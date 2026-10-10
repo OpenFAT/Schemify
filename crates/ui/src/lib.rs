@@ -10,6 +10,7 @@
 //! layout(tables, state, viewport)      -> UiLayout          (per frame when dirty)
 //! route_input(tables, layout, events)  -> Routed            (command_requests, canvas events)
 //! access_tree(tables, layout)          -> accesskit::TreeUpdate
+//! waves::WaveUi::{route,command}       -> wave requests     (the waveform window, D23)
 //! ```
 //!
 //! ```
@@ -35,6 +36,7 @@ pub mod records;
 mod strings;
 mod tables;
 mod text;
+pub mod waves;
 
 pub use input::{Button, CommandRequests, InputEvent, InputEvents, Routed, UiState, route_input};
 pub use layout::{Layer, Rect, Shown, UiLayout, layout, row_style};

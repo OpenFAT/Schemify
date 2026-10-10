@@ -2777,6 +2777,7 @@ dependencies = [
  "accesskit_winit",
  "pollster",
  "schemify-ui",
+ "schemify-wave",
  "vello",
  "vello_cpu",
  "wasm-bindgen",
@@ -2814,6 +2815,7 @@ dependencies = [
  "ratex-layout",
  "ratex-parser",
  "ratex-types",
+ "schemify-wave",
  "skrifa",
  "taffy",
 ]
@@ -2822,7 +2824,8 @@ dependencies = [
 name = "schemify-wave"
 version = "0.1.0"
 dependencies = [
- "rustfft",
+ "proptest",
+ "schemify-expr",
  "thiserror 2.0.21",
 ]
 

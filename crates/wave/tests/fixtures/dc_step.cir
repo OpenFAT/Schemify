@@ -1,0 +1,24 @@
+* Diode DC sweep, stepped two ways: a nested source sweep (steps inside one plot, the scale
+* restarts) and three runs with a changed resistor appended as three plots.
+V1 in 0 DC 0
+V2 b 0 DC 0
+R1 in a 1k
+D1 a b dmod
+.model dmod D(IS=1e-14)
+.control
+set filetype=binary
+set appendwrite
+dc V1 0 2 0.05 V2 0 0.5 0.25
+write dc_step.bin.raw
+set filetype=ascii
+write dc_step.ascii.raw
+foreach r 2k 4k
+  alter R1 $r
+  dc V1 0 2 0.1
+  set filetype=binary
+  write dc_step.bin.raw
+  set filetype=ascii
+  write dc_step.ascii.raw
+end
+.endc
+.end

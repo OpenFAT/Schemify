@@ -265,7 +265,12 @@ impl Builder<'_> {
                 FlexDirection::Column
             };
             if row_dir {
-                style.align_items = Some(AlignItems::CENTER);
+                let stretch = st(self, StyleProp::Stretch) != 0.0;
+                style.align_items = Some(if stretch {
+                    AlignItems::STRETCH
+                } else {
+                    AlignItems::CENTER
+                });
             }
             style.gap = Size {
                 width: length(gap),

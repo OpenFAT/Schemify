@@ -10,6 +10,8 @@ workspace = true
 
 [dependencies]
 schemify-ui = { path = "../ui" }
+# Waveform panes (D23): trace columns, decimation, axes.
+schemify-wave.workspace = true
 vello.workspace = true
 vello_cpu.workspace = true
 winit.workspace = true

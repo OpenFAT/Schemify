@@ -1,0 +1,2 @@
+# Simulator outputs used as oracle fixtures (the root ignores *.raw).
+!*.raw
