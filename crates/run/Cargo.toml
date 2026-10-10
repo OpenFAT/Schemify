@@ -24,3 +24,15 @@ schemify-wave.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+
+[[test]]
+name = "ngspice"
+required-features = ["sweep", "corners", "mc", "optimize"]
+
+[[test]]
+name = "runner"
+required-features = ["sweep", "corners", "mc"]
+
+[[test]]
+name = "expand"
+required-features = ["sweep", "corners", "mc"]

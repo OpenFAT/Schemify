@@ -5,33 +5,36 @@
 //! Every candidate is clamped to [lo, hi] before being handed out, so the
 //! simplex only ever contains feasible points.
 
-use serde::{Deserialize, Serialize};
-
-use crate::Param;
+use super::Param;
 
 const ALPHA: f64 = 1.0; // reflection
 const GAMMA: f64 = 2.0; // expansion
 const RHO: f64 = 0.5; // contraction
 const SIGMA: f64 = 0.5; // shrink
 
-/// Placeholder for not-yet-evaluated vertices. `f64::MAX` instead of
-/// `INFINITY` so the state survives a JSON round-trip (serde_json maps
-/// non-finite floats to null).
-const UNEVALUATED: f64 = f64::MAX;
+/// Placeholder for not-yet-evaluated vertices; also the score of a failed evaluation,
+/// so a failed candidate sorts worst.
+pub(crate) const UNEVALUATED: f64 = f64::MAX;
 
 /// Where the state machine is waiting for its next evaluation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Phase {
     /// Evaluating the initial simplex; `next` is the vertex awaiting a score.
-    BuildingSimplex { next: u32 },
+    BuildingSimplex {
+        next: u32,
+    },
     Reflecting,
     Expanding,
-    Contracting { outside: bool },
+    Contracting {
+        outside: bool,
+    },
     /// Re-evaluating shrunk vertices one at a time; `next` is the row index.
-    Shrinking { next: u32 },
+    Shrinking {
+        next: u32,
+    },
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NelderMead {
     lo: Vec<f64>,
     hi: Vec<f64>,
@@ -53,6 +56,7 @@ impl NelderMead {
     /// would collapse it, jittered if the range itself is degenerate).
     pub(crate) fn new(params: &[Param]) -> Self {
         let n = params.len();
+        assert!(n >= 1, "a simplex needs a dimension");
         let lo: Vec<f64> = params.iter().map(|p| p.min).collect();
         let hi: Vec<f64> = params.iter().map(|p| p.max).collect();
         let init: Vec<f64> = params.iter().map(|p| p.init.clamp(p.min, p.max)).collect();
@@ -78,6 +82,7 @@ impl NelderMead {
             simplex.extend_from_slice(&v);
         }
 
+        assert_eq!(simplex.len(), (n + 1) * n);
         NelderMead {
             lo,
             hi,
@@ -96,6 +101,7 @@ impl NelderMead {
 
     /// Record the score for the current candidate and compute the next one.
     pub(crate) fn tell(&mut self, score: f64) {
+        assert!(!score.is_nan(), "scores must be comparable");
         let n = self.n();
         match self.phase {
             Phase::BuildingSimplex { next } => {
@@ -220,6 +226,7 @@ impl NelderMead {
         for c in &mut c {
             *c /= n as f64;
         }
+        assert_eq!(c.len(), n);
         c
     }
 
@@ -233,13 +240,15 @@ impl NelderMead {
         self.simplex = Vec::with_capacity(old_simplex.len());
         self.fvals = Vec::with_capacity(old_fvals.len());
         for &src in &order {
-            self.simplex.extend_from_slice(&old_simplex[src * n..(src + 1) * n]);
+            self.simplex
+                .extend_from_slice(&old_simplex[src * n..(src + 1) * n]);
             self.fvals.push(old_fvals[src]);
         }
     }
 
     fn replace_worst(&mut self, point: &[f64], score: f64) {
         let n = self.n();
+        assert_eq!(point.len(), n);
         self.simplex[n * n..(n + 1) * n].copy_from_slice(point);
         self.fvals[n] = score;
         self.sort();

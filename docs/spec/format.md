@@ -125,7 +125,7 @@ Document order is preserved.
 | Record | Attributes | Notes |
 |---|---|---|
 | `prose <id>` | verbatim lines | Markdown + `$…$` / `$$…$$` LaTeX math (D21). |
-| `var <name> <expr>` | `unit <u>`, `min <expr>`, `max <expr>`, `doc <text>`, `cached <value> <hash>` | The cell's variables table (D19). Bench vars are the sweep/optimizer variables. |
+| `var <name> <expr>` | `unit <u>`, `min <expr>`, `max <expr>`, `doc <text>`, `cached <value> <hash>`, `dist gauss\|uniform <spread> [rel]` | The cell's variables table (D19). Bench vars are the sweep/optimizer variables. `dist` makes a bench var vary in Monte Carlo runs: normal with standard deviation `spread`, or uniform over `±spread`; `rel` scales the spread by the value ([run.md](run.md) §3). |
 
 ### Rank 5 — impl bodies
 
@@ -139,10 +139,10 @@ Document order is preserved.
 |---|---|---|
 | `corner <name>` | `lib <path> <section>` (repeatable), `include <path>` (repeatable), `set <var> <expr>` (repeatable), `temp <expr>` | Model sections and var overrides. Paths may contain `${NAME}` expanded from project `set` entries, then the environment; nothing executes. |
 | `config <name>` | `order <impl>…`, `cell <cellref> <impl>` (repeatable), `inst <path> <impl>` (repeatable) | D11a impl selection. |
-| `sweep <name>` | `var <v>`, and one of `values <expr>…` / `lin <from> <to> <n>` / `log <from> <to> <n>` | |
-| `montecarlo <name>` | `samples <n>`, `seed <n>` | |
-| `optimize <name>` | `algo <word>`, `goal <output> min\|max\|target <expr>` (repeatable), `vary <var>` (repeatable; bounds come from the var) , `budget <n>` | |
-| `output <name> <expr>` | `unit <u>` | Column-mode expression over results. |
+| `sweep <name>` | `var <v>`, and one of `values <expr>…` / `lin <from> <to> <n>` / `log <from> <to> <n>` | `lin`/`log` bounds are constants, `n` in `1..=65536` ([run.md](run.md) §2). |
+| `montecarlo <name>` | `samples <n>` (required), `seed <n>` (default 0) | Varies every var with `dist` ([run.md](run.md) §3). |
+| `optimize <name>` | `algo random\|nelder-mead` (default `nelder-mead`), `goal <output> min\|max\|target <expr>` (repeatable), `vary <var>` (repeatable; bounds come from the var), `budget <n>` (default 100), `seed <n>` (default 1) | [run.md](run.md) §6. |
+| `output <name> <expr>` | `unit <u>` | Calculator-mode expression over each job's raw file, reduced to one number ([run.md](run.md) §4). |
 | `spec <output>` | `min <expr>`, `max <expr>` | |
 | `code <name> <lang>` | verbatim lines | `lang` `spice` = all SPICE dialects; `ngspice`/`xyce`/`spectre` = that dialect only; anything else goes to a runner plugin. |
 
@@ -164,7 +164,7 @@ A library's content hash is the lowercase hex sha256 over its files sorted bytew
 
 ### User config
 
-`set <key> <value>`, `key <chord> <command>`, `sim <name>` with `path`, `args`, `plugin <name>` (order = load order, D8). The app edits single lines in place and never rewrites hand-written config.
+`set <key> <value>`, `key <chord> <command>`, `sim <name>` with `path`, `args` (`ngspice`: the simulator command line, `{netlist}` and `{raw}` replaced by the job's files; `openvaf`, `iverilog`: compilers, [run.md](run.md) §5), `plugin <name>` (order = load order, D8). The app edits single lines in place and never rewrites hand-written config.
 
 ## 5. Unknowns and forward compatibility
 
