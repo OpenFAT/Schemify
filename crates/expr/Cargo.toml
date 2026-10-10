@@ -11,6 +11,8 @@ workspace = true
 [dependencies]
 # Complex arithmetic (num_complex re-export) and `fft()`; already the wave crate's dep.
 rustfft.workspace = true
+# Pure-Rust libm: transcendentals bit-identical on every target (D32).
+libm.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

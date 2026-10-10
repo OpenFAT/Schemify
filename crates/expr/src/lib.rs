@@ -63,6 +63,8 @@
 
 mod calc;
 mod compile;
+#[doc(hidden)]
+pub mod dmath;
 mod eval;
 mod graph;
 mod lex;

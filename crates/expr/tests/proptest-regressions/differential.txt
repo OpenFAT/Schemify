@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5417a1e49593cb6c377810813d9c9b2513e88a9dddfb2f896973794fd99bcac1 # shrinks to e = Bin(Add, Call("str", [Call("db", [Pi])]), Str("1k")), env = [Int(0), Int(0), Int(0), Int(0), Str(""), Bool(false), C(0.0, 0.0)]

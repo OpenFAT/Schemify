@@ -8,6 +8,7 @@ use core::fmt::Write;
 use rustfft::num_complex::Complex64;
 
 use crate::compile::{Builtin, Mode, OpKind, Program};
+use crate::dmath;
 use crate::text::{Bytes, fmt_eng, fmt_num};
 use crate::{Code, Error, MAX_PLUGIN_ARGS, MAX_STR_BYTES, Span, Value};
 
@@ -477,7 +478,7 @@ fn num_binary(op: OpKind, x: f64, y: f64) -> Result<V, Error> {
         OpKind::Mul => x * y,
         OpKind::Div => x / y,
         OpKind::Rem => x % y,
-        OpKind::Pow => x.powf(y),
+        OpKind::Pow => dmath::pow(x, y),
         _ => {
             let ord = x.partial_cmp(&y).expect("values are never NaN");
             return Ok(V::Bool(cmp(op, ord)));
@@ -493,8 +494,7 @@ fn cnum_binary(op: OpKind, a: Complex64, b: Complex64) -> Result<Result<V, Error
         OpKind::Sub => a - b,
         OpKind::Mul => a * b,
         OpKind::Div => a / b,
-        OpKind::Pow if b.im == 0.0 => a.powf(b.re),
-        OpKind::Pow => a.powc(b),
+        OpKind::Pow => dmath::cpow(a, b),
         _ => return Err(()),
     };
     Ok(cfin(r, op_str(op)))
@@ -561,7 +561,7 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut Vec<u8>) -> Result<V, Erro
     let r = match b {
         Builtin::Abs => match a0 {
             V::Int(x) => Ok(x.checked_abs().map_or(V::Num((x as f64).abs()), V::Int)),
-            V::Cnum(re, im) => fin(re.hypot(im), name),
+            V::Cnum(re, im) => fin(dmath::hypot(re, im), name),
             v => Ok(V::Num(num(v)?.abs())),
         },
         Builtin::Sqrt
@@ -577,10 +577,10 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut Vec<u8>) -> Result<V, Erro
         | Builtin::Sinh
         | Builtin::Cosh
         | Builtin::Tanh => match a0 {
-            V::Cnum(re, im) => cfin(complex_fn(b, Complex64::new(re, im)), name),
-            v => fin(real_fn(b, num(v)?), name),
+            V::Cnum(re, im) => cfin(dmath::complex(b, Complex64::new(re, im)), name),
+            v => fin(dmath::real(b, num(v)?), name),
         },
-        Builtin::Atan2 => fin(num(a0)?.atan2(num(args[1])?), name),
+        Builtin::Atan2 => fin(dmath::atan2(num(a0)?, num(args[1])?), name),
         Builtin::Floor | Builtin::Ceil | Builtin::Round => match a0 {
             V::Int(x) => Ok(V::Int(x)),
             v => {
@@ -698,12 +698,12 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut Vec<u8>) -> Result<V, Erro
             match b {
                 Builtin::Re => Ok(V::Num(z.re)),
                 Builtin::Im => Ok(V::Num(z.im)),
-                Builtin::Mag => fin(z.norm(), name),
+                Builtin::Mag => fin(dmath::norm(z), name),
                 // Zero has no phase; define it as 0 so the sign of a zero
                 // (`-0.0`) cannot flip the answer to 180.
                 Builtin::Ph if z.re == 0.0 && z.im == 0.0 => Ok(V::Num(0.0)),
-                Builtin::Ph => Ok(V::Num(z.im.atan2(z.re).to_degrees())),
-                Builtin::Db => fin(20.0 * z.norm().log10(), name),
+                Builtin::Ph => Ok(V::Num(dmath::atan2(z.im, z.re).to_degrees())),
+                Builtin::Db => fin(20.0 * dmath::log10(dmath::norm(z)), name),
                 _ if matches!(a0, V::Cnum(..)) => Ok(V::Cnum(z.re, -z.im)),
                 _ => Ok(a0),
             }
@@ -737,46 +737,4 @@ fn write_str(
     let len = strs.len() - start;
     check_str_len(&strs[..start], len)?;
     Ok(V::Str(start as u32, len as u32))
-}
-
-// ponytail: transcendental functions (and `powf`) call the platform libm,
-// which can differ by an ulp between Linux, macOS, Windows and wasm; values
-// that reach netlists are then not byte-identical across platforms (D32).
-// Upgrade path: route these through a pure-Rust libm port.
-fn real_fn(b: Builtin, x: f64) -> f64 {
-    match b {
-        Builtin::Sqrt => x.sqrt(),
-        Builtin::Exp => x.exp(),
-        Builtin::Ln => x.ln(),
-        Builtin::Log10 => x.log10(),
-        Builtin::Sin => x.sin(),
-        Builtin::Cos => x.cos(),
-        Builtin::Tan => x.tan(),
-        Builtin::Asin => x.asin(),
-        Builtin::Acos => x.acos(),
-        Builtin::Atan => x.atan(),
-        Builtin::Sinh => x.sinh(),
-        Builtin::Cosh => x.cosh(),
-        Builtin::Tanh => x.tanh(),
-        _ => unreachable!("not an elementary function"),
-    }
-}
-
-fn complex_fn(b: Builtin, z: Complex64) -> Complex64 {
-    match b {
-        Builtin::Sqrt => z.sqrt(),
-        Builtin::Exp => z.exp(),
-        Builtin::Ln => z.ln(),
-        Builtin::Log10 => z.log10(),
-        Builtin::Sin => z.sin(),
-        Builtin::Cos => z.cos(),
-        Builtin::Tan => z.tan(),
-        Builtin::Asin => z.asin(),
-        Builtin::Acos => z.acos(),
-        Builtin::Atan => z.atan(),
-        Builtin::Sinh => z.sinh(),
-        Builtin::Cosh => z.cosh(),
-        Builtin::Tanh => z.tanh(),
-        _ => unreachable!("not an elementary function"),
-    }
 }

@@ -17,6 +17,7 @@ use rustfft::FftPlanner;
 use rustfft::num_complex::Complex64;
 
 use crate::compile::{Builtin, Mode, OpKind, Program};
+use crate::dmath;
 use crate::eval::{
     Scratch, V, binary, call, call_plugin, fin, load_const, load_value, no_plugins, not_bool,
     op_str, to_value, type_name, unary,
@@ -1041,11 +1042,11 @@ fn settle(x: &[f64], y: &[f64], tol: f64) -> f64 {
 fn margin(gain: bool, re: &[f64], im: &[f64]) -> f64 {
     let n = re.len();
     let z = |i: usize| Complex64::new(re[i], if im.is_empty() { 0.0 } else { im[i] });
-    let db = |i: usize| 20.0 * z(i).norm().log10();
+    let db = |i: usize| 20.0 * dmath::log10(dmath::norm(z(i)));
     let mut prev_ph = 0.0;
     let mut phase = Vec::with_capacity(n);
     for i in 0..n {
-        let mut p = z(i).im.atan2(z(i).re).to_degrees();
+        let mut p = dmath::atan2(z(i).im, z(i).re).to_degrees();
         if i > 0 {
             p -= 360.0 * ((p - prev_ph) / 360.0).round();
         }

@@ -347,7 +347,7 @@ fn binop(op: Op, x: &RV, y: &RV) -> R {
                 Op::Mul => a * b,
                 Op::Div => a / b,
                 Op::Rem => a % b,
-                Op::Pow => a.powf(b),
+                Op::Pow => schemify_expr::dmath::pow(a, b),
                 _ => unreachable!(),
             })
         }
@@ -363,8 +363,7 @@ fn binop(op: Op, x: &RV, y: &RV) -> R {
                 Op::Sub => a - b,
                 Op::Mul => a * b,
                 Op::Div => a / b,
-                Op::Pow if b.im == 0.0 => a.powf(b.re),
-                Op::Pow => a.powc(b),
+                Op::Pow => schemify_expr::dmath::cpow(a, b),
                 _ => return Err(Code::X003),
             })
         }
@@ -397,47 +396,19 @@ fn builtin(f: &str, v: &[RV]) -> R {
     match f {
         "abs" => match &v[0] {
             RV::Int(x) => Ok(x.checked_abs().map_or(RV::Num((*x as f64).abs()), RV::Int)),
-            RV::C(a, b) => fin(a.hypot(*b)),
+            RV::C(a, b) => fin(schemify_expr::dmath::hypot(*a, *b)),
             o => Ok(RV::Num(num(o)?.abs())),
         },
         "sqrt" | "exp" | "ln" | "log10" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan"
         | "sinh" | "cosh" | "tanh" => {
             if let RV::C(a, b) = v[0] {
                 let z = Complex64::new(a, b);
-                return cfin(match f {
-                    "sqrt" => z.sqrt(),
-                    "exp" => z.exp(),
-                    "ln" => z.ln(),
-                    "log10" => z.log10(),
-                    "sin" => z.sin(),
-                    "cos" => z.cos(),
-                    "tan" => z.tan(),
-                    "asin" => z.asin(),
-                    "acos" => z.acos(),
-                    "atan" => z.atan(),
-                    "sinh" => z.sinh(),
-                    "cosh" => z.cosh(),
-                    _ => z.tanh(),
-                });
+                return cfin(schemify_expr::dmath::complex_named(f, z).expect("elementary"));
             }
             let x = n0()?;
-            fin(match f {
-                "sqrt" => x.sqrt(),
-                "exp" => x.exp(),
-                "ln" => x.ln(),
-                "log10" => x.log10(),
-                "sin" => x.sin(),
-                "cos" => x.cos(),
-                "tan" => x.tan(),
-                "asin" => x.asin(),
-                "acos" => x.acos(),
-                "atan" => x.atan(),
-                "sinh" => x.sinh(),
-                "cosh" => x.cosh(),
-                _ => x.tanh(),
-            })
+            fin(schemify_expr::dmath::real_named(f, x).expect("elementary"))
         }
-        "atan2" => fin(n0()?.atan2(num(&v[1])?)),
+        "atan2" => fin(schemify_expr::dmath::atan2(n0()?, num(&v[1])?)),
         "floor" | "ceil" | "round" => match &v[0] {
             RV::Int(x) => Ok(RV::Int(*x)),
             o => {
@@ -522,10 +493,12 @@ fn builtin(f: &str, v: &[RV]) -> R {
             match f {
                 "re" => Ok(RV::Num(z.re)),
                 "im" => Ok(RV::Num(z.im)),
-                "mag" => fin(z.norm()),
+                "mag" => fin(schemify_expr::dmath::norm(z)),
                 "ph" if z.re == 0.0 && z.im == 0.0 => Ok(RV::Num(0.0)),
-                "ph" => Ok(RV::Num(z.im.atan2(z.re).to_degrees())),
-                "db" => fin(20.0 * z.norm().log10()),
+                "ph" => Ok(RV::Num(
+                    schemify_expr::dmath::atan2(z.im, z.re).to_degrees(),
+                )),
+                "db" => fin(20.0 * schemify_expr::dmath::log10(schemify_expr::dmath::norm(z))),
                 _ => match &v[0] {
                     RV::C(a, b) => Ok(RV::C(*a, -*b)),
                     o => Ok(o.clone()),

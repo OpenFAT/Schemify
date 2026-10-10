@@ -28,6 +28,7 @@ schemify-wave = { path = "crates/wave" }
 schemify-run = { path = "crates/run" }
 # third-party (justify additions in the PR, AGENTS.md rule 7)
 rustfft = "6"
+libm = "0.2"
 thiserror = "2"
 proptest = "1"
 
