@@ -1,0 +1,24 @@
+schemify 1 shprim
+  doc "generic PMOS"
+  category pmos
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+  unit um
+  min 0.42
+  grid 0.01
+param L 0.15
+  unit um
+  min 0.15
+  grid 0.01
+param model pfet
+  kind choice
+  choices pfet pfet_lvt
+
+impl spice spice
+  format spice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}u"

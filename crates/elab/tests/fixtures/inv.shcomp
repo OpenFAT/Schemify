@@ -1,0 +1,41 @@
+schemify 1 shcomp
+  doc "CMOS inverter"
+  category logic
+
+pin A in -40 0
+pin Y out 40 0
+
+param wn 1
+param wp 2
+param l 0.15
+
+impl sch schematic
+
+line -40 0 -20 0
+line 20 0 40 0
+
+inst 0mn001 ./nmos
+  at 0 60 R0
+  name MN
+  W wn
+  L l
+inst 0mp001 ./pmos
+  at 0 -60 R0
+  name MP
+  W wp
+  L l
+
+# Drains joined by a vertical wire; the output wire T-joins it.
+wire 0w0001 20 -30 20 30
+wire 0w0002 20 0 60 0
+# Gates joined; the input wire T-joins it.
+wire 0w0003 -20 -60 -20 60
+wire 0w0004 -60 0 -20 0
+
+label 0n0001 20 -90 R0 vdd!
+label 0n0002 20 -60 R0 vdd!
+label 0n0003 20 90 R0 0
+label 0n0004 20 60 R0 0
+
+port 0p0001 -60 0 R0 A
+port 0p0002 60 0 R0 Y

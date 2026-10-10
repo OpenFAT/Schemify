@@ -2722,6 +2722,7 @@ dependencies = [
  "proptest",
  "schemify-doc",
  "schemify-expr",
+ "schemify-format",
 ]
 
 [[package]]

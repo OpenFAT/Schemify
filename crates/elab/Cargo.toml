@@ -11,6 +11,9 @@ workspace = true
 [dependencies]
 schemify-doc.workspace = true
 schemify-expr.workspace = true
+# `doc` columns and edit targets are typed with format's `Orient`, `RecordKind` and
+# `FileKind`, which `doc` does not re-export; naming them needs the (leaf) crate.
+schemify-format.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

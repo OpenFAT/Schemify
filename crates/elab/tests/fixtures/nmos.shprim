@@ -1,0 +1,30 @@
+schemify 1 shprim
+  doc "generic NMOS"
+  category nmos
+  prefix M
+
+pin D inout 20 -30
+pin G in -20 0
+pin S inout 20 30
+pin B inout 20 0
+
+param W 1
+  unit um
+  min 0.42
+  grid 0.01
+param L 0.15
+  unit um
+  min 0.15
+  grid 0.01
+param nf 1
+  kind int
+  min 1
+param model nfet
+  kind choice
+  choices nfet nfet_lvt
+param ad 0
+  computed W*0.29
+
+impl spice spice
+  format spice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}u nf={nf} ad={ad}p"
+  format cdl "M{name} {D} {G} {S} {B} {model} W={W}u L={L}u"

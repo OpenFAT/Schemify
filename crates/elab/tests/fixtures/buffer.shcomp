@@ -1,0 +1,23 @@
+schemify 1 shcomp
+  doc "unity-gain buffer around the OTA"
+
+pin IN in -40 0
+pin OUT out 40 0
+pin IB in 0 40
+
+param size 1
+
+impl sch schematic
+
+inst 0x0001 ./opamp
+  at 0 0 R0
+  name X1
+  wn 2*size
+  wp 4*size
+
+# Feedback by name: the inverting input carries the output label.
+label 0n0001 -40 20 R0 OUT
+
+port 0p0001 -40 -20 R0 IN
+port 0p0002 40 0 R0 OUT
+port 0p0003 0 40 R0 IB
