@@ -116,6 +116,7 @@ The complete list. Each is zero-overhead and replaces two or more interfaces:
 | Annotation overlay | ERC markers, OP back-annotation, LVS errors, diff markers, plugin markers | one table keyed by path/id |
 | Platform split | native fs/OPFS, subprocess/no-subprocess | `cfg`, compile-time only |
 | Command table | menu items, keymap targets, CLI, JSON-RPC, plugin commands | core commands = closed enum; plugin commands = rows |
+| `render::Painter` | vello GPU `Scene` and `vello_cpu` raster (goldens, no-GPU fallback) | trait used only as a compile-time generic bound; monomorphized |
 
 ## Change drill
 

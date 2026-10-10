@@ -1,0 +1,1702 @@
+# Schemify default UI: the xschem-parity shell (D6, D25).
+#
+# Body of the bundled default-UI plugin's `contribute ui` + `contribute keymap` output
+# (plugin-abi §7, format spec §2). Every element below can be overridden by a later plugin with
+# `set`, `remove`, `style` or `key` records; last contribution wins (D8).
+# Menus, items and accelerators follow docs/xschem-ui/menu-tree.md (xschem 3.4.7, captured live).
+
+# --- theme: one row per selector; class (`style` prop) > kind > `*` -----------------------------
+
+style *
+  fg 000000
+  font 13
+  accel-fg 000000
+  hover-bg ececec
+  active-bg c3c3c3
+  border-color 808080
+
+style window
+  bg 000000
+  dir column
+
+style menubar
+  bg d9d9d9
+  dir row
+  height 27
+  pad 2
+
+style menu-title
+  pad 7
+  height 23
+  hover-bg ececec
+  active-bg ececec
+
+style menubar-dash
+  fg 6d6d6d
+  pad 7
+
+style menubar-button
+  bg a3a3a3
+  hover-bg b8b8b8
+  pad 6
+  height 23
+
+style menu
+  bg d9d9d9
+  border 1
+  border-color 8c8c8c
+  pad-y 2
+  min-width 140
+
+style item
+  pad 6
+  height 22
+  gap 28
+  hover-bg ececec
+
+style radio
+  radius 6
+
+style separator
+  height 9
+  fg a3a3a3
+
+style toolbar
+  bg ffffff
+  dir row
+  height 30
+  pad 3
+  gap 2
+
+style button
+  pad 5
+  height 24
+  font 12
+  hover-bg dcdcdc
+  radius 3
+
+style spacer
+  grow 1
+
+style tabs
+  bg c3c3c3
+  dir row
+  height 23
+  pad 1
+  gap 2
+
+style tab
+  bg d9d9d9
+  pad 5
+  height 20
+  border 1
+  active-bg 90ee90
+
+style tab-new
+  bg d9d9d9
+  pad 4
+  height 18
+  border 1
+
+style canvas
+  grow 1
+  bg 000000
+
+style status
+  bg d9d9d9
+  dir row
+  height 26
+  pad 4
+  gap 6
+
+style status-field
+  bg 98fb98
+  width 52
+  pad 4
+  pad-y 1
+  border 1
+
+style status-msg
+  grow 1
+
+style text_input
+  bg ffffff
+  pad 4
+  pad-y 2
+  border 1
+  width 120
+
+style dialog
+  bg d9d9d9
+  dir column
+  pad 12
+  pad-y 12
+  gap 10
+  border 1
+  border-color 404040
+
+style dialog-input
+  width 320
+
+style dialog-button
+  bg e4e4e4
+  pad 14
+  border 1
+  radius 2
+
+style dialog-buttons
+  dir row
+  gap 8
+
+# --- window ---------------------------------------------------------------------------------------
+
+node window window
+
+node menubar menubar
+  parent window
+
+# --- menus (generated once from docs/xschem-ui/menu-tree.md, then hand-maintained) ----------------
+
+node menu.file menu
+  parent menubar
+  label File
+node file.clear_schematic item
+  parent menu.file
+  label "Clear Schematic"
+  command file.clear_schematic
+  accel Ctrl+N
+node file.clear_symbol item
+  parent menu.file
+  label "Clear Symbol"
+  command file.clear_symbol
+  accel Ctrl+Shift+N
+node file.component_browser item
+  parent menu.file
+  label "Component browser"
+  command file.component_browser
+  accel "Shift-Ins, Ctrl-I"
+node file.open item
+  parent menu.file
+  label Open
+  command file.open
+  accel Ctrl+O
+node file.open_most_recent item
+  parent menu.file
+  label "Open Most Recent"
+  command file.open_most_recent
+  accel Ctrl+Shift+O
+node menu.file.open_recent menu
+  parent menu.file
+  label "Open recent"
+node file.open_recent.poweramp_sch item
+  parent menu.file.open_recent
+  label poweramp.sch
+  command file.open_recent.poweramp_sch
+node file.open_recent.mos_power_ampli_sym item
+  parent menu.file.open_recent
+  label mos_power_ampli.sym
+  command file.open_recent.mos_power_ampli_sym
+node file.open_recent.solar_panel_sch item
+  parent menu.file.open_recent
+  label solar_panel.sch
+  command file.open_recent.solar_panel_sch
+node file.open_recent.cmos_example_sch item
+  parent menu.file.open_recent
+  label cmos_example.sch
+  command file.open_recent.cmos_example_sch
+node file.open_recent.rlc_sch item
+  parent menu.file.open_recent
+  label rlc.sch
+  command file.open_recent.rlc_sch
+node file.create_new_window_tab item
+  parent menu.file
+  label "Create new window/tab"
+  command file.create_new_window_tab
+node file.open_schematic_in_new_window_tab item
+  parent menu.file
+  label "Open schematic in new window/tab"
+  command file.open_schematic_in_new_window_tab
+  accel Alt+E
+node file.open_symbol_in_new_window_tab item
+  parent menu.file
+  label "Open symbol in new window/tab"
+  command file.open_symbol_in_new_window_tab
+  accel Alt+I
+node file.delete_files item
+  parent menu.file
+  label "Delete files"
+  command file.delete_files
+  accel Shift-D
+node file.save item
+  parent menu.file
+  label Save
+  command file.save
+  accel Ctrl+S
+node file.merge item
+  parent menu.file
+  label Merge
+  command file.merge
+  accel B
+node file.reload item
+  parent menu.file
+  label Reload
+  command file.reload
+  accel Alt+S
+node file.save_as item
+  parent menu.file
+  label "Save as"
+  command file.save_as
+  accel Ctrl+Shift+S
+node file.save_as_symbol item
+  parent menu.file
+  label "Save as symbol"
+  command file.save_as_symbol
+  accel Ctrl+Alt+S
+node menu.file.image_export menu
+  parent menu.file
+  label "Image export"
+node file.image_export.eps_selection_export item
+  parent menu.file.image_export
+  label "EPS Selection Export"
+  command file.image_export.eps_selection_export
+node file.image_export.pdf_ps_export item
+  parent menu.file.image_export
+  label "PDF/PS Export"
+  command file.image_export.pdf_ps_export
+  accel *
+node file.image_export.pdf_ps_export_full item
+  parent menu.file.image_export
+  label "PDF/PS Export Full"
+  command file.image_export.pdf_ps_export_full
+node file.image_export.hierarchical_pdf_ps_export item
+  parent menu.file.image_export
+  label "Hierarchical PDF/PS Export"
+  command file.image_export.hierarchical_pdf_ps_export
+node file.image_export.png_export item
+  parent menu.file.image_export
+  label "PNG Export"
+  command file.image_export.png_export
+  accel Ctrl+*
+node file.image_export.svg_export item
+  parent menu.file.image_export
+  label "SVG Export"
+  command file.image_export.svg_export
+  accel Alt+*
+node menu.file.sep1 separator
+  parent menu.file
+node file.start_new_xschem_process item
+  parent menu.file
+  label "Start new Xschem process"
+  command file.start_new_xschem_process
+  accel X
+node file.close_schematic item
+  parent menu.file
+  label "Close schematic"
+  command file.close_schematic
+  accel Ctrl+W
+node file.quit_xschem item
+  parent menu.file
+  label "Quit Xschem"
+  command file.quit_xschem
+  accel Ctrl+Q
+node menu.edit menu
+  parent menubar
+  label Edit
+node edit.undo item
+  parent menu.edit
+  label Undo
+  command edit.undo
+  accel U
+node edit.redo item
+  parent menu.edit
+  label Redo
+  command edit.redo
+  accel Shift+U
+node edit.copy item
+  parent menu.edit
+  label Copy
+  command edit.copy
+  accel Ctrl+C
+node edit.cut item
+  parent menu.edit
+  label Cut
+  command edit.cut
+  accel Ctrl+X
+node edit.paste item
+  parent menu.edit
+  label Paste
+  command edit.paste
+  accel Ctrl+V
+node edit.delete item
+  parent menu.edit
+  label Delete
+  command edit.delete
+  accel Del
+node edit.select_all item
+  parent menu.edit
+  label "Select all"
+  command edit.select_all
+  accel Ctrl+A
+node edit.duplicate_objects item
+  parent menu.edit
+  label "Duplicate objects"
+  command edit.duplicate_objects
+  accel C
+node edit.move_objects item
+  parent menu.edit
+  label "Move objects"
+  command edit.move_objects
+  accel M
+node edit.move_objects_stretching_attached_wires item
+  parent menu.edit
+  label "Move objects stretching attached wires"
+  command edit.move_objects_stretching_attached_wires
+  accel Control+M
+node edit.move_objects_adding_wires_to_connected_p item
+  parent menu.edit
+  label "Move objects adding wires to connected pins"
+  command edit.move_objects_adding_wires_to_connected_p
+  accel Shift+M
+node edit.horizontal_flip_in_place_selected_object item
+  parent menu.edit
+  label "Horizontal Flip in place selected objects"
+  command edit.horizontal_flip_in_place_selected_object
+  accel Alt-F
+node edit.vertical_flip_in_place_selected_objects item
+  parent menu.edit
+  label "Vertical Flip in place selected objects"
+  command edit.vertical_flip_in_place_selected_objects
+  accel Alt-V
+node edit.rotate_in_place_selected_objects item
+  parent menu.edit
+  label "Rotate in place selected objects"
+  command edit.rotate_in_place_selected_objects
+  accel Alt-R
+node edit.vertical_flip_selected_objects item
+  parent menu.edit
+  label "Vertical Flip selected objects"
+  command edit.vertical_flip_selected_objects
+  accel Shift-V
+node edit.horizontal_flip_selected_objects item
+  parent menu.edit
+  label "Horizontal Flip selected objects"
+  command edit.horizontal_flip_selected_objects
+  accel Shift-F
+node edit.rotate_selected_objects item
+  parent menu.edit
+  label "Rotate selected objects"
+  command edit.rotate_selected_objects
+  accel Shift-R
+node edit.unconstrained_move item
+  parent menu.edit
+  label "Unconstrained move"
+  command edit.unconstrained_move
+  checked 0
+  style radio
+node edit.constrained_horizontal_move item
+  parent menu.edit
+  label "Constrained Horizontal move"
+  command edit.constrained_horizontal_move
+  accel H
+  checked 0
+  style radio
+node edit.constrained_vertical_move item
+  parent menu.edit
+  label "Constrained Vertical move"
+  command edit.constrained_vertical_move
+  accel V
+  checked 0
+  style radio
+node edit.push_schematic item
+  parent menu.edit
+  label "Push schematic"
+  command edit.push_schematic
+  accel E
+node edit.push_symbol item
+  parent menu.edit
+  label "Push symbol"
+  command edit.push_symbol
+  accel I
+node edit.pop item
+  parent menu.edit
+  label Pop
+  command edit.pop
+  accel Ctrl+E
+node menu.options menu
+  parent menubar
+  label Options
+node options.color_postscript_svg item
+  parent menu.options
+  label "Color Postscript/SVG"
+  command options.color_postscript_svg
+  checked 0
+node options.transparent_svg_background item
+  parent menu.options
+  label "Transparent SVG background"
+  command options.transparent_svg_background
+  checked 0
+node options.debug_mode item
+  parent menu.options
+  label "Debug mode"
+  command options.debug_mode
+  checked 0
+node options.undo_buffer_on_disk item
+  parent menu.options
+  label "Undo buffer on Disk"
+  command options.undo_buffer_on_disk
+  checked 0
+node options.enable_stretch item
+  parent menu.options
+  label "Enable stretch"
+  command options.enable_stretch
+  accel Y
+  checked 0
+node options.enable_infix_interface item
+  parent menu.options
+  label "Enable infix-interface"
+  command options.enable_infix_interface
+  checked 0
+node options.enable_orthogonal_wiring item
+  parent menu.options
+  label "Enable orthogonal wiring"
+  command options.enable_orthogonal_wiring
+  accel Shift-L
+  checked 0
+node options.unsel_partial_sel_wires_after_stretch_mo item
+  parent menu.options
+  label "Unsel. partial sel. wires after stretch move"
+  command options.unsel_partial_sel_wires_after_stretch_mo
+  checked 0
+node options.auto_join_trim_wires item
+  parent menu.options
+  label "Auto Join/Trim Wires"
+  command options.auto_join_trim_wires
+  checked 0
+node options.persistent_wire_line_place_command item
+  parent menu.options
+  label "Persistent wire/line place command"
+  command options.persistent_wire_line_place_command
+  checked 0
+node options.intuitive_click_drag_interface item
+  parent menu.options
+  label "Intuitive Click & Drag interface"
+  command options.intuitive_click_drag_interface
+  checked 0
+node menu.options.crosshair menu
+  parent menu.options
+  label Crosshair
+node options.crosshair.draw_snap_cursor item
+  parent menu.options.crosshair
+  label "Draw snap cursor"
+  command options.crosshair.draw_snap_cursor
+  accel Alt-Z
+  checked 0
+node options.crosshair.draw_crosshair item
+  parent menu.options.crosshair
+  label "Draw crosshair"
+  command options.crosshair.draw_crosshair
+  accel Alt-X
+  checked 0
+node options.crosshair.crosshair_size item
+  parent menu.options.crosshair
+  label "Crosshair size"
+  command options.crosshair.crosshair_size
+node options.replace_and_for_buses_in_spice_netlist item
+  parent menu.options
+  label "Replace [ and ] for buses in SPICE netlist"
+  command options.replace_and_for_buses_in_spice_netlist
+node options.group_bus_slices_in_verilog_instances item
+  parent menu.options
+  label "Group bus slices in Verilog instances"
+  command options.group_bus_slices_in_verilog_instances
+  checked 0
+node options.draw_grid item
+  parent menu.options
+  label "Draw grid"
+  command options.draw_grid
+  accel %
+  checked 0
+node options.half_snap_threshold item
+  parent menu.options
+  label "Half Snap Threshold"
+  command options.half_snap_threshold
+  accel G
+node options.double_snap_threshold item
+  parent menu.options
+  label "Double Snap Threshold"
+  command options.double_snap_threshold
+  accel Shift-G
+node options.variable_grid_point_size item
+  parent menu.options
+  label "Variable grid point size"
+  command options.variable_grid_point_size
+  checked 0
+node menu.options.sep2 separator
+  parent menu.options
+node options.no_xcopyarea_drawing_model item
+  parent menu.options
+  label "No XCopyArea drawing model"
+  command options.no_xcopyarea_drawing_model
+  accel Ctrl+$
+  checked 0
+node options.fix_for_gpus_with_broken_tiled_fill item
+  parent menu.options
+  label "Fix for GPUs with broken tiled fill"
+  command options.fix_for_gpus_with_broken_tiled_fill
+  checked 0
+node options.fix_broken_rdp_mouse_coordinates item
+  parent menu.options
+  label "Fix broken RDP mouse coordinates"
+  command options.fix_broken_rdp_mouse_coordinates
+  checked 0
+node menu.options.sep3 separator
+  parent menu.options
+node menu.options.netlist_format_symbol_mode menu
+  parent menu.options
+  label "Netlist format / Symbol mode"
+node options.netlist_format_symbol_mode.flat_netlist item
+  parent menu.options.netlist_format_symbol_mode
+  label "Flat netlist"
+  command options.netlist_format_symbol_mode.flat_netlist
+  accel :
+  checked 0
+node options.netlist_format_symbol_mode.split_netlist item
+  parent menu.options.netlist_format_symbol_mode
+  label "Split netlist"
+  command options.netlist_format_symbol_mode.split_netlist
+  checked 0
+node options.netlist_format_symbol_mode.spice_netlist item
+  parent menu.options.netlist_format_symbol_mode
+  label "Spice netlist"
+  command options.netlist_format_symbol_mode.spice_netlist
+  accel Ctrl+Shift+V
+  checked 0
+  style radio
+node options.netlist_format_symbol_mode.vhdl_netlist item
+  parent menu.options.netlist_format_symbol_mode
+  label "VHDL netlist"
+  command options.netlist_format_symbol_mode.vhdl_netlist
+  accel Ctrl+Shift+V
+  checked 0
+  style radio
+node options.netlist_format_symbol_mode.verilog_netlist item
+  parent menu.options.netlist_format_symbol_mode
+  label "Verilog netlist"
+  command options.netlist_format_symbol_mode.verilog_netlist
+  accel Ctrl+Shift+V
+  checked 0
+  style radio
+node options.netlist_format_symbol_mode.tedax_netlist item
+  parent menu.options.netlist_format_symbol_mode
+  label "tEDAx netlist"
+  command options.netlist_format_symbol_mode.tedax_netlist
+  accel Ctrl+Shift+V
+  checked 0
+  style radio
+node options.netlist_format_symbol_mode.symbol_global_attrs item
+  parent menu.options.netlist_format_symbol_mode
+  label "Symbol global attrs"
+  command options.netlist_format_symbol_mode.symbol_global_attrs
+  accel Ctrl+Shift+V
+  checked 0
+  style radio
+node menu.view menu
+  parent menubar
+  label View
+node view.redraw item
+  parent menu.view
+  label Redraw
+  command view.redraw
+  accel Esc
+node view.fullscreen item
+  parent menu.view
+  label Fullscreen
+  command view.fullscreen
+  accel "\\"
+node view.zoom_full item
+  parent menu.view
+  label "Zoom Full"
+  command view.zoom_full
+  accel F
+node view.zoom_in item
+  parent menu.view
+  label "Zoom In"
+  command view.zoom_in
+  accel Shift+Z
+node view.zoom_out item
+  parent menu.view
+  label "Zoom Out"
+  command view.zoom_out
+  accel Ctrl+Z
+node view.zoom_box item
+  parent menu.view
+  label "Zoom box"
+  command view.zoom_box
+  accel Z
+node view.set_snap_value item
+  parent menu.view
+  label "Set snap value"
+  command view.set_snap_value
+node view.set_grid_spacing item
+  parent menu.view
+  label "Set grid spacing"
+  command view.set_grid_spacing
+node view.toggle_colorscheme item
+  parent menu.view
+  label "Toggle colorscheme"
+  command view.toggle_colorscheme
+  accel Shift+O
+node view.dim_colors item
+  parent menu.view
+  label "Dim colors"
+  command view.dim_colors
+node view.change_current_layer_color item
+  parent menu.view
+  label "Change current layer color"
+  command view.change_current_layer_color
+node view.reset_all_colors_to_default item
+  parent menu.view
+  label "Reset all colors to default"
+  command view.reset_all_colors_to_default
+node view.toggle_variable_line_width item
+  parent menu.view
+  label "Toggle variable line width"
+  command view.toggle_variable_line_width
+  accel _
+  checked 0
+node view.set_line_width item
+  parent menu.view
+  label "Set line width"
+  command view.set_line_width
+  accel Alt+-
+node view.set_grid_point_size item
+  parent menu.view
+  label "Set grid point size"
+  command view.set_grid_point_size
+node view.tabbed_interface item
+  parent menu.view
+  label "Tabbed interface"
+  command view.tabbed_interface
+  checked 0
+node menu.view.show_hide menu
+  parent menu.view
+  label "Show / Hide"
+node view.show_hide.show_erc_info_window item
+  parent menu.view.show_hide
+  label "Show ERC Info window"
+  command view.show_hide.show_erc_info_window
+  checked 0
+node view.show_hide.visible_layers item
+  parent menu.view.show_hide
+  label "Visible layers"
+  command view.show_hide.visible_layers
+node view.show_hide.symbol_text item
+  parent menu.view.show_hide
+  label "Symbol text"
+  command view.show_hide.symbol_text
+  accel Ctrl+B
+  checked 0
+node view.show_hide.show_toolbar item
+  parent menu.view.show_hide
+  label "Show Toolbar"
+  command view.show_hide.show_toolbar
+  checked 0
+node view.show_hide.horizontal_toolbar item
+  parent menu.view.show_hide
+  label "Horizontal Toolbar"
+  command view.show_hide.horizontal_toolbar
+  checked 0
+node view.show_hide.show_hidden_texts item
+  parent menu.view.show_hide
+  label "Show hidden texts"
+  command view.show_hide.show_hidden_texts
+  checked 0
+node view.show_hide.draw_grid_axes item
+  parent menu.view.show_hide
+  label "Draw grid axes"
+  command view.show_hide.draw_grid_axes
+  checked 0
+node menu.properties menu
+  parent menubar
+  label Properties
+node properties.edit item
+  parent menu.properties
+  label Edit
+  command properties.edit
+  accel Q
+node properties.edit_with_editor item
+  parent menu.properties
+  label "Edit with editor"
+  command properties.edit_with_editor
+  accel Shift+Q
+node properties.view item
+  parent menu.properties
+  label View
+  command properties.view
+  accel Ctrl+Shift+Q
+node properties.toggle_ignore_attribute_on_selected_inst item
+  parent menu.properties
+  label "Toggle *_ignore attribute on selected instances"
+  command properties.toggle_ignore_attribute_on_selected_inst
+  accel Shift+T
+node properties.change_selected_object_insertion_order item
+  parent menu.properties
+  label "Change selected object insertion order"
+  command properties.change_selected_object_insertion_order
+  accel Shift+S
+node properties.edit_header_license_text item
+  parent menu.properties
+  label "Edit Header/License text"
+  command properties.edit_header_license_text
+  accel Shift+B
+node properties.edit_file_danger item
+  parent menu.properties
+  label "Edit file (danger!)"
+  command properties.edit_file_danger
+  accel Alt+Q
+node menu.layers menu
+  parent menubar
+  label Layers
+node layers.0_bg item
+  parent menu.layers
+  label 0-BG
+  command layers.0_bg
+node layers.1_wire item
+  parent menu.layers
+  label 1-WIRE
+  command layers.1_wire
+node layers.2_grid item
+  parent menu.layers
+  label 2-GRID
+  command layers.2_grid
+node layers.3_text item
+  parent menu.layers
+  label 3-TEXT
+  command layers.3_text
+node layers.4 item
+  parent menu.layers
+  label 4
+  command layers.4
+node layers.5_pin item
+  parent menu.layers
+  label 5-PIN
+  command layers.5_pin
+node layers.6 item
+  parent menu.layers
+  label 6
+  command layers.6
+node layers.7 item
+  parent menu.layers
+  label 7
+  command layers.7
+node layers.8 item
+  parent menu.layers
+  label 8
+  command layers.8
+node layers.9 item
+  parent menu.layers
+  label 9
+  command layers.9
+node layers.10 item
+  parent menu.layers
+  label 10
+  command layers.10
+node layers.11 item
+  parent menu.layers
+  label 11
+  command layers.11
+node layers.12 item
+  parent menu.layers
+  label 12
+  command layers.12
+node layers.13 item
+  parent menu.layers
+  label 13
+  command layers.13
+node layers.14 item
+  parent menu.layers
+  label 14
+  command layers.14
+node layers.15 item
+  parent menu.layers
+  label 15
+  command layers.15
+node layers.16 item
+  parent menu.layers
+  label 16
+  command layers.16
+node layers.17 item
+  parent menu.layers
+  label 17
+  command layers.17
+node layers.18 item
+  parent menu.layers
+  label 18
+  command layers.18
+node layers.19 item
+  parent menu.layers
+  label 19
+  command layers.19
+node layers.20 item
+  parent menu.layers
+  label 20
+  command layers.20
+node layers.21 item
+  parent menu.layers
+  label 21
+  command layers.21
+node menu.tools menu
+  parent menubar
+  label Tools
+node tools.insert_symbol item
+  parent menu.tools
+  label "Insert symbol"
+  command tools.insert_symbol
+  accel "Ins, Shift-I"
+node tools.insert_text item
+  parent menu.tools
+  label "Insert text"
+  command tools.insert_text
+  accel T
+node tools.insert_wire item
+  parent menu.tools
+  label "Insert wire"
+  command tools.insert_wire
+  accel W
+node tools.insert_snap_wire item
+  parent menu.tools
+  label "Insert snap wire"
+  command tools.insert_snap_wire
+  accel Shift+W
+node tools.insert_line item
+  parent menu.tools
+  label "Insert line"
+  command tools.insert_line
+  accel L
+node tools.insert_rect item
+  parent menu.tools
+  label "Insert rect"
+  command tools.insert_rect
+  accel R
+node tools.insert_polygon item
+  parent menu.tools
+  label "Insert polygon"
+  command tools.insert_polygon
+  accel P
+node tools.insert_arc item
+  parent menu.tools
+  label "Insert arc"
+  command tools.insert_arc
+  accel Shift+C
+node tools.insert_circle item
+  parent menu.tools
+  label "Insert circle"
+  command tools.insert_circle
+  accel Ctrl+Shift+C
+node tools.insert_jpg_png_svg_image item
+  parent menu.tools
+  label "Insert JPG/PNG/SVG image"
+  command tools.insert_jpg_png_svg_image
+node tools.grab_screen_area item
+  parent menu.tools
+  label "Grab screen area"
+  command tools.grab_screen_area
+  accel "Print Scrn"
+node tools.search item
+  parent menu.tools
+  label Search
+  command tools.search
+  accel Ctrl+F
+node tools.align_to_grid item
+  parent menu.tools
+  label "Align to Grid"
+  command tools.align_to_grid
+  accel Alt+U
+node tools.execute_tcl_command item
+  parent menu.tools
+  label "Execute TCL command"
+  command tools.execute_tcl_command
+node tools.join_trim_wires item
+  parent menu.tools
+  label "Join/Trim wires"
+  command tools.join_trim_wires
+  accel &
+node tools.break_wires_at_selected_instance_pins item
+  parent menu.tools
+  label "Break wires at selected instance pins"
+  command tools.break_wires_at_selected_instance_pins
+  accel !
+node tools.remove_wires_running_through_selected_in item
+  parent menu.tools
+  label "Remove wires running through selected inst. pins"
+  command tools.remove_wires_running_through_selected_in
+  accel Ctrl-!
+node tools.break_wires_at_mouse_position item
+  parent menu.tools
+  label "Break wires at mouse position"
+  command tools.break_wires_at_mouse_position
+  accel "Alt-Shift-Right Butt."
+node tools.break_wires_at_mouse_position_align_cut item
+  parent menu.tools
+  label "Break wires at mouse position, align cut point"
+  command tools.break_wires_at_mouse_position_align_cut
+  accel "Alt-Right Butt."
+node tools.select_all_connected_wires_labels_pins item
+  parent menu.tools
+  label "Select all connected wires/labels/pins"
+  command tools.select_all_connected_wires_labels_pins
+  accel "Shift-Right Butt."
+node tools.select_conn_wires_stop_at_junctions item
+  parent menu.tools
+  label "Select conn. wires, stop at junctions"
+  command tools.select_conn_wires_stop_at_junctions
+  accel "Ctrl-Righ Butt."
+node menu.symbol menu
+  parent menubar
+  label Symbol
+node menu.symbol.show_symbols menu
+  parent menu.symbol
+  label "Show symbols"
+node symbol.show_symbols.show_symbol_details item
+  parent menu.symbol.show_symbols
+  label "Show symbol details"
+  command symbol.show_symbols.show_symbol_details
+  accel Alt+B
+  checked 0
+  style radio
+node symbol.show_symbols.show_instance_bounding_boxes_for_subcirc item
+  parent menu.symbol.show_symbols
+  label "Show instance Bounding boxes for subcircuit symbols"
+  command symbol.show_symbols.show_instance_bounding_boxes_for_subcirc
+  accel Alt+B
+  checked 0
+  style radio
+node symbol.show_symbols.show_instance_bounding_boxes_for_all_sym item
+  parent menu.symbol.show_symbols
+  label "Show instance Bounding boxes for all symbols"
+  command symbol.show_symbols.show_instance_bounding_boxes_for_all_sym
+  accel Alt+B
+  checked 0
+  style radio
+node symbol.set_symbol_width item
+  parent menu.symbol
+  label "Set symbol width"
+  command symbol.set_symbol_width
+node symbol.make_symbol_from_schematic item
+  parent menu.symbol
+  label "Make symbol from schematic"
+  command symbol.make_symbol_from_schematic
+  accel A
+node symbol.make_schematic_from_symbol item
+  parent menu.symbol
+  label "Make schematic from symbol"
+  command symbol.make_schematic_from_symbol
+  accel Ctrl+L
+node symbol.make_schematic_and_symbol_from_selected item
+  parent menu.symbol
+  label "Make schematic and symbol from selected components"
+  command symbol.make_schematic_and_symbol_from_selected
+  accel Ctrl+Shift+H
+node symbol.attach_net_labels_to_component_instance item
+  parent menu.symbol
+  label "Attach net labels to component instance"
+  command symbol.attach_net_labels_to_component_instance
+  accel Shift+H
+node symbol.create_symbol_pins_from_selected_schemat item
+  parent menu.symbol
+  label "Create symbol pins from selected schematic pins"
+  command symbol.create_symbol_pins_from_selected_schemat
+  accel Alt+H
+node symbol.place_symbol_pin item
+  parent menu.symbol
+  label "Place symbol pin"
+  command symbol.place_symbol_pin
+  accel Alt+P
+node symbol.place_schematic_input_port item
+  parent menu.symbol
+  label "Place schematic input port"
+  command symbol.place_schematic_input_port
+  accel Ctrl+P
+node symbol.place_schematic_output_port item
+  parent menu.symbol
+  label "Place schematic output port"
+  command symbol.place_schematic_output_port
+  accel Ctrl+Shift+P
+node symbol.place_net_pin_label item
+  parent menu.symbol
+  label "Place net pin label"
+  command symbol.place_net_pin_label
+  accel Alt+L
+node symbol.place_net_wire_label item
+  parent menu.symbol
+  label "Place net wire label"
+  command symbol.place_net_wire_label
+  accel Alt+Shift+L
+node symbol.change_selected_inst_texts_to_floaters item
+  parent menu.symbol
+  label "Change selected inst. texts to floaters"
+  command symbol.change_selected_inst_texts_to_floaters
+node symbol.unselect_attached_floaters item
+  parent menu.symbol
+  label "Unselect attached floaters"
+  command symbol.unselect_attached_floaters
+node menu.symbol.list_of_nets menu
+  parent menu.symbol
+  label "List of nets"
+node symbol.list_of_nets.print_list_of_highlight_nets item
+  parent menu.symbol.list_of_nets
+  label "Print list of highlight nets"
+  command symbol.list_of_nets.print_list_of_highlight_nets
+  accel J
+node symbol.list_of_nets.print_list_of_highlight_nets_with_buses item
+  parent menu.symbol.list_of_nets
+  label "Print list of highlight nets, with buses expanded"
+  command symbol.list_of_nets.print_list_of_highlight_nets_with_buses
+  accel Alt-Ctrl-J
+node symbol.list_of_nets.create_labels_from_highlight_nets item
+  parent menu.symbol.list_of_nets
+  label "Create labels from highlight nets"
+  command symbol.list_of_nets.create_labels_from_highlight_nets
+  accel Alt-J
+node symbol.list_of_nets.create_labels_from_highlight_nets_with_i item
+  parent menu.symbol.list_of_nets
+  label "Create labels from highlight nets with 'i' prefix"
+  command symbol.list_of_nets.create_labels_from_highlight_nets_with_i
+  accel Alt-Shift-J
+node symbol.list_of_nets.create_pins_from_highlight_nets item
+  parent menu.symbol.list_of_nets
+  label "Create pins from highlight nets"
+  command symbol.list_of_nets.create_pins_from_highlight_nets
+  accel Ctrl-J
+node symbol.search_all_search_paths_for_schematic_as item
+  parent menu.symbol
+  label "Search all search-paths for schematic associated to symbol"
+  command symbol.search_all_search_paths_for_schematic_as
+  checked 0
+node symbol.allow_duplicated_instance_names_refdes item
+  parent menu.symbol
+  label "Allow duplicated instance names (refdes)"
+  command symbol.allow_duplicated_instance_names_refdes
+  checked 0
+node menu.highlight menu
+  parent menubar
+  label Highlight
+node highlight.set_schematic_to_compare_and_compare_wit item
+  parent menu.highlight
+  label "Set schematic to compare and compare with"
+  command highlight.set_schematic_to_compare_and_compare_wit
+node highlight.swap_compare_schematics item
+  parent menu.highlight
+  label "Swap compare schematics"
+  command highlight.swap_compare_schematics
+node highlight.compare_schematics item
+  parent menu.highlight
+  label "Compare schematics"
+  command highlight.compare_schematics
+  checked 0
+node highlight.view_only_probes item
+  parent menu.highlight
+  label "View only Probes"
+  command highlight.view_only_probes
+  accel 5
+  checked 0
+node highlight.highlight_net_pin_mismatches_on_sel_inst item
+  parent menu.highlight
+  label "Highlight net-pin mismatches on sel. instances"
+  command highlight.highlight_net_pin_mismatches_on_sel_inst
+  accel Shift-X
+node highlight.highlight_duplicate_instance_names item
+  parent menu.highlight
+  label "Highlight duplicate instance names"
+  command highlight.highlight_duplicate_instance_names
+  accel "#"
+node highlight.rename_duplicate_instance_names item
+  parent menu.highlight
+  label "Rename duplicate instance names"
+  command highlight.rename_duplicate_instance_names
+  accel Ctrl+#
+node highlight.select_overlapped_instances item
+  parent menu.highlight
+  label "Select overlapped instances"
+  command highlight.select_overlapped_instances
+node highlight.propagate_highlight_selected_net_pins item
+  parent menu.highlight
+  label "Propagate Highlight selected net/pins"
+  command highlight.propagate_highlight_selected_net_pins
+  accel Ctrl+Shift+K
+node highlight.increment_hilight_color item
+  parent menu.highlight
+  label "Increment Hilight Color"
+  command highlight.increment_hilight_color
+  checked 0
+node highlight.highlight_selected_net_pins item
+  parent menu.highlight
+  label "Highlight selected net/pins"
+  command highlight.highlight_selected_net_pins
+  accel K
+node highlight.send_selected_net_pins_to_viewer item
+  parent menu.highlight
+  label "Send selected net/pins to Viewer"
+  command highlight.send_selected_net_pins_to_viewer
+  accel Alt+G
+node highlight.select_hilight_nets_pins item
+  parent menu.highlight
+  label "Select hilight nets / pins"
+  command highlight.select_hilight_nets_pins
+  accel Alt+K
+node highlight.un_highlight_all_net_pins item
+  parent menu.highlight
+  label "Un-highlight all net/pins"
+  command highlight.un_highlight_all_net_pins
+  accel Shift+K
+node highlight.un_highlight_selected_net_pins item
+  parent menu.highlight
+  label "Un-highlight selected net/pins"
+  command highlight.un_highlight_selected_net_pins
+  accel Ctrl+K
+node highlight.auto_highlight_net_pins item
+  parent menu.highlight
+  label "Auto-highlight net/pins"
+  command highlight.auto_highlight_net_pins
+  checked 0
+node highlight.enable_highlight_connected_instances item
+  parent menu.highlight
+  label "Enable highlight connected instances"
+  command highlight.enable_highlight_connected_instances
+  checked 0
+node menu.simulation menu
+  parent menubar
+  label Simulation
+node simulation.set_netlist_dir item
+  parent menu.simulation
+  label "Set netlist Dir"
+  command simulation.set_netlist_dir
+node simulation.set_top_level_netlist_name item
+  parent menu.simulation
+  label "Set top level netlist name"
+  command simulation.set_top_level_netlist_name
+node simulation.show_netlist_after_netlist_command item
+  parent menu.simulation
+  label "Show netlist after netlist command"
+  command simulation.show_netlist_after_netlist_command
+  accel Shift+A
+  checked 0
+node simulation.keep_symbols_when_traversing_hierarchy item
+  parent menu.simulation
+  label "Keep symbols when traversing hierarchy"
+  command simulation.keep_symbols_when_traversing_hierarchy
+  checked 0
+node simulation.use_netlist_directory item
+  parent menu.simulation
+  label "Use netlist directory"
+  command simulation.use_netlist_directory
+  checked 0
+  style radio
+node simulation.use_simulation_dir_in_schematic_dir item
+  parent menu.simulation
+  label "Use 'simulation' dir in schematic dir"
+  command simulation.use_simulation_dir_in_schematic_dir
+  checked 0
+  style radio
+node simulation.use_simulation_schname_dir_in_schematic item
+  parent menu.simulation
+  label "Use 'simulation/[schname]' dir in schematic dir"
+  command simulation.use_simulation_schname_dir_in_schematic
+  checked 0
+  style radio
+node simulation.configure_simulators_and_tools item
+  parent menu.simulation
+  label "Configure simulators and tools"
+  command simulation.configure_simulators_and_tools
+node simulation.list_running_sub_processes item
+  parent menu.simulation
+  label "List running sub-processes"
+  command simulation.list_running_sub_processes
+node simulation.view_last_job_data item
+  parent menu.simulation
+  label "View last job data"
+  command simulation.view_last_job_data
+node simulation.view_last_job_errors item
+  parent menu.simulation
+  label "View last job errors"
+  command simulation.view_last_job_errors
+node simulation.utile_stimuli_editor_gui item
+  parent menu.simulation
+  label "Utile Stimuli Editor (GUI)"
+  command simulation.utile_stimuli_editor_gui
+node simulation.utile_stimuli_translate item
+  parent menu.simulation
+  label "Utile Stimuli Translate"
+  command simulation.utile_stimuli_translate
+node simulation.shell_simulation_path item
+  parent menu.simulation
+  label "Shell [simulation path]"
+  command simulation.shell_simulation_path
+node simulation.edit_netlist item
+  parent menu.simulation
+  label "Edit Netlist"
+  command simulation.edit_netlist
+node simulation.send_highlighted_nets_to_viewer item
+  parent menu.simulation
+  label "Send highlighted nets to viewer"
+  command simulation.send_highlighted_nets_to_viewer
+  accel Ctrl+Shift+X
+node simulation.changelog_from_current_hierarchy item
+  parent menu.simulation
+  label "Changelog from current hierarchy"
+  command simulation.changelog_from_current_hierarchy
+node menu.simulation.sep4 separator
+  parent menu.simulation
+node menu.simulation.graphs menu
+  parent menu.simulation
+  label Graphs
+node simulation.graphs.auto_highlight_plotted_nets item
+  parent menu.simulation.graphs
+  label "Auto highlight plotted nets"
+  command simulation.graphs.auto_highlight_plotted_nets
+  checked 0
+node simulation.graphs.add_waveform_graph item
+  parent menu.simulation.graphs
+  label "Add waveform graph"
+  command simulation.graphs.add_waveform_graph
+node simulation.graphs.add_waveform_reload_launcher item
+  parent menu.simulation.graphs
+  label "Add waveform reload launcher"
+  command simulation.graphs.add_waveform_reload_launcher
+node simulation.graphs.annotate_operating_point_into_schematic item
+  parent menu.simulation.graphs
+  label "Annotate Operating Point into schematic"
+  command simulation.graphs.annotate_operating_point_into_schematic
+node simulation.graphs.live_annotate_probes_with_b_cursor item
+  parent menu.simulation.graphs
+  label "Live annotate probes with 'b' cursor"
+  command simulation.graphs.live_annotate_probes_with_b_cursor
+  checked 0
+node simulation.graphs.hide_graphs_if_no_spice_data_loaded item
+  parent menu.simulation.graphs
+  label "Hide graphs if no spice data loaded"
+  command simulation.graphs.hide_graphs_if_no_spice_data_loaded
+  checked 0
+node menu.simulation.lvs menu
+  parent menu.simulation
+  label LVS
+node simulation.lvs.lvs_netlist_top_level_is_a_subckt item
+  parent menu.simulation.lvs
+  label "LVS netlist + Top level is a .subckt"
+  command simulation.lvs.lvs_netlist_top_level_is_a_subckt
+  checked 0
+node simulation.lvs.upper_case_subckt_and_ends item
+  parent menu.simulation.lvs
+  label "Upper case .SUBCKT and .ENDS"
+  command simulation.lvs.upper_case_subckt_and_ends
+  checked 0
+node simulation.lvs.top_level_is_a_subckt item
+  parent menu.simulation.lvs
+  label "Top level is a .subckt"
+  command simulation.lvs.top_level_is_a_subckt
+  checked 0
+node simulation.lvs.set_lvs_ignore_variable item
+  parent menu.simulation.lvs
+  label "Set 'lvs_ignore' variable"
+  command simulation.lvs.set_lvs_ignore_variable
+  checked 0
+node simulation.lvs.use_spiceprefix_attribute item
+  parent menu.simulation.lvs
+  label "Use 'spiceprefix' attribute"
+  command simulation.lvs.use_spiceprefix_attribute
+  checked 0
+node menu.help menu
+  parent menubar
+  label Help
+node help.help item
+  parent menu.help
+  label Help
+  command help.help
+  accel ?
+node help.keys item
+  parent menu.help
+  label Keys
+  command help.keys
+node help.show_keybindings item
+  parent menu.help
+  label "Show Keybindings"
+  command help.show_keybindings
+node help.about_xschem item
+  parent menu.help
+  label "About XSCHEM"
+  command help.about_xschem
+node menubar.sep label
+  parent menubar
+  label -
+  style menubar-dash
+node menubar.netlist button
+  parent menubar
+  label Netlist
+  command sim.netlist
+  style menubar-button
+node menubar.simulate button
+  parent menubar
+  label Simulate
+  command sim.simulate
+  style menubar-button
+node menu.waves menu
+  parent menubar
+  label Waves
+  style menubar-button
+node waves.external_viewer item
+  parent menu.waves
+  label "External viewer"
+  command waves.external_viewer
+node menu.waves.sep5 separator
+  parent menu.waves
+node waves.clear item
+  parent menu.waves
+  label Clear
+  command waves.clear
+node menu.waves.sep6 separator
+  parent menu.waves
+node waves.op_annotate item
+  parent menu.waves
+  label "Op Annotate"
+  command waves.op_annotate
+node waves.op item
+  parent menu.waves
+  label Op
+  command waves.op
+node waves.dc item
+  parent menu.waves
+  label Dc
+  command waves.dc
+node waves.ac item
+  parent menu.waves
+  label Ac
+  command waves.ac
+node waves.tran item
+  parent menu.waves
+  label Tran
+  command waves.tran
+node waves.noise item
+  parent menu.waves
+  label Noise
+  command waves.noise
+node waves.sp item
+  parent menu.waves
+  label Sp
+  command waves.sp
+node waves.spectrum item
+  parent menu.waves
+  label Spectrum
+  command waves.spectrum
+
+key Ctrl+N file.clear_schematic
+key Ctrl+Shift+N file.clear_symbol
+key Shift-Ins file.component_browser
+key Ctrl-I file.component_browser
+key Ctrl+O file.open
+key Ctrl+Shift+O file.open_most_recent
+key Alt+E file.open_schematic_in_new_window_tab
+key Alt+I file.open_symbol_in_new_window_tab
+key Shift-D file.delete_files
+key Ctrl+S file.save
+key B file.merge
+key Alt+S file.reload
+key Ctrl+Shift+S file.save_as
+key Ctrl+Alt+S file.save_as_symbol
+key * file.image_export.pdf_ps_export
+key Ctrl+* file.image_export.png_export
+key Alt+* file.image_export.svg_export
+key X file.start_new_xschem_process
+key Ctrl+W file.close_schematic
+key Ctrl+Q file.quit_xschem
+key U edit.undo
+key Shift+U edit.redo
+key Ctrl+C edit.copy
+key Ctrl+X edit.cut
+key Ctrl+V edit.paste
+key Del edit.delete
+key Ctrl+A edit.select_all
+key C edit.duplicate_objects
+key M edit.move_objects
+key Ctrl+M edit.move_objects_stretching_attached_wires
+key Shift+M edit.move_objects_adding_wires_to_connected_p
+key Alt-F edit.horizontal_flip_in_place_selected_object
+key Alt-V edit.vertical_flip_in_place_selected_objects
+key Alt-R edit.rotate_in_place_selected_objects
+key Shift-V edit.vertical_flip_selected_objects
+key Shift-F edit.horizontal_flip_selected_objects
+key Shift-R edit.rotate_selected_objects
+key H edit.constrained_horizontal_move
+key V edit.constrained_vertical_move
+key E edit.push_schematic
+key I edit.push_symbol
+key Ctrl+E edit.pop
+key Y options.enable_stretch
+key Shift-L options.enable_orthogonal_wiring
+key Alt-Z options.crosshair.draw_snap_cursor
+key Alt-X options.crosshair.draw_crosshair
+key % options.draw_grid
+key G options.half_snap_threshold
+key Shift-G options.double_snap_threshold
+key Ctrl+$ options.no_xcopyarea_drawing_model
+key : options.netlist_format_symbol_mode.flat_netlist
+key Ctrl+Shift+V options.netlist_format_symbol_mode.spice_netlist
+key Esc view.redraw
+key "\\" view.fullscreen
+key F view.zoom_full
+key Shift+Z view.zoom_in
+key Ctrl+Z view.zoom_out
+key Z view.zoom_box
+key Shift+O view.toggle_colorscheme
+key _ view.toggle_variable_line_width
+key Alt+- view.set_line_width
+key Ctrl+B view.show_hide.symbol_text
+key Q properties.edit
+key Shift+Q properties.edit_with_editor
+key Ctrl+Shift+Q properties.view
+key Shift+T properties.toggle_ignore_attribute_on_selected_inst
+key Shift+S properties.change_selected_object_insertion_order
+key Shift+B properties.edit_header_license_text
+key Alt+Q properties.edit_file_danger
+key Ins tools.insert_symbol
+key Shift-I tools.insert_symbol
+key T tools.insert_text
+key W tools.insert_wire
+key Shift+W tools.insert_snap_wire
+key L tools.insert_line
+key R tools.insert_rect
+key P tools.insert_polygon
+key Shift+C tools.insert_arc
+key Ctrl+Shift+C tools.insert_circle
+key Print tools.grab_screen_area
+key Ctrl+F tools.search
+key Alt+U tools.align_to_grid
+key & tools.join_trim_wires
+key ! tools.break_wires_at_selected_instance_pins
+key Ctrl-! tools.remove_wires_running_through_selected_in
+key Alt+B symbol.show_symbols.show_symbol_details
+key A symbol.make_symbol_from_schematic
+key Ctrl+L symbol.make_schematic_from_symbol
+key Ctrl+Shift+H symbol.make_schematic_and_symbol_from_selected
+key Shift+H symbol.attach_net_labels_to_component_instance
+key Alt+H symbol.create_symbol_pins_from_selected_schemat
+key Alt+P symbol.place_symbol_pin
+key Ctrl+P symbol.place_schematic_input_port
+key Ctrl+Shift+P symbol.place_schematic_output_port
+key Alt+L symbol.place_net_pin_label
+key Alt+Shift+L symbol.place_net_wire_label
+key J symbol.list_of_nets.print_list_of_highlight_nets
+key Alt-Ctrl-J symbol.list_of_nets.print_list_of_highlight_nets_with_buses
+key Alt-J symbol.list_of_nets.create_labels_from_highlight_nets
+key Alt-Shift-J symbol.list_of_nets.create_labels_from_highlight_nets_with_i
+key Ctrl-J symbol.list_of_nets.create_pins_from_highlight_nets
+key 5 highlight.view_only_probes
+key Shift-X highlight.highlight_net_pin_mismatches_on_sel_inst
+key "#" highlight.highlight_duplicate_instance_names
+key Ctrl+# highlight.rename_duplicate_instance_names
+key Ctrl+Shift+K highlight.propagate_highlight_selected_net_pins
+key K highlight.highlight_selected_net_pins
+key Alt+G highlight.send_selected_net_pins_to_viewer
+key Alt+K highlight.select_hilight_nets_pins
+key Shift+K highlight.un_highlight_all_net_pins
+key Ctrl+K highlight.un_highlight_selected_net_pins
+key Shift+A simulation.show_netlist_after_netlist_command
+key Ctrl+Shift+X simulation.send_highlighted_nets_to_viewer
+key ? help.help
+
+# --- toolbar (xschem shows icons; text labels until an icon set exists) ----------------------------
+
+node toolbar toolbar
+  parent window
+node tb.open button
+  parent toolbar
+  label Open
+  command file.open
+  tooltip "Open file"
+node tb.save button
+  parent toolbar
+  label Save
+  command file.save
+node tb.reload button
+  parent toolbar
+  label Reload
+  command file.reload
+node tb.undo button
+  parent toolbar
+  label Undo
+  command edit.undo
+node tb.redo button
+  parent toolbar
+  label Redo
+  command edit.redo
+node tb.cut button
+  parent toolbar
+  label Cut
+  command edit.cut
+node tb.copy button
+  parent toolbar
+  label Copy
+  command edit.copy
+node tb.paste button
+  parent toolbar
+  label Paste
+  command edit.paste
+node tb.delete button
+  parent toolbar
+  label Del
+  command edit.delete
+node tb.descend button
+  parent toolbar
+  label Push
+  command edit.push_schematic
+node tb.ascend button
+  parent toolbar
+  label Pop
+  command edit.pop
+node tb.symbol button
+  parent toolbar
+  label Symbol
+  command tools.insert_symbol
+node tb.wire button
+  parent toolbar
+  label Wire
+  command tools.insert_wire
+node tb.line button
+  parent toolbar
+  label Line
+  command tools.insert_line
+node tb.rect button
+  parent toolbar
+  label Rect
+  command tools.insert_rect
+node tb.poly button
+  parent toolbar
+  label Poly
+  command tools.insert_polygon
+node tb.arc button
+  parent toolbar
+  label Arc
+  command tools.insert_arc
+node tb.circle button
+  parent toolbar
+  label Circle
+  command tools.insert_circle
+node tb.text button
+  parent toolbar
+  label Text
+  command tools.insert_text
+node tb.zoom_full button
+  parent toolbar
+  label Full
+  command view.zoom_full
+node tb.zoom_in button
+  parent toolbar
+  label In
+  command view.zoom_in
+node tb.zoom_out button
+  parent toolbar
+  label Out
+  command view.zoom_out
+node tb.spacer panel
+  parent toolbar
+  style spacer
+node tb.netlist button
+  parent toolbar
+  label Netlist
+  command sim.netlist
+node tb.simulate button
+  parent toolbar
+  label Simulate
+  command sim.simulate
+node tb.waves button
+  parent toolbar
+  label Waves
+  command waves.external_viewer
+
+# --- tabs -------------------------------------------------------------------------------------------
+
+node tabs tabs
+  parent window
+node tab.0 tab
+  parent tabs
+  label poweramp.sch
+  checked 1
+  command tab.select
+node tab.new button
+  parent tabs
+  label +
+  command tab.new
+  style tab-new
+
+# --- canvas -----------------------------------------------------------------------------------------
+
+node canvas canvas
+  parent window
+
+# --- status bar (SNAP / GRID / MODE as in xschem) ---------------------------------------------------
+
+node status status
+  parent window
+node status.snap_label label
+  parent status
+  label SNAP:
+node status.snap text_input
+  parent status
+  value 10
+  command view.set_snap
+  style status-field
+node status.grid_label label
+  parent status
+  label GRID:
+node status.grid text_input
+  parent status
+  value 20
+  command view.set_grid
+  style status-field
+node status.mode_label label
+  parent status
+  label MODE:
+node status.mode label
+  parent status
+  label spice
+node status.stretch_label label
+  parent status
+  label Stretch:
+node status.stretch label
+  parent status
+  label 1
+node status.msg label
+  parent status
+  label "selected: 0"
+  style status-msg
+
+# --- dialogs (roots; shown by UiState::set_dialog) --------------------------------------------------
+
+node dialog.enter_text dialog
+  label "Enter text"
+node dialog.enter_text.title label
+  parent dialog.enter_text
+  label "Enter text"
+node dialog.enter_text.input text_input
+  parent dialog.enter_text
+  command dialog.enter_text.ok
+  style dialog-input
+node dialog.enter_text.buttons panel
+  parent dialog.enter_text
+  style dialog-buttons
+node dialog.enter_text.ok button
+  parent dialog.enter_text.buttons
+  label OK
+  command dialog.enter_text.ok
+  style dialog-button
+node dialog.enter_text.cancel button
+  parent dialog.enter_text.buttons
+  label Cancel
+  command dialog.close
+  style dialog-button
+
+# --- keys not on any menu (xschem defaults) ---------------------------------------------------------
+
+key Left view.pan_left
+key Right view.pan_right
+key Up view.pan_up
+key Down view.pan_down

@@ -1,0 +1,182 @@
+//! Text shaping and measurement (parley) with embedded fonts only.
+//!
+//! System fonts are never consulted, so layout and golden images are identical on every
+//! platform (D32) and the web build needs no font discovery.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use parley::fontique::Blob;
+use parley::{
+    Alignment, AlignmentOptions, FontContext, FontFamily, Layout, LayoutContext, StyleProperty,
+};
+
+use crate::math::{MathFonts, MathList};
+use crate::strings::{Strings, Sym};
+
+/// Index of a shaped layout in [`TextSystem`]; valid until the next [`TextSystem::begin_frame`]
+/// that evicts.
+pub type TextId = u32;
+
+/// "No text" sentinel for [`TextId`] columns.
+pub const NO_TEXT: TextId = u32::MAX;
+
+static NOTO_SANS: &[u8] = include_bytes!("../fonts/NotoSans.ttf");
+
+/// Font database, shaping scratch, and the cache of shaped UI strings and math.
+///
+/// Capacity: [`TextSystem::CACHE_CAPACITY`] cached layouts; beyond that the whole cache is
+/// dropped at the next [`TextSystem::begin_frame`] (a phase boundary), so a session that keeps
+/// producing new strings stays bounded.
+pub struct TextSystem {
+    pub(crate) font_cx: FontContext,
+    pub(crate) layout_cx: LayoutContext<()>,
+    family: String,
+    layouts: Vec<Layout<()>>,
+    cache: HashMap<(Sym, u16), TextId>,
+    math_fonts: MathFonts,
+    maths: Vec<MathList>,
+    math_cache: HashMap<(Sym, u16), u32>,
+}
+
+impl Default for TextSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for TextSystem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextSystem")
+            .field("layouts", &self.layouts.len())
+            .finish()
+    }
+}
+
+impl TextSystem {
+    /// Cached layouts kept across frames before the cache is reset.
+    pub const CACHE_CAPACITY: usize = 1 << 14;
+
+    /// Creates the system and registers the embedded UI font.
+    pub fn new() -> Self {
+        let mut font_cx = FontContext::default();
+        let families = font_cx
+            .collection
+            .register_fonts(Blob::new(Arc::new(NOTO_SANS)), None);
+        let family = families
+            .first()
+            .and_then(|(id, _)| font_cx.collection.family_name(*id))
+            .expect("embedded UI font registers a family")
+            .to_owned();
+        TextSystem {
+            font_cx,
+            layout_cx: LayoutContext::new(),
+            family,
+            layouts: Vec::new(),
+            cache: HashMap::new(),
+            math_fonts: MathFonts::new(),
+            maths: Vec::new(),
+            math_cache: HashMap::new(),
+        }
+    }
+
+    /// Marks a layout pass boundary: if the cache is over capacity it is emptied, which
+    /// invalidates every [`TextId`] handed out before this call.
+    pub fn begin_frame(&mut self) {
+        if self.layouts.len() + self.maths.len() > Self::CACHE_CAPACITY {
+            self.layouts.clear();
+            self.cache.clear();
+            self.maths.clear();
+            self.math_cache.clear();
+        }
+    }
+
+    /// Shapes `text` at `px` pixels (single line, no wrapping), cached by (string, size).
+    pub fn shape(&mut self, strings: &Strings, text: Sym, px: u16) -> TextId {
+        assert!(px > 0, "font size must be positive");
+        if let Some(&id) = self.cache.get(&(text, px)) {
+            return id;
+        }
+        let mut layout = Layout::new();
+        self.shape_into(strings.get(text), f32::from(px), &mut layout);
+        let id = self.layouts.len() as TextId;
+        self.layouts.push(layout);
+        self.cache.insert((text, px), id);
+        id
+    }
+
+    /// Shapes uncached text into `out` (reusing its allocation): canvas labels, editors.
+    pub fn shape_into(&mut self, text: &str, px: f32, out: &mut Layout<()>) {
+        assert!(px > 0.0 && px.is_finite(), "font size must be positive");
+        let mut builder = self
+            .layout_cx
+            .ranged_builder(&mut self.font_cx, text, 1.0, true);
+        builder.push_default(StyleProperty::FontFamily(FontFamily::from(
+            self.family.as_str(),
+        )));
+        builder.push_default(StyleProperty::FontSize(px));
+        builder.build_into(out, text);
+        out.break_all_lines(None);
+        out.align(Alignment::Start, AlignmentOptions::default());
+    }
+
+    pub(crate) fn family(&self) -> &str {
+        &self.family
+    }
+
+    /// A shaped layout.
+    ///
+    /// # Panics
+    ///
+    /// Panics on [`NO_TEXT`] or a stale id.
+    pub fn layout(&self, id: TextId) -> &Layout<()> {
+        &self.layouts[id as usize]
+    }
+
+    /// Lays out LaTeX `src` at `px` pixels per em, cached by (source, size).
+    ///
+    /// # Errors
+    ///
+    /// Returns the parser's message when `src` is not in the supported LaTeX subset.
+    pub fn math(&mut self, strings: &Strings, src: Sym, px: u16) -> Result<u32, String> {
+        if let Some(&id) = self.math_cache.get(&(src, px)) {
+            return Ok(id);
+        }
+        let list = crate::math::layout_math(strings.get(src), f32::from(px), &self.math_fonts)?;
+        let id = self.maths.len() as u32;
+        self.maths.push(list);
+        self.math_cache.insert((src, px), id);
+        Ok(id)
+    }
+
+    /// A math layout from [`TextSystem::math`].
+    pub fn math_list(&self, id: u32) -> &MathList {
+        &self.maths[id as usize]
+    }
+
+    /// The embedded math fonts (render needs them to draw [`MathList`] glyphs).
+    pub fn math_fonts(&self) -> &MathFonts {
+        &self.math_fonts
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shapes_with_embedded_font_and_caches() {
+        let mut strings = Strings::new();
+        let mut text = TextSystem::new();
+        let a = strings.intern("File");
+        let id = text.shape(&strings, a, 13);
+        assert_eq!(text.shape(&strings, a, 13), id);
+        assert_ne!(text.shape(&strings, a, 20), id);
+        let w13 = text.layout(id).width();
+        let l = text.layout(id);
+        assert!(l.width() > 15.0 && l.width() < 40.0, "width {}", l.width());
+        assert!(l.height() > 10.0 && l.height() < 25.0);
+        let wide = text.shape(&strings, strings.find("File").unwrap(), 20);
+        assert!(text.layout(wide).width() > w13);
+    }
+}
