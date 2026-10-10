@@ -7,7 +7,7 @@
 //! together by name (sweep name → var + values), not hot columns. Lifetime: one Run.
 //! Read once, then shared read-only by expansion, results and the optimizer.
 
-use schemify_doc::{Document, Span};
+use schemify_doc::{Document, RecordKind, Span};
 use schemify_expr::{Mode, Program, Scratch, Value};
 use std::fmt;
 
@@ -217,7 +217,7 @@ impl Plan {
         // ---- vars (rank 4, document order) and their `dist`
         let blocks = doc.doc_blocks();
         for r in 0..blocks.kind.len() {
-            if blocks.kind[r].word() != "var" {
+            if blocks.kind[r] != RecordKind::Var {
                 continue;
             }
             let name = s.get(blocks.fields[r][0]).to_owned();
