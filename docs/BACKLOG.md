@@ -27,7 +27,6 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - `gmid-lut`: queries at VDS = VDD/2 only; the sky130 pfet sample tops out near gm/Id 15 at L 0.15/0.18 µm; characterization uses `spawn:ngspice`, not `run` requests (the sweep needs the full grid, not bench outputs).
 - Edit round trip rebuilds the whole scene (40 ms at 100k objects): incremental scene rebuild.
 - Integration points still stubbed: elab (symbols via elab, net highlight `k`, eval, net ids in snapshots; values are wired for the docs page), netlist (`n`), run (`s`, plugin run requests), web OPFS.
-- **elab** test `inherited_connections_resolve_up_the_path` fails on `m1` (expects `net_0j0001`, gets `net_0j0001_1`).
 
 ## netlist
 

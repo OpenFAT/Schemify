@@ -52,7 +52,10 @@ fn same(a: &RV, b: &RV) -> bool {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 6000, ..ProptestConfig::default() })]
+    // ~15% of generated expressions are filtered by `prop_assume!` (big ints, atan2);
+    // at 6000 cases that is ~1000 rejects, right at the default budget of 1024, which
+    // made the run flaky. Budget = cases keeps it deterministic in outcome.
+    #![proptest_config(ProptestConfig { cases: 6000, max_global_rejects: 6000, ..ProptestConfig::default() })]
 
     /// Ok values agree bitwise; a runtime error has the reference's code;
     /// a compile-time error (a constant subexpression that always runs)
