@@ -1,0 +1,51 @@
+# Merge tier (TESTING.md): every push and PR, all tier-1 platforms (D32).
+name: ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo test --workspace
+
+  # Pure crates must build for the web (D2, D32).
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: >-
+          cargo build --target wasm32-unknown-unknown
+          -p schemify-format -p schemify-expr -p schemify-doc -p schemify-elab -p schemify-netlist
+
+  # TODO(netlist): byte-identical netlists across Linux/macOS/Windows/Web
+  # (AGENTS.md rule 4, TESTING.md merge tier). Once `schemify netlist` exists:
+  #   1. a matrix job per OS (plus wasm32 under a WASI runner) netlists every
+  #      fixture in tests/corpus/ (hand-written, committed) in every dialect and
+  #      prints `sha256sum` of each output;
+  #   2. a final job diffs the four hash lists and fails on any mismatch.
+  # Kept as a skipped job so the slot is visible in the checks list.
+  determinism:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "placeholder until the netlister exists"

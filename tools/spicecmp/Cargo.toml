@@ -1,0 +1,20 @@
+[package]
+name = "schemify-spicecmp"
+description = "Semantic SPICE/CDL netlist comparator: the netlist oracle of TESTING.md."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "spicecmp"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

@@ -367,6 +367,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "schemify-spicecmp"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "schemify-wave"
 version = "0.1.0"
 dependencies = [
