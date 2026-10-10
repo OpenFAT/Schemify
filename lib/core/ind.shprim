@@ -1,0 +1,30 @@
+schemify 1 shprim
+  doc "Inductor: SPICE L element"
+  prefix L
+  category passive
+
+pin p inout 0 -30
+pin n inout 0 30
+
+param value 1n
+  kind string
+  unit H
+  doc "inductance: SPICE value text (a number, an expression, or a value plus device parameters)"
+param m 1
+  doc "parallel multiplier"
+
+impl spice spice
+  format spice "{name} {p} {n} {value} m={m}"
+
+line 0 -30 0 -20
+line 0 20 0 30
+
+arc 0 -15 5 270 180
+arc 0 -5 5 270 180
+arc 0 5 5 270 180
+arc 0 15 5 270 180
+
+stext 20 -10 R0 {name}
+  size 0.2
+stext 20 0 R0 {value}
+  size 0.2

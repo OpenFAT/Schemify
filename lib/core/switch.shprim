@@ -1,0 +1,26 @@
+schemify 1 shprim
+  doc "Current-controlled switch: SPICE W element, controlled by the current through voltage source vnam"
+  prefix W
+  category switch
+
+pin p inout 0 -30
+pin n inout 0 30
+
+param vnam v1
+  kind string
+  doc "name of the voltage source whose current controls the switch"
+param model csw
+  kind string
+  doc "SPICE CSW .model name"
+
+impl spice spice
+  format spice "{name} {p} {n} {vnam} {model}"
+
+line 0 -30 0 -10
+line 0 10 0 30
+line 0 10 -10 -10
+
+stext 10 -10 R0 {name}
+  size 0.2
+stext 10 0 R0 {vnam}
+  size 0.2
