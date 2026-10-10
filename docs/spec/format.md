@@ -109,7 +109,7 @@ Kinds in writer order:
 
 | Record | Attributes | Notes |
 |---|---|---|
-| `inst <id> <cellref>` | `at <x> <y> <orient>` (required, first), `name <instname>` (required), `<param> <value>` overrides, `inherit <pin> <net>` | `cellref` = `lib:cell` or `./cell` (same directory). Only overrides are stored (D40). `name` may be iterated `X1[3:0]`. |
+| `inst <id> <cellref>` | `at <x> <y> <orient>` (required, first), `name <instname>` (required), `ignore true\|short\|open`, `<param> <value>` overrides, `inherit <pin> <net>` | `cellref` = `lib:cell` or `./cell` (same directory). Only overrides are stored (D40). `name` may be iterated `X1[3:0]`. |
 | `wire <id> <x1> <y1> <x2> <y2>` | `bus true` | Writer normalizes so `(x1, y1) < (x2, y2)` lexicographically. Zero-length wires are an error (`E026`). |
 | `label <id> <x> <y> <orient> <netexpr>` | | Net names live only on labels and ports. |
 | `port <id> <x> <y> <orient> <pin>` | | Binds a schematic net to interface pin `<pin>` (shcomp only). |

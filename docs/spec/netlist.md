@@ -70,6 +70,7 @@ For an inherited pin `P` with default net `D` on cell `c`, at instance path `p`:
 ### 7.1 Common rules
 
 - Dialect ∈ `ngspice xyce cdl spectre verilog`. `spice` templates serve `ngspice`, `xyce` and `cdl` unless a dialect-specific `format` exists.
+- Instances (or impls) with `ignore true` are not emitted; `ignore open` is not emitted and its pins are left unconnected; `ignore short` is not emitted and all its pin nets are merged into one net (named by §3 rules). Ignored instances still elaborate for checks.
 - Instance lines come from the selected impl's template ([expr.md §6](expr.md)). Default templates when an impl has none:
 
   | impl lang | ngspice / xyce | cdl |
