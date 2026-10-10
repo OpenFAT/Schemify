@@ -1,0 +1,32 @@
+schemify 1 shprim
+  doc "Lossless transmission line: SPICE T element, port 1 (p1, n1) to port 2 (p2, n2)"
+  prefix T
+  category passive
+
+pin p1 inout -80 -10
+pin n1 inout -80 10
+pin p2 inout 80 -10
+pin n2 inout 80 10
+
+param z0 50
+  unit Ohm
+  doc "characteristic impedance"
+param td 10n
+  unit s
+  doc "transmission delay"
+
+impl spice spice
+  format spice "{name} {p1} {n1} {p2} {n2} z0={z0} td={td}"
+
+line -80 -10 -60 -10
+line -80 10 -60 10
+line 60 -10 80 -10
+line 60 10 80 10
+
+rect -60 -20 60 20
+  fill false
+
+stext -60 -40 R0 {name}
+  size 0.2
+stext -60 30 R0 "z0={z0} td={td}"
+  size 0.2

@@ -1,0 +1,38 @@
+schemify 1 shprim
+  doc "NPN bipolar transistor: SPICE Q element"
+  prefix Q
+  category semiconductor
+
+pin c inout 20 -30
+pin b in -20 0
+pin e inout 20 30
+
+param spiceprefix ""
+  kind string
+  doc "instance-name prefix; X when the model is a subcircuit"
+param model npn
+  kind string
+  doc "SPICE .model name"
+param area 1
+  doc "area factor"
+param m 1
+  doc "parallel multiplier"
+
+impl spice spice
+  format spice "{spiceprefix}{name} {c} {b} {e} {model} area={area} m={m}"
+
+line 20 -30 20 -20
+line 20 20 20 30
+line -20 0 0 0
+line 0 -20 0 20
+line 0 -10 20 -20
+line 0 10 20 20
+
+poly 10 10 20 20 10 20
+  fill true
+  closed true
+
+stext 30 -20 R0 {name}
+  size 0.2
+stext 30 10 R0 {model}
+  size 0.2

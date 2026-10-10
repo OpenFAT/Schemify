@@ -1,0 +1,30 @@
+schemify 1 shprim
+  doc "Voltage-controlled switch: SPICE S element, controlled by v(cp,cn); the SW .model comes from a code block or library"
+  prefix S
+  category switch
+
+pin p inout 0 -30
+pin n inout 0 30
+pin cp in -40 0
+pin cn in -40 20
+
+param model sw
+  kind string
+  doc "SPICE SW .model name"
+
+impl spice spice
+  format spice "{name} {p} {n} {cp} {cn} {model}"
+
+line 0 -30 0 -10
+line 0 10 0 30
+line 0 10 -10 -10
+line -40 0 -20 0
+line -40 20 -20 20
+
+rect -20 -10 -10 30
+  fill false
+
+stext 10 -10 R0 {name}
+  size 0.2
+stext 10 0 R0 {model}
+  size 0.2
