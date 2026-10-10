@@ -1,0 +1,45 @@
+# Nightly tier (TESTING.md): xschem differential on the full corpus, fuzzing.
+name: nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  corpus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - uses: dtolnay/rust-toolchain@stable
+      - name: fetch corpus (pinned, sparse)
+        run: tests/corpus/fetch.sh
+      - name: golden netlists from pinned xschem (nix)
+        run: tests/corpus/golden.sh
+      - name: goldens report
+        if: always()
+        run: cat tests/corpus/.cache/golden/REPORT.txt
+      - name: comparator self-checks on real goldens
+        run: cargo test --release -p schemify-spicecmp -- --include-ignored
+      # Reports the ratchet number; must not fail until the netlister exists.
+      # TODO(netlist): fill `ours/` with `schemify netlist` output named like
+      # the goldens (<name>.spice, <name>.cdl), then drop continue-on-error and
+      # fail when the agree count drops below the last recorded value.
+      - name: differential vs xschem (ratchet)
+        continue-on-error: true
+        run: |
+          mkdir -p ours
+          tests/corpus/diff_all.sh ours
+
+  # TODO(fuzz): cargo-fuzz targets, 1 h each (TESTING.md nightly tier):
+  # format reader, expr parser, xschem .sch/.sym importer, spicecmp parser.
+  # Corpus seeds: tests/corpus/.cache/src (real PDK files) and the goldens.
+  fuzz:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "placeholder until fuzz targets exist"
