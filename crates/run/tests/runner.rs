@@ -332,5 +332,5 @@ fn verilog_a_compiles_once_into_every_job_or_fails_clearly() {
         "mtime cache hit for the second job"
     );
     let netlist = std::fs::read_to_string(runner.job_dir(0).join("netlist.cir")).unwrap();
-    assert!(netlist.contains("NN1 out 0 vres"), "{netlist}");
+    assert!(netlist.contains("\nN1 out 0 vres\n"), "{netlist}");
 }

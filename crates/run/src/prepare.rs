@@ -3,7 +3,7 @@
 //! needs compiled first (Verilog-A → OSDI, Verilog → VVP).
 
 use crate::jobs::Jobs;
-use crate::netlist_shim as netlist;
+use schemify_netlist as netlist;
 use crate::results::Results;
 use schemify_doc::{Digest, DocHandle, Project, Sha256, sha256};
 use schemify_elab::{Dialect, Elab, Funcs, Name, Request, Severity, elaborate};
