@@ -387,7 +387,12 @@ pub fn connect(
     let nc = ncomp as usize;
     let mut comp_nodes = vec![0u32; nc];
     let mut comp_pins = vec![0u32; nc];
+    // Generated names must never be shared by two components (SPICE connects equal
+    // node names): wires, labels, ports and noconns belong to exactly one component, so
+    // their smallest id names it; a component made only of instance pins falls back to
+    // its smallest (instance id, pin index) pin node, unique to that component.
     let mut comp_minid = vec![ObjId::NONE; nc];
+    let mut comp_minpin = vec![(ObjId::NONE, 0u32); nc];
     let mut comp_pinw = vec![1u32; nc];
     let mut better = |c: usize, id: ObjId| {
         if comp_minid[c] == ObjId::NONE || id_cmp(id, comp_minid[c], s) == Ordering::Less {
@@ -405,7 +410,17 @@ pub fn connect(
             let p = pin_pin[k] as usize;
             comp_pins[c] += 1;
             comp_pinw[c] = comp_pinw[c].max(f.pin_bit_start[p + 1] - f.pin_bit_start[p]);
-            better(c, inst.id[pin_inst[k] as usize]);
+            let id = inst.id[pin_inst[k] as usize];
+            let (best_id, best_p) = comp_minpin[c];
+            let take = best_id == ObjId::NONE
+                || match id_cmp(id, best_id, s) {
+                    Ordering::Less => true,
+                    Ordering::Equal => (p as u32) < best_p,
+                    Ordering::Greater => false,
+                };
+            if take {
+                comp_minpin[c] = (id, p as u32);
+            }
         } else if i < ports0 {
             better(c, labels.id[i - labels0]);
         } else if i < noconns0 {
@@ -415,6 +430,34 @@ pub fn connect(
             better(c, noconns.id[i - noconns0]);
         }
     }
+
+    // Naming key per component: an owned object id (pin = NONE_PIN), else a pin node.
+    const NONE_PIN: u32 = u32::MAX;
+    let comp_key: Vec<(ObjId, u32)> = (0..nc)
+        .map(|c| match comp_minid[c] {
+            ObjId::NONE => comp_minpin[c],
+            id => (id, NONE_PIN),
+        })
+        .collect();
+    assert!(
+        comp_key.iter().all(|k| k.0 != ObjId::NONE),
+        "every component holds an id"
+    );
+    // Owned ids sort before pin nodes; then by id text, then pin index.
+    let key_cmp = |a: (ObjId, u32), b: (ObjId, u32)| {
+        (a.1 != NONE_PIN)
+            .cmp(&(b.1 != NONE_PIN))
+            .then_with(|| id_cmp(a.0, b.0, s))
+            .then(a.1.cmp(&b.1))
+    };
+    let write_key = |k: (ObjId, u32), buf: &mut String| {
+        buf.push_str("net_");
+        k.0.write(s, buf);
+        if k.1 != NONE_PIN {
+            buf.push('_');
+            buf.push_str(&k.1.to_string());
+        }
+    };
 
     // ---- names per component: (comp, class, bits range)
     let mut src_comp: Vec<u32> = Vec::new();
@@ -687,24 +730,23 @@ pub fn connect(
             best[b] = (class, name);
         }
     }
-    // Unnamed bits: smallest (component id, bit index) among the slots.
-    let mut unnamed: Vec<(ObjId, u32, u32)> = vec![(ObjId::NONE, 0, 1); nb];
+    // Unnamed bits: smallest (component key, bit index) among the slots.
+    let mut unnamed: Vec<((ObjId, u32), u32, u32)> = vec![((ObjId::NONE, 0), 0, 1); nb];
     for c in 0..nc {
         for j in 0..comp_width[c] {
             let b = net_of[(slot_start[c] + j) as usize] as usize;
             if best[b].1 != Name::NONE {
                 continue;
             }
-            let (id, k, _) = unnamed[b];
-            let id_c = comp_minid[c];
-            let take = id == ObjId::NONE
-                || match id_cmp(id_c, id, s) {
+            let (key, k, _) = unnamed[b];
+            let take = key.0 == ObjId::NONE
+                || match key_cmp(comp_key[c], key) {
                     Ordering::Less => true,
                     Ordering::Equal => j < k,
                     Ordering::Greater => false,
                 };
             if take {
-                unnamed[b] = (id_c, j, comp_width[c]);
+                unnamed[b] = (comp_key[c], j, comp_width[c]);
             }
         }
     }
@@ -713,14 +755,13 @@ pub fn connect(
         let name = match best[b] {
             (_, n) if n != Name::NONE => n,
             _ => {
-                let (id, k, width) = unnamed[b];
+                let (key, k, width) = unnamed[b];
                 assert!(
-                    id != ObjId::NONE,
+                    key.0 != ObjId::NONE,
                     "every component holds an object with an id"
                 );
                 buf.clear();
-                buf.push_str("net_");
-                id.write(s, &mut buf);
+                write_key(key, &mut buf);
                 if width > 1 {
                     buf.push('[');
                     buf.push_str(&k.to_string());
@@ -768,8 +809,7 @@ pub fn connect(
                     cn.bit_name[b as usize]
                 } else {
                     buf.clear();
-                    buf.push_str("net_");
-                    comp_minid[c].write(s, &mut buf);
+                    write_key(comp_key[c], &mut buf);
                     names.intern(&buf)
                 }
             }

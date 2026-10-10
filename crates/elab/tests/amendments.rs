@@ -116,3 +116,37 @@ fn dollar_names_expand_from_project_sets_then_env() {
         .collect();
     assert_eq!(e034, ["NOPE"]);
 }
+
+#[test]
+fn dollar_values_expand_recursively_and_cycles_are_e034() {
+    // Imported PDK sets are themselves templates (`${PDK_ROOT}/${PDK}/…`).
+    let manifest = "schemify 1 project\n\nset PDK_ROOT /pdk\nset PDK sky130A\nset MODELS ${PDK_ROOT}/${PDK}/libs.tech\nset LOOP_A ${LOOP_B}\nset LOOP_B ${LOOP_A}\n";
+    let bench = "schemify 1 shbench\n\ncode a spice\n  | .lib ${MODELS}/combined.lib tt\n  | .include ${LOOP_A}\n";
+    let mut p = Project::new(Some(manifest.as_bytes()), None, 1).unwrap();
+    p.index_library("", "", &[("tb.shbench", bench.as_bytes())])
+        .unwrap();
+    let h = p
+        .open("", "tb.shbench", bench.as_bytes(), None)
+        .unwrap()
+        .handle;
+    let e = elaborate(&p, h, &ngspice(), &mut no_funcs);
+    let lines: Vec<&str> = e.bench.code_lines.iter().map(|n| e.names.get(*n)).collect();
+    assert_eq!(lines[0], ".lib /pdk/sky130A/libs.tech/combined.lib tt");
+    let e034 = e.violations.with(Code::E034).count();
+    assert_eq!(e034, 1, "the cyclic definition is reported once");
+}
+
+#[test]
+fn generated_net_names_never_merge_two_components() {
+    // R1 has the smallest id; each of its pins touches its own unnamed wire. Naming
+    // both components after R1 would make them one SPICE node (a shorted resistor).
+    let bench = "schemify 1 shbench\n\ninst 0aaaaa ./res\n  at 0 0 R0\n  name R1\ninst 0aaaab ./res\n  at 200 0 R0\n  name R2\n\nwire zzzzz1 -40 0 0 0\nwire zzzzz2 -40 20 0 20\n";
+    let (p, hs) = project(&[("res.shprim", RES), ("tb.shbench", bench)]);
+    let e = elab(&p, hs[1]);
+    let top = e.top;
+    let r1 = conn_names(&e, row(&e, top, "R1"));
+    assert_eq!(r1, ["net_zzzzz1", "net_zzzzz2"]);
+    // R2 touches nothing: its pin-only components fall back to (instance, pin) nodes.
+    let r2 = conn_names(&e, row(&e, top, "R2"));
+    assert_eq!(r2, ["net_0aaaab_0", "net_0aaaab_1"]);
+}
