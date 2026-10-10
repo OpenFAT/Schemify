@@ -1,0 +1,27 @@
+[package]
+name = "schemify-abi"
+description = "Plugin ABI v1 shared by the Schemify host and guests; doubles as the Rust guest SDK."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# Not `workspace = true`: the workspace forbids unsafe, and `forbid` cannot be relaxed
+# locally. The guest glue (extern imports) needs one module with `#![allow(unsafe_code)]`,
+# so this crate denies instead of forbids. Everything else stays safe.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+[features]
+# Guest SDK: `export!`, `Host`, the input arena. Compiled only for wasm32.
+guest = []
+
+[dependencies]
+
+[dev-dependencies]
+proptest.workspace = true
