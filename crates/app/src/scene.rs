@@ -21,6 +21,7 @@
 use std::collections::HashMap;
 
 use schemify_doc::{DocHandle, Document, Project, Strings as DocStrings, Sym, TableId};
+use schemify_elab::CellState;
 use schemify_expr::{Scratch, Template, Value};
 use schemify_format::{Orient, RecordKind};
 use schemify_render::canvas::{CanvasPrims, Marks, PrimKind};
@@ -369,7 +370,9 @@ impl Build<'_> {
 
 /// Rebuilds `sc` for document `h` shown as `view`. `symbols` must hold every cell the
 /// document instantiates that resolves (see `Editor::load_symbols`); unresolved cells draw
-/// as a red placeholder with the cell reference.
+/// as a red placeholder with the cell reference. `values`, when given, must be the elab
+/// state of `h` at this epoch: symbol texts (`{W}`) then show evaluated param values (an
+/// override `W = W_in` reads the var's value, D19) instead of the override text.
 ///
 /// Cost: O(objects + stamped symbol primitives); reuses `sc`'s allocations.
 pub fn build(
@@ -379,6 +382,7 @@ pub fn build(
     view: View,
     symbols: &Symbols,
     epoch: u32,
+    values: Option<&CellState>,
 ) {
     let Some(doc) = project.doc(h) else {
         *sc = Scene::default();
@@ -393,8 +397,9 @@ pub fn build(
         sc,
         ext: [i32::MAX, i32::MAX, i32::MIN, i32::MIN],
     };
+    let values = values.filter(|v| v.inst_iface.len() == doc.instances().id.len());
     match view {
-        View::Schematic => schematic(&mut b, project, h, doc, symbols),
+        View::Schematic => schematic(&mut b, project, h, doc, symbols, values),
         View::Symbol => symbol(&mut b, doc),
     }
     let ext = if b.ext[0] > b.ext[2] { [0; 4] } else { b.ext };
@@ -470,7 +475,14 @@ fn fit_boxes(sc: &mut Scene) {
     }
 }
 
-fn schematic(b: &mut Build<'_>, project: &Project, h: DocHandle, doc: &Document, sym: &Symbols) {
+fn schematic(
+    b: &mut Build<'_>,
+    project: &Project,
+    h: DocHandle,
+    doc: &Document,
+    sym: &Symbols,
+    values: Option<&CellState>,
+) {
     let s = doc.strings();
     // Instances: stamp the resolved cell's symbol through the placement transform.
     let inst = doc.instances();
@@ -548,7 +560,9 @@ fn schematic(b: &mut Build<'_>, project: &Project, h: DocHandle, doc: &Document,
             let rendered = t.template.as_ref().is_some_and(|tpl| {
                 let ok = tpl
                     .program()
-                    .bind(&mut inputs, |name| bind_ident(name, doc, i, iface, cellref))
+                    .bind(&mut inputs, |name| {
+                        bind_ident(name, doc, i, iface, cellref, values)
+                    })
                     .is_ok();
                 ok && tpl.render(&inputs, &mut scratch, &mut text).is_ok()
             });
@@ -636,14 +650,16 @@ fn schematic(b: &mut Build<'_>, project: &Project, h: DocHandle, doc: &Document,
     }
 }
 
-/// Binds a template identifier for instance row `i`: `name`, `cell`, then the instance's
-/// override of a parameter, then the cell's default (numbers as numbers, the rest as text).
+/// Binds a template identifier for instance row `i`: `name`, `cell`, then the param's
+/// evaluated value from `values` (elab), then the instance's override text, then the cell's
+/// default (numbers as numbers, the rest as text).
 fn bind_ident<'d>(
     name: &str,
     doc: &'d Document,
     i: usize,
     iface: Option<&'d Document>,
     cellref: &'d str,
+    values: Option<&'d CellState>,
 ) -> Option<Value<'d>> {
     let s = doc.strings();
     let inst = doc.instances();
@@ -651,6 +667,9 @@ fn bind_ident<'d>(
         "name" => s.get(inst.name[i]),
         "cell" => cellref.rsplit([':', '/']).next().unwrap_or(cellref),
         _ => {
+            if let Some(v) = values.and_then(|st| param_value(st, i, name)) {
+                return Some(v);
+            }
             let over = doc
                 .pool()
                 .find_attr(s, inst.attrs[i], name)
@@ -672,6 +691,16 @@ fn bind_ident<'d>(
         Ok(v) if name != "name" => Value::Num(v),
         _ => Value::Str(text),
     })
+}
+
+/// The evaluated value of param `name` of instance row `i` (`None`: unresolved cell, no
+/// such param, or an evaluation error, which the docs page and checks report).
+fn param_value<'c>(st: &'c CellState, i: usize, name: &str) -> Option<Value<'c>> {
+    let iface = st.ifaces.get(*st.inst_iface.get(i)? as usize)?;
+    let n = st.names.find(name)?;
+    let k = iface.param_name.iter().position(|&p| p == n)?;
+    let node = st.graph.inst_param(i, k)?;
+    st.graph.vals.get(node as usize)?.value()
 }
 
 /// Maps a symbol-local arc through an instance orientation (millidegrees).

@@ -21,16 +21,40 @@ use schemify_ui::{
 
 use crate::scene::{LAYER_BUS, LAYER_JUNCTION, LAYER_MISSING, LAYER_SEL};
 
-/// The core base: the minimum the editor needs to be usable without the default UI.
+/// The core base: the minimum the editor needs to be usable without the default UI — the
+/// canvas, and the docs page beside it (D21: docs render without plugins).
 pub const CORE_UI: &str = "\
 style window
   dir column
   bg 000000
+style work
+  dir row
+  grow 1
+  stretch 1
 style canvas
   grow 1
+style docs-pane
+  bg ffffff
+  dir column
+  width 520
+style docs-page
+  grow 1
+  dir column
+  pad 12
+  pad-y 10
+  gap 4
 node window window
-node canvas canvas
+node work panel
   parent window
+  style work
+node canvas canvas
+  parent work
+node docs.pane panel
+  parent work
+  style docs-pane
+node docs.page scroll
+  parent docs.pane
+  style docs-page
 ";
 
 /// Composed UI tables, interaction state and the current layout.

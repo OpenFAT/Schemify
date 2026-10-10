@@ -214,3 +214,87 @@ fn a_value_edit_reevaluates_only_its_dependents() {
     // `c` feeds `l` of M1, M5, …: c itself + 10 overrides + their computed `ad`.
     assert_eq!(done.evaluated, 1 + 10 + 10, "of {total} nodes");
 }
+
+/// D20 write-back: the app copies plugin results into `cached` attributes. Such an edit is
+/// value-only: no graph rebuild, the stand-in reaches the value when the plugin is missing,
+/// and the result equals a fresh build.
+#[test]
+fn cached_attribute_edits_refresh_without_a_rebuild() {
+    use schemify_elab::Val;
+    let src = format!(
+        "{}var g \"gmid.w(a)\"\n  cached 2 00aa\n",
+        cell(8).replace("  w a+k2\n", "  w g\n")
+    );
+    let (mut p, hs) = project(&[("dev.shprim", DEV), ("cell.shcomp", &src)]);
+    let h = hs[1];
+    let mut st = CellState::build(&p, h, &mut no_funcs).unwrap();
+    let g = |st: &CellState| {
+        let v = st
+            .graph
+            .var_name
+            .iter()
+            .position(|n| st.names.get(*n) == "g")
+            .unwrap();
+        let node = st.graph.params as usize + v;
+        (st.graph.vals[node].clone(), st.graph.unverified[node])
+    };
+    assert_eq!(
+        g(&st),
+        (Val::Int(2), true),
+        "missing plugin: cached, unverified"
+    );
+    let m0_w = st.graph.inst_param(0, 0).unwrap() as usize;
+    assert!(
+        st.graph.unverified[m0_w],
+        "a dependent of a stand-in is unverified"
+    );
+    let set = Op::SetAttr {
+        target: Target::new(RecordKind::Var, "g"),
+        key: "cached".into(),
+        values: vec!["3.5".into(), "00bb".into()],
+    };
+    let remove = Op::RemoveAttr {
+        target: Target::new(RecordKind::Var, "g"),
+        key: "cached".into(),
+        first: None,
+    };
+    for (op, want) in [(set, Some(Val::Num(3.5))), (remove, None)] {
+        assert!(commit(&mut p, h, vec![op.clone()]));
+        let done = st.recompute(&p, h, std::slice::from_ref(&op), &mut no_funcs);
+        assert!(!done.graph && !done.nets, "{done:?}");
+        let fresh = CellState::build(&p, h, &mut no_funcs).unwrap();
+        assert_eq!(snapshot(&st), snapshot(&fresh), "{op:?}");
+        match want {
+            Some(v) => {
+                assert_eq!(g(&st), (v.clone(), true));
+                assert_eq!(st.graph.vals[m0_w], v, "the override reads the stand-in");
+            }
+            None => assert!(
+                matches!(g(&st).0, Val::Err(e) if e.code == schemify_expr::Code::X006),
+                "no plugin, no cache: X006"
+            ),
+        }
+    }
+    // A loaded plugin wins over any cache, and a cache write never re-runs its value.
+    let mut funcs = |name: &str, args: &[schemify_expr::Value<'_>]| {
+        (name == "gmid.w").then(|| match args[0] {
+            schemify_expr::Value::Int(i) => Ok(schemify_expr::Value::Num(i as f64 * 10.0)),
+            _ => Ok(schemify_expr::Value::Num(-1.0)),
+        })
+    };
+    let mut st = CellState::build(&p, h, &mut funcs).unwrap();
+    assert_eq!(g(&st), (Val::Num(10.0), false));
+    let op = Op::SetAttr {
+        target: Target::new(RecordKind::Var, "g"),
+        key: "cached".into(),
+        values: vec!["10".into(), "00cc".into()],
+    };
+    assert!(commit(&mut p, h, vec![op.clone()]));
+    let done = st.recompute(&p, h, &[op], &mut funcs);
+    assert_eq!(
+        (done.graph, done.evaluated),
+        (false, 0),
+        "verified values stay"
+    );
+    assert_eq!(g(&st), (Val::Num(10.0), false));
+}

@@ -8,8 +8,9 @@
 //! plugin::deliver(plugins, plugin_events, snapshots)   → request_queues (edits, logs, io)
 //! doc::apply_edits(edit_requests ∪ plugin edits)       → doc tables, journal
 //! app::load_symbols(active doc)                        → open symbol cells (I/O)
-//! elab::recompute(doc, dirty)                          → (integration point: not yet)
-//! ui::compose(base, plugin sets, state) + ui::layout   → ui_nodes, ui_layout
+//! elab::CellState::recompute(doc, ops, plugin fns)     → values (D19; incremental per edit)
+//! docs::cache_ops(values) → doc::apply_edits           → D20 `cached` write-back, same undo
+//! ui::compose(base, plugin sets, state + docs page)    → ui_nodes; ui::layout → ui_layout
 //! scene::build(doc, symbols)                           → canvas prims, objects (on change)
 //! render::draw_ui / draw_canvas                        → scene (in `paint`)
 //! ```
@@ -28,6 +29,8 @@ use schemify_doc::{
     DocHandle, Document, Edit, EditRequest, External, Mode, Op, Outcome, RecordBuf, TableId,
     Transaction, apply_edits, ops_from_text,
 };
+use schemify_elab::CellState;
+use schemify_expr::Value;
 use schemify_format::{FileKind, IdRng, Orient, RecordKind};
 use schemify_plugin::abi::Event;
 use schemify_render::canvas::{self, Camera, CanvasPrims, CanvasScratch, Marks, Palette};
@@ -39,6 +42,7 @@ use schemify_ui::{
 };
 
 use crate::commands::{Cmd, Commands, Target};
+use crate::docs::{self, Page};
 use crate::edit::{self, Ids};
 use crate::geometry::{Pt, Xform, snap};
 use crate::platform;
@@ -298,6 +302,22 @@ pub struct Editor {
     symbols_key: Option<(DocHandle, u32)>,
     /// Text field to focus once the dialog that holds it is laid out.
     focus_next: Option<String>,
+    /// Derived values of the active level's document (owner: `elab`; D19, D20).
+    cell: Option<CellState>,
+    /// What `cell` is current for: (document, its edit epoch, plugin composition epoch).
+    /// Kept in step by `apply` while edits are incremental; `None` forces a rebuild.
+    cell_key: Option<(DocHandle, u32, u32)>,
+    /// Ops committed to the active document that `cell` has not seen yet.
+    cell_ops: Vec<Op>,
+    /// The docs page.
+    page: Page,
+    /// This frame's docs-page commit (document, label, ops, committed?): a D20 cache write
+    /// it causes is folded into the same undo entry.
+    amend: Option<(DocHandle, String, Vec<Op>, bool)>,
+    /// The cache ops of an amend in flight (see `sync_cache`).
+    amending: Option<Vec<Op>>,
+    /// An undo or redo ran this frame: cache writes wait (a commit would clear redo).
+    undid: bool,
 }
 
 impl std::fmt::Debug for Editor {
@@ -366,6 +386,13 @@ impl Editor {
             generation: 0,
             symbols_key: None,
             focus_next: None,
+            cell: None,
+            cell_key: None,
+            cell_ops: Vec::new(),
+            page: Page::default(),
+            amend: None,
+            amending: None,
+            undid: false,
         };
         let opened = match &path {
             Some(p) if !platform::is_dir(p) => Some(ed.session.open_path(p)?),
@@ -441,6 +468,30 @@ impl Editor {
         self.waves.is_some()
     }
 
+    /// Derived values of the active level's document; `None` before the first frame or for
+    /// a stale handle. Current after every [`Editor::update`].
+    pub fn cell(&self) -> Option<&CellState> {
+        self.cell.as_ref()
+    }
+
+    /// The docs page state (selection, open text editor).
+    pub fn page(&self) -> &Page {
+        &self.page
+    }
+
+    /// Whether the active tab shows its docs page beside the canvas.
+    pub fn docs_shown(&self) -> bool {
+        self.session
+            .tabs
+            .get(self.session.active)
+            .is_some_and(|t| t.docs)
+    }
+
+    /// The plugin host (loaded plugins, D20 function registry).
+    pub fn host(&self) -> &Host {
+        &self.host
+    }
+
     /// Whether the user asked to quit (the window shell exits the process).
     pub fn wants_quit(&self) -> bool {
         self.quit
@@ -482,6 +533,8 @@ impl Editor {
         let synced = self.sync_fields();
         let mut changed = resized || routed.redraw || routed.relayout || synced;
         let mut reqs: Vec<EditRequest> = Vec::new();
+        self.undid = false;
+        changed |= self.sync_page(events, &routed.commands, &mut reqs);
         // 2. dispatch → edit_requests, plugin_events, ui state
         changed |= self.dispatch_all(&routed.commands, &mut reqs);
         for &ev in &routed.canvas {
@@ -496,16 +549,24 @@ impl Editor {
             }
             changed |= self.apply(&mut reqs);
         }
-        // 5. symbols of the active document (I/O) — elab::recompute hooks in here later.
+        // 5. symbols of the active document (I/O)
         self.load_symbols();
-        // 6. ui compose + layout
+        // 6. elab::recompute → values (D19), then the D20 cache write-back folded into the
+        //    edit's own undo entry; both before compose so page and canvas show this frame's
+        //    values.
+        if self.recompute_elab() {
+            changed = true;
+            changed |= self.sync_cache(&mut reqs);
+        }
+        self.amend = None;
+        // 7. ui compose + layout
         changed |= self.compose_ui(routed.relayout);
         if let Some(id) = self.focus_next.take() {
             let s = &mut self.shell;
             let sym = s.strings.intern(&id);
             s.ui.focus_text(&s.tables, &s.layout, &s.strings, &mut s.text, sym);
         }
-        // 7. scene, overlay, marks
+        // 8. scene, overlay, marks
         changed |= self.build_scene();
         self.build_overlay();
         self.routed = routed;
@@ -963,6 +1024,90 @@ impl Editor {
                 };
                 self.switch_tab(i);
             }
+            Cmd::DocsToggle => {
+                let a = self.session.active;
+                if let Some(t) = self.session.tabs.get_mut(a) {
+                    t.docs = !t.docs;
+                }
+            }
+            Cmd::DocsSelect => self.page.sel = docs::row_of(node),
+            Cmd::DocsEdit => {
+                let Some(row) = docs::row_of(node) else {
+                    return false;
+                };
+                self.page.sel = Some(row);
+                let text = self
+                    .session
+                    .project
+                    .doc(h)
+                    .filter(|d| docs::kind_of(d, row) == Some(RecordKind::Prose))
+                    .map(|d| docs::prose_text(d, row));
+                if let Some(text) = text {
+                    self.page.editing = Some((row, text));
+                    self.page.focused = false;
+                    self.focus_next = Some(docs::editor_id(row));
+                }
+            }
+            Cmd::DocsVarOk => {
+                let Some(row) = docs::row_of(node) else {
+                    return false;
+                };
+                self.page.sel = Some(row);
+                let ops = self.with_doc(h, |d, _| docs::var_ops(d, row, arg));
+                self.commit_docs(reqs, h, "edit variable", ops);
+            }
+            Cmd::DocsProseOk => {
+                if let Some((row, typed)) = self.page.editing.take() {
+                    let text = if arg.is_empty() {
+                        typed
+                    } else {
+                        arg.to_owned()
+                    };
+                    let ops = self.with_doc(h, |d, _| docs::prose_ops(d, row, &text));
+                    self.commit_docs(reqs, h, "edit text", ops);
+                }
+            }
+            Cmd::DocsAddProse | Cmd::DocsAddVar => {
+                let Some(doc) = self.session.project.doc(h) else {
+                    return false;
+                };
+                let row = docs::insert_row(doc, self.page.sel);
+                let (label, ops) = if cmd == Cmd::DocsAddProse {
+                    ("add text", docs::add_prose(row))
+                } else {
+                    ("add variable", docs::add_var(doc, row))
+                };
+                self.commit_docs(reqs, h, label, ops);
+                self.page.sel = Some(row);
+                let tab = self.session.active;
+                if let Some(t) = self.session.tabs.get_mut(tab) {
+                    t.docs = true;
+                }
+                if cmd == Cmd::DocsAddVar {
+                    self.focus_next = Some(format!("docs.b.{row}.expr"));
+                }
+            }
+            Cmd::DocsUp | Cmd::DocsDown => {
+                let Some(row) = self.page.sel else {
+                    self.session.status = "select a docs block first".into();
+                    return true;
+                };
+                let up = cmd == Cmd::DocsUp;
+                let ops = self.with_doc(h, |d, _| docs::move_block(d, row, up));
+                if !ops.is_empty() {
+                    self.page.sel = Some(if up { row - 1 } else { row + 1 });
+                }
+                self.commit_docs(reqs, h, "move block", ops);
+            }
+            Cmd::DocsDelete => {
+                let Some(row) = self.page.sel.take() else {
+                    self.session.status = "select a docs block first".into();
+                    return true;
+                };
+                self.page.editing = None;
+                let ops = self.with_doc(h, |d, _| docs::delete_block(d, row));
+                self.commit_docs(reqs, h, "delete block", ops);
+            }
             Cmd::UnselectUnderMouse => {
                 if let Some(o) = self.hit_at(self.pointer) {
                     let key = self.scene.objs.key[o as usize];
@@ -1003,6 +1148,22 @@ impl Editor {
             ops,
         };
         push_req(reqs, h, Edit::Tx(tx));
+    }
+
+    /// [`Editor::commit`] for a docs-page edit, remembered so a D20 cache write it causes
+    /// lands in the same undo entry (`sync_cache`).
+    fn commit_docs(
+        &mut self,
+        reqs: &mut Vec<EditRequest>,
+        h: DocHandle,
+        label: &str,
+        ops: Vec<Op>,
+    ) {
+        if ops.is_empty() {
+            return;
+        }
+        self.amend = Some((h, label.to_owned(), ops.clone(), false));
+        self.commit(reqs, h, label, ops);
     }
 
     fn set_selection(&mut self, mut sel: Vec<ObjKey>) {
@@ -2117,6 +2278,9 @@ impl Editor {
         if let Some(l) = d.logs.last() {
             self.session.status.clone_from(l);
         }
+        if d.state_changed {
+            self.cell_key = None; // plugin functions may answer differently now (D20)
+        }
         true
     }
 
@@ -2127,6 +2291,7 @@ impl Editor {
         let outcomes = apply_edits(&mut self.session.project, reqs);
         assert_eq!(outcomes.len(), reqs.len());
         let mut changed = false;
+        let active = self.active().map(|a| a.0);
         for (r, o) in reqs.iter().zip(&outcomes) {
             match o {
                 Outcome::Committed { .. }
@@ -2134,6 +2299,7 @@ impl Editor {
                 | Outcome::Redone { .. }
                 | Outcome::Staged { .. }
                 | Outcome::Dropped => {
+                    self.track_elab(r, o, active);
                     self.session.bump(r.doc);
                     self.session.flush_journal(r.doc);
                     self.generation = self.generation.wrapping_add(1);
@@ -2158,6 +2324,177 @@ impl Editor {
         }
         reqs.clear();
         changed
+    }
+
+    /// Keeps `cell` in step with one applied edit (called before the epoch bump): a commit to
+    /// the active document while `cell` is current queues its ops for the incremental
+    /// recompute; anything else that changes design data forces a rebuild. While an amend is
+    /// in flight its undo + recommit nets to the queued cache ops.
+    fn track_elab(&mut self, r: &EditRequest, o: &Outcome, active: Option<DocHandle>) {
+        let design = matches!(
+            o,
+            Outcome::Committed { .. } | Outcome::Undone { .. } | Outcome::Redone { .. }
+        );
+        if !design {
+            return;
+        }
+        let epoch = self.session.epoch(r.doc);
+        let current = self
+            .cell_key
+            .is_some_and(|k| Some(k.0) == active && k.0 == r.doc && k.1 == epoch);
+        let ops = match (&r.edit, o) {
+            (Edit::Tx(tx), Outcome::Committed { .. }) => Some(&tx.ops),
+            _ => None,
+        };
+        if let (Some((d, _, a_ops, done)), Some(ops)) = (self.amend.as_mut(), ops)
+            && *d == r.doc
+            && a_ops == ops
+        {
+            *done = true;
+        }
+        let amend_undo = self.amending.is_some() && matches!(o, Outcome::Undone { .. });
+        match (current, ops, &self.amending) {
+            (true, _, Some(_)) if amend_undo => {}
+            (true, Some(_), Some(cache)) => self.cell_ops.extend(cache.iter().cloned()),
+            (true, Some(ops), None) => self.cell_ops.extend(ops.iter().cloned()),
+            _ => {
+                self.cell_key = None;
+                self.cell_ops.clear();
+            }
+        }
+        if let Some(k) = self.cell_key.as_mut() {
+            k.1 = epoch.wrapping_add(1); // the bump that follows
+        }
+        self.undid |=
+            self.amending.is_none() && matches!(o, Outcome::Undone { .. } | Outcome::Redone { .. });
+        debug_assert!(self.cell_key.is_some() || self.cell_ops.is_empty());
+    }
+
+    /// `elab::CellState::recompute` for the active document: incremental over the queued ops
+    /// when `cell` is current, else a full build (another document, an undo, a plugin
+    /// change). Plugin functions are called through the host (D20). Returns whether values
+    /// may have changed.
+    fn recompute_elab(&mut self) -> bool {
+        let Some((h, _)) = self.active() else {
+            return false;
+        };
+        // Values are needed where vars are (the page, `W = W_in` labels): a cell without doc
+        // blocks shows override text as before and pays nothing.
+        // ponytail: structural edits rebuild the whole state (elab's recompute contract), 136 ms
+        // at 100k objects; make elab's instance insert/delete incremental if docs-heavy cells
+        // get that large.
+        let has_vars = self
+            .session
+            .project
+            .doc(h)
+            .is_some_and(|d| !d.doc_blocks().kind.is_empty());
+        if !has_vars {
+            let had = self.cell.take().is_some();
+            self.cell_key = None;
+            self.cell_ops.clear();
+            return had;
+        }
+        let epoch = self.session.epoch(h);
+        let fe = self.host.plugins.composed_epoch();
+        let current = self.cell.is_some() && self.cell_key == Some((h, epoch, fe));
+        if current && self.cell_ops.is_empty() {
+            return false;
+        }
+        let ops = std::mem::take(&mut self.cell_ops);
+        let (project, host) = (&self.session.project, &mut self.host);
+        let mut funcs = |name: &str, args: &[Value<'_>]| host.call_fn(name, args);
+        if current {
+            let cell = self.cell.as_mut().expect("current state");
+            cell.recompute(project, h, &ops, &mut funcs);
+        } else {
+            self.cell = CellState::build(project, h, &mut funcs);
+        }
+        self.cell_key = self.cell.as_ref().map(|_| (h, epoch, fe));
+        self.scene_dirty = true; // symbol texts show values
+        assert!(self.cell_ops.is_empty());
+        true
+    }
+
+    /// D20 write-back: when a loaded plugin computed a var value whose `cached <value>
+    /// <hash>` differs, writes it. After a docs-page edit the write joins that edit's undo
+    /// entry (undo + recommit of the edit with the cache ops), so one edit is one undo; else
+    /// it is its own "update plugin cache" commit, skipped in a frame that undid or redid
+    /// (it would clear the redo stack). Returns whether anything was written.
+    // ponytail: the amend replays the edit through undo; a `doc` amend-last-entry op would
+    // save the two journal records.
+    fn sync_cache(&mut self, reqs: &mut Vec<EditRequest>) -> bool {
+        let amend = self.amend.take().filter(|a| a.3);
+        let Some((h, _)) = self.active() else {
+            return false;
+        };
+        let (Some(cell), Some(doc)) = (self.cell.as_ref(), self.session.project.doc(h)) else {
+            return false;
+        };
+        if self.cell_key.map(|k| k.0) != Some(h) || doc.read_only() {
+            return false;
+        }
+        let host = &self.host;
+        let ops = docs::cache_ops(doc, cell, |fns| host.fn_hash(fns));
+        if ops.is_empty() {
+            return false;
+        }
+        match amend {
+            Some((d, label, mut tx_ops, _)) if d == h => {
+                tx_ops.extend(ops.iter().cloned());
+                push_req(reqs, h, Edit::Undo);
+                let tx = Transaction {
+                    label,
+                    mode: Mode::Commit,
+                    ops: tx_ops,
+                };
+                push_req(reqs, h, Edit::Tx(tx));
+                self.amending = Some(ops);
+            }
+            _ if self.undid => return false,
+            _ => self.commit(reqs, h, "update plugin cache", ops),
+        }
+        let changed = self.apply(reqs);
+        self.amending = None;
+        self.recompute_elab();
+        changed
+    }
+
+    /// Follows the docs page's text editor: copies what is typed while it has focus; when
+    /// focus leaves it, Escape cancels and anything else (a click elsewhere) applies the
+    /// text. Ctrl+Enter submits through `docs.prose_ok` instead.
+    fn sync_page(
+        &mut self,
+        events: &InputEvents,
+        cmds: &CommandRequests,
+        reqs: &mut Vec<EditRequest>,
+    ) -> bool {
+        let Some((row, _)) = self.page.editing else {
+            return false;
+        };
+        let focus = self.shell.ui.focus();
+        let id = docs::editor_id(row);
+        if !focus.is_none() && self.shell.strings.get(focus) == id {
+            self.page.focused = true;
+            if let (Some(ed), Some(e)) = (self.shell.ui.editor(), self.page.editing.as_mut()) {
+                e.1 = ed.raw_text().to_owned();
+            }
+            return false;
+        }
+        let submitted = (0..cmds.len())
+            .any(|i| self.shell.strings.get(cmds.command[i]) == Cmd::DocsProseOk.name());
+        if !self.page.focused || submitted {
+            return false;
+        }
+        let escape = events.events.iter().any(
+            |e| matches!(e, InputEvent::Key { chord } if chord.key() == schemify_ui::Key::ESCAPE),
+        );
+        let (row, text) = self.page.editing.take().expect("checked above");
+        self.page.focused = false;
+        if !escape && let Some((h, _)) = self.active() {
+            let ops = self.with_doc(h, |d, _| docs::prose_ops(d, row, &text));
+            self.commit_docs(reqs, h, "edit text", ops);
+        }
+        true
     }
 
     /// Opens every cell the active schematic instantiates (their symbols draw it) and
@@ -2206,6 +2543,9 @@ impl Editor {
             self.commands.set_plugin_rows(self.host.plugins.composed());
             restyle = true;
         }
+        if let Some((h, _)) = self.active() {
+            self.page.follow(h);
+        }
         let text = self.state_contribution();
         self.shell.set_state(&text);
         let changed = self.shell.refresh(self.viewport, relayout);
@@ -2225,6 +2565,11 @@ impl Editor {
         let stale =
             self.scene_dirty || self.scene.built != Some((h, view, epoch, self.symbols.epoch));
         if stale {
+            let fe = self.host.plugins.composed_epoch();
+            let values = self
+                .cell
+                .as_ref()
+                .filter(|_| self.cell_key == Some((h, epoch, fe)));
             scene::build(
                 &mut self.scene,
                 &self.session.project,
@@ -2232,6 +2577,7 @@ impl Editor {
                 view,
                 &self.symbols,
                 epoch,
+                values,
             );
             self.scene_dirty = false;
             let sel: Vec<ObjKey> = self
@@ -2409,6 +2755,18 @@ impl Editor {
         ];
         for (id, on) in flags {
             let _ = writeln!(t, "set {id} checked {}", u8::from(on));
+        }
+        // The docs page (D19): blocks under `docs.page`, or the pane removed while hidden.
+        match self.active().and_then(|(h, _)| self.session.project.doc(h)) {
+            Some(doc) if self.docs_shown() => {
+                let h = self.active().expect("doc implies a level").0;
+                let cell = self
+                    .cell
+                    .as_ref()
+                    .filter(|_| self.cell_key.is_some_and(|k| k.0 == h));
+                docs::contribute(&mut t, doc, cell, &self.page);
+            }
+            _ => t.push_str("remove docs.pane\n"),
         }
         match &self.dialog {
             Dialog::None => {}

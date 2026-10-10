@@ -34,6 +34,24 @@ commands! {
     DialogClose = "dialog.close",
     /// OK in the enter-text dialog.
     EnterTextOk = "dialog.enter_text.ok",
+    /// Docs page: insert a text block after the selected block.
+    DocsAddProse = "docs.add_prose",
+    /// Docs page: insert a variable after the selected block.
+    DocsAddVar = "docs.add_var",
+    /// Docs page: delete the selected block.
+    DocsDelete = "docs.delete_block",
+    /// Docs page: click on a text block (select it and open its editor).
+    DocsEdit = "docs.edit",
+    /// Docs page: move the selected block down.
+    DocsDown = "docs.move_down",
+    /// Docs page: move the selected block up.
+    DocsUp = "docs.move_up",
+    /// Docs page: apply the text block editor (Ctrl+Enter).
+    DocsProseOk = "docs.prose_ok",
+    /// Docs page: select a block (click on a variable's name).
+    DocsSelect = "docs.select",
+    /// Docs page: a variable's expression field submitted (Enter).
+    DocsVarOk = "docs.var_ok",
     /// Constrain the next move/wire horizontally.
     ConstrainH = "edit.constrained_horizontal_move",
     /// Constrain the next move/wire vertically.
@@ -162,6 +180,8 @@ commands! {
     InsertText = "tools.insert_text",
     /// Draw a wire.
     InsertWire = "tools.insert_wire",
+    /// Show / hide the active tab's docs page beside the canvas.
+    DocsToggle = "view.docs",
     /// Center the view on the pointer.
     PanCenter = "view.pan_center",
     /// Pan down.

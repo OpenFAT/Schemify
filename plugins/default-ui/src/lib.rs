@@ -16,6 +16,10 @@
 //!
 //! Contract the app relies on (node ids it `set`s or adds children to):
 //! - `tab.0` (first tab; the app retitles it and adds `tab.<i>` siblings), `tabs`, `canvas`;
+//! - `docs.pane` (removed by the app while the active tab hides its docs) holding the `docs.bar`
+//!   toolbar (`docs.add_prose`, `docs.add_var`, `docs.move_up`, `docs.move_down`,
+//!   `docs.delete_block`, `view.docs`) and the `docs.page` scroll node, under which the app adds
+//!   one `docs.b.<row>` panel per doc block (`docs/spec/docs-page.md`);
 //! - `status.snap`, `status.grid` (text fields, values), `status.mode`, `status.msg` (labels);
 //! - `dialog.enter_text` with `dialog.enter_text.title` / `.input` (command
 //!   `dialog.enter_text.ok`);

@@ -32,6 +32,7 @@ pub mod graph;
 mod input;
 mod layout;
 pub mod math;
+pub mod prose;
 pub mod records;
 mod strings;
 mod tables;
@@ -39,7 +40,7 @@ mod text;
 pub mod waves;
 
 pub use input::{Button, CommandRequests, InputEvent, InputEvents, Routed, UiState, route_input};
-pub use layout::{Layer, Rect, Shown, UiLayout, layout, row_style};
+pub use layout::{Layer, NO_CLIP, Rect, Shown, UiLayout, layout, row_style};
 pub use strings::{Strings, Sym};
 pub use tables::{
     Chord, Contribution, Edit, Health, HealthKind, Key, Keymap, Kind, Mods, NO_NODE, NO_STYLE,

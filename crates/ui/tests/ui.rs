@@ -244,7 +244,11 @@ fn layout_stacks_bars_and_fills_canvas() {
     assert_eq!(canvas.y, tabs.y + tabs.h);
     assert_eq!(status.y + status.h, VIEW.1);
     assert_eq!(canvas.y + canvas.h, status.y, "canvas grows to fill");
-    assert_eq!(canvas.w, VIEW.0);
+    // Schematic | docs page side by side (the app removes the pane while docs are hidden).
+    let docs = r("docs.pane");
+    assert_eq!((docs.x, docs.y, docs.h), (canvas.w, canvas.y, canvas.h));
+    assert_eq!(canvas.w + docs.w, VIEW.0);
+    assert_eq!(docs.w, 560.0, "the theme's docs-pane width");
     let (file, edit) = (r("menu.file"), r("menu.edit"));
     assert!(file.x < edit.x && (file.y - edit.y).abs() < 0.5 && file.x + file.w <= edit.x + 0.5);
     assert!(f.frame.rows(Layer::Overlay).is_empty(), "nothing open");

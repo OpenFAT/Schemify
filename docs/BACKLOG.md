@@ -15,9 +15,19 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - **render**: `draw_canvas` shares one text cache between scene and overlay (re-shapes labels every frame; the editor works around it, the demo doesn't); window has no exit hook or timer wake-up.
 - **ui**: text fields commit only on Enter (the app copies typed text every frame).
 - **plugins/build.sh**: rebuilding `hello`/`gmid_stub` is not byte-reproducible.
-- Editor gaps vs xschem: stretch/kissing moves, polygon/arc/circle drawing, schematic graphics (format has none), context menu, persistent wire mode, snap cursor/crosshair, search, Save As, rotated texts, scrolling lists (24 rows max), system clipboard, crash-recovery prompt, plugin timers and I/O capabilities (spawn/fetch/clipboard) in the app.
+- Editor gaps vs xschem: stretch/kissing moves, polygon/arc/circle drawing, schematic graphics (format has none), context menu, persistent wire mode, snap cursor/crosshair, search, Save As, rotated texts, scrolling lists (24 rows max), system clipboard, crash-recovery prompt, plugin timers and I/O capabilities (fetch/clipboard) in the app; `spawn` runs synchronously in the frame (the UI waits for ngspice during a gm/Id characterization).
+
+## docs page (D19–D21)
+
+- `plot` fences show "no results yet": bind them to `render::waves` panes once the run spine reaches the editor.
+- D20 write-back covers vars only; own param defaults that call plugin functions keep their `cached` as written. Plugin functions return numbers/bools only (a string result needs an owned `Value`).
+- The cache amend replays the edit through undo (two extra journal records); a `doc` "extend last entry" edit would save them.
+- Values are kept for the active level's document; other open documents sync their caches when activated. A structural edit (instance insert/delete) rebuilds the cell state (136 ms at 100k objects when the cell has vars).
+- Prose: no images, footnotes or nested emphasis inside links; tables use equal column widths; a `text_area` does not scroll inside itself (the page does).
+- `gmid-lut`: queries at VDS = VDD/2 only; the sky130 pfet sample tops out near gm/Id 15 at L 0.15/0.18 µm; characterization uses `spawn:ngspice`, not `run` requests (the sweep needs the full grid, not bench outputs).
 - Edit round trip rebuilds the whole scene (40 ms at 100k objects): incremental scene rebuild.
-- Integration points still stubbed: elab (symbols via elab, net highlight `k`, eval, net ids in snapshots), netlist (`n`), run (`s`, plugin run requests), web OPFS.
+- Integration points still stubbed: elab (symbols via elab, net highlight `k`, eval, net ids in snapshots; values are wired for the docs page), netlist (`n`), run (`s`, plugin run requests), web OPFS.
+- **elab** test `inherited_connections_resolve_up_the_path` fails on `m1` (expects `net_0j0001`, gets `net_0j0001_1`).
 
 ## run
 

@@ -1,0 +1,784 @@
+//! The `prose` widget (D19, D21): a markdown subset with inline `$…$` and display `$$…$$` LaTeX
+//! math, laid out at a given width into positioned parley layouts, math boxes and rules. The
+//! docs page renders every `prose` doc block through it. Rules: `docs/spec/docs-page.md` §2.
+//!
+//! Subset: ATX headings (`#`…`######`), paragraphs, `*em*`/`_em_`, `**strong**`/`__strong__`,
+//! `` `code` `` spans, fenced code blocks, `-`/`*`/`+`/`1.` list items (two spaces of indent per
+//! level), `>` quotes, `---` rules, pipe tables, links shown as their text, backslash escapes.
+//! `_` emphasis never opens or closes inside a word, so `gm_id_in` stays literal.
+//!
+//! Data design:
+//! 1. In: markdown text, font px, width. Out: [`ProseList`] (layout ids + offsets, math ids +
+//!    offsets, rules, shades) in the [`TextSystem`] cache.
+//! 2. How many: one list per (prose block, size, width); a page holds ≤ 2^12 blocks (doc
+//!    capacity), a block tens of lines.
+//! 3. Widths: logical-pixel `f32` offsets; layout and math ids `u32` into the text system.
+//! 4. Access: built once per (source, width), painted linearly every frame.
+//! 5. Lifetime: the text system cache (evicted with it).
+//! 6. Parallel: no; shaping shares the font context.
+
+use parley::{
+    Alignment, AlignmentOptions, FontFamily, FontStyle, FontWeight, InlineBox, InlineBoxKind,
+    Layout, PositionedLayoutItem, StyleProperty, VerticalAlign,
+};
+
+use crate::text::{TextId, TextSystem};
+
+/// Lines of one source the parser looks at; longer sources are cut (a doc block is far smaller).
+pub const LINES_MAX: usize = 1 << 14;
+/// Table columns laid out; extra cells are dropped.
+pub const COLUMNS_MAX: usize = 16;
+
+/// Inline style bits of a span.
+const BOLD: u8 = 1;
+const ITALIC: u8 = 2;
+const CODE: u8 = 4;
+
+/// One parsed markdown block.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Block {
+    /// `#` heading, level 1–6, with its inline text.
+    Heading(u8, String),
+    /// Paragraph: consecutive lines joined by spaces.
+    Para(String),
+    /// List item at nesting `depth` with its marker (`•` or `3.`).
+    Item {
+        /// Nesting level (two leading spaces per level).
+        depth: u8,
+        /// Bullet or number text.
+        marker: String,
+        /// Item text (continuation lines joined).
+        text: String,
+    },
+    /// `>` quote text.
+    Quote(String),
+    /// Fenced code block: info string and verbatim text.
+    Code(String, String),
+    /// Display math source (`$$…$$`).
+    Math(String),
+    /// Pipe table: header cells (empty when the table has no separator row) and body rows.
+    Table(Vec<String>, Vec<Vec<String>>),
+    /// `---` horizontal rule.
+    Rule,
+}
+
+/// Parses the block structure of `src`. Never fails: anything unrecognised is paragraph text.
+///
+/// Cost: O(len); allocates the block texts.
+pub fn blocks(src: &str) -> Vec<Block> {
+    let lines: Vec<&str> = src.lines().take(LINES_MAX).collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let t = line.trim();
+        if t.is_empty() {
+            i += 1;
+            continue;
+        }
+        if let Some(fence) = ["```", "~~~"].into_iter().find(|f| t.starts_with(f)) {
+            let lang = t[3..].trim().to_owned();
+            let mut body = Vec::new();
+            i += 1;
+            while i < lines.len() && !lines[i].trim_start().starts_with(fence) {
+                body.push(lines[i]);
+                i += 1;
+            }
+            i += 1; // closing fence (or past the end)
+            out.push(Block::Code(lang, body.join("\n")));
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix("$$") {
+            if let Some(one) = rest.strip_suffix("$$") {
+                out.push(Block::Math(one.trim().to_owned()));
+                i += 1;
+                continue;
+            }
+            let mut body = vec![rest];
+            i += 1;
+            while i < lines.len() {
+                let l = lines[i].trim();
+                i += 1;
+                if let Some(head) = l.strip_suffix("$$") {
+                    body.push(head);
+                    break;
+                }
+                body.push(l);
+            }
+            out.push(Block::Math(body.join("\n").trim().to_owned()));
+            continue;
+        }
+        if let Some((level, text)) = heading(t) {
+            out.push(Block::Heading(level, text.to_owned()));
+            i += 1;
+            continue;
+        }
+        if is_rule(t) {
+            out.push(Block::Rule);
+            i += 1;
+            continue;
+        }
+        if t.starts_with('|') {
+            let mut rows: Vec<Vec<String>> = Vec::new();
+            while i < lines.len() && lines[i].trim().starts_with('|') {
+                rows.push(cells(lines[i].trim()));
+                i += 1;
+            }
+            let sep = rows
+                .get(1)
+                .is_some_and(|r| r.iter().all(|c| is_separator(c)));
+            let header = if sep { rows.remove(0) } else { Vec::new() };
+            if sep {
+                rows.remove(0);
+            }
+            out.push(Block::Table(header, rows));
+            continue;
+        }
+        if let Some((depth, marker, text)) = item(line) {
+            let indent = line.len() - line.trim_start().len();
+            let mut text = text.to_owned();
+            i += 1;
+            while i < lines.len() {
+                let l = lines[i];
+                let lt = l.trim();
+                let deeper = l.len() - l.trim_start().len() > indent;
+                if lt.is_empty() || !deeper || item(l).is_some() || starts_block(lt) {
+                    break;
+                }
+                text.push(' ');
+                text.push_str(lt);
+                i += 1;
+            }
+            out.push(Block::Item {
+                depth,
+                marker,
+                text,
+            });
+            continue;
+        }
+        if t.starts_with('>') {
+            let mut text = String::new();
+            while i < lines.len() && lines[i].trim().starts_with('>') {
+                let l = lines[i].trim()[1..].trim();
+                if !text.is_empty() {
+                    text.push(' ');
+                }
+                text.push_str(l);
+                i += 1;
+            }
+            out.push(Block::Quote(text));
+            continue;
+        }
+        let mut text = t.to_owned();
+        i += 1;
+        while i < lines.len() {
+            let l = lines[i].trim();
+            if l.is_empty() || starts_block(l) || item(lines[i]).is_some() {
+                break;
+            }
+            text.push(' ');
+            text.push_str(l);
+            i += 1;
+        }
+        out.push(Block::Para(text));
+    }
+    debug_assert!(out.len() <= lines.len());
+    out
+}
+
+fn heading(t: &str) -> Option<(u8, &str)> {
+    let level = t.bytes().take_while(|&b| b == b'#').count();
+    let rest = &t[level..];
+    ((1..=6).contains(&level) && (rest.is_empty() || rest.starts_with(' ')))
+        .then(|| (level as u8, rest.trim().trim_end_matches('#').trim_end()))
+}
+
+fn is_rule(t: &str) -> bool {
+    let c = t.as_bytes()[0];
+    matches!(c, b'-' | b'*' | b'_')
+        && t.bytes().filter(|&b| b != b' ').all(|b| b == c)
+        && t.bytes().filter(|&b| b == c).count() >= 3
+}
+
+fn starts_block(t: &str) -> bool {
+    t.starts_with("```")
+        || t.starts_with("~~~")
+        || t.starts_with("$$")
+        || t.starts_with('|')
+        || t.starts_with('>')
+        || heading(t).is_some()
+        || is_rule(t)
+}
+
+/// A list item line: `(depth, marker, text)`.
+fn item(line: &str) -> Option<(u8, String, &str)> {
+    let t = line.trim_start();
+    let depth = ((line.len() - t.len()) / 2).min(7) as u8;
+    for b in ["- ", "* ", "+ "] {
+        if let Some(rest) = t.strip_prefix(b) {
+            return Some((depth, "\u{2022}".to_owned(), rest.trim()));
+        }
+    }
+    let digits = t.bytes().take_while(u8::is_ascii_digit).count();
+    let rest = &t[digits..];
+    if (1..=9).contains(&digits) && (rest.starts_with(". ") || rest.starts_with(") ")) {
+        return Some((depth, format!("{}.", &t[..digits]), rest[2..].trim()));
+    }
+    None
+}
+
+fn cells(t: &str) -> Vec<String> {
+    let inner = t.trim_start_matches('|');
+    let inner = inner.strip_suffix('|').unwrap_or(inner);
+    inner
+        .split('|')
+        .take(COLUMNS_MAX)
+        .map(|c| c.trim().to_owned())
+        .collect()
+}
+
+fn is_separator(c: &str) -> bool {
+    let c = c.trim_matches(':');
+    !c.is_empty() && c.bytes().all(|b| b == b'-')
+}
+
+/// Plain text of an inline run, with style spans and math anchors (byte offsets into `text`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Inline {
+    /// Text with markup removed (math sources removed too; they sit at anchors).
+    pub text: String,
+    /// `(start, end, style bits)`, non-overlapping, ascending.
+    pub spans: Vec<(u32, u32, u8)>,
+    /// `(byte offset, value returned by the math callback)` per inline formula.
+    pub maths: Vec<(u32, u32)>,
+}
+
+/// Parses inline markup. `math` lays out one `$…$` source and returns its id, or `None` to keep
+/// the source as literal text (a formula outside the LaTeX subset is shown raw, never dropped).
+pub fn inlines(src: &str, math: &mut impl FnMut(&str) -> Option<u32>) -> Inline {
+    let mut out = Inline::default();
+    let mut flags = 0u8;
+    let mut span_start = 0u32;
+    let chars: Vec<char> = src.chars().collect();
+    let mut i = 0;
+    // Each iteration consumes ≥ 1 char.
+    while i < chars.len() {
+        let c = chars[i];
+        let prev = i.checked_sub(1).map(|p| chars[p]);
+        match c {
+            '\\' if chars.get(i + 1).is_some_and(|n| n.is_ascii_punctuation()) => {
+                out.text.push(chars[i + 1]);
+                i += 2;
+            }
+            '`' => match chars[i + 1..].iter().position(|&n| n == '`') {
+                Some(len) => {
+                    let at = out.text.len() as u32;
+                    restyle(&mut out, &mut span_start, flags, flags | CODE);
+                    out.text.extend(&chars[i + 1..i + 1 + len]);
+                    restyle(&mut out, &mut span_start, flags | CODE, flags);
+                    debug_assert!(out.text.len() as u32 >= at);
+                    i += len + 2;
+                }
+                None => {
+                    out.text.push('`');
+                    i += 1;
+                }
+            },
+            '$' => {
+                let double = chars.get(i + 1) == Some(&'$');
+                let open = if double { 2 } else { 1 };
+                let body = &chars[i + open..];
+                // Pandoc's rule keeps prices literal: the closer is not escaped and (single
+                // `$`) not followed by a digit.
+                let close = (0..body.len()).find(|&k| {
+                    body[k] == '$'
+                        && (k == 0 || body[k - 1] != '\\')
+                        && if double {
+                            body.get(k + 1) == Some(&'$')
+                        } else {
+                            !body.get(k + 1).is_some_and(char::is_ascii_digit)
+                        }
+                });
+                let ok = close.filter(|&k| k > 0 && !body[0].is_whitespace());
+                let id = ok.and_then(|k| math(&body[..k].iter().collect::<String>()));
+                match (ok, id) {
+                    (Some(k), Some(id)) => {
+                        out.maths.push((out.text.len() as u32, id));
+                        i += open + k + open;
+                    }
+                    _ => {
+                        out.text.push('$');
+                        i += 1;
+                    }
+                }
+            }
+            '*' | '_' => {
+                let run = chars[i..].iter().take_while(|&&n| n == c).count();
+                let next = chars.get(i + run).copied();
+                let word = |ch: Option<char>| ch.is_some_and(char::is_alphanumeric);
+                let can_open =
+                    next.is_some_and(|n| !n.is_whitespace()) && (c == '*' || !word(prev));
+                let can_close =
+                    prev.is_some_and(|p| !p.is_whitespace()) && (c == '*' || !word(next));
+                let mut used = 0;
+                for (len, bit) in [(2usize, BOLD), (1, ITALIC)] {
+                    if run - used < len {
+                        continue;
+                    }
+                    let on = flags & bit != 0;
+                    if (on && can_close) || (!on && can_open) {
+                        let to = flags ^ bit;
+                        restyle(&mut out, &mut span_start, flags, to);
+                        flags = to;
+                        used += len;
+                    }
+                }
+                out.text.extend(&chars[i + used..i + run]);
+                i += run;
+            }
+            '[' => {
+                let close = chars[i..].iter().position(|&n| n == ']').map(|k| i + k);
+                let link = close.filter(|&k| chars.get(k + 1) == Some(&'('));
+                let end =
+                    link.and_then(|k| chars[k..].iter().position(|&n| n == ')').map(|e| k + e));
+                match (link, end) {
+                    (Some(k), Some(e)) => {
+                        out.text.extend(&chars[i + 1..k]);
+                        i = e + 1;
+                    }
+                    _ => {
+                        out.text.push('[');
+                        i += 1;
+                    }
+                }
+            }
+            _ => {
+                out.text.push(c);
+                i += 1;
+            }
+        }
+    }
+    restyle(&mut out, &mut span_start, flags, 0);
+    debug_assert!(out.spans.windows(2).all(|w| w[0].1 <= w[1].0));
+    out
+}
+
+/// Closes the span styled `from` at the current end and starts one styled `to`.
+fn restyle(out: &mut Inline, start: &mut u32, from: u8, to: u8) {
+    let end = out.text.len() as u32;
+    if from != 0 && end > *start {
+        out.spans.push((*start, end, from));
+    }
+    if from != to {
+        *start = end;
+    }
+}
+
+/// One piece of a prose source after [`split_plots`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Segment<'a> {
+    /// Markdown for the prose widget.
+    Prose(&'a str),
+    /// The calculator expression of a ```` ```plot ```` fence (an embedded graph).
+    Plot(&'a str),
+}
+
+/// Splits `src` at ```` ```plot ```` fences, so the page puts a graph where the fence is and
+/// renders the text around it as prose. An unclosed fence runs to the end; whitespace-only
+/// prose between fences is dropped.
+///
+/// Cost: one pass over the lines.
+pub fn split_plots(src: &str) -> Vec<Segment<'_>> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    let mut at = 0;
+    // Inside a fence: (is a plot fence, byte offset of its first body line).
+    let mut fence: Option<(bool, usize)> = None;
+    for line in src.split_inclusive('\n') {
+        let start = at;
+        at += line.len();
+        let t = line.trim();
+        let is_fence = t.starts_with("```") || t.starts_with("~~~");
+        match fence {
+            None if is_fence => {
+                let plot = t[3..].trim() == "plot";
+                if plot {
+                    push_prose(&mut out, &src[from..start]);
+                }
+                fence = Some((plot, at));
+            }
+            Some((plot, body)) if is_fence => {
+                if plot {
+                    out.push(Segment::Plot(src[body..start].trim()));
+                    from = at;
+                }
+                fence = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some((true, body)) = fence {
+        out.push(Segment::Plot(src[body..].trim()));
+        from = src.len();
+    }
+    push_prose(&mut out, &src[from..]);
+    debug_assert!(at == src.len());
+    out
+}
+
+fn push_prose<'a>(out: &mut Vec<Segment<'a>>, s: &'a str) {
+    if !s.trim().is_empty() {
+        out.push(Segment::Prose(s));
+    }
+}
+
+/// A laid-out prose block in logical pixels, origin at its top-left. Text layouts and math
+/// lists live in the [`TextSystem`] that built it and are evicted with it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProseList {
+    /// Layout id per text run (paragraph, heading, list body, table cell, code block).
+    pub text_id: Vec<TextId>,
+    /// Left edge of each text layout.
+    pub text_x: Vec<f32>,
+    /// Top edge of each text layout.
+    pub text_y: Vec<f32>,
+    /// Math id ([`TextSystem::math_list`]) per formula, inline or display.
+    pub math_id: Vec<u32>,
+    /// Left edge of each formula box.
+    pub math_x: Vec<f32>,
+    /// Top edge of each formula box (its baseline is at `top + MathList::height`).
+    pub math_y: Vec<f32>,
+    /// Filled rectangles `[x, y, w, h]` in the text color (rules, table grid, quote bars).
+    pub rules: Vec<[f32; 4]>,
+    /// Rectangles `[x, y, w, h]` drawn faintly behind code blocks.
+    pub shades: Vec<[f32; 4]>,
+    /// Widest line.
+    pub width: f32,
+    /// Total height.
+    pub height: f32,
+}
+
+/// Lays out markdown `src` at `px` pixels per em, wrapping at `width`.
+///
+/// # Panics
+///
+/// Panics if `px` or `width` is not finite and positive.
+pub(crate) fn layout_prose(ts: &mut TextSystem, src: &str, px: f32, width: f32) -> ProseList {
+    assert!(px > 0.0 && px.is_finite(), "prose size must be positive");
+    assert!(
+        width > 0.0 && width.is_finite(),
+        "prose width must be positive"
+    );
+    let mut p = ProseList::default();
+    let gap = (px * 0.6).round();
+    let mut y = 0.0f32;
+    for (k, b) in blocks(src).iter().enumerate() {
+        if k > 0 {
+            y += gap;
+        }
+        match b {
+            Block::Heading(level, text) => {
+                let scale = [1.6, 1.35, 1.2, 1.1, 1.0, 1.0][usize::from(*level) - 1];
+                y += rich(ts, &mut p, text, px * scale, BOLD, (0.0, y), width);
+            }
+            Block::Para(text) => y += rich(ts, &mut p, text, px, 0, (0.0, y), width),
+            Block::Quote(text) => {
+                let h = rich(ts, &mut p, text, px, ITALIC, (px, y), (width - px).max(px));
+                p.rules.push([px * 0.25, y, 3.0, h]);
+                y += h;
+            }
+            Block::Item {
+                depth,
+                marker,
+                text,
+            } => {
+                let x = px * 1.5 * f32::from(*depth);
+                let body = x + px * 1.6;
+                rich(ts, &mut p, marker, px, 0, (x + px * 0.3, y), px * 1.3);
+                y += rich(ts, &mut p, text, px, 0, (body, y), (width - body).max(px));
+            }
+            Block::Code(_, text) => {
+                let pad = (px * 0.5).round();
+                let id = shape(ts, text, px * 0.92, (width - 2.0 * pad).max(px));
+                let h = ts.layout(id).height();
+                p.shades.push([0.0, y, width, h + 2.0 * pad]);
+                push_text(&mut p, ts, id, pad, y + pad);
+                y += h + 2.0 * pad;
+            }
+            Block::Math(src) => match ts.math_uncached(src, px * 1.15) {
+                Some(m) => {
+                    let list = ts.math_list(m);
+                    let (mw, mh) = (list.width, list.height + list.depth);
+                    p.math_id.push(m);
+                    p.math_x.push(((width - mw) / 2.0).max(0.0));
+                    p.math_y.push(y);
+                    p.width = p.width.max(mw);
+                    y += mh;
+                }
+                None => {
+                    let id = shape(ts, &format!("$${src}$$"), px, width);
+                    y += push_text(&mut p, ts, id, 0.0, y);
+                }
+            },
+            Block::Table(header, rows) => y += table(ts, &mut p, header, rows, px, y, width),
+            Block::Rule => {
+                p.rules.push([0.0, (y + px * 0.4).round(), width, 1.0]);
+                y += px * 0.8;
+            }
+        }
+    }
+    p.height = y.ceil();
+    p.width = p.width.min(width);
+    debug_assert_eq!(p.text_id.len(), p.text_y.len());
+    debug_assert_eq!(p.math_id.len(), p.math_y.len());
+    p
+}
+
+/// Lays out one inline run at `at`, wrapping at `width`; returns its height.
+fn rich(
+    ts: &mut TextSystem,
+    p: &mut ProseList,
+    src: &str,
+    px: f32,
+    style: u8,
+    at: (f32, f32),
+    width: f32,
+) -> f32 {
+    let inl = inlines(src, &mut |m| ts.math_uncached(m, px));
+    // Math boxes first: the builder below borrows the text system's contexts mutably.
+    let boxes: Vec<(u32, f32, f32, f32)> = inl
+        .maths
+        .iter()
+        .map(|&(index, m)| {
+            let l = ts.math_list(m);
+            (index, l.width, l.height, l.depth)
+        })
+        .collect();
+    let (family, mono) = (ts.family().to_owned(), ts.mono().to_owned());
+    let mut layout: Layout<()> = Layout::new();
+    {
+        let (fcx, lcx) = ts.contexts();
+        let mut b = lcx.ranged_builder(fcx, &inl.text, 1.0, true);
+        b.push_default(StyleProperty::FontFamily(FontFamily::from(family.as_str())));
+        b.push_default(StyleProperty::FontSize(px));
+        b.push_default(StyleProperty::LineHeight(
+            parley::LineHeight::FontSizeRelative(1.35),
+        ));
+        if style & BOLD != 0 {
+            b.push_default(StyleProperty::FontWeight(FontWeight::BOLD));
+        }
+        if style & ITALIC != 0 {
+            b.push_default(StyleProperty::FontStyle(FontStyle::Italic));
+        }
+        for &(s, e, f) in &inl.spans {
+            let r = s as usize..e as usize;
+            if f & BOLD != 0 {
+                b.push(StyleProperty::FontWeight(FontWeight::BOLD), r.clone());
+            }
+            if f & ITALIC != 0 {
+                b.push(StyleProperty::FontStyle(FontStyle::Italic), r.clone());
+            }
+            if f & CODE != 0 {
+                b.push(
+                    StyleProperty::FontFamily(FontFamily::from(mono.as_str())),
+                    r,
+                );
+            }
+        }
+        for (k, &(index, w, h, d)) in boxes.iter().enumerate() {
+            b.push_inline_box(InlineBox {
+                id: k as u64,
+                kind: InlineBoxKind::InFlow,
+                index: index as usize,
+                width: w,
+                height: h + d,
+                baseline: Some(h),
+                vertical_align: VerticalAlign::BASELINE,
+            });
+        }
+        b.build_into(&mut layout, &inl.text);
+    }
+    layout.break_all_lines(Some(width.max(1.0)));
+    layout.align(Alignment::Start, AlignmentOptions::default());
+    for line in layout.lines() {
+        for item in line.items() {
+            if let PositionedLayoutItem::InlineBox(ib) = item {
+                p.math_id.push(inl.maths[ib.id as usize].1);
+                p.math_x.push(at.0 + ib.x);
+                p.math_y.push(at.1 + ib.y);
+            }
+        }
+    }
+    let id = ts.push_layout(layout);
+    push_text(p, ts, id, at.0, at.1)
+}
+
+/// Shapes verbatim monospace text (code blocks, formulas outside the subset), wrapping at
+/// `width`.
+fn shape(ts: &mut TextSystem, text: &str, px: f32, width: f32) -> TextId {
+    let mono = ts.mono().to_owned();
+    let mut layout: Layout<()> = Layout::new();
+    {
+        let (fcx, lcx) = ts.contexts();
+        let mut b = lcx.ranged_builder(fcx, text, 1.0, true);
+        b.push_default(StyleProperty::FontFamily(FontFamily::from(mono.as_str())));
+        b.push_default(StyleProperty::FontSize(px));
+        b.build_into(&mut layout, text);
+    }
+    layout.break_all_lines(Some(width.max(1.0)));
+    layout.align(Alignment::Start, AlignmentOptions::default());
+    ts.push_layout(layout)
+}
+
+/// Records text layout `id` at `(x, y)`; returns its height.
+fn push_text(p: &mut ProseList, ts: &TextSystem, id: TextId, x: f32, y: f32) -> f32 {
+    let l = ts.layout(id);
+    p.text_id.push(id);
+    p.text_x.push(x);
+    p.text_y.push(y);
+    p.width = p.width.max(x + l.width());
+    l.height()
+}
+
+/// Lays out a pipe table with equal column widths and a full grid; returns its height.
+fn table(
+    ts: &mut TextSystem,
+    p: &mut ProseList,
+    header: &[String],
+    rows: &[Vec<String>],
+    px: f32,
+    y0: f32,
+    width: f32,
+) -> f32 {
+    let cols = rows
+        .iter()
+        .map(Vec::len)
+        .chain([header.len()])
+        .max()
+        .unwrap_or(0)
+        .min(COLUMNS_MAX);
+    if cols == 0 {
+        return 0.0;
+    }
+    let cw = (width / cols as f32).floor();
+    let pad = (px * 0.4).round();
+    let mut y = y0;
+    p.rules.push([0.0, y0, cw * cols as f32, 1.0]);
+    let all = (!header.is_empty())
+        .then_some((header, BOLD))
+        .into_iter()
+        .chain(rows.iter().map(|r| (r.as_slice(), 0)));
+    for (row, style) in all {
+        let mut h = 0.0f32;
+        for c in 0..cols {
+            let text = row.get(c).map_or("", String::as_str);
+            let at = (c as f32 * cw + pad, y + pad);
+            h = h.max(rich(ts, p, text, px, style, at, (cw - 2.0 * pad).max(px)));
+        }
+        y += h + 2.0 * pad;
+        p.rules.push([0.0, y, cw * cols as f32, 1.0]);
+    }
+    for c in 0..=cols {
+        p.rules.push([c as f32 * cw, y0, 1.0, y - y0]);
+    }
+    p.width = p.width.max(cw * cols as f32);
+    y - y0 + 1.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blocks_cover_the_subset() {
+        let src = "# Sizing\n\nThe input pair sets $g_m$.\nSecond line.\n\n- one\n  more\n  - nested\n2. two\n\n```spice\n.op\n```\n\n$$\ng_m = \\frac{2 I_D}{V_{ov}}\n$$\n\n| a | b |\n|---|:-:|\n| 1 | 2 |\n\n> note\n\n---\n";
+        let b = blocks(src);
+        assert_eq!(b[0], Block::Heading(1, "Sizing".into()));
+        assert_eq!(
+            b[1],
+            Block::Para("The input pair sets $g_m$. Second line.".into())
+        );
+        assert_eq!(
+            b[2],
+            Block::Item {
+                depth: 0,
+                marker: "\u{2022}".into(),
+                text: "one more".into()
+            }
+        );
+        assert!(matches!(&b[3], Block::Item { depth: 1, text, .. } if text == "nested"));
+        assert!(matches!(&b[4], Block::Item { marker, .. } if marker == "2."));
+        assert_eq!(b[5], Block::Code("spice".into(), ".op".into()));
+        assert_eq!(b[6], Block::Math("g_m = \\frac{2 I_D}{V_{ov}}".into()));
+        assert_eq!(
+            b[7],
+            Block::Table(
+                vec!["a".into(), "b".into()],
+                vec![vec!["1".into(), "2".into()]]
+            )
+        );
+        assert_eq!(b[8], Block::Quote("note".into()));
+        assert_eq!(b[9], Block::Rule);
+        assert_eq!(b.len(), 10);
+        // Negative space: nothing but text is a paragraph; empty input has no blocks.
+        assert_eq!(blocks("#nospace"), vec![Block::Para("#nospace".into())]);
+        assert!(blocks("\n\n  \n").is_empty());
+    }
+
+    #[test]
+    fn inlines_style_and_anchor_math() {
+        let mut n = 0;
+        let mut math = |s: &str| {
+            n += 1;
+            (s != "bad").then_some(n)
+        };
+        let i = inlines(
+            "**gm** is *large* for `W` at $g_m$; $bad$ stays, gm_id_in too, \\*x\\* and [doc](u)",
+            &mut math,
+        );
+        assert_eq!(
+            i.text,
+            "gm is large for W at ; $bad$ stays, gm_id_in too, *x* and doc"
+        );
+        assert_eq!(i.spans[0], (0, 2, BOLD));
+        assert_eq!(i.spans[1], (6, 11, ITALIC));
+        assert_eq!(i.spans[2], (16, 17, CODE));
+        assert_eq!(i.spans.len(), 3);
+        assert_eq!(i.maths, vec![(21, 1)]);
+        // Prices stay literal: the closer is followed by a digit.
+        assert!(inlines("from $5 to $10", &mut |_| Some(0)).maths.is_empty());
+    }
+
+    #[test]
+    fn plots_split_out_in_place() {
+        let s = "Intro\n```plot\nv(out)\n```\nAfter\n```spice\n```plot inside code\n```\n";
+        let parts = split_plots(s);
+        assert_eq!(parts[0], Segment::Prose("Intro\n"));
+        assert_eq!(parts[1], Segment::Plot("v(out)"));
+        assert!(matches!(parts[2], Segment::Prose(p) if p.starts_with("After")));
+        assert_eq!(parts.len(), 3);
+        assert_eq!(split_plots("```plot\nx()"), vec![Segment::Plot("x()")]);
+        assert!(split_plots("").is_empty());
+    }
+
+    #[test]
+    fn layout_wraps_and_places_math_inline() {
+        let mut ts = TextSystem::new();
+        let src = "# Title\n\nA long paragraph that has to wrap around several times at this narrow width, with $g_m = 2 I_D / V_{ov}$ inline.\n\n$$\\frac{g_m}{I_D}$$\n\n| a | b |\n|---|---|\n| 1 | 2 |";
+        let wide = layout_prose(&mut ts, src, 14.0, 900.0);
+        let narrow = layout_prose(&mut ts, src, 14.0, 160.0);
+        assert!(
+            narrow.height > wide.height,
+            "{} vs {}",
+            narrow.height,
+            wide.height
+        );
+        assert!(narrow.width <= 160.0 && wide.width <= 900.0);
+        assert_eq!(wide.math_id.len(), 2, "one inline and one display formula");
+        // The display formula is centred; the inline one sits inside its paragraph.
+        assert!(wide.math_x[1] > 300.0);
+        assert!(wide.math_y[0] > wide.text_y[0] && wide.math_y[0] < wide.text_y[2]);
+        assert!(wide.rules.len() >= 4, "table grid");
+        assert!(wide.text_y.windows(2).all(|w| w[0] <= w[1]));
+    }
+}
