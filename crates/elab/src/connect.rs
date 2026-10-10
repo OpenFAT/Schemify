@@ -165,7 +165,7 @@ fn key(a: i32, b: i32) -> u64 {
     (u64::from(a as u32 ^ 0x8000_0000) << 32) | u64::from(b as u32 ^ 0x8000_0000)
 }
 
-fn find(parent: &mut [u32], mut x: u32) -> u32 {
+pub(crate) fn find(parent: &mut [u32], mut x: u32) -> u32 {
     while parent[x as usize] != x {
         let p = parent[parent[x as usize] as usize];
         parent[x as usize] = p;
@@ -174,7 +174,7 @@ fn find(parent: &mut [u32], mut x: u32) -> u32 {
     x
 }
 
-fn union(parent: &mut [u32], a: u32, b: u32) {
+pub(crate) fn union(parent: &mut [u32], a: u32, b: u32) {
     let (ra, rb) = (find(parent, a), find(parent, b));
     match ra.cmp(&rb) {
         Ordering::Less => parent[rb as usize] = ra,
@@ -191,25 +191,52 @@ pub(crate) fn id_cmp(a: ObjId, b: ObjId, s: &Strings) -> Ordering {
     a.text(s).cmp(&b.text(s))
 }
 
+/// Appends the bit names of `doc`'s labels marked `global true` (netlist spec §3):
+/// they are global in the whole elaborated hierarchy.
+pub fn global_labels(doc: &Document, names: &mut Names, out: &mut Vec<Name>) {
+    let (s, labels) = (doc.strings(), doc.labels());
+    let mut buf = String::new();
+    for l in 0..labels.id.len() {
+        let flag = doc.pool().find_attr(s, labels.attrs[l], "global");
+        if flag
+            .and_then(|v| v.first())
+            .is_some_and(|v| s.get(*v) == "true")
+        {
+            // An over-wide expression is reported by `connect` as E011.
+            let _ = netexpr::expand(s.get(labels.text[l]), names, out, &mut buf);
+        }
+    }
+}
+
 /// Builds the connectivity of `doc`. `own` is the cell's own interface (ports and
 /// inherited pins bind to its pins; a bench passes an interface without pins);
 /// `inst_iface[i]` indexes `ifaces` for instance row `i`, or is `u32::MAX` when the
-/// instance's cell did not resolve (it then has no pins). Findings (`E003`, `E009`,
+/// instance's cell did not resolve (it then has no pins). `globals` (sorted) are the
+/// names made global by `global true` labels anywhere in the hierarchy (see
+/// [`global_labels`]); `0` and `…!` are global by spelling. Findings (`E003`, `E009`,
 /// `E011`, `E012`, `E002`, `W004`, `W010`, `W016`) are appended to `out`.
 ///
 /// Cost: O(n log n) in nodes plus the nodes lying on wires.
 ///
 /// # Panics
 ///
-/// Panics if `inst_iface.len()` differs from the instance count.
+/// Panics if `inst_iface.len()` differs from the instance count or `globals` is not
+/// sorted.
 pub fn connect(
     doc: &Document,
     own: &Iface,
     ifaces: &[Iface],
     inst_iface: &[u32],
+    globals: &[Name],
     names: &mut Names,
     out: &mut Vec<Violation>,
 ) -> CellNets {
+    assert!(
+        globals.windows(2).all(|w| w[0] <= w[1]),
+        "globals are sorted"
+    );
+    let glob =
+        |n: Name, names: &Names| is_global(names.get(n)) || globals.binary_search(&n).is_ok();
     let s = doc.strings();
     let (inst, wires, labels, ports, noconns) = (
         doc.instances(),
@@ -408,7 +435,7 @@ pub fn connect(
                 ));
                 return;
             }
-            let global = src_bits[before..].iter().all(|b| is_global(names.get(*b)));
+            let global = src_bits[before..].iter().all(|b| glob(*b, names));
             src_comp.push(c);
             src_class.push(if global { GLOBAL } else { class });
             src_text.push(names.intern(text));
@@ -498,11 +525,7 @@ pub fn connect(
         let c = src_comp[k] as usize;
         let class = src_class[k];
         for (j, &b) in bits(k).iter().enumerate() {
-            let class = if is_global(names.get(b)) {
-                GLOBAL
-            } else {
-                class
-            };
+            let class = if glob(b, names) { GLOBAL } else { class };
             pairs.push((b, slot_start[c] + j as u32, class));
         }
     }
@@ -513,11 +536,7 @@ pub fn connect(
      -> (u32, u32) {
         let first = nslots;
         for &b in text_bits {
-            let class = if is_global(names.get(b)) {
-                GLOBAL
-            } else {
-                class
-            };
+            let class = if glob(b, names) { GLOBAL } else { class };
             pairs.push((b, nslots, class));
             nslots += 1;
         }
@@ -558,7 +577,11 @@ pub fn connect(
                 let declared = (0..f.pin_name.len())
                     .find(|&p| f.pin_name[p] == pin_name && f.pin_inherit[p] != Name::NONE);
                 if let Some(p) = declared.filter(|&p| f.bits(p).len() != tmp.len()) {
-                    let detail = format!("inherit `{pin}` ({} bits) set to `{net}` ({} bits)", f.bits(p).len(), tmp.len());
+                    let detail = format!(
+                        "inherit `{pin}` ({} bits) set to `{net}` ({} bits)",
+                        f.bits(p).len(),
+                        tmp.len()
+                    );
                     out.push(finding(Code::E011, inst.id[i], pin_name, detail));
                     continue;
                 }
@@ -707,7 +730,7 @@ pub fn connect(
             }
         };
         cn.bit_name.push(name);
-        cn.bit_global.push(is_global(names.get(name)));
+        cn.bit_global.push(glob(name, names));
     }
     // All pairs with one name were merged above, so one net per name.
     cn.by_name = pairs.iter().map(|p| (p.0, net_of[p.1 as usize])).collect();
@@ -862,14 +885,12 @@ pub fn connect(
                 out.push(finding(Code::E012, ObjId::NONE, own.pin_name[p], detail));
             }
         }
-        if out.len() > before {
-            if let Some(si) = own.schematic_impl(names) {
-                let detail = format!(
-                    "schematic impl `{}` ports differ from the symbol pins",
-                    names.get(own.impl_name[si])
-                );
-                out.push(finding(Code::E002, ObjId::NONE, own.impl_name[si], detail));
-            }
+        if let Some(si) = own.schematic_impl(names).filter(|_| out.len() > before) {
+            let detail = format!(
+                "schematic impl `{}` ports differ from the symbol pins",
+                names.get(own.impl_name[si])
+            );
+            out.push(finding(Code::E002, ObjId::NONE, own.impl_name[si], detail));
         }
     }
     assert_eq!(cn.net_name.len(), nc);

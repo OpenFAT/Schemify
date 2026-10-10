@@ -33,7 +33,7 @@
 //! p.index_library("", "", &[("res.shprim", res.as_bytes()), ("tb.shbench", bench.as_bytes())]).unwrap();
 //! p.open("", "res.shprim", res.as_bytes(), None).unwrap();
 //! let top = p.open("", "tb.shbench", bench.as_bytes(), None).unwrap().handle;
-//! let req = Request { config: None, corner: None, overrides: &[], dialect: Dialect::Ngspice };
+//! let req = Request { config: None, corner: None, overrides: &[], env: &[], dialect: Dialect::Ngspice };
 //! let e = elaborate(&p, top, &req, &mut no_funcs);
 //! assert!(!e.violations.blocking());
 //! let row = e.insts_of(e.top).start;
@@ -45,6 +45,9 @@
 
 #![forbid(unsafe_code)]
 #![deny(rustdoc::broken_intra_doc_links)]
+// Tables are SoA: loops index several parallel columns by one row, which is clearer
+// than zipping four iterators.
+#![allow(clippy::needless_range_loop)]
 
 mod annotate;
 mod cells;
@@ -60,7 +63,7 @@ mod values;
 
 pub use annotate::{ANNOTATIONS_MAX, AnnotationRequest, Annotations, Mark, violation_marks};
 pub use check::{Code, Severity, VIOLATIONS_MAX, Violation, Violations};
-pub use connect::{CellNets, Ignore, NO_NET, connect, place};
+pub use connect::{CellNets, Ignore, NO_NET, connect, global_labels, place};
 pub use elaborate::{
     Bench, COMPUTED, CornerLine, DEFAULT, DEPTH_MAX, Defs, Dialect, Elab, Impls, Insts, OVERRIDDEN,
     Request, Target, elaborate,

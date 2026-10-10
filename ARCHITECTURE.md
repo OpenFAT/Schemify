@@ -13,8 +13,8 @@ Crate = owner. A crate boundary exists only where it enforces single ownership (
 | `format` | — (codec) | bytes | none | Line-record codec (D9): parse, canonical write, `merge3`, record diff. Used for documents, config, manifest, lockfile, journal. |
 | `expr` | — (pure) | source text | `rustfft`, `libm` | The one expression language (D12): lex → parse → check → compile → eval. Scalar mode (params, docs, templates) and column/complex mode (waveform calculator). Seeded from UW `wave/expr.rs`. Transcendentals via pure-Rust `libm` for bit-identical results on all targets (D32); FFT twiddles still use platform math (calculator output only, never netlists). |
 | `doc` | `cells`, `symbols`, `pins`, `graphics`, `param_schema`, `impls`, `instances`, `inst_params`, `wires`, `labels`, `ports`, `texts`, `doc_blocks`, `bench_*`, `constraints`, `waivers`, `staged_edits`, `journal` | `edit_requests` | `format` | The only writer of design data. Load/save, edit transactions (commit or stage), undo/redo, lib resolution via manifest + lockfile (D10, D35). |
-| `elab` | `expr_graph`, `values`, `nets`, `pin_nets`, `inst_paths`, `resolved_impls`, `resolved_params`, `name_map`, `violations`, `annotations` | doc tables, `annotation_requests` | `expr` | Everything derived: dirty-graph recompute (D19), connectivity from geometry, hierarchy elaboration with bench-config impl selection (D11a), checks/gating (D13), one annotation overlay. |
-| `netlist` | `netlist_text` (job arena) | elab tables only | — | Emitters: `Dialect = Ngspice \| Xyce \| Cdl \| Verilog \| Spectre`, closed enum, exhaustive match (D22). Plugin dialects go through `run_requests`. |
+| `elab` | `expr_graph`, `values` (`Graph`), `nets`, `pin_nets` (`CellNets`), `defs`, `def_insts`, `leaf_impls` (`Elab`: hierarchical, one row per specialization), `violations`, `annotations` | doc tables, `annotation_requests` | `expr` (`format` for doc's column types) | Everything derived: dirty-graph recompute (D19), connectivity from geometry, hierarchy elaboration with bench-config impl selection (D11a) and subckt specialization, checks/gating (D13), one annotation overlay. Paths are not materialized: a path is the walk of `defs`/`def_insts` from the top. |
+| `netlist` | `netlist_text` (job arena), `name_map` | elab tables only | — | Emitters: `Dialect = Ngspice \| Xyce \| Cdl \| Verilog \| Spectre`, closed enum, exhaustive match (D22). Plugin dialects go through `run_requests`. |
 | `wave` | `raw_plots` (column SoA), viewer tables (`traces`, `panes`, x view, cursors) | `.raw` bytes, `wave_requests` | none (`expr`) | Reader for ngspice/Xyce/LTspice binary+ASCII (UW salvage, D26, hardened). Calculator = `expr` calc mode over borrowed raw columns. SIMD min/max display decimation. `Waves::apply(Request)` is the viewer tables' only writer (D23). |
 | `run` | `jobs`, `results` | bench tables, elab, netlist | features: `sweep`, `corners`, `mc`, `optimize` | Job expansion (sweep × corner × MC × named config), local worker queue, native subprocess runner (D15), result tagging by design hash, outputs/specs eval, optimizer ask/tell (UW salvage). |
 | `import` | — (emits doc tables via `format`) | xschem `.sch/.sym`, model cards, tech files, `cdfDump` | `format`, `expr` | Clean-room xschem reader + attribute/expression translation + PDK constraint readers (D14). Library for both `schemify import` and `tools/devicereader`. |
@@ -54,13 +54,13 @@ Each spine lives in `app` as one function, one line per transform. Branches that
   `plugin::deliver(plugins, plugin_events, snapshots) → request_queues` →
   `doc::apply_edits(edit_requests ∪ plugin edits) → doc tables, journal` →
   `ui::apply_ui_edits(ui_edit_requests ∪ plugin ui edits) → ui_nodes` (ordered, last wins) →
-  `elab::recompute(doc, dirty) → values, nets, violations` →
+  `elab::CellState::recompute(project, doc, ops) → values, nets, violations` (per open document; value edits re-evaluate only dependents) →
   `elab::apply_annotations(annotation_requests) → annotations` →
   `run::poll(jobs) → results` →
   `ui::layout(ui_nodes, ui_styles) → ui_layout` →
   `render::build_scene(doc, elab, ui_layout, results) → scene` → `render::submit(scene)`
 - **`load`**: `format::parse(manifest, lockfile)` → `doc::resolve_libs` → `doc::load_headers` (symbol interface only, 5 µs each) → `doc::load_bodies` (opened cells) → `elab::recompute(all dirty)`
-- **`netlist`**: `elab::elaborate(doc, bench, config) → inst_paths, resolved_impls` → `elab::resolve_params → resolved_params` → `elab::check → violations` → **gate** (violations without waiver block, D13) → `netlist::emit(dialect) → netlist_text, name_map`
+- **`netlist`**: `elab::elaborate(project, top, request{config, corner, overrides, env, dialect}) → defs, def_insts, leaf_impls, globals, bench lines, violations` (open `needs_open` cells and repeat if non-empty) → **gate** (`violations.blocking()`; waived rows are `I005`, D13) → `netlist::emit(&elab, dialect) → netlist_text, name_map`
 - **`run`**: `run::expand_jobs(bench, corners, mc, sweeps, configs) → jobs` → per job: `netlist` spine with overrides → `run::dispatch(jobs) → subprocess | plugin runner` → `wave::read(raw) → raw_plots` → `run::eval_outputs(expr, raw_plots) → results` → `run::eval_specs(results)`; optimizer = `ask → jobs → tell` loop around this spine
 - **`import`**: `import::read_xschem → records` → `import::translate(attrs, pdk_vars) → doc tables + needs_review + rounded_coords` → `format::write` → report
 - **`merge-driver`**: `format::parse(O, A, B)` → `format::merge3` (by record id, by field line) → `format::write` (no semantics needed; D34)
@@ -80,7 +80,8 @@ Each spine lives in `app` as one function, one line per transform. Branches that
 | journal | doc | apply_edits | doc (undo/recovery) | append-only, compacted on save | sidecar file |
 | expr_graph, values | elab | recompute | netlist, run, ui, render | = expressions in project | elab |
 | nets, pin_nets | elab | recompute | netlist, checks, render, plugin | 2^22 | elab |
-| inst_paths, resolved_impls, resolved_params, name_map | elab | elaborate | netlist, run, annotations, plugin | 2^24 elaborated instances | elab |
+| defs, def_insts, leaf_impls (+ globals, bench lines) | elab | elaborate | netlist, run, annotations, plugin | 2^24 definition rows (not flattened) | elaboration |
+| name_map | netlist | emit | run, annotations, plugin | 2^24 paths | job |
 | violations | elab | check | gate, render, plugin | 2^20 | elab |
 | annotations | elab | apply_annotations | render | 2^20 | elab |
 | jobs, results | run | expand_jobs, poll | ui, render, optimizer, plugin | 2^20 jobs | project |

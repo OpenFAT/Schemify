@@ -34,7 +34,10 @@ impl Mix {
 pub fn id(n: u64) -> String {
     const A: &[u8] = b"0123456789abcdefghjkmnpqrstvwxyz";
     let v = n.wrapping_mul(0x9e37_79b1) & ((1 << 30) - 1);
-    (0..6).rev().map(|k| A[((v >> (5 * k)) & 31) as usize] as char).collect()
+    (0..6)
+        .rev()
+        .map(|k| A[((v >> (5 * k)) & 31) as usize] as char)
+        .collect()
 }
 
 /// Coordinate text of milli-units.
@@ -52,7 +55,11 @@ pub fn project(files: &[(&str, &str)]) -> (Project, Vec<DocHandle>) {
     assert!(diags.is_empty(), "index diags: {diags:?}");
     let handles = files
         .iter()
-        .map(|(n, t)| p.open("", n, t.as_bytes(), None).unwrap_or_else(|e| panic!("{n}: {e:?}")).handle)
+        .map(|(n, t)| {
+            p.open("", n, t.as_bytes(), None)
+                .unwrap_or_else(|e| panic!("{n}: {e:?}"))
+                .handle
+        })
         .collect();
     (p, handles)
 }
@@ -62,6 +69,7 @@ pub fn ngspice() -> Request<'static> {
         config: None,
         corner: None,
         overrides: &[],
+        env: &[],
         dialect: Dialect::Ngspice,
     }
 }
@@ -72,7 +80,11 @@ pub fn elab(p: &Project, top: DocHandle) -> Elab {
 
 /// Codes of an elaboration's violations, as text.
 pub fn codes(e: &Elab) -> Vec<String> {
-    e.violations.rows.iter().map(|v| v.code.as_str().to_owned()).collect()
+    e.violations
+        .rows
+        .iter()
+        .map(|v| v.code.as_str().to_owned())
+        .collect()
 }
 
 /// A three-pin device: pins at (0,0), (20,0) and (0,30) symbol-local units.
@@ -100,18 +112,31 @@ pub fn random_bench(rng: &mut Mix, n: usize, base: u64) -> String {
             3..=7 => {
                 let (x1, y1) = (g(rng), g(rng));
                 let (x2, y2) = match rng.below(5) {
-                    0 => (x1 + rng.range(-3, 3) * 10_000, y1 + rng.range(-3, 3) * 10_000), // diagonal-ish
+                    0 => (
+                        x1 + rng.range(-3, 3) * 10_000,
+                        y1 + rng.range(-3, 3) * 10_000,
+                    ), // diagonal-ish
                     1 | 2 => (x1, y1 + rng.range(1, 6) * 10_000),
                     _ => (x1 + rng.range(1, 6) * 10_000, y1),
                 };
                 if (x1, y1) == (x2, y2) {
                     continue;
                 }
-                rest.push_str(&format!("wire {i} {} {} {} {}\n", c(x1), c(y1), c(x2), c(y2)));
+                rest.push_str(&format!(
+                    "wire {i} {} {} {} {}\n",
+                    c(x1),
+                    c(y1),
+                    c(x2),
+                    c(y2)
+                ));
             }
             8 => {
                 let name = ["a", "b", "c", "0", "vdd!"][rng.below(5) as usize];
-                rest.push_str(&format!("label {i} {} {} R0 {name}\n", c(g(rng)), c(g(rng))));
+                rest.push_str(&format!(
+                    "label {i} {} {} R0 {name}\n",
+                    c(g(rng)),
+                    c(g(rng))
+                ));
             }
             _ => rest.push_str(&format!("noconn {i} {} {}\n", c(g(rng)), c(g(rng)))),
         }
@@ -224,7 +249,10 @@ pub fn real_partition(doc: &Document, nets: &CellNets) -> Partition {
     }
     for i in 0..doc.instances().id.len() {
         for (p, &net) in nets.pins(i).iter().enumerate() {
-            out.insert(format!("p:{}:{p}", doc.instances().id[i].text(s)), net as usize);
+            out.insert(
+                format!("p:{}:{p}", doc.instances().id[i].text(s)),
+                net as usize,
+            );
         }
     }
     out
@@ -237,5 +265,7 @@ pub fn canon(p: &Partition) -> BTreeMap<String, String> {
     for (k, b) in p {
         first.entry(*b).or_insert(k); // keys iterate in order: the first is the smallest
     }
-    p.iter().map(|(k, b)| (k.clone(), first[b].clone())).collect()
+    p.iter()
+        .map(|(k, b)| (k.clone(), first[b].clone()))
+        .collect()
 }

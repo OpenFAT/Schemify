@@ -80,6 +80,10 @@ pub struct Request<'a> {
     /// `(var, expression)` assignments applied after the corner's `set` lines, in
     /// order (sweep/MC/optimizer values, then CLI overrides); later entries win.
     pub overrides: &'a [(&'a str, &'a str)],
+    /// Environment for `${NAME}` expansion after the project's `set` entries (spec
+    /// §7.1). The app passes what it allows (the process environment natively, nothing
+    /// on the web); elab itself reads no environment.
+    pub env: &'a [(&'a str, &'a str)],
     /// Target dialect.
     pub dialect: Dialect,
 }
@@ -301,6 +305,8 @@ struct Config {
 
 struct CellData<'p> {
     doc: &'p Document,
+    resolved: bool,
+    unresolved: Vec<Option<String>>,
     prepared: bool,
     inst_iface: Vec<u32>,
     graph: Graph,
@@ -336,6 +342,8 @@ struct Elaborator<'p, 'r, F> {
     impl_ids: HashMap<(u32, u32), u32>,
     stack: Vec<u32>,
     needs_open: Vec<u32>,
+    /// Names made global by `global true` labels (sorted).
+    globals: Vec<Name>,
     defs: Defs,
     insts: Insts,
     impls: Impls,
@@ -385,6 +393,7 @@ pub fn elaborate<F: Funcs>(
         impl_ids: HashMap::new(),
         stack: Vec::new(),
         needs_open: Vec::new(),
+        globals: Vec::new(),
         defs: Defs::default(),
         insts: Insts::default(),
         impls: Impls::default(),
@@ -445,6 +454,7 @@ pub fn elaborate<F: Funcs>(
     if let Some(r) = top_row {
         e.row_cell.insert(r as u32, 0);
     }
+    e.discover();
     let top_tuple = e.defaults(0);
     let top_def = e.build_def(0, top_tuple, String::new(), 0);
 
@@ -465,10 +475,13 @@ pub fn elaborate<F: Funcs>(
         .iter()
         .chain(&e.defs.port_net)
         .copied()
-        .filter(|&n| n != Name::NONE && is_global(e.names.get(n)))
+        .filter(|&n| {
+            n != Name::NONE && (is_global(e.names.get(n)) || e.globals.binary_search(&n).is_ok())
+        })
         .collect();
-    globals.sort_unstable_by(|a, b| e.names.cmp(*a, *b));
+    globals.sort_unstable();
     globals.dedup();
+    globals.sort_unstable_by(|a, b| e.names.cmp(*a, *b));
     out.bench = if bench {
         e.bench_lines(doc, corner_row)
     } else {
@@ -509,6 +522,37 @@ fn record(t: &schemify_doc::Records, doc: &Document, name: &str) -> Option<usize
 }
 
 impl<'p, F: Funcs> Elaborator<'p, '_, F> {
+    /// Expands `${NAME}` in `text` (project `set` entries, then [`Request::env`];
+    /// `$$` is a literal `$`) and interns the result. An undefined or unclosed name is
+    /// `E034` on `cell`, and the text stays as written.
+    fn expand_vars(&mut self, cell: Name, text: &str) -> Name {
+        if !text.contains('$') {
+            return self.names.intern(text);
+        }
+        let sets = self.project.settings();
+        let lookup = |n: &str| {
+            sets.iter()
+                .find(|(k, _)| k == n)
+                .map(|(_, v)| v.as_str())
+                .or_else(|| self.req.env.iter().find(|(k, _)| *k == n).map(|(_, v)| *v))
+        };
+        match expand_dollars(text, lookup) {
+            Ok(out) => self.names.intern(&out),
+            Err(name) => {
+                let param = self.names.intern(&name);
+                self.viol.push(Violation {
+                    code: Code::E034,
+                    cell,
+                    object: ObjId::NONE,
+                    path: Name::NONE,
+                    param,
+                    detail: format!("`${{{name}}}` is not defined"),
+                });
+                self.names.intern(text)
+            }
+        }
+    }
+
     fn request_finding(&mut self, cell: Name, detail: &str) {
         self.viol.push(Violation {
             code: Code::E035,
@@ -560,6 +604,8 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         self.nets.push(None);
         self.cells.push(CellData {
             doc,
+            resolved: false,
+            unresolved: Vec::new(),
             prepared: false,
             inst_iface: Vec::new(),
             graph: Graph::default(),
@@ -586,10 +632,9 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         ci
     }
 
-    /// Resolves cell `ci`'s instances, builds its connectivity and graph, and reports
-    /// its context-free findings. Once per cell.
-    fn prepare(&mut self, ci: u32) {
-        if self.cells[ci as usize].prepared {
+    /// Resolves cell `ci`'s instances to cells (creating their interfaces). Once per cell.
+    fn resolve(&mut self, ci: u32) {
+        if self.cells[ci as usize].resolved {
             return;
         }
         let doc = self.cells[ci as usize].doc;
@@ -621,6 +666,40 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 Err(why) => unresolved[i] = Some(why),
             }
         }
+        let cell = &mut self.cells[ci as usize];
+        cell.inst_iface = inst_iface;
+        cell.unresolved = unresolved;
+        cell.resolved = true;
+    }
+
+    /// Resolves everything reachable from the top and collects the names of `global
+    /// true` labels (spec §3: global anywhere in the elaborated hierarchy). Over every
+    /// reachable schematic, selected or not: a superset, but path-independent.
+    fn discover(&mut self) {
+        let mut globals = Vec::new();
+        let mut ci = 0;
+        while ci < self.cells.len() {
+            if self.ifaces[ci].open {
+                self.resolve(ci as u32);
+                crate::connect::global_labels(self.cells[ci].doc, &mut self.names, &mut globals);
+            }
+            ci += 1;
+        }
+        globals.sort_unstable();
+        globals.dedup();
+        self.globals = globals;
+    }
+
+    /// Builds cell `ci`'s connectivity and graph and reports its context-free findings.
+    /// Once per cell.
+    fn prepare(&mut self, ci: u32) {
+        if self.cells[ci as usize].prepared {
+            return;
+        }
+        self.resolve(ci);
+        let doc = self.cells[ci as usize].doc;
+        let inst_iface = std::mem::take(&mut self.cells[ci as usize].inst_iface);
+        let unresolved = std::mem::take(&mut self.cells[ci as usize].unresolved);
         let mut found = Vec::new();
         let own = &self.ifaces[ci as usize];
         let nets = connect(
@@ -628,6 +707,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             own,
             &self.ifaces,
             &inst_iface,
+            &self.globals,
             &mut self.names,
             &mut found,
         );
@@ -688,16 +768,10 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         } else {
             Vec::new()
         };
+        // Own params and vars only: instance blocks are left out (`none`).
         let g = Graph::build(doc, ci, &self.ifaces, &none, &subst, &mut self.names);
         let (mut vals, mut unv) = (Vec::new(), Vec::new());
-        g.eval_all(
-            None,
-            &mut vals,
-            &mut unv,
-            &self.ifaces,
-            self.funcs,
-            &mut self.ws,
-        );
+        g.eval_own(&mut vals, &mut unv, &self.ifaces, self.funcs, &mut self.ws);
         vals.truncate(g.params as usize);
         let (key, _) = tuple(&self.ifaces[ci as usize], &vals, &mut self.names);
         let cell = &mut self.cells[ci as usize];
@@ -720,12 +794,11 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 None => finding = Some((imp.clone(), "inst")),
             }
         }
-        if chosen.is_none() {
-            if let Some((_, imp)) = self.config.cell.iter().find(|(r, _)| *r as u32 == f.row) {
-                match by_name(imp, &self.names) {
-                    Some(k) => chosen = Some(k),
-                    None => finding = finding.or(Some((imp.clone(), "cell"))),
-                }
+        let cell_rule = self.config.cell.iter().find(|(r, _)| *r as u32 == f.row);
+        if let Some((_, imp)) = cell_rule.filter(|_| chosen.is_none()) {
+            match by_name(imp, &self.names) {
+                Some(k) => chosen = Some(k),
+                None => finding = finding.or(Some((imp.clone(), "cell"))),
             }
         }
         if chosen.is_none() {
@@ -742,7 +815,11 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         if let Some((imp, rule)) = finding {
             let param = self.names.intern(&imp);
             // A `cell` rule is wrong for every path; an `inst` rule for its own.
-            let path = if rule == "inst" { self.names.intern(path) } else { Name::NONE };
+            let path = if rule == "inst" {
+                self.names.intern(path)
+            } else {
+                Name::NONE
+            };
             self.viol.push(Violation {
                 code: Code::E031,
                 cell,
@@ -779,12 +856,13 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 .find(|&j| self.names.get(f.fmt_dialect[j]) == *w)
                 .map(|j| f.fmt_template[j])
         });
-        let default_ok = match (lang, d) {
-            ("spice", Dialect::Ngspice | Dialect::Xyce | Dialect::Cdl) => true,
-            ("veriloga", Dialect::Ngspice) => true,
-            ("verilog", Dialect::Ngspice | Dialect::Verilog) => true,
-            _ => false,
-        };
+        // Spec §7.1 default templates: which langs have one for which dialect.
+        let default_ok = matches!(
+            (lang, d),
+            ("spice", Dialect::Ngspice | Dialect::Xyce | Dialect::Cdl)
+                | ("veriloga", Dialect::Ngspice)
+                | ("verilog", Dialect::Ngspice | Dialect::Verilog)
+        );
         if template.is_none() && !default_ok {
             let (cell, imp) = (f.cell, f.impl_name[k as usize]);
             let detail = format!(
@@ -813,8 +891,9 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         let imp_text = self.names.get(f.impl_name[k as usize]).to_owned();
         let bodies = doc.bodies();
         if let Some(r) = (0..bodies.kind.len()).find(|&r| s.get(bodies.fields[r][0]) == imp_text) {
+            let cell = self.ifaces[c as usize].cell;
             for &l in &doc.pool().lines[bodies.verbatim[r].range()] {
-                let line = self.names.intern(s.get(l));
+                let line = self.expand_vars(cell, s.get(l));
                 self.impls.body.push(line);
             }
         }
@@ -834,10 +913,9 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         let sensitive = self.config.inst.iter().any(|(p, _)| {
             p.len() > path.len() && p.starts_with(&path) && p.as_bytes()[path.len()] == b'/'
         });
-        if !sensitive {
-            if let Some(&d) = self.memo.get(&(ci, key.clone())) {
-                return Some(d);
-            }
+        let known = self.memo.get(&(ci, key.clone())).filter(|_| !sensitive);
+        if let Some(&d) = known {
+            return Some(d);
         }
         if depth >= DEPTH_MAX {
             let p = self.names.intern(&path);
@@ -943,7 +1021,10 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                     }
                     if self.stack.contains(&c) {
                         let p = self.names.intern(&child_path);
-                        let detail = format!("{} instantiates itself", self.names.get(self.ifaces[c as usize].cell));
+                        let detail = format!(
+                            "{} instantiates itself",
+                            self.names.get(self.ifaces[c as usize].cell)
+                        );
                         self.viol.push(Violation {
                             code: Code::E014,
                             cell: self.ifaces[ci as usize].cell,
@@ -967,8 +1048,16 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                         None => continue,
                     }
                 };
-                let conn =
+                let mut conn =
                     self.instance_conns(ci, i, k, target, is_top, &mut propagated, &child_path);
+                // The instance's own `ignore` wins; else the selected impl's.
+                let ignore = match ignore {
+                    Ignore::No => self.ifaces[c as usize].impl_ignore[imp as usize],
+                    own => own,
+                };
+                if ignore == Ignore::Open {
+                    conn.fill(Name::NONE);
+                }
                 rows.push(RowTmp {
                     name: elem,
                     id: doc.instances().id[i],
@@ -1034,14 +1123,31 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 .find(|&j| nets.inh_inst[j] == i as u32 && nets.inh_pin[j] == pin);
             if let Some(j) = local {
                 let r = nets.inh_bit_start[j] as usize..nets.inh_bit_start[j + 1] as usize;
-                let bits: Vec<Name> = nets.inh_bits[r].iter().map(|&b| nets.bit_name[b as usize]).collect();
+                let bits: Vec<Name> = nets.inh_bits[r]
+                    .iter()
+                    .map(|&b| nets.bit_name[b as usize])
+                    .collect();
                 tmp.clear();
                 let text = self.names.get(pin).to_owned();
                 let _ = netexpr::expand(&text, &mut self.names, &mut tmp, &mut buf);
                 if tmp.len() != bits.len() {
-                    let (cell, id) = (self.ifaces[ci as usize].cell, self.cells[ci as usize].doc.instances().id[i]);
-                    let detail = format!("inherit `{text}` ({} bits) set to {} bits", tmp.len(), bits.len());
-                    self.viol.push(Violation { code: Code::E011, cell, object: id, path: Name::NONE, param: pin, detail });
+                    let (cell, id) = (
+                        self.ifaces[ci as usize].cell,
+                        self.cells[ci as usize].doc.instances().id[i],
+                    );
+                    let detail = format!(
+                        "inherit `{text}` ({} bits) set to {} bits",
+                        tmp.len(),
+                        bits.len()
+                    );
+                    self.viol.push(Violation {
+                        code: Code::E011,
+                        cell,
+                        object: id,
+                        path: Name::NONE,
+                        param: pin,
+                        detail,
+                    });
                 }
                 conn.extend(bits);
                 continue;
@@ -1059,7 +1165,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                             self.names.get(default)
                         );
                         self.viol.push(Violation {
-                            code: Code::E034,
+                            code: Code::E036,
                             cell,
                             object: ObjId::NONE,
                             path: p,
@@ -1161,6 +1267,15 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 self.defs.inh_pin.push(pin);
                 self.defs.inh_default.push(default);
             }
+        }
+        if rows.iter().any(|r| r.ignore == Ignore::Short) {
+            let port0 = *self.defs.port_start.last().expect("seeded") as usize;
+            short_nets(
+                &mut rows,
+                &mut self.defs.port_net[port0..],
+                &self.globals,
+                &self.names,
+            );
         }
         self.defs.cell.push(ci);
         self.defs.name.push(Name::NONE);
@@ -1294,17 +1409,10 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
     fn bench_lines(&mut self, doc: &Document, corner: Option<usize>) -> Bench {
         let mut b = Bench::default();
         let s = doc.strings();
-        // Vars: the top graph in the default context.
+        // Vars: the top graph's own nodes in the default context.
         let g = &self.cells[0].graph;
         let (mut vals, mut unv) = (Vec::new(), Vec::new());
-        g.eval_all(
-            None,
-            &mut vals,
-            &mut unv,
-            &self.ifaces,
-            self.funcs,
-            &mut self.ws,
-        );
+        g.eval_own(&mut vals, &mut unv, &self.ifaces, self.funcs, &mut self.ws);
         let mut vars: Vec<(Name, Name)> = Vec::new();
         for v in 0..g.vars as usize {
             let val = &vals[g.params as usize + v];
@@ -1346,8 +1454,13 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                         }
                     }
                 } else {
-                    for &x in v {
-                        let n = self.names.intern(s.get(x));
+                    // The path expands `${NAME}`; a `lib` section word is literal.
+                    for (j, &x) in v.iter().enumerate() {
+                        let n = if j == 0 {
+                            self.expand_vars(self.ifaces[0].cell, s.get(x))
+                        } else {
+                            self.names.intern(s.get(x))
+                        };
                         b.corner_args.push(n);
                     }
                 }
@@ -1388,13 +1501,98 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             b.code_lang
                 .push(self.names.intern(s.get(codes.fields[r][1])));
             for &l in lines {
-                let n = self.names.intern(s.get(l));
+                let n = self.expand_vars(self.ifaces[0].cell, s.get(l));
                 b.code_lines.push(n);
             }
             b.code_start.push(b.code_lines.len() as u32);
         }
         b
     }
+}
+
+/// `ignore short` rows of one definition (spec §7.1): all nets of a shorted row become
+/// one net, renamed everywhere in the definition to the set's best name — global,
+/// then a port of the definition, then bytewise smallest. (An instance attr was
+/// already merged by `connect`; this is what an impl-level `ignore short` needs.)
+fn short_nets(rows: &mut [RowTmp], ports: &mut [Name], globals: &[Name], names: &Names) {
+    let mut ids: Vec<Name> = rows
+        .iter()
+        .flat_map(|r| r.conn.iter().copied())
+        .chain(ports.iter().copied())
+        .filter(|n| *n != Name::NONE)
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let idx = |n: Name| ids.binary_search(&n).expect("collected above") as u32;
+    let mut parent: Vec<u32> = (0..ids.len() as u32).collect();
+    for r in rows.iter().filter(|r| r.ignore == Ignore::Short) {
+        let mut first = NONE;
+        for &n in r.conn.iter().filter(|n| **n != Name::NONE) {
+            if first == NONE {
+                first = idx(n);
+            } else {
+                crate::connect::union(&mut parent, first, idx(n));
+            }
+        }
+    }
+    let rank = |n: Name| -> u8 {
+        if is_global(names.get(n)) || globals.binary_search(&n).is_ok() {
+            0
+        } else if ports.contains(&n) {
+            1
+        } else {
+            2
+        }
+    };
+    let mut best: Vec<Name> = ids.clone();
+    for i in 0..ids.len() {
+        let r = crate::connect::find(&mut parent, i as u32) as usize;
+        let (a, b) = (ids[i], best[r]);
+        if (rank(a), names.get(a)) < (rank(b), names.get(b)) {
+            best[r] = a;
+        }
+    }
+    let mut rename = |n: &mut Name| {
+        if *n != Name::NONE {
+            *n = best[crate::connect::find(&mut parent, idx(*n)) as usize];
+        }
+    };
+    for r in rows.iter_mut() {
+        r.conn.iter_mut().for_each(&mut rename);
+    }
+    ports.iter_mut().for_each(&mut rename);
+}
+
+/// `${NAME}` expansion (spec §7.1): `$$` → `$`, `${NAME}` → `lookup(NAME)`, any other
+/// `$` literal. Nothing is executed.
+///
+/// # Errors
+///
+/// The first undefined name (or the unclosed `${…` text).
+pub(crate) fn expand_dollars<'v>(
+    text: &str,
+    lookup: impl Fn(&str) -> Option<&'v str>,
+) -> Result<String, String> {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('$') {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        if let Some(after) = tail.strip_prefix("$$") {
+            out.push('$');
+            rest = after;
+        } else if let Some(after) = tail.strip_prefix("${") {
+            let end = after.find('}').ok_or_else(|| tail.to_owned())?;
+            let name = &after[..end];
+            out.push_str(lookup(name).ok_or_else(|| name.to_owned())?);
+            rest = &after[end + 1..];
+        } else {
+            out.push('$');
+            rest = &tail[1..];
+        }
+    }
+    out.push_str(rest);
+    Ok(out)
 }
 
 /// Evaluates a corner `temp` expression with the bench vars in scope.

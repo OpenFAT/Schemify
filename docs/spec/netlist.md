@@ -132,6 +132,30 @@ Severity `E` blocks Run and makes `schemify netlist` exit 1 (unless `--allow-err
 | E032 | E | param off grid/step (waivable) |
 | E033 | E | `.control` in a code block for xyce |
 | E034 | E | undefined `${NAME}` in code, body or corner path |
+| E035 | E | unknown corner or config named by the request |
+| E036 | E | inherited pins of one name with different default nets in one definition |
 | I005 | I | waived violation |
 
-Violations are keyed by (code, instance path or object id, param) and sorted for output.
+Violations are keyed by (code, cell, object id, instance path, param) and sorted bytewise on that key (code text first). A finding true for every path through an object has no path.
+
+## 9. Elaboration decisions (amendments, WS2 `elab`)
+
+Where §1–§8 left a choice open, `crates/elab` decided as follows; these are normative.
+
+1. **Names connect.** Components carrying the same bit name are one net, in the cell and (for globals) everywhere. A component with names whose bit lists differ is `E003` (one row per extra name); names of different width on one component are `E011` and the narrower-ranked name is ignored.
+2. **Emitted bit name**, per merged net: global names first (`0`, `…!`, `global true`), then port names (and interface pins bound by name), then label and `inherit` names; bytewise smallest within the class. Unnamed: `net_<id>` for a 1-bit component, `net_<id>[k]` (component bit `k`, from 0) for wider ones; noconn ids are id candidates too. The component (render/plugin `Nets` row) is named by its best name expression (`d[3:0]`).
+3. **Width of an unnamed component** = its widest attached pin, so an unnamed wire between two 4-bit pins is 4 bits, and an iterated instance's 1-bit pins slice it.
+4. **Net expressions** outside the grammar are one scalar name, verbatim (importer leftovers keep working); an expression over 65 535 bits is `E011`.
+5. **Pins bind by name.** A `port` names its component with its pin's bits; every interface pin (ordinary or inherited) binds to the nets named by its bit names, so a label spelled like the pin binds it too. Inside a cell's schematic an inherited pin `P` is the net named `P` (not its default).
+6. **Inherited connections, hierarchically.** A definition takes as ports its cell's declared inherited pins (pin order) and every inherited pin its subtree leaves unresolved (sorted by name), after its ordinary pins. At the top they bind to their default net. An `inherit P <net>` override of a pin propagated from deeper is width-checked where it is resolved (`E011`); one pin name with two defaults in one definition is `E036`.
+7. **`global true` labels** are collected over every schematic reachable from the top (a superset of the selected impls, but path-independent); the editor's single-document view uses its own document's.
+8. **Checks:** `W004` = an instance pin alone in its component; `W016` = a non-global bit net with exactly one connection (instance pin bits, port bits, `inherit` overrides); `W010` per bit net; `E009` on element names after iterated expansion; `E002` once per schematic impl whose ports and pins disagree (alongside the per-object `E012`); `E031` from a `cell` rule has no path, from an `inst` rule the rule's path; a cell with no selectable impl is `E013`.
+9. **Specialization text:** the non-computed params as `k=v`, sorted bytewise by `k`, joined by single spaces; numbers in canonical text (expr §7), strings quoted with expression escapes. The hash digits are the Crockford lowercase alphabet of ids, most significant 5 bits first. The default tuple is the cell's defaults evaluated in its own scope. Two definitions of one cell with one tuple but different children (config `inst` rules) both hash `text|name=target,…` (children are named first; targets are child definition names or `cell:impl`). Distinct tuples whose 6 digits collide use all 13. Distinct cells sharing a stem use `<stem>__<6 digits of FNV-1a 64 of lib:dir/stem>` as their base name.
+10. **`ignore`:** the instance attr wins over the selected impl's. An impl-level `short` merges the instance's nets within the definition (renamed to the best name: global, then a definition port, then bytewise smallest).
+11. **Request:** corner `set` lines apply first, then the request's overrides in order (later wins); an override of an unknown var adds it. The default corner/config is the bench's header attr; an unknown name is `E035`. Corner `lib` sections are literal; `temp` is evaluated in the bench scope.
+12. **`${NAME}`** is expanded by elab from project `set` entries, then an environment table the caller passes in the request (elab reads no environment), so the netlister receives final text.
+13. **Code blocks per dialect:** `spice` → ngspice and xyce, a dialect word → that dialect, CDL → none.
+14. **Loaded documents:** cells whose schematic or body elaboration needs but which are only indexed (ranks 0–1) are listed for the app to open, then elaboration runs again; meanwhile an unopened schematic child is skipped and a leaf keeps its template.
+15. **D20:** a param's or var's `cached` value stands in for the whole expression when a plugin function is missing; the value and everything computed from it are flagged unverified.
+16. **Scopes:** child vars read by a child-scope expression are evaluated per instance, in that instance's scope.
+17. **The name map** (path ↔ emitted name) is the netlister's: it depends on the dialect's emitted names. Elab's definitions keep the hierarchy; a path is the `/`-joined local names from the top.

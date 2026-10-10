@@ -1,16 +1,16 @@
 //! Checks (netlist spec §8): the code table, the [`Violations`] table, D13 gating on
 //! evaluated values with waivers, and the per-cell checks over instances and the
 //! expression graph. Connectivity findings come from `connect`; hierarchy findings
-//! (`E013`, `E014`, `E031`, `E033`–`E035`) from `elaborate`.
+//! (`E013`, `E014`, `E031`, `E033`–`E036`) from `elaborate`.
 
 use crate::graph::{Graph, Work};
-use crate::iface::{GRID, Iface, MAX, MIN, ParamKind, STEP};
+use crate::iface::{GRID, Iface, MAX, MIN, STEP};
 use crate::names::{Name, Names};
 use crate::values::{Code as PCode, Funcs, NONE, Val};
 use schemify_doc::{Document, Instances, ObjId};
 use std::cmp::Ordering;
 
-/// Check codes (netlist spec §8; `E034`, `E035` are elab amendments).
+/// Check codes (netlist spec §8; `E035`, `E036` are elab amendments).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[allow(missing_docs)] // meanings: `Code::meaning`
 pub enum Code {
@@ -35,6 +35,7 @@ pub enum Code {
     E033,
     E034,
     E035,
+    E036,
     I005,
 }
 
@@ -53,9 +54,10 @@ pub enum Severity {
 impl Code {
     /// Returns the code as written in reports (`"E005"`).
     pub fn as_str(self) -> &'static str {
-        const S: [&str; 22] = [
+        const S: [&str; 23] = [
             "E001", "E002", "E003", "W004", "E005", "E006", "W007", "E008", "E009", "W010", "E011",
-            "E012", "E013", "E014", "W016", "E030", "E031", "E032", "E033", "E034", "E035", "I005",
+            "E012", "E013", "E014", "W016", "E030", "E031", "E032", "E033", "E034", "E035", "E036",
+            "I005",
         ];
         S[self as usize]
     }
@@ -96,8 +98,9 @@ impl Code {
             Code::E031 => "config names an impl the cell lacks",
             Code::E032 => "param off grid/step",
             Code::E033 => ".control in a code block for xyce",
-            Code::E034 => "inherited pins of one name with different default nets",
+            Code::E034 => "undefined ${NAME} in code, body or corner path",
             Code::E035 => "unknown corner or config",
+            Code::E036 => "inherited pins of one name with different default nets",
             Code::I005 => "waived violation",
         }
     }
@@ -145,6 +148,44 @@ impl Violations {
         Violations { rows }
     }
 
+    /// Replaces the value-dependent rows (`E008`, `E005`, `E006`, `E032`, `I005`) with
+    /// `fresh` (sorted, value codes only), keeping order. Cost: O(rows), no re-sort.
+    pub(crate) fn replace_values(&mut self, fresh: Violations, names: &Names) {
+        let value = |c: Code| {
+            matches!(
+                c,
+                Code::E008 | Code::E005 | Code::E006 | Code::E032 | Code::I005
+            )
+        };
+        assert!(
+            fresh.rows.iter().all(|v| value(v.code)),
+            "only value rows are replaced"
+        );
+        let mut old = std::mem::take(&mut self.rows);
+        old.retain(|v| !value(v.code));
+        let mut out = Vec::with_capacity(old.len() + fresh.rows.len());
+        let (mut a, mut b) = (
+            old.into_iter().peekable(),
+            fresh.rows.into_iter().peekable(),
+        );
+        while let (Some(x), Some(y)) = (a.peek(), b.peek()) {
+            let next = if cmp_key(x, y, names) == Ordering::Greater {
+                b.next()
+            } else {
+                a.next()
+            };
+            out.extend(next);
+        }
+        out.extend(a);
+        out.extend(b);
+        out.truncate(VIOLATIONS_MAX);
+        debug_assert!(
+            out.windows(2)
+                .all(|w| cmp_key(&w[0], &w[1], names) == Ordering::Less)
+        );
+        self.rows = out;
+    }
+
     /// Returns whether any row blocks (severity `Error`).
     pub fn blocking(&self) -> bool {
         self.rows
@@ -186,7 +227,6 @@ pub(crate) fn waivers(doc: &Document, names: &mut Names) -> Vec<(ObjId, Name)> {
 /// violated rule; `bounds` are the evaluated `min`, `max`, `step`, `grid`.
 pub(crate) fn gate(
     v: &Val,
-    kind: ParamKind,
     bounds: &[Option<Val>; 4],
     choices: &[Name],
     names: &Names,
@@ -243,7 +283,7 @@ pub(crate) fn gate(
             c == text
                 || matches!((schemify_expr::parse_num(c), v.as_f64()), (Ok(a), Some(b)) if a == b)
         });
-        if !hit || (kind == ParamKind::Choice && v.as_f64().is_some() && !hit) {
+        if !hit {
             out.push((Code::E006, format!("{text} is not one of the choices")));
         }
     }
@@ -402,14 +442,7 @@ pub(crate) fn check_values<F: Funcs>(
                 *b = g.bound(i, k, which, vals, cx.ifaces, funcs, ws);
             }
             found.clear();
-            gate(
-                v,
-                c.param_kind[k],
-                &bounds,
-                c.choices_of(k),
-                names,
-                &mut found,
-            );
+            gate(v, &bounds, c.choices_of(k), names, &mut found);
             for (code, detail) in found.drain(..) {
                 let waived = cx
                     .waivers
@@ -437,19 +470,18 @@ pub(crate) fn check_values<F: Funcs>(
 mod tests {
     use super::*;
 
-    fn run(v: Val, kind: ParamKind, b: [Option<f64>; 4], choices: &[&str]) -> Vec<Code> {
+    fn run(v: Val, b: [Option<f64>; 4], choices: &[&str]) -> Vec<Code> {
         let mut names = Names::default();
         let choices: Vec<Name> = choices.iter().map(|c| names.intern(c)).collect();
         let bounds = b.map(|x| x.map(Val::Num));
         let mut out = Vec::new();
-        gate(&v, kind, &bounds, &choices, &names, &mut out);
+        gate(&v, &bounds, &choices, &names, &mut out);
         out.into_iter().map(|(c, _)| c).collect()
     }
 
     /// Exhaustive small domain: every value on a 0.05 lattice against min/max/grid/step.
     #[test]
     fn gating_matches_the_rules_over_a_small_domain() {
-        use ParamKind::Number as N;
         for i in -10..=40 {
             let x = f64::from(i) * 0.05;
             let in_range = (0.15 - 1e-12..=1.5 + 1e-12).contains(&x);
@@ -461,16 +493,11 @@ mod tests {
             if !on_grid {
                 want.push(Code::E032);
             }
-            let got = run(
-                Val::Num(x),
-                N,
-                [Some(0.15), Some(1.5), None, Some(0.1)],
-                &[],
-            );
+            let got = run(Val::Num(x), [Some(0.15), Some(1.5), None, Some(0.1)], &[]);
             assert_eq!(got, want, "x = {x}");
             // step 0.25 from min 0.25: on-step iff (x - 0.25) / 0.25 is an integer.
             let on_step = (i - 5) % 5 == 0;
-            let got = run(Val::Num(x), N, [Some(0.25), None, Some(0.25), None], &[]);
+            let got = run(Val::Num(x), [Some(0.25), None, Some(0.25), None], &[]);
             let mut want = Vec::new();
             if x < 0.25 - 1e-12 {
                 want.push(Code::E005);
@@ -481,21 +508,20 @@ mod tests {
             assert_eq!(got, want, "step x = {x}");
         }
         // Decimal values on a decimal grid pass despite binary rounding.
-        assert!(run(Val::Num(0.3), N, [None, None, None, Some(0.1)], &[]).is_empty());
-        assert!(run(Val::Num(1.15e-6), N, [None, None, None, Some(5e-9)], &[]).is_empty());
+        assert!(run(Val::Num(0.3), [None, None, None, Some(0.1)], &[]).is_empty());
+        assert!(run(Val::Num(1.15e-6), [None, None, None, Some(5e-9)], &[]).is_empty());
         assert_eq!(
-            run(Val::Num(1.151e-6), N, [None, None, None, Some(5e-9)], &[]),
+            run(Val::Num(1.151e-6), [None, None, None, Some(5e-9)], &[]),
             [Code::E032]
         );
         // Ints compare like nums; strings and bools ignore numeric rules.
         assert_eq!(
-            run(Val::Int(0), N, [Some(1.0), None, None, None], &[]),
+            run(Val::Int(0), [Some(1.0), None, None, None], &[]),
             [Code::E005]
         );
         assert!(
             run(
                 Val::Str("x".into()),
-                N,
                 [Some(1.0), Some(2.0), None, Some(0.5)],
                 &[]
             )
@@ -505,18 +531,14 @@ mod tests {
 
     #[test]
     fn choices_compare_text_or_number() {
-        let k = ParamKind::Choice;
-        assert!(run(Val::Str("nfet".into()), k, [None; 4], &["nfet", "pfet"]).is_empty());
+        assert!(run(Val::Str("nfet".into()), [None; 4], &["nfet", "pfet"]).is_empty());
         assert_eq!(
-            run(Val::Str("lvt".into()), k, [None; 4], &["nfet", "pfet"]),
+            run(Val::Str("lvt".into()), [None; 4], &["nfet", "pfet"]),
             [Code::E006]
         );
-        assert!(run(Val::Num(2.0), ParamKind::Number, [None; 4], &["1", "2"]).is_empty());
-        assert!(run(Val::Int(2), ParamKind::Number, [None; 4], &["2.0"]).is_empty());
-        assert_eq!(
-            run(Val::Int(3), ParamKind::Number, [None; 4], &["1", "2"]),
-            [Code::E006]
-        );
+        assert!(run(Val::Num(2.0), [None; 4], &["1", "2"]).is_empty());
+        assert!(run(Val::Int(2), [None; 4], &["2.0"]).is_empty());
+        assert_eq!(run(Val::Int(3), [None; 4], &["1", "2"]), [Code::E006]);
     }
 
     #[test]

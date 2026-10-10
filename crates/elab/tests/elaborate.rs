@@ -24,7 +24,9 @@ fn target(e: &Elab, r: usize) -> String {
         Target::Def(d) => format!("def:{}", e.names.get(e.defs.name[d as usize])),
         Target::Leaf(l) => {
             let f = &e.cells[e.impls.cell[l as usize] as usize];
-            e.names.get(f.impl_name[e.impls.index[l as usize] as usize]).to_owned()
+            e.names
+                .get(f.impl_name[e.impls.index[l as usize] as usize])
+                .to_owned()
         }
     }
 }
@@ -34,7 +36,10 @@ fn conn_names(e: &Elab, r: usize) -> Vec<&str> {
 }
 
 fn param(e: &Elab, r: usize, name: &str) -> String {
-    let k = e.params_of(r).find(|&k| e.names.get(e.insts.param_name[k]) == name).unwrap();
+    let k = e
+        .params_of(r)
+        .find(|&k| e.names.get(e.insts.param_name[k]) == name)
+        .unwrap();
     e.names.get(e.insts.param_text[k]).to_owned()
 }
 
@@ -51,11 +56,16 @@ fn bench_with(config: &str) -> String {
 }
 
 fn elab_cfg(bench: &str, cfg: Option<&str>, dialect: Dialect) -> Elab {
-    let (p, hs) = project(&[("res.shprim", RES), ("amp.shcomp", AMP), ("tb.shbench", bench)]);
+    let (p, hs) = project(&[
+        ("res.shprim", RES),
+        ("amp.shcomp", AMP),
+        ("tb.shbench", bench),
+    ]);
     let req = Request {
         config: cfg,
         corner: None,
         overrides: &[],
+        env: &[],
         dialect,
     };
     elaborate(&p, hs[2], &req, &mut no_funcs)
@@ -68,11 +78,41 @@ fn impl_selection_precedence() {
         ("", "", "def:amp", "def:amp", &[]),
         ("config c\n  order beh sch\n", "c", "beh", "beh", &[]),
         ("config c\n  order nope va\n", "c", "va", "va", &[]),
-        ("config c\n  cell ./amp va\n  order beh\n", "c", "va", "va", &[]),
-        ("config c\n  inst /X1 beh\n  cell ./amp va\n", "c", "beh", "va", &[]),
-        ("config c\n  inst /X1 nope\n  order va\n", "c", "va", "va", &["E031"]),
-        ("config c\n  cell ./amp nope\n  order beh\n", "c", "beh", "beh", &["E031"]),
-        ("config c\n  inst /X2 sch\n  order beh\n", "c", "beh", "def:amp", &[]),
+        (
+            "config c\n  cell ./amp va\n  order beh\n",
+            "c",
+            "va",
+            "va",
+            &[],
+        ),
+        (
+            "config c\n  inst /X1 beh\n  cell ./amp va\n",
+            "c",
+            "beh",
+            "va",
+            &[],
+        ),
+        (
+            "config c\n  inst /X1 nope\n  order va\n",
+            "c",
+            "va",
+            "va",
+            &["E031"],
+        ),
+        (
+            "config c\n  cell ./amp nope\n  order beh\n",
+            "c",
+            "beh",
+            "beh",
+            &["E031"],
+        ),
+        (
+            "config c\n  inst /X2 sch\n  order beh\n",
+            "c",
+            "beh",
+            "def:amp",
+            &[],
+        ),
     ];
     for (rec, name, x1, x2, want) in cases {
         let bench = bench_with(rec);
@@ -80,11 +120,15 @@ fn impl_selection_precedence() {
         let e = elab_cfg(&bench, cfg, Dialect::Ngspice);
         assert_eq!(target(&e, row(&e, e.top, "X1")), *x1, "{rec}");
         assert_eq!(target(&e, row(&e, e.top, "X2")), *x2, "{rec}");
-        let got: Vec<String> = codes(&e).into_iter().filter(|c| c.starts_with('E')).collect();
+        let got: Vec<String> = codes(&e)
+            .into_iter()
+            .filter(|c| c.starts_with('E'))
+            .collect();
         assert_eq!(got, *want, "{rec}");
     }
     // The bench's `config` header is the default; an unknown name is E035.
-    let bench = bench_with("config c\n  order beh\n").replacen("shbench\n", "shbench\n  config c\n", 1);
+    let bench =
+        bench_with("config c\n  order beh\n").replacen("shbench\n", "shbench\n  config c\n", 1);
     let e = elab_cfg(&bench, None, Dialect::Ngspice);
     assert_eq!(target(&e, row(&e, e.top, "X1")), "beh");
     let e = elab_cfg(&bench_with(""), Some("missing"), Dialect::Ngspice);
@@ -95,25 +139,41 @@ fn impl_selection_precedence() {
 fn dialect_support_and_templates() {
     let cfg = "config c\n  order va\n";
     let e = elab_cfg(&bench_with(cfg), Some("c"), Dialect::Xyce);
-    assert!(codes(&e).contains(&"E013".to_owned()), "veriloga has no xyce form");
+    assert!(
+        codes(&e).contains(&"E013".to_owned()),
+        "veriloga has no xyce form"
+    );
     let e = elab_cfg(&bench_with(cfg), Some("c"), Dialect::Ngspice);
     assert!(!codes(&e).contains(&"E013".to_owned()));
     let l = match e.insts.target[row(&e, e.top, "X1")] {
         Target::Leaf(l) => l as usize,
         Target::Def(_) => panic!(),
     };
-    assert_eq!(e.impls.template[l], schemify_elab::Name::NONE, "default template");
+    assert_eq!(
+        e.impls.template[l],
+        schemify_elab::Name::NONE,
+        "default template"
+    );
     // `format spice` serves ngspice, xyce and cdl; spectre needs its own.
     let e = elab_cfg(&bench_with(""), None, Dialect::Spectre);
-    assert!(codes(&e).contains(&"E013".to_owned()), "res has no spectre format: {:?}", codes(&e));
+    assert!(
+        codes(&e).contains(&"E013".to_owned()),
+        "res has no spectre format: {:?}",
+        codes(&e)
+    );
     let e = elab_cfg(&bench_with(""), None, Dialect::Cdl);
     let amp = match e.insts.target[row(&e, e.top, "X1")] {
         Target::Def(d) => d,
         Target::Leaf(_) => panic!(),
     };
     let r = row(&e, amp, "R1");
-    let Target::Leaf(l) = e.insts.target[r] else { panic!() };
-    assert_eq!(e.names.get(e.impls.template[l as usize]), "R{name} {A} {B} {R}");
+    let Target::Leaf(l) = e.insts.target[r] else {
+        panic!()
+    };
+    assert_eq!(
+        e.names.get(e.impls.template[l as usize]),
+        "R{name} {A} {B} {R}"
+    );
 }
 
 /// FNV-1a 64 + 6 Crockford base32 digits, written independently of elab.
@@ -124,18 +184,37 @@ fn spec_hash(text: &str) -> String {
         h = h.wrapping_mul(0x100_0000_01b3);
     }
     let a = b"0123456789abcdefghjkmnpqrstvwxyz";
-    (0..6).map(|i| a[((h >> (59 - 5 * i)) & 31) as usize] as char).collect()
+    (0..6)
+        .map(|i| a[((h >> (59 - 5 * i)) & 31) as usize] as char)
+        .collect()
 }
 
 #[test]
 fn specialization_names_are_stable_and_shared() {
     let bench = "schemify 1 shbench\n\ninst 0x0001 ./amp\n  at 0 0 R0\n  name X1\ninst 0x0002 ./amp\n  at 100 0 R0\n  name X2\n  r 2k\ninst 0x0003 ./amp\n  at 200 0 R0\n  name X3\n  r 2000\ninst 0x0004 ./amp\n  at 300 0 R0\n  name X4\n  r 1000\ninst 0x0005 ./amp\n  at 400 0 R0\n  name X5\n  r 3k\n";
     let e = elab_cfg(bench, None, Dialect::Ngspice);
-    let names: Vec<String> = ["X1", "X2", "X3", "X4", "X5"].iter().map(|x| target(&e, row(&e, e.top, x))).collect();
+    let names: Vec<String> = ["X1", "X2", "X3", "X4", "X5"]
+        .iter()
+        .map(|x| target(&e, row(&e, e.top, x)))
+        .collect();
     let two = format!("def:amp__{}", spec_hash("r=2000"));
     let three = format!("def:amp__{}", spec_hash("r=3000"));
-    assert_eq!(names, ["def:amp", two.as_str(), two.as_str(), "def:amp", three.as_str()]);
-    let amp_defs = e.defs.cell.iter().filter(|&&c| e.names.get(e.cells[c as usize].stem) == "amp").count();
+    assert_eq!(
+        names,
+        [
+            "def:amp",
+            two.as_str(),
+            two.as_str(),
+            "def:amp",
+            three.as_str()
+        ]
+    );
+    let amp_defs = e
+        .defs
+        .cell
+        .iter()
+        .filter(|&&c| e.names.get(e.cells[c as usize].stem) == "amp")
+        .count();
     assert_eq!(amp_defs, 3, "identical tuples share one definition");
     // Inside the specialization the value is concrete.
     let d = match e.insts.target[row(&e, e.top, "X2")] {
@@ -157,20 +236,35 @@ fn path_rules_split_definitions_with_equal_params() {
     // a name.
     let mid = "schemify 1 shcomp\n\npin P inout 0 0\n\nimpl sch schematic\n\ninst 0a0001 ./amp\n  at 0 0 R0\n  name A1\n\nport 0p0001 0 0 R0 P\n";
     let bench = "schemify 1 shbench\n\ninst 0x0001 ./mid\n  at 0 0 R0\n  name M1\ninst 0x0002 ./mid\n  at 100 0 R0\n  name M2\n\nconfig c\n  inst /M2/A1 beh\n";
-    let (p, hs) = project(&[("res.shprim", RES), ("amp.shcomp", AMP), ("mid.shcomp", mid), ("tb.shbench", bench)]);
+    let (p, hs) = project(&[
+        ("res.shprim", RES),
+        ("amp.shcomp", AMP),
+        ("mid.shcomp", mid),
+        ("tb.shbench", bench),
+    ]);
     let req = Request {
         config: Some("c"),
         ..ngspice()
     };
     let e = elaborate(&p, hs[3], &req, &mut no_funcs);
-    let (m1, m2) = (target(&e, row(&e, e.top, "M1")), target(&e, row(&e, e.top, "M2")));
+    let (m1, m2) = (
+        target(&e, row(&e, e.top, "M1")),
+        target(&e, row(&e, e.top, "M2")),
+    );
     assert_ne!(m1, m2, "different children, different definitions");
-    assert!(m1.starts_with("def:mid__") && m2.starts_with("def:mid__"), "{m1} {m2}");
+    assert!(
+        m1.starts_with("def:mid__") && m2.starts_with("def:mid__"),
+        "{m1} {m2}"
+    );
     let names: Vec<&str> = e.defs.name.iter().map(|n| e.names.get(*n)).collect();
     let mut sorted = names.clone();
     sorted.sort_unstable();
     sorted.dedup();
-    assert_eq!(sorted.len(), names.len(), "definition names are unique: {names:?}");
+    assert_eq!(
+        sorted.len(),
+        names.len(),
+        "definition names are unique: {names:?}"
+    );
 }
 
 #[test]
@@ -179,7 +273,12 @@ fn recursion_is_reported_not_followed() {
     let b = "schemify 1 shcomp\n\npin P inout 0 0\n\nimpl sch schematic\n\ninst 0b0001 ./a\n  at 0 0 R0\n  name XA\n\nport 0p0002 0 0 R0 P\n";
     let selfie = "schemify 1 shcomp\n\npin P inout 0 0\n\nimpl sch schematic\n\ninst 0c0001 ./selfie\n  at 0 0 R0\n  name XS\n\nport 0p0003 0 0 R0 P\n";
     let bench = "schemify 1 shbench\n\ninst 0x0001 ./a\n  at 0 0 R0\n  name X1\ninst 0x0002 ./selfie\n  at 100 0 R0\n  name X2\n";
-    let (p, hs) = project(&[("a.shcomp", a), ("b.shcomp", b), ("selfie.shcomp", selfie), ("tb.shbench", bench)]);
+    let (p, hs) = project(&[
+        ("a.shcomp", a),
+        ("b.shcomp", b),
+        ("selfie.shcomp", selfie),
+        ("tb.shbench", bench),
+    ]);
     let e = elab(&p, hs[3]);
     let paths: Vec<&str> = e
         .violations
@@ -197,17 +296,32 @@ fn inherited_connections_resolve_up_the_path() {
     // propagated inherited ports (sorted), and the top resolves them per instance.
     let buf = "schemify 1 shcomp\n\npin A in 0 0\npin Y out 100 0\n\nimpl sch schematic\n\ninst 0j0001 ./inv\n  at 0 0 R0\n  name I1\n  inherit VSS gnd_local\ninst 0j0002 ./inv\n  at 20 0 R0\n  name I2\n\nport 0p0001 0 0 R0 A\nport 0p0002 40 0 R0 Y\n";
     let bench = "schemify 1 shbench\n\ninst 0x0001 ./buf\n  at 0 0 R0\n  name X1\ninst 0x0002 ./buf\n  at 200 0 R0\n  name X2\n  inherit VDD vccb\n\nlabel 0n0001 0 0 R0 in1\nlabel 0n0002 100 0 R0 out1\nlabel 0n0003 200 0 R0 in2\nlabel 0n0004 300 0 R0 out2\n";
-    let (p, hs) = project(&[("inv.shprim", INV), ("buf.shcomp", buf), ("tb.shbench", bench)]);
+    let (p, hs) = project(&[
+        ("inv.shprim", INV),
+        ("buf.shcomp", buf),
+        ("tb.shbench", bench),
+    ]);
     let e = elab(&p, hs[2]);
     assert!(!e.violations.blocking(), "{:?}", codes(&e));
     let x1 = row(&e, e.top, "X1");
     assert_eq!(conn_names(&e, x1), ["in1", "out1", "vdd!", "0"]);
-    assert_eq!(conn_names(&e, row(&e, e.top, "X2")), ["in2", "out2", "vccb", "0"]);
-    let Target::Def(d) = e.insts.target[x1] else { panic!() };
+    assert_eq!(
+        conn_names(&e, row(&e, e.top, "X2")),
+        ["in2", "out2", "vccb", "0"]
+    );
+    let Target::Def(d) = e.insts.target[x1] else {
+        panic!()
+    };
     let ports: Vec<&str> = e.ports(d).iter().map(|n| e.names.get(*n)).collect();
     assert_eq!(ports, ["A", "Y", "VDD", "VSS"]);
-    assert_eq!(conn_names(&e, row(&e, d, "I1")), ["A", "net_0j0001", "VDD", "gnd_local"]);
-    assert_eq!(conn_names(&e, row(&e, d, "I2")), ["net_0j0001", "Y", "VDD", "VSS"]);
+    assert_eq!(
+        conn_names(&e, row(&e, d, "I1")),
+        ["A", "net_0j0001", "VDD", "gnd_local"]
+    );
+    assert_eq!(
+        conn_names(&e, row(&e, d, "I2")),
+        ["net_0j0001", "Y", "VDD", "VSS"]
+    );
     let globals: Vec<&str> = e.globals.iter().map(|n| e.names.get(*n)).collect();
     assert_eq!(globals, ["0", "vdd!"]);
     // A cell netlisted on its own: its declared/propagated pins are bound to defaults.
@@ -220,36 +334,72 @@ fn params_evaluate_in_parent_then_child_scope_with_corner_and_overrides() {
     let dev = "schemify 1 shprim\n\npin D inout 0 0\n\nparam W 1\nparam L 0.25\nparam ad 0\n  computed W*L\n\nimpl spice spice\n";
     let amp = "schemify 1 shcomp\n\npin P inout 0 0\n\nparam Wp 2\n\nimpl sch schematic\n\ninst 0m0001 ./dev\n  at 0 0 R0\n  name M1\n  W Wp*k\n  ad 9\n  bogus 1\n\nport 0p0001 0 0 R0 P\n\nvar k 3\n";
     let bench = "schemify 1 shbench\n  corner tt\n\ninst 0x0001 ./amp\n  at 0 0 R0\n  name X1\n  Wp vdd*2\n\nvar vdd 1.8\n\ncorner ff\n  lib ${PDK}/models.lib ff\n  set vdd 2\n  temp -40\ncorner tt\n  include ./tt.spice\n  set vdd 1.8\n  temp vdd*10\n\ncode b2 ngspice\n  | .op\ncode a1 spice\n  | .control\n  | run\n  | .endc\ncode z9 xyce\n  | .tran 1n 1u\n";
-    let (p, hs) = project(&[("dev.shprim", dev), ("amp.shcomp", amp), ("tb.shbench", bench)]);
+    let (p, hs) = project(&[
+        ("dev.shprim", dev),
+        ("amp.shcomp", amp),
+        ("tb.shbench", bench),
+    ]);
     let run = |corner: Option<&str>, ovr: &[(&str, &str)], d: Dialect| {
         let req = Request {
             config: None,
             corner,
             overrides: ovr,
+            env: &[],
             dialect: d,
         };
         elaborate(&p, hs[2], &req, &mut no_funcs)
     };
     let e = run(Some("ff"), &[], Dialect::Ngspice);
-    let Target::Def(d) = e.insts.target[row(&e, e.top, "X1")] else { panic!() };
+    let Target::Def(d) = e.insts.target[row(&e, e.top, "X1")] else {
+        panic!()
+    };
     let m1 = row(&e, d, "M1");
-    assert_eq!(param(&e, m1, "W"), "12", "Wp = vdd*2 in the bench scope, W = Wp*k in amp's");
-    assert_eq!(param(&e, m1, "ad"), "3", "computed in the child scope; the override is E030");
+    assert_eq!(
+        param(&e, m1, "W"),
+        "12",
+        "Wp = vdd*2 in the bench scope, W = Wp*k in amp's"
+    );
+    assert_eq!(
+        param(&e, m1, "ad"),
+        "3",
+        "computed in the child scope; the override is E030"
+    );
     let c = codes(&e);
-    assert!(c.contains(&"E030".to_owned()) && c.contains(&"W007".to_owned()), "{c:?}");
+    assert!(
+        c.contains(&"E030".to_owned()) && c.contains(&"W007".to_owned()),
+        "{c:?}"
+    );
     // Bench lines: vars after corner set, corner lines in file order, code by dialect.
-    let vars: Vec<(&str, &str)> = e.bench.var_name.iter().zip(&e.bench.var_text).map(|(a, b)| (e.names.get(*a), e.names.get(*b))).collect();
+    let vars: Vec<(&str, &str)> = e
+        .bench
+        .var_name
+        .iter()
+        .zip(&e.bench.var_text)
+        .map(|(a, b)| (e.names.get(*a), e.names.get(*b)))
+        .collect();
     assert_eq!(vars, [("vdd", "2")]);
     assert_eq!(e.bench.corner_kind, [CornerLine::Lib, CornerLine::Temp]);
-    let args: Vec<&str> = e.bench.corner_args.iter().map(|n| e.names.get(*n)).collect();
+    let args: Vec<&str> = e
+        .bench
+        .corner_args
+        .iter()
+        .map(|n| e.names.get(*n))
+        .collect();
     assert_eq!(args, ["${PDK}/models.lib", "ff", "-40"]);
     let blocks: Vec<&str> = e.bench.code_name.iter().map(|n| e.names.get(*n)).collect();
     assert_eq!(blocks, ["a1", "b2"]);
     // Default corner from the header; overrides win over the corner's set, in order.
     let e = run(None, &[("vdd", "2"), ("vdd", "2.5")], Dialect::Ngspice);
-    let Target::Def(d) = e.insts.target[row(&e, e.top, "X1")] else { panic!() };
+    let Target::Def(d) = e.insts.target[row(&e, e.top, "X1")] else {
+        panic!()
+    };
     assert_eq!(param(&e, row(&e, d, "M1"), "W"), "15");
-    let args: Vec<&str> = e.bench.corner_args.iter().map(|n| e.names.get(*n)).collect();
+    let args: Vec<&str> = e
+        .bench
+        .corner_args
+        .iter()
+        .map(|n| e.names.get(*n))
+        .collect();
     assert_eq!(args, ["./tt.spice", "25"]);
     // Xyce: `.control` in a spice block is E033 and not emitted.
     let e = run(None, &[], Dialect::Xyce);
@@ -266,17 +416,27 @@ fn unresolved_cells_and_unopened_bodies() {
     let bench = "schemify 1 shbench\n\ninst 0x0001 ./ghost\n  at 0 0 R0\n  name X1\ninst 0x0002 nolib:res\n  at 0 0 R0\n  name X2\ninst 0x0003 ./amp\n  at 0 0 R0\n  name X3\n";
     // amp is indexed but not opened: its schematic is needed.
     let mut p = Project::new(None, None, 3).unwrap();
-    let files = [("res.shprim", RES), ("amp.shcomp", AMP), ("tb.shbench", bench)];
+    let files = [
+        ("res.shprim", RES),
+        ("amp.shcomp", AMP),
+        ("tb.shbench", bench),
+    ];
     let listing: Vec<(&str, &[u8])> = files.iter().map(|(n, t)| (*n, t.as_bytes())).collect();
     p.index_library("", "", &listing).unwrap();
-    let top = p.open("", "tb.shbench", bench.as_bytes(), None).unwrap().handle;
+    let top = p
+        .open("", "tb.shbench", bench.as_bytes(), None)
+        .unwrap()
+        .handle;
     let e = elab(&p, top);
     assert_eq!(codes(&e).iter().filter(|c| *c == "E001").count(), 2);
     assert_eq!(e.needs_open.len(), 1);
     assert_eq!(e.insts_of(e.top).len(), 0);
     p.open("", "amp.shcomp", AMP.as_bytes(), None).unwrap();
     let e = elab(&p, top);
-    assert!(e.needs_open.len() == 1, "res is a leaf whose body may be needed");
+    assert!(
+        e.needs_open.len() == 1,
+        "res is a leaf whose body may be needed"
+    );
     assert_eq!(target(&e, row(&e, e.top, "X3")), "def:amp");
 }
 
@@ -313,10 +473,17 @@ fn expression_errors_and_cycles_are_e008() {
     let cell = "schemify 1 shcomp\n\npin P inout 0 0\n\nparam a b+1\nparam b a+1\nparam c 1/0\n\nimpl sch schematic\n\ninst 0m0001 ./res\n  at 0 0 R0\n  name R1\n  R nope\n\nport 0p0001 0 0 R0 P\n";
     let (p, hs) = project(&[("res.shprim", RES), ("cell.shcomp", cell)]);
     let st = CellState::build(&p, hs[1], &mut no_funcs).unwrap();
-    let details: Vec<String> = st.violations.with(schemify_elab::Code::E008).map(|v| v.detail.clone()).collect();
+    let details: Vec<String> = st
+        .violations
+        .with(schemify_elab::Code::E008)
+        .map(|v| v.detail.clone())
+        .collect();
     assert_eq!(details.len(), 4, "{details:?}");
     assert_eq!(details.iter().filter(|d| d.starts_with("X005")).count(), 2);
-    assert!(details.iter().any(|d| d.starts_with("X010")) && details.iter().any(|d| d.starts_with("X004")));
+    assert!(
+        details.iter().any(|d| d.starts_with("X010"))
+            && details.iter().any(|d| d.starts_with("X004"))
+    );
 }
 
 #[test]
@@ -327,8 +494,14 @@ fn gating_waivers_flip_only_the_named_param() {
     for l in ["0.1", "0.15", "0.175", "0.2", "0.3", "0.35", "0.325"] {
         for waive in [false, true] {
             for model in ["n", "q"] {
-                let w = if waive { "\nwaive 0w0001 0m0001 L\n  reason \"char\"\n" } else { "" };
-                let bench = format!("schemify 1 shbench\n\ninst 0m0001 ./dev\n  at 0 0 R0\n  name M1\n  L {l}\n  W 0.5\n  model {model}\n{w}");
+                let w = if waive {
+                    "\nwaive 0w0001 0m0001 L\n  reason \"char\"\n"
+                } else {
+                    ""
+                };
+                let bench = format!(
+                    "schemify 1 shbench\n\ninst 0m0001 ./dev\n  at 0 0 R0\n  name M1\n  L {l}\n  W 0.5\n  model {model}\n{w}"
+                );
                 let (p, hs) = project(&[("dev.shprim", dev), ("tb.shbench", &bench)]);
                 let st = CellState::build(&p, hs[1], &mut no_funcs).unwrap();
                 let x: f64 = l.parse().unwrap();

@@ -8,6 +8,7 @@
 //! connectivity (pin columns) and per graph node during binding (program refs).
 //! Lifetime: one elaboration or one editor cell state.
 
+use crate::connect::Ignore;
 use crate::names::{Name, Names};
 use crate::netexpr;
 use crate::values::{Code, NONE, Progs, Ref, Syntax, VAR, Val};
@@ -123,6 +124,8 @@ pub struct Iface {
     pub fmt_dialect: Vec<Name>,
     /// `format` template text.
     pub fmt_template: Vec<Name>,
+    /// `ignore` attr of each impl (format spec §4: same meaning as the instance attr).
+    pub impl_ignore: Vec<Ignore>,
     /// Index of the default impl (`default` header attr, else the only impl), or
     /// `u32::MAX` when the cell has none.
     pub default_impl: u32,
@@ -255,7 +258,13 @@ impl Iface {
                     && progs.refs(b).is_empty()
                     && matches!(&progs.code[b as usize], Code::Expr(p) if p.plugin_fns().len() == 0);
                 if constant {
-                    let (v, _) = progs.eval(b, &[], &mut crate::values::no_funcs, &mut scratch, &mut text);
+                    let (v, _) = progs.eval(
+                        b,
+                        &[],
+                        &mut crate::values::no_funcs,
+                        &mut scratch,
+                        &mut text,
+                    );
                     row[slot] = (!v.is_err()).then_some(v);
                 }
             }
@@ -286,6 +295,12 @@ impl Iface {
                 .push(one("model").map_or(Name::NONE, |v| names.intern(s.get(v))));
             f.impl_file
                 .push(one("file").map_or(Name::NONE, |v| names.intern(s.get(v))));
+            f.impl_ignore.push(match one("ignore").map(|v| s.get(v)) {
+                Some("true") => Ignore::True,
+                Some("open") => Ignore::Open,
+                Some("short") => Ignore::Short,
+                _ => Ignore::No,
+            });
             for (key, vals) in pool.attrs(impls.attrs[r]) {
                 if s.get(key) == "format" && vals.len() == 2 {
                     f.fmt_dialect.push(names.intern(s.get(vals[0])));

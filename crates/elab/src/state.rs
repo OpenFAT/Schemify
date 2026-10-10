@@ -124,6 +124,7 @@ impl CellState {
         let mut rebuild = false;
         let mut touched_insts: Vec<ObjId> = Vec::new();
         let mut touched_vars = false;
+        let mut waived = false;
         for op in ops {
             let (kind, key, attr) = subject(op);
             match kind {
@@ -149,6 +150,7 @@ impl CellState {
                     Op::SetField { index: 1, .. } => touched_vars = true,
                     _ => rebuild = true,
                 },
+                RecordKind::Waive => waived = true,
                 RecordKind::Param | RecordKind::Pin | RecordKind::Impl | RecordKind::Header => {
                     *self = CellState::build(project, h, funcs).expect("live handle");
                     return Recomputed {
@@ -176,7 +178,11 @@ impl CellState {
                 .graph
                 .recompute(&dirty, &self.ifaces, funcs, &mut self.ws);
         }
-        self.check(doc, funcs);
+        if done.nets || done.graph || waived || !touched_insts.is_empty() {
+            self.check(doc, funcs);
+        } else {
+            self.check_values_only(doc, funcs);
+        }
         assert!(!(done.graph && done.evaluated > 0));
         done
     }
@@ -269,11 +275,16 @@ impl CellState {
 
     fn rebuild_nets(&mut self, doc: &Document) {
         self.net_findings.clear();
+        let mut globals = Vec::new();
+        crate::connect::global_labels(doc, &mut self.names, &mut globals);
+        globals.sort_unstable();
+        globals.dedup();
         self.nets = connect(
             doc,
             &self.ifaces[0],
             &self.ifaces,
             &self.inst_iface,
+            &globals,
             &mut self.names,
             &mut self.net_findings,
         );
@@ -294,6 +305,7 @@ impl CellState {
         self.graph.unverified = unv;
     }
 
+    /// Recomputes every finding.
     fn check<F: Funcs>(&mut self, doc: &Document, funcs: &mut F) {
         self.waivers = waivers(doc, &mut self.names);
         let mut rows = self.net_findings.clone();
@@ -307,13 +319,6 @@ impl CellState {
             path: Name::NONE,
         };
         check_overrides(&cx, &self.unresolved, &mut self.names, &mut rows);
-        let cx = CellCtx {
-            ifaces: &self.ifaces,
-            inst_iface: &self.inst_iface,
-            graph: &self.graph,
-            waivers: &self.waivers,
-            ..cx
-        };
         check_values(
             &cx,
             &self.graph.vals,
@@ -323,6 +328,32 @@ impl CellState {
             &mut rows,
         );
         self.violations = Violations::from_rows(rows, &self.names);
+    }
+
+    /// Replaces only the findings that depend on values (`E008`, gating): after a value
+    /// edit nothing else can change, and the other rows (often thousands of `W004`)
+    /// keep their sorted place.
+    fn check_values_only<F: Funcs>(&mut self, doc: &Document, funcs: &mut F) {
+        let mut rows = Vec::new();
+        let cx = CellCtx {
+            doc,
+            ifaces: &self.ifaces,
+            own: 0,
+            inst_iface: &self.inst_iface,
+            graph: &self.graph,
+            waivers: &self.waivers,
+            path: Name::NONE,
+        };
+        check_values(
+            &cx,
+            &self.graph.vals,
+            &self.names,
+            funcs,
+            &mut self.ws,
+            &mut rows,
+        );
+        let fresh = Violations::from_rows(rows, &self.names);
+        self.violations.replace_values(fresh, &self.names);
     }
 }
 

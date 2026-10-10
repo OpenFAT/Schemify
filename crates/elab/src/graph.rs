@@ -386,6 +386,34 @@ impl Graph {
         }
     }
 
+    /// Evaluates only the own params and vars (default context): they never read
+    /// instance nodes, so this is their full evaluation at a fraction of the cost.
+    /// Instance nodes are left as [`Val::Upstream`].
+    pub(crate) fn eval_own<F: Funcs>(
+        &self,
+        vals: &mut Vec<Val>,
+        unv: &mut Vec<bool>,
+        ifaces: &[Iface],
+        funcs: &mut F,
+        ws: &mut Work,
+    ) {
+        let n = self.len();
+        vals.clear();
+        vals.resize(n, Val::Upstream);
+        unv.clear();
+        unv.resize(n, false);
+        for &node in &self.order {
+            if self.owner[node as usize] == NONE {
+                debug_assert!(
+                    self.node_deps(node)
+                        .iter()
+                        .all(|&d| self.owner[d as usize] == NONE)
+                );
+                self.eval_node(node, vals, unv, ifaces, funcs, ws);
+            }
+        }
+    }
+
     /// Re-evaluates the `dirty` nodes and everything depending on them, in order.
     /// Returns the number of nodes evaluated. Valid while edges are unchanged.
     ///
@@ -461,6 +489,7 @@ impl Graph {
 
     /// Evaluates bound `which` (`MIN`, `MAX`, `STEP`, `GRID`) of param `k` for
     /// instance row `i` in its child scope; `None` when absent or failing.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn bound<F: Funcs>(
         &self,
         i: usize,
@@ -478,6 +507,9 @@ impl Graph {
         let b = c.param_bound[k][which];
         if b == NONE {
             return None;
+        }
+        if let Some(v) = &c.bound_const[k][which] {
+            return Some(v.clone());
         }
         let mut inputs: Vec<Value<'_>> = recycle(std::mem::take(&mut ws.inputs));
         for &r in c.progs.refs(b) {
