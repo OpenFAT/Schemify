@@ -32,7 +32,7 @@ Union-find over the cell's schematic points, using exact i32 coordinates:
 Each connected component is a **net**. Naming, per net:
 1. names from `port` records (the interface pin name), then from labels;
 2. more than one distinct name on one net → `E003` (shorted names); the emitted name is the port name if any, else the bytewise-smallest label;
-3. no name → `net_<id>` where `<id>` is the bytewise-smallest id among the net's wires/labels/instances-pins' owning instance ids (stable across unrelated edits).
+3. no name → `net_<id>` where `<id>` is the bytewise-smallest id among the net's wires, labels, ports and noconns (each belongs to exactly one net); a net made only of instance pins → `net_<inst id>_<pin index>` of its bytewise-smallest (instance id, pin index) pin node. A generated name is therefore unique per net and can never merge two nets (SPICE connects equal node names).
 
 Global nets: the name `0`, any name ending in `!`, and any name carried by a label with `global true` anywhere in the elaborated hierarchy (xschem's `.GLOBAL` symbols import this way; the name keeps its spelling). Globals are the same net in every cell and are never subckt ports. An inherited pin (`pin … inherit <net>`) is not a geometric node; see §5.
 
@@ -143,7 +143,7 @@ Violations are keyed by (code, cell, object id, instance path, param) and sorted
 Where §1–§8 left a choice open, `crates/elab` decided as follows; these are normative.
 
 1. **Names connect.** Components carrying the same bit name are one net, in the cell and (for globals) everywhere. A component with names whose bit lists differ is `E003` (one row per extra name); names of different width on one component are `E011` and the narrower-ranked name is ignored.
-2. **Emitted bit name**, per merged net: global names first (`0`, `…!`, `global true`), then port names (and interface pins bound by name), then label and `inherit` names; bytewise smallest within the class. Unnamed: `net_<id>` for a 1-bit component, `net_<id>[k]` (component bit `k`, from 0) for wider ones; noconn ids are id candidates too. The component (render/plugin `Nets` row) is named by its best name expression (`d[3:0]`).
+2. **Emitted bit name**, per merged net: global names first (`0`, `…!`, `global true`), then port names (and interface pins bound by name), then label and `inherit` names; bytewise smallest within the class. Unnamed: the §3 rule (`net_<id>` from an owned wire/label/port/noconn id, else `net_<inst>_<pin>`), with `[k]` (component bit `k`, from 0) appended for wider components. The component (render/plugin `Nets` row) is named by its best name expression (`d[3:0]`).
 3. **Width of an unnamed component** = its widest attached pin, so an unnamed wire between two 4-bit pins is 4 bits, and an iterated instance's 1-bit pins slice it.
 4. **Net expressions** outside the grammar are one scalar name, verbatim (importer leftovers keep working); an expression over 65 535 bits is `E011`.
 5. **Pins bind by name.** A `port` names its component with its pin's bits; every interface pin (ordinary or inherited) binds to the nets named by its bit names, so a label spelled like the pin binds it too. Inside a cell's schematic an inherited pin `P` is the net named `P` (not its default).

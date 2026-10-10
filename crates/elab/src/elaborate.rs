@@ -546,7 +546,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                     object: ObjId::NONE,
                     path: Name::NONE,
                     param,
-                    detail: format!("`${{{name}}}` is not defined"),
+                    detail: format!("`${{{name}}}` is not defined or expands cyclically"),
                 });
                 self.names.intern(text)
             }
@@ -1573,6 +1573,19 @@ pub(crate) fn expand_dollars<'v>(
     text: &str,
     lookup: impl Fn(&str) -> Option<&'v str>,
 ) -> Result<String, String> {
+    expand_depth(text, &lookup, 0)
+}
+
+/// Bound on nested `${NAME}` expansion; deeper (or cyclic) definitions are `E034`.
+const EXPAND_DEPTH_MAX: u8 = 16;
+
+/// Expands `text`, recursively expanding the values it substitutes (project `set`
+/// values such as `${PDK_ROOT}/${PDK}/libs.tech` are themselves templates).
+fn expand_depth<'v>(
+    text: &str,
+    lookup: &impl Fn(&str) -> Option<&'v str>,
+    depth: u8,
+) -> Result<String, String> {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find('$') {
@@ -1584,7 +1597,11 @@ pub(crate) fn expand_dollars<'v>(
         } else if let Some(after) = tail.strip_prefix("${") {
             let end = after.find('}').ok_or_else(|| tail.to_owned())?;
             let name = &after[..end];
-            out.push_str(lookup(name).ok_or_else(|| name.to_owned())?);
+            let value = lookup(name).ok_or_else(|| name.to_owned())?;
+            if depth >= EXPAND_DEPTH_MAX {
+                return Err(name.to_owned());
+            }
+            out.push_str(&expand_depth(value, lookup, depth + 1)?);
             rest = &after[end + 1..];
         } else {
             out.push('$');

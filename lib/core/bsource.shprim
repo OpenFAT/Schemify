@@ -1,0 +1,30 @@
+schemify 1 shprim
+  doc "Behavioural source: SPICE B element, src = func (an ngspice expression of node voltages and branch currents)"
+  prefix B
+  category source
+
+pin p inout 0 -30
+pin n inout 0 30
+
+param src I
+  kind choice
+  choices V I
+  doc "V for a voltage source, I for a current source"
+param func 0
+  kind string
+  doc "SPICE expression, e.g. 'v(a)*2'"
+param m 1
+  doc "parallel multiplier"
+
+impl spice spice
+  format spice "{name} {p} {n} {src} = {func} m={m}"
+
+line 0 -30 0 -20
+line 0 20 0 30
+
+circle 0 0 20
+
+stext 30 -10 R0 {name}
+  size 0.2
+stext 30 0 R0 {src}={func}
+  size 0.2

@@ -1,0 +1,27 @@
+schemify 1 shprim
+  doc "Independent current source: SPICE I element; current flows from p through the source to m"
+  prefix I
+  category source
+
+pin p inout 0 -30
+pin n inout 0 30
+
+param value 0
+  kind string
+  doc "SPICE source specification"
+
+impl spice spice
+  format spice "{name} {p} {n} {value}"
+
+line 0 -30 0 -20
+line 0 20 0 30
+line 0 -10 0 10
+line 0 10 -5 0
+line 0 10 5 0
+
+circle 0 0 20
+
+stext 30 -10 R0 {name}
+  size 0.2
+stext 30 0 R0 {value}
+  size 0.2

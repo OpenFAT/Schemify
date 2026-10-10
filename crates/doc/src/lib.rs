@@ -65,6 +65,9 @@ pub use project::{
     apply_edits,
 };
 pub use record::{Attr, RecordBuf};
+/// Format types that appear in this crate's columns and edit targets, re-exported so
+/// consumers need no direct `schemify-format` dependency just to name them.
+pub use schemify_format::{FileKind, Orient, RecordKind};
 pub use sha256::{Digest, Sha256, hex, sha256};
 pub use strings::{ObjId, SYMS_MAX, Strings, Sym};
 pub use tables::{

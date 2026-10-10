@@ -1,0 +1,24 @@
+schemify 1 shprim
+  doc "Ammeter: a 0 V SPICE V element; its branch current i(<name>) is the current from p to n"
+  prefix V
+  category probe
+
+pin p inout 0 -30
+pin n inout 0 30
+
+param savecurrent true
+  kind bool
+  doc "also emit .save i(<name>)"
+
+impl spice spice
+  format spice "{name} {p} {n} 0{savecurrent ? \"\\n.save i(\" + name + \")\" : \"\"}"
+
+line 0 -30 0 -10
+line 0 10 0 30
+line 0 -10 -5 0
+line 0 -10 5 0
+
+circle 0 0 10
+
+stext 20 -10 R0 {name}
+  size 0.2

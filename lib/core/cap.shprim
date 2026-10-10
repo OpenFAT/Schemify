@@ -1,0 +1,27 @@
+schemify 1 shprim
+  doc "Capacitor: SPICE C element"
+  prefix C
+  category passive
+
+pin p inout 0 -30
+pin n inout 0 30
+
+param value 1p
+  kind string
+  unit F
+  doc "capacitance: SPICE value text (a number, an expression, or a value plus device parameters)"
+param m 1
+  doc "parallel multiplier"
+
+impl spice spice
+  format spice "{name} {p} {n} {value} m={m}"
+
+line 0 -30 0 -5
+line -20 -5 20 -5
+line -20 5 20 5
+line 0 5 0 30
+
+stext 20 -20 R0 {name}
+  size 0.2
+stext 20 10 R0 {value}
+  size 0.2

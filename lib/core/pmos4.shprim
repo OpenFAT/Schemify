@@ -1,0 +1,48 @@
+schemify 1 shprim
+  doc "P-channel MOSFET, 4 terminals: SPICE M element (spiceprefix X calls a subckt model instead)"
+  prefix M
+  category semiconductor
+
+pin d inout 20 30
+pin g in -20 0
+pin s inout 20 -30
+pin b in 20 0
+
+param spiceprefix ""
+  kind string
+  doc "instance-name prefix; X when the model is a subcircuit"
+param model pmos
+  kind string
+  doc "SPICE .model or subcircuit name"
+param w 1u
+  unit m
+  doc "channel width"
+param l 0.18u
+  unit m
+  doc "channel length"
+param extra ""
+  kind string
+  doc "further instance parameters, emitted verbatim"
+param m 1
+  doc "parallel multiplier"
+
+impl spice spice
+  format spice "{spiceprefix}{name} {d} {g} {s} {b} {model} w={w} l={l} {extra} m={m}"
+
+line 20 -30 20 -20
+line 20 20 20 30
+line -20 0 -10 0
+line -10 -20 -10 20
+line 0 -20 0 20
+line 0 -20 20 -20
+line 0 20 20 20
+line 0 0 20 0
+
+poly 20 -5 10 0 20 5
+  fill true
+  closed true
+
+stext 30 -20 R0 {name}
+  size 0.2
+stext 30 10 R0 {model}
+  size 0.2

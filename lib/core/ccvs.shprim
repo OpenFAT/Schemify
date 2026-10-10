@@ -1,0 +1,29 @@
+schemify 1 shprim
+  doc "Current-controlled voltage source: SPICE H element, v(p,m) = value * i(vnam)"
+  prefix H
+  category source
+
+pin p inout 0 -30
+pin n inout 0 30
+
+param vnam v1
+  kind string
+  doc "name of the voltage source whose current controls the output"
+param value 1
+  kind string
+  doc "transresistance, or any SPICE H specification"
+
+impl spice spice
+  format spice "{name} {p} {n} {vnam} {value}"
+
+line 0 -30 0 -20
+line 0 20 0 30
+line 0 -20 20 0
+line 20 0 0 20
+line 0 20 -20 0
+line -20 0 0 -20
+
+stext 30 -10 R0 {name}
+  size 0.2
+stext 30 0 R0 {vnam}
+  size 0.2

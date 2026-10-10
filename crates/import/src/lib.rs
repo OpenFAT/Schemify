@@ -1,14 +1,19 @@
 //! Clean-room importers (D1, D14, D24): xschem `.sch`/`.sym` designs and PDK libraries,
 //! SPICE model-card bin ranges, tech-file grids and Cadence `cdfDump` output.
 //!
-//! This crate currently holds the **readers**. Each turns text into data-oriented tables
-//! and never evaluates, executes or resolves anything: translation into Schemify files
-//! (`.shprim`/`.shcomp`/`.shbench`) sits on top of these tables. Behaviour comes from
-//! `docs/research/xschem-feature-inventory.md` §5 and `docs/research/pdk-xschem-devices.md`,
-//! never from xschem source.
+//! Two layers. The **readers** turn text into data-oriented tables and never evaluate,
+//! execute or resolve anything. The **translation** ([`translate_library`], spec
+//! `docs/spec/import.md`) turns those tables into Schemify files (`.shprim`/`.shcomp`/
+//! `.shbench`, a project manifest and an import report); [`check_output`] is its
+//! oracle (every file loads in `doc`, round-trips, and every expression compiles).
+//! Behaviour comes from `docs/research/` and from golden netlists produced by running
+//! xschem, never from xschem source (D1).
 //!
 //! | Transform | Reads | Writes |
 //! |---|---|---|
+//! | [`translate_library`] | `(path, bytes)` of `.sym`/`.sch` + [`Options`] | `(path, bytes)` outputs + [`Report`] |
+//! | [`tcl::pdk_vars`], [`tcl::drc_procs`] | PDK `xschemrc` text | project `set` entries, `drc` rules |
+//! | [`check_output`] | translated outputs | list of problems (empty = valid) |
 //! | [`xschem::read`] | `.sch`/`.sym` text | [`xschem::XschemFile`]: record tables, dropped-record issues, D33 roundings |
 //! | [`attr::Attrs::parse_into`] | one attribute string | key/value rows with an [`attr::Idioms`] set per value |
 //! | [`symbol::extract`] | [`xschem::XschemFile`] | [`symbol::SymbolInterface`]: attributes, template, pins in netlist order |
@@ -26,11 +31,23 @@
 
 pub mod attr;
 pub mod cdf;
+pub mod check;
+pub mod core;
 pub mod decimal;
+mod limits;
+pub mod report;
 pub mod spice;
 pub mod symbol;
+pub mod tcl;
 pub mod tech;
+pub mod template;
+pub mod translate;
 pub mod xschem;
+
+pub use crate::core::{DEVICE_MAP, core_library};
+pub use check::check_output;
+pub use report::Report;
+pub use translate::{Options, translate_library};
 
 /// Byte range into an arena string owned by the table that hands it out.
 ///
