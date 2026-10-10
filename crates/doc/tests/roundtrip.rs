@@ -457,6 +457,19 @@ fn newer_versions_open_read_only() {
 }
 
 #[test]
+fn inherit_is_keyed_by_pin_on_load() {
+    // One `inherit` line per pin is legal (format spec §4); the same pin twice is E024.
+    let ok = "schemify 1 shbench\n\ninst 0gsrp0 ./a\n  at 0 0 R0\n  name X1\n  inherit VPWR vdd\n  inherit VGND 0\n";
+    let mut p = Project::new(None, None, 1).unwrap();
+    let opened = p.open("", "ok.shbench", ok.as_bytes(), None).unwrap();
+    assert!(opened.diags.is_empty(), "{:?}", opened.diags);
+    let twice = ok.replace("inherit VGND 0", "inherit VPWR vss");
+    let opened = p.open("", "twice.shbench", twice.as_bytes(), None).unwrap();
+    let codes: Vec<Code> = opened.diags.iter().map(|d| d.code).collect();
+    assert_eq!(codes, [Code::E024]);
+}
+
+#[test]
 fn load_reports_what_the_format_cannot_see() {
     let text = "schemify 1 shbench\n\ninst 0gsrp0 ./a\n  at 0 0 R0\n  name X1\n  W 1\n  W 2\n\nwaive 1aaaaa zzzzzz W\n  reason ok\n";
     let mut p = Project::new(None, None, 1).unwrap();

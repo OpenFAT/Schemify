@@ -710,8 +710,16 @@ impl Document {
     /// override keys on one instance (`E024`) and dangling in-file references (`E042`).
     fn load_diags(&self) -> Vec<Diag> {
         let mut diags = Vec::new();
+        let inherit = self.strings.find("inherit");
+        let mut keys = Vec::new();
         for &span in &self.instances.attrs {
-            let keys = &self.pool.attr_key[span.range()];
+            // `inherit <pin> <net>` is repeatable, one line per pin (format spec §4),
+            // so it is keyed by (inherit, pin); every other key must be unique.
+            keys.clear();
+            keys.extend(self.pool.attrs(span).map(|(k, vals)| {
+                let pin = (Some(k) == inherit).then(|| vals.first().copied()).flatten();
+                (k, pin)
+            }));
             if (1..keys.len()).any(|i| keys[..i].contains(&keys[i])) {
                 diags.push(Diag {
                     code: Code::E024,
