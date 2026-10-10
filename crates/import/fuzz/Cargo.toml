@@ -1,0 +1,23 @@
+[package]
+name = "schemify-import-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+schemify-import = { path = ".." }
+
+# Own workspace: cargo-fuzz needs nightly + sanitizer flags the main workspace must not see.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "xschem_read"
+path = "fuzz_targets/xschem_read.rs"
+test = false
+doc = false
+bench = false
