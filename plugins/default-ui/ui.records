@@ -102,6 +102,100 @@ style canvas
   grow 1
   bg 000000
 
+style work
+  dir row
+  grow 1
+  stretch 1
+
+style docs-pane
+  bg ffffff
+  dir column
+  width 560
+  border 1
+  border-color a0a0a0
+
+style docs-bar
+  bg e8e8e8
+  dir row
+  height 28
+  pad 3
+  gap 2
+
+style docs-title
+  pad 6
+
+style docs-page
+  grow 1
+  dir column
+  pad 16
+  pad-y 12
+  gap 4
+
+style docs-block
+  dir column
+  pad 4
+  pad-y 2
+
+style docs-block-sel
+  dir column
+  pad 4
+  pad-y 2
+  bg e8f0ff
+
+style prose
+  font 15
+  fg 202020
+
+style docs-var
+  dir row
+  gap 6
+  pad 4
+  pad-y 3
+  bg f4f4f4
+
+style docs-var-name
+  fg 1a3a8a
+  font 14
+
+style docs-expr
+  bg ffffff
+  border 1
+  border-color d0d0d0
+  width 200
+  grow 1
+
+style docs-value
+  fg 006000
+  font 14
+
+style docs-value-bad
+  fg c00000
+  font 14
+
+style docs-unverified
+  fg b06000
+  font 11
+
+style docs-hint
+  fg 707070
+  font 12
+
+style docs-plot
+  bg 101010
+  fg c0c0c0
+  dir column
+  height 110
+  pad 8
+  pad-y 6
+  gap 4
+
+style text_area
+  bg ffffff
+  border 1
+  pad 6
+  pad-y 6
+  font 13
+
 style status
   bg d9d9d9
   dir row
@@ -608,6 +702,11 @@ node view.redraw item
   label Redraw
   command view.redraw
   accel Esc
+node view.docs item
+  parent menu.view
+  label "Docs page"
+  command view.docs
+  accel Alt+D
 node view.fullscreen item
   parent menu.view
   label Fullscreen
@@ -1512,10 +1611,58 @@ node tab.new button
   command tab.new
   style tab-new
 
-# --- canvas -----------------------------------------------------------------------------------------
+# --- work area: schematic canvas | docs page (D19, docs/spec/docs-page.md) --------------------------
+# The app fills `docs.page` with one node per doc block and removes `docs.pane` while the active
+# tab's docs are hidden (`view.docs`, Alt+D).
 
-node canvas canvas
+node work panel
   parent window
+  style work
+node canvas canvas
+  parent work
+node docs.pane panel
+  parent work
+  style docs-pane
+node docs.bar toolbar
+  parent docs.pane
+  style docs-bar
+node docs.title label
+  parent docs.bar
+  label Docs
+  style docs-title
+node docs.bar.spacer panel
+  parent docs.bar
+  style spacer
+node docs.add_prose button
+  parent docs.bar
+  label "+ Text"
+  command docs.add_prose
+  tooltip "Insert a text block after the selected block"
+node docs.add_var button
+  parent docs.bar
+  label "+ Var"
+  command docs.add_var
+  tooltip "Insert a variable after the selected block"
+node docs.up button
+  parent docs.bar
+  label Up
+  command docs.move_up
+node docs.down button
+  parent docs.bar
+  label Down
+  command docs.move_down
+node docs.delete button
+  parent docs.bar
+  label Del
+  command docs.delete_block
+node docs.close button
+  parent docs.bar
+  label x
+  command view.docs
+  tooltip "Hide the docs page (Alt+D)"
+node docs.page scroll
+  parent docs.pane
+  style docs-page
 
 # --- status bar (SNAP / GRID / MODE as in xschem) ---------------------------------------------------
 

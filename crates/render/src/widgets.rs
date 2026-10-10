@@ -67,7 +67,24 @@ pub fn draw_ui<P: Painter>(
 ) {
     let n = &tables.nodes;
     assert_eq!(layout.rect().len(), layout.len());
+    assert_eq!(layout.clip().len(), layout.len());
+    // Rows inside a scroll pane are clipped to it; consecutive rows share one clip layer.
+    let mut clipped: Option<schemify_ui::Rect> = None;
     for r in layout.rows(layer) {
+        let clip = layout.clip()[r];
+        if clipped != Some(clip).filter(|c| *c != schemify_ui::NO_CLIP) {
+            if clipped.take().is_some() {
+                p.pop_clip();
+            }
+            if clip != schemify_ui::NO_CLIP {
+                p.push_clip(rect(clip));
+                clipped = Some(clip);
+            }
+        }
+        let vis = layout.rect()[r].intersect(&clip);
+        if vis.w <= 0.0 || vis.h <= 0.0 {
+            continue; // scrolled out of view
+        }
         let node = layout.node()[r];
         let i = node as usize;
         let shown = layout.shown()[r];
@@ -119,10 +136,16 @@ pub fn draw_ui<P: Painter>(
             );
             continue;
         }
-        let editing = kind == Kind::TextInput && state.focus() == id;
+        let area_kind = kind == Kind::TextArea;
+        let editing = matches!(kind, Kind::TextInput | Kind::TextArea) && state.focus() == id;
         let label = layout.label()[r];
+        let pad_y = f64::from(style(StyleProp::PadY));
         if editing && let Some(ed) = state.editor().and_then(|e| e.try_layout()) {
-            let y = area.y0 + (area.height() - f64::from(ed.height())) / 2.0;
+            let y = if area_kind {
+                area.y0 + pad_y
+            } else {
+                area.y0 + (area.height() - f64::from(ed.height())) / 2.0
+            };
             let (x, w) = (area.x0 + pad, f64::from(ed.width()));
             draw_text(p, ed, x, y, fg, scratch);
             if let Some(c) = state.editor().and_then(|e| e.cursor_geometry(1.0)) {
@@ -131,7 +154,11 @@ pub fn draw_ui<P: Painter>(
             debug_assert!(w >= 0.0);
         } else if label != NO_TEXT {
             let l = text.layout(label);
-            let y = area.y0 + (area.height() - f64::from(l.height())) / 2.0;
+            let y = if area_kind {
+                area.y0 + pad_y
+            } else {
+                area.y0 + (area.height() - f64::from(l.height())) / 2.0
+            };
             let x = match kind {
                 Kind::Checkbox => {
                     area.x0 + pad + f64::from(l.height()) + f64::from(style(StyleProp::Gap))
@@ -198,11 +225,65 @@ pub fn draw_ui<P: Painter>(
                 Affine::translate((area.x0 + pad, area.y0 + f64::from(style(StyleProp::PadY))));
             draw_math(p, list, text.math_fonts(), at, fg, scratch);
         }
+        if kind == Kind::Prose && layout.prose()[r] != u32::MAX {
+            draw_prose(
+                p,
+                layout.prose()[r],
+                text,
+                (area.x0 + pad, area.y0 + pad_y),
+                fg,
+                scratch,
+            );
+        }
         if kind == Kind::Graph
             && let Some(g) = graphs.iter().find(|g| g.node == id)
         {
             draw_graph(p, area, g, fg, text, scratch);
         }
+    }
+    if clipped.is_some() {
+        p.pop_clip();
+    }
+}
+
+/// Draws prose layout `id` ([`TextSystem::prose`]) with its top-left at `at`: code shades,
+/// rules, text runs, then formulas.
+pub fn draw_prose<P: Painter>(
+    p: &mut P,
+    id: u32,
+    text: &TextSystem,
+    at: (f64, f64),
+    color: Color,
+    scratch: &mut UiScratch,
+) {
+    let list = text.prose_list(id);
+    assert_eq!(list.text_id.len(), list.text_y.len());
+    assert_eq!(list.math_id.len(), list.math_y.len());
+    let r = |q: &[f32; 4]| {
+        let (x, y) = (at.0 + f64::from(q[0]), at.1 + f64::from(q[1]));
+        Rect::new(x, y, x + f64::from(q[2]), y + f64::from(q[3]))
+    };
+    for s in &list.shades {
+        p.fill_rect(r(s), color.with_alpha(0.08));
+    }
+    for q in &list.rules {
+        p.fill_rect(r(q), color.with_alpha(0.6));
+    }
+    for k in 0..list.text_id.len() {
+        let l = text.layout(list.text_id[k]);
+        let (x, y) = (
+            at.0 + f64::from(list.text_x[k]),
+            at.1 + f64::from(list.text_y[k]),
+        );
+        draw_text(p, l, x, y, color, scratch);
+    }
+    for k in 0..list.math_id.len() {
+        let m = text.math_list(list.math_id[k]);
+        let a = Affine::translate((
+            at.0 + f64::from(list.math_x[k]),
+            at.1 + f64::from(list.math_y[k]),
+        ));
+        draw_math(p, m, text.math_fonts(), a, color, scratch);
     }
 }
 
@@ -233,12 +314,22 @@ pub fn draw_text<P: Painter>(
             scratch
                 .coords
                 .extend(r.normalized_coords().iter().map(|c| c.to_bits()));
+            // A synthesized oblique (italic of an upright-only face) slants about the baseline.
+            let mut at = Affine::translate((x, y));
+            if let Some(deg) = r.synthesis().skew() {
+                let b = f64::from(run.baseline());
+                let k = -f64::from(deg).to_radians().tan();
+                at = at
+                    * Affine::translate((0.0, b))
+                    * Affine::skew(k, 0.0)
+                    * Affine::translate((0.0, -b));
+            }
             p.glyphs(
                 r.font(),
                 r.font_size(),
                 &scratch.coords,
                 color,
-                Affine::translate((x, y)),
+                at,
                 &scratch.glyphs,
             );
         }

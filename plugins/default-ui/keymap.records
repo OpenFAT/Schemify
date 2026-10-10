@@ -48,6 +48,9 @@ key Alt+C edit.duplicate_objects
 key Shift+C tools.insert_arc
 key Ctrl+Shift+C tools.insert_circle
 
+# Alt+d: show / hide the docs page beside the schematic (Schemify; xschem has no binding here)
+key Alt+D view.docs
+
 # d: unselect the object under the mouse; Ctrl+d: delete files; D: unselect by area
 key D edit.unselect_under_mouse
 key Ctrl+D file.delete_files

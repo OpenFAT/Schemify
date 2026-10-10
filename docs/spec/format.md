@@ -124,8 +124,8 @@ Document order is preserved.
 
 | Record | Attributes | Notes |
 |---|---|---|
-| `prose <id>` | verbatim lines | Markdown + `$…$` / `$$…$$` LaTeX math (D21). |
-| `var <name> <expr>` | `unit <u>`, `min <expr>`, `max <expr>`, `doc <text>`, `cached <value> <hash>`, `dist gauss\|uniform <spread> [rel]` | The cell's variables table (D19). Bench vars are the sweep/optimizer variables. `dist` makes a bench var vary in Monte Carlo runs: normal with standard deviation `spread`, or uniform over `±spread`; `rel` scales the spread by the value ([run.md](run.md) §3). |
+| `prose <id>` | verbatim lines | Markdown + `$…$` / `$$…$$` LaTeX math (D21); the subset and its rendering are [docs-page.md](docs-page.md) §2. A ```` ```plot ```` fence inside is an embedded graph (§5 there), not a record. |
+| `var <name> <expr>` | `unit <u>`, `min <expr>`, `max <expr>`, `doc <text>`, `cached <value> <hash>`, `dist gauss\|uniform <spread> [rel]` | The cell's variables table (D19). Bench vars are the sweep/optimizer variables. `dist` makes a bench var vary in Monte Carlo runs: normal with standard deviation `spread`, or uniform over `±spread`; `rel` scales the spread by the value ([run.md](run.md) §3). `cached` (D20) is written by the tool: `<value>` in canonical number text (expr §7), `<hash>` 16 lowercase hex digits identifying the plugin(s) that computed it ([docs-page.md](docs-page.md) §6). |
 
 ### Rank 5 — impl bodies
 

@@ -224,6 +224,8 @@ pub struct UiState {
     pub(crate) focus: Sym,
     pub(crate) capture: bool,
     pub(crate) editor: Option<PlainEditor<()>>,
+    /// Wheel offset of each scrolled `scroll` node, by node id (layout clamps it).
+    pub(crate) scroll: Vec<(Sym, f32)>,
 }
 
 impl std::fmt::Debug for UiState {
@@ -240,6 +242,33 @@ impl std::fmt::Debug for UiState {
 impl UiState {
     /// Maximum menu nesting.
     pub const MAX_OPEN: usize = 16;
+    /// Scroll nodes whose offsets are remembered; the oldest is forgotten beyond this.
+    pub const MAX_SCROLL: usize = 64;
+    /// Pixels per wheel line.
+    pub const WHEEL_PX: f32 = 40.0;
+
+    /// Scroll offset of `scroll` node `id` in pixels (0 when never scrolled).
+    pub fn scroll_of(&self, id: Sym) -> f32 {
+        self.scroll
+            .iter()
+            .find(|(s, _)| *s == id)
+            .map_or(0.0, |(_, o)| *o)
+    }
+
+    /// Sets the scroll offset of node `id`, clamped to `[0, max]`.
+    pub fn set_scroll(&mut self, id: Sym, offset: f32, max: f32) {
+        let v = offset.clamp(0.0, max.max(0.0));
+        match self.scroll.iter_mut().find(|(s, _)| *s == id) {
+            Some(e) => e.1 = v,
+            None => {
+                if self.scroll.len() >= Self::MAX_SCROLL {
+                    self.scroll.remove(0);
+                }
+                self.scroll.push((id, v));
+            }
+        }
+        debug_assert!(self.scroll.len() <= Self::MAX_SCROLL);
+    }
 
     /// Opens a chain of menus (menubar menu first); used by tests and by keyboard menu access.
     pub fn open_menus(&mut self, chain: &[Sym]) {
@@ -301,7 +330,10 @@ impl UiState {
         let Some(n) = tables.nodes.find(node) else {
             return false;
         };
-        if tables.nodes.kind[n as usize] != Kind::TextInput {
+        if !matches!(
+            tables.nodes.kind[n as usize],
+            Kind::TextInput | Kind::TextArea
+        ) {
             return false;
         }
         let Some(r) = layout.row_of(n) else {
@@ -326,6 +358,7 @@ fn interactive(kind: Kind, shown: Shown) -> bool {
                 | Kind::Checkbox
                 | Kind::Dropdown
                 | Kind::TextInput
+                | Kind::TextArea
         )
 }
 
@@ -437,9 +470,12 @@ pub fn route_input(
                 }
                 let i = n as usize;
                 let id = ids[i];
-                if nodes.kind[i] != Kind::TextInput && !state.focus.is_none() {
+                let field = matches!(nodes.kind[i], Kind::TextInput | Kind::TextArea);
+                let same = field && state.focus == id;
+                if !same && !state.focus.is_none() {
                     state.blur();
                     out.redraw = true;
+                    out.relayout = true; // a text_area shrinks back to its value
                 }
                 match (nodes.kind[i], shown) {
                     (_, Shown::Title) => {
@@ -457,12 +493,18 @@ pub fn route_input(
                             out.relayout = true;
                         }
                     }
-                    (Kind::TextInput, _) => {
+                    (Kind::TextInput | Kind::TextArea, _) => {
                         focus_field(tables, layout, strings, text, state, r, x, y);
                         out.redraw = true;
                     }
                     (
-                        Kind::Item | Kind::Button | Kind::Tab | Kind::Checkbox | Kind::Dropdown,
+                        Kind::Item
+                        | Kind::Button
+                        | Kind::Tab
+                        | Kind::Checkbox
+                        | Kind::Dropdown
+                        | Kind::Prose
+                        | Kind::Label,
                         _,
                     ) => {
                         let cmd = nodes.prop(Prop::Command)[i];
@@ -487,16 +529,39 @@ pub fn route_input(
                     out.redraw = true;
                 }
             }
-            InputEvent::Wheel { x, y, .. } => {
-                let on_canvas = matches!(hit(x, y), Some((_, n, Shown::Normal)) if nodes.kind[n as usize] == Kind::Canvas);
+            InputEvent::Wheel { x, y, dy, .. } => {
+                let h = hit(x, y);
+                let on_canvas = matches!(h, Some((_, n, Shown::Normal)) if nodes.kind[n as usize] == Kind::Canvas);
                 if on_canvas && state.open.is_empty() {
                     out.canvas.push(ev);
+                    continue;
+                }
+                // Over a scroll pane (or anything inside one): scroll it. Wheel away from the
+                // user (positive `dy`) moves the content down, like every text view.
+                let pane = h.map(|(r, n, _)| {
+                    if nodes.kind[n as usize] == Kind::Scroll {
+                        n
+                    } else {
+                        layout.scroller(r)
+                    }
+                });
+                if let Some(s) = pane.filter(|&s| s != NO_NODE)
+                    && let Some(max) = layout.scroll_max(s)
+                {
+                    let id = ids[s as usize];
+                    let now = state.scroll_of(id);
+                    state.set_scroll(id, now - dy * UiState::WHEEL_PX, max);
+                    out.relayout |= state.scroll_of(id) != now;
                 }
             }
             InputEvent::Key { chord } => {
                 if state.editor.is_some() {
-                    edit_key(tables, text, state, chord, out);
+                    let area = nodes
+                        .find(state.focus)
+                        .is_some_and(|n| nodes.kind[n as usize] == Kind::TextArea);
+                    edit_key(tables, text, state, chord, area, out);
                     out.redraw = true;
+                    out.relayout |= area; // the field grows and shrinks with its lines
                 } else if chord == Chord::new(Mods::default(), Key::ESCAPE)
                     && (!state.open.is_empty() || modal)
                 {
@@ -515,6 +580,9 @@ pub fn route_input(
                     d.insert_or_replace_selection(s);
                     d.refresh_layout();
                     out.redraw = true;
+                    out.relayout |= nodes
+                        .find(state.focus)
+                        .is_some_and(|n| nodes.kind[n as usize] == Kind::TextArea);
                 }
             }
             InputEvent::Preedit { start, end } => {
@@ -569,34 +637,60 @@ fn focus_field(
     let style =
         |p| crate::layout::row_style(tables, layout.title_style, n, Shown::Normal, p) as f32;
     let (pad, font) = (style(StyleProp::Pad), style(StyleProp::Font).max(8.0));
+    let area = tables.nodes.kind[i] == Kind::TextArea;
+    let top = if area { style(StyleProp::PadY) } else { 0.0 };
     let id = tables.nodes.id[i];
     if state.focus != id || state.editor.is_none() {
         let mut ed = PlainEditor::new(font);
         let family = FontFamily::from(text.family());
         ed.edit_styles()
             .insert(StyleProperty::FontFamily(family.into_owned()));
+        if area {
+            ed.set_width(Some((rect.w - 2.0 * pad).max(font)));
+        }
         ed.set_text(strings.get(tables.nodes.prop(Prop::Value)[i]));
         state.editor = Some(ed);
         state.focus = id;
     }
     let ed = state.editor.as_mut().expect("editor just created");
     let mut d = ed.driver(&mut text.font_cx, &mut text.layout_cx);
-    d.move_to_point(x - rect.x - pad, y - rect.y);
+    d.move_to_point(x - rect.x - pad, y - rect.y - top);
     d.refresh_layout();
 }
 
-/// Applies an editing key to the focused field; Enter submits, Escape cancels.
+/// Applies an editing key to the focused field; Enter submits (Ctrl+Enter in a `text_area`,
+/// where Enter breaks the line), Escape cancels.
 fn edit_key(
     tables: &UiTables,
     text: &mut TextSystem,
     state: &mut UiState,
     chord: Chord,
+    area: bool,
     out: &mut Routed,
 ) {
     let mods = chord.mods().0;
     let shift = mods & Mods::SHIFT != 0;
     let word = mods & Mods::CTRL != 0;
     let key = chord.key();
+    if area && key == Key::ENTER && !word {
+        let ed = state.editor.as_mut().expect("caller checked editor");
+        let mut d = ed.driver(&mut text.font_cx, &mut text.layout_cx);
+        d.insert_or_replace_selection("\n");
+        d.refresh_layout();
+        return;
+    }
+    if area && (key == Key::UP || key == Key::DOWN) {
+        let ed = state.editor.as_mut().expect("caller checked editor");
+        let mut d = ed.driver(&mut text.font_cx, &mut text.layout_cx);
+        match (key == Key::UP, shift) {
+            (true, false) => d.move_up(),
+            (true, true) => d.select_up(),
+            (false, false) => d.move_down(),
+            (false, true) => d.select_down(),
+        }
+        d.refresh_layout();
+        return;
+    }
     if key == Key::ENTER || key == Key::ESCAPE {
         if key == Key::ENTER
             && let (Some(n), Some(ed)) = (tables.nodes.find(state.focus), state.editor.as_ref())

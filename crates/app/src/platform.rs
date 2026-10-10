@@ -17,6 +17,10 @@ mod imp {
     use super::*;
     use std::io::Write;
 
+    /// Plugin-ABI `E_GONE` (§8): a spawned binary that cannot start. Spelled here because
+    /// the headless build has no plugin crate.
+    const E_GONE: i32 = 2;
+
     pub fn read(path: &Path) -> Result<Vec<u8>, String> {
         std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
     }
@@ -53,6 +57,37 @@ mod imp {
             .map_err(|e| format!("{}: {e}", path.display()))?;
         f.write_all(bytes)
             .map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    pub fn spawn(cwd: &Path, argv: &[String], stdin: &[u8]) -> (i32, Vec<u8>) {
+        use std::process::{Command, Stdio};
+        let child = Command::new(&argv[0])
+            .args(&argv[1..])
+            .current_dir(cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+        let mut child = match child {
+            Ok(c) => c,
+            Err(e) => {
+                let gone = -E_GONE;
+                return (gone, format!("{}: {e}", argv[0]).into_bytes());
+            }
+        };
+        if let Some(mut pipe) = child.stdin.take() {
+            // A child that exits without reading its input is not an error.
+            let _ = pipe.write_all(stdin);
+        }
+        match child.wait_with_output() {
+            Ok(o) => {
+                let mut bytes = o.stdout;
+                bytes.extend_from_slice(&o.stderr);
+                // A signal kill has no code; report it as a failure, never as success.
+                (o.status.code().unwrap_or(-1).max(-1), bytes)
+            }
+            Err(e) => (-1, e.to_string().into_bytes()),
+        }
     }
 
     pub fn list(dir: &Path, depth: u32, skip: &[PathBuf], out: &mut Vec<PathBuf>) {
@@ -107,6 +142,26 @@ mod imp {
         Err(NO_OPFS.into())
     }
     pub fn list(_: &Path, _: u32, _: &[PathBuf], _: &mut Vec<PathBuf>) {}
+    pub fn spawn(_: &Path, _: &[String], _: &[u8]) -> (i32, Vec<u8>) {
+        // D16: no processes in a browser; simulation goes through runner plugins.
+        (-1, b"no processes on the web".to_vec())
+    }
+}
+
+/// Runs `argv` (a binary on `PATH` and its arguments; the plugin host already checked the
+/// `spawn:<binary>` grant) in `cwd` with `stdin`, waiting for it to exit. Returns the exit
+/// status (`-1` for a signal or a wait failure, a negated `E_GONE` when it cannot start) and
+/// stdout followed by stderr: the `IoDone` of a plugin `spawn` (plugin-abi §5).
+///
+/// # Panics
+///
+/// Panics if `argv` is empty.
+// ponytail: blocks the frame while the child runs (a characterization takes seconds); move to
+// a worker thread with an event-loop wake-up when the run spine lands in the editor.
+pub fn spawn(cwd: &Path, argv: &[String], stdin: &[u8]) -> (i32, Vec<u8>) {
+    assert!(!argv.is_empty(), "spawn needs a binary");
+    let (status, out) = imp::spawn(cwd, argv, stdin);
+    (status, out)
 }
 
 /// Reads a whole file.

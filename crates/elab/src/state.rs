@@ -124,6 +124,8 @@ impl CellState {
         let mut rebuild = false;
         let mut touched_insts: Vec<ObjId> = Vec::new();
         let mut touched_vars = false;
+        // D20: vars whose `cached` stand-in changed (the cache the app writes back).
+        let mut cached_vars: Vec<&str> = Vec::new();
         let mut waived = false;
         for op in ops {
             let (kind, key, attr) = subject(op);
@@ -148,6 +150,9 @@ impl CellState {
                 },
                 RecordKind::Var => match op {
                     Op::SetField { index: 1, .. } => touched_vars = true,
+                    Op::SetAttr { .. } | Op::RemoveAttr { .. } if attr == Some("cached") => {
+                        cached_vars.push(key);
+                    }
                     _ => rebuild = true,
                 },
                 RecordKind::Waive => waived = true,
@@ -169,6 +174,9 @@ impl CellState {
         let mut dirty: Vec<u32> = Vec::new();
         if !rebuild {
             rebuild = !self.diff_values(doc, &touched_insts, touched_vars, &mut dirty);
+        }
+        if !rebuild {
+            rebuild = !self.refresh_cached(doc, &cached_vars, &mut dirty);
         }
         if rebuild {
             self.rebuild_graph(doc, funcs);
@@ -270,6 +278,47 @@ impl CellState {
             g.src[n as usize] = sym;
             dirty.push(n);
         }
+        true
+    }
+
+    /// Points the programs of own vars `names` at their current `cached` attribute (D20),
+    /// marking dirty the ones whose value rests on it. A cache write never changes a value
+    /// that a loaded plugin computed, so it costs no rebuild. Returns `false` when a name is
+    /// not an own var (the caller rebuilds).
+    fn refresh_cached(&mut self, doc: &Document, names: &[&str], dirty: &mut Vec<u32>) -> bool {
+        let s = doc.strings();
+        let blocks = doc.doc_blocks();
+        let g = &mut self.graph;
+        for &name in names {
+            let Some(n) = self.names.find(name) else {
+                return false;
+            };
+            let Some(v) = g.var_name.iter().position(|&x| x == n) else {
+                return false;
+            };
+            let Some(r) = (0..blocks.kind.len())
+                .find(|&r| blocks.kind[r] == RecordKind::Var && s.get(blocks.fields[r][0]) == name)
+            else {
+                return false;
+            };
+            let node = g.params + v as u32;
+            let cached = crate::iface::cached(blocks, r, s, doc);
+            let prog = g.prog[node as usize] as usize;
+            let progs = if g.table[node as usize] == OWN {
+                &mut g.progs
+            } else {
+                assert_eq!(
+                    g.table[node as usize], g.own,
+                    "own var in the own interface"
+                );
+                &mut self.ifaces[g.own as usize].progs
+            };
+            progs.cached[prog] = cached;
+            if g.unverified[node as usize] || g.vals[node as usize].is_err() {
+                dirty.push(node);
+            }
+        }
+        debug_assert!(dirty.iter().all(|&d| (d as usize) < g.len()));
         true
     }
 

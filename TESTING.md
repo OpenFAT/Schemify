@@ -19,6 +19,8 @@ Methodology: `../../Zig/TESTING-METHODOLOGY.md` (oracles before coverage; severa
 | `run` | Analytic optima for the optimizer; MC sample statistics within confidence bounds; `jobs=1` vs `jobs=N` byte-identical results. |
 | `plugin` | Stateful fuzz of request tables: stale handles, conflicting edits, capability violations → declared errors only. The default-UI plugin is the conformance test. |
 | `ui`/`render` | Golden images (vello CPU vs GPU within tolerance); UI table → AccessKit tree snapshot. |
+| docs page (D19–D21) | Incremental recompute == fresh `CellState` build, including `cached` edits (`elab/tests/incremental.rs`); headless edits through the frame spine against the canonical file (undo restores it byte for byte; one edit = one undo, cache write-back included); D20 paths (no plugin → cached + unverified, stale hash → rewrite); values vs the plugin's own sample checks; CPU golden of a page (prose, inline/display math, var rows); D39 var edit with 1k dependents in `app/tests/perf.rs`. |
+| `plugins/gmid-lut` | LUT queries vs the analytic EKV model it was generated from (bisection at full precision, ≤ 2%); monotonicity (jd, VGS, ft fall and W grows with gm/Id; gain grows, ft falls with L); `.glut` round trip; no panic on every truncation, random byte flips and oversized headers; the built wasm vs the native evaluator through wasmi, within the default fuel. |
 
 ## Corpus
 

@@ -14,10 +14,12 @@ fn boots_without_the_default_ui_plugin() {
     let mut s = Session::open("inv", "top.shcomp", "bare", false);
     let n = &s.ed.shell.tables.nodes;
     let kinds: Vec<Kind> = (0..n.len()).map(|i| n.kind()[i]).collect();
+    // The core base also holds the docs pane (D21: docs render without plugins); a cell
+    // without doc blocks starts with it removed.
     assert_eq!(
         kinds,
-        [Kind::Window, Kind::Canvas],
-        "blank UI: window + canvas only"
+        [Kind::Window, Kind::Panel, Kind::Canvas],
+        "blank UI: window + work row + canvas only"
     );
     assert!(
         s.ed.shell.tables.keymap.chords().is_empty(),

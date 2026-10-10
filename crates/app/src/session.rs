@@ -58,6 +58,9 @@ pub struct Level {
 pub struct Tab {
     /// Levels, top first; never empty.
     pub stack: Vec<Level>,
+    /// The docs page is shown beside the canvas (`view.docs`); starts on when the opened
+    /// document has doc blocks.
+    pub docs: bool,
 }
 
 /// Open documents and where they live on disk (SoA, one row per open document).
@@ -346,6 +349,10 @@ impl Session {
             self.status = format!("at most {TABS_MAX} tabs");
             return;
         }
+        let docs = self
+            .project
+            .doc(doc)
+            .is_some_and(|d| !d.doc_blocks().kind.is_empty());
         self.tabs.push(Tab {
             stack: vec![Level {
                 doc,
@@ -354,6 +361,7 @@ impl Session {
                 cam: None,
                 sel: Vec::new(),
             }],
+            docs,
         });
         self.active = self.tabs.len() - 1;
         assert!(!self.tabs[self.active].stack.is_empty());

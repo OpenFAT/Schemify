@@ -67,6 +67,63 @@ fn big_schematic() -> String {
     t
 }
 
+/// D39 "param edit → recompute + redraw ≤ 8 ms for 1k dependents": a var edited on the docs
+/// page (Enter in its field) re-evaluates 1000 instance overrides, re-projects the page,
+/// recomposes the UI and rebuilds the scene with the new symbol labels — one `update`. Once
+/// for a plain var, once for a var behind a `gmid` plugin call (D20: plugin call + cache
+/// write folded into the edit's undo entry; the amend's undo + recommit nets to the cache
+/// ops, so the cell state stays incremental).
+#[test]
+#[ignore = "release-mode benchmark; run explicitly"]
+fn var_edit_with_1k_dependents_through_the_docs_page() {
+    let dir = fixture("ota", "perf-docs");
+    let mut t = String::from("schemify 1 shcomp\n\nimpl sch schematic\n\n");
+    for i in 0..1000u32 {
+        let (x, y) = (i64::from(i % 40) * 120, i64::from(i / 40) * 120);
+        let _ = writeln!(
+            t,
+            "inst {} dev:nfet_01v8\n  at {x} {y} R0\n  name M{i}\n  W Wg\n  L L1",
+            id('m', i)
+        );
+    }
+    t.push_str("\nvar L1 0.5u\nvar k 1\nvar g 15\n");
+    t.push_str("var Wg \"gmid.w(\\\"nfet_01v8\\\", g, 0.5u, 10u)*k\"\n");
+    std::fs::write(dir.join("big.shcomp"), t).unwrap();
+    let ed = Editor::new(Options {
+        no_default_ui: false,
+        path: Some(dir.join("big.shcomp")),
+        seed: 1,
+    })
+    .unwrap();
+    let mut s = common::Session { ed, now: 1, dir };
+    for _ in 0..3 {
+        s.frame(InputEvents::default());
+    }
+    let measure = |s: &mut common::Session, row: u32, expr: &str| {
+        s.click_node(&format!("docs.b.{row}.expr"));
+        s.key("Ctrl+A");
+        s.type_text(expr);
+        let t = Instant::now();
+        s.key("Enter");
+        t.elapsed().as_secs_f64() * 1e3
+    };
+    let mut plain = Vec::new();
+    let mut plugin = Vec::new();
+    for k in 0..9 {
+        plain.push(measure(&mut s, 0, &format!("0.{}u", 5 + k % 4)));
+        plugin.push(measure(&mut s, 1, &format!("1.0{k}")));
+    }
+    let w = s.text();
+    assert!(w.contains("  cached "), "the plugin path wrote its cache");
+    plain.sort_by(f64::total_cmp);
+    plugin.sort_by(f64::total_cmp);
+    eprintln!(
+        "var edit, 1000 dependents, one frame: plain median {:.2} ms (max {:.2}); \
+         gmid-backed median {:.2} ms (max {:.2})",
+        plain[4], plain[8], plugin[4], plugin[8]
+    );
+}
+
 #[test]
 #[ignore = "release-mode benchmark; run explicitly"]
 fn hundred_k_objects_open_build_pan_edit() {
