@@ -194,7 +194,11 @@ fn diff(args: &[String]) -> u8 {
         out.push('\n');
     }
     print!("{out}");
-    if d.changes.is_empty() { OK } else { DESIGN_ERROR }
+    if d.changes.is_empty() {
+        OK
+    } else {
+        DESIGN_ERROR
+    }
 }
 
 /// `git-setup`: configures this clone's merge driver (git never reads driver

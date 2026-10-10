@@ -12,8 +12,8 @@ fn schemify(dir: &Path, args: &[&str]) -> (i32, String) {
         .current_dir(dir)
         .output()
         .expect("binary runs");
-    let text = String::from_utf8_lossy(&out.stdout).into_owned()
-        + &String::from_utf8_lossy(&out.stderr);
+    let text =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
     (out.status.code().expect("not killed"), text)
 }
 
@@ -50,7 +50,10 @@ fn fmt_check_and_rewrite() {
     assert_eq!(schemify(&dir, &["fmt", "--check", "a.shcomp"]).0, 0);
     assert_eq!(schemify(&dir, &["fmt", "--check", "b.shcomp"]).0, 1);
     assert_eq!(schemify(&dir, &["fmt", "b.shcomp"]).0, 0);
-    assert_eq!(std::fs::read_to_string(dir.join("b.shcomp")).unwrap(), CANONICAL);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("b.shcomp")).unwrap(),
+        CANONICAL
+    );
     assert_eq!(schemify(&dir, &["fmt", "--check", "b.shcomp"]).0, 0);
 }
 
@@ -71,7 +74,10 @@ fn merge_driver_merges_independent_edits_and_flags_conflicts() {
     std::fs::write(dir.join("O"), CANONICAL).unwrap();
     std::fs::write(dir.join("A"), &moved).unwrap();
     std::fs::write(dir.join("B"), &resized).unwrap();
-    assert_eq!(schemify(&dir, &["merge-driver", "O", "A", "B", "x.shcomp"]).0, 0);
+    assert_eq!(
+        schemify(&dir, &["merge-driver", "O", "A", "B", "x.shcomp"]).0,
+        0
+    );
     let merged = std::fs::read_to_string(dir.join("A")).unwrap();
     assert!(merged.contains("  at 999 -300 R0") && merged.contains("  W 7"));
 
@@ -79,7 +85,11 @@ fn merge_driver_merges_independent_edits_and_flags_conflicts() {
     std::fs::write(dir.join("A"), edit_attr(CANONICAL, 1, "W ", "  W 3")).unwrap();
     let (code, text) = schemify(&dir, &["merge-driver", "O", "A", "B", "x.shcomp"]);
     assert_eq!(code, 1, "{text}");
-    assert!(std::fs::read_to_string(dir.join("A")).unwrap().contains("<<<<<<<"));
+    assert!(
+        std::fs::read_to_string(dir.join("A"))
+            .unwrap()
+            .contains("<<<<<<<")
+    );
 }
 
 #[test]
@@ -87,7 +97,10 @@ fn diff_lists_changed_records_and_exit_code() {
     let dir = scratch("diff");
     std::fs::write(dir.join("a.shcomp"), CANONICAL).unwrap();
     std::fs::write(dir.join("b.shcomp"), edit_attr(CANONICAL, 1, "W ", "  W 7")).unwrap();
-    assert_eq!(schemify(&dir, &["diff", "a.shcomp", "a.shcomp"]), (0, String::new()));
+    assert_eq!(
+        schemify(&dir, &["diff", "a.shcomp", "a.shcomp"]),
+        (0, String::new())
+    );
     let (code, text) = schemify(&dir, &["diff", "a.shcomp", "b.shcomp"]);
     assert_eq!(code, 1);
     assert_eq!(text, "~ inst 1j446r [attrs: W]\n");
