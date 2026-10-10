@@ -160,6 +160,8 @@ Document order is preserved.
 
 `locked <lib|plugin> <name> <kind> <resolved> <sha256>`, sorted by (type, name). Tool-written only.
 
+A library's content hash is the lowercase hex sha256 over its files sorted bytewise by library-relative path, each contributing its path bytes, one `0x00` byte, and the 32-byte sha256 of its contents. `<resolved>` is the commit a git rev resolved to, the url, or the path. `lib core builtin` is never locked (it ships with the tool); an explicit `lib core …` in the manifest replaces the builtin.
+
 ### User config
 
 `set <key> <value>`, `key <chord> <command>`, `sim <name>` with `path`, `args`, `plugin <name>` (order = load order, D8). The app edits single lines in place and never rewrites hand-written config.
