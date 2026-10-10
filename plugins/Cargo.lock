@@ -7,6 +7,13 @@ name = "bad-actor"
 version = "0.1.0"
 
 [[package]]
+name = "default-ui"
+version = "0.1.0"
+dependencies = [
+ "schemify-abi",
+]
+
+[[package]]
 name = "gmid-stub"
 version = "0.1.0"
 dependencies = [

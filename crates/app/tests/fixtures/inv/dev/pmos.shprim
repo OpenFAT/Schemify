@@ -1,0 +1,33 @@
+schemify 1 shprim
+  doc "PMOS transistor (editor fixture)"
+  prefix M
+
+pin D inout 20 30
+pin G in -20 0
+pin S inout 20 -30
+pin B in 20 0
+
+param W 2
+  unit um
+param L 0.15
+  unit um
+
+impl spice spice
+  format spice "M{name} {D} {G} {S} {B} pmos W={W}u L={L}u"
+
+line 20 -30 20 -15
+line 20 15 20 30
+line 4 -15 20 -15
+line 4 15 20 15
+line 4 -15 4 15
+line 0 -10 0 10
+line -20 0 -5 0
+
+circle -2.5 0 2.5
+
+line 4 0 20 0
+
+stext 25 -27 R0 {name}
+  size 0.2
+stext 25 12 R0 W={W}
+  size 0.15

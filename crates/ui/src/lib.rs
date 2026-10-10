@@ -50,8 +50,12 @@ pub use text::{NO_TEXT, TextId, TextSystem};
 /// Re-exported so renderers name the same layout and font types as this crate.
 pub use parley;
 
-/// The default UI: the xschem-parity shell as one contribution (menus, toolbar, tabs, canvas,
-/// status bar, a dialog, theme and keymap).
-// ponytail: lives here until `plugins/default-ui` exists (D6); then it becomes that plugin's
-// `contribute ui` output and this constant goes away.
-pub const DEFAULT_UI: &str = include_str!("../default-ui.records");
+/// The bundled default-UI plugin's two contribution sets (`plugins/default-ui`, D6): its
+/// `contribute ui` records (menus, toolbar, tabs, canvas, status bar, dialogs, theme) followed by
+/// its `contribute keymap` records (xschem's bindings, D25), as one text [`records::parse`]
+/// accepts. The app loads the plugin itself; this copy is a fixture for the ui/render tests and
+/// the render demo, so they need no wasm host.
+pub const DEFAULT_UI: &str = concat!(
+    include_str!("../../../plugins/default-ui/ui.records"),
+    include_str!("../../../plugins/default-ui/keymap.records")
+);

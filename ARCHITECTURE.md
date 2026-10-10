@@ -22,7 +22,7 @@ Crate = owner. A crate boundary exists only where it enforces single ownership (
 | `plugin` | `plugins`, `grants`, `request_queues`, `health` | snapshots of all tables | `wasmi` | Host: load, capability enforcement (D7), snapshot export, request intake, last-wins ordering + health report (D8). |
 | `ui` | `ui_nodes`, `ui_styles`, `keymap`, `ui_layout` (frame) | `ui_edit_requests`, input events | `taffy`, `parley`, `accesskit`, `ratex-*` | UI-as-data (D4, D6). Widget kinds (incl. `math`, `graph`) are a closed enum. Input routing → `command_requests`. |
 | `render` | `scene` (frame), `camera` | doc, elab, ui_layout, results | `vello`, `wgpu` | The only crate touching the GPU. Draws canvas, UI, graphs, visual diff and annotations (D5). |
-| `app` | `commands` (registry), `session` | everything | `winit` | The spines. Platform split by `cfg`: native fs / OPFS (D31), subprocess runner / none (D16). CLI + JSON-RPC over the command table (D27). Binary `schemify`. |
+| `app` | `commands` (registry), `session` (project, open documents, tabs, hierarchy stacks), `selection`, `tool_state`, `canvas_prims` + `objects` (the active document drawn, derived), `symbols` (cache), clipboard, dialog state | everything | (`winit` through `render::run`) | The spines. Platform split by `cfg`: native fs / OPFS (D31, web is a TODO stub), subprocess runner / none (D16). CLI + JSON-RPC over the command table (D27). Binary `schemify` (`schemify edit` = the GUI, feature `gui`). |
 
 Outside `crates/`: `tools/devicereader` (thin bin over `import`), `tools/fmtbench` (format benchmark), `plugins/default-ui` (D6), `plugins/gmid-lut`, `plugins/net2schem` (D26).
 
@@ -59,6 +59,17 @@ Each spine lives in `app` as one function, one line per transform. Branches that
   `run::poll(jobs) → results` →
   `ui::layout(ui_nodes, ui_styles) → ui_layout` →
   `render::build_scene(doc, elab, ui_layout, results) → scene` → `render::submit(scene)`
+
+  As implemented in M2 (`crates/app/src/editor.rs`, `Editor::update` + `paint`; `run` and the annotation steps are not wired yet):
+  1. `ui::route_input(ui_layout, keymap, events) → command_requests, canvas events`
+  2. `app::dispatch(commands, command_requests) → edit_requests, plugin_events, ui state` — core commands are the closed `Cmd` enum, plugin commands become `Event::Command` to their owner (D27)
+  3. `app::gesture(tool_state, selection, canvas events) → edit_requests` — the xschem tool state machine; one transaction per gesture, so one undo
+  4. `plugin::deliver(plugins, plugin_events, snapshots) → request_queues` → plugin edits join `edit_requests`, logs go to the status line, I/O runs through `app::platform`
+  5. `doc::apply_edits(edit_requests) → doc tables, journal` (+ `DocChanged` events; steps 4–5 run twice at most so plugins answer in the same frame)
+  6. `app::load_symbols(active doc)` — opens every instantiated cell (with its journal) so its symbol graphics can be drawn; `elab::recompute` hooks in here
+  7. `ui::compose(core base, plugin ui+keymap sets, app state) → ui_nodes, ui_styles, keymap` (last wins, D8) → `ui::layout → ui_layout`. The app projects its own state (tabs, status line, dialog rows) as the *last* contribution, made of `set`s and child nodes under plugin-declared containers; the core base (window + canvas) applies only when no plugin declares a `window`
+  8. `scene::build(doc, symbols) → canvas_prims, objects` (only when the document, view, edit epoch or symbols changed; pan/zoom never rebuilds), then selection marks and the gesture overlay
+  9. `paint`: `render::draw_ui(main)` → `render::canvas::{draw_grid, draw_prims, draw_marks}` → `render::draw_ui(overlay)`
 - **`load`**: `format::parse(manifest, lockfile)` → `doc::resolve_libs` → `doc::load_headers` (symbol interface only, 5 µs each) → `doc::load_bodies` (opened cells) → `elab::recompute(all dirty)`
 - **`netlist`**: `elab::elaborate(doc, bench, config) → inst_paths, resolved_impls` → `elab::resolve_params → resolved_params` → `elab::check → violations` → **gate** (violations without waiver block, D13) → `netlist::emit(dialect) → netlist_text, name_map`
 - **`run`**: `run::expand_jobs(bench, corners, mc, sweeps, configs) → jobs` → per job: `netlist` spine with overrides → `run::dispatch(jobs) → subprocess | plugin runner` → `wave::read(raw) → raw_plots` → `run::eval_outputs(expr, raw_plots) → results` → `run::eval_specs(results)`; optimizer = `ask → jobs → tell` loop around this spine
@@ -89,6 +100,10 @@ Each spine lives in `app` as one function, one line per transform. Branches that
 | ui_nodes, ui_styles, keymap | ui | apply_ui_edits | ui::layout, ui::route_input, plugin | 2^16 nodes | session |
 | scene, ui_layout | render, ui | per frame | — | per frame | frame |
 | commands | app | registration (core enum + plugin rows) | dispatch, JSON-RPC, keymap | 2^12 | session |
+| tabs (level stacks: doc, view, camera, selection) | app | dispatch (open, descend, return) | frame spine | 64 tabs × 40 levels | session |
+| selection | app | gestures, dispatch | edits, marks, plugin `Selection` snapshot | 2^22 keys | per hierarchy level |
+| tool_state | app | gestures, dispatch | overlay, status line | 1 row | session |
+| canvas_prims, objects, conn (scene) | app | `scene::build` on document change | render canvas, hit test, box select | 2^22 per kind | document epoch |
 | plugins, grants, request_queues, health | plugin | load, deliver | app, ui (health panel) | 2^8 plugins; bounded queues | session |
 
 Handles are `u32` index + `u32` generation; files store ids, never handles (D9). No pointer is stored in a field.

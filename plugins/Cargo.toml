@@ -1,4 +1,4 @@
-# Example guest plugins, built for wasm32-unknown-unknown only.
+# Guest plugins (the bundled default UI and examples), built for wasm32-unknown-unknown only.
 #
 # A workspace of its own, not a member of the root one: the root globs only `crates/*`
 # and `tools/*`, so `cargo test --workspace` never builds these cdylibs (their `schemify`
@@ -6,7 +6,7 @@
 # fixtures with `plugins/build.sh`.
 [workspace]
 resolver = "3"
-members = ["hello", "bad-actor", "gmid-stub"]
+members = ["hello", "bad-actor", "gmid-stub", "default-ui"]
 
 [workspace.package]
 version = "0.1.0"

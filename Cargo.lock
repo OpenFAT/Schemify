@@ -2689,13 +2689,17 @@ dependencies = [
 name = "schemify-app"
 version = "0.1.0"
 dependencies = [
+ "schemify-abi",
  "schemify-doc",
  "schemify-elab",
  "schemify-expr",
  "schemify-format",
  "schemify-import",
  "schemify-netlist",
+ "schemify-plugin",
+ "schemify-render",
  "schemify-run",
+ "schemify-ui",
  "schemify-wave",
 ]
 
