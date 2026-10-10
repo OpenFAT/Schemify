@@ -1,0 +1,86 @@
+schemify	1   shcomp
+  doc     "5-transistor OTA, NMOS input pair"
+	pdk "sky130"
+  category "amplifier"
+
+    # --- rank 1: symbol interface. A library browser or netlister stops reading here. ---
+# pin <name> <dir> <x> <y>; file order = port order
+pin INP in -80.000 -20
+pin INN in -80 20.0
+pin OUT out 80 0
+pin IBIAS in -80 40
+pin VDD inout 0 -60
+pin VSS inout 0 60
+param Wp 2
+      unit um
+      doc "input pair width"
+param Lp 0.5
+  unit um
+impl sch schematic
+# --- rank 2: symbol graphics, draw order ---
+poly -60 -50 60 0 -60 50 -60 -50
+  closed true
+line -80 -20 -60 -20
+line -80 20 -60 20
+line 60 0 80 0
+stext -55 -28 R0 "+"
+stext -55 12 R0 -
+
+port qz81ty 30 -100 R270 VSS
+# Net names live only here. Renaming "tail" is a 1-line diff.
+label 2ma7xe 30 -190 R0 tail
+wire h2w9cs 100 -330 100 -430
+# --- rank 3: schematic. Each kind contiguous, sorted by id. ---
+# Moving M2 changes only its "at" line; editing W changes only the W line.
+inst 0gsrp0 sky130:nfet_01v8
+  at -60 -300 R0
+  name "M1"
+  W Wp
+  L Lp
+  nf 2
+port 8tj4wh 200 -300 R0 INN
+inst 9vdm2q sky130:nfet_01v8
+  at 30 -160 R0
+  name M5
+  W 4
+  L 1
+text r0m2ve -150 -620 R0 "Gm stage: keep M1/M2 common-centroid"
+  size 0.4
+# Wires are geometry only: no net names, so renaming a net never touches them.
+wire 0d2k1m 100 -450 -40 -450
+inst 4tyd1p sky130:pfet_01v8
+  at 120 -480 MR0
+  name M4
+  W 4
+  L 1
+wire 7q3vxa 100 -270 100 -190
+inst 1j446r sky130:nfet_01v8
+  at 120 -300 MR0
+  name M2
+  W Wp
+  L Lp
+  nf 2
+constraint s4m3tr match
+  member 0gsrp0
+     member  1j446r
+  pattern "common-centroid"
+# A port connects a schematic net to the rank-1 pin of the same name.
+port 5c0d2r -120 -300 R0 INP
+port c7rm1e 140 -380 R0 OUT
+wire 3fk2a1 -40 -270 -40 -190
+inst 4szjc8 sky130:pfet_01v8
+  at -60 -480 R0
+  name M3
+  W 4
+  L 1
+port fa3k0q -60 -160 R0 IBIAS
+wire b8nq0t -40 -190 100 -190
+label kq1p4z -40 -380 R0 mirror
+port mx0k2p 30 -560 R90 VDD
+prose v1d0c5
+	| # 5T OTA
+	|
+	| Gain is $g_m r_o / 2$, with $r_o$ from M2 || M4.
+var gm_target "100u"
+  unit "S"
+  doc "transconductance target"

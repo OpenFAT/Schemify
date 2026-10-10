@@ -1,0 +1,16 @@
+schemify 1 config
+
+# Hand-written. The app edits single lines in place (set/key) and never rewrites the file,
+# so comments survive. ${VAR} expands from the environment; nothing executes while loading.
+set grid 10
+set snap 5
+
+key ctrl+s file.save
+key w wire.draw
+
+sim ngspice
+  path ngspice
+  args -b -r {raw} {netlist}
+
+plugin default-ui
+plugin gmid-lut

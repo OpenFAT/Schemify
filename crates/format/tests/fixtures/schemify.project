@@ -1,0 +1,13 @@
+schemify 1 project
+
+lib sky130 git https://github.com/example/sky130-schemify v1.2.0
+  subdir libs/sky130
+lib analog url https://example.org/analog.tar.gz 9f2c4e1a7b3d5f60
+lib mine path ./lib
+
+plugin gmid-lut path ./plugins/gmid-lut
+  grant read-project
+  grant network
+
+set PDK_ROOT /opt/pdk
+set grid 10

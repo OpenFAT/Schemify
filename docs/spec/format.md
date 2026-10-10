@@ -40,15 +40,17 @@ WS        = 1*WSP
 EOL       = LF / CRLF
 ```
 
-- Encoding UTF-8. A BOM or invalid UTF-8 is an error.
-- **Writer canonical form:** LF only, final newline, single space separators, attributes indented by exactly two spaces, verbatim lines as `  | text` (or `  |` for an empty line), no trailing spaces, one blank line between record kinds, quoting only when a value is not a legal `bare`. The same model always produces the same bytes.
-- Comments attach to the next record and are written back immediately before it (indentation dropped). Comments at end of file attach to EOF.
+- Encoding UTF-8. A BOM or invalid UTF-8 is an error (`E028`). The reader accepts CRLF and a missing final newline.
+- Header: `version` is a positive integer below 65536 (written without leading zeros); a larger version than the reader's enables §5 forward compatibility. Anything malformed on line 1 is `E028`.
+- **Writer canonical form:** LF only, final newline, single space separators, attributes indented by exactly two spaces, verbatim lines as `  | text` (or `  |` for an empty line), no trailing spaces outside verbatim text (verbatim text is kept exactly), one blank line between consecutive records with different words and before end-of-file comments, coordinates as the shortest decimal (§3), quoting only when a value is not a legal `bare`. Inside quotes the writer escapes `"` `\` LF TAB as `\" \\ \n \t`, and CR, other C0 controls and DEL as `\u{hex}` (lowercase, no leading zeros); everything else is written raw. Attributes are written in model order, known attributes of the record kind before unknown ones (§5). The same model always produces the same bytes.
+- Comments attach to the next record and are written back immediately before it (indentation and trailing whitespace dropped). A comment between attribute lines also attaches to the next record. Comments at end of file attach to EOF. The header never carries comments.
 - Line length is unbounded; a file is capped at 2^30 bytes (`E021`).
+- Diagnostics carry a 1-based line and a 1-based byte column (0 when the position is the whole line or an unescaped value).
 
 ## 3. Numbers, coordinates, orientation
 
 - **Number literal (file level):** `-?digits(.digits)?` with no exponent and no SI suffix. Anything else in a numeric position is an error. (SI suffixes belong to expressions, §6.)
-- **Coordinates** are written in xschem units, y pointing down, with at most 3 fractional digits. In memory they are `i32` milli-units (`value × 1000`, exact). A coordinate needing more digits or outside `[-2^31, 2^31-1]` milli-units is an error (`E022`). Writer: shortest decimal (`-60`, `12.5`, `0.156`).
+- **Coordinates** are written in xschem units, y pointing down, with at most 3 fractional digits. In memory they are `i32` milli-units (`value × 1000`, exact). A coordinate needing more digits or outside `[-2^31, 2^31-1]` milli-units is an error (`E022`); further fractional digits that are all zero are exact and accepted (`1.5000`). Writer: shortest decimal (`-60`, `12.5`, `0.156`); the reader already rewrites coordinates to that form, so `-80.000` and `-80` are the same model (and never a merge change). A non-coordinate in a coordinate slot is `E029`.
 - **Orientation:** `R0 R90 R180 R270 MR0 MR90 MR180 MR270`. Transform of a symbol-local point `(x, y)` placed at `(X, Y)`:
   1. if `M`: `(x, y) ← (−x, y)`
   2. rotate clockwise on screen (y down) by k·90°: `R90: (x, y) → (−y, x)`, `R180: (−x, −y)`, `R270: (y, −x)`
@@ -56,9 +58,11 @@ EOL       = LF / CRLF
 
 ## 4. Sections and records
 
-Records appear in rank order; a record of lower rank after a higher rank is an error (`E023`). Within rank 3 the writer emits kinds in the order listed and each kind sorted by id (bytewise); the reader accepts any order within rank 3. Ranks 1, 2, 4, 5 keep file order (it is semantic). Rank 6 is written sorted by (kind, name).
+Records appear in rank order; a record of lower rank after a higher rank is an error (`E023`). Within rank 3 the writer emits kinds in the order listed and each kind sorted by id (bytewise); the reader accepts any order within rank 3. Ranks 1, 2, 4, 5 keep file order (it is semantic). Rank 6 is written with kinds in the order listed, each sorted bytewise by name. Project and config records are rank 1 in file order; lockfile records are rank 1 sorted by (type, name).
 
-Ids: 1–13 chars of lowercase Crockford base32 (`0-9 a-h j k m n p-t v-z`); the writer generates 6. Unique per file across all id-bearing kinds; a duplicate on load is re-id'd with warning `W001` (later occurrence). Names (pins, params, impls, vars, outputs, corners, configs, code blocks) are unique within their kind (`E024`).
+Shapes: a record line or attribute line with the wrong number of values, or a value of the wrong form in a typed slot (id, coordinate, number, orientation, `true|false`, or one of the listed words such as pin `dir`), is `E029`; so are a missing required attribute and `|` verbatim lines under a record kind that takes none (only `prose`, `body`, `code` and unknown records do). Flag attributes (`hcenter`, `vcenter`) take no value. A second line of a non-repeatable known attribute is `E024`; repeatable ones are `format` (impl), `inherit` (inst), `member` (constraint), `lib`/`include`/`set` (corner), `cell`/`inst` (config), `goal`/`vary` (optimize) and `grant` (plugin).
+
+Ids: 1–13 chars of lowercase Crockford base32 (`0-9 a-h j k m n p-t v-z`); the writer generates 6 (random, caller-seeded; importers seed from FNV-1a of (source path, record ordinal) and redraw on collision). A malformed id is `E029`. Unique per file across all id-bearing kinds; a duplicate on load is reported as warning `W001` on the later occurrence and re-id'd by the `doc` layer. Names (pins, params, impls, vars, bodies, every rank-6 kind, project/config entries; `locked` by (type, name)) are unique within their kind (`E024`). The reader also normalizes wires so `(x1, y1) < (x2, y2)`.
 
 ### Rank 0 — header
 
@@ -74,6 +78,8 @@ Ids: 1–13 chars of lowercase Crockford base32 (`0-9 a-h j k m n p-t v-z`); the
 | `corner <name>` | shbench | default corner |
 | `config <name>` | shbench | default config |
 
+The writer treats the union of these as the known header attributes for every kind; anything else (e.g. `pdk`, `library`) is kept and written after them.
+
 ### Rank 1 — symbol interface (shprim, shcomp only)
 
 | Record | Attributes | Notes |
@@ -82,7 +88,7 @@ Ids: 1–13 chars of lowercase Crockford base32 (`0-9 a-h j k m n p-t v-z`); the
 | `param <name> <default>` | `kind number\|int\|bool\|string\|choice` (default `number`), `unit <u>`, `min <expr>`, `max <expr>`, `step <expr>`, `grid <expr>`, `choices <v>…`, `computed <expr>`, `show <expr>`, `doc <text>`, `cached <value> <hash>` | `default` and `computed` are expressions for number/int/bool, template strings for string/choice. A `computed` param cannot be overridden (`E030`). `cached` holds the last value of an expression that calls a plugin function (D20). |
 | `impl <name> <lang>` | `format <dialect> <template>` (repeatable, one per dialect), `model <name>`, `file <relpath>` | `lang` ∈ `schematic spice veriloga verilog` or any plugin tag. `dialect` ∈ `spice xyce cdl spectre verilog` (`spice` is the fallback for `xyce`). `file` is relative to the cell file. |
 
-Kind rules: `shprim` has ≥1 pin and ≥1 impl, none with lang `schematic`. `shcomp` has exactly one impl with lang `schematic` (`E025`). Every impl of a cell matches the cell's pins (D11): enforced on save (`E002`).
+Kind rules (`E025`): `shprim` has ≥1 pin and ≥1 impl, none with lang `schematic`. `shcomp` has exactly one impl with lang `schematic`. A cell with more than one impl has a `default` header attribute. Every impl of a cell matches the cell's pins (D11): enforced on save (`E002`). A `.shbench` has no impls, so no `body` records and no `port` records.
 
 ### Rank 2 — symbol graphics (shprim, shcomp only)
 
@@ -161,7 +167,8 @@ Document order is preserved.
 ## 5. Unknowns and forward compatibility
 
 - Unknown attributes are preserved verbatim, in order, after known ones.
-- An unknown record word is an error (`E027`) unless the header version is newer than the reader's, in which case the record (with its attributes) is preserved verbatim at its position.
+- An unknown record word is an error (`E027`) unless the header version is newer than the reader's, in which case the record (with its attributes and verbatim lines) is preserved verbatim at its position. A known word that the file kind does not allow (`pin` in a `.shbench`) is unknown for that kind.
+- An unknown record has the rank of the closest known record before it (0 right after the header). In a sorted rank (3, 6) it is written after the rank's known kinds, keeping file order; elsewhere it keeps its position. For merge and diff it is identified by its word and first field.
 
 ## 6. Values inside records
 
@@ -182,10 +189,23 @@ The file layer only splits values. Their meaning:
 | E022 | coordinate not representable |
 | E023 | record out of rank order |
 | E024 | duplicate name within a kind |
-| E025 | impl count rule for the kind violated |
+| E025 | kind rule violated (§4 rank 1: pins, impl count and langs, `default`) |
 | E026 | zero-length wire |
 | E027 | unknown record |
-| E028 | malformed line (lexical) |
-| E029 | wrong arity / non-numeric where numeric required |
+| E028 | malformed line (lexical; also BOM, invalid UTF-8, bad header) |
+| E029 | wrong arity or value form (number, coordinate, id, orientation, listed word), missing required attribute, verbatim lines where none are allowed |
 | E030 | override of a computed param |
-| W001 | duplicate id re-assigned |
+| W001 | duplicate id (later occurrence re-assigned by the `doc` layer) |
+
+## 8. Merge and diff
+
+The merge driver (D34) and the in-app reload merge (D28) are record-level, need no semantics beyond §4, and are implemented by `schemify-format` (`merge3`, `diff`).
+
+- **Identity.** The header is one record. Id-keyed kinds are identified by (kind, id), named kinds by (kind, name), `locked` by (kind, type, name), unknown records by (word, first field); a further occurrence number separates duplicates (`W001` files). Rank-2 graphics have no identity.
+- **Three-way pick** for any unit given base O, ours A, theirs B: the side that changed wins; an identical change on both sides is taken once; different changes on both sides conflict.
+- **Records** present on all sides: the pick applies to the whole record; if both changed it differently, it applies per component: the record line, each attribute line (identified by key, plus the first value for repeatable attributes, plus occurrence), the verbatim block and the comment block. Attribute adds and deletes merge like records. Any conflicting component makes the record a conflict.
+- **Adds and deletes.** A record added on one side is kept; deleted on one side and unchanged on the other is dropped; deleted against modified is a conflict. Added on both sides: identical is kept once; different with the same name is a conflict; different with the same id re-ids theirs: the new id is drawn deterministically (splitmix64 seeded with FNV-1a of the old id, redrawn while taken in any input) and every id field or id reference (`waive` target, constraint `member`) in theirs is rewritten.
+- **Rank 2** (symbol graphics) merges as one block by the pick rule.
+- **Order** in file-order ranks: records common to all sides keep theirs' order if ours kept the base order, else ours' order (both reordering differently conflicts over the whole rank). Every other kept record follows the nearest common record before it on its own side; records added at the same place by both sides are ordered by identity, so clean merges are symmetric in A and B. Sorted ranks need no order merge (the writer sorts).
+- **Output** is the canonical form (§2). A conflict is written as ours' records, then theirs', between `<<<<<<< ours`, `=======` and `>>>>>>> theirs` lines (an empty side has no records); the driver reports the number of such blocks and fails when it is not 0. End-of-file comments conflict the same way.
+- **Diff** lists records added, removed and changed between two files, in identity order, with which components changed and which attribute keys were added, removed or changed. Graphics are matched by occurrence within their kind. Order-only changes are not reported.
