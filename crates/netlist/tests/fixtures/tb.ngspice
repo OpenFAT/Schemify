@@ -1,0 +1,48 @@
+* tb (schemify ngspice)
+.global vdd!
+.param tstop=2e-9
+.param vdd=1.8
+.lib models.lib tt
+.include extra.inc
+.temp 27
+CCOUT out2 0 1e-14
+CC[0] ld[0] 0 1e-14
+CC[1] ld[1] 0 1e-14
+VVDD vdd! 0 dc 1.8
+VVIN in 0 dc 0.9
+X1 in out vdd! chain
+X2 out out2 vdd! chain__h4shwd
+XF1 out filt rcfilt
+.control
+run
+.endc
+.tran 1p 2n
+.subckt chain IN OUT VDD
+X1 IN net_0w0001 VDD inv
+X2 net_0w0001 OUT VDD inv__8hc2h8
+.ends chain
+.subckt chain__h4shwd IN OUT VDD
+X1 IN net_0w0001 VDD inv__8hc2x8
+X2 net_0w0001 OUT VDD inv__sty8mw
+.ends chain__h4shwd
+.subckt inv A Y VDD
+MMN Y A 0 0 nch W=1u L=0.15u ad=0.3p
+MMP Y A VDD VDD pch W=2u L=0.15u
+.ends inv
+.subckt inv__8hc2h8 A Y VDD
+MMN Y A 0 0 nch W=2u L=0.15u ad=0.6p
+MMP Y A VDD VDD pch W=4u L=0.15u
+.ends inv__8hc2h8
+.subckt inv__8hc2x8 A Y VDD
+MMN Y A 0 0 nch W=2u L=0.15u ad=0.6p
+MMP Y A VDD VDD pch W=2u L=0.15u
+.ends inv__8hc2x8
+.subckt inv__sty8mw A Y VDD
+MMN Y A 0 0 nch W=4u L=0.15u ad=1.2p
+MMP Y A VDD VDD pch W=8u L=0.15u
+.ends inv__sty8mw
+.subckt rcfilt a b
+R1 a b 1k
+C1 b 0 1p
+.ends rcfilt
+.end

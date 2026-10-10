@@ -1,0 +1,35 @@
+schemify 1 shcomp
+  doc "CMOS inverter with an inherited supply (fixture)"
+
+pin A in -40 0
+pin Y out 40 0
+pin VDD inout 0 -40
+  inherit vdd!
+
+param wn 1
+param wp 2
+
+impl sch schematic
+
+inst 0mn001 ./nmos
+  at 0 60 R0
+  name MN
+  W wn
+inst 0mp001 ./pmos
+  at 0 -60 R0
+  name MP
+  W wp
+
+# Pins by coincident labels: MN D (20,30) G (-20,60) S (20,90) B (20,60);
+# MP S (20,-90) G (-20,-60) D (20,-30) B (20,-60).
+label 0n0001 20 30 R0 Y
+label 0n0002 -20 60 R0 A
+label 0n0003 20 90 R0 0
+label 0n0004 20 60 R0 0
+label 0n0005 20 -90 R0 VDD
+label 0n0006 -20 -60 R0 A
+label 0n0007 20 -30 R0 Y
+label 0n0008 20 -60 R0 VDD
+
+port 0p0001 -100 0 R0 A
+port 0p0002 100 0 R0 Y

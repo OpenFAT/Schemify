@@ -1,0 +1,16 @@
+* mixed_tb (schemify ngspice)
+NA1 in 0 a ampm
+NA2 a 0 b ampm
+VVIN in 0 dc 0.1
+XB1 b y dbuf
+.tran 1n 1u
+.subckt dbuf A Y
+AU1 [ A ] [ net_0w0001 ] dinv
+AU2 [ net_0w0001 ] [ Y ] dinv
+.ends dbuf
+.control
+pre_osdi amp.osdi
+.endc
+.model ampm amp
+.model dinv d_cosim simulation="dinv.vvp"
+.end

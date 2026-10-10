@@ -2763,6 +2763,10 @@ dependencies = [
  "schemify-doc",
  "schemify-elab",
  "schemify-expr",
+ "schemify-format",
+ "schemify-import",
+ "schemify-spicecmp",
+ "schemify-wave",
 ]
 
 [[package]]

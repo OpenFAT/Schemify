@@ -1,0 +1,21 @@
+// dig_tb (schemify verilog)
+module dig_tb ();
+  wire \d[0] ;
+  wire \d[1] ;
+  wire \q[0] ;
+  wire \q[1] ;
+  wire qb;
+  dinv UX (.A(\q[0] ), .Y(qb));
+  dbuf \B[0]  (.A(\d[0] ), .Y(\q[0] ));
+  dbuf \B[1]  (.A(\d[1] ), .Y(\q[1] ));
+endmodule
+module dbuf (A, Y);
+  input A;
+  output Y;
+  wire net_0w0001;
+  dinv U1 (.A(A), .Y(net_0w0001));
+  dinv U2 (.A(net_0w0001), .Y(Y));
+endmodule
+module dinv(input A, output Y);
+  assign Y = ~A;
+endmodule

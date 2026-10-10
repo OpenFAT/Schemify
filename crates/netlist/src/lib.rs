@@ -1,4 +1,829 @@
-//! Netlist emitters (D22): ngspice, xyce, cdl, spectre, verilog.
+//! Netlist emitters (D22): ngspice, xyce, cdl, spectre and structural verilog, plus the
+//! [`NameMap`] between hierarchical paths and emitted names.
 //!
-//! Reads `elab` tables only, so every dialect sees identical resolved values.
-//! Spec: `docs/spec/netlist.md` §7.
+//! Reads [`schemify_elab::Elab`] only, so every dialect sees the same resolved values.
+//! Pure (no I/O, no clock, no environment) and deterministic: one elaboration gives the
+//! same bytes on every platform. Normative spec: `docs/spec/netlist.md` §7, decisions
+//! in §7.6.
+//!
+//! # Spine
+//!
+//! `elab::elaborate` → gate on `violations` (the caller's) → [`emit`]: plan the
+//! templates → header → globals → bench params → corner lines → top block → code
+//! blocks → definitions by name → once-only text → end.
+//!
+//! ```
+//! use schemify_doc::Project;
+//! use schemify_elab::{Dialect, Request, elaborate, no_funcs};
+//!
+//! let mut p = Project::new(None, None, 1).unwrap();
+//! let res = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\nparam R 1k\n\nimpl spice spice\n  format spice \"R{name} {A} {B} {R}\"\n";
+//! let bench = "schemify 1 shbench\n\ninst 0aaaaa ./res\n  at 0 0 R0\n  name 1\n  R 2k\n\nlabel 0bbbbb 0 0 R0 in\nlabel 0ccccc 0 20 R0 0\n";
+//! p.index_library("", "", &[("res.shprim", res.as_bytes()), ("tb.shbench", bench.as_bytes())]).unwrap();
+//! p.open("", "res.shprim", res.as_bytes(), None).unwrap();
+//! let top = p.open("", "tb.shbench", bench.as_bytes(), None).unwrap().handle;
+//! let req = Request { config: None, corner: None, overrides: &[], env: &[], dialect: Dialect::Ngspice };
+//! let e = elaborate(&p, top, &req, &mut no_funcs);
+//! assert!(!e.violations.blocking());
+//! let n = schemify_netlist::emit(&e, Dialect::Ngspice);
+//! assert_eq!(n.text, "* tb (schemify ngspice)\nR1 in 0 2000\n.end\n");
+//! assert_eq!(n.name_map.inst_name("/1").as_deref(), Some("R1"));
+//! assert_eq!(n.name_map.inst_path("r1").as_deref(), Some("/1"));
+//! ```
+
+#![forbid(unsafe_code)]
+#![deny(rustdoc::broken_intra_doc_links)]
+// Tables are SoA: loops index several parallel columns by one row.
+#![allow(clippy::needless_range_loop)]
+
+// Data design (the six questions):
+// 1. In: one `Elab` (definitions, instance rows, leaf impls, bench lines). Out: one
+//    netlist `String` and a `NameMap`.
+// 2. Many: one line per emitted instance row; rows are per definition, not flattened, so
+//    a design of 10^6 leaves in 5 definitions writes ~10^2 lines, and a flat bench of
+//    10^5 instances writes 10^5.
+// 3. Widths: rows, definitions and names are `u32` (elab's capacities: 2^24 rows, 2^26
+//    names); text offsets are `usize` while writing and `u32` in the name map (asserted
+//    below 4 GiB).
+// 4. Access: rows of one definition are read in order (name, target, conns, params
+//    together), lines are appended to one buffer and sorted only when a template
+//    reorders names.
+// 5. Lifetime: everything is per `emit` call; scratch buffers are reused per line.
+// 6. Parallel: definitions are independent; a single thread already meets D39 (see
+//    tests/perf.rs), so the spine stays sequential.
+
+mod inst;
+mod name_map;
+
+pub use name_map::NameMap;
+
+use inst::{Plans, Tmp};
+use schemify_doc::PinDir;
+use schemify_elab::{CornerLine, Dialect, Elab, Ignore, Name, Target};
+
+/// One emitted netlist.
+#[derive(Clone, Debug, Default)]
+pub struct Netlist {
+    /// The netlist text, `\n` line ends, ending in a newline.
+    pub text: String,
+    /// Hierarchical path ↔ emitted name, for instances and nets.
+    pub name_map: NameMap,
+}
+
+/// "No row / no definition" in `u32` columns.
+const NONE: u32 = u32::MAX;
+
+/// Emits `elab` in `dialect` (netlist spec §7).
+///
+/// Precondition: the caller gated on `elab.violations` (spec §8); `emit` never fails,
+/// so a design with errors still yields text: a template that fails to render becomes a
+/// comment naming the error, and an unconnected pin bit is written `?`.
+///
+/// Cost: O(emitted rows + their connections) plus a sort of a definition's lines when
+/// a template does not keep the rows' name order; the hierarchy is not flattened.
+///
+/// # Panics
+///
+/// Panics if `elab` violates its own table invariants (CSR columns of mismatched
+/// lengths), i.e. it was not produced by `schemify_elab::elaborate`.
+pub fn emit(elab: &Elab, dialect: Dialect) -> Netlist {
+    assert_eq!(elab.defs.inst_start.len(), elab.defs.cell.len() + 1);
+    assert_eq!(elab.insts.conn_start.len(), elab.insts.name.len() + 1);
+    let plans = Plans::new(elab, dialect);
+    let order = defs_by_name(elab);
+    let mut w = Writer::new(elab, dialect, &plans, &order);
+
+    header(&mut w.out, elab, dialect);
+    globals(&mut w.out, elab, dialect);
+    bench_params(&mut w.out, elab, dialect);
+    corners(&mut w.out, elab, dialect);
+    if elab.top != NONE {
+        w.def_block(elab.top, true);
+    }
+    code(&mut w.out, elab, dialect);
+    for &d in &order {
+        w.def_block(d, false);
+    }
+    once_only(&mut w.out, elab, dialect, &w.tmp);
+    end(&mut w.out, dialect);
+
+    assert!(w.out.ends_with('\n'));
+    Netlist {
+        text: w.out,
+        name_map: w.map.finish(),
+    }
+}
+
+/// Emits `elab` with the hierarchy flattened into top-level lines: leaf `name`s become
+/// `<local>__<instance path, `__`-joined>` and internal nets `<path>.<net>`. Test oracle
+/// only (hierarchical vs flattened emission must be equivalent); SPICE dialects only.
+///
+/// # Panics
+///
+/// Panics for spectre and verilog, and as [`emit`].
+#[doc(hidden)]
+pub fn emit_flat(elab: &Elab, dialect: Dialect) -> String {
+    assert!(
+        is_spice(dialect),
+        "flat emission is a SPICE-dialect test oracle"
+    );
+    assert_eq!(elab.defs.inst_start.len(), elab.defs.cell.len() + 1);
+    let plans = Plans::new(elab, dialect);
+    let mut out = String::new();
+    let mut tmp = Tmp::new(elab);
+    header(&mut out, elab, dialect);
+    globals(&mut out, elab, dialect);
+    bench_params(&mut out, elab, dialect);
+    corners(&mut out, elab, dialect);
+    let mut lines: Vec<String> = Vec::new();
+    if elab.top != NONE {
+        let top_ports: Vec<String> = elab
+            .ports(elab.top)
+            .iter()
+            .map(|n| net_text(elab, *n).to_owned())
+            .collect();
+        flat_def(
+            elab,
+            dialect,
+            &plans,
+            &mut tmp,
+            elab.top,
+            ("", ""),
+            &top_ports,
+            &mut lines,
+        );
+    }
+    lines.sort();
+    if dialect == Dialect::Cdl {
+        out.push_str(".SUBCKT ");
+        out.push_str(elab.names.get(elab.defs.name[elab.top as usize]));
+        for p in elab.ports(elab.top) {
+            out.push(' ');
+            out.push_str(net_text(elab, *p));
+        }
+        out.push('\n');
+    }
+    lines.iter().for_each(|l| out.push_str(l));
+    if dialect == Dialect::Cdl {
+        out.push_str(".ENDS\n");
+    }
+    code(&mut out, elab, dialect);
+    once_only(&mut out, elab, dialect, &tmp);
+    end(&mut out, dialect);
+    out
+}
+
+/// Whether `d` is one of the SPICE-syntax dialects (ngspice, xyce, cdl): verbatim
+/// names, `*` comments, `.subckt` blocks, case-insensitive names.
+pub(crate) fn is_spice(d: Dialect) -> bool {
+    matches!(d, Dialect::Ngspice | Dialect::Xyce | Dialect::Cdl)
+}
+
+/// Appends `name` as the dialect spells an identifier (spec §7.6): SPICE dialects
+/// verbatim; spectre escapes every character outside `[A-Za-z0-9_]` with `\`; verilog
+/// writes a non-simple identifier as an escaped identifier (`\d[3] `).
+#[inline]
+pub(crate) fn push_name(out: &mut String, name: &str, d: Dialect) {
+    match d {
+        Dialect::Ngspice | Dialect::Xyce | Dialect::Cdl => out.push_str(name),
+        Dialect::Spectre => {
+            for c in name.chars() {
+                if !(c.is_ascii_alphanumeric() || c == '_') {
+                    out.push('\\');
+                }
+                out.push(c);
+            }
+        }
+        Dialect::Verilog => {
+            let b = name.as_bytes();
+            let simple = !b.is_empty()
+                && (b[0].is_ascii_alphabetic() || b[0] == b'_')
+                && b.iter()
+                    .all(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'$');
+            if simple {
+                out.push_str(name);
+            } else {
+                out.push('\\');
+                out.push_str(name);
+                out.push(' ');
+            }
+        }
+    }
+}
+
+/// The text of net `n`; `?` for an unconnected bit ([`Name::NONE`]).
+pub(crate) fn net_text(e: &Elab, n: Name) -> &str {
+    if n == Name::NONE { "?" } else { e.names.get(n) }
+}
+
+/// The comment leader of `d`.
+fn comment(d: Dialect) -> &'static str {
+    if is_spice(d) { "*" } else { "//" }
+}
+
+/// Used definitions other than the top, sorted by subckt name (spec §7.1).
+fn defs_by_name(e: &Elab) -> Vec<u32> {
+    let mut order: Vec<u32> = (0..e.defs.cell.len() as u32)
+        .filter(|&d| e.defs.used[d as usize] && d != e.top)
+        .collect();
+    order.sort_by(|a, b| {
+        e.names
+            .cmp(e.defs.name[*a as usize], e.defs.name[*b as usize])
+    });
+    assert!(order.len() < e.defs.cell.len().max(1));
+    order
+}
+
+// ------------------------------------------------------------------ sections
+
+fn header(out: &mut String, e: &Elab, d: Dialect) {
+    assert!(out.is_empty(), "the header is the first line");
+    let top = e.cells.first().map_or("top", |c| e.names.get(c.cell));
+    out.push_str(comment(d));
+    out.push(' ');
+    out.push_str(top);
+    out.push_str(" (schemify ");
+    out.push_str(d.as_str());
+    out.push_str(")\n");
+    if d == Dialect::Spectre {
+        out.push_str("simulator lang=spectre\n");
+    }
+}
+
+/// Spec §7.2: one `.global` line of every global but `0` (spectre lists `0` too);
+/// verilog has no global nets (§7.6).
+fn globals(out: &mut String, e: &Elab, d: Dialect) {
+    let word = match d {
+        Dialect::Ngspice | Dialect::Xyce => ".global",
+        Dialect::Cdl => ".GLOBAL",
+        Dialect::Spectre => "global",
+        Dialect::Verilog => return,
+    };
+    let names: Vec<&str> = e
+        .globals
+        .iter()
+        .map(|g| e.names.get(*g))
+        .filter(|g| d == Dialect::Spectre || *g != "0")
+        .collect();
+    if names.is_empty() {
+        return;
+    }
+    out.push_str(word);
+    for g in names {
+        out.push(' ');
+        push_name(out, g, d);
+    }
+    out.push('\n');
+}
+
+/// Bench vars in name order: `.param k=v` (ngspice, xyce), one `parameters` line
+/// (spectre); none for cdl and verilog.
+fn bench_params(out: &mut String, e: &Elab, d: Dialect) {
+    let b = &e.bench;
+    assert_eq!(b.var_name.len(), b.var_text.len());
+    for v in 0..b.var_name.len() {
+        match d {
+            Dialect::Ngspice | Dialect::Xyce => out.push_str(".param "),
+            Dialect::Spectre if v == 0 => out.push_str("parameters "),
+            Dialect::Spectre => out.push(' '),
+            Dialect::Cdl | Dialect::Verilog => return,
+        }
+        out.push_str(e.names.get(b.var_name[v]));
+        out.push('=');
+        out.push_str(e.names.get(b.var_text[v]));
+        if d != Dialect::Spectre {
+            out.push('\n');
+        }
+    }
+    if d == Dialect::Spectre && !b.var_name.is_empty() {
+        out.push('\n');
+    }
+}
+
+/// Corner lines in file order: `.lib path section`, `.include path`, `.temp t`
+/// (xyce: `.options device temp=t`; spectre: `include` / `options`); none for cdl and
+/// verilog.
+fn corners(out: &mut String, e: &Elab, d: Dialect) {
+    let b = &e.bench;
+    if matches!(d, Dialect::Cdl | Dialect::Verilog) || b.corner_kind.is_empty() {
+        return; // a non-bench top has empty bench tables (no CSR seed either)
+    }
+    assert_eq!(b.corner_start.len(), b.corner_kind.len() + 1);
+    for k in 0..b.corner_kind.len() {
+        let args = &b.corner_args[b.corner_start[k] as usize..b.corner_start[k + 1] as usize];
+        let arg = |i: usize| args.get(i).map_or("", |n| e.names.get(*n));
+        match (b.corner_kind[k], d) {
+            (CornerLine::Lib, Dialect::Spectre) => {
+                out.push_str("include \"");
+                out.push_str(arg(0));
+                out.push_str("\" section=");
+                out.push_str(arg(1));
+            }
+            (CornerLine::Include, Dialect::Spectre) => {
+                out.push_str("include \"");
+                out.push_str(arg(0));
+                out.push('"');
+            }
+            (CornerLine::Temp, Dialect::Spectre) => {
+                out.push_str("corner_temp options temp=");
+                out.push_str(arg(0));
+            }
+            (CornerLine::Lib, _) => {
+                out.push_str(".lib ");
+                out.push_str(arg(0));
+                out.push(' ');
+                out.push_str(arg(1));
+            }
+            (CornerLine::Include, _) => {
+                out.push_str(".include ");
+                out.push_str(arg(0));
+            }
+            (CornerLine::Temp, Dialect::Xyce) => {
+                out.push_str(".options device temp=");
+                out.push_str(arg(0));
+            }
+            (CornerLine::Temp, _) => {
+                out.push_str(".temp ");
+                out.push_str(arg(0));
+            }
+        }
+        out.push('\n');
+    }
+}
+
+/// Bench code blocks for the dialect, already selected and sorted by elab, verbatim.
+fn code(out: &mut String, e: &Elab, d: Dialect) {
+    let b = &e.bench;
+    if d == Dialect::Cdl || b.code_name.is_empty() {
+        return; // spec §7.4: no code in cdl (elab selects none either)
+    }
+    assert_eq!(b.code_start.len(), b.code_name.len() + 1);
+    for &l in &b.code_lines {
+        out.push_str(e.names.get(l));
+        out.push('\n');
+    }
+}
+
+/// Once-only text (spec §7.1, §7.2): OSDI loads, then generated `.model` lines, then
+/// impl bodies by (cell, impl). Only impls some emitted row uses.
+fn once_only(out: &mut String, e: &Elab, d: Dialect, tmp: &Tmp) {
+    let uses = &tmp.uses;
+    assert_eq!(uses.impl_used.len(), e.impls.cell.len());
+    let stem_of = |l: usize| -> String {
+        let f = &e.cells[e.impls.cell[l] as usize];
+        let imp = e.impls.index[l] as usize;
+        match f.impl_file[imp] {
+            Name::NONE => e.names.get(f.stem).to_owned(),
+            file => {
+                let base = e.names.get(file).rsplit(['/', '\\']).next().unwrap_or("");
+                base.rsplit_once('.').map_or(base, |(s, _)| s).to_owned()
+            }
+        }
+    };
+    // OSDI loads and models (ngspice only: elab rejects veriloga/verilog elsewhere). A
+    // Verilog-A impl with a `file` is compiled by the runner: one OSDI load per file and
+    // a `.model` per model name (the impl's `model` attr, and each default-template row's
+    // model). One without a `file` is precompiled: its body carries that text (§7.6).
+    let mut osdi: Vec<String> = Vec::new();
+    let mut models: Vec<String> = Vec::new();
+    let lang_of = |l: usize| {
+        let f = &e.cells[e.impls.cell[l] as usize];
+        (
+            e.names.get(f.impl_lang[e.impls.index[l] as usize]),
+            f.impl_file[e.impls.index[l] as usize],
+        )
+    };
+    let model_line = |l: usize, m: &str, models: &mut Vec<String>, osdi: &mut Vec<String>| {
+        let stem = stem_of(l);
+        match lang_of(l) {
+            ("veriloga", file) if file != Name::NONE => {
+                models.push(format!(".model {m} {stem}"));
+                osdi.push(stem);
+            }
+            ("verilog", _) => models.push(format!(".model {m} d_cosim simulation=\"{stem}.vvp\"")),
+            _ => {}
+        }
+    };
+    if d == Dialect::Ngspice {
+        for l in (0..e.impls.cell.len()).filter(|&l| uses.impl_used[l]) {
+            let f = &e.cells[e.impls.cell[l] as usize];
+            match f.impl_model[e.impls.index[l] as usize] {
+                Name::NONE if lang_of(l).0 == "veriloga" && lang_of(l).1 != Name::NONE => {
+                    osdi.push(stem_of(l));
+                }
+                Name::NONE => {}
+                m => model_line(l, e.names.get(m), &mut models, &mut osdi),
+            }
+        }
+        for &(model, l) in &uses.models {
+            model_line(l as usize, e.names.get(model), &mut models, &mut osdi);
+        }
+    }
+    osdi.sort();
+    osdi.dedup();
+    models.sort();
+    models.dedup();
+    for s in &osdi {
+        out.push_str(".control\npre_osdi ");
+        out.push_str(s);
+        out.push_str(".osdi\n.endc\n");
+    }
+    for m in &models {
+        out.push_str(m);
+        out.push('\n');
+    }
+    // Bodies: SPICE text for the SPICE dialects (spectre wraps it in `lang=spice`):
+    // `spice` impls and, except for cdl, precompiled Verilog-A ones (no `file`);
+    // Verilog source for verilog. A Verilog-A source (`file`) is the runner's.
+    let mut bodies: Vec<usize> = (0..e.impls.cell.len())
+        .filter(|&l| {
+            let wanted = match (lang_of(l), d) {
+                (("verilog", _), Dialect::Verilog) => true,
+                (_, Dialect::Verilog) => false,
+                (("spice", _), _) => true,
+                // Simulation-only text (OSDI load, model card): not for LVS.
+                (("veriloga", file), _) => file == Name::NONE && d != Dialect::Cdl,
+                _ => false,
+            };
+            uses.impl_used[l] && wanted && e.impls.body_start[l] < e.impls.body_start[l + 1]
+        })
+        .collect();
+    let key = |l: usize| {
+        let f = &e.cells[e.impls.cell[l] as usize];
+        (
+            e.names.get(f.cell),
+            e.names.get(f.impl_name[e.impls.index[l] as usize]),
+        )
+    };
+    bodies.sort_by(|a, b| key(*a).cmp(&key(*b)));
+    for l in bodies {
+        if d == Dialect::Spectre {
+            out.push_str("simulator lang=spice\n");
+        }
+        for &line in
+            &e.impls.body[e.impls.body_start[l] as usize..e.impls.body_start[l + 1] as usize]
+        {
+            out.push_str(e.names.get(line));
+            out.push('\n');
+        }
+        if d == Dialect::Spectre {
+            out.push_str("simulator lang=spectre\n");
+        }
+    }
+}
+
+fn end(out: &mut String, d: Dialect) {
+    match d {
+        Dialect::Ngspice | Dialect::Xyce => out.push_str(".end\n"),
+        Dialect::Cdl => out.push_str(".END\n"),
+        Dialect::Spectre | Dialect::Verilog => {}
+    }
+}
+
+/// Direction letter of each port of definition `d` in port order (CDL `*.PININFO`,
+/// verilog declarations): ordinary pins bit by bit, then declared inherited pins, then
+/// inherited pins propagated from the subtree (`inout`). Tolerates a port list that
+/// disagrees with the pins (`E012` designs): missing directions are `inout`.
+fn port_dirs(e: &Elab, d: u32) -> Vec<PinDir> {
+    let f = &e.cells[e.defs.cell[d as usize] as usize];
+    let n = e.ports(d).len();
+    let mut dirs = Vec::with_capacity(n);
+    for inherited in [false, true] {
+        for p in 0..f.pin_name.len() {
+            if (f.pin_inherit[p] != Name::NONE) == inherited {
+                dirs.extend(std::iter::repeat_n(f.pin_dir[p], f.bits(p).len()));
+            }
+        }
+    }
+    dirs.resize(n, PinDir::Inout);
+    assert_eq!(dirs.len(), n);
+    dirs
+}
+
+// ------------------------------------------------------------------ definitions
+
+/// The emission state: output buffer, line index of the definition being written,
+/// per-line scratch and the name map under construction.
+struct Writer<'e> {
+    e: &'e Elab,
+    d: Dialect,
+    plans: &'e Plans,
+    out: String,
+    tmp: Tmp,
+    /// Lines of the current definition: (start, end, name start, name end) in `out`.
+    lines: Vec<(usize, usize, usize, usize)>,
+    /// Elab definition → name-map definition (`NONE` when not emitted).
+    def_map: Vec<u32>,
+    map: name_map::Builder,
+    /// Verilog: the definition's nets, sorted, for `wire` declarations.
+    wires: Vec<Name>,
+}
+
+impl<'e> Writer<'e> {
+    fn new(e: &'e Elab, d: Dialect, plans: &'e Plans, order: &[u32]) -> Writer<'e> {
+        let mut def_map = vec![NONE; e.defs.cell.len()];
+        let mut rows = 0;
+        if e.top != NONE {
+            def_map[e.top as usize] = 0;
+            rows += e.insts_of(e.top).len();
+        }
+        for (k, &d) in order.iter().enumerate() {
+            def_map[d as usize] = k as u32 + 1;
+            rows += e.insts_of(d).len();
+        }
+        let body_lines = e.impls.body.len() + e.bench.code_lines.len();
+        Writer {
+            e,
+            d,
+            plans,
+            out: String::with_capacity(4096 + 48 * rows + 64 * body_lines),
+            tmp: Tmp::new(e),
+            lines: Vec::new(),
+            def_map,
+            map: name_map::Builder::new(e, d, order.len() + usize::from(e.top != NONE), rows),
+            wires: Vec::new(),
+        }
+    }
+
+    /// Writes definition `d`: its opening line(s), its instance lines sorted by emitted
+    /// name, its closing line. The top is unwrapped except for cdl (a `.SUBCKT`, spec
+    /// §7.4) and verilog (a `module`).
+    fn def_block(&mut self, d: u32, top: bool) {
+        let (e, dialect) = (self.e, self.d);
+        assert!(
+            self.def_map[d as usize] != NONE,
+            "definition {d} is emitted"
+        );
+        let name = e.names.get(e.defs.name[d as usize]);
+        let wrap = !top || matches!(dialect, Dialect::Cdl | Dialect::Verilog);
+        if wrap {
+            self.open_def(d, name);
+        }
+        self.map.def(e, d, &self.def_map);
+        self.rows(d);
+        if wrap {
+            match dialect {
+                Dialect::Ngspice | Dialect::Xyce => self.out.push_str(".ends "),
+                Dialect::Cdl => self.out.push_str(".ENDS "),
+                Dialect::Spectre => self.out.push_str("ends "),
+                Dialect::Verilog => self.out.push_str("endmodule"),
+            }
+            if dialect != Dialect::Verilog {
+                push_name(&mut self.out, name, dialect);
+            }
+            self.out.push('\n');
+        }
+    }
+
+    fn open_def(&mut self, d: u32, name: &str) {
+        let (e, dialect, out) = (self.e, self.d, &mut self.out);
+        let ports = e.ports(d);
+        let (open, sep, close) = match dialect {
+            Dialect::Ngspice | Dialect::Xyce => (".subckt ", " ", ""),
+            Dialect::Cdl => (".SUBCKT ", " ", ""),
+            Dialect::Spectre => ("subckt ", " ", ")"),
+            Dialect::Verilog => ("module ", ", ", ");"),
+        };
+        out.push_str(open);
+        push_name(out, name, dialect);
+        if !close.is_empty() {
+            out.push_str(" (");
+        }
+        for (i, p) in ports.iter().enumerate() {
+            if i > 0 || close.is_empty() {
+                out.push_str(sep);
+            }
+            push_name(out, net_text(e, *p), dialect);
+        }
+        out.push_str(close);
+        out.push('\n');
+        match dialect {
+            Dialect::Cdl if !ports.is_empty() => {
+                out.push_str("*.PININFO");
+                for (p, dir) in ports.iter().zip(port_dirs(e, d)) {
+                    out.push(' ');
+                    out.push_str(net_text(e, *p));
+                    out.push_str(match dir {
+                        PinDir::In => ":I",
+                        PinDir::Out => ":O",
+                        PinDir::Inout => ":B",
+                    });
+                }
+                out.push('\n');
+            }
+            Dialect::Verilog => self.verilog_decls(d),
+            _ => {}
+        }
+    }
+
+    /// Verilog port directions and one `wire` per other net of the definition's
+    /// emitted rows, sorted by name (spec §7.5).
+    fn verilog_decls(&mut self, d: u32) {
+        let (e, out) = (self.e, &mut self.out);
+        let ports = e.ports(d);
+        for (p, dir) in ports.iter().zip(port_dirs(e, d)) {
+            out.push_str(match dir {
+                PinDir::In => "  input ",
+                PinDir::Out => "  output ",
+                PinDir::Inout => "  inout ",
+            });
+            push_name(out, net_text(e, *p), Dialect::Verilog);
+            out.push_str(";\n");
+        }
+        self.wires.clear();
+        for r in e.insts_of(d) {
+            if e.insts.ignore[r] == Ignore::No {
+                self.wires
+                    .extend(e.conns(r).iter().filter(|n| **n != Name::NONE));
+            }
+        }
+        self.wires.sort_unstable();
+        self.wires.dedup();
+        self.wires.retain(|n| !ports.contains(n));
+        self.wires.sort_by(|a, b| e.names.cmp(*a, *b));
+        for n in &self.wires {
+            out.push_str("  wire ");
+            push_name(out, e.names.get(*n), Dialect::Verilog);
+            out.push_str(";\n");
+        }
+    }
+
+    /// Instance lines of definition `d`, sorted by emitted name (ties keep row order),
+    /// and their name-map rows.
+    fn rows(&mut self, d: u32) {
+        let e = self.e;
+        let seg = self.out.len();
+        self.lines.clear();
+        let indent = if self.d == Dialect::Verilog { "  " } else { "" };
+        let mut sorted = true;
+        for r in e.insts_of(d) {
+            if e.insts.ignore[r] != Ignore::No {
+                continue;
+            }
+            let start = self.out.len();
+            self.out.push_str(indent);
+            let local = e.names.get(e.insts.name[r]);
+            let rendered = inst::line(
+                e,
+                self.d,
+                self.plans,
+                r,
+                local,
+                |n| e.names.get(n),
+                &mut self.out,
+                &mut self.tmp,
+            );
+            if let Err(msg) = &rendered {
+                self.out.truncate(start);
+                self.out.push_str(indent);
+                self.out.push_str(comment(self.d));
+                self.out.push_str(" error in ");
+                self.out.push_str(local);
+                self.out.push_str(": ");
+                self.out.push_str(&msg.replace('\n', " "));
+            }
+            if self.out.len() == start + indent.len() {
+                self.out.truncate(start);
+                continue; // a template that renders nothing emits no line
+            }
+            if !self.out.ends_with('\n') {
+                self.out.push('\n');
+            }
+            let name = emitted_name(&self.out, start, self.d);
+            if let Some(prev) = self.lines.last() {
+                sorted &=
+                    self.out.as_bytes()[prev.2..prev.3] <= self.out.as_bytes()[name.0..name.1];
+            }
+            if rendered.is_ok() {
+                let child = match e.insts.target[r] {
+                    Target::Def(c) => self.def_map[c as usize],
+                    Target::Leaf(_) => NONE,
+                };
+                self.map.row(e, r, &self.out[name.0..name.1], child);
+            }
+            self.lines.push((start, self.out.len(), name.0, name.1));
+        }
+        if !sorted {
+            sort_lines(&mut self.out, seg, &self.lines);
+        }
+    }
+}
+
+/// The byte range of the emitted instance name of the line starting at `start`: its
+/// first token, the second for verilog (`<module> <instance> (…);`). Lines sort by it.
+fn emitted_name(out: &str, start: usize, d: Dialect) -> (usize, usize) {
+    let b = out.as_bytes();
+    let mut i = start;
+    let skip = usize::from(d == Dialect::Verilog);
+    let mut tok = (start, start);
+    for _ in 0..=skip {
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let t0 = i;
+        while i < b.len() && !b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        tok = (t0, i);
+    }
+    assert!(tok.0 <= tok.1 && tok.1 <= b.len());
+    tok
+}
+
+/// Reorders the lines written since `seg` by emitted name (stable). `lines` are
+/// `(start, end, name start, name end)` offsets into `out`, contiguous from `seg` to
+/// the end.
+fn sort_lines(out: &mut String, seg: usize, lines: &[(usize, usize, usize, usize)]) {
+    assert!(lines.first().is_some_and(|l| l.0 == seg));
+    assert!(lines.last().is_some_and(|l| l.1 == out.len()));
+    // ponytail: the out-of-order case copies the definition's text once; fine for
+    // templates that reorder names (rare), revisit if a PDK makes it common.
+    let text = out[seg..].to_owned();
+    let mut order: Vec<usize> = (0..lines.len()).collect();
+    order.sort_by(|&a, &b| {
+        let key = |l: (usize, usize, usize, usize)| &text.as_bytes()[l.2 - seg..l.3 - seg];
+        key(lines[a]).cmp(key(lines[b]))
+    });
+    out.truncate(seg);
+    for i in order {
+        out.push_str(&text[lines[i].0 - seg..lines[i].1 - seg]);
+    }
+    assert_eq!(out.len(), seg + text.len());
+}
+
+/// Flattens definition `d` at instance path `path` (`__`-joined local names, empty at
+/// the top; `dotted` is the same path `.`-joined) whose ports are bound to `ports`
+/// (flat net names), appending its leaf lines.
+#[allow(clippy::too_many_arguments)]
+fn flat_def(
+    e: &Elab,
+    dialect: Dialect,
+    plans: &Plans,
+    tmp: &mut Tmp,
+    d: u32,
+    (path, dotted): (&str, &str),
+    ports: &[String],
+    lines: &mut Vec<String>,
+) {
+    assert_eq!(ports.len(), e.ports(d).len());
+    let flat = |n: Name| -> String {
+        if n == Name::NONE {
+            return "?".to_owned();
+        }
+        if let Some(j) = e.ports(d).iter().position(|p| *p == n) {
+            return ports[j].clone();
+        }
+        let text = e.names.get(n);
+        if dotted.is_empty() || e.globals.contains(&n) {
+            text.to_owned()
+        } else {
+            format!("{dotted}.{text}")
+        }
+    };
+    for r in e.insts_of(d) {
+        if e.insts.ignore[r] != Ignore::No {
+            continue;
+        }
+        let local = e.names.get(e.insts.name[r]);
+        match e.insts.target[r] {
+            Target::Def(c) => {
+                let child: Vec<String> = e.conns(r).iter().map(|n| flat(*n)).collect();
+                let p = if path.is_empty() {
+                    local.to_owned()
+                } else {
+                    format!("{path}__{local}")
+                };
+                let dt = if dotted.is_empty() {
+                    local.to_owned()
+                } else {
+                    format!("{dotted}.{local}")
+                };
+                flat_def(e, dialect, plans, tmp, c, (&p, &dt), &child, lines);
+            }
+            Target::Leaf(_) => {
+                let names: Vec<(Name, String)> =
+                    e.conns(r).iter().map(|n| (*n, flat(*n))).collect();
+                let name = if path.is_empty() {
+                    local.to_owned()
+                } else {
+                    format!("{local}__{path}")
+                };
+                let mut out = String::new();
+                let lookup = |n: Name| -> &str {
+                    names
+                        .iter()
+                        .find(|x| x.0 == n)
+                        .map_or("?", |x| x.1.as_str())
+                };
+                if inst::line(e, dialect, plans, r, &name, lookup, &mut out, tmp).is_ok()
+                    && !out.is_empty()
+                {
+                    if !out.ends_with('\n') {
+                        out.push('\n');
+                    }
+                    lines.push(out);
+                }
+            }
+        }
+    }
+}

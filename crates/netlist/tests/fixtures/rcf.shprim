@@ -1,0 +1,15 @@
+schemify 1 shprim
+  doc "RC low-pass whose SPICE text is a body (fixture)"
+
+pin a inout 0 -30
+pin b inout 0 30
+
+impl spice spice
+  format spice "X{name} {a} {b} rcfilt"
+  format spectre "{name} ({a} {b}) rcfilt"
+
+body spice
+  | .subckt rcfilt a b
+  | R1 a b 1k
+  | C1 b 0 1p
+  | .ends rcfilt

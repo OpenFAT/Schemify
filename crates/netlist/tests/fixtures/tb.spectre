@@ -1,0 +1,45 @@
+// tb (schemify spectre)
+simulator lang=spectre
+global 0 vdd\!
+parameters tstop=2e-9 vdd=1.8
+include "models.lib" section=tt
+include "extra.inc"
+corner_temp options temp=27
+COUT (out2 0) capacitor c=1e-14
+C\[0\] (ld\[0\] 0) capacitor c=1e-14
+C\[1\] (ld\[1\] 0) capacitor c=1e-14
+F1 (out filt) rcfilt
+VDD (vdd\! 0) vsource dc=1.8
+VIN (in 0) vsource dc=0.9
+X1 (in out vdd\!) chain
+X2 (out out2 vdd\!) chain__h4shwd
+subckt chain (IN OUT VDD)
+X1 (IN net_0w0001 VDD) inv
+X2 (net_0w0001 OUT VDD) inv__8hc2h8
+ends chain
+subckt chain__h4shwd (IN OUT VDD)
+X1 (IN net_0w0001 VDD) inv__8hc2x8
+X2 (net_0w0001 OUT VDD) inv__sty8mw
+ends chain__h4shwd
+subckt inv (A Y VDD)
+MN (Y A 0 0) nch w=1u l=0.15u
+MP (Y A VDD VDD) pch w=2u l=0.15u
+ends inv
+subckt inv__8hc2h8 (A Y VDD)
+MN (Y A 0 0) nch w=2u l=0.15u
+MP (Y A VDD VDD) pch w=4u l=0.15u
+ends inv__8hc2h8
+subckt inv__8hc2x8 (A Y VDD)
+MN (Y A 0 0) nch w=2u l=0.15u
+MP (Y A VDD VDD) pch w=2u l=0.15u
+ends inv__8hc2x8
+subckt inv__sty8mw (A Y VDD)
+MN (Y A 0 0) nch w=4u l=0.15u
+MP (Y A VDD VDD) pch w=8u l=0.15u
+ends inv__sty8mw
+simulator lang=spice
+.subckt rcfilt a b
+R1 a b 1k
+C1 b 0 1p
+.ends rcfilt
+simulator lang=spectre

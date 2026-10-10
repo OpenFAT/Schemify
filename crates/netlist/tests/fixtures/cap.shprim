@@ -1,0 +1,11 @@
+schemify 1 shprim
+  prefix C
+
+pin p inout 0 -30
+pin n inout 0 30
+
+param C 1p
+
+impl spice spice
+  format spice "C{name} {p} {n} {C}"
+  format spectre "{name} ({p} {n}) capacitor c={C}"
