@@ -1,0 +1,19 @@
+[package]
+name = "schemify-plugin"
+description = "Plugin host: wasmi runtime, capability enforcement, contribution composition, request queues."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+schemify-abi.workspace = true
+wasmi.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+# Tests hand-write tiny malformed modules (bad version, missing exports, looping start) as WAT.
+wasmi = { workspace = true, features = ["wat"] }
