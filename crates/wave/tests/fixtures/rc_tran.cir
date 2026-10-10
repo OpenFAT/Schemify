@@ -1,0 +1,13 @@
+* RC low-pass, transient: real data, one plot.
+V1 in 0 PULSE(0 1 1u 10n 10n 5u 10u)
+R1 in out 1k
+C1 out 0 1n
+.tran 50n 20u
+.control
+run
+set filetype=binary
+write rc_tran.bin.raw
+set filetype=ascii
+write rc_tran.ascii.raw
+.endc
+.end

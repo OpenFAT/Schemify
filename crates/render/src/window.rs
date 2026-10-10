@@ -396,7 +396,12 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => self.scale = scale_factor,
             WindowEvent::RedrawRequested => self.render(),
-            WindowEvent::ModifiersChanged(m) => self.mods = mods_of(m.state()),
+            WindowEvent::ModifiersChanged(m) => {
+                self.mods = mods_of(m.state());
+                self.events.push(InputEvent::Mods {
+                    mods: Mods(self.mods),
+                });
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = ((position.x / s) as f32, (position.y / s) as f32);
                 self.events.push(InputEvent::PointerMove {

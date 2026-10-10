@@ -179,6 +179,9 @@ named_enum!(
         Grow = "grow",
         /// Child direction: 1 = row, 0 = column.
         Dir = "dir",
+        /// Rows only: 1 stretches children to the row's height (side-by-side panels) instead of
+        /// centering them (bars).
+        Stretch = "stretch",
     }
 );
 

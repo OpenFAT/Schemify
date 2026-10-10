@@ -9,6 +9,8 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+# Waveform viewer tables (D23): the waves window reads them and sends requests.
+schemify-wave.workspace = true
 taffy.workspace = true
 parley.workspace = true
 accesskit.workspace = true

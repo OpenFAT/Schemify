@@ -1,52 +1,80 @@
-//! `.raw` file parser — ngspice and LTspice, ascii and binary.
+//! `.raw` reader: ngspice, Xyce and LTspice; ASCII (`Values:`) and binary (`Binary:`).
 //!
-//! Input: raw bytes. Output: `Vec<RawPlot>` (refined type — downstream never
-//! re-validates). Handles:
-//!   - ngspice ascii (`Values:`) and binary (`Binary:`, row-major f64)
-//!   - LTspice binary (UTF-16LE header, scale f64 + data f32, abs-coded time,
-//!     `fastaccess` column-major variant, complex AC as f64 pairs)
-//!   - multiple analysis blocks appended in one file
-//!   - parametric sweep step detection (scale variable restart)
+//! Bytes in, `Vec<RawPlot>` out (one per analysis block, in file order). Flavours handled:
+//!
+//! - ngspice binary: row-major little-endian f64 (pairs for complex); ASCII: one value per line,
+//!   `%.15e`, complex as `re,im`.
+//! - Xyce (`-r`, `-r … -a`): same layout; ASCII has 9 significant digits and writes complex as
+//!   `re, im` (space after the comma); node names are bare (`OUT`, `V1#branch`); each `.step` is a
+//!   separate block (see [`crate::group_datasets`]).
+//! - LTspice binary: UTF-16LE header, f64 scale with f32 data (or all f64), `fastaccess`
+//!   column-major, negative times marking compressed points (|t| is used).
+//!
+//! The reader is total: any byte string yields `Ok` or a [`RawError`], never a panic, and no
+//! allocation exceeds what the input's size can fill (a header claiming 2^32 points in a
+//! 100-byte file fails before allocating).
 
-use crate::data::{RawPlot, VarKind, Variable};
+use std::borrow::Cow;
+
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+use crate::data::{RawPlot, VarKind, Variable};
+
+/// Why a `.raw` file could not be read.
+#[derive(Debug, Error, PartialEq, Eq)]
 pub enum RawError {
+    /// No bytes at all.
     #[error("empty file")]
     Empty,
+    /// A header field is missing, malformed or inconsistent.
     #[error("malformed header: {0}")]
     Header(String),
-    #[error("binary data truncated: expected {expected} bytes, found {found}")]
-    Truncated { expected: usize, found: usize },
+    /// The data section is shorter than the header's point × variable count requires.
+    #[error("data truncated: expected {expected} bytes, found {found}")]
+    Truncated {
+        /// Bytes the header implies.
+        expected: usize,
+        /// Bytes present.
+        found: usize,
+    },
+    /// An ASCII value (or point index) is missing or not a number.
     #[error("malformed ascii values at point {0}")]
     Values(u32),
+    /// Only blank lines.
     #[error("no plots found in file")]
     NoPlots,
 }
 
-/// Parse a complete `.raw` file. Returns one `RawPlot` per analysis block.
+/// Parses a complete `.raw` file into one [`RawPlot`] per analysis block.
+///
+/// # Errors
+///
+/// See [`RawError`]; the first malformed block fails the whole file.
+///
+/// # Time complexity
+///
+/// O(bytes). Binary data is transposed to column-major once.
 pub fn parse_raw(bytes: &[u8]) -> Result<Vec<RawPlot>, RawError> {
     if bytes.is_empty() {
         return Err(RawError::Empty);
     }
     let mut rd = Reader::new(bytes);
     let mut plots = Vec::new();
+    // Bounded: every iteration consumes at least one header line or ends the loop.
     while !rd.at_end() {
+        let before = rd.pos;
         match parse_one_plot(&mut rd)? {
             Some(p) => plots.push(p),
-            None => break, // trailing whitespace
+            None => break, // trailing blank lines
         }
+        assert!(rd.pos > before, "parser made no progress");
     }
     if plots.is_empty() {
         return Err(RawError::NoPlots);
     }
+    debug_assert!(plots.iter().all(|p| !p.steps().is_empty()));
     Ok(plots)
 }
-
-// ════════════════════════════════════════════════════════════
-// Header parsing
-// ════════════════════════════════════════════════════════════
 
 #[derive(Default)]
 struct Header {
@@ -63,37 +91,25 @@ fn parse_one_plot(rd: &mut Reader) -> Result<Option<RawPlot>, RawError> {
     let Some(h) = parse_header(rd)? else {
         return Ok(None);
     };
-    let complex = h.flags.to_ascii_lowercase().contains("complex");
-    let fastaccess = h.flags.to_ascii_lowercase().contains("fastaccess");
-    let ltspice = h.command.to_ascii_lowercase().contains("ltspice")
-        || h.command.to_ascii_lowercase().contains("linear technology");
+    let flags = h.flags.to_ascii_lowercase();
+    let complex = flags.contains("complex");
+    let fastaccess = flags.contains("fastaccess");
+    let command = h.command.to_ascii_lowercase();
+    let ltspice = command.contains("ltspice") || command.contains("linear technology");
     let n = h.n_points as usize;
 
-    let (re, im) = if h.binary {
+    let (mut re, im) = if h.binary {
         parse_binary(rd, &h, complex, fastaccess, ltspice)?
     } else {
         parse_ascii_values(rd, &h, complex)?
     };
-
-    let mut plot = RawPlot {
-        plotname: h.plotname,
-        complex,
-        variables: h.variables,
-        n_points: h.n_points,
-        re,
-        im,
-        steps: Vec::new(),
-    };
-
-    // LTspice compresses transient files by flagging non-essential points
-    // with a negative time value; consumers take |t|.
-    if ltspice && !plot.variables.is_empty() && plot.variables[0].kind == VarKind::Time {
-        for x in &mut plot.re[..n] {
+    // LTspice marks compressed transient points with a negative time; consumers take |t|.
+    if ltspice && h.variables[0].kind == VarKind::Time {
+        for x in &mut re[..n] {
             *x = x.abs();
         }
     }
-
-    plot.detect_steps();
+    let plot = RawPlot::from_columns(&h.plotname, h.variables, re, im)?;
     Ok(Some(plot))
 }
 
@@ -103,7 +119,7 @@ fn parse_header(rd: &mut Reader) -> Result<Option<Header>, RawError> {
     loop {
         let Some(line) = rd.read_line() else {
             return if seen_any {
-                Err(RawError::Header("unexpected EOF in header".into()))
+                Err(RawError::Header("unexpected end of file in header".into()))
             } else {
                 Ok(None)
             };
@@ -113,55 +129,46 @@ fn parse_header(rd: &mut Reader) -> Result<Option<Header>, RawError> {
             continue;
         }
         seen_any = true;
-        let lower = trimmed.to_ascii_lowercase();
         if let Some(v) = value_of(trimmed, "plotname:") {
-            h.plotname = v.to_string();
+            h.plotname = v.to_owned();
         } else if let Some(v) = value_of(trimmed, "command:") {
-            h.command = v.to_string();
+            h.command = v.to_owned();
         } else if let Some(v) = value_of(trimmed, "flags:") {
-            h.flags = v.to_string();
+            h.flags = v.to_owned();
         } else if let Some(v) = value_of(trimmed, "no. variables:") {
             h.n_vars = v
-                .trim()
                 .parse()
                 .map_err(|_| RawError::Header(format!("bad variable count: {v}")))?;
         } else if let Some(v) = value_of(trimmed, "no. points:") {
             h.n_points = v
-                .trim()
                 .parse()
                 .map_err(|_| RawError::Header(format!("bad point count: {v}")))?;
-        } else if lower.starts_with("variables:") {
-            // Followed by n_vars lines: "<idx> <name> <type> [params...]".
+        } else if let Some(rest) = value_of(trimmed, "variables:") {
             if h.n_vars == 0 {
                 return Err(RawError::Header("Variables: before No. Variables:".into()));
             }
-            h.variables.reserve(h.n_vars as usize);
-            for _ in 0..h.n_vars {
+            // Some writers put the first entry on the `Variables:` line itself.
+            if !rest.is_empty() {
+                h.variables.push(parse_var_line(rest)?);
+            }
+            // Bounded by n_vars, and each pass consumes a line or fails.
+            while h.variables.len() < h.n_vars as usize {
                 let vl = rd
                     .read_line()
-                    .ok_or_else(|| RawError::Header("EOF in variable list".into()))?;
-                let mut it = vl.split_whitespace();
-                let _idx = it.next();
-                let name = it
-                    .next()
-                    .ok_or_else(|| RawError::Header(format!("bad variable line: {vl}")))?;
-                let kind = it
-                    .next()
-                    .map(VarKind::from_type_str)
-                    .unwrap_or(VarKind::Other);
-                h.variables.push(Variable {
-                    name: name.to_string(),
-                    kind,
-                });
+                    .ok_or_else(|| RawError::Header("end of file in variable list".into()))?;
+                h.variables.push(parse_var_line(&vl)?);
             }
-        } else if lower.starts_with("values:") {
+        } else if value_of(trimmed, "values:").is_some() {
             h.binary = false;
             break;
-        } else if lower.starts_with("binary:") {
+        } else if value_of(trimmed, "binary:").is_some() {
             h.binary = true;
             break;
         }
-        // Unknown header lines (Date:, Offset:, Dimensions:, …) are skipped.
+        // Unknown header lines (Title:, Date:, Offset:, Dimensions:, …) are skipped.
+    }
+    if h.n_points == 0 || h.n_vars == 0 {
+        return Err(RawError::Header("zero points or variables".into()));
     }
     if h.variables.len() != h.n_vars as usize {
         return Err(RawError::Header(format!(
@@ -170,27 +177,38 @@ fn parse_header(rd: &mut Reader) -> Result<Option<Header>, RawError> {
             h.variables.len()
         )));
     }
-    if h.n_points == 0 || h.n_vars == 0 {
-        return Err(RawError::Header("zero points or variables".into()));
-    }
     Ok(Some(h))
 }
 
-/// Case-insensitive `"Key:" value` extractor.
+/// `"<idx> <name> <type> [params…]"`.
+fn parse_var_line(line: &str) -> Result<Variable, RawError> {
+    let mut it = line.split_whitespace();
+    let _idx = it.next();
+    let name = it
+        .next()
+        .ok_or_else(|| RawError::Header(format!("bad variable line: {line}")))?;
+    let kind = it.next().map_or(VarKind::Other, VarKind::from_type_str);
+    Ok(Variable {
+        name: name.to_owned(),
+        kind,
+    })
+}
+
+/// Case-insensitive `"Key:" value` extractor; byte-wise, so a multibyte character in the line
+/// never splits.
 fn value_of<'a>(line: &'a str, key: &str) -> Option<&'a str> {
-    if line.len() >= key.len() && line[..key.len()].eq_ignore_ascii_case(key) {
+    let b = line.as_bytes();
+    if b.len() >= key.len() && b[..key.len()].eq_ignore_ascii_case(key.as_bytes()) {
+        // `key` is ASCII and matched, so `key.len()` is a char boundary.
         Some(line[key.len()..].trim())
     } else {
         None
     }
 }
 
-// ════════════════════════════════════════════════════════════
-// Ascii values
-// ════════════════════════════════════════════════════════════
-
-/// Parse the `Values:` section: per point, `<idx> <v0>` then one value per
-/// line. Complex values are `re,im`. Output is column-major.
+/// Parses the `Values:` section as a token stream: per point, the index then one value per
+/// variable (two numbers for complex). Commas and whitespace both separate, so ngspice's
+/// `re,im` and Xyce's `re, im` read the same; line breaks carry no meaning.
 fn parse_ascii_values(
     rd: &mut Reader,
     h: &Header,
@@ -198,71 +216,48 @@ fn parse_ascii_values(
 ) -> Result<(Vec<f64>, Vec<f64>), RawError> {
     let n = h.n_points as usize;
     let nv = h.n_vars as usize;
+    let parts = if complex { 2 } else { 1 };
+    // Every number needs at least two units (a digit and a separator): refuse before allocating
+    // what the input cannot fill.
+    let need = n
+        .checked_mul(nv)
+        .and_then(|c| c.checked_mul(parts + 1))
+        .and_then(|c| c.checked_mul(rd.unit))
+        .ok_or_else(|| RawError::Header("point × variable count overflows".into()))?;
+    if need > rd.remaining() {
+        return Err(RawError::Truncated {
+            expected: need,
+            found: rd.remaining(),
+        });
+    }
     let mut re = vec![0.0f64; nv * n];
     let mut im = if complex {
         vec![0.0f64; nv * n]
     } else {
         Vec::new()
     };
-
-    let mut point = 0usize;
-    let mut var = 0usize;
-    while point < n {
-        let Some(line) = rd.read_line() else {
-            return Err(RawError::Values(point as u32));
-        };
-        let mut rest = line.trim();
-        if rest.is_empty() {
-            continue;
+    for point in 0..n {
+        let bad = || RawError::Values(point as u32);
+        let idx = rd.number().ok_or_else(bad)?;
+        if idx != point as f64 {
+            return Err(bad());
         }
-        // First value of a point is prefixed with the point index.
-        if var == 0 {
-            let mut it = rest.splitn(2, char::is_whitespace);
-            let _idx = it.next();
-            rest = it.next().unwrap_or("").trim();
-            if rest.is_empty() {
-                return Err(RawError::Values(point as u32));
-            }
-        }
-        // A line may hold one value (ngspice) — parse all tokens present.
-        for tok in rest.split_whitespace() {
-            if var >= nv {
-                return Err(RawError::Values(point as u32));
-            }
-            let (r, i) = parse_value(tok).ok_or(RawError::Values(point as u32))?;
-            re[var * n + point] = r;
+        for v in 0..nv {
+            re[v * n + point] = rd.number().ok_or_else(bad)?;
             if complex {
-                im[var * n + point] = i;
+                im[v * n + point] = rd.number().ok_or_else(bad)?;
             }
-            var += 1;
-        }
-        if var == nv {
-            var = 0;
-            point += 1;
         }
     }
+    rd.skip_line();
     Ok((re, im))
 }
 
-/// `"1.5"` → (1.5, 0) · `"1.5,-2.5"` → (1.5, -2.5)
-fn parse_value(tok: &str) -> Option<(f64, f64)> {
-    match tok.split_once(',') {
-        Some((r, i)) => Some((r.trim().parse().ok()?, i.trim().parse().ok()?)),
-        None => Some((tok.trim().parse().ok()?, 0.0)),
-    }
-}
-
-// ════════════════════════════════════════════════════════════
-// Binary values
-// ════════════════════════════════════════════════════════════
-
 /// Binary layouts, all little-endian:
-///   - ngspice real:      row-major, every value f64
-///   - ngspice complex:   row-major, every value (f64, f64)
-///   - LTspice real:      row-major, scale var f64, data vars f32
-///   - LTspice fastaccess: column-major, scale f64 column, data f32 columns
-///   - LTspice complex:   row-major, every value (f64, f64)
-///   - LTspice "double":  row-major, every value f64 (detected by size)
+///   - ngspice / Xyce real: row-major, every value f64
+///   - ngspice / Xyce / LTspice complex: row-major, every value (f64, f64)
+///   - LTspice real: row-major, scale f64, data f32 (or all f64, detected by size)
+///   - LTspice fastaccess: column-major, scale f64 column, then f32 data columns
 fn parse_binary(
     rd: &mut Reader,
     h: &Header,
@@ -272,138 +267,186 @@ fn parse_binary(
 ) -> Result<(Vec<f64>, Vec<f64>), RawError> {
     let n = h.n_points as usize;
     let nv = h.n_vars as usize;
+    let overflow = || RawError::Header("point × variable count overflows".into());
+    let cells = n.checked_mul(nv).ok_or_else(overflow)?;
 
     if complex {
-        let expected = n * nv * 16;
-        let data = rd.take_bytes(expected)?;
-        let mut re = vec![0.0f64; nv * n];
-        let mut im = vec![0.0f64; nv * n];
-        // Row-major pairs → column-major split.
-        for p in 0..n {
-            for v in 0..nv {
-                let off = (p * nv + v) * 16;
-                re[v * n + p] = f64_le(&data[off..]);
-                im[v * n + p] = f64_le(&data[off + 8..]);
+        let data = rd.take_bytes(cells.checked_mul(16).ok_or_else(overflow)?)?;
+        let mut re = vec![0.0f64; cells];
+        let mut im = vec![0.0f64; cells];
+        for (p, row) in data.chunks_exact(nv * 16).enumerate() {
+            for (v, pair) in row.chunks_exact(16).enumerate() {
+                re[v * n + p] = f64_le(&pair[..8]);
+                im[v * n + p] = f64_le(&pair[8..]);
             }
         }
         return Ok((re, im));
     }
 
-    let all_f64 = n * nv * 8;
-    let mixed = n * (8 + (nv - 1) * 4); // LTspice: scale f64 + data f32
-    let avail = rd.bytes.len() - rd.pos; // size heuristic: f32 vs f64 data
-
-    let mut re = vec![0.0f64; nv * n];
+    let all_f64 = cells.checked_mul(8).ok_or_else(overflow)?;
+    let row_mixed = (nv - 1)
+        .checked_mul(4)
+        .and_then(|b| b.checked_add(8))
+        .ok_or_else(overflow)?;
+    let mixed = n.checked_mul(row_mixed).ok_or_else(overflow)?;
+    let avail = rd.remaining();
     if ltspice && avail >= mixed && (avail < all_f64 || nv == 1) {
         let data = rd.take_bytes(mixed)?;
+        let mut re = vec![0.0f64; cells];
         if fastaccess {
-            // Column-major: scale column f64, then each data column f32.
-            for p in 0..n {
-                re[p] = f64_le(&data[p * 8..]);
+            let (scale, rest) = data.split_at(n * 8);
+            for (p, b) in scale.chunks_exact(8).enumerate() {
+                re[p] = f64_le(b);
             }
-            let mut off = n * 8;
-            for v in 1..nv {
-                for p in 0..n {
-                    re[v * n + p] = f32_le(&data[off..]) as f64;
-                    off += 4;
-                }
+            for (k, b) in rest.chunks_exact(4).enumerate() {
+                re[n + k] = f64::from(f32_le(b));
             }
         } else {
-            // Row-major: per point, f64 scale + f32 data.
-            let stride = 8 + (nv - 1) * 4;
-            for p in 0..n {
-                let row = p * stride;
-                re[p] = f64_le(&data[row..]);
-                for v in 1..nv {
-                    re[v * n + p] = f32_le(&data[row + 8 + (v - 1) * 4..]) as f64;
+            for (p, row) in data.chunks_exact(row_mixed).enumerate() {
+                re[p] = f64_le(&row[..8]);
+                for (v, b) in row[8..].chunks_exact(4).enumerate() {
+                    re[(v + 1) * n + p] = f64::from(f32_le(b));
                 }
             }
         }
-    } else {
-        // ngspice (or LTspice double-precision): row-major f64.
-        let data = rd.take_bytes(all_f64)?;
-        for p in 0..n {
-            for v in 0..nv {
-                re[v * n + p] = f64_le(&data[(p * nv + v) * 8..]);
-            }
+        return Ok((re, Vec::new()));
+    }
+    let data = rd.take_bytes(all_f64)?;
+    let mut re = vec![0.0f64; cells];
+    for (p, row) in data.chunks_exact(nv * 8).enumerate() {
+        for (v, b) in row.chunks_exact(8).enumerate() {
+            re[v * n + p] = f64_le(b);
         }
     }
-    Ok((re, vec![]))
+    Ok((re, Vec::new()))
 }
 
 #[inline]
 fn f64_le(b: &[u8]) -> f64 {
-    f64::from_le_bytes(b[..8].try_into().unwrap())
+    f64::from_le_bytes(b[..8].try_into().expect("8 bytes"))
 }
 
 #[inline]
 fn f32_le(b: &[u8]) -> f32 {
-    f32::from_le_bytes(b[..4].try_into().unwrap())
+    f32::from_le_bytes(b[..4].try_into().expect("4 bytes"))
 }
 
-// ════════════════════════════════════════════════════════════
-// Reader — line-oriented over UTF-8 or UTF-16LE bytes, with raw byte access
-// for binary sections.
-// ════════════════════════════════════════════════════════════
-
+/// Line- and token-oriented cursor over UTF-8 or UTF-16LE text, with raw byte access for binary
+/// sections. `unit` is the code-unit width (1 or 2 bytes).
 struct Reader<'a> {
     bytes: &'a [u8],
     pos: usize,
-    utf16: bool,
+    unit: usize,
 }
 
 impl<'a> Reader<'a> {
     fn new(bytes: &'a [u8]) -> Self {
-        // UTF-16LE detection: BOM, or ascii first char with zero high byte.
-        let utf16 = bytes.len() >= 2 && (bytes[..2] == [0xFF, 0xFE] || bytes[1] == 0);
-        let pos = if bytes.len() >= 2 && bytes[..2] == [0xFF, 0xFE] {
-            2
-        } else {
-            0
-        };
-        Self { bytes, pos, utf16 }
+        let bom = bytes.len() >= 2 && bytes[..2] == [0xFF, 0xFE];
+        // UTF-16LE: a BOM, or an ASCII first character with a zero high byte.
+        let utf16 = bom || (bytes.len() >= 2 && bytes[1] == 0);
+        Reader {
+            bytes,
+            pos: if bom { 2 } else { 0 },
+            unit: if utf16 { 2 } else { 1 },
+        }
     }
 
     fn at_end(&self) -> bool {
-        self.pos >= self.bytes.len()
+        self.pos + self.unit > self.bytes.len()
     }
 
-    /// Read one text line (up to `\n`), stripping `\r`. Returns `None` at EOF.
-    fn read_line(&mut self) -> Option<String> {
+    fn remaining(&self) -> usize {
+        self.bytes.len() - self.pos.min(self.bytes.len())
+    }
+
+    /// Code unit at the cursor (a byte, or a UTF-16 unit), if a whole one remains.
+    fn peek(&self) -> Option<u32> {
         if self.at_end() {
             return None;
         }
-        let mut out = String::new();
-        if self.utf16 {
-            while self.pos + 1 < self.bytes.len() {
-                let u = u16::from_le_bytes([self.bytes[self.pos], self.bytes[self.pos + 1]]);
-                self.pos += 2;
-                if u == b'\n' as u16 {
-                    break;
-                }
-                if u != b'\r' as u16 {
-                    // .raw headers are ascii in practice; lossy is fine.
-                    out.push(char::from_u32(u as u32).unwrap_or('\u{FFFD}'));
-                }
-            }
+        Some(if self.unit == 1 {
+            u32::from(self.bytes[self.pos])
         } else {
-            while self.pos < self.bytes.len() {
-                let b = self.bytes[self.pos];
-                self.pos += 1;
-                if b == b'\n' {
-                    break;
-                }
-                if b != b'\r' {
-                    out.push(b as char);
-                }
-            }
-        }
-        Some(out)
+            u32::from(u16::from_le_bytes([
+                self.bytes[self.pos],
+                self.bytes[self.pos + 1],
+            ]))
+        })
     }
 
-    /// Consume exactly `want` bytes; error if fewer available.
+    /// One text line without its `\r\n`; `None` at end of input. Always consumes at least one
+    /// unit, and a trailing partial UTF-16 unit is dropped.
+    fn read_line(&mut self) -> Option<Cow<'a, str>> {
+        if self.at_end() {
+            self.pos = self.bytes.len();
+            return None;
+        }
+        if self.unit == 1 {
+            let rest = &self.bytes[self.pos..];
+            let len = rest.iter().position(|&b| b == b'\n').unwrap_or(rest.len());
+            self.pos += (len + 1).min(rest.len());
+            let line = &rest[..len];
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            return Some(String::from_utf8_lossy(line));
+        }
+        let mut out = String::new();
+        while let Some(u) = self.peek() {
+            self.pos += 2;
+            if u == u32::from(b'\n') {
+                break;
+            }
+            if u != u32::from(b'\r') {
+                // .raw headers are ASCII in practice; anything else is shown lossily.
+                out.push(char::from_u32(u).unwrap_or('\u{FFFD}'));
+            }
+        }
+        if self.at_end() {
+            self.pos = self.bytes.len();
+        }
+        Some(Cow::Owned(out))
+    }
+
+    /// Skips the rest of the current line (after the last ASCII value).
+    fn skip_line(&mut self) {
+        while let Some(u) = self.peek() {
+            self.pos += self.unit;
+            if u == u32::from(b'\n') {
+                break;
+            }
+        }
+    }
+
+    /// Next number token: separators are ASCII whitespace and `,`. `None` at end of input, for a
+    /// token over 63 units, or one that is not a number.
+    fn number(&mut self) -> Option<f64> {
+        while let Some(u) = self.peek() {
+            if !(u == u32::from(b',') || u == 0x20 || (0x09..=0x0d).contains(&u)) {
+                break;
+            }
+            self.pos += self.unit;
+        }
+        let mut buf = [0u8; 64];
+        let mut len = 0;
+        while let Some(u) = self.peek() {
+            if u == u32::from(b',') || u == 0x20 || (0x09..=0x0d).contains(&u) {
+                break;
+            }
+            if len == buf.len() || u > 0x7f {
+                return None;
+            }
+            buf[len] = u as u8;
+            len += 1;
+            self.pos += self.unit;
+        }
+        if len == 0 {
+            return None;
+        }
+        std::str::from_utf8(&buf[..len]).ok()?.parse().ok()
+    }
+
+    /// Consumes exactly `want` raw bytes.
     fn take_bytes(&mut self, want: usize) -> Result<&'a [u8], RawError> {
-        let avail = self.bytes.len() - self.pos;
+        let avail = self.remaining();
         if avail < want {
             return Err(RawError::Truncated {
                 expected: want,
@@ -415,10 +458,6 @@ impl<'a> Reader<'a> {
         Ok(out)
     }
 }
-
-// ════════════════════════════════════════════════════════════
-// Tests
-// ════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
@@ -457,15 +496,16 @@ Values:
         let plots = parse_raw(&ngspice_ascii()).unwrap();
         assert_eq!(plots.len(), 1);
         let p = &plots[0];
-        assert_eq!(p.n_points, 4);
-        assert_eq!(p.variables.len(), 3);
-        assert_eq!(p.variables[1].name, "v(out)");
-        assert_eq!(p.variables[1].kind, VarKind::Voltage);
+        assert_eq!(p.len(), 4);
+        assert_eq!(p.vars().len(), 3);
+        assert_eq!(p.vars()[1].name, "v(out)");
+        assert_eq!(p.vars()[1].kind, VarKind::Voltage);
         assert_eq!(p.scale(), &[0.0, 1e-9, 2e-9, 3e-9]);
         assert_eq!(p.col(1), &[0.0, 0.5, 0.8, 0.95]);
         assert_eq!(p.col(2), &[1e-3, 2e-3, 3e-3, 4e-3]);
-        assert_eq!(p.steps, vec![0..4]);
-        assert_eq!(p.find_var("V(OUT)"), Some(1)); // case-insensitive
+        assert_eq!(p.steps().len(), 1);
+        assert_eq!(p.steps()[0], 0..4);
+        assert_eq!(p.find_var("V(OUT)"), Some(1));
     }
 
     fn ngspice_binary(values: &[[f64; 2]]) -> Vec<u8> {
@@ -484,61 +524,43 @@ Values:
     #[test]
     fn binary_ngspice() {
         let rows = [[0.0, 1.0], [1e-9, 2.0], [2e-9, 3.0]];
-        let plots = parse_raw(&ngspice_binary(&rows)).unwrap();
-        let p = &plots[0];
+        let p = &parse_raw(&ngspice_binary(&rows)).unwrap()[0];
         assert_eq!(p.scale(), &[0.0, 1e-9, 2e-9]);
         assert_eq!(p.col(1), &[1.0, 2.0, 3.0]);
     }
 
     #[test]
     fn binary_ltspice_utf16_f32_abs_time() {
-        // UTF-16LE header, row-major: time f64 (negative = compression
-        // marker), data f32.
         let header = "Title: * tb\nDate: x\nPlotname: Transient Analysis\nFlags: real forward\nNo. Variables: 2\nNo. Points: 3\nOffset: 0\nCommand: Linear Technology LTspice XVII\nVariables:\n\t0\ttime\ttime\n\t1\tV(out)\tvoltage\nBinary:\n";
         let mut f: Vec<u8> = Vec::new();
         for c in header.encode_utf16() {
             f.extend_from_slice(&c.to_le_bytes());
         }
-        let pts: [(f64, f32); 3] = [(0.0, 0.1), (-1e-9, 0.2), (2e-9, 0.3)];
-        for (t, v) in pts {
+        for (t, v) in [(0.0f64, 0.1f32), (-1e-9, 0.2), (2e-9, 0.3)] {
             f.extend_from_slice(&t.to_le_bytes());
             f.extend_from_slice(&v.to_le_bytes());
         }
-        let plots = parse_raw(&f).unwrap();
-        let p = &plots[0];
-        assert_eq!(p.scale(), &[0.0, 1e-9, 2e-9]); // abs applied
-        let col = p.col(1);
-        assert!((col[0] - 0.1).abs() < 1e-6);
-        assert!((col[2] - 0.3).abs() < 1e-6);
+        let p = &parse_raw(&f).unwrap()[0];
+        assert_eq!(p.scale(), &[0.0, 1e-9, 2e-9]);
+        assert!((p.col(1)[0] - 0.1).abs() < 1e-6 && (p.col(1)[2] - 0.3).abs() < 1e-6);
     }
 
     #[test]
-    fn complex_ascii_ac() {
-        let f = b"Title: ac
-Plotname: AC Analysis
-Flags: complex
-No. Variables: 2
-No. Points: 2
-Variables:
-\t0\tfrequency\tfrequency
-\t1\tv(out)\tvoltage
-Values:
-0\t1.0,0.0
-\t0.5,-0.5
-1\t10.0,0.0
-\t0.1,-0.2
-";
-        let plots = parse_raw(f).unwrap();
-        let p = &plots[0];
-        assert!(p.complex);
-        assert_eq!(p.scale(), &[1.0, 10.0]);
-        assert_eq!(p.col(1), &[0.5, 0.1]);
-        assert_eq!(p.col_im(1), &[-0.5, -0.2]);
+    fn complex_ascii_both_comma_styles() {
+        for sep in [",", ", "] {
+            let f = format!(
+                "Title: ac\nPlotname: AC Analysis\nFlags: complex\nNo. Variables: 2\nNo. Points: 2\nVariables:\n\t0\tfrequency\tfrequency\n\t1\tv(out)\tvoltage\nValues:\n0\t1.0{sep}0.0\n\t0.5{sep}-0.5\n1\t10.0{sep}0.0\n\t0.1{sep}-0.2\n"
+            );
+            let p = &parse_raw(f.as_bytes()).unwrap()[0];
+            assert!(p.is_complex());
+            assert_eq!(p.scale(), &[1.0, 10.0]);
+            assert_eq!(p.col(1), &[0.5, 0.1]);
+            assert_eq!(p.col_im(1), &[-0.5, -0.2]);
+        }
     }
 
     #[test]
     fn sweep_steps_detected() {
-        // Two steps of 3 points: time restarts at 0.
         let rows = [
             [0.0, 1.0],
             [1e-9, 2.0],
@@ -547,8 +569,8 @@ Values:
             [1e-9, 20.0],
             [2e-9, 30.0],
         ];
-        let plots = parse_raw(&ngspice_binary(&rows)).unwrap();
-        assert_eq!(plots[0].steps, vec![0..3, 3..6]);
+        let p = &parse_raw(&ngspice_binary(&rows)).unwrap()[0];
+        assert_eq!(p.steps(), &[0..3, 3..6]);
     }
 
     #[test]
@@ -561,9 +583,28 @@ Values:
     }
 
     #[test]
-    fn truncated_binary_errors() {
+    fn malformed_inputs_fail_with_declared_errors() {
         let mut f = ngspice_binary(&[[0.0, 1.0], [1e-9, 2.0]]);
         f.truncate(f.len() - 4);
         assert!(matches!(parse_raw(&f), Err(RawError::Truncated { .. })));
+        assert_eq!(parse_raw(b""), Err(RawError::Empty));
+        assert_eq!(parse_raw(b"\n\n  \n"), Err(RawError::NoPlots));
+        // A huge declared size in a tiny file fails before allocating.
+        let huge = b"No. Variables: 4000000\nNo. Points: 4000000000\nVariables:\n";
+        assert!(parse_raw(huge).is_err());
+        let huge_bin = "No. Variables: 1\nNo. Points: 4000000000\nVariables:\n 0 t time\nBinary:\n";
+        assert!(matches!(
+            parse_raw(huge_bin.as_bytes()),
+            Err(RawError::Truncated { .. })
+        ));
+        // Wrong point index in ASCII values.
+        let mut bad = ngspice_ascii();
+        let at = bad.windows(3).position(|w| w == b"\n1\t").unwrap();
+        bad[at + 1] = b'7';
+        assert_eq!(parse_raw(&bad), Err(RawError::Values(1)));
+        // Odd-length UTF-16 tail terminates.
+        assert!(parse_raw(&[b'T', 0, b'i']).is_err());
+        // Multibyte text where a key is compared.
+        assert!(parse_raw("Plotnämé: x\nNo. ü".as_bytes()).is_err());
     }
 }

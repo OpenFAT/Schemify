@@ -34,6 +34,7 @@
 
 pub mod canvas;
 mod painter;
+pub mod waves;
 pub mod widgets;
 mod window;
 

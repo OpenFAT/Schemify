@@ -86,7 +86,7 @@ The writer treats the union of these as the known header attributes for every ki
 |---|---|---|
 | `pin <name> <dir> <x> <y>` | `domain analog\|digital\|real` (default `analog`), `inherit <net>`, `number <n>` | `dir` ∈ `in out inout`. File order = port order. `name` may be a bus `D[3:0]`. `inherit` makes the pin an inherited connection (D29): it is not drawn-connected; its net is resolved by name (§5 of netlist spec). |
 | `param <name> <default>` | `kind number\|int\|bool\|string\|choice` (default `number`), `unit <u>`, `min <expr>`, `max <expr>`, `step <expr>`, `grid <expr>`, `choices <v>…`, `computed <expr>`, `show <expr>`, `doc <text>`, `cached <value> <hash>` | `default` and `computed` are expressions for number/int/bool, template strings for string/choice. A `computed` param cannot be overridden (`E030`). `cached` holds the last value of an expression that calls a plugin function (D20). |
-| `impl <name> <lang>` | `format <dialect> <template>` (repeatable, one per dialect), `model <name>`, `file <relpath>` | `lang` ∈ `schematic spice veriloga verilog` or any plugin tag. `dialect` ∈ `spice xyce cdl spectre verilog` (`spice` is the fallback for `xyce`). `file` is relative to the cell file. |
+| `impl <name> <lang>` | `format <dialect> <template>` (repeatable, one per dialect), `model <name>`, `file <relpath>`, `ignore true\|open\|short` | `lang` ∈ `schematic spice veriloga verilog` or any plugin tag. `dialect` ∈ `spice xyce cdl spectre verilog` (`spice` is the fallback for `xyce`). `file` is relative to the cell file. |
 
 Kind rules (`E025`): `shprim` has ≥1 pin and ≥1 impl, none with lang `schematic`. `shcomp` has exactly one impl with lang `schematic`. A cell with more than one impl has a `default` header attribute. Every impl of a cell matches the cell's pins (D11): enforced on save (`E002`). A `.shbench` has no impls, so no `body` records and no `port` records.
 
@@ -111,7 +111,7 @@ Kinds in writer order:
 |---|---|---|
 | `inst <id> <cellref>` | `at <x> <y> <orient>` (required, first), `name <instname>` (required), `ignore true\|short\|open`, `<param> <value>` overrides, `inherit <pin> <net>` | `cellref` = `lib:cell` or `./cell` (same directory). Only overrides are stored (D40). `name` may be iterated `X1[3:0]`. |
 | `wire <id> <x1> <y1> <x2> <y2>` | `bus true` | Writer normalizes so `(x1, y1) < (x2, y2)` lexicographically. Zero-length wires are an error (`E026`). |
-| `label <id> <x> <y> <orient> <netexpr>` | | Net names live only on labels and ports. |
+| `label <id> <x> <y> <orient> <netexpr>` | `global true` | Net names live only on labels and ports. |
 | `port <id> <x> <y> <orient> <pin>` | | Binds a schematic net to interface pin `<pin>` (shcomp only). |
 | `noconn <id> <x> <y>` | | Marks an intentionally unconnected pin. |
 | `text <id> <x> <y> <orient> <text>` | `size <s>` | Annotation only. |

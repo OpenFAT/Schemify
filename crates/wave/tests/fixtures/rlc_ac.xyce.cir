@@ -1,0 +1,7 @@
+* Series RLC, AC sweep (Xyce): complex data on a log frequency axis.
+V1 in 0 DC 0 AC 1
+R1 in mid 10
+L1 mid out 10u
+C1 out 0 100n
+.ac dec 20 1k 100meg
+.end

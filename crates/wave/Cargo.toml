@@ -5,6 +5,13 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
+# The calculator (D12, D23): `Mode::Calc` programs evaluated over raw columns.
+schemify-expr.workspace = true
 thiserror.workspace = true
-rustfft.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

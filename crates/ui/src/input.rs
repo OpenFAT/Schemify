@@ -89,6 +89,12 @@ pub enum InputEvent {
         /// Target node id.
         node: Sym,
     },
+    /// The held modifiers changed (pointer gestures such as Shift+wheel read them; key chords
+    /// carry their own).
+    Mods {
+        /// Modifier bits now held.
+        mods: Mods,
+    },
 }
 
 /// The input event table for one frame.
@@ -494,6 +500,7 @@ pub fn route_input(
                     out.redraw = true;
                 }
             }
+            InputEvent::Mods { .. } => {}
             InputEvent::Activate { node } => {
                 let Some(n) = nodes.find(node) else { continue };
                 let cmd = nodes.prop(Prop::Command)[n as usize];

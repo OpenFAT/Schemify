@@ -34,7 +34,7 @@ Each connected component is a **net**. Naming, per net:
 2. more than one distinct name on one net → `E003` (shorted names); the emitted name is the port name if any, else the bytewise-smallest label;
 3. no name → `net_<id>` where `<id>` is the bytewise-smallest id among the net's wires/labels/instances-pins' owning instance ids (stable across unrelated edits).
 
-Global nets: the name `0`, and any name ending in `!`. Globals are the same net in every cell and are never subckt ports. An inherited pin (`pin … inherit <net>`) is not a geometric node; see §5.
+Global nets: the name `0`, any name ending in `!`, and any name carried by a label with `global true` anywhere in the elaborated hierarchy (xschem's `.GLOBAL` symbols import this way; the name keeps its spelling). Globals are the same net in every cell and are never subckt ports. An inherited pin (`pin … inherit <net>`) is not a geometric node; see §5.
 
 ## 4. Buses, bundles, iterated instances
 
@@ -81,7 +81,8 @@ For an inherited pin `P` with default net `D` on cell `c`, at instance path `p`:
   | `verilog` | `A{name} [{in_pins}] [{out_pins}] {model}` (ngspice d_cosim); xyce → `E013` | `E013` |
 
   `in_pins`/`out_pins` are the template identifiers for digital-domain pins by direction.
-- `body` text is emitted once per netlist per (cell, impl), verbatim.
+- `body` text is emitted once per netlist per (cell, impl), verbatim except for `${NAME}` expansion.
+- `${NAME}` in bench `code` text, impl `body` text and corner paths expands from project `set` entries, then the environment; an undefined name is `E034` (nothing is executed; `$$` is a literal `$`).
 - Ordering (deterministic): header comment; bench `.param` lines (vars, name order); corner `.lib`/`.include`/`.temp` lines in file order; top-level instance lines sorted by emitted name; bench `code` blocks for the dialect sorted by name; subckt definitions sorted by subckt name, each with its instance lines sorted by emitted name; once-only lines (models, OSDI loads) sorted; `.end`.
 - Numbers use canonical number text (expr §7). Names: hierarchical emitted names are local (`XM1` inside a subckt); the name map records path ↔ emitted hierarchical name (`/X1/M1` ↔ `X1.XM1`; ngspice lowercases at runtime, the map stores both).
 
@@ -130,6 +131,7 @@ Severity `E` blocks Run and makes `schemify netlist` exit 1 (unless `--allow-err
 | E031 | E | config names an impl the cell lacks |
 | E032 | E | param off grid/step (waivable) |
 | E033 | E | `.control` in a code block for xyce |
+| E034 | E | undefined `${NAME}` in code, body or corner path |
 | I005 | I | waived violation |
 
 Violations are keyed by (code, instance path or object id, param) and sorted for output.

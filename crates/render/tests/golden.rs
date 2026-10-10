@@ -217,3 +217,153 @@ fn math_expression() {
     );
     check("math", p.finish(Color::WHITE));
 }
+
+// --- waveform viewer (D23) ----------------------------------------------------------------------
+
+use schemify_render::waves::{WaveLook, WaveScratch, draw_pane, draw_window};
+use schemify_ui::waves::{Geometry, WAVES_UI, WaveUi};
+use schemify_wave::{Cursor, Request, Waves, parse_raw};
+
+/// Real simulator output shared with the `wave` crate's oracles.
+fn raw(name: &str) -> Waves {
+    let path = format!(
+        "{}/../wave/tests/fixtures/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    Waves::new(parse_raw(&std::fs::read(path).expect("fixture")).expect("parses"))
+}
+
+fn plot(w: &mut Waves, pane: u8, srcs: &[&str]) {
+    for src in srcs {
+        let r = Request::AddTrace {
+            src: (*src).into(),
+            dataset: 0,
+            pane,
+        };
+        w.apply(&r).unwrap_or_else(|e| panic!("{src}: {e}"));
+    }
+}
+
+/// Composes, measures and paints the whole waves window, as the `waves` example does.
+fn paint_waves(waves: &Waves, ui: &mut WaveUi, w: u16, h: u16) -> schemify_render::Pixmap {
+    let mut strings = Strings::new();
+    let (base, rejects) = records::parse(WAVES_UI, &mut strings);
+    assert!(rejects.is_empty(), "{rejects:?}");
+    let name = strings.intern("waves.session");
+    let (mut text, state) = (TextSystem::new(), UiState::default());
+    let viewport = (f32::from(w), f32::from(h));
+    let (mut tables, mut frame, mut geo);
+    let mut passes = 0;
+    loop {
+        let session = ui.contribute(waves, &mut strings);
+        tables = compose(&strings, &base, &[(name, &session)]);
+        frame = layout(&tables, &strings, &mut text, &state, viewport);
+        geo = Geometry::of(&tables, &frame, &strings);
+        passes += 1;
+        let fit = (WaveUi::rows_fit(geo.signals), WaveUi::rows_fit(geo.traces));
+        if !ui.set_capacity(fit.0, fit.1) {
+            break;
+        }
+        assert!(passes < 3, "list capacity does not settle");
+    }
+    assert_eq!(geo.panes.len(), waves.panes().len());
+    let mut p = CpuPainter::new(w, h, 1.0);
+    let mut us = UiScratch::default();
+    draw_ui(
+        &mut p,
+        &tables,
+        &frame,
+        &strings,
+        &mut text,
+        &state,
+        Layer::Main,
+        &[],
+        &mut us,
+    );
+    let look = WaveLook::default();
+    draw_window(
+        &mut p,
+        &geo,
+        waves,
+        ui,
+        &look,
+        &mut text,
+        &mut WaveScratch::default(),
+    );
+    draw_ui(
+        &mut p,
+        &tables,
+        &frame,
+        &strings,
+        &mut text,
+        &state,
+        Layer::Overlay,
+        &[],
+        &mut us,
+    );
+    p.finish(Color::from_rgba8(0xd9, 0xd9, 0xd9, 0xff))
+}
+
+#[test]
+fn waves_two_panes_three_traces() {
+    let mut w = raw("rc_tran.bin.raw");
+    w.apply(&Request::AddPane).unwrap();
+    plot(&mut w, 0, &["v(in)", "v(out)"]);
+    plot(&mut w, 1, &["i(v1)"]);
+    check(
+        "waves_two_panes",
+        paint_waves(&w, &mut WaveUi::default(), 1100, 640),
+    );
+}
+
+#[test]
+fn waves_cursors_with_readout() {
+    let mut w = raw("rc_tran.bin.raw");
+    w.apply(&Request::AddPane).unwrap();
+    plot(&mut w, 0, &["v(in)", "v(out)"]);
+    plot(&mut w, 1, &["(v(in) - v(out)) / 1k"]);
+    w.apply(&Request::Cursor {
+        which: Cursor::A,
+        at: Some(1.5e-6),
+    })
+    .unwrap();
+    w.apply(&Request::Cursor {
+        which: Cursor::B,
+        at: Some(4.0e-6),
+    })
+    .unwrap();
+    w.apply(&Request::BoxX { from: 0.0, to: 0.5 }).unwrap();
+    check(
+        "waves_cursors",
+        paint_waves(&w, &mut WaveUi::default(), 1100, 640),
+    );
+}
+
+#[test]
+fn waves_embedded_log_x_ac_magnitude() {
+    let mut w = raw("rlc_ac.bin.raw");
+    plot(&mut w, 0, &["db(v(out))", "db(v(mid))"]);
+    w.apply(&Request::LogX { on: true }).unwrap();
+    let (cw, ch) = (640u16, 360u16);
+    let area = schemify_ui::Rect {
+        x: 0.0,
+        y: 0.0,
+        w: f32::from(cw),
+        h: f32::from(ch),
+    };
+    let mut p = CpuPainter::new(cw, ch, 1.0);
+    let (look, mut text) = (WaveLook::default(), TextSystem::new());
+    let drag = schemify_ui::waves::Drag::None;
+    draw_pane(
+        &mut p,
+        area,
+        &w,
+        0,
+        false,
+        drag,
+        &look,
+        &mut text,
+        &mut WaveScratch::default(),
+    );
+    check("waves_ac_logx", p.finish(Color::BLACK));
+}
