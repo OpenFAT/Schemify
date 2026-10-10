@@ -123,7 +123,10 @@ pub fn emit(elab: &Elab, dialect: Dialect) -> Netlist {
 /// Panics for spectre and verilog, and as [`emit`].
 #[doc(hidden)]
 pub fn emit_flat(elab: &Elab, dialect: Dialect) -> String {
-    assert!(is_spice(dialect), "flat emission is a SPICE-dialect test oracle");
+    assert!(
+        is_spice(dialect),
+        "flat emission is a SPICE-dialect test oracle"
+    );
     assert_eq!(elab.defs.inst_start.len(), elab.defs.cell.len() + 1);
     let plans = Plans::new(elab, dialect);
     let mut out = String::new();
@@ -139,7 +142,16 @@ pub fn emit_flat(elab: &Elab, dialect: Dialect) -> String {
             .iter()
             .map(|n| net_text(elab, *n).to_owned())
             .collect();
-        flat_def(elab, dialect, &plans, &mut tmp, elab.top, ("", ""), &top_ports, &mut lines);
+        flat_def(
+            elab,
+            dialect,
+            &plans,
+            &mut tmp,
+            elab.top,
+            ("", ""),
+            &top_ports,
+            &mut lines,
+        );
     }
     lines.sort();
     if dialect == Dialect::Cdl {
@@ -170,6 +182,7 @@ pub(crate) fn is_spice(d: Dialect) -> bool {
 /// Appends `name` as the dialect spells an identifier (spec §7.6): SPICE dialects
 /// verbatim; spectre escapes every character outside `[A-Za-z0-9_]` with `\`; verilog
 /// writes a non-simple identifier as an escaped identifier (`\d[3] `).
+#[inline]
 pub(crate) fn push_name(out: &mut String, name: &str, d: Dialect) {
     match d {
         Dialect::Ngspice | Dialect::Xyce | Dialect::Cdl => out.push_str(name),
@@ -185,7 +198,8 @@ pub(crate) fn push_name(out: &mut String, name: &str, d: Dialect) {
             let b = name.as_bytes();
             let simple = !b.is_empty()
                 && (b[0].is_ascii_alphabetic() || b[0] == b'_')
-                && b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'$');
+                && b.iter()
+                    .all(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'$');
             if simple {
                 out.push_str(name);
             } else {
@@ -212,7 +226,10 @@ fn defs_by_name(e: &Elab) -> Vec<u32> {
     let mut order: Vec<u32> = (0..e.defs.cell.len() as u32)
         .filter(|&d| e.defs.used[d as usize] && d != e.top)
         .collect();
-    order.sort_by(|a, b| e.names.cmp(e.defs.name[*a as usize], e.defs.name[*b as usize]));
+    order.sort_by(|a, b| {
+        e.names
+            .cmp(e.defs.name[*a as usize], e.defs.name[*b as usize])
+    });
     assert!(order.len() < e.defs.cell.len().max(1));
     order
 }
@@ -363,20 +380,43 @@ fn once_only(out: &mut String, e: &Elab, d: Dialect, tmp: &Tmp) {
             }
         }
     };
-    // OSDI loads and models (ngspice only: elab rejects veriloga/verilog elsewhere).
+    // OSDI loads and models (ngspice only: elab rejects veriloga/verilog elsewhere). A
+    // Verilog-A impl with a `file` is compiled by the runner: one OSDI load per file and
+    // a `.model` per model name (the impl's `model` attr, and each default-template row's
+    // model). One without a `file` is precompiled: its body carries that text (§7.6).
     let mut osdi: Vec<String> = Vec::new();
     let mut models: Vec<String> = Vec::new();
-    for &(model, l) in &uses.models {
-        let l = l as usize;
+    let lang_of = |l: usize| {
         let f = &e.cells[e.impls.cell[l] as usize];
-        let lang = e.names.get(f.impl_lang[e.impls.index[l] as usize]);
+        (
+            e.names.get(f.impl_lang[e.impls.index[l] as usize]),
+            f.impl_file[e.impls.index[l] as usize],
+        )
+    };
+    let model_line = |l: usize, m: &str, models: &mut Vec<String>, osdi: &mut Vec<String>| {
         let stem = stem_of(l);
-        let m = e.names.get(model);
-        if lang == "veriloga" {
-            models.push(format!(".model {m} {stem}"));
-            osdi.push(stem);
-        } else {
-            models.push(format!(".model {m} d_cosim simulation=\"{stem}.vvp\""));
+        match lang_of(l) {
+            ("veriloga", file) if file != Name::NONE => {
+                models.push(format!(".model {m} {stem}"));
+                osdi.push(stem);
+            }
+            ("verilog", _) => models.push(format!(".model {m} d_cosim simulation=\"{stem}.vvp\"")),
+            _ => {}
+        }
+    };
+    if d == Dialect::Ngspice {
+        for l in (0..e.impls.cell.len()).filter(|&l| uses.impl_used[l]) {
+            let f = &e.cells[e.impls.cell[l] as usize];
+            match f.impl_model[e.impls.index[l] as usize] {
+                Name::NONE if lang_of(l).0 == "veriloga" && lang_of(l).1 != Name::NONE => {
+                    osdi.push(stem_of(l));
+                }
+                Name::NONE => {}
+                m => model_line(l, e.names.get(m), &mut models, &mut osdi),
+            }
+        }
+        for &(model, l) in &uses.models {
+            model_line(l as usize, e.names.get(model), &mut models, &mut osdi);
         }
     }
     osdi.sort();
@@ -392,27 +432,36 @@ fn once_only(out: &mut String, e: &Elab, d: Dialect, tmp: &Tmp) {
         out.push_str(m);
         out.push('\n');
     }
-    // Bodies: SPICE text for the SPICE dialects (spectre wraps it in `lang=spice`),
-    // Verilog source for verilog; Verilog-A source is compiled by the runner.
-    let body_lang = if d == Dialect::Verilog { "verilog" } else { "spice" };
+    // Bodies: SPICE text for the SPICE dialects (spectre wraps it in `lang=spice`):
+    // `spice` impls and, except for cdl, precompiled Verilog-A ones (no `file`);
+    // Verilog source for verilog. A Verilog-A source (`file`) is the runner's.
     let mut bodies: Vec<usize> = (0..e.impls.cell.len())
         .filter(|&l| {
-            let f = &e.cells[e.impls.cell[l] as usize];
-            uses.impl_used[l]
-                && e.impls.body_start[l] < e.impls.body_start[l + 1]
-                && e.names.get(f.impl_lang[e.impls.index[l] as usize]) == body_lang
+            let wanted = match (lang_of(l), d) {
+                (("verilog", _), Dialect::Verilog) => true,
+                (_, Dialect::Verilog) => false,
+                (("spice", _), _) => true,
+                // Simulation-only text (OSDI load, model card): not for LVS.
+                (("veriloga", file), _) => file == Name::NONE && d != Dialect::Cdl,
+                _ => false,
+            };
+            uses.impl_used[l] && wanted && e.impls.body_start[l] < e.impls.body_start[l + 1]
         })
         .collect();
     let key = |l: usize| {
         let f = &e.cells[e.impls.cell[l] as usize];
-        (e.names.get(f.cell), e.names.get(f.impl_name[e.impls.index[l] as usize]))
+        (
+            e.names.get(f.cell),
+            e.names.get(f.impl_name[e.impls.index[l] as usize]),
+        )
     };
     bodies.sort_by(|a, b| key(*a).cmp(&key(*b)));
     for l in bodies {
         if d == Dialect::Spectre {
             out.push_str("simulator lang=spice\n");
         }
-        for &line in &e.impls.body[e.impls.body_start[l] as usize..e.impls.body_start[l + 1] as usize]
+        for &line in
+            &e.impls.body[e.impls.body_start[l] as usize..e.impls.body_start[l + 1] as usize]
         {
             out.push_str(e.names.get(line));
             out.push('\n');
@@ -461,8 +510,8 @@ struct Writer<'e> {
     plans: &'e Plans,
     out: String,
     tmp: Tmp,
-    /// Lines of the current definition: (start, end) in `out`.
-    lines: Vec<(usize, usize)>,
+    /// Lines of the current definition: (start, end, name start, name end) in `out`.
+    lines: Vec<(usize, usize, usize, usize)>,
     /// Elab definition → name-map definition (`NONE` when not emitted).
     def_map: Vec<u32>,
     map: name_map::Builder,
@@ -501,7 +550,10 @@ impl<'e> Writer<'e> {
     /// §7.4) and verilog (a `module`).
     fn def_block(&mut self, d: u32, top: bool) {
         let (e, dialect) = (self.e, self.d);
-        assert!(self.def_map[d as usize] != NONE, "definition {d} is emitted");
+        assert!(
+            self.def_map[d as usize] != NONE,
+            "definition {d} is emitted"
+        );
         let name = e.names.get(e.defs.name[d as usize]);
         let wrap = !top || matches!(dialect, Dialect::Cdl | Dialect::Verilog);
         if wrap {
@@ -581,7 +633,8 @@ impl<'e> Writer<'e> {
         self.wires.clear();
         for r in e.insts_of(d) {
             if e.insts.ignore[r] == Ignore::No {
-                self.wires.extend(e.conns(r).iter().filter(|n| **n != Name::NONE));
+                self.wires
+                    .extend(e.conns(r).iter().filter(|n| **n != Name::NONE));
             }
         }
         self.wires.sort_unstable();
@@ -595,13 +648,14 @@ impl<'e> Writer<'e> {
         }
     }
 
-    /// Instance lines of definition `d`, sorted by emitted name (the first token of
-    /// each line; ties keep row order), and their name-map rows.
+    /// Instance lines of definition `d`, sorted by emitted name (ties keep row order),
+    /// and their name-map rows.
     fn rows(&mut self, d: u32) {
         let e = self.e;
         let seg = self.out.len();
         self.lines.clear();
         let indent = if self.d == Dialect::Verilog { "  " } else { "" };
+        let mut sorted = true;
         for r in e.insts_of(d) {
             if e.insts.ignore[r] != Ignore::No {
                 continue;
@@ -619,19 +673,15 @@ impl<'e> Writer<'e> {
                 &mut self.out,
                 &mut self.tmp,
             );
-            let ok = match rendered {
-                Ok(()) => true,
-                Err(msg) => {
-                    self.out.truncate(start);
-                    self.out.push_str(indent);
-                    self.out.push_str(comment(self.d));
-                    self.out.push_str(" error in ");
-                    self.out.push_str(local);
-                    self.out.push_str(": ");
-                    self.out.push_str(&msg.replace('\n', " "));
-                    false
-                }
-            };
+            if let Err(msg) = &rendered {
+                self.out.truncate(start);
+                self.out.push_str(indent);
+                self.out.push_str(comment(self.d));
+                self.out.push_str(" error in ");
+                self.out.push_str(local);
+                self.out.push_str(": ");
+                self.out.push_str(&msg.replace('\n', " "));
+            }
             if self.out.len() == start + indent.len() {
                 self.out.truncate(start);
                 continue; // a template that renders nothing emits no line
@@ -639,53 +689,64 @@ impl<'e> Writer<'e> {
             if !self.out.ends_with('\n') {
                 self.out.push('\n');
             }
-            if ok {
+            let name = emitted_name(&self.out, start, self.d);
+            if let Some(prev) = self.lines.last() {
+                sorted &=
+                    self.out.as_bytes()[prev.2..prev.3] <= self.out.as_bytes()[name.0..name.1];
+            }
+            if rendered.is_ok() {
                 let child = match e.insts.target[r] {
                     Target::Def(c) => self.def_map[c as usize],
                     Target::Leaf(_) => NONE,
                 };
-                let emitted = emitted_name(&self.out[start..], self.d);
-                self.map.row(e, r, emitted, child);
+                self.map.row(e, r, &self.out[name.0..name.1], child);
             }
-            self.lines.push((start, self.out.len()));
+            self.lines.push((start, self.out.len(), name.0, name.1));
         }
-        sort_lines(&mut self.out, seg, &mut self.lines, self.d);
+        if !sorted {
+            sort_lines(&mut self.out, seg, &self.lines);
+        }
     }
 }
 
-/// The emitted instance name of an instance line: its first token, the second for
-/// verilog (`<module> <instance> (…);`). Lines sort by it.
-fn emitted_name(line: &str, d: Dialect) -> &str {
-    let mut tokens = line.split_ascii_whitespace();
-    if d == Dialect::Verilog {
-        tokens.next();
+/// The byte range of the emitted instance name of the line starting at `start`: its
+/// first token, the second for verilog (`<module> <instance> (…);`). Lines sort by it.
+fn emitted_name(out: &str, start: usize, d: Dialect) -> (usize, usize) {
+    let b = out.as_bytes();
+    let mut i = start;
+    let skip = usize::from(d == Dialect::Verilog);
+    let mut tok = (start, start);
+    for _ in 0..=skip {
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let t0 = i;
+        while i < b.len() && !b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        tok = (t0, i);
     }
-    tokens.next().unwrap_or("")
+    assert!(tok.0 <= tok.1 && tok.1 <= b.len());
+    tok
 }
 
-/// Reorders the lines written since `seg` by emitted name (stable), when they are not
-/// already in order. `lines` are `(start, end)` offsets into `out`, contiguous from
-/// `seg` to the end.
-fn sort_lines(out: &mut String, seg: usize, lines: &mut [(usize, usize)], d: Dialect) {
-    assert!(lines.first().is_none_or(|l| l.0 == seg));
-    assert!(lines.last().is_none_or(|l| l.1 == out.len()));
-    let key = |text: &str, l: (usize, usize)| emitted_name(&text[l.0..l.1], d).to_owned();
-    let sorted = lines.windows(2).all(|w| {
-        emitted_name(&out[w[0].0..w[0].1], d) <= emitted_name(&out[w[1].0..w[1].1], d)
-    });
-    if sorted {
-        return;
-    }
+/// Reorders the lines written since `seg` by emitted name (stable). `lines` are
+/// `(start, end, name start, name end)` offsets into `out`, contiguous from `seg` to
+/// the end.
+fn sort_lines(out: &mut String, seg: usize, lines: &[(usize, usize, usize, usize)]) {
+    assert!(lines.first().is_some_and(|l| l.0 == seg));
+    assert!(lines.last().is_some_and(|l| l.1 == out.len()));
     // ponytail: the out-of-order case copies the definition's text once; fine for
     // templates that reorder names (rare), revisit if a PDK makes it common.
     let text = out[seg..].to_owned();
-    let rebased: Vec<(usize, usize)> = lines.iter().map(|l| (l.0 - seg, l.1 - seg)).collect();
-    let mut order: Vec<(String, usize)> =
-        rebased.iter().enumerate().map(|(i, l)| (key(&text, *l), i)).collect();
-    order.sort();
+    let mut order: Vec<usize> = (0..lines.len()).collect();
+    order.sort_by(|&a, &b| {
+        let key = |l: (usize, usize, usize, usize)| &text.as_bytes()[l.2 - seg..l.3 - seg];
+        key(lines[a]).cmp(key(lines[b]))
+    });
     out.truncate(seg);
-    for (_, i) in order {
-        out.push_str(&text[rebased[i].0..rebased[i].1]);
+    for i in order {
+        out.push_str(&text[lines[i].0 - seg..lines[i].1 - seg]);
     }
     assert_eq!(out.len(), seg + text.len());
 }
@@ -727,16 +788,32 @@ fn flat_def(
         match e.insts.target[r] {
             Target::Def(c) => {
                 let child: Vec<String> = e.conns(r).iter().map(|n| flat(*n)).collect();
-                let p = if path.is_empty() { local.to_owned() } else { format!("{path}__{local}") };
-                let dt = if dotted.is_empty() { local.to_owned() } else { format!("{dotted}.{local}") };
+                let p = if path.is_empty() {
+                    local.to_owned()
+                } else {
+                    format!("{path}__{local}")
+                };
+                let dt = if dotted.is_empty() {
+                    local.to_owned()
+                } else {
+                    format!("{dotted}.{local}")
+                };
                 flat_def(e, dialect, plans, tmp, c, (&p, &dt), &child, lines);
             }
             Target::Leaf(_) => {
-                let names: Vec<(Name, String)> = e.conns(r).iter().map(|n| (*n, flat(*n))).collect();
-                let name = if path.is_empty() { local.to_owned() } else { format!("{local}__{path}") };
+                let names: Vec<(Name, String)> =
+                    e.conns(r).iter().map(|n| (*n, flat(*n))).collect();
+                let name = if path.is_empty() {
+                    local.to_owned()
+                } else {
+                    format!("{local}__{path}")
+                };
                 let mut out = String::new();
                 let lookup = |n: Name| -> &str {
-                    names.iter().find(|x| x.0 == n).map_or("?", |x| x.1.as_str())
+                    names
+                        .iter()
+                        .find(|x| x.0 == n)
+                        .map_or("?", |x| x.1.as_str())
                 };
                 if inst::line(e, dialect, plans, r, &name, lookup, &mut out, tmp).is_ok()
                     && !out.is_empty()

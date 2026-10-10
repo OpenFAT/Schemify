@@ -1,0 +1,16 @@
+schemify 1 shprim
+  doc "digital inverter, Verilog model (fixture)"
+
+pin A in -20 0
+  domain digital
+pin Y out 20 0
+  domain digital
+
+impl verilog verilog
+  model dinv
+  file hdl/dinv.v
+
+body verilog
+  | module dinv(input A, output Y);
+  |   assign Y = ~A;
+  | endmodule

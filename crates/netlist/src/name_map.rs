@@ -96,7 +96,9 @@ impl NameMap {
     /// then a binary search per level, retried at each `.` when names contain dots.
     pub fn inst_path(&self, name: &str) -> Option<String> {
         let mut path = String::new();
-        (!self.def_rows.is_empty() && self.walk_inst(0, name, &mut path, 0)).then_some(path)
+        let found = !self.def_rows.is_empty() && self.walk_inst(0, name, &mut path, 0);
+        assert!(!found || path.starts_with('/'));
+        found.then_some(path)
     }
 
     /// Returns the emitted hierarchical name of the net at `path` (`/X1/n1` → `X1.n1`):
@@ -154,10 +156,15 @@ impl NameMap {
             .globals
             .binary_search_by(|&id| self.key_cmp(self.s(self.net_name[id as usize]), &bare));
         if let Ok(k) = g {
-            return Some(format!("/{}", self.s(self.net_name[ix.globals[k] as usize])));
+            return Some(format!(
+                "/{}",
+                self.s(self.net_name[ix.globals[k] as usize])
+            ));
         }
         let mut path = String::new();
-        self.walk_net(0, name, &mut path, 0).then_some(path)
+        let found = self.walk_net(0, name, &mut path, 0);
+        assert!(!found || path.starts_with('/'));
+        found.then_some(path)
     }
 
     // ---------------------------------------------------------------- internals
@@ -167,14 +174,17 @@ impl NameMap {
     }
 
     fn rows_of(&self, d: u32) -> std::ops::Range<usize> {
+        assert!((d as usize) + 1 < self.def_rows.len());
         self.def_rows[d as usize] as usize..self.def_rows[d as usize + 1] as usize
     }
 
     fn nets_of(&self, d: u32) -> std::ops::Range<usize> {
+        assert!((d as usize) + 1 < self.def_nets.len());
         self.def_nets[d as usize] as usize..self.def_nets[d as usize + 1] as usize
     }
 
     fn ports(&self, d: u32) -> &[u32] {
+        assert!((d as usize) + 1 < self.def_ports.len());
         &self.port[self.def_ports[d as usize] as usize..self.def_ports[d as usize + 1] as usize]
     }
 
@@ -222,6 +232,7 @@ impl NameMap {
         let rows = self.rows_of(d);
         let slice = &self.row_local[rows.clone()];
         let k = slice.binary_search_by(|sp| self.s(*sp).cmp(seg)).ok()?;
+        assert!(rows.start + k < rows.end);
         Some(rows.start + k)
     }
 
@@ -232,9 +243,10 @@ impl NameMap {
         let k0 = group.partition_point(|&r| {
             self.key_cmp(self.s(self.row_emitted[r as usize]), name) == Ordering::Less
         });
-        let equal = group[k0..]
-            .iter()
-            .take_while(|&&r| self.key_cmp(self.s(self.row_emitted[r as usize]), name).is_eq());
+        let equal = group[k0..].iter().take_while(|&&r| {
+            self.key_cmp(self.s(self.row_emitted[r as usize]), name)
+                .is_eq()
+        });
         let mut first = None;
         for &r in equal {
             if self.s(self.row_emitted[r as usize]) == name {
@@ -256,9 +268,10 @@ impl NameMap {
         let k0 = group.partition_point(|&id| {
             self.key_cmp(self.s(self.net_name[id as usize]), name) == Ordering::Less
         });
-        let equal = group[k0..]
-            .iter()
-            .take_while(|&&id| self.key_cmp(self.s(self.net_name[id as usize]), name).is_eq());
+        let equal = group[k0..].iter().take_while(|&&id| {
+            self.key_cmp(self.s(self.net_name[id as usize]), name)
+                .is_eq()
+        });
         let mut first = None;
         for &id in equal {
             if self.s(self.net_name[id as usize]) == name {
@@ -277,7 +290,10 @@ impl NameMap {
     }
 
     fn walk_inst(&self, d: u32, name: &str, path: &mut String, depth: u32) -> bool {
-        assert!(depth <= schemify_elab::DEPTH_MAX, "deeper than any elaboration");
+        assert!(
+            depth <= schemify_elab::DEPTH_MAX,
+            "deeper than any elaboration"
+        );
         let len0 = path.len();
         for (head, rest) in Self::splits(name) {
             let Some(r) = self.find_emitted(d, head) else {
@@ -300,7 +316,10 @@ impl NameMap {
     }
 
     fn walk_net(&self, d: u32, name: &str, path: &mut String, depth: u32) -> bool {
-        assert!(depth <= schemify_elab::DEPTH_MAX, "deeper than any elaboration");
+        assert!(
+            depth <= schemify_elab::DEPTH_MAX,
+            "deeper than any elaboration"
+        );
         let len0 = path.len();
         if let Some(id) = self.find_net(d, &self.unescape(name)) {
             path.push('/');
@@ -331,21 +350,36 @@ impl NameMap {
             let mut rows: Vec<u32> = (0..self.row_local.len() as u32).collect();
             let mut nets = self.net.clone();
             for d in 0..defs {
-                let by_emitted =
-                    |a: &u32, b: &u32| self.key_cmp(self.s(self.row_emitted[*a as usize]), self.s(self.row_emitted[*b as usize]));
+                let by_emitted = |a: &u32, b: &u32| {
+                    self.key_cmp(
+                        self.s(self.row_emitted[*a as usize]),
+                        self.s(self.row_emitted[*b as usize]),
+                    )
+                };
                 rows[self.rows_of(d)].sort_by(by_emitted);
-                let by_name =
-                    |a: &u32, b: &u32| self.key_cmp(self.s(self.net_name[*a as usize]), self.s(self.net_name[*b as usize]));
+                let by_name = |a: &u32, b: &u32| {
+                    self.key_cmp(
+                        self.s(self.net_name[*a as usize]),
+                        self.s(self.net_name[*b as usize]),
+                    )
+                };
                 nets[self.nets_of(d)].sort_by(by_name);
             }
             let mut globals: Vec<u32> = (0..self.net_name.len() as u32)
                 .filter(|&id| self.net_global[id as usize])
                 .collect();
             globals.sort_by(|a, b| {
-                self.key_cmp(self.s(self.net_name[*a as usize]), self.s(self.net_name[*b as usize]))
+                self.key_cmp(
+                    self.s(self.net_name[*a as usize]),
+                    self.s(self.net_name[*b as usize]),
+                )
             });
             assert_eq!(rows.len(), self.row_local.len());
-            Index { rows, nets, globals }
+            Index {
+                rows,
+                nets,
+                globals,
+            }
         })
     }
 }
@@ -357,6 +391,8 @@ pub(crate) struct Builder {
     remap: Vec<u32>,
     /// Net id → the last definition that listed it.
     stamp: Vec<u32>,
+    /// The definition being recorded.
+    cur: u32,
 }
 
 impl Builder {
@@ -377,13 +413,17 @@ impl Builder {
             map,
             remap: vec![NONE; e.names.len() as usize],
             stamp: Vec::new(),
+            cur: NONE,
         }
     }
 
     fn span(&mut self, text: &str) -> Span {
         let start = self.map.text.len();
         self.map.text.push_str(text);
-        assert!(self.map.text.len() < u32::MAX as usize, "name map holds < 4 GiB");
+        assert!(
+            self.map.text.len() < u32::MAX as usize,
+            "name map holds < 4 GiB"
+        );
         Span(start as u32, text.len() as u32)
     }
 
@@ -402,9 +442,9 @@ impl Builder {
             self.map.net_global.push(global);
             self.stamp.push(NONE);
         }
-        let cur = self.map.def_rows.len() as u32 - 1;
-        if self.stamp[id as usize] != cur {
-            self.stamp[id as usize] = cur;
+        assert!((id as usize) < self.map.net_name.len() && self.cur != NONE);
+        if self.stamp[id as usize] != self.cur {
+            self.stamp[id as usize] = self.cur;
             self.map.net.push(id);
         }
         id
@@ -414,6 +454,7 @@ impl Builder {
     /// must be `def_map`'s numbering).
     pub(crate) fn def(&mut self, e: &Elab, d: u32, def_map: &[u32]) {
         assert_eq!(def_map[d as usize] as usize, self.map.def_rows.len());
+        self.cur = self.map.def_rows.len() as u32;
         self.map.def_rows.push(self.map.row_local.len() as u32);
         self.map.def_ports.push(self.map.port.len() as u32);
         self.map.def_nets.push(self.map.net.len() as u32);
@@ -425,7 +466,10 @@ impl Builder {
 
     /// Records emitted row `r` of the current definition.
     pub(crate) fn row(&mut self, e: &Elab, r: usize, emitted: &str, child: u32) {
-        assert!(!self.map.def_rows.is_empty(), "a row belongs to a definition");
+        assert!(
+            !self.map.def_rows.is_empty(),
+            "a row belongs to a definition"
+        );
         let local = self.span(e.names.get(e.insts.name[r]));
         let emitted = self.span(emitted);
         self.map.row_local.push(local);

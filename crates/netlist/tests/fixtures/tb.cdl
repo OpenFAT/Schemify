@@ -1,0 +1,47 @@
+* tb (schemify cdl)
+.GLOBAL vdd!
+.SUBCKT tb
+CCOUT out2 0 1e-14
+CC[0] ld[0] 0 1e-14
+CC[1] ld[1] 0 1e-14
+VVDD vdd! 0 dc 1.8
+VVIN in 0 dc 0.9
+X1 in out vdd! chain
+X2 out out2 vdd! chain__h4shwd
+XF1 out filt rcfilt
+.ENDS tb
+.SUBCKT chain IN OUT VDD
+*.PININFO IN:I OUT:O VDD:B
+X1 IN net_0w0001 VDD inv
+X2 net_0w0001 OUT VDD inv__8hc2h8
+.ENDS chain
+.SUBCKT chain__h4shwd IN OUT VDD
+*.PININFO IN:I OUT:O VDD:B
+X1 IN net_0w0001 VDD inv__8hc2x8
+X2 net_0w0001 OUT VDD inv__sty8mw
+.ENDS chain__h4shwd
+.SUBCKT inv A Y VDD
+*.PININFO A:I Y:O VDD:B
+MMN Y A 0 0 nch W=1u L=0.15u
+MMP Y A VDD VDD pch W=2u L=0.15u
+.ENDS inv
+.SUBCKT inv__8hc2h8 A Y VDD
+*.PININFO A:I Y:O VDD:B
+MMN Y A 0 0 nch W=2u L=0.15u
+MMP Y A VDD VDD pch W=4u L=0.15u
+.ENDS inv__8hc2h8
+.SUBCKT inv__8hc2x8 A Y VDD
+*.PININFO A:I Y:O VDD:B
+MMN Y A 0 0 nch W=2u L=0.15u
+MMP Y A VDD VDD pch W=2u L=0.15u
+.ENDS inv__8hc2x8
+.SUBCKT inv__sty8mw A Y VDD
+*.PININFO A:I Y:O VDD:B
+MMN Y A 0 0 nch W=4u L=0.15u
+MMP Y A VDD VDD pch W=8u L=0.15u
+.ENDS inv__sty8mw
+.subckt rcfilt a b
+R1 a b 1k
+C1 b 0 1p
+.ends rcfilt
+.END

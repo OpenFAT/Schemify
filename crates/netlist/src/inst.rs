@@ -6,7 +6,7 @@
 //! identifiers (the usual `M{name} {D} {G} {S} {B} {model} W={W}`) also get a fast form
 //! that copies the canonical texts elab already wrote instead of evaluating; the
 //! `schemify_expr::Template` render stays as the general path and as the oracle of the
-//! fast one (`tests/templates.rs`).
+//! fast one (`tests/metamorphic.rs`).
 
 use crate::{is_spice, push_name};
 use schemify_doc::PinDir;
@@ -258,6 +258,10 @@ fn fast_form(src: &str, tmpl: &Template) -> Option<Fast> {
         segs.push(Seg::Lit(lit_start as u32, lits.len() as u32));
     }
     assert!(lits.len() <= src.len());
+    assert!(
+        segs.iter()
+            .all(|s| !matches!(s, Seg::Hole(k) if *k as usize >= idents.len()))
+    );
     Some(Fast { segs, lits })
 }
 
@@ -281,6 +285,7 @@ pub(crate) struct Tmp {
 
 impl Tmp {
     pub(crate) fn new(e: &Elab) -> Tmp {
+        assert_eq!(e.impls.cell.len(), e.impls.index.len());
         Tmp {
             buf: String::new(),
             ranges: Vec::new(),
@@ -303,6 +308,8 @@ struct Row<'a, F> {
     name: &'a str,
     /// `cell` (definition name or leaf stem).
     cell: Name,
+    /// The row's connections.
+    conn: &'a [Name],
     net: F,
 }
 
@@ -328,6 +335,7 @@ pub(crate) fn line<'n, F: Fn(Name) -> &'n str>(
     tmp: &mut Tmp,
 ) -> Result<(), String> {
     assert!(r < e.insts.name.len());
+    assert_eq!(e.insts.param_start.len(), e.insts.name.len() + 1);
     let (plan, cell, leaf) = match e.insts.target[r] {
         Target::Def(c) => {
             let plan = &plans.def[e.defs.cell[c as usize] as usize];
@@ -346,6 +354,7 @@ pub(crate) fn line<'n, F: Fn(Name) -> &'n str>(
         r,
         name,
         cell,
+        conn: e.conns(r),
         net,
     };
     match &plan.form {
@@ -370,6 +379,11 @@ pub(crate) fn line<'n, F: Fn(Name) -> &'n str>(
 /// template so it reports the same error.
 fn fast_ok<F>(row: &Row<'_, F>, srcs: &[Src]) -> bool {
     let p0 = row.e.insts.param_start[row.r] as usize;
+    // Elab writes one param entry per schema param, so `Param(k)` indexes stay in range.
+    assert_eq!(
+        row.e.params_of(row.r).len(),
+        row.e.cells[cell_of(row)].param_name.len()
+    );
     srcs.iter().all(|s| match s {
         Src::Param(k) => !matches!(
             row.e.insts.param_val[p0 + *k as usize],
@@ -427,6 +441,7 @@ fn slow_line<'n, F: Fn(Name) -> &'n str>(
             }
         };
     }
+    assert_eq!(tmp.ranges.len(), srcs.len());
     tmpl.render(vals, &mut tmp.scratch, out)
         .map_err(|err| err.to_string())
 }
@@ -434,7 +449,7 @@ fn slow_line<'n, F: Fn(Name) -> &'n str>(
 /// Appends the text of one identifier source.
 fn write_src<'n, F: Fn(Name) -> &'n str>(row: &Row<'_, F>, s: Src, out: &mut String) {
     let e = row.e;
-    let conn = e.conns(row.r);
+    let conn = row.conn;
     match s {
         Src::Name => push_name(out, row.name, row.d),
         Src::Cell => push_name(out, e.names.get(row.cell), row.d),
@@ -458,6 +473,7 @@ fn write_src<'n, F: Fn(Name) -> &'n str>(row: &Row<'_, F>, s: Src, out: &mut Str
             } // a specialized subckt takes no params (spec §6)
         }
         Src::Pin(p) => {
+            assert!((p as usize) < row.plan.slots.len());
             let (a, w) = row.plan.slots[p as usize];
             let bits = conn.get(a as usize..(a + w) as usize).unwrap_or(&[]);
             push_nets(out, bits, row);
@@ -488,7 +504,8 @@ fn push_nets<'n, F: Fn(Name) -> &'n str>(out: &mut String, nets: &[Name], row: &
 /// (ordinary `out`/`inout` pins, then inherited pins), space-separated.
 fn dir_nets<'n, F: Fn(Name) -> &'n str>(out: &mut String, row: &Row<'_, F>, inputs: bool) {
     let f = &row.e.cells[cell_of(row)];
-    let conn = row.e.conns(row.r);
+    assert_eq!(row.plan.slots.len(), f.pin_name.len());
+    let conn = row.conn;
     let start = out.len();
     for p in 0..f.pin_name.len() {
         let is_in = f.pin_dir[p] == PinDir::In && f.pin_inherit[p] == Name::NONE;
@@ -515,6 +532,7 @@ fn cell_of<F>(row: &Row<'_, F>) -> usize {
 /// Appends `name` with the device letter `letter` in front unless it already starts
 /// with it (ASCII case-insensitive): `X1` stays `X1`, `M1` becomes `XM1` (spec §7.6).
 fn push_prefixed(out: &mut String, letter: u8, name: &str, d: Dialect) {
+    assert!(letter.is_ascii_uppercase());
     if !name
         .as_bytes()
         .first()
@@ -533,7 +551,8 @@ fn default_line<'n, F: Fn(Name) -> &'n str>(
     uses: &mut Uses,
 ) -> Result<(), String> {
     let (e, d) = (row.e, row.d);
-    let conn = e.conns(row.r);
+    let conn = row.conn;
+    assert_eq!(conn.len(), e.conns(row.r).len());
     let model = |out: &mut String| write_src(row, row.plan.model, out);
     let model_name = || match row.plan.model {
         Src::Text(n) => n,
@@ -617,10 +636,11 @@ fn module_ports<'p, 'n, F: Fn(Name) -> &'n str>(
     row: &Row<'_, F>,
     ports: impl Iterator<Item = &'p str>,
 ) {
+    assert!(!out.is_empty(), "the module name precedes the instance");
     out.push(' ');
     push_name(out, row.name, row.d);
     out.push_str(" (");
-    for (i, (port, &n)) in ports.zip(row.e.conns(row.r)).enumerate() {
+    for (i, (port, &n)) in ports.zip(row.conn).enumerate() {
         if i > 0 {
             out.push_str(", ");
         }

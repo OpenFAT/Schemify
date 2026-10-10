@@ -20,3 +20,4 @@ proptest.workspace = true
 schemify-import.workspace = true
 schemify-spicecmp.workspace = true
 schemify-wave.workspace = true
+schemify-format.workspace = true

@@ -1,0 +1,48 @@
+* tb: expected netlist, written by hand from the schematic (not from our output)
+.global vdd!
+.param vdd=1.8 tstop=2n
+.lib models.lib tt
+.include extra.inc
+.temp 27
+VVDD vdd! 0 dc 1.8
+VVIN in 0 dc 0.9
+CL0 ld[0] 0 10f
+CL1 ld[1] 0 10f
+* RIG is ignored; RSH (ignore short) makes outs the same net as out2
+CO out2 0 10f
+XF out filt rcf
+XA in out small
+XB out out2 big
+.tran 1p 2n
+.control
+run
+.endc
+.subckt rcf a b
+R1 a b 1k
+C1 b 0 1p
+.ends
+.subckt small i o
+XI1 i m inv_1_2
+XI2 m o inv_2_4
+.ends
+.subckt big i o
+XI1 i m inv_2_2
+XI2 m o inv_4_8
+.ends
+.subckt inv_1_2 a y
+M1 y a 0 0 nch W=1u L=0.15u ad=0.3p
+M2 y a vdd! vdd! pch W=2u L=0.15u
+.ends
+.subckt inv_2_4 a y
+M1 y a 0 0 nch W=2u L=0.15u ad=0.6p
+M2 y a vdd! vdd! pch W=4u L=0.15u
+.ends
+.subckt inv_2_2 a y
+M1 y a 0 0 nch W=2u L=0.15u ad=0.6p
+M2 y a vdd! vdd! pch W=2u L=0.15u
+.ends
+.subckt inv_4_8 a y
+M1 y a 0 0 nch W=4u L=0.15u ad=1.2p
+M2 y a vdd! vdd! pch W=8u L=0.15u
+.ends
+.end
