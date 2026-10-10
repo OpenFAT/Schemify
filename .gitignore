@@ -2,3 +2,4 @@
 /tests/corpus/.cache/
 /.schemify/
 *.raw
+/.claude/worktrees/
