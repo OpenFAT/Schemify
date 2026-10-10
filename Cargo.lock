@@ -325,6 +325,7 @@ name = "schemify-expr"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "rustfft",
 ]
 
 [[package]]
