@@ -1,0 +1,87 @@
+Window [0 0 1280 800]
+  MenuBar [0 0 1280 27]
+    MenuItem "File" [2 2 37 25] expanded=false
+    MenuItem "Edit" [37 2 74 25] expanded=false
+    MenuItem "Options" [74 2 136 25] expanded=true
+      Menu "Options" [74 25 359 531]
+        MenuItem "Color Postscript/SVG" [74 27 359 49] toggled=False
+        MenuItem "Transparent SVG background" [74 49 359 71] toggled=False
+        MenuItem "Debug mode" [74 71 359 93] toggled=False
+        MenuItem "Undo buffer on Disk" [74 93 359 115] toggled=False
+        MenuItem "Enable stretch" [74 115 359 137] toggled=False key="Y"
+        MenuItem "Enable infix-interface" [74 137 359 159] toggled=False
+        MenuItem "Enable orthogonal wiring" [74 159 359 181] toggled=False key="Shift-L"
+        MenuItem "Unsel. partial sel. wires after stretch move" [74 181 359 203] toggled=False
+        MenuItem "Auto Join/Trim Wires" [74 203 359 225] toggled=False
+        MenuItem "Persistent wire/line place command" [74 225 359 247] toggled=False
+        MenuItem "Intuitive Click & Drag interface" [74 247 359 269] toggled=False
+        MenuItem "Crosshair" [74 269 359 291] expanded=true
+          Menu "Crosshair" [359 269 552 339]
+            MenuItem "Draw snap cursor" [359 271 552 293] toggled=False key="Alt-Z"
+            MenuItem "Draw crosshair" [359 293 552 315] toggled=False key="Alt-X"
+            MenuItem "Crosshair size" [359 315 552 337]
+        MenuItem "Replace [ and ] for buses in SPICE netlist" [74 291 359 313]
+        MenuItem "Group bus slices in Verilog instances" [74 313 359 335] toggled=False
+        MenuItem "Draw grid" [74 335 359 357] toggled=False key="%"
+        MenuItem "Half Snap Threshold" [74 357 359 379] key="G"
+        MenuItem "Double Snap Threshold" [74 379 359 401] key="Shift-G"
+        MenuItem "Variable grid point size" [74 401 359 423] toggled=False
+        GenericContainer [74 423 359 432]
+        MenuItem "No XCopyArea drawing model" [74 432 359 454] toggled=False key="Ctrl+$"
+        MenuItem "Fix for GPUs with broken tiled fill" [74 454 359 476] toggled=False
+        MenuItem "Fix broken RDP mouse coordinates" [74 476 359 498] toggled=False
+        GenericContainer [74 498 359 507]
+        MenuItem "Netlist format / Symbol mode" [74 507 359 529] expanded=false
+    MenuItem "View" [136 2 179 25] expanded=false
+    MenuItem "Properties" [179 2 256 25] expanded=false
+    MenuItem "Layers" [256 2 310 25] expanded=false
+    MenuItem "Tools" [310 2 355 25] expanded=false
+    MenuItem "Symbol" [355 2 414 25] expanded=false
+    MenuItem "Highlight" [414 2 485 25] expanded=false
+    MenuItem "Simulation" [485 2 564 25] expanded=false
+    MenuItem "Help" [564 2 606 25] expanded=false
+    Label "-" [606 5 625 23]
+    Button "Netlist" [625 2 673 25]
+    Button "Simulate" [673 2 734 25]
+    MenuItem "Waves" [734 2 786 25] expanded=false
+  Toolbar [0 27 1280 57]
+    Button "Open" [3 30 44 54]
+    Button "Save" [46 30 82 54]
+    Button "Reload" [84 30 133 54]
+    Button "Undo" [135 30 176 54]
+    Button "Redo" [178 30 217 54]
+    Button "Cut" [219 30 248 54]
+    Button "Copy" [250 30 288 54]
+    Button "Paste" [290 30 331 54]
+    Button "Del" [333 30 361 54]
+    Button "Push" [363 30 401 54]
+    Button "Pop" [403 30 435 54]
+    Button "Symbol" [437 30 489 54]
+    Button "Wire" [491 30 527 54]
+    Button "Line" [529 30 562 54]
+    Button "Rect" [564 30 598 54]
+    Button "Poly" [600 30 634 54]
+    Button "Arc" [636 30 664 54]
+    Button "Circle" [666 30 707 54]
+    Button "Text" [709 30 742 54]
+    Button "Full" [744 30 774 54]
+    Button "In" [776 30 798 54]
+    Button "Out" [800 30 831 54]
+    Pane [833 42 1119 42]
+    Button "Netlist" [1121 30 1167 54]
+    Button "Simulate" [1169 30 1229 54]
+    Button "Waves" [1231 30 1277 54]
+  TabList [0 57 1280 80]
+    Tab "poweramp.sch" [1 59 101 79] toggled=True
+    Button "+" [103 60 118 78]
+  Canvas [0 80 1280 774]
+  Status [0 774 1280 800]
+    Label "SNAP:" [4 778 41 796]
+    TextInput [47 777 99 797]
+    Label "GRID:" [105 778 140 796]
+    TextInput [146 777 198 797]
+    Label "MODE:" [204 778 246 796]
+    Label "spice" [252 778 283 796]
+    Label "Stretch:" [289 778 336 796]
+    Label "1" [342 778 349 796]
+    Label "selected: 0" [355 778 1276 796]
