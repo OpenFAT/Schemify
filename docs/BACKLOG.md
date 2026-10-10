@@ -9,6 +9,16 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - **expr**: topological sort that reports every cycle in one pass (elab cuts one cycle per pass).
 - **plugin**, **ui**: switch the local line-record lexers to `schemify-format`.
 
+## app / editor
+
+- **doc**: keep rank 2 (symbol graphics) in indexed interfaces (`parse_prefix(bytes, 2)`); the editor currently opens every instantiated cell to get its symbol.
+- **render**: `draw_canvas` shares one text cache between scene and overlay (re-shapes labels every frame; the editor works around it, the demo doesn't); window has no exit hook or timer wake-up.
+- **ui**: text fields commit only on Enter (the app copies typed text every frame).
+- **plugins/build.sh**: rebuilding `hello`/`gmid_stub` is not byte-reproducible.
+- Editor gaps vs xschem: stretch/kissing moves, polygon/arc/circle drawing, schematic graphics (format has none), context menu, persistent wire mode, snap cursor/crosshair, search, Save As, rotated texts, scrolling lists (24 rows max), system clipboard, crash-recovery prompt, plugin timers and I/O capabilities (spawn/fetch/clipboard) in the app.
+- Edit round trip rebuilds the whole scene (40 ms at 100k objects): incremental scene rebuild.
+- Integration points still stubbed: elab (symbols via elab, net highlight `k`, eval, net ids in snapshots), netlist (`n`), run (`s`, plugin run requests), web OPFS.
+
 ## run
 
 - Switch `prepare` from `netlist_shim.rs` to `schemify_netlist::emit` when netlist merges; delete the shim.
