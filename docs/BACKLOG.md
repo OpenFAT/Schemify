@@ -9,6 +9,15 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - **expr**: topological sort that reports every cycle in one pass (elab cuts one cycle per pass).
 - **plugin**, **ui**: switch the local line-record lexers to `schemify-format`.
 
+## run
+
+- Switch `prepare` from `netlist_shim.rs` to `schemify_netlist::emit` when netlist merges; delete the shim.
+- `format`: make var `dist` and optimize `seed` known attributes (they work as preserved unknowns today).
+- ngspice's random seed isn't set per MC sample, so PDK `agauss` statistics aren't reproducible yet.
+- Inline Verilog-A/Verilog `body` sources aren't compiled (only `file`); OpenVAF/Icarus steps tested with stand-ins only (tools not installed); compile blocks `poll` the first time.
+- Optimizer runs only at the bench's default config/corner with unit goal weights.
+- Relative `.lib` paths resolve against the job directory.
+
 ## Performance
 
 - **elab**: a flat 1M-instance bench extrapolates to ~0.93 s of elaboration (D39 netlist budget is 1 s end-to-end): write rows directly instead of building temporaries.
