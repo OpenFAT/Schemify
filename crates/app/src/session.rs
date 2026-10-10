@@ -14,10 +14,12 @@
 
 use std::path::{Path, PathBuf};
 
-use schemify_doc::{DocHandle, LibSource, OpenError, Project, Recovery};
+use schemify_doc::{DocHandle, OpenError, Project, Recovery};
 use schemify_format::FileKind;
 use schemify_render::canvas::Camera;
 
+pub use crate::libs::cell_relpath;
+use crate::libs::{self, BUILTIN_DIR, absolute, rel_path};
 use crate::platform;
 use crate::scene::ObjKey;
 
@@ -94,87 +96,17 @@ impl Session {
     ///
     /// The manifest or lockfile does not parse.
     pub fn load(root: &Path, seed: u64) -> Result<Session, String> {
-        let manifest = platform::read(&root.join("schemify.project")).ok();
-        let lock = platform::read(&root.join("schemify.lock")).ok();
-        let project = Project::new(manifest.as_deref(), lock.as_deref(), seed)
-            .map_err(|e| format!("schemify.project: {:?}", e.diagnostics.first()))?;
-        let libs = project.libs();
-        let mut lib_dir = Vec::with_capacity(libs.name.len());
-        let mut notes = Vec::new();
-        for row in 0..libs.name.len() {
-            let dir = match &libs.source[row] {
-                LibSource::Project => Some(root.to_path_buf()),
-                LibSource::Path { path } => {
-                    let mut d = root.join(path);
-                    if let Some(sub) = &libs.subdir[row] {
-                        d = d.join(sub);
-                    }
-                    Some(d)
-                }
-                LibSource::Builtin => None,
-                other => {
-                    notes.push(format!(
-                        "lib {}: {} sources are not fetched yet",
-                        libs.name[row],
-                        other.word()
-                    ));
-                    None
-                }
-            };
-            lib_dir.push(dir);
-        }
-        let mut s = Session {
+        let loaded = libs::load(root, seed)?;
+        Ok(Session {
             root: root.to_path_buf(),
-            project,
-            lib_dir,
+            project: loaded.project,
+            lib_dir: loaded.lib_dir,
             docs: Docs::default(),
             tabs: Vec::new(),
             active: 0,
-            status: String::new(),
+            status: loaded.notes.join("; "),
             untitled: 0,
-        };
-        let skip: Vec<PathBuf> = s.lib_dir.iter().skip(1).flatten().cloned().collect();
-        for row in 0..s.lib_dir.len() {
-            let Some(dir) = s.lib_dir[row].clone() else {
-                continue;
-            };
-            let others: Vec<PathBuf> = skip.iter().filter(|d| **d != dir).cloned().collect();
-            if let Err(e) = s.index(row, &dir, &others) {
-                notes.push(e);
-            }
-        }
-        s.status = notes.join("; ");
-        assert_eq!(s.lib_dir.len(), s.project.libs().name.len());
-        Ok(s)
-    }
-
-    /// Indexes library `row` from the cell files under `dir`.
-    fn index(&mut self, row: usize, dir: &Path, skip: &[PathBuf]) -> Result<(), String> {
-        let name = self.project.libs().name[row].clone();
-        let mut rel = Vec::new();
-        let mut bytes = Vec::new();
-        for p in platform::list_files(dir, skip) {
-            let Some(r) = rel_path(dir, &p) else { continue };
-            if !is_cell_file(&r) {
-                continue;
-            }
-            bytes.push(platform::read(&p)?);
-            rel.push(r);
-        }
-        let files: Vec<(&str, &[u8])> = rel
-            .iter()
-            .map(String::as_str)
-            .zip(bytes.iter().map(Vec::as_slice))
-            .collect();
-        let resolved = dir.display().to_string();
-        let (_, diags) = self
-            .project
-            .index_library(&name, &resolved, &files)
-            .map_err(|c| format!("lib {name}: {c}"))?;
-        if let Some((path, d)) = diags.first() {
-            return Err(format!("{name}/{path}: {} {}", d.code, d.detail));
-        }
-        Ok(())
+        })
     }
 
     /// Returns the directory of library row `lib`, if it is local.
@@ -191,17 +123,21 @@ impl Session {
     ///
     /// The file cannot be read or does not parse.
     pub fn open_file(&mut self, lib: u8, relpath: &str) -> Result<DocHandle, String> {
-        let dir = self
-            .lib_dir(lib)
-            .ok_or_else(|| format!("library row {lib} is not local"))?
-            .to_path_buf();
-        let path = dir.join(relpath);
+        let (path, bytes, builtin) = libs::cell_bytes(&self.lib_dir, &self.project, lib, relpath)?;
         if let Some(h) = self.handle_of(&path) {
             return Ok(h);
         }
-        let bytes = platform::read(&path)?;
-        let journal_path = self.journal_path(&path);
-        let journal = platform::read(&journal_path).ok();
+        // Builtin cells are read-only: no journal, and `save` refuses their paths.
+        let journal_path = if builtin {
+            PathBuf::new()
+        } else {
+            self.journal_path(&path)
+        };
+        let journal = if builtin {
+            None
+        } else {
+            platform::read(&journal_path).ok()
+        };
         let name = self.project.libs().name[usize::from(lib)].clone();
         let opened = match self
             .project
@@ -358,6 +294,9 @@ impl Session {
         };
         let Some(i) = self.row(h) else { return };
         let path = &self.docs.journal[i];
+        if path.as_os_str().is_empty() {
+            return; // builtin library cell: read-only, never journaled
+        }
         let r = if w.rewrite {
             platform::write_atomic(path, w.text.as_bytes())
         } else {
@@ -381,6 +320,9 @@ impl Session {
             .map_err(|c| format!("save refused: {c} {}", c.meaning()))?;
         let Some(req) = req else { return Ok(false) };
         let path = self.path(h).ok_or("not a file document")?.to_path_buf();
+        if path.starts_with(BUILTIN_DIR) {
+            return Err("the bundled core library is read-only".into());
+        }
         platform::write_atomic(&path, req.bytes.as_bytes())?;
         self.project
             .saved(h, req.bytes)
@@ -470,42 +412,5 @@ impl Session {
             }
             _ => false,
         }
-    }
-}
-
-/// `relpath` of indexed cell `row` inside its library (`dir/stem.ext`).
-pub fn cell_relpath(project: &Project, row: usize) -> String {
-    let c = project.cells();
-    let s = project.strings();
-    let (dir, stem) = (s.get(c.dir[row]), s.get(c.stem[row]));
-    let ext = c.kind[row].word();
-    if dir.is_empty() {
-        format!("{stem}.{ext}")
-    } else {
-        format!("{dir}/{stem}.{ext}")
-    }
-}
-
-fn is_cell_file(rel: &str) -> bool {
-    [".shprim", ".shcomp", ".shbench"]
-        .iter()
-        .any(|e| rel.ends_with(e))
-}
-
-/// `path` relative to `dir` with `/` separators, if inside it.
-fn rel_path(dir: &Path, path: &Path) -> Option<String> {
-    let rel = path.strip_prefix(dir).ok()?;
-    let parts: Vec<String> = rel
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect();
-    (!parts.is_empty()).then(|| parts.join("/"))
-}
-
-fn absolute(p: &Path) -> PathBuf {
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        std::env::current_dir().map_or_else(|_| p.to_path_buf(), |d| d.join(p))
     }
 }

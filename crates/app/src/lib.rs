@@ -33,6 +33,7 @@ pub mod edit;
 pub mod editor;
 #[cfg(feature = "gui")]
 pub mod geometry;
+pub mod libs;
 pub mod platform;
 #[cfg(feature = "gui")]
 pub mod plugins;

@@ -372,7 +372,17 @@ impl Runner {
                 ),
             );
         }
-        match fs::read(dir.join(RAW)) {
+        // Benches whose `.control` block `write`s its own raw file (xschem style) leave
+        // the `-r` file unwritten: fall back to the raw files the job wrote, by name.
+        let raw = fs::read(dir.join(RAW)).or_else(|e| {
+            let mut own: Vec<_> = fs::read_dir(&dir)
+                .map(|d| d.flatten().map(|f| f.path()).collect())
+                .unwrap_or_default();
+            own.retain(|p: &PathBuf| p.extension().is_some_and(|x| x == "raw"));
+            own.sort();
+            own.first().map_or(Err(e), fs::read)
+        });
+        match raw {
             Ok(raw) => results.record(plan, jobs, j, &raw),
             Err(e) => {
                 let why = last_line(&dir.join(STDERR)).unwrap_or_default();

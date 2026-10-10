@@ -3,10 +3,10 @@
 //! needs compiled first (Verilog-A → OSDI, Verilog → VVP).
 
 use crate::jobs::Jobs;
-use schemify_netlist as netlist;
 use crate::results::Results;
 use schemify_doc::{Digest, DocHandle, Project, Sha256, sha256};
 use schemify_elab::{Dialect, Elab, Funcs, Name, Request, Severity, elaborate};
+use schemify_netlist as netlist;
 
 /// Why a run cannot start.
 #[derive(Clone, Debug, PartialEq, Eq)]

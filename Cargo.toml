@@ -26,6 +26,7 @@ schemify-netlist = { path = "crates/netlist" }
 schemify-import = { path = "crates/import" }
 schemify-wave = { path = "crates/wave" }
 schemify-run = { path = "crates/run" }
+schemify-devicereader = { path = "tools/devicereader" }
 schemify-abi = { path = "crates/abi" }
 schemify-plugin = { path = "crates/plugin" }
 schemify-spicecmp = { path = "tools/spicecmp" }

@@ -236,6 +236,21 @@ fn simulator_failures_fail_the_job_with_a_reason() {
 }
 
 #[test]
+fn a_bench_that_writes_its_own_raw_file_still_records_results() {
+    // xschem-style benches `write <name>.raw` from their `.control` block, so the `-r`
+    // file never appears: the runner falls back to the raw files the job wrote.
+    let own = FAKE.replace("> \"$2\"", "> \"$(dirname \"$2\")/own.raw\"");
+    assert_ne!(own, FAKE, "the fake writes elsewhere");
+    let (jobs, results) = single(sh(&own), "own-raw", Duration::from_secs(3600));
+    assert_eq!(jobs.state(0), State::Done);
+    assert_eq!(results.errors().count(), 0);
+    assert!(
+        results.value(0, 0).is_some(),
+        "the output was evaluated from own.raw"
+    );
+}
+
+#[test]
 fn cancel_kills_running_and_drops_queued_jobs() {
     let (p, top) = rc();
     let plan = Plan::read(p.doc(top).unwrap()).unwrap();
