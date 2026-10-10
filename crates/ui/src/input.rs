@@ -284,6 +284,36 @@ impl UiState {
         self.focus = Sym::NONE;
         self.editor = None;
     }
+
+    /// Gives keyboard focus to text field `node` with the caret at the end of its value, as
+    /// a dialog does for its first field when it opens. `layout` must be the layout of the
+    /// current state with the field visible.
+    ///
+    /// Returns false (and changes nothing) when `node` is not a laid-out `text_input`.
+    pub fn focus_text(
+        &mut self,
+        tables: &UiTables,
+        layout: &UiLayout,
+        strings: &Strings,
+        text: &mut TextSystem,
+        node: Sym,
+    ) -> bool {
+        let Some(n) = tables.nodes.find(node) else {
+            return false;
+        };
+        if tables.nodes.kind[n as usize] != Kind::TextInput {
+            return false;
+        }
+        let Some(r) = layout.row_of(n) else {
+            return false;
+        };
+        let rect = layout.rect[r];
+        // A point past the last glyph puts the caret at the end.
+        let (x, y) = (rect.x + rect.w - 1.0, rect.y + rect.h / 2.0);
+        focus_field(tables, layout, strings, text, self, r, x, y);
+        assert_eq!(self.focus, node);
+        true
+    }
 }
 
 fn interactive(kind: Kind, shown: Shown) -> bool {

@@ -5,12 +5,22 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[lib]
+name = "schemify_app"
+path = "src/lib.rs"
+
 [[bin]]
 name = "schemify"
 path = "src/main.rs"
 
 [lints]
 workspace = true
+
+[features]
+# The interactive editor (M2). Off = the M1 headless build (ARCHITECTURE.md: `format expr doc
+# elab netlist import run app`); on adds `abi plugin ui render`.
+default = ["gui"]
+gui = ["dep:schemify-abi", "dep:schemify-plugin", "dep:schemify-ui", "dep:schemify-render"]
 
 [dependencies]
 schemify-format.workspace = true
@@ -21,3 +31,8 @@ schemify-netlist.workspace = true
 schemify-import.workspace = true
 schemify-wave.workspace = true
 schemify-run.workspace = true
+schemify-abi = { workspace = true, optional = true }
+schemify-plugin = { workspace = true, optional = true }
+# Path deps (no root `[workspace.dependencies]` row yet), the same way `render` names `ui`.
+schemify-ui = { path = "../ui", optional = true }
+schemify-render = { path = "../render", optional = true }

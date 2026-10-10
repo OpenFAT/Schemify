@@ -39,6 +39,13 @@ Load these **before writing or reviewing any code** (Claude Code: `Skill` tool; 
 - Edition 2024, stable toolchain. `cargo clippy -p <crate> -- -D warnings` must be clean. `cargo fmt`.
 - Only the integrator edits the root `Cargo.toml` and `Cargo.lock` deps list. Need a dependency or an API change in another crate? Report it, don't edit someone else's crate.
 
+## Running the editor (GUI)
+
+- `cargo run -p schemify-app -- edit crates/app/tests/fixtures/inv/top.shcomp` opens a cell (its project is the nearest directory with `schemify.project`); `edit <dir>` opens a project with a new schematic; `--no-default-ui` runs the bare core (window + canvas, mouse only) to prove it stands without the bundled UI plugin (D6). Keys are xschem's (D25; `/` toggles a key summary).
+- The default UI is the wasm plugin `plugins/default-ui` (`ui.records`, `keymap.records`), embedded from `crates/app/assets/default_ui.wasm`. After editing it, run `plugins/build.sh` (rebuilds every guest, refreshes the asset, enforces < 200 KB) and commit the `.wasm`.
+- Headless editing tests drive the real frame spine: `cargo test -p schemify-app`; goldens re-bless with `SCHEMIFY_BLESS=1`; the 100k-object budget check is `cargo test --release -p schemify-app --test perf -- --ignored --nocapture`.
+- NixOS: winit `dlopen`s Wayland/Vulkan, so export `LD_LIBRARY_PATH` with the `lib` dirs of `nixpkgs#wayland`, `#libxkbcommon`, `#vulkan-loader` and `/run/opengl-driver/lib`. A screenshot without a desktop: `WLR_BACKENDS=headless WLR_RENDERER=pixman cage -- schemify edit FILE` in `nix shell nixpkgs#cage`, then `grim out.png` with `WAYLAND_DISPLAY` set to cage's socket.
+
 ## Definition of done (per change)
 
 - Spec section exists and matches the code.

@@ -1,8 +1,8 @@
 # Schemify default UI: the xschem-parity shell (D6, D25).
 #
-# Body of the bundled default-UI plugin's `contribute ui` + `contribute keymap` output
-# (plugin-abi §7, format spec §2). Every element below can be overridden by a later plugin with
-# `set`, `remove`, `style` or `key` records; last contribution wins (D8).
+# Body of the bundled default-UI plugin's `contribute ui` set (plugin-abi §7, format spec §2);
+# its key bindings are the `contribute keymap` set in keymap.records. Every element below can be
+# overridden by a later plugin with `set`, `remove` or `style` records; last contribution wins (D8).
 # Menus, items and accelerators follow docs/xschem-ui/menu-tree.md (xschem 3.4.7, captured live).
 
 # --- theme: one row per selector; class (`style` prop) > kind > `*` -----------------------------
@@ -215,12 +215,12 @@ node file.create_new_window_tab item
 node file.open_schematic_in_new_window_tab item
   parent menu.file
   label "Open schematic in new window/tab"
-  command file.open_schematic_in_new_window_tab
+  command edit.open_sub_schematic_tab
   accel Alt+E
 node file.open_symbol_in_new_window_tab item
   parent menu.file
   label "Open symbol in new window/tab"
-  command file.open_symbol_in_new_window_tab
+  command edit.open_symbol_tab
   accel Alt+I
 node file.delete_files item
   parent menu.file
@@ -1388,121 +1388,6 @@ node waves.spectrum item
   label Spectrum
   command waves.spectrum
 
-key Ctrl+N file.clear_schematic
-key Ctrl+Shift+N file.clear_symbol
-key Shift-Ins file.component_browser
-key Ctrl-I file.component_browser
-key Ctrl+O file.open
-key Ctrl+Shift+O file.open_most_recent
-key Alt+E file.open_schematic_in_new_window_tab
-key Alt+I file.open_symbol_in_new_window_tab
-key Shift-D file.delete_files
-key Ctrl+S file.save
-key B file.merge
-key Alt+S file.reload
-key Ctrl+Shift+S file.save_as
-key Ctrl+Alt+S file.save_as_symbol
-key * file.image_export.pdf_ps_export
-key Ctrl+* file.image_export.png_export
-key Alt+* file.image_export.svg_export
-key X file.start_new_xschem_process
-key Ctrl+W file.close_schematic
-key Ctrl+Q file.quit_xschem
-key U edit.undo
-key Shift+U edit.redo
-key Ctrl+C edit.copy
-key Ctrl+X edit.cut
-key Ctrl+V edit.paste
-key Del edit.delete
-key Ctrl+A edit.select_all
-key C edit.duplicate_objects
-key M edit.move_objects
-key Ctrl+M edit.move_objects_stretching_attached_wires
-key Shift+M edit.move_objects_adding_wires_to_connected_p
-key Alt-F edit.horizontal_flip_in_place_selected_object
-key Alt-V edit.vertical_flip_in_place_selected_objects
-key Alt-R edit.rotate_in_place_selected_objects
-key Shift-V edit.vertical_flip_selected_objects
-key Shift-F edit.horizontal_flip_selected_objects
-key Shift-R edit.rotate_selected_objects
-key H edit.constrained_horizontal_move
-key V edit.constrained_vertical_move
-key E edit.push_schematic
-key I edit.push_symbol
-key Ctrl+E edit.pop
-key Y options.enable_stretch
-key Shift-L options.enable_orthogonal_wiring
-key Alt-Z options.crosshair.draw_snap_cursor
-key Alt-X options.crosshair.draw_crosshair
-key % options.draw_grid
-key G options.half_snap_threshold
-key Shift-G options.double_snap_threshold
-key Ctrl+$ options.no_xcopyarea_drawing_model
-key : options.netlist_format_symbol_mode.flat_netlist
-key Ctrl+Shift+V options.netlist_format_symbol_mode.spice_netlist
-key Esc view.redraw
-key "\\" view.fullscreen
-key F view.zoom_full
-key Shift+Z view.zoom_in
-key Ctrl+Z view.zoom_out
-key Z view.zoom_box
-key Shift+O view.toggle_colorscheme
-key _ view.toggle_variable_line_width
-key Alt+- view.set_line_width
-key Ctrl+B view.show_hide.symbol_text
-key Q properties.edit
-key Shift+Q properties.edit_with_editor
-key Ctrl+Shift+Q properties.view
-key Shift+T properties.toggle_ignore_attribute_on_selected_inst
-key Shift+S properties.change_selected_object_insertion_order
-key Shift+B properties.edit_header_license_text
-key Alt+Q properties.edit_file_danger
-key Ins tools.insert_symbol
-key Shift-I tools.insert_symbol
-key T tools.insert_text
-key W tools.insert_wire
-key Shift+W tools.insert_snap_wire
-key L tools.insert_line
-key R tools.insert_rect
-key P tools.insert_polygon
-key Shift+C tools.insert_arc
-key Ctrl+Shift+C tools.insert_circle
-key Print tools.grab_screen_area
-key Ctrl+F tools.search
-key Alt+U tools.align_to_grid
-key & tools.join_trim_wires
-key ! tools.break_wires_at_selected_instance_pins
-key Ctrl-! tools.remove_wires_running_through_selected_in
-key Alt+B symbol.show_symbols.show_symbol_details
-key A symbol.make_symbol_from_schematic
-key Ctrl+L symbol.make_schematic_from_symbol
-key Ctrl+Shift+H symbol.make_schematic_and_symbol_from_selected
-key Shift+H symbol.attach_net_labels_to_component_instance
-key Alt+H symbol.create_symbol_pins_from_selected_schemat
-key Alt+P symbol.place_symbol_pin
-key Ctrl+P symbol.place_schematic_input_port
-key Ctrl+Shift+P symbol.place_schematic_output_port
-key Alt+L symbol.place_net_pin_label
-key Alt+Shift+L symbol.place_net_wire_label
-key J symbol.list_of_nets.print_list_of_highlight_nets
-key Alt-Ctrl-J symbol.list_of_nets.print_list_of_highlight_nets_with_buses
-key Alt-J symbol.list_of_nets.create_labels_from_highlight_nets
-key Alt-Shift-J symbol.list_of_nets.create_labels_from_highlight_nets_with_i
-key Ctrl-J symbol.list_of_nets.create_pins_from_highlight_nets
-key 5 highlight.view_only_probes
-key Shift-X highlight.highlight_net_pin_mismatches_on_sel_inst
-key "#" highlight.highlight_duplicate_instance_names
-key Ctrl+# highlight.rename_duplicate_instance_names
-key Ctrl+Shift+K highlight.propagate_highlight_selected_net_pins
-key K highlight.highlight_selected_net_pins
-key Alt+G highlight.send_selected_net_pins_to_viewer
-key Alt+K highlight.select_hilight_nets_pins
-key Shift+K highlight.un_highlight_all_net_pins
-key Ctrl+K highlight.un_highlight_selected_net_pins
-key Shift+A simulation.show_netlist_after_netlist_command
-key Ctrl+Shift+X simulation.send_highlighted_nets_to_viewer
-key ? help.help
-
 # --- toolbar (xschem shows icons; text labels until an icon set exists) ----------------------------
 
 node toolbar toolbar
@@ -1694,9 +1579,176 @@ node dialog.enter_text.cancel button
   command dialog.close
   style dialog-button
 
-# --- keys not on any menu (xschem defaults) ---------------------------------------------------------
+# --- chooser dialog: insert symbol, open cell, waves file (the app sets the title, the filter value
+# and adds `dialog.choose.row.<i>` items under `dialog.choose.list`, command `choose.pick`) --------
 
-key Left view.pan_left
-key Right view.pan_right
-key Up view.pan_up
-key Down view.pan_down
+node dialog.choose dialog
+  label Choose
+node dialog.choose.title label
+  parent dialog.choose
+  label Choose
+node dialog.choose.filter text_input
+  parent dialog.choose
+  command choose.filter
+  style dialog-input
+node dialog.choose.list panel
+  parent dialog.choose
+  style dialog-list
+node dialog.choose.buttons panel
+  parent dialog.choose
+  style dialog-buttons
+node dialog.choose.cancel button
+  parent dialog.choose.buttons
+  label Cancel
+  command dialog.close
+  style dialog-button
+
+# --- properties dialog (the app adds `dialog.props.row.<i>` panels under `dialog.props.fields`, each
+# a `dialog.props.key.<i>` label and a `dialog.props.val.<i>` text_input, command `props.field`) ---
+
+node dialog.props dialog
+  label "Edit Properties"
+node dialog.props.title label
+  parent dialog.props
+  label "Edit Properties"
+node dialog.props.fields panel
+  parent dialog.props
+  style dialog-fields
+node dialog.props.buttons panel
+  parent dialog.props
+  style dialog-buttons
+node dialog.props.ok button
+  parent dialog.props.buttons
+  label OK
+  command props.ok
+  style dialog-button
+node dialog.props.cancel button
+  parent dialog.props.buttons
+  label Cancel
+  command dialog.close
+  style dialog-button
+
+style dialog-list
+  dir column
+  gap 0
+  min-width 320
+
+style list-row
+  pad 6
+  height 20
+  hover-bg ececec
+  active-bg c3c3c3
+
+style dialog-fields
+  dir column
+  gap 4
+
+style dialog-row
+  dir row
+  gap 8
+
+style dialog-key
+  width 160
+
+# --- canvas palette (D5): one selector per schematic layer and theme; layer 0 is the background.
+# The app reads `fg` of `canvas.<theme>.<layer>`, `.grid` and `.sel`. Dark = xschem's dark scheme
+# as captured; light = inventory §4A.3 for layers 0-5, the rest read off 60_main_light.png or
+# darkened from the dark list for contrast on white. -----------------------------------------------
+
+style canvas.dark.0
+  fg 000000
+style canvas.dark.1
+  fg 00ccff
+style canvas.dark.2
+  fg 505050
+style canvas.dark.3
+  fg d0d0d0
+style canvas.dark.4
+  fg 88dd00
+style canvas.dark.5
+  fg bb2200
+style canvas.dark.6
+  fg 00a0ff
+style canvas.dark.7
+  fg ff70ff
+style canvas.dark.8
+  fg ffff00
+style canvas.dark.9
+  fg 00ff80
+style canvas.dark.10
+  fg ff8000
+style canvas.dark.11
+  fg 8080ff
+style canvas.dark.12
+  fg ff4040
+style canvas.dark.13
+  fg 40ffff
+style canvas.dark.14
+  fg c0c000
+style canvas.dark.15
+  fg a040ff
+style canvas.dark.16
+  fg 40a040
+style canvas.dark.17
+  fg ffa0a0
+style canvas.dark.18
+  fg a0a0ff
+style canvas.dark.19
+  fg e0e0e0
+style canvas.dark.20
+  fg 80c0ff
+style canvas.dark.21
+  fg ffc040
+style canvas.dark.grid
+  fg 707070
+style canvas.dark.sel
+  fg e0e0e0
+
+style canvas.light.0
+  fg ffffff
+style canvas.light.1
+  fg 0055ee
+style canvas.light.2
+  fg aaaaaa
+style canvas.light.3
+  fg 222222
+style canvas.light.4
+  fg 229900
+style canvas.light.5
+  fg bb2200
+style canvas.light.6
+  fg 0070c0
+style canvas.light.7
+  fg c000c0
+style canvas.light.8
+  fg 908000
+style canvas.light.9
+  fg 008040
+style canvas.light.10
+  fg c06000
+style canvas.light.11
+  fg 4040c0
+style canvas.light.12
+  fg d02020
+style canvas.light.13
+  fg 008080
+style canvas.light.14
+  fg 707000
+style canvas.light.15
+  fg 7020c0
+style canvas.light.16
+  fg 207020
+style canvas.light.17
+  fg c05050
+style canvas.light.18
+  fg 5050a0
+style canvas.light.19
+  fg 404040
+style canvas.light.20
+  fg 3070b0
+style canvas.light.21
+  fg b07000
+style canvas.light.grid
+  fg 909090
+style canvas.light.sel
+  fg 202020

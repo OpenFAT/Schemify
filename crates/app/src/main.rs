@@ -12,6 +12,8 @@ const USAGE: &str = "\
 usage: schemify <command> [args]
 
 commands:
+  edit [<project-dir>|<cell-file>] [--no-default-ui]
+                                       open the interactive editor (GUI)
   fmt [--check] <file>...              rewrite files in canonical form
   merge-driver <O> <A> <B> [<path>]    git merge driver (writes the result to A)
   diff <A> <B>                         record-level semantic diff of two files
@@ -37,6 +39,7 @@ fn main() -> ExitCode {
         "fmt" => fmt(rest),
         "merge-driver" => merge_driver(rest),
         "diff" => diff(rest),
+        "edit" => edit(rest),
         "git-setup" => git_setup(rest),
         "import" | "netlist" | "check" => {
             eprintln!("schemify {command}: not implemented yet");
@@ -52,6 +55,39 @@ fn main() -> ExitCode {
         }
     };
     ExitCode::from(code)
+}
+
+/// `edit`: the interactive editor (`frame` spine) on a project directory or cell file.
+#[cfg(feature = "gui")]
+fn edit(args: &[String]) -> u8 {
+    let no_default_ui = args.iter().any(|a| a == "--no-default-ui");
+    let unknown = args
+        .iter()
+        .any(|a| a.starts_with("--") && a != "--no-default-ui");
+    let paths: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
+    if paths.len() > 1 || unknown {
+        eprint!("{USAGE}");
+        return USAGE_ERROR;
+    }
+    let opts = schemify_app::editor::Options {
+        no_default_ui,
+        path: paths.first().map(|p| std::path::PathBuf::from(p.as_str())),
+        seed: schemify_app::platform::seed(),
+    };
+    match schemify_app::editor::run(opts) {
+        Ok(()) => OK,
+        Err(e) => {
+            eprintln!("schemify edit: {e}");
+            USAGE_ERROR
+        }
+    }
+}
+
+/// `edit` without the `gui` feature (the M1 headless build).
+#[cfg(not(feature = "gui"))]
+fn edit(_: &[String]) -> u8 {
+    eprintln!("schemify edit: this build has no GUI (feature `gui`)");
+    USAGE_ERROR
 }
 
 /// Reads a file, mapping I/O errors to a printed message.
