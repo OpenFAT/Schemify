@@ -1,0 +1,78 @@
+//! Templates (spec §6): holes, escapes, canonical numbers, netlist-context
+//! identifiers bound by the caller, error atomicity.
+
+use schemify_expr::{Code, Scratch, Template, Value};
+
+fn render(src: &str, vars: &[(&str, Value<'_>)]) -> Result<String, schemify_expr::Error> {
+    let t = Template::parse(src)?;
+    let mut inputs = Vec::new();
+    t.program().bind(&mut inputs, |n| {
+        vars.iter().find(|(k, _)| *k == n).map(|(_, v)| *v)
+    })?;
+    let mut out = String::from(">");
+    t.render(&inputs, &mut Scratch::default(), &mut out)?;
+    Ok(out[1..].to_string())
+}
+
+#[test]
+fn netlist_line() {
+    let vars = [
+        ("name", Value::Str("M1")),
+        ("pins", Value::Str("d g s b")),
+        ("model", Value::Str("nfet_01v8")),
+        ("w", Value::Num(1e-6)),
+        ("l", Value::Num(0.15e-6)),
+        ("nf", Value::Int(2)),
+    ];
+    let line = render(
+        "X{name} {pins} {model} w={w} l={l} nf={nf} m={nf > 1 ? 1 : 2}",
+        &vars,
+    )
+    .unwrap();
+    assert_eq!(line, "XM1 d g s b nfet_01v8 w=1e-6 l=1.5e-7 nf=2 m=1");
+}
+
+#[test]
+fn escapes_strings_and_values() {
+    assert_eq!(render("{{literal}} {1+1}", &[]).unwrap(), "{literal} 2");
+    assert_eq!(render("}}{{", &[]).unwrap(), "}{");
+    assert_eq!(render(r#"{"a}b" + "{"}"#, &[]).unwrap(), "a}b{");
+    assert_eq!(render(r#"{"q\"}"}"#, &[]).unwrap(), "q\"}");
+    assert_eq!(
+        render("{true} {2.5k} {0.1} {1/3}", &[]).unwrap(),
+        "true 2500 0.1 0.3333333333333333"
+    );
+    assert_eq!(render("no holes", &[]).unwrap(), "no holes");
+    assert_eq!(render("", &[]).unwrap(), "");
+    assert_eq!(
+        render("{ eng(r) }Ω", &[("r", Value::Num(4700.0))]).unwrap(),
+        "4.7kΩ"
+    );
+}
+
+#[test]
+fn identifiers_are_shared_across_holes() {
+    let t = Template::parse("{a} {b} {a + b}").unwrap();
+    assert_eq!(t.program().idents().collect::<Vec<_>>(), ["a", "b"]);
+}
+
+#[test]
+fn errors_and_atomicity() {
+    let e = Template::parse("R1 {1 +} x").unwrap_err();
+    assert_eq!(
+        (e.code, e.span.start),
+        (Code::X009, 7),
+        "spans are in template coordinates"
+    );
+    let e = Template::parse("R1 {foo(1)}").unwrap_err();
+    assert_eq!((e.code, e.span.start, e.span.end), (Code::X006, 4, 10));
+    let t = Template::parse("ok {x} {1/x}").unwrap();
+    let mut out = String::from("keep");
+    let e = t
+        .render(&[Value::Int(0)], &mut Scratch::default(), &mut out)
+        .unwrap_err();
+    assert_eq!(e.code, Code::X010);
+    assert_eq!(out, "keep", "a failed render leaves the output untouched");
+    assert_eq!(render("{cplx(1, 2)}", &[]).unwrap_err().code, Code::X003);
+    assert_eq!(render("{missing}", &[]).unwrap_err().code, Code::X004);
+}
