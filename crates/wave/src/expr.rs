@@ -11,7 +11,7 @@
 use crate::data::RawPlot;
 use crate::si::parse_si;
 use core::ops::Range;
-use rustfft::{num_complex::Complex64, FftPlanner};
+use rustfft::{FftPlanner, num_complex::Complex64};
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq)]
@@ -357,7 +357,11 @@ fn eval_value(expr: &Expr, src: &RawPlot) -> Result<Value, ExprError> {
                 .ok_or_else(|| ExprError::UnknownSignal(name.clone()))?;
             Ok(Value::Col(EvalResult {
                 re: src.col(v).to_vec(),
-                im: if src.complex { src.col_im(v).to_vec() } else { vec![] },
+                im: if src.complex {
+                    src.col_im(v).to_vec()
+                } else {
+                    vec![]
+                },
                 domain: None,
             }))
         }
@@ -758,13 +762,12 @@ mod tests {
         let e = parse_expr("mag(fft(v(out)))").unwrap();
         let r = eval(&e, &s).unwrap();
         let (x, _) = r.domain.unwrap();
-        let peak = r
-            .re
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-            .unwrap()
-            .0;
+        let peak =
+            r.re.iter()
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .unwrap()
+                .0;
         assert!((x[peak] - 8.0).abs() < 1.5, "peak at {} Hz", x[peak]);
         assert!(r.re[peak] > 0.5);
     }

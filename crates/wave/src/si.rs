@@ -18,16 +18,15 @@ pub fn parse_si(s: &str) -> Option<f64> {
     let mut end = 0;
     while end < bytes.len() {
         let b = bytes[end];
-        if b.is_ascii_digit() || b == b'.' || b == b'+' || b == b'-' {
-            end += 1;
-        } else if (b == b'e' || b == b'E')
+        let exponent = (b == b'e' || b == b'E')
             && end + 1 < bytes.len()
-            && (bytes[end + 1].is_ascii_digit() || bytes[end + 1] == b'+' || bytes[end + 1] == b'-')
-        {
-            end += 1;
-        } else {
+            && (bytes[end + 1].is_ascii_digit()
+                || bytes[end + 1] == b'+'
+                || bytes[end + 1] == b'-');
+        if !(b.is_ascii_digit() || b == b'.' || b == b'+' || b == b'-' || exponent) {
             break;
         }
+        end += 1;
     }
     let num: f64 = s[..end].parse().ok()?;
     let tail = s[end..].trim();

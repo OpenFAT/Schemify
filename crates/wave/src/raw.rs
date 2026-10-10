@@ -145,7 +145,10 @@ fn parse_header(rd: &mut Reader) -> Result<Option<Header>, RawError> {
                 let name = it
                     .next()
                     .ok_or_else(|| RawError::Header(format!("bad variable line: {vl}")))?;
-                let kind = it.next().map(VarKind::from_type_str).unwrap_or(VarKind::Other);
+                let kind = it
+                    .next()
+                    .map(VarKind::from_type_str)
+                    .unwrap_or(VarKind::Other);
                 h.variables.push(Variable {
                     name: name.to_string(),
                     kind,
@@ -196,7 +199,11 @@ fn parse_ascii_values(
     let n = h.n_points as usize;
     let nv = h.n_vars as usize;
     let mut re = vec![0.0f64; nv * n];
-    let mut im = if complex { vec![0.0f64; nv * n] } else { Vec::new() };
+    let mut im = if complex {
+        vec![0.0f64; nv * n]
+    } else {
+        Vec::new()
+    };
 
     let mut point = 0usize;
     let mut var = 0usize;
@@ -557,9 +564,6 @@ Values:
     fn truncated_binary_errors() {
         let mut f = ngspice_binary(&[[0.0, 1.0], [1e-9, 2.0]]);
         f.truncate(f.len() - 4);
-        assert!(matches!(
-            parse_raw(&f),
-            Err(RawError::Truncated { .. })
-        ));
+        assert!(matches!(parse_raw(&f), Err(RawError::Truncated { .. })));
     }
 }

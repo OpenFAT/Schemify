@@ -10,6 +10,6 @@ pub mod raw;
 pub mod si;
 
 pub use data::{RawPlot, VarKind, Variable};
-pub use expr::{eval, parse_expr, EvalResult, Expr, ExprError};
-pub use raw::{parse_raw, RawError};
+pub use expr::{EvalResult, Expr, ExprError, eval, parse_expr};
+pub use raw::{RawError, parse_raw};
 pub use si::{format_si, parse_si};
