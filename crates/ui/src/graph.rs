@@ -51,38 +51,15 @@ pub fn decimate(
     debug_assert_eq!(min.len(), usize::from(columns));
 }
 
-/// Min and max of `y`, ignoring NaN; `(+inf, -inf)` when nothing is finite-comparable.
-///
-/// Four independent accumulators in the chunk loop let LLVM keep them in vector registers
-/// (`minpd`/`maxpd`); the scalar tail is the same fold as [`minmax_scalar`], the test oracle.
+/// Min and max of `y`, ignoring NaN; `(+inf, -inf)` when nothing is finite-comparable. The
+/// vectorized kernel lives with the column data in `schemify_wave` (one kernel, one oracle).
 fn minmax(y: &[f64]) -> (f64, f64) {
-    let mut lo = [f64::INFINITY; 4];
-    let mut hi = [f64::NEG_INFINITY; 4];
-    let chunks = y.chunks_exact(4);
-    let tail = chunks.remainder();
-    for c in chunks {
-        for l in 0..4 {
-            lo[l] = lo[l].min(c[l]);
-            hi[l] = hi[l].max(c[l]);
-        }
-    }
-    let (mut a, mut b) = (
-        lo.iter().copied().fold(f64::INFINITY, f64::min),
-        hi.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-    );
-    for &v in tail {
-        a = a.min(v);
-        b = b.max(v);
-    }
-    (a, b)
+    schemify_wave::minmax(y)
 }
 
 #[cfg(test)]
 fn minmax_scalar(y: &[f64]) -> (f64, f64) {
-    y.iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &v| {
-            (a.min(v), b.max(v))
-        })
+    schemify_wave::minmax_scalar(y)
 }
 
 /// Writes "nice" tick positions (steps of 1, 2 or 5 × 10^k) covering `[lo, hi]` into `out`,
@@ -120,6 +97,49 @@ pub fn ticks(lo: f64, hi: f64, max_ticks: u8, out: &mut Vec<f64>) {
         out.push(v);
     }
     debug_assert!(out.len() <= usize::from(max_ticks) + 1);
+}
+
+/// Writes tick positions for a log axis over `[lo, hi]` into `out`: every decade (every k-th one
+/// when there are more than `max_ticks`), plus 2× and 5× when at most three decades show; below
+/// two decades it falls back to linear [`ticks`], which read fine on a short log axis.
+///
+/// # Panics
+///
+/// Panics unless `0 < lo < hi` (both finite) and `max_ticks >= 2`.
+pub fn log_ticks(lo: f64, hi: f64, max_ticks: u8, out: &mut Vec<f64>) {
+    assert!(
+        lo > 0.0 && hi.is_finite() && lo < hi,
+        "empty log tick range"
+    );
+    assert!(max_ticks >= 2, "need at least two ticks");
+    let (d0, d1) = (lo.log10().ceil() as i32, hi.log10().floor() as i32);
+    if d1 - d0 + 1 < 2 {
+        ticks(lo, hi, max_ticks, out);
+        return;
+    }
+    out.clear();
+    let decades = (d1 - d0 + 1) as u32;
+    let every = decades.div_ceil(u32::from(max_ticks)).max(1) as i32;
+    let minor = decades <= 3;
+    // Bounded: at most `decades` (≤ 600 for f64) iterations, 3 pushes each.
+    for d in (d0 - 1)..=d1 {
+        let base = 10f64.powi(d);
+        if d >= d0 && (d - d0) % every == 0 {
+            out.push(base);
+        }
+        if minor {
+            out.extend(
+                [2.0 * base, 5.0 * base]
+                    .into_iter()
+                    .filter(|v| *v >= lo && *v <= hi),
+            );
+        }
+    }
+    out.sort_by(f64::total_cmp);
+    debug_assert!(
+        out.iter()
+            .all(|v| *v >= lo * (1.0 - 1e-12) && *v <= hi * (1.0 + 1e-12))
+    );
 }
 
 #[cfg(test)]
@@ -184,6 +204,19 @@ mod tests {
         assert!(mn[1..9].iter().all(|v| v.is_nan()));
         decimate(&[], &[], 0.0, 1.0, 3, &mut mn, &mut mx);
         assert!(mn.iter().all(|v| v.is_nan()) && mn.len() == 3);
+    }
+
+    #[test]
+    fn log_ticks_mark_decades() {
+        let mut t = Vec::new();
+        log_ticks(1e3, 1e8, 8, &mut t);
+        assert_eq!(t, vec![1e3, 1e4, 1e5, 1e6, 1e7, 1e8]);
+        log_ticks(1.0, 100.0, 8, &mut t); // three decades: 2× and 5× too
+        assert_eq!(t, vec![1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]);
+        log_ticks(1e-15, 1e15, 6, &mut t);
+        assert_eq!(t.len(), 6);
+        log_ticks(2.0, 9.0, 5, &mut t); // inside one decade: linear
+        assert_eq!(t, vec![2.0, 4.0, 6.0, 8.0]);
     }
 
     #[test]

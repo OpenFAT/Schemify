@@ -1,0 +1,419 @@
+//! Waveform panes (D23): grid with engineering-unit ticks, decimated traces, A/B cursors, the
+//! legend, the box-zoom band, and the cursor readout table. Generic over [`Painter`], so the
+//! window, an embedded graph and the CPU golden images all draw through the same code.
+//!
+//! Per frame and pane the cost is O(pixel columns) per trace step after
+//! [`schemify_wave::decimate`] (which scans the visible samples once), plus shaping the tick and
+//! legend labels.
+
+use vello::kurbo::{BezPath, Rect};
+use vello::peniko::Color;
+
+use schemify_ui::graph::{log_ticks, ticks};
+use schemify_ui::parley::Layout;
+use schemify_ui::waves::{Drag, Geometry, WaveUi, plot_area};
+use schemify_ui::{Rect as UiRect, TextSystem};
+use schemify_wave::{Axis, Cursor, Waves, decimate, format_si};
+
+use crate::painter::{Chains, Painter, rgba};
+use crate::widgets::{UiScratch, draw_text};
+
+/// Colors of the pane chrome (RGBA8). The default follows xschem's graphs: black plot, grey
+/// grid, light labels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WaveLook {
+    /// Pane background.
+    pub bg: u32,
+    /// Grid lines and plot frame.
+    pub grid: u32,
+    /// Tick labels.
+    pub label: u32,
+    /// Frame of the active pane (when there are several).
+    pub active: u32,
+    /// Cursor A and B.
+    pub cursor: [u32; 2],
+}
+
+impl Default for WaveLook {
+    fn default() -> Self {
+        WaveLook {
+            bg: 0x0000_00ff,
+            grid: 0x3a3a_3aff,
+            label: 0xb0b0_b0ff,
+            active: 0x5a8c_d2ff,
+            cursor: [0xffff_ffff, 0xff8c_ffff],
+        }
+    }
+}
+
+/// Buffers reused across frames (no allocation per frame after warm-up).
+#[derive(Debug, Default)]
+pub struct WaveScratch {
+    pts: Vec<[f32; 2]>,
+    chains: Chains,
+    ticks: Vec<f64>,
+    label: Layout<()>,
+    text: String,
+    path: BezPath,
+    ui: UiScratch,
+}
+
+fn kr(r: UiRect) -> Rect {
+    Rect::new(
+        f64::from(r.x),
+        f64::from(r.y),
+        f64::from(r.x + r.w),
+        f64::from(r.y + r.h),
+    )
+}
+
+/// Tick label size in logical pixels.
+const TICK_PX: f32 = 10.0;
+
+/// Draws every pane of the window into its layout rectangle, then the readout panel.
+pub fn draw_window<P: Painter>(
+    p: &mut P,
+    geo: &Geometry,
+    waves: &Waves,
+    ui: &WaveUi,
+    look: &WaveLook,
+    text: &mut TextSystem,
+    s: &mut WaveScratch,
+) {
+    assert!(
+        geo.panes.len() <= waves.panes().len(),
+        "more pane rects than panes"
+    );
+    let several = geo.panes.len() > 1;
+    for (k, &r) in geo.panes.iter().enumerate() {
+        let active = several && ui.active_pane() as usize == k;
+        draw_pane(p, r, waves, k as u8, active, ui.drag(), look, text, s);
+    }
+    if geo.readout.w > 0.0 && geo.readout.h > 0.0 {
+        draw_readout(p, geo.readout, waves, look, text, s);
+    }
+}
+
+/// Draws pane `k` (its traces, grid, cursors, legend) filling `area`. `drag` adds the box-zoom
+/// band when it belongs to this pane. An embedded graph calls this with its own rectangle.
+///
+/// # Panics
+///
+/// Panics if `k` is not a pane of `waves`.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_pane<P: Painter>(
+    p: &mut P,
+    area: UiRect,
+    waves: &Waves,
+    k: u8,
+    active: bool,
+    drag: Drag,
+    look: &WaveLook,
+    text: &mut TextSystem,
+    s: &mut WaveScratch,
+) {
+    assert!(usize::from(k) < waves.panes().len(), "no pane {k}");
+    let pane = kr(area);
+    p.fill_rect(pane, rgba(look.bg));
+    let pr = plot_area(area);
+    if pr.w < 8.0 || pr.h < 8.0 {
+        return;
+    }
+    let plot = kr(pr);
+    let (xa, ya) = (waves.x(), waves.panes()[usize::from(k)]);
+    let sx = xa.scale(pr.x, pr.x + pr.w);
+    let sy = ya.scale(pr.y + pr.h, pr.y);
+    let (grid, label) = (rgba(look.grid), rgba(look.label));
+
+    // Grid and tick labels.
+    let nx = (pr.w / 90.0).clamp(2.0, 12.0) as u8;
+    axis_ticks(xa, nx, &mut s.ticks);
+    let ts = std::mem::take(&mut s.ticks);
+    let digits = label_digits(&ts, xa.log);
+    for &t in &ts {
+        let x = f64::from(sx.px(t)).floor() + 0.5;
+        if x < plot.x0 - 0.5 || x > plot.x1 + 0.5 {
+            continue;
+        }
+        p.fill_rect(Rect::new(x - 0.5, plot.y0, x + 0.5, plot.y1), grid);
+        label_at(
+            p,
+            text,
+            s,
+            &format_si(t, digits),
+            x,
+            plot.y1 + 2.0,
+            Align::Center,
+            label,
+        );
+    }
+    s.ticks = ts;
+    let ny = (pr.h / 26.0).clamp(2.0, 10.0) as u8;
+    axis_ticks(ya, ny, &mut s.ticks);
+    let ts = std::mem::take(&mut s.ticks);
+    let digits = label_digits(&ts, ya.log);
+    for &t in &ts {
+        let y = f64::from(sy.px(t)).floor() + 0.5;
+        if y < plot.y0 - 0.5 || y > plot.y1 + 0.5 {
+            continue;
+        }
+        p.fill_rect(Rect::new(plot.x0, y - 0.5, plot.x1, y + 0.5), grid);
+        let t = format_si(t, digits);
+        label_at(p, text, s, &t, plot.x0 - 4.0, y - 7.0, Align::Right, label);
+    }
+    s.ticks = ts;
+    outline(p, &mut s.path, plot, 1.0, grid);
+
+    // Traces, clipped to the plot.
+    p.push_clip(plot);
+    for i in (0..waves.trace_count()).filter(|&i| waves.pane_of(i) == k) {
+        let (x, y) = waves.xy(i);
+        s.chains.clear();
+        for st in waves.steps(i) {
+            let r = st.start as usize..st.end as usize;
+            s.pts.clear();
+            decimate(&x[r.clone()], &y[r], &sx, &sy, &mut s.pts);
+            if s.pts.len() >= 2 {
+                s.chains.push(&s.pts);
+            }
+        }
+        if !s.chains.is_empty() {
+            p.stroke_chains(
+                &s.chains,
+                false,
+                waves.style(i).width(),
+                rgba(waves.color(i)),
+            );
+        }
+    }
+    // Cursors span the plot; their tags sit on the x axis.
+    for c in [Cursor::A, Cursor::B] {
+        let Some(at) = waves.cursors()[c as usize] else {
+            continue;
+        };
+        let x = f64::from(sx.px(at)).floor() + 0.5;
+        if x < plot.x0 || x > plot.x1 {
+            continue;
+        }
+        let color = rgba(look.cursor[c as usize]);
+        p.fill_rect(Rect::new(x - 0.5, plot.y0, x + 0.5, plot.y1), color);
+        let tag = if c == Cursor::A { "A" } else { "B" };
+        p.fill_rect(Rect::new(x - 6.0, plot.y0, x + 6.0, plot.y0 + 13.0), color);
+        label_at(p, text, s, tag, x, plot.y0, Align::Center, rgba(look.bg));
+    }
+    if let Drag::Box {
+        pane,
+        x0,
+        y0,
+        x1,
+        y1,
+    } = drag
+        && pane == k
+    {
+        let band = Rect::new(
+            f64::from(x0.min(x1)),
+            f64::from(y0.min(y1)),
+            f64::from(x0.max(x1)),
+            f64::from(y0.max(y1)),
+        );
+        p.fill_rect(band, Color::from_rgba8(120, 160, 255, 48));
+        outline(
+            p,
+            &mut s.path,
+            band,
+            1.0,
+            Color::from_rgba8(150, 190, 255, 220),
+        );
+    }
+    p.pop_clip();
+
+    // Legend: trace names in their colors, with the value at cursor A (as xschem's labels do).
+    let mut lx = plot.x0 + 2.0;
+    for i in (0..waves.trace_count()).filter(|&i| waves.pane_of(i) == k) {
+        s.text.clear();
+        if waves.is_magnitude(i) {
+            s.text.push('|');
+            s.text.push_str(waves.src(i));
+            s.text.push('|');
+        } else {
+            s.text.push_str(waves.src(i));
+        }
+        if let Some(v) = waves.cursors()[0].and_then(|a| waves.value_at(i, a)) {
+            s.text.push_str(" = ");
+            s.text.push_str(&format_si(v, 4));
+        }
+        let t = std::mem::take(&mut s.text);
+        let w = label_at(
+            p,
+            text,
+            s,
+            &t,
+            lx,
+            pane.y0 + 2.0,
+            Align::Left,
+            rgba(waves.color(i)),
+        );
+        s.text = t;
+        lx += w + 14.0;
+        if lx > plot.x1 {
+            break;
+        }
+    }
+    if active {
+        outline(p, &mut s.path, pane.inset(-0.5), 1.0, rgba(look.active));
+    }
+}
+
+/// Draws the cursor readout: A, B, Δx and 1/Δx, then each trace's value at A and B and their
+/// difference, in the trace's color. Rows that do not fit are left out.
+pub fn draw_readout<P: Painter>(
+    p: &mut P,
+    area: UiRect,
+    waves: &Waves,
+    look: &WaveLook,
+    text: &mut TextSystem,
+    s: &mut WaveScratch,
+) {
+    let r = kr(area);
+    p.push_clip(r);
+    let fg = rgba(0xd0d0_d0ff);
+    let row = 15.0;
+    let mut y = r.y0 + 4.0;
+    let [a, b] = waves.cursors();
+    // Columns: name 40%, then A, B and B−A at 20% each.
+    let col = |k: usize| r.x0 + 6.0 + [0.0, 0.4, 0.6, 0.8][k] * (r.width() - 12.0);
+    let si = |v: Option<f64>| v.map_or_else(|| "-".to_owned(), |v| format_si(v, 4));
+    for (k, name, v) in [(0, "A", a), (1, "B", b)] {
+        if v.is_some() {
+            label_at(
+                p,
+                text,
+                s,
+                name,
+                col(0),
+                y,
+                Align::Left,
+                rgba(look.cursor[k]),
+            );
+        }
+        label_at(
+            p,
+            text,
+            s,
+            &format!("x = {}", si(v)),
+            col(0) + 16.0,
+            y,
+            Align::Left,
+            fg,
+        );
+        y += row;
+    }
+    if let (Some(a), Some(b)) = (a, b) {
+        let dx = b - a;
+        let inv = if dx != 0.0 {
+            si(Some(1.0 / dx))
+        } else {
+            "-".into()
+        };
+        let t = format!("Δx = {}   1/Δx = {inv}", si(Some(dx)));
+        label_at(p, text, s, &t, col(0), y, Align::Left, fg);
+    }
+    y += row + 4.0;
+    for (k, h) in ["trace", "@A", "@B", "B−A"].iter().enumerate() {
+        label_at(p, text, s, h, col(k), y, Align::Left, rgba(look.label));
+    }
+    y += row;
+    for i in 0..waves.trace_count() {
+        if y + row > r.y1 {
+            break;
+        }
+        let va = a.and_then(|x| waves.value_at(i, x));
+        let vb = b.and_then(|x| waves.value_at(i, x));
+        let color = rgba(waves.color(i));
+        let name: String = waves.src(i).chars().take(14).collect();
+        label_at(p, text, s, &name, col(0), y, Align::Left, color);
+        let d = va.zip(vb).map(|(a, b)| b - a);
+        for (k, v) in [va, vb, d].into_iter().enumerate() {
+            label_at(p, text, s, &si(v), col(k + 1), y, Align::Left, color);
+        }
+        y += row;
+    }
+    p.pop_clip();
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Align {
+    Left,
+    Center,
+    Right,
+}
+
+/// Shapes and draws `t` with its top at `y`, anchored at `x`; returns the width.
+#[allow(clippy::too_many_arguments)]
+fn label_at<P: Painter>(
+    p: &mut P,
+    text: &mut TextSystem,
+    s: &mut WaveScratch,
+    t: &str,
+    x: f64,
+    y: f64,
+    align: Align,
+    color: Color,
+) -> f64 {
+    // ponytail: every tick, legend and readout label is shaped each frame (~0.3 ms for a
+    // three-pane window). Cache by (text, size) in `TextSystem` if a profile ever shows it.
+    text.shape_into(t, TICK_PX, &mut s.label);
+    let w = f64::from(s.label.width());
+    let x = match align {
+        Align::Left => x,
+        Align::Center => x - w / 2.0,
+        Align::Right => x - w,
+    };
+    draw_text(p, &s.label, x, y, color, &mut s.ui);
+    w
+}
+
+fn outline<P: Painter>(p: &mut P, path: &mut BezPath, r: Rect, w: f64, color: Color) {
+    path.truncate(0);
+    path.move_to((r.x0, r.y0));
+    path.line_to((r.x1, r.y0));
+    path.line_to((r.x1, r.y1));
+    path.line_to((r.x0, r.y1));
+    path.close_path();
+    p.stroke_path(path, w, color);
+}
+
+/// Significant digits that tell neighbouring ticks apart: at least 3, more when the view is
+/// narrow next to its distance from zero (a 50 ps window at 4.2 ms needs 9).
+fn label_digits(ts: &[f64], log: bool) -> usize {
+    let (Some(&a), Some(&b)) = (ts.first(), ts.get(1)) else {
+        return 3;
+    };
+    let big = ts.iter().fold(0.0f64, |m, t| m.max(t.abs()));
+    if log || b <= a || big == 0.0 {
+        return 3;
+    }
+    ((big / (b - a)).log10().ceil() as i64 + 1).clamp(3, 15) as usize
+}
+
+#[cfg(test)]
+#[test]
+fn tick_labels_get_enough_digits_to_differ() {
+    assert_eq!(label_digits(&[0.0, 5e-6, 10e-6], false), 3);
+    assert_eq!(label_digits(&[-100.0, -80.0, -60.0], false), 3);
+    let narrow = [4.2e-3, 4.2e-3 + 1e-11, 4.2e-3 + 2e-11];
+    let d = label_digits(&narrow, false);
+    let s: Vec<String> = narrow.iter().map(|&t| format_si(t, d)).collect();
+    assert!(s[0] != s[1] && s[1] != s[2], "{s:?}");
+    assert_eq!(label_digits(&[1e3, 1e4], true), 3);
+    assert_eq!(label_digits(&[1.0], false), 3);
+}
+
+/// Tick positions for one axis: decades on a log axis, nice 1-2-5 steps otherwise.
+fn axis_ticks(a: Axis, n: u8, out: &mut Vec<f64>) {
+    if a.log {
+        log_ticks(a.lo, a.hi, n, out);
+    } else {
+        ticks(a.lo, a.hi, n, out);
+    }
+}

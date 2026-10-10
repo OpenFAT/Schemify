@@ -15,7 +15,7 @@ Crate = owner. A crate boundary exists only where it enforces single ownership (
 | `doc` | `cells`, `symbols`, `pins`, `graphics`, `param_schema`, `impls`, `instances`, `inst_params`, `wires`, `labels`, `ports`, `texts`, `doc_blocks`, `bench_*`, `constraints`, `waivers`, `staged_edits`, `journal` | `edit_requests` | `format` | The only writer of design data. Load/save, edit transactions (commit or stage), undo/redo, lib resolution via manifest + lockfile (D10, D35). |
 | `elab` | `expr_graph`, `values`, `nets`, `pin_nets`, `inst_paths`, `resolved_impls`, `resolved_params`, `name_map`, `violations`, `annotations` | doc tables, `annotation_requests` | `expr` | Everything derived: dirty-graph recompute (D19), connectivity from geometry, hierarchy elaboration with bench-config impl selection (D11a), checks/gating (D13), one annotation overlay. |
 | `netlist` | `netlist_text` (job arena) | elab tables only | — | Emitters: `Dialect = Ngspice \| Xyce \| Cdl \| Verilog \| Spectre`, closed enum, exhaustive match (D22). Plugin dialects go through `run_requests`. |
-| `wave` | `raw_plots` (column SoA) | `.raw` bytes | `rustfft` | UW salvage as-is (D26); calculator delegates to `expr` column mode. |
+| `wave` | `raw_plots` (column SoA), viewer tables (`traces`, `panes`, x view, cursors) | `.raw` bytes, `wave_requests` | none (`expr`) | Reader for ngspice/Xyce/LTspice binary+ASCII (UW salvage, D26, hardened). Calculator = `expr` calc mode over borrowed raw columns. SIMD min/max display decimation. `Waves::apply(Request)` is the viewer tables' only writer (D23). |
 | `run` | `jobs`, `results` | bench tables, elab, netlist | features: `sweep`, `corners`, `mc`, `optimize` | Job expansion (sweep × corner × MC × named config), local worker queue, native subprocess runner (D15), result tagging by design hash, outputs/specs eval, optimizer ask/tell (UW salvage). |
 | `import` | — (emits doc tables via `format`) | xschem `.sch/.sym`, model cards, tech files, `cdfDump` | `format`, `expr` | Clean-room xschem reader + attribute/expression translation + PDK constraint readers (D14). Library for both `schemify import` and `tools/devicereader`. |
 | `abi` | — (types) | — | none | Versioned plugin ABI: table snapshot layouts, request-table layouts, capability ids. Shared by host and guests; doubles as the Rust plugin SDK. |
@@ -39,6 +39,8 @@ import  netlist   run
        ↖     ↑    ↗
            app
 ```
+
+`ui` and `render` also depend on `wave` (the waves window and its panes); `wave` depends on `expr`.
 
 Headless build (M1): `format expr doc elab netlist import run app` with `app` feature `gui` off. GUI adds `abi plugin ui render`.
 
@@ -83,6 +85,7 @@ Each spine lives in `app` as one function, one line per transform. Branches that
 | annotations | elab | apply_annotations | render | 2^20 | elab |
 | jobs, results | run | expand_jobs, poll | ui, render, optimizer, plugin | 2^20 jobs | project |
 | raw_plots | wave | read | run, render | bounded by file | job |
+| traces, panes, x view, cursors (viewer) | wave | `Waves::apply` | ui (rows, input), render (panes) | 64 traces, 16 panes, 256 datasets | session |
 | ui_nodes, ui_styles, keymap | ui | apply_ui_edits | ui::layout, ui::route_input, plugin | 2^16 nodes | session |
 | scene, ui_layout | render, ui | per frame | — | per frame | frame |
 | commands | app | registration (core enum + plugin rows) | dispatch, JSON-RPC, keymap | 2^12 | session |
@@ -110,7 +113,7 @@ The complete list. Each is zero-overhead and replaces two or more interfaces:
 | Abstraction | Replaces | Mechanism |
 |---|---|---|
 | Line-record codec (`format`) | document, config, manifest, lockfile and journal parsers; merge driver; diff | one parser/writer |
-| Request tables | plugin API, UI actions, JSON-RPC, optimizer write-back, importer output | plain data queues consumed by the owner |
+| Request tables | plugin API, UI actions, JSON-RPC, optimizer write-back, importer output, waveform viewer actions | plain data queues consumed by the owner |
 | `Cell { symbol?, impls[] }` | three file kinds | one table set; kind = which rows exist |
 | Expression language | xschem `@subst`/`expr()`/`tcleval`, param callbacks, docs math, waveform calculator, specs | one compiler, two eval modes |
 | Annotation overlay | ERC markers, OP back-annotation, LVS errors, diff markers, plugin markers | one table keyed by path/id |

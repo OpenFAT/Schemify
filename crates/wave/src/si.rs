@@ -1,71 +1,17 @@
-//! SI / SPICE engineering-suffix parsing and formatting.
+//! Engineering-prefix formatting for axis ticks and readouts (`3.3n`, `12k`, `-4.7µ`).
 //!
-//! Parsing follows SPICE convention: suffixes are case-insensitive, so `M`
-//! is milli and mega is spelled `meg`. Formatting emits display-style
-//! prefixes (`m`, `k`, `M`, `G`, …).
+//! Display-only: the prefixes are the SI ones (`M` is mega), unlike SPICE input where `M` is
+//! milli. Parsing user input goes through `schemify_expr::parse_num` (spec expr §2).
 
-/// Parse a number with an optional SPICE suffix: `5n`, `1k`, `2.5meg`,
-/// `100`, `1e-9`, `3.3m`. Trailing unit letters after the suffix are
-/// ignored (`10nF` parses as `10e-9`), matching SPICE.
-pub fn parse_si(s: &str) -> Option<f64> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    // Split numeric head from alpha tail. The head may contain an exponent
-    // (`1e-9`), so 'e'/'E' followed by a digit or sign stays numeric.
-    let bytes = s.as_bytes();
-    let mut end = 0;
-    while end < bytes.len() {
-        let b = bytes[end];
-        let exponent = (b == b'e' || b == b'E')
-            && end + 1 < bytes.len()
-            && (bytes[end + 1].is_ascii_digit()
-                || bytes[end + 1] == b'+'
-                || bytes[end + 1] == b'-');
-        if !(b.is_ascii_digit() || b == b'.' || b == b'+' || b == b'-' || exponent) {
-            break;
-        }
-        end += 1;
-    }
-    let num: f64 = s[..end].parse().ok()?;
-    let tail = s[end..].trim();
-    if tail.is_empty() {
-        return Some(num);
-    }
-    Some(num * suffix_multiplier(tail))
-}
-
-/// Multiplier for a SPICE suffix (with possible trailing unit letters).
-fn suffix_multiplier(tail: &str) -> f64 {
-    let t = tail.to_ascii_lowercase();
-    // `meg` / `mil` are the only multi-letter suffixes; check them first so
-    // `meg` doesn't parse as milli.
-    if t.starts_with("meg") {
-        return 1e6;
-    }
-    if t.starts_with("mil") {
-        return 25.4e-6;
-    }
-    match t.as_bytes()[0] {
-        b'f' => 1e-15,
-        b'p' => 1e-12,
-        b'n' => 1e-9,
-        b'u' => 1e-6,
-        b'm' => 1e-3,
-        b'k' => 1e3,
-        b'g' => 1e9,
-        b't' => 1e12,
-        // Bare unit letter ("10V") — no scaling.
-        _ => 1.0,
-    }
-}
-
-/// Format with an engineering prefix: `3.3e-9` → `"3.3n"`, `1.2e4` → `"12k"`.
-/// `digits` = significant digits.
+/// Formats `value` with `digits` significant digits and an engineering prefix: `3.3e-9` →
+/// `"3.3n"`, `1.2e4` → `"12k"`, `999.96e3` → `"1M"` (rounding carries into the next prefix).
+/// Zero (either sign) is `"0"`; NaN and infinities print as Rust does (`"NaN"`, `"inf"`).
 pub fn format_si(value: f64, digits: usize) -> String {
-    if value == 0.0 || !value.is_finite() {
-        return trim_zeros(&format!("{value:.*}", digits.saturating_sub(1)));
+    if value == 0.0 {
+        return "0".to_owned();
+    }
+    if !value.is_finite() {
+        return format!("{value}");
     }
     const PREFIXES: [(f64, &str); 9] = [
         (1e12, "T"),
@@ -78,18 +24,26 @@ pub fn format_si(value: f64, digits: usize) -> String {
         (1e-9, "n"),
         (1e-12, "p"),
     ];
-    let mag = value.abs();
-    let (scale, prefix) = PREFIXES
+    let digits = digits.clamp(1, 17);
+    let mut k = PREFIXES
         .iter()
-        .find(|(s, _)| mag >= *s)
-        .copied()
-        .unwrap_or((1e-15, "f"));
-    let scaled = value / scale;
-    // Significant digits: decimals = digits - integer digits of |scaled|.
-    let int_digits = (scaled.abs().log10().floor() as i32 + 1).max(1) as usize;
-    let decimals = digits.saturating_sub(int_digits);
-    let s = format!("{scaled:.decimals$}");
-    format!("{}{}", trim_zeros(&s), prefix)
+        .position(|(s, _)| value.abs() >= *s)
+        .unwrap_or(PREFIXES.len());
+    // Two passes at most: the second runs only when rounding reached 1000 of a prefix.
+    for _ in 0..2 {
+        let (scale, prefix) = PREFIXES.get(k).copied().unwrap_or((1e-15, "f"));
+        let scaled = value / scale;
+        let int_digits = (scaled.abs().log10().floor() as i32 + 1).max(1) as usize;
+        let decimals = digits.saturating_sub(int_digits);
+        let s = format!("{scaled:.decimals$}");
+        let rounded: f64 = s.parse().unwrap_or(scaled);
+        if rounded.abs() >= 1000.0 && k > 0 {
+            k -= 1;
+            continue;
+        }
+        return format!("{}{}", trim_zeros(&s), prefix);
+    }
+    unreachable!("a carry moves up one prefix, then fits")
 }
 
 /// Strip trailing fractional zeros ("1.500" → "1.5", "2.000" → "2").
@@ -105,30 +59,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_plain_and_exponent() {
-        assert_eq!(parse_si("100"), Some(100.0));
-        assert_eq!(parse_si("1e-9"), Some(1e-9));
-        assert_eq!(parse_si("-2.5"), Some(-2.5));
-    }
-
-    #[test]
-    fn parse_suffixes() {
-        assert_eq!(parse_si("5n"), Some(5e-9));
-        assert_eq!(parse_si("1k"), Some(1e3));
-        assert_eq!(parse_si("2.5meg"), Some(2.5e6));
-        assert_eq!(parse_si("3.3m"), Some(3.3e-3));
-        assert_eq!(parse_si("3.3M"), Some(3.3e-3)); // SPICE: M = milli
-        assert_eq!(parse_si("10nF"), Some(10e-9)); // trailing unit ignored
-        assert_eq!(parse_si("1u"), Some(1e-6));
-    }
-
-    #[test]
-    fn parse_rejects_garbage() {
-        assert_eq!(parse_si(""), None);
-        assert_eq!(parse_si("abc"), None);
-    }
-
-    #[test]
     fn format_engineering() {
         assert_eq!(format_si(3.3e-9, 3), "3.3n");
         assert_eq!(format_si(12_000.0, 3), "12k");
@@ -136,5 +66,8 @@ mod tests {
         assert_eq!(format_si(1.0, 3), "1");
         assert_eq!(format_si(-4.7e-6, 3), "-4.7µ");
         assert_eq!(format_si(33.33e9, 4), "33.33G");
+        assert_eq!(format_si(999.96e3, 3), "1M");
+        assert_eq!(format_si(-0.0, 3), "0");
+        assert_eq!(format_si(4e-16, 2), "0.4f");
     }
 }

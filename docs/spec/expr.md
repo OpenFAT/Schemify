@@ -56,7 +56,7 @@ Limits: ≤ 65 536 AST nodes and nesting depth ≤ 256 per expression (`X002`). 
 - Identifier resolution order, by context (the caller resolves; the evaluator receives one value per identifier, in first-occurrence order):
   - **Cell scope** (vars, param defaults, instance overrides inside a cell): the cell's own params (effective values for the instance being elaborated), then the cell's vars. Unknown → `X004`.
   - **Bench scope:** bench vars, after corner `set` overrides and sweep/MC/optimizer assignments.
-  - **Calculator:** result signals via `v(net)`, `i(dev)`, `x()` (sweep axis), plus bench vars.
+  - **Calculator:** result signals via `v(net)`, `i(dev)`, `x()` (sweep axis), plus bench vars. A signal names a raw vector case-insensitively: `v(net)` is the vector `v(net)`, else `net` (Xyce writes bare node names); `i(dev)` is `i(dev)`, else `dev#branch`, else `dev`. No match is `X004`.
 - Dependency graph: every identifier is an edge; a cycle is `X005` and names the cycle as `a -> b -> a` (`a` depends on `b`, …).
 
 ## 5. Built-in functions

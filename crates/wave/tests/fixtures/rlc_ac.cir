@@ -1,0 +1,14 @@
+* Series RLC, AC sweep: complex data on a log frequency axis.
+V1 in 0 DC 0 AC 1
+R1 in mid 10
+L1 mid out 10u
+C1 out 0 100n
+.ac dec 20 1k 100meg
+.control
+run
+set filetype=binary
+write rlc_ac.bin.raw
+set filetype=ascii
+write rlc_ac.ascii.raw
+.endc
+.end

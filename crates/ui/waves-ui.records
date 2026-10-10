@@ -1,0 +1,253 @@
+# Schemify waveform window (D23): the static skeleton. The rows that follow the viewer tables
+# (signals, traces, panes, toggle states, status text) come from `ui::waves::WaveUi::contribute`
+# and are composed after this, so a plugin can still restyle or remove anything here (D8).
+# Layout follows the UW viewer (D26): expression bar on top, signal browser left, stacked panes
+# sharing x in the middle, traces and cursor readout right.
+
+style *
+  fg 000000
+  font 12
+  hover-bg e4e4e4
+  active-bg c3c3c3
+  border-color 8c8c8c
+
+style window
+  bg d9d9d9
+  dir column
+
+style toolbar
+  bg ececec
+  dir row
+  height 30
+  pad 4
+  gap 4
+
+style button
+  bg f4f4f4
+  pad 6
+  height 22
+  border 1
+  radius 2
+  hover-bg ffffff
+
+style checkbox
+  pad 4
+  height 22
+  gap 4
+
+style label
+  pad 4
+
+style text_input
+  bg ffffff
+  pad 4
+  pad-y 2
+  border 1
+  width 120
+
+style wexpr
+  width 380
+
+style wfilter
+  width 210
+
+style panel
+  dir column
+
+style wbody
+  dir row
+  stretch 1
+  grow 1
+  pad 4
+  gap 4
+
+style wbrowser
+  width 222
+  gap 4
+
+style wpanes
+  grow 1
+  gap 4
+
+style wside
+  width 270
+  gap 4
+
+style wrow
+  dir row
+  gap 4
+
+style whead
+  pad 2
+  font 12
+
+style list
+  bg ffffff
+  border 1
+  grow 1
+
+style graph
+  grow 1
+  bg 000000
+  fg a0a0a0
+
+style wreadout
+  bg 101010
+  fg d0d0d0
+  height 190
+  border 1
+
+style status
+  bg d9d9d9
+  dir row
+  height 24
+  pad 4
+  gap 6
+
+style wstatus
+  grow 1
+
+node waves window
+
+# --- expression bar and view controls ----------------------------------------------------------
+
+node waves.toolbar toolbar
+  parent waves
+node waves.expr_label label
+  parent waves.toolbar
+  label "Expression"
+node waves.expr text_input
+  parent waves.toolbar
+  style wexpr
+  command waves.plot
+  tooltip "Calculator expression, e.g. db(v(out)/v(in)); Enter plots it"
+node waves.plot button
+  parent waves.toolbar
+  label Plot
+  command waves.plot_button
+node waves.autoscale button
+  parent waves.toolbar
+  label "Full (f)"
+  command waves.autoscale
+node waves.log_x checkbox
+  parent waves.toolbar
+  label "Log X"
+  command waves.log_x
+  checked 0
+node waves.log_y checkbox
+  parent waves.toolbar
+  label "Log Y"
+  command waves.log_y
+  checked 0
+node waves.cursor_a checkbox
+  parent waves.toolbar
+  label "Cursor A"
+  command waves.cursor_a
+  checked 0
+node waves.cursor_b checkbox
+  parent waves.toolbar
+  label "Cursor B"
+  command waves.cursor_b
+  checked 0
+node waves.add_pane button
+  parent waves.toolbar
+  label "+ Pane"
+  command waves.add_pane
+node waves.remove_pane button
+  parent waves.toolbar
+  label "- Pane"
+  command waves.remove_pane
+
+# --- body: browser | panes | traces + readout ---------------------------------------------------
+
+node waves.body panel
+  parent waves
+  style wbody
+
+node waves.browser panel
+  parent waves.body
+  style wbrowser
+node waves.datasets panel
+  parent waves.browser
+  style wrow
+node waves.dataset_prev button
+  parent waves.datasets
+  label "<"
+  command waves.dataset_prev
+node waves.dataset_name label
+  parent waves.datasets
+  label ""
+node waves.dataset_next button
+  parent waves.datasets
+  label ">"
+  command waves.dataset_next
+node waves.filter text_input
+  parent waves.browser
+  style wfilter
+  command waves.filter
+  tooltip "Filter signals (live)"
+node waves.signals list
+  parent waves.browser
+node waves.browser_buttons panel
+  parent waves.browser
+  style wrow
+node waves.add_signal button
+  parent waves.browser_buttons
+  label "Add"
+  command waves.add_signal
+  tooltip "Plot the selected signal (or double-click it)"
+
+node waves.panes panel
+  parent waves.body
+  style wpanes
+
+node waves.side panel
+  parent waves.body
+  style wside
+node waves.traces_head label
+  parent waves.side
+  label "Traces"
+  style whead
+node waves.traces list
+  parent waves.side
+node waves.trace_buttons panel
+  parent waves.side
+  style wrow
+node waves.delete_trace button
+  parent waves.trace_buttons
+  label "Delete"
+  command waves.delete_trace
+node waves.bold button
+  parent waves.trace_buttons
+  label "Bold"
+  command waves.bold
+node waves.move_trace button
+  parent waves.trace_buttons
+  label "Next pane"
+  command waves.move_trace
+node waves.readout_head label
+  parent waves.side
+  label "Cursors"
+  style whead
+node waves.readout panel
+  parent waves.side
+  style wreadout
+
+node waves.status status
+  parent waves
+node waves.status_msg label
+  parent waves.status
+  style wstatus
+  label ""
+
+# --- keys: xschem graph keys where they exist (a, b, s, f, arrows) -------------------------------
+
+key a waves.cursor_a
+key b waves.cursor_b
+key s waves.swap_cursors
+key f waves.autoscale
+key Del waves.delete_trace
+key Left waves.pan_left
+key Right waves.pan_right
+key Up waves.zoom_in
+key Down waves.zoom_out
