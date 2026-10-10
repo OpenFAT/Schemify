@@ -1,5 +1,78 @@
 //! Clean-room importers (D1, D14, D24): xschem `.sch`/`.sym` designs and PDK libraries,
 //! SPICE model-card bin ranges, tech-file grids and Cadence `cdfDump` output.
 //!
-//! Emits Schemify files; every construct it cannot translate is reported in
-//! `needs_review`, never dropped. Research: `docs/research/pdk-xschem-devices.md`.
+//! This crate currently holds the **readers**. Each turns text into data-oriented tables
+//! and never evaluates, executes or resolves anything: translation into Schemify files
+//! (`.shprim`/`.shcomp`/`.shbench`) sits on top of these tables. Behaviour comes from
+//! `docs/research/xschem-feature-inventory.md` §5 and `docs/research/pdk-xschem-devices.md`,
+//! never from xschem source.
+//!
+//! | Transform | Reads | Writes |
+//! |---|---|---|
+//! | [`xschem::read`] | `.sch`/`.sym` text | [`xschem::XschemFile`]: record tables, dropped-record issues, D33 roundings |
+//! | [`attr::Attrs::parse_into`] | one attribute string | key/value rows with an [`attr::Idioms`] set per value |
+//! | [`symbol::extract`] | [`xschem::XschemFile`] | [`symbol::SymbolInterface`]: attributes, template, pins in netlist order |
+//! | [`spice::scan`] | model cards, through a caller loader | [`spice::ModelScan`]: models, bins, subckts, OSDI evidence |
+//! | [`tech::read_lyt`], [`tech::read_magic`] | KLayout / Magic tech files | manufacturing grid in picometres |
+//! | [`cdf::read`] | `cdfDump` SKILL text | [`cdf::CdfDump`]: parameter tables and a review list |
+//!
+//! Every reader is total over its input: malformed parts land in an issue table with a
+//! location instead of a panic, and each reader asserts a count-conservation invariant on
+//! exit (records or lines read = kept + reported).
+
+// SIMD triage (simd-loops): inputs are single files of kilobytes (the 3,218-file corpus is
+// ~60 MB, read in ~0.1 s), every scanner is a byte state machine (a chain dependency),
+// so the scalar loops stay.
+
+pub mod attr;
+pub mod cdf;
+pub mod decimal;
+pub mod spice;
+pub mod symbol;
+pub mod tech;
+pub mod xschem;
+
+/// Byte range into an arena string owned by the table that hands it out.
+///
+/// A `Span` only means something together with the arena it was cut from; each table
+/// names its arena. Offsets fit `u32` because readers cap input at [`MAX_INPUT_BYTES`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Span {
+    /// Byte offset of the first byte.
+    pub start: u32,
+    /// Length in bytes.
+    pub len: u32,
+}
+
+impl Span {
+    /// Returns the spanned text.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the span is not a char-boundary range of `arena`, i.e. if it was cut
+    /// from a different arena.
+    pub fn of<'a>(&self, arena: &'a str) -> &'a str {
+        let start = self.start as usize;
+        &arena[start..start + self.len as usize]
+    }
+
+    pub(crate) fn new(start: usize, end: usize) -> Span {
+        assert!(start <= end, "span start {start} after end {end}");
+        assert!(end <= u32::MAX as usize, "span end {end} beyond u32");
+        Span {
+            start: start as u32,
+            len: (end - start) as u32,
+        }
+    }
+}
+
+/// Largest input [`xschem::read`] accepts, in bytes (2^30, the cap of
+/// `docs/spec/format.md` §2). Larger inputs are refused before parsing.
+pub const MAX_INPUT_BYTES: usize = 1 << 30;
+
+/// Appends `text` to `arena` and returns its span.
+pub(crate) fn push_span(arena: &mut String, text: &str) -> Span {
+    let start = arena.len();
+    arena.push_str(text);
+    Span::new(start, arena.len())
+}
