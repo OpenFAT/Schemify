@@ -304,8 +304,8 @@ fn naming_rules() {
     );
     let unnamed = &conns(&p, h, &st, "X3")[0][0];
     assert_eq!(
-        unnamed, "net_000003",
-        "unnamed nets take the smallest owning id"
+        unnamed, "net_000003_0",
+        "a pin-only net takes its smallest (instance id, pin index) node"
     );
     assert_eq!(codes_of(&st).iter().filter(|c| **c == "E003").count(), 1);
     assert!(codes_of(&st).contains(&"W004"), "X3's pin touches nothing");
@@ -420,15 +420,15 @@ fn buses_bundles_repeats_and_iterated_instances() {
             &[&["a"]],
             &["E011"],
         ),
-        // Unnamed bus between two bus pins: width from the pins, net_<id>[k] names.
+        // Unnamed bus between two bus pins: width from the pins, net_<inst>_<pin>[k] names.
         (
             "inst 000001 ./bus\n  at 0 0 R0\n  name X1\ninst 000002 ./bus\n  at 0 0 R0\n  name X2\nlabel 000003 0 20 R0 q\n",
             "X2",
             &[&[
-                "net_000001[0]",
-                "net_000001[1]",
-                "net_000001[2]",
-                "net_000001[3]",
+                "net_000001_0[0]",
+                "net_000001_0[1]",
+                "net_000001_0[2]",
+                "net_000001_0[3]",
                 "q",
             ]],
             &["E009"][..0],
