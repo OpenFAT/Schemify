@@ -2759,6 +2759,9 @@ dependencies = [
  "schemify-doc",
  "schemify-elab",
  "schemify-expr",
+ "schemify-import",
+ "schemify-spicecmp",
+ "schemify-wave",
 ]
 
 [[package]]
