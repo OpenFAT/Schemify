@@ -717,7 +717,9 @@ impl Document {
             // so it is keyed by (inherit, pin); every other key must be unique.
             keys.clear();
             keys.extend(self.pool.attrs(span).map(|(k, vals)| {
-                let pin = (Some(k) == inherit).then(|| vals.first().copied()).flatten();
+                let pin = (Some(k) == inherit)
+                    .then(|| vals.first().copied())
+                    .flatten();
                 (k, pin)
             }));
             if (1..keys.len()).any(|i| keys[..i].contains(&keys[i])) {

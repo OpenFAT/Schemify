@@ -4,7 +4,7 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## Cross-crate API requests
 
-- **doc**: re-export `format::{Orient, RecordKind, FileKind}` (elab, netlist and app import format only for these); resolve a reference from a cell row; "is this row open" query; optionally have `apply_edits` report the changed records so callers don't pass ops back (elab).
+- **doc**: resolve a reference from a cell row; "is this row open" query; optionally have `apply_edits` report the changed records so callers don't pass ops back (elab).
 - **doc**: a `journal` file kind or a public lexer in `format` (doc currently parses journal/op text through format's newer-version mode).
 - **expr**: topological sort that reports every cycle in one pass (elab cuts one cycle per pass).
 - **plugin**, **ui**: switch the local line-record lexers to `schemify-format`.
