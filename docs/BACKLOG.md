@@ -19,6 +19,13 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - Edit round trip rebuilds the whole scene (40 ms at 100k objects): incremental scene rebuild.
 - Integration points still stubbed: elab (symbols via elab, net highlight `k`, eval, net ids in snapshots), netlist (`n`), run (`s`, plugin run requests), web OPFS.
 
+## netlist
+
+- Implement the XSPICE bus-bit spelling rule (netlist spec §7.2): nets on XSPICE vector ports → `d_0`.
+- Remaining corpus differences are owned and annotated in `tests/corpus/RATCHET.md` (SPICE 198/301, CDL code-stripped 174/301 at merge).
+- import: precompiled OSDI cells should be lang `spice`, not `veriloga`; elab: check impl `format` templates at elaboration (E008) and pass absolute `file` paths.
+- No corpus oracle yet for spectre/verilog (snapshots only).
+
 ## run
 
 - `format`: make var `dist` and optimize `seed` known attributes (they work as preserved unknowns today).

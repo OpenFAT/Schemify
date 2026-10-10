@@ -94,6 +94,8 @@ For an inherited pin `P` with default net `D` on cell `c`, at instance path `p`:
 - Verilog: `.model <model> d_cosim simulation="<file stem>.vvp"`; digital-domain nets get ngspice auto-bridges (no explicit bridges emitted).
 - Code blocks with lang `spice` or `ngspice` are emitted verbatim.
 
+- **Bus bits in XSPICE vectors (ngspice):** a net that connects to an XSPICE port vector (`[ … ]`, digital-domain pins of `verilog` impls) is spelled with `[k]` → `_k` (`d[0]` → `d_0`) everywhere in that netlist, because ngspice's tokenizer splits `d[0]` inside `[ … ]`. All other bus bits keep the `d[0]` spelling (xschem parity). Decided 2026-10-10; implementation tracked in docs/BACKLOG.md.
+
 ### 7.3 xyce
 
 As ngspice except: subckt params use `PARAMS:` when present; `.control` blocks are never emitted (a `spice` code block containing `.control` → `E033`); lang `xyce` blocks emitted.
