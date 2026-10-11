@@ -564,6 +564,7 @@ pub struct Editor {
     /// The selected job whose OP marks the overlay holds.
     op_job: Option<(u32, u32)>,
     /// Whether the overlay may hold `op` marks (only `step_sim` posts them).
+    #[cfg(not(target_arch = "wasm32"))]
     op_shown: bool,
     /// The run state (D15–D18).
     #[cfg(not(target_arch = "wasm32"))]
@@ -721,6 +722,7 @@ impl Editor {
             show_netlist: true,
             op_on: true,
             op_job: None,
+            #[cfg(not(target_arch = "wasm32"))]
             op_shown: false,
             #[cfg(not(target_arch = "wasm32"))]
             sim: Sim::new(sim_cmd),
