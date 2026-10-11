@@ -28,6 +28,10 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - Edit round trip rebuilds the whole scene (40 ms at 100k objects): incremental scene rebuild.
 - Integration points still stubbed: elab (symbols via elab, net highlight `k`, eval, net ids in snapshots; values are wired for the docs page), netlist (`n`), run (`s`, plugin run requests), web OPFS.
 
+## Decisions pending (user)
+
+- **Code inside a component's subcircuit** (5 corpus benches): xschem places code blocks (e.g. `.param`, `.include`) inside a component's schematic and emits them inside its `.subckt`. Today `.shcomp` cannot carry `code` (rank 6 is bench-only), so the importer moves it to the bench copy. Recommendation: allow `code <name> <lang>` in `.shcomp`, emitted inside every specialization of the component's subckt (format rank 6 + netlist §7). Needs a format/elab decision.
+
 ## netlist
 
 - Remaining corpus differences are owned and annotated in `tests/corpus/RATCHET.md` (SPICE 246/301 + 23 golden-unevaluated, CDL code-stripped 227/301 + 32, 22 gate-blocked).
