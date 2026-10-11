@@ -1,23 +1,27 @@
-//! The waveform window (D23, D26), built from UI tables: a static skeleton ([`WAVES_UI`]), the
-//! rows that follow the viewer tables ([`WaveUi::contribute`]), and pointer input over the graph
-//! panes turned into viewer [`Request`]s ([`WaveUi::route`]). The same pane input drives an
-//! embedded graph (D23: one pane, no browser) given just that pane's rectangle.
+//! The waveform window (D23, D26, spec `docs/spec/waves.md`), built from UI tables: a static
+//! skeleton ([`WAVES_UI`]), the rows that follow the viewer tables ([`WaveUi::contribute`]),
+//! pointer input over the graph panes turned into viewer [`Request`]s ([`WaveUi::route`]), and
+//! the graph properties dialog ([`PROPS_DIALOG`]). The same pane input drives an embedded graph
+//! (D23: one pane, no browser) given just that pane's rectangle.
 //!
 //! One frame of the window, in spine order (the caller owns the loop):
 //!
 //! ```text
 //! route_input(tables, layout, events)        -> commands          (buttons, keys, list rows)
 //! WaveUi::route(waves, geometry, events)     -> requests          (wheel, drags, box zoom)
-//! WaveUi::command(waves, command, …)         -> requests
+//! WaveUi::command(waves, command, …)         -> requests          (and the dialog to show)
 //! Waves::apply(request); WaveUi::note(…)     -> viewer tables, status text
 //! WaveUi::contribute(waves)                  -> ui contribution   (only when `note` says so)
 //! ```
 //!
-//! [`WaveUi`] holds only transient interaction state (drag, hover, selection, filter text); the
-//! viewer tables stay in [`Waves`], written by `wave` alone.
+//! [`WaveUi`] holds only transient interaction state (drag, hover, selection, filter text, the
+//! open dialog's fields); the viewer tables stay in [`Waves`], written by `wave` alone.
 
 use schemify_wave::calc::signal_expr;
-use schemify_wave::{Applied, Cursor, LineStyle, Request, TRACE_COLORS, ViewError, Waves};
+use schemify_wave::{
+    Applied, Axis, Cursor, LineStyle, PALETTE, PaneMode, PaneProps, Radix, Request, Scale,
+    TRACE_COLORS, ViewError, Waves, parse_num, write_num,
+};
 
 use crate::input::{Button, InputEvent, InputEvents, UiState};
 use crate::layout::{Rect, UiLayout};
@@ -25,14 +29,36 @@ use crate::strings::{Strings, Sym};
 use crate::tables::{Contribution, Edit, Kind, Mods, Prop, StyleProp, UiTables};
 
 /// The window's static skeleton: toolbar, browser, pane column, trace panel, readout, status,
-/// theme and keys. Compose it as the base contribution, then [`WaveUi::contribute`] on top.
+/// the graph properties dialog, theme and keys. Compose it as the base contribution, then
+/// [`WaveUi::contribute`] on top.
 pub const WAVES_UI: &str = include_str!("../waves-ui.records");
+
+/// Node id of the graph properties dialog; show it when an [`Effect`] says [`DialogFx::Open`].
+pub const PROPS_DIALOG: &str = "waves.props";
 
 /// Height of one signal or trace row in logical pixels.
 pub const ROW_H: f32 = 18.0;
 
 /// Gap between two clicks of a double-click.
 pub const DOUBLE_CLICK_MS: u64 = 400;
+
+/// Pointer distance in logical pixels within which a press grabs a cursor line.
+const GRAB_PX: f32 = 6.0;
+
+/// Text fields of the properties dialog (`waves.props.f.<k>`), in order.
+const FIELDS: [&str; 11] = [
+    "threshold",
+    "bins",
+    "step",
+    "x min",
+    "x max",
+    "y min",
+    "y max",
+    "cursor a",
+    "cursor b",
+    "cursor A",
+    "cursor B",
+];
 
 /// Plot area of a pane: the pane minus room for y tick labels (left), the legend (top) and x
 /// tick labels (bottom). [`WaveUi::route`] and the renderer both use it, so a click lands where
@@ -52,7 +78,8 @@ pub fn plot_area(pane: Rect) -> Rect {
 pub enum Drag {
     /// Nothing held.
     None,
-    /// Left drag in a plot: pan x (shared) and this pane's y. Holds the last pointer position.
+    /// Left drag in a plot: pan this pane's x (the shared one when locked) and y. Holds the last
+    /// pointer position.
     Pan {
         /// Pane.
         pane: u8,
@@ -68,8 +95,20 @@ pub enum Drag {
         /// Last y.
         y: f32,
     },
-    /// Left drag that started within 6 px of a cursor line.
-    Cursor(Cursor),
+    /// Left drag that started within 6 px of a vertical cursor in a locked pane.
+    Cursor {
+        /// Pane the drag started in (its plot maps the pointer).
+        pane: u8,
+        /// Which cursor.
+        which: Cursor,
+    },
+    /// Left drag that started within 6 px of one of a pane's horizontal cursors.
+    HCursor {
+        /// Pane.
+        pane: u8,
+        /// Which cursor.
+        which: Cursor,
+    },
     /// Right drag: box zoom from the first corner to the current pointer.
     Box {
         /// Pane.
@@ -135,20 +174,47 @@ impl Geometry {
     }
 }
 
+/// What the caller must do with the properties dialog ([`PROPS_DIALOG`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DialogFx {
+    /// Leave it as it is.
+    #[default]
+    Keep,
+    /// Show it (modal); its fields are in the next contribution.
+    Open,
+    /// Close it.
+    Close,
+}
+
 /// What the caller must do after routing or a command.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Effect {
-    /// Paint again (drag overlay, hover).
+    /// Paint again (drag overlay, hover, tooltip).
     pub redraw: bool,
     /// Rebuild the contribution and relayout (rows changed).
     pub recompose: bool,
+    /// Show or close the properties dialog.
+    pub dialog: DialogFx,
 }
 
 impl Effect {
     fn or(&mut self, o: Effect) {
         self.redraw |= o.redraw;
         self.recompose |= o.recompose;
+        if o.dialog != DialogFx::Keep {
+            self.dialog = o.dialog;
+        }
     }
+}
+
+/// The properties dialog's working copy (spec waves §8): toggles edit `props` in place, text
+/// fields are parsed on OK and compared with the values shown when it opened.
+#[derive(Clone, Debug)]
+struct Dialog {
+    pane: u8,
+    props: PaneProps,
+    text: [String; FIELDS.len()],
+    shown: [Option<f64>; FIELDS.len()],
 }
 
 /// Transient state of one waveform window (or embedded graph).
@@ -170,6 +236,8 @@ pub struct WaveUi {
     last_click: Option<(u32, u64)>,
     last_down: Option<(f32, f32, u64)>,
     cursors_on: [bool; 2],
+    measure: bool,
+    dialog: Option<Dialog>,
 }
 
 impl Default for WaveUi {
@@ -191,6 +259,8 @@ impl Default for WaveUi {
             last_click: None,
             last_down: None,
             cursors_on: [false; 2],
+            measure: false,
+            dialog: None,
         }
     }
 }
@@ -221,6 +291,17 @@ impl WaveUi {
         self.dataset
     }
 
+    /// True while the measurement tooltip is on (xschem `m`): the renderer shows `y=`/`x=` at
+    /// [`WaveUi::pointer`].
+    pub fn measure(&self) -> bool {
+        self.measure
+    }
+
+    /// Last pointer position over the window, `None` after it left.
+    pub fn pointer(&self) -> Option<(f32, f32)> {
+        self.pointer
+    }
+
     /// Sets how many signal and trace rows fit, measured from a layout made with fewer rows
     /// (see [`WaveUi::rows_fit`]); returns true when that changes the contribution.
     pub fn set_capacity(&mut self, signal_rows: u16, trace_rows: u16) -> bool {
@@ -249,8 +330,9 @@ impl WaveUi {
     }
 
     /// The rows that follow the viewer tables: signal rows (filtered, scrolled), one graph node
-    /// per pane, trace rows, toggle states, field values and status. Interns every string it
-    /// emits into `strings` (bounded by datasets' variable names and user input).
+    /// per pane, trace rows, toggle states, field values, the open dialog's fields and status.
+    /// Interns every string it emits into `strings` (bounded by datasets' variable names and
+    /// user input).
     pub fn contribute(&self, waves: &Waves, strings: &mut Strings) -> Contribution {
         let mut e = Vec::with_capacity(256);
         let mut s = |t: &str| strings.intern(t);
@@ -278,9 +360,21 @@ impl WaveUi {
                 style(&mut e, c, StyleProp::Bg, bg);
             }
         }
-        for (k, &color) in TRACE_COLORS.iter().enumerate() {
+        // The trace colours always have a class; a picked colour outside them gets its own.
+        let mut extra: Vec<u32> = (0..waves.trace_count())
+            .map(|i| waves.color(i))
+            .filter(|c| !TRACE_COLORS.contains(c))
+            .collect();
+        extra.sort_unstable();
+        extra.dedup();
+        let classes = TRACE_COLORS
+            .iter()
+            .enumerate()
+            .map(|(k, &c)| (format!("wtrace{k}"), c))
+            .chain(extra.iter().map(|&c| (format!("wtrace-{c:08x}"), c)));
+        for (name, color) in classes {
             for (suffix, bg) in [("", 0x2020_20ff), ("-sel", 0x5a5a_5aff)] {
-                let c = s(&format!("wtrace{k}{suffix}"));
+                let c = s(&format!("{name}{suffix}"));
                 style(&mut e, c, StyleProp::Height, ROW_H as u32);
                 style(&mut e, c, StyleProp::Pad, 4);
                 style(&mut e, c, StyleProp::Font, 12);
@@ -360,16 +454,16 @@ impl WaveUi {
             ));
             set(&mut e, id, Prop::Label, label);
             set(&mut e, id, Prop::Command, trace_cmd);
-            let k = TRACE_COLORS
-                .iter()
-                .position(|&c| c == waves.color(i))
-                .unwrap_or(0);
             let sel = if self.selected_trace == Some(i as u8) {
                 "-sel"
             } else {
                 ""
             };
-            let class = s(&format!("wtrace{k}{sel}"));
+            let color = waves.color(i);
+            let class = match TRACE_COLORS.iter().position(|&c| c == color) {
+                Some(k) => s(&format!("wtrace{k}{sel}")),
+                None => s(&format!("wtrace-{color:08x}{sel}")),
+            };
             set(&mut e, id, Prop::Style, class);
         }
         if waves.trace_count() > shown {
@@ -381,10 +475,16 @@ impl WaveUi {
 
         // Toggle states, field values, status.
         let (on, off) = (s("1"), s("0"));
-        let pane = waves.panes().get(usize::from(self.active_pane));
+        let active = usize::from(self.active_pane);
+        let pane = waves.panes().get(active);
+        let log_x = if active < waves.panes().len() {
+            waves.x_of(active).log
+        } else {
+            waves.x().log
+        };
         let cur = waves.cursors();
         for (id, v) in [
-            ("waves.log_x", waves.x().log),
+            ("waves.log_x", log_x),
             ("waves.log_y", pane.is_some_and(|p| p.log)),
             ("waves.cursor_a", cur[0].is_some()),
             ("waves.cursor_b", cur[1].is_some()),
@@ -400,6 +500,39 @@ impl WaveUi {
             let (id, v) = (s(id), s(v));
             set(&mut e, id, prop, v);
         }
+
+        // The properties dialog's working copy.
+        if let Some(d) = &self.dialog {
+            let mode = match d.props.mode {
+                PaneMode::Analog => "analog",
+                PaneMode::Digital => "digital",
+                PaneMode::Histogram => "histogram",
+            };
+            let radix = match d.props.radix {
+                Radix::Hex => "hex",
+                Radix::Dec => "dec",
+            };
+            let title = format!("Graph properties: pane {}", d.pane + 1);
+            for (id, text) in [
+                ("waves.props.title", title),
+                ("waves.props.mode", format!("Mode: {mode}")),
+                ("waves.props.radix", format!("Radix: {radix}")),
+            ] {
+                let (id, v) = (s(id), s(&text));
+                set(&mut e, id, Prop::Label, v);
+            }
+            let id = s("waves.props.unlock");
+            set(
+                &mut e,
+                id,
+                Prop::Checked,
+                if d.props.locked { off } else { on },
+            );
+            for (k, text) in d.text.iter().enumerate() {
+                let (id, v) = (s(&format!("waves.props.f.{k}")), s(text));
+                set(&mut e, id, Prop::Value, v);
+            }
+        }
         assert!(
             e.len() <= Contribution::CAPACITY,
             "waves contribution too large"
@@ -407,8 +540,8 @@ impl WaveUi {
         Contribution { edits: e }
     }
 
-    /// Copies the focused field's text into the live state (the filter applies as typed).
-    /// Returns true when the filter changed, so the signal rows must be rebuilt.
+    /// Copies the focused field's text into the live state (the filter applies as typed, the
+    /// dialog's fields are kept for OK). Returns true when that changes the contribution.
     pub fn sync_fields(&mut self, state: &UiState, strings: &Strings) -> bool {
         let (Some(ed), focus) = (state.editor(), state.focus()) else {
             return false;
@@ -425,12 +558,20 @@ impl WaveUi {
             self.scroll = 0;
             return true;
         }
+        let field = field_index(strings.get(focus));
+        if let (Some(k), Some(d)) = (field, self.dialog.as_mut())
+            && d.text[k] != text
+        {
+            d.text[k] = text.to_owned();
+            return true;
+        }
         false
     }
 
     /// Routes one frame of pointer input over the panes (and the wheel over the signal list):
     /// wheel zooms x about the pointer (y with Shift or over the y-axis strip), left drag pans
-    /// or moves a cursor, right drag box-zooms, double-click autoscales. Appends to `out`.
+    /// or moves a cursor, right drag box-zooms, double-click (or a right click on a cursor)
+    /// opens the properties dialog. Appends to `out`.
     ///
     /// # Panics
     ///
@@ -449,7 +590,8 @@ impl WaveUi {
         );
         let mut fx = Effect::default();
         for &ev in &events.events {
-            fx.or(self.event(waves, geo, ev, now_ms, out));
+            let e = self.event(waves, geo, ev, now_ms, out);
+            fx.or(e);
         }
         fx
     }
@@ -465,8 +607,11 @@ impl WaveUi {
         let mut fx = Effect::default();
         // A gesture never outlives its pane (a pane removed mid-drag, a stale geometry).
         let held = match self.drag {
-            Drag::Pan { pane, .. } | Drag::PanY { pane, .. } | Drag::Box { pane, .. } => Some(pane),
-            Drag::Cursor(_) => Some(0),
+            Drag::Pan { pane, .. }
+            | Drag::PanY { pane, .. }
+            | Drag::Box { pane, .. }
+            | Drag::Cursor { pane, .. }
+            | Drag::HCursor { pane, .. } => Some(pane),
             Drag::None => None,
         };
         if held.is_some_and(|p| usize::from(p) >= geo.panes.len()) {
@@ -475,17 +620,23 @@ impl WaveUi {
         let plot = |k: u8| plot_area(geo.panes[usize::from(k)]);
         let x_scale = |k: u8| {
             let p = plot(k);
-            waves.x().scale(p.x, p.x + p.w)
+            waves.x_of(usize::from(k)).scale(p.x, p.x + p.w)
+        };
+        let y_scale = |k: u8| {
+            let p = plot(k);
+            waves.panes()[usize::from(k)].scale(p.y + p.h, p.y)
         };
         match ev {
             InputEvent::Mods { mods } => self.mods = mods,
             InputEvent::PointerMove { x, y } => {
                 self.pointer = Some((x, y));
+                fx.redraw |= self.measure;
                 match self.drag {
                     Drag::Pan { pane, x: x0, y: y0 } => {
                         let p = plot(pane);
                         if x != x0 {
                             out.push(Request::PanX {
+                                pane,
                                 by: f64::from((x0 - x) / p.w),
                             });
                         }
@@ -505,10 +656,19 @@ impl WaveUi {
                         });
                         self.drag = Drag::PanY { pane, y };
                     }
-                    Drag::Cursor(which) => {
-                        let p = plot(0);
-                        let at = x_scale(0).value(x.clamp(p.x, p.x + p.w));
+                    Drag::Cursor { pane, which } => {
+                        let p = plot(pane);
+                        let at = x_scale(pane).value(x.clamp(p.x, p.x + p.w));
                         out.push(Request::Cursor {
+                            which,
+                            at: Some(at),
+                        });
+                    }
+                    Drag::HCursor { pane, which } => {
+                        let p = plot(pane);
+                        let at = y_scale(pane).value(y.clamp(p.y, p.y + p.h));
+                        out.push(Request::HCursor {
+                            pane,
                             which,
                             at: Some(at),
                         });
@@ -528,7 +688,7 @@ impl WaveUi {
                             && k != self.active_pane
                         {
                             self.active_pane = k;
-                            fx.recompose = true; // the Log Y box shows the active pane
+                            fx.recompose = true; // the Log X/Y boxes show the active pane
                         }
                     }
                 }
@@ -543,6 +703,11 @@ impl WaveUi {
                 }
                 let p = plot(k);
                 let in_plot = p.contains(x, y);
+                let grabbed = if in_plot {
+                    grab(waves, k, &x_scale(k), &y_scale(k), x, y)
+                } else {
+                    None
+                };
                 match button {
                     Button::Left if in_plot => {
                         let double = self.last_down.is_some_and(|(px, py, t)| {
@@ -552,21 +717,16 @@ impl WaveUi {
                         });
                         self.last_down = Some((x, y, now_ms));
                         if double {
-                            out.push(Request::Autoscale);
                             self.last_down = None;
+                            fx.or(self.open_dialog(waves, k));
                             return fx;
                         }
-                        let sx = x_scale(k);
-                        let near = [Cursor::A, Cursor::B].into_iter().find(|&c| {
-                            waves.cursors()[c as usize]
-                                .is_some_and(|cx| (sx.px(cx) - x).abs() <= 6.0)
-                        });
-                        self.drag = match near {
-                            Some(c) => Drag::Cursor(c),
-                            None => Drag::Pan { pane: k, x, y },
-                        };
+                        self.drag = grabbed.unwrap_or(Drag::Pan { pane: k, x, y });
                     }
                     Button::Left if x < p.x => self.drag = Drag::PanY { pane: k, y },
+                    Button::Right if in_plot && grabbed.is_some() => {
+                        fx.or(self.open_dialog(waves, k));
+                    }
                     Button::Right if in_plot => {
                         self.drag = Drag::Box {
                             pane: k,
@@ -594,6 +754,7 @@ impl WaveUi {
                     let p = plot(pane);
                     if (x1 - x0).abs() >= 4.0 {
                         out.push(Request::BoxX {
+                            pane,
                             from: f64::from((x0.min(x1) - p.x) / p.w),
                             to: f64::from((x0.max(x1) - p.x) / p.w),
                         });
@@ -623,6 +784,7 @@ impl WaveUi {
                         });
                     } else {
                         out.push(Request::ZoomX {
+                            pane: k,
                             at: f64::from((x - p.x) / p.w),
                             factor,
                         });
@@ -636,15 +798,140 @@ impl WaveUi {
                     self.scroll = to;
                 }
             }
-            InputEvent::PointerLeave => self.pointer = None,
+            InputEvent::PointerLeave => {
+                fx.redraw |= self.measure && self.pointer.is_some();
+                self.pointer = None;
+            }
             _ => {}
         }
         fx
     }
 
-    /// Runs one command from the waves window (buttons, keys, list rows). `node` is the issuing
-    /// node's id (`waves.sig.12`, `waves.trace.3`), `arg` a submitted field's text, `now_ms` a
-    /// monotonic clock for double-clicks. Unknown names do nothing (and ask for no redraw).
+    /// The pane under the pointer with the pointer's fractions of its plot (x from the left, y
+    /// from the bottom), clamped to `[0, 1]`.
+    fn pointer_at(&self, geo: &Geometry) -> Option<(u8, f64, f64)> {
+        let (x, y) = self.pointer?;
+        let k = geo.pane_at(x, y)?;
+        let p = plot_area(geo.panes[usize::from(k)]);
+        let fx = f64::from((x - p.x) / p.w).clamp(0.0, 1.0);
+        let fy = f64::from((p.y + p.h - y) / p.h).clamp(0.0, 1.0);
+        Some((k, fx, fy))
+    }
+
+    /// Opens the properties dialog on pane `pane` with the values the viewer shows now.
+    fn open_dialog(&mut self, waves: &Waves, pane: u8) -> Effect {
+        let p = usize::from(pane);
+        let props = waves.props(p);
+        let (xa, ya) = (waves.x_of(p), waves.panes()[p]);
+        let [a, b] = waves.cursors();
+        let [ha, hb] = waves.hcursors(p);
+        let shown = [
+            Some(props.threshold),
+            Some(f64::from(props.bins)),
+            props.step.map(f64::from),
+            Some(xa.lo),
+            Some(xa.hi),
+            Some(ya.lo),
+            Some(ya.hi),
+            a,
+            b,
+            ha,
+            hb,
+        ];
+        let mut text: [String; FIELDS.len()] = Default::default();
+        for (t, v) in text.iter_mut().zip(shown) {
+            if let Some(v) = v {
+                write_num(t, v);
+            }
+        }
+        self.dialog = Some(Dialog {
+            pane,
+            props,
+            text,
+            shown,
+        });
+        // The dialog is modal: the gesture that opened it ends here.
+        self.drag = Drag::None;
+        Effect {
+            redraw: true,
+            recompose: true,
+            dialog: DialogFx::Open,
+        }
+    }
+
+    /// The requests the open dialog's OK applies (spec waves §8): the pane's properties, then
+    /// each range or cursor whose field now reads a different value than it showed. `Err`
+    /// names the first field that does not parse or a range that is not valid.
+    fn dialog_requests(&self, waves: &Waves, d: &Dialog) -> Result<Vec<Request>, String> {
+        let mut v = [None; FIELDS.len()];
+        for (k, t) in d.text.iter().enumerate() {
+            let t = t.trim();
+            if !t.is_empty() {
+                let n = parse_num(t).map_err(|_| format!("{}: not a number: {t}", FIELDS[k]))?;
+                v[k] = Some(n);
+            }
+        }
+        let whole = |k: usize, max: f64| match v[k] {
+            Some(n) if n.fract() == 0.0 && (0.0..=max).contains(&n) => Ok(Some(n)),
+            None => Ok(None),
+            Some(_) => Err(format!("{}: a whole number up to {max}", FIELDS[k])),
+        };
+        let threshold = v[0].ok_or("threshold: a number")?;
+        let bins = whole(1, f64::from(schemify_wave::MAX_BINS))?.ok_or("bins: a number")? as u16;
+        let step = whole(2, f64::from(u32::MAX))?.map(|n| n as u32);
+        let props = PaneProps {
+            threshold,
+            bins,
+            step,
+            ..d.props
+        };
+        if !props.valid() {
+            return Err(format!(
+                "bins: 2 to {} (threshold: finite)",
+                schemify_wave::MAX_BINS
+            ));
+        }
+        let pane = d.pane;
+        let p = usize::from(pane);
+        let mut out = vec![Request::SetPane { pane, props }];
+        for (k, log, what) in [(3, waves.x_of(p).log, "x"), (5, waves.panes()[p].log, "y")] {
+            if (v[k], v[k + 1]) == (d.shown[k], d.shown[k + 1]) {
+                continue;
+            }
+            let (Some(lo), Some(hi)) = (v[k], v[k + 1]) else {
+                return Err(format!("{what} min/max: two numbers"));
+            };
+            if !(Axis { lo, hi, log }).valid() {
+                return Err(format!("{what} range: invalid ({lo} .. {hi})"));
+            }
+            out.push(if k == 3 {
+                Request::SetX { pane, lo, hi }
+            } else {
+                Request::SetY { pane, lo, hi }
+            });
+        }
+        for (k, which) in [(7, Cursor::A), (8, Cursor::B)] {
+            if v[k] != d.shown[k] {
+                out.push(Request::Cursor { which, at: v[k] });
+            }
+        }
+        for (k, which) in [(9, Cursor::A), (10, Cursor::B)] {
+            if v[k] != d.shown[k] {
+                out.push(Request::HCursor {
+                    pane,
+                    which,
+                    at: v[k],
+                });
+            }
+        }
+        debug_assert!(matches!(out[0], Request::SetPane { .. }));
+        Ok(out)
+    }
+
+    /// Runs one command from the waves window (buttons, keys, list rows, the dialog). `node` is
+    /// the issuing node's id (`waves.sig.12`, `waves.trace.3`, `waves.props.f.4`), `arg` a
+    /// submitted field's text, `now_ms` a monotonic clock for double-clicks. Unknown names do
+    /// nothing (and ask for no redraw).
     #[allow(clippy::too_many_arguments)]
     pub fn command(
         &mut self,
@@ -658,16 +945,11 @@ impl WaveUi {
     ) -> Effect {
         let mut fx = Effect {
             redraw: true,
-            recompose: false,
+            ..Effect::default()
         };
-        let pane = self.active_pane;
+        let active = self.active_pane;
         let trace = self.selected_trace;
-        let pointer_frac = || {
-            let (x, y) = self.pointer?;
-            let k = geo.pane_at(x, y)?;
-            let p = plot_area(geo.panes[usize::from(k)]);
-            Some(f64::from((x - p.x) / p.w).clamp(0.0, 1.0))
-        };
+        let at_pointer = self.pointer_at(geo);
         match name {
             "waves.plot" | "waves.plot_button" => {
                 if name == "waves.plot" {
@@ -678,7 +960,7 @@ impl WaveUi {
                     out.push(Request::AddTrace {
                         src: src.to_owned(),
                         dataset: self.dataset,
-                        pane,
+                        pane: active,
                     });
                 }
             }
@@ -738,12 +1020,18 @@ impl WaveUi {
                 }
             }
             "waves.add_pane" => out.push(Request::AddPane),
-            "waves.remove_pane" => out.push(Request::RemovePane { pane }),
+            "waves.remove_pane" => out.push(Request::RemovePane { pane: active }),
             "waves.autoscale" => out.push(Request::Autoscale),
-            "waves.log_x" => out.push(Request::LogX { on: !waves.x().log }),
+            "waves.log_x" => {
+                let on = !waves.x_of(usize::from(active)).log;
+                out.push(Request::LogX { pane: active, on });
+            }
             "waves.log_y" => {
-                let on = waves.panes().get(usize::from(pane)).is_some_and(|p| !p.log);
-                out.push(Request::LogY { pane, on });
+                let on = waves
+                    .panes()
+                    .get(usize::from(active))
+                    .is_some_and(|p| !p.log);
+                out.push(Request::LogY { pane: active, on });
             }
             "waves.cursor_a" | "waves.cursor_b" => {
                 let which = if name == "waves.cursor_a" {
@@ -754,31 +1042,92 @@ impl WaveUi {
                 let at = match waves.cursors()[which as usize] {
                     Some(_) => None,
                     None => {
-                        let f = pointer_frac().unwrap_or(if which == Cursor::A {
-                            1.0 / 3.0
-                        } else {
-                            2.0 / 3.0
-                        });
+                        // At the pointer when it is over a pane showing the shared x.
+                        let f = at_pointer
+                            .filter(|&(k, ..)| !waves.props(usize::from(k)).own_x())
+                            .map_or(
+                                if which == Cursor::A {
+                                    1.0 / 3.0
+                                } else {
+                                    2.0 / 3.0
+                                },
+                                |(_, f, _)| f,
+                            );
                         Some(waves.x().at(f))
                     }
                 };
                 out.push(Request::Cursor { which, at });
             }
+            "waves.hcursor_a" | "waves.hcursor_b" => {
+                let which = if name == "waves.hcursor_a" {
+                    Cursor::A
+                } else {
+                    Cursor::B
+                };
+                let (pane, fy) = match at_pointer {
+                    Some((k, _, fy)) => (k, Some(fy)),
+                    None => (active, None),
+                };
+                let p = usize::from(pane);
+                if p < waves.panes().len() {
+                    let at = match waves.hcursors(p)[which as usize] {
+                        Some(_) => None,
+                        None => {
+                            let dflt = if which == Cursor::A {
+                                1.0 / 3.0
+                            } else {
+                                2.0 / 3.0
+                            };
+                            Some(waves.panes()[p].at(fy.unwrap_or(dflt)))
+                        }
+                    };
+                    out.push(Request::HCursor { pane, which, at });
+                }
+            }
             "waves.swap_cursors" => out.push(Request::SwapCursors),
+            "waves.measure" => {
+                self.measure = !self.measure;
+                self.status = if self.measure {
+                    "measure: on (y= x= at the pointer)".into()
+                } else {
+                    "measure: off".into()
+                };
+                fx.recompose = true;
+            }
+            "waves.track" => {
+                fx.recompose = true;
+                let Some((k, f, fy)) = at_pointer else {
+                    self.status = "track: point at a pane".into();
+                    return fx;
+                };
+                let p = usize::from(k);
+                let mut props = waves.props(p);
+                if props.step.is_some() {
+                    props.step = None;
+                    self.status = "tracking off: every step".into();
+                } else {
+                    let (x, y) = (waves.x_of(p).at(f), waves.panes()[p].at(fy));
+                    let Some(s) = waves.closest_step(k, x, y) else {
+                        self.status = "track: no step under the pointer".into();
+                        return fx;
+                    };
+                    props.step = Some(s);
+                    self.status = format!("tracking step {s}");
+                }
+                out.push(Request::SetPane { pane: k, props });
+            }
             "waves.pan_left" | "waves.pan_right" => {
                 let by = if name == "waves.pan_left" {
                     -0.05
                 } else {
                     0.05
                 };
-                out.push(Request::PanX { by });
+                out.push(Request::PanX { pane: active, by });
             }
             "waves.zoom_in" | "waves.zoom_out" => {
                 let factor = if name == "waves.zoom_in" { 0.8 } else { 1.25 };
-                out.push(Request::ZoomX {
-                    at: pointer_frac().unwrap_or(0.5),
-                    factor,
-                });
+                let (pane, at) = at_pointer.map_or((active, 0.5), |(k, f, _)| (k, f));
+                out.push(Request::ZoomX { pane, at, factor });
             }
             "waves.dataset_prev" | "waves.dataset_next" => {
                 let n = waves.datasets().len().max(1) as u8;
@@ -790,6 +1139,76 @@ impl WaveUi {
                 self.scroll = 0;
                 self.selected_signal = None;
                 fx.recompose = true;
+            }
+            "waves.props" => {
+                let p = active.min(waves.panes().len().saturating_sub(1) as u8);
+                fx.or(self.open_dialog(waves, p));
+            }
+            "waves.props.mode" | "waves.props.radix" | "waves.props.unlock" => {
+                if let Some(d) = self.dialog.as_mut() {
+                    let p = &mut d.props;
+                    match name {
+                        "waves.props.mode" => {
+                            p.mode = match p.mode {
+                                PaneMode::Analog => PaneMode::Digital,
+                                PaneMode::Digital => PaneMode::Histogram,
+                                PaneMode::Histogram => PaneMode::Analog,
+                            }
+                        }
+                        "waves.props.radix" => {
+                            p.radix = match p.radix {
+                                Radix::Hex => Radix::Dec,
+                                Radix::Dec => Radix::Hex,
+                            }
+                        }
+                        _ => p.locked = !p.locked,
+                    }
+                    fx.recompose = true;
+                }
+            }
+            "waves.props.swatch" => {
+                let k = node
+                    .strip_prefix("waves.props.swatch.")
+                    .and_then(|k| k.parse::<usize>().ok())
+                    .filter(|&k| k < PALETTE.len());
+                match (k, trace.filter(|&t| usize::from(t) < waves.trace_count())) {
+                    (Some(k), Some(t)) => out.push(Request::SetColor {
+                        trace: t,
+                        color: PALETTE[k],
+                    }),
+                    _ => {
+                        self.status = "colour: select a trace first".into();
+                        fx.recompose = true;
+                    }
+                }
+            }
+            "waves.props.ok" => {
+                let Some(mut d) = self.dialog.take() else {
+                    return fx;
+                };
+                // Enter in a field submits it with its text (the editor may be gone already).
+                if let Some(k) = field_index(node) {
+                    d.text[k] = arg.to_owned();
+                }
+                fx.recompose = true;
+                if usize::from(d.pane) >= waves.panes().len() {
+                    fx.dialog = DialogFx::Close;
+                    return fx;
+                }
+                match self.dialog_requests(waves, &d) {
+                    Ok(reqs) => {
+                        out.extend(reqs);
+                        fx.dialog = DialogFx::Close;
+                    }
+                    Err(why) => {
+                        self.status = why;
+                        self.dialog = Some(d);
+                    }
+                }
+            }
+            "waves.props.cancel" => {
+                self.dialog = None;
+                fx.dialog = DialogFx::Close;
             }
             _ => fx.redraw = false,
         }
@@ -824,7 +1243,7 @@ impl WaveUi {
     ) -> Effect {
         let mut fx = Effect {
             redraw: true,
-            recompose: false,
+            ..Effect::default()
         };
         match res {
             Err(e) => {
@@ -866,6 +1285,8 @@ impl WaveUi {
                     | Request::RemoveTrace { .. }
                     | Request::MoveTrace { .. }
                     | Request::SetStyle { .. }
+                    | Request::SetColor { .. }
+                    | Request::SetPane { .. }
                     | Request::AddPane
                     | Request::RemovePane { .. }
                     | Request::LogX { .. }
@@ -875,4 +1296,36 @@ impl WaveUi {
         debug_assert!(usize::from(self.active_pane) < waves.panes().len());
         fx
     }
+}
+
+/// The cursor line within [`GRAB_PX`] of a press at `(x, y)` in pane `k`'s plot (scales `sx`,
+/// `sy`), as the drag that moves it: a vertical cursor (locked panes only: they show the shared
+/// x), else a horizontal one (analog and histogram panes).
+fn grab(waves: &Waves, k: u8, sx: &Scale, sy: &Scale, x: f32, y: f32) -> Option<Drag> {
+    let p = usize::from(k);
+    let props = waves.props(p);
+    let near =
+        |c: Option<f64>, at: f32, s: &Scale| c.is_some_and(|v| (s.px(v) - at).abs() <= GRAB_PX);
+    if !props.own_x()
+        && let Some(which) = [Cursor::A, Cursor::B]
+            .into_iter()
+            .find(|&c| near(waves.cursors()[c as usize], x, sx))
+    {
+        return Some(Drag::Cursor { pane: k, which });
+    }
+    if props.mode == PaneMode::Digital {
+        return None;
+    }
+    let hc = waves.hcursors(p);
+    [Cursor::A, Cursor::B]
+        .into_iter()
+        .find(|&c| near(hc[c as usize], y, sy))
+        .map(|which| Drag::HCursor { pane: k, which })
+}
+
+/// The dialog field `node` names (`waves.props.f.<k>`), if any.
+fn field_index(node: &str) -> Option<usize> {
+    node.strip_prefix("waves.props.f.")
+        .and_then(|k| k.parse::<usize>().ok())
+        .filter(|&k| k < FIELDS.len())
 }

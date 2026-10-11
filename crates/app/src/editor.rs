@@ -2427,11 +2427,26 @@ impl Editor {
             .find(|c| p.resolve(h, c).ok() == Some(row))
     }
 
+    /// Opens the waves dock on `path`, or points an open dock at it keeping its traces and panes
+    /// (spec waves §9).
     fn open_waves(&mut self, path: PathBuf) {
         self.close_dialog();
-        match platform::read(&path).and_then(|b| WavesView::open(&path.display().to_string(), &b)) {
-            Ok(w) => self.waves = Some(w),
-            Err(e) => self.session.status = e,
+        let title = path.display().to_string();
+        let bytes = match platform::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.session.status = e;
+                return;
+            }
+        };
+        match self.waves.as_mut() {
+            Some(w) => match w.reload(&title, &bytes) {
+                Ok(s) | Err(s) => self.session.status = s,
+            },
+            None => match WavesView::open(&title, &bytes) {
+                Ok(w) => self.waves = Some(w),
+                Err(e) => self.session.status = e,
+            },
         }
     }
 

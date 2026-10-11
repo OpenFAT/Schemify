@@ -153,6 +153,7 @@ fn waves_pane_three_1m_point_traces() {
         w.apply(&r).unwrap();
     }
     w.apply(&Request::ZoomX {
+        pane: 0,
         at: 0.5,
         factor: 0.9,
     })
@@ -174,7 +175,7 @@ fn waves_pane_three_1m_point_traces() {
         } else {
             -1.0 / 1442.0
         };
-        w.apply(&Request::PanX { by }).unwrap();
+        w.apply(&Request::PanX { pane: 0, by }).unwrap();
         let t0 = Instant::now();
         scene.reset();
         let mut p = ScenePainter {

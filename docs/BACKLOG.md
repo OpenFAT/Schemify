@@ -114,12 +114,12 @@ for it; the goal set for this work was ≤ 1 ms).
 
 - **elab**: `E002` doesn't yet compare a SPICE `body`'s `.subckt` ports with the symbol pins; `global true` names are gathered from every reachable schematic, including unselected impls; `net_<id>` may collide with a user label of the same spelling; `CellState` doesn't observe edits to other documents.
 - **ui**: status text that changes every frame grows the string table; IME candidate window not positioned.
-- **wave**: per-sweep-step readouts; FFT traces share the time-domain x axis.
 - **import (readers)**: cdfDump untested against a real dump: producing one needs Cadence Virtuoso (`cdfDump` is a SKILL function), which no CI or this machine has; the reader follows the documented format only.
 
 ## Parity gaps vs xschem (UI)
 
 - **ui/render**: toolbar icons (text labels now), menu keyboard navigation, tear-off menus, split dragging, dropdown popups. (Context menus are positioned dialogs, `UiState::set_dialog_at`; chooser lists scroll.)
+- **waves** (spec waves): live annotation of the schematic at cursor b (`live_cursor2_backannotate`, `cursor_2_hook`); per-graph cursors (`private_cursor`: the vertical cursors are shared and drawn only in locked panes); the x-axis scrollbar strip (B1 drag below the plot); an alternate sweep variable per trace (`sweep`); rainbow colouring of steps; per-graph raw files; the dialog's signal list and node text (traces are added from the browser instead). Digital lanes share the plot height (no `ypos1`/`ypos2` scroll), are drawn sample-and-hold (no interpolated threshold crossing) and skip a non-ascending step; histograms count samples without weighting them by their x spacing.
 
 ## Parity: intentionally dropped
 
@@ -152,7 +152,6 @@ xschem menu items and keys with no meaning in Schemify, removed from the default
 - Simulation → LVS (LVS netlist, upper-case SUBCKT, top level is a subckt, lvs_ignore, spiceprefix): LVS netlists are the `cdl` dialect (D22).
 - Simulation → Graphs → Hide graphs if no spice data loaded, Live annotate probes with 'b' cursor: docs plot slots show their state; cursor-time annotation is a waves-dock gap (see "Parity gaps vs xschem (UI)" waves).
 - Keys `0`–`4`: xschem's built-in logic simulator (net logic values); simulation goes through runners (D15).
-- **waves**: horizontal cursors, dataset tracking, measurement tooltip, digital/bus mode, histogram, graph properties dialog, per-graph x locking, typed cursor positions, colour picker.
 
 ## Testing infrastructure
 

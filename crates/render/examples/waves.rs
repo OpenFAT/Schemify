@@ -10,16 +10,17 @@
 //! cursors A and B at 30% and 70% of the view; `--logx` sets a log x axis.
 //!
 //! Mouse: wheel zooms x (Shift or over the y labels: y), left drag pans (or moves a cursor),
-//! right drag box-zooms, double-click autoscales, double-click a signal to plot it. Keys: `a`/`b`
-//! cursors at the pointer, `s` swap, `f` full view, Del delete the selected trace, arrows pan and
-//! zoom. `SCHEMIFY_FPS=1` prints scene-build times.
+//! right drag box-zooms, double-click opens the graph properties dialog, double-click a signal
+//! to plot it. Keys: `a`/`b` cursors at the pointer (`Shift+A`/`Shift+B` horizontal ones), `s`
+//! swap, `f` full view, `m` measurement tooltip, `t` track the step under the pointer, Del
+//! delete the selected trace, arrows pan and zoom. `SCHEMIFY_FPS=1` prints scene-build times.
 
 use std::time::Instant;
 
 use schemify_render::waves::{WaveLook, WaveScratch, draw_pane, draw_window};
 use schemify_render::widgets::{UiScratch, draw_ui};
 use schemify_render::{App, Painter, run};
-use schemify_ui::waves::{Geometry, WAVES_UI, WaveUi};
+use schemify_ui::waves::{DialogFx, Effect, Geometry, PROPS_DIALOG, WAVES_UI, WaveUi};
 use schemify_ui::{
     Contribution, InputEvents, Layer, Rect, Routed, Strings, Sym, TextSystem, UiLayout, UiState,
     UiTables, access, compose, layout, records, route_input,
@@ -120,6 +121,18 @@ impl Viewer {
         }
     }
 
+    /// Shows or closes the graph properties dialog as the window's effect asks.
+    fn show_dialog(&mut self, fx: DialogFx) {
+        match fx {
+            DialogFx::Keep => {}
+            DialogFx::Open => {
+                let id = self.strings.intern(PROPS_DIALOG);
+                self.state.set_dialog(id);
+            }
+            DialogFx::Close => self.state.set_dialog(Sym::NONE),
+        }
+    }
+
     fn apply(&mut self) -> bool {
         let mut recompose = false;
         for r in std::mem::take(&mut self.requests) {
@@ -166,13 +179,21 @@ impl App for Viewer {
                 );
                 changed |= fx.redraw;
                 recompose |= fx.recompose;
+                self.show_dialog(fx.dialog);
             }
         }
-        let fx = self
-            .ui
-            .route(&self.waves, &self.geo, events, now, &mut self.requests);
+        // A modal dialog takes the pointer: the panes under it do not pan or zoom.
+        let fx = if self.state.dialog().is_none() {
+            self.ui
+                .route(&self.waves, &self.geo, events, now, &mut self.requests)
+        } else {
+            Effect::default()
+        };
         changed |= fx.redraw || !self.requests.is_empty();
         recompose |= fx.recompose | self.apply();
+        if !self.embed {
+            self.show_dialog(fx.dialog);
+        }
         if recompose || routed.relayout {
             self.rebuild();
         }
@@ -286,7 +307,7 @@ fn main() {
                 cursors = true;
                 continue;
             }
-            "--logx" => Request::LogX { on: true },
+            "--logx" => Request::LogX { pane: 0, on: true },
             "--pane" => {
                 pane += 1;
                 Request::AddPane

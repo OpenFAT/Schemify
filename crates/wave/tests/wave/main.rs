@@ -4,8 +4,10 @@
 //! the simulators when they are installed.
 
 mod calc;
+mod digital;
 mod fuzz;
 mod oracle;
+mod panes;
 mod view;
 
 use schemify_wave::{RawPlot, parse_raw};

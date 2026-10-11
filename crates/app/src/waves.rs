@@ -15,12 +15,12 @@ use schemify_render::vello::kurbo::{Affine, BezPath, Rect as KRect};
 use schemify_render::vello::peniko::{Color, FontData};
 use schemify_render::waves::{WaveLook, WaveScratch, draw_window};
 use schemify_render::widgets::{UiScratch, draw_ui};
-use schemify_ui::waves::{Geometry, WAVES_UI, WaveUi};
+use schemify_ui::waves::{DialogFx, Effect, Geometry, PROPS_DIALOG, WAVES_UI, WaveUi};
 use schemify_ui::{
     Chord, Contribution, InputEvent, InputEvents, Key, Layer, Mods, Routed, Strings, Sym,
     TextSystem, UiLayout, UiState, UiTables, compose, layout, records, route_input,
 };
-use schemify_wave::{Request, Waves, group_datasets, parse_raw};
+use schemify_wave::{MAX_DATASETS, Request, Waves, group_datasets, parse_raw};
 
 /// One open waveform window.
 pub struct WavesView {
@@ -58,10 +58,9 @@ impl WavesView {
     ///
     /// # Errors
     ///
-    /// The reader's error text.
+    /// The reader's error text, or more than `wave::MAX_DATASETS` datasets.
     pub fn open(title: &str, bytes: &[u8]) -> Result<WavesView, String> {
-        let plots = parse_raw(bytes).map_err(|e| format!("{title}: {e}"))?;
-        let waves = Waves::new(group_datasets(plots));
+        let waves = Waves::new(datasets(title, bytes)?);
         let mut strings = Strings::new();
         let (base, rejects) = records::parse(WAVES_UI, &mut strings);
         assert!(rejects.is_empty(), "waves UI rejects: {rejects:?}");
@@ -163,12 +162,18 @@ impl WavesView {
             );
             changed |= fx.redraw;
             recompose |= fx.recompose;
+            self.show_dialog(fx.dialog);
         }
-        let fx = self
-            .ui
-            .route(&self.waves, &self.geo, events, now, &mut self.requests);
+        // A modal dialog takes the pointer: the panes under it do not pan or zoom.
+        let fx = if self.state.dialog().is_none() {
+            self.ui
+                .route(&self.waves, &self.geo, events, now, &mut self.requests)
+        } else {
+            Effect::default()
+        };
         changed |= fx.redraw || !self.requests.is_empty();
         recompose |= fx.recompose;
+        self.show_dialog(fx.dialog);
         for r in std::mem::take(&mut self.requests) {
             let res = self.waves.apply(&r);
             recompose |= self.ui.note(&self.waves, &r, &res).recompose;
@@ -179,6 +184,38 @@ impl WavesView {
         changed |= routed.redraw || recompose;
         self.routed = routed;
         (changed, false)
+    }
+
+    /// Shows or closes the graph properties dialog as a `ui::waves` effect asks.
+    fn show_dialog(&mut self, fx: DialogFx) {
+        match fx {
+            DialogFx::Keep => {}
+            DialogFx::Open => {
+                let id = self.strings.intern(PROPS_DIALOG);
+                self.state.set_dialog(id);
+            }
+            DialogFx::Close => self.state.set_dialog(Sym::NONE),
+        }
+    }
+
+    /// Points the viewer at new data (spec waves §9): `bytes` is parsed and every trace is
+    /// re-evaluated over it; panes, ranges and cursors stay. Returns the status-line text,
+    /// naming the traces that no longer evaluate (they are removed).
+    ///
+    /// # Errors
+    ///
+    /// The reader's error text; the viewer is unchanged then.
+    pub fn reload(&mut self, title: &str, bytes: &[u8]) -> Result<String, String> {
+        let dropped = self.waves.reload(datasets(title, bytes)?);
+        self.title = title.to_owned();
+        if self.viewport.0 > 0.0 {
+            self.rebuild();
+        }
+        Ok(if dropped.is_empty() {
+            format!("waves: reloaded {title}")
+        } else {
+            format!("waves: reloaded {title}; dropped {}", dropped.join("; "))
+        })
     }
 
     /// Adds a trace for calculator expression `src` (cross-probe: `v(net)`, `i(dev)`) to the
@@ -256,6 +293,20 @@ impl WavesView {
             &mut self.ui_scratch,
         );
     }
+}
+
+/// The datasets of a `.raw` file (ngspice/Xyce/LTspice, binary or ASCII), `.step` blocks
+/// grouped; errors name `title`.
+fn datasets(title: &str, bytes: &[u8]) -> Result<Vec<schemify_wave::RawPlot>, String> {
+    let plots = parse_raw(bytes).map_err(|e| format!("{title}: {e}"))?;
+    let d = group_datasets(plots);
+    if d.len() > MAX_DATASETS {
+        return Err(format!(
+            "{title}: {} datasets (at most {MAX_DATASETS})",
+            d.len()
+        ));
+    }
+    Ok(d)
 }
 
 /// A painter that draws `dy` logical pixels lower: the waves dock lays out at its own origin

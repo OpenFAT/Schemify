@@ -332,7 +332,12 @@ fn waves_cursors_with_readout() {
         at: Some(4.0e-6),
     })
     .unwrap();
-    w.apply(&Request::BoxX { from: 0.0, to: 0.5 }).unwrap();
+    w.apply(&Request::BoxX {
+        pane: 0,
+        from: 0.0,
+        to: 0.5,
+    })
+    .unwrap();
     check(
         "waves_cursors",
         paint_waves(&w, &mut WaveUi::default(), 1100, 640),
@@ -343,7 +348,7 @@ fn waves_cursors_with_readout() {
 fn waves_embedded_log_x_ac_magnitude() {
     let mut w = raw("rlc_ac.bin.raw");
     plot(&mut w, 0, &["db(v(out))", "db(v(mid))"]);
-    w.apply(&Request::LogX { on: true }).unwrap();
+    w.apply(&Request::LogX { pane: 0, on: true }).unwrap();
     let (cw, ch) = (640u16, 360u16);
     let area = schemify_ui::Rect {
         x: 0.0,

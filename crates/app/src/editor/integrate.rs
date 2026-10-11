@@ -530,6 +530,20 @@ impl Editor {
         }
     }
 
+    /// A run finished: an open waves dock re-reads the selected job's raw file, keeping its
+    /// traces and panes (spec waves §9). Nothing happens when the dock is closed.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn refresh_job_waves(&mut self) {
+        let (Some(w), Some(path)) = (self.waves.as_mut(), self.sim.job_raw(self.sim.selected))
+        else {
+            return;
+        };
+        let title = path.display().to_string();
+        match platform::read(&path).and_then(|b| w.reload(&title, &b)) {
+            Ok(s) | Err(s) => self.session.status = s,
+        }
+    }
+
     /// `Alt+G`: adds `v(<net>)` to the waves dock for every highlighted net (keys the name map
     /// resolved; level paths are skipped), opening the dock on the selected job when closed.
     pub(super) fn send_to_viewer(&mut self) {
@@ -688,6 +702,9 @@ impl Editor {
             self.session.status = self.sim.status.clone();
             self.op_job = None;
             self.sim.plots.clear();
+        }
+        if polled.done {
+            self.refresh_job_waves();
         }
         if let Some(best) = polled.best {
             self.stage_best(reqs, best);
