@@ -35,7 +35,8 @@ pub enum Drop {
     Layer,
     /// An embedded symbol (`[ … ]`): the library symbol of the same name is used.
     Embedded,
-    /// Netlist text in a component schematic, carried by its `<cell>__top` bench copy.
+    /// `only_toplevel=true` content of a component schematic (xschem netlists it only
+    /// when the schematic is the top), carried by its `<cell>__top` bench copy.
     BenchCopy,
     /// A netlist text instance with `spice_ignore=true`: xschem does not netlist it.
     SpiceIgnore,

@@ -10,7 +10,9 @@
 //!
 //! `elab::elaborate` → gate on `violations` (the caller's) → [`emit`]: plan the
 //! templates → header → globals → bench params → corner lines → top block → code
-//! blocks → definitions by name → once-only text → end.
+//! blocks → definitions by name → once-only text → end. A block is its instance lines
+//! sorted by emitted name, then its cell's own `code` lines (a component's netlist
+//! text, D17 as amended).
 //!
 //! ```
 //! use schemify_doc::Project;
@@ -88,6 +90,7 @@ const NONE: u32 = u32::MAX;
 /// lengths), i.e. it was not produced by `schemify_elab::elaborate`.
 pub fn emit(elab: &Elab, dialect: Dialect) -> Netlist {
     assert_eq!(elab.defs.inst_start.len(), elab.defs.cell.len() + 1);
+    assert_eq!(elab.defs.code_start.len(), elab.defs.cell.len() + 1);
     assert_eq!(elab.insts.conn_start.len(), elab.insts.name.len() + 1);
     let plans = Plans::new(elab, dialect);
     let order = defs_by_name(elab);
@@ -117,6 +120,8 @@ pub fn emit(elab: &Elab, dialect: Dialect) -> Netlist {
 /// Emits `elab` with the hierarchy flattened into top-level lines: leaf `name`s become
 /// `<local>__<instance path, `__`-joined>` and internal nets `<path>.<net>`. Test oracle
 /// only (hierarchical vs flattened emission must be equivalent); SPICE dialects only.
+/// A component's own `code` lines are left out: their text names nets and devices in
+/// the scope of its subckt, which flattening cannot rewrite.
 ///
 /// # Panics
 ///
@@ -607,7 +612,7 @@ impl<'e> Writer<'e> {
             def_map[d as usize] = k as u32 + 1;
             rows += e.insts_of(d).len();
         }
-        let body_lines = e.impls.body.len() + e.bench.code_lines.len();
+        let body_lines = e.impls.body.len() + e.bench.code_lines.len() + e.defs.code.len();
         let respell = xspice_spellings(e, plans, d);
         let mut map = name_map::Builder::new(e, d, order.len() + usize::from(e.top != NONE), rows);
         map.respell = respell.clone();
@@ -641,6 +646,13 @@ impl<'e> Writer<'e> {
         }
         self.map.def(e, d, &self.def_map);
         self.rows(d);
+        // D17 as amended (spec §7.6.15): the cell's netlist text, in every definition.
+        let code =
+            e.defs.code_start[d as usize] as usize..e.defs.code_start[d as usize + 1] as usize;
+        for &line in &e.defs.code[code] {
+            self.out.push_str(e.names.get(line));
+            self.out.push('\n');
+        }
         if wrap {
             match dialect {
                 Dialect::Ngspice | Dialect::Xyce => self.out.push_str(".ends "),

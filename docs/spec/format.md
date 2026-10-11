@@ -7,7 +7,7 @@ Implements D9, D10, D11, D13, D17, D19, D20, D29, D30, D33, D35, D40. Rationale 
 | File | Header kind | Purpose |
 |---|---|---|
 | `<cell>.shprim` | `shprim` | symbol + ≥1 leaf impl (device binding, Verilog-A, Verilog, SPICE text) |
-| `<cell>.shcomp` | `shcomp` | symbol + exactly one schematic impl + 0..N leaf impls + docs |
+| `<cell>.shcomp` | `shcomp` | symbol + exactly one schematic impl + 0..N leaf impls + docs + netlist `code` (D17 as amended 2026-10-11) |
 | `<cell>.shbench` | `shbench` | schematic + docs + bench tables; no symbol |
 | `schemify.project` | `project` | project manifest: libraries, plugins, settings |
 | `schemify.lock` | `lock` | resolved sources + content hashes (written by the tool only) |
@@ -89,7 +89,7 @@ The writer treats the union of these as the known header attributes for every ki
 | `param <name> <default>` | `kind number\|int\|bool\|string\|choice` (default `number`), `unit <u>`, `min <expr>`, `max <expr>`, `step <expr>`, `grid <expr>`, `choices <v>…`, `computed <expr>`, `show <expr>`, `doc <text>`, `cached <value> <hash>` | `default` and `computed` are expressions for number/int/bool, template strings for string/choice. A `computed` param cannot be overridden (`E030`). `cached` holds the last value of an expression that calls a plugin function (D20). |
 | `impl <name> <lang>` | `format <dialect> <template>` (repeatable, one per dialect), `model <name>`, `file <relpath>`, `ignore true\|open\|short` | `lang` ∈ `schematic spice veriloga verilog` or any plugin tag. `dialect` ∈ `spice xyce cdl spectre verilog` (`spice` is the fallback for `xyce`). `file` is relative to the cell file. |
 
-Kind rules (`E025`): `shprim` has ≥1 pin and ≥1 impl, none with lang `schematic`. `shcomp` has exactly one impl with lang `schematic`. A cell with more than one impl has a `default` header attribute. Every impl of a cell matches the cell's pins (D11): enforced on save (`E002`). A `.shbench` has no impls, so no `body` records and no `port` records.
+Kind rules (`E025`): `shprim` has ≥1 pin and ≥1 impl, none with lang `schematic`. `shcomp` has exactly one impl with lang `schematic`. A cell with more than one impl has a `default` header attribute. Every impl of a cell matches the cell's pins (D11): enforced on save (`E002`). A `.shbench` has no impls, so no `body` records and no `port` records. Of the rank-6 records only `code` is allowed outside a `.shbench`, and only in a `.shcomp` (D17 as amended 2026-10-11); any other rank-6 word in a `.shcomp`, and `code` in a `.shprim`, is an unknown record (`E027`).
 
 ### Rank 2 — symbol graphics (shprim, shcomp only)
 
@@ -135,7 +135,7 @@ Document order is preserved.
 |---|---|
 | `body <impl>` | verbatim lines: the definition text emitted once per netlist (SPICE subckt text, Verilog-A source, Verilog source) |
 
-### Rank 6 — bench (shbench only)
+### Rank 6 — bench (shbench; `code` also in shcomp)
 
 | Record | Attributes | Notes |
 |---|---|---|
@@ -146,7 +146,7 @@ Document order is preserved.
 | `optimize <name>` | `algo random\|nelder-mead` (default `nelder-mead`), `goal <output> min\|max\|target <expr>` (repeatable), `vary <var>` (repeatable; bounds come from the var), `budget <n>` (default 100), `seed <n>` (default 1) | [run.md](run.md) §6. |
 | `output <name> <expr>` | `unit <u>` | Calculator-mode expression over each job's raw file, reduced to one number ([run.md](run.md) §4). |
 | `spec <output>` | `min <expr>`, `max <expr>` | |
-| `code <name> <lang>` | verbatim lines | `lang` `spice` = all SPICE dialects; `ngspice`/`xyce`/`spectre` = that dialect only; anything else goes to a runner plugin. |
+| `code <name> <lang>` | verbatim lines | `lang` `spice` = all SPICE dialects; `ngspice`/`xyce`/`spectre` = that dialect only; anything else goes to a runner plugin. In a `.shcomp` the text is the component's own (`.model` cards, `.param` lines, XSPICE `A` devices, an extracted netlist): it is emitted inside each of its definitions ([netlist.md](netlist.md) §7.6.15), never at the top of a bench that instantiates it. |
 
 ### Project manifest (`schemify.project`)
 

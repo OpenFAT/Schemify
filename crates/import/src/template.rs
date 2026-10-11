@@ -27,8 +27,6 @@ pub enum Reason {
     BuiltinToken,
     /// A `drc=` rule outside the recognised `min`/`max` patterns (D14).
     Drc,
-    /// A netlist code block (`code.sym`, `S {}` text) inside a component schematic.
-    CodeInComponent,
     /// Per-instance netlist text: instance `format`, `device_model`, `spice_sym_def`.
     InstanceText,
     /// A symbol reference that resolves to no input file.
@@ -50,7 +48,6 @@ impl Reason {
             Reason::PinToken => "pin-token",
             Reason::BuiltinToken => "builtin-token",
             Reason::Drc => "drc",
-            Reason::CodeInComponent => "code-in-component",
             Reason::InstanceText => "instance-text",
             Reason::MissingSymbol => "missing-symbol",
             Reason::Unsupported => "unsupported",

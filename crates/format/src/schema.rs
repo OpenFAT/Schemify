@@ -753,8 +753,9 @@ const BENCH: [RecordKind; 8] = [
 static FILE_RECORDS: [&[RecordKind]; 6] = [
     // shprim: symbol, docs, bodies
     &concat::<9, 3, 12>(SYMBOL, [R::Prose, R::Var, R::Body]),
-    // shcomp: symbol, schematic, docs, bodies
-    &concat::<9, 12, 21>(
+    // shcomp: symbol, schematic, docs, bodies, code (D17 as amended 2026-10-11: netlist
+    // text emitted inside each of the component's definitions)
+    &concat::<9, 13, 22>(
         SYMBOL,
         [
             R::Inst,
@@ -769,6 +770,7 @@ static FILE_RECORDS: [&[RecordKind]; 6] = [
             R::Prose,
             R::Var,
             R::Body,
+            R::Code,
         ],
     ),
     // shbench: schematic without ports, docs, bench
@@ -844,6 +846,21 @@ mod tests {
         }
         assert_eq!(FileKind::from_word("schematic"), None);
         assert_eq!(FileKind::Shbench.lookup("pin"), None);
+        // D17 as amended: a component carries `code`; the other bench tables stay
+        // bench-only, and a primitive has neither.
+        assert_eq!(FileKind::Shcomp.lookup("code"), Some(R::Code));
+        for w in [
+            "corner",
+            "config",
+            "sweep",
+            "montecarlo",
+            "optimize",
+            "output",
+            "spec",
+        ] {
+            assert_eq!(FileKind::Shcomp.lookup(w), None, "{w}");
+        }
+        assert_eq!(FileKind::Shprim.lookup("code"), None);
         assert_eq!(FileKind::Config.lookup("plugin"), Some(R::PluginOrder));
         assert_eq!(FileKind::Project.lookup("plugin"), Some(R::Plugin));
     }
