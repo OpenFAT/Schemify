@@ -245,7 +245,8 @@ pub(crate) fn value_code(code: Code) -> bool {
     )
 }
 
-fn cmp_key(a: &Violation, b: &Violation, names: &Names) -> Ordering {
+/// Orders violations by their key (code text, cell, object, path, param).
+pub(crate) fn cmp_key(a: &Violation, b: &Violation, names: &Names) -> Ordering {
     let code = if a.code == b.code {
         Ordering::Equal
     } else {

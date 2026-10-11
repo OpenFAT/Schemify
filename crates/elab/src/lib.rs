@@ -56,6 +56,7 @@ mod connect;
 mod elaborate;
 mod graph;
 mod iface;
+mod live;
 mod names;
 mod netexpr;
 mod state;

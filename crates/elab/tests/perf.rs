@@ -258,3 +258,197 @@ fn connectivity_of_a_100k_object_cell() {
     eprintln!("PERF elab.connect_100k_ms {:.3}", best.as_secs_f64() * 1e3);
     assert!(best < Duration::from_millis(200), "{best:?}");
 }
+
+/// A schematic of `tiles` tiles of 10 objects on a 200-unit pitch: a three-pin device
+/// (`common::DEV`), six wires (pin stubs, an unnamed drop, a ground bar, a supply stub), a
+/// tile-local net label `in<t>`, `gnd` and `vdd!` labels shared by every tile (one named
+/// bit each across the sheet), and a noconn. Tile `t`'s objects have ids `id(t * 16 + k)`.
+fn tiles(tiles: u64) -> String {
+    let side = (tiles as f64).sqrt().ceil() as u64;
+    let mut s = String::with_capacity(tiles as usize * 400);
+    s.push_str("schemify 1 shcomp\n\npin P inout 0 0\n\nimpl sch schematic\n\n");
+    for t in 0..tiles {
+        let (x, y) = ((t % side) as i64 * 200_000, (t / side) as i64 * 200_000);
+        let k = |n: u64| id(t * 16 + n);
+        s.push_str(&format!(
+            "inst {} ./dev\n  at {} {} R0\n  name X{t}\n",
+            k(0),
+            c(x),
+            c(y)
+        ));
+        let wires = [
+            (x - 40_000, y, x, y),
+            (x + 20_000, y, x + 60_000, y),
+            (x + 60_000, y, x + 60_000, y + 40_000),
+            (x, y + 30_000, x, y + 60_000),
+            (x - 40_000, y + 60_000, x + 60_000, y + 60_000),
+            (x - 40_000, y + 90_000, x + 20_000, y + 90_000),
+        ];
+        for (n, w) in wires.iter().enumerate() {
+            s.push_str(&format!(
+                "wire {} {} {} {} {}\n",
+                k(1 + n as u64),
+                c(w.0),
+                c(w.1),
+                c(w.2),
+                c(w.3)
+            ));
+        }
+        s.push_str(&format!(
+            "label {} {} {} R0 in{t}\nlabel {} {} {} R0 gnd\nlabel {} {} {} R0 vdd!\nnoconn {} {} {}\n",
+            k(7),
+            c(x - 40_000),
+            c(y),
+            k(8),
+            c(x - 40_000),
+            c(y + 60_000),
+            k(9),
+            c(x - 40_000),
+            c(y + 90_000),
+            k(10),
+            c(x + 100_000),
+            c(y)
+        ));
+    }
+    s.push_str(&format!("port {} 0 -100 R0 P\n", id(1 << 28)));
+    s
+}
+
+/// The ops of one random local edit on tile `t` of `tiles(n)`: delete a wire, join two
+/// tiles' nets with a new wire, rename the tile's label to its neighbour's (a merge by
+/// name), move the device, or move a wire end.
+fn local_edit(rng: &mut Mix, t: u64, side: u64) -> Vec<Op> {
+    let (x, y) = ((t % side) as i64 * 200_000, (t / side) as i64 * 200_000);
+    let k = |n: u64| id(t * 16 + n);
+    match rng.below(5) {
+        0 => vec![Op::Delete(Target::new(
+            RecordKind::Wire,
+            &k(1 + rng.below(6)),
+        ))],
+        1 => vec![Op::Insert {
+            rec: schemify_doc::RecordBuf::new(RecordKind::Wire)
+                .field("-")
+                .field(&c(x + 60_000))
+                .field(&c(y))
+                .field(&c(x + 160_000))
+                .field(&c(y)),
+            at: None,
+        }],
+        2 => vec![Op::SetField {
+            target: Target::new(RecordKind::Label, &k(7)),
+            index: 4,
+            value: format!("in{}", t + 1),
+        }],
+        3 => vec![Op::SetAttr {
+            target: Target::new(RecordKind::Inst, &k(0)),
+            key: "at".into(),
+            values: vec![c(x + 10_000), c(y), "R0".into()],
+        }],
+        _ => vec![Op::SetField {
+            target: Target::new(RecordKind::Wire, &k(2)),
+            index: 3,
+            value: c(x + 80_000),
+        }],
+    }
+}
+
+/// p50 / p95 / p99 of `samples` (sorted in place), in ms.
+fn percentiles(samples: &mut [Duration]) -> (f64, f64, f64) {
+    samples.sort_unstable();
+    let at = |q: f64| {
+        let i = ((samples.len() as f64 - 1.0) * q).round() as usize;
+        samples[i].as_secs_f64() * 1e3
+    };
+    (at(0.5), at(0.95), at(0.99))
+}
+
+/// The elab cost of one local edit, `CellState::recompute` (connectivity patch + checks
+/// delta), at `objects` objects: 200 random edits on random tiles, each followed by its
+/// undo. Returns (p50, p95, p99) in ms.
+fn edit_costs(objects: u64) -> (f64, f64, f64) {
+    let n = objects / 10;
+    let side = (n as f64).sqrt().ceil() as u64;
+    let (mut p, hs) = project(&[("dev.shprim", DEV), ("big.shcomp", &tiles(n))]);
+    let h = hs[1];
+    let t0 = Instant::now();
+    let mut st = CellState::build(&p, h, &mut no_funcs).unwrap();
+    let build = t0.elapsed();
+    let mut rng = Mix(7);
+    let mut samples = Vec::new();
+    let mut patched = 0;
+    let mut step = |p: &mut schemify_doc::Project, edit: Edit, ops: &[Op], st: &mut CellState| {
+        let out = apply_edits(
+            p,
+            &[EditRequest {
+                doc: h,
+                edit,
+                unix_ms: 0,
+            }],
+        );
+        if !matches!(
+            out[0],
+            Outcome::Committed { .. } | Outcome::Undone { .. } | Outcome::Redone { .. }
+        ) {
+            return;
+        }
+        let t = Instant::now();
+        let done = st.recompute(p, h, ops, &mut no_funcs);
+        samples.push(t.elapsed());
+        patched += usize::from(done.patched);
+    };
+    for _ in 0..100 {
+        let t = rng.below(n);
+        let ops = local_edit(&mut rng, t, side);
+        let tx = Transaction {
+            label: "e".into(),
+            mode: Mode::Commit,
+            ops: ops.clone(),
+        };
+        step(&mut p, Edit::Tx(tx), &ops, &mut st);
+        step(&mut p, Edit::Undo, &ops, &mut st);
+    }
+    assert!(
+        patched * 10 >= samples.len() * 9,
+        "{patched} of {} patched",
+        samples.len()
+    );
+    let (p50, p95, p99) = percentiles(&mut samples);
+    eprintln!(
+        "local edit at {objects} objects ({} edits, build {build:?}): elab p50 {p50:.3} ms, p95 {p95:.3} ms, p99 {p99:.3} ms",
+        samples.len()
+    );
+    if objects <= 10_000 {
+        // The patched rows equal a fresh build's (names compared as text: two arenas).
+        let fresh = CellState::build(&p, h, &mut no_funcs).unwrap();
+        let text = |st: &CellState| -> Vec<String> {
+            let n = |x: schemify_elab::Name| {
+                (x != schemify_elab::Name::NONE).then(|| st.names.get(x).to_owned())
+            };
+            let rows = st.violations.rows.iter();
+            rows.map(|v| {
+                format!(
+                    "{} {:?} {} {:?} {}",
+                    v.code.as_str(),
+                    n(v.param),
+                    v.object.0,
+                    n(v.path),
+                    v.detail
+                )
+            })
+            .collect()
+        };
+        assert_eq!(text(&st), text(&fresh));
+    }
+    (p50, p95, p99)
+}
+
+/// D39 (editing): a local edit costs ≤ 0.5 ms of elab at 100k objects (p95), reported at
+/// 10k, 100k and 1M objects.
+#[test]
+#[ignore]
+fn a_local_edit_costs_half_a_millisecond_of_elab() {
+    edit_costs(10_000);
+    let (_, p95, _) = edit_costs(100_000);
+    edit_costs(1_000_000);
+    assert!(p95 <= 0.5, "p95 {p95:.3} ms at 100k objects");
+}

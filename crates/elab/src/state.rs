@@ -2,13 +2,17 @@
 //! its expression graph evaluated in the default context, and its context-free
 //! violations. The frame spine calls [`CellState::recompute`] with the ops `doc` just
 //! applied; value edits re-evaluate only the affected nodes (D19, D39: 1k dependents
-//! within 8 ms), everything else rebuilds what it touched.
+//! within 8 ms), geometry edits patch only the nets they touch (`live`) and post only the
+//! findings they change; everything else rebuilds what it touched.
 
 use crate::cells::{display, row_of};
-use crate::check::{CellCtx, Violation, Violations, check_overrides, check_values, waivers};
-use crate::connect::{CellNets, connect};
+use crate::check::{
+    CellCtx, Violation, Violations, check_overrides, check_values, cmp_key, waivers,
+};
+use crate::connect::{CellNets, Seed, connect_seeded};
 use crate::graph::{Graph, OWN, Work, override_of};
 use crate::iface::{Iface, own_ref};
+use crate::live::{Ctx, Delta, Live};
 use crate::names::{Name, Names};
 use crate::values::{Funcs, NONE, Syntax, VAR};
 use schemify_doc::{DocHandle, Document, ObjId, Op, Project, Sym};
@@ -18,8 +22,11 @@ use std::collections::HashMap;
 /// What [`CellState::recompute`] did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Recomputed {
-    /// Connectivity was rebuilt.
+    /// Connectivity changed (rebuilt, or patched).
     pub nets: bool,
+    /// Connectivity was patched per touched net instead of rebuilt: untouched nets kept
+    /// their handles, and the check pass posted only the findings that changed.
+    pub patched: bool,
     /// The graph was rebuilt and fully evaluated.
     pub graph: bool,
     /// Nodes re-evaluated incrementally (0 when the graph was rebuilt).
@@ -51,7 +58,10 @@ pub struct CellState {
     /// The pass `changes` starts from; 0 after [`CellState::build`] (no delta: take all).
     pub prev_pass: u64,
     unresolved: Vec<Option<String>>,
-    net_findings: Vec<Violation>,
+    /// Connectivity findings sorted by key, duplicate keys kept (the table keeps one row
+    /// per key): what a patch updates the table's connectivity rows from.
+    net_rows: Vec<Violation>,
+    live: Live,
     waivers: Vec<(ObjId, Name)>,
     ws: Work,
 }
@@ -126,8 +136,19 @@ impl CellState {
         funcs: &mut F,
     ) -> Recomputed {
         let doc = project.doc(h).expect("recompute needs the edited document");
+        if self.live.instances_moved(doc) {
+            // Row-indexed state is stale: a rejected transaction permuted the instances.
+            *self = CellState::build(project, h, funcs).expect("live handle");
+            return Recomputed {
+                nets: true,
+                patched: false,
+                graph: true,
+                evaluated: 0,
+            };
+        }
         let mut done = Recomputed::default();
-        let mut nets = false;
+        // `nets`: rebuild the connectivity; `geom`: patch it (`live`).
+        let (mut nets, mut geom) = (false, false);
         let mut rebuild = false;
         let mut touched_insts: Vec<ObjId> = Vec::new();
         let mut touched_vars = false;
@@ -139,11 +160,12 @@ impl CellState {
             let (kind, key, attr) = subject(op);
             match kind {
                 RecordKind::Wire | RecordKind::Label | RecordKind::Port | RecordKind::Noconn => {
-                    nets = true
+                    geom = true
                 }
                 RecordKind::Inst => match op {
                     Op::SetAttr { .. } | Op::RemoveAttr { .. } => match attr {
-                        Some("at" | "name" | "inherit" | "ignore") => nets = true,
+                        Some("at") => geom = true,
+                        Some("name" | "inherit" | "ignore") => nets = true,
                         _ => touched_insts.extend(ObjId::find(key, doc.strings())),
                     },
                     _ => {
@@ -151,6 +173,7 @@ impl CellState {
                         *self = CellState::build(project, h, funcs).expect("live handle");
                         return Recomputed {
                             nets: true,
+                            patched: false,
                             graph: true,
                             evaluated: 0,
                         };
@@ -174,6 +197,7 @@ impl CellState {
                     *self = CellState::build(project, h, funcs).expect("live handle");
                     return Recomputed {
                         nets: true,
+                        patched: false,
                         graph: true,
                         evaluated: 0,
                     };
@@ -181,10 +205,22 @@ impl CellState {
                 _ => {}
             }
         }
+        let mut delta: Option<Delta> = None;
+        if !nets && geom {
+            let cx = Ctx {
+                doc,
+                own: &self.ifaces[0],
+                ifaces: &self.ifaces,
+                inst_iface: &self.inst_iface,
+            };
+            delta = self.live.update(ops, &cx, &mut self.nets, &mut self.names);
+            nets = delta.is_none(); // the patch gave up: rebuild
+            done.patched = delta.is_some();
+        }
         if nets {
             self.rebuild_nets(doc);
-            done.nets = true;
         }
+        done.nets = nets || geom;
         let mut dirty: Vec<u32> = Vec::new();
         if !rebuild {
             rebuild = !self.diff_values(doc, &touched_insts, touched_vars, &mut dirty);
@@ -200,12 +236,15 @@ impl CellState {
                 .graph
                 .recompute(&dirty, &self.ifaces, funcs, &mut self.ws);
         }
-        if done.nets || done.graph || waived || !touched_insts.is_empty() {
-            self.check(doc, funcs);
-        } else {
-            self.check_values_only(doc, funcs);
+        // A patch posts its findings unless values changed too (then one full pass).
+        let values = done.graph || waived || !touched_insts.is_empty() || !dirty.is_empty();
+        match delta {
+            Some(d) if !values => self.apply_net_delta(d),
+            _ if done.nets || values => self.check(doc, funcs),
+            _ => self.check_values_only(doc, funcs),
         }
         assert!(!(done.graph && done.evaluated > 0));
+        assert!(!(done.patched && nets), "patched or rebuilt, not both");
         done
     }
 
@@ -350,20 +389,96 @@ impl CellState {
     }
 
     fn rebuild_nets(&mut self, doc: &Document) {
-        self.net_findings.clear();
         let mut globals = Vec::new();
         crate::connect::global_labels(doc, &mut self.names, &mut globals);
         globals.sort_unstable();
         globals.dedup();
-        self.nets = connect(
+        let (mut seed, mut found) = (Seed::default(), Vec::new());
+        self.nets = connect_seeded(
             doc,
             &self.ifaces[0],
             &self.ifaces,
             &self.inst_iface,
             &globals,
             &mut self.names,
-            &mut self.net_findings,
+            &mut found,
+            Some(&mut seed),
         );
+        let cx = Ctx {
+            doc,
+            own: &self.ifaces[0],
+            ifaces: &self.ifaces,
+            inst_iface: &self.inst_iface,
+        };
+        self.live = Live::seed(seed, found, globals, &self.nets, &cx, &mut self.names);
+    }
+
+    /// Posts a connectivity patch's findings: `gone` leave the table and `new` enter it
+    /// (rows on both sides cancel), as the delta of a new pass. The table keeps one row per
+    /// key, so a key leaves only with its last connectivity row.
+    ///
+    /// Cost: O((gone + new) · log rows) compares plus a memmove per changed row.
+    fn apply_net_delta(&mut self, (mut gone, mut new): Delta) {
+        let names = &self.names;
+        let order = |a: &Violation, b: &Violation| {
+            cmp_key(a, b, names).then_with(|| a.detail.cmp(&b.detail))
+        };
+        gone.sort_by(order);
+        new.sort_by(order);
+        let (mut g, mut n) = (Vec::new(), Vec::new());
+        let (mut gi, mut ni) = (gone.into_iter().peekable(), new.into_iter().peekable());
+        loop {
+            match (gi.peek(), ni.peek()) {
+                (Some(a), Some(b)) => match order(a, b) {
+                    std::cmp::Ordering::Equal => {
+                        gi.next();
+                        ni.next();
+                    }
+                    std::cmp::Ordering::Less => g.extend(gi.next()),
+                    std::cmp::Ordering::Greater => n.extend(ni.next()),
+                },
+                (Some(_), None) => g.extend(gi.next()),
+                (None, Some(_)) => n.extend(ni.next()),
+                (None, None) => break,
+            }
+        }
+        let (rows, net) = (&mut self.violations.rows, &mut self.net_rows);
+        let mut changes: (Vec<Violation>, Vec<Violation>) = (Vec::new(), Vec::new());
+        for r in g {
+            let lo = net.partition_point(|x| cmp_key(x, &r, names).is_lt());
+            let at = (lo..net.len())
+                .take_while(|&k| cmp_key(&net[k], &r, names).is_eq())
+                .find(|&k| net[k] == r)
+                .expect("a gone finding is a connectivity row");
+            net.remove(at);
+            let t = rows
+                .binary_search_by(|x| cmp_key(x, &r, names))
+                .expect("its key is in the table");
+            let kept = net.get(lo).filter(|x| cmp_key(x, &r, names).is_eq());
+            match kept {
+                None => changes.0.push(rows.remove(t)),
+                Some(k) if rows[t] == r => {
+                    changes.0.push(std::mem::replace(&mut rows[t], k.clone()));
+                    changes.1.push(k.clone());
+                }
+                Some(_) => {}
+            }
+        }
+        for r in n {
+            let at = net.partition_point(|x| cmp_key(x, &r, names).is_le());
+            net.insert(at, r.clone());
+            if let Err(t) = rows.binary_search_by(|x| cmp_key(x, &r, names)) {
+                rows.insert(t, r.clone());
+                changes.1.push(r);
+            }
+        }
+        changes.0.sort_by(|a, b| cmp_key(a, b, names));
+        changes.1.sort_by(|a, b| cmp_key(a, b, names));
+        debug_assert!(
+            rows.windows(2)
+                .all(|w| cmp_key(&w[0], &w[1], names).is_lt())
+        );
+        self.next_pass(changes);
     }
 
     fn rebuild_graph<F: Funcs>(&mut self, doc: &Document, funcs: &mut F) {
@@ -384,7 +499,10 @@ impl CellState {
     /// Recomputes every finding.
     fn check<F: Funcs>(&mut self, doc: &Document, funcs: &mut F) {
         self.waivers = waivers(doc, &mut self.names);
-        let mut rows = self.net_findings.clone();
+        let mut net = self.live.rows(&self.nets, &self.ifaces[0], &self.names);
+        net.sort_by(|a, b| cmp_key(a, b, &self.names));
+        self.net_rows = net;
+        let mut rows = self.net_rows.clone();
         let cx = CellCtx {
             doc,
             ifaces: &self.ifaces,
@@ -471,7 +589,7 @@ impl CellState {
 }
 
 /// The record an op is about: (kind, key, attribute key for attribute ops).
-fn subject(op: &Op) -> (RecordKind, &str, Option<&str>) {
+pub(crate) fn subject(op: &Op) -> (RecordKind, &str, Option<&str>) {
     match op {
         Op::Insert { rec, .. } => (
             rec.kind,

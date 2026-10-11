@@ -47,19 +47,27 @@ pub enum Ignore {
 
 /// The connectivity of one cell. Component rows ("nets") are geometric; bit rows are
 /// what a netlist connects. All names live in the arena passed to [`connect`].
+///
+/// [`connect`] numbers components and bits densely. The editor's [`crate::CellState`]
+/// patches them per edit instead: component and bit handles are then stable (an edit keeps
+/// every net it does not touch, handle and name) and freed rows are holes until reused. A
+/// hole component has width 0, no bits and the empty name; a hole bit has
+/// [`Name::NONE`] as its name and is on no component.
 #[derive(Clone, Debug, Default)]
 pub struct CellNets {
     /// Component name: its emitted name expression (`d[3:0]`) or `net_<id>`.
     pub net_name: Vec<Name>,
-    /// Bits the component carries.
+    /// Bits the component carries (0 for a hole).
     pub net_width: Vec<u16>,
     /// Whether any of its bits is global.
     pub net_global: Vec<bool>,
     /// Instance pins and ports touching it (the plugin `Nets.pin_count`).
     pub net_pins: Vec<u32>,
-    /// CSR offsets (`nets + 1`) into [`CellNets::net_bits`].
+    /// Offset of each component's bits in [`CellNets::net_bits`]; it has
+    /// [`CellNets::net_width`] of them.
     pub net_bit_start: Vec<u32>,
-    /// Bit net of each component bit.
+    /// Bit net of each component bit (patched components append theirs: unreferenced
+    /// entries are garbage until the next full build).
     pub net_bits: Vec<u32>,
     /// Component of each wire row.
     pub wire_net: Vec<u32>,
@@ -132,9 +140,10 @@ impl CellNets {
         &self.pin_net[self.pin_start[i] as usize..self.pin_start[i + 1] as usize]
     }
 
-    /// Returns the bit nets of component `c`.
+    /// Returns the bit nets of component `c` (empty for a hole).
     pub fn bits_of(&self, c: usize) -> &[u32] {
-        &self.net_bits[self.net_bit_start[c] as usize..self.net_bit_start[c + 1] as usize]
+        let start = self.net_bit_start[c] as usize;
+        &self.net_bits[start..start + usize::from(self.net_width[c])]
     }
 }
 
@@ -270,6 +279,159 @@ pub fn global_labels(doc: &Document, names: &mut Names, out: &mut Vec<Name>) {
     }
 }
 
+/// Owner of a finding that no component or bit owns: instance names (`E011`, `E009`) and
+/// `inherit` overrides (`E011`); they change only with what forces a full build.
+pub(crate) const OWN_STATIC: u32 = u32::MAX;
+/// Owner of the port ↔ interface pin findings (`E012`, `E002`).
+pub(crate) const OWN_PORTS: u32 = u32::MAX - 1;
+/// Owner of the bit findings (`W016`, `W010`), recomputed from each bit's counts.
+pub(crate) const OWN_BITS: u32 = u32::MAX - 2;
+
+/// What the full pass knows that the editor's incremental connectivity (`live`) starts
+/// from: the nodes in [`connect`]'s order (wire ends, instance pins, labels, ports,
+/// noconns) with their components, the two node sorts, and who owns each finding.
+#[derive(Debug, Default)]
+pub(crate) struct Seed {
+    pub(crate) px: Vec<i32>,
+    pub(crate) py: Vec<i32>,
+    /// Component of each node.
+    pub(crate) comp: Vec<u32>,
+    /// First node of the instance pins, labels, ports and noconns.
+    pub(crate) pins0: usize,
+    pub(crate) labels0: usize,
+    pub(crate) ports0: usize,
+    pub(crate) noconns0: usize,
+    /// Instance row and interface pin index of each pin node.
+    pub(crate) pin_inst: Vec<u32>,
+    pub(crate) pin_pin: Vec<u16>,
+    /// `(key(x, y), node)` and `(key(y, x), node)`, sorted (`yx` empty without wires).
+    pub(crate) xy: Vec<(u64, u32)>,
+    pub(crate) yx: Vec<(u64, u32)>,
+    /// Whether each component is named by a label or port.
+    pub(crate) named: Vec<bool>,
+    /// Owner of each finding appended to `out`: a component, or `OWN_*`.
+    pub(crate) owner: Vec<u32>,
+    /// Instance pin bits of each bit net in the `real` domain and in the others (`W010`).
+    pub(crate) real: Vec<u32>,
+    pub(crate) other: Vec<u32>,
+    /// Whether names merge components beyond one name per bit (`E003` shorts, `ignore
+    /// short`): then nothing is patched per edit.
+    pub(crate) merged: bool,
+}
+
+/// Findings with their owners (what `live` drops when the owner changes).
+struct Found<'a> {
+    out: &'a mut Vec<Violation>,
+    owner: Vec<u32>,
+}
+
+impl Found<'_> {
+    fn push(&mut self, owner: u32, v: Violation) {
+        self.out.push(v);
+        self.owner.push(owner);
+    }
+}
+
+/// A component key's pin index when the key is an owned object id.
+pub(crate) const NONE_PIN: u32 = u32::MAX;
+
+/// Appends `net_<id>` (an owned object id) or `net_<inst id>_<pin>` (a pin node): the
+/// generated name of an unnamed component keyed `k` (§3).
+pub(crate) fn write_key(k: (ObjId, u32), s: &Strings, buf: &mut String) {
+    buf.push_str("net_");
+    k.0.write(s, buf);
+    if k.1 != NONE_PIN {
+        buf.push('_');
+        push_decimal(k.1, buf);
+    }
+}
+
+/// Decodes [`key`]: `(a, b)`.
+pub(crate) fn unkey(k: u64) -> (i32, i32) {
+    (
+        ((k >> 32) as u32 ^ 0x8000_0000) as i32,
+        (k as u32 ^ 0x8000_0000) as i32,
+    )
+}
+
+/// `W016` and `W010` of bit `b` named `name` (the bit-owned findings).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn bit_findings(
+    cell: Name,
+    name: Name,
+    global: bool,
+    conns: u32,
+    real: u32,
+    other: u32,
+    names: &Names,
+    out: &mut Vec<Violation>,
+) {
+    let row = |code, detail| Violation {
+        code,
+        cell,
+        object: ObjId::NONE,
+        path: Name::NONE,
+        param: name,
+        detail,
+    };
+    if conns == 1 && !global {
+        let detail = format!("net `{}` has a single connection", names.get(name));
+        out.push(row(Code::W016, detail));
+    }
+    if real > 0 && other > 0 {
+        let detail = format!(
+            "net `{}` joins real and analog/digital pins",
+            names.get(name)
+        );
+        out.push(row(Code::W010, detail));
+    }
+}
+
+/// `E012` (ports ↔ own interface pins) and `E002` once when the schematic impl breaks it.
+pub(crate) fn port_findings(doc: &Document, own: &Iface, names: &Names, out: &mut Vec<Violation>) {
+    let (s, ports) = (doc.strings(), doc.ports());
+    if own.impl_name.is_empty() && ports.id.is_empty() {
+        return;
+    }
+    let row = |code, object, param, detail| Violation {
+        code,
+        cell: own.cell,
+        object,
+        path: Name::NONE,
+        param,
+        detail,
+    };
+    let before = out.len();
+    for p in 0..ports.id.len() {
+        let text = names.find(s.get(ports.text[p]));
+        let known = text.is_some_and(|t| own.pin_name.contains(&t));
+        if !known {
+            let detail = format!("port `{}` names no interface pin", s.get(ports.text[p]));
+            out.push(row(
+                Code::E012,
+                ports.id[p],
+                text.unwrap_or(Name::NONE),
+                detail,
+            ));
+        }
+    }
+    for p in 0..own.pin_name.len() {
+        let has =
+            (0..ports.id.len()).any(|q| names.find(s.get(ports.text[q])) == Some(own.pin_name[p]));
+        if !has && own.pin_inherit[p] == Name::NONE && own.pin_alias[p] == NONE {
+            let detail = format!("interface pin `{}` has no port", names.get(own.pin_name[p]));
+            out.push(row(Code::E012, ObjId::NONE, own.pin_name[p], detail));
+        }
+    }
+    if let Some(si) = own.schematic_impl(names).filter(|_| out.len() > before) {
+        let detail = format!(
+            "schematic impl `{}` ports differ from the symbol pins",
+            names.get(own.impl_name[si])
+        );
+        out.push(row(Code::E002, ObjId::NONE, own.impl_name[si], detail));
+    }
+}
+
 /// Builds the connectivity of `doc`. `own` is the cell's own interface (ports and
 /// inherited pins bind to its pins; a bench passes an interface without pins);
 /// `inst_iface[i]` indexes `ifaces` for instance row `i`, or is `u32::MAX` when the
@@ -293,10 +455,29 @@ pub fn connect(
     names: &mut Names,
     out: &mut Vec<Violation>,
 ) -> CellNets {
+    connect_seeded(doc, own, ifaces, inst_iface, globals, names, out, None)
+}
+
+/// [`connect`], also filling `seed` (the editor's incremental start) when given.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn connect_seeded(
+    doc: &Document,
+    own: &Iface,
+    ifaces: &[Iface],
+    inst_iface: &[u32],
+    globals: &[Name],
+    names: &mut Names,
+    out: &mut Vec<Violation>,
+    seed: Option<&mut Seed>,
+) -> CellNets {
     assert!(
         globals.windows(2).all(|w| w[0] <= w[1]),
         "globals are sorted"
     );
+    let mut out = Found {
+        out,
+        owner: Vec::new(),
+    };
     let glob =
         |n: Name, names: &Names| is_global(names.get(n)) || globals.binary_search(&n).is_ok();
     let s = doc.strings();
@@ -318,6 +499,7 @@ pub fn connect(
         detail,
     };
     let mut cn = CellNets::default();
+    let mut merged = false;
     let mut buf = String::new();
     // Attribute keys looked up once (a key the document never interned is on no row).
     let (ignore_key, inherit_key) = (s.find("ignore"), s.find("inherit"));
@@ -328,12 +510,15 @@ pub fn connect(
     for i in 0..ni {
         let text = s.get(inst.name[i]);
         if netexpr::expand(text, names, &mut cn.elem_name, &mut buf).is_err() {
-            out.push(finding(
-                Code::E011,
-                inst.id[i],
-                Name::NONE,
-                format!("instance name `{text}` is wider than 65535"),
-            ));
+            out.push(
+                OWN_STATIC,
+                finding(
+                    Code::E011,
+                    inst.id[i],
+                    Name::NONE,
+                    format!("instance name `{text}` is wider than 65535"),
+                ),
+            );
             cn.elem_name.push(names.intern(text));
         }
         cn.elem_start.push(cn.elem_name.len() as u32);
@@ -411,7 +596,14 @@ pub fn connect(
             union(&mut parent, pair[0].1, pair[1].1);
         }
     }
-    let yx = sorted_nodes(&py, &px);
+    // Only horizontal wires search the (y, x) order: a wireless cell (a flat netlist of
+    // abutting pins) skips the second sort.
+    let horizontal = (0..nw).any(|w| wires.y1[w] == wires.y2[w] && wires.x1[w] != wires.x2[w]);
+    let yx = if horizontal {
+        sorted_nodes(&py, &px)
+    } else {
+        Vec::new()
+    };
     for w in 0..nw {
         let (x1, y1, x2, y2) = (wires.x1[w], wires.y1[w], wires.x2[w], wires.y2[w]);
         let wn = 2 * w as u32;
@@ -507,7 +699,6 @@ pub fn connect(
     }
 
     // Naming key per component: an owned object id (pin = NONE_PIN), else a pin node.
-    const NONE_PIN: u32 = u32::MAX;
     let comp_key: Vec<(ObjId, u32)> = (0..nc)
         .map(|c| match comp_minid[c] {
             ObjId::NONE => comp_minpin[c],
@@ -525,14 +716,7 @@ pub fn connect(
             .then_with(|| id_cmp(a.0, b.0, s))
             .then(a.1.cmp(&b.1))
     };
-    let write_key = |k: (ObjId, u32), buf: &mut String| {
-        buf.push_str("net_");
-        k.0.write(s, buf);
-        if k.1 != NONE_PIN {
-            buf.push('_');
-            push_decimal(k.1, buf);
-        }
-    };
+    let write_key = |k: (ObjId, u32), buf: &mut String| write_key(k, s, buf);
 
     // ---- names per component: (comp, class, bits range)
     let mut src_comp: Vec<u32> = Vec::new();
@@ -542,15 +726,18 @@ pub fn connect(
     let mut src_start: Vec<u32> = vec![0];
     let mut src_bits: Vec<Name> = Vec::new();
     let mut add_src =
-        |c: u32, class: u8, text: &str, obj: ObjId, names: &mut Names, out: &mut Vec<Violation>| {
+        |c: u32, class: u8, text: &str, obj: ObjId, names: &mut Names, out: &mut Found<'_>| {
             let before = src_bits.len();
             if netexpr::expand(text, names, &mut src_bits, &mut buf).is_err() {
-                out.push(finding(
-                    Code::E011,
-                    obj,
-                    Name::NONE,
-                    format!("`{text}` is wider than 65535 bits"),
-                ));
+                out.push(
+                    c,
+                    finding(
+                        Code::E011,
+                        obj,
+                        Name::NONE,
+                        format!("`{text}` is wider than 65535 bits"),
+                    ),
+                );
                 return;
             }
             let global = src_bits[before..].iter().all(|b| glob(*b, names));
@@ -567,7 +754,7 @@ pub fn connect(
             s.get(labels.text[l]),
             labels.id[l],
             names,
-            out,
+            &mut out,
         );
     }
     for p in 0..ports.id.len() {
@@ -577,7 +764,7 @@ pub fn connect(
             s.get(ports.text[p]),
             ports.id[p],
             names,
-            out,
+            &mut out,
         );
     }
     let nsrc = src_comp.len();
@@ -618,14 +805,21 @@ pub fn connect(
                 names.get(src_text[b]),
                 bits(b).len()
             );
-            out.push(finding(Code::E011, src_obj[k], src_text[k], detail));
+            out.push(
+                c as u32,
+                finding(Code::E011, src_obj[k], src_text[k], detail),
+            );
         } else {
             let detail = format!(
                 "`{}` is shorted to `{}`",
                 names.get(src_text[k]),
                 names.get(src_text[b])
             );
-            out.push(finding(Code::E003, src_obj[k], src_text[k], detail));
+            out.push(
+                c as u32,
+                finding(Code::E003, src_obj[k], src_text[k], detail),
+            );
+            merged = true;
         }
     }
 
@@ -680,12 +874,15 @@ pub fn connect(
             let (pin, net) = (s.get(vals[0]), s.get(vals[1]));
             tmp.clear();
             if netexpr::expand(net, names, &mut tmp, &mut buf).is_err() {
-                out.push(finding(
-                    Code::E011,
-                    inst.id[i],
-                    Name::NONE,
-                    format!("`{net}` is wider than 65535 bits"),
-                ));
+                out.push(
+                    OWN_STATIC,
+                    finding(
+                        Code::E011,
+                        inst.id[i],
+                        Name::NONE,
+                        format!("`{net}` is wider than 65535 bits"),
+                    ),
+                );
                 continue;
             }
             let pin_name = names.intern(pin);
@@ -700,7 +897,10 @@ pub fn connect(
                         f.bits(p).len(),
                         tmp.len()
                     );
-                    out.push(finding(Code::E011, inst.id[i], pin_name, detail));
+                    out.push(
+                        OWN_STATIC,
+                        finding(Code::E011, inst.id[i], pin_name, detail),
+                    );
                     continue;
                 }
             }
@@ -741,7 +941,10 @@ pub fn connect(
                     "pin `{}` ({w} bits × {elems}) on a {nwidth}-bit net",
                     names.get(f.pin_name[p])
                 );
-                out.push(finding(Code::E011, inst.id[i], f.pin_name[p], detail));
+                out.push(
+                    c as u32,
+                    finding(Code::E011, inst.id[i], f.pin_name[p], detail),
+                );
                 continue;
             };
             for e in 0..elems {
@@ -876,7 +1079,6 @@ pub fn connect(
     }
 
     // ---- component rows
-    cn.net_bit_start.push(0);
     for c in 0..nc {
         cn.net_name.push(match comp_best[c] {
             NONE => {
@@ -891,12 +1093,15 @@ pub fn connect(
             }
             k => src_text[k as usize],
         });
-        cn.net_width
-            .push(comp_width[c].min(u32::from(u16::MAX)) as u16);
+        assert!(
+            comp_width[c] <= u32::from(u16::MAX),
+            "widths fit u16 (E011 above)"
+        );
+        cn.net_width.push(comp_width[c] as u16);
         cn.net_pins.push(comp_pins[c]);
+        cn.net_bit_start.push(cn.net_bits.len() as u32);
         let r = slot_start[c]..slot_start[c + 1];
         cn.net_bits.extend(r.map(|sl| net_of[sl as usize]));
-        cn.net_bit_start.push(cn.net_bits.len() as u32);
         let global = cn.bits_of(c).iter().any(|&b| cn.bit_global[b as usize]);
         cn.net_global.push(global);
     }
@@ -922,16 +1127,22 @@ pub fn connect(
             cn.bit_conns[b as usize] += 1;
         }
     }
-    let mut dom = vec![0u8; nb];
+    let (mut real, mut other) = (vec![0u32; nb], vec![0u32; nb]);
     for &(slot, d) in &pin_domain_slots {
-        dom[net_of[slot as usize] as usize] |= 1 << d as u8;
+        let b = net_of[slot as usize] as usize;
+        if d == Domain::Real {
+            real[b] += 1;
+        } else {
+            other[b] += 1;
+        }
     }
 
     // ---- findings
     // A cell's floating pins share few names (G, S, B, …): format each detail once.
     let mut unconnected: Vec<(Name, String)> = Vec::new();
     for k in 0..(labels0 - pins0) {
-        if comp_nodes[comp[pins0 + k] as usize] == 1 {
+        let c = comp[pins0 + k];
+        if comp_nodes[c as usize] == 1 {
             let i = pin_inst[k] as usize;
             let f = &ifaces[inst_iface[i] as usize];
             let pin = f.pin_name[pin_pin[k] as usize];
@@ -945,31 +1156,23 @@ pub fn connect(
                     d
                 }
             };
-            out.push(finding(Code::W004, inst.id[i], pin, detail));
+            out.push(c, finding(Code::W004, inst.id[i], pin, detail));
         }
     }
+    let mut rows = Vec::new();
     for b in 0..nb {
-        if cn.bit_conns[b] == 1 && !cn.bit_global[b] {
-            let name = cn.bit_name[b];
-            out.push(finding(
-                Code::W016,
-                ObjId::NONE,
-                name,
-                format!("net `{}` has a single connection", names.get(name)),
-            ));
-        }
-        let real = dom[b] & (1 << Domain::Real as u8) != 0;
-        if real && dom[b] & !(1 << Domain::Real as u8) != 0 {
-            let name = cn.bit_name[b];
-            out.push(finding(
-                Code::W010,
-                ObjId::NONE,
-                name,
-                format!(
-                    "net `{}` joins real and analog/digital pins",
-                    names.get(name)
-                ),
-            ));
+        bit_findings(
+            own.cell,
+            cn.bit_name[b],
+            cn.bit_global[b],
+            cn.bit_conns[b],
+            real[b],
+            other[b],
+            names,
+            &mut rows,
+        );
+        for v in rows.drain(..) {
+            out.push(OWN_BITS, v);
         }
     }
     // E009: duplicate element names.
@@ -981,40 +1184,33 @@ pub fn connect(
     for w in elems.windows(2) {
         if w[0].0 == w[1].0 {
             let detail = format!("instance name `{}` is used twice", names.get(w[1].0));
-            out.push(finding(Code::E009, w[1].1, w[1].0, detail));
+            out.push(OWN_STATIC, finding(Code::E009, w[1].1, w[1].0, detail));
         }
     }
-    // E012: ports ↔ own interface pins; E002 once when the schematic impl breaks it.
-    if !own.impl_name.is_empty() || !ports.id.is_empty() {
-        let before = out.len();
-        for p in 0..ports.id.len() {
-            let text = names.find(s.get(ports.text[p]));
-            let known = text.is_some_and(|t| own.pin_name.contains(&t));
-            if !known {
-                let detail = format!("port `{}` names no interface pin", s.get(ports.text[p]));
-                out.push(finding(
-                    Code::E012,
-                    ports.id[p],
-                    text.unwrap_or(Name::NONE),
-                    detail,
-                ));
-            }
-        }
-        for p in 0..own.pin_name.len() {
-            let has = (0..ports.id.len())
-                .any(|q| names.find(s.get(ports.text[q])) == Some(own.pin_name[p]));
-            if !has && own.pin_inherit[p] == Name::NONE && own.pin_alias[p] == NONE {
-                let detail = format!("interface pin `{}` has no port", names.get(own.pin_name[p]));
-                out.push(finding(Code::E012, ObjId::NONE, own.pin_name[p], detail));
-            }
-        }
-        if let Some(si) = own.schematic_impl(names).filter(|_| out.len() > before) {
-            let detail = format!(
-                "schematic impl `{}` ports differ from the symbol pins",
-                names.get(own.impl_name[si])
-            );
-            out.push(finding(Code::E002, ObjId::NONE, own.impl_name[si], detail));
-        }
+    port_findings(doc, own, names, &mut rows);
+    for v in rows.drain(..) {
+        out.push(OWN_PORTS, v);
+    }
+    if let Some(sd) = seed {
+        merged |= cn.ignore.contains(&Ignore::Short);
+        *sd = Seed {
+            px,
+            py,
+            comp,
+            pins0,
+            labels0,
+            ports0,
+            noconns0,
+            pin_inst,
+            pin_pin,
+            xy,
+            yx,
+            named: comp_best.iter().map(|&b| b != NONE).collect(),
+            owner: std::mem::take(&mut out.owner),
+            real,
+            other,
+            merged,
+        };
     }
     assert_eq!(cn.net_name.len(), nc);
     assert_eq!(cn.bit_name.len(), nb);
