@@ -122,18 +122,9 @@ jobs:
           path: ${{ env.CORPUS }}
           key: fuzz-${{ matrix.target }}-${{ github.run_id }}
           restore-keys: fuzz-${{ matrix.target }}-
+      # xschem_read also gets the fetched PDK files (TESTING.md: seeded with real PDK files).
       - name: seeds
-        run: |
-          mkdir -p "$CORPUS"
-          case "${{ matrix.target }}" in
-            parse) find crates/*/tests/fixtures -name '*.sh*' -type f -exec cp {} "$CORPUS"/ \; ;;
-            xschem_read)
-              # Real PDK files (TESTING.md: seeded with real PDK files) plus the hand-written set.
-              tests/corpus/fetch.sh >/dev/null
-              find tests/corpus/.cache/src tests/determinism/xschem \( -name '*.sch' -o -name '*.sym' \) \
-                -type f -size -64k | head -4000 | while read -r f; do cp "$f" "$CORPUS/$(echo "$f" | sha1sum | cut -c1-16)"; done ;;
-          esac
-          echo "$(ls "$CORPUS" | wc -l) corpus inputs"
+        run: tests/fuzz/seeds.sh ${{ matrix.target }} "$CORPUS" --fetched
       - name: fuzz ${{ matrix.target }} for ${{ env.MINUTES }} min
         working-directory: crates/${{ matrix.crate }}/fuzz
         run: >-
@@ -176,15 +167,7 @@ jobs:
         with:
           tool: cargo-fuzz
       - name: seeds (this repository only)
-        run: |
-          mkdir -p "$CORPUS"
-          case "${{ matrix.target }}" in
-            parse) find crates/*/tests/fixtures -name '*.sh*' -type f -exec cp {} "$CORPUS"/ \; ;;
-            xschem_read)
-              find tests/determinism/xschem \( -name '*.sch' -o -name '*.sym' \) -type f \
-                | while read -r f; do cp "$f" "$CORPUS/$(echo "$f" | sha1sum | cut -c1-16)"; done ;;
-          esac
-          echo "$(ls "$CORPUS" | wc -l) seed inputs"
+        run: tests/fuzz/seeds.sh ${{ matrix.target }} "$CORPUS"
       # Inputs up to 4 KiB: a corpus of small inputs replays fast in debug builds.
       - name: fuzz ${{ matrix.target }} for ${{ env.MINUTES }} min
         working-directory: crates/${{ matrix.crate }}/fuzz
