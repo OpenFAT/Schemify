@@ -36,7 +36,7 @@ Where the project stands. Update this file whenever a workstream lands or stops.
 
 ## Next
 
-1. Merge the cktImg plugin branch; run `cargo test --workspace --no-fail-fast`.
+1. Upstream the cktImg patches in `docs/upstream/` (user), bump the submodule; set `fuel` for cktimg in project manifests that import large decks.
 2. Editor parity gaps (BACKLOG "app / editor"): stretch/kissing move, poly/arc/circle, context menu, search, Save As, scrolling lists, system clipboard, crash-recovery prompt, toolbar icons.
 3. Web build end to end (OPFS VFS, runner plugin), CI determinism job, nightly fuzzing.
 4. Remaining BACKLOG items by crate.
