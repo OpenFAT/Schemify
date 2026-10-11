@@ -184,8 +184,8 @@ jobs:
           name: plugin-fixtures
           path: crates/app/tests/fixtures/ota/plugins/*.wasm
           if-no-files-found: error
-      # Every rebuilt module at its repository path (`gh run download <run> -n plugin-guests`
-      # from the repository root restores them in place).
+      # Every rebuilt module at its repository path: `gh run download <run> -n plugin-guests -D
+      # <tmp>`, then `cp -r <tmp>/. .` from the repository root (gh does not overwrite files).
       - uses: actions/upload-artifact@v4
         with:
           name: plugin-guests
