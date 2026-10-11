@@ -110,7 +110,8 @@ pub struct Item {
 /// Everything the importer reports.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Report {
-    /// Input paths, sorted; items index this.
+    /// Input paths in input order (sorted by full path), each relative to the shallowest
+    /// search-path root containing it (`devices/res.sym`); items index this.
     pub files: Vec<String>,
     /// Input records per file (top level plus embedded bodies).
     pub records_in: Vec<u32>,

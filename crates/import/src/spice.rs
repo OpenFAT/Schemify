@@ -11,11 +11,16 @@
 //!   `f`; `.lib s … .endl` defines a section. Relative paths resolve against the including
 //!   file, then the search directories. Includes are followed to [`MAX_INCLUDE_DEPTH`],
 //!   cycles are cut and reported, and a (file, section) pair is read once.
-//! - `.if`/`.else`/`.endif` are not evaluated: every branch is scanned.
+//! - `.if`/`.elseif`/`.else`/`.endif` pick their branch when the condition evaluates over
+//!   the numeric `.param`s read so far (expression language, names lowercased); a
+//!   condition that does not evaluate keeps every branch of its block, as ngspice's
+//!   choice cannot be known then.
 //! - OSDI evidence: `osdi`/`pre_osdi` commands, `N` device lines, and `.model` types that
 //!   are not built into ngspice or XSPICE.
 
 use std::path::{Component, Path, PathBuf};
+
+use schemify_expr::{Mode, Program, Scratch, Value};
 
 use crate::{Span, push_span};
 
@@ -175,13 +180,13 @@ pub enum LineKind {
     Control,
     /// `osdi` / `pre_osdi` command.
     Osdi,
-    /// `.if` / `.elseif` / `.else` / `.endif` (not evaluated).
+    /// `.if` / `.elseif` / `.else` / `.endif`.
     Conditional,
     /// Any other dot command (`.option`, `.temp`, …).
     OtherDirective,
     /// A device line.
     Device,
-    /// A line inside a section that is not being read.
+    /// A line inside a section that is not being read, or in an `.if` branch not taken.
     Inactive,
     /// Anything else (stray `+`, junk).
     Other,
@@ -434,6 +439,7 @@ impl ModelScan {
             found: false,
             control: false,
             subckts: Vec::new(),
+            conds: Vec::new(),
         };
         let mut pending: Option<(u32, String)> = None;
         for (i, physical) in text.lines().enumerate() {
@@ -508,6 +514,14 @@ impl ModelScan {
             None => cx.region == Region::Outside,
         };
         if !active {
+            return self.count(LineKind::Inactive);
+        }
+        if matches!(first.as_str(), ".if" | ".elseif" | ".else" | ".endif") {
+            let cond = text.trim_start().get(first.len()..).unwrap_or("").trim();
+            self.conditional(cx, &first, cond);
+            return self.count(LineKind::Conditional);
+        }
+        if cx.conds.iter().any(|c| !c.active) {
             return self.count(LineKind::Inactive);
         }
         let subckt = cx.subckts.last().copied().unwrap_or(TOP_LEVEL);
@@ -594,9 +608,6 @@ impl ModelScan {
                     self.params.line.push(line);
                 }
             }
-            // ponytail: every branch is scanned, so bins of all branches union; evaluate
-            // `.if` with the expr crate if a PDK ever gates bins on parameters.
-            ".if" | ".elseif" | ".else" | ".endif" => self.count(LineKind::Conditional),
             f if f.starts_with('.') => self.count(LineKind::OtherDirective),
             f if f.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) => {
                 self.count(LineKind::Device);
@@ -679,6 +690,66 @@ impl ModelScan {
             kind,
             detail,
         });
+    }
+
+    /// Opens, switches or closes an `.if` block of `cx` (`first` lowercased, `cond` the
+    /// condition text). A block inside an inactive branch takes no branch.
+    fn conditional(&self, cx: &mut FileState, first: &str, cond: &str) {
+        let depth = cx.conds.len();
+        match first {
+            ".if" => {
+                let outer = cx.conds.iter().all(|c| c.active);
+                let v = if outer {
+                    self.eval_cond(cond)
+                } else {
+                    Some(false)
+                };
+                cx.conds.push(Cond {
+                    active: v.unwrap_or(true),
+                    taken: v.unwrap_or(true) || !outer,
+                    known: v.is_some(),
+                });
+            }
+            ".endif" => {
+                cx.conds.pop(); // an unbalanced `.endif` closes nothing
+            }
+            _ => {
+                if let Some(c) = cx.conds.last_mut() {
+                    if first == ".elseif" && c.known && !c.taken {
+                        let v = self.eval_cond(cond);
+                        *c = Cond {
+                            active: v.unwrap_or(true),
+                            taken: v.unwrap_or(false),
+                            known: v.is_some(),
+                        };
+                    } else {
+                        c.active = !c.known || !c.taken;
+                        c.taken = true;
+                    }
+                }
+            }
+        }
+        assert!(cx.conds.len().abs_diff(depth) <= 1);
+    }
+
+    /// The value of an `.if` condition over the numeric `.param`s read so far (the last
+    /// assignment of each name wins); `None` when it does not compile, names a parameter
+    /// without a numeric value, or is not a `bool`.
+    fn eval_cond(&self, cond: &str) -> Option<bool> {
+        let src = cond.to_ascii_lowercase();
+        let prog = Program::compile(&src, Mode::Scalar).ok()?;
+        let mut inputs = Vec::with_capacity(prog.idents().len());
+        for id in prog.idents() {
+            let row = (0..self.params.name.len())
+                .rev()
+                .find(|&r| self.str(self.params.name[r]) == id)?;
+            inputs.push(Value::Num(parse_number(self.str(self.params.value[row]))?));
+        }
+        let mut scratch = Scratch::default();
+        match prog.eval(&inputs, &mut scratch).ok()? {
+            Value::Bool(b) => Some(b),
+            _ => None,
+        }
     }
 
     /// Returns `span`'s text from [`ModelScan::names`].
@@ -783,6 +854,19 @@ struct FileState<'s> {
     found: bool,
     control: bool,
     subckts: Vec<u32>,
+    /// Open `.if` blocks, outermost first.
+    conds: Vec<Cond>,
+}
+
+/// One open `.if` block.
+#[derive(Clone, Copy, Debug)]
+struct Cond {
+    /// Lines of the current branch are read.
+    active: bool,
+    /// A branch was taken already: later `.elseif`/`.else` branches are not.
+    taken: bool,
+    /// Every condition so far evaluated; otherwise all branches are read.
+    known: bool,
 }
 
 /// Returns a BSIM bin model's family name: `name` minus a trailing `.<digits>`.
@@ -986,10 +1070,100 @@ fn normalize(p: &Path) -> PathBuf {
     out
 }
 
+/// The ngspice `sourcepath` a `.spiceinit` sets, for [`ScanOptions::search_dirs`]: the
+/// words of every `set sourcepath = ( … )` / `setcs …` line in file order, each line
+/// replacing the value and `$sourcepath` in it standing for the value so far; then
+/// duplicates dropped (first kept). Other `$NAME`s are kept as written: the caller
+/// expands them (IHP: `$PDK_ROOT/$PDK/libs.tech/ngspice/models`). `*` lines are
+/// comments. Cost: one pass over `text`.
+///
+/// # Examples
+///
+/// ```
+/// use schemify_import::spice::spiceinit_sourcepath;
+/// let init = "* IHP\nsetcs sourcepath = ( $sourcepath $PDK_ROOT/models )\nsetcs sourcepath = ( $sourcepath $PDK_ROOT/io )\n";
+/// assert_eq!(spiceinit_sourcepath(init), ["$PDK_ROOT/models", "$PDK_ROOT/io"]);
+/// ```
+pub fn spiceinit_sourcepath(text: &str) -> Vec<String> {
+    let mut path: Vec<String> = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('*') {
+            continue;
+        }
+        let spaced = line.replace(['=', '(', ')'], " ");
+        let mut words = spaced.split_whitespace();
+        let set = words
+            .next()
+            .is_some_and(|w| w.eq_ignore_ascii_case("set") || w.eq_ignore_ascii_case("setcs"));
+        if !set
+            || !words
+                .next()
+                .is_some_and(|w| w.eq_ignore_ascii_case("sourcepath"))
+        {
+            continue;
+        }
+        let mut next: Vec<String> = Vec::new();
+        for w in words {
+            match w {
+                "$sourcepath" | "${sourcepath}" => next.extend(path.iter().cloned()),
+                w => next.push(w.to_owned()),
+            }
+        }
+        path = next;
+    }
+    let mut out: Vec<String> = Vec::with_capacity(path.len());
+    for p in path {
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    assert!(out.iter().all(|p| !p.is_empty()));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn if_blocks_pick_their_branch() {
+        let lib = ".param mc_switch=0 corner=2\n.if (mc_switch == 1)\n.model a.0 nmos lmin=1e-6 lmax=2e-6\n.elseif (CORNER == 2)\n.model b.0 nmos lmin=3e-6 lmax=4e-6\n.else\n.model c.0 nmos lmin=5e-6 lmax=6e-6\n.endif\n.if (unknown_p > 0)\n.model d.0 nmos lmin=7e-6 lmax=8e-6\n.else\n.model e.0 nmos lmin=9e-6 lmax=1e-5\n.endif\n.else\n.endif\n";
+        let s = scan(
+            Path::new("m.lib"),
+            &ScanOptions::default(),
+            fs(&[("m.lib", lib)]),
+        );
+        let names: Vec<&str> = s.models.name.iter().map(|n| s.str(*n)).collect();
+        // The taken branch only; a condition naming an unknown parameter keeps both
+        // branches; unbalanced `.else`/`.endif` lines switch nothing.
+        assert_eq!(names, ["b.0", "d.0", "e.0"]);
+        assert_eq!(s.line_counts[LineKind::Inactive as usize], 2);
+        assert_eq!(s.line_counts[LineKind::Conditional as usize], 9);
+    }
+
+    #[test]
+    fn spiceinit_sourcepath_lines() {
+        // IHP's `.spiceinit` shape: two appends of `$sourcepath`, a commented echo.
+        let init = "*  a custom spiceinit\nsetcs sourcepath = (  $sourcepath $PDK_ROOT/$PDK/libs.tech/ngspice/models $PDK_ROOT/ihp-sg13g2/libs.ref/sg13g2_stdcell/spice )\nsetcs sourcepath = (  $sourcepath $PDK_ROOT/$PDK/libs.tech/ngspice/models $PDK_ROOT/ihp-sg13g2/libs.ref/sg13g2_io/spice )\n*echo $sourcepath\noption tnom=28\n";
+        assert_eq!(
+            spiceinit_sourcepath(init),
+            [
+                "$PDK_ROOT/$PDK/libs.tech/ngspice/models",
+                "$PDK_ROOT/ihp-sg13g2/libs.ref/sg13g2_stdcell/spice",
+                "$PDK_ROOT/ihp-sg13g2/libs.ref/sg13g2_io/spice",
+            ]
+        );
+        // A plain `set` replaces the value; other lines and comments are ignored.
+        assert_eq!(
+            spiceinit_sourcepath(
+                "set sourcepath=(a b)\n* set sourcepath = ( c )\nset sourcepath = ( d $sourcepath )\nset other = ( e )\n"
+            ),
+            ["d", "a", "b"]
+        );
+        assert!(spiceinit_sourcepath("osdi x.osdi\n").is_empty());
+    }
 
     fn fs(files: &[(&str, &str)]) -> impl FnMut(&Path) -> Option<String> + use<> {
         let map: BTreeMap<PathBuf, String> = files

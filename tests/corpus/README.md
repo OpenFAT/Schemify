@@ -93,7 +93,11 @@ canonicalized and parameter names in scope replaced by their values (SPICE
 evaluates them in the instance's scope: `v(a)/ron` with `ron=0.1` *is*
 `v(a)/0.1`). Control nodes of B/E/G sources (`v(a,b)` arguments, the `2·N`
 nodes after `poly(N)`/`pwl(N)`/`and(N)`/…) and the extra bare nodes of CDL
-multi-terminal R/C/D are terminals, not text. Known blind spots: 1-WL cannot
+multi-terminal R/C/D are terminals, not text. A subckt call's scope follows
+ngspice 45: top-level `.param`s, then the call's overrides, then the subckt's
+other defaults evaluated after them (`r='w*l'` sees the call's `w`); a bare word
+after a `.subckt` line's parameters (`delay=200 ps`) is ignored, as ngspice
+ignores it (both checked by running ngspice 45). Known blind spots: 1-WL cannot
 separate some highly regular graphs (it also lets a `.save` of one of two
 automorphic nets match the other), and F/H/K references keep instance names as
 text.

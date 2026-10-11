@@ -4,14 +4,17 @@
 //!
 //! ```text
 //! devicereader <lib-dir>... [--root <dir>]... [--models <file>[:<section>]]...
-//!              [--tech <file>] [--cdf <dump>] [--xschemrc <file>]... [--no-core] -o <out-dir>
+//!              [--spiceinit <file>] [--tech <file>] [--cdf <dump>] [--xschemrc <file>]...
+//!              [--no-core] -o <out-dir>
 //! ```
 //!
 //! Each `<lib-dir>` is one element of the xschem library search path, in the order
 //! given, and every `.sym`/`.sch` under it is converted. `--root` adds a search-path
 //! element whose files are only referenced (xschem's `xschem_library` parent, so that
 //! `devices/res.sym` resolves) — they must also be under some `<lib-dir>`. `--xschemrc` (repeatable: pass
-//! `xschem-drc` too) supplies PDK path variables and `drc` procs. Writes the outputs
+//! `xschem-drc` too) supplies PDK path variables and `drc` procs. `--spiceinit` reads an
+//! ngspice `.spiceinit`: its `sourcepath` (`$VAR`s from the environment) is where model
+//! includes are looked up. A Magic `--tech` file's `include`s are read beside it. Writes the outputs
 //! (`<lib>/<cell>.<ext>`, `schemify.project`, `import-report.{md,txt}`) and prints a
 //! summary. Exit status: 0 ok, 1 an output failed its check, 2 usage or I/O error.
 
@@ -25,6 +28,7 @@ struct Args {
     dirs: Vec<(PathBuf, bool)>,
     models: Vec<(PathBuf, Option<String>)>,
     tech: Option<PathBuf>,
+    spiceinit: Option<PathBuf>,
     cdf: Option<PathBuf>,
     rcs: Vec<PathBuf>,
     core: bool,
@@ -34,7 +38,8 @@ struct Args {
 fn usage() -> u8 {
     eprintln!(
         "usage: devicereader <lib-dir>... [--root <dir>]... [--models <file>[:<section>]]... \
-         [--tech <file>] [--cdf <dump>] [--xschemrc <file>]... [--no-core] -o <out-dir>"
+         [--spiceinit <file>] [--tech <file>] [--cdf <dump>] [--xschemrc <file>]... \
+         [--no-core] -o <out-dir>"
     );
     2
 }
@@ -44,6 +49,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
         dirs: Vec::new(),
         models: Vec::new(),
         tech: None,
+        spiceinit: None,
         cdf: None,
         rcs: Vec::new(),
         core: true,
@@ -64,6 +70,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
             }
             "--root" => a.dirs.push((PathBuf::from(it.next()?), false)),
             "--tech" => a.tech = Some(PathBuf::from(it.next()?)),
+            "--spiceinit" => a.spiceinit = Some(PathBuf::from(it.next()?)),
             "--cdf" => a.cdf = Some(PathBuf::from(it.next()?)),
             "--xschemrc" => a.rcs.push(PathBuf::from(it.next()?)),
             "--no-core" => a.core = false,
@@ -93,6 +100,33 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
             out.push(p);
         }
     }
+}
+
+/// `text` with every `$NAME` / `${NAME}` replaced from the environment; `None` when one
+/// is undefined.
+fn expand_env(text: &str) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find('$') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        let (name, tail) = match after.strip_prefix('{') {
+            Some(b) => {
+                let end = b.find('}')?;
+                (&b[..end], &b[end + 1..])
+            }
+            None => {
+                let end = after
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .unwrap_or(after.len());
+                (&after[..end], &after[end..])
+            }
+        };
+        out.push_str(&std::env::var(name).ok()?);
+        rest = tail;
+    }
+    out.push_str(rest);
+    Some(out)
 }
 
 fn slash(p: &Path) -> String {
@@ -144,13 +178,28 @@ pub fn run(args: &[String]) -> u8 {
         }
         procs.extend(tcl::drc_procs(&text));
     }
+    let search_dirs: Vec<PathBuf> = args
+        .spiceinit
+        .as_ref()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|t| spice::spiceinit_sourcepath(&t))
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|d| match expand_env(d) {
+            Some(d) => Some(PathBuf::from(d)),
+            None => {
+                eprintln!("import: sourcepath {d}: undefined variable, skipped");
+                None
+            }
+        })
+        .collect();
     let scans: Vec<spice::ModelScan> = args
         .models
         .iter()
         .map(|(p, section)| {
             let opts = spice::ScanOptions {
                 section: section.as_deref(),
-                search_dirs: &[],
+                search_dirs: &search_dirs,
             };
             let s = spice::scan(p, &opts, |q| std::fs::read_to_string(q).ok());
             eprintln!(
@@ -170,7 +219,18 @@ pub fn run(args: &[String]) -> u8 {
         if t.extension().is_some_and(|x| x == "lyt") {
             tech::read_lyt(&text).ok()?.default_grid_pm
         } else {
-            tech::read_magic(&text).manufacturing_grid_pm()
+            // Magic splices `include`d files in; they sit beside the tech file.
+            let dir = t.parent().unwrap_or(Path::new(""));
+            let read = |n: &str| {
+                std::fs::read_to_string(dir.join(n))
+                    .or_else(|_| std::fs::read_to_string(dir.join(format!("{n}.tech"))))
+                    .ok()
+            };
+            let magic = tech::read_magic_with(&text, read);
+            for n in &magic.unresolved {
+                eprintln!("import: tech include {n}: not found beside {}", t.display());
+            }
+            magic.manufacturing_grid_pm()
         }
     });
     let cdf = args

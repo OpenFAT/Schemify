@@ -2839,6 +2839,27 @@ impl<'o> Tables<'o> {
         write(&d)
     }
 
+    /// `path` relative to the shallowest search-path root that contains it (as given when
+    /// none does), so a report reads the same on every machine (D32): the roots are
+    /// where the checkout or PDK sits.
+    fn report_path(&self, path: &str) -> String {
+        let root = self
+            .opts
+            .roots
+            .iter()
+            .map(|r| normalize(r))
+            .filter(|r| {
+                !r.is_empty()
+                    && path.len() > r.len()
+                    && path.starts_with(r.as_str())
+                    && path.as_bytes()[r.len()] == b'/'
+            })
+            .min_by_key(String::len);
+        let rel = root.as_ref().map_or(path, |r| &path[r.len() + 1..]);
+        assert!(root.is_none() || !rel.starts_with('/'));
+        rel.to_owned()
+    }
+
     fn finish(&self, files: &[(String, Vec<u8>)], mut acc: Acc) -> Report {
         // Symbols that became no cell: their records are carried by the records
         // their instances became (labels, ports, code) or by the core cell.
@@ -2872,7 +2893,11 @@ impl<'o> Tables<'o> {
         outputs.push("import-report.txt".into());
         outputs.sort();
         Report {
-            files: self.srcs.iter().map(|s| s.path.clone()).collect(),
+            files: self
+                .srcs
+                .iter()
+                .map(|s| self.report_path(&s.path))
+                .collect(),
             records_in: self.srcs.iter().map(|s| records_in(&s.file)).collect(),
             records_out: acc.out,
             items: acc.items,

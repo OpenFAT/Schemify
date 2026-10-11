@@ -8,7 +8,8 @@
 //! - `.tech`: in the `cifoutput`/`cifinput` sections, each `style` with its
 //!   `scalefactor <n> [nanometers|angstroms]` (default unit: centimicrons) and
 //!   `gridlimit <n>` (in the same unit). The manufacturing grid is the first
-//!   `cifoutput` style's `gridlimit`. `include` lines are listed, not followed.
+//!   `cifoutput` style's `gridlimit`. `include` lines are listed by [`read_magic`] and
+//!   spliced in, through a caller loader, by [`read_magic_with`].
 
 use crate::decimal::parse_scaled;
 
@@ -163,8 +164,12 @@ pub struct CifStyles {
 pub struct MagicTech {
     /// CIF styles.
     pub styles: CifStyles,
-    /// Files named by `include` lines (not followed).
+    /// Files named by `include` lines: listed by [`read_magic`], spliced in (and listed)
+    /// by [`read_magic_with`].
     pub includes: Vec<String>,
+    /// `include` names [`read_magic_with`] could not load, or cut as a cycle or past
+    /// [`MAGIC_INCLUDE_DEPTH`].
+    pub unresolved: Vec<String>,
     /// Lines of `scalefactor`/`gridlimit` whose value is not a usable number.
     pub bad_lines: Vec<u32>,
 }
@@ -202,8 +207,7 @@ pub fn read_magic(text: &str) -> MagicTech {
             continue;
         }
         match (section, first) {
-            // ponytail: listed, not followed (IHP splits CIF sections into included files);
-            // the caller reads them. Add a loader like `spice::scan` if more PDKs do this.
+            // Listed only; `read_magic_with` splices included files in before this runs.
             (None, "include") => t.includes.extend(words.next().map(str::to_string)),
             (None, s) => {
                 section = Some(match s {
@@ -253,6 +257,80 @@ pub fn read_magic(text: &str) -> MagicTech {
     t
 }
 
+/// Deepest chain of Magic `include`s [`read_magic_with`] follows.
+pub const MAGIC_INCLUDE_DEPTH: u8 = 8;
+
+/// Reads a Magic `.tech` file with every top-level `include <name>` replaced by the text
+/// `load(name)` returns, as Magic does (IHP keeps its CIF sections in included files).
+/// [`MagicTech::includes`] lists the names spliced in, in order; a name `load` cannot
+/// provide, already in the include chain, or past [`MAGIC_INCLUDE_DEPTH`] is listed in
+/// [`MagicTech::unresolved`] and skipped. Line numbers count the spliced text.
+///
+/// # Examples
+///
+/// ```
+/// use schemify_import::tech::read_magic_with;
+/// let t = read_magic_with("tech\nend\ninclude cif\n", |n| {
+///     (n == "cif").then(|| "cifoutput\nstyle gds\n scalefactor 10 nanometers\n gridlimit 5\nend\n".to_string())
+/// });
+/// assert_eq!((t.manufacturing_grid_pm(), t.includes.as_slice()), (Some(5_000), &["cif".to_string()][..]));
+/// ```
+pub fn read_magic_with(text: &str, mut load: impl FnMut(&str) -> Option<String>) -> MagicTech {
+    let mut spliced = String::with_capacity(text.len());
+    let (mut includes, mut unresolved) = (Vec::new(), Vec::new());
+    splice(
+        text,
+        &mut load,
+        &mut Vec::new(),
+        &mut spliced,
+        (&mut includes, &mut unresolved),
+    );
+    let mut t = read_magic(&spliced);
+    t.includes = includes;
+    t.unresolved = unresolved;
+    assert!(
+        t.includes
+            .iter()
+            .chain(&t.unresolved)
+            .all(|n| !n.is_empty())
+    );
+    t
+}
+
+/// Appends `text` to `out` with its top-level `include` lines replaced (see
+/// [`read_magic_with`]); `chain` holds the names being included.
+fn splice(
+    text: &str,
+    load: &mut impl FnMut(&str) -> Option<String>,
+    chain: &mut Vec<String>,
+    out: &mut String,
+    (includes, unresolved): (&mut Vec<String>, &mut Vec<String>),
+) {
+    assert!(chain.len() <= usize::from(MAGIC_INCLUDE_DEPTH));
+    for raw in text.lines() {
+        let mut words = raw.split_whitespace();
+        let name = match (words.next(), words.next()) {
+            (Some("include"), Some(name)) => name.to_owned(),
+            _ => {
+                out.push_str(raw);
+                out.push('\n');
+                continue;
+            }
+        };
+        let body = (chain.len() < usize::from(MAGIC_INCLUDE_DEPTH) && !chain.contains(&name))
+            .then(|| load(&name))
+            .flatten();
+        let Some(body) = body else {
+            unresolved.push(name);
+            continue;
+        };
+        includes.push(name.clone());
+        chain.push(name);
+        splice(&body, load, chain, out, (&mut *includes, &mut *unresolved));
+        chain.pop();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,5 +367,28 @@ mod tests {
         assert_eq!(t.includes, ["ihp-cifout"]);
         assert_eq!(t.bad_lines, [16]);
         assert_eq!(read_magic("").manufacturing_grid_pm(), None);
+    }
+
+    #[test]
+    fn magic_includes_are_spliced_in_place() {
+        let files = [
+            ("a", "include b\ninclude missing\n"),
+            (
+                "b",
+                "cifoutput\nstyle gds\n scalefactor 10 nanometers\n gridlimit 5\nend\ninclude a\n",
+            ),
+        ];
+        let load = |n: &str| files.iter().find(|f| f.0 == n).map(|f| f.1.to_string());
+        let t = read_magic_with("tech\nend\ninclude a\n", load);
+        assert_eq!(t.manufacturing_grid_pm(), Some(5_000));
+        assert_eq!(t.includes, ["a", "b"]);
+        // `a` again (a cycle) and an unloadable name are reported, not followed.
+        assert_eq!(t.unresolved, ["a", "missing"]);
+        // Without a loader the include is only listed, and nothing is spliced.
+        let plain = read_magic("include a\n");
+        assert_eq!(
+            (plain.includes.len(), plain.manufacturing_grid_pm()),
+            (1, None)
+        );
     }
 }

@@ -39,9 +39,9 @@ Implements D1, D14, D24, D33, D40. Readers: `crates/import` (`xschem`, `attr`, `
 ### 2.1 Device limits (D14)
 
 Limits go on parameters named `L`/`W` (any case) as `min`/`max`/`grid` expressions in the parameter's own unit: a default with an SI suffix or below 1e-3 is metres (gf180 `0.28u`), a plain default ≥ 1e-3 is micrometres (sky130 `L=0.15` with `.option scale=1e-6`).
-- **Model cards:** the SPICE name is the `format` word holding `@model` with the template `model` substituted (`sky130_fd_pr__@model`); bins of every scanned model under that name (`spice::ModelScan::bins_of`) → the envelope `[min lmin, max lmax]` / `[min wmin, max wmax]` (`ponytail:` gaps between bins are not representable).
+- **Model cards:** the SPICE name is the `format` word holding `@model` with the template `model` substituted (`sky130_fd_pr__@model`); bins of every scanned model under that name (`spice::ModelScan::bins_of`) → the envelope `[min lmin, max lmax]` / `[min wmin, max wmax]` (`ponytail:` gaps between bins are not representable). The scanner follows `.include`/`.lib` through the including file's directory, then the ngspice `sourcepath` of a `.spiceinit` (`spice::spiceinit_sourcepath`: `set`/`setcs sourcepath = ( … )` lines, `$sourcepath` appends; `devicereader --spiceinit`); `.if`/`.elseif`/`.else` blocks take the branch their condition selects over the numeric `.param`s read so far, and keep every branch when it does not evaluate.
 - **`drc=` procs:** the call's words map the proc's formal arguments to `@params`; the arm of `switch -regexp $model` matching the template's `model` default supplies rules `if { $v < N }` → `min`, `> N` → `max`. `regsub {u$} $v {} v` marks thresholds ≥ 1e-3 as micrometres (`0.13` → `0.13u` for a metre parameter); `set v [expr {double($v)/double($d)}]` makes the bound per finger (`0.42*nf`), skipped when a guarding `if {![regexp {RE} $symbol]}` matches the symbol file name. Any other line, a proc without a `switch`, or an unknown proc → `needs_review` (the recognised rules still apply).
-- **Grid:** the tech file's manufacturing grid (KLayout default grid, Magic `cifoutput` `gridlimit`) → `grid` (`5n` or `0.005`).
+- **Grid:** the tech file's manufacturing grid (KLayout default grid, Magic `cifoutput` `gridlimit`, with Magic `include`d files spliced in at their line: `tech::read_magic_with`) → `grid` (`5n` or `0.005`).
 - Several bounds on one attribute combine to the tightest (`max(…)` of minima).
 - **CDF (`cdfDump`):** radio/cyclic parameters of a same-named cell set `choice` and `choices` on a same-named `string` parameter; callbacks → `needs_review`.
 
@@ -135,6 +135,8 @@ Symbol `T` texts become `stext` templates the same way; only `name`, `cell` and 
 `import-report.md` (tables) and `import-report.txt` (tab-separated: `class file line records detail`; `file` lines give records in/out per input). Item classes: `needs_review:<reason>` (`tcl expression pin-token builtin-token drc instance-text missing-symbol unsupported name port`), `dropped:<reason>` (`malformed not-a-cell mapped-to-core schematic-graphic display-only zero-length-wire non-electrical other-netlister-text symbol-wire-or-instance layer-out-of-range embedded-symbol in-bench-copy spice-ignore`), `rounding`, `unknown-token`, `alt-cell` (alternate, variant and bench-copy cells); plus unused instance attributes by key and the `devices`→`core` instance counts.
 
 **Count conservation** (asserted per input file): records in (top level plus embedded bodies) = records out (emitted as a record, or folded into one: `v`, `K`, comments, pin boxes) + records reported (each item states how many records it accounts for; field-level items account for none). Re-translations for alternate cells and bench copies are not counted twice.
+
+**Paths** in both reports are relative to the shallowest search-path root (`Options::roots`) containing the input (`devices/res.sym`; as given when no root does), so the reports are byte-identical across machines and platforms and the determinism job compares them (D32).
 
 ## 8. Resolved questions (golden evidence)
 
