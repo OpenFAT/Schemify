@@ -7,7 +7,9 @@ mod common;
 
 use common::*;
 use proptest::prelude::*;
-use schemify_doc::{Code, Edit, Mode, Op, Outcome, Project, Transaction};
+use schemify_doc::{
+    Code, Edit, Mode, Op, Outcome, Project, Transaction, apply_edits, apply_edits_report,
+};
 
 fn stage_tx(ops: Vec<Op>) -> Edit {
     Edit::Tx(Transaction {
@@ -153,6 +155,71 @@ proptest! {
     fn edits_match_the_naive_model(seed: u64) {
         check_model(seed, 150);
     }
+}
+
+/// `apply_edits_report` oracle: the reported ops, committed as one transaction to a
+/// mirror document that saw every earlier report, reproduce the edited document after
+/// every request (commits, undo, redo, stage, accept, reject, rejections); requests
+/// that change nothing report no ops.
+#[test]
+fn reported_ops_replay_to_the_same_document() {
+    for seed in 0..24 {
+        let mut rng = Mix::new(seed);
+        let (mut p, h) = open(SEED_DOC, "cell.shcomp");
+        let (mut mirror, m) = open(SEED_DOC, "cell.shcomp");
+        let mut stages: Vec<u16> = Vec::new();
+        let (mut changed, mut unchanged) = (0u32, 0u32);
+        for step in 0..120 {
+            let ctx = format!("seed {seed} step {step}");
+            let edit = match rng.below(10) {
+                0..=4 => tx((0..1 + rng.below(3))
+                    .map(|_| gen_op(&mut rng, p.doc(h).unwrap()))
+                    .collect()),
+                5 => Edit::Undo,
+                6 => Edit::Redo,
+                7 => stage_tx(vec![gen_op(&mut rng, p.doc(h).unwrap())]),
+                8 if !stages.is_empty() => Edit::Accept(stages.remove(0)),
+                _ => Edit::Reject(stages.pop().unwrap_or(u16::MAX)),
+            };
+            let before = canon(&p, h);
+            let applied = apply_edits_report(&mut p, &[req(h, edit)]).remove(0);
+            if let Outcome::Staged { stage } = applied.outcome {
+                stages.push(stage);
+            }
+            let after = canon(&p, h);
+            if applied.ops.is_empty() {
+                assert_eq!(before, after, "no ops, no change: {ctx} {applied:?}");
+                unchanged += 1;
+                continue;
+            }
+            assert!(
+                matches!(
+                    applied.outcome,
+                    Outcome::Committed { .. } | Outcome::Undone { .. } | Outcome::Redone { .. }
+                ),
+                "{ctx} {applied:?}"
+            );
+            let out = run(&mut mirror, m, tx(applied.ops.clone()));
+            assert!(matches!(out, Outcome::Committed { .. }), "{ctx} {out:?}");
+            assert_eq!(canon(&mirror, m), after, "{ctx} {applied:?}");
+            changed += 1;
+        }
+        assert!(
+            changed > 20 && unchanged > 0,
+            "seed {seed}: {changed}/{unchanged}"
+        );
+    }
+    // The plain entry point reports the same outcomes.
+    let (mut p, h) = open(SEED_DOC, "cell.shcomp");
+    let (mut q, g) = open(SEED_DOC, "cell.shcomp");
+    let mut rng = Mix::new(99);
+    for _ in 0..40 {
+        let ops = vec![gen_op(&mut rng, p.doc(h).unwrap())];
+        let a = apply_edits(&mut p, &[req(h, tx(ops.clone()))]).remove(0);
+        let b = apply_edits_report(&mut q, &[req(g, tx(ops))]).remove(0);
+        assert_eq!(a, b.outcome);
+    }
+    assert_eq!(canon(&p, h), canon(&q, g));
 }
 
 #[test]

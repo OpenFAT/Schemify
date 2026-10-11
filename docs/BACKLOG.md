@@ -4,16 +4,14 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## Cross-crate API requests
 
-- **doc**: resolve a reference from a cell row; "is this row open" query; optionally have `apply_edits` report the changed records so callers don't pass ops back (elab).
-- **doc**: a `journal` file kind or a public lexer in `format` (doc currently parses journal/op text through format's newer-version mode).
-- **expr**: topological sort that reports every cycle in one pass (elab cuts one cycle per pass).
+- **elab**: adopt the doc and expr APIs that replaced its workarounds: `Project::resolve_in(row, ref)` and `Project::open_handle(row)` (for `cells::resolve_in_row` / `is_open`), `apply_edits_report` (ops of commits, undos and redos, instead of the caller passing ops back), `expr::topo_order_all` (every cycle in one pass, instead of `Graph::finish` cutting one cycle per round).
 - **plugin**, **ui**: switch the local line-record lexers to `schemify-format`.
 
 ## app / editor
 
 - **Tests open fixtures in place**, so a journal left by using the GUI on a fixture (`fixtures/*/.schemify/journal`) is replayed as crash recovery and breaks `tests/docs.rs` (happened 2026-10-10). Copy fixtures into a temp dir per test.
 
-- **doc**: keep rank 2 (symbol graphics) in indexed interfaces (`parse_prefix(bytes, 2)`); the editor currently opens every instantiated cell to get its symbol.
+- **app**: `load_symbols` opens every instantiated cell to get its symbol; the library index now keeps rank 2 (`Project::interface(row)` has the symbol graphics, `Project::open_handle(row)` says whether the cell is open), so the editor can draw instances from the index.
 - **ui**: text fields commit only on Enter (the app copies typed text every frame).
 - Editor gaps vs xschem (after the parity pass, `tests/parity.rs`): partial wire selection (xschem's Ctrl+drag box selects only the inside ends of crossing wires; here a stretch follows wire ends on moved connection points); vertex editing of a selected wire/line/polygon/rect corner; symbol `stext` orientation (only schematic `text` records turn); the context menu closes with Esc or a row, not a click outside; recent files outside the current project do not open (one project per session); layer colors, dim and line width are not persisted (set them in `init.lua`: `schemify.opt` has no keys for them yet); the web build has no system clipboard (D2 glue) and no exports to disk (OPFS); plugin I/O capabilities fetch/clipboard in the app.
 - **Exports**: PDF/EPS text uses the base-14 Helvetica (not embedded, ASCII only, others print `?`); one A4 landscape page per drawing; arcs are polylines of 6° steps; the PNG is the visible canvas at screen resolution (no DPI/size option).
@@ -117,7 +115,6 @@ for it; the goal set for this work was ≤ 1 ms).
 ## Correctness / semantics
 
 - **elab**: `E002` doesn't yet compare a SPICE `body`'s `.subckt` ports with the symbol pins; `global true` names are gathered from every reachable schematic, including unselected impls; `net_<id>` may collide with a user label of the same spelling; `CellState` doesn't observe edits to other documents.
-- **format**: verbatim blocks merge as a unit (line-level diff3 is the upgrade); a clean merge can still violate kind rules (doc/elab must check).
 - **plugin**: an earlier plugin's `set X p` survives a later full redefinition of node `X`; no auto-quarantine of repeatedly trapping plugins.
 - **ui**: status text that changes every frame grows the string table; IME candidate window not positioned.
 - **wave**: per-sweep-step readouts; FFT traces share the time-domain x axis.

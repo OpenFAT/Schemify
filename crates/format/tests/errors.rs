@@ -146,6 +146,25 @@ fn e027_unknown_record() {
 }
 
 #[test]
+fn journal_files_keep_every_record_at_version_1() {
+    // The same records are E027 in a design file, kept (word, fields, attributes, verbatim
+    // lines, comments, file order) in a journal, and written back unchanged.
+    let body = "tx 3 17 \"move it\"\n  | set_attr inst 0abc at 1 2 R0\n\n# why\ninverse 3\n  knob 1\n  | put inst 0abc ./x\n\ntx 2 1 b\n";
+    fails(&format!("{BENCH}{body}"), Code::E027, 2, 1);
+    let text = format!("schemify 1 journal\n\n{body}");
+    let doc = parse(text.as_bytes()).expect("journal records are free-form");
+    assert_eq!(doc.kind(), schemify_format::FileKind::Journal);
+    assert_eq!(doc.record_count(), 4);
+    let words: Vec<&str> = (1..4).map(|r| doc.record_word(r)).collect();
+    assert_eq!(words, ["tx", "inverse", "tx"]);
+    assert!((1..4).all(|r| doc.record_kind(r) == schemify_format::RecordKind::Unknown));
+    assert_eq!(doc.comments(2).collect::<Vec<_>>(), [" why"]);
+    assert_eq!(schemify_format::write(&doc), text);
+    // Lexical errors still apply.
+    fails("schemify 1 journal\ntx \"open\n", Code::E028, 2, 0);
+}
+
+#[test]
 fn e028_lexical() {
     fails("\u{feff}schemify 1 shbench\n", Code::E028, 1, 1);
     fails("", Code::E028, 1, 1);

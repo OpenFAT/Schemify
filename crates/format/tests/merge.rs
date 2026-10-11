@@ -543,12 +543,135 @@ fn header_comments_and_eof_merge() {
 }
 
 #[test]
-fn verbatim_blocks_merge_as_a_unit() {
+fn adjacent_verbatim_line_changes_conflict() {
+    // No line both sides keep separates the two changes: one changed run, changed twice.
     let o = "schemify 1 shbench\n\ncode ctl spice\n  | .op\n  | .end\n";
     let a = o.replace(".op", ".tran 1n 1u");
     let b = o.replace(".end", ".endc");
     assert_eq!(merge3(&p(o), &p(&a), &p(o)).text, a);
     assert_eq!(merge3(&p(o), &p(&a), &p(&b)).conflicts, 1);
+}
+
+#[test]
+fn verbatim_lines_merge_line_by_line() {
+    let o = "schemify 1 shbench\n\ncode ctl spice\n  | .op\n  | * keep\n  | .end\n";
+    let a = o.replace(".op", ".tran 1n 1u");
+    let b = o.replace(".end", ".endc");
+    let m = merge3(&p(o), &p(&a), &p(&b));
+    assert_eq!(m.conflicts, 0, "{}", m.text);
+    assert_eq!(m.text, a.replace(".end", ".endc"));
+    assert_eq!(merge3(&p(o), &p(&b), &p(&a)).text, m.text);
+    // An insertion and a deletion in different runs, and the same change on both sides.
+    let ins = o.replace("  | .op\n", "  | .op\n  | .save all\n");
+    let del = o.replace("  | .end\n", "");
+    let m = merge3(&p(o), &p(&ins), &p(&del));
+    assert_eq!(m.conflicts, 0, "{}", m.text);
+    assert_eq!(m.text, ins.replace("  | .end\n", ""));
+    assert_eq!(merge3(&p(o), &p(&a), &p(&a)).text, a);
+    // Negative space: one line changed differently, or different lines inserted at one
+    // place, conflicts; the same insertion on both sides is taken once.
+    let mine = o.replace("* keep", "* mine");
+    let yours = o.replace("* keep", "* yours");
+    assert_eq!(merge3(&p(o), &p(&mine), &p(&yours)).conflicts, 1);
+    let other = o.replace("  | .op\n", "  | .op\n  | .save v(out)\n");
+    assert_eq!(merge3(&p(o), &p(&ins), &p(&other)).conflicts, 1);
+    let both = format!("{}  | .print\n", ins.trim_end_matches("  | .end\n"));
+    let both = format!("{both}  | .end\n");
+    let m = merge3(&p(o), &p(&ins), &p(&both));
+    assert_eq!((m.conflicts, m.text.as_str()), (0, both.as_str()));
+}
+
+/// Edits a run of base lines (keep, delete, replace, insert before), writing fresh
+/// lines `<tag><n>` that equal no base line and no line of the other side.
+fn edit_lines(rng: &mut Rng, lines: &[String], tag: char) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut fresh = 0;
+    let mut new_line = |out: &mut Vec<String>| {
+        fresh += 1;
+        out.push(format!("{tag}{fresh}"));
+    };
+    for line in lines {
+        match rng.below(6) {
+            0 => {}                  // delete
+            1 => new_line(&mut out), // replace
+            2 => {
+                new_line(&mut out); // insert before
+                out.push(line.clone());
+            }
+            _ => out.push(line.clone()),
+        }
+    }
+    if rng.chance(20) {
+        new_line(&mut out); // insert at the end of the run
+    }
+    out
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+    /// diff3 oracle: edits of `a` and `b` separated by a base line both keep merge
+    /// cleanly to "both edits applied", symmetrically.
+    #[test]
+    fn separated_verbatim_edits_merge_cleanly_and_commute(seed: u64, n in 1usize..40, cut in 0usize..40) {
+        let mut rng = Rng::new(seed);
+        let base: Vec<String> = (0..n).map(|i| format!("o{i}")).collect();
+        let k = cut % n;
+        let ea = edit_lines(&mut rng, &base[..k], 'a');
+        let eb = edit_lines(&mut rng, &base[k + 1..], 'b');
+        let join = |head: &[String], tail: &[String]| {
+            let mut v = head.to_vec();
+            v.push(base[k].clone());
+            v.extend_from_slice(tail);
+            v
+        };
+        let doc = |lines: &[String]| {
+            let mut t = String::from("schemify 1 shbench\n\nprose 0abc\n");
+            for l in lines {
+                t.push_str("  | ");
+                t.push_str(l);
+                t.push('\n');
+            }
+            t
+        };
+        let (to, ta, tb) = (doc(&base), doc(&join(&ea, &base[k + 1..])), doc(&join(&base[..k], &eb)));
+        let (po, pa, pb) = (p(&to), p(&ta), p(&tb));
+        let m = merge3(&po, &pa, &pb);
+        prop_assert_eq!(m.conflicts, 0, "{}", m.text);
+        prop_assert_eq!(&m.text, &doc(&join(&ea, &eb)));
+        prop_assert_eq!(&merge3(&po, &pb, &pa).text, &m.text);
+    }
+}
+
+#[test]
+fn a_clean_merge_that_breaks_kind_rules_conflicts_on_the_interface() {
+    // Each side replaces the schematic impl: both results have one, the merge has two.
+    let o = "schemify 1 shcomp\n\npin A in 0 0\n\nimpl sch schematic\n";
+    let a = o.replace("impl sch", "impl main");
+    let b = o.replace("impl sch", "impl top");
+    let m = merge3(&p(o), &p(&a), &p(&b));
+    assert_eq!(m.conflicts, 1, "{}", m.text);
+    assert_eq!(
+        m.text,
+        "schemify 1 shcomp\n\n<<<<<<< ours\npin A in 0 0\n\nimpl main schematic\n=======\npin A in 0 0\n\nimpl top schematic\n>>>>>>> theirs\n"
+    );
+    assert_eq!(merge3(&p(o), &p(&b), &p(&a)).conflicts, 1);
+    // Each side deletes the other's last-but-one pin: no pin is left.
+    let o = "schemify 1 shprim\n\npin A in 0 0\npin B out 1 0\n\nimpl s spice\n";
+    let a = o.replace("pin A in 0 0\n", "");
+    let b = o.replace("pin B out 1 0\n", "");
+    let m = merge3(&p(o), &p(&a), &p(&b));
+    assert_eq!(m.conflicts, 1, "{}", m.text);
+    assert!(
+        m.text.contains("<<<<<<< ours\npin B out 1 0\n"),
+        "{}",
+        m.text
+    );
+    // Positive space: rank-1 changes that keep the rules stay clean.
+    let c = o.replace("pin B out 1 0\n", "pin B out 1 0\npin C out 2 0\n");
+    let m = merge3(&p(o), &p(&a), &p(&c));
+    assert_eq!(m.conflicts, 0, "{}", m.text);
+    assert!(parse(m.text.as_bytes()).is_ok());
 }
 
 #[test]

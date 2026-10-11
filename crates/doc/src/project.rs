@@ -372,7 +372,7 @@ impl Project {
     /// Indexes library `name` (`""` for the project's own files) from a listing of
     /// `(relpath, bytes)` the app read; `resolved` is what the source resolved to (the
     /// commit of a git rev, the url, the path). Replaces the library's previous rows,
-    /// parses every cell interface (`parse_prefix`, ranks 0–1), and computes the
+    /// parses every cell's symbol (`parse_prefix`, ranks 0–2), and computes the
     /// library content hash (sha256 over the files sorted by path, each `path`, `0`,
     /// sha256 of its bytes).
     ///
@@ -470,26 +470,53 @@ impl Project {
         Ok(row)
     }
 
-    /// Returns the interface of indexed cell `row`: the open document when the cell is
-    /// open (its edits are the current interface), else the indexed one.
-    pub fn interface(&self, row: usize) -> Option<&Document> {
+    /// Resolves a cell reference written in the file of indexed cell `row`, by the
+    /// rules of [`Project::resolve`] (netlist spec §1), whether or not that cell is open.
+    ///
+    /// # Errors
+    ///
+    /// `E001` missing library, unindexed library, missing cell, or only a bench.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `row` is not a row of the current index (`index_library` invalidates
+    /// rows).
+    pub fn resolve_in(&self, row: usize, cellref: &str) -> Result<usize, Code> {
         assert!(row < self.cells.lib.len(), "cell row from a previous index");
-        let (lib, dir, stem) = (
-            self.cells.lib[row],
-            self.cells.dir[row],
-            self.cells.stem[row],
-        );
-        let open = self
-            .slots
-            .iter()
-            .filter_map(|s| s.open.as_deref())
-            .find(|o| {
-                o.lib == lib
-                    && o.dir == dir
-                    && o.stem == stem
-                    && o.doc.kind() == self.cells.kind[row]
-            });
-        open.map(|o| &o.doc).or(self.cells.iface[row].as_ref())
+        let found = self.resolve_at(self.cells.lib[row], self.cells.dir[row], cellref);
+        if let Ok(r) = found {
+            assert!(r < self.cells.lib.len() && self.cells.kind[r] != FileKind::Shbench);
+        }
+        found
+    }
+
+    /// Returns the handle of the open document of indexed cell `row`, or `None` when
+    /// only its indexed symbol is loaded (the "is this row open" query). Cost: a scan
+    /// of the open documents.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `row` is not a row of the current index.
+    pub fn open_handle(&self, row: usize) -> Option<DocHandle> {
+        assert!(row < self.cells.lib.len(), "cell row from a previous index");
+        let c = &self.cells;
+        let found = self.handles().find(|&h| {
+            let o = self.open_ref(h).expect("live handle");
+            o.lib == c.lib[row]
+                && o.dir == c.dir[row]
+                && o.stem == c.stem[row]
+                && o.doc.kind() == c.kind[row]
+        });
+        assert!(found.is_none_or(|h| self.open_ref(h).is_some()));
+        found
+    }
+
+    /// Returns the symbol of indexed cell `row` (interface and graphics, ranks 0–2):
+    /// the open document when the cell is open (its edits are the current symbol),
+    /// else the indexed one.
+    pub fn interface(&self, row: usize) -> Option<&Document> {
+        let open = self.open_handle(row).and_then(|h| self.doc(h));
+        open.or(self.cells.iface[row].as_ref())
     }
 
     // ------------------------------------------------------------------ documents
@@ -1117,6 +1144,64 @@ impl Project {
 /// a failing request does not stop the ones after it. Journal output accumulates per
 /// document for [`Project::take_journal`].
 pub fn apply_edits(project: &mut Project, requests: &[EditRequest]) -> Vec<Outcome> {
+    let out: Vec<Outcome> = apply(project, requests, false)
+        .into_iter()
+        .map(|a| a.outcome)
+        .collect();
+    assert_eq!(out.len(), requests.len());
+    out
+}
+
+/// One request's [`Outcome`] and the ops that changed its document.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Applied {
+    /// What the request did.
+    pub outcome: Outcome,
+    /// The ops applied to the document, in application order: a commit's resolved ops
+    /// (fresh ids drawn, values snapped), an undo's inverse ops, a redo's ops. Empty
+    /// when the document did not change (staged, dropped, nothing, rejected, refused).
+    /// Committed as one transaction on the state before the request, they give the
+    /// state after it; [`Op::subject`] names each changed record.
+    pub ops: Vec<Op>,
+}
+
+/// [`apply_edits`] that also reports, per request, the ops it applied, so a consumer
+/// (elab's incremental recompute) needs no copy of the requests and sees undo and
+/// redo as ops too. Cost: one clone of each applied op list.
+pub fn apply_edits_report(project: &mut Project, requests: &[EditRequest]) -> Vec<Applied> {
+    let out = apply(project, requests, true);
+    assert_eq!(out.len(), requests.len());
+    assert!(out.iter().all(|a| a.ops.is_empty()
+        || matches!(
+            a.outcome,
+            Outcome::Committed { .. } | Outcome::Undone { .. } | Outcome::Redone { .. }
+        )));
+    out
+}
+
+/// The ops request outcome `outcome` applied to document `h`, read back from the top of
+/// the stack the request just pushed.
+fn applied_ops(project: &Project, h: DocHandle, outcome: &Outcome) -> Vec<Op> {
+    let Some(open) = project.open_ref(h) else {
+        return Vec::new();
+    };
+    let ops = match outcome {
+        Outcome::Committed { seq } | Outcome::Redone { seq } => open
+            .undo
+            .back()
+            .filter(|e| e.seq == *seq)
+            .map(|e| e.forward.clone()),
+        Outcome::Undone { seq } => open
+            .redo
+            .last()
+            .filter(|e| e.seq == *seq)
+            .map(|e| e.inverse.clone()),
+        _ => Some(Vec::new()),
+    };
+    ops.expect("the entry a request applied is on top of its stack")
+}
+
+fn apply(project: &mut Project, requests: &[EditRequest], report: bool) -> Vec<Applied> {
     let mut out = Vec::with_capacity(requests.len());
     for req in requests {
         let outcome = match &req.edit {
@@ -1175,7 +1260,12 @@ pub fn apply_edits(project: &mut Project, requests: &[EditRequest]) -> Vec<Outco
                 },
             },
         };
-        out.push(outcome);
+        let ops = if report {
+            applied_ops(project, req.doc, &outcome)
+        } else {
+            Vec::new()
+        };
+        out.push(Applied { outcome, ops });
     }
     assert_eq!(out.len(), requests.len());
     out

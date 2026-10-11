@@ -4,7 +4,7 @@ Implements D11a, D13, D22, D29, D40. Inputs: a project (manifest + lockfile), a 
 
 ## 1. Cell resolution
 
-- `lib:cell` resolves through the manifest's `lib` entries (D10); `./cell` resolves in the referencing file's directory. A cell is found by trying `<cell>.shcomp`, then `<cell>.shprim`; `.shbench` is never instantiable (`E001`).
+- `lib:cell` resolves through the manifest's `lib` entries (D10); `./cell` resolves in the referencing file's directory (open or only indexed: the library index keeps each cell's directory). A cell is found by trying `<cell>.shcomp`, then `<cell>.shprim`; `.shbench` is never instantiable (`E001`).
 - Missing lib or cell → `E001` (error). Hierarchy recursion (a cell instantiating itself at any depth under the selected impls) → `E014`.
 
 ## 2. Impl selection (per instance path)
@@ -176,7 +176,7 @@ Where §1–§8 left a choice open, `crates/elab` decided as follows; these are 
 11. **Request:** corner `set` lines apply first, then the request's overrides in order (later wins); an override of an unknown var adds it. The default corner/config is the bench's header attr; an unknown name is `E035`. Corner `lib` sections are literal; `temp` is evaluated in the bench scope.
 12. **`${NAME}`** is expanded by elab from project `set` entries, then an environment table the caller passes in the request (elab reads no environment), so the netlister receives final text.
 13. **Code blocks per dialect:** `spice` → ngspice and xyce, a dialect word → that dialect, CDL → none.
-14. **Loaded documents:** cells whose schematic or body elaboration needs but which are only indexed (ranks 0–1) are listed for the app to open, then elaboration runs again; meanwhile an unopened schematic child is skipped and a leaf keeps its template.
+14. **Loaded documents:** cells whose schematic or body elaboration needs but which are only indexed (ranks 0–2: interface and symbol graphics) are listed for the app to open, then elaboration runs again; meanwhile an unopened schematic child is skipped and a leaf keeps its template.
 15. **D20:** a param's or var's `cached` value stands in for the whole expression when a plugin function is missing; the value and everything computed from it are flagged unverified.
 16. **Scopes:** child vars read by a child-scope expression are evaluated per instance, in that instance's scope.
 17. **The name map** (path ↔ emitted name) is the netlister's: it depends on the dialect's emitted names. Elab's definitions keep the hierarchy; a path is the `/`-joined local names from the top.

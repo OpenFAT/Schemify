@@ -1,12 +1,9 @@
 //! Op text and the edit journal (edits spec §1 op text, §3 journal).
 //!
-//! Both use the line-record syntax. `schemify-format` has no `journal` file kind and
-//! no public lexer, so this module borrows the format's lexical layer through its
-//! forward-compatible mode instead of copying it: text is parsed as a `lock` file of
-//! a newer version (whose only known word, `locked`, never appears), which keeps every
-//! other record verbatim, and is written through the same `Document` builder. Quoting,
-//! escapes, verbatim lines and comments are therefore exactly the format's.
-//! Needed format change (reported): a `FileKind::Journal` or a public `lex` entry.
+//! Both use the line-record syntax: text is parsed as a format `journal` file (no known
+//! record words, so every record is kept as written) and written through the same
+//! `Document` builder. Quoting, escapes, verbatim lines and comments are therefore
+//! exactly the format's.
 //!
 //! Op text, one record per op (`<word> <key>` addresses a record, see [`Target`]):
 //!
@@ -30,23 +27,19 @@ use crate::edit::{Op, OpError, Target};
 use crate::record::{Attr, RecordBuf};
 use schemify_format::{Document as FormatDoc, FileKind, RecordKind, parse, write};
 
-/// Header the journal file starts with.
+/// Header the journal file starts with; op text is lexed and built under it too.
 pub(crate) const JOURNAL_HEADER: &str = "schemify 1 journal\n";
-/// What op text and journals are lexed as (see module docs).
-const LEX_HEADER: &str = "schemify 65535 lock\n";
-/// What the builder writes as line 1 (then a blank line before the first record).
-const BUILT_HEADER: &str = "schemify 1 lock\n";
 /// Torn-tail retries when a journal does not lex (each drops the last record).
 const TORN_RETRIES_MAX: u32 = 4;
 
 // ------------------------------------------------------------------ encoding
 
 fn encode(build: impl FnOnce(&mut FormatDoc<'static>)) -> String {
-    let mut d = FormatDoc::new(FileKind::Lock);
+    let mut d = FormatDoc::new(FileKind::Journal);
     build(&mut d);
     let text = write(&d);
     let body = text
-        .strip_prefix(BUILT_HEADER)
+        .strip_prefix(JOURNAL_HEADER)
         .expect("the builder writes its header first");
     let body = body.strip_prefix('\n').unwrap_or(body);
     assert!(body.is_empty() || body.ends_with('\n'));
@@ -159,12 +152,13 @@ pub fn ops_to_text(ops: &[Op]) -> String {
 /// Lexes `body` (record lines without a header) with the format's lexer and hands the
 /// model to `read`. Errors are (1-based line within `body`, code).
 fn lex<T>(body: &str, read: impl FnOnce(&FormatDoc<'_>) -> T) -> Result<T, Vec<(u32, Code)>> {
-    let mut text = String::with_capacity(LEX_HEADER.len() + body.len());
-    text.push_str(LEX_HEADER);
+    let mut text = String::with_capacity(JOURNAL_HEADER.len() + body.len());
+    text.push_str(JOURNAL_HEADER);
     text.push_str(body);
     match parse(text.as_bytes()) {
         Ok(d) => {
-            assert!(d.version() > schemify_format::VERSION);
+            assert_eq!(d.kind(), FileKind::Journal);
+            assert!((1..d.record_count()).all(|r| d.record_kind(r) == RecordKind::Unknown));
             Ok(read(&d))
         }
         Err(e) => Err(e

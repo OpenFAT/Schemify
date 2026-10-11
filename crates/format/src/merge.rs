@@ -2,11 +2,15 @@
 //!
 //! Both key records by identity: (kind, word, id-or-name, occurrence). Merge spine:
 //! `reid_collisions` → `join` (identity table over O, A, B) → `decide` per identity
-//! (with `merge_record` per attribute line) → per rank: positional block or
-//! `merge_seq` ordering → `write_spans` with conflict markers.
+//! (with `merge_record` per attribute line and `diff3` per verbatim line) → per rank:
+//! positional block or `merge_seq` ordering → the kind-rule check (a clean result that
+//! breaks them is assembled again with the symbol interface as one conflict) →
+//! `write_spans` with conflict markers.
 
+use crate::diag::Code;
 use crate::document::{Document, NONE, record_eq};
 use crate::id::{FNV_OFFSET, IdRng, fnv1a64, fresh_id, id_sort_key};
+use crate::reader::check_kind_rules;
 use crate::schema::{KeyRule, RANK_MAX, RANK_POSITIONAL, RecordKind, Ty};
 use crate::writer::{ConflictSpan, write_spans};
 use std::ops::Range;
@@ -37,9 +41,17 @@ pub struct Merged {
 /// Order inside file-order ranks merges too (both sides reordering differently is a
 /// conflict over the whole rank).
 ///
+/// Verbatim lines merge line by line (diff3): every run between lines that all three
+/// sides keep takes the side that changed it; both changing one run differently is a
+/// conflict.
+///
 /// When both sides add different records with the same id, `b`'s record gets a new id
 /// drawn deterministically from the old one, and `b`'s id references to it are
 /// rewritten. A conflicting record is written as ours, then theirs, between markers.
+///
+/// A clean result that breaks the kind rules both sides keep (spec §4, `E025`: both add
+/// a schematic impl, or each deletes the other's last pin) does not count as clean: the
+/// symbol interface (rank 1) becomes one conflict block of ours' and theirs' records.
 ///
 /// Properties (tested): `merge3(o, a, o)` and `merge3(o, o, a)` equal `write(a)`;
 /// clean merges are commutative in `a` and `b`; output is canonical.
@@ -87,7 +99,7 @@ pub fn merge3(o: &Document<'_>, a: &Document<'_>, b: &Document<'_>) -> Merged {
         rank_of[i] = doc_ranks[s][recs[s] as usize];
     }
 
-    let mut picks: Vec<(u8, u32)> = Vec::new();
+    let mut picks = Picks::default();
     let header = decide(&docs, [0, 0, 0], &mut picks);
     let outcomes: Vec<Outcome> = idents
         .iter()
@@ -112,9 +124,6 @@ pub fn merge3(o: &Document<'_>, a: &Document<'_>, b: &Document<'_>) -> Merged {
         Outcome::Conflict { .. } | Outcome::Drop => A as u8,
     };
     let head = docs[head_side as usize];
-    let mut out = Document::bare("", head.version(), head.kind());
-    let mut spans: Vec<ConflictSpan> = Vec::new();
-    emit(&mut out, &mut spans, &docs, [0, 0, 0], header, &picks);
 
     // by_rank[s][rank]: side s's records of that rank, in document order.
     let by_rank: [Vec<Vec<u32>>; 3] = [O, A, B].map(|s| {
@@ -124,59 +133,78 @@ pub fn merge3(o: &Document<'_>, a: &Document<'_>, b: &Document<'_>) -> Merged {
         }
         buckets
     });
-    for rank in 0..=RANK_MAX {
-        let blocks = [O, A, B].map(|s| &by_rank[s][rank as usize]);
-        if rank == RANK_POSITIONAL {
-            let same = |x: usize, y: usize| {
-                blocks[x].len() == blocks[y].len()
-                    && blocks[x]
-                        .iter()
-                        .zip(blocks[y])
-                        .all(|(&p, &q)| record_eq(docs[x], p, docs[y], q))
-            };
-            match pick3(same) {
-                Some(s) => {
-                    for &r in blocks[s as usize] {
-                        out.copy_record_any(docs[s as usize], r);
+    // Writes the merged records rank by rank; rank `conflict_rank` (`NO_RANK`: none) is
+    // written as one conflict block of ours' and theirs' records.
+    let assemble = |conflict_rank: u8| -> (Document<'static>, Vec<ConflictSpan>) {
+        let mut out = Document::bare("", head.version(), head.kind());
+        let mut spans: Vec<ConflictSpan> = Vec::new();
+        emit(&mut out, &mut spans, &docs, [0, 0, 0], header, &picks);
+        for rank in 0..=RANK_MAX {
+            let blocks = [O, A, B].map(|s| &by_rank[s][rank as usize]);
+            if rank == conflict_rank {
+                push_conflict(&mut out, &mut spans, &docs, blocks[A], blocks[B]);
+                continue;
+            }
+            if rank == RANK_POSITIONAL {
+                let same = |x: usize, y: usize| {
+                    blocks[x].len() == blocks[y].len()
+                        && blocks[x]
+                            .iter()
+                            .zip(blocks[y])
+                            .all(|(&p, &q)| record_eq(docs[x], p, docs[y], q))
+                };
+                match pick3(same) {
+                    Some(s) => {
+                        for &r in blocks[s as usize] {
+                            out.copy_record_any(docs[s as usize], r);
+                        }
+                    }
+                    None => push_conflict(&mut out, &mut spans, &docs, blocks[A], blocks[B]),
+                }
+                continue;
+            }
+            // In sorted ranks the writer orders known kinds itself, so only `Unknown`
+            // records keep a file order worth merging; known ones go first by identity.
+            let sorted = out.kind().rank_sorted(rank);
+            let seqs = [O, A, B].map(|s| {
+                let ident = |r: &u32| ident_of[s][*r as usize];
+                let unknown = |r: &&u32| docs[s].record_kind(**r) == RecordKind::Unknown;
+                if !sorted {
+                    return blocks[s].iter().map(ident).collect::<Vec<u32>>();
+                }
+                let mut seq: Vec<u32> = blocks[s]
+                    .iter()
+                    .filter(|r| !unknown(r))
+                    .map(ident)
+                    .collect();
+                seq.sort_unstable();
+                seq.extend(blocks[s].iter().filter(unknown).map(ident));
+                seq
+            });
+            match merge_seq([&seqs[O], &seqs[A], &seqs[B]], &flags) {
+                Some(order) => {
+                    for i in order {
+                        emit(
+                            &mut out,
+                            &mut spans,
+                            &docs,
+                            idents[i as usize],
+                            outcomes[i as usize],
+                            &picks,
+                        );
                     }
                 }
                 None => push_conflict(&mut out, &mut spans, &docs, blocks[A], blocks[B]),
             }
-            continue;
         }
-        // In sorted ranks the writer orders known kinds itself, so only `Unknown`
-        // records keep a file order worth merging; known ones go first by identity.
-        let sorted = out.kind().rank_sorted(rank);
-        let seqs = [O, A, B].map(|s| {
-            let ident = |r: &u32| ident_of[s][*r as usize];
-            let unknown = |r: &&u32| docs[s].record_kind(**r) == RecordKind::Unknown;
-            if !sorted {
-                return blocks[s].iter().map(ident).collect::<Vec<u32>>();
-            }
-            let mut seq: Vec<u32> = blocks[s]
-                .iter()
-                .filter(|r| !unknown(r))
-                .map(ident)
-                .collect();
-            seq.sort_unstable();
-            seq.extend(blocks[s].iter().filter(unknown).map(ident));
-            seq
-        });
-        match merge_seq([&seqs[O], &seqs[A], &seqs[B]], &flags) {
-            Some(order) => {
-                for i in order {
-                    emit(
-                        &mut out,
-                        &mut spans,
-                        &docs,
-                        idents[i as usize],
-                        outcomes[i as usize],
-                        &picks,
-                    );
-                }
-            }
-            None => push_conflict(&mut out, &mut spans, &docs, blocks[A], blocks[B]),
-        }
+        (out, spans)
+    };
+    let (mut out, mut spans) = assemble(NO_RANK);
+    // The kind rules count pins and impls (rank 1). Both sides keeping them makes a broken
+    // result the merge's doing, and guarantees that both sides' rank-1 blocks are non-empty.
+    if spans.is_empty() && kind_rules_hold(a) && kind_rules_hold(b) && !kind_rules_hold(&out) {
+        (out, spans) = assemble(RecordKind::Impl.rank());
+        assert!(!spans.is_empty(), "the interface conflict is a span");
     }
 
     let eof = [o, a, b].map(|d| d.eof_comments().collect::<Vec<_>>());
@@ -218,15 +246,38 @@ enum Outcome {
 #[derive(Clone, Copy, Debug)]
 struct MergedRec {
     fields: u8,
-    verbatim: u8,
     comments: u8,
-    /// Range into the shared `(side, attribute)` pick list, in merged order.
+    /// Range into [`Picks::attrs`], in merged order.
     attrs: (u32, u32),
+    /// Range into [`Picks::lines`], in merged order.
+    lines: (u32, u32),
+}
+
+/// Components that [`merge_record`] took from different sides, shared by every merged
+/// record: `(side, attribute index)` and `(side, verbatim line index)` in that side's
+/// document. Grows by at most the attributes and verbatim lines of the three inputs.
+#[derive(Default)]
+struct Picks {
+    attrs: Vec<(u8, u32)>,
+    lines: Vec<(u8, u32)>,
 }
 
 /// Presence bits (`1 << side`) plus this one: the identity survives the merge.
 const KEEP: u8 = 8;
 const COMMON: u8 = 1 | 2 | 4 | KEEP;
+/// No rank is forced into one conflict block.
+const NO_RANK: u8 = u8::MAX;
+/// Largest LCS table [`diff3`] aligns (cells = (base lines + 1) × (side lines + 1) after
+/// the common prefix and suffix): 8 MiB of `u16`.
+const ALIGN_CELLS_MAX: usize = 1 << 22;
+
+/// Returns whether `doc` keeps the spec §4 kind rules (`E025`).
+fn kind_rules_hold(doc: &Document<'_>) -> bool {
+    let mut diags = Vec::new();
+    check_kind_rules(doc, &mut diags);
+    assert!(diags.iter().all(|d| d.code == Code::E025));
+    diags.is_empty()
+}
 
 /// Three-way pick over sides O=0, A=1, B=2 given an equality test: the side that
 /// changed wins, an identical change takes A; `None` when both changed differently.
@@ -246,7 +297,7 @@ fn pick3(eq: impl Fn(usize, usize) -> bool) -> Option<u8> {
     side
 }
 
-fn decide(docs: &[&Document<'_>; 3], recs: [u32; 3], picks: &mut Vec<(u8, u32)>) -> Outcome {
+fn decide(docs: &[&Document<'_>; 3], recs: [u32; 3], picks: &mut Picks) -> Outcome {
     let [ro, ra, rb] = recs;
     assert!(
         recs.iter()
@@ -288,11 +339,7 @@ fn decide(docs: &[&Document<'_>; 3], recs: [u32; 3], picks: &mut Vec<(u8, u32)>)
 }
 
 /// Merges a record that all three sides have and both changed, component by component.
-fn merge_record(
-    docs: &[&Document<'_>; 3],
-    recs: [u32; 3],
-    picks: &mut Vec<(u8, u32)>,
-) -> Option<MergedRec> {
+fn merge_record(docs: &[&Document<'_>; 3], recs: [u32; 3], picks: &mut Picks) -> Option<MergedRec> {
     assert!(
         recs.iter().all(|&r| r != NONE),
         "both-changed records exist on all sides"
@@ -303,8 +350,15 @@ fn merge_record(
     );
     let d = |s: usize| (docs[s], recs[s]);
     let fields = pick3(|x, y| d(x).0.fields(d(x).1).eq(d(y).0.fields(d(y).1)))?;
-    let verbatim = pick3(|x, y| d(x).0.verbatim(d(x).1).eq(d(y).0.verbatim(d(y).1)))?;
     let comments = pick3(|x, y| d(x).0.comments(d(x).1).eq(d(y).0.comments(d(y).1)))?;
+    let block = |s: usize| docs[s].verbatim(recs[s]).collect::<Vec<&str>>();
+    let lines: Vec<(u8, u32)> =
+        match pick3(|x, y| d(x).0.verbatim(d(x).1).eq(d(y).0.verbatim(d(y).1))) {
+            Some(s) => (0..docs[s as usize].verbatim(recs[s as usize]).len() as u32)
+                .map(|i| (s, i))
+                .collect(),
+            None => diff3(&block(O), &block(A), &block(B))?,
+        };
 
     let attr_ids = join_attrs(docs, recs);
     let value_eq = |ids: &[u32; 3], x: usize, y: usize| {
@@ -340,17 +394,134 @@ fn merge_record(
         seq.into_iter().map(|(_, i)| i).collect::<Vec<u32>>()
     });
     let order = merge_seq([&seqs[O], &seqs[A], &seqs[B]], &flags)?;
-    let start = picks.len() as u32;
+    let start = picks.attrs.len() as u32;
     for i in order {
         let side = take[i as usize];
-        picks.push((side, attr_ids[i as usize][side as usize]));
+        picks
+            .attrs
+            .push((side, attr_ids[i as usize][side as usize]));
+    }
+    // Lines are picked last, so a record that conflicts leaves no picks behind.
+    let first_line = picks.lines.len() as u32;
+    for (side, i) in lines {
+        let base = docs[side as usize].rec_verbatim_start[recs[side as usize] as usize];
+        picks.lines.push((side, base + i));
     }
     Some(MergedRec {
         fields,
-        verbatim,
         comments,
-        attrs: (start, picks.len() as u32),
+        attrs: (start, picks.attrs.len() as u32),
+        lines: (first_line, picks.lines.len() as u32),
     })
+}
+
+/// Line-level three-way merge of one verbatim block (diff3). Lines of `o` that `a` and
+/// `b` both keep, at matching positions, split the blocks into stable and changed runs;
+/// a changed run takes the side that changed it (both identically: `a`'s). Returns the
+/// merged lines as `(side, line index within that side's block)`, or `None` when both
+/// sides changed one run differently or a block is too large to align
+/// ([`ALIGN_CELLS_MAX`]).
+///
+/// Symmetric in `a` and `b`: the alignments `o`–`a` and `o`–`b` are computed alike and
+/// independently. Cost: O(n) plus O(n·m) of the changed middles (bounded).
+fn diff3(o: &[&str], a: &[&str], b: &[&str]) -> Option<Vec<(u8, u32)>> {
+    let (ma, mb) = (align(o, a)?, align(o, b)?);
+    assert!(ma.len() == o.len() && mb.len() == o.len());
+    let mut out: Vec<(u8, u32)> = Vec::with_capacity(a.len().max(b.len()));
+    let (mut lo, mut la, mut lb) = (0usize, 0usize, 0usize);
+    loop {
+        // Stable run: base lines both sides keep at the next positions.
+        while lo < o.len() && ma[lo] == la as u32 && mb[lo] == lb as u32 {
+            out.push((O as u8, lo as u32));
+            (lo, la, lb) = (lo + 1, la + 1, lb + 1);
+        }
+        // The next base line both sides keep ends the changed run (or the blocks end).
+        let sync = (lo..o.len()).find(|&j| ma[j] != NONE && mb[j] != NONE);
+        let (eo, ea, eb) = match sync {
+            Some(j) => (j, ma[j] as usize, mb[j] as usize),
+            None => (o.len(), a.len(), b.len()),
+        };
+        assert!(eo >= lo && ea >= la && eb >= lb, "alignments are monotone");
+        let (co, ca, cb) = (&o[lo..eo], &a[la..ea], &b[lb..eb]);
+        let (side, from, to) = if ca == co {
+            (B, lb, eb)
+        } else if cb == co || ca == cb {
+            (A, la, ea)
+        } else {
+            return None;
+        };
+        out.extend((from..to).map(|i| (side as u8, i as u32)));
+        (lo, la, lb) = (eo, ea, eb);
+        if sync.is_none() {
+            break;
+        }
+    }
+    assert!(
+        lo == o.len() && la == a.len() && lb == b.len(),
+        "every line consumed"
+    );
+    Some(out)
+}
+
+/// Aligns `x` to `o`: for each line of `o`, the index of the line of `x` it matches in
+/// one longest common subsequence, or [`NONE`]. Matches are strictly increasing. The
+/// common prefix and suffix match directly; the middle goes through an LCS table, and a
+/// middle above [`ALIGN_CELLS_MAX`] cells returns `None` (the block merges as a unit).
+// ponytail: O(n·m) table over the changed middle; Myers' O(ND) diff if large blocks
+// with scattered edits need line merges.
+fn align(o: &[&str], x: &[&str]) -> Option<Vec<u32>> {
+    let prefix = o.iter().zip(x).take_while(|(p, q)| p == q).count();
+    let rest = o.len().min(x.len()) - prefix;
+    let suffix = o
+        .iter()
+        .rev()
+        .zip(x.iter().rev())
+        .take(rest)
+        .take_while(|(p, q)| p == q)
+        .count();
+    let (mo, mx) = (&o[prefix..o.len() - suffix], &x[prefix..x.len() - suffix]);
+    let (n, m) = (mo.len(), mx.len());
+    if (n + 1) * (m + 1) > ALIGN_CELLS_MAX {
+        return None;
+    }
+    // lcs[i * (m + 1) + j] = LCS length of mo[i..] and mx[j..]; it fits u16 because
+    // min(n, m) < 2^11 under the cell cap.
+    let mut lcs = vec![0u16; (n + 1) * (m + 1)];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            lcs[i * (m + 1) + j] = if mo[i] == mx[j] {
+                lcs[(i + 1) * (m + 1) + j + 1] + 1
+            } else {
+                lcs[(i + 1) * (m + 1) + j].max(lcs[i * (m + 1) + j + 1])
+            };
+        }
+    }
+    let mut out = vec![NONE; o.len()];
+    for (k, slot) in out[..prefix].iter_mut().enumerate() {
+        *slot = k as u32;
+    }
+    let (mut i, mut j) = (0, 0);
+    while i < n && j < m {
+        if mo[i] == mx[j] {
+            out[prefix + i] = (prefix + j) as u32;
+            (i, j) = (i + 1, j + 1);
+        } else if lcs[(i + 1) * (m + 1) + j] >= lcs[i * (m + 1) + j + 1] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    for k in 0..suffix {
+        out[o.len() - suffix + k] = (x.len() - suffix + k) as u32;
+    }
+    assert!(
+        out.iter()
+            .filter(|&&v| v != NONE)
+            .zip(out.iter().filter(|&&v| v != NONE).skip(1))
+            .all(|(p, q)| p < q),
+        "matches are strictly increasing"
+    );
+    Some(out)
 }
 
 /// Appends the merged form of one identity to `out`.
@@ -360,7 +531,7 @@ fn emit(
     docs: &[&Document<'_>; 3],
     recs: [u32; 3],
     outcome: Outcome,
-    picks: &[(u8, u32)],
+    picks: &Picks,
 ) {
     let before = out.record_count();
     assert!(spans.iter().all(|s| s.first + s.ours + s.theirs <= before));
@@ -370,14 +541,17 @@ fn emit(
             out.copy_record_any(docs[s as usize], recs[s as usize]);
         }
         Outcome::Merged(m) => {
-            let (fs, vs, cs) = (m.fields as usize, m.verbatim as usize, m.comments as usize);
+            let (fs, cs) = (m.fields as usize, m.comments as usize);
             out.begin_like(docs[A], recs[A]);
             out.copy_comments(docs[cs], recs[cs]);
             out.copy_fields(docs[fs], recs[fs]);
-            for &(s, attr) in &picks[m.attrs.0 as usize..m.attrs.1 as usize] {
+            for &(s, attr) in &picks.attrs[m.attrs.0 as usize..m.attrs.1 as usize] {
                 out.copy_attr(docs[s as usize], attr);
             }
-            out.copy_verbatim(docs[vs], recs[vs]);
+            for &(s, line) in &picks.lines[m.lines.0 as usize..m.lines.1 as usize] {
+                let d = docs[s as usize];
+                out.push_verbatim(d.text(d.verbatim[line as usize]));
+            }
         }
         Outcome::Conflict { ours, theirs } => {
             let ours: Vec<u32> = (ours != NONE).then_some(ours).into_iter().collect();

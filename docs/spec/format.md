@@ -13,6 +13,7 @@ Implements D9, D10, D11, D13, D17, D19, D20, D29, D30, D33, D35, D40. Rationale 
 | `schemify.lock` | `lock` | resolved sources + content hashes (written by the tool only) |
 | `schemify-pack.lock` (user, next to `init.lua`) | `lock` | user packages pinned ([config.md](config.md) §5); same rows as `schemify.lock` |
 | — | `config` | reserved: the user config is Lua since the 2026-10-11 D9 amendment ([config.md](config.md)) |
+| `.schemify/journal/<cell path>.journal` | `journal` | edit journal and op text ([edits.md](edits.md) §1, §3); tool-written; no known record words: every record is kept as written, like a §5 unknown record, at any version |
 
 A library is a directory; one cell per file; the cell name is the file stem. Two files with the same stem and different kinds in one library is an error (`E020`).
 
@@ -24,7 +25,7 @@ A library is a directory; one cell per file; the cell name is the file stem. Two
 file      = header *line
 header    = "schemify" WS version WS kind EOL          ; line 1, always
 version   = 1*DIGIT                                     ; this spec: 1
-kind      = "shprim" / "shcomp" / "shbench" / "project" / "lock" / "config"
+kind      = "shprim" / "shcomp" / "shbench" / "project" / "lock" / "config" / "journal"
 line      = blank / comment / record / attr / verbatim
 blank     = *WSP EOL
 comment   = *WSP "#" *CHAR EOL                          ; whole-line only; attaches to the next record
@@ -171,7 +172,7 @@ The user config is `init.lua` (D9 as amended 2026-10-11), specified in [config.m
 ## 5. Unknowns and forward compatibility
 
 - Unknown attributes are preserved verbatim, in order, after known ones.
-- An unknown record word is an error (`E027`) unless the header version is newer than the reader's, in which case the record (with its attributes and verbatim lines) is preserved verbatim at its position. A known word that the file kind does not allow (`pin` in a `.shbench`) is unknown for that kind.
+- An unknown record word is an error (`E027`) unless the header version is newer than the reader's or the file is a `journal`, in which case the record (with its attributes and verbatim lines) is preserved verbatim at its position. A known word that the file kind does not allow (`pin` in a `.shbench`) is unknown for that kind.
 - An unknown record has the rank of the closest known record before it (0 right after the header). In a sorted rank (3, 6) it is written after the rank's known kinds, keeping file order; elsewhere it keeps its position. For merge and diff it is identified by its word and first field.
 
 ## 6. Values inside records
@@ -207,7 +208,8 @@ The merge driver (D34) and the in-app reload merge (D28) are record-level, need 
 
 - **Identity.** The header is one record. Id-keyed kinds are identified by (kind, id), named kinds by (kind, name), `locked` by (kind, type, name), unknown records by (word, first field); a further occurrence number separates duplicates (`W001` files). Rank-2 graphics have no identity.
 - **Three-way pick** for any unit given base O, ours A, theirs B: the side that changed wins; an identical change on both sides is taken once; different changes on both sides conflict.
-- **Records** present on all sides: the pick applies to the whole record; if both changed it differently, it applies per component: the record line, each attribute line (identified by key, plus the first value for repeatable attributes, plus occurrence), the verbatim block and the comment block. Attribute adds and deletes merge like records. Any conflicting component makes the record a conflict.
+- **Records** present on all sides: the pick applies to the whole record; if both changed it differently, it applies per component: the record line, each attribute line (identified by key, plus the first value for repeatable attributes, plus occurrence), the verbatim lines and the comment block. Attribute adds and deletes merge like records. Verbatim lines merge line by line (diff3): each side is aligned to the base by a longest common subsequence of lines; base lines both sides keep at matching positions are stable, and every run between stable lines takes the side that changed it (identical changes once; both changing it differently conflicts). A block whose changed middle (after the common prefix and suffix) would need more than 2^22 alignment cells merges as a unit. Any conflicting component makes the record a conflict.
+- **Kind rules.** A clean result that breaks the §4 kind rules (`E025`) while both sides keep them (both add a schematic impl to a `.shcomp`; each deletes the other's last pin) is not clean: rank 1 is written as one conflict block of ours' and theirs' rank-1 records.
 - **Adds and deletes.** A record added on one side is kept; deleted on one side and unchanged on the other is dropped; deleted against modified is a conflict. Added on both sides: identical is kept once; different with the same name is a conflict; different with the same id re-ids theirs: the new id is drawn deterministically (splitmix64 seeded with FNV-1a of the old id, redrawn while taken in any input) and every id field or id reference (`waive` target, constraint `member`) in theirs is rewritten.
 - **Rank 2** (symbol graphics) merges as one block by the pick rule.
 - **Order** in file-order ranks: records common to all sides keep theirs' order if ours kept the base order, else ours' order (both reordering differently conflicts over the whole rank). Every other kept record follows the nearest common record before it on its own side; records added at the same place by both sides are ordered by identity, so clean merges are symmetric in A and B. Sorted ranks need no order merge (the writer sorts).
