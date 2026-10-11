@@ -140,17 +140,25 @@ pub fn have_ngspice() -> bool {
     have("ngspice", "--version")
 }
 
-/// Whether `tool` starts from PATH (called with `arg`). Tests skip without it, except
-/// under `SCHEMIFY_REQUIRE_SIMULATORS` (the CI step whose Nix shell provides ngspice,
-/// Icarus and OpenVAF), where a missing tool fails the test instead of skipping it.
+/// Whether `tool` starts from PATH (called with `arg`); see [`first_of`].
 pub fn have(tool: &str, arg: &str) -> bool {
-    let ok = std::process::Command::new(tool).arg(arg).output().is_ok();
-    if !ok {
+    first_of(&[tool], arg).is_some()
+}
+
+/// The first of `tools` (one program's names) that starts from PATH, called with `arg`.
+/// Tests skip without one, except under `SCHEMIFY_REQUIRE_SIMULATORS` (the CI step whose
+/// Nix shell provides ngspice, Icarus and OpenVAF), where none fails the test.
+pub fn first_of<'a>(tools: &[&'a str], arg: &str) -> Option<&'a str> {
+    let found = tools
+        .iter()
+        .copied()
+        .find(|t| std::process::Command::new(t).arg(arg).output().is_ok());
+    if found.is_none() {
         assert!(
             std::env::var_os("SCHEMIFY_REQUIRE_SIMULATORS").is_none(),
-            "{tool} must be on PATH (SCHEMIFY_REQUIRE_SIMULATORS is set)"
+            "one of {tools:?} must be on PATH (SCHEMIFY_REQUIRE_SIMULATORS is set)"
         );
-        eprintln!("{tool} not on PATH: skipping");
+        eprintln!("none of {tools:?} on PATH: skipping");
     }
-    ok
+    found
 }

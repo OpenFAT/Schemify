@@ -7,7 +7,7 @@
 
 mod common;
 
-use common::{have, have_ngspice, project, rc, run, tmp};
+use common::{first_of, have_ngspice, project, rc, run, tmp};
 use schemify_elab::{Dialect, no_funcs};
 use schemify_run::{
     Jobs, OptRun, Pass, Plan, Results, Runner, RunnerConfig, Select, State, design, expand,
@@ -268,9 +268,13 @@ fn a_relative_corner_lib_is_found_beside_the_bench() {
 
 #[test]
 fn a_verilog_a_body_compiles_with_openvaf_and_simulates_through_osdi() {
-    if !have_ngspice() || !have("openvaf", "--version") {
+    if !have_ngspice() {
         return;
     }
+    // OpenVAF-Reloaded (nixpkgs `openvaf`) installs `openvaf-r`.
+    let Some(vaf) = first_of(&["openvaf", "openvaf-r"], "--version") else {
+        return;
+    };
     let vres = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\n\
                 impl va veriloga\n  model vres_m\n\nbody va\n  | `include \"disciplines.vams\"\n  \
                 | module vres(p, n);\n  |   inout p, n;\n  |   electrical p, n;\n  \
@@ -288,6 +292,7 @@ fn a_verilog_a_body_compiles_with_openvaf_and_simulates_through_osdi() {
     let (jobs, results, runner) = run(&p, top, &plan, two, |d| {
         let mut c = RunnerConfig::new(&dir, d);
         c.cache = dir.join("cache");
+        c.tools.openvaf = vaf.to_owned();
         c
     });
     for j in 0..2 {
