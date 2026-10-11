@@ -381,13 +381,7 @@ fn verilog_a_compiles_once_into_every_job_or_fails_clearly() {
     #[cfg(unix)]
     {
         let fake = dir.join("fake-openvaf");
-        std::fs::write(
-            &fake,
-            "#!/bin/sh\necho run >> \"$1.count\"\ncp \"$1\" \"$3\"\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-            .unwrap();
+        stand_in(&fake, "echo run >> \"$1.count\"\ncp \"$1\" \"$3\"\n");
         let (jobs, _, runner) = run(&p, top, &plan, two(), |d| {
             let mut c = cfg(&dir, d, sh(FAKE), 1);
             c.cache = dir.join("cache");
@@ -416,10 +410,24 @@ const VBODY: &str = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\n\
 impl va veriloga\n  model vres\n\nbody va\n  | module vres(p, n);\n  | endmodule\n";
 
 /// Writes an executable stand-in compiler (`<src> -o <out>`, OpenVAF's argument order).
+///
+/// A child shell writes it: a file this multi-threaded test process held open for writing
+/// could be inherited by another test's simulator between its fork and exec, and running
+/// it would then fail with ETXTBSY ("text file busy").
 #[cfg(unix)]
 fn stand_in(path: &Path, script: &str) {
-    std::fs::write(path, format!("#!/bin/sh\n{script}")).unwrap();
-    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let ok = std::process::Command::new("sh")
+        .args([
+            "-c",
+            "printf '%s' \"$2\" > \"$1\" && chmod 755 \"$1\"",
+            "sh",
+        ])
+        .arg(path)
+        .arg(format!("#!/bin/sh\n{script}"))
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok && path.exists(), "{}", path.display());
 }
 
 /// Two jobs of the `VBODY` bench prepared and submitted to a runner whose OpenVAF is
@@ -481,7 +489,8 @@ fn a_body_compiles_beside_the_poll_once_for_every_job() {
         first < Duration::from_millis(500),
         "the poll waited for the compiler: {first:?}"
     );
-    assert_eq!(jobs.states(), [State::Queued, State::Queued]);
+    let errs: Vec<_> = results.errors().collect();
+    assert_eq!(jobs.states(), [State::Queued, State::Queued], "{errs:?}");
     let progress: Vec<&str> = runner.progress().map(|p| p.1).collect();
     assert_eq!(progress, ["compiling sources"; 2]);
     runner.wait(&plan, &mut jobs, &mut results, &mut finished);
