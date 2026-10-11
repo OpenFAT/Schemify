@@ -28,6 +28,7 @@ Where the project stands. Update this file whenever a workstream lands or stops.
 | Corpus | `tests/corpus/` fetch + 602 xschem goldens (`.cache/`, gitignored), `tools/spicecmp`, ratchet in `tests/corpus/RATCHET.md` (SPICE 246/301, CDL code-stripped 227/301; +23/+32 golden-unevaluated tracked separately) |
 | Workspace tests | 537 passed, 0 failed (`cargo test --workspace --no-fail-fast`, 2026-10-10, after the editor-integration merge) |
 | Nix | `flake.nix`: `nix run` (wrapped editor, 23.0 MiB stripped/LTO/panic=abort, D39 ≤ 25 MB), `nix run .#devicereader`, `nix develop` (toolchain, simulators, xschem, GUI libs) |
+| CI (D32, D37) | `.github/workflows/`: `ci.yml` (merge tier: fmt/clippy/tests on Linux, macOS, Windows; wasm32 web build + bundle + headless-Chrome smoke test; WASI CLI; byte-identical CLI outputs across the four; Nix plugin build with size limits; `nix flake check` + `nix build`), `nightly.yml` (xschem goldens + differential ratchet against `RATCHET.md`, cargo-fuzz on the four harnesses, perf tests + 10% regression gate on `tests/perf/baseline.txt`), `mutants.yml` (weekly), `release.yml` (tag `v*`: three native archives + web bundle on a draft release with the checklist). Toolchain pinned to 1.95.0 (= MSRV = flake.lock rustc). Details: TESTING.md § Tiers |
 
 ## In flight (resumed 2026-10-10)
 
@@ -38,7 +39,7 @@ Where the project stands. Update this file whenever a workstream lands or stops.
 
 1. Upstream the cktImg patches in `docs/upstream/` (user), bump the submodule; set `fuel` for cktimg in project manifests that import large decks.
 2. Editor parity gaps (BACKLOG "app / editor"): stretch/kissing move, poly/arc/circle, context menu, search, Save As, scrolling lists, system clipboard, crash-recovery prompt, toolbar icons.
-3. Web build end to end (OPFS VFS, runner plugin), CI determinism job, nightly fuzzing.
+3. Web build end to end: OPFS VFS (D31; the web build edits in memory today), runner plugin.
 4. Remaining BACKLOG items by crate.
 
 ## Run it

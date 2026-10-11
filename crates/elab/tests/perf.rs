@@ -96,6 +96,10 @@ fn elaborate_a_hierarchy_of_a_million_leaves() {
         "elaborate 4 levels × {fan} = {} leaves: {best:?}",
         (fan as u64).pow(4)
     );
+    eprintln!(
+        "PERF elab.hier_1m_leaves_ms {:.3}",
+        best.as_secs_f64() * 1e3
+    );
     assert!(best < Duration::from_millis(500), "D39: {best:?}");
 }
 
@@ -119,6 +123,7 @@ fn elaborate_a_flat_bench_of_100k_instances() {
     let dt = t.elapsed();
     assert_eq!(e.flat_leaves(e.top), n as u64);
     eprintln!("elaborate a flat 100k-instance bench: {dt:?} (×10 ≈ 1M flat)");
+    eprintln!("PERF elab.flat_100k_ms {:.3}", dt.as_secs_f64() * 1e3);
 }
 
 #[test]
@@ -176,6 +181,10 @@ fn a_param_edit_with_1k_dependents_recomputes_within_8ms() {
         );
     }
     eprintln!("1k dependents of 30k nodes: recompute + checks {best:?} (full build {build:?})");
+    eprintln!(
+        "PERF elab.recompute_1k_dependents_ms {:.3}",
+        best.as_secs_f64() * 1e3
+    );
     assert!(best < Duration::from_millis(8), "D39: {best:?}");
 }
 
@@ -246,5 +255,6 @@ fn connectivity_of_a_100k_object_cell() {
         nets = cn.net_name.len();
     }
     eprintln!("connect 100k objects ({nets} nets): {best:?}");
+    eprintln!("PERF elab.connect_100k_ms {:.3}", best.as_secs_f64() * 1e3);
     assert!(best < Duration::from_millis(200), "{best:?}");
 }

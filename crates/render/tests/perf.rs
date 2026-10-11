@@ -95,6 +95,7 @@ fn scene_build_100k_primitives() {
         "scene build, 100k primitives + shell: median {median:.2} ms, p95 {p95:.2} ms (path data {} KiB)",
         bytes / 1024
     );
+    println!("PERF render.scene_100k_ms {median:.3}");
     if cfg!(debug_assertions) {
         println!("debug build: budget not enforced");
         return;
@@ -198,6 +199,7 @@ fn waves_pane_three_1m_point_traces() {
     times.sort_by(f64::total_cmp);
     let (median, p95) = (times[times.len() / 2], times[times.len() * 95 / 100]);
     println!("waves pane, 3 x 1M points: median {median:.2} ms, p95 {p95:.2} ms per scene build");
+    println!("PERF render.waves_3x1m_ms {median:.3}");
     if cfg!(debug_assertions) {
         println!("debug build: budget not enforced");
         return;

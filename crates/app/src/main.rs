@@ -34,7 +34,11 @@ const DESIGN_ERROR: u8 = 1;
 const USAGE_ERROR: u8 = 2;
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // A browser passes no argv: the web build is the editor on its file-system root (D2, D31).
+    if cfg!(all(target_arch = "wasm32", target_os = "unknown")) && args.is_empty() {
+        args = vec!["edit".into(), schemify_app::platform::WEB_ROOT.into()];
+    }
     let Some(command) = args.first() else {
         eprint!("{USAGE}");
         return ExitCode::from(USAGE_ERROR);
@@ -75,6 +79,8 @@ fn edit(args: &[String]) -> u8 {
         eprint!("{USAGE}");
         return USAGE_ERROR;
     }
+    // The web build has no `sim` field (D16: no processes), so the update is empty there.
+    #[cfg_attr(target_arch = "wasm32", allow(clippy::needless_update))]
     let opts = schemify_app::editor::Options {
         no_default_ui,
         path: paths.first().map(|p| std::path::PathBuf::from(p.as_str())),

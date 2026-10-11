@@ -142,6 +142,9 @@ fn load_and_save_100k_objects_within_budget() {
         "100k objects, {} KiB: format parse {parse:?}; open (parse + tables) {load:?}; save (tables + write) {save:?}; total {total:?}; one edit + undo {edit:?}",
         text.len() / 1024
     );
+    for (key, d) in [("open", load), ("save", save), ("edit_undo", edit)] {
+        eprintln!("PERF doc.{key}_100k_ms {:.3}", d.as_secs_f64() * 1e3);
+    }
     assert!(
         load < Duration::from_millis(200),
         "open took {load:?} (D39: ≤ 200 ms)"

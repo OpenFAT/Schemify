@@ -123,6 +123,8 @@ fn var_edit_with_1k_dependents_through_the_docs_page() {
          gmid-backed median {:.2} ms (max {:.2})",
         plain[4], plain[8], plugin[4], plugin[8]
     );
+    eprintln!("PERF app.var_edit_1k_dependents_ms {:.3}", plain[4]);
+    eprintln!("PERF app.var_edit_1k_dependents_gmid_ms {:.3}", plugin[4]);
 }
 
 #[test]
@@ -202,5 +204,8 @@ fn hundred_k_objects_open_build_pan_edit() {
         1e3 / median,
         edit.as_secs_f64() * 1e3
     );
+    eprintln!("PERF app.open_100k_ms {:.3}", open.as_secs_f64() * 1e3);
+    eprintln!("PERF app.pan_frame_100k_ms {median:.3}");
+    eprintln!("PERF app.edit_100k_ms {:.3}", edit.as_secs_f64() * 1e3);
     let _ = std::fs::remove_dir_all(&dir);
 }
