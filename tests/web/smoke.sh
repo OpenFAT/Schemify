@@ -5,6 +5,9 @@
 # appended its canvas to the page) and the console shows no trap or panic. WebGPU is requested
 # through SwiftShader; a missing adapter (`gpu: ...`, blank canvas) is reported, not failed:
 # headless runners have no GPU, and the renderer has no CPU fallback on the web yet.
+# Then `drive.py` drives a session through the DevTools protocol (web spec): a wire drawn
+# and saved reaches OPFS and survives a reload, Ctrl+C reaches the system clipboard and
+# Ctrl+V pastes from it.
 #
 #   tests/web/smoke.sh <web-dir> [<out-dir>] [<chrome-binary>]
 set -euo pipefail
@@ -48,4 +51,6 @@ fi
 if grep -aq 'gpu: ' "$out/chrome.log"; then
   echo "::warning::no WebGPU device in this browser: the editor runs but draws nothing"
 fi
+echo "--- driven session (storage across a reload, clipboard)"
+python3 "$(dirname "$0")/drive.py" "$chrome" "$url" "$out" || status=1
 exit $status

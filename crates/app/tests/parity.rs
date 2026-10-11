@@ -442,6 +442,42 @@ fn image_exports_png_svg_pdf_eps() {
     );
 }
 
+/// File → Export project (web spec §3): the archive holds exactly the listed project files
+/// under `<name>/`, byte for byte (oracle: the files on disk, read back through the zip
+/// reader that CPython's archives check), hidden entries (journals, earlier exports) left
+/// out, and the same bytes again on a second export. Import is web-only: natively it only
+/// reports.
+#[test]
+fn export_project_zips_the_listed_files() {
+    let mut s = Session::open("inv", "top.shcomp", "export_project", true);
+    run(&mut s, "file.export_project", "");
+    let name = s.dir.file_name().unwrap().to_str().unwrap().to_owned();
+    let zip = s.dir.join(".schemify/export").join(format!("{name}.zip"));
+    let bytes = std::fs::read(&zip)
+        .unwrap_or_else(|e| panic!("{}: {e} (status: {})", zip.display(), status(&s)));
+    let files = schemify_cli::zip::read(&bytes, usize::MAX).expect("the archive reads");
+    let want = schemify_app::platform::list_files(&s.dir, &[]);
+    assert!(!want.is_empty());
+    assert_eq!(files.len(), want.len());
+    for ((n, b), p) in files.iter().zip(&want) {
+        let rel = schemify_app::libs::rel_path(&s.dir, p).unwrap();
+        assert_eq!(n, &format!("{name}/{rel}"));
+        assert_eq!(b, &std::fs::read(p).unwrap(), "{n}");
+    }
+    assert!(
+        files.iter().all(|(n, _)| !n.contains("/.")),
+        "hidden left out"
+    );
+    run(&mut s, "file.export_project", "");
+    assert_eq!(
+        std::fs::read(&zip).unwrap(),
+        bytes,
+        "same project, same bytes"
+    );
+    run(&mut s, "file.import_project", "");
+    assert!(status(&s).contains("directory"), "{}", status(&s));
+}
+
 // ---------------------------------------------------------------------------- Edit
 
 /// Property (TESTING.md): after a kissing move (Shift+M) of any instance subset by any

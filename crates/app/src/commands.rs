@@ -138,6 +138,8 @@ commands! {
     NewWindowTab = "file.create_new_window_tab",
     /// Delete a cell file of the project from disk: chooser, then the same pick again to confirm.
     DeleteFiles = "file.delete_files",
+    /// Pack the project into a zip (`.schemify/export/<name>.zip`; a download on the web).
+    ExportProject = "file.export_project",
     /// Export the selection (else the whole drawing) as Encapsulated PostScript.
     ExportEps = "file.image_export.eps_selection_export",
     /// Export the active cell and every schematic below it as a multi-page PDF.
@@ -153,6 +155,9 @@ commands! {
     ExportPngFull = "file.image_export.png_export_full",
     /// Export the whole drawing as SVG.
     ExportSvg = "file.image_export.svg_export",
+    /// Web: import a project from a zip (`file.import_project.folder`: from a folder) and
+    /// reload on it (web spec §3).
+    ImportProject = "file.import_project",
     /// Insert another cell's schematic attached to the pointer (xschem merge).
     Merge = "file.merge",
     /// The open-cell chooser.
@@ -486,7 +491,12 @@ impl Cmd {
     pub fn takes_suffix(self) -> bool {
         matches!(
             self,
-            Cmd::SetDialect | Cmd::SetLayer | Cmd::ToggleLayer | Cmd::OpenRecent | Cmd::WavesLoad
+            Cmd::SetDialect
+                | Cmd::SetLayer
+                | Cmd::ToggleLayer
+                | Cmd::OpenRecent
+                | Cmd::WavesLoad
+                | Cmd::ImportProject
         )
     }
 }

@@ -1,9 +1,12 @@
 //! The OS boundary (ARCHITECTURE: only `app` talks to the OS), split by `cfg` (D31):
-//! native and WASI builds use `std::fs`; the web build will use OPFS through generated glue
-//! (D2) and until then sees an empty file system holding only [`WEB_ROOT`].
+//! native and WASI builds use `std::fs`, child processes and the OS clipboard tools; the web
+//! build (`wasm32-unknown-unknown`) keeps OPFS in a synchronous in-memory table written back
+//! asynchronously, uses the async Clipboard API, and turns exports into downloads (web spec,
+//! `docs/spec/web.md`). Both sides offer the same functions, so the spines never branch on
+//! the platform.
 //!
-//! Every path here is absolute or relative to the process working directory; callers build
-//! them from the project root. Errors are plain text for the status line.
+//! Every path here is absolute or relative to the process working directory (on the web,
+//! `/`); callers build them from the project root. Errors are plain text for the status line.
 
 use std::path::{Path, PathBuf};
 
@@ -12,9 +15,19 @@ use std::path::{Path, PathBuf};
 pub const LIST_FILES_MAX: usize = 1 << 16;
 /// Directory depth walked by [`list_files`].
 pub const LIST_DEPTH_MAX: u32 = 8;
-/// The web build's project directory, opened by its argv-less start (`schemify edit /`): the
-/// root of its file system and, until OPFS is wired (D31), the only entry that exists there.
-pub const WEB_ROOT: &str = "/";
+/// The project the web build opens when its URL names none (web spec §1); imported projects
+/// sit beside it under `/projects`.
+pub const WEB_ROOT: &str = "/projects/default";
+/// The error [`clipboard_get`] returns on the web while the browser has not answered yet;
+/// [`clipboard_ready`] turns true once it has (web spec §4). Never returned natively.
+pub const CLIPBOARD_PENDING: &str = "clipboard: waiting for the browser";
+
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+mod vfs;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod web;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use web as imp;
 
 // WASI (the CLI under a wasm runtime, CI's determinism job) has `std::fs`: it takes the native
 // path. Only the browser (`wasm32-unknown-unknown`) lacks a file system.
@@ -190,6 +203,49 @@ mod imp {
         schemify_config::dirs::here(schemify_config::dirs::Dir::State).ok()
     }
 
+    // The clipboard tools answer synchronously: nothing is ever pending.
+    pub fn clipboard_ready() -> bool {
+        false
+    }
+
+    pub fn wake_ms() -> Option<u32> {
+        None
+    }
+
+    pub fn export(path: &Path, bytes: &[u8]) -> Result<(), String> {
+        write_atomic(path, bytes)
+    }
+
+    pub fn import_project(_folder: bool) -> Result<(), String> {
+        Err("a native project is a directory: open it (schemify edit <dir>)".into())
+    }
+
+    pub fn args() -> Vec<String> {
+        std::env::args().skip(1).collect()
+    }
+
+    pub fn unix_ms() -> u64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as u64)
+        }
+        // WASI (CI's determinism runs under wasmtime): no clock.
+        #[cfg(target_arch = "wasm32")]
+        {
+            0
+        }
+    }
+
+    pub fn seed() -> u64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        let pid = u64::from(std::process::id());
+        #[cfg(target_arch = "wasm32")]
+        let pid = 0u64; // WASI: no process ids
+        unix_ms() ^ (pid << 32) ^ 0x9e37_79b9_7f4a_7c15
+    }
+
     pub fn list(dir: &Path, depth: u32, skip: &[PathBuf], out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -215,55 +271,6 @@ mod imp {
                 out.push(p);
             }
         }
-    }
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod imp {
-    // TODO(D31): OPFS through web-sys (generated glue only, D2). Until then the web build
-    // edits in memory over an empty file system: only the root `/` exists (the editor's
-    // project directory on the web), reads fail, writes are refused, listings are empty.
-    // ponytail: OPFS is async on the main thread while this API is synchronous; the upgrade
-    // is an in-memory mirror loaded from OPFS before the editor starts, written back async.
-    use super::*;
-
-    const NO_OPFS: &str = "web storage (OPFS) is not wired yet";
-
-    pub fn read(_: &Path) -> Result<Vec<u8>, String> {
-        Err(NO_OPFS.into())
-    }
-    pub fn exists(path: &Path) -> bool {
-        is_dir(path)
-    }
-    pub fn is_dir(path: &Path) -> bool {
-        path == Path::new(WEB_ROOT)
-    }
-    pub fn write_atomic(_: &Path, _: &[u8]) -> Result<(), String> {
-        Err(NO_OPFS.into())
-    }
-    pub fn append(_: &Path, _: &[u8]) -> Result<(), String> {
-        Err(NO_OPFS.into())
-    }
-    pub fn list(_: &Path, _: u32, _: &[PathBuf], _: &mut Vec<PathBuf>) {}
-    pub fn remove(_: &Path) -> Result<(), String> {
-        Err(NO_OPFS.into())
-    }
-    pub fn mtime_unix_s(_: &Path) -> Option<u64> {
-        None
-    }
-    // TODO(D2): the async Clipboard API through web-sys; the editor keeps its own clipboard.
-    pub fn clipboard_set(_: &str) -> Result<(), String> {
-        Err("no system clipboard on the web yet".into())
-    }
-    pub fn clipboard_get() -> Result<String, String> {
-        Err("no system clipboard on the web yet".into())
-    }
-    pub fn state_dir() -> Option<PathBuf> {
-        None
-    }
-    pub fn spawn(_: &Path, _: &[String], _: &[u8]) -> (i32, Vec<u8>) {
-        // D16: no processes in a browser; simulation goes through runner plugins.
-        (-1, b"no processes on the web".to_vec())
     }
 }
 
@@ -358,6 +365,86 @@ pub fn read(path: &Path) -> Result<Vec<u8>, String> {
     imp::read(path)
 }
 
+/// The program's arguments after its name. On the web, where there is no command line, the
+/// URL fragment is the one argument: `index.html#/projects/inv/top.shcomp` opens that cell,
+/// `#/projects/inv` that project (percent-decoded; empty without a fragment, web spec §1).
+pub fn args() -> Vec<String> {
+    imp::args()
+}
+
+/// Mounts the web storage (loads every OPFS file into memory, web spec §2), installs the
+/// guard that asks before the page closes with writes still pending, then calls `run`.
+/// Returns at once; `run` follows when the browser has answered. A storage the browser
+/// refuses leaves the page editing in memory, reported on the console, as is an error from
+/// `run`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub fn mount_then(run: impl FnOnce() -> Result<(), String> + 'static) {
+    imp::mount_then(run);
+}
+
+/// Delivers an export: natively writes `bytes` to `path` ([`write_atomic`]); on the web the
+/// browser downloads them as `path`'s file name and nothing is written (web spec §3).
+///
+/// # Errors
+///
+/// The write failed, or the page cannot start a download.
+pub fn export(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    imp::export(path, bytes)
+}
+
+/// Packs the project at `root` into `<root>/.schemify/export/<name>.zip` (`<name>`: the
+/// directory's name; every entry under `<name>/`), or downloads it on the web: every file
+/// [`list_files`] lists, so hidden entries (`.schemify`, `.git`, journals) stay out. Returns
+/// the archive's path. Stored entries, fixed timestamps: the same project gives the same
+/// bytes everywhere (rule 4).
+///
+/// # Errors
+///
+/// A file cannot be read, the archive is past the zip limits ([`crate::zip::write`]), or
+/// the export fails.
+pub fn export_project(root: &Path) -> Result<PathBuf, String> {
+    let name = root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| !n.is_empty())
+        .unwrap_or("project");
+    let files = list_files(root, &[]);
+    let mut names = Vec::with_capacity(files.len());
+    let mut bytes = Vec::with_capacity(files.len());
+    for f in &files {
+        let Some(rel) = crate::libs::rel_path(root, f) else {
+            continue;
+        };
+        names.push(format!("{name}/{rel}"));
+        bytes.push(read(f)?);
+    }
+    let entries: Vec<(&str, &[u8])> = names
+        .iter()
+        .map(String::as_str)
+        .zip(bytes.iter().map(Vec::as_slice))
+        .collect();
+    let zip = crate::zip::write(&entries)?;
+    let out = root
+        .join(".schemify")
+        .join("export")
+        .join(format!("{name}.zip"));
+    export(&out, &zip)?;
+    assert_eq!(names.len(), bytes.len());
+    Ok(out)
+}
+
+/// Starts a project import on the web: the browser's file picker for a `.zip` (or, with
+/// `folder`, a directory); the picked files land in `/projects/<name>` and the page reloads
+/// on that project (web spec §3). Must run inside a user gesture (a menu click or key).
+///
+/// # Errors
+///
+/// Natively always (a native project is a directory to open); on the web when the page
+/// cannot show a picker. Failures after the pick go to the browser console.
+pub fn import_project(folder: bool) -> Result<(), String> {
+    imp::import_project(folder)
+}
+
 /// Returns whether `path` exists.
 pub fn exists(path: &Path) -> bool {
     imp::exists(path)
@@ -369,7 +456,8 @@ pub fn is_dir(path: &Path) -> bool {
 }
 
 /// Writes `bytes` atomically (temp file + rename), creating parent directories, so a crash
-/// never leaves a half-written design file (edits spec §5).
+/// never leaves a half-written design file (edits spec §5). On the web the write is
+/// visible at once and reaches OPFS shortly after, whole (web spec §2).
 ///
 /// # Errors
 ///
@@ -394,7 +482,7 @@ pub const CLIPBOARD_BYTES_MAX: usize = 64 << 20;
 ///
 /// # Errors
 ///
-/// The OS error, prefixed with the path (the web build refuses).
+/// The OS error, prefixed with the path (also for a directory).
 pub fn remove(path: &Path) -> Result<(), String> {
     imp::remove(path)
 }
@@ -405,28 +493,47 @@ pub fn mtime_unix_s(path: &Path) -> Option<u64> {
 }
 
 /// Puts `text` on the system clipboard through the platform's clipboard program
-/// (`wl-copy`, `xclip`, `xsel`, `pbcopy`, PowerShell `Set-Clipboard`). Blocks until the
-/// program has read it (milliseconds).
+/// (`wl-copy`, `xclip`, `xsel`, `pbcopy`, PowerShell `Set-Clipboard`), blocking until the
+/// program has read it (milliseconds). On the web: the Clipboard API's `writeText`, which
+/// completes later; a refusal is logged to the console (web spec §4).
 ///
 /// # Errors
 ///
-/// No clipboard program could take the text (the last failure); always on the web.
+/// No clipboard program could take the text (the last failure); on the web, no clipboard
+/// in this context (an insecure origin).
 pub fn clipboard_set(text: &str) -> Result<(), String> {
     imp::clipboard_set(text)
 }
 
 /// The system clipboard's text (at most [`CLIPBOARD_BYTES_MAX`] bytes), read the same way.
+/// On the web the browser answers asynchronously: the first call starts the read and
+/// returns [`CLIPBOARD_PENDING`]; once [`clipboard_ready`] is true, the next call returns
+/// the answer.
 ///
 /// # Errors
 ///
-/// No clipboard program answered, or the text is not UTF-8.
+/// No clipboard program answered, or the text is not UTF-8; on the web also
+/// [`CLIPBOARD_PENDING`], or the browser refused the read (permission).
 pub fn clipboard_get() -> Result<String, String> {
     imp::clipboard_get()
 }
 
+/// True once after a pending web clipboard read finished: the caller repeats the paste
+/// that got [`CLIPBOARD_PENDING`]. Always false natively.
+pub fn clipboard_ready() -> bool {
+    imp::clipboard_ready()
+}
+
+/// Milliseconds until the caller should poll again without input because the browser owes
+/// an answer ([`clipboard_ready`]); `None` when nothing is pending (always natively), so an
+/// idle editor sleeps (D39).
+pub fn wake_ms() -> Option<u32> {
+    imp::wake_ms()
+}
+
 /// The user state directory, `stdpath("state")` of the config spec §1 (honours
-/// `SCHEMIFY_APPNAME`): the recent-files list lives here. `None` when the environment names
-/// none (and on the web).
+/// `SCHEMIFY_APPNAME`): the recent-files list lives here; `/state` on the web. `None` when
+/// the environment names none.
 pub fn state_dir() -> Option<PathBuf> {
     imp::state_dir()
 }
@@ -441,25 +548,14 @@ pub fn list_files(dir: &Path, skip: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
-/// Milliseconds since the Unix epoch (journal stamps); 0 where no clock is available.
+/// Milliseconds since the Unix epoch (journal stamps, file times); the browser's clock on
+/// the web; 0 under WASI, which has no clock in CI's determinism runs.
 pub fn unix_ms() -> u64 {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64)
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        0
-    }
+    imp::unix_ms()
 }
 
-/// A seed for id generation (OS entropy where available, D9).
+/// A seed for id generation (D9): clock and process id natively, `Math.random` on the web,
+/// so two sessions editing one file do not draw the same ids.
 pub fn seed() -> u64 {
-    #[cfg(not(target_arch = "wasm32"))]
-    let pid = u64::from(std::process::id());
-    #[cfg(target_arch = "wasm32")]
-    let pid = 0u64; // no process ids in a browser; TODO(D31): crypto.getRandomValues
-    unix_ms() ^ (pid << 32) ^ 0x9e37_79b9_7f4a_7c15
+    imp::seed()
 }

@@ -258,6 +258,18 @@ impl Editor {
             | Cmd::ExportPdfFull
             | Cmd::ExportPdfHier
             | Cmd::ExportEps => self.export(h, cmd, arg),
+            Cmd::ExportProject => {
+                self.session.status = match platform::export_project(&self.session.root) {
+                    Ok(p) => format!("exported project {}", p.display()),
+                    Err(e) => format!("export project: {e}"),
+                };
+            }
+            Cmd::ImportProject => {
+                self.session.status = match platform::import_project(arg.trim() == "folder") {
+                    Ok(()) => "import project: pick a zip or folder".into(),
+                    Err(e) => format!("import project: {e}"),
+                };
+            }
             // ---------------------------------------------------------------- Edit / tools
             Cmd::UnselectArea => self.tool = Tool::UnselectArmed,
             Cmd::InsertPolygon | Cmd::InsertArc | Cmd::InsertCircle => {
@@ -969,7 +981,8 @@ impl Editor {
             _ => ("pdf", self.export_hierarchy(h, &look)),
         };
         let path = self.export_path(h, arg, ext);
-        match bytes.and_then(|b| platform::write_atomic(&path, &b)) {
+        // Web: a download (web spec §3).
+        match bytes.and_then(|b| platform::export(&path, &b)) {
             Ok(()) => self.session.status = format!("exported {}", path.display()),
             Err(e) => self.session.status = format!("export: {e}"),
         }
