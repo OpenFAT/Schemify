@@ -342,6 +342,7 @@ impl Editor {
         self.symbols = scene::Symbols::default();
         self.symbols_key = None;
         self.invalidate_cells();
+        self.scene_dirty = true; // cell rows shifted with the re-index: re-stamp every instance
         self.commit(reqs, h, "make subcircuit", ops);
         self.set_selection(Vec::new());
         self.set_partial(Vec::new());
