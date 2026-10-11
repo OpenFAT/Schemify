@@ -1,7 +1,6 @@
-//! The runner with a fake simulator (`sh`, so Unix only): `jobs=1` vs `jobs=N`
-//! byte-identical results, the results file, the design hash and staleness, gate and
-//! job failures, timeouts, cancellation, and the OSDI compile step.
-#![cfg(unix)]
+//! The runner with a fake simulator (`sh`; on Windows the one Git for Windows puts on `PATH`):
+//! `jobs=1` vs `jobs=N` byte-identical results, the results file, the design hash and
+//! staleness, gate and job failures, timeouts, cancellation, and the OSDI compile step.
 
 mod common;
 
@@ -321,31 +320,36 @@ fn verilog_a_compiles_once_into_every_job_or_fails_clearly() {
             && msg.contains("vres.va"),
         "{msg}"
     );
-    // A stand-in compiler that counts its runs: one compile, copied into both jobs.
-    let fake = dir.join("fake-openvaf");
-    std::fs::write(
-        &fake,
-        "#!/bin/sh\necho run >> \"$1.count\"\ncp \"$1\" \"$3\"\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    let (jobs, _, runner) = run(&p, top, &plan, two(), |d| {
-        let mut c = cfg(&dir, d, sh(FAKE), 1);
-        c.cache = dir.join("cache");
-        c.tools.openvaf = fake.to_string_lossy().into_owned();
-        c
-    });
-    assert_eq!(jobs.states(), [State::Done, State::Done]);
-    assert!(
-        runner.job_dir(0).join("vres.osdi").exists()
-            && runner.job_dir(1).join("vres.osdi").exists()
-    );
-    let count = std::fs::read_to_string(dir.join("vres.va.count")).unwrap();
-    assert_eq!(
-        count.lines().count(),
-        1,
-        "mtime cache hit for the second job"
-    );
-    let netlist = std::fs::read_to_string(runner.job_dir(0).join("netlist.cir")).unwrap();
-    assert!(netlist.contains("\nN1 out 0 vres\n"), "{netlist}");
+    // A stand-in compiler that counts its runs: one compile, copied into both jobs. A script
+    // run as a binary needs a shebang and an exec bit: Unix only.
+    #[cfg(unix)]
+    {
+        let fake = dir.join("fake-openvaf");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\necho run >> \"$1.count\"\ncp \"$1\" \"$3\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let (jobs, _, runner) = run(&p, top, &plan, two(), |d| {
+            let mut c = cfg(&dir, d, sh(FAKE), 1);
+            c.cache = dir.join("cache");
+            c.tools.openvaf = fake.to_string_lossy().into_owned();
+            c
+        });
+        assert_eq!(jobs.states(), [State::Done, State::Done]);
+        assert!(
+            runner.job_dir(0).join("vres.osdi").exists()
+                && runner.job_dir(1).join("vres.osdi").exists()
+        );
+        let count = std::fs::read_to_string(dir.join("vres.va.count")).unwrap();
+        assert_eq!(
+            count.lines().count(),
+            1,
+            "mtime cache hit for the second job"
+        );
+        let netlist = std::fs::read_to_string(runner.job_dir(0).join("netlist.cir")).unwrap();
+        assert!(netlist.contains("\nN1 out 0 vres\n"), "{netlist}");
+    }
 }

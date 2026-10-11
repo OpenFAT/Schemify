@@ -3,9 +3,8 @@
 //! (results table, plot slots, OP back-annotation, cross-probe), the optimizer's staged edit,
 //! plugin run requests, and the idle check (no ticks when nothing runs, D39).
 //!
-//! The fake simulator is `sh` (Unix only); the real-ngspice test runs when `ngspice` is on
-//! `PATH`.
-#![cfg(unix)]
+//! The fake simulator is `sh` (on Windows the one Git for Windows puts on `PATH`); the
+//! real-ngspice test runs when `ngspice` is on `PATH`.
 
 mod common;
 
