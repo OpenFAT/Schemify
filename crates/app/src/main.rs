@@ -41,10 +41,13 @@ fn main() -> ExitCode {
     let opts = schemify_app::editor::Options {
         no_default_ui,
         // A browser passes no argv: the web editor opens its file-system root (D2, D31).
-        path: paths.first().map(|p| std::path::PathBuf::from(p.as_str())).or_else(|| {
-            cfg!(all(target_arch = "wasm32", target_os = "unknown"))
-                .then(|| schemify_app::platform::WEB_ROOT.into())
-        }),
+        path: paths
+            .first()
+            .map(|p| std::path::PathBuf::from(p.as_str()))
+            .or_else(|| {
+                cfg!(all(target_arch = "wasm32", target_os = "unknown"))
+                    .then(|| schemify_app::platform::WEB_ROOT.into())
+            }),
         seed: schemify_app::platform::seed(),
         config,
         ..schemify_app::editor::Options::default()
