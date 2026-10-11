@@ -49,8 +49,7 @@ pub use tables::{
     NodeIx, Prop, StyleProp, UiNodes, UiStyles, UiTables, compose,
 };
 pub use text::{
-    FontGlyph, FontInfo, Image, NO_TEXT, TextId, TextSystem, ui_font_glyphs, ui_font_info,
-    ui_fonts,
+    FontGlyph, FontInfo, Image, NO_TEXT, TextId, TextSystem, ui_font_glyphs, ui_font_info, ui_fonts,
 };
 
 /// Re-exported so renderers name the same layout and font types as this crate.
