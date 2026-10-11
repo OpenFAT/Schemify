@@ -24,6 +24,7 @@ On NixOS the tests need the Vulkan loader on `LD_LIBRARY_PATH`, e.g.
 | …on a given GPU | prefix `SCHEMIFY_GPU=<adapter name substring>` (default: the first non-CPU adapter) |
 | Param edit with 1k dependents | `… --test perf -- --ignored --nocapture var_edit` |
 | Flat 1M-instance netlist (elaborate + emit) | `cargo test --release -p schemify-netlist --test perf -- --ignored --nocapture --test-threads=1` |
+| elab cost of a local edit (p50/p95/p99) at 10k / 100k / 1M objects | `cargo test --release -p schemify-elab --test perf -- --ignored --nocapture a_local_edit` |
 | Canvas cache and patch oracles (GPU) | `cargo test --release -p schemify-render --test gpu -- --ignored --nocapture --test-threads=1` |
 
 The frame benchmark drives the real frame spine (`Editor::update` + `Editor::paint` into a
@@ -82,6 +83,24 @@ Open + first build: 17 ms (10k), 1.93 s (1M).
 | emit | 0.15 s | 0.14 s |
 | total (budget 1 s) | 1.43 s | 0.85–0.93 s (0.90 after the merge) |
 
+Second pass (2026-10-11, `pr/elab-incremental`; machine shared with other agents at load
+average 40–90, so these are upper bounds): elaborate 0.49 s cold / 0.35–0.44 s warm, emit
+0.08–0.11 s, total 0.60 s cold / 0.43–0.51 s warm (0.94 s before, at load 5). Large cells
+use a second thread (connectivity beside the graph, element names beside the geometry,
+emission in row chunks); output is byte-identical to the serial run (oracle
+`netlist/tests/metamorphic.rs` `threads_change_nothing`).
+
+### Local edit, elab cost (`CellState::recompute`), p50 / p95 / p99 ms
+
+200 random edits plus their undos (wire delete/insert/move, label renames that merge by
+name, device moves) on a tiled schematic with shared `gnd`/`vdd!` nets.
+
+| Objects | before (full rebuild) | after (patched) |
+|---|---|---|
+| 10k | 3.1 / 3.2 / 3.4 | 0.011 / 0.027 / 0.035 |
+| 100k | 34.6 / 36.4 / 37.0 | 0.079 / 0.163 / 0.186 |
+| 1M | — | 0.94 / 2.37 / 3.17 |
+
 ### Other D39 rows
 
 | Budget | Measured |
@@ -107,7 +126,7 @@ Open + first build: 17 ms (10k), 1.93 s (1M).
 
 ## Where the time still goes
 
-At 100k objects an edit spends ~28 ms in elab (connectivity 20 ms, checks 7 ms), ~7 ms
+At 100k objects an edit spends ~0.1–0.2 ms in elab (was ~28 ms), ~7 ms
 refilling plugin snapshots (two delivery rounds), ~4.5 ms rebuilding decor, ~3.4 ms diffing
 the canvas tables, ~1.5 ms in the scene update and ~1 ms painting the patch. See
 `docs/BACKLOG.md` (Performance) for the next steps.

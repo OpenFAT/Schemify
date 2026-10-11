@@ -90,11 +90,11 @@ Numbers and how to reproduce them: `docs/perf.md`. D39 status: pan/zoom at 100k 
 param edit 1.8 ms; idle 0%. Not met: a local edit at 100k objects (~50 ms, D39 has no row
 for it; the goal set for this work was ≤ 1 ms).
 
-- **elab**: an edit at 100k objects rebuilds connectivity (20 ms) and re-runs every check
-  (7 ms, 3.4 of it sorting the rows): incremental connectivity per touched component
-  (a deleted wire can split only its own net) and checks over the changed nets would make
-  it O(change). The 1M flat netlist has 7–15% margin: generated net names (1M interns,
-  ~100 ms) and the elements' names (~90 ms) are the next costs.
+- **elab**: a local edit is patched (0.08 ms p50 at 100k); still rebuilt: instance
+  insert/delete (the graph and instance rows), name/ignore/inherit edits, cells with `E003`
+  shorts or `ignore short`, label edits when `global true` labels exist. At 1M objects the
+  id-column diff and violation-table memmoves dominate (1 ms p50). The 1M flat netlist:
+  generated-name interning, the rows loop and page faults on fresh buffers are what remain.
 - **elab**: edits that change an expression's dependencies rebuild the whole graph (17 ms at 30k nodes).
 - **app**: per edit, plugin snapshots are refilled twice (one delivery before the edit is
   applied, one after: ~3.5 ms each at 100k) and decor is rebuilt (~4.5 ms): per-table
