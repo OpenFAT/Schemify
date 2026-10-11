@@ -11,6 +11,8 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## app / editor
 
+- **Tests open fixtures in place**, so a journal left by using the GUI on a fixture (`fixtures/*/.schemify/journal`) is replayed as crash recovery and breaks `tests/docs.rs` (happened 2026-10-10). Copy fixtures into a temp dir per test.
+
 - **doc**: keep rank 2 (symbol graphics) in indexed interfaces (`parse_prefix(bytes, 2)`); the editor currently opens every instantiated cell to get its symbol.
 - **render**: `draw_canvas` shares one text cache between scene and overlay (re-shapes labels every frame; the editor works around it, the demo doesn't); window has no exit hook or timer wake-up.
 - **ui**: text fields commit only on Enter (the app copies typed text every frame).
