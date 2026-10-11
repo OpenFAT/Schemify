@@ -99,7 +99,7 @@ proptest! {
         for (s, r) in steps.iter().enumerate() {
             let (a, b) = (r.start as usize, r.end as usize);
             let want = reference(&xs[a..b], &ys[a..b], q);
-            prop_assert_eq!(w.value_at_step(0, s, q), want, "step {}", s);
+            prop_assert_eq!(w.value_at_step(0, s, q), want, "step {s}");
             first = first.or(want);
         }
         prop_assert_eq!(w.value_at(0, q), first);
@@ -131,14 +131,14 @@ proptest! {
         let want = |t: f64, k: usize| {
             bits.iter().fold(0u32, |acc, b| (acc << 1) | u32::from(f64::from(b[k]) >= t))
         };
-        for k in 0..12 {
-            prop_assert_eq!(w.xy(0).1[k], f64::from(want(t, k)));
-            prop_assert_eq!(w.logic_at(0, x[k]), Some(want(t, k)));
+        for (k, (&xk, &yk)) in x.iter().zip(w.xy(0).1).enumerate() {
+            prop_assert_eq!(yk, f64::from(want(t, k)));
+            prop_assert_eq!(w.logic_at(0, xk), Some(want(t, k)));
         }
         // A new threshold re-evaluates the bus.
         set(&mut w, 0, |p| p.threshold = t - 1.0).unwrap();
-        for k in 0..12 {
-            prop_assert_eq!(w.xy(0).1[k], f64::from(want(t - 1.0, k)));
+        for (k, &yk) in w.xy(0).1.iter().enumerate() {
+            prop_assert_eq!(yk, f64::from(want(t - 1.0, k)));
         }
     }
 }
@@ -163,7 +163,7 @@ fn bus_values_hold_between_samples_and_follow_their_pane() {
     for bad in ["{}", "{v(a),}", "{v(a), 1}", "{v(nope)}"] {
         assert!(add(&mut w, bad, 0).is_err(), "{bad}");
     }
-    let wide = format!("{{{}}}", vec!["v(a)"; 33].join(","));
+    let wide = format!("{{{}}}", ["v(a)"; 33].join(","));
     assert!(matches!(add(&mut w, &wide, 0), Err(ViewError::Bus(_))));
     assert_eq!(w.trace_count(), 1);
 }

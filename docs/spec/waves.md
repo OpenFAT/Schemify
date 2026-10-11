@@ -57,7 +57,7 @@ New traces take the first unused of 8 trace colours. The properties dialog's swa
 
 ## 8. Graph properties dialog
 
-Double-click in a plot opens it for that pane (xschem); `Escape` or Cancel closes it without changes. It holds the pane's properties (mode and radix as cycling buttons, x lock as a checkbox), x min/max, y min/max, the four cursor positions and the colour swatches. Numbers accept SI suffixes (`1.5u`, `2meg`) and are shown in canonical number text (expr §7), so OK on an unchanged dialog changes nothing (the round trip). OK applies everything as requests (`SetPane`, `SetX`, `SetY`, `Cursor`, `HCursor`); a field that does not parse keeps the dialog open and names the field in the status line.
+Double-click in a plot (or a right click within 6 px of a cursor) opens it for that pane (xschem); `Escape` or Cancel closes it without changes. It holds the pane's properties (mode and radix as cycling buttons, x lock as a checkbox), x min/max, y min/max, the four cursor positions and the colour swatches. Numbers accept SI suffixes (`1.5u`, `2meg`) and are shown in canonical number text (expr §7), so OK on an unchanged dialog changes nothing (the round trip). OK applies everything as requests (`SetPane`, `SetX`, `SetY`, `Cursor`, `HCursor`); a field that does not parse keeps the dialog open and names the field in the status line.
 
 ## 9. New results
 

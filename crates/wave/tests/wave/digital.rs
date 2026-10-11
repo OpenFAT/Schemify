@@ -152,7 +152,7 @@ proptest! {
 
 #[test]
 fn bins_place_centres_exactly_and_ends_inside() {
-    let mut bins = vec![0u32; 4];
+    let mut bins = [0u32; 4];
     // Centres of four unit bins over [0, 4], both ends, and values outside.
     bin_counts(
         &[0.5, 1.5, 2.5, 3.5, 0.0, 4.0, -0.1, 4.1, f64::NAN],
@@ -161,11 +161,11 @@ fn bins_place_centres_exactly_and_ends_inside() {
         false,
         &mut bins,
     );
-    assert_eq!(bins, vec![2, 1, 1, 2]);
+    assert_eq!(bins, [2, 1, 1, 2]);
     // On a log axis, decades are bins and values <= 0 are not counted.
-    let mut bins = vec![0u32; 3];
+    let mut bins = [0u32; 3];
     bin_counts(&[2.0, 20.0, 200.0, 0.0, -5.0], 0.0, 3.0, true, &mut bins);
-    assert_eq!(bins, vec![1, 1, 1]);
+    assert_eq!(bins, [1, 1, 1]);
 }
 
 #[test]
