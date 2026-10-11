@@ -410,7 +410,8 @@ impl Builder {
         map.row_child.reserve(rows);
         map.row_conn.reserve(rows + 1);
         map.row_conn.push(0);
-        map.text.reserve(rows * 12);
+        // Local and emitted names per row plus net names: ~32 bytes a row.
+        map.text.reserve(rows * 32);
         Builder {
             map,
             remap: vec![NONE; e.names.len() as usize],
@@ -439,9 +440,18 @@ impl Builder {
         if id == NONE {
             id = self.map.net_name.len() as u32;
             self.remap[n.0 as usize] = id;
-            let text = crate::spelled(e, &self.respell, n).to_owned();
-            let sp = self.span(&text);
-            self.map.net_name.push(sp);
+            // Copied straight from elab's arena (no owned copy per new net: 10^6 in a flat
+            // design); `respell` and `map` are disjoint fields.
+            let text = crate::spelled(e, &self.respell, n);
+            let start = self.map.text.len();
+            self.map.text.push_str(text);
+            assert!(
+                self.map.text.len() < u32::MAX as usize,
+                "name map holds < 4 GiB"
+            );
+            self.map
+                .net_name
+                .push(Span(start as u32, text.len() as u32));
             let global = e.globals.binary_search_by(|g| e.names.cmp(*g, n)).is_ok();
             self.map.net_global.push(global);
             self.stamp.push(NONE);

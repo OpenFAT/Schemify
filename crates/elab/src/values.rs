@@ -201,6 +201,10 @@ pub(crate) struct Progs {
     pub(crate) ref_start: Vec<u32>,
     pub(crate) refs: Vec<Ref>,
     pub(crate) cached: Vec<Option<Val>>,
+    /// The value of a program with no inputs and no plugin call (a literal, `2*3`):
+    /// computed once when compiled, so evaluating it is a copy (a flat netlist's 10^6
+    /// overrides are mostly literals).
+    pub(crate) konst: Vec<Option<Val>>,
 }
 
 impl Progs {
@@ -246,11 +250,25 @@ impl Progs {
                 }
             }
         };
+        let pure = match &code {
+            Code::Expr(p) => p.plugin_fns().len() == 0 && p.signals().len() == 0,
+            Code::Tmpl(_) | Code::Bad(_) => false,
+        };
+        let inputs = self.refs.len() - *self.ref_start.last().expect("seeded") as usize;
         self.code.push(code);
         self.ref_start.push(self.refs.len() as u32);
         self.cached.push(cached);
+        self.konst.push(None);
+        let p = (self.code.len() - 1) as u32;
+        if pure && inputs == 0 {
+            let (mut s, mut t) = (Scratch::default(), String::new());
+            let (v, unverified) = self.eval(p, &[], &mut no_funcs, &mut s, &mut t);
+            assert!(!unverified, "no plugin call, no stand-in");
+            self.konst[p as usize] = (!v.is_err()).then_some(v);
+        }
         assert_eq!(self.code.len() + 1, self.ref_start.len());
-        (self.code.len() - 1) as u32
+        assert_eq!(self.konst.len(), self.code.len());
+        p
     }
 
     pub(crate) fn refs(&self, p: u32) -> &[Ref] {
@@ -269,6 +287,10 @@ impl Progs {
         scratch: &mut Scratch,
         text: &mut String,
     ) -> (Val, bool) {
+        if let Some(v) = &self.konst[p as usize] {
+            debug_assert!(inputs.is_empty());
+            return (v.clone(), false);
+        }
         let mut missing = false;
         let result = match &self.code[p as usize] {
             Code::Bad(e) => return (Val::Err(e.clone()), false),

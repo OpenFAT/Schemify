@@ -2,8 +2,9 @@
 //! graph and its values, hierarchy elaboration with impl selection and subckt
 //! specialization, resolved params, violations and the annotation overlay.
 //!
-//! Reads `doc` tables; owns everything it derives; pure (no I/O, no clock, no threads)
-//! and builds for `wasm32-unknown-unknown`. Normative spec: `docs/spec/netlist.md`
+//! Reads `doc` tables; owns everything it derives; pure (no I/O, no clock) and builds for
+//! `wasm32-unknown-unknown`. A large cell elaborates on two scoped threads (native only),
+//! with the serial results. Normative spec: `docs/spec/netlist.md`
 //! §1–§6 and §8 (with the amendments listed in its §9).
 //!
 //! # Spines
@@ -56,6 +57,7 @@ mod connect;
 mod elaborate;
 mod graph;
 mod iface;
+mod live;
 mod names;
 mod netexpr;
 mod state;
@@ -75,9 +77,30 @@ pub use netexpr::{WIDTH_MAX, is_global};
 pub use state::{CellState, Recomputed};
 pub use values::{Funcs, Val, cached_text, no_funcs};
 
+/// Cells with at least this many instances elaborate on two threads: connectivity beside
+/// the graph, element names beside the geometry.
+const PARALLEL_MIN: usize = 1 << 15;
+
+/// Forces the serial order everywhere (the D37 jobs = 1 vs N oracle).
+static SERIAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a cell of `instances` instances uses a second thread: large enough to pay for
+/// one, on a target that has them, unless forced serial. Results never depend on it.
+fn parallel_ok(instances: usize) -> bool {
+    cfg!(not(target_family = "wasm"))
+        && instances >= PARALLEL_MIN
+        && !SERIAL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 #[doc(hidden)]
 pub mod test_support {
     //! Internals the integration tests drive directly.
+
+    /// Makes elaboration serial (`true`) or lets large cells use a second thread (`false`,
+    /// the default). Outputs are identical either way; tests compare the two.
+    pub fn set_serial(serial: bool) {
+        crate::SERIAL.store(serial, std::sync::atomic::Ordering::Relaxed);
+    }
     pub use crate::iface::Iface;
     pub use crate::names::Names;
 

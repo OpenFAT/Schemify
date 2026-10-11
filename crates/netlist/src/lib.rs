@@ -51,17 +51,18 @@
 //    together), lines are appended to one buffer and sorted only when a template
 //    reorders names.
 // 5. Lifetime: everything is per `emit` call; scratch buffers are reused per line.
-// 6. Parallel: definitions are independent; a single thread already meets D39 (see
-//    tests/perf.rs), so the spine stays sequential.
+// 6. Parallel: a large block's rows render in chunks on scoped threads (`Writer::rows`),
+//    appended in row order; the name map and line sort stay sequential.
 
 mod inst;
 mod name_map;
 
 pub use name_map::NameMap;
 
-use inst::{Plans, Tmp};
+use inst::{Plans, Tmp, Uses};
 use schemify_doc::PinDir;
 use schemify_elab::{CornerLine, Dialect, Elab, Ignore, Name, Target};
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
 /// One emitted netlist.
 #[derive(Clone, Debug, Default)]
@@ -622,7 +623,7 @@ impl<'e> Writer<'e> {
             plans,
             out: String::with_capacity(4096 + 48 * rows + 64 * body_lines),
             tmp: Tmp::new(e),
-            lines: Vec::new(),
+            lines: Vec::with_capacity(rows),
             def_map,
             map,
             wires: Vec::new(),
@@ -746,58 +747,151 @@ impl<'e> Writer<'e> {
         let e = self.e;
         let seg = self.out.len();
         self.lines.clear();
-        let indent = if self.d == Dialect::Verilog { "  " } else { "" };
+        let rows = e.insts_of(d);
+        // Rows render independently: a large block renders in chunks on scoped threads and
+        // the chunks are appended in row order, so the text is the serial text (D37).
+        let chunks = if rows.len() >= PARALLEL_ROWS && !SERIAL.load(Relaxed) {
+            std::thread::available_parallelism().map_or(1, |n| n.get().min(4))
+        } else {
+            1
+        };
+        let step = rows.len().div_ceil(chunks.max(1)).max(1);
+        let parts: Vec<std::ops::Range<usize>> = (rows.start..rows.end)
+            .step_by(step)
+            .map(|a| a..(a + step).min(rows.end))
+            .collect();
+        let (dl, plans, respell) = (self.d, self.plans, &self.respell);
+        let rendered: Vec<Chunk> = if parts.len() > 1 {
+            std::thread::scope(|sc| {
+                let workers: Vec<_> = parts
+                    .iter()
+                    .skip(1)
+                    .map(|p| {
+                        sc.spawn(|| {
+                            let mut tmp = Tmp::new(e);
+                            let mut c = render(e, dl, plans, respell, p.clone(), &mut tmp);
+                            c.uses = tmp.uses;
+                            c
+                        })
+                    })
+                    .collect();
+                let first = render(e, dl, plans, respell, parts[0].clone(), &mut self.tmp);
+                let mut all = vec![first];
+                all.extend(workers.into_iter().map(|w| w.join().expect("rows render")));
+                all
+            })
+        } else {
+            parts
+                .iter()
+                .map(|p| render(e, dl, plans, respell, p.clone(), &mut self.tmp))
+                .collect()
+        };
         let mut sorted = true;
-        for r in e.insts_of(d) {
-            if e.insts.ignore[r] != Ignore::No {
-                continue;
+        for (k, c) in rendered.into_iter().enumerate() {
+            if k > 0 {
+                self.tmp.uses.merge(c.uses);
             }
-            let start = self.out.len();
-            self.out.push_str(indent);
-            let local = e.names.get(e.insts.name[r]);
-            let rendered = inst::line(
-                e,
-                self.d,
-                self.plans,
-                r,
-                local,
-                |n| spelled(e, &self.respell, n),
-                &mut self.out,
-                &mut self.tmp,
-            );
-            if let Err(msg) = &rendered {
-                self.out.truncate(start);
-                self.out.push_str(indent);
-                self.out.push_str(comment(self.d));
-                self.out.push_str(" error in ");
-                self.out.push_str(local);
-                self.out.push_str(": ");
-                self.out.push_str(&msg.replace('\n', " "));
+            let base = self.out.len();
+            self.out.push_str(&c.text);
+            for (r, a, b, ok) in c.lines {
+                let (start, end) = (base + a, base + b);
+                let name = emitted_name(&self.out, start, self.d);
+                if let Some(prev) = self.lines.last() {
+                    sorted &=
+                        self.out.as_bytes()[prev.2..prev.3] <= self.out.as_bytes()[name.0..name.1];
+                }
+                if ok {
+                    let child = match e.insts.target[r] {
+                        Target::Def(c) => self.def_map[c as usize],
+                        Target::Leaf(_) => NONE,
+                    };
+                    self.map.row(e, r, &self.out[name.0..name.1], child);
+                }
+                self.lines.push((start, end, name.0, name.1));
             }
-            if self.out.len() == start + indent.len() {
-                self.out.truncate(start);
-                continue; // a template that renders nothing emits no line
-            }
-            if !self.out.ends_with('\n') {
-                self.out.push('\n');
-            }
-            let name = emitted_name(&self.out, start, self.d);
-            if let Some(prev) = self.lines.last() {
-                sorted &=
-                    self.out.as_bytes()[prev.2..prev.3] <= self.out.as_bytes()[name.0..name.1];
-            }
-            if rendered.is_ok() {
-                let child = match e.insts.target[r] {
-                    Target::Def(c) => self.def_map[c as usize],
-                    Target::Leaf(_) => NONE,
-                };
-                self.map.row(e, r, &self.out[name.0..name.1], child);
-            }
-            self.lines.push((start, self.out.len(), name.0, name.1));
         }
         if !sorted {
             sort_lines(&mut self.out, seg, &self.lines);
         }
+    }
+}
+
+/// Blocks with at least this many rows render on several threads.
+const PARALLEL_ROWS: usize = 1 << 15;
+
+/// Forces serial rendering (the D37 jobs = 1 vs N oracle).
+static SERIAL: AtomicBool = AtomicBool::new(false);
+
+/// Renders every block on one thread (`true`) or lets large blocks use several (`false`,
+/// the default). The text is identical either way; tests compare the two.
+#[doc(hidden)]
+pub fn set_serial(serial: bool) {
+    SERIAL.store(serial, Relaxed);
+}
+
+/// Instance lines of a run of rows, rendered on their own: the text, then per kept line
+/// `(row, start, end, rendered without error)` with offsets into the text, and the impls
+/// and models the lines use.
+struct Chunk {
+    text: String,
+    lines: Vec<(usize, usize, usize, bool)>,
+    uses: Uses,
+}
+
+/// Renders rows `rows` of one block (spec §7.6.1: a failed template becomes an error
+/// comment, an empty rendering no line). The impls and models used accumulate in `tmp`;
+/// the chunk's `uses` is left empty for the caller to fill.
+fn render(
+    e: &Elab,
+    d: Dialect,
+    plans: &Plans,
+    respell: &[(Name, String)],
+    rows: std::ops::Range<usize>,
+    tmp: &mut Tmp,
+) -> Chunk {
+    let indent = if d == Dialect::Verilog { "  " } else { "" };
+    let mut out = String::with_capacity(48 * rows.len());
+    let mut lines = Vec::with_capacity(rows.len());
+    for r in rows {
+        if e.insts.ignore[r] != Ignore::No {
+            continue;
+        }
+        let start = out.len();
+        out.push_str(indent);
+        let local = e.names.get(e.insts.name[r]);
+        let rendered = inst::line(
+            e,
+            d,
+            plans,
+            r,
+            local,
+            |n| spelled(e, respell, n),
+            &mut out,
+            tmp,
+        );
+        if let Err(msg) = &rendered {
+            out.truncate(start);
+            out.push_str(indent);
+            out.push_str(comment(d));
+            out.push_str(" error in ");
+            out.push_str(local);
+            out.push_str(": ");
+            out.push_str(&msg.replace('\n', " "));
+        }
+        if out.len() == start + indent.len() {
+            out.truncate(start);
+            continue; // a template that renders nothing emits no line
+        }
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        lines.push((r, start, out.len(), rendered.is_ok()));
+    }
+    assert!(lines.last().is_none_or(|l| l.2 == out.len()));
+    Chunk {
+        text: out,
+        lines,
+        uses: Uses::default(),
     }
 }
 

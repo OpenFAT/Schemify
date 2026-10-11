@@ -342,6 +342,21 @@ pub(crate) struct Uses {
     pub(crate) models: Vec<(Name, u32)>,
 }
 
+impl Uses {
+    /// Adds what a later run of rows used (`models` keep row order; their lines are sorted
+    /// and deduplicated when written).
+    pub(crate) fn merge(&mut self, other: Uses) {
+        if other.impl_used.len() == self.impl_used.len() {
+            for (a, b) in self.impl_used.iter_mut().zip(other.impl_used) {
+                *a |= b;
+            }
+        } else {
+            assert!(other.impl_used.is_empty(), "uses of one elaboration");
+        }
+        self.models.extend(other.models);
+    }
+}
+
 /// Per-line scratch, reused across lines.
 #[derive(Debug)]
 pub(crate) struct Tmp {

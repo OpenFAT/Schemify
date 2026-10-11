@@ -245,7 +245,8 @@ pub(crate) fn value_code(code: Code) -> bool {
     )
 }
 
-fn cmp_key(a: &Violation, b: &Violation, names: &Names) -> Ordering {
+/// Orders violations by their key (code text, cell, object, path, param).
+pub(crate) fn cmp_key(a: &Violation, b: &Violation, names: &Names) -> Ordering {
     let code = if a.code == b.code {
         Ordering::Equal
     } else {
@@ -255,6 +256,21 @@ fn cmp_key(a: &Violation, b: &Violation, names: &Names) -> Ordering {
         .then(a.object.cmp(&b.object))
         .then_with(|| names.cmp(a.path, b.path))
         .then_with(|| names.cmp(a.param, b.param))
+}
+
+/// [`waivers`] without interning: a waiver naming a param no interface has (its name not
+/// in `names`) can match no finding and is left out.
+pub(crate) fn waivers_found(doc: &Document, names: &Names) -> Vec<(ObjId, Name)> {
+    let s = doc.strings();
+    let w = doc.waivers();
+    let mut out: Vec<(ObjId, Name)> = (0..w.kind.len())
+        .filter_map(|r| {
+            let inst = ObjId::find(s.get(w.fields[r][1]), s)?;
+            Some((inst, names.find(s.get(w.fields[r][2]))?))
+        })
+        .collect();
+    out.sort_unstable();
+    out
 }
 
 /// Waivers of one document: `(instance id, param)` pairs, sorted.
@@ -280,10 +296,19 @@ pub(crate) fn gate(
     names: &Names,
     out: &mut Vec<(Code, String)>,
 ) {
-    let mut text = String::new();
-    if !v.is_err() {
-        v.write_text(&mut text);
-    }
+    // The value's text goes only into a finding or a choice compare: written on first use
+    // (a flat 1M-instance netlist gates 10^6 passing values).
+    let cell = std::cell::OnceCell::new();
+    let text = || {
+        cell.get_or_init(|| {
+            let mut t = String::new();
+            if !v.is_err() {
+                v.write_text(&mut t);
+            }
+            t
+        })
+        .as_str()
+    };
     if let Some(x) = v.as_f64() {
         let below = bounds[MIN]
             .as_ref()
@@ -294,10 +319,16 @@ pub(crate) fn gate(
             .and_then(Val::as_f64)
             .filter(|m| x > *m);
         if let Some(m) = below {
-            out.push((Code::E005, format!("{text} is below min {}", num_text(m))));
+            out.push((
+                Code::E005,
+                format!("{} is below min {}", text(), num_text(m)),
+            ));
         }
         if let Some(m) = above {
-            out.push((Code::E005, format!("{text} is above max {}", num_text(m))));
+            out.push((
+                Code::E005,
+                format!("{} is above max {}", text(), num_text(m)),
+            ));
         }
         let grid = bounds[GRID]
             .as_ref()
@@ -309,7 +340,10 @@ pub(crate) fn gate(
             .filter(|s| *s != 0.0);
         if let Some(g) = grid {
             if !on_grid(x, 0.0, g) {
-                out.push((Code::E032, format!("{text} is off grid {}", num_text(g))));
+                out.push((
+                    Code::E032,
+                    format!("{} is off grid {}", text(), num_text(g)),
+                ));
             }
         } else if let Some(st) = step {
             let base = bounds[MIN].as_ref().and_then(Val::as_f64).unwrap_or(0.0);
@@ -317,7 +351,8 @@ pub(crate) fn gate(
                 out.push((
                     Code::E032,
                     format!(
-                        "{text} is off step {} from {}",
+                        "{} is off step {} from {}",
+                        text(),
                         num_text(st),
                         num_text(base)
                     ),
@@ -328,13 +363,29 @@ pub(crate) fn gate(
     if !choices.is_empty() && !v.is_err() {
         let hit = choices.iter().any(|c| {
             let c = names.get(*c);
-            c == text
+            c == text()
                 || matches!((schemify_expr::parse_num(c), v.as_f64()), (Ok(a), Some(b)) if a == b)
         });
         if !hit {
-            out.push((Code::E006, format!("{text} is not one of the choices")));
+            out.push((Code::E006, format!("{} is not one of the choices", text())));
         }
     }
+}
+
+/// Whether [`gate`] finds nothing for a number `x` against numeric bounds `b` (`MIN`,
+/// `MAX`, `STEP`, `GRID`; `None` absent) and no choices: the per-instance fast path, with
+/// no bound copied and no text written.
+pub(crate) fn passes(x: f64, b: [Option<f64>; 4]) -> bool {
+    let grid = b[GRID].filter(|g| *g != 0.0);
+    let step = b[STEP].filter(|s| *s != 0.0);
+    let base = b[MIN].unwrap_or(0.0);
+    b[MIN].is_none_or(|m| x >= m)
+        && b[MAX].is_none_or(|m| x <= m)
+        && match (grid, step) {
+            (Some(g), _) => on_grid(x, 0.0, g),
+            (None, Some(st)) => on_grid(x, base, st),
+            (None, None) => true,
+        }
 }
 
 /// Whether `x` is `base + k·step` for an integer `k`, to a relative 1e-9 (values are
@@ -485,6 +536,19 @@ pub(crate) fn check_values<F: Funcs>(
             if v.is_err() {
                 continue;
             }
+            // Fast path: constant bounds and no choices (PDK `min`/`max`/`grid`), a value
+            // that passes them has nothing to report.
+            let konst = &c.bound_const[k];
+            let fast = c.choice_start[k] == c.choice_start[k + 1]
+                && (0..4).all(|w| c.param_bound[k][w] == NONE || konst[w].is_some());
+            if fast {
+                let b = |w: usize| konst[w].as_ref().and_then(Val::as_f64);
+                if v.as_f64()
+                    .is_none_or(|x| passes(x, [b(0), b(1), b(2), b(3)]))
+                {
+                    continue;
+                }
+            }
             let mut bounds: [Option<Val>; 4] = Default::default();
             for (which, b) in bounds.iter_mut().enumerate() {
                 *b = g.bound(i, k, which, vals, cx.ifaces, funcs, ws);
@@ -524,6 +588,10 @@ mod tests {
         let bounds = b.map(|x| x.map(Val::Num));
         let mut out = Vec::new();
         gate(&v, &bounds, &choices, &names, &mut out);
+        // The fast path agrees: it passes exactly when gate finds nothing.
+        if let (true, Some(x)) = (choices.is_empty(), v.as_f64()) {
+            assert_eq!(passes(x, b), out.is_empty(), "{v:?} {b:?}");
+        }
         out.into_iter().map(|(c, _)| c).collect()
     }
 
