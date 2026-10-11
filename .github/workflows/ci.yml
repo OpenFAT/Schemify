@@ -155,6 +155,13 @@ jobs:
             . -> target
             plugins -> target
       - run: nix develop -c plugins/build.sh
+      # The rebuilt guests: a PR that edits a plugin downloads this artifact
+      # (`gh run download <run> -n plugin-assets`) and commits the .wasm it changed.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-assets
+          path: crates/app/assets/*.wasm
+          if-no-files-found: error
       # The crates with native tests (rlib + the built guest driven through wasmi); the others
       # are cdylib guests whose `guest` module exists only on wasm32.
       - name: plugins workspace tests (native + built guests)
