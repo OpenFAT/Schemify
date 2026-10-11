@@ -3839,12 +3839,12 @@ impl Window {
 impl App for Window {
     fn update(&mut self, events: &InputEvents, viewport: (f32, f32)) -> bool {
         let now = self.now_ms();
-        let changed = self.ed.update(events, viewport, now);
-        if self.ed.wants_quit() {
-            // Journals are flushed after every edit, so nothing is lost by leaving now.
-            std::process::exit(0);
-        }
-        changed
+        self.ed.update(events, viewport, now)
+    }
+
+    fn exit_requested(&self) -> bool {
+        // Journals are flushed after every edit, so nothing is lost by leaving now.
+        self.ed.wants_quit()
     }
 
     fn paint<P: Painter>(&mut self, p: &mut P, _viewport: (f32, f32)) {

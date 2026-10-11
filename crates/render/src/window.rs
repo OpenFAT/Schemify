@@ -41,6 +41,12 @@ pub trait App {
     fn background(&self) -> Color {
         Color::BLACK
     }
+    /// Whether the app is done (its quit command ran). Asked after every batch of updates;
+    /// true exits the event loop, so [`run`] returns and drops the app (its `Drop` runs, which
+    /// a `process::exit` inside `update` would skip).
+    fn exit_requested(&self) -> bool {
+        false
+    }
 }
 
 /// Why [`run`] failed.
@@ -511,6 +517,10 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
                 self.access_dirty = true;
             }
             self.events.clear();
+        }
+        if self.app.exit_requested() {
+            event_loop.exit();
+            return;
         }
         if self.access_dirty {
             let (adapter, app) = (&mut self.adapter, &mut self.app);

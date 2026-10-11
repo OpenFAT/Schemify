@@ -44,19 +44,21 @@ wire; **edit** is a wire delete and its undo.
 
 ## Results (2026-10-11)
 
-Before = `main` at `aec8c6a`; after = this branch. p50 / p95 / p99 in ms.
+Before = `main` at `aec8c6a`; after = this branch merged with `main` at `88e818c` (RTX
+columns re-measured after the merge; the Intel column is the run before it). p50 / p95 / p99
+in ms.
 
 ### 100k objects (260k primitives)
 
 | Frame | CPU before | CPU after | GPU after, RTX 4060 | GPU after, Intel iGPU |
 |---|---|---|---|---|
-| pan | 10.9 (every frame re-encoded) | 0.13 / 0.22 / 22 | 0.076 / 0.092 / 3.7 | 0.37–1.1 / 0.39–2.3 / 47–51 |
-| zoom | ~11 | 0.07 / 12.2 / 15.5 | 0.082 / 3.1 / 4.6 | 0.40–1.1 / 47–50 / 47–55 |
-| select | not measured (≈ a full frame) | 3.4 / 3.9 / 4.2 | 0.47 / 0.50 / 1.1 | 1.1–2.3 / 1.1–3.4 / 3.2–3.4 |
-| edit | 112 | 49 / 53 / 68 | 1.05 / 1.3 / 2.6 | 3.3–3.8 / 3.9–8.0 / 3.9–8.1 |
+| pan | 10.9 (every frame re-encoded) | 0.06 / 0.20 / 12.8 | 0.074 / 0.086 / 5.5 | 0.37–1.1 / 0.39–2.3 / 47–51 |
+| zoom | ~11 | 0.09 / 13.6 / 18.2 | 0.081 / 5.9 / 5.9 | 0.40–1.1 / 47–50 / 47–55 |
+| select | not measured (≈ a full frame) | 1.95 / 2.9 / 3.2 | 0.47 / 0.50 / 1.0 | 1.1–2.3 / 1.1–3.4 / 3.2–3.4 |
+| edit | 112 | 48 / 60 / 75 | 1.05 / 1.3 / 1.3 | 3.3–3.8 / 3.9–8.0 / 3.9–8.1 |
 
 GPU before: 1.9 ms (RTX) and 26–37 ms (Intel) per frame, every frame (the whole scene through
-vello). Open + first build: 178 ms before, 162–172 ms after.
+vello). Open + first build: 178 ms before, 162–178 ms after.
 
 The Intel ranges are two runs: its timestamp floor moves from 0.02 to 0.11 ms with the GPU's
 clock state, and so does everything above it.
@@ -65,26 +67,26 @@ clock state, and so does everything above it.
 
 | Frame | 10k CPU | 10k GPU | 1M CPU | 1M GPU |
 |---|---|---|---|---|
-| pan | 0.14 / 0.24 / 3.1 | 0.069 / 0.080 / 0.73 | 0.11 / 0.20 / 103 | 0.065 / 0.081 / 39 |
-| zoom | 0.09 / 3.2 / 3.4 | 0.072 / 2.4 / 3.2 | 0.06 / 104 / 110 | 0.080 / 39 / 40 |
-| select | 0.48 / 0.76 / 0.79 | 0.26 / 0.40 / 0.81 | 16.6 / 16.8 / 16.8 | 1.6 / 1.7 / 2.0 |
-| edit | 4.6 / 8.4 / 12.9 | 0.81 / 1.0 / 2.6 | 531 / 602 / 720 | 9.8 / 19 / 19 |
+| pan | 0.06 / 0.09 / 1.5 | 0.069 / 0.073 / 0.73 | 0.08 / 0.22 / 107 | 0.063 / 0.075 / 39 |
+| zoom | 0.09 / 2.4 / 3.3 | 0.071 / 1.6 / 2.1 | 0.07 / 103 / 109 | 0.082 / 39 / 39 |
+| select | 0.51 / 0.81 / 0.90 | 0.25 / 0.41 / 0.81 | 17.1 / 18.2 / 26.9 | 1.6 / 2.0 / 2.0 |
+| edit | 4.6 / 6.9 / 7.8 | 0.82 / 0.99 / 1.1 | 541 / 614 / 706 | 10.6 / 13.6 / 19.8 |
 
-Open + first build: 17 ms (10k), 1.95 s (1M).
+Open + first build: 17 ms (10k), 1.93 s (1M).
 
 ### Netlist, flat 1M instances (elaborate + emit, document open)
 
 | | before | after |
 |---|---|---|
-| elaborate | 1.28 s | 0.70–0.79 s |
+| elaborate | 1.28 s | 0.70–0.79 s (0.75 after the merge) |
 | emit | 0.15 s | 0.14 s |
-| total (budget 1 s) | 1.43 s | 0.85–0.93 s |
+| total (budget 1 s) | 1.43 s | 0.85–0.93 s (0.90 after the merge) |
 
 ### Other D39 rows
 
 | Budget | Measured |
 |---|---|
-| param edit → recompute + redraw ≤ 8 ms, 1k dependents | 1.8 ms (plugin-backed functions 3.4 ms) |
+| param edit → recompute + redraw ≤ 8 ms, 1k dependents | 1.8 ms (plugin-backed functions 3.2 ms) |
 | idle CPU 0% | no wake-up once the zoom settles (asserted by the frame benchmark) |
 
 ## What makes a frame cheap
