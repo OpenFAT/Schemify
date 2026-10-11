@@ -1,7 +1,8 @@
 //! `docs`: the docs page of the active level (D19, D21, `docs/spec/docs-page.md`): its doc
 //! blocks projected as UI nodes into the plugin-declared `docs.page` scroll pane, beside the
 //! canvas, and the `doc` edit transactions the page makes (one per edit, so one undo). Also
-//! the D20 cache write-back: plugin-computed var values copied into `cached` attributes.
+//! the D20 cache write-back: plugin-computed param and var values copied into `cached`
+//! attributes, and the rule that drops a cache whose expression changed.
 //!
 //! Data design:
 //! 1. In: one document's `doc_blocks` rows and its [`CellState`] values. Out: state
