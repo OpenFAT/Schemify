@@ -402,6 +402,8 @@ pub struct Editor {
     op_on: bool,
     /// The selected job whose OP marks the overlay holds.
     op_job: Option<(u32, u32)>,
+    /// Whether the overlay may hold `op` marks (only `step_sim` posts them).
+    op_shown: bool,
     /// The run state (D15–D18).
     #[cfg(not(target_arch = "wasm32"))]
     sim: Sim,
@@ -519,6 +521,7 @@ impl Editor {
             show_netlist: true,
             op_on: true,
             op_job: None,
+            op_shown: false,
             #[cfg(not(target_arch = "wasm32"))]
             sim: Sim::new(opts.sim.clone()),
             graphs: Vec::new(),
@@ -3180,12 +3183,19 @@ impl Editor {
             }
             Tool::Idle | Tool::Press { .. } | Tool::ZoomArmed => {}
         }
-        // Selected texts have no stroke to recolor: outline them.
-        for (i, &on) in self.selected.iter().enumerate() {
-            if on && self.scene.objs.key[i].table == TableId::Texts {
-                let b = self.scene.objs.bbox(i);
-                o.rect(b[0], b[1], b[2], b[3], LAYER_SEL);
-            }
+        // Selected texts have no stroke to recolor: outline them (in object order; a frame
+        // looks at the selection, not at every object).
+        let sel = self.session.level().map_or(&[][..], |l| &l.sel);
+        let mut texts: Vec<u32> = sel
+            .iter()
+            .filter(|k| k.table == TableId::Texts)
+            .filter_map(|&k| self.scene.find(k))
+            .collect();
+        texts.sort_unstable();
+        texts.dedup();
+        for i in texts {
+            let b = self.scene.objs.bbox(i as usize);
+            o.rect(b[0], b[1], b[2], b[3], LAYER_SEL);
         }
         self.overlay = o;
     }

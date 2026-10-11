@@ -702,8 +702,15 @@ impl Editor {
             .map(|t| t.stack[0].doc);
         let key = (self.sim.selected, self.generation);
         let wanted = self.op_on && top.is_some() && top == self.sim.bench();
-        if self.op_job != Some(key) || !wanted {
-            let had = self.annotations.source.iter().any(|s| s == SOURCE_OP);
+        // Only this posts `op` marks: while none are shown, an unwanted overlay has nothing to
+        // clear (no scan of every mark per frame).
+        let stale = if wanted {
+            self.op_job != Some(key)
+        } else {
+            self.op_shown
+        };
+        if stale {
+            let had = self.op_shown;
             let req = if wanted {
                 match self.hier_map().cloned() {
                     Some(map) => self.sim.op_marks(&map),
@@ -719,6 +726,7 @@ impl Editor {
                 }
             };
             if had || !req.marks.is_empty() {
+                self.op_shown = !req.marks.is_empty();
                 self.annotations.replace(req);
                 self.decor_dirty = true;
                 changed = true;
@@ -727,6 +735,7 @@ impl Editor {
                 self.op_job = Some(key);
             }
         }
+        debug_assert!(self.op_shown || !self.annotations.source.iter().any(|s| s == SOURCE_OP));
         changed
     }
 
