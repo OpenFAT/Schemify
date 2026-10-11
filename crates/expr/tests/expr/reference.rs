@@ -3,8 +3,8 @@
 //! minimal-parentheses printer (spec §3 precedence), and proptest generators.
 //! Test-only; slow and allocation-heavy on purpose.
 
+use num_complex::Complex64;
 use proptest::prelude::*;
-use rustfft::num_complex::Complex64;
 use schemify_expr::{Code, Value};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

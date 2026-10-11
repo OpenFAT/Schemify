@@ -97,7 +97,6 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - **elab**: `E002` doesn't yet compare a SPICE `body`'s `.subckt` ports with the symbol pins; `global true` names are gathered from every reachable schematic, including unselected impls; `net_<id>` may collide with a user label of the same spelling; `CellState` doesn't observe edits to other documents.
 - **format**: verbatim blocks merge as a unit (line-level diff3 is the upgrade); a clean merge can still violate kind rules (doc/elab must check).
 - **plugin**: an earlier plugin's `set X p` survives a later full redefinition of node `X`; no auto-quarantine of repeatedly trapping plugins.
-- **expr**: FFT twiddles use platform math (calculator output only, never netlists).
 - **ui**: status text that changes every frame grows the string table; IME candidate window not positioned.
 - **wave**: per-sweep-step readouts; FFT traces share the time-domain x axis.
 - **import (readers)**: `.spiceinit` `sourcepath` lines, Magic `include`, `.if` blocks; cdfDump untested against real dumps.

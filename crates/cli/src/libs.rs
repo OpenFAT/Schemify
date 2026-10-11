@@ -1,7 +1,7 @@
 //! The project on disk, without any GUI state: the `load` spine (manifest + lockfile →
 //! library directories → `doc::index_library` per local library → the bundled `core`
 //! library) and cell bytes by (library, path). Shared by the headless CLI spines and the
-//! editor's [`Session`](crate::session).
+//! editor's `Session` (`schemify_app::session`).
 
 use std::path::{Path, PathBuf};
 

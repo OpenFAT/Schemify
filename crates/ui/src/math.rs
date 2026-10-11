@@ -91,6 +91,16 @@ const FACES: [(&str, &[u8]); 19] = [
     ),
 ];
 
+/// The bytes of embedded KaTeX face `name` ([`FontId`] spelling, `"Main-Regular"`).
+///
+/// # Panics
+///
+/// `name` is not one of the embedded faces.
+pub(crate) fn face_bytes(name: &str) -> &'static [u8] {
+    let face = FACES.iter().find(|f| f.0 == name);
+    face.expect("an embedded KaTeX face").1
+}
+
 /// The embedded KaTeX faces, indexed by the `u8` face index stored in [`MathList::glyph_face`].
 pub struct MathFonts {
     data: Vec<FontData>,

@@ -9,31 +9,27 @@ rust-version.workspace = true
 name = "schemify_app"
 path = "src/lib.rs"
 
+# The editor (D39: a separate binary from the headless core `schemify`, which runs this one
+# for `schemify edit`).
 [[bin]]
-name = "schemify"
+name = "schemify-gui"
 path = "src/main.rs"
 
 [lints]
 workspace = true
 
-[features]
-# The interactive editor (M2). Off = the M1 headless build (ARCHITECTURE.md: `format expr doc
-# elab netlist import run app`); on adds `abi plugin ui render`.
-default = ["gui"]
-gui = ["dep:schemify-abi", "dep:schemify-plugin", "dep:schemify-ui", "dep:schemify-render"]
-
 [dependencies]
+# The core's spines, project loading and OS boundary.
+schemify-cli.workspace = true
 schemify-format.workspace = true
 schemify-expr.workspace = true
 schemify-doc.workspace = true
 schemify-elab.workspace = true
 schemify-netlist.workspace = true
-schemify-import.workspace = true
-schemify-devicereader.workspace = true
 schemify-wave.workspace = true
 schemify-run.workspace = true
-schemify-abi = { workspace = true, optional = true }
-schemify-plugin = { workspace = true, optional = true }
+schemify-abi.workspace = true
+schemify-plugin.workspace = true
 # Path deps (no root `[workspace.dependencies]` row yet), the same way `render` names `ui`.
-schemify-ui = { path = "../ui", optional = true }
-schemify-render = { path = "../render", optional = true }
+schemify-ui = { path = "../ui" }
+schemify-render = { path = "../render" }

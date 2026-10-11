@@ -13,8 +13,7 @@
 
 use core::ops::Range;
 
-use rustfft::FftPlanner;
-use rustfft::num_complex::Complex64;
+use num_complex::Complex64;
 
 use crate::compile::{Builtin, Mode, OpKind, Program};
 use crate::dmath;
@@ -1104,7 +1103,6 @@ fn resample(xs: &[f64], ys: &[f64], m: usize) -> Vec<Complex64> {
 /// keep bins `0..m/2` scaled to amplitude. Bin k is at `k / span`.
 fn fft(axes: &mut Vec<Axis>, y: &Col) -> Result<Col, Error> {
     let src = y.axis as usize;
-    let mut planner = FftPlanner::new();
     let (mut re, mut im, mut fx, mut steps) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for s in &axes[src].steps {
         let r = s.start as usize..s.end as usize;
@@ -1118,7 +1116,7 @@ fn fft(axes: &mut Vec<Axis>, y: &Col) -> Result<Col, Error> {
         }
         let m = n.next_power_of_two();
         let mut buf = resample(xs, ys, m);
-        planner.plan_fft_forward(m).process(&mut buf);
+        crate::fft::forward(&mut buf);
         let start = re.len() as u32;
         for (k, v) in buf.iter().take(m / 2).enumerate() {
             let scale = if k == 0 { 1.0 } else { 2.0 } / m as f64;

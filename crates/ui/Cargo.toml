@@ -13,6 +13,8 @@ workspace = true
 schemify-wave.workspace = true
 taffy.workspace = true
 parley.workspace = true
+# Feature selection only: system-font fallback through a dlopen'ed fontconfig (fonts/README.md).
+fontique.workspace = true
 accesskit.workspace = true
 ratex-parser.workspace = true
 ratex-layout.workspace = true

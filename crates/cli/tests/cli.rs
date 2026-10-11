@@ -118,7 +118,7 @@ fn usage_errors_exit_2() {
 /// The editor's fixture project: a two-inverter buffer over a hierarchical `inv`.
 fn inv_top() -> String {
     format!(
-        "{}/tests/fixtures/inv/top.shcomp",
+        "{}/../app/tests/fixtures/inv/top.shcomp",
         env!("CARGO_MANIFEST_DIR")
     )
 }

@@ -30,8 +30,11 @@ schemify-devicereader = { path = "tools/devicereader" }
 schemify-abi = { path = "crates/abi" }
 schemify-plugin = { path = "crates/plugin" }
 schemify-spicecmp = { path = "tools/spicecmp" }
+schemify-cli = { path = "crates/cli" }
 # third-party (justify additions in the PR, AGENTS.md rule 7)
+# Dev-only: the differential oracle of expr's own FFT (D39 size cut).
 rustfft = "6"
+num-complex = "0.4"
 libm = "0.2"
 thiserror = "2"
 proptest = "1"
@@ -41,7 +44,10 @@ proptest = "1"
 wasmi = { version = "2", default-features = false, features = ["std", "validate", "auto-dispatch", "deterministic"] }
 # GUI (WS5): only crates/ui and crates/render may use these (AGENTS.md rule 7)
 taffy = { version = "0.14", default-features = false, features = ["std", "taffy_tree", "flexbox"] }
-parley = { version = "0.12", default-features = false, features = ["std"] }
+parley = { version = "0.12", default-features = false, features = ["std", "system"] }
+# Only to pick fontique's features: system fonts (fallback for glyphs outside the embedded
+# subset) found through a dlopen'ed fontconfig, so nothing links libfontconfig at build time.
+fontique = { version = "0.12", default-features = false, features = ["std", "system", "fontconfig-dlopen"] }
 accesskit = "0.25"
 accesskit_winit = "0.34"
 ratex-parser = "0.1.14"
@@ -49,7 +55,10 @@ ratex-layout = "0.1.14"
 ratex-types = "0.1.14"
 ratex-font = "0.1.14"
 skrifa = "0.44"
-winit = "0.30"
+# No `wayland-csd-adwaita` (D39: tiny-skia + ab_glyph + ttf-parser for a title bar). Where the
+# compositor has no server-side decorations (GNOME) the window gets smithay's plain fallback
+# frame: move/resize/close/maximize/minimize, no title text, no Adwaita styling.
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
 vello = "0.11"
 vello_cpu = "0.3"
 pollster = "0.4"
@@ -59,6 +68,97 @@ web-sys = "0.3"
 
 [profile.release]
 debug = 1
+
+# D39 binary size (docs/perf.md "Binary size"): code that is cold at run time is optimized for
+# size; the hot paths (parse, load, elaborate, netlist, expressions, waveforms, wasmi, render,
+# vello, text shaping, layout) stay at opt-level 3. The binary crates themselves
+# (schemify-cli, schemify-app) take no override: cargo then drops `CARGO_PROFILE_RELEASE_STRIP`
+# for their link (cargo 1.95), and the release env would ship symbols.
+[profile.release.package]
+# Core: importer, runner.
+schemify-import = { opt-level = "z" }
+schemify-devicereader = { opt-level = "z" }
+schemify-run = { opt-level = "z" }
+# Editor: accessibility over D-Bus (kept: accessibility is not optional) and its async runtime.
+accesskit = { opt-level = "z" }
+accesskit_atspi_common = { opt-level = "z" }
+accesskit_consumer = { opt-level = "z" }
+accesskit_unix = { opt-level = "z" }
+accesskit_winit = { opt-level = "z" }
+atspi = { opt-level = "z" }
+atspi-common = { opt-level = "z" }
+atspi-proxies = { opt-level = "z" }
+zbus = { opt-level = "z" }
+zbus_names = { opt-level = "z" }
+zbus_xml = { opt-level = "z" }
+zbus-lockstep = { opt-level = "z" }
+zvariant = { opt-level = "z" }
+quick-xml = { opt-level = "z" }
+serde = { opt-level = "z" }
+serde_core = { opt-level = "z" }
+serde_json = { opt-level = "z" }
+async-broadcast = { opt-level = "z" }
+async-channel = { opt-level = "z" }
+async-executor = { opt-level = "z" }
+async-io = { opt-level = "z" }
+async-lock = { opt-level = "z" }
+async-process = { opt-level = "z" }
+async-signal = { opt-level = "z" }
+async-task = { opt-level = "z" }
+blocking = { opt-level = "z" }
+event-listener = { opt-level = "z" }
+event-listener-strategy = { opt-level = "z" }
+futures-util = { opt-level = "z" }
+futures-lite = { opt-level = "z" }
+polling = { opt-level = "z" }
+enumflags2 = { opt-level = "z" }
+ordered-stream = { opt-level = "z" }
+# Editor: windowing and input.
+winit = { opt-level = "z" }
+smithay-client-toolkit = { opt-level = "z" }
+wayland-client = { opt-level = "z" }
+wayland-backend = { opt-level = "z" }
+wayland-protocols = { opt-level = "z" }
+wayland-protocols-plasma = { opt-level = "z" }
+wayland-protocols-wlr = { opt-level = "z" }
+wayland-cursor = { opt-level = "z" }
+wayland-csd-frame = { opt-level = "z" }
+x11-dl = { opt-level = "z" }
+x11rb = { opt-level = "z" }
+x11rb-protocol = { opt-level = "z" }
+xkbcommon-dl = { opt-level = "z" }
+xcursor = { opt-level = "z" }
+calloop = { opt-level = "z" }
+calloop-wayland-source = { opt-level = "z" }
+# Editor: plugin validation at load, LaTeX parsing (ratex has no feature to drop mhchem's regex), PNG.
+wasmparser = { opt-level = "z" }
+ratex-parser = { opt-level = "z" }
+ratex-layout = { opt-level = "z" }
+ratex-font = { opt-level = "z" }
+ratex-types = { opt-level = "z" }
+ratex-lexer = { opt-level = "z" }
+regex = { opt-level = "z" }
+regex-automata = { opt-level = "z" }
+regex-syntax = { opt-level = "z" }
+regex-lite = { opt-level = "z" }
+fancy-regex = { opt-level = "z" }
+aho-corasick = { opt-level = "z" }
+unicode-normalization = { opt-level = "z" }
+png = { opt-level = "z" }
+flate2 = { opt-level = "z" }
+miniz_oxide = { opt-level = "z" }
+crc32fast = { opt-level = "z" }
+fdeflate = { opt-level = "z" }
+glifo = { opt-level = "z" }
+# Editor: GPU setup and per-frame encoding (shader compile at startup, command validation): size over speed, not minimal.
+ash = { opt-level = "z" }
+naga = { opt-level = "s" }
+wgpu = { opt-level = "s" }
+wgpu-core = { opt-level = "s" }
+wgpu-hal = { opt-level = "s" }
+glow = { opt-level = "s" }
+khronos-egl = { opt-level = "s" }
+gpu-allocator = { opt-level = "s" }
 
 [profile.test]
 opt-level = 1
