@@ -151,7 +151,7 @@ Document order is preserved.
 | Record | Attributes |
 |---|---|
 | `lib <name> path <relpath>` / `lib <name> git <url> <rev>` / `lib <name> url <url> <sha256>` | `subdir <relpath>` |
-| `plugin <name> path\|git\|url …` (same forms) | `grant <capability>` (repeatable) |
+| `plugin <name> path\|git\|url …` (same forms) | `grant <capability>` (repeatable), `fuel <n>` (per-event instruction budget, plugin ABI §2; whole number in [10^6, 10^11], default 10^8) |
 | `set <key> <value>` | |
 
 `lib core builtin` is implicit (the bundled core library).

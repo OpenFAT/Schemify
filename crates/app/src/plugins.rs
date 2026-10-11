@@ -118,8 +118,15 @@ impl Host {
                 .filter(|a| a.key == "grant")
                 .filter_map(|a| a.values.first().map(String::as_str))
                 .collect();
+            let fuel = match manifest_fuel(rec.attrs.iter().find(|a| a.key == "fuel")) {
+                Ok(f) => f,
+                Err(e) => {
+                    notes.push(format!("plugin {name}: {e}; using the default fuel"));
+                    FUEL_DEFAULT
+                }
+            };
             match platform::read(&file) {
-                Ok(wasm) => match plugins.load(name, &wasm, &grants, FUEL_DEFAULT) {
+                Ok(wasm) => match plugins.load(name, &wasm, &grants, fuel) {
                     Ok(id) => hashes.push((id, content_hash(&wasm))),
                     Err(c) => notes.push(format!("plugin {name}: {c:?}")),
                 },
@@ -557,4 +564,60 @@ fn content_hash(bytes: &[u8]) -> String {
     h.truncate(HASH_HEX);
     debug_assert_eq!(h.len(), HASH_HEX);
     h
+}
+
+/// Bounds on a manifest `fuel` override (plugin ABI §2). The ceiling keeps one event from
+/// freezing the editor indefinitely: wasmi runs on the frame thread.
+// ponytail: events run synchronously on the frame; a plugin that needs 10^10+ fuel (large
+// cktimg imports) still blocks the UI for seconds. Upgrade: run long events on a worker.
+const FUEL_MIN: u64 = 1_000_000;
+const FUEL_MAX: u64 = 100_000_000_000;
+
+/// The per-plugin fuel budget from a manifest `fuel <n>` attribute, or the default when
+/// absent.
+///
+/// # Errors
+///
+/// The value is not a whole number in `[FUEL_MIN, FUEL_MAX]`; the caller reports it and
+/// falls back to the default rather than trusting a project file's number.
+fn manifest_fuel(attr: Option<&schemify_doc::Attr>) -> Result<u64, String> {
+    let Some(attr) = attr else {
+        return Ok(FUEL_DEFAULT);
+    };
+    let text = attr.values.first().map_or("", String::as_str);
+    let fuel: u64 = text
+        .parse()
+        .map_err(|_| format!("fuel `{text}` is not a whole number"))?;
+    if !(FUEL_MIN..=FUEL_MAX).contains(&fuel) {
+        return Err(format!("fuel {fuel} is outside [{FUEL_MIN}, {FUEL_MAX}]"));
+    }
+    assert!(fuel > 0);
+    Ok(fuel)
+}
+
+#[cfg(test)]
+mod fuel_tests {
+    use super::*;
+
+    fn attr(v: &str) -> schemify_doc::Attr {
+        schemify_doc::Attr {
+            key: "fuel".into(),
+            values: vec![v.into()],
+        }
+    }
+
+    #[test]
+    fn manifest_fuel_defaults_parses_and_rejects() {
+        assert_eq!(manifest_fuel(None), Ok(FUEL_DEFAULT));
+        assert_eq!(
+            manifest_fuel(Some(&attr("50000000000"))),
+            Ok(50_000_000_000)
+        );
+        assert_eq!(manifest_fuel(Some(&attr("1000000"))), Ok(FUEL_MIN));
+        assert!(manifest_fuel(Some(&attr("999999"))).is_err());
+        assert!(manifest_fuel(Some(&attr("100000000001"))).is_err());
+        assert!(manifest_fuel(Some(&attr("1e9"))).is_err());
+        assert!(manifest_fuel(Some(&attr("-5"))).is_err());
+        assert!(manifest_fuel(Some(&attr(""))).is_err());
+    }
 }
