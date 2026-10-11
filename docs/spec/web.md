@@ -76,7 +76,22 @@ Not run on the web in this version (config spec §4). Evaluation (2026-10-11):
 
 ## 6. Simulation
 
-D16: runner plugins. Not wired yet (the editor's run spine is native-only); see BACKLOG.
+D16: runner plugins. **Designed here, not implemented yet**: the editor's run spine (`app::sim`, `cli::spines::Run`) is native-only, and the steps below fall in the run, plugin and app crates that open PRs (#5, #6, #7) are changing; BACKLOG "web" lists them by owner, in order.
+
+Options:
+
+1. *ngspice compiled to wasm, in the page.* Rejected. An emscripten build ships emscripten's JS runtime (D2). A `wasm32-wasi` build would need a WASI host inside the page: a preview1 shim of our own under wasmi, over the OPFS table. wasmi interprets (D3's ceiling: heavy compute stays in external tools), and a transient analysis is compute-bound. A simulator binary of several MB would also share D39's 8 MB compressed budget with the editor. D16 itself says no ngspice port.
+2. *A runner plugin with `network`* (chosen; D16's example): the plugin sends the job's netlist to a simulation endpoint the user runs (a machine with ngspice and the PDK) and hands back the raw file.
+
+Design (each job of a run, exactly where the native runner would start ngspice, run spec §5):
+
+- **Runner choice.** The plugin whose composed `runners` contribution claims lang `spice` (last wins, D8). None: the run is refused at start, `no runner plugin for spice (D16)`.
+- **Hand-off** (plugin-abi §6 amendment). The netlist is written to the job directory `.schemify/runs/<design>/<job>/netlist.cir` (OPFS) as natively, and the plugin gets `RunJob { job, lang, dir }` with the netlist bytes as the event's NUL payload (as `io_done`). Model files the netlist names (`.lib`, `.include`) are the endpoint's to resolve (its PDK install) or the plugin's to upload (`read_project`).
+- **Transport.** The plugin's `fetch` (plugin-abi §5, grant `network`): natively a `curl` child process (as `pack` fetches), on the web `window.fetch`; `IoDone.status` = the HTTP status, or −`E_GONE` without a response; `bytes` = the body.
+- **Result** (plugin-abi §7 amendment). The plugin writes the raw file to `<dir>/out.raw` (`fs_write`, grant `write_project`) and returns `job <job> done`, or `job <job> failed <message>`. The host takes `job` records after the delivery's file writes; `done` sends the raw file through `Results::record`, as a native job's, and `failed` (or the plugin trapping or unloading) fails the job with the message.
+- **Limits.** At most `workers` jobs handed off at once (default 4 on the web) and the run's timeout (1 h) per job. Cancel fails every handed-off job (`cancelled`); a later `job` record for it is ignored.
+- **Runner in the spine.** On the web `Run` holds a plugin runner with the native `Runner`'s five calls (`submit`, `poll`, `busy`, `cancel_all`, `save`), selected by `cfg` (ARCHITECTURE "Platform split"), so `sim` keeps one spine for both targets.
+- **Reference plugin** `plugins/remote-runner`: the endpoint URL comes from its manifest record (`plugin remote-runner … endpoint <url>`). It POSTs the netlist to the endpoint and expects `200` with the ngspice raw file as the body. The smoke test serves a fake endpoint that returns a canned raw file.
 
 ## 7. Rendering
 

@@ -27,7 +27,12 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - **cli/platform**: the whole OPFS tree lives in memory and a changed file is rewritten whole (a journal append rewrites the journal). Upgrade: mount the open project with `/config` and `/state` only; append in place (`createWritable({keepExistingData})` + `seek`).
 - **cli/platform**: a refused mount or a failed OPFS write is reported on the browser console only (plus the unload guard), not in the status line.
 - **app**: the URL fragment is the only argument on the web (no `--clean`, `-u`, `--no-default-ui`).
-- **app/run**: simulation on the web (D16 runner plugins) is not wired: the editor's run spine (`sim`) is native-only.
+- **Simulation on the web** (D16; designed in web spec §6, not implemented). In order, by owner:
+  1. **abi/plugin**: `RunJob { job, lang, dir }` + the netlist as NUL payload; output record `job <job> done|failed <message>` into a `jobs` request queue, taken after the delivery's file writes.
+  2. **cli/platform** (web): `fetch_start(url, body) -> Spawned` (natively `curl`, on the web `window.fetch`); **app/plugins.rs**: execute `fetch` through it, as `spawn`.
+  3. **run + cli/spines**: on the web `Run` holds a plugin runner with `Runner`'s five calls; `RunnerConfig`/`SimCommand` build for wasm.
+  4. **app/sim.rs**: compile on wasm (run history through `platform::list_files`, not `std::fs`); route `RunJob`/`job` between the run and the host.
+  5. **web**: `plugins/remote-runner` and a fake endpoint in the smoke test.
 
 ## docs page (D19–D21)
 
