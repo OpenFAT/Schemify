@@ -20,7 +20,9 @@
 
 use std::collections::HashMap;
 
-use schemify_doc::{DocHandle, Document, Project, Strings as DocStrings, Sym, TableId};
+use schemify_doc::{
+    DocHandle, Document, ObjId, Project, Span, Strings as DocStrings, Sym, TableId,
+};
 use schemify_elab::CellState;
 use schemify_expr::{Scratch, Template, Value};
 use schemify_format::{Orient, RecordKind};
@@ -133,10 +135,305 @@ pub struct Scene {
     pub index: Vec<(ObjKey, u32)>,
     /// Connection points (instance pins, wire ends) and their owner object.
     pub conn: Vec<(Pt, u32)>,
-    /// World bounds of everything drawn (`[0; 4]` when empty).
+    /// World bounds of everything drawn (`[0; 4]` when empty). [`update`] only grows it: after
+    /// deletions it may cover more than is drawn until the next [`build`].
     pub extent: [i32; 4],
     /// What was built: (document, view, document epoch, symbol cache epoch).
     pub built: Option<(DocHandle, View, u32, u32)>,
+    /// The document rows the schematic was drawn from (what [`update`] diffs against).
+    source: Source,
+    /// Wire ends and runs, for junction dots.
+    wiring: Wiring,
+}
+
+/// One instance row as drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct InstRow {
+    id: ObjId,
+    cell: Sym,
+    at: Pt,
+    orient: Orient,
+    name: Sym,
+    attrs: Span,
+}
+
+/// One wire row as drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WireRow {
+    id: ObjId,
+    p: [i32; 4],
+    attrs: Span,
+}
+
+/// One label, port, text or noconn row as drawn (noconns have no orientation or text).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PlacedRow {
+    id: ObjId,
+    at: Pt,
+    orient: Orient,
+    text: Sym,
+    attrs: Span,
+}
+
+/// The object rows a schematic scene was drawn from, per table, in document row order.
+#[derive(Clone, Debug, Default)]
+struct Source {
+    inst: Vec<InstRow>,
+    wires: Vec<WireRow>,
+    labels: Vec<PlacedRow>,
+    ports: Vec<PlacedRow>,
+    noconns: Vec<PlacedRow>,
+    texts: Vec<PlacedRow>,
+}
+
+fn inst_row(doc: &Document, i: usize) -> InstRow {
+    let t = doc.instances();
+    InstRow {
+        id: t.id[i],
+        cell: t.cell[i],
+        at: (t.x[i], t.y[i]),
+        orient: t.orient[i],
+        name: t.name[i],
+        attrs: t.attrs[i],
+    }
+}
+
+fn wire_row(doc: &Document, i: usize) -> WireRow {
+    let t = doc.wires();
+    WireRow {
+        id: t.id[i],
+        p: [t.x1[i], t.y1[i], t.x2[i], t.y2[i]],
+        attrs: t.attrs[i],
+    }
+}
+
+fn placed_row(t: &schemify_doc::Placed, i: usize) -> PlacedRow {
+    PlacedRow {
+        id: t.id[i],
+        at: (t.x[i], t.y[i]),
+        orient: t.orient[i],
+        text: t.text[i],
+        attrs: t.attrs[i],
+    }
+}
+
+fn noconn_row(doc: &Document, i: usize) -> PlacedRow {
+    let t = doc.noconns();
+    PlacedRow {
+        id: t.id[i],
+        at: (t.x[i], t.y[i]),
+        orient: Orient::R0,
+        text: Sym(0),
+        attrs: t.attrs[i],
+    }
+}
+
+impl Source {
+    /// Every object row of `doc`.
+    fn of(doc: &Document) -> Source {
+        Source {
+            inst: (0..doc.instances().id.len())
+                .map(|i| inst_row(doc, i))
+                .collect(),
+            wires: (0..doc.wires().id.len())
+                .map(|i| wire_row(doc, i))
+                .collect(),
+            labels: (0..doc.labels().id.len())
+                .map(|i| placed_row(doc.labels(), i))
+                .collect(),
+            ports: (0..doc.ports().id.len())
+                .map(|i| placed_row(doc.ports(), i))
+                .collect(),
+            noconns: (0..doc.noconns().id.len())
+                .map(|i| noconn_row(doc, i))
+                .collect(),
+            texts: (0..doc.texts().id.len())
+                .map(|i| placed_row(doc.texts(), i))
+                .collect(),
+        }
+    }
+}
+
+/// Rows of one table that differ between `old` and the document's `len` rows (`row(k)`):
+/// pushes the replaced or dropped old rows to `gone` and the new or replaced row indices to
+/// `fresh`, and makes `old` the document's rows. Doc tables of objects delete by swap-remove
+/// and insert by push, so an edit changes O(1) positions.
+///
+/// Cost: one row compare per row (O(rows)), work only for the differing ones.
+// ponytail: a positional scan per edit (0.1–0.3 ms at 10^5 rows); a `doc` change log
+// (BACKLOG: apply_edits reporting changed records) would make it O(changes).
+fn diff<R: Copy + PartialEq>(
+    old: &mut Vec<R>,
+    len: usize,
+    row: impl Fn(usize) -> R,
+    gone: &mut Vec<R>,
+    fresh: &mut Vec<usize>,
+) {
+    let n = old.len().max(len);
+    for k in 0..n {
+        let new = (k < len).then(|| row(k));
+        let was = old.get(k).copied();
+        if was == new {
+            continue;
+        }
+        gone.extend(was);
+        if let Some(r) = new {
+            fresh.push(k);
+            if k < old.len() {
+                old[k] = r;
+            } else {
+                old.push(r);
+            }
+        }
+    }
+    old.truncate(len);
+    assert_eq!(old.len(), len);
+}
+
+/// Wire ends and runs (xschem's connection cues): what decides where junction dots go, kept
+/// up to date per changed wire.
+#[derive(Clone, Debug, Default)]
+struct Wiring {
+    /// Wire ends sorted by (x, y).
+    xy: Vec<Pt>,
+    /// Wire ends as (y, x), sorted.
+    yx: Vec<Pt>,
+    /// Horizontal runs: y → (x min, x max) of each wire on it.
+    horiz: HashMap<i32, Vec<(i32, i32)>>,
+    /// Vertical runs: x → (y min, y max).
+    vert: HashMap<i32, Vec<(i32, i32)>>,
+    /// Diagonal wires `[x1, y1, x2, y2]`.
+    diag: Vec<[i32; 4]>,
+    /// Centers of the dots drawn, sorted.
+    dots: Vec<Pt>,
+}
+
+impl Wiring {
+    /// The wiring of every wire row of `w` (bulk: one sort, not an insert per end).
+    fn of(w: &schemify_doc::Wires) -> Wiring {
+        let mut out = Wiring::default();
+        for i in 0..w.id.len() {
+            let p = [w.x1[i], w.y1[i], w.x2[i], w.y2[i]];
+            out.xy.extend([(p[0], p[1]), (p[2], p[3])]);
+            out.runs(p, true);
+        }
+        out.xy.sort_unstable();
+        out.yx = out.xy.iter().map(|p| (p.1, p.0)).collect();
+        out.yx.sort_unstable();
+        out
+    }
+
+    /// Adds (`add`) or removes the run of wire `w` from the per-row/column maps.
+    fn runs(&mut self, w: [i32; 4], add: bool) {
+        let (map, key, run) = if w[1] == w[3] {
+            (&mut self.horiz, w[1], (w[0].min(w[2]), w[0].max(w[2])))
+        } else if w[0] == w[2] {
+            (&mut self.vert, w[0], (w[1].min(w[3]), w[1].max(w[3])))
+        } else {
+            if add {
+                self.diag.push(w);
+            } else {
+                let i = self
+                    .diag
+                    .iter()
+                    .position(|d| *d == w)
+                    .expect("a drawn wire");
+                self.diag.swap_remove(i);
+            }
+            return;
+        };
+        let runs = map.entry(key).or_default();
+        if add {
+            runs.push(run);
+        } else {
+            let i = runs.iter().position(|r| *r == run).expect("a drawn run");
+            runs.swap_remove(i);
+        }
+    }
+
+    fn add(&mut self, w: [i32; 4]) {
+        for p in [(w[0], w[1]), (w[2], w[3])] {
+            let i = self.xy.partition_point(|q| *q < p);
+            self.xy.insert(i, p);
+            let i = self.yx.partition_point(|q| *q < (p.1, p.0));
+            self.yx.insert(i, (p.1, p.0));
+        }
+        self.runs(w, true);
+    }
+
+    fn remove(&mut self, w: [i32; 4]) {
+        for p in [(w[0], w[1]), (w[2], w[3])] {
+            let i = self.xy.binary_search(&p).expect("a drawn wire end");
+            self.xy.remove(i);
+            let i = self
+                .yx
+                .binary_search(&(p.1, p.0))
+                .expect("a drawn wire end");
+            self.yx.remove(i);
+        }
+        self.runs(w, false);
+    }
+
+    /// Wire ends at `p`.
+    fn ends_at(&self, p: Pt) -> usize {
+        let i = self.xy.partition_point(|q| *q < p);
+        self.xy[i..].iter().take_while(|q| **q == p).count()
+    }
+
+    /// Whether `p` lies strictly inside some wire.
+    fn interior(&self, p: Pt) -> bool {
+        let h = self
+            .horiz
+            .get(&p.1)
+            .is_some_and(|v| v.iter().any(|&(a, c)| a < p.0 && p.0 < c));
+        let v = self
+            .vert
+            .get(&p.0)
+            .is_some_and(|v| v.iter().any(|&(a, c)| a < p.1 && p.1 < c));
+        let d = self.diag.iter().any(|w| {
+            let (ax, ay, bx, by) = (
+                i64::from(w[0]),
+                i64::from(w[1]),
+                i64::from(w[2]),
+                i64::from(w[3]),
+            );
+            let (px, py) = (i64::from(p.0), i64::from(p.1));
+            let cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+            let dot = (px - ax) * (bx - ax) + (py - ay) * (by - ay);
+            let len2 = (bx - ax).pow(2) + (by - ay).pow(2);
+            cross == 0 && dot > 0 && dot < len2
+        });
+        h || v || d
+    }
+
+    /// xschem's rule: a dot at a wire end where three or more ends meet, or one touches
+    /// another wire's interior.
+    fn dot_at(&self, p: Pt) -> bool {
+        let n = self.ends_at(p);
+        n >= 3 || (n >= 1 && self.interior(p))
+    }
+
+    /// Wire ends lying strictly inside wire `w` (where `w` decides their dots), plus `w`'s
+    /// own ends: every point whose dot `w` can change.
+    fn touched(&self, w: [i32; 4], out: &mut Vec<Pt>) {
+        out.extend([(w[0], w[1]), (w[2], w[3])]);
+        if w[1] == w[3] {
+            let (a, c) = (w[0].min(w[2]), w[0].max(w[2]));
+            let i = self.yx.partition_point(|q| *q <= (w[1], a));
+            let run = self.yx[i..].iter().take_while(|q| **q < (w[1], c));
+            out.extend(run.map(|q| (q.1, q.0)));
+        } else if w[0] == w[2] {
+            let (a, c) = (w[1].min(w[3]), w[1].max(w[3]));
+            let i = self.xy.partition_point(|q| *q <= (w[0], a));
+            out.extend(self.xy[i..].iter().take_while(|q| **q < (w[0], c)));
+        } else {
+            // ponytail: a diagonal wire checks every end, O(ends); a 2-D index if
+            // diagonal-heavy schematics show up in profiles.
+            let mut probe = Wiring::default();
+            probe.diag.push(w);
+            out.extend(self.xy.iter().filter(|q| probe.interior(**q)));
+        }
+    }
 }
 
 impl Scene {
@@ -393,18 +690,34 @@ pub fn build(
     sc.objs = Objects::default();
     sc.index.clear();
     sc.conn.clear();
+    sc.source = Source::default();
+    sc.wiring = Wiring::default();
     let mut b = Build {
         sc,
         ext: [i32::MAX, i32::MAX, i32::MIN, i32::MIN],
     };
     let values = values.filter(|v| v.inst_iface.len() == doc.instances().id.len());
     match view {
-        View::Schematic => schematic(&mut b, project, h, doc, symbols, values),
+        View::Schematic => {
+            let mut st = Stamp::default();
+            for i in 0..doc.instances().id.len() {
+                instance(&mut b, project, h, doc, symbols, values, i, &mut st);
+            }
+            for i in 0..doc.wires().id.len() {
+                wire(&mut b, doc, i);
+            }
+            b.sc.wiring = Wiring::of(doc.wires());
+            let mut ends = b.sc.wiring.xy.clone();
+            ends.dedup();
+            redot(&mut b, &ends);
+            other_objects(&mut b, doc, 0..usize::MAX);
+            b.sc.source = Source::of(doc);
+        }
         View::Symbol => symbol(&mut b, doc),
     }
     let ext = if b.ext[0] > b.ext[2] { [0; 4] } else { b.ext };
     sc.extent = ext;
-    fit_boxes(sc);
+    fit_boxes(sc, Counts::default());
     sc.index = sc
         .objs
         .key
@@ -414,15 +727,296 @@ pub fn build(
         .collect();
     sc.index.sort_unstable();
     sc.built = Some((h, view, epoch, symbols.epoch));
-    let p = &sc.prims;
-    assert_eq!(p.lines.x0.len(), sc.owner.lines.len());
-    assert_eq!(p.texts.x.len(), sc.owner.texts.len());
-    assert_eq!(p.polygons.end.len(), sc.owner.polygons.len());
+    check_tables(sc);
 }
 
-/// Grows every box object's geometry to cover all of its primitives, so whatever is drawn
-/// for an object hits and box-selects as that object.
-fn fit_boxes(sc: &mut Scene) {
+/// Brings a schematic scene built for document `h` up to date with the document's current
+/// rows (`epoch`): objects whose rows changed are removed and re-stamped, junction dots are
+/// recomputed only where a changed wire can move them. Same contract as [`build`] (whose
+/// result it equals as a set of primitives per object, up to row order); falls back to it,
+/// returning false, when the scene was built for another document, view or symbol cache,
+/// or when most of the document changed. Values (`{W}` texts) are taken as unchanged: when
+/// they changed, call [`build`].
+///
+/// Cost: O(rows) compares to find the changes (see `diff`), then O(primitives) scans per
+/// changed object (prim and owner removal), O(objects) for index inserts.
+pub fn update(
+    sc: &mut Scene,
+    project: &Project,
+    h: DocHandle,
+    symbols: &Symbols,
+    epoch: u32,
+    values: Option<&CellState>,
+) -> bool {
+    let Some(doc) = project.doc(h) else {
+        return false;
+    };
+    if !matches!(sc.built, Some((d, View::Schematic, _, s)) if d == h && s == symbols.epoch) {
+        build(sc, project, h, View::Schematic, symbols, epoch, values);
+        return false;
+    }
+    let values = values.filter(|v| v.inst_iface.len() == doc.instances().id.len());
+    // Which rows changed, per table (the old rows go, the new rows come).
+    let (mut gone_i, mut fresh_i) = (Vec::new(), Vec::new());
+    let (mut gone_w, mut fresh_w) = (Vec::new(), Vec::new());
+    let (mut gone_p, mut fresh_p) = (Vec::new(), Vec::new());
+    let s = &mut sc.source;
+    let n_inst = doc.instances().id.len();
+    diff(
+        &mut s.inst,
+        n_inst,
+        |i| inst_row(doc, i),
+        &mut gone_i,
+        &mut fresh_i,
+    );
+    let n_wires = doc.wires().id.len();
+    diff(
+        &mut s.wires,
+        n_wires,
+        |i| wire_row(doc, i),
+        &mut gone_w,
+        &mut fresh_w,
+    );
+    let mut fresh_other: Vec<(TableId, usize)> = Vec::new();
+    for (table, rows, t) in [
+        (TableId::Labels, &mut s.labels, Some(doc.labels())),
+        (TableId::Ports, &mut s.ports, Some(doc.ports())),
+        (TableId::Texts, &mut s.texts, Some(doc.texts())),
+        (TableId::Noconns, &mut s.noconns, None),
+    ] {
+        let (len, before) = (
+            t.map_or(doc.noconns().id.len(), |t| t.id.len()),
+            fresh_p.len(),
+        );
+        let row = |i| t.map_or_else(|| noconn_row(doc, i), |t| placed_row(t, i));
+        let mut gone = Vec::new();
+        diff(rows, len, row, &mut gone, &mut fresh_p);
+        gone_p.extend(gone.into_iter().map(|r| ObjKey { table, key: r.id.0 }));
+        fresh_other.extend(fresh_p.drain(before..).map(|i| (table, i)));
+    }
+    let changed = gone_i.len() + fresh_i.len() + gone_w.len() + fresh_w.len() + gone_p.len();
+    let total = sc.objs.len().max(1);
+    if changed > total / 8 + 64 {
+        // ponytail: most of the document changed (a paste, an import): one full build is
+        // cheaper than this many removals.
+        build(sc, project, h, View::Schematic, symbols, epoch, values);
+        return false;
+    }
+    // Junction points the changed wires can affect, while the old wires are still indexed.
+    let mut points: Vec<Pt> = Vec::new();
+    for w in &gone_w {
+        sc.wiring.touched(w.p, &mut points);
+    }
+    // Remove what changed.
+    let keys = gone_i
+        .iter()
+        .map(|r| ObjKey {
+            table: TableId::Instances,
+            key: r.id.0,
+        })
+        .chain(gone_w.iter().map(|r| ObjKey {
+            table: TableId::Wires,
+            key: r.id.0,
+        }))
+        .chain(gone_p);
+    for key in keys {
+        remove_object(sc, key);
+    }
+    for w in &gone_w {
+        sc.wiring.remove(w.p);
+    }
+    // Stamp what is new, then index it.
+    let (objs0, prims0) = (sc.objs.len(), Counts::of(sc));
+    let ext = match sc.extent {
+        [0, 0, 0, 0] => [i32::MAX, i32::MAX, i32::MIN, i32::MIN],
+        e => e,
+    };
+    let mut b = Build { ext, sc };
+    let mut st = Stamp::default();
+    for &i in &fresh_i {
+        instance(&mut b, project, h, doc, symbols, values, i, &mut st);
+    }
+    for &i in &fresh_w {
+        wire(&mut b, doc, i);
+        let w = doc.wires();
+        b.sc.wiring.add([w.x1[i], w.y1[i], w.x2[i], w.y2[i]]);
+    }
+    for &i in &fresh_w {
+        let w = doc.wires();
+        b.sc.wiring
+            .touched([w.x1[i], w.y1[i], w.x2[i], w.y2[i]], &mut points);
+    }
+    for &(table, i) in &fresh_other {
+        one_other(&mut b, doc, table, i);
+    }
+    points.sort_unstable();
+    points.dedup();
+    redot(&mut b, &points);
+    let ext = b.ext;
+    sc.extent = if ext[0] > ext[2] { [0; 4] } else { ext };
+    fit_boxes(sc, prims0);
+    for o in objs0..sc.objs.len() {
+        let key = sc.objs.key[o];
+        let at = sc.index.partition_point(|e| e.0 < key);
+        sc.index.insert(at, (key, o as u32));
+    }
+    sc.built = Some((h, View::Schematic, epoch, symbols.epoch));
+    check_tables(sc);
+    debug_assert!(sc.index.windows(2).all(|w| w[0].0 < w[1].0));
+    true
+}
+
+/// Parallel-column invariants of a built scene.
+fn check_tables(sc: &Scene) {
+    let (p, o) = (&sc.prims, &sc.owner);
+    assert_eq!(p.lines.x0.len(), o.lines.len());
+    assert_eq!(p.rects.x0.len(), o.rects.len());
+    assert_eq!(p.arcs.cx.len(), o.arcs.len());
+    assert_eq!(p.polylines.end.len(), o.polylines.len());
+    assert_eq!(p.polygons.end.len(), o.polygons.len());
+    assert_eq!(p.texts.x.len(), o.texts.len());
+    assert_eq!(sc.index.len(), sc.objs.len(), "one index entry per object");
+}
+
+/// Primitive counts per table (where an update's new primitives start).
+#[derive(Clone, Copy, Debug, Default)]
+struct Counts {
+    lines: usize,
+    rects: usize,
+    arcs: usize,
+    polylines: usize,
+    polygons: usize,
+    texts: usize,
+}
+
+impl Counts {
+    fn of(sc: &Scene) -> Counts {
+        let o = &sc.owner;
+        Counts {
+            lines: o.lines.len(),
+            rects: o.rects.len(),
+            arcs: o.arcs.len(),
+            polylines: o.polylines.len(),
+            polygons: o.polygons.len(),
+            texts: o.texts.len(),
+        }
+    }
+}
+
+/// Removes object `key` (when drawn): its primitives, connection points and index entry;
+/// the last object takes its index (swap-remove), so its references are renumbered.
+///
+/// Cost: two scans of every owner column and of `conn`, O(objects) for the index.
+fn remove_object(sc: &mut Scene, key: ObjKey) {
+    let Some(o) = sc.find(key) else {
+        return;
+    };
+    let last = (sc.objs.len() - 1) as u32;
+    let (p, own) = (&mut sc.prims, &mut sc.owner);
+    // Primitives of `o`: backwards, so a swapped-in row was already visited.
+    for i in rows_of(&own.lines, o) {
+        let l = &mut p.lines;
+        for col in [&mut l.x0, &mut l.y0, &mut l.x1, &mut l.y1] {
+            col.swap_remove(i);
+        }
+        l.layer.swap_remove(i);
+        own.lines.swap_remove(i);
+    }
+    for i in rows_of(&own.rects, o) {
+        let r = &mut p.rects;
+        for col in [&mut r.x0, &mut r.y0, &mut r.x1, &mut r.y1] {
+            col.swap_remove(i);
+        }
+        r.layer.swap_remove(i);
+        own.rects.swap_remove(i);
+    }
+    for i in rows_of(&own.arcs, o) {
+        let a = &mut p.arcs;
+        for col in [&mut a.cx, &mut a.cy, &mut a.r, &mut a.start, &mut a.sweep] {
+            col.swap_remove(i);
+        }
+        a.layer.swap_remove(i);
+        own.arcs.swap_remove(i);
+    }
+    for (polys, owners) in [
+        (&mut p.polylines, &mut own.polylines),
+        (&mut p.polygons, &mut own.polygons),
+    ] {
+        for k in rows_of(owners, o) {
+            // Point chains are CSR: drop the points and shift the later ends.
+            let start = if k == 0 { 0 } else { polys.end[k - 1] as usize };
+            let end = polys.end[k] as usize;
+            polys.x.drain(start..end);
+            polys.y.drain(start..end);
+            for e in &mut polys.end[k + 1..] {
+                *e -= (end - start) as u32;
+            }
+            polys.end.remove(k);
+            polys.layer.remove(k);
+            owners.remove(k);
+        }
+    }
+    for k in rows_of(&own.texts, o) {
+        let t = &mut p.texts;
+        let start = if k == 0 { 0 } else { t.end[k - 1] as usize };
+        let end = t.end[k] as usize;
+        t.text.replace_range(start..end, "");
+        for e in &mut t.end[k + 1..] {
+            *e -= (end - start) as u32;
+        }
+        t.end.remove(k);
+        for col in [&mut t.x, &mut t.y, &mut t.size] {
+            col.remove(k);
+        }
+        t.layer.remove(k);
+        own.texts.remove(k);
+    }
+    sc.conn.retain(|c| c.1 != o);
+    // The last object moves into `o`'s slot.
+    let objs = &mut sc.objs;
+    objs.key.swap_remove(o as usize);
+    objs.geom.swap_remove(o as usize);
+    objs.seg.swap_remove(o as usize);
+    let at = sc.index.binary_search_by(|e| e.0.cmp(&key)).expect("drawn");
+    sc.index.remove(at);
+    if o != last {
+        let own = &mut sc.owner;
+        for col in [
+            &mut own.lines,
+            &mut own.rects,
+            &mut own.arcs,
+            &mut own.polylines,
+            &mut own.polygons,
+            &mut own.texts,
+        ] {
+            col.iter_mut().filter(|x| **x == last).for_each(|x| *x = o);
+        }
+        sc.conn
+            .iter_mut()
+            .filter(|c| c.1 == last)
+            .for_each(|c| c.1 = o);
+        let moved = sc.objs.key[o as usize];
+        let at = sc
+            .index
+            .binary_search_by(|e| e.0.cmp(&moved))
+            .expect("drawn");
+        sc.index[at].1 = o;
+    }
+    assert_eq!(sc.index.len(), sc.objs.len());
+}
+
+/// Rows of an owner column belonging to object `o`, last first (so swap-removing them in
+/// order never moves a row still to be removed).
+fn rows_of(owners: &[u32], o: u32) -> Vec<usize> {
+    (0..owners.len())
+        .rev()
+        .filter(|&i| owners[i] == o)
+        .collect()
+}
+
+/// Grows every box object's geometry to cover all of its primitives from `from` on, so
+/// whatever is drawn for an object hits and box-selects as that object.
+fn fit_boxes(sc: &mut Scene, from: Counts) {
     let p = &sc.prims;
     let o = &sc.owner;
     let objs = &mut sc.objs;
@@ -438,15 +1032,15 @@ fn fit_boxes(sc: &mut Scene) {
             g[3].max(y0.max(y1)),
         ];
     };
-    for i in 0..p.lines.x0.len() {
+    for i in from.lines..p.lines.x0.len() {
         let l = &p.lines;
         grow(o.lines[i], l.x0[i], l.y0[i], l.x1[i], l.y1[i]);
     }
-    for i in 0..p.rects.x0.len() {
+    for i in from.rects..p.rects.x0.len() {
         let r = &p.rects;
         grow(o.rects[i], r.x0[i], r.y0[i], r.x1[i], r.y1[i]);
     }
-    for i in 0..p.arcs.cx.len() {
+    for i in from.arcs..p.arcs.cx.len() {
         let a = &p.arcs;
         grow(
             o.arcs[i],
@@ -456,197 +1050,223 @@ fn fit_boxes(sc: &mut Scene) {
             a.cy[i] + a.r[i],
         );
     }
-    for (polys, owners) in [(&p.polylines, &o.polylines), (&p.polygons, &o.polygons)] {
-        let mut start = 0;
-        for (k, &end) in polys.end.iter().enumerate() {
+    for (polys, owners, k0) in [
+        (&p.polylines, &o.polylines, from.polylines),
+        (&p.polygons, &o.polygons, from.polygons),
+    ] {
+        for (k, (&end, &owner)) in polys.end.iter().zip(owners).enumerate().skip(k0) {
+            let start = if k == 0 { 0 } else { polys.end[k - 1] as usize };
             for j in start..end as usize {
-                grow(owners[k], polys.x[j], polys.y[j], polys.x[j], polys.y[j]);
+                grow(owner, polys.x[j], polys.y[j], polys.x[j], polys.y[j]);
             }
-            start = end as usize;
         }
     }
     let t = &p.texts;
-    let mut start = 0;
-    for i in 0..t.x.len() {
-        let end = t.end[i] as usize;
-        let (w, h) = text_size(t.size[i], &t.text[start..end]);
+    for i in from.texts..t.x.len() {
+        let start = if i == 0 { 0 } else { t.end[i - 1] as usize };
+        let (w, h) = text_size(t.size[i], &t.text[start..t.end[i] as usize]);
         grow(o.texts[i], t.x[i], t.y[i], t.x[i] + w, t.y[i] + h);
-        start = end;
     }
 }
 
-fn schematic(
+/// Reusable buffers of instance stamping (resolved cells, template inputs, text).
+#[derive(Default)]
+struct Stamp<'d> {
+    resolved: HashMap<Sym, Option<usize>>,
+    inputs: Vec<Value<'d>>,
+    scratch: Scratch,
+    text: String,
+}
+
+/// Stamps instance row `i`: the resolved cell's symbol through the placement transform, or
+/// a red placeholder with the cell reference when it does not resolve.
+#[allow(clippy::too_many_arguments)]
+fn instance<'d>(
     b: &mut Build<'_>,
-    project: &Project,
+    project: &'d Project,
     h: DocHandle,
-    doc: &Document,
+    doc: &'d Document,
     sym: &Symbols,
-    values: Option<&CellState>,
+    values: Option<&'d CellState>,
+    i: usize,
+    st: &mut Stamp<'d>,
 ) {
     let s = doc.strings();
-    // Instances: stamp the resolved cell's symbol through the placement transform.
     let inst = doc.instances();
-    let mut inputs: Vec<Value<'_>> = Vec::new();
-    let mut scratch = Scratch::default();
-    let mut text = String::new();
-    let mut resolved: HashMap<Sym, Option<usize>> = HashMap::new();
-    for i in 0..inst.id.len() {
-        let key = ObjKey {
-            table: TableId::Instances,
-            key: inst.id[i].0,
-        };
-        let (o, at) = (inst.orient[i], (inst.x[i], inst.y[i]));
-        let cellref = s.get(inst.cell[i]);
-        let row = *resolved
-            .entry(inst.cell[i])
-            .or_insert_with(|| project.resolve(h, cellref).ok());
-        let prims = row.and_then(|r| sym.get(r));
-        let Some(p) = prims else {
-            let obj = b.sc.objs.push(
-                key,
-                [
-                    at.0 - 10 * UNIT,
-                    at.1 - 10 * UNIT,
-                    at.0 + 10 * UNIT,
-                    at.1 + 10 * UNIT,
-                ],
-                false,
-            );
-            b.rect(
-                (at.0 - 10 * UNIT, at.1 - 10 * UNIT),
-                (at.0 + 10 * UNIT, at.1 + 10 * UNIT),
-                LAYER_MISSING,
-                obj,
-            );
-            b.text(
-                (at.0 - 10 * UNIT, at.1 + 11 * UNIT),
-                8 * UNIT,
-                LAYER_MISSING,
-                cellref,
-                obj,
-            );
-            continue;
-        };
-        let x = |q: Pt| place(o, at, q);
-        let (c0, c1) = (x((p.bbox[0], p.bbox[1])), x((p.bbox[2], p.bbox[3])));
-        let obj = b.sc.objs.push(key, [c0.0, c0.1, c1.0, c1.1], false);
-        for (l, layer) in &p.lines {
-            b.line(x((l[0], l[1])), x((l[2], l[3])), *layer, obj);
-        }
-        for (r, layer) in &p.rects {
-            b.rect(x((r[0], r[1])), x((r[2], r[3])), *layer, obj);
-        }
-        for (a, layer) in &p.arcs {
-            let (start, sweep) = arc_placed(o, a[3], a[4]);
-            b.arc(x((a[0], a[1])), a[2], start, sweep, *layer, obj);
-        }
-        for (pts, closed, layer) in &p.polys {
-            let q: Vec<Pt> = pts.iter().map(|&q| x(q)).collect();
-            b.poly(&q, *closed, *layer, obj);
-        }
-        for &pin in &p.pins {
-            let q = x(pin);
-            b.rect(
-                (q.0 - PIN_HALF, q.1 - PIN_HALF),
-                (q.0 + PIN_HALF, q.1 + PIN_HALF),
-                5,
-                obj,
-            );
-            b.sc.conn.push((q, obj));
-        }
-        let iface = row.and_then(|r| project.interface(r));
-        for t in &p.texts {
+    let key = ObjKey {
+        table: TableId::Instances,
+        key: inst.id[i].0,
+    };
+    let (o, at) = (inst.orient[i], (inst.x[i], inst.y[i]));
+    let cellref = s.get(inst.cell[i]);
+    let row = *st
+        .resolved
+        .entry(inst.cell[i])
+        .or_insert_with(|| project.resolve(h, cellref).ok());
+    let Some(p) = row.and_then(|r| sym.get(r)) else {
+        let u = 10 * UNIT;
+        let obj =
+            b.sc.objs
+                .push(key, [at.0 - u, at.1 - u, at.0 + u, at.1 + u], false);
+        b.rect(
+            (at.0 - u, at.1 - u),
+            (at.0 + u, at.1 + u),
+            LAYER_MISSING,
+            obj,
+        );
+        b.text(
+            (at.0 - u, at.1 + 11 * UNIT),
+            8 * UNIT,
+            LAYER_MISSING,
+            cellref,
+            obj,
+        );
+        return;
+    };
+    let x = |q: Pt| place(o, at, q);
+    let (c0, c1) = (x((p.bbox[0], p.bbox[1])), x((p.bbox[2], p.bbox[3])));
+    let obj = b.sc.objs.push(key, [c0.0, c0.1, c1.0, c1.1], false);
+    for (l, layer) in &p.lines {
+        b.line(x((l[0], l[1])), x((l[2], l[3])), *layer, obj);
+    }
+    for (r, layer) in &p.rects {
+        b.rect(x((r[0], r[1])), x((r[2], r[3])), *layer, obj);
+    }
+    for (a, layer) in &p.arcs {
+        let (start, sweep) = arc_placed(o, a[3], a[4]);
+        b.arc(x((a[0], a[1])), a[2], start, sweep, *layer, obj);
+    }
+    for (pts, closed, layer) in &p.polys {
+        let q: Vec<Pt> = pts.iter().map(|&q| x(q)).collect();
+        b.poly(&q, *closed, *layer, obj);
+    }
+    for &pin in &p.pins {
+        let q = x(pin);
+        b.rect(
+            (q.0 - PIN_HALF, q.1 - PIN_HALF),
+            (q.0 + PIN_HALF, q.1 + PIN_HALF),
+            5,
+            obj,
+        );
+        b.sc.conn.push((q, obj));
+    }
+    let iface = row.and_then(|r| project.interface(r));
+    for t in &p.texts {
+        let Stamp {
+            inputs,
+            scratch,
+            text,
+            ..
+        } = &mut *st;
+        text.clear();
+        let rendered = t.template.as_ref().is_some_and(|tpl| {
+            let ok = tpl
+                .program()
+                .bind(inputs, |name| {
+                    bind_ident(name, doc, i, iface, cellref, values)
+                })
+                .is_ok();
+            ok && tpl.render(inputs, scratch, text).is_ok()
+        });
+        if !rendered {
             text.clear();
-            let rendered = t.template.as_ref().is_some_and(|tpl| {
-                let ok = tpl
-                    .program()
-                    .bind(&mut inputs, |name| {
-                        bind_ident(name, doc, i, iface, cellref, values)
-                    })
-                    .is_ok();
-                ok && tpl.render(&inputs, &mut scratch, &mut text).is_ok()
-            });
-            if !rendered {
-                text.clear();
-                text.push_str(&t.raw);
-            }
-            let q = x(t.at);
-            let (w, _) = text_size(t.size, &text);
-            let left = if t.hcenter { q.0 - w / 2 } else { q.0 };
-            b.text((left, q.1), t.size, t.layer, &text, obj);
+            text.push_str(&t.raw);
+        }
+        let q = x(t.at);
+        let (w, _) = text_size(t.size, text);
+        let left = if t.hcenter { q.0 - w / 2 } else { q.0 };
+        b.text((left, q.1), t.size, t.layer, text, obj);
+    }
+}
+
+/// Draws wire row `i` (its connection points included; dots are [`redot`]'s).
+fn wire(b: &mut Build<'_>, doc: &Document, i: usize) {
+    let w = doc.wires();
+    let (a, c) = ((w.x1[i], w.y1[i]), (w.x2[i], w.y2[i]));
+    let key = ObjKey {
+        table: TableId::Wires,
+        key: w.id[i].0,
+    };
+    let bus = attr(doc, w.attrs[i], "bus").is_some_and(|v| v == "true");
+    let obj = b.sc.objs.push(key, [a.0, a.1, c.0, c.1], true);
+    b.line(a, c, if bus { LAYER_BUS } else { 1 }, obj);
+    b.sc.conn.push((a, obj));
+    b.sc.conn.push((c, obj));
+}
+
+/// Labels, ports, noconns and texts of rows `rows` (clamped to each table) in that order.
+fn other_objects(b: &mut Build<'_>, doc: &Document, rows: std::ops::Range<usize>) {
+    for table in [
+        TableId::Labels,
+        TableId::Ports,
+        TableId::Noconns,
+        TableId::Texts,
+    ] {
+        let len = match table {
+            TableId::Labels => doc.labels().id.len(),
+            TableId::Ports => doc.ports().id.len(),
+            TableId::Noconns => doc.noconns().id.len(),
+            _ => doc.texts().id.len(),
+        };
+        for i in rows.start.min(len)..rows.end.min(len) {
+            one_other(b, doc, table, i);
         }
     }
-    // Wires.
-    let w = doc.wires();
-    for i in 0..w.id.len() {
-        let (a, c) = ((w.x1[i], w.y1[i]), (w.x2[i], w.y2[i]));
-        let key = ObjKey {
-            table: TableId::Wires,
-            key: w.id[i].0,
-        };
-        let bus = attr(doc, w.attrs[i], "bus").is_some_and(|v| v == "true");
-        let obj = b.sc.objs.push(key, [a.0, a.1, c.0, c.1], true);
-        b.line(a, c, if bus { LAYER_BUS } else { 1 }, obj);
-        b.sc.conn.push((a, obj));
-        b.sc.conn.push((c, obj));
-    }
-    junctions(b, w);
-    // Labels: a pin square at the anchor and the net name beside it, in wire color.
-    let l = doc.labels();
-    for i in 0..l.id.len() {
-        let key = ObjKey {
-            table: TableId::Labels,
-            key: l.id[i].0,
-        };
-        placed(
-            b,
-            key,
-            (l.x[i], l.y[i]),
-            l.orient[i],
-            s.get(l.text[i]),
-            false,
-        );
-    }
-    let p = doc.ports();
-    for i in 0..p.id.len() {
-        let key = ObjKey {
-            table: TableId::Ports,
-            key: p.id[i].0,
-        };
-        placed(
-            b,
-            key,
-            (p.x[i], p.y[i]),
-            p.orient[i],
-            s.get(p.text[i]),
-            true,
-        );
-    }
-    let n = doc.noconns();
-    for i in 0..n.id.len() {
-        let key = ObjKey {
-            table: TableId::Noconns,
-            key: n.id[i].0,
-        };
-        let (x, y) = (n.x[i], n.y[i]);
-        let r = 4 * UNIT;
-        let obj = b.sc.objs.push(key, [x - r, y - r, x + r, y + r], false);
-        b.line((x - r, y - r), (x + r, y + r), 4, obj);
-        b.line((x - r, y + r), (x + r, y - r), 4, obj);
-        b.sc.conn.push(((x, y), obj));
-    }
-    let t = doc.texts();
-    for i in 0..t.id.len() {
-        let key = ObjKey {
-            table: TableId::Texts,
-            key: t.id[i].0,
-        };
-        let size = size_of(attr(doc, t.attrs[i], "size"), 0.4);
-        let layer = layer_attr(doc, t.attrs[i], 3);
-        let at = (t.x[i], t.y[i]);
-        let obj = b.sc.objs.push(key, [at.0, at.1, at.0, at.1], false);
-        let bx = b.text(at, size, layer, s.get(t.text[i]), obj);
-        b.sc.objs.geom[obj as usize] = bx;
+}
+
+/// Draws row `i` of a label, port, noconn or text table.
+fn one_other(b: &mut Build<'_>, doc: &Document, table: TableId, i: usize) {
+    let s = doc.strings();
+    match table {
+        TableId::Labels | TableId::Ports => {
+            // Labels: a pin square at the anchor and the net name beside it, in wire color;
+            // ports: an arrow.
+            let t = if table == TableId::Labels {
+                doc.labels()
+            } else {
+                doc.ports()
+            };
+            let key = ObjKey {
+                table,
+                key: t.id[i].0,
+            };
+            let port = table == TableId::Ports;
+            placed(
+                b,
+                key,
+                (t.x[i], t.y[i]),
+                t.orient[i],
+                s.get(t.text[i]),
+                port,
+            );
+        }
+        TableId::Noconns => {
+            let n = doc.noconns();
+            let key = ObjKey {
+                table,
+                key: n.id[i].0,
+            };
+            let (x, y) = (n.x[i], n.y[i]);
+            let r = 4 * UNIT;
+            let obj = b.sc.objs.push(key, [x - r, y - r, x + r, y + r], false);
+            b.line((x - r, y - r), (x + r, y + r), 4, obj);
+            b.line((x - r, y + r), (x + r, y - r), 4, obj);
+            b.sc.conn.push(((x, y), obj));
+        }
+        TableId::Texts => {
+            let t = doc.texts();
+            let key = ObjKey {
+                table,
+                key: t.id[i].0,
+            };
+            let size = size_of(attr(doc, t.attrs[i], "size"), 0.4);
+            let layer = layer_attr(doc, t.attrs[i], 3);
+            let at = (t.x[i], t.y[i]);
+            let obj = b.sc.objs.push(key, [at.0, at.1, at.0, at.1], false);
+            let bx = b.text(at, size, layer, s.get(t.text[i]), obj);
+            b.sc.objs.geom[obj as usize] = bx;
+        }
+        _ => unreachable!("{table:?} has no canvas objects"),
     }
 }
 
@@ -774,68 +1394,34 @@ fn placed(b: &mut Build<'_>, key: ObjKey, at: Pt, o: Orient, name: &str, port: b
     b.sc.conn.push((at, obj));
 }
 
-/// xschem's connection cues: per wire end +1 for every other wire end at the same point
-/// and +2 for every wire whose interior it touches; a dot where the count exceeds 1.
-// ponytail: axis-aligned interior touches use per-coordinate buckets, diagonal wires are
-// scanned linearly; a spatial grid if diagonal-heavy schematics show up in profiles.
-fn junctions(b: &mut Build<'_>, w: &schemify_doc::Wires) {
-    let n = w.id.len();
-    if n < 2 {
-        return;
-    }
-    let mut ends: Vec<Pt> = Vec::with_capacity(2 * n);
-    for i in 0..n {
-        ends.push((w.x1[i], w.y1[i]));
-        ends.push((w.x2[i], w.y2[i]));
-    }
-    ends.sort_unstable();
-    let mut horiz: HashMap<i32, Vec<(i32, i32)>> = HashMap::new();
-    let mut vert: HashMap<i32, Vec<(i32, i32)>> = HashMap::new();
-    let mut diag: Vec<usize> = Vec::new();
-    for i in 0..n {
-        if w.y1[i] == w.y2[i] {
-            horiz.entry(w.y1[i]).or_default().push((w.x1[i], w.x2[i]));
-        } else if w.x1[i] == w.x2[i] {
-            vert.entry(w.x1[i]).or_default().push((w.y1[i], w.y2[i]));
-        } else {
-            diag.push(i);
+/// Makes the junction dots at `points` (sorted, unique) match xschem's rule for the current
+/// wiring ([`Wiring::dot_at`]): adds missing dots, removes stale ones. Dots belong to no
+/// object (owner `u32::MAX`): they are cues, not selectable records.
+fn redot(b: &mut Build<'_>, points: &[Pt]) {
+    debug_assert!(points.windows(2).all(|w| w[0] < w[1]));
+    for &p in points {
+        let now = b.sc.wiring.dot_at(p);
+        let had = b.sc.wiring.dots.binary_search(&p);
+        match (had, now) {
+            (Err(at), true) => {
+                b.sc.wiring.dots.insert(at, p);
+                b.sc.prims.arc(p.0, p.1, DOT_R, 0, 360_000, LAYER_JUNCTION);
+                b.sc.owner.arcs.push(u32::MAX);
+            }
+            (Ok(at), false) => {
+                b.sc.wiring.dots.remove(at);
+                let (a, own) = (&mut b.sc.prims.arcs, &mut b.sc.owner.arcs);
+                let i = (0..own.len())
+                    .find(|&i| own[i] == u32::MAX && (a.cx[i], a.cy[i]) == p)
+                    .expect("a recorded dot is drawn");
+                for col in [&mut a.cx, &mut a.cy, &mut a.r, &mut a.start, &mut a.sweep] {
+                    col.swap_remove(i);
+                }
+                a.layer.swap_remove(i);
+                own.swap_remove(i);
+            }
+            _ => {}
         }
-    }
-    let interior = |p: Pt| -> bool {
-        let h = horiz
-            .get(&p.1)
-            .is_some_and(|v| v.iter().any(|&(a, c)| a < p.0 && p.0 < c));
-        let v = vert
-            .get(&p.0)
-            .is_some_and(|v| v.iter().any(|&(a, c)| a < p.1 && p.1 < c));
-        let d = diag.iter().any(|&i| {
-            let (ax, ay, bx, by) = (
-                i64::from(w.x1[i]),
-                i64::from(w.y1[i]),
-                i64::from(w.x2[i]),
-                i64::from(w.y2[i]),
-            );
-            let (px, py) = (i64::from(p.0), i64::from(p.1));
-            let cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
-            let dot = (px - ax) * (bx - ax) + (py - ay) * (by - ay);
-            let len2 = (bx - ax).pow(2) + (by - ay).pow(2);
-            cross == 0 && dot > 0 && dot < len2
-        });
-        h || v || d
-    };
-    let mut i = 0;
-    while i < ends.len() {
-        let mut j = i;
-        while j < ends.len() && ends[j] == ends[i] {
-            j += 1;
-        }
-        let p = ends[i];
-        if j - i >= 3 || interior(p) {
-            // Dots belong to no object: they are cues, not selectable records.
-            b.sc.prims.arc(p.0, p.1, DOT_R, 0, 360_000, LAYER_JUNCTION);
-            b.sc.owner.arcs.push(u32::MAX);
-        }
-        i = j;
     }
 }
 

@@ -185,6 +185,32 @@ pub fn violation_request(cell: &CellState, doc: &Document) -> AnnotationRequest 
     req
 }
 
+/// The marks of violation rows `rows` of `cell` as [`violation_request`] targets them, or
+/// `None` when one names an aliased object `doc` no longer has (its posted mark used the
+/// alias text, which is gone: the caller re-posts everything).
+pub fn violation_marks_of(
+    rows: &[Violation],
+    cell: &CellState,
+    doc: &Document,
+) -> Option<Vec<Mark>> {
+    let lost = |v: &Violation| {
+        v.path == Name::NONE
+            && v.object != ObjId::NONE
+            && v.object.is_alias()
+            && doc.find_id(v.object).is_none()
+    };
+    if rows.iter().any(lost) {
+        return None;
+    }
+    let v = schemify_elab::Violations {
+        rows: rows.to_vec(),
+    };
+    let s = doc.strings();
+    let req = violation_marks(&v, &cell.names, |raw| ObjId(raw).text(s));
+    assert_eq!(req.marks.len(), rows.len());
+    Some(req.marks)
+}
+
 /// The marks on `target` (binary search: the overlay is sorted by target).
 pub fn marks_on<'a>(ann: &'a Annotations, target: &str) -> &'a [Mark] {
     let m = &ann.marks;

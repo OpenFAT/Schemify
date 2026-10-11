@@ -2831,14 +2831,18 @@ impl Editor {
         let ops = std::mem::take(&mut self.cell_ops);
         let (project, host) = (&self.session.project, &mut self.host);
         let mut funcs = |name: &str, args: &[Value<'_>]| host.call_fn(name, args);
-        if current {
+        let values = if current {
             let cell = self.cell.as_mut().expect("current state");
-            cell.recompute(project, h, &ops, &mut funcs);
+            let done = cell.recompute(project, h, &ops, &mut funcs);
+            done.graph || done.evaluated > 0
         } else {
             self.cell = CellState::build(project, h, &mut funcs);
-        }
+            true
+        };
         self.cell_key = self.cell.as_ref().map(|_| (h, epoch, fe));
-        self.scene_dirty = true; // symbol texts show values
+        // Symbol texts show values: a value change re-stamps the scene; a geometry edit is
+        // drawn incrementally (`scene::update`).
+        self.scene_dirty |= values;
         assert!(self.cell_ops.is_empty());
         true
     }
@@ -2999,15 +3003,21 @@ impl Editor {
                 .cell
                 .as_ref()
                 .filter(|_| self.cell_key == Some((h, epoch, fe)));
-            scene::build(
-                &mut self.scene,
-                &self.session.project,
-                h,
-                view,
-                &self.symbols,
-                epoch,
-                values,
-            );
+            let project = &self.session.project;
+            if self.scene_dirty || view != View::Schematic {
+                scene::build(
+                    &mut self.scene,
+                    project,
+                    h,
+                    view,
+                    &self.symbols,
+                    epoch,
+                    values,
+                );
+            } else {
+                // An edit: only the objects whose rows changed are re-stamped.
+                scene::update(&mut self.scene, project, h, &self.symbols, epoch, values);
+            }
             self.canvas_gen += 1;
             self.scene_dirty = false;
             let sel: Vec<ObjKey> = self

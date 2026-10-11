@@ -179,6 +179,7 @@ fn incremental_recompute_equals_full_rebuild_after_random_edits() {
             if !commit(&mut p, h, ops.clone()) {
                 continue;
             }
+            let (before, pass) = (st.violations.rows.clone(), st.pass);
             let done = st.recompute(&p, h, &ops, &mut no_funcs);
             if done.evaluated > 0 {
                 incremental += 1;
@@ -188,6 +189,31 @@ fn incremental_recompute_equals_full_rebuild_after_random_edits() {
                 snapshot(&st),
                 snapshot(&fresh),
                 "seed {seed} step {step} ops {ops:?}"
+            );
+            // The pass's delta turns the previous rows into the current ones (a rebuilt
+            // state starts a new chain: `prev_pass == 0`, consumers take every row).
+            if st.prev_pass == 0 {
+                continue;
+            }
+            assert_eq!(st.prev_pass, pass, "passes chain");
+            let mut rows = before;
+            for g in &st.changes.0 {
+                let at = rows
+                    .iter()
+                    .position(|r| r == g)
+                    .expect("a removed row existed");
+                rows.remove(at);
+            }
+            rows.extend(st.changes.1.iter().cloned());
+            let text = |v: &[schemify_elab::Violation]| {
+                let mut t: Vec<String> = v.iter().map(|r| format!("{r:?}")).collect();
+                t.sort();
+                t
+            };
+            assert_eq!(
+                text(&rows),
+                text(&st.violations.rows),
+                "seed {seed} step {step} delta"
             );
         }
     }
