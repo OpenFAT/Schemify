@@ -17,6 +17,17 @@ rust-version = "1.95"
 [workspace.dependencies]
 schemify-abi = { path = "../crates/abi", features = ["guest"] }
 
+# The guest tests (`cktimg/tests/guest.rs`) run imports of up to 10^11 wasmi fuel, so the
+# interpreter is optimized in test builds too (the test profile inherits these).
+[profile.dev.package.wasmi]
+opt-level = 3
+[profile.dev.package.wasmi_core]
+opt-level = 3
+[profile.dev.package.wasmi_ir]
+opt-level = 3
+[profile.dev.package.wasmi_collections]
+opt-level = 3
+
 # Small fixtures: size over speed, no unwinding (a panic is a trap the host reports).
 [profile.release]
 opt-level = "z"

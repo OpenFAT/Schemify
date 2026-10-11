@@ -183,6 +183,13 @@ jobs:
           name: plugin-fixtures
           path: crates/app/tests/fixtures/ota/plugins/*.wasm
           if-no-files-found: error
+      # The cktimg guest lives next to its source (projects load it by path); same flow,
+      # `gh run download <run> -n cktimg-wasm`.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cktimg-wasm
+          path: plugins/cktimg/cktimg.wasm
+          if-no-files-found: error
       # The crates with native tests (rlib + the built guest driven through wasmi); the others
       # are cdylib guests whose `guest` module exists only on wasm32.
       - name: plugins workspace tests (native + built guests)
