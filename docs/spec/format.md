@@ -103,7 +103,7 @@ Kind rules (`E025`): `shprim` has ≥1 pin and ≥1 impl, none with lang `schema
 | `poly <x> <y> <x> <y> …` (≥ 2 points) | `layer`, `fill`, `closed true\|false` |
 | `stext <x> <y> <orient> <template>` | `size <s>`, `hcenter`, `vcenter`, `layer` |
 
-`stext` templates may reference `name`, params and `cell` (render-time only).
+`stext` templates may reference `name`, params and `cell` (render-time only). Its `<orient>` turns the text about its anchor like a `text` record's (quarter turns clockwise; a mirror keeps the text readable); in an instance the text turns by the instance's orientation composed with its own.
 
 ### Rank 3 — schematic (shcomp, shbench)
 

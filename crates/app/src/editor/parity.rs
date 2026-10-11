@@ -37,7 +37,7 @@ const USER_LAYERS: u8 = 22;
 /// Names of the special layers (xschem Layers menu).
 const LAYER_NAMES: [&str; 6] = ["BG", "WIRE", "GRID", "TEXT", "", "PIN"];
 /// Pin pitch of generated symbols and port columns (xschem units).
-const PITCH: i32 = 20 * UNIT;
+pub(super) const PITCH: i32 = 20 * UNIT;
 /// Rows of hierarchy the changelog lists at most.
 const CHANGELOG_ROWS: usize = 1 << 12;
 /// Largest PNG export side in pixels (the CPU raster's target is `u16`; 16k keeps one
@@ -197,6 +197,19 @@ pub(super) fn text_tab_ok(cmd: Cmd) -> bool {
     )
 }
 
+/// The user config's layer colors (`schemify.opt.layer_colors`, config spec §3) as the
+/// editor's `(layer, 0xRRGGBB)` overrides, by layer.
+pub(super) fn user_layer_colors(o: &schemify_config::Opts) -> Vec<(u8, u32)> {
+    let out: Vec<(u8, u32)> = o
+        .layer_colors
+        .iter()
+        .enumerate()
+        .filter_map(|(l, c)| c.map(|rgb| (l as u8, rgb)))
+        .collect();
+    assert!(out.iter().all(|c| c.0 < USER_LAYERS && c.1 <= 0xff_ffff));
+    out
+}
+
 /// A parsed number argument in `[lo, hi]`.
 fn number(arg: &str, lo: f64, hi: f64) -> Option<f64> {
     arg.trim()
@@ -242,9 +255,9 @@ impl Editor {
                 }
             }
             Cmd::Merge => self.open_chooser(ChooseFor::Merge),
-            Cmd::OpenMostRecent => self.open_recent(0),
+            Cmd::OpenMostRecent => self.open_recent(0, reqs),
             Cmd::OpenRecent => match arg.trim().parse::<usize>() {
-                Ok(i) => self.open_recent(i),
+                Ok(i) => self.open_recent(i, reqs),
                 Err(_) => self.session.status = format!("{arg:?}: not a recent-file index"),
             },
             Cmd::DeleteFiles => {
@@ -685,7 +698,9 @@ impl Editor {
         }
     }
 
-    fn open_recent(&mut self, i: usize) {
+    /// Opens recent file `i`: in a tab when it belongs to this project (or one of its local
+    /// libraries), else by switching to its project (`switch_project`).
+    fn open_recent(&mut self, i: usize, reqs: &mut Vec<EditRequest>) {
         let Some(path) = self.recent.get(i).cloned() else {
             self.session.status = "no recent file".into();
             return;
@@ -703,8 +718,67 @@ impl Editor {
                 self.tool = Tool::Idle;
                 self.scene_dirty = true;
             }
+            Err(_) if super::project_root(&path) != crate::libs::absolute(&self.session.root) => {
+                self.switch_project(path, reqs);
+            }
             Err(e) => self.session.status = e,
         }
+    }
+
+    /// Opens `file` of another project: that project's session (manifest, libraries,
+    /// plugins, journals) replaces this one, started with this session's startup options and
+    /// keeping what belongs to the user rather than the project: the view options, layer
+    /// colors, clipboard, netlist dialect, recent files, the UI and its state. Refused while a
+    /// document of this project has unsaved edits or a simulation runs (both would be lost).
+    /// Edit requests already queued this frame name this project's documents and are dropped.
+    fn switch_project(&mut self, file: PathBuf, reqs: &mut Vec<EditRequest>) {
+        let p = &self.session.project;
+        if p.handles().any(|d| p.is_dirty(d)) {
+            self.session.status = format!(
+                "{}: another project; save or undo this project's edits first",
+                file.display()
+            );
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.sim.wake_ms().is_some() {
+                self.session.status =
+                    "a simulation is running: cancel it before switching project".into();
+                return;
+            }
+        }
+        let mut opts = self.startup.clone();
+        opts.path = Some(file);
+        let mut next = match Editor::new(opts) {
+            Ok(e) => e,
+            Err(e) => {
+                self.session.status = e;
+                return;
+            }
+        };
+        // The UI keeps its string arena: commands routed this frame name its symbols.
+        next.shell = std::mem::take(&mut self.shell);
+        next.shell.invalidate();
+        next.viewport = self.viewport;
+        next.now = self.now;
+        next.pointer = self.pointer;
+        next.mods = self.mods;
+        next.opts = self.opts;
+        next.layer_colors = std::mem::take(&mut self.layer_colors);
+        next.clipboard = std::mem::take(&mut self.clipboard);
+        next.dialect = self.dialect;
+        next.recent = std::mem::take(&mut self.recent);
+        next.queued = std::mem::take(&mut self.queued);
+        if let Some((h, _)) = next.active() {
+            next.remember(h);
+        }
+        reqs.clear();
+        let root = next.session.root.clone();
+        *self = next;
+        self.refresh_palette();
+        self.session.status = format!("project {}", root.display());
+        assert!(reqs.is_empty() && self.active().is_some());
     }
 
     /// File → Save As: writes the active document's canonical text to `rel` (project-relative
@@ -1263,7 +1337,8 @@ impl Editor {
     }
 
     /// Ends a move: a plain move, or a stretch (`stretch` 1) / kissing (2) move whose
-    /// attached wires follow (translations only; a move rotated in flight is plain).
+    /// attached wires follow (translations only; a move rotated in flight is plain). The
+    /// selected ends of partially selected wires (Ctrl+drag box) move with any translation.
     pub(super) fn finish_stretch(
         &mut self,
         reqs: &mut Vec<EditRequest>,
@@ -1271,34 +1346,45 @@ impl Editor {
         x: Xform,
         stretch: u8,
     ) {
-        if !x.is_translation() || stretch == 0 {
+        let sel = self.selection().to_vec();
+        let ends: Vec<(ObjKey, Pt)> = self
+            .partial_ends()
+            .iter()
+            .copied()
+            .filter(|e| sel.binary_search(&e.0).is_err())
+            .collect();
+        if !x.is_translation() || (stretch == 0 && ends.is_empty()) {
             let ops = self.with_doc(h, |doc, sel| edit::transform(doc, sel, x));
             self.commit(reqs, h, "move", ops);
             return;
         }
-        let sel = self.selection().to_vec();
         let manhattan = self.opts.manhattan;
         let out = {
             let mut ids = Ids::new(&mut self.rng);
             wiring::stretch(
                 &self.session.project,
                 h,
-                &sel,
+                wiring::Moved {
+                    sel: &sel,
+                    ends: &ends,
+                    follow: stretch > 0,
+                    kiss: stretch == 2,
+                },
                 x,
-                stretch == 2,
                 manhattan,
                 &mut ids,
             )
         };
-        let label = if stretch == 2 {
-            "kissing move"
-        } else {
-            "stretch move"
+        let label = match stretch {
+            2 => "kissing move",
+            1 => "stretch move",
+            _ => "move",
         };
-        // The selection stays what was moved: stretched wires are whole objects here, so
-        // keeping them selected would move them whole next time (xschem's partial wire
-        // selection has no equivalent).
+        // The selection, whole and partial, stays what was moved (xschem's default: partially
+        // selected wires stay selected after a stretch move); partial ends follow their move.
         self.commit(reqs, h, label, out.ops);
+        let moved: Vec<(ObjKey, Pt)> = ends.iter().map(|&(k, p)| (k, x.point(p))).collect();
+        self.set_partial(moved);
         self.session.status = format!("{label}: {} wire(s) followed", out.wires.len());
     }
 
@@ -1787,186 +1873,6 @@ impl Editor {
             self.session.status = "no unconnected pins on the selected instances".into();
         }
         ops
-    }
-
-    /// Symbol → Make schematic and symbol from selected components: the selection moves into
-    /// a new cell `<cell>_sub<k>.shcomp` beside this one (its objects, a port wherever a net
-    /// crosses the selection boundary, a symbol made from those ports), and an instance of it
-    /// replaces the selection, joined to the boundary nets by labels (one undo here; the new
-    /// file is written at once).
-    fn make_subcircuit(&mut self, reqs: &mut Vec<EditRequest>, h: DocHandle) {
-        let sel = self.selection().to_vec();
-        if sel.is_empty() {
-            self.session.status = "select the components to move into a new cell".into();
-            return;
-        }
-        let Some(path) = self.session.path(h).map(Path::to_path_buf) else {
-            return;
-        };
-        let (Some(cell), Some(doc)) = (self.cell.as_ref(), self.session.project.doc(h)) else {
-            self.session.status = "the cell is not elaborated".into();
-            return;
-        };
-        if cell.inst_iface.len() != doc.instances().id.len() {
-            return;
-        }
-        // Components touched by selected and by unselected objects: the boundary nets.
-        let selset: std::collections::HashSet<ObjKey> = sel.iter().copied().collect();
-        let n = &cell.nets;
-        let mut inside: Vec<(u32, Pt)> = Vec::new();
-        let mut outside: Vec<u32> = Vec::new();
-        let tables = [
-            (TableId::Wires, &doc.wires().id, &n.wire_net),
-            (TableId::Labels, &doc.labels().id, &n.label_net),
-            (TableId::Ports, &doc.ports().id, &n.port_net),
-        ];
-        for (table, ids, nets) in tables {
-            for (r, (id, &c)) in ids.iter().zip(nets).enumerate() {
-                let k = ObjKey { table, key: id.0 };
-                if selset.contains(&k) {
-                    let at = match table {
-                        TableId::Wires => (doc.wires().x1[r], doc.wires().y1[r]),
-                        TableId::Labels => (doc.labels().x[r], doc.labels().y[r]),
-                        _ => (doc.ports().x[r], doc.ports().y[r]),
-                    };
-                    inside.push((c, at));
-                } else {
-                    outside.push(c);
-                }
-            }
-        }
-        for i in 0..doc.instances().id.len() {
-            let k = ObjKey {
-                table: TableId::Instances,
-                key: doc.instances().id[i].0,
-            };
-            for (c, at) in checks::pins_of(doc, cell, i) {
-                if selset.contains(&k) {
-                    inside.push((c, at));
-                } else {
-                    outside.push(c);
-                }
-            }
-        }
-        outside.sort_unstable();
-        outside.dedup();
-        let mut boundary: Vec<(u32, Pt)> = inside
-            .iter()
-            .copied()
-            .filter(|(c, _)| outside.binary_search(c).is_ok())
-            .collect();
-        boundary.sort_by_key(|b| b.0);
-        boundary.dedup_by_key(|b| b.0);
-        let names: Vec<String> = boundary
-            .iter()
-            .map(|(c, _)| checks::net_name(cell, *c).to_owned())
-            .collect();
-        // The new cell file.
-        let stem = path
-            .file_stem()
-            .map_or_else(|| "cell".to_owned(), |s| s.to_string_lossy().into_owned());
-        let dir = path.parent().map_or_else(PathBuf::new, Path::to_path_buf);
-        let Some(file) = (1..100)
-            .map(|k| dir.join(format!("{stem}_sub{k}.shcomp")))
-            .find(|p| !platform::exists(p))
-        else {
-            self.session.status = format!("{stem}_sub*.shcomp: no free name");
-            return;
-        };
-        let sub_stem = file
-            .file_stem()
-            .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
-        let recs: Vec<RecordBuf> = edit::selected_records(doc, &sel)
-            .into_iter()
-            .map(|(_, _, r)| r)
-            .filter(|r| r.kind.rank() == 3)
-            .collect();
-        let scratch = schemify_doc::Document::new(FileKind::Shcomp);
-        let mut ids = Ids::new(&mut self.rng);
-        // The new cell: its symbol made from the boundary ports, the moved objects, the ports.
-        let ports: Vec<(String, Orient, Pt)> = boundary
-            .iter()
-            .zip(&names)
-            .map(|((_, at), name)| (name.clone(), Orient::R0, *at))
-            .collect();
-        let symbol = symbol_records(&ports, self.opts.symbol_width);
-        let sub_pins: Vec<(String, Pt)> = symbol
-            .iter()
-            .filter(|r| r.kind == RecordKind::Pin)
-            .filter_map(|r| {
-                let x = schemify_format::parse_coord(&r.fields[2]).ok()?;
-                let y = schemify_format::parse_coord(&r.fields[3]).ok()?;
-                Some((r.fields[0].clone(), (x, y)))
-            })
-            .collect();
-        let mut frag: Vec<RecordBuf> = symbol;
-        frag.extend(recs.iter().cloned());
-        for ((_, at), name) in boundary.iter().zip(&names) {
-            let (id, _) = ids.draw(&scratch);
-            frag.push(edit::placed(RecordKind::Port, *at, Orient::R0, name, &id));
-        }
-        // A clipboard fragment is a `.shcomp` with one schematic impl: the new cell's file.
-        let text = crate::clip::encode(&frag).replacen(
-            "impl clipboard schematic",
-            "impl sch schematic",
-            1,
-        );
-        let parsed = match schemify_format::parse(text.as_bytes()) {
-            Ok(d) => schemify_format::write(&d),
-            Err(e) => {
-                self.session.status = format!("new cell: {:?}", e.diagnostics.first());
-                return;
-            }
-        };
-        if let Err(e) = platform::write_atomic(&file, parsed.as_bytes()) {
-            self.session.status = e;
-            return;
-        }
-        self.session.reindex(&file);
-        self.symbols = scene::Symbols::default();
-        self.symbols_key = None;
-        self.invalidate_cells();
-        // The replacement here: an instance of the new cell where the selection was.
-        let Some(doc) = self.session.project.doc(h) else {
-            return;
-        };
-        let centroid = self.selection_pivot();
-        let mut ops = edit::delete(doc, &sel);
-        let mut ids = Ids::new(&mut self.rng);
-        let prefix = "X";
-        let name = edit::unique_name(doc, prefix, &mut Default::default());
-        let (id, _) = ids.draw(doc);
-        ops.push(Op::Insert {
-            rec: edit::instance(&format!("./{sub_stem}"), centroid, Orient::R0, &name, &id),
-            at: None,
-        });
-        // Labels at the boundary points keep the outside nets named; the instance's pins get
-        // the same names through labels placed on them.
-        let sub_pins: Vec<(String, Pt)> = sub_pins
-            .into_iter()
-            .map(|(n, p)| (n, crate::geometry::place(Orient::R0, centroid, p)))
-            .collect();
-        for ((_, at), net) in boundary.iter().zip(&names) {
-            let (id, _) = ids.draw(doc);
-            ops.push(Op::Insert {
-                rec: edit::placed(RecordKind::Label, *at, Orient::R0, net, &id),
-                at: None,
-            });
-            if let Some((_, q)) = sub_pins.iter().find(|p| p.0 == *net) {
-                let (id, _) = ids.draw(doc);
-                ops.push(Op::Insert {
-                    rec: edit::placed(RecordKind::Label, *q, Orient::R0, net, &id),
-                    at: None,
-                });
-            }
-        }
-        self.commit(reqs, h, "make subcircuit", ops);
-        self.set_selection(Vec::new());
-        self.session.status = format!(
-            "new cell {} with {} port(s)",
-            file.display(),
-            boundary.len()
-        );
     }
 
     /// Local names of the highlighted nets at the active level.
@@ -2623,6 +2529,7 @@ impl Editor {
     /// Overlay additions of the parity options: crosshair, snap cursor, grid axes and the
     /// preview of a shape tool in progress.
     pub(super) fn parity_overlay(&self, o: &mut CanvasPrims) {
+        self.gesture_overlay(o);
         let v = self.canvas_rect();
         let cam = self.camera();
         let w = self.view_world_rect();
@@ -2984,7 +2891,7 @@ fn overlapped(doc: &schemify_doc::Document) -> Vec<ObjKey> {
 /// on the right, each side top to bottom in the ports' (y, x) order, one per name), then the
 /// graphics (a box `width` wide, pin leads, pin names, the `{name}` text). Empty when there
 /// are no ports.
-fn symbol_records(ports: &[(String, Orient, Pt)], width: i32) -> Vec<RecordBuf> {
+pub(super) fn symbol_records(ports: &[(String, Orient, Pt)], width: i32) -> Vec<RecordBuf> {
     let mut order: Vec<usize> = (0..ports.len()).collect();
     order.sort_by_key(|&i| (ports[i].2.1, ports[i].2.0));
     let mut left: Vec<&str> = Vec::new();

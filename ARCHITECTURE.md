@@ -110,7 +110,7 @@ Each spine lives in `app` as one function, one line per transform. Branches that
 | scene, ui_layout | render, ui | per frame | — | per frame | frame |
 | commands | app | registration (core enum + plugin rows) | dispatch, JSON-RPC, keymap | 2^12 | session |
 | tabs (level stacks: doc, view, camera, selection) | app | dispatch (open, descend, return) | frame spine | 64 tabs × 40 levels | session |
-| selection | app | gestures, dispatch | edits, marks, plugin `Selection` snapshot | 2^22 keys | per hierarchy level |
+| selection (+ partial wire ends, `Level::ends`) | app | gestures, dispatch | edits, marks, plugin `Selection` snapshot | 2^22 keys | per hierarchy level |
 | tool_state | app | gestures, dispatch | overlay, status line | 1 row | session |
 | recent files | app | opens, Save As (`recent`) | File menu, Open Most Recent | 10 paths | user state dir |
 | highlight (net keys), decor prims | app | `k`/`Shift+K`; `checks::decor` | render canvas | 2^16 keys; per scene | session / scene |

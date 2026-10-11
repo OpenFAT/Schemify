@@ -80,6 +80,7 @@ schemify.pack.add {{
             grid: 25_500,
             show_grid: false,
             light: true,
+            ..Opts::default()
         },
         keymaps: Keymaps {
             chord: vec!["Ctrl+S".into(), "F5".into()],
@@ -146,6 +147,56 @@ fn options_read_back_and_defaults_hold() {
     let (clean, out) = Config::load(&Startup::Clean);
     assert!(out.is_empty() && clean.root().is_none());
     assert_eq!(clean.table(), &Table::default());
+}
+
+/// The canvas options (`layer_colors`, `dim`, `line_width`) read back what was set, in the
+/// table's units; every value outside its domain is an error that sets nothing.
+#[test]
+fn canvas_options_set_read_back_and_reject_bad_values() {
+    let (cfg, out) = run(concat!(
+        "schemify.opt.layer_colors = { [4] = 'ff8000', [1] = '#00CCFF', [21] = '000001' }\n",
+        "schemify.opt.dim = 0.25\n",
+        "schemify.opt.line_width = 1.5\n",
+        "local c = schemify.opt.layer_colors\n",
+        "assert(c[4] == 'ff8000' and c[1] == '00ccff' and c[21] == '000001' and c[0] == nil)\n",
+        "assert(schemify.opt.dim == 0.25 and schemify.opt.line_width == 1.5)\n",
+        "c[5] = '123456' -- a copy: sets nothing\n",
+    ));
+    assert!(out.is_empty(), "{out:?}");
+    let o = cfg.table().opts;
+    let mut want = [None; schemify_config::USER_LAYERS];
+    want[1] = Some(0x00cc_ff);
+    want[4] = Some(0xff_8000);
+    want[21] = Some(0x00_0001);
+    assert_eq!(o.layer_colors, want);
+    assert_eq!((o.dim, o.line_width_tenths), (25, 15));
+    // Defaults: no colour, no dimming, one pixel.
+    let d = Opts::default();
+    assert_eq!(
+        (d.layer_colors, d.dim, d.line_width_tenths),
+        ([None; schemify_config::USER_LAYERS], 0, 10)
+    );
+    // Negative space: each bad value is one located error, and the options keep their
+    // defaults.
+    for bad in [
+        "schemify.opt.layer_colors = { [22] = 'ff0000' }",
+        "schemify.opt.layer_colors = { [-1] = 'ff0000' }",
+        "schemify.opt.layer_colors = { [3] = 'red' }",
+        "schemify.opt.layer_colors = { [3] = 'ff00000' }",
+        "schemify.opt.layer_colors = { x = 'ff0000' }",
+        "schemify.opt.layer_colors = 'ff0000'",
+        "schemify.opt.dim = 1.5",
+        "schemify.opt.dim = -0.1",
+        "schemify.opt.dim = 'half'",
+        "schemify.opt.line_width = 0",
+        "schemify.opt.line_width = 11",
+    ] {
+        let (cfg, out) = run(bad);
+        let e = errors(&out);
+        assert_eq!(e.len(), 1, "{bad}: {out:?}");
+        assert!(e[0].contains("bad value"), "{bad}: {}", e[0]);
+        assert_eq!(cfg.table().opts, Opts::default(), "{bad}");
+    }
 }
 
 #[test]

@@ -11,10 +11,9 @@ Open items collected from workstream reports. Each item names its owner crate. R
 ## app / editor
 
 - **app**: `load_symbols` opens every instantiated cell to get its symbol; the library index now keeps rank 2 (`Project::interface(row)` has the symbol graphics, `Project::open_handle(row)` says whether the cell is open), so the editor can draw instances from the index. `scene::diff` (a positional scan per edit) can take the changed records from `apply_edits_report` instead.
-- Editor gaps vs xschem (after the parity pass, `tests/parity.rs`): partial wire selection (xschem's Ctrl+drag box selects only the inside ends of crossing wires; here a stretch follows wire ends on moved connection points); vertex editing of a selected wire/line/polygon/rect corner; symbol `stext` orientation (only schematic `text` records turn); recent files outside the current project do not open (one project per session); layer colors, dim and line width are not persisted (set them in `init.lua`: `schemify.opt` has no keys for them yet); the web build has no system clipboard (D2 glue) and no exports to disk (OPFS); plugin I/O capabilities fetch/clipboard in the app.
+- Editor gaps vs xschem (after the parity pass, `tests/parity.rs`; gestures in `tests/gestures.rs`): the web build has no system clipboard (D2 glue) and no exports to disk (OPFS); plugin I/O capabilities fetch/clipboard in the app; polygon vertices cannot be inserted (xschem Shift+B1) or deleted (Ctrl+B1), only dragged; a partial wire selection goes stale after its move is undone (rows keep the moved positions) and loses a wire whose stretched end turned into an L (Manhattan mode); layer colors, dim and line width changed in the editor last for the session (`init.lua` keeps them, config spec §3).
 - **Exports**: PDF/EPS embed whole UI faces (Noto Sans ~190 KB, KaTeX Main ~65 KB when used, ASCII85; twice that as EPS hex) instead of subsets of the glyphs used; their text is placed glyph by glyph (no kerning or ligatures); characters neither face has print `.notdef` (the canvas falls back to system fonts). The export page, PNG scale and package status are commands without default-UI menu rows yet (`options.export_page_size`, `options.png_export_scale`, `file.image_export.png_export_full`, `tools.package_status`).
-- **Make subcircuit** (Ctrl+Shift+H) connects the new instance by net labels at the old boundary points and on its pins (xschem rewires); the new cell's symbol is the generated box.
-- **Join/trim** does not merge diagonal wires or wires with attributes other than `bus`.
+- **Make subcircuit** (Ctrl+Shift+H): selected ports stay in the parent (they are its interface); a pin direction is inferred from the moved instance pins on the net (`out` if one drives it, `in` if all are inputs, else `inout`); where no L wire from a new pin to a cut point avoids other nets, a label pair joins them.
 
 ## user config and packages (config spec)
 
@@ -128,7 +127,7 @@ xschem menu items and keys with no meaning in Schemify, removed from the default
 - Options → No XCopyArea drawing model, Fix for GPUs with broken tiled fill, Fix broken RDP mouse coordinates, `$` / Ctrl+`$`: X11 drawing workarounds; vello draws every frame.
 - Options → Enable infix-interface, Intuitive Click & Drag interface: Schemify keeps xschem's default interaction (infix and intuitive), one gesture state machine.
 - Options → Undo buffer on Disk: undo always lives in the on-disk journal (D28).
-- Options → Unsel. partial sel. wires after stretch move: wires are selected whole; a stretch never leaves partially selected wires.
+- Options → Unsel. partial sel. wires after stretch move: partially selected wire ends stay selected after a move (xschem's default); Esc or a click elsewhere drops them.
 - Options → Variable grid point size, View → Set grid point size: the canvas draws grid dots at one size.
 - Options → Group bus slices in Verilog instances, Replace `[` and `]` for buses in SPICE netlist: netlist spellings are fixed by the dialects (D22, netlist spec §7.6).
 - Options → Netlist format → VHDL, tEDAx, Split netlist, Symbol global attrs: no such emitters or modes; SPICE/Verilog map to the dialect list (Simulation → Netlist dialect).

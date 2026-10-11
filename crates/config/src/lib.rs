@@ -25,7 +25,7 @@
 //!    [`Table`] (options, keymaps, sims, package specs, hooks) and, per Lua call, a list of
 //!    [`Request`]s (queued commands, notifications, errors).
 //! 2. One config per process. Keymaps ≤ [`KEYMAPS_MAX`], packages ≤ [`PACKS_MAX`], hooks ≤
-//!    [`HOOKS_MAX`], three sims, four options; ≤ [`REQUESTS_MAX`] requests per call.
+//!    [`HOOKS_MAX`], three sims, seven options; ≤ [`REQUESTS_MAX`] requests per call.
 //! 3. Steps are i32 milli-units (D33) in `[1, 10^9]`; a Lua function is a [`FnId`] (u16:
 //!    keymaps + hooks < 2^13); `fuel` u64 in `[10^6, 10^11]` (plugin ABI §2).
 //! 4. The binaries read the table at startup (the editor re-reads keymaps when they change);
@@ -53,6 +53,8 @@ pub const REQUESTS_MAX: usize = 256;
 pub const BUDGET: u64 = 100_000_000;
 /// Bytes the Lua state may hold (spec §4).
 pub const MEMORY_MAX: usize = 64 << 20;
+/// Canvas layers a colour can be set for (`layer_colors`, xschem's 22 `cadlayers`).
+pub const USER_LAYERS: usize = 22;
 
 /// Where the user config comes from (`--clean`, the default, `-u <file>`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -116,6 +118,14 @@ pub struct Opts {
     pub show_grid: bool,
     /// Light canvas colours.
     pub light: bool,
+    /// Canvas colour `0xRRGGBB` of each layer `[0, USER_LAYERS)` drawn over the theme's
+    /// (`layer_colors`); `None` keeps the theme's colour.
+    pub layer_colors: [Option<u32>; USER_LAYERS],
+    /// Dimming of the canvas toward its background, percent `[0, 100]` (`dim`, a factor in
+    /// `[0, 1]` in Lua).
+    pub dim: u8,
+    /// Canvas line width in tenths of a pixel `[1, 100]` (`line_width`, pixels in Lua).
+    pub line_width_tenths: u8,
 }
 
 impl Default for Opts {
@@ -125,6 +135,9 @@ impl Default for Opts {
             grid: 20_000,
             show_grid: true,
             light: false,
+            layer_colors: [None; USER_LAYERS],
+            dim: 0,
+            line_width_tenths: 10,
         }
     }
 }

@@ -5,6 +5,9 @@
 schemify.opt.snap = 5          -- snap step, schematic units
 schemify.opt.grid = 20
 schemify.opt.light = true      -- light canvas
+schemify.opt.layer_colors = { [4] = "ff8000" }  -- symbol layer orange
+schemify.opt.dim = 0.2         -- dim the canvas 20% toward its background
+schemify.opt.line_width = 1.5  -- pixels
 
 -- Keymaps: a command name or a Lua function. Last wins over the default UI (D8).
 schemify.keymap.set("Ctrl+Shift+N", "sim.netlist", { desc = "netlist the active cell" })

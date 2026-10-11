@@ -16,7 +16,7 @@ use mlua::{
 
 use crate::{
     BUDGET, Event, FnId, HOOKS_MAX, KEYMAPS_MAX, Level, MEMORY_MAX, PACKS_MAX, PackSpec,
-    REQUESTS_MAX, Request, SimKind, Source, Table, Target, error,
+    REQUESTS_MAX, Request, SimKind, Source, Table, Target, USER_LAYERS, error,
 };
 
 /// Registry table of kept functions (`FnId` n is at index n + 1).
@@ -415,8 +415,62 @@ fn get_opt(lua: &Lua, key: &str) -> mlua::Result<Value> {
         "grid" => step(o.grid),
         "show_grid" => Value::Boolean(o.show_grid),
         "light" => Value::Boolean(o.light),
+        "dim" => Value::Number(f64::from(o.dim) / 100.0),
+        "line_width" => Value::Number(f64::from(o.line_width_tenths) / 10.0),
+        // A copy: assigning to one of its entries changes nothing (spec §3).
+        "layer_colors" => {
+            let t = lua.create_table()?;
+            for (layer, c) in o.layer_colors.iter().enumerate() {
+                if let Some(rgb) = c {
+                    t.raw_set(layer, format!("{rgb:06x}"))?;
+                }
+            }
+            Value::Table(t)
+        }
         _ => return fail(lua, format!("unknown option `{key}`")),
     })
+}
+
+/// A Lua number (integer or float).
+fn number(v: &Value) -> Option<f64> {
+    match *v {
+        Value::Integer(i) => Some(i as f64),
+        Value::Number(n) if n.is_finite() => Some(n),
+        _ => None,
+    }
+}
+
+/// `{ [layer] = "rrggbb" | "#rrggbb", … }` with layers in `[0, USER_LAYERS)`; `None` for
+/// any other key, value or a table of more than [`USER_LAYERS`] entries.
+fn layer_colors(v: &Value) -> Option<[Option<u32>; USER_LAYERS]> {
+    let Value::Table(t) = v else {
+        return None;
+    };
+    let mut out = [None; USER_LAYERS];
+    let mut n = 0usize;
+    for pair in t.pairs::<Value, Value>() {
+        let (k, c) = pair.ok()?;
+        n += 1;
+        if n > USER_LAYERS {
+            return None;
+        }
+        let layer = match k {
+            Value::Integer(i) => usize::try_from(i).ok().filter(|&l| l < USER_LAYERS)?,
+            _ => return None,
+        };
+        let Value::String(c) = c else {
+            return None;
+        };
+        let text = c.to_str().ok()?;
+        let text: &str = &text;
+        let hex = text.strip_prefix('#').unwrap_or(text);
+        if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        out[layer] = Some(u32::from_str_radix(hex, 16).ok()?);
+    }
+    assert!(n <= USER_LAYERS);
+    Some(out)
 }
 
 fn set_opt(lua: &Lua, key: &str, v: Value) -> mlua::Result<()> {
@@ -438,6 +492,14 @@ fn set_opt(lua: &Lua, key: &str, v: Value) -> mlua::Result<()> {
         "grid" => step(&v).map(|s| with(lua, |st| st.table.opts.grid = s)),
         "show_grid" => flag(&v).map(|b| with(lua, |st| st.table.opts.show_grid = b)),
         "light" => flag(&v).map(|b| with(lua, |st| st.table.opts.light = b)),
+        "dim" => number(&v)
+            .filter(|f| (0.0..=1.0).contains(f))
+            .map(|f| with(lua, |st| st.table.opts.dim = (f * 100.0).round() as u8)),
+        "line_width" => number(&v).filter(|w| (0.1..=10.0).contains(w)).map(|w| {
+            let tenths = (w * 10.0).round().clamp(1.0, 100.0) as u8;
+            with(lua, |st| st.table.opts.line_width_tenths = tenths)
+        }),
+        "layer_colors" => layer_colors(&v).map(|c| with(lua, |st| st.table.opts.layer_colors = c)),
         _ => return fail(lua, format!("unknown option `{key}`")),
     };
     match set {
