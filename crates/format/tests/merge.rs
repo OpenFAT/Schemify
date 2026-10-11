@@ -710,7 +710,11 @@ fn an_added_id_duplicated_in_theirs_is_re_ided_once() {
     assert_eq!(m.conflicts, 0, "{}", m.text);
     let merged = p(&m.text);
     assert_eq!(merged.record_count(), 4);
-    assert_eq!(merged.warnings().len(), 1, "theirs' two records share the new id");
+    assert_eq!(
+        merged.warnings().len(),
+        1,
+        "theirs' two records share the new id"
+    );
     assert!(m.text.contains("wire 0abc 0 0 1 0\n"), "{}", m.text);
     assert!(!m.text.contains("label 0abc"), "{}", m.text);
 }
