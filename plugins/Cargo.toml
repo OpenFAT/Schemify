@@ -17,16 +17,16 @@ rust-version = "1.95"
 [workspace.dependencies]
 schemify-abi = { path = "../crates/abi", features = ["guest"] }
 
-# The guest tests (`cktimg/tests/guest.rs`) run imports of up to 10^11 wasmi fuel, so the
-# interpreter is optimized in test builds too (the test profile inherits these).
-[profile.dev.package.wasmi]
+# `cargo test --profile fuel`: the cktimg guest test at the manifest's fuel ceiling (10^11
+# per event) needs an optimized interpreter. Everything is optimized alike: an optimized
+# wasmi under unoptimized callers overflowed the test threads' stacks.
+[profile.fuel]
+inherits = "release"
 opt-level = 3
-[profile.dev.package.wasmi_core]
-opt-level = 3
-[profile.dev.package.wasmi_ir]
-opt-level = 3
-[profile.dev.package.wasmi_collections]
-opt-level = 3
+lto = false
+codegen-units = 16
+panic = "unwind"
+strip = false
 
 # Small fixtures: size over speed, no unwinding (a panic is a trap the host reports).
 [profile.release]
