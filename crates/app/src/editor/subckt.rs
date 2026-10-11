@@ -96,7 +96,8 @@ fn crossings(doc: &Document, cell: &CellState, sel: &HashSet<ObjKey>) -> (Vec<Cr
         (TableId::Labels, doc.labels(), &n.label_net),
         (TableId::Ports, doc.ports(), &n.port_net),
     ] {
-        for r in 0..t.id.len() {
+        assert_eq!(nets.len(), t.id.len(), "elab is current for the document");
+        for (r, &c) in nets.iter().enumerate() {
             let key = ObjKey {
                 table,
                 key: t.id[r].0,
@@ -106,7 +107,7 @@ fn crossings(doc: &Document, cell: &CellState, sel: &HashSet<ObjKey>) -> (Vec<Cr
             } else {
                 &mut outside
             };
-            side.pts.push((nets[r], (t.x[r], t.y[r])));
+            side.pts.push((c, (t.x[r], t.y[r])));
         }
     }
     let nc = doc.noconns();

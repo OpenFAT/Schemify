@@ -103,7 +103,7 @@ fn text_rots(s: &Session, text: &str) -> Vec<u8> {
     let mut out = Vec::new();
     for i in 0..t.x.len() {
         let end = t.end[i] as usize;
-        if &t.text[start..end] == text {
+        if t.text[start..end] == *text {
             out.push(t.rot[i]);
         }
         start = end;
@@ -535,11 +535,11 @@ fn join_trim_merges_diagonals_and_equal_attributes_only() {
         })
         .collect::<Vec<_>>();
     assert!(
-        w.contains(&"300 0 320 20".to_owned()),
+        w.iter().any(|l| l == "300 0 320 20"),
         "diagonal merged: {w:?}"
     );
     assert!(
-        w.contains(&"300 50 320 50".to_owned()),
+        w.iter().any(|l| l == "300 50 320 50"),
         "equal attributes merged: {w:?}"
     );
     assert!(
@@ -548,12 +548,12 @@ fn join_trim_merges_diagonals_and_equal_attributes_only() {
         s.text()
     );
     assert!(
-        w.contains(&"300 80 310 80".to_owned()),
+        w.iter().any(|l| l == "300 80 310 80"),
         "bus kept apart: {w:?}"
     );
     assert!(
-        w.contains(&"310 80 320 80".to_owned()),
+        w.iter().any(|l| l == "310 80 320 80"),
         "plain kept apart: {w:?}"
     );
-    assert!(!w.contains(&"300 80 320 80".to_owned()));
+    assert!(!w.iter().any(|l| l == "300 80 320 80"));
 }
