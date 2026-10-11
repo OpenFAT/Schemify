@@ -133,6 +133,10 @@ pub struct Defs {
     pub inh_default: Vec<Name>,
     /// CSR offsets (`defs + 1`) into [`Insts`] rows.
     pub inst_start: Vec<u32>,
+    /// The [`Impls`] row holding the `body` of the cell's schematic impl (model cards
+    /// an imported `device_model` put there), or `u32::MAX` when it has none. Its
+    /// `template` is unused: the definition is emitted as a subckt, the body once.
+    pub body: Vec<u32>,
     key: Vec<String>,
     sig: Vec<String>,
 }
@@ -881,13 +885,63 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             self.impl_ids.insert((c, k), NONE);
             return None;
         }
+        if let Some(t) = template
+            && let Some(detail) = self.template_error(c, k, self.names.get(t))
+        {
+            // The netlister would write `* error in …` for every row: gate it here.
+            let (cell, imp) = (f.cell, f.impl_name[k as usize]);
+            self.viol.push(Violation {
+                code: Code::E008,
+                cell,
+                object: ObjId::NONE,
+                path: Name::NONE,
+                param: imp,
+                detail,
+            });
+        }
         let id = self.impls.cell.len() as u32;
         self.impls.cell.push(c);
         self.impls.index.push(k);
         self.impls.template.push(template.unwrap_or(Name::NONE));
-        // Body lines (rank 5) exist only in an open document.
+        self.push_body(c, k);
+        self.impl_ids.insert((c, k), id);
+        Some(id)
+    }
+
+    /// Why impl `k` of cell `c` cannot render the template `src`: its parse error, or
+    /// the first identifier that no builtin, pin or param provides, resolved as the
+    /// netlister resolves them (spec §7.6.6). `None` when every row can render.
+    fn template_error(&self, c: u32, k: u32, src: &str) -> Option<String> {
+        let tmpl = match schemify_expr::Template::parse(src) {
+            Err(err) => return Some(err.to_string()),
+            Ok(t) => t,
+        };
+        let f = &self.ifaces[c as usize];
+        let attr = |col: &[Name]| col.get(k as usize).is_some_and(|n| *n != Name::NONE);
+        let param = |id: &str| f.param_name.iter().any(|p| self.names.get(*p) == id);
+        let pin = |id: &str| {
+            f.pin_name
+                .iter()
+                .any(|p| self.names.get(*p).split('[').next() == Some(id))
+        };
+        let missing = tmpl.program().idents().find(|&id| match id {
+            "name" | "cell" | "pins" | "in_pins" | "out_pins" | "params" => false,
+            "model" => !(attr(&f.impl_model) || param(id) || pin(id)),
+            "file" => !attr(&f.impl_file),
+            _ => !(pin(id) || param(id)),
+        })?;
+        Some(format!(
+            "X004: unknown identifier `{missing}` in the template"
+        ))
+    }
+
+    /// Appends impl `k`'s `body` lines of cell `c` (rank 5, so only in an open
+    /// document) and closes the row's CSR range.
+    fn push_body(&mut self, c: u32, k: u32) {
+        assert_eq!(self.impls.body_start.len(), self.impls.cell.len());
         let doc = self.cells[c as usize].doc;
         let s = doc.strings();
+        let f = &self.ifaces[c as usize];
         let imp_text = self.names.get(f.impl_name[k as usize]).to_owned();
         let bodies = doc.bodies();
         if let Some(r) = (0..bodies.kind.len()).find(|&r| s.get(bodies.fields[r][0]) == imp_text) {
@@ -898,8 +952,33 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             }
         }
         self.impls.body_start.push(self.impls.body.len() as u32);
+        assert_eq!(self.impls.body_start.len(), self.impls.cell.len() + 1);
+    }
+
+    /// The [`Impls`] row carrying the body of cell `c`'s schematic impl, `NONE` when no
+    /// schematic impl has one (spec §7.6.8). Memoized like leaf rows.
+    fn def_body(&mut self, c: u32) -> u32 {
+        let f = &self.ifaces[c as usize];
+        let doc = self.cells[c as usize].doc;
+        let (s, bodies) = (doc.strings(), doc.bodies());
+        let k = (0..f.impl_name.len()).find(|&k| {
+            self.names.get(f.impl_lang[k]) == "schematic"
+                && (0..bodies.kind.len())
+                    .any(|r| s.get(bodies.fields[r][0]) == self.names.get(f.impl_name[k]))
+        });
+        let Some(k) = k.map(|k| k as u32) else {
+            return NONE;
+        };
+        if let Some(&id) = self.impl_ids.get(&(c, k)) {
+            return id;
+        }
+        let id = self.impls.cell.len() as u32;
+        self.impls.cell.push(c);
+        self.impls.index.push(k);
+        self.impls.template.push(Name::NONE);
+        self.push_body(c, k);
         self.impl_ids.insert((c, k), id);
-        Some(id)
+        id
     }
 
     /// Builds (or reuses) the definition of cell `ci` for own-param values `tuple` at
@@ -1229,7 +1308,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         let f = &self.ifaces[ci as usize];
         let nets = self.nets[ci as usize].as_ref().expect("prepared");
         for p in 0..f.pin_name.len() {
-            if f.pin_inherit[p] == Name::NONE {
+            if f.pin_inherit[p] == Name::NONE && f.pin_alias[p] == NONE {
                 self.defs
                     .port_net
                     .extend(nets.port(p).iter().map(|&b| nets.bit_name[b as usize]));
@@ -1277,6 +1356,8 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 &self.names,
             );
         }
+        let body = self.def_body(ci);
+        self.defs.body.push(body);
         self.defs.cell.push(ci);
         self.defs.name.push(Name::NONE);
         self.defs.key.push(key.clone());

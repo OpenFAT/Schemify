@@ -150,3 +150,35 @@ fn generated_net_names_never_merge_two_components() {
     let r2 = conn_names(&e, row(&e, top, "R2"));
     assert_eq!(r2, ["net_0aaaab_0", "net_0aaaab_1"]);
 }
+
+#[test]
+fn alias_pins_are_one_port_at_two_positions() {
+    // xschem shorts same-named pins (`short.sym`, `doublepin`): the importer writes the
+    // second as `alias`. Both positions are one node of the instance, the alias is no
+    // connection of its own, and a component's definition lists the port once.
+    let cross = "schemify 1 shcomp\n\npin A inout 0 0\npin A_2 inout 100 0\n  alias A\npin B inout 50 50\n\nimpl sch schematic\n\ninst 0r0001 ./res\n  at 0 0 R0\n  name R9\n\nport 0p0001 0 0 R0 A\nport 0p0002 0 20 R0 B\n";
+    let bench = "schemify 1 shbench\n\ninst 0c0001 ./cross\n  at 0 0 R0\n  name X1\ninst 0r0001 ./res\n  at 0 0 R0\n  name R1\ninst 0r0002 ./res\n  at 100 0 R0\n  name R2\n\nlabel 0n0001 0 20 R0 n1\nlabel 0n0002 100 20 R0 n2\nlabel 0n0003 50 50 R0 b\n";
+    let (p, hs) = project(&[
+        ("res.shprim", RES),
+        ("cross.shcomp", cross),
+        ("tb.shbench", bench),
+    ]);
+    let e = elab(&p, hs[2]);
+    let (r1, r2) = (
+        conn_names(&e, row(&e, e.top, "R1")),
+        conn_names(&e, row(&e, e.top, "R2")),
+    );
+    assert_eq!(r1[0], r2[0], "both positions of A are one net");
+    assert_ne!(r1[1], r2[1]);
+    let x1 = row(&e, e.top, "X1");
+    assert_eq!(conn_names(&e, x1), [r1[0].clone(), "b".to_owned()]);
+    let schemify_elab::Target::Def(d) = e.insts.target[x1] else {
+        panic!("cross is a definition")
+    };
+    assert_eq!(e.ports(d).len(), 2, "A once, B");
+    assert!(
+        e.violations.with(Code::E012).next().is_none(),
+        "an alias pin needs no port: {:?}",
+        codes(&e)
+    );
+}

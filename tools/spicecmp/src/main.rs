@@ -1,11 +1,13 @@
-//! `spicecmp [--alias FROM=TO]... [--quiet] A B` — semantic netlist diff.
+//! `spicecmp [--alias FROM=TO]... [--bind-free] [--quiet] A B` — semantic netlist diff
+//! (`--bind-free`: `Options::bind_free`, A is the reference).
 //! Exit 0: equivalent; 1: different; 2: usage or I/O error.
 
 use std::process::ExitCode;
 
 use schemify_spicecmp::{Options, compare};
 
-const USAGE: &str = "usage: spicecmp [--alias FROM=TO]... [--quiet] <a.spice> <b.spice>";
+const USAGE: &str =
+    "usage: spicecmp [--alias FROM=TO]... [--bind-free] [--quiet] <reference.spice> <b.spice>";
 
 fn main() -> ExitCode {
     let mut opts = Options::default();
@@ -15,6 +17,7 @@ fn main() -> ExitCode {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--quiet" | "-q" => quiet = true,
+            "--bind-free" => opts.bind_free = true,
             "--alias" => match args.next().as_deref().and_then(|a| a.split_once('=')) {
                 Some((from, to)) => opts.path_aliases.push((from.to_string(), to.to_string())),
                 None => return usage("--alias needs FROM=TO"),

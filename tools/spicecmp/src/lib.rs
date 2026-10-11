@@ -15,22 +15,29 @@
 //! 4. **Includes** — `.include` / `.lib` lines, paths compared verbatim
 //!    after [`Options::path_aliases`].
 //! 5. **Directives** — every other dot-card, case-folded, whitespace-collapsed.
+//!    `.save` vectors are a set; with matching connectivity a saved net or
+//!    device is spelled by its final colour, once per expansion of its subckt.
 //! 6. **Control** — `.control` blocks as opaque text (line order kept, block
 //!    order ignored).
 //!
 //! Numbers compare after evaluation (SI suffixes, arithmetic over params in
-//! scope) rounded to 10 significant digits; expressions that do not evaluate
-//! compare as case-folded text without whitespace.
+//! scope) rounded to 10 significant digits; an expression that does not
+//! evaluate compares as canonical text (numbers canonical, params in scope
+//! replaced by their values, whitespace dropped). Control nodes of B/E/G
+//! sources (`v(a,b)` arguments, the nodes after `poly(N)`/`pwl(N)`/`and(N)`…)
+//! and extra bare nodes of CDL R/C/D lines are terminals.
 //!
 //! Known blind spots: 1-WL cannot tell apart some highly regular graphs
-//! (e.g. two disjoint triangles vs one hexagon of identical devices); B-source
-//! expressions and F/H/K references keep net/instance names as text.
+//! (e.g. two disjoint triangles vs one hexagon of identical devices, or a save
+//! of one of two automorphic nets); F/H/K references keep instance names as
+//! text.
 //!
 //! Data: per side, one flat SoA device table (signature hash, CSR terminal →
 //! net ids `u32`) and a net table; lifetime is one `compare` call.
 
 #![forbid(unsafe_code)]
 
+mod bind;
 mod eval;
 mod flat;
 mod parse;
@@ -46,6 +53,14 @@ pub struct Options {
     /// parsing, so absolute paths from different checkouts compare equal
     /// (e.g. `("/home/ci/corpus/.cache", "$CORPUS")`).
     pub path_aliases: Vec<(String, String)>,
+    /// Treats names the first netlist (the reference) uses but never defines
+    /// with a top-level `.param` as free parameters, bound to the values the
+    /// second netlist uses (its same-named `.param`, else the same-named
+    /// device's value in the same slot), then compares everything under that
+    /// binding; `b`'s `.param`s of bound names leave the Params section.
+    /// Off for the oracle: a pair equal only with it on means "the reference
+    /// leaves these parameters unevaluated", reported apart from agreement.
+    pub bind_free: bool,
 }
 
 /// Which equivalence section a difference belongs to.
@@ -89,6 +104,9 @@ pub struct Report {
     pub devices: [usize; 2],
     /// Flat net counts `[a, b]`.
     pub nets: [usize; 2],
+    /// With [`Options::bind_free`]: the values assumed for `a`'s free names,
+    /// `name=value` sorted by name; empty otherwise.
+    pub bindings: Vec<String>,
 }
 
 impl Report {
@@ -109,11 +127,28 @@ const SHOWN_MAX: usize = 25;
 pub fn compare(a: &str, b: &str, opts: &Options) -> Report {
     let (a, b) = (alias(a, opts), alias(b, opts));
     let (na, nb) = (parse::parse(&a), parse::parse(&b));
-    let (fa, fb) = (flat::flatten(&na), flat::flatten(&nb));
+    let (mut fa, mut fb) = (flat::flatten(&na, &[]), flat::flatten(&nb, &[]));
+    let mut bound = Vec::new();
+    if opts.bind_free {
+        bound = bind::infer(&na, &fa, &fb);
+        if !bound.is_empty() {
+            fa = flat::flatten(&na, &bound);
+            fb.params.retain(|p| {
+                p.split_once('=')
+                    .is_none_or(|(k, _)| bound.iter().all(|(n, _)| n != k))
+            });
+        }
+    }
+    let mut bindings: Vec<String> = bound
+        .iter()
+        .map(|(k, v)| format!("{k}={}", eval::canon_number(*v)))
+        .collect();
+    bindings.sort();
 
     let mut report = Report {
         devices: [fa.dev_sig.len(), fb.dev_sig.len()],
         nets: [fa.net_name.len(), fb.net_name.len()],
+        bindings,
         ..Report::default()
     };
     for (side, nl, f) in [("a", &na, &fa), ("b", &nb, &fb)] {
@@ -124,7 +159,18 @@ pub fn compare(a: &str, b: &str, opts: &Options) -> Report {
                 .map(|w| format!("{side}: {w}")),
         );
     }
-    connectivity(&fa, &fb, &mut report.diffs);
+    let colours = connectivity(&fa, &fb, &mut report.diffs);
+    let (mut da, mut db) = (na.directives.clone(), nb.directives.clone());
+    match &colours {
+        Some([(dca, nca), (dcb, ncb)]) => {
+            da.extend(saves(&na, &fa, Some((dca, nca))));
+            db.extend(saves(&nb, &fb, Some((dcb, ncb))));
+        }
+        None => {
+            da.extend(saves(&na, &fa, None));
+            db.extend(saves(&nb, &fb, None));
+        }
+    }
     multiset(Section::Params, &fa.params, &fb.params, &mut report.diffs);
     multiset(Section::Models, &fa.models, &fb.models, &mut report.diffs);
     multiset(
@@ -133,12 +179,7 @@ pub fn compare(a: &str, b: &str, opts: &Options) -> Report {
         &nb.includes,
         &mut report.diffs,
     );
-    multiset(
-        Section::Directives,
-        &na.directives,
-        &nb.directives,
-        &mut report.diffs,
-    );
+    multiset(Section::Directives, &da, &db, &mut report.diffs);
     multiset(
         Section::Control,
         &na.controls,
@@ -146,6 +187,33 @@ pub fn compare(a: &str, b: &str, opts: &Options) -> Report {
         &mut report.diffs,
     );
     report
+}
+
+/// `.save` directives as a set. With the final WL colours (connectivity
+/// matched), every vector naming nets or devices is spelled by their colours,
+/// once per expansion of its scope: names of unanchored nets do not matter
+/// there either, and a save inside a subckt is the same save whatever the
+/// subckt is called or however its instances are split between definitions.
+/// Without colours, or for vectors naming nothing, `scope: .save vector` text.
+fn saves(nl: &parse::Netlist, f: &Flat, colours: Option<(&Vec<u64>, &Vec<u64>)>) -> Vec<String> {
+    let dev_index: std::collections::HashMap<&str, u32> = f
+        .dev_name
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.as_str(), i as u32))
+        .collect();
+    let mut out = Vec::with_capacity(nl.saves.len());
+    for (scope, vector) in &nl.saves {
+        let resolved = colours.and_then(|(d, n)| f.save_vectors(scope, vector, &dev_index, d, n));
+        match resolved {
+            Some(list) => out.extend(list.into_iter().map(|v| format!(".save {v}"))),
+            None if scope.is_empty() => out.push(format!(".save {vector}")),
+            None => out.push(format!("{scope}: .save {vector}")),
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 fn alias(text: &str, opts: &Options) -> String {
@@ -315,10 +383,14 @@ fn unmatched(a: &[u64], b: &[u64]) -> (Vec<usize>, Vec<usize>) {
     (oa, ob)
 }
 
+/// Final colours `(devices, nets)` of both sides, when they match.
+type Colours = [(Vec<u64>, Vec<u64>); 2];
+
 /// Runs WL on both graphs in lockstep and reports the devices that differ
 /// at the first round where the colour multisets diverge: round 0 means
-/// signatures (params/models), later rounds mean wiring.
-fn connectivity(fa: &Flat, fb: &Flat, diffs: &mut Vec<Diff>) {
+/// signatures (params/models), later rounds mean wiring. Returns the stable
+/// colours when nothing differs.
+fn connectivity(fa: &Flat, fb: &Flat, diffs: &mut Vec<Diff>) -> Option<Colours> {
     let (ia, ib) = (incidence(fa), incidence(fb));
     let (mut da, mut na) = (fa.dev_sig.clone(), fa.net_anchor.clone());
     let (mut db, mut nb) = (fb.dev_sig.clone(), fb.net_anchor.clone());
@@ -329,7 +401,7 @@ fn connectivity(fa: &Flat, fb: &Flat, diffs: &mut Vec<Diff>) {
         let (oa, ob) = unmatched(&da, &db);
         if !oa.is_empty() || !ob.is_empty() {
             report_devices(fa, fb, &oa, &ob, round, diffs);
-            return;
+            return None;
         }
         (da, na) = refine(fa, &ia, &da, &na);
         (db, nb) = refine(fb, &ib, &db, &nb);
@@ -342,9 +414,12 @@ fn connectivity(fa: &Flat, fb: &Flat, diffs: &mut Vec<Diff>) {
         let (oa, ob) = unmatched(&da, &db);
         if !oa.is_empty() || !ob.is_empty() {
             report_devices(fa, fb, &oa, &ob, round + 1, diffs);
-            return;
+            return None;
         }
         let (ona, onb) = unmatched(&na, &nb);
+        if ona.is_empty() && onb.is_empty() {
+            return Some([(da, na), (db, nb)]);
+        }
         let list = |f: &Flat, ids: &[usize], sign: char| -> Vec<String> {
             ids.iter()
                 .map(|&n| format!("{sign} net {}", f.net_name[n]))
@@ -352,12 +427,13 @@ fn connectivity(fa: &Flat, fb: &Flat, diffs: &mut Vec<Diff>) {
         };
         push_capped(Section::Connectivity, list(fa, &ona, '-'), diffs);
         push_capped(Section::Connectivity, list(fb, &onb, '+'), diffs);
-        return;
+        return None;
     }
     debug_assert!(
         false,
         "WL refinement must stabilize within {rounds_max} rounds"
     );
+    None
 }
 
 fn report_devices(
@@ -446,6 +522,9 @@ impl fmt::Display for Report {
                 last = Some(d.section);
             }
             writeln!(f, "  {}", d.text)?;
+        }
+        if !self.bindings.is_empty() {
+            writeln!(f, "assuming {}", self.bindings.join(" "))?;
         }
         for w in &self.warnings {
             writeln!(f, "warning: {w}")?;

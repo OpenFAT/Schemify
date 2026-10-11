@@ -316,11 +316,12 @@ fn inherited_connections_resolve_up_the_path() {
     assert_eq!(ports, ["A", "Y", "VDD", "VSS"]);
     assert_eq!(
         conn_names(&e, row(&e, d, "I1")),
-        ["A", "net_0j0001", "VDD", "gnd_local"]
+        // A net of instance pins only is `net_<inst id>_<pin index>` (spec §3).
+        ["A", "net_0j0001_1", "VDD", "gnd_local"]
     );
     assert_eq!(
         conn_names(&e, row(&e, d, "I2")),
-        ["net_0j0001", "Y", "VDD", "VSS"]
+        ["net_0j0001_1", "Y", "VDD", "VSS"]
     );
     let globals: Vec<&str> = e.globals.iter().map(|n| e.names.get(*n)).collect();
     assert_eq!(globals, ["0", "vdd!"]);

@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use crate::eval::{canon_number, eval, strip_quotes};
+use crate::eval::{Sub, canon_number, canon_text, eval};
 use crate::parse::{Body, Inst, Netlist};
 
 /// Hierarchy depth beyond which expansion stops (recursive definitions).
@@ -35,7 +35,19 @@ pub(crate) struct Flat {
     /// `.model` cards, canonical text.
     pub models: Vec<String>,
     pub warnings: Vec<String>,
+    /// One row per body expansion, in expansion order (cold; resolves `.save`).
+    pub expansions: Vec<Expansion>,
     net_index: HashMap<String, u32>,
+}
+
+/// One expansion of a body: the top level, a root subckt or one subckt call.
+pub(crate) struct Expansion {
+    /// Defining subckt name, `""` for the top level.
+    pub scope: String,
+    /// Flat name prefix of the body's local nets and devices (`x1.`, `cell/`).
+    pub prefix: String,
+    /// Local port name → net id it is bound to.
+    pub ports: HashMap<String, u32>,
 }
 
 #[derive(Clone)]
@@ -52,8 +64,9 @@ pub(crate) fn hash_str(s: &str) -> u64 {
     h.finish()
 }
 
-/// Flattens `nl`. Cost: O(flat devices × params); bounded by `DEVICES_MAX`.
-pub(crate) fn flatten(nl: &Netlist) -> Flat {
+/// Flattens `nl`, with `bound` names defined ahead of its top-level `.param`s
+/// (see `bind`). Cost: O(flat devices × params); bounded by `DEVICES_MAX`.
+pub(crate) fn flatten(nl: &Netlist, bound: &[(String, f64)]) -> Flat {
     let mut flat = Flat {
         term_start: vec![0],
         ..Flat::default()
@@ -68,8 +81,12 @@ pub(crate) fn flatten(nl: &Netlist) -> Flat {
         }
     }
     let globals: HashSet<&str> = nl.globals.iter().map(String::as_str).collect();
-    let mut top = Scope::new();
-    eval_into(&mut top, &nl.top.params, &Scope::new());
+    let base: Scope = bound
+        .iter()
+        .map(|(k, v)| (k.clone(), Val::Num(*v)))
+        .collect();
+    let mut top = base.clone();
+    eval_into(&mut top, &nl.top.params, &base);
     let ctx = Ctx {
         nl,
         subckts: &subckts,
@@ -106,7 +123,7 @@ pub(crate) fn flatten(nl: &Netlist) -> Flat {
     }
 
     if !nl.top.insts.is_empty() {
-        expand(&ctx, &mut flat, &nl.top, "", &HashMap::new(), &top, 0);
+        expand(&ctx, &mut flat, "", &nl.top, "", &HashMap::new(), &top, 0);
     }
     let called: HashSet<&str> = std::iter::once(&nl.top)
         .chain(nl.subckts.iter().map(|s| &s.body))
@@ -128,6 +145,7 @@ pub(crate) fn flatten(nl: &Netlist) -> Flat {
         expand(
             &ctx,
             &mut flat,
+            &s.name,
             &s.body,
             &format!("{}/", s.name),
             &ports,
@@ -182,9 +200,69 @@ impl Flat {
     }
 }
 
+impl Flat {
+    /// The `.save` vector `vector` written in `scope`, once per expansion of
+    /// that scope, with each net or device it names replaced by its colour
+    /// (`v(#…)`, `i(#…)`, `@#…[param]`). `None` when the scope is never
+    /// expanded or a name resolves to no net or device in some expansion: the
+    /// caller then compares the vector as text.
+    pub(crate) fn save_vectors(
+        &self,
+        scope: &str,
+        vector: &str,
+        dev_index: &HashMap<&str, u32>,
+        dev_colour: &[u64],
+        net_colour: &[u64],
+    ) -> Option<Vec<String>> {
+        debug_assert_eq!(dev_colour.len(), self.dev_sig.len());
+        debug_assert_eq!(net_colour.len(), self.net_name.len());
+        let net = |e: &Expansion, node: &str| -> Option<u64> {
+            let node = if node == "gnd" { "0" } else { node };
+            let id = e.ports.get(node).copied().or_else(|| {
+                let local = self.net_index.get(&format!("{}{node}", e.prefix)).copied();
+                let global = || {
+                    let id = *self.net_index.get(node)?;
+                    (self.net_anchor[id as usize] == hash_str(&format!("global:{node}")))
+                        .then_some(id)
+                };
+                local.or_else(global)
+            })?;
+            Some(net_colour[id as usize])
+        };
+        let dev = |e: &Expansion, name: &str| -> Option<u64> {
+            let id = *dev_index.get(format!("{}{name}", e.prefix).as_str())?;
+            Some(dev_colour[id as usize])
+        };
+        let mut out = Vec::new();
+        for e in self.expansions.iter().filter(|e| e.scope == scope) {
+            let text = if let Some(rest) = vector.strip_prefix('@') {
+                let (name, param) = rest.split_at(rest.find('[')?);
+                format!("@#{:016x}{param}", dev(e, name)?)
+            } else {
+                let (f, args) = vector.split_once('(')?;
+                let args = args.strip_suffix(')')?;
+                let mut colours = Vec::new();
+                for a in args.split(',') {
+                    colours.push(match f.as_bytes().first() {
+                        Some(b'v') => net(e, a)?,
+                        Some(b'i') => dev(e, a)?,
+                        _ => return None,
+                    });
+                }
+                let list: Vec<String> = colours.iter().map(|c| format!("#{c:016x}")).collect();
+                format!("{f}({})", list.join(","))
+            };
+            out.push(text);
+        }
+        (!out.is_empty()).then_some(out)
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // the recursion's whole state, all read-only but `flat`
 fn expand(
     ctx: &Ctx,
     flat: &mut Flat,
+    scope_name: &str,
     body: &Body,
     prefix: &str,
     ports: &HashMap<String, u32>,
@@ -197,6 +275,11 @@ fn expand(
             .values()
             .all(|&id| (id as usize) < flat.net_name.len())
     );
+    flat.expansions.push(Expansion {
+        scope: scope_name.to_string(),
+        prefix: prefix.to_string(),
+        ports: ports.clone(),
+    });
     let mut scope = parent.clone();
     eval_into(&mut scope, &body.params, parent);
     for inst in &body.insts {
@@ -242,6 +325,7 @@ fn expand(
                 expand(
                     ctx,
                     flat,
+                    &s.name,
                     &s.body,
                     &format!("{prefix}{}.", inst.name),
                     &child_ports,
@@ -326,9 +410,16 @@ fn eval_into(out: &mut Scope, pairs: &[(String, String)], base: &Scope) {
     for ((k, raw), v) in pairs.iter().zip(got) {
         let val = match v {
             Some(x) => Val::Num(x),
-            None => Val::Text(norm_text(raw)),
+            None => Val::Text(canon_text(raw, &|n: &str| sub(base.get(n)))),
         };
         out.insert(k.clone(), val);
+    }
+}
+
+fn sub(v: Option<&Val>) -> Option<Sub<'_>> {
+    match v? {
+        Val::Num(x) => Some(Sub::Num(*x)),
+        Val::Text(t) => Some(Sub::Text(t)),
     }
 }
 
@@ -357,15 +448,9 @@ fn canon_value(raw: &str, scope: &Scope) -> String {
     {
         return format!("{k}={}", canon_value(v, scope));
     }
-    match eval(raw, &|n: &str| num(scope.get(n))) {
+    let lookup = |n: &str| num(scope.get(n));
+    match eval(raw, &lookup) {
         Some(x) => canon_number(x),
-        None => norm_text(raw),
+        None => canon_text(raw, &|n: &str| sub(scope.get(n))),
     }
-}
-
-fn norm_text(raw: &str) -> String {
-    strip_quotes(raw.trim())
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect()
 }

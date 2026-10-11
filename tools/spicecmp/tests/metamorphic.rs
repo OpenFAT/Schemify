@@ -476,6 +476,7 @@ fn hand_cases() {
             ("/home/ci".into(), "$R".into()),
             ("/tmp/x".into(), "$R".into()),
         ],
+        ..Options::default()
     };
     assert!(
         compare(
@@ -493,6 +494,113 @@ fn hand_cases() {
         )
         .is_equal()
     );
+}
+
+/// Equivalences added for the xschem differential (each with its negative):
+/// `.save` vectors are a set and spacing inside `v( x )` is not significant;
+/// parameter names inside unevaluable expressions read as their values in
+/// scope; `bind_free` binds the reference's undefined names consistently.
+#[test]
+fn save_sets_expression_params_and_free_bindings() {
+    let opts = Options::default();
+    let eq = |a: &str, b: &str| compare(a, b, &opts).is_equal();
+    // `.save`: ngspice saves the union of every `.save` line's vectors.
+    assert!(eq(".save v( b1 )\n", ".save v(b1)\n"));
+    assert!(eq(
+        ".save v(a) v(b)\n",
+        ".save v(b)\n.save v(a)\n.save v(a)\n"
+    ));
+    assert!(!eq(".save v(a)\n", ".save v(b)\n"));
+    assert!(!eq(".save v(a) v(b)\n", ".save v(a)\n"));
+    assert!(!eq(".save v(a,b)\n", ".save v(a)\n"));
+    // Once connectivity matches, saved nets and devices are compared by
+    // their place in the graph: unnamed nets, and saves in a subckt whose
+    // instances are split over two specialized definitions.
+    let named = "R1 a 0 1k\nR2 a b 2k\n.save v(a) i(r2)\n";
+    assert!(eq(
+        named,
+        "R7 x 0 1k\nR8 x net_9 2k\n.save i(r8)\n.save v(x)\n"
+    ));
+    assert!(!eq(
+        named,
+        "R7 x 0 1k\nR8 x net_9 2k\n.save v(net_9) i(r8)\n"
+    ));
+    assert!(!eq(named, "R7 x 0 1k\nR8 x net_9 2k\n.save v(x) i(r7)\n"));
+    let passed = ".subckt inv y a r=1\nR1 y a 'r'\nV1 a 0 0\n.save i(v1)\n.ends\nX1 n1 n2 inv\nX2 n3 n4 inv r=2\n";
+    let split = ".subckt inv y a\nR1 y a 1\nV1 a 0 0\n.save i(v1)\n.ends\n.subckt inv__h y a\nR1 y a 2\nV1 a 0 0\n.save i(v1)\n.ends\nX1 n1 n2 inv\nX2 n3 n4 inv__h\n";
+    assert!(eq(passed, split));
+    assert!(!eq(passed, &split.replacen(".save i(v1)\n", "", 1)));
+    // Control nodes of B/E/G sources are terminals: renaming an unnamed one
+    // is fine, pointing it at another net is not.
+    let b = "B1 o 0 v='v(a)*2'\nR1 a 0 1k\nR2 o 0 2k\n";
+    assert!(eq(b, "B9 x 0 V = 'V( n ) * 2'\nR1 n 0 1k\nR2 x 0 2k\n"));
+    assert!(!eq(b, "B9 x 0 v='v(x)*2'\nR1 n 0 1k\nR2 x 0 2k\n"));
+    let e = "E1 o 0 pwl(1) a 0 0 0 1 1\nR1 a 0 1k\nR2 o 0 2k\n";
+    assert!(eq(e, "E1 x 0 pwl(1) n 0 0 0 1 1\nR1 n 0 1k\nR2 x 0 2k\n"));
+    assert!(!eq(e, "E1 x 0 pwl(1) x 0 0 0 1 1\nR1 n 0 1k\nR2 x 0 2k\n"));
+    let gate = "E2 o 0 and(2) a 0 b 0 0 0 1 1\nR1 a 0 1k\nR2 b 0 2k\nR3 o 0 3k\n";
+    assert!(eq(
+        gate,
+        "E2 o 0 and(2) n1 0 n2 0 0 0 1 1\nR1 n1 0 1k\nR2 n2 0 2k\nR3 o 0 3k\n"
+    ));
+    assert!(!eq(
+        gate,
+        "E2 o 0 and(2) n2 0 n1 0 0 0 1 1\nR1 n1 0 1k\nR2 n2 0 2k\nR3 o 0 3k\n"
+    ));
+    // A node named like a gate is still a node.
+    assert!(!eq(
+        "E1 o 0 orx 0 2\nR1 orx 0 1\n",
+        "E1 o 0 0 orx 2\nR1 orx 0 1\n"
+    ));
+    // CDL multi-terminal C/D: extra bare names before the model are terminals.
+    let var = "C1 a b n3 sub! cvar w=1\nR1 n3 0 1k\nR2 a 0 2k\n";
+    assert!(eq(var, "C9 a b x7 sub! cvar w=1\nR1 x7 0 1k\nR2 a 0 2k\n"));
+    assert!(!eq(var, "C9 a b a sub! cvar w=1\nR1 x7 0 1k\nR2 a 0 2k\n"));
+    assert!(
+        !eq("R1 a b rout\n", "R1 a b rmod\n"),
+        "one trailing name is the model"
+    );
+    // Params in scope inside a behavioural expression (passed vs specialized).
+    let passed_b = ".subckt d p m ron=0.1 roff=1e9\nB1 p m i='v(p,m)>0?v(p,m)/ron:v(p,m)/roff'\n.ends\nX1 a 0 d\n";
+    let special = ".subckt d__x p m\nB1 p m I = 'v( p , m ) > 0 ? v(p,m) / 0.1 : v(p,m) / 1G'\n.ends\nX1 a 0 d__x\n";
+    assert!(eq(passed_b, special));
+    assert!(!eq(passed_b, &special.replace("/ 0.1", "/ 0.2")));
+    // A node named like a param is a node, not the param.
+    assert!(!eq(
+        ".subckt d p ron ron=1\nB1 p 0 v=v(ron)\n.ends\nX1 a b d\n",
+        ".subckt d p ron\nB1 p 0 v=v(1)\n.ends\nX1 a b d\n",
+    ));
+    // Free names of the reference: bound only with the option, consistently.
+    let free = "M1 d g 0 0 n w=wp l=lp\nR1 d 0 'res/2'\n";
+    let ours = "M1 d g 0 0 n w=1u l=0.15u\nR1 d 0 5k\n";
+    assert!(!eq(free, ours));
+    let bind = Options {
+        bind_free: true,
+        ..Options::default()
+    };
+    let r = compare(free, ours, &bind);
+    assert!(r.is_equal(), "{r}");
+    assert_eq!(r.bindings, ["lp=1.5e-7", "res=1e4", "wp=1e-6"]);
+    // A free name passed down a hierarchy (`WP=WP_FB`) binds at the top.
+    let passed_free = ".subckt inv a y wp=1u\nM1 y a 0 0 p w=wp\n.ends\nX1 n1 n2 inv wp=wp_fb\n";
+    let r = compare(
+        passed_free,
+        ".subckt inv a y\nM1 y a 0 0 p w=2u\n.ends\nX1 n1 n2 inv\n",
+        &bind,
+    );
+    assert!(r.is_equal(), "{r}");
+    assert_eq!(r.bindings, ["wp_fb=2e-6"]);
+    // One name, two values: no assignment makes them equal.
+    let twice = "M1 d g 0 0 n w=wp\nM2 d g 0 0 n w=wp\n";
+    let differ = "M1 d g 0 0 n w=1u\nM2 d g 0 0 n w=2u\n";
+    assert!(!compare(twice, differ, &bind).is_equal());
+    // A name the reference defines is never rebound.
+    assert!(!compare(&format!(".param wp=2u\n{twice}"), differ, &bind).is_equal());
+    // Wiring still counts, and the other side's `.param` binds and is excused.
+    assert!(!compare(free, "M1 g d 0 0 n w=1u l=0.15u\nR1 d 0 5k\n", &bind).is_equal());
+    let with_param = ".param wp=1u lp=0.15u res=10k\nM1 d g 0 0 n w=1u l=0.15u\nR1 d 0 5k\n";
+    assert!(compare(free, with_param, &bind).is_equal());
+    assert!(!compare(free, &with_param.replace("res=10k", "res=10k x=1"), &bind).is_equal());
 }
 
 /// Real-data metamorphic check over the xschem goldens: shuffling statements

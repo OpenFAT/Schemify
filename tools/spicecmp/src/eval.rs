@@ -54,6 +54,196 @@ pub(crate) fn canon_number(x: f64) -> String {
     format!("{rounded:e}")
 }
 
+/// One lexeme of an expression that does not evaluate as a whole.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Lex<'a> {
+    /// A number literal (SI suffix applied).
+    Num(f64),
+    /// An identifier that can name a parameter: not a function name and not a
+    /// node or device name inside `v(…)` / `i(…)`.
+    Name(&'a str),
+    /// Anything else, verbatim: punctuation, `"…"` strings, function names,
+    /// the arguments of `v(…)` / `i(…)`, and one `" "` between two words.
+    Text(&'a str),
+}
+
+/// Splits `s` into lexemes, dropping whitespace except one `" "` between two
+/// adjacent words (identifiers or numbers), so spacing never matters but
+/// `a b` and `ab` stay different.
+pub(crate) fn lex(s: &str) -> Vec<Lex<'_>> {
+    let b = s.as_bytes();
+    let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'.';
+    let mut out: Vec<Lex> = Vec::new();
+    // Paren depth inside `v(…)` / `i(…)`: names there are nodes, never params.
+    let mut node_depth = 0u32;
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c.is_ascii_whitespace() {
+            while i < b.len() && b[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            let after_word = matches!(out.last(), Some(Lex::Num(_) | Lex::Name(_)))
+                || matches!(out.last(), Some(Lex::Text(t)) if t.bytes().last().is_some_and(is_word));
+            if after_word && i < b.len() && is_word(b[i]) {
+                out.push(Lex::Text(" "));
+            }
+            continue;
+        }
+        if c == b'"' {
+            let end = s[i + 1..].find('"').map_or(b.len(), |k| i + k + 2);
+            out.push(Lex::Text(&s[i..end]));
+            i = end;
+            continue;
+        }
+        if node_depth > 0 {
+            match c {
+                b'(' => node_depth += 1,
+                b')' => node_depth -= 1,
+                _ => {}
+            }
+            let start = i;
+            i += 1;
+            while i < b.len() && is_word(b[i]) && is_word(b[start]) {
+                i += 1;
+            }
+            out.push(Lex::Text(&s[start..i]));
+            continue;
+        }
+        if c.is_ascii_digit() || (c == b'.' && b.get(i + 1).is_some_and(u8::is_ascii_digit)) {
+            let mut lx = Lexer { s: b, pos: i };
+            if let Some(v) = lx.number() {
+                out.push(Lex::Num(v));
+                i = lx.pos;
+                continue;
+            }
+        }
+        if c.is_ascii_alphabetic() || c == b'_' {
+            let start = i;
+            while i < b.len() && is_word(b[i]) {
+                i += 1;
+            }
+            let name = &s[start..i];
+            let mut j = i;
+            while j < b.len() && b[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if b.get(j) == Some(&b'(') {
+                if name.eq_ignore_ascii_case("v") || name.eq_ignore_ascii_case("i") {
+                    out.push(Lex::Text(name));
+                    out.push(Lex::Text("("));
+                    node_depth = 1;
+                    i = j + 1;
+                } else {
+                    out.push(Lex::Text(name));
+                }
+            } else {
+                out.push(Lex::Name(name));
+            }
+            continue;
+        }
+        let len = s[i..].chars().next().map_or(1, char::len_utf8);
+        out.push(Lex::Text(&s[i..i + len]));
+        i += len;
+    }
+    out
+}
+
+/// Canonical text of an expression that does not evaluate as a whole (B/E/G
+/// source specs, `pwl` points, text-valued params): one level of outer quotes
+/// removed, numbers in [`canon_number`] form, parameter names that `lookup`
+/// resolves replaced by their value, whitespace dropped (see [`lex`]).
+///
+/// Why: SPICE evaluates a parameter name inside such an expression in the
+/// instance's scope, so `v(a)/ron` with `ron=0.1` in scope *is* `v(a)/0.1`;
+/// a netlist that passes parameters (xschem) and one that specializes them
+/// (Schemify) then compare equal, while any different value still differs.
+pub(crate) fn canon_text<'s>(raw: &str, lookup: &impl Fn(&str) -> Option<Sub<'s>>) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let l = lex(strip_quotes(raw.trim()));
+    for (i, x) in l.iter().enumerate() {
+        match *x {
+            Lex::Num(x) => out.push_str(&canon_number(x)),
+            // `k=` names a key (`m=1` after a B expression), never a value.
+            Lex::Name(n) if is_key(&l, i) => out.push_str(n),
+            Lex::Name(n) => match lookup(n) {
+                Some(Sub::Num(x)) => out.push_str(&canon_number(x)),
+                // A param whose value is itself text (`VTH=VTH` passed down from an
+                // undefined name): its text, so the name it stands for shows.
+                Some(Sub::Text(t)) if matches!(lex(t)[..], [Lex::Name(_)]) => out.push_str(t),
+                Some(Sub::Text(t)) => {
+                    out.push('(');
+                    out.push_str(t);
+                    out.push(')');
+                }
+                None => out.push_str(n),
+            },
+            Lex::Text(t) => out.push_str(t),
+        }
+    }
+    out
+}
+
+/// What a parameter name stands for in [`canon_text`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Sub<'s> {
+    /// An evaluated value.
+    Num(f64),
+    /// Canonical text of a value that does not evaluate.
+    Text(&'s str),
+}
+
+/// Whether lexeme `i` is followed by a single `=` (an assignment, not `==`).
+pub(crate) fn is_key(l: &[Lex], i: usize) -> bool {
+    l.get(i + 1) == Some(&Lex::Text("=")) && l.get(i + 2) != Some(&Lex::Text("="))
+}
+
+/// Replaces the node list of every `v(…)` in `s` by `#` per node, appending
+/// the node names (trimmed) to `nodes` in order of appearance. `"…"` strings
+/// are copied verbatim; `i(…)` (device names) is left alone.
+pub(crate) fn take_v_nodes(s: &str, nodes: &mut Vec<String>) -> String {
+    let b = s.as_bytes();
+    let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'.';
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'"' {
+            let end = s[i + 1..].find('"').map_or(b.len(), |k| i + k + 2);
+            out.push_str(&s[i..end]);
+            i = end;
+            continue;
+        }
+        if (c == b'v' || c == b'V') && (i == 0 || !is_word(b[i - 1])) {
+            let mut j = i + 1;
+            while j < b.len() && b[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            let close = (b.get(j) == Some(&b'('))
+                .then(|| s[j + 1..].find(')'))
+                .flatten();
+            if let Some(k) = close {
+                let args = &s[j + 1..j + 1 + k];
+                out.push_str("v(");
+                for (n, a) in args.split(',').enumerate() {
+                    if n > 0 {
+                        out.push(',');
+                    }
+                    nodes.push(a.trim().to_string());
+                    out.push('#');
+                }
+                out.push(')');
+                i = j + k + 2;
+                continue;
+            }
+        }
+        let len = s[i..].chars().next().map_or(1, char::len_utf8);
+        out.push_str(&s[i..i + len]);
+        i += len;
+    }
+    out
+}
+
 /// Removes one level of `'…'` or `{…}` quoting.
 pub(crate) fn strip_quotes(s: &str) -> &str {
     let b = s.as_bytes();

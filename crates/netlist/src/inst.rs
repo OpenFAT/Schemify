@@ -88,6 +88,60 @@ pub(crate) struct Plan {
     /// The model name for default templates: `model` attr, else the `model` param,
     /// else the cell stem.
     model: Src,
+    /// Per pin of the cell: written inside an XSPICE port vector (`[ … ]` of the
+    /// template, or the default `verilog` template's `[{in_pins}] [{out_pins}]`).
+    pub(crate) vector: Vec<bool>,
+}
+
+impl Plan {
+    /// `(first bit, bits)` of pin `p` in a row's connections.
+    pub(crate) fn slot(&self, p: usize) -> (u32, u32) {
+        self.slots[p]
+    }
+}
+
+/// Which pins of `f` the template `src` writes inside `[ … ]` (outside holes): a hole
+/// naming a pin marks it, `pins` marks every pin, `in_pins`/`out_pins` the `in` pins /
+/// the others. Same lexical rules as `Template::parse` (`{{`/`}}` literal, a hole ends
+/// at the first `}`).
+fn vector_pins(src: &str, f: &schemify_elab::Iface, names: &schemify_elab::Names) -> Vec<bool> {
+    let n = f.pin_name.len();
+    let mut out = vec![false; n];
+    let is_in = |p: usize| f.pin_dir[p] == PinDir::In && f.pin_inherit[p] == Name::NONE;
+    let b = src.as_bytes();
+    let (mut i, mut depth) = (0usize, 0u32);
+    while i < b.len() {
+        match (b[i], b.get(i + 1)) {
+            (b'{', Some(b'{')) | (b'}', Some(b'}')) => i += 2,
+            (b'{', _) => {
+                let end = src[i..].find('}').map_or(b.len(), |k| i + k);
+                let id = src[i + 1..end].trim();
+                if depth > 0 {
+                    for p in 0..n {
+                        let named = names.get(f.pin_name[p]).split('[').next() == Some(id);
+                        out[p] |= match id {
+                            "pins" => true,
+                            "in_pins" => is_in(p),
+                            "out_pins" => !is_in(p),
+                            _ => named,
+                        };
+                    }
+                }
+                i = end + 1;
+            }
+            (b'[', _) => {
+                depth += 1;
+                i += 1;
+            }
+            (b']', _) => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    assert_eq!(out.len(), n);
+    out
 }
 
 /// Plans for every leaf impl row and every reached cell's schematic impl.
@@ -127,6 +181,14 @@ impl Plans {
             .collect();
         assert_eq!(def.len(), e.cells.len());
         Plans { leaf, def }
+    }
+
+    /// The plan that writes instance row `r`.
+    pub(crate) fn of_row(&self, e: &Elab, r: usize) -> &Plan {
+        match e.insts.target[r] {
+            Target::Def(c) => &self.def[e.defs.cell[c as usize] as usize],
+            Target::Leaf(l) => &self.leaf[l as usize],
+        }
     }
 }
 
@@ -205,11 +267,17 @@ fn plan(e: &Elab, c: u32, k: u32, template: Name) -> Plan {
         }
     };
     assert_eq!(slots.len(), f.pin_name.len());
+    let vector = match (&form, lang) {
+        (Form::Default, Lang::Verilog) => vector_pins("[{in_pins}] [{out_pins}]", f, names),
+        (Form::Template { .. }, _) => vector_pins(names.get(template), f, names),
+        _ => vec![false; f.pin_name.len()],
+    };
     Plan {
         lang,
         form,
         slots,
         model,
+        vector,
     }
 }
 
@@ -509,8 +577,8 @@ fn dir_nets<'n, F: Fn(Name) -> &'n str>(out: &mut String, row: &Row<'_, F>, inpu
     let start = out.len();
     for p in 0..f.pin_name.len() {
         let is_in = f.pin_dir[p] == PinDir::In && f.pin_inherit[p] == Name::NONE;
-        if is_in != inputs {
-            continue;
+        if is_in != inputs || f.pin_alias[p] != u32::MAX {
+            continue; // an alias pin is its target's connection, listed once
         }
         let (a, w) = row.plan.slots[p];
         let bits = conn.get(a as usize..(a + w) as usize).unwrap_or(&[]);
@@ -586,7 +654,8 @@ fn default_line<'n, F: Fn(Name) -> &'n str>(
         (Lang::Verilog, Dialect::Verilog) => {
             model(out);
             let f = &e.cells[cell_of(row)];
-            let ordinary = (0..f.pin_name.len()).filter(|&p| f.pin_inherit[p] == Name::NONE);
+            let ordinary = (0..f.pin_name.len())
+                .filter(|&p| f.pin_inherit[p] == Name::NONE && f.pin_alias[p] == u32::MAX);
             let inherited = (0..f.pin_name.len()).filter(|&p| f.pin_inherit[p] != Name::NONE);
             let bits = ordinary
                 .chain(inherited)
