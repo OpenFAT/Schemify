@@ -165,9 +165,9 @@ fn canvas_options_set_read_back_and_reject_bad_values() {
     assert!(out.is_empty(), "{out:?}");
     let o = cfg.table().opts;
     let mut want = [None; schemify_config::USER_LAYERS];
-    want[1] = Some(0x00cc_ff);
-    want[4] = Some(0xff_8000);
-    want[21] = Some(0x00_0001);
+    want[1] = Some(0x0000_ccff);
+    want[4] = Some(0x00ff_8000);
+    want[21] = Some(0x0000_0001);
     assert_eq!(o.layer_colors, want);
     assert_eq!((o.dim, o.line_width_tenths), (25, 15));
     // Defaults: no colour, no dimming, one pixel.

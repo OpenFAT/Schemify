@@ -206,7 +206,7 @@ pub(super) fn user_layer_colors(o: &schemify_config::Opts) -> Vec<(u8, u32)> {
         .enumerate()
         .filter_map(|(l, c)| c.map(|rgb| (l as u8, rgb)))
         .collect();
-    assert!(out.iter().all(|c| c.0 < USER_LAYERS && c.1 <= 0xff_ffff));
+    assert!(out.iter().all(|c| c.0 < USER_LAYERS && c.1 <= 0x00ff_ffff));
     out
 }
 
