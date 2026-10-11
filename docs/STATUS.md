@@ -33,11 +33,21 @@ Where the project stands. Update this file whenever a workstream lands or stops.
 | Nix | `flake.nix`: `nix run` (wrapped editor, 23.0 MiB stripped/LTO/panic=abort, D39 ≤ 25 MB), `nix run .#devicereader`, `nix develop` (toolchain, simulators, xschem, GUI libs) |
 | CI (D32, D37) | `.github/workflows/`: `ci.yml` (merge tier: fmt/clippy/tests on Linux, macOS, Windows; wasm32 web build + bundle + headless-Chrome smoke test; WASI CLI; byte-identical CLI outputs across the four; Nix plugin build with size limits; `nix flake check` + `nix build`), `nightly.yml` (xschem goldens + differential ratchet against `RATCHET.md`, cargo-fuzz on the four harnesses, perf tests + 10% regression gate on `tests/perf/baseline.txt`), `mutants.yml` (weekly), `release.yml` (tag `v*`: three native archives + web bundle on a draft release with the checklist). Toolchain pinned to 1.95.0 (= MSRV = flake.lock rustc). Details: TESTING.md § Tiers |
 
-## In flight (resumed 2026-10-10)
+## In flight (2026-10-11): every gap in BACKLOG.md has an owner; PR agents build only in CI
 
 | Workstream | Branch | Scope |
 |---|---|---|
-| Performance (D39 frames) | `worktree-agent-a5a13d952a4c2592a` | world-space scene + camera transform, tile culling/LOD, incremental connectivity and checks, flat 1M netlist |
+| Performance (local) | `pr/perf-*` | merge of main, tiles + LOD (p99 ≤ 2 ms), app-side edit cost ≤ 0.5 ms, render text cache / exit hook |
+| Incremental elab (local) | `pr/elab-incremental` | per-net connectivity + checks (≤ 0.5 ms/edit), flat 1M netlist ≤ 0.5 s, elab correctness + xschem bus broadcast |
+| web (PR) | `pr/*` | OPFS, Lua on the web, clipboard/exports, web runner, CPU render fallback |
+| api (PR) | `pr/*` | JSON-RPC (D27), plugin `eval`, plugin events on a worker, plugin correctness |
+| netlist (PR) | `pr/*` | D17 code in `.shcomp`, import/netlist corpus gaps, spicecmp, Verilog oracle |
+| editor (PR) | `pr/*` | ui widgets, edit gestures, exports, make-subcircuit, join/trim, packages view |
+| run (PR) | `pr/*` | MC seeds, Verilog-A/Verilog bodies, optimizer corners, results table, staged edits |
+| docs (PR) | `pr/*` | plot overlays, write-back, prose, incremental cell state, gmid-lut |
+| waves (PR) | `pr/*` | cursors, digital/bus, histogram, properties, FFT axis |
+| core (PR) | `pr/*` | doc/expr API requests, merge checks, reproducible plugins, fuzz corpora, coverage, sky130 oracle, release |
+| cktimg (PR) | `pr/*` + upstream PRs | cktImg patches upstream, block geometry, XSPICE cards, one cell per event |
 
 ## Next
 
