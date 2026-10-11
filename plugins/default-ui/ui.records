@@ -189,6 +189,118 @@ style docs-plot
   pad-y 6
   gap 4
 
+style docs-graph
+  height 170
+
+style docs-staged-bar
+  dir row
+  gap 6
+  pad 6
+  pad-y 4
+  bg e6ffe6
+  border 1
+  border-color 40a040
+
+style docs-staged
+  fg 107010
+  font 13
+
+style bottom
+  dir column
+
+style bottom-pane
+  bg f4f4f4
+  dir column
+  height 150
+  border 1
+  border-color a0a0a0
+
+style bottom-bar
+  bg e0e0e0
+  dir row
+  height 26
+  pad 3
+  gap 4
+
+style bottom-title
+  grow 1
+  pad 4
+
+style bottom-list
+  grow 1
+  dir column
+  pad 6
+  pad-y 4
+  gap 1
+
+style check-error
+  fg b00000
+  height 18
+  hover-bg ffe0e0
+
+style check-warning
+  fg 905000
+  height 18
+  hover-bg fff0d0
+
+style check-info
+  fg 305080
+  height 18
+
+style results-row
+  dir row
+  gap 2
+  height 18
+
+style results-key
+  width 50
+  fg 404040
+
+style results-wide
+  width 260
+  fg 202020
+
+style results-cell
+  width 90
+
+style results-pass
+  width 90
+  fg 007000
+
+style results-fail
+  width 90
+  fg c00000
+
+style results-dim
+  width 90
+  fg 909090
+
+style results-yield
+  fg 1a3a8a
+
+style results-pick
+  width 50
+  height 16
+  pad 2
+  bg e8e8e8
+
+style results-pick-sel
+  width 50
+  height 16
+  pad 2
+  bg 90ee90
+
+style text-view
+  grow 1
+  dir column
+  bg ffffff
+  pad 12
+  pad-y 8
+
+style text-view-body
+  font 13
+  fg 202020
+
 style text_area
   bg ffffff
   border 1
@@ -406,6 +518,14 @@ node edit.redo item
   label Redo
   command edit.redo
   accel Shift+U
+node edit.accept_staged item
+  parent menu.edit
+  label "Accept staged edit"
+  command edit.accept_staged
+node edit.reject_staged item
+  parent menu.edit
+  label "Reject staged edit"
+  command edit.reject_staged
 node edit.copy item
   parent menu.edit
   label Copy
@@ -1266,6 +1386,76 @@ node highlight.enable_highlight_connected_instances item
 node menu.simulation menu
   parent menubar
   label Simulation
+node sim.netlist item
+  parent menu.simulation
+  label "Netlist"
+  command sim.netlist
+  accel N
+node sim.netlist_top_only item
+  parent menu.simulation
+  label "Netlist this level"
+  command sim.netlist_top_only
+  accel Shift+N
+node sim.simulate item
+  parent menu.simulation
+  label "Simulate"
+  command sim.simulate
+  accel S
+node sim.cancel item
+  parent menu.simulation
+  label "Cancel simulation"
+  command sim.cancel
+node sim.optimize item
+  parent menu.simulation
+  label "Optimize"
+  command sim.optimize
+node sim.new_bench item
+  parent menu.simulation
+  label "New bench from this component"
+  command sim.new_bench
+node view.results item
+  parent menu.simulation
+  label "Results table"
+  command view.results
+node view.checks item
+  parent menu.simulation
+  label "Checks panel"
+  command view.checks
+node menu.simulation.dialect menu
+  parent menu.simulation
+  label "Netlist dialect"
+node sim.dialect.ngspice item
+  parent menu.simulation.dialect
+  label ngspice
+  command sim.dialect
+  checked 1
+  style radio
+node sim.dialect.xyce item
+  parent menu.simulation.dialect
+  label Xyce
+  command sim.dialect
+  checked 0
+  style radio
+node sim.dialect.cdl item
+  parent menu.simulation.dialect
+  label CDL
+  command sim.dialect
+  checked 0
+  style radio
+node sim.dialect.spectre item
+  parent menu.simulation.dialect
+  label Spectre
+  command sim.dialect
+  checked 0
+  style radio
+node sim.dialect.verilog item
+  parent menu.simulation.dialect
+  label Verilog
+  command sim.dialect
+  checked 0
+  style radio
+node menu.simulation.sep0 separator
+  parent menu.simulation
 node simulation.set_netlist_dir item
   parent menu.simulation
   label "Set netlist Dir"
@@ -1458,6 +1648,7 @@ node waves.op_annotate item
   parent menu.waves
   label "Op Annotate"
   command waves.op_annotate
+  checked 1
 node waves.op item
   parent menu.waves
   label Op
@@ -1663,6 +1854,11 @@ node docs.close button
 node docs.page scroll
   parent docs.pane
   style docs-page
+
+# The app puts the checks panel (`view.checks`) or the results table (`view.results`) here.
+node bottom panel
+  parent window
+  style bottom
 
 # --- status bar (SNAP / GRID / MODE as in xschem) ---------------------------------------------------
 

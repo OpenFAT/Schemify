@@ -93,6 +93,7 @@ fn var_edit_with_1k_dependents_through_the_docs_page() {
         no_default_ui: false,
         path: Some(dir.join("big.shcomp")),
         seed: 1,
+        ..Default::default()
     })
     .unwrap();
     let mut s = common::Session { ed, now: 1, dir };
@@ -134,6 +135,7 @@ fn hundred_k_objects_open_build_pan_edit() {
         no_default_ui: false,
         path: Some(dir.join("big.shcomp")),
         seed: 1,
+        ..Default::default()
     })
     .unwrap();
     ed.update(&InputEvents::default(), VIEW, 0);

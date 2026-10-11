@@ -10,13 +10,17 @@
 //! app::load_symbols(active doc)                        → open symbol cells (I/O)
 //! elab::CellState::recompute(doc, ops, plugin fns)     → values (D19; incremental per edit)
 //! docs::cache_ops(values) → doc::apply_edits           → D20 `cached` write-back, same undo
+//! elab::apply_annotations(checks, op)                  → annotations (replace per source)
+//! run::poll(jobs) → results; optimizer ask/tell        → results table, plots, staged edit
 //! ui::compose(base, plugin sets, state + docs page)    → ui_nodes; ui::layout → ui_layout
 //! scene::build(doc, symbols)                           → canvas prims, objects (on change)
-//! render::draw_ui / draw_canvas                        → scene (in `paint`)
+//! checks::decor(scene, violations, highlight, annots)  → decor prims (on change)
+//! render::draw_ui / draw_canvas / waves::draw_pane     → scene (in `paint`)
 //! ```
 //!
-//! Event-driven: `update` runs only when the window delivers input, and does nothing that
-//! is not caused by it (D39 idle CPU 0%).
+//! Event-driven: `update` runs when the window delivers input, or on a tick the editor asked
+//! for through [`Editor::wake_ms`] while a simulation, a plugin's child process or a plugin
+//! timer is pending; with nothing pending it asks for none (D39 idle CPU 0%).
 //!
 //! Tables owned here (single owner): `selection` (per hierarchy level, in `session`),
 //! `tool_state` ([`Tool`]), `edit options` ([`EditOpts`]), the dialog state, the clipboard,
@@ -29,7 +33,7 @@ use schemify_doc::{
     DocHandle, Document, Edit, EditRequest, External, Mode, Op, Outcome, RecordBuf, TableId,
     Transaction, apply_edits, ops_from_text,
 };
-use schemify_elab::CellState;
+use schemify_elab::{Annotations, CellState, Dialect};
 use schemify_expr::Value;
 use schemify_format::{FileKind, IdRng, Orient, RecordKind};
 use schemify_plugin::abi::Event;
@@ -41,6 +45,7 @@ use schemify_ui::{
     Button, CommandRequests, InputEvent, InputEvents, Layer, Mods, Routed, route_input,
 };
 
+use crate::checks::Members;
 use crate::commands::{Cmd, Commands, Target};
 use crate::docs::{self, Page};
 use crate::edit::{self, Ids};
@@ -50,7 +55,13 @@ use crate::plugins::{self, Host};
 use crate::scene::{self, LAYER_SEL, ObjKey, Scene, Symbols, UNIT};
 use crate::session::{Session, View};
 use crate::shell::Shell;
-use crate::waves::WavesView;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::sim::Sim;
+use crate::spines;
+use crate::waves::{Shifted, WavesView};
+
+mod integrate;
+use integrate::text_tab_cmd;
 
 /// Pointer travel (logical px) before a press becomes a drag (xschem: 8 px).
 const DRAG_PX: f32 = 8.0;
@@ -64,6 +75,21 @@ const ZOOM_STEP: f64 = 1.2;
 const CHOOSER_ROWS: usize = 24;
 /// Edit requests one frame may carry.
 const REQUESTS_MAX: usize = 1 << 10;
+/// Share of the window height the editor keeps while the waves dock is open.
+const DOCK_SPLIT: f32 = 0.6;
+/// Netlist lines a text tab shows (the prose widget's source cap); the file has them all.
+const TEXT_TAB_LINES: usize = 1 << 14;
+
+/// Which panel the `bottom` container shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Panel {
+    /// None.
+    None,
+    /// The checks panel (violations of the active level, refused netlists and runs).
+    Checks,
+    /// The results table of the last run.
+    Results,
+}
 
 /// Startup options.
 #[derive(Clone, Debug, Default)]
@@ -74,6 +100,10 @@ pub struct Options {
     pub path: Option<PathBuf>,
     /// Id-generation seed (tests pin it; the binary uses OS entropy).
     pub seed: u64,
+    /// The simulator command line (`None`: the user config's, by default
+    /// `ngspice -b -r {raw} {netlist}`, D7/D15). Tests pass a fake simulator.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub sim: Option<schemify_run::SimCommand>,
 }
 
 /// Interaction options (xschem Options/View state).
@@ -318,6 +348,59 @@ pub struct Editor {
     amending: Option<Vec<Op>>,
     /// An undo or redo ran this frame: cache writes wait (a commit would clear redo).
     undid: bool,
+    /// The annotation overlay (owner: `elab`, written through `Annotations::apply`): sources
+    /// `checks` (live violations) and `op` (OP back-annotation).
+    annotations: Annotations,
+    /// Highlighted nets, keyed across the hierarchy (emitted names, else level paths);
+    /// sorted, ≤ `checks::HIGHLIGHT_MAX`.
+    highlight: Vec<String>,
+    /// What the highlight covers at the active level (rebuilt with the decor).
+    hl: Members,
+    /// (document, fingerprint) of the violations last posted to the overlay.
+    checks_key: Option<(Option<DocHandle>, u64)>,
+    /// Decor primitives: highlight, violation markers, annotation texts, staged diff.
+    decor: CanvasPrims,
+    decor_scratch: CanvasScratch,
+    decor_dirty: bool,
+    /// Name map of the active tab's top cell (ngspice, default request), for hierarchy-wide
+    /// net keys, cross-probe names and OP targets: (top document, edit generation, map).
+    hier: Option<(DocHandle, u32, schemify_netlist::NameMap)>,
+    /// The panel under the work area.
+    panel: Panel,
+    /// Blocking violation lines of the last refused netlist or run (checks panel).
+    blocked: Vec<String>,
+    /// Netlist dialect of `n` / `Shift+N` (D22).
+    dialect: Dialect,
+    /// Open the netlist in a text tab after netlisting (xschem `Shift+A`).
+    show_netlist: bool,
+    /// OP back-annotation shown.
+    op_on: bool,
+    /// The selected job whose OP marks the overlay holds.
+    op_job: Option<(u32, u32)>,
+    /// The run state (D15–D18).
+    #[cfg(not(target_arch = "wasm32"))]
+    sim: Sim,
+    /// `(graph node id, plot expression)` of the docs page's filled plot slots.
+    graphs: Vec<(String, String)>,
+    /// The process environment (netlists, design hash).
+    env: Vec<(String, String)>,
+    /// The clock of the last update.
+    now: u64,
+    /// Objects the active document's staged edit changes (visual diff) and its key.
+    diff: Vec<ObjKey>,
+    diff_key: Option<(DocHandle, u32)>,
+    /// Keyboard input goes to the waves dock (the pointer is over it).
+    dock_focus: bool,
+    /// The active document's first staged edit: its label and the document with it applied.
+    staged: Option<(String, Document)>,
+    /// Embedded graph chrome and buffers (docs plot slots).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    plot_look: schemify_render::waves::WaveLook,
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    plot_scratch: schemify_render::waves::WaveScratch,
+    /// The bench whose saved results were looked up (once per activation).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    results_for: Option<DocHandle>,
 }
 
 impl std::fmt::Debug for Editor {
@@ -393,6 +476,32 @@ impl Editor {
             amend: None,
             amending: None,
             undid: false,
+            annotations: Annotations::default(),
+            highlight: Vec::new(),
+            hl: Members::default(),
+            checks_key: None,
+            decor: CanvasPrims::default(),
+            decor_scratch: CanvasScratch::default(),
+            decor_dirty: true,
+            hier: None,
+            panel: Panel::None,
+            blocked: Vec::new(),
+            dialect: Dialect::Ngspice,
+            show_netlist: true,
+            op_on: true,
+            op_job: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            sim: Sim::new(opts.sim.clone()),
+            graphs: Vec::new(),
+            env: spines::env_pairs(),
+            now: 0,
+            diff: Vec::new(),
+            diff_key: None,
+            dock_focus: false,
+            staged: None,
+            plot_look: schemify_render::waves::WaveLook::default(),
+            plot_scratch: schemify_render::waves::WaveScratch::default(),
+            results_for: None,
         };
         let opened = match &path {
             Some(p) if !platform::is_dir(p) => Some(ed.session.open_path(p)?),
@@ -497,21 +606,91 @@ impl Editor {
         self.quit
     }
 
+    /// The annotation overlay (sources `checks` and `op`).
+    pub fn annotations(&self) -> &Annotations {
+        &self.annotations
+    }
+
+    /// What the highlight covers at the active level (wires, labels, ports, instance pins).
+    pub fn highlighted(&self) -> &Members {
+        &self.hl
+    }
+
+    /// The highlighted net keys (emitted hierarchical names, lowercase for SPICE).
+    pub fn highlight_keys(&self) -> &[String] {
+        &self.highlight
+    }
+
+    /// The decor primitives drawn over the scene (highlight, markers, annotations, diff).
+    pub fn decor(&self) -> &CanvasPrims {
+        &self.decor
+    }
+
+    /// The panel under the work area.
+    pub fn panel(&self) -> Panel {
+        self.panel
+    }
+
+    /// The run state.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn sim(&self) -> &Sim {
+        &self.sim
+    }
+
+    /// The source of every trace in the waves dock (empty when closed).
+    pub fn waves_traces(&self) -> Vec<String> {
+        self.waves.as_ref().map_or_else(Vec::new, |w| {
+            w.traces().iter().map(|t| (*t).to_owned()).collect()
+        })
+    }
+
+    /// The netlist dialect of `n` / `Shift+N`.
+    pub fn dialect(&self) -> Dialect {
+        self.dialect
+    }
+
+    /// Milliseconds until the editor needs [`Editor::update`] without input: a run in flight
+    /// or a plugin's child process or timer pending. `None` when nothing is pending, so the
+    /// window sleeps until input (D39 idle CPU 0%).
+    pub fn wake_ms(&self) -> Option<u32> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let sim = self.sim.wake_ms();
+        #[cfg(target_arch = "wasm32")]
+        let sim: Option<u32> = None;
+        // Events queued for plugins (a `RunDone`, a completion) are delivered on the next tick.
+        let queued = self.host.has_work().then_some(1);
+        [sim, self.host.wake_ms(self.now), queued]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
     // ------------------------------------------------------------------ the frame spine
 
     /// One frame: input in, tables updated. Returns whether the picture changed. `now_ms`
-    /// is a monotonic clock (double-click detection, waves UI).
+    /// is a monotonic clock (double-click detection, waves UI, plugin timers). An empty
+    /// `events` is a tick ([`Editor::wake_ms`]): it polls the run and plugin completions.
     pub fn update(&mut self, events: &InputEvents, viewport: (f32, f32), now_ms: u64) -> bool {
         assert!(viewport.0 >= 0.0 && viewport.1 >= 0.0, "negative viewport");
-        if let Some(w) = self.waves.as_mut() {
-            let (redraw, close) = w.update(events, viewport, now_ms);
-            if close {
-                self.waves = None;
-                self.shell.invalidate();
-            } else {
-                return redraw;
+        self.now = now_ms;
+        // 0. the waves dock: its share of the window and the input over it
+        let mut changed = false;
+        let (events, viewport) = match self.waves.is_some() {
+            true => {
+                let (mine, dock, view, dock_view) = self.split_input(events, viewport);
+                let w = self.waves.as_mut().expect("checked above");
+                let (redraw, close) = w.update(&dock, dock_view, now_ms);
+                changed |= redraw;
+                if close {
+                    self.waves = None;
+                    self.shell.invalidate();
+                    changed = true;
+                }
+                (std::borrow::Cow::Owned(mine), view)
             }
-        }
+            false => (std::borrow::Cow::Borrowed(events), viewport),
+        };
+        let events: &InputEvents = &events;
         let resized = viewport != self.viewport;
         self.viewport = viewport;
         self.compose_ui(false);
@@ -531,7 +710,7 @@ impl Editor {
             self.dialog = Dialog::None; // Escape closed it inside `ui` (cancel)
         }
         let synced = self.sync_fields();
-        let mut changed = resized || routed.redraw || routed.relayout || synced;
+        changed |= resized || routed.redraw || routed.relayout || synced;
         let mut reqs: Vec<EditRequest> = Vec::new();
         self.undid = false;
         changed |= self.sync_page(events, &routed.commands, &mut reqs);
@@ -540,8 +719,10 @@ impl Editor {
         for &ev in &routed.canvas {
             changed |= self.gesture(ev, &mut reqs, now_ms);
         }
-        // 3–4. plugin::deliver → request_queues; doc::apply_edits (twice at most, so plugins
-        // see this frame's DocChanged and their answers land in the same frame).
+        // 3–4. plugin completions (child processes, timers) → events; plugin::deliver →
+        // request_queues; doc::apply_edits (twice at most, so plugins see this frame's
+        // DocChanged and their answers land in the same frame).
+        changed |= self.host.poll(now_ms);
         for _ in 0..2 {
             changed |= self.deliver(&mut reqs);
             if reqs.is_empty() {
@@ -551,34 +732,113 @@ impl Editor {
         }
         // 5. symbols of the active document (I/O)
         self.load_symbols();
-        // 6. elab::recompute → values (D19), then the D20 cache write-back folded into the
-        //    edit's own undo entry; both before compose so page and canvas show this frame's
-        //    values.
+        // 6. elab::recompute → values and violations (D13, D19), then the D20 cache
+        //    write-back folded into the edit's own undo entry, then the `checks` source of
+        //    the annotation overlay; before compose so page, panel and canvas agree.
         if self.recompute_elab() {
             changed = true;
             changed |= self.sync_cache(&mut reqs);
+            self.post_checks();
         }
         self.amend = None;
-        // 7. ui compose + layout
+        // 7. run::poll → results; optimizer ask/tell; plugin run requests; OP annotation
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            changed |= self.step_sim(&mut reqs);
+        }
+        self.track_stage();
+        // 8. ui compose + layout
         changed |= self.compose_ui(routed.relayout);
         if let Some(id) = self.focus_next.take() {
             let s = &mut self.shell;
             let sym = s.strings.intern(&id);
             s.ui.focus_text(&s.tables, &s.layout, &s.strings, &mut s.text, sym);
         }
-        // 8. scene, overlay, marks
-        changed |= self.build_scene();
+        // 9. scene, decor, overlay, marks
+        let stale = self.build_scene();
+        changed |= stale;
+        changed |= self.build_decor(stale);
         self.build_overlay();
         self.routed = routed;
         changed
     }
 
-    /// Paints one frame: UI main layer, canvas, UI overlay (menus, dialogs).
-    pub fn paint<P: Painter>(&mut self, p: &mut P) {
-        if let Some(w) = self.waves.as_mut() {
-            w.paint(p);
-            return;
+    /// Splits one input batch between the editor (above the dock) and the waves dock
+    /// (below, in its own coordinates): pointer events by position, keys and text to the
+    /// side the pointer was last over, `Ctrl+W` always to the dock (it closes it). Returns
+    /// (editor events, dock events, editor viewport, dock viewport).
+    fn split_input(
+        &mut self,
+        events: &InputEvents,
+        viewport: (f32, f32),
+    ) -> (InputEvents, InputEvents, (f32, f32), (f32, f32)) {
+        let split = (viewport.1 * DOCK_SPLIT).floor();
+        let mut mine = InputEvents {
+            events: Vec::new(),
+            text: events.text.clone(),
+        };
+        let mut dock = InputEvents {
+            events: Vec::new(),
+            text: events.text.clone(),
+        };
+        let close = schemify_ui::Chord::new(Mods(Mods::CTRL), schemify_ui::Key('w' as u32));
+        for &e in &events.events {
+            let pointer_y = match e {
+                InputEvent::PointerMove { y, .. }
+                | InputEvent::PointerDown { y, .. }
+                | InputEvent::PointerUp { y, .. }
+                | InputEvent::Wheel { y, .. } => Some(y),
+                _ => None,
+            };
+            if let Some(y) = pointer_y {
+                self.dock_focus = y >= split;
+            }
+            let to_dock = match e {
+                InputEvent::Key { chord } if chord == close => true,
+                InputEvent::Mods { .. } | InputEvent::PointerLeave => {
+                    mine.push(e);
+                    true
+                }
+                _ => self.dock_focus,
+            };
+            if !to_dock {
+                mine.push(e);
+                continue;
+            }
+            dock.push(match e {
+                InputEvent::PointerMove { x, y } => InputEvent::PointerMove { x, y: y - split },
+                InputEvent::PointerDown { x, y, button } => InputEvent::PointerDown {
+                    x,
+                    y: y - split,
+                    button,
+                },
+                InputEvent::PointerUp { x, y, button } => InputEvent::PointerUp {
+                    x,
+                    y: y - split,
+                    button,
+                },
+                InputEvent::Wheel { x, y, dx, dy } => InputEvent::Wheel {
+                    x,
+                    y: y - split,
+                    dx,
+                    dy,
+                },
+                other => other,
+            });
         }
+        assert!(split >= 0.0 && split <= viewport.1);
+        (
+            mine,
+            dock,
+            (viewport.0, split),
+            (viewport.0, viewport.1 - split),
+        )
+    }
+
+    /// Paints one frame: UI main layer, canvas (grid, scene, decor, overlay, marks) or the
+    /// text tab, the docs page's graphs, the UI overlay (menus, dialogs), then the waves dock
+    /// below.
+    pub fn paint<P: Painter>(&mut self, p: &mut P) {
         draw_ui(
             p,
             &self.shell.tables,
@@ -590,6 +850,28 @@ impl Editor {
             &[],
             &mut self.ui_scratch,
         );
+        if self.session.text_view().is_none() {
+            self.paint_canvas(p);
+        }
+        self.paint_graphs(p);
+        draw_ui(
+            p,
+            &self.shell.tables,
+            &self.shell.layout,
+            &self.shell.strings,
+            &mut self.shell.text,
+            &self.shell.ui,
+            Layer::Overlay,
+            &[],
+            &mut self.ui_scratch,
+        );
+        let dy = f64::from(self.viewport.1);
+        if let Some(w) = self.waves.as_mut() {
+            w.paint(&mut Shifted { p, dy });
+        }
+    }
+
+    fn paint_canvas<P: Painter>(&mut self, p: &mut P) {
         let view = self.canvas_rect();
         let cam = self.camera();
         let grid = if self.opts.show_grid {
@@ -597,9 +879,9 @@ impl Editor {
         } else {
             i32::MAX / 4
         };
-        // `draw_canvas` step by step: the overlay gets its own scratch, because the shaped-label
-        // cache is keyed by one text table, and sharing it would reshape every scene label
-        // each frame (measured: 130 ms at 50k labels).
+        // `draw_canvas` step by step: the decor and the overlay get their own scratch,
+        // because the shaped-label cache is keyed by one text table, and sharing it would
+        // reshape every scene label each frame (measured: 130 ms at 50k labels).
         p.push_clip(view);
         p.fill_rect(view, schemify_render::rgba(self.palette.background));
         canvas::draw_grid(p, view, &cam, grid, &self.palette, &mut self.canvas_scratch);
@@ -617,6 +899,15 @@ impl Editor {
             p,
             view,
             &cam,
+            &self.decor,
+            palette,
+            text,
+            &mut self.decor_scratch,
+        );
+        canvas::draw_prims(
+            p,
+            view,
+            &cam,
             &self.overlay,
             palette,
             text,
@@ -624,17 +915,60 @@ impl Editor {
         );
         canvas::draw_marks(p, view, &cam, prims, &self.marks, &mut self.canvas_scratch);
         p.pop_clip();
-        draw_ui(
-            p,
-            &self.shell.tables,
-            &self.shell.layout,
-            &self.shell.strings,
-            &mut self.shell.text,
-            &self.shell.ui,
-            Layer::Overlay,
-            &[],
-            &mut self.ui_scratch,
-        );
+    }
+
+    /// Draws each filled plot slot of the docs page (`graph` nodes) as an embedded waves
+    /// pane over the selected job's results, clipped to the page.
+    fn paint_graphs<P: Painter>(&mut self, p: &mut P) {
+        #[cfg(not(target_arch = "wasm32"))]
+        for (id, expr) in &self.graphs {
+            let s = &self.shell;
+            let Some(sym) = s.strings.find(id) else {
+                continue;
+            };
+            let Some(row) = s.tables.nodes.find(sym).and_then(|n| s.layout.row_of(n)) else {
+                continue;
+            };
+            let Some(Ok(w)) = self
+                .sim
+                .plots
+                .iter()
+                .find(|x| x.expr == *expr)
+                .map(|x| &x.waves)
+            else {
+                continue;
+            };
+            let r = s.layout.rect()[row];
+            let clip = s.layout.clip()[row];
+            if r.w < 16.0 || r.h < 16.0 {
+                continue;
+            }
+            let clipped = clip != schemify_ui::NO_CLIP;
+            if clipped {
+                p.push_clip(KRect::new(
+                    f64::from(clip.x),
+                    f64::from(clip.y),
+                    f64::from(clip.x + clip.w),
+                    f64::from(clip.y + clip.h),
+                ));
+            }
+            schemify_render::waves::draw_pane(
+                p,
+                r,
+                w,
+                0,
+                false,
+                schemify_ui::waves::Drag::None,
+                &self.plot_look,
+                &mut self.shell.text,
+                &mut self.plot_scratch,
+            );
+            if clipped {
+                p.pop_clip();
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = p;
     }
 
     /// Tracks modifiers and, for keys that use the pointer as first point (xschem infix
@@ -713,6 +1047,10 @@ impl Editor {
         let Some((h, view)) = self.active() else {
             return false;
         };
+        if self.session.text_view().is_some() && !text_tab_cmd(cmd) {
+            self.session.status = "read-only text view: switch to a schematic tab".into();
+            return true;
+        }
         let ptr = self.pointer_world_snapped();
         match cmd {
             Cmd::Undo | Cmd::Redo => {
@@ -865,25 +1203,71 @@ impl Editor {
                     self.quit = true;
                 }
             }
-            Cmd::Highlight | Cmd::Unhighlight => {
-                self.session.status =
-                    "net highlight: not available yet (elab integration point)".into();
+            Cmd::Highlight | Cmd::Unhighlight | Cmd::UnhighlightSelected => {
+                self.highlight_cmd(h, cmd);
             }
-            Cmd::Netlist | Cmd::NetlistTop => {
-                self.session.status =
-                    "netlist: not available yet (elab/netlist integration point)".into();
-            }
-            Cmd::Simulate => {
-                let bench = self
-                    .session
-                    .project
-                    .doc(h)
-                    .is_some_and(|d| d.kind() == FileKind::Shbench);
-                self.session.status = if bench {
-                    "simulate: not available yet (run integration point)".into()
+            Cmd::Netlist | Cmd::NetlistTop => self.netlist(cmd == Cmd::Netlist),
+            Cmd::SetDialect => {
+                let word = if arg.is_empty() {
+                    node.rsplit('.').next().unwrap_or("")
                 } else {
-                    "simulate: only a .shbench runs (D11b)".into()
+                    arg.trim()
                 };
+                match spines::dialect_of(word) {
+                    Some(d) => {
+                        self.dialect = d;
+                        self.session.status = format!("netlist dialect: {word}");
+                    }
+                    None => self.session.status = format!("{word:?}: not a netlist dialect"),
+                }
+            }
+            Cmd::ShowNetlist => self.show_netlist = !self.show_netlist,
+            Cmd::Simulate | Cmd::Optimize => self.simulate(h, cmd == Cmd::Optimize, arg),
+            Cmd::SimCancel => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.session.status = if self.sim.cancel() {
+                        "simulation cancelled".into()
+                    } else {
+                        "nothing is running".into()
+                    };
+                }
+            }
+            Cmd::NewBench => self.new_bench(h),
+            Cmd::ChecksToggle | Cmd::ResultsToggle => {
+                let want = if cmd == Cmd::ChecksToggle {
+                    Panel::Checks
+                } else {
+                    Panel::Results
+                };
+                self.panel = if self.panel == want {
+                    Panel::None
+                } else {
+                    want
+                };
+            }
+            Cmd::ChecksPick => self.checks_pick(h, node),
+            Cmd::SendToViewer | Cmd::SendHighlighted => self.send_to_viewer(),
+            Cmd::ResultsPick | Cmd::ResultsWaves | Cmd::ResultsHistory => {
+                self.results_cmd(cmd, node);
+            }
+            Cmd::OpAnnotate => {
+                self.op_on = !self.op_on;
+                self.op_job = None;
+                self.session.status =
+                    format!("OP annotation {}", if self.op_on { "on" } else { "off" });
+            }
+            Cmd::AcceptStaged | Cmd::RejectStaged => {
+                let Some(id) = self.session.project.stages(h).first().map(|st| st.id) else {
+                    self.session.status = "no staged edit on this document".into();
+                    return true;
+                };
+                let edit = if cmd == Cmd::AcceptStaged {
+                    Edit::Accept(id)
+                } else {
+                    Edit::Reject(id)
+                };
+                push_req(reqs, h, edit);
             }
             Cmd::HalfSnap => self.opts.snap = (self.opts.snap / 2).max(1),
             Cmd::DoubleSnap => self.opts.snap = (self.opts.snap * 2).min(1000 * UNIT),
@@ -1944,6 +2328,9 @@ impl Editor {
                         });
                         self.last_click = Some((now, x, y));
                         let hit = self.hit_at((x, y));
+                        if self.waves.is_some() && view == View::Schematic && !alt && !ctrl {
+                            self.cross_probe(h, hit, w);
+                        }
                         if let Some(o) = hit.filter(|_| double) {
                             self.last_click = None;
                             let key = self.scene.objs.key[o as usize];
@@ -2258,9 +2645,20 @@ impl Editor {
             .filter(|k| !matches!(k.table, TableId::Pins | TableId::Graphics))
             .map(|k| k.key)
             .collect();
-        self.host.snapshot(&self.session.project, active, &sel);
+        #[cfg(not(target_arch = "wasm32"))]
+        let rows = self.sim.result_rows();
+        #[cfg(target_arch = "wasm32")]
+        let rows = Vec::new();
+        let cell = self
+            .cell
+            .as_ref()
+            .filter(|_| self.cell_key.is_some_and(|k| Some(k.0) == active));
+        self.host
+            .snapshot(&self.session.project, active, &sel, cell, &rows);
         let root = self.session.root.clone();
-        let d = self.host.deliver(&self.session.project, &root);
+        let d = self.host.deliver(&self.session.project, &root, self.now);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.sim.enqueue(d.runs);
         for (doc, label, text, stage) in d.edits {
             let Some(kind) = self.session.project.doc(doc).map(Document::kind) else {
                 continue;
@@ -2378,22 +2776,11 @@ impl Editor {
         let Some((h, _)) = self.active() else {
             return false;
         };
-        // Values are needed where vars are (the page, `W = W_in` labels): a cell without doc
-        // blocks shows override text as before and pays nothing.
+        // Every shown document is elaborated: its values (the page, `W = W_in` labels), its
+        // violations (the live checks, D13) and its connectivity (net highlight, probes).
         // ponytail: structural edits rebuild the whole state (elab's recompute contract), 136 ms
-        // at 100k objects; make elab's instance insert/delete incremental if docs-heavy cells
-        // get that large.
-        let has_vars = self
-            .session
-            .project
-            .doc(h)
-            .is_some_and(|d| !d.doc_blocks().kind.is_empty());
-        if !has_vars {
-            let had = self.cell.take().is_some();
-            self.cell_key = None;
-            self.cell_ops.clear();
-            return had;
-        }
+        // at 100k objects; make elab's instance insert/delete incremental if cells that large
+        // get edited structurally.
         let epoch = self.session.epoch(h);
         let fe = self.host.plugins.composed_epoch();
         let current = self.cell.is_some() && self.cell_key == Some((h, epoch, fe));
@@ -2546,7 +2933,8 @@ impl Editor {
         if let Some((h, _)) = self.active() {
             self.page.follow(h);
         }
-        let text = self.state_contribution();
+        let (text, graphs) = self.state_contribution();
+        self.graphs = graphs;
         self.shell.set_state(&text);
         let changed = self.shell.refresh(self.viewport, relayout);
         if restyle {
@@ -2691,18 +3079,25 @@ impl Editor {
         self.overlay = o;
     }
 
-    /// The state contribution: session state projected into plugin-declared nodes.
-    fn state_contribution(&self) -> String {
+    /// The state contribution: session state projected into plugin-declared nodes, and the
+    /// docs page's filled plot slots `(graph node id, expression)` for the painter.
+    fn state_contribution(&self) -> (String, Vec<(String, String)>) {
         use std::fmt::Write;
         let mut t = String::with_capacity(1024);
+        let mut graphs = Vec::new();
         let s = &self.session;
         for (i, tab) in s.tabs.iter().enumerate() {
             let l = tab.stack.last().expect("tabs are never empty");
-            let mut name = s.name(l.doc);
-            if l.view == View::Symbol && tab.stack.len() > 1 {
+            let mut name = match &tab.text {
+                Some(v) => v.title.clone(),
+                None => s.name(l.doc),
+            };
+            if tab.text.is_some() {
+                // A text tab is read-only: no symbol or dirty marks.
+            } else if l.view == View::Symbol && tab.stack.len() > 1 {
                 name.push_str(" (symbol)");
             }
-            if s.project.is_dirty(l.doc) {
+            if tab.text.is_none() && s.project.is_dirty(l.doc) {
                 name.push('*');
             }
             let checked = u8::from(i == s.active);
@@ -2764,7 +3159,20 @@ impl Editor {
                     .cell
                     .as_ref()
                     .filter(|_| self.cell_key.is_some_and(|k| k.0 == h));
-                docs::contribute(&mut t, doc, cell, &self.page);
+                #[cfg(not(target_arch = "wasm32"))]
+                let plots: Vec<(String, Option<String>)> = self
+                    .sim
+                    .plots
+                    .iter()
+                    .map(|p| (p.expr.clone(), p.waves.as_ref().err().cloned()))
+                    .collect();
+                #[cfg(target_arch = "wasm32")]
+                let plots: Vec<(String, Option<String>)> = Vec::new();
+                let extras = docs::Extras {
+                    plots: &plots,
+                    staged: self.staged.as_ref().map(|(l, d)| (l.as_str(), d)),
+                };
+                docs::contribute(&mut t, doc, cell, &self.page, extras, &mut graphs);
             }
             _ => t.push_str("remove docs.pane\n"),
         }
@@ -2812,7 +3220,8 @@ impl Editor {
                 }
             }
         }
-        t
+        self.contribute_integration(&mut t);
+        (t, graphs)
     }
 }
 
@@ -2874,6 +3283,10 @@ impl App for Window {
 
     fn paint<P: Painter>(&mut self, p: &mut P, _viewport: (f32, f32)) {
         self.ed.paint(p);
+    }
+
+    fn wake_ms(&self) -> Option<u32> {
+        self.ed.wake_ms()
     }
 
     fn access(&mut self) -> schemify_render::accesskit::TreeUpdate {

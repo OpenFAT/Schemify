@@ -61,6 +61,20 @@ pub struct Tab {
     /// The docs page is shown beside the canvas (`view.docs`); starts on when the opened
     /// document has doc blocks.
     pub docs: bool,
+    /// A read-only text view (a netlist, xschem's "show netlist") shown instead of the
+    /// canvas; `stack` then holds the level it was made from, which editing commands skip.
+    pub text: Option<TextView>,
+}
+
+/// A read-only text shown in a tab.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextView {
+    /// Tab title.
+    pub title: String,
+    /// The file the text was written to (a second view of the same file replaces it).
+    pub path: PathBuf,
+    /// The text.
+    pub body: String,
 }
 
 /// Open documents and where they live on disk (SoA, one row per open document).
@@ -115,6 +129,18 @@ impl Session {
     /// Returns the directory of library row `lib`, if it is local.
     pub fn lib_dir(&self, lib: u8) -> Option<&Path> {
         self.lib_dir.get(usize::from(lib))?.as_deref()
+    }
+
+    /// The directory of every library row, the project root standing in for libraries
+    /// that are not local (a runner's `lib_dirs`: sources are compiled from them).
+    pub fn lib_dirs(&self) -> Vec<PathBuf> {
+        let dirs: Vec<PathBuf> = self
+            .lib_dir
+            .iter()
+            .map(|d| d.clone().unwrap_or_else(|| self.root.clone()))
+            .collect();
+        assert_eq!(dirs.len(), self.lib_dir.len());
+        dirs
     }
 
     /// Opens (or returns the already open) cell file `relpath` of library row `lib`, with its
@@ -362,9 +388,43 @@ impl Session {
                 sel: Vec::new(),
             }],
             docs,
+            text: None,
         });
         self.active = self.tabs.len() - 1;
         assert!(!self.tabs[self.active].stack.is_empty());
+    }
+
+    /// Shows `view` in a read-only text tab made from the active level (a tab already
+    /// showing the same file is replaced and activated).
+    pub fn open_text_tab(&mut self, view: TextView) {
+        let Some(level) = self.level().cloned() else {
+            return;
+        };
+        if let Some(i) = self
+            .tabs
+            .iter()
+            .position(|t| t.text.as_ref().is_some_and(|v| v.path == view.path))
+        {
+            self.tabs[i].text = Some(view);
+            self.active = i;
+            return;
+        }
+        if self.tabs.len() >= TABS_MAX {
+            self.status = format!("at most {TABS_MAX} tabs");
+            return;
+        }
+        self.tabs.push(Tab {
+            stack: vec![level],
+            docs: false,
+            text: Some(view),
+        });
+        self.active = self.tabs.len() - 1;
+        assert!(self.tabs[self.active].text.is_some());
+    }
+
+    /// The text view of the active tab, if it is one.
+    pub fn text_view(&self) -> Option<&TextView> {
+        self.tabs.get(self.active).and_then(|t| t.text.as_ref())
     }
 
     /// The level shown in the active tab.
@@ -420,5 +480,15 @@ impl Session {
             }
             _ => false,
         }
+    }
+}
+
+impl crate::spines::Cells for Session {
+    fn project(&self) -> &Project {
+        &self.project
+    }
+
+    fn open_row(&mut self, row: u32) -> Result<(), String> {
+        self.open_cell(row as usize).map(|_| ())
     }
 }

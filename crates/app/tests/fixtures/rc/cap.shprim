@@ -1,0 +1,22 @@
+schemify 1 shprim
+  doc "Capacitor (run fixture)"
+  prefix C
+
+pin A inout 0 -30
+pin B inout 0 30
+
+param C 1p
+  unit F
+
+impl spice spice
+  format spice "{name} {A} {B} {C}"
+
+line 0 -30 0 -4
+line 0 4 0 30
+line -12 -4 12 -4
+line -12 4 12 4
+
+stext 16 -12 R0 {name}
+  size 0.2
+stext 16 2 R0 C={eng(C)}
+  size 0.18

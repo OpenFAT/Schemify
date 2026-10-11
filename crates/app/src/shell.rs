@@ -19,10 +19,12 @@ use schemify_ui::{
     compose, layout, records,
 };
 
+use crate::checks::{LAYER_ANNOT, LAYER_DIFF, LAYER_ERROR, LAYER_HILITE, LAYER_INFO, LAYER_WARN};
 use crate::scene::{LAYER_BUS, LAYER_JUNCTION, LAYER_MISSING, LAYER_SEL};
 
 /// The core base: the minimum the editor needs to be usable without the default UI — the
-/// canvas, and the docs page beside it (D21: docs render without plugins).
+/// canvas, the docs page beside it (D21: docs render without plugins), and the `bottom`
+/// container the checks and results panels go into.
 pub const CORE_UI: &str = "\
 style window
   dir column
@@ -55,6 +57,11 @@ node docs.pane panel
 node docs.page scroll
   parent docs.pane
   style docs-page
+style bottom
+  dir column
+node bottom panel
+  parent window
+  style bottom
 ";
 
 /// Composed UI tables, interaction state and the current layout.
@@ -259,6 +266,20 @@ impl Shell {
         p.color[usize::from(LAYER_BUS)] = p.color[1];
         p.color[usize::from(LAYER_MISSING)] = 0xff40_40ff;
         p.color[usize::from(LAYER_SEL)] = sel;
+        // Decor layers (checks overlay, highlight, annotations, staged diff): from the
+        // theme like the rest, else xschem-like defaults.
+        let decor = [
+            (LAYER_HILITE, "hilite", 0xff40_ffff, 4.0),
+            (LAYER_ERROR, "error", 0xff30_30ff, 2.0),
+            (LAYER_WARN, "warning", 0xffb0_20ff, 1.5),
+            (LAYER_INFO, "info", 0x60a0_ffff, 1.0),
+            (LAYER_ANNOT, "annot", 0x40e0_e0ff, 1.0),
+            (LAYER_DIFF, "diff", 0x30ff_60ff, 2.0),
+        ];
+        for (layer, name, default, width) in decor {
+            p.color[usize::from(layer)] = color(name).unwrap_or(default);
+            p.width[usize::from(layer)] = width;
+        }
         p.width[usize::from(LAYER_BUS)] = 3.0;
         p.fill = (1 << 5) | (1 << LAYER_JUNCTION);
         assert!(LAYERS > usize::from(LAYER_SEL));

@@ -153,15 +153,81 @@ mod imp {
 /// status (`-1` for a signal or a wait failure, a negated `E_GONE` when it cannot start) and
 /// stdout followed by stderr: the `IoDone` of a plugin `spawn` (plugin-abi §5).
 ///
+/// Blocks the caller; the editor uses [`spawn_start`] instead.
+///
 /// # Panics
 ///
 /// Panics if `argv` is empty.
-// ponytail: blocks the frame while the child runs (a characterization takes seconds); move to
-// a worker thread with an event-loop wake-up when the run spine lands in the editor.
 pub fn spawn(cwd: &Path, argv: &[String], stdin: &[u8]) -> (i32, Vec<u8>) {
     assert!(!argv.is_empty(), "spawn needs a binary");
     let (status, out) = imp::spawn(cwd, argv, stdin);
     (status, out)
+}
+
+/// A child process started by [`spawn_start`]: poll it with [`Spawned::try_finish`].
+#[derive(Debug)]
+pub struct Spawned {
+    #[cfg(not(target_arch = "wasm32"))]
+    rx: std::sync::mpsc::Receiver<(i32, Vec<u8>)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    taken: bool,
+    #[cfg(target_arch = "wasm32")]
+    done: Option<(i32, Vec<u8>)>,
+}
+
+/// Starts [`spawn`] without waiting: the child runs and its pipes drain on a worker thread
+/// (one per child; the plugin host bounds them by its `io` queue, 256 per frame), so the
+/// frame spine never blocks on a plugin's process (D39). On the web nothing can start and the
+/// result is ready at once (D16).
+///
+/// # Panics
+///
+/// Panics if `argv` is empty.
+pub fn spawn_start(cwd: &Path, argv: Vec<String>, stdin: Vec<u8>) -> Spawned {
+    assert!(!argv.is_empty(), "spawn needs a binary");
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cwd = cwd.to_path_buf();
+        // A failed send means the editor dropped the request (it shut down): nothing to do.
+        std::thread::spawn(move || {
+            let _ = tx.send(imp::spawn(&cwd, &argv, &stdin));
+        });
+        Spawned { rx, taken: false }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Spawned {
+            done: Some(imp::spawn(cwd, &argv, &stdin)),
+        }
+    }
+}
+
+impl Spawned {
+    /// The child's `(status, stdout + stderr)` once it exited; `None` while it runs. Returns
+    /// the result once; later calls return `None`.
+    pub fn try_finish(&mut self) -> Option<(i32, Vec<u8>)> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.taken {
+                return None;
+            }
+            let r = match self.rx.try_recv() {
+                Ok(r) => r,
+                Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                // The worker died without sending (only on OOM): a failure, reported once.
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    (-1, b"spawn worker vanished".to_vec())
+                }
+            };
+            self.taken = true;
+            Some(r)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.done.take()
+        }
+    }
 }
 
 /// Reads a whole file.

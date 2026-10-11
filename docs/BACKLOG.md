@@ -12,21 +12,34 @@ Open items collected from workstream reports. Each item names its owner crate. R
 ## app / editor
 
 - **doc**: keep rank 2 (symbol graphics) in indexed interfaces (`parse_prefix(bytes, 2)`); the editor currently opens every instantiated cell to get its symbol.
-- **render**: `draw_canvas` shares one text cache between scene and overlay (re-shapes labels every frame; the editor works around it, the demo doesn't); window has no exit hook or timer wake-up.
+- **render**: `draw_canvas` shares one text cache between scene and overlay (re-shapes labels every frame; the editor works around it, the demo doesn't); window has no exit hook.
 - **ui**: text fields commit only on Enter (the app copies typed text every frame).
 - **plugins/build.sh**: rebuilding `hello`/`gmid_stub` is not byte-reproducible.
-- Editor gaps vs xschem: stretch/kissing moves, polygon/arc/circle drawing, schematic graphics (format has none), context menu, persistent wire mode, snap cursor/crosshair, search, Save As, rotated texts, scrolling lists (24 rows max), system clipboard, crash-recovery prompt, plugin timers and I/O capabilities (fetch/clipboard) in the app; `spawn` runs synchronously in the frame (the UI waits for ngspice during a gm/Id characterization).
+- Editor gaps vs xschem: stretch/kissing moves, polygon/arc/circle drawing, schematic graphics (format has none), context menu, persistent wire mode, snap cursor/crosshair, search, Save As, rotated texts, scrolling lists (24 rows max), system clipboard, crash-recovery prompt, plugin I/O capabilities fetch/clipboard in the app.
+- No user-config reader: the `sim ngspice` command line (format spec §4) is not read; the CLI and the editor use `ngspice -b -r {raw} {netlist}` (tests pass `editor::Options::sim`).
+- Plugin `eval` requests still answer `E_GONE` (elab evaluator not wired to the host).
 
 ## docs page (D19–D21)
 
-- `plot` fences show "no results yet": bind them to `render::waves` panes once the run spine reaches the editor.
+- Plot slots show the selected job only (no per-sweep or per-corner overlay) and only for the bench's own page or a cell it instantiates directly.
 - D20 write-back covers vars only; own param defaults that call plugin functions keep their `cached` as written. Plugin functions return numbers/bools only (a string result needs an owned `Value`).
 - The cache amend replays the edit through undo (two extra journal records); a `doc` "extend last entry" edit would save them.
 - Values are kept for the active level's document; other open documents sync their caches when activated. A structural edit (instance insert/delete) rebuilds the cell state (136 ms at 100k objects when the cell has vars).
 - Prose: no images, footnotes or nested emphasis inside links; tables use equal column widths; a `text_area` does not scroll inside itself (the page does).
 - `gmid-lut`: queries at VDS = VDD/2 only; the sky130 pfet sample tops out near gm/Id 15 at L 0.15/0.18 µm; characterization uses `spawn:ngspice`, not `run` requests (the sweep needs the full grid, not bench outputs).
 - Edit round trip rebuilds the whole scene (40 ms at 100k objects): incremental scene rebuild.
-- Integration points still stubbed: elab (symbols via elab, net highlight `k`, eval, net ids in snapshots; values are wired for the docs page), netlist (`n`), run (`s`, plugin run requests), web OPFS.
+- Integration points still stubbed: symbols via elab, plugin `eval`, web OPFS.
+
+## run in the editor (M2 integration)
+
+- One run at a time (xschem-like); a plugin request for another bench waits until the current run is idle. Results table: ≤ 64 job rows, no sort/filter; MC yield and the optimizer's best point are text rows.
+- OP back-annotation maps ngspice names only (`v(net)`, `@dev[p]`); Xyce OP naming and `.save` of device quantities (ngspice saves `@dev[gm]` only when asked) are not added automatically. Cross-probe of currents: branch devices (`v`, `e`, `h`, `l`) only.
+- Staged edits: the canvas diff outlines changed objects only (inserted/deleted ones are not drawn until accepted); Accept/Reject act on the document's first stage.
+- Waves dock: fixed 60/40 split (no splitter drag); keyboard focus follows the pointer.
+- Netlist text tab: a prose code block capped at 2^14 lines / 256 KiB (the file has everything); no search.
+- Highlight keys a component by its first bit name (a bus component highlights by its first bit); keys of nets the name map lacks fall back to the level path (no cross-hierarchy match then).
+- `Results` snapshot `pass` is 0: spec verdicts are per spec, not per output.
+- The OTA fixture has no bench; the GUI run tests and `docs/screenshots/simulate.png` use `crates/app/tests/fixtures/rc`.
 
 ## netlist
 
@@ -48,6 +61,7 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - **elab**: a flat 1M-instance bench extrapolates to ~0.93 s of elaboration (D39 netlist budget is 1 s end-to-end): write rows directly instead of building temporaries.
 - **elab**: edits that change an expression's dependencies rebuild the whole graph (17 ms at 30k nodes).
 - **format**: 100k-object parse ~52–60 ms; doc open 89 ms (budget 200 ms, OK); the 100k parse test sits near 100 ms under load.
+- **elab/app**: every shown document now has a `CellState` (live checks): at 100k objects a geometry edit costs ~50 ms of elab (connectivity rebuild + full check) and re-posting ~40k `W004` marks ~15 ms (measured in `app/tests/perf.rs`: edit round trip 112 ms, was 40 ms without checks; open 178 ms of the 200 ms budget). Incremental connectivity and checks per touched component would bring it back.
 - **render**: 100k-primitive scene build is 3.9 ms on a fast CPU (budget 4 ms for the 8 ms frame); 26 ms GPU time on the Intel iGPU (120 fps unmet there). Options: parallel encoding, reusing the last scene while panning.
 
 ## Correctness / semantics

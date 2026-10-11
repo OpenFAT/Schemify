@@ -1,16 +1,25 @@
 //! Plugin host glue for the frame spine: loads the bundled default UI (D6) and the
 //! manifest's local plugins in configured order (D8), fills snapshot tables from `doc`,
-//! runs `plugin::deliver`, and drains the request queues to their owners (edits to `doc`,
-//! I/O to `platform`, logs to the status line).
+//! `elab` and `run`, runs `plugin::deliver`, and drains the request queues to their owners
+//! (edits to `doc`, run requests to the editor's run queue, I/O to `platform`, logs to the
+//! status line).
+//!
+//! I/O is inverted and never blocks the frame (plugin-abi §5): file reads and writes complete
+//! within the delivery, a `spawn` runs on a worker ([`platform::spawn_start`]) and its
+//! `IoDone` arrives in a later frame through [`Host::poll`]; timers fire the same way. While
+//! either waits, [`Host::wake_ms`] asks the window for a tick.
 
 use std::path::Path;
 
 use schemify_doc::{DocHandle, Project};
+use schemify_elab::CellState;
 use schemify_expr::{Code as XCode, Error as XError, Span, Value};
 use schemify_plugin::abi::{Event, FUEL_DEFAULT, Kind, Table, col};
-use schemify_plugin::{IoOp, PluginEvents, PluginId, Plugins, RequestQueues, Snapshots, deliver};
+use schemify_plugin::{
+    IoOp, PluginEvents, PluginId, Plugins, RequestQueues, RunRequest, Snapshots, deliver,
+};
 
-use crate::platform;
+use crate::platform::{self, Spawned};
 
 /// Hex digits of a plugin content hash in a D20 `cached <value> <hash>` attribute: the
 /// first 8 bytes of the module's sha256 (change detection, not authentication).
@@ -22,6 +31,15 @@ pub const DEFAULT_UI_WASM: &[u8] = include_bytes!("../assets/default_ui.wasm");
 /// Delivery rounds per frame: a plugin's I/O completion is answered in the same frame, up to
 /// this many request → completion hops.
 const ROUNDS_MAX: u32 = 4;
+/// Child processes and timers waiting at once (the plugin crate's per-frame queue
+/// capacities, plugin-abi §10); a request past it completes at once with `E_SPACE`.
+pub const WAITING_MAX: usize = 256;
+/// Tick period while a child process runs (its completion is polled, not signalled).
+const IO_POLL_MS: u32 = 20;
+
+/// Results rows a run exposes to plugins (the `Results` snapshot): `(job, output, value
+/// text, pass)`; `pass` is 1 pass, 2 fail, 0 unknown or no spec.
+pub type ResultRows = Vec<(u32, String, String, u8)>;
 
 /// Loaded plugins, their per-frame event table, snapshots and request queues.
 pub struct Host {
@@ -39,6 +57,10 @@ pub struct Host {
     result: String,
     /// A command event waits for delivery (see [`Delivered::state_changed`]).
     commanded: bool,
+    /// Child processes started for `spawn` requests: (plugin, handle, child).
+    children: Vec<(PluginId, u32, Spawned)>,
+    /// Pending timers: (due, in the editor's monotonic ms; plugin; timer id).
+    timers: Vec<(u64, PluginId, u32)>,
 }
 
 impl std::fmt::Debug for Host {
@@ -59,6 +81,8 @@ pub struct Delivered {
     /// A plugin ran a command or got an I/O completion: its pure functions may answer
     /// differently now (a LUT loaded), so derived values must be recomputed.
     pub state_changed: bool,
+    /// Plugin `run` requests (plugin-abi §7) for the editor's run queue.
+    pub runs: Vec<RunRequest>,
 }
 
 impl Host {
@@ -112,6 +136,8 @@ impl Host {
             args: String::new(),
             result: String::new(),
             commanded: false,
+            children: Vec::new(),
+            timers: Vec::new(),
         };
         assert_eq!(host.hashes.len(), host.plugins.ids().len());
         (host, notes)
@@ -213,9 +239,71 @@ impl Host {
         !self.events.is_empty() || self.plugins.has_pending()
     }
 
+    /// Queues the completions that arrived since the last call: `IoDone` for every child
+    /// process that exited, `Timer` for every timer due at `now_ms`. Returns whether any
+    /// event was queued. Cost: one channel poll per running child.
+    pub fn poll(&mut self, now_ms: u64) -> bool {
+        let before = self.events.len();
+        let mut i = 0;
+        while i < self.children.len() {
+            let Some((status, bytes)) = self.children[i].2.try_finish() else {
+                i += 1;
+                continue;
+            };
+            let (plugin, handle, _) = self.children.swap_remove(i);
+            let ev = Event::IoDone {
+                handle,
+                status,
+                bytes: &bytes,
+            };
+            let _ = self.events.push(Some(plugin), &ev);
+            self.commanded = true; // a completion may change what a pure function answers
+        }
+        let mut k = 0;
+        while k < self.timers.len() {
+            if self.timers[k].0 > now_ms {
+                k += 1;
+                continue;
+            }
+            let (_, plugin, id) = self.timers.swap_remove(k);
+            let _ = self.events.push(Some(plugin), &Event::Timer { id });
+        }
+        assert!(self.children.len() <= WAITING_MAX && self.timers.len() <= WAITING_MAX);
+        self.events.len() > before
+    }
+
+    /// Milliseconds until the next completion should be looked for: 20 ms while a
+    /// child runs, else the nearest timer; `None` when nothing waits (idle CPU 0%, D39).
+    pub fn wake_ms(&self, now_ms: u64) -> Option<u32> {
+        let timer = self
+            .timers
+            .iter()
+            .map(|t| t.0.saturating_sub(now_ms).min(u64::from(u32::MAX)) as u32)
+            .min();
+        let io = (!self.children.is_empty()).then_some(IO_POLL_MS);
+        match (timer, io) {
+            (Some(t), Some(i)) => Some(t.min(i)),
+            (t, i) => t.or(i),
+        }
+    }
+
+    /// Queues `RunDone { job }` for `plugin` (its `run` request's job finished or failed).
+    pub fn run_done(&mut self, plugin: PluginId, job: u32) {
+        let _ = self.events.push(Some(plugin), &Event::RunDone { job });
+    }
+
     /// Refreshes the snapshot tables plugins read for the active document `h` (Docs,
-    /// Instances, Wires, Labels, Selection). Cost: one copy of those columns.
-    pub fn snapshot(&mut self, project: &Project, h: Option<DocHandle>, selection: &[u32]) {
+    /// Instances, Wires, Labels, Selection), its derived state `cell` (net ids of wires and
+    /// labels, Nets, Violations; `u32::MAX` nets and empty tables without it) and the last
+    /// run's `results` rows. Cost: one copy of those columns.
+    pub fn snapshot(
+        &mut self,
+        project: &Project,
+        h: Option<DocHandle>,
+        selection: &[u32],
+        cell: Option<&CellState>,
+        results: &ResultRows,
+    ) {
         let s = &mut self.snapshots;
         let handles: Vec<DocHandle> = project.handles().collect();
         let ids: Vec<u32> = handles.iter().map(|&d| doc_id(d)).collect();
@@ -260,8 +348,16 @@ impl Host {
         s.fill::<i32>(Table::Wires, col::wires::Y1, &w.y1);
         s.fill::<i32>(Table::Wires, col::wires::X2, &w.x2);
         s.fill::<i32>(Table::Wires, col::wires::Y2, &w.y2);
-        // Net ids come from elab (integration point); u32::MAX = not elaborated.
-        s.fill::<u32>(Table::Wires, col::wires::NET, &vec![u32::MAX; n]);
+        // Net ids are elab's component rows; u32::MAX = not elaborated.
+        let nets_of = |col: &[u32], n: usize| match cell {
+            Some(_) if col.len() == n => col.to_vec(),
+            _ => vec![u32::MAX; n],
+        };
+        s.fill::<u32>(
+            Table::Wires,
+            col::wires::NET,
+            &nets_of(cell.map_or(&[][..], |c| &c.nets.wire_net), n),
+        );
         let l = doc.labels();
         let n = l.id.len();
         s.fill::<u32>(Table::Labels, col::labels::DOC, &vec![id; n]);
@@ -269,7 +365,11 @@ impl Host {
         s.fill::<u32>(Table::Labels, col::labels::ID, &raw);
         s.fill::<i32>(Table::Labels, col::labels::X, &l.x);
         s.fill::<i32>(Table::Labels, col::labels::Y, &l.y);
-        s.fill::<u32>(Table::Labels, col::labels::NET, &vec![u32::MAX; n]);
+        s.fill::<u32>(
+            Table::Labels,
+            col::labels::NET,
+            &nets_of(cell.map_or(&[][..], |c| &c.nets.label_net), n),
+        );
         let texts: Vec<&str> = l.text.iter().map(|&t| st.get(t)).collect();
         s.fill_strings(Table::Labels, col::labels::TEXT, &texts);
         s.fill::<u32>(
@@ -278,13 +378,50 @@ impl Host {
             &vec![id; selection.len()],
         );
         s.fill::<u32>(Table::Selection, col::selection::ID, selection);
+        let empty = CellState::default();
+        let c = cell.unwrap_or(&empty);
+        let nets = &c.nets;
+        let names: Vec<&str> = nets.net_name.iter().map(|&n| c.names.get(n)).collect();
+        s.fill_strings(Table::Nets, col::nets::NAME, &names);
+        s.fill::<u16>(Table::Nets, col::nets::WIDTH, &nets.net_width);
+        let global: Vec<u8> = nets.net_global.iter().map(|&g| u8::from(g)).collect();
+        s.fill::<u8>(Table::Nets, col::nets::GLOBAL, &global);
+        s.fill::<u32>(Table::Nets, col::nets::PIN_COUNT, &nets.net_pins);
+        let v = &c.violations.rows;
+        let codes: Vec<&str> = v.iter().map(|r| r.code.as_str()).collect();
+        s.fill_strings(Table::Violations, col::violations::CODE, &codes);
+        let sev: Vec<u8> = v.iter().map(|r| r.code.severity() as u8).collect();
+        s.fill::<u8>(Table::Violations, col::violations::SEVERITY, &sev);
+        let obj: Vec<u32> = v.iter().map(|r| r.object.0).collect();
+        s.fill::<u32>(Table::Violations, col::violations::OBJECT, &obj);
+        let none = schemify_elab::Name::NONE;
+        let param: Vec<&str> = v
+            .iter()
+            .map(|r| {
+                if r.param == none {
+                    ""
+                } else {
+                    c.names.get(r.param)
+                }
+            })
+            .collect();
+        s.fill_strings(Table::Violations, col::violations::PARAM, &param);
+        let jobs: Vec<u32> = results.iter().map(|r| r.0).collect();
+        s.fill::<u32>(Table::Results, col::results::JOB, &jobs);
+        let outs: Vec<&str> = results.iter().map(|r| r.1.as_str()).collect();
+        s.fill_strings(Table::Results, col::results::OUTPUT, &outs);
+        let vals: Vec<&str> = results.iter().map(|r| r.2.as_str()).collect();
+        s.fill_strings(Table::Results, col::results::VALUE, &vals);
+        let pass: Vec<u8> = results.iter().map(|r| r.3).collect();
+        s.fill::<u8>(Table::Results, col::results::PASS, &pass);
         debug_assert_eq!(s.check(), Ok(()));
     }
 
-    /// The spine's `plugin::deliver` plus queue draining. I/O completions are fed back
-    /// within the frame, at most `ROUNDS_MAX` (4) rounds. Timers are not supported yet (the
-    /// event loop has no wake-up source) and are logged.
-    pub fn deliver(&mut self, project: &Project, root: &Path) -> Delivered {
+    /// The spine's `plugin::deliver` plus queue draining, at most `ROUNDS_MAX` (4) rounds:
+    /// file I/O completes within the frame; `spawn` starts a child whose `IoDone` comes
+    /// through [`Host::poll`]; timers are armed against `now_ms`; run requests go out in
+    /// [`Delivered::runs`].
+    pub fn deliver(&mut self, project: &Project, root: &Path, now_ms: u64) -> Delivered {
         let mut out = Delivered {
             state_changed: std::mem::take(&mut self.commanded),
             ..Delivered::default()
@@ -314,10 +451,13 @@ impl Host {
                 out.logs.push(format!("{name}: {}", l.text));
             }
             for t in self.queues.timers.drain(..) {
-                out.logs
-                    .push(format!("{}: timers are not supported yet", t.plugin));
+                if self.timers.len() < WAITING_MAX {
+                    self.timers.push((now_ms + u64::from(t.ms), t.plugin, t.id));
+                } else {
+                    out.logs.push(format!("{}: too many timers", t.plugin));
+                }
             }
-            self.queues.runs.clear(); // run integration point (M3)
+            out.runs.append(&mut self.queues.runs);
             let evals: Vec<_> = self.queues.evals.drain(..).collect();
             for e in evals {
                 // elab integration point: no evaluator yet.
@@ -332,7 +472,17 @@ impl Host {
             let io: Vec<_> = self.queues.io.drain(..).collect();
             out.state_changed |= !io.is_empty();
             for r in io {
-                let (status, bytes) = run_io(root, r.op, &r.args, &r.data);
+                if r.op == IoOp::Spawn && self.children.len() < WAITING_MAX {
+                    let child = platform::spawn_start(root, r.args, r.data);
+                    self.children.push((r.plugin, r.handle, child));
+                    continue;
+                }
+                let (status, bytes) = if r.op == IoOp::Spawn {
+                    let space = -(schemify_plugin::abi::Code::Space as i32);
+                    (space, b"too many child processes".to_vec())
+                } else {
+                    run_io(root, r.op, &r.args, &r.data)
+                };
                 let ev = Event::IoDone {
                     handle: r.handle,
                     status,
@@ -393,7 +543,7 @@ fn run_io(root: &Path, op: IoOp, args: &[String], data: &[u8]) -> (i32, Vec<u8>)
             Ok(()) => (0, Vec::new()),
             Err(e) => (denied, e.into_bytes()),
         },
-        IoOp::Spawn => platform::spawn(root, args, data),
+        IoOp::Spawn => unreachable!("spawn runs through platform::spawn_start"),
         // ponytail: fetch and clipboard are M3; answer "denied".
         IoOp::Fetch | IoOp::ClipboardGet | IoOp::ClipboardSet => {
             (denied, b"not supported yet".to_vec())

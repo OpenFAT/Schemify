@@ -198,6 +198,19 @@ impl Jobs {
         self.state[j as usize]
     }
 
+    /// Cancels job `j` before it was submitted (a caller that prepares jobs lazily, like
+    /// the editor, stops a run whose tail was never handed to a runner; queued and running
+    /// jobs go through `Runner::cancel`). Returns whether `j` was pending.
+    pub fn cancel_pending(&mut self, j: u32) -> bool {
+        assert!(j < self.len(), "job {j} of {}", self.len());
+        let pending = self.state[j as usize] == State::Pending;
+        if pending {
+            self.state[j as usize] = State::Cancelled;
+        }
+        assert!(self.state[j as usize] != State::Pending);
+        pending
+    }
+
     pub(crate) fn set_state(&mut self, j: u32, s: State) {
         let old = self.state[j as usize];
         assert!(!old.finished() || old == s, "job {j} already {old:?}");

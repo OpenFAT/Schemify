@@ -1,5 +1,7 @@
 //! Window, event loop and GPU surface (winit + wgpu via vello), native and web from one code
-//! path. Redraw is event-driven: nothing runs while idle (D39).
+//! path. Redraw is event-driven: nothing runs while idle (D39). An app with background work
+//! (a simulation, a child process, a plugin timer) asks for a tick through [`App::wake_ms`];
+//! the loop then sleeps until that deadline or the next input, never busy-polls.
 
 use std::sync::Arc;
 
@@ -10,7 +12,7 @@ use vello::util::{RenderContext, RenderSurface};
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, wgpu};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
@@ -28,6 +30,12 @@ pub trait App {
     fn paint<P: Painter>(&mut self, p: &mut P, viewport: (f32, f32));
     /// Full accessibility tree for the current frame.
     fn access(&mut self) -> TreeUpdate;
+    /// Milliseconds until the app wants [`App::update`] called again without input (it
+    /// polls background work then), or `None` to sleep until the next input. Asked after
+    /// every update; `None` whenever nothing runs keeps idle CPU at 0% (D39).
+    fn wake_ms(&self) -> Option<u32> {
+        None
+    }
     /// Color under everything painted.
     fn background(&self) -> Color {
         Color::BLACK
@@ -105,6 +113,8 @@ struct Shell<A: App> {
     scale: f64,
     scene: Scene,
     access_dirty: bool,
+    /// The deadline [`App::wake_ms`] asked for has passed: update with no input.
+    tick: bool,
 }
 
 /// Opens a window and runs `app` until it closes. Native: blocks. Web (wasm32): attaches a
@@ -134,6 +144,7 @@ pub fn run<A: App + 'static>(title: &str, app: A) -> Result<(), RunError> {
         scale: 1.0,
         scene: Scene::new(),
         access_dirty: true,
+        tick: false,
     };
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -456,8 +467,12 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
         }
     }
 
-    fn about_to_wait(&mut self, _: &ActiveEventLoop) {
-        if !self.events.is_empty() {
+    fn new_events(&mut self, _: &ActiveEventLoop, cause: StartCause) {
+        self.tick |= matches!(cause, StartCause::ResumeTimeReached { .. });
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if !self.events.is_empty() || std::mem::take(&mut self.tick) {
             let viewport = self.viewport();
             if self.app.update(&self.events, viewport) {
                 if let Some(w) = &self.window {
@@ -474,5 +489,10 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
             }
             self.access_dirty = false;
         }
+        let flow = match self.app.wake_ms() {
+            Some(ms) => ControlFlow::wait_duration(std::time::Duration::from_millis(u64::from(ms))),
+            None => ControlFlow::Wait,
+        };
+        event_loop.set_control_flow(flow);
     }
 }

@@ -1,0 +1,59 @@
+schemify 1 shbench
+  doc "RC low-pass step response: a 1 V step charges C through R"
+  corner tt
+
+inst 0aaaaa ./res
+  at 0 0 R0
+  name R1
+  R R
+inst 0aaaab ./cap
+  at 0 90 R0
+  name C1
+  C C
+
+wire 0ccccc 0 30 0 60
+
+label 0bbbba 0 -30 R0 in
+label 0bbbbb 0 30 R0 out
+label 0bbbbd 0 120 R0 0
+
+text 0eeeee -60 -80 R0 "RC low-pass: V1 in 0 1 (code block), tau = R C"
+  size 0.3
+
+prose 0ddddd
+  | # RC low-pass
+  |
+  | A 1 V step charges $C$ through $R$: $v_{out} = 1 - e^{-t/\tau}$ with $\tau = RC$.
+  |
+  | ```plot
+  | v(out)
+  | ```
+
+var R 3.3k
+  unit Ohm
+  min 100
+  max 10k
+var C 1u
+  unit F
+
+corner tt
+  set C 1u
+
+optimize fit
+  algo nelder-mead
+  goal tau target 1m
+  vary R
+  budget 12
+
+output tau "cross(v(out), 0.6321205588285577)"
+output v1m "at(v(out), 1m)"
+
+spec v1m
+  min 0.3
+  max 0.9
+
+code tran spice
+  | V1 in 0 1
+  | .ic v(out)=0
+  | .op
+  | .tran 1u 5m 0 1u uic

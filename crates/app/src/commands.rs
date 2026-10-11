@@ -26,6 +26,8 @@ macro_rules! commands {
 }
 
 commands! {
+    /// Click on a row of the checks panel: select and zoom to its object.
+    ChecksPick = "checks.pick",
     /// Enter in the chooser filter.
     ChooseFilter = "choose.filter",
     /// Pick a chooser row (insert symbol / open cell / waves file).
@@ -52,6 +54,8 @@ commands! {
     DocsSelect = "docs.select",
     /// Docs page: a variable's expression field submitted (Enter).
     DocsVarOk = "docs.var_ok",
+    /// Commit the active document's staged edit (visual diff reviewed, D18).
+    AcceptStaged = "edit.accept_staged",
     /// Constrain the next move/wire horizontally.
     ConstrainH = "edit.constrained_horizontal_move",
     /// Constrain the next move/wire vertically.
@@ -88,6 +92,8 @@ commands! {
     DescendSymbol = "edit.push_symbol",
     /// Redo.
     Redo = "edit.redo",
+    /// Drop the active document's staged edit.
+    RejectStaged = "edit.reject_staged",
     /// Rotate each selected object about its own anchor.
     RotateInPlace = "edit.rotate_in_place_selected_objects",
     /// Rotate the selection as a group.
@@ -120,10 +126,15 @@ commands! {
     Reload = "file.reload",
     /// Save the active document.
     Save = "file.save",
-    /// Highlight selected nets (elab integration point).
+    /// Highlight the nets of the selection or under the pointer, across the hierarchy (`k`).
     Highlight = "highlight.highlight_selected_net_pins",
-    /// Clear highlights (elab integration point).
+    /// Send the highlighted nets to the waves dock as `v(<net>)` traces (`Alt+G`), opening it
+    /// on the selected job when closed.
+    SendToViewer = "highlight.send_selected_net_pins_to_viewer",
+    /// Clear every highlight (`Shift+K`).
     Unhighlight = "highlight.un_highlight_all_net_pins",
+    /// Clear the highlight of the selected nets (`Ctrl+K`).
+    UnhighlightSelected = "highlight.un_highlight_selected_net_pins",
     /// Double the snap.
     DoubleSnap = "options.double_snap_threshold",
     /// Toggle the grid.
@@ -142,12 +153,30 @@ commands! {
     PropsField = "props.field",
     /// OK in the properties dialog.
     PropsOk = "props.ok",
-    /// Netlist the active bench or cell (netlist integration point).
+    /// Results panel: load an earlier run of the bench (`results.hist.<i>`, results history).
+    ResultsHistory = "results.history",
+    /// Results panel: pick a job (waves, plots and OP annotation follow it).
+    ResultsPick = "results.pick",
+    /// Results panel: open the selected job's raw file in the waves dock.
+    ResultsWaves = "results.waves",
+    /// Cancel the simulation or optimization in flight.
+    SimCancel = "sim.cancel",
+    /// Netlist dialect (`sim.dialect.<word>` menu items, or the word as argument).
+    SetDialect = "sim.dialect",
+    /// Netlist the tab's top cell (`n`): written to `.schemify/netlist/`, shown in a tab.
     Netlist = "sim.netlist",
-    /// Netlist the top level only (netlist integration point).
+    /// Netlist the cell shown at this hierarchy level (`Shift+N`).
     NetlistTop = "sim.netlist_top_only",
-    /// Simulate (run integration point; only `.shbench`, D11b).
+    /// New bench from this component (D11b): a `.shbench` instantiating the active cell.
+    NewBench = "sim.new_bench",
+    /// Run the bench's `optimize` record (D18); the best point becomes a staged edit.
+    Optimize = "sim.optimize",
+    /// Simulate the active bench (`s`; only `.shbench`, D11b), non-blocking.
     Simulate = "sim.simulate",
+    /// Send the highlighted nets to the waves dock (xschem `Ctrl+Shift+X`; same as `Alt+G`).
+    SendHighlighted = "simulation.send_highlighted_nets_to_viewer",
+    /// Toggle opening the netlist in a text tab after netlisting (xschem `Shift+A`).
+    ShowNetlist = "simulation.show_netlist_after_netlist_command",
     /// Place a net label (xschem `lab_pin`).
     PlaceLabel = "symbol.place_net_pin_label",
     /// Place a net label (xschem `lab_wire`).
@@ -180,6 +209,8 @@ commands! {
     InsertText = "tools.insert_text",
     /// Draw a wire.
     InsertWire = "tools.insert_wire",
+    /// Show / hide the checks panel.
+    ChecksToggle = "view.checks",
     /// Show / hide the active tab's docs page beside the canvas.
     DocsToggle = "view.docs",
     /// Center the view on the pointer.
@@ -194,6 +225,8 @@ commands! {
     PanUp = "view.pan_up",
     /// Escape: abort the operation, unselect, redraw.
     Redraw = "view.redraw",
+    /// Show / hide the results panel.
+    ResultsToggle = "view.results",
     /// Grid from the status field.
     SetGrid = "view.set_grid",
     /// Snap from the status field.
@@ -212,6 +245,8 @@ commands! {
     ZoomSelection = "view.zoom_selection",
     /// The waveform-file chooser (D23 viewer).
     Waves = "waves.external_viewer",
+    /// Toggle the OP back-annotation overlay (node voltages, device `gm`/`id`/…).
+    OpAnnotate = "waves.op_annotate",
 }
 
 impl Cmd {

@@ -59,6 +59,7 @@ impl Session {
             no_default_ui: !default_ui,
             path: Some(dir.join(file)),
             seed: 7,
+            ..Default::default()
         })
         .expect("fixture opens");
         let mut s = Session { ed, now: 1, dir };
@@ -199,6 +200,15 @@ impl Drop for Session {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// Writes `px` as a PNG to `path` (screenshots).
+pub fn save_png(px: &schemify_render::Pixmap, path: &Path) {
+    let png = px.clone().into_png().expect("encode png");
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(path, png).unwrap();
 }
 
 /// Lines of `text` starting with `prefix`.

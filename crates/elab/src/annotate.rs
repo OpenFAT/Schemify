@@ -46,13 +46,11 @@ impl Annotations {
     /// Applies requests in order (the frame spine's `elab::apply_annotations`): each
     /// replaces its source's marks. Marks past [`ANNOTATIONS_MAX`] are dropped.
     ///
-    /// Cost: O(rows + new marks) per request plus one sort.
+    /// Cost: O(rows + new marks) per request plus one sort; every mark is cloned (see
+    /// [`Annotations::replace`] for a request the caller gives up).
     pub fn apply(&mut self, requests: &[AnnotationRequest]) {
         for req in requests {
-            let mut keep = self.source.iter().map(|s| *s != req.source);
-            self.marks
-                .retain(|_| keep.next().expect("parallel columns"));
-            self.source.retain(|s| *s != req.source);
+            self.remove_source(&req.source);
             for m in &req.marks {
                 if self.marks.len() >= ANNOTATIONS_MAX {
                     break;
@@ -61,6 +59,31 @@ impl Annotations {
                 self.marks.push(m.clone());
             }
         }
+        self.sort();
+    }
+
+    /// [`Annotations::apply`] of one request, moving its marks in instead of cloning them
+    /// (the editor posts tens of thousands of check marks on a large cell).
+    ///
+    /// Cost: O(rows + new marks) plus one sort.
+    pub fn replace(&mut self, req: AnnotationRequest) {
+        self.remove_source(&req.source);
+        let room = ANNOTATIONS_MAX.saturating_sub(self.marks.len());
+        let n = req.marks.len().min(room);
+        self.source.extend(std::iter::repeat_n(req.source, n));
+        self.marks.extend(req.marks.into_iter().take(n));
+        self.sort();
+    }
+
+    fn remove_source(&mut self, source: &str) {
+        let mut keep = self.source.iter().map(|s| s != source);
+        self.marks
+            .retain(|_| keep.next().expect("parallel columns"));
+        self.source.retain(|s| s != source);
+        assert_eq!(self.source.len(), self.marks.len());
+    }
+
+    fn sort(&mut self) {
         let mut rows: Vec<(String, Mark)> =
             self.source.drain(..).zip(self.marks.drain(..)).collect();
         rows.sort_by(|a, b| {
@@ -146,6 +169,13 @@ mod tests {
         );
         a.apply(&[req("op", vec![])]);
         assert_eq!(a.source, ["checks"]);
+        // `replace` moves the request in and agrees with `apply`.
+        let mut r = a.clone();
+        a.apply(&[req("op", vec![mark("/X1", "1.2V"), mark("/X0", "0V")])]);
+        r.replace(req("op", vec![mark("/X1", "1.2V"), mark("/X0", "0V")]));
+        assert_eq!((&a.source, &a.marks), (&r.source, &r.marks));
+        r.replace(req("checks", vec![]));
+        assert_eq!(r.source, ["op", "op"]);
         // Order does not depend on request order.
         let mut b = Annotations::default();
         b.apply(&[

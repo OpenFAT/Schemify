@@ -304,6 +304,7 @@ fn open_edited(tag: &str, file: &str, edit: impl Fn(String) -> String) -> Sessio
         no_default_ui: false,
         path: Some(dir.join("ota.shcomp")),
         seed: 7,
+        ..Default::default()
     })
     .expect("opens");
     let mut s = Session { ed, now: 1, dir };

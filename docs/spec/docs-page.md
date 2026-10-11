@@ -90,8 +90,16 @@ editable text field.
 
 A ```` ```plot ```` fence holds one calculator-mode expression ([expr.md](expr.md), e.g.
 `db(v(out))`). The page splits the prose block at the fence and puts a graph slot there, drawn
-from the latest results of a bench that instantiates the cell. Until the editor runs benches the
-slot shows `no results yet`.
+from the editor's current results when the page's cell is their bench or the bench instantiates
+it directly: the selected job's raw file (job 0 after a run), on the last dataset that evaluates
+the expression, autoscaled, as an embedded `render::waves` pane (a `graph` node of style
+`docs-graph`, 170 px). Without results the slot says `no results yet`; an expression that does
+not evaluate, or reduces to a number, shows why instead of a graph.
+
+A staged edit on the page's document (an optimizer result, a plugin's `stage`) adds a banner at
+the top (`docs.staged`, its label, Accept and Reject) and, beside each var it changes, the
+staged expression (`→ <expr>`): the docs half of the visual diff; the canvas half outlines the
+objects it changes.
 
 ## 6. D20 cache write-back
 

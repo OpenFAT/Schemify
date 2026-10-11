@@ -72,20 +72,74 @@ pub fn kind_of(doc: &Document, row: u32) -> Option<RecordKind> {
     doc.doc_blocks().kind.get(row as usize).copied()
 }
 
+/// The calculator expressions of every ```` ```plot ```` fence of `doc`'s prose blocks, in
+/// page order (the slots the run fills, `docs-page.md` §5).
+pub fn plot_exprs(doc: &Document) -> Vec<String> {
+    let b = doc.doc_blocks();
+    let mut out = Vec::new();
+    for r in 0..b.kind.len() as u32 {
+        if b.kind[r as usize] != RecordKind::Prose {
+            continue;
+        }
+        for part in split_plots(&prose_text(doc, r)) {
+            if let Segment::Plot(e) = part {
+                out.push(e.trim().to_owned());
+            }
+        }
+    }
+    out
+}
+
+/// What the page shows besides its document.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Extras<'a> {
+    /// `(expression, None when its graph has data | Some(why the slot is empty))` per plot
+    /// slot with results; a fence missing here shows "no results yet".
+    pub plots: &'a [(String, Option<String>)],
+    /// The staged edit under review (D18 optimizer, plugin stages): its label and the
+    /// document with it applied (`doc::Project::preview`).
+    pub staged: Option<(&'a str, &'a Document)>,
+}
+
 // ---------------------------------------------------------------------- projection
 
 /// Appends the page of `doc` to the state contribution `t`: one `docs.b.<row>` panel per
 /// block under `docs.page`. `cell` supplies var values; `None` (not yet elaborated) shows
-/// expressions without values.
+/// expressions without values. A plot slot with data becomes a `graph` node, recorded in
+/// `graphs` as `(node id, expression)` for the painter; a staged edit adds a banner with
+/// Accept / Reject and its new expression beside each var it changes (the docs half of the
+/// visual diff).
 ///
 /// Cost: O(blocks) text per call; the shell reparses only when the text changed.
 // ponytail: rebuilt on every input frame like the rest of the state contribution; cache the
 // text by (document epoch, values, page state) if pages grow to thousands of blocks.
-pub fn contribute(t: &mut String, doc: &Document, cell: Option<&CellState>, page: &Page) {
+pub fn contribute(
+    t: &mut String,
+    doc: &Document,
+    cell: Option<&CellState>,
+    page: &Page,
+    extras: Extras<'_>,
+    graphs: &mut Vec<(String, String)>,
+) {
     let blocks = doc.doc_blocks();
     let s = doc.strings();
     let n = blocks.kind.len();
     assert!(n <= 1 << 12, "doc blocks over capacity");
+    if let Some((label, _)) = extras.staged {
+        node(t, "docs.staged", "panel", "docs.page");
+        attr(t, "style", "docs-staged-bar");
+        node(t, "docs.staged.label", "label", "docs.staged");
+        attr(t, "label", &format!("Staged: {label}"));
+        attr(t, "style", "docs-staged");
+        for (id, text, cmd) in [
+            ("docs.staged.accept", "Accept", "edit.accept_staged"),
+            ("docs.staged.reject", "Reject", "edit.reject_staged"),
+        ] {
+            node(t, id, "button", "docs.staged");
+            attr(t, "label", text);
+            attr(t, "command", cmd);
+        }
+    }
     if n == 0 {
         node(t, "docs.empty", "label", "docs.page");
         attr(
@@ -119,7 +173,7 @@ pub fn contribute(t: &mut String, doc: &Document, cell: Option<&CellState>, page
                     );
                     attr(t, "style", "docs-hint");
                 }
-                _ => prose(t, &id, &prose_text(doc, r)),
+                _ => prose(t, &id, &prose_text(doc, r), extras.plots, graphs),
             },
             RecordKind::Var => {
                 let f = blocks.fields[r as usize];
@@ -139,6 +193,13 @@ pub fn contribute(t: &mut String, doc: &Document, cell: Option<&CellState>, page
                     cell,
                     v,
                 );
+                if let Some((_, preview)) = extras.staged
+                    && let Some(new) = var_expr(preview, name).filter(|e| *e != expr)
+                {
+                    node(t, &format!("{id}.staged"), "label", &format!("{id}.row"));
+                    attr(t, "label", &format!("→ {new}"));
+                    attr(t, "style", "docs-staged");
+                }
                 v += 1;
             }
             _ => {}
@@ -146,8 +207,24 @@ pub fn contribute(t: &mut String, doc: &Document, cell: Option<&CellState>, page
     }
 }
 
-/// A prose block: prose segments and `plot` placeholders in source order.
-fn prose(t: &mut String, id: &str, text: &str) {
+/// The expression of var `name` in `doc`, if it has one.
+fn var_expr<'d>(doc: &'d Document, name: &str) -> Option<&'d str> {
+    let b = doc.doc_blocks();
+    let s = doc.strings();
+    (0..b.kind.len())
+        .find(|&r| b.kind[r] == RecordKind::Var && s.get(b.fields[r][0]) == name)
+        .map(|r| s.get(b.fields[r][1]))
+}
+
+/// A prose block: prose segments and `plot` slots in source order. A slot whose expression
+/// has data in `plots` is a `graph` node (recorded in `graphs`); the others say why empty.
+fn prose(
+    t: &mut String,
+    id: &str,
+    text: &str,
+    plots: &[(String, Option<String>)],
+    graphs: &mut Vec<(String, String)>,
+) {
     let parts = split_plots(text);
     if parts.is_empty() {
         node(t, &format!("{id}.0"), "prose", id);
@@ -163,18 +240,23 @@ fn prose(t: &mut String, id: &str, text: &str) {
                 attr(t, "command", "docs.edit");
             }
             Segment::Plot(expr) => {
-                // ponytail: no results reach the editor until the run spine is wired; the
-                // graph node and its data binding land with it.
+                let expr = expr.trim();
+                let state = plots.iter().find(|p| p.0 == expr).map(|p| p.1.as_deref());
+                if let Some(None) = state {
+                    node(t, &pid, "graph", id);
+                    attr(t, "style", "docs-graph");
+                    graphs.push((pid, expr.to_owned()));
+                    continue;
+                }
                 node(t, &pid, "panel", id);
                 attr(t, "style", "docs-plot");
                 node(t, &format!("{pid}.expr"), "label", &pid);
                 attr(t, "label", &format!("plot  {expr}"));
                 node(t, &format!("{pid}.none"), "label", &pid);
-                attr(
-                    t,
-                    "label",
-                    "no results yet: run the bench to fill this graph",
-                );
+                let why = state
+                    .flatten()
+                    .unwrap_or("no results yet: run the bench to fill this graph");
+                attr(t, "label", why);
                 attr(t, "style", "docs-hint");
             }
         }
