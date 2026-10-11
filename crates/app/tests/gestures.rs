@@ -80,17 +80,18 @@ fn nets(s: &Session) -> BTreeMap<String, (u32, String)> {
     out
 }
 
-/// Whether two connectivity maps put the keys they share into the same partition.
+/// Whether two connectivity maps put the keys they share on the same nets: two keys share a
+/// net when their components carry the same net name (a label joins components by name).
 fn same_partition(a: &BTreeMap<String, (u32, String)>, b: &BTreeMap<String, (u32, String)>) {
     let shared: Vec<&String> = a.keys().filter(|k| b.contains_key(*k)).collect();
     for x in &shared {
         for y in &shared {
             assert_eq!(
-                a[*x].0 == a[*y].0,
-                b[*x].0 == b[*y].0,
+                a[*x].1 == a[*y].1,
+                b[*x].1 == b[*y].1,
                 "{x} and {y}: connected before {} / after {}",
-                a[*x].0 == a[*y].0,
-                b[*x].0 == b[*y].0
+                a[*x].1 == a[*y].1,
+                b[*x].1 == b[*y].1
             );
         }
     }
@@ -399,7 +400,7 @@ fn make_subcircuit_rewires_and_keeps_connectivity() {
             );
             for (key, (_, was)) in &before {
                 if was == name && after.contains_key(key) {
-                    assert_eq!(after[key].0, pin.0, "case {case}: {key} joins pin {name}");
+                    assert_eq!(after[key].1, pin.1, "case {case}: {key} joins pin {name}");
                 }
             }
             assert!(["in", "out", "inout"].contains(&dir.as_str()));
