@@ -470,6 +470,7 @@ name = "schemify-plugin"
 version = "0.1.0"
 dependencies = [
  "schemify-abi",
+ "schemify-format",
  "wasmi",
 ]
 

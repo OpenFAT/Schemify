@@ -5,7 +5,8 @@ Open items collected from workstream reports. Each item names its owner crate. R
 ## Cross-crate API requests
 
 - **elab**: adopt the doc and expr APIs that replaced its workarounds: `Project::resolve_in(row, ref)` and `Project::open_handle(row)` (for `cells::resolve_in_row` / `is_open`), `apply_edits_report` (ops of commits, undos and redos, instead of the caller passing ops back), `expr::topo_order_all` (every cycle in one pass, instead of `Graph::finish` cutting one cycle per round).
-- **plugin**, **ui**: switch the local line-record lexers to `schemify-format`.
+- **ui**: switch the local line-record lexer to `schemify-format`. (**plugin** host done; `abi::text` stays the guests' encoder/decoder until `format` has a public value lexer, pinned to the format by `abi_and_format_lexers_agree`.)
+- **format**: a `\u{+41}` escape is accepted (`u32::from_str_radix` takes a sign; the grammar says `1*6HEXDIG`). `abi::text` rejects it.
 
 ## app / editor
 
@@ -17,7 +18,6 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - **Exports**: PDF/EPS text uses the base-14 Helvetica (not embedded, ASCII only, others print `?`); one A4 landscape page per drawing; arcs are polylines of 6° steps; the PNG is the visible canvas at screen resolution (no DPI/size option).
 - **Make subcircuit** (Ctrl+Shift+H) connects the new instance by net labels at the old boundary points and on its pins (xschem rewires); the new cell's symbol is the generated box.
 - **Join/trim** does not merge diagonal wires or wires with attributes other than `bus`.
-- Plugin `eval` requests still answer `E_GONE` (elab evaluator not wired to the host).
 
 ## user config and packages (config spec)
 
@@ -34,7 +34,7 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - Values are kept for the active level's document; other open documents sync their caches when activated. A structural edit (instance insert/delete) rebuilds the cell state (136 ms at 100k objects when the cell has vars).
 - Prose: no images, footnotes or nested emphasis inside links; tables use equal column widths; a `text_area` does not scroll inside itself (the page does).
 - `gmid-lut` characterization uses `spawn:ngspice`, not `run` requests: the ABI cannot (**abi**/**plugin**) run a bench the plugin just wrote (cells are indexed at project load) or hand back a job's raw file/directory (`RunDone` and `Results` carry scalar outputs; the LUT needs the (L, VDS, VGS) grid). Needs a "run this written bench" request and the job directory in `RunDone`.
-- Integration points still stubbed: symbols via elab, plugin `eval`, web OPFS.
+- Integration points still stubbed: symbols via elab, web OPFS.
 
 ## run in the editor (M2 integration)
 
@@ -54,7 +54,8 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## plugins
 
-- Plugin events run synchronously on the frame thread: a cktimg import of a large deck (up to 4·10^10 fuel with the new manifest `fuel` override) blocks the UI for seconds. Run long events on a worker.
+- Web: plugins with a fuel override run their events on the frame thread (no threads in `wasm32-unknown-unknown`), so a large cktimg import still blocks the browser tab. Slice them with wasmi resumable calls (out-of-fuel resumption) per frame.
+- A plugin's `eval` builds the document's `CellState` once per delivery (100+ ms at 100k objects); pass the editor's own state for the active document if eval-heavy plugins appear.
 
 ## cktimg plugin
 
@@ -110,7 +111,6 @@ for it; the goal set for this work was ≤ 1 ms).
 ## Correctness / semantics
 
 - **elab**: `E002` doesn't yet compare a SPICE `body`'s `.subckt` ports with the symbol pins; `global true` names are gathered from every reachable schematic, including unselected impls; `net_<id>` may collide with a user label of the same spelling; `CellState` doesn't observe edits to other documents.
-- **plugin**: an earlier plugin's `set X p` survives a later full redefinition of node `X`; no auto-quarantine of repeatedly trapping plugins.
 - **ui**: status text that changes every frame grows the string table; IME candidate window not positioned.
 - **wave**: per-sweep-step readouts; FFT traces share the time-domain x axis.
 - **import (readers)**: cdfDump untested against a real dump: producing one needs Cadence Virtuoso (`cdfDump` is a SKILL function), which no CI or this machine has; the reader follows the documented format only.

@@ -4,13 +4,13 @@
 //! Every import validates its arguments against the plugin's own memory and returns a
 //! negated [`Code`]; no guest input can make the host panic.
 
-use schemify_abi::{Code, IMPORT_MODULE, Level, MEMORY_BYTES_MAX, Table, exports, text, unpack};
+use schemify_abi::{Code, IMPORT_MODULE, Level, MEMORY_BYTES_MAX, Table, exports, unpack};
 use wasmi::{
     Caller, Config, Engine, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder,
     TrapCode, TypedFunc,
 };
 
-use crate::intake::truncate;
+use crate::intake::{line_values, truncate};
 use crate::{
     EvalRequest, Grants, IO_BYTES_MAX, IoOp, IoRequest, LOG_BYTES_MAX, LogEntry, OUTPUT_BYTES_MAX,
     PluginId, Snapshots, authorize,
@@ -97,7 +97,8 @@ impl Ctx {
     }
 }
 
-/// Typed exports of one instance.
+/// Typed exports of one instance (handles into its store: cheap to copy, valid only with it).
+#[derive(Clone)]
 pub(crate) struct Exports {
     alloc: TypedFunc<u32, u32>,
     on_event: TypedFunc<(u32, u32), u64>,
@@ -606,10 +607,7 @@ fn request(caller: &mut Caller<'_, Ctx>, op: IoOp, target: (u32, u32), data: (u3
     };
     let args: Vec<String> = match op {
         IoOp::ClipboardGet | IoOp::ClipboardSet => Vec::new(),
-        IoOp::Spawn => match text::values(target)
-            .map(|v| v.map(|v| v.into_owned()))
-            .collect()
-        {
+        IoOp::Spawn => match line_values(target) {
             Ok(argv) => argv,
             Err(code) => return code.neg(),
         },

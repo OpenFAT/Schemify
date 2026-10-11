@@ -213,7 +213,8 @@ impl Model {
     }
 
     /// Reference composition: for every key the last plugin in `order` wins; keys keep
-    /// their first-appearance order per (kind, scope).
+    /// their first-appearance order per (kind, scope); a `node X` / `remove X` drops every
+    /// `set X …` before it (a set after it appears again, at the end).
     fn compose(&self, order: &[PluginId]) -> Vec<Row> {
         let mut groups: BTreeMap<(Kind, String), Group> = BTreeMap::new();
         for &p in order {
@@ -223,6 +224,10 @@ impl Model {
                 }
                 let group = groups.entry((*kind, scope.clone())).or_default();
                 for (key, text) in members {
+                    if let Some(node) = key.strip_prefix("node ") {
+                        let prefix = format!("set {node} ");
+                        group.retain(|g| !g.0.starts_with(&prefix));
+                    }
                     match group.iter_mut().find(|g| g.0 == *key) {
                         Some(g) => (g.1, g.2) = (p, text.clone()),
                         None => group.push((key.clone(), p, text.clone())),
@@ -494,6 +499,51 @@ proptest! {
         };
         prop_assert_eq!(got.is_ok(), allowed, "{:?} {:?} {:?}", grants, op, args);
     }
+}
+
+/// Takes `body` in as `p`'s `ui` set.
+fn ui(p: PluginId, body: &str, c: &mut Contributions) {
+    let mut o = Out::new();
+    o.contribute(Kind::Ui, body);
+    let (mut q, mut rej) = (RequestQueues::default(), Vec::new());
+    intake(p, o.as_str().as_bytes(), &snapshots(), c, &mut q, &mut rej);
+    assert!(rej.is_empty(), "{rej:?}");
+}
+
+/// A later plugin's full redefinition of a node (`node X`, `remove X`) drops every earlier
+/// `set X …`, as the UI composition does; a later set applies again.
+#[test]
+fn a_full_redefinition_drops_earlier_sets() {
+    let [a, b, c3] = PLUGINS;
+    let mut c = Contributions::new();
+    ui(
+        a,
+        "node x item\n  label one\nset x label two\nset y label keep",
+        &mut c,
+    );
+    ui(b, "node x item\n  label three", &mut c);
+    let keys = |composed: &Composed| -> Vec<String> {
+        composed.records.iter().map(|r| r.key.to_string()).collect()
+    };
+    let (composed, overrides) = compose(&c, &PLUGINS[..2]);
+    assert_eq!(keys(&composed), ["node x", "set y label"]);
+    assert_eq!(composed.records[0].owner, b);
+    let dropped = overrides
+        .iter()
+        .filter(|o| &*o.key == "set x label")
+        .map(|o| (o.loser, o.winner));
+    assert_eq!(dropped.collect::<Vec<_>>(), [(a, b)]);
+
+    ui(c3, "set x label four", &mut c);
+    let (composed, _) = compose(&c, &PLUGINS);
+    assert_eq!(keys(&composed), ["node x", "set y label", "set x label"]);
+    assert_eq!(composed.records[2].owner, c3);
+
+    // `remove` is a redefinition too, and it drops the same plugin's earlier set.
+    ui(c3, "set x label four\nremove x", &mut c);
+    let (composed, _) = compose(&c, &PLUGINS);
+    assert_eq!(keys(&composed), ["node x", "set y label"]);
+    assert_eq!(&*composed.records[0].text, "remove x");
 }
 
 /// Composition key of a set member's first line, computed like the spec says (word and first

@@ -9,14 +9,17 @@
 //! I/O is inverted and never blocks the frame (plugin-abi §5): file reads and writes complete
 //! within the delivery, a `spawn` runs on a worker ([`platform::spawn_start`]) and its
 //! `IoDone` arrives in a later frame through [`Host::poll`]; timers fire the same way. While
-//! either waits, [`Host::wake_ms`] asks the window for a tick.
+//! either waits, [`Host::wake_ms`] asks the window for a tick. A plugin granted more fuel than
+//! the default (a manifest or package `fuel` override) runs its events on a worker thread
+//! (`Plugins::set_worker`), so a long import never freezes the editor; its outputs land in a
+//! later frame. `eval` requests are answered within the delivery by [`eval_in`].
 
 use std::path::Path;
 
 use schemify_doc::{DocHandle, Project};
-use schemify_elab::CellState;
-use schemify_expr::{Code as XCode, Error as XError, Span, Value};
-use schemify_plugin::abi::{Event, FUEL_DEFAULT, Kind, Table, col};
+use schemify_elab::{CellState, Funcs, Val};
+use schemify_expr::{Code as XCode, Error as XError, Mode, Program, Scratch, Span, Value};
+use schemify_plugin::abi::{Code, Event, FUEL_DEFAULT, Kind, Table, col};
 use schemify_plugin::{
     IoOp, PluginEvents, PluginId, Plugins, RequestQueues, RunRequest, Snapshots, deliver,
 };
@@ -169,7 +172,10 @@ impl Host {
             };
             match platform::read(&file) {
                 Ok(wasm) => match plugins.load(name, &wasm, &grants, fuel) {
-                    Ok(id) => hashes.push((id, content_hash(&wasm))),
+                    Ok(id) => {
+                        let _ = plugins.set_worker(id, fuel > FUEL_DEFAULT);
+                        hashes.push((id, content_hash(&wasm)));
+                    }
                     Err(c) => notes.push(format!("plugin {name}: {c:?}")),
                 },
                 Err(e) => notes.push(format!("plugin {name}: {e}")),
@@ -308,7 +314,8 @@ impl Host {
 
     /// The D20 function registry (`elab::Funcs`): calls `ns.f` through the composed
     /// `functions` contributions and `schemify_call`. `None` when no loaded plugin exports
-    /// `name` (elab then falls back to the record's `cached` value, unverified).
+    /// `name`, or its plugin's event is running on a worker (elab then falls back to the
+    /// record's `cached` value, unverified, until the next recompute).
     ///
     /// Args travel as line-record values (strings quoted, numbers canonical); a number or
     /// `true`/`false` comes back. Failures map to expression errors: wrong arity `X008`, a
@@ -321,6 +328,10 @@ impl Host {
         let f = &self.plugins.composed().functions;
         let row = f.find(name)?;
         let (plugin, fn_id, arity) = (f.plugin[row], f.fn_id[row], f.arity[row]);
+        if self.plugins.busy(plugin) {
+            // Its event runs on a worker: the record's `cached` value stands in (D20).
+            return None;
+        }
         let err = |code, msg: String| Some(Err(XError::new(code, Span::default(), msg)));
         if args.len() != usize::from(arity) {
             return err(
@@ -401,10 +412,11 @@ impl Host {
     }
 
     /// Returns whether a delivery has work (queued events or host-originated ones, user
-    /// config requests).
+    /// config requests, an event running on a worker to take in).
     pub fn has_work(&self) -> bool {
         !self.events.is_empty()
             || self.plugins.has_pending()
+            || self.plugins.running() > 0
             || !self.user_ready
             || !self.user_cmds.is_empty()
             || !self.user_logs.is_empty()
@@ -444,14 +456,16 @@ impl Host {
     }
 
     /// Milliseconds until the next completion should be looked for: 20 ms while a
-    /// child runs, else the nearest timer; `None` when nothing waits (idle CPU 0%, D39).
+    /// child or a plugin's worker event runs, else the nearest timer; `None` when nothing
+    /// waits (idle CPU 0%, D39).
     pub fn wake_ms(&self, now_ms: u64) -> Option<u32> {
         let timer = self
             .timers
             .iter()
             .map(|t| t.0.saturating_sub(now_ms).min(u64::from(u32::MAX)) as u32)
             .min();
-        let io = (!self.children.is_empty()).then_some(IO_POLL_MS);
+        let busy = !self.children.is_empty() || self.plugins.running() > 0;
+        let io = busy.then_some(IO_POLL_MS);
         match (timer, io) {
             (Some(t), Some(i)) => Some(t.min(i)),
             (t, i) => t.or(i),
@@ -622,6 +636,9 @@ impl Host {
             logs: std::mem::take(&mut self.user_logs),
             ..Delivered::default()
         };
+        let jobs_done = self.plugins.jobs_done();
+        // `eval` answers reuse one cell state per document within this delivery.
+        let mut states: Vec<(DocHandle, Option<CellState>)> = Vec::new();
         for _ in 0..ROUNDS_MAX {
             if !self.has_work() {
                 break;
@@ -656,12 +673,11 @@ impl Host {
             out.runs.append(&mut self.queues.runs);
             let evals: Vec<_> = self.queues.evals.drain(..).collect();
             for e in evals {
-                // elab integration point: no evaluator yet.
-                let gone = -(schemify_plugin::abi::Code::Gone as i32);
+                let (status, text) = self.eval_request(project, &mut states, e.doc, &e.expr);
                 let ev = Event::IoDone {
                     handle: e.handle,
-                    status: gone,
-                    bytes: b"",
+                    status,
+                    bytes: text.as_bytes(),
                 };
                 let _ = self.events.push(Some(e.plugin), &ev);
             }
@@ -687,7 +703,42 @@ impl Host {
                 let _ = self.events.push(Some(r.plugin), &ev);
             }
         }
+        // A worker event that finished may have loaded what a pure function reads (D20).
+        out.state_changed |= self.plugins.jobs_done() != jobs_done;
+        assert!(states.len() <= ROUNDS_MAX as usize * schemify_plugin::EVALS_MAX);
         out
+    }
+
+    /// Answers one plugin `eval` (plugin-abi §3) for document id `doc`: [`eval_in`] over its
+    /// cell state, built once per delivery (`states`) with this host's plugin functions.
+    /// Returns the `IoDone` status and bytes: `0` and the value, or `-E_GONE` for a closed
+    /// document, `-E_PARSE` and the expression error.
+    fn eval_request(
+        &mut self,
+        project: &Project,
+        states: &mut Vec<(DocHandle, Option<CellState>)>,
+        doc: u32,
+        expr: &str,
+    ) -> (i32, String) {
+        let Some(h) = handle_of(project, doc) else {
+            return (Code::Gone.neg(), "document closed".to_owned());
+        };
+        let i = match states.iter().position(|s| s.0 == h) {
+            Some(i) => i,
+            None => {
+                let mut funcs = |name: &str, args: &[Value<'_>]| self.call_fn(name, args);
+                states.push((h, CellState::build(project, h, &mut funcs)));
+                states.len() - 1
+            }
+        };
+        let Some(st) = &states[i].1 else {
+            return (Code::Gone.neg(), "document closed".to_owned());
+        };
+        let mut funcs = |name: &str, args: &[Value<'_>]| self.call_fn(name, args);
+        match eval_in(st, expr, &mut funcs) {
+            Ok(text) => (0, text),
+            Err(e) => (Code::Parse.neg(), format!("{}: {}", e.code.as_str(), e.msg)),
+        }
     }
 
     /// Returns `(plugin name, ui set + keymap set)` per plugin in load order, when the
@@ -739,6 +790,7 @@ fn load_installed(
     let fuel = p.fuel.unwrap_or(FUEL_DEFAULT).clamp(FUEL_MIN, FUEL_MAX);
     match plugins.load(&p.name, &wasm, &grants, fuel) {
         Ok(id) => {
+            let _ = plugins.set_worker(id, fuel > FUEL_DEFAULT);
             hashes.push((id, content_hash(&wasm)));
             Some(id)
         }
@@ -759,6 +811,60 @@ pub fn doc_id(h: DocHandle) -> u32 {
 /// The live handle a plugin's document id names.
 pub fn handle_of(project: &Project, id: u32) -> Option<DocHandle> {
     project.handles().find(|&h| doc_id(h) == id)
+}
+
+/// Evaluates a plugin's `eval` expression (plugin-abi §3) in the cell scope of `st` (expr
+/// spec §4: the cell's own params, then its vars, at their default-context values), calling
+/// plugin functions through `funcs`. Returns the value as one line-record value, the form
+/// `schemify_call` results take: `int`/`num` in canonical number text (expr spec §7), `bool`
+/// as `true`/`false`, `str` quoted, `cnum` as `re+imi`.
+///
+/// # Errors
+///
+/// The compile or evaluation error of `expr`; `X004` also for a name whose own value failed
+/// in the cell (its error is the cell's violation, not this expression's).
+pub fn eval_in<F: Funcs>(st: &CellState, expr: &str, funcs: &mut F) -> Result<String, XError> {
+    let prog = Program::compile(expr, Mode::Scalar)?;
+    let g = &st.graph;
+    let own = st.ifaces.first().map_or(&[][..], |f| &f.param_name[..]);
+    let params = own.len().min(g.params as usize);
+    let mut inputs: Vec<Value<'_>> = Vec::with_capacity(prog.idents().len());
+    for name in prog.idents() {
+        let node = (0..params)
+            .find(|&p| st.names.get(own[p]) == name)
+            .or_else(|| {
+                let vars = g.var_name.iter().position(|&v| st.names.get(v) == name)?;
+                Some(g.params as usize + vars)
+            });
+        let Some(value) = node.and_then(|n| g.vals.get(n)).and_then(Val::value) else {
+            let msg = format!("`{name}` has no value in this cell");
+            return Err(XError::new(XCode::X004, Span::default(), msg));
+        };
+        inputs.push(value);
+    }
+    let mut call = |slot: u32, args: &[Value<'_>]| -> Result<Value<'static>, XError> {
+        let (ns, f) = prog
+            .plugin_fns()
+            .nth(slot as usize)
+            .expect("slot of this program");
+        let name = format!("{ns}.{f}");
+        funcs(&name, args).unwrap_or_else(|| {
+            let msg = format!("plugin function `{name}` is not loaded");
+            Err(XError::new(XCode::X006, Span::default(), msg))
+        })
+    };
+    let mut scratch = Scratch::default();
+    let value = prog.eval_with(&inputs, &mut call, &mut scratch)?;
+    let mut out = String::new();
+    match value {
+        Value::Str(s) => out.push_str(&crate::docs::quote(s)),
+        other => Val::from_value(other).write_text(&mut out),
+    }
+    assert!(
+        !out.is_empty() || matches!(value, Value::Str(_)),
+        "values have text"
+    );
+    Ok(out)
 }
 
 /// Executes an authorized I/O request natively (project-relative paths were checked by the
@@ -790,10 +896,10 @@ fn content_hash(bytes: &[u8]) -> String {
     h
 }
 
-/// Bounds on a manifest `fuel` override (plugin ABI §2). The ceiling keeps one event from
-/// freezing the editor indefinitely: wasmi runs on the frame thread.
-// ponytail: events run synchronously on the frame; a plugin that needs 10^10+ fuel (large
-// cktimg imports) still blocks the UI for seconds. Upgrade: run long events on a worker.
+/// Bounds on a manifest `fuel` override (plugin ABI §2). A plugin above the default runs its
+/// events on a worker thread; the ceiling still bounds how long one event may run there.
+// ponytail: on the web (no threads) such events still run on the frame thread and block it;
+// slice them with wasmi's resumable calls (`call_resumable`, out-of-fuel) if the web needs it.
 const FUEL_MIN: u64 = 1_000_000;
 const FUEL_MAX: u64 = 100_000_000_000;
 
@@ -817,6 +923,42 @@ fn manifest_fuel(attr: Option<&schemify_doc::Attr>) -> Result<u64, String> {
     }
     assert!(fuel > 0);
     Ok(fuel)
+}
+
+#[cfg(test)]
+mod eval_tests {
+    use super::*;
+    use schemify_elab::no_funcs;
+
+    /// Oracle: a plugin's `eval` of cell names gives the values elab computed for them
+    /// (`b = a + p = 4`), combined by the expression; names without a value and missing
+    /// plugin functions are declared errors, never a panic.
+    #[test]
+    fn eval_reads_the_cell_scope() {
+        let cell = "schemify 1 shcomp\n\npin P inout 0 0\n\nparam p 3\n\nimpl sch schematic\n\nport 0p0001 0 0 R0 P\n\nvar a 1\nvar b a+p\nvar bad 1/0\n";
+        let mut project = Project::new(None, None, 1).unwrap();
+        project
+            .index_library("", "", &[("c.shcomp", cell.as_bytes())])
+            .unwrap();
+        let h = project
+            .open("", "c.shcomp", cell.as_bytes(), None)
+            .unwrap()
+            .handle;
+        let st = CellState::build(&project, h, &mut no_funcs).unwrap();
+        let ev = |e: &str| eval_in(&st, e, &mut no_funcs);
+        assert_eq!(ev("b"), Ok("4".to_owned()));
+        assert_eq!(ev("b*2 + p"), Ok("11".to_owned()));
+        assert_eq!(ev("b > a"), Ok("true".to_owned()));
+        assert_eq!(ev("str(b) + \"V\""), Ok("\"4V\"".to_owned()));
+        assert_eq!(ev("nope + 1").unwrap_err().code, XCode::X004);
+        assert_eq!(
+            ev("bad").unwrap_err().code,
+            XCode::X004,
+            "its error is the cell's"
+        );
+        assert_eq!(ev("gmid.width(1, 2, 3)").unwrap_err().code, XCode::X006);
+        assert!(ev("1 +").is_err());
+    }
 }
 
 #[cfg(test)]
