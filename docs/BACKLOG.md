@@ -32,6 +32,15 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 - **Code inside a component's subcircuit** (5 corpus benches): xschem places code blocks (e.g. `.param`, `.include`) inside a component's schematic and emits them inside its `.subckt`. Today `.shcomp` cannot carry `code` (rank 6 is bench-only), so the importer moves it to the bench copy. Recommendation: allow `code <name> <lang>` in `.shcomp`, emitted inside every specialization of the component's subckt (format rank 6 + netlist §7). Needs a format/elab decision.
 
+## spicecmp
+
+- Evaluate subckt defaults after the call's overrides (ngspice 45 order; net2schem found it).
+- Treat stray tokens on `.subckt` lines (`delay=200 ps`) consistently with ngspice.
+
+## net2schem plugin
+
+- Splitting a conversion across events would lift the 200-card / 80-device caps (`ponytail` in code); XSPICE `A/N/P/Y` and node-less `X` cards are kept as code text, not drawn.
+
 ## netlist
 
 - Remaining corpus differences are owned and annotated in `tests/corpus/RATCHET.md` (SPICE 246/301 + 23 golden-unevaluated, CDL code-stripped 227/301 + 32, 22 gate-blocked).

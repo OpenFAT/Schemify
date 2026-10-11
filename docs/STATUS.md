@@ -24,7 +24,7 @@ Where the project stands. Update this file whenever a workstream lands or stops.
 | `abi` + `plugin` | wasmi host, capabilities, fuel, last-wins composition, guest SDK |
 | `ui` + `render` | UI-as-data toolkit (taffy/parley/AccessKit/RaTeX), vello renderer, waves window |
 | `app` | GUI editor (`schemify edit`), default-UI plugin, docs pane, CLI: `import netlist check run fmt diff merge-driver git-setup` |
-| Plugins | `default-ui` (embedded), `gmid-lut` (gm/Id functions from ngspice-characterized LUTs), examples `hello`/`bad-actor`/`gmid-stub` |
+| Plugins | `default-ui` (embedded), `gmid-lut` (gm/Id functions from ngspice-characterized LUTs), `net2schem` (SPICE → schematic; round trip spicecmp-equivalent on 297/301 goldens), examples `hello`/`bad-actor`/`gmid-stub` |
 | Corpus | `tests/corpus/` fetch + 602 xschem goldens (`.cache/`, gitignored), `tools/spicecmp`, ratchet in `tests/corpus/RATCHET.md` (SPICE 246/301, CDL code-stripped 227/301; +23/+32 golden-unevaluated tracked separately) |
 | Workspace tests | 520 passed, 0 failed (`cargo test --workspace --no-fail-fast`, 2026-10-10) |
 
@@ -33,7 +33,6 @@ Where the project stands. Update this file whenever a workstream lands or stops.
 | Workstream | Branch | Scope |
 |---|---|---|
 | Editor integration | `worktree-agent-a17d8c60dd9156f29` | checks overlay + panel, net highlight `k`, netlist `n`, non-blocking Simulate `s`, results table, waves cross-probe, OP back-annotation, optimizer UI with staged edits |
-| net2schem plugin | `worktree-agent-a7f93ac635546c3a1` | SPICE → schematic as a WASM plugin, round-trip spicecmp oracle |
 | `flake.nix` | committed on `m1` | package + dev shell verified; LTO build 25.4 MiB; `panic=abort` build measuring (D39: ≤ 25 MB) |
 
 ## Next
