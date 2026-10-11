@@ -80,8 +80,23 @@ An `optimize` record runs as an ask → job → tell loop, one candidate at a ti
 
 A plugin's `run <bench> <config> <corner>` record with `vary <var> <value>` lines ([plugin-abi.md](plugin-abi.md) §7) is one job: config and corner as named, no sample index, the vary lines as assignments in order. It is prepared and dispatched like any other job; `RunDone { job }` follows when the job is done or failed.
 
+In the editor all runs share one queue: a request for the bench of the current run (same design) becomes a job of that run; a request for another bench starts a fresh run of it (gated and hashed with no jobs) once the current run is idle. At most 256 requests wait; more are dropped with a status note.
+
+## 7a. The run in the editor (non-blocking)
+
+`s` (Simulate) on a `.shbench` selects every corner and sweep and the first Monte Carlo record of the plan; on any other file it refuses (D11b) and points to *New bench from this component*, which writes `<stem>_tb.shbench` beside the cell: one instance of it at the origin, a label on every pin naming the net after the pin, and a `code op spice` block with `.op`. *Optimize* runs the bench's first `optimize` record (or the one named).
+
+Starting a run is the gate and the design hash only (§4); a refused gate lists its blocking violations in the checks panel. Each frame then prepares at most 8 jobs (elaborate + netlist), polls the runner without waiting, and steps the optimizer (one candidate in flight). While a run is in flight the editor asks the window for a tick every 25 ms; idle, it asks for none (D39). *Cancel simulation* kills running simulators and cancels queued and unprepared jobs (`cancelled`).
+
+When the run goes idle the results file is written (§4) and, beside it, `bench` — one line, the bench's display name (`lib:dir/stem`, a project cell without `lib:`) — so the editor finds a bench's runs. Opening a bench loads its newest run (by the results file's modification time); the results panel lists up to 8 earlier ones. Results are **stale** when the design hash of the bench over the run's original job list (optimizer candidates and plugin jobs excluded) differs from the run's; the editor rechecks after each edit while results are shown.
+
+The optimizer's best evaluation (lowest score, first on ties) is offered as a **staged edit** on the bench (edits spec §1): `set_field var <name> 1 <canonical value>` per `vary` var (plus removing a stale `cached`), shown on the docs page beside each var with Accept / Reject (`edit.accept_staged`, `edit.reject_staged`).
+
+The selected job (job 0 after a run; a results row picks another) feeds the waves dock, the docs page's plot slots ([docs-page.md](docs-page.md) §5) and the OP back-annotation: the dataset whose plot name contains "operating point" gives one mark per node voltage `v(<net>)` (target: the emitted net name, lowercase; text `<value>V`) and per device quantity `@<dev>[p]` for `p` in `id gm gds vds vgs vth vdsat i` (target: the instance path through the name map; text `p=<value>`), as the `op` source of the annotation overlay, while the tab shows the bench's hierarchy and *Op Annotate* is on.
+
 ## 8. Amendments
 
 1. format.md rank 4 `var` gains `dist gauss|uniform <spread> [rel]` (§3); rank 6 `optimize` gains `seed <n>`; `montecarlo` and `optimize` defaults and `output` evaluation as stated here.
 2. format.md user config `sim <name>`: `{netlist}`/`{raw}` placeholders; names `ngspice`, `openvaf`, `iverilog`.
 3. Results live in `.schemify/runs/<design>/results` next to the job directories (D18 said `.schemify/results/`): one directory per design keeps a run's netlists, raw files and results together.
+4. (M2 editor) The app writes a `bench` sidecar beside `results` (§7a) and runs the spine without blocking; `crates/run` gained `Jobs::cancel_pending` for jobs never handed to a runner.

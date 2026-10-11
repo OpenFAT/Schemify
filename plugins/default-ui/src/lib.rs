@@ -27,7 +27,12 @@
 //!   `.list`, under which the app adds `dialog.choose.row.<i>` items (command `choose.pick`);
 //! - `dialog.props` with `dialog.props.title`, `.fields` (rows `dialog.props.row.<i>` holding
 //!   `dialog.props.key.<i>` and `dialog.props.val.<i>`, command `props.field`), OK
-//!   (`props.ok`) and Cancel (`dialog.close`).
+//!   (`props.ok`) and Cancel (`dialog.close`);
+//! - `bottom` (under the work area), where the app puts the checks panel (`checks.pane`) or
+//!   the results table (`results.pane`); `work`, whose `canvas` the app replaces with a
+//!   `textview` in a netlist tab; the checkable items `sim.dialect.<word>`,
+//!   `simulation.show_netlist_after_netlist_command` and `waves.op_annotate`, whose `checked`
+//!   the app sets.
 
 use std::cell::Cell;
 

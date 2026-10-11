@@ -1,12 +1,18 @@
-//! The waveform window (D23): `render::waves` over one `.raw` file, shown in place of the
-//! schematic until closed (`Ctrl+W` or Escape with nothing open). Same wiring as the
+//! The waveform dock (D23): `render::waves` over one `.raw` file, docked under the schematic
+//! until closed (`Ctrl+W`, or Escape over the dock with nothing open). Same wiring as the
 //! `waves` example in `crates/render`: the viewer tables are `wave::Waves`, its UI is
 //! `ui::waves`, and every viewer change is a `wave::Request`.
 //!
-//! The Simulate → Waves path will open this with the run's result file once `run` exists;
-//! today the Waves command opens it on a file the user picks.
+//! Opened by the Waves command on a file the user picks, or by the results table on a job's
+//! raw file. Docked rather than full-window so the canvas stays clickable: a click on a net
+//! cross-probes it into the open viewer ([`WavesView::add_trace`]). The dock lays out and
+//! routes input in its own coordinates; the editor shifts pointer events into them and
+//! paints it through [`Shifted`].
 
 use schemify_render::Painter;
+use schemify_render::vello::Glyph;
+use schemify_render::vello::kurbo::{Affine, BezPath, Rect as KRect};
+use schemify_render::vello::peniko::{Color, FontData};
 use schemify_render::waves::{WaveLook, WaveScratch, draw_window};
 use schemify_render::widgets::{UiScratch, draw_ui};
 use schemify_ui::waves::{Geometry, WAVES_UI, WaveUi};
@@ -175,6 +181,47 @@ impl WavesView {
         (changed, false)
     }
 
+    /// Adds a trace for calculator expression `src` (cross-probe: `v(net)`, `i(dev)`) to the
+    /// active pane, over the last dataset that evaluates it. A trace with the same source is
+    /// not added twice.
+    ///
+    /// # Errors
+    ///
+    /// No dataset evaluates `src` (the last dataset's reason), or the viewer is full.
+    pub fn add_trace(&mut self, src: &str) -> Result<(), String> {
+        if self.traces().iter().any(|t| t.eq_ignore_ascii_case(src)) {
+            return Ok(());
+        }
+        let mut why = String::from("no dataset");
+        for d in (0..self.waves.datasets().len()).rev() {
+            let req = Request::AddTrace {
+                src: src.to_owned(),
+                dataset: d as u8,
+                pane: self.ui.active_pane(),
+            };
+            let res = self.waves.apply(&req);
+            match &res {
+                Ok(schemify_wave::Applied::Trace(_)) => {
+                    self.ui.note(&self.waves, &req, &res);
+                    if self.viewport.0 > 0.0 {
+                        self.rebuild();
+                    }
+                    return Ok(());
+                }
+                Ok(other) => why = format!("{other:?}"),
+                Err(e) => why = e.to_string(),
+            }
+        }
+        Err(format!("{src}: {why}"))
+    }
+
+    /// The source text of every trace, in legend order.
+    pub fn traces(&self) -> Vec<&str> {
+        (0..self.waves.trace_count())
+            .map(|i| self.waves.src(i))
+            .collect()
+    }
+
     /// Paints the viewer.
     pub fn paint<P: Painter>(&mut self, p: &mut P) {
         draw_ui(
@@ -208,5 +255,66 @@ impl WavesView {
             &[],
             &mut self.ui_scratch,
         );
+    }
+}
+
+/// A painter that draws `dy` logical pixels lower: the waves dock lays out at its own origin
+/// and is painted below the editor through this. Paths are copied per call (the dock draws
+/// hundreds, not the canvas's hundreds of thousands).
+pub struct Shifted<'a, P: Painter> {
+    /// The window's painter.
+    pub p: &'a mut P,
+    /// Vertical offset in logical pixels.
+    pub dy: f64,
+}
+
+impl<P: Painter> Shifted<'_, P> {
+    fn rect(&self, r: KRect) -> KRect {
+        KRect::new(r.x0, r.y0 + self.dy, r.x1, r.y1 + self.dy)
+    }
+
+    fn path(&self, path: &BezPath) -> BezPath {
+        let mut out = path.clone();
+        out.apply_affine(Affine::translate((0.0, self.dy)));
+        out
+    }
+}
+
+impl<P: Painter> Painter for Shifted<'_, P> {
+    fn fill_rect(&mut self, r: KRect, color: Color) {
+        let r = self.rect(r);
+        self.p.fill_rect(r, color);
+    }
+
+    fn fill_path(&mut self, path: &BezPath, color: Color) {
+        let path = self.path(path);
+        self.p.fill_path(&path, color);
+    }
+
+    fn stroke_path(&mut self, path: &BezPath, width: f64, color: Color) {
+        let path = self.path(path);
+        self.p.stroke_path(&path, width, color);
+    }
+
+    fn glyphs(
+        &mut self,
+        font: &FontData,
+        px: f32,
+        coords: &[i16],
+        color: Color,
+        at: Affine,
+        glyphs: &[Glyph],
+    ) {
+        let at = Affine::translate((0.0, self.dy)) * at;
+        self.p.glyphs(font, px, coords, color, at, glyphs);
+    }
+
+    fn push_clip(&mut self, r: KRect) {
+        let r = self.rect(r);
+        self.p.push_clip(r);
+    }
+
+    fn pop_clip(&mut self) {
+        self.p.pop_clip();
     }
 }

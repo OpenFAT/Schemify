@@ -1,0 +1,22 @@
+schemify 1 shprim
+  doc "Resistor (run fixture)"
+  prefix R
+
+pin A inout 0 -30
+pin B inout 0 30
+
+param R 1k
+  unit Ohm
+
+impl spice spice
+  format spice "{name} {A} {B} {R}"
+
+line 0 -30 0 -15
+line 0 15 0 30
+
+rect -5 -15 5 15
+
+stext 10 -12 R0 {name}
+  size 0.2
+stext 10 2 R0 R={eng(R)}
+  size 0.18

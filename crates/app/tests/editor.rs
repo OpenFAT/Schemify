@@ -357,26 +357,3 @@ fn tabs_open_new_and_switch() {
         "a .shprim opens on its symbol"
     );
 }
-
-#[test]
-fn integration_points_report_not_available() {
-    let mut s = Session::open("inv", "top.shcomp", "stubs", true);
-    s.key("n");
-    assert!(
-        s.ed.session.status.contains("not available yet"),
-        "{}",
-        s.ed.session.status
-    );
-    s.key("s");
-    assert!(
-        s.ed.session.status.contains("shbench"),
-        "{}",
-        s.ed.session.status
-    );
-    s.key("k");
-    assert!(
-        s.ed.session.status.contains("elab"),
-        "{}",
-        s.ed.session.status
-    );
-}

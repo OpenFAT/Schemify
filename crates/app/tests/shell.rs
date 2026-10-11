@@ -456,6 +456,7 @@ fn manifest_plugins_load_in_order_and_receive_commands() {
         no_default_ui: false,
         path: Some(dir.join("top.shcomp")),
         seed: 3,
+        ..Default::default()
     })
     .unwrap();
     let mut s = Session { ed, now: 1, dir };

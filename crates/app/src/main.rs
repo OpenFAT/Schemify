@@ -79,6 +79,7 @@ fn edit(args: &[String]) -> u8 {
         no_default_ui,
         path: paths.first().map(|p| std::path::PathBuf::from(p.as_str())),
         seed: schemify_app::platform::seed(),
+        ..schemify_app::editor::Options::default()
     };
     match schemify_app::editor::run(opts) {
         Ok(()) => OK,
@@ -339,7 +340,7 @@ fn design_args(args: &[String]) -> Option<DesignArgs> {
 
 /// The process environment for `${NAME}` expansion (netlist spec §7.1).
 fn env_pairs() -> Vec<(String, String)> {
-    std::env::vars().collect()
+    schemify_app::spines::env_pairs()
 }
 
 /// A loaded project with `file` open (load spine).
@@ -347,6 +348,26 @@ struct Opened {
     project: schemify_doc::Project,
     lib_dir: Vec<Option<std::path::PathBuf>>,
     top: schemify_doc::DocHandle,
+}
+
+impl schemify_app::spines::Cells for Opened {
+    fn project(&self) -> &schemify_doc::Project {
+        &self.project
+    }
+
+    fn open_row(&mut self, row: u32) -> Result<(), String> {
+        use schemify_app::libs;
+        let row = row as usize;
+        let lib = self.project.cells().lib[row];
+        let rel = libs::cell_relpath(&self.project, row);
+        let (_, bytes, _) = libs::cell_bytes(&self.lib_dir, &self.project, lib, &rel)
+            .map_err(|e| format!("{rel}: {e}"))?;
+        let name = self.project.libs().name[usize::from(lib)].clone();
+        self.project
+            .open(&name, &rel, &bytes, None)
+            .map(|_| ())
+            .map_err(|e| format!("{name}:{rel}: cannot open: {e:?}"))
+    }
 }
 
 fn open_design(file: &str) -> Result<Opened, u8> {
@@ -397,36 +418,16 @@ fn open_design(file: &str) -> Result<Opened, u8> {
     })
 }
 
-/// Elaborates `o.top`, opening every cell elab asks for (bounded by the cell count).
+/// Elaborates `o.top`, opening every cell elab asks for (`spines::elaborate_all`).
 fn elaborate_all(
     o: &mut Opened,
     req: &schemify_elab::Request<'_>,
 ) -> Result<schemify_elab::Elab, u8> {
-    use schemify_app::libs;
-    let rounds = o.project.cells().lib.len() + 1;
-    for _ in 0..rounds {
-        let e = schemify_elab::elaborate(&o.project, o.top, req, &mut schemify_elab::no_funcs);
-        if e.needs_open.is_empty() {
-            return Ok(e);
-        }
-        for &row in &e.needs_open {
-            let row = row as usize;
-            let lib = o.project.cells().lib[row];
-            let rel = libs::cell_relpath(&o.project, row);
-            let (_, bytes, _) =
-                libs::cell_bytes(&o.lib_dir, &o.project, lib, &rel).map_err(|e| {
-                    eprintln!("{rel}: {e}");
-                    USAGE_ERROR
-                })?;
-            let name = o.project.libs().name[usize::from(lib)].clone();
-            if let Err(e) = o.project.open(&name, &rel, &bytes, None) {
-                eprintln!("{name}:{rel}: cannot open: {e:?}");
-                return Err(DESIGN_ERROR);
-            }
-        }
-    }
-    eprintln!("elaboration kept asking for more cells");
-    Err(DESIGN_ERROR)
+    let top = o.top;
+    schemify_app::spines::elaborate_all(o, top, req, &mut schemify_elab::no_funcs).map_err(|e| {
+        eprintln!("{e}");
+        DESIGN_ERROR
+    })
 }
 
 /// Prints violations (`E`/`W`/`I code cell path param: detail`); returns whether any is
@@ -434,30 +435,14 @@ fn elaborate_all(
 fn report(e: &schemify_elab::Elab) -> bool {
     let mut errors = false;
     for v in &e.violations.rows {
-        let name = |n: schemify_elab::Name| {
-            (n != schemify_elab::Name::NONE).then(|| e.names.get(n).to_owned())
-        };
         errors |= v.code.as_str().starts_with('E');
-        let mut line = format!("{} {}", v.code.as_str(), name(v.cell).unwrap_or_default());
-        for extra in [name(v.path), name(v.param)].into_iter().flatten() {
-            line.push(' ');
-            line.push_str(&extra);
-        }
-        eprintln!("{line}: {}", v.detail);
+        eprintln!("{}", schemify_app::spines::violation_line(&e.names, v));
     }
     errors
 }
 
 fn dialect_of(word: Option<&str>) -> Option<schemify_elab::Dialect> {
-    use schemify_elab::Dialect;
-    Some(match word.unwrap_or("ngspice") {
-        "ngspice" => Dialect::Ngspice,
-        "xyce" => Dialect::Xyce,
-        "cdl" => Dialect::Cdl,
-        "spectre" => Dialect::Spectre,
-        "verilog" => Dialect::Verilog,
-        _ => return None,
-    })
+    schemify_app::spines::dialect_of(word.unwrap_or("ngspice"))
 }
 
 /// `netlist`: load → elaborate → check → gate → emit (netlist spine).
@@ -536,7 +521,7 @@ fn check(args: &[String]) -> u8 {
 }
 
 /// `run`: plan → expand → design hash (gate) → per job prepare + submit → wait →
-/// outputs and specs (run spine, native runner).
+/// outputs and specs (run spine, native runner; `spines::start_run`).
 #[cfg(not(target_arch = "wasm32"))]
 fn run(args: &[String]) -> u8 {
     use schemify_run as run;
@@ -550,24 +535,6 @@ fn run(args: &[String]) -> u8 {
     };
     let env = env_pairs();
     let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    // Open every reached cell first (each config may reach different ones).
-    let probe = schemify_elab::Request {
-        config: a.configs.first().map(String::as_str),
-        corner: None,
-        overrides: &[],
-        env: &env,
-        dialect: schemify_elab::Dialect::Ngspice,
-    };
-    if let Err(c) = elaborate_all(&mut o, &probe) {
-        return c;
-    }
-    let plan = match run::Plan::read(o.project.doc(o.top).expect("open")) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("bench: {e:?}");
-            return DESIGN_ERROR;
-        }
-    };
     let configs: Vec<&str> = a.configs.iter().map(String::as_str).collect();
     let corners: Vec<&str> = a.corners.iter().map(String::as_str).collect();
     let sweeps: Vec<&str> = a.sweeps.iter().map(String::as_str).collect();
@@ -583,54 +550,43 @@ fn run(args: &[String]) -> u8 {
         montecarlo: a.mc.as_deref(),
         overrides: &sets,
     };
-    let mut jobs = match run::expand(&plan, &select) {
-        Ok(j) => j,
-        Err(e) => {
-            eprintln!("bench: {e:?}");
-            return DESIGN_ERROR;
-        }
-    };
-    let digest = match run::design(&o.project, o.top, &jobs, &env, &mut schemify_elab::no_funcs) {
-        Ok(d) => d,
-        Err(b) => {
-            eprintln!("run blocked: {b:?}");
-            return DESIGN_ERROR;
-        }
-    };
-    let mut results = run::Results::new(&plan, digest);
     let root = schemify_app::libs::project_root(Path::new(a.cell.as_deref().expect("parsed")));
-    let mut cfg = run::RunnerConfig::new(&root, &digest);
-    if let Some(n) = a.jobs {
-        cfg.workers = n;
-    }
-    let mut runner = run::Runner::new(cfg);
-    for j in 0..jobs.len() {
-        let prepared = run::prepare(
-            &o.project,
-            o.top,
-            &mut jobs,
-            j,
-            &env,
-            schemify_elab::Dialect::Ngspice,
-            &mut schemify_elab::no_funcs,
-            &mut results,
-        );
-        if let Some(p) = prepared {
-            runner.submit(&mut jobs, &mut results, j, &p);
+    let top = o.top;
+    let started = schemify_app::spines::start_run(
+        &mut o,
+        top,
+        Some(&select),
+        &env,
+        &mut schemify_elab::no_funcs,
+        |digest| {
+            let mut cfg = run::RunnerConfig::new(&root, digest);
+            if let Some(n) = a.jobs {
+                cfg.workers = n;
+            }
+            cfg
+        },
+    );
+    let mut r = match started {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{e}");
+            return DESIGN_ERROR;
         }
-    }
-    let mut finished = Vec::new();
-    runner.wait(&plan, &mut jobs, &mut results, &mut finished);
-    if let Err(e) = runner.save(&jobs, &results) {
+    };
+    let all = r.jobs.len();
+    r.submit_next(&o.project, top, &env, &mut schemify_elab::no_funcs, all);
+    r.runner
+        .wait(&r.plan, &mut r.jobs, &mut r.results, &mut r.finished);
+    if let Err(e) = r.runner.save(&r.jobs, &r.results) {
         eprintln!("results: {e}");
     }
-    print!("{}", run::write_results(&jobs, &results));
-    let failed = results.errors().count() > 0;
-    for (j, _, msg) in results.errors() {
+    print!("{}", run::write_results(&r.jobs, &r.results));
+    let failed = r.results.errors().count() > 0;
+    for (j, _, msg) in r.results.errors() {
         eprintln!("job {j}: {msg}");
     }
-    let spec_fail = (0..jobs.len()).any(|j| {
-        (0..results.specs()).any(|s| matches!(results.pass(j, s as u16), run::Pass::Fail))
+    let spec_fail = (0..r.jobs.len()).any(|j| {
+        (0..r.results.specs()).any(|s| matches!(r.results.pass(j, s as u16), run::Pass::Fail))
     });
     if failed || spec_fail {
         DESIGN_ERROR

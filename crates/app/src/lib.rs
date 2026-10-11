@@ -12,7 +12,11 @@
 //! - [`session`] — project load, open documents, tabs and hierarchy, saves and journals;
 //! - [`shell`] — UI composition (core base ⊕ plugins ⊕ app state) and the canvas palette;
 //! - [`plugins`] — plugin host glue (bundled default UI, D6);
-//! - [`waves`] — the waveform window (D23);
+//! - [`waves`] — the waveform dock (D23) and its cross-probe entry;
+//! - [`checks`] — the live violation overlay, the checks panel and net highlight (D13);
+//! - [`sim`] — the run spine in the editor: non-blocking runs, results table, plot slots,
+//!   OP back-annotation, the optimizer's staged edit (D15–D18, D23);
+//! - [`spines`] — the netlist/run spine steps shared with the headless CLI;
 //! - [`platform`] — file system split by `cfg` (native `std::fs`; web OPFS is a TODO, D31).
 //!
 //! ```no_run
@@ -26,6 +30,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "gui")]
+pub mod checks;
 #[cfg(feature = "gui")]
 pub mod commands;
 #[cfg(feature = "gui")]
@@ -46,5 +52,8 @@ pub mod scene;
 pub mod session;
 #[cfg(feature = "gui")]
 pub mod shell;
+#[cfg(all(feature = "gui", not(target_arch = "wasm32")))]
+pub mod sim;
+pub mod spines;
 #[cfg(feature = "gui")]
 pub mod waves;
