@@ -6,11 +6,14 @@
 //!   D31);
 //! - [`libs`] — the `load` spine: manifest + lockfile → library directories → index;
 //! - [`spines`] — the netlist/run spine steps shared by the CLI and the editor;
-//! - [`pack`] — the user package manager (`schemify pack`, config spec §5).
+//! - [`pack`] — the user package manager (`schemify pack`, config spec §5);
+//! - [`rpc`] — the JSON-RPC command stream (D27, `docs/spec/rpc.md`): codec, framing,
+//!   sockets and the headless server of `schemify rpc`.
 
 #![forbid(unsafe_code)]
 
 pub mod libs;
 pub mod pack;
 pub mod platform;
+pub mod rpc;
 pub mod spines;

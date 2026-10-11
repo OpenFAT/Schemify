@@ -29,3 +29,7 @@ schemify-import.workspace = true
 schemify-devicereader.workspace = true
 schemify-run.workspace = true
 schemify-config.workspace = true
+
+[dev-dependencies]
+# The JSON-RPC codec's round-trip and malformed-input properties (TESTING.md `rpc`).
+proptest.workspace = true

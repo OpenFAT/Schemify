@@ -1,6 +1,7 @@
 //! `schemify-gui`: the editor (D39), started directly or by `schemify edit`.
 //!
-//! `schemify-gui [--clean | -u <init.lua>] [edit] [<project-dir>|<cell-file>] [--no-default-ui]`
+//! `schemify-gui [--clean | -u <init.lua>] [edit] [<project-dir>|<cell-file>] [--no-default-ui]
+//! [--rpc <socket>]`
 //! Exit codes: 0 closed normally, 2 usage or startup errors.
 
 use std::process::ExitCode;
@@ -9,6 +10,8 @@ use schemify_config::Startup;
 
 const USAGE: &str = "\
 usage: schemify-gui [--clean | -u <init.lua>] [<project-dir>|<cell-file>] [--no-default-ui]
+                    [--rpc <socket>]
+  --rpc  serve the JSON-RPC command stream on a socket path or 127.0.0.1:<port>
 ";
 
 fn main() -> ExitCode {
@@ -21,12 +24,25 @@ fn main() -> ExitCode {
         }
     };
     // `cargo run -p schemify-app -- edit <path>` keeps working: the word is optional.
-    let rest: Vec<&String> = args[first..]
+    let mut rest: Vec<&String> = args[first..]
         .iter()
         .enumerate()
         .filter(|&(i, a)| !(i == 0 && a == "edit"))
         .map(|(_, a)| a)
         .collect();
+    // `--rpc <socket>`: serve the JSON-RPC command stream (D27, docs/spec/rpc.md).
+    let rpc = match rest.iter().position(|a| *a == "--rpc") {
+        Some(i) if i + 1 < rest.len() => {
+            let socket = rest.remove(i + 1).clone();
+            rest.remove(i);
+            Some(socket)
+        }
+        Some(_) => {
+            eprint!("{USAGE}");
+            return ExitCode::from(2);
+        }
+        None => None,
+    };
     let no_default_ui = rest.iter().any(|a| *a == "--no-default-ui");
     let unknown = rest
         .iter()
@@ -52,7 +68,17 @@ fn main() -> ExitCode {
         config,
         ..schemify_app::editor::Options::default()
     };
-    match schemify_app::editor::run(opts) {
+    #[cfg(not(target_arch = "wasm32"))]
+    let ran = match &rpc {
+        Some(socket) => schemify_app::rpc::run(opts, socket),
+        None => schemify_app::editor::run(opts),
+    };
+    #[cfg(target_arch = "wasm32")]
+    let ran = match rpc {
+        Some(_) => Err("--rpc needs a native build (no sockets in a browser)".to_owned()),
+        None => schemify_app::editor::run(opts),
+    };
+    match ran {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("schemify-gui: {e}");

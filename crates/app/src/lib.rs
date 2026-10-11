@@ -21,6 +21,7 @@
 //! - [`plugins`] — plugin host glue (bundled default UI, D6; user packages, D35);
 //! - [`waves`] — the waveform dock (D23) and its cross-probe entry;
 //! - [`checks`] — the live violation overlay, the checks panel and net highlight (D13);
+//! - [`rpc`] — `--rpc <socket>`: the JSON-RPC command stream into the running editor (D27);
 //! - [`sim`] — the run spine in the editor: non-blocking runs, results table, plot slots,
 //!   OP back-annotation, the optimizer's staged edit (D15–D18, D23).
 //!
@@ -47,6 +48,8 @@ pub mod export;
 pub mod geometry;
 pub mod plugins;
 pub mod recent;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod rpc;
 pub mod scene;
 pub mod search;
 pub mod session;
