@@ -4,7 +4,7 @@ Where the project stands. Update this file whenever a workstream lands or stops.
 
 ## Branches
 
-- `m1`: integration branch. Every merged workstream lives here; `main` has no commits yet.
+- `main`: integration branch, pushed to `origin` (git@github.com:OmarSiwy/Schemify.git, public); `m1` is its pre-remote history.
 - In-flight work happens in agent worktrees under `.claude/worktrees/agent-<id>` on branches `worktree-agent-<id>`, merged into `m1` by the integrator.
 
 ## Done on `m1`

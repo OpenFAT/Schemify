@@ -34,10 +34,11 @@ Load these **before writing or reviewing any code** (Claude Code: `Skill` tool; 
 
 ## Building on this machine
 
+- `main` is the integration branch (remote `origin` = github.com/OmarSiwy/Schemify, public). Agents work in their own git worktree branched from `main` and never push `main`; CI work may push `ci/*` branches.
 - Agents may work in their own git worktree. Disk is tight (~19 GB free): when your work is done, **delete your worktree's `target/`** (`cargo clean` or `rm -rf target`) before reporting back. Never set a custom `CARGO_TARGET_DIR` outside the worktree.
 - Build and test your crate only: `cargo test -p schemify-<crate>`. Full workspace runs are for the integrator.
 - **RAM is the binding limit (31 GB, several agents share it; the host OOMed twice on 2026-10-11 and took the desktop down).** Every build, test or tool run goes through a memory-capped cgroup so a runaway process is killed instead of the machine:
-  `systemd-run --user --scope -q -p MemoryMax=10G -p MemorySwapMax=0 <command>` (exit 137 = the cap killed it: find the cause, don't raise the cap). Also cap parallelism: `export CARGO_BUILD_JOBS=6`, `zig build -j4`, `cargo test -- --test-threads=4`. Never run two heavy jobs at once (a release/LTO build, the wasm guest build, a Zig build, the full corpus differential): finish one before starting the next. Prefer debug builds for tests; use `--release` only for the perf checks that need it. Native code reached through FFI (e.g. `extern/cktimg`) has no wasm memory cap: bound its inputs.
+  `systemd-run --user --scope -q -p MemoryMax=7G -p MemorySwapMax=0 <command>` (7G while up to three agents run at once) (exit 137 = the cap killed it: find the cause, don't raise the cap). Also cap parallelism: `export CARGO_BUILD_JOBS=4`, `zig build -j4`, `cargo test -- --test-threads=4`. Never run two heavy jobs at once (a release/LTO build, the wasm guest build, a Zig build, the full corpus differential): finish one before starting the next. Prefer debug builds for tests; use `--release` only for the perf checks that need it. Native code reached through FFI (e.g. `extern/cktimg`) has no wasm memory cap: bound its inputs.
 - Edition 2024, stable toolchain. `cargo clippy -p <crate> -- -D warnings` must be clean. `cargo fmt`.
 - Only the integrator edits the root `Cargo.toml` and `Cargo.lock` deps list. Need a dependency or an API change in another crate? Report it, don't edit someone else's crate.
 
