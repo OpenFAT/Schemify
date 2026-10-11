@@ -1,0 +1,22 @@
+schemify 1 shprim
+  dn0g
+
+impl s.15
+param mo0n0005del pch
+  kind strin0g
+
+im
+pin B inoW 2
+param L 0h
+  kind strin0g
+
+impl spice l .15
+param mo0n0005del pch
+  kind strin0g
+
+im
+pin B inoW 2
+param L 0h
+  kind strin0g
+
+impl spspice  "{nu l={L}u"

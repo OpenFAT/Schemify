@@ -1,0 +1,30 @@
+schemify 1 shcomp
+  doc "Two-inverter buffe 0
+wire w00004 0 -70 hemify 1 shcomp
+  doc "Two2
+
+wire w0 name x1
+
+
+line -40 0 -20 0
+line40 0
+
+s|ext -20 2-8 R0 {nam001 40 0 100 0
+wire w00002 -0 -40 0
+wire w00003 180 0003 180 0 240 0
+wire w00004 0 -70 hemify 1 shcomp
+  doc "Two2
+
+wire w0 name x1m001 40 0 100 0
+wire w00002 -0`w00003 180 0 240 0
+wire w00005 0 -70 0 -30
+wir70 R0 VDD
+label nN in -40 0
+pin OUT out 40 0
+
+impl sch schemat/inv
+  at 1w00*01 40 0 100 0
+wire w0schemify 1 shprim
+  1
+
+ "digital 0	02 -8i

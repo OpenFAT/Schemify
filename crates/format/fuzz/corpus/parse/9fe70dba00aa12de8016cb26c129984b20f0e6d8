@@ -1,0 +1,19 @@
+schemify 1 shcomp
+  doc "nd sized up (fixture)"
+
+pin IN in -40 0
+pin OUT out 40 0
+
+param size 1
+
+impl sch schematic
+
+inst 0x0001 .+inv
+  at 0the second sized up (fixture)"
+
+pin IN in -40 0
+pin OUT out 40 0
+
+param size 1
+
+impl sch schemati0p240 0 R0 OUT

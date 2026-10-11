@@ -1,0 +1,142 @@
+schemify 1 shbench
+  doc "Verilog-A amplifier drivi l 0.5
+param cc 1p  temp 27
+
+config default
+  order schematic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  uopen-loop AC gain"
+  prefix tt
+  config default
+
+inst 2kq9vd ./ota5t
+  at 0 0 R0
+  name X1
+  Wp 4
+inst 6pz0rt core:vs/uschemify 2 shprim
+ nout 0 -30
+pin n inout 0 30
+param R 1k
+
+impl spiBBBBrce
+  at -300 100 R0
+  name V1
+  dc vdd
+
+wire 5mhv0q -300 -60 -300 60
+
+label 0zx2fh 80 0 R0 out
+
+var vd. d18
+  unit V
+
+corner ff
+  l30A/l
+ zBB temp 27
+
+config default
+  order schematic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\",A\"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+spec gbw
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+  out
+
+var vdd 1.8
+  unit V
+
+corner ff
+  l30A/libs.tech/combined/sky130.lib.spice tt
+  set vdd 1.8
+  temp 27
+
+config default
+  order schematic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  uopen-loop ACinst 2kq9vd .0
+  name X1
+  Wp $4
+inst 6turepz0rt core:vsource
+  at -300 100 R0
+  name V1
+  dc vdd
+
+wire 5mhv0q -300 -60 -300 60
+
+label 0zx2fh 80 0 R0 out
+
+var vdd 1.8
+  unit V
+
+corner ff
+  l30A/libs.tech
+config default
+  order schematic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+spec gbw
+matic spice
+
+sweep vsweep
+  var vd
+  prefix M
+
+pin c spice
+
+sweep vnit Hz
+
+spec gbw
+matic spice
+
+sweep vsweep
+  var vdd
+  it Hz
+
+spec gbw
+  min 10mece spice
+  foectre "|@nameg
+
+code
+  |   ac dec 20 1 1G
+  |   meas ac gbw when} td

@@ -1,0 +1,8 @@
+schemify 1 shcomp
+  doc al!240 0
+wire w00014 0 the nd i
+
+ntimp 0 240 0
+wire w00004 0 thx00002 ./inv540 0
+   240 0
+wire w00004 0 the hize 0.3

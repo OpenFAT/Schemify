@@ -1,0 +1,10 @@
+schemify 1 shprim
+  doc V
+
+pin Pim
+  doc "DCVSSputg sour@ce"
+  prram dc 0
+  unt V
+
+impl spice sp
+  format spice "V{naTc}"

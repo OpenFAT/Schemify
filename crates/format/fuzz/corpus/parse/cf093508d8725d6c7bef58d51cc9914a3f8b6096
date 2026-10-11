@@ -1,0 +1,119 @@
+schemify 1 shprim
+  doc "gen"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inout 20 30S} {B} {model} W={%W}u L={L}u"
+? format spectre "{name| {D inout 20 30
+pin B inoud 20 0
+
+param W 2
+param L 0.15
+param model pch
+  si ntdkring
+
+impl spice spice
+e
+  prefix M
+
+pin S iut 07 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 10 0
+
+param W 2
+param L 0.15
+param model pch
+  si ntdkring
+
+imp} {G} {S} {B}) {model} w={e)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D 
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param model pch
+  si ntdkr} {B}) {model} w={e)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param model pch
+  si me| {D inout 20 30
+pin B inoud 20 0
+
+param W 2
+param L 0.15
+param model pch
+  si ntdkring
+
+impl spice spice
+e
+  prefix M
+
+pin S iut 07 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 10 0
+
+param si ntdkring
+
+imp} {G} {SB} {model} W={W}u L={L}u"
+? format spectre "{name| ({D} {G} {S} {B}) {model} w={e)"
+  prefix M
+
+pin S inout 07 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 10 0
+
+param W 2
+param L 0.15
+param model pch
+  si ntdkriM
+
+pin S inout 20 -30
+pin G in -20 0
+pin D 
+pin B inout 20 0
+
+par15
+param model pch
+  si ntdkriM
+
+pin S inout 20 -30
+pin G in -20 0
+pin D 
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param model pch
+  si ntdkring
+
+imp} {G} {S} {B}) {model} w={e)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param model pch
+  si ntdkring
+
+impl spice spice
+  format spice "M{name} {D} {G} {S} {B} del} W={W}u L={L}u"
+  format spectre me} (W}u l={L}u"

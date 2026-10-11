@@ -1,0 +1,7 @@
+schemify 1 shbench
+  doc- VDD
+  dc vdd
+inst 0x0003 ./vsource
+  at -1 000 R0
+  name VIN
+  dn0005 100 1p 1n

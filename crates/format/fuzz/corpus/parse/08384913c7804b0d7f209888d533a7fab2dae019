@@ -1,0 +1,19 @@
+schemify	1   shcomp
+  doc    VSS
+# N.
+label 2ma7xe 3-190 R0 tail
+wire h2w9cs 100 -330 100 -430
+# sky130:nfet_-01v8
+  at -60 -300 R0
+  name "M2"
+  W Wp
+  L Lp
+  nf 2
+port 8tj4wh 200 -300 R0 INN
+ns0 -300 R0 INP
+port OUT
+wire 3fk2a1 -40 -270 -40 -190
+inst 4szjc8 sky130:pfet_01v8
+  at -60 -480fa3k0q -60 -160 R0 IBIAS
+wire b8nq0t -40 -190 300 -190
+label kq1p4z -40 -

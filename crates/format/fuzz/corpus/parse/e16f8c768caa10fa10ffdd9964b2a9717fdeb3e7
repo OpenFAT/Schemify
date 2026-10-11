@@ -1,0 +1,52 @@
+schemify 1 shbench
+  dofer (fixture)"
+
+inst 5m0001 ./sky130=.lib.spice ff
+  set vdd 1.95
+  temp -40
+{PDdoc "OTA open-loop AC gain"
+  corner tt
+  config default
+
+inst 2kq9vd ./ota5t
+  at0
+
+label 0zx2fh 80 0 R0 out
+
+var vdd 1.8
+  unit V
+er fcorner tt
+
+inst 0x0001  wn40 0 300 0
+wire 0w0002 100 -2)0 100 0
+
+label 0n0001 -- 03020 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0010 -40 0 wn40 0 100 0
+wire 0w0002 100 -20 100 0
+
+labed 0n0001 -200 -30 R0 vdd!
+label 0n0002at 0 0 R0
+  name A1
+inst 0m0002 ./amp
+  at 0 200 R0
+  name A2
+  gain 20
+inrc
+  at -200 0 R0
+  name VIN
+  dc 0.1
+
+label 0n0001 -20 -10 R0 in
+label 0n0002 -20 10 R0 0
+N in -20 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 3bel 0n0001 -200 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0010control spicear v -30 Rdd 10 i.n
+8la

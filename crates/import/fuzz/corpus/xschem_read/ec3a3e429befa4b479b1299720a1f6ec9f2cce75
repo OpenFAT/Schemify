@@ -1,0 +1,8 @@
+v {xsch {xschem ve3.4.7 fi®e_version=1.2}
+K {rma4="*.0pin @lab"vemlab"
+template=ab=xxx"}
+B 5 -1.25 -1.25 1.25 1.25 {nace=p diame=p1 lab=xxx"}
+B 5 -1.25 -1.25 1.25 1.25 {nÿÿ›=25 1.25 iame=pmplate=xxx"}
+B 5 -1.25 -1.25 1.24 1.25 {nace=p diame=p1( lab=xxx"}
+B 5 -1.25 -1.25 1.25 1.25 {nÿÿ›=1.255 -1.22.15 5 1.25 {nace=p ab=xxx"}
+B 5 -1.25 -1.25 1.25 1.25 {nÿÿ›=p dirout}

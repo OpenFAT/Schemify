@@ -1,0 +1,5 @@
+schemify 1 shprim
+cr --
+poly 50 -60
+  closed false
+impl

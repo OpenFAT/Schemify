@@ -1,0 +1,8 @@
+schemify 1 shbench
+ Hz
+
+spec gbw
+ n 28mg
+
+code cnurol spice
+ | c

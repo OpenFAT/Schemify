@@ -1,0 +1,15 @@
+schemify 2 shbench
+  doc "inverter transient"
+  corner tt
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 0.5
+inst 0x000 ./vso,rce
+  at -200 0 R0
+  name VDD
+ bel 0n0005 -40 0 R0 in
+lal n0be0006 40 0 R0 out
+labe spice
+  | .tran 1p 1n

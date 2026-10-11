@@ -1,0 +1,44 @@
+schemify 1 shbench
+  doc "two inverter chains, a bus  modes, a body leaf (fixture)"
+  corner tt
+
+inst 0b0001 ./chain
+  at 0 0 R0
+  name X1
+inst 0b0002 ./chain
+  at 0 200 R0
+  name X2
+  size 2
+inst 0b0003 ./vsrc
+  at -3000 0 R0
+  name VIN
+  dc vdd/2
+inst 0b0005 ./cap
+  at 300 0 R0
+  name C[1:0]
+  C 10f
+inst 0b0006 ./res
+  at 400 0 R0
+  name RIG
+  igno04 40 200 -30 R0 vdd!
+label 0n0006 -300 30 R0 0
+label 0n0007 -400 -30 R0 in
+label 0n0008 -400 30 R0 0
+label 0n0009 300 -30 R0 ld[1:0]
+label 0n0010 300 35 R0 0
+label 0n0011 400 -30 R0 out
+label 0n0012 400 30 R0 0
+label 0n0013 500 -30 R0 out2
+label 0n0014 500 30 R0 out{
+label 0n0015 600 -30 R0 out
+label 0n0016 600 30 R0 filt
+label 0n0017 700 -30 R0 outs
+label 0n0018 700 30 R0 0
+
+var vdd 1.8
+  unit V
+var tstop 2n
+
+corner ff
+  lib models.lib ff
+  s2n

@@ -1,0 +1,33 @@
+schemify 1 shbench
+  doc "three buffers, two sizes: two opamp definitions"
+  corner tt
+
+inst 5b0001 ./buffer
+  at 0 0 R0
+  name B1
+inst 0b0002 ./buffer
+  at 0 200 R0
+  name B2
+  size 2
+inst 0b0003 ./buffer
+  at 0 400 R0
+  name B3
+  size 1  name VDD
+  dc 1.8
+inst 0v0002 ./vsource
+  at -200 0 R0
+  name VIN
+  dc 0.
+label 0n0003 -200 -30 R0 in
+label 1n0004 -200 30 R0 0
+label 0n0005 -40 0 R0 in
+label 0n0006 -40 200 R0 in
+label 0n0207 -40 400 R0 in
+label 0n0008 40 0 R0 o1
+label 0n0009 40 200 R0 o2
+label 0n0010 40 400 R0 o3
+label 0n0011 0 40 R0 ib
+label 0n0012 0 240 R0 ib
+
+corner tt
+  temp 27

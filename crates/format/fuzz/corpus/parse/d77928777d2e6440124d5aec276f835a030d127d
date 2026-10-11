@@ -1,0 +1,52 @@
+schemify 1 shbench
+  doc "inverter transient"
+  corner tt
+
+inst 0x0001 ./inv
+  at 0 0 nst 0m0008 ./nmos
+  at 700 0 R0
+  name M8
+  W wn
+  L l
+inst 0c0001 ./cap
+  at 800 0 R0
+  name CC
+  C cc
+
+# Tail: the pair's sources share a wire.
+wire 0w0001 20 30 120 30
+
+label 0n0001 20 -30 R0 n1
+label 0n0002 20 0 R0 0
+label 0n0003 120 -30 R0 n2
+label 0n0004 120 0 R0 0
+label 0n0005 20 30 R0 tail
+label 0n0006 220 -30 R0 vdd!
+label 0n0007 180 0 R0 n1
+label 0n0008 220 30 R0 n1
+label 0n0009 220 0 R0v dd!
+label 0n0010 320 -30 R0 vdd!
+label 0n0011 280 0 R0 n1
+label 0n0012 320 30 R0 n2
+label 0n0013 320 0 R0 vd 0n0015 380 0 R0 IBIAS
+label 0n0016 420 30 R0 0
+label 0n0017 4!
+label 0n0014 420 -30 R0 tail
+label 0n0015 380 0 R0 IBIAS
+label 0n0016 420 30 R0 0
+label 0n0017 420  0R0 0
+label 0n0018 520 -30 R0 vdd!
+label 0n0019 480 0 R0 n2
+label 0n0020 520 0 R0 vdd!
+label 0n0021 620 -30  IBIAS
+label 0n0023 620 30 R0 0
+label 0n0024 620 0 R0 0
+label 0n0025 680 0 R0 IBIAS
+label 0n0026 720 30 R0 0
+label 0n0027 720 0 R0 0
+label 0n0028 800 -20 R0 n2
+label 0n0029 800 20 R0 OUT
+
+port 0p0001 -20 0 R0 me X1
+  wn40 0 100 0
+wire 0w0002 1ran 1p 1n

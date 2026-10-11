@@ -1,0 +1,27 @@
+schemify 1 shprim
+  doc "sky130 pfet_01v8 (docs-page femo fixture): W and L in ms, emitted in microns"
+  prefix M
+
+pin s  in -20 0
+pin d inout 20 30
+pin b in 20 0
+  inherit VDD
+
+param W 1u
+  unit m
+param L 0.15u
+  unm nf 1
+  kind int
+
+impl spice spice
+  format spic 0
+line 4 0 20 0
+
+circle -4 0 3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext 25 -30 R0 {name}
+  si1 R0  L={eng(L)}
+  size 0.18

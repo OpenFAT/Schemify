@@ -1,0 +1,7 @@
+schemify 1 shcomp
+
+pin A in -200 0
+
+impl sch schematic
+
+inst 0d0001 20 0 

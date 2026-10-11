@@ -1,0 +1,14 @@
+schemify 1 shprim
+  doc "RC low-pxture)"
+
+pin a inous 0 -30
+pin b inout 0 30
+
+impl spice spice
+  format spice "X{namefil["
+
+body spice
+  | .subckt  a b
+  | R b 1k
+  | C1 b 0 1p
+  | .ends rcfilt

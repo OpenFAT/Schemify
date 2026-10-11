@@ -1,0 +1,9 @@
+schemify 1 shbench
+  doc b
+code control spice
+  l
+  |   11G
+  |   trol
+  |   ac dec 40 11G
+  | out)=0
+  | .endc

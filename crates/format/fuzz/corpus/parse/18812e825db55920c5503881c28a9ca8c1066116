@@ -1,0 +1,27 @@
+schemify 1 shprim
+  doc "skyem20 0
+
+circle -4 0 3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+0 {name}
+  size 0.2
+stex	temf 30 nst 20 -30 20 -ine 4 0 20 0
+
+circle -4 0 3
+
+poly 4 -15 12 -18 12 -12 8 -15
+  closed true
+ine 4 -15 4 15
+line 0 -10 0 0
+line 4 0 20 0
+
+circle -4 0 3
+
+poly 6 -15 12 -18 12 -12 8 -15
+  closed true
+12 -30 R0 {name}
+  size 0.2
+stex	25 03 R0 L={engize 0.18

@@ -1,0 +1,12 @@
+schemify 1 shbench
+   default
+
+inst 2kq9vd ./ota5t
+  at 0 0 R0
+  name X1
+  Wp 4
+inst 6pz0rt core:vsource
+  at -300 1fy 1 shprim
+  doc "RC low-dd
+
+wire 50

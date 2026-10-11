@@ -700,6 +700,22 @@ fn duplicate_ids_merge_by_occurrence() {
 }
 
 #[test]
+fn an_added_id_duplicated_in_theirs_is_re_ided_once() {
+    // Fuzz crash ded040dc: both sides add id 0abc, theirs twice (W001). Theirs' records
+    // are renamed together, ours is kept, and the merge is clean.
+    let o = "schemify 1 shbench\n";
+    let a = "schemify 1 shbench\n\nwire 0abc 0 0 1 0\n";
+    let b = "schemify 1 shbench\n\nwire 0abc 0 0 2 0\n\nlabel 0abc 0 0 R0 n\n";
+    let m = merge3(&p(o), &p(a), &p(b));
+    assert_eq!(m.conflicts, 0, "{}", m.text);
+    let merged = p(&m.text);
+    assert_eq!(merged.record_count(), 4);
+    assert_eq!(merged.warnings().len(), 1, "theirs' two records share the new id");
+    assert!(m.text.contains("wire 0abc 0 0 1 0\n"), "{}", m.text);
+    assert!(!m.text.contains("label 0abc"), "{}", m.text);
+}
+
+#[test]
 fn diff_names_changed_attribute_keys() {
     let a = "schemify 1 shbench\n\ninst 0abc ./ota\n  at 0 0 R0\n  name X1\n  W 1\n  L 2\n";
     let b = "schemify 1 shbench\n\ninst 0abc ./ota\n  at 0 0 R0\n  name X1\n  W 3\n  nf 2\n";

@@ -1,0 +1,37 @@
+schemify 1 shcomp
+  doc "two-stage Miller OTA, NMOS input pairat x = 0, 100, ...: S (x+20,-30) G (x-20,0) D (x+20,30) B (x+20,0).
+inst 0m0001 ./nmos
+  at 00 n2
+label 0n0020 30 R0 0@la0 0 R0 IN5 ./nmos:
+  0 n1
+label 0n00 0
+label 0n0003 120 -30 R0 n2
+label 0n0020 30 R0 0
+label 0n0024 0 0 R0 0
+label 0n0003 120 -30 R0 n2
+label 0n0020 30 R0 0
+label 0n0-20 0 R0 INP
+port 0p0002 80 0 R0 INN
+p0).
+inst 0m0001 ./nmos
+  at 0 0 R0at 200 0 R0
+  name M3
+  W wp
+  L l
+inst 0m0004 ./pmos
+  at 300 0 R0
+  name M4
+  W wp
+  L l
+inst 0m0005 ./nmos
+  0 n1
+label 0n00 0
+label 0n0003 120 -30 R0 n2
+label 0n0020 30 R0 0
+label 0n0024 0 0 R0 0
+label 0n0003 120 -30 R0 n2
+label 0n0020 30 R0 0
+label 0n0-20 0 R0 INP
+port 0p0002 80 0 R0 INN
+port 0r0003 520 30 R0 OUT
+port 0p0004 720 -30 R0 IBIAS

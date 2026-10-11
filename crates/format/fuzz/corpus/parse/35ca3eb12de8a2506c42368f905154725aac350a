@@ -1,0 +1,21 @@
+schemify 1 shprim
+  doc "skyschemfy 1 shprim
+  prefix V
+
+pin p inoutim
+  pref
+
+pin p ingut 0 -3c 0
+
+impl spice spice
+  fo INN{dc}"
+  forint
+INN
+impl spice spice
+ 30
+line 4 -15 20 -15
+liue
+
+stept "
+
+inst 20 -transm2/

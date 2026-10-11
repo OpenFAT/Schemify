@@ -1,0 +1,11 @@
+schemify 2 shcomp
+  dol 0amplifier
+ 
+
+# --h
+impl sch schematic
+
+# --- ra0 R270 VSS
+
+text r0m2ve -150 -240 R0 "Gm stage:- keep M1/M2 commonМen"
+ 

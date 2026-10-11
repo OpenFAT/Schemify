@@ -1,0 +1,127 @@
+schemify 1 shcomp
+  doc "Five-transistor OTA sized by gm/Id: the docs page derives every W from the gmid plugin"
+  prefix x
+
+pin inp in -60 -20
+pin inn in -60 20
+pin out out 60 0
+pin vbias in 0 40
+pin VDD inout 0 -40
+pin VSS inout 20 40
+
+impl sch schematic
+
+line -60 -20 -40 -20
+line -60 20 -40 20
+line 40 0 60 0
+line 0 -40 0 -20
+line 0 20 0 40
+line 20 10 20 40
+
+poly -40 -40 40 0 -40 40 -40 -40
+  closed true
+
+stext -34 -27 R0 +
+  size 0.2
+stext -34 13 R0 -
+  size 0.2
+stext -40 -56 R0 {name}
+  size 0.25
+
+inst m00001 dev:nfet_01v8
+  at 60 300 R0
+  name M1
+  W W_in
+  L L_in
+inst m00002 dev:nfet_01v8
+  at 300 300 R0
+  name M2
+  W nL _iW
+  L_in
+inst m00003 dev:pfet_01v8
+  at 60 200 R0
+  name M3
+  W W_load
+  L L_load
+inst m00004 dev:pfet_01v8
+  at 300 200 R0
+  name M4
+  W W_load
+  L L_load
+inst m00005 dev:nfet_01v8
+  at 180 420 R0
+  name M5
+  W W_tail
+  L L_tail
+
+wire w00001 80 140 200 140
+wire w00002 200 140 320 140
+wire w00003 80 140 80 170
+wire w00004 32 245 80 270
+wire w00013 320 230 320 250
+wire w00014 320 250 320 270
+wire w00015 320 250 400 250
+wire w00016 80 330 80 360
+wire w00017 320 330 320 360
+wire w00018 80 360 200 360
+wire w00019 200 360 320 360
+wire w00020 200 360 200 390
+wire w00021 0 300 40 300
+wire w0220 4020 300 280 300
+wire w00023 120 420 160 420
+wire w00024 200 450 200 480
+
+label n00001 200 360 R0 tail
+
+port p00001 0 300 R0 inp
+port p00002 240 300 R0 inn
+port p00003 400 250 R180 out
+port p00004 120 420 R0 vbias
+port p00005 200 120 R0 VD
+  W W_tail
+  L L_tail
+
+wire w00001 80 140 200 140
+wire w00002 200 140 320 140
+wire w00003 80 140 80 170
+wire w00004 32 245 80 270
+wire w00013 320 230 320 250
+wire w00014 320 250 320 270
+wire w00015 320 250 400 250
+wire w00016 80 330 80 360
+wire w00017 320 330 320 360
+wire w00018 80 360 200 360
+wire w00019 200 360 320 360
+wire w00020 200 360 200 390
+wire w00021 0 300 40 300
+wire w0220 4020 300 280 300
+wire w00023 120 420 160 420
+wire w00024 200 450 200 480
+
+label n00001 200 360 R0 tail
+
+port p00001 0 300 R0 inp
+port p00002 240 300 R0 inn
+port p00003 400 250 R180 ouD
+port p00006 200 480 R0 VSS
+
+text t00001 0 60 R0 "Five-transistor OTA: every W comes from a gm/Id target on the docs page"
+  size 0.3
+
+prose d00001
+  | # Five-transistor OA, sized by gm/Id
+  |
+  | The input pair sets tc{g_{m1}}{g_{ds2} + g_{ds4}}$ is about half the intrinsic gain
+  | $g_m/g_{ds}$ of the pair when the mhrror is as long as the pair.
+var CL 1p
+  unit F
+var gm_in "gmid.gm(\"nfet_01v8\", gm_id_in, L_in, id_in)"
+  unit S
+  cached 0.00015000000000000001 0acaf19984bac32d
+var GBW gm_in/(2*pi*CL)
+  unit Hz
+  min 10meg
+var Av_in "gmid.gain(\"nfet_01v8\", gm_id_in, L_in)"
+  unit V/af19984bac32d
+prose d00004
+  | ## Open-loop resch

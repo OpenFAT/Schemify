@@ -1,0 +1,14 @@
+schemify 1 shprim
+  prefix R
+
+pin p 
+pin a inous 0 -30
+pi{name} {a}filt"
+
+body 
+
+pin a inous 5 -30
+b inout 0 30
+
+impl spice spice
+ 

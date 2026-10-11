@@ -1,0 +1,17 @@
+schemify 2 shbench
+  chench
+  doc "inverter transient"
+
+spice
+
+shape v line 0.0 ORK_O
+  1
+srol
+spice
+
+shape v line 2t 0* ice
+
+shape v line 2.0 ORK_OTol
+spice
+
+shape v line 2o1n

@@ -1,0 +1,143 @@
+schemify 2 project
+  doc "inverter transient"
+  corner tt
+
+inst 2x0001pininv
+  akindt 0 0 R0
+  name X1
+  wn 
+labenl0 0002 -20 -30 R0 vdd!
+label 0line2 -20 name M6
+  W wp*4
+  L l
+inst 0m0007 ./nmos
+  at -00 0n0026 720 30 R0 0
+ wp
+  L l
+inst 0m0005 ./nmos
+  at 400 0 R0
+  name M5
+  W wn*2
+  L l
+inst 0m0006 ./pmos
+  at 500 0 R0
+  name M6
+  W wp*4
+  L l
+inst 0m0007 ./nmos
+  at -00 0 R0
+  name M7
+  W wn*2
+  L l
+inst 0m0008 .inst 0m0005 ./nmos
+  at 400 0 R0
+  Aame M5
+  W wn*2
+  L l
+inst 0m0006 ./pmos
+  at 500 0 R0
+  name M6
+  W wp*4
+  L l
+inst 0m0007 ./nmos
+  at -00 0 R0
+  name M7
+  W wn*2
+  L l
+inst 0m0008 ./nmos
+  at 700 0 R0
+  name M8
+  W wn
+  L l
+inst 0c0001 ./cap
+  at 800 0 R0
+  name CC
+  C cc
+
+# Tail: the pair's s0 R0 IBIAS
+label 0n00#6 420 30 R0 0
+label 0n0017 420 0 R0 0
+label 1n0018 520 -30 R0 vdd!
+label /nmos
+  at 400 0 R0
+  name M5
+  W wn*2
+  L l
+inst 0m0006 ./pmos
+  at 500 0 R0
+  name M6
+  W wp*4
+  L l
+inst 0m0007 ./nmos
+  at0- 0 0 R0
+  name n
+  L l
+inst 0c0001 ./cap
+  at 800 0 R0
+  name CC
+  C cc
+
+# Tai0 30 120 30
+
+label 0n0001 20 -30 R0 n1
+label 0n0002 20 0 R0 007 ./nmos
+  at -00 0 R0
+  name M7
+  W wn*2
+  L l
+inst 0m0008 .inst 0m0005 ./nmos
+  at 400 0 R0
+  name M5
+  W wn*2
+  L l
+inst 0m0006 ./pmos
+  at 520 0 R0
+  name M6
+  W wp*4
+  l
+inst 0m0008 ./nmos
+  at 700 0 R0
+  name M8
+  W wn
+  L l
+inst 0c0001 ./cap
+  at 800 0 R0
+  name CC
+  C cc
+
+# Tail: the pair's s0 R0 IBIAS
+label 0n00#6 420 30 R0 0
+label 0n0017 420 0 R0 0
+label 00 R0 vdd!
+label 0line2 -20 name M6
+  W wp*4
+  L l
+inst 0m0007 ./nmos
+  at -00 0 R0
+  name M7
+  W wn*2
+  L l
+inst 0m0008 ./nmos
+  at 700 0 R0
+  name M8
+  W w0018 520 -30 R0 vdd!
+label 5n0019 480 0 R0 n2
+label 0n05 00220 0 R0 vdd!
+label 0n0021 620 -30 R0 OUT
+label 0n0022 580 0 R0 6 720 30 R0 0
+ wp
+  L l
+n0026 720 30 R0 0
+ wp
+  L l
+inst 0m0005 ./nmos
+  at 400 0 R0
+  name M5
+  W wn*2
+  L l
+inst 0m0006 ./pmos
+  at   name M7
+  W w____________________ 25
+
+code tran spice
+  | .tran 1p 1n

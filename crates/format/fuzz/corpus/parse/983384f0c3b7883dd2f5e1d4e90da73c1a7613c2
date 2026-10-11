@@ -1,0 +1,160 @@
+schemify 2 shbench
+  doc "invdc vbel 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidd
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05ntouout 0;30
+
+p  -in 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05schemd
+
+param i[ 05
+
+shape v circle 05schemidd
+shape v circle 05sc0 R180 OU0 0 R0 o/inv
+  a3 -100 -30 R0 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidd
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05ntouout 0;30
+
+p  -in 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05schemd
+
+param i[ 05
+
+shape v circle 05'schemidd
+shape v circle 05sc0 R180 OU0 0 R0 o/inv
+ defa0 at 0 0 R0
+ 
+
+line -40 30 0 7 40 0 100schemify 1 shcomp
+  doc "twschemify 1schemify 1 shbench
+n p/intouout 0;30
+
+p  -in 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05scheiidd
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05ntouout 0;30
+
+p  -in 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05schemd
+
+param i[ 05
+
+shape v circle 05schemidd
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05ntouout 0;78
+
+p  -in 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidddddim
+
+param i[ 05
+
+sh 0
+wire w00002 -80 0 -40 0
+wire w00003 180 0 24  0
+wire w0000im
+
+param i[ 05
+
+shape v circle 05schemd
+
+param i[ 05
+
+shape v circle 05schemidd
+shape v circle 05sc0 R180 OU0 0 R0 o/inv
+  a3 -100 -30 R0 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidd
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05ntouout 0;30
+
+p  -in 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05schemd
+
+param i[ 05
+
+shape v circle 05'schemidd
+shape v circle 05sc0 R180 OU0 0 R0 o/inv
+ defa0 at 0 0 R0
+ 
+
+line -40 30 0 7 40 0 100schemify 1 shcomp
+  doc "twschemify 1schemif4 0 -70 0 -30
+wire w00005 140 -7001 70 0 R0 miape v circld
+elabe

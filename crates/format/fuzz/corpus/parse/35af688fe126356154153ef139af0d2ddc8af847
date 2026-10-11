@@ -1,0 +1,121 @@
+schemify 2 shbench
+  doc "inverter transient"
+  corner tt
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 0.5
+inst 0x0002 ./vsource
+  at -200 0 R0
+  name VDD
+  dc vdd
+inst 0x0003 ./vsource
+  at -100 0 R0
+  name VIN
+  dc vdd/2ire 0w0002 100 -20 100 0
+
+label 0n0001 -200 -30 R0 vdd!
+label 0n0002 -20 -30 R0 vdd!
+label 0n002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n00004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be0006 40 0 R0 out  doc "inverter transient"
+  corner tt
+
+inst 1x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+la0 R0 iNn
+lal n0be0006 40 0 R 0 c "inverter transient"
+  corner tt
+
+inst 1x0001 ./in$v
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+l
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_a R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be0006 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp 250 0n0002 -2004 -100 30 R0 0
+label 0n0005 -40 0 R0 iNn
+lal n0be0006 40 6 40
+latemp 2507 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp__________________________________a_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be0006 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp 250 0n0002 -20 -30 R0 vdd!
+label 0n06 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+late3 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 iNn
+lal n0be0006 40 0 R 0 30 R0 0
+label000n0 3 -100 -3030 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+l30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+el 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+latextl n0be000  corner tt
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 vdd!
+labec 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 
+labep 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+labe. 0n0006 40 0 R0 out
+label 0n0007 100 20 R0 0
+Rvar vdd 1.8
+  unit V
+
+corner ff
+  lib models.lib ff
+  set vdd 1.95
+  temwaive
+corner tt
+  lib models.lib tt
+  temp 25
+codant re spice
+  | .tran 1p 1n

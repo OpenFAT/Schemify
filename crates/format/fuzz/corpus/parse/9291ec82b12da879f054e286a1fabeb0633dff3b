@@ -1,0 +1,25 @@
+schemify 1 shcomp
+  doc "5-transistor OTA, NMOS input pair"
+  category amplifier
+  pdk sky130
+
+# --- rank 1: symbol interface. A library browser or ops reading here. ---
+# pin <> <y= p
+pin VDD inout 0 -60
+pin VSS inout 0 60
+
+param Wp 2
+  ut um
+
+impl sch schematic
+
+# --- rank80 0
+
+stext -55 -28 R0 +
+stext -55 12 R0 -
+
+# --- rank 3: schematic
+
+var gm_target 100u
+  unit S
+  doc "transconductance target"

@@ -1,0 +1,11 @@
+schemify 1 shbench
+  doc e
+
+shape v poly 2.
+
+shape v poly 2.0 5
+
+output gbw "meas
+shape v poly 0.0 5
+
+o002

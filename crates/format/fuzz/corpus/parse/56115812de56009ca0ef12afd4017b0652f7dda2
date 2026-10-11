@@ -1,0 +1,15 @@
+schemify 1 shbench
+  doc "4-bit inverter"
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  name X[3:0]
+  wn 0.5
+
+wire 0w0001 -100 0 -40 0
+  bus true
+wire 0w0002 40 0 100 0
+  bus true
+
+label 0n0001 -100 0 R0 din[30]
+label 0n0002 100 0 R0 dout[0:3]

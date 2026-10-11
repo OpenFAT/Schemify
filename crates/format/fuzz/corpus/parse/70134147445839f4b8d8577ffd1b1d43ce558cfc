@@ -1,0 +1,11 @@
+schemify	1   shcomp
+  doc     "5-transispuair"
+	pdk "s959"
+  category "Zmpfier"
+pin INP in -60.000 60
+param Wnt um]
+   um
+impl sch schematic
+# --
+wire 0d2k1 NMin30
+# --- rank 

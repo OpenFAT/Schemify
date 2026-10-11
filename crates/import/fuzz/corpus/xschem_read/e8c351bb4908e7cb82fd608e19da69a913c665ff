@@ -1,0 +1,4 @@
+v {xs.2 -1l1 lab=GND&}
+B 5 -2 -2.5 2.5 27 {nam=p dir=in.25 1)ÿÿÿme=B D"}
+B 5 -2.5 -2.5 2. 2.5 {name=p dir=in.25 1.2}
+pr(

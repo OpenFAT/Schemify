@@ -764,13 +764,17 @@ fn reid_collisions<'s>(
     let (io, ia, ib) = (ids(o), ids(a), ids(b));
     let find =
         |v: &[(u128, u32)], k: u128| v.binary_search_by_key(&k, |e| e.0).ok().map(|i| v[i].1);
-    let colliding: Vec<u32> = ib
+    let mut colliding: Vec<(u128, u32)> = ib
         .iter()
         .filter(|&&(k, rb)| {
             find(&io, k).is_none() && find(&ia, k).is_some_and(|ra| !record_eq(a, ra, b, rb))
         })
-        .map(|&(_, rb)| rb)
+        .copied()
         .collect();
+    // One rename per id: `rename_id` rewrites every record of `b` with it, so a duplicate
+    // id in `b` (W001) is renamed with its first occurrence (fuzz crash ded040dc).
+    colliding.dedup_by_key(|e| e.0);
+    let colliding: Vec<u32> = colliding.into_iter().map(|(_, rb)| rb).collect();
     if colliding.is_empty() {
         return None;
     }

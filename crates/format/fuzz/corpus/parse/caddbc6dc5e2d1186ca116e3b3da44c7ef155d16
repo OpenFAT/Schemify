@@ -1,0 +1,55 @@
+schemify 1 shcomp
+  doc "5-transistor OTA, NMOS input pair"
+  category amplifier
+  pdk sky130
+
+# --- rank 1: symbol interface. A library browser or netlister stops reading here. --- port order
+pin INP in -80 -20
+pin INN in -80 20
+pin OUT out 80 0
+pin IBIAS in -80 40
+pin VDD inout 0 -60
+pin VSS inout 0 60
+
+param Wp 2
+  unit um
+  doc "input pair width"
+param Lp 0.5
+  unit um
+
+impl sch schematic
+
+# --- rank -
+
+# --- rank 3: schematic. Each ki70 -40 -190
+wire 7q3vxa 100 -270 100 -190
+wire b8nq0t -40 -190 100 -190
+wire h2w9cs 100 -430 100 -330
+
+# Net names live only here. Renaming "tail" is a 1-line diff.
+label 2ma7xe 30 -190 R0 tail
+label kq1p4z -40 -380 R0 mirror
+
+# A port coer 0gsrp0
+  member 1j446r
+  patwire 7q3vxa 100 -270 100 -190
+wire b8nq0t -40 -190 100 -190
+wire h2w9cs 100 -430 100 -330
+
+# Net names live only here. Renaming "tail" is a 1-line diff.
+label 2ma7xe 30 -190 R0 tail
+label kq1p4z -40 -380 R0 mirror
+
+# A port connects a schematic net to the size 0.4
+
+constraint s4m3tr match
+  member 0gsrp0
+  member 1j446r
+  pattern common-centroid
+
+prose v1d0c5
+ | M4.
+
+var gm_target 100u
+  unit S
+  doc "transconductance targht"

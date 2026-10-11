@@ -1,0 +1,35 @@
+schemify 2 shbench
+  doc "inverter transient"
+  corner tt
+
+iame X1
+  wn 
+label 0n0002 -20 -30 R0 vdd!
+schemify 2 shbench
+  d
+i...i00
+imp...i0..rc -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be0006 42500 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+Aabel 0n0005 -40 0 R0 iNn
+lal n0be0006 40 0 R 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0002 -20 -30 R0 vdd!
+labe2 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be0000
+label 0n0003 -100 -30 R0 in
+latemp 25
+
+code tran spice
+  | .tran 1p 1n

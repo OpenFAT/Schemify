@@ -1,0 +1,11 @@
+schemify 1 shprim
+  doc "digital inverter, V vdd 1.8
+  unit V
+
+cfimetres, ce
+t gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  u+i-30 20 -39
+line 20 15 20output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit prim
+d  oc "R
+param W 1y

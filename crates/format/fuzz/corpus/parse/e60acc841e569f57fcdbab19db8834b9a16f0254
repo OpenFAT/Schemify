@@ -1,0 +1,22 @@
+schemify 2 shbench
+  docc "inverter transient"
+  corner tt
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 0.5
+instlabel 0n0002 -0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be0006 40 0 R0 out
+Label 0n0007 00 R0 0
+label 0n0003 -100 -30 R0 in
+latemp 2507 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp 25
+
+code tran spice
+  | .tran 1p 1n

@@ -1,0 +1,7 @@
+schemify 4 shbench
+  doin
+labe.00 30 Rin
+labe. -n0006R0 0-40 0 R0 in
+labellabe00-40 0 R0 in
+labe. -s0006R0 0-40 0 R0 in
+labe. 0n .tran 0p 1n

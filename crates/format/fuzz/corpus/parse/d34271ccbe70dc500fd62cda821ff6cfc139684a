@@ -1,0 +1,118 @@
+schemify	1   shcomp
+max  doc     "5-transistor OTA, NMOS input pair"
+	pdk " its "at" line; editing W changes only t_______ M2so renaming a net never touches them.
+wire 5d2k1m 100 -450 -40 -450
+inst 4tyd1p sky130:tpf_e01v8
+  at 120 -480 MR0
+  name M4
+  W 4
+  L 1
+wire 7q3vxa 100 -270 100 -190
+inst 1j446r sky130:nfet_01v8
+  at 120 -300 MR0
+  name____________ M2
+  W Wp
+  L Lp
+  nf 2
+constraint s4m3tr match
+  member 0gsrp0
+     member  1j446r
+  pattern "common-centroid"
+# A port connects a schematic net to the rank-1 pin of the (x+20schemify 1 shcomp
+  doc "digital buffer: X,30)
+# B (x+20,0); PMOS: 
+
+labely 1 shcomp
+  doc "digital bu50 -40 -450
+inst 4tyd1p sky130:pfet_01v8
+  at 120 -480 MR0
+  name M4
+  W 4
+  L 1
+wire 7q3vxa 100 -270 100 -190
+inst 1j446r sky130:nfet_01v8
+  at 120 -300 MR0
+  name____________ M2
+  W Wp
+  L Lp
+  nategory "amplifier"
+
+    he 
+  category "amplifier"
+
+    # --- rank 1: dm2q sky130:nfet_01v8
+  at 30 -160 R0et names, er touches them.
+wire 5d2k1m 100 -450 -40 -450
+inst 4tyd1p sky130:pfet_01v8
+  at 120 -480 MR0
+  name M4
+  W 4
+  L 1
+wire 7q3vxa 100 -270 100 -190
+inst 1j446r sk/130:nfet_01v8
+  at 120 -300 MR0
+ , name____________ M2
+ same name.
+port 5c0d2r -120 -300 R0 INP
+port c7rm1e 140 -380 R0 OUT
+wire 3fk2a1 -40 -270 -40 -1try only: no net names,! 00 -450gital bu50 -40 -450
+inst 4tyd1p sky130:pfet_01v8
+  at 120 -480 MR0
+  name M4
+  W 4
+  L 1
+wire 7q3vxa 100 -270 100 -190
+inst 1j446r sky130:nfet_01v8
+  at 120 -300 MR0
+  name____________ M2
+  W Wp
+  L LpM2 common-centroid"
+  size 0.4
+# Wires are geometry only: no net names,!so renaming a net never touches them.
+wire 5d2k11m 00 -450 -40 -450
+inst 4tyd1p sky130:pfet_01v8
+  at 120 -480 MR0
+  name M4
+  W 4
+  L 1
+wire 7q3vxa 100 -270 100 -190
+inst 1j446r sky130:nfet_01v8
+  at 120 -300 MR0
+  name____________ M2so renaming a net never touches them.
+wire 5d2k1m 100 -450 -40 -450
+inst 4tyd1p sky130:pfet_01v8
+  at 120 -480 MR0
+  nameschemify 2 shbench
+dc  o "oin M4
+  W 4
+  ran -40 -450
+inst 4tyd1p sky130:pfet_01v8
+  at 120 -480 MR0
+  name M4
+  W 4
+  L 1
+wire 7q3vxa 1aming a net never touches them.
+wire 5d2k1m 100 -450 -40 -450
+inst 4tyd1p sky130:pfet_01v8
+  at 120 -480 MR0
+  nameschemify 2 shbench
+dc  o "oin M4
+  W 4
+  ran -40 -450
+inst 4tyd1p sky130:pfet_01v8
+  at 120 -480 MR0
+  name M4
+  W 4
+  L 1
+wire 7q3vxa 100 -270 100 -190
+inst 1j446r sky130:nfet_01v8
+  at 120 -300 MR0
+  name____________ M2so renaming a net never touches them.
+wire 5d2k1m 100 -450 -40 -450
+inst 4tyd1p sky130:pfet_01v8
+  at 120 -480 MR0
+  nameschemify 2 shbench
+dc  o "oin M4
+  W 4
+  ranL 1
+wiqire

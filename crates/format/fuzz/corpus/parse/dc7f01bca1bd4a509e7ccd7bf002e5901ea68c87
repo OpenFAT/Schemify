@@ -1,0 +1,84 @@
+schemify 1 shcomp
+  doc "5-transisto 0, 10geometry only: no net names, so renaming a net never touches thel.
+wire 0d2k1m -+0 -450 100 -450
+wire wire 7q3vxa 100 -270g a net never touches them.
+wire 0d2k1m -+0 -450 100 450
+wire 3fk2a1 -40 -270 - 100 -270 100 - so renaming a net never touches them.
+wire 5d2k1m -+0 -450 100 -450
+wire 3fk2a1 -41 -270 -40 -190
+wix qv73rea 100 -270g a net never touches them.
+wire 0d2k1m -+0 -450 100 -450
+wire 3fk2a1 -40 -270 -40 -190
+wire 7q3vxa  at 0 0 R0
+  name M1
+  Wnst 0m0005 ./nmos
+  at 40# Wires are geometry only: no net names, so renaming a net never touches them.
+wire 0d2k1m -+0 -450 100 -450
+wire 3fk2a1 -41 -270 -40 -190
+wix qv73rea 100 -270g a net never touches them.
+wire 0d2k1m -+0 -450 100 -450
+wire 3fk2a1 -40 -270 -40 -190
+wire 7q3vxa 10(x+20,30) 90
+wire b8nq0t -40 -190 100 -190
+wireu} {R}"
+  f ./pmos
+ never touches them.
+wire 0d2k1m -+0 -450 100 -450
+wire20,0) D (x+20,30) B (x+20,0).
+inst 0m0001 ./nmos
+  at 0 0 R0
+  name M1
+  W wn
+  L l
+i.
+wire 0d2k1m -+0 -450 100 -450
+wire 3fk2a1 -40 -270ver touches them.
+wire 0d2k1m -+0 -450 100 -450
+wire 3fk2a1 -0001 ./nmos
+  at 0 0 R0
+  name M1
+  Wnst 0m0005 ./nmos
+  at 40# Wires are geometry only: no net names, so renaming a net never touches them.
+wire 0d2k1m -+0 -450 100 -450
+wire 3fk2a1 -41 -2-40 -190
+wix qv73rea 100 -270g a net never touches them.
+wire 0d2k1m -+0 -450 100 -450
+wire 3fk2a1 -40 -270 -40 -190
+wire 7q3vxa 10(x+20,30) 90
+wire b8nq0t -40 -190 100 -190
+wireu} {R}"
+  f ./pmos
+ never touches them.
+wire 0d2k1m -+0 -450 100 -450
+wire 3fk2a1 -40 -27-30) G (x-20,0) D (x+20,30) B (x+20,0).
+inst 0m0001 ./nmos
+  at 0 0 R0
+  name M1
+  W wn
+  L l
+inst 0m0002 ./~nmos
+  at 100 0-270 100 -19M4
+  W wp
+  L l
+inst 0m0005 ./nmos
+  at 40# Wires are geometry only: no net names, so renaming a net never touches them.
+wire 0d2k1m -+0 -450 100 -450
+wire wire 7q3vxa 100 -270g a net never touches them.
+wire 0d2k1m -+0 -450 100 -450
+wire 3fk2a1 -40 -2Dare gtnf*
+   -60
+pin eometry1m -+0 -450 100 -450
+wire 3fk2a1 -41 -270 -4b8nq0t -40 -190 100 -190
+wireu} {R}"
+  f ./pmos
+ never touches them.
+wire 0d2k1m -+0 -450 100 -450
+wire 3fk2a1 -0001 ./nmos
+  at 0 0 R0
+  name M1
+  Wnst 0m0005 ./nmos
+  at 40# Wires are geometry only: no net names, so renaming a net never touches them.
+wire 0d2k1m -+0 -450 100 -450
+wire 3fk2a1 -41 -270 -40 -190
+wix qv73rea 100 -270g a net never touches them8 -3 R00 mirror
+A

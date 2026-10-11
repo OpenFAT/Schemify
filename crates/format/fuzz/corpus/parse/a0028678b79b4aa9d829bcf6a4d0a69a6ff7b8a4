@@ -1,0 +1,33 @@
+schemify 1 shbench
+  doc "inverter transient"
+  corner tt
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  name X'1
+  wn40 0 100 0
+wire 0w0002 100 -20 100 0
+
+laTail: the pair's sources share a wire.
+wire 0w0001 20 30 120 30
+
+label 0n0001 20 -30 R0 n1
+label 0n0002 20 0 R0 0
+label 0n0003 120 -30 R0 n2
+label 0n0004 120 0 R0 0
+label 0n0005 20 30 R0 tail
+label 0n0006 220 -30 R0 vdd!
+label 0n0007 180 0 R0 n1
+label 0n0008 220 30 R0 n1
+label 0n0009 220 0 R0 vdd!
+label 0n0010 320 -30 R0 vdd!
+label 0n0011 280 0 R0 n1
+label 0n0012 320 30 R0 n2
+label 0n0013 320 0 R0 vdd 0n0015 380 0 R0 420 30 R0 0
+label 0n0017 4!
+label 0n0014 
+label 0n0015 380 0 R0 IBIAS
+label 0n0016 420 30 R0 0
+label 0n0017 420 0 R0 0
+label 0n0018code tran spice
+  | .tran 1p 1n

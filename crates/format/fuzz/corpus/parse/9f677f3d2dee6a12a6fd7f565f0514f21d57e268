@@ -1,0 +1,29 @@
+schemify 2 shbench
+  doc "inverter transient"
+  cst 0x0001 ./iline 202 -802
+  wp size*4
+
+# X1: A (-40,0)  size*2
+  wp size*4
+
+# X1: A (-40,0) Y (40,0); X2: A(601,0 )  s0,e*4
+
+# X1: A (- (-40*)  size*2
+  wp size*4
+
+# X1: A # X1
+
+# XY: A (160,e*4
+
+# X1: A (- (-40*)  size*2
+  
+# X1
+
+# X1:(160,e*4
+
+# X1: A (-40,0) Y0
+wire w00009 0 70 140 70
+
+label n00001 70 0 R0 mid
+la100 -30 R wpice
+  | .tran 0p 1n

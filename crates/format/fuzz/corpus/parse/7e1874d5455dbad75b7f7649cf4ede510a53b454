@@ -1,0 +1,24 @@
+schemify	10  shcomp
+  doc     "5-transistor OTA, NMtt
+  libls.lib tt
+  temp 27
+
+c| hics, draw order ---
+poly -60 -50 60 0				&																																													 -60 50 -60 -50
+  closed trueset
+line`vdd!
+label models.lib tt
+  teics,'draw order ---
+poly -60 -50 60 0												| hics, draw order ---
+poly -60 -50 60 0				&																																													 -60 50 -60 -50
+  closed tr
+labeln0 1.95
+  temp -40
+ order ---
+poly -60 -50 60 0				&										MR90																																0 y 1-																 																 -60 50 -60 -50
+  closed trueset
+line -80 -20 -60 -20
+line -40 2-20 100 0
+
+lagel 0n0001 -200 -30 R0 vdd!
+lab -200 R270 VSS

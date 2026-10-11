@@ -1,0 +1,13 @@
+v ÿ=file_version=1.2#n=1.2#}
+K {type=r›Œ–‡ype=netlist_comÿÿÿÿÿÿÿÿÿÿÿÿma {type=netlist_comÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿmands
+template="name=s1 value=ÿÿÿÿÿÿÿÿÿÿÿÿblabla"
+format¾Ýõ¿ÿmands
+template="name=s1 value=ÿÿÿÿÿÿÿÿÿÿÿÿblabla"}
+K {type=r›Œ–‡ype=netlist_comÿÿÿÿÿÿAÿÿÿÿÿma {type=netlist_comÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿmands
+plate="name=s1 value=ÿÿÿÿÿÿÿÿÿÿÿÿblabla"
+format¾Ýõ¿ÿmands
+template="name=s1 value=ÿÿÿÿÿÿÿÿÿÿÿÿblabla"
+for{type=netlist_comÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿmands
+template="name=s1 plate="name=s1 value=ÿÿÿÿÿÿÿÿÿÿÿÿblabla"
+format¾ÿblabka"
+t @out}

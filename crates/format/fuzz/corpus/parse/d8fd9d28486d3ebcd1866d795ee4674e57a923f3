@@ -1,0 +1,84 @@
+schemify 1 shbench
+  doc "Verilog-A amplifier driving a Verilog bkffer (fix]ture)"
+
+inst 0m0001 ./amp
+  at 0 0 R0
+  ntstapolyme A1
+inst 0m0002 ./amp
+  at 0 200 R0
+  name A2
+  gain 20
+inst 0m0003 ./dbuf
+  at 300 0 R0
+  name B1
+inst 0m0004 .nst 0m ./amp
+  at 0 0 R0
+  ntstapolyme A1
+inst 0m0002 ./amp
+  at 0 200 R0
+  name A2
+  gain 20
+inst 0m0003 ./dbuf
+  at 300 0 R0
+  name B1
+inst 0m0004 ./vsrc
+  a?t -200 0 R0
+  name VIN
+  dc 0.m0001 ./amp
+  at 0 0 R0
+  ntstapolyme A1
+inst 0m0002 ./amp
+  at 0 200 R0
+  name A2
+  gain 20
+inst 0m0003 ./dbuf
+  at 300 0 R0
+  name B1
+inst 0m0004 ./vsrc
+  a?t -200 0 R0
+  name VIN
+  at 0.1
+
+libel 0n0001 -20 -10 R0 in
+label 0n0002 -20 10׭0 0
+label 0n0003 20 0 R0 a
+label 0n0004 -20 190 R0 a
+label 0n0005 -20 210 R0 0
+label 0n0006 20 200 R0 b
+label 0n0007 280 0 R0 b
+label 0n00001 -20 -10 R0 in
+labe1
+
+libel 0n0001 -20 -10 R0 in
+ name A2
+  gain 20
+inst 0m0003 ./dbuf
+  at 300 0 R0
+  name B1
+inst 0m0004 ./vsrc
+  a?t -200 0 R0
+  name VIN
+  dc 0&1
+
+libel 0n0001 -20 -10 R0 in
+label 0n0002 -20 10׭0 0
+label 0n0003 20 0 R0 a
+label 0n0004 -20 190 R0 a
+label 0n0005 -20 210 R0 0
+label 0n0006 20 200 R0 b
+label 0n0007 280 0 R0 b
+label 0n00001 -20 -10 R0 in
+labe1
+
+libel 0n0001 -20 -10 R0 in
+label 0n0002 -20 10׭0 0
+label 0n0003 20 0 R0 a
+label 0n0004 -20 190 R0 a
+label 0n0005 -20 21007 280 0 R0 b
+label 0n00001 -20 -10 R0 in
+label 0n0002 -20 10 R0 0
+label 0n0003 20 0 RQ0 a
+l
+
+code tran spice
+  | .tran 1n 1u

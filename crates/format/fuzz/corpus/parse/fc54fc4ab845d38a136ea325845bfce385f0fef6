@@ -1,0 +1,13 @@
+schemify 1 shcomp
+ waive do100 MR180 VSS
+
+text r0y 30 -100 MR270 VSS
+
+text r0BIAen R9 DV0D
+port qz81ty 30 -100 MR270 VSS
+
+oc0x5 
+
+0wire 0w00 -100-56sc|90 VDD
+port qz81ty 30 -100 MR270 VSSvdd!
+l 1b

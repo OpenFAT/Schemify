@@ -1,0 +1,159 @@
+schemify 2 shbench
+  doc "inverter transient"
+  corner tt
+
+inst 1x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be0006 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp 250 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 iNn
+lal n0be0006 40 0 R 0 c "inverter transient"
+  corner tt
+
+inst 1x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+l
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label 0n000007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp 250 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 iNn
+lal n0be0006 40 0 R 0 c "inverter transient"
+  corner tt
+
+inst 1x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be0006 40 0 R0 out
+label 0n0007 0 30 R0 0
+lgain 0n0003 -900 -30 R0 in
+latemp 250 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 4n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 iNn
+lal n0be0006 40 0 R 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+l30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be000  corner tt
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0012 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be0006 40 0 R0 out
+label 0n0007 0 30 R0 0
+labe0 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0bM0006 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp 250 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 iNn
+lal n0be0006 40 0 R 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+l30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be000  corner tt
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be0006 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp 250 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+lleba 0n0005 -40 0 R0 iNn
+lal n0be0006 40 6 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp 2507 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp_______________________________________________ 25
+
+code tran spice
+  | .tran 1p 1n

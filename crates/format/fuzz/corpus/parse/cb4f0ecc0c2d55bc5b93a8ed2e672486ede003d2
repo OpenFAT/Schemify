@@ -1,0 +1,6 @@
+schemify 1 shbench
+  doc ""
+  corner tt
+
+inst  0lib tt
+  ÿÿÿÿÿo

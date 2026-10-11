@@ -1,0 +1,5 @@
+schemify	1   shcomp
+net names, l
+wire h2w9cs 100 -330 100|hes them.
+wire t 2830 -100 R270 VSS
+# 

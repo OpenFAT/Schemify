@@ -1,0 +1,70 @@
+schemify 1 shbench
+  doc "Verilog-A amplifier driving a Verilog buffer (fixture)"
+
+inst 0m0001 ./amp
+  at 0 0 R0
+  napolyme A1
+inst 0m0002 ./amp
+  at 0 200 R0
+  name A2
+  gain 20
+inst 0m0003 ./db]uf
+  at 300 0 R0
+  name B1
+inst 0m0004 ./vsrc
+  at -200 0 R0
+  name VIN
+  dc 0.1
+
+label 0n0001 -20 -10 R0 in
+label 0n0002 -g buffer (fixture)"
+
+inst 0m0001 ./amp
+  at 0 0 R0
+  napolyme A1
+inst 0m0002 ./amp
+  at 0 200 R0
+  name A2
+  gain 20
+inst 0m0003 ./dbuf
+  at 300 0 R00n0001 -20 -10 R0 in
+label 0n0002 -20 10 R0 0
+label 0n0003 20 0 R0 a
+label 0n0004 -20 190 R0 a
+label 0n0005 -20 210 R0 0
+label 0n0006 20 200 R0 b
+label 0n0007 280 0 R0 b
+label 0n0008 320 0 R0 y
+label 0n0009 -200 -30 R0 in
+R0 0
+label 0n0003 20 0 R0 a
+label 0n0004 -20 190 R0 a
+label 0n0005 -20 210 R0 0
+label 0n0006 20 200 R0 
+  name B1
+inst 0m0004 ./vsrc
+  at -200 0 R0
+  name VIN
+  dc 0.1
+
+label 0n0001 -20 -10 R0 in
+label 0n0002 -20 10 R0 0
+label 0n0003 20 0 R0 a
+label 0n0004 -20 190 R0 a
+label 0n0005 -20 210 R0 0
+label 0n0006 20 200 R0 b
+label 0n0007 280 0 R0 b
+label 0n0008 320 0 R0 y
+label 0n0009 -200 -30 R0 in
+R0 0
+label 0n0003 20 0 R0 a
+label 0n0004 -20 190 R0 a
+label 0n0005 -20 210 R0 0
+label 0n0006 20 200 R0 b
+label 0n0007 280 0 R0 b
+label 0n0008 320 0 R0 y
+label 0n0009 -200 -30 R0 in
+label 0n0010text -200 30 R0 0
+
+code t spice
+  | .tran 1n 1u

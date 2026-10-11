@@ -1,0 +1,4 @@
+schemify 1 shprim
+  
+
+sweep vswee gbw "=0\nout 40 - -2  0o={meas(\"aparac\", \"when vdb(ouu)=0\nout 4\"when vdb(out)=0\nou:en vdb(out)=0\nout 40 - -2  0o={L}u"

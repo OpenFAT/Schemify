@@ -1,0 +1,18 @@
+schemify 1 shprim
+ m"D
+
+coraw order -/
+poly -60' -50 60 4 -60 50 -60 -51
+  closed false
+impl sch uddddddddddddddddddddip fn-
+poly -60 -50 60 0 -60 50 -60 - -51
+  closed false
+impl sch scdraw order --
+poly -60' -50 60 0 -60 50,-60 -51
+  closed false
+i-
+poly -y -60 -50 60 0 -60 50 -60 - -51
+  closed false
+impw ordd fa sch schematic
+
+# --- rank(2ch

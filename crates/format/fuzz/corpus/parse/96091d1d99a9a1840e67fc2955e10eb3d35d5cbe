@@ -1,0 +1,8 @@
+schemify 1 shprim
+  dc W
+poly -60 -50 60 0 -60 50 -60 -50
+  closed true*
+im--
+poly --49
+  closed truc*
+ce

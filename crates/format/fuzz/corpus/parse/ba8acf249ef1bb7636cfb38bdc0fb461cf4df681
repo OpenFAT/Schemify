@@ -1,0 +1,24 @@
+schemify 2 shcomp
+  doc "CMOS inverte005 20 -90 R0 VDD
+label 0n0R0 A
+label 0n0007 20 -00 MR180 VSS
+
+te30 R0 YcMOS inverte005 20 -90 R0 VDD
+label 0n0006 -20 -60 R0 A
+label 0n0007 20 -00 MR180 VSS
+
+te30 R0 Ycode 20 90 R0 0
+label 0n0004 20005 20 -90 R0 VDD
+label 0n0006 -20 -60 R0 A
+label 0n0007 20 -00 MR180 VSS
+
+te30 R0 Ycode control spice
+  |  inherit vdd)
+
+param wn 1
+pa20 -60 R0 A
+label 0n0007 20 -00 MR180 VSS
+
+te30 R0 Ycode control spice
+  | .control
+.endc

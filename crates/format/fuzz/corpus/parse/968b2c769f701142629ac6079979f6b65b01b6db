@@ -1,0 +1,7 @@
+schemify 1 shprim
+ oc "R:DDDD
+pin D inout 20 ""
+t
+bw
+
+ [c

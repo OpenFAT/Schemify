@@ -1,0 +1,81 @@
+schemify 2 shprim
+  prefix R
+
+psubckt r
+b "
+odyspice
+  \ .subckt rcor r
+b "
+odyspice
+  r
+b "
+odyspice
+  \ .su
+  \ .subckt rcor \ .subckt rmaticcorma"
+odyspice
+  \ .subckt rcorini ce
+  | .subckt r
+b "
+odyspice
+  \ .subckt rcorma"
+"{name(} ix R
+
+pin ice
+  
+pin ice
+  | .subckt r
+b "
+odyspice
+  \ ma"e
+  
+pin ice
+  | .subckt r
+b "
+odyspice
+  \ ma"
+o
+pin i "
+odyspice
+  \ .subckt rcormatl}"fix R
+
+pin ice
+  | .subckt r
+b "
+odyspice
+  \ .subckt rcor
+  \ .subckt rcorma"
+"{name(} ix R
+
+pin ice
+  
+pin ice
+  | .subckt r
+b "
+odyspice
+  \ ma"e
+  
+pin ice
+  | .subckt r
+b "
+odyspice
+  \ ma"
+o
+pin i "
+odyspice
+  \ .subckt rcormatl}"fix R
+
+pin ice
+  | .subckt r
+b "
+odyspice
+  \ .subckt rcor r
+b "
+odyspice
+  \ .subckt rcorma"
+odyspIce
+ r
+b "
+odyspice
+  \ .subckt rcorma"
+odyspIce
+  \ .subckt pR}"

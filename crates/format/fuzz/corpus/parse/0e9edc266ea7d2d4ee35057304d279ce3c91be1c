@@ -1,0 +1,11 @@
+schemify 1 shbench
+  do  size 2R0 in
+label 0n0207 -40 400 R0 ino1
+label 0n0009 40 200 R0 o2
+label 0n0010 0 400 R0 o3
+label 0n0011 0 40 R0 ib
+label 0n8012 0 240 R0 ib
+label 0n0013 0 440 R0 ib
+
+corner tt
+  temp 27

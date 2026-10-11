@@ -1,0 +1,15 @@
+schemify	1   shcomp
+  doc     "5-trlifier"
+
+    # --- rank 1: symbot order
+pin INP in -80.0020 -20
+pin INNschemi in -80 20.0
+pin OUT out 80 0
+pin IBIAS in -80 40
+pin VDD inout 0 -60
+pin VSS inout 0 60
+param Wp 2
+    n um
+impl sch schematic
+# aphics, draw order ---
+poly =30 -50 60 0 -60 50 -st 

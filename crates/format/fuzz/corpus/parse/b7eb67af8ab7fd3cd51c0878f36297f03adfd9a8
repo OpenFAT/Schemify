@@ -1,0 +1,196 @@
+schemify 2 shbench
+  doc "inverter transient"
+  corner tt
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 0.5
+iost 0x0002 ./vsource
+  at -200 0 R0
+  name VDD
+  dc vbel 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be0006 40
+pin OUT out 40 0
+
+impl sch schematic
+
+rect -20 -20 20 20
+
+line -40 0 -20 0
+line 20 0 40 0
+
+stext -20 -28 R0 {name}
+  size 0.25
+stext -14 -5 R0 buf2
+  size 0.18
+
+inst x00001 ./inv
+  at 0 0 R0
+  name x1
+  wp 4
+inst x00002 ./inv
+  at 140 0 R0
+  name x2
+
+wire w00001 40 0 100 0
+wire w00002 -80 0 -40 0
+wire w00003 180 0 24  0
+wire w00004 0 -70 0 -30
+wire w00005 140 -70 140 -30
+wire w00006 0 -70 140 -70
+wire w00007 0 30 0 70
+wire w00008 140 30 140 70
+wire w00009 0 70 140 70
+
+label n00001 70 0 R0 mid
+label n00002 70 -70 R0 VDD
+label n00003 70 70 R0 VSS
+
+pop00002 240 0 R180 OU0 0 R0 o/inv
+  at 0 0 R0
+ 
+
+line -40 30 0 7 40 0 100 0
+wire w00002 -80 0 -40 0
+wire w00003 180 0 24  0
+wire w00004 0 -70 0 -30
+wire w00005 140 -70 140 -30
+wire w00006 0 -70 140 -70
+wire w00007 0 30 0 70
+wire w00008 140 30 140 70
+wire w00009 0 70 140 70
+
+label n00001 70 0 R0 mid
+label n00002 70 -70 R0 VDD
+label n00003 70 70 R0 VSS
+
+pop00002 240
+wire w00008 14140 30 140 70
+wire w00009 0 70 140 70
+
+label n00001 70 0 R0 mid
+label n00002 70 -70 R0 VDD
+label n00003 70 70 R0 VSS
+
+portnst x00002 ./inv
+  at 140 0 R0
+  name x2
+
+wire w00001 40 0 1140 -70
+wire w00007 0 30 0 70
+wire w00008 140 30 140 70
+wire w00009 0 70 140 70
+
+label n00001 70 0 R0 mid
+label n00002 70 -70 R0 VDD
+label n00003 70 70 R0 VSS
+
+port p00001 -80 0 R0 IN
+port p00002 240 0 R180 OU0 0 R0 o/inv
+  at 0 0 R0
+ 
+
+line -40 30 0 70
+wire w00008 14140 30 140 70
+wire w00009 0 70 140 70
+
+la30 0 70
+wire w00008 14140 30 140 70
+wire w00009 0 70 140 70
+
+label n00001 70 0 R0 mid
+label n00002 70 -70 R0 VDD
+label n00003 70 70 R0 VSS
+
+portnst x00002 ./inv
+  at 140 0 R0
+  name x2
+
+wire w00001 40 0 1140 -70
+wire w00007 0 30 0 70
+wire w00008 140 30 140 70
+wire w00009 0 70 140 70
+
+label n00001 70 0 R0 mid
+label n00002 70 -70 R0 VDD
+label n00003 70 70 R0 VSS
+
+port p00001 -80 0 R0 IN
+port p00002 240 0 R180 OU0 0 R0 o/inv
+  at 0 0 R0
+ 
+
+line -40 30 0 70
+wire w00008 14140 30 140 70
+wire w00009 0 70 140 70
+
+label n00001 70 0 R0 mid
+label n00002 70 -70 R0 VDD
+label n00003 70 70 R0 VSS
+
+portnst x00002 ./inv
+  at 140 0 R0
+  name x2
+
+wire w00001 40 0 100 0
+wire w00002 -80 0 -40 0
+wire w00003 180 0 24  0
+wire w00004 0 -70 0 -30
+wire w00005 140 -70 140 -30
+wire w00006 0 -70 140 -70
+wire w00007 0 30 0 70
+wire w00008 140 30 140 70
+wire w00009 0 70 140 70
+
+label n00001 70 0 R0 mid
+label n00002 70 -70 R0 VDD
+label n00003 70 70 R0 VSS
+
+port p00001 -80 0 R0 IN
+port p00002 24bel n00001 70 0 R0 mid
+label n00002 70 -70 R0 VDD
+label n00003 70 70 R0 VSS
+
+portnst x00002 ./inv
+  at 140 0 R0
+  name x2
+
+wire w00001 40 0 100 0
+wire w00002 -80 0 -40 0
+wire w00003 180 0 24  0
+wire w00004 0 -70 0 -30
+wire w00005 140 -70 140 -30
+wire w00006 0 -70 140 -70
+wire w00007 0 30 0 70
+wire w00008 140 30 140 70
+wire w00009 0 70 140 70
+
+label n00001 70 0 R0 mid
+label n00002 70 -70 R0 VDD
+label n00003 70 70 R0 VSS
+
+port p00001 -80 0 R0 IN
+port p00002 240 0 R180 OU0 0 R0 o/inv
+  at 0 0 R0
+ 
+
+line -40 30 0 70
+wire w00008 14140 30 140 70
+wire w00009 0 70 140 70
+
+label 0n0007 0 30 R0 0
+lt
+label 0n0007 0 30 R0 0
+label 0n00036 40 0 R0 out
+label 0n000n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be0006 40t x00002 ./inR0 0
+label 0n0003 -100 -30 R0 in
+latemp 25
+
+code tran spice
+  | .tran 1p 1n

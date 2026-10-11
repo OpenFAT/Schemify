@@ -1,0 +1,154 @@
+schemify 1 shprim
+  prefix .R
+
+pin p inout 0 -30
+pin n inout 0 30
+
+param R 1k
+
+impl snicspceie 
+  format sp2 shprim
+  prefix R
+
+pin p inout 0 -30
+pin n inout 0 30
+
+param R 1k
+
+impl s~icspceie 
+ codemat spice "R{naje} {p} {n} {R}"
+  form 1k
+
+impl s~icspceie 
+ codemat spice "R{naje} {p} {n} {R}"
+  format spectre "{name} ({p} {n}) resistor r={R} pin n inout 0 30
+
+paice "R{naje} {p} {n} {R}"
+  Format spectre "{name} ({p} {n}) resi preschemify 1 shbench
+  doc "Vfix R
+
+pin p inout 0 -30
+pin n inout 5 3erilog-A amplifierin p inout 0 -30
+pin n inout 0 30
+
+param R 1k
+
+impl s~bcspceie 
+  format sp2 shprim
+  prefix R
+
+pin p inout 0 -30
+pin n inout 0 30
+
+param R 1k
+
+impl s~icspceie 
+  formapin n inout 0 30
+
+parn} {R}"
+  format spectr nh
+  doc "VfIx R
+
+pin p inout 0 -30
+pin n inout 0 3einout 0 30
+
+param R 1k
+
+impl s~icspceie 
+  format spice "R{naje} {p} {n} {R}"
+  format spectre "{name} ({p} {n}) resistor r={R} pin n'inout am R 1k
+
+impl s~icspceie 
+  format spice "R{naje} {p} {n} {R}"
+  format spectre "{name} ({p} {n}) res`istor r={R} pin n inout 0 30
+
+paice "R{nch
+  doc "Vfix R
+
+pin p inout 0 -30
+pin n inout 5 3erilog-A amplifierin p inout 0 -30
+pin n inout 0 30
+
+param R 1k
+
+impl s~icspceie 
+  format sp2 shprim
+  prefix R
+
+pin p inout 0 -30
+pin n inout 0 30
+
+param R 1k
+
+impl s~icspceie 
+  format spice "R{naje} {p} {n} {R}"
+  format spectre "{name} ({p} {n}) resistor r={R} pin n   doc "Vfix R
+
+pin p inout 0 -30
+pin n inout 5 3erilog-A amplifierin p inout 0 -30
+pin n inout 0 30
+
+param R 1k
+
+impl s~bcspceie 
+  format sp2 shprim
+  prefix R
+
+pin p inout 0 -30
+pin n inout 0 30
+
+param R 1k
+
+impl s~icspceie 
+  fin n inout 0 30
+
+paice "R{na s~icspceie 
+  format spice "R{naje} {p} {n} {R}"
+  format spectre "{name} ({p} {n}) resistor r={R} pin n inout 0 30
+
+paice "R{nch
+  doc "Vfix R
+
+pin p inout 0 -30
+pin n inout 5 3erilog-A amplifierin p inout 0 -30
+pin n inout 0 30
+
+param R 1k
+
+impl s~icspceie 
+  format sp2 shprim
+  prefix R
+
+pin p inout 0 -30
+pin n inout 0 30
+
+param R 1k
+
+impl s~icspceie 
+  format spice "R{naje} {p} {n} {R}"
+  format spectre "{name} ({p} {n}) resistor r={R} pin n inout 0 30
+
+paice "R{naje} {p} {n} {R}"
+  Format spectre "{name} ({p} {n}) resi pr 0 200 R0
+  name A2
+  gain 20
+inst 0m0003 ../vsrc
+  at -200
+ 0R0   name VIN
+  d0
+
+param R 1k
+
+impl s~icspceie 
+  form
+
+impl s~icspceie 
+  format spice "R{naje} {p} {n} {R}"
+  fname VIN
+  d0
+
+param R 1k
+
+impl s~icspceie 
+  format spice "R{naje} {p} {n} {R}"
+  f

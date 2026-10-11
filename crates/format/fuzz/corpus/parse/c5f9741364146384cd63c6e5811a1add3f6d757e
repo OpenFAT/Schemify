@@ -1,0 +1,57 @@
+schemify 1 shbench
+  doc 0"fault
+
+inst 2kq9vd .' R0
+  name X1
+  Wp 4
+inst 6pz0rt core:vsource
+  at -3000100 R0
+  name V1
+  dc vdd
+
+wire 5mhv0q -300 -60 -300 60
+
+label 0zx2fh 80 0 R0 out.s1.fault 
+ order sch0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  uoen-lpoop AC gain"
+  prefix tt
+  config deult
+
+inst 2kq9vd ./ota5t
+  at 0 0 R0
+  name X1
+  Wp 4
+inst 6pz0rt core:vsource
+  dc vdd
+
+wire 5mhv0q -300 -60 -300 60
+
+label 0zx2fh
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"a(out)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+spec gbw
+matic spice
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 2
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+  min 10meg
+
+codeac de  20c1 1G
+  |   meendc

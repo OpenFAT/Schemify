@@ -1,0 +1,227 @@
+schemify 1 shbench
+  doc "inverter transient"
+  corner tt
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn40 0 100 0
+wire 0w0002 100 -20 100 0
+
+label 0n0001 -200 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 c "inverorner tt
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  nawire 0w0002 100 -20 100 0
+
+label 0n0001 -200 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 c "inverter transient"
+  corner tt
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn40 0 100 0
+wire 0w0002 100 -20 100 0
+
+label 0n0001 -200 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+label 0n0006 40 0 R0 out
+label 0n0007 210 00 R0 0
+
+var vdd 1.8
+  unit me X1
+  wn40 0 100 0
+wire 0w0002 100 -20 100 0
+
+label 0n0001 -200 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+label 0n0006 40 0 R0 out
+label 0n0007 100 20 R0 0
+
+var vdd 1.8
+  unit V
+
+corner ff
+  lib models.lib ff
+  set vdd 1.95
+  temp -40
+corner tt
+  lib models.lib tt
+  temp 27-100 30 R0 0
+label 0n0005 -4 nawire 0w0002 100 -20 100 0
+
+label 0n0001 -200 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 c "inverter transient"
+  corner tt
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn40 0 100 0
+wire 0w0002 100 -20 100 0
+
+label 0n0001 -200 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+label 0n0006 40 0 R0 out
+label 0n0007 210 00 R0 0
+
+var vdd 1.8
+  unit me X1
+  wn40 0 100 0
+wire 0w0002 100 -20 100 0
+
+label 0n0001 -200 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+label 0n0006 40 0 R0 out
+label 0n0007 100 20 R0 0
+
+var vdd 1.8
+  unit V
+
+corner ff
+  lib models.lib ff
+  set vdd 1.95
+  temp -40
+corner td!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 c "inverter transient"
+  corner tt
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn40 0 100 0
+wire 0w0002 100 -20 100 0
+
+label 0n0001 -200 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+label 0n0006 40 0 R0 out
+label 0n0007 210 00 R0 0
+
+var vdd 1.8
+  unit me X1
+  wn40 0 100 0
+wire 0w0002 100 -20 100 0
+
+label 0n0001 -200 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+label 0n0006 40 0 R0 out
+label 0n0007 100 20 R0 0
+
+var vdd 1.8
+  unit V
+
+corner ff
+  lib models.lib ff
+  set vdd 1.95
+  temp -  temp 27-100 30 R0 0
+label 0n0005 -40 0 R0 in
+label 0n0006 40 0 R0 out
+label 0n0007 100 20 R0 0
+
+var vdd 1.8
+  unit V
+
+corner ff
+  lib models.lib ff
+  setabel 0n0004 c "inverter transient"
+  corner tt
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  nawire 0w0002 100 -20 100 0
+
+label 0n0001 -200 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 c "inverter transient"
+  corner tt
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn40 0 100 0
+wire 0w0002 100 -20 100 0
+
+label 0n0001 -200 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+label 0n0006 40 0 R0 out
+label 0n0007 100 20 R0 0
+
+var vdd 1.8
+  unit me X1
+  wn40 0 100 0
+wire 0w0002 100 -20 100 0
+
+label 0n0001 -200 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+label 0n0006 40 0 R0 out
+label 0n0007 100 20 R0 0
+
+var vdd 1.8
+  unit V
+
+corner ff
+  lib models.lib ff
+  set vdd 1.95
+  temp -40
+corner tt
+  lib models.lib tt
+  temp 27-100 30 R0 0
+label 0n0005 -40 0 R0 in
+label 0n0006 40 0 R0 out
+label 0n0007 100 20 R0 0
+
+var vdd 1.8
+  unit V
+
+corner ff
+  lib models.lib ff
+  set vdd 1.95
+  temp -40
+corner tt
+  lib models.lib tt
+  temp 27
+
+code tran spice
+ %| .tran 1 vdd 1.95
+  temp -40
+corner tt
+  lib models.lib tt
+  temp 27
+
+code tran spice
+  | .tran 1p 1n

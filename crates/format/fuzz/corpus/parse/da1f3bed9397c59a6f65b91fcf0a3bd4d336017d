@@ -1,0 +1,10 @@
+schemify 1 shcomp
+  
+   unit um
+
+impl sch schematic
+
+# - name.
+port 5c0d1r -120 -300 R0 IN0u
+  unit S
+  doc "transarget"

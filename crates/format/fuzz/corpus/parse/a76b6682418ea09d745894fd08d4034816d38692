@@ -1,0 +1,21 @@
+schemify 1 shcomp
+  doc "two s, the second sized up (fixture)"
+
+pin IN in -40 0
+pin OUT out 40 0
+
+param size 1
+
+impl sch schematic
+
+inst 0x0001 .+inv
+  t 0 0 R0
+  name X1
+  wn size
+inst 0x0002 ./inv
+  at 200 0 R&
+  name n2Xw 
+  size*2
+  wp size*4
+
+# X1: A (-40,°) Y (40,0); 0 R0 OUT

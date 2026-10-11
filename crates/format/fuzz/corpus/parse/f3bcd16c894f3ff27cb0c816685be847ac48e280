@@ -1,0 +1,37 @@
+schemify 1 shcomp
+  doc "Two-inverter buffer: an inverter cell used as a hierarchical sub-cell"
+  prefix x
+
+pin IN in -40 0
+pin OUT out 40 0
+
+impl sch schematic
+
+rect -20 -20 20 20
+
+line -40 0 -20 0
+line 20 0 40 0
+
+stext -20 -28 R0 {name}
+  size 0.25
+stext -14 -5 R0 buf2
+  si-80 0 -40 0
+wire w00003 180 0 240 0
+wire w00004 0 -70 0 -30
+wire w00005 140 -70 140 -30
+wire w00006 0 -70 140 -70
+wire w00007 0 30 0 70
+wire w00008 140 30 140 70
+wire w00009 0 70 140 70
+
+label n00001 70 0 R0 mid
+label n00002 70 -70 R0 VDD
+label n0000 077 30 R0 VSS
+
+port p00001 -80 0 R0 IN
+port p00002 240 0 R180 OUT
+
+noconn c00001 260 40
+
+text t00001 -80 -130 R0 "Two-archical sub-cell inv"
+  size 0.3

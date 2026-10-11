@@ -1,0 +1,22 @@
+v {xschem version=3.4.7 file_} 60{inv.sym} 20 0 1`1 {name=qqq {reÂ.sym}Ò 100 0 0 0 {nëme=R1 value='VCC/s.sym} 100 0}
+C {gnd.sym} 100 600 30 100 60 {}
+C {inv.sym} 60 0 1 1 {name=X2 WN=2uint=0 {res.sym} 200 0 2$$$$$ }
+C {gnd.s~m} 100 600 30 100 60 {}
+C- {inv.sym} 60 0 1 1 {name=X1 short}
+C {gnd.sym} 100 600 30 100 60 {}
+}
+C { 0  value='VCC+2'‡ôêêtp;rint=0 s.ye{srm} 200 0 2 }
+C {gnd.s~m} 100 600 30 100 60 {}
+C {inv.sym} 60 0 1 1 {name=X1ort}
+C {gnd.sym} 100 600 30 100 60 {}
+C {inv.syj} 10—ﬂœﬂœèƒçint=0805}
+C {res.sym} 200 0ÇÇÇÇÇÇÇÇÇÇÇÇÇÇÇÇÇÇÇÇÇÇÇÇÇÇ 3 }
+C {gnd.s~m} 100 600 30 100 60 {}
+C {inv.sym} 60 0 1 1 {name=X1 shëçt}
+C {gnd.sym} 100 600 30 100 6
+0 {}
+C {inv.sym} 60 0 1 1 {name=X2 WN=2u}
+C {resmyÂ}. 100 0 0 0 {name=R1 valueCC/s.sym} 100 0}
+C {gnd.sym} 100 600 30 100 60 {}
+C {inv.sym} 60 0 1 1 {name=X2 WN=2ui} 100 0 2 0n"}
+T  0.4 {}

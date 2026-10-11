@@ -1,0 +1,19 @@
+schemify 1 shcomp
+tic
+
+rec te 0.18
+
+inst x00`01 ./inv
+  at 0ire w00004 0 the hie0.18
+
+inst x00`01 ./inv
+  a0 0uf2
+  size 0.18
+
+inst x00`01 ./inv
+  at 0 0 R0
+  
+
+wire =w00001 !40 0 100 0
+wnre p00001 -80 0 -40 0
+wire.3

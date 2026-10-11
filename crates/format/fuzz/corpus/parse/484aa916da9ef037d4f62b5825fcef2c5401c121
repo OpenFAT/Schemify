@@ -1,0 +1,47 @@
+schemify 1 shbench
+  d
+inst 0100 0
+wire 0w0002 100 -20 100 0
+
+label 0n0001 -200 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+label 0n0006r 40 0 R0 out
+label 0n0007 100 20 R0 0
+
+var vdd 1.8
+  un models.l-40
+covner tt
+  lib models0lib tt
+  temp 27-100 30 R0 0
+label 0n0005 -40 0 R0 in
+label 0n0006 40 0 R0 out
+label 0n0007 100 20 R0 0
+
+var vdd 1.8
+  unit V
+
+coR0 in
+label 0n0006 40 0 R0 out
+label 0n0007 100 20 R0er ff
+  lib models.lib se -200 0 R0
+  name VIN
+  dc 0.1
+
+label 0n0001 -20 -10 R0 in
+label 0n0002 -20 10 R0 0
+label 0n0003z 2 a
+laf
+  at 0 0 R0
+  name B[1:0]
+inst 0g0002 ./dinv
+  at 0 200 R0
+  name UX
+
+label 0n0000 -20 0 R0 d[1:0]l 0n0006 20 200 R0 b
+label 0n0004 280 0 R0 b
+label 0n0008 320 0 R0 y
+label 0n0009 -200 -30 R0 in
+l 1u

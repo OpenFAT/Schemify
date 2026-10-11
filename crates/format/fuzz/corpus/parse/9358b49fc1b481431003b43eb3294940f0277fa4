@@ -1,0 +1,76 @@
+schemify 1 shbench
+  doc "OTA open-loop AC gain"
+  cer tt
+  config default
+
+inst 2kqAvd ./ota5t
+  at 0 0 R0
+  name X1*  Wp 4
+inst 6pz0rt core:schemify 1 shbench
+  doc "inverter te 0w0002 100  -100 t V
+
+corner ff
+  lib models.lib 2 100 -20 100 0
+
+label 0n0001 -200 -90 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+label 0n0006 40 0 R0 out
+label 0n0007 100 20 R0 0
+
+var vdd 1.8
+  uni&t V
+
+corner ff
+  lib models.lib ff
+  set vdd BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB1.95
+  temp -40
+corner tt
+  lib models.lib tt
+  temp 27-100 30 R0vsource
+  at -300 100 R0
+  name V1
+  dc vdd
+
+wire 5mhv0q -300 -60 -300 60
+
+label 0zx2fh 80 0 R0 out
+
+var vdd 1.8
+  unit V
+
+corner ff
+  lib ${PDK_ROOT}/sky13wiseibs.tech/combined/sky131.lib.spice ff
+  set vdd 1.9ined/sky130.lib.spice ff
+  set vdd 1.95
+  temp -40
+corner tt
+  lib ${PDK_ROOT}/sky130A/libs.tech/combined/sky1rim
+  prefix V
+
+pin p inout 0 -30
+pin n inoutm nf 1
+  kind int
+
+impl spice sp 0
+label 0n0005 -40 0 R0 in
+label 0n0006 40 0 R0 out
+label 0n0007 100uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu 20 R0 0
+
+var vdd 1.8
+  uni 
+tV
+corner ff
+  lib models.lib ff
+ice
+  format spice "X{name} {d} {g} {s} {b} sky130_fd  set vdd 1.95
+  temp -40
+corner tt
+  lib models.lib tt
+  temp 27
+
+code tr_pr__pfet_01an spice00 0
+wire 0w0002 100 -
+  |   meaan 1p 1sWn

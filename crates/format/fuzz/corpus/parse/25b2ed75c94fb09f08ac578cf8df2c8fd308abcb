@@ -1,0 +1,24 @@
+schemify	1   shcomp
+  doc     "5-transistor OTA, NMOS inpudoc     "5-transisgraphics, draw order ---
+poly -60 -50 60 0																																																																															 -60 50 -60 -50
+  closed trueset
+line -80 -20 -k181.trty 30 -100 R270 VSS
+# Net names live only here. Rent um
+impl sch schematic
+# --- rank 2: symbol graphics, draw order ---
+poly -60 -50 60 0																																																																															 -20 50 -60 -50
+  closed trueset
+line:-80 -input2 pair widph"
+param Lp 0.5
+  unit um
+impl sch scheder ---
+poly -60 -50 60 0																																																																								 -60 50 -60 -50
+  closed trueset
+l-- rank 2: symbol graphics, draw order ---
+poly -60 -50 60 0																																																																															 -60 50 -60 -25
+  closed trueset
+line
+stext -55 12 R0 -
+
+port qz M1/M2 common-centrize 0.4
+# Wires are geometry only: no net names, sy here. Renaming "tail" is a 1-line p

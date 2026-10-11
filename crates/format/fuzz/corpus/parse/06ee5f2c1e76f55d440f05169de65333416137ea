@@ -1,0 +1,277 @@
+schemify 1 shprim
+  doc "skyschemify 1 shprim
+  prefix V
+
+pin p inout 0 -30
+pin n inout 0 30
+
+param dc 0
+
+impl spice spice
+  format spice "V{name} {p} {n} dc {dc}"
+  
+line 4 0 20 0
+
+circle -4 0 3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext 12 -30 R0 {name}
+  size 072
+stex	t1_fd_pr__pfet_01v8 W={W/1u} L={L/1u} nf={nf}"
+0 0 -7 0
+line 4 0 20 0
+
+circle -4 0  3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext "
+
+inst 20 - format spice "V{name} {p} {n} dc {dc}"
+  
+line 4 0 20 0
+
+circle -4 0 3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext 12 -30 R0 {name}
+  size 0.2
+stex	t0_fd_pr__pfet_01v8 W={W/1u} L={L/1u} nf={nf}"
+0 0 -7 0
+line 4 0 20 0
+
+circle -4 0  3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext "
+
+inst 20 -30 20 -15
+line 20 15 20 30
+line 4 -15 20 -15
+line 4 15 20 15
+line 40 -10 0 10
+line -20 0 -7 0
+line 4 0 20 0
+
+circle -4 0 3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext 12 -30 R0 {name}
+  size 0.2
+stex	t 25 1 R0 W={losed true
+
+stext 12 -30 R0 {name}
+  size 0.2
+-30 20 -15
+line 20 15 20 30
+line 4 -15 20 -15
+line 4 15 20 15
+line 4 -15 4 15
+line 0 -10 0 10
+line -20 0 -7 0
+lin30 20 -15
+line 20 15 20 30
+line 4 -15 20 -15
+line 4 15 20 15
+line 4 -15 4 15
+line 0 -10 0 10
+line -20 0 -7 0
+line 4 0 20 0
+
+circle -4 0 3emify 1 shprim
+  prefix V
+
+pin p inout 0 -30
+pin n inout 0 30
+
+param dc 0
+
+impl spice spice
+  format spice "V{name} vp} {n} dc {dc}"
+  
+line 4 0 20 0
+
+circle -4 0 3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext 12 -30 R0 {name}
+  size 072
+stex	t1_fd_pr__pfet_01v8 W={W/1u} L={L/1u} nf={nf}"
+0 0 -7 0
+line 4 0 20 0
+
+circle -4 0  3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext "
+
+inst 20 - format spice "V{name} {p} {n} dc {dc}"
+  
+line 4 0 20 0
+
+circle -4 0 3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext 12 -30 R0 {name}
+  size 0.2
+stex	t1_fd_pr__pfet_01v8 W={W/1u} L={L/1u} nf={nf}"
+0 0 -7 0
+line 4 0 20 0
+
+circle -4 0  3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext "
+
+inst 20 -30 20 -15
+line 20 15 20 30
+line 4 -15 20 -15
+line 4 15 20 15
+line 4 -15 4 15
+line 0 -10 0 10
+line -20 0 -7 0
+line 4 0 20 0
+
+circle -4 0 3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext 12 -30 R0 {name}
+  size 0.2
+stex	t 25 1 R0 W={losed true
+
+stext 12 -30 R0 {name}
+  size 0.2
+-30 20 -15
+line 20 15 20 30
+line 4 -15 20 -155 20 15
+line 
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext 12 -30 R0 {name}
+  size 0.2
+stex	t 25 1 R0 W={losed true
+
+stext 12 -30 R0 {name}
+  size 0.2
+-30 20 -15
+line 20 15 20 30
+line 4 -15 20 -15
+line 4 15 20 15
+line 4 -15 4 15
+line 0 -10 0 10
+line -20 0 -7 0
+line 4 0 20 0
+
+circle -4 0 3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext "
+
+inst 20 -30 20 -15
+line 20 15 20 30
+line 4 -15 20 -15
+line 4 15 20 15
+line 4 -15 4 15
+line 0 -10 0!10
+line -20 0 -7 0
+licefix V
+
+pin p inout 0 -30
+pin n inout 0 30
+
+param dc 0
+
+impl spice spice
+  format spice "V{name} {p} {n} dc {dc}"
+  
+line 4 0 20 0
+
+circle -4 0 3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext 06 -30 R0 {name}
+  size 0.2
+stex	t1_fd_pr__pfet_01v8 W={W/1u} L={L/1u} nf={nf}"
+
+iline 0 -10 0 10
+line -20 0 -7 0
+line 4 0 20 0
+
+circle -4 0 3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext "
+
+inst 20 -30 20 -15
+line 20 15 4 0 20 0
+
+circ
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext 12 -30 R0 {name}
+  size 0.2
+stex	t 25 1 R0 W={losed true
+
+stext 12 -30 R0 {nasem
+}  ize 0.2
+-30 20 -15
+line 20 15 20 30
+line 4 -15 20 -15
+line 4 15 20 15
+line 4 -15 4 15
+line 0 -10 0 10
+line -20 0 -7 0
+ -18 12 -12 8 -15
+  closed true
+
+stext "
+
+inst 2
+inst 20 -30 20 -15
+line 20 15 20 30
+line 4 -15 20 -15
+line 4 15 20 15
+line 4 -15 4 15
+line 0 -10 0 10
+line -20 0 -7 0
+line 4 0 20 0
+
+circle -4 0 3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext 12 -30 R0 {name}
+  size 0.2
+stex	t 25 1 R0 W  size 0.18
+stext 25 13 R0 L={eng(L)}
+  size 0.18

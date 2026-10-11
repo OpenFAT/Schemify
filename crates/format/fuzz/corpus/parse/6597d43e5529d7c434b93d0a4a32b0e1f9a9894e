@@ -1,0 +1,12 @@
+schemify 1 shprim
+  doc "DC voltage source"
+  prefix V
+
+pin P inout 0 -30
+pin N inout 0 30
+
+param dc 0
+  unit V
+
+impl spice spice
+  format spice "V{name} {P} {N} dc {dc}"

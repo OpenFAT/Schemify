@@ -1,0 +1,82 @@
+schemify 1 shprim
+  doc "generic PMOS (fixture)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inoud 20 0
+
+param W 2
+param L 0.15
+param model pch
+  si ntdkring
+
+impl spice spice
+  format spice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}u"
+? format spectre "{name| ({D inout 20 30
+pin B inoud 20 0
+
+param W 2
+param L 0.15
+param model pch
+  si ntdkring
+
+impl spice spice
+  format spice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}u"
+? format spectre "{name| ({D} {G} {S} {B}) {model} w={e)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param model pch
+  si ntdkring
+
+imp} {G} {S} {B}) {modelrefix M
+
+pin S inoumax0 -30
+pin G in -20 0
+pin Dench
+  doc "inverter transient"
+  corner tt
+
+inst 0x00004 -100 300 0
+label 0n0005 -40 0 R0 in
+label 0n00
+label 0n0005 -40 0 R0 in
+label 0n0006 40 0 R0 out
+label 0n0007 100 20 R0 0
+
+varls20
+pin OUT out 40 0
+pin IBIAS in 0 40
+
+param wn 2
+param wp 4
+param l 0..lib ff
+  set ver tt
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  n inout 20 30
+pin B inoud 20 0
+
+param W 2
+param } w={e)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param model pch
+  si ntdkri{D} {G} {S} {B} {model} W={W}u L={L}u"
+  format spectre "{name} (W}u l={L}u"

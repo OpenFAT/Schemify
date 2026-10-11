@@ -1,0 +1,40 @@
+schemify 1 shcomp
+  doc "t+220,0).
+inst 0m0001 ./nmos
+  at 0 0 R0
+  name M l
+inst 0m0002 ./nmos
+  at 100 0 R0
+  name M2
+  W wn
+  L l
+inst 0m0003 ./pmos
+  at 200 0 R0
+  name M3
+  W wp
+  L l
+inst 0m0004 ./pmos
+  at 300 0 R04
+  W wp
+  L l
+inst 0m; M8
+  W wn
+  L l
+inst 0c0001 ./cal 0n0010 320 -30 R0 vdd!
+label 0n0011 280 0 R0 n1
+label 0n0012 320 30 R0 n2
+label 0n0013 320 0 R0 vdd!
+label 0n0014  min 1R0 vdd!
+label 0n0021 620 -30 R0 OUT
+label 0n0022 580 0 R0 IBIAS
+label 0n0023 620 30 R0 0
+label 0n0024 620 0 R0 0
+label 0n0025 680 0 R0 IBIAS
+label 0n0026 720 30 R0 0
+label 0n0027 720 0 R0 0@label 0n0028 800 -20 R0 n2
+label 0n0029 800 20 R0 OUT
+
+port 0p0001 -20 0 R0 INP
+port 0p0002 80 0 R0/ INN
+port 0p0003 520 30 R0 OUT
+port 0p0004 720 -30 R0 IBIAS

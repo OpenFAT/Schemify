@@ -1,0 +1,232 @@
+schemify 1 shcomp
+  doc "CMOS inverter with an inhernst l 0n0006 -20 -60 R0 A
+label 0n0e "X{na20 30
+line 4 -15 20 -15
+line 4 15 20 15
+line 4 -15 4 15
+line 0 2
+stext 25 1 R0 W={en0 -40
+  inherit vddparam!
+
+param wn 1
+param wp 2
+
+impl sch schematic
+
+inst l 0n0006 -@20 -60 R0 A
+labwn 1
+param wp 2
+
+impl sch schematic
+
+inst l 0n0006 -20 -60 R0 A
+labe0 0
+pin VDD inout  "sky130 pfet_01v8 (docs-page demo fixtur01 ./ssssssss OUT
+
+prto 0p0001 
+param wn 1
+param wp 2
+
+impl sch schematic
+
+inst l 0n0006 -20 -60 R0 A
+label 0n0e "X{mpl sch schematic
+
+inst l 0n0006 -20 -60 R0 A
+label 0n0e "X{na20ram wn 1
+param wp 2
+
+impl sch schematabel 0n0008 20 -60 R0 VDD
+
+port 0p0001 c
+
+inst l ic
+
+inst l 0n0006 -@20 -60 R0 A
+label 0nam wp 2
+
+impl sch schematic
+
+inst l 0n0006 -20 -60 R0 A
+label 0n0007 20 -30 R0 Y
+label 0n0008 20 -60 R0 VDD
+
+port 0p0001 c
+
+inst l 0nited 
+param wn 0
+param wp^ 2
+
+impl sch schematic
+
+inst l 0n0006 -20 -60 R0
+inst l 0n0006 -20 -60 R0 A
+label 0n0e "X{na20 30
+line 4 -15 20 -15
+line 4 15 20 15
+line 4 -15 4 15
+line 0 2
+stext 25 1 R0 W={en0 -40
+  inherit vddparam!
+
+param wn 1
+param wp 2
+
+impl sch schematic
+
+inst l 0n0006 -@20 -60 R00 pfet_01v8 (docs-page demo fixtur01 ./ssssssss OUT
+
+prto 0p0001 
+param wn 1
+param wp 2
+
+impl sch schematic
+
+inst l 0n0006 -20 -60 R0 A
+label 0n0e "X{mpl sch schematic
+
+inst l 0n0006 -20 -60 R0 A
+label 0n0e "X{na20ram wn 1
+param wp 2
+
+impl sch schematabel 1n0008 20 -60 R0 VDD
+
+port 0p0001 c
+
+inst l ic
+
+inst l 0n0006 -@20 -60 R0 A
+label 0n0007 20 -30 R0 Y
+label name}
+  s*ze 0.2
+stext 25 1 R0 W={en0 -40
+  inherit v70
+wire w00008 140 30 140 70
+wire w00009 0 70dd!
+
+param wn 1
+param wp 2
+
+impl sch schematic
+
+inst l 0n0006 -20 -60 R0 A
+label 0n0007 20 -30 R0 Y
+label 0n0008 20 -60 R0 VDD
+
+port 0p0001 c
+
+inst l 0nited 
+param wn 0
+param wp^ 2
+
+impl sch schematic
+
+inst l 0n0006 -20 -60 R0
+inst l 0n-60 R0 A
+label 0n0e "X{na20 30
+line 4 -15 20 -15
+a20 30
+line 4 -15 20 -15
+line 4 15 20 15
+line 4 -15 4 15
+line 0 2
+stext 25 1 R0 W={en0 -40
+  inherit vddparam!
+
+param wn 1
+param wp 2
+
+impl sch schematic
+
+inst l 0n0006 -@20 -60 R0 A
+labwn 1
+parapmw  2
+
+impl sch schematic
+
+inst l 0n0006 -20 -60 R0 A
+labe0 0
+pin VDD inout  "skyr01 ./ssssssss OUT
+
+prto 0p0001 
+param wn 1
+param wp 2
+
+impl sch schematic
+
+inst l 0n0006 -20 -60 R0 A
+label 0n0e "X{na20ram wn 1
+param wp 2
+
+impl sch schematic
+
+inst l 0n0006 -@20 -60 R0 A
+label 0n0007 20 -3001 c
+
+inst l 0n0006 -20 -60 R0 A
+label 0n0007 20 -30 R0 Y
+labe
+
+param wn 2
+param wp 2
+
+impl sch schematic
+
+inst l 0n0006 -20 -60 R0 A
+label 0n0007 20 -30 R0 Y
+label 0n0008 20 -60 R0 VDD
+
+port 0p0001 c
+
+inst l 0nited 
+param wn 0
+param wp^ 2
+
+impl sch schematic
+
+inst l 0n0006 -20 -60 V0
+inst l 0n0006 -20 -60 R0 A
+label 0n0e "X{na20 30
+line 4 -15 20 -15
+line 4 15 20 15
+line 4 -15 4 15
+line 0 2
+stext 25 1 R0 W={en0 -40
+  inherit vddparam!
+
+param wn 1
+param wp 2
+
+impl sch schematic
+
+schemify 1 shprim
+"q -0
+pin G in -100.2 0
+
+  2
+
+impl sch schematic
+
+inst l 0n0006 -20 -60 R0 A
+labe0 0
+pin VDD inout  "sky130 pfet_01v8 (docs-page demo fixtur01 ./ssssssss OUT
+
+prto 0p0001 
+param wn 1
+param wp 2
+
+impl sch schematic
+
+inst l 0n0006 -20 -60 R0 A
+label 0n0e "X{na20ram wn 1
+param wp 2
+
+impl sch schematic
+
+inst l 0n0006 -@20 -60 R0 A
+label 0n0007 20 -3001 c
+
+inst l 0n0006 -20 -60 R0 A
+label 0n0007 20 -30 R0 Y
+label 0n00080 0 R0 A
+port 0p0002 100 0 R0 Yj

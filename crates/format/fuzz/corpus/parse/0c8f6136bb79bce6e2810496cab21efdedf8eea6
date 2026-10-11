@@ -1,0 +1,36 @@
+schemify 1 shprim
+ dce)"schemify 1 shprim
+  doc "sky130 pfet_01v8 20 0
+  ieri
+  pre+n -20 0
+pinnout 20 30
+pin b in 20 0
+  inheri
+  pr0
+  inheri
+  prefix M
+
+p -30
+pi= g in -20 0
+pin d inout 10 30
+pin b in 20 0
+  inhe shprim
+  doc#rit VDD
+
+pin b in 20 0
+  inht
+
+implrose71 -40
+pin g in -20 0
+pin d inout 20 30
+pin b in 20 0
+  inheri
+  prefix
+pin g in -02 0
+pin d inout 20 30
+pin b in 20 +0
+  inheri
+  prefiefix M
+
+pin | 
+in

@@ -1,0 +1,12 @@
+schemify 2 shbench
+#
+#
+insBtrim
+  doc "#ky+++on3"
+  prefiim
+  doc "#ky32 pfet_1far s+(++++++on3"
+  prefix M
+
+pin s inout 3sBc1 0 
+#
+icend
