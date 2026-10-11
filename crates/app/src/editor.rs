@@ -90,8 +90,12 @@ const REQUESTS_MAX: usize = 1 << 10;
 // ponytail: older undos rebuild the derived state (136 ms at 100k objects); doc reporting an
 // undo's touched records would retire this mirror.
 const COMMITS_KEPT: usize = 64;
-/// Share of the window height the editor keeps while the waves dock is open.
+/// Share of the window height the editor keeps when the waves dock opens.
 const DOCK_SPLIT: f32 = 0.6;
+/// Range the dock divider can be dragged in, as shares of the window height.
+const DOCK_SPLIT_RANGE: (f32, f32) = (0.15, 0.85);
+/// Logical px either side of the dock divider that grab it.
+const DOCK_GRAB_PX: f32 = 4.0;
 /// Netlist lines a text tab shows (the prose widget's source cap); the file has them all.
 const TEXT_TAB_LINES: usize = 1 << 14;
 
@@ -453,13 +457,13 @@ enum Dialog {
     None,
     Choose(Chooser),
     Props(Props),
-    /// Purpose, title, typed text (synced every frame).
+    /// Purpose, title, typed text (follows the typing: `field.typed`).
     Text(TextFor, String, String),
     /// The canvas context menu (right click); `true` when something was selected.
     Ctx(bool),
     /// View → Visible layers.
     Layers,
-    /// Properties → Edit file: the document's text (synced every frame).
+    /// Properties → Edit file: the document's text (follows the typing: `field.typed`).
     File(String),
     /// Crash recovery of a document: (document, journal records offered).
     Recover(DocHandle, u32),
@@ -587,6 +591,10 @@ pub struct Editor {
     diff_key: Option<(DocHandle, u32)>,
     /// Keyboard input goes to the waves dock (the pointer is over it).
     dock_focus: bool,
+    /// Share of the window height above the waves dock (the divider, dragged by the pointer).
+    dock_split: f32,
+    /// The pointer is dragging the dock divider.
+    dock_drag: bool,
     /// The active document's first staged edit: its label and the document with it applied.
     staged: Option<(String, Document)>,
     /// Embedded graph chrome and buffers (docs plot slots).
@@ -739,6 +747,8 @@ impl Editor {
             diff: Vec::new(),
             diff_key: None,
             dock_focus: false,
+            dock_split: DOCK_SPLIT,
+            dock_drag: false,
             staged: None,
             plot_look: schemify_render::waves::WaveLook::default(),
             plot_scratch: schemify_render::waves::WaveScratch::default(),
@@ -1021,8 +1031,7 @@ impl Editor {
         if self.shell.ui.dialog().is_none() {
             self.dialog = Dialog::None; // Escape closed it inside `ui` (cancel)
         }
-        let synced = self.sync_fields();
-        changed |= resized || routed.redraw || routed.relayout || synced;
+        changed |= resized || routed.redraw || routed.relayout;
         let mut reqs: Vec<EditRequest> = Vec::new();
         self.undid = false;
         changed |= self.sync_page(events, &routed.commands, &mut reqs);
@@ -1094,14 +1103,15 @@ impl Editor {
 
     /// Splits one input batch between the editor (above the dock) and the waves dock
     /// (below, in its own coordinates): pointer events by position, keys and text to the
-    /// side the pointer was last over, `Ctrl+W` always to the dock (it closes it). Returns
-    /// (editor events, dock events, editor viewport, dock viewport).
+    /// side the pointer was last over, `Ctrl+W` always to the dock (it closes it). A left
+    /// press within [`DOCK_GRAB_PX`] of the divider drags it (neither side sees the drag).
+    /// Returns (editor events, dock events, editor viewport, dock viewport).
     fn split_input(
         &mut self,
         events: &InputEvents,
         viewport: (f32, f32),
     ) -> (InputEvents, InputEvents, (f32, f32), (f32, f32)) {
-        let split = (viewport.1 * DOCK_SPLIT).floor();
+        let split = (viewport.1 * self.dock_split).floor();
         let mut mine = InputEvents {
             events: Vec::new(),
             text: events.text.clone(),
@@ -1112,6 +1122,29 @@ impl Editor {
         };
         let close = schemify_ui::Chord::new(Mods(Mods::CTRL), schemify_ui::Key('w' as u32));
         for &e in &events.events {
+            match e {
+                InputEvent::PointerDown {
+                    y,
+                    button: Button::Left,
+                    ..
+                } if (y - split).abs() <= DOCK_GRAB_PX => {
+                    self.dock_drag = true;
+                    continue;
+                }
+                InputEvent::PointerMove { y, .. } if self.dock_drag && viewport.1 > 0.0 => {
+                    let (lo, hi) = DOCK_SPLIT_RANGE;
+                    self.dock_split = (y / viewport.1).clamp(lo, hi);
+                    continue;
+                }
+                InputEvent::PointerUp {
+                    button: Button::Left,
+                    ..
+                } if self.dock_drag => {
+                    self.dock_drag = false;
+                    continue;
+                }
+                _ => {}
+            }
             let pointer_y = match e {
                 InputEvent::PointerMove { y, .. }
                 | InputEvent::PointerDown { y, .. }
@@ -1155,6 +1188,8 @@ impl Editor {
                 other => other,
             });
         }
+        // A drag in this batch moves the divider now: both sides lay out at the new split.
+        let split = (viewport.1 * self.dock_split).floor();
         assert!(split >= 0.0 && split <= viewport.1);
         (
             mine,
@@ -1433,6 +1468,10 @@ impl Editor {
     /// Runs one core command. Returns whether anything visible changed.
     #[allow(clippy::too_many_lines)]
     fn run(&mut self, cmd: Cmd, arg: &str, node: &str, reqs: &mut Vec<EditRequest>) -> bool {
+        if cmd == Cmd::FieldTyped {
+            // Typing in a field: allowed in every dialog and tab, changes no document.
+            return self.field_typed(node, arg);
+        }
         if matches!(self.dialog, Dialog::Ctx(_)) && cmd != Cmd::DialogClose {
             // A context-menu row: the menu closes and its command runs as from the menubar.
             self.close_dialog();
@@ -2241,7 +2280,7 @@ impl Editor {
             return;
         };
         // Enter in the field submits its text as `arg`; the OK button submits none, and the
-        // field lost focus before the click, so the synced copy is used.
+        // typing reached the dialog as `field.typed` before the click, so that copy is used.
         let text = if arg.is_empty() {
             typed
         } else {
@@ -2629,22 +2668,14 @@ impl Editor {
         self.commit(reqs, h, "edit properties", ops);
     }
 
-    /// Copies the focused dialog field's text into the dialog state every frame (the field
-    /// commits only on Enter; clicking OK first must not lose the typing). Returns whether
-    /// the chooser filter changed.
-    fn sync_fields(&mut self) -> bool {
-        let focus = self.shell.ui.focus();
-        let Some(ed) = self.shell.ui.editor() else {
-            return false;
-        };
-        if focus.is_none() {
-            return false;
-        }
-        let id = self.shell.strings.get(focus).to_owned();
-        let text = ed.raw_text().to_owned();
+    /// `field.typed` (a dialog field's `input` command, sent as the field's text changes): the
+    /// text reaches the dialog state as typed, so OK, a click elsewhere or the chooser's
+    /// filtering see it without Enter. Returns whether anything visible changed (the chooser
+    /// rows). The docs page's editor is followed by `sync_page`.
+    fn field_typed(&mut self, node: &str, text: &str) -> bool {
         match &mut self.dialog {
             Dialog::Props(p) => {
-                let i = id
+                let i = node
                     .strip_prefix("dialog.props.val.")
                     .and_then(|n| n.parse::<usize>().ok());
                 if let Some(f) = i.and_then(|i| p.fields.get_mut(i)).filter(|f| f.editable) {
@@ -2652,17 +2683,17 @@ impl Editor {
                 }
                 false
             }
-            Dialog::Choose(c) if id == "dialog.choose.filter" && c.filter != text => {
-                c.filter = text;
+            Dialog::Choose(c) if node == "dialog.choose.filter" && c.filter != text => {
+                c.filter = text.to_owned();
                 self.refill_chooser();
                 true
             }
-            Dialog::Text(_, _, typed) if id == "dialog.enter_text.input" => {
-                *typed = text;
+            Dialog::Text(_, _, typed) if node == "dialog.enter_text.input" => {
+                text.clone_into(typed);
                 false
             }
-            Dialog::File(typed) if id == "dialog.edit_file.text" => {
-                *typed = text;
+            Dialog::File(typed) if node == "dialog.edit_file.text" => {
+                text.clone_into(typed);
                 false
             }
             _ => false,
@@ -3392,9 +3423,9 @@ impl Editor {
         changed
     }
 
-    /// Follows the docs page's text editor: copies what is typed while it has focus; when
-    /// focus leaves it, Escape cancels and anything else (a click elsewhere) applies the
-    /// text. Ctrl+Enter submits through `docs.prose_ok` instead.
+    /// Follows the docs page's text editor: takes what is typed from its `field.typed`
+    /// requests; when focus leaves it, Escape cancels and anything else (a click elsewhere)
+    /// applies the text. Ctrl+Enter submits through `docs.prose_ok` instead.
     fn sync_page(
         &mut self,
         events: &InputEvents,
@@ -3406,11 +3437,19 @@ impl Editor {
         };
         let focus = self.shell.ui.focus();
         let id = docs::editor_id(row);
+        // Typing reaches the page before the focus test: one batch may type and click away.
+        let typed = Cmd::FieldTyped.name();
+        for i in 0..cmds.len() {
+            let s = &self.shell.strings;
+            if s.get(cmds.command[i]) == typed
+                && s.get(cmds.node[i]) == id
+                && let Some(e) = self.page.editing.as_mut()
+            {
+                cmds.arg(i).clone_into(&mut e.1);
+            }
+        }
         if !focus.is_none() && self.shell.strings.get(focus) == id {
             self.page.focused = true;
-            if let (Some(ed), Some(e)) = (self.shell.ui.editor(), self.page.editing.as_mut()) {
-                e.1 = ed.raw_text().to_owned();
-            }
             return false;
         }
         let submitted = (0..cmds.len())
@@ -3765,6 +3804,7 @@ impl Editor {
             Dialog::Text(_, title, typed) => {
                 let _ = writeln!(t, "set dialog.enter_text.title label {}", q(title));
                 let _ = writeln!(t, "set dialog.enter_text.input value {}", q(typed));
+                let _ = writeln!(t, "set dialog.enter_text.input input field.typed");
             }
             Dialog::Ctx(_) | Dialog::Layers | Dialog::File(_) | Dialog::Recover(..) => {}
             Dialog::Choose(c) => {
@@ -3784,6 +3824,7 @@ impl Editor {
                 };
                 let _ = writeln!(t, "set dialog.choose.title label {}", q(&title));
                 let _ = writeln!(t, "set dialog.choose.filter value {}", q(&c.filter));
+                let _ = writeln!(t, "set dialog.choose.filter input field.typed");
                 for (i, (label, _)) in c.rows.iter().enumerate() {
                     let _ = writeln!(t, "node dialog.choose.row.{i} item");
                     let _ = writeln!(t, "  parent dialog.choose.list");
@@ -3808,6 +3849,7 @@ impl Editor {
                     if f.editable {
                         let _ = writeln!(t, "  value {}", q(&f.value));
                         let _ = writeln!(t, "  command props.field");
+                        let _ = writeln!(t, "  input field.typed");
                         let _ = writeln!(t, "  style dialog-input");
                     } else {
                         let _ = writeln!(t, "  label {}", q("(computed)"));
@@ -3889,6 +3931,12 @@ impl App for Window {
 
     fn wake_ms(&self) -> Option<u32> {
         self.ed.wake_ms()
+    }
+
+    fn ime_area(&self) -> Option<(f32, f32, f32, f32)> {
+        let s = &self.ed.shell;
+        s.ui.ime_area(&s.tables, &s.layout)
+            .map(|r| (r.x, r.y, r.w, r.h))
     }
 
     fn access(&mut self) -> schemify_render::accesskit::TreeUpdate {

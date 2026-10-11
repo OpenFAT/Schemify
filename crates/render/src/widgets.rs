@@ -6,6 +6,7 @@ use vello::kurbo::{Affine, BezPath, Rect};
 use vello::peniko::Color;
 
 use schemify_ui::graph::{decimate, ticks};
+use schemify_ui::icon::{ICON_BOX, ICON_STROKE, Icon};
 use schemify_ui::math::{MathFonts, MathList, MathPaths, Verb};
 use schemify_ui::parley::{Layout, PositionedLayoutItem};
 use schemify_ui::{
@@ -96,7 +97,10 @@ pub fn draw_ui<P: Painter>(
         let hovered = state.hover() == id && shown != Shown::Popup;
         let active = match shown {
             Shown::Title | Shown::Cascade => state.open().contains(&id),
-            Shown::Normal => kind == Kind::Tab && n.is_checked(strings, node),
+            Shown::Normal => {
+                (kind == Kind::Tab && n.is_checked(strings, node))
+                    || (kind == Kind::Dropdown && state.open().contains(&id))
+            }
             Shown::Popup => false,
         };
         let pick = |base: StyleProp, hover: StyleProp, act: StyleProp| {
@@ -193,7 +197,11 @@ pub fn draw_ui<P: Painter>(
                 scratch,
             );
         }
-        if shown == Shown::Cascade || kind == Kind::Dropdown {
+        let icon = layout.icon()[r];
+        if icon != u32::MAX {
+            draw_icon(p, text.icon_paths(icon), area, (pad, pad_y), fg, scratch);
+        }
+        if shown == Shown::Cascade || (kind == Kind::Dropdown && shown == Shown::Normal) {
             let (cx, cy) = (area.x1 - pad - 4.0, (area.y0 + area.y1) / 2.0);
             let path = &mut scratch.path;
             path.truncate(0);
@@ -255,6 +263,38 @@ pub fn draw_ui<P: Painter>(
     }
     if clipped.is_some() {
         p.pop_clip();
+    }
+}
+
+/// Draws an [`Icon`] scaled from its 16-unit box to the largest square inside `area`'s
+/// padding `(x, y)`, centered; strokes are [`ICON_STROKE`] units wide.
+pub fn draw_icon<P: Painter>(
+    p: &mut P,
+    icon: &Icon,
+    area: Rect,
+    pad: (f64, f64),
+    color: Color,
+    scratch: &mut UiScratch,
+) {
+    let side = (area.width() - 2.0 * pad.0).min(area.height() - 2.0 * pad.1);
+    if side <= 0.0 {
+        return;
+    }
+    let s = side / f64::from(ICON_BOX);
+    let c = area.center();
+    let at = Affine::translate((c.x - side / 2.0, c.y - side / 2.0)) * Affine::scale(s);
+    for (paths, fill) in [(&icon.fill, true), (&icon.stroke, false)] {
+        let (mut v0, mut pt) = (0usize, 0usize);
+        for &v1 in &paths.verb_end {
+            build_math_path(paths, v0, v1 as usize, &mut pt, at, &mut scratch.path);
+            if fill {
+                p.fill_path(&scratch.path, color);
+            } else {
+                p.stroke_path(&scratch.path, f64::from(ICON_STROKE) * s, color);
+            }
+            v0 = v1 as usize;
+        }
+        debug_assert_eq!(pt, paths.pt.len(), "every point drawn");
     }
 }
 

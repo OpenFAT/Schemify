@@ -285,6 +285,7 @@ pub fn contribute(
                     node(t, &editor_id(r), "text_area", &id);
                     attr(t, "value", text);
                     attr(t, "command", "docs.prose_ok");
+                    attr(t, "input", "field.typed");
                     node(t, &format!("{id}.hint"), "label", &id);
                     attr(
                         t,

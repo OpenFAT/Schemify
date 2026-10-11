@@ -3,8 +3,9 @@
 //!
 //! The UI never edits `ui_nodes` in response to input. Clicking a checkbox emits its command;
 //! whoever owns the checked state answers with a `set … checked` contribution. Only transient
-//! interaction state (open menus, hover, focus, the focused field's editor) lives in
-//! [`UiState`], keyed by stable node ids so it survives recomposition.
+//! interaction state (open menus and dropdowns, hover and the keyboard highlight, focus, the
+//! focused field's editor, scroll offsets, split divider positions) lives in [`UiState`], keyed
+//! by stable node ids so it survives recomposition.
 
 use parley::{FontFamily, PlainEditor, StyleProperty};
 
@@ -228,6 +229,10 @@ pub struct UiState {
     pub(crate) editor: Option<PlainEditor<()>>,
     /// Wheel offset of each scrolled `scroll` node, by node id (layout clamps it).
     pub(crate) scroll: Vec<(Sym, f32)>,
+    /// Second-pane size of each dragged `split` node, by node id.
+    pub(crate) split: Vec<(Sym, f32)>,
+    /// The `split` node whose divider the pointer is dragging (`Sym::NONE` when none).
+    pub(crate) split_drag: Sym,
 }
 
 impl std::fmt::Debug for UiState {
@@ -246,6 +251,8 @@ impl UiState {
     pub const MAX_OPEN: usize = 16;
     /// Scroll nodes whose offsets are remembered; the oldest is forgotten beyond this.
     pub const MAX_SCROLL: usize = 64;
+    /// Split nodes whose divider positions are remembered; the oldest is forgotten beyond this.
+    pub const MAX_SPLIT: usize = 64;
     /// Pixels per wheel line.
     pub const WHEEL_PX: f32 = 40.0;
 
@@ -272,6 +279,32 @@ impl UiState {
         debug_assert!(self.scroll.len() <= Self::MAX_SCROLL);
     }
 
+    /// Size in pixels of `split` node `id`'s second pane along the split's axis, once its
+    /// divider was dragged (`None`: the panes keep their own sizes).
+    pub fn split_of(&self, id: Sym) -> Option<f32> {
+        self.split.iter().find(|(s, _)| *s == id).map(|(_, v)| *v)
+    }
+
+    /// Sets the second-pane size of `split` node `id` (what a divider drag does; a host may
+    /// restore a saved layout with it). Takes effect at the next layout.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `px` is negative or not finite.
+    pub fn set_split(&mut self, id: Sym, px: f32) {
+        assert!(px.is_finite() && px >= 0.0, "split size must be finite");
+        match self.split.iter_mut().find(|(s, _)| *s == id) {
+            Some(e) => e.1 = px,
+            None => {
+                if self.split.len() >= Self::MAX_SPLIT {
+                    self.split.remove(0);
+                }
+                self.split.push((id, px));
+            }
+        }
+        debug_assert!(self.split.len() <= Self::MAX_SPLIT);
+    }
+
     /// Opens a chain of menus (menubar menu first); used by tests and by keyboard menu access.
     pub fn open_menus(&mut self, chain: &[Sym]) {
         assert!(chain.len() <= Self::MAX_OPEN, "menu chain too deep");
@@ -291,7 +324,8 @@ impl UiState {
 
     /// Shows dialog `id` modally with its top-left corner at `at` (logical px, moved inside
     /// the viewport by layout), e.g. a context menu at the pointer; `None` centers it as
-    /// [`UiState::set_dialog`] does.
+    /// [`UiState::set_dialog`] does. A dialog shown at a point closes on a click outside it,
+    /// like a menu.
     pub fn set_dialog_at(&mut self, id: Sym, at: Option<(f32, f32)>) {
         assert!(
             at.is_none_or(|(x, y)| x.is_finite() && y.is_finite()),
@@ -308,7 +342,7 @@ impl UiState {
         self.dialog
     }
 
-    /// Node under the pointer.
+    /// Node under the pointer, or the menu row the keyboard highlights.
     pub fn hover(&self) -> Sym {
         self.hover
     }
@@ -321,6 +355,35 @@ impl UiState {
     /// The focused text field's editor; its layout is fresh after [`route_input`].
     pub fn editor(&self) -> Option<&PlainEditor<()>> {
         self.editor.as_ref()
+    }
+
+    /// Where the platform should place an IME candidate window: the focused field's preedit
+    /// text, else its caret line, in logical px (`None` without a focused, laid-out field).
+    /// `layout` must be the layout of the current state.
+    pub fn ime_area(&self, tables: &UiTables, layout: &UiLayout) -> Option<crate::Rect> {
+        let ed = self.editor.as_ref()?;
+        let n = tables.nodes.find(self.focus)?;
+        let r = layout.row_of(n)?;
+        let l = ed.try_layout()?;
+        let area = layout.rect[r];
+        let style =
+            |p| crate::layout::row_style(tables, layout.title_style, n, Shown::Normal, p) as f32;
+        // Where the painter puts the text: top-left inside the padding (text areas) or
+        // vertically centered (single-line fields).
+        let top = if tables.nodes.kind[n as usize] == Kind::TextArea {
+            area.y + style(StyleProp::PadY)
+        } else {
+            area.y + (area.h - l.height()) / 2.0
+        };
+        let b = ed.ime_cursor_area();
+        let out = crate::Rect {
+            x: area.x + style(StyleProp::Pad) + b.x0 as f32,
+            y: top + b.y0 as f32,
+            w: (b.x1 - b.x0).max(1.0) as f32,
+            h: (b.y1 - b.y0).max(1.0) as f32,
+        };
+        debug_assert!(out.w > 0.0 && out.h > 0.0);
+        Some(out)
     }
 
     fn blur(&mut self) {
@@ -386,11 +449,19 @@ fn popup_depth(tables: &UiTables, state: &UiState, node: NodeIx) -> Option<usize
     state.open.iter().position(|&m| m == pid)
 }
 
-/// Routes one frame of input: keymap chords, clicks on items and buttons, menu open/close and
-/// hover tracking, text-field focus and editing (including IME preedit), and canvas forwarding.
+/// True for a dropdown with choices (it opens a popup instead of running its command).
+fn has_popup(tables: &UiTables, node: NodeIx) -> bool {
+    tables.nodes.kind[node as usize] == Kind::Dropdown
+        && tables.nodes.children(node).next().is_some()
+}
+
+/// Routes one frame of input: keymap chords, clicks on items and buttons, menu and dropdown
+/// popups (pointer and keyboard), hover tracking, split dividers, text-field focus and editing
+/// (including IME preedit), and canvas forwarding.
 ///
 /// Reads `tables` and `layout` (which must be the layout of the current `state`); writes only
-/// `state` and `out`.
+/// `state` and `out`. A text field's `input` command is pushed with its text before any other
+/// command of the same event that follows the edit.
 ///
 /// # Panics
 ///
@@ -411,6 +482,8 @@ pub fn route_input(
     out.clear();
     let nodes = &tables.nodes;
     let ids = nodes.id();
+    // The focused field's text changed since its last `input` command.
+    let mut typed = false;
     for &ev in &events.events {
         let modal = nodes.find(state.dialog).is_some();
         let hit = |x: f32, y: f32| {
@@ -420,6 +493,11 @@ pub fn route_input(
         };
         match ev {
             InputEvent::PointerMove { x, y } => {
+                if !state.split_drag.is_none() {
+                    drag_split(tables, layout, state, x, y);
+                    out.relayout = true;
+                    continue;
+                }
                 if state.capture {
                     out.canvas.push(ev);
                     continue;
@@ -434,9 +512,14 @@ pub fn route_input(
                     out.redraw = true;
                 }
                 match h {
-                    // Menu tracking: once a menu is open, hovering moves the open chain.
+                    // Menu tracking: once a menubar menu is open, hovering moves the open chain
+                    // (an open dropdown does not follow the pointer onto the menubar).
                     Some((_, n, Shown::Title))
-                        if !state.open.is_empty() && state.open[0] != ids[n as usize] =>
+                        if !state.open.is_empty()
+                            && state.open[0] != ids[n as usize]
+                            && nodes
+                                .find(state.open[0])
+                                .is_some_and(|m| nodes.kind[m as usize] == Kind::Menu) =>
                     {
                         state.open.clear();
                         state.open.push(ids[n as usize]);
@@ -469,9 +552,17 @@ pub fn route_input(
                     out.relayout = true;
                     continue;
                 }
+                if modal && h.is_none() && state.dialog_at.is_some() {
+                    // A dialog at a point (the context menu) closes like a menu.
+                    flush_typed(tables, state, &mut typed, out);
+                    state.set_dialog(Sym::NONE);
+                    out.relayout = true;
+                    continue;
+                }
                 if on_canvas {
                     state.capture = true;
                     if !state.focus.is_none() {
+                        flush_typed(tables, state, &mut typed, out);
                         state.blur();
                         out.redraw = true;
                     }
@@ -487,6 +578,7 @@ pub fn route_input(
                 let field = matches!(nodes.kind[i], Kind::TextInput | Kind::TextArea);
                 let same = field && state.focus == id;
                 if !same && !state.focus.is_none() {
+                    flush_typed(tables, state, &mut typed, out);
                     state.blur();
                     out.redraw = true;
                     out.relayout = true; // a text_area shrinks back to its value
@@ -506,6 +598,15 @@ pub fn route_input(
                             state.open.push(id);
                             out.relayout = true;
                         }
+                    }
+                    (Kind::Dropdown, Shown::Normal) if has_popup(tables, n) => {
+                        toggle_popup(tables, state, n);
+                        out.relayout = true;
+                    }
+                    (Kind::Split, Shown::Normal) => {
+                        // Inside a split only its divider is not covered by a pane.
+                        state.split_drag = id;
+                        out.redraw = true;
                     }
                     (Kind::TextInput | Kind::TextArea, _) => {
                         focus_field(tables, layout, strings, text, state, r, x, y);
@@ -532,7 +633,10 @@ pub fn route_input(
                 }
             }
             InputEvent::PointerUp { .. } => {
-                if state.capture {
+                if !state.split_drag.is_none() {
+                    state.split_drag = Sym::NONE;
+                    out.redraw = true;
+                } else if state.capture {
                     state.capture = false;
                     out.canvas.push(ev);
                 }
@@ -586,20 +690,30 @@ pub fn route_input(
                     let area = nodes
                         .find(state.focus)
                         .is_some_and(|n| nodes.kind[n as usize] == Kind::TextArea);
-                    edit_key(tables, text, state, chord, area, out);
+                    edit_key(tables, text, state, chord, area, &mut typed, out);
                     out.redraw = true;
                     out.relayout |= area; // the field grows and shrinks with its lines
                     if area {
                         follow_caret(tables, layout, text, state);
                     }
-                } else if chord == Chord::new(Mods::default(), Key::ESCAPE)
-                    && (!state.open.is_empty() || modal)
-                {
-                    state.open.clear();
+                } else if !state.open.is_empty() {
+                    // An open popup has the keyboard: no key binding runs under it.
+                    menu_key(tables, strings, state, chord, out);
+                    out.relayout = true;
+                    out.redraw = true;
+                } else if chord == Chord::new(Mods::default(), Key::ESCAPE) && modal {
                     state.dialog = Sym::NONE;
+                    state.dialog_at = None;
                     out.relayout = true;
                 } else if let Some(cmd) = tables.keymap.lookup(chord) {
                     out.commands.push(cmd, Sym::NONE, "");
+                } else if chord == Chord::new(Mods::default(), Key::f(10))
+                    && !modal
+                    && open_menubar(tables, strings, state)
+                {
+                    // F10 (when nothing binds it) opened the first menubar menu.
+                    out.relayout = true;
+                    out.redraw = true;
                 }
             }
             InputEvent::Text { start, end } => {
@@ -609,6 +723,7 @@ pub fn route_input(
                     d.clear_compose();
                     d.insert_or_replace_selection(s);
                     d.refresh_layout();
+                    typed = true;
                     out.redraw = true;
                     let area = nodes
                         .find(state.focus)
@@ -636,13 +751,15 @@ pub fn route_input(
             InputEvent::Activate { node } => {
                 let Some(n) = nodes.find(node) else { continue };
                 let cmd = nodes.prop(Prop::Command)[n as usize];
-                if nodes.kind[n as usize] == Kind::Menu {
+                if nodes.kind[n as usize] == Kind::Menu || has_popup(tables, n) {
                     let chain_ok =
                         popup_depth(tables, state, n).map(|d| state.open.truncate(d + 1));
                     if chain_ok.is_none() {
                         state.open.clear();
                     }
-                    state.open.push(node);
+                    if state.open.len() < UiState::MAX_OPEN {
+                        state.open.push(node);
+                    }
                     out.relayout = true;
                 } else if !cmd.is_none() && !nodes.is_disabled(strings, n) {
                     out.commands.push(cmd, node, "");
@@ -650,7 +767,256 @@ pub fn route_input(
             }
         }
     }
+    flush_typed(tables, state, &mut typed, out);
+    debug_assert!(!typed);
     debug_assert!(state.open.len() <= UiState::MAX_OPEN);
+}
+
+/// Pushes the focused field's `input` command with its text when an edit changed it since the
+/// last push. Called before anything that blurs the field and once at the end of a frame.
+fn flush_typed(tables: &UiTables, state: &UiState, typed: &mut bool, out: &mut Routed) {
+    if !std::mem::take(typed) {
+        return;
+    }
+    let (Some(n), Some(ed)) = (tables.nodes.find(state.focus), state.editor.as_ref()) else {
+        return;
+    };
+    let cmd = tables.nodes.prop(Prop::Input)[n as usize];
+    if !cmd.is_none() {
+        out.commands.push(cmd, state.focus, ed.raw_text());
+    }
+    debug_assert!(!*typed);
+}
+
+/// Opens or closes dropdown `n`'s popup: a dropdown inside an open popup keeps the chain above
+/// it, anywhere else it starts a new chain.
+fn toggle_popup(tables: &UiTables, state: &mut UiState, n: NodeIx) {
+    let id = tables.nodes.id[n as usize];
+    let reopen = state.open.last() != Some(&id);
+    match popup_depth(tables, state, n) {
+        Some(d) => state.open.truncate(d + 1),
+        None => state.open.clear(),
+    }
+    if reopen && state.open.len() < UiState::MAX_OPEN {
+        state.open.push(id);
+    }
+    debug_assert!(state.open.len() <= UiState::MAX_OPEN);
+}
+
+/// Moves the divider of the dragged `split` to the pointer: the second pane takes the space
+/// from the pointer to the split's far edge, leaving each pane at least
+/// [`crate::layout::SPLIT_MIN`].
+fn drag_split(tables: &UiTables, layout: &UiLayout, state: &mut UiState, x: f32, y: f32) {
+    let id = state.split_drag;
+    let Some(r) = tables.nodes.find(id).and_then(|n| layout.row_of(n)) else {
+        state.split_drag = Sym::NONE; // the split went away mid-drag
+        return;
+    };
+    let n = layout.node[r];
+    let style =
+        |p| crate::layout::row_style(tables, layout.title_style, n, Shown::Normal, p) as f32;
+    let gap = style(StyleProp::Gap).max(crate::layout::SPLIT_GAP);
+    let rect = layout.rect[r];
+    let (far, pos, pad, len) = if style(StyleProp::Dir) != 0.0 {
+        (rect.x + rect.w, x, style(StyleProp::Pad), rect.w)
+    } else {
+        (rect.y + rect.h, y, style(StyleProp::PadY), rect.h)
+    };
+    let total = (len - 2.0 * pad - gap).max(0.0);
+    let min = crate::layout::SPLIT_MIN.min(total / 2.0);
+    let px = (far - pad - pos - gap / 2.0).clamp(min, total - min);
+    state.set_split(id, px);
+    debug_assert!(px >= 0.0 && px <= total);
+}
+
+/// Opens the first menu of the first menubar with the keyboard highlight on its first row.
+/// Returns false when there is no menubar menu.
+fn open_menubar(tables: &UiTables, strings: &Strings, state: &mut UiState) -> bool {
+    let n = &tables.nodes;
+    let Some(bar) = (0..n.len()).find(|&i| n.kind[i] == Kind::Menubar) else {
+        return false;
+    };
+    let Some(first) = n
+        .children(bar as NodeIx)
+        .find(|&c| n.kind[c as usize] == Kind::Menu)
+    else {
+        return false;
+    };
+    state.open.clear();
+    state.open.push(n.id[first as usize]);
+    state.hover = first_row(tables, strings, first);
+    debug_assert_eq!(state.open.len(), 1);
+    true
+}
+
+/// Rows of popup `menu` the keyboard can land on: enabled items, cascades and dropdowns.
+fn nav_rows(tables: &UiTables, strings: &Strings, menu: NodeIx) -> Vec<NodeIx> {
+    let n = &tables.nodes;
+    n.children(menu)
+        .filter(|&c| {
+            matches!(n.kind[c as usize], Kind::Item | Kind::Menu | Kind::Dropdown)
+                && !n.is_disabled(strings, c)
+        })
+        .collect()
+}
+
+/// Id of the first keyboard row of `menu` (`Sym::NONE` when it has none).
+fn first_row(tables: &UiTables, strings: &Strings, menu: NodeIx) -> Sym {
+    nav_rows(tables, strings, menu)
+        .first()
+        .map_or(Sym::NONE, |&c| tables.nodes.id[c as usize])
+}
+
+/// Keyboard navigation of the open popup chain; the deepest popup has the keyboard and
+/// [`UiState::hover`] is its highlighted row. Up/Down move the highlight (wrapping), Right
+/// opens a cascade or moves to the next menubar menu, Left closes a cascade or moves to the
+/// previous menubar menu, Enter or Space activates, Escape closes one level, and a letter
+/// (mnemonic) jumps to the next row whose label starts with it, activating it when it is the
+/// only one.
+fn menu_key(
+    tables: &UiTables,
+    strings: &Strings,
+    state: &mut UiState,
+    chord: Chord,
+    out: &mut Routed,
+) {
+    let n = &tables.nodes;
+    let Some(menu) = state.open.last().and_then(|&m| n.find(m)) else {
+        state.open.clear(); // the open popup's node went away
+        return;
+    };
+    let rows = nav_rows(tables, strings, menu);
+    let cur = rows.iter().position(|&c| n.id[c as usize] == state.hover);
+    let key = chord.key();
+    let plain = chord.mods().0 & (Mods::CTRL | Mods::ALT | Mods::SUPER) == 0;
+    match key {
+        Key::ESCAPE => {
+            let closed = state.open.pop().expect("checked non-empty");
+            state.hover = if state.open.is_empty() {
+                Sym::NONE
+            } else {
+                closed
+            };
+        }
+        Key::DOWN | Key::UP if !rows.is_empty() => {
+            let len = rows.len();
+            let next = match (cur, key == Key::DOWN) {
+                (None, true) => 0,
+                (None, false) => len - 1,
+                (Some(i), true) => (i + 1) % len,
+                (Some(i), false) => (i + len - 1) % len,
+            };
+            state.hover = n.id[rows[next] as usize];
+        }
+        Key::RIGHT => match cur {
+            Some(i) if n.kind[rows[i] as usize] == Kind::Menu => {
+                activate(tables, strings, state, rows[i], out);
+            }
+            _ => step_menubar(tables, strings, state, true),
+        },
+        Key::LEFT => {
+            if state.open.len() > 1 {
+                state.hover = state.open.pop().expect("more than one open");
+            } else {
+                step_menubar(tables, strings, state, false);
+            }
+        }
+        Key::ENTER => {
+            if let Some(i) = cur {
+                activate(tables, strings, state, rows[i], out);
+            }
+        }
+        k if k == Key(' ' as u32) && plain => {
+            if let Some(i) = cur {
+                activate(tables, strings, state, rows[i], out);
+            }
+        }
+        k if plain && k.0 < Key::NAMED => {
+            let Some(c) = char::from_u32(k.0) else { return };
+            let starts = |row: NodeIx| {
+                let label = strings.get(n.prop(Prop::Label)[row as usize]);
+                label
+                    .chars()
+                    .next()
+                    .is_some_and(|f| f.to_lowercase().eq(c.to_lowercase()))
+            };
+            let hits: Vec<usize> = (0..rows.len()).filter(|&j| starts(rows[j])).collect();
+            match hits.as_slice() {
+                [] => {}
+                [only] => activate(tables, strings, state, rows[*only], out),
+                many => {
+                    // The next match after the highlight, wrapping.
+                    let after = cur.map_or(0, |i| i + 1);
+                    let j = many
+                        .iter()
+                        .copied()
+                        .find(|&j| j >= after)
+                        .unwrap_or(many[0]);
+                    state.hover = n.id[rows[j] as usize];
+                }
+            }
+        }
+        _ => {}
+    }
+    debug_assert!(state.open.len() <= UiState::MAX_OPEN);
+}
+
+/// Runs a popup row from the keyboard: an item runs its command and closes the chain; a
+/// cascade or dropdown opens its popup with the highlight on its first row.
+fn activate(
+    tables: &UiTables,
+    strings: &Strings,
+    state: &mut UiState,
+    row: NodeIx,
+    out: &mut Routed,
+) {
+    let n = &tables.nodes;
+    let i = row as usize;
+    let opens = n.kind[i] == Kind::Menu || has_popup(tables, row);
+    if opens {
+        if state.open.len() < UiState::MAX_OPEN {
+            state.open.push(n.id[i]);
+            state.hover = first_row(tables, strings, row);
+        }
+        return;
+    }
+    let cmd = n.prop(Prop::Command)[i];
+    if !cmd.is_none() && !n.is_disabled(strings, row) {
+        out.commands.push(cmd, n.id[i], "");
+        state.open.clear();
+        state.hover = Sym::NONE;
+    }
+}
+
+/// Moves the open chain to the next (`forward`) or previous menu of the menubar holding the
+/// open root menu, highlighting its first row. Does nothing for a popup not opened from a
+/// menubar (a dropdown).
+fn step_menubar(tables: &UiTables, strings: &Strings, state: &mut UiState, forward: bool) {
+    let n = &tables.nodes;
+    let Some(root) = state.open.first().and_then(|&m| n.find(m)) else {
+        return;
+    };
+    let bar = n.parent[root as usize];
+    if bar == NO_NODE || n.kind[bar as usize] != Kind::Menubar {
+        return;
+    }
+    let menus: Vec<NodeIx> = n
+        .children(bar)
+        .filter(|&c| n.kind[c as usize] == Kind::Menu)
+        .collect();
+    let Some(at) = menus.iter().position(|&m| m == root) else {
+        return;
+    };
+    let len = menus.len();
+    let next = menus[if forward {
+        (at + 1) % len
+    } else {
+        (at + len - 1) % len
+    }];
+    state.open.clear();
+    state.open.push(n.id[next as usize]);
+    state.hover = first_row(tables, strings, next);
+    debug_assert_eq!(state.open.len(), 1);
 }
 
 /// Focuses text field at layout row `r` and places the caret under `(x, y)`.
@@ -730,13 +1096,15 @@ fn follow_caret(tables: &UiTables, layout: &UiLayout, text: &TextSystem, state: 
 }
 
 /// Applies an editing key to the focused field; Enter submits (Ctrl+Enter in a `text_area`,
-/// where Enter breaks the line), Escape cancels.
+/// where Enter breaks the line), Escape cancels. Sets `typed` when the key changed the text;
+/// flushes the field's `input` command before the field loses focus.
 fn edit_key(
     tables: &UiTables,
     text: &mut TextSystem,
     state: &mut UiState,
     chord: Chord,
     area: bool,
+    typed: &mut bool,
     out: &mut Routed,
 ) {
     let mods = chord.mods().0;
@@ -748,6 +1116,7 @@ fn edit_key(
         let mut d = ed.driver(&mut text.font_cx, &mut text.layout_cx);
         d.insert_or_replace_selection("\n");
         d.refresh_layout();
+        *typed = true;
         return;
     }
     if area && (key == Key::UP || key == Key::DOWN) {
@@ -763,6 +1132,7 @@ fn edit_key(
         return;
     }
     if key == Key::ENTER || key == Key::ESCAPE {
+        flush_typed(tables, state, typed, out);
         if key == Key::ENTER
             && let (Some(n), Some(ed)) = (tables.nodes.find(state.focus), state.editor.as_ref())
         {
@@ -795,4 +1165,5 @@ fn edit_key(
         _ => {} // printable keys arrive as Text events
     }
     d.refresh_layout();
+    *typed |= matches!(key, Key::BACKSPACE | Key::DELETE);
 }

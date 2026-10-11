@@ -138,6 +138,13 @@ pub fn access_tree(
                 node.set_expanded(state.open.contains(&n.id[i]));
                 node.add_action(Action::Click);
             }
+            Shown::Normal
+                if n.kind[i] == Kind::Dropdown && n.children(i as u16).next().is_some() =>
+            {
+                node.set_has_popup(accesskit::HasPopup::Listbox);
+                node.set_expanded(state.open.contains(&n.id[i]));
+                node.add_action(Action::Click);
+            }
             _ if !n.prop(Prop::Command)[i].is_none() => node.add_action(Action::Click),
             _ => {}
         }

@@ -7,7 +7,7 @@ use common::{Session, U, VIEW};
 
 use schemify_app::commands::{CORE, Commands, Target};
 use schemify_app::scene::{self, Objects, Scene};
-use schemify_ui::{Chord, Kind};
+use schemify_ui::{Button, Chord, InputEvent, InputEvents, Kind};
 
 #[test]
 fn boots_without_the_default_ui_plugin() {
@@ -18,8 +18,8 @@ fn boots_without_the_default_ui_plugin() {
     // without doc blocks starts with it removed.
     assert_eq!(
         kinds,
-        [Kind::Window, Kind::Panel, Kind::Canvas],
-        "blank UI: window + work row + canvas only"
+        [Kind::Window, Kind::Split, Kind::Canvas],
+        "blank UI: window + work split + canvas only"
     );
     assert!(
         s.ed.shell.tables.keymap.chords().is_empty(),
@@ -514,4 +514,78 @@ fn golden_editor_light_selection() {
     assert!(s.ed.opts.light);
     let px = s.render();
     check_golden("editor_light_selection", px);
+}
+
+/// Pointer moves rewrite the status line (coordinates) every frame; the UI string table stays
+/// the same size (live strings), so a long session cannot fill it.
+#[test]
+fn pointer_moves_do_not_grow_the_ui_string_table() {
+    let mut s = Session::open("inv", "top.shcomp", "strings", true);
+    s.move_to((0, 0));
+    let len = s.ed.shell.strings.len();
+    for i in 0..300 {
+        s.move_to((i * 10 * U, (i % 7) * 10 * U));
+    }
+    assert_eq!(
+        s.ed.shell.strings.len(),
+        len,
+        "the permanent table did not grow"
+    );
+    assert!(s.ed.shell.strings.live_len() < 4096, "one live generation");
+    let status = s.ed.shell.strings.find("status.msg").unwrap();
+    let n = s.ed.shell.tables.nodes.find(status).unwrap();
+    let label = s.ed.shell.tables.nodes.prop(schemify_ui::Prop::Label)[n as usize];
+    assert!(
+        s.ed.shell.strings.get(label).contains("mouse = 2990 "),
+        "the status line shows the last move: {}",
+        s.ed.shell.strings.get(label)
+    );
+}
+
+/// The waves dock divider: a press on the boundary and a drag move it (the editor above
+/// shrinks), clamped to the allowed range; a press away from it is the editor's.
+#[test]
+fn waves_dock_divider_drags() {
+    let mut s = Session::open("inv", "top.shcomp", "dock-split", true);
+    let raw = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../wave/tests/fixtures/rc_tran.bin.raw"
+    );
+    std::fs::copy(raw, s.dir.join("rc_tran.raw")).unwrap();
+    s.click_node("tb.waves");
+    s.click_node("dialog.choose.row.0");
+    assert!(s.ed.waves_open(), "{}", s.ed.session.status);
+    let split = (VIEW.1 * 0.6).floor();
+    let before = s.ed.canvas_rect();
+    assert!(
+        before.y1 <= f64::from(split) && before.y1 > 400.0,
+        "{before:?}"
+    );
+    let drag = |s: &mut Session, from: f32, to: f32| {
+        let mut ev = InputEvents::default();
+        ev.push(InputEvent::PointerMove { x: 600.0, y: from });
+        ev.push(InputEvent::PointerDown {
+            x: 600.0,
+            y: from,
+            button: Button::Left,
+        });
+        ev.push(InputEvent::PointerMove { x: 600.0, y: to });
+        ev.push(InputEvent::PointerUp {
+            x: 600.0,
+            y: to,
+            button: Button::Left,
+        });
+        s.frame(ev);
+    };
+    drag(&mut s, split, 300.0);
+    let after = s.ed.canvas_rect();
+    assert!(after.y1 <= 300.0 && after.y1 > 200.0, "{after:?}");
+    assert!(s.ed.waves_open());
+    // Clamped at 15% of the window.
+    drag(&mut s, 300.0, 5.0);
+    assert!(s.ed.canvas_rect().y1 <= f64::from(VIEW.1 * 0.15) + 1.0);
+    // A press 40 px above the divider belongs to the editor: the divider stays.
+    let at = (VIEW.1 * 0.15).floor();
+    drag(&mut s, at - 40.0, 600.0);
+    assert!(s.ed.canvas_rect().y1 <= f64::from(VIEW.1 * 0.15) + 1.0);
 }

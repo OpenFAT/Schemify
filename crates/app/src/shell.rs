@@ -46,7 +46,7 @@ style docs-page
   pad-y 10
   gap 4
 node window window
-node work panel
+node work split
   parent window
   style work
 node canvas canvas
@@ -155,12 +155,14 @@ impl Shell {
         self.composed = false;
     }
 
-    /// Replaces the state contribution when its text changed.
+    /// Replaces the state contribution when its text changed. Its free text (labels, values)
+    /// is one live generation of the string table (`records::parse_live`), so a status line
+    /// that changes every frame does not grow it; the next [`Shell::refresh`] recomposes.
     pub fn set_state(&mut self, text: &str) {
         if text == self.state_text {
             return;
         }
-        let (c, rejects) = records::parse(text, &mut self.strings);
+        let (c, rejects) = records::parse_live(text, &mut self.strings);
         debug_assert!(
             rejects.is_empty(),
             "state contribution rejects: {rejects:?}\n{text}"
