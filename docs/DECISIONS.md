@@ -108,3 +108,4 @@ Plugin-controllable areas: UI (every element), commands and keybindings, edit to
 |---|---|---|
 | 2026-10-10 | D18 | Results live under `.schemify/runs/<design hash>/` (job directories + `results` file), not `.schemify/results/`: one directory per design hash makes stale-result detection and cleanup a directory operation. Still git-ignored. |
 | 2026-10-10 | D33 | Unchanged unit (1/1000 xschem unit); the importer measured 0.52% inexact coordinates on the larger 526k-coordinate corpus (max error 0.0005 units). |
+| 2026-10-11 | D26 | net2schem is replaced by the `cktimg` plugin (SPICE → Schemify via `extern/cktimg`, user decision): cktImg places and routes; the plugin keeps the Schemify side (core-cell recognition, hierarchy, code blocks, ids, file writing). |

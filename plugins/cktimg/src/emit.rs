@@ -1,4 +1,4 @@
-//! Emit transform: placed and routed cells → Schemify files (format spec v1) in the
+//! Emit transform: drawn cells → Schemify files (format spec v1) in the
 //! writer's canonical form (§2, §4): records in rank order, rank-3 kinds in writer order
 //! each sorted by id, a blank line between records of different words, values quoted
 //! only when not bare. Only the record kinds below are ever written, so this is a few
@@ -10,9 +10,8 @@
 //! record `k` of a file draws from FNV-1a 64 of `"<source>#<stem>"` then `k`
 //! (little-endian), splitmix64, redrawn on collision.
 
-use crate::place::{ORIENT_WORDS, Placed};
+use crate::layout::{Drawn, ORIENT_WORDS};
 use crate::recognize::{Family, Recognized, strip_outer, template, template_expr};
-use crate::route::Routed;
 use crate::spice::{Deck, Interner};
 
 /// One output file.
@@ -262,24 +261,22 @@ impl Writer {
 ///
 /// # Panics
 ///
-/// Panics if `placed`/`routed` were made for another cell.
-#[allow(clippy::too_many_arguments)] // every argument is a table the file is made of
+/// Panics if `drawn` was made for another cell.
 pub fn cell_file(
     source: &str,
     deck: &Deck,
     rec: &Recognized,
     c: usize,
     stem: &str,
-    placed: &Placed,
-    routed: &Routed,
+    drawn: &Drawn,
 ) -> OutFile {
-    assert_eq!(placed.x.len(), deck.devs(c).len());
+    assert_eq!(drawn.x.len(), deck.devs(c).len());
     let kind = if c == 0 { "shbench" } else { "shcomp" };
     let mut w = Writer::new(kind, format!("{source}#{stem}"));
     if c > 0 {
         w.header_attr("prefix", "X");
     }
-    w.header_attr("provenance", &format!("net2schem {source}"));
+    w.header_attr("provenance", &format!("cktimg {source}"));
     let params: Vec<&str> = deck
         .params(c)
         .map(|p| deck.param_name[p].as_str())
@@ -298,8 +295,8 @@ pub fn cell_file(
     for (i, d) in deck.devs(c).enumerate() {
         let s = rec.parts.sym[d] as usize;
         w.record(Slot::Inst, "inst", &[&rec.syms.cellref(s)]);
-        let (x, y) = (int(placed.x[i]), int(placed.y[i]));
-        w.attr("at", &[&x, &y, ORIENT_WORDS[placed.orient[i] as usize]]);
+        let (x, y) = (int(drawn.x[i]), int(drawn.y[i]));
+        w.attr("at", &[&x, &y, ORIENT_WORDS[drawn.orient[i] as usize]]);
         w.attr(
             "name",
             &[&crate::recognize::pin_name(&rec.parts.inst_name[d])],
@@ -308,28 +305,32 @@ pub fn cell_file(
             w.attr(&rec.parts.over_key[o], &[&rec.parts.over_val[o]]);
         }
     }
-    for seg in &routed.wire {
+    for seg in &drawn.wire {
         w.record(Slot::Wire, "wire", &[]);
         w.coords(seg);
     }
-    for m in 0..routed.mark_net.len() {
-        let net = routed.mark_net[m];
+    for p in &drawn.noconn {
+        w.record(Slot::Noconn, "noconn", &[]);
+        w.coords(p);
+    }
+    for m in 0..drawn.mark_net.len() {
+        let net = drawn.mark_net[m];
         let name = crate::recognize::pin_name(deck.net_name(c, net));
-        let (slot, word) = if routed.mark_port[m] {
+        let (slot, word) = if drawn.mark_port[m] {
             (Slot::Port, "port")
         } else {
             (Slot::Label, "label")
         };
         w.record(slot, word, &[]);
-        w.coords(&[routed.mark_x[m], routed.mark_y[m]]);
+        w.coords(&[drawn.mark_x[m], drawn.mark_y[m]]);
         let rec_text = &mut w.recs.last_mut().expect("just opened").text;
         rec_text.pop();
         rec_text.push(' ');
-        rec_text.push_str(ORIENT_WORDS[routed.mark_orient[m] as usize]);
+        rec_text.push_str(ORIENT_WORDS[drawn.mark_orient[m] as usize]);
         rec_text.push(' ');
         push_value(rec_text, &name);
         rec_text.push('\n');
-        if !routed.mark_port[m] && deck.globals.iter().any(|g| g == deck.net_key(c, net)) {
+        if !drawn.mark_port[m] && deck.globals.iter().any(|g| g == deck.net_key(c, net)) {
             w.attr("global", &["true"]);
         }
     }
@@ -344,7 +345,7 @@ pub fn cell_file(
         }
     } else if c > 0 && (code().next().is_some() || !params.is_empty()) {
         // Inside a subckt the text must stay in its definition: one `spice_code` instance
-        // per entry, stacked below the drawing (outside the routing grid), pin no-connected.
+        // per entry, stacked below the drawing (clear of every wire), pin no-connected.
         // The first re-declares the cell's parameters for the card text that names them:
         // `.param k={k}` renders each (specialized) value.
         let mut texts: Vec<String> = Vec::new();
@@ -363,7 +364,7 @@ pub fn cell_file(
         texts.extend(code().map(|k| template(&deck.code[k], &[])));
         let s = rec.code_sym as usize;
         let k0 = rec.syms.pins(s).start;
-        let (x, mut y) = below(deck, rec, c, placed);
+        let (x, mut y) = below(drawn);
         for (n, text) in texts.iter().enumerate() {
             w.record(Slot::Inst, "inst", &[&rec.syms.cellref(s)]);
             w.attr("at", &[&int(x), &int(y), "R0"]);
@@ -377,16 +378,16 @@ pub fn cell_file(
     w.finish(format!("{stem}.{kind}"), false)
 }
 
-/// Origin for code instances of cell `c`: left-aligned 300 units below its devices.
-fn below(deck: &Deck, rec: &Recognized, c: usize, placed: &Placed) -> (i32, i32) {
-    let (mut x0, mut y1) = (0i32, 0i32);
-    for (i, d) in deck.devs(c).enumerate() {
-        let e = crate::place::extent(rec, rec.parts.sym[d] as usize, placed.orient[i]);
-        x0 = x0.min(placed.x[i] + e[0]);
-        y1 = y1.max(placed.y[i] + e[3]);
-    }
-    assert!(x0 % 10 == 0 && y1 % 10 == 0);
-    (x0, y1 + 300)
+/// Origin for code instances: left-aligned, 300 units below the drawing, on the 10 grid.
+fn below(drawn: &Drawn) -> (i32, i32) {
+    let b = drawn.bounds;
+    assert!(b[0] <= b[2] && b[1] <= b[3]);
+    let (x, y) = (
+        b[0].div_euclid(10) * 10,
+        (b[3] + 300).div_euclid(10) * 10 + 10,
+    );
+    assert!(y > b[3]);
+    (x, y)
 }
 
 /// Writes generated leaf symbol `s` (`.shprim`): its pins, one string parameter and a
@@ -397,20 +398,20 @@ pub fn leaf_file(source: &str, rec: &Recognized, s: usize) -> OutFile {
     let code = s == rec.code_sym as usize;
     let (doc, param, format) = if code {
         (
-            "SPICE text kept inside a subckt definition (net2schem)",
+            "SPICE text kept inside a subckt definition (cktimg plugin)",
             "text",
             "{text}",
         )
     } else {
         (
-            "SPICE card re-emitted verbatim (net2schem)",
+            "SPICE card re-emitted verbatim (cktimg plugin)",
             "args",
             "{name} {pins} {args}",
         )
     };
     let mut w = Writer::new("shprim", format!("{source}#{stem}"));
     w.header_attr("doc", doc);
-    w.header_attr("provenance", &format!("net2schem {source}"));
+    w.header_attr("provenance", &format!("cktimg {source}"));
     symbol(&mut w, rec, s);
     w.record(
         Slot::Rank1,

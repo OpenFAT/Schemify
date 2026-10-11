@@ -117,7 +117,8 @@ impl Symbols {
             ];
         }
         match family {
-            Family::Two => body = [-10, -30, 10, 30],
+            // The core two-pin bodies (circles, plates) reach x = ±20.
+            Family::Two => body = [-20, -30, 20, 30],
             Family::Vcxs | Family::Vsw => body[2] = 20,
             Family::Tline => body = [-80, -20, 80, 20],
             _ => {}

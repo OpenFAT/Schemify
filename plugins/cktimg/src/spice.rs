@@ -534,6 +534,31 @@ impl Builder {
         id
     }
 
+    /// Sets parameter `k` of cell `c`; a repeated name (case-insensitive) takes the later
+    /// value, as SPICE reads it, so the cell declares each parameter once.
+    fn param(&mut self, line: u32, c: usize, k: &str, v: String) {
+        match self.params[c]
+            .iter()
+            .position(|p| p.0.eq_ignore_ascii_case(k))
+        {
+            Some(i) => {
+                self.warn(
+                    line,
+                    &format!("parameter {k} set again; the later value is kept"),
+                );
+                self.params[c][i].1 = v;
+            }
+            None => self.params[c].push((k.to_owned(), v)),
+        }
+        assert!(
+            self.params[c]
+                .iter()
+                .filter(|p| p.0.eq_ignore_ascii_case(k))
+                .count()
+                == 1
+        );
+    }
+
     fn warn(&mut self, line: u32, what: &str) {
         self.deck.warnings.push(format!("line {line}: {what}"));
     }
@@ -578,7 +603,10 @@ impl Builder {
                     return true;
                 };
                 if self.deck.find_cell(&name.text).is_some() {
-                    self.warn(st.line, "duplicate .subckt name; calls use the first definition");
+                    self.warn(
+                        st.line,
+                        "duplicate .subckt name; calls use the first definition",
+                    );
                 }
                 if self.cell() != 0 {
                     self.warn(st.line, "nested .subckt hoisted to the top level");
@@ -591,7 +619,7 @@ impl Builder {
                     } else if let Some(k) = key_of(&t.text) {
                         in_params = true;
                         let v = t.text[k.len() + 1..].to_owned();
-                        self.params[c as usize].push((k.to_owned(), v));
+                        self.param(st.line, c as usize, k, v);
                     } else if in_params {
                         self.warn(st.line, &format!("stray token {} in .subckt", t.text));
                     } else {
@@ -626,7 +654,7 @@ impl Builder {
                     match key_of(&t.text) {
                         Some(k) => {
                             let v = t.text[k.len() + 1..].to_owned();
-                            self.params[c].push((k.to_owned(), v));
+                            self.param(st.line, c, k, v);
                         }
                         None => self.warn(st.line, &format!("stray token {} in .param", t.text)),
                     }
@@ -822,6 +850,16 @@ mod tests {
         assert_eq!(d.ports(1).len(), 3);
         let params: Vec<&str> = d.params(1).map(|p| d.param_name[p].as_str()).collect();
         assert_eq!(params, ["wn", "k"]);
+        let r = parse(".subckt s a k=1\n.param K=2 j=3\n.param k=4\nR1 a 0 1\n.ends\n");
+        let kv: Vec<(&str, &str)> = r
+            .params(1)
+            .map(|p| (r.param_name[p].as_str(), r.param_value[p].as_str()))
+            .collect();
+        assert_eq!(
+            kv,
+            [("k", "4"), ("j", "3")],
+            "a repeated parameter keeps its later value"
+        );
         assert_eq!(d.devs(0).len(), 2, "X1 and V1 at top");
         assert_eq!(d.devs(1).len(), 2);
         let m1 = d.devs(1).start;

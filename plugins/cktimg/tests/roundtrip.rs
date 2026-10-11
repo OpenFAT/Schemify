@@ -1,6 +1,6 @@
-//! Oracles for net2schem (TESTING.md style), native only:
+//! Oracles for the cktimg plugin (TESTING.md style), native only:
 //!
-//! 1. **Connectivity round trip.** netlist → net2schem → Schemify files → `doc` + `elab` +
+//! 1. **Connectivity round trip.** netlist → cktimg → Schemify files → `doc` + `elab` +
 //!    the netlister (`schemify_run::prepare`) → SPICE, compared with the input under
 //!    `tools/spicecmp`. Subckts are made comparable by *probes*: every generated component
 //!    is instantiated once in the oracle bench and the input gets the same `X` lines, so
@@ -114,22 +114,22 @@ const XFAIL: &[(&str, Section, &str)] = &[
     (
         "corpus/xs-ex-doublepin",
         Section::Directives,
-        "`.subckt latch … delay=200 ps`: spicecmp keeps the stray token as a directive, net2schem drops it with a warning",
+        "`.subckt latch … delay=200 ps`: spicecmp keeps the stray token as a directive, the plugin drops it with a warning",
     ),
     (
         "corpus/xs-ex-test_doublepin",
         Section::Directives,
-        "`.subckt latch … delay=200 ps`: spicecmp keeps the stray token as a directive, net2schem drops it with a warning",
+        "`.subckt latch … delay=200 ps`: spicecmp keeps the stray token as a directive, the plugin drops it with a warning",
     ),
     (
         "corpus/xs-ex-loading",
         Section::Directives,
-        "`.subckt switch_rreal … del=2 ns`: spicecmp keeps the stray token as a directive, net2schem drops it with a warning",
+        "`.subckt switch_rreal … del=2 ns`: spicecmp keeps the stray token as a directive, the plugin drops it with a warning",
     ),
     (
         "corpus/xs-logic-testbench",
         Section::Directives,
-        "`.subckt latch … delay=200 ps`: spicecmp keeps the stray token as a directive, net2schem drops it with a warning",
+        "`.subckt latch … delay=200 ps`: spicecmp keeps the stray token as a directive, the plugin drops it with a warning",
     ),
     (
         "hand/default_after_override",
@@ -171,8 +171,8 @@ fn source_of(case: &Case) -> String {
 /// Runs every oracle on `case`.
 fn run(case: &Case) -> Outcome {
     let source = source_of(case);
-    let conv = net2schem::convert(&source, &case.text);
-    let again = net2schem::convert(&source, &case.text);
+    let conv = cktimg::convert(&source, &case.text);
+    let again = cktimg::convert(&source, &case.text);
     let mut out = Outcome::default();
     if conv.files != again.files {
         out.problems
@@ -196,14 +196,14 @@ fn run(case: &Case) -> Outcome {
     out.metrics.markers = conv.stats.markers;
 
     // Probes: one instance per generated component, in deck order.
-    let deck = net2schem::spice::parse(&case.text);
-    let comps: Vec<&net2schem::OutFile> = conv
+    let deck = cktimg::spice::parse(&case.text);
+    let comps: Vec<&cktimg::OutFile> = conv
         .files
         .iter()
         .filter(|f| f.name.ends_with(".shcomp"))
         .collect();
     assert_eq!(comps.len(), deck.cells() - 1);
-    let mut probe_text = String::from("* net2schem probes\n");
+    let mut probe_text = String::from("* cktimg probes\n");
     let bench_name = conv
         .files
         .iter()
@@ -350,7 +350,7 @@ fn unspecialized(diffs: Vec<schemify_spicecmp::Diff>, ours: &str) -> Vec<schemif
 }
 
 /// Netlists the oracle bench `bench` over the generated `files` (ngspice dialect).
-fn netlist(files: &[net2schem::OutFile], bench: &[u8]) -> Result<String, String> {
+fn netlist(files: &[cktimg::OutFile], bench: &[u8]) -> Result<String, String> {
     let mut p = Project::new(Some(MANIFEST.as_bytes()), None, 1).map_err(|e| format!("{e:?}"))?;
     let core = schemify_import::core_library();
     p.index_library("core", "test", core)
@@ -403,7 +403,7 @@ fn netlist(files: &[net2schem::OutFile], bench: &[u8]) -> Result<String, String>
 }
 
 /// Pin offsets of every cell the outputs use (core and generated), by cell reference.
-fn pin_table(files: &[net2schem::OutFile]) -> BTreeMap<String, Vec<(i32, i32)>> {
+fn pin_table(files: &[cktimg::OutFile]) -> BTreeMap<String, Vec<(i32, i32)>> {
     let mut t = BTreeMap::new();
     let core = schemify_import::core_library().iter().map(|(n, b)| {
         (
@@ -452,7 +452,7 @@ fn orient(o: &str, x: i32, y: i32) -> (i32, i32) {
 }
 
 /// Geometry oracles and layout metrics over every cell file (milli-units internally).
-fn geometry(files: &[net2schem::OutFile]) -> (Metrics, Vec<String>) {
+fn geometry(files: &[cktimg::OutFile]) -> (Metrics, Vec<String>) {
     let pins = pin_table(files);
     let mut m = Metrics::default();
     let mut problems = Vec::new();
@@ -587,6 +587,7 @@ fn table(cases: &[Case]) -> Vec<String> {
             failures.push(format!("{}: spicecmp: {}", case.name, o.why));
         }
         for p in o.problems.iter().take(5) {
+            eprintln!("  problem: {p}");
             failures.push(format!("{}: {p}", case.name));
         }
     }
@@ -620,11 +621,13 @@ fn corpus_sample_round_trips_connectivity_equivalent() {
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
 
-/// The whole golden corpus, for the agreement count (`--ignored --nocapture`).
+/// The whole golden corpus, for the agreement count (`--ignored --nocapture`);
+/// `SCHEMIFY_CORPUS_FILTER=<substring>` narrows it to matching netlist names.
 #[test]
 #[ignore = "slow: every corpus netlist; run for the report"]
 fn corpus_all_report() {
-    let Some(cases) = corpus(|_| true) else {
+    let only = std::env::var("SCHEMIFY_CORPUS_FILTER").unwrap_or_default();
+    let Some(cases) = corpus(|n| n.contains(&only)) else {
         return;
     };
     let failures = table(&cases);
@@ -633,11 +636,11 @@ fn corpus_all_report() {
     }
 }
 
-/// The pin tables net2schem places core cells with match `lib/core`.
+/// The pin tables the plugin places core cells with match `lib/core`.
 #[test]
 fn core_pin_tables_match_the_bundled_library() {
     let lib = pin_table(&[]);
-    for (cell, pins) in net2schem::recognize::core_table() {
+    for (cell, pins) in cktimg::recognize::core_table() {
         let want: Vec<(i32, i32)> = pins.iter().map(|p| (p.1 * 1000, p.2 * 1000)).collect();
         assert_eq!(lib[&format!("core:{cell}")], want, "{cell}");
         let bytes = schemify_import::core_library()
@@ -680,8 +683,7 @@ fn mutated() -> impl Strategy<Value = String> {
                     2 => {
                         let s = &mut lines[k];
                         let pos = usize::from(byte) % (s.len() + 1);
-                        let ch = [b'+', b'.', b'{', b'}', b'\'', b'=', b' ', b'x', b'0', b'*']
-                            [usize::from(byte) % 10] as char;
+                        let ch = b"+.{}'= x0*"[usize::from(byte) % 10] as char;
                         if s.is_char_boundary(pos) {
                             s.insert(pos, ch);
                         }
@@ -713,7 +715,7 @@ proptest! {
 
     #[test]
     fn mutated_netlists_never_panic_and_load(text in mutated()) {
-        let conv = net2schem::convert("n2s/mutant.sp", &text);
+        let conv = cktimg::convert("n2s/mutant.sp", &text);
         let files: Vec<(String, Vec<u8>)> = std::iter::once(("schemify.project".to_owned(), MANIFEST.as_bytes().to_vec()))
             .chain(conv.files.iter().map(|f| (format!("n2s/{}", f.name), f.bytes.clone())))
             .collect();
