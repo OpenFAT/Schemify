@@ -2,10 +2,13 @@
 """Drives the web editor in headless Chrome through the DevTools protocol (over a pipe,
 Python stdlib only) and checks what the web spec promises end to end:
 
-1. storage (web spec §2): a wire drawn and saved (Ctrl+S) reaches OPFS; after a reload the
-   file is still there and the editor sees it (its next new cell is `untitled2`);
-2. clipboard (§4): Ctrl+C puts the Schemify fragment on the system clipboard; after the
-   reload (the editor's own clipboard is empty) Ctrl+V pastes it from the system clipboard;
+1. storage (web spec §2): the `inv` fixture, written into OPFS by the browser's own API,
+   opens (the mount reads files it did not write); a wire drawn and saved (Ctrl+S) reaches
+   OPFS and is still there after a reload;
+2. clipboard (§4): Ctrl+C of that wire puts the Schemify fragment on the system clipboard;
+   after the reload (the editor's own clipboard is empty) Ctrl+V pastes it from the system
+   clipboard, and the next save holds the reloaded file plus the pasted wire (so the editor
+   read the saved file back);
 3. no trap, panic or uncaught error on the console.
 
 Test-only JavaScript below (OPFS reads, clipboard reads) runs through `Runtime.evaluate`;
@@ -22,7 +25,8 @@ import subprocess
 import sys
 import time
 
-PROJECT = "/projects/default"  # platform::WEB_ROOT
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+FIXTURE = os.path.join(REPO, "crates/app/tests/fixtures/inv")
 
 
 class Browser:
@@ -135,6 +139,52 @@ class Page:
         self.call("Page.navigate", {"url": url})
         self.wait("the editor's canvas", "!!document.querySelector('canvas')")
         time.sleep(1.0)  # the first frames: plugins load, the UI composes
+
+    def load(self, url):
+        """Loads `url` afresh (a changed fragment alone would not restart the editor)."""
+        before = self.eval("performance.timeOrigin")
+        self.call("Page.navigate", {"url": url})
+        self.call("Page.reload", {"ignoreCache": False})
+        self.wait(
+            f"the editor's canvas at {url}",
+            f"performance.timeOrigin !== {before} && !!document.querySelector('canvas')",
+        )
+        time.sleep(1.0)
+
+    def write_opfs(self, prefix, src):
+        """Copies the non-hidden files under directory `src` into OPFS at `prefix`."""
+        files = []
+        for top, dirs, names in os.walk(src):
+            dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+            for n in sorted(names):
+                if n.startswith("."):
+                    continue
+                path = os.path.join(top, n)
+                rel = os.path.relpath(path, src).replace(os.sep, "/")
+                with open(path, "rb") as f:
+                    files.append([f"{prefix}/{rel}", base64.b64encode(f.read()).decode()])
+        js = (
+            "(async () => { const root = await navigator.storage.getDirectory();"
+            f" for (const [path, b64] of {json.dumps(files)}) {{"
+            " const segs = path.split('/').filter(s => s); let d = root;"
+            " for (const s of segs.slice(0, -1)) d = await d.getDirectoryHandle(s, {create: true});"
+            " const w = await (await d.getFileHandle(segs[segs.length - 1], {create: true}))"
+            ".createWritable();"
+            " await w.write(Uint8Array.from(atob(b64), c => c.charCodeAt(0))); await w.close(); }"
+            " return true; })()"
+        )
+        self.eval(js)
+        return len(files)
+
+    def wait_file(self, path, ok, timeout=20):
+        """The text of OPFS file `path` once `ok(text)` holds (or the last text read)."""
+        text, deadline = None, time.time() + timeout
+        while time.time() < deadline:
+            text = self.opfs(path)
+            if text is not None and ok(text):
+                break
+            time.sleep(0.2)
+        return text
 
     def reload(self):
         before = self.eval("performance.timeOrigin")
@@ -270,26 +320,25 @@ def main():
                 raise
             p.screenshot(os.path.join(out, "web.png"))
 
-            # 1. Draw a wire (xschem: `w` from the pointer, click its end), save, copy. The
-            #    canvas is the left part of the window (the docs pane takes 560 px right).
-            p.click(350, 480)  # focus the canvas
-            p.move(200, 420)
+            # 1. A project the browser itself puts into OPFS (the mount reads files it did
+            #    not write): draw a wire in an empty area (xschem: `w` from the pointer,
+            #    click its end), save it, select just that wire and copy it.
+            with open(os.path.join(FIXTURE, "top.shcomp")) as f:
+                n0 = len(wires(f.read()))
+            n = p.write_opfs("/projects/inv", FIXTURE)
+            top = "/projects/inv/top.shcomp"
+            p.load(f"{url}#{top}")
+            p.move(250, 700)
             p.key("w")
-            p.move(450, 420)
-            p.click(450, 420)
+            p.click(500, 700)
             p.key("Escape")
             p.key("s", ctrl=True)
-            first = None
-            deadline = time.time() + 20
-            while time.time() < deadline and not wires(first):
-                first = p.opfs(f"{PROJECT}/untitled1.shcomp")
-                time.sleep(0.2)
-            print(f"saved untitled1.shcomp: {len(wires(first))} wire(s)")
-            if len(wires(first)) != 1:
-                failures.append(f"the save did not reach OPFS with one wire: {first!r}")
+            first = p.wait_file(top, lambda t: len(wires(t)) == n0 + 1)
+            print(f"inv ({n} files via OPFS): top.shcomp {n0} -> {len(wires(first))} wires")
+            if len(wires(first)) != n0 + 1:
+                failures.append(f"the save did not reach OPFS with {n0 + 1} wires")
                 print(f"OPFS now: {p.opfs_tree()}")
-                print(f"OPFS createWritable probe: {p.opfs_probe()!r}")
-            p.key("a", ctrl=True)
+            p.click(375, 700)
             p.key("c", ctrl=True)
             clip = None
             deadline = time.time() + 10
@@ -297,32 +346,28 @@ def main():
                 clip = p.clipboard()
                 time.sleep(0.2)
             print(f"system clipboard after Ctrl+C: {len(wires(clip))} wire(s)")
-            if not wires(clip):
-                failures.append(f"Ctrl+C did not reach the system clipboard: {clip!r}")
+            if len(wires(clip)) != 1:
+                failures.append(f"Ctrl+C did not put the wire on the system clipboard: {clip!r}")
 
-            # 2. Reload: the file persists, the editor sees it, the paste comes from the
-            #    system clipboard (the editor's own clipboard is empty now).
+            # 2. Reload: the saved file persists and the editor reads it back; the paste
+            #    comes from the system clipboard (the editor's own clipboard is empty now).
             p.reload()
-            if wires(p.opfs(f"{PROJECT}/untitled1.shcomp")) != wires(first):
-                failures.append("untitled1.shcomp changed or vanished across the reload")
-            p.click(350, 480)
-            p.move(300, 300)
+            if len(wires(p.opfs(top))) != n0 + 1:
+                failures.append("top.shcomp changed or vanished across the reload")
+            p.move(400, 160)
             p.key("v", ctrl=True)
             time.sleep(1.0)  # the browser answers the clipboard read; the paste follows
-            p.click(300, 300)
+            p.click(400, 160)
             p.key("Escape")
             p.key("s", ctrl=True)
-            second = None
-            deadline = time.time() + 20
-            while time.time() < deadline and not wires(second):
-                second = p.opfs(f"{PROJECT}/untitled2.shcomp")
-                time.sleep(0.2)
-            print(f"saved untitled2.shcomp after the reload: {len(wires(second))} wire(s)")
-            if second is None:
-                failures.append("no untitled2.shcomp: the editor did not see untitled1 after "
-                                "the reload, or the save did not reach OPFS")
-            elif not wires(second):
-                failures.append(f"Ctrl+V did not paste from the system clipboard: {second!r}")
+            second = p.wait_file(top, lambda t: len(wires(t)) == n0 + 2)
+            print(f"after the reload, paste and save: {len(wires(second))} wires")
+            if len(wires(second)) != n0 + 2:
+                failures.append(
+                    f"expected {n0 + 2} wires (the reloaded file plus the pasted wire), got "
+                    f"{len(wires(second))}: the editor did not read the saved file back, or "
+                    "Ctrl+V did not paste from the system clipboard"
+                )
             p.screenshot(os.path.join(out, "drive.png"))
         except Exception as e:  # noqa: BLE001 - report and fail
             failures.append(f"driver: {type(e).__name__}: {e}")
