@@ -91,12 +91,17 @@ pub fn merge3(o: &Document<'_>, a: &Document<'_>, b: &Document<'_>) -> Merged {
                 ident_of[s][recs[s] as usize] = i as u32;
             }
         }
-        // One rank per identity (sides can disagree only for inherited `Unknown` ranks).
-        let s = [A, B, O]
-            .into_iter()
-            .find(|&s| recs[s] != NONE)
-            .expect("identity has a record");
-        rank_of[i] = doc_ranks[s][recs[s] as usize];
+        // One rank per identity. Sides can disagree only for `Unknown` records, whose rank
+        // is inherited from their position: the side that moved the record wins, like any
+        // other component (fuzz crash 13af0e2c: `merge3(o, o, b)` must keep b's position).
+        let rank = |s: usize| (recs[s] != NONE).then(|| doc_ranks[s][recs[s] as usize]);
+        let (ro, ra, rb) = (rank(O), rank(A), rank(B));
+        rank_of[i] = match (ra, rb) {
+            (Some(a), Some(b)) if a != b && ro == Some(a) => b,
+            (Some(a), _) => a,
+            (None, Some(b)) => b,
+            (None, None) => ro.expect("identity has a record"),
+        };
     }
 
     let mut picks = Picks::default();

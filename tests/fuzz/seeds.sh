@@ -34,7 +34,7 @@ case "$target" in
     find $roots \( -name '*.sch' -o -name '*.sym' \) -type f -size -64k | head -n 4000 |
       while read -r f; do cp "$f" "$dir/$(echo "$f" | sha1sum | cut -c1-16)"; done
     ;;
-  compile) ;; # expressions: libFuzzer starts from the checked-in corpus
+  compile | rpc_decode) ;; # libFuzzer starts from the checked-in corpus (or empty)
   *)
     echo "unknown fuzz target: $target" >&2
     exit 2
