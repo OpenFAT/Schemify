@@ -73,7 +73,7 @@ pub use iface::{Domain, Iface, ParamKind};
 pub use names::{NAMES_MAX, Name, Names};
 pub use netexpr::{WIDTH_MAX, is_global};
 pub use state::{CellState, Recomputed};
-pub use values::{Funcs, Val, no_funcs};
+pub use values::{Funcs, Val, cached_text, no_funcs};
 
 #[doc(hidden)]
 pub mod test_support {

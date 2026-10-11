@@ -458,7 +458,7 @@ fn plugin_functions_fall_back_to_cached_values() {
     assert_eq!(e008.len(), 1);
     assert!(e008[0].detail.starts_with("X006"));
     // With the plugin loaded the value is computed and verified.
-    let mut funcs = |name: &str, args: &[Value<'_>]| {
+    let mut funcs = |name: &str, args: &[Value<'_>]| -> Option<Result<Value<'static>, _>> {
         (name == "gmid.width").then(|| match args[0] {
             Value::Int(i) => Ok(Value::Num(i as f64 * 4.0)),
             _ => Ok(Value::Num(0.0)),

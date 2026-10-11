@@ -90,6 +90,18 @@ const REQUESTS_MAX: usize = 1 << 10;
 // ponytail: older undos rebuild the derived state (136 ms at 100k objects); doc reporting an
 // undo's touched records would retire this mirror.
 const COMMITS_KEPT: usize = 64;
+/// Cell states kept for documents that are not active ([`Editor`]'s `parked`).
+const PARKED_MAX: usize = 8;
+
+/// The [`CellState`] of a document that is not active, with the doc epoch it is current for
+/// (after `ops`), the plugin composition epoch, and the ops committed to it since.
+#[derive(Debug)]
+struct Parked {
+    doc: DocHandle,
+    key: (u32, u32),
+    state: CellState,
+    ops: Vec<Op>,
+}
 /// Share of the window height the editor keeps when the waves dock opens.
 const DOCK_SPLIT: f32 = 0.6;
 /// Range the dock divider can be dragged in, as shares of the window height.
@@ -539,11 +551,14 @@ pub struct Editor {
     commits: std::collections::VecDeque<(DocHandle, u64, Vec<Op>)>,
     /// The docs page.
     page: Page,
-    /// This frame's docs-page commit (document, label, ops, committed?): a D20 cache write
-    /// it causes is folded into the same undo entry.
-    amend: Option<(DocHandle, String, Vec<Op>, bool)>,
-    /// The cache ops of an amend in flight (see `sync_cache`).
-    amending: Option<Vec<Op>>,
+    /// This frame's docs-page commit (document, label, ops, its journal seq once applied): a
+    /// D20 cache write it causes extends the same undo entry (`Edit::Extend`), and its
+    /// journal record waits for it (flushed at the end of the elab step).
+    amend: Option<(DocHandle, String, Vec<Op>, Option<u64>)>,
+    /// States of documents shown before, kept while another level is active (D19: values
+    /// for every open document): ops committed to them since are queued; an edit to a cell
+    /// they instantiate or a plugin change drops them. At most [`PARKED_MAX`].
+    parked: Vec<Parked>,
     /// An undo or redo ran this frame: cache writes wait (a commit would clear redo).
     undid: bool,
     /// The annotation overlay (owner: `elab`, written through `Annotations::apply`): sources
@@ -722,7 +737,7 @@ impl Editor {
             commits: std::collections::VecDeque::new(),
             page: Page::default(),
             amend: None,
-            amending: None,
+            parked: Vec::new(),
             undid: false,
             annotations: Annotations::default(),
             highlight: Vec::new(),
@@ -1064,7 +1079,10 @@ impl Editor {
             changed |= self.sync_cache(&mut reqs);
             self.post_checks();
         }
-        self.amend = None;
+        // A docs-page commit's journal record waited for its cache ops (`Edit::Extend`).
+        if let Some((h, ..)) = self.amend.take() {
+            self.session.flush_journal(h);
+        }
         // 7. run::poll → results; optimizer ask/tell; plugin run requests; OP annotation
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -2019,7 +2037,7 @@ impl Editor {
         if ops.is_empty() {
             return;
         }
-        self.amend = Some((h, label.to_owned(), ops.clone(), false));
+        self.amend = Some((h, label.to_owned(), ops.clone(), None));
         self.commit(reqs, h, label, ops);
     }
 
@@ -3248,19 +3266,26 @@ impl Editor {
             self.session.status.clone_from(l);
         }
         if d.state_changed {
-            self.cell_key = None; // plugin functions may answer differently now (D20)
+            self.invalidate_cells(); // plugin functions may answer differently now (D20)
         }
         true
     }
 
     /// `doc::apply_edits`, then per-document bookkeeping: edit epochs, journals, plugin
-    /// `DocChanged` events, and the status line for refusals.
+    /// `DocChanged` events, and the status line for refusals. Every transaction first drops
+    /// the D20 caches of the expressions it changes (`docs::drop_stale_caches`).
     fn apply(&mut self, reqs: &mut Vec<EditRequest>) -> bool {
         assert!(reqs.len() <= REQUESTS_MAX);
+        for r in reqs.iter_mut() {
+            if let Edit::Tx(tx) = &mut r.edit
+                && let Some(doc) = self.session.project.doc(r.doc)
+            {
+                docs::drop_stale_caches(doc, &mut tx.ops);
+            }
+        }
         let outcomes = apply_edits(&mut self.session.project, reqs);
         assert_eq!(outcomes.len(), reqs.len());
         let mut changed = false;
-        let active = self.active().map(|a| a.0);
         for (r, o) in reqs.iter().zip(&outcomes) {
             match o {
                 Outcome::Committed { .. }
@@ -3268,9 +3293,12 @@ impl Editor {
                 | Outcome::Redone { .. }
                 | Outcome::Staged { .. }
                 | Outcome::Dropped => {
-                    self.track_elab(r, o, active);
+                    self.track_elab(r, o);
                     self.session.bump(r.doc);
-                    self.session.flush_journal(r.doc);
+                    // A docs-page commit's record waits for its cache ops (`sync_cache`).
+                    if !self.amend.as_ref().is_some_and(|a| a.0 == r.doc) {
+                        self.session.flush_journal(r.doc);
+                    }
                     self.generation = self.generation.wrapping_add(1);
                     let ev = Event::DocChanged {
                         doc: plugins::doc_id(r.doc),
@@ -3295,11 +3323,12 @@ impl Editor {
         changed
     }
 
-    /// Keeps `cell` in step with one applied edit (called before the epoch bump): a commit to
-    /// the active document while `cell` is current queues its ops for the incremental
-    /// recompute; anything else that changes design data forces a rebuild. While an amend is
-    /// in flight its undo + recommit nets to the queued cache ops.
-    fn track_elab(&mut self, r: &EditRequest, o: &Outcome, active: Option<DocHandle>) {
+    /// Keeps the cell states in step with one applied edit (called before the epoch bump):
+    /// the ops it applied are queued on the document's own state (active or parked) while
+    /// that state is current, for the incremental recompute; a state that is not current
+    /// rebuilds, and a state whose cell instantiates the edited one rebuilds (its interface
+    /// may have changed).
+    fn track_elab(&mut self, r: &EditRequest, o: &Outcome) {
         let design = matches!(
             o,
             Outcome::Committed { .. } | Outcome::Undone { .. } | Outcome::Redone { .. }
@@ -3307,20 +3336,34 @@ impl Editor {
         if !design {
             return;
         }
-        let epoch = self.session.epoch(r.doc);
-        let current = self
-            .cell_key
-            .is_some_and(|k| Some(k.0) == active && k.0 == r.doc && k.1 == epoch);
-        if let (Edit::Tx(tx), Outcome::Committed { seq }) = (&r.edit, o) {
-            if self.commits.len() == COMMITS_KEPT {
-                self.commits.pop_front();
+        match (&r.edit, o) {
+            (Edit::Tx(tx), Outcome::Committed { seq }) => {
+                if self.commits.len() == COMMITS_KEPT {
+                    self.commits.pop_front();
+                }
+                self.commits.push_back((r.doc, *seq, tx.ops.clone()));
+                if let Some((d, _, a_ops, done)) = self.amend.as_mut()
+                    && *d == r.doc
+                    && tx.ops.starts_with(a_ops)
+                {
+                    *done = Some(*seq);
+                }
             }
-            self.commits.push_back((r.doc, *seq, tx.ops.clone()));
+            (Edit::Extend(_, ext), Outcome::Committed { seq }) => {
+                let mut entry = self.commits.iter_mut().rev();
+                if let Some(c) = entry.find(|c| c.0 == r.doc && c.1 == *seq) {
+                    c.2.extend(ext.iter().cloned());
+                }
+            }
+            _ => {}
         }
-        // An undo or redo touches what the entry's ops touched: the same records, so the
-        // same recompute (the ops' direction does not matter to it).
-        let undone = match o {
-            Outcome::Undone { seq } | Outcome::Redone { seq } => self
+        let epoch = self.session.epoch(r.doc);
+        // The ops this outcome applied: an undo or redo touches what the entry's ops touched,
+        // the same records, so the same recompute (their direction does not matter to it).
+        let applied: Option<&Vec<Op>> = match (&r.edit, o) {
+            (Edit::Tx(tx), Outcome::Committed { .. }) => Some(&tx.ops),
+            (Edit::Extend(_, ext), Outcome::Committed { .. }) => Some(ext),
+            (_, Outcome::Undone { seq } | Outcome::Redone { seq }) => self
                 .commits
                 .iter()
                 .rev()
@@ -3328,38 +3371,50 @@ impl Editor {
                 .map(|c| &c.2),
             _ => None,
         };
-        let ops = match (&r.edit, o) {
-            (Edit::Tx(tx), Outcome::Committed { .. }) => Some(&tx.ops),
-            _ => None,
+        let project = &self.session.project;
+        let mut row: Option<Option<u32>> = None;
+        let mut reads_edited = |state: &CellState| {
+            let row = *row.get_or_insert_with(|| row_of_doc(project, r.doc));
+            row.is_some_and(|row| state.ifaces.iter().skip(1).any(|f| f.row == row))
         };
-        if let (Some((d, _, a_ops, done)), Some(ops)) = (self.amend.as_mut(), ops)
-            && *d == r.doc
-            && a_ops == ops
-        {
-            *done = true;
-        }
-        let amend_undo = self.amending.is_some() && matches!(o, Outcome::Undone { .. });
-        match (current, ops.or(undone), &self.amending) {
-            (true, _, Some(_)) if amend_undo => {}
-            (true, Some(_), Some(cache)) => self.cell_ops.extend(cache.iter().cloned()),
-            (true, Some(ops), None) => self.cell_ops.extend(ops.iter().cloned()),
+        // The active state.
+        match (self.cell_key, applied) {
+            (Some(k), Some(ops)) if k.0 == r.doc && k.1 == epoch => {
+                self.cell_ops.extend(ops.iter().cloned());
+                self.cell_key = Some((k.0, epoch.wrapping_add(1), k.2)); // the bump that follows
+            }
+            (Some(k), _) if k.0 != r.doc && !self.cell.as_ref().is_some_and(&mut reads_edited) => {}
             _ => {
                 self.cell_key = None;
                 self.cell_ops.clear();
             }
         }
-        if let Some(k) = self.cell_key.as_mut() {
-            k.1 = epoch.wrapping_add(1); // the bump that follows
-        }
-        self.undid |=
-            self.amending.is_none() && matches!(o, Outcome::Undone { .. } | Outcome::Redone { .. });
+        // Parked states, the same way.
+        self.parked.retain_mut(|p| {
+            if p.doc != r.doc {
+                return !reads_edited(&p.state);
+            }
+            match applied {
+                Some(ops) if p.key.0 == epoch => {
+                    p.ops.extend(ops.iter().cloned());
+                    p.key.0 = epoch.wrapping_add(1);
+                    true
+                }
+                _ => false,
+            }
+        });
+        self.undid |= matches!(o, Outcome::Undone { .. } | Outcome::Redone { .. });
         debug_assert!(self.cell_key.is_some() || self.cell_ops.is_empty());
+        debug_assert!(self.parked.len() <= PARKED_MAX);
     }
 
     /// `elab::CellState::recompute` for the active document: incremental over the queued ops
-    /// when `cell` is current, else a full build (another document, an undo of a commit
-    /// older than [`COMMITS_KEPT`], a plugin change). Plugin functions are called through the host (D20). Returns whether values
-    /// may have changed.
+    /// when `cell` is current, else a full build (a document shown for the first time or
+    /// since dropped, an undo of a commit older than [`COMMITS_KEPT`], a plugin change).
+    /// Switching documents parks the state of the one left and takes back the parked state
+    /// of the one shown while its key holds (D19: values kept for every open document).
+    /// Plugin functions are called through the host (D20). Returns whether values may have
+    /// changed.
     fn recompute_elab(&mut self) -> bool {
         let Some((h, _)) = self.active() else {
             return false;
@@ -3371,6 +3426,29 @@ impl Editor {
         // get edited structurally.
         let epoch = self.session.epoch(h);
         let fe = self.host.plugins.composed_epoch();
+        if let Some(k) = self.cell_key.filter(|k| k.0 != h) {
+            if let Some(state) = self.cell.take() {
+                let ops = std::mem::take(&mut self.cell_ops);
+                self.park(Parked {
+                    doc: k.0,
+                    key: (k.1, k.2),
+                    state,
+                    ops,
+                });
+            }
+            self.cell_key = None;
+            self.cell_ops.clear();
+        }
+        if self.cell_key.is_none()
+            && let Some(i) = self.parked.iter().position(|p| p.doc == h)
+        {
+            let p = self.parked.swap_remove(i);
+            if p.key == (epoch, fe) {
+                self.cell = Some(p.state);
+                self.cell_key = Some((h, epoch, fe));
+                self.cell_ops = p.ops;
+            }
+        }
         let current = self.cell.is_some() && self.cell_key == Some((h, epoch, fe));
         if current && self.cell_ops.is_empty() {
             return false;
@@ -3394,15 +3472,34 @@ impl Editor {
         true
     }
 
-    /// D20 write-back: when a loaded plugin computed a var value whose `cached <value>
-    /// <hash>` differs, writes it. After a docs-page edit the write joins that edit's undo
-    /// entry (undo + recommit of the edit with the cache ops), so one edit is one undo; else
-    /// it is its own "update plugin cache" commit, skipped in a frame that undid or redid
-    /// (it would clear the redo stack). Returns whether anything was written.
-    // ponytail: the amend replays the edit through undo; a `doc` amend-last-entry op would
-    // save the two journal records.
+    /// Keeps `p` among the parked states (replacing an older one of its document), dropping
+    /// states of closed documents and, past [`PARKED_MAX`], the oldest.
+    fn park(&mut self, p: Parked) {
+        let project = &self.session.project;
+        self.parked
+            .retain(|q| q.doc != p.doc && project.doc(q.doc).is_some());
+        if self.parked.len() >= PARKED_MAX {
+            self.parked.remove(0);
+        }
+        self.parked.push(p);
+        assert!(self.parked.len() <= PARKED_MAX);
+    }
+
+    /// Drops every cell state (active and parked): plugin functions may answer differently,
+    /// a document was recovered or the cell index changed.
+    fn invalidate_cells(&mut self) {
+        self.cell_key = None;
+        self.cell_ops.clear();
+        self.parked.clear();
+    }
+
+    /// D20 write-back: when a loaded plugin computed a param default or var value whose
+    /// `cached <value> <hash>` differs, writes it. After a docs-page edit the write extends
+    /// that edit's undo entry and journal record (`Edit::Extend`): one edit, one undo, no
+    /// extra journal records. Otherwise it is its own "update plugin cache" commit, skipped
+    /// in a frame that undid or redid (it would clear the redo stack). Returns whether
+    /// anything was written.
     fn sync_cache(&mut self, reqs: &mut Vec<EditRequest>) -> bool {
-        let amend = self.amend.take().filter(|a| a.3);
         let Some((h, _)) = self.active() else {
             return false;
         };
@@ -3417,23 +3514,12 @@ impl Editor {
         if ops.is_empty() {
             return false;
         }
-        match amend {
-            Some((d, label, mut tx_ops, _)) if d == h => {
-                tx_ops.extend(ops.iter().cloned());
-                push_req(reqs, h, Edit::Undo);
-                let tx = Transaction {
-                    label,
-                    mode: Mode::Commit,
-                    ops: tx_ops,
-                };
-                push_req(reqs, h, Edit::Tx(tx));
-                self.amending = Some(ops);
-            }
-            _ if self.undid => return false,
-            _ => self.commit(reqs, h, "update plugin cache", ops),
+        match self.amend.as_ref().and_then(|a| a.3.filter(|_| a.0 == h)) {
+            Some(seq) => push_req(reqs, h, Edit::Extend(seq, ops)),
+            None if self.undid => return false,
+            None => self.commit(reqs, h, "update plugin cache", ops),
         }
         let changed = self.apply(reqs);
-        self.amending = None;
         self.recompute_elab();
         changed
     }
@@ -4005,6 +4091,16 @@ fn default_view(doc: Option<&Document>) -> View {
         Some(FileKind::Shprim) => View::Symbol,
         _ => View::Schematic,
     }
+}
+
+/// The cell row whose open document is `h` (a scan of the cell index); `None` for a
+/// document outside it (a new, unsaved file).
+fn row_of_doc(project: &schemify_doc::Project, h: DocHandle) -> Option<u32> {
+    let doc = project.doc(h)?;
+    let cells = project.cells();
+    (0..cells.lib.len())
+        .find(|&r| project.interface(r).is_some_and(|d| std::ptr::eq(d, doc)))
+        .map(|r| r as u32)
 }
 
 /// The project directory of a file: the nearest ancestor holding `schemify.project`, else

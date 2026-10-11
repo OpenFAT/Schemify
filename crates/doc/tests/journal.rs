@@ -480,3 +480,65 @@ fn edit_garbage_is_compacted_without_changing_the_document() {
     while matches!(run(&mut p, h, Edit::Undo), Outcome::Undone { .. }) {}
     assert_eq!(canon(&p, h), OTA);
 }
+
+/// `Edit::Extend` (edits spec §1): ops added to the last commit share its undo entry and its
+/// journal record. While the record is pending it is rewritten in place (no record added);
+/// once written out the journal is rewritten from base. A crash after either recovers the
+/// extended state, one undo reverts all of it, and only the top entry can be extended.
+#[test]
+fn extend_joins_the_last_commit_and_its_journal_record() {
+    let (mut p, h) = open(SEED_DOC, "cell.shcomp");
+    let mut disk = Disk {
+        file: SEED_DOC.as_bytes().to_vec(),
+        journal: Vec::new(),
+    };
+    let original = canon(&p, h);
+    let var = |name: &str, v: &str| Op::Insert {
+        rec: RecordBuf::new(RecordKind::Var).field(name).field(v),
+        at: None,
+    };
+    let Outcome::Committed { seq } = run(&mut p, h, tx(vec![var("a", "1")])) else {
+        panic!("the commit applies");
+    };
+    let out = run(&mut p, h, Edit::Extend(seq, vec![var("b", "2")]));
+    assert_eq!(out, Outcome::Committed { seq });
+    disk.sync(&mut p, h);
+    let journal = String::from_utf8(disk.journal.clone()).unwrap();
+    let words: Vec<&str> = journal
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .filter(|w| ["tx", "undo", "redo"].contains(w))
+        .collect();
+    assert_eq!(words, ["tx"], "one record, rewritten in place: {journal}");
+    assert_eq!(p.history_len(h), (1, 0), "one undo entry");
+    let extended = canon(&p, h);
+    assert!(extended.contains("var a 1") && extended.contains("var b 2"));
+    let (rp, rh, _) = reopen(&disk);
+    assert_eq!(
+        canon(&rp, rh),
+        extended,
+        "recovery replays the extended record"
+    );
+    // The record is on disk now: the journal is rewritten from base instead.
+    let out = run(&mut p, h, Edit::Extend(seq, vec![var("c", "3")]));
+    assert_eq!(out, Outcome::Committed { seq });
+    disk.sync(&mut p, h);
+    let (rp, rh, _) = reopen(&disk);
+    assert_eq!(canon(&rp, rh), canon(&p, h));
+    assert!(matches!(run(&mut p, h, Edit::Undo), Outcome::Undone { .. }));
+    assert_eq!(
+        canon(&p, h),
+        original,
+        "one undo reverts the commit and both extensions"
+    );
+    // Negative space: with redo pending, or naming another entry, nothing changes.
+    let refused = Outcome::Refused(schemify_doc::Code::E040);
+    assert_eq!(
+        run(&mut p, h, Edit::Extend(seq, vec![var("d", "4")])),
+        refused
+    );
+    assert!(matches!(run(&mut p, h, Edit::Redo), Outcome::Redone { .. }));
+    let other = Edit::Extend(seq + 1, vec![var("d", "4")]);
+    assert_eq!(run(&mut p, h, other), refused);
+    assert!(!canon(&p, h).contains("var d"));
+}

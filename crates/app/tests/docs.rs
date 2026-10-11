@@ -82,9 +82,14 @@ fn edit_var(s: &mut Session, name: &str, expr: &str) {
 
 /// `cached` attribute values of var `name` in the file text.
 fn cached(text: &str, name: &str) -> Option<(f64, String)> {
+    cached_of(text, "var", name)
+}
+
+/// `cached` attribute values of the `word` record (`var`, `param`) named `name`.
+fn cached_of(text: &str, word: &str, name: &str) -> Option<(f64, String)> {
     let mut lines = text
         .lines()
-        .skip_while(|l| !l.starts_with(&format!("var {name} ")));
+        .skip_while(|l| !l.starts_with(&format!("{word} {name} ")));
     lines.next()?;
     let line = lines
         .take_while(|l| l.starts_with("  "))
@@ -213,6 +218,17 @@ fn a_var_edit_recomputes_page_and_instances_in_one_undo() {
     let before = s.text();
     let undo_before = s.ed.session.project.history_len(h).0;
     let w_before = num(&s, "W_in");
+    let journal = s
+        .dir
+        .join(".schemify")
+        .join("journal")
+        .join("ota.shcomp.journal");
+    let records = |word: &str| {
+        let t = std::fs::read_to_string(&journal).unwrap_or_default();
+        let first = |l: &&str| l.split_whitespace().next() == Some(word);
+        t.lines().filter(first).count()
+    };
+    let txs_before = records("tx");
     edit_var(&mut s, "gm_id_in", "10");
     assert_eq!(var(&s, "gm_id_in").0, Val::Int(10));
     let w = num(&s, "W_in");
@@ -239,6 +255,12 @@ fn a_var_edit_recomputes_page_and_instances_in_one_undo() {
         undo_before + 1,
         "one edit, one undo entry"
     );
+    // The cache ops extended the edit's own journal record (`Edit::Extend`): one more `tx`,
+    // no undo/redo records, and the record holds them.
+    assert_eq!(records("tx"), txs_before + 1);
+    assert_eq!((records("undo"), records("redo")), (0, 0));
+    let jtext = std::fs::read_to_string(&journal).unwrap();
+    assert!(jtext.contains("set_attr var W_in cached"), "{jtext}");
     assert_eq!(
         s.ed.session.project.undo_labels(h).last().copied(),
         Some("edit variable")
@@ -364,6 +386,79 @@ fn d20_a_changed_plugin_hash_recomputes_and_rewrites_the_cache() {
         Some("update plugin cache")
     );
     assert!(!var(&s, "Av_in").1);
+}
+
+/// The OTA with an own param whose default calls the plugin (and, when given, its cache).
+fn with_wref(text: &str, cache: Option<&str>) -> String {
+    let mut p = String::from(
+        "pin VSS inout 20 40\n\nparam wref \"gmid.w(\\\"nfet_01v8\\\", 10, 1u, 20u)\"\n",
+    );
+    if let Some(c) = cache {
+        p.push_str(&format!("  cached {c}\n"));
+    }
+    text.replacen("pin VSS inout 20 40\n", &p, 1)
+}
+
+/// Replaces the document's text through Edit file (the canonical text with `from` → `to`).
+fn edit_file(s: &mut Session, from: &str, to: &str) {
+    let edited = s.text().replace(from, to);
+    s.key("Alt+Q");
+    s.ed.command("dialog.edit_file.ok", &edited);
+    s.frame(Default::default());
+}
+
+/// D20 for the cell's own param defaults: a default that calls a plugin function gets its
+/// `cached` on open (the plugin's answer and hash); a new default through Edit file, with the
+/// stale `cached` line kept, has it stripped in the same transaction and the plugin's new
+/// answer written after.
+#[test]
+fn d20_param_defaults_are_cached_like_vars() {
+    let mut s = open_edited("param", "ota.shcomp", |t| with_wref(&t, None));
+    let (w, hash) = cached_of(&s.text(), "param", "wref").expect("written on open");
+    // Oracle: the plugin's own sample check, gmid.w(nfet, 10, 1u, 20u) = 4.930µm.
+    assert!((w - 4.930e-6).abs() < 2e-9, "{w}");
+    assert_eq!(hash, plugin_hash());
+    let g = &s.ed.cell().unwrap().graph;
+    assert_eq!((g.vals[0].clone(), g.unverified[0]), (Val::Num(w), false));
+    edit_file(&mut s, "10, 1u, 20u", "12, 1u, 20u");
+    let (w12, _) = cached_of(&s.text(), "param", "wref").expect("rewritten");
+    assert!(w12 > w, "weaker inversion, wider: {w12} vs {w}");
+    assert_eq!(s.ed.cell().unwrap().graph.vals[0], Val::Num(w12));
+}
+
+/// Without the plugin a param's cache stands in, unverified; a new default drops it (the
+/// cache belongs to the old expression), leaving `X006` until the plugin is back.
+#[test]
+fn d20_param_cache_without_the_plugin_goes_with_its_default() {
+    let dir = common::fixture("ota", "param-noplugin");
+    let manifest = "schemify 1 project\n\nlib dev path dev\n";
+    std::fs::write(dir.join("schemify.project"), manifest).unwrap();
+    let p = dir.join("ota.shcomp");
+    let text = std::fs::read_to_string(&p).unwrap();
+    let cache = format!("4.93e-6 {}", fixture_hash(&text));
+    std::fs::write(&p, with_wref(&text, Some(&cache))).unwrap();
+    let ed = schemify_app::editor::Editor::new(schemify_app::editor::Options {
+        path: Some(p),
+        seed: 7,
+        ..Default::default()
+    })
+    .expect("opens");
+    let mut s = Session { ed, now: 1, dir };
+    for _ in 0..3 {
+        s.frame(Default::default());
+    }
+    let g = &s.ed.cell().unwrap().graph;
+    assert_eq!(
+        (g.vals[0].clone(), g.unverified[0]),
+        (Val::Num(4.93e-6), true)
+    );
+    edit_file(&mut s, "10, 1u, 20u", "12, 1u, 20u");
+    assert_eq!(cached_of(&s.text(), "param", "wref"), None);
+    let v = &s.ed.cell().unwrap().graph.vals[0];
+    assert!(
+        matches!(v, Val::Err(e) if e.code == schemify_expr::Code::X006),
+        "{v:?}"
+    );
 }
 
 /// The hash the fixture file was cached with.

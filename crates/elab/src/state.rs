@@ -131,8 +131,9 @@ impl CellState {
         let mut rebuild = false;
         let mut touched_insts: Vec<ObjId> = Vec::new();
         let mut touched_vars = false;
-        // D20: vars whose `cached` stand-in changed (the cache the app writes back).
+        // D20: own vars and params whose `cached` stand-in changed (the app's write-back).
         let mut cached_vars: Vec<&str> = Vec::new();
+        let mut cached_params: Vec<&str> = Vec::new();
         let mut waived = false;
         for op in ops {
             let (kind, key, attr) = subject(op);
@@ -163,6 +164,12 @@ impl CellState {
                     _ => rebuild = true,
                 },
                 RecordKind::Waive => waived = true,
+                RecordKind::Param
+                    if matches!(op, Op::SetAttr { .. } | Op::RemoveAttr { .. })
+                        && attr == Some("cached") =>
+                {
+                    cached_params.push(key);
+                }
                 RecordKind::Param | RecordKind::Pin | RecordKind::Impl | RecordKind::Header => {
                     *self = CellState::build(project, h, funcs).expect("live handle");
                     return Recomputed {
@@ -183,7 +190,7 @@ impl CellState {
             rebuild = !self.diff_values(doc, &touched_insts, touched_vars, &mut dirty);
         }
         if !rebuild {
-            rebuild = !self.refresh_cached(doc, &cached_vars, &mut dirty);
+            rebuild = !self.refresh_cached(doc, &cached_vars, &cached_params, &mut dirty);
         }
         if rebuild {
             self.rebuild_graph(doc, funcs);
@@ -288,35 +295,48 @@ impl CellState {
         true
     }
 
-    /// Points the programs of own vars `names` at their current `cached` attribute (D20),
-    /// marking dirty the ones whose value rests on it. A cache write never changes a value
-    /// that a loaded plugin computed, so it costs no rebuild. Returns `false` when a name is
-    /// not an own var (the caller rebuilds).
-    fn refresh_cached(&mut self, doc: &Document, names: &[&str], dirty: &mut Vec<u32>) -> bool {
+    /// Points the programs of own vars `vars` and own params `params` at their current
+    /// `cached` attribute (D20), marking dirty the ones whose value rests on it. A cache write
+    /// never changes a value that a loaded plugin computed, so it costs no rebuild. Returns
+    /// `false` when a name is not an own var / param (the caller rebuilds).
+    fn refresh_cached(
+        &mut self,
+        doc: &Document,
+        vars: &[&str],
+        params: &[&str],
+        dirty: &mut Vec<u32>,
+    ) -> bool {
         let s = doc.strings();
-        let blocks = doc.doc_blocks();
+        let (blocks, prows) = (doc.doc_blocks(), doc.params());
         let g = &mut self.graph;
-        for &name in names {
+        let names = vars.iter().map(|&v| (false, v));
+        for (is_param, name) in names.chain(params.iter().map(|&p| (true, p))) {
             let Some(n) = self.names.find(name) else {
                 return false;
             };
-            let Some(v) = g.var_name.iter().position(|&x| x == n) else {
+            let (table, kind, slot) = if is_param {
+                let own = &self.ifaces[0].param_name;
+                (prows, RecordKind::Param, own.iter().position(|&x| x == n))
+            } else {
+                let v = g.var_name.iter().position(|&x| x == n);
+                (blocks, RecordKind::Var, v.map(|v| g.params as usize + v))
+            };
+            let Some(node) = slot.map(|k| k as u32) else {
                 return false;
             };
-            let Some(r) = (0..blocks.kind.len())
-                .find(|&r| blocks.kind[r] == RecordKind::Var && s.get(blocks.fields[r][0]) == name)
+            let Some(r) = (0..table.kind.len())
+                .find(|&r| table.kind[r] == kind && s.get(table.fields[r][0]) == name)
             else {
                 return false;
             };
-            let node = g.params + v as u32;
-            let cached = crate::iface::cached(blocks, r, s, doc);
+            let cached = crate::iface::cached(table, r, s, doc);
             let prog = g.prog[node as usize] as usize;
             let progs = if g.table[node as usize] == OWN {
                 &mut g.progs
             } else {
                 assert_eq!(
                     g.table[node as usize], g.own,
-                    "own var in the own interface"
+                    "own var or param in the own interface"
                 );
                 &mut self.ifaces[g.own as usize].progs
             };

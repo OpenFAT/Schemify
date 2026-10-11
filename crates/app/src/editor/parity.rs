@@ -658,7 +658,7 @@ impl Editor {
                 self.close_dialog();
                 self.session.decide_recovery(d, cmd == Cmd::Recover);
                 self.scene_dirty = true;
-                self.cell_key = None;
+                self.invalidate_cells();
             }
             _ => {
                 self.session.status = format!("{}: not available yet", cmd.name());
@@ -754,7 +754,7 @@ impl Editor {
         self.session.reindex(&path);
         self.symbols = scene::Symbols::default();
         self.symbols_key = None;
-        self.cell_key = None;
+        self.invalidate_cells();
         let new = match self.session.open_path(&path) {
             Ok(d) => d,
             Err(e) => {
@@ -1925,7 +1925,7 @@ impl Editor {
         self.session.reindex(&file);
         self.symbols = scene::Symbols::default();
         self.symbols_key = None;
-        self.cell_key = None;
+        self.invalidate_cells();
         // The replacement here: an instance of the new cell where the selection was.
         let Some(doc) = self.session.project.doc(h) else {
             return;

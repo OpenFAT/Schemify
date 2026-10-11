@@ -427,6 +427,77 @@ fn simulate_polls_a_fake_simulator_to_results_waves_and_op() {
     assert!(s2.ed.sim().stale, "{}", s2.ed.session.status);
 }
 
+/// A swept bench overlays its plot slot: one trace per finished job (each sweep point), the
+/// selected job's first; the fake's `v(out)` ends at R, so the traces are the jobs' own.
+#[test]
+fn plot_slots_overlay_every_sweep_point() {
+    let dir = fixture("rc", "overlay");
+    let tb = dir.join("tb.shbench");
+    let text = std::fs::read_to_string(&tb).unwrap();
+    let swept = text.replace(
+        "optimize fit\n",
+        "sweep rs\n  var R\n  values 1k 2.2k 3.3k\n\noptimize fit\n",
+    );
+    std::fs::write(&tb, swept).unwrap();
+    let ed = Editor::new(Options {
+        path: Some(tb),
+        seed: 7,
+        sim: Some(sh(FAKE)),
+        ..Options::default()
+    })
+    .expect("fixture opens");
+    let mut s = Session { ed, now: 1, dir };
+    s.frame(InputEvents::default());
+    s.key("s");
+    run_to_idle(&mut s);
+    let (_, jobs, _) = s.ed.sim().tables().unwrap();
+    assert_eq!(jobs.len(), 3, "{}", s.ed.session.status);
+    assert!((0..3).all(|j| jobs.state(j) == State::Done));
+    let w = s.ed.sim().plots[0].waves.as_ref().expect("a graph");
+    assert_eq!(w.trace_count(), 3, "one trace per sweep point");
+}
+
+/// Bench → mid → leaf: a docs page two levels below the bench shows its run (a run opens
+/// every cell it reaches); a cell outside the hierarchy does not.
+#[test]
+fn plot_slots_reach_cells_below_the_bench() {
+    const PAGE: &str = "prose 1aaaae\n  | ```plot\n  | v(out)\n  | ```\n";
+    let leaf = format!(
+        "schemify 1 shcomp\n  prefix x\n\npin a inout 0 0\npin b inout 0 60\n\nimpl sch schematic\n\ninst 1aaaaa ./res\n  at 0 30 R0\n  name R1\n  R 1k\n\nport 1aaaab 0 0 R0 a\nport 1aaaac 0 60 R0 b\n\n{PAGE}"
+    );
+    let mid = "schemify 1 shcomp\n  prefix x\n\npin a inout 0 0\npin b inout 0 60\n\nimpl sch schematic\n\ninst 2aaaaa ./leaf\n  at 0 0 R0\n  name X1\n\nport 2aaaab 0 0 R0 a\nport 2aaaac 0 60 R0 b\n";
+    let bench = "schemify 1 shbench\n\ninst 3aaaaa ./mid\n  at 0 0 R0\n  name X1\n\nlabel 3aaaab 0 0 R0 in\nlabel 3aaaac 0 60 R0 out\n\nvar R 3.3k\n\ncode tran spice\n  | V1 in 0 1\n  | .tran 1u 5m\n";
+    let dir = fixture("rc", "deep");
+    std::fs::write(dir.join("leaf.shcomp"), &leaf).unwrap();
+    std::fs::write(dir.join("other.shcomp"), leaf.replace("1aaaa", "4aaaa")).unwrap();
+    std::fs::write(dir.join("mid.shcomp"), mid).unwrap();
+    std::fs::write(dir.join("deep.shbench"), bench).unwrap();
+    let ed = Editor::new(Options {
+        path: Some(dir.join("deep.shbench")),
+        seed: 7,
+        sim: Some(sh(FAKE)),
+        ..Options::default()
+    })
+    .expect("fixture opens");
+    let mut s = Session { ed, now: 1, dir };
+    s.frame(InputEvents::default());
+    s.key("s");
+    run_to_idle(&mut s);
+    let (_, jobs, _) = s.ed.sim().tables().expect("a run");
+    assert_eq!(jobs.state(0), State::Done, "{}", s.ed.session.status);
+    let show = |s: &mut Session, file: &str| {
+        let d = s.ed.session.open_path(&s.dir.join(file)).unwrap();
+        s.ed.session
+            .open_tab(d, schemify_app::session::View::Schematic);
+        s.frame(InputEvents::default());
+    };
+    show(&mut s, "leaf.shcomp");
+    let plot = s.ed.sim().plots.first().expect("the leaf's slot is filled");
+    assert!(plot.waves.is_ok());
+    show(&mut s, "other.shcomp");
+    assert!(s.ed.sim().plots.is_empty(), "outside the bench's hierarchy");
+}
+
 /// Cancel kills the simulator; the run is idle at once and asks for no more ticks.
 #[test]
 fn cancel_stops_the_run() {

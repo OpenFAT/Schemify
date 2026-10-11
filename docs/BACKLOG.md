@@ -24,10 +24,9 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## docs page (D19–D21)
 
-- Plot slots show the selected job only (no per-sweep or per-corner overlay) and only for the bench's own page or a cell it instantiates directly.
-- D20 write-back covers vars only; own param defaults that call plugin functions keep their `cached` as written. Plugin functions return numbers/bools only (a string result needs an owned `Value`).
-- The cache amend replays the edit through undo (two extra journal records); a `doc` "extend last entry" edit would save them.
-- Values are kept for the active level's document; other open documents sync their caches when activated. A structural edit (instance insert/delete) rebuilds the cell state (136 ms at 100k objects when the cell has vars).
+- A structural edit (instance insert/delete) still rebuilds the cell state (136 ms at 100k objects when the cell has vars): left to the in-flight incremental-elab work (**elab**: per-net connectivity and checks, then instance blocks in the graph), which owns `CellState::recompute`.
+- Plot overlays: at most 16 jobs per slot, read from disk on each refresh (no per-job raw cache); cells below the bench are found among open documents (results reloaded at open reach the bench's direct children only, by stem).
+- D20 caches of parked (shown before, not active) documents are written when they are activated again.
 - `gmid-lut` characterization uses `spawn:ngspice`, not `run` requests: the ABI cannot (**abi**/**plugin**) run a bench the plugin just wrote (cells are indexed at project load) or hand back a job's raw file/directory (`RunDone` and `Results` carry scalar outputs; the LUT needs the (L, VDS, VGS) grid). Needs a "run this written bench" request and the job directory in `RunDone`.
 - Integration points still stubbed: symbols via elab, web OPFS.
 

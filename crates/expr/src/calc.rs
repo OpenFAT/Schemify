@@ -18,8 +18,8 @@ use num_complex::Complex64;
 use crate::compile::{Builtin, Mode, OpKind, Program};
 use crate::dmath;
 use crate::eval::{
-    Scratch, V, binary, call, call_plugin, fin, load_const, load_value, no_plugins, not_bool,
-    op_str, to_value, type_name, unary,
+    PluginValue, Scratch, V, binary, call, call_plugin, fin, load_const, load_value, no_plugins,
+    not_bool, op_str, to_value, type_name, unary,
 };
 use crate::{Code, Error, Span, Value};
 
@@ -144,7 +144,7 @@ impl Program {
     /// # Panics
     /// If the program is not [`Mode::Calc`], `inputs.len() != idents().len()`
     /// or `plot.signals.len() != signals().len()`.
-    pub fn eval_calc<'s, P>(
+    pub fn eval_calc<'s, P, R>(
         &self,
         inputs: &[Value<'_>],
         plot: &Plot<'_>,
@@ -152,7 +152,8 @@ impl Program {
         scratch: &'s mut Scratch,
     ) -> Result<CalcResult<'s>, Error>
     where
-        P: FnMut(u32, &[Value<'_>]) -> Result<Value<'static>, Error>,
+        P: FnMut(u32, &[Value<'_>]) -> Result<R, Error>,
+        R: PluginValue,
     {
         assert_eq!(
             self.mode,
@@ -265,7 +266,7 @@ fn check_plot(prog: &Program, plot: &Plot<'_>) -> Result<Vec<Range<u32>>, Error>
 // copied in); fine for one trace per result set. Reuse operand buffers if
 // calculator evaluation ever shows up in a profile.
 #[allow(clippy::too_many_arguments)]
-fn run<P>(
+fn run<P, R>(
     prog: &Program,
     start: u32,
     end: u32,
@@ -276,7 +277,8 @@ fn run<P>(
     cs: &mut CalcScratch,
 ) -> Result<CV, Error>
 where
-    P: FnMut(u32, &[Value<'_>]) -> Result<Value<'static>, Error>,
+    P: FnMut(u32, &[Value<'_>]) -> Result<R, Error>,
+    R: PluginValue,
 {
     assert!(
         start < end && end as usize <= prog.ops.len(),
@@ -429,11 +431,11 @@ where
                         .map(|a| if let CV::S(v) = a { *v } else { unreachable!() })
                         .collect();
                     let r = call_plugin(plugin, slot, &vs, strs);
-                    CV::S(r.and_then(|r| load_value(&r, strs)).map_err(at)?)
+                    CV::S(r.and_then(|r| load_value(&r.value(), strs)).map_err(at)?)
                 } else {
                     let r = elementwise(&args, &cs.axes, strs, |v, strs| {
                         let r = call_plugin(plugin, slot, v, strs)?;
-                        load_value(&r, strs)
+                        load_value(&r.value(), strs)
                     });
                     CV::C(r.map_err(at)?)
                 };

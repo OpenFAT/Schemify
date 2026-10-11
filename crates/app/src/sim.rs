@@ -53,6 +53,8 @@ pub const SUBMIT_PER_FRAME: u32 = 8;
 pub const TABLE_ROWS: usize = 64;
 /// Plot slots with data at once.
 pub const PLOTS_MAX: usize = 64;
+/// Jobs one plot slot overlays (sweep points, corners, samples: one trace each).
+pub const OVERLAY_JOBS: usize = 16;
 /// Plugin run requests waiting for another bench's run to finish.
 pub const QUEUE_MAX: usize = 256;
 /// Earlier runs of a bench listed in the results panel.
@@ -71,12 +73,12 @@ enum Kind {
     Loaded,
 }
 
-/// A docs-page plot slot's data: the expression and its trace over the selected job.
+/// A docs-page plot slot's data: the expression and its traces, one per job overlaid.
 #[derive(Debug)]
 pub struct Plot {
     /// Calculator expression of the fence.
     pub expr: String,
-    /// A one-pane viewer holding the trace (autoscaled); `Err` explains an empty slot.
+    /// A one-pane viewer holding the traces (autoscaled); `Err` explains an empty slot.
     pub waves: Result<Waves, String>,
 }
 
@@ -653,24 +655,45 @@ impl Sim {
         }
     }
 
-    /// Rebuilds the plot slots for `exprs` (the shown page's `plot` fences) over the selected
-    /// job: each a one-pane viewer with the trace added on the last dataset that evaluates
-    /// it, autoscaled. Kept when the expressions and the selection did not change.
+    /// Rebuilds the plot slots for `exprs` (the shown page's `plot` fences): each a one-pane
+    /// viewer with one trace per finished job of the run (sweep points, corners, Monte Carlo
+    /// samples; the selected job's first, at most [`OVERLAY_JOBS`]; an optimizer run shows
+    /// the selected job only), each on the last dataset of its job that evaluates the
+    /// expression, autoscaled. Kept when the expressions and the selection did not change.
+    ///
+    /// Cost: reads and parses the overlaid jobs' raw files (the selected one is cached).
     pub fn refresh_plots(&mut self, exprs: &[String]) {
         let same = self.plots.len() == exprs.len()
             && self.plots.iter().zip(exprs).all(|(p, e)| p.expr == *e);
         if same {
             return;
         }
-        let data: Option<Vec<RawPlot>> = self.datasets().map(<[RawPlot]>::to_vec);
+        let mut jobs: Vec<Vec<RawPlot>> = Vec::new();
+        jobs.extend(self.datasets().map(<[RawPlot]>::to_vec));
+        let overlay = !jobs.is_empty() && !matches!(self.kind, Kind::Optimize(..));
+        let others: Vec<u32> = match self.tables() {
+            Some((_, t, _)) if overlay => (0..t.len())
+                .filter(|&j| j != self.selected && t.state(j) == State::Done)
+                .take(OVERLAY_JOBS - 1)
+                .collect(),
+            _ => Vec::new(),
+        };
+        for j in others {
+            let parsed = self.job_raw(j).and_then(|p| platform::read(&p).ok());
+            if let Some(d) = parsed.and_then(|b| parse_raw(&b).ok()) {
+                jobs.push(group_datasets(d));
+            }
+        }
+        assert!(jobs.len() <= OVERLAY_JOBS);
         self.plots = exprs
             .iter()
             .take(PLOTS_MAX)
             .map(|e| Plot {
                 expr: e.clone(),
-                waves: match &data {
-                    Some(d) => plot(d, e),
-                    None => Err("no results yet: run the bench to fill this graph".into()),
+                waves: if jobs.is_empty() {
+                    Err("no results yet: run the bench to fill this graph".into())
+                } else {
+                    plot(&jobs, e)
                 },
             })
             .collect();
@@ -989,28 +1012,51 @@ fn history(root: &Path, bench: &str) -> Vec<PathBuf> {
     dirs.into_iter().take(HISTORY_MAX).map(|(_, d)| d).collect()
 }
 
-/// A one-pane viewer over `data` showing `expr` on the last dataset that evaluates it.
-fn plot(data: &[RawPlot], expr: &str) -> Result<Waves, String> {
+/// A one-pane viewer over the datasets of `jobs` (each a raw file's grouped datasets, the
+/// first the selected job's) showing `expr` once per job, on the last dataset of that job
+/// that evaluates it. A scalar answer of the first job explains an empty slot instead.
+fn plot(jobs: &[Vec<RawPlot>], expr: &str) -> Result<Waves, String> {
+    let mut data: Vec<RawPlot> = Vec::new();
+    let mut ranges: Vec<std::ops::Range<usize>> = Vec::with_capacity(jobs.len());
+    for job in jobs {
+        // The viewer's cap (its dataset indices are u8).
+        if data.len() + job.len() > schemify_wave::MAX_DATASETS {
+            break;
+        }
+        ranges.push(data.len()..data.len() + job.len());
+        data.extend(job.iter().cloned());
+    }
     let mut last = String::from("no dataset");
     // A refused request changes nothing, so one viewer serves every attempt.
-    let mut w = Waves::new(data.to_vec());
-    for d in (0..data.len()).rev() {
-        let req = WaveRequest::AddTrace {
-            src: expr.to_owned(),
-            dataset: d as u8,
-            pane: 0,
-        };
-        match w.apply(&req) {
-            Ok(schemify_wave::Applied::Trace(_)) => {
-                let _ = w.apply(&WaveRequest::Autoscale);
-                return Ok(w);
+    let mut w = Waves::new(data);
+    let mut traces = 0usize;
+    for (k, range) in ranges.into_iter().enumerate() {
+        for d in range.rev() {
+            let req = WaveRequest::AddTrace {
+                src: expr.to_owned(),
+                dataset: d as u8,
+                pane: 0,
+            };
+            match w.apply(&req) {
+                Ok(schemify_wave::Applied::Trace(_)) => {
+                    traces += 1;
+                    break;
+                }
+                Ok(schemify_wave::Applied::Value(v)) if k == 0 => {
+                    return Err(format!("{expr} = {v}"));
+                }
+                Ok(schemify_wave::Applied::Value(_)) => break,
+                Ok(schemify_wave::Applied::Done) => {}
+                Err(e) => last = e.to_string(),
             }
-            Ok(schemify_wave::Applied::Value(v)) => return Err(format!("{expr} = {v}")),
-            Ok(schemify_wave::Applied::Done) => {}
-            Err(e) => last = e.to_string(),
         }
     }
-    Err(format!("{expr}: {last}"))
+    if traces == 0 {
+        return Err(format!("{expr}: {last}"));
+    }
+    let _ = w.apply(&WaveRequest::Autoscale);
+    debug_assert_eq!(w.trace_count(), traces);
+    Ok(w)
 }
 
 /// One OP mark from raw vector `name` = `x`: `v(net)` (or a bare node name) on the net,
