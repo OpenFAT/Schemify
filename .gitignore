@@ -1,5 +1,7 @@
 /target
 /tests/corpus/.cache/
-/.schemify/
+.schemify/
 *.raw
 /.claude/worktrees/
+result
+result-*
