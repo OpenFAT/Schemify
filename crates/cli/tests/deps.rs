@@ -70,7 +70,10 @@ fn the_core_links_no_editor_crate() {
         .lines()
         .filter_map(|l| l.split_whitespace().next())
         .collect();
-    assert!(names.contains(&"schemify-cli"), "{names:?}");
+    assert!(
+        names.contains(&"schemify-cli") && names.contains(&"mlua"),
+        "{names:?}"
+    );
     let bad: Vec<&&str> = names.iter().filter(|n| EDITOR_ONLY.contains(n)).collect();
     assert!(bad.is_empty(), "the core depends on editor crates: {bad:?}");
 }

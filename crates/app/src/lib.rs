@@ -1,5 +1,5 @@
 //! Schemify's editor (binary `schemify-gui`, D39): the `frame` spine over the core's spines.
-//! The headless CLI, project loading and the OS boundary live in
+//! The headless CLI, project loading, the OS boundary and the package manager live in
 //! `schemify-cli` (binary `schemify`) and are re-exported here as [`libs`], [`platform`] and
 //! [`spines`].
 //!
@@ -12,7 +12,7 @@
 //! - [`geometry`] — grid symmetries applied to records;
 //! - [`session`] — project load, open documents, tabs and hierarchy, saves and journals;
 //! - [`shell`] — UI composition (core base ⊕ plugins ⊕ app state) and the canvas palette;
-//! - [`plugins`] — plugin host glue (bundled default UI, D6);
+//! - [`plugins`] — plugin host glue (bundled default UI, D6; user packages, D35);
 //! - [`waves`] — the waveform dock (D23) and its cross-probe entry;
 //! - [`checks`] — the live violation overlay, the checks panel and net highlight (D13);
 //! - [`sim`] — the run spine in the editor: non-blocking runs, results table, plot slots,

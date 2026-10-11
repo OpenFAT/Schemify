@@ -19,8 +19,9 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-# The core's spines, project loading and OS boundary.
+# The core's spines, project loading, OS boundary and package manager.
 schemify-cli.workspace = true
+schemify-config.workspace = true
 schemify-format.workspace = true
 schemify-expr.workspace = true
 schemify-doc.workspace = true

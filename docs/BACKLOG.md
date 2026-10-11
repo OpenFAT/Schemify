@@ -18,8 +18,14 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - **ui**: text fields commit only on Enter (the app copies typed text every frame).
 - **plugins/build.sh**: rebuilding `hello`/`gmid_stub` is not byte-reproducible.
 - Editor gaps vs xschem: stretch/kissing moves, polygon/arc/circle drawing, schematic graphics (format has none), context menu, persistent wire mode, snap cursor/crosshair, search, Save As, rotated texts, scrolling lists (24 rows max), system clipboard, crash-recovery prompt, plugin I/O capabilities fetch/clipboard in the app.
-- No user-config reader: the `sim ngspice` command line (format spec §4) is not read; the CLI and the editor use `ngspice -b -r {raw} {netlist}` (tests pass `editor::Options::sim`).
 - Plugin `eval` requests still answer `E_GONE` (elab evaluator not wired to the host).
+
+## user config and packages (config spec)
+
+- **config**: no Lua on the web: C Lua 5.4 (mlua vendored) has no `wasm32-unknown-unknown` build, so the web runs without `init.lua`. Upgrade: a pure-Rust Lua 5.4 (piccolo, once it covers `error(msg, level)`, `tonumber`, `load` semantics) or C Lua on a wasi-libc shim; OPFS `/config` then holds `init.lua`.
+- **config**: a single C library call (a pattern match over a huge string) runs between budget checks; only the memory cap bounds it.
+- **app**: the editor applies `sim ngspice` only (openvaf/iverilog paths reach the CLI's runner through `spines::tools`, not the editor's `Sim`); no "Packages" status view (use `schemify pack status`).
+- **cli/pack**: `url` packages are one `.wasm` file (no archives); `pack` has no parallel fetches.
 
 ## docs page (D19–D21)
 

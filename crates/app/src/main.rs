@@ -1,18 +1,27 @@
 //! `schemify-gui`: the editor (D39), started directly or by `schemify edit`.
 //!
-//! `schemify-gui [edit] [<project-dir>|<cell-file>] [--no-default-ui]`
+//! `schemify-gui [--clean | -u <init.lua>] [edit] [<project-dir>|<cell-file>] [--no-default-ui]`
 //! Exit codes: 0 closed normally, 2 usage or startup errors.
 
 use std::process::ExitCode;
 
+use schemify_config::Startup;
+
 const USAGE: &str = "\
-usage: schemify-gui [<project-dir>|<cell-file>] [--no-default-ui]
+usage: schemify-gui [--clean | -u <init.lua>] [<project-dir>|<cell-file>] [--no-default-ui]
 ";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let (config, first) = match Startup::parse(&args) {
+        Ok(s) => s,
+        Err(e) => {
+            eprint!("schemify-gui: {e}\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
     // `cargo run -p schemify-app -- edit <path>` keeps working: the word is optional.
-    let rest: Vec<&String> = args
+    let rest: Vec<&String> = args[first..]
         .iter()
         .enumerate()
         .filter(|&(i, a)| !(i == 0 && a == "edit"))
@@ -31,6 +40,7 @@ fn main() -> ExitCode {
         no_default_ui,
         path: paths.first().map(|p| std::path::PathBuf::from(p.as_str())),
         seed: schemify_app::platform::seed(),
+        config,
         ..schemify_app::editor::Options::default()
     };
     match schemify_app::editor::run(opts) {

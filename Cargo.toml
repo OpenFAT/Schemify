@@ -30,12 +30,15 @@ schemify-devicereader = { path = "tools/devicereader" }
 schemify-abi = { path = "crates/abi" }
 schemify-plugin = { path = "crates/plugin" }
 schemify-spicecmp = { path = "tools/spicecmp" }
+schemify-config = { path = "crates/config" }
 schemify-cli = { path = "crates/cli" }
 # third-party (justify additions in the PR, AGENTS.md rule 7)
 # Dev-only: the differential oracle of expr's own FFT (D39 size cut).
 rustfft = "6"
 num-complex = "0.4"
 libm = "0.2"
+# User config (D9 amended): Lua 5.4 compiled from vendored C sources; only `config` may use it.
+mlua = { version = "0.12", features = ["lua54", "vendored"] }
 thiserror = "2"
 proptest = "1"
 # D3: the one plugin engine (native + web); only `plugin` may depend on it (AGENTS rule 7).
@@ -75,10 +78,13 @@ debug = 1
 # (schemify-cli, schemify-app) take no override: cargo then drops `CARGO_PROFILE_RELEASE_STRIP`
 # for their link (cargo 1.95), and the release env would ship symbols.
 [profile.release.package]
-# Core: importer, runner.
+# Core: importer, runner, user config (Lua C sources compile at -Os too).
 schemify-import = { opt-level = "z" }
 schemify-devicereader = { opt-level = "z" }
 schemify-run = { opt-level = "z" }
+schemify-config = { opt-level = "z" }
+mlua = { opt-level = "z" }
+mlua-sys = { opt-level = "z" }
 # Editor: accessibility over D-Bus (kept: accessibility is not optional) and its async runtime.
 accesskit = { opt-level = "z" }
 accesskit_atspi_common = { opt-level = "z" }

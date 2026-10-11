@@ -200,6 +200,29 @@ pub fn open_file(file: &Path, seed: u64) -> Result<(Opened, Vec<String>), OpenEr
     Ok((opened, loaded.notes))
 }
 
+/// The external programs of run spec §5 from the user config's `schemify.sim` rows; the
+/// defaults for rows it does not set (this fixes "no user-config reader": documents never
+/// name a program, D7).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn tools(user: &schemify_config::Table) -> schemify_run::Tools {
+    use schemify_config::SimKind;
+    let mut t = schemify_run::Tools::default();
+    if let Some(s) = user.sim(SimKind::Ngspice) {
+        t.sim = schemify_run::SimCommand {
+            path: s.path.clone(),
+            args: s.args.clone(),
+        };
+    }
+    if let Some(s) = user.sim(SimKind::Openvaf) {
+        t.openvaf.clone_from(&s.path);
+    }
+    if let Some(s) = user.sim(SimKind::Iverilog) {
+        t.iverilog.clone_from(&s.path);
+    }
+    assert!(!t.sim.path.is_empty());
+    t
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::{BENCH, Run, start_run};
 

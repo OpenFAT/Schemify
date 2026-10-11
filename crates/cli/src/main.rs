@@ -1,17 +1,18 @@
-//! `schemify`: the headless core (D39): the CLI entry point and the spines. `schemify edit`
-//! starts the editor binary, `schemify-gui`.
+//! `schemify`: the headless core (D39): CLI entry point, the user config and the package
+//! manager. `schemify edit` starts the editor binary, `schemify-gui`.
 //!
 //! Exit codes (D27): 0 success, 1 design errors (violations, merge conflicts,
-//! non-canonical files under `--check`), 2 usage or I/O errors.
+//! non-canonical files under `--check`, failed packages), 2 usage or I/O errors.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use schemify_cli::spines::{OpenError, Opened};
+use schemify_config::{Config, Level, Request, Startup};
 use schemify_format as format;
 
 const USAGE: &str = "\
-usage: schemify <command> [args]
+usage: schemify [--clean | -u <init.lua>] <command> [args]
 
 commands:
   edit [<project-dir>|<cell-file>] [--no-default-ui]
@@ -29,6 +30,10 @@ commands:
                                        report violations (exit 1 on errors)
   run <bench> [--config C]... [--corner K]... [--sweep S]... [--mc M] [--set VAR=EXPR]...
           [--jobs N]                   simulate a .shbench and print outputs and specs
+  pack sync|update|restore|clean|status
+                                       manage the user packages of init.lua
+
+--clean skips init.lua and user packages; -u runs another init file (docs/spec/config.md).
 ";
 
 const OK: u8 = 0;
@@ -37,22 +42,35 @@ const USAGE_ERROR: u8 = 2;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let Some(command) = args.first() else {
+    let (start, first) = match Startup::parse(&args) {
+        Ok(s) => s,
+        Err(e) => {
+            eprint!("schemify: {e}\n{USAGE}");
+            return ExitCode::from(USAGE_ERROR);
+        }
+    };
+    let Some(command) = args.get(first) else {
         eprint!("{USAGE}");
         return ExitCode::from(USAGE_ERROR);
     };
-    let rest = &args[1..];
+    let rest = &args[first + 1..];
+    if command == "edit" {
+        // The editor reads the config itself (config spec §2): don't run it twice.
+        return ExitCode::from(edit(&start, rest));
+    }
+    let (config, startup) = Config::load(&start);
+    report_requests(&startup);
     // Spine selection is the only branch on which work happens (codebase-clean-code rule 1).
     let code = match command.as_str() {
         "fmt" => fmt(rest),
         "merge-driver" => merge_driver(rest),
         "diff" => diff(rest),
-        "edit" => edit(rest),
         "git-setup" => git_setup(rest),
         "import" => schemify_devicereader::run(rest),
         "netlist" => netlist(rest),
         "check" => check(rest),
-        "run" => run(rest),
+        "run" => run(&config, rest),
+        "pack" => schemify_cli::pack::main(&config, rest),
         "-h" | "--help" | "help" => {
             print!("{USAGE}");
             OK
@@ -65,16 +83,34 @@ fn main() -> ExitCode {
     ExitCode::from(code)
 }
 
-/// `edit`: runs `schemify-gui` (next to this binary, else on `PATH`) with the remaining
-/// arguments; returns its exit code.
-fn edit(args: &[String]) -> u8 {
+/// Prints the user config's notifications and errors on stderr. Queued commands are for the
+/// editor: the core has no command table, so it ignores them (config spec §3).
+fn report_requests(out: &[Request]) {
+    for r in out {
+        if let Request::Notify { level, text } = r {
+            let tag = match level {
+                Level::Error => "error",
+                Level::Warn => "warning",
+                Level::Info => "note",
+            };
+            eprintln!("{tag}: {text}");
+        }
+    }
+}
+
+/// `edit`: runs `schemify-gui` (next to this binary, else on `PATH`) with the startup flags
+/// and the remaining arguments; returns its exit code.
+fn edit(start: &Startup, args: &[String]) -> u8 {
     let name = format!("schemify-gui{}", std::env::consts::EXE_SUFFIX);
     let sibling = std::env::current_exe()
         .ok()
         .map(|p| p.with_file_name(&name))
         .filter(|p| p.is_file());
     let program = sibling.unwrap_or_else(|| PathBuf::from(&name));
-    let status = std::process::Command::new(&program).args(args).status();
+    let status = std::process::Command::new(&program)
+        .args(start.flags())
+        .args(args)
+        .status();
     match status {
         Ok(s) => s
             .code()
@@ -460,7 +496,7 @@ fn check(args: &[String]) -> u8 {
 /// `run`: plan → expand → design hash (gate) → per job prepare + submit → wait →
 /// outputs and specs (run spine, native runner; `spines::start_run`).
 #[cfg(not(target_arch = "wasm32"))]
-fn run(args: &[String]) -> u8 {
+fn run(config: &Config, args: &[String]) -> u8 {
     use schemify_run as run;
     let Some(a) = design_args(args) else {
         eprint!("{USAGE}");
@@ -497,6 +533,7 @@ fn run(args: &[String]) -> u8 {
         &mut schemify_elab::no_funcs,
         |digest| {
             let mut cfg = run::RunnerConfig::new(&root, digest);
+            cfg.tools = schemify_cli::spines::tools(config.table());
             if let Some(n) = a.jobs {
                 cfg.workers = n;
             }
@@ -533,7 +570,7 @@ fn run(args: &[String]) -> u8 {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn run(_: &[String]) -> u8 {
+fn run(_: &Config, _: &[String]) -> u8 {
     eprintln!("schemify run: no native simulator on the web (D16: use a runner plugin)");
     USAGE_ERROR
 }

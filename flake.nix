@@ -76,7 +76,7 @@
           # Tracked files only (git), so the gitignored corpus cache never enters the store.
           src = self;
           cargoLock.lockFile = ./Cargo.lock;
-          # D39: the headless core `schemify` (the CLI), the editor
+          # D39: the headless core `schemify` (CLI, config, package manager), the editor
           # `schemify-gui` (`schemify edit` runs it) and the standalone importer; plugins are
           # prebuilt wasm assets.
           cargoBuildFlags = [
@@ -107,11 +107,11 @@
           # `cargo test --workspace` in the dev shell (CI does).
           doCheck = false;
           nativeBuildInputs = [ pkgs.makeWrapper ];
-          # Only the editor gets the GUI libraries; both find the simulators. The user's PATH
-          # comes first.
+          # Only the editor gets the GUI libraries. Both find the simulators; the core also runs
+          # git and curl for `schemify pack` (config spec §5). The user's PATH comes first.
           postInstall = ''
             wrapProgram $out/bin/schemify \
-              --suffix PATH : ${pkgs.lib.makeBinPath (simulators pkgs)}
+              --suffix PATH : ${pkgs.lib.makeBinPath ((simulators pkgs) ++ [ pkgs.git pkgs.curl ])}
             wrapProgram $out/bin/schemify-gui \
               ${pkgs.lib.optionalString pkgs.stdenv.isLinux "--prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (runtimeLibs pkgs)}"} \
               --suffix PATH : ${pkgs.lib.makeBinPath (simulators pkgs)}

@@ -22,8 +22,9 @@ Crate = owner. A crate boundary exists only where it enforces single ownership (
 | `plugin` | `plugins`, `grants`, `request_queues`, `health` | snapshots of all tables | `wasmi` | Host: load, capability enforcement (D7), snapshot export, request intake, last-wins ordering + health report (D8). |
 | `ui` | `ui_nodes`, `ui_styles`, `keymap`, `ui_layout` (frame) | `ui_edit_requests`, input events | `taffy`, `parley`, `accesskit`, `ratex-*` | UI-as-data (D4, D6). Widget kinds (incl. `math`, `graph`, `prose` = markdown + math wrapped to its width, multi-line `text_area`, scrolling `scroll`) are a closed enum. Input routing → `command_requests`. |
 | `render` | `scene` (frame), `camera` | doc, elab, ui_layout, results | `vello`, `wgpu` | The only crate touching the GPU. Draws canvas, UI, graphs, visual diff and annotations (D5). |
-| `cli` | — | everything headless | — | The headless core, binary `schemify` (D39 ≤ 2 MB): the CLI spines, `libs` (load spine), `platform` (the OS boundary), `spines` (netlist/run steps shared with the editor). `schemify edit` runs `schemify-gui`. Links no GPU/window/text/accessibility/LaTeX crate (`tests/deps.rs`). |
-| `app` | `commands` (registry), `session` (project, open documents, tabs + their docs toggle, hierarchy stacks), `selection`, `tool_state`, `canvas_prims` + `objects` (the active document drawn, derived), `symbols` (cache), clipboard, dialog state, docs page state (`docs::Page`), net highlight + decor prims (`checks`), the run in flight (`sim::Sim`: run queue, plot slots; jobs/results stay `run`'s), the editor's `elab::Annotations` instance | everything | (`winit` through `render::run`) | The editor, binary `schemify-gui` (D39 ≤ 10 MB): the `frame` spine over `cli`'s spines, `libs` and `platform` (re-exported). JSON-RPC over the command table later (D27). |
+| `config` | the user-config table (options, keymaps, sims, package specs, hooks) | `init.lua` + `lua/` modules | `mlua` (vendored Lua 5.4, native only) | D9/D35 as amended: `stdpath` directories, the sandboxed Lua state (instruction budget, memory cap, no `io`/`os`/`debug`), the `schemify.*` API ([config.md](docs/spec/config.md)). Only this crate touches Lua; callers read the table and drain request lists. No Lua on the web yet. |
+| `cli` | user packages on disk (`<data>/pack`, `schemify-pack.lock`) | everything headless | — | The headless core, binary `schemify` (D39 ≤ 2 MB): the CLI spines, `libs` (load spine), `platform` (the OS boundary), `spines` (netlist/run steps shared with the editor), `pack` (package manager: `git`/`curl` as child processes, sha256 + lockfile rows from `doc`). `schemify edit` runs `schemify-gui`. Links no GPU/window/text/accessibility/LaTeX crate (`tests/deps.rs`). |
+| `app` | `commands` (registry), `session` (project, open documents, tabs + their docs toggle, hierarchy stacks), `selection`, `tool_state`, `canvas_prims` + `objects` (the active document drawn, derived), `symbols` (cache), clipboard, dialog state, docs page state (`docs::Page`), net highlight + decor prims (`checks`), the run in flight (`sim::Sim`: run queue, plot slots; jobs/results stay `run`'s), the editor's `elab::Annotations` instance | everything | (`winit` through `render::run`) | The editor, binary `schemify-gui` (D39 ≤ 10 MB): the `frame` spine over `cli`'s spines, `libs` and `platform` (re-exported). User packages load through the plugin host between the default UI and the project's plugins; the user's Lua keymaps and hooks run through it (`plugins::Host`). JSON-RPC over the command table later (D27). |
 
 Outside `crates/`: `tools/devicereader` (thin bin over `import`), `tools/fmtbench` (format benchmark), `plugins/default-ui` (D6), `plugins/gmid-lut` (D20/D26: `gmid.*` expression functions over gm/Id lookup tables, characterized through `spawn:ngspice`; loaded by a project manifest, not embedded), `plugins/cktimg` (D26 as amended 2026-10-11: SPICE → Schemify import; a thin safe wrapper over cktImg's C ABI (`ffi` module, the crate's only `unsafe`) plus the glue that maps devices onto `core` cells, tells cktImg their pin geometry and writes its placement as records; its `build.rs` compiles `extern/cktimg` with Zig 0.17), `extern/cktimg` (git submodule, MIT: cktImg, the user's SPICE → placed-schematic library, Zig with a C ABI; never edited here — changes go upstream as `docs/upstream/cktimg-*.patch`).
 
@@ -41,9 +42,9 @@ import  netlist   run
            app
 ```
 
-`ui` and `render` also depend on `wave` (the waves window and its panes); `wave` depends on `expr`. `cli` depends on `import netlist run` (with `doc elab expr format`); `app` depends on `cli`.
+`ui` and `render` also depend on `wave` (the waves window and its panes); `wave` depends on `expr`. `cli` depends on `import netlist run config` (with `doc elab expr format`); `app` depends on `cli`; `config` is a leaf.
 
-Two binaries (D39 as amended): the core `schemify` = `cli` over `format expr doc elab netlist import run`; the editor `schemify-gui` = `app`, which adds `abi plugin ui render` on top of `cli`.
+Two binaries (D39 as amended): the core `schemify` = `cli` over `format expr doc elab netlist import run config`; the editor `schemify-gui` = `app`, which adds `abi plugin ui render` on top of `cli`.
 
 ## Spines
 
@@ -129,7 +130,7 @@ Handles are `u32` index + `u32` generation; files store ids, never handles (D9).
 - Expression evaluation is pure and total: no IO, bounded steps, deterministic.
 - Same inputs → byte-identical saves and netlists on all four platforms (D32, D37).
 - Plugins never hold a handle across deliveries without a generation check; a stale handle is a declared error, never a crash.
-- Only `render` talks to the GPU; only `cli` (`platform`) and `app` talk to the OS.
+- Only `render` talks to the GPU; only `cli` (`platform`, `pack`) and `app` talk to the OS; only `config` touches the Lua state.
 
 ## Unifying abstractions
 

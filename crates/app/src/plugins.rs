@@ -2,7 +2,9 @@
 //! manifest's local plugins in configured order (D8), fills snapshot tables from `doc`,
 //! `elab` and `run`, runs `plugin::deliver`, and drains the request queues to their owners
 //! (edits to `doc`, run requests to the editor's run queue, I/O to `platform`, logs to the
-//! status line).
+//! status line). User packages (D35, config spec §5) load between the default UI and the
+//! project's plugins; lazy ones wait for their command or event. The user config's Lua
+//! keymaps and hooks run here too, so their requests join the plugins' (config spec §6).
 //!
 //! I/O is inverted and never blocks the frame (plugin-abi §5): file reads and writes complete
 //! within the delivery, a `spawn` runs on a worker ([`platform::spawn_start`]) and its
@@ -20,6 +22,8 @@ use schemify_plugin::{
 };
 
 use crate::platform::{self, Spawned};
+use schemify_cli::pack::{self, Installed};
+use schemify_config::{Config, Request, Startup};
 
 /// Hex digits of a plugin content hash in a D20 `cached <value> <hash>` attribute: the
 /// first 8 bytes of the module's sha256 (change detection, not authentication).
@@ -61,6 +65,16 @@ pub struct Host {
     children: Vec<(PluginId, u32, Spawned)>,
     /// Pending timers: (due, in the editor's monotonic ms; plugin; timer id).
     timers: Vec<(u64, PluginId, u32)>,
+    /// The user config (owner: `schemify_config`); its Lua runs only through this host.
+    user: Config,
+    /// User packages waiting for their first command or event (config spec §5 `lazy`).
+    lazy: Vec<Installed>,
+    /// Commands the user config queued, for the next delivery.
+    user_cmds: Vec<(String, String)>,
+    /// User config notifications and errors, for the next delivery.
+    user_logs: Vec<String>,
+    /// The user's `load` hooks ran.
+    user_ready: bool,
 }
 
 impl std::fmt::Debug for Host {
@@ -83,21 +97,47 @@ pub struct Delivered {
     pub state_changed: bool,
     /// Plugin `run` requests (plugin-abi §7) for the editor's run queue.
     pub runs: Vec<RunRequest>,
+    /// Commands the user config queued (`schemify.cmd`): (name, args), to dispatch in order.
+    pub commands: Vec<(String, String)>,
 }
 
 impl Host {
-    /// Loads the bundled default UI (unless `no_default_ui`) and then every manifest plugin
-    /// with a `path` source (a `.wasm` file, or a directory holding `<name>.wasm`), granting
-    /// what the manifest declares. Load failures are returned as messages and recorded in
-    /// the plugin health report.
-    pub fn new(project: &Project, root: &Path, no_default_ui: bool) -> (Host, Vec<String>) {
+    /// Runs the user config `startup` names, then loads, in composition order (config spec
+    /// §6): the bundled default UI (unless `no_default_ui`), the user's eager packages, and
+    /// every manifest plugin with a `path` source (a `.wasm` file, or a directory holding
+    /// `<name>.wasm`), granting what the manifest declares. Load failures and config errors
+    /// are returned as messages; plugin failures are also in the health report.
+    pub fn new(
+        project: &Project,
+        root: &Path,
+        no_default_ui: bool,
+        startup: &Startup,
+    ) -> (Host, Vec<String>) {
         let mut plugins = Plugins::new();
         let mut notes = Vec::new();
         let mut hashes = Vec::new();
+        let (user, startup_out) = Config::load(startup);
         if !no_default_ui {
             match plugins.load("default-ui", DEFAULT_UI_WASM, &[], FUEL_DEFAULT) {
                 Ok(id) => hashes.push((id, content_hash(DEFAULT_UI_WASM))),
                 Err(c) => notes.push(format!("default-ui: {c:?}")),
+            }
+        }
+        let mut lazy = Vec::new();
+        if !user.table().packs.is_empty() {
+            match pack::Paths::of(&user) {
+                Ok(paths) => {
+                    let (found, pack_notes) = pack::installed(user.table(), &paths);
+                    notes.extend(pack_notes);
+                    for p in found {
+                        if p.lazy_cmd.is_empty() && p.lazy_event.is_empty() {
+                            load_installed(&mut plugins, &mut hashes, &mut notes, &p);
+                        } else {
+                            lazy.push(p);
+                        }
+                    }
+                }
+                Err(e) => notes.push(format!("user packages: {e}")),
             }
         }
         for rec in project.plugins() {
@@ -145,9 +185,122 @@ impl Host {
             commanded: false,
             children: Vec::new(),
             timers: Vec::new(),
+            user,
+            lazy,
+            user_cmds: Vec::new(),
+            user_logs: Vec::new(),
+            user_ready: false,
         };
+        let mut host = host;
+        // Startup errors go out with the load notes (all of them reach the status line).
+        for r in startup_out {
+            match r {
+                Request::Command { name, args } => host.user_cmds.push((name, args)),
+                Request::Notify { text, .. } => notes.push(text),
+            }
+        }
         assert_eq!(host.hashes.len(), host.plugins.ids().len());
         (host, notes)
+    }
+
+    /// The user-config table (options, keymaps, sims, packages, hooks).
+    pub fn user(&self) -> &schemify_config::Table {
+        self.user.table()
+    }
+
+    /// Runs a command nobody in the command table owns, if the user config or a lazy package
+    /// does: a Lua keymap function (`user.lua.<id>`) runs now; a lazy package listing `name`
+    /// loads and gets the command as `Event::Command`. Returns whether it was handled.
+    pub fn user_command(&mut self, name: &str, args: &str) -> bool {
+        if let Some(f) = schemify_config::fn_of_command(name) {
+            let keys = self.user.table().keymaps.clone();
+            let out = self.user.call(f);
+            self.absorb(out, &keys);
+            return true;
+        }
+        let Some(i) = self
+            .lazy
+            .iter()
+            .position(|p| p.lazy_cmd.iter().any(|c| c == name))
+        else {
+            return false;
+        };
+        let p = self.lazy.remove(i);
+        let mut notes = Vec::new();
+        match load_installed(&mut self.plugins, &mut self.hashes, &mut notes, &p) {
+            Some(id) => {
+                let ev = Event::Command { name, args };
+                if let Err(e) = self.push(Some(id), &ev) {
+                    notes.push(e);
+                }
+            }
+            None => notes.push(format!("{name}: its package did not load")),
+        }
+        self.user_logs.extend(notes);
+        assert!(self.lazy.len() < schemify_config::PACKS_MAX);
+        true
+    }
+
+    /// Queues the requests of a user-config call; recomposes the UI when the call changed the
+    /// keymaps (`keys` is the table before it; a function may call `schemify.keymap.set`).
+    fn absorb(&mut self, out: Vec<Request>, keys: &schemify_config::Keymaps) {
+        for r in out {
+            match r {
+                Request::Command { name, args } => self.user_cmds.push((name, args)),
+                Request::Notify { text, .. } => self.user_logs.push(text),
+            }
+        }
+        if *keys != self.user.table().keymaps {
+            self.seen_epoch = None;
+        }
+    }
+
+    /// The user side of an editor event: loads the lazy packages that wait for it, then runs
+    /// the user's hooks.
+    fn user_event(&mut self, ev: &Event<'_>) {
+        let (event, fields): (schemify_config::Event, Vec<(&str, i64)>) = match *ev {
+            Event::DocOpened { doc } => {
+                (schemify_config::Event::DocOpened, vec![("doc", doc.into())])
+            }
+            Event::DocClosed { doc } => {
+                (schemify_config::Event::DocClosed, vec![("doc", doc.into())])
+            }
+            Event::DocChanged { doc, epoch } => (
+                schemify_config::Event::DocChanged,
+                vec![("doc", doc.into()), ("epoch", epoch.into())],
+            ),
+            Event::SelectionChanged => (schemify_config::Event::SelectionChanged, Vec::new()),
+            Event::Saved { doc } => (schemify_config::Event::Saved, vec![("doc", doc.into())]),
+            Event::RunDone { job } => (schemify_config::Event::RunDone, vec![("job", job.into())]),
+            _ => return,
+        };
+        self.wake_lazy(event);
+        if self.user.table().hooks.iter().any(|h| h.0 == event) {
+            let keys = self.user.table().keymaps.clone();
+            let out = self.user.fire(event, &fields);
+            self.absorb(out, &keys);
+        }
+    }
+
+    /// Loads every lazy package waiting for `event` (its `Load` is delivered before the
+    /// event that woke it, plugin-abi §6).
+    fn wake_lazy(&mut self, event: schemify_config::Event) {
+        let mut i = 0;
+        while i < self.lazy.len() {
+            if !self.lazy[i].lazy_event.contains(&event) {
+                i += 1;
+                continue;
+            }
+            let p = self.lazy.remove(i);
+            let mut notes = Vec::new();
+            load_installed(&mut self.plugins, &mut self.hashes, &mut notes, &p);
+            self.user_logs.extend(notes);
+        }
+    }
+
+    /// Whether a user package is still waiting to load (tests, status).
+    pub fn is_lazy(&self, name: &str) -> bool {
+        self.lazy.iter().any(|p| p.name == name)
     }
 
     /// The D20 function registry (`elab::Funcs`): calls `ns.f` through the composed
@@ -236,14 +389,22 @@ impl Host {
     /// Queues an event (`None` = broadcast). A full table drops it with a note.
     pub fn push(&mut self, target: Option<PluginId>, ev: &Event<'_>) -> Result<(), String> {
         self.commanded |= matches!(ev, Event::Command { .. });
+        if target.is_none() {
+            self.user_event(ev);
+        }
         self.events
             .push(target, ev)
             .map_err(|c| format!("plugin event dropped: {c:?}"))
     }
 
-    /// Returns whether a delivery has work (queued events or host-originated ones).
+    /// Returns whether a delivery has work (queued events or host-originated ones, user
+    /// config requests).
     pub fn has_work(&self) -> bool {
-        !self.events.is_empty() || self.plugins.has_pending()
+        !self.events.is_empty()
+            || self.plugins.has_pending()
+            || !self.user_ready
+            || !self.user_cmds.is_empty()
+            || !self.user_logs.is_empty()
     }
 
     /// Queues the completions that arrived since the last call: `IoDone` for every child
@@ -297,6 +458,7 @@ impl Host {
     /// Queues `RunDone { job }` for `plugin` (its `run` request's job finished or failed).
     pub fn run_done(&mut self, plugin: PluginId, job: u32) {
         let _ = self.events.push(Some(plugin), &Event::RunDone { job });
+        self.user_event(&Event::RunDone { job });
     }
 
     /// Refreshes the snapshot tables plugins read for the active document `h` (Docs,
@@ -429,8 +591,24 @@ impl Host {
     /// through [`Host::poll`]; timers are armed against `now_ms`; run requests go out in
     /// [`Delivered::runs`].
     pub fn deliver(&mut self, project: &Project, root: &Path, now_ms: u64) -> Delivered {
+        if !self.user_ready {
+            self.user_ready = true;
+            if self
+                .user
+                .table()
+                .hooks
+                .iter()
+                .any(|h| h.0 == schemify_config::Event::Load)
+            {
+                let keys = self.user.table().keymaps.clone();
+                let out = self.user.fire(schemify_config::Event::Load, &[]);
+                self.absorb(out, &keys);
+            }
+        }
         let mut out = Delivered {
             state_changed: std::mem::take(&mut self.commanded),
+            commands: std::mem::take(&mut self.user_cmds),
+            logs: std::mem::take(&mut self.user_logs),
             ..Delivered::default()
         };
         for _ in 0..ROUNDS_MAX {
@@ -520,8 +698,43 @@ impl Host {
                 text.push_str(c.get(id, Kind::Keymap, "").unwrap_or(""));
                 (self.plugins.name(id).unwrap_or("?").to_owned(), text)
             })
-            .collect();
+            .collect::<Vec<_>>();
+        // The user's own keymaps go after every plugin (config spec §6).
+        let mut sets = sets;
+        let keys = self.user.table().keymaps.records();
+        if !keys.is_empty() {
+            sets.push(("user".to_owned(), keys));
+        }
         Some(sets)
+    }
+}
+
+/// Loads one installed user package with its effective grants and fuel; returns its id, or
+/// `None` with a note.
+fn load_installed(
+    plugins: &mut Plugins,
+    hashes: &mut Vec<(PluginId, String)>,
+    notes: &mut Vec<String>,
+    p: &Installed,
+) -> Option<PluginId> {
+    let wasm = match platform::read(&p.wasm) {
+        Ok(w) => w,
+        Err(e) => {
+            notes.push(format!("plugin {}: {e}", p.name));
+            return None;
+        }
+    };
+    let grants: Vec<&str> = p.grants.iter().map(String::as_str).collect();
+    let fuel = p.fuel.unwrap_or(FUEL_DEFAULT).clamp(FUEL_MIN, FUEL_MAX);
+    match plugins.load(&p.name, &wasm, &grants, fuel) {
+        Ok(id) => {
+            hashes.push((id, content_hash(&wasm)));
+            Some(id)
+        }
+        Err(c) => {
+            notes.push(format!("plugin {}: {c:?}", p.name));
+            None
+        }
     }
 }
 
