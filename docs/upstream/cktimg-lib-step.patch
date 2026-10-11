@@ -1,0 +1,22 @@
+diff --git a/build.zig b/build.zig
+index 135543f..3b530b9 100644
+--- a/build.zig
++++ b/build.zig
+@@ -15,10 +15,16 @@ pub fn build(b: *std.Build) void {
+     });
+     mod.addOptions("build_options", options);
+ 
+-    // libcktimg.a and its header: the C ABI (src/abi.zig).
++    // libcktimg.a and its header: the C ABI (src/abi.zig). `zig build lib` installs only
++    // these, for a host that links the library (and on targets the tools do not build for).
+     const static = b.addLibrary(.{ .name = "cktimg", .linkage = .static, .root_module = mod });
+     b.installArtifact(static);
+     b.installFile("include/cktimg.h", "include/cktimg.h");
++    const lib_step = b.step("lib", "Build libcktimg.a and install it with include/cktimg.h");
++    lib_step.dependOn(&b.addInstallArtifact(static, .{}).step);
++    lib_step.dependOn(&b.addInstallFile(b.path("include/cktimg.h"), "include/cktimg.h").step);
++    // The tools need an OS (files, a clock); a freestanding target (wasm) gets the library only.
++    if (target.result.os.tag == .freestanding) return;
+ 
+     // The standard symbol set, for the tools (the library itself has none).
+     const sym_files = b.addWriteFiles();

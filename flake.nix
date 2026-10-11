@@ -141,7 +141,7 @@
               rust-analyzer
               # Plugins: wasm-ld (the nix rustc has no rust-lld); web glue.
               lld
-              # extern/cktimg (net2schem's layout engine, a Zig library with a C ABI).
+              # extern/cktimg (the cktimg plugin's layout engine, a Zig library with a C ABI).
               zig-overlay.packages.${pkgs.stdenv.hostPlatform.system}."0.17.0"
               (wasmBindgenCli pkgs)
               # Golden corpus (tests/corpus): xschem to make goldens, tclsh for PDK generators.

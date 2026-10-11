@@ -91,6 +91,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cktimg"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "schemify-abi",
+ "schemify-doc",
+ "schemify-elab",
+ "schemify-format",
+ "schemify-import",
+ "schemify-plugin",
+ "schemify-run",
+ "schemify-spicecmp",
+]
+
+[[package]]
 name = "core_detect"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -228,21 +243,6 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
-
-[[package]]
-name = "net2schem"
-version = "0.1.0"
-dependencies = [
- "proptest",
- "schemify-abi",
- "schemify-doc",
- "schemify-elab",
- "schemify-format",
- "schemify-import",
- "schemify-plugin",
- "schemify-run",
- "schemify-spicecmp",
-]
 
 [[package]]
 name = "num-complex"

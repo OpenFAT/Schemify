@@ -2,13 +2,15 @@
 # Build the guest plugins for wasm32-unknown-unknown: refresh the host's test fixtures in
 # crates/plugin/tests/fixtures/, the bundled default UI in crates/app/assets/ (embedded by the
 # app with include_bytes!), the gm/Id plugin of the app's OTA fixture project (loaded through
-# its manifest's `plugin` entry, not embedded) and the net2schem plugin next to its source (a
-# project loads it with `plugin net2schem path plugins/net2schem`). Fails if any module reaches
-# 200 KB.
+# its manifest's `plugin` entry, not embedded) and the cktimg plugin next to its source (a
+# project loads it with `plugin cktimg path plugins/cktimg`). Fails if a module reaches its
+# size limit: 200 KB, except cktimg (cktImg's layout engine is linked in; see its README).
 #
 # Needs the wasm32-unknown-unknown std (rustup: `rustup target add wasm32-unknown-unknown`;
-# the NixOS rustc ships it). The nix-built rustc has no rust-lld, so without one on the
-# toolchain the script re-runs itself under `nix shell nixpkgs#lld` and links with wasm-ld.
+# the NixOS rustc ships it) and, for cktimg, Zig 0.17 (its build.rs compiles extern/cktimg;
+# `nix develop` has it, and `git submodule update --init` fetches the source). The nix-built
+# rustc has no rust-lld, so without one on the toolchain the script re-runs itself under
+# `nix shell nixpkgs#lld` and links with wasm-ld.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,15 +27,18 @@ if [[ ! -x "$(rustc --print sysroot)/lib/rustlib/$host/bin/rust-lld" ]] \
   fi
 fi
 
-cargo build --manifest-path "$here/Cargo.toml" --release --target wasm32-unknown-unknown
+# Six jobs: the machine's agents share its RAM (AGENTS.md).
+CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}" \
+  cargo build --manifest-path "$here/Cargo.toml" --release --target wasm32-unknown-unknown
 
-# Copies module $1 into directory $2, enforcing the size limit.
+# Copies module $1 into directory $2, enforcing the size limit $3 (KB, default 200).
 install_wasm() {
   local wasm="$here/target/wasm32-unknown-unknown/release/$1.wasm"
+  local limit="${3:-200}"
   local size
   size=$(wc -c <"$wasm")
-  if (( size >= 200 * 1024 )); then
-    echo "error: $1.wasm is $size bytes (limit 200 KB)" >&2
+  if (( size >= limit * 1024 )); then
+    echo "error: $1.wasm is $size bytes (limit $limit KB)" >&2
     exit 1
   fi
   mkdir -p "$2"
@@ -46,4 +51,4 @@ for name in hello bad_actor gmid_stub; do
 done
 install_wasm default_ui "$assets"
 install_wasm gmid_lut "$here/../crates/app/tests/fixtures/ota/plugins"
-install_wasm net2schem "$here/net2schem"
+install_wasm cktimg "$here/cktimg" 700

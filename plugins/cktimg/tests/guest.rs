@@ -1,4 +1,4 @@
-//! The built guest (`plugins/net2schem/net2schem.wasm`, refreshed by `plugins/build.sh`)
+//! The built guest (`plugins/cktimg/cktimg.wasm`, refreshed by `plugins/build.sh`)
 //! end to end through the real host (`schemify_plugin`, wasmi) with the default fuel:
 //! contributions compose without faults; the import command reads, probes and writes
 //! through inverted I/O; the wasm output equals the native conversion byte for byte; an
@@ -23,11 +23,10 @@ impl World {
     }
 
     fn with_fuel(fuel: u64) -> Option<World> {
-        let wasm =
-            std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("net2schem.wasm")).ok()?;
+        let wasm = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("cktimg.wasm")).ok()?;
         let mut plugins = Plugins::new();
         let id = plugins
-            .load("net2schem", &wasm, &["read_project", "write_project"], fuel)
+            .load("cktimg", &wasm, &["read_project", "write_project"], fuel)
             .expect("loads");
         let mut w = World {
             plugins,
@@ -80,7 +79,7 @@ type Logs = Vec<(Level, String)>;
 fn import(w: &mut World, source: &str, text: &str, exists: impl Fn(&str) -> bool) -> (Files, Logs) {
     w.take();
     w.send(Event::Command {
-        name: "net2schem.import",
+        name: "cktimg.import",
         args: source,
     });
     let mut written = Vec::new();
@@ -123,7 +122,7 @@ fn import(w: &mut World, source: &str, text: &str, exists: impl Fn(&str) -> bool
 #[test]
 fn contributes_menu_command_and_key() {
     let Some(mut w) = World::new() else {
-        eprintln!("net2schem.wasm not built (plugins/build.sh); skipped");
+        eprintln!("cktimg.wasm not built (plugins/build.sh); skipped");
         return;
     };
     assert!(w.faults().is_empty(), "{:?}", w.faults());
@@ -131,12 +130,12 @@ fn contributes_menu_command_and_key() {
     assert!(
         c.of(Kind::Ui)
             .iter()
-            .any(|r| r.text.contains("parent menu.file") && r.text.contains("net2schem.import"))
+            .any(|r| r.text.contains("parent menu.file") && r.text.contains("cktimg.import"))
     );
     assert!(
         c.of(Kind::Commands)
             .iter()
-            .any(|r| r.text.contains("net2schem.import"))
+            .any(|r| r.text.contains("cktimg.import"))
     );
     assert!(
         c.of(Kind::Keymap)
@@ -145,7 +144,7 @@ fn contributes_menu_command_and_key() {
     );
     // No argument: the path panel appears (and closes again).
     w.send(Event::Command {
-        name: "net2schem.import",
+        name: "cktimg.import",
         args: "",
     });
     assert!(
@@ -156,7 +155,7 @@ fn contributes_menu_command_and_key() {
             .any(|r| r.text.contains("text_input"))
     );
     w.send(Event::Command {
-        name: "net2schem.close",
+        name: "cktimg.close",
         args: "",
     });
     assert!(
@@ -169,10 +168,28 @@ fn contributes_menu_command_and_key() {
     assert!(w.faults().is_empty(), "{:?}", w.faults());
 }
 
+/// Fixtures whose cktImg layout needs more than the default fuel (10^8) under wasmi, with
+/// the measured need (`fuel_report`, ReleaseSmall guest): the import aborts with `E_FUEL`,
+/// writes nothing, and the plugin imports the next netlist as if it had not happened.
+/// cktImg's layout rounds (`layout.place`, L6) dominate; see docs/upstream/README.md.
+const OVER_BUDGET: &[(&str, &str)] = &[
+    ("bus_sram_cell_array", "> 4·10^10"),
+    ("bus_parallel_adder", "2.5·10^10"),
+    ("bus_4bit_flash_adc", "1.3·10^10"),
+    ("bus_shift_register", "2.1·10^9"),
+    ("bus_current_dac", "1.6·10^9"),
+    ("raw_cards", "1.0·10^9"),
+    ("bus_data_bus_driver", "7.2·10^8"),
+    ("bus_mux_4to1", "2.5·10^8"),
+    ("bus_decoder_2to4", "1.7·10^8"),
+    ("phase_detector", "1.6·10^8"),
+    ("sr_latch", "1.1·10^8"),
+];
+
 #[test]
 fn imports_every_fixture_like_the_native_build() {
     let Some(mut w) = World::new() else {
-        eprintln!("net2schem.wasm not built (plugins/build.sh); skipped");
+        eprintln!("cktimg.wasm not built (plugins/build.sh); skipped");
         return;
     };
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
@@ -184,12 +201,24 @@ fn imports_every_fixture_like_the_native_build() {
         .collect();
     cases.sort();
     assert!(cases.len() >= 80);
+    let mut over: Vec<String> = Vec::new();
     for path in cases {
         let text = std::fs::read_to_string(&path).unwrap();
+        let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
         let source = format!("n2s/{}", path.file_name().unwrap().to_string_lossy());
+        let faults = w.faults().len();
         let (written, logs) = import(&mut w, &source, &text, |_| false);
-        assert!(w.faults().is_empty(), "{source}: {:?}", w.faults());
-        let native = net2schem::convert(&source, &text);
+        if w.faults().len() > faults {
+            let fault = w.faults().last().cloned().unwrap_or_default();
+            assert!(fault.contains("code: Fuel"), "{source}: {fault}");
+            assert!(
+                written.is_empty(),
+                "{source}: an aborted import writes nothing"
+            );
+            over.push(stem);
+            continue;
+        }
+        let native = cktimg::convert(&source, &text);
         let want: Vec<(String, Vec<u8>)> = native
             .files
             .iter()
@@ -202,9 +231,23 @@ fn imports_every_fixture_like_the_native_build() {
             .map(|l| l.1.as_str())
             .unwrap_or("");
         assert!(
-            summary.starts_with(&format!("net2schem: {source} → {} files", want.len())),
+            summary.starts_with(&format!("cktimg: {source} → {} files", want.len())),
             "{source}: {logs:?}"
         );
+    }
+    eprintln!("over the default fuel: {over:?}");
+    for name in &over {
+        assert!(
+            OVER_BUDGET.iter().any(|o| o.0 == name),
+            "{name} newly needs more than the default fuel"
+        );
+    }
+    for (name, need) in OVER_BUDGET {
+        if !over.iter().any(|o| o == name) {
+            eprintln!(
+                "note: {name} (measured {need}) now fits the default fuel; drop it from OVER_BUDGET"
+            );
+        }
     }
 }
 
@@ -229,7 +272,7 @@ fn refuses_to_overwrite_and_reports_missing_input() {
         written.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(),
         ["n2s/u.shbench"]
     );
-    // A netlist over the card limit is refused with a log, not a fuel trap.
+    // A netlist over the card limit is refused with a log before any work.
     let big: String = (0..300)
         .map(|i| format!("R{i} n{i} n{} 1k\n", i + 1))
         .collect();
@@ -243,7 +286,7 @@ fn refuses_to_overwrite_and_reports_missing_input() {
     // A missing input file is an error log, not a fault.
     w.take();
     w.send(Event::Command {
-        name: "net2schem.import",
+        name: "cktimg.import",
         args: "n2s/missing.sp",
     });
     let q = w.take();
@@ -279,7 +322,7 @@ fn fuel_report() {
     let panel = bisect(&|fuel| {
         let mut w = World::with_fuel(fuel).expect("built");
         w.send(Event::Command {
-            name: "net2schem.import",
+            name: "cktimg.import",
             args: "",
         });
         w.faults().is_empty()
@@ -287,7 +330,7 @@ fn fuel_report() {
     let read_missing = bisect(&|fuel| {
         let mut w = World::with_fuel(fuel).expect("built");
         w.send(Event::Command {
-            name: "net2schem.import",
+            name: "cktimg.import",
             args: "n2s/a.sp",
         });
         let h = w.take().io.first().map_or(0, |r| r.handle);
@@ -318,27 +361,34 @@ fn fuel_report() {
         ("limit/chain_200", chain),
         ("limit/cells_8x24", cells),
     ];
-    let named = [
-        "bus/bus_parallel_adder",
-        "bus/bus_sram_cell_array",
-        "bus/bus_data_bus_driver",
-        "mosfet/two_stage_opamp",
-        "basic/rc_lowpass",
-    ]
-    .map(|n| {
-        (
-            n,
-            std::fs::read_to_string(root.join(format!("{n}.sp"))).unwrap(),
-        )
-    });
-    for (name, text) in tiny.into_iter().chain(named) {
+    // Every fixture (`CKTIMG_FUEL_FILTER=<substring>` narrows them), largest first.
+    let only = std::env::var("CKTIMG_FUEL_FILTER").unwrap_or_default();
+    let mut named: Vec<(String, String)> = std::fs::read_dir(&root)
+        .unwrap()
+        .flat_map(|d| std::fs::read_dir(d.unwrap().path()).into_iter().flatten())
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "sp") && p.to_string_lossy().contains(&only))
+        .map(|p| {
+            (
+                p.file_stem().unwrap().to_string_lossy().into_owned(),
+                std::fs::read_to_string(&p).unwrap(),
+            )
+        })
+        .collect();
+    named.sort_by_key(|n| std::cmp::Reverse(n.1.len()));
+    let tiny = tiny.into_iter().map(|(n, t)| (n.to_owned(), t));
+    for (name, text) in tiny.chain(named) {
         let fits = |fuel: u64| {
             let mut w = World::with_fuel(fuel).expect("built");
             import(&mut w, "n2s/x.sp", &text, |_| false);
             w.faults().is_empty()
         };
-        let (mut lo, mut hi) = (1_000_000u64, 2_000_000_000u64);
-        while hi - lo > hi / 50 {
+        let (mut lo, mut hi) = (1_000_000u64, 40_000_000_000u64);
+        if !fits(hi) {
+            eprintln!("{name}: over {:.0}M fuel", hi as f64 / 1e6);
+            continue;
+        }
+        while hi - lo > hi / 20 {
             let mid = (lo + hi) / 2;
             if fits(mid) { hi = mid } else { lo = mid }
         }

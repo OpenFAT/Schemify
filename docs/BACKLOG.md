@@ -49,12 +49,16 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## spicecmp
 
-- Evaluate subckt defaults after the call's overrides (ngspice 45 order; net2schem found it).
+- Evaluate subckt defaults after the call's overrides (ngspice 45 order; the netlist importer plugin found it).
 - Treat stray tokens on `.subckt` lines (`delay=200 ps`) consistently with ngspice.
 
-## net2schem plugin
+## cktimg plugin
 
-- Splitting a conversion across events would lift the 200-card / 80-device caps (`ponytail` in code); XSPICE `A/N/P/Y` and node-less `X` cards are kept as code text, not drawn.
+- **Fuel**: cktImg needs ~10^8 wasmi fuel per millisecond of native layout; 11 of 80 fixtures exceed the default 10^8 per event and abort with `E_FUEL` (up to > 4·10^10). Needs the per-plugin fuel override the plugin ABI (§2) specifies but the app does not implement yet (`plugins.load(.., FUEL_DEFAULT)` for every plugin), and/or a faster cktImg layout (`docs/upstream/cktimg-performance.md`). With a bigger budget, one cell per event (a timer between cells) keeps the editor responsive.
+- **Size**: `cktimg.wasm` is ~630 KB (`plugins/build.sh` allows 700 KB for it, 200 KB for the rest); `docs/upstream/cktimg-optional-zon.patch` takes it to ~480 KB.
+- **Upstream**: `docs/upstream/cktimg-lib-step.patch` (then `build.rs` can call `zig build lib`), `cktimg-optional-zon.patch`.
+- Block symbols of generated subckt cells are the plugin's own (inputs left, the rest right); cktImg's `*@ left/right/top/bottom` directives are not read yet (a probe placement of one instance would give cktImg's block geometry).
+- XSPICE `A/N/P/Y` and node-less `X` cards are kept as code text, not drawn.
 
 ## netlist
 

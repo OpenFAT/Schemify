@@ -1,6 +1,6 @@
 //! Guest glue (wasm32 only): contributions and the import job.
 //!
-//! `net2schem.import <path>` (File ▸ Import SPICE netlist…, `Ctrl+Shift+I`) runs one job
+//! `cktimg.import <path>` (File ▸ Import SPICE netlist…, `Ctrl+Shift+I`) runs one job
 //! through inverted I/O (plugin ABI §5), one phase per completion event:
 //!
 //! ```text
@@ -25,37 +25,40 @@ use crate::OutFile;
 guest::export!(on_event);
 
 /// The menu item; the path panel is appended while it is shown.
-const UI: &str = "node file.net2schem_import item
+const UI: &str = "node file.cktimg_import item
   parent menu.file
   label \"Import SPICE netlist…\"
-  command net2schem.import
+  command cktimg.import
   accel Ctrl+Shift+I
 ";
-const PANEL: &str = "node net2schem.panel panel
+const PANEL: &str = "node cktimg.panel panel
   parent window
-node net2schem.prompt label
-  parent net2schem.panel
+node cktimg.prompt label
+  parent cktimg.panel
   label \"SPICE netlist to import (project-relative .sp/.cir/.spice path), Enter to convert:\"
-node net2schem.path text_input
-  parent net2schem.panel
-  command net2schem.import
-node net2schem.close button
-  parent net2schem.panel
+node cktimg.path text_input
+  parent cktimg.panel
+  command cktimg.import
+node cktimg.close button
+  parent cktimg.panel
   label Close
-  command net2schem.close
+  command cktimg.close
 ";
-const COMMANDS: &str = "command net2schem.import \"Import SPICE netlist…\"
-command net2schem.close \"Close the SPICE import panel\"
+const COMMANDS: &str = "command cktimg.import \"Import SPICE netlist…\"
+command cktimg.close \"Close the SPICE import panel\"
 ";
-const KEYMAP: &str = "key Ctrl+Shift+I net2schem.import\n";
+const KEYMAP: &str = "key Ctrl+Shift+I cktimg.import\n";
 /// I/O requests kept in flight (the host's queue holds 256 per frame).
 const WINDOW: usize = 32;
 /// Warnings echoed to the log per import.
 const WARNINGS_SHOWN: usize = 20;
-/// Element cards converted within the default fuel budget (with
-/// `route::ROUTE_DEVICES_MAX` routed, the rest labelled: ~90M of 10^8 at worst); larger
-/// netlists are refused with a log instead of trapping mid-conversion.
-// ponytail: split the work over several events (one cell per completion) to lift it.
+/// Element cards per import: bounds the parse, recognition and file writing (cells
+/// cktImg does not draw are labelled, ~0.15M fuel per device); larger netlists are refused
+/// with a log. cktImg's own work is bounded by `CELL_DEVICES_MAX`/`DRAWN_DEVICES_MAX` and
+/// by the fuel budget: a cell whose layout needs more aborts the import with `E_FUEL`
+/// (nothing is written; the health report says why).
+// ponytail: one cell per event (a timer between cells) would give each cell the whole
+// budget; worth it once the host honours a per-plugin fuel override (plugin ABI §2).
 const CARDS_MAX: usize = 200;
 
 /// What a handle in flight stands for.
@@ -106,11 +109,11 @@ fn on_event(ev: Event<'_>, host: &Host, out: &mut Out) {
     match ev {
         Event::Load => contribute(out, false),
         Event::Command {
-            name: "net2schem.close",
+            name: "cktimg.close",
             ..
         } => contribute(out, false),
         Event::Command {
-            name: "net2schem.import",
+            name: "cktimg.import",
             args,
         } => {
             let mut words = Vec::new();
@@ -148,7 +151,7 @@ fn on_event(ev: Event<'_>, host: &Host, out: &mut Out) {
             let record = String::from_utf8_lossy(record);
             out.log_at(
                 Level::Warn,
-                &format!("net2schem: output rejected ({code}): {record}"),
+                &format!("cktimg: output rejected ({code}): {record}"),
             );
         }
         _ => {}
@@ -165,7 +168,7 @@ fn start(path: &str, host: &Host, out: &mut Out) {
     {
         out.log_at(
             Level::Warn,
-            &format!("net2schem: {path}: not a .sp/.cir/.spice file; importing anyway"),
+            &format!("cktimg: {path}: not a .sp/.cir/.spice file; importing anyway"),
         );
     }
     match host.fs_read(path) {
@@ -181,7 +184,7 @@ fn start(path: &str, host: &Host, out: &mut Out) {
         }
         Err(c) => out.log_at(
             Level::Error,
-            &format!("net2schem: cannot read {path}: {c}{}", hint(c)),
+            &format!("cktimg: cannot read {path}: {c}{}", hint(c)),
         ),
     }
 }
@@ -215,7 +218,7 @@ fn step(job: &mut Job, op: Op, status: i32, bytes: &[u8], host: &Host, out: &mut
                 let c = Code::from_raw(status.unsigned_abs()).unwrap_or(Code::Gone);
                 out.log_at(
                     Level::Error,
-                    &format!("net2schem: cannot read {}: {c}{}", job.source, hint(c)),
+                    &format!("cktimg: cannot read {}: {c}{}", job.source, hint(c)),
                 );
                 return false;
             }
@@ -223,7 +226,7 @@ fn step(job: &mut Job, op: Op, status: i32, bytes: &[u8], host: &Host, out: &mut
                 out.log_at(
                     Level::Error,
                     &format!(
-                        "net2schem: {} is over {} bytes",
+                        "cktimg: {} is over {} bytes",
                         job.source,
                         crate::spice::TEXT_MAX
                     ),
@@ -241,7 +244,7 @@ fn step(job: &mut Job, op: Op, status: i32, bytes: &[u8], host: &Host, out: &mut
             if cards > CARDS_MAX {
                 out.log_at(
                     Level::Error,
-                    &format!("net2schem: {}: {cards} element cards; the plugin converts at most {CARDS_MAX} (split the netlist)", job.source),
+                    &format!("cktimg: {}: {cards} element cards; the plugin converts at most {CARDS_MAX} (split the netlist)", job.source),
                 );
                 return false;
             }
@@ -250,7 +253,7 @@ fn step(job: &mut Job, op: Op, status: i32, bytes: &[u8], host: &Host, out: &mut
                 out.log_at(
                     Level::Warn,
                     &format!(
-                        "net2schem: {}: no subckt or top-level card to import",
+                        "cktimg: {}: no subckt or top-level card to import",
                         job.source
                     ),
                 );
@@ -258,7 +261,7 @@ fn step(job: &mut Job, op: Op, status: i32, bytes: &[u8], host: &Host, out: &mut
             }
             let s = conv.stats;
             job.summary = format!(
-                "net2schem: {} → {} files ({} cells); {} devices, {} wires, {} labels/ports; {}/{} nets fully wired; {} warnings",
+                "cktimg: {} → {} files ({} cells); {} devices, {} wires, {} labels/ports; {}/{} nets fully wired; {} warnings",
                 job.source,
                 conv.files.len(),
                 s.cells,
@@ -270,7 +273,7 @@ fn step(job: &mut Job, op: Op, status: i32, bytes: &[u8], host: &Host, out: &mut
                 conv.warnings.len()
             );
             for w in conv.warnings.iter().take(WARNINGS_SHOWN) {
-                out.log_at(Level::Warn, &format!("net2schem: {}: {w}", job.source));
+                out.log_at(Level::Warn, &format!("cktimg: {}: {w}", job.source));
             }
             for (i, f) in conv.files.iter().enumerate() {
                 let stem = f.name.rsplit_once('.').map_or(f.name.as_str(), |(s, _)| s);
@@ -300,7 +303,7 @@ fn step(job: &mut Job, op: Op, status: i32, bytes: &[u8], host: &Host, out: &mut
                 out.log_at(
                     Level::Error,
                     &format!(
-                        "net2schem: {}: not imported, these cells already exist: {}",
+                        "cktimg: {}: not imported, these cells already exist: {}",
                         job.source,
                         clash.join(" ")
                     ),
@@ -326,7 +329,7 @@ fn step(job: &mut Job, op: Op, status: i32, bytes: &[u8], host: &Host, out: &mut
                 out.log_at(
                     Level::Error,
                     &format!(
-                        "net2schem: {}: could not write {}",
+                        "cktimg: {}: could not write {}",
                         job.source,
                         job.failed.join(" ")
                     ),
@@ -367,7 +370,7 @@ fn pump(job: &mut Job, host: &Host, out: &mut Out) -> bool {
             Err(c) => {
                 out.log_at(
                     Level::Error,
-                    &format!("net2schem: {}: I/O refused: {c}{}", job.source, hint(c)),
+                    &format!("cktimg: {}: I/O refused: {c}{}", job.source, hint(c)),
                 );
                 return false;
             }
