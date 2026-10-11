@@ -35,7 +35,7 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - The cache amend replays the edit through undo (two extra journal records); a `doc` "extend last entry" edit would save them.
 - Values are kept for the active level's document; other open documents sync their caches when activated. A structural edit (instance insert/delete) rebuilds the cell state (136 ms at 100k objects when the cell has vars).
 - Prose: no images, footnotes or nested emphasis inside links; tables use equal column widths; a `text_area` does not scroll inside itself (the page does).
-- `gmid-lut`: queries at VDS = VDD/2 only; the sky130 pfet sample tops out near gm/Id 15 at L 0.15/0.18 µm; characterization uses `spawn:ngspice`, not `run` requests (the sweep needs the full grid, not bench outputs).
+- `gmid-lut` characterization uses `spawn:ngspice`, not `run` requests: the ABI cannot (**abi**/**plugin**) run a bench the plugin just wrote (cells are indexed at project load) or hand back a job's raw file/directory (`RunDone` and `Results` carry scalar outputs; the LUT needs the (L, VDS, VGS) grid). Needs a "run this written bench" request and the job directory in `RunDone`.
 - Integration points still stubbed: symbols via elab, plugin `eval`, web OPFS.
 
 ## run in the editor (M2 integration)

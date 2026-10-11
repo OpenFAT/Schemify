@@ -115,7 +115,7 @@ var id_in Id_tail/2
   unit A
 var W_in "gmid.w(\"nfet_01v8\", gm_id_in, L_in, id_in)"
   unit m
-  cached 3.8813910462992726e-6 0acaf19984bac32d
+  cached 3.8813910462992726e-6 6f77c86f9226a930
 prose d00002
   | ## Speed and gain
   |
@@ -126,16 +126,16 @@ var CL 1p
   unit F
 var gm_in "gmid.gm(\"nfet_01v8\", gm_id_in, L_in, id_in)"
   unit S
-  cached 0.00015000000000000001 0acaf19984bac32d
+  cached 0.00015000000000000001 6f77c86f9226a930
 var GBW gm_in/(2*pi*CL)
   unit Hz
   min 10meg
 var Av_in "gmid.gain(\"nfet_01v8\", gm_id_in, L_in)"
   unit V/V
-  cached 112.20605997990423 0acaf19984bac32d
+  cached 112.20605997990423 6f77c86f9226a930
 var ft_in "gmid.ft(\"nfet_01v8\", gm_id_in, L_in)"
   unit Hz
-  cached 2414582200.15373 0acaf19984bac32d
+  cached 2414582200.15373 6f77c86f9226a930
 prose d00003
   | ## Mirror load and tail
   |
@@ -152,14 +152,14 @@ var L_load 1u
   unit m
 var W_load "gmid.w(\"pfet_01v8\", gm_id_load, L_load, id_in)"
   unit m
-  cached 8.84865072531957e-6 0acaf19984bac32d
+  cached 8.84865072531957e-6 6f77c86f9226a930
 var gm_id_tail 8
   unit 1/V
 var L_tail 1u
   unit m
 var W_tail "gmid.w(\"nfet_01v8\", gm_id_tail, L_tail, Id_tail)"
   unit m
-  cached 3.023519651188211e-6 0acaf19984bac32d
+  cached 3.023519651188211e-6 6f77c86f9226a930
 prose d00004
   | ## Open-loop response
   |

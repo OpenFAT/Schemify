@@ -168,6 +168,13 @@ jobs:
           name: plugin-assets
           path: crates/app/assets/*.wasm
           if-no-files-found: error
+      # The gm/Id guest of the OTA fixture project (loaded through its manifest, not embedded):
+      # a PR that edits `plugins/gmid-lut` commits it from this artifact the same way.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-fixtures
+          path: crates/app/tests/fixtures/ota/plugins/*.wasm
+          if-no-files-found: error
       # The crates with native tests (rlib + the built guest driven through wasmi); the others
       # are cdylib guests whose `guest` module exists only on wasm32.
       - name: plugins workspace tests (native + built guests)

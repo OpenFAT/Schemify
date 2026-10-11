@@ -2,7 +2,7 @@
 //! per-device lookup tables, loads those tables from the project, and characterizes devices
 //! with ngspice. Ported from the UW-ASIC `gmid-lut` salvage (own code). Spec: `README.md`.
 //!
-//! - [`lut`] — the table, its `.glut` v2 file format, and the one query ([`lut::Lut::point`]);
+//! - [`lut`] — the table, its `.glut` v2 file format, and the one query ([`lut::Lut::point_at`]);
 //! - [`chars`] — the `gmid.chars` config, the sweep netlist, `wrdata` parsing, LUT building;
 //! - this module — the function set ([`FUNCTIONS`], [`eval`]), the loaded tables
 //!   ([`Tables`]), and on wasm32 the guest glue (events, I/O chain, `schemify_call`).
@@ -19,8 +19,10 @@ use schemify_abi::{Code, text};
 use lut::Lut;
 
 /// Exported functions as `(name, arity)`; the index is the function's `fn_id` modulo
-/// [`FN_STRIDE`]. Arguments: device name, gm/Id (1/V), L (m), and for the sized ones Id (A).
-pub const FUNCTIONS: [(&str, u8); 7] = [
+/// [`FN_STRIDE`]. Arguments: device name, gm/Id (1/V), L (m), for the sized ones Id (A), and
+/// for the `_at` rows (index [`AT`] and up, row `AT + k` is row `k` plus the argument) |VDS|
+/// (V) last. The rows without it answer at the table's nominal VDS (`vdd / 2`).
+pub const FUNCTIONS: [(&str, u8); 14] = [
     ("gmid.vgs", 3),
     ("gmid.jd", 3),
     ("gmid.w", 4),
@@ -28,12 +30,22 @@ pub const FUNCTIONS: [(&str, u8); 7] = [
     ("gmid.gds", 4),
     ("gmid.gain", 3),
     ("gmid.ft", 3),
+    ("gmid.vgs_at", 4),
+    ("gmid.jd_at", 4),
+    ("gmid.w_at", 5),
+    ("gmid.gm_at", 5),
+    ("gmid.gds_at", 5),
+    ("gmid.gain_at", 4),
+    ("gmid.ft_at", 4),
 ];
+
+/// Index of the first function taking VDS as its last argument (see [`FUNCTIONS`]).
+pub const AT: usize = 7;
 
 /// `fn_id = index + FN_STRIDE × generation`: the generation moves whenever the loaded tables
 /// change, so the re-declared `functions` set differs and the host recomposes and re-evaluates
 /// (identical re-declarations are ignored, plugin-abi §9).
-pub const FN_STRIDE: u32 = 8;
+pub const FN_STRIDE: u32 = 16;
 
 /// The `contribute functions` body for table generation `generation`.
 pub fn functions_text(generation: u32) -> String {
@@ -83,31 +95,36 @@ impl Tables {
 }
 
 /// Evaluates function `fn_id` (see [`FUNCTIONS`]) on line-record `args`, e.g.
-/// `"nfet_01v8" 15 5e-7 2e-5`. Pure: reads only `tables`.
+/// `"nfet_01v8" 15 5e-7 2e-5` (`gmid.w`) or `"nfet_01v8" 15 5e-7 2e-5 1.2` (`gmid.w_at`).
+/// Pure: reads only `tables`.
 ///
 /// # Errors
 ///
-/// `E_RANGE` for an unknown function, wrong arity or argument type, an unknown device, L
-/// outside the table, an unreachable gm/Id, a non-positive Id, or a non-finite result.
+/// `E_RANGE` for an unknown function, wrong arity or argument type, an unknown device, L or
+/// VDS outside the table, an unreachable gm/Id, a non-positive Id, or a non-finite result.
 pub fn eval(tables: &Tables, fn_id: u32, args: &str) -> Result<f64, Code> {
     let f = (fn_id % FN_STRIDE) as usize;
     let &(_, arity) = FUNCTIONS.get(f).ok_or(Code::Range)?;
+    let at_vds = f >= AT;
+    let sized = arity - u8::from(at_vds) == 4;
     let mut v = text::values(args);
     let dev = v.need().map_err(|_| Code::Range)?;
     let mut num = || -> Result<f64, Code> { v.need_num::<f64>().map_err(|_| Code::Range) };
     let (gm_id, l) = (num()?, num()?);
-    let id = if arity == 4 { num()? } else { 1.0 };
+    let id = if sized { num()? } else { 1.0 };
+    let vds = if at_vds { Some(num()?) } else { None };
     v.end().map_err(|_| Code::Range)?;
     if !(id.is_finite() && id > 0.0) {
         return Err(Code::Range);
     }
-    let p = tables
-        .get(&dev)
-        .ok_or(Code::Range)?
-        .point(gm_id, l)
-        .map_err(|_| Code::Range)?;
+    let lut = tables.get(&dev).ok_or(Code::Range)?;
+    let p = match vds {
+        Some(vds) => lut.point_at(gm_id, l, vds),
+        None => lut.point(gm_id, l),
+    }
+    .map_err(|_| Code::Range)?;
     let gain = p.gm_w / p.gds_w;
-    let x = match f {
+    let x = match f % AT {
         0 => p.vgs,
         1 => p.jd,
         2 => id / p.jd,
@@ -115,7 +132,7 @@ pub fn eval(tables: &Tables, fn_id: u32, args: &str) -> Result<f64, Code> {
         4 => gm_id * id / gain,
         5 => gain,
         6 => p.gm_w / (2.0 * std::f64::consts::PI * p.cgg_w),
-        _ => unreachable!("FUNCTIONS has 7 rows"),
+        _ => unreachable!("AT is 7"),
     };
     if x.is_finite() {
         Ok(x)
@@ -506,6 +523,45 @@ mod tests {
         }
     }
 
+    /// The `_at` functions: at the nominal VDS they equal the plain ones bit for bit; off it
+    /// they follow the analytic model; without the VDS argument, or with a VDS off the table's
+    /// axis, they fail.
+    #[test]
+    fn at_functions_take_vds_last() {
+        let (m, t) = tables();
+        let l = t.luts[0].l[5];
+        for (plain, at, extra) in [
+            ("gmid.vgs", "gmid.vgs_at", ""),
+            ("gmid.jd", "gmid.jd_at", ""),
+            ("gmid.w", "gmid.w_at", " 2e-5"),
+            ("gmid.gm", "gmid.gm_at", " 2e-5"),
+            ("gmid.gds", "gmid.gds_at", " 2e-5"),
+            ("gmid.gain", "gmid.gain_at", ""),
+            ("gmid.ft", "gmid.ft_at", ""),
+        ] {
+            let args = format!("\"nsynth\" 12 {l}{extra}");
+            let want = call(&t, plain, &args);
+            assert!(want.is_ok(), "{plain}({args})");
+            assert_eq!(call(&t, at, &format!("{args} 0.9")), want, "{at} at VDD/2");
+            assert_eq!(call(&t, at, &args), Err(Code::Range), "{at} without VDS");
+            let off = format!("{args} 1.9");
+            assert_eq!(
+                call(&t, at, &off),
+                Err(Code::Range),
+                "{at} VDS off the axis"
+            );
+        }
+        let vgs = m.vgs_for(12.0);
+        for vds in [0.3, 0.5, 1.35] {
+            let q = m.quantities(vgs, vds, l);
+            let args = format!("\"nsynth\" 12 {l} {vds}");
+            let jd = call(&t, "gmid.jd_at", &args).unwrap();
+            assert!(rel(jd, q[0]) < 0.02, "jd at {vds}: {jd} vs {}", q[0]);
+            let gain = call(&t, "gmid.gain_at", &args).unwrap();
+            assert!(rel(gain, q[1] / q[2]) < 0.02, "gain at {vds}: {gain}");
+        }
+    }
+
     #[test]
     fn bad_calls_are_range_errors() {
         let (_, t) = tables();
@@ -527,9 +583,9 @@ mod tests {
             assert_eq!(call(&t, f, args), Err(Code::Range), "{f}({args})");
         }
         assert_eq!(
-            eval(&t, 7, "\"nsynth\" 15 1e-6"),
+            eval(&t, 14, "\"nsynth\" 15 1e-6"),
             Err(Code::Range),
-            "fn index 7 is free"
+            "fn index 14 is free"
         );
         assert_eq!(
             eval(&Tables::default(), 1, "\"nsynth\" 15 1e-6"),
@@ -565,12 +621,21 @@ mod tests {
         let ft = at("gmid.ft", "nfet_01v8", 15.0, 0.5e-6);
         assert!((1e9..1e10).contains(&ft), "nfet ft {ft}");
         assert!(at("gmid.gain", "nfet_01v8", 15.0, 0.5e-6) > 30.0);
+        // The pfet's short and long bins dip in moderate inversion (a local gm/Id peak of 15–17
+        // at L 0.15, 0.18 and 8 µm); the scan crosses the dip, so every row reaches weak
+        // inversion (> 20 1/V) and VGS keeps falling as gm/Id rises across it.
+        let p0 = t.get("pfet_01v8").unwrap().l[0];
+        let (v14, v20) = (
+            at("gmid.vgs", "pfet_01v8", 14.0, p0),
+            at("gmid.vgs", "pfet_01v8", 20.0, p0),
+        );
+        assert!(v20 < v14, "pfet L {p0}: VGS {v20} at 20 vs {v14} at 14");
         for dev in ["nfet_01v8", "pfet_01v8"] {
             let ls = t.get(dev).unwrap().l.clone();
             for (li, l) in ls.iter().enumerate() {
                 let (lo, hi) = t.get(dev).unwrap().gm_id_range(li);
                 assert!(
-                    lo < 3.0 && hi > 14.0 && hi < 40.0,
+                    lo < 3.0 && hi > 20.0 && hi < 40.0,
                     "{dev} L {l}: {lo}..{hi}"
                 );
             }
@@ -605,7 +670,18 @@ mod tests {
             functions_text(0).lines().next(),
             Some("function gmid.vgs 0 3")
         );
-        assert!(functions_text(2).contains("function gmid.ft 22 3\n"));
+        assert!(functions_text(2).contains("function gmid.ft 38 3\n"));
+        assert!(functions_text(2).contains("function gmid.w_at 41 5\n"));
+        assert_eq!(functions_text(0).lines().count(), FUNCTIONS.len());
+        for (k, (name, arity)) in FUNCTIONS[AT..].iter().enumerate() {
+            assert_eq!(*name, format!("{}_at", FUNCTIONS[k].0));
+            assert_eq!(
+                *arity,
+                FUNCTIONS[k].1 + 1,
+                "{name}: one more argument (VDS)"
+            );
+        }
+        assert!(FUNCTIONS.len() as u32 <= FN_STRIDE);
         let s = |x: f64| {
             let mut o = String::new();
             canonical(x, &mut o);
