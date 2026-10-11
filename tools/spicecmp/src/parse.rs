@@ -354,8 +354,12 @@ fn dot_card(
                 }
             }
             let name = name.to_ascii_lowercase();
+            // ngspice 45 ignores a bare word after the parameters (`delay=200 ps` keeps
+            // `delay=200`), so it is no difference: warned about, not compared.
             for t in stray {
-                stray_token(nl, line_no, &name, ".subckt", t);
+                nl.warnings.push(format!(
+                    "line {line_no}: stray token {t} in .subckt {name} (ignored, as ngspice does)"
+                ));
             }
             nl.subckts.push(Subckt {
                 name,

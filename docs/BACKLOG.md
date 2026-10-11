@@ -58,11 +58,6 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 - Plugin events run synchronously on the frame thread: a cktimg import of a large deck (up to 4·10^10 fuel with the new manifest `fuel` override) blocks the UI for seconds. Run long events on a worker.
 
-## spicecmp
-
-- Evaluate subckt defaults after the call's overrides (ngspice 45 order; the netlist importer plugin found it).
-- Treat stray tokens on `.subckt` lines (`delay=200 ps`) consistently with ngspice.
-
 ## cktimg plugin
 
 - **Fuel**: cktImg needs ~10^8 wasmi fuel per millisecond of native layout; 11 of 80 fixtures exceed the default 10^8 per event and abort with `E_FUEL` (up to > 4·10^10). Needs the per-plugin fuel override the plugin ABI (§2) specifies but the app does not implement yet (`plugins.load(.., FUEL_DEFAULT)` for every plugin), and/or a faster cktImg layout (`docs/upstream/cktimg-performance.md`). With a bigger budget, one cell per event (a timer between cells) keeps the editor responsive.
@@ -79,7 +74,7 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - **elab**: xschem replicates a 1-pin instance on an N-bit bus (`.save v(count[k])` per bit) and sizes an unnamed net on an iterated instance by pin width × elements; both need a rule that keeps the sky130 adders' broadcast.
 - `file` stays relative in templates (netlist §7.6.14): absolute paths would break byte-identical output across checkouts; decide on project-relative paths if a template needs one.
 - Precompiled OSDI cells stay lang `veriloga` (no `file`): their body is simulation-only text the netlister keeps out of CDL, as xschem keeps it in its architecture block; lang `spice` would put `pre_osdi` loads into LVS netlists.
-- No corpus oracle yet for spectre/verilog (snapshots only).
+- Spectre has no second oracle (snapshots only): no Spectre-syntax simulator runs in CI. Verilog is compiled by Icarus in CI (`netlist/tests/iverilog.rs`).
 
 ## run
 
@@ -121,7 +116,7 @@ for it; the goal set for this work was ≤ 1 ms).
 - **plugin**: an earlier plugin's `set X p` survives a later full redefinition of node `X`; no auto-quarantine of repeatedly trapping plugins.
 - **ui**: status text that changes every frame grows the string table; IME candidate window not positioned.
 - **wave**: per-sweep-step readouts; FFT traces share the time-domain x axis.
-- **import (readers)**: `.spiceinit` `sourcepath` lines, Magic `include`, `.if` blocks; cdfDump untested against real dumps.
+- **import (readers)**: cdfDump untested against a real dump: producing one needs Cadence Virtuoso (`cdfDump` is a SKILL function), which no CI or this machine has; the reader follows the documented format only.
 
 ## Parity gaps vs xschem (UI)
 
@@ -168,5 +163,4 @@ xschem menu items and keys with no meaning in Schemify, removed from the default
 - Coverage ratchet (`cargo-llvm-cov`) is not wired (TESTING.md nightly tier).
 - **render** (web): no WebGPU device in headless Chrome (CI, SwiftShader) means a blank canvas; the browser smoke test can only check that the editor starts (canvas created, no trap). A `vello_cpu` fallback when no adapter is found would let it compare pixels against the native goldens.
 - `tests/perf/baseline.txt` is measured on GitHub's shared `ubuntu-latest` runners; if the 10% gate proves noisy there, gate on best-of-N medians or a self-hosted runner.
-- **import** (`devicereader`): `import-report.{md,txt}` spell input files as absolute paths, so they differ per machine; the determinism job excludes them. Report paths relative to the import roots to bring them under the byte comparison.
 - Release builds: no macOS x86_64 binary (only Apple-silicon runners); the Linux binary links the build runner's glibc.

@@ -40,6 +40,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Second oracle for the Verilog dialect (xschem has no Verilog golden):
+      # Icarus Verilog parses and elaborates our netlists (crates/netlist/tests/iverilog.rs).
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends iverilog
+          echo "SCHEMIFY_IVERILOG=iverilog" >> "$GITHUB_ENV"
       - run: cargo test --workspace --no-fail-fast
       # Determinism (D32): the CLI outputs every platform must write byte for byte; the
       # `determinism` job below compares them. The test run above already built the binary.
@@ -116,8 +122,8 @@ jobs:
           path: determinism-out
           if-no-files-found: error
 
-  # Byte-identical CLI outputs on every platform (D32, AGENTS.md rule 4). Import reports are
-  # excluded: they record the absolute input paths (provenance), which differ per machine.
+  # Byte-identical CLI outputs on every platform (D32, AGENTS.md rule 4), import reports
+  # included (their paths are relative to the import roots, import spec §7).
   determinism:
     needs: [test, wasm]
     if: ${{ !cancelled() }}
@@ -133,7 +139,7 @@ jobs:
           for d in determinism-*; do
             [ "$d" = determinism-ubuntu-latest ] && continue
             echo "== ubuntu-latest vs ${d#determinism-}"
-            diff -r -x '*.log' -x 'import-report.*' determinism-ubuntu-latest "$d" || status=1
+            diff -r -x '*.log' determinism-ubuntu-latest "$d" || status=1
           done
           [ -d determinism-ubuntu-latest ] && [ "$(ls -d determinism-* | wc -l)" -eq 4 ] || {
             echo "::error::missing platform outputs"; status=1; }

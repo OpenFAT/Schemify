@@ -313,14 +313,24 @@ fn expand(
                     inst.name
                 ));
             } else {
-                // Lexical scoping as in ngspice: the child sees top-level
-                // `.param`s, its defaults, then the call's overrides (those
-                // evaluated in the caller's scope).
-                let mut child = ctx.top.clone();
-                eval_into(&mut child, &s.defaults, ctx.top);
+                // Lexical scoping as in ngspice 45: the child sees top-level
+                // `.param`s and the call's overrides (evaluated in the caller's
+                // scope); its other defaults are evaluated after them, so a default
+                // naming an overridden one sees the override (`r='w*l'` with `w=3`
+                // on the call is 3·l: ngspice's own result).
                 let mut overrides = Scope::new();
                 eval_into(&mut overrides, &inst.params, &scope);
-                child.extend(overrides);
+                let mut base = ctx.top.clone();
+                base.extend(overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
+                let rest: Vec<(String, String)> = s
+                    .defaults
+                    .iter()
+                    .filter(|(k, _)| !overrides.contains_key(k))
+                    .cloned()
+                    .collect();
+                let mut child = base.clone();
+                eval_into(&mut child, &rest, &base);
+                debug_assert!(overrides.keys().all(|k| child.contains_key(k)));
                 let child_ports: HashMap<String, u32> = s.ports.iter().cloned().zip(nets).collect();
                 expand(
                     ctx,

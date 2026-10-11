@@ -459,6 +459,17 @@ fn hand_cases() {
     let hier = ".subckt cell a b w=1\nR1 a b 'w*2'\n.ends\nX1 n 0 cell w=3\n";
     assert!(compare(hier, "R9 q 0 6\n", &opts).is_equal());
     assert!(!compare(hier, "R9 q 0 5\n", &opts).is_equal());
+    // ngspice 45 evaluates a subckt's defaults after the call's overrides: `r='w*l'`
+    // with `w=3` on the call is 6 (ngspice -b on this netlist: i(v1) = -1/6).
+    let late = ".subckt foo a b w=1 l=2 r='w*l'\nR1 a b 'r'\n.ends\nx1 n1 0 foo w=3\n";
+    assert!(compare(late, "R1 n1 0 6\n", &opts).is_equal());
+    assert!(!compare(late, "R1 n1 0 2\n", &opts).is_equal());
+    // ngspice ignores a bare word after a `.subckt` line's parameters (`delay=200 ps`
+    // simulates as `delay=200`): no difference.
+    let stray = ".subckt bar a b r=2 delay=200 ps\nR1 a b 'r'\n.ends\nx1 n1 0 bar\n";
+    let clean = ".subckt bar a b r=2 delay=200\nR1 a b 'r'\n.ends\nx1 n1 0 bar\n";
+    assert!(compare(stray, clean, &opts).is_equal());
+    assert!(!compare(stray, "R1 n1 0 3\n", &opts).is_equal());
     // Text sections.
     let r = compare(
         ".lib /a/m.lib tt\n.control\nrun\n.endc\n",
