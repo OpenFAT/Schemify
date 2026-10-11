@@ -22,8 +22,8 @@ Pre-release. What works today:
   and a default UI that is itself a plugin.
 - Netlists agree with xschem's on 246 of 301 SPICE corpus benches (sky130, GF180, IHP and
   xschem's examples); the rest are triaged in [tests/corpus/RATCHET.md](tests/corpus/RATCHET.md).
-- In the browser the editor opens a new schematic in memory. Files are not persisted yet
-  (OPFS storage is a stub).
+- The browser build starts the editor on a new in-memory schematic. Drawing needs WebGPU, and
+  files are not persisted yet (OPFS storage is a stub).
 
 [docs/STATUS.md](docs/STATUS.md) tracks progress and [docs/BACKLOG.md](docs/BACKLOG.md) the open
 items.

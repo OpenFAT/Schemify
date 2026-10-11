@@ -98,7 +98,12 @@ jobs:
           name: web
           path: crates/app/web
       - name: browser smoke test (headless Chrome)
-        run: bash tests/web/smoke.sh crates/app/web
+        run: bash tests/web/smoke.sh crates/app/web web-smoke
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: web-smoke
+          path: web-smoke
       - name: CLI for WASI (determinism under wasmtime)
         run: cargo build --target wasm32-wasip1 -p schemify-app --no-default-features --bin schemify
       - run: >-

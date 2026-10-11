@@ -36,8 +36,8 @@ run() { # run <log> <status-file> args...
   set -e
 }
 
-fixtures="crates/app/tests/fixtures crates/elab/tests/fixtures crates/netlist/tests/fixtures"
-for f in $(find $fixtures -type f \( -name '*.shcomp' -o -name '*.shbench' \) | sort); do
+fixtures=(crates/app/tests/fixtures crates/elab/tests/fixtures crates/netlist/tests/fixtures)
+for f in $(find "${fixtures[@]}" -type f \( -name '*.shcomp' -o -name '*.shbench' \) | sort); do
   name="${f//\//__}"
   for d in ngspice xyce cdl spectre verilog; do
     run "$rel/netlist/$name.$d.log" "$rel/netlist/$name.$d.status" \
@@ -46,7 +46,7 @@ for f in $(find $fixtures -type f \( -name '*.shcomp' -o -name '*.shbench' \) | 
 done
 
 files=()
-for f in $(find $fixtures -type f \( -name '*.shprim' -o -name '*.shcomp' -o -name '*.shbench' \) | sort); do
+for f in $(find "${fixtures[@]}" -type f \( -name '*.shprim' -o -name '*.shcomp' -o -name '*.shbench' \) | sort); do
   cp "$f" "$rel/fmt/${f//\//__}"
   files+=("$rel/fmt/${f//\//__}")
 done

@@ -15,12 +15,21 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 table="$1"
 recorded="${2:-$here/RATCHET.md}"
 
-# Prints "<spice agree> <cdl stripped agree>" of a table file.
+# Prints "<spice agree> <cdl stripped agree>" of a table file. Columns are found by their header
+# (`agree`, `cdl agree, golden code stripped`), so added columns do not shift the reading.
 counts() {
   awk -F'|' '
-    { for (i = 2; i <= NF; i++) { gsub(/[ *]/, "", $i) } }
-    $3 == "spice" { spice += $4; rows++ }
-    $3 == "cdl" { cdl += $8; rows++ }
+    { for (i = 2; i <= NF; i++) { gsub(/^ +| +$|\*/, "", $i) } }
+    $2 == "set" && $3 == "mode" {
+      agree = stripped = 0
+      for (i = 2; i <= NF; i++) {
+        if ($i == "agree") agree = i
+        if ($i == "cdl agree, golden code stripped") stripped = i
+      }
+      next
+    }
+    agree && stripped && $3 == "spice" { spice += $agree; rows++ }
+    agree && stripped && $3 == "cdl" { cdl += $stripped; rows++ }
     END { if (rows == 0) exit 2; print spice + 0, cdl + 0 }
   ' "$1"
 }
