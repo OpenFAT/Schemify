@@ -99,7 +99,7 @@ proptest! {
         for (s, r) in steps.iter().enumerate() {
             let (a, b) = (r.start as usize, r.end as usize);
             let want = reference(&xs[a..b], &ys[a..b], q);
-            prop_assert_eq!(w.value_at_step(0, s, q), want, "step {s}");
+            prop_assert_eq!(w.value_at_step(0, s, q), want, "step {}", s);
             first = first.or(want);
         }
         prop_assert_eq!(w.value_at(0, q), first);
