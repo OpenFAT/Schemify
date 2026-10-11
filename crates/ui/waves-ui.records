@@ -240,12 +240,310 @@ node waves.status_msg label
   style wstatus
   label ""
 
-# --- keys: xschem graph keys where they exist (a, b, s, f, arrows) -------------------------------
+# --- graph properties dialog (spec waves §8): a root, shown by UiState::set_dialog when a plot is
+# double-clicked. `WaveUi::contribute` sets the title, the mode/radix labels, the unlock box and
+# the `waves.props.f.<k>` field values; Enter in a field or OK applies, Escape or Cancel closes. ---
+
+style dialog
+  bg d9d9d9
+  dir column
+  pad 12
+  pad-y 12
+  gap 8
+  border 1
+  border-color 404040
+
+style wfield
+  width 96
+
+style wflabel
+  pad 4
+  width 70
+
+node waves.props dialog
+  label "Graph properties"
+node waves.props.title label
+  parent waves.props
+  label "Graph properties"
+node waves.props.row0 panel
+  parent waves.props
+  style wrow
+node waves.props.mode button
+  parent waves.props.row0
+  label "Mode: analog"
+  command waves.props.mode
+  tooltip "Analog lines, digital lanes, or a histogram of values"
+node waves.props.radix button
+  parent waves.props.row0
+  label "Radix: hex"
+  command waves.props.radix
+  tooltip "How bus values print"
+node waves.props.unlock checkbox
+  parent waves.props.row0
+  label "Unlock X"
+  command waves.props.unlock
+  checked 0
+  tooltip "Own x axis, not moved with the other panes"
+
+node waves.props.row1 panel
+  parent waves.props
+  style wrow
+node waves.props.l.0 label
+  parent waves.props.row1
+  label Threshold
+  style wflabel
+node waves.props.f.0 text_input
+  parent waves.props.row1
+  command waves.props.ok
+  style wfield
+  tooltip "Logic 1 at or above this y (digital lanes, bus bits)"
+node waves.props.l.1 label
+  parent waves.props.row1
+  label Bins
+  style wflabel
+node waves.props.f.1 text_input
+  parent waves.props.row1
+  command waves.props.ok
+  style wfield
+  tooltip "Histogram bins, 2 to 1024"
+node waves.props.l.2 label
+  parent waves.props.row1
+  label Step
+  style wflabel
+node waves.props.f.2 text_input
+  parent waves.props.row1
+  command waves.props.ok
+  style wfield
+  tooltip "Sweep step shown (empty: every step)"
+
+node waves.props.row2 panel
+  parent waves.props
+  style wrow
+node waves.props.l.3 label
+  parent waves.props.row2
+  label "X min"
+  style wflabel
+node waves.props.f.3 text_input
+  parent waves.props.row2
+  command waves.props.ok
+  style wfield
+node waves.props.l.4 label
+  parent waves.props.row2
+  label "X max"
+  style wflabel
+node waves.props.f.4 text_input
+  parent waves.props.row2
+  command waves.props.ok
+  style wfield
+
+node waves.props.row3 panel
+  parent waves.props
+  style wrow
+node waves.props.l.5 label
+  parent waves.props.row3
+  label "Y min"
+  style wflabel
+node waves.props.f.5 text_input
+  parent waves.props.row3
+  command waves.props.ok
+  style wfield
+node waves.props.l.6 label
+  parent waves.props.row3
+  label "Y max"
+  style wflabel
+node waves.props.f.6 text_input
+  parent waves.props.row3
+  command waves.props.ok
+  style wfield
+
+node waves.props.row4 panel
+  parent waves.props
+  style wrow
+node waves.props.l.7 label
+  parent waves.props.row4
+  label "Cursor a"
+  style wflabel
+node waves.props.f.7 text_input
+  parent waves.props.row4
+  command waves.props.ok
+  style wfield
+  tooltip "x of cursor a (empty hides it)"
+node waves.props.l.8 label
+  parent waves.props.row4
+  label "Cursor b"
+  style wflabel
+node waves.props.f.8 text_input
+  parent waves.props.row4
+  command waves.props.ok
+  style wfield
+
+node waves.props.row5 panel
+  parent waves.props
+  style wrow
+node waves.props.l.9 label
+  parent waves.props.row5
+  label "Cursor A"
+  style wflabel
+node waves.props.f.9 text_input
+  parent waves.props.row5
+  command waves.props.ok
+  style wfield
+  tooltip "y of horizontal cursor A (empty hides it)"
+node waves.props.l.10 label
+  parent waves.props.row5
+  label "Cursor B"
+  style wflabel
+node waves.props.f.10 text_input
+  parent waves.props.row5
+  command waves.props.ok
+  style wfield
+
+# Colour swatches (wave::PALETTE, in order): a click recolours the selected trace.
+node waves.props.colours panel
+  parent waves.props
+  style wrow
+node waves.props.colours_label label
+  parent waves.props.colours
+  label "Trace colour"
+  style wflabel
+
+style wswatch0
+  bg ffd83c
+style wswatch1
+  bg 3ce6ff
+style wswatch2
+  bg ff5050
+style wswatch3
+  bg 6cff5c
+style wswatch4
+  bg ff9f1a
+style wswatch5
+  bg c08cff
+style wswatch6
+  bg 4d94ff
+style wswatch7
+  bg ff70c8
+style wswatch8
+  bg ffffff
+style wswatch9
+  bg a0a0a0
+style wswatch10
+  bg 00b090
+style wswatch11
+  bg b8e040
+style wswatch12
+  bg d8b080
+style wswatch13
+  bg 9090ff
+style wswatch14
+  bg ff4080
+style wswatch15
+  bg 40c0ff
+
+node waves.props.swatch.0 button
+  parent waves.props.colours
+  label " "
+  command waves.props.swatch
+  style wswatch0
+node waves.props.swatch.1 button
+  parent waves.props.colours
+  label " "
+  command waves.props.swatch
+  style wswatch1
+node waves.props.swatch.2 button
+  parent waves.props.colours
+  label " "
+  command waves.props.swatch
+  style wswatch2
+node waves.props.swatch.3 button
+  parent waves.props.colours
+  label " "
+  command waves.props.swatch
+  style wswatch3
+node waves.props.swatch.4 button
+  parent waves.props.colours
+  label " "
+  command waves.props.swatch
+  style wswatch4
+node waves.props.swatch.5 button
+  parent waves.props.colours
+  label " "
+  command waves.props.swatch
+  style wswatch5
+node waves.props.swatch.6 button
+  parent waves.props.colours
+  label " "
+  command waves.props.swatch
+  style wswatch6
+node waves.props.swatch.7 button
+  parent waves.props.colours
+  label " "
+  command waves.props.swatch
+  style wswatch7
+node waves.props.swatch.8 button
+  parent waves.props.colours
+  label " "
+  command waves.props.swatch
+  style wswatch8
+node waves.props.swatch.9 button
+  parent waves.props.colours
+  label " "
+  command waves.props.swatch
+  style wswatch9
+node waves.props.swatch.10 button
+  parent waves.props.colours
+  label " "
+  command waves.props.swatch
+  style wswatch10
+node waves.props.swatch.11 button
+  parent waves.props.colours
+  label " "
+  command waves.props.swatch
+  style wswatch11
+node waves.props.swatch.12 button
+  parent waves.props.colours
+  label " "
+  command waves.props.swatch
+  style wswatch12
+node waves.props.swatch.13 button
+  parent waves.props.colours
+  label " "
+  command waves.props.swatch
+  style wswatch13
+node waves.props.swatch.14 button
+  parent waves.props.colours
+  label " "
+  command waves.props.swatch
+  style wswatch14
+node waves.props.swatch.15 button
+  parent waves.props.colours
+  label " "
+  command waves.props.swatch
+  style wswatch15
+
+node waves.props.buttons panel
+  parent waves.props
+  style wrow
+node waves.props.ok button
+  parent waves.props.buttons
+  label OK
+  command waves.props.ok
+node waves.props.cancel button
+  parent waves.props.buttons
+  label Cancel
+  command waves.props.cancel
+
+# --- keys: xschem graph keys (inventory §2.2): a, b, s, f, A, B (horizontal cursors), m
+# (measurement tooltip), t (dataset tracking), arrows ---------------------------------------------
 
 key a waves.cursor_a
 key b waves.cursor_b
+key Shift+A waves.hcursor_a
+key Shift+B waves.hcursor_b
 key s waves.swap_cursors
 key f waves.autoscale
+key m waves.measure
+key t waves.track
 key Del waves.delete_trace
 key Left waves.pan_left
 key Right waves.pan_right

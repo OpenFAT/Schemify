@@ -13,6 +13,9 @@
 //! vector and scalar versions agree on every input: NaN samples are skipped (a NaN never wins a
 //! comparison), and an empty or all-NaN run gives `(+inf, -inf)`. The one difference is which
 //! zero wins between `0.0` and `-0.0`; they compare equal.
+//!
+//! The other two display reductions are per pixel column (digital lanes: [`logic_runs`], busy
+//! columns where samples disagree) and per bin (histogram panes: [`bin_counts`]).
 
 use core::ops::Range;
 
@@ -256,6 +259,111 @@ fn decimate_with(
         push(xs[b - 1], ys[b - 1], out);
     }
     debug_assert!(out.len() - before <= 2 * cols + 2);
+}
+
+/// One run of equal pixel columns of a digital lane (spec waves §4): columns `c0..c1` counted
+/// from the x scale's `p0`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Run {
+    /// First column.
+    pub c0: u32,
+    /// One past the last column.
+    pub c1: u32,
+    /// The logic or bus value; `None` when the samples in a column disagree (busy).
+    pub value: Option<u32>,
+}
+
+/// The logic value of sample `y`: `y >= threshold` as 0/1, or the bus value `y` itself when
+/// there is no threshold (NaN reads 0).
+#[inline]
+pub fn logic(y: f64, threshold: Option<f64>) -> u32 {
+    match threshold {
+        Some(t) => u32::from(y >= t),
+        None => y as u32,
+    }
+}
+
+/// Appends the digital runs of one sweep step to `out` (spec waves §4): per pixel column of
+/// `sx`, the value held into it from the sample before plus every sample in it, `None` when
+/// they disagree; equal neighbours merge, columns before the first or after the last sample are
+/// left out. `threshold` thresholds an analog trace; `None` reads a bus's values.
+///
+/// # Panics
+///
+/// Panics if the columns differ in length or `sx` does not increase left to right.
+///
+/// # Time complexity
+///
+/// O(visible samples + columns · log(samples per column)); nothing for a non-ascending step.
+pub fn logic_runs(xs: &[f64], ys: &[f64], threshold: Option<f64>, sx: &Scale, out: &mut Vec<Run>) {
+    assert_eq!(xs.len(), ys.len(), "x and y columns differ in length");
+    assert!(sx.p1 > sx.p0, "x pixels must increase left to right");
+    let n = xs.len();
+    if n == 0 || xs[0] > xs[n - 1] || !xs[0].is_finite() {
+        // ponytail: a non-ascending step (an X-Y sweep) has no time order to hold values in.
+        return;
+    }
+    // ponytail: a scalar fold per column. It is an accumulator in the `minmax` shape; vectorize
+    // it when a profile of million-sample digital lanes asks for it.
+    let before = out.len();
+    let cols = ((sx.p1 - sx.p0).floor() as usize).max(1);
+    let edge = |c: usize| sx.value(sx.p0 + c as f32);
+    // `i`: first sample at or after the current column's left edge.
+    let mut i = xs.partition_point(|&x| x < edge(0));
+    for c in 0..cols {
+        let j = gallop(xs, i, n, edge(c + 1));
+        // The value held into the column needs a sample before it and one at or after it.
+        let held = (i > 0 && i < n).then(|| logic(ys[i - 1], threshold));
+        let mut state = held.map(Some);
+        for &y in &ys[i..j] {
+            let v = logic(y, threshold);
+            state = match state {
+                None => Some(Some(v)),
+                Some(Some(w)) if w == v => Some(Some(w)),
+                Some(_) => Some(None),
+            };
+        }
+        i = j;
+        let Some(value) = state else { continue };
+        let c = c as u32;
+        let extend =
+            out.len() > before && out.last().is_some_and(|r| r.c1 == c && r.value == value);
+        if extend {
+            out.last_mut().expect("checked above").c1 = c + 1;
+        } else {
+            out.push(Run {
+                c0: c,
+                c1: c + 1,
+                value,
+            });
+        }
+    }
+    debug_assert!(out[before..].windows(2).all(|w| w[0].c1 <= w[1].c0));
+}
+
+/// Adds the samples of `y` to `bins` equal bins over `[t0, t1]` in transformed units (`log10`
+/// when `log`, spec waves §5): bin `⌊(t − t0) · bins / (t1 − t0)⌋`, `t1` itself in the last bin.
+/// Samples outside the range or not finite after the transform are not counted.
+///
+/// # Panics
+///
+/// Panics if `bins` is empty or `t0 < t1` does not hold with both finite.
+pub fn bin_counts(y: &[f64], t0: f64, t1: f64, log: bool, bins: &mut [u32]) {
+    assert!(!bins.is_empty(), "no bins");
+    assert!(
+        t0.is_finite() && t1.is_finite() && t0 < t1,
+        "empty bin range"
+    );
+    let n = bins.len();
+    let k = n as f64 / (t1 - t0);
+    for &v in y {
+        let t = if log { v.log10() } else { v };
+        if !(t >= t0 && t <= t1) {
+            continue; // outside, or NaN (a log of a value <= 0 is -inf or NaN)
+        }
+        let b = (((t - t0) * k) as usize).min(n - 1);
+        bins[b] += 1;
+    }
 }
 
 /// First index in `from..=end` whose x is `>= edge` (`xs` ascending): exponential search from

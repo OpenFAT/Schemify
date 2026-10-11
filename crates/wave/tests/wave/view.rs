@@ -75,7 +75,7 @@ fn complex_traces_show_magnitude_on_log_axes() {
     let mut w = Waves::new(fixture("rlc_ac.bin.raw"));
     add(&mut w, "v(out)", 0).unwrap();
     assert!(w.is_magnitude(0));
-    w.apply(&Request::LogX { on: true }).unwrap();
+    w.apply(&Request::LogX { pane: 0, on: true }).unwrap();
     w.apply(&Request::LogY { pane: 0, on: true }).unwrap();
     let f = w.datasets()[0].scale();
     assert_eq!(
@@ -223,11 +223,11 @@ proptest! {
     fn zoom_then_unzoom_restores_the_view(at in 0.0f64..1.0, f in 0.01f64..100.0, log: bool) {
         let mut w = ramp();
         if log {
-            w.apply(&Request::LogX { on: true }).unwrap();
+            w.apply(&Request::LogX { pane: 0, on: true }).unwrap();
         }
         let before = w.x();
-        w.apply(&Request::ZoomX { at, factor: f }).unwrap();
-        w.apply(&Request::ZoomX { at, factor: 1.0 / f }).unwrap();
+        w.apply(&Request::ZoomX { pane: 0, at, factor: f }).unwrap();
+        w.apply(&Request::ZoomX { pane: 0, at, factor: 1.0 / f }).unwrap();
         prop_assert!(near(w.x(), before), "{:?} vs {before:?}", w.x());
     }
 
@@ -239,8 +239,8 @@ proptest! {
             w.apply(&Request::PanY { pane: 0, by }).unwrap();
             w.apply(&Request::PanY { pane: 0, by: -by }).unwrap();
         } else {
-            w.apply(&Request::PanX { by }).unwrap();
-            w.apply(&Request::PanX { by: -by }).unwrap();
+            w.apply(&Request::PanX { pane: 0, by }).unwrap();
+            w.apply(&Request::PanX { pane: 0, by: -by }).unwrap();
         }
         prop_assert!(near(w.x(), before.0) && near(w.panes()[0], before.1));
     }
@@ -249,7 +249,7 @@ proptest! {
     fn box_zoom_lands_inside_the_old_view(a in 0.0f64..1.0, b in 0.0f64..1.0) {
         let mut w = ramp();
         let old = w.x();
-        w.apply(&Request::BoxX { from: a, to: b }).unwrap();
+        w.apply(&Request::BoxX { pane: 0, from: a, to: b }).unwrap();
         let new = w.x();
         if (a - b).abs() > 1e-6 {
             prop_assert!((new.lo - old.at(a.min(b))).abs() < 1e-12);
@@ -262,7 +262,7 @@ proptest! {
     #[test]
     fn autoscale_covers_every_visible_sample(at in 0.0f64..1.0, f in 0.05f64..0.9) {
         let mut w = ramp();
-        w.apply(&Request::ZoomX { at, factor: f }).unwrap();
+        w.apply(&Request::ZoomX { pane: 0, at, factor: f }).unwrap();
         w.apply(&Request::AutoscaleY { pane: 0 }).unwrap();
         let (x, y) = w.xy(0);
         let (vx, vy) = (w.x(), w.panes()[0]);
