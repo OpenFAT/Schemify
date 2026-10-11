@@ -100,6 +100,13 @@ fn parse_100k_objects_within_budget() {
         "100k objects, {} MB: parse {parse_time:?}, write {write_time:?}, merge3 {merge_time:?}",
         text.len() / 1_000_000
     );
+    for (key, d) in [
+        ("parse", parse_time),
+        ("write", write_time),
+        ("merge3", merge_time),
+    ] {
+        println!("PERF format.{key}_100k_ms {:.3}", d.as_secs_f64() * 1e3);
+    }
     assert_eq!(doc.record_count(), 100_001);
     assert!(
         parse_time < Duration::from_millis(100),

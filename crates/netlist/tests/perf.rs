@@ -96,6 +96,7 @@ fn emit_a_hierarchy_of_a_million_leaves() {
         "1M-leaf hierarchy: elaborate {te:?}, emit {dt:?} ({} bytes)",
         n.text.len()
     );
+    eprintln!("PERF netlist.emit_hier_1m_ms {:.3}", dt.as_secs_f64() * 1e3);
     assert!(dt < Duration::from_millis(5), "{dt:?}");
 }
 
@@ -121,6 +122,10 @@ fn emit_a_flat_bench_of_100k_instances() {
     eprintln!(
         "flat 100k: elaborate {te:?}, emit {dt:?} ({} bytes), first reverse lookup {dl:?}; ×10 ≈ 1M flat",
         out.text.len()
+    );
+    eprintln!(
+        "PERF netlist.emit_flat_100k_ms {:.3}",
+        dt.as_secs_f64() * 1e3
     );
     // D39: 1M flat ≤ 1 s end to end. Measured: elab ~93 ms + emit ~11 ms per 10^5
     // (~1.04 s per 10^6, elab's share is BACKLOG). Regression guard for emission:

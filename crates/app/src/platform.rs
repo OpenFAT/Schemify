@@ -1,5 +1,6 @@
 //! The OS boundary (ARCHITECTURE: only `app` talks to the OS), split by `cfg` (D31):
-//! native builds use `std::fs`; the web build will use OPFS through generated glue (D2).
+//! native and WASI builds use `std::fs`; the web build will use OPFS through generated glue
+//! (D2) and until then sees an empty file system holding only [`WEB_ROOT`].
 //!
 //! Every path here is absolute or relative to the process working directory; callers build
 //! them from the project root. Errors are plain text for the status line.
@@ -11,8 +12,13 @@ use std::path::{Path, PathBuf};
 pub const LIST_FILES_MAX: usize = 1 << 16;
 /// Directory depth walked by [`list_files`].
 pub const LIST_DEPTH_MAX: u32 = 8;
+/// The web build's project directory, opened by its argv-less start (`schemify edit /`): the
+/// root of its file system and, until OPFS is wired (D31), the only entry that exists there.
+pub const WEB_ROOT: &str = "/";
 
-#[cfg(not(target_arch = "wasm32"))]
+// WASI (the CLI under a wasm runtime, CI's determinism job) has `std::fs`: it takes the native
+// path. Only the browser (`wasm32-unknown-unknown`) lacks a file system.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 mod imp {
     use super::*;
     use std::io::Write;
@@ -118,10 +124,13 @@ mod imp {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod imp {
     // TODO(D31): OPFS through web-sys (generated glue only, D2). Until then the web build
-    // edits in memory: reads fail, writes are refused, listings are empty.
+    // edits in memory over an empty file system: only the root `/` exists (the editor's
+    // project directory on the web), reads fail, writes are refused, listings are empty.
+    // ponytail: OPFS is async on the main thread while this API is synchronous; the upgrade
+    // is an in-memory mirror loaded from OPFS before the editor starts, written back async.
     use super::*;
 
     const NO_OPFS: &str = "web storage (OPFS) is not wired yet";
@@ -129,11 +138,11 @@ mod imp {
     pub fn read(_: &Path) -> Result<Vec<u8>, String> {
         Err(NO_OPFS.into())
     }
-    pub fn exists(_: &Path) -> bool {
-        false
+    pub fn exists(path: &Path) -> bool {
+        is_dir(path)
     }
-    pub fn is_dir(_: &Path) -> bool {
-        false
+    pub fn is_dir(path: &Path) -> bool {
+        path == Path::new(WEB_ROOT)
     }
     pub fn write_atomic(_: &Path, _: &[u8]) -> Result<(), String> {
         Err(NO_OPFS.into())

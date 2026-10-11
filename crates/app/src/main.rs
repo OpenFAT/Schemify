@@ -34,7 +34,11 @@ const DESIGN_ERROR: u8 = 1;
 const USAGE_ERROR: u8 = 2;
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // A browser passes no argv: the web build is the editor on its file-system root (D2, D31).
+    if cfg!(all(target_arch = "wasm32", target_os = "unknown")) && args.is_empty() {
+        args = vec!["edit".into(), schemify_app::platform::WEB_ROOT.into()];
+    }
     let Some(command) = args.first() else {
         eprint!("{USAGE}");
         return ExitCode::from(USAGE_ERROR);
