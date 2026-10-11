@@ -749,6 +749,8 @@ fn keys_place_horizontal_cursors_track_steps_and_measure() {
             at: None
         }]
     );
+    w.apply(reqs);
+    assert_eq!(w.waves.hcursors(0), [None, None]);
     // A press within 6 px of a horizontal cursor drags it.
     let reqs = w.command("waves.hcursor_b", "", "", 0);
     w.apply(reqs);
