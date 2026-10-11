@@ -34,6 +34,9 @@ pub(crate) const IMPORT_BYTES_MAX: usize = 512 << 20;
 /// Where imported projects go (web spec §3).
 pub(crate) const PROJECTS: &str = "/projects";
 
+/// `(relative path, bytes)` per file, as [`crate::zip::read`] returns them.
+pub(crate) type Files = Vec<(String, Vec<u8>)>;
+
 /// The table. Directories are explicit (OPFS has empty directories); `/` always exists.
 #[derive(Debug)]
 pub(crate) struct Vfs {
@@ -284,8 +287,8 @@ impl Vfs {
     pub(crate) fn import_plan(
         &self,
         hint: &str,
-        mut entries: Vec<(String, Vec<u8>)>,
-    ) -> Result<(String, Vec<(String, Vec<u8>)>), String> {
+        mut entries: Files,
+    ) -> Result<(String, Files), String> {
         entries.retain(|(p, _)| !p.starts_with("__MACOSX/"));
         if entries.is_empty() {
             return Err("no files to import".into());
