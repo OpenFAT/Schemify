@@ -46,12 +46,14 @@ fn groups(c: &Path) -> Vec<Group> {
         "rom8k",
     ];
     let s = |p: &Path| p.to_string_lossy().into_owned();
+    // golden.sh runs xschem with HOME in the cache (`$USER_CONF_DIR` is `~/.xschem`).
+    let home = ("HOME", s(&c.join("home")));
     vec![
         Group {
             name: "xschem",
             path: xs.iter().map(|d| (l.join(d), true)).collect(),
             rcs: vec![],
-            env: vec![],
+            env: vec![home.clone()],
         },
         Group {
             name: "sky130",
@@ -61,7 +63,11 @@ fn groups(c: &Path) -> Vec<Group> {
                 (src.join("xschem_sky130"), true),
             ],
             rcs: vec![src.join("xschem_sky130/xschemrc")],
-            env: vec![("PDK_ROOT", s(&c.join("pdk"))), ("PDK", "sky130A".into())],
+            env: vec![
+                ("PDK_ROOT", s(&c.join("pdk"))),
+                ("PDK", "sky130A".into()),
+                home.clone(),
+            ],
         },
         Group {
             name: "gf180",
@@ -71,7 +77,7 @@ fn groups(c: &Path) -> Vec<Group> {
                 (src.join("gf180mcu_fd_pr/cells/xschem"), true),
             ],
             rcs: vec![src.join("gf180mcu_fd_pr/cells/xschem/xschemrc")],
-            env: vec![("PDK_ROOT", s(&src.join("gf180mcu_fd_pr")))],
+            env: vec![("PDK_ROOT", s(&src.join("gf180mcu_fd_pr"))), home.clone()],
         },
         Group {
             name: "ihp",
@@ -90,6 +96,7 @@ fn groups(c: &Path) -> Vec<Group> {
             env: vec![
                 ("PDK_ROOT", s(&src.join("ihp_open_pdk"))),
                 ("PDK", "ihp-sg13g2".into()),
+                home,
             ],
         },
     ]
@@ -408,6 +415,11 @@ struct Tally {
     /// CDL agreement against the golden without xschem's user-architecture-code blocks
     /// (spec §7.4: CDL carries no code; xschem's lvs netlist keeps it).
     stripped_agree: u32,
+    /// Differences that vanish once the golden's undefined parameter names are bound
+    /// (`spicecmp` `bind_free`): xschem left a top-level component's parameters
+    /// unevaluated. Counted apart from agreement (SPICE: against the golden; CDL:
+    /// against the code-stripped golden).
+    unevaluated: u32,
 }
 
 /// The golden without its `**** begin/end user architecture code` blocks.
@@ -516,11 +528,26 @@ fn xschem_differential() {
                 aliases.extend(theirs.map(|p| (p, "$CORPUS".to_owned())));
                 let opts = CmpOptions {
                     path_aliases: aliases,
+                    ..CmpOptions::default()
                 };
                 let report = compare(&golden, &text, &opts);
                 let stripped_report =
                     (mode == "cdl").then(|| compare(&strip_code(&golden), &text, &opts));
                 let stripped = stripped_report.as_ref().is_some_and(|r| r.is_equal());
+                // Bound comparison against what this mode is judged on.
+                let reference = if mode == "cdl" {
+                    strip_code(&golden)
+                } else {
+                    golden.clone()
+                };
+                let bound = (!report.is_equal() && !stripped).then(|| {
+                    let o = CmpOptions {
+                        bind_free: true,
+                        ..opts.clone()
+                    };
+                    compare(&reference, &text, &o)
+                });
+                let unevaluated = bound.as_ref().is_some_and(|r| r.is_equal());
                 // The diff file of a cdl bench is against the code-stripped golden.
                 let diff: Vec<String> = stripped_report
                     .as_ref()
@@ -542,6 +569,14 @@ fn xschem_differential() {
                 } else if report.is_equal() {
                     t.agree += 1;
                     t.stripped_agree += u32::from(mode == "cdl");
+                } else if unevaluated {
+                    t.unevaluated += 1;
+                    lines.push(format!(
+                        "{name} {mode} golden-unevaluated: {}",
+                        bound
+                            .as_ref()
+                            .map_or(String::new(), |r| r.bindings.join(" "))
+                    ));
                 } else {
                     t.stripped_agree += u32::from(stripped);
                     t.differ += 1;
@@ -561,13 +596,14 @@ fn xschem_differential() {
         }
     }
     let mut table = String::from(
-        "| set | mode | agree | differ | (connectivity agrees) | cdl agree, golden code stripped | failed-to-import | failed-to-elaborate |\n|---|---|---|---|---|---|---|---|\n",
+        "| set | mode | agree | golden-unevaluated | differ | (connectivity agrees) | cdl agree, golden code stripped | failed-to-import | failed-to-elaborate |\n|---|---|---|---|---|---|---|---|---|\n",
     );
     let mut total = Tally::default();
     for ((set, mode), t) in &tally {
         table.push_str(&format!(
-            "| {set} | {mode} | {} | {} | {} | {} | {} | {} |\n",
+            "| {set} | {mode} | {} | {} | {} | {} | {} | {} | {} |\n",
             t.agree,
+            t.unevaluated,
             t.differ,
             t.conn_agree,
             if *mode == "cdl" {
@@ -579,6 +615,7 @@ fn xschem_differential() {
             t.no_elab
         ));
         total.stripped_agree += t.stripped_agree;
+        total.unevaluated += t.unevaluated;
         total.agree += t.agree;
         total.differ += t.differ;
         total.conn_agree += t.conn_agree;
@@ -586,8 +623,9 @@ fn xschem_differential() {
         total.no_elab += t.no_elab;
     }
     table.push_str(&format!(
-        "| total | | {} | {} | {} | {} | {} | {} |\n",
+        "| total | | {} | {} | {} | {} | {} | {} | {} |\n",
         total.agree,
+        total.unevaluated,
         total.differ,
         total.conn_agree,
         total.stripped_agree,

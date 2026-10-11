@@ -219,6 +219,9 @@ struct PinOut {
     dir: &'static str,
     xy: [i32; 2],
     inherit: Option<String>,
+    /// A second pin of an earlier pin's xschem name: written `alias <that pin>` (xschem
+    /// shorts same-named pins; netlist spec §3).
+    alias: bool,
 }
 
 struct ParamOut {
@@ -579,6 +582,11 @@ impl<'o> Tables<'o> {
                 | "annotator" => SymClass::Drop(Drop::NonElectrical),
                 "netlist_options" | "bus_tap" => SymClass::Review(Reason::Unsupported),
                 "probe" if !has_format => SymClass::Drop(Drop::Display),
+                // A pinless symbol whose format uses `extra` nets is a device with only
+                // inherited pins (sky130 `fill_1`, `tap_1`: LVS goldens list them).
+                _ if iface.pins.name.is_empty() && has_format && implicit_only(&iface) => {
+                    SymClass::Cell
+                }
                 _ if iface.pins.name.is_empty() && has_format => SymClass::Code,
                 _ if iface.pins.name.is_empty() => SymClass::Drop(Drop::NonElectrical),
                 t if t.starts_with("tcleval(") => SymClass::Review(Reason::Tcl),
@@ -725,16 +733,17 @@ impl<'o> Tables<'o> {
                 });
                 name = format!("pin{p}");
             }
-            if pins.iter().any(|q| q.name == name) {
-                reviews.push(Review {
-                    reason: Reason::Name,
-                    detail: format!("duplicate pin name {name}"),
-                });
+            // A repeated name is the same port at a second position (xschem shorts them:
+            // goldens `doublepin`, `xcross`, `short.sym`): an alias pin `<base>_<k>[…]`.
+            let xs = name.clone();
+            let alias = pins.iter().any(|q| q.xs == name);
+            if alias {
+                let (base, bus) = name.split_at(name.find('[').unwrap_or(name.len()));
                 let mut k = 2;
-                while pins.iter().any(|q| q.name == format!("{name}_{k}")) {
+                while pins.iter().any(|q| q.name == format!("{base}_{k}{bus}")) {
                     k += 1;
                 }
-                name = format!("{name}_{k}");
+                name = format!("{base}_{k}{bus}");
             }
             let dir = match iface.pins.dir[p] {
                 PinDir::In => "in",
@@ -742,11 +751,12 @@ impl<'o> Tables<'o> {
                 _ => "inout",
             };
             pins.push(PinOut {
-                xs: name.clone(),
+                xs,
                 name,
                 dir,
                 xy: iface.pins.center[p],
                 inherit: None,
+                alias,
             });
         }
         // A format that names its pins with `@@P` instead of `@pinlist` fixes the port
@@ -781,6 +791,7 @@ impl<'o> Tables<'o> {
                 dir: "inout",
                 xy: [0, 0],
                 inherit: Some(net.clone()),
+                alias: false,
             });
         }
         // Parameters from the template.
@@ -850,6 +861,13 @@ impl<'o> Tables<'o> {
                 }
                 rename.push((pins[k].xs.clone(), n.clone()));
                 pins[k].name = n;
+            }
+            // `D[5..0]` is the bracket-less bundle `D5,…,D0` (as in labels).
+            let bundle = dotted_bus(&pins[k].name);
+            if bundle != pins[k].name && !pins[k].alias {
+                rename.retain(|(x, _)| *x != pins[k].xs);
+                rename.push((pins[k].xs.clone(), bundle.clone()));
+                pins[k].name = bundle;
             }
         }
         let pin_names: Vec<String> = pins
@@ -1148,6 +1166,69 @@ impl<'o> Tables<'o> {
             });
             self.targets[s] = Some(Target::Cell(c));
         }
+        // A schematic as a symbol: xschem netlists a schematic's `ipin`/`opin`/`iopin`
+        // instances as its interface (the LVS `.subckt` ports of a symbol-less schematic,
+        // and the pins of a `.sch` placed as a symbol, LCC). One derived symbol per such
+        // schematic that no cell symbol owns (the cell `<stem>`), or that is owned but
+        // placed as a symbol (a second cell `<stem>__lcc`: its pins sit elsewhere).
+        let placed = self.placed_schematics();
+        for x in 0..self.srcs.len() as u32 {
+            let owned = consumed.contains(&x);
+            if self.srcs[x as usize].ext != Ext::Sch || (owned && !placed.contains(&x)) {
+                continue;
+            }
+            let owner: Vec<String> = self
+                .cells
+                .iter()
+                .find(|c| c.sch == Some(x) && c.sym.is_some())
+                .and_then(|c| self.plans[c.sym.expect("checked") as usize].as_ref())
+                .map(|p| p.pins.iter().map(|q| q.xs.clone()).collect())
+                .unwrap_or_default();
+            let Some((iface, ty)) = self.derived_iface(x, &owner) else {
+                continue;
+            };
+            let s = self.syms.len();
+            self.syms.push(Sym {
+                src: x,
+                iface,
+                ty,
+                class: SymClass::Cell,
+            });
+            self.plans.push(None);
+            self.sym_ifaces.push(None);
+            self.targets.push(None);
+            let plan = self.plan_symbol(s, acc);
+            self.sym_ifaces[s] = Some(iface_of_plan(&plan));
+            self.plans[s] = Some(plan);
+            self.sym_of_src[x as usize] = Some(s as u32);
+            let path = &self.srcs[x as usize].path;
+            let stem = stem_of(path).replace(':', "_");
+            let c = self.cells.len() as u32;
+            let name = if owned { format!("{stem}__lcc") } else { stem };
+            if owned {
+                acc.item(
+                    x,
+                    0,
+                    Class::AltCell,
+                    0,
+                    format!("{name} (the schematic placed as a symbol)"),
+                );
+            }
+            self.cells.push(Cell {
+                dir: dir_of(path).to_owned(),
+                name,
+                kind: FileKind::Shcomp,
+                sym: Some(s as u32),
+                sch: Some(x),
+                tally_sym: false,
+                tally_sch: !owned,
+                copy_of: None,
+                has_copy: false,
+                lib: 0,
+            });
+            self.targets[s] = Some(Target::Cell(c));
+            consumed.insert(x);
+        }
         for x in 0..self.srcs.len() as u32 {
             if self.srcs[x as usize].ext != Ext::Sch || consumed.contains(&x) {
                 continue;
@@ -1267,6 +1348,89 @@ impl<'o> Tables<'o> {
         );
     }
 
+    /// Schematic sources some instance places as a symbol (`C {x.sch}`).
+    fn placed_schematics(&self) -> HashSet<u32> {
+        let mut out = HashSet::new();
+        for x in 0..self.srcs.len() as u32 {
+            let f = &self.srcs[x as usize].file;
+            for row in 0..f.instances.symref.len() {
+                if let Some(t) = self.resolve(x, f.str(f.instances.symref[row]))
+                    && self.srcs[t as usize].ext == Ext::Sch
+                {
+                    out.insert(t);
+                }
+            }
+        }
+        out
+    }
+
+    /// The interface of schematic `x` used as a symbol: its own `K` attributes (type
+    /// `subcircuit` when it sets none) and one pin per `ipin`/`opin`/`iopin` instance in
+    /// file order, at that instance's pin, named by its `lab` (first occurrence wins),
+    /// direction `in`/`out`/`inout`. `None` when it has no port instance.
+    fn derived_iface(&self, x: u32, order: &[String]) -> Option<(SymbolInterface, String)> {
+        let f = &self.srcs[x as usize].file;
+        let mut iface = symbol::extract(f);
+        iface.pins = symbol::Pins::default();
+        iface.names.clear();
+        iface.rounded_centers.clear();
+        iface.order = symbol::PinOrder::File;
+        // Port rows ranked by the owning symbol's pin order (stable: others after, in
+        // file order): xschem's `.subckt` of a placed schematic follows its `.sym`
+        // (golden poweramp_lcc `mos_power_ampli`, loading `switch_rreal`).
+        let mut rows: Vec<usize> = (0..f.instances.symref.len()).collect();
+        let lab_of = |row: usize| {
+            Attrs::parse(f.str(f.instances.props[row]))
+                .get("lab")
+                .map(|l| l.trim().to_owned())
+        };
+        rows.sort_by_key(|&row| {
+            lab_of(row)
+                .and_then(|l| order.iter().position(|o| *o == l))
+                .unwrap_or(order.len())
+        });
+        for row in rows {
+            let Some(p) = self
+                .resolve(x, f.str(f.instances.symref[row]))
+                .and_then(|src| self.sym_of_src[src as usize])
+                .filter(|&p| self.syms[p as usize].class == SymClass::Port)
+            else {
+                continue;
+            };
+            let port = &self.syms[p as usize];
+            let props = Attrs::parse(f.str(f.instances.props[row]));
+            let lab = props
+                .get("lab")
+                .or_else(|| port.iface.template.get("lab"))
+                .unwrap_or("")
+                .trim();
+            let taken = (0..iface.pins.name.len()).any(|k| iface.pin_name(k) == lab);
+            let Some(at) = self.anchor(f, row, p).filter(|_| !lab.is_empty() && !taken) else {
+                continue;
+            };
+            iface.pins.box_row.push(u32::MAX);
+            iface
+                .pins
+                .name
+                .push(crate::push_span(&mut iface.names, lab));
+            iface.pins.dir.push(match port.ty.as_str() {
+                "ipin" => PinDir::In,
+                "opin" => PinDir::Out,
+                _ => PinDir::InOut,
+            });
+            iface.pins.center.push(at);
+            iface.pins.sim_pinnumber.push(None);
+        }
+        if iface.pins.name.is_empty() {
+            return None;
+        }
+        let ty = match iface.get(SymKey::Type).map(str::trim) {
+            Some(t) if !t.is_empty() => t.to_owned(),
+            _ => "subcircuit".to_owned(),
+        };
+        Some((iface, ty))
+    }
+
     /// Whether schematic `x` holds netlist text: code instances or `S {}` text.
     fn has_netlist_text(&self, x: u32) -> bool {
         let f = &self.srcs[x as usize].file;
@@ -1278,6 +1442,7 @@ impl<'o> Tables<'o> {
                 self.resolve(x, f.str(f.instances.symref[row]))
                     .and_then(|src| self.sym_of_src[src as usize])
                     .is_some_and(|s| self.syms[s as usize].class == SymClass::Code)
+                    || top_only(f, row)
             })
     }
 
@@ -1382,11 +1547,13 @@ impl<'o> Tables<'o> {
             "xschem {lib}/{}",
             file_of(&self.srcs[main_src as usize].path)
         ));
-        // Ranks 1–2: the symbol.
+        // Ranks 1–2: the symbol (a schematic placed as a symbol has no drawing of its own).
         if let (Some(s), Some(plan)) = (cell.sym, plan) {
             acc.active = cell.tally_sym;
             emit_interface(&mut doc, plan, &impls);
-            self.emit_graphics(&mut doc, s, plan, acc);
+            if self.srcs[self.syms[s as usize].src as usize].ext == Ext::Sym {
+                self.emit_graphics(&mut doc, s, plan, acc);
+            }
             acc.active = true;
         }
         // Rank 3: the schematic.
@@ -1400,9 +1567,11 @@ impl<'o> Tables<'o> {
             let parents: Vec<String> = plan.map_or_else(Vec::new, |p| {
                 p.params.iter().map(|q| q.name.clone()).collect()
             });
+            // Alias pins are no ports: their target's port serves both positions.
             let pins: Vec<(String, String)> = plan.map_or_else(Vec::new, |p| {
                 p.pins
                     .iter()
+                    .filter(|q| !q.alias)
                     .map(|q| (q.xs.clone(), q.name.clone()))
                     .collect()
             });
@@ -1415,17 +1584,22 @@ impl<'o> Tables<'o> {
                 pins,
             };
             // A bench copy defines the component's numeric parameters as bench variables
-            // (xschem leaves them undefined at the top level; these are its defaults).
+            // (xschem leaves them undefined at the top level; these are its defaults),
+            // those the schematic's values mention: an unused one (`m`) would be a
+            // `.param` xschem's netlist does not have.
             if let Some(base) = cell.copy_of {
                 let plan = self.cells[base as usize]
                     .sym
                     .and_then(|s| self.plans[s as usize].as_ref());
+                let words = self.value_words(x);
                 for p in plan
                     .into_iter()
                     .flat_map(|p| &p.params)
                     .filter(|p| p.kind == Kind::Number)
+                    .filter(|p| words.contains(&p.name.to_ascii_lowercase()))
                 {
                     out.vars.push((p.name.clone(), p.default.clone()));
+                    out.default_vars.push(p.name.clone());
                 }
             }
             acc.active = cell.tally_sch;
@@ -1724,6 +1898,15 @@ impl<'o> Tables<'o> {
             };
             let line = f.instances.line[row];
             let props = Attrs::parse(f.str(f.instances.props[row]));
+            let ignored = props
+                .get("spice_ignore")
+                .or_else(|| self.syms[s as usize].iface.template.get("spice_ignore"))
+                .and_then(truthy);
+            if ignored == Some(true) {
+                let detail = format!("netlist text instance {}", f.str(f.instances.symref[row]));
+                acc.item(fid, line, Class::Dropped(Drop::SpiceIgnore), 1, detail);
+                continue;
+            }
             if !sc.bench {
                 let detail = format!("netlist text instance {}", f.str(f.instances.symref[row]));
                 match sc.has_copy {
@@ -1755,7 +1938,7 @@ impl<'o> Tables<'o> {
             }
         }
         for code in &mut out.codes {
-            extract_params(&mut code.2, &mut out.vars);
+            extract_params(&mut code.2, &mut out.vars, &mut out.default_vars);
         }
         let mut known: Vec<String> = sc.parents.clone();
         known.extend(out.vars.iter().map(|v| v.0.clone()));
@@ -1809,6 +1992,14 @@ impl<'o> Tables<'o> {
                 continue;
             };
             out.extend_bbox(f.instances.xy[row]);
+            if !sc.bench && self.syms[s as usize].class == SymClass::Cell && top_only(f, row) {
+                // xschem netlists `only_toplevel=true` devices only when this schematic
+                // is the top (golden test_analog: n_diffamp's stimuli are not in its
+                // subckt): the bench copy carries them.
+                let detail = format!("only_toplevel instance {symref}");
+                acc.item(fid, line, Class::Dropped(Drop::BenchCopy), 1, detail);
+                continue;
+            }
             match self.syms[s as usize].class {
                 SymClass::Cell => self.emit_instance(doc, ids, sc, row, s, &known, out, acc),
                 SymClass::Label => self.emit_label(doc, ids, sc, row, s, false, out, acc),
@@ -1946,7 +2137,7 @@ impl<'o> Tables<'o> {
             }
         }
         let name = match props.get("name").map(str::trim).filter(|n| !n.is_empty()) {
-            Some(n) => n.to_owned(),
+            Some(n) => dotted_bus(n),
             None => {
                 acc.review(
                     fid,
@@ -2079,11 +2270,11 @@ impl<'o> Tables<'o> {
             Target::Core(_) => None,
         };
         let sym_dm = sym.iface.attrs.get("device_model");
+        // A mapped device's *template* `device_model` is not emitted: goldens whose
+        // `switch_ngspice` instances set another `model` (flip_flop_ngspice, led_driver,
+        // solar_panel) carry no `.MODEL SW1` from its template.
         let dm = match map {
-            Some(_) => props
-                .get("device_model")
-                .or_else(|| xs_tpl.get("device_model"))
-                .or(sym_dm),
+            Some(_) => props.get("device_model").or(sym_dm),
             None => props
                 .get("device_model")
                 .filter(|d| Some(*d) != xs_tpl.get("device_model").or(sym_dm)),
@@ -2230,8 +2421,11 @@ impl<'o> Tables<'o> {
         doc.push_field_coord(anchor[0]);
         doc.push_field_coord(anchor[1]);
         doc.push_field(o.as_str());
-        let field = if is_port { bound.unwrap_or(lab) } else { lab };
-        doc.push_field(field);
+        let field = match (is_port, bound) {
+            (true, Some(pin)) => pin.to_owned(),
+            _ => dotted_bus(lab),
+        };
+        doc.push_field(&field);
         let global = props
             .get("global")
             .or_else(|| sym.iface.attrs.get("global"))
@@ -2242,7 +2436,7 @@ impl<'o> Tables<'o> {
             doc.push_value("true");
         }
         if is_port {
-            out.ports.push(field.to_owned());
+            out.ports.push(field);
         } else {
             out.labels.push((lab.to_owned(), anchor));
         }
@@ -2340,6 +2534,36 @@ impl<'o> Tables<'o> {
         push_unescaped(&mut text, &fmt[last.min(fmt.len())..]);
         let text = netlist_text(&text, self.opts.pdk_vars).map_err(tcl_err)?;
         Ok(("spice".to_owned(), text))
+    }
+
+    /// Lowercase words of the attribute values of schematic `x`'s cell and netlist-text
+    /// instances, and of its `S {}` text: the names its netlist can mention (graphs and
+    /// launchers excluded).
+    fn value_words(&self, x: u32) -> HashSet<String> {
+        let f = &self.srcs[x as usize].file;
+        let mut words = HashSet::new();
+        let mut add = |text: &str| {
+            words.extend(
+                text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .filter(|w| !w.is_empty())
+                    .map(str::to_ascii_lowercase),
+            );
+        };
+        for row in 0..f.instances.props.len() {
+            let class = self
+                .resolve(x, f.str(f.instances.symref[row]))
+                .and_then(|src| self.sym_of_src[src as usize])
+                .map(|s| self.syms[s as usize].class);
+            if matches!(class, Some(SymClass::Cell | SymClass::Code)) {
+                let a = Attrs::parse(f.str(f.instances.props[row]));
+                (0..a.len()).for_each(|i| add(a.value(i)));
+            }
+        }
+        let g = &f.globals;
+        for i in (0..g.tag.len()).filter(|&i| g.tag[i] == GlobalTag::S) {
+            add(f.str(g.text[i]));
+        }
+        words
     }
 
     // ------------------------------------------------------------------ 7. outputs
@@ -2448,6 +2672,9 @@ struct SchCtx {
 #[derive(Default)]
 struct SchOut {
     vars: Vec<(String, String)>,
+    /// Bench-copy variables taken from the component's defaults: a bench `.param` of
+    /// the same name replaces them (that is the value xschem's netlist defines).
+    default_vars: Vec<String>,
     codes: Vec<(String, String, Vec<String>)>,
     ports: Vec<String>,
     labels: Vec<(String, [i32; 2])>,
@@ -2568,6 +2795,14 @@ fn emit_interface(doc: &mut Document, plan: &Plan, impls: &[ImplRow]) {
             doc.push_attr("inherit");
             doc.push_value(net);
         }
+        if let Some(target) = p
+            .alias
+            .then(|| plan.pins.iter().find(|q| !q.alias && q.xs == p.xs))
+            .flatten()
+        {
+            doc.push_attr("alias");
+            doc.push_value(&target.name);
+        }
     }
     for p in &plan.params {
         doc.begin_record(RecordKind::Param);
@@ -2677,7 +2912,11 @@ fn override_text(
 
 /// Moves closed `.param name=value …` lines (outside `.control`) into bench variables
 /// when every value translates and only references names defined the same way.
-fn extract_params(text: &mut Vec<String>, vars: &mut Vec<(String, String)>) {
+fn extract_params(
+    text: &mut Vec<String>,
+    vars: &mut Vec<(String, String)>,
+    defaults: &mut Vec<String>,
+) {
     let mut keep = Vec::with_capacity(text.len());
     let mut control = false;
     for (k, l) in text.iter().enumerate() {
@@ -2694,8 +2933,18 @@ fn extract_params(text: &mut Vec<String>, vars: &mut Vec<(String, String)>) {
             keep.push(l.clone());
             continue;
         }
-        match param_pairs(l.trim()[6..].trim(), vars) {
-            Some(pairs) => vars.extend(pairs),
+        // Component defaults give way to the bench's own definition.
+        let replaced: Vec<(String, String)> = vars
+            .iter()
+            .filter(|v| !defaults.iter().any(|d| d.eq_ignore_ascii_case(&v.0)))
+            .cloned()
+            .collect();
+        match param_pairs(l.trim()[6..].trim(), &replaced, vars) {
+            Some(pairs) => {
+                vars.retain(|v| !pairs.iter().any(|p| p.0.eq_ignore_ascii_case(&v.0)));
+                defaults.retain(|d| !pairs.iter().any(|p| p.0.eq_ignore_ascii_case(d)));
+                vars.extend(pairs);
+            }
             None => keep.push(l.clone()),
         }
     }
@@ -2706,7 +2955,14 @@ fn extract_params(text: &mut Vec<String>, vars: &mut Vec<(String, String)>) {
     *text = keep;
 }
 
-fn param_pairs(s: &str, vars: &[(String, String)]) -> Option<Vec<(String, String)>> {
+/// The `k=v` pairs of one `.param` line, values translated; `None` unless every value
+/// translates and names only `known` variables or earlier pairs. A name in `fixed`
+/// (or repeated in the line) cannot be redefined.
+fn param_pairs(
+    s: &str,
+    fixed: &[(String, String)],
+    known: &[(String, String)],
+) -> Option<Vec<(String, String)>> {
     let b = s.as_bytes();
     let mut i = 0;
     let mut out: Vec<(String, String)> = Vec::new();
@@ -2756,11 +3012,11 @@ fn param_pairs(s: &str, vars: &[(String, String)]) -> Option<Vec<(String, String
         };
         out.push((name.to_owned(), value.to_owned()));
     }
-    let mut names: Vec<String> = vars.iter().map(|v| v.0.clone()).collect();
+    let mut names: Vec<String> = known.iter().map(|v| v.0.clone()).collect();
     names.extend(out.iter().map(|p| p.0.clone()));
     let mut res = Vec::with_capacity(out.len());
     for (n, v) in out {
-        if vars.iter().any(|x| x.0.eq_ignore_ascii_case(&n))
+        if fixed.iter().any(|x| x.0.eq_ignore_ascii_case(&n))
             || res
                 .iter()
                 .any(|x: &(String, String)| x.0.eq_ignore_ascii_case(&n))
@@ -2775,6 +3031,67 @@ fn param_pairs(s: &str, vars: &[(String, String)]) -> Option<Vec<(String, String
         res.push((n, e));
     }
     (!res.is_empty()).then_some(res)
+}
+
+/// Whether a symbol's `format` names an `extra` net as a standalone `@x` word: its
+/// connections are inherited pins (spec §2, implicit pins).
+fn implicit_only(iface: &SymbolInterface) -> bool {
+    let extra = iface.attrs.get("extra").unwrap_or("");
+    let fmt = iface.get(SymKey::Format).unwrap_or("");
+    extra.split_whitespace().any(|x| {
+        fmt.split_whitespace()
+            .any(|w| w.strip_prefix('@') == Some(x))
+    })
+}
+
+/// Whether instance `row` of `f` sets `only_toplevel=true`.
+fn top_only(f: &XschemFile, row: usize) -> bool {
+    Attrs::parse(f.str(f.instances.props[row]))
+        .get("only_toplevel")
+        .and_then(truthy)
+        == Some(true)
+}
+
+/// xschem's bracket-less bus form in a net or instance name: `A[3..0]` is the nets
+/// `A3,A2,A1,A0` and `A[6..0..2]` steps by 2 (research: xschem-feature-inventory, bus
+/// syntax; goldens name `G2[9..0]`'s devices `G29`…`G20`), as a Schemify bundle. Any
+/// other text is returned unchanged.
+pub(crate) fn dotted_bus(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(open) = rest.find('[') {
+        let Some(close) = rest[open..].find(']').map(|c| open + c) else {
+            break;
+        };
+        let base_start = rest[..open]
+            .rfind(|c: char| c == ',' || c == '*' || c == ']' || c.is_whitespace())
+            .map_or(0, |i| i + 1);
+        let nums: Vec<i64> = rest[open + 1..close]
+            .split("..")
+            .map(|n| n.trim().parse::<i64>())
+            .collect::<Result<_, _>>()
+            .unwrap_or_default();
+        let (from, to, step) = match nums[..] {
+            [a, b] => (a, b, 1),
+            [a, b, c] if c > 0 => (a, b, c),
+            _ => {
+                out.push_str(&rest[..=close]);
+                rest = &rest[close + 1..];
+                continue;
+            }
+        };
+        let base = &rest[base_start..open];
+        out.push_str(&rest[..base_start]);
+        let dir = if to >= from { 1 } else { -1 };
+        let count = ((to - from).abs() / step + 1).min(65_536);
+        let bits: Vec<String> = (0..count)
+            .map(|k| format!("{base}{}", from + dir * k * step))
+            .collect();
+        out.push_str(&bits.join(","));
+        rest = &rest[close + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn unique<'a>(base: &str, taken: impl Iterator<Item = &'a str> + Clone) -> String {
@@ -2898,7 +3215,16 @@ fn apply_cdf(cdf: &CdfDump, cell: &str, params: &mut [ParamOut], reviews: &mut V
 fn netlist_text(text: &str, vars: &[(String, String)]) -> Result<String, String> {
     let t = text.trim();
     match t.strip_prefix("tcleval(").and_then(|b| b.strip_suffix(')')) {
-        Some(inner) => tcl::subst(inner, vars),
+        Some(inner) => tcl::subst(inner, vars).or_else(|e| {
+            // Tcl inside SPICE comment lines (`* path: $path`, `[xschem get …]`) has no
+            // netlist effect: drop those lines rather than the whole block.
+            let tcl_comment = |l: &&str| l.trim_start().starts_with('*') && l.contains(['[', '$']);
+            if !inner.lines().any(|l| tcl_comment(&l)) {
+                return Err(e);
+            }
+            let kept: Vec<&str> = inner.lines().filter(|l| !tcl_comment(l)).collect();
+            tcl::subst(&kept.join("\n"), vars)
+        }),
         None => Ok(text.replace('$', "$$")),
     }
 }
@@ -2918,4 +3244,20 @@ fn lines(text: &str) -> Vec<String> {
         .rposition(|l| !l.trim().is_empty())
         .map_or(start, |e| e + 1);
     v[start..end].to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dotted_bus;
+
+    #[test]
+    fn dotted_buses_become_bundles() {
+        assert_eq!(dotted_bus("G2[9..7]"), "G29,G28,G27");
+        assert_eq!(dotted_bus("~D[1..3]"), "~D1,~D2,~D3");
+        assert_eq!(dotted_bus("A[6..0..2],B"), "A6,A4,A2,A0,B");
+        // Untouched: colon ranges, single bits, malformed ranges.
+        for s in ["A[3:0]", "A[3]", "A[x..1]", "A[3..", "plain"] {
+            assert_eq!(dotted_bus(s), s);
+        }
+    }
 }

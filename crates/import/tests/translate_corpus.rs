@@ -180,17 +180,9 @@ fn every_corpus_group_translates_checks_and_reimports_identically() {
 /// its ports in the order of the translated cell's pins (bus pins expanded MSB first,
 /// inherited pins last). Known differences are listed with their reason.
 fn port_order_matches_golden_subckt_lines(c: &Path, outputs: &[Vec<(String, Vec<u8>)>]) {
-    const XFAIL: &[(&str, &str)] = &[
-        (
-            "sar_adc",
-            "`D[5..0]` bus syntax (bits without brackets) is outside the netexpr grammar",
-        ),
-        (
-            "xcross",
-            "duplicate pin names are one xschem port; Schemify pins are unique (needs_review)",
-        ),
-        ("doublepin", "duplicate pin names, as xcross"),
-    ];
+    // `D[5..0]` (bits without brackets) imports as the bundle `D5,…,D0`; same-named
+    // pins (`xcross`, `doublepin`) as one port plus `alias` pins.
+    const XFAIL: &[(&str, &str)] = &[];
     // (file name, lib) → pin names, from the translated cells' provenance.
     let mut cells: HashMap<(String, String), Vec<String>> = HashMap::new();
     for (path, bytes) in outputs
@@ -206,9 +198,14 @@ fn port_order_matches_golden_subckt_lines(c: &Path, outputs: &[Vec<(String, Vec<
         let Some((lib, file)) = prov.strip_prefix("xschem ").and_then(|p| p.split_once('/')) else {
             continue;
         };
+        // An alias pin is a second position of an earlier port, not a port.
         let pins = (1..d.record_count())
             .filter(|&r| d.record_kind(r) == schemify_format::RecordKind::Pin)
-            .map(|r| d.field(r, 0).unwrap_or("").to_owned())
+            .filter(|&r| d.find_attr(r, "alias").is_none())
+            .flat_map(|r| {
+                let name = d.field(r, 0).unwrap_or("");
+                name.split(',').map(str::to_owned).collect::<Vec<_>>()
+            })
             .collect();
         cells.insert((file.to_owned(), lib.to_owned()), pins);
     }

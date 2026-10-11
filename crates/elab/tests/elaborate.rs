@@ -316,6 +316,7 @@ fn inherited_connections_resolve_up_the_path() {
     assert_eq!(ports, ["A", "Y", "VDD", "VSS"]);
     assert_eq!(
         conn_names(&e, row(&e, d, "I1")),
+        // A net of instance pins only is `net_<inst id>_<pin index>` (spec §3).
         ["A", "net_0j0001_1", "VDD", "gnd_local"]
     );
     assert_eq!(

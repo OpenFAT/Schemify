@@ -162,6 +162,8 @@ pub fn convert_format(src: &str, ctx: &FormatCtx) -> Result<Converted, Review> {
         Some(inner) => (inner, true),
         None => (src, false),
     };
+    let unmarked = name_prefix_marks(body);
+    let body = unmarked.as_str();
     let dropped_pairs;
     let body = if ctx.schematic {
         dropped_pairs = drop_param_pairs(body, ctx.params);
@@ -175,6 +177,11 @@ pub fn convert_format(src: &str, ctx: &FormatCtx) -> Result<Converted, Review> {
     while i < b.len() {
         let c = b[i];
         match c {
+            b'\\' if body[i + 1..].starts_with('\n') || body[i + 1..].starts_with("\r\n") => {
+                // An escaped newline (`\\` + newline in the file) joins lines (golden
+                // sky130 test_stdcells: the `sqwsource` format is one `V… pulse …` line).
+                i += if b[i + 1] == b'\r' { 3 } else { 2 };
+            }
             b'\\' => {
                 // `\x`: the backslash is a token terminator or an escape; emit `x`.
                 i += 1;
@@ -300,6 +307,29 @@ fn push_literal(out: &mut String, ch: char) {
     }
 }
 
+/// Drops the `#` marks of xschem's `#pfx#@name` (`pfx` prefixed to every bit of the
+/// instance name, research: feature inventory, format tokens): elab names each bit of
+/// an iterated instance, so `pfx{name}` is that prefix on every bit. A `#` that opens
+/// no such word stays literal.
+fn name_prefix_marks(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(k) = rest.find("#@name") {
+        let word = rest[..k].rfind(char::is_whitespace).map_or(0, |w| w + 1);
+        match rest[word..k].strip_prefix('#') {
+            Some(pfx) if !pfx.contains('#') => {
+                out.push_str(&rest[..word]);
+                out.push_str(pfx);
+                out.push_str("@name");
+            }
+            _ => out.push_str(&rest[..k + "#@name".len()]),
+        }
+        rest = &rest[k + "#@name".len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Removes whitespace-separated `k=@k` words where `k` is a parameter.
 fn drop_param_pairs(s: &str, params: &[String]) -> String {
     let mut out = String::with_capacity(s.len());
@@ -362,8 +392,12 @@ fn convert_token(s: &str, i: usize, ctx: &FormatCtx, out: &mut Converted) -> Res
         b'P' => {
             if is_pin(name) && is_ident(pin_out(ctx, name)) {
                 hole(&mut out.text, pin_out(ctx, name), Eng::Plain);
-            } else {
+            } else if is_pin(name) {
                 return Err(review(Reason::PinToken, format!("@@{name}")));
+            } else {
+                // A pin the symbol does not have renders empty: golden sky130
+                // `nand4b_1` (`@@A` on a symbol whose pin is `A_N`) lists no net there.
+                out.dropped.push(format!("@@{name}"));
             }
         }
         b'#' => {
@@ -745,7 +779,9 @@ pub fn spice_number(text: &str) -> Option<String> {
 
 /// Converts free text to a template string: literal braces doubled, and every word
 /// that names a parameter of `parents` (case-insensitively) turned into a hole, so a
-/// value like `w=WP` inside a subcircuit renders the parent's evaluated `WP`.
+/// value like `w=WP` inside a subcircuit renders the parent's evaluated `WP`. An
+/// xschem `@name` token naming a parent parameter is the same hole without its `@`
+/// (`model=@modeln` → `{modeln}`; goldens render the parameter's value there).
 ///
 /// # Examples
 ///
@@ -767,7 +803,12 @@ pub fn string_value(text: &str, parents: &[String]) -> String {
             }
             let word = &text[start..i];
             match parents.iter().find(|p| p.eq_ignore_ascii_case(word)) {
-                Some(p) => hole(&mut out, p, Eng::Plain),
+                Some(p) => {
+                    if start > 0 && b[start - 1] == b'@' {
+                        out.pop();
+                    }
+                    hole(&mut out, p, Eng::Plain);
+                }
                 None => out.push_str(word),
             }
         } else {
@@ -844,6 +885,8 @@ mod tests {
                 "Q{name} le={eng(El * 1.0e-6, 4)}",
             ),
             ("[ @@D ]", "[ {D} ]"),
+            // An escaped newline joins lines (sqwsource).
+            ("@name \\\npulse 0", "{name} pulse 0"),
         ];
         for (src, want) in rows {
             let got = convert_format(src, &ctx).unwrap_or_else(|e| panic!("{src}: {e:?}"));
@@ -854,9 +897,11 @@ mod tests {
         let c = convert_format("@extra m=@m @gnd)", &ctx).unwrap();
         assert_eq!(c.text, "{extra} m={m} ");
         assert_eq!((c.unknown, c.dropped), (s(&["extra"]), s(&["gnd)"])));
+        // A pin token naming no pin renders empty, as in the goldens (nand4b_1).
+        let c = convert_format("@name @@Q @@D", &ctx).unwrap();
+        assert_eq!((c.text.as_str(), c.dropped), ("{name}  {D}", s(&["@@Q"])));
         // Negative space: constructs that must be reviewed, never guessed.
         for bad in [
-            "@@Q",
             "@path",
             "tcleval([my_proc 1])",
             "tcleval($::X/f)",
@@ -933,11 +978,27 @@ mod tests {
     }
 
     #[test]
+    fn name_prefix_marks_are_dropped() {
+        assert_eq!(
+            name_prefix_marks("#@spiceprefix\\MA#@name @#0"),
+            "@spiceprefix\\MA@name @#0"
+        );
+        assert_eq!(
+            name_prefix_marks("#MB#@name x #y#@name"),
+            "MB@name x y@name"
+        );
+        // Not a prefix mark: no opening `#` in the word, or a stray one.
+        assert_eq!(name_prefix_marks("a#@name"), "a#@name");
+        assert_eq!(name_prefix_marks("# c @name"), "# c @name");
+    }
+
+    #[test]
     fn string_values_escape_and_bind_parent_params() {
         let p = s(&["W_N"]);
         assert_eq!(string_value("dc 0 ac 1", &p), "dc 0 ac 1");
         assert_eq!(string_value("pulse 0 {VCC}", &p), "pulse 0 {{VCC}}");
         assert_eq!(string_value("w_n*2 xw_n", &p), "{W_N}*2 xw_n");
+        assert_eq!(string_value("@w_n @other", &p), "{W_N} @other");
         assert_eq!(literal("{a}"), "{{a}}");
     }
 }

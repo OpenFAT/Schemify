@@ -1,6 +1,6 @@
 * dig_tb (schemify ngspice)
-AUX [ q[0] ] [ qb ] dinv
-XB[0] d[0] q[0] dbuf
+AUX [ q_0 ] [ qb ] dinv
+XB[0] d[0] q_0 dbuf
 XB[1] d[1] q[1] dbuf
 .subckt dbuf A Y
 AU1 [ A ] [ net_0w0001 ] dinv

@@ -25,6 +25,9 @@ pub(crate) struct Netlist {
     pub controls: Vec<String>,
     pub globals: Vec<String>,
     pub warnings: Vec<String>,
+    /// `.save` vectors as `(enclosing subckt or "", vector)`, whitespace
+    /// removed, one per vector (ngspice saves the union of all `.save` lines).
+    pub saves: Vec<(String, String)>,
 }
 
 pub(crate) struct Subckt {
@@ -419,6 +422,18 @@ fn dot_card(
             }
             nl.models.push(model);
         }
+        ".save" => {
+            // Spacing inside `v( x )` is not significant; the set semantics and
+            // net/device resolution are applied in `compare`.
+            let scope = scope_name(nl, open);
+            for t in &tokens[1..] {
+                let v: String = lower_outside_dquotes(t)
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect();
+                nl.saves.push((scope.clone(), v));
+            }
+        }
         _ => {
             let scope = scope_name(nl, open);
             let text = lower_outside_dquotes(&tokens.join(" "));
@@ -468,18 +483,22 @@ fn instance(name: String, kind: u8, rest: &[String]) -> Inst {
         let n = n.min(lowered.len());
         inst.nodes = lowered[..n].to_vec();
         if kind == b'b' {
-            inst.spec.push(lowered[n..].concat());
-            return inst;
-        }
-        for t in &lowered[n..] {
-            if t.starts_with(['\'', '{']) || key_of(t).is_some() {
-                inst.spec.push(t.clone()); // expression or k=v: one unit
-            } else {
-                let parts =
-                    t.split(|c: char| c == '(' || c == ')' || c == ',' || c.is_whitespace());
-                inst.spec
-                    .extend(parts.filter(|s| !s.is_empty()).map(str::to_string));
+            // One expression; words stay apart (`v(f)*isc m=1` is not `iscm=1`).
+            inst.spec.push(lowered[n..].join(" "));
+        } else {
+            for t in &lowered[n..] {
+                if t.starts_with(['\'', '{']) || key_of(t).is_some() {
+                    inst.spec.push(t.clone()); // expression or k=v: one unit
+                } else {
+                    let parts =
+                        t.split(|c: char| c == '(' || c == ')' || c == ',' || c.is_whitespace());
+                    inst.spec
+                        .extend(parts.filter(|s| !s.is_empty()).map(str::to_string));
+                }
             }
+        }
+        if matches!(kind, b'b' | b'e' | b'g') {
+            control_nodes(&mut inst);
         }
         return inst;
     }
@@ -508,6 +527,17 @@ fn instance(name: String, kind: u8, rest: &[String]) -> Inst {
 
     match fixed_nodes(kind) {
         Some(n) => {
+            // CDL multi-terminal R/C/D (`C1 a b n3 sub! cvar`, `D1 a b n3 dmod`): bare
+            // names before the model, past the fixed two, are terminals too. A single
+            // trailing name stays the model (`R1 a b rout`, `D1 a b dmod`).
+            let word =
+                |t: &String| crate::eval::parse_number(t).is_none() && !t.starts_with(['\'', '{']);
+            let names = bare.iter().skip(n).take_while(|t| word(t)).count();
+            let n = if names >= 2 && matches!(kind, b'r' | b'c' | b'd') && inst.model.is_empty() {
+                n + names - 1
+            } else {
+                n
+            };
             let n = n.min(bare.len());
             inst.nodes = bare[..n].to_vec();
             for t in &bare[n..] {
@@ -539,14 +569,45 @@ fn instance(name: String, kind: u8, rest: &[String]) -> Inst {
     inst
 }
 
+/// Functions whose argument `N` is followed by `2·N` control nodes
+/// (`E1 o 0 and(2) a 0 b 0 …`, `poly(1)`, `pwl(1)`).
+const CONTROLLED: [&str; 6] = ["poly", "pwl", "and", "nand", "or", "nor"];
+
 fn is_behavioural(third: Option<&String>) -> bool {
     let Some(t) = third else { return true };
+    let call = |f: &&str| t.strip_prefix(f).is_some_and(|r| r.starts_with('('));
     key_of(t).is_some()
-        || [
-            "poly", "value", "vol", "cur", "table", "laplace", "freq", "{",
-        ]
-        .iter()
-        .any(|p| t.starts_with(p))
+        || t == "vcr"
+        || CONTROLLED.iter().any(call)
+        || ["value", "vol", "cur", "table", "laplace", "freq", "{"]
+            .iter()
+            .any(|p| t.starts_with(p))
+}
+
+/// Moves the control nodes of a B/E/G source out of its spec into its
+/// terminals, leaving `#` in their place: the `2·N` nodes after one of
+/// [`CONTROLLED`]`(N)`, and the arguments of every `v(…)` in an expression.
+/// They are connections, so they compare by graph position like every other
+/// terminal instead of by net name.
+fn control_nodes(inst: &mut Inst) {
+    let mut k = 0;
+    while k < inst.spec.len() {
+        let dims = CONTROLLED
+            .contains(&inst.spec[k].as_str())
+            .then(|| inst.spec.get(k + 1)?.parse::<usize>().ok())
+            .flatten();
+        if let Some(n) = dims {
+            let end = (k + 2 + 2 * n).min(inst.spec.len());
+            for t in &mut inst.spec[k + 2..end] {
+                inst.nodes.push(std::mem::replace(t, "#".to_string()));
+            }
+            k = end;
+            continue;
+        }
+        let t = std::mem::take(&mut inst.spec[k]);
+        inst.spec[k] = crate::eval::take_v_nodes(&t, &mut inst.nodes);
+        k += 1;
+    }
 }
 
 /// `A1 [a b] %v c model k=v`: brackets and `%` modifiers become the shape,
@@ -655,7 +716,14 @@ mod tests {
         );
         assert_eq!((i[2].nodes.len(), i[2].model.as_str()), (4, "npn"));
         assert_eq!(i[3].nodes.len(), 4);
-        assert_eq!(i[4].nodes.len(), 2);
+        // `v(a)` in a behavioural expression is a third terminal.
+        assert_eq!(
+            (i[4].nodes.as_slice(), i[4].spec.as_slice()),
+            (
+                &["o".to_string(), "0".into(), "a".into()][..],
+                &["vol='v(#)*2'".to_string()][..]
+            )
+        );
         assert_eq!(
             (
                 i[5].nodes.as_slice(),

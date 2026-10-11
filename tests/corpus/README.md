@@ -79,17 +79,37 @@ equivalent when all six sections agree:
    substitution (`diff_all.sh` aliases the cache directory, so goldens from
    another checkout still compare).
 5. **Directives**: all other dot-cards, case-folded, whitespace collapsed.
+   `.save` vectors form a set (ngspice saves their union; spacing inside
+   `v( x )` dropped); once connectivity matches, a saved net or device is
+   spelled by its final WL colour, once per expansion of its subckt, so an
+   unnamed net or a save inside a renamed/specialized subckt compares by graph
+   position.
 6. **Control**: `.control` blocks as text, comment and blank lines dropped.
 
 Numbers are evaluated (SI suffixes, arithmetic over parameters in scope) and
-compared to 10 significant digits; expressions that do not evaluate are
-compared as case-folded text. Known blind spots: 1-WL cannot separate some
-highly regular graphs, and B-source expressions and F/H/K references keep
-names as text.
+compared to 10 significant digits. An expression that does not evaluate
+(B/E/G specs, `pwl` points) is compared as canonical text: numbers
+canonicalized and parameter names in scope replaced by their values (SPICE
+evaluates them in the instance's scope: `v(a)/ron` with `ron=0.1` *is*
+`v(a)/0.1`). Control nodes of B/E/G sources (`v(a,b)` arguments, the `2·N`
+nodes after `poly(N)`/`pwl(N)`/`and(N)`/…) and the extra bare nodes of CDL
+multi-terminal R/C/D are terminals, not text. Known blind spots: 1-WL cannot
+separate some highly regular graphs (it also lets a `.save` of one of two
+automorphic nets match the other), and F/H/K references keep instance names as
+text.
+
+`--bind-free` (`Options::bind_free`, off for the oracle) treats names the
+first netlist uses but never defines at its top level as free parameters,
+binds them to the values the second netlist uses (its same-named `.param`,
+else the same-named device's value in the same slot, or the solution of an
+expression affine in one free name) and compares everything under that one
+binding. The corpus reports pairs equal only this way as
+"golden-unevaluated" (RATCHET.md), never as agreement.
 
 Self-tests: `cargo test -p schemify-spicecmp` (metamorphic proptests:
 shuffled lines, renamed nets/instances/subckts, reordered subckts, respelled
 numbers and case compare equal; one moved connection or one changed value
 compares different; arbitrary text never panics and comparison is reflexive
-and symmetric). With goldens present, `-- --include-ignored` also shuffles
+and symmetric; each equivalence above has a case and its negative in
+`save_sets_expression_params_and_free_bindings`). With goldens present, `-- --include-ignored` also shuffles
 every golden and checks that dropping a device is always detected.

@@ -88,8 +88,13 @@ pub struct Iface {
     /// Bit names of each pin name, in written order.
     pub pin_bits: Vec<Name>,
     /// Offset of each ordinary pin's first bit among the ordinary pin bits; `u32::MAX`
-    /// for inherited pins.
+    /// for inherited pins. An alias pin shares its target's offset.
     pub pin_off: Vec<u32>,
+    /// For an alias pin (`alias <pin>`, a second position of an earlier pin: xschem's
+    /// same-named pins), the index of that earlier pin; else `u32::MAX`. An alias pin
+    /// carries its target's bits, is a geometric node joined to its target's in every
+    /// instance, and is no port or connection of its own.
+    pub pin_alias: Vec<u32>,
     /// Bits of all ordinary pins (the width of one instance element's connection row).
     pub bits_total: u32,
 
@@ -178,6 +183,21 @@ impl Iface {
             });
             let inherit = attr("inherit").map_or(Name::NONE, |n| names.intern(n));
             f.pin_inherit.push(inherit);
+            // An alias names an earlier ordinary pin; anything else is an ordinary pin.
+            let alias = attr("alias")
+                .and_then(|a| names.find(a))
+                .and_then(|a| {
+                    (0..p).find(|&q| f.pin_name[q] == a && f.pin_inherit[q] == Name::NONE)
+                })
+                .filter(|_| inherit == Name::NONE);
+            f.pin_alias.push(alias.map_or(NONE, |q| q as u32));
+            if let Some(q) = alias {
+                let (a, b) = (f.pin_bit_start[q] as usize, f.pin_bit_start[q + 1] as usize);
+                f.pin_bits.extend_from_within(a..b);
+                f.pin_bit_start.push(f.pin_bits.len() as u32);
+                f.pin_off.push(f.pin_off[q]);
+                continue;
+            }
             if netexpr::expand(text, names, &mut f.pin_bits, &mut buf).is_err() {
                 f.too_wide.push(f.pin_name[p]);
             }

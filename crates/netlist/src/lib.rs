@@ -216,6 +216,72 @@ pub(crate) fn net_text(e: &Elab, n: Name) -> &str {
     if n == Name::NONE { "?" } else { e.names.get(n) }
 }
 
+/// Respelled net names, sorted by [`Name`]: ngspice's tokenizer splits `d[0]` inside
+/// an XSPICE port vector `[ … ]`, so every net some emitted row writes there is spelled
+/// with `[k]` → `_k` (`d[0]` → `d_0`) throughout the netlist (spec §7.2); a respelling
+/// that would equal another net's name gets `_` appended until it is unique. Empty for
+/// other dialects. Cost: one pass over the emitted rows' connections.
+fn xspice_spellings(e: &Elab, plans: &Plans, d: Dialect) -> Vec<(Name, String)> {
+    if d != Dialect::Ngspice {
+        return Vec::new();
+    }
+    let mut defs: Vec<u32> = (0..e.defs.cell.len() as u32)
+        .filter(|&c| e.defs.used[c as usize])
+        .collect();
+    if e.top != NONE && !defs.contains(&e.top) {
+        defs.push(e.top);
+    }
+    let mut hits: Vec<Name> = Vec::new();
+    for &c in &defs {
+        for r in e.insts_of(c).filter(|&r| e.insts.ignore[r] == Ignore::No) {
+            let plan = plans.of_row(e, r);
+            let conns = e.conns(r);
+            for p in (0..plan.vector.len()).filter(|&p| plan.vector[p]) {
+                let (a, w) = plan.slot(p);
+                let bits = conns.get(a as usize..(a + w) as usize).unwrap_or(&[]);
+                hits.extend(
+                    bits.iter()
+                        .filter(|n| **n != Name::NONE && e.names.get(**n).contains('[')),
+                );
+            }
+        }
+    }
+    hits.sort_unstable_by(|a, b| e.names.cmp(*a, *b));
+    hits.dedup();
+    if hits.is_empty() {
+        return Vec::new();
+    }
+    // Every net text of the netlist: a respelling must not merge two nets.
+    let mut taken: std::collections::HashSet<String> = e
+        .insts
+        .conn
+        .iter()
+        .chain(&e.defs.port_net)
+        .filter(|n| **n != Name::NONE)
+        .map(|n| e.names.get(*n).to_owned())
+        .collect();
+    let mut out: Vec<(Name, String)> = Vec::with_capacity(hits.len());
+    for n in hits {
+        let mut s: String = e.names.get(n).replace('[', "_").replace(']', "");
+        while taken.contains(&s) {
+            s.push('_');
+        }
+        taken.insert(s.clone());
+        out.push((n, s));
+    }
+    out.sort_unstable_by_key(|p| p.0.0);
+    assert!(out.windows(2).all(|w| w[0].0 != w[1].0));
+    out
+}
+
+/// The emitted text of net `n` under the respellings `rs` (sorted by [`Name`]).
+pub(crate) fn spelled<'a>(e: &'a Elab, rs: &'a [(Name, String)], n: Name) -> &'a str {
+    match rs.binary_search_by_key(&n.0, |p| p.0.0) {
+        Ok(i) => &rs[i].1,
+        Err(_) => net_text(e, n),
+    }
+}
+
 /// The comment leader of `d`.
 fn comment(d: Dialect) -> &'static str {
     if is_spice(d) { "*" } else { "//" }
@@ -433,8 +499,15 @@ fn once_only(out: &mut String, e: &Elab, d: Dialect, tmp: &Tmp) {
         out.push('\n');
     }
     // Bodies: SPICE text for the SPICE dialects (spectre wraps it in `lang=spice`):
-    // `spice` impls and, except for cdl, precompiled Verilog-A ones (no `file`);
-    // Verilog source for verilog. A Verilog-A source (`file`) is the runner's.
+    // `spice` impls and, except for cdl, precompiled Verilog-A ones (no `file`) and the
+    // schematic impls of emitted definitions (model cards); Verilog source for verilog.
+    // A Verilog-A source (`file`) is the runner's.
+    let mut used = uses.impl_used.clone();
+    for (def, &l) in e.defs.body.iter().enumerate() {
+        if l != u32::MAX && e.defs.used[def] {
+            used[l as usize] = true;
+        }
+    }
     let mut bodies: Vec<usize> = (0..e.impls.cell.len())
         .filter(|&l| {
             let wanted = match (lang_of(l), d) {
@@ -443,9 +516,10 @@ fn once_only(out: &mut String, e: &Elab, d: Dialect, tmp: &Tmp) {
                 (("spice", _), _) => true,
                 // Simulation-only text (OSDI load, model card): not for LVS.
                 (("veriloga", file), _) => file == Name::NONE && d != Dialect::Cdl,
+                (("schematic", _), _) => d != Dialect::Cdl,
                 _ => false,
             };
-            uses.impl_used[l] && wanted && e.impls.body_start[l] < e.impls.body_start[l + 1]
+            used[l] && wanted && e.impls.body_start[l] < e.impls.body_start[l + 1]
         })
         .collect();
     let key = |l: usize| {
@@ -490,7 +564,7 @@ fn port_dirs(e: &Elab, d: u32) -> Vec<PinDir> {
     let mut dirs = Vec::with_capacity(n);
     for inherited in [false, true] {
         for p in 0..f.pin_name.len() {
-            if (f.pin_inherit[p] != Name::NONE) == inherited {
+            if (f.pin_inherit[p] != Name::NONE) == inherited && f.pin_alias[p] == u32::MAX {
                 dirs.extend(std::iter::repeat_n(f.pin_dir[p], f.bits(p).len()));
             }
         }
@@ -517,6 +591,8 @@ struct Writer<'e> {
     map: name_map::Builder,
     /// Verilog: the definition's nets, sorted, for `wire` declarations.
     wires: Vec<Name>,
+    /// Net respellings ([`xspice_spellings`]), sorted by [`Name`].
+    respell: Vec<(Name, String)>,
 }
 
 impl<'e> Writer<'e> {
@@ -532,6 +608,9 @@ impl<'e> Writer<'e> {
             rows += e.insts_of(d).len();
         }
         let body_lines = e.impls.body.len() + e.bench.code_lines.len();
+        let respell = xspice_spellings(e, plans, d);
+        let mut map = name_map::Builder::new(e, d, order.len() + usize::from(e.top != NONE), rows);
+        map.respell = respell.clone();
         Writer {
             e,
             d,
@@ -540,8 +619,9 @@ impl<'e> Writer<'e> {
             tmp: Tmp::new(e),
             lines: Vec::new(),
             def_map,
-            map: name_map::Builder::new(e, d, order.len() + usize::from(e.top != NONE), rows),
+            map,
             wires: Vec::new(),
+            respell,
         }
     }
 
@@ -593,7 +673,7 @@ impl<'e> Writer<'e> {
             if i > 0 || close.is_empty() {
                 out.push_str(sep);
             }
-            push_name(out, net_text(e, *p), dialect);
+            push_name(out, spelled(e, &self.respell, *p), dialect);
         }
         out.push_str(close);
         out.push('\n');
@@ -669,7 +749,7 @@ impl<'e> Writer<'e> {
                 self.plans,
                 r,
                 local,
-                |n| e.names.get(n),
+                |n| spelled(e, &self.respell, n),
                 &mut self.out,
                 &mut self.tmp,
             );

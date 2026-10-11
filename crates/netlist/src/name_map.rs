@@ -393,6 +393,8 @@ pub(crate) struct Builder {
     stamp: Vec<u32>,
     /// The definition being recorded.
     cur: u32,
+    /// Net respellings of the netlist (XSPICE bus bits, spec §7.2), sorted by name.
+    pub(crate) respell: Vec<(Name, String)>,
 }
 
 impl Builder {
@@ -414,6 +416,7 @@ impl Builder {
             remap: vec![NONE; e.names.len() as usize],
             stamp: Vec::new(),
             cur: NONE,
+            respell: Vec::new(),
         }
     }
 
@@ -436,7 +439,8 @@ impl Builder {
         if id == NONE {
             id = self.map.net_name.len() as u32;
             self.remap[n.0 as usize] = id;
-            let sp = self.span(e.names.get(n));
+            let text = crate::spelled(e, &self.respell, n).to_owned();
+            let sp = self.span(&text);
             self.map.net_name.push(sp);
             let global = e.globals.binary_search_by(|g| e.names.cmp(*g, n)).is_ok();
             self.map.net_global.push(global);

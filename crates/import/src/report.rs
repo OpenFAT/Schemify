@@ -37,6 +37,8 @@ pub enum Drop {
     Embedded,
     /// Netlist text in a component schematic, carried by its `<cell>__top` bench copy.
     BenchCopy,
+    /// A netlist text instance with `spice_ignore=true`: xschem does not netlist it.
+    SpiceIgnore,
 }
 
 impl Drop {
@@ -55,6 +57,7 @@ impl Drop {
             Drop::Layer => "layer-out-of-range",
             Drop::Embedded => "embedded-symbol",
             Drop::BenchCopy => "in-bench-copy",
+            Drop::SpiceIgnore => "spice-ignore",
         }
     }
 }

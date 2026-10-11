@@ -32,8 +32,12 @@ for g in "$golden"/*.spice "$golden"/*.cdl; do
     echo "missing $file"
     continue
   fi
-  # Goldens embed the cache's absolute paths; ours may come from another checkout.
-  if "$cmp_bin" --quiet --alias "$here/.cache=\$CORPUS" "$g" "$ours/$file" >"$ours/diff/$file.txt" 2>&1; then
+  # Goldens embed the absolute cache path of the checkout that made them; ours may
+  # come from another checkout.
+  theirs="$(grep -m1 -o '[^ ]*/tests/corpus/\.cache' "$g" || true)"
+  extra=()
+  [[ -n "$theirs" ]] && extra=(--alias "$theirs=\$CORPUS")
+  if "$cmp_bin" --quiet --alias "$here/.cache=\$CORPUS" ${extra[@]+"${extra[@]}"} "$g" "$ours/$file" >"$ours/diff/$file.txt" 2>&1; then
     agree[$key]=$(( ${agree[$key]:-0} + 1 )); total_agree=$((total_agree + 1))
     rm -f "$ours/diff/$file.txt"
   else

@@ -295,14 +295,23 @@ pub fn connect(
     let pins0 = px.len();
     let mut pin_inst: Vec<u32> = Vec::new();
     let mut pin_pin: Vec<u16> = Vec::new();
+    // (alias pin node, target pin node): one node, joined after the union-find starts.
+    let mut aliased: Vec<(u32, u32)> = Vec::new();
     for i in 0..ni {
         let Some(f) = ifaces.get(inst_iface[i] as usize) else {
             continue;
         };
         let (m, t) = (inst.orient[i].mirrored(), inst.orient[i].quarter_turns());
+        let first = px.len();
         for p in 0..f.pin_name.len() {
             if f.pin_inherit[p] != Name::NONE {
                 continue; // inherited pins are not geometric (§3)
+            }
+            let q = f.pin_alias[p];
+            if q != NONE {
+                // Targets precede their aliases and are ordinary: find its node.
+                let at = (first..px.len()).find(|&k| pin_pin[k - pins0] == q as u16);
+                aliased.extend(at.map(|k| (px.len() as u32, k as u32)));
             }
             let (x, y) = place(f.pin_x[p], f.pin_y[p], m, t, inst.x[i], inst.y[i]);
             px.push(x);
@@ -327,6 +336,9 @@ pub fn connect(
     let mut parent: Vec<u32> = (0..n as u32).collect();
     for w in 0..nw {
         union(&mut parent, 2 * w as u32, 2 * w as u32 + 1);
+    }
+    for &(a, b) in &aliased {
+        union(&mut parent, a, b);
     }
     let mut xy: Vec<(u64, u32)> = (0..n).map(|i| (key(px[i], py[i]), i as u32)).collect();
     xy.sort_unstable();
@@ -920,7 +932,7 @@ pub fn connect(
         for p in 0..own.pin_name.len() {
             let has = (0..ports.id.len())
                 .any(|q| names.find(s.get(ports.text[q])) == Some(own.pin_name[p]));
-            if !has && own.pin_inherit[p] == Name::NONE {
+            if !has && own.pin_inherit[p] == Name::NONE && own.pin_alias[p] == NONE {
                 let detail = format!("interface pin `{}` has no port", names.get(own.pin_name[p]));
                 out.push(finding(Code::E012, ObjId::NONE, own.pin_name[p], detail));
             }

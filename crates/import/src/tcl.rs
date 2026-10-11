@@ -126,9 +126,13 @@ pub fn subst(text: &str, vars: &[(String, String)]) -> Result<String, String> {
     // `PDK_ROOT` and `PDK` are the PDK's own Tcl globals (set from the environment by
     // its xschemrc); the netlister resolves them from the project, then the environment.
     let out = braced_vars(&plain, |n| {
-        matches!(n, "PDK_ROOT" | "PDK") || vars.iter().any(|(v, _)| v == n)
+        matches!(n, "PDK_ROOT" | "PDK" | "USER_CONF_DIR") || vars.iter().any(|(v, _)| v == n)
     })?;
-    Ok(out.replace('\u{1}', "$$"))
+    // xschem's user configuration directory is `~/.xschem` (golden tb_diff_amp:
+    // `pre_osdi <HOME>/.xschem/xschem_library/diff_amp.osdi`).
+    Ok(out
+        .replace("${USER_CONF_DIR}", "${HOME}/.xschem")
+        .replace('\u{1}', "$$"))
 }
 
 fn unescaped(text: &str, needle: u8) -> Option<usize> {
@@ -551,6 +555,10 @@ mod tests {
             Ok(".lib ${SKYWATER_MODELS}/sky130.lib.spice tt\n$$keep")
         );
         assert!(subst("$::OTHER/x", &vars).is_err());
+        assert_eq!(
+            subst("pre_osdi $USER_CONF_DIR/lib/a.osdi", &vars).as_deref(),
+            Ok("pre_osdi ${HOME}/.xschem/lib/a.osdi")
+        );
         assert!(subst(".include [abs_sym_path a.cir]", &vars).is_err());
         assert_eq!(subst("a \\[b\\]", &vars).as_deref(), Ok("a [b]"));
     }

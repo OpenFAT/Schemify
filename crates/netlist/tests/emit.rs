@@ -154,3 +154,34 @@ fn logic_and_mixed_benches() {
         );
     }
 }
+
+#[test]
+fn xspice_vector_bus_bits_are_respelled_everywhere() {
+    // ngspice splits `d[0]` inside an XSPICE port vector (spec §7.2): every net written
+    // in `[ … ]` is spelled `d_0` in the whole netlist, never merging with an existing
+    // `d_1`; other dialects keep the bracket spelling.
+    let dbus = "schemify 1 shprim\n\npin A[1:0] in -20 0\n  domain digital\npin Y out 20 0\n  domain digital\n\nimpl verilog verilog\n  model dbus\n";
+    let res = "schemify 1 shprim\n  prefix R\n\npin p inout 0 -30\npin n inout 0 30\n\nimpl spice spice\n  format spice \"R{name} {p} {n} 1k\"\n";
+    let bench = "schemify 1 shbench\n\ninst 0a0001 ./dbus\n  at 0 0 R0\n  name U1\ninst 0r0001 ./res\n  at 100 0 R0\n  name R1\ninst 0r0002 ./res\n  at 200 0 R0\n  name R2\n\nlabel 0n0001 -20 0 R0 d[1:0]\nlabel 0n0002 20 0 R0 y\nlabel 0n0003 100 -30 R0 d[0]\nlabel 0n0004 100 30 R0 0\nlabel 0n0005 200 -30 R0 d_1\nlabel 0n0006 200 30 R0 0\n";
+    let (p, hs) = project(&[
+        ("dbus.shprim", dbus),
+        ("res.shprim", res),
+        ("tb.shbench", bench),
+    ]);
+    let e = elab(&p, hs[2], Dialect::Ngspice);
+    assert!(blocking(&e).is_empty(), "{:?}", blocking(&e));
+    let text = emit(&e, Dialect::Ngspice).text;
+    assert!(text.contains("AU1 [ d_1_ d_0 ] [ y ] dbus"), "{text}");
+    assert!(
+        text.contains("RR1 d_0 0 1k"),
+        "the bit is respelled everywhere: {text}"
+    );
+    assert!(
+        text.contains("RR2 d_1 0 1k"),
+        "an existing d_1 keeps its net: {text}"
+    );
+    assert!(!text.contains("d[0]") && !text.contains("d[1]"), "{text}");
+    // Spectre/CDL keep brackets; xyce has no verilog default template.
+    let n = emit(&elab(&p, hs[2], Dialect::Spectre), Dialect::Spectre).text;
+    assert!(!n.contains("d_0"), "{n}");
+}

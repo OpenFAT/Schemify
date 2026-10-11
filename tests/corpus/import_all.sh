@@ -15,11 +15,14 @@
 # The cell file is the bench copy <stem>__top.shbench when the schematic has a symbol
 # and netlist text, else <stem>.shbench, else the component <stem>.shcomp.
 #
-# With NETLIST set to a command template, each mapped bench is netlisted and compared:
-#   NETLIST='schemify netlist --dialect %dialect% -o %out% %cell%' tests/corpus/import_all.sh out
+# Then each mapped bench is netlisted (SPICE: the cell above; CDL: the component
+# <stem>.shcomp first, as LVS checks the cell) and compared with diff_all.sh. NETLIST is
+# the command template, default the CLI built from this checkout:
+#   NETLIST='schemify netlist --dialect %dialect% -o %out% --allow-errors %cell%'
 # %cell% is the absolute cell path, %dialect% is ngspice or cdl, %out% the target file
-# (<out>/netlists/<bench>.spice|.cdl), run with PDK_ROOT/PDK exported as golden.sh did;
-# then tests/corpus/diff_all.sh <out>/netlists gives the xschem-differential numbers.
+# (<out>/netlists/<bench>.spice|.cdl), run with PDK_ROOT/PDK/HOME exported as golden.sh
+# did. NETLIST=none stops after the map. The authoritative ratchet (golden code blocks
+# stripped for CDL, golden-unevaluated parameters) is crates/netlist/tests/corpus.rs.
 # Exit status: 0 ok, 1 an import check failed, 2 usage or setup error.
 set -euo pipefail
 
@@ -83,18 +86,29 @@ while read -r name rc path; do
 done < "$here/benches.txt"
 echo "wrote $map ($(wc -l < "$map") benches)"
 
-if [[ -n "${NETLIST:-}" ]]; then
+if [[ -z "${NETLIST:-}" ]]; then
+  cargo build -q --release -p schemify-app --manifest-path "$repo/Cargo.toml"
+  cli="${CARGO_TARGET_DIR:-$repo/target}/release/schemify"
+  NETLIST="$cli netlist --dialect %dialect% -o %out% --allow-errors %cell%"
+fi
+if [[ "$NETLIST" != none ]]; then
   mkdir -p "$out/netlists"
   while read -r name rc cell root pdk; do
     for mode in spice cdl; do
-      dialect=ngspice; [[ $mode == cdl ]] && dialect=cdl
-      cmd="${NETLIST//%cell%/$out/$rc/$cell}"
+      dialect=ngspice; target="$cell"
+      if [[ $mode == cdl ]]; then
+        dialect=cdl
+        comp="${cell%__top.shbench}"; comp="${comp%.shbench}"; comp="${comp%.shcomp}.shcomp"
+        [[ -f "$out/$rc/$comp" ]] && target="$comp"
+      fi
+      cmd="${NETLIST//%cell%/$out/$rc/$target}"
       cmd="${cmd//%dialect%/$dialect}"
       cmd="${cmd//%out%/$out/netlists/$name.$mode}"
       ( [[ $root != - ]] && export PDK_ROOT="$root"; [[ $pdk != - ]] && export PDK="$pdk"
+        export HOME="$cache/home"
         cd "$out/$rc" && eval "$cmd" ) || echo "netlist failed: $name $mode" >&2
     done
   done < "$map"
-  echo "next: tests/corpus/diff_all.sh $out/netlists"
+  "$here/diff_all.sh" "$out/netlists" || true
 fi
 exit $status
