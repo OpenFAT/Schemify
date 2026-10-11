@@ -1,0 +1,11 @@
+# Byte-exact fixtures and canonical files: never convert line endings (Windows CI, D32).
+* text=auto eol=lf
+*.png binary
+*.wasm binary
+*.raw binary
+*.glut binary
+*.svg text eol=lf
+# Semantic merges of design files (D34); configure per clone with `schemify git-setup`.
+*.shprim merge=schemify
+*.shcomp merge=schemify
+*.shbench merge=schemify
