@@ -33,10 +33,10 @@ Open items collected from workstream reports. Each item names its owner crate. R
 ## run in the editor (M2 integration)
 
 - OP quantities are `.save`d only for MOSFETs the netlist names (`M…` leaves): a PDK device wrapped in a model subcircuit (`XM1` → `m.xm1.msky130_fd_pr__nfet_01v8`) has an inner name the netlist does not know. Xyce runs get no probe lines (lead currents need `.print`).
-- Staged edits: the canvas diff outlines changed objects only (inserted/deleted ones are not drawn until accepted); Accept/Reject act on the document's first stage.
+- Staged edits: an inserted instance is drawn as a box with its name, not its symbol (the stage's records are not elaborated).
 - Waves dock: keyboard focus follows the pointer; the divider position is not kept across sessions.
-- Netlist text tab: a prose code block capped at 2^14 lines / 256 KiB (the file has everything); no search.
-- Highlight keys a component by its first bit name (a bus component highlights by its first bit); keys of nets the name map lacks fall back to the level path (no cross-hierarchy match then).
+- Netlist text tab: a prose code block capped at 2^14 lines / 256 KiB (the file has everything); find lists matching lines, it does not scroll to them in the full text.
+- Highlight keys of nets the name map lacks fall back to the level path (no cross-hierarchy match then). OP voltage marks of a bus net use its first bit.
 - The OTA fixture has no bench; the GUI run tests and `docs/screenshots/simulate.png` use `crates/app/tests/fixtures/rc`.
 
 ## Decisions pending (user)

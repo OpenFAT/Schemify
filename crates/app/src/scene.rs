@@ -1854,6 +1854,16 @@ pub fn stamp(symbols: &Symbols, row: usize, o: Orient, at: Pt, out: &mut CanvasP
 /// Outlines clipboard records through `x` (paste preview): wires and graphics as drawn,
 /// everything else as a small box at its anchor plus its text.
 pub fn preview_records(recs: &[schemify_doc::RecordBuf], x: Xform, out: &mut CanvasPrims) {
+    preview_records_on(recs, x, LAYER_SEL, out);
+}
+
+/// [`preview_records`] on `layer` (the staged-edit diff draws inserted records on its own).
+pub fn preview_records_on(
+    recs: &[schemify_doc::RecordBuf],
+    x: Xform,
+    layer: u8,
+    out: &mut CanvasPrims,
+) {
     for r in recs {
         let mut r = r.clone();
         if crate::geometry::transform_record(&mut r, x).is_none() {
@@ -1866,15 +1876,15 @@ pub fn preview_records(recs: &[schemify_doc::RecordBuf], x: Xform, out: &mut Can
                 .unwrap_or(0)
         };
         match r.kind {
-            RecordKind::Wire => out.line(c(1), c(2), c(3), c(4), LAYER_SEL),
-            RecordKind::Line => out.line(c(0), c(1), c(2), c(3), LAYER_SEL),
-            RecordKind::Rect => out.rect(c(0), c(1), c(2), c(3), LAYER_SEL),
+            RecordKind::Wire => out.line(c(1), c(2), c(3), c(4), layer),
+            RecordKind::Line => out.line(c(0), c(1), c(2), c(3), layer),
+            RecordKind::Rect => out.rect(c(0), c(1), c(2), c(3), layer),
             _ => {
                 let Some(a) = crate::geometry::anchor(&r) else {
                     continue;
                 };
                 let u = 5 * UNIT;
-                out.rect(a.0 - u, a.1 - u, a.0 + u, a.1 + u, LAYER_SEL);
+                out.rect(a.0 - u, a.1 - u, a.0 + u, a.1 + u, layer);
                 let text = match r.kind {
                     RecordKind::Inst => r.find_attr("name").and_then(|v| v.values.first()).cloned(),
                     RecordKind::Label | RecordKind::Port | RecordKind::Text => {
@@ -1883,7 +1893,7 @@ pub fn preview_records(recs: &[schemify_doc::RecordBuf], x: Xform, out: &mut Can
                     _ => None,
                 };
                 if let Some(t) = text.filter(|t| !t.is_empty()) {
-                    out.text(a.0 + u, a.1 - 3 * u, 12 * UNIT, LAYER_SEL, &t);
+                    out.text(a.0 + u, a.1 - 3 * u, 12 * UNIT, layer, &t);
                 }
             }
         }

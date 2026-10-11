@@ -68,6 +68,7 @@ pub(super) fn text_tab_cmd(cmd: Cmd) -> bool {
             | Cmd::DialogClose
             | Cmd::ChooseFilter
             | Cmd::ChoosePick
+            | Cmd::TextFind
     )
 }
 
@@ -170,12 +171,16 @@ impl Editor {
             self.session.status = "highlight: no net under the pointer or in the selection".into();
             return;
         }
+        // Every bit of each component: a bus highlights all its bits, so a single-bit net
+        // carrying one of them lights up too.
         let names: Vec<String> = {
             let cell = self.cell.as_ref().expect("checked above");
-            comps
+            let mut n: Vec<String> = comps
                 .iter()
-                .map(|&c| checks::net_name(cell, c).to_owned())
-                .collect()
+                .flat_map(|&c| checks::bit_names(cell, c).map(str::to_owned))
+                .collect();
+            n.dedup();
+            n
         };
         let mut shown = Vec::with_capacity(names.len());
         for n in &names {
@@ -204,6 +209,46 @@ impl Editor {
         };
         self.session.status = format!("{verb}: {}", shown.join(" "));
         debug_assert!(self.highlight.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    /// `text.find`: the lines of the text tab's file (all of it, not only the part the tab
+    /// shows; the tab's text when there is no file) containing `query`, ASCII
+    /// case-insensitively, numbered, at most a tab's worth shown; an empty query shows the
+    /// text again.
+    pub(super) fn find_in_text(&mut self, query: &str) {
+        use std::fmt::Write as _;
+        let q = query.trim().to_owned();
+        let active = self.session.active;
+        let Some(v) = self
+            .session
+            .tabs
+            .get_mut(active)
+            .and_then(|t| t.text.as_mut())
+        else {
+            self.session.status = "find: no text tab".into();
+            return;
+        };
+        v.find.clone_from(&q);
+        if q.is_empty() {
+            v.found = None;
+            return;
+        }
+        let full = platform::read(&v.path)
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+            .unwrap_or_else(|| v.body.clone());
+        let needle = q.to_ascii_lowercase();
+        let (mut lines, mut count) = (String::new(), 0u32);
+        for (i, l) in full.lines().enumerate() {
+            if l.to_ascii_lowercase().contains(&needle) {
+                count += 1;
+                if count as usize <= TEXT_TAB_LINES {
+                    let _ = writeln!(lines, "{:>6}: {l}", i + 1);
+                }
+            }
+        }
+        v.found = Some((count, lines));
+        self.session.status = format!("find {q:?}: {count} line(s)");
     }
 
     /// `n` (`whole`: the tab's top cell) / `Shift+N` (the cell at this level): elaborate,
@@ -314,6 +359,8 @@ impl Editor {
                 title: format!("{title} (netlist)"),
                 path,
                 body,
+                find: String::new(),
+                found: None,
             });
             self.shell.invalidate();
         }
@@ -913,41 +960,63 @@ impl Editor {
     pub(super) fn track_stage(&mut self) {
         let Some((h, _)) = self.active() else { return };
         let stages = self.session.project.stages(h);
-        let key = stages.first().map(|st| (h, u32::from(st.id)));
+        let n = stages.len();
+        let pick = self.stage_pick.min(n.saturating_sub(1));
+        self.stage_pick = pick;
+        let key = stages.get(pick).map(|st| (h, u32::from(st.id)));
         if key == self.diff_key {
             return;
         }
         self.diff_key = key;
-        self.diff.clear();
+        self.diff = checks::Diff::default();
         self.staged = None;
         self.decor_dirty = true;
-        let Some(st) = stages.first() else { return };
+        let Some(st) = stages.get(pick) else { return };
         let Some(doc) = self.session.project.doc(h) else {
             return;
         };
         let s = doc.strings();
         for op in &st.ops {
-            let (kind, key) = match op {
-                Op::Delete(t)
-                | Op::Put { target: t, .. }
+            let (kind, key, deleted) = match op {
+                Op::Delete(t) => (t.kind, t.key.as_str(), true),
+                Op::Put { target: t, .. }
                 | Op::SetField { target: t, .. }
                 | Op::SetAttr { target: t, .. }
                 | Op::RemoveAttr { target: t, .. }
-                | Op::Reorder { target: t, .. } => (t.kind, t.key.as_str()),
-                Op::Insert { .. } => continue, // ponytail: new objects are not drawn until accepted
+                | Op::Reorder { target: t, .. } => (t.kind, t.key.as_str(), false),
+                Op::Insert { rec, .. } => {
+                    self.diff.inserted.push(rec.clone());
+                    continue;
+                }
             };
             let table = match TableId::of(kind) {
                 Some(t) => t,
                 None => continue,
             };
             if let Some(id) = ObjId::find(key, s).filter(|&id| doc.find_id(id).is_some()) {
-                self.diff.push(ObjKey { table, key: id.0 });
+                let k = ObjKey { table, key: id.0 };
+                if deleted {
+                    self.diff.deleted.push(k);
+                } else {
+                    self.diff.changed.push(k);
+                }
             }
         }
-        self.diff.sort_unstable();
-        self.diff.dedup();
+        let checks::Diff {
+            changed, deleted, ..
+        } = &mut self.diff;
+        deleted.sort_unstable();
+        deleted.dedup();
+        changed.sort_unstable();
+        changed.dedup();
+        changed.retain(|k| deleted.binary_search(k).is_err());
         if let Ok(preview) = self.session.project.preview(h, st.id) {
-            self.staged = Some((st.label.clone(), preview));
+            // With several stages the banner says which one is under review.
+            let label = match n {
+                1 => st.label.clone(),
+                _ => format!("({}/{n}) {}", pick + 1, st.label),
+            };
+            self.staged = Some((label, preview));
         }
     }
 
@@ -961,17 +1030,20 @@ impl Editor {
         let Some((h, _)) = self.active() else {
             return false;
         };
-        // Components whose hierarchy key is highlighted.
+        // Components with a highlighted bit (a bus by any of its bits).
         let comps: Vec<u32> = match (self.highlight.is_empty(), self.cell.as_ref()) {
             (false, Some(cell)) => {
-                let names: Vec<String> = (0..cell.nets.net_name.len() as u32)
-                    .map(|c| checks::net_name(cell, c).to_owned())
+                let bits: Vec<(u32, String)> = (0..cell.nets.net_name.len() as u32)
+                    .flat_map(|c| checks::bit_names(cell, c).map(move |b| (c, b.to_owned())))
                     .collect();
-                let mut out = Vec::new();
-                for (c, n) in names.iter().enumerate() {
+                let mut out: Vec<u32> = Vec::new();
+                for (c, n) in &bits {
+                    if out.last() == Some(c) {
+                        continue;
+                    }
                     let key = self.net_key(n);
                     if self.highlight.binary_search(&key).is_ok() {
-                        out.push(c as u32);
+                        out.push(*c);
                     }
                 }
                 out
@@ -1042,10 +1114,44 @@ impl Editor {
                 }
             }
         }
+        // Several staged edits: step through them on the docs page's banner.
+        if self.staged.is_some()
+            && self.docs_shown()
+            && self
+                .active()
+                .is_some_and(|(h, _)| self.session.project.stages(h).len() > 1)
+        {
+            for (id, label, cmd) in [
+                ("docs.staged.prev", "<", "edit.show_staged.prev"),
+                ("docs.staged.next", ">", "edit.show_staged.next"),
+            ] {
+                let _ = writeln!(
+                    t,
+                    "node {id} button\n  parent docs.staged\n  label {label}\n  command {cmd}"
+                );
+            }
+        }
         if let Some(v) = self.session.text_view() {
             let _ = writeln!(t, "remove canvas");
             let _ = writeln!(t, "node textview scroll\n  parent work\n  style text-view");
-            let fenced = format!("```\n{}\n```", v.body);
+            let _ = writeln!(
+                t,
+                "node textview.find text_input\n  parent textview\n  value {}\n  command text.find\n  tooltip {}",
+                docs::quote(&v.find),
+                docs::quote("Find (Enter): the file's lines containing the text, numbered")
+            );
+            let shown = match &v.found {
+                Some((count, lines)) => {
+                    let _ = writeln!(
+                        t,
+                        "node textview.found label\n  parent textview\n  label {}",
+                        docs::quote(&format!("{count} line(s) contain {:?}", v.find))
+                    );
+                    lines
+                }
+                None => &v.body,
+            };
+            let fenced = format!("```\n{shown}\n```");
             let _ = writeln!(
                 t,
                 "node textview.body prose\n  parent textview\n  value {}\n  style text-view-body",

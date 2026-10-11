@@ -75,6 +75,11 @@ pub struct TextView {
     pub path: PathBuf,
     /// The text.
     pub body: String,
+    /// The last find (`text.find`), empty for none.
+    pub find: String,
+    /// Its result: how many lines of the whole file contain it, and those lines (numbered,
+    /// at most as many as a text tab shows); `None` shows `body`.
+    pub found: Option<(u32, String)>,
 }
 
 /// Open documents and where they live on disk (SoA, one row per open document).

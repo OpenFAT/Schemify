@@ -889,3 +889,191 @@ fn real_ngspice_saves_mos_op_quantities_and_terminal_currents() {
         "savecurrents wrote i(@m1[id])"
     );
 }
+
+/// A bus highlights by every bit: `k` on the single-bit wire `d[0]` lights the bus `d[1:0]`
+/// that carries it (not `d[1]`, which only the bus shares); `k` on the bus lights both bit
+/// wires. The oracle is elab's membership: components carrying any highlighted bit.
+#[test]
+fn bus_components_highlight_by_every_bit() {
+    let bench = "schemify 1 shbench\n\nwire 0w0001 0 0 100 0\n  bus true\nwire 0w0002 0 100 100 100\n\
+                 wire 0w0003 0 200 100 200\n\nlabel 0n0001 0 0 R0 d[1:0]\nlabel 0n0002 0 100 R0 d[0]\n\
+                 label 0n0003 0 200 R0 d[1]\n";
+    let mut s = open_with(
+        "inv",
+        &[("bus.shbench", bench)],
+        "bus.shbench",
+        "bus-hilite",
+        None,
+    );
+    let keys = |s: &Session, rows: &[usize]| {
+        let (h, _) = s.ed.active().unwrap();
+        let doc = s.ed.session.project.doc(h).unwrap();
+        let mut k: Vec<ObjKey> = rows
+            .iter()
+            .flat_map(|&r| {
+                [
+                    ObjKey {
+                        table: TableId::Wires,
+                        key: doc.wires().id[r].0,
+                    },
+                    ObjKey {
+                        table: TableId::Labels,
+                        key: doc.labels().id[r].0,
+                    },
+                ]
+            })
+            .collect();
+        k.sort_unstable();
+        k
+    };
+    // Rows follow the ids: 0 the bus, 1 `d[0]`, 2 `d[1]`.
+    s.click((50 * U, 100 * U));
+    assert_eq!(s.ed.selection().len(), 1);
+    s.key("k");
+    assert_eq!(
+        s.ed.highlighted().keys,
+        keys(&s, &[0, 1]),
+        "{}",
+        s.ed.session.status
+    );
+    s.key("Shift+K");
+    assert!(s.ed.highlighted().keys.is_empty());
+    s.click((50 * U, 0));
+    s.key("k");
+    assert_eq!(s.ed.highlight_keys().len(), 2, "one key per bit");
+    assert_eq!(s.ed.highlighted().keys, keys(&s, &[0, 1, 2]));
+}
+
+/// Staged edits under review: inserted records are drawn where they will be, deleted objects
+/// crossed out, changed ones outlined; with two stages the banner steps between them and
+/// Accept / Reject act on the one under review.
+#[test]
+fn staged_edits_draw_inserts_and_deletes_and_review_one_stage_at_a_time() {
+    use schemify_app::checks::LAYER_DIFF;
+    use schemify_doc::{
+        Edit, EditRequest, FileKind, Mode, Transaction, apply_edits, ops_from_text,
+    };
+    let mut s = open("rc", "tb.shbench", "stages", None);
+    let before = s.text();
+    let (h, _) = s.ed.active().unwrap();
+    for (label, ops) in [
+        ("s1", "insert wire - 0 200 50 200\ndelete label 0bbbbd\n"),
+        ("s2", "set_field label 0bbbba 4 vin\n"),
+    ] {
+        let ops = ops_from_text(ops, FileKind::Shbench).unwrap();
+        let tx = Transaction {
+            label: label.into(),
+            mode: Mode::Stage,
+            ops,
+        };
+        let req = EditRequest {
+            doc: h,
+            edit: Edit::Tx(tx),
+            unix_ms: 0,
+        };
+        let out = apply_edits(&mut s.ed.session.project, &[req]);
+        assert!(
+            matches!(out[0], schemify_doc::Outcome::Staged { .. }),
+            "{out:?}"
+        );
+    }
+    if !s.ed.docs_shown() {
+        activate(&mut s, "view.docs");
+    }
+    s.frame(InputEvents::default());
+    assert_eq!(s.ed.session.project.stages(h).len(), 2);
+    let lines_on = |s: &Session, layer: u8| -> Vec<[i32; 4]> {
+        let l = &s.ed.decor().lines;
+        (0..l.layer.len())
+            .filter(|&i| l.layer[i] == layer)
+            .map(|i| [l.x0[i], l.y0[i], l.x1[i], l.y1[i]])
+            .collect()
+    };
+    let rects_on = |s: &Session, layer: u8| {
+        s.ed.decor()
+            .rects
+            .layer
+            .iter()
+            .filter(|&&l| l == layer)
+            .count()
+    };
+    // Stage 1 under review: the new wire drawn, the deleted label crossed out.
+    assert!(
+        lines_on(&s, LAYER_DIFF).contains(&[0, 200 * U, 50 * U, 200 * U]),
+        "{:?}",
+        lines_on(&s, LAYER_DIFF)
+    );
+    assert_eq!(lines_on(&s, LAYER_ERROR).len(), 2, "one cross");
+    assert_eq!(node_kind(&s, "docs.staged.next"), Some(Kind::Button));
+    // Stage 2: only the renamed label, outlined.
+    activate(&mut s, "docs.staged.next");
+    assert!(lines_on(&s, LAYER_DIFF).is_empty());
+    assert!(lines_on(&s, LAYER_ERROR).is_empty());
+    assert_eq!(rects_on(&s, LAYER_DIFF), 1);
+    // Accept acts on the stage under review; the other stays, and is reviewed next.
+    activate(&mut s, "docs.staged.accept");
+    assert!(
+        s.text().contains("label 0bbbba 0 -30 R0 vin\n"),
+        "{}",
+        s.text()
+    );
+    assert_eq!(s.ed.session.project.stages(h).len(), 1);
+    assert_eq!(
+        lines_on(&s, LAYER_ERROR).len(),
+        2,
+        "stage 1 under review again"
+    );
+    assert_eq!(
+        node_kind(&s, "docs.staged.next"),
+        None,
+        "one stage: no stepping"
+    );
+    activate(&mut s, "edit.reject_staged");
+    assert!(s.ed.session.project.stages(h).is_empty());
+    assert_eq!(
+        s.text(),
+        before.replace("label 0bbbba 0 -30 R0 in\n", "label 0bbbba 0 -30 R0 vin\n"),
+        "only the accepted stage changed the file"
+    );
+}
+
+/// Find in the netlist tab: the numbered lines of the whole file that contain the text,
+/// case-insensitively; an empty find shows the netlist again.
+#[test]
+fn netlist_tab_finds_lines_of_the_whole_file() {
+    let mut s = open("inv", "top.shcomp", "find", None);
+    s.key("n");
+    let text = std::fs::read_to_string(s.dir.join(".schemify/netlist/top.spice")).unwrap();
+    assert!(
+        s.ed.session.text_view().is_some(),
+        "{}",
+        s.ed.session.status
+    );
+    let find = |s: &mut Session, q: &str| {
+        s.click_node("textview.find");
+        s.key("Ctrl+A");
+        s.key("Del");
+        if !q.is_empty() {
+            s.type_text(q);
+        }
+        s.key("Enter");
+    };
+    find(&mut s, "SUBCKT");
+    let want: Vec<String> = text
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| l.to_ascii_lowercase().contains("subckt"))
+        .map(|(i, l)| format!("{:>6}: {l}", i + 1))
+        .collect();
+    assert!(!want.is_empty(), "{text}");
+    let (count, lines) = s.ed.session.text_view().unwrap().found.clone().unwrap();
+    assert_eq!(count as usize, want.len());
+    assert_eq!(lines.lines().collect::<Vec<_>>(), want);
+    assert_eq!(node_kind(&s, "textview.found"), Some(Kind::Label));
+    find(&mut s, "no such text anywhere");
+    let (count, lines) = s.ed.session.text_view().unwrap().found.clone().unwrap();
+    assert_eq!((count, lines.as_str()), (0, ""));
+    find(&mut s, "");
+    assert!(s.ed.session.text_view().unwrap().found.is_none());
+    assert_eq!(node_kind(&s, "textview.found"), None);
+}

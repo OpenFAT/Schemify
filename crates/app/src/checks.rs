@@ -63,6 +63,28 @@ pub struct Members {
     pub pins: Vec<(u32, u32, Pt)>,
 }
 
+/// The visual diff of the staged edit under review: the objects it changes and deletes
+/// (outlined; a deleted one crossed out in the error colour) and the records it inserts
+/// (drawn as outlines where they will be: they are not in the document until accepted).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Diff {
+    /// Objects the stage modifies, sorted.
+    pub changed: Vec<ObjKey>,
+    /// Objects the stage deletes, sorted.
+    pub deleted: Vec<ObjKey>,
+    /// Records the stage inserts.
+    pub inserted: Vec<schemify_doc::RecordBuf>,
+}
+
+/// Every bit name of component `c`, in bit order: a bus component carries several, and each
+/// keys it across the hierarchy (highlight).
+pub fn bit_names(cell: &CellState, c: u32) -> impl Iterator<Item = &str> + '_ {
+    let bits = cell.nets.bits_of(c as usize);
+    assert!(!bits.is_empty(), "a component carries at least one bit");
+    bits.iter()
+        .map(move |&b| cell.names.get(cell.nets.bit_name[b as usize]))
+}
+
 /// The bit name of component `c` that keys it across the hierarchy (its first bit).
 pub fn net_name(cell: &CellState, c: u32) -> &str {
     let bits = cell.nets.bits_of(c as usize);
@@ -253,8 +275,8 @@ fn anchors(doc: &Document, cell: &CellState) -> Vec<Option<Pt>> {
 /// Builds the decor primitives of the active level into `out` (cleared first):
 /// highlighted members, violation markers of the `checks` source, annotation texts of every
 /// other source on nets (`net_key` maps a net's bit name at this level to its overlay
-/// target) and instances (`inst_key` maps an instance name), and the objects a staged edit
-/// changes (`diff`).
+/// target) and instances (`inst_key` maps an instance name), and the visual diff of a
+/// staged edit (`diff`).
 #[allow(clippy::too_many_arguments)]
 pub fn decor(
     out: &mut CanvasPrims,
@@ -265,7 +287,7 @@ pub fn decor(
     hl: &Members,
     net_key: impl Fn(&str) -> Option<String>,
     inst_key: impl Fn(&str) -> String,
-    diff: &[ObjKey],
+    diff: &Diff,
 ) {
     *out = CanvasPrims::default();
     // Highlight: wires as thick segments, labels/ports/pins as squares.
@@ -353,13 +375,23 @@ pub fn decor(
             }
         }
     }
-    // The visual diff of a staged edit.
-    for k in diff {
-        let Some(o) = scene.find(*k) else { continue };
-        let b = scene.objs.bbox(o as usize);
-        let pad = 4 * UNIT;
-        out.rect(b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad, LAYER_DIFF);
+    // The visual diff of a staged edit: changed objects outlined, deleted ones crossed out,
+    // inserted records drawn where they will be.
+    let pad = 4 * UNIT;
+    for (keys, layer) in [(&diff.changed, LAYER_DIFF), (&diff.deleted, LAYER_ERROR)] {
+        for k in keys {
+            let Some(o) = scene.find(*k) else { continue };
+            let b = scene.objs.bbox(o as usize);
+            let (x0, y0, x1, y1) = (b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad);
+            out.rect(x0, y0, x1, y1, layer);
+            if layer == LAYER_ERROR {
+                out.line(x0, y0, x1, y1, layer);
+                out.line(x0, y1, x1, y0, layer);
+            }
+        }
     }
+    let identity = crate::geometry::Xform::translate(0, 0);
+    crate::scene::preview_records_on(&diff.inserted, identity, LAYER_DIFF, out);
     assert_eq!(out.texts.x.len(), out.texts.end.len());
 }
 

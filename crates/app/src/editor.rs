@@ -601,16 +601,18 @@ pub struct Editor {
     env: Vec<(String, String)>,
     /// The clock of the last update.
     now: u64,
-    /// Objects the active document's staged edit changes (visual diff) and its key.
-    diff: Vec<ObjKey>,
+    /// The visual diff of the staged edit under review and its key (document, stage id).
+    diff: crate::checks::Diff,
     diff_key: Option<(DocHandle, u32)>,
+    /// Which of the active document's staged edits is under review (index; clamped).
+    stage_pick: usize,
     /// Keyboard input goes to the waves dock (the pointer is over it).
     dock_focus: bool,
     /// Share of the window height above the waves dock (the divider, dragged by the pointer).
     dock_split: f32,
     /// The pointer is dragging the dock divider.
     dock_drag: bool,
-    /// The active document's first staged edit: its label and the document with it applied.
+    /// The staged edit under review: its label and the document with it applied.
     staged: Option<(String, Document)>,
     /// Embedded graph chrome and buffers (docs plot slots).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -760,7 +762,8 @@ impl Editor {
             graphs: Vec::new(),
             env: spines::env_pairs(),
             now: 0,
-            diff: Vec::new(),
+            diff: crate::checks::Diff::default(),
+            stage_pick: 0,
             diff_key: None,
             dock_focus: false,
             dock_split: DOCK_SPLIT,
@@ -1744,7 +1747,12 @@ impl Editor {
                     format!("OP annotation {}", if self.op_on { "on" } else { "off" });
             }
             Cmd::AcceptStaged | Cmd::RejectStaged => {
-                let Some(id) = self.session.project.stages(h).first().map(|st| st.id) else {
+                // The stage under review, or the one the suffix names (0-based).
+                let n = self.session.project.stages(h).len();
+                let pick = arg
+                    .parse::<usize>()
+                    .unwrap_or(self.stage_pick.min(n.saturating_sub(1)));
+                let Some(id) = self.session.project.stages(h).get(pick).map(|st| st.id) else {
                     self.session.status = "no staged edit on this document".into();
                     return true;
                 };
@@ -1755,6 +1763,15 @@ impl Editor {
                 };
                 push_req(reqs, h, edit);
             }
+            Cmd::ShowStaged => {
+                let n = self.session.project.stages(h).len().max(1);
+                self.stage_pick = match arg {
+                    "next" => (self.stage_pick + 1) % n,
+                    "prev" => (self.stage_pick + n - 1) % n,
+                    k => k.parse::<usize>().map_or(self.stage_pick, |k| k.min(n - 1)),
+                };
+            }
+            Cmd::TextFind => self.find_in_text(arg),
             Cmd::HalfSnap => self.opts.snap = (self.opts.snap / 2).max(1),
             Cmd::DoubleSnap => self.opts.snap = (self.opts.snap * 2).min(1000 * UNIT),
             Cmd::DrawGrid => self.opts.show_grid = !self.opts.show_grid,
