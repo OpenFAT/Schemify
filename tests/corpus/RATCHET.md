@@ -31,19 +31,19 @@ cause and owner.
   Counted apart from agreement, never as agree.
 - **differ**, **failed-to-elaborate** (blocked by the gate): below.
 
-## Current numbers (2026-10-11, main @ 1b59bda + the D17 amendment + instance netlist text)
+## Current numbers (2026-10-11, main @ 1b59bda + the D17 amendment + instance netlist text + spicecmp ngspice-45 rules)
 
 | set | mode | agree | golden-unevaluated | differ | (connectivity agrees) | cdl agree, golden code stripped | failed-to-import | failed-to-elaborate |
 |---|---|---|---|---|---|---|---|---|
-| xschem | spice | 74 | 19 | 7 | 3 | - | 0 | 10 |
-| xschem | cdl | 32 | 20 | 48 | 18 | 72 | 0 | 10 |
+| xschem | spice | 76 | 19 | 5 | 1 | - | 0 | 10 |
+| xschem | cdl | 33 | 20 | 47 | 17 | 74 | 0 | 10 |
 | sky130 | spice | 64 | 5 | 6 | 0 | - | 0 | 1 |
 | sky130 | cdl | 23 | 11 | 41 | 18 | 53 | 0 | 1 |
 | gf180 | spice | 58 | 0 | 0 | 0 | - | 0 | 0 |
 | gf180 | cdl | 0 | 0 | 58 | 8 | 58 | 0 | 0 |
 | ihp | spice | 57 | 0 | 0 | 0 | - | 0 | 0 |
 | ihp | cdl | 2 | 2 | 53 | 47 | 50 | 0 | 0 |
-| **total** | | **310** | **57** | **213** | 94 | **233** | 0 | 22 |
+| **total** | | **313** | **57** | **210** | 91 | **235** | 0 | 22 |
 
 For CDL, golden-unevaluated is judged against the code-stripped golden.
 
@@ -58,7 +58,8 @@ For CDL, golden-unevaluated is judged against the code-stripped golden.
 Then 246 → **250** SPICE with the D17 amendment (component code inside its subckt); CDL
 unchanged (CDL carries no code). Then 250 → **253** SPICE and 227 → **233** CDL with
 instance netlist text as variant cells and `spice_sym_def` port order (ccap moves to
-golden-unevaluated in both modes).
+golden-unevaluated in both modes). Then 253 → **255** SPICE and 233 → **235** CDL with
+spicecmp ignoring a bare word after a `.subckt` line's parameters, as ngspice 45 does.
 
 Gate-blocked: 20 → 22 per both modes together (`test_doublepin` unblocked; `sar_adc`
 and `tb_sar_adc` now blocked by a real E011, see below).
@@ -88,17 +89,17 @@ m1 feb9899); 198 with precompiled Verilog-A bodies emitted; 246 with this change
 | netlist | XSPICE bus bits respelled `d[0]` → `d_0` (spec §7.2) | test_ngspice (`Y_NAND_A[4]`) |
 | format + elab + netlist + import | D17 amendment: `code` in a `.shcomp`, written inside each of its definitions (netlist §7.6.15); the importer keeps a component's code instances and `S {}` text there | MSA-2643 (Q1 model cards), test_extracted_netlist, test_ngspice_flop, test_stdcells |
 | import | instance `format`/`lvs_format`/`spice_sym_def` as variant cells `<cell>__<instance>` (import §3); a blank format netlists nothing; a symbol's `spice_sym_def` is its netlist text with `@pinlist` in the included `.subckt`'s order (§2); `c='C'` keeps the assigned name | test_format_override ×2, ainv ×2, boost/buck_boost/sky130_mismatch (cdl), tb_symbol_include ×2, ccap ×2 (now golden-unevaluated) |
+| spicecmp | ngspice 45 rules, checked by running ngspice: a bare word after a `.subckt` line's parameters is ignored (`delay=200 ps`); a call's overrides are in scope before the subckt's other defaults are evaluated | doublepin ×2, loading ×2 |
 
 ## Remaining differences by root cause
 
-Rows are `bench (mode)`; SPICE unless marked. 13 SPICE and 24 CDL (code stripped)
+Rows are `bench (mode)`; SPICE unless marked. 11 SPICE and 22 CDL (code stripped)
 differences remain outside golden-unevaluated and the gate.
 
 | count | owner | root cause | benches |
 |---|---|---|---|
 | 6 | golden | xschem resolves an `extra` parameter (`@modelp`) inside a subcircuit from the symbol default and ignores the instance's value (`modelp=pfet_01v8_lvt` on x5/x6); ours honours the instance | sky130-bandgap, sky130-bandgap (cdl), sky130-tb_bandgap, sky130-tb_bandgap (cdl), sky130-tb_bandgap_opamp, sky130-tb_bandgap_opamp (cdl) |
 | 4 | golden | a top-level component renders an unresolved `@modeln` as an empty model name (`sky130_fd_pr__`): not bindable (a name, not a value) | sky130-gain_stage, sky130-gain_stage (cdl), sky130-passgate, sky130-passgate (cdl) |
-| 4 | golden | unquoted values with a space in xschem's `.subckt` line (`delay=200 ps`, `del=2 ns`): invalid SPICE, the stray token remains | xs-ex-doublepin, xs-ex-doublepin (cdl), xs-ex-loading, xs-ex-loading (cdl) |
 | 5 | golden (spec §7.4) | xschem's LVS netlist keeps `.include`/`.lib` lines of netlist-text symbols outside the architecture block; CDL has no corners (test_stdcells also passes `vcc` from a stripped `.param`) | sky130-optimize_delay (cdl), sky130-tb_charge_pump (cdl), sky130-test_hvl_cells (cdl), ihp-sc-tran_inv (cdl), sky130-test_stdcells (cdl) |
 | 4 | golden | xschem's CDL keeps `expr_eng(...)` unevaluated (IHP `rsil`/`rppd`/`rhigh` `lvs_format`) | ihp-ac_lv_nmosrf (cdl), ihp-dc_res_temp (cdl), ihp-iso_dc_res (cdl), ihp-mc_res_op (cdl) |
 | 2 | golden (Tcl) | the symbol's `format` calls a Tcl proc the schematic defines (`[ calc_rc @L @W ]`): back-annotated values need a Tcl interpreter (D7, D12) | xs-ex-test_backannotated_subckt, xs-ex-test_backannotated_subckt (cdl) |
