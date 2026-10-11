@@ -1,9 +1,9 @@
 //! gm/Id lookup tables: per-width device quantities on an (L, VDS, VGS) grid, their `.glut`
-//! v2 binary form, and the one query every exported function is built on ([`Lut::point`]).
+//! v2 binary form, and the one query every exported function is built on ([`Lut::point_at`]).
 //!
 //! Data design:
 //! 1. In: `.glut` bytes or a characterization grid. Out: [`Lut`] (SoA), then one [`Point`] per
-//!    query (gm/Id, L).
+//!    query (gm/Id, L, VDS).
 //! 2. How many: a few devices per project ([`DEVICES_MAX`]); ≤ [`CELLS_MAX`] grid cells each.
 //! 3. Widths: axes `f64` (they are compared against user values), cells `f32` (7 significant
 //!    digits is beyond any model's accuracy and halves the file), axis lengths `u16` in the file
@@ -52,7 +52,8 @@ pub struct Lut {
     pub polarity: Polarity,
     /// Supply the device was characterized for (V).
     pub vdd: f64,
-    /// VDS every query is answered at (V), normally `vdd / 2`.
+    /// VDS [`Lut::point`] answers at (V), normally `vdd / 2`; [`Lut::point_at`] takes any VDS
+    /// on the axis.
     pub vds_nom: f64,
     /// Free text: PDK, corner, temperature, and whether the data is simulated or synthetic.
     pub provenance: String,
@@ -92,8 +93,11 @@ pub struct Point {
 pub enum Miss {
     /// L is not finite or outside the table's L axis (no extrapolation).
     L,
-    /// gm/Id is not finite or not reachable on the table's monotone branch at that L.
+    /// gm/Id is not finite or not reachable at that L (above the row's highest value or below
+    /// its value at the highest VGS).
     GmId,
+    /// VDS is not finite or outside the table's VDS axis (no extrapolation).
+    Vds,
 }
 
 impl Lut {
@@ -152,22 +156,36 @@ impl Lut {
 
     // ------------------------------------------------------------------ query
 
-    /// The operating point where gm/Id equals `gm_id` at length `l` (m), at the nominal VDS.
+    /// The operating point where gm/Id equals `gm_id` at length `l` (m), at the nominal VDS
+    /// ([`Lut::vds_nom`]); [`Lut::point_at`] with that VDS.
     ///
-    /// Steps: VDS rows bracketing [`Lut::vds_nom`] are blended linearly; VGS is found by
-    /// inverse lookup on the monotone branch of gm/Id, scanning down from the highest VGS until
-    /// gm/Id stops rising (weak-inversion peak; below it leakage makes gm/Id fall again); the
-    /// positive quantities are interpolated geometrically in VGS (exact for the exponential
-    /// weak-inversion current); the two bracketing L rows are blended in log L, quantities
-    /// geometrically (exact for the power laws jd ∝ 1/L, ft ∝ 1/L²), VGS linearly.
+    /// # Errors
+    ///
+    /// As [`Lut::point_at`]; never [`Miss::Vds`] on a checked table.
+    pub fn point(&self, gm_id: f64, l: f64) -> Result<Point, Miss> {
+        self.point_at(gm_id, l, self.vds_nom)
+    }
+
+    /// The operating point where gm/Id equals `gm_id` at length `l` (m) and |VDS| `vds` (V).
+    ///
+    /// Steps: the VDS rows bracketing `vds` are blended linearly; VGS is found by inverse
+    /// lookup of gm/Id, scanning down from the highest VGS (gm/Id rises as VGS falls) to the
+    /// first VGS where it reaches `gm_id`. A dip on the way (a local maximum in moderate
+    /// inversion, as sky130 pfet bins show) is crossed, so the reachable gm/Id at one L row run
+    /// from the value at the highest VGS to the row's highest value ([`Lut::gm_id_range`]).
+    /// Inside the bracketing VGS cell the positive quantities are interpolated geometrically
+    /// (exact for the exponential weak-inversion current); the two bracketing L rows are
+    /// blended in log L, quantities geometrically (exact for the power laws jd ∝ 1/L,
+    /// ft ∝ 1/L²), VGS linearly.
     ///
     /// # Errors
     ///
     /// [`Miss::L`] outside the L axis (a relative 1e-9 slack absorbs `0.5u` ≠ `0.5e-6`
-    /// rounding); [`Miss::GmId`] when `gm_id` is not reachable.
+    /// rounding); [`Miss::Vds`] outside the VDS axis (1 nV slack); [`Miss::GmId`] when `gm_id`
+    /// is not reachable.
     ///
     /// Cost: O(VGS points) for each of ≤ 2 L rows.
-    pub fn point(&self, gm_id: f64, l: f64) -> Result<Point, Miss> {
+    pub fn point_at(&self, gm_id: f64, l: f64, vds: f64) -> Result<Point, Miss> {
         debug_assert!(self.id_w.len() == self.cells() && self.cgg_w.len() == self.cells());
         if !(gm_id.is_finite() && gm_id > 0.0) {
             return Err(Miss::GmId);
@@ -175,6 +193,7 @@ impl Lut {
         if !(l.is_finite() && l > 0.0) {
             return Err(Miss::L);
         }
+        let d = self.vds_bracket(vds)?;
         let (first, last) = (self.l[0], self.l[self.l.len() - 1]);
         if l < first * (1.0 - 1e-9) || l > last * (1.0 + 1e-9) {
             return Err(Miss::L);
@@ -183,13 +202,13 @@ impl Lut {
         let i1 = self.l.partition_point(|&x| x < l);
         // On a grid length (within rounding) the row answers alone.
         if i1 == 0 || 1.0 - l / self.l[i1] < 1e-9 {
-            return self.row_point(i1, gm_id);
+            return self.row_point(i1, gm_id, d);
         }
         let i0 = i1 - 1;
         if l / self.l[i0] - 1.0 < 1e-9 {
-            return self.row_point(i0, gm_id);
+            return self.row_point(i0, gm_id, d);
         }
-        let (p0, p1) = (self.row_point(i0, gm_id)?, self.row_point(i1, gm_id)?);
+        let (p0, p1) = (self.row_point(i0, gm_id, d)?, self.row_point(i1, gm_id, d)?);
         let t = (l / self.l[i0]).ln() / (self.l[i1] / self.l[i0]).ln();
         debug_assert!((0.0..=1.0).contains(&t));
         Ok(Point {
@@ -201,24 +220,24 @@ impl Lut {
         })
     }
 
-    /// VDS rows bracketing the nominal VDS and the blend factor between them.
-    fn vds_bracket(&self) -> (usize, usize, f64) {
-        let d1 = self
-            .vds
-            .partition_point(|&x| x < self.vds_nom)
-            .min(self.vds.len() - 1);
-        if d1 == 0 || self.vds[d1] == self.vds_nom {
-            return (d1, d1, 0.0);
+    /// VDS rows bracketing `vds` and the blend factor between them.
+    fn vds_bracket(&self, vds: f64) -> Result<(usize, usize, f64), Miss> {
+        let (first, last) = (self.vds[0], self.vds[self.vds.len() - 1]);
+        if !(vds.is_finite() && vds >= first - 1e-9 && vds <= last + 1e-9) {
+            return Err(Miss::Vds);
+        }
+        let v = vds.clamp(first, last);
+        let d1 = self.vds.partition_point(|&x| x < v).min(self.vds.len() - 1);
+        if d1 == 0 || self.vds[d1] == v {
+            return Ok((d1, d1, 0.0));
         }
         let d0 = d1 - 1;
-        (
-            d0,
-            d1,
-            (self.vds_nom - self.vds[d0]) / (self.vds[d1] - self.vds[d0]),
-        )
+        let t = (v - self.vds[d0]) / (self.vds[d1] - self.vds[d0]);
+        debug_assert!((0.0..=1.0).contains(&t));
+        Ok((d0, d1, t))
     }
 
-    /// `[id, gm, gds, cgg]` per width at L row `li`, VGS point `g`, nominal VDS.
+    /// `[id, gm, gds, cgg]` per width at L row `li`, VGS point `g`, VDS bracket `d`.
     fn quantities(&self, li: usize, (d0, d1, td): (usize, usize, f64), g: usize) -> [f64; 4] {
         let at = |block: &[f32]| {
             let a = f64::from(block[self.idx(li, d0, g)]);
@@ -232,12 +251,13 @@ impl Lut {
         ]
     }
 
-    /// [`Lut::point`] for one L row.
-    fn row_point(&self, li: usize, target: f64) -> Result<Point, Miss> {
+    /// [`Lut::point_at`] for one L row and VDS bracket `d`.
+    fn row_point(&self, li: usize, target: f64, d: (usize, usize, f64)) -> Result<Point, Miss> {
         let ng = self.vgs.len();
         assert!(li < self.l.len() && ng >= 2);
-        let d = self.vds_bracket();
-        // Scan from the strong-inversion end: gm/Id rises as VGS falls, up to its peak.
+        // Scan from the strong-inversion end down. Every value passed so far is below
+        // `target` (else the scan stopped there), so the first point at or above it closes the
+        // first upward crossing, after any dip. Cutoff (no current, a sign flip) ends the row.
         let mut hi = self.quantities(li, d, ng - 1);
         let mut hi_v = gm_id_of(&hi);
         if hi_v <= 0.0 || target < hi_v {
@@ -246,11 +266,17 @@ impl Lut {
         for g in (0..ng - 1).rev() {
             let lo = self.quantities(li, d, g);
             let lo_v = gm_id_of(&lo);
-            if lo_v <= hi_v {
-                break; // past the peak (or into cutoff): the monotone branch ends
+            if lo_v <= 0.0 {
+                break;
             }
             if target <= lo_v {
-                let t = (target - hi_v) / (lo_v - hi_v);
+                debug_assert!(hi_v <= target);
+                // Equal ends only on the first step, where `target == hi_v == lo_v`.
+                let t = if lo_v > hi_v {
+                    (target - hi_v) / (lo_v - hi_v)
+                } else {
+                    0.0
+                };
                 return Ok(Point {
                     vgs: lerp(self.vgs[g + 1], self.vgs[g], t),
                     jd: geo(hi[0], lo[0], t),
@@ -265,10 +291,17 @@ impl Lut {
     }
 
     /// The gm/Id interval [`Lut::point`] answers at L row `li`: from the value at the highest
-    /// VGS up to the weak-inversion peak. `(0, 0)` when the row has no usable branch.
+    /// VGS up to the row's highest value above cutoff (dips crossed). `(0, 0)` when the row has
+    /// no usable branch.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `li` is not a row of the L axis.
     pub fn gm_id_range(&self, li: usize) -> (f64, f64) {
         assert!(li < self.l.len());
-        let d = self.vds_bracket();
+        let Ok(d) = self.vds_bracket(self.vds_nom) else {
+            return (0.0, 0.0);
+        };
         let ng = self.vgs.len();
         let low = gm_id_of(&self.quantities(li, d, ng - 1));
         if low <= 0.0 {
@@ -277,10 +310,10 @@ impl Lut {
         let mut peak = low;
         for g in (0..ng - 1).rev() {
             let v = gm_id_of(&self.quantities(li, d, g));
-            if v <= peak {
+            if v <= 0.0 {
                 break;
             }
-            peak = v;
+            peak = peak.max(v);
         }
         debug_assert!(peak >= low);
         (low, peak)
@@ -528,6 +561,88 @@ mod tests {
         assert!(Lut::decode(&huge).is_err());
         assert!(Lut::decode(b"GLUT").is_err());
         assert!(Lut::decode(&[]).is_err());
+    }
+
+    /// A row whose gm/Id dips in moderate inversion (as sky130 pfet bins do): targets below
+    /// the local peak answer on its strong-inversion side, targets above it past the dip, up to
+    /// the row's highest value; VGS still falls as gm/Id rises.
+    #[test]
+    fn a_dip_in_gm_id_is_crossed() {
+        // gm/Id per VGS point (0 V … 1 V in 0.1 V); read from the top: 2 4 6 8, dip 7 6, 9 12,
+        // then 11 10 9 below the highest value.
+        let profile = [9.0f32, 10.0, 11.0, 12.0, 9.0, 6.0, 7.0, 8.0, 6.0, 4.0, 2.0];
+        let n = profile.len();
+        let lut = Lut {
+            name: "dip".into(),
+            polarity: Polarity::N,
+            vdd: 1.0,
+            vds_nom: 0.5,
+            provenance: String::new(),
+            l: vec![1e-6],
+            vds: vec![0.5],
+            vgs: (0..n).map(|k| 0.1 * k as f64).collect(),
+            id_w: vec![1.0; n],
+            gm_w: profile.to_vec(),
+            gds_w: vec![1.0; n],
+            cgg_w: vec![1.0; n],
+        };
+        assert_eq!(lut.check(), Ok(()));
+        let vgs = |g: f64| lut.point(g, 1e-6).map(|p| p.vgs);
+        assert!(
+            (vgs(7.5).unwrap() - 0.725).abs() < 1e-12,
+            "before the local peak"
+        );
+        assert!((vgs(8.0).unwrap() - 0.7).abs() < 1e-12, "at the local peak");
+        let past = vgs(10.0).unwrap();
+        assert!(
+            (past - (0.4 - 0.1 / 3.0)).abs() < 1e-12,
+            "past the dip: {past}"
+        );
+        assert!(
+            (vgs(12.0).unwrap() - 0.3).abs() < 1e-12,
+            "the row's highest value"
+        );
+        assert_eq!(vgs(12.5), Err(Miss::GmId));
+        assert_eq!(vgs(1.5), Err(Miss::GmId));
+        assert_eq!(lut.gm_id_range(0), (2.0, 12.0));
+        let ts: Vec<f64> = (0..=100).map(|k| 2.0 + 0.1 * f64::from(k)).collect();
+        for w in ts.windows(2) {
+            assert!(vgs(w[1]).unwrap() <= vgs(w[0]).unwrap(), "{w:?}");
+        }
+    }
+
+    /// Off-nominal VDS against the analytic model: id and gm are linear in VDS there and gds
+    /// does not depend on it, so the VDS blend is exact up to f32 storage. The nominal VDS
+    /// reproduces [`Lut::point`] bit for bit; a VDS off the axis misses.
+    #[test]
+    fn queries_at_any_vds_on_the_axis() {
+        let m = Ekv::default();
+        let lut = synth::lut(&m, "nsynth");
+        let l = lut.l[3];
+        for vds in [0.15, 0.3, 0.5, 0.9, 1.0, 1.35, 1.7, 1.8] {
+            for g in [5.0, 10.0, 15.0, 20.0] {
+                let p = lut.point_at(g, l, vds).unwrap();
+                let vgs = m.vgs_for(g);
+                let q = m.quantities(vgs, vds, l);
+                assert!(
+                    (p.vgs - vgs).abs() < 2e-3,
+                    "vgs at {vds}: {} vs {vgs}",
+                    p.vgs
+                );
+                let jd_err = (p.jd - q[0]).abs() / q[0];
+                assert!(jd_err < 0.02, "jd at {vds}: {} vs {}", p.jd, q[0]);
+                let (gain, want) = (p.gm_w / p.gds_w, q[1] / q[2]);
+                assert!(
+                    (gain - want).abs() < 0.02 * want,
+                    "gain at {vds}: {gain} vs {want}"
+                );
+            }
+        }
+        assert_eq!(lut.point_at(15.0, l, lut.vds_nom), lut.point(15.0, l));
+        assert_eq!(lut.point_at(15.0, l, 0.1), Err(Miss::Vds));
+        assert_eq!(lut.point_at(15.0, l, 1.9), Err(Miss::Vds));
+        assert_eq!(lut.point_at(15.0, l, f64::NAN), Err(Miss::Vds));
+        assert!(lut.point_at(15.0, l, 1.8 + 1e-12).is_ok(), "edge slack");
     }
 
     #[test]

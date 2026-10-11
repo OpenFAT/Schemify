@@ -209,10 +209,10 @@ fn guest_characterizes_and_answers_calls_within_the_fuel_budget() {
     );
     let (out, _) = g.done(2, 0, &std::fs::read(sample).unwrap());
     assert!(
-        out.contains("function gmid.jd 9 3") && out.contains("nsim loaded"),
+        out.contains("function gmid.jd 17 3") && out.contains("nsim loaded"),
         "{out}"
     );
-    let jd: f64 = g.call(9, "\"nsim\" 15 5e-7").unwrap().parse().unwrap();
+    let jd: f64 = g.call(17, "\"nsim\" 15 5e-7").unwrap().parse().unwrap();
     assert!((1.0..10.0).contains(&jd), "sample jd {jd}");
     let (out, _) = g.done(2, 0, b"stale handle");
     assert!(out.is_empty(), "a completed handle is forgotten: {out}");
@@ -255,7 +255,7 @@ fn guest_characterizes_and_answers_calls_within_the_fuel_budget() {
             "{out}"
         );
         assert_eq!(
-            out.contains("function gmid.jd 17 3"),
+            out.contains("function gmid.jd 33 3"),
             last,
             "re-declared at generation 2"
         );

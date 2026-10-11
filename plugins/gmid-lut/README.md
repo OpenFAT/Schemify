@@ -20,7 +20,8 @@ only for characterization.
 ## Functions
 
 All arguments and results are SI. `dev` is a device name from `gmid.chars` (a string), `gm_id`
-is gm/Id in 1/V, `l` the channel length in metres, `id` the drain current in amperes.
+is gm/Id in 1/V, `l` the channel length in metres, `id` the drain current in amperes, `vds` the
+drain-source voltage magnitude in volts.
 
 | Function | Arity | Result |
 |---|---|---|
@@ -31,29 +32,36 @@ is gm/Id in 1/V, `l` the channel length in metres, `id` the drain current in amp
 | `gmid.gds(dev, gm_id, l, id)` | 4 | gds = gm / gain (S) |
 | `gmid.gain(dev, gm_id, l)` | 3 | intrinsic gain gm/gds (V/V) |
 | `gmid.ft(dev, gm_id, l)` | 3 | transit frequency gm / (2π·Cgg) (Hz) |
+| `gmid.<f>_at(…, vds)` | +1 | each of the above at \|VDS\| = `vds` instead of the nominal VDS |
+
+The `_at` variants (`gmid.vgs_at(dev, gm_id, l, vds)`, …, `gmid.w_at(dev, gm_id, l, id, vds)`)
+take `vds` as their last argument; at the nominal VDS they return exactly what the plain
+function returns. `vds` must lie on the table's VDS axis (0.15 V … VDD for a default
+characterization).
 
 Registry records (`contribute functions`, plugin-abi §7): `function <name> <fn_id> <arity>` with
-`fn_id = index + 8 × generation`, index in the table order above (vgs 0 … ft 6). The generation
-starts at 0 on `Load` and advances whenever the loaded tables change (a LUT loads or a
-characterization finishes); the plugin then re-declares the set, so the host's registry epoch
-moves and it re-evaluates every expression that calls `gmid.*` (an identical re-declaration would
-be ignored). `schemify_call` reads `fn_id % 8`.
+`fn_id = index + 16 × generation`, index in the table order above (vgs 0 … ft 6, then vgs_at 7
+… ft_at 13). The generation starts at 0 on `Load` and advances whenever the loaded tables
+change (a LUT loads or a characterization finishes); the plugin then re-declares the set, so the
+host's registry epoch moves and it re-evaluates every expression that calls `gmid.*` (an
+identical re-declaration would be ignored). `schemify_call` reads `fn_id % 16`.
 
 Errors: every failure is `E_RANGE` (the host reports `X010`): unknown device or no table loaded
 for it, wrong arity or argument type, `l` outside the table's L axis (no extrapolation; a 1e-9
-relative slack absorbs `0.5u` vs `0.5e-6` rounding), `gm_id` not reachable, `id ≤ 0`, or a
-non-finite result. The functions never panic.
+relative slack absorbs `0.5u` vs `0.5e-6` rounding), `vds` outside the VDS axis (1 nV slack),
+`gm_id` not reachable, `id ≤ 0`, or a non-finite result. The functions never panic.
 
 ### Query semantics
 
-Every function evaluates one operating point at (gm_id, l) at the device's nominal VDS (VDD/2
-by default, stored in the LUT):
+Every function evaluates one operating point at (gm_id, l), at `vds` for the `_at` variants and
+at the device's nominal VDS (VDD/2 by default, stored in the LUT) for the others:
 
-1. the two VDS rows bracketing the nominal VDS are blended linearly;
-2. VGS is found by inverse lookup of gm/Id along VGS, scanning down from the highest VGS while
-   gm/Id keeps rising (the strong → weak inversion branch). The scan stops at the first local
-   maximum: below it leakage (or a model-bin artefact) makes gm/Id fall again. Reachable
-   targets therefore form `[gm/Id at VDD, first peak]` per L row;
+1. the two VDS rows bracketing that VDS are blended linearly;
+2. VGS is found by inverse lookup of gm/Id along VGS, scanning down from the highest VGS (gm/Id
+   rises from strong towards weak inversion) to the first VGS where gm/Id reaches `gm_id`. A dip
+   on the way (a local maximum in moderate inversion, which sky130 pfet bins show) is crossed;
+   cutoff (no current) ends the row. Reachable targets therefore form `[gm/Id at VDD, the row's
+   highest gm/Id]` per L row, and VGS still falls as `gm_id` rises;
 3. inside the bracketing VGS cell, id, gm, gds and Cgg are interpolated geometrically (exact for
    the exponential weak-inversion current);
 4. the two L rows bracketing `l` are blended in log L, quantities geometrically (exact for the
@@ -61,7 +69,8 @@ by default, stored in the LUT):
 
 Against a synthetic EKV device (closed-form gm, gds, Cgg; `src/synth.rs`) sampled on the
 characterization grid, every function agrees with the exact answer within 2 % (worst measured
-1.5 %, at off-grid L), VGS within 2 mV.
+1.5 %, at off-grid L), VGS within 2 mV, at the nominal VDS and off it (id and gm are linear in
+VDS in that model, so the VDS blend adds no error beyond f32 storage).
 
 ## `gmid.chars`
 
@@ -121,9 +130,12 @@ device nfet_01v8
   ≤ 256 requests pending. A failed write, a non-zero ngspice exit (the log carries the tail of
   its output), a missing or malformed data file only log an error; the loaded table is kept.
 
-`ponytail:` characterization uses the `spawn` capability, not core `run` requests: the editor
-does not execute run requests yet, and the sweep needs the raw (L, VDS, VGS) grid rather than
-bench outputs. Switch to a generated `.shbench` + `run` once the run spine reads results back.
+`ponytail:` characterization uses the `spawn` capability, not core `run` requests, because the
+ABI does not allow it yet: a plugin `run` record names a bench that is already a project cell
+(a `.shbench` the plugin writes is indexed only on the next project load), and `RunDone` /
+the `Results` snapshot carry the job's scalar outputs, not its raw file or directory, while the
+LUT needs the whole (L, VDS, VGS) grid of four OP quantities. Switch to a generated `.shbench`
++ `run` once the ABI can run a written bench and hand back the job directory (BACKLOG).
 
 ### The sweep
 
@@ -139,8 +151,8 @@ the LUT) measured ≈ 15 M fuel against 10^8 per event (`tests/guest.rs`, which 
 module with wasmi). A single file for all 8 lengths measured ≈ 150 M and did not fit — hence
 one file per length.
 
-`ponytail:` the grid is fixed (25 mV × 150 mV at 1.8 V) and queries are at the nominal VDS only;
-add `vgs_step`/`vds_step` attributes or a VDS argument when someone needs them.
+`ponytail:` the grid is fixed (25 mV × 150 mV at 1.8 V); add `vgs_step`/`vds_step` attributes
+when someone needs a finer one.
 
 ## `.glut` v2 format
 
@@ -182,11 +194,12 @@ cargo run --manifest-path plugins/Cargo.toml -p gmid-lut --example characterize 
 ```
 
 which runs the plugin's own config parser, netlist generator, `wrdata` parser and LUT builder
-with `std::process` in place of the host's `spawn`. Reachable gm/Id: nfet from ≈ 1.2 up to a
-26–32 V⁻¹ peak at every L; pfet ≈ 1.2–2.3 up to ≈ 30 V⁻¹ for L 0.25–4 µm, but only ≈ 15 V⁻¹ at
-L 0.15/0.18 µm and 17 V⁻¹ at 8 µm (those bins show a local gm/Id maximum in moderate inversion,
-where the monotone-branch scan stops). At gm/Id = 15, L = 0.5 µm the nfet has jd ≈ 2.6 A/m,
-gain ≈ 112 and ft ≈ 2.4 GHz.
+with `std::process` in place of the host's `spawn`. Reachable gm/Id: nfet from ≈ 1.2 up to
+26–32 V⁻¹ at every L; pfet from ≈ 1.2–2.3 up to ≈ 29–31 V⁻¹ for L 0.25–8 µm, 27 V⁻¹ at L 0.18 µm
+and 23 V⁻¹ at L 0.15 µm (still rising at VGS = 0). The pfet bins at L 0.15, 0.18 and 8 µm show a
+local gm/Id maximum in moderate inversion (15.1, 15.6 and 17.3 V⁻¹) followed by a dip; the scan
+crosses it (query step 2), so targets above the local maximum answer at a lower VGS past the
+dip. At gm/Id = 15, L = 0.5 µm the nfet has jd ≈ 2.6 A/m, gain ≈ 112 and ft ≈ 2.4 GHz.
 
 ## Building and testing
 
@@ -197,9 +210,10 @@ gain ≈ 112 and ft ≈ 2.4 GHz.
 - Native tests (the guest glue is `cfg(target_arch = "wasm32")`, everything else is plain Rust):
   `cargo test --manifest-path plugins/Cargo.toml -p gmid-lut`. Unit tests cover the format round
   trip and malformed input, the config parser, the netlist, the `wrdata` parser and builder,
-  accuracy against the analytic model, monotonicity (jd, ft, VGS fall and W grows with gm/Id;
-  gain grows and ft falls with L), error paths, and the plausibility of the committed sky130
-  samples. `tests/guest.rs` loads the built `gmid_lut.wasm` in wasmi (run `build.sh` first) and
+  accuracy against the analytic model (also off the nominal VDS), monotonicity (jd, ft, VGS
+  fall and W grows with gm/Id; gain grows and ft falls with L), a synthetic gm/Id dip, the `_at`
+  variants (equal to the plain functions at the nominal VDS), error paths, and the plausibility
+  of the committed sky130 samples. `tests/guest.rs` loads the built `gmid_lut.wasm` in wasmi (run `build.sh` first) and
   drives Load → config → LUT load → characterize → spawn → 8 data files → LUT write →
   `schemify_call`, asserting every event fits the default fuel and the guest's answers equal
   the native `eval` on the LUT it wrote.
