@@ -40,6 +40,9 @@ const LAYER_NAMES: [&str; 6] = ["BG", "WIRE", "GRID", "TEXT", "", "PIN"];
 const PITCH: i32 = 20 * UNIT;
 /// Rows of hierarchy the changelog lists at most.
 const CHANGELOG_ROWS: usize = 1 << 12;
+/// Largest PNG export side in pixels (the CPU raster's target is `u16`; 16k keeps one
+/// image under 1 GiB of RGBA).
+const PNG_MAX_PX: u16 = 16_384;
 
 /// The comparison of the active document with another cell (Highlight → compare).
 #[derive(Clone, Debug)]
@@ -174,6 +177,7 @@ pub(super) fn text_tab_ok(cmd: Cmd) -> bool {
             | Cmd::Help
             | Cmd::Changelog
             | Cmd::ListProcesses
+            | Cmd::PackageStatus
             | Cmd::JobData
             | Cmd::JobErrors
             | Cmd::ListNets
@@ -248,6 +252,7 @@ impl Editor {
                 self.open_chooser(ChooseFor::Delete);
             }
             Cmd::ExportPng
+            | Cmd::ExportPngFull
             | Cmd::ExportSvg
             | Cmd::ExportPdf
             | Cmd::ExportPdfFull
@@ -363,7 +368,9 @@ impl Editor {
             | Cmd::DimColors
             | Cmd::SymbolWidth
             | Cmd::GridDialog
-            | Cmd::SnapDialog => self.setting(cmd, arg),
+            | Cmd::SnapDialog
+            | Cmd::ExportPage
+            | Cmd::PngScale => self.setting(cmd, arg),
             Cmd::CycleDialect => {
                 let i = spines::DIALECTS
                     .iter()
@@ -619,6 +626,7 @@ impl Editor {
                 }
             }
             Cmd::ListProcesses => self.list_processes(),
+            Cmd::PackageStatus => self.package_status(),
             Cmd::JobData | Cmd::JobErrors => self.job_log(cmd == Cmd::JobErrors),
             Cmd::WavesClear => {
                 self.waves = None;
@@ -909,10 +917,12 @@ impl Editor {
             .join(format!("{stem}.{ext}"))
     }
 
-    /// File → Image export (PNG of the visible canvas; SVG, PDF and EPS of the drawing, the
-    /// selection or the visible area; a PDF page per schematic of the hierarchy).
+    /// File → Image export (PNG of the visible canvas or of the whole drawing, at the PNG
+    /// scale; SVG, PDF and EPS of the drawing, the selection or the visible area, PDF and EPS
+    /// fitted to the export page; a PDF page per schematic of the hierarchy).
     fn export(&mut self, h: DocHandle, cmd: Cmd, arg: &str) {
         let look = self.export_look();
+        let page = self.opts.export_page;
         let pad = 10 * UNIT;
         let whole = export::bounds(&self.scene.prims).map(|b| export::padded(b, pad));
         let selected = (!self.selection().is_empty()).then(|| {
@@ -921,6 +931,7 @@ impl Editor {
         });
         let (ext, bytes): (&str, Result<Vec<u8>, String>) = match cmd {
             Cmd::ExportPng => ("png", self.export_png()),
+            Cmd::ExportPngFull => ("png", self.export_png_full()),
             Cmd::ExportSvg => (
                 "svg",
                 whole
@@ -932,7 +943,9 @@ impl Editor {
                 (
                     "eps",
                     export::bounds(prims)
-                        .map(|b| export::eps(prims, export::padded(b, pad), &look).into_bytes())
+                        .map(|b| {
+                            export::eps(prims, export::padded(b, pad), &look, page).into_bytes()
+                        })
                         .ok_or_else(|| "nothing to export".into()),
                 )
             }
@@ -943,14 +956,14 @@ impl Editor {
                 };
                 (
                     "pdf",
-                    b.map(|b| export::pdf(&[(prims, b)], &look))
+                    b.map(|b| export::pdf(&[(prims, b)], &look, page))
                         .ok_or_else(|| "nothing to export".into()),
                 )
             }
             Cmd::ExportPdfFull => (
                 "pdf",
                 whole
-                    .map(|b| export::pdf(&[(&self.scene.prims, b)], &look))
+                    .map(|b| export::pdf(&[(&self.scene.prims, b)], &look, page))
                     .ok_or_else(|| "nothing to export".into()),
             ),
             _ => ("pdf", self.export_hierarchy(h, &look)),
@@ -972,22 +985,63 @@ impl Editor {
         [r(x0.min(x1)), r(y0.min(y1)), r(x0.max(x1)), r(y0.max(y1))]
     }
 
-    /// The visible canvas rasterized on the CPU (`render::CpuPainter`) as PNG bytes: the same
-    /// grid, primitives and palette the window draws, without selection marks or overlay.
+    /// The visible canvas rasterized on the CPU (`render::CpuPainter`) as PNG bytes at the
+    /// PNG scale (`EditOpts::png_scale`): the same grid, primitives and palette the window
+    /// draws, without selection marks or overlay. At scale 1 the image has the canvas's size
+    /// in logical pixels.
     ///
     /// # Errors
     ///
-    /// The canvas has no area, or PNG encoding fails.
+    /// The canvas has no area, the scaled image is over 16384 px a side, or PNG
+    /// encoding fails.
     pub fn export_png(&mut self) -> Result<Vec<u8>, String> {
         let v = self.canvas_rect();
-        let (w, hgt) = (v.width().round(), v.height().round());
-        if w < 1.0 || hgt < 1.0 || w > 16384.0 || hgt > 16384.0 {
-            return Err("the canvas has no drawable area".into());
-        }
-        let mut p = schemify_render::CpuPainter::new(w as u16, hgt as u16, 1.0);
-        let view = KRect::new(0.0, 0.0, w, hgt);
         // The camera is relative to the view's center: the image shows what the canvas shows.
         let cam = self.camera();
+        self.raster_png(v.width().round(), v.height().round(), cam)
+    }
+
+    /// The whole drawing (its bounds plus a 10-unit margin) rasterized as PNG bytes at one
+    /// logical pixel per schematic unit times the PNG scale, whatever the canvas shows.
+    ///
+    /// # Errors
+    ///
+    /// Nothing is drawn, the image is over 16384 px a side (lower the scale), or PNG
+    /// encoding fails.
+    pub fn export_png_full(&mut self) -> Result<Vec<u8>, String> {
+        let b = export::bounds(&self.scene.prims)
+            .map(|b| export::padded(b, 10 * UNIT))
+            .ok_or("nothing to export")?;
+        let u = f64::from(UNIT);
+        let (w, h) = (
+            (f64::from(b[2]) - f64::from(b[0])) / u,
+            (f64::from(b[3]) - f64::from(b[1])) / u,
+        );
+        let cam = canvas::Camera {
+            cx: (f64::from(b[0]) + f64::from(b[2])) / 2.0,
+            cy: (f64::from(b[1]) + f64::from(b[3])) / 2.0,
+            scale: 1.0 / u,
+        };
+        self.raster_png(w.ceil(), h.ceil(), cam)
+    }
+
+    /// Rasterizes a `w × h` logical-pixel view through `cam` at the PNG scale and encodes it.
+    fn raster_png(&mut self, w: f64, h: f64, cam: canvas::Camera) -> Result<Vec<u8>, String> {
+        let k = f64::from(self.opts.png_scale) / 100.0;
+        assert!(k > 0.0 && cam.scale > 0.0, "a positive scale");
+        let (pw, ph) = ((w * k).round(), (h * k).round());
+        if w < 1.0 || h < 1.0 || pw < 1.0 || ph < 1.0 {
+            return Err("the canvas has no drawable area".into());
+        }
+        let max = f64::from(PNG_MAX_PX);
+        if pw > max || ph > max {
+            return Err(format!(
+                "a {pw} × {ph} px image is over {PNG_MAX_PX} px a side: lower the PNG scale \
+                 (options.png_export_scale)"
+            ));
+        }
+        let mut p = schemify_render::CpuPainter::new(pw as u16, ph as u16, k);
+        let view = KRect::new(0.0, 0.0, w, h);
         let palette = self.view_palette();
         let grid = if self.opts.show_grid {
             self.opts.grid
@@ -1022,6 +1076,7 @@ impl Editor {
             &mut scratch2,
         );
         let px = p.finish(schemify_render::vello::peniko::Color::BLACK);
+        assert_eq!((px.width(), px.height()), (pw as u16, ph as u16));
         px.into_png().map_err(|e| format!("png: {e:?}"))
     }
 
@@ -1054,7 +1109,7 @@ impl Editor {
         if pages.is_empty() {
             return Err("nothing to export".into());
         }
-        Ok(export::pdf(&pages, look))
+        Ok(export::pdf(&pages, look, self.opts.export_page))
     }
 
     /// The schematic documents of the hierarchy below `h` (`h` first), each once, opening
@@ -1330,6 +1385,14 @@ impl Editor {
                 ),
                 Cmd::SymbolWidth => ("Symbol width (units)", units(self.opts.symbol_width)),
                 Cmd::GridDialog => ("Grid spacing (units)", units(self.opts.grid)),
+                Cmd::ExportPage => (
+                    "Export page (a4, a3, a5, letter, legal, tabloid; portrait)",
+                    self.opts.export_page.name(),
+                ),
+                Cmd::PngScale => (
+                    "PNG export scale (1 = screen resolution, 96 dpi)",
+                    format!("{}", f64::from(self.opts.png_scale) / 100.0),
+                ),
                 _ => ("Snap (units)", units(self.opts.snap)),
             };
             self.open_text(TextFor::Setting(cmd), title);
@@ -1365,6 +1428,21 @@ impl Editor {
                         self.opts.snap = m;
                     }
                 }
+                None => self.session.status = bad(),
+            },
+            Cmd::ExportPage => match export::Page::parse(arg) {
+                Some(p) => {
+                    self.opts.export_page = p;
+                    self.session.status = format!("export page: {}", p.name());
+                }
+                None => {
+                    self.session.status = format!(
+                        "{arg:?}: not a page (a4, a3, a5, letter, legal, tabloid; portrait)"
+                    );
+                }
+            },
+            Cmd::PngScale => match number(arg, 0.1, 16.0) {
+                Some(v) => self.opts.png_scale = (v * 100.0).round().clamp(10.0, 1600.0) as u16,
                 None => self.session.status = bad(),
             },
             _ => {}
@@ -2244,6 +2322,34 @@ impl Editor {
             body.push_str(&format!("{t:>12}  {}{dirty}\n", p.display()));
         }
         self.text_tab("changelog", "changelog", body);
+    }
+
+    /// Tools → Package status: what `schemify pack status` prints for the user config
+    /// (config spec §5), in a text tab.
+    fn package_status(&mut self) {
+        use schemify_cli::pack;
+        let config = self.host.config();
+        let specs = &config.table().packs;
+        let body = match pack::Paths::of(config) {
+            Err(e) => format!("user packages: {e}\n"),
+            Ok(_) if specs.is_empty() => {
+                "no user packages (`schemify.pack.add` in init.lua)\n".to_owned()
+            }
+            Ok(paths) => {
+                let report = pack::status(specs, &paths);
+                let mut b = report.lines.join("\n");
+                b.push('\n');
+                if report.failed > 0 {
+                    b.push_str(&format!(
+                        "\n{} package(s) missing or broken: run `schemify pack sync`\n",
+                        report.failed
+                    ));
+                }
+                b
+            }
+        };
+        assert!(body.ends_with('\n'));
+        self.text_tab("packages", "packages", body);
     }
 
     fn list_processes(&mut self) {

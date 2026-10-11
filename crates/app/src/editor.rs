@@ -203,6 +203,11 @@ pub struct EditOpts {
     pub fullscreen: bool,
     /// Box width make-symbol draws, milli-units.
     pub symbol_width: i32,
+    /// Paper PDF and EPS exports are fitted to.
+    pub export_page: crate::export::Page,
+    /// PNG export scale, percent of screen resolution (100 = one image pixel per logical
+    /// pixel, 96 dpi), `[10, 1600]`.
+    pub png_scale: u16,
 }
 
 impl Default for EditOpts {
@@ -241,6 +246,8 @@ impl Default for EditOpts {
             toolbar: true,
             fullscreen: false,
             symbol_width: 150 * UNIT,
+            export_page: crate::export::Page::default(),
+            png_scale: 100,
         }
     }
 }
@@ -767,6 +774,13 @@ impl Editor {
                 let h = ed.session.create(FileKind::Shcomp)?;
                 ed.session.open_tab(h, View::Schematic);
             }
+        }
+        // The user config's `sim openvaf` / `sim iverilog` programs, as the CLI runner gets
+        // them (`spines::tools`; config spec §3).
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let tools = spines::tools(ed.host.user());
+            ed.sim.set_compilers(tools.openvaf, tools.iverilog);
         }
         if !status.is_empty() {
             ed.session.status = status;

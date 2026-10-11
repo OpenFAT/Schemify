@@ -11,12 +11,10 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## app / editor
 
-- **Tests open fixtures in place**, so a journal left by using the GUI on a fixture (`fixtures/*/.schemify/journal`) is replayed as crash recovery and breaks `tests/docs.rs` (happened 2026-10-10). Copy fixtures into a temp dir per test.
-
 - **doc**: keep rank 2 (symbol graphics) in indexed interfaces (`parse_prefix(bytes, 2)`); the editor currently opens every instantiated cell to get its symbol.
 - **ui**: text fields commit only on Enter (the app copies typed text every frame).
 - Editor gaps vs xschem (after the parity pass, `tests/parity.rs`): partial wire selection (xschem's Ctrl+drag box selects only the inside ends of crossing wires; here a stretch follows wire ends on moved connection points); vertex editing of a selected wire/line/polygon/rect corner; symbol `stext` orientation (only schematic `text` records turn); the context menu closes with Esc or a row, not a click outside; recent files outside the current project do not open (one project per session); layer colors, dim and line width are not persisted (set them in `init.lua`: `schemify.opt` has no keys for them yet); the web build has no system clipboard (D2 glue) and no exports to disk (OPFS); plugin I/O capabilities fetch/clipboard in the app.
-- **Exports**: PDF/EPS text uses the base-14 Helvetica (not embedded, ASCII only, others print `?`); one A4 landscape page per drawing; arcs are polylines of 6° steps; the PNG is the visible canvas at screen resolution (no DPI/size option).
+- **Exports**: PDF/EPS embed whole UI faces (Noto Sans ~190 KB, KaTeX Main ~65 KB when used, ASCII85; twice that as EPS hex) instead of subsets of the glyphs used; their text is placed glyph by glyph (no kerning or ligatures); characters neither face has print `.notdef` (the canvas falls back to system fonts). The export page, PNG scale and package status are commands without default-UI menu rows yet (`options.export_page_size`, `options.png_export_scale`, `file.image_export.png_export_full`, `tools.package_status`).
 - **Make subcircuit** (Ctrl+Shift+H) connects the new instance by net labels at the old boundary points and on its pins (xschem rewires); the new cell's symbol is the generated box.
 - **Join/trim** does not merge diagonal wires or wires with attributes other than `bus`.
 - Plugin `eval` requests still answer `E_GONE` (elab evaluator not wired to the host).
@@ -25,7 +23,6 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 - **config**: no Lua on the web: C Lua 5.4 (mlua vendored) has no `wasm32-unknown-unknown` build, so the web runs without `init.lua`. Upgrade: a pure-Rust Lua 5.4 (piccolo, once it covers `error(msg, level)`, `tonumber`, `load` semantics) or C Lua on a wasi-libc shim; OPFS `/config` then holds `init.lua`.
 - **config**: a single C library call (a pattern match over a huge string) runs between budget checks; only the memory cap bounds it.
-- **app**: the editor applies `sim ngspice` only (openvaf/iverilog paths reach the CLI's runner through `spines::tools`, not the editor's `Sim`); no "Packages" status view (use `schemify pack status`).
 - **cli/pack**: `url` packages are one `.wasm` file (no archives); `pack` has no parallel fetches.
 
 ## docs page (D19–D21)

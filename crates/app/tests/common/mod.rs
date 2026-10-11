@@ -17,7 +17,9 @@ pub const VIEW: (f32, f32) = (1280.0, 800.0);
 /// One xschem unit in milli-units.
 pub const U: i32 = 1000;
 
-/// Copies `tests/fixtures/<name>` into a fresh temp directory and returns its path.
+/// Copies `tests/fixtures/<name>` into a fresh temp directory and returns its path. Tests
+/// never open a fixture in place: a GUI session on a fixture leaves `.schemify/` state (a
+/// journal replayed as crash recovery, netlists, runs) that must not reach a test.
 pub fn fixture(name: &str, tag: &str) -> PathBuf {
     let src = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -31,11 +33,16 @@ pub fn fixture(name: &str, tag: &str) -> PathBuf {
     dst
 }
 
-fn copy_dir(src: &Path, dst: &Path) {
+/// Copies the tree `src` to `dst`, leaving out every `.schemify/` directory (derived editor
+/// state: journals, netlists, runs, exports).
+pub fn copy_dir(src: &Path, dst: &Path) {
     std::fs::create_dir_all(dst).unwrap();
     for e in std::fs::read_dir(src).unwrap() {
         let p = e.unwrap().path();
         let to = dst.join(p.file_name().unwrap());
+        if p.file_name().is_some_and(|n| n == ".schemify") {
+            continue;
+        }
         if p.is_dir() {
             copy_dir(&p, &to);
         } else {

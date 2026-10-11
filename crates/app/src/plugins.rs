@@ -211,6 +211,11 @@ impl Host {
         self.user.table()
     }
 
+    /// The user config itself: its root locates the package lockfile (`pack::Paths::of`).
+    pub fn config(&self) -> &Config {
+        &self.user
+    }
+
     /// Runs a command nobody in the command table owns, if the user config or a lazy package
     /// does: a Lua keymap function (`user.lua.<id>`) runs now; a lazy package listing `name`
     /// loads and gets the command as `Event::Command`. Returns whether it was handled.

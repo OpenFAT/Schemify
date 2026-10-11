@@ -143,8 +143,11 @@ commands! {
     ExportPdf = "file.image_export.pdf_ps_export",
     /// Export the whole drawing as PDF.
     ExportPdfFull = "file.image_export.pdf_ps_export_full",
-    /// Export the visible canvas as PNG (the CPU raster of `render::Painter`).
+    /// Export the visible canvas as PNG (the CPU raster of `render::Painter`) at the PNG
+    /// scale (`options.png_export_scale`).
     ExportPng = "file.image_export.png_export",
+    /// Export the whole drawing as PNG: one pixel per schematic unit times the PNG scale.
+    ExportPngFull = "file.image_export.png_export_full",
     /// Export the whole drawing as SVG.
     ExportSvg = "file.image_export.svg_export",
     /// Insert another cell's schematic attached to the pointer (xschem merge).
@@ -230,12 +233,18 @@ commands! {
     Orthogonal = "options.enable_orthogonal_wiring",
     /// Toggle stretching attached wires on plain moves (xschem `y`).
     EnableStretch = "options.enable_stretch",
+    /// Paper PDF and EPS exports fit (`a4`, `letter portrait`, …): dialog, or the size as
+    /// argument.
+    ExportPage = "options.export_page_size",
     /// Halve the snap.
     HalfSnap = "options.half_snap_threshold",
     /// Toggle flat (hierarchy expanded) SPICE netlists.
     FlatNetlist = "options.netlist_format_symbol_mode.flat_netlist",
     /// Toggle staying in wire/line mode after each segment.
     PersistentWire = "options.persistent_wire_line_place_command",
+    /// PNG export scale (1 = screen resolution, 96 dpi; 2 = 192 dpi): dialog, or the factor
+    /// as argument.
+    PngScale = "options.png_export_scale",
     /// Toggle the SVG background rectangle.
     ExportTransparent = "options.transparent_svg_background",
     /// Properties dialog of the selection.
@@ -374,6 +383,8 @@ commands! {
     InsertWire = "tools.insert_wire",
     /// Merge collinear touching wires, drop duplicates, split at T junctions.
     JoinTrim = "tools.join_trim_wires",
+    /// The user packages' state (`schemify pack status`) in a text tab.
+    PackageStatus = "tools.package_status",
     /// Split wires at the selected instances' pins and delete the pieces inside them.
     RemoveThrough = "tools.remove_wires_running_through_selected_in",
     /// Search / replace dialog: select objects by attribute, or replace a value everywhere.

@@ -71,7 +71,7 @@ The init file and every function it registers run in one Lua 5.4 state that only
 | `schemify.keymap.set(chord, target, opts?)` | Binds `chord` (the keymap record syntax, `Ctrl+Shift+N`, `F5`, `w`) to `target`: a command name ([plugin-abi.md](plugin-abi.md) §7, the D27 command table) or a Lua function. `opts.desc` is a description string. A later `set` of the same chord replaces the earlier one. |
 | `schemify.cmd(name, args?)` | Queues command `name` with the argument string `args` (default empty). The editor runs queued commands in order at its next delivery; the core has no command table yet and ignores them. |
 | `schemify.on(event, fn)` | Calls `fn(ev)` after each `event` the editor delivers to plugins. Events (plugin-abi §6 wire words): `load` (the editor is ready), `doc_opened`, `doc_closed`, `doc_changed`, `selection_changed`, `saved`, `run_done`. `ev` holds the event's fields (`ev.doc`, `ev.epoch`, `ev.job`). Hooks run in registration order. |
-| `schemify.sim(name, { path = , args = })` | The external programs of [run.md](run.md) §5: `ngspice` (the simulator command line; `{netlist}` and `{raw}` are replaced by the job's files), `openvaf`, `iverilog` (compilers; `args` unused). `path` is required; `args` is a list of strings. Another name is an error. |
+| `schemify.sim(name, { path = , args = })` | The external programs of [run.md](run.md) §5: `ngspice` (the simulator command line; `{netlist}` and `{raw}` are replaced by the job's files), `openvaf`, `iverilog` (compilers; `args` unused). `path` is required; `args` is a list of strings. Another name is an error. The core's runner and the editor's Simulate both use all three. |
 | `schemify.notify(msg, level?)` | Shows `msg`: `level` is `"error"`, `"warn"` or `"info"` (default). |
 | `schemify.pack.add { spec, … }` | Declares user packages (§5). Each call appends; a later spec with the same name replaces the earlier one. |
 
@@ -150,7 +150,7 @@ A loaded package gets the **intersection** of what it requests and what the user
 | `update` | Fetches every `git` package and moves it to `rev`/`version` (or the default branch's latest commit), re-hashes every package, rewrites the lockfile. |
 | `restore` | Makes every listed package exactly what the lockfile says: checks out the locked commit, re-fetches a `url` whose file is missing; a hash that still differs from the lock is an error. Packages without a lock row are installed as by `sync`. |
 | `clean` | Deletes every directory under `<data>/pack/` that no spec names and drops lockfile rows for unlisted packages. |
-| `status` | One line per package: name, kind, resolved source, `ok` / `missing` / `changed` (hash ≠ lock) / `unlocked`, and the `denied` and `unused` grants. |
+| `status` | One line per package: name, kind, resolved source, `ok` / `missing` / `changed` (hash ≠ lock) / `unlocked`, and the `denied` and `unused` grants. The editor shows the same lines in a read-only `packages` tab (command `tools.package_status`), with a `schemify pack sync` hint when a package is missing. |
 
 Fetching: `git` sources by running `git` (`clone`, `fetch`, `checkout`, `rev-parse`), `url` sources by running `curl -fsSL -o <tmp> <url>`, as lazy.nvim and `vim.pack` do; no HTTP library is linked. A downloaded file whose sha256 differs from the spec is deleted and the package fails with nothing installed.
 
