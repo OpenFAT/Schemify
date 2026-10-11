@@ -1,0 +1,19 @@
+schemify 1 shcomp
+  doc "digital buffer: two Verilog inverters (fixture)"
+
+pin A in -20 0
+pin Y out 20 0
+
+impl sch schematic
+
+inst 0d0001 ./dinv
+  at 0 0 R0
+  name U1
+inst 0d0002 ./dinv
+  at 100 0 R0
+  name U2
+
+wire 0w0001 20 0 80 0
+
+port 0p0001 -20 0 R0 A
+port 0p0002 120 0 R0 Y

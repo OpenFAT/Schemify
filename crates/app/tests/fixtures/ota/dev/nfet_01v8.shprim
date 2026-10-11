@@ -1,0 +1,38 @@
+schemify 1 shprim
+  doc "sky130 nfet_01v8 (docs-page demo fixture): W and L in metres, emitted in microns"
+  prefix M
+
+pin d inout 20 -30
+pin g in -20 0
+pin s inout 20 30
+pin b in 20 0
+  inherit VSS
+
+param W 1u
+  unit m
+param L 0.15u
+  unit m
+param nf 1
+  kind int
+
+impl spice spice
+  format spice "X{name} {d} {g} {s} {b} sky130_fd_pr__nfet_01v8 W={W/1u} L={L/1u} nf={nf}"
+
+line 20 -30 20 -15
+line 20 15 20 30
+line 4 -15 20 -15
+line 4 15 20 15
+line 4 -15 4 15
+line 0 -10 0 10
+line -20 0 0 0
+line 4 0 20 0
+
+poly 12 15 16 12 16 18 12 15
+  closed true
+
+stext 25 -30 R0 {name}
+  size 0.2
+stext 25 1 R0 W={eng(W)}
+  size 0.18
+stext 25 13 R0 L={eng(L)}
+  size 0.18

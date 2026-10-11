@@ -37,6 +37,8 @@ fn role(kind: Kind, shown: Shown) -> Role {
         (Kind::Canvas, _) => Role::Canvas,
         (Kind::Graph, _) => Role::Figure,
         (Kind::Math, _) => Role::Math,
+        (Kind::Prose, _) => Role::Paragraph,
+        (Kind::TextArea, _) => Role::MultilineTextInput,
         (Kind::Dialog, _) => Role::Dialog,
         (Kind::Status, _) => Role::Status,
     }
@@ -139,7 +141,7 @@ pub fn access_tree(
             _ if !n.prop(Prop::Command)[i].is_none() => node.add_action(Action::Click),
             _ => {}
         }
-        if n.kind[i] == Kind::TextInput {
+        if matches!(n.kind[i], Kind::TextInput | Kind::TextArea) {
             node.add_action(Action::Focus);
         }
         node.set_children(kids);

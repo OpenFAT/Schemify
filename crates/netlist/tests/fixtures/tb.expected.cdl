@@ -1,0 +1,40 @@
+* tb: expected LVS netlist, written by hand (no code, corners or params; cdl formats)
+.GLOBAL vdd!
+.SUBCKT tb
+VVDD vdd! 0 dc 1.8
+VVIN in 0 dc 0.9
+CL0 ld[0] 0 10f
+CL1 ld[1] 0 10f
+CO out2 0 10f
+XF out filt rcf
+XA in out small
+XB out out2 big
+.ENDS
+.SUBCKT rcf a b
+R1 a b 1k
+C1 b 0 1p
+.ENDS
+.SUBCKT small i o
+XI1 i m inv_1_2
+XI2 m o inv_2_4
+.ENDS
+.SUBCKT big i o
+XI1 i m inv_2_2
+XI2 m o inv_4_8
+.ENDS
+.SUBCKT inv_1_2 a y
+M1 y a 0 0 nch W=1u L=0.15u
+M2 y a vdd! vdd! pch W=2u L=0.15u
+.ENDS
+.SUBCKT inv_2_4 a y
+M1 y a 0 0 nch W=2u L=0.15u
+M2 y a vdd! vdd! pch W=4u L=0.15u
+.ENDS
+.SUBCKT inv_2_2 a y
+M1 y a 0 0 nch W=2u L=0.15u
+M2 y a vdd! vdd! pch W=2u L=0.15u
+.ENDS
+.SUBCKT inv_4_8 a y
+M1 y a 0 0 nch W=4u L=0.15u
+M2 y a vdd! vdd! pch W=8u L=0.15u
+.ENDS

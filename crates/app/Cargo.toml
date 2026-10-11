@@ -29,6 +29,7 @@ schemify-doc.workspace = true
 schemify-elab.workspace = true
 schemify-netlist.workspace = true
 schemify-import.workspace = true
+schemify-devicereader.workspace = true
 schemify-wave.workspace = true
 schemify-run.workspace = true
 schemify-abi = { workspace = true, optional = true }

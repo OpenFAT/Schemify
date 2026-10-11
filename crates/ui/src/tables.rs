@@ -99,7 +99,8 @@ named_enum!(
         List = "list",
         /// Hierarchical list.
         Tree = "tree",
-        /// Scrolling viewport.
+        /// Scrolling viewport: children shift up by the wheel offset kept in
+        /// [`crate::UiState`] and are clipped to the node's rectangle.
         Scroll = "scroll",
         /// The schematic canvas; drawn by `render`'s canvas layer.
         Canvas = "canvas",
@@ -107,6 +108,11 @@ named_enum!(
         Graph = "graph",
         /// LaTeX math (`value`), D21.
         Math = "math",
+        /// Markdown with inline and display LaTeX math (`value`), wrapped to the node's width
+        /// ([`crate::prose`]); clickable when it has a `command` (the docs page, D19).
+        Prose = "prose",
+        /// Multi-line editable text (`value`): Enter inserts a line break, Ctrl+Enter submits.
+        TextArea = "text_area",
         /// Modal window root (no parent); shown when opened in [`crate::UiState`].
         Dialog = "dialog",
         /// Status bar row.

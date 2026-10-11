@@ -159,6 +159,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gmid-lut"
+version = "0.1.0"
+dependencies = [
+ "schemify-abi",
+ "wasmi",
+]
+
+[[package]]
 name = "gmid-stub"
 version = "0.1.0"
 dependencies = [

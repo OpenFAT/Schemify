@@ -1,0 +1,27 @@
+[package]
+name = "gmid-lut"
+description = "gm/Id sizing plugin (D20, D26): LUT-backed expression functions gmid.* and a ngspice characterization flow."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "gmid_lut"
+# cdylib: the wasm guest. rlib: the pure modules are unit-tested natively and reused by
+# `examples/characterize.rs` (the guest glue is compiled only for wasm32).
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+schemify-abi.workspace = true
+
+[dev-dependencies]
+# Drives the built guest in `tests/guest.rs` (event chain, fuel, `schemify_call`); same engine
+# configuration as the host (`crates/plugin`).
+wasmi = { version = "2", default-features = false, features = ["std", "validate", "auto-dispatch", "deterministic"] }
+
+[lints.rust]
+# `deny`, not `forbid`: `guest::export!` allows `unsafe(no_mangle)` on its four exports.
+unsafe_code = "deny"
+missing_docs = "warn"

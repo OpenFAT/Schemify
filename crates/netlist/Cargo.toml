@@ -15,3 +15,9 @@ schemify-expr.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# Corpus differential (TESTING.md netlist row): import xschem, compare semantically,
+# and read ngspice results for the second oracle.
+schemify-import.workspace = true
+schemify-spicecmp.workspace = true
+schemify-wave.workspace = true
+schemify-format.workspace = true

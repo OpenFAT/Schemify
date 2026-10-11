@@ -370,7 +370,7 @@ fn attr_vals<'d>(
     doc.pool().find_attr(s, t.attrs[r], key)
 }
 
-fn cached(t: &Records, r: usize, s: &Strings, doc: &Document) -> Option<Val> {
+pub(crate) fn cached(t: &Records, r: usize, s: &Strings, doc: &Document) -> Option<Val> {
     let v = attr_vals(t, r, s, doc, "cached")?;
     v.first().map(|v| Val::parse_cached(s.get(*v)))
 }

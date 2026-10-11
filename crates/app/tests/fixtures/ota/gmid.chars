@@ -1,0 +1,5 @@
+device nfet_01v8
+  lut gmid/nfet_01v8.glut
+
+device pfet_01v8
+  lut gmid/pfet_01v8.glut

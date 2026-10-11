@@ -26,8 +26,10 @@ schemify-netlist = { path = "crates/netlist" }
 schemify-import = { path = "crates/import" }
 schemify-wave = { path = "crates/wave" }
 schemify-run = { path = "crates/run" }
+schemify-devicereader = { path = "tools/devicereader" }
 schemify-abi = { path = "crates/abi" }
 schemify-plugin = { path = "crates/plugin" }
+schemify-spicecmp = { path = "tools/spicecmp" }
 # third-party (justify additions in the PR, AGENTS.md rule 7)
 rustfft = "6"
 libm = "0.2"

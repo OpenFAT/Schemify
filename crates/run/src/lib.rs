@@ -56,7 +56,6 @@
 mod jobs;
 #[cfg(feature = "mc")]
 mod mc;
-mod netlist_shim;
 #[cfg(feature = "optimize")]
 mod optimize;
 mod plan;

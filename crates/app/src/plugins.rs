@@ -6,10 +6,15 @@
 use std::path::Path;
 
 use schemify_doc::{DocHandle, Project};
+use schemify_expr::{Code as XCode, Error as XError, Span, Value};
 use schemify_plugin::abi::{Event, FUEL_DEFAULT, Kind, Table, col};
 use schemify_plugin::{IoOp, PluginEvents, PluginId, Plugins, RequestQueues, Snapshots, deliver};
 
 use crate::platform;
+
+/// Hex digits of a plugin content hash in a D20 `cached <value> <hash>` attribute: the
+/// first 8 bytes of the module's sha256 (change detection, not authentication).
+pub const HASH_HEX: usize = 16;
 
 /// The bundled default UI plugin, built by `plugins/build.sh`.
 pub const DEFAULT_UI_WASM: &[u8] = include_bytes!("../assets/default_ui.wasm");
@@ -28,6 +33,12 @@ pub struct Host {
     queues: RequestQueues,
     /// Epoch of the last composition the app consumed.
     pub seen_epoch: Option<u32>,
+    /// Content hash ([`HASH_HEX`] hex digits) of each loaded plugin's module, by id.
+    hashes: Vec<(PluginId, String)>,
+    args: String,
+    result: String,
+    /// A command event waits for delivery (see [`Delivered::state_changed`]).
+    commanded: bool,
 }
 
 impl std::fmt::Debug for Host {
@@ -45,6 +56,9 @@ pub struct Delivered {
     pub edits: Vec<(DocHandle, String, String, bool)>,
     /// Log lines for the status line.
     pub logs: Vec<String>,
+    /// A plugin ran a command or got an I/O completion: its pure functions may answer
+    /// differently now (a LUT loaded), so derived values must be recomputed.
+    pub state_changed: bool,
 }
 
 impl Host {
@@ -55,10 +69,12 @@ impl Host {
     pub fn new(project: &Project, root: &Path, no_default_ui: bool) -> (Host, Vec<String>) {
         let mut plugins = Plugins::new();
         let mut notes = Vec::new();
-        if !no_default_ui
-            && let Err(c) = plugins.load("default-ui", DEFAULT_UI_WASM, &[], FUEL_DEFAULT)
-        {
-            notes.push(format!("default-ui: {c:?}"));
+        let mut hashes = Vec::new();
+        if !no_default_ui {
+            match plugins.load("default-ui", DEFAULT_UI_WASM, &[], FUEL_DEFAULT) {
+                Ok(id) => hashes.push((id, content_hash(DEFAULT_UI_WASM))),
+                Err(c) => notes.push(format!("default-ui: {c:?}")),
+            }
         }
         for rec in project.plugins() {
             let name = rec.fields.first().map_or("", String::as_str);
@@ -79,11 +95,10 @@ impl Host {
                 .filter_map(|a| a.values.first().map(String::as_str))
                 .collect();
             match platform::read(&file) {
-                Ok(wasm) => {
-                    if let Err(c) = plugins.load(name, &wasm, &grants, FUEL_DEFAULT) {
-                        notes.push(format!("plugin {name}: {c:?}"));
-                    }
-                }
+                Ok(wasm) => match plugins.load(name, &wasm, &grants, FUEL_DEFAULT) {
+                    Ok(id) => hashes.push((id, content_hash(&wasm))),
+                    Err(c) => notes.push(format!("plugin {name}: {c:?}")),
+                },
                 Err(e) => notes.push(format!("plugin {name}: {e}")),
             }
         }
@@ -93,12 +108,101 @@ impl Host {
             snapshots: Snapshots::new(),
             queues: RequestQueues::default(),
             seen_epoch: None,
+            hashes,
+            args: String::new(),
+            result: String::new(),
+            commanded: false,
         };
+        assert_eq!(host.hashes.len(), host.plugins.ids().len());
         (host, notes)
+    }
+
+    /// The D20 function registry (`elab::Funcs`): calls `ns.f` through the composed
+    /// `functions` contributions and `schemify_call`. `None` when no loaded plugin exports
+    /// `name` (elab then falls back to the record's `cached` value, unverified).
+    ///
+    /// Args travel as line-record values (strings quoted, numbers canonical); a number or
+    /// `true`/`false` comes back. Failures map to expression errors: wrong arity `X008`, a
+    /// complex or string argument or a non-numeric result `X003`, a plugin error code `X010`.
+    pub fn call_fn(
+        &mut self,
+        name: &str,
+        args: &[Value<'_>],
+    ) -> Option<Result<Value<'static>, XError>> {
+        let f = &self.plugins.composed().functions;
+        let row = f.find(name)?;
+        let (plugin, fn_id, arity) = (f.plugin[row], f.fn_id[row], f.arity[row]);
+        let err = |code, msg: String| Some(Err(XError::new(code, Span::default(), msg)));
+        if args.len() != usize::from(arity) {
+            return err(
+                XCode::X008,
+                format!("{name} takes {arity} arguments, got {}", args.len()),
+            );
+        }
+        self.args.clear();
+        for (k, a) in args.iter().enumerate() {
+            if k > 0 {
+                self.args.push(' ');
+            }
+            match *a {
+                Value::Num(x) => schemify_expr::write_num(&mut self.args, x),
+                Value::Int(i) => schemify_expr::write_int(&mut self.args, i),
+                Value::Bool(b) => self.args.push_str(if b { "true" } else { "false" }),
+                Value::Str(s) => self.args.push_str(&crate::docs::quote(s)),
+                Value::Cnum { .. } => {
+                    return err(
+                        XCode::X003,
+                        format!("{name}: complex arguments unsupported"),
+                    );
+                }
+            }
+        }
+        match self
+            .plugins
+            .call(plugin, fn_id, &self.args, &mut self.result)
+        {
+            Ok(()) => Some(match self.result.trim() {
+                "true" => Ok(Value::Bool(true)),
+                "false" => Ok(Value::Bool(false)),
+                t => schemify_expr::parse_num(t).map(Value::Num).map_err(|_| {
+                    // ponytail: string results need an owned `Value`; numbers cover gm/Id.
+                    XError::new(
+                        XCode::X003,
+                        Span::default(),
+                        format!("{name} returned non-numeric `{t}`"),
+                    )
+                }),
+            }),
+            Err(code) => err(XCode::X010, format!("{name}: plugin reports {code:?}")),
+        }
+    }
+
+    /// D20 cache hash of an expression calling `fns` (sorted, distinct `ns.f` names): the
+    /// content hash of the one plugin serving them, or of their hashes joined when several
+    /// do. `None` when any function is not loaded.
+    pub fn fn_hash(&self, fns: &[String]) -> Option<String> {
+        let f = &self.plugins.composed().functions;
+        let mut owners: Vec<PluginId> = Vec::with_capacity(fns.len());
+        for name in fns {
+            owners.push(f.plugin[f.find(name)?]);
+        }
+        owners.sort_unstable();
+        owners.dedup();
+        let hashes: Vec<&str> = owners
+            .iter()
+            .filter_map(|id| self.hashes.iter().find(|(h, _)| h == id))
+            .map(|(_, h)| h.as_str())
+            .collect();
+        match hashes.as_slice() {
+            [] => None,
+            [one] => Some((*one).to_owned()),
+            many => Some(content_hash(many.join("").as_bytes())),
+        }
     }
 
     /// Queues an event (`None` = broadcast). A full table drops it with a note.
     pub fn push(&mut self, target: Option<PluginId>, ev: &Event<'_>) -> Result<(), String> {
+        self.commanded |= matches!(ev, Event::Command { .. });
         self.events
             .push(target, ev)
             .map_err(|c| format!("plugin event dropped: {c:?}"))
@@ -181,7 +285,10 @@ impl Host {
     /// within the frame, at most `ROUNDS_MAX` (4) rounds. Timers are not supported yet (the
     /// event loop has no wake-up source) and are logged.
     pub fn deliver(&mut self, project: &Project, root: &Path) -> Delivered {
-        let mut out = Delivered::default();
+        let mut out = Delivered {
+            state_changed: std::mem::take(&mut self.commanded),
+            ..Delivered::default()
+        };
         for _ in 0..ROUNDS_MAX {
             if !self.has_work() {
                 break;
@@ -223,6 +330,7 @@ impl Host {
                 let _ = self.events.push(Some(e.plugin), &ev);
             }
             let io: Vec<_> = self.queues.io.drain(..).collect();
+            out.state_changed |= !io.is_empty();
             for r in io {
                 let (status, bytes) = run_io(root, r.op, &r.args, &r.data);
                 let ev = Event::IoDone {
@@ -285,9 +393,18 @@ fn run_io(root: &Path, op: IoOp, args: &[String], data: &[u8]) -> (i32, Vec<u8>)
             Ok(()) => (0, Vec::new()),
             Err(e) => (denied, e.into_bytes()),
         },
-        // ponytail: spawn (run plugins), fetch and clipboard are M3; answer "denied".
-        IoOp::Spawn | IoOp::Fetch | IoOp::ClipboardGet | IoOp::ClipboardSet => {
+        IoOp::Spawn => platform::spawn(root, args, data),
+        // ponytail: fetch and clipboard are M3; answer "denied".
+        IoOp::Fetch | IoOp::ClipboardGet | IoOp::ClipboardSet => {
             (denied, b"not supported yet".to_vec())
         }
     }
+}
+
+/// `HASH_HEX` lowercase hex digits of the sha256 of `bytes`.
+fn content_hash(bytes: &[u8]) -> String {
+    let mut h = schemify_doc::hex(&schemify_doc::sha256(bytes));
+    h.truncate(HASH_HEX);
+    debug_assert_eq!(h.len(), HASH_HEX);
+    h
 }

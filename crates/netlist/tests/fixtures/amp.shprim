@@ -1,0 +1,12 @@
+schemify 1 shprim
+  doc "behavioural amplifier, Verilog-A model (fixture)"
+
+pin inp in -20 -10
+pin inn in -20 10
+pin out out 20 0
+
+param gain 10
+
+impl va veriloga
+  model ampm
+  file va/amp.va

@@ -5,6 +5,7 @@
 //! - [`editor`] — the `frame` spine: input → commands → plugins → `doc` edits → UI
 //!   composition → scene, plus the xschem editing gestures (tool state machine);
 //! - [`commands`] — the command table (core enum + plugin rows, D27);
+//! - [`docs`] — the docs page beside the canvas (D19 vars, D21 math, D20 cache write-back);
 //! - [`scene`] — the document as canvas primitives, with hit-testing and box selection;
 //! - [`edit`] — gestures as `doc` edit transactions (one per gesture, so one undo);
 //! - [`geometry`] — grid symmetries applied to records;
@@ -28,11 +29,14 @@
 #[cfg(feature = "gui")]
 pub mod commands;
 #[cfg(feature = "gui")]
+pub mod docs;
+#[cfg(feature = "gui")]
 pub mod edit;
 #[cfg(feature = "gui")]
 pub mod editor;
 #[cfg(feature = "gui")]
 pub mod geometry;
+pub mod libs;
 pub mod platform;
 #[cfg(feature = "gui")]
 pub mod plugins;

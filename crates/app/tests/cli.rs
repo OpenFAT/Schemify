@@ -114,3 +114,61 @@ fn usage_errors_exit_2() {
     assert_eq!(schemify(&dir, &["merge-driver", "O"]).0, 2);
     assert_eq!(schemify(&dir, &["diff", "missing-a", "missing-b"]).0, 2);
 }
+
+/// The editor's fixture project: a two-inverter buffer over a hierarchical `inv`.
+fn inv_top() -> String {
+    format!(
+        "{}/tests/fixtures/inv/top.shcomp",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+#[test]
+fn netlist_and_check_a_project_cell() {
+    let dir = scratch("netlist");
+    let top = inv_top();
+    assert_eq!(schemify(&dir, &["check", &top]).0, 0);
+    let (code, text) = schemify(&dir, &["netlist", &top]);
+    assert_eq!(code, 0, "{text}");
+    // x1 overrides a param: its subckt is specialized; x2 uses the default definition.
+    assert!(text.contains(".subckt inv A Y VDD VSS"), "{text}");
+    assert!(text.contains("inv__"), "{text}");
+    assert!(text.trim_end().ends_with(".end"), "{text}");
+    let (code, cdl) = schemify(
+        &dir,
+        &["netlist", &top, "--dialect", "cdl", "-o", "top.cdl"],
+    );
+    assert_eq!(code, 0, "{cdl}");
+    let cdl = std::fs::read_to_string(dir.join("top.cdl")).unwrap();
+    assert!(
+        cdl.contains(".SUBCKT top IN OUT") && cdl.contains("*.PININFO"),
+        "{cdl}"
+    );
+    // Determinism: the same input netlists to the same bytes.
+    assert_eq!(schemify(&dir, &["netlist", &top]).1, text);
+}
+
+#[test]
+fn netlist_gate_and_usage_errors() {
+    let dir = scratch("netlist-gate");
+    // A cell referencing a missing library cell: E001 blocks the netlist (exit 1).
+    std::fs::write(dir.join("schemify.project"), "schemify 1 project\n").unwrap();
+    std::fs::write(
+        dir.join("bad.shbench"),
+        "schemify 1 shbench\n\ninst 0aaaaa ./nowhere\n  at 0 0 R0\n  name X1\n",
+    )
+    .unwrap();
+    let (code, text) = schemify(&dir, &["netlist", "bad.shbench"]);
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("E001"), "{text}");
+    assert_eq!(schemify(&dir, &["check", "bad.shbench"]).0, 1);
+    assert_eq!(
+        schemify(&dir, &["netlist", "bad.shbench", "--allow-errors"]).0,
+        0
+    );
+    assert_eq!(
+        schemify(&dir, &["netlist", &inv_top(), "--dialect", "bogus"]).0,
+        2
+    );
+    assert_eq!(schemify(&dir, &["netlist"]).0, 2);
+}

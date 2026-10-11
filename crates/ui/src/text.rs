@@ -12,6 +12,7 @@ use parley::{
 };
 
 use crate::math::{MathFonts, MathList};
+use crate::prose::ProseList;
 use crate::strings::{Strings, Sym};
 
 /// Index of a shaped layout in [`TextSystem`]; valid until the next [`TextSystem::begin_frame`]
@@ -22,6 +23,8 @@ pub type TextId = u32;
 pub const NO_TEXT: TextId = u32::MAX;
 
 static NOTO_SANS: &[u8] = include_bytes!("../fonts/NotoSans.ttf");
+/// Monospace face for code (prose code spans and blocks); KaTeX's, already embedded for math.
+static MONO: &[u8] = include_bytes!("../fonts/KaTeX_Typewriter-Regular.ttf");
 
 /// Font database, shaping scratch, and the cache of shaped UI strings and math.
 ///
@@ -32,11 +35,14 @@ pub struct TextSystem {
     pub(crate) font_cx: FontContext,
     pub(crate) layout_cx: LayoutContext<()>,
     family: String,
+    mono: String,
     layouts: Vec<Layout<()>>,
     cache: HashMap<(Sym, u16), TextId>,
     math_fonts: MathFonts,
     maths: Vec<MathList>,
     math_cache: HashMap<(Sym, u16), u32>,
+    proses: Vec<ProseList>,
+    prose_cache: HashMap<(Sym, u16, u16), u32>,
 }
 
 impl Default for TextSystem {
@@ -68,26 +74,40 @@ impl TextSystem {
             .and_then(|(id, _)| font_cx.collection.family_name(*id))
             .expect("embedded UI font registers a family")
             .to_owned();
+        let monos = font_cx
+            .collection
+            .register_fonts(Blob::new(Arc::new(MONO)), None);
+        let mono = monos
+            .first()
+            .and_then(|(id, _)| font_cx.collection.family_name(*id))
+            .expect("embedded mono font registers a family")
+            .to_owned();
+        assert_ne!(family, mono);
         TextSystem {
             font_cx,
             layout_cx: LayoutContext::new(),
             family,
+            mono,
             layouts: Vec::new(),
             cache: HashMap::new(),
             math_fonts: MathFonts::new(),
             maths: Vec::new(),
             math_cache: HashMap::new(),
+            proses: Vec::new(),
+            prose_cache: HashMap::new(),
         }
     }
 
     /// Marks a layout pass boundary: if the cache is over capacity it is emptied, which
     /// invalidates every [`TextId`] handed out before this call.
     pub fn begin_frame(&mut self) {
-        if self.layouts.len() + self.maths.len() > Self::CACHE_CAPACITY {
+        if self.layouts.len() + self.maths.len() + self.proses.len() > Self::CACHE_CAPACITY {
             self.layouts.clear();
             self.cache.clear();
             self.maths.clear();
             self.math_cache.clear();
+            self.proses.clear();
+            self.prose_cache.clear();
         }
     }
 
@@ -122,6 +142,52 @@ impl TextSystem {
 
     pub(crate) fn family(&self) -> &str {
         &self.family
+    }
+
+    pub(crate) fn mono(&self) -> &str {
+        &self.mono
+    }
+
+    pub(crate) fn contexts(&mut self) -> (&mut FontContext, &mut LayoutContext<()>) {
+        (&mut self.font_cx, &mut self.layout_cx)
+    }
+
+    /// Stores a layout built outside [`TextSystem::shape`] (prose runs) and returns its id.
+    pub(crate) fn push_layout(&mut self, layout: Layout<()>) -> TextId {
+        self.layouts.push(layout);
+        (self.layouts.len() - 1) as TextId
+    }
+
+    /// Lays out math that has no interned source (prose formulas); `None` outside the subset.
+    pub(crate) fn math_uncached(&mut self, src: &str, px: f32) -> Option<u32> {
+        let list = crate::math::layout_math(src, px, &self.math_fonts).ok()?;
+        self.maths.push(list);
+        Some((self.maths.len() - 1) as u32)
+    }
+
+    /// Lays out markdown `src` (the `prose` widget, [`crate::prose`]) at `px` wrapped at
+    /// `width` logical pixels, cached by (source, size, width). The id is valid until the next
+    /// [`TextSystem::begin_frame`] that evicts.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `px` or `width` is zero.
+    pub fn prose(&mut self, strings: &Strings, src: Sym, px: u16, width: u16) -> u32 {
+        assert!(px > 0 && width > 0, "prose needs a size and a width");
+        if let Some(&id) = self.prose_cache.get(&(src, px, width)) {
+            return id;
+        }
+        let list =
+            crate::prose::layout_prose(self, strings.get(src), f32::from(px), f32::from(width));
+        self.proses.push(list);
+        let id = (self.proses.len() - 1) as u32;
+        self.prose_cache.insert((src, px, width), id);
+        id
+    }
+
+    /// A prose layout from [`TextSystem::prose`].
+    pub fn prose_list(&self, id: u32) -> &ProseList {
+        &self.proses[id as usize]
     }
 
     /// A shaped layout.
