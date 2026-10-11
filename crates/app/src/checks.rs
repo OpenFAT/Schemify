@@ -63,11 +63,16 @@ pub struct Members {
     pub pins: Vec<(u32, u32, Pt)>,
 }
 
-/// The bit name of component `c` that keys it across the hierarchy (its first bit).
+/// The bit name of component `c` that keys it across the hierarchy (its first bit); empty
+/// for a hole (a component handle an edit freed: elab patches nets in place).
 pub fn net_name(cell: &CellState, c: u32) -> &str {
     let bits = cell.nets.bits_of(c as usize);
-    assert!(!bits.is_empty(), "a component carries at least one bit");
-    cell.names.get(cell.nets.bit_name[bits[0] as usize])
+    assert!(
+        bits.is_empty() == (cell.nets.net_width[c as usize] == 0),
+        "a live component carries at least one bit"
+    );
+    bits.first()
+        .map_or("", |&b| cell.names.get(cell.nets.bit_name[b as usize]))
 }
 
 /// World position of every ordinary pin of instance row `i` with its component, in pin
