@@ -607,31 +607,40 @@ impl Editor {
         };
     }
 
-    /// The `checks` source of the annotation overlay from the active level's violations,
-    /// re-posted only when they changed (a fingerprint over every row: a value edit that
-    /// leaves tens of thousands of `W004` rows alone costs one hash pass, not a re-sort).
+    /// The `checks` source of the annotation overlay from the active level's violations: when
+    /// the cell state's last check pass continues the pass posted here, only its changes are
+    /// patched in (an edit that leaves tens of thousands of `W004` rows alone touches none
+    /// of their marks); otherwise (another document, a rebuilt state) everything is re-posted.
     pub(super) fn post_checks(&mut self) {
-        use std::hash::{Hash, Hasher};
-        let doc = self.active().and_then(|(h, _)| self.session.project.doc(h));
-        let mut fp = std::collections::hash_map::DefaultHasher::new();
-        if let Some(c) = self.cell.as_ref() {
-            for v in &c.violations.rows {
-                (v.code, v.object.0, v.path.0, v.param.0, &v.detail).hash(&mut fp);
+        let active = self.active().map(|a| a.0);
+        let doc = active.and_then(|h| self.session.project.doc(h));
+        let Some((c, d)) = self.cell.as_ref().zip(doc) else {
+            if self.checks_key.take().is_some() {
+                self.annotations.replace(AnnotationRequest {
+                    source: SOURCE_CHECKS.to_owned(),
+                    marks: Vec::new(),
+                });
+                self.decor_dirty = true;
             }
-        }
-        let key = (self.active().map(|a| a.0), fp.finish());
-        if self.checks_key == Some(key) {
+            return;
+        };
+        if self.checks_key == Some((active, c.pass)) {
             return;
         }
-        self.checks_key = Some(key);
-        let req = match (self.cell.as_ref(), doc) {
-            (Some(c), Some(d)) => checks::violation_request(c, d),
-            _ => AnnotationRequest {
-                source: SOURCE_CHECKS.to_owned(),
-                marks: Vec::new(),
-            },
-        };
-        self.annotations.replace(req);
+        let continues = c.prev_pass != 0 && self.checks_key == Some((active, c.prev_pass));
+        let delta = continues
+            .then(|| {
+                let gone = checks::violation_marks_of(&c.changes.0, c, d)?;
+                let new = checks::violation_marks_of(&c.changes.1, c, d)?;
+                Some((gone, new))
+            })
+            .flatten();
+        self.checks_key = Some((active, c.pass));
+        match delta {
+            Some((gone, new)) if gone.is_empty() && new.is_empty() => return,
+            Some((gone, new)) => self.annotations.patch(SOURCE_CHECKS, gone, new),
+            None => self.annotations.replace(checks::violation_request(c, d)),
+        }
         self.decor_dirty = true;
     }
 
@@ -704,8 +713,15 @@ impl Editor {
             .map(|t| t.stack[0].doc);
         let key = (self.sim.selected, self.generation);
         let wanted = self.op_on && top.is_some() && top == self.sim.bench();
-        if self.op_job != Some(key) || !wanted {
-            let had = self.annotations.source.iter().any(|s| s == SOURCE_OP);
+        // Only this posts `op` marks: while none are shown, an unwanted overlay has nothing to
+        // clear (no scan of every mark per frame).
+        let stale = if wanted {
+            self.op_job != Some(key)
+        } else {
+            self.op_shown
+        };
+        if stale {
+            let had = self.op_shown;
             let req = if wanted {
                 match self.hier_map().cloned() {
                     Some(map) => self.sim.op_marks(&map),
@@ -721,6 +737,7 @@ impl Editor {
                 }
             };
             if had || !req.marks.is_empty() {
+                self.op_shown = !req.marks.is_empty();
                 self.annotations.replace(req);
                 self.decor_dirty = true;
                 changed = true;
@@ -729,6 +746,7 @@ impl Editor {
                 self.op_job = Some(key);
             }
         }
+        debug_assert!(self.op_shown || !self.annotations.source.iter().any(|s| s == SOURCE_OP));
         changed
     }
 
@@ -905,6 +923,7 @@ impl Editor {
             |inst| format!("{prefix}/{inst}"),
             &self.diff,
         );
+        self.canvas_gen[1] += 1;
         true
     }
 

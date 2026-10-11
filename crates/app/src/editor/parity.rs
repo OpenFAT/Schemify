@@ -2058,9 +2058,7 @@ impl Editor {
         if !decor_rebuilt && !compare_stale {
             return false;
         }
-        let epoch_text = self.extra.texts.epoch;
         let mut out = CanvasPrims::default();
-        out.texts.epoch = epoch_text + 1;
         if self.opts.incr_color && !self.highlight.is_empty() {
             self.colored_highlight(&mut out);
         }
@@ -2094,6 +2092,7 @@ impl Editor {
             }
         }
         self.extra = out;
+        self.canvas_gen[2] += 1;
         true
     }
 
@@ -2428,7 +2427,9 @@ impl Editor {
         let mode = self.opts.show_symbols;
         let texts = self.opts.symbol_text;
         if mode == 0 && texts {
-            self.shown = None;
+            if self.shown.take().is_some() {
+                self.canvas_gen[0] += 1; // the canvas draws the scene as built again
+            }
             self.shown_key = None;
             return;
         }
@@ -2508,9 +2509,9 @@ impl Editor {
                 out.rect(bb[0], bb[1], bb[2], bb[3], 4);
             }
         }
-        out.texts.epoch = self.scene.prims.texts.epoch.wrapping_add(0x5eed);
         self.shown = Some(out);
         self.shown_key = Some(key);
+        self.canvas_gen[0] += 1;
     }
 
     /// Overlay additions of the parity options: crosshair, snap cursor, grid axes and the

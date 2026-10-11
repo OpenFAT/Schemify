@@ -43,6 +43,13 @@ pub struct CellState {
     pub graph: Graph,
     /// Context-free findings of this document, sorted.
     pub violations: Violations,
+    /// What the last check pass changed in `violations`: (rows removed, rows added), each in
+    /// key order. Applying it to pass `prev_pass`'s rows gives pass `pass`'s.
+    pub changes: (Vec<Violation>, Vec<Violation>),
+    /// Process-unique id of the check pass `violations` comes from.
+    pub pass: u64,
+    /// The pass `changes` starts from; 0 after [`CellState::build`] (no delta: take all).
+    pub prev_pass: u64,
     unresolved: Vec<Option<String>>,
     net_findings: Vec<Violation>,
     waivers: Vec<(ObjId, Name)>,
@@ -376,7 +383,28 @@ impl CellState {
             &mut self.ws,
             &mut rows,
         );
-        self.violations = Violations::from_rows(rows, &self.names);
+        let fresh = Violations::from_rows(rows, &self.names);
+        // The first pass has no predecessor: consumers take every row (`prev_pass == 0`).
+        let changes = if self.pass == 0 {
+            (Vec::new(), Vec::new())
+        } else {
+            let (gone, new) = fresh.diff(&self.violations, &self.names);
+            (
+                gone.into_iter().cloned().collect(),
+                new.into_iter().cloned().collect(),
+            )
+        };
+        self.violations = fresh;
+        self.next_pass(changes);
+    }
+
+    /// Starts a new check pass whose delta from the current one is `changes`.
+    fn next_pass(&mut self, changes: (Vec<Violation>, Vec<Violation>)) {
+        static PASSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.prev_pass = self.pass;
+        self.pass = PASSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.changes = changes;
+        assert!(self.pass > self.prev_pass);
     }
 
     /// Replaces only the findings that depend on values (`E008`, gating): after a value
@@ -402,7 +430,23 @@ impl CellState {
             &mut rows,
         );
         let fresh = Violations::from_rows(rows, &self.names);
-        self.violations.replace_values(fresh, &self.names);
+        let old = self.violations.replace_values(fresh, &self.names);
+        // The delta: old value rows against the fresh ones (both sorted, value codes only).
+        let fresh = Violations {
+            rows: self
+                .violations
+                .rows
+                .iter()
+                .filter(|v| crate::check::value_code(v.code))
+                .cloned()
+                .collect(),
+        };
+        let (gone, new) = fresh.diff(&old, &self.names);
+        let changes = (
+            gone.into_iter().cloned().collect(),
+            new.into_iter().cloned().collect(),
+        );
+        self.next_pass(changes);
     }
 }
 

@@ -37,7 +37,9 @@ use schemify_elab::{Annotations, CellState, Dialect};
 use schemify_expr::Value;
 use schemify_format::{FileKind, IdRng, Orient, RecordKind};
 use schemify_plugin::abi::Event;
-use schemify_render::canvas::{self, Camera, CanvasPrims, CanvasScratch, Marks, Palette};
+use schemify_render::canvas::{
+    self, Camera, CanvasCache, CanvasDiff, CanvasPrims, CanvasScratch, Marks, Palette,
+};
 use schemify_render::vello::kurbo::Rect as KRect;
 use schemify_render::widgets::{UiScratch, draw_ui};
 use schemify_render::{App, Painter};
@@ -72,6 +74,9 @@ const HIT_PX: f64 = 5.0;
 const DOUBLE_CLICK_MS: u64 = 400;
 /// Zoom factor per wheel notch and per zoom key (xschem: 1.2).
 const ZOOM_STEP: f64 = 1.2;
+/// A zoom counts as finished this long after the camera scale last changed; until then the
+/// canvas shows its recorded layer stretched (D39: a zoom frame re-encodes nothing).
+const ZOOM_SETTLE_MS: u32 = 120;
 /// Chooser rows listed (the list scrolls; typing filters). Every row is a composed node, so
 /// the cap bounds the per-frame compose cost while a chooser is open.
 // ponytail: a fixed cap; a virtualized list (rows composed for the visible window only) when
@@ -81,6 +86,10 @@ const CHOOSER_ROWS: usize = 512;
 pub const QUEUED_MAX: usize = 256;
 /// Edit requests one frame may carry.
 const REQUESTS_MAX: usize = 1 << 10;
+/// Commits whose ops the editor keeps to recompute an undo or redo of them incrementally.
+// ponytail: older undos rebuild the derived state (136 ms at 100k objects); doc reporting an
+// undo's touched records would retire this mirror.
+const COMMITS_KEPT: usize = 64;
 /// Share of the window height the editor keeps while the waves dock is open.
 const DOCK_SPLIT: f32 = 0.6;
 /// Netlist lines a text tab shows (the prose widget's source cap); the file has them all.
@@ -479,8 +488,22 @@ pub struct Editor {
     rng: IdRng,
     routed: Routed,
     viewport: (f32, f32),
+    /// Label glyphs and path buffers of every canvas table (scene, decor, overlay).
     canvas_scratch: CanvasScratch,
-    overlay_scratch: CanvasScratch,
+    /// The canvas's raster layer (D39: pan/zoom frames reuse it instead of re-encoding).
+    canvas_cache: CanvasCache,
+    /// Advance whenever a table the canvas layer draws changes: the scene as shown, decor,
+    /// parity decor (`extra`), marks.
+    canvas_gen: [u64; 4],
+    /// What changed in those tables since the last painted frame (an edit patches only
+    /// there): the diff's snapshot, the `canvas_gen` and style key it was taken at, and the
+    /// changed boxes (`None` = unknown).
+    canvas_diff: (CanvasDiff, [u64; 4], u64, Option<Vec<[i32; 4]>>),
+    /// Clock (ms) until which the zoom counts as changing: frames before it stretch the
+    /// recorded canvas layer instead of re-recording it.
+    zoom_until: u64,
+    /// The last frame showed a stretched layer: a crisp frame is due at `zoom_until`.
+    stretched: bool,
     ui_scratch: UiScratch,
     waves: Option<WavesView>,
     confirm: Option<Cmd>,
@@ -499,6 +522,10 @@ pub struct Editor {
     cell_key: Option<(DocHandle, u32, u32)>,
     /// Ops committed to the active document that `cell` has not seen yet.
     cell_ops: Vec<Op>,
+    /// The last [`COMMITS_KEPT`] commits' (document, journal seq, ops): undoing or redoing
+    /// one touches the records its ops name, so `cell` recomputes over those ops instead
+    /// of rebuilding (`doc` reports only the seq).
+    commits: std::collections::VecDeque<(DocHandle, u64, Vec<Op>)>,
     /// The docs page.
     page: Page,
     /// This frame's docs-page commit (document, label, ops, committed?): a D20 cache write
@@ -520,7 +547,6 @@ pub struct Editor {
     checks_key: Option<(Option<DocHandle>, u64)>,
     /// Decor primitives: highlight, violation markers, annotation texts, staged diff.
     decor: CanvasPrims,
-    decor_scratch: CanvasScratch,
     decor_dirty: bool,
     /// Name map of the active tab's top cell (ngspice, default request), for hierarchy-wide
     /// net keys, cross-probe names and OP targets: (top document, edit generation, map).
@@ -537,6 +563,9 @@ pub struct Editor {
     op_on: bool,
     /// The selected job whose OP marks the overlay holds.
     op_job: Option<(u32, u32)>,
+    /// Whether the overlay may hold `op` marks (only `step_sim` posts them).
+    #[cfg(not(target_arch = "wasm32"))]
+    op_shown: bool,
     /// The run state (D15–D18).
     #[cfg(not(target_arch = "wasm32"))]
     sim: Sim,
@@ -576,7 +605,6 @@ pub struct Editor {
     /// Parity decor: per-net highlight colors, connected-instance outlines, the
     /// comparison; rebuilt with the decor.
     extra: CanvasPrims,
-    extra_scratch: CanvasScratch,
     /// The scene as shown when instances draw as boxes or without texts (`None`: as built).
     shown: Option<CanvasPrims>,
     /// (scene build, symbol mode) `shown` was made for.
@@ -659,7 +687,11 @@ impl Editor {
             routed: Routed::default(),
             viewport: (0.0, 0.0),
             canvas_scratch: CanvasScratch::default(),
-            overlay_scratch: CanvasScratch::default(),
+            canvas_cache: CanvasCache::default(),
+            canvas_gen: [0; 4],
+            canvas_diff: (CanvasDiff::default(), [0; 4], 0, None),
+            zoom_until: 0,
+            stretched: false,
             ui_scratch: UiScratch::default(),
             waves: None,
             confirm: None,
@@ -672,6 +704,7 @@ impl Editor {
             cell: None,
             cell_key: None,
             cell_ops: Vec::new(),
+            commits: std::collections::VecDeque::new(),
             page: Page::default(),
             amend: None,
             amending: None,
@@ -681,7 +714,6 @@ impl Editor {
             hl: Members::default(),
             checks_key: None,
             decor: CanvasPrims::default(),
-            decor_scratch: CanvasScratch::default(),
             decor_dirty: true,
             hier: None,
             panel: Panel::None,
@@ -690,6 +722,8 @@ impl Editor {
             show_netlist: true,
             op_on: true,
             op_job: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            op_shown: false,
             #[cfg(not(target_arch = "wasm32"))]
             sim: Sim::new(sim_cmd),
             graphs: Vec::new(),
@@ -712,7 +746,6 @@ impl Editor {
             pending_delete: None,
             compare: None,
             extra: CanvasPrims::default(),
-            extra_scratch: CanvasScratch::default(),
             shown: None,
             shown_key: None,
             trim_after: None,
@@ -917,7 +950,13 @@ impl Editor {
         let sim: Option<u32> = None;
         // Events queued for plugins (a `RunDone`, a completion) are delivered on the next tick.
         let queued = self.host.has_work().then_some(1);
-        [sim, self.host.wake_ms(self.now), queued]
+        // A stretched canvas (mid-zoom) is redrawn crisp once the zoom has settled.
+        let crisp = self.stretched.then(|| {
+            self.zoom_until
+                .saturating_sub(self.now)
+                .min(u64::from(ZOOM_SETTLE_MS)) as u32
+        });
+        [sim, self.host.wake_ms(self.now), queued, crisp]
             .into_iter()
             .flatten()
             .min()
@@ -949,6 +988,7 @@ impl Editor {
             false => (std::borrow::Cow::Borrowed(events), viewport),
         };
         let events: &InputEvents = &events;
+        let zoom0 = self.camera().scale;
         let resized = viewport != self.viewport;
         self.viewport = viewport;
         self.compose_ui(false);
@@ -1026,6 +1066,14 @@ impl Editor {
         self.build_shown();
         changed |= self.build_extra(decor);
         self.build_overlay();
+        // 10. zoom settle: while the scale keeps changing the canvas layer is stretched; the
+        //     first frame ZOOM_SETTLE_MS after the last change records it crisp.
+        if self.camera().scale != zoom0 {
+            self.zoom_until = now_ms + u64::from(ZOOM_SETTLE_MS);
+        } else if self.stretched && now_ms >= self.zoom_until {
+            self.stretched = false;
+            changed = true;
+        }
         self.routed = routed;
         changed
     }
@@ -1146,55 +1194,80 @@ impl Editor {
         } else {
             i32::MAX / 4
         };
-        // `draw_canvas` step by step: the decor and the overlay get their own scratch,
-        // because the shaped-label cache is keyed by one text table, and sharing it would
-        // reshape every scene label each frame (measured: 130 ms at 50k labels).
+        // Everything but the gesture preview goes through the raster layer: a pan or zoom
+        // frame re-encodes nothing and an edit redraws only where its tables changed (D39).
         // The palette as the View/Layers options shape it (hidden layers, dimming, colors,
-        // widths); the scene as displayed (instances as boxes, symbol texts off).
+        // widths) and the grid are the `style`: no damage box describes a change of either,
+        // so it records afresh. The scene as displayed (instances as boxes, symbol texts off).
         let palette = &self.view_palette();
-        p.push_clip(view);
-        p.fill_rect(view, schemify_render::rgba(palette.background));
-        canvas::draw_grid(p, view, &cam, grid, palette, &mut self.canvas_scratch);
+        use std::hash::{Hash, Hasher};
+        let style = {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (
+                grid,
+                palette.color,
+                palette.fill,
+                palette.background,
+                palette.grid,
+            )
+                .hash(&mut h);
+            palette.width.map(f32::to_bits).hash(&mut h);
+            h.finish()
+        };
+        let key = {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (self.canvas_gen, style).hash(&mut h);
+            h.finish()
+        };
         let shown = self.shown.as_ref().unwrap_or(&self.scene.prims);
-        let (prims, text) = (&self.scene.prims, &mut self.shell.text);
-        canvas::draw_prims(
+        let (diff, diff_gen, diff_style, boxes) = &mut self.canvas_diff;
+        if *diff_gen != self.canvas_gen || *diff_style != style {
+            // ponytail: hashes every row of a changed table (~2 ms per 10^5 rows); the scene
+            // and decor builders reporting their own changed rows would make it O(change).
+            let mut out = boxes.take().unwrap_or_default();
+            out.clear();
+            let changed = |k: usize| diff_gen[k] != self.canvas_gen[k];
+            let tables = [
+                (shown, changed(0)),
+                (&self.decor, changed(1)),
+                (&self.extra, changed(2)),
+            ];
+            let marks = (&self.scene.prims, &self.marks, changed(0) || changed(3));
+            let known = diff.update(&tables, marks, &mut out);
+            *boxes = (known && *diff_style == style).then_some(out);
+            (*diff_gen, *diff_style) = (self.canvas_gen, style);
+        } else if let Some(b) = boxes.as_mut() {
+            b.clear(); // the same key: nothing changed since the last frame
+        }
+        let damage = boxes.as_deref();
+        let crisp = self.now >= self.zoom_until;
+        let (prims, decor, extra, marks) =
+            (&self.scene.prims, &self.decor, &self.extra, &self.marks);
+        let (text, scratch) = (&mut self.shell.text, &mut self.canvas_scratch);
+        let drawn = canvas::draw_cached(
             p,
+            &mut self.canvas_cache,
             view,
             &cam,
-            shown,
-            palette,
-            text,
-            &mut self.canvas_scratch,
+            key,
+            damage,
+            crisp,
+            schemify_render::rgba(palette.background),
+            |p, v, c| {
+                p.fill_rect(v, schemify_render::rgba(palette.background));
+                canvas::draw_grid(p, v, c, grid, palette, scratch);
+                canvas::draw_prims(p, v, c, shown, palette, text, scratch);
+                canvas::draw_prims(p, v, c, decor, palette, text, scratch);
+                canvas::draw_prims(p, v, c, extra, palette, text, scratch);
+                canvas::draw_marks(p, v, c, prims, marks, scratch);
+            },
         );
-        canvas::draw_prims(
-            p,
-            view,
-            &cam,
-            &self.decor,
-            palette,
-            text,
-            &mut self.decor_scratch,
-        );
-        canvas::draw_prims(
-            p,
-            view,
-            &cam,
-            &self.extra,
-            palette,
-            text,
-            &mut self.extra_scratch,
-        );
-        canvas::draw_prims(
-            p,
-            view,
-            &cam,
-            &self.overlay,
-            palette,
-            text,
-            &mut self.overlay_scratch,
-        );
-        canvas::draw_marks(p, view, &cam, prims, &self.marks, &mut self.canvas_scratch);
-        p.pop_clip();
+        self.stretched = drawn == canvas::Drawn::Stretched;
+        if !self.overlay.is_empty() {
+            p.push_clip(view);
+            canvas::draw_prims(p, view, &cam, &self.overlay, palette, text, scratch);
+            p.pop_clip();
+        }
     }
 
     /// Draws each filled plot slot of the docs page (`graph` nodes) as an embedded waves
@@ -3068,8 +3141,20 @@ impl Editor {
             .cell
             .as_ref()
             .filter(|_| self.cell_key.is_some_and(|k| Some(k.0) == active));
+        // What the document tables are filled from: unchanged on a click, so a selection
+        // change does not copy every row again.
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            let project = &self.session.project;
+            for d in project.handles() {
+                (d, project.is_dirty(d), self.session.epoch(d)).hash(&mut h);
+            }
+            (active, cell.map(|c| c.pass), &rows).hash(&mut h);
+            h.finish()
+        };
         self.host
-            .snapshot(&self.session.project, active, &sel, cell, &rows);
+            .snapshot(&self.session.project, active, &sel, cell, &rows, key);
         let root = self.session.root.clone();
         let d = self.host.deliver(&self.session.project, &root, self.now);
         if !d.commands.is_empty() {
@@ -3166,6 +3251,23 @@ impl Editor {
         let current = self
             .cell_key
             .is_some_and(|k| Some(k.0) == active && k.0 == r.doc && k.1 == epoch);
+        if let (Edit::Tx(tx), Outcome::Committed { seq }) = (&r.edit, o) {
+            if self.commits.len() == COMMITS_KEPT {
+                self.commits.pop_front();
+            }
+            self.commits.push_back((r.doc, *seq, tx.ops.clone()));
+        }
+        // An undo or redo touches what the entry's ops touched: the same records, so the
+        // same recompute (the ops' direction does not matter to it).
+        let undone = match o {
+            Outcome::Undone { seq } | Outcome::Redone { seq } => self
+                .commits
+                .iter()
+                .rev()
+                .find(|c| c.0 == r.doc && c.1 == *seq)
+                .map(|c| &c.2),
+            _ => None,
+        };
         let ops = match (&r.edit, o) {
             (Edit::Tx(tx), Outcome::Committed { .. }) => Some(&tx.ops),
             _ => None,
@@ -3177,7 +3279,7 @@ impl Editor {
             *done = true;
         }
         let amend_undo = self.amending.is_some() && matches!(o, Outcome::Undone { .. });
-        match (current, ops, &self.amending) {
+        match (current, ops.or(undone), &self.amending) {
             (true, _, Some(_)) if amend_undo => {}
             (true, Some(_), Some(cache)) => self.cell_ops.extend(cache.iter().cloned()),
             (true, Some(ops), None) => self.cell_ops.extend(ops.iter().cloned()),
@@ -3195,8 +3297,8 @@ impl Editor {
     }
 
     /// `elab::CellState::recompute` for the active document: incremental over the queued ops
-    /// when `cell` is current, else a full build (another document, an undo, a plugin
-    /// change). Plugin functions are called through the host (D20). Returns whether values
+    /// when `cell` is current, else a full build (another document, an undo of a commit
+    /// older than [`COMMITS_KEPT`], a plugin change). Plugin functions are called through the host (D20). Returns whether values
     /// may have changed.
     fn recompute_elab(&mut self) -> bool {
         let Some((h, _)) = self.active() else {
@@ -3216,14 +3318,18 @@ impl Editor {
         let ops = std::mem::take(&mut self.cell_ops);
         let (project, host) = (&self.session.project, &mut self.host);
         let mut funcs = |name: &str, args: &[Value<'_>]| host.call_fn(name, args);
-        if current {
+        let values = if current {
             let cell = self.cell.as_mut().expect("current state");
-            cell.recompute(project, h, &ops, &mut funcs);
+            let done = cell.recompute(project, h, &ops, &mut funcs);
+            done.graph || done.evaluated > 0
         } else {
             self.cell = CellState::build(project, h, &mut funcs);
-        }
+            true
+        };
         self.cell_key = self.cell.as_ref().map(|_| (h, epoch, fe));
-        self.scene_dirty = true; // symbol texts show values
+        // Symbol texts show values: a value change re-stamps the scene; a geometry edit is
+        // drawn incrementally (`scene::update`).
+        self.scene_dirty |= values;
         assert!(self.cell_ops.is_empty());
         true
     }
@@ -3384,15 +3490,22 @@ impl Editor {
                 .cell
                 .as_ref()
                 .filter(|_| self.cell_key == Some((h, epoch, fe)));
-            scene::build(
-                &mut self.scene,
-                &self.session.project,
-                h,
-                view,
-                &self.symbols,
-                epoch,
-                values,
-            );
+            let project = &self.session.project;
+            if self.scene_dirty || view != View::Schematic {
+                scene::build(
+                    &mut self.scene,
+                    project,
+                    h,
+                    view,
+                    &self.symbols,
+                    epoch,
+                    values,
+                );
+            } else {
+                // An edit: only the objects whose rows changed are re-stamped.
+                scene::update(&mut self.scene, project, h, &self.symbols, epoch, values);
+            }
+            self.canvas_gen[0] += 1;
             self.scene_dirty = false;
             let sel: Vec<ObjKey> = self
                 .selection()
@@ -3421,6 +3534,7 @@ impl Editor {
                 }
             }
             scene::marks(&self.scene, &self.selected, self.sel_color, &mut self.marks);
+            self.canvas_gen[3] += 1;
             self.sel_changed = false;
             let _ = self.host.push(None, &Event::SelectionChanged);
         }
@@ -3490,12 +3604,19 @@ impl Editor {
             Tool::Idle | Tool::Press { .. } | Tool::ZoomArmed | Tool::UnselectArmed => {}
         }
         self.parity_overlay(&mut o);
-        // Selected texts have no stroke to recolor: outline them.
-        for (i, &on) in self.selected.iter().enumerate() {
-            if on && self.scene.objs.key[i].table == TableId::Texts {
-                let b = self.scene.objs.bbox(i);
-                o.rect(b[0], b[1], b[2], b[3], LAYER_SEL);
-            }
+        // Selected texts have no stroke to recolor: outline them (in object order; a frame
+        // looks at the selection, not at every object).
+        let sel = self.session.level().map_or(&[][..], |l| &l.sel);
+        let mut texts: Vec<u32> = sel
+            .iter()
+            .filter(|k| k.table == TableId::Texts)
+            .filter_map(|&k| self.scene.find(k))
+            .collect();
+        texts.sort_unstable();
+        texts.dedup();
+        for i in texts {
+            let b = self.scene.objs.bbox(i as usize);
+            o.rect(b[0], b[1], b[2], b[3], LAYER_SEL);
         }
         self.overlay = o;
     }
@@ -3720,12 +3841,12 @@ impl Window {
 impl App for Window {
     fn update(&mut self, events: &InputEvents, viewport: (f32, f32)) -> bool {
         let now = self.now_ms();
-        let changed = self.ed.update(events, viewport, now);
-        if self.ed.wants_quit() {
-            // Journals are flushed after every edit, so nothing is lost by leaving now.
-            std::process::exit(0);
-        }
-        changed
+        self.ed.update(events, viewport, now)
+    }
+
+    fn exit_requested(&self) -> bool {
+        // Journals are flushed after every edit, so nothing is lost by leaving now.
+        self.ed.wants_quit()
     }
 
     fn paint<P: Painter>(&mut self, p: &mut P, _viewport: (f32, f32)) {

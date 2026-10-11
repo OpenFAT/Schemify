@@ -185,6 +185,32 @@ pub fn violation_request(cell: &CellState, doc: &Document) -> AnnotationRequest 
     req
 }
 
+/// The marks of violation rows `rows` of `cell` as [`violation_request`] targets them, or
+/// `None` when one names an aliased object `doc` no longer has (its posted mark used the
+/// alias text, which is gone: the caller re-posts everything).
+pub fn violation_marks_of(
+    rows: &[Violation],
+    cell: &CellState,
+    doc: &Document,
+) -> Option<Vec<Mark>> {
+    let lost = |v: &Violation| {
+        v.path == Name::NONE
+            && v.object != ObjId::NONE
+            && v.object.is_alias()
+            && doc.find_id(v.object).is_none()
+    };
+    if rows.iter().any(lost) {
+        return None;
+    }
+    let v = schemify_elab::Violations {
+        rows: rows.to_vec(),
+    };
+    let s = doc.strings();
+    let req = violation_marks(&v, &cell.names, |raw| ObjId(raw).text(s));
+    assert_eq!(req.marks.len(), rows.len());
+    Some(req.marks)
+}
+
 /// The marks on `target` (binary search: the overlay is sorted by target).
 pub fn marks_on<'a>(ann: &'a Annotations, target: &str) -> &'a [Mark] {
     let m = &ann.marks;
@@ -224,8 +250,7 @@ fn anchors(doc: &Document, cell: &CellState) -> Vec<Option<Pt>> {
     at
 }
 
-/// Builds the decor primitives of the active level into `out` (cleared first, text epoch
-/// carried forward so the label cache never mistakes a rebuild for the previous one):
+/// Builds the decor primitives of the active level into `out` (cleared first):
 /// highlighted members, violation markers of the `checks` source, annotation texts of every
 /// other source on nets (`net_key` maps a net's bit name at this level to its overlay
 /// target) and instances (`inst_key` maps an instance name), and the objects a staged edit
@@ -242,9 +267,7 @@ pub fn decor(
     inst_key: impl Fn(&str) -> String,
     diff: &[ObjKey],
 ) {
-    let epoch = out.texts.epoch;
     *out = CanvasPrims::default();
-    out.texts.epoch = epoch + 1;
     // Highlight: wires as thick segments, labels/ports/pins as squares.
     let r = 3 * UNIT;
     for k in &hl.keys {
@@ -337,7 +360,7 @@ pub fn decor(
         let pad = 4 * UNIT;
         out.rect(b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad, LAYER_DIFF);
     }
-    assert!(out.texts.epoch > epoch);
+    assert_eq!(out.texts.x.len(), out.texts.end.len());
 }
 
 /// Appends the checks panel to the state contribution `t`: a header with the counts and a

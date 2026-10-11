@@ -155,6 +155,7 @@ fn gpu_matches_cpu_and_reports_frame_time() {
         &mut ScenePainter {
             scene: &mut scene,
             base: Affine::IDENTITY,
+            layers: None,
         },
         &prims,
         view,
@@ -194,6 +195,7 @@ fn gpu_matches_cpu_and_reports_frame_time() {
         let mut p = ScenePainter {
             scene: &mut scene,
             base: Affine::IDENTITY,
+            layers: None,
         };
         canvas::draw_canvas(
             &mut p,
@@ -217,4 +219,319 @@ fn gpu_matches_cpu_and_reports_frame_time() {
         "GPU render (100k primitives, 1600x900, incl. submit+wait): median {:.2} ms",
         times[times.len() / 2]
     );
+}
+
+fn texture(g: &Gpu, (w, h): (u32, u32), usage: wgpu::TextureUsages) -> wgpu::Texture {
+    g.device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage,
+        view_formats: &[],
+    })
+}
+
+/// Reads an `Rgba8Unorm` texture back (row-major, `w*h*4` bytes).
+fn read(g: &Gpu, t: &wgpu::Texture) -> Vec<u8> {
+    let (w, h) = (t.width(), t.height());
+    let row = (w * 4).div_ceil(256) * 256;
+    let buffer = g.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: u64::from(row * h),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = g.device.create_command_encoder(&Default::default());
+    enc.copy_texture_to_buffer(
+        t.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(h),
+            },
+        },
+        t.size(),
+    );
+    g.queue.submit([enc.finish()]);
+    buffer
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, |r| r.expect("map"));
+    g.device
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        })
+        .expect("poll");
+    let data = buffer.slice(..).get_mapped_range().expect("mapped range");
+    (0..h)
+        .flat_map(|y| data[(y * row) as usize..(y * row + w * 4) as usize].to_vec())
+        .collect()
+}
+
+/// (mean |Δ| per channel, pixels with a channel off by more than 2).
+fn diff_px(a: &[u8], b: &[u8]) -> (f64, usize) {
+    let (mut sum, mut bad) = (0u64, 0usize);
+    for (p, q) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+        let d: Vec<u8> = p.iter().zip(q).map(|(x, y)| x.abs_diff(*y)).collect();
+        sum += d.iter().map(|&x| u64::from(x)).sum::<u64>();
+        bad += usize::from(d.iter().any(|&x| x > 2));
+    }
+    (sum as f64 / a.len() as f64, bad)
+}
+
+/// The window's vello-free frames (`Layers::reusable` + `Layers::compose`, D39) equal a full
+/// vello render of the same frame: exactly for a pan, within a bilinear tolerance for a zoom
+/// stand-in; and a change outside the layers forbids reuse.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn composed_frames_equal_vello_frames() {
+    use schemify_render::Layers;
+    use schemify_render::canvas::{CanvasCache, Drawn};
+
+    let mut g = gpu();
+    let size = (640u32, 400u32);
+    let prims = common::thousand_prims();
+    let view = Rect::new(40.0, 30.0, 600.0, 380.0);
+    let mut cam = Camera {
+        cx: 0.0,
+        cy: 0.0,
+        scale: 1.0,
+    };
+    cam.fit(view, [0, 0, 600_000, 380_000]);
+    let target = texture(
+        &g,
+        size,
+        wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+    );
+    let surface = texture(
+        &g,
+        size,
+        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+    );
+    let (target_view, surface_view) = (
+        target.create_view(&Default::default()),
+        surface.create_view(&Default::default()),
+    );
+    let blitter = wgpu::util::TextureBlitter::new(&g.device, wgpu::TextureFormat::Rgba8Unorm);
+    let (mut layers, mut cache, mut scene) =
+        (Layers::default(), CanvasCache::default(), Scene::new());
+    let (mut text, mut scratch) = (TextSystem::new(), CanvasScratch::default());
+    let bg = schemify_render::rgba(Palette::xschem_dark().background);
+    // One window frame: a UI rect, the cached canvas; vello or composed, as the window does.
+    let mut frame = |cam: &Camera, crisp: bool, ui: Color, full: bool| -> (bool, Drawn, Vec<u8>) {
+        scene.reset();
+        layers.begin_frame(Affine::IDENTITY);
+        let mut p = ScenePainter {
+            scene: &mut scene,
+            base: Affine::IDENTITY,
+            layers: Some(&mut layers),
+        };
+        p.fill_rect(Rect::new(0.0, 0.0, 640.0, 400.0), ui);
+        let drawn = canvas::draw_cached(
+            &mut p,
+            &mut cache,
+            view,
+            cam,
+            1,
+            Some(&[]),
+            crisp,
+            bg,
+            |p, v, c| {
+                p.fill_rect(v, schemify_render::rgba(Palette::xschem_dark().background));
+                canvas::draw_prims(
+                    p,
+                    v,
+                    c,
+                    &prims,
+                    &Palette::xschem_dark(),
+                    &mut text,
+                    &mut scratch,
+                );
+            },
+        );
+        layers
+            .raster(&g.device, &g.queue, &mut g.renderer)
+            .expect("raster");
+        let reuse = layers.reusable(size.0, size.1) && !full;
+        if !reuse {
+            let params = RenderParams {
+                base_color: Color::BLACK,
+                width: size.0,
+                height: size.1,
+                antialiasing_method: AaConfig::Area,
+            };
+            g.renderer
+                .render_to_texture(&g.device, &g.queue, &scene, &target_view, &params)
+                .expect("render");
+            layers.rendered(size.0, size.1);
+        }
+        let mut enc = g.device.create_command_encoder(&Default::default());
+        blitter.copy(&g.device, &mut enc, &target_view, &surface_view);
+        if reuse {
+            let format = wgpu::TextureFormat::Rgba8Unorm;
+            layers.compose(&g.device, &g.queue, &mut enc, &surface_view, format, size);
+        }
+        g.queue.submit([enc.finish()]);
+        (reuse, drawn, read(&g, &surface))
+    };
+    let gray = Color::from_rgba8(60, 60, 60, 255);
+    let (reused, drawn, _) = frame(&cam, true, gray, false);
+    assert!(
+        !reused && drawn == Drawn::Recorded,
+        "the first frame goes through vello"
+    );
+
+    // A pan: composed without vello, equal to vello's frame.
+    cam.pan(17.0, -9.0);
+    let (reused, drawn, composed) = frame(&cam, true, gray, false);
+    assert!(
+        reused && drawn == Drawn::Copied,
+        "a pan reuses ({reused}, {drawn:?})"
+    );
+    let (_, _, full) = frame(&cam, true, gray, true);
+    let (mean, bad) = diff_px(&composed, &full);
+    println!("pan: composed vs vello mean |Δ| {mean:.4}, {bad} pixels off by > 2");
+    assert!(bad * 1000 <= composed.len() / 4, "pan frame differs: {bad}");
+
+    // A zoom stand-in: the layer stretched; bilinear on both sides, so within tolerance.
+    cam.zoom_at(view, 300.0, 200.0, 1.2);
+    let (reused, drawn, composed) = frame(&cam, false, gray, false);
+    assert!(
+        reused && drawn == Drawn::Stretched,
+        "a zoom stand-in reuses"
+    );
+    let (_, _, full) = frame(&cam, false, gray, true);
+    let (mean, bad) = diff_px(&composed, &full);
+    println!("zoom stand-in: composed vs vello mean |Δ| {mean:.4}, {bad} pixels off by > 2");
+    assert!(mean < 2.0, "zoom stand-in differs: mean {mean}");
+
+    // A zoom-out past the margin: still a stand-in, the uncovered view filled with background.
+    cam.zoom_at(view, 300.0, 200.0, 1.0 / 4.0);
+    let (reused, drawn, composed) = frame(&cam, false, gray, false);
+    assert!(
+        reused && drawn == Drawn::Stretched,
+        "a zoom-out stand-in reuses"
+    );
+    let (_, _, full) = frame(&cam, false, gray, true);
+    let (mean, bad) = diff_px(&composed, &full);
+    println!("zoom-out stand-in: composed vs vello mean |Δ| {mean:.4}, {bad} pixels off by > 2");
+    assert!(mean < 2.0, "zoom-out stand-in differs: mean {mean}");
+
+    // Anything painted differently outside the layer: through vello again.
+    let (reused, _, _) = frame(&cam, false, Color::from_rgba8(61, 60, 60, 255), false);
+    assert!(!reused, "a changed UI is rendered by vello");
+}
+
+/// D39 edits on the GPU: a layer patched where `CanvasDiff` says the content changed (each part
+/// rendered into its own texture and copied over its place) shows what a fresh recording of the
+/// same camera shows.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn patched_layers_equal_recorded_layers() {
+    use schemify_render::Layers;
+    use schemify_render::canvas::{CanvasCache, CanvasDiff, Drawn};
+
+    let mut g = gpu();
+    let (w, h) = (640u32, 400u32);
+    let mut prims = common::thousand_prims();
+    let view = Rect::new(40.0, 30.0, 600.0, 380.0);
+    let mut cam = Camera {
+        cx: 0.0,
+        cy: 0.0,
+        scale: 1.0,
+    };
+    cam.fit(view, [0, 0, 600_000, 380_000]);
+    let (mut text, mut scratch) = (TextSystem::new(), CanvasScratch::default());
+    let bg = schemify_render::rgba(Palette::xschem_dark().background);
+    let mut frame = |layers: &mut Layers,
+                     cache: &mut CanvasCache,
+                     prims: &CanvasPrims,
+                     key: u64,
+                     damage: Option<&[[i32; 4]]>| {
+        let mut scene = Scene::new();
+        layers.begin_frame(Affine::IDENTITY);
+        let mut p = ScenePainter {
+            scene: &mut scene,
+            base: Affine::IDENTITY,
+            layers: Some(layers),
+        };
+        let drawn = canvas::draw_cached(
+            &mut p,
+            cache,
+            view,
+            &cam,
+            key,
+            damage,
+            true,
+            bg,
+            |p, v, c| {
+                p.fill_rect(v, bg);
+                canvas::draw_prims(
+                    p,
+                    v,
+                    c,
+                    prims,
+                    &Palette::xschem_dark(),
+                    &mut text,
+                    &mut scratch,
+                );
+            },
+        );
+        layers
+            .raster(&g.device, &g.queue, &mut g.renderer)
+            .expect("raster");
+        (drawn, render(&mut g, &scene, w, h).0)
+    };
+    let (mut layers, mut cache, mut diff) = (
+        Layers::default(),
+        CanvasCache::default(),
+        CanvasDiff::default(),
+    );
+    let mut boxes = Vec::new();
+    let marks = Marks::default();
+    assert!(!diff.update(&[(&prims, true)], (&prims, &marks, true), &mut boxes));
+    assert_eq!(
+        frame(&mut layers, &mut cache, &prims, 1, None).0,
+        Drawn::Recorded
+    );
+    for (key, (x, y)) in [(2u64, (150_000, 90_000)), (3, (420_000, 260_000))] {
+        prims.line(x, y, x + 60_000, y + 20_000, 1);
+        let l = &mut prims.lines;
+        for col in [&mut l.x0, &mut l.y0, &mut l.x1, &mut l.y1] {
+            col.swap_remove(key as usize * 37);
+        }
+        l.layer.swap_remove(key as usize * 37);
+        boxes.clear();
+        assert!(diff.update(&[(&prims, true)], (&prims, &marks, true), &mut boxes));
+        let (drawn, patched) = frame(&mut layers, &mut cache, &prims, key, Some(&boxes));
+        assert_eq!(drawn, Drawn::Patched, "an edit patches");
+        let (again, fresh) = frame(
+            &mut Layers::default(),
+            &mut CanvasCache::default(),
+            &prims,
+            key,
+            None,
+        );
+        assert_eq!(again, Drawn::Recorded);
+        let (mean, bad) = diff_px(&patched, &fresh);
+        println!("edit {key}: patched vs recorded mean |Δ| {mean:.5}, {bad} pixels off by > 2");
+        // vello flattens curves on the GPU in f32 relative to the target, so a part rendered
+        // on its own can move an arc's edge by a few levels; a missed row would be many
+        // pixels at full contrast.
+        assert!(
+            mean < 0.01 && bad * 10_000 <= patched.len() / 4,
+            "a patched layer differs from a recording: mean {mean}, {bad} pixels"
+        );
+    }
 }

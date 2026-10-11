@@ -14,9 +14,13 @@
 //!    layer into reused paths: one draw call per (layer, stroke|fill), not per primitive.
 //! 5. **Lifetime.** Prims: document lifetime (rebuilt by their owner on edit). Paths and glyph
 //!    caches in [`CanvasScratch`]: reused across frames, never freed while the canvas lives.
+//!    The picture itself: one raster layer per canvas ([`draw_cached`]), re-recorded only when
+//!    the content key or the zoom changes or a pan leaves its margin, so a steady pan or zoom
+//!    frame encodes nothing (D39).
 //! 6. **Parallel.** The per-kind passes are independent (they could fill per-layer paths on
-//!    separate threads), but at 10^5 lines the single-threaded build already fits the budget
-//!    (see `tests/perf.rs`), so it stays serial.
+//!    separate threads), but they run only when the layer is re-recorded, so they stay serial.
+
+use std::collections::HashMap;
 
 use vello::Glyph;
 use vello::kurbo::{Affine, BezPath, Rect};
@@ -25,6 +29,7 @@ use vello::peniko::FontData;
 use schemify_ui::TextSystem;
 use schemify_ui::parley::PositionedLayoutItem;
 
+pub use crate::damage::{CanvasDiff, DIFF_EDITS_MAX};
 use crate::painter::{Chains, Painter, rgba};
 
 /// Number of palette layers.
@@ -180,8 +185,6 @@ pub struct Texts {
     pub end: Vec<u32>,
     /// UTF-8 bytes of all labels.
     pub text: String,
-    /// Bumped by the writer whenever any label changes; invalidates the shaped-glyph cache.
-    pub epoch: u64,
 }
 
 /// One canvas's primitives: a table per kind (existence-based; no per-primitive objects).
@@ -257,7 +260,7 @@ impl CanvasPrims {
         t.layer.push(layer);
     }
 
-    /// Appends a label and bumps the text epoch.
+    /// Appends a label.
     pub fn text(&mut self, x: i32, y: i32, size: i32, layer: u8, s: &str) {
         self.text_rot(x, y, size, layer, s, 0);
     }
@@ -274,7 +277,6 @@ impl CanvasPrims {
         t.rot.push(rot % 4);
         t.text.push_str(s);
         t.end.push(t.text.len() as u32);
-        t.epoch += 1;
     }
 
     /// Total primitive count over all kinds.
@@ -386,7 +388,8 @@ impl Marks {
     }
 }
 
-/// Reused per-frame buffers and the shaped-label cache. Keep one per canvas.
+/// Reused per-frame buffers and the shaped-label cache (glyphs per distinct string, shared by
+/// every primitive table drawn through it). Keep one per canvas.
 #[derive(Default)]
 pub struct CanvasScratch {
     open: Vec<Chains>,
@@ -395,15 +398,17 @@ pub struct CanvasScratch {
     fill: Vec<BezPath>,
     dots: Chains,
     path: BezPath,
-    text_epoch: Option<u64>,
     text_face: Option<FontData>,
-    text_glyph_end: Vec<u32>,
+    /// Glyph range in `text_glyphs` of each string shaped so far.
+    text_runs: HashMap<Box<str>, (u32, u32)>,
     text_glyphs: Vec<Glyph>,
+    text_layout: schemify_ui::parley::Layout<()>,
 }
 
 impl std::fmt::Debug for CanvasScratch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CanvasScratch")
+            .field("strings", &self.text_runs.len())
             .field("glyphs", &self.text_glyphs.len())
             .finish()
     }
@@ -413,6 +418,295 @@ impl std::fmt::Debug for CanvasScratch {
 const TEXT_REF_PX: f32 = 64.0;
 /// Labels smaller than this on screen are skipped (unreadable, and the cheapest cull).
 const TEXT_MIN_PX: f64 = 3.0;
+/// Distinct strings the label cache keeps before it starts over (a phase boundary, like the UI
+/// text cache).
+const TEXT_RUNS_MAX: usize = 1 << 16;
+
+/// The raster cache of one canvas: which painter layer holds its picture and for what camera.
+/// One per canvas; the picture itself lives in the painter (see [`Painter::layer`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CanvasCache {
+    /// Painter layer slot (`< painter::LAYER_SLOTS`), distinct per canvas sharing a painter.
+    pub slot: usize,
+    /// Tag of the recorded layer; 0 = nothing recorded.
+    stamp: u64,
+    /// Content fingerprint the layer was recorded for.
+    key: u64,
+    /// Camera zoom it was recorded at.
+    scale: f64,
+    /// Screen position of world (0, 0) when recorded (logical px).
+    origin: (f64, f64),
+    /// Logical-px rectangle the layer covered when recorded (the view plus [`CACHE_MARGIN`]).
+    rect: Rect,
+    /// Key of the previous call (what its `damage` was relative to).
+    last: u64,
+    /// World boxes where the content of `last` differs from the layer's (`key`); `None` =
+    /// unknown.
+    pending: Option<Vec<[i32; 4]>>,
+}
+
+/// How [`draw_cached`] drew a frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Drawn {
+    /// The recorded layer, copied pixel for pixel at an integer offset (a pan).
+    Copied,
+    /// The recorded layer stretched to a new zoom (a stand-in until the next crisp frame).
+    Stretched,
+    /// The changed parts of the layer redrawn (see `damage` of [`draw_cached`]), then copied.
+    Patched,
+    /// Content drawn into a fresh layer, then copied.
+    Recorded,
+    /// Content drawn straight into the frame (the painter keeps no layers).
+    Direct,
+}
+
+/// Share of the view's size recorded beyond each edge, so pans and zoom-outs up to it reuse the
+/// layer (larger = rarer re-records, each costing more pixels).
+pub const CACHE_MARGIN: f64 = 0.25;
+
+/// Unique layer tags across every cache in the process.
+static STAMPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Logical px a damage box is widened by: half the widest stroke, mark strokes, antialiasing
+/// and pixel snapping. Content must not draw farther than this outside its rows' boxes.
+pub const PATCH_PAD_PX: f64 = 8.0;
+/// Patches are whole multiples of this many logical px (so of 16 device px at integral scales),
+/// on the layer's own grid: vello's tiles, so every pixel outside the patches sees exactly the
+/// path segments it saw when recorded, and pixel snapping lands alike inside them.
+const PATCH_TILE: f64 = 16.0;
+/// Most patches one frame redraws (each culls every primitive once).
+const PATCHES_MAX: usize = 4;
+/// Most distinct damaged parts merged down to [`PATCHES_MAX`] (the merge is quadratic).
+const PARTS_MAX: usize = 64;
+/// Most damage boxes kept between frames before the change counts as unknown.
+const DAMAGE_BOXES_MAX: usize = 4096;
+
+/// Draws a canvas through its raster cache: `draw(p, view, cam)` paints the content (it must
+/// fill `view` opaquely with `background` first) and runs only when the cache cannot serve
+/// `key` at `cam`. A pan by whole pixels copies the recorded layer; a zoom with
+/// `crisp == false` stretches it (view pixels it no longer covers show `background`); new
+/// content whose change is known and small redraws only the changed parts; anything else
+/// records `view` plus [`CACHE_MARGIN`] afresh. Content outside the cache (gesture
+/// previews) is drawn by the caller afterwards.
+///
+/// `key` must change whenever anything `draw` reads changes, except the camera. `damage`
+/// says where the content for `key` differs from the content of the previous call's key: world
+/// boxes (each row added or removed, e.g. from [`CanvasDiff::update`]; `draw` must paint
+/// nothing farther than [`PATCH_PAD_PX`] outside them), empty when the key is the same, or
+/// `None` when unknown.
+///
+/// Cost: O(1) when copied or stretched; `draw` per changed part (up to 4) when patched;
+/// `draw` over view + margin when recorded.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_cached<P: Painter>(
+    p: &mut P,
+    cache: &mut CanvasCache,
+    view: Rect,
+    cam: &Camera,
+    key: u64,
+    damage: Option<&[[i32; 4]]>,
+    crisp: bool,
+    background: vello::peniko::Color,
+    mut draw: impl FnMut(&mut P, Rect, &Camera),
+) -> Drawn {
+    assert!(view.width() >= 0.0 && view.height() >= 0.0 && cam.scale > 0.0);
+    let origin = cam.origin(view);
+    // What changed since the layer was recorded: this call's damage on top of the earlier.
+    if key != cache.last {
+        cache.pending = match (cache.pending.take(), damage) {
+            (Some(mut boxes), Some(d)) if boxes.len() + d.len() <= DAMAGE_BOXES_MAX => {
+                boxes.extend_from_slice(d);
+                Some(boxes)
+            }
+            _ => None,
+        };
+        cache.last = key;
+    }
+    if cache.stamp != 0 && view.area() > 0.0 {
+        let (o0, r) = (cache.origin, cache.rect);
+        if cache.scale == cam.scale {
+            let (dx, dy) = (origin.0 - o0.0, origin.1 - o0.1);
+            let aligned = (dx - dx.round()).abs() < 1e-6 && (dy - dy.round()).abs() < 1e-6;
+            let at = r + vello::kurbo::Vec2::new(dx.round(), dy.round());
+            let place = Affine::translate((at.x0, at.y0));
+            if aligned && at.contains_rect(view) {
+                if cache.key == key && p.draw_layer(cache.slot, cache.stamp, place, view, None) {
+                    return Drawn::Copied;
+                }
+                // A painter without the layer (a fresh one) patches nothing and shows nothing:
+                // it records below.
+                if cache.key != key
+                    && patch(p, cache, &mut draw)
+                    && p.draw_layer(cache.slot, cache.stamp, place, view, None)
+                {
+                    cache.key = key;
+                    cache.pending = Some(Vec::new());
+                    return Drawn::Patched;
+                }
+            }
+        } else if !crisp && cache.key == key {
+            // Layer px u ↔ screen u + r.p0 at the recorded camera ↔ world (u + r.p0 - o0) / s0
+            // ↔ screen now: (u + r.p0 - o0) · s1/s0 + o1. Where a zoom-out uncovers the view,
+            // background shows until the crisp frame (no re-record mid-gesture).
+            let at = Affine::translate(origin)
+                * Affine::scale(cam.scale / cache.scale)
+                * Affine::translate((r.x0 - o0.0, r.y0 - o0.1));
+            if p.draw_layer(cache.slot, cache.stamp, at, view, Some(background)) {
+                return Drawn::Stretched;
+            }
+        }
+    }
+    // Record view + margin, its corner on the integer-pixel grid so later pans copy exactly.
+    let s = p.device_scale();
+    let (mx, my) = (
+        (view.width() * CACHE_MARGIN).max(64.0),
+        (view.height() * CACHE_MARGIN).max(64.0),
+    );
+    let (x0, y0) = ((view.x0 - mx).floor(), (view.y0 - my).floor());
+    // ponytail: 8192 device px is wgpu's default texture limit; a bigger window (> 5.4k logical
+    // px wide at scale 1) records without margin, then 8192 caps the picture itself.
+    let w = (((view.x1 + mx - x0) * s).ceil() as u32).clamp(1, 8192);
+    let h = (((view.y1 + my - y0) * s).ceil() as u32).clamp(1, 8192);
+    let local = Rect::new(0.0, 0.0, f64::from(w) / s, f64::from(h) / s);
+    // The same picture in layer coordinates: world (0, 0) lands at origin - (x0, y0).
+    let lcam = Camera {
+        cx: (local.center().x - (origin.0 - x0)) / cam.scale,
+        cy: (local.center().y - (origin.1 - y0)) / cam.scale,
+        scale: cam.scale,
+    };
+    let stamp = STAMPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if p.layer(cache.slot, stamp, w, h, |p| draw(p, local, &lcam)) {
+        *cache = CanvasCache {
+            slot: cache.slot,
+            stamp,
+            key,
+            scale: cam.scale,
+            origin,
+            rect: local + vello::kurbo::Vec2::new(x0, y0),
+            last: key,
+            pending: Some(Vec::new()),
+        };
+        let shown = p.draw_layer(cache.slot, stamp, Affine::translate((x0, y0)), view, None);
+        assert!(shown, "a recorded layer draws");
+        return Drawn::Recorded;
+    }
+    cache.stamp = 0;
+    p.push_clip(view);
+    draw(p, view, cam);
+    p.pop_clip();
+    Drawn::Direct
+}
+
+/// Redraws the parts of the recorded layer that `cache.pending` covers, at the camera it was
+/// recorded with. False (the layer may be partly redrawn: record it afresh) when the damage
+/// is unknown or too large, or a [`PATCH_TILE`] is no whole number of device px (patch
+/// offsets must be whole device px and whole logical px, so pixel snapping lands alike).
+///
+/// A part redrawn alone matches the recording within ±1 per channel, not bit for bit: its
+/// unsnapped coordinates (arcs, glyphs) round to `f32` at other magnitudes.
+fn patch<P: Painter>(
+    p: &mut P,
+    cache: &CanvasCache,
+    draw: &mut impl FnMut(&mut P, Rect, &Camera),
+) -> bool {
+    let s = p.device_scale();
+    let Some(boxes) = cache.pending.as_deref() else {
+        return false;
+    };
+    if (PATCH_TILE * s).fract() != 0.0 || s <= 0.0 {
+        return false;
+    }
+    // Layer px of world (0, 0) and the layer's size, as recorded.
+    let (ox, oy) = (
+        cache.origin.0 - cache.rect.x0,
+        cache.origin.1 - cache.rect.y0,
+    );
+    let (lw, lh) = (
+        (cache.rect.width() * s).round(),
+        (cache.rect.height() * s).round(),
+    );
+    let (pad, step) = (PATCH_PAD_PX * s, PATCH_TILE * s);
+    let mut parts: Vec<Rect> = Vec::new();
+    for b in boxes {
+        let (x0, y0) = (
+            f64::from(b[0]) * cache.scale + ox,
+            f64::from(b[1]) * cache.scale + oy,
+        );
+        let (x1, y1) = (
+            f64::from(b[2]) * cache.scale + ox,
+            f64::from(b[3]) * cache.scale + oy,
+        );
+        let tile = |v: f64, up: bool| {
+            let t = v / step;
+            (if up { t.ceil() } else { t.floor() } * step).clamp(0.0, 1e9)
+        };
+        let part = Rect::new(
+            tile(x0 * s - pad, false),
+            tile(y0 * s - pad, false),
+            tile(x1 * s + pad, true).min(lw),
+            tile(y1 * s + pad, true).min(lh),
+        );
+        if part.x1 > part.x0 && part.y1 > part.y0 {
+            parts.push(part);
+        }
+        if parts.len() > PARTS_MAX {
+            return false; // scattered: one recording beats merging them
+        }
+    }
+    // Merge overlapping parts, then the closest pairs until few are left.
+    let mut merged = true;
+    while merged {
+        merged = false;
+        'pairs: for i in 0..parts.len() {
+            for j in i + 1..parts.len() {
+                let overlap = parts[i].intersect(parts[j]).area() > 0.0;
+                let grow = parts[i].union(parts[j]).area() - parts[i].area() - parts[j].area();
+                if overlap || (parts.len() > PATCHES_MAX && grow <= 0.0) {
+                    parts[i] = parts[i].union(parts[j]);
+                    parts.swap_remove(j);
+                    merged = true;
+                    break 'pairs;
+                }
+            }
+        }
+        if !merged && parts.len() > PATCHES_MAX {
+            let (mut best, mut cost) = ((0, 1), f64::INFINITY);
+            for i in 0..parts.len() {
+                for j in i + 1..parts.len() {
+                    let c = parts[i].union(parts[j]).area();
+                    if c < cost {
+                        (best, cost) = ((i, j), c);
+                    }
+                }
+            }
+            parts[best.0] = parts[best.0].union(parts[best.1]);
+            parts.swap_remove(best.1);
+            merged = true;
+        }
+    }
+    let area: f64 = parts.iter().map(Rect::area).sum();
+    if area > lw * lh / 2.0 {
+        return false; // most of the layer: one recording is cheaper than the culling passes
+    }
+    assert!(parts.len() <= PATCHES_MAX);
+    for part in &parts {
+        let (x, y, w, h) = (part.x0, part.y0, part.width(), part.height());
+        // The part's picture in its own coordinates: world (0, 0) lands at (ox, oy) - (x, y)/s.
+        let local = Rect::new(0.0, 0.0, w / s, h / s);
+        let pcam = Camera {
+            cx: (local.center().x - (ox - x / s)) / cache.scale,
+            cy: (local.center().y - (oy - y / s)) / cache.scale,
+            scale: cache.scale,
+        };
+        let (x, y, w, h) = (x as u32, y as u32, w as u32, h as u32);
+        if !p.patch_layer(cache.slot, cache.stamp, x, y, w, h, |p| {
+            draw(p, local, &pcam)
+        }) {
+            return false;
+        }
+    }
+    true
+}
 
 /// Draws background, grid, primitives, overlay primitives and marks into `view`, clipped.
 /// The diagonal route for the common case; each step is also public.
@@ -467,9 +761,9 @@ pub fn draw_grid<P: Painter>(
     let dots = &mut scratch.dots;
     dots.clear();
     for j in j0..=j1 {
-        let y = (j as f64 * s * cam.scale + oy).floor() as f32;
+        let y = pixel(j as f64 * s * cam.scale + oy) as f32;
         for i in i0..=i1 {
-            let x = (i as f64 * s * cam.scale + ox).floor() as f32;
+            let x = pixel(i as f64 * s * cam.scale + ox) as f32;
             dots.push(&[[x, y], [x + 1.0, y], [x + 1.0, y + 1.0], [x, y + 1.0]]);
         }
     }
@@ -513,10 +807,18 @@ fn push_arc(path: &mut BezPath, cx: f64, cy: f64, r: f64, start: f64, sweep: f64
     }
 }
 
-/// Snaps a coordinate to the pixel center so 1 px strokes stay crisp.
+/// Snaps a coordinate to the pixel center so 1 px strokes stay crisp. The 1e-6 px bias keeps a
+/// coordinate that lands on a pixel edge on the same side whether its camera origin was
+/// computed directly or rebuilt for a cached layer (they differ by rounding, ~1e-9 px).
 #[inline]
 fn snap(v: f64) -> f64 {
-    v.floor() + 0.5
+    pixel(v) + 0.5
+}
+
+/// The pixel `v` falls in, with [`snap`]'s bias.
+#[inline]
+fn pixel(v: f64) -> f64 {
+    (v + 1e-6).floor()
 }
 
 /// Builds one stroke path and one fill path per layer from all primitive tables, then issues
@@ -672,16 +974,10 @@ fn draw_texts<P: Painter>(
     scratch: &mut CanvasScratch,
 ) {
     assert_eq!(t.x.len(), t.end.len());
-    if scratch.text_epoch != Some(t.epoch) || scratch.text_glyph_end.len() != t.x.len() {
-        reshape_texts(t, text, scratch);
-    }
-    let Some(face) = scratch.text_face.clone() else {
-        return;
-    };
     let (ox, oy) = cam.origin(view);
-    let mut g0 = 0usize;
+    let mut start = 0usize;
     for i in 0..t.x.len() {
-        let g1 = scratch.text_glyph_end[i] as usize;
+        let end = t.end[i] as usize;
         let px = f64::from(t.size[i]) * cam.scale;
         let (x, y) = (
             f64::from(t.x[i]) * cam.scale + ox,
@@ -691,60 +987,56 @@ fn draw_texts<P: Painter>(
         let rot = t.rot.get(i).copied().unwrap_or(0);
         let visible = px >= TEXT_MIN_PX
             && (rot != 0 || (x < view.x1 && y < view.y1 && y + px * 2.0 > view.y0));
-        if visible && g1 > g0 {
-            let at = Affine::translate((x, y))
-                * Affine::rotate(f64::from(rot) * std::f64::consts::FRAC_PI_2)
-                * Affine::scale(px / f64::from(TEXT_REF_PX));
-            let color = rgba(palette.color[usize::from(t.layer[i])]);
-            p.glyphs(
-                &face,
-                TEXT_REF_PX,
-                &[],
-                color,
-                at,
-                &scratch.text_glyphs[g0..g1],
-            );
+        if visible {
+            let (g0, g1) = shaped(&t.text[start..end], text, scratch);
+            if let (Some(face), true) = (scratch.text_face.clone(), g1 > g0) {
+                let at = Affine::translate((x, y))
+                    * Affine::rotate(f64::from(rot) * std::f64::consts::FRAC_PI_2)
+                    * Affine::scale(px / f64::from(TEXT_REF_PX));
+                let color = rgba(palette.color[usize::from(t.layer[i])]);
+                let glyphs = &scratch.text_glyphs[g0 as usize..g1 as usize];
+                p.glyphs(&face, TEXT_REF_PX, &[], color, at, glyphs);
+            }
         }
-        g0 = g1;
+        start = end;
     }
 }
 
-/// Shapes every label once at [`TEXT_REF_PX`]; glyph positions are relative to the label's
-/// top-left. Called only when the text epoch changes.
-fn reshape_texts(t: &Texts, text: &mut TextSystem, scratch: &mut CanvasScratch) {
-    scratch.text_face = None;
-    scratch.text_glyph_end.clear();
-    scratch.text_glyphs.clear();
-    let mut layout = schemify_ui::parley::Layout::new();
-    let mut start = 0usize;
-    for &end in &t.end {
-        let s = &t.text[start..end as usize];
-        start = end as usize;
-        text.shape_into(s, TEXT_REF_PX, &mut layout);
-        for line in layout.lines() {
-            for item in line.items() {
-                if let PositionedLayoutItem::GlyphRun(run) = item {
-                    // ponytail: one face for all labels (the only registered UI font). Font
-                    // fallback would need a face per glyph range.
-                    scratch
-                        .text_face
-                        .get_or_insert_with(|| run.run().font().clone());
-                    scratch
-                        .text_glyphs
-                        .extend(run.positioned_glyphs().map(|g| Glyph {
-                            id: g.id,
-                            x: g.x,
-                            y: g.y,
-                        }));
-                }
+/// The glyph range of `s` shaped at [`TEXT_REF_PX`] (positions relative to its top-left),
+/// shaping it on first use: a string is shaped once per cache lifetime, however many labels or
+/// frames show it.
+fn shaped(s: &str, text: &mut TextSystem, scratch: &mut CanvasScratch) -> (u32, u32) {
+    if let Some(&r) = scratch.text_runs.get(s) {
+        return r;
+    }
+    if scratch.text_runs.len() >= TEXT_RUNS_MAX {
+        scratch.text_runs.clear();
+        scratch.text_glyphs.clear();
+    }
+    let g0 = scratch.text_glyphs.len() as u32;
+    text.shape_into(s, TEXT_REF_PX, &mut scratch.text_layout);
+    for line in scratch.text_layout.lines() {
+        for item in line.items() {
+            if let PositionedLayoutItem::GlyphRun(run) = item {
+                // ponytail: one face for all labels (the only registered UI font). Font
+                // fallback would need a face per glyph range.
+                scratch
+                    .text_face
+                    .get_or_insert_with(|| run.run().font().clone());
+                scratch
+                    .text_glyphs
+                    .extend(run.positioned_glyphs().map(|g| Glyph {
+                        id: g.id,
+                        x: g.x,
+                        y: g.y,
+                    }));
             }
         }
-        scratch
-            .text_glyph_end
-            .push(scratch.text_glyphs.len() as u32);
     }
-    scratch.text_epoch = Some(t.epoch);
-    debug_assert_eq!(scratch.text_glyph_end.len(), t.x.len());
+    let r = (g0, scratch.text_glyphs.len() as u32);
+    scratch.text_runs.insert(s.into(), r);
+    assert!(r.0 <= r.1);
+    r
 }
 
 /// Redraws marked primitives in their mark color, 1 px wider than the base stroke.

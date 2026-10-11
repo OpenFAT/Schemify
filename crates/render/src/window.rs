@@ -19,6 +19,7 @@ use winit::window::{Window, WindowId};
 
 use schemify_ui::{Button, Chord, InputEvent, InputEvents, Key, Mods};
 
+use crate::layers::Layers;
 use crate::painter::{Painter, ScenePainter};
 
 /// What the application provides to [`run`]. Static dispatch: `run` is generic over it.
@@ -39,6 +40,12 @@ pub trait App {
     /// Color under everything painted.
     fn background(&self) -> Color {
         Color::BLACK
+    }
+    /// Whether the app is done (its quit command ran). Asked after every batch of updates;
+    /// true exits the event loop, so [`run`] returns and drops the app (its `Drop` runs, which
+    /// a `process::exit` inside `update` would skip).
+    fn exit_requested(&self) -> bool {
+        false
     }
 }
 
@@ -112,6 +119,8 @@ struct Shell<A: App> {
     pointer: (f32, f32),
     scale: f64,
     scene: Scene,
+    /// Raster layers the app's cached canvases record into (kept across frames).
+    layers: Layers,
     access_dirty: bool,
     /// The deadline [`App::wake_ms`] asked for has passed: update with no input.
     tick: bool,
@@ -143,6 +152,7 @@ pub fn run<A: App + 'static>(title: &str, app: A) -> Result<(), RunError> {
         pointer: (0.0, 0.0),
         scale: 1.0,
         scene: Scene::new(),
+        layers: Layers::default(),
         access_dirty: true,
         tick: false,
     };
@@ -190,11 +200,21 @@ impl<A: App> Shell<A> {
             (f64::from(size.height) / self.scale) as f32,
         );
         self.scene.reset();
+        let base = Affine::scale(self.scale);
+        self.layers.begin_frame(base);
         let mut painter = ScenePainter {
             scene: &mut self.scene,
-            base: Affine::scale(self.scale),
+            base,
+            layers: Some(&mut self.layers),
         };
         self.app.paint(&mut painter, viewport);
+        let dev = &gpu.cx.devices[gpu.surface.dev_id];
+        if let Err(e) = self
+            .layers
+            .raster(&dev.device, &dev.queue, &mut gpu.renderer)
+        {
+            eprintln!("render layer: {e}");
+        }
         let frame = match gpu.surface.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -206,21 +226,27 @@ impl<A: App> Shell<A> {
             _ => return,
         };
         let dev = &gpu.cx.devices[gpu.surface.dev_id];
-        let params = RenderParams {
-            base_color: self.app.background(),
-            width: size.width,
-            height: size.height,
-            antialiasing_method: AaConfig::Area,
-        };
-        if let Err(e) = gpu.renderer.render_to_texture(
-            &dev.device,
-            &dev.queue,
-            &self.scene,
-            &gpu.surface.target_view,
-            &params,
-        ) {
-            eprintln!("render: {e}");
-            return;
+        // D39: a frame that only moved its cached layers (a pan, a zoom stand-in) skips vello:
+        // the target still holds the last vello frame, and the layers are quads over it.
+        let reuse = self.layers.reusable(size.width, size.height);
+        if !reuse {
+            let params = RenderParams {
+                base_color: self.app.background(),
+                width: size.width,
+                height: size.height,
+                antialiasing_method: AaConfig::Area,
+            };
+            if let Err(e) = gpu.renderer.render_to_texture(
+                &dev.device,
+                &dev.queue,
+                &self.scene,
+                &gpu.surface.target_view,
+                &params,
+            ) {
+                eprintln!("render: {e}");
+                return;
+            }
+            self.layers.rendered(size.width, size.height);
         }
         let mut encoder = dev
             .device
@@ -233,6 +259,16 @@ impl<A: App> Shell<A> {
         gpu.surface
             .blitter
             .copy(&dev.device, &mut encoder, &gpu.surface.target_view, &target);
+        if reuse {
+            self.layers.compose(
+                &dev.device,
+                &dev.queue,
+                &mut encoder,
+                &target,
+                gpu.surface.format,
+                (size.width, size.height),
+            );
+        }
         dev.queue.submit([encoder.finish()]);
         window.pre_present_notify();
         dev.queue.present(frame);
@@ -481,6 +517,10 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
                 self.access_dirty = true;
             }
             self.events.clear();
+        }
+        if self.app.exit_requested() {
+            event_loop.exit();
+            return;
         }
         if self.access_dirty {
             let (adapter, app) = (&mut self.adapter, &mut self.app);

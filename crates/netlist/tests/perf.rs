@@ -127,7 +127,45 @@ fn emit_a_flat_bench_of_100k_instances() {
         "PERF netlist.emit_flat_100k_ms {:.3}",
         dt.as_secs_f64() * 1e3
     );
-    // D39: 1M flat ≤ 1 s end to end. Measured: elab ~93 ms + emit ~11 ms per 10^5
-    // (~1.04 s per 10^6, elab's share is BACKLOG). Regression guard for emission:
+    // D39: 1M flat ≤ 1 s end to end (measured at full size below). Regression guard for
+    // emission:
     assert!(dt < Duration::from_millis(15), "{dt:?}");
+}
+
+/// D39 at its stated size: a flat bench of 10^6 instances netlisted end to end (elaborate +
+/// emit, the document already open) within 1 s.
+#[test]
+#[ignore]
+fn netlist_a_flat_bench_of_1m_instances() {
+    let n = 1_000_000;
+    let mut s = String::with_capacity(n * 48);
+    s.push_str("schemify 1 shbench\n\n");
+    // Ten columns of 10^5 resistors in series (one column would leave the i32 range).
+    for i in 0..n {
+        s.push_str(&format!(
+            "inst {} ./res\n  at {} {} R0\n  name R{i}\n  R {}\n",
+            id(i as u64 + 1),
+            c((i / 100_000) as i64 * 100_000),
+            c((i % 100_000) as i64 * 20_000),
+            i % 7 + 1
+        ));
+    }
+    let (p, hs) = project(&[("res.shprim", RES), ("tb.shbench", &s)]);
+    drop(s);
+    let t = Instant::now();
+    let e = elab(&p, hs[1], Dialect::Ngspice);
+    let te = t.elapsed();
+    let out = emit(&e, Dialect::Ngspice);
+    let total = t.elapsed();
+    assert_eq!(e.flat_leaves(e.top), n as u64);
+    assert_eq!(out.text.lines().filter(|l| l.starts_with("RR")).count(), n);
+    eprintln!(
+        "flat 1M: elaborate {te:?}, emit {:?}, total {total:?} ({} bytes)",
+        total - te,
+        out.text.len()
+    );
+    assert!(
+        total < Duration::from_secs(1),
+        "D39: flat 1M netlist {total:?} > 1 s"
+    );
 }

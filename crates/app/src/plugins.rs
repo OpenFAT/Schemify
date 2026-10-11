@@ -52,6 +52,8 @@ pub struct Host {
     /// Events queued for the next delivery.
     pub events: PluginEvents,
     snapshots: Snapshots,
+    /// What the document tables in `snapshots` were filled from (see [`Host::snapshot`]).
+    snapshot_key: Option<u64>,
     queues: RequestQueues,
     /// Epoch of the last composition the app consumed.
     pub seen_epoch: Option<u32>,
@@ -177,6 +179,7 @@ impl Host {
             plugins,
             events: PluginEvents::new(),
             snapshots: Snapshots::new(),
+            snapshot_key: None,
             queues: RequestQueues::default(),
             seen_epoch: None,
             hashes,
@@ -464,7 +467,9 @@ impl Host {
     /// Refreshes the snapshot tables plugins read for the active document `h` (Docs,
     /// Instances, Wires, Labels, Selection), its derived state `cell` (net ids of wires and
     /// labels, Nets, Violations; `u32::MAX` nets and empty tables without it) and the last
-    /// run's `results` rows. Cost: one copy of those columns.
+    /// run's `results` rows. `key` names everything but `selection` (document epochs, the
+    /// check pass, the results): with the previous call's key only the Selection table is
+    /// refilled. Cost: one copy of those columns, or of the selection.
     pub fn snapshot(
         &mut self,
         project: &Project,
@@ -472,8 +477,20 @@ impl Host {
         selection: &[u32],
         cell: Option<&CellState>,
         results: &ResultRows,
+        key: u64,
     ) {
         let s = &mut self.snapshots;
+        let id = h.map_or(0, doc_id);
+        s.fill::<u32>(
+            Table::Selection,
+            col::selection::DOC,
+            &vec![id; selection.len()],
+        );
+        s.fill::<u32>(Table::Selection, col::selection::ID, selection);
+        if self.snapshot_key.replace(key) == Some(key) {
+            debug_assert_eq!(s.check(), Ok(()));
+            return; // a selection change only (a click): the document tables stand
+        }
         let handles: Vec<DocHandle> = project.handles().collect();
         let ids: Vec<u32> = handles.iter().map(|&d| doc_id(d)).collect();
         s.fill::<u32>(Table::Docs, col::docs::HANDLE, &ids);
@@ -541,12 +558,6 @@ impl Host {
         );
         let texts: Vec<&str> = l.text.iter().map(|&t| st.get(t)).collect();
         s.fill_strings(Table::Labels, col::labels::TEXT, &texts);
-        s.fill::<u32>(
-            Table::Selection,
-            col::selection::DOC,
-            &vec![id; selection.len()],
-        );
-        s.fill::<u32>(Table::Selection, col::selection::ID, selection);
         let empty = CellState::default();
         let c = cell.unwrap_or(&empty);
         let nets = &c.nets;

@@ -149,20 +149,16 @@ impl Violations {
     }
 
     /// Replaces the value-dependent rows (`E008`, `E005`, `E006`, `E032`, `I005`) with
-    /// `fresh` (sorted, value codes only), keeping order. Cost: O(rows), no re-sort.
-    pub(crate) fn replace_values(&mut self, fresh: Violations, names: &Names) {
-        let value = |c: Code| {
-            matches!(
-                c,
-                Code::E008 | Code::E005 | Code::E006 | Code::E032 | Code::I005
-            )
-        };
+    /// `fresh` (sorted, value codes only), keeping order, and returns the replaced rows
+    /// (sorted). Cost: O(rows), no re-sort.
+    pub(crate) fn replace_values(&mut self, fresh: Violations, names: &Names) -> Violations {
         assert!(
-            fresh.rows.iter().all(|v| value(v.code)),
+            fresh.rows.iter().all(|v| value_code(v.code)),
             "only value rows are replaced"
         );
-        let mut old = std::mem::take(&mut self.rows);
-        old.retain(|v| !value(v.code));
+        let (replaced, old): (Vec<Violation>, Vec<Violation>) = std::mem::take(&mut self.rows)
+            .into_iter()
+            .partition(|v| value_code(v.code));
         let mut out = Vec::with_capacity(old.len() + fresh.rows.len());
         let (mut a, mut b) = (
             old.into_iter().peekable(),
@@ -184,6 +180,48 @@ impl Violations {
                 .all(|w| cmp_key(&w[0], &w[1], names) == Ordering::Less)
         );
         self.rows = out;
+        Violations { rows: replaced }
+    }
+
+    /// What changed from `old` to `self` (both from the same names arena): `(gone, new)`,
+    /// the rows only `old` has and the rows only `self` has, each in key order. A row whose
+    /// key stayed but whose detail changed is in both.
+    ///
+    /// Cost: one merge pass, O(rows) row compares; key comparisons (string compares through
+    /// `names`) only where the two lists differ.
+    pub fn diff<'a>(
+        &'a self,
+        old: &'a Violations,
+        names: &Names,
+    ) -> (Vec<&'a Violation>, Vec<&'a Violation>) {
+        let (mut gone, mut new) = (Vec::new(), Vec::new());
+        let (a, b) = (&old.rows, &self.rows);
+        let (mut i, mut j) = (0, 0);
+        while i < a.len() && j < b.len() {
+            if a[i] == b[j] {
+                (i, j) = (i + 1, j + 1);
+                continue;
+            }
+            match cmp_key(&a[i], &b[j], names) {
+                Ordering::Less => {
+                    gone.push(&a[i]);
+                    i += 1;
+                }
+                Ordering::Greater => {
+                    new.push(&b[j]);
+                    j += 1;
+                }
+                Ordering::Equal => {
+                    gone.push(&a[i]);
+                    new.push(&b[j]);
+                    (i, j) = (i + 1, j + 1);
+                }
+            }
+        }
+        gone.extend(&a[i..]);
+        new.extend(&b[j..]);
+        assert!(gone.len() <= a.len() && new.len() <= b.len());
+        (gone, new)
     }
 
     /// Returns whether any row blocks (severity `Error`).
@@ -199,11 +237,21 @@ impl Violations {
     }
 }
 
+/// Whether rows of `code` depend on evaluated values (what a value-only recheck replaces).
+pub(crate) fn value_code(code: Code) -> bool {
+    matches!(
+        code,
+        Code::E008 | Code::E005 | Code::E006 | Code::E032 | Code::I005
+    )
+}
+
 fn cmp_key(a: &Violation, b: &Violation, names: &Names) -> Ordering {
-    a.code
-        .as_str()
-        .cmp(b.code.as_str())
-        .then_with(|| names.cmp(a.cell, b.cell))
+    let code = if a.code == b.code {
+        Ordering::Equal
+    } else {
+        a.code.as_str().cmp(b.code.as_str())
+    };
+    code.then_with(|| names.cmp(a.cell, b.cell))
         .then(a.object.cmp(&b.object))
         .then_with(|| names.cmp(a.path, b.path))
         .then_with(|| names.cmp(a.param, b.param))

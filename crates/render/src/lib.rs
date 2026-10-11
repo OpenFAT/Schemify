@@ -33,11 +33,14 @@
 #![forbid(unsafe_code)]
 
 pub mod canvas;
+mod damage;
+mod layers;
 mod painter;
 pub mod waves;
 pub mod widgets;
 mod window;
 
+pub use layers::{LAYER_SLOTS, Layers};
 pub use painter::{Chains, CpuPainter, Painter, ScenePainter, rgba};
 /// CPU raster target returned by [`CpuPainter::finish`] (PNG encode/decode included).
 pub use vello_cpu::Pixmap;

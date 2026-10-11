@@ -161,8 +161,66 @@ const GLOBAL: u8 = 0;
 const PORT: u8 = 1;
 const LABEL: u8 = 2;
 
+/// Appends `v` in decimal (what `to_string` writes, without its allocation: generated net
+/// names are built once per unnamed bit).
+pub(crate) fn push_decimal(mut v: u32, out: &mut String) {
+    let mut digits = [0u8; 10];
+    let mut n = 0;
+    loop {
+        digits[n] = b'0' + (v % 10) as u8;
+        n += 1;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    out.extend(digits[..n].iter().rev().map(|&d| char::from(d)));
+}
+
 fn key(a: i32, b: i32) -> u64 {
     (u64::from(a as u32 ^ 0x8000_0000) << 32) | u64::from(b as u32 ^ 0x8000_0000)
+}
+
+/// `(key(a, b), i)` for every node `i`, sorted: what `sort_unstable` gives, in about a third
+/// of its time at 10^6 nodes (the two node sorts were a quarter of a flat 1M-instance
+/// elaboration).
+fn sorted_nodes(a: &[i32], b: &[i32]) -> Vec<(u64, u32)> {
+    assert_eq!(a.len(), b.len());
+    let mut v: Vec<(u64, u32)> = (0..a.len()).map(|i| (key(a[i], b[i]), i as u32)).collect();
+    if v.len() < 1 << 12 {
+        v.sort_unstable();
+        return v;
+    }
+    // LSD radix on the key, 11-bit digits. Stable, and the indices start ascending, so
+    // ties stay in index order as in a `(key, index)` sort. A digit every key shares
+    // (the high bits of a narrow coordinate range) is skipped.
+    const BITS: u32 = 11;
+    const DIGITS: usize = 64usize.div_ceil(BITS as usize);
+    let digit = |k: u64, d: usize| ((k >> (d as u32 * BITS)) & ((1 << BITS) - 1)) as usize;
+    let mut counts = vec![[0u32; 1 << BITS]; DIGITS];
+    for &(k, _) in &v {
+        for (d, c) in counts.iter_mut().enumerate() {
+            c[digit(k, d)] += 1;
+        }
+    }
+    let mut tmp = vec![(0u64, 0u32); v.len()];
+    for (d, c) in counts.iter_mut().enumerate() {
+        if c.iter().any(|&n| n as usize == v.len()) {
+            continue;
+        }
+        let mut sum = 0;
+        for n in c.iter_mut() {
+            (*n, sum) = (sum, sum + *n);
+        }
+        for &e in &v {
+            let slot = &mut c[digit(e.0, d)];
+            tmp[*slot as usize] = e;
+            *slot += 1;
+        }
+        std::mem::swap(&mut v, &mut tmp);
+    }
+    debug_assert!(v.windows(2).all(|w| w[0] < w[1]));
+    v
 }
 
 pub(crate) fn find(parent: &mut [u32], mut x: u32) -> u32 {
@@ -196,8 +254,12 @@ pub(crate) fn id_cmp(a: ObjId, b: ObjId, s: &Strings) -> Ordering {
 pub fn global_labels(doc: &Document, names: &mut Names, out: &mut Vec<Name>) {
     let (s, labels) = (doc.strings(), doc.labels());
     let mut buf = String::new();
+    let global_key = s.find("global");
     for l in 0..labels.id.len() {
-        let flag = doc.pool().find_attr(s, labels.attrs[l], "global");
+        let flag = global_key.and_then(|key| {
+            let mut attrs = doc.pool().attrs(labels.attrs[l]);
+            attrs.find(|(k, _)| *k == key).map(|(_, v)| v)
+        });
         if flag
             .and_then(|v| v.first())
             .is_some_and(|v| s.get(*v) == "true")
@@ -257,8 +319,11 @@ pub fn connect(
     };
     let mut cn = CellNets::default();
     let mut buf = String::new();
+    // Attribute keys looked up once (a key the document never interned is on no row).
+    let (ignore_key, inherit_key) = (s.find("ignore"), s.find("inherit"));
 
     // ---- instance elements and ignore modes
+    names.reserve(ni);
     cn.elem_start.push(0);
     for i in 0..ni {
         let text = s.get(inst.name[i]);
@@ -272,10 +337,10 @@ pub fn connect(
             cn.elem_name.push(names.intern(text));
         }
         cn.elem_start.push(cn.elem_name.len() as u32);
-        let mode = doc
-            .pool()
-            .find_attr(s, inst.attrs[i], "ignore")
-            .and_then(|v| v.first());
+        let mode = ignore_key.and_then(|key| {
+            let mut attrs = doc.pool().attrs(inst.attrs[i]);
+            attrs.find(|(k, _)| *k == key).and_then(|(_, v)| v.first())
+        });
         cn.ignore.push(match mode.map(|v| s.get(*v)) {
             Some("true") => Ignore::True,
             Some("open") => Ignore::Open,
@@ -340,15 +405,13 @@ pub fn connect(
     for &(a, b) in &aliased {
         union(&mut parent, a, b);
     }
-    let mut xy: Vec<(u64, u32)> = (0..n).map(|i| (key(px[i], py[i]), i as u32)).collect();
-    xy.sort_unstable();
+    let xy = sorted_nodes(&px, &py);
     for pair in xy.windows(2) {
         if pair[0].0 == pair[1].0 {
             union(&mut parent, pair[0].1, pair[1].1);
         }
     }
-    let mut yx: Vec<(u64, u32)> = (0..n).map(|i| (key(py[i], px[i]), i as u32)).collect();
-    yx.sort_unstable();
+    let yx = sorted_nodes(&py, &px);
     for w in 0..nw {
         let (x1, y1, x2, y2) = (wires.x1[w], wires.y1[w], wires.x2[w], wires.y2[w]);
         let wn = 2 * w as u32;
@@ -467,7 +530,7 @@ pub fn connect(
         k.0.write(s, buf);
         if k.1 != NONE_PIN {
             buf.push('_');
-            buf.push_str(&k.1.to_string());
+            push_decimal(k.1, buf);
         }
     };
 
@@ -609,9 +672,9 @@ pub fn connect(
     let mut inh_slot_start = vec![0u32];
     let mut inh_slots: Vec<u32> = Vec::new();
     let mut tmp: Vec<Name> = Vec::new();
-    for i in 0..ni {
+    for i in (0..ni).filter(|_| inherit_key.is_some()) {
         for (k, vals) in doc.pool().attrs(inst.attrs[i]) {
-            if s.get(k) != "inherit" || vals.len() != 2 {
+            if Some(k) != inherit_key || vals.len() != 2 {
                 continue;
             }
             let (pin, net) = (s.get(vals[0]), s.get(vals[1]));
@@ -763,6 +826,7 @@ pub fn connect(
         }
     }
     cn.bit_name.reserve(nb);
+    names.reserve(nb);
     for b in 0..nb {
         let name = match best[b] {
             (_, n) if n != Name::NONE => n,
@@ -776,7 +840,7 @@ pub fn connect(
                 write_key(key, &mut buf);
                 if width > 1 {
                     buf.push('[');
-                    buf.push_str(&k.to_string());
+                    push_decimal(k, &mut buf);
                     buf.push(']');
                 }
                 names.intern(&buf)
@@ -864,17 +928,24 @@ pub fn connect(
     }
 
     // ---- findings
+    // A cell's floating pins share few names (G, S, B, …): format each detail once.
+    let mut unconnected: Vec<(Name, String)> = Vec::new();
     for k in 0..(labels0 - pins0) {
         if comp_nodes[comp[pins0 + k] as usize] == 1 {
             let i = pin_inst[k] as usize;
             let f = &ifaces[inst_iface[i] as usize];
             let pin = f.pin_name[pin_pin[k] as usize];
-            out.push(finding(
-                Code::W004,
-                inst.id[i],
-                pin,
-                format!("pin `{}` is unconnected", names.get(pin)),
-            ));
+            let detail = match unconnected.iter().find(|(p, _)| *p == pin) {
+                Some((_, d)) => d.clone(),
+                None => {
+                    let d = format!("pin `{}` is unconnected", names.get(pin));
+                    if unconnected.len() < 64 {
+                        unconnected.push((pin, d.clone()));
+                    }
+                    d
+                }
+            };
+            out.push(finding(Code::W004, inst.id[i], pin, detail));
         }
     }
     for b in 0..nb {
@@ -949,4 +1020,35 @@ pub fn connect(
     assert_eq!(cn.bit_name.len(), nb);
     assert_eq!(cn.conn_start.len(), ni + 1);
     cn
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sorted_nodes_equals_a_pair_sort() {
+        // Oracle: `sort_unstable` on (key, index). Wide, narrow (skipped digits) and
+        // duplicate-heavy coordinates, on both sides of the radix threshold.
+        let mut rng = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        for (n, range) in [
+            (0, 1u64),
+            (100, 7),
+            (5000, 1 << 32),
+            (9000, 40),
+            (20_000, 1 << 20),
+        ] {
+            let mut coord = || (next() % range) as i64 as i32;
+            let (a, b): (Vec<i32>, Vec<i32>) = (0..n).map(|_| (coord(), coord())).unzip();
+            let mut want: Vec<(u64, u32)> = (0..n).map(|i| (key(a[i], b[i]), i as u32)).collect();
+            want.sort_unstable();
+            assert_eq!(sorted_nodes(&a, &b), want, "n {n} range {range}");
+        }
+    }
 }
