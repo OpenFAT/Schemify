@@ -1,10 +1,19 @@
 {
   description = "Schemify: schematic capture for analog/mixed-signal IC design (xschem replacement)";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # extern/cktimg needs Zig 0.17 (build.zig.zon), which nixpkgs doesn't ship yet.
+    zig-overlay.url = "github:mitchellh/zig-overlay";
+    zig-overlay.inputs.nixpkgs.follows = "nixpkgs";
+  };
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      zig-overlay,
+    }:
     let
       systems = [
         "x86_64-linux"
@@ -132,6 +141,8 @@
               rust-analyzer
               # Plugins: wasm-ld (the nix rustc has no rust-lld); web glue.
               lld
+              # extern/cktimg (net2schem's layout engine, a Zig library with a C ABI).
+              zig-overlay.packages.${pkgs.stdenv.hostPlatform.system}."0.17.0"
               (wasmBindgenCli pkgs)
               # Golden corpus (tests/corpus): xschem to make goldens, tclsh for PDK generators.
               xschem

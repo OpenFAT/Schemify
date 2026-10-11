@@ -1,0 +1,3 @@
+[submodule "extern/cktimg"]
+	path = extern/cktimg
+	url = https://github.com/OmarSiwy/cktImg
