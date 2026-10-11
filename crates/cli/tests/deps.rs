@@ -1,6 +1,8 @@
 //! D39: the headless core links no GPU, window, text-shaping, accessibility or LaTeX code.
 //! Checked on the resolved dependency graph for every target platform, so a new dependency
-//! (or a feature that drags one in) fails here instead of in a size measurement.
+//! (or a feature that drags one in) fails here instead of in a size measurement. Not
+//! `--offline`: `--target all` needs every platform's crate sources, and a host build only
+//! fetched its own (CI); cargo fetches the rest.
 
 use std::process::Command;
 
@@ -45,7 +47,6 @@ fn the_core_links_no_editor_crate() {
     let out = Command::new(env!("CARGO"))
         .args([
             "tree",
-            "--offline",
             "-p",
             "schemify-cli",
             "-e",

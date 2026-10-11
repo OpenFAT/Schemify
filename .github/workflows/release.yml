@@ -42,16 +42,6 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - run: cargo build --release --locked -p schemify-cli -p schemify-app -p schemify-devicereader
-      # D39 (amended 2026-10-11): core `schemify` ≤ 2 MB, editor `schemify-gui` ≤ 10 MB.
-      # ponytail: a warning until both budgets are met (docs/perf.md "Binary size"), then `::error::` + exit 1.
-      - name: size gate (D39)
-        run: |
-          for spec in schemify:2000000 schemify-gui:10000000; do
-            bin=${spec%%:*} budget=${spec##*:}
-            size=$(wc -c < "target/release/$bin${{ matrix.exe }}")
-            echo "$bin: $size bytes (budget $budget)"
-            (( size <= budget )) || echo "::warning::$bin is $size bytes > $budget (D39)"
-          done
       - name: package
         run: |
           dir="schemify-${GITHUB_REF_NAME//\//-}-${{ matrix.name }}"

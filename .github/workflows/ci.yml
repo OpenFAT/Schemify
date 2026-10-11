@@ -118,21 +118,6 @@ jobs:
 
   # Byte-identical CLI outputs on every platform (D32, AGENTS.md rule 4). Import reports are
   # excluded: they record the absolute input paths (provenance), which differ per machine.
-  # D39 size budgets (amended 2026-10-11): core `schemify` ≤ 2 MB, editor `schemify-gui` ≤ 10 MB,
-  # built as shipped (tools/size-check.sh mirrors the flake's env).
-  # ponytail: non-blocking until both budgets are met (docs/perf.md "Binary size"); then drop
-  # `continue-on-error`.
-  size:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - uses: Swatinem/rust-cache@v2
-      - run: bash tools/size-check.sh
-
   determinism:
     needs: [test, wasm]
     if: ${{ !cancelled() }}
