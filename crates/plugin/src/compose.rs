@@ -3,10 +3,10 @@
 
 use std::collections::BTreeMap;
 
-use schemify_abi::{Kind, text};
+use schemify_abi::Kind;
 
 use crate::PluginId;
-use crate::intake::{Contributions, set_records};
+use crate::intake::{Contributions, function_row, lex, set_records};
 
 /// One record that survived composition.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,7 +88,10 @@ impl Composed {
 
 /// Composes every set of the plugins in `order` (plugins absent from `order` are ignored).
 /// For each key the record of the last plugin wins; it keeps the position where the key
-/// first appeared. Deterministic: same inputs, same output.
+/// first appeared. A `node X` or `remove X` record (a full redefinition) also drops every
+/// `set X …` record composed before it, as the UI composition does (a redefined node starts
+/// with no properties); a later `set X …` appears again, at its new position. Every replaced
+/// or dropped record is one [`Override`]. Deterministic: same inputs, same output.
 ///
 /// # Panics
 ///
@@ -120,11 +123,32 @@ pub fn compose(contributions: &Contributions, order: &[PluginId]) -> (Composed, 
         for scope in scopes {
             let mut index: BTreeMap<String, usize> = BTreeMap::new();
             let first = composed.records.len();
+            // Records of this group dropped by a redefinition (existence: filtered below).
+            let mut dropped: Vec<bool> = Vec::new();
             for &plugin in order {
                 let Some(body) = contributions.get(plugin, kind, scope) else {
                     continue;
                 };
                 for rec in set_records(kind, body).expect("validated at intake") {
+                    if let Some(node) = rec.key.strip_prefix("node ") {
+                        let prefix = format!("set {node} ");
+                        let stale: Vec<String> = index
+                            .range(prefix.clone()..)
+                            .take_while(|(k, _)| k.starts_with(&prefix))
+                            .map(|(k, _)| k.clone())
+                            .collect();
+                        for key in stale {
+                            let i = index.remove(&key).expect("collected from the index");
+                            dropped[i - first] = true;
+                            overrides.push(Override {
+                                kind,
+                                scope: scope.into(),
+                                key: key.into(),
+                                loser: composed.records[i].owner,
+                                winner: plugin,
+                            });
+                        }
+                    }
                     match index.get(&rec.key) {
                         Some(&i) => {
                             let won = &mut composed.records[i];
@@ -140,6 +164,7 @@ pub fn compose(contributions: &Contributions, order: &[PluginId]) -> (Composed, 
                         }
                         None => {
                             index.insert(rec.key.clone(), composed.records.len());
+                            dropped.push(false);
                             composed.records.push(ComposedRecord {
                                 kind,
                                 scope: scope.into(),
@@ -151,6 +176,14 @@ pub fn compose(contributions: &Contributions, order: &[PluginId]) -> (Composed, 
                     }
                 }
             }
+            assert_eq!(composed.records.len() - first, dropped.len());
+            let group = composed.records.split_off(first);
+            composed.records.extend(
+                group
+                    .into_iter()
+                    .zip(dropped)
+                    .filter_map(|(r, gone)| (!gone).then_some(r)),
+            );
             debug_assert_eq!(composed.records.len() - first, index.len());
         }
     }
@@ -163,14 +196,11 @@ fn functions(records: &[ComposedRecord]) -> Functions {
     let mut rows: Vec<(Box<str>, PluginId, u32, u8)> = records
         .iter()
         .map(|r| {
-            let head = r.text.lines().next().unwrap_or_default();
-            let (_, rest) = text::split_word(head).expect("validated at intake");
-            let mut v = text::values(rest);
-            let row = (v.need(), v.need_num::<u32>(), v.need_num::<u8>());
-            let (Ok(name), Ok(fn_id), Ok(arity)) = row else {
-                panic!("validated at intake: {head}")
+            let row = lex(&r.text, |d| function_row(d, 1));
+            let Ok(Ok((name, fn_id, arity))) = row else {
+                panic!("validated at intake: {}", r.text)
             };
-            (name.into(), r.owner, fn_id, arity)
+            (name, r.owner, fn_id, arity)
         })
         .collect();
     rows.sort_unstable_by(|a, b| a.0.cmp(&b.0));

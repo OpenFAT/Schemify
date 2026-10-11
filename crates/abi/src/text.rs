@@ -4,9 +4,10 @@
 //!
 //! Lexing never panics on any input; every failure is [`Code::Parse`].
 
-// ponytail: local subset of the format codec so `abi` stays a dependency-free leaf while
-// `schemify-format` is written in parallel. Switch these functions to re-exports of the
-// format crate once it lands; the fuzz tests here then become its conformance tests.
+// ponytail: a subset of the format codec kept here so `abi` stays a dependency-free leaf for
+// guests (every plugin links it). The host validates contribution sets and spawn argv with
+// `schemify-format` itself (`schemify_plugin::intake`); this lexer only encodes and decodes
+// events and output records. Re-export the format's once it has a public value lexer.
 
 use std::borrow::Cow;
 use std::fmt::Write as _;

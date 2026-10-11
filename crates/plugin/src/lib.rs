@@ -97,6 +97,11 @@ pub const TIMER_MS_MAX: u32 = 86_400_000;
 pub const CALL_ARGS_BYTES_MAX: usize = 64 << 10;
 /// Bytes of a rejected record echoed in [`Rejection`] and `Event::Rejected`.
 pub const REJECT_ECHO_BYTES: usize = 256;
+/// Aborted calls in a row (fuel, trap, bad output buffer; events and pure calls alike) after
+/// which a plugin is quarantined: dropped like an unload, without `Unload` (§2).
+pub const QUARANTINE_AFTER: u8 = 8;
+/// Events waiting, per plugin, behind its event running on a worker ([`Plugins::set_worker`]).
+pub const DEFERRED_MAX: usize = 1 << 10;
 
 /// Identifies a loaded plugin. Assigned at load, never reused in a session, so a stale id
 /// (an event for an unloaded plugin) is detected, never misdelivered.
@@ -403,6 +408,16 @@ struct Pending {
     echo: bool,
 }
 
+/// What a worker hands back ([`Plugins::set_worker`]): the plugin's store and the event's
+/// outcome and output, taken in by the next [`deliver`] after it finished.
+struct Done {
+    store: Store<Ctx>,
+    outcome: Result<(), Code>,
+    output: Vec<u8>,
+    event: Vec<u8>,
+    echo: bool,
+}
+
 /// The plugin table plus everything derived from plugins: contributions, composition,
 /// health. Row order is load order, which is the configured order (D8: last wins).
 pub struct Plugins {
@@ -414,6 +429,15 @@ pub struct Plugins {
     stores: Vec<Store<Ctx>>,
     exports: Vec<Exports>,
     pending: Vec<VecDeque<Pending>>,
+    /// Events that arrived while the row's event ran on a worker, in arrival order.
+    deferred: Vec<VecDeque<Pending>>,
+    /// Aborted calls in a row and the last abort's code (quarantine at [`QUARANTINE_AFTER`]).
+    strikes: Vec<(u8, Code)>,
+    /// Rows whose events run on a worker thread.
+    worker: Vec<bool>,
+    /// The row's event running on a worker; its store is then away and an idle one stands in.
+    jobs: Vec<Option<std::thread::JoinHandle<Done>>>,
+    jobs_done: u32,
     next_id: u32,
     contributions: Contributions,
     composed: Composed,
@@ -452,6 +476,11 @@ impl Plugins {
             stores: Vec::new(),
             exports: Vec::new(),
             pending: Vec::new(),
+            deferred: Vec::new(),
+            strikes: Vec::new(),
+            worker: Vec::new(),
+            jobs: Vec::new(),
+            jobs_done: 0,
             next_id: 1,
             contributions: Contributions::new(),
             composed: Composed::default(),
@@ -516,12 +545,19 @@ impl Plugins {
             bytes: load,
             echo: true,
         }]));
+        self.deferred.push(VecDeque::new());
+        self.strikes.push((0, Code::Trap));
+        self.worker.push(false);
+        self.jobs.push(None);
         debug_assert!(self.ids.len() <= PLUGINS_MAX && self.ids.len() == self.stores.len());
+        debug_assert!(self.jobs.len() == self.ids.len() && self.strikes.len() == self.ids.len());
         Ok(id)
     }
 
     /// Delivers `Event::Unload` (requests it makes are kept, contributions are not), then
-    /// drops the plugin, its memory and its contributions, and recomposes.
+    /// drops the plugin, its memory and its contributions, and recomposes. A plugin whose
+    /// event runs on a worker is waited for first (its outputs are taken in); events still
+    /// waiting for it are dropped.
     ///
     /// # Errors
     ///
@@ -538,19 +574,52 @@ impl Plugins {
     ) -> Result<(), Code> {
         assert_eq!(snapshots.check(), Ok(()), "snapshot columns disagree");
         let row = self.row(id).ok_or(Code::Gone)?;
+        self.poll_job(row, true, snapshots, queues);
+        self.worker[row] = false; // `Unload` runs here, on the caller's thread
         let mut unload = Vec::new();
         Event::Unload.encode(&mut unload).expect("Unload encodes");
         self.deliver_one(row, &unload, false, snapshots, queues);
-        self.ids.remove(row);
-        self.names.remove(row);
-        self.fuel.remove(row);
-        self.stores.remove(row);
-        self.exports.remove(row);
-        self.pending.remove(row);
-        self.contributions.remove_plugin(id);
-        self.recompose();
+        self.remove_row(row);
         debug_assert!(self.row(id).is_none());
         Ok(())
+    }
+
+    /// Runs `id`'s events on a worker thread from its next event on, so a long event (a
+    /// large import under a fuel override far above [`abi::FUEL_DEFAULT`]) never blocks the
+    /// caller's frame. Each such event completes in a later [`deliver`]: its outputs are
+    /// taken in there, before the plugin's next event, and are the same as if it had run on
+    /// the caller's thread (it reads a copy of the snapshots its event was delivered with).
+    /// Events for the plugin that arrive meanwhile wait in order (at most [`DEFERRED_MAX`];
+    /// more are dropped with an `E_SPACE` fault) and [`Plugins::call`] answers `E_DENIED`.
+    /// Composition stays in plugin order (D8) whenever the outputs arrive. On wasm32 (no
+    /// threads) this does nothing: events stay on the caller's thread.
+    ///
+    /// # Errors
+    ///
+    /// `E_GONE` if `id` is not loaded.
+    pub fn set_worker(&mut self, id: PluginId, on: bool) -> Result<(), Code> {
+        let row = self.row(id).ok_or(Code::Gone)?;
+        self.worker[row] = on && cfg!(not(target_arch = "wasm32"));
+        debug_assert!(!self.worker[row] || on);
+        Ok(())
+    }
+
+    /// Returns how many plugins have an event running on a worker; [`deliver`] takes each in
+    /// once it finished, so the caller keeps delivering (on a timer) while this is non-zero.
+    pub fn running(&self) -> usize {
+        self.jobs.iter().filter(|j| j.is_some()).count()
+    }
+
+    /// Returns whether `id` has an event running on a worker (its pure functions are
+    /// unavailable until it finishes).
+    pub fn busy(&self, id: PluginId) -> bool {
+        self.row(id).is_some_and(|row| self.jobs[row].is_some())
+    }
+
+    /// Returns a counter that advances (wrapping) whenever [`deliver`] or
+    /// [`Plugins::unload`] takes in an event that ran on a worker.
+    pub fn jobs_done(&self) -> u32 {
+        self.jobs_done
     }
 
     /// Calls pure expression function `fn_id` of `plugin` (D20) with `args` (line-record
@@ -559,9 +628,11 @@ impl Plugins {
     ///
     /// # Errors
     ///
-    /// `E_GONE` for an unloaded plugin; `E_SPACE` for args over [`CALL_ARGS_BYTES_MAX`];
-    /// whatever code the function returns; `E_FUEL` / `E_TRAP` / `E_RANGE` / `E_PARSE` when
-    /// the guest misbehaves (those are also recorded in [`Health`]).
+    /// `E_GONE` for an unloaded plugin; `E_DENIED` while its event runs on a worker
+    /// ([`Plugins::set_worker`]); `E_SPACE` for args over [`CALL_ARGS_BYTES_MAX`]; whatever
+    /// code the function returns; `E_FUEL` / `E_TRAP` / `E_RANGE` / `E_PARSE` when the guest
+    /// misbehaves (those are also recorded in [`Health`], and an abort counts toward
+    /// [`QUARANTINE_AFTER`]: the plugin may be gone after this call).
     pub fn call(
         &mut self,
         plugin: PluginId,
@@ -570,6 +641,9 @@ impl Plugins {
         result: &mut String,
     ) -> Result<(), Code> {
         let row = self.row(plugin).ok_or(Code::Gone)?;
+        if self.jobs[row].is_some() {
+            return Err(Code::Denied); // its store is on a worker
+        }
         if args.len() > CALL_ARGS_BYTES_MAX {
             return Err(Code::Space);
         }
@@ -590,10 +664,16 @@ impl Plugins {
             Err(code) => {
                 self.health
                     .fault(plugin, code, format!("call {fn_id} aborted"));
+                self.strike(row, code);
+                self.quarantine();
                 Err(code)
             }
-            Ok(Err(code)) => Err(code),
+            Ok(Err(code)) => {
+                self.strikes[row].0 = 0;
+                Err(code)
+            }
             Ok(Ok(())) => {
+                self.strikes[row].0 = 0;
                 let text = std::str::from_utf8(&self.scratch).map_err(|_| Code::Parse)?;
                 result.clear();
                 result.push_str(text);
@@ -641,7 +721,10 @@ impl Plugins {
     /// Returns whether host-originated events (`Load`, `Rejected`) wait for the next
     /// [`deliver`]; the app calls `deliver` when this or its own event table is non-empty.
     pub fn has_pending(&self) -> bool {
-        self.pending.iter().any(|p| !p.is_empty())
+        self.pending
+            .iter()
+            .chain(&self.deferred)
+            .any(|p| !p.is_empty())
     }
 
     fn row(&self, id: PluginId) -> Option<usize> {
@@ -649,7 +732,8 @@ impl Plugins {
     }
 
     /// Runs one event through one plugin and takes its outputs in. A fault (fuel, trap, bad
-    /// output buffer) discards every output and staged request of the event.
+    /// output buffer) discards every output and staged request of the event. A plugin on a
+    /// worker gets the event on its thread; a busy one gets it after its running event.
     fn deliver_one(
         &mut self,
         row: usize,
@@ -658,27 +742,51 @@ impl Plugins {
         snapshots: &mut Snapshots,
         queues: &mut RequestQueues,
     ) {
-        let id = self.ids[row];
+        if self.jobs[row].is_some() {
+            self.defer(row, event, echo);
+            return;
+        }
+        if self.worker[row] {
+            self.start_job(row, event, echo, snapshots, queues);
+            return;
+        }
         let store = &mut self.stores[row];
         let ctx = store.data_mut();
         assert!(!ctx.live && ctx.staged.is_empty() && snapshots.is_lent());
         std::mem::swap(&mut ctx.snapshots, snapshots);
         ctx.live = true;
-        ctx.room = runtime::Room {
-            io: IO_MAX.saturating_sub(queues.io.len()),
-            evals: EVALS_MAX.saturating_sub(queues.evals.len()),
-            logs: LOGS_MAX.saturating_sub(queues.logs.len()),
-        };
+        ctx.room = room(queues);
+        let mut output = std::mem::take(&mut self.scratch);
         let outcome = runtime::run_event(
             store,
             &self.exports[row],
             event,
             self.fuel[row],
-            &mut self.scratch,
+            &mut output,
         );
         let ctx = store.data_mut();
         ctx.live = false;
         std::mem::swap(&mut ctx.snapshots, snapshots);
+        self.take_in(row, outcome, event, &output, echo, snapshots, queues);
+        self.scratch = output;
+    }
+
+    /// Takes in what one event of row `row` produced: faults, then (unless it aborted) its
+    /// staged requests and output records; rejections are echoed per §8.
+    #[allow(clippy::too_many_arguments)]
+    fn take_in(
+        &mut self,
+        row: usize,
+        outcome: Result<(), Code>,
+        event: &[u8],
+        output: &[u8],
+        echo: bool,
+        snapshots: &Snapshots,
+        queues: &mut RequestQueues,
+    ) {
+        let id = self.ids[row];
+        let ctx = self.stores[row].data_mut();
+        assert!(!ctx.live, "taken in after the call returned");
         let staged = std::mem::take(&mut ctx.staged);
         for (code, detail) in ctx.faults.drain(..) {
             self.health.fault(id, code, detail);
@@ -689,14 +797,16 @@ impl Plugins {
                     .into_owned();
             self.health
                 .fault(id, code, format!("{kind}: aborted, outputs discarded"));
+            self.strike(row, code);
             return;
         }
+        self.strikes[row].0 = 0;
         queues.io.extend(staged.io);
         queues.evals.extend(staged.evals);
         queues.logs.extend(staged.logs);
         intake(
             id,
-            &self.scratch,
+            output,
             snapshots,
             &mut self.contributions,
             queues,
@@ -725,7 +835,146 @@ impl Plugins {
             .expect("Rejected encodes");
             self.pending[row].push_back(Pending { bytes, echo: false });
         }
-        debug_assert!(queues.io.len() <= IO_MAX && queues.logs.len() <= LOGS_MAX);
+        // A worker reserved its room when it started; the spine drains the queues every
+        // frame, so at most one more event's worth can sit on top.
+        debug_assert!(queues.io.len() <= 2 * IO_MAX && queues.logs.len() <= 2 * LOGS_MAX);
+    }
+
+    /// Queues an event behind row `row`'s running worker event.
+    fn defer(&mut self, row: usize, event: &[u8], echo: bool) {
+        assert!(self.jobs[row].is_some(), "only a busy plugin defers");
+        if self.deferred[row].len() >= DEFERRED_MAX {
+            let detail = "event dropped: too many wait for its worker".to_owned();
+            self.health.fault(self.ids[row], Code::Space, detail);
+            return;
+        }
+        self.deferred[row].push_back(Pending {
+            bytes: event.to_vec(),
+            echo,
+        });
+    }
+
+    /// Moves row `row`'s store to a worker thread that runs `event` with a copy of
+    /// `snapshots`; an idle store (same grants, no instance) stands in until it returns.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the OS refuses a thread (`std::thread::spawn`).
+    fn start_job(
+        &mut self,
+        row: usize,
+        event: &[u8],
+        echo: bool,
+        snapshots: &Snapshots,
+        queues: &RequestQueues,
+    ) {
+        assert!(self.jobs[row].is_none() && self.worker[row]);
+        let id = self.ids[row];
+        let grants = self.stores[row].data().grants.clone();
+        let idle = Store::new(&self.engine, Ctx::new(id, grants));
+        let mut store = std::mem::replace(&mut self.stores[row], idle);
+        let ctx = store.data_mut();
+        assert!(!ctx.live && ctx.staged.is_empty() && snapshots.is_lent());
+        ctx.snapshots = snapshots.clone();
+        ctx.live = true;
+        ctx.room = room(queues);
+        let exports = self.exports[row].clone();
+        let fuel = self.fuel[row];
+        let event = event.to_vec();
+        self.jobs[row] = Some(std::thread::spawn(move || {
+            let mut output = Vec::new();
+            let outcome = runtime::run_event(&mut store, &exports, &event, fuel, &mut output);
+            let ctx = store.data_mut();
+            ctx.live = false;
+            ctx.snapshots = Snapshots::placeholder();
+            Done {
+                store,
+                outcome,
+                output,
+                event,
+                echo,
+            }
+        }));
+    }
+
+    /// Takes in row `row`'s worker event once it finished (`wait`: blocks until it does).
+    /// Returns whether one was taken in.
+    ///
+    /// # Panics
+    ///
+    /// Re-raises a panic of the worker (a host bug: no guest input panics the host).
+    fn poll_job(
+        &mut self,
+        row: usize,
+        wait: bool,
+        snapshots: &Snapshots,
+        queues: &mut RequestQueues,
+    ) -> bool {
+        match &self.jobs[row] {
+            Some(job) if wait || job.is_finished() => {}
+            _ => return false,
+        }
+        let job = self.jobs[row].take().expect("matched above");
+        let done = match job.join() {
+            Ok(done) => done,
+            Err(panic) => std::panic::resume_unwind(panic),
+        };
+        self.stores[row] = done.store;
+        self.jobs_done = self.jobs_done.wrapping_add(1);
+        self.take_in(
+            row,
+            done.outcome,
+            &done.event,
+            &done.output,
+            done.echo,
+            snapshots,
+            queues,
+        );
+        debug_assert!(self.jobs[row].is_none());
+        true
+    }
+
+    /// Counts one aborted call of row `row`.
+    fn strike(&mut self, row: usize, code: Code) {
+        let s = &mut self.strikes[row];
+        s.0 = s.0.saturating_add(1);
+        s.1 = code;
+    }
+
+    /// Drops every plugin with [`QUARANTINE_AFTER`] aborted calls in a row, recording why.
+    fn quarantine(&mut self) {
+        for row in (0..self.ids.len()).rev() {
+            let (count, code) = self.strikes[row];
+            if count < QUARANTINE_AFTER {
+                continue;
+            }
+            let id = self.ids[row];
+            let detail = format!(
+                "{} quarantined: {count} aborted calls in a row, the last {code:?}",
+                self.names[row]
+            );
+            self.health.fault(id, Code::Gone, detail);
+            self.remove_row(row);
+        }
+        debug_assert!(self.strikes.iter().all(|s| s.0 < QUARANTINE_AFTER));
+    }
+
+    /// Drops row `row` and its contributions, and recomposes. A worker still running for it
+    /// is detached; its result is dropped when it ends.
+    fn remove_row(&mut self, row: usize) {
+        let id = self.ids.remove(row);
+        self.names.remove(row);
+        self.fuel.remove(row);
+        self.stores.remove(row);
+        self.exports.remove(row);
+        self.pending.remove(row);
+        self.deferred.remove(row);
+        self.strikes.remove(row);
+        self.worker.remove(row);
+        self.jobs.remove(row);
+        self.contributions.remove_plugin(id);
+        self.recompose();
+        debug_assert!(self.row(id).is_none() && self.jobs.len() == self.ids.len());
     }
 
     fn recompose(&mut self) {
@@ -739,12 +988,23 @@ impl Plugins {
     }
 }
 
-/// The frame-spine transform: delivers queued host events (`Load`, `Rejected`) and then
+/// Queue room an event may fill through imports; they refuse with `E_SPACE` at zero.
+fn room(queues: &RequestQueues) -> runtime::Room {
+    runtime::Room {
+        io: IO_MAX.saturating_sub(queues.io.len()),
+        evals: EVALS_MAX.saturating_sub(queues.evals.len()),
+        logs: LOGS_MAX.saturating_sub(queues.logs.len()),
+    }
+}
+
+/// The frame-spine transform: takes in the events that finished on workers, delivers
+/// queued host events (`Load`, `Rejected`) and the events that waited for a worker, then
 /// `events` in order (broadcasts to every plugin in composition order), takes each
-/// plugin's outputs into `queues`, and recomposes contributions if any set changed.
+/// plugin's outputs into `queues`, quarantines plugins that aborted [`QUARANTINE_AFTER`]
+/// calls in a row, and recomposes contributions if any set changed.
 ///
 /// Never fails: every plugin misbehaviour is a declared [`Fault`] in [`Plugins::health`],
-/// and an event for an unloaded plugin is an `E_GONE` fault. `snapshots` is borrowed
+/// and an event for an unloaded (or quarantined) plugin is an `E_GONE` fault. `snapshots` is borrowed
 /// mutably only to lend it to each plugin's store; it is returned unchanged.
 ///
 /// # Panics
@@ -763,8 +1023,12 @@ pub fn deliver(
     assert_eq!(snapshots.check(), Ok(()), "snapshot columns disagree");
     assert!(events.len() <= EVENTS_MAX);
     for row in 0..plugins.ids.len() {
-        let pending = std::mem::take(&mut plugins.pending[row]);
-        for p in pending {
+        plugins.poll_job(row, false, snapshots, queues);
+        // Host events first, then the events that waited for the worker, in arrival order;
+        // whatever meets a new worker event waits again, in the same order.
+        let mut queue = std::mem::take(&mut plugins.pending[row]);
+        queue.append(&mut plugins.deferred[row]);
+        for p in queue {
             plugins.deliver_one(row, &p.bytes, p.echo, snapshots, queues);
         }
     }
@@ -786,6 +1050,7 @@ pub fn deliver(
             },
         }
     }
+    plugins.quarantine();
     plugins.recompose();
     debug_assert!(plugins.composed_epoch == plugins.contributions.epoch());
 }

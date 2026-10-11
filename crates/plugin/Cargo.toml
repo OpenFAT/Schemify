@@ -11,6 +11,8 @@ workspace = true
 
 [dependencies]
 schemify-abi.workspace = true
+# Contribution sets and spawn argv are lexed by the document reader (format spec §2).
+schemify-format.workspace = true
 wasmi.workspace = true
 
 [dev-dependencies]

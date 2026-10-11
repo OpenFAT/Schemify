@@ -4,7 +4,7 @@
 use schemify_plugin::abi::{Code, Event, FUEL_DEFAULT, Kind, Level, Table, col};
 use schemify_plugin::{
     EvalRequest, FAULTS_MAX, Fault, IoOp, IoRequest, LOGS_MAX, LogEntry, PENDING_MAX, PLUGINS_MAX,
-    PluginEvents, PluginId, Plugins, RequestQueues, Snapshots, deliver,
+    PluginEvents, PluginId, Plugins, QUARANTINE_AFTER, RequestQueues, Snapshots, deliver,
 };
 
 const HELLO: &[u8] = include_bytes!("fixtures/hello.wasm");
@@ -618,4 +618,107 @@ fn host_work_is_charged_as_fuel() {
         assert_eq!(World::codes(&faults), codes, "fuel {fuel}");
         assert_eq!(w.queues.logs.len(), logs, "fuel {fuel}");
     }
+}
+
+/// Quarantine (§2): a plugin whose calls abort `QUARANTINE_AFTER` times in a row is dropped
+/// with a health entry and its id stays gone; one good event in between resets the count.
+#[test]
+fn a_plugin_that_keeps_aborting_is_quarantined() {
+    let trap = r#"
+        (memory (export "memory") 1)
+        (func (export "schemify_abi") (result i32) i32.const 1)
+        (func (export "schemify_alloc") (param i32) (result i32) i32.const 8)
+        (func (export "schemify_on_event") (param i32 i32) (result i64) unreachable)"#;
+    let mut w = World::new();
+    let bad = w.load("bad", BAD, &[], FUEL_DEFAULT);
+    let trapper = w.load("trap", &module(trap), &[], FUEL_DEFAULT); // `Load` aborts: 1
+    for _ in 2..QUARANTINE_AFTER {
+        w.send(Some(trapper), Event::Timer { id: 1 });
+    }
+    assert_eq!(
+        w.plugins.ids(),
+        [bad, trapper],
+        "one abort short: still loaded"
+    );
+    w.send(Some(trapper), Event::Timer { id: 1 });
+    assert_eq!(w.plugins.ids(), [bad]);
+    let last = w.plugins.health().faults().back().cloned().unwrap();
+    assert_eq!((last.plugin, last.code), (trapper, Code::Gone));
+    assert!(last.detail.contains("quarantined"), "{}", last.detail);
+    w.send(Some(trapper), Event::Timer { id: 1 });
+    let last = w.plugins.health().faults().back().cloned().unwrap();
+    assert_eq!(
+        (last.plugin, last.code),
+        (trapper, Code::Gone),
+        "stays gone"
+    );
+
+    for _ in 0..2 {
+        for _ in 1..QUARANTINE_AFTER {
+            assert_eq!(World::codes(&w.command(bad, "bad.recurse")), [Code::Trap]);
+        }
+        assert!(
+            w.command(bad, "bad.grow").is_empty(),
+            "a good event resets the count"
+        );
+    }
+    assert_eq!(w.plugins.ids(), [bad]);
+}
+
+/// Worker events (`set_worker`): the same outputs, faults and composition as on the caller's
+/// thread, taken in by a later delivery, in event order; the plugin's pure calls are denied
+/// while one runs; `unload` waits for it.
+#[test]
+fn worker_events_match_synchronous_ones() {
+    fn script(w: &mut World, id: PluginId) {
+        let run = Event::Command {
+            name: "count_nets.run",
+            args: "",
+        };
+        w.send(Some(id), run);
+        w.send(None, Event::DocChanged { doc: 1, epoch: 3 });
+        let inspect = Event::Command {
+            name: "hello.inspect",
+            args: "",
+        };
+        w.send(Some(id), inspect);
+    }
+    fn faults(w: &World) -> Vec<Fault> {
+        w.plugins.health().faults().iter().cloned().collect()
+    }
+    let mut sync = World::new();
+    let a = sync.load("hello", HELLO, &[], FUEL_DEFAULT);
+    script(&mut sync, a);
+
+    let mut bg = World::new();
+    let b = bg.plugins.load("hello", HELLO, &[], FUEL_DEFAULT).unwrap();
+    assert_eq!(a, b, "same id sequence");
+    bg.plugins.set_worker(b, true).unwrap();
+    bg.frame();
+    assert!(bg.plugins.busy(b) && bg.plugins.running() == 1);
+    assert!(
+        bg.plugins.contributions().is_empty(),
+        "taken in by a later delivery"
+    );
+    let mut out = String::new();
+    assert_eq!(bg.plugins.call(b, 0, "", &mut out), Err(Code::Denied));
+    script(&mut bg, b);
+    for _ in 0..10_000 {
+        if bg.plugins.running() == 0 && !bg.plugins.has_pending() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        bg.frame();
+    }
+    assert_eq!(bg.plugins.running(), 0);
+    assert_eq!(bg.plugins.jobs_done(), 4, "Load and three events");
+    assert_eq!(bg.plugins.composed(), sync.plugins.composed());
+    assert_eq!(bg.queues, sync.queues);
+    assert_eq!(faults(&bg), faults(&sync));
+
+    bg.send(None, Event::DocChanged { doc: 1, epoch: 4 });
+    assert!(bg.plugins.busy(b));
+    bg.plugins.unload(b, &mut bg.snap, &mut bg.queues).unwrap();
+    assert!(bg.plugins.ids().is_empty() && bg.plugins.contributions().is_empty());
+    assert_eq!(bg.plugins.running(), 0);
 }
