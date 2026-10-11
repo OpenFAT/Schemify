@@ -153,10 +153,4 @@ xschem menu items and keys with no meaning in Schemify, removed from the default
 
 ## Testing infrastructure
 
-- sky130 model files aren't fetched (open_pdks builds them); the ngspice second oracle for sky130 needs `volare`, then a nightly step for `ngspice_results_agree`.
-- **plugins/build.sh is not byte-reproducible** (`hello`, `gmid_stub`, … differ between rebuilds and machines), so CI cannot check that the committed `.wasm` assets match their sources. Make it reproducible (pinned toolchain in the build, `--remap-path-prefix`, no host paths in custom sections), then add the diff to the `plugins` job.
-- Fuzz-corpus replay at the merge tier: the nightly corpora live in the actions cache and artifacts, not the repo. Check in minimized corpora (`cargo fuzz cmin`) and replay them in `ci.yml`.
-- Coverage ratchet (`cargo-llvm-cov`) is not wired (TESTING.md nightly tier).
 - **render** (web): no WebGPU device in headless Chrome (CI, SwiftShader) means a blank canvas; the browser smoke test can only check that the editor starts (canvas created, no trap). A `vello_cpu` fallback when no adapter is found would let it compare pixels against the native goldens.
-- `tests/perf/baseline.txt` is measured on GitHub's shared `ubuntu-latest` runners; if the 10% gate proves noisy there, gate on best-of-N medians or a self-hosted runner.
-- Release builds: no macOS x86_64 binary (only Apple-silicon runners); the Linux binary links the build runner's glibc.

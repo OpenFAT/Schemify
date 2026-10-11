@@ -154,8 +154,9 @@ jobs:
           exit $status
 
   # Guest plugins (Linux, Nix: Zig 0.17 for extern/cktimg, wasm-ld). build.sh fails when a module
-  # reaches its size limit (200 KB; cktimg 700 KB). The rebuilt modules are not diffed against
-  # the committed ones: build.sh is not byte-reproducible yet (BACKLOG § Testing).
+  # reaches its size limit (200 KB; cktimg 700 KB). build.sh is byte-reproducible, so the last
+  # step fails when a committed module differs from its rebuild (a plugin source changed
+  # without its module, or a module built elsewhere): commit the `plugin-guests` artifact.
   plugins:
     runs-on: ubuntu-latest
     steps:
@@ -183,6 +184,17 @@ jobs:
           name: plugin-fixtures
           path: crates/app/tests/fixtures/ota/plugins/*.wasm
           if-no-files-found: error
+      # Every rebuilt module at its repository path (`gh run download <run> -n plugin-guests`
+      # from the repository root restores them in place).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-guests
+          path: |
+            crates/plugin/tests/fixtures/*.wasm
+            crates/app/assets/*.wasm
+            crates/app/tests/fixtures/ota/plugins/*.wasm
+            plugins/cktimg/cktimg.wasm
+          if-no-files-found: error
       # The crates with native tests (rlib + the built guest driven through wasmi); the others
       # are cdylib guests whose `guest` module exists only on wasm32.
       - name: plugins workspace tests (native + built guests)
@@ -191,6 +203,14 @@ jobs:
           -p gmid-lut -p cktimg --no-fail-fast
       - name: host tests against the rebuilt guests
         run: nix develop -c cargo test -p schemify-plugin -p schemify-app --no-fail-fast
+      - name: committed modules equal the rebuild (reproducible guests)
+        if: ${{ !cancelled() }}
+        run: |
+          changed="$(git status --porcelain -- '*.wasm')"
+          [ -z "$changed" ] && exit 0
+          echo "$changed"
+          echo "::error::the committed plugin modules differ from plugins/build.sh output: commit the plugin-guests artifact of this run"
+          exit 1
 
   flake:
     runs-on: ubuntu-latest

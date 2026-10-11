@@ -1,0 +1,3 @@
+# Workspace line coverage floor in percent (tests/coverage/ratchet.sh), from the nightly
+# `coverage` job on GitHub ubuntu-latest. Only ever raised.
+0

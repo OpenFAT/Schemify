@@ -2,8 +2,8 @@
 # the perf tests print. Measured on GitHub `ubuntu-latest`, the runner class that runs the gate;
 # never on a developer machine. Each value is the slowest of the calibration runs below, so
 # run-to-run noise stays inside the 10% margin.
-# Re-bless after an intended change: take the `PERF` lines of the nightly `perf-results`
-# artifact (fastest of its two rounds per metric), drop the prefix, and note the run here.
+# Re-bless after an intended change: take the median column `tests/perf/gate.sh` prints for the
+# nightly `perf-results` artifact (median over its rounds per metric) and note the run here.
 # Calibration runs: 38151805246 (2026-10-11).
 app.edit_100k_ms 148.338
 app.open_100k_ms 235.188

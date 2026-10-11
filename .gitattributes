@@ -9,3 +9,5 @@
 *.shprim merge=schemify
 *.shcomp merge=schemify
 *.shbench merge=schemify
+# Fuzz corpora are exact bytes (CRLF, NUL, invalid UTF-8 are the point): never normalize.
+crates/*/fuzz/corpus/** binary

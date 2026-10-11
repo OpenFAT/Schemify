@@ -16,6 +16,8 @@ jobs:
   mutants:
     strategy:
       fail-fast: false
+      # Hours-long shards share the account's job concurrency with every PR's CI.
+      max-parallel: 5
       matrix:
         crate: [format, expr, doc, elab, netlist]
         # ~1100 mutants per crate (format, doc, elab): three shards keep each under the 5 h cap.
