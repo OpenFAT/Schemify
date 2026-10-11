@@ -81,10 +81,16 @@ editable text field.
 ## 4. Values and the frame
 
 - Values are `elab::CellState` of the active level's document, built when the page needs it
-  (the document has doc blocks), incrementally recomputed with the ops of each commit, and
-  rebuilt after an undo/redo, an edit to another document, a plugin composition change, or a
-  plugin command / I/O completion (a pure function may answer differently after its plugin
-  loaded data).
+  (the document has doc blocks), incrementally recomputed with the ops of each commit (an
+  undo or redo recomputes over the ops of the entry it reverts, while that entry is among the
+  last 64 commits), and rebuilt after a plugin composition change, a plugin command / I/O
+  completion (a pure function may answer differently after its plugin loaded data), or an
+  edit to a cell the document instantiates (its interface may have changed).
+- Values are kept for every document shown: switching tabs or hierarchy levels parks the state
+  of the document left (at most 8 parked, oldest dropped) and takes back the parked state of
+  the one shown, still incremental: ops committed to a parked document are queued on its
+  state; an edit to a cell it instantiates, a plugin change or closing it drops it. D20 caches
+  of a document are written while it is active (§6).
 - In the same frame as an edit: `doc::apply_edits` → recompute → D20 write-back (§6) → UI
   compose (the page) → scene build. Symbol texts (`stext W={eng(W)}`) of instances render the
   evaluated param values, so `W = W_in` shows the var's value on the canvas.
@@ -96,11 +102,15 @@ editable text field.
 
 A ```` ```plot ```` fence holds one calculator-mode expression ([expr.md](expr.md), e.g.
 `db(v(out))`). The page splits the prose block at the fence and puts a graph slot there, drawn
-from the editor's current results when the page's cell is their bench or the bench instantiates
-it directly: the selected job's raw file (job 0 after a run), on the last dataset that evaluates
-the expression, autoscaled, as an embedded `render::waves` pane (a `graph` node of style
-`docs-graph`, 170 px). Without results the slot says `no results yet`; an expression that does
-not evaluate, or reduces to a number, shows why instead of a graph.
+from the editor's current results when the page's cell is their bench, the bench instantiates
+it (by file stem, also when results were reloaded), or it is any cell below the bench among the
+open documents (a run opens every cell it reaches). The slot is an embedded `render::waves`
+pane (a `graph` node of style `docs-graph`, 170 px), autoscaled, with one trace per finished job
+of the run: every sweep point, corner and Monte Carlo sample (the selected job's first, job 0
+after a run; at most 16 jobs; an optimizer run shows the selected job only), each on the last
+dataset of its job's raw file that evaluates the expression. Without results the slot says
+`no results yet`; an expression that does not evaluate, or reduces to a number on the selected
+job, shows why instead of a graph.
 
 A staged edit on the page's document (an optimizer result, a plugin's `stage`) adds a banner at
 the top (`docs.staged`, its label, Accept and Reject) and, beside each var it changes, the
@@ -109,20 +119,28 @@ objects it changes.
 
 ## 6. D20 cache write-back
 
-- **Which vars:** an own var whose expression calls plugin functions (`ns.f(…)`), whose current
-  value a loaded plugin computed (not unverified, not an error) and is a number or `bool`.
-- **What:** `cached <value> <hash>` on the var: `<value>` is the canonical text (expr §7);
-  `<hash>` is the content hash of the plugin serving the functions: the first 8 bytes of the
-  sha256 of its wasm module, as 16 lowercase hex digits. Functions from several plugins: the
-  same hash over their hashes concatenated in load order.
+- **Which records:** an own `param` (its default, or its `computed` expression) or an own
+  `var` whose expression calls plugin functions (`ns.f(…)`), whose current value a loaded
+  plugin computed (not unverified, not an error) and is a number, `bool` or `str` (not `cnum`).
+- **What:** `cached <value> <hash>` on the record: `<value>` is the canonical text (expr §7),
+  a `str` quoted with the format §2 escapes (`"tt"`) so it never reads back as a number or a
+  bool; `<hash>` is the content hash of the plugin serving the functions: the first 8 bytes of
+  the sha256 of its wasm module, as 16 lowercase hex digits. Functions from several plugins:
+  the same hash over their hashes concatenated in load order.
 - **When:** whenever the stored pair differs from the computed one. After a docs-page edit the
-  write joins that edit's undo entry (one edit, one undo: the app undoes the edit and recommits
-  it with the cache ops appended). Otherwise (a file opened with stale caches, a plugin with a
-  new hash) it is its own transaction, `update plugin cache`; it waits in a frame that undid or
-  redid, because a commit would clear the redo stack.
+  write extends that edit's undo entry and its journal record ([edits.md](edits.md) §1
+  `extend`): one edit, one undo, no extra journal records (the edit's record is written out
+  after its cache ops joined it, in the same frame). Otherwise (a file opened with stale
+  caches, a plugin with a new hash, an edit elsewhere) it is its own transaction, `update
+  plugin cache`; it waits in a frame that undid or redid, because a commit would clear the
+  redo stack.
+- **A cache belongs to its expression:** every transaction the editor applies that changes a
+  var's expression or a param's default or `computed` expression without touching its
+  `cached` also removes that `cached` (a `put` has it stripped from the replacement), so a
+  stale value never stands in for a new expression.
 - **Without the plugin:** the cached value stands in for the whole expression and is marked
-  unverified, as are its dependents (D20); nothing is written. A var whose expression changed
-  has no cache (§3) and shows `X006` until the plugin is back.
+  unverified, as are its dependents (D20); nothing is written. A record whose expression
+  changed has no cache and shows `X006` until the plugin is back.
 - **Changed plugin:** the loaded plugin recomputes every value; the differing hash makes the
   pair differ, so every cache is rewritten.
 

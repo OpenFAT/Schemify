@@ -66,18 +66,20 @@ impl Program {
     /// for every `ns.f(args)`, with `slot` indexing [`Program::plugin_fns`].
     /// It must be pure; a missing plugin should return `X006` (callers holding
     /// a D20 cached value substitute it for the whole expression instead of
-    /// evaluating). Results must be finite; strings must be `'static`.
+    /// evaluating). Results must be finite; a result is copied in at once, so it may own its
+    /// text ([`PluginValue`]).
     ///
     /// # Errors
     /// As [`Program::eval`], plus whatever `plugins` returns.
-    pub fn eval_with<'s, P>(
+    pub fn eval_with<'s, P, R>(
         &self,
         inputs: &[Value<'_>],
         plugins: &mut P,
         scratch: &'s mut Scratch,
     ) -> Result<Value<'s>, Error>
     where
-        P: FnMut(u32, &[Value<'_>]) -> Result<Value<'static>, Error>,
+        P: FnMut(u32, &[Value<'_>]) -> Result<R, Error>,
+        R: PluginValue,
     {
         assert_eq!(
             self.mode,
@@ -96,6 +98,20 @@ impl Program {
     }
 }
 
+/// What a plugin callback returns ([`Program::eval_with`], D20): a value the evaluator copies
+/// in as soon as the callback returns, so it may own its text (a plugin's string answer).
+/// [`Value`]`<'static>` is one.
+pub trait PluginValue {
+    /// The value, borrowed for the copy.
+    fn value(&self) -> Value<'_>;
+}
+
+impl PluginValue for Value<'static> {
+    fn value(&self) -> Value<'_> {
+        *self
+    }
+}
+
 /// A plugin callback that reports every call as a missing plugin (`X006`).
 pub(crate) fn no_plugins(
     prog: &Program,
@@ -110,7 +126,7 @@ pub(crate) fn no_plugins(
 }
 
 /// Runs `prog.ops[start..end]` to one value. Clears the scratch stack and strings.
-pub(crate) fn run<P>(
+pub(crate) fn run<P, R>(
     prog: &Program,
     start: u32,
     end: u32,
@@ -119,7 +135,8 @@ pub(crate) fn run<P>(
     s: &mut Scratch,
 ) -> Result<V, Error>
 where
-    P: FnMut(u32, &[Value<'_>]) -> Result<Value<'static>, Error>,
+    P: FnMut(u32, &[Value<'_>]) -> Result<R, Error>,
+    R: PluginValue,
 {
     assert!(
         start < end && end as usize <= prog.ops.len(),
@@ -235,7 +252,9 @@ where
             OpKind::Plugin => {
                 let base = s.stack.len() - op.sub as usize;
                 let r = call_plugin(plugin, op.arg, &s.stack[base..], &s.strs);
-                let v = r.and_then(|r| load_value(&r, &mut s.strs)).map_err(at)?;
+                let v = r
+                    .and_then(|r| load_value(&r.value(), &mut s.strs))
+                    .map_err(at)?;
                 s.stack.truncate(base);
                 s.stack.push(v);
             }
@@ -250,14 +269,15 @@ fn pop(stack: &mut Vec<V>) -> V {
     stack.pop().expect("compiled code keeps the stack balanced")
 }
 
-pub(crate) fn call_plugin<P>(
+pub(crate) fn call_plugin<P, R>(
     plugin: &mut P,
     slot: u32,
     args: &[V],
     strs: &[u8],
-) -> Result<Value<'static>, Error>
+) -> Result<R, Error>
 where
-    P: FnMut(u32, &[Value<'_>]) -> Result<Value<'static>, Error>,
+    P: FnMut(u32, &[Value<'_>]) -> Result<R, Error>,
+    R: PluginValue,
 {
     assert!(
         args.len() <= MAX_PLUGIN_ARGS,

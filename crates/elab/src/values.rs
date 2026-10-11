@@ -8,7 +8,7 @@
 //! with arithmetic, which is what keeps a 10^5-instance cell cheap to build.
 
 use schemify_expr::{
-    Code as XCode, Error as XError, Mode, Program, Scratch, Span, Template, Value,
+    Code as XCode, Error as XError, Mode, PluginValue, Program, Scratch, Span, Template, Value,
 };
 
 /// A scope reference: param `k` is `k`, var `v` is `VAR | v`.
@@ -99,8 +99,12 @@ impl Val {
         }
     }
 
-    /// Parses a `cached <value>` attribute (D20): a number, `true`/`false`, else text.
+    /// Parses a `cached <value>` attribute (D20): a quoted string ([`cached_text`]), a
+    /// number, `true`/`false`, else the text itself.
     pub(crate) fn parse_cached(text: &str) -> Val {
+        if let Some(s) = unquote(text) {
+            return Val::Str(s.into());
+        }
         match text {
             "true" => Val::Bool(true),
             "false" => Val::Bool(false),
@@ -111,6 +115,65 @@ impl Val {
             },
         }
     }
+}
+
+impl PluginValue for Val {
+    /// # Panics
+    ///
+    /// Panics on the two error states: a plugin result is a value (the registry reports a
+    /// failure as `Err`).
+    fn value(&self) -> Value<'_> {
+        Val::value(self).expect("a plugin result is a value")
+    }
+}
+
+/// Appends the `cached` text of `v` (D20, docs-page §6): its canonical text, a string quoted
+/// with the format §2 escapes so it never reads back as a number or a bool.
+///
+/// # Panics
+///
+/// Panics on the error states and on `cnum` (neither is cached).
+pub fn cached_text(v: &Val, out: &mut String) {
+    let start = out.len();
+    match v {
+        Val::Str(s) => {
+            out.push('"');
+            for c in s.chars() {
+                match c {
+                    '"' => out.push_str(r#"\""#),
+                    '\\' => out.push_str(r"\\"),
+                    '\n' => out.push_str(r"\n"),
+                    '\t' => out.push_str(r"\t"),
+                    c => out.push(c),
+                }
+            }
+            out.push('"');
+        }
+        Val::Cnum(..) => panic!("a cnum is not cached"),
+        _ => v.write_text(out),
+    }
+    debug_assert!(out.len() > start);
+}
+
+/// The text of a quoted `cached` string (the inverse of [`cached_text`]); `None` when `t` is
+/// not one.
+fn unquote(t: &str) -> Option<String> {
+    let body = t.strip_prefix('"')?.strip_suffix('"')?;
+    let mut out = String::with_capacity(body.len());
+    let mut chars = body.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next()? {
+            'n' => out.push('\n'),
+            't' => out.push('\t'),
+            e @ ('"' | '\\') => out.push(e),
+            _ => return None,
+        }
+    }
+    Some(out)
 }
 
 /// How a program's text is read (format spec §6).
@@ -233,9 +296,26 @@ impl Progs {
 }
 
 /// The plugin function registry (D20): returns `None` when `"ns.f"` is not loaded,
-/// else the call's result. Must be pure. Implemented for every matching closure.
-pub trait Funcs: FnMut(&str, &[Value<'_>]) -> Option<Result<Value<'static>, XError>> {}
-impl<F: FnMut(&str, &[Value<'_>]) -> Option<Result<Value<'static>, XError>>> Funcs for F {}
+/// else the call's result: a [`Value`]`<'static>` (numbers, bools) or an owned [`Val`]
+/// (strings too). Must be pure. Implemented for every matching closure.
+pub trait Funcs {
+    /// What a call returns.
+    type Out: PluginValue;
+    /// Calls `name` with `args`; `None` when no loaded plugin exports it.
+    fn call(&mut self, name: &str, args: &[Value<'_>]) -> Option<Result<Self::Out, XError>>;
+}
+
+impl<F, R> Funcs for F
+where
+    F: FnMut(&str, &[Value<'_>]) -> Option<Result<R, XError>>,
+    R: PluginValue,
+{
+    type Out = R;
+
+    fn call(&mut self, name: &str, args: &[Value<'_>]) -> Option<Result<R, XError>> {
+        self(name, args)
+    }
+}
 
 /// A registry with no plugin functions loaded: every `ns.f(...)` falls back to its
 /// record's `cached` value (unverified) or fails with `X006`.
@@ -249,13 +329,13 @@ fn plugin<F: Funcs>(
     args: &[Value<'_>],
     funcs: &mut F,
     missing: &mut bool,
-) -> Result<Value<'static>, XError> {
+) -> Result<F::Out, XError> {
     let (ns, f) = prog
         .plugin_fns()
         .nth(slot as usize)
         .expect("slot from this program");
     let name = format!("{ns}.{f}");
-    match funcs(&name, args) {
+    match funcs.call(&name, args) {
         Some(r) => r,
         None => {
             *missing = true;
@@ -318,14 +398,47 @@ mod tests {
         );
         let (v, u) = p.eval(without, &inputs, &mut no_funcs, &mut s, &mut t);
         assert!(matches!(v, Val::Err(e) if e.code == XCode::X006) && !u);
-        let mut loaded = |name: &str, args: &[Value<'_>]| {
-            assert_eq!(name, "gmid.width");
-            let Value::Num(x) = args[0] else { panic!() };
-            Some(Ok(Value::Num(x * 3.0)))
-        };
+        let mut loaded =
+            |name: &str, args: &[Value<'_>]| -> Option<Result<Value<'static>, XError>> {
+                assert_eq!(name, "gmid.width");
+                let Value::Num(x) = args[0] else { panic!() };
+                Some(Ok(Value::Num(x * 3.0)))
+            };
         assert_eq!(
             p.eval(with, &inputs, &mut loaded, &mut s, &mut t),
             (Val::Num(3.0), false)
+        );
+    }
+
+    /// A plugin may answer with a string (an owned [`Val`]); its D20 cache is written quoted
+    /// and reads back as that string, even when it looks like a number, and stands in for a
+    /// missing plugin like any other cached value.
+    #[test]
+    fn plugin_strings_are_owned_and_cached_quoted() {
+        let mut p = Progs::default();
+        let a = p.push("pdk.corner(w) + \"!\"", Syntax::Expr, None, lookup);
+        let (mut s, mut t) = (Scratch::default(), String::new());
+        let mut strings = |name: &str, _: &[Value<'_>]| -> Option<Result<Val, XError>> {
+            assert_eq!(name, "pdk.corner");
+            Some(Ok(Val::Str("12".into())))
+        };
+        let inputs = [Value::Num(1.0)];
+        assert_eq!(
+            p.eval(a, &inputs, &mut strings, &mut s, &mut t),
+            (Val::Str("12!".into()), false)
+        );
+        let odd = Val::Str("12 \"x\"\\\n".into());
+        let mut text = String::new();
+        cached_text(&odd, &mut text);
+        assert_eq!(text, r#""12 \"x\"\\\n""#);
+        assert_eq!(Val::parse_cached(&text), odd);
+        assert_eq!(Val::parse_cached("\"12\""), Val::Str("12".into()));
+        assert_eq!(Val::parse_cached("12"), Val::Int(12), "unquoted: a number");
+        let c = Some(Val::parse_cached("\"tt\""));
+        let b = p.push("pdk.corner(w)", Syntax::Expr, c, lookup);
+        assert_eq!(
+            p.eval(b, &inputs, &mut no_funcs, &mut s, &mut t),
+            (Val::Str("tt".into()), true)
         );
     }
 

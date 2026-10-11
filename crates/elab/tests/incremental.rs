@@ -332,7 +332,9 @@ fn cached_attribute_edits_refresh_without_a_rebuild() {
         }
     }
     // A loaded plugin wins over any cache, and a cache write never re-runs its value.
-    let mut funcs = |name: &str, args: &[schemify_expr::Value<'_>]| {
+    let mut funcs = |name: &str,
+                     args: &[schemify_expr::Value<'_>]|
+     -> Option<Result<schemify_expr::Value<'static>, schemify_expr::Error>> {
         (name == "gmid.w").then(|| match args[0] {
             schemify_expr::Value::Int(i) => Ok(schemify_expr::Value::Num(i as f64 * 10.0)),
             _ => Ok(schemify_expr::Value::Num(-1.0)),
@@ -353,4 +355,58 @@ fn cached_attribute_edits_refresh_without_a_rebuild() {
         "verified values stay"
     );
     assert_eq!(g(&st), (Val::Num(10.0), false));
+}
+
+/// The same for an own param's default (D20 write-back of params): a `cached` edit on a param
+/// record is value-only, its stand-in reaches the instances that read the param, and the
+/// result equals a fresh build.
+#[test]
+fn cached_param_edits_refresh_without_a_rebuild() {
+    use schemify_elab::Val;
+    let src = cell(8)
+        .replace(
+            "param p 3\n",
+            "param p 3\nparam q \"gmid.w(p)\"\n  cached 4 00aa\n",
+        )
+        .replace("  l p+a\n", "  l q\n");
+    let (mut p, hs) = project(&[("dev.shprim", DEV), ("cell.shcomp", &src)]);
+    let h = hs[1];
+    let mut st = CellState::build(&p, h, &mut no_funcs).unwrap();
+    let q = |st: &CellState| (st.graph.vals[1].clone(), st.graph.unverified[1]);
+    assert_eq!(
+        q(&st),
+        (Val::Int(4), true),
+        "missing plugin: cached, unverified"
+    );
+    let m2_l = st.graph.inst_param(2, 1).unwrap() as usize;
+    assert_eq!(
+        st.graph.vals[m2_l],
+        Val::Int(4),
+        "the override reads the stand-in"
+    );
+    let target = Target::new(RecordKind::Param, "q");
+    let set = Op::SetAttr {
+        target: target.clone(),
+        key: "cached".into(),
+        values: vec!["2.5".into(), "00bb".into()],
+    };
+    let remove = Op::RemoveAttr {
+        target,
+        key: "cached".into(),
+        first: None,
+    };
+    for (op, want) in [(set, Some(Val::Num(2.5))), (remove, None)] {
+        assert!(commit(&mut p, h, vec![op.clone()]));
+        let done = st.recompute(&p, h, std::slice::from_ref(&op), &mut no_funcs);
+        assert!(!done.graph && !done.nets, "{done:?}");
+        let fresh = CellState::build(&p, h, &mut no_funcs).unwrap();
+        assert_eq!(snapshot(&st), snapshot(&fresh), "{op:?}");
+        match want {
+            Some(v) => assert_eq!(q(&st), (v, true)),
+            None => assert!(
+                matches!(q(&st).0, Val::Err(e) if e.code == schemify_expr::Code::X006),
+                "no plugin, no cache: X006"
+            ),
+        }
+    }
 }

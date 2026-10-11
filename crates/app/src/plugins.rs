@@ -362,14 +362,11 @@ impl Host {
     /// `name`, or its plugin's event is running on a worker (elab then falls back to the
     /// record's `cached` value, unverified, until the next recompute).
     ///
-    /// Args travel as line-record values (strings quoted, numbers canonical); a number or
-    /// `true`/`false` comes back. Failures map to expression errors: wrong arity `X008`, a
-    /// complex or string argument or a non-numeric result `X003`, a plugin error code `X010`.
-    pub fn call_fn(
-        &mut self,
-        name: &str,
-        args: &[Value<'_>],
-    ) -> Option<Result<Value<'static>, XError>> {
+    /// Args travel as line-record values (strings quoted, numbers canonical); a number,
+    /// `true`/`false` or a quoted string comes back ([`fn_result`]). Failures map to
+    /// expression errors: wrong arity `X008`, a complex argument or a result that is none of
+    /// those `X003`, a plugin error code `X010`.
+    pub fn call_fn(&mut self, name: &str, args: &[Value<'_>]) -> Option<Result<Val, XError>> {
         let f = &self.plugins.composed().functions;
         let row = f.find(name)?;
         let (plugin, fn_id, arity) = (f.plugin[row], f.fn_id[row], f.arity[row]);
@@ -406,18 +403,14 @@ impl Host {
             .plugins
             .call(plugin, fn_id, &self.args, &mut self.result)
         {
-            Ok(()) => Some(match self.result.trim() {
-                "true" => Ok(Value::Bool(true)),
-                "false" => Ok(Value::Bool(false)),
-                t => schemify_expr::parse_num(t).map(Value::Num).map_err(|_| {
-                    // ponytail: string results need an owned `Value`; numbers cover gm/Id.
-                    XError::new(
-                        XCode::X003,
-                        Span::default(),
-                        format!("{name} returned non-numeric `{t}`"),
-                    )
-                }),
-            }),
+            Ok(()) => Some(fn_result(self.result.trim()).ok_or_else(|| {
+                let t = self.result.trim();
+                XError::new(
+                    XCode::X003,
+                    Span::default(),
+                    format!("{name} returned `{t}`: not a number, bool or quoted string"),
+                )
+            })),
             Err(code) => err(XCode::X010, format!("{name}: plugin reports {code:?}")),
         }
     }
@@ -887,13 +880,13 @@ pub fn eval_in<F: Funcs>(st: &CellState, expr: &str, funcs: &mut F) -> Result<St
         };
         inputs.push(value);
     }
-    let mut call = |slot: u32, args: &[Value<'_>]| -> Result<Value<'static>, XError> {
+    let mut call = |slot: u32, args: &[Value<'_>]| -> Result<F::Out, XError> {
         let (ns, f) = prog
             .plugin_fns()
             .nth(slot as usize)
             .expect("slot of this program");
         let name = format!("{ns}.{f}");
-        funcs(&name, args).unwrap_or_else(|| {
+        funcs.call(&name, args).unwrap_or_else(|| {
             let msg = format!("plugin function `{name}` is not loaded");
             Err(XError::new(XCode::X006, Span::default(), msg))
         })
@@ -930,6 +923,23 @@ fn run_io(root: &Path, op: IoOp, args: &[String], data: &[u8]) -> (i32, Vec<u8>)
         IoOp::Fetch | IoOp::ClipboardGet | IoOp::ClipboardSet => {
             (denied, b"not supported yet".to_vec())
         }
+    }
+}
+
+/// A plugin function's result text (plugin ABI §2 `schemify_call`, expr §5): `true`/`false`,
+/// a number in canonical text, or one quoted string (format §2 escapes). `None` for anything
+/// else, including trailing values.
+pub fn fn_result(t: &str) -> Option<Val> {
+    match t {
+        "true" => Some(Val::Bool(true)),
+        "false" => Some(Val::Bool(false)),
+        t if t.starts_with('"') => {
+            let mut v = schemify_plugin::abi::text::values(t);
+            let s = v.need().ok()?;
+            v.end().ok()?;
+            Some(Val::Str(s.as_ref().into()))
+        }
+        t => schemify_expr::parse_num(t).ok().map(Val::Num),
     }
 }
 
@@ -1014,6 +1024,27 @@ mod fuel_tests {
         schemify_doc::Attr {
             key: "fuel".into(),
             values: vec![v.into()],
+        }
+    }
+
+    /// Plugin results: numbers, bools and quoted strings (escapes undone); a bare word, two
+    /// values or an unterminated quote are not results.
+    #[test]
+    fn fn_results_are_numbers_bools_or_quoted_strings() {
+        assert_eq!(fn_result("2.5e-6"), Some(Val::Num(2.5e-6)));
+        assert_eq!(fn_result("true"), Some(Val::Bool(true)));
+        assert_eq!(
+            fn_result("\"nfet_01v8\""),
+            Some(Val::Str("nfet_01v8".into()))
+        );
+        assert_eq!(fn_result(r#""a \"b\"""#), Some(Val::Str("a \"b\"".into())));
+        assert_eq!(
+            fn_result("\"12\""),
+            Some(Val::Str("12".into())),
+            "quoted: a string"
+        );
+        for bad in ["nfet", "\"a\" \"b\"", "\"open", "1 2", ""] {
+            assert_eq!(fn_result(bad), None, "{bad:?}");
         }
     }
 

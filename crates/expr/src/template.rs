@@ -5,7 +5,7 @@
 use core::fmt::Write;
 
 use crate::compile::{Compiler, Mode, Program};
-use crate::eval::{self, Scratch, V};
+use crate::eval::{self, PluginValue, Scratch, V};
 use crate::text::fmt_num;
 use crate::{Code, Error, Span, Value};
 
@@ -122,7 +122,7 @@ impl Template {
     ///
     /// # Errors
     /// As [`Template::render`], plus whatever `plugins` returns.
-    pub fn render_with<P>(
+    pub fn render_with<P, R>(
         &self,
         inputs: &[Value<'_>],
         plugins: &mut P,
@@ -130,7 +130,8 @@ impl Template {
         out: &mut String,
     ) -> Result<(), Error>
     where
-        P: FnMut(u32, &[Value<'_>]) -> Result<Value<'static>, Error>,
+        P: FnMut(u32, &[Value<'_>]) -> Result<R, Error>,
+        R: PluginValue,
     {
         assert_eq!(
             inputs.len(),
@@ -145,7 +146,7 @@ impl Template {
         r
     }
 
-    fn render_inner<P>(
+    fn render_inner<P, R>(
         &self,
         inputs: &[Value<'_>],
         plugins: &mut P,
@@ -153,7 +154,8 @@ impl Template {
         out: &mut String,
     ) -> Result<(), Error>
     where
-        P: FnMut(u32, &[Value<'_>]) -> Result<Value<'static>, Error>,
+        P: FnMut(u32, &[Value<'_>]) -> Result<R, Error>,
+        R: PluginValue,
     {
         for seg in &self.segs {
             match *seg {

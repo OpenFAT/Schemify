@@ -697,7 +697,7 @@ impl Editor {
             Some(doc) if self.docs_shown() => docs::plot_exprs(doc),
             _ => Vec::new(),
         };
-        let related = active.is_some_and(|h| self.related_to_bench(h));
+        let related = !exprs.is_empty() && active.is_some_and(|h| self.related_to_bench(h));
         let before = self.sim.plots.len();
         if related && !exprs.is_empty() {
             self.sim.refresh_plots(&exprs);
@@ -751,9 +751,12 @@ impl Editor {
     }
 
     /// Whether the docs page of `h` should show the current run's results: `h` is its bench,
-    /// or the bench instantiates `h`'s cell (by file stem).
-    // ponytail: matches one level of instantiation by stem; walk the elaboration when pages
-    // of deep sub-cells need results.
+    /// the bench instantiates `h`'s cell (by file stem, also when results were reloaded and
+    /// the cells are closed), or `h` is a cell anywhere below it. The walk goes through open
+    /// documents (a run opens every cell it reaches), each visited once.
+    ///
+    /// Cost: O(instances of the open documents of the hierarchy); called only while the
+    /// shown page has plot fences.
     #[cfg(not(target_arch = "wasm32"))]
     fn related_to_bench(&self, h: DocHandle) -> bool {
         let Some(b) = self.sim.bench() else {
@@ -764,13 +767,44 @@ impl Editor {
         }
         let stem = self.session.name(h);
         let stem = stem.rsplit_once('.').map_or(stem.as_str(), |(s, _)| s);
-        self.session.project.doc(b).is_some_and(|d| {
+        let p = &self.session.project;
+        let direct = p.doc(b).is_some_and(|d| {
             let s = d.strings();
             d.instances().cell.iter().any(|&c| {
                 let r = s.get(c);
                 r.rsplit([':', '/']).next() == Some(stem)
             })
-        })
+        });
+        if direct {
+            return true;
+        }
+        let open: Vec<DocHandle> = p.handles().collect();
+        let (mut seen, mut todo) = (vec![b], vec![b]);
+        while let Some(d) = todo.pop() {
+            if d == h {
+                return true;
+            }
+            let Some(doc) = p.doc(d) else { continue };
+            let s = doc.strings();
+            let mut cells = doc.instances().cell.clone();
+            cells.sort_unstable_by_key(|c| c.0);
+            cells.dedup();
+            for c in cells {
+                let Some(child) = p.resolve(d, s.get(c)).ok().and_then(|r| p.interface(r)) else {
+                    continue;
+                };
+                let found = open
+                    .iter()
+                    .copied()
+                    .find(|&o| p.doc(o).is_some_and(|x| std::ptr::eq(x, child)));
+                if let Some(o) = found.filter(|o| !seen.contains(o)) {
+                    seen.push(o);
+                    todo.push(o);
+                }
+            }
+        }
+        debug_assert!(seen.len() <= open.len() + 1);
+        false
     }
 
     /// Stages the optimizer's best point on its bench (D18): one `set_field var` per varied

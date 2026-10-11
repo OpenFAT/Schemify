@@ -68,6 +68,11 @@ pub enum Edit {
     Accept(u16),
     /// Drop a stage.
     Reject(u16),
+    /// Apply ops as part of committed transaction `seq`, the top of the undo stack (edits
+    /// spec §1 "extend"): one undo entry covers both; its journal record is rewritten in
+    /// place while still pending, so no record is added. The D20 cache write-back that
+    /// follows an edit uses it.
+    Extend(u64, Vec<Op>),
 }
 
 /// A request addressed to one document. `unix_ms` stamps journal entries (the crate
@@ -248,6 +253,9 @@ struct JournalOut {
     text: String,
     txs: u64,
     bytes: u64,
+    /// `(seq, byte offset in text)` of the last transaction record appended and not yet
+    /// taken: [`Edit::Extend`] rewrites it in place.
+    last_tx: Option<(u64, usize)>,
 }
 
 #[derive(Debug)]
@@ -721,6 +729,7 @@ impl Project {
         if open.journal.text.is_empty() {
             return None;
         }
+        open.journal.last_tx = None;
         let w = JournalWrite {
             rewrite: std::mem::take(&mut open.journal.rewrite),
             text: std::mem::take(&mut open.journal.text),
@@ -1139,6 +1148,59 @@ impl Project {
     }
 }
 
+impl Project {
+    /// [`Edit::Extend`]: applies `ops` inside entry `seq`. Refused (`E040`) unless `seq` is
+    /// the top of the undo stack with redo empty, and (`E044`) when the document is
+    /// refused, the entry is part of the saved state, or its journal record was written
+    /// out and the journal cannot be rewritten (no reachable saved state).
+    fn extend(&mut self, h: DocHandle, seq: u64, ops: &[Op]) -> Outcome {
+        let Some(open) = self.open_ref(h) else {
+            return Outcome::Refused(Code::E040);
+        };
+        if !open.redo.is_empty() || open.undo.back().is_none_or(|e| e.seq != seq) {
+            return Outcome::Refused(Code::E040);
+        }
+        let pending = open.journal.last_tx.is_some_and(|(s, _)| s == seq);
+        let rewritable = pending || !open.journal.started || open.saved_depth.is_some();
+        let saved = open.saved_depth.is_some_and(|d| d >= open.undo.len());
+        if refused(open) || saved || !rewritable {
+            return Outcome::Refused(Code::E044);
+        }
+        let params = self.param_map(open, ops);
+        let mut ops = ops.to_vec();
+        let Project { slots, rng, .. } = self;
+        let open = slots[h.index as usize]
+            .open
+            .as_deref_mut()
+            .expect("checked live");
+        let mut inverse = match edit::apply(&mut open.doc, &mut ops, &params, rng) {
+            Ok(inv) => inv,
+            Err(errors) => return Outcome::Rejected(errors),
+        };
+        let entry = open.undo.back_mut().expect("checked above");
+        entry.forward.extend(ops);
+        // Undo reverts the extension first: it was applied last.
+        inverse.append(&mut entry.inverse);
+        entry.inverse = inverse;
+        let entry = entry.clone();
+        match open.journal.last_tx {
+            Some((s, at)) if s == seq => {
+                let j = &mut open.journal;
+                j.bytes -= (j.text.len() - at) as u64;
+                j.txs -= 1;
+                j.text.truncate(at);
+                append_journal(open, &[JRec::Tx(entry)]);
+                open.journal.last_tx = Some((seq, at));
+            }
+            _ if open.journal.started => rewrite_journal(open),
+            _ => {}
+        }
+        open.doc.compact_if_needed();
+        assert!(open.undo.back().is_some_and(|e| e.seq == seq) && open.redo.is_empty());
+        Outcome::Committed { seq }
+    }
+}
+
 /// Applies edit requests in order (the frame spine's `doc::apply_edits`): transactions
 /// (commit or stage), undo, redo, accept and reject. Each request is all-or-nothing;
 /// a failing request does not stop the ones after it. Journal output accumulates per
@@ -1206,6 +1268,7 @@ fn apply(project: &mut Project, requests: &[EditRequest], report: bool) -> Vec<A
     for req in requests {
         let outcome = match &req.edit {
             Edit::Tx(tx) => project.tx(req.doc, tx, req.unix_ms),
+            Edit::Extend(seq, ops) => project.extend(req.doc, *seq, ops),
             Edit::Accept(id) => {
                 let stage = project
                     .open_ref(req.doc)
@@ -1347,7 +1410,9 @@ fn commit(open: &mut Open, label: &str, unix_ms: u64, forward: Vec<Op>, inverse:
     if !open.journal.started && !open.disk.is_empty() && open.saved_depth.is_some() {
         rewrite_journal(open);
     }
+    let at = open.journal.text.len();
     append_journal(open, &[JRec::Tx(entry.clone())]);
+    open.journal.last_tx = open.journal.started.then_some((seq, at));
     push_commit(open, entry);
     open.doc.compact_if_needed();
     assert!(open.redo.is_empty());
@@ -1452,6 +1517,7 @@ fn rewrite_journal(open: &mut Open) {
         txs: (recs.len() - 1) as u64,
         bytes: text.len() as u64,
         text,
+        last_tx: None,
     };
     open.redo.clear();
     assert!(open.journal.text.starts_with(JOURNAL_HEADER));
