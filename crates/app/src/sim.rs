@@ -107,6 +107,9 @@ pub struct Polled {
 /// The editor's run state.
 pub struct Sim {
     sim: Option<SimCommand>,
+    /// OpenVAF and Icarus Verilog programs (user config `sim openvaf` / `sim iverilog`);
+    /// `None` keeps the runner's defaults (`openvaf`, `iverilog` on `PATH`).
+    compilers: Option<(String, String)>,
     run: Option<Run>,
     kind: Kind,
     bench: Option<DocHandle>,
@@ -145,6 +148,7 @@ impl Sim {
     pub fn new(sim: Option<SimCommand>) -> Sim {
         Sim {
             sim,
+            compilers: None,
             run: None,
             kind: Kind::Loaded,
             bench: None,
@@ -161,6 +165,14 @@ impl Sim {
             status: String::new(),
             saved: true,
         }
+    }
+
+    /// Sets the compilers every later run uses for Verilog-A and Verilog `file` sources
+    /// (`openvaf`, `iverilog`: program paths from the user config, config spec §3), as the
+    /// CLI's runner gets them from `spines::tools`. A run in flight keeps its own.
+    pub fn set_compilers(&mut self, openvaf: String, iverilog: String) {
+        assert!(!openvaf.is_empty() && !iverilog.is_empty(), "program paths");
+        self.compilers = Some((openvaf, iverilog));
     }
 
     /// Whether a run is in flight or plugin requests wait.
@@ -275,11 +287,16 @@ impl Sim {
         let root = session.root.clone();
         let lib_dirs = session.lib_dirs();
         let sim = self.sim.clone();
+        let compilers = self.compilers.clone();
         move |d| {
             let mut c = RunnerConfig::new(&root, d);
             c.lib_dirs = lib_dirs;
             if let Some(s) = sim {
                 c.tools.sim = s;
+            }
+            if let Some((openvaf, iverilog)) = compilers {
+                c.tools.openvaf = openvaf;
+                c.tools.iverilog = iverilog;
             }
             c
         }

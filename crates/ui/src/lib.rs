@@ -46,7 +46,9 @@ pub use tables::{
     Chord, Contribution, Edit, Health, HealthKind, Key, Keymap, Kind, Mods, NO_NODE, NO_STYLE,
     NodeIx, Prop, StyleProp, UiNodes, UiStyles, UiTables, compose,
 };
-pub use text::{NO_TEXT, TextId, TextSystem};
+pub use text::{
+    FontGlyph, FontInfo, NO_TEXT, TextId, TextSystem, ui_font_glyphs, ui_font_info, ui_fonts,
+};
 
 /// Re-exported so renderers name the same layout and font types as this crate.
 pub use parley;
