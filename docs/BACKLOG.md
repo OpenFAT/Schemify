@@ -14,7 +14,7 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - **Tests open fixtures in place**, so a journal left by using the GUI on a fixture (`fixtures/*/.schemify/journal`) is replayed as crash recovery and breaks `tests/docs.rs` (happened 2026-10-10). Copy fixtures into a temp dir per test.
 
 - **doc**: keep rank 2 (symbol graphics) in indexed interfaces (`parse_prefix(bytes, 2)`); the editor currently opens every instantiated cell to get its symbol.
-- **render**: `draw_canvas` shares one text cache between scene and overlay (re-shapes labels every frame; the editor works around it, the demo doesn't); window has no exit hook.
+- **render**: window has no exit hook.
 - **ui**: text fields commit only on Enter (the app copies typed text every frame).
 - **plugins/build.sh**: rebuilding `hello`/`gmid_stub` is not byte-reproducible.
 - Editor gaps vs xschem: stretch/kissing moves, polygon/arc/circle drawing, schematic graphics (format has none), context menu, persistent wire mode, snap cursor/crosshair, search, Save As, rotated texts, scrolling lists (24 rows max), system clipboard, crash-recovery prompt, plugin I/O capabilities fetch/clipboard in the app.
@@ -29,7 +29,6 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - Values are kept for the active level's document; other open documents sync their caches when activated. A structural edit (instance insert/delete) rebuilds the cell state (136 ms at 100k objects when the cell has vars).
 - Prose: no images, footnotes or nested emphasis inside links; tables use equal column widths; a `text_area` does not scroll inside itself (the page does).
 - `gmid-lut`: queries at VDS = VDD/2 only; the sky130 pfet sample tops out near gm/Id 15 at L 0.15/0.18 µm; characterization uses `spawn:ngspice`, not `run` requests (the sweep needs the full grid, not bench outputs).
-- Edit round trip rebuilds the whole scene (40 ms at 100k objects): incremental scene rebuild.
 - Integration points still stubbed: symbols via elab, plugin `eval`, web OPFS.
 
 ## run in the editor (M2 integration)
@@ -86,11 +85,28 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## Performance
 
-- **elab**: a flat 1M-instance bench extrapolates to ~0.93 s of elaboration (D39 netlist budget is 1 s end-to-end): write rows directly instead of building temporaries.
+Numbers and how to reproduce them: `docs/perf.md`. D39 status: pan/zoom at 100k objects
+0.13 ms CPU, 0.08 ms GPU (RTX; 0.4–1.1 ms on the Intel iGPU); flat 1M netlist 0.85–0.93 s;
+param edit 1.8 ms; idle 0%. Not met: a local edit at 100k objects (~50 ms, D39 has no row
+for it; the goal set for this work was ≤ 1 ms).
+
+- **elab**: an edit at 100k objects rebuilds connectivity (20 ms) and re-runs every check
+  (7 ms, 3.4 of it sorting the rows): incremental connectivity per touched component
+  (a deleted wire can split only its own net) and checks over the changed nets would make
+  it O(change). The 1M flat netlist has 7–15% margin: generated net names (1M interns,
+  ~100 ms) and the elements' names (~90 ms) are the next costs.
 - **elab**: edits that change an expression's dependencies rebuild the whole graph (17 ms at 30k nodes).
+- **app**: per edit, plugin snapshots are refilled twice (one delivery before the edit is
+  applied, one after: ~3.5 ms each at 100k) and decor is rebuilt (~4.5 ms): per-table
+  snapshot keys and an incremental decor (changed marks and objects only).
+- **render/app**: `CanvasDiff` hashes every row of a changed table (~3.4 ms for the 320k
+  rows of a 100k-object scene and its decor): `scene::update` and the decor builder
+  reporting their changed rows would make it O(change). A click at 1M objects costs 17 ms
+  (`scene::marks` scans every primitive's owner).
+- **render**: a crisp zoom frame or a pan past the margin re-records the whole layer
+  (~12 ms CPU, 3–5 ms RTX / ~47 ms Intel GPU at 100k): tiles (record only the newly uncovered
+  part) and a level-of-detail table for zoomed-out views.
 - **format**: 100k-object parse ~52–60 ms; doc open 89 ms (budget 200 ms, OK); the 100k parse test sits near 100 ms under load.
-- **elab/app**: every shown document now has a `CellState` (live checks): at 100k objects a geometry edit costs ~50 ms of elab (connectivity rebuild + full check) and re-posting ~40k `W004` marks ~15 ms (measured in `app/tests/perf.rs`: edit round trip 112 ms, was 40 ms without checks; open 178 ms of the 200 ms budget). Incremental connectivity and checks per touched component would bring it back.
-- **render**: 100k-primitive scene build is 3.9 ms on a fast CPU (budget 4 ms for the 8 ms frame); 26 ms GPU time on the Intel iGPU (120 fps unmet there). Options: parallel encoding, reusing the last scene while panning.
 
 ## Correctness / semantics
 
