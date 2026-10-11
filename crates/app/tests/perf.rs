@@ -493,13 +493,14 @@ fn frame_times(n: u32) {
     }
     b.report("zoom");
 
-    // A local edit: select a wire, delete it, undo; the delete and undo frames are measured.
+    // A selection (click a wire), then a local edit: select a wire, delete it, undo; the
+    // click frames, then the delete and undo frames, are measured.
     let key = |c: &str| {
         event(InputEvent::Key {
             chord: Chord::parse(c).expect("chord"),
         })
     };
-    for k in 0..12 {
+    let select = |b: &mut Bench, k: i32, measure: bool| {
         let at = b.ed.to_screen((70 * U + 200 * U * (k % 4), -30 * U));
         b.frame(
             &event(InputEvent::PointerMove { x: at.0, y: at.1 }),
@@ -518,8 +519,15 @@ fn frame_times(n: u32) {
         };
         let mut click = event(down);
         click.push(up);
-        b.frame(&click, 50, false);
+        b.frame(&click, 500, measure);
         assert_eq!(b.ed.selection().len(), 1, "a wire under the pointer");
+    };
+    for k in 0..12 {
+        select(&mut b, k, true);
+    }
+    b.report("select");
+    for k in 0..12 {
+        select(&mut b, k, false);
         let before = b.ed.scene().objs.len();
         b.frame(&key("Del"), 500, true);
         assert_eq!(b.ed.scene().objs.len(), before - 1, "deleted");

@@ -43,6 +43,8 @@ pub(crate) struct GpuLayer {
     pub(crate) image: Option<ImageData>,
     texture: Option<wgpu::Texture>,
     pub(crate) dirty: bool,
+    /// Parts recorded since the last raster: a scene of `w × h` device px for `[x, y, w, h]`.
+    pub(crate) patches: Vec<(Scene, [u32; 4])>,
 }
 
 /// What one frame painted outside its layers.
@@ -110,10 +112,11 @@ impl Layers {
     }
 
     /// Rasterizes every layer recorded since the last call into its texture (vello renders it
-    /// into an `Rgba8Unorm` texture registered as the layer's image). Call once per frame
-    /// after painting and before rendering or composing the frame.
+    /// into an `Rgba8Unorm` texture registered as the layer's image), then every part patched
+    /// since (rendered into a texture of its size and copied over its place). Call once per
+    /// frame after painting and before rendering or composing the frame.
     ///
-    /// Cost: one vello render per recorded layer; nothing when no layer was recorded.
+    /// Cost: one vello render per recorded layer or patch; nothing when none was recorded.
     ///
     /// # Errors
     ///
@@ -143,6 +146,7 @@ impl Layers {
                     format: wgpu::TextureFormat::Rgba8Unorm,
                     usage: wgpu::TextureUsages::STORAGE_BINDING
                         | wgpu::TextureUsages::COPY_SRC
+                        | wgpu::TextureUsages::COPY_DST
                         | wgpu::TextureUsages::TEXTURE_BINDING,
                     view_formats: &[],
                 });
@@ -167,6 +171,51 @@ impl Layers {
             renderer.render_to_texture(device, queue, &l.scene, &view, &params)?;
             renderer.mark_override_image_dirty(image);
             l.dirty = false;
+        }
+        for l in self.slots.iter_mut().filter(|l| !l.patches.is_empty()) {
+            let (Some(image), Some(texture)) = (l.image.as_ref(), l.texture.as_ref()) else {
+                l.patches.clear(); // no picture to patch (its first raster failed)
+                continue;
+            };
+            for (scene, [x, y, w, h]) in l.patches.drain(..) {
+                assert!(x + w <= image.width && y + h <= image.height);
+                let size = wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                };
+                let part = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("layer patch"),
+                    size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let params = RenderParams {
+                    base_color: Color::TRANSPARENT,
+                    width: w,
+                    height: h,
+                    antialiasing_method: AaConfig::Area,
+                };
+                let view = part.create_view(&wgpu::TextureViewDescriptor::default());
+                renderer.render_to_texture(device, queue, &scene, &view, &params)?;
+                let mut encoder = device.create_command_encoder(&Default::default());
+                encoder.copy_texture_to_texture(
+                    part.as_image_copy(),
+                    wgpu::TexelCopyTextureInfo {
+                        texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d { x, y, z: 0 },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    size,
+                );
+                queue.submit([encoder.finish()]);
+            }
+            renderer.mark_override_image_dirty(image);
         }
         Ok(())
     }

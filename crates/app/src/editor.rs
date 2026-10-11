@@ -38,7 +38,7 @@ use schemify_expr::Value;
 use schemify_format::{FileKind, IdRng, Orient, RecordKind};
 use schemify_plugin::abi::Event;
 use schemify_render::canvas::{
-    self, Camera, CanvasCache, CanvasPrims, CanvasScratch, Marks, Palette,
+    self, Camera, CanvasCache, CanvasDiff, CanvasPrims, CanvasScratch, Marks, Palette,
 };
 use schemify_render::vello::kurbo::Rect as KRect;
 use schemify_render::widgets::{UiScratch, draw_ui};
@@ -80,6 +80,10 @@ const ZOOM_SETTLE_MS: u32 = 120;
 const CHOOSER_ROWS: usize = 24;
 /// Edit requests one frame may carry.
 const REQUESTS_MAX: usize = 1 << 10;
+/// Commits whose ops the editor keeps to recompute an undo or redo of them incrementally.
+// ponytail: older undos rebuild the derived state (136 ms at 100k objects); doc reporting an
+// undo's touched records would retire this mirror.
+const COMMITS_KEPT: usize = 64;
 /// Share of the window height the editor keeps while the waves dock is open.
 const DOCK_SPLIT: f32 = 0.6;
 /// Netlist lines a text tab shows (the prose widget's source cap); the file has them all.
@@ -330,6 +334,10 @@ pub struct Editor {
     canvas_cache: CanvasCache,
     /// Advances whenever a table the canvas layer draws changes (scene, marks, decor).
     canvas_gen: u64,
+    /// What changed in those tables since the last painted frame (an edit patches only
+    /// there): the diff's snapshot, the `canvas_gen` and style key it was taken at, and the
+    /// changed boxes (`None` = unknown).
+    canvas_diff: (CanvasDiff, u64, u64, Option<Vec<[i32; 4]>>),
     /// Clock (ms) until which the zoom counts as changing: frames before it stretch the
     /// recorded canvas layer instead of re-recording it.
     zoom_until: u64,
@@ -353,6 +361,10 @@ pub struct Editor {
     cell_key: Option<(DocHandle, u32, u32)>,
     /// Ops committed to the active document that `cell` has not seen yet.
     cell_ops: Vec<Op>,
+    /// The last [`COMMITS_KEPT`] commits' (document, journal seq, ops): undoing or redoing
+    /// one touches the records its ops name, so `cell` recomputes over those ops instead
+    /// of rebuilding (`doc` reports only the seq).
+    commits: std::collections::VecDeque<(DocHandle, u64, Vec<Op>)>,
     /// The docs page.
     page: Page,
     /// This frame's docs-page commit (document, label, ops, committed?): a D20 cache write
@@ -474,6 +486,7 @@ impl Editor {
             canvas_scratch: CanvasScratch::default(),
             canvas_cache: CanvasCache::default(),
             canvas_gen: 0,
+            canvas_diff: (CanvasDiff::default(), 0, 0, None),
             zoom_until: 0,
             stretched: false,
             ui_scratch: UiScratch::default(),
@@ -488,6 +501,7 @@ impl Editor {
             cell: None,
             cell_key: None,
             cell_ops: Vec::new(),
+            commits: std::collections::VecDeque::new(),
             page: Page::default(),
             amend: None,
             amending: None,
@@ -910,23 +924,35 @@ impl Editor {
             i32::MAX / 4
         };
         // Everything but the gesture preview goes through the raster layer: a pan or zoom
-        // frame re-encodes nothing (D39); `key` names every input of the closure.
-        let key = {
-            use std::hash::{Hash, Hasher};
+        // frame re-encodes nothing and an edit redraws only where its tables changed (D39);
+        // `key` names every input of the closure, `style` those no damage box describes.
+        use std::hash::{Hash, Hasher};
+        let style = {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             let pal = &self.palette;
-            (
-                self.canvas_gen,
-                grid,
-                pal.color,
-                pal.fill,
-                pal.background,
-                pal.grid,
-            )
-                .hash(&mut h);
+            (grid, pal.color, pal.fill, pal.background, pal.grid).hash(&mut h);
             pal.width.map(f32::to_bits).hash(&mut h);
             h.finish()
         };
+        let key = {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (self.canvas_gen, style).hash(&mut h);
+            h.finish()
+        };
+        let (diff, diff_gen, diff_style, boxes) = &mut self.canvas_diff;
+        if *diff_gen != self.canvas_gen || *diff_style != style {
+            // ponytail: hashes every row per change (~1 ms at 10^5); the scene, decor and
+            // marks builders reporting their own changed rows would make it O(change).
+            let mut out = boxes.take().unwrap_or_default();
+            out.clear();
+            let tables = [&self.scene.prims, &self.decor];
+            let known = diff.update(&tables, (&self.scene.prims, &self.marks), &mut out);
+            *boxes = (known && *diff_style == style).then_some(out);
+            (*diff_gen, *diff_style) = (self.canvas_gen, style);
+        } else if let Some(b) = boxes.as_mut() {
+            b.clear(); // the same key: nothing changed since the last frame
+        }
+        let damage = boxes.as_deref();
         let crisp = self.now >= self.zoom_until;
         let (scene, decor, marks) = (&self.scene, &self.decor, &self.marks);
         let (palette, text, scratch) = (
@@ -940,6 +966,7 @@ impl Editor {
             view,
             &cam,
             key,
+            damage,
             crisp,
             schemify_render::rgba(palette.background),
             |p, v, c| {
@@ -2694,8 +2721,20 @@ impl Editor {
             .cell
             .as_ref()
             .filter(|_| self.cell_key.is_some_and(|k| Some(k.0) == active));
+        // What the document tables are filled from: unchanged on a click, so a selection
+        // change does not copy every row again.
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            let project = &self.session.project;
+            for d in project.handles() {
+                (d, project.is_dirty(d), self.session.epoch(d)).hash(&mut h);
+            }
+            (active, cell.map(|c| c.pass), &rows).hash(&mut h);
+            h.finish()
+        };
         self.host
-            .snapshot(&self.session.project, active, &sel, cell, &rows);
+            .snapshot(&self.session.project, active, &sel, cell, &rows, key);
         let root = self.session.root.clone();
         let d = self.host.deliver(&self.session.project, &root, self.now);
         #[cfg(not(target_arch = "wasm32"))]
@@ -2781,6 +2820,23 @@ impl Editor {
         let current = self
             .cell_key
             .is_some_and(|k| Some(k.0) == active && k.0 == r.doc && k.1 == epoch);
+        if let (Edit::Tx(tx), Outcome::Committed { seq }) = (&r.edit, o) {
+            if self.commits.len() == COMMITS_KEPT {
+                self.commits.pop_front();
+            }
+            self.commits.push_back((r.doc, *seq, tx.ops.clone()));
+        }
+        // An undo or redo touches what the entry's ops touched: the same records, so the
+        // same recompute (the ops' direction does not matter to it).
+        let undone = match o {
+            Outcome::Undone { seq } | Outcome::Redone { seq } => self
+                .commits
+                .iter()
+                .rev()
+                .find(|c| c.0 == r.doc && c.1 == *seq)
+                .map(|c| &c.2),
+            _ => None,
+        };
         let ops = match (&r.edit, o) {
             (Edit::Tx(tx), Outcome::Committed { .. }) => Some(&tx.ops),
             _ => None,
@@ -2792,7 +2848,7 @@ impl Editor {
             *done = true;
         }
         let amend_undo = self.amending.is_some() && matches!(o, Outcome::Undone { .. });
-        match (current, ops, &self.amending) {
+        match (current, ops.or(undone), &self.amending) {
             (true, _, Some(_)) if amend_undo => {}
             (true, Some(_), Some(cache)) => self.cell_ops.extend(cache.iter().cloned()),
             (true, Some(ops), None) => self.cell_ops.extend(ops.iter().cloned()),
@@ -2810,8 +2866,8 @@ impl Editor {
     }
 
     /// `elab::CellState::recompute` for the active document: incremental over the queued ops
-    /// when `cell` is current, else a full build (another document, an undo, a plugin
-    /// change). Plugin functions are called through the host (D20). Returns whether values
+    /// when `cell` is current, else a full build (another document, an undo of a commit
+    /// older than [`COMMITS_KEPT`], a plugin change). Plugin functions are called through the host (D20). Returns whether values
     /// may have changed.
     fn recompute_elab(&mut self) -> bool {
         let Some((h, _)) = self.active() else {

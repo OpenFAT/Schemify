@@ -41,15 +41,19 @@ fn commit(p: &mut Project, h: DocHandle, ops: Vec<Op>) -> bool {
         mode: Mode::Commit,
         ops,
     };
-    let out = apply_edits(
+    matches!(edit(p, h, Edit::Tx(tx)), Outcome::Committed { .. })
+}
+
+fn edit(p: &mut Project, h: DocHandle, edit: Edit) -> Outcome {
+    let mut out = apply_edits(
         p,
         &[EditRequest {
             doc: h,
-            edit: Edit::Tx(tx),
+            edit,
             unix_ms: 1,
         }],
     );
-    matches!(out[0], Outcome::Committed { .. })
+    out.pop().expect("one outcome per request")
 }
 
 /// Everything comparable between two states, as text.
@@ -165,20 +169,45 @@ fn random_op(rng: &mut Mix, n: usize) -> Op {
 
 #[test]
 fn incremental_recompute_equals_full_rebuild_after_random_edits() {
-    let mut incremental = 0;
+    let (mut incremental, mut reverted) = (0, 0);
     for seed in 0..12u64 {
         let n = 24;
         let (mut p, hs) = project(&[("dev.shprim", DEV), ("cell.shcomp", &cell(n))]);
         let h = hs[1];
         let mut st = CellState::build(&p, h, &mut no_funcs).unwrap();
         let mut rng = Mix(seed);
+        // (journal seq, ops) of each commit: an undo or redo is recomputed over the ops of
+        // the entry it reverts or replays (what the editor does).
+        let mut commits: Vec<(u64, Vec<Op>)> = Vec::new();
         for step in 0..60 {
-            let ops: Vec<Op> = (0..1 + rng.below(3))
-                .map(|_| random_op(&mut rng, n))
-                .collect();
-            if !commit(&mut p, h, ops.clone()) {
-                continue;
-            }
+            let ops = if rng.chance(25) {
+                let e = if rng.chance(50) {
+                    Edit::Undo
+                } else {
+                    Edit::Redo
+                };
+                let seq = match edit(&mut p, h, e) {
+                    Outcome::Undone { seq } | Outcome::Redone { seq } => seq,
+                    _ => continue,
+                };
+                let entry = commits.iter().find(|c| c.0 == seq);
+                reverted += 1;
+                entry.expect("an entry committed here").1.clone()
+            } else {
+                let ops: Vec<Op> = (0..1 + rng.below(3))
+                    .map(|_| random_op(&mut rng, n))
+                    .collect();
+                let tx = Transaction {
+                    label: "t".into(),
+                    mode: Mode::Commit,
+                    ops: ops.clone(),
+                };
+                match edit(&mut p, h, Edit::Tx(tx)) {
+                    Outcome::Committed { seq } => commits.push((seq, ops.clone())),
+                    _ => continue,
+                }
+                ops
+            };
             let (before, pass) = (st.violations.rows.clone(), st.pass);
             let done = st.recompute(&p, h, &ops, &mut no_funcs);
             if done.evaluated > 0 {
@@ -221,6 +250,7 @@ fn incremental_recompute_equals_full_rebuild_after_random_edits() {
         incremental > 50,
         "the incremental path ran {incremental} times"
     );
+    assert!(reverted > 40, "{reverted} undos and redos");
 }
 
 #[test]

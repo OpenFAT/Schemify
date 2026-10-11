@@ -29,6 +29,7 @@ use vello::peniko::FontData;
 use schemify_ui::TextSystem;
 use schemify_ui::parley::PositionedLayoutItem;
 
+pub use crate::damage::{CanvasDiff, DIFF_EDITS_MAX};
 use crate::painter::{Chains, Painter, rgba};
 
 /// Number of palette layers.
@@ -428,6 +429,11 @@ pub struct CanvasCache {
     origin: (f64, f64),
     /// Logical-px rectangle the layer covered when recorded (the view plus [`CACHE_MARGIN`]).
     rect: Rect,
+    /// Key of the previous call (what its `damage` was relative to).
+    last: u64,
+    /// World boxes where the content of `last` differs from the layer's (`key`); `None` =
+    /// unknown.
+    pending: Option<Vec<[i32; 4]>>,
 }
 
 /// How [`draw_cached`] drew a frame.
@@ -437,6 +443,8 @@ pub enum Drawn {
     Copied,
     /// The recorded layer stretched to a new zoom (a stand-in until the next crisp frame).
     Stretched,
+    /// The changed parts of the layer redrawn (see `damage` of [`draw_cached`]), then copied.
+    Patched,
     /// Content drawn into a fresh layer, then copied.
     Recorded,
     /// Content drawn straight into the frame (the painter keeps no layers).
@@ -450,16 +458,36 @@ pub const CACHE_MARGIN: f64 = 0.25;
 /// Unique layer tags across every cache in the process.
 static STAMPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+/// Logical px a damage box is widened by: half the widest stroke, mark strokes, antialiasing
+/// and pixel snapping. Content must not draw farther than this outside its rows' boxes.
+pub const PATCH_PAD_PX: f64 = 8.0;
+/// Patches are whole multiples of this many logical px (so of 16 device px at integral scales),
+/// on the layer's own grid: vello's tiles, so every pixel outside the patches sees exactly the
+/// path segments it saw when recorded, and pixel snapping lands alike inside them.
+const PATCH_TILE: f64 = 16.0;
+/// Most patches one frame redraws (each culls every primitive once).
+const PATCHES_MAX: usize = 4;
+/// Most distinct damaged parts merged down to [`PATCHES_MAX`] (the merge is quadratic).
+const PARTS_MAX: usize = 64;
+/// Most damage boxes kept between frames before the change counts as unknown.
+const DAMAGE_BOXES_MAX: usize = 4096;
+
 /// Draws a canvas through its raster cache: `draw(p, view, cam)` paints the content (it must
 /// fill `view` opaquely with `background` first) and runs only when the cache cannot serve
 /// `key` at `cam`. A pan by whole pixels copies the recorded layer; a zoom with
-/// `crisp == false` stretches it (view pixels it no longer covers show `background`);
-/// anything else records `view` plus [`CACHE_MARGIN`] afresh. Content outside the cache
-/// (gesture previews) is drawn by the caller afterwards.
+/// `crisp == false` stretches it (view pixels it no longer covers show `background`); new
+/// content whose change is known and small redraws only the changed parts; anything else
+/// records `view` plus [`CACHE_MARGIN`] afresh. Content outside the cache (gesture
+/// previews) is drawn by the caller afterwards.
 ///
-/// `key` must change whenever anything `draw` reads changes, except the camera.
+/// `key` must change whenever anything `draw` reads changes, except the camera. `damage`
+/// says where the content for `key` differs from the content of the previous call's key: world
+/// boxes (each row added or removed, e.g. from [`CanvasDiff::update`]; `draw` must paint
+/// nothing farther than [`PATCH_PAD_PX`] outside them), empty when the key is the same, or
+/// `None` when unknown.
 ///
-/// Cost: O(1) when copied or stretched; `draw` over view + margin when recorded.
+/// Cost: O(1) when copied or stretched; `draw` per changed part (up to 4) when patched;
+/// `draw` over view + margin when recorded.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_cached<P: Painter>(
     p: &mut P,
@@ -467,31 +495,44 @@ pub fn draw_cached<P: Painter>(
     view: Rect,
     cam: &Camera,
     key: u64,
+    damage: Option<&[[i32; 4]]>,
     crisp: bool,
     background: vello::peniko::Color,
     mut draw: impl FnMut(&mut P, Rect, &Camera),
 ) -> Drawn {
     assert!(view.width() >= 0.0 && view.height() >= 0.0 && cam.scale > 0.0);
     let origin = cam.origin(view);
-    if cache.stamp != 0 && cache.key == key && view.area() > 0.0 {
+    // What changed since the layer was recorded: this call's damage on top of the earlier.
+    if key != cache.last {
+        cache.pending = match (cache.pending.take(), damage) {
+            (Some(mut boxes), Some(d)) if boxes.len() + d.len() <= DAMAGE_BOXES_MAX => {
+                boxes.extend_from_slice(d);
+                Some(boxes)
+            }
+            _ => None,
+        };
+        cache.last = key;
+    }
+    if cache.stamp != 0 && view.area() > 0.0 {
         let (o0, r) = (cache.origin, cache.rect);
         if cache.scale == cam.scale {
             let (dx, dy) = (origin.0 - o0.0, origin.1 - o0.1);
             let aligned = (dx - dx.round()).abs() < 1e-6 && (dy - dy.round()).abs() < 1e-6;
             let at = r + vello::kurbo::Vec2::new(dx.round(), dy.round());
-            if aligned
-                && at.contains_rect(view)
-                && p.draw_layer(
-                    cache.slot,
-                    cache.stamp,
-                    Affine::translate((at.x0, at.y0)),
-                    view,
-                    None,
-                )
-            {
-                return Drawn::Copied;
+            let place = Affine::translate((at.x0, at.y0));
+            if aligned && at.contains_rect(view) {
+                if cache.key == key && p.draw_layer(cache.slot, cache.stamp, place, view, None) {
+                    return Drawn::Copied;
+                }
+                if cache.key != key && patch(p, cache, &mut draw) {
+                    cache.key = key;
+                    cache.pending = Some(Vec::new());
+                    let shown = p.draw_layer(cache.slot, cache.stamp, place, view, None);
+                    assert!(shown, "a patched layer draws");
+                    return Drawn::Patched;
+                }
             }
-        } else if !crisp {
+        } else if !crisp && cache.key == key {
             // Layer px u ↔ screen u + r.p0 at the recorded camera ↔ world (u + r.p0 - o0) / s0
             // ↔ screen now: (u + r.p0 - o0) · s1/s0 + o1. Where a zoom-out uncovers the view,
             // background shows until the crisp frame (no re-record mid-gesture).
@@ -530,6 +571,8 @@ pub fn draw_cached<P: Painter>(
             scale: cam.scale,
             origin,
             rect: local + vello::kurbo::Vec2::new(x0, y0),
+            last: key,
+            pending: Some(Vec::new()),
         };
         let shown = p.draw_layer(cache.slot, stamp, Affine::translate((x0, y0)), view, None);
         assert!(shown, "a recorded layer draws");
@@ -540,6 +583,117 @@ pub fn draw_cached<P: Painter>(
     draw(p, view, cam);
     p.pop_clip();
     Drawn::Direct
+}
+
+/// Redraws the parts of the recorded layer that `cache.pending` covers, at the camera it was
+/// recorded with. False (the layer may be partly redrawn: record it afresh) when the damage
+/// is unknown or too large, or a [`PATCH_TILE`] is no whole number of device px (patch
+/// offsets must be whole device px and whole logical px, so pixel snapping lands alike).
+///
+/// A part redrawn alone matches the recording within ±1 per channel, not bit for bit: its
+/// unsnapped coordinates (arcs, glyphs) round to `f32` at other magnitudes.
+fn patch<P: Painter>(
+    p: &mut P,
+    cache: &CanvasCache,
+    draw: &mut impl FnMut(&mut P, Rect, &Camera),
+) -> bool {
+    let s = p.device_scale();
+    let Some(boxes) = cache.pending.as_deref() else {
+        return false;
+    };
+    if (PATCH_TILE * s).fract() != 0.0 || s <= 0.0 {
+        return false;
+    }
+    // Layer px of world (0, 0) and the layer's size, as recorded.
+    let (ox, oy) = (
+        cache.origin.0 - cache.rect.x0,
+        cache.origin.1 - cache.rect.y0,
+    );
+    let (lw, lh) = (
+        (cache.rect.width() * s).round(),
+        (cache.rect.height() * s).round(),
+    );
+    let (pad, step) = (PATCH_PAD_PX * s, PATCH_TILE * s);
+    let mut parts: Vec<Rect> = Vec::new();
+    for b in boxes {
+        let (x0, y0) = (
+            f64::from(b[0]) * cache.scale + ox,
+            f64::from(b[1]) * cache.scale + oy,
+        );
+        let (x1, y1) = (
+            f64::from(b[2]) * cache.scale + ox,
+            f64::from(b[3]) * cache.scale + oy,
+        );
+        let tile = |v: f64, up: bool| {
+            let t = v / step;
+            (if up { t.ceil() } else { t.floor() } * step).clamp(0.0, 1e9)
+        };
+        let part = Rect::new(
+            tile(x0 * s - pad, false),
+            tile(y0 * s - pad, false),
+            tile(x1 * s + pad, true).min(lw),
+            tile(y1 * s + pad, true).min(lh),
+        );
+        if part.x1 > part.x0 && part.y1 > part.y0 {
+            parts.push(part);
+        }
+        if parts.len() > PARTS_MAX {
+            return false; // scattered: one recording beats merging them
+        }
+    }
+    // Merge overlapping parts, then the closest pairs until few are left.
+    let mut merged = true;
+    while merged {
+        merged = false;
+        'pairs: for i in 0..parts.len() {
+            for j in i + 1..parts.len() {
+                let overlap = parts[i].intersect(parts[j]).area() > 0.0;
+                let grow = parts[i].union(parts[j]).area() - parts[i].area() - parts[j].area();
+                if overlap || (parts.len() > PATCHES_MAX && grow <= 0.0) {
+                    parts[i] = parts[i].union(parts[j]);
+                    parts.swap_remove(j);
+                    merged = true;
+                    break 'pairs;
+                }
+            }
+        }
+        if !merged && parts.len() > PATCHES_MAX {
+            let (mut best, mut cost) = ((0, 1), f64::INFINITY);
+            for i in 0..parts.len() {
+                for j in i + 1..parts.len() {
+                    let c = parts[i].union(parts[j]).area();
+                    if c < cost {
+                        (best, cost) = ((i, j), c);
+                    }
+                }
+            }
+            parts[best.0] = parts[best.0].union(parts[best.1]);
+            parts.swap_remove(best.1);
+            merged = true;
+        }
+    }
+    let area: f64 = parts.iter().map(Rect::area).sum();
+    if area > lw * lh / 2.0 {
+        return false; // most of the layer: one recording is cheaper than the culling passes
+    }
+    assert!(parts.len() <= PATCHES_MAX);
+    for part in &parts {
+        let (x, y, w, h) = (part.x0, part.y0, part.width(), part.height());
+        // The part's picture in its own coordinates: world (0, 0) lands at (ox, oy) - (x, y)/s.
+        let local = Rect::new(0.0, 0.0, w / s, h / s);
+        let pcam = Camera {
+            cx: (local.center().x - (ox - x / s)) / cache.scale,
+            cy: (local.center().y - (oy - y / s)) / cache.scale,
+            scale: cache.scale,
+        };
+        let (x, y, w, h) = (x as u32, y as u32, w as u32, h as u32);
+        if !p.patch_layer(cache.slot, cache.stamp, x, y, w, h, |p| {
+            draw(p, local, &pcam)
+        }) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Draws background, grid, primitives, overlay primitives and marks into `view`, clipped.

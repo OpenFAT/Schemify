@@ -79,6 +79,32 @@ pub trait Painter {
         false
     }
 
+    /// Redraws the part `[x, x + w) × [y, y + h)` (device px) of layer `slot` with `draw`,
+    /// which paints that part as [`Painter::layer`]'s `draw` paints a whole layer (its origin
+    /// is the part's top-left); the rest of the layer keeps its pixels. Returns false without
+    /// calling `draw` unless this painter holds layer `slot` tagged `stamp`.
+    ///
+    /// # Panics
+    ///
+    /// Panics on an empty part or one reaching outside the layer.
+    #[allow(clippy::too_many_arguments)]
+    fn patch_layer(
+        &mut self,
+        slot: usize,
+        stamp: u64,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        draw: impl FnOnce(&mut Self),
+    ) -> bool
+    where
+        Self: Sized,
+    {
+        let _ = (slot, stamp, x, y, w, h, draw);
+        false
+    }
+
     /// Draws layer `slot` through `at` (layer logical px → logical px), clipped to `clip`.
     /// `stretch: None` copies pixels (`at` must cover `clip`); `Some(bg)` samples bilinearly (a
     /// scaled stand-in) and paints the part of `clip` the layer misses with `bg`. Returns
@@ -357,6 +383,44 @@ impl Painter for ScenePainter<'_> {
         l.scene = other;
         l.stamp = stamp;
         l.dirty = true;
+        l.patches.clear(); // the fresh picture covers them
+        true
+    }
+
+    fn patch_layer(
+        &mut self,
+        slot: usize,
+        stamp: u64,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        draw: impl FnOnce(&mut Self),
+    ) -> bool {
+        let Some(layers) = self.layers.as_deref_mut() else {
+            return false;
+        };
+        let Some(l) = layers
+            .slots
+            .get(slot)
+            .filter(|l| stamp != 0 && l.stamp == stamp)
+        else {
+            return false;
+        };
+        let image = l.image.as_ref().expect("a recorded layer has an image");
+        assert!(
+            w > 0 && h > 0 && x + w <= image.width && y + h <= image.height,
+            "patch outside its layer"
+        );
+        // Like `layer`: record into a scene of its own, outside the frame log.
+        let mut other = Scene::new();
+        layers.log.recording = true;
+        std::mem::swap(self.scene, &mut other);
+        draw(self);
+        std::mem::swap(self.scene, &mut other);
+        let layers = self.layers.as_deref_mut().expect("checked above");
+        layers.log.recording = false;
+        layers.slots[slot].patches.push((other, [x, y, w, h]));
         true
     }
 
@@ -575,6 +639,47 @@ impl Painter for CpuPainter {
                 .resize_with(slot + 1, || (0, Arc::new(vello_cpu::Pixmap::new(1, 1))));
         }
         self.layers[slot] = (stamp, Arc::new(pixmap));
+        true
+    }
+
+    fn patch_layer(
+        &mut self,
+        slot: usize,
+        stamp: u64,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        draw: impl FnOnce(&mut Self),
+    ) -> bool {
+        if self
+            .layers
+            .get(slot)
+            .is_none_or(|l| stamp == 0 || l.0 != stamp)
+        {
+            return false;
+        }
+        let lw = u32::from(self.layers[slot].1.width());
+        let lh = u32::from(self.layers[slot].1.height());
+        assert!(
+            w > 0 && h > 0 && x + w <= lw && y + h <= lh,
+            "patch outside its layer"
+        );
+        let (pw, ph) = (w as u16, h as u16);
+        let mut other = vello_cpu::RenderContext::new(pw, ph);
+        std::mem::swap(&mut self.ctx, &mut other);
+        draw(self);
+        std::mem::swap(&mut self.ctx, &mut other);
+        let mut part = vello_cpu::Pixmap::new(pw, ph);
+        other.flush();
+        other.render(&mut part, &mut self.resources);
+        // Copy-on-write: a frame still sampling the old picture keeps it.
+        let dst = Arc::make_mut(&mut self.layers[slot].1).data_mut();
+        let (lw, w, x, y) = (lw as usize, w as usize, x as usize, y as usize);
+        for (r, src) in part.data().chunks_exact(w).enumerate() {
+            let at = (y + r) * lw + x;
+            dst[at..at + w].copy_from_slice(src);
+        }
         true
     }
 

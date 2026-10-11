@@ -113,6 +113,7 @@ fn walk(scale: f64, seed: u32) {
             view,
             &cam,
             key,
+            None, // where the content changed is not known: record
             true,
             bg(),
             |p, v, c| content(p, v, c, &prims, &mut text, &mut scratch),
@@ -169,9 +170,17 @@ fn zoom_stretches_until_crisp() {
     let mut cache = CanvasCache::default();
     let mut frame = |p: &mut CpuPainter, cam: &Camera, crisp: bool| {
         p.reset();
-        let drawn = canvas::draw_cached(p, &mut cache, view, cam, 7, crisp, bg(), |p, v, c| {
-            content(p, v, c, &prims, &mut text, &mut scratch)
-        });
+        let drawn = canvas::draw_cached(
+            p,
+            &mut cache,
+            view,
+            cam,
+            7,
+            Some(&[]),
+            crisp,
+            bg(),
+            |p, v, c| content(p, v, c, &prims, &mut text, &mut scratch),
+        );
         (drawn, p.finish(Color::WHITE))
     };
     assert_eq!(frame(&mut p, &cam, false).0, Drawn::Recorded);
@@ -217,10 +226,202 @@ fn a_fresh_painter_records() {
     let mut cache = CanvasCache::default();
     for _ in 0..2 {
         let mut p = CpuPainter::new(200, 100, 1.0);
-        let drawn =
-            canvas::draw_cached(&mut p, &mut cache, view, &cam, 1, true, bg(), |p, v, c| {
-                content(p, v, c, &prims, &mut text, &mut scratch)
-            });
+        let drawn = canvas::draw_cached(
+            &mut p,
+            &mut cache,
+            view,
+            &cam,
+            1,
+            Some(&[]),
+            true,
+            bg(),
+            |p, v, c| content(p, v, c, &prims, &mut text, &mut scratch),
+        );
         assert_eq!(drawn, Drawn::Recorded);
     }
+}
+
+/// One edit the way the editor's tables change: a row swap-removed, a row pushed, a label
+/// moved, or a different row selected.
+fn edit(prims: &mut CanvasPrims, sel: &mut Vec<u32>, rng: &mut Rng) {
+    let l = &mut prims.lines;
+    match rng.below(5) {
+        0 if l.x0.len() > 10 => {
+            let i = rng.below(l.x0.len() as u32) as usize;
+            for col in [&mut l.x0, &mut l.y0, &mut l.x1, &mut l.y1] {
+                col.swap_remove(i);
+            }
+            l.layer.swap_remove(i);
+            sel.retain(|&s| (s as usize) < l.x0.len());
+        }
+        1 => {
+            let (x, y) = (rng.below(600) as i32 * 1000, rng.below(380) as i32 * 1000);
+            prims.line(
+                x,
+                y,
+                x + 30_000,
+                y + 7_000,
+                [1, 4, 5][rng.below(3) as usize],
+            );
+        }
+        2 => {
+            let t = &mut prims.texts;
+            let i = rng.below(t.x.len() as u32) as usize;
+            t.x[i] += 5_000;
+            t.y[i] -= 3_000;
+        }
+        3 => {
+            let r = &mut prims.rects;
+            let i = rng.below(r.x0.len() as u32) as usize;
+            r.x1[i] += 4_000;
+        }
+        _ => *sel = vec![rng.below(prims.lines.x0.len() as u32)],
+    }
+}
+
+/// D39 oracle for edits: a layer patched where [`CanvasDiff`] says the tables changed equals
+/// the same frame recorded afresh, pixel for pixel, while the camera stays (and within the
+/// golden tolerance of a direct render after pans).
+fn patch_walk(scale: f64, seed: u32) {
+    use schemify_render::canvas::{CanvasDiff, Marks, PrimKind};
+    let mut prims = common::thousand_prims();
+    let (w, h) = (480u16, 320u16);
+    let view = Rect::new(13.0, 21.0, 460.0, 300.0);
+    let mut cam = Camera {
+        cx: 0.0,
+        cy: 0.0,
+        scale: 1.0,
+    };
+    cam.fit(view, [0, 0, 600_000, 380_000]);
+    let (mut text, mut scratch) = (TextSystem::new(), CanvasScratch::default());
+    let size = |v: u16| (f64::from(v) * scale) as u16;
+    let mut p = CpuPainter::new(size(w), size(h), scale);
+    let (mut cache, mut diff, mut boxes) = (CanvasCache::default(), CanvasDiff::default(), vec![]);
+    let (mut rng, mut sel, mut key) = (Rng(seed), vec![3u32, 8], 1u64);
+    let mut draws = |p: &mut CpuPainter,
+                     cache: &mut CanvasCache,
+                     cam: &Camera,
+                     key: u64,
+                     damage: Option<&[[i32; 4]]>,
+                     prims: &CanvasPrims,
+                     marks: &Marks| {
+        p.reset();
+        let drawn = canvas::draw_cached(p, cache, view, cam, key, damage, true, bg(), |p, v, c| {
+            content(p, v, c, prims, &mut text, &mut scratch);
+            canvas::draw_marks(p, v, c, prims, marks, &mut scratch);
+        });
+        (drawn, p.finish(Color::BLACK))
+    };
+    let (mut patched, mut moved) = (0, false);
+    for step in 0..50 {
+        if rng.below(6) == 0 {
+            cam.pan(
+                f64::from(rng.below(21)) - 10.0,
+                f64::from(rng.below(21)) - 10.0,
+            );
+            moved = true;
+        } else {
+            edit(&mut prims, &mut sel, &mut rng);
+            key += 1;
+        }
+        let mut marks = Marks::default();
+        for &s in &sel {
+            marks.push(PrimKind::Line, s, 0xffff_00ff);
+        }
+        boxes.clear();
+        let known = diff.update(&[&prims], (&prims, &marks), &mut boxes);
+        let damage = known.then_some(&boxes[..]);
+        let (drawn, got) = draws(&mut p, &mut cache, &cam, key, damage, &prims, &marks);
+        patched += usize::from(drawn == Drawn::Patched);
+        if drawn == Drawn::Recorded {
+            moved = false; // the layer grid follows the camera again
+        }
+        let mut fresh = CpuPainter::new(size(w), size(h), scale);
+        let (again, want) = draws(
+            &mut fresh,
+            &mut CanvasCache::default(),
+            &cam,
+            key,
+            None,
+            &prims,
+            &marks,
+        );
+        assert_eq!(again, Drawn::Recorded);
+        // A stale row would differ by its full contrast; a part redrawn alone may round its
+        // unsnapped coordinates (arcs, glyphs) differently, by 1. After a pan the two layers'
+        // pixel grids differ too: the golden tolerance, as for copied frames.
+        let worst = got
+            .data()
+            .iter()
+            .zip(want.data())
+            .map(|(a, b)| {
+                let (a, b) = ([a.r, a.g, a.b, a.a], [b.r, b.g, b.b, b.a]);
+                a.iter()
+                    .zip(b)
+                    .map(|(x, y)| x.abs_diff(y))
+                    .max()
+                    .unwrap_or(0)
+            })
+            .max()
+            .unwrap_or(0);
+        let bad = differing(&got, &want);
+        assert!(
+            (moved || worst <= 1) && bad <= want.data().len() / 1000,
+            "step {step} ({drawn:?}, scale {scale}): off by {worst}, {bad} pixels by more than 2"
+        );
+    }
+    assert!(patched >= 20, "{patched} frames patched");
+}
+
+#[test]
+fn patched_layers_equal_recordings() {
+    patch_walk(1.0, 0x9e37_79b9);
+    patch_walk(1.0, 0x0bad_cafe);
+}
+
+#[test]
+fn patched_layers_equal_recordings_at_scale_two() {
+    patch_walk(2.0, 0x1234_5678);
+}
+
+/// Negative space for the oracle above: damage that misses the change leaves the old pixels
+/// (the comparison would catch a diff that forgot a row), and unknown damage records.
+#[test]
+fn withheld_damage_shows_stale_pixels() {
+    let mut prims = common::thousand_prims();
+    let view = Rect::new(0.0, 0.0, 400.0, 300.0);
+    let cam = Camera {
+        cx: 300_000.0,
+        cy: 190_000.0,
+        scale: 0.001,
+    };
+    let (mut text, mut scratch) = (TextSystem::new(), CanvasScratch::default());
+    let mut frame = |p: &mut CpuPainter, cache: &mut CanvasCache, key, damage, prims: &_| {
+        p.reset();
+        let drawn =
+            canvas::draw_cached(p, cache, view, &cam, key, damage, true, bg(), |p, v, c| {
+                content(p, v, c, prims, &mut text, &mut scratch)
+            });
+        (drawn, p.finish(Color::BLACK))
+    };
+    let (mut p, mut cache) = (CpuPainter::new(400, 300, 1.0), CanvasCache::default());
+    assert_eq!(
+        frame(&mut p, &mut cache, 1, None, &prims).0,
+        Drawn::Recorded
+    );
+    prims.line(100_000, 100_000, 500_000, 300_000, 1);
+    let (drawn, stale) = frame(&mut p, &mut cache, 2, Some(&[]), &prims);
+    assert_eq!(drawn, Drawn::Patched);
+    let (_, fresh) = frame(
+        &mut CpuPainter::new(400, 300, 1.0),
+        &mut CanvasCache::default(),
+        2,
+        None,
+        &prims,
+    );
+    assert!(differing(&stale, &fresh) > 100, "the new line is missing");
+    assert_eq!(
+        frame(&mut p, &mut cache, 3, None, &prims).0,
+        Drawn::Recorded
+    );
 }

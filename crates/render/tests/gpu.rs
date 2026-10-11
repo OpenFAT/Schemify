@@ -278,7 +278,7 @@ fn read(g: &Gpu, t: &wgpu::Texture) -> Vec<u8> {
 }
 
 /// (mean |Δ| per channel, pixels with a channel off by more than 2).
-fn diff(a: &[u8], b: &[u8]) -> (f64, usize) {
+fn diff_px(a: &[u8], b: &[u8]) -> (f64, usize) {
     let (mut sum, mut bad) = (0u64, 0usize);
     for (p, q) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
         let d: Vec<u8> = p.iter().zip(q).map(|(x, y)| x.abs_diff(*y)).collect();
@@ -338,18 +338,28 @@ fn composed_frames_equal_vello_frames() {
             layers: Some(&mut layers),
         };
         p.fill_rect(Rect::new(0.0, 0.0, 640.0, 400.0), ui);
-        let drawn = canvas::draw_cached(&mut p, &mut cache, view, cam, 1, crisp, bg, |p, v, c| {
-            p.fill_rect(v, schemify_render::rgba(Palette::xschem_dark().background));
-            canvas::draw_prims(
-                p,
-                v,
-                c,
-                &prims,
-                &Palette::xschem_dark(),
-                &mut text,
-                &mut scratch,
-            );
-        });
+        let drawn = canvas::draw_cached(
+            &mut p,
+            &mut cache,
+            view,
+            cam,
+            1,
+            Some(&[]),
+            crisp,
+            bg,
+            |p, v, c| {
+                p.fill_rect(v, schemify_render::rgba(Palette::xschem_dark().background));
+                canvas::draw_prims(
+                    p,
+                    v,
+                    c,
+                    &prims,
+                    &Palette::xschem_dark(),
+                    &mut text,
+                    &mut scratch,
+                );
+            },
+        );
         layers
             .raster(&g.device, &g.queue, &mut g.renderer)
             .expect("raster");
@@ -390,7 +400,7 @@ fn composed_frames_equal_vello_frames() {
         "a pan reuses ({reused}, {drawn:?})"
     );
     let (_, _, full) = frame(&cam, true, gray, true);
-    let (mean, bad) = diff(&composed, &full);
+    let (mean, bad) = diff_px(&composed, &full);
     println!("pan: composed vs vello mean |Δ| {mean:.4}, {bad} pixels off by > 2");
     assert!(bad * 1000 <= composed.len() / 4, "pan frame differs: {bad}");
 
@@ -402,7 +412,7 @@ fn composed_frames_equal_vello_frames() {
         "a zoom stand-in reuses"
     );
     let (_, _, full) = frame(&cam, false, gray, true);
-    let (mean, bad) = diff(&composed, &full);
+    let (mean, bad) = diff_px(&composed, &full);
     println!("zoom stand-in: composed vs vello mean |Δ| {mean:.4}, {bad} pixels off by > 2");
     assert!(mean < 2.0, "zoom stand-in differs: mean {mean}");
 
@@ -414,11 +424,114 @@ fn composed_frames_equal_vello_frames() {
         "a zoom-out stand-in reuses"
     );
     let (_, _, full) = frame(&cam, false, gray, true);
-    let (mean, bad) = diff(&composed, &full);
+    let (mean, bad) = diff_px(&composed, &full);
     println!("zoom-out stand-in: composed vs vello mean |Δ| {mean:.4}, {bad} pixels off by > 2");
     assert!(mean < 2.0, "zoom-out stand-in differs: mean {mean}");
 
     // Anything painted differently outside the layer: through vello again.
     let (reused, _, _) = frame(&cam, false, Color::from_rgba8(61, 60, 60, 255), false);
     assert!(!reused, "a changed UI is rendered by vello");
+}
+
+/// D39 edits on the GPU: a layer patched where `CanvasDiff` says the content changed (each part
+/// rendered into its own texture and copied over its place) shows what a fresh recording of the
+/// same camera shows.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn patched_layers_equal_recorded_layers() {
+    use schemify_render::Layers;
+    use schemify_render::canvas::{CanvasCache, CanvasDiff, Drawn};
+
+    let mut g = gpu();
+    let (w, h) = (640u32, 400u32);
+    let mut prims = common::thousand_prims();
+    let view = Rect::new(40.0, 30.0, 600.0, 380.0);
+    let mut cam = Camera {
+        cx: 0.0,
+        cy: 0.0,
+        scale: 1.0,
+    };
+    cam.fit(view, [0, 0, 600_000, 380_000]);
+    let (mut text, mut scratch) = (TextSystem::new(), CanvasScratch::default());
+    let bg = schemify_render::rgba(Palette::xschem_dark().background);
+    let mut frame = |layers: &mut Layers,
+                     cache: &mut CanvasCache,
+                     prims: &CanvasPrims,
+                     key: u64,
+                     damage: Option<&[[i32; 4]]>| {
+        let mut scene = Scene::new();
+        layers.begin_frame(Affine::IDENTITY);
+        let mut p = ScenePainter {
+            scene: &mut scene,
+            base: Affine::IDENTITY,
+            layers: Some(layers),
+        };
+        let drawn = canvas::draw_cached(
+            &mut p,
+            cache,
+            view,
+            &cam,
+            key,
+            damage,
+            true,
+            bg,
+            |p, v, c| {
+                p.fill_rect(v, bg);
+                canvas::draw_prims(
+                    p,
+                    v,
+                    c,
+                    prims,
+                    &Palette::xschem_dark(),
+                    &mut text,
+                    &mut scratch,
+                );
+            },
+        );
+        layers
+            .raster(&g.device, &g.queue, &mut g.renderer)
+            .expect("raster");
+        (drawn, render(&mut g, &scene, w, h).0)
+    };
+    let (mut layers, mut cache, mut diff) = (
+        Layers::default(),
+        CanvasCache::default(),
+        CanvasDiff::default(),
+    );
+    let mut boxes = Vec::new();
+    let marks = Marks::default();
+    assert!(!diff.update(&[&prims], (&prims, &marks), &mut boxes));
+    assert_eq!(
+        frame(&mut layers, &mut cache, &prims, 1, None).0,
+        Drawn::Recorded
+    );
+    for (key, (x, y)) in [(2u64, (150_000, 90_000)), (3, (420_000, 260_000))] {
+        prims.line(x, y, x + 60_000, y + 20_000, 1);
+        let l = &mut prims.lines;
+        for col in [&mut l.x0, &mut l.y0, &mut l.x1, &mut l.y1] {
+            col.swap_remove(key as usize * 37);
+        }
+        l.layer.swap_remove(key as usize * 37);
+        boxes.clear();
+        assert!(diff.update(&[&prims], (&prims, &marks), &mut boxes));
+        let (drawn, patched) = frame(&mut layers, &mut cache, &prims, key, Some(&boxes));
+        assert_eq!(drawn, Drawn::Patched, "an edit patches");
+        let (again, fresh) = frame(
+            &mut Layers::default(),
+            &mut CanvasCache::default(),
+            &prims,
+            key,
+            None,
+        );
+        assert_eq!(again, Drawn::Recorded);
+        let (mean, bad) = diff_px(&patched, &fresh);
+        println!("edit {key}: patched vs recorded mean |Δ| {mean:.5}, {bad} pixels off by > 2");
+        // vello flattens curves on the GPU in f32 relative to the target, so a part rendered
+        // on its own can move an arc's edge by a few levels; a missed row would be many
+        // pixels at full contrast.
+        assert!(
+            mean < 0.01 && bad * 10_000 <= patched.len() / 4,
+            "a patched layer differs from a recording: mean {mean}, {bad} pixels"
+        );
+    }
 }

@@ -33,6 +33,7 @@
 #![forbid(unsafe_code)]
 
 pub mod canvas;
+mod damage;
 mod layers;
 mod painter;
 pub mod waves;
