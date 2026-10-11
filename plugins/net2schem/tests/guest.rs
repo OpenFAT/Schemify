@@ -23,16 +23,30 @@ impl World {
     }
 
     fn with_fuel(fuel: u64) -> Option<World> {
-        let wasm = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("net2schem.wasm")).ok()?;
+        let wasm =
+            std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("net2schem.wasm")).ok()?;
         let mut plugins = Plugins::new();
-        let id = plugins.load("net2schem", &wasm, &["read_project", "write_project"], fuel).expect("loads");
-        let mut w = World { plugins, events: PluginEvents::new(), snap: Snapshots::new(), queues: RequestQueues::default(), id };
+        let id = plugins
+            .load("net2schem", &wasm, &["read_project", "write_project"], fuel)
+            .expect("loads");
+        let mut w = World {
+            plugins,
+            events: PluginEvents::new(),
+            snap: Snapshots::new(),
+            queues: RequestQueues::default(),
+            id,
+        };
         w.frame();
         Some(w)
     }
 
     fn frame(&mut self) {
-        deliver(&mut self.plugins, &self.events, &mut self.snap, &mut self.queues);
+        deliver(
+            &mut self.plugins,
+            &self.events,
+            &mut self.snap,
+            &mut self.queues,
+        );
         self.events.clear();
     }
 
@@ -47,15 +61,28 @@ impl World {
     }
 
     fn faults(&self) -> Vec<String> {
-        self.plugins.health().faults().iter().map(|f| format!("{f:?}")).collect()
+        self.plugins
+            .health()
+            .faults()
+            .iter()
+            .map(|f| format!("{f:?}"))
+            .collect()
     }
 }
 
+/// Files written: (path, bytes).
+type Files = Vec<(String, Vec<u8>)>;
+/// Logged lines.
+type Logs = Vec<(Level, String)>;
+
 /// Runs an import of `text` as `source`, answering every probe with `exists(path)`.
 /// Returns the written files (path, bytes) and the logs.
-fn import(w: &mut World, source: &str, text: &str, exists: impl Fn(&str) -> bool) -> (Vec<(String, Vec<u8>)>, Vec<(Level, String)>) {
+fn import(w: &mut World, source: &str, text: &str, exists: impl Fn(&str) -> bool) -> (Files, Logs) {
     w.take();
-    w.send(Event::Command { name: "net2schem.import", args: source });
+    w.send(Event::Command {
+        name: "net2schem.import",
+        args: source,
+    });
     let mut written = Vec::new();
     let mut logs = Vec::new();
     let mut q = w.take();
@@ -76,7 +103,16 @@ fn import(w: &mut World, source: &str, text: &str, exists: impl Fn(&str) -> bool
                 }
                 op => panic!("unexpected {op:?}"),
             };
-            w.events.push(Some(w.id), &Event::IoDone { handle: r.handle, status, bytes: &bytes }).expect("queued");
+            w.events
+                .push(
+                    Some(w.id),
+                    &Event::IoDone {
+                        handle: r.handle,
+                        status,
+                        bytes: &bytes,
+                    },
+                )
+                .expect("queued");
         }
         w.frame();
         q = w.take();
@@ -92,14 +128,44 @@ fn contributes_menu_command_and_key() {
     };
     assert!(w.faults().is_empty(), "{:?}", w.faults());
     let c = w.plugins.composed();
-    assert!(c.of(Kind::Ui).iter().any(|r| r.text.contains("parent menu.file") && r.text.contains("net2schem.import")));
-    assert!(c.of(Kind::Commands).iter().any(|r| r.text.contains("net2schem.import")));
-    assert!(c.of(Kind::Keymap).iter().any(|r| r.text.contains("Ctrl+Shift+I")));
+    assert!(
+        c.of(Kind::Ui)
+            .iter()
+            .any(|r| r.text.contains("parent menu.file") && r.text.contains("net2schem.import"))
+    );
+    assert!(
+        c.of(Kind::Commands)
+            .iter()
+            .any(|r| r.text.contains("net2schem.import"))
+    );
+    assert!(
+        c.of(Kind::Keymap)
+            .iter()
+            .any(|r| r.text.contains("Ctrl+Shift+I"))
+    );
     // No argument: the path panel appears (and closes again).
-    w.send(Event::Command { name: "net2schem.import", args: "" });
-    assert!(w.plugins.composed().of(Kind::Ui).iter().any(|r| r.text.contains("text_input")));
-    w.send(Event::Command { name: "net2schem.close", args: "" });
-    assert!(!w.plugins.composed().of(Kind::Ui).iter().any(|r| r.text.contains("text_input")));
+    w.send(Event::Command {
+        name: "net2schem.import",
+        args: "",
+    });
+    assert!(
+        w.plugins
+            .composed()
+            .of(Kind::Ui)
+            .iter()
+            .any(|r| r.text.contains("text_input"))
+    );
+    w.send(Event::Command {
+        name: "net2schem.close",
+        args: "",
+    });
+    assert!(
+        !w.plugins
+            .composed()
+            .of(Kind::Ui)
+            .iter()
+            .any(|r| r.text.contains("text_input"))
+    );
     assert!(w.faults().is_empty(), "{:?}", w.faults());
 }
 
@@ -124,10 +190,21 @@ fn imports_every_fixture_like_the_native_build() {
         let (written, logs) = import(&mut w, &source, &text, |_| false);
         assert!(w.faults().is_empty(), "{source}: {:?}", w.faults());
         let native = net2schem::convert(&source, &text);
-        let want: Vec<(String, Vec<u8>)> = native.files.iter().map(|f| (format!("n2s/{}", f.name), f.bytes.clone())).collect();
+        let want: Vec<(String, Vec<u8>)> = native
+            .files
+            .iter()
+            .map(|f| (format!("n2s/{}", f.name), f.bytes.clone()))
+            .collect();
         assert_eq!(written, want, "{source}: wasm and native outputs differ");
-        let summary = logs.iter().find(|l| l.0 == Level::Info).map(|l| l.1.as_str()).unwrap_or("");
-        assert!(summary.starts_with(&format!("net2schem: {source} → {} files", want.len())), "{source}: {logs:?}");
+        let summary = logs
+            .iter()
+            .find(|l| l.0 == Level::Info)
+            .map(|l| l.1.as_str())
+            .unwrap_or("");
+        assert!(
+            summary.starts_with(&format!("net2schem: {source} → {} files", want.len())),
+            "{source}: {logs:?}"
+        );
     }
 }
 
@@ -139,23 +216,49 @@ fn refuses_to_overwrite_and_reports_missing_input() {
     let text = ".subckt inv a y\nM1 y a 0 0 nch w=1u l=1u\n.ends\nX1 in out inv\nV1 in 0 1\n";
     let (written, logs) = import(&mut w, "n2s/t.sp", text, |p| p == "n2s/inv.shprim");
     assert!(written.is_empty());
-    assert!(logs.iter().any(|l| l.0 == Level::Error && l.1.contains("already exist") && l.1.contains("inv.shcomp")), "{logs:?}");
+    assert!(
+        logs.iter().any(|l| l.0 == Level::Error
+            && l.1.contains("already exist")
+            && l.1.contains("inv.shcomp")),
+        "{logs:?}"
+    );
     // A stub of an undefined subckt that already exists in the directory is kept.
     let text = "X1 in out dut\nV1 in 0 1\n";
     let (written, _) = import(&mut w, "n2s/u.sp", text, |p| p == "n2s/dut.shcomp");
-    assert_eq!(written.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(), ["n2s/u.shbench"]);
+    assert_eq!(
+        written.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(),
+        ["n2s/u.shbench"]
+    );
     // A netlist over the card limit is refused with a log, not a fuel trap.
-    let big: String = (0..300).map(|i| format!("R{i} n{i} n{} 1k\n", i + 1)).collect();
+    let big: String = (0..300)
+        .map(|i| format!("R{i} n{i} n{} 1k\n", i + 1))
+        .collect();
     let (written, logs) = import(&mut w, "n2s/big.sp", &big, |_| false);
     assert!(written.is_empty());
-    assert!(logs.iter().any(|l| l.0 == Level::Error && l.1.contains("300 element cards")), "{logs:?}");
+    assert!(
+        logs.iter()
+            .any(|l| l.0 == Level::Error && l.1.contains("300 element cards")),
+        "{logs:?}"
+    );
     // A missing input file is an error log, not a fault.
     w.take();
-    w.send(Event::Command { name: "net2schem.import", args: "n2s/missing.sp" });
+    w.send(Event::Command {
+        name: "net2schem.import",
+        args: "n2s/missing.sp",
+    });
     let q = w.take();
     let h = q.io[0].handle;
-    w.send(Event::IoDone { handle: h, status: Code::Gone.neg(), bytes: b"" });
-    assert!(w.take().logs.iter().any(|l| l.level == Level::Error && l.text.contains("cannot read n2s/missing.sp")));
+    w.send(Event::IoDone {
+        handle: h,
+        status: Code::Gone.neg(),
+        bytes: b"",
+    });
+    assert!(
+        w.take()
+            .logs
+            .iter()
+            .any(|l| l.level == Level::Error && l.text.contains("cannot read n2s/missing.sp"))
+    );
     assert!(w.faults().is_empty(), "{:?}", w.faults());
 }
 
@@ -175,29 +278,59 @@ fn fuel_report() {
     let load_only = bisect(&|fuel| World::with_fuel(fuel).is_some_and(|w| w.faults().is_empty()));
     let panel = bisect(&|fuel| {
         let mut w = World::with_fuel(fuel).expect("built");
-        w.send(Event::Command { name: "net2schem.import", args: "" });
+        w.send(Event::Command {
+            name: "net2schem.import",
+            args: "",
+        });
         w.faults().is_empty()
     });
     let read_missing = bisect(&|fuel| {
         let mut w = World::with_fuel(fuel).expect("built");
-        w.send(Event::Command { name: "net2schem.import", args: "n2s/a.sp" });
+        w.send(Event::Command {
+            name: "net2schem.import",
+            args: "n2s/a.sp",
+        });
         let h = w.take().io.first().map_or(0, |r| r.handle);
-        w.send(Event::IoDone { handle: h, status: Code::Gone.neg(), bytes: b"" });
+        w.send(Event::IoDone {
+            handle: h,
+            status: Code::Gone.neg(),
+            bytes: b"",
+        });
         w.faults().is_empty()
     });
     eprintln!("load {load_only}, panel {panel}, read-missing {read_missing}");
-    let chain: String = (0..250).map(|i| format!("R{i} n{i} n{} 1k\n", i + 1)).collect();
-    let cells: String = (0..10)
-        .map(|c| format!(".subckt c{c} a b\n{}.ends\n", (0..24).map(|i| format!("M{i} n{i} a b n{} nch w=1u l=1u\n", i + 1)).collect::<String>()))
+    let chain: String = (0..200)
+        .map(|i| format!("R{i} n{i} n{} 1k\n", i + 1))
+        .collect();
+    let cells: String = (0..8)
+        .map(|c| {
+            format!(
+                ".subckt c{c} a b\n{}.ends\n",
+                (0..24)
+                    .map(|i| format!("M{i} n{i} a b n{} nch w=1u l=1u\n", i + 1))
+                    .collect::<String>()
+            )
+        })
         .collect();
     let tiny = [
         ("tiny/one_r", "R1 a b 1k\n".to_owned()),
         ("tiny/empty", "* nothing\n.op\n".to_owned()),
-        ("limit/chain_250", chain),
-        ("limit/cells_10x24", cells),
+        ("limit/chain_200", chain),
+        ("limit/cells_8x24", cells),
     ];
-    let named = ["bus/bus_parallel_adder", "bus/bus_sram_cell_array", "bus/bus_data_bus_driver", "mosfet/two_stage_opamp", "basic/rc_lowpass"]
-        .map(|n| (n, std::fs::read_to_string(root.join(format!("{n}.sp"))).unwrap()));
+    let named = [
+        "bus/bus_parallel_adder",
+        "bus/bus_sram_cell_array",
+        "bus/bus_data_bus_driver",
+        "mosfet/two_stage_opamp",
+        "basic/rc_lowpass",
+    ]
+    .map(|n| {
+        (
+            n,
+            std::fs::read_to_string(root.join(format!("{n}.sp"))).unwrap(),
+        )
+    });
     for (name, text) in tiny.into_iter().chain(named) {
         let fits = |fuel: u64| {
             let mut w = World::with_fuel(fuel).expect("built");
@@ -212,4 +345,3 @@ fn fuel_report() {
         eprintln!("{name}: ~{:.1}M fuel", hi as f64 / 1e6);
     }
 }
-

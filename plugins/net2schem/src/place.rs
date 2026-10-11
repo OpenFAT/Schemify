@@ -68,7 +68,9 @@ pub fn role(key: &str) -> Role {
         || k.starts_with("vee")
         || k.ends_with("_gnd")
         || k.ends_with("_vss");
-    let supply = ["vdd", "vcc", "avdd", "dvdd", "vpp"].iter().any(|p| k.starts_with(p))
+    let supply = ["vdd", "vcc", "avdd", "dvdd", "vpp"]
+        .iter()
+        .any(|p| k.starts_with(p))
         || k.ends_with("_vdd")
         || k.ends_with("_vcc");
     if sink {
@@ -157,7 +159,11 @@ impl Graph<'_> {
 ///
 /// Panics if `rec` was not built from `deck`.
 pub fn place(deck: &Deck, rec: &Recognized, c: usize) -> Placed {
-    assert_eq!(rec.parts.sym.len(), deck.dev_name.len(), "recognized another deck");
+    assert_eq!(
+        rec.parts.sym.len(),
+        deck.dev_name.len(),
+        "recognized another deck"
+    );
     let devs = deck.devs(c);
     let n = devs.len();
     let nets = deck.net_count(c);
@@ -184,7 +190,10 @@ pub fn place(deck: &Deck, rec: &Recognized, c: usize) -> Placed {
             && g.signal(ns[1]);
     }
     let dist = columns(&g, c, n);
-    let (sd, kd) = (rail_distance(&g, nets, Role::Supply), rail_distance(&g, nets, Role::Sink));
+    let (sd, kd) = (
+        rail_distance(&g, nets, Role::Supply),
+        rail_distance(&g, nets, Role::Sink),
+    );
     let height = |net: u32| -> i64 {
         match g.roles[net as usize] {
             Role::Supply => -1,
@@ -202,12 +211,24 @@ pub fn place(deck: &Deck, rec: &Recognized, c: usize) -> Placed {
         let (mut cond, mut ctrl) = (INF, INF);
         let (mut top, mut low) = (INF, INF);
         for (_, net, r) in g.pins(i) {
-            let d = if g.signal(net) { dist[net as usize] } else { INF };
+            let d = if g.signal(net) {
+                dist[net as usize]
+            } else {
+                INF
+            };
             match r {
                 PinRole::Conduct => {
                     cond = cond.min(d);
-                    top = top.min(if g.roles[net as usize] == Role::Supply { 0 } else { sd[net as usize] });
-                    low = low.min(if g.roles[net as usize] == Role::Sink { 0 } else { kd[net as usize] });
+                    top = top.min(if g.roles[net as usize] == Role::Supply {
+                        0
+                    } else {
+                        sd[net as usize]
+                    });
+                    low = low.min(if g.roles[net as usize] == Role::Sink {
+                        0
+                    } else {
+                        kd[net as usize]
+                    });
                 }
                 PinRole::Control => ctrl = ctrl.min(d),
                 PinRole::Ignore => {}
@@ -238,17 +259,30 @@ pub fn place(deck: &Deck, rec: &Recognized, c: usize) -> Placed {
 
     // Orientation (vertical flips and horizontal direction), then extents.
     let mut orient = vec![R0; n];
-    for i in 0..n {
+    for (i, o) in orient.iter_mut().enumerate() {
         let s = g.sym(i);
         let ns = g.nets(i);
-        orient[i] = match rec.syms.family[s] {
+        *o = match rec.syms.family[s] {
             Family::Two if g.horizontal[i] => {
-                if dist[ns[0] as usize] <= dist[ns[1] as usize] { R270 } else { R90 }
+                if dist[ns[0] as usize] <= dist[ns[1] as usize] {
+                    R270
+                } else {
+                    R90
+                }
             }
             Family::Two => {
-                if height(ns[0]) > height(ns[1]) { R180 } else { R0 }
+                if height(ns[0]) > height(ns[1]) {
+                    R180
+                } else {
+                    R0
+                }
             }
-            Family::Nmos | Family::Pmos | Family::Npn | Family::Pnp | Family::Vcxs | Family::Vsw => {
+            Family::Nmos
+            | Family::Pmos
+            | Family::Npn
+            | Family::Pnp
+            | Family::Vcxs
+            | Family::Vsw => {
                 // Top and bottom conduction pins in R0.
                 let (mut top, mut bot) = (None, None);
                 for (k, net, r) in g.pins(i) {
@@ -288,21 +322,72 @@ pub fn place(deck: &Deck, rec: &Recognized, c: usize) -> Placed {
     for r in 0..nrows {
         row_y[r + 1] = row_y[r] + row_h[r];
     }
-    let mut cursor = vec![0i32; ncols * nrows];
-    let mut out = Placed { x: vec![0; n], y: vec![0; n], orient };
-    for i in 0..n {
-        let slot = cols[i] * nrows + rows[i];
-        let w = ext[i][2] - ext[i][0];
-        let cx = col_x[cols[i]] + cursor[slot] + (w + GAP_X) / 2;
-        cursor[slot] += w + GAP_X;
-        let cy = row_y[rows[i]] + row_h[rows[i]] / 2;
-        out.x[i] = snap(cx - (ext[i][0] + ext[i][2]) / 2);
-        out.y[i] = snap(cy - (ext[i][1] + ext[i][3]) / 2);
+    let mut out = Placed {
+        x: vec![0; n],
+        y: vec![0; n],
+        orient,
+    };
+    // Two passes: deck order, then each slot reordered by the barycenter of the devices
+    // its devices share signal nets with (fewer crossings between stacked rows).
+    let mut order: Vec<u64> = (0..n as u64).collect();
+    for pass in 0..2 {
+        if pass == 1 {
+            order = (0..n)
+                .map(|i| {
+                    let bary =
+                        barycenter(&g, &out, &ext, i).clamp(-(1 << 20), (1 << 20) - 1) + (1 << 20);
+                    let slot = (cols[i] * nrows + rows[i]) as u64;
+                    assert!(slot < 1 << 21 && i < 1 << 21);
+                    slot << 42 | (bary as u64) << 21 | i as u64
+                })
+                .collect();
+            order.sort_unstable();
+        }
+        let mut cursor = vec![0i32; ncols * nrows];
+        for &key in &order {
+            let i = (key & ((1 << 21) - 1)) as usize;
+            let slot = cols[i] * nrows + rows[i];
+            let w = ext[i][2] - ext[i][0];
+            let cx = col_x[cols[i]] + cursor[slot] + (w + GAP_X) / 2;
+            cursor[slot] += w + GAP_X;
+            let cy = row_y[rows[i]] + row_h[rows[i]] / 2;
+            out.x[i] = snap(cx - (ext[i][0] + ext[i][2]) / 2);
+            out.y[i] = snap(cy - (ext[i][1] + ext[i][3]) / 2);
+        }
     }
     face_gates(&g, &mut out);
-    assert!(out.x.iter().chain(&out.y).all(|v| v % 10 == 0), "origins on the grid");
+    assert!(
+        out.x.iter().chain(&out.y).all(|v| v % 10 == 0),
+        "origins on the grid"
+    );
     assert_eq!(out.orient.len(), n);
     out
+}
+
+/// Mean x centre of the other devices sharing a signal net with device `i` (its own
+/// centre when it shares none), from the placement so far.
+fn barycenter(g: &Graph<'_>, p: &Placed, ext: &[[i32; 4]], i: usize) -> i32 {
+    assert!(i < p.x.len() && p.x.len() == ext.len());
+    let centre = |j: usize| p.x[j] + (ext[j][0] + ext[j][2]) / 2;
+    let (mut sum, mut cnt) = (0i64, 0i64);
+    for &net in g.nets(i) {
+        if !g.signal(net) {
+            continue;
+        }
+        let at = g.net_start[net as usize] as usize..g.net_start[net as usize + 1] as usize;
+        for e in at {
+            let j = g.inc_dev[e] as usize;
+            if j != i {
+                sum += i64::from(centre(j));
+                cnt += 1;
+            }
+        }
+    }
+    if cnt == 0 {
+        centre(i)
+    } else {
+        (sum / cnt) as i32
+    }
 }
 
 /// Rounds down to the 10-unit grid.
@@ -315,7 +400,10 @@ fn dense(keys: &[u64]) -> Vec<usize> {
     let mut uniq: Vec<u64> = keys.to_vec();
     uniq.sort_unstable();
     uniq.dedup();
-    let out: Vec<usize> = keys.iter().map(|k| uniq.binary_search(k).expect("present")).collect();
+    let out: Vec<usize> = keys
+        .iter()
+        .map(|k| uniq.binary_search(k).expect("present"))
+        .collect();
     assert!(out.iter().all(|&r| r < uniq.len().max(1)));
     out
 }
@@ -325,7 +413,10 @@ pub fn extent(rec: &Recognized, s: usize, o: u8) -> [i32; 4] {
     let b = rec.syms.body[s];
     let mut e = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
     let corners = [(b[0], b[1]), (b[2], b[3])];
-    let pins = rec.syms.pins(s).map(|k| (rec.syms.pin_x[k], rec.syms.pin_y[k]));
+    let pins = rec
+        .syms
+        .pins(s)
+        .map(|k| (rec.syms.pin_x[k], rec.syms.pin_y[k]));
     for (x, y) in corners.into_iter().chain(pins) {
         let (x, y) = xform(o, x, y);
         e = [e[0].min(x), e[1].min(y), e[2].max(x), e[3].max(y)];
@@ -370,12 +461,13 @@ fn columns(g: &Graph<'_>, c: usize, n: usize) -> Vec<u32> {
     let nets = g.roles.len();
     let mut dist = vec![INF; nets];
     let mut heap: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
-    let seed = |net: u32, d: u32, dist: &mut Vec<u32>, heap: &mut BinaryHeap<Reverse<(u32, u32)>>| {
-        if g.signal(net) && d < dist[net as usize] {
-            dist[net as usize] = d;
-            heap.push(Reverse((d, net)));
-        }
-    };
+    let seed =
+        |net: u32, d: u32, dist: &mut Vec<u32>, heap: &mut BinaryHeap<Reverse<(u32, u32)>>| {
+            if g.signal(net) && d < dist[net as usize] {
+                dist[net as usize] = d;
+                heap.push(Reverse((d, net)));
+            }
+        };
     for &p in g.deck.ports(c) {
         if crate::recognize::port_dir(g.deck, c, p) == Dir::In {
             seed(p, 0, &mut dist, &mut heap);
@@ -419,9 +511,16 @@ fn columns(g: &Graph<'_>, c: usize, n: usize) -> Vec<u32> {
             }
         }
         // Another component: start it right of everything reached so far.
-        let far = dist.iter().filter(|&&d| d != INF).max().map_or(0, |m| m + 2);
-        let fresh = (next_seed..nets as u32)
-            .find(|&k| g.signal(k) && dist[k as usize] == INF && g.net_start[k as usize + 1] > g.net_start[k as usize]);
+        let far = dist
+            .iter()
+            .filter(|&&d| d != INF)
+            .max()
+            .map_or(0, |m| m + 2);
+        let fresh = (next_seed..nets as u32).find(|&k| {
+            g.signal(k)
+                && dist[k as usize] == INF
+                && g.net_start[k as usize + 1] > g.net_start[k as usize]
+        });
         match fresh {
             Some(k) => {
                 next_seed = k + 1;
@@ -440,9 +539,9 @@ fn rail_distance(g: &Graph<'_>, nets: usize, from: Role) -> Vec<u32> {
     assert_ne!(from, Role::Signal);
     let mut dist = vec![INF; nets];
     let mut heap: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
-    for k in 0..nets {
+    for (k, d) in dist.iter_mut().enumerate() {
         if g.roles[k] == from {
-            dist[k] = 0;
+            *d = 0;
             heap.push(Reverse((0, k as u32)));
         }
     }

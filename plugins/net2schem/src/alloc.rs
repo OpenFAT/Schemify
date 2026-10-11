@@ -87,7 +87,8 @@ unsafe impl GlobalAlloc for Classes {
     }
 
     unsafe fn realloc(&self, p: *mut u8, l: Layout, new_size: usize) -> *mut u8 {
-        let new = Layout::from_size_align(new_size, l.align()).expect("valid per the caller's contract");
+        let new =
+            Layout::from_size_align(new_size, l.align()).expect("valid per the caller's contract");
         match (class(l), class(new)) {
             (Some(a), Some(b)) if a == b => p,
             // SAFETY: both blocks belong to the system allocator.

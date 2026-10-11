@@ -80,7 +80,9 @@ fn push_value(out: &mut String, v: &str) {
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                out.push_str(&format!("\\u{{{:x}}}", c as u32))
+            }
             c => out.push(c),
         }
     }
@@ -116,7 +118,9 @@ fn int(v: i32) -> String {
 
 /// The 6-char id drawn from 64 random bits (low 30 bits, 5 per char, first char lowest).
 fn id_text(bits: u64) -> String {
-    (0..6).map(|i| ID_ALPHABET[((bits >> (5 * i)) & 31) as usize] as char).collect()
+    (0..6)
+        .map(|i| ID_ALPHABET[((bits >> (5 * i)) & 31) as usize] as char)
+        .collect()
 }
 
 /// Bytewise sort value of an id drawn from `bits` (first char most significant).
@@ -126,7 +130,9 @@ fn id_order(bits: u64) -> u64 {
 
 /// FNV-1a 64 of `bytes`, continuing from `h`.
 fn fnv(h: u64, bytes: &[u8]) -> u64 {
-    bytes.iter().fold(h, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3))
+    bytes.iter().fold(h, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 /// FNV-1a 64 state after the source key (each record then folds in its ordinal).
@@ -175,7 +181,10 @@ impl Writer {
     /// Starts a record; rank-3 records draw an id (the first field).
     fn record(&mut self, slot: Slot, word: &'static str, fields: &[&str]) {
         assert!(self.recs.len() < RECORDS_MAX, "file record table full");
-        let ranked = matches!(slot, Slot::Inst | Slot::Wire | Slot::Label | Slot::Port | Slot::Noconn);
+        let ranked = matches!(
+            slot,
+            Slot::Inst | Slot::Wire | Slot::Label | Slot::Port | Slot::Noconn
+        );
         let mut text = String::from(word);
         let mut order = 0;
         if ranked {
@@ -221,7 +230,8 @@ impl Writer {
     fn verbatim(&mut self, line: &str) {
         assert!(!line.contains(['\n', '\r']));
         let rec = self.recs.last_mut().expect("a record is open");
-        rec.text.push_str(if line.is_empty() { "  |" } else { "  | " });
+        rec.text
+            .push_str(if line.is_empty() { "  |" } else { "  | " });
         rec.text.push_str(line);
         rec.text.push('\n');
     }
@@ -240,7 +250,11 @@ impl Writer {
             prev = r.word;
         }
         assert!(out.starts_with("schemify 1 ") && out.ends_with('\n'));
-        OutFile { name, bytes: out.into_bytes(), shared }
+        OutFile {
+            name,
+            bytes: out.into_bytes(),
+            shared,
+        }
     }
 }
 
@@ -266,7 +280,10 @@ pub fn cell_file(
         w.header_attr("prefix", "X");
     }
     w.header_attr("provenance", &format!("net2schem {source}"));
-    let params: Vec<&str> = deck.params(c).map(|p| deck.param_name[p].as_str()).collect();
+    let params: Vec<&str> = deck
+        .params(c)
+        .map(|p| deck.param_name[p].as_str())
+        .collect();
     if c > 0 {
         let s = crate::recognize::sub_symbol(c);
         symbol(&mut w, rec, s);
@@ -283,7 +300,10 @@ pub fn cell_file(
         w.record(Slot::Inst, "inst", &[&rec.syms.cellref(s)]);
         let (x, y) = (int(placed.x[i]), int(placed.y[i]));
         w.attr("at", &[&x, &y, ORIENT_WORDS[placed.orient[i] as usize]]);
-        w.attr("name", &[&crate::recognize::pin_name(&rec.parts.inst_name[d])]);
+        w.attr(
+            "name",
+            &[&crate::recognize::pin_name(&rec.parts.inst_name[d])],
+        );
         for o in rec.parts.overrides(d) {
             w.attr(&rec.parts.over_key[o], &[&rec.parts.over_val[o]]);
         }
@@ -295,7 +315,11 @@ pub fn cell_file(
     for m in 0..routed.mark_net.len() {
         let net = routed.mark_net[m];
         let name = crate::recognize::pin_name(deck.net_name(c, net));
-        let (slot, word) = if routed.mark_port[m] { (Slot::Port, "port") } else { (Slot::Label, "label") };
+        let (slot, word) = if routed.mark_port[m] {
+            (Slot::Port, "port")
+        } else {
+            (Slot::Label, "label")
+        };
         w.record(slot, word, &[]);
         w.coords(&[routed.mark_x[m], routed.mark_y[m]]);
         let rec_text = &mut w.recs.last_mut().expect("just opened").text;
@@ -372,15 +396,27 @@ pub fn leaf_file(source: &str, rec: &Recognized, s: usize) -> OutFile {
     let stem = &rec.syms.stem[s];
     let code = s == rec.code_sym as usize;
     let (doc, param, format) = if code {
-        ("SPICE text kept inside a subckt definition (net2schem)", "text", "{text}")
+        (
+            "SPICE text kept inside a subckt definition (net2schem)",
+            "text",
+            "{text}",
+        )
     } else {
-        ("SPICE card re-emitted verbatim (net2schem)", "args", "{name} {pins} {args}")
+        (
+            "SPICE card re-emitted verbatim (net2schem)",
+            "args",
+            "{name} {pins} {args}",
+        )
     };
     let mut w = Writer::new("shprim", format!("{source}#{stem}"));
     w.header_attr("doc", doc);
     w.header_attr("provenance", &format!("net2schem {source}"));
     symbol(&mut w, rec, s);
-    w.record(Slot::Rank1, "param", &[param, &template(&rec.syms.args_default[s], &[])]);
+    w.record(
+        Slot::Rank1,
+        "param",
+        &[param, &template(&rec.syms.args_default[s], &[])],
+    );
     w.attr("kind", &["string"]);
     w.record(Slot::Rank1, "impl", &["spice", "spice"]);
     w.attr("format", &["spice", format]);
@@ -391,7 +427,11 @@ pub fn leaf_file(source: &str, rec: &Recognized, s: usize) -> OutFile {
 /// Rank 1 pins of symbol `s`.
 fn symbol(w: &mut Writer, rec: &Recognized, s: usize) {
     for k in rec.syms.pins(s) {
-        w.record(Slot::Rank1, "pin", &[&rec.syms.pin_name[k], rec.syms.pin_dir[k].word()]);
+        w.record(
+            Slot::Rank1,
+            "pin",
+            &[&rec.syms.pin_name[k], rec.syms.pin_dir[k].word()],
+        );
         w.coords(&[rec.syms.pin_x[k], rec.syms.pin_y[k]]);
     }
 }
@@ -411,13 +451,23 @@ fn graphics(w: &mut Writer, rec: &Recognized, s: usize) {
             w.coords(&[-10, -20, 10, 20]);
         }
         Family::Box | Family::Vcxs | Family::Vsw | Family::Tline => {
-            let inner = if rec.syms.family[s] == Family::Box { 40 } else { b[2].max(-b[0]) - 20 };
+            let inner = if rec.syms.family[s] == Family::Box {
+                40
+            } else {
+                b[2].max(-b[0]) - 20
+            };
             let (top, bot) = (b[1].min(-10) - 10, b[3].max(10) + 10);
             w.record(Slot::Rank2, "rect", &[]);
             w.coords(&[-inner, top, inner, bot]);
             for k in rec.syms.pins(s) {
                 let (x, y) = (rec.syms.pin_x[k], rec.syms.pin_y[k]);
-                let edge = if x < 0 { -inner } else if x > 0 { inner } else { 0 };
+                let edge = if x < 0 {
+                    -inner
+                } else if x > 0 {
+                    inner
+                } else {
+                    0
+                };
                 if edge != x {
                     line(w, [x, y, edge, y]);
                 } else if y != 0 && (y < top || y > bot) {
@@ -426,7 +476,15 @@ fn graphics(w: &mut Writer, rec: &Recognized, s: usize) {
             }
         }
         Family::Nmos | Family::Pmos | Family::Npn | Family::Pnp => {
-            for v in [[-20, 0, -10, 0], [-10, -20, -10, 20], [0, -20, 0, 20], [0, -20, 20, -20], [0, 20, 20, 20], [20, -30, 20, -20], [20, 20, 20, 30]] {
+            for v in [
+                [-20, 0, -10, 0],
+                [-10, -20, -10, 20],
+                [0, -20, 0, 20],
+                [0, -20, 20, -20],
+                [0, 20, 20, 20],
+                [20, -30, 20, -20],
+                [20, 20, 20, 30],
+            ] {
                 line(w, v);
             }
             if rec.syms.pins(s).len() == 4 {
@@ -462,7 +520,10 @@ mod tests {
         assert_eq!(q("#1"), "\"#1\"");
         assert_eq!(q("a b"), "\"a b\"");
         assert_eq!(q("say \"hi\"\\"), "\"say \\\"hi\\\"\\\\\"");
-        assert_eq!(q("l1\nl2\tx\r\u{0}\u{7f}"), "\"l1\\nl2\\tx\\u{d}\\u{0}\\u{7f}\"");
+        assert_eq!(
+            q("l1\nl2\tx\r\u{0}\u{7f}"),
+            "\"l1\\nl2\\tx\\u{d}\\u{0}\\u{7f}\""
+        );
     }
 
     #[test]

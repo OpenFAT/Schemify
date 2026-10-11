@@ -98,7 +98,11 @@ pub fn convert(source: &str, text: &str) -> Conversion {
     let has_top = !deck.devs(0).is_empty() || deck.code_cell.contains(&0);
     let mut budget = route::ROUTE_DEVICES_MAX;
     for c in (1..deck.cells()).chain(has_top.then_some(0)) {
-        let stem = if c == 0 { bench.clone() } else { rec.syms.stem[recognize::sub_symbol(c)].clone() };
+        let stem = if c == 0 {
+            bench.clone()
+        } else {
+            rec.syms.stem[recognize::sub_symbol(c)].clone()
+        };
         let placed = place::place(&deck, &rec, c);
         let routed = route::route(&deck, &rec, &placed, c, &mut budget);
         let s = &mut out.stats;
@@ -108,7 +112,9 @@ pub fn convert(source: &str, text: &str) -> Conversion {
         s.markers += routed.mark_net.len() as u32;
         s.nets_multi += routed.nets_multi;
         s.nets_wired += routed.nets_wired;
-        out.files.push(emit::cell_file(source, &deck, &rec, c, &stem, &placed, &routed));
+        out.files.push(emit::cell_file(
+            source, &deck, &rec, c, &stem, &placed, &routed,
+        ));
     }
     for s in 0..rec.syms.stem.len() {
         if rec.syms.origin[s] == recognize::Origin::Leaf {
@@ -116,6 +122,9 @@ pub fn convert(source: &str, text: &str) -> Conversion {
         }
     }
     assert!(out.stats.nets_wired <= out.stats.nets_multi);
-    assert_eq!(out.stats.cells as usize, out.files.iter().filter(|f| !f.shared).count());
+    assert_eq!(
+        out.stats.cells as usize,
+        out.files.iter().filter(|f| !f.shared).count()
+    );
     out
 }

@@ -119,7 +119,9 @@ impl Deck {
     /// Display spelling of local net `n` of cell `c` (its first spelling in the deck).
     pub fn net_name(&self, c: usize, n: u32) -> &str {
         let key = self.net_key(c, n);
-        self.spelling.get(key).map_or(key, |id| self.spelled[id as usize].as_str())
+        self.spelling
+            .get(key)
+            .map_or(key, |id| self.spelled[id as usize].as_str())
     }
 
     /// `*.PININFO` direction of lowercase net name `key`.
@@ -210,7 +212,6 @@ impl Interner {
 }
 
 impl Deck {
-
     /// Node nets of device `d`.
     pub fn nets_of(&self, d: usize) -> &[u32] {
         &self.dev_net[self.dev_net_start[d] as usize..self.dev_net_start[d + 1] as usize]
@@ -325,9 +326,9 @@ fn statements(text: &str, deck: &mut Deck) -> Vec<Stmt> {
                     st.raw.push('\n');
                     st.raw.push_str(raw.trim_end());
                 }
-                _ => deck
-                    .warnings
-                    .push(format!("line {line_no}: continuation without a card, dropped")),
+                _ => deck.warnings.push(format!(
+                    "line {line_no}: continuation without a card, dropped"
+                )),
             }
             continue;
         }
@@ -577,7 +578,7 @@ impl Builder {
                     return true;
                 };
                 if self.deck.find_cell(&name.text).is_some() {
-                    self.warn(st.line, "duplicate .subckt name; later definition renamed");
+                    self.warn(st.line, "duplicate .subckt name; calls use the first definition");
                 }
                 if self.cell() != 0 {
                     self.warn(st.line, "nested .subckt hoisted to the top level");
@@ -649,9 +650,8 @@ impl Builder {
     /// Node count of an element card, or `None` for a card kept as code text.
     fn node_count(&self, letter: u8, toks: &[Tok]) -> Option<usize> {
         let lower = |i: usize| toks.get(i).map(|t| t.text.to_ascii_lowercase());
-        let is_model = |i: usize| {
-            lower(i).is_some_and(|m| self.deck.models.iter().any(|(n, _)| *n == m))
-        };
+        let is_model =
+            |i: usize| lower(i).is_some_and(|m| self.deck.models.iter().any(|(n, _)| *n == m));
         Some(match letter {
             b'r' | b'c' | b'l' | b'd' | b'v' | b'i' | b'f' | b'h' | b'b' | b'w' => 2,
             b'e' | b'g' => {
@@ -676,7 +676,9 @@ impl Builder {
             b'x' => {
                 let k = toks
                     .iter()
-                    .position(|t| key_of(&t.text).is_some() || t.text.eq_ignore_ascii_case("params:"))
+                    .position(|t| {
+                        key_of(&t.text).is_some() || t.text.eq_ignore_ascii_case("params:")
+                    })
                     .unwrap_or(toks.len());
                 // No nodes (`X1 sub`): kept as code, since a cell needs a pin.
                 if k < 3 {
@@ -777,7 +779,8 @@ impl Builder {
             d.dev_line.push(rows.line[i]);
             d.dev_sub.push(rows.sub[i].clone());
             d.dev_rest.push(rows.rest[i].clone());
-            d.dev_net.extend(rows.nets[i].iter().map(|&g| local[g as usize]));
+            d.dev_net
+                .extend(rows.nets[i].iter().map(|&g| local[g as usize]));
             d.dev_net_start
                 .push(u32::try_from(d.dev_net.len()).expect("pin count fits u32"));
         }
@@ -794,7 +797,10 @@ impl Builder {
             d.param_start.push(d.param_name.len() as u32);
         }
         assert_eq!(d.dev_name.len() + 1, d.dev_net_start.len());
-        assert_eq!(*d.dev_start.last().expect("cells + 1 entries") as usize, d.dev_name.len());
+        assert_eq!(
+            *d.dev_start.last().expect("cells + 1 entries") as usize,
+            d.dev_name.len()
+        );
         d
     }
 }
@@ -851,7 +857,10 @@ mod tests {
             .into_iter()
             .map(|t| t.text)
             .collect();
-        assert_eq!(t, ["V1", "a", "b", "PULSE(0 1 0)", "w={a + b}", "l=2", "'x y'"]);
+        assert_eq!(
+            t,
+            ["V1", "a", "b", "PULSE(0 1 0)", "w={a + b}", "l=2", "'x y'"]
+        );
         assert_eq!(cut_comment("R1 a b 1k $ note"), "R1 a b 1k");
         assert_eq!(cut_comment("R1 a b '1$2' ; c"), "R1 a b '1$2'");
     }

@@ -89,9 +89,18 @@ impl Symbols {
         }
     }
 
-    fn push(&mut self, stem: String, origin: Origin, family: Family, pins: &[(String, i32, i32, Dir)]) -> u32 {
+    fn push(
+        &mut self,
+        stem: String,
+        origin: Origin,
+        family: Family,
+        pins: &[(String, i32, i32, Dir)],
+    ) -> u32 {
         assert!(self.stem.len() < SYMBOLS_MAX, "symbol table full");
-        assert!(pins.iter().all(|p| p.1 % 10 == 0 && p.2 % 10 == 0), "pins on the 10 grid");
+        assert!(
+            pins.iter().all(|p| p.1 % 10 == 0 && p.2 % 10 == 0),
+            "pins on the 10 grid"
+        );
         if self.pin_start.is_empty() {
             self.pin_start.push(0);
         }
@@ -100,7 +109,12 @@ impl Symbols {
             if i == 0 {
                 body = [p.1, p.2, p.1, p.2];
             }
-            body = [body[0].min(p.1), body[1].min(p.2), body[2].max(p.1), body[3].max(p.2)];
+            body = [
+                body[0].min(p.1),
+                body[1].min(p.2),
+                body[2].max(p.1),
+                body[3].max(p.2),
+            ];
         }
         match family {
             Family::Two => body = [-10, -30, 10, 30],
@@ -148,7 +162,10 @@ impl Parts {
 
 /// Core cells this importer places, with their SPICE-order pins (offsets from
 /// `lib/core/*.shprim`; `tests/core_geometry.rs` checks them against the files).
-const CORE: &[(&str, Family, &[(&str, i32, i32, Dir)])] = &[
+/// A pin table row: name, x, y, direction.
+type PinRow = (&'static str, i32, i32, Dir);
+
+const CORE: &[(&str, Family, &[PinRow])] = &[
     ("res", Family::Two, TWO),
     ("cap", Family::Two, TWO),
     ("ind", Family::Two, TWO),
@@ -169,19 +186,47 @@ const CORE: &[(&str, Family, &[(&str, i32, i32, Dir)])] = &[
 ];
 
 use Dir::{In, Inout};
-const TWO: &[(&str, i32, i32, Dir)] = &[("p", 0, -30, Inout), ("n", 0, 30, Inout)];
-const NMOS: &[(&str, i32, i32, Dir)] =
-    &[("d", 20, -30, Inout), ("g", -20, 0, In), ("s", 20, 30, Inout), ("b", 20, 0, In)];
-const PMOS: &[(&str, i32, i32, Dir)] =
-    &[("d", 20, 30, Inout), ("g", -20, 0, In), ("s", 20, -30, Inout), ("b", 20, 0, In)];
-const NPN: &[(&str, i32, i32, Dir)] = &[("c", 20, -30, Inout), ("b", -20, 0, In), ("e", 20, 30, Inout)];
-const PNP: &[(&str, i32, i32, Dir)] = &[("c", 20, 30, Inout), ("b", -20, 0, In), ("e", 20, -30, Inout)];
-const VCXS: &[(&str, i32, i32, Dir)] =
-    &[("p", 0, -30, Inout), ("n", 0, 30, Inout), ("cp", -40, -20, In), ("cn", -40, 20, In)];
-const VSW: &[(&str, i32, i32, Dir)] =
-    &[("p", 0, -30, Inout), ("n", 0, 30, Inout), ("cp", -40, 0, In), ("cn", -40, 20, In)];
-const TLINE: &[(&str, i32, i32, Dir)] =
-    &[("p1", -80, -10, Inout), ("n1", -80, 10, Inout), ("p2", 80, -10, Inout), ("n2", 80, 10, Inout)];
+const TWO: &[PinRow] = &[("p", 0, -30, Inout), ("n", 0, 30, Inout)];
+const NMOS: &[PinRow] = &[
+    ("d", 20, -30, Inout),
+    ("g", -20, 0, In),
+    ("s", 20, 30, Inout),
+    ("b", 20, 0, In),
+];
+const PMOS: &[PinRow] = &[
+    ("d", 20, 30, Inout),
+    ("g", -20, 0, In),
+    ("s", 20, -30, Inout),
+    ("b", 20, 0, In),
+];
+const NPN: &[PinRow] = &[
+    ("c", 20, -30, Inout),
+    ("b", -20, 0, In),
+    ("e", 20, 30, Inout),
+];
+const PNP: &[PinRow] = &[
+    ("c", 20, 30, Inout),
+    ("b", -20, 0, In),
+    ("e", 20, -30, Inout),
+];
+const VCXS: &[PinRow] = &[
+    ("p", 0, -30, Inout),
+    ("n", 0, 30, Inout),
+    ("cp", -40, -20, In),
+    ("cn", -40, 20, In),
+];
+const VSW: &[PinRow] = &[
+    ("p", 0, -30, Inout),
+    ("n", 0, 30, Inout),
+    ("cp", -40, 0, In),
+    ("cn", -40, 20, In),
+];
+const TLINE: &[PinRow] = &[
+    ("p1", -80, -10, Inout),
+    ("n1", -80, 10, Inout),
+    ("p2", 80, -10, Inout),
+    ("n2", 80, 10, Inout),
+];
 
 /// Symbol row of the generated cell of deck subckt `c` (≥ 1).
 pub fn sub_symbol(c: usize) -> usize {
@@ -218,7 +263,10 @@ pub fn recognize(deck: &Deck) -> Recognized {
     let mut r = Recognized::default();
     let mut taken: Vec<String> = Vec::new();
     for (name, fam, pins) in CORE {
-        let pins: Vec<_> = pins.iter().map(|p| (p.0.to_owned(), p.1, p.2, p.3)).collect();
+        let pins: Vec<_> = pins
+            .iter()
+            .map(|p| (p.0.to_owned(), p.1, p.2, p.3))
+            .collect();
         r.syms.push((*name).to_owned(), Origin::Core, *fam, &pins);
     }
     for c in 1..deck.cells() {
@@ -235,21 +283,29 @@ pub fn recognize(deck: &Deck) -> Recognized {
     }
     r.parts.over_start.push(0);
     for c in 0..deck.cells() {
-        let params: Vec<&str> = deck.params(c).map(|p| deck.param_name[p].as_str()).collect();
+        let params: Vec<&str> = deck
+            .params(c)
+            .map(|p| deck.param_name[p].as_str())
+            .collect();
         let first = r.parts.inst_name.len();
         for d in deck.devs(c) {
             device(deck, d, &params, &mut r, &mut taken);
             r.parts.over_start.push(r.parts.over_key.len() as u32);
             // Instance names are unique per cell (E009): a repeated card name gets a suffix.
             let last = r.parts.inst_name.len() - 1;
-            let taken_name = |n: &str, names: &[String]| names[first..last].iter().any(|x| x.eq_ignore_ascii_case(n));
+            let taken_name = |n: &str, names: &[String]| {
+                names[first..last].iter().any(|x| x.eq_ignore_ascii_case(n))
+            };
             let name = r.parts.inst_name[last].clone();
             if taken_name(&name, &r.parts.inst_name) {
                 let mut k = 2u32;
                 while taken_name(&format!("{name}_{k}"), &r.parts.inst_name) {
                     k += 1;
                 }
-                r.warnings.push(format!("line {}: duplicate name {name} renamed {name}_{k}", deck.dev_line[d]));
+                r.warnings.push(format!(
+                    "line {}: duplicate name {name} renamed {name}_{k}",
+                    deck.dev_line[d]
+                ));
                 r.parts.inst_name[last] = format!("{name}_{k}");
             }
         }
@@ -262,8 +318,16 @@ pub fn recognize(deck: &Deck) -> Recognized {
 /// Generated box pins of subckt cell `c`: inputs on the left, the rest on the right,
 /// 20 apart, centred on the origin; leads end at x = ±60.
 fn box_pins(deck: &Deck, c: usize) -> Vec<(String, i32, i32, Dir)> {
-    let dirs: Vec<Dir> = deck.ports(c).iter().map(|&n| port_dir(deck, c, n)).collect();
-    let names: Vec<String> = deck.ports(c).iter().map(|&n| pin_name(deck.net_name(c, n))).collect();
+    let dirs: Vec<Dir> = deck
+        .ports(c)
+        .iter()
+        .map(|&n| port_dir(deck, c, n))
+        .collect();
+    let names: Vec<String> = deck
+        .ports(c)
+        .iter()
+        .map(|&n| pin_name(deck.net_name(c, n)))
+        .collect();
     box_layout(&names, &dirs)
 }
 
@@ -300,7 +364,11 @@ pub fn port_dir(deck: &Deck, c: usize, n: u32) -> Dir {
     }
     if key.starts_with("in") || key.starts_with("vin") {
         Dir::In
-    } else if key.starts_with("out") || key.starts_with("vout") || key.starts_with("vref") || key == "vo" {
+    } else if key.starts_with("out")
+        || key.starts_with("vout")
+        || key.starts_with("vref")
+        || key == "vo"
+    {
         Dir::Out
     } else {
         Dir::Inout
@@ -318,9 +386,19 @@ pub fn pin_name(name: &str) -> String {
 pub fn unique_stem(name: &str, taken: &mut Vec<String>) -> String {
     let base: String = name
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || "_.-".contains(ch) { ch } else { '_' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || "_.-".contains(ch) {
+                ch
+            } else {
+                '_'
+            }
+        })
         .collect();
-    let base = if base.is_empty() || base.starts_with('.') { format!("c{base}") } else { base };
+    let base = if base.is_empty() || base.starts_with('.') {
+        format!("c{base}")
+    } else {
+        base
+    };
     let mut stem = base.clone();
     let mut k = 2u32;
     while taken.iter().any(|t| t.eq_ignore_ascii_case(&stem)) {
@@ -353,7 +431,11 @@ pub fn is_literal(s: &str) -> bool {
     } else if !int {
         return false;
     }
-    if i < b.len() && b[i] == b'e' && b.get(i + 1).is_some_and(|c| c.is_ascii_digit() || *c == b'+' || *c == b'-') {
+    if i < b.len()
+        && b[i] == b'e'
+        && b.get(i + 1)
+            .is_some_and(|c| c.is_ascii_digit() || *c == b'+' || *c == b'-')
+    {
         i += 1;
         if b[i] == b'+' || b[i] == b'-' {
             i += 1;
@@ -417,7 +499,8 @@ fn template_in(text: &str, params: &[&str], depth0: u32) -> String {
                 }
                 _ => {
                     out.push_str(word);
-                    if is_call && (word.eq_ignore_ascii_case("v") || word.eq_ignore_ascii_case("i")) {
+                    if is_call && (word.eq_ignore_ascii_case("v") || word.eq_ignore_ascii_case("i"))
+                    {
                         probe_depth = Some(paren);
                     }
                 }
@@ -521,7 +604,10 @@ fn device(deck: &Deck, d: usize, params: &[&str], r: &mut Recognized, taken: &mu
     let nodes = deck.nets_of(d).len();
     let rest = deck.dev_rest[d].as_str();
     let toks = tokenize(rest);
-    let mut o = Over { keys: Vec::new(), vals: Vec::new() };
+    let mut o = Over {
+        keys: Vec::new(),
+        vals: Vec::new(),
+    };
     let core = |n: &str| CORE.iter().position(|c| c.0 == n).map(|i| i as u32);
     let model_kind = |m: &str| {
         let m = m.to_ascii_lowercase();
@@ -530,7 +616,9 @@ fn device(deck: &Deck, d: usize, params: &[&str], r: &mut Recognized, taken: &mu
     let mut inst_name = name.clone();
     let sym: Option<u32> = match (letter, nodes) {
         (b'r' | b'c' | b'l', 2) => {
-            let m = toks.iter().find(|t| key_of(&t.text).is_some_and(|k| k.eq_ignore_ascii_case("m")));
+            let m = toks
+                .iter()
+                .find(|t| key_of(&t.text).is_some_and(|k| k.eq_ignore_ascii_case("m")));
             let value: Vec<&str> = toks
                 .iter()
                 .filter(|t| !key_of(&t.text).is_some_and(|k| k.eq_ignore_ascii_case("m")))
@@ -564,19 +652,26 @@ fn device(deck: &Deck, d: usize, params: &[&str], r: &mut Recognized, taken: &mu
         (b'q', 3) => match model_and_params(&toks) {
             Some((m, p))
                 if p.iter().any(|x| x.0 == "area")
-                    && p.iter().all(|x| (x.0 == "area" || x.0 == "m") && is_literal(&x.1)) =>
+                    && p.iter()
+                        .all(|x| (x.0 == "area" || x.0 == "m") && is_literal(&x.1)) =>
             {
                 o.text("model", m);
                 for (k, v) in &p {
                     o.number(k, v, "1");
                 }
-                core(if model_kind(m).is_some_and(|k| k == "pnp") { "pnp" } else { "npn" })
+                core(if model_kind(m).is_some_and(|k| k == "pnp") {
+                    "pnp"
+                } else {
+                    "npn"
+                })
             }
             _ => None,
         },
         (b'm', 4) => match model_and_params(&toks) {
             Some((m, p))
-                if has_literal(&p, "w") && has_literal(&p, "l") && p.iter().all(|x| x.0 != "m" || is_literal(&x.1)) =>
+                if has_literal(&p, "w")
+                    && has_literal(&p, "l")
+                    && p.iter().all(|x| x.0 != "m" || is_literal(&x.1)) =>
             {
                 o.text("model", m);
                 let mut extra: Vec<String> = Vec::new();
@@ -589,7 +684,11 @@ fn device(deck: &Deck, d: usize, params: &[&str], r: &mut Recognized, taken: &mu
                     }
                 }
                 o.text("extra", &extra.join(" "));
-                core(if is_pmos(m, model_kind(m)) { "pmos4" } else { "nmos4" })
+                core(if is_pmos(m, model_kind(m)) {
+                    "pmos4"
+                } else {
+                    "nmos4"
+                })
             }
             _ => None,
         },
@@ -622,14 +721,25 @@ fn device(deck: &Deck, d: usize, params: &[&str], r: &mut Recognized, taken: &mu
         },
         (b'x', _) => match deck.find_cell(&deck.dev_sub[d]) {
             Some(c) if deck.ports(c).len() == nodes => {
-                let callee: Vec<&str> = deck.params(c).map(|p| deck.param_name[p].as_str()).collect();
-                for t in toks.iter().filter(|t| !t.text.eq_ignore_ascii_case("params:")) {
-                    let hit = key_of(&t.text)
-                        .and_then(|k| callee.iter().find(|p| p.eq_ignore_ascii_case(k)).map(|p| (k, *p)));
+                let callee: Vec<&str> = deck
+                    .params(c)
+                    .map(|p| deck.param_name[p].as_str())
+                    .collect();
+                for t in toks
+                    .iter()
+                    .filter(|t| !t.text.eq_ignore_ascii_case("params:"))
+                {
+                    let hit = key_of(&t.text).and_then(|k| {
+                        callee
+                            .iter()
+                            .find(|p| p.eq_ignore_ascii_case(k))
+                            .map(|p| (k, *p))
+                    });
                     match hit {
                         Some((k, p)) => {
                             o.keys.push(p.to_owned());
-                            o.vals.push(template_expr(strip_outer(&t.text[k.len() + 1..]), params));
+                            o.vals
+                                .push(template_expr(strip_outer(&t.text[k.len() + 1..]), params));
                         }
                         None => r.warnings.push(format!(
                             "line {}: {name}: `{}` is no parameter of {}; dropped",
@@ -662,7 +772,11 @@ fn device(deck: &Deck, d: usize, params: &[&str], r: &mut Recognized, taken: &mu
     let sym = sym.unwrap_or_else(|| {
         o.keys.clear();
         o.vals.clear();
-        let text = if letter == b'x' { format!("{} {rest}", deck.dev_sub[d]) } else { rest.to_owned() };
+        let text = if letter == b'x' {
+            format!("{} {rest}", deck.dev_sub[d])
+        } else {
+            rest.to_owned()
+        };
         o.text("args", text.trim_end());
         leaf(letter, nodes, &toks, deck, r, taken)
     });
@@ -691,13 +805,20 @@ fn is_pmos(model: &str, kind: Option<String>) -> bool {
 
 /// The generated leaf for a card core cells cannot re-emit, keyed by drawing family and
 /// pin count (`spice_nmos4`, `spice_diode`, `spice_e2`, …), created on first use.
-fn leaf(letter: u8, nodes: usize, toks: &[Tok], deck: &Deck, r: &mut Recognized, taken: &mut Vec<String>) -> u32 {
+fn leaf(
+    letter: u8,
+    nodes: usize,
+    toks: &[Tok],
+    deck: &Deck,
+    r: &mut Recognized,
+    taken: &mut Vec<String>,
+) -> u32 {
     let model = toks.first().map(|t| t.text.as_str()).unwrap_or("");
     let kind = {
         let m = model.to_ascii_lowercase();
         deck.models.iter().find(|x| x.0 == m).map(|x| x.1.clone())
     };
-    let (key, fam, pins): (String, Family, &[(&str, i32, i32, Dir)]) = match (letter, nodes) {
+    let (key, fam, pins): (String, Family, &[PinRow]) = match (letter, nodes) {
         (b'd', 2) => ("diode".into(), Family::Two, TWO),
         (b'm', 4) if is_pmos(model, kind.clone()) => ("pmos4".into(), Family::Pmos, PMOS),
         (b'm', 4) => ("nmos4".into(), Family::Nmos, NMOS),
@@ -711,7 +832,9 @@ fn leaf(letter: u8, nodes: usize, toks: &[Tok], deck: &Deck, r: &mut Recognized,
         _ => (format!("{}{nodes}", letter as char), Family::Box, &[]),
     };
     let want = format!("spice_{key}");
-    if let Some(s) = (0..r.syms.stem.len()).find(|&s| r.syms.origin[s] == Origin::Leaf && r.syms.stem[s] == want) {
+    if let Some(s) =
+        (0..r.syms.stem.len()).find(|&s| r.syms.origin[s] == Origin::Leaf && r.syms.stem[s] == want)
+    {
         return s as u32;
     }
     let stem = unique_stem(&want, taken);
@@ -719,7 +842,9 @@ fn leaf(letter: u8, nodes: usize, toks: &[Tok], deck: &Deck, r: &mut Recognized,
         let names: Vec<String> = (1..=nodes).map(|i| format!("p{i}")).collect();
         box_layout(&names, &vec![Dir::Inout; nodes])
     } else {
-        pins.iter().map(|p| (p.0.to_owned(), p.1, p.2, p.3)).collect()
+        pins.iter()
+            .map(|p| (p.0.to_owned(), p.1, p.2, p.3))
+            .collect()
     };
     r.syms.push(stem, Origin::Leaf, fam, &pins)
 }
@@ -752,10 +877,14 @@ mod tests {
 
     #[test]
     fn literals_follow_the_expression_grammar() {
-        for ok in ["1", "10u", "1.8", ".5", "2meg", "1e-6", "1E3k", "-3", "0.18U", "5mil"] {
+        for ok in [
+            "1", "10u", "1.8", ".5", "2meg", "1e-6", "1E3k", "-3", "0.18U", "5mil",
+        ] {
             assert!(is_literal(ok), "{ok}");
         }
-        for bad in ["", "1.", "u", "1.8V", "10uF", "{w}", "'1u'", "1e", "w", "1k2"] {
+        for bad in [
+            "", "1.", "u", "1.8V", "10uF", "{w}", "'1u'", "1e", "w", "1k2",
+        ] {
             assert!(!is_literal(bad), "{bad}");
         }
     }
@@ -766,9 +895,19 @@ mod tests {
         assert_eq!(template("{rval}", &[]), "{{rval}}");
         assert_eq!(template("{2*W}", &["w"]), "{{2*({w})}}");
         assert_eq!(template("wn", &["wn"]), "{{({wn})}}");
-        assert_eq!(template("w=wn l={l}", &["wn", "l"]), "w={{({wn})}} l={{({l})}}");
-        assert_eq!(template("v(k)*k + f(k)", &["k", "f"]), "v(k)*{{({k})}} + f({{({k})}})");
-        assert_eq!(template("10k", &["k"]), "10k", "a suffix is not an identifier");
+        assert_eq!(
+            template("w=wn l={l}", &["wn", "l"]),
+            "w={{({wn})}} l={{({l})}}"
+        );
+        assert_eq!(
+            template("v(k)*k + f(k)", &["k", "f"]),
+            "v(k)*{{({k})}} + f({{({k})}})"
+        );
+        assert_eq!(
+            template("10k", &["k"]),
+            "10k",
+            "a suffix is not an identifier"
+        );
         assert_eq!(strip_outer("{2*k}"), "2*k");
         assert_eq!(strip_outer("'a'"), "a");
     }
@@ -784,15 +923,34 @@ mod tests {
         let names: Vec<&str> = (0..d.dev_name.len()).map(stem).collect();
         assert_eq!(
             names,
-            ["res", "spice_diode", "diode", "nmos4", "spice_pmos4", "spice_npn", "undefined_sub", "spice_e2", "spice_j3"]
+            [
+                "res",
+                "spice_diode",
+                "diode",
+                "nmos4",
+                "spice_pmos4",
+                "spice_npn",
+                "undefined_sub",
+                "spice_e2",
+                "spice_j3"
+            ]
         );
         let over = |i: usize| -> Vec<(String, String)> {
-            r.parts.overrides(i).map(|o| (r.parts.over_key[o].clone(), r.parts.over_val[o].clone())).collect()
+            r.parts
+                .overrides(i)
+                .map(|o| (r.parts.over_key[o].clone(), r.parts.over_val[o].clone()))
+                .collect()
         };
-        assert_eq!(over(0), [("value".into(), "1k".into()), ("m".into(), "2".into())]);
+        assert_eq!(
+            over(0),
+            [("value".into(), "1k".into()), ("m".into(), "2".into())]
+        );
         assert_eq!(over(1), [("args".into(), "dm".into())]);
         assert!(over(3).contains(&("extra".into(), "nf=2".into())));
         assert_eq!(over(6), [("args".into(), "undefined_sub w=1".into())]);
-        assert_eq!(r.syms.args_default[r.parts.sym[6] as usize], "undefined_sub");
+        assert_eq!(
+            r.syms.args_default[r.parts.sym[6] as usize],
+            "undefined_sub"
+        );
     }
 }

@@ -19,11 +19,12 @@ use crate::recognize::Recognized;
 use crate::spice::{Deck, Dir};
 
 /// Devices drawn with wires per conversion (cells in file order, each wholly wired or
-/// wholly labelled): bounds the work within the plugin's default fuel budget (routing
-/// costs ~0.4–0.7M fuel per device; a 117-device bus array converts in ~85M of 10^8).
+/// wholly labelled): bounds the work within the plugin's default fuel budget. Measured
+/// (`tests/guest.rs` fuel report): routing costs 0.4–0.9M fuel per device, labelling
+/// ~0.15M, so 80 routed devices plus the plugin's 200-card limit stay under 10^8.
 // ponytail: a cheaper router (channel routing, or candidate checks over a coarser grid)
 // would lift the cap; until then big cells are drawn with labels, which stay correct.
-pub const ROUTE_DEVICES_MAX: usize = 120;
+pub const ROUTE_DEVICES_MAX: usize = 80;
 /// Grid points per cell above which wires are skipped (labels only).
 pub const GRID_POINTS_MAX: usize = 1 << 20;
 /// Tree targets tried per pin.
@@ -70,7 +71,12 @@ struct Cell {
     body: bool,
 }
 
-const EMPTY: Cell = Cell { node: NONE, h: NONE, v: NONE, body: false };
+const EMPTY: Cell = Cell {
+    node: NONE,
+    h: NONE,
+    v: NONE,
+    body: false,
+};
 
 /// Occupancy grid of 10-unit points (row-major, `w` per row).
 struct Grid {
@@ -88,7 +94,13 @@ impl Grid {
         let w = ((b[2] - b[0]) / 10 + 1) as usize;
         let h = ((b[3] - b[1]) / 10 + 1) as usize;
         assert!(w * h <= GRID_POINTS_MAX, "grid of {w}×{h} points");
-        Grid { x0: b[0], y0: b[1], w, h, cells: vec![EMPTY; w * h] }
+        Grid {
+            x0: b[0],
+            y0: b[1],
+            w,
+            h,
+            cells: vec![EMPTY; w * h],
+        }
     }
 
     fn at(&self, p: Pt) -> Option<usize> {
@@ -103,16 +115,28 @@ impl Grid {
     /// Nets of the horizontal and vertical wires through or ending at point `i`.
     fn wires_at(&self, i: usize) -> (u16, u16) {
         let cells = &self.cells[..];
+        assert!(i < cells.len());
         let c = cells[i];
-        let h = if c.h != NONE || i % self.w == 0 { c.h } else { cells[i - 1].h };
-        let v = if c.v != NONE || i < self.w { c.v } else { cells[i - self.w].v };
+        let h = if c.h != NONE || i.is_multiple_of(self.w) {
+            c.h
+        } else {
+            cells[i - 1].h
+        };
+        let v = if c.v != NONE || i < self.w {
+            c.v
+        } else {
+            cells[i - self.w].v
+        };
         (h, v)
     }
 
     /// First point index, index step and point count of segment `a`–`b` (both ends
     /// inclusive), and whether it is horizontal; `None` when it leaves the grid.
     fn span(&self, a: Pt, b: Pt) -> Option<(usize, usize, usize, bool)> {
-        assert!(a != b && (a.0 == b.0 || a.1 == b.1), "axis-aligned, non-zero segment");
+        assert!(
+            a != b && (a.0 == b.0 || a.1 == b.1),
+            "axis-aligned, non-zero segment"
+        );
         let horiz = a.1 == b.1;
         let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
         let first = self.at(lo)?;
@@ -157,6 +181,7 @@ impl Grid {
 
     fn commit(&mut self, n: u16, a: Pt, b: Pt) {
         let (first, step, count, horiz) = self.span(a, b).expect("checked by seg_ok");
+        assert!(count >= 2, "a wire spans two points at least");
         let cells = &mut self.cells[..];
         for k in 0..count - 1 {
             let c = &mut cells[first + k * step];
@@ -199,7 +224,13 @@ struct Pin {
 /// # Panics
 ///
 /// Panics if `placed` does not have one row per device of cell `c`.
-pub fn route(deck: &Deck, rec: &Recognized, placed: &Placed, c: usize, budget: &mut usize) -> Routed {
+pub fn route(
+    deck: &Deck,
+    rec: &Recognized,
+    placed: &Placed,
+    c: usize,
+    budget: &mut usize,
+) -> Routed {
     let devs = deck.devs(c);
     assert_eq!(placed.x.len(), devs.len(), "placement of another cell");
     let nets = deck.net_count(c);
@@ -209,8 +240,22 @@ pub fn route(deck: &Deck, rec: &Recognized, placed: &Placed, c: usize, budget: &
     let mut b = [0i32, 0, 0, 0];
     for (i, d) in devs.clone().enumerate() {
         let e = extent(rec, rec.parts.sym[d] as usize, placed.orient[i]);
-        let e = [e[0] + placed.x[i], e[1] + placed.y[i], e[2] + placed.x[i], e[3] + placed.y[i]];
-        b = if i == 0 { e } else { [b[0].min(e[0]), b[1].min(e[1]), b[2].max(e[2]), b[3].max(e[3])] };
+        let e = [
+            e[0] + placed.x[i],
+            e[1] + placed.y[i],
+            e[2] + placed.x[i],
+            e[3] + placed.y[i],
+        ];
+        b = if i == 0 {
+            e
+        } else {
+            [
+                b[0].min(e[0]),
+                b[1].min(e[1]),
+                b[2].max(e[2]),
+                b[3].max(e[3]),
+            ]
+        };
     }
     let b = [b[0] - 200, b[1] - 200, b[2] + 200, b[3] + 200];
     let points = (((b[2] - b[0]) / 10 + 1) * ((b[3] - b[1]) / 10 + 1)) as usize;
@@ -241,7 +286,11 @@ pub fn route(deck: &Deck, rec: &Recognized, placed: &Placed, c: usize, budget: &
     // Union-find over pins: which pins one wired tree joins.
     let mut comp: Vec<u32> = (0..pins.len() as u32).collect();
     let mut wired = vec![false; pins.len()];
-    let mut grid = if wires_allowed { Some(Grid::new(b)) } else { None };
+    let mut grid = if wires_allowed {
+        Some(Grid::new(b))
+    } else {
+        None
+    };
     if let Some(g) = grid.as_mut() {
         for (i, d) in devs.clone().enumerate() {
             let s = rec.parts.sym[d] as usize;
@@ -260,7 +309,10 @@ pub fn route(deck: &Deck, rec: &Recognized, placed: &Placed, c: usize, budget: &
         for p in &pins {
             let at = g.at(p.p).expect("pins inside the bounds");
             let node = &mut g.cells[at].node;
-            assert!(*node == NONE || *node == p.net as u16, "two nets on one pin point");
+            assert!(
+                *node == NONE || *node == p.net as u16,
+                "two nets on one pin point"
+            );
             *node = p.net as u16;
         }
         // Short nets first: sort keys (half perimeter << 32 | net).
@@ -278,17 +330,25 @@ pub fn route(deck: &Deck, rec: &Recognized, placed: &Placed, c: usize, budget: &
         order.sort_unstable();
         for key in order {
             let k = (key & 0xffff_ffff) as usize;
-            route_net(g, &pins, net_pins(k), k as u16, &mut comp, &mut wired, &mut out);
+            route_net(
+                g,
+                &pins,
+                net_pins(k),
+                k as u16,
+                &mut comp,
+                &mut wired,
+                &mut out,
+            );
         }
     }
 
     // Markers: one per connected piece; rails per pin; ports first.
     let ports = deck.ports(c);
     let mut free_ports = 0i32;
-    for k in 0..nets {
+    for (k, &net_role) in roles.iter().enumerate() {
         let members = net_pins(k);
         let mut port_left = ports.contains(&(k as u32));
-        if roles[k] == Role::Signal && members.len() > 1 {
+        if net_role == Role::Signal && members.len() > 1 {
             out.nets_multi += 1;
         }
         let mut roots: Vec<u32> = Vec::new();
@@ -298,19 +358,38 @@ pub fn route(deck: &Deck, rec: &Recognized, placed: &Placed, c: usize, budget: &
                 roots.push(r);
             }
         }
-        if roles[k] == Role::Signal && members.len() > 1 && roots.len() == 1 && wired[members[0] as usize] {
+        if net_role == Role::Signal
+            && members.len() > 1
+            && roots.len() == 1
+            && wired[members[0] as usize]
+        {
             out.nets_wired += 1;
         }
         // The wired piece first: its marker may sit on any wire of the net only while
         // no other piece has a marker stub yet.
-        let (mut first, rest): (Vec<u32>, Vec<u32>) =
-            roots.iter().partition(|&&r| members.iter().any(|&j| wired[j as usize] && find(&mut comp, j) == r));
+        let (mut first, rest): (Vec<u32>, Vec<u32>) = roots.iter().partition(|&&r| {
+            members
+                .iter()
+                .any(|&j| wired[j as usize] && find(&mut comp, j) == r)
+        });
         first.extend(rest);
         let roots = first;
         for &r in &roots {
-            let piece: Vec<u32> = members.iter().copied().filter(|&j| find(&mut comp, j) == r).collect();
+            let piece: Vec<u32> = members
+                .iter()
+                .copied()
+                .filter(|&j| find(&mut comp, j) == r)
+                .collect();
             let is_port = std::mem::take(&mut port_left);
-            mark(grid.as_mut(), &pins, &piece, wired[piece[0] as usize], k as u32, is_port, &mut out);
+            mark(
+                grid.as_mut(),
+                &pins,
+                &piece,
+                wired[piece[0] as usize],
+                k as u32,
+                is_port,
+                &mut out,
+            );
         }
         if port_left {
             // A port whose net has no pins in this cell: on the margin, inputs left.
@@ -333,11 +412,13 @@ fn roots_lower_bound(nets: usize, pins: &[Pin]) -> usize {
 }
 
 fn find(comp: &mut [u32], mut j: u32) -> u32 {
+    assert!((j as usize) < comp.len());
     while comp[j as usize] != j {
         let up = comp[comp[j as usize] as usize];
         comp[j as usize] = up;
         j = up;
     }
+    assert_eq!(comp[j as usize], j, "a root is its own parent");
     j
 }
 
@@ -360,7 +441,11 @@ fn absolute_pins(deck: &Deck, rec: &Recognized, placed: &Placed, c: usize) -> Ve
             };
             let (x, y) = xform(placed.orient[i], lx, ly);
             let dir = xform(placed.orient[i], local.0, local.1);
-            out.push(Pin { p: (x + placed.x[i], y + placed.y[i]), dir, net });
+            out.push(Pin {
+                p: (x + placed.x[i], y + placed.y[i]),
+                dir,
+                net,
+            });
         }
     }
     assert!(out.iter().all(|p| p.p.0 % 10 == 0 && p.p.1 % 10 == 0));
@@ -368,9 +453,20 @@ fn absolute_pins(deck: &Deck, rec: &Recognized, placed: &Placed, c: usize) -> Ve
 }
 
 /// Grows the tree of net `n` over its pins `members` (Prim order from the leftmost pin).
-fn route_net(g: &mut Grid, pins: &[Pin], members: &[u32], n: u16, comp: &mut [u32], wired: &mut [bool], out: &mut Routed) {
+fn route_net(
+    g: &mut Grid,
+    pins: &[Pin],
+    members: &[u32],
+    n: u16,
+    comp: &mut [u32],
+    wired: &mut [bool],
+    out: &mut Routed,
+) {
     assert!(members.len() > 1);
-    let root = *members.iter().min_by_key(|&&j| (pins[j as usize].p, j)).expect("non-empty");
+    let root = *members
+        .iter()
+        .min_by_key(|&&j| (pins[j as usize].p, j))
+        .expect("non-empty");
     let mut tree: Vec<u32> = vec![root];
     let mut segs: Vec<(Pt, Pt)> = Vec::new();
     let mut left: Vec<u32> = members.iter().copied().filter(|&j| j != root).collect();
@@ -390,10 +486,13 @@ fn route_net(g: &mut Grid, pins: &[Pin], members: &[u32], n: u16, comp: &mut [u3
         let q = pins[j as usize];
         // Targets: the nearest distinct tree pins (with their stub direction), segment
         // ends and projections, kept sorted in a fixed array (no allocation per pin).
-        let mut targets: [(i32, Pt, Option<Pt>); TARGETS_MAX] = [(i32::MAX, (0, 0), None); TARGETS_MAX];
+        let mut targets: [(i32, Pt, Option<Pt>); TARGETS_MAX] =
+            [(i32::MAX, (0, 0), None); TARGETS_MAX];
         let mut offer = |p: Pt, d: Option<Pt>| {
             let key = dist(q.p, p);
-            if key >= targets[TARGETS_MAX - 1].0 || targets.iter().any(|t| t.0 != i32::MAX && t.1 == p) {
+            if key >= targets[TARGETS_MAX - 1].0
+                || targets.iter().any(|t| t.0 != i32::MAX && t.1 == p)
+            {
                 return;
             }
             let mut k = TARGETS_MAX - 1;
@@ -442,8 +541,18 @@ fn dist(a: Pt, b: Pt) -> i32 {
 
 /// Nearest point of axis-aligned segment `s` to `q`.
 fn project(q: Pt, s: (Pt, Pt)) -> Pt {
+    assert!(s.0.0 == s.1.0 || s.0.1 == s.1.1, "axis-aligned segment");
     let (lo, hi) = (s.0.min(s.1), s.0.max(s.1));
-    (q.0.clamp(lo.0.min(hi.0), lo.0.max(hi.0)), q.1.clamp(lo.1.min(hi.1), lo.1.max(hi.1)))
+    let p = (
+        q.0.clamp(lo.0.min(hi.0), lo.0.max(hi.0)),
+        q.1.clamp(lo.1.min(hi.1), lo.1.max(hi.1)),
+    );
+    assert_eq!(
+        dist(lo, p) + dist(p, hi),
+        dist(lo, hi),
+        "the projection lies on the segment"
+    );
+    p
 }
 
 /// Points a candidate path can have: start, two stub points, two bends, end stub, end.
@@ -461,7 +570,10 @@ impl Path {
     /// Joins `parts`, dropping repeated points and collinear interior points; `None`
     /// for a path that doubles back on itself or is not axis-aligned.
     fn join(parts: &[&[Pt]]) -> Option<Path> {
-        let mut p = Path { pts: [(0, 0); PATH_MAX], len: 0 };
+        let mut p = Path {
+            pts: [(0, 0); PATH_MAX],
+            len: 0,
+        };
         for &pt in parts.iter().flat_map(|s| s.iter()) {
             if p.len > 0 && p.pts[p.len - 1] == pt {
                 continue;
@@ -469,24 +581,33 @@ impl Path {
             if p.len >= 2 {
                 let (a, b) = (p.pts[p.len - 2], p.pts[p.len - 1]);
                 if (a.0 == b.0 && b.0 == pt.0) || (a.1 == b.1 && b.1 == pt.1) {
-                    let back = (b.0 - a.0).signum() != (pt.0 - b.0).signum() || (b.1 - a.1).signum() != (pt.1 - b.1).signum();
+                    let back = (b.0 - a.0).signum() != (pt.0 - b.0).signum()
+                        || (b.1 - a.1).signum() != (pt.1 - b.1).signum();
                     if back {
                         return None;
                     }
                     p.len -= 1;
                 }
             }
-            assert!(p.len < PATH_MAX, "candidate paths have at most {PATH_MAX} points");
+            assert!(
+                p.len < PATH_MAX,
+                "candidate paths have at most {PATH_MAX} points"
+            );
             p.pts[p.len] = pt;
             p.len += 1;
         }
-        let axis = p.pts[..p.len].windows(2).all(|w| w[0].0 == w[1].0 || w[0].1 == w[1].1);
+        let axis = p.pts[..p.len]
+            .windows(2)
+            .all(|w| w[0].0 == w[1].0 || w[0].1 == w[1].1);
         (p.len >= 2 && axis).then_some(p)
     }
 
     /// Length plus [`BEND_COST`] per bend.
     fn cost(&self) -> i32 {
-        let len: i32 = self.pts[..self.len].windows(2).map(|w| dist(w[0], w[1])).sum();
+        let len: i32 = self.pts[..self.len]
+            .windows(2)
+            .map(|w| dist(w[0], w[1]))
+            .sum();
         len + BEND_COST * (self.len as i32 - 2)
     }
 }
@@ -496,22 +617,41 @@ const CANDIDATES_MAX: usize = 24;
 
 /// The cheapest valid path from pin `q` (leaving along `qd`) to `t` (entered against
 /// `td` when `t` is a pin), or `None`; validates at most `tries` candidates (decremented).
-fn best_path(g: &Grid, n: u16, q: Pt, qd: Pt, t: Pt, td: Option<Pt>, tries: &mut usize) -> Option<Path> {
+fn best_path(
+    g: &Grid,
+    n: u16,
+    q: Pt,
+    qd: Pt,
+    t: Pt,
+    td: Option<Pt>,
+    tries: &mut usize,
+) -> Option<Path> {
     let mid = |a: i32, b: i32| ((a + b) / 2).div_euclid(10) * 10;
     let step = |p: Pt, d: Pt, k: i32| (p.0 + d.0 * k, p.1 + d.1 * k);
     let starts: [&[Pt]; 3] = [&[q], &[q, step(q, qd, 20)], &[q, step(q, qd, 40)]];
     let tail = td.map(|d| step(t, d, 20));
-    let mut cands = [Path { pts: [(0, 0); PATH_MAX], len: 0 }; CANDIDATES_MAX];
+    let mut cands = [Path {
+        pts: [(0, 0); PATH_MAX],
+        len: 0,
+    }; CANDIDATES_MAX];
     let mut keys = [0u64; CANDIDATES_MAX];
     let mut count = 0;
     for s in starts {
         // Straight into `t`, and (for a pin) through a stub out of it.
-        for e in [None, tail].into_iter().take(1 + usize::from(tail.is_some())) {
+        for e in [None, tail]
+            .into_iter()
+            .take(1 + usize::from(tail.is_some()))
+        {
             let end: [Pt; 2] = [e.unwrap_or(t), t];
             let end: &[Pt] = if e.is_some() { &end } else { &end[1..] };
             let (a, z) = (*s.last().expect("non-empty"), end[0]);
             let (mx, my) = (mid(a.0, z.0), mid(a.1, z.1));
-            let shapes: [[Pt; 2]; 4] = [[(z.0, a.1), (z.0, a.1)], [(a.0, z.1), (a.0, z.1)], [(mx, a.1), (mx, z.1)], [(a.0, my), (z.0, my)]];
+            let shapes: [[Pt; 2]; 4] = [
+                [(z.0, a.1), (z.0, a.1)],
+                [(a.0, z.1), (a.0, z.1)],
+                [(mx, a.1), (mx, z.1)],
+                [(a.0, my), (z.0, my)],
+            ];
             for v in shapes {
                 if let Some(p) = Path::join(&[s, &v, end]) {
                     keys[count] = (p.cost() as u64) << 32 | count as u64;
@@ -547,16 +687,29 @@ fn orient_of(d: Pt) -> u8 {
 }
 
 fn push_mark(out: &mut Routed, p: Pt, net: u32, orient: u8, port: bool) {
+    assert!(
+        orient < 8 && p.0 % 10 == 0 && p.1 % 10 == 0,
+        "markers sit on the grid"
+    );
     out.mark_x.push(p.0);
     out.mark_y.push(p.1);
     out.mark_net.push(net);
     out.mark_orient.push(orient);
     out.mark_port.push(port);
+    assert_eq!(out.mark_x.len(), out.mark_port.len());
 }
 
 /// Names one connected piece of net `net` (pins `piece`): on its longest wire when it is
 /// wired, else on a stub off its first pin, else on the pin itself.
-fn mark(grid: Option<&mut Grid>, pins: &[Pin], piece: &[u32], wired: bool, net: u32, port: bool, out: &mut Routed) {
+fn mark(
+    grid: Option<&mut Grid>,
+    pins: &[Pin],
+    piece: &[u32],
+    wired: bool,
+    net: u32,
+    port: bool,
+    out: &mut Routed,
+) {
     assert!(!piece.is_empty());
     let n = net as u16;
     let first = pins[piece[0] as usize];
@@ -601,7 +754,12 @@ fn mark(grid: Option<&mut Grid>, pins: &[Pin], piece: &[u32], wired: bool, net: 
             let s = (q.p.0 + q.dir.0 * k, q.p.1 + q.dir.1 * k);
             if g.seg_ok(n, q.p, s) && g.mark_ok(n, s) {
                 g.commit(n, q.p, s);
-                out.wire.push([q.p.0.min(s.0), q.p.1.min(s.1), q.p.0.max(s.0), q.p.1.max(s.1)]);
+                out.wire.push([
+                    q.p.0.min(s.0),
+                    q.p.1.min(s.1),
+                    q.p.0.max(s.0),
+                    q.p.1.max(s.1),
+                ]);
                 out.wire_net.push(net);
                 push_mark(out, s, net, orient_of(q.dir), port);
                 return;
@@ -614,11 +772,20 @@ fn mark(grid: Option<&mut Grid>, pins: &[Pin], piece: &[u32], wired: bool, net: 
 /// Places the port of a net with no pins in the cell on the left (inputs) or right
 /// margin of `b`, at the first free point from the top; past the bottom of the grid
 /// (where nothing is ever drawn) when the margin is full. `count` numbers those.
-fn free_port(grid: Option<&mut Grid>, b: [i32; 4], left: bool, net: u32, count: &mut i32, out: &mut Routed) {
+fn free_port(
+    grid: Option<&mut Grid>,
+    b: [i32; 4],
+    left: bool,
+    net: u32,
+    count: &mut i32,
+    out: &mut Routed,
+) {
     let x = if left { b[0] + 40 } else { b[2] - 40 };
     let n = net as u16;
     let found = grid.and_then(|g| {
-        let y = (b[1] + 40..b[3] - 40).step_by(20).find(|&y| g.mark_ok(n, (x, y)))?;
+        let y = (b[1] + 40..b[3] - 40)
+            .step_by(20)
+            .find(|&y| g.mark_ok(n, (x, y)))?;
         let i = g.at((x, y)).expect("inside");
         g.cells[i].node = n;
         Some(y)

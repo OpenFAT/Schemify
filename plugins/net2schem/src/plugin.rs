@@ -52,11 +52,11 @@ const KEYMAP: &str = "key Ctrl+Shift+I net2schem.import\n";
 const WINDOW: usize = 32;
 /// Warnings echoed to the log per import.
 const WARNINGS_SHOWN: usize = 20;
-/// Element cards converted within the default fuel budget (~0.3M fuel per card drawn
-/// with labels, more when routed); larger netlists are refused with a log instead of
-/// trapping mid-conversion.
+/// Element cards converted within the default fuel budget (with
+/// `route::ROUTE_DEVICES_MAX` routed, the rest labelled: ~90M of 10^8 at worst); larger
+/// netlists are refused with a log instead of trapping mid-conversion.
 // ponytail: split the work over several events (one cell per completion) to lift it.
-const CARDS_MAX: usize = 250;
+const CARDS_MAX: usize = 200;
 
 /// What a handle in flight stands for.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -92,7 +92,11 @@ thread_local! {
 }
 
 fn contribute(out: &mut Out, panel: bool) {
-    let ui = if panel { format!("{UI}{PANEL}") } else { UI.to_owned() };
+    let ui = if panel {
+        format!("{UI}{PANEL}")
+    } else {
+        UI.to_owned()
+    };
     out.contribute(Kind::Ui, &ui);
     out.contribute(Kind::Commands, COMMANDS);
     out.contribute(Kind::Keymap, KEYMAP);
@@ -101,8 +105,14 @@ fn contribute(out: &mut Out, panel: bool) {
 fn on_event(ev: Event<'_>, host: &Host, out: &mut Out) {
     match ev {
         Event::Load => contribute(out, false),
-        Event::Command { name: "net2schem.close", .. } => contribute(out, false),
-        Event::Command { name: "net2schem.import", args } => {
+        Event::Command {
+            name: "net2schem.close",
+            ..
+        } => contribute(out, false),
+        Event::Command {
+            name: "net2schem.import",
+            args,
+        } => {
             let mut words = Vec::new();
             let mut values = text::values(args);
             while let Ok(v) = values.need() {
@@ -117,7 +127,11 @@ fn on_event(ev: Event<'_>, host: &Host, out: &mut Out) {
             JOB.set(None); // abandon any job in flight
             start(&path, host, out);
         }
-        Event::IoDone { handle, status, bytes } => {
+        Event::IoDone {
+            handle,
+            status,
+            bytes,
+        } => {
             let Some(mut job) = JOB.take() else {
                 return;
             };
@@ -132,7 +146,10 @@ fn on_event(ev: Event<'_>, host: &Host, out: &mut Out) {
         }
         Event::Rejected { code, record } => {
             let record = String::from_utf8_lossy(record);
-            out.log_at(Level::Warn, &format!("net2schem: output rejected ({code}): {record}"));
+            out.log_at(
+                Level::Warn,
+                &format!("net2schem: output rejected ({code}): {record}"),
+            );
         }
         _ => {}
     }
@@ -140,29 +157,54 @@ fn on_event(ev: Event<'_>, host: &Host, out: &mut Out) {
 
 /// Starts an import of `path` (project-relative).
 fn start(path: &str, host: &Host, out: &mut Out) {
+    assert!(!path.is_empty(), "the caller shows the path panel instead");
     let lower = path.to_ascii_lowercase();
-    if ![".sp", ".cir", ".spice", ".net", ".cdl"].iter().any(|e| lower.ends_with(e)) {
-        out.log_at(Level::Warn, &format!("net2schem: {path}: not a .sp/.cir/.spice file; importing anyway"));
+    if ![".sp", ".cir", ".spice", ".net", ".cdl"]
+        .iter()
+        .any(|e| lower.ends_with(e))
+    {
+        out.log_at(
+            Level::Warn,
+            &format!("net2schem: {path}: not a .sp/.cir/.spice file; importing anyway"),
+        );
     }
     match host.fs_read(path) {
         Ok(h) => {
             let dir = path.rsplit_once('/').map_or("", |(d, _)| d).to_owned();
-            let job = Job { source: path.to_owned(), dir, in_flight: vec![(h, Op::Read)], ..Job::default() };
+            let job = Job {
+                source: path.to_owned(),
+                dir,
+                in_flight: vec![(h, Op::Read)],
+                ..Job::default()
+            };
             JOB.set(Some(job));
         }
-        Err(c) => out.log_at(Level::Error, &format!("net2schem: cannot read {path}: {c}{}", hint(c))),
+        Err(c) => out.log_at(
+            Level::Error,
+            &format!("net2schem: cannot read {path}: {c}{}", hint(c)),
+        ),
     }
 }
 
 fn hint(c: Code) -> &'static str {
     match c {
-        Code::Denied => " (grant read_project/write_project in schemify.project, and use a project-relative path)",
+        Code::Denied => {
+            " (grant read_project/write_project in schemify.project, and use a project-relative path)"
+        }
         _ => "",
     }
 }
 
 fn out_path(job: &Job, name: &str) -> String {
-    if job.dir.is_empty() { name.to_owned() } else { format!("{}/{name}", job.dir) }
+    assert!(
+        !name.is_empty() && !name.contains('/'),
+        "output names are plain file names"
+    );
+    if job.dir.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{}/{name}", job.dir)
+    }
 }
 
 /// Handles completion `op`; returns whether the job continues.
@@ -171,15 +213,31 @@ fn step(job: &mut Job, op: Op, status: i32, bytes: &[u8], host: &Host, out: &mut
         Op::Read => {
             if status < 0 {
                 let c = Code::from_raw(status.unsigned_abs()).unwrap_or(Code::Gone);
-                out.log_at(Level::Error, &format!("net2schem: cannot read {}: {c}{}", job.source, hint(c)));
+                out.log_at(
+                    Level::Error,
+                    &format!("net2schem: cannot read {}: {c}{}", job.source, hint(c)),
+                );
                 return false;
             }
             if bytes.len() > crate::spice::TEXT_MAX {
-                out.log_at(Level::Error, &format!("net2schem: {} is over {} bytes", job.source, crate::spice::TEXT_MAX));
+                out.log_at(
+                    Level::Error,
+                    &format!(
+                        "net2schem: {} is over {} bytes",
+                        job.source,
+                        crate::spice::TEXT_MAX
+                    ),
+                );
                 return false;
             }
             let text = String::from_utf8_lossy(bytes);
-            let cards = text.lines().filter(|l| l.trim_start().starts_with(|c: char| c.is_ascii_alphabetic())).count();
+            let cards = text
+                .lines()
+                .filter(|l| {
+                    l.trim_start()
+                        .starts_with(|c: char| c.is_ascii_alphabetic())
+                })
+                .count();
             if cards > CARDS_MAX {
                 out.log_at(
                     Level::Error,
@@ -189,7 +247,13 @@ fn step(job: &mut Job, op: Op, status: i32, bytes: &[u8], host: &Host, out: &mut
             }
             let conv = crate::convert(&job.source, &text);
             if conv.files.is_empty() {
-                out.log_at(Level::Warn, &format!("net2schem: {}: no subckt or top-level card to import", job.source));
+                out.log_at(
+                    Level::Warn,
+                    &format!(
+                        "net2schem: {}: no subckt or top-level card to import",
+                        job.source
+                    ),
+                );
                 return false;
             }
             let s = conv.stats;
@@ -211,7 +275,8 @@ fn step(job: &mut Job, op: Op, status: i32, bytes: &[u8], host: &Host, out: &mut
             for (i, f) in conv.files.iter().enumerate() {
                 let stem = f.name.rsplit_once('.').map_or(f.name.as_str(), |(s, _)| s);
                 for ext in ["shcomp", "shprim", "shbench"] {
-                    job.probes.push((out_path(job, &format!("{stem}.{ext}")), i as u32));
+                    job.probes
+                        .push((out_path(job, &format!("{stem}.{ext}")), i as u32));
                 }
             }
             job.exists = vec![false; conv.files.len()];
@@ -234,11 +299,17 @@ fn step(job: &mut Job, op: Op, status: i32, bytes: &[u8], host: &Host, out: &mut
             if !clash.is_empty() {
                 out.log_at(
                     Level::Error,
-                    &format!("net2schem: {}: not imported, these cells already exist: {}", job.source, clash.join(" ")),
+                    &format!(
+                        "net2schem: {}: not imported, these cells already exist: {}",
+                        job.source,
+                        clash.join(" ")
+                    ),
                 );
                 return false;
             }
-            job.writes = (0..job.files.len() as u32).filter(|&k| !job.exists[k as usize]).collect();
+            job.writes = (0..job.files.len() as u32)
+                .filter(|&k| !job.exists[k as usize])
+                .collect();
             job.issued = 0;
             pump(job, host, out)
         }
@@ -252,7 +323,14 @@ fn step(job: &mut Job, op: Op, status: i32, bytes: &[u8], host: &Host, out: &mut
             if job.failed.is_empty() {
                 out.log(&job.summary);
             } else {
-                out.log_at(Level::Error, &format!("net2schem: {}: could not write {}", job.source, job.failed.join(" ")));
+                out.log_at(
+                    Level::Error,
+                    &format!(
+                        "net2schem: {}: could not write {}",
+                        job.source,
+                        job.failed.join(" ")
+                    ),
+                );
             }
             false
         }
@@ -262,16 +340,23 @@ fn step(job: &mut Job, op: Op, status: i32, bytes: &[u8], host: &Host, out: &mut
 /// Issues queued probes or writes up to [`WINDOW`] in flight; returns whether the job
 /// continues (`false` after a refused request, which is logged).
 fn pump(job: &mut Job, host: &Host, out: &mut Out) -> bool {
+    assert!(job.in_flight.len() <= WINDOW);
     let writing = !job.writes.is_empty();
-    let total = if writing { job.writes.len() } else { job.probes.len() };
+    let total = if writing {
+        job.writes.len()
+    } else {
+        job.probes.len()
+    };
     while job.issued < total && job.in_flight.len() < WINDOW {
         let r = if writing {
             let k = job.writes[job.issued];
             let f = &job.files[k as usize];
-            host.fs_write(&out_path(job, &f.name), &f.bytes).map(|h| (h, Op::Write(k)))
+            host.fs_write(&out_path(job, &f.name), &f.bytes)
+                .map(|h| (h, Op::Write(k)))
         } else {
             let (path, _) = &job.probes[job.issued];
-            host.fs_read(path).map(|h| (h, Op::Probe(job.issued as u32)))
+            host.fs_read(path)
+                .map(|h| (h, Op::Probe(job.issued as u32)))
         };
         match r {
             Ok(entry) => {
@@ -280,7 +365,10 @@ fn pump(job: &mut Job, host: &Host, out: &mut Out) -> bool {
             }
             Err(Code::Space) if !job.in_flight.is_empty() => break, // resume on the next completion
             Err(c) => {
-                out.log_at(Level::Error, &format!("net2schem: {}: I/O refused: {c}{}", job.source, hint(c)));
+                out.log_at(
+                    Level::Error,
+                    &format!("net2schem: {}: I/O refused: {c}{}", job.source, hint(c)),
+                );
                 return false;
             }
         }
