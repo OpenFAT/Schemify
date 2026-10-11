@@ -47,6 +47,14 @@ jobs:
           sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends iverilog
           echo "SCHEMIFY_IVERILOG=iverilog" >> "$GITHUB_ENV"
       - run: cargo test --workspace --no-fail-fast
+      # Golden images and snapshots a test rejected (`<name>.actual.*` in CARGO_TARGET_TMPDIR):
+      # a PR that changes a picture on purpose re-blesses from them without a local build.
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-actual-${{ matrix.os }}
+          path: target/tmp/*.actual.*
+          if-no-files-found: ignore
       # Determinism (D32): the CLI outputs every platform must write byte for byte; the
       # `determinism` job below compares them. The test run above already built the binary.
       # Runs even when a test failed, so the comparison still sees every platform.

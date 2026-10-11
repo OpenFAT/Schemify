@@ -13,6 +13,7 @@ use parley::{
     Alignment, AlignmentOptions, FontContext, FontFamily, Layout, LayoutContext, StyleProperty,
 };
 
+use crate::icon::Icon;
 use crate::math::{MathFonts, MathList};
 use crate::prose::ProseList;
 use crate::strings::{Strings, Sym};
@@ -80,6 +81,9 @@ pub struct TextSystem {
     proses: Vec<ProseList>,
     prose_cache: HashMap<(Sym, u16, u16), u32>,
     images: Vec<Image>,
+    icons: Vec<Icon>,
+    /// Icon source → id, or `u32::MAX` for data that does not parse (parsed once either way).
+    icon_cache: HashMap<Sym, u32>,
 }
 
 impl Default for TextSystem {
@@ -136,19 +140,24 @@ impl TextSystem {
             proses: Vec::new(),
             prose_cache: HashMap::new(),
             images: Vec::new(),
+            icons: Vec::new(),
+            icon_cache: HashMap::new(),
         }
     }
 
     /// Marks a layout pass boundary: if the cache is over capacity it is emptied, which
     /// invalidates every [`TextId`] handed out before this call.
     pub fn begin_frame(&mut self) {
-        if self.layouts.len() + self.maths.len() + self.proses.len() > Self::CACHE_CAPACITY {
+        let held = self.layouts.len() + self.maths.len() + self.proses.len() + self.icons.len();
+        if held > Self::CACHE_CAPACITY {
             self.layouts.clear();
             self.cache.clear();
             self.maths.clear();
             self.math_cache.clear();
             self.proses.clear();
             self.prose_cache.clear();
+            self.icons.clear();
+            self.icon_cache.clear();
         }
     }
 
@@ -294,6 +303,34 @@ impl TextSystem {
     /// A math layout from [`TextSystem::math`].
     pub fn math_list(&self, id: u32) -> &MathList {
         &self.maths[id as usize]
+    }
+
+    /// Parses icon data `src` (the `icon` prop, [`crate::icon`]) once per source and returns
+    /// its id; `None` when the data does not parse. The id is valid until the next
+    /// [`TextSystem::begin_frame`] that evicts.
+    pub fn icon(&mut self, strings: &Strings, src: Sym) -> Option<u32> {
+        if let Some(&id) = self.icon_cache.get(&src) {
+            return (id != u32::MAX).then_some(id);
+        }
+        let id = match crate::icon::parse(strings.get(src)) {
+            Some(icon) => {
+                self.icons.push(icon);
+                (self.icons.len() - 1) as u32
+            }
+            None => u32::MAX,
+        };
+        self.icon_cache.insert(src, id);
+        debug_assert!(id == u32::MAX || (id as usize) < self.icons.len());
+        (id != u32::MAX).then_some(id)
+    }
+
+    /// An icon from [`TextSystem::icon`].
+    ///
+    /// # Panics
+    ///
+    /// Panics on a stale id.
+    pub fn icon_paths(&self, id: u32) -> &Icon {
+        &self.icons[id as usize]
     }
 
     /// The embedded math fonts (render needs them to draw [`MathList`] glyphs).

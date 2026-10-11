@@ -63,6 +63,29 @@ enum Ctx {
 /// Panics when the text holds more than [`Contribution::CAPACITY`] edits or more than 2^32
 /// lines.
 pub fn parse(text: &str, strings: &mut Strings) -> (Contribution, Vec<Reject>) {
+    parse_into(text, strings, false)
+}
+
+/// Parses like [`parse`], but interns the free text of `label`, `value`, `tooltip` and `accel`
+/// props into the live region of `strings` as one generation ([`Strings::begin_live`]): the
+/// previous call's handles for text this one no longer uses die. Ids, commands, classes and
+/// every other value stay permanent, so interaction state keyed by node id survives.
+///
+/// For a contribution re-parsed whenever it changes (the app's state contribution, which
+/// carries the pointer coordinates): text that changes every frame does not grow `strings`.
+/// The tables composed from the previous result must be recomposed before they are read again.
+///
+/// # Panics
+///
+/// As [`parse`]; also when one generation holds more than [`Strings::LIVE_CAPACITY`] strings.
+pub fn parse_live(text: &str, strings: &mut Strings) -> (Contribution, Vec<Reject>) {
+    strings.begin_live();
+    let out = parse_into(text, strings, true);
+    strings.end_live();
+    out
+}
+
+fn parse_into(text: &str, strings: &mut Strings, live: bool) -> (Contribution, Vec<Reject>) {
     assert!(
         text.len() < u32::MAX as usize,
         "contribution text too large"
@@ -81,10 +104,10 @@ pub fn parse(text: &str, strings: &mut Strings) -> (Contribution, Vec<Reject>) {
         let result = tokenize(body, &mut toks).and_then(|()| {
             let t: Vec<&str> = toks.iter().map(String::as_str).collect();
             if indented {
-                attr(&t, &ctx, strings, &mut out)
+                attr(&t, &ctx, strings, live, &mut out)
             } else {
                 ctx = Ctx::None;
-                record(&t, strings, &mut out).map(|c| ctx = c)
+                record(&t, strings, live, &mut out).map(|c| ctx = c)
             }
         });
         if let Err(reason) = result {
@@ -101,7 +124,12 @@ pub fn parse(text: &str, strings: &mut Strings) -> (Contribution, Vec<Reject>) {
     (out, rejects)
 }
 
-fn record(t: &[&str], strings: &mut Strings, out: &mut Contribution) -> Result<Ctx, RejectReason> {
+fn record(
+    t: &[&str],
+    strings: &mut Strings,
+    live: bool,
+    out: &mut Contribution,
+) -> Result<Ctx, RejectReason> {
     let arity = |n: usize| {
         if t.len() == n {
             Ok(())
@@ -120,7 +148,7 @@ fn record(t: &[&str], strings: &mut Strings, out: &mut Contribution) -> Result<C
         "set" => {
             arity(4)?;
             let id = strings.intern(t[1]);
-            node_attr(id, t[2], t[3], strings, out)?;
+            node_attr(id, t[2], t[3], strings, live, out)?;
             Ok(Ctx::None)
         }
         "remove" => {
@@ -151,6 +179,7 @@ fn attr(
     t: &[&str],
     ctx: &Ctx,
     strings: &mut Strings,
+    live: bool,
     out: &mut Contribution,
 ) -> Result<(), RejectReason> {
     if t.len() != 2 {
@@ -158,7 +187,7 @@ fn attr(
     }
     match *ctx {
         Ctx::None => Err(RejectReason::OrphanAttr),
-        Ctx::Node(id) => node_attr(id, t[0], t[1], strings, out),
+        Ctx::Node(id) => node_attr(id, t[0], t[1], strings, live, out),
         Ctx::Style(selector) => {
             let prop = StyleProp::parse(t[0]).ok_or(RejectReason::UnknownProp)?;
             let value = prop.parse_value(t[1]).ok_or(RejectReason::BadValue)?;
@@ -177,6 +206,7 @@ fn node_attr(
     name: &str,
     value: &str,
     strings: &mut Strings,
+    live: bool,
     out: &mut Contribution,
 ) -> Result<(), RejectReason> {
     let edit = match name {
@@ -190,10 +220,18 @@ fn node_attr(
         },
         _ => {
             let prop = Prop::parse(name).ok_or(RejectReason::UnknownProp)?;
+            let text = matches!(
+                prop,
+                Prop::Label | Prop::Value | Prop::Tooltip | Prop::Accel
+            );
             Edit::Set {
                 id,
                 prop,
-                value: strings.intern(value),
+                value: if live && text {
+                    strings.intern_live(value)
+                } else {
+                    strings.intern(value)
+                },
             }
         }
     };

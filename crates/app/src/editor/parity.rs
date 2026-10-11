@@ -2862,6 +2862,7 @@ impl Editor {
             }
             Dialog::File(text) => {
                 let _ = writeln!(t, "set dialog.edit_file.text value {}", q_multiline(text));
+                let _ = writeln!(t, "set dialog.edit_file.text input field.typed");
             }
             Dialog::Recover(d, n) => {
                 let name = self.session.name(*d);

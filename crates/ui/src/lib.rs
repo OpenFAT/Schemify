@@ -29,6 +29,7 @@
 
 pub mod access;
 pub mod graph;
+pub mod icon;
 mod input;
 mod layout;
 pub mod math;
@@ -41,7 +42,8 @@ pub mod waves;
 
 pub use input::{Button, CommandRequests, InputEvent, InputEvents, Routed, UiState, route_input};
 pub use layout::{
-    AREA_EM_MAX, Layer, NO_CLIP, Rect, Shown, UiLayout, area_scroll_max, layout, row_style,
+    AREA_EM_MAX, Layer, NO_CLIP, Rect, SPLIT_GAP, SPLIT_MIN, Shown, UiLayout, area_scroll_max,
+    layout, row_style,
 };
 pub use strings::{Strings, Sym};
 pub use tables::{

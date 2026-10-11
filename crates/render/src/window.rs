@@ -11,7 +11,7 @@ use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, wgpu};
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
+use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
@@ -46,6 +46,12 @@ pub trait App {
     /// a `process::exit` inside `update` would skip).
     fn exit_requested(&self) -> bool {
         false
+    }
+    /// Where the platform should put an IME candidate window: `(x, y, w, h)` in logical px
+    /// around the text being composed (the focused field's caret). Asked after every update
+    /// that changed the picture; `None` leaves the window where it was.
+    fn ime_area(&self) -> Option<(f32, f32, f32, f32)> {
+        None
     }
 }
 
@@ -124,6 +130,8 @@ struct Shell<A: App> {
     access_dirty: bool,
     /// The deadline [`App::wake_ms`] asked for has passed: update with no input.
     tick: bool,
+    /// The IME area last given to the window ([`App::ime_area`]).
+    ime: Option<(f32, f32, f32, f32)>,
 }
 
 /// Opens a window and runs `app` until it closes. Native: blocks. Web (wasm32): attaches a
@@ -155,6 +163,7 @@ pub fn run<A: App + 'static>(title: &str, app: A) -> Result<(), RunError> {
         layers: Layers::default(),
         access_dirty: true,
         tick: false,
+        ime: None,
     };
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -515,6 +524,16 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
                     w.request_redraw();
                 }
                 self.access_dirty = true;
+                let ime = self.app.ime_area();
+                if let (Some(a), Some(w)) = (ime, &self.window)
+                    && self.ime != ime
+                {
+                    w.set_ime_cursor_area(
+                        LogicalPosition::new(a.0, a.1),
+                        LogicalSize::new(a.2, a.3),
+                    );
+                }
+                self.ime = ime;
             }
             self.events.clear();
         }

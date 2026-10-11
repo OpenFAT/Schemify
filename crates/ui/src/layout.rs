@@ -1,8 +1,9 @@
 //! `ui_layout`: one frame's rectangles for every visible node, computed with taffy (flexbox).
 //!
-//! Rows are in paint order: the window tree in pre-order (layer [`Layer::Main`]), then each open
-//! menu popup and the open dialog (layer [`Layer::Overlay`]). Renderers paint the main layer,
-//! then the canvas, then the overlay, so popups always sit above the schematic.
+//! Rows are in paint order: the window tree in pre-order (layer [`Layer::Main`]), then the open
+//! dialog and each open popup, menus and dropdowns (layer [`Layer::Overlay`]). Renderers paint
+//! the main layer, then the canvas, then the overlay, so popups always sit above the schematic
+//! and above the dialog that holds their dropdown.
 
 use taffy::prelude::*;
 
@@ -24,6 +25,12 @@ const PROSE_W_MAX: f32 = 8192.0;
 /// Tallest text area, in font sizes (plus its padding): it grows with its lines up to this,
 /// then scrolls inside itself ([`area_scroll_max`]).
 pub const AREA_EM_MAX: f32 = 24.0;
+
+/// Narrowest divider of a `split` node (its gap), so the pointer can grab it.
+pub const SPLIT_GAP: f32 = 4.0;
+
+/// Smallest pane a dragged `split` divider leaves on either side.
+pub const SPLIT_MIN: f32 = 24.0;
 
 /// Axis-aligned rectangle in logical pixels.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
@@ -70,8 +77,8 @@ pub enum Shown {
     Title,
     /// A menu as a row inside another menu's popup (styled like `item`, with an arrow).
     Cascade,
-    /// A menu's open popup panel (styled by selector `menu`; the node's own class styles its
-    /// title).
+    /// A menu's or dropdown's open popup panel (styled by selector `menu`; the node's own class
+    /// styles its title).
     Popup,
 }
 
@@ -95,6 +102,7 @@ pub struct UiLayout {
     pub(crate) accel: Vec<TextId>,
     pub(crate) math: Vec<u32>,
     pub(crate) prose: Vec<u32>,
+    pub(crate) icon: Vec<u32>,
     pub(crate) indent: Vec<f32>,
     pub(crate) clip: Vec<Rect>,
     pub(crate) scroller: Vec<NodeIx>,
@@ -147,6 +155,12 @@ impl UiLayout {
     /// Prose layout id ([`TextSystem::prose_list`]) of each row (`u32::MAX` when none).
     pub fn prose(&self) -> &[u32] {
         &self.prose
+    }
+
+    /// Icon id ([`TextSystem::icon_paths`]) of each row (`u32::MAX` when none): a button
+    /// with a parsable `icon` shows it instead of its label.
+    pub fn icon(&self) -> &[u32] {
+        &self.icon
     }
 
     /// Left inset reserved for a check indicator in menu rows.
@@ -268,6 +282,7 @@ struct Pending {
     accel: TextId,
     math: u32,
     prose: u32,
+    icon: u32,
     indent: f32,
 }
 
@@ -319,6 +334,7 @@ impl Builder<'_> {
             accel: NO_TEXT,
             math: u32::MAX,
             prose: u32::MAX,
+            icon: u32::MAX,
             indent,
         });
         let st = |b: &Self, p| b.style(node, shown, p);
@@ -368,6 +384,8 @@ impl Builder<'_> {
                     AlignItems::CENTER
                 });
             }
+            let split = kind == Kind::Split && shown == Shown::Normal;
+            let gap = if split { gap.max(SPLIT_GAP) } else { gap };
             style.gap = Size {
                 width: length(gap),
                 height: length(gap),
@@ -420,6 +438,12 @@ impl Builder<'_> {
                 }
                 tkids.push(self.build(c, cshown, row, child_indent));
             }
+            if split
+                && tkids.len() >= 2
+                && let Some(px) = self.state.split_of(self.tables.nodes.id[i])
+            {
+                self.size_panes(tkids[0], tkids[1], px, row_dir);
+            }
             self.tree
                 .new_with_children(style, &tkids)
                 .expect("taffy node")
@@ -452,7 +476,21 @@ impl Builder<'_> {
                 Prop::Label
             };
             let label_sym = self.tables.nodes.prop(label_prop)[i];
-            let (label, lw, lh) = self.text(label_sym, font);
+            let icon_src = self.tables.nodes.prop(Prop::Icon)[i];
+            let icon = if kind == Kind::Button && !icon_src.is_none() {
+                self.text.icon(self.strings, icon_src)
+            } else {
+                None
+            };
+            let (label, lw, lh) = match icon {
+                // An icon replaces the label: a square of 1.4 em.
+                Some(id) => {
+                    self.rows[row as usize].icon = id;
+                    let side = (font * 1.4).round();
+                    (NO_TEXT, side, side)
+                }
+                None => self.text(label_sym, font),
+            };
             let (mut w, mut h) = (lw + 2.0 * pad, lh + 2.0 * pad_y);
             match (kind, shown) {
                 (_, Shown::Cascade) => w += indent + gap + ARROW_W,
@@ -514,6 +552,30 @@ impl Builder<'_> {
         };
         self.rows[row as usize].tnode = tnode;
         tnode
+    }
+
+    /// Pins the second pane of a dragged `split` to `px` along its axis and lets the first take
+    /// the rest (overriding both panes' own sizes and grow factors).
+    fn size_panes(&mut self, first: NodeId, second: NodeId, px: f32, row_dir: bool) {
+        assert!(px.is_finite() && px >= 0.0, "split size");
+        let mut a = self.tree.style(first).expect("pane style").clone();
+        a.flex_grow = a.flex_grow.max(1.0);
+        a.flex_basis = length(0.0);
+        let mut b = self.tree.style(second).expect("pane style").clone();
+        b.flex_grow = 0.0;
+        if row_dir {
+            a.min_size.width = length(0.0);
+            a.size.width = auto();
+            b.size.width = length(px);
+            b.min_size.width = length(px);
+        } else {
+            a.min_size.height = length(0.0);
+            a.size.height = auto();
+            b.size.height = length(px);
+            b.min_size.height = length(px);
+        }
+        self.tree.set_style(first, a).expect("pane style");
+        self.tree.set_style(second, b).expect("pane style");
     }
 
     /// Indicator inset for a popup: reserved for every row when any row is checkable, so labels
@@ -701,25 +763,8 @@ pub fn layout(
         width: AvailableSpace::MaxContent,
         height: AvailableSpace::MaxContent,
     };
-    // Popups: each anchored to the row that opened it (bounded by the open chain length).
-    for &menu in &state.open {
-        let Some(m) = nodes.find(menu) else { break };
-        let anchor = (0..b.rows.len())
-            .rev()
-            .find(|&r| b.rows[r].node == m && b.rows[r].shown != Shown::Popup);
-        let Some(a) = anchor else { break };
-        let ar = f.rect[a];
-        let below = b.rows[a].shown == Shown::Title;
-        let start = b.rows.len();
-        let root = b.build(m, Shown::Popup, NO_ROW, 0.0);
-        b.place(start, root, max_content, (0.0, 0.0), &mut f);
-        let (pw, ph) = (f.rect[start].w, f.rect[start].h);
-        let mut x = if below { ar.x } else { ar.x + ar.w };
-        let mut y = if below { ar.y + ar.h } else { ar.y };
-        x = x.min(viewport.0 - pw).max(0.0);
-        y = y.min(viewport.1 - ph).max(0.0);
-        f.shift(start, x, y);
-    }
+    // The dialog first: a dropdown inside it anchors its popup to a laid-out row, and the
+    // popup paints (and hits) above it.
     if let Some(d) = nodes
         .find(state.dialog)
         .filter(|&d| nodes.kind[d as usize] == Kind::Dialog)
@@ -741,6 +786,27 @@ pub fn layout(
         };
         f.shift(start, dx, dy);
     }
+    // Popups: each anchored to the row that opened it (bounded by the open chain length).
+    for &menu in &state.open {
+        let Some(m) = nodes.find(menu) else { break };
+        let anchor = (0..b.rows.len())
+            .rev()
+            .find(|&r| b.rows[r].node == m && b.rows[r].shown != Shown::Popup);
+        let Some(a) = anchor else { break };
+        let ar = f.rect[a];
+        // Menubar titles and dropdowns drop down; cascades open to the right.
+        let below = b.rows[a].shown == Shown::Title
+            || (b.rows[a].shown == Shown::Normal && nodes.kind[m as usize] == Kind::Dropdown);
+        let start = b.rows.len();
+        let root = b.build(m, Shown::Popup, NO_ROW, 0.0);
+        b.place(start, root, max_content, (0.0, 0.0), &mut f);
+        let (pw, ph) = (f.rect[start].w, f.rect[start].h);
+        let mut x = if below { ar.x } else { ar.x + ar.w };
+        let mut y = if below { ar.y + ar.h } else { ar.y };
+        x = x.min(viewport.0 - pw).max(0.0);
+        y = y.min(viewport.1 - ph).max(0.0);
+        f.shift(start, x, y);
+    }
     let out = UiLayout {
         node: b.rows.iter().map(|r| r.node).collect(),
         shown: b.rows.iter().map(|r| r.shown).collect(),
@@ -749,6 +815,7 @@ pub fn layout(
         accel: b.rows.iter().map(|r| r.accel).collect(),
         math: b.rows.iter().map(|r| r.math).collect(),
         prose: b.rows.iter().map(|r| r.prose).collect(),
+        icon: b.rows.iter().map(|r| r.icon).collect(),
         indent: b.rows.iter().map(|r| r.indent).collect(),
         clip: f.clip,
         scroller: f.scroller,

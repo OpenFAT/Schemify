@@ -85,7 +85,9 @@ named_enum!(
         Tab = "tab",
         /// Generic flex container.
         Panel = "panel",
-        /// Resizable two-pane container.
+        /// Two panes with a draggable divider (the gap between its first two children): the
+        /// first child takes the free space, the second keeps the size the divider was dragged
+        /// to ([`crate::UiState::split_of`]; its own size until then).
         Split = "split",
         /// Static text.
         Label = "label",
@@ -93,7 +95,9 @@ named_enum!(
         TextInput = "text_input",
         /// Toggle with a label.
         Checkbox = "checkbox",
-        /// Choice from a list.
+        /// Choice from a list: a click opens its `item` children as a popup below it (keyboard
+        /// and pointer as in a menu); its `label` shows the current choice, which the owner
+        /// sets. One without children runs its `command` instead.
         Dropdown = "dropdown",
         /// Vertical list of rows.
         List = "list",
@@ -140,6 +144,13 @@ named_enum!(
         Tooltip = "tooltip",
         /// Non-empty and not `"0"` disables activation.
         Disabled = "disabled",
+        /// Text fields: command run with the field's text whenever an edit changes it (typing,
+        /// deletion, an IME commit), at most once per [`crate::route_input`] call and always
+        /// before the field loses focus; `command` still runs on Enter.
+        Input = "input",
+        /// Buttons: a vector icon drawn instead of the label, which stays the accessible name
+        /// (SVG path data in a 16 × 16 box, [`crate::icon`]). Unparsable data shows the label.
+        Icon = "icon",
     }
 );
 

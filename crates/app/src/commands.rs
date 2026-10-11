@@ -123,6 +123,9 @@ commands! {
     VFlipInPlace = "edit.vertical_flip_in_place_selected_objects",
     /// Vertical flip of the selection as a group.
     VFlip = "edit.vertical_flip_selected_objects",
+    /// A text field's `input` command: its text as typed (the node is the field), so dialog
+    /// and docs-page state follow the typing without polling the field.
+    FieldTyped = "field.typed",
     /// New empty schematic in a new tab.
     NewSchematic = "file.clear_schematic",
     /// New empty symbol in a new tab.

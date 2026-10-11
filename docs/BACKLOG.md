@@ -11,8 +11,7 @@ Open items collected from workstream reports. Each item names its owner crate. R
 ## app / editor
 
 - **app**: `load_symbols` opens every instantiated cell to get its symbol; the library index now keeps rank 2 (`Project::interface(row)` has the symbol graphics, `Project::open_handle(row)` says whether the cell is open), so the editor can draw instances from the index. `scene::diff` (a positional scan per edit) can take the changed records from `apply_edits_report` instead.
-- **ui**: text fields commit only on Enter (the app copies typed text every frame).
-- Editor gaps vs xschem (after the parity pass, `tests/parity.rs`): partial wire selection (xschem's Ctrl+drag box selects only the inside ends of crossing wires; here a stretch follows wire ends on moved connection points); vertex editing of a selected wire/line/polygon/rect corner; symbol `stext` orientation (only schematic `text` records turn); the context menu closes with Esc or a row, not a click outside; recent files outside the current project do not open (one project per session); layer colors, dim and line width are not persisted (set them in `init.lua`: `schemify.opt` has no keys for them yet); the web build has no system clipboard (D2 glue) and no exports to disk (OPFS); plugin I/O capabilities fetch/clipboard in the app.
+- Editor gaps vs xschem (after the parity pass, `tests/parity.rs`): partial wire selection (xschem's Ctrl+drag box selects only the inside ends of crossing wires; here a stretch follows wire ends on moved connection points); vertex editing of a selected wire/line/polygon/rect corner; symbol `stext` orientation (only schematic `text` records turn); recent files outside the current project do not open (one project per session); layer colors, dim and line width are not persisted (set them in `init.lua`: `schemify.opt` has no keys for them yet); the web build has no system clipboard (D2 glue) and no exports to disk (OPFS); plugin I/O capabilities fetch/clipboard in the app.
 - **Exports**: PDF/EPS embed whole UI faces (Noto Sans ~190 KB, KaTeX Main ~65 KB when used, ASCII85; twice that as EPS hex) instead of subsets of the glyphs used; their text is placed glyph by glyph (no kerning or ligatures); characters neither face has print `.notdef` (the canvas falls back to system fonts). The export page, PNG scale and package status are commands without default-UI menu rows yet (`options.export_page_size`, `options.png_export_scale`, `file.image_export.png_export_full`, `tools.package_status`).
 - **Make subcircuit** (Ctrl+Shift+H) connects the new instance by net labels at the old boundary points and on its pins (xschem rewires); the new cell's symbol is the generated box.
 - **Join/trim** does not merge diagonal wires or wires with attributes other than `bus`.
@@ -37,7 +36,7 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - One run at a time (xschem-like); a plugin request for another bench waits until the current run is idle. Results table: ≤ 64 job rows, no sort/filter; MC yield and the optimizer's best point are text rows.
 - OP back-annotation maps ngspice names only (`v(net)`, `@dev[p]`); Xyce OP naming and `.save` of device quantities (ngspice saves `@dev[gm]` only when asked) are not added automatically. Cross-probe of currents: branch devices (`v`, `e`, `h`, `l`) only.
 - Staged edits: the canvas diff outlines changed objects only (inserted/deleted ones are not drawn until accepted); Accept/Reject act on the document's first stage.
-- Waves dock: fixed 60/40 split (no splitter drag); keyboard focus follows the pointer.
+- Waves dock: keyboard focus follows the pointer; the divider position is not kept across sessions.
 - Netlist text tab: a prose code block capped at 2^14 lines / 256 KiB (the file has everything); no search.
 - Highlight keys a component by its first bit name (a bus component highlights by its first bit); keys of nets the name map lacks fall back to the level path (no cross-hierarchy match then).
 - `Results` snapshot `pass` is 0: spec verdicts are per spec, not per output.
@@ -113,12 +112,12 @@ for it; the goal set for this work was ≤ 1 ms).
 ## Correctness / semantics
 
 - **elab**: `E002` doesn't yet compare a SPICE `body`'s `.subckt` ports with the symbol pins; `global true` names are gathered from every reachable schematic, including unselected impls; `net_<id>` may collide with a user label of the same spelling; `CellState` doesn't observe edits to other documents.
-- **ui**: status text that changes every frame grows the string table; IME candidate window not positioned.
+- **ui**: the waves window's own fields (`ui/src/waves.rs` `WaveUi::sync_fields`, waves-owned) still copy the focused editor's text every frame; the `input` prop (plugin-abi §11.14) replaces that. A live string handle is never reused before its 31-bit counter wraps; the shaped-text cache would need a generation in its key past that.
 - **import (readers)**: cdfDump untested against a real dump: producing one needs Cadence Virtuoso (`cdfDump` is a SKILL function), which no CI or this machine has; the reader follows the documented format only.
 
 ## Parity gaps vs xschem (UI)
 
-- **ui/render**: toolbar icons (text labels now), menu keyboard navigation, tear-off menus, split dragging, dropdown popups. (Context menus are positioned dialogs, `UiState::set_dialog_at`; chooser lists scroll.)
+- **ui/render**: tear-off menus; Alt+letter menubar mnemonics (xschem's Alt chords own those keys; F10 opens the menubar). (Context menus are positioned dialogs, `UiState::set_dialog_at`; chooser lists scroll.)
 - **waves** (spec waves): live annotation of the schematic at cursor b (`live_cursor2_backannotate`, `cursor_2_hook`); per-graph cursors (`private_cursor`: the vertical cursors are shared and drawn only in locked panes); the x-axis scrollbar strip (B1 drag below the plot); an alternate sweep variable per trace (`sweep`); rainbow colouring of steps; per-graph raw files; the dialog's signal list and node text (traces are added from the browser instead). Digital lanes share the plot height (no `ypos1`/`ypos2` scroll), are drawn sample-and-hold (no interpolated threshold crossing) and skip a non-ascending step; histograms count samples without weighting them by their x spacing.
 
 ## Parity: intentionally dropped

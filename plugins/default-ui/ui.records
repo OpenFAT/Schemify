@@ -1421,7 +1421,7 @@ node waves.spectrum item
   label Spectrum
   command waves.load.spectrum
 
-# --- toolbar (xschem shows icons; text labels until an icon set exists) ----------------------------
+# --- toolbar: vector icons (the `icon` prop); labels stay the accessible names ---------------------
 
 node toolbar toolbar
   parent window
@@ -1429,91 +1429,113 @@ node tb.open button
   parent toolbar
   label Open
   command file.open
+  icon "M1.5 4 L6 4 L7.5 5.5 L14.5 5.5 L14.5 13.5 L1.5 13.5 Z"
   tooltip "Open file"
 node tb.save button
   parent toolbar
   label Save
   command file.save
+  icon "M2 2 L12 2 L14 4 L14 14 L2 14 Z M5 2 L5 6 L11 6 L11 2 M5 14 L5 10 L11 10 L11 14"
 node tb.reload button
   parent toolbar
   label Reload
   command file.reload
+  icon "M13.5 8 C13.5 11 11 13.5 8 13.5 C5 13.5 2.5 11 2.5 8 C2.5 5 5 2.5 8 2.5 C10 2.5 11.6 3.5 12.6 5 M13 1.5 L13 5.5 L9 5.5"
 node tb.undo button
   parent toolbar
   label Undo
   command edit.undo
+  icon "M5.5 3 L2 6.5 L5.5 10 M2 6.5 L10 6.5 C12.5 6.5 14 8.3 14 10.5 C14 12.7 12.5 14 10 14 L7 14"
 node tb.redo button
   parent toolbar
   label Redo
   command edit.redo
+  icon "M10.5 3 L14 6.5 L10.5 10 M14 6.5 L6 6.5 C3.5 6.5 2 8.3 2 10.5 C2 12.7 3.5 14 6 14 L9 14"
 node tb.cut button
   parent toolbar
   label Cut
   command edit.cut
+  icon "M6.5 12 C6.5 13.1 5.6 14 4.5 14 C3.4 14 2.5 13.1 2.5 12 C2.5 10.9 3.4 10 4.5 10 C5.6 10 6.5 10.9 6.5 12 Z M13.5 12 C13.5 13.1 12.6 14 11.5 14 C10.4 14 9.5 13.1 9.5 12 C9.5 10.9 10.4 10 11.5 10 C12.6 10 13.5 10.9 13.5 12 Z M5.8 10.4 L12 1.5 M10.2 10.4 L4 1.5"
 node tb.copy button
   parent toolbar
   label Copy
   command edit.copy
+  icon "M5.5 5.5 L14 5.5 L14 14 L5.5 14 Z M10.5 5.5 L10.5 2 L2 2 L2 10.5 L5.5 10.5"
 node tb.paste button
   parent toolbar
   label Paste
   command edit.paste
+  icon "M3 3 L13 3 L13 15 L3 15 Z M6 1.5 L10 1.5 L10 4.5 L6 4.5 Z M5.5 8 L10.5 8 M5.5 11 L10.5 11"
 node tb.delete button
   parent toolbar
   label Del
   command edit.delete
+  icon "M2.5 4 L13.5 4 M6 4 L6 2 L10 2 L10 4 M4 4 L5 14.5 L11 14.5 L12 4 M7 7 L7 12 M9 7 L9 12"
 node tb.descend button
   parent toolbar
   label Push
   command edit.push_schematic
+  icon "M8 1.5 L8 10 M5 7 L8 10 L11 7 M2 9 L2 14.5 L14 14.5 L14 9"
 node tb.ascend button
   parent toolbar
   label Pop
   command edit.pop
+  icon "M8 10 L8 1.5 M5 4.5 L8 1.5 L11 4.5 M2 9 L2 14.5 L14 14.5 L14 9"
 node tb.symbol button
   parent toolbar
   label Symbol
   command tools.insert_symbol
+  icon "M4 2.5 L13 8 L4 13.5 Z M1 5.5 L4 5.5 M1 10.5 L4 10.5 M13 8 L15.5 8"
 node tb.wire button
   parent toolbar
   label Wire
   command tools.insert_wire
+  icon "M2 13 L8 13 L8 3 L14 3; F M0.5 11.5 L3.5 11.5 L3.5 14.5 L0.5 14.5 Z; F M12.5 1.5 L15.5 1.5 L15.5 4.5 L12.5 4.5 Z"
 node tb.line button
   parent toolbar
   label Line
   command tools.insert_line
+  icon "M2 14 L14 2"
 node tb.rect button
   parent toolbar
   label Rect
   command tools.insert_rect
+  icon "M2 4 L14 4 L14 12 L2 12 Z"
 node tb.poly button
   parent toolbar
   label Poly
   command tools.insert_polygon
+  icon "M2 12.5 L5 3 L12 5 L14.5 13 L7.5 10 Z"
 node tb.arc button
   parent toolbar
   label Arc
   command tools.insert_arc
+  icon "M2 14 C2 7 7 2 14 2"
 node tb.circle button
   parent toolbar
   label Circle
   command tools.insert_circle
+  icon "M14 8 C14 11.3 11.3 14 8 14 C4.7 14 2 11.3 2 8 C2 4.7 4.7 2 8 2 C11.3 2 14 4.7 14 8 Z"
 node tb.text button
   parent toolbar
   label Text
   command tools.insert_text
+  icon "M3 3 L13 3 M8 3 L8 14 M6 14 L10 14"
 node tb.zoom_full button
   parent toolbar
   label Full
   command view.zoom_full
+  icon "M2 6 L2 2 L6 2 M10 2 L14 2 L14 6 M14 10 L14 14 L10 14 M6 14 L2 14 L2 10"
 node tb.zoom_in button
   parent toolbar
   label In
   command view.zoom_in
+  icon "M11 6.5 C11 8.98 8.98 11 6.5 11 C4.02 11 2 8.98 2 6.5 C2 4.02 4.02 2 6.5 2 C8.98 2 11 4.02 11 6.5 Z M10 10 L14.5 14.5 M4.5 6.5 L8.5 6.5 M6.5 4.5 L6.5 8.5"
 node tb.zoom_out button
   parent toolbar
   label Out
   command view.zoom_out
+  icon "M11 6.5 C11 8.98 8.98 11 6.5 11 C4.02 11 2 8.98 2 6.5 C2 4.02 4.02 2 6.5 2 C8.98 2 11 4.02 11 6.5 Z M10 10 L14.5 14.5 M4.5 6.5 L8.5 6.5"
 node tb.spacer panel
   parent toolbar
   style spacer
@@ -1521,14 +1543,17 @@ node tb.netlist button
   parent toolbar
   label Netlist
   command sim.netlist
+  icon "M3 1.5 L10 1.5 L13 4.5 L13 14.5 L3 14.5 Z M5.5 6.5 L10.5 6.5 M5.5 9 L10.5 9 M5.5 11.5 L10.5 11.5"
 node tb.simulate button
   parent toolbar
   label Simulate
   command sim.simulate
+  icon "F M4 2 L14 8 L4 14 Z"
 node tb.waves button
   parent toolbar
   label Waves
   command waves.external_viewer
+  icon "M1 8 C2.5 1.5 4.5 1.5 5.5 8 C6.5 14.5 8.5 14.5 10 8 C11.5 1.5 13.5 1.5 15 8"
 
 # --- tabs -------------------------------------------------------------------------------------------
 
@@ -1549,7 +1574,7 @@ node tab.new button
 # The app fills `docs.page` with one node per doc block and removes `docs.pane` while the active
 # tab's docs are hidden (`view.docs`, Alt+D).
 
-node work panel
+node work split
   parent window
   style work
 node canvas canvas
