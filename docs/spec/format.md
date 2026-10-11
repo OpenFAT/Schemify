@@ -115,6 +115,7 @@ Kinds in writer order:
 | `port <id> <x> <y> <orient> <pin>` | | Binds a schematic net to interface pin `<pin>` (shcomp only). |
 | `noconn <id> <x> <y>` | | Marks an intentionally unconnected pin. |
 | `text <id> <x> <y> <orient> <text>` | `size <s>` | Annotation only. |
+| `shape <id> <form> <values…>` | `layer <n>`, `fill true\|false`, `dash <n>`, `width <n>`, `closed true\|false` | Schematic graphics, annotation only (no connectivity). `form` and its coordinate values: `line x1 y1 x2 y2`, `rect x1 y1 x2 y2`, `arc cx cy r start_deg sweep_deg`, `circle cx cy r`, `poly x y x y …` (≥ 2 points; `closed` for a polygon). Any other count is `E029`. The rank-2 graphic forms with an id, so they merge and diff per record like every rank-3 kind. |
 | `constraint <id> <type>` | `member <id>` (repeatable), any `<key> <value>` | D30. `type` is a plugin-defined word; core stores, diffs, revalidates members. |
 | `waive <id> <inst_id> <param>` | `reason <text>` (required) | D13 waiver for one instance param. |
 

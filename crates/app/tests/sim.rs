@@ -118,9 +118,10 @@ fn violation_overlay_follows_edits() {
         cell.violations.rows.len()
     };
     let n0 = check(&s);
-    // Copy x2 far away: its four pins dangle (W004).
+    // Move x2 far away (a plain drag; Ctrl+drag would stretch its wires along): its four
+    // pins dangle (W004).
     s.drag((130 * U, 10 * U), (130 * U, 10 * U), 0);
-    s.drag((130 * U, 10 * U), (130 * U, 300 * U), 1);
+    s.drag((130 * U, 10 * U), (130 * U, 300 * U), 0);
     let n1 = check(&s);
     assert!(n1 >= n0 + 4, "{n0} -> {n1}");
     let w004 =

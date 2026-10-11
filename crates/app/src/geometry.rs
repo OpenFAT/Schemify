@@ -250,6 +250,24 @@ pub fn transform_record(rec: &mut RecordBuf, x: Xform) -> Option<()> {
             map_pair(f, 0, x)?;
             map_orient(&mut f[2], x)?;
         }
+        // `shape <id> <form> <values…>`: the rank-2 forms shifted by two fields.
+        RecordKind::Shape => match f.get(1).map(String::as_str) {
+            Some("arc") if f.len() == 7 => {
+                map_pair(f, 2, x)?;
+                let (a, s) = (coord(&f[5])?, coord(&f[6])?);
+                let (a, _) = x.arc(f64::from(a) / 1000.0, f64::from(s) / 1000.0);
+                f[5] = degrees(a);
+            }
+            Some("circle") if f.len() == 5 => map_pair(f, 2, x)?,
+            Some("line" | "rect" | "poly") => {
+                for i in (2..f.len()).step_by(2) {
+                    if i + 1 < f.len() {
+                        map_pair(f, i, x)?;
+                    }
+                }
+            }
+            _ => return None,
+        },
         _ => {}
     }
     Some(())
@@ -274,6 +292,7 @@ pub fn anchor(rec: &RecordBuf) -> Option<Pt> {
         | RecordKind::Arc
         | RecordKind::Poly
         | RecordKind::Stext => pair(0),
+        RecordKind::Shape => pair(2),
         _ => None,
     }
 }
@@ -394,6 +413,23 @@ mod tests {
         let mut prose = RecordBuf::new(RecordKind::Prose).field("gh");
         assert!(transform_record(&mut prose, Xform::translate(1, 1)).is_some());
         assert_eq!(prose.fields, ["gh"]);
+        // Schematic shapes: coordinates after the form; an arc's start turns, its sweep stays.
+        let shape = |form: &str, v: &[&str]| {
+            let mut r = RecordBuf::new(RecordKind::Shape).field("jk").field(form);
+            for s in v {
+                r = r.field(s);
+            }
+            r
+        };
+        let mut line = shape("line", &["0", "0", "10", "0"]);
+        transform_record(&mut line, Xform::rotate((0, 0))).unwrap();
+        assert_eq!(line.fields[2..], ["0", "0", "0", "10"]);
+        let mut arc = shape("arc", &["10", "0", "5", "0", "90"]);
+        transform_record(&mut arc, Xform::rotate((0, 0))).unwrap();
+        assert_eq!(arc.fields[2..], ["0", "10", "5", "90", "90"]);
+        assert_eq!(anchor(&arc), Some((0, 10_000)));
+        let mut odd = shape("oval", &["0", "0"]);
+        assert!(transform_record(&mut odd, Xform::translate(1, 1)).is_none());
     }
 
     #[test]

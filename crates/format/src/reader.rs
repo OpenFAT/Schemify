@@ -699,6 +699,19 @@ fn check_records(doc: &Document<'_>, diags: &mut Vec<Diagnostic>) {
                 });
             }
         }
+        if kind == RecordKind::Shape
+            && let Some(form) = doc.field(r, 1)
+            && crate::schema::shape_arity(form, doc.fields(r).len().saturating_sub(2))
+                == Some(false)
+        {
+            diags.push(Diagnostic {
+                code: Code::E029,
+                line,
+                col: 1,
+                record: r,
+                detail: "wrong number of values for this shape form",
+            });
+        }
         if kind == RecordKind::Wire && doc.fields(r).len() == 5 {
             let c = |i| doc.field(r, i).map(parse_coord);
             if c(1).is_some_and(|x| x.is_ok())

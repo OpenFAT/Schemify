@@ -876,6 +876,76 @@ impl Table for Noconns {
     }
 }
 
+/// `shape` records (rank 3, unordered): schematic graphics, annotation only. Capacity
+/// 2^16. `form` is the rank-2 kind of the same shape (`Line`, `Rect`, `Arc`, `Circle`,
+/// `Poly`); `coords` spans into [`Pool::coords`] in record order — for an arc the start and
+/// sweep degrees are stored in milli-degrees there too (the file writes them as coordinates,
+/// spec §4 rank 3).
+#[derive(Clone, Debug, Default)]
+pub struct Shapes {
+    /// Object id.
+    pub id: Vec<ObjId>,
+    /// The shape's form, as the rank-2 record kind of the same name.
+    pub form: Vec<RecordKind>,
+    /// Values after the form.
+    pub coords: Vec<Span>,
+    /// Attribute lines (`layer`, `fill`, `dash`, `width`, `closed`).
+    pub attrs: Vec<Span>,
+    /// Comments.
+    pub comments: Vec<Span>,
+}
+
+/// The rank-2 kind a `shape` form word names.
+///
+/// # Panics
+///
+/// Panics on a word outside `format::SHAPE_FORMS` (validated before reaching a table).
+pub(crate) fn shape_form(word: &str) -> RecordKind {
+    match word {
+        "line" => RecordKind::Line,
+        "rect" => RecordKind::Rect,
+        "arc" => RecordKind::Arc,
+        "circle" => RecordKind::Circle,
+        "poly" => RecordKind::Poly,
+        _ => panic!("shape form {word:?} was validated before reaching the table"),
+    }
+}
+
+impl Table for Shapes {
+    row_ops!(id, form, coords, attrs, comments);
+    fn kind_at(&self, _row: usize) -> RecordKind {
+        RecordKind::Shape
+    }
+    fn push(&mut self, rec: &RecView<'_>, strings: &mut Strings, pool: &mut Pool) {
+        assert!(
+            rec.fields.len() >= 5,
+            "a shape has an id, a form and values"
+        );
+        self.id.push(ObjId::intern(rec.fields[0], strings));
+        self.form.push(shape_form(rec.fields[1]));
+        self.coords.push(pool.push_coords(&rec.fields[2..]));
+        self.attrs.push(pool.push_attrs(rec, &[], strings));
+        self.comments.push(pool.push_lines(rec.comments, strings));
+        assert!(self.columns_ok());
+    }
+    fn emit<S: Sink>(&self, row: usize, strings: &Strings, pool: &Pool, sink: &mut S) {
+        sink.begin(RecordKind::Shape);
+        sink.id(self.id[row], strings);
+        sink.field(self.form[row].word());
+        for &c in &pool.coords[self.coords[row].range()] {
+            sink.coord(c);
+        }
+        emit_attrs(self.attrs[row], strings, pool, sink);
+        emit_lines(self.comments[row], strings, pool, sink, false);
+    }
+    fn id_at(&self, row: usize, _strings: &Strings) -> ObjId {
+        self.id[row]
+    }
+    fn name_at(&self, _row: usize) -> Sym {
+        Sym::NONE
+    }
+}
+
 /// Text-only records: every kind whose fields are names, ids, words or expressions
 /// (`param`, `impl`, `constraint`, `waive`, `prose`, `var`, `body`, and the bench kinds).
 /// One table per kind, except `doc_blocks`, which holds `prose` and `var` interleaved in

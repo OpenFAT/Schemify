@@ -61,6 +61,7 @@ use crate::spines;
 use crate::waves::{Shifted, WavesView};
 
 mod integrate;
+mod parity;
 use integrate::text_tab_cmd;
 
 /// Pointer travel (logical px) before a press becomes a drag (xschem: 8 px).
@@ -71,14 +72,22 @@ const HIT_PX: f64 = 5.0;
 const DOUBLE_CLICK_MS: u64 = 400;
 /// Zoom factor per wheel notch and per zoom key (xschem: 1.2).
 const ZOOM_STEP: f64 = 1.2;
-/// Chooser rows shown at once (the list widget does not scroll yet).
-const CHOOSER_ROWS: usize = 24;
+/// Chooser rows listed (the list scrolls; typing filters). Every row is a composed node, so
+/// the cap bounds the per-frame compose cost while a chooser is open.
+// ponytail: a fixed cap; a virtualized list (rows composed for the visible window only) when
+// libraries list more cells than this.
+const CHOOSER_ROWS: usize = 512;
+/// Commands [`Editor::command`] queues between frames.
+pub const QUEUED_MAX: usize = 256;
 /// Edit requests one frame may carry.
 const REQUESTS_MAX: usize = 1 << 10;
 /// Share of the window height the editor keeps while the waves dock is open.
 const DOCK_SPLIT: f32 = 0.6;
 /// Netlist lines a text tab shows (the prose widget's source cap); the file has them all.
 const TEXT_TAB_LINES: usize = 1 << 14;
+
+/// What a displayed scene (`shown`) was made for: (scene build key, symbol mode, symbol texts).
+type ShownKey = ((DocHandle, View, u32, u32), u8, bool);
 
 /// Which panel the `bottom` container shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +113,12 @@ pub struct Options {
     /// `ngspice -b -r {raw} {netlist}`, D7/D15). Tests pass a fake simulator.
     #[cfg(not(target_arch = "wasm32"))]
     pub sim: Option<schemify_run::SimCommand>,
+    /// Directory of user state (the recent-files list); `None` keeps it in memory only.
+    /// [`run`] uses `platform::state_dir()`; tests leave it `None` or pass a temp dir.
+    pub state_dir: Option<PathBuf>,
+    /// Copy/cut/paste also go through the system clipboard (`platform::clipboard_*`).
+    /// [`run`] turns it on; headless tests keep the editor's own clipboard only.
+    pub system_clipboard: bool,
 }
 
 /// Interaction options (xschem Options/View state).
@@ -124,6 +139,58 @@ pub struct EditOpts {
     pub constrain: u8,
     /// Pick the Manhattan mode from the dominant axis (Shift+L).
     pub orthogonal: bool,
+    /// Plain moves stretch attached wires (xschem `enable_stretch`, `y`).
+    pub stretch: bool,
+    /// Wire and line modes continue from each committed segment.
+    pub persistent: bool,
+    /// Join/trim wires after every wire edit.
+    pub auto_trim: bool,
+    /// Crosshair at the snapped pointer.
+    pub crosshair: bool,
+    /// Crosshair half-size in px; 0 = across the canvas.
+    pub crosshair_px: u16,
+    /// Diamond on the connection point nearest the pointer.
+    pub snap_cursor: bool,
+    /// The x = 0 / y = 0 axes.
+    pub grid_axes: bool,
+    /// Current drawing layer of lines, rects, polygons and arcs, `[0, 21]`.
+    pub layer: u8,
+    /// Hidden canvas layers (bit `l`).
+    pub hidden: u32,
+    /// Filled layers drawn filled.
+    pub fill: bool,
+    /// Line width in tenths of a pixel (10 = 1 px), `[1, 100]`.
+    pub width_tenths: u8,
+    /// Line width follows the zoom.
+    pub variable_width: bool,
+    /// Dimming toward the background, percent `[0, 100]`.
+    pub dim: u8,
+    /// Texts inside symbol instances drawn.
+    pub symbol_text: bool,
+    /// Instances: 0 symbol graphics, 1 boxes for schematic cells, 2 boxes for all.
+    pub show_symbols: u8,
+    /// Exports use layer colors (else black on white).
+    pub export_color: bool,
+    /// SVG exports have no background rectangle.
+    pub export_transparent: bool,
+    /// Netlists are flat (SPICE dialects).
+    pub flat: bool,
+    /// Every selection change highlights the selection's nets.
+    pub auto_highlight: bool,
+    /// Instances with a pin on a highlighted net are outlined.
+    pub highlight_insts: bool,
+    /// Everything but the highlight is dimmed.
+    pub only_probes: bool,
+    /// Each highlighted net gets its own color.
+    pub incr_color: bool,
+    /// The nets plotted in the waves dock are highlighted.
+    pub highlight_plotted: bool,
+    /// The toolbar is shown.
+    pub toolbar: bool,
+    /// Canvas-only view (menus, toolbar, tabs and status hidden).
+    pub fullscreen: bool,
+    /// Box width make-symbol draws, milli-units.
+    pub symbol_width: i32,
 }
 
 impl Default for EditOpts {
@@ -136,6 +203,32 @@ impl Default for EditOpts {
             manhattan: 0,
             constrain: 0,
             orthogonal: false,
+            stretch: false,
+            persistent: false,
+            auto_trim: false,
+            crosshair: false,
+            crosshair_px: 0,
+            snap_cursor: false,
+            grid_axes: false,
+            layer: 4,
+            hidden: 0,
+            fill: true,
+            width_tenths: 10,
+            variable_width: false,
+            dim: 0,
+            symbol_text: true,
+            show_symbols: 0,
+            export_color: true,
+            export_transparent: false,
+            flat: false,
+            auto_highlight: false,
+            highlight_insts: false,
+            only_probes: false,
+            incr_color: false,
+            highlight_plotted: false,
+            toolbar: true,
+            fullscreen: false,
+            symbol_width: 150 * UNIT,
         }
     }
 }
@@ -196,6 +289,8 @@ pub enum Tool {
         copy: bool,
         /// Ends on button release (a drag) instead of on click.
         drag: bool,
+        /// 0 plain move, 1 stretch attached wires, 2 stretch and add "kissing" wires.
+        stretch: u8,
     },
     /// Drawing a wire from `from` to `to`.
     Wire {
@@ -206,15 +301,18 @@ pub enum Tool {
         /// Ends on release.
         drag: bool,
     },
-    /// Drawing a symbol line or rectangle.
+    /// Drawing a graphic (symbol graphics in the symbol view, `shape` records in a
+    /// schematic): the points clicked so far and the pointer.
     Shape {
-        /// Rectangle instead of line.
-        rect: bool,
-        /// First corner.
-        from: Pt,
-        /// Current corner.
+        /// What is drawn.
+        form: Form,
+        /// Points clicked so far (the first point is where the tool started).
+        pts: Vec<Pt>,
+        /// Current pointer position.
         to: Pt,
     },
+    /// `D`: the next press starts a box that removes objects from the selection.
+    UnselectArmed,
     /// An object attached to the pointer; a click drops it.
     Place {
         /// What.
@@ -235,6 +333,32 @@ pub enum Tool {
     },
 }
 
+/// What a shape tool draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Form {
+    /// Two points.
+    Line,
+    /// Two corners.
+    Rect,
+    /// Vertices until closed (Enter, or a click on the first vertex).
+    Poly,
+    /// Three points: start, end, a point on the arc.
+    Arc,
+    /// Center and a point on the circle.
+    Circle,
+}
+
+impl Form {
+    /// Points that complete the shape (`None`: open-ended polygon).
+    fn points(self) -> Option<usize> {
+        match self {
+            Form::Line | Form::Rect | Form::Circle => Some(2),
+            Form::Arc => Some(3),
+            Form::Poly => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 enum Pick {
     Cell(usize),
@@ -246,6 +370,12 @@ enum ChooseFor {
     Insert,
     Open,
     Waves,
+    /// Insert another cell's schematic at the pointer (File → Merge).
+    Merge,
+    /// Delete a cell file (picked twice to confirm).
+    Delete,
+    /// The cell to compare the active document with.
+    Compare,
 }
 
 #[derive(Clone, Debug)]
@@ -253,6 +383,8 @@ struct Chooser {
     purpose: ChooseFor,
     filter: String,
     rows: Vec<(String, Pick)>,
+    /// Analysis a waves chooser was opened for (`waves.load.<a>`), shown in its title.
+    note: String,
 }
 
 #[derive(Clone, Debug)]
@@ -264,9 +396,20 @@ struct Field {
     editable: bool,
 }
 
+/// What a fields dialog (the `dialog.props` node) edits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PropsFor {
+    /// One object's properties.
+    Object(ObjKey),
+    /// The header attributes (Properties → Edit Header).
+    Header,
+    /// Tools → Search: field, value, replacement, exact.
+    Search,
+}
+
 #[derive(Clone, Debug)]
 struct Props {
-    key: ObjKey,
+    of: PropsFor,
     title: String,
     fields: Vec<Field>,
 }
@@ -277,6 +420,12 @@ enum TextFor {
     Port(bool),
     Text,
     SymPin,
+    /// File → Save As (`true`: as symbol).
+    SaveAs(bool),
+    /// A one-number setting: snap, grid, line width, crosshair, symbol width, dim.
+    Setting(Cmd),
+    /// Layer color `rrggbb` of the current layer.
+    LayerColor,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -287,6 +436,14 @@ enum Dialog {
     Props(Props),
     /// Purpose, title, typed text (synced every frame).
     Text(TextFor, String, String),
+    /// The canvas context menu (right click); `true` when something was selected.
+    Ctx(bool),
+    /// View → Visible layers.
+    Layers,
+    /// Properties → Edit file: the document's text (synced every frame).
+    File(String),
+    /// Crash recovery of a document: (document, journal records offered).
+    Recover(DocHandle, u32),
 }
 
 /// An interactive editing session: project, UI, plugins, scene, tool and dialogs.
@@ -401,6 +558,30 @@ pub struct Editor {
     /// The bench whose saved results were looked up (once per activation).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     results_for: Option<DocHandle>,
+    /// Recently opened files, most recent first (≤ `recent::RECENT_MAX`, user state).
+    recent: Vec<PathBuf>,
+    /// Where `recent` is persisted (`None`: memory only).
+    state_dir: Option<PathBuf>,
+    /// Copy/paste also use the system clipboard.
+    system_clipboard: bool,
+    /// Layer color changes (layer, `0xRRGGBB`), applied over the theme's palette.
+    layer_colors: Vec<(u8, u32)>,
+    /// A cell file picked once for deletion: the same pick again deletes it.
+    pending_delete: Option<PathBuf>,
+    /// The comparison with another cell (Highlight → compare schematics).
+    compare: Option<parity::Compare>,
+    /// Parity decor: per-net highlight colors, connected-instance outlines, the
+    /// comparison; rebuilt with the decor.
+    extra: CanvasPrims,
+    extra_scratch: CanvasScratch,
+    /// The scene as shown when instances draw as boxes or without texts (`None`: as built).
+    shown: Option<CanvasPrims>,
+    /// (scene build, symbol mode) `shown` was made for.
+    shown_key: Option<ShownKey>,
+    /// Commands queued by [`Editor::command`]: (name, argument).
+    queued: Vec<(String, String)>,
+    /// A wire edit to follow with join/trim once applied (Options → auto join/trim).
+    trim_after: Option<DocHandle>,
 }
 
 impl std::fmt::Debug for Editor {
@@ -502,6 +683,21 @@ impl Editor {
             plot_look: schemify_render::waves::WaveLook::default(),
             plot_scratch: schemify_render::waves::WaveScratch::default(),
             results_for: None,
+            recent: opts
+                .state_dir
+                .as_deref()
+                .map_or_else(Vec::new, crate::recent::load),
+            state_dir: opts.state_dir.clone(),
+            system_clipboard: opts.system_clipboard,
+            layer_colors: Vec::new(),
+            pending_delete: None,
+            compare: None,
+            extra: CanvasPrims::default(),
+            extra_scratch: CanvasScratch::default(),
+            shown: None,
+            shown_key: None,
+            trim_after: None,
+            queued: Vec::new(),
         };
         let opened = match &path {
             Some(p) if !platform::is_dir(p) => Some(ed.session.open_path(p)?),
@@ -513,6 +709,7 @@ impl Editor {
                 ed.session.open_tab(h, view);
                 let id = plugins::doc_id(h);
                 let _ = ed.host.push(None, &Event::DocOpened { doc: id });
+                ed.remember(h);
             }
             None => {
                 let h = ed.session.create(FileKind::Shcomp)?;
@@ -599,6 +796,48 @@ impl Editor {
     /// The plugin host (loaded plugins, D20 function registry).
     pub fn host(&self) -> &Host {
         &self.host
+    }
+
+    /// The command table: core commands plus the composed plugin rows (current after the
+    /// first [`Editor::update`]). What a menu row, key or JSON-RPC call names resolves here.
+    pub fn commands(&self) -> &Commands {
+        &self.commands
+    }
+
+    /// Queues command `name` with argument `arg` for the next [`Editor::update`], dispatched
+    /// after that frame's input exactly as a menu row or key would run it (`<name>.<word>`
+    /// suffix arguments included). The entry point of the CLI / JSON-RPC command stream (D27)
+    /// and of scripted tests. At most [`QUEUED_MAX`] commands wait; more are dropped with a
+    /// status message.
+    pub fn command(&mut self, name: &str, arg: &str) {
+        if self.queued.len() >= QUEUED_MAX {
+            self.session.status = format!("{name}: command queue full");
+            return;
+        }
+        self.queued.push((name.to_owned(), arg.to_owned()));
+    }
+
+    /// The scene as the canvas shows it: instances as boxes or without their texts when the
+    /// Symbol / View options say so, else the built scene itself.
+    pub fn shown(&self) -> &CanvasPrims {
+        self.shown.as_ref().unwrap_or(&self.scene.prims)
+    }
+
+    /// The parity decor of the last frame: per-net highlight colors, outlines of instances
+    /// on highlighted nets, the comparison with another cell.
+    pub fn parity_decor(&self) -> &CanvasPrims {
+        &self.extra
+    }
+
+    /// The overlay primitives of the last frame (rubber bands, previews, crosshair, snap
+    /// cursor, grid axes).
+    pub fn overlay(&self) -> &CanvasPrims {
+        &self.overlay
+    }
+
+    /// The recent-files list, most recent first.
+    pub fn recent(&self) -> &[PathBuf] {
+        &self.recent
     }
 
     /// Whether the user asked to quit (the window shell exits the process).
@@ -716,6 +955,7 @@ impl Editor {
         changed |= self.sync_page(events, &routed.commands, &mut reqs);
         // 2. dispatch → edit_requests, plugin_events, ui state
         changed |= self.dispatch_all(&routed.commands, &mut reqs);
+        changed |= self.dispatch_queued(&mut reqs);
         for &ev in &routed.canvas {
             changed |= self.gesture(ev, &mut reqs, now_ms);
         }
@@ -730,8 +970,10 @@ impl Editor {
             }
             changed |= self.apply(&mut reqs);
         }
-        // 5. symbols of the active document (I/O)
+        changed |= self.auto_trim(&mut reqs);
+        // 5. symbols of the active document (I/O); a journal's crash recovery asks first
         self.load_symbols();
+        self.prompt_recovery();
         // 6. elab::recompute → values and violations (D13, D19), then the D20 cache
         //    write-back folded into the edit's own undo entry, then the `checks` source of
         //    the annotation overlay; before compose so page, panel and canvas agree.
@@ -754,10 +996,16 @@ impl Editor {
             let sym = s.strings.intern(&id);
             s.ui.focus_text(&s.tables, &s.layout, &s.strings, &mut s.text, sym);
         }
-        // 9. scene, decor, overlay, marks
+        // 9. scene, decor, overlay, marks (auto highlight follows the selection first)
+        if self.sel_changed && self.opts.auto_highlight {
+            self.auto_highlight();
+        }
         let stale = self.build_scene();
         changed |= stale;
-        changed |= self.build_decor(stale);
+        let decor = self.build_decor(stale);
+        changed |= decor;
+        self.build_shown();
+        changed |= self.build_extra(decor);
         self.build_overlay();
         self.routed = routed;
         changed
@@ -882,15 +1130,19 @@ impl Editor {
         // `draw_canvas` step by step: the decor and the overlay get their own scratch,
         // because the shaped-label cache is keyed by one text table, and sharing it would
         // reshape every scene label each frame (measured: 130 ms at 50k labels).
+        // The palette as the View/Layers options shape it (hidden layers, dimming, colors,
+        // widths); the scene as displayed (instances as boxes, symbol texts off).
+        let palette = &self.view_palette();
         p.push_clip(view);
-        p.fill_rect(view, schemify_render::rgba(self.palette.background));
-        canvas::draw_grid(p, view, &cam, grid, &self.palette, &mut self.canvas_scratch);
-        let (prims, palette, text) = (&self.scene.prims, &self.palette, &mut self.shell.text);
+        p.fill_rect(view, schemify_render::rgba(palette.background));
+        canvas::draw_grid(p, view, &cam, grid, palette, &mut self.canvas_scratch);
+        let shown = self.shown.as_ref().unwrap_or(&self.scene.prims);
+        let (prims, text) = (&self.scene.prims, &mut self.shell.text);
         canvas::draw_prims(
             p,
             view,
             &cam,
-            prims,
+            shown,
             palette,
             text,
             &mut self.canvas_scratch,
@@ -903,6 +1155,15 @@ impl Editor {
             palette,
             text,
             &mut self.decor_scratch,
+        );
+        canvas::draw_prims(
+            p,
+            view,
+            &cam,
+            &self.extra,
+            palette,
+            text,
+            &mut self.extra_scratch,
         );
         canvas::draw_prims(
             p,
@@ -1003,8 +1264,12 @@ impl Editor {
             } else {
                 self.shell.strings.get(cmds.node[i]).to_owned()
             };
-            let arg = cmds.arg(i).to_owned();
-            changed |= match self.commands.resolve(&name) {
+            let (target, suffix) = self.commands.resolve_arg(&name);
+            let arg = match cmds.arg(i) {
+                "" => suffix.to_owned(),
+                a => a.to_owned(),
+            };
+            changed |= match target {
                 Target::Core(cmd) => self.run(cmd, &arg, &node, reqs),
                 Target::Plugin(id) => {
                     let ev = Event::Command {
@@ -1025,9 +1290,45 @@ impl Editor {
         changed
     }
 
+    /// Runs the commands [`Editor::command`] queued, in order.
+    fn dispatch_queued(&mut self, reqs: &mut Vec<EditRequest>) -> bool {
+        let mut changed = false;
+        for (name, arg) in std::mem::take(&mut self.queued) {
+            let (target, suffix) = self.commands.resolve_arg(&name);
+            let arg = if arg.is_empty() {
+                suffix.to_owned()
+            } else {
+                arg
+            };
+            changed |= match target {
+                Target::Core(cmd) => self.run(cmd, &arg, "", reqs),
+                Target::Plugin(id) => {
+                    let ev = Event::Command {
+                        name: &name,
+                        args: &arg,
+                    };
+                    if let Err(e) = self.host.push(Some(id), &ev) {
+                        self.session.status = e;
+                    }
+                    true
+                }
+                Target::Unknown => {
+                    self.session.status = format!("{name}: not available yet");
+                    true
+                }
+            };
+        }
+        assert!(self.queued.is_empty());
+        changed
+    }
+
     /// Runs one core command. Returns whether anything visible changed.
     #[allow(clippy::too_many_lines)]
     fn run(&mut self, cmd: Cmd, arg: &str, node: &str, reqs: &mut Vec<EditRequest>) -> bool {
+        if matches!(self.dialog, Dialog::Ctx(_)) && cmd != Cmd::DialogClose {
+            // A context-menu row: the menu closes and its command runs as from the menubar.
+            self.close_dialog();
+        }
         let modal = !matches!(self.dialog, Dialog::None) || !self.shell.ui.dialog().is_none();
         let dialog_cmd = matches!(
             cmd,
@@ -1037,7 +1338,10 @@ impl Editor {
                 | Cmd::EnterTextOk
                 | Cmd::PropsOk
                 | Cmd::PropsField
-        );
+                | Cmd::EditFileOk
+                | Cmd::Recover
+                | Cmd::DiscardRecovery
+        ) || (cmd == Cmd::ToggleLayer && matches!(self.dialog, Dialog::Layers));
         if modal && !dialog_cmd {
             return false; // xschem: editing keys are no-ops while a dialog is open
         }
@@ -1047,7 +1351,7 @@ impl Editor {
         let Some((h, view)) = self.active() else {
             return false;
         };
-        if self.session.text_view().is_some() && !text_tab_cmd(cmd) {
+        if self.session.text_view().is_some() && !text_tab_cmd(cmd) && !parity::text_tab_ok(cmd) {
             self.session.status = "read-only text view: switch to a schematic tab".into();
             return true;
         }
@@ -1085,6 +1389,12 @@ impl Editor {
                     .filter_map(|mut r| crate::geometry::transform_record(&mut r, back).map(|()| r))
                     .collect();
                 self.session.status = format!("{} object(s) copied", self.clipboard.len());
+                if self.system_clipboard
+                    && !self.clipboard.is_empty()
+                    && let Err(e) = platform::clipboard_set(&crate::clip::encode(&self.clipboard))
+                {
+                    self.session.status = format!("system clipboard: {e} (copied here only)");
+                }
                 if cmd == Cmd::Cut {
                     let ops = self.with_doc(h, edit::delete);
                     self.commit(reqs, h, "cut", ops);
@@ -1092,6 +1402,14 @@ impl Editor {
                 }
             }
             Cmd::Paste => {
+                // The system clipboard wins when it holds a Schemify fragment (another
+                // window, another process, a text editor); else the editor's own.
+                if self.system_clipboard
+                    && let Ok(text) = platform::clipboard_get()
+                    && let Ok(recs) = crate::clip::decode(&text)
+                {
+                    self.clipboard = recs;
+                }
                 if !self.clipboard.is_empty() {
                     self.tool = Tool::Place {
                         what: Placement::Paste(self.clipboard.clone()),
@@ -1101,6 +1419,14 @@ impl Editor {
                 }
             }
             Cmd::Duplicate | Cmd::Move | Cmd::MoveKiss | Cmd::MoveStretch => {
+                // xschem: `m` moves, Ctrl+M stretches (swapped by `enable_stretch`), Shift+M
+                // stretches and adds "kissing" wires.
+                let stretch = match cmd {
+                    Cmd::Move => u8::from(self.opts.stretch),
+                    Cmd::MoveStretch => u8::from(!self.opts.stretch),
+                    Cmd::MoveKiss => 2,
+                    _ => 0,
+                };
                 if !self.selection().is_empty() {
                     self.tool = Tool::Move {
                         from: ptr,
@@ -1108,11 +1434,8 @@ impl Editor {
                         lin: Xform::IDENTITY,
                         copy: cmd == Cmd::Duplicate,
                         drag: false,
+                        stretch,
                     };
-                }
-                if matches!(cmd, Cmd::MoveKiss | Cmd::MoveStretch) {
-                    self.session.status =
-                        "stretch/kissing moves are not implemented: plain move".into();
                 }
             }
             Cmd::Rotate | Cmd::Flip | Cmd::VFlip => {
@@ -1154,7 +1477,7 @@ impl Editor {
                 }
                 self.scene_dirty = true;
             }
-            Cmd::NewSchematic | Cmd::TabNew | Cmd::NewSymbol => {
+            Cmd::NewSchematic | Cmd::TabNew | Cmd::NewWindowTab | Cmd::NewSymbol => {
                 let (kind, v) = if cmd == Cmd::NewSymbol {
                     (FileKind::Shprim, View::Symbol)
                 } else {
@@ -1251,7 +1574,7 @@ impl Editor {
             Cmd::ResultsPick | Cmd::ResultsWaves | Cmd::ResultsHistory => {
                 self.results_cmd(cmd, node);
             }
-            Cmd::OpAnnotate => {
+            Cmd::OpAnnotate | Cmd::OpAnnotateGraphs => {
                 self.op_on = !self.op_on;
                 self.op_job = None;
                 self.session.status =
@@ -1294,7 +1617,7 @@ impl Editor {
             Cmd::DialogClose => self.close_dialog(),
             Cmd::ChooseFilter => self.choose_filter(arg),
             Cmd::ChoosePick => self.choose_pick(node, h),
-            Cmd::EnterTextOk => self.enter_text_ok(arg, ptr),
+            Cmd::EnterTextOk => self.enter_text_ok(arg, ptr, reqs),
             Cmd::PlaceLabel | Cmd::PlaceWireLabel => self.open_text(TextFor::Label, "Net label"),
             Cmd::PlaceInPort => self.open_text(TextFor::Port(false), "Input port"),
             Cmd::PlaceOutPort => self.open_text(TextFor::Port(true), "Output port"),
@@ -1323,16 +1646,17 @@ impl Editor {
                 }
             }
             Cmd::InsertLine | Cmd::InsertRect => {
-                if view == View::Symbol {
-                    self.tool = Tool::Shape {
-                        rect: cmd == Cmd::InsertRect,
-                        from: ptr,
-                        to: ptr,
-                    };
-                } else {
-                    self.session.status =
-                        "lines and rectangles are symbol graphics: use the symbol view (i)".into();
-                }
+                // Symbol graphics in the symbol view, `shape` records in a schematic.
+                self.tool = Tool::Shape {
+                    form: if cmd == Cmd::InsertRect {
+                        Form::Rect
+                    } else {
+                        Form::Line
+                    },
+                    pts: vec![ptr],
+                    to: ptr,
+                };
+                let _ = view;
             }
             Cmd::CycleManhattan => match self.tool {
                 Tool::Wire { .. } | Tool::Move { .. } | Tool::Shape { .. } => {
@@ -1504,6 +1828,8 @@ impl Editor {
                     self.set_selection(sel);
                 }
             }
+            // Every command added for xschem parity (`parity.rs`).
+            other => return self.parity(other, arg, node, reqs),
         }
         true
     }
@@ -1801,7 +2127,7 @@ impl Editor {
         self.focus_next = Some("dialog.enter_text.input".into());
     }
 
-    fn enter_text_ok(&mut self, arg: &str, at: Pt) {
+    fn enter_text_ok(&mut self, arg: &str, at: Pt, reqs: &mut Vec<EditRequest>) {
         let Dialog::Text(purpose, _, typed) = self.dialog.clone() else {
             self.close_dialog();
             return;
@@ -1823,6 +2149,10 @@ impl Editor {
             TextFor::Port(out) => Placement::Port(text, out),
             TextFor::Text => Placement::Text(text),
             TextFor::SymPin => Placement::SymPin(text),
+            other => {
+                self.text_ok(other, &text, reqs);
+                return;
+            }
         };
         self.tool = Tool::Place {
             what,
@@ -1837,6 +2167,7 @@ impl Editor {
             purpose,
             filter: String::new(),
             rows: Vec::new(),
+            note: String::new(),
         });
         self.refill_chooser();
         self.show_dialog("dialog.choose");
@@ -1851,12 +2182,24 @@ impl Editor {
         let (purpose, filter) = (c.purpose, c.filter.to_lowercase());
         let mut rows = Vec::new();
         match purpose {
-            ChooseFor::Insert | ChooseFor::Open => {
+            ChooseFor::Insert
+            | ChooseFor::Open
+            | ChooseFor::Merge
+            | ChooseFor::Delete
+            | ChooseFor::Compare => {
                 let p = &self.session.project;
                 let cells = p.cells();
                 for row in 0..cells.lib.len() {
                     let kind = cells.kind[row];
-                    if purpose == ChooseFor::Insert && kind == FileKind::Shbench {
+                    let skip = match purpose {
+                        ChooseFor::Insert => kind == FileKind::Shbench,
+                        // Only files with a schematic merge or compare.
+                        ChooseFor::Merge | ChooseFor::Compare => kind == FileKind::Shprim,
+                        // Only files on disk delete (not the bundled core library).
+                        ChooseFor::Delete => self.session.lib_dir(cells.lib[row]).is_none(),
+                        _ => false,
+                    };
+                    if skip {
                         continue;
                     }
                     let lib = &p.libs().name[usize::from(cells.lib[row])];
@@ -1943,6 +2286,7 @@ impl Editor {
                 Ok(d) => {
                     let view = default_view(self.session.project.doc(d));
                     self.session.open_tab(d, view);
+                    self.remember(d);
                     let _ = self.host.push(
                         None,
                         &Event::DocOpened {
@@ -1954,6 +2298,9 @@ impl Editor {
                 Err(e) => self.session.status = e,
             },
             (ChooseFor::Waves, Pick::File(f)) => self.open_waves(f),
+            (ChooseFor::Merge, Pick::Cell(row)) => self.merge_cell(row),
+            (ChooseFor::Delete, Pick::Cell(row)) => self.delete_cell(row),
+            (ChooseFor::Compare, Pick::Cell(row)) => self.compare_with(row),
             _ => {}
         }
     }
@@ -2089,7 +2436,11 @@ impl Editor {
         }
         self.tool = Tool::Idle;
         let first = fields.iter().position(|f| f.editable);
-        self.dialog = Dialog::Props(Props { key, title, fields });
+        self.dialog = Dialog::Props(Props {
+            of: PropsFor::Object(key),
+            title,
+            fields,
+        });
         self.show_dialog("dialog.props");
         self.focus_next = first.map(|i| format!("dialog.props.val.{i}"));
     }
@@ -2115,10 +2466,15 @@ impl Editor {
             return;
         };
         self.close_dialog();
+        let key = match p.of {
+            PropsFor::Object(key) => key,
+            PropsFor::Header => return self.header_ok(h, &p.fields, reqs),
+            PropsFor::Search => return self.search_ok(h, &p.fields, reqs),
+        };
         let Some(doc) = self.session.project.doc(h) else {
             return;
         };
-        let Some(loc) = edit::loc_of(doc, p.key) else {
+        let Some(loc) = edit::loc_of(doc, key) else {
             return;
         };
         let rec = doc.record(loc);
@@ -2197,6 +2553,10 @@ impl Editor {
                 *typed = text;
                 false
             }
+            Dialog::File(typed) if id == "dialog.edit_file.text" => {
+                *typed = text;
+                false
+            }
             _ => false,
         }
     }
@@ -2235,13 +2595,21 @@ impl Editor {
                             let keys = self.session.level().map_or(&[][..], |l| &l.sel);
                             let on_selected = hit
                                 .is_some_and(|o| keys.contains(&self.scene.objs.key[o as usize]));
+                            // xschem: Ctrl+drag stretches (swapped by `enable_stretch`),
+                            // Ctrl+Shift+drag stretches with kissing wires, Shift+drag copies.
+                            let stretch = match (ctrl, shift) {
+                                (true, true) => 2,
+                                (true, false) => u8::from(!self.opts.stretch),
+                                (false, _) => u8::from(self.opts.stretch),
+                            };
                             self.tool = if on_selected {
                                 Tool::Move {
                                     from: world,
                                     to: w,
                                     lin: Xform::IDENTITY,
-                                    copy: shift,
+                                    copy: shift && !ctrl,
                                     drag: true,
+                                    stretch: if shift && !ctrl { 0 } else { stretch },
                                 }
                             } else {
                                 Tool::Box {
@@ -2255,11 +2623,13 @@ impl Editor {
                     }
                     Tool::Box { to, .. } | Tool::Zoom { to, .. } => *to = raw,
                     Tool::Move { from, to, .. } => *to = constrain(*from, w, self.opts.constrain),
-                    Tool::Wire { from, to, .. } | Tool::Shape { from, to, .. } => {
-                        *to = constrain(*from, w, self.opts.constrain)
+                    Tool::Wire { from, to, .. } => *to = constrain(*from, w, self.opts.constrain),
+                    Tool::Shape { pts, to, .. } => {
+                        let last = *pts.last().expect("a shape tool has its first point");
+                        *to = constrain(last, w, self.opts.constrain);
                     }
                     Tool::Place { at, .. } => *at = w,
-                    Tool::Idle | Tool::ZoomArmed => {
+                    Tool::Idle | Tool::ZoomArmed | Tool::UnselectArmed => {
                         // The status line shows the pointer coordinates.
                         return prev != (x, y);
                     }
@@ -2292,8 +2662,9 @@ impl Editor {
                         lin,
                         copy,
                         drag: false,
+                        stretch,
                     } => {
-                        self.finish_move(reqs, h, from, to, lin, copy);
+                        self.finish_move(reqs, h, from, to, lin, copy, stretch);
                     }
                     Tool::Wire { from, to, .. } => {
                         let to = if shift {
@@ -2303,21 +2674,22 @@ impl Editor {
                         };
                         self.finish_wire(reqs, h, from, to);
                     }
-                    Tool::Shape { rect, from, to } => {
-                        if from != to {
-                            let rec = edit::shape(rect, from, to);
-                            self.commit(
-                                reqs,
-                                h,
-                                if rect { "draw rect" } else { "draw line" },
-                                vec![Op::Insert { rec, at: None }],
-                            );
-                        }
+                    Tool::Shape { form, pts, to } => {
+                        self.shape_click(reqs, h, view, form, pts, to);
                     }
                     Tool::Place { what, lin, .. } => self.finish_place(reqs, h, view, what, w, lin),
                     Tool::ZoomArmed => {
                         let p = self.world_at((x, y));
                         self.tool = Tool::Zoom { from: p, to: p };
+                    }
+                    Tool::UnselectArmed => {
+                        let p = self.world_at((x, y));
+                        self.tool = Tool::Box {
+                            from: p,
+                            to: p,
+                            additive: false,
+                            unselect: true,
+                        };
                     }
                     _ => {
                         // Double click: properties of the object under the pointer.
@@ -2393,8 +2765,9 @@ impl Editor {
                                 self.fit_world(p, q);
                                 return true;
                             }
-                            // ponytail: right click opens xschem's context menu; no popup
-                            // menus outside the menubar yet.
+                            // A click: modified actions, end the tool, or the context menu.
+                            self.right_click(reqs, h, view, (x, y));
+                            return true;
                         }
                         return false;
                     }
@@ -2407,7 +2780,8 @@ impl Editor {
                         lin,
                         copy,
                         drag: true,
-                    } => self.finish_move(reqs, h, from, to, lin, copy),
+                        stretch,
+                    } => self.finish_move(reqs, h, from, to, lin, copy, stretch),
                     Tool::Wire {
                         from,
                         to,
@@ -2509,8 +2883,20 @@ impl Editor {
         };
         self.opts.constrain = 0;
         self.commit(reqs, h, "draw wire", ops);
+        if self.opts.auto_trim {
+            self.trim_after = Some(h);
+        }
+        if self.opts.persistent && from != to {
+            // Options → persistent wire: the next segment starts where this one ended.
+            self.tool = Tool::Wire {
+                from: to,
+                to,
+                drag: false,
+            };
+        }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn finish_move(
         &mut self,
         reqs: &mut Vec<EditRequest>,
@@ -2519,10 +2905,18 @@ impl Editor {
         to: Pt,
         lin: Xform,
         copy: bool,
+        stretch: u8,
     ) {
         let x = lin.then(Xform::translate(to.0 - from.0, to.1 - from.1));
         self.opts.constrain = 0;
         if x == Xform::IDENTITY && !copy {
+            return;
+        }
+        if !copy && stretch > 0 {
+            self.finish_stretch(reqs, h, x, stretch);
+            if self.opts.auto_trim {
+                self.trim_after = Some(h);
+            }
             return;
         }
         if copy {
@@ -3024,13 +3418,7 @@ impl Editor {
                     o.line(w[0].0, w[0].1, w[1].0, w[1].1, 1);
                 }
             }
-            Tool::Shape { rect, from, to } => {
-                if *rect {
-                    o.rect(from.0, from.1, to.0, to.1, 4);
-                } else {
-                    o.line(from.0, from.1, to.0, to.1, 4);
-                }
-            }
+            Tool::Shape { .. } => {} // `parity_overlay` previews shapes
             Tool::Place { what, at, lin } => {
                 let p = &self.session.project;
                 let row = match (what, self.active()) {
@@ -3067,8 +3455,9 @@ impl Editor {
                     }
                 }
             }
-            Tool::Idle | Tool::Press { .. } | Tool::ZoomArmed => {}
+            Tool::Idle | Tool::Press { .. } | Tool::ZoomArmed | Tool::UnselectArmed => {}
         }
+        self.parity_overlay(&mut o);
         // Selected texts have no stroke to recolor: outline them.
         for (i, &on) in self.selected.iter().enumerate() {
             if on && self.scene.objs.key[i].table == TableId::Texts {
@@ -3123,8 +3512,22 @@ impl Editor {
         let _ = writeln!(t, "set status.grid value {}", q(&units(self.opts.grid)));
         let banner = match &self.tool {
             Tool::Wire { .. } => "DRAW WIRE! ",
-            Tool::Shape { rect: true, .. } => "DRAW RECTANGLE! ",
-            Tool::Shape { rect: false, .. } => "DRAW LINE! ",
+            Tool::Shape {
+                form: Form::Rect, ..
+            } => "DRAW RECTANGLE! ",
+            Tool::Shape {
+                form: Form::Line, ..
+            } => "DRAW LINE! ",
+            Tool::Shape {
+                form: Form::Poly, ..
+            } => "DRAW POLYGON! ",
+            Tool::Shape {
+                form: Form::Arc, ..
+            } => "DRAW ARC! ",
+            Tool::Shape {
+                form: Form::Circle, ..
+            } => "DRAW CIRCLE! ",
+            Tool::UnselectArmed => "UNSELECT AREA! ",
             Tool::Move { copy: true, .. } => "COPY! ",
             Tool::Move { .. } => "MOVE! ",
             Tool::Place { .. } => "PLACE! ",
@@ -3178,16 +3581,27 @@ impl Editor {
         }
         match &self.dialog {
             Dialog::None => {}
-            Dialog::Text(_, title, _) => {
+            Dialog::Text(_, title, typed) => {
                 let _ = writeln!(t, "set dialog.enter_text.title label {}", q(title));
+                let _ = writeln!(t, "set dialog.enter_text.input value {}", q(typed));
             }
+            Dialog::Ctx(_) | Dialog::Layers | Dialog::File(_) | Dialog::Recover(..) => {}
             Dialog::Choose(c) => {
                 let title = match c.purpose {
-                    ChooseFor::Insert => "Insert symbol (type to filter, click to place)",
-                    ChooseFor::Open => "Open cell",
-                    ChooseFor::Waves => "Open waveform file (.raw; or type a path + Enter)",
+                    ChooseFor::Insert => "Insert symbol (type to filter, click to place)".into(),
+                    ChooseFor::Open => "Open cell".into(),
+                    ChooseFor::Waves if !c.note.is_empty() => format!(
+                        "Open waveform file for {} (.raw; or type a path + Enter)",
+                        c.note
+                    ),
+                    ChooseFor::Waves => {
+                        "Open waveform file (.raw; or type a path + Enter)".to_owned()
+                    }
+                    ChooseFor::Merge => "Merge: insert a cell's schematic at the pointer".into(),
+                    ChooseFor::Delete => "Delete a cell file (pick twice to confirm)".into(),
+                    ChooseFor::Compare => "Compare the active schematic with".into(),
                 };
-                let _ = writeln!(t, "set dialog.choose.title label {}", q(title));
+                let _ = writeln!(t, "set dialog.choose.title label {}", q(&title));
                 let _ = writeln!(t, "set dialog.choose.filter value {}", q(&c.filter));
                 for (i, (label, _)) in c.rows.iter().enumerate() {
                     let _ = writeln!(t, "node dialog.choose.row.{i} item");
@@ -3221,6 +3635,7 @@ impl Editor {
             }
         }
         self.contribute_integration(&mut t);
+        self.contribute_parity(&mut t);
         (t, graphs)
     }
 }
@@ -3300,7 +3715,11 @@ impl App for Window {
 /// # Errors
 ///
 /// The project or file cannot be opened, or no window can be created.
-pub fn run(opts: Options) -> Result<(), String> {
+pub fn run(mut opts: Options) -> Result<(), String> {
+    if opts.state_dir.is_none() {
+        opts.state_dir = platform::state_dir();
+    }
+    opts.system_clipboard = true;
     let ed = Editor::new(opts)?;
     schemify_render::run("Schemify", Window::new(ed)).map_err(|e| e.to_string())
 }

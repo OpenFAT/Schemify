@@ -17,7 +17,10 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - **render**: `draw_canvas` shares one text cache between scene and overlay (re-shapes labels every frame; the editor works around it, the demo doesn't); window has no exit hook.
 - **ui**: text fields commit only on Enter (the app copies typed text every frame).
 - **plugins/build.sh**: rebuilding `hello`/`gmid_stub` is not byte-reproducible.
-- Editor gaps vs xschem: stretch/kissing moves, polygon/arc/circle drawing, schematic graphics (format has none), context menu, persistent wire mode, snap cursor/crosshair, search, Save As, rotated texts, scrolling lists (24 rows max), system clipboard, crash-recovery prompt, plugin I/O capabilities fetch/clipboard in the app.
+- Editor gaps vs xschem (after the parity pass, `tests/parity.rs`): partial wire selection (xschem's Ctrl+drag box selects only the inside ends of crossing wires; here a stretch follows wire ends on moved connection points); vertex editing of a selected wire/line/polygon/rect corner; symbol `stext` orientation (only schematic `text` records turn); the context menu closes with Esc or a row, not a click outside; recent files outside the current project do not open (one project per session); layer colors, dim and line width are not persisted (no user-config writer yet); the web build has no system clipboard (D2 glue) and no exports to disk (OPFS); plugin I/O capabilities fetch/clipboard in the app.
+- **Exports**: PDF/EPS text uses the base-14 Helvetica (not embedded, ASCII only, others print `?`); one A4 landscape page per drawing; arcs are polylines of 6° steps; the PNG is the visible canvas at screen resolution (no DPI/size option).
+- **Make subcircuit** (Ctrl+Shift+H) connects the new instance by net labels at the old boundary points and on its pins (xschem rewires); the new cell's symbol is the generated box.
+- **Join/trim** does not merge diagonal wires or wires with attributes other than `bus`.
 - No user-config reader: the `sim ngspice` command line (format spec §4) is not read; the CLI and the editor use `ngspice -b -r {raw} {netlist}` (tests pass `editor::Options::sim`).
 - Plugin `eval` requests still answer `E_GONE` (elab evaluator not wired to the host).
 
@@ -104,7 +107,39 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## Parity gaps vs xschem (UI)
 
-- **ui/render**: toolbar icons (text labels now), menu keyboard navigation, tear-off/context menus, scrolling, split dragging, dropdown popups.
+- **ui/render**: toolbar icons (text labels now), menu keyboard navigation, tear-off menus, split dragging, dropdown popups. (Context menus are positioned dialogs, `UiState::set_dialog_at`; chooser lists scroll.)
+
+## Parity: intentionally dropped
+
+xschem menu items and keys with no meaning in Schemify, removed from the default UI (`plugins/default-ui`) rather than left unresolved. The parity ratchet (`crates/app/tests/parity.rs`) holds every remaining name to an implementation; `tests/shell.rs` lists the dropped inventory chords.
+
+- File → Start new Xschem process (`x`), Alt+Shift+E / Alt+Shift+I "in a new process": one process with tabs; `x` and the Alt+Shift keys open a new tab instead.
+- Options → Debug mode: logs go to the status line and stderr; there is no Tcl debug level.
+- Options → No XCopyArea drawing model, Fix for GPUs with broken tiled fill, Fix broken RDP mouse coordinates, `$` / Ctrl+`$`: X11 drawing workarounds; vello draws every frame.
+- Options → Enable infix-interface, Intuitive Click & Drag interface: Schemify keeps xschem's default interaction (infix and intuitive), one gesture state machine.
+- Options → Undo buffer on Disk: undo always lives in the on-disk journal (D28).
+- Options → Unsel. partial sel. wires after stretch move: wires are selected whole; a stretch never leaves partially selected wires.
+- Options → Variable grid point size, View → Set grid point size: the canvas draws grid dots at one size.
+- Options → Group bus slices in Verilog instances, Replace `[` and `]` for buses in SPICE netlist: netlist spellings are fixed by the dialects (D22, netlist spec §7.6).
+- Options → Netlist format → VHDL, tEDAx, Split netlist, Symbol global attrs: no such emitters or modes; SPICE/Verilog map to the dialect list (Simulation → Netlist dialect).
+- View → Horizontal toolbar: toolbar placement is a UI-plugin style (D6); View → Tabbed interface: always tabbed.
+- View → Show hidden texts: the scene draws every text (no hidden-text attribute).
+- Properties → Change selected object insertion order (Shift+S): rank-3 order is by id (D9); netlist order is not set by insertion.
+- Tools → Execute TCL command: no Tcl, documents and the UI run no scripts (D7, D12).
+- Tools → Grab screen area (Print): no image objects in the format; Print exports a PNG of the canvas instead.
+- Tools → Insert JPG/PNG/SVG image: no image records in the format (D9).
+- Ctrl+h launcher, Simulation → Graphs → Add waveform reload launcher: executable content in a design (D7).
+- Symbol → Change selected inst. texts to floaters, Unselect attached floaters (Ctrl+u): no floater texts (instance texts are symbol `stext` templates).
+- Symbol → Search all search-paths for schematic: no search path (D10, `lib:cell`).
+- Symbol → Allow duplicated instance names: duplicate names break netlists; copies are renamed, and Highlight → duplicate / rename duplicate names repair imports.
+- Highlight → Propagate highlight (drill): no `propag` pin attribute; highlights are hierarchy-wide already (Ctrl+Shift+K highlights).
+- Simulation → Set netlist dir, Set top level netlist name, Use netlist directory / 'simulation' dir / 'simulation/[schname]' dir: netlists go to `.schemify/netlist/<cell>.<ext>` (spines).
+- Simulation → Keep symbols when traversing hierarchy: the symbol cache is always kept.
+- Simulation → Configure simulators and tools: simulators come from the user config (`sim` records, format spec §4; the reader is the config crate's).
+- Simulation → Shell [simulation path], Utile stimuli editor / translate: terminals and xschem's awk tool chain.
+- Simulation → LVS (LVS netlist, upper-case SUBCKT, top level is a subckt, lvs_ignore, spiceprefix): LVS netlists are the `cdl` dialect (D22).
+- Simulation → Graphs → Hide graphs if no spice data loaded, Live annotate probes with 'b' cursor: docs plot slots show their state; cursor-time annotation is a waves-dock gap (see "Parity gaps vs xschem (UI)" waves).
+- Keys `0`–`4`: xschem's built-in logic simulator (net logic values); simulation goes through runners (D15).
 - **waves**: horizontal cursors, dataset tracking, measurement tooltip, digital/bus mode, histogram, graph properties dialog, per-graph x locking, typed cursor positions, colour picker.
 
 ## Testing infrastructure

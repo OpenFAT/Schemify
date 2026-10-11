@@ -333,3 +333,35 @@ fn errors_are_collected_in_line_order_and_capped() {
     let shown = err.to_string();
     assert!(shown.starts_with("2:1: E026 zero-length wire: "), "{shown}");
 }
+
+/// Rank-3 `shape` (spec §4): the form fixes the value count; a wrong count, an unknown form
+/// or a non-coordinate value is `E029`; `shape` is not a symbol (rank-2) kind.
+#[test]
+fn shape_forms_and_arity() {
+    let ok = "schemify 1 shbench\n\nshape 0abc line 0 0 10 0\n  layer 7\nshape 0abd rect 0 0 10 5\nshape 0abe arc 0 0 5 0 90\nshape 0abf circle 0 0 5\nshape 0abg poly 0 0 10 0 10 10\n  closed true\n";
+    let doc = parse(ok.as_bytes()).expect("every form parses");
+    assert_eq!(schemify_format::write(&doc), ok, "canonical round trip");
+    for bad in [
+        "shape 0abc line 0 0 10\n",
+        "shape 0abc rect 0 0 10 5 1\n",
+        "shape 0abc arc 0 0 5 0\n",
+        "shape 0abc circle 0 0\n",
+        "shape 0abc poly 0 0 10\n",
+        "shape 0abc poly 0 0\n",
+    ] {
+        fails(&format!("{BENCH}{bad}"), Code::E029, 2, 1);
+    }
+    fails(&format!("{BENCH}shape 0abc oval 0 0 5\n"), Code::E029, 2, 0);
+    fails(
+        &format!("{BENCH}shape 0abc line 0 0 x 0\n"),
+        Code::E029,
+        2,
+        0,
+    );
+    fails(
+        "schemify 1 shprim\npin A in 0 0\nimpl s spice\nshape 0abc line 0 0 1 0\n",
+        Code::E027,
+        4,
+        0,
+    );
+}

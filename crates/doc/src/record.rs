@@ -158,6 +158,11 @@ pub(crate) fn check_record(rec: &RecordBuf, file: FileKind) -> Result<(), (Code,
     if !rec.verbatim.is_empty() && !schema.verbatim {
         return Err((Code::E029, "this record kind takes no verbatim lines"));
     }
+    if rec.kind == RecordKind::Shape
+        && schemify_format::shape_arity(&rec.fields[1], rec.fields.len() - 2) != Some(true)
+    {
+        return Err((Code::E029, "wrong number of values for this shape form"));
+    }
     if rec.verbatim.iter().any(|l| l.contains(['\n', '\r'])) {
         return Err((Code::E028, "verbatim line contains a line break"));
     }
