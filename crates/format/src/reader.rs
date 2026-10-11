@@ -34,6 +34,7 @@ const BOM: &[u8] = b"\xEF\xBB\xBF";
 /// (BOM, invalid UTF-8, bad header, bad escape, ...), `E027` unknown record (unless the
 /// header version is newer than [`VERSION`]), `E023` rank order, `E029` arity or value
 /// form, `E022` coordinates, `E024` duplicate names, `E025` kind rules, `E026` zero-length wires.
+/// A `journal` file has no known record words, so every record is kept as `Unknown`.
 ///
 /// # Examples
 ///
@@ -320,7 +321,10 @@ impl<'s> Lexer<'s> {
         let word = &line[..word_end];
         let kind = match self.doc.kind.lookup(word) {
             Some(k) => k,
-            None if self.doc.version > VERSION => RecordKind::Unknown,
+            // A newer version (spec §5) or a journal (no known words): kept as written.
+            None if self.doc.version > VERSION || self.doc.kind == FileKind::Journal => {
+                RecordKind::Unknown
+            }
             None if word == "schemify" => {
                 return self.error(Code::E028, line_no, 0, "second header line");
             }
@@ -795,7 +799,7 @@ fn check_keys(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
 
 /// Spec §4 kind rules (`E025`): `.shprim` has ≥ 1 pin and ≥ 1 impl, none schematic;
 /// `.shcomp` has exactly one schematic impl; more than one impl needs a `default`.
-fn check_kind_rules(doc: &Document<'_>, diags: &mut Vec<Diagnostic>) {
+pub(crate) fn check_kind_rules(doc: &Document<'_>, diags: &mut Vec<Diagnostic>) {
     assert_eq!(doc.record_kind(0), RecordKind::Header);
     let (mut pins, mut impls, mut schematic) = (0u32, 0u32, 0u32);
     for r in 0..doc.record_count() {

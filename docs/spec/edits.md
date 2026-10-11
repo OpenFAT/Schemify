@@ -43,6 +43,8 @@ Modes:
 - **commit**: validate → apply → push inverse to the undo stack → append to the journal.
 - **stage**: validate → store in `staged_edits` (not applied; ids are drawn and values snapped at stage time, so the preview is stable). The visual diff renders design ⊕ stage. `accept(stage)` re-validates and commits it as one transaction (a failing accept keeps the stage); `reject(stage)` drops it. Stages are per document, identified by a u16, capped at 2^8 open stages (`E043` beyond). Stages are not journaled.
 
+**What changed.** Each request yields an outcome (committed, staged, undone, redone, dropped, nothing, rejected, refused). On request, `doc` also reports the ops it applied, in application order: a commit's resolved ops (ids drawn, values snapped), an undo's inverse ops, a redo's ops; none for the other outcomes. Committed as one transaction onto the state before the request, they give the state after it, so owners of derived tables (elab) update from them without keeping copies of the requests.
+
 Validation is all-or-nothing per transaction: every failing op is reported as (op index, error code) and nothing is applied. Per op: target exists (`E040`), id free (`E041`), name free (`E024`), the record is legal for the file kind and well formed (format spec §4: `E027`, `E029`, `E022`, `E024`, `E028` for keys that are not words or comments/verbatim lines that could not be written back), the op is allowed (`E043`), computed-param overrides (`E030`). At the end of the transaction, so a transaction may pass through invalid states: zero-length wires it touched (`E026`), kind rules (`E025`, only when the transaction makes a valid document invalid, so a new cell can be built up), and in-file references (`E042`: `waive` → instance, constraint `member` → id, `body` → impl, `spec` → output, header `default` → impl; only references the transaction leaves dangling, so a file loaded with dangling references stays editable). End-of-transaction errors are attributed to the last op touching the record involved.
 
 **Grid snapping** (D13) applies to instance parameter overrides the op writes (every override of an inserted or `put` instance; the one key of a `set_attr`), when the value is a plain number (format spec §3 number literal; SI suffixes and expressions are left for elab to gate, `E032`) and the instantiated cell resolves (netlist spec §1; unresolved cells get no parameter semantics and elab reports `E001`). A param with `grid g` snaps to the nearest multiple of `g`; otherwise `step s` snaps to `min + k·s` (`min` when it is a plain number, else no snapping; 0 without `min`). An expression `grid` or `step` disables snapping. Arithmetic is exact decimal, ties away from zero; the snapped value is what is stored and journaled, so replaying the journal needs no parameter facts.
@@ -58,7 +60,7 @@ Validation is all-or-nothing per transaction: every failing op is reported as (o
 
 ## 3. Journal (crash recovery, session restore, undo after restart)
 
-Sidecar file `.schemify/journal/<project-relative cell path>.journal`, gitignored, same line-record syntax:
+Sidecar file `.schemify/journal/<project-relative cell path>.journal`, gitignored, a format `journal` file (format spec §1: no known record words, every record kept as written; op text is read the same way):
 
 ```
 schemify 1 journal

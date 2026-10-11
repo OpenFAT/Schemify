@@ -133,6 +133,199 @@ pub fn topo_order(deps: Deps<'_>, order: &mut Vec<u32>) -> Result<(), Cycle> {
     Ok(())
 }
 
+/// Writes every node into `order` (cleared first) and every cycle into `cycles`
+/// (cleared first), in one pass: [`topo_order`] for graphs that may have cycles.
+///
+/// `order` lists strongly connected components dependencies first, each component's
+/// nodes together, so every edge between components is satisfied; edges inside a
+/// cyclic component cannot be. On an acyclic graph `order` equals [`topo_order`]'s.
+///
+/// `cycles` covers every node that lies on a cycle (a component of two or more nodes,
+/// or one with a self-loop), and no other: per cyclic component, in `order`'s
+/// component order, the shortest cycle through its lowest uncovered node, repeated
+/// until each of the component's nodes is on a reported cycle. Each [`Cycle`] is a
+/// real cycle of edges.
+///
+/// Cost: O(nodes + edges) for the order; covering a component of k nodes is at most
+/// k breadth-first searches inside it, O(k · (k + edges inside)).
+///
+/// # Panics
+/// If `deps` is not a valid CSR table.
+pub fn topo_order_all(deps: Deps<'_>, order: &mut Vec<u32>, cycles: &mut Vec<Cycle>) {
+    deps.check();
+    let n = deps.len();
+    order.clear();
+    cycles.clear();
+    let mut t = Tarjan {
+        index: vec![NONE; n],
+        low: vec![0; n],
+        on_stack: vec![false; n],
+        stack: Vec::new(),
+        path: Vec::new(),
+        next: 0,
+    };
+    let mut cover = Cover::new(n);
+    for root in 0..n as u32 {
+        if t.index[root as usize] != NONE {
+            continue;
+        }
+        t.visit(deps, root);
+        while let Some(&(v, next)) = t.path.last() {
+            if next < deps.offsets[v as usize + 1] {
+                t.path.last_mut().expect("non-empty").1 += 1;
+                let w = deps.targets[next as usize];
+                if t.index[w as usize] == NONE {
+                    t.visit(deps, w);
+                } else if t.on_stack[w as usize] {
+                    t.low[v as usize] = t.low[v as usize].min(t.index[w as usize]);
+                }
+                continue;
+            }
+            t.path.pop();
+            if let Some(&(u, _)) = t.path.last() {
+                t.low[u as usize] = t.low[u as usize].min(t.low[v as usize]);
+            }
+            if t.low[v as usize] == t.index[v as usize] {
+                let start = order.len();
+                loop {
+                    let w = t.stack.pop().expect("the component root is on the stack");
+                    t.on_stack[w as usize] = false;
+                    order.push(w);
+                    if w == v {
+                        break;
+                    }
+                }
+                let component = &order[start..];
+                if component.len() > 1 || deps.edges(v).contains(&v) {
+                    cover.component(deps, component, cycles);
+                }
+            }
+        }
+    }
+    assert_eq!(order.len(), n, "every node emitted exactly once");
+    assert!(t.stack.is_empty() && t.path.is_empty());
+}
+
+/// Marker for "no index yet" / "no parent" in [`topo_order_all`].
+const NONE: u32 = u32::MAX;
+
+/// Tarjan's strongly connected components, iterative: discovery index ([`NONE`] =
+/// unseen), low link, the component stack and the DFS path of (node, next edge offset).
+struct Tarjan {
+    index: Vec<u32>,
+    low: Vec<u32>,
+    on_stack: Vec<bool>,
+    stack: Vec<u32>,
+    path: Vec<(u32, u32)>,
+    next: u32,
+}
+
+impl Tarjan {
+    fn visit(&mut self, deps: Deps<'_>, v: u32) {
+        assert_eq!(self.index[v as usize], NONE, "each node is discovered once");
+        self.index[v as usize] = self.next;
+        self.low[v as usize] = self.next;
+        self.next += 1;
+        self.stack.push(v);
+        self.on_stack[v as usize] = true;
+        self.path.push((v, deps.offsets[v as usize]));
+        assert!(
+            self.path.len() <= self.index.len(),
+            "DFS path within the node count"
+        );
+    }
+}
+
+/// Scratch for covering cyclic components with shortest cycles: component membership,
+/// coverage and breadth-first-search parents, one slot per node, reset after each use.
+struct Cover {
+    in_component: Vec<bool>,
+    covered: Vec<bool>,
+    parent: Vec<u32>,
+    queue: Vec<u32>,
+}
+
+impl Cover {
+    fn new(n: usize) -> Cover {
+        Cover {
+            in_component: vec![false; n],
+            covered: vec![false; n],
+            parent: vec![NONE; n],
+            queue: Vec::new(),
+        }
+    }
+
+    /// Appends cycles to `cycles` until every node of the strongly connected
+    /// `component` is on one.
+    fn component(&mut self, deps: Deps<'_>, component: &[u32], cycles: &mut Vec<Cycle>) {
+        assert!(!component.is_empty());
+        let mut members = component.to_vec();
+        members.sort_unstable();
+        for &v in &members {
+            self.in_component[v as usize] = true;
+        }
+        for &v in &members {
+            if self.covered[v as usize] {
+                continue;
+            }
+            let cycle = self.shortest_cycle(deps, v);
+            for &u in &cycle {
+                self.covered[u as usize] = true;
+            }
+            cycles.push(Cycle { nodes: cycle });
+        }
+        for &v in &members {
+            assert!(
+                self.covered[v as usize],
+                "every component node is on a cycle"
+            );
+            self.in_component[v as usize] = false;
+        }
+    }
+
+    /// Returns the shortest cycle through `v` inside the marked component, starting at
+    /// `v`. One exists: the component is strongly connected and cyclic.
+    fn shortest_cycle(&mut self, deps: Deps<'_>, v: u32) -> Vec<u32> {
+        self.queue.clear();
+        self.queue.push(v);
+        let mut head = 0;
+        let mut last = NONE; // the node whose edge closes the cycle back to `v`
+        'search: while head < self.queue.len() {
+            let u = self.queue[head];
+            head += 1;
+            for &w in deps.edges(u) {
+                if w == v {
+                    last = u;
+                    break 'search;
+                }
+                if self.in_component[w as usize] && self.parent[w as usize] == NONE {
+                    self.parent[w as usize] = u;
+                    self.queue.push(w);
+                }
+            }
+        }
+        assert!(
+            last != NONE,
+            "a strongly connected cyclic component closes every cycle"
+        );
+        let mut cycle = vec![last];
+        while *cycle.last().expect("non-empty") != v {
+            let p = self.parent[*cycle.last().expect("non-empty") as usize];
+            assert!(
+                p != NONE && cycle.len() <= self.queue.len(),
+                "parents lead back to v"
+            );
+            cycle.push(p);
+        }
+        cycle.reverse();
+        for &u in &self.queue {
+            self.parent[u as usize] = NONE;
+        }
+        assert_eq!(cycle[0], v);
+        cycle
+    }
+}
+
 /// Builds the reverse table (dependents) of `deps` into `offsets`/`targets`
 /// (both cleared). Each node's dependents are in increasing index order.
 ///

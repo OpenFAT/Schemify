@@ -6,7 +6,8 @@ mod common;
 
 use common::*;
 use schemify_doc::{
-    Code, LibSource, LockStatus, Op, Outcome, Project, RecordBuf, Target, apply_edits, hex, sha256,
+    Code, LibSource, Loc, LockStatus, Op, Outcome, Project, RecordBuf, TableId, Target,
+    apply_edits, hex, sha256,
 };
 use schemify_format::{FileKind, RecordKind};
 
@@ -138,9 +139,41 @@ fn cell_references_resolve_per_netlist_spec() {
     assert_eq!(
         iface.pins().name.len(),
         6,
-        "the interface is ranks 0-1 only"
+        "the interface is ranks 0-2 only"
     );
     assert_eq!(iface.instances().id.len(), 0);
+    // The index keeps the symbol graphics: every rank-2 record of the full file, so an
+    // instance draws without opening its cell.
+    let (full, fh) = open(OTA, "ota5t.shcomp");
+    let full = full.doc(fh).unwrap();
+    let graphics = |d: &schemify_doc::Document| -> Vec<RecordBuf> {
+        (0..d.table_len(TableId::Graphics) as u32)
+            .map(|row| {
+                d.record(Loc {
+                    table: TableId::Graphics,
+                    row,
+                })
+            })
+            .collect()
+    };
+    assert!(!graphics(full).is_empty(), "the fixture draws a symbol");
+    assert_eq!(graphics(iface), graphics(full));
+    assert_eq!(p.open_handle(ota), None, "indexed, not open");
+    // Resolution from a cell row needs no open document and agrees with the handle form.
+    assert_eq!(p.resolve_in(ota, "./ota5t"), Ok(ota));
+    assert_eq!(p.resolve_in(ota, "./twin"), p.resolve(h, "./twin"));
+    assert_eq!(
+        p.resolve_in(ota, "sky130:nfet_01v8"),
+        p.resolve(h, "sky130:nfet_01v8")
+    );
+    let nfet_row = p.resolve(h, "sky130:nfet_01v8").unwrap();
+    assert_eq!(p.resolve_in(nfet_row, "./nfet_01v8"), Ok(nfet_row));
+    assert_eq!(
+        p.resolve_in(nfet_row, "./ota5t"),
+        Err(Code::E001),
+        "other library"
+    );
+    assert_eq!(p.resolve_in(ota, "./ota_ac"), Err(Code::E001), "a bench");
     let nfet = p.resolve(h, "sky130:nfet_01v8").unwrap();
     assert_eq!(p.cells().kind[nfet], FileKind::Shprim);
     assert_eq!(
@@ -164,6 +197,8 @@ fn cell_references_resolve_per_netlist_spec() {
         .open("", "bench/ota5t.shcomp", OTA.as_bytes(), None)
         .unwrap()
         .handle;
+    assert_eq!(p.open_handle(ota), Some(oh));
+    assert_eq!(p.open_handle(nfet_row), None);
     let del = Op::Delete(Target::new(RecordKind::Pin, "VSS"));
     assert!(matches!(
         run(&mut p, oh, tx(vec![del])),

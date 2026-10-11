@@ -197,8 +197,9 @@ pub struct Cells {
     pub kind: Vec<FileKind>,
     /// sha256 of the file bytes.
     pub hash: Vec<Digest>,
-    /// The symbol interface (ranks 0–1, `parse_prefix`), for cells; `None` for benches
-    /// and for files whose interface does not parse (see the index report).
+    /// The symbol (ranks 0–2, `parse_prefix`: header, interface and symbol graphics),
+    /// for cells; `None` for benches and for files whose symbol does not parse (see the
+    /// index report). Enough to place and draw an instance without opening the cell.
     pub iface: Vec<Option<Document>>,
 }
 
@@ -399,6 +400,10 @@ pub(crate) fn split_cell_path(relpath: &str) -> Option<(&str, &str, FileKind)> {
     (!stem.is_empty()).then_some((dir, stem, kind))
 }
 
+/// Highest rank an indexed cell keeps: the symbol graphics (rank 2), so an editor draws
+/// instances from the index instead of opening every instantiated cell.
+const SYMBOL_RANK: u8 = 2;
+
 /// Indexes one library's listing into `cells`, replacing its previous rows. Returns
 /// per-file findings as (relpath, diag): `E020` same stem with two kinds in one
 /// directory, interface parse errors (the format code).
@@ -435,7 +440,7 @@ pub(crate) fn index_cells(
         }
         let iface = match kind {
             FileKind::Shbench => None,
-            _ => match parse_prefix(bytes, 1) {
+            _ => match parse_prefix(bytes, SYMBOL_RANK) {
                 Ok(model) => Some(Document::from_format(&model).doc),
                 Err(e) => {
                     let d = e.diagnostics[0];

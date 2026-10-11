@@ -111,9 +111,10 @@ pub enum Op {
 }
 
 impl Op {
-    /// Returns the record this op is about: (kind, key text). Inserts report the
-    /// payload's first field.
-    pub(crate) fn subject(&self) -> (RecordKind, &str) {
+    /// Returns the record this op changes: (kind, key text), the key as in [`Target`].
+    /// Inserts report the payload's first field (a graphic's draw-order index is its
+    /// insert row instead, which an insert without `at` does not know).
+    pub fn subject(&self) -> (RecordKind, &str) {
         match self {
             Op::Insert { rec, .. } => (rec.kind, rec.fields.first().map_or("", String::as_str)),
             Op::Delete(t)

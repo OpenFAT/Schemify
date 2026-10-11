@@ -23,7 +23,8 @@
 //!
 //! - load: `Project::new(manifest, lock)` → `index_library` per library (caller
 //!   supplies `(relpath, bytes)` listings) → `open` per opened cell.
-//! - frame: [`apply_edits`]`(project, edit_requests)` → `take_journal` per document.
+//! - frame: [`apply_edits`]`(project, edit_requests)` (or [`apply_edits_report`], which
+//!   also returns the ops each request applied) → `take_journal` per document.
 //! - save: `save` → app writes atomically → `saved`.
 //! - external change: `external_change` → (conflict → `resolve`).
 //!
@@ -60,9 +61,9 @@ pub use edit::{Mode, NEW_ID, OPS_MAX, Op, OpError, Target, Transaction};
 pub use journal::{ops_from_text, ops_to_text};
 pub use library::{CELLS_MAX, CellRef, Cells, LIBS_MAX, LibSource, Libs, LockStatus, Locked};
 pub use project::{
-    Choice, ConflictBlock, DOCS_MAX, DocHandle, Edit, EditRequest, External, JournalWrite,
+    Applied, Choice, ConflictBlock, DOCS_MAX, DocHandle, Edit, EditRequest, External, JournalWrite,
     OpenError, Opened, Outcome, Project, Recovery, STAGES_MAX, SaveRequest, Stage, UNDO_MAX,
-    apply_edits,
+    apply_edits, apply_edits_report,
 };
 pub use record::{Attr, RecordBuf};
 /// Format types that appear in this crate's columns and edit targets, re-exported so

@@ -20,19 +20,25 @@ pub enum FileKind {
     Lock,
     /// User `config`: settings, keymap, simulators, plugin order.
     Config,
+    /// The `doc` crate's edit journal and op text (edits spec §1, §3). It has no known
+    /// record words: every record is kept like a §5 unknown record, at any version.
+    Journal,
 }
 
-const FILE_WORDS: [&str; 6] = ["shprim", "shcomp", "shbench", "project", "lock", "config"];
+const FILE_WORDS: [&str; 7] = [
+    "shprim", "shcomp", "shbench", "project", "lock", "config", "journal",
+];
 
 impl FileKind {
     /// Every file kind, in declaration order.
-    pub const ALL: [FileKind; 6] = [
+    pub const ALL: [FileKind; 7] = [
         FileKind::Shprim,
         FileKind::Shcomp,
         FileKind::Shbench,
         FileKind::Project,
         FileKind::Lock,
         FileKind::Config,
+        FileKind::Journal,
     ];
 
     /// Returns the header word (`shcomp`, `project`, ...).
@@ -750,7 +756,7 @@ const BENCH: [RecordKind; 8] = [
 ];
 
 /// Allowed record kinds per [`FileKind`], in declaration order of `FileKind`.
-static FILE_RECORDS: [&[RecordKind]; 6] = [
+static FILE_RECORDS: [&[RecordKind]; 7] = [
     // shprim: symbol, docs, bodies
     &concat::<9, 3, 12>(SYMBOL, [R::Prose, R::Var, R::Body]),
     // shcomp: symbol, schematic, docs, bodies, code (D17 as amended 2026-10-11: netlist
@@ -792,6 +798,8 @@ static FILE_RECORDS: [&[RecordKind]; 6] = [
     &[R::Lib, R::Plugin, R::Set],
     &[R::Locked],
     &[R::Set, R::Key, R::Sim, R::PluginOrder],
+    // journal: no known words, every record is free-form
+    &[],
 ];
 
 const fn concat<const X: usize, const Y: usize, const Z: usize>(
