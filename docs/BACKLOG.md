@@ -155,4 +155,4 @@ xschem menu items and keys with no meaning in Schemify, removed from the default
 - **render** (web): no WebGPU device in headless Chrome (CI, SwiftShader) means a blank canvas; the browser smoke test can only check that the editor starts (canvas created, no trap). A `vello_cpu` fallback when no adapter is found would let it compare pixels against the native goldens.
 - `tests/perf/baseline.txt` is measured on GitHub's shared `ubuntu-latest` runners; if the 10% gate proves noisy there, gate on best-of-N medians or a self-hosted runner.
 - **import** (`devicereader`): `import-report.{md,txt}` spell input files as absolute paths, so they differ per machine; the determinism job excludes them. Report paths relative to the import roots to bring them under the byte comparison.
-- Release builds: no macOS x86_64 binary (only Apple-silicon runners); the Linux binary links the build runner's glibc. The D39 size gate in `release.yml` holds the single binary to 25 MB until the core/editor split (core ≤ 2 MB, editor ≤ 10 MB) lands.
+- Release builds: no macOS x86_64 binary (only Apple-silicon runners); the Linux binary links the build runner's glibc.
