@@ -185,3 +185,58 @@ fn xspice_vector_bus_bits_are_respelled_everywhere() {
     let n = emit(&elab(&p, hs[2], Dialect::Spectre), Dialect::Spectre).text;
     assert!(!n.contains("d_0"), "{n}");
 }
+
+#[test]
+fn component_code_is_emitted_inside_every_definition() {
+    // D17 as amended (spec §7.6.15): a `.shcomp`'s `code` is its own netlist text,
+    // written after the instance lines of each of its specializations; the bench's code
+    // stays at the top, once; CDL takes none; xyce refuses `.control` (E033).
+    let res = "schemify 1 shprim\n\npin p inout 0 -30\npin n inout 0 30\n\nparam R 1k\n\nimpl spice spice\n  format spice \"R{name} {p} {n} {R}\"\n";
+    let comp = "schemify 1 shcomp\n\npin A inout -20 0\npin B inout 20 0\n\nparam r 1k\n\nimpl sch schematic\n\ninst 0r0001 ./res\n  at 0 0 R0\n  name R1\n  R r\n\nport 0p0001 0 -30 R0 A\nport 0p0002 0 30 R0 B\n\ncode ctl spice\n  | .control\n  | .endc\n\ncode models spice\n  | .model dm d is=1e-14\n";
+    let bench = "schemify 1 shbench\n\ninst 0x0001 ./comp\n  at 0 0 R0\n  name X1\ninst 0x0002 ./comp\n  at 100 0 R0\n  name X2\n  r 2k\n\nlabel 0n0001 -20 0 R0 a\nlabel 0n0002 20 0 R0 0\nlabel 0n0003 80 0 R0 a\nlabel 0n0004 120 0 R0 0\n\ncode tran spice\n  | .tran 1n 10n\n";
+    let (p, hs) = project(&[
+        ("res.shprim", res),
+        ("comp.shcomp", comp),
+        ("tb.shbench", bench),
+    ]);
+    let e = elab(&p, hs[2], Dialect::Ngspice);
+    assert!(blocking(&e).is_empty(), "{:?}", blocking(&e));
+    let text = emit(&e, Dialect::Ngspice).text;
+    let blocks: Vec<&str> = text.split(".subckt ").skip(1).collect();
+    assert_eq!(blocks.len(), 2, "two specializations: {text}");
+    for b in &blocks {
+        let body = &b[..b.find(".ends").expect("closed")];
+        let (inst, model) = (body.find("\nRR1 "), body.find("\n.model dm d is=1e-14\n"));
+        assert!(inst.is_some() && model.is_some(), "{text}");
+        assert!(inst < model, "code after the instance lines: {text}");
+        assert!(
+            body.contains(".control\n.endc\n.model dm"),
+            "blocks by name: {text}"
+        );
+    }
+    assert_eq!(text.matches(".model dm d").count(), 2, "{text}");
+    assert_eq!(text.matches(".tran 1n 10n").count(), 1, "{text}");
+    assert!(
+        text.find(".tran 1n 10n") < text.find(".subckt "),
+        "bench code stays at the top: {text}"
+    );
+    // CDL: no code at all. Xyce: the `.control` block is E033, the model is kept.
+    let cdl = emit(&elab(&p, hs[2], Dialect::Cdl), Dialect::Cdl).text;
+    assert!(
+        !cdl.contains(".model") && !cdl.contains(".control"),
+        "{cdl}"
+    );
+    let x = elab(&p, hs[2], Dialect::Xyce);
+    assert!(
+        blocking(&x).iter().any(|b| b.starts_with("E033")),
+        "{:?}",
+        blocking(&x)
+    );
+    let xyce = emit(&x, Dialect::Xyce).text;
+    assert_eq!(xyce.matches(".model dm d").count(), 2, "{xyce}");
+    assert!(!xyce.contains(".control"), "{xyce}");
+    // The component as the top: its code sits in the (unwrapped) top block.
+    let top = emit(&elab(&p, hs[1], Dialect::Ngspice), Dialect::Ngspice).text;
+    assert_eq!(top.matches(".model dm d").count(), 1, "{top}");
+    assert!(!top.contains(".subckt"), "{top}");
+}

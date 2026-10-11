@@ -283,8 +283,6 @@ struct Cell {
     tally_sch: bool,
     /// A bench copy of component `copy_of`'s schematic (its netlist text needs a bench).
     copy_of: Option<u32>,
-    /// This component has a bench copy that carries its netlist text.
-    has_copy: bool,
     lib: u16,
 }
 
@@ -1161,7 +1159,6 @@ impl<'o> Tables<'o> {
                 tally_sym: true,
                 tally_sch: !shared,
                 copy_of: None,
-                has_copy: false,
                 lib: 0,
             });
             self.targets[s] = Some(Target::Cell(c));
@@ -1223,7 +1220,6 @@ impl<'o> Tables<'o> {
                 tally_sym: false,
                 tally_sch: !owned,
                 copy_of: None,
-                has_copy: false,
                 lib: 0,
             });
             self.targets[s] = Some(Target::Cell(c));
@@ -1243,7 +1239,6 @@ impl<'o> Tables<'o> {
                 tally_sym: false,
                 tally_sch: true,
                 copy_of: None,
-                has_copy: false,
                 lib: 0,
             });
         }
@@ -1269,7 +1264,6 @@ impl<'o> Tables<'o> {
                 tally_sym: false,
                 tally_sch: false,
                 copy_of: Some(c as u32),
-                has_copy: false,
                 lib: 0,
             };
             acc.item(
@@ -1279,7 +1273,6 @@ impl<'o> Tables<'o> {
                 0,
                 format!("{} (bench copy carrying the netlist text)", copy.name),
             );
-            self.cells[c].has_copy = true;
             self.cells.push(copy);
         }
         // Alternate schematics requested by instances (`schematic=` on a `C` record).
@@ -1322,7 +1315,6 @@ impl<'o> Tables<'o> {
                     tally_sym: false,
                     tally_sch: false,
                     copy_of: None,
-                    has_copy: false,
                     lib: 0,
                 };
                 acc.item(
@@ -1579,7 +1571,6 @@ impl<'o> Tables<'o> {
                 file: x,
                 lib: cell.lib,
                 bench: cell.kind == FileKind::Shbench,
-                has_copy: cell.has_copy,
                 parents,
                 pins,
             };
@@ -1845,24 +1836,13 @@ impl<'o> Tables<'o> {
         let fid = sc.file;
         let f = &self.srcs[fid as usize].file;
         tally_common(f, fid, acc, true);
-        // `S {}`: SPICE text emitted verbatim by xschem.
+        // `S {}`: SPICE text emitted verbatim by xschem, inside the component's subckt when
+        // the schematic is one (D17 as amended: a `.shcomp` carries `code` too).
         let g = &f.globals;
         for i in (0..g.tag.len()).filter(|&i| g.tag[i] == GlobalTag::S) {
             let text = f.str(g.text[i]);
             if text.trim().is_empty() {
                 acc.out(fid, 1);
-            } else if !sc.bench && sc.has_copy {
-                acc.item(fid, g.line[i], Class::Dropped(Drop::BenchCopy), 1, text);
-            } else if !sc.bench {
-                acc.review(
-                    fid,
-                    g.line[i],
-                    Review {
-                        reason: Reason::CodeInComponent,
-                        detail: text.to_owned(),
-                    },
-                    1,
-                );
             } else {
                 match netlist_text(text, self.opts.pdk_vars) {
                     Ok(t) => {
@@ -1907,20 +1887,16 @@ impl<'o> Tables<'o> {
                 acc.item(fid, line, Class::Dropped(Drop::SpiceIgnore), 1, detail);
                 continue;
             }
-            if !sc.bench {
+            // In a component the text is the subckt's (code.sym and its kin default to
+            // `only_toplevel=false`); `only_toplevel=true` text is the bench copy's.
+            let top_only = props
+                .get("only_toplevel")
+                .or_else(|| self.syms[s as usize].iface.template.get("only_toplevel"))
+                .and_then(truthy)
+                == Some(true);
+            if !sc.bench && top_only {
                 let detail = format!("netlist text instance {}", f.str(f.instances.symref[row]));
-                match sc.has_copy {
-                    true => acc.item(fid, line, Class::Dropped(Drop::BenchCopy), 1, detail),
-                    false => acc.review(
-                        fid,
-                        line,
-                        Review {
-                            reason: Reason::CodeInComponent,
-                            detail,
-                        },
-                        1,
-                    ),
-                }
+                acc.item(fid, line, Class::Dropped(Drop::BenchCopy), 1, detail);
                 continue;
             }
             match self.render_code(s, &props) {
@@ -1937,7 +1913,9 @@ impl<'o> Tables<'o> {
                 Err(r) => acc.review(fid, line, r, 1),
             }
         }
-        for code in &mut out.codes {
+        // A bench's `.param` lines become its variables; a component's stay in its
+        // subckt text, where xschem writes them.
+        for code in out.codes.iter_mut().filter(|_| sc.bench) {
             extract_params(&mut code.2, &mut out.vars, &mut out.default_vars);
         }
         let mut known: Vec<String> = sc.parents.clone();
@@ -2660,8 +2638,6 @@ struct SchCtx {
     file: u32,
     lib: u16,
     bench: bool,
-    /// The component has a bench copy that carries its netlist text.
-    has_copy: bool,
     /// The cell's parameters (empty for a bench): overrides referencing them become
     /// expressions or holes evaluated in this cell's scope.
     parents: Vec<String>,

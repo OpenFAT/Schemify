@@ -139,6 +139,18 @@ fn e027_unknown_record() {
     );
     fails("schemify 1 shbench\npin A in 0 0\n", Code::E027, 2, 1); // known word, wrong file kind
     fails("schemify 1 config\ninst 0abc ./x\n", Code::E027, 2, 1);
+    // D17 as amended: `code` is a component record too; the other bench tables are not,
+    // and a primitive has no netlist text of its own.
+    let comp = "schemify 1 shcomp\nimpl s schematic\n";
+    assert!(parse(format!("{comp}code m spice\n  | .model d d\n").as_bytes()).is_ok());
+    fails(&format!("{comp}corner tt\n"), Code::E027, 3, 1);
+    fails(&format!("{comp}output g 1\n"), Code::E027, 3, 1);
+    fails(
+        "schemify 1 shprim\npin A in 0 0\nimpl s spice\ncode m spice\n",
+        Code::E027,
+        4,
+        1,
+    );
     // Its attribute lines are skipped, not reported again or attached elsewhere.
     let err = parse(b"schemify 1 shbench\nhologram 1 2\n  knob 3\n  | x\n").unwrap_err();
     assert_eq!(err.diagnostics.len(), 1);

@@ -53,7 +53,7 @@ fn fixture() -> Vec<(String, String)> {
         ),
         f(
             "x/lib/inv.sch",
-            "v {xschem version=3.4.7 file_version=1.2}\nN 0 -30 0 -50 {lab=Z}\nC {ipin.sym} -40 0 0 0 {name=p1 lab=A}\nC {opin.sym} 0 -50 0 0 {name=p2 lab=Z}\nC {devices/nmos4.sym} -20 0 0 0 {name=M1 w=WN l=0.2u}\nC {lab_pin.sym} 0 30 0 0 {name=l1 lab=0}\nC {lab_pin.sym} 0 0 0 0 {name=l2 lab=0}\nL 4 0 0 10 10 {}\n",
+            "v {xschem version=3.4.7 file_version=1.2}\nN 0 -30 0 -50 {lab=Z}\nC {ipin.sym} -40 0 0 0 {name=p1 lab=A}\nC {opin.sym} 0 -50 0 0 {name=p2 lab=Z}\nC {devices/nmos4.sym} -20 0 0 0 {name=M1 w=WN l=0.2u}\nC {lab_pin.sym} 0 30 0 0 {name=l1 lab=0}\nC {lab_pin.sym} 0 0 0 0 {name=l2 lab=0}\nC {code.sym} 0 -200 0 0 {name=MOD value=\".param KP=2\n.model nch nmos kp=KP\"}\nC {code.sym} 0 -300 0 0 {name=STIM only_toplevel=true value=\"Vin A 0 1\"}\nL 4 0 0 10 10 {}\n",
         ),
         f(
             "x/lib/nand.sym",
@@ -172,6 +172,28 @@ fn fixture_translates_and_every_output_checks() {
     assert!(has(Class::Dropped(Drop::NonElectrical)) && has(Class::Dropped(Drop::Graphic)));
     assert!(has(Class::Dropped(Drop::ZeroWire)) && has(Class::Dropped(Drop::Display)));
     assert_eq!((report.core_instances, report.device_instances), (3, 3));
+    // D17 as amended: a component's netlist text is its own `code` (its `.param` lines
+    // stay in it, xschem writes them inside the subckt); `only_toplevel` text belongs to
+    // the bench copy alone.
+    assert!(
+        inv.contains("code MOD spice\n  | .param KP=2\n  | .model nch nmos kp=KP\n"),
+        "{inv}"
+    );
+    assert!(!inv.contains("STIM") && !inv.contains("var KP"), "{inv}");
+    let copy = file(&out, "lib/inv__top.shbench");
+    assert!(copy.contains("code STIM spice\n  | Vin A 0 1\n"), "{copy}");
+    assert!(
+        copy.contains("var KP 2\n"),
+        "the bench copy's .param: {copy}"
+    );
+    assert!(has(Class::Dropped(Drop::BenchCopy)));
+    assert!(
+        !report
+            .items
+            .iter()
+            .any(|i| matches!(i.class, Class::Review(_)) && i.detail.contains("MOD")),
+        "component code is translated, not reviewed"
+    );
     report.assert_conservation();
 }
 

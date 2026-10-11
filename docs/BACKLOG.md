@@ -74,7 +74,6 @@ Open items collected from workstream reports. Each item names its owner crate. R
 ## netlist
 
 - Remaining corpus differences are owned and annotated in `tests/corpus/RATCHET.md` (SPICE 246/301 + 23 golden-unevaluated, CDL code-stripped 227/301 + 32, 22 gate-blocked).
-- **format + elab + netlist** (largest remaining cause, 5 rows): netlist text inside a component's definition. xschem writes a subcircuit schematic's code blocks / `S {}` text inside its `.subckt` (XSPICE `A` devices, `.model` cards, extracted netlists); a `.shcomp` cannot carry `code`, so the importer moves it to the bench copy. Proposal: allow `code` records in a `.shcomp`, emitted inside each of its definitions.
 - **import**: instance `format`/`lvs_format` overrides (9 rows) as per-instance variant cells; alternate `schematic=` per instance and back-annotation (4); parametric bus widths `A[max:0]`, `ADD[dim-1:0]`; XSPICE inverted-net labels `~D[5..0]`; `spice_sym_def=".include f.cir"` pin order from the included `.subckt`.
 - **elab**: xschem replicates a 1-pin instance on an N-bit bus (`.save v(count[k])` per bit) and sizes an unnamed net on an iterated instance by pin width × elements; both need a rule that keeps the sky130 adders' broadcast.
 - `file` stays relative in templates (netlist §7.6.14): absolute paths would break byte-identical output across checkouts; decide on project-relative paths if a template needs one.

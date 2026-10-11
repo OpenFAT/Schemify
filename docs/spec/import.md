@@ -13,7 +13,7 @@ Implements D1, D14, D24, D33, D40. Readers: `crates/import` (`xschem`, `attr`, `
 | `X.sym` with no schematic | `X.shprim`, one leaf impl named after its lang: `spice`; `veriloga` when `device_model` holds `pre_osdi`; `verilog` for `d_cosim` |
 | `X.sch` with no `.sym` (or a non-cell `.sym`) | `X.shcomp` with the interface derived from its `ipin`/`opin`/`iopin` instances (below) and, when it holds netlist text, the bench copy `X__top.shbench`; without port instances `X.shbench` |
 | `X.sch` placed as a symbol (`C {X.sch}`, xschem LCC) while a cell symbol owns it | also `X__lcc.shcomp`: the derived interface over the same schematic |
-| a `.shcomp` schematic holding netlist text (code instances, `S {}`) | also `X__top.shbench`: a bench copy of the same schematic carrying that text (xschem netlists such schematics as test benches; 271 of the 301 corpus benches have a symbol) |
+| a `.shcomp` schematic holding netlist text (code instances, `S {}`) | the component keeps that text as its own `code` (D17 as amended, emitted inside its subckt), and also `X__top.shbench`: a bench copy of the same schematic carrying it as bench code (xschem netlists such schematics as test benches; 271 of the 301 corpus benches have a symbol) |
 | `type` ∈ `label ipin opin iopin noconn` | not cells: label / port / noconn records (§3) |
 | `type` ∈ `netlist_commands spice_parameters`, or a pinless symbol with a `format` (`k.sym`) | not cells: bench `code` text (§3); except a pinless symbol whose `format` uses an `extra` net as `@x`: a cell with only inherited pins (sky130 `fill_1`, `tap_1`; LVS goldens list them) |
 | `type` ∈ `launcher logo architecture arch_declarations attributes package port_attributes use timescale verilog_preprocessor generic annotator`, `show_label scope`, `probe` without `format` | not cells; instances dropped (non-electrical / display) and reported |
@@ -53,8 +53,8 @@ Limits go on parameters named `L`/`W` (any case) as `min`/`max`/`grid` expressio
 | `ipin`/`opin`/`iopin` | in a `.shcomp`: `port` bound to the same-named interface pin (renamed pins follow); a label that names no pin stays a `label` + `needs_review`. In a `.shbench`: `label` |
 | interface pin with no port | a `port` at a same-named label's anchor (xschem binds subcircuit ports by net name; IHP std cells' `VDD`/`VSS`), else at a free point outside the drawing |
 | `noconn` | `noconn` at the pin position |
-| netlist text (`code`, `code_shown`, `simulator_commands`, `corner`, `param`, pinless devices) | in a `.shbench`: `code <instance name> <lang>`: the `format` (instance first) rendered with instance-then-template values, `tcleval(…)` per §5, verbatim lines; lang = the `simulator` value when the format tests `sim_is_@simulator`, else `spice`. In a `.shcomp`: dropped when a bench copy carries it, else `needs_review`. With `spice_ignore=true` (instance, else template): dropped (`spice-ignore`) |
-| `S {…}` text | in a `.shbench`: `code schematic_spice spice`; in a `.shcomp`: as netlist text |
+| netlist text (`code`, `code_shown`, `simulator_commands`, `corner`, `param`, pinless devices) | `code <instance name> <lang>`: the `format` (instance first) rendered with instance-then-template values, `tcleval(…)` per §5, verbatim lines; lang = the `simulator` value when the format tests `sim_is_@simulator`, else `spice`. In a `.shcomp` (D17 as amended) the same record is the component's own text, emitted inside its subckt (netlist §7.6.15, goldens `MSA-2643`, `test_stdcells`): its `.param` lines stay in the text (xschem writes them inside the `.subckt`), and text with `only_toplevel=true` (instance, else template; xschem's code symbols default to `false`) is dropped (`in-bench-copy`): the bench copy carries it. With `spice_ignore=true` (instance, else template): dropped (`spice-ignore`) |
+| `S {…}` text | `code schematic_spice spice`, in a `.shbench` and a `.shcomp` alike |
 | `G`/`V`/`E` text, launchers, logos, display probes, `L B P A` drawings, graphs, images | dropped; listed in the report (drawings as one line per file) |
 | `T` text | `text` + `size` (x scale); floaters (`name=`), `tcleval`, `@spice_get*`, `@#` texts → dropped as display-only |
 | any other `C {sym}` | `inst <id> <cellref>` |
@@ -131,7 +131,7 @@ Symbol `T` texts become `stext` templates the same way; only `name`, `cell` and 
 
 ## 7. Report
 
-`import-report.md` (tables) and `import-report.txt` (tab-separated: `class file line records detail`; `file` lines give records in/out per input). Item classes: `needs_review:<reason>` (`tcl expression pin-token builtin-token drc code-in-component instance-text missing-symbol unsupported name port`), `dropped:<reason>` (`malformed not-a-cell mapped-to-core schematic-graphic display-only zero-length-wire non-electrical other-netlister-text symbol-wire-or-instance layer-out-of-range embedded-symbol in-bench-copy spice-ignore`), `rounding`, `unknown-token`, `alt-cell` (alternate and bench-copy cells); plus unused instance attributes by key and the `devices`→`core` instance counts.
+`import-report.md` (tables) and `import-report.txt` (tab-separated: `class file line records detail`; `file` lines give records in/out per input). Item classes: `needs_review:<reason>` (`tcl expression pin-token builtin-token drc instance-text missing-symbol unsupported name port`), `dropped:<reason>` (`malformed not-a-cell mapped-to-core schematic-graphic display-only zero-length-wire non-electrical other-netlister-text symbol-wire-or-instance layer-out-of-range embedded-symbol in-bench-copy spice-ignore`), `rounding`, `unknown-token`, `alt-cell` (alternate and bench-copy cells); plus unused instance attributes by key and the `devices`→`core` instance counts.
 
 **Count conservation** (asserted per input file): records in (top level plus embedded bodies) = records out (emitted as a record, or folded into one: `v`, `K`, comments, pin boxes) + records reported (each item states how many records it accounts for; field-level items account for none). Re-translations for alternate cells and bench copies are not counted twice.
 
@@ -149,3 +149,7 @@ Against the first version of this spec: integer defaults are `number`, not `int`
 ## 10. Amendments (2026-10-10, xschem-differential ratchet)
 
 From goldens (tests/corpus/RATCHET.md): symbol-less schematics with port instances, and schematics placed as symbols, get a derived interface (§1); same-named pins are `alias` pins (§2, format spec rank 1, netlist §3); pinless symbols whose format uses `extra` nets are cells (§1); `@p` in instance values, bracket-less buses `A[3..0]`, `only_toplevel` devices in the bench copy, bench variables only for referenced parameters and replaced by bench `.param`s, no template `device_model` for mapped devices (§3); `spice_ignore=true` netlist text dropped (§3, report class `spice-ignore`); `@@P` naming no pin, `#pfx#@name`, escaped newlines (§4); `$USER_CONF_DIR`, Tcl in SPICE comment lines (§5).
+
+## 11. Amendments (2026-10-11, D17 amendment)
+
+A component's netlist text (code instances, `S {}`) is its own `code` (format spec §4 rank 6, netlist §7.6.15) instead of being moved to the bench copy and reviewed as `code-in-component` (a reason that no longer exists); `.param` lines of component code stay in the text; `only_toplevel=true` text is the bench copy's (§1, §3, §7).

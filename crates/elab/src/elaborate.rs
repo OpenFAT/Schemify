@@ -137,6 +137,14 @@ pub struct Defs {
     /// an imported `device_model` put there), or `u32::MAX` when it has none. Its
     /// `template` is unused: the definition is emitted as a subckt, the body once.
     pub body: Vec<u32>,
+    /// CSR offsets (`defs + 1`) into [`Defs::code`].
+    pub code_start: Vec<u32>,
+    /// The `code` lines a `.shcomp` cell carries for the dialect (D17 as amended
+    /// 2026-10-11: netlist text that belongs to the component), blocks sorted by name,
+    /// `${NAME}` expanded; the netlister writes them inside every specialization, after
+    /// its instance lines (spec §7.6.15). Empty for a bench top (its code is
+    /// [`Bench`]'s) and for CDL.
+    pub code: Vec<Name>,
     key: Vec<String>,
     sig: Vec<String>,
 }
@@ -428,6 +436,7 @@ pub fn elaborate<F: Funcs>(
     e.defs.port_start.push(0);
     e.defs.inh_start.push(0);
     e.defs.inst_start.push(0);
+    e.defs.code_start.push(0);
     e.insts.conn_start.push(0);
     e.insts.param_start.push(0);
     e.impls.body_start.push(0);
@@ -1002,6 +1011,61 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         id
     }
 
+    /// Closes the next [`Defs`] row's range of [`Defs::code`] with the `code` lines of cell
+    /// `ci` for the dialect. Only a `.shcomp` contributes (D17 as amended): a bench top's
+    /// code is [`Bench`]'s, and a primitive has none.
+    fn push_def_code(&mut self, ci: u32) {
+        assert_eq!(self.defs.code_start.len(), self.defs.cell.len());
+        let doc = self.cells[ci as usize].doc;
+        if doc.kind() == FileKind::Shcomp {
+            let (s, codes) = (doc.strings(), doc.codes());
+            let cell = self.ifaces[ci as usize].cell;
+            for r in self.code_rows(doc, cell) {
+                for &l in &doc.pool().lines[codes.verbatim[r].range()] {
+                    let line = self.expand_vars(cell, s.get(l));
+                    self.defs.code.push(line);
+                }
+            }
+        }
+        self.defs.code_start.push(self.defs.code.len() as u32);
+        assert_eq!(self.defs.code_start.len(), self.defs.cell.len() + 1);
+    }
+
+    /// Rows of `doc`'s `code` table the dialect takes (spec §9.13), sorted by name. A
+    /// block holding `.control` is left out for xyce and reported as `E033` on `cell`.
+    fn code_rows(&mut self, doc: &Document, cell: Name) -> Vec<usize> {
+        let (s, codes) = (doc.strings(), doc.codes());
+        let mut rows: Vec<usize> = (0..codes.kind.len())
+            .filter(|&r| self.req.dialect.takes_code(s.get(codes.fields[r][1])))
+            .collect();
+        rows.sort_by(|a, c| s.get(codes.fields[*a][0]).cmp(s.get(codes.fields[*c][0])));
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            let control = self.req.dialect == Dialect::Xyce
+                && doc.pool().lines[codes.verbatim[r].range()].iter().any(|l| {
+                    s.get(*l)
+                        .trim_start()
+                        .to_ascii_lowercase()
+                        .starts_with(".control")
+                });
+            if !control {
+                out.push(r);
+                continue;
+            }
+            let name = self.names.intern(s.get(codes.fields[r][0]));
+            self.viol.push(Violation {
+                code: Code::E033,
+                cell,
+                object: ObjId::NONE,
+                path: Name::NONE,
+                param: name,
+                detail: "xyce has no .control blocks".to_owned(),
+            });
+        }
+        assert!(out.len() <= codes.kind.len());
+        out
+    }
+
     /// Builds (or reuses) the definition of cell `ci` for own-param values `tuple` at
     /// instance path `path`. `None` when the cell cannot be elaborated here.
     fn build_def(&mut self, ci: u32, own_vals: Vec<Val>, path: String, depth: u32) -> Option<u32> {
@@ -1429,6 +1493,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         let body = self.def_body(ci);
         self.defs.body.push(body);
         self.defs.cell.push(ci);
+        self.push_def_code(ci);
         self.defs.name.push(Name::NONE);
         self.defs.key.push(key.clone());
         self.defs.sig.push(sig);
@@ -1623,39 +1688,16 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             }
         }
         // Code blocks for the dialect, sorted by name; E033 for `.control` on xyce.
-        let codes = doc.codes();
-        let mut rows: Vec<usize> = (0..codes.kind.len())
-            .filter(|&r| self.req.dialect.takes_code(s.get(codes.fields[r][1])))
-            .collect();
-        rows.sort_by(|a, c| s.get(codes.fields[*a][0]).cmp(s.get(codes.fields[*c][0])));
+        let (codes, top) = (doc.codes(), self.ifaces[0].cell);
         b.code_start.push(0);
-        for r in rows {
+        for r in self.code_rows(doc, top) {
             let lines = &doc.pool().lines[codes.verbatim[r].range()];
-            if self.req.dialect == Dialect::Xyce
-                && lines.iter().any(|l| {
-                    s.get(*l)
-                        .trim_start()
-                        .to_ascii_lowercase()
-                        .starts_with(".control")
-                })
-            {
-                let name = self.names.intern(s.get(codes.fields[r][0]));
-                self.viol.push(Violation {
-                    code: Code::E033,
-                    cell: self.ifaces[0].cell,
-                    object: ObjId::NONE,
-                    path: Name::NONE,
-                    param: name,
-                    detail: "xyce has no .control blocks".to_owned(),
-                });
-                continue;
-            }
             b.code_name
                 .push(self.names.intern(s.get(codes.fields[r][0])));
             b.code_lang
                 .push(self.names.intern(s.get(codes.fields[r][1])));
             for &l in lines {
-                let n = self.expand_vars(self.ifaces[0].cell, s.get(l));
+                let n = self.expand_vars(top, s.get(l));
                 b.code_lines.push(n);
             }
             b.code_start.push(b.code_lines.len() as u32);
