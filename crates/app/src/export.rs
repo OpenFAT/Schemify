@@ -1279,7 +1279,8 @@ mod tests {
         assert_eq!(text.matches("/Type /Page ").count(), 2);
         assert!(text.contains("/MediaBox [0 0 842 595]"), "A4 landscape");
         // The xref offsets point at the objects they name: 2 + 2 pages × 2 + 5 font objects.
-        let xref = text.rfind("xref\n").unwrap();
+        // The table keyword starts a line (`startxref` also ends in `xref`).
+        let xref = text.rfind("\nxref\n").unwrap() + 1;
         let rows: Vec<&str> = text[xref..]
             .lines()
             .skip(3)
