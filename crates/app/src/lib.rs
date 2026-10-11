@@ -8,6 +8,12 @@
 //! - [`docs`] — the docs page beside the canvas (D19 vars, D21 math, D20 cache write-back);
 //! - [`scene`] — the document as canvas primitives, with hit-testing and box selection;
 //! - [`edit`] — gestures as `doc` edit transactions (one per gesture, so one undo);
+//! - [`wiring`] — wire-topology edits: stretch/kissing moves, join/trim, cuts, connected
+//!   wires, align to grid;
+//! - [`search`] — the search/replace dialog's find and replace transforms;
+//! - [`clip`] — clipboard fragments as line-record text (system clipboard in `platform`);
+//! - [`export`] — SVG/PDF/EPS writers over the canvas primitive tables (PNG: CPU raster);
+//! - [`recent`] — the recent-files list (user state);
 //! - [`geometry`] — grid symmetries applied to records;
 //! - [`session`] — project load, open documents, tabs and hierarchy, saves and journals;
 //! - [`shell`] — UI composition (core base ⊕ plugins ⊕ app state) and the canvas palette;
@@ -33,6 +39,8 @@
 #[cfg(feature = "gui")]
 pub mod checks;
 #[cfg(feature = "gui")]
+pub mod clip;
+#[cfg(feature = "gui")]
 pub mod commands;
 #[cfg(feature = "gui")]
 pub mod docs;
@@ -41,13 +49,19 @@ pub mod edit;
 #[cfg(feature = "gui")]
 pub mod editor;
 #[cfg(feature = "gui")]
+pub mod export;
+#[cfg(feature = "gui")]
 pub mod geometry;
 pub mod libs;
 pub mod platform;
 #[cfg(feature = "gui")]
 pub mod plugins;
 #[cfg(feature = "gui")]
+pub mod recent;
+#[cfg(feature = "gui")]
 pub mod scene;
+#[cfg(feature = "gui")]
+pub mod search;
 #[cfg(feature = "gui")]
 pub mod session;
 #[cfg(feature = "gui")]
@@ -57,3 +71,5 @@ pub mod sim;
 pub mod spines;
 #[cfg(feature = "gui")]
 pub mod waves;
+#[cfg(feature = "gui")]
+pub mod wiring;

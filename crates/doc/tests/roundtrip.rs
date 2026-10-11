@@ -491,6 +491,73 @@ fn instance_at_and_name_are_written_first() {
     );
 }
 
+/// Rank-3 `shape` rows (spec §4): load, find by id, edit (insert, put, delete) through
+/// transactions with undo restoring the bytes, and the per-form arity check on edits.
+#[test]
+fn schematic_shapes_load_edit_and_undo() {
+    let text = "schemify 1 shbench\n\nshape 0abc arc 0 0 5 0 90\n  layer 7\nshape 0abd poly 0 0 10 0 10 10\n  closed true\n";
+    let (mut p, h) = open(text, "b.shbench");
+    assert_eq!(canon(&p, h), text, "shapes round-trip");
+    let d = p.doc(h).unwrap();
+    assert_eq!(d.shapes().form, [RecordKind::Arc, RecordKind::Poly]);
+    let loc = d
+        .find_id(ObjId::find("0abc", d.strings()).unwrap())
+        .unwrap();
+    assert_eq!(
+        d.record(loc),
+        RecordBuf::new(RecordKind::Shape)
+            .field("0abc")
+            .field("arc")
+            .field("0")
+            .field("0")
+            .field("5")
+            .field("0")
+            .field("90")
+            .attr("layer", &["7"])
+    );
+    let line = RecordBuf::new(RecordKind::Shape)
+        .field("0abe")
+        .field("line")
+        .field("0")
+        .field("0")
+        .field("20")
+        .field("0");
+    let out = run(
+        &mut p,
+        h,
+        tx(vec![Op::Insert {
+            rec: line,
+            at: None,
+        }]),
+    );
+    assert!(matches!(out, Outcome::Committed { .. }), "{out:?}");
+    assert!(canon(&p, h).contains("shape 0abe line 0 0 20 0\n"));
+    let short = RecordBuf::new(RecordKind::Shape)
+        .field("0abf")
+        .field("line")
+        .field("0")
+        .field("0");
+    let out = run(
+        &mut p,
+        h,
+        tx(vec![Op::Insert {
+            rec: short,
+            at: None,
+        }]),
+    );
+    assert!(matches!(out, Outcome::Rejected(_)), "{out:?}");
+    let out = run(
+        &mut p,
+        h,
+        tx(vec![Op::Delete(Target::new(RecordKind::Shape, "0abd"))]),
+    );
+    assert!(matches!(out, Outcome::Committed { .. }), "{out:?}");
+    assert!(!canon(&p, h).contains("0abd"));
+    run(&mut p, h, Edit::Undo);
+    run(&mut p, h, Edit::Undo);
+    assert_eq!(canon(&p, h), text, "undo restores the file");
+}
+
 #[test]
 fn record_read_api_matches_the_file() {
     let (p, h) = open(OTA, "ota5t.shcomp");

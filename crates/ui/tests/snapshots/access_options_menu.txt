@@ -3,35 +3,23 @@ Window [0 0 1280 800]
     MenuItem "File" [2 2 37 25] expanded=false
     MenuItem "Edit" [37 2 74 25] expanded=false
     MenuItem "Options" [74 2 136 25] expanded=true
-      Menu "Options" [74 25 359 531]
-        MenuItem "Color Postscript/SVG" [74 27 359 49] toggled=False
-        MenuItem "Transparent SVG background" [74 49 359 71] toggled=False
-        MenuItem "Debug mode" [74 71 359 93] toggled=False
-        MenuItem "Undo buffer on Disk" [74 93 359 115] toggled=False
-        MenuItem "Enable stretch" [74 115 359 137] toggled=False key="Y"
-        MenuItem "Enable infix-interface" [74 137 359 159] toggled=False
-        MenuItem "Enable orthogonal wiring" [74 159 359 181] toggled=False key="Shift-L"
-        MenuItem "Unsel. partial sel. wires after stretch move" [74 181 359 203] toggled=False
-        MenuItem "Auto Join/Trim Wires" [74 203 359 225] toggled=False
-        MenuItem "Persistent wire/line place command" [74 225 359 247] toggled=False
-        MenuItem "Intuitive Click & Drag interface" [74 247 359 269] toggled=False
-        MenuItem "Crosshair" [74 269 359 291] expanded=true
-          Menu "Crosshair" [359 269 552 339]
-            MenuItem "Draw snap cursor" [359 271 552 293] toggled=False key="Alt-Z"
-            MenuItem "Draw crosshair" [359 293 552 315] toggled=False key="Alt-X"
-            MenuItem "Crosshair size" [359 315 552 337]
-        MenuItem "Replace [ and ] for buses in SPICE netlist" [74 291 359 313]
-        MenuItem "Group bus slices in Verilog instances" [74 313 359 335] toggled=False
-        MenuItem "Draw grid" [74 335 359 357] toggled=False key="%"
-        MenuItem "Half Snap Threshold" [74 357 359 379] key="G"
-        MenuItem "Double Snap Threshold" [74 379 359 401] key="Shift-G"
-        MenuItem "Variable grid point size" [74 401 359 423] toggled=False
-        GenericContainer [74 423 359 432]
-        MenuItem "No XCopyArea drawing model" [74 432 359 454] toggled=False key="Ctrl+$"
-        MenuItem "Fix for GPUs with broken tiled fill" [74 454 359 476] toggled=False
-        MenuItem "Fix broken RDP mouse coordinates" [74 476 359 498] toggled=False
-        GenericContainer [74 498 359 507]
-        MenuItem "Netlist format / Symbol mode" [74 507 359 529] expanded=false
+      Menu "Options" [74 25 326 280]
+        MenuItem "Color Postscript/SVG" [74 27 326 49] toggled=False
+        MenuItem "Transparent SVG background" [74 49 326 71] toggled=False
+        MenuItem "Enable stretch" [74 71 326 93] toggled=False key="Y"
+        MenuItem "Enable orthogonal wiring" [74 93 326 115] toggled=False key="Shift-L"
+        MenuItem "Auto Join/Trim Wires" [74 115 326 137] toggled=False
+        MenuItem "Persistent wire/line place command" [74 137 326 159] toggled=False
+        MenuItem "Crosshair" [74 159 326 181] expanded=true
+          Menu "Crosshair" [326 159 519 229]
+            MenuItem "Draw snap cursor" [326 161 519 183] toggled=False key="Alt-Z"
+            MenuItem "Draw crosshair" [326 183 519 205] toggled=False key="Alt-X"
+            MenuItem "Crosshair size" [326 205 519 227]
+        MenuItem "Draw grid" [74 181 326 203] toggled=False key="%"
+        MenuItem "Half Snap Threshold" [74 203 326 225] key="G"
+        MenuItem "Double Snap Threshold" [74 225 326 247] key="Shift-G"
+        GenericContainer [74 247 326 256]
+        MenuItem "Netlist format / Symbol mode" [74 256 326 278] expanded=false
     MenuItem "View" [136 2 179 25] expanded=false
     MenuItem "Properties" [179 2 256 25] expanded=false
     MenuItem "Layers" [256 2 310 25] expanded=false

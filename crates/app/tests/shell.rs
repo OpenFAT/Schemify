@@ -110,14 +110,24 @@ fn keymap_covers_the_xschem_inventory() {
         "parsed {} inventory combos",
         expected.len()
     );
+    // xschem functions with no meaning here keep no binding (docs/BACKLOG.md "Parity:
+    // intentionally dropped"): the logic simulator (0-4), the launcher (Ctrl+h), insertion
+    // order (Shift+S), floaters (Ctrl+u), X11 drawing modes ($, Ctrl+$).
+    const DROPPED: [&str; 10] = [
+        "0", "1", "2", "3", "4", "Ctrl+h", "Shift+S", "Ctrl+u", "$", "Ctrl+$",
+    ];
     let mut missing = Vec::new();
     for (chord, row) in &expected {
         let c = Chord::parse(chord).unwrap_or_else(|| panic!("{chord} parses ({row})"));
-        if keymap.lookup(c).is_none() {
+        let dropped = DROPPED.contains(&chord.as_str());
+        if keymap.lookup(c).is_none() != dropped {
             missing.push(chord.clone());
         }
     }
-    assert!(missing.is_empty(), "unbound inventory chords: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "unbound (or dropped but bound) inventory chords: {missing:?}"
+    );
     // How many bindings reach an implementation (core command or plugin command).
     let commands = Commands::default();
     let strings = &s.ed.shell.strings;

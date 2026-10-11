@@ -102,6 +102,9 @@ pub struct Session {
     /// Status line message (last command result or error).
     pub status: String,
     untitled: u32,
+    /// Documents whose journal offers unsaved edits from a crash, waiting for the user's
+    /// decision (`decide_recovery`): (document, journal records offered).
+    recovery: Vec<(DocHandle, u32)>,
 }
 
 impl Session {
@@ -123,6 +126,7 @@ impl Session {
             active: 0,
             status: loaded.notes.join("; "),
             untitled: 0,
+            recovery: Vec::new(),
         })
     }
 
@@ -144,9 +148,9 @@ impl Session {
     }
 
     /// Opens (or returns the already open) cell file `relpath` of library row `lib`, with its
-    /// journal sidecar. A crash-recovery offer is accepted (replayed) right away and noted in
-    /// the status line — never losing the user's edits is the safe default.
-    // ponytail: no recovery prompt yet; add a dialog (recover / discard) when one exists.
+    /// journal sidecar. A crash-recovery offer is queued for the user's decision
+    /// ([`Session::pending_recovery`], [`Session::decide_recovery`]); until then the document
+    /// refuses edits and saves (`doc` E044), so nothing is lost or overwritten.
     ///
     /// # Errors
     ///
@@ -185,14 +189,11 @@ impl Session {
             Err(OpenError::Code(c)) => return Err(format!("{relpath}: {c} {}", c.meaning())),
         };
         let h = opened.handle;
-        if opened.recovery != Recovery::None {
-            match self.project.recover(h) {
-                Ok((applied, dropped)) => {
-                    self.status = format!(
-                        "{relpath}: recovered {applied} unsaved edit(s) from the journal ({dropped} dropped)"
-                    );
-                }
-                Err(c) => self.status = format!("{relpath}: recovery failed ({c})"),
+        match opened.recovery {
+            Recovery::None => {}
+            Recovery::Offer { txs } | Recovery::Diverged { txs } => {
+                self.recovery.push((h, txs));
+                self.status = format!("{relpath}: {txs} unsaved edit(s) can be recovered");
             }
         }
         self.docs.handle.push(h);
@@ -240,6 +241,92 @@ impl Session {
         let (lib, rel, _) =
             best.ok_or_else(|| format!("{}: outside the project", path.display()))?;
         self.open_file(lib, &rel)
+    }
+
+    /// The next document waiting for a crash-recovery decision: (document, journal records
+    /// offered). Documents closed meanwhile are skipped.
+    pub fn pending_recovery(&mut self) -> Option<(DocHandle, u32)> {
+        let project = &self.project;
+        self.recovery.retain(|(h, _)| project.doc(*h).is_some());
+        self.recovery.first().copied()
+    }
+
+    /// Recovers (`true`: replays the journal's unsaved edits) or discards the offer of `h`,
+    /// writes the journal, and reports the outcome in the status line.
+    pub fn decide_recovery(&mut self, h: DocHandle, recover: bool) {
+        let Some(i) = self.recovery.iter().position(|r| r.0 == h) else {
+            return;
+        };
+        self.recovery.remove(i);
+        let name = self.name(h);
+        self.status = if recover {
+            match self.project.recover(h) {
+                Ok((applied, dropped)) => format!(
+                    "{name}: recovered {applied} unsaved edit(s) from the journal ({dropped} dropped)"
+                ),
+                Err(c) => format!("{name}: recovery failed ({c})"),
+            }
+        } else {
+            match self.project.discard_recovery(h) {
+                Ok(()) => format!("{name}: unsaved edits from the journal discarded"),
+                Err(c) => format!("{name}: discard failed ({c})"),
+            }
+        };
+        self.bump(h);
+        self.flush_journal(h);
+        assert!(!self.recovery.iter().any(|r| r.0 == h));
+    }
+
+    /// The open document read from `path`, if any.
+    pub fn handle_of_path(&self, path: &Path) -> Option<DocHandle> {
+        self.handle_of(path)
+    }
+
+    /// Closes `h` dropping its unsaved edits and its journal (Save As moved them to another
+    /// file). Tabs must no longer show it.
+    pub fn close_discarding(&mut self, h: DocHandle) {
+        if let Some(path) = self.path(h).map(Path::to_path_buf) {
+            self.drop_journal(&path);
+        }
+        let _ = self.project.close(h);
+        assert!(self.project.doc(h).is_none());
+    }
+
+    /// Deletes the journal sidecar of cell file `path` (it was deleted, or its edits moved).
+    pub fn drop_journal(&mut self, path: &Path) {
+        let j = self.journal_path(path);
+        if platform::exists(&j) {
+            let _ = platform::remove(&j);
+        }
+    }
+
+    /// Re-indexes the local library whose directory holds `path` (a file was written or
+    /// deleted there), so choosers and `lib:cell` references see it. Cell rows shift: callers
+    /// drop anything keyed by row (the symbol cache).
+    pub fn reindex(&mut self, path: &Path) {
+        let abs = absolute(path);
+        let mut best: Option<(usize, usize)> = None;
+        for (row, dir) in self.lib_dir.iter().enumerate() {
+            let Some(dir) = dir else { continue };
+            if rel_path(&absolute(dir), &abs).is_some() {
+                let depth = absolute(dir).components().count();
+                if best.is_none_or(|b| depth > b.1) {
+                    best = Some((row, depth));
+                }
+            }
+        }
+        let Some((row, _)) = best else { return };
+        let dir = self.lib_dir[row].clone().expect("matched a local library");
+        let others: Vec<PathBuf> = self
+            .lib_dir
+            .iter()
+            .enumerate()
+            .filter(|(r, d)| *r != row && d.as_ref().is_some_and(|d| d.starts_with(&dir)))
+            .filter_map(|(_, d)| d.clone())
+            .collect();
+        if let Err(e) = libs::index(&mut self.project, row, &dir, &others) {
+            self.status = e;
+        }
     }
 
     /// Creates a new, unsaved cell document in the project directory.

@@ -693,10 +693,18 @@ pub fn layout(
         let start = b.rows.len();
         let root = b.build(d, Shown::Normal, NO_ROW, 0.0);
         b.place(start, root, max_content, (0.0, 0.0), &mut f);
-        let (dx, dy) = (
-            ((viewport.0 - f.rect[start].w) / 2.0).max(0.0),
-            ((viewport.1 - f.rect[start].h) / 3.0).max(0.0),
-        );
+        let (w, h) = (f.rect[start].w, f.rect[start].h);
+        let (dx, dy) = match state.dialog_at {
+            // At a point (a context menu): kept inside the viewport.
+            Some((x, y)) => (
+                x.min(viewport.0 - w).max(0.0),
+                y.min(viewport.1 - h).max(0.0),
+            ),
+            None => (
+                ((viewport.0 - w) / 2.0).max(0.0),
+                ((viewport.1 - h) / 3.0).max(0.0),
+            ),
+        };
         f.shift(start, dx, dy);
     }
     let out = UiLayout {
