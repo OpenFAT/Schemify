@@ -3462,8 +3462,22 @@ impl Editor {
             self.commands.set_plugin_rows(self.host.plugins.composed());
             restyle = true;
         }
+        let mut relayout = relayout;
         if let Some((h, _)) = self.active() {
             self.page.follow(h);
+            // Prose images of the page, read once per path; one that loads lays it out again.
+            // ponytail: an image file changed on disk is not reloaded; watch it with the documents.
+            if self.docs_shown()
+                && let Some(doc) = self.session.project.doc(h)
+            {
+                let failed = &mut self.page.images_failed;
+                let (loaded, err) =
+                    docs::load_images(doc, &self.session.root, &mut self.shell.text, failed);
+                relayout |= loaded;
+                if let Some(e) = err {
+                    self.session.status = e;
+                }
+            }
         }
         let (text, graphs) = self.state_contribution();
         self.graphs = graphs;

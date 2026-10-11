@@ -21,6 +21,9 @@ pub const NO_CLIP: Rect = Rect {
 
 /// Widest a `prose` node is laid out (the width is a `u16` cache key).
 const PROSE_W_MAX: f32 = 8192.0;
+/// Tallest text area, in font sizes (plus its padding): it grows with its lines up to this,
+/// then scrolls inside itself ([`area_scroll_max`]).
+pub const AREA_EM_MAX: f32 = 24.0;
 
 /// Axis-aligned rectangle in logical pixels.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
@@ -199,6 +202,35 @@ impl UiLayout {
             .rev()
             .find(|&r| self.rect[r].contains(x, y) && self.clip[r].contains(x, y))
     }
+}
+
+/// How far text area row `r` scrolls inside itself: the height of its text (the editor's
+/// while it has focus) minus the height inside its vertical padding; 0 when it fits.
+pub fn area_scroll_max(
+    tables: &UiTables,
+    layout: &UiLayout,
+    text: &TextSystem,
+    state: &UiState,
+    r: usize,
+) -> f32 {
+    let n = layout.node[r];
+    debug_assert_eq!(tables.nodes.kind[n as usize], Kind::TextArea);
+    let pad_y = row_style(
+        tables,
+        layout.title_style,
+        n,
+        Shown::Normal,
+        StyleProp::PadY,
+    ) as f32;
+    let content = if state.focus == tables.nodes.id[n as usize] {
+        let ed = state.editor.as_ref().and_then(|e| e.try_layout());
+        ed.map_or(0.0, |l| l.height())
+    } else if layout.label[r] != NO_TEXT {
+        text.layout(layout.label[r]).height()
+    } else {
+        0.0
+    };
+    (content - (layout.rect[r].h - 2.0 * pad_y)).max(0.0)
 }
 
 /// Resolves a style prop for a row, following the [`Shown`] fallback chains.
@@ -443,7 +475,9 @@ impl Builder<'_> {
                         .filter(|_| editing)
                         .and_then(|e| e.try_layout())
                         .map_or(0.0, |l| l.height());
-                    h = (lh.max(eh) + font * 1.4 + 2.0 * pad_y).max(font * 4.0);
+                    h = (lh.max(eh) + font * 1.4 + 2.0 * pad_y)
+                        .max(font * 4.0)
+                        .min(font * AREA_EM_MAX + 2.0 * pad_y);
                     // Width comes from the parent (stretch), never from the longest line.
                     w = 2.0 * pad + font;
                 }

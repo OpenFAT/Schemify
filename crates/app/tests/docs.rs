@@ -544,3 +544,58 @@ fn programs_name_their_plugin_functions() {
     let f: Vec<(&str, &str)> = p.plugin_fns().collect();
     assert_eq!(f, [("gmid", "w"), ("gmid", "jd")]);
 }
+
+/// Prose images come from the project only: a PNG inside it is drawn at its pixel size; a path
+/// leaving the project (the file exists there) and a file that is not a PNG are never decoded
+/// and show their alt text.
+#[test]
+fn prose_images_load_from_inside_the_project_only() {
+    let dir = common::fixture("ota", "images");
+    let png = schemify_render::Pixmap::new(40, 20).into_png().unwrap();
+    std::fs::create_dir_all(dir.join("img")).unwrap();
+    std::fs::write(dir.join("img/dot.png"), &png).unwrap();
+    std::fs::write(dir.join("img/fake.png"), b"not a png").unwrap();
+    let outside = format!("schemify-outside-{}.png", std::process::id());
+    let outside_file = dir.parent().unwrap().join(&outside);
+    std::fs::write(&outside_file, &png).unwrap();
+    let p = dir.join("ota.shcomp");
+    let head = "  | # Five-transistor OTA, sized by gm/Id\n";
+    let with = format!(
+        "{head}  |\n  | ![dot](img/dot.png)\n  |\n  | ![out](../{outside})\n  |\n  | ![fake](img/fake.png)\n"
+    );
+    let text = std::fs::read_to_string(&p).unwrap().replace(head, &with);
+    std::fs::write(&p, text).unwrap();
+    let ed = schemify_app::editor::Editor::new(schemify_app::editor::Options {
+        no_default_ui: false,
+        path: Some(p),
+        seed: 7,
+        ..Default::default()
+    })
+    .expect("opens");
+    let mut s = Session { ed, now: 1, dir };
+    for _ in 0..3 {
+        s.frame(Default::default());
+    }
+    let _ = std::fs::remove_file(&outside_file);
+    let sh = &s.ed.shell;
+    let t = &sh.text;
+    let id = t
+        .image_id("img/dot.png")
+        .expect("a PNG inside the project loads");
+    assert_eq!((t.image(id).width, t.image(id).height), (40, 20));
+    let escaped = format!("../{outside}");
+    assert_eq!(
+        t.image_id(&escaped),
+        None,
+        "outside the project: never read"
+    );
+    assert_eq!(t.image_id("img/fake.png"), None, "not a PNG");
+    let n = sh.tables.nodes.find(sh.strings.find("docs.b.0.0").unwrap());
+    let r = sh
+        .layout
+        .row_of(n.unwrap())
+        .expect("the first prose block is laid out");
+    let list = t.prose_list(sh.layout.prose()[r]);
+    assert_eq!(list.image_rect.len(), 1, "one image drawn, two alt texts");
+    assert_eq!(list.image_rect[0][2..], [40.0, 20.0]);
+}

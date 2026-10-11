@@ -40,13 +40,15 @@ mod text;
 pub mod waves;
 
 pub use input::{Button, CommandRequests, InputEvent, InputEvents, Routed, UiState, route_input};
-pub use layout::{Layer, NO_CLIP, Rect, Shown, UiLayout, layout, row_style};
+pub use layout::{
+    AREA_EM_MAX, Layer, NO_CLIP, Rect, Shown, UiLayout, area_scroll_max, layout, row_style,
+};
 pub use strings::{Strings, Sym};
 pub use tables::{
     Chord, Contribution, Edit, Health, HealthKind, Key, Keymap, Kind, Mods, NO_NODE, NO_STYLE,
     NodeIx, Prop, StyleProp, UiNodes, UiStyles, UiTables, compose,
 };
-pub use text::{NO_TEXT, TextId, TextSystem};
+pub use text::{Image, NO_TEXT, TextId, TextSystem};
 
 /// Re-exported so renderers name the same layout and font types as this crate.
 pub use parley;

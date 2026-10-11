@@ -40,6 +40,7 @@ pub struct UiScratch {
     max: Vec<f32>,
     ticks: Vec<f64>,
     label: Layout<()>,
+    images: Vec<vello::peniko::ImageData>,
 }
 
 fn rect(r: schemify_ui::Rect) -> Rect {
@@ -140,9 +141,17 @@ pub fn draw_ui<P: Painter>(
         let editing = matches!(kind, Kind::TextInput | Kind::TextArea) && state.focus() == id;
         let label = layout.label()[r];
         let pad_y = f64::from(style(StyleProp::PadY));
+        // A text area taller than its box scrolls inside itself, clipped to the box.
+        let scrolled = if area_kind {
+            let max = schemify_ui::area_scroll_max(tables, layout, text, state, r);
+            p.push_clip(area);
+            f64::from(state.scroll_of(id).min(max))
+        } else {
+            0.0
+        };
         if editing && let Some(ed) = state.editor().and_then(|e| e.try_layout()) {
             let y = if area_kind {
-                area.y0 + pad_y
+                area.y0 + pad_y - scrolled
             } else {
                 area.y0 + (area.height() - f64::from(ed.height())) / 2.0
             };
@@ -155,7 +164,7 @@ pub fn draw_ui<P: Painter>(
         } else if label != NO_TEXT {
             let l = text.layout(label);
             let y = if area_kind {
-                area.y0 + pad_y
+                area.y0 + pad_y - scrolled
             } else {
                 area.y0 + (area.height() - f64::from(l.height())) / 2.0
             };
@@ -166,6 +175,9 @@ pub fn draw_ui<P: Painter>(
                 _ => area.x0 + pad + indent,
             };
             draw_text(p, l, x, y, fg, scratch);
+        }
+        if area_kind {
+            p.pop_clip();
         }
         let accel = layout.accel()[r];
         if accel != NO_TEXT {
@@ -247,7 +259,7 @@ pub fn draw_ui<P: Painter>(
 }
 
 /// Draws prose layout `id` ([`TextSystem::prose`]) with its top-left at `at`: code shades,
-/// rules, text runs, then formulas.
+/// rules, images, text runs, then formulas.
 pub fn draw_prose<P: Painter>(
     p: &mut P,
     id: u32,
@@ -268,6 +280,10 @@ pub fn draw_prose<P: Painter>(
     }
     for q in &list.rules {
         p.fill_rect(r(q), color.with_alpha(0.6));
+    }
+    for (&img, q) in list.image_id.iter().zip(&list.image_rect) {
+        let data = crate::painter::image_data(&mut scratch.images, text.image(img));
+        p.image(&data, r(q));
     }
     for k in 0..list.text_id.len() {
         let l = text.layout(list.text_id[k]);

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use vello::kurbo::{Affine, BezPath, PathEl, Rect, Shape, Stroke};
 use vello::low_level::vello_encoding::Transform;
-use vello::peniko::{Color, Fill, FontData, ImageBrush, ImageQuality, ImageSampler};
+use vello::peniko::{Color, Fill, FontData, ImageBrush, ImageData, ImageQuality, ImageSampler};
 use vello::{Glyph, Scene};
 
 use crate::layers::{LAYER_SLOTS, Layers};
@@ -121,6 +121,13 @@ pub trait Painter {
         let _ = (slot, stamp, at, clip, stretch);
         false
     }
+
+    /// Draws `image` (premultiplied RGBA8, as prose images are) scaled into `r`. A backend
+    /// without images fills `r` with a faint grey instead.
+    fn image(&mut self, image: &ImageData, r: Rect) {
+        debug_assert!(image.width > 0 && image.height > 0);
+        self.fill_rect(r, Color::from_rgba8(128, 128, 128, 48));
+    }
 }
 
 fn sampler(stretch: Option<Color>) -> ImageSampler {
@@ -128,6 +135,37 @@ fn sampler(stretch: Option<Color>) -> ImageSampler {
         Some(_) => ImageQuality::Medium,
         None => ImageQuality::Low,
     })
+}
+
+/// Maps image pixels onto `r`: the paint transform of [`Painter::image`].
+fn image_to(image: &ImageData, r: Rect) -> Affine {
+    let (w, h) = (f64::from(image.width), f64::from(image.height));
+    assert!(w > 0.0 && h > 0.0, "an image has pixels");
+    Affine::translate((r.x0, r.y0)) * Affine::scale_non_uniform(r.width() / w, r.height() / h)
+}
+
+/// The [`ImageData`] of a prose image, cached in `cache` so its blob (and the GPU's upload of
+/// it) is reused across frames. Holding the blob keeps the pixels alive, so a cached pointer is
+/// never reused by another image.
+// ponytail: dropped wholesale past twice the image cap; an LRU when pages show more images.
+pub(crate) fn image_data(cache: &mut Vec<ImageData>, image: &schemify_ui::Image) -> ImageData {
+    let key = image.rgba.as_ptr();
+    if let Some(d) = cache.iter().find(|d| d.data.data().as_ptr() == key) {
+        return d.clone();
+    }
+    if cache.len() >= 2 * schemify_ui::TextSystem::IMAGES_MAX {
+        cache.clear();
+    }
+    let d = ImageData {
+        data: vello::peniko::Blob::new(image.rgba.clone()),
+        format: vello::peniko::ImageFormat::Rgba8,
+        alpha_type: vello::peniko::ImageAlphaType::AlphaPremultiplied,
+        width: image.width,
+        height: image.height,
+    };
+    cache.push(d.clone());
+    debug_assert_eq!(d.data.data().as_ptr(), key);
+    d
 }
 
 /// Polylines as flat `f32` point runs: chain `i` is `pts[end[i-1]..end[i]]`, at least 2 points.
@@ -331,6 +369,10 @@ impl Painter for ScenePainter<'_> {
     fn pop_clip(&mut self) {
         self.log(6u8);
         self.scene.pop_layer();
+    }
+
+    fn image(&mut self, image: &ImageData, r: Rect) {
+        self.scene.draw_image(image, self.base * image_to(image, r));
     }
 
     fn stroke_chains(&mut self, chains: &Chains, closed: bool, width: f64, color: Color) {
@@ -718,5 +760,19 @@ impl Painter for CpuPainter {
         self.ctx.fill_rect(&area);
         self.ctx.reset_paint_transform();
         true
+    }
+
+    fn image(&mut self, image: &ImageData, r: Rect) {
+        // ponytail: converts (copies) the pixels on every draw; the CPU path draws goldens
+        // and the GPU-less fallback only. Cache the pixmap beside the blob if that changes.
+        let brush = vello_cpu::Image {
+            image: vello_cpu::ImageSource::from_peniko_image_data(image),
+            sampler: ImageSampler::default(),
+        };
+        self.ctx.set_transform(self.base);
+        self.ctx.set_paint_transform(image_to(image, r));
+        self.ctx.set_paint(brush);
+        self.ctx.fill_rect(&r);
+        self.ctx.reset_paint_transform();
     }
 }

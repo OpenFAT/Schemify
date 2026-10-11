@@ -34,7 +34,7 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - D20 write-back covers vars only; own param defaults that call plugin functions keep their `cached` as written. Plugin functions return numbers/bools only (a string result needs an owned `Value`).
 - The cache amend replays the edit through undo (two extra journal records); a `doc` "extend last entry" edit would save them.
 - Values are kept for the active level's document; other open documents sync their caches when activated. A structural edit (instance insert/delete) rebuilds the cell state (136 ms at 100k objects when the cell has vars).
-- Prose: no images, footnotes or nested emphasis inside links; tables use equal column widths; a `text_area` does not scroll inside itself (the page does).
+- Prose images are PNG only, read once per path (a file changed on disk is not reloaded); the CPU painter converts an image's pixels on every draw.
 - `gmid-lut`: queries at VDS = VDD/2 only; the sky130 pfet sample tops out near gm/Id 15 at L 0.15/0.18 µm; characterization uses `spawn:ngspice`, not `run` requests (the sweep needs the full grid, not bench outputs).
 - Integration points still stubbed: symbols via elab, plugin `eval`, web OPFS.
 

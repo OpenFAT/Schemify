@@ -36,8 +36,12 @@ A `prose` block's verbatim lines are markdown, laid out by the `prose` widget at
 | `-`, `*`, `+`, `1.` items | marker then body indented 1.6 em; two leading spaces per nesting level (1.5 em each); indented continuation lines join the item |
 | `>` quote | italic, indented, with a bar |
 | `---` (3+ of `-*_`) | rule |
-| pipe table (`\|` rows; a `---` second row makes the first a bold header) | equal column widths, full grid; at most 16 columns |
-| `[text](url)` | the text (links are not followed) |
+| pipe table (`\|` rows; a `---` second row makes the first a bold header) | full grid; at most 16 columns. Each column is as wide as its widest cell unwrapped (plus padding) when the table fits the pane; otherwise columns narrower than an equal share of what the others leave keep that width, and the rest share the remainder in proportion to their content (cells wrap), each at least 3 em |
+| `[text](url)` | the text with its own markup (emphasis nests inside); links are not followed |
+| `[^label]` | the footnote's number in superscript digits (`¹`); an undefined label stays literal |
+| `[^label]: text` (a line of its own; lines indented 2+ spaces continue it) | listed at the end of the block under a short rule, numbered `1.`, `2.` … in definition order, at 0.9× the body size |
+| `![alt](path)` alone on a line | the PNG image at `path`, at its pixel size, scaled down (never up) to the pane width. `path` is project-relative: no leading `/`, no `\` or `:`, no empty, `.` or `..` segment (the plugin ABI's path rule), so a page cannot read outside its project; at most 16 MiB and 4096 px a side (checked in the header before decoding). Missing, refused or undecodable: `[image: alt]` in italics. Read once per path per page |
+| `![alt](path)` inside text | the alt text |
 | `\*` and other backslash-escaped punctuation | the literal character |
 | `$…$` | inline math through the `math` widget (RaTeX, KaTeX fonts), baseline-aligned in the line |
 | `$$…$$` (on its own lines, or one line) | display math centred, ×1.15 the body size |
@@ -49,9 +53,11 @@ the supported LaTeX subset is shown as its source text, never dropped. Anything 
 text. The parser never fails; sources are cut at 2^14 lines.
 
 Editing: a click on a prose block selects it and replaces it with a multi-line `text_area`
-holding its source. Enter breaks a line; Ctrl+Enter applies; a click elsewhere applies; Esc
-cancels. Applying is one transaction: `put prose <id>` with the new verbatim lines (trailing
-spaces trimmed), or `delete prose <id>` when the text is blank.
+holding its source. The area grows with its text up to 24 font sizes tall, then scrolls inside
+itself: the wheel over it scrolls it (not the page), and caret moves and typing keep the caret
+in view. Enter breaks a line; Ctrl+Enter applies; a click elsewhere applies; Esc cancels.
+Applying is one transaction: `put prose <id>` with the new verbatim lines (trailing spaces
+trimmed), or `delete prose <id>` when the text is blank.
 
 ## 3. Var rows
 

@@ -3,8 +3,8 @@
 
 use schemify_ui::{
     Button, Chord, HealthKind, InputEvent, InputEvents, Kind, Layer, NO_NODE, Prop, Routed, Shown,
-    Strings, Sym, TextSystem, UiLayout, UiState, UiTables, access, compose, layout, records,
-    route_input,
+    Strings, StyleProp, Sym, TextSystem, UiLayout, UiState, UiTables, access, compose, layout,
+    records, route_input,
 };
 
 struct Fixture {
@@ -416,6 +416,79 @@ fn text_field_editing_with_ime_submits_on_enter() {
     assert_eq!(f.commands(&out), ["view.set_snap"]);
     assert_eq!(out.commands.arg(0), "15");
     assert!(f.state.focus().is_none() && f.state.editor().is_none());
+}
+
+/// A text area grows with its lines up to `AREA_EM_MAX` font sizes, then scrolls inside itself:
+/// the wheel over it scrolls it, a click lands on the scrolled line, and caret moves keep the
+/// caret in view. One that fits leaves the wheel alone.
+#[test]
+fn text_area_scrolls_inside_itself() {
+    let long: Vec<String> = (0..60).map(|k| format!("line {k}")).collect();
+    let src = format!(
+        "node area.box text_area\n  parent window\n  value \"{}\"\nnode area.short text_area\n  parent window\n  value \"one\\ntwo\"\n",
+        long.join("\\n")
+    );
+    let mut f = fixture(&[src.as_str()]);
+    let (node, r) = (f.node("area.box"), f.row("area.box"));
+    let style = |p| {
+        let v = schemify_ui::row_style(&f.tables, f.frame.title_style(), node, Shown::Normal, p);
+        v as f32
+    };
+    let (font, pad_y) = (style(StyleProp::Font).max(8.0), style(StyleProp::PadY));
+    let rect = f.frame.rect()[r];
+    assert!(
+        rect.h <= font * schemify_ui::AREA_EM_MAX + 2.0 * pad_y + 0.5,
+        "capped: {rect:?}"
+    );
+    let max = schemify_ui::area_scroll_max(&f.tables, &f.frame, &f.text, &f.state, r);
+    assert!(max > 100.0, "60 lines overflow the box: {max}");
+    let id = f.sym("area.box");
+    let wheel = |x: f32, y: f32| {
+        let mut ev = InputEvents::default();
+        ev.push(InputEvent::Wheel {
+            x,
+            y,
+            dx: 0.0,
+            dy: -2.0,
+        });
+        ev
+    };
+    let (cx, cy) = f.center("area.box");
+    f.route(&wheel(cx, cy));
+    assert_eq!(f.state.scroll_of(id), 2.0 * UiState::WHEEL_PX);
+    // A click lands on the line under the pointer in the scrolled text.
+    f.click("area.box");
+    let caret = f.state.editor().unwrap().cursor_geometry(1.0).unwrap();
+    let view = rect.h - 2.0 * pad_y;
+    let off = f.state.scroll_of(id);
+    assert!(caret.y0 as f32 >= off - 1.0 && caret.y1 as f32 <= off + view + 1.0);
+    assert!(
+        caret.y0 as f32 > 2.0 * UiState::WHEEL_PX,
+        "below the scrolled-out lines"
+    );
+    let mut ev = InputEvents::default();
+    for _ in 0..40 {
+        ev.push(InputEvent::Key {
+            chord: Chord::parse("Down").unwrap(),
+        });
+    }
+    f.route(&ev);
+    let caret = f.state.editor().unwrap().cursor_geometry(1.0).unwrap();
+    let off = f.state.scroll_of(id);
+    assert!(
+        off > 2.0 * UiState::WHEEL_PX,
+        "followed the caret down: {off}"
+    );
+    assert!(caret.y1 as f32 <= off + view + 1.0 && caret.y0 as f32 >= off - 1.0);
+    // Negative space: an area that fits does not scroll.
+    let short = f.row("area.short");
+    assert_eq!(
+        schemify_ui::area_scroll_max(&f.tables, &f.frame, &f.text, &f.state, short),
+        0.0
+    );
+    let (sx, sy) = f.center("area.short");
+    f.route(&wheel(sx, sy));
+    assert_eq!(f.state.scroll_of(f.sym("area.short")), 0.0);
 }
 
 #[test]
