@@ -488,7 +488,7 @@ impl CellState {
             self.names.get(self.ifaces[0].stem).to_owned(),
         );
         self.ifaces[0] = Iface::from_doc(doc, &cell, &stem, NONE, true, &mut self.names);
-        self.graph = Graph::build(doc, 0, &self.ifaces, &self.inst_iface, &[], &mut self.names);
+        self.graph = Graph::build(doc, 0, &self.ifaces, &self.inst_iface, &[], &self.names);
         let (mut vals, mut unv) = (Vec::new(), Vec::new());
         self.graph
             .eval_all(None, &mut vals, &mut unv, &self.ifaces, funcs, &mut self.ws);

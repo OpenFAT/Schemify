@@ -95,8 +95,8 @@ impl Graph {
         own: u32,
         ifaces: &[Iface],
         inst_iface: &[u32],
-        subst: &[(&str, &str)],
-        names: &mut Names,
+        subst: &[(Name, &str)],
+        names: &Names,
     ) -> Graph {
         let s = doc.strings();
         let ni = doc.instances().id.len();
@@ -111,8 +111,7 @@ impl Graph {
         };
         // Substituted / added vars (later wins).
         let mut var_subst: Vec<Option<&str>> = vec![None; me.var_name.len()];
-        for &(name, text) in subst {
-            let n = names.intern(name);
+        for &(n, text) in subst {
             match g.var_name.iter().position(|v| *v == n) {
                 Some(v) => var_subst[v] = Some(text),
                 None => {
@@ -186,7 +185,9 @@ impl Graph {
         }
         // Dependencies (child var nodes are appended while resolving).
         g.dep_start.push(0);
+        g.dep_start.reserve(g.owner.len());
         let mut n = 0;
+        let mut refs: Vec<Ref> = Vec::new(); // reused: one allocation, not one per node
         while n < g.owner.len() {
             let (owner, table, prog) = (g.owner[n], g.table[n], g.prog[n]);
             let child_scope = owner != NONE && table != OWN;
@@ -195,8 +196,9 @@ impl Graph {
             } else {
                 &ifaces[table as usize].progs
             };
-            let refs: Vec<Ref> = progs.refs(prog).to_vec();
-            for r in refs {
+            refs.clear();
+            refs.extend_from_slice(progs.refs(prog));
+            for &r in &refs {
                 let d = if child_scope {
                     g.child_ref(owner, table, r, ifaces)
                 } else {

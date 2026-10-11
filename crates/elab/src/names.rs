@@ -146,6 +146,140 @@ impl Names {
         n
     }
 
+    /// Interns every text of `texts` and appends their names to `out`: the same names, and
+    /// new ones numbered in the same order, as interning them one by one.
+    ///
+    /// Why: a batch of mostly new texts (a flat design's element and generated net names,
+    /// 10^6 each) misses the cache once per text when probed in text order, the table being
+    /// tens of MB. Here the probes run in table-slot order (a radix sort of the batch by
+    /// home slot), so the table is swept; small batches just intern one by one.
+    ///
+    /// Cost: O(n) passes over the batch plus the probe sequences.
+    pub(crate) fn intern_batch(&mut self, texts: &[&str], out: &mut Vec<Name>) {
+        let n = texts.len();
+        if n < 1 << 12 {
+            out.extend(texts.iter().map(|t| self.intern(t)));
+            return;
+        }
+        assert!(n < NAMES_MAX as usize, "a batch fits the arena");
+        self.reserve(n); // the table grows once, here
+        let mask = self.table.len() - 1;
+        // Items `(hash << 32) | index`, sorted by (home slot, index): LSD radix on the slot,
+        // 14-bit digits (≤ 2^27 slots). Each item carries its hash, so the slot-order passes
+        // read the items and the table sequentially and touch a text only on a hash match.
+        let mut items: Vec<u64> = texts
+            .iter()
+            .enumerate()
+            .map(|(k, t)| u64::from(hash(t)) << 32 | k as u64)
+            .collect();
+        let slot = |item: u64| (item >> 32) as usize & mask;
+        let mut tmp = vec![0u64; n];
+        for shift in [0u32, 14] {
+            if (mask >> shift) == 0 {
+                break;
+            }
+            let digit = |item: u64| slot(item) >> shift & 0x3fff;
+            let mut count = vec![0u32; (1 << 14) + 1];
+            for &it in &items {
+                count[digit(it) + 1] += 1;
+            }
+            for d in 0..1 << 14 {
+                count[d + 1] += count[d];
+            }
+            for &it in &items {
+                let d = digit(it);
+                tmp[count[d] as usize] = it;
+                count[d] += 1;
+            }
+            std::mem::swap(&mut items, &mut tmp);
+        }
+        drop(tmp);
+        debug_assert!(
+            items
+                .windows(2)
+                .all(|w| (slot(w[0]), w[0] as u32) < (slot(w[1]), w[1] as u32))
+        );
+        // Pass 1, slot order: an existing name, NEW, or DUP of the first occurrence of the
+        // same text in the batch (equal texts share a home slot: one run, index order).
+        const NEW: u32 = u32::MAX;
+        const DUP: u32 = 1 << 31;
+        let mut res = vec![NEW; n]; // by item position
+        let mut run = 0;
+        for at in 0..n {
+            let (it, k) = (items[at], items[at] as u32 as usize);
+            let h = (it >> 32) as u32;
+            if at > 0 && slot(items[at - 1]) != slot(it) {
+                run = at;
+            }
+            let mut sl = slot(it);
+            loop {
+                let e = self.table[sl];
+                if e == 0 {
+                    break;
+                }
+                let name = Name((e as u32) - 1);
+                if (e >> 32) as u32 == h && self.get(name) == texts[k] {
+                    res[at] = name.0;
+                    break;
+                }
+                sl = (sl + 1) & mask;
+            }
+            if res[at] != NEW {
+                continue;
+            }
+            let earlier = (run..at).find(|&j| {
+                res[j] == NEW
+                    && items[j] >> 32 == it >> 32
+                    && texts[items[j] as u32 as usize] == texts[k]
+            });
+            if let Some(j) = earlier {
+                res[at] = DUP | items[j] as u32;
+            }
+        }
+        // Pass 2, batch order: number the new names as one-by-one interning would.
+        let mut by_k = vec![NEW; n];
+        for at in 0..n {
+            by_k[items[at] as u32 as usize] = res[at];
+        }
+        // An upper bound read in text order (the exact sum would read texts in slot order).
+        self.bytes.reserve(texts.iter().map(|t| t.len()).sum());
+        for k in 0..n {
+            let r = by_k[k];
+            by_k[k] = if r == NEW {
+                assert!(self.len() < NAMES_MAX, "name arena holds 2^26 names");
+                assert!(
+                    self.bytes.len() + texts[k].len() < u32::MAX as usize,
+                    "name arena exceeds 4 GiB"
+                );
+                self.bytes.push_str(texts[k]);
+                self.ends.push(self.bytes.len() as u32);
+                self.len() - 1
+            } else if r & DUP != 0 && r != NEW {
+                by_k[(r & !DUP) as usize] // an earlier index: already numbered
+            } else {
+                r
+            };
+        }
+        // Pass 3, slot order: place the new names (linear probing from the home slot keeps
+        // every entry reachable whatever the insertion order).
+        for at in 0..n {
+            if res[at] != NEW {
+                continue;
+            }
+            let it = items[at];
+            let mut sl = slot(it);
+            while self.table[sl] != 0 {
+                sl = (sl + 1) & mask;
+            }
+            self.table[sl] = entry((it >> 32) as u32, Name(by_k[it as u32 as usize]));
+        }
+        out.extend(by_k.into_iter().map(Name));
+        assert!(
+            self.ends.len() * 2 <= self.table.len(),
+            "load stays below 1/2"
+        );
+    }
+
     /// Doubles the table, re-placing entries by their stored hashes (no text is read).
     fn grow(&mut self) {
         let len = (self.table.len() * 2).max(64);
@@ -218,6 +352,38 @@ mod tests {
         assert_eq!(n.find("absent"), None);
         assert_eq!(n.cmp(ids[1], ids[10]), "n1".cmp("n10"));
         assert_eq!(n.cmp(Name::NONE, ids[0]), Ordering::Less);
+    }
+
+    /// Oracle: one-by-one interning. New, existing and repeated texts, below and above the
+    /// batch threshold, across table growth.
+    #[test]
+    fn a_batch_interns_like_one_by_one() {
+        for (n, pre) in [
+            (0usize, 0usize),
+            (100, 50),
+            (5000, 0),
+            (20_000, 7000),
+            (70_000, 30_000),
+        ] {
+            let text = |k: usize| format!("t{}", (k * 7919) % (n.max(1) * 2 / 3 + 1));
+            let mut seq = Names::default();
+            for k in 0..pre {
+                seq.intern(&format!("t{}", k * 3));
+            }
+            let mut batch = seq.clone();
+            let texts: Vec<String> = (0..n).map(text).collect();
+            let want: Vec<Name> = texts.iter().map(|t| seq.intern(t)).collect();
+            let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+            let mut got = vec![Name(7)];
+            batch.intern_batch(&refs, &mut got);
+            assert_eq!(&got[1..], &want[..], "n {n}");
+            assert_eq!(batch.len(), seq.len());
+            for i in 0..seq.len() {
+                assert_eq!(batch.get(Name(i)), seq.get(Name(i)));
+                assert_eq!(batch.find(seq.get(Name(i))), Some(Name(i)), "findable");
+            }
+            assert_eq!(batch.find("absent"), None);
+        }
     }
 
     #[test]

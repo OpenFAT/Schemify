@@ -44,7 +44,7 @@ Net expression grammar (labels, ports, pin names, inherit nets, instance names):
 netexpr = term *("," term)                 ; bundle, left to right
 term    = [count "*"] base                 ; repeat
 base    = ident ["[" int [":" int] "]"]    ; bit or range, msb:lsb in written order
-ident   = [A-Za-z_][A-Za-z0-9_$.]* ["!"]   ; or the literal "0"
+ident   = ["~"] [A-Za-z_][A-Za-z0-9_$.]* ["!"]   ; or the literal "0"; `~` (active low) is part of the name
 ```
 
 - A label's netexpr expands to an ordered bit list (`d[3:0]` → `d[3] d[2] d[1] d[0]`; `2*a,b` → `a a b`). The net's width is the list length; all names on one net must have equal width (`E011`).

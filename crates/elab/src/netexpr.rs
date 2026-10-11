@@ -25,6 +25,12 @@ pub fn is_global(bit: &str) -> bool {
     bit == "0" || bit.ends_with('!')
 }
 
+/// Whether `text` is one scalar name as written (no bus range, bundle or repeat): what
+/// [`expand`] interns verbatim.
+pub(crate) fn is_plain(text: &str) -> bool {
+    !text.bytes().any(|b| matches!(b, b'[' | b',' | b'*'))
+}
+
 /// Appends the bit names of `text` to `out` and returns how many were appended.
 /// `buf` is scratch for building `name[i]` texts.
 ///
@@ -36,7 +42,7 @@ pub(crate) fn expand(
     buf: &mut String,
 ) -> Result<u32, TooWide> {
     let before = out.len();
-    if !text.bytes().any(|b| matches!(b, b'[' | b',' | b'*')) {
+    if is_plain(text) {
         out.push(names.intern(text));
         return Ok(1);
     }
@@ -106,11 +112,15 @@ fn parse(text: &str) -> Option<Vec<Term<'_>>> {
             }
             i += digits + 1;
         }
-        // ident: "0" or [A-Za-z_][A-Za-z0-9_$.]* ["!"]
+        // ident: "0" or ["~"][A-Za-z_][A-Za-z0-9_$.]* ["!"] (`~` marks an active-low
+        // name; it is part of the name, as xschem writes `~D[5:0]`)
         let start = i;
         if b.get(i) == Some(&b'0') && !b.get(i + 1).is_some_and(|c| ident_char(*c)) {
             i += 1;
         } else {
+            if b.get(i) == Some(&b'~') {
+                i += 1;
+            }
             if !b
                 .get(i)
                 .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_')
@@ -189,6 +199,11 @@ mod tests {
             ("a,b[1:0],c", &["a", "b[1]", "b[0]", "c"]),
             ("2*d[1:0]", &["d[1]", "d[0]", "d[1]", "d[0]"]),
             ("x.y$z", &["x.y$z"]),
+            ("~D[2:0]", &["~D[2]", "~D[1]", "~D[0]"]),
+            ("~a,b", &["~a", "b"]),
+            ("~D5", &["~D5"]),
+            ("~0,a", &["~0,a"]),
+            ("~~a,b", &["~~a,b"]),
             ("X1[3:0]", &["X1[3]", "X1[2]", "X1[1]", "X1[0]"]),
             // Outside the grammar: one verbatim name.
             ("a[", &["a["]),

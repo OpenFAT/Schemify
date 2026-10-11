@@ -11,7 +11,9 @@
 //! globals → bench lines → sort violations.
 
 use crate::cells::{display, is_open, resolve_in_row, row_of};
-use crate::check::{CellCtx, Code, Violation, Violations, check_overrides, check_values, waivers};
+use crate::check::{
+    CellCtx, Code, Violation, Violations, check_overrides, check_values, waivers_found,
+};
 use crate::connect::{CellNets, Ignore, NO_NET, connect};
 use crate::graph::{Graph, OWN, Work};
 use crate::iface::Iface;
@@ -503,18 +505,24 @@ pub fn elaborate<F: Funcs>(
         mark(&e.defs, &e.insts, t, &mut used);
     }
     e.defs.used = used;
-    let mut globals: Vec<Name> = e
-        .insts
-        .conn
-        .iter()
-        .chain(&e.defs.port_net)
-        .copied()
-        .filter(|&n| {
-            n != Name::NONE && (is_global(e.names.get(n)) || e.globals.binary_search(&n).is_ok())
-        })
-        .collect();
-    globals.sort_unstable();
-    globals.dedup();
+    // Each distinct connection name is tested once (a bitset over the arena): a flat
+    // design repeats few names among 10^6 connections.
+    let mut seen = vec![0u64; (e.names.len() as usize).div_ceil(64)];
+    let mut globals: Vec<Name> = Vec::new();
+    for &n in e.insts.conn.iter().chain(&e.defs.port_net) {
+        if n == Name::NONE {
+            continue;
+        }
+        let (w, bit) = (n.0 as usize / 64, 1u64 << (n.0 % 64));
+        if seen[w] & bit != 0 {
+            continue;
+        }
+        seen[w] |= bit;
+        if is_global(e.names.get(n)) || e.globals.binary_search(&n).is_ok() {
+            globals.push(n);
+        }
+    }
+    drop(seen);
     globals.sort_unstable_by(|a, b| e.names.cmp(*a, *b));
     out.bench = if bench {
         e.bench_lines(doc, corner_row)
@@ -724,38 +732,122 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         self.globals = globals;
     }
 
-    /// Builds cell `ci`'s connectivity and graph and reports its context-free findings.
-    /// Once per cell.
-    fn prepare(&mut self, ci: u32) {
+    /// The request's var substitutions for cell `ci` (the top only), names interned.
+    fn subst_of(&mut self, ci: u32) -> Vec<(Name, String)> {
+        if ci != 0 {
+            return Vec::new();
+        }
+        let subst = self.subst.clone();
+        subst
+            .into_iter()
+            .map(|(a, b)| (self.names.intern(&a), b))
+            .collect()
+    }
+
+    /// Evaluates cell `ci`'s graph for own-param values `own_vals` and gates the values
+    /// (`E008`, D13), building the cell's connectivity and graph first, once per cell, with
+    /// its context-free findings. Returns the values and their unverified flags.
+    ///
+    /// A large cell (`crate::PARALLEL_MIN` instances, native targets) builds its connectivity on a
+    /// second thread while this one builds, evaluates and gates the graph (`funcs` stays
+    /// here). The two share only the name arena: the graph side interns nothing and reads
+    /// a snapshot, and every interning call happens in the serial order, so names, values
+    /// and findings are the serial ones (D37: jobs = 1 vs N byte-identical).
+    fn prepare_eval(&mut self, ci: u32, own_vals: &[Val]) -> (Vec<Val>, Vec<bool>) {
+        let (mut vals, mut unv) = (Vec::new(), Vec::new());
+        let mut gated = Vec::new();
         if self.cells[ci as usize].prepared {
-            return;
+            let cell = &self.cells[ci as usize];
+            let ifaces = &self.ifaces;
+            cell.graph.eval_all(
+                Some(own_vals),
+                &mut vals,
+                &mut unv,
+                ifaces,
+                self.funcs,
+                &mut self.ws,
+            );
+            let cx = CellCtx {
+                doc: cell.doc,
+                ifaces,
+                own: ci,
+                inst_iface: &cell.inst_iface,
+                graph: &cell.graph,
+                waivers: &cell.waivers,
+                path: Name::NONE,
+            };
+            check_values(
+                &cx,
+                &vals,
+                &self.names,
+                self.funcs,
+                &mut self.ws,
+                &mut gated,
+            );
+            self.viol.append(&mut gated);
+            return (vals, unv);
         }
         self.resolve(ci);
         let doc = self.cells[ci as usize].doc;
         let inst_iface = std::mem::take(&mut self.cells[ci as usize].inst_iface);
         let unresolved = std::mem::take(&mut self.cells[ci as usize].unresolved);
+        let subst = self.subst_of(ci);
+        let subst: Vec<(Name, &str)> = subst.iter().map(|(n, t)| (*n, t.as_str())).collect();
+        let waiv = waivers_found(doc, &self.names);
         let mut found = Vec::new();
-        let own = &self.ifaces[ci as usize];
-        let nets = connect(
-            doc,
-            own,
-            &self.ifaces,
-            &inst_iface,
-            &self.globals,
-            &mut self.names,
-            &mut found,
-        );
-        let subst: Vec<(&str, &str)> = if ci == 0 {
-            self.subst
-                .iter()
-                .map(|(a, b)| (a.as_str(), b.as_str()))
-                .collect()
+        let parallel = crate::parallel_ok(doc.instances().id.len());
+        let Elaborator {
+            names,
+            ifaces,
+            globals,
+            funcs,
+            ws,
+            ..
+        } = self;
+        let (nets, graph) = if parallel {
+            let snapshot = names.clone();
+            std::thread::scope(|sc| {
+                let worker = sc.spawn(|| {
+                    let mut found = Vec::new();
+                    let own = &ifaces[ci as usize];
+                    let nets = connect(doc, own, ifaces, &inst_iface, globals, names, &mut found);
+                    (nets, found)
+                });
+                let graph = Graph::build(doc, ci, ifaces, &inst_iface, &subst, &snapshot);
+                graph.eval_all(Some(own_vals), &mut vals, &mut unv, ifaces, *funcs, ws);
+                let cx = CellCtx {
+                    doc,
+                    ifaces,
+                    own: ci,
+                    inst_iface: &inst_iface,
+                    graph: &graph,
+                    waivers: &waiv,
+                    path: Name::NONE,
+                };
+                check_values(&cx, &vals, &snapshot, *funcs, ws, &mut gated);
+                let (nets, f) = worker.join().expect("connect does not panic");
+                found = f;
+                (nets, graph)
+            })
         } else {
-            Vec::new()
+            let own = &ifaces[ci as usize];
+            let nets = connect(doc, own, ifaces, &inst_iface, globals, names, &mut found);
+            let graph = Graph::build(doc, ci, ifaces, &inst_iface, &subst, names);
+            graph.eval_all(Some(own_vals), &mut vals, &mut unv, ifaces, *funcs, ws);
+            let cx = CellCtx {
+                doc,
+                ifaces,
+                own: ci,
+                inst_iface: &inst_iface,
+                graph: &graph,
+                waivers: &waiv,
+                path: Name::NONE,
+            };
+            check_values(&cx, &vals, names, *funcs, ws, &mut gated);
+            (nets, graph)
         };
-        let graph = Graph::build(doc, ci, &self.ifaces, &inst_iface, &subst, &mut self.names);
-        let waiv = waivers(doc, &mut self.names);
         {
+            // Override keys are interned here, after connect, in both orders.
             let cx = CellCtx {
                 doc,
                 ifaces: &self.ifaces,
@@ -777,13 +869,17 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 detail: "pin name wider than 65535 bits".to_owned(),
             });
         }
+        // The serial order of findings: connectivity, overrides, wide pins, then gating.
         self.viol.append(&mut found);
+        self.viol.append(&mut gated);
         self.nets[ci as usize] = Some(nets);
         let cell = &mut self.cells[ci as usize];
         cell.inst_iface = inst_iface;
         cell.graph = graph;
         cell.waivers = waiv;
         cell.prepared = true;
+        assert_eq!(vals.len(), cell.graph.len());
+        (vals, unv)
     }
 
     /// Default values of cell `ci`'s own params (its defaults evaluated in its own
@@ -794,16 +890,10 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         }
         let doc = self.cells[ci as usize].doc;
         let none = vec![NONE; doc.instances().id.len()];
-        let subst: Vec<(&str, &str)> = if ci == 0 {
-            self.subst
-                .iter()
-                .map(|(a, b)| (a.as_str(), b.as_str()))
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let subst = self.subst_of(ci);
+        let subst: Vec<(Name, &str)> = subst.iter().map(|(n, t)| (*n, t.as_str())).collect();
         // Own params and vars only: instance blocks are left out (`none`).
-        let g = Graph::build(doc, ci, &self.ifaces, &none, &subst, &mut self.names);
+        let g = Graph::build(doc, ci, &self.ifaces, &none, &subst, &self.names);
         let (mut vals, mut unv) = (Vec::new(), Vec::new());
         g.eval_own(&mut vals, &mut unv, &self.ifaces, self.funcs, &mut self.ws);
         vals.truncate(g.params as usize);
@@ -1093,45 +1183,28 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             });
             return None;
         }
-        self.prepare(ci);
+        let (vals, _unverified) = self.prepare_eval(ci, &own_vals);
         self.stack.push(ci);
-        let (mut vals, mut unv) = (Vec::new(), Vec::new());
-        {
-            let cell = &self.cells[ci as usize];
-            cell.graph.eval_all(
-                Some(&own_vals),
-                &mut vals,
-                &mut unv,
-                &self.ifaces,
-                self.funcs,
-                &mut self.ws,
-            );
-            let cx = CellCtx {
-                doc: cell.doc,
-                ifaces: &self.ifaces,
-                own: ci,
-                inst_iface: &cell.inst_iface,
-                graph: &cell.graph,
-                waivers: &cell.waivers,
-                path: Name::NONE,
-            };
-            check_values(
-                &cx,
-                &vals,
-                &self.names,
-                self.funcs,
-                &mut self.ws,
-                &mut self.viol,
-            );
-        }
         let doc = self.cells[ci as usize].doc;
         let ni = doc.instances().id.len();
         let is_top = depth == 0;
         let mut rows: Vec<RowTmp> = Vec::with_capacity(ni);
         let mut bufs = RowBufs::default();
+        {
+            let nets = self.nets[ci as usize].as_ref().expect("prepared");
+            bufs.conn.reserve(nets.conns.len());
+            bufs.params.reserve(vals.len());
+        }
         let mut propagated: Vec<(Name, Name)> = Vec::new();
         let mut text = String::new();
         let mut child_path = String::new();
+        // Canonical text of recent scalar values (tag, bits) → name: a flat design repeats
+        // a few values a million times; formatting and interning each was a tenth of it.
+        let mut texts = [(0u8, 0u64, Name::NONE); 64];
+        // Per child cell, memoized for the run of instances of one cell: whether rows need
+        // their path, and the last (impl → leaf row) (`leaf_impl` memoizes too, by hash).
+        let mut pathed_of = (NONE, false);
+        let mut leaf_of = (NONE, NONE, None);
         for i in 0..ni {
             let c = self.cells[ci as usize].inst_iface[i];
             if c == NONE {
@@ -1152,8 +1225,31 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 let table = &self.cells[ci as usize].graph.table;
                 for k in 0..pc {
                     let v = &vals[first + k];
-                    text.clear();
-                    v.write_text(&mut text);
+                    let key = match v {
+                        Val::Int(x) => (1, *x as u64),
+                        Val::Num(x) => (2, x.to_bits()),
+                        Val::Bool(b) => (3, u64::from(*b)),
+                        _ => (0, 0),
+                    };
+                    let slot = (key.1.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 58) as usize;
+                    let t = if key.0 != 0 && texts[slot].0 == key.0 && texts[slot].1 == key.1 {
+                        texts[slot].2
+                    } else {
+                        text.clear();
+                        v.write_text(&mut text);
+                        let t = self.names.intern(&text);
+                        if key.0 != 0 {
+                            texts[slot] = (key.0, key.1, t);
+                        }
+                        t
+                    };
+                    debug_assert!(
+                        self.names.get(t) == {
+                            text.clear();
+                            v.write_text(&mut text);
+                            text.as_str()
+                        }
+                    );
                     let mut flags = 0;
                     if f.param_computed[k] {
                         flags |= COMPUTED;
@@ -1164,7 +1260,6 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                     if table[first + k] == OWN {
                         flags |= OVERRIDDEN;
                     }
-                    let t = self.names.intern(&text);
                     bufs.params.push((f.param_name[k], t, v.clone(), flags));
                 }
             }
@@ -1175,11 +1270,15 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             // The child path is read by config `inst` rules, by schematic children (their
             // own paths, E014) and by inherited pins (E036); a plain leaf row never needs it.
             let f = &self.ifaces[c as usize];
-            let pathed = !self.config.inst.is_empty()
-                || f.pin_inherit.iter().any(|p| *p != Name::NONE)
-                || f.impl_lang
-                    .iter()
-                    .any(|l| self.names.get(*l) == "schematic");
+            if pathed_of.0 != c {
+                let pathed = !self.config.inst.is_empty()
+                    || f.pin_inherit.iter().any(|p| *p != Name::NONE)
+                    || f.impl_lang
+                        .iter()
+                        .any(|l| self.names.get(*l) == "schematic");
+                pathed_of = (c, pathed);
+            }
+            let pathed = pathed_of.1;
             for k in 0..e1 - e0 {
                 let elem = self.nets[ci as usize].as_ref().expect("prepared").elem_name[e0 + k];
                 child_path.clear();
@@ -1224,7 +1323,10 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                     if !self.ifaces[c as usize].open && self.ifaces[c as usize].row != NONE {
                         self.needs_open.push(self.ifaces[c as usize].row);
                     }
-                    match self.leaf_impl(c, imp) {
+                    if (leaf_of.0, leaf_of.1) != (c, imp) {
+                        leaf_of = (c, imp, self.leaf_impl(c, imp));
+                    }
+                    match leaf_of.2 {
                         Some(id) => Target::Leaf(id),
                         None => continue,
                     }
@@ -1399,22 +1501,42 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         key: String,
         pairs: Vec<(Name, Name)>,
         sensitive: bool,
-        mut rows: Vec<RowTmp>,
+        rows: Vec<RowTmp>,
         mut bufs: RowBufs,
         propagated: Vec<(Name, Name)>,
         is_top: bool,
     ) -> u32 {
         let names = &self.names;
-        // By name text (stable): the prefix decides wherever it differs.
-        rows.sort_by(|a, b| {
-            a.prefix
-                .cmp(&b.prefix)
-                .then_with(|| names.cmp(a.name, b.name))
-        });
+        // By name text (stable): a radix sort of (prefix, row) keys, then runs of equal
+        // prefixes (names sharing their first 8 bytes) by text. The rows stay put and are
+        // read in that order (no sorted copy of 10^6 rows).
+        let keys: Vec<(u64, u32)> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (r.prefix, i as u32))
+            .collect();
+        let mut keys = crate::connect::radix_sort(keys);
+        let mut lo = 0;
+        while lo < keys.len() {
+            let hi = lo + keys[lo..].iter().take_while(|k| k.0 == keys[lo].0).count();
+            if hi - lo > 1 {
+                keys[lo..hi].sort_by(|a, b| {
+                    names
+                        .cmp(rows[a.1 as usize].name, rows[b.1 as usize].name)
+                        .then(a.1.cmp(&b.1))
+                });
+            }
+            lo = hi;
+        }
+        let order: Vec<u32> = keys.into_iter().map(|k| k.1).collect();
+        debug_assert!(order.windows(2).all(|w| {
+            let (a, b) = (&rows[w[0] as usize], &rows[w[1] as usize]);
+            (a.prefix, names.get(a.name)) <= (b.prefix, names.get(b.name))
+        }));
         // The children signature keys reuse of an identical definition; the top is never
         // instantiated, so it has nothing to be shared with (and the longest signature).
         let mut sig = String::new();
-        for r in rows.iter().filter(|_| !is_top) {
+        for r in order.iter().map(|&i| &rows[i as usize]).filter(|_| !is_top) {
             sig.push_str(names.get(r.name));
             sig.push('=');
             let (tag, n) = match r.target {
@@ -1502,7 +1624,19 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             .push(self.defs.param_name.len() as u32);
         self.defs.port_start.push(self.defs.port_net.len() as u32);
         self.defs.inh_start.push(self.defs.inh_pin.len() as u32);
-        for r in rows {
+        let i = &mut self.insts;
+        i.name.reserve(rows.len());
+        i.id.reserve(rows.len());
+        i.target.reserve(rows.len());
+        i.ignore.reserve(rows.len());
+        i.conn_start.reserve(rows.len());
+        i.param_start.reserve(rows.len());
+        i.conn.reserve(bufs.conn.len());
+        i.param_name.reserve(bufs.params.len());
+        i.param_text.reserve(bufs.params.len());
+        i.param_val.reserve(bufs.params.len());
+        i.param_flags.reserve(bufs.params.len());
+        for r in order.iter().map(|&i| &rows[i as usize]) {
             self.insts.name.push(r.name);
             self.insts.id.push(r.id);
             self.insts.target.push(r.target);
