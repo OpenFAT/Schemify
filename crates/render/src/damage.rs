@@ -40,7 +40,7 @@ struct Seq {
 
 /// The six tables of [`CanvasPrims`], in drawing order within a kind.
 #[derive(Clone, Copy)]
-enum Table {
+pub(crate) enum Table {
     Lines,
     Rects,
     Arcs,
@@ -49,7 +49,7 @@ enum Table {
     Texts,
 }
 
-const TABLES: [Table; 6] = [
+pub(crate) const TABLES: [Table; 6] = [
     Table::Lines,
     Table::Rects,
     Table::Arcs,
@@ -131,7 +131,7 @@ fn fill(s: &mut Seq, t: &CanvasPrims, table: Table) {
     assert_eq!(s.hash.len(), n);
 }
 
-fn len(t: &CanvasPrims, table: Table) -> usize {
+pub(crate) fn len(t: &CanvasPrims, table: Table) -> usize {
     match table {
         Table::Lines => t.lines.x0.len(),
         Table::Rects => t.rects.x0.len(),
@@ -155,7 +155,7 @@ fn fold(seed: i64, fields: &[i32]) -> u64 {
 
 /// Row `i` of `table`: its hash (everything drawn about it) and its world box.
 #[inline]
-fn row(t: &CanvasPrims, table: Table, i: usize) -> (u64, [i32; 4]) {
+pub(crate) fn row(t: &CanvasPrims, table: Table, i: usize) -> (u64, [i32; 4]) {
     let span =
         |x0: i32, y0: i32, x1: i32, y1: i32| [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)];
     match table {

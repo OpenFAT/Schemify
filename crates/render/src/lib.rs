@@ -34,8 +34,10 @@
 
 pub mod canvas;
 mod damage;
+mod index;
 mod layers;
 mod painter;
+mod tiles;
 pub mod waves;
 pub mod widgets;
 mod window;

@@ -30,7 +30,9 @@ use schemify_ui::TextSystem;
 use schemify_ui::parley::PositionedLayoutItem;
 
 pub use crate::damage::{CanvasDiff, DIFF_EDITS_MAX};
+pub use crate::index::{PrimIndex, Rows};
 use crate::painter::{Chains, Painter, rgba};
+pub use crate::tiles::{CanvasCache, Drawn, PATCH_PAD_PX, TILE_PX, TILES_PER_FRAME, draw_cached};
 
 /// Number of palette layers.
 pub const LAYERS: usize = 32;
@@ -398,6 +400,7 @@ pub struct CanvasScratch {
     fill: Vec<BezPath>,
     dots: Chains,
     path: BezPath,
+    lod: Lod,
     text_face: Option<FontData>,
     /// Glyph range in `text_glyphs` of each string shaped so far.
     text_runs: HashMap<Box<str>, (u32, u32)>,
@@ -414,6 +417,132 @@ impl std::fmt::Debug for CanvasScratch {
     }
 }
 
+/// Primitives whose screen box is at most this many logical px each way are drawn as the whole
+/// pixels that box touches (level of detail, D39): at a far zoom a row costs a few bit sets
+/// instead of path segments, and below two pixels a stroke and a block look alike. A function
+/// of the zoom and the row only, so a tile, a patch and the whole view draw a row alike.
+pub const LOD_PX: f64 = 2.0;
+/// Cost units a row drawn as a path or label adds over one culled or drawn as pixels (it is
+/// about that many times slower: path encoding against a few bit sets).
+pub const PATH_COST: usize = 6;
+/// Most pixels a level-of-detail mask covers (2 MiB per layer); larger views draw every row
+/// as a path.
+const LOD_AREA_MAX: i64 = 1 << 24;
+
+/// Per-layer pixel masks of the [`LOD_PX`]-small rows of one view, drawn as horizontal runs.
+#[derive(Default)]
+struct Lod {
+    /// The mask's pixel (0, 0) in view px, its size in px (0 = off) and words per mask row.
+    x0: i64,
+    y0: i64,
+    w: i64,
+    h: i64,
+    wpr: usize,
+    /// Per layer, `wpr · h` words once used; all zero between draws.
+    bits: Vec<Vec<u64>>,
+    /// Layers with a set bit.
+    used: u32,
+    runs: Chains,
+}
+
+impl Lod {
+    /// Starts the masks of `view` (empty: the previous draw flushed every layer).
+    fn begin(&mut self, view: Rect) {
+        assert_eq!(self.used, 0, "every layer flushed");
+        let (x0, y0) = (view.x0.floor() as i64, view.y0.floor() as i64);
+        let (w, h) = (view.x1.ceil() as i64 - x0, view.y1.ceil() as i64 - y0);
+        let on = w > 0 && h > 0 && w.saturating_mul(h) <= LOD_AREA_MAX;
+        (self.x0, self.y0) = (x0, y0);
+        (self.w, self.h) = if on { (w, h) } else { (0, 0) };
+        self.wpr = (self.w as usize).div_ceil(64);
+        self.bits.resize_with(LAYERS, Vec::new);
+    }
+
+    /// Marks the pixels of screen box `[x0, x1] × [y0, y1]` in `layer` when it is
+    /// [`LOD_PX`]-small; false (nothing marked) when it is larger or the masks are off.
+    #[inline(always)]
+    fn mark(&mut self, layer: usize, x0: f64, y0: f64, x1: f64, y1: f64) -> bool {
+        debug_assert!(x0 <= x1 && y0 <= y1);
+        if self.w == 0 || x1 - x0 > LOD_PX || y1 - y0 > LOD_PX {
+            return false;
+        }
+        let (a, b) = (pixel_i(x0) - self.x0, pixel_i(x1) - self.x0);
+        let (c, d) = (pixel_i(y0) - self.y0, pixel_i(y1) - self.y0);
+        if b < 0 || d < 0 || a >= self.w || c >= self.h {
+            return true; // wholly outside: nothing to show
+        }
+        let (a, b) = (a.max(0) as usize, b.min(self.w - 1) as usize);
+        let (c, d) = (c.max(0) as usize, d.min(self.h - 1) as usize);
+        if self.used & (1 << layer) == 0 {
+            self.used |= 1 << layer;
+            self.bits[layer].resize(self.wpr * self.h as usize, 0);
+        }
+        // At most 3 px across: the bits of a row sit in one word or two.
+        let (wa, wb) = (a / 64, b / 64);
+        let (ma, mb) = (!0u64 << (a % 64), !0u64 >> (63 - b % 64));
+        let bits = &mut self.bits[layer];
+        for y in c..=d {
+            let row = y * self.wpr;
+            if wa == wb {
+                bits[row + wa] |= ma & mb;
+            } else {
+                bits[row + wa] |= ma;
+                bits[row + wb] |= mb;
+            }
+        }
+        true
+    }
+
+    /// Fills `layer`'s marked pixels in `color` (one rect per horizontal run) and clears them.
+    ///
+    /// Cost: O(mask words + runs).
+    fn flush<P: Painter>(&mut self, p: &mut P, layer: usize, color: vello::peniko::Color) {
+        if self.used & (1 << layer) == 0 {
+            return;
+        }
+        self.used &= !(1 << layer);
+        self.runs.clear();
+        let wpr = self.wpr;
+        let bits = &mut self.bits[layer];
+        for y in 0..self.h as usize {
+            let row = &mut bits[y * wpr..(y + 1) * wpr];
+            let (fy, ly) = ((self.y0 + y as i64) as f32, (self.y0 + y as i64 + 1) as f32);
+            let run = |runs: &mut Chains, a: usize, b: usize| {
+                let (fa, fb) = ((self.x0 + a as i64) as f32, (self.x0 + b as i64) as f32);
+                runs.push(&[[fa, fy], [fb, fy], [fb, ly], [fa, ly]]);
+            };
+            let mut start: Option<usize> = None;
+            for (i, word) in row.iter_mut().enumerate() {
+                let (m, base) = (std::mem::take(word), i * 64);
+                let mut at = 0u32;
+                // Bits below `at` are done; a run open at a word's end continues into the next.
+                while at < 64 {
+                    let rest = m >> at;
+                    match start {
+                        None if rest == 0 => break,
+                        None => {
+                            at += rest.trailing_zeros();
+                            start = Some(base + at as usize);
+                        }
+                        Some(a) => {
+                            at += (!rest).trailing_zeros();
+                            if at < 64 {
+                                run(&mut self.runs, a, base + at as usize);
+                                start = None;
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(a) = start {
+                run(&mut self.runs, a, self.w as usize);
+            }
+        }
+        assert!(self.runs.end.len() <= (self.w * self.h) as usize);
+        p.fill_chains(&self.runs, color);
+    }
+}
+
 /// Labels are shaped once at this size and scaled by the camera.
 const TEXT_REF_PX: f32 = 64.0;
 /// Labels smaller than this on screen are skipped (unreadable, and the cheapest cull).
@@ -421,292 +550,6 @@ const TEXT_MIN_PX: f64 = 3.0;
 /// Distinct strings the label cache keeps before it starts over (a phase boundary, like the UI
 /// text cache).
 const TEXT_RUNS_MAX: usize = 1 << 16;
-
-/// The raster cache of one canvas: which painter layer holds its picture and for what camera.
-/// One per canvas; the picture itself lives in the painter (see [`Painter::layer`]).
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct CanvasCache {
-    /// Painter layer slot (`< painter::LAYER_SLOTS`), distinct per canvas sharing a painter.
-    pub slot: usize,
-    /// Tag of the recorded layer; 0 = nothing recorded.
-    stamp: u64,
-    /// Content fingerprint the layer was recorded for.
-    key: u64,
-    /// Camera zoom it was recorded at.
-    scale: f64,
-    /// Screen position of world (0, 0) when recorded (logical px).
-    origin: (f64, f64),
-    /// Logical-px rectangle the layer covered when recorded (the view plus [`CACHE_MARGIN`]).
-    rect: Rect,
-    /// Key of the previous call (what its `damage` was relative to).
-    last: u64,
-    /// World boxes where the content of `last` differs from the layer's (`key`); `None` =
-    /// unknown.
-    pending: Option<Vec<[i32; 4]>>,
-}
-
-/// How [`draw_cached`] drew a frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Drawn {
-    /// The recorded layer, copied pixel for pixel at an integer offset (a pan).
-    Copied,
-    /// The recorded layer stretched to a new zoom (a stand-in until the next crisp frame).
-    Stretched,
-    /// The changed parts of the layer redrawn (see `damage` of [`draw_cached`]), then copied.
-    Patched,
-    /// Content drawn into a fresh layer, then copied.
-    Recorded,
-    /// Content drawn straight into the frame (the painter keeps no layers).
-    Direct,
-}
-
-/// Share of the view's size recorded beyond each edge, so pans and zoom-outs up to it reuse the
-/// layer (larger = rarer re-records, each costing more pixels).
-pub const CACHE_MARGIN: f64 = 0.25;
-
-/// Unique layer tags across every cache in the process.
-static STAMPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
-/// Logical px a damage box is widened by: half the widest stroke, mark strokes, antialiasing
-/// and pixel snapping. Content must not draw farther than this outside its rows' boxes.
-pub const PATCH_PAD_PX: f64 = 8.0;
-/// Patches are whole multiples of this many logical px (so of 16 device px at integral scales),
-/// on the layer's own grid: vello's tiles, so every pixel outside the patches sees exactly the
-/// path segments it saw when recorded, and pixel snapping lands alike inside them.
-const PATCH_TILE: f64 = 16.0;
-/// Most patches one frame redraws (each culls every primitive once).
-const PATCHES_MAX: usize = 4;
-/// Most distinct damaged parts merged down to [`PATCHES_MAX`] (the merge is quadratic).
-const PARTS_MAX: usize = 64;
-/// Most damage boxes kept between frames before the change counts as unknown.
-const DAMAGE_BOXES_MAX: usize = 4096;
-
-/// Draws a canvas through its raster cache: `draw(p, view, cam)` paints the content (it must
-/// fill `view` opaquely with `background` first) and runs only when the cache cannot serve
-/// `key` at `cam`. A pan by whole pixels copies the recorded layer; a zoom with
-/// `crisp == false` stretches it (view pixels it no longer covers show `background`); new
-/// content whose change is known and small redraws only the changed parts; anything else
-/// records `view` plus [`CACHE_MARGIN`] afresh. Content outside the cache (gesture
-/// previews) is drawn by the caller afterwards.
-///
-/// `key` must change whenever anything `draw` reads changes, except the camera. `damage`
-/// says where the content for `key` differs from the content of the previous call's key: world
-/// boxes (each row added or removed, e.g. from [`CanvasDiff::update`]; `draw` must paint
-/// nothing farther than [`PATCH_PAD_PX`] outside them), empty when the key is the same, or
-/// `None` when unknown.
-///
-/// Cost: O(1) when copied or stretched; `draw` per changed part (up to 4) when patched;
-/// `draw` over view + margin when recorded.
-#[allow(clippy::too_many_arguments)]
-pub fn draw_cached<P: Painter>(
-    p: &mut P,
-    cache: &mut CanvasCache,
-    view: Rect,
-    cam: &Camera,
-    key: u64,
-    damage: Option<&[[i32; 4]]>,
-    crisp: bool,
-    background: vello::peniko::Color,
-    mut draw: impl FnMut(&mut P, Rect, &Camera),
-) -> Drawn {
-    assert!(view.width() >= 0.0 && view.height() >= 0.0 && cam.scale > 0.0);
-    let origin = cam.origin(view);
-    // What changed since the layer was recorded: this call's damage on top of the earlier.
-    if key != cache.last {
-        cache.pending = match (cache.pending.take(), damage) {
-            (Some(mut boxes), Some(d)) if boxes.len() + d.len() <= DAMAGE_BOXES_MAX => {
-                boxes.extend_from_slice(d);
-                Some(boxes)
-            }
-            _ => None,
-        };
-        cache.last = key;
-    }
-    if cache.stamp != 0 && view.area() > 0.0 {
-        let (o0, r) = (cache.origin, cache.rect);
-        if cache.scale == cam.scale {
-            let (dx, dy) = (origin.0 - o0.0, origin.1 - o0.1);
-            let aligned = (dx - dx.round()).abs() < 1e-6 && (dy - dy.round()).abs() < 1e-6;
-            let at = r + vello::kurbo::Vec2::new(dx.round(), dy.round());
-            let place = Affine::translate((at.x0, at.y0));
-            if aligned && at.contains_rect(view) {
-                if cache.key == key && p.draw_layer(cache.slot, cache.stamp, place, view, None) {
-                    return Drawn::Copied;
-                }
-                // A painter without the layer (a fresh one) patches nothing and shows nothing:
-                // it records below.
-                if cache.key != key
-                    && patch(p, cache, &mut draw)
-                    && p.draw_layer(cache.slot, cache.stamp, place, view, None)
-                {
-                    cache.key = key;
-                    cache.pending = Some(Vec::new());
-                    return Drawn::Patched;
-                }
-            }
-        } else if !crisp && cache.key == key {
-            // Layer px u ↔ screen u + r.p0 at the recorded camera ↔ world (u + r.p0 - o0) / s0
-            // ↔ screen now: (u + r.p0 - o0) · s1/s0 + o1. Where a zoom-out uncovers the view,
-            // background shows until the crisp frame (no re-record mid-gesture).
-            let at = Affine::translate(origin)
-                * Affine::scale(cam.scale / cache.scale)
-                * Affine::translate((r.x0 - o0.0, r.y0 - o0.1));
-            if p.draw_layer(cache.slot, cache.stamp, at, view, Some(background)) {
-                return Drawn::Stretched;
-            }
-        }
-    }
-    // Record view + margin, its corner on the integer-pixel grid so later pans copy exactly.
-    let s = p.device_scale();
-    let (mx, my) = (
-        (view.width() * CACHE_MARGIN).max(64.0),
-        (view.height() * CACHE_MARGIN).max(64.0),
-    );
-    let (x0, y0) = ((view.x0 - mx).floor(), (view.y0 - my).floor());
-    // ponytail: 8192 device px is wgpu's default texture limit; a bigger window (> 5.4k logical
-    // px wide at scale 1) records without margin, then 8192 caps the picture itself.
-    let w = (((view.x1 + mx - x0) * s).ceil() as u32).clamp(1, 8192);
-    let h = (((view.y1 + my - y0) * s).ceil() as u32).clamp(1, 8192);
-    let local = Rect::new(0.0, 0.0, f64::from(w) / s, f64::from(h) / s);
-    // The same picture in layer coordinates: world (0, 0) lands at origin - (x0, y0).
-    let lcam = Camera {
-        cx: (local.center().x - (origin.0 - x0)) / cam.scale,
-        cy: (local.center().y - (origin.1 - y0)) / cam.scale,
-        scale: cam.scale,
-    };
-    let stamp = STAMPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if p.layer(cache.slot, stamp, w, h, |p| draw(p, local, &lcam)) {
-        *cache = CanvasCache {
-            slot: cache.slot,
-            stamp,
-            key,
-            scale: cam.scale,
-            origin,
-            rect: local + vello::kurbo::Vec2::new(x0, y0),
-            last: key,
-            pending: Some(Vec::new()),
-        };
-        let shown = p.draw_layer(cache.slot, stamp, Affine::translate((x0, y0)), view, None);
-        assert!(shown, "a recorded layer draws");
-        return Drawn::Recorded;
-    }
-    cache.stamp = 0;
-    p.push_clip(view);
-    draw(p, view, cam);
-    p.pop_clip();
-    Drawn::Direct
-}
-
-/// Redraws the parts of the recorded layer that `cache.pending` covers, at the camera it was
-/// recorded with. False (the layer may be partly redrawn: record it afresh) when the damage
-/// is unknown or too large, or a [`PATCH_TILE`] is no whole number of device px (patch
-/// offsets must be whole device px and whole logical px, so pixel snapping lands alike).
-///
-/// A part redrawn alone matches the recording within ±1 per channel, not bit for bit: its
-/// unsnapped coordinates (arcs, glyphs) round to `f32` at other magnitudes.
-fn patch<P: Painter>(
-    p: &mut P,
-    cache: &CanvasCache,
-    draw: &mut impl FnMut(&mut P, Rect, &Camera),
-) -> bool {
-    let s = p.device_scale();
-    let Some(boxes) = cache.pending.as_deref() else {
-        return false;
-    };
-    if (PATCH_TILE * s).fract() != 0.0 || s <= 0.0 {
-        return false;
-    }
-    // Layer px of world (0, 0) and the layer's size, as recorded.
-    let (ox, oy) = (
-        cache.origin.0 - cache.rect.x0,
-        cache.origin.1 - cache.rect.y0,
-    );
-    let (lw, lh) = (
-        (cache.rect.width() * s).round(),
-        (cache.rect.height() * s).round(),
-    );
-    let (pad, step) = (PATCH_PAD_PX * s, PATCH_TILE * s);
-    let mut parts: Vec<Rect> = Vec::new();
-    for b in boxes {
-        let (x0, y0) = (
-            f64::from(b[0]) * cache.scale + ox,
-            f64::from(b[1]) * cache.scale + oy,
-        );
-        let (x1, y1) = (
-            f64::from(b[2]) * cache.scale + ox,
-            f64::from(b[3]) * cache.scale + oy,
-        );
-        let tile = |v: f64, up: bool| {
-            let t = v / step;
-            (if up { t.ceil() } else { t.floor() } * step).clamp(0.0, 1e9)
-        };
-        let part = Rect::new(
-            tile(x0 * s - pad, false),
-            tile(y0 * s - pad, false),
-            tile(x1 * s + pad, true).min(lw),
-            tile(y1 * s + pad, true).min(lh),
-        );
-        if part.x1 > part.x0 && part.y1 > part.y0 {
-            parts.push(part);
-        }
-        if parts.len() > PARTS_MAX {
-            return false; // scattered: one recording beats merging them
-        }
-    }
-    // Merge overlapping parts, then the closest pairs until few are left.
-    let mut merged = true;
-    while merged {
-        merged = false;
-        'pairs: for i in 0..parts.len() {
-            for j in i + 1..parts.len() {
-                let overlap = parts[i].intersect(parts[j]).area() > 0.0;
-                let grow = parts[i].union(parts[j]).area() - parts[i].area() - parts[j].area();
-                if overlap || (parts.len() > PATCHES_MAX && grow <= 0.0) {
-                    parts[i] = parts[i].union(parts[j]);
-                    parts.swap_remove(j);
-                    merged = true;
-                    break 'pairs;
-                }
-            }
-        }
-        if !merged && parts.len() > PATCHES_MAX {
-            let (mut best, mut cost) = ((0, 1), f64::INFINITY);
-            for i in 0..parts.len() {
-                for j in i + 1..parts.len() {
-                    let c = parts[i].union(parts[j]).area();
-                    if c < cost {
-                        (best, cost) = ((i, j), c);
-                    }
-                }
-            }
-            parts[best.0] = parts[best.0].union(parts[best.1]);
-            parts.swap_remove(best.1);
-            merged = true;
-        }
-    }
-    let area: f64 = parts.iter().map(Rect::area).sum();
-    if area > lw * lh / 2.0 {
-        return false; // most of the layer: one recording is cheaper than the culling passes
-    }
-    assert!(parts.len() <= PATCHES_MAX);
-    for part in &parts {
-        let (x, y, w, h) = (part.x0, part.y0, part.width(), part.height());
-        // The part's picture in its own coordinates: world (0, 0) lands at (ox, oy) - (x, y)/s.
-        let local = Rect::new(0.0, 0.0, w / s, h / s);
-        let pcam = Camera {
-            cx: (local.center().x - (ox - x / s)) / cache.scale,
-            cy: (local.center().y - (oy - y / s)) / cache.scale,
-            scale: cache.scale,
-        };
-        let (x, y, w, h) = (x as u32, y as u32, w as u32, h as u32);
-        if !p.patch_layer(cache.slot, cache.stamp, x, y, w, h, |p| {
-            draw(p, local, &pcam)
-        }) {
-            return false;
-        }
-    }
-    true
-}
 
 /// Draws background, grid, primitives, overlay primitives and marks into `view`, clipped.
 /// The diagonal route for the common case; each step is also public.
@@ -818,7 +661,17 @@ fn snap(v: f64) -> f64 {
 /// The pixel `v` falls in, with [`snap`]'s bias.
 #[inline]
 fn pixel(v: f64) -> f64 {
-    (v + 1e-6).floor()
+    pixel_i(v) as f64
+}
+
+/// [`pixel`] as an integer. A truncating cast and a compare: `f64::floor` is a libm call on
+/// baseline x86-64 (no SSE4.1), which cost ~10% of a far-zoom tile. Exact for |v| < 2^63
+/// (screen coordinates are far inside).
+#[inline]
+fn pixel_i(v: f64) -> i64 {
+    let v = v + 1e-6;
+    let t = v as i64;
+    t - i64::from((t as f64) > v)
 }
 
 /// Builds one stroke path and one fill path per layer from all primitive tables, then issues
@@ -835,7 +688,30 @@ pub fn draw_prims<P: Painter>(
     palette: &Palette,
     text: &mut TextSystem,
     scratch: &mut CanvasScratch,
-) {
+) -> usize {
+    draw_prims_in(p, view, cam, prims, None, palette, text, scratch)
+}
+
+/// [`draw_prims`] over the rows `rows` lists (ascending per kind, e.g. a
+/// [`PrimIndex::query`] of the view's world box), or every row for `None`: what it draws
+/// inside `view` is the same when `rows` holds every row that reaches into it.
+///
+/// # Time complexity
+///
+/// O(listed rows + glyphs of visible labels). Returns the cost (for [`draw_cached`]'s
+/// per-frame budget): 1 per row looked at, [`PATH_COST`] more per row drawn as a path or
+/// label (~15 ns per unit on a 2024 laptop).
+#[allow(clippy::too_many_arguments)]
+pub fn draw_prims_in<P: Painter>(
+    p: &mut P,
+    view: Rect,
+    cam: &Camera,
+    prims: &CanvasPrims,
+    rows: Option<&Rows>,
+    palette: &Palette,
+    text: &mut TextSystem,
+    scratch: &mut CanvasScratch,
+) -> usize {
     let l = &prims.lines;
     assert!(
         l.x0.len() == l.y0.len()
@@ -854,6 +730,8 @@ pub fn draw_prims<P: Painter>(
     for path in sc.curves.iter_mut().chain(sc.fill.iter_mut()) {
         path.truncate(0);
     }
+    sc.lod.begin(view);
+    let mut paths = 0; // rows drawn as paths or glyph runs (the costly ones)
     let (ox, oy) = cam.origin(view);
     let s = cam.scale;
     let cull = view.inflate(2.0, 2.0);
@@ -862,60 +740,84 @@ pub fn draw_prims<P: Painter>(
     };
     let pt = |x: f64, y: f64| [snap(x) as f32, snap(y) as f32];
 
-    for i in 0..l.x0.len() {
+    for i in each(l.x0.len(), rows.map(|r| &r.lines[..])) {
         let (ax, ay) = (f64::from(l.x0[i]) * s + ox, f64::from(l.y0[i]) * s + oy);
         let (bx, by) = (f64::from(l.x1[i]) * s + ox, f64::from(l.y1[i]) * s + oy);
-        if outside(ax, ay, bx, by) {
+        let layer = usize::from(l.layer[i]);
+        if outside(ax, ay, bx, by)
+            || sc
+                .lod
+                .mark(layer, ax.min(bx), ay.min(by), ax.max(bx), ay.max(by))
+        {
             continue;
         }
-        sc.open[usize::from(l.layer[i])].push(&[pt(ax, ay), pt(bx, by)]);
+        sc.open[layer].push(&[pt(ax, ay), pt(bx, by)]);
+        paths += 1;
     }
 
     let r = &prims.rects;
-    for i in 0..r.x0.len() {
+    for i in each(r.x0.len(), rows.map(|r| &r.rects[..])) {
         let (ax, ay) = (f64::from(r.x0[i]) * s + ox, f64::from(r.y0[i]) * s + oy);
         let (bx, by) = (f64::from(r.x1[i]) * s + ox, f64::from(r.y1[i]) * s + oy);
-        if outside(ax, ay, bx, by) {
-            continue;
-        }
         let layer = usize::from(r.layer[i]);
         let (x0, y0, x1, y1) = (ax.min(bx), ay.min(by), ax.max(bx), ay.max(by));
+        if outside(ax, ay, bx, by) || sc.lod.mark(layer, x0, y0, x1, y1) {
+            continue;
+        }
         sc.closed[layer].push(&[pt(x0, y0), pt(x1, y0), pt(x1, y1), pt(x0, y1)]);
+        paths += 1;
         if palette.fill & (1 << layer) != 0 {
             push_rect(&mut sc.fill[layer], x0, y0, x1, y1);
         }
     }
 
     let a = &prims.arcs;
-    for i in 0..a.cx.len() {
+    for i in each(a.cx.len(), rows.map(|r| &r.arcs[..])) {
         let (cx, cy, rad) = (
             f64::from(a.cx[i]) * s + ox,
             f64::from(a.cy[i]) * s + oy,
             f64::from(a.r[i]) * s,
         );
-        if outside(cx - rad, cy - rad, cx + rad, cy + rad) {
+        let layer = usize::from(a.layer[i]);
+        if outside(cx - rad, cy - rad, cx + rad, cy + rad)
+            || sc.lod.mark(layer, cx - rad, cy - rad, cx + rad, cy + rad)
+        {
             continue;
         }
-        let layer = usize::from(a.layer[i]);
         let (start, sweep) = (
             f64::from(a.start[i]).to_radians() / 1000.0,
             f64::from(a.sweep[i]).to_radians() / 1000.0,
         );
         push_arc(&mut sc.curves[layer], cx, cy, rad, start, sweep);
+        paths += 1;
         if a.sweep[i].abs() >= 360_000 && palette.fill & (1 << layer) != 0 {
             push_arc(&mut sc.fill[layer], cx, cy, rad, start, sweep);
         }
     }
 
-    for (polys, closed) in [(&prims.polylines, false), (&prims.polygons, true)] {
-        let mut start = 0usize;
-        for (k, &end) in polys.end.iter().enumerate() {
-            let end = end as usize;
+    for (polys, closed, listed) in [
+        (&prims.polylines, false, rows.map(|r| &r.polylines[..])),
+        (&prims.polygons, true, rows.map(|r| &r.polygons[..])),
+    ] {
+        for k in each(polys.end.len(), listed) {
+            let start = if k == 0 { 0 } else { polys.end[k - 1] as usize };
+            let end = polys.end[k] as usize;
             assert!(
                 end >= start + 2 && end <= polys.x.len(),
                 "malformed poly table"
             );
             let layer = usize::from(polys.layer[k]);
+            let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+            for j in start..end {
+                let (x, y) = (
+                    f64::from(polys.x[j]) * s + ox,
+                    f64::from(polys.y[j]) * s + oy,
+                );
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+            }
+            if outside(x0, y0, x1, y1) || sc.lod.mark(layer, x0, y0, x1, y1) {
+                continue;
+            }
             let chains = if closed {
                 &mut sc.closed[layer]
             } else {
@@ -928,6 +830,7 @@ pub fn draw_prims<P: Painter>(
                 ));
             }
             chains.end.push(chains.pts.len() as u32);
+            paths += 1;
             if closed && palette.fill & (1 << layer) != 0 {
                 let f = &mut sc.fill[layer];
                 f.move_to((
@@ -942,7 +845,6 @@ pub fn draw_prims<P: Painter>(
                 }
                 f.close_path();
             }
-            start = end;
         }
     }
 
@@ -960,23 +862,36 @@ pub fn draw_prims<P: Painter>(
         if !sc.curves[layer].is_empty() {
             p.stroke_path(&sc.curves[layer], width, color);
         }
+        sc.lod.flush(p, layer, color);
     }
-    draw_texts(p, view, cam, &prims.texts, palette, text, scratch);
+    assert_eq!(sc.lod.used, 0, "every mask drawn");
+    let listed = rows.map(|r| &r.texts[..]);
+    paths += draw_texts(p, view, cam, &prims.texts, listed, palette, text, scratch);
+    rows.map_or(prims.len(), Rows::len) + PATH_COST * paths
 }
 
+/// Every row `0..n`, or the listed ones.
+fn each(n: usize, rows: Option<&[u32]>) -> impl Iterator<Item = usize> + '_ {
+    let all = rows.is_none().then_some(0..n).into_iter().flatten();
+    all.chain(rows.into_iter().flatten().map(|&i| i as usize))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn draw_texts<P: Painter>(
     p: &mut P,
     view: Rect,
     cam: &Camera,
     t: &Texts,
+    rows: Option<&[u32]>,
     palette: &Palette,
     text: &mut TextSystem,
     scratch: &mut CanvasScratch,
-) {
+) -> usize {
     assert_eq!(t.x.len(), t.end.len());
     let (ox, oy) = cam.origin(view);
-    let mut start = 0usize;
-    for i in 0..t.x.len() {
+    let mut drawn = 0;
+    for i in each(t.x.len(), rows) {
+        let start = if i == 0 { 0 } else { t.end[i - 1] as usize };
         let end = t.end[i] as usize;
         let px = f64::from(t.size[i]) * cam.scale;
         let (x, y) = (
@@ -996,10 +911,11 @@ fn draw_texts<P: Painter>(
                 let color = rgba(palette.color[usize::from(t.layer[i])]);
                 let glyphs = &scratch.text_glyphs[g0 as usize..g1 as usize];
                 p.glyphs(&face, TEXT_REF_PX, &[], color, at, glyphs);
+                drawn += 1;
             }
         }
-        start = end;
     }
+    drawn
 }
 
 /// The glyph range of `s` shaped at [`TEXT_REF_PX`] (positions relative to its top-left),

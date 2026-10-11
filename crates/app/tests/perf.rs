@@ -491,8 +491,10 @@ fn frame_times(n: u32) {
             };
             b.frame(&event(wheel), 16, true);
         }
-        // A stretched last frame asks for its crisp frame; a recorded one is crisp already.
-        if let Some(wake) = b.ed.wake_ms() {
+        // A stretched last frame asks for its crisp frame, which records the new zoom's tiles a
+        // few per frame: frames follow until the view is whole (all counted).
+        for _ in 0..256 {
+            let Some(wake) = b.ed.wake_ms() else { break };
             assert!(wake <= 120, "the crisp frame is due within the settle time");
             b.frame(&InputEvents::default(), u64::from(wake) + 1, true);
         }

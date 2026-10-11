@@ -20,6 +20,9 @@ use vello::{AaConfig, RenderParams, Renderer, Scene, wgpu};
 
 /// Raster layer slots a painter keeps (one per cached canvas).
 pub const LAYER_SLOTS: usize = 8;
+/// Layer draws one frame composes without vello at most (a canvas's tiles and stand-ins);
+/// a frame with more goes through vello.
+const DRAWS_MAX: usize = 1024;
 
 /// GPU raster layers kept across frames (owner: the window, or a benchmark driving vello
 /// itself): per slot the recorded scene, the texture it is rasterized into, and the image a
@@ -34,7 +37,17 @@ pub struct Layers {
     /// Hash and target size of the last frame vello rendered (what the target texture holds).
     shown: Option<(u64, u32, u32)>,
     quad: Option<Quad>,
+    /// Where a frame's patches are rendered together before their copies: grown to the
+    /// largest batch, kept.
+    scratch: Option<wgpu::Texture>,
 }
+
+/// Width of the patch batch (patches are packed in rows across it); its height is at most
+/// the same, more patches go in another batch.
+const BATCH_PX: u32 = 2048;
+/// Patch placements in a batch are multiples of this (vello's tile edge), so a patch
+/// rasterizes exactly as it would alone.
+const BATCH_ALIGN: u32 = 16;
 
 #[derive(Default)]
 pub(crate) struct GpuLayer {
@@ -68,6 +81,14 @@ impl FrameLog {
         }
         self.after |= !self.draws.is_empty();
         data.hash(&mut self.hash);
+    }
+
+    /// Like [`FrameLog::call`] for a call that paints nothing over a layer (a layer draw, the
+    /// end of a clip): hashed, but it does not count as painting after the layers.
+    pub(crate) fn mark(&mut self, data: impl Hash) {
+        if !self.recording {
+            data.hash(&mut self.hash);
+        }
     }
 }
 
@@ -113,10 +134,11 @@ impl Layers {
 
     /// Rasterizes every layer recorded since the last call into its texture (vello renders it
     /// into an `Rgba8Unorm` texture registered as the layer's image), then every part patched
-    /// since (rendered into a texture of its size and copied over its place). Call once per
-    /// frame after painting and before rendering or composing the frame.
+    /// since (rendered side by side into a scratch texture, each copied over its place). Call
+    /// once per frame after painting and before rendering or composing the frame.
     ///
-    /// Cost: one vello render per recorded layer or patch; nothing when none was recorded.
+    /// Cost: one vello render per recorded layer and per [`BATCH_PX`]-square batch of
+    /// patches (one, for a frame's few tiles); nothing when none was recorded.
     ///
     /// # Errors
     ///
@@ -172,50 +194,104 @@ impl Layers {
             renderer.mark_override_image_dirty(image);
             l.dirty = false;
         }
-        for l in self.slots.iter_mut().filter(|l| !l.patches.is_empty()) {
-            let (Some(image), Some(texture)) = (l.image.as_ref(), l.texture.as_ref()) else {
+        // Every slot's patches, packed in rows across one scratch texture (in batches).
+        let mut parts: Vec<(usize, Scene, [u32; 4])> = Vec::new();
+        for (k, l) in self.slots.iter_mut().enumerate() {
+            if l.image.is_none() || l.texture.is_none() {
                 l.patches.clear(); // no picture to patch (its first raster failed)
-                continue;
-            };
-            for (scene, [x, y, w, h]) in l.patches.drain(..) {
-                assert!(x + w <= image.width && y + h <= image.height);
-                let size = wgpu::Extent3d {
-                    width: w,
-                    height: h,
-                    depth_or_array_layers: 1,
-                };
-                let part = device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("layer patch"),
-                    size,
+            }
+            parts.extend(l.patches.drain(..).map(|(sc, r)| (k, sc, r)));
+        }
+        let mut next = 0;
+        while next < parts.len() {
+            // Shelf packing: (x, y) per part of this batch.
+            let (mut x, mut y, mut row, mut at) = (0u32, 0u32, 0u32, Vec::new());
+            for (_, _, [_, _, w, h]) in &parts[next..] {
+                let (w, h) = (
+                    w.next_multiple_of(BATCH_ALIGN),
+                    h.next_multiple_of(BATCH_ALIGN),
+                );
+                assert!(w <= BATCH_PX && h <= BATCH_PX, "a patch fits a batch");
+                if x + w > BATCH_PX {
+                    (x, y, row) = (0, y + row, 0);
+                }
+                if y + h > BATCH_PX {
+                    break;
+                }
+                at.push((x, y));
+                (x, row) = (x + w, row.max(h));
+            }
+            let batch = &parts[next..next + at.len()];
+            let height = y + row;
+            let mut scene = Scene::new();
+            for ((_, part, [_, _, w, h]), &(px, py)) in batch.iter().zip(&at) {
+                let place = Affine::translate((f64::from(px), f64::from(py)));
+                let clip = Rect::new(0.0, 0.0, f64::from(*w), f64::from(*h));
+                scene.push_clip_layer(vello::peniko::Fill::NonZero, place, &clip);
+                scene.append(part, Some(place));
+                scene.pop_layer();
+            }
+            let small = self.scratch.as_ref().is_none_or(|t| t.height() < height);
+            if small {
+                self.scratch = Some(device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("layer patches"),
+                    size: wgpu::Extent3d {
+                        width: BATCH_PX,
+                        height: height.next_power_of_two().min(BATCH_PX),
+                        depth_or_array_layers: 1,
+                    },
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
                     format: wgpu::TextureFormat::Rgba8Unorm,
                     usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
                     view_formats: &[],
-                });
-                let params = RenderParams {
-                    base_color: Color::TRANSPARENT,
-                    width: w,
-                    height: h,
-                    antialiasing_method: AaConfig::Area,
-                };
-                let view = part.create_view(&wgpu::TextureViewDescriptor::default());
-                renderer.render_to_texture(device, queue, &scene, &view, &params)?;
-                let mut encoder = device.create_command_encoder(&Default::default());
+                }));
+            }
+            let scratch = self.scratch.as_ref().expect("made above");
+            let params = RenderParams {
+                base_color: Color::TRANSPARENT,
+                width: scratch.width(),
+                height: scratch.height(),
+                antialiasing_method: AaConfig::Area,
+            };
+            let view = scratch.create_view(&wgpu::TextureViewDescriptor::default());
+            renderer.render_to_texture(device, queue, &scene, &view, &params)?;
+            let mut encoder = device.create_command_encoder(&Default::default());
+            for ((k, _, [x, y, w, h]), &(px, py)) in batch.iter().zip(&at) {
+                let l = &self.slots[*k];
+                let (image, texture) = (
+                    l.image.as_ref().expect("checked above"),
+                    l.texture.as_ref().expect("checked above"),
+                );
+                assert!(x + w <= image.width && y + h <= image.height);
                 encoder.copy_texture_to_texture(
-                    part.as_image_copy(),
+                    wgpu::TexelCopyTextureInfo {
+                        texture: scratch,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d { x: px, y: py, z: 0 },
+                        aspect: wgpu::TextureAspect::All,
+                    },
                     wgpu::TexelCopyTextureInfo {
                         texture,
                         mip_level: 0,
-                        origin: wgpu::Origin3d { x, y, z: 0 },
+                        origin: wgpu::Origin3d { x: *x, y: *y, z: 0 },
                         aspect: wgpu::TextureAspect::All,
                     },
-                    size,
+                    wgpu::Extent3d {
+                        width: *w,
+                        height: *h,
+                        depth_or_array_layers: 1,
+                    },
                 );
-                queue.submit([encoder.finish()]);
             }
-            renderer.mark_override_image_dirty(image);
+            queue.submit([encoder.finish()]);
+            for (k, _, _) in batch {
+                let image = self.slots[*k].image.as_ref().expect("checked above");
+                renderer.mark_override_image_dirty(image);
+            }
+            assert!(!at.is_empty(), "a batch holds a patch");
+            next += at.len();
         }
         Ok(())
     }
@@ -227,6 +303,7 @@ impl Layers {
         let hash = self.log.hash.finish();
         !self.log.after
             && !self.log.draws.is_empty()
+            && self.log.draws.len() <= DRAWS_MAX
             && self.shown == Some((hash, w, h))
             && self
                 .log
@@ -255,8 +332,8 @@ impl Layers {
         (w, h): (u32, u32),
     ) {
         assert!(
-            self.log.draws.len() <= LAYER_SLOTS,
-            "one draw per slot at most"
+            self.log.draws.len() <= DRAWS_MAX,
+            "Layers::reusable caps the draws"
         );
         let quad = match &self.quad {
             Some(q) if q.format == format => self.quad.as_ref().expect("checked"),
@@ -462,7 +539,7 @@ struct Out { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
             layout,
             uniforms: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("layer quad"),
-                size: (Self::STRIDE * LAYER_SLOTS) as u64,
+                size: (Self::STRIDE * DRAWS_MAX) as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),

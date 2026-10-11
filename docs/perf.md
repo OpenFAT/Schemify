@@ -44,35 +44,39 @@ wire; **edit** is a wire delete and its undo.
 
 ## Results (2026-10-11)
 
-Before = `main` at `aec8c6a`; after = this branch merged with `main` at `88e818c` (RTX
-columns re-measured after the merge; the Intel column is the run before it). p50 / p95 / p99
-in ms.
+Before = `main` at `aec8c6a` (every frame re-encoded); retained layer = PR #1 (one layer per
+canvas with a margin); tiles = `pr/perf-tiles` (world-anchored tiles, per-frame record budget,
+level of detail, batched patches). p50 / p95 / p99 in ms, RTX 4060 unless it says otherwise.
 
 ### 100k objects (260k primitives)
 
-| Frame | CPU before | CPU after | GPU after, RTX 4060 | GPU after, Intel iGPU |
-|---|---|---|---|---|
-| pan | 10.9 (every frame re-encoded) | 0.06 / 0.20 / 12.8 | 0.074 / 0.086 / 5.5 | 0.37–1.1 / 0.39–2.3 / 47–51 |
-| zoom | ~11 | 0.09 / 13.6 / 18.2 | 0.081 / 5.9 / 5.9 | 0.40–1.1 / 47–50 / 47–55 |
-| select | not measured (≈ a full frame) | 1.95 / 2.9 / 3.2 | 0.47 / 0.50 / 1.0 | 1.1–2.3 / 1.1–3.4 / 3.2–3.4 |
-| edit | 112 | 48 / 60 / 75 | 1.05 / 1.3 / 1.3 | 3.3–3.8 / 3.9–8.0 / 3.9–8.1 |
+| Frame | CPU before | CPU retained layer | CPU tiles | GPU retained layer | GPU tiles |
+|---|---|---|---|---|---|
+| pan | 10.9 | 0.06 / 0.20 / 12.8 | 0.092 / 0.116 / 0.403 | 0.074 / 0.086 / 5.5 | 0.083 / 0.096 / 0.366 |
+| zoom | ~11 | 0.09 / 13.6 / 18.2 | 0.224 / 0.926 / 0.992 | 0.081 / 5.9 / 5.9 | 0.360 / 0.544 / 0.551 |
+| select | ≈ a full frame | 1.95 / 2.9 / 3.2 | 1.10 / 1.86 / 2.50 | 0.47 / 0.50 / 1.0 | 0.47 / 0.51 / 2.0 |
+| edit | 112 | 48 / 60 / 75 | 65 / 72 / 95 (app side, untouched here; run-to-run 48–74) | 1.05 / 1.3 / 1.3 | 1.98 / 3.4 / 3.4 |
 
-GPU before: 1.9 ms (RTX) and 26–37 ms (Intel) per frame, every frame (the whole scene through
-vello). Open + first build: 178 ms before, 162–178 ms after.
+GPU before: 1.9 ms (RTX) and 26–37 ms (Intel iGPU) per frame, every frame. The retained
+layer's Intel numbers: pan 0.37–1.1 / 0.39–2.3 / 47–51, zoom 0.40–1.1 / 47–50 / 47–55 (its
+timestamp floor moves from 0.02 to 0.11 ms with the clock state). The tiles were not
+re-measured on the Intel iGPU (one release run per change on the shared machine).
 
-The Intel ranges are two runs: its timestamp floor moves from 0.02 to 0.11 ms with the GPU's
-clock state, and so does everything above it.
-
-### 10k and 1M objects (after, RTX 4060)
+### 10k and 1M objects (tiles, RTX 4060)
 
 | Frame | 10k CPU | 10k GPU | 1M CPU | 1M GPU |
 |---|---|---|---|---|
-| pan | 0.06 / 0.09 / 1.5 | 0.069 / 0.073 / 0.73 | 0.08 / 0.22 / 107 | 0.063 / 0.075 / 39 |
-| zoom | 0.09 / 2.4 / 3.3 | 0.071 / 1.6 / 2.1 | 0.07 / 103 / 109 | 0.082 / 39 / 39 |
-| select | 0.51 / 0.81 / 0.90 | 0.25 / 0.41 / 0.81 | 17.1 / 18.2 / 26.9 | 1.6 / 2.0 / 2.0 |
-| edit | 4.6 / 6.9 / 7.8 | 0.82 / 0.99 / 1.1 | 541 / 614 / 706 | 10.6 / 13.6 / 19.8 |
+| pan | 0.18 / 0.27 / 0.31 | 0.073 / 0.085 / 0.36 | 0.20 / 0.29 / 0.64 | 0.081 / 0.095 / 0.57 |
+| zoom | 0.16 / 0.29 / 4.0 | 0.093 / 0.51 / 1.2 | 0.99 / 2.0 / 2.5 | 0.61 / 0.67 / 0.69 |
+| select | 0.36 / 0.47 / 1.0 | 0.34 / 0.36 / 1.9 | 6.7 / 6.8 / 7.2 | 0.51 / 0.56 / 2.0 |
+| edit | 4.9 / 7.4 / 7.6 | 1.8 / 1.9 / 2.0 | 570 / 630 / 718 | 8.9 / 12.4 / 21 |
 
-Open + first build: 17 ms (10k), 1.93 s (1M).
+Open + first build: 22 ms (10k), 248 ms (100k, under load; 166–174 ms idle), 1.98 s (1M).
+The 10k zoom p99 is one frame: the first crisp frame after a zoom records every visible tile
+when no stand-in covers them yet.
+
+Retained layer at 1M for comparison: pan 0.08 / 0.22 / 107 CPU, 0.063 / 0.075 / 39 GPU; zoom
+0.07 / 103 / 109 CPU, 0.082 / 39 / 39 GPU.
 
 ### Netlist, flat 1M instances (elaborate + emit, document open)
 
@@ -91,15 +95,23 @@ Open + first build: 17 ms (10k), 1.93 s (1M).
 
 ## What makes a frame cheap
 
-- **Raster layer** (`canvas::draw_cached`): the canvas (background, grid, primitives, decor,
-  selection marks) is recorded once into a layer with a 25% margin; a whole-pixel pan copies
-  it, a zoom stretches it until 120 ms after the last notch, then records crisp.
+- **Tiles** (`canvas::draw_cached`, `tiles.rs`): the canvas (background, grid, primitives,
+  decor, selection marks) is recorded as world-anchored 256-px tiles in one atlas layer. A
+  whole-pixel pan copies the tiles it has and records the ones it uncovers (plus a 1-tile
+  ring ahead); a zoom stretches the old tiles until 120 ms after the last notch, then records
+  the new zoom's tiles within a per-frame cost budget (`COST_PER_FRAME`), the old ones
+  standing in meanwhile. A tile the cost estimate (the old cells over the same world) says is
+  too costly is recorded in up to 16 parts over several frames.
+- **Index and level of detail** (`PrimIndex`, `draw_prims_in`): a tile reads only the rows
+  its world box meets (a CSR grid, about 16 rows per cell); rows ≤ 2 px on screen are drawn
+  as the whole pixels they touch (per-layer bit masks, one rect per run) instead of paths.
 - **Vello-free frames** (`render::Layers`): when nothing outside the layers changed (the
   frame log's hash), the window blits the last target and composes the layers as textured
   quads instead of running vello.
 - **Patches** (`canvas::CanvasDiff`, `Painter::patch_layer`): after an edit or a selection,
   the rows that changed (a Myers diff of per-row hashes) give world boxes; only those parts
-  of the layer are redrawn, on vello's tile grid.
+  of the visible tiles are redrawn, on vello's tile grid. A frame's patches and new tiles are
+  rendered in one vello pass into a scratch texture and copied into the atlas.
 - **Incremental scene and checks**: `scene::update` re-stamps only changed objects; check
   passes post their delta (`Annotations::patch`); undo/redo recompute over the undone entry's
   ops instead of rebuilding.
