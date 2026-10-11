@@ -75,7 +75,8 @@ fn parse_args(args: &[String]) -> Option<Args> {
     (a.dirs.iter().any(|d| d.1) && !a.out.as_os_str().is_empty()).then_some(a)
 }
 
-/// Every `.sym`/`.sch` under `dir`, recursively, sorted.
+/// Every `.sym`/`.sch` under `dir`, recursively, sorted, with the `.cir` files netlist
+/// text may include (side inputs, import spec §1).
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -85,7 +86,10 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     for p in v {
         if p.is_dir() {
             walk(&p, out);
-        } else if p.extension().is_some_and(|x| x == "sym" || x == "sch") {
+        } else if p
+            .extension()
+            .is_some_and(|x| x == "sym" || x == "sch" || x == "cir")
+        {
             out.push(p);
         }
     }
