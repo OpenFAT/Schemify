@@ -212,7 +212,7 @@ fn user_config_flags_and_pack_commands() {
     std::fs::create_dir_all(&pkg).unwrap();
     std::fs::write(pkg.join("demo.wasm"), b"demo").unwrap();
     let init = format!(
-        "schemify.pack.add {{ {{ path = '{}', name = 'demo' }} }}",
+        "schemify.pack.add {{ {{ path = [==[{}]==], name = 'demo' }} }}",
         pkg.display()
     );
     std::fs::write(cfg.join("init.lua"), init).unwrap();

@@ -60,14 +60,17 @@ fn git(dir: &Path, args: &[&str]) -> String {
 
 /// Lock rows as `(name, kind, resolved, hash)`.
 fn lock_rows(p: &Paths) -> Vec<(String, String, String, String)> {
-    let Ok(text) = std::fs::read_to_string(&p.lock) else {
+    let Ok(bytes) = std::fs::read(&p.lock) else {
         return Vec::new();
     };
-    text.lines()
-        .filter_map(|l| l.strip_prefix("locked plugin "))
-        .map(|l| {
-            let f: Vec<&str> = l.split(' ').collect();
-            (f[0].into(), f[1].into(), f[2].into(), f[3].into())
+    // Read through the format layer, as `pack` does: a Windows path is a quoted, escaped value.
+    let project = schemify_doc::Project::new(None, Some(&bytes), 0).expect("lockfile parses");
+    let l = project.lock();
+    (0..l.name.len())
+        .filter(|&i| l.ty[i] == "plugin")
+        .map(|i| {
+            let f = |c: &[String]| c[i].clone();
+            (f(&l.name), f(&l.kind), f(&l.resolved), f(&l.hash))
         })
         .collect()
 }

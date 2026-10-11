@@ -104,7 +104,7 @@ fn a_lazy_package_loads_on_its_first_command() {
     let init = write_init(
         &dir,
         &format!(
-            "schemify.pack.add {{ {{ path = '{}', name = 'hello', lazy = {{ cmd = 'count_nets.run' }} }} }}",
+            "schemify.pack.add {{ {{ path = [==[{}]==], name = 'hello', lazy = {{ cmd = 'count_nets.run' }} }} }}",
             pkg.display()
         ),
     );
