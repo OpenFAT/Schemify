@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 04933c4333c2a4138e64c8962e16b9ca1240670d7a6cbadba9edb8ec1ae0b1c0 # shrinks to text = ".title RC Integrator\n.subckt s a b\nVin vin 0 PULSE(0 1 0 1e-06 1e-06 5e-06 2e-05)\nR1 vin vout 10000.0\nC1 vout 0 1e-09\n.end\n"
+cc 4d903b51ec03cd00067463050aec4b6f16fa710fa9ce74fdacac25a973120b2e # shrinks to text = ".title TB Diff Pair CMRR\nXdut i'np inn outp outn vdd diff_pair\nVdd vdd 0 1.8\nVdd vdd 0 1.8\nVcm vcm 0 0.9\nVdp inp vcm DC 0 AC 0.5\nVdn vcm inn DC 0 AC 0.5\nRprobe_p outp 0 1000000.0\nRprobe_n outn 0 1000000.0\n.end\n"

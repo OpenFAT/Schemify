@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Build the guest plugins for wasm32-unknown-unknown: refresh the host's test fixtures in
 # crates/plugin/tests/fixtures/, the bundled default UI in crates/app/assets/ (embedded by the
-# app with include_bytes!), and the gm/Id plugin of the app's OTA fixture project (loaded through
-# its manifest's `plugin` entry, not embedded). Fails if any module reaches 200 KB.
+# app with include_bytes!), the gm/Id plugin of the app's OTA fixture project (loaded through
+# its manifest's `plugin` entry, not embedded) and the net2schem plugin next to its source (a
+# project loads it with `plugin net2schem path plugins/net2schem`). Fails if any module reaches
+# 200 KB.
 #
 # Needs the wasm32-unknown-unknown std (rustup: `rustup target add wasm32-unknown-unknown`;
 # the NixOS rustc ships it). The nix-built rustc has no rust-lld, so without one on the
@@ -44,3 +46,4 @@ for name in hello bad_actor gmid_stub; do
 done
 install_wasm default_ui "$assets"
 install_wasm gmid_lut "$here/../crates/app/tests/fixtures/ota/plugins"
+install_wasm net2schem "$here/net2schem"
