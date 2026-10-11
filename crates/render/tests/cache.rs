@@ -242,8 +242,8 @@ fn a_fresh_painter_records() {
 }
 
 /// One edit the way the editor's tables change: a row swap-removed, a row pushed, a label
-/// moved, or a different row selected.
-fn edit(prims: &mut CanvasPrims, sel: &mut Vec<u32>, rng: &mut Rng) {
+/// moved, or a different row selected. Returns whether `prims` changed.
+fn edit(prims: &mut CanvasPrims, sel: &mut Vec<u32>, rng: &mut Rng) -> bool {
     let l = &mut prims.lines;
     match rng.below(5) {
         0 if l.x0.len() > 10 => {
@@ -275,8 +275,12 @@ fn edit(prims: &mut CanvasPrims, sel: &mut Vec<u32>, rng: &mut Rng) {
             let i = rng.below(r.x0.len() as u32) as usize;
             r.x1[i] += 4_000;
         }
-        _ => *sel = vec![rng.below(prims.lines.x0.len() as u32)],
+        _ => {
+            *sel = vec![rng.below(prims.lines.x0.len() as u32)];
+            return false;
+        }
     }
+    true
 }
 
 /// D39 oracle for edits: a layer patched where [`CanvasDiff`] says the tables changed equals
@@ -314,6 +318,7 @@ fn patch_walk(scale: f64, seed: u32) {
     };
     let (mut patched, mut moved) = (0, false);
     for step in 0..50 {
+        let mut changed = false;
         if rng.below(6) == 0 {
             cam.pan(
                 f64::from(rng.below(21)) - 10.0,
@@ -321,7 +326,7 @@ fn patch_walk(scale: f64, seed: u32) {
             );
             moved = true;
         } else {
-            edit(&mut prims, &mut sel, &mut rng);
+            changed = edit(&mut prims, &mut sel, &mut rng);
             key += 1;
         }
         let mut marks = Marks::default();
@@ -329,7 +334,8 @@ fn patch_walk(scale: f64, seed: u32) {
             marks.push(PrimKind::Line, s, 0xffff_00ff);
         }
         boxes.clear();
-        let known = diff.update(&[&prims], (&prims, &marks), &mut boxes);
+        // Unchanged prims are not rehashed: only the marks then (a selection).
+        let known = diff.update(&[(&prims, changed)], (&prims, &marks, true), &mut boxes);
         let damage = known.then_some(&boxes[..]);
         let (drawn, got) = draws(&mut p, &mut cache, &cam, key, damage, &prims, &marks);
         patched += usize::from(drawn == Drawn::Patched);

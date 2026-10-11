@@ -332,12 +332,12 @@ pub struct Editor {
     canvas_scratch: CanvasScratch,
     /// The canvas's raster layer (D39: pan/zoom frames reuse it instead of re-encoding).
     canvas_cache: CanvasCache,
-    /// Advances whenever a table the canvas layer draws changes (scene, marks, decor).
-    canvas_gen: u64,
+    /// Advance whenever a table the canvas layer draws changes: scene, decor, marks.
+    canvas_gen: [u64; 3],
     /// What changed in those tables since the last painted frame (an edit patches only
     /// there): the diff's snapshot, the `canvas_gen` and style key it was taken at, and the
     /// changed boxes (`None` = unknown).
-    canvas_diff: (CanvasDiff, u64, u64, Option<Vec<[i32; 4]>>),
+    canvas_diff: (CanvasDiff, [u64; 3], u64, Option<Vec<[i32; 4]>>),
     /// Clock (ms) until which the zoom counts as changing: frames before it stretch the
     /// recorded canvas layer instead of re-recording it.
     zoom_until: u64,
@@ -485,8 +485,8 @@ impl Editor {
             viewport: (0.0, 0.0),
             canvas_scratch: CanvasScratch::default(),
             canvas_cache: CanvasCache::default(),
-            canvas_gen: 0,
-            canvas_diff: (CanvasDiff::default(), 0, 0, None),
+            canvas_gen: [0; 3],
+            canvas_diff: (CanvasDiff::default(), [0; 3], 0, None),
             zoom_until: 0,
             stretched: false,
             ui_scratch: UiScratch::default(),
@@ -941,12 +941,14 @@ impl Editor {
         };
         let (diff, diff_gen, diff_style, boxes) = &mut self.canvas_diff;
         if *diff_gen != self.canvas_gen || *diff_style != style {
-            // ponytail: hashes every row per change (~1 ms at 10^5); the scene, decor and
-            // marks builders reporting their own changed rows would make it O(change).
+            // ponytail: hashes every row of a changed table (~2 ms per 10^5 rows); the scene
+            // and decor builders reporting their own changed rows would make it O(change).
             let mut out = boxes.take().unwrap_or_default();
             out.clear();
-            let tables = [&self.scene.prims, &self.decor];
-            let known = diff.update(&tables, (&self.scene.prims, &self.marks), &mut out);
+            let changed = |k: usize| diff_gen[k] != self.canvas_gen[k];
+            let tables = [(&self.scene.prims, changed(0)), (&self.decor, changed(1))];
+            let marks = (&self.scene.prims, &self.marks, changed(0) || changed(2));
+            let known = diff.update(&tables, marks, &mut out);
             *boxes = (known && *diff_style == style).then_some(out);
             (*diff_gen, *diff_style) = (self.canvas_gen, style);
         } else if let Some(b) = boxes.as_mut() {
@@ -3074,7 +3076,7 @@ impl Editor {
                 // An edit: only the objects whose rows changed are re-stamped.
                 scene::update(&mut self.scene, project, h, &self.symbols, epoch, values);
             }
-            self.canvas_gen += 1;
+            self.canvas_gen[0] += 1;
             self.scene_dirty = false;
             let sel: Vec<ObjKey> = self
                 .selection()
@@ -3103,7 +3105,7 @@ impl Editor {
                 }
             }
             scene::marks(&self.scene, &self.selected, self.sel_color, &mut self.marks);
-            self.canvas_gen += 1;
+            self.canvas_gen[2] += 1;
             self.sel_changed = false;
             let _ = self.host.push(None, &Event::SelectionChanged);
         }

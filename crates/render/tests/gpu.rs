@@ -500,7 +500,7 @@ fn patched_layers_equal_recorded_layers() {
     );
     let mut boxes = Vec::new();
     let marks = Marks::default();
-    assert!(!diff.update(&[&prims], (&prims, &marks), &mut boxes));
+    assert!(!diff.update(&[(&prims, true)], (&prims, &marks, true), &mut boxes));
     assert_eq!(
         frame(&mut layers, &mut cache, &prims, 1, None).0,
         Drawn::Recorded
@@ -513,7 +513,7 @@ fn patched_layers_equal_recorded_layers() {
         }
         l.layer.swap_remove(key as usize * 37);
         boxes.clear();
-        assert!(diff.update(&[&prims], (&prims, &marks), &mut boxes));
+        assert!(diff.update(&[(&prims, true)], (&prims, &marks, true), &mut boxes));
         let (drawn, patched) = frame(&mut layers, &mut cache, &prims, key, Some(&boxes));
         assert_eq!(drawn, Drawn::Patched, "an edit patches");
         let (again, fresh) = frame(

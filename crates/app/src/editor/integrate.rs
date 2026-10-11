@@ -903,7 +903,7 @@ impl Editor {
             |inst| format!("{prefix}/{inst}"),
             &self.diff,
         );
-        self.canvas_gen += 1;
+        self.canvas_gen[1] += 1;
         true
     }
 

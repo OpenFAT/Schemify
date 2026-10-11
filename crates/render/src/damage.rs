@@ -8,9 +8,10 @@
 //!    outside the boxes a fresh recording draws exactly what the layer holds).
 //! 2. 10^5–10^6 rows per canvas; an edit changes a handful.
 //! 3. Boxes in i32 milli-units (D33); a `u64` hash per row stands for the row.
-//! 4. One linear pass hashing every row, then per table a diff of the two hash sequences.
+//! 4. One linear pass hashing every row of a table that changed, then a diff of its two hash
+//!    sequences; an unchanged table (a selection edits only the marks) costs nothing.
 //! 5. The snapshot (hashes, boxes) lives with the canvas until its next change.
-//! 6. Tables are independent (parallelizable; ~1 ms at 10^5 rows, so not needed).
+//! 6. Tables are independent (parallelizable; ~1 ms per 10^5 rows, so not yet needed).
 //!
 //! SIMD triage: hashing is per row over a few SoA columns (variable width for polys and
 //! texts); the diff is a chain. Scalar.
@@ -27,6 +28,8 @@ pub const DIFF_EDITS_MAX: usize = 128;
 pub struct CanvasDiff {
     /// Per table: the six kinds of each input in order, then the marks.
     seqs: Vec<Seq>,
+    /// The sequences replaced by the last call, kept for their allocations.
+    spare: Vec<Seq>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -56,47 +59,76 @@ const TABLES: [Table; 6] = [
 ];
 
 impl CanvasDiff {
-    /// Diffs `tables` (drawn in this order) and `marks` (recoloring rows of `marks.0`)
-    /// against the previous call's and appends to `out` the world boxes of every row added
-    /// or removed since. Returns false when the change is not small (or there was no previous
-    /// call, or a different number of tables): then `out` is meaningless.
+    /// Diffs `tables` (drawn in this order, each with whether it may have changed since the
+    /// previous call) and `marks` (recoloring rows of `marks.0`; may have changed when they
+    /// or `marks.0` did) against the previous call's, and appends to `out` the world boxes
+    /// of every row added or removed since. A table flagged unchanged must be unchanged: it
+    /// is neither hashed nor diffed. Returns false when the change is not small (or there was
+    /// no previous call, or a different number of tables): then `out` is meaningless.
     ///
-    /// Cost: O(rows) to hash, plus O(rows + edits²) per table to diff.
+    /// Cost: O(rows) of the changed tables to hash, plus O(rows + edits²) each to diff.
     pub fn update(
         &mut self,
-        tables: &[&CanvasPrims],
-        marks: (&CanvasPrims, &Marks),
+        tables: &[(&CanvasPrims, bool)],
+        marks: (&CanvasPrims, &Marks, bool),
         out: &mut Vec<[i32; 4]>,
     ) -> bool {
-        let mut seqs: Vec<Seq> = Vec::with_capacity(tables.len() * TABLES.len() + 1);
-        for t in tables {
-            for table in TABLES {
-                let mut s = Seq::default();
-                for i in 0..len(t, table) {
-                    let (h, b) = row(t, table, i);
-                    s.hash.push(h);
-                    s.boxes.push(b);
-                }
-                seqs.push(s);
-            }
+        let n = tables.len() * TABLES.len() + 1;
+        let first = self.seqs.len() != n;
+        if first {
+            self.seqs = vec![Seq::default(); n];
         }
-        seqs.push(mark_rows(marks.0, marks.1));
-        let old = std::mem::replace(&mut self.seqs, seqs);
-        if old.len() != self.seqs.len() {
-            return false;
-        }
+        self.spare.resize_with(n, Seq::default);
         let (mut gone, mut new) = (Vec::new(), Vec::new());
-        for (a, b) in old.iter().zip(&self.seqs) {
+        let mut known = !first;
+        let jobs = tables
+            .iter()
+            .flat_map(|&(t, changed)| TABLES.map(|table| (Some((t, table)), changed)))
+            .chain([(None, marks.2)]);
+        for (k, (job, changed)) in jobs.enumerate() {
+            if !changed && !first {
+                continue;
+            }
+            let s = &mut self.spare[k];
+            match job {
+                Some((t, table)) => fill(s, t, table),
+                None => fill_marks(s, marks.0, marks.1),
+            }
+            let (a, b) = (&self.seqs[k], &self.spare[k]);
             gone.clear();
             new.clear();
-            if !edits(&a.hash, &b.hash, &mut gone, &mut new) {
-                return false;
+            known = known && edits(&a.hash, &b.hash, &mut gone, &mut new);
+            if known {
+                out.extend(gone.iter().map(|&i| a.boxes[i as usize]));
+                out.extend(new.iter().map(|&i| b.boxes[i as usize]));
             }
-            out.extend(gone.iter().map(|&i| a.boxes[i as usize]));
-            out.extend(new.iter().map(|&i| b.boxes[i as usize]));
+            std::mem::swap(&mut self.seqs[k], &mut self.spare[k]);
         }
-        true
+        assert_eq!(self.seqs.len(), n);
+        known
     }
+}
+
+/// Refills `s` with the rows of `table`: one tight loop per kind.
+fn fill(s: &mut Seq, t: &CanvasPrims, table: Table) {
+    let n = len(t, table);
+    s.hash.clear();
+    s.boxes.clear();
+    s.hash.reserve(n);
+    s.boxes.reserve(n);
+    let mut push = |(h, b): (u64, [i32; 4])| {
+        s.hash.push(h);
+        s.boxes.push(b);
+    };
+    match table {
+        Table::Lines => (0..n).for_each(|i| push(row(t, Table::Lines, i))),
+        Table::Rects => (0..n).for_each(|i| push(row(t, Table::Rects, i))),
+        Table::Arcs => (0..n).for_each(|i| push(row(t, Table::Arcs, i))),
+        Table::Polylines => (0..n).for_each(|i| push(row(t, Table::Polylines, i))),
+        Table::Polygons => (0..n).for_each(|i| push(row(t, Table::Polygons, i))),
+        Table::Texts => (0..n).for_each(|i| push(row(t, Table::Texts, i))),
+    }
+    assert_eq!(s.hash.len(), n);
 }
 
 fn len(t: &CanvasPrims, table: Table) -> usize {
@@ -122,6 +154,7 @@ fn fold(seed: i64, fields: &[i32]) -> u64 {
 }
 
 /// Row `i` of `table`: its hash (everything drawn about it) and its world box.
+#[inline]
 fn row(t: &CanvasPrims, table: Table, i: usize) -> (u64, [i32; 4]) {
     let span =
         |x0: i32, y0: i32, x1: i32, y1: i32| [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)];
@@ -196,9 +229,10 @@ fn row(t: &CanvasPrims, table: Table, i: usize) -> (u64, [i32; 4]) {
 
 /// The marks as rows: what they recolor (the marked row's content, not its index, which
 /// moves when other rows are removed) and in which color.
-fn mark_rows(prims: &CanvasPrims, m: &Marks) -> Seq {
+fn fill_marks(s: &mut Seq, prims: &CanvasPrims, m: &Marks) {
     assert!(m.kind.len() == m.index.len() && m.kind.len() == m.color.len());
-    let mut s = Seq::default();
+    s.hash.clear();
+    s.boxes.clear();
     for i in 0..m.kind.len() {
         let table = match m.kind[i] {
             PrimKind::Line => Table::Lines,
@@ -211,7 +245,7 @@ fn mark_rows(prims: &CanvasPrims, m: &Marks) -> Seq {
         s.hash.push(mix(h, i64::from(m.color[i])));
         s.boxes.push(b);
     }
-    s
+    assert_eq!(s.hash.len(), m.kind.len());
 }
 
 /// Pushes the indices of `a` (removed) and `b` (added) outside one longest common
