@@ -233,7 +233,7 @@ mod tests {
         s.end_live();
         assert!(tab.is_live() && msg.is_live() && !save.is_live());
         assert_eq!((s.get(tab), s.get(msg)), ("top.shcomp", "mouse = 0 0"));
-        for i in 0..10_000 {
+        for i in 1..10_000 {
             s.begin_live();
             assert_eq!(
                 s.intern_live("top.shcomp"),
@@ -241,7 +241,7 @@ mod tests {
                 "kept text keeps its handle"
             );
             let m = s.intern_live(&format!("mouse = {i} {i}"));
-            assert_ne!(m, msg);
+            assert_ne!(m, msg, "new text, new handle");
             s.end_live();
             assert_eq!(s.get(m), format!("mouse = {i} {i}"));
             assert_eq!(s.live_len(), 2, "dropped text is freed");

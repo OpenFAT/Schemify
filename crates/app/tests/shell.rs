@@ -555,6 +555,8 @@ fn waves_dock_divider_drags() {
     s.click_node("tb.waves");
     s.click_node("dialog.choose.row.0");
     assert!(s.ed.waves_open(), "{}", s.ed.session.status);
+    // The dock takes its share of the window from the next frame on.
+    s.frame(InputEvents::default());
     let split = (VIEW.1 * 0.6).floor();
     let before = s.ed.canvas_rect();
     assert!(
