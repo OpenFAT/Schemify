@@ -150,8 +150,12 @@ jobs:
             . -> target
             plugins -> target
       - run: nix develop -c plugins/build.sh
+      # The crates with native tests (rlib + the built guest driven through wasmi); the others
+      # are cdylib guests whose `guest` module exists only on wasm32.
       - name: plugins workspace tests (native + built guests)
-        run: nix develop -c cargo test --manifest-path plugins/Cargo.toml --workspace --no-fail-fast
+        run: >-
+          nix develop -c cargo test --manifest-path plugins/Cargo.toml
+          -p gmid-lut -p cktimg --no-fail-fast
       - name: host tests against the rebuilt guests
         run: nix develop -c cargo test -p schemify-plugin -p schemify-app --no-fail-fast
 

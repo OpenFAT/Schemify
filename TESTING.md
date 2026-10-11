@@ -29,12 +29,15 @@ Methodology: `../../Zig/TESTING-METHODOLOGY.md` (oracles before coverage; severa
 
 ## Tiers
 
-| Tier | Runs |
-|---|---|
-| pre-commit | `cargo test -p <touched crates>` |
-| merge | full workspace tests on Linux/macOS/Windows/Web(wasm32), fuzz-corpus replay, determinism check (byte-identical netlists across platforms) |
-| nightly | fuzzing 1 h/target, xschem + ngspice differential on the full corpus, `cargo mutants` on changed crates, coverage ratchet, benchmarks vs D39 budgets (fail on > 10% regression) |
-| release | ≥ 24 CPU-h fuzzing per target, full differential, checklist |
+As implemented in `.github/workflows/` (Rust pinned to the workspace MSRV 1.95.0, the rustc
+`flake.lock` pins; bump both together). "Not yet" marks the gaps of the binding plan.
+
+| Tier | Where | Runs |
+|---|---|---|
+| pre-commit | local | `cargo test -p <touched crates>`, `cargo clippy -p <crate> -- -D warnings`, `cargo fmt` |
+| merge | `ci.yml`, every push to `main`/`ci/*` and every PR | **test** (ubuntu, macos, windows): `fmt --check`, `clippy --workspace --all-targets -D warnings`, `cargo test --workspace --no-fail-fast`. **wasm**: clippy of the web `cfg` paths, release build of every web crate incl. `schemify-app` for `wasm32-unknown-unknown`, `wasm-bindgen` bundle (artifact `web`, D39 ≤ 8 MiB gzip), headless-Chrome smoke test (`tests/web/smoke.sh`), the CLI for `wasm32-wasip1`. **determinism** (D32): `tests/determinism/run.sh` on each OS and under wasmtime (`netlist` of every app/elab/netlist fixture in all five dialects with exit codes, `fmt` rewrites, `import` of `tests/determinism/xschem`), byte-compared across the four. **plugins** (Nix): `plugins/build.sh` (size limits), `gmid-lut` + `cktimg` tests against the rebuilt guests, host tests. **flake**: `nix flake check`, `nix build .#schemify`. Not yet: fuzz-corpus replay. |
+| nightly | `nightly.yml` (03:17 UTC), `mutants.yml` (weekly, Sunday) | **corpus**: fetch, xschem goldens, spicecmp self-checks, `xschem_differential`, `tests/corpus/ratchet.sh` fails when the SPICE or code-stripped CDL agree count drops below `RATCHET.md`. **fuzz**: every `crates/*/fuzz` target (`format/parse`, `format/merge3`, `expr/compile`, `import/xschem_read`, the last seeded with the fetched PDK files) for 60 min, corpus kept in the actions cache and uploaded with crash inputs. **perf**: every `--ignored --release` perf test (their D39 budget asserts) and `tests/perf/gate.sh`: > 10% slower than `tests/perf/baseline.txt` (measured on GitHub `ubuntu-latest`) fails. **mutants**: `cargo mutants` on `format expr doc elab netlist`, survivors uploaded (report only). Not yet: ngspice second oracle (sky130 models), coverage ratchet. |
+| release | `release.yml`, tag `v*` | `schemify` + `devicereader` for Linux x86_64, macOS aarch64, Windows x86_64 (stripped, LTO, size gate) and the web bundle, attached to a draft release whose notes are the checklist below (`.github/release-notes.md`). A push to `ci/release*` is a dry run. |
 
 ## Release exit criteria
 

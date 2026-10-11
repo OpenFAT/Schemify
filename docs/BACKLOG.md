@@ -16,7 +16,6 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - **doc**: keep rank 2 (symbol graphics) in indexed interfaces (`parse_prefix(bytes, 2)`); the editor currently opens every instantiated cell to get its symbol.
 - **render**: `draw_canvas` shares one text cache between scene and overlay (re-shapes labels every frame; the editor works around it, the demo doesn't); window has no exit hook.
 - **ui**: text fields commit only on Enter (the app copies typed text every frame).
-- **plugins/build.sh**: rebuilding `hello`/`gmid_stub` is not byte-reproducible.
 - Editor gaps vs xschem: stretch/kissing moves, polygon/arc/circle drawing, schematic graphics (format has none), context menu, persistent wire mode, snap cursor/crosshair, search, Save As, rotated texts, scrolling lists (24 rows max), system clipboard, crash-recovery prompt, plugin I/O capabilities fetch/clipboard in the app.
 - No user-config reader: the `sim ngspice` command line (format spec §4) is not read; the CLI and the editor use `ngspice -b -r {raw} {netlist}` (tests pass `editor::Options::sim`).
 - Plugin `eval` requests still answer `E_GONE` (elab evaluator not wired to the host).
@@ -109,6 +108,10 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## Testing infrastructure
 
-- Fuzz harnesses exist for format, expr and import, but there's no nightly toolchain installed locally; CI nightly placeholders need wiring.
-- Determinism CI job (byte-identical netlists across Linux/macOS/Windows/wasm) is a placeholder until `netlist` lands.
-- sky130 model files aren't fetched (open_pdks builds them); the ngspice second oracle for sky130 needs `volare`.
+- sky130 model files aren't fetched (open_pdks builds them); the ngspice second oracle for sky130 needs `volare`, then a nightly step for `ngspice_results_agree`.
+- **plugins/build.sh is not byte-reproducible** (`hello`, `gmid_stub`, … differ between rebuilds and machines), so CI cannot check that the committed `.wasm` assets match their sources. Make it reproducible (pinned toolchain in the build, `--remap-path-prefix`, no host paths in custom sections), then add the diff to the `plugins` job.
+- Fuzz-corpus replay at the merge tier: the nightly corpora live in the actions cache and artifacts, not the repo. Check in minimized corpora (`cargo fuzz cmin`) and replay them in `ci.yml`.
+- Coverage ratchet (`cargo-llvm-cov`) is not wired (TESTING.md nightly tier).
+- `tests/perf/baseline.txt` is measured on GitHub's shared `ubuntu-latest` runners; if the 10% gate proves noisy there, gate on best-of-N medians or a self-hosted runner.
+- **import** (`devicereader`): `import-report.{md,txt}` spell input files as absolute paths, so they differ per machine; the determinism job excludes them. Report paths relative to the import roots to bring them under the byte comparison.
+- Release builds: no macOS x86_64 binary (only Apple-silicon runners); the Linux binary links the build runner's glibc. The D39 size gate in `release.yml` holds the single binary to 25 MB until the core/editor split (core ≤ 2 MB, editor ≤ 10 MB) lands.

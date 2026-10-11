@@ -79,6 +79,8 @@ fn edit(args: &[String]) -> u8 {
         eprint!("{USAGE}");
         return USAGE_ERROR;
     }
+    // The web build has no `sim` field (D16: no processes), so the update is empty there.
+    #[cfg_attr(target_arch = "wasm32", allow(clippy::needless_update))]
     let opts = schemify_app::editor::Options {
         no_default_ui,
         path: paths.first().map(|p| std::path::PathBuf::from(p.as_str())),
