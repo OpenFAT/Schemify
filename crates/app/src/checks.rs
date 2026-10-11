@@ -224,8 +224,7 @@ fn anchors(doc: &Document, cell: &CellState) -> Vec<Option<Pt>> {
     at
 }
 
-/// Builds the decor primitives of the active level into `out` (cleared first, text epoch
-/// carried forward so the label cache never mistakes a rebuild for the previous one):
+/// Builds the decor primitives of the active level into `out` (cleared first):
 /// highlighted members, violation markers of the `checks` source, annotation texts of every
 /// other source on nets (`net_key` maps a net's bit name at this level to its overlay
 /// target) and instances (`inst_key` maps an instance name), and the objects a staged edit
@@ -242,9 +241,7 @@ pub fn decor(
     inst_key: impl Fn(&str) -> String,
     diff: &[ObjKey],
 ) {
-    let epoch = out.texts.epoch;
     *out = CanvasPrims::default();
-    out.texts.epoch = epoch + 1;
     // Highlight: wires as thick segments, labels/ports/pins as squares.
     let r = 3 * UNIT;
     for k in &hl.keys {
@@ -337,7 +334,7 @@ pub fn decor(
         let pad = 4 * UNIT;
         out.rect(b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad, LAYER_DIFF);
     }
-    assert!(out.texts.epoch > epoch);
+    assert_eq!(out.texts.x.len(), out.texts.end.len());
 }
 
 /// Appends the checks panel to the state contribution `t`: a header with the counts and a

@@ -1,10 +1,19 @@
 //! One drawing interface over two backends: vello's GPU [`Scene`] and the `vello_cpu` rasterizer
 //! (golden images, GPU-less fallback, D5). Monomorphized, so it costs nothing at runtime.
+//!
+//! Both backends also keep *raster layers* across frames ([`Painter::layer`],
+//! [`Painter::draw_layer`]): a picture recorded once and composed as an image afterwards, so a
+//! canvas that only moved costs one image draw instead of re-encoding every primitive
+//! (`canvas::draw_cached`, D39).
 
-use vello::kurbo::{Affine, BezPath, Rect, Shape, Stroke};
+use std::sync::Arc;
+
+use vello::kurbo::{Affine, BezPath, PathEl, Rect, Shape, Stroke};
 use vello::low_level::vello_encoding::Transform;
-use vello::peniko::{Color, Fill, FontData};
+use vello::peniko::{Color, Fill, FontData, ImageBrush, ImageQuality, ImageSampler};
 use vello::{Glyph, Scene};
+
+use crate::layers::{LAYER_SLOTS, Layers};
 
 /// The drawing calls every frame builder uses. Coordinates are logical pixels; each painter
 /// applies its own base transform (the window's scale factor).
@@ -40,6 +49,59 @@ pub trait Painter {
     fn fill_chains(&mut self, chains: &Chains, color: Color) {
         self.fill_path(&chains.to_path(true), color);
     }
+
+    /// Device pixels per logical pixel (the base transform's scale).
+    fn device_scale(&self) -> f64 {
+        1.0
+    }
+
+    /// Records `draw` into raster layer `slot` (a `w × h` device-pixel picture whose origin is
+    /// its top-left; `draw` paints in logical pixels as usual) and tags it `stamp`. The layer is
+    /// rasterized before the frame is composed and stays until `slot` is recorded again.
+    /// Returns false without calling `draw` when this painter keeps no layers; the caller then
+    /// paints directly.
+    ///
+    /// # Panics
+    ///
+    /// Panics on `slot ≥ LAYER_SLOTS`, an empty size, or `stamp == 0` (the "no layer" tag).
+    fn layer(
+        &mut self,
+        slot: usize,
+        stamp: u64,
+        w: u32,
+        h: u32,
+        draw: impl FnOnce(&mut Self),
+    ) -> bool
+    where
+        Self: Sized,
+    {
+        let _ = (slot, stamp, w, h, draw);
+        false
+    }
+
+    /// Draws layer `slot` through `at` (layer logical px → logical px), clipped to `clip`.
+    /// `stretch: None` copies pixels (`at` must cover `clip`); `Some(bg)` samples bilinearly (a
+    /// scaled stand-in) and paints the part of `clip` the layer misses with `bg`. Returns
+    /// false, drawing nothing, unless this painter holds layer `slot` tagged `stamp` (a fresh
+    /// painter, or one that never recorded it, holds none).
+    fn draw_layer(
+        &mut self,
+        slot: usize,
+        stamp: u64,
+        at: Affine,
+        clip: Rect,
+        stretch: Option<Color>,
+    ) -> bool {
+        let _ = (slot, stamp, at, clip, stretch);
+        false
+    }
+}
+
+fn sampler(stretch: Option<Color>) -> ImageSampler {
+    ImageSampler::default().with_quality(match stretch {
+        Some(_) => ImageQuality::Medium,
+        None => ImageQuality::Low,
+    })
 }
 
 /// Polylines as flat `f32` point runs: chain `i` is `pts[end[i-1]..end[i]]`, at least 2 points.
@@ -107,18 +169,102 @@ pub struct ScenePainter<'a> {
     pub scene: &'a mut Scene,
     /// Logical → physical pixels (the window scale factor).
     pub base: Affine,
+    /// Raster layers kept across frames; `None` paints every layer directly. The owner calls
+    /// [`Layers::begin_frame`] before painting and [`Layers::raster`] after, before rendering
+    /// `scene` (or composing over the last frame when [`Layers::reusable`]).
+    pub layers: Option<&'a mut Layers>,
+}
+
+/// Bit patterns of a rectangle, for the frame log.
+fn rect_bits(r: Rect) -> [u64; 4] {
+    [r.x0, r.y0, r.x1, r.y1].map(f64::to_bits)
+}
+
+/// Bit patterns of a color, for the frame log.
+fn color_bits(c: Color) -> [u32; 4] {
+    c.components.map(f32::to_bits)
+}
+
+/// A path's elements as bit patterns, for the frame log (hashed without allocating).
+struct PathBits<'a>(&'a BezPath);
+
+impl std::hash::Hash for PathBits<'_> {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        let mut pt = |p: vello::kurbo::Point| {
+            h.write_u64(p.x.to_bits());
+            h.write_u64(p.y.to_bits());
+        };
+        for el in self.0.elements() {
+            match *el {
+                PathEl::MoveTo(p) => pt(p),
+                PathEl::LineTo(p) => pt(p),
+                PathEl::QuadTo(a, b) => [a, b].into_iter().for_each(&mut pt),
+                PathEl::CurveTo(a, b, c) => [a, b, c].into_iter().for_each(&mut pt),
+                PathEl::ClosePath => {}
+            }
+        }
+        // Element kinds separately, so `MoveTo`/`LineTo` sequences of equal points differ.
+        for el in self.0.elements() {
+            h.write_u8(match el {
+                PathEl::MoveTo(_) => 0,
+                PathEl::LineTo(_) => 1,
+                PathEl::QuadTo(..) => 2,
+                PathEl::CurveTo(..) => 3,
+                PathEl::ClosePath => 4,
+            });
+        }
+    }
+}
+
+/// Glyph ids and positions as bit patterns, for the frame log.
+struct GlyphBits<'a>(&'a [Glyph]);
+
+impl std::hash::Hash for GlyphBits<'_> {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        h.write_usize(self.0.len());
+        for g in self.0 {
+            h.write_u32(g.id);
+            h.write_u32(g.x.to_bits());
+            h.write_u32(g.y.to_bits());
+        }
+    }
+}
+
+/// Chain points and ends as bit patterns, for the frame log.
+struct ChainBits<'a>(&'a Chains);
+
+impl std::hash::Hash for ChainBits<'_> {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.0.end.hash(h);
+        for p in &self.0.pts {
+            h.write_u32(p[0].to_bits());
+            h.write_u32(p[1].to_bits());
+        }
+    }
+}
+
+impl ScenePainter<'_> {
+    /// Logs one call outside the layers into the frame hash (see [`Layers::reusable`]).
+    fn log(&mut self, data: impl std::hash::Hash) {
+        if let Some(l) = self.layers.as_deref_mut() {
+            l.log.call(data);
+        }
+    }
 }
 
 impl Painter for ScenePainter<'_> {
     fn fill_rect(&mut self, r: Rect, color: Color) {
+        self.log((1u8, rect_bits(r), color_bits(color)));
         self.scene.fill(Fill::NonZero, self.base, color, None, &r);
     }
 
     fn fill_path(&mut self, path: &BezPath, color: Color) {
+        self.log((2u8, PathBits(path), color_bits(color)));
         self.scene.fill(Fill::NonZero, self.base, color, None, path);
     }
 
     fn stroke_path(&mut self, path: &BezPath, width: f64, color: Color) {
+        self.log((3u8, PathBits(path), width.to_bits(), color_bits(color)));
         self.scene
             .stroke(&Stroke::new(width), self.base, color, None, path);
     }
@@ -132,6 +278,16 @@ impl Painter for ScenePainter<'_> {
         at: Affine,
         glyphs: &[Glyph],
     ) {
+        let at_bits = at.as_coeffs().map(f64::to_bits);
+        self.log((
+            4u8,
+            font.data.id(),
+            font.index,
+            px.to_bits(),
+            coords,
+            color_bits(color),
+        ));
+        self.log((at_bits, GlyphBits(glyphs)));
         self.scene
             .draw_glyphs(font)
             .font_size(px)
@@ -142,20 +298,106 @@ impl Painter for ScenePainter<'_> {
     }
 
     fn push_clip(&mut self, r: Rect) {
+        self.log((5u8, rect_bits(r)));
         self.scene.push_clip_layer(Fill::NonZero, self.base, &r);
     }
 
     fn pop_clip(&mut self) {
+        self.log(6u8);
         self.scene.pop_layer();
     }
 
     fn stroke_chains(&mut self, chains: &Chains, closed: bool, width: f64, color: Color) {
         assert!(width > 0.0, "zero-width stroke");
+        self.log((
+            7u8,
+            ChainBits(chains),
+            closed,
+            width.to_bits(),
+            color_bits(color),
+        ));
         self.encode_chains(chains, closed, Some(width), color);
     }
 
     fn fill_chains(&mut self, chains: &Chains, color: Color) {
+        self.log((8u8, ChainBits(chains), color_bits(color)));
         self.encode_chains(chains, true, None, color);
+    }
+
+    fn device_scale(&self) -> f64 {
+        self.base.as_coeffs()[0]
+    }
+
+    fn layer(
+        &mut self,
+        slot: usize,
+        stamp: u64,
+        w: u32,
+        h: u32,
+        draw: impl FnOnce(&mut Self),
+    ) -> bool {
+        assert!(
+            slot < LAYER_SLOTS && w > 0 && h > 0 && stamp != 0,
+            "bad layer"
+        );
+        let Some(layers) = self.layers.as_deref_mut() else {
+            return false;
+        };
+        // Record into the layer's own scene by swapping it in for the frame scene; the calls
+        // belong to the layer (its stamp names them), not to the frame log.
+        let mut other = std::mem::take(&mut layers.sized(slot, w, h).scene);
+        other.reset();
+        layers.log.recording = true;
+        std::mem::swap(self.scene, &mut other);
+        draw(self);
+        std::mem::swap(self.scene, &mut other);
+        let layers = self.layers.as_deref_mut().expect("checked above");
+        layers.log.recording = false;
+        let l = &mut layers.slots[slot];
+        l.scene = other;
+        l.stamp = stamp;
+        l.dirty = true;
+        true
+    }
+
+    fn draw_layer(
+        &mut self,
+        slot: usize,
+        stamp: u64,
+        at: Affine,
+        clip: Rect,
+        stretch: Option<Color>,
+    ) -> bool {
+        let base = self.base;
+        let s = self.device_scale();
+        let Some(layers) = self.layers.as_deref_mut() else {
+            return false;
+        };
+        let Some(image) = layers
+            .slots
+            .get(slot)
+            .filter(|l| stamp != 0 && l.stamp == stamp)
+            .and_then(|l| l.image.clone())
+        else {
+            return false;
+        };
+        // Where and how it lands is not part of the frame hash: a frame that only moved its
+        // layers can be composed without vello (`Layers::reusable`).
+        layers.log.call((9u8, slot, rect_bits(clip)));
+        let to_device = base * at * Affine::scale(1.0 / s);
+        let draw = (slot, to_device, base.transform_rect_bbox(clip), stretch);
+        layers.log.draws.push(draw);
+        if let Some(bg) = stretch {
+            self.scene.fill(Fill::NonZero, base, bg, None, &clip);
+        }
+        let brush = ImageBrush {
+            image,
+            sampler: sampler(stretch),
+        };
+        self.scene.push_clip_layer(Fill::NonZero, base, &clip);
+        self.scene.draw_image(&brush, to_device);
+        self.scene.pop_layer();
+        true
     }
 }
 
@@ -193,11 +435,14 @@ impl ScenePainter<'_> {
     }
 }
 
-/// Paints with `vello_cpu` into a pixmap: golden images and the no-GPU fallback.
+/// Paints with `vello_cpu` into a pixmap: golden images and the no-GPU fallback. Raster layers
+/// are rasterized when recorded and kept across [`CpuPainter::reset`].
 pub struct CpuPainter {
     ctx: vello_cpu::RenderContext,
     resources: vello_cpu::Resources,
     base: Affine,
+    /// `(stamp, pixels)` per slot; stamp 0 = empty.
+    layers: Vec<(u64, Arc<vello_cpu::Pixmap>)>,
 }
 
 impl std::fmt::Debug for CpuPainter {
@@ -222,7 +467,13 @@ impl CpuPainter {
             ctx: vello_cpu::RenderContext::new(w, h),
             resources: vello_cpu::Resources::new(),
             base: Affine::scale(scale),
+            layers: Vec::new(),
         }
+    }
+
+    /// Starts a new frame on the same target, keeping the raster layers.
+    pub fn reset(&mut self) {
+        self.ctx.reset();
     }
 
     /// Rasterizes everything painted so far onto `background` and returns the pixels.
@@ -289,5 +540,78 @@ impl Painter for CpuPainter {
 
     fn pop_clip(&mut self) {
         self.ctx.pop_layer();
+    }
+
+    fn device_scale(&self) -> f64 {
+        self.base.as_coeffs()[0]
+    }
+
+    fn layer(
+        &mut self,
+        slot: usize,
+        stamp: u64,
+        w: u32,
+        h: u32,
+        draw: impl FnOnce(&mut Self),
+    ) -> bool {
+        assert!(
+            slot < LAYER_SLOTS && w > 0 && h > 0 && stamp != 0,
+            "bad layer"
+        );
+        let (w, h) = (
+            u16::try_from(w).expect("layer width fits u16"),
+            u16::try_from(h).expect("layer height fits u16"),
+        );
+        // Record into a context of the layer's size by swapping it in for the frame's.
+        let mut other = vello_cpu::RenderContext::new(w, h);
+        std::mem::swap(&mut self.ctx, &mut other);
+        draw(self);
+        std::mem::swap(&mut self.ctx, &mut other);
+        let mut pixmap = vello_cpu::Pixmap::new(w, h);
+        other.flush();
+        other.render(&mut pixmap, &mut self.resources);
+        if self.layers.len() <= slot {
+            self.layers
+                .resize_with(slot + 1, || (0, Arc::new(vello_cpu::Pixmap::new(1, 1))));
+        }
+        self.layers[slot] = (stamp, Arc::new(pixmap));
+        true
+    }
+
+    fn draw_layer(
+        &mut self,
+        slot: usize,
+        stamp: u64,
+        at: Affine,
+        clip: Rect,
+        stretch: Option<Color>,
+    ) -> bool {
+        let Some((_, pixmap)) = self.layers.get(slot).filter(|l| stamp != 0 && l.0 == stamp) else {
+            return false;
+        };
+        let s = self.device_scale();
+        let to_logical = at * Affine::scale(1.0 / s);
+        let size = Rect::new(
+            0.0,
+            0.0,
+            f64::from(pixmap.width()),
+            f64::from(pixmap.height()),
+        );
+        let image = vello_cpu::Image {
+            image: vello_cpu::ImageSource::Pixmap(pixmap.clone()),
+            sampler: sampler(stretch),
+        };
+        self.ctx.set_transform(self.base);
+        if let Some(bg) = stretch {
+            self.ctx.set_paint(bg);
+            self.ctx.fill_rect(&clip);
+        }
+        // Only where the image lies: outside it the sampler would smear its edge pixels.
+        let area = clip.intersect(to_logical.transform_rect_bbox(size));
+        self.ctx.set_paint_transform(to_logical);
+        self.ctx.set_paint(image);
+        self.ctx.fill_rect(&area);
+        self.ctx.reset_paint_transform();
+        true
     }
 }

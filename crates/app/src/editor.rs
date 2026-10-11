@@ -37,7 +37,9 @@ use schemify_elab::{Annotations, CellState, Dialect};
 use schemify_expr::Value;
 use schemify_format::{FileKind, IdRng, Orient, RecordKind};
 use schemify_plugin::abi::Event;
-use schemify_render::canvas::{self, Camera, CanvasPrims, CanvasScratch, Marks, Palette};
+use schemify_render::canvas::{
+    self, Camera, CanvasCache, CanvasPrims, CanvasScratch, Marks, Palette,
+};
 use schemify_render::vello::kurbo::Rect as KRect;
 use schemify_render::widgets::{UiScratch, draw_ui};
 use schemify_render::{App, Painter};
@@ -71,6 +73,9 @@ const HIT_PX: f64 = 5.0;
 const DOUBLE_CLICK_MS: u64 = 400;
 /// Zoom factor per wheel notch and per zoom key (xschem: 1.2).
 const ZOOM_STEP: f64 = 1.2;
+/// A zoom counts as finished this long after the camera scale last changed; until then the
+/// canvas shows its recorded layer stretched (D39: a zoom frame re-encodes nothing).
+const ZOOM_SETTLE_MS: u32 = 120;
 /// Chooser rows shown at once (the list widget does not scroll yet).
 const CHOOSER_ROWS: usize = 24;
 /// Edit requests one frame may carry.
@@ -319,8 +324,17 @@ pub struct Editor {
     rng: IdRng,
     routed: Routed,
     viewport: (f32, f32),
+    /// Label glyphs and path buffers of every canvas table (scene, decor, overlay).
     canvas_scratch: CanvasScratch,
-    overlay_scratch: CanvasScratch,
+    /// The canvas's raster layer (D39: pan/zoom frames reuse it instead of re-encoding).
+    canvas_cache: CanvasCache,
+    /// Advances whenever a table the canvas layer draws changes (scene, marks, decor).
+    canvas_gen: u64,
+    /// Clock (ms) until which the zoom counts as changing: frames before it stretch the
+    /// recorded canvas layer instead of re-recording it.
+    zoom_until: u64,
+    /// The last frame showed a stretched layer: a crisp frame is due at `zoom_until`.
+    stretched: bool,
     ui_scratch: UiScratch,
     waves: Option<WavesView>,
     confirm: Option<Cmd>,
@@ -360,7 +374,6 @@ pub struct Editor {
     checks_key: Option<(Option<DocHandle>, u64)>,
     /// Decor primitives: highlight, violation markers, annotation texts, staged diff.
     decor: CanvasPrims,
-    decor_scratch: CanvasScratch,
     decor_dirty: bool,
     /// Name map of the active tab's top cell (ngspice, default request), for hierarchy-wide
     /// net keys, cross-probe names and OP targets: (top document, edit generation, map).
@@ -459,7 +472,10 @@ impl Editor {
             routed: Routed::default(),
             viewport: (0.0, 0.0),
             canvas_scratch: CanvasScratch::default(),
-            overlay_scratch: CanvasScratch::default(),
+            canvas_cache: CanvasCache::default(),
+            canvas_gen: 0,
+            zoom_until: 0,
+            stretched: false,
             ui_scratch: UiScratch::default(),
             waves: None,
             confirm: None,
@@ -481,7 +497,6 @@ impl Editor {
             hl: Members::default(),
             checks_key: None,
             decor: CanvasPrims::default(),
-            decor_scratch: CanvasScratch::default(),
             decor_dirty: true,
             hier: None,
             panel: Panel::None,
@@ -659,7 +674,13 @@ impl Editor {
         let sim: Option<u32> = None;
         // Events queued for plugins (a `RunDone`, a completion) are delivered on the next tick.
         let queued = self.host.has_work().then_some(1);
-        [sim, self.host.wake_ms(self.now), queued]
+        // A stretched canvas (mid-zoom) is redrawn crisp once the zoom has settled.
+        let crisp = self.stretched.then(|| {
+            self.zoom_until
+                .saturating_sub(self.now)
+                .min(u64::from(ZOOM_SETTLE_MS)) as u32
+        });
+        [sim, self.host.wake_ms(self.now), queued, crisp]
             .into_iter()
             .flatten()
             .min()
@@ -691,6 +712,7 @@ impl Editor {
             false => (std::borrow::Cow::Borrowed(events), viewport),
         };
         let events: &InputEvents = &events;
+        let zoom0 = self.camera().scale;
         let resized = viewport != self.viewport;
         self.viewport = viewport;
         self.compose_ui(false);
@@ -759,6 +781,14 @@ impl Editor {
         changed |= stale;
         changed |= self.build_decor(stale);
         self.build_overlay();
+        // 10. zoom settle: while the scale keeps changing the canvas layer is stretched; the
+        //     first frame ZOOM_SETTLE_MS after the last change records it crisp.
+        if self.camera().scale != zoom0 {
+            self.zoom_until = now_ms + u64::from(ZOOM_SETTLE_MS);
+        } else if self.stretched && now_ms >= self.zoom_until {
+            self.stretched = false;
+            changed = true;
+        }
         self.routed = routed;
         changed
     }
@@ -879,42 +909,53 @@ impl Editor {
         } else {
             i32::MAX / 4
         };
-        // `draw_canvas` step by step: the decor and the overlay get their own scratch,
-        // because the shaped-label cache is keyed by one text table, and sharing it would
-        // reshape every scene label each frame (measured: 130 ms at 50k labels).
-        p.push_clip(view);
-        p.fill_rect(view, schemify_render::rgba(self.palette.background));
-        canvas::draw_grid(p, view, &cam, grid, &self.palette, &mut self.canvas_scratch);
-        let (prims, palette, text) = (&self.scene.prims, &self.palette, &mut self.shell.text);
-        canvas::draw_prims(
-            p,
-            view,
-            &cam,
-            prims,
-            palette,
-            text,
+        // Everything but the gesture preview goes through the raster layer: a pan or zoom
+        // frame re-encodes nothing (D39); `key` names every input of the closure.
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            let pal = &self.palette;
+            (
+                self.canvas_gen,
+                grid,
+                pal.color,
+                pal.fill,
+                pal.background,
+                pal.grid,
+            )
+                .hash(&mut h);
+            pal.width.map(f32::to_bits).hash(&mut h);
+            h.finish()
+        };
+        let crisp = self.now >= self.zoom_until;
+        let (scene, decor, marks) = (&self.scene, &self.decor, &self.marks);
+        let (palette, text, scratch) = (
+            &self.palette,
+            &mut self.shell.text,
             &mut self.canvas_scratch,
         );
-        canvas::draw_prims(
+        let drawn = canvas::draw_cached(
             p,
+            &mut self.canvas_cache,
             view,
             &cam,
-            &self.decor,
-            palette,
-            text,
-            &mut self.decor_scratch,
+            key,
+            crisp,
+            schemify_render::rgba(palette.background),
+            |p, v, c| {
+                p.fill_rect(v, schemify_render::rgba(palette.background));
+                canvas::draw_grid(p, v, c, grid, palette, scratch);
+                canvas::draw_prims(p, v, c, &scene.prims, palette, text, scratch);
+                canvas::draw_prims(p, v, c, decor, palette, text, scratch);
+                canvas::draw_marks(p, v, c, &scene.prims, marks, scratch);
+            },
         );
-        canvas::draw_prims(
-            p,
-            view,
-            &cam,
-            &self.overlay,
-            palette,
-            text,
-            &mut self.overlay_scratch,
-        );
-        canvas::draw_marks(p, view, &cam, prims, &self.marks, &mut self.canvas_scratch);
-        p.pop_clip();
+        self.stretched = drawn == canvas::Drawn::Stretched;
+        if !self.overlay.is_empty() {
+            p.push_clip(view);
+            canvas::draw_prims(p, view, &cam, &self.overlay, palette, text, scratch);
+            p.pop_clip();
+        }
     }
 
     /// Draws each filled plot slot of the docs page (`graph` nodes) as an embedded waves
@@ -2967,6 +3008,7 @@ impl Editor {
                 epoch,
                 values,
             );
+            self.canvas_gen += 1;
             self.scene_dirty = false;
             let sel: Vec<ObjKey> = self
                 .selection()
@@ -2995,6 +3037,7 @@ impl Editor {
                 }
             }
             scene::marks(&self.scene, &self.selected, self.sel_color, &mut self.marks);
+            self.canvas_gen += 1;
             self.sel_changed = false;
             let _ = self.host.push(None, &Event::SelectionChanged);
         }
