@@ -210,18 +210,26 @@ fn row(t: &CanvasPrims, table: Table, i: usize) -> (u64, [i32; 4]) {
             let tx = &t.texts;
             let start = if i == 0 { 0 } else { tx.end[i - 1] as usize };
             let bytes = &tx.text.as_bytes()[start..tx.end[i] as usize];
-            let f = [tx.x[i], tx.y[i], tx.size[i], i32::from(tx.layer[i])];
+            let rot = tx.rot.get(i).copied().unwrap_or(0);
+            let f = [
+                tx.x[i],
+                tx.y[i],
+                tx.size[i],
+                i32::from(tx.layer[i]),
+                i32::from(rot),
+            ];
             let h = bytes.iter().fold(fold(6, &f), |h, &b| mix(h, i64::from(b)));
             // Labels hang right and down from their anchor: at most an em per byte across and
-            // two lines down (what `draw_texts` treats as visible), padded by an em.
+            // two lines down (what `draw_texts` treats as visible), padded by an em; a turned
+            // label reaches as far in any direction.
             let (x, y, em) = (i64::from(f[0]), i64::from(f[1]), i64::from(f[2]));
+            let reach = em * (bytes.len() as i64 + 1).max(3);
             let c = |v: i64| v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
-            let b = [
-                c(x - em),
-                c(y - em),
-                c(x + em * (bytes.len() as i64 + 1)),
-                c(y + 3 * em),
-            ];
+            let b = if rot == 0 {
+                [c(x - em), c(y - em), c(x + reach), c(y + 3 * em)]
+            } else {
+                [c(x - reach), c(y - reach), c(x + reach), c(y + reach)]
+            };
             (h, b)
         }
     }

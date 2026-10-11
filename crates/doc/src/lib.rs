@@ -71,7 +71,8 @@ pub use schemify_format::{FileKind, Orient, RecordKind};
 pub use sha256::{Digest, Sha256, hex, sha256};
 pub use strings::{ObjId, SYMS_MAX, Strings, Sym};
 pub use tables::{
-    Graphics, Instances, Noconns, POOL_MAX, PinDir, Pins, Placed, Pool, Records, Span, Wires,
+    Graphics, Instances, Noconns, POOL_MAX, PinDir, Pins, Placed, Pool, Records, Shapes, Span,
+    Wires,
 };
 
 use std::fmt;

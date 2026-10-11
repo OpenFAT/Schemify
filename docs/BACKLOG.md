@@ -16,10 +16,18 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - **doc**: keep rank 2 (symbol graphics) in indexed interfaces (`parse_prefix(bytes, 2)`); the editor currently opens every instantiated cell to get its symbol.
 - **render**: window has no exit hook.
 - **ui**: text fields commit only on Enter (the app copies typed text every frame).
-- **plugins/build.sh**: rebuilding `hello`/`gmid_stub` is not byte-reproducible.
-- Editor gaps vs xschem: stretch/kissing moves, polygon/arc/circle drawing, schematic graphics (format has none), context menu, persistent wire mode, snap cursor/crosshair, search, Save As, rotated texts, scrolling lists (24 rows max), system clipboard, crash-recovery prompt, plugin I/O capabilities fetch/clipboard in the app.
-- No user-config reader: the `sim ngspice` command line (format spec §4) is not read; the CLI and the editor use `ngspice -b -r {raw} {netlist}` (tests pass `editor::Options::sim`).
+- Editor gaps vs xschem (after the parity pass, `tests/parity.rs`): partial wire selection (xschem's Ctrl+drag box selects only the inside ends of crossing wires; here a stretch follows wire ends on moved connection points); vertex editing of a selected wire/line/polygon/rect corner; symbol `stext` orientation (only schematic `text` records turn); the context menu closes with Esc or a row, not a click outside; recent files outside the current project do not open (one project per session); layer colors, dim and line width are not persisted (set them in `init.lua`: `schemify.opt` has no keys for them yet); the web build has no system clipboard (D2 glue) and no exports to disk (OPFS); plugin I/O capabilities fetch/clipboard in the app.
+- **Exports**: PDF/EPS text uses the base-14 Helvetica (not embedded, ASCII only, others print `?`); one A4 landscape page per drawing; arcs are polylines of 6° steps; the PNG is the visible canvas at screen resolution (no DPI/size option).
+- **Make subcircuit** (Ctrl+Shift+H) connects the new instance by net labels at the old boundary points and on its pins (xschem rewires); the new cell's symbol is the generated box.
+- **Join/trim** does not merge diagonal wires or wires with attributes other than `bus`.
 - Plugin `eval` requests still answer `E_GONE` (elab evaluator not wired to the host).
+
+## user config and packages (config spec)
+
+- **config**: no Lua on the web: C Lua 5.4 (mlua vendored) has no `wasm32-unknown-unknown` build, so the web runs without `init.lua`. Upgrade: a pure-Rust Lua 5.4 (piccolo, once it covers `error(msg, level)`, `tonumber`, `load` semantics) or C Lua on a wasi-libc shim; OPFS `/config` then holds `init.lua`.
+- **config**: a single C library call (a pattern match over a huge string) runs between budget checks; only the memory cap bounds it.
+- **app**: the editor applies `sim ngspice` only (openvaf/iverilog paths reach the CLI's runner through `spines::tools`, not the editor's `Sim`); no "Packages" status view (use `schemify pack status`).
+- **cli/pack**: `url` packages are one `.wasm` file (no archives); `pack` has no parallel fetches.
 
 ## docs page (D19–D21)
 
@@ -113,18 +121,54 @@ for it; the goal set for this work was ≤ 1 ms).
 - **elab**: `E002` doesn't yet compare a SPICE `body`'s `.subckt` ports with the symbol pins; `global true` names are gathered from every reachable schematic, including unselected impls; `net_<id>` may collide with a user label of the same spelling; `CellState` doesn't observe edits to other documents.
 - **format**: verbatim blocks merge as a unit (line-level diff3 is the upgrade); a clean merge can still violate kind rules (doc/elab must check).
 - **plugin**: an earlier plugin's `set X p` survives a later full redefinition of node `X`; no auto-quarantine of repeatedly trapping plugins.
-- **expr**: FFT twiddles use platform math (calculator output only, never netlists).
 - **ui**: status text that changes every frame grows the string table; IME candidate window not positioned.
 - **wave**: per-sweep-step readouts; FFT traces share the time-domain x axis.
 - **import (readers)**: `.spiceinit` `sourcepath` lines, Magic `include`, `.if` blocks; cdfDump untested against real dumps.
 
 ## Parity gaps vs xschem (UI)
 
-- **ui/render**: toolbar icons (text labels now), menu keyboard navigation, tear-off/context menus, scrolling, split dragging, dropdown popups.
+- **ui/render**: toolbar icons (text labels now), menu keyboard navigation, tear-off menus, split dragging, dropdown popups. (Context menus are positioned dialogs, `UiState::set_dialog_at`; chooser lists scroll.)
+
+## Parity: intentionally dropped
+
+xschem menu items and keys with no meaning in Schemify, removed from the default UI (`plugins/default-ui`) rather than left unresolved. The parity ratchet (`crates/app/tests/parity.rs`) holds every remaining name to an implementation; `tests/shell.rs` lists the dropped inventory chords.
+
+- File → Start new Xschem process (`x`), Alt+Shift+E / Alt+Shift+I "in a new process": one process with tabs; `x` and the Alt+Shift keys open a new tab instead.
+- Options → Debug mode: logs go to the status line and stderr; there is no Tcl debug level.
+- Options → No XCopyArea drawing model, Fix for GPUs with broken tiled fill, Fix broken RDP mouse coordinates, `$` / Ctrl+`$`: X11 drawing workarounds; vello draws every frame.
+- Options → Enable infix-interface, Intuitive Click & Drag interface: Schemify keeps xschem's default interaction (infix and intuitive), one gesture state machine.
+- Options → Undo buffer on Disk: undo always lives in the on-disk journal (D28).
+- Options → Unsel. partial sel. wires after stretch move: wires are selected whole; a stretch never leaves partially selected wires.
+- Options → Variable grid point size, View → Set grid point size: the canvas draws grid dots at one size.
+- Options → Group bus slices in Verilog instances, Replace `[` and `]` for buses in SPICE netlist: netlist spellings are fixed by the dialects (D22, netlist spec §7.6).
+- Options → Netlist format → VHDL, tEDAx, Split netlist, Symbol global attrs: no such emitters or modes; SPICE/Verilog map to the dialect list (Simulation → Netlist dialect).
+- View → Horizontal toolbar: toolbar placement is a UI-plugin style (D6); View → Tabbed interface: always tabbed.
+- View → Show hidden texts: the scene draws every text (no hidden-text attribute).
+- Properties → Change selected object insertion order (Shift+S): rank-3 order is by id (D9); netlist order is not set by insertion.
+- Tools → Execute TCL command: no Tcl, documents and the UI run no scripts (D7, D12).
+- Tools → Grab screen area (Print): no image objects in the format; Print exports a PNG of the canvas instead.
+- Tools → Insert JPG/PNG/SVG image: no image records in the format (D9).
+- Ctrl+h launcher, Simulation → Graphs → Add waveform reload launcher: executable content in a design (D7).
+- Symbol → Change selected inst. texts to floaters, Unselect attached floaters (Ctrl+u): no floater texts (instance texts are symbol `stext` templates).
+- Symbol → Search all search-paths for schematic: no search path (D10, `lib:cell`).
+- Symbol → Allow duplicated instance names: duplicate names break netlists; copies are renamed, and Highlight → duplicate / rename duplicate names repair imports.
+- Highlight → Propagate highlight (drill): no `propag` pin attribute; highlights are hierarchy-wide already (Ctrl+Shift+K highlights).
+- Simulation → Set netlist dir, Set top level netlist name, Use netlist directory / 'simulation' dir / 'simulation/[schname]' dir: netlists go to `.schemify/netlist/<cell>.<ext>` (spines).
+- Simulation → Keep symbols when traversing hierarchy: the symbol cache is always kept.
+- Simulation → Configure simulators and tools: simulators come from the user config (`sim` records, format spec §4; the reader is the config crate's).
+- Simulation → Shell [simulation path], Utile stimuli editor / translate: terminals and xschem's awk tool chain.
+- Simulation → LVS (LVS netlist, upper-case SUBCKT, top level is a subckt, lvs_ignore, spiceprefix): LVS netlists are the `cdl` dialect (D22).
+- Simulation → Graphs → Hide graphs if no spice data loaded, Live annotate probes with 'b' cursor: docs plot slots show their state; cursor-time annotation is a waves-dock gap (see "Parity gaps vs xschem (UI)" waves).
+- Keys `0`–`4`: xschem's built-in logic simulator (net logic values); simulation goes through runners (D15).
 - **waves**: horizontal cursors, dataset tracking, measurement tooltip, digital/bus mode, histogram, graph properties dialog, per-graph x locking, typed cursor positions, colour picker.
 
 ## Testing infrastructure
 
-- Fuzz harnesses exist for format, expr and import, but there's no nightly toolchain installed locally; CI nightly placeholders need wiring.
-- Determinism CI job (byte-identical netlists across Linux/macOS/Windows/wasm) is a placeholder until `netlist` lands.
-- sky130 model files aren't fetched (open_pdks builds them); the ngspice second oracle for sky130 needs `volare`.
+- sky130 model files aren't fetched (open_pdks builds them); the ngspice second oracle for sky130 needs `volare`, then a nightly step for `ngspice_results_agree`.
+- **plugins/build.sh is not byte-reproducible** (`hello`, `gmid_stub`, … differ between rebuilds and machines), so CI cannot check that the committed `.wasm` assets match their sources. Make it reproducible (pinned toolchain in the build, `--remap-path-prefix`, no host paths in custom sections), then add the diff to the `plugins` job.
+- Fuzz-corpus replay at the merge tier: the nightly corpora live in the actions cache and artifacts, not the repo. Check in minimized corpora (`cargo fuzz cmin`) and replay them in `ci.yml`.
+- Coverage ratchet (`cargo-llvm-cov`) is not wired (TESTING.md nightly tier).
+- **render** (web): no WebGPU device in headless Chrome (CI, SwiftShader) means a blank canvas; the browser smoke test can only check that the editor starts (canvas created, no trap). A `vello_cpu` fallback when no adapter is found would let it compare pixels against the native goldens.
+- `tests/perf/baseline.txt` is measured on GitHub's shared `ubuntu-latest` runners; if the 10% gate proves noisy there, gate on best-of-N medians or a self-hosted runner.
+- **import** (`devicereader`): `import-report.{md,txt}` spell input files as absolute paths, so they differ per machine; the determinism job excludes them. Report paths relative to the import roots to bring them under the byte comparison.
+- Release builds: no macOS x86_64 binary (only Apple-silicon runners); the Linux binary links the build runner's glibc. The D39 size gate in `release.yml` holds the single binary to 25 MB until the core/editor split (core ≤ 2 MB, editor ≤ 10 MB) lands.

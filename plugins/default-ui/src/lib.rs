@@ -28,6 +28,13 @@
 //! - `dialog.props` with `dialog.props.title`, `.fields` (rows `dialog.props.row.<i>` holding
 //!   `dialog.props.key.<i>` and `dialog.props.val.<i>`, command `props.field`), OK
 //!   (`props.ok`) and Cancel (`dialog.close`);
+//! - `dialog.ctx` (the canvas context menu: the app adds `dialog.ctx.row.<i>` items running
+//!   ordinary commands and opens it at the pointer), `dialog.layers` with `.list` (the app adds
+//!   checkable `dialog.layers.row.<n>` items, command `layers.toggle.<n>`), `dialog.edit_file`
+//!   with the `.text` text area (command `dialog.edit_file.ok`), `dialog.recover` with `.title`
+//!   (commands `dialog.recover.ok` / `.discard`), and `menu.file.open_recent`, under which the
+//!   app adds one `file.open_recent.<i>` item per recent file;
+//! - the chooser's `dialog.choose.list` is a `scroll` node inside a fixed-height box;
 //! - `bottom` (under the work area), where the app puts the checks panel (`checks.pane`) or
 //!   the results table (`results.pane`); `work`, whose `canvas` the app replaces with a
 //!   `textview` in a netlist tab; the checkable items `sim.dialect.<word>`,

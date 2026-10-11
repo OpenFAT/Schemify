@@ -394,26 +394,6 @@ node file.open_most_recent item
 node menu.file.open_recent menu
   parent menu.file
   label "Open recent"
-node file.open_recent.poweramp_sch item
-  parent menu.file.open_recent
-  label poweramp.sch
-  command file.open_recent.poweramp_sch
-node file.open_recent.mos_power_ampli_sym item
-  parent menu.file.open_recent
-  label mos_power_ampli.sym
-  command file.open_recent.mos_power_ampli_sym
-node file.open_recent.solar_panel_sch item
-  parent menu.file.open_recent
-  label solar_panel.sch
-  command file.open_recent.solar_panel_sch
-node file.open_recent.cmos_example_sch item
-  parent menu.file.open_recent
-  label cmos_example.sch
-  command file.open_recent.cmos_example_sch
-node file.open_recent.rlc_sch item
-  parent menu.file.open_recent
-  label rlc.sch
-  command file.open_recent.rlc_sch
 node file.create_new_window_tab item
   parent menu.file
   label "Create new window/tab"
@@ -490,11 +470,6 @@ node file.image_export.svg_export item
   accel Alt+*
 node menu.file.sep1 separator
   parent menu.file
-node file.start_new_xschem_process item
-  parent menu.file
-  label "Start new Xschem process"
-  command file.start_new_xschem_process
-  accel X
 node file.close_schematic item
   parent menu.file
   label "Close schematic"
@@ -649,37 +624,17 @@ node options.transparent_svg_background item
   label "Transparent SVG background"
   command options.transparent_svg_background
   checked 0
-node options.debug_mode item
-  parent menu.options
-  label "Debug mode"
-  command options.debug_mode
-  checked 0
-node options.undo_buffer_on_disk item
-  parent menu.options
-  label "Undo buffer on Disk"
-  command options.undo_buffer_on_disk
-  checked 0
 node options.enable_stretch item
   parent menu.options
   label "Enable stretch"
   command options.enable_stretch
   accel Y
   checked 0
-node options.enable_infix_interface item
-  parent menu.options
-  label "Enable infix-interface"
-  command options.enable_infix_interface
-  checked 0
 node options.enable_orthogonal_wiring item
   parent menu.options
   label "Enable orthogonal wiring"
   command options.enable_orthogonal_wiring
   accel Shift-L
-  checked 0
-node options.unsel_partial_sel_wires_after_stretch_mo item
-  parent menu.options
-  label "Unsel. partial sel. wires after stretch move"
-  command options.unsel_partial_sel_wires_after_stretch_mo
   checked 0
 node options.auto_join_trim_wires item
   parent menu.options
@@ -690,11 +645,6 @@ node options.persistent_wire_line_place_command item
   parent menu.options
   label "Persistent wire/line place command"
   command options.persistent_wire_line_place_command
-  checked 0
-node options.intuitive_click_drag_interface item
-  parent menu.options
-  label "Intuitive Click & Drag interface"
-  command options.intuitive_click_drag_interface
   checked 0
 node menu.options.crosshair menu
   parent menu.options
@@ -715,15 +665,6 @@ node options.crosshair.crosshair_size item
   parent menu.options.crosshair
   label "Crosshair size"
   command options.crosshair.crosshair_size
-node options.replace_and_for_buses_in_spice_netlist item
-  parent menu.options
-  label "Replace [ and ] for buses in SPICE netlist"
-  command options.replace_and_for_buses_in_spice_netlist
-node options.group_bus_slices_in_verilog_instances item
-  parent menu.options
-  label "Group bus slices in Verilog instances"
-  command options.group_bus_slices_in_verilog_instances
-  checked 0
 node options.draw_grid item
   parent menu.options
   label "Draw grid"
@@ -740,30 +681,7 @@ node options.double_snap_threshold item
   label "Double Snap Threshold"
   command options.double_snap_threshold
   accel Shift-G
-node options.variable_grid_point_size item
-  parent menu.options
-  label "Variable grid point size"
-  command options.variable_grid_point_size
-  checked 0
 node menu.options.sep2 separator
-  parent menu.options
-node options.no_xcopyarea_drawing_model item
-  parent menu.options
-  label "No XCopyArea drawing model"
-  command options.no_xcopyarea_drawing_model
-  accel Ctrl+$
-  checked 0
-node options.fix_for_gpus_with_broken_tiled_fill item
-  parent menu.options
-  label "Fix for GPUs with broken tiled fill"
-  command options.fix_for_gpus_with_broken_tiled_fill
-  checked 0
-node options.fix_broken_rdp_mouse_coordinates item
-  parent menu.options
-  label "Fix broken RDP mouse coordinates"
-  command options.fix_broken_rdp_mouse_coordinates
-  checked 0
-node menu.options.sep3 separator
   parent menu.options
 node menu.options.netlist_format_symbol_mode menu
   parent menu.options
@@ -774,43 +692,17 @@ node options.netlist_format_symbol_mode.flat_netlist item
   command options.netlist_format_symbol_mode.flat_netlist
   accel :
   checked 0
-node options.netlist_format_symbol_mode.split_netlist item
-  parent menu.options.netlist_format_symbol_mode
-  label "Split netlist"
-  command options.netlist_format_symbol_mode.split_netlist
-  checked 0
 node options.netlist_format_symbol_mode.spice_netlist item
   parent menu.options.netlist_format_symbol_mode
   label "Spice netlist"
-  command options.netlist_format_symbol_mode.spice_netlist
-  accel Ctrl+Shift+V
-  checked 0
-  style radio
-node options.netlist_format_symbol_mode.vhdl_netlist item
-  parent menu.options.netlist_format_symbol_mode
-  label "VHDL netlist"
-  command options.netlist_format_symbol_mode.vhdl_netlist
+  command sim.dialect.ngspice
   accel Ctrl+Shift+V
   checked 0
   style radio
 node options.netlist_format_symbol_mode.verilog_netlist item
   parent menu.options.netlist_format_symbol_mode
   label "Verilog netlist"
-  command options.netlist_format_symbol_mode.verilog_netlist
-  accel Ctrl+Shift+V
-  checked 0
-  style radio
-node options.netlist_format_symbol_mode.tedax_netlist item
-  parent menu.options.netlist_format_symbol_mode
-  label "tEDAx netlist"
-  command options.netlist_format_symbol_mode.tedax_netlist
-  accel Ctrl+Shift+V
-  checked 0
-  style radio
-node options.netlist_format_symbol_mode.symbol_global_attrs item
-  parent menu.options.netlist_format_symbol_mode
-  label "Symbol global attrs"
-  command options.netlist_format_symbol_mode.symbol_global_attrs
+  command sim.dialect.verilog
   accel Ctrl+Shift+V
   checked 0
   style radio
@@ -888,15 +780,6 @@ node view.set_line_width item
   label "Set line width"
   command view.set_line_width
   accel Alt+-
-node view.set_grid_point_size item
-  parent menu.view
-  label "Set grid point size"
-  command view.set_grid_point_size
-node view.tabbed_interface item
-  parent menu.view
-  label "Tabbed interface"
-  command view.tabbed_interface
-  checked 0
 node menu.view.show_hide menu
   parent menu.view
   label "Show / Hide"
@@ -919,16 +802,6 @@ node view.show_hide.show_toolbar item
   parent menu.view.show_hide
   label "Show Toolbar"
   command view.show_hide.show_toolbar
-  checked 0
-node view.show_hide.horizontal_toolbar item
-  parent menu.view.show_hide
-  label "Horizontal Toolbar"
-  command view.show_hide.horizontal_toolbar
-  checked 0
-node view.show_hide.show_hidden_texts item
-  parent menu.view.show_hide
-  label "Show hidden texts"
-  command view.show_hide.show_hidden_texts
   checked 0
 node view.show_hide.draw_grid_axes item
   parent menu.view.show_hide
@@ -958,11 +831,6 @@ node properties.toggle_ignore_attribute_on_selected_inst item
   label "Toggle *_ignore attribute on selected instances"
   command properties.toggle_ignore_attribute_on_selected_inst
   accel Shift+T
-node properties.change_selected_object_insertion_order item
-  parent menu.properties
-  label "Change selected object insertion order"
-  command properties.change_selected_object_insertion_order
-  accel Shift+S
 node properties.edit_header_license_text item
   parent menu.properties
   label "Edit Header/License text"
@@ -979,91 +847,91 @@ node menu.layers menu
 node layers.0_bg item
   parent menu.layers
   label 0-BG
-  command layers.0_bg
+  command layers.set_current.0
 node layers.1_wire item
   parent menu.layers
   label 1-WIRE
-  command layers.1_wire
+  command layers.set_current.1
 node layers.2_grid item
   parent menu.layers
   label 2-GRID
-  command layers.2_grid
+  command layers.set_current.2
 node layers.3_text item
   parent menu.layers
   label 3-TEXT
-  command layers.3_text
+  command layers.set_current.3
 node layers.4 item
   parent menu.layers
   label 4
-  command layers.4
+  command layers.set_current.4
 node layers.5_pin item
   parent menu.layers
   label 5-PIN
-  command layers.5_pin
+  command layers.set_current.5
 node layers.6 item
   parent menu.layers
   label 6
-  command layers.6
+  command layers.set_current.6
 node layers.7 item
   parent menu.layers
   label 7
-  command layers.7
+  command layers.set_current.7
 node layers.8 item
   parent menu.layers
   label 8
-  command layers.8
+  command layers.set_current.8
 node layers.9 item
   parent menu.layers
   label 9
-  command layers.9
+  command layers.set_current.9
 node layers.10 item
   parent menu.layers
   label 10
-  command layers.10
+  command layers.set_current.10
 node layers.11 item
   parent menu.layers
   label 11
-  command layers.11
+  command layers.set_current.11
 node layers.12 item
   parent menu.layers
   label 12
-  command layers.12
+  command layers.set_current.12
 node layers.13 item
   parent menu.layers
   label 13
-  command layers.13
+  command layers.set_current.13
 node layers.14 item
   parent menu.layers
   label 14
-  command layers.14
+  command layers.set_current.14
 node layers.15 item
   parent menu.layers
   label 15
-  command layers.15
+  command layers.set_current.15
 node layers.16 item
   parent menu.layers
   label 16
-  command layers.16
+  command layers.set_current.16
 node layers.17 item
   parent menu.layers
   label 17
-  command layers.17
+  command layers.set_current.17
 node layers.18 item
   parent menu.layers
   label 18
-  command layers.18
+  command layers.set_current.18
 node layers.19 item
   parent menu.layers
   label 19
-  command layers.19
+  command layers.set_current.19
 node layers.20 item
   parent menu.layers
   label 20
-  command layers.20
+  command layers.set_current.20
 node layers.21 item
   parent menu.layers
   label 21
-  command layers.21
+  command layers.set_current.21
 node menu.tools menu
   parent menubar
   label Tools
@@ -1112,15 +980,6 @@ node tools.insert_circle item
   label "Insert circle"
   command tools.insert_circle
   accel Ctrl+Shift+C
-node tools.insert_jpg_png_svg_image item
-  parent menu.tools
-  label "Insert JPG/PNG/SVG image"
-  command tools.insert_jpg_png_svg_image
-node tools.grab_screen_area item
-  parent menu.tools
-  label "Grab screen area"
-  command tools.grab_screen_area
-  accel "Print Scrn"
 node tools.search item
   parent menu.tools
   label Search
@@ -1131,10 +990,6 @@ node tools.align_to_grid item
   label "Align to Grid"
   command tools.align_to_grid
   accel Alt+U
-node tools.execute_tcl_command item
-  parent menu.tools
-  label "Execute TCL command"
-  command tools.execute_tcl_command
 node tools.join_trim_wires item
   parent menu.tools
   label "Join/Trim wires"
@@ -1251,14 +1106,6 @@ node symbol.place_net_wire_label item
   label "Place net wire label"
   command symbol.place_net_wire_label
   accel Alt+Shift+L
-node symbol.change_selected_inst_texts_to_floaters item
-  parent menu.symbol
-  label "Change selected inst. texts to floaters"
-  command symbol.change_selected_inst_texts_to_floaters
-node symbol.unselect_attached_floaters item
-  parent menu.symbol
-  label "Unselect attached floaters"
-  command symbol.unselect_attached_floaters
 node menu.symbol.list_of_nets menu
   parent menu.symbol
   label "List of nets"
@@ -1287,16 +1134,6 @@ node symbol.list_of_nets.create_pins_from_highlight_nets item
   label "Create pins from highlight nets"
   command symbol.list_of_nets.create_pins_from_highlight_nets
   accel Ctrl-J
-node symbol.search_all_search_paths_for_schematic_as item
-  parent menu.symbol
-  label "Search all search-paths for schematic associated to symbol"
-  command symbol.search_all_search_paths_for_schematic_as
-  checked 0
-node symbol.allow_duplicated_instance_names_refdes item
-  parent menu.symbol
-  label "Allow duplicated instance names (refdes)"
-  command symbol.allow_duplicated_instance_names_refdes
-  checked 0
 node menu.highlight menu
   parent menubar
   label Highlight
@@ -1338,11 +1175,6 @@ node highlight.select_overlapped_instances item
   parent menu.highlight
   label "Select overlapped instances"
   command highlight.select_overlapped_instances
-node highlight.propagate_highlight_selected_net_pins item
-  parent menu.highlight
-  label "Propagate Highlight selected net/pins"
-  command highlight.propagate_highlight_selected_net_pins
-  accel Ctrl+Shift+K
 node highlight.increment_hilight_color item
   parent menu.highlight
   label "Increment Hilight Color"
@@ -1456,47 +1288,12 @@ node sim.dialect.verilog item
   style radio
 node menu.simulation.sep0 separator
   parent menu.simulation
-node simulation.set_netlist_dir item
-  parent menu.simulation
-  label "Set netlist Dir"
-  command simulation.set_netlist_dir
-node simulation.set_top_level_netlist_name item
-  parent menu.simulation
-  label "Set top level netlist name"
-  command simulation.set_top_level_netlist_name
 node simulation.show_netlist_after_netlist_command item
   parent menu.simulation
   label "Show netlist after netlist command"
   command simulation.show_netlist_after_netlist_command
   accel Shift+A
   checked 0
-node simulation.keep_symbols_when_traversing_hierarchy item
-  parent menu.simulation
-  label "Keep symbols when traversing hierarchy"
-  command simulation.keep_symbols_when_traversing_hierarchy
-  checked 0
-node simulation.use_netlist_directory item
-  parent menu.simulation
-  label "Use netlist directory"
-  command simulation.use_netlist_directory
-  checked 0
-  style radio
-node simulation.use_simulation_dir_in_schematic_dir item
-  parent menu.simulation
-  label "Use 'simulation' dir in schematic dir"
-  command simulation.use_simulation_dir_in_schematic_dir
-  checked 0
-  style radio
-node simulation.use_simulation_schname_dir_in_schematic item
-  parent menu.simulation
-  label "Use 'simulation/[schname]' dir in schematic dir"
-  command simulation.use_simulation_schname_dir_in_schematic
-  checked 0
-  style radio
-node simulation.configure_simulators_and_tools item
-  parent menu.simulation
-  label "Configure simulators and tools"
-  command simulation.configure_simulators_and_tools
 node simulation.list_running_sub_processes item
   parent menu.simulation
   label "List running sub-processes"
@@ -1509,18 +1306,6 @@ node simulation.view_last_job_errors item
   parent menu.simulation
   label "View last job errors"
   command simulation.view_last_job_errors
-node simulation.utile_stimuli_editor_gui item
-  parent menu.simulation
-  label "Utile Stimuli Editor (GUI)"
-  command simulation.utile_stimuli_editor_gui
-node simulation.utile_stimuli_translate item
-  parent menu.simulation
-  label "Utile Stimuli Translate"
-  command simulation.utile_stimuli_translate
-node simulation.shell_simulation_path item
-  parent menu.simulation
-  label "Shell [simulation path]"
-  command simulation.shell_simulation_path
 node simulation.edit_netlist item
   parent menu.simulation
   label "Edit Netlist"
@@ -1548,52 +1333,10 @@ node simulation.graphs.add_waveform_graph item
   parent menu.simulation.graphs
   label "Add waveform graph"
   command simulation.graphs.add_waveform_graph
-node simulation.graphs.add_waveform_reload_launcher item
-  parent menu.simulation.graphs
-  label "Add waveform reload launcher"
-  command simulation.graphs.add_waveform_reload_launcher
 node simulation.graphs.annotate_operating_point_into_schematic item
   parent menu.simulation.graphs
   label "Annotate Operating Point into schematic"
   command simulation.graphs.annotate_operating_point_into_schematic
-node simulation.graphs.live_annotate_probes_with_b_cursor item
-  parent menu.simulation.graphs
-  label "Live annotate probes with 'b' cursor"
-  command simulation.graphs.live_annotate_probes_with_b_cursor
-  checked 0
-node simulation.graphs.hide_graphs_if_no_spice_data_loaded item
-  parent menu.simulation.graphs
-  label "Hide graphs if no spice data loaded"
-  command simulation.graphs.hide_graphs_if_no_spice_data_loaded
-  checked 0
-node menu.simulation.lvs menu
-  parent menu.simulation
-  label LVS
-node simulation.lvs.lvs_netlist_top_level_is_a_subckt item
-  parent menu.simulation.lvs
-  label "LVS netlist + Top level is a .subckt"
-  command simulation.lvs.lvs_netlist_top_level_is_a_subckt
-  checked 0
-node simulation.lvs.upper_case_subckt_and_ends item
-  parent menu.simulation.lvs
-  label "Upper case .SUBCKT and .ENDS"
-  command simulation.lvs.upper_case_subckt_and_ends
-  checked 0
-node simulation.lvs.top_level_is_a_subckt item
-  parent menu.simulation.lvs
-  label "Top level is a .subckt"
-  command simulation.lvs.top_level_is_a_subckt
-  checked 0
-node simulation.lvs.set_lvs_ignore_variable item
-  parent menu.simulation.lvs
-  label "Set 'lvs_ignore' variable"
-  command simulation.lvs.set_lvs_ignore_variable
-  checked 0
-node simulation.lvs.use_spiceprefix_attribute item
-  parent menu.simulation.lvs
-  label "Use 'spiceprefix' attribute"
-  command simulation.lvs.use_spiceprefix_attribute
-  checked 0
 node menu.help menu
   parent menubar
   label Help
@@ -1652,31 +1395,31 @@ node waves.op_annotate item
 node waves.op item
   parent menu.waves
   label Op
-  command waves.op
+  command waves.load.op
 node waves.dc item
   parent menu.waves
   label Dc
-  command waves.dc
+  command waves.load.dc
 node waves.ac item
   parent menu.waves
   label Ac
-  command waves.ac
+  command waves.load.ac
 node waves.tran item
   parent menu.waves
   label Tran
-  command waves.tran
+  command waves.load.tran
 node waves.noise item
   parent menu.waves
   label Noise
-  command waves.noise
+  command waves.load.noise
 node waves.sp item
   parent menu.waves
   label Sp
-  command waves.sp
+  command waves.load.sp
 node waves.spectrum item
   parent menu.waves
   label Spectrum
-  command waves.spectrum
+  command waves.load.spectrum
 
 # --- toolbar (xschem shows icons; text labels until an icon set exists) ----------------------------
 
@@ -1922,8 +1665,9 @@ node dialog.enter_text.cancel button
   command dialog.close
   style dialog-button
 
-# --- chooser dialog: insert symbol, open cell, waves file (the app sets the title, the filter value
-# and adds `dialog.choose.row.<i>` items under `dialog.choose.list`, command `choose.pick`) --------
+# --- chooser dialog: insert symbol, open cell, merge, delete, compare, waves file (the app sets the
+# title, the filter value and adds `dialog.choose.row.<i>` items under the scrolling
+# `dialog.choose.list`, command `choose.pick`) -----------------------------------------------------
 
 node dialog.choose dialog
   label Choose
@@ -1934,9 +1678,12 @@ node dialog.choose.filter text_input
   parent dialog.choose
   command choose.filter
   style dialog-input
-node dialog.choose.list panel
+node dialog.choose.box panel
   parent dialog.choose
-  style dialog-list
+  style dialog-scroll-box
+node dialog.choose.list scroll
+  parent dialog.choose.box
+  style dialog-list-scroll
 node dialog.choose.buttons panel
   parent dialog.choose
   style dialog-buttons
@@ -1971,10 +1718,113 @@ node dialog.props.cancel button
   command dialog.close
   style dialog-button
 
+# --- context menu (right click on the canvas): the app adds `dialog.ctx.row.<i>` items, one per
+# entry of xschem's menu for the current selection (inventory §1.15); a row runs its command. ---
+
+node dialog.ctx dialog
+  label "Context menu"
+  style ctx-menu
+
+style ctx-menu
+  bg d9d9d9
+  dir column
+  pad 2
+  pad-y 2
+  gap 0
+  border 1
+  border-color 404040
+
+# --- visible layers (View -> Show/Hide -> Visible layers): the app adds checkable
+# `dialog.layers.row.<n>` items (command `layers.toggle.<n>`) under `dialog.layers.list`. ------
+
+node dialog.layers dialog
+  label "Visible layers"
+node dialog.layers.title label
+  parent dialog.layers
+  label "Visible layers (click to show / hide)"
+node dialog.layers.list panel
+  parent dialog.layers
+  style dialog-list
+node dialog.layers.buttons panel
+  parent dialog.layers
+  style dialog-buttons
+node dialog.layers.all button
+  parent dialog.layers.buttons
+  label "All"
+  command layers.draw_all_layers
+  style dialog-button
+node dialog.layers.close button
+  parent dialog.layers.buttons
+  label Close
+  command dialog.close
+  style dialog-button
+
+# --- edit file (Properties -> Edit file): the document as text; OK applies it as one edit. ------
+
+node dialog.edit_file dialog
+  label "Edit file"
+node dialog.edit_file.title label
+  parent dialog.edit_file
+  label "Edit the file (Ctrl+Enter or OK applies it as one undoable edit)"
+node dialog.edit_file.text text_area
+  parent dialog.edit_file
+  command dialog.edit_file.ok
+  style edit-file-text
+node dialog.edit_file.buttons panel
+  parent dialog.edit_file
+  style dialog-buttons
+node dialog.edit_file.ok button
+  parent dialog.edit_file.buttons
+  label OK
+  command dialog.edit_file.ok
+  style dialog-button
+node dialog.edit_file.cancel button
+  parent dialog.edit_file.buttons
+  label Cancel
+  command dialog.close
+  style dialog-button
+
+style edit-file-text
+  width 640
+  height 420
+  font 12
+
+# --- crash recovery: a document's journal holds unsaved edits from a crash (D28). -------------
+
+node dialog.recover dialog
+  label "Recover unsaved edits"
+node dialog.recover.title label
+  parent dialog.recover
+  label "Unsaved edits can be recovered"
+node dialog.recover.buttons panel
+  parent dialog.recover
+  style dialog-buttons
+node dialog.recover.ok button
+  parent dialog.recover.buttons
+  label Recover
+  command dialog.recover.ok
+  style dialog-button
+node dialog.recover.discard button
+  parent dialog.recover.buttons
+  label Discard
+  command dialog.recover.discard
+  style dialog-button
+
 style dialog-list
   dir column
   gap 0
   min-width 320
+
+# The chooser's rows scroll (the wheel over the list) inside a fixed-height box.
+style dialog-scroll-box
+  dir column
+  height 420
+  min-width 360
+
+style dialog-list-scroll
+  dir column
+  grow 1
+  gap 0
 
 style list-row
   pad 6

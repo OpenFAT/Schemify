@@ -220,6 +220,8 @@ impl Routed {
 pub struct UiState {
     pub(crate) open: Vec<Sym>,
     pub(crate) dialog: Sym,
+    /// Top-left corner of the open dialog (a context menu at the pointer); `None` centers it.
+    pub(crate) dialog_at: Option<(f32, f32)>,
     pub(crate) hover: Sym,
     pub(crate) focus: Sym,
     pub(crate) capture: bool,
@@ -284,8 +286,20 @@ impl UiState {
 
     /// Shows dialog `id` modally (closing menus); `Sym::NONE` closes it.
     pub fn set_dialog(&mut self, id: Sym) {
+        self.set_dialog_at(id, None);
+    }
+
+    /// Shows dialog `id` modally with its top-left corner at `at` (logical px, moved inside
+    /// the viewport by layout), e.g. a context menu at the pointer; `None` centers it as
+    /// [`UiState::set_dialog`] does.
+    pub fn set_dialog_at(&mut self, id: Sym, at: Option<(f32, f32)>) {
+        assert!(
+            at.is_none_or(|(x, y)| x.is_finite() && y.is_finite()),
+            "dialog position must be finite"
+        );
         self.open.clear();
         self.dialog = id;
+        self.dialog_at = at.filter(|_| !id.is_none());
         self.blur();
     }
 

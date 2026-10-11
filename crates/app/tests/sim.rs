@@ -3,9 +3,8 @@
 //! (results table, plot slots, OP back-annotation, cross-probe), the optimizer's staged edit,
 //! plugin run requests, and the idle check (no ticks when nothing runs, D39).
 //!
-//! The fake simulator is `sh` (Unix only); the real-ngspice test runs when `ngspice` is on
-//! `PATH`.
-#![cfg(unix)]
+//! The fake simulator is `sh` (on Windows the one Git for Windows puts on `PATH`); the
+//! real-ngspice test runs when `ngspice` is on `PATH`.
 
 mod common;
 
@@ -118,9 +117,10 @@ fn violation_overlay_follows_edits() {
         cell.violations.rows.len()
     };
     let n0 = check(&s);
-    // Copy x2 far away: its four pins dangle (W004).
+    // Move x2 far away (a plain drag; Ctrl+drag would stretch its wires along): its four
+    // pins dangle (W004).
     s.drag((130 * U, 10 * U), (130 * U, 10 * U), 0);
-    s.drag((130 * U, 10 * U), (130 * U, 300 * U), 1);
+    s.drag((130 * U, 10 * U), (130 * U, 300 * U), 0);
     let n1 = check(&s);
     assert!(n1 >= n0 + 4, "{n0} -> {n1}");
     let w004 =
@@ -218,13 +218,23 @@ fn netlist_command_writes_the_cli_bytes() {
     s.key("n");
     let file = s.dir.join(".schemify/netlist/top.spice");
     let bytes = std::fs::read(&file).unwrap_or_else(|e| panic!("{e}: {}", s.ed.session.status));
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_schemify"))
-        .args(["netlist", "top.shcomp"])
-        .current_dir(&s.dir)
-        .output()
+    // The CLI's own load + netlist spine (`schemify netlist top.shcomp`; the binary lives in
+    // schemify-cli since the D39 split, so its spine is called directly).
+    let (mut o, _) = schemify_cli::spines::open_file(&s.dir.join("top.shcomp"), 1).unwrap();
+    let env = schemify_cli::spines::env_pairs();
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let req = schemify_elab::Request {
+        config: None,
+        corner: None,
+        overrides: &[],
+        env: &env,
+        dialect: schemify_elab::Dialect::Ngspice,
+    };
+    let top = o.top;
+    let e = schemify_cli::spines::elaborate_all(&mut o, top, &req, &mut schemify_elab::no_funcs)
         .unwrap();
-    assert!(out.status.success());
-    assert_eq!(bytes, out.stdout, "editor and CLI netlists differ");
+    let cli = schemify_netlist::emit(&e, schemify_elab::Dialect::Ngspice).text;
+    assert_eq!(bytes, cli.as_bytes(), "editor and CLI netlists differ");
     let view =
         s.ed.session
             .text_view()

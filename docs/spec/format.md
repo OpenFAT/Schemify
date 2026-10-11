@@ -11,7 +11,8 @@ Implements D9, D10, D11, D13, D17, D19, D20, D29, D30, D33, D35, D40. Rationale 
 | `<cell>.shbench` | `shbench` | schematic + docs + bench tables; no symbol |
 | `schemify.project` | `project` | project manifest: libraries, plugins, settings |
 | `schemify.lock` | `lock` | resolved sources + content hashes (written by the tool only) |
-| `config` (user, `$XDG_CONFIG_HOME/schemify/config`) | `config` | settings, keymap, simulators, plugin order |
+| `schemify-pack.lock` (user, next to `init.lua`) | `lock` | user packages pinned ([config.md](config.md) §5); same rows as `schemify.lock` |
+| — | `config` | reserved: the user config is Lua since the 2026-10-11 D9 amendment ([config.md](config.md)) |
 
 A library is a directory; one cell per file; the cell name is the file stem. Two files with the same stem and different kinds in one library is an error (`E020`).
 
@@ -115,6 +116,7 @@ Kinds in writer order:
 | `port <id> <x> <y> <orient> <pin>` | | Binds a schematic net to interface pin `<pin>` (shcomp only). |
 | `noconn <id> <x> <y>` | | Marks an intentionally unconnected pin. |
 | `text <id> <x> <y> <orient> <text>` | `size <s>` | Annotation only. |
+| `shape <id> <form> <values…>` | `layer <n>`, `fill true\|false`, `dash <n>`, `width <n>`, `closed true\|false` | Schematic graphics, annotation only (no connectivity). `form` and its coordinate values: `line x1 y1 x2 y2`, `rect x1 y1 x2 y2`, `arc cx cy r start_deg sweep_deg`, `circle cx cy r`, `poly x y x y …` (≥ 2 points; `closed` for a polygon). Any other count is `E029`. The rank-2 graphic forms with an id, so they merge and diff per record like every rank-3 kind. |
 | `constraint <id> <type>` | `member <id>` (repeatable), any `<key> <value>` | D30. `type` is a plugin-defined word; core stores, diffs, revalidates members. |
 | `waive <id> <inst_id> <param>` | `reason <text>` (required) | D13 waiver for one instance param. |
 
@@ -164,7 +166,7 @@ A library's content hash is the lowercase hex sha256 over its files sorted bytew
 
 ### User config
 
-`set <key> <value>`, `key <chord> <command>`, `sim <name>` with `path`, `args` (`ngspice`: the simulator command line, `{netlist}` and `{raw}` replaced by the job's files; `openvaf`, `iverilog`: compilers, [run.md](run.md) §5), `plugin <name>` (order = load order, D8). The app edits single lines in place and never rewrites hand-written config.
+The user config is `init.lua` (D9 as amended 2026-10-11), specified in [config.md](config.md): options, keymaps, simulator command lines, event hooks and user packages through a sandboxed `schemify.*` Lua API. Its package lockfile uses the lockfile rows above.
 
 ## 5. Unknowns and forward compatibility
 

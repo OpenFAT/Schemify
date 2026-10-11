@@ -6,10 +6,15 @@ use std::process::Command;
 const CANONICAL: &str = include_str!("../../format/tests/fixtures/ota5t.shcomp");
 const MESSY: &str = include_str!("../../format/tests/fixtures/ota5t.messy.shcomp");
 
+/// Runs the core in `dir` with the user directories inside it, so the developer's own
+/// `~/.config/schemify/init.lua` never runs here.
 fn schemify(dir: &Path, args: &[&str]) -> (i32, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_schemify"))
         .args(args)
         .current_dir(dir)
+        .env("XDG_CONFIG_HOME", dir.join(".xdg/config"))
+        .env("XDG_DATA_HOME", dir.join(".xdg/data"))
+        .env_remove("SCHEMIFY_APPNAME")
         .output()
         .expect("binary runs");
     let text =
@@ -118,7 +123,7 @@ fn usage_errors_exit_2() {
 /// The editor's fixture project: a two-inverter buffer over a hierarchical `inv`.
 fn inv_top() -> String {
     format!(
-        "{}/tests/fixtures/inv/top.shcomp",
+        "{}/../app/tests/fixtures/inv/top.shcomp",
         env!("CARGO_MANIFEST_DIR")
     )
 }
@@ -171,4 +176,63 @@ fn netlist_gate_and_usage_errors() {
         2
     );
     assert_eq!(schemify(&dir, &["netlist"]).0, 2);
+}
+
+/// Startup flags and the user config (config spec §2): errors are reported with `file:line`
+/// and never stop a command; `--clean` skips the config; `pack` works end to end.
+#[test]
+fn user_config_flags_and_pack_commands() {
+    let dir = scratch("config");
+    std::fs::write(dir.join("a.shcomp"), CANONICAL).unwrap();
+    std::fs::write(
+        dir.join("bad.lua"),
+        "schemify.opt.snap = 5\nschemify.opt.nope = 1\n",
+    )
+    .unwrap();
+    let (code, text) = schemify(&dir, &["-u", "bad.lua", "fmt", "--check", "a.shcomp"]);
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains("error: bad.lua:2: unknown option `nope`"),
+        "{text}"
+    );
+    assert_eq!(
+        schemify(&dir, &["--clean", "fmt", "--check", "a.shcomp"]),
+        (0, String::new())
+    );
+    assert_eq!(schemify(&dir, &["--clean", "-u", "x.lua", "fmt"]).0, 2);
+    // The default config is <XDG_CONFIG_HOME>/schemify/init.lua.
+    let cfg = dir.join(".xdg/config/schemify");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(cfg.join("init.lua"), "print('from init')").unwrap();
+    let (_, text) = schemify(&dir, &["fmt", "--check", "a.shcomp"]);
+    assert!(text.contains("note: from init"), "{text}");
+
+    // pack: a local package, synced and locked next to init.lua.
+    let pkg = dir.join("pkg");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(pkg.join("demo.wasm"), b"demo").unwrap();
+    let init = format!(
+        "schemify.pack.add {{ {{ path = [==[{}]==], name = 'demo' }} }}",
+        pkg.display()
+    );
+    std::fs::write(cfg.join("init.lua"), init).unwrap();
+    let (code, text) = schemify(&dir, &["pack", "status"]);
+    assert_eq!((code, text.trim()), (0, "demo: path - unlocked"));
+    let (code, text) = schemify(&dir, &["pack", "sync"]);
+    assert_eq!((code, text.trim()), (0, "demo: local"));
+    let lock = std::fs::read_to_string(cfg.join("schemify-pack.lock")).unwrap();
+    assert!(
+        lock.starts_with("schemify 1 lock\n") && lock.contains("locked plugin demo path"),
+        "{lock}"
+    );
+    let (code, text) = schemify(&dir, &["pack", "status"]);
+    assert_eq!(code, 0);
+    assert!(text.trim().ends_with(" ok"), "{text}");
+    assert_eq!(schemify(&dir, &["pack"]).0, 2);
+    assert_eq!(schemify(&dir, &["pack", "frobnicate"]).0, 2);
+    assert_eq!(
+        schemify(&dir, &["--clean", "pack", "status"]).0,
+        2,
+        "no config, no packages"
+    );
 }

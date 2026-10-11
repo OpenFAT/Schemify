@@ -1,5 +1,6 @@
 //! The OS boundary (ARCHITECTURE: only `app` talks to the OS), split by `cfg` (D31):
-//! native builds use `std::fs`; the web build will use OPFS through generated glue (D2).
+//! native and WASI builds use `std::fs`; the web build will use OPFS through generated glue
+//! (D2) and until then sees an empty file system holding only [`WEB_ROOT`].
 //!
 //! Every path here is absolute or relative to the process working directory; callers build
 //! them from the project root. Errors are plain text for the status line.
@@ -11,8 +12,13 @@ use std::path::{Path, PathBuf};
 pub const LIST_FILES_MAX: usize = 1 << 16;
 /// Directory depth walked by [`list_files`].
 pub const LIST_DEPTH_MAX: u32 = 8;
+/// The web build's project directory, opened by its argv-less start (`schemify edit /`): the
+/// root of its file system and, until OPFS is wired (D31), the only entry that exists there.
+pub const WEB_ROOT: &str = "/";
 
-#[cfg(not(target_arch = "wasm32"))]
+// WASI (the CLI under a wasm runtime, CI's determinism job) has `std::fs`: it takes the native
+// path. Only the browser (`wasm32-unknown-unknown`) lacks a file system.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 mod imp {
     use super::*;
     use std::io::Write;
@@ -90,6 +96,100 @@ mod imp {
         }
     }
 
+    pub fn remove(path: &Path) -> Result<(), String> {
+        std::fs::remove_file(path).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    pub fn mtime_unix_s(path: &Path) -> Option<u64> {
+        let t = std::fs::metadata(path).ok()?.modified().ok()?;
+        t.duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_secs())
+    }
+
+    /// The platform's clipboard programs: (write argv, read argv) candidates in order.
+    fn clipboard_tools() -> Vec<(Vec<&'static str>, Vec<&'static str>)> {
+        if cfg!(target_os = "macos") {
+            return vec![(vec!["pbcopy"], vec!["pbpaste"])];
+        }
+        if cfg!(target_os = "windows") {
+            return vec![(
+                vec![
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "$input | Set-Clipboard",
+                ],
+                vec!["powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw"],
+            )];
+        }
+        let mut t = Vec::new();
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            t.push((vec!["wl-copy"], vec!["wl-paste", "--no-newline"]));
+        }
+        t.push((
+            vec!["xclip", "-selection", "clipboard"],
+            vec!["xclip", "-selection", "clipboard", "-o"],
+        ));
+        t.push((
+            vec!["xsel", "--clipboard", "--input"],
+            vec!["xsel", "--clipboard", "--output"],
+        ));
+        t
+    }
+
+    pub fn clipboard_set(text: &str) -> Result<(), String> {
+        use std::process::{Command, Stdio};
+        let mut last = String::from("no clipboard program");
+        for (write, _) in clipboard_tools() {
+            // stdout/stderr are not piped: X11/Wayland tools fork a server that keeps them
+            // open, and waiting for their end would hang the frame.
+            let child = Command::new(write[0])
+                .args(&write[1..])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+            let mut child = match child {
+                Ok(c) => c,
+                Err(e) => {
+                    last = format!("{}: {e}", write[0]);
+                    continue;
+                }
+            };
+            if let Some(mut pipe) = child.stdin.take() {
+                let _ = pipe.write_all(text.as_bytes());
+            }
+            match child.wait() {
+                Ok(s) if s.success() => return Ok(()),
+                Ok(s) => last = format!("{}: {s}", write[0]),
+                Err(e) => last = format!("{}: {e}", write[0]),
+            }
+        }
+        Err(last)
+    }
+
+    pub fn clipboard_get() -> Result<String, String> {
+        use std::process::Command;
+        let mut last = String::from("no clipboard program");
+        for (_, read) in clipboard_tools() {
+            match Command::new(read[0]).args(&read[1..]).output() {
+                Ok(o) if o.status.success() => {
+                    let mut b = o.stdout;
+                    b.truncate(super::CLIPBOARD_BYTES_MAX);
+                    return String::from_utf8(b).map_err(|_| "clipboard is not UTF-8".into());
+                }
+                Ok(o) => last = format!("{}: {}", read[0], o.status),
+                Err(e) => last = format!("{}: {e}", read[0]),
+            }
+        }
+        Err(last)
+    }
+
+    pub fn state_dir() -> Option<PathBuf> {
+        schemify_config::dirs::here(schemify_config::dirs::Dir::State).ok()
+    }
+
     pub fn list(dir: &Path, depth: u32, skip: &[PathBuf], out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -118,10 +218,13 @@ mod imp {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod imp {
     // TODO(D31): OPFS through web-sys (generated glue only, D2). Until then the web build
-    // edits in memory: reads fail, writes are refused, listings are empty.
+    // edits in memory over an empty file system: only the root `/` exists (the editor's
+    // project directory on the web), reads fail, writes are refused, listings are empty.
+    // ponytail: OPFS is async on the main thread while this API is synchronous; the upgrade
+    // is an in-memory mirror loaded from OPFS before the editor starts, written back async.
     use super::*;
 
     const NO_OPFS: &str = "web storage (OPFS) is not wired yet";
@@ -129,11 +232,11 @@ mod imp {
     pub fn read(_: &Path) -> Result<Vec<u8>, String> {
         Err(NO_OPFS.into())
     }
-    pub fn exists(_: &Path) -> bool {
-        false
+    pub fn exists(path: &Path) -> bool {
+        is_dir(path)
     }
-    pub fn is_dir(_: &Path) -> bool {
-        false
+    pub fn is_dir(path: &Path) -> bool {
+        path == Path::new(WEB_ROOT)
     }
     pub fn write_atomic(_: &Path, _: &[u8]) -> Result<(), String> {
         Err(NO_OPFS.into())
@@ -142,6 +245,22 @@ mod imp {
         Err(NO_OPFS.into())
     }
     pub fn list(_: &Path, _: u32, _: &[PathBuf], _: &mut Vec<PathBuf>) {}
+    pub fn remove(_: &Path) -> Result<(), String> {
+        Err(NO_OPFS.into())
+    }
+    pub fn mtime_unix_s(_: &Path) -> Option<u64> {
+        None
+    }
+    // TODO(D2): the async Clipboard API through web-sys; the editor keeps its own clipboard.
+    pub fn clipboard_set(_: &str) -> Result<(), String> {
+        Err("no system clipboard on the web yet".into())
+    }
+    pub fn clipboard_get() -> Result<String, String> {
+        Err("no system clipboard on the web yet".into())
+    }
+    pub fn state_dir() -> Option<PathBuf> {
+        None
+    }
     pub fn spawn(_: &Path, _: &[String], _: &[u8]) -> (i32, Vec<u8>) {
         // D16: no processes in a browser; simulation goes through runner plugins.
         (-1, b"no processes on the web".to_vec())
@@ -266,6 +385,50 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 /// The OS error, prefixed with the path.
 pub fn append(path: &Path, bytes: &[u8]) -> Result<(), String> {
     imp::append(path, bytes)
+}
+
+/// Bytes read from the system clipboard at most (a fragment of 2^22 records is far below).
+pub const CLIPBOARD_BYTES_MAX: usize = 64 << 20;
+
+/// Deletes a file.
+///
+/// # Errors
+///
+/// The OS error, prefixed with the path (the web build refuses).
+pub fn remove(path: &Path) -> Result<(), String> {
+    imp::remove(path)
+}
+
+/// Modification time in seconds since the Unix epoch; `None` when unknown.
+pub fn mtime_unix_s(path: &Path) -> Option<u64> {
+    imp::mtime_unix_s(path)
+}
+
+/// Puts `text` on the system clipboard through the platform's clipboard program
+/// (`wl-copy`, `xclip`, `xsel`, `pbcopy`, PowerShell `Set-Clipboard`). Blocks until the
+/// program has read it (milliseconds).
+///
+/// # Errors
+///
+/// No clipboard program could take the text (the last failure); always on the web.
+pub fn clipboard_set(text: &str) -> Result<(), String> {
+    imp::clipboard_set(text)
+}
+
+/// The system clipboard's text (at most [`CLIPBOARD_BYTES_MAX`] bytes), read the same way.
+///
+/// # Errors
+///
+/// No clipboard program answered, or the text is not UTF-8.
+pub fn clipboard_get() -> Result<String, String> {
+    imp::clipboard_get()
+}
+
+/// The user state directory, `stdpath("state")` of the config spec §1 (honours
+/// `SCHEMIFY_APPNAME`): the recent-files list lives here. `None` when the environment names
+/// none (and on the web).
+pub fn state_dir() -> Option<PathBuf> {
+    imp::state_dir()
 }
 
 /// Lists regular files under `dir` recursively in sorted order, skipping hidden entries,

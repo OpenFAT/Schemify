@@ -1,0 +1,59 @@
+# Weekly mutation testing of the core crates (TESTING.md § Tiers, nightly tier): can the tests
+# fail? Report only: the survivors (`missed.txt`) are uploaded and summarized; the job fails
+# only when cargo-mutants itself cannot run (unmutated baseline red, usage error).
+name: mutants
+
+on:
+  schedule:
+    - cron: "41 1 * * 0"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.95.0" # = ci.yml
+
+jobs:
+  mutants:
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [format, expr, doc, elab, netlist]
+        # ~1100 mutants per crate (format, doc, elab): three shards keep each under the 5 h cap.
+        shard: [0, 1, 2]
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      OUT: mutants-${{ matrix.crate }}-${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+      - name: cargo mutants -p schemify-${{ matrix.crate }} (shard ${{ matrix.shard }}/3)
+        # 5 h of the 6 h job limit, so a partial report still uploads. Exit 2 (missed mutants)
+        # and 3 (timeouts) are findings, not failures.
+        run: |
+          set +e
+          mkdir -p "$OUT"
+          timeout 300m cargo mutants -p schemify-${{ matrix.crate }} --test-workspace=false \
+            --shard ${{ matrix.shard }}/3 --no-shuffle -j 2 --timeout-multiplier 3 --output "$OUT"
+          code=$?
+          out="$OUT/mutants.out"
+          {
+            echo "### schemify-${{ matrix.crate }} shard ${{ matrix.shard }}/3: cargo mutants exit $code"
+            for f in caught missed timeout unviable; do
+              echo "- $f: $(wc -l < "$out/$f.txt" 2>/dev/null || echo 0)"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$code" -eq 124 ] && echo "::warning::stopped at the 5 h budget: partial report"
+          case "$code" in 0|2|3|124) exit 0 ;; *) exit "$code" ;; esac
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutants-${{ matrix.crate }}-${{ matrix.shard }}
+          path: mutants-${{ matrix.crate }}-${{ matrix.shard }}/mutants.out
+          if-no-files-found: ignore

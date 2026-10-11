@@ -1,7 +1,7 @@
 //! The project on disk, without any GUI state: the `load` spine (manifest + lockfile →
 //! library directories → `doc::index_library` per local library → the bundled `core`
 //! library) and cell bytes by (library, path). Shared by the headless CLI spines and the
-//! editor's [`Session`](crate::session).
+//! editor's `Session` (`schemify_app::session`).
 
 use std::path::{Path, PathBuf};
 
@@ -90,8 +90,18 @@ pub fn load(root: &Path, seed: u64) -> Result<Loaded, String> {
     })
 }
 
-/// Indexes library `row` from the cell files under `dir`, skipping `skip` subtrees.
-fn index(project: &mut Project, row: usize, dir: &Path, skip: &[PathBuf]) -> Result<(), String> {
+/// Indexes library `row` from the cell files under `dir`, skipping `skip` subtrees (also
+/// after the editor writes or deletes a cell file: `Session::reindex`).
+///
+/// # Errors
+///
+/// A file cannot be read, or indexing reports a diagnostic (the first).
+pub fn index(
+    project: &mut Project,
+    row: usize,
+    dir: &Path,
+    skip: &[PathBuf],
+) -> Result<(), String> {
     let name = project.libs().name[row].clone();
     let mut rel = Vec::new();
     let mut bytes = Vec::new();

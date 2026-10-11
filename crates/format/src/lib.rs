@@ -62,6 +62,6 @@ pub use reader::{MAX_FILE_BYTES, parse, parse_prefix};
 pub use scalar::{CoordError, MILLI_PER_UNIT, Orient, format_coord, is_number, parse_coord};
 pub use schema::{
     AttrSchema, FileKind, KeyRule, RANK_INHERIT, RANK_MAX, RANK_POSITIONAL, RecordKind,
-    RecordSchema, Rest, Shape, Ty,
+    RecordSchema, Rest, SHAPE_FORMS, Shape, Ty, shape_arity,
 };
 pub use writer::{write, write_into};

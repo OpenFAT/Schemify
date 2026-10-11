@@ -184,6 +184,30 @@ struct Source {
     ports: Vec<PlacedRow>,
     noconns: Vec<PlacedRow>,
     texts: Vec<PlacedRow>,
+    shapes: Vec<ShapeRow>,
+}
+
+/// One shape row as drawn: its coordinates by value (a hash), not only by pool span.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ShapeRow {
+    id: ObjId,
+    form: RecordKind,
+    coords: u64,
+    attrs: Span,
+}
+
+fn shape_row(doc: &Document, i: usize) -> ShapeRow {
+    let t = doc.shapes();
+    let c = &doc.pool().coords[t.coords[i].range()];
+    let coords = c.iter().fold(c.len() as u64, |h, &v| {
+        (h.rotate_left(5) ^ u64::from(v as u32)).wrapping_mul(0x517c_c1b7_2722_0a95)
+    });
+    ShapeRow {
+        id: t.id[i],
+        form: t.form[i],
+        coords,
+        attrs: t.attrs[i],
+    }
 }
 
 fn inst_row(doc: &Document, i: usize) -> InstRow {
@@ -249,6 +273,9 @@ impl Source {
                 .collect(),
             texts: (0..doc.texts().id.len())
                 .map(|i| placed_row(doc.texts(), i))
+                .collect(),
+            shapes: (0..doc.shapes().id.len())
+                .map(|i| shape_row(doc, i))
                 .collect(),
         }
     }
@@ -603,6 +630,16 @@ pub fn sym_prims(doc: &Document) -> SymPrims {
     p
 }
 
+/// The far corner of a `(w, h)` text box from its anchor after `rot` clockwise quarter turns.
+fn rotated_extent((w, h): (i32, i32), rot: u8) -> (i32, i32) {
+    match rot % 4 {
+        0 => (w, h),
+        1 => (-h, w),
+        2 => (-w, -h),
+        _ => (h, -w),
+    }
+}
+
 /// Approximate text box: 0.6 em per character (the renderer shapes the real glyphs).
 fn text_size(size: i32, text: &str) -> (i32, i32) {
     let n = text.chars().count().max(1) as f64;
@@ -653,15 +690,25 @@ impl Build<'_> {
     }
     /// Text with its top-left at `at`; returns its box.
     fn text(&mut self, at: Pt, size: i32, layer: u8, s: &str, o: u32) -> [i32; 4] {
+        self.text_rot(at, size, layer, s, 0, o)
+    }
+    /// Text turned `rot` quarter turns clockwise about `at`; returns its box.
+    fn text_rot(&mut self, at: Pt, size: i32, layer: u8, s: &str, rot: u8, o: u32) -> [i32; 4] {
         if s.is_empty() || size <= 0 {
             return [at.0, at.1, at.0, at.1];
         }
-        self.sc.prims.text(at.0, at.1, size, layer, s);
+        self.sc.prims.text_rot(at.0, at.1, size, layer, s, rot);
         self.sc.owner.texts.push(o);
-        let (w, h) = text_size(size, s);
-        self.grow(at.0, at.1);
-        self.grow(at.0 + w, at.1 + h);
-        [at.0, at.1, at.0 + w, at.1 + h]
+        let (dx, dy) = rotated_extent(text_size(size, s), rot);
+        let (q0, q1) = ((at.0, at.1), (at.0 + dx, at.1 + dy));
+        self.grow(q0.0, q0.1);
+        self.grow(q1.0, q1.1);
+        [
+            q0.0.min(q1.0),
+            q0.1.min(q1.1),
+            q0.0.max(q1.0),
+            q0.1.max(q1.1),
+        ]
     }
 }
 
@@ -794,6 +841,19 @@ pub fn update(
         gone_p.extend(gone.into_iter().map(|r| ObjKey { table, key: r.id.0 }));
         fresh_other.extend(fresh_p.drain(before..).map(|i| (table, i)));
     }
+    let mut gone_s = Vec::new();
+    diff(
+        &mut s.shapes,
+        doc.shapes().id.len(),
+        |i| shape_row(doc, i),
+        &mut gone_s,
+        &mut fresh_p,
+    );
+    gone_p.extend(gone_s.iter().map(|r| ObjKey {
+        table: TableId::Shapes,
+        key: r.id.0,
+    }));
+    fresh_other.extend(fresh_p.drain(..).map(|i| (TableId::Shapes, i)));
     let changed = gone_i.len() + fresh_i.len() + gone_w.len() + fresh_w.len() + gone_p.len();
     let total = sc.objs.len().max(1);
     if changed > total / 8 + 64 {
@@ -875,6 +935,11 @@ fn check_tables(sc: &Scene) {
     assert_eq!(p.polylines.end.len(), o.polylines.len());
     assert_eq!(p.polygons.end.len(), o.polygons.len());
     assert_eq!(p.texts.x.len(), o.texts.len());
+    assert_eq!(
+        p.texts.rot.len(),
+        p.texts.x.len(),
+        "rotation column in step"
+    );
     assert_eq!(sc.index.len(), sc.objs.len(), "one index entry per object");
 }
 
@@ -969,6 +1034,7 @@ fn remove_object(sc: &mut Scene, key: ObjKey) {
             col.remove(k);
         }
         t.layer.remove(k);
+        t.rot.remove(k);
         own.texts.remove(k);
     }
     sc.conn.retain(|c| c.1 != o);
@@ -1064,7 +1130,8 @@ fn fit_boxes(sc: &mut Scene, from: Counts) {
     let t = &p.texts;
     for i in from.texts..t.x.len() {
         let start = if i == 0 { 0 } else { t.end[i - 1] as usize };
-        let (w, h) = text_size(t.size[i], &t.text[start..t.end[i] as usize]);
+        let rot = t.rot.get(i).copied().unwrap_or(0);
+        let (w, h) = rotated_extent(text_size(t.size[i], &t.text[start..t.end[i] as usize]), rot);
         grow(o.texts[i], t.x[i], t.y[i], t.x[i] + w, t.y[i] + h);
     }
 }
@@ -1194,19 +1261,22 @@ fn wire(b: &mut Build<'_>, doc: &Document, i: usize) {
     b.sc.conn.push((c, obj));
 }
 
-/// Labels, ports, noconns and texts of rows `rows` (clamped to each table) in that order.
+/// Labels, ports, noconns, texts and shapes of rows `rows` (clamped to each table) in that
+/// order.
 fn other_objects(b: &mut Build<'_>, doc: &Document, rows: std::ops::Range<usize>) {
     for table in [
         TableId::Labels,
         TableId::Ports,
         TableId::Noconns,
         TableId::Texts,
+        TableId::Shapes,
     ] {
         let len = match table {
             TableId::Labels => doc.labels().id.len(),
             TableId::Ports => doc.ports().id.len(),
             TableId::Noconns => doc.noconns().id.len(),
-            _ => doc.texts().id.len(),
+            TableId::Texts => doc.texts().id.len(),
+            _ => doc.shapes().id.len(),
         };
         for i in rows.start.min(len)..rows.end.min(len) {
             one_other(b, doc, table, i);
@@ -1214,7 +1284,7 @@ fn other_objects(b: &mut Build<'_>, doc: &Document, rows: std::ops::Range<usize>
     }
 }
 
-/// Draws row `i` of a label, port, noconn or text table.
+/// Draws row `i` of a label, port, noconn, text or shape table.
 fn one_other(b: &mut Build<'_>, doc: &Document, table: TableId, i: usize) {
     let s = doc.strings();
     match table {
@@ -1263,10 +1333,57 @@ fn one_other(b: &mut Build<'_>, doc: &Document, table: TableId, i: usize) {
             let layer = layer_attr(doc, t.attrs[i], 3);
             let at = (t.x[i], t.y[i]);
             let obj = b.sc.objs.push(key, [at.0, at.1, at.0, at.1], false);
-            let bx = b.text(at, size, layer, s.get(t.text[i]), obj);
+            // Rotated texts (format spec §3 orientation): turned about the anchor; a mirror
+            // keeps the text readable.
+            let rot = t.orient[i].quarter_turns();
+            let bx = b.text_rot(at, size, layer, s.get(t.text[i]), rot, obj);
             b.sc.objs.geom[obj as usize] = bx;
         }
+        TableId::Shapes => shape(b, doc, i),
         _ => unreachable!("{table:?} has no canvas objects"),
+    }
+}
+
+/// Draws row `i` of the schematic graphics (`shape` records, format spec §4 rank 3): one
+/// object each, on its `layer` (default 4, the symbol layer, like xschem's default drawing
+/// layer); a malformed row draws nothing.
+fn shape(b: &mut Build<'_>, doc: &Document, i: usize) {
+    let sh = doc.shapes();
+    let key = ObjKey {
+        table: TableId::Shapes,
+        key: sh.id[i].0,
+    };
+    let c = &doc.pool().coords[sh.coords[i].range()];
+    let layer = layer_attr(doc, sh.attrs[i], 4);
+    match sh.form[i] {
+        RecordKind::Line if c.len() == 4 => {
+            let obj = b.sc.objs.push(key, [c[0], c[1], c[2], c[3]], true);
+            b.line((c[0], c[1]), (c[2], c[3]), layer, obj);
+        }
+        RecordKind::Rect if c.len() == 4 => {
+            let obj = b.sc.objs.push(key, [c[0], c[1], c[2], c[3]], false);
+            b.rect((c[0], c[1]), (c[2], c[3]), layer, obj);
+        }
+        RecordKind::Arc | RecordKind::Circle if c.len() >= 3 => {
+            let (start, sweep) = match c {
+                [_, _, _, a, s] => (*a, *s),
+                _ => (0, 360_000),
+            };
+            let r = c[2].max(0);
+            let obj =
+                b.sc.objs
+                    .push(key, [c[0] - r, c[1] - r, c[0] + r, c[1] + r], false);
+            b.arc((c[0], c[1]), r, start, sweep, layer, obj);
+        }
+        RecordKind::Poly if c.len() >= 4 => {
+            let pts: Vec<Pt> = c.chunks_exact(2).map(|q| (q[0], q[1])).collect();
+            let closed = attr(doc, sh.attrs[i], "closed") == Some("true");
+            let obj =
+                b.sc.objs
+                    .push(key, [pts[0].0, pts[0].1, pts[0].0, pts[0].1], false);
+            b.poly(&pts, closed, layer, obj);
+        }
+        _ => {}
     }
 }
 

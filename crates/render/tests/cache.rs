@@ -211,8 +211,9 @@ fn zoom_stretches_until_crisp() {
     assert_eq!(frame(&mut p, &cam, true).0, Drawn::Copied);
 }
 
-/// A painter that never recorded the layer (a fresh one) cannot be served from the cache: it
-/// records instead of drawing nothing.
+/// A painter that never recorded the layer (a fresh one) cannot be served from the cache, nor
+/// patched (new content with known, even empty, damage): it records instead of drawing
+/// nothing.
 #[test]
 fn a_fresh_painter_records() {
     let prims = common::thousand_prims();
@@ -224,14 +225,14 @@ fn a_fresh_painter_records() {
     };
     let (mut text, mut scratch) = (TextSystem::new(), CanvasScratch::default());
     let mut cache = CanvasCache::default();
-    for _ in 0..2 {
+    for key in [1, 1, 2] {
         let mut p = CpuPainter::new(200, 100, 1.0);
         let drawn = canvas::draw_cached(
             &mut p,
             &mut cache,
             view,
             &cam,
-            1,
+            key,
             Some(&[]),
             true,
             bg(),

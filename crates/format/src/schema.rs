@@ -96,6 +96,9 @@ pub enum RecordKind {
     Port,
     Noconn,
     Text,
+    /// Rank-3 schematic graphic `shape <id> <form> <values…>` (annotation only, no
+    /// connectivity): the forms of the rank-2 graphics with an id.
+    Shape,
     Constraint,
     Waive,
     Prose,
@@ -393,6 +396,22 @@ const MIN: AttrSchema = attr("min", &[A]);
 const MAX: AttrSchema = attr("max", &[A]);
 const CACHED: AttrSchema = attr("cached", &[A, A]);
 const PLACED: &[Ty] = &[Ty::Id, C, C, Ty::Orient, A];
+/// The forms of a rank-3 `shape` (spec §4 rank 3), in [`shape_arity`] order.
+pub const SHAPE_FORMS: &[&str] = &["line", "rect", "arc", "circle", "poly"];
+
+/// Whether `n` values may follow `shape <id> <form>`: 4 for `line`/`rect` (two corners), 5
+/// for `arc` (center, radius, start and sweep degrees), 3 for `circle`, an even count ≥ 4
+/// for `poly`. `None` for a form outside [`SHAPE_FORMS`].
+pub fn shape_arity(form: &str, n: usize) -> Option<bool> {
+    let ok = match form {
+        "line" | "rect" => n == 4,
+        "arc" => n == 5,
+        "circle" => n == 3,
+        "poly" => n >= 4 && n.is_multiple_of(2),
+        _ => return None,
+    };
+    Some(ok)
+}
 
 /// Header attributes: the union over all cell kinds (spec §4 rank 0). A kind-specific
 /// attribute in another kind (`corner` in a `.shcomp`) is still kept; this list only
@@ -522,6 +541,22 @@ static RECORDS: [RecordSchema; RecordKind::Unknown as usize + 1] = [
     rec("port", 3, KI, fixed(PLACED), &[]),
     rec("noconn", 3, KI, fixed(&[Ty::Id, C, C]), &[]),
     rec("text", 3, KI, fixed(PLACED), &[attr("size", &[N])]),
+    rec(
+        "shape",
+        3,
+        KI,
+        Shape {
+            fixed: &[Ty::Id, Ty::Choice(SHAPE_FORMS)],
+            rest: Rest::Many(C),
+        },
+        &[
+            LAYER,
+            FILL,
+            attr("dash", &[N]),
+            attr("width", &[N]),
+            attr("closed", &[B]),
+        ],
+    ),
     open(rec(
         "constraint",
         3,
@@ -719,7 +754,7 @@ static FILE_RECORDS: [&[RecordKind]; 6] = [
     // shprim: symbol, docs, bodies
     &concat::<9, 3, 12>(SYMBOL, [R::Prose, R::Var, R::Body]),
     // shcomp: symbol, schematic, docs, bodies
-    &concat::<9, 11, 20>(
+    &concat::<9, 12, 21>(
         SYMBOL,
         [
             R::Inst,
@@ -728,6 +763,7 @@ static FILE_RECORDS: [&[RecordKind]; 6] = [
             R::Port,
             R::Noconn,
             R::Text,
+            R::Shape,
             R::Constraint,
             R::Waive,
             R::Prose,
@@ -736,13 +772,14 @@ static FILE_RECORDS: [&[RecordKind]; 6] = [
         ],
     ),
     // shbench: schematic without ports, docs, bench
-    &concat::<9, 8, 17>(
+    &concat::<10, 8, 18>(
         [
             R::Inst,
             R::Wire,
             R::Label,
             R::Noconn,
             R::Text,
+            R::Shape,
             R::Constraint,
             R::Waive,
             R::Prose,

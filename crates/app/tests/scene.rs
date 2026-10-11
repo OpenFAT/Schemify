@@ -1,6 +1,7 @@
 //! Oracle for the incremental scene (`scene::update`, D39 edits): after every edit of a seeded
 //! random sequence through `doc::apply_edits` (inserts, deletes, moves, attribute changes,
-//! undo, redo), the incrementally updated scene draws exactly what a full `scene::build`
+//! shapes, rotated texts, undo, redo), the incrementally updated scene draws exactly what a
+//! full `scene::build`
 //! draws — per object the same primitives, geometry and connection points, and the same
 //! junction dots — compared as sets (the incremental path appends, so row order differs).
 
@@ -93,12 +94,13 @@ fn canonical(sc: &Scene) -> (Vec<String>, Vec<(i32, i32)>) {
     for i in 0..t.x.len() {
         let end = t.end[i] as usize;
         rows.push(format!(
-            "{:?} text {} {} {} {} {:?}",
+            "{:?} text {} {} {} {} {} {:?}",
             key(sc.owner.texts[i]),
             t.x[i],
             t.y[i],
             t.size[i],
             t.layer[i],
+            t.rot[i],
             &t.text[start..end]
         ));
         start = end;
@@ -135,7 +137,7 @@ fn random_ops(rng: &mut Rng, p: &Project, h: DocHandle, next: &mut u64) -> Strin
         *next += 1;
         id(*next)
     };
-    match rng.below(14) {
+    match rng.below(18) {
         0..=2 => {
             // An axis-aligned wire, often ending on another wire (T-junctions), sometimes
             // diagonal.
@@ -165,12 +167,60 @@ fn random_ops(rng: &mut Rng, p: &Project, h: DocHandle, next: &mut u64) -> Strin
         ),
         5 => format!("insert noconn {} {} {}\n", fresh(), rng.at(), rng.at()),
         6 => format!(
-            "insert text {} {} {} R0 t{}\n",
+            "insert text {} {} {} {} t{}\n",
             fresh(),
             rng.at(),
             rng.at(),
+            ["R0", "R90", "R180", "R270", "MR90"][rng.below(5) as usize],
             rng.below(9)
         ),
+        14 | 15 => {
+            // A schematic graphic of every form.
+            let (x, y) = (rng.at(), rng.at());
+            let d = (rng.below(3) as i64 + 1) * 20;
+            let (form, values) = match rng.below(5) {
+                0 => ("line", format!("{x} {y} {} {}", x + d, y)),
+                1 => ("rect", format!("{x} {y} {} {}", x + d, y + d)),
+                2 => ("circle", format!("{x} {y} {d}")),
+                3 => ("arc", format!("{x} {y} {d} 0 90")),
+                _ => ("poly", format!("{x} {y} {} {y} {x} {}", x + d, y + d)),
+            };
+            let layer = ["", "  layer 7\n"][rng.below(2) as usize];
+            format!("insert shape {} {form} {values}\n{layer}", fresh())
+        }
+        16 => {
+            // Delete or move a shape (its coordinates, or its layer).
+            let t = doc.shapes();
+            match pick(rng, t.id.len()) {
+                Some(i) if rng.below(3) == 0 => format!("delete shape {}\n", t.id[i].text(s)),
+                Some(i) if rng.below(2) == 0 => {
+                    format!(
+                        "set_attr shape {} layer {}\n",
+                        t.id[i].text(s),
+                        rng.below(8) + 1
+                    )
+                }
+                Some(i) => format!(
+                    "set_field shape {} {} {}\n",
+                    t.id[i].text(s),
+                    rng.below(2) + 2,
+                    rng.at()
+                ),
+                None => String::new(),
+            }
+        }
+        17 => {
+            // Turn a text.
+            let t = doc.texts();
+            match pick(rng, t.id.len()) {
+                Some(i) => format!(
+                    "set_field text {} 3 {}\n",
+                    t.id[i].text(s),
+                    ["R0", "R90", "R180", "R270"][rng.below(4) as usize]
+                ),
+                None => String::new(),
+            }
+        }
         7 | 8 => {
             // Delete something.
             let tables = [
@@ -293,6 +343,12 @@ fn walk(seed: u64, steps: usize) {
     assert!(
         updated * 2 > steps,
         "most edits were incremental ({updated} of {steps})"
+    );
+    let doc = p.doc(h).expect("open");
+    assert!(!doc.shapes().id.is_empty(), "the walk drew shapes");
+    assert!(
+        inc.prims.texts.rot.iter().any(|&r| r != 0),
+        "and turned texts"
     );
 }
 

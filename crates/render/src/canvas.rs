@@ -179,6 +179,8 @@ pub struct Texts {
     pub size: Vec<i32>,
     /// Palette layer.
     pub layer: Vec<u8>,
+    /// Quarter turns clockwise on screen about the anchor, `[0, 3]`.
+    pub rot: Vec<u8>,
     /// One past each label's last byte in `text`.
     pub end: Vec<u32>,
     /// UTF-8 bytes of all labels.
@@ -260,12 +262,19 @@ impl CanvasPrims {
 
     /// Appends a label.
     pub fn text(&mut self, x: i32, y: i32, size: i32, layer: u8, s: &str) {
+        self.text_rot(x, y, size, layer, s, 0);
+    }
+
+    /// Appends a label turned `rot` quarter turns clockwise about its anchor (taken mod 4).
+    pub fn text_rot(&mut self, x: i32, y: i32, size: i32, layer: u8, s: &str, rot: u8) {
         let t = &mut self.texts;
         assert!(t.x.len() < Self::CAPACITY && usize::from(layer) < LAYERS && size > 0);
+        assert_eq!(t.rot.len(), t.x.len(), "rotation column in step");
         t.x.push(x);
         t.y.push(y);
         t.size.push(size);
         t.layer.push(layer);
+        t.rot.push(rot % 4);
         t.text.push_str(s);
         t.end.push(t.text.len() as u32);
     }
@@ -524,11 +533,14 @@ pub fn draw_cached<P: Painter>(
                 if cache.key == key && p.draw_layer(cache.slot, cache.stamp, place, view, None) {
                     return Drawn::Copied;
                 }
-                if cache.key != key && patch(p, cache, &mut draw) {
+                // A painter without the layer (a fresh one) patches nothing and shows nothing:
+                // it records below.
+                if cache.key != key
+                    && patch(p, cache, &mut draw)
+                    && p.draw_layer(cache.slot, cache.stamp, place, view, None)
+                {
                     cache.key = key;
                     cache.pending = Some(Vec::new());
-                    let shown = p.draw_layer(cache.slot, cache.stamp, place, view, None);
-                    assert!(shown, "a patched layer draws");
                     return Drawn::Patched;
                 }
             }
@@ -971,11 +983,16 @@ fn draw_texts<P: Painter>(
             f64::from(t.x[i]) * cam.scale + ox,
             f64::from(t.y[i]) * cam.scale + oy,
         );
-        let visible = px >= TEXT_MIN_PX && x < view.x1 && y < view.y1 && y + px * 2.0 > view.y0;
+        // A turned label extends left/up of its anchor too: only the size culls it.
+        let rot = t.rot.get(i).copied().unwrap_or(0);
+        let visible = px >= TEXT_MIN_PX
+            && (rot != 0 || (x < view.x1 && y < view.y1 && y + px * 2.0 > view.y0));
         if visible {
             let (g0, g1) = shaped(&t.text[start..end], text, scratch);
             if let (Some(face), true) = (scratch.text_face.clone(), g1 > g0) {
-                let at = Affine::translate((x, y)) * Affine::scale(px / f64::from(TEXT_REF_PX));
+                let at = Affine::translate((x, y))
+                    * Affine::rotate(f64::from(rot) * std::f64::consts::FRAC_PI_2)
+                    * Affine::scale(px / f64::from(TEXT_REF_PX));
                 let color = rgba(palette.color[usize::from(t.layer[i])]);
                 let glyphs = &scratch.text_glyphs[g0 as usize..g1 as usize];
                 p.glyphs(&face, TEXT_REF_PX, &[], color, at, glyphs);

@@ -123,6 +123,8 @@ fn var_edit_with_1k_dependents_through_the_docs_page() {
          gmid-backed median {:.2} ms (max {:.2})",
         plain[4], plain[8], plugin[4], plugin[8]
     );
+    eprintln!("PERF app.var_edit_1k_dependents_ms {:.3}", plain[4]);
+    eprintln!("PERF app.var_edit_1k_dependents_gmid_ms {:.3}", plugin[4]);
 }
 
 /// Polls a wgpu future to completion (native wgpu resolves them without a reactor).
@@ -363,8 +365,9 @@ impl Bench {
         }
     }
 
-    /// Prints p50/p95/p99 of the samples since the last report and clears them.
-    fn report(&mut self, what: &str) {
+    /// Prints p50/p95/p99 of the samples since the last report, clears them, and returns the
+    /// CPU p50.
+    fn report(&mut self, what: &str) -> f64 {
         let pct = |v: &mut Vec<f64>| {
             if v.is_empty() {
                 return "-".to_owned();
@@ -376,6 +379,9 @@ impl Bench {
             s
         };
         let n = self.cpu.len();
+        let mut cpu50 = self.cpu.clone();
+        cpu50.sort_by(f64::total_cmp);
+        let cpu50 = cpu50.get(n / 2).copied().unwrap_or(0.0);
         let reused = self
             .gpu
             .as_mut()
@@ -389,6 +395,7 @@ impl Bench {
             "  {what:<8} {n:>3} frames ({reused} without vello)  CPU update+paint p50/p95/p99 \
              {cpu} ms  render calls {vello} ms  GPU {gpu} ms"
         );
+        cpu50
     }
 }
 
@@ -467,7 +474,7 @@ fn frame_times(n: u32) {
         8,
         false,
     );
-    b.report("pan");
+    let pan = b.report("pan");
 
     // Zoom: bursts of 6 wheel notches at the pointer, 16 ms apart, alternately in and out,
     // each followed by the frame that redraws crisp once the zoom has settled (counted too).
@@ -534,7 +541,13 @@ fn frame_times(n: u32) {
         b.frame(&key("U"), 500, true);
         assert_eq!(b.ed.scene().objs.len(), before, "undone");
     }
-    b.report("edit");
+    let edit = b.report("edit");
+    if n == 100_000 {
+        // The nightly regression gate's metrics (tests/perf/baseline.txt): CPU p50 per frame.
+        eprintln!("PERF app.open_100k_ms {open:.3}");
+        eprintln!("PERF app.pan_frame_100k_ms {pan:.3}");
+        eprintln!("PERF app.edit_100k_ms {edit:.3}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

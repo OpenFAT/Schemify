@@ -1,6 +1,7 @@
-//! Schemify's application crate: the spines (ARCHITECTURE.md § Spines) and the only crate
-//! that talks to the OS. The `schemify` binary (`src/main.rs`) runs the headless CLI spines;
-//! with the `gui` feature (default) this library also provides the interactive editor:
+//! Schemify's editor (binary `schemify-gui`, D39): the `frame` spine over the core's spines.
+//! The headless CLI, project loading, the OS boundary and the package manager live in
+//! `schemify-cli` (binary `schemify`) and are re-exported here as [`libs`], [`platform`] and
+//! [`spines`].
 //!
 //! - [`editor`] — the `frame` spine: input → commands → plugins → `doc` edits → UI
 //!   composition → scene, plus the xschem editing gestures (tool state machine);
@@ -8,16 +9,20 @@
 //! - [`docs`] — the docs page beside the canvas (D19 vars, D21 math, D20 cache write-back);
 //! - [`scene`] — the document as canvas primitives, with hit-testing and box selection;
 //! - [`edit`] — gestures as `doc` edit transactions (one per gesture, so one undo);
+//! - [`wiring`] — wire-topology edits: stretch/kissing moves, join/trim, cuts, connected
+//!   wires, align to grid;
+//! - [`search`] — the search/replace dialog's find and replace transforms;
+//! - [`clip`] — clipboard fragments as line-record text (system clipboard in `platform`);
+//! - [`export`] — SVG/PDF/EPS writers over the canvas primitive tables (PNG: CPU raster);
+//! - [`recent`] — the recent-files list (user state);
 //! - [`geometry`] — grid symmetries applied to records;
 //! - [`session`] — project load, open documents, tabs and hierarchy, saves and journals;
 //! - [`shell`] — UI composition (core base ⊕ plugins ⊕ app state) and the canvas palette;
-//! - [`plugins`] — plugin host glue (bundled default UI, D6);
+//! - [`plugins`] — plugin host glue (bundled default UI, D6; user packages, D35);
 //! - [`waves`] — the waveform dock (D23) and its cross-probe entry;
 //! - [`checks`] — the live violation overlay, the checks panel and net highlight (D13);
 //! - [`sim`] — the run spine in the editor: non-blocking runs, results table, plot slots,
-//!   OP back-annotation, the optimizer's staged edit (D15–D18, D23);
-//! - [`spines`] — the netlist/run spine steps shared with the headless CLI;
-//! - [`platform`] — file system split by `cfg` (native `std::fs`; web OPFS is a TODO, D31).
+//!   OP back-annotation, the optimizer's staged edit (D15–D18, D23).
 //!
 //! ```no_run
 //! use schemify_app::editor::{Editor, Options};
@@ -30,30 +35,23 @@
 
 #![forbid(unsafe_code)]
 
-#[cfg(feature = "gui")]
+pub use schemify_cli::{libs, platform, spines};
+
 pub mod checks;
-#[cfg(feature = "gui")]
+pub mod clip;
 pub mod commands;
-#[cfg(feature = "gui")]
 pub mod docs;
-#[cfg(feature = "gui")]
 pub mod edit;
-#[cfg(feature = "gui")]
 pub mod editor;
-#[cfg(feature = "gui")]
+pub mod export;
 pub mod geometry;
-pub mod libs;
-pub mod platform;
-#[cfg(feature = "gui")]
 pub mod plugins;
-#[cfg(feature = "gui")]
+pub mod recent;
 pub mod scene;
-#[cfg(feature = "gui")]
+pub mod search;
 pub mod session;
-#[cfg(feature = "gui")]
 pub mod shell;
-#[cfg(all(feature = "gui", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod sim;
-pub mod spines;
-#[cfg(feature = "gui")]
 pub mod waves;
+pub mod wiring;

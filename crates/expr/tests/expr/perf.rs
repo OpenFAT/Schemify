@@ -30,6 +30,7 @@ fn perf_scalar_eval_1m() {
         "1M evaluations of `{src}`: {dt:?} ({:.1} ns each)",
         dt.as_nanos() as f64 / 1e6
     );
+    eprintln!("PERF expr.scalar_eval_1m_ms {:.3}", dt.as_secs_f64() * 1e3);
     if !cfg!(debug_assertions) {
         assert!(dt.as_millis() < 200, "scalar evaluation too slow: {dt:?}");
     }

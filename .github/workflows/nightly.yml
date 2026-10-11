@@ -1,21 +1,33 @@
-# Nightly tier (TESTING.md): xschem differential on the full corpus, fuzzing.
+# Nightly tier (TESTING.md § Tiers): xschem differential ratchet on the full corpus, fuzzing,
+# perf regression gate.
 name: nightly
 
 on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
+    inputs:
+      fuzz_minutes:
+        description: minutes per fuzz target
+        default: "60"
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.95.0" # = ci.yml
 
 jobs:
+  # Goldens from a pinned xschem (nix), our netlists of every bench, spicecmp comparison;
+  # fails when the agree counts drop below tests/corpus/RATCHET.md.
   corpus:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: cachix/install-nix-action@v31
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
       - name: fetch corpus (pinned, sparse)
         run: tests/corpus/fetch.sh
       - name: golden netlists from pinned xschem (nix)
@@ -25,21 +37,109 @@ jobs:
         run: cat tests/corpus/.cache/golden/REPORT.txt
       - name: comparator self-checks on real goldens
         run: cargo test --release -p schemify-spicecmp -- --include-ignored
-      # Reports the ratchet number; must not fail until the netlister exists.
-      # TODO(netlist): fill `ours/` with `schemify netlist` output named like
-      # the goldens (<name>.spice, <name>.cdl), then drop continue-on-error and
-      # fail when the agree count drops below the last recorded value.
-      - name: differential vs xschem (ratchet)
-        continue-on-error: true
-        run: |
-          mkdir -p ours
-          tests/corpus/diff_all.sh ours
+      - name: differential vs xschem
+        run: >-
+          SCHEMIFY_CORPUS=$PWD/tests/corpus/.cache
+          cargo test -p schemify-netlist --release --test corpus -- --nocapture
+      - name: ratchet (RATCHET.md)
+        run: tests/corpus/ratchet.sh tests/corpus/.cache/netlist-out/TABLE.md
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: corpus-results
+          path: |
+            tests/corpus/.cache/golden/REPORT.txt
+            tests/corpus/.cache/netlist-out/TABLE.md
+            tests/corpus/.cache/netlist-out/RESULTS.txt
+          if-no-files-found: ignore
 
-  # TODO(fuzz): cargo-fuzz targets, 1 h each (TESTING.md nightly tier):
-  # format reader, expr parser, xschem .sch/.sym importer, spicecmp parser.
-  # Corpus seeds: tests/corpus/.cache/src (real PDK files) and the goldens.
+  # cargo-fuzz on every harness (crates/*/fuzz). The corpus carries over between nights through
+  # the actions cache and is uploaded with any crash inputs; a crash fails the job and its
+  # input becomes a checked-in regression test (TESTING.md).
   fuzz:
-    if: false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { crate: format, target: parse }
+          - { crate: format, target: merge3 }
+          - { crate: expr, target: compile }
+          - { crate: import, target: xschem_read }
     runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      MINUTES: ${{ inputs.fuzz_minutes || '60' }}
+      CORPUS: crates/${{ matrix.crate }}/fuzz/corpus/${{ matrix.target }}
     steps:
-      - run: echo "placeholder until fuzz targets exist"
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.CORPUS }}
+          key: fuzz-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-${{ matrix.target }}-
+      - name: seeds
+        run: |
+          mkdir -p "$CORPUS"
+          case "${{ matrix.target }}" in
+            parse) find crates/*/tests/fixtures -name '*.sh*' -type f -exec cp {} "$CORPUS"/ \; ;;
+            xschem_read)
+              # Real PDK files (TESTING.md: seeded with real PDK files) plus the hand-written set.
+              tests/corpus/fetch.sh >/dev/null
+              find tests/corpus/.cache/src tests/determinism/xschem \( -name '*.sch' -o -name '*.sym' \) \
+                -type f -size -64k | head -4000 | while read -r f; do cp "$f" "$CORPUS/$(echo "$f" | sha1sum | cut -c1-16)"; done ;;
+          esac
+          echo "$(ls "$CORPUS" | wc -l) corpus inputs"
+      - name: fuzz ${{ matrix.target }} for ${{ env.MINUTES }} min
+        working-directory: crates/${{ matrix.crate }}/fuzz
+        run: >-
+          cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} --
+          -max_total_time=$((MINUTES * 60)) -rss_limit_mb=4096 -timeout=30 -print_final_stats=1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: |
+            ${{ env.CORPUS }}
+            crates/${{ matrix.crate }}/fuzz/artifacts
+          if-no-files-found: ignore
+
+  # D39 budgets (each perf test asserts its own) and a > 10% regression gate against
+  # tests/perf/baseline.txt, measured on this runner class.
+  perf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      # The budget asserts are calibrated for D39's reference machine (a mid-range laptop), not
+      # a shared runner: a miss here is a warning; the gate below is the regression check.
+      # Two rounds: the gate takes each metric's faster value (runner hiccups).
+      - name: perf tests (--ignored --release, one at a time, two rounds)
+        run: |
+          set -o pipefail
+          missed=""
+          for round in 1 2; do
+            for p in format doc elab netlist render app; do
+              cargo test --release -p "schemify-$p" --test perf -- --ignored --nocapture --test-threads=1 2>&1 | tee -a perf.log || missed="$missed $p"
+            done
+            cargo test --release -p schemify-expr --test expr perf -- --ignored --nocapture --test-threads=1 2>&1 | tee -a perf.log || missed="$missed expr"
+          done
+          grep -a '^PERF ' perf.log > perf-results.txt || true
+          [ -z "$missed" ] || echo "::warning::perf tests failed (D39 budget asserts on this runner?):$missed"
+      - name: regression gate (tests/perf/baseline.txt, > 10% fails)
+        if: always()
+        run: tests/perf/gate.sh perf-results.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-results
+          path: |
+            perf.log
+            perf-results.txt

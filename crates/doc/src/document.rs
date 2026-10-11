@@ -10,7 +10,8 @@
 use crate::record::{Attr, RecordBuf, check_record};
 use crate::strings::{FastMap, ObjId, Strings, Sym};
 use crate::tables::{
-    FormatSink, Graphics, Instances, Noconns, Pins, Placed, Pool, Records, Scratch, Span, Table,
+    FormatSink, Graphics, Instances, Noconns, Pins, Placed, Pool, Records, Scratch, Shapes, Span,
+    Table,
 };
 use crate::{Code, Diag};
 use schemify_format::{
@@ -33,6 +34,7 @@ pub enum TableId {
     Ports,
     Noconns,
     Texts,
+    Shapes,
     Constraints,
     Waivers,
     DocBlocks,
@@ -49,7 +51,7 @@ pub enum TableId {
 
 impl TableId {
     /// Every table, in rank order.
-    pub const ALL: [TableId; 22] = [
+    pub const ALL: [TableId; 23] = [
         TableId::Pins,
         TableId::Params,
         TableId::Impls,
@@ -60,6 +62,7 @@ impl TableId {
         TableId::Ports,
         TableId::Noconns,
         TableId::Texts,
+        TableId::Shapes,
         TableId::Constraints,
         TableId::Waivers,
         TableId::DocBlocks,
@@ -89,6 +92,7 @@ impl TableId {
             K::Port => TableId::Ports,
             K::Noconn => TableId::Noconns,
             K::Text => TableId::Texts,
+            K::Shape => TableId::Shapes,
             K::Constraint => TableId::Constraints,
             K::Waive => TableId::Waivers,
             K::Prose | K::Var => TableId::DocBlocks,
@@ -126,7 +130,9 @@ impl TableId {
             TableId::Params => 1 << 8,
             TableId::Impls | TableId::Bodies => 1 << 4,
             TableId::Pins | TableId::DocBlocks => 1 << 12,
-            TableId::Graphics | TableId::Constraints | TableId::Waivers => 1 << 16,
+            TableId::Graphics | TableId::Shapes | TableId::Constraints | TableId::Waivers => {
+                1 << 16
+            }
             TableId::Instances
             | TableId::Wires
             | TableId::Labels
@@ -190,6 +196,10 @@ macro_rules! with_table {
             }
             TableId::Texts => {
                 let $tab = &$doc.texts;
+                $body
+            }
+            TableId::Shapes => {
+                let $tab = &$doc.shapes;
                 $body
             }
             TableId::Constraints => {
@@ -294,6 +304,10 @@ macro_rules! with_table_mut {
                 let $tab = &mut $doc.texts;
                 $body
             }
+            TableId::Shapes => {
+                let $tab = &mut $doc.shapes;
+                $body
+            }
             TableId::Constraints => {
                 let $tab = &mut $doc.constraints;
                 $body
@@ -369,6 +383,7 @@ pub struct Document {
     pub(crate) ports: Placed,
     pub(crate) noconns: Noconns,
     pub(crate) texts: Placed,
+    pub(crate) shapes: Shapes,
     pub(crate) constraints: Records,
     pub(crate) waivers: Records,
     pub(crate) doc_blocks: Records,
@@ -421,6 +436,7 @@ impl Document {
             ports: Placed::new(RecordKind::Port),
             noconns: Noconns::default(),
             texts: Placed::new(RecordKind::Text),
+            shapes: Shapes::default(),
             constraints: Records::default(),
             waivers: Records::default(),
             doc_blocks: Records::default(),
@@ -517,6 +533,10 @@ impl Document {
     /// `text` rows (unordered).
     pub fn texts(&self) -> &Placed {
         &self.texts
+    }
+    /// `shape` rows: schematic graphics (unordered).
+    pub fn shapes(&self) -> &Shapes {
+        &self.shapes
     }
     /// `constraint` rows (unordered, D30).
     pub fn constraints(&self) -> &Records {

@@ -66,6 +66,7 @@ mod compile;
 #[doc(hidden)]
 pub mod dmath;
 mod eval;
+mod fft;
 mod graph;
 mod lex;
 mod parse;

@@ -23,12 +23,14 @@
       ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
-      # winit and wgpu `dlopen` these at runtime (Linux): Wayland first, X11 fallback.
+      # winit and wgpu `dlopen` these at runtime (Linux): Wayland first, X11 fallback;
+      # fontconfig for the system-font fallback of glyphs outside the embedded UI font.
       runtimeLibs =
         pkgs:
         pkgs.lib.optionals pkgs.stdenv.isLinux (
           with pkgs;
           [
+            fontconfig
             wayland
             libxkbcommon
             vulkan-loader
@@ -74,15 +76,20 @@
           # Tracked files only (git), so the gitignored corpus cache never enters the store.
           src = self;
           cargoLock.lockFile = ./Cargo.lock;
-          # The editor/CLI and the standalone importer; plugins are prebuilt wasm assets.
+          # D39: the headless core `schemify` (CLI, config, package manager), the editor
+          # `schemify-gui` (`schemify edit` runs it) and the standalone importer; plugins are
+          # prebuilt wasm assets.
           cargoBuildFlags = [
+            "-p"
+            "schemify-cli"
             "-p"
             "schemify-app"
             "-p"
             "schemify-devicereader"
           ];
-          # Shipped binaries carry no debug info (D39: native binary ≤ 25 MB); the
-          # workspace release profile keeps `debug = 1` for local profiling.
+          # Shipped binaries carry no debug info (D39: core ≤ 2 MB, editor ≤ 10 MB; checked by
+          # tools/size-check.sh, which uses this same env); the workspace release profile keeps
+          # `debug = 1` for local profiling.
           env = {
             CARGO_PROFILE_RELEASE_DEBUG = "0";
             CARGO_PROFILE_RELEASE_STRIP = "symbols";
@@ -90,14 +97,23 @@
             CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1";
             # No shipped code catches panics (only a corpus test does), so drop unwinding.
             CARGO_PROFILE_RELEASE_PANIC = "abort";
+            # Linux (docs/perf.md "Binary size"): with panic=abort and stripped symbols the unwind
+            # tables only fed symbol-less backtraces (-0.5 MB editor), and packed relative
+            # relocations (DT_RELR, glibc >= 2.36; nix's glibc) shrink the PIE relocation table
+            # (-0.8 MB). buildRustPackage passes --target, so build scripts keep their defaults.
+            RUSTFLAGS = pkgs.lib.optionalString pkgs.stdenv.isLinux "-C force-unwind-tables=no -C link-arg=-Wl,-z,pack-relative-relocs";
           };
           # The suite needs a GPU, the fetched xschem corpus and simulators; run
           # `cargo test --workspace` in the dev shell (CI does).
           doCheck = false;
           nativeBuildInputs = [ pkgs.makeWrapper ];
-          postInstall = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+          # Only the editor gets the GUI libraries. Both find the simulators; the core also runs
+          # git and curl for `schemify pack` (config spec §5). The user's PATH comes first.
+          postInstall = ''
             wrapProgram $out/bin/schemify \
-              --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (runtimeLibs pkgs)} \
+              --suffix PATH : ${pkgs.lib.makeBinPath ((simulators pkgs) ++ [ pkgs.git pkgs.curl ])}
+            wrapProgram $out/bin/schemify-gui \
+              ${pkgs.lib.optionalString pkgs.stdenv.isLinux "--prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (runtimeLibs pkgs)}"} \
               --suffix PATH : ${pkgs.lib.makeBinPath (simulators pkgs)}
           '';
           meta = {
@@ -106,7 +122,7 @@
               mit
               asl20
             ];
-            mainProgram = "schemify";
+            mainProgram = "schemify-gui";
             platforms = systems;
           };
         };
@@ -119,7 +135,12 @@
       });
 
       apps = forAll (pkgs: {
+        # `nix run` starts the editor; `nix run .#schemify -- netlist …` the headless core.
         default = {
+          type = "app";
+          program = "${schemify pkgs}/bin/schemify-gui";
+        };
+        schemify = {
           type = "app";
           program = "${schemify pkgs}/bin/schemify";
         };

@@ -9,7 +9,7 @@
 //! Hidden public module: the test-only reference evaluator shares this math
 //! kernel (and nothing else) so the differential oracle checks evaluator logic.
 
-use rustfft::num_complex::Complex64 as C;
+use num_complex::Complex64 as C;
 
 use crate::compile::Builtin;
 

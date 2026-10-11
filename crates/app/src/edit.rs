@@ -47,6 +47,27 @@ pub fn selected_records(doc: &Document, sel: &[ObjKey]) -> Vec<(Loc, Target, Rec
     out
 }
 
+/// Keys of every drawn rank-3 object of `doc` (instances, wires, labels, ports, noconns,
+/// texts, shapes), table by table in row order: what select-all, merge and align see.
+pub fn schematic_keys(doc: &Document) -> Vec<ObjKey> {
+    let mut out = Vec::new();
+    let tables: [(TableId, &[ObjId]); 7] = [
+        (TableId::Instances, &doc.instances().id),
+        (TableId::Wires, &doc.wires().id),
+        (TableId::Labels, &doc.labels().id),
+        (TableId::Ports, &doc.ports().id),
+        (TableId::Noconns, &doc.noconns().id),
+        (TableId::Texts, &doc.texts().id),
+        (TableId::Shapes, &doc.shapes().id),
+    ];
+    let rows: usize = tables.iter().map(|t| t.1.len()).sum();
+    for (table, ids) in tables {
+        out.extend(ids.iter().map(|id| ObjKey { table, key: id.0 }));
+    }
+    assert_eq!(out.len(), rows);
+    out
+}
+
 /// Deletes the selection. Graphics are deleted from the highest row down so the rows of
 /// the ones still to delete stay valid inside the transaction.
 pub fn delete(doc: &Document, sel: &[ObjKey]) -> Vec<Op> {

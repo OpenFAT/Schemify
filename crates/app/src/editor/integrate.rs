@@ -263,7 +263,18 @@ impl Editor {
             return;
         }
         self.blocked.clear();
-        let text = schemify_netlist::emit(&e, dialect).text;
+        // Options → Flat netlist: the hierarchy expanded (SPICE dialects only).
+        let spice = matches!(
+            dialect,
+            schemify_elab::Dialect::Ngspice
+                | schemify_elab::Dialect::Xyce
+                | schemify_elab::Dialect::Cdl
+        );
+        let text = if self.opts.flat && spice {
+            schemify_netlist::emit_flat(&e, dialect)
+        } else {
+            schemify_netlist::emit(&e, dialect).text
+        };
         let path = spines::netlist_file(&self.session.root, &stem, dialect);
         if let Err(err) = platform::write_atomic(&path, text.as_bytes()) {
             self.session.status = format!("netlist: {err}");

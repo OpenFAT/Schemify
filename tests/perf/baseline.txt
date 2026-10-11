@@ -1,0 +1,27 @@
+# Perf baseline for tests/perf/gate.sh (nightly `perf` job): `<metric> <ms>`, one per `PERF` line
+# the perf tests print. Measured on GitHub `ubuntu-latest`, the runner class that runs the gate;
+# never on a developer machine. Each value is the slowest of the calibration runs below, so
+# run-to-run noise stays inside the 10% margin.
+# Re-bless after an intended change: take the `PERF` lines of the nightly `perf-results`
+# artifact (fastest of its two rounds per metric), drop the prefix, and note the run here.
+# Calibration runs: 38151805246 (2026-10-11).
+app.edit_100k_ms 148.338
+app.open_100k_ms 235.188
+app.pan_frame_100k_ms 13.858
+app.var_edit_1k_dependents_gmid_ms 2.771
+app.var_edit_1k_dependents_ms 2.605
+doc.edit_undo_100k_ms 0.015
+doc.open_100k_ms 106.412
+doc.save_100k_ms 43.556
+elab.connect_100k_ms 68.379
+elab.flat_100k_ms 118.244
+elab.hier_1m_leaves_ms 0.339
+elab.recompute_1k_dependents_ms 1.608
+expr.scalar_eval_1m_ms 145.647
+format.merge3_100k_ms 183.783
+format.parse_100k_ms 66.687
+format.write_100k_ms 24.175
+netlist.emit_flat_100k_ms 16.993
+netlist.emit_hier_1m_ms 0.020
+render.scene_100k_ms 5.036
+render.waves_3x1m_ms 1.375
