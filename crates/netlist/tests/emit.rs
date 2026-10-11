@@ -126,6 +126,22 @@ fn tb_name_map_round_trips() {
     // `ignore short` merged out2 and outs into the smaller name.
     assert_eq!(m.net_name("/outs"), None);
     assert!(n.text.contains("CCOUT out2 0 1e-14"), "{}", n.text);
+    // Leaves: every emitted leaf once, each mapping back to a path; bounded by `max`.
+    let leaves = m.leaves(usize::MAX);
+    assert!(leaves.iter().any(|l| l == "X2.X1.MMN"), "{leaves:?}");
+    assert!(
+        !leaves.iter().any(|l| l == "X1" || l == "X2"),
+        "subckt rows are not leaves"
+    );
+    for l in &leaves {
+        assert!(m.inst_path(l).is_some(), "{l}");
+    }
+    let mut sorted = leaves.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(sorted.len(), leaves.len(), "no leaf twice");
+    assert_eq!(m.leaves(1).len(), 1);
+    assert!(m.leaves(0).is_empty());
 }
 
 #[test]

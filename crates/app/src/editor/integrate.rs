@@ -55,6 +55,8 @@ pub(super) fn text_tab_cmd(cmd: Cmd) -> bool {
             | Cmd::ResultsPick
             | Cmd::ResultsWaves
             | Cmd::ResultsHistory
+            | Cmd::ResultsSort
+            | Cmd::ResultsFilter
             | Cmd::SimCancel
             | Cmd::SetDialect
             | Cmd::ShowNetlist
@@ -334,6 +336,13 @@ impl Editor {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
+            // OP annotation needs device quantities and currents saved (run spec §7a).
+            let probe = if self.op_on {
+                self.hier_map().map(crate::sim::probe_lines)
+            } else {
+                None
+            };
+            let probe = probe.unwrap_or_default();
             let env: Vec<(&str, &str)> = self
                 .env
                 .iter()
@@ -342,7 +351,10 @@ impl Editor {
             let host = &mut self.host;
             let mut funcs = |name: &str, args: &[Value<'_>]| host.call_fn(name, args);
             let what = optimize.then_some(arg.trim());
-            match self.sim.start(&mut self.session, h, what, &env, &mut funcs) {
+            match self
+                .sim
+                .start(&mut self.session, h, what, &probe, &env, &mut funcs)
+            {
                 Ok(msg) => {
                     self.blocked.clear();
                     self.session.status = msg;
@@ -484,13 +496,34 @@ impl Editor {
         self.fit([b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad]);
     }
 
-    /// Results panel buttons: pick a job (`results.row.<j>`), open its raw file in the waves
-    /// dock, or load an earlier run (`results.hist.<i>`).
-    pub(super) fn results_cmd(&mut self, cmd: Cmd, node: &str) {
+    /// Results panel commands: pick a job (`results.row.<j>`, `results.best.<j>`), open its
+    /// raw file in the waves dock, load an earlier run (`results.hist.<i>`), sort by a header
+    /// column (`results.head.<col>`) or filter the rows (`arg`: the filter field's text).
+    pub(super) fn results_cmd(&mut self, cmd: Cmd, node: &str, arg: &str) {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let index = node.rsplit('.').next().and_then(|n| n.parse::<u32>().ok());
             match cmd {
+                Cmd::ResultsSort => {
+                    use crate::sim::Col;
+                    let col = node.strip_prefix("results.head.").and_then(|c| match c {
+                        "job" => Some(Col::Job),
+                        "key" => Some(Col::Key),
+                        "state" => Some(Col::State),
+                        _ => {
+                            let k = c.get(1..)?.parse::<u16>().ok()?;
+                            match c.get(..1)? {
+                                "o" => Some(Col::Output(k)),
+                                "s" => Some(Col::Spec(k)),
+                                _ => None,
+                            }
+                        }
+                    });
+                    if let Some(col) = col {
+                        self.sim.sort_by(col);
+                    }
+                }
+                Cmd::ResultsFilter => self.sim.set_filter(arg),
                 Cmd::ResultsPick => {
                     if let Some(j) = index {
                         self.sim.select(j);
@@ -517,7 +550,7 @@ impl Editor {
             }
         }
         #[cfg(target_arch = "wasm32")]
-        let _ = (cmd, node);
+        let _ = (cmd, node, arg);
     }
 
     /// Opens the waves dock on the selected job's raw file.
@@ -587,36 +620,45 @@ impl Editor {
                 return;
             };
             checks::component_of(doc, cell, key, at, tol).map(|(c, pin)| {
-                let inst = pin.map(|(row, _)| {
-                    doc.strings()
-                        .get(doc.instances().name[row as usize])
-                        .to_owned()
+                let inst = pin.map(|(row, k)| {
+                    let name = doc.strings().get(doc.instances().name[row as usize]);
+                    let f = cell.ifaces.get(cell.inst_iface[row as usize] as usize);
+                    // `k` counts the ordinary (not inherited) pins, as `pins_of` does.
+                    let pin = f.and_then(|f| {
+                        (0..f.pin_name.len())
+                            .filter(|&p| f.pin_inherit[p] == schemify_elab::Name::NONE)
+                            .nth(k as usize)
+                            .map(|p| cell.names.get(f.pin_name[p]).to_owned())
+                    });
+                    (name.to_owned(), pin.unwrap_or_default())
                 });
                 (checks::net_name(cell, c).to_owned(), inst)
             })
         };
         let Some((net, inst)) = found else { return };
+        let volts = format!("v({})", self.net_key(&net));
         let src = match inst {
-            Some(name) => {
+            Some((name, pin)) => {
                 let path = format!("{}/{name}", self.level_prefix());
                 let Some(emitted) = self.hier_map().and_then(|m| m.inst_name(&path)) else {
                     self.session.status = format!("{path}: not in the netlist");
                     return;
                 };
-                let dev = spice_case(&emitted);
-                let last = dev.rsplit('.').next().unwrap_or(&dev);
-                if !last.starts_with(['v', 'e', 'h', 'l']) {
-                    // Not a branch device: probe the pin's net instead.
-                    format!("v({})", self.net_key(&net))
-                } else {
-                    format!("i({dev})")
-                }
+                crate::waves::current_probe(&emitted, &pin)
             }
-            None => format!("v({})", self.net_key(&net)),
+            None => volts.clone(),
         };
         let Some(w) = self.waves.as_mut() else { return };
-        self.session.status = match w.add_trace(&src) {
-            Ok(()) => format!("cross-probe: {src}"),
+        // A device current the raw file lacks (a run without OP annotation saves no
+        // `savecurrents`): probe the pin's net instead.
+        let same = volts == src;
+        let added = match w.add_trace(&src) {
+            Ok(()) => Ok(src),
+            Err(e) if !same => w.add_trace(&volts).map(|()| volts).map_err(|_| e),
+            Err(e) => Err(e),
+        };
+        self.session.status = match added {
+            Ok(src) => format!("cross-probe: {src}"),
             Err(e) => format!("cross-probe: {e}"),
         };
     }
@@ -706,9 +748,10 @@ impl Editor {
         if polled.done {
             self.refresh_job_waves();
         }
-        if let Some(best) = polled.best {
+        for best in polled.best {
             self.stage_best(reqs, best);
         }
+        self.sim.refresh_table();
         // Plot slots of the shown page.
         let exprs = match active.and_then(|h| self.session.project.doc(h)) {
             Some(doc) if self.docs_shown() => docs::plot_exprs(doc),
@@ -992,7 +1035,11 @@ impl Editor {
             }
             Panel::Results => {
                 #[cfg(not(target_arch = "wasm32"))]
-                self.sim.contribute(t);
+                {
+                    let list = self.shell.strings.find("results.list");
+                    let scroll = list.map_or(0.0, |s| self.shell.ui.scroll_of(s));
+                    self.sim.contribute(t, scroll);
+                }
             }
         }
         if let Some(v) = self.session.text_view() {

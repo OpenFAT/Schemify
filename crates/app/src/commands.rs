@@ -266,10 +266,15 @@ commands! {
     PropsField = "props.field",
     /// OK in the properties dialog.
     PropsOk = "props.ok",
+    /// Results panel: filter the job rows (the filter field's text: every word must appear).
+    ResultsFilter = "results.filter",
     /// Results panel: load an earlier run of the bench (`results.hist.<i>`, results history).
     ResultsHistory = "results.history",
     /// Results panel: pick a job (waves, plots and OP annotation follow it).
     ResultsPick = "results.pick",
+    /// Results panel: sort the job rows by a header column (`results.head.<col>`; again:
+    /// reversed).
+    ResultsSort = "results.sort",
     /// Results panel: open the selected job's raw file in the waves dock.
     ResultsWaves = "results.waves",
     /// Cancel the simulation or optimization in flight.

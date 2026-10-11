@@ -679,14 +679,15 @@ impl Editor {
             light: user.opts.light,
             ..EditOpts::default()
         };
+        // The user config's simulator and compilers (`sim` rows), the simulator overridable.
         #[cfg(not(target_arch = "wasm32"))]
-        let sim_cmd = opts.sim.clone().or_else(|| {
-            user.sim(schemify_config::SimKind::Ngspice)
-                .map(|s| schemify_run::SimCommand {
-                    path: s.path.clone(),
-                    args: s.args.clone(),
-                })
-        });
+        let tools = {
+            let mut t = spines::tools(user);
+            if let Some(s) = opts.sim.clone() {
+                t.sim = s;
+            }
+            t
+        };
         let mut status = std::mem::take(&mut session.status);
         for n in notes {
             push_note(&mut status, &n);
@@ -755,7 +756,7 @@ impl Editor {
             #[cfg(not(target_arch = "wasm32"))]
             op_shown: false,
             #[cfg(not(target_arch = "wasm32"))]
-            sim: Sim::new(sim_cmd),
+            sim: Sim::new(tools),
             graphs: Vec::new(),
             env: spines::env_pairs(),
             now: 0,
@@ -799,13 +800,6 @@ impl Editor {
                 let h = ed.session.create(FileKind::Shcomp)?;
                 ed.session.open_tab(h, View::Schematic);
             }
-        }
-        // The user config's `sim openvaf` / `sim iverilog` programs, as the CLI runner gets
-        // them (`spines::tools`; config spec §3).
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let tools = spines::tools(ed.host.user());
-            ed.sim.set_compilers(tools.openvaf, tools.iverilog);
         }
         if !status.is_empty() {
             ed.session.status = status;
@@ -1736,8 +1730,12 @@ impl Editor {
             }
             Cmd::ChecksPick => self.checks_pick(h, node),
             Cmd::SendToViewer | Cmd::SendHighlighted => self.send_to_viewer(),
-            Cmd::ResultsPick | Cmd::ResultsWaves | Cmd::ResultsHistory => {
-                self.results_cmd(cmd, node);
+            Cmd::ResultsPick
+            | Cmd::ResultsWaves
+            | Cmd::ResultsHistory
+            | Cmd::ResultsSort
+            | Cmd::ResultsFilter => {
+                self.results_cmd(cmd, node, arg);
             }
             Cmd::OpAnnotate | Cmd::OpAnnotateGraphs => {
                 self.op_on = !self.op_on;
