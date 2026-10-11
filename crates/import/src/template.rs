@@ -778,14 +778,17 @@ pub fn spice_number(text: &str) -> Option<String> {
 /// that names a parameter of `parents` (case-insensitively) turned into a hole, so a
 /// value like `w=WP` inside a subcircuit renders the parent's evaluated `WP`. An
 /// xschem `@name` token naming a parent parameter is the same hole without its `@`
-/// (`model=@modeln` → `{modeln}`; goldens render the parameter's value there).
+/// (`model=@modeln` → `{modeln}`; goldens render the parameter's value there). A word
+/// followed by `=` is a SPICE parameter being assigned and stays (`c='C'` → `c='{C}'`,
+/// golden ccap).
 ///
 /// # Examples
 ///
 /// ```
 /// use schemify_import::template::string_value;
-/// let p = ["WP".to_string()];
+/// let p = ["WP".to_string(), "C".to_string()];
 /// assert_eq!(string_value("'wp*2' {x}", &p), "'{WP}*2' {{x}}");
+/// assert_eq!(string_value("c='C' m == c", &p), "c='{C}' m == {C}");
 /// ```
 pub fn string_value(text: &str, parents: &[String]) -> String {
     let mut out = String::with_capacity(text.len());
@@ -799,7 +802,13 @@ pub fn string_value(text: &str, parents: &[String]) -> String {
                 i += 1;
             }
             let word = &text[start..i];
-            match parents.iter().find(|p| p.eq_ignore_ascii_case(word)) {
+            // A word being assigned (`c='C'`) names a SPICE parameter, never the parent's.
+            let next = text[i..].trim_start_matches([' ', '\t']).as_bytes();
+            let assigned = next.first() == Some(&b'=') && next.get(1) != Some(&b'=');
+            match parents
+                .iter()
+                .find(|p| !assigned && p.eq_ignore_ascii_case(word))
+            {
                 Some(p) => {
                     if start > 0 && b[start - 1] == b'@' {
                         out.pop();

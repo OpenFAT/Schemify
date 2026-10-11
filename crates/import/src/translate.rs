@@ -37,6 +37,10 @@ use crate::template::{
 };
 use crate::xschem::{self, GlobalTag, NumField, XschemFile};
 
+/// Instance attributes that are netlist text of their own: an instance that sets one to
+/// other text than its symbol gets a variant cell (spec §3).
+const INSTANCE_TEXT: [&str; 3] = ["format", "lvs_format", "spice_sym_def"];
+
 /// Most input files one call accepts (rows are `u32`, report items index files).
 pub const MAX_FILES: usize = 1 << 20;
 
@@ -113,8 +117,10 @@ pub fn place(p: [i32; 2], o: Orient, at: [i32; 2]) -> Option<[i32; 2]> {
 
 /// Translates xschem libraries into Schemify files.
 ///
-/// `inputs` are `(path, bytes)` with `/`-separated paths; only `.sym` and `.sch` are
-/// read, in path order whatever the input order. Returns the output files as
+/// `inputs` are `(path, bytes)` with `/`-separated paths; `.sym` and `.sch` are
+/// translated, in path order whatever the input order; any other input is a side file
+/// read only where netlist text names it (a `spice_sym_def=".include f.cir"` gives the
+/// `.subckt` port order, spec §2). Returns the output files as
 /// `(path, bytes)` sorted by path — `<lib>/<cell>.<ext>`, `schemify.project`,
 /// `import-report.md`, `import-report.txt` — and the [`Report`].
 ///
@@ -135,6 +141,7 @@ pub fn translate_library(
     t.scan_overrides();
     t.plan_symbols(&mut acc);
     t.plan_cells(&mut acc);
+    t.plan_variants(&mut acc);
     t.name_libs();
     let mut files: Vec<(String, Vec<u8>)> = Vec::with_capacity(t.cells.len() + 3);
     for c in 0..t.cells.len() {
@@ -249,6 +256,9 @@ struct Plan {
     /// Formats for a schematic impl (subcircuit-style conversion).
     schematic_formats: Vec<(&'static str, String)>,
     subcircuit: bool,
+    /// The symbol has a `spice_sym_def`: xschem netlists it by that text, so the leaf impl
+    /// is the default even with a schematic.
+    sym_def: bool,
     /// `spice_ignore` of the symbol: applies to every impl.
     ignore: Option<String>,
     prefix: Option<String>,
@@ -348,6 +358,11 @@ struct Tables<'o> {
     cells: Vec<Cell>,
     /// (base cell, alternate schematic src) → alternate cell.
     alt_cells: HashMap<(u32, u32), u32>,
+    /// (schematic src, instance row) → its variant cell (instance netlist text, spec §3).
+    variants: HashMap<(u32, u32), u32>,
+    /// Inputs that are neither `.sym` nor `.sch`, by normalised path: files netlist text
+    /// includes (`spice_sym_def=".include f.cir"`).
+    side: HashMap<String, String>,
     lib_names: Vec<String>,
 }
 
@@ -443,10 +458,13 @@ impl<'o> Tables<'o> {
     // ------------------------------------------------------------------ 1. read
 
     fn read_sources(inputs: &[(&str, &[u8])], opts: &'o Options<'o>) -> (Tables<'o>, Acc) {
-        let mut sorted: Vec<(String, &[u8])> = inputs
+        let (mut sorted, others): (Vec<_>, Vec<_>) = inputs
             .iter()
             .map(|(p, b)| (normalize(p), *b))
-            .filter(|(p, _)| p.ends_with(".sym") || p.ends_with(".sch"))
+            .partition(|(p, _)| p.ends_with(".sym") || p.ends_with(".sch"));
+        let side: HashMap<String, String> = others
+            .into_iter()
+            .map(|(p, b)| (p, String::from_utf8_lossy(b).into_owned()))
             .collect();
         sorted.sort_by(|a, b| a.0.cmp(&b.0));
         sorted.dedup_by(|a, b| a.0 == b.0);
@@ -513,6 +531,8 @@ impl<'o> Tables<'o> {
             textual: HashSet::new(),
             cells: Vec::new(),
             alt_cells: HashMap::new(),
+            variants: HashMap::new(),
+            side,
             lib_names: Vec::new(),
         };
         (t, acc)
@@ -884,9 +904,16 @@ impl<'o> Tables<'o> {
             ("spectre_format", "spectre"),
             ("verilog_format", "verilog"),
         ] {
-            let Some(f) = attrs.get(key).filter(|f| !f.trim().is_empty()) else {
+            let Some(f) = attrs.get(key).filter(|f| !f.is_empty()) else {
                 continue;
             };
+            if f.trim().is_empty() {
+                // A blank format (`lvs_format=" "`) netlists nothing (golden
+                // sky130_mismatch: the instance is absent from the LVS netlist).
+                leaf_formats.push((dialect, String::new()));
+                schematic_formats.push((dialect, String::new()));
+                continue;
+            }
             for schematic in [false, true] {
                 let names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
                 let ctx = FormatCtx {
@@ -973,6 +1000,34 @@ impl<'o> Tables<'o> {
                 Err(detail) => reviews.push(Review {
                     reason: Reason::Tcl,
                     detail,
+                }),
+            }
+        }
+        // `spice_sym_def` is the cell's netlist text (it replaces the schematic in xschem),
+        // and xschem orders `@pinlist` like its `.subckt` line, inline or in the file an
+        // `.include` names (golden tb_symbol_include): spell the pins out in that order.
+        let sym_def = attrs
+            .get("spice_sym_def")
+            .filter(|d| !d.trim().is_empty())
+            .and_then(|d| netlist_text(d, self.opts.pdk_vars).ok())
+            .map(|t| lines(&t));
+        let stem = stem_of(&self.srcs[sym.src as usize].path).to_owned();
+        let ports = sym_def
+            .as_deref()
+            .and_then(|l| self.subckt_ports(sym.src, l, &stem));
+        if let Some(ports) = ports {
+            match pin_order(&pins, &ports) {
+                Some(holes) => {
+                    for (_, t) in &mut leaf_formats {
+                        *t = t.replace("{pins}", &holes);
+                    }
+                }
+                None => reviews.push(Review {
+                    reason: Reason::PinToken,
+                    detail: format!(
+                        "spice_sym_def .subckt ports `{}` do not match the pins",
+                        ports.join(" ")
+                    ),
                 }),
             }
         }
@@ -1074,9 +1129,32 @@ impl<'o> Tables<'o> {
             ignore,
             schematic_formats,
             subcircuit,
+            sym_def: sym_def.is_some(),
             prefix,
             spiceprefix,
         }
+    }
+
+    /// The port names of the `.subckt` that netlist text `text` of symbol source `src`
+    /// defines, or of the file its `.include` names (a side input, resolved beside the
+    /// symbol); the subckt named `stem` (case-insensitively) if several, else the first.
+    /// `None` when there is no such line or the file is not an input.
+    fn subckt_ports(&self, src: u32, text: &[String], stem: &str) -> Option<Vec<String>> {
+        let mut found = subckt_lines(text.iter().map(String::as_str));
+        if found.is_empty() {
+            let inc = text.iter().find_map(|l| {
+                let w: Vec<&str> = l.split_whitespace().collect();
+                (w.len() == 2 && w[0].eq_ignore_ascii_case(".include"))
+                    .then(|| w[1].trim_matches(['"', '\'']))
+            })?;
+            let path = join(dir_of(&self.srcs[src as usize].path), inc);
+            found = subckt_lines(self.side.get(&path)?.lines());
+        }
+        let pick = found
+            .iter()
+            .position(|(n, _)| n.eq_ignore_ascii_case(stem))
+            .unwrap_or(0);
+        found.into_iter().nth(pick).map(|(_, ports)| ports)
     }
 
     fn iface_of(&self, t: Target) -> &Iface {
@@ -1337,6 +1415,196 @@ impl<'o> Tables<'o> {
             self.cells
                 .iter()
                 .all(|c| (c.kind == FileKind::Shbench) == c.sym.is_none())
+        );
+    }
+
+    /// Instance netlist text that differs from the symbol's: `(key, value)` per key of
+    /// [`INSTANCE_TEXT`] the instance sets (a blank value counts: `lvs_format=" "`
+    /// netlists nothing) to other text than symbol `s`, unless the key is a parameter
+    /// of `target`.
+    fn overrides_of(&self, s: u32, target: Target, props: &Attrs) -> Vec<(&'static str, String)> {
+        let sym = &self.syms[s as usize];
+        let params = &self.iface_of(target).params;
+        let mut out = Vec::new();
+        for key in INSTANCE_TEXT {
+            let Some(v) = props.get(key).filter(|v| !v.is_empty()) else {
+                continue;
+            };
+            let differs = sym.iface.attrs.get(key).map(collapse_ws) != Some(collapse_ws(v));
+            if differs && !params.iter().any(|p| p.0 == key) {
+                out.push((key, v.to_owned()));
+            }
+        }
+        assert!(out.len() <= INSTANCE_TEXT.len());
+        out
+    }
+
+    /// Per-instance variant cells (spec §3): an instance whose `format`, `lvs_format` or
+    /// `spice_sym_def` differs from its symbol's netlists through `<cell>__<instance>`,
+    /// a copy of its target (its `schematic=` alternate included) with those attributes;
+    /// instances with the same symbol, schematic and overrides share one. A
+    /// `spice_sym_def` makes the copy a leaf netlisted by that text. A leaf copy renders
+    /// `@symname` as the subckt the instance still calls: the `schematic=` stem when the
+    /// instance sets one (xschem names the subckt after it), else the symbol's stem.
+    fn plan_variants(&mut self, acc: &mut Acc) {
+        // (symbol, schematic, symname, overrides) → variant cell.
+        let mut seen: HashMap<(u32, Option<u32>, String, String), u32> = HashMap::new();
+        let mut wanted = Vec::new();
+        for x in 0..self.srcs.len() as u32 {
+            if self.srcs[x as usize].ext != Ext::Sch {
+                continue;
+            }
+            let f = &self.srcs[x as usize].file;
+            for row in 0..f.instances.symref.len() {
+                let Some(s) = self
+                    .resolve(x, f.str(f.instances.symref[row]))
+                    .and_then(|src| self.sym_of_src[src as usize])
+                    .filter(|&s| self.syms[s as usize].class == SymClass::Cell)
+                else {
+                    continue;
+                };
+                let Some(target) = self.targets[s as usize] else {
+                    continue;
+                };
+                let props = Attrs::parse(f.str(f.instances.props[row]));
+                let overrides = self.overrides_of(s, target, &props);
+                if overrides.is_empty() {
+                    continue;
+                }
+                let alt = props
+                    .get("schematic")
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_owned);
+                let name = props.get("name").unwrap_or("").trim().to_owned();
+                wanted.push((x, row, s, target, overrides, alt, name));
+            }
+        }
+        for (x, row, s, target, overrides, alt, inst) in wanted {
+            let line = self.srcs[x as usize].file.instances.line[row];
+            let src = self.syms[s as usize].src;
+            let base_stem = stem_of(&self.srcs[src as usize].path).to_owned();
+            let sym_def = overrides.iter().any(|o| o.0 == "spice_sym_def");
+            let base = match target {
+                Target::Cell(c) => Some(c),
+                Target::Core(_) => None,
+            };
+            let alt_src = alt
+                .as_deref()
+                .zip(base)
+                .and_then(|(a, c)| self.alt_source(x, c, a));
+            let sch = match base {
+                Some(c) if !sym_def => alt_src.or(self.cells[c as usize].sch),
+                _ => None,
+            };
+            let symname = match alt.as_deref() {
+                Some(a) if sch.is_none() => stem_of(a).to_owned(),
+                _ => base_stem.clone(),
+            };
+            let text: Vec<String> = overrides.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            let key = (s, sch, symname.clone(), text.join("\n"));
+            if let Some(&c) = seen.get(&key) {
+                self.variants.insert((x, row as u32), c);
+                continue;
+            }
+            // The copied symbol: the instance's text first, so every lookup sees it.
+            let mut iface = self.syms[s as usize].iface.clone();
+            for (k, v) in &overrides {
+                iface.attrs.prepend(k, v);
+            }
+            if sch.is_none() {
+                for k in ["format", "lvs_format", "spectre_format", "verilog_format"] {
+                    let named = iface
+                        .attrs
+                        .get(k)
+                        .filter(|v| v.contains("@symname"))
+                        .map(|v| v.replace("@symname", &symname));
+                    if let Some(v) = named {
+                        iface.attrs.prepend(k, &v);
+                    }
+                }
+            }
+            let s2 = self.syms.len() as u32;
+            let ty = self.syms[s as usize].ty.clone();
+            self.syms.push(Sym {
+                src,
+                iface,
+                ty,
+                class: SymClass::Cell,
+            });
+            self.plans.push(None);
+            self.sym_ifaces.push(None);
+            self.targets.push(None);
+            let textual: Vec<String> = self
+                .textual
+                .iter()
+                .filter(|(t, _)| *t == s)
+                .map(|(_, k)| k.clone())
+                .collect();
+            self.textual.extend(textual.into_iter().map(|k| (s2, k)));
+            // The symbol's own findings were reported once, with the symbol.
+            let active = std::mem::replace(&mut acc.active, false);
+            let plan = self.plan_symbol(s2 as usize, acc);
+            acc.active = active;
+            if sch.is_none() && plan.leaf.ignore.as_deref() == Some("true") {
+                acc.review(
+                    x,
+                    line,
+                    Review {
+                        reason: Reason::InstanceText,
+                        detail: format!("{}: the variant does not netlist", text.join(" ")),
+                    },
+                    0,
+                );
+            }
+            self.sym_ifaces[s2 as usize] = Some(iface_of_plan(&plan));
+            self.plans[s2 as usize] = Some(plan);
+            let (dir, base_name) = match base {
+                Some(c) => (
+                    self.cells[c as usize].dir.clone(),
+                    self.cells[c as usize].name.clone(),
+                ),
+                None => (
+                    dir_of(&self.srcs[x as usize].path).to_owned(),
+                    base_stem.replace(':', "_"),
+                ),
+            };
+            let inst: String = inst
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect();
+            let name = format!("{base_name}__{inst}");
+            acc.item(
+                x,
+                line,
+                Class::AltCell,
+                0,
+                format!("{name} for {}", text.join(" ")),
+            );
+            let c = self.cells.len() as u32;
+            self.cells.push(Cell {
+                dir,
+                name,
+                kind: if sch.is_some() {
+                    FileKind::Shcomp
+                } else {
+                    FileKind::Shprim
+                },
+                sym: Some(s2),
+                sch,
+                tally_sym: false,
+                tally_sch: false,
+                copy_of: None,
+                lib: 0,
+            });
+            self.targets[s2 as usize] = Some(Target::Cell(c));
+            self.variants.insert((x, row as u32), c);
+            seen.insert(key, c);
+        }
+        assert!(
+            self.variants
+                .values()
+                .all(|&c| (c as usize) < self.cells.len())
         );
     }
 
@@ -1642,7 +1910,7 @@ impl<'o> Tables<'o> {
             p.schematic_formats.as_slice(),
             p.ignore.as_deref(),
         );
-        match (cell.kind, p.subcircuit) {
+        match (cell.kind, p.subcircuit && !p.sym_def) {
             (FileKind::Shcomp, true) => vec![schematic],
             (FileKind::Shcomp, false) => vec![leaf, schematic],
             _ => vec![leaf],
@@ -2081,6 +2349,12 @@ impl<'o> Tables<'o> {
         let xs_tpl = &sym.iface.template;
         assert_eq!(self.syms[s as usize].class, SymClass::Cell);
         let mut target = self.targets[s as usize].expect("cell symbols have targets");
+        // An instance with netlist text of its own instantiates its variant cell, which
+        // already carries any `schematic=` alternate.
+        let variant = self.variants.get(&(fid, row as u32)).copied();
+        if let Some(v) = variant {
+            target = Target::Cell(v);
+        }
         let in_devices = file_of(dir_of(&self.srcs[sym.src as usize].path)) == "devices";
         if in_devices && acc.active {
             acc.device_instances += 1;
@@ -2089,7 +2363,7 @@ impl<'o> Tables<'o> {
         if let Some(alt) = props
             .get("schematic")
             .map(str::trim)
-            .filter(|v| !v.is_empty())
+            .filter(|v| !v.is_empty() && variant.is_none())
         {
             let resolved = match target {
                 Target::Cell(c) => self.alt_source(fid, c, alt).and_then(|a| {
@@ -2296,6 +2570,9 @@ impl<'o> Tables<'o> {
                 continue;
             };
             used.push(key);
+            if variant.is_some() && INSTANCE_TEXT.contains(&key) {
+                continue; // the variant cell netlists it
+            }
             let sym_v = match key {
                 "spiceprefix" => plan
                     .and_then(|p| p.spiceprefix.as_deref())
@@ -2565,9 +2842,12 @@ impl<'o> Tables<'o> {
     fn finish(&self, files: &[(String, Vec<u8>)], mut acc: Acc) -> Report {
         // Symbols that became no cell: their records are carried by the records
         // their instances became (labels, ports, code) or by the core cell.
-        for sym in &self.syms {
+        for (si, sym) in self.syms.iter().enumerate() {
             let fid = sym.src as usize;
-            if self.plans[self.sym_of_src[fid].expect("symbol row") as usize].is_some() {
+            if self.sym_of_src[fid] != Some(si as u32) {
+                continue; // a variant's copy of a symbol: the canonical row reports it
+            }
+            if self.plans[si].is_some() {
                 continue;
             }
             let records = records_in(&self.srcs[fid].file);
@@ -3222,9 +3502,152 @@ fn lines(text: &str) -> Vec<String> {
     v[start..end].to_vec()
 }
 
+/// `(name, ports)` of every `.subckt` line in SPICE text (`+` continuations joined,
+/// `*` comment lines skipped), ports up to the first `k=v` or `params:` word.
+fn subckt_lines<'a>(text: impl Iterator<Item = &'a str>) -> Vec<(String, Vec<String>)> {
+    let mut logical: Vec<String> = Vec::new();
+    for l in text {
+        let t = l.trim();
+        match t.strip_prefix('+') {
+            Some(rest) if !logical.is_empty() => {
+                let last = logical.last_mut().expect("checked");
+                last.push(' ');
+                last.push_str(rest);
+            }
+            _ if t.starts_with('*') || t.is_empty() => {}
+            _ => logical.push(t.to_owned()),
+        }
+    }
+    let mut out = Vec::new();
+    for l in &logical {
+        let mut w = l.split_whitespace();
+        if !w.next().is_some_and(|k| k.eq_ignore_ascii_case(".subckt")) {
+            continue;
+        }
+        let Some(name) = w.next() else { continue };
+        let ports: Vec<String> = w
+            .take_while(|p| !p.contains('=') && !p.eq_ignore_ascii_case("params:"))
+            .map(str::to_owned)
+            .collect();
+        out.push((name.to_owned(), ports));
+    }
+    assert!(out.len() <= logical.len());
+    out
+}
+
+/// The bit names of a pin name: `A[2:0]` → `A[2] A[1] A[0]`, `A[3]`, a bundle `a,b`,
+/// else the name itself.
+fn pin_bits(name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for t in name.split(',') {
+        let range = t
+            .strip_suffix(']')
+            .and_then(|r| r.split_once('['))
+            .and_then(|(base, r)| {
+                let (a, b) = r.split_once(':').unwrap_or((r, r));
+                Some((
+                    base,
+                    a.trim().parse::<i64>().ok()?,
+                    b.trim().parse::<i64>().ok()?,
+                ))
+            });
+        match range {
+            Some((base, a, b)) if a.abs_diff(b) < 65_536 => {
+                let step = if b >= a { 1 } else { -1 };
+                let mut i = a;
+                loop {
+                    out.push(format!("{base}[{i}]"));
+                    if i == b {
+                        break;
+                    }
+                    i += step;
+                }
+            }
+            _ => out.push(t.to_owned()),
+        }
+    }
+    out
+}
+
+/// The `@pinlist` replacement `{P} {Q} …` ordering the ordinary pins like `ports` (a
+/// `.subckt` line's bit names, matched case-insensitively): each pin's bits must appear
+/// together and in its own order, and every pin exactly once. `None` otherwise.
+fn pin_order(pins: &[PinOut], ports: &[String]) -> Option<String> {
+    let ordinary: Vec<&PinOut> = pins
+        .iter()
+        .filter(|p| p.inherit.is_none() && !p.alias)
+        .collect();
+    let bits: Vec<Vec<String>> = ordinary.iter().map(|p| pin_bits(&p.name)).collect();
+    let mut used = vec![false; ordinary.len()];
+    let mut holes = String::new();
+    let mut i = 0;
+    while i < ports.len() {
+        let rest = &ports[i..];
+        let k = (0..ordinary.len()).find(|&k| {
+            !used[k]
+                && bits[k].len() <= rest.len()
+                && bits[k]
+                    .iter()
+                    .zip(rest)
+                    .all(|(b, p)| b.eq_ignore_ascii_case(p))
+        })?;
+        let base = ordinary[k].name.split('[').next().unwrap_or("");
+        if !is_ident(base) {
+            return None;
+        }
+        used[k] = true;
+        if !holes.is_empty() {
+            holes.push(' ');
+        }
+        holes.push('{');
+        holes.push_str(base);
+        holes.push('}');
+        i += bits[k].len();
+    }
+    assert!(i == ports.len());
+    used.iter().all(|u| *u).then_some(holes)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::dotted_bus;
+    use super::{PinOut, dotted_bus, pin_order, subckt_lines};
+
+    fn pin(name: &str) -> PinOut {
+        PinOut {
+            name: name.to_owned(),
+            xs: name.to_owned(),
+            dir: "inout",
+            xy: [0, 0],
+            inherit: None,
+            alias: false,
+        }
+    }
+
+    #[test]
+    fn subckt_ports_order_the_pinlist() {
+        // golden tb_symbol_include: `.subckt symbol_include z y[5] … VCC VSS A[2] … B C`.
+        let text = "* a file\n.subckt symbol_include z y[5] y[4] y[3] y[2]\n+ VCC VSS\n* note\n+ A[2] A[1] A[0] B C W=10 L=1\n...\n.ends\n";
+        let found = subckt_lines(text.lines());
+        assert_eq!(found.len(), 1);
+        let (name, ports) = &found[0];
+        assert_eq!(name, "symbol_include");
+        assert_eq!(ports.len(), 12);
+        let pins: Vec<PinOut> = ["A[2:0]", "Z", "B", "Y[5:2]", "C", "vcc", "VSS"]
+            .into_iter()
+            .map(pin)
+            .collect();
+        assert_eq!(
+            pin_order(&pins, ports).as_deref(),
+            Some("{Z} {Y} {vcc} {VSS} {A} {B} {C}")
+        );
+        // Negative space: a bus whose bits are split, a missing pin, an unknown port.
+        let split: Vec<String> = ["z", "y[5]", "VCC", "y[4]"].map(String::from).to_vec();
+        assert_eq!(pin_order(&pins, &split), None);
+        assert_eq!(pin_order(&pins[..2], &ports[..1]), None);
+        let unknown: Vec<String> = ["q"].map(String::from).to_vec();
+        assert_eq!(pin_order(&pins[1..2], &unknown), None);
+        assert!(subckt_lines("R1 a b 1k\n.ends\n".lines()).is_empty());
+    }
 
     #[test]
     fn dotted_buses_become_bundles() {

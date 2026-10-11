@@ -111,7 +111,10 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     for p in v {
         if p.is_dir() {
             walk(&p, out);
-        } else if p.extension().is_some_and(|x| x == "sym" || x == "sch") {
+        } else if p
+            .extension()
+            .is_some_and(|x| x == "sym" || x == "sch" || x == "cir")
+        {
             out.push(p);
         }
     }

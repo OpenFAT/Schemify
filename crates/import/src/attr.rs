@@ -12,7 +12,7 @@
 
 use std::ops::{BitOr, BitOrAssign};
 
-use crate::Span;
+use crate::{Span, push_span};
 
 /// One attribute string, tokenized: a table with one row per `key[=value]` occurrence,
 /// in source order. Duplicates are kept; lookups return the first (xschem's rule).
@@ -188,6 +188,23 @@ impl Attrs {
     /// Returns the value of the first occurrence of `key`; `Some("")` for a bare flag.
     pub fn get(&self, key: &str) -> Option<&str> {
         self.find(key).map(|i| self.value(i))
+    }
+
+    /// Inserts `key=value` (already unescaped) as the first row, so every lookup sees it
+    /// before an existing row of that key: how an instance attribute overrides its
+    /// symbol's. The row has no source location ([`Attrs::raw`] is empty at 0). Shifts
+    /// every row index by one.
+    pub fn prepend(&mut self, key: &str, value: &str) {
+        let n = self.len();
+        let k = push_span(&mut self.arena, key);
+        let v = push_span(&mut self.arena, value);
+        self.key.insert(0, k);
+        self.value.insert(0, v);
+        self.raw.insert(0, Span::new(0, 0));
+        self.flag.insert(0, false);
+        self.idioms.insert(0, classify(value));
+        assert_eq!(self.len(), n + 1);
+        assert_eq!(self.get(key), Some(value));
     }
 }
 

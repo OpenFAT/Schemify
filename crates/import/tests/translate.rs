@@ -60,8 +60,14 @@ fn fixture() -> Vec<(String, String)> {
             "v {xschem version=3.4.7 file_version=1.2}\nK {type=primitive\nformat=\"@name @@A @@B @VDD @VSS @@Y @prefix\\\\\\\\nand2\"\ntemplate=\"name=x1 VDD=VDD VSS=VSS prefix=pdk_\"\nextra=\"VDD VSS prefix\"}\nB 5 -42.5 -12.5 -37.5 -7.5 {name=A dir=in}\nB 5 -42.5 7.5 -37.5 12.5 {name=B dir=in}\nB 5 37.5 -2.5 42.5 2.5 {name=Y dir=out}\n",
         ),
         f(
+            "x/lib/inc.sym",
+            "v {xschem version=3.4.7 file_version=1.2}\nK {type=subcircuit\nformat=\"@name @pinlist @symname\"\ntemplate=\"name=x1\"\nspice_sym_def=\".include inc.cir\"}\nB 5 -42.5 -2.5 -37.5 2.5 {name=A dir=in}\nB 5 37.5 -2.5 42.5 2.5 {name=Z dir=out}\n",
+        ),
+        // A side input: the file `inc.sym`'s spice_sym_def includes.
+        f("x/lib/inc.cir", "* a model\n.subckt inc Z\n+ A\n.ends\n"),
+        f(
             "x/lib/tb.sch",
-            "v {xschem version=3.4.7 file_version=1.2}\nN 100 -30 100 -60 {lab=OUT}\nN 100 30 100 60 {}\nN 100 60 100 60 {}\nC {inv.sym} 60 0 1 1 {name=X1 WN=2u}\nC {nand.sym} 300 0 0 0 {name=x2 VSS=GND}\nC {res.sym} 100 0 0 0 {name=R1 value='VCC/2' footprint=0805}\nC {res.sym} 200 0 2 0 {name=R2 value=1k spice_ignore=short}\nC {gnd.sym} 100 60 0 0 {name=l1 lab=GND}\nC {lab_pin.sym} 100 -60 0 0 {name=l2 lab=OUT}\nC {code.sym} 0 -200 0 0 {name=SIM value=\".param VCC=5 HALF='VCC/2'\n.tran 1n 10n\n.include $::MODELS/x.lib\"}\nC {code.sym} 0 -300 0 0 {name=TCL format=\"tcleval(@value )\" value=\".lib $::MODELS/m.lib tt\"}\nC {launcher.sym} 0 -400 0 0 {name=h1}\nC {missing.sym} 0 -500 0 0 {name=U1}\nT {a note} 0 100 0 0 0.4 0.4 {}\nB 2 0 0 100 100 {flags=graph}\n",
+            "v {xschem version=3.4.7 file_version=1.2}\nN 100 -30 100 -60 {lab=OUT}\nN 100 30 100 60 {}\nN 100 60 100 60 {}\nC {inv.sym} 60 0 1 1 {name=X1 WN=2u}\nC {nand.sym} 300 0 0 0 {name=x2 VSS=GND}\nC {res.sym} 100 0 0 0 {name=R1 value='VCC/2' footprint=0805}\nC {res.sym} 200 0 2 0 {name=R2 value=1k spice_ignore=short}\nC {gnd.sym} 100 60 0 0 {name=l1 lab=GND}\nC {lab_pin.sym} 100 -60 0 0 {name=l2 lab=OUT}\nC {code.sym} 0 -200 0 0 {name=SIM value=\".param VCC=5 HALF='VCC/2'\n.tran 1n 10n\n.include $::MODELS/x.lib\"}\nC {code.sym} 0 -300 0 0 {name=TCL format=\"tcleval(@value )\" value=\".lib $::MODELS/m.lib tt\"}\nC {launcher.sym} 0 -400 0 0 {name=h1}\nC {missing.sym} 0 -500 0 0 {name=U1}\nC {res.sym} 400 0 0 0 {name=R3 value=2k format=\"@name @pinlist @value\"}\nC {nand.sym} 500 0 0 0 {name=x3 lvs_format=\" \"}\nC {nand.sym} 500 100 0 0 {name=x4 lvs_format=\" \"}\nC {inc.sym} 600 0 0 0 {name=x5}\nT {a note} 0 100 0 0 0.4 0.4 {}\nB 2 0 0 100 100 {flags=graph}\n",
         ),
     ]
 }
@@ -171,7 +177,45 @@ fn fixture_translates_and_every_output_checks() {
     assert!(has(Class::Review(Reason::MissingSymbol)));
     assert!(has(Class::Dropped(Drop::NonElectrical)) && has(Class::Dropped(Drop::Graphic)));
     assert!(has(Class::Dropped(Drop::ZeroWire)) && has(Class::Dropped(Drop::Display)));
-    assert_eq!((report.core_instances, report.device_instances), (3, 3));
+    // R3 overrides its format: a variant cell, not core:res.
+    assert_eq!((report.core_instances, report.device_instances), (3, 4));
+    // Instance netlist text (spec §3): variant cells, one per distinct override set.
+    assert!(
+        tb.contains("./res__R3\n  at 400 0 R0\n  name R3\n  value 2k\n"),
+        "{tb}"
+    );
+    let r3 = file(&out, "lib/res__R3.shprim");
+    assert!(
+        r3.contains("format spice \"{name} {pins} {value}\"\n"),
+        "{r3}"
+    );
+    assert!(
+        tb.contains("./nand__x3\n") && !tb.contains("nand__x4"),
+        "{tb}"
+    );
+    let x3 = file(&out, "lib/nand__x3.shprim");
+    assert!(
+        x3.contains("  format cdl \"\"\n"),
+        "a blank lvs_format: {x3}"
+    );
+    assert!(
+        !report
+            .items
+            .iter()
+            .any(|i| i.class == Class::Review(Reason::InstanceText)),
+        "overrides are honoured, not reviewed"
+    );
+    // spice_sym_def: netlisted by its text, pins in the included `.subckt` order.
+    let inc = file(&out, "lib/inc.shprim");
+    assert!(
+        inc.contains("format spice \"{name} {Z} {A} {cell}\"\n"),
+        "{inc}"
+    );
+    assert!(inc.contains("body spice\n  | .include inc.cir\n"), "{inc}");
+    assert!(
+        !paths.iter().any(|p| p.ends_with(".cir")),
+        "side inputs are read, not output"
+    );
     // D17 as amended: a component's netlist text is its own `code` (its `.param` lines
     // stay in it, xschem writes them inside the subckt); `only_toplevel` text belongs to
     // the bench copy alone.
