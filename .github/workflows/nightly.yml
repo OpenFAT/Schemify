@@ -248,7 +248,7 @@ jobs:
           tool: cargo-llvm-cov
       - name: cargo llvm-cov (workspace tests)
         run: >-
-          cargo llvm-cov --workspace --no-fail-fast --ignore-run-fail
+          cargo llvm-cov --workspace --ignore-run-fail
           --json --summary-only --output-path coverage.json
       - name: ratchet (tests/coverage/floor.txt)
         run: tests/coverage/ratchet.sh coverage.json
