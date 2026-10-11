@@ -33,6 +33,8 @@
 #![forbid(unsafe_code)]
 
 pub mod canvas;
+#[cfg(target_arch = "wasm32")]
+mod cpu_view;
 mod damage;
 mod index;
 mod layers;

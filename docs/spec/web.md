@@ -95,11 +95,11 @@ Design (each job of a run, exactly where the native runner would start ngspice, 
 
 ## 7. Rendering
 
-WebGPU through vello, as natively. Without an adapter (headless Chrome in CI) the canvas stays blank; a CPU fallback is pending (BACKLOG).
+WebGPU through vello, as natively. When the browser offers no adapter (headless Chrome in CI, browsers without WebGPU), the console says `gpu: …; drawing on the CPU` and every frame is rasterized by `CpuPainter` (vello_cpu, the painter of the native goldens) and put with `putImageData` on a 2D canvas (`id="schemify-cpu"`, `pointer-events: none`) laid over winit's canvas, which keeps the input (`crates/render/src/cpu_view.rs`). A separate canvas because winit's already holds the `webgpu` context of the failed attempt. Cost: a full raster per frame; the editor redraws on input only (D39).
 
 ## 8. Tests
 
 - `crates/cli/src/platform/vfs.rs`: the table against `std::fs` on random operation scripts (reads, existence, directories, listings with hidden and skipped subtrees), the flush order, the byte budget, import planning (top directory, names, collisions, unsafe paths).
 - `crates/cli/src/zip.rs`: an archive written by CPython's `zipfile` (deflated + stored + a directory entry), round trips and determinism, the CRC check value, truncation and byte flips (errors, never a panic), the output cap.
 - `crates/app/tests/parity.rs` `export_project_zips_the_listed_files`: the archive equals the listed files byte for byte, hidden entries out, same bytes twice.
-- `tests/web/smoke.sh` + `drive.py` (CI `wasm` job, headless Chrome over the DevTools protocol): the editor starts without a trap; the `inv` fixture written into OPFS by the browser's own API opens; a wire drawn and saved reaches OPFS and survives a reload; Ctrl+C of it reaches the system clipboard and, after the reload, Ctrl+V pastes it from there, and the next save holds the reloaded file plus the pasted wire.
+- `tests/web/smoke.sh` + `drive.py` (CI `wasm` job, headless Chrome over the DevTools protocol): the editor starts without a trap; the `inv` fixture written into OPFS by the browser's own API opens, and (without a GPU) its CPU frame matches the native golden `editor_dark.png` under the native test's tolerance (≤ 0.1% of pixels off by more than 2 levels); a wire drawn and saved reaches OPFS and survives a reload; Ctrl+C of it reaches the system clipboard and, after the reload, Ctrl+V pastes it from there, and the next save holds the reloaded file plus the pasted wire.

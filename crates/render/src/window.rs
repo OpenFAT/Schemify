@@ -76,6 +76,9 @@ enum UserEvent {
     Access(accesskit_winit::Event),
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     GpuReady,
+    /// Web: no WebGPU adapter; frames go to the CPU overlay (`cpu_view`).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    NoGpu,
 }
 
 impl From<accesskit_winit::Event> for UserEvent {
@@ -119,6 +122,9 @@ struct Shell<A: App> {
     gpu: Option<Gpu>,
     #[cfg(target_arch = "wasm32")]
     pending: std::rc::Rc<std::cell::RefCell<Option<Gpu>>>,
+    /// Web without a GPU: the CPU-rastered overlay (web spec §7).
+    #[cfg(target_arch = "wasm32")]
+    cpu: Option<crate::cpu_view::CpuView>,
     adapter: Option<accesskit_winit::Adapter>,
     events: InputEvents,
     mods: u8,
@@ -154,6 +160,8 @@ pub fn run<A: App + 'static>(title: &str, app: A) -> Result<(), RunError> {
         gpu: None,
         #[cfg(target_arch = "wasm32")]
         pending: Default::default(),
+        #[cfg(target_arch = "wasm32")]
+        cpu: None,
         adapter: None,
         events: InputEvents::default(),
         mods: 0,
@@ -193,6 +201,14 @@ impl<A: App> Shell<A> {
     }
 
     fn render(&mut self) {
+        #[cfg(target_arch = "wasm32")]
+        if self.gpu.is_none() {
+            if let (Some(w), Some(cpu)) = (&self.window, &mut self.cpu) {
+                let size = w.inner_size();
+                cpu.present(&mut self.app, size.width, size.height, self.scale);
+            }
+            return;
+        }
         let (Some(window), Some(gpu)) = (&self.window, &mut self.gpu) else {
             return;
         };
@@ -398,7 +414,10 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
                         *pending.borrow_mut() = Some(g);
                         let _ = proxy.send_event(UserEvent::GpuReady);
                     }
-                    Err(e) => web_sys::console::error_1(&format!("gpu: {e}").into()),
+                    Err(e) => {
+                        web_sys::console::error_1(&format!("gpu: {e}; drawing on the CPU").into());
+                        let _ = proxy.send_event(UserEvent::NoGpu);
+                    }
                 }
             });
         }
@@ -429,6 +448,17 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
                     self.gpu = self.pending.borrow_mut().take();
                 }
                 if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+            }
+            UserEvent::NoGpu =>
+            {
+                #[cfg(target_arch = "wasm32")]
+                if let Some(w) = &self.window {
+                    match crate::cpu_view::CpuView::new(w) {
+                        Ok(v) => self.cpu = Some(v),
+                        Err(e) => web_sys::console::error_1(&format!("cpu view: {e}").into()),
+                    }
                     w.request_redraw();
                 }
             }
