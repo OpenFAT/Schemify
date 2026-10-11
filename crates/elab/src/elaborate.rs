@@ -319,13 +319,34 @@ struct CellData<'p> {
     default_key: Option<String>,
 }
 
+/// One instance row of a definition being built. Its connections and params are ranges
+/// of the definition's [`RowBufs`] (elements of one instance share the params range).
 struct RowTmp {
     name: Name,
+    /// The name's first 8 bytes, big-endian, zero-padded: orders rows like their text
+    /// wherever those bytes differ (the sort compares text only on a tie).
+    prefix: u64,
     id: ObjId,
     target: Target,
     ignore: Ignore,
+    conn: std::ops::Range<u32>,
+    params: std::ops::Range<u32>,
+}
+
+/// The connection and param rows of one definition being built (flat, appended per
+/// instance, so a row costs no allocation of its own).
+#[derive(Default)]
+struct RowBufs {
     conn: Vec<Name>,
     params: Vec<(Name, Name, Val, u8)>,
+}
+
+/// The first 8 bytes of `text` as a big-endian number (zero-padded).
+fn name_prefix(text: &str) -> u64 {
+    let mut b = [0u8; 8];
+    let n = text.len().min(8);
+    b[..n].copy_from_slice(&text.as_bytes()[..n]);
+    u64::from_be_bytes(b)
 }
 
 struct Elaborator<'p, 'r, F> {
@@ -1042,8 +1063,11 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         let doc = self.cells[ci as usize].doc;
         let ni = doc.instances().id.len();
         let is_top = depth == 0;
-        let mut rows: Vec<RowTmp> = Vec::new();
+        let mut rows: Vec<RowTmp> = Vec::with_capacity(ni);
+        let mut bufs = RowBufs::default();
         let mut propagated: Vec<(Name, Name)> = Vec::new();
+        let mut text = String::new();
+        let mut child_path = String::new();
         for i in 0..ni {
             let c = self.cells[ci as usize].inst_iface[i];
             if c == NONE {
@@ -1051,42 +1075,55 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             }
             let first = self.cells[ci as usize].graph.inst_first[i] as usize;
             let pc = self.ifaces[c as usize].param_name.len();
-            let child_tuple: Vec<Val> = vals[first..first + pc].to_vec();
-            if child_tuple.iter().any(Val::is_err) {
+            if vals[first..first + pc].iter().any(Val::is_err) {
                 continue; // E008 reported; nothing sound to instantiate
             }
-            let child_defaults = self.defaults(c);
-            let params: Vec<(Name, Name, Val, u8)> = (0..pc)
-                .map(|k| {
-                    let f = &self.ifaces[c as usize];
-                    let mut text = String::new();
-                    child_tuple[k].write_text(&mut text);
+            if self.cells[c as usize].defaults.is_none() {
+                self.defaults(c); // computed once per cell, then borrowed below
+            }
+            let p0 = bufs.params.len() as u32;
+            {
+                let f = &self.ifaces[c as usize];
+                let defaults = self.cells[c as usize].defaults.as_ref().expect("computed");
+                let table = &self.cells[ci as usize].graph.table;
+                for k in 0..pc {
+                    let v = &vals[first + k];
+                    text.clear();
+                    v.write_text(&mut text);
                     let mut flags = 0;
                     if f.param_computed[k] {
                         flags |= COMPUTED;
                     }
-                    if child_defaults[k] == child_tuple[k] {
+                    if defaults[k] == *v {
                         flags |= DEFAULT;
                     }
-                    if self.cells[ci as usize].graph.table[first + k] == OWN {
+                    if table[first + k] == OWN {
                         flags |= OVERRIDDEN;
                     }
-                    (
-                        f.param_name[k],
-                        self.names.intern(&text),
-                        child_tuple[k].clone(),
-                        flags,
-                    )
-                })
-                .collect();
-            let elems: Vec<Name> = self.nets[ci as usize]
-                .as_ref()
-                .expect("prepared")
-                .elems(i)
-                .to_vec();
-            let ignore = self.nets[ci as usize].as_ref().expect("prepared").ignore[i];
-            for (k, &elem) in elems.iter().enumerate() {
-                let child_path = format!("{path}/{}", self.names.get(elem));
+                    let t = self.names.intern(&text);
+                    bufs.params.push((f.param_name[k], t, v.clone(), flags));
+                }
+            }
+            let params = p0..bufs.params.len() as u32;
+            let nets = self.nets[ci as usize].as_ref().expect("prepared");
+            let (e0, e1) = (nets.elem_start[i] as usize, nets.elem_start[i + 1] as usize);
+            let ignore = nets.ignore[i];
+            // The child path is read by config `inst` rules, by schematic children (their
+            // own paths, E014) and by inherited pins (E036); a plain leaf row never needs it.
+            let f = &self.ifaces[c as usize];
+            let pathed = !self.config.inst.is_empty()
+                || f.pin_inherit.iter().any(|p| *p != Name::NONE)
+                || f.impl_lang
+                    .iter()
+                    .any(|l| self.names.get(*l) == "schematic");
+            for k in 0..e1 - e0 {
+                let elem = self.nets[ci as usize].as_ref().expect("prepared").elem_name[e0 + k];
+                child_path.clear();
+                if pathed {
+                    child_path.push_str(&path);
+                    child_path.push('/');
+                    child_path.push_str(self.names.get(elem));
+                }
                 let Some(imp) = self.select(&child_path, c) else {
                     continue;
                 };
@@ -1114,7 +1151,8 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                         });
                         continue;
                     }
-                    match self.build_def(c, child_tuple.clone(), child_path.clone(), depth + 1) {
+                    let child_tuple = vals[first..first + pc].to_vec();
+                    match self.build_def(c, child_tuple, child_path.clone(), depth + 1) {
                         Some(d) => Target::Def(d),
                         None => continue,
                     }
@@ -1127,33 +1165,45 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                         None => continue,
                     }
                 };
-                let mut conn =
-                    self.instance_conns(ci, i, k, target, is_top, &mut propagated, &child_path);
+                let c0 = bufs.conn.len();
+                self.instance_conns(
+                    ci,
+                    i,
+                    k,
+                    target,
+                    is_top,
+                    &mut propagated,
+                    &child_path,
+                    &mut bufs.conn,
+                );
                 // The instance's own `ignore` wins; else the selected impl's.
                 let ignore = match ignore {
                     Ignore::No => self.ifaces[c as usize].impl_ignore[imp as usize],
                     own => own,
                 };
                 if ignore == Ignore::Open {
-                    conn.fill(Name::NONE);
+                    bufs.conn[c0..].fill(Name::NONE);
                 }
                 rows.push(RowTmp {
                     name: elem,
+                    prefix: name_prefix(self.names.get(elem)),
                     id: doc.instances().id[i],
                     target,
                     ignore,
-                    conn,
+                    conn: c0 as u32..bufs.conn.len() as u32,
                     params: params.clone(),
                 });
             }
         }
         self.stack.pop();
-        Some(self.finish_def(ci, key, pairs, sensitive, rows, propagated, is_top))
+        let def = self.finish_def(ci, key, pairs, sensitive, rows, bufs, propagated, is_top);
+        Some(def)
     }
 
-    /// Connection names of element `k` of instance row `i` in cell `ci`: ordinary pin
-    /// bits, then the target's inherited pins (spec §5): a local `inherit` override,
-    /// else (top) the default net, else the definition's own inherited port.
+    /// Appends to `conn` the connection names of element `k` of instance row `i` in cell
+    /// `ci`: ordinary pin bits, then the target's inherited pins (spec §5): a local
+    /// `inherit` override, else (top) the default net, else the definition's own
+    /// inherited port.
     #[allow(clippy::too_many_arguments)]
     fn instance_conns(
         &mut self,
@@ -1164,21 +1214,31 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         is_top: bool,
         propagated: &mut Vec<(Name, Name)>,
         path: &str,
-    ) -> Vec<Name> {
+        conn: &mut Vec<Name>,
+    ) {
         let c = self.cells[ci as usize].inst_iface[i];
         let nets = self.nets[ci as usize].as_ref().expect("prepared");
         let bits = self.ifaces[c as usize].bits_total as usize;
         let start = nets.conn_start[i] as usize + k * bits;
-        let mut conn: Vec<Name> = nets.conns[start..start + bits]
-            .iter()
-            .map(|&b| {
-                if b == NO_NET {
-                    Name::NONE
-                } else {
-                    nets.bit_name[b as usize]
-                }
-            })
-            .collect();
+        conn.extend(nets.conns[start..start + bits].iter().map(|&b| {
+            if b == NO_NET {
+                Name::NONE
+            } else {
+                nets.bit_name[b as usize]
+            }
+        }));
+        let none = match target {
+            Target::Leaf(_) => self.ifaces[c as usize]
+                .pin_inherit
+                .iter()
+                .all(|p| *p == Name::NONE),
+            Target::Def(d) => {
+                self.defs.inh_start[d as usize] == self.defs.inh_start[d as usize + 1]
+            }
+        };
+        if none {
+            return; // no inherited pins (the common case): nothing more to resolve
+        }
         let inherited: Vec<(Name, Name)> = match target {
             Target::Leaf(_) => {
                 let f = &self.ifaces[c as usize];
@@ -1266,7 +1326,6 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                     .map(|&b| nets.bit(b).map_or(b, |n| nets.bit_name[n as usize])),
             );
         }
-        conn
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1277,19 +1336,29 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         pairs: Vec<(Name, Name)>,
         sensitive: bool,
         mut rows: Vec<RowTmp>,
+        mut bufs: RowBufs,
         propagated: Vec<(Name, Name)>,
         is_top: bool,
     ) -> u32 {
         let names = &self.names;
-        rows.sort_by(|a, b| names.cmp(a.name, b.name));
+        // By name text (stable): the prefix decides wherever it differs.
+        rows.sort_by(|a, b| {
+            a.prefix
+                .cmp(&b.prefix)
+                .then_with(|| names.cmp(a.name, b.name))
+        });
+        // The children signature keys reuse of an identical definition; the top is never
+        // instantiated, so it has nothing to be shared with (and the longest signature).
         let mut sig = String::new();
-        for r in &rows {
+        for r in rows.iter().filter(|_| !is_top) {
             sig.push_str(names.get(r.name));
             sig.push('=');
-            match r.target {
-                Target::Def(d) => sig.push_str(&format!("d{d}")),
-                Target::Leaf(l) => sig.push_str(&format!("l{l}")),
-            }
+            let (tag, n) = match r.target {
+                Target::Def(d) => ('d', d),
+                Target::Leaf(l) => ('l', l),
+            };
+            sig.push(tag);
+            crate::connect::push_decimal(n, &mut sig);
             sig.push(',');
         }
         let full = (ci, key.clone(), sig.clone());
@@ -1350,7 +1419,8 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         if rows.iter().any(|r| r.ignore == Ignore::Short) {
             let port0 = *self.defs.port_start.last().expect("seeded") as usize;
             short_nets(
-                &mut rows,
+                &rows,
+                &mut bufs.conn,
                 &mut self.defs.port_net[port0..],
                 &self.globals,
                 &self.names,
@@ -1372,13 +1442,16 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             self.insts.id.push(r.id);
             self.insts.target.push(r.target);
             self.insts.ignore.push(r.ignore);
-            self.insts.conn.extend(r.conn);
+            let conn = r.conn.start as usize..r.conn.end as usize;
+            self.insts.conn.extend_from_slice(&bufs.conn[conn]);
             self.insts.conn_start.push(self.insts.conn.len() as u32);
-            for (name, text, val, flags) in r.params {
-                self.insts.param_name.push(name);
-                self.insts.param_text.push(text);
-                self.insts.param_val.push(val);
-                self.insts.param_flags.push(flags);
+            for (name, text, val, flags) in
+                &bufs.params[r.params.start as usize..r.params.end as usize]
+            {
+                self.insts.param_name.push(*name);
+                self.insts.param_text.push(*text);
+                self.insts.param_val.push(val.clone());
+                self.insts.param_flags.push(*flags);
             }
             self.insts
                 .param_start
@@ -1595,10 +1668,17 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
 /// one net, renamed everywhere in the definition to the set's best name — global,
 /// then a port of the definition, then bytewise smallest. (An instance attr was
 /// already merged by `connect`; this is what an impl-level `ignore short` needs.)
-fn short_nets(rows: &mut [RowTmp], ports: &mut [Name], globals: &[Name], names: &Names) {
+fn short_nets(
+    rows: &[RowTmp],
+    conns: &mut [Name],
+    ports: &mut [Name],
+    globals: &[Name],
+    names: &Names,
+) {
+    let range = |r: &RowTmp| r.conn.start as usize..r.conn.end as usize;
     let mut ids: Vec<Name> = rows
         .iter()
-        .flat_map(|r| r.conn.iter().copied())
+        .flat_map(|r| conns[range(r)].iter().copied())
         .chain(ports.iter().copied())
         .filter(|n| *n != Name::NONE)
         .collect();
@@ -1608,7 +1688,7 @@ fn short_nets(rows: &mut [RowTmp], ports: &mut [Name], globals: &[Name], names: 
     let mut parent: Vec<u32> = (0..ids.len() as u32).collect();
     for r in rows.iter().filter(|r| r.ignore == Ignore::Short) {
         let mut first = NONE;
-        for &n in r.conn.iter().filter(|n| **n != Name::NONE) {
+        for &n in conns[range(r)].iter().filter(|n| **n != Name::NONE) {
             if first == NONE {
                 first = idx(n);
             } else {
@@ -1638,8 +1718,8 @@ fn short_nets(rows: &mut [RowTmp], ports: &mut [Name], globals: &[Name], names: 
             *n = best[crate::connect::find(&mut parent, idx(*n)) as usize];
         }
     };
-    for r in rows.iter_mut() {
-        r.conn.iter_mut().for_each(&mut rename);
+    for r in rows {
+        conns[range(r)].iter_mut().for_each(&mut rename);
     }
     ports.iter_mut().for_each(&mut rename);
 }

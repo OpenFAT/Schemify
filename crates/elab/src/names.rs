@@ -32,9 +32,17 @@ pub const NAMES_MAX: u32 = 1 << 26;
 pub struct Names {
     bytes: String,
     ends: Vec<u32>,
-    /// Open addressing, linear probing: 0 empty, else `name + 1`. Power-of-two length,
-    /// load factor below 1/2.
-    table: Vec<u32>,
+    /// Open addressing, linear probing: 0 empty, else `(hash << 32) | (name + 1)` with the
+    /// name's 32-bit hash, which picks the slot and is compared before the text (the table
+    /// outgrows the cache at 10^5 names: the text would be a second miss) and lets growth
+    /// re-place entries without reading any text. Power-of-two length, load below 1/2.
+    table: Vec<u64>,
+}
+
+/// A table entry: `(hash, name + 1)`.
+#[inline]
+fn entry(h: u32, n: Name) -> u64 {
+    (u64::from(h) << 32) | u64::from(n.0 + 1)
 }
 
 impl Names {
@@ -65,24 +73,45 @@ impl Names {
         if self.table.is_empty() {
             return None;
         }
+        self.probe(text, hash(text)).ok()
+    }
+
+    /// Where `text` (hashing to `h`) is: `Ok(name)`, or `Err(empty slot)` to put it in.
+    /// The table is never full (load factor below 1/2), so the probe ends.
+    fn probe(&self, text: &str, h: u32) -> Result<Name, usize> {
         let mask = self.table.len() - 1;
-        let mut slot = hash(text) as usize & mask;
+        let mut slot = h as usize & mask;
         for _ in 0..self.table.len() {
             let e = self.table[slot];
             if e == 0 {
-                return None;
+                return Err(slot);
             }
-            if self.get(Name(e - 1)) == text {
-                return Some(Name(e - 1));
+            let n = Name((e as u32) - 1);
+            if (e >> 32) as u32 == h && self.get(n) == text {
+                return Ok(n);
             }
             slot = (slot + 1) & mask;
         }
         unreachable!("the table is never full");
     }
 
+    /// Makes room for `additional` more names without growing the table on the way (a
+    /// caller about to intern a known volume, e.g. one name per instance).
+    pub(crate) fn reserve(&mut self, additional: usize) {
+        let want = ((self.ends.len() + additional) * 2).next_power_of_two();
+        while self.table.len() < want {
+            self.grow();
+        }
+        self.ends.reserve(additional);
+        assert!((self.ends.len() + additional) * 2 <= self.table.len());
+    }
+
     /// Compares two names bytewise by text (the order every sorted output uses).
     /// [`Name::NONE`] sorts first.
     pub fn cmp(&self, a: Name, b: Name) -> Ordering {
+        if a == b {
+            return Ordering::Equal; // one arena: equal handles are equal text
+        }
         match (a == Name::NONE, b == Name::NONE) {
             (true, true) => Ordering::Equal,
             (true, false) => Ordering::Less,
@@ -92,48 +121,49 @@ impl Names {
     }
 
     /// Interns `text`; equal text always yields the same name.
+    ///
+    /// Cost: one hash and one probe sequence (absent text is placed where the lookup
+    /// ended); amortized O(1).
     pub(crate) fn intern(&mut self, text: &str) -> Name {
-        if let Some(n) = self.find(text) {
-            return n;
+        if (self.ends.len() + 1) * 2 > self.table.len() {
+            self.grow();
         }
+        let h = hash(text);
+        let slot = match self.probe(text, h) {
+            Ok(n) => return n,
+            Err(slot) => slot,
+        };
         assert!(self.len() < NAMES_MAX, "name arena holds 2^26 names");
         assert!(
             self.bytes.len() + text.len() < u32::MAX as usize,
             "name arena exceeds 4 GiB"
         );
-        if (self.ends.len() + 1) * 2 > self.table.len() {
-            self.grow();
-        }
         let n = Name(self.len());
         self.bytes.push_str(text);
         self.ends.push(self.bytes.len() as u32);
-        self.insert_slot(n);
+        self.table[slot] = entry(h, n);
         debug_assert_eq!(self.get(n), text);
         n
     }
 
-    fn insert_slot(&mut self, n: Name) {
-        assert!(self.table.len().is_power_of_two() && (n.0 as usize) < self.table.len() / 2);
-        let mask = self.table.len() - 1;
-        let mut slot = hash(self.get(n)) as usize & mask;
-        while self.table[slot] != 0 {
-            slot = (slot + 1) & mask;
-        }
-        self.table[slot] = n.0 + 1;
-    }
-
+    /// Doubles the table, re-placing entries by their stored hashes (no text is read).
     fn grow(&mut self) {
         let len = (self.table.len() * 2).max(64);
-        self.table = vec![0; len];
-        for i in 0..self.len() {
-            self.insert_slot(Name(i));
+        let old = std::mem::replace(&mut self.table, vec![0; len]);
+        let mask = len - 1;
+        for e in old.into_iter().filter(|&e| e != 0) {
+            let mut slot = (e >> 32) as usize & mask;
+            while self.table[slot] != 0 {
+                slot = (slot + 1) & mask;
+            }
+            self.table[slot] = e;
         }
-        assert!(self.ends.len() * 2 <= self.table.len());
+        assert!(self.ends.len() * 2 <= self.table.len() && self.table.len().is_power_of_two());
     }
 }
 
-/// Multiply-rotate hash over 8-byte words; deterministic on every target.
-fn hash(text: &str) -> u64 {
+/// Multiply-rotate hash over 8-byte words, folded to 32 bits; deterministic on every target.
+fn hash(text: &str) -> u32 {
     const K: u64 = 0x517c_c1b7_2722_0a95;
     let b = text.as_bytes();
     let mut h = b.len() as u64;
@@ -145,7 +175,8 @@ fn hash(text: &str) -> u64 {
     let mut tail = [0u8; 8];
     tail[..chunks.remainder().len()].copy_from_slice(chunks.remainder());
     h = (h.rotate_left(5) ^ u64::from_le_bytes(tail)).wrapping_mul(K);
-    h ^ (h >> 29)
+    // The product's high bits are the well-mixed ones.
+    ((h ^ (h >> 29)) >> 32) as u32 ^ (h as u32)
 }
 
 /// FNV-1a 64 (netlist spec §6 specialization names).
