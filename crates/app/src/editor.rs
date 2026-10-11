@@ -3854,6 +3854,12 @@ impl Window {
         }
     }
 
+    /// The wrapped editor: the `--rpc` server (`crate::rpc`) queues commands into it
+    /// between frames.
+    pub fn editor(&mut self) -> &mut Editor {
+        &mut self.ed
+    }
+
     fn now_ms(&self) -> u64 {
         #[cfg(not(target_arch = "wasm32"))]
         {

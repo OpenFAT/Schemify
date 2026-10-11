@@ -1,0 +1,27 @@
+# cargo-fuzz harness for the JSON-RPC command stream (TESTING.md: fuzz every parser).
+# Run from this directory with a nightly toolchain:
+#   cargo +nightly fuzz run rpc_decode
+# Not a member of the repository workspace: it needs nightly, libfuzzer-sys and its
+# own lockfile, none of which belong in the stable workspace build.
+
+[package]
+name = "schemify-cli-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+schemify-cli = { path = ".." }
+
+[workspace]
+
+[[bin]]
+name = "rpc_decode"
+path = "fuzz_targets/rpc_decode.rs"
+test = false
+doc = false
+bench = false

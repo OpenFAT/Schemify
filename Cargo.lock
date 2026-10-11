@@ -2774,6 +2774,7 @@ dependencies = [
 name = "schemify-cli"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "schemify-config",
  "schemify-devicereader",
  "schemify-doc",

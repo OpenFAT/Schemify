@@ -32,6 +32,9 @@ commands:
           [--jobs N]                   simulate a .shbench and print outputs and specs
   pack sync|update|restore|clean|status
                                        manage the user packages of init.lua
+  rpc [--listen <socket>]              JSON-RPC command stream on stdio, or on a local socket
+                                       (a socket path, or 127.0.0.1:<port>; docs/spec/rpc.md)
+  mcp                                  the same methods as MCP tools on stdio (for agents)
 
 --clean skips init.lua and user packages; -u runs another init file (docs/spec/config.md).
 ";
@@ -71,6 +74,8 @@ fn main() -> ExitCode {
         "check" => check(rest),
         "run" => run(&config, rest),
         "pack" => schemify_cli::pack::main(&config, rest),
+        "rpc" => rpc(&start, rest),
+        "mcp" => mcp(&start, rest),
         "-h" | "--help" | "help" => {
             print!("{USAGE}");
             OK
@@ -121,6 +126,67 @@ fn edit(start: &Startup, args: &[String]) -> u8 {
                  schemify or on PATH",
                 program.display()
             );
+            USAGE_ERROR
+        }
+    }
+}
+
+/// `rpc [--listen <socket>]`: the JSON-RPC command stream (D27, docs/spec/rpc.md) on stdio
+/// until it ends, or on a local socket serving one client after another until the listener
+/// fails. Exit 0 at the end of stdin, 2 for usage or I/O errors.
+fn rpc(start: &Startup, args: &[String]) -> u8 {
+    use schemify_cli::rpc;
+    let h = rpc::Headless {
+        exe: std::env::current_exe().ok(),
+        flags: start.flags(),
+        seed: schemify_cli::platform::seed(),
+    };
+    let served = match args {
+        [] => rpc::serve(
+            &mut std::io::stdin().lock(),
+            &mut std::io::stdout().lock(),
+            &h,
+        ),
+        [flag, addr] if flag == "--listen" => rpc::listen(addr).and_then(|listener| {
+            // A server: runs until the listener fails; a client's I/O error ends only it.
+            loop {
+                let mut stream = listener.accept()?;
+                let mut input = std::io::BufReader::new(stream.try_clone()?);
+                if let Err(e) = rpc::serve(&mut input, &mut stream, &h) {
+                    eprintln!("rpc client: {e}");
+                }
+            }
+        }),
+        _ => {
+            eprint!("{USAGE}");
+            return USAGE_ERROR;
+        }
+    };
+    match served {
+        Ok(()) => OK,
+        Err(e) => {
+            eprintln!("rpc: {e}");
+            USAGE_ERROR
+        }
+    }
+}
+
+/// `mcp`: the MCP bridge (D27) on stdio until it ends; exit 0 then, 2 for usage or I/O errors.
+fn mcp(start: &Startup, args: &[String]) -> u8 {
+    if !args.is_empty() {
+        eprint!("{USAGE}");
+        return USAGE_ERROR;
+    }
+    let h = schemify_cli::rpc::Headless {
+        exe: std::env::current_exe().ok(),
+        flags: start.flags(),
+        seed: schemify_cli::platform::seed(),
+    };
+    let (stdin, stdout) = (std::io::stdin(), std::io::stdout());
+    match schemify_cli::mcp::serve(&mut stdin.lock(), &mut stdout.lock(), &h) {
+        Ok(()) => OK,
+        Err(e) => {
+            eprintln!("mcp: {e}");
             USAGE_ERROR
         }
     }

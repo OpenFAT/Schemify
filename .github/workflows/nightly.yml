@@ -65,6 +65,7 @@ jobs:
           - { crate: format, target: merge3 }
           - { crate: expr, target: compile }
           - { crate: import, target: xschem_read }
+          - { crate: cli, target: rpc_decode }
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:

@@ -48,6 +48,12 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - **cktImg upstream patches** (`docs/upstream/`): `cktimg-lib-step.patch` (a `zig build lib` step: `zig build` fails on wasm32-freestanding because the tools need an OS), `cktimg-optional-zon.patch` (`-Dzon_config=false`, plugin 645 KB → 478 KB), `cktimg-performance.md` (99% of layout time is the round loop in `layout.place`; batching separation requests). Apply upstream, then bump the `extern/cktimg` submodule.
 
 
+## command stream (rpc, D27)
+
+- The editor's server has no `edit`/`netlist` methods of its own (its table is the command table; use the headless server for files the editor does not hold open). Command answers carry the status line only, not structured results (a `sim.netlist` answer does not include the text).
+- `schemify rpc --listen` serves one client at a time; Windows has no Unix-domain sockets in `std` (TCP loopback only; named pipes need `windows-sys`).
+- `schemify mcp` exposes the headless methods only (no editor tools, no MCP resources or prompts); a bridge to a running editor's socket would add its command table as tools.
+
 ## plugins
 
 - Web: plugins with a fuel override run their events on the frame thread (no threads in `wasm32-unknown-unknown`), so a large cktimg import still blocks the browser tab. Slice them with wasmi resumable calls (out-of-fuel resumption) per frame.
