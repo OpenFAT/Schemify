@@ -435,6 +435,36 @@ fn code(out: &mut String, e: &Elab, d: Dialect) {
     }
 }
 
+/// Returns whether leaf impl row `l` of `e` is source text the runner compiles (spec
+/// §7.6.8, run spec §5): a `veriloga` or `verilog` impl with a `file`, a `verilog` impl
+/// with a `body`, or a `veriloga` impl whose `body` has an `endmodule` line. A `veriloga`
+/// body without one is precompiled SPICE text (model card, OSDI load) and is emitted as is.
+///
+/// # Panics
+///
+/// Panics if `l` is not a row of `e.impls`.
+pub fn compiled_source(e: &Elab, l: usize) -> bool {
+    assert!(
+        l < e.impls.cell.len(),
+        "impl row {l} of {}",
+        e.impls.cell.len()
+    );
+    let f = &e.cells[e.impls.cell[l] as usize];
+    let k = e.impls.index[l] as usize;
+    let body = &e.impls.body[e.impls.body_start[l] as usize..e.impls.body_start[l + 1] as usize];
+    match e.names.get(f.impl_lang[k]) {
+        "veriloga" => {
+            f.impl_file[k] != Name::NONE
+                || body.iter().any(|&n| {
+                    let w = e.names.get(n).split_whitespace().next();
+                    w.is_some_and(|w| w.starts_with("endmodule"))
+                })
+        }
+        "verilog" => f.impl_file[k] != Name::NONE || !body.is_empty(),
+        _ => false,
+    }
+}
+
 /// Once-only text (spec §7.1, §7.2): OSDI loads, then generated `.model` lines, then
 /// impl bodies by (cell, impl). Only impls some emitted row uses.
 fn once_only(out: &mut String, e: &Elab, d: Dialect, tmp: &Tmp) {
@@ -452,26 +482,24 @@ fn once_only(out: &mut String, e: &Elab, d: Dialect, tmp: &Tmp) {
         }
     };
     // OSDI loads and models (ngspice only: elab rejects veriloga/verilog elsewhere). A
-    // Verilog-A impl with a `file` is compiled by the runner: one OSDI load per file and
-    // a `.model` per model name (the impl's `model` attr, and each default-template row's
-    // model). One without a `file` is precompiled: its body carries that text (§7.6).
+    // Verilog-A source (a `file`, or a `body` that is source) is compiled by the runner:
+    // one OSDI load per stem and a `.model` per model name (the impl's `model` attr, and
+    // each default-template row's model). Any other `veriloga` impl is precompiled: its
+    // body carries that text (§7.6).
     let mut osdi: Vec<String> = Vec::new();
     let mut models: Vec<String> = Vec::new();
     let lang_of = |l: usize| {
         let f = &e.cells[e.impls.cell[l] as usize];
-        (
-            e.names.get(f.impl_lang[e.impls.index[l] as usize]),
-            f.impl_file[e.impls.index[l] as usize],
-        )
+        e.names.get(f.impl_lang[e.impls.index[l] as usize])
     };
     let model_line = |l: usize, m: &str, models: &mut Vec<String>, osdi: &mut Vec<String>| {
         let stem = stem_of(l);
         match lang_of(l) {
-            ("veriloga", file) if file != Name::NONE => {
+            "veriloga" if compiled_source(e, l) => {
                 models.push(format!(".model {m} {stem}"));
                 osdi.push(stem);
             }
-            ("verilog", _) => models.push(format!(".model {m} d_cosim simulation=\"{stem}.vvp\"")),
+            "verilog" => models.push(format!(".model {m} d_cosim simulation=\"{stem}.vvp\"")),
             _ => {}
         }
     };
@@ -479,7 +507,7 @@ fn once_only(out: &mut String, e: &Elab, d: Dialect, tmp: &Tmp) {
         for l in (0..e.impls.cell.len()).filter(|&l| uses.impl_used[l]) {
             let f = &e.cells[e.impls.cell[l] as usize];
             match f.impl_model[e.impls.index[l] as usize] {
-                Name::NONE if lang_of(l).0 == "veriloga" && lang_of(l).1 != Name::NONE => {
+                Name::NONE if lang_of(l) == "veriloga" && compiled_source(e, l) => {
                     osdi.push(stem_of(l));
                 }
                 Name::NONE => {}
@@ -504,9 +532,9 @@ fn once_only(out: &mut String, e: &Elab, d: Dialect, tmp: &Tmp) {
         out.push('\n');
     }
     // Bodies: SPICE text for the SPICE dialects (spectre wraps it in `lang=spice`):
-    // `spice` impls and, except for cdl, precompiled Verilog-A ones (no `file`) and the
-    // schematic impls of emitted definitions (model cards); Verilog source for verilog.
-    // A Verilog-A source (`file`) is the runner's.
+    // `spice` impls and, except for cdl, precompiled Verilog-A ones and the schematic
+    // impls of emitted definitions (model cards); Verilog source for verilog. A Verilog-A
+    // source (`file` or source `body`) is the runner's.
     let mut used = uses.impl_used.clone();
     for (def, &l) in e.defs.body.iter().enumerate() {
         if l != u32::MAX && e.defs.used[def] {
@@ -516,12 +544,12 @@ fn once_only(out: &mut String, e: &Elab, d: Dialect, tmp: &Tmp) {
     let mut bodies: Vec<usize> = (0..e.impls.cell.len())
         .filter(|&l| {
             let wanted = match (lang_of(l), d) {
-                (("verilog", _), Dialect::Verilog) => true,
+                ("verilog", Dialect::Verilog) => true,
                 (_, Dialect::Verilog) => false,
-                (("spice", _), _) => true,
+                ("spice", _) => true,
                 // Simulation-only text (OSDI load, model card): not for LVS.
-                (("veriloga", file), _) => file == Name::NONE && d != Dialect::Cdl,
-                (("schematic", _), _) => d != Dialect::Cdl,
+                ("veriloga", _) => !compiled_source(e, l) && d != Dialect::Cdl,
+                ("schematic", _) => d != Dialect::Cdl,
                 _ => false,
             };
             used[l] && wanted && e.impls.body_start[l] < e.impls.body_start[l + 1]

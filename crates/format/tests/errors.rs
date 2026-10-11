@@ -333,6 +333,52 @@ fn e029_shapes() {
         3,
         11,
     );
+    // Bench var `dist` and optimize lines are known (run spec §1, §3, §6).
+    fails(
+        "schemify 1 shbench\nvar R 1k\n  dist weird 5\n",
+        Code::E029,
+        3,
+        8,
+    );
+    fails(
+        "schemify 1 shbench\nvar R 1k\n  dist gauss\n",
+        Code::E029,
+        3,
+        3,
+    );
+    fails(
+        "schemify 1 shbench\nvar R 1k\n  dist gauss 5 abs\n",
+        Code::E029,
+        3,
+        16,
+    );
+    fails(
+        "schemify 1 shbench\nvar R 1k\n  dist gauss 5\n  dist uniform 5\n",
+        Code::E024,
+        4,
+        3,
+    );
+    fails(
+        "schemify 1 shbench\noptimize o\n  seed one\n",
+        Code::E029,
+        3,
+        8,
+    );
+    fails(
+        "schemify 1 shbench\noptimize o\n  corner\n",
+        Code::E029,
+        3,
+        3,
+    );
+    let ok = "schemify 1 shbench\n\nvar R 1k\n  min 1\n  max 9k\n  dist gauss 5 rel\n\n\
+              optimize o\n  goal g target 1m weight 2\n  goal h max\n  vary R\n  \
+              config a\n  config b\n  corner ff\n  corner ss\n  seed 7\n";
+    let doc = parse(ok.as_bytes()).unwrap();
+    assert_eq!(
+        schemify_format::write(&doc),
+        ok,
+        "known, canonical as written"
+    );
     fails("schemify 1 shbench\nvar W 1\n  | text\n", Code::E029, 2, 1);
     fails("schemify 1 shbench\n  | text\n", Code::E029, 1, 1);
     fails("schemify 1 project\nlib core svn x\n", Code::E029, 2, 10);

@@ -357,6 +357,9 @@ pub fn write_results(jobs: &Jobs, r: &Results) -> String {
         if jobs.sample(j) != NO_SAMPLE {
             attr(&mut out, "sample", &[&jobs.sample(j).to_string()]);
         }
+        if let Some(seed) = jobs.seed(j) {
+            attr(&mut out, "seed", &[&seed.to_string()]);
+        }
         for (v, x) in jobs.assignments(j) {
             attr(&mut out, "set", &[v, x]);
         }
@@ -491,6 +494,7 @@ pub fn read_results(text: &str) -> Result<(Jobs, Results), String> {
         config: Option<String>,
         corner: Option<String>,
         sample: u32,
+        seed: u32,
         sets: Vec<(String, String)>,
         fields: Vec<(usize, Vec<String>)>,
     }
@@ -506,6 +510,9 @@ pub fn read_results(text: &str) -> Result<(Jobs, Results), String> {
         let j = jobs
             .push(p.config.as_deref(), p.corner.as_deref(), p.sample, &sets)
             .map_err(|e| e.to_string())?;
+        if p.seed != 0 {
+            jobs.set_seed(j, p.seed);
+        }
         r.ensure(j);
         for (n, f) in p.fields {
             let find = |names: &[String], x: &str| {
@@ -582,6 +589,7 @@ pub fn read_results(text: &str) -> Result<(Jobs, Results), String> {
                         config: None,
                         corner: None,
                         sample: NO_SAMPLE,
+                        seed: 0,
                         sets: Vec::new(),
                         fields: Vec::new(),
                     });
@@ -607,6 +615,10 @@ pub fn read_results(text: &str) -> Result<(Jobs, Results), String> {
             ("config", 2) => p.config = Some(f[1].clone()),
             ("corner", 2) => p.corner = Some(f[1].clone()),
             ("sample", 2) => p.sample = f[1].parse().map_err(|_| bad(n, "bad sample"))?,
+            ("seed", 2) => match f[1].parse::<u32>() {
+                Ok(s) if s != 0 => p.seed = s,
+                _ => return Err(bad(n, "bad seed")),
+            },
             ("set", 3) => p.sets.push((f[1].clone(), f[2].clone())),
             _ => p.fields.push((n, f)),
         }

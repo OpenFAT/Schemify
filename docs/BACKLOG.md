@@ -77,11 +77,8 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## run
 
-- `format`: make var `dist` and optimize `seed` known attributes (they work as preserved unknowns today).
-- ngspice's random seed isn't set per MC sample, so PDK `agauss` statistics aren't reproducible yet.
-- Inline Verilog-A/Verilog `body` sources aren't compiled (only `file`); OpenVAF/Icarus steps tested with stand-ins only (tools not installed); compile blocks `poll` the first time.
-- Optimizer runs only at the bench's default config/corner with unit goal weights.
-- Relative `.lib` paths resolve against the job directory.
+- Xyce runs get no Monte Carlo seed (`-randseed` is a command-line flag; the runner's simulator line comes from the user config).
+- ngspice `d_cosim` with an Icarus `.vvp` is compiled and wired but not simulated end to end in a test (Icarus needs `libvvp` for the `ivlng` shim).
 
 ## Performance
 

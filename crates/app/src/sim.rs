@@ -446,9 +446,9 @@ impl Sim {
         run.finished.clear();
         // The optimizer tells a finished candidate and asks the next in the same frame.
         if let Kind::Optimize(o, _) = &mut self.kind
-            && let Ok(Some(_)) = o.step(&mut run.jobs, &run.results)
+            && let Ok(Some(r)) = o.step(&mut run.jobs, &run.results)
         {
-            run.submit_next(project, top, env, funcs, 1);
+            run.submit_next(project, top, env, funcs, r.end - r.start);
         }
         let idle = self.run.as_ref().is_some_and(|r| self.run_idle(r));
         self.status = self.progress();

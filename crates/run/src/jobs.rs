@@ -3,7 +3,8 @@
 //!
 //! Six questions: in, a [`Plan`] and a [`Select`]; out, [`Jobs`] rows. At most
 //! [`JOBS_MAX`] rows. Config and corner are `u16` indices into the table's own name
-//! lists (bench tables hold ≤ 2^12 rows); samples `u32`; assignments are a CSR of
+//! lists (bench tables hold ≤ 2^12 rows); samples `u32`; simulator seeds `u32` in
+//! `1..=2^30` (0: none, ngspice takes no seed 0); assignments are a CSR of
 //! (var index, value text) with all value text in one arena. Access: the spine walks
 //! jobs in order (prepare, dispatch); results index by job. Lifetime: one run. Jobs are
 //! independent, which is what makes the subprocess workers parallel.
@@ -95,6 +96,8 @@ pub struct Jobs {
     config: Vec<u16>,
     corner: Vec<u16>,
     sample: Vec<u32>,
+    /// Simulator random seed (run spec §3), 0 for none.
+    seed: Vec<u32>,
     state: Vec<State>,
     /// CSR offsets (`jobs + 1`) into `assign_var` / `assign_end`.
     assign_start: Vec<u32>,
@@ -168,6 +171,7 @@ impl Jobs {
         self.config.push(config);
         self.corner.push(corner);
         self.sample.push(sample);
+        self.seed.push(0);
         self.state.push(State::Pending);
         assert_eq!(self.state.len(), self.config.len());
         Ok(self.len() - 1)
@@ -186,6 +190,21 @@ impl Jobs {
     /// Returns job `j`'s Monte Carlo sample index, or [`NO_SAMPLE`].
     pub fn sample(&self, j: u32) -> u32 {
         self.sample[j as usize]
+    }
+
+    /// Returns job `j`'s simulator random seed (run spec §3: a Monte Carlo sample's, so
+    /// the simulator's own random functions draw the same values every run), if any.
+    pub fn seed(&self, j: u32) -> Option<u32> {
+        let s = self.seed[j as usize];
+        (s != 0).then_some(s)
+    }
+
+    pub(crate) fn set_seed(&mut self, j: u32, seed: u32) {
+        assert!(
+            seed != 0 && self.seed[j as usize] == 0,
+            "job {j}: one nonzero seed"
+        );
+        self.seed[j as usize] = seed;
     }
 
     /// Returns every job's state.
@@ -364,7 +383,13 @@ pub fn expand(plan: &Plan, select: &Select<'_>) -> Result<Jobs, PlanError> {
                         assigns.iter().map(|(v, x)| (*v, x.as_str())).collect();
                     list.extend_from_slice(select.overrides);
                     let sample = if mc.is_some() { s } else { NO_SAMPLE };
-                    jobs.push(config, corner, sample, &list)?;
+                    let j = jobs.push(config, corner, sample, &list)?;
+                    #[cfg(feature = "mc")]
+                    if let Some(m) = mc {
+                        jobs.set_seed(j, crate::mc::sim_seed(m.seed, s));
+                    }
+                    #[cfg(not(feature = "mc"))]
+                    let _ = j;
                 }
                 if !odometer(&mut point, &sweeps) {
                     break;

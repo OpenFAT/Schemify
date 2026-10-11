@@ -240,3 +240,58 @@ fn component_code_is_emitted_inside_every_definition() {
     assert_eq!(top.matches(".model dm d").count(), 1, "{top}");
     assert!(!top.contains(".subckt"), "{top}");
 }
+
+#[test]
+fn veriloga_bodies_are_source_or_precompiled_text() {
+    // A `veriloga` body with an `endmodule` line is source the runner compiles (§7.6.8):
+    // loaded and modelled like a `file`, never emitted; one without is precompiled SPICE
+    // text, emitted as is. A `verilog` body is always source.
+    let src = "schemify 1 shprim\n\npin p inout 0 -30\npin n inout 0 30\n\nimpl va veriloga\n  \
+               model vsrc_m\n\nbody va\n  | `include \"disciplines.vams\"\n  \
+               | module vsrc(p, n);\n  |   electrical p, n;\n  \
+               |   analog I(p, n) <+ V(p, n) / 1000.0;\n  | endmodule\n";
+    let pre = "schemify 1 shprim\n\npin p inout 0 -30\npin n inout 0 30\n\nimpl va veriloga\n  \
+               model pre_m\n\nbody va\n  | .control\n  | pre_osdi pre.osdi\n  | .endc\n  \
+               | .model pre_m pre\n";
+    let bench = "schemify 1 shbench\n\ninst 0a0001 ./vsrc\n  at 0 0 R0\n  name N1\n\
+                 inst 0a0002 ./pre\n  at 100 0 R0\n  name N2\n\nlabel 0n0001 0 -30 R0 a\n\
+                 label 0n0002 0 30 R0 0\nlabel 0n0003 100 -30 R0 a\nlabel 0n0004 100 30 R0 0\n";
+    let (p, hs) = project(&[
+        ("vsrc.shprim", src),
+        ("pre.shprim", pre),
+        ("tb.shbench", bench),
+    ]);
+    let e = elab(&p, hs[2], Dialect::Ngspice);
+    assert!(blocking(&e).is_empty(), "{:?}", blocking(&e));
+    let compiled: Vec<(&str, bool)> = (0..e.impls.cell.len())
+        .map(|l| {
+            let cell = e.names.get(e.cells[e.impls.cell[l] as usize].stem);
+            (cell, schemify_netlist::compiled_source(&e, l))
+        })
+        .collect();
+    assert!(
+        compiled.contains(&("vsrc", true)) && compiled.contains(&("pre", false)),
+        "{compiled:?}"
+    );
+    let text = emit(&e, Dialect::Ngspice).text;
+    assert!(
+        text.contains(".control\npre_osdi vsrc.osdi\n.endc\n"),
+        "{text}"
+    );
+    assert!(text.contains("\n.model vsrc_m vsrc\n"), "{text}");
+    assert!(
+        !text.contains("endmodule") && !text.contains("disciplines"),
+        "{text}"
+    );
+    assert!(
+        text.contains("\npre_osdi pre.osdi\n.endc\n.model pre_m pre\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("\nN1 a 0 vsrc_m\n") && text.contains("\nN2 a 0 pre_m\n"),
+        "{text}"
+    );
+    // CDL: neither is LVS text.
+    let cdl = emit(&elab(&p, hs[2], Dialect::Cdl), Dialect::Cdl).text;
+    assert!(!cdl.contains("osdi") && !cdl.contains("endmodule"), "{cdl}");
+}

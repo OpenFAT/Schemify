@@ -8,8 +8,8 @@ The bench tables are read once per Run into a plan. Named rank-6 tables are orde
 
 - `sweep`: `var` is required; exactly one of `values` / `lin` / `log`; `lin`/`log` bounds are constant expressions (no identifiers), the count is an integer in `1..=65536`, `log` bounds are nonzero with one sign; every `values` entry compiles.
 - `montecarlo`: `samples` is required, an integer in `1..=2^20`; `seed` is a u64, default 0.
-- var `dist` (§3): shape, spread compiles, spread does not name the var itself.
-- `optimize` (§6): at least one `goal` naming an existing output (`target` needs a constant value) and one `vary` naming a bench var with constant `min` and `max`, `min ≤ max`; `budget` in `1..=65536` (default 100); `seed` a u64 (default 1).
+- var `dist` (§3): spread compiles, spread does not name the var itself (the shape is the format's, `E029`).
+- `optimize` (§6): at least one `goal` naming an existing output, shaped `<output> min|max [weight <w>]` or `<output> target <t> [weight <w>]` (`t` constant; `w` a constant > 0, default 1), and one `vary` naming a bench var with constant `min` and `max`, `min ≤ max`; every `config` and `corner` line names a config or corner of the bench; `budget` in `1..=65536` (default 100); `seed` a u64 (default 1).
 - `output`: compiles in calculator mode. `spec`: names an output; `min`/`max` compile in scalar mode.
 
 ## 2. Job expansion
@@ -38,6 +38,8 @@ A var varies when it carries `dist gauss|uniform <spread> [rel]` (format.md rank
 
 So sample `k` of var `R` is the same in every corner, config and sweep point of a run (common random numbers), and adding a var leaves the others' draws unchanged.
 
+**Simulator seed.** Each sample also fixes the simulator's own random seed, `1 + (x >> 34)` ∈ `[1, 2^30]` where `x` is the first output of the second splitmix64 of the stream above for the empty var name `""` (no var has it). The job keeps it (`Jobs::seed`, results file `seed`), and its ngspice netlist ends `.option seed=<n>` before `.end` (ngspice applies it before evaluating `.param`), so the PDK's own statistics (`agauss`/`gauss` in a Monte Carlo `lib` section) draw the same values for the same seed and sample on every run, and sample `k` sees the same PDK draws in every corner, config and sweep point. (Xyce takes its seed on the command line; not set yet.)
+
 The varied expression (base) is the latest assignment of the var in this job, else the selected corner's last `set` of it, else the var's own expression. The assignment text is `(base)+(spread)*(z)`, or `(base)*(1+(spread)*(z))` with `rel`, `z` in canonical number text: still an expression, evaluated by elab in bench scope.
 
 PDK statistical models are selected with a corner whose `lib` section is the PDK's Monte Carlo section; those lines pass through to the netlist unchanged.
@@ -55,24 +57,25 @@ PDK statistical models are selected with a corner whose `lib` section is the PDK
 
 Job states: `pending`, `queued`, `running`, `done` (simulator exited 0 and its raw file parsed), `failed` (gate, netlist, compile, simulator, raw file), `cancelled`.
 
-**Results file** (`<run dir>/results`): line records in the format.md §2 lexical layer (not a format.md file kind: `crates/run` reads and writes it), header `schemify 1 results` with attribute `design <64 hex>`; then `output <name>` records (plan order), `spec <output>` records, `var <name>` records; then one `job <index> <state>` record per job in index order, with attributes `config`, `corner`, `sample` (each only when set), `set <var> <value>` per assignment, `var <name> <number>` and `value <output> <number>` per present value (canonical number text), `pass <output> pass|fail` per decided spec, `error <output|-> <message>` per error row sorted by output. Written canonically, so `jobs=1` and `jobs=N` give identical bytes.
+**Results file** (`<run dir>/results`): line records in the format.md §2 lexical layer (not a format.md file kind: `crates/run` reads and writes it), header `schemify 1 results` with attribute `design <64 hex>`; then `output <name>` records (plan order), `spec <output>` records, `var <name>` records; then one `job <index> <state>` record per job in index order, with attributes `config`, `corner`, `sample`, `seed` (each only when set), `set <var> <value>` per assignment, `var <name> <number>` and `value <output> <number>` per present value (canonical number text), `pass <output> pass|fail` per decided spec, `error <output|-> <message>` per error row sorted by output. Written canonically, so `jobs=1` and `jobs=N` give identical bytes.
 
 ## 5. Native runner (not on the web)
 
 - Directories: run `<project>/.schemify/runs/<first 16 hex digits of the design hash>/`, one sub-directory per job index holding `netlist.cir`, `out.raw`, `stdout.log`, `stderr.log`; compiled sources cached in `<project>/.schemify/build/`. `.schemify/` is git-ignored.
+- Corner paths: a corner `lib`/`include` path that is relative (not starting with `/`, `\`, `~`, `$`, a quote or a drive letter `C:`) names a file beside the bench. The netlist keeps it as written (netlist spec §7.6.14: the output must not depend on the checkout); the runner writes it into the job's `netlist.cir` joined onto the bench's directory (the library's directory joined with the bench's), quoted when that holds whitespace.
 - The simulator command line comes from the user config `sim ngspice` (`path`, `args`), never from a document (D7); default `ngspice -b -r {raw} {netlist}`. `{netlist}` and `{raw}` are replaced by the job's file names; the working directory is the job directory; stdin is empty.
 - At most `workers` simulators at once (default: available cores, at most 1024), started in submission order. A simulator past the timeout (default 1 h) is killed and the job fails. Exit 0 with a raw file: results are recorded (§4). Non-zero exit, or no raw file: the job fails with the last stderr line. A program that cannot be found fails the job naming it.
-- Sources: a leaf impl with lang `veriloga` and a `file` is compiled with `openvaf <src> -o <build>/<file stem>.osdi`, lang `verilog` with `iverilog -o <build>/<file stem>.vvp <src>` (programs from the user config `sim openvaf` / `sim iverilog` `path`), only when the output is missing or older than the source, then copied into the job directory (the netlist names them relative, netlist.md §7.2). A missing compiler fails the job naming the program and the source.
+- Sources: a leaf impl with lang `veriloga` or `verilog` whose source is a `file`, or its `body` (a `verilog` body; a `veriloga` body with an `endmodule` line, netlist.md §7.6.8), is compiled with `openvaf <src> -o <build>/<stem>.osdi` (Verilog-A) or `iverilog -o <build>/<stem>.vvp <src>` (Verilog), programs from the user config `sim openvaf` / `sim iverilog` `path`; `stem` is the `file` stem, else the cell stem. A `body` is first written to `<build>/<stem>.va|.v` (only when its text changed). A source compiles only when its output is missing or older than it, then the output is copied into the job directory (the netlist names it relative, netlist.md §7.2). Compilers are child processes polled like simulators, never waited for: a job holds its worker slot (state `queued`, progress `compiling sources`) until its sources are compiled; one compiler per output serves every job that needs it; compiler output goes to `<build>/<out>.log`. A missing compiler, a non-zero exit, no output or the timeout fails every job of the run that needs that output, naming the program, the source and the compiler's last line.
 - Progress: the last complete stdout line of each running job.
 
 On the web, runner plugins (D16) receive the job's netlist and return its raw bytes, which go through the same result recording; a plugin's failure fails the job.
 
 ## 6. Optimizer
 
-An `optimize` record runs as an ask → job → tell loop, one candidate at a time, each candidate one job at the bench's default config and corner (no sample index) assigning every `vary` var its canonical number text.
+An `optimize` record runs as an ask → jobs → tell loop, one candidate at a time. A candidate is one job per (config, corner) of the record, configs outer and corners inner in file order (the bench default where it names none: one job at the default config and corner), no sample index, each assigning every `vary` var its canonical number text.
 
 - Params: the `vary` vars with their constant `min`/`max`; start at the var's value when constant, else the midpoint, clamped into the bounds. Every candidate is clamped into the bounds (D13).
-- Score (lower is better): sum over goals, weight 1, of `value` (`min`), `−value` (`max`), `|value − target|` (`target`). A failed job or a missing goal output scores `f64::MAX`.
+- Score (lower is better): sum over goals of `weight ×` the goal's error on the candidate's worst job for it, the error being `value` (`min`), `−value` (`max`), `|value − target|` (`target`). A failed job or a missing goal output in any of the candidate's jobs scores `f64::MAX`.
 - `algo nelder-mead` (default): downhill simplex from the start point plus one vertex per param stepped by 5% of its range; reflection 1, expansion 2, contraction 0.5, shrink 0.5. `algo random`: the start point, then uniform draws from xorshift64* seeded by `seed`.
 - At most `budget` evaluations. The same bench, seed and simulator results give the same sequence of jobs.
 
@@ -96,7 +99,8 @@ The selected job (job 0 after a run; a results row picks another) feeds the wave
 
 ## 8. Amendments
 
-1. format.md rank 4 `var` gains `dist gauss|uniform <spread> [rel]` (§3); rank 6 `optimize` gains `seed <n>`; `montecarlo` and `optimize` defaults and `output` evaluation as stated here.
+1. format.md rank 4 `var` gains `dist gauss|uniform <spread> [rel]` (§3); rank 6 `optimize` gains `seed <n>`, `config <name>`, `corner <name>` and goal weights; all are known attributes (shape errors are `E029`); `montecarlo` and `optimize` defaults and `output` evaluation as stated here.
 2. format.md user config `sim <name>`: `{netlist}`/`{raw}` placeholders; names `ngspice`, `openvaf`, `iverilog`.
 3. Results live in `.schemify/runs/<design>/results` next to the job directories (D18 said `.schemify/results/`): one directory per design keeps a run's netlists, raw files and results together.
 4. (M2 editor) The app writes a `bench` sidecar beside `results` (§7a) and runs the spine without blocking; `crates/run` gained `Jobs::cancel_pending` for jobs never handed to a runner.
+5. (2026-10-11) Monte Carlo samples fix the simulator seed (§3); inline `body` sources compile and compilers never block a poll (§5); relative corner paths resolve against the bench (§5); the optimizer runs over configs and corners with goal weights (§6).

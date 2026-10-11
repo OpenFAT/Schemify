@@ -137,12 +137,20 @@ pub fn run(
 
 /// Whether `ngspice` runs from PATH.
 pub fn have_ngspice() -> bool {
-    let ok = std::process::Command::new("ngspice")
-        .arg("--version")
-        .output()
-        .is_ok();
+    have("ngspice", "--version")
+}
+
+/// Whether `tool` starts from PATH (called with `arg`). Tests skip without it, except
+/// under `SCHEMIFY_REQUIRE_SIMULATORS` (the CI step whose Nix shell provides ngspice,
+/// Icarus and OpenVAF), where a missing tool fails the test instead of skipping it.
+pub fn have(tool: &str, arg: &str) -> bool {
+    let ok = std::process::Command::new(tool).arg(arg).output().is_ok();
     if !ok {
-        eprintln!("ngspice not on PATH: skipping");
+        assert!(
+            std::env::var_os("SCHEMIFY_REQUIRE_SIMULATORS").is_none(),
+            "{tool} must be on PATH (SCHEMIFY_REQUIRE_SIMULATORS is set)"
+        );
+        eprintln!("{tool} not on PATH: skipping");
     }
     ok
 }

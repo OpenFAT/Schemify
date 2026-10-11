@@ -4,13 +4,15 @@
 //!
 //! No threads and no callbacks: children write `stdout.log`/`stderr.log` in their job
 //! directory; [`Runner::poll`] reaps exited children, kills those past the timeout,
-//! tails stdout for progress and starts queued jobs. Compiled sources (OpenVAF,
-//! Icarus) are cached by mtime in a shared build directory and copied into each job
+//! tails stdout for progress and starts queued jobs. Sources (OpenVAF, Icarus) compile
+//! as child processes too, polled the same way: a job holds its worker slot while its
+//! sources compile, one compiler per stale output serves every job that needs it, and
+//! the outputs are cached by mtime in a shared build directory and copied into each job
 //! directory.
 
 use crate::jobs::{Jobs, State};
 use crate::plan::Plan;
-use crate::prepare::{Prepared, Source, Tool};
+use crate::prepare::{Origin, Prepared, Source, Tool};
 use crate::results::Results;
 use schemify_doc::Digest;
 use std::collections::VecDeque;
@@ -115,9 +117,20 @@ impl RunnerConfig {
     }
 }
 
+/// A job with its netlist written: queued for a worker slot, then holding one while its
+/// sources compile.
 struct Queued {
     job: u32,
     sources: Vec<Source>,
+}
+
+/// One compiler child writing `out` into the build cache.
+struct Compiling {
+    out: String,
+    child: Child,
+    started: Instant,
+    /// `` `openvaf` on <src> ``, for messages.
+    what: String,
 }
 
 struct Running {
@@ -130,10 +143,18 @@ struct Running {
     last: String,
 }
 
-/// Jobs waiting for and holding worker slots. Dropping a runner kills its children.
+/// Jobs waiting for and holding worker slots, and the compilers they wait on. Dropping a
+/// runner kills its children.
 pub struct Runner {
     cfg: RunnerConfig,
     queue: VecDeque<Queued>,
+    /// Jobs holding a worker slot while their sources compile.
+    waiting: Vec<Queued>,
+    /// Compiler children, at most one per cache output.
+    compiling: Vec<Compiling>,
+    /// Cache outputs whose compile failed this run, with the message every job needing
+    /// one fails with.
+    failed: Vec<(String, String)>,
     running: Vec<Running>,
 }
 
@@ -153,6 +174,9 @@ impl Runner {
         Runner {
             cfg,
             queue: VecDeque::new(),
+            waiting: Vec::new(),
+            compiling: Vec::new(),
+            failed: Vec::new(),
             running: Vec::new(),
         }
     }
@@ -167,18 +191,24 @@ impl Runner {
         self.cfg.dir.join(j.to_string())
     }
 
-    /// Writes job `j`'s netlist into its directory (removing an old raw file) and queues
-    /// it. A write failure fails the job.
+    /// Writes job `j`'s netlist into its directory (removing an old raw file; relative
+    /// corner paths made absolute against the bench's directory, [`Prepared::resolved`])
+    /// and queues it. A write failure fails the job.
     pub fn submit(&mut self, jobs: &mut Jobs, results: &mut Results, j: u32, p: &Prepared) {
         assert_eq!(jobs.state(j), State::Pending, "submit job {j} once");
         assert!(self.queue.len() < crate::JOBS_MAX as usize);
         let dir = self.job_dir(j);
+        let base = self.cfg.lib_dirs.get(usize::from(p.base.0));
+        let text = match base {
+            Some(lib) if !p.relative.is_empty() => p.resolved(&lib.join(&p.base.1)),
+            _ => p.netlist.clone(),
+        };
         let written = fs::create_dir_all(&dir).and_then(|()| {
             match fs::remove_file(dir.join(RAW)) {
                 Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
                 _ => {}
             }
-            fs::write(dir.join(NETLIST), &p.netlist)
+            fs::write(dir.join(NETLIST), &text)
         });
         if let Err(e) = written {
             return results.fail(jobs, j, format!("cannot write {}: {e}", dir.display()));
@@ -190,23 +220,30 @@ impl Runner {
         jobs.set_state(j, State::Queued);
     }
 
-    /// Returns whether any job is queued or running.
+    /// Returns whether any job is queued, compiling or running, or a compiler runs.
     pub fn busy(&self) -> bool {
-        !self.queue.is_empty() || !self.running.is_empty()
+        !self.queue.is_empty()
+            || !self.waiting.is_empty()
+            || !self.running.is_empty()
+            || !self.compiling.is_empty()
     }
 
-    /// Iterates `(job, last stdout line)` of the running jobs.
+    /// Iterates `(job, progress)` of the jobs holding a worker slot: the last stdout line
+    /// of a running simulator, or that the job waits for its sources to compile.
     pub fn progress(&self) -> impl Iterator<Item = (u32, &str)> + '_ {
-        self.running.iter().map(|r| (r.job, r.last.as_str()))
+        let running = self.running.iter().map(|r| (r.job, r.last.as_str()));
+        running.chain(self.waiting.iter().map(|w| (w.job, "compiling sources")))
     }
 
-    /// Advances every job one step without blocking: reaps exited simulators (their raw
-    /// file goes through [`Results::record`]), kills those past the timeout, tails
-    /// stdout, and starts queued jobs into free worker slots. Appends to `finished` every
-    /// job that reached `Done` or `Failed` in this call.
+    /// Advances every job one step without blocking: reaps exited compilers and
+    /// simulators (a simulator's raw file goes through [`Results::record`]), kills those
+    /// past the timeout, tails stdout, admits queued jobs into free worker slots (starting
+    /// the compiles their sources need: one compiler per stale cache output, shared by
+    /// every job that needs it) and starts the simulator of every job whose sources are
+    /// ready. Appends to `finished` every job that reached `Done` or `Failed` in this call.
     ///
-    /// Cost: one `try_wait` per running child; compiling a changed Verilog-A or Verilog
-    /// source blocks this call while the compiler runs.
+    /// Cost: one `try_wait` per child and a stat of each source of an admitted job;
+    /// compilers and simulators are child processes, so nothing here waits for them.
     pub fn poll(
         &mut self,
         plan: &Plan,
@@ -215,6 +252,7 @@ impl Runner {
         finished: &mut Vec<u32>,
     ) {
         let before = finished.len();
+        self.reap_compiles();
         let mut i = 0;
         while i < self.running.len() {
             let dir = self.job_dir(self.running[i].job);
@@ -237,23 +275,30 @@ impl Runner {
             self.finish(plan, jobs, results, r.job, outcome);
             finished.push(r.job);
         }
-        while self.running.len() < usize::from(self.cfg.workers) {
-            let Some(q) = self.queue.pop_front() else {
-                break;
-            };
-            if let Err(msg) = self.start(&q) {
-                results.fail(jobs, q.job, msg);
-                finished.push(q.job);
-                continue;
+        // Each pass admits at least one queued job, or ends: a start that fails frees its
+        // slot for the next queued job in the same poll.
+        let workers = usize::from(self.cfg.workers);
+        loop {
+            while self.waiting.len() + self.running.len() < workers {
+                let Some(q) = self.queue.pop_front() else {
+                    break;
+                };
+                for s in &q.sources {
+                    self.ensure_compiled(s);
+                }
+                self.waiting.push(q);
             }
-            jobs.set_state(q.job, State::Running);
+            self.start_ready(jobs, results, finished);
+            if self.queue.is_empty() || self.waiting.len() + self.running.len() >= workers {
+                break;
+            }
         }
-        assert!(self.running.len() <= usize::from(self.cfg.workers));
+        assert!(self.running.len() + self.waiting.len() <= workers);
         assert!(finished[before..].iter().all(|&j| jobs.state(j).finished()));
     }
 
-    /// Polls until no job is queued or running (the CLI and tests; the app polls from
-    /// its frame spine instead). Terminates: every child is killed at the timeout.
+    /// Polls until no job is queued, compiling or running (the CLI and tests; the app polls
+    /// from its frame spine instead). Terminates: every child is killed at the timeout.
     pub fn wait(
         &mut self,
         plan: &Plan,
@@ -270,13 +315,17 @@ impl Runner {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(self.queue.is_empty() && self.running.is_empty());
+        assert!(self.queue.is_empty() && self.running.is_empty() && self.waiting.is_empty());
     }
 
-    /// Cancels job `j` if it is queued or running (a running simulator is killed).
+    /// Cancels job `j` if it is queued, compiling or running (a running simulator is
+    /// killed; a compiler other jobs may share keeps running).
     pub fn cancel(&mut self, jobs: &mut Jobs, j: u32) {
         if let Some(i) = self.queue.iter().position(|q| q.job == j) {
             self.queue.remove(i);
+            jobs.set_state(j, State::Cancelled);
+        } else if let Some(i) = self.waiting.iter().position(|w| w.job == j) {
+            self.waiting.remove(i);
             jobs.set_state(j, State::Cancelled);
         } else if let Some(i) = self.running.iter().position(|r| r.job == j) {
             let mut r = self.running.remove(i);
@@ -285,18 +334,24 @@ impl Runner {
             jobs.set_state(j, State::Cancelled);
         }
         assert!(!self.queue.iter().any(|q| q.job == j) && !self.running.iter().any(|r| r.job == j));
+        assert!(!self.waiting.iter().any(|w| w.job == j));
     }
 
-    /// Cancels every queued and running job.
+    /// Cancels every queued, compiling and running job and kills every compiler.
     pub fn cancel_all(&mut self, jobs: &mut Jobs) {
         let all: Vec<u32> = self
             .queue
             .iter()
+            .chain(&self.waiting)
             .map(|q| q.job)
             .chain(self.running.iter().map(|r| r.job))
             .collect();
         for j in all {
             self.cancel(jobs, j);
+        }
+        for mut c in self.compiling.drain(..) {
+            let _ = c.child.kill();
+            let _ = c.child.wait();
         }
         assert!(!self.busy());
     }
@@ -315,10 +370,107 @@ impl Runner {
         Ok(path)
     }
 
+    /// Starts the compiler of `s` unless its output is fresh, already compiling, or
+    /// failed this run; a compiler that cannot start fails the output.
+    fn ensure_compiled(&mut self, s: &Source) {
+        if self.failed.iter().any(|(o, _)| *o == s.out)
+            || self.compiling.iter().any(|c| c.out == s.out)
+        {
+            return;
+        }
+        match spawn_compile(&self.cfg, s) {
+            Ok(None) => {}
+            Ok(Some(c)) => self.compiling.push(c),
+            Err(msg) => self.failed.push((s.out.clone(), msg)),
+        }
+        assert!(self.compiling.len() <= crate::JOBS_MAX as usize);
+    }
+
+    /// Reaps exited compilers; one that failed, wrote nothing or ran past the timeout
+    /// fails its output.
+    fn reap_compiles(&mut self) {
+        let mut i = 0;
+        while i < self.compiling.len() {
+            let c = &mut self.compiling[i];
+            let outcome = match c.child.try_wait() {
+                Ok(Some(status)) => Ok(status),
+                Ok(None) if c.started.elapsed() <= self.cfg.timeout => {
+                    i += 1;
+                    continue;
+                }
+                Ok(None) => Err(format!("timed out after {:?}", self.cfg.timeout)),
+                Err(e) => Err(format!("cannot wait for the compiler: {e}")),
+            };
+            let mut c = self.compiling.remove(i);
+            if outcome.is_err() {
+                let _ = c.child.kill();
+                let _ = c.child.wait();
+            }
+            let wrote = self.cfg.cache.join(&c.out).exists();
+            let why = match outcome {
+                Ok(status) if status.success() && wrote => continue,
+                Ok(status) => {
+                    let log = self.cfg.cache.join(format!("{}.log", c.out));
+                    let last = last_line(&log).unwrap_or_else(|| "no output".into());
+                    format!("{status}: {last}")
+                }
+                Err(msg) => msg,
+            };
+            self.failed
+                .push((c.out, format!("{} failed ({why})", c.what)));
+        }
+        assert!(
+            self.compiling
+                .iter()
+                .all(|c| !self.failed.iter().any(|f| f.0 == c.out))
+        );
+    }
+
+    /// Starts the simulator of every waiting job whose sources are compiled; fails those
+    /// with a failed source.
+    fn start_ready(&mut self, jobs: &mut Jobs, results: &mut Results, finished: &mut Vec<u32>) {
+        let mut i = 0;
+        while i < self.waiting.len() {
+            let w = &self.waiting[i];
+            let failed = w
+                .sources
+                .iter()
+                .find_map(|s| self.failed.iter().find(|f| f.0 == s.out))
+                .map(|f| f.1.clone());
+            let compiling = w
+                .sources
+                .iter()
+                .any(|s| self.compiling.iter().any(|c| c.out == s.out));
+            if failed.is_none() && compiling {
+                i += 1;
+                continue;
+            }
+            let w = self.waiting.remove(i);
+            let started = match failed {
+                Some(msg) => Err(msg),
+                None => self.start(&w),
+            };
+            match started {
+                Ok(()) => jobs.set_state(w.job, State::Running),
+                Err(msg) => {
+                    results.fail(jobs, w.job, msg);
+                    finished.push(w.job);
+                }
+            }
+        }
+        assert!(
+            self.waiting
+                .iter()
+                .all(|w| jobs.state(w.job) == State::Queued)
+        );
+    }
+
+    /// Copies the compiled sources into the job directory and spawns the simulator.
     fn start(&mut self, q: &Queued) -> Result<(), String> {
         let dir = self.job_dir(q.job);
         for s in &q.sources {
-            compile(&self.cfg, s, &dir)?;
+            fs::copy(self.cfg.cache.join(&s.out), dir.join(&s.out))
+                .map_err(|e| format!("copy {}: {e}", s.out))?;
         }
         let log = |name: &str| {
             File::create(dir.join(name)).map_err(|e| format!("cannot create {name}: {e}"))
@@ -403,57 +555,82 @@ impl Drop for Runner {
             let _ = r.child.kill();
             let _ = r.child.wait();
         }
+        for c in &mut self.compiling {
+            let _ = c.child.kill();
+            let _ = c.child.wait();
+        }
     }
 }
 
-/// Compiles `s` into the cache unless the cached output is at least as new as the
-/// source, then copies it into the job directory.
-fn compile(cfg: &RunnerConfig, s: &Source, job_dir: &Path) -> Result<(), String> {
-    let lib = cfg
-        .lib_dirs
-        .get(usize::from(s.lib))
-        .ok_or_else(|| format!("no directory for library row {}", s.lib))?;
-    let src = lib.join(&s.path);
+/// Starts compiling `s` into the build cache, or returns `None` when the cached output is
+/// at least as new as the source. A `body` source is first written to the cache as
+/// `<stem>.va|.v` (only when its text changed, so the mtime check holds across runs).
+/// The compiler's output goes to `<cache>/<out>.log`.
+fn spawn_compile(cfg: &RunnerConfig, s: &Source) -> Result<Option<Compiling>, String> {
+    let cache = |e: io::Error| format!("cache {}: {e}", cfg.cache.display());
+    let src = match &s.origin {
+        Origin::File { lib, path } => cfg
+            .lib_dirs
+            .get(usize::from(*lib))
+            .ok_or_else(|| format!("no directory for library row {lib}"))?
+            .join(path),
+        Origin::Body(text) => {
+            fs::create_dir_all(&cfg.cache).map_err(cache)?;
+            let stem = s.out.rsplit_once('.').map_or(s.out.as_str(), |(st, _)| st);
+            let ext = match s.tool {
+                Tool::Openvaf => "va",
+                Tool::Iverilog => "v",
+            };
+            let p = cfg.cache.join(format!("{stem}.{ext}"));
+            if fs::read(&p).ok().as_deref() != Some(text.as_bytes()) {
+                fs::write(&p, text).map_err(cache)?;
+            }
+            p
+        }
+    };
     let cached = cfg.cache.join(&s.out);
     let mtime = |p: &Path| fs::metadata(p).and_then(|m| m.modified());
     let src_time = mtime(&src).map_err(|e| format!("source {}: {e}", src.display()))?;
-    let fresh = mtime(&cached).is_ok_and(|t| t >= src_time);
-    if !fresh {
-        fs::create_dir_all(&cfg.cache)
-            .map_err(|e| format!("cache {}: {e}", cfg.cache.display()))?;
-        let (prog, what) = match s.tool {
-            Tool::Openvaf => (&cfg.tools.openvaf, "Verilog-A → OSDI"),
-            Tool::Iverilog => (&cfg.tools.iverilog, "Verilog → VVP"),
-        };
-        let mut cmd = Command::new(prog);
-        match s.tool {
-            Tool::Openvaf => cmd.arg(&src).arg("-o").arg(&cached),
-            Tool::Iverilog => cmd.arg("-o").arg(&cached).arg(&src),
-        };
-        let out = cmd.stdin(Stdio::null()).output().map_err(|e| {
+    if mtime(&cached).is_ok_and(|t| t >= src_time) {
+        return Ok(None);
+    }
+    fs::create_dir_all(&cfg.cache).map_err(cache)?;
+    // A stale output must not pass for this compile's result if the compiler writes none.
+    match fs::remove_file(&cached) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(cache(e)),
+        _ => {}
+    }
+    let (prog, what) = match s.tool {
+        Tool::Openvaf => (&cfg.tools.openvaf, "Verilog-A → OSDI"),
+        Tool::Iverilog => (&cfg.tools.iverilog, "Verilog → VVP"),
+    };
+    let mut cmd = Command::new(prog);
+    match s.tool {
+        Tool::Openvaf => cmd.arg(&src).arg("-o").arg(&cached),
+        Tool::Iverilog => cmd.arg("-o").arg(&cached).arg(&src),
+    };
+    let log = File::create(cfg.cache.join(format!("{}.log", s.out))).map_err(cache)?;
+    let log2 = log.try_clone().map_err(cache)?;
+    let child = cmd
+        .stdin(Stdio::null())
+        .stdout(log)
+        .stderr(log2)
+        .spawn()
+        .map_err(|e| {
             let need = format!("needed to compile {} ({what})", src.display());
             format!(
                 "{}; {need}",
                 spawn_error(prog, "compiler", "the user config", &e)
             )
         })?;
-        if !out.status.success() || !cached.exists() {
-            let err = String::from_utf8_lossy(&out.stderr);
-            let why = err
-                .lines()
-                .rev()
-                .find(|l| !l.trim().is_empty())
-                .unwrap_or("no output");
-            return Err(format!(
-                "`{prog}` failed on {} ({}): {why}",
-                src.display(),
-                out.status
-            ));
-        }
-    }
-    fs::copy(&cached, job_dir.join(&s.out)).map_err(|e| format!("copy {}: {e}", s.out))?;
-    assert!(job_dir.join(&s.out).exists());
-    Ok(())
+    let c = Compiling {
+        out: s.out.clone(),
+        child,
+        started: Instant::now(),
+        what: format!("`{prog}` on {}", src.display()),
+    };
+    assert!(!c.out.is_empty());
+    Ok(Some(c))
 }
 
 fn spawn_error(prog: &str, what: &str, config: &str, e: &io::Error) -> String {
