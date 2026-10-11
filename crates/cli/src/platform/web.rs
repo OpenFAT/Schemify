@@ -76,14 +76,16 @@ pub fn is_dir(path: &Path) -> bool {
 /// as well.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let k = vfs::key(path);
-    FS.with_borrow_mut(|fs| fs.write(&k, bytes.to_vec(), now_s()))?;
+    FS.with_borrow_mut(|fs| fs.write(&k, bytes.to_vec(), now_s()))
+        .inspect_err(|e| warn(e))?;
     flush();
     Ok(())
 }
 
 pub fn append(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let k = vfs::key(path);
-    FS.with_borrow_mut(|fs| fs.append(&k, bytes, now_s()))?;
+    FS.with_borrow_mut(|fs| fs.append(&k, bytes, now_s()))
+        .inspect_err(|e| warn(e))?;
     flush();
     Ok(())
 }
@@ -403,13 +405,19 @@ fn flush() {
                 continue; // memory only: nothing to write to
             }
             let bytes = FS.with_borrow(|fs| fs.read(&key).map(<[u8]>::to_vec));
-            let done = match bytes {
-                Some(b) => opfs_write(&key, &b).await,
+            let done = match &bytes {
+                Some(b) => opfs_write(&key, b).await,
                 None => opfs_remove(&key).await,
             };
-            if let Err(e) = done {
-                FAILED.set(FAILED.get() + 1);
-                error(&format!("web storage: {key}: {e}"));
+            match done {
+                Ok(()) => debug(&format!(
+                    "web storage: {} {key}",
+                    bytes.map_or_else(|| "removed".to_owned(), |b| format!("wrote {} B", b.len()))
+                )),
+                Err(e) => {
+                    FAILED.set(FAILED.get() + 1);
+                    error(&format!("web storage: {key}: {e}"));
+                }
             }
         }
         FLUSHING.set(false);
@@ -535,6 +543,11 @@ fn js_err(e: JsValue) -> String {
 
 fn log(msg: &str) {
     web_sys::console::log_1(&JsValue::from_str(msg));
+}
+
+/// A console line hidden by default (DevTools' "Verbose" level): one per OPFS write.
+fn debug(msg: &str) {
+    web_sys::console::debug_1(&JsValue::from_str(msg));
 }
 
 fn warn(msg: &str) {

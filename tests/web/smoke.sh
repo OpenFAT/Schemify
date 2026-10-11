@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Browser smoke test of the web bundle (D2, D32): serves <web-dir> (index.html + wasm-bindgen
-# `pkg/`) and loads it in headless Chrome twice: once dumping the DOM, once taking a screenshot
-# (<out-dir>/web.png) with the console logged. Passes when the editor reached its window (winit
-# appended its canvas to the page) and the console shows no trap or panic. WebGPU is requested
-# through SwiftShader; a missing adapter (`gpu: ...`, blank canvas) is reported, not failed:
-# headless runners have no GPU, and the renderer has no CPU fallback on the web yet.
-# Then `drive.py` drives a session through the DevTools protocol (web spec): a wire drawn
-# and saved reaches OPFS and survives a reload, Ctrl+C reaches the system clipboard and
-# Ctrl+V pastes from it.
+# `pkg/`) and drives the editor in headless Chrome through the DevTools protocol
+# (`drive.py`, web spec §8): the editor opens its window (winit's canvas) without a trap or
+# panic, a wire drawn and saved reaches OPFS and survives a reload, Ctrl+C reaches the
+# system clipboard and Ctrl+V pastes from it. Console output, the Chrome log and a screenshot
+# land in <out-dir>. WebGPU is requested through SwiftShader; a missing adapter (`gpu: ...`)
+# is reported, not failed: headless runners have no GPU. The page mounts OPFS before the
+# editor starts, so the checks wait in real time (Chrome's virtual-time budget skips past
+# storage I/O).
 #
 #   tests/web/smoke.sh <web-dir> [<out-dir>] [<chrome-binary>]
 set -euo pipefail
@@ -26,31 +26,9 @@ for _ in $(seq 50); do
   sleep 0.1
 done
 
-# shellcheck disable=SC2054 # "1280,800" is one argument
-flags=(--headless=new --no-sandbox --no-first-run --window-size=1280,800
-  --enable-unsafe-webgpu --enable-features=Vulkan --use-angle=swiftshader
-  --use-webgpu-adapter=swiftshader --enable-logging=stderr --v=0 --virtual-time-budget=20000)
-url="http://127.0.0.1:$port/"
-timeout 120 "$chrome" "${flags[@]}" --dump-dom "$url" >"$out/dom.html" 2>"$out/chrome-dom.log" || true
-timeout 120 "$chrome" "${flags[@]}" --screenshot="$out/web.png" "$url" 2>"$out/chrome.log" || true
-
-echo "--- console"
-grep -ah 'CONSOLE' "$out/chrome-dom.log" "$out/chrome.log" || echo "(no console output)"
-echo "--- page"
-grep -ao '<canvas[^>]*>' "$out/dom.html" || echo "(no canvas)"
-
 status=0
-if ! grep -aq '<canvas' "$out/dom.html"; then
-  echo "::error::the editor never opened its window (no canvas in the page)"
-  status=1
-fi
-if grep -ahiE 'RuntimeError|panicked|Uncaught' "$out/chrome-dom.log" "$out/chrome.log"; then
-  echo "::error::the web build trapped or panicked"
-  status=1
-fi
-if grep -aq 'gpu: ' "$out/chrome.log"; then
+python3 "$(dirname "$0")/drive.py" "$chrome" "http://127.0.0.1:$port/" "$out" || status=1
+if grep -aq 'gpu: ' "$out/drive-console.txt"; then
   echo "::warning::no WebGPU device in this browser: the editor runs but draws nothing"
 fi
-echo "--- driven session (storage across a reload, clipboard)"
-python3 "$(dirname "$0")/drive.py" "$chrome" "$url" "$out" || status=1
 exit $status

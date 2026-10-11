@@ -204,6 +204,26 @@ class Page:
     def clipboard(self):
         return self.eval("navigator.clipboard.readText().catch(e => 'ERROR ' + e)")
 
+    def opfs_tree(self):
+        """Every OPFS path with its size (diagnostics when a save does not show up)."""
+        return self.eval(
+            "(async () => { const out = []; const walk = async (d, p) => {"
+            " for await (const [n, h] of d.entries()) {"
+            " if (h.kind === 'directory') await walk(h, p + '/' + n);"
+            " else out.push(p + '/' + n + ' ' + (await h.getFile()).size); } };"
+            " await walk(await navigator.storage.getDirectory(), ''); return out; })()"
+        )
+
+    def opfs_probe(self):
+        """Whether this browser's OPFS takes a `createWritable` write (what the flusher does)."""
+        return self.eval(
+            "(async () => { try { const d = await navigator.storage.getDirectory();"
+            " const h = await d.getFileHandle('probe.txt', {create: true});"
+            " const w = await h.createWritable(); await w.write(new Uint8Array([111, 107]));"
+            " await w.close(); const t = await (await h.getFile()).text();"
+            " await d.removeEntry('probe.txt'); return t; } catch (e) { return 'ERROR ' + e; } })()"
+        )
+
     def screenshot(self, path):
         data = self.call("Page.captureScreenshot", {"format": "png"})["data"]
         with open(path, "wb") as f:
@@ -243,7 +263,12 @@ def main():
         b = Browser(chrome, flags, log)
         try:
             p = Page(b, origin)
-            p.open(url)
+            try:
+                p.open(url)
+            except TimeoutError:
+                failures.append("the editor never opened its window (no canvas in the page)")
+                raise
+            p.screenshot(os.path.join(out, "web.png"))
 
             # 1. Draw a wire (xschem: `w` from the pointer, click its end), save, copy. The
             #    canvas is the left part of the window (the docs pane takes 560 px right).
@@ -262,6 +287,8 @@ def main():
             print(f"saved untitled1.shcomp: {len(wires(first))} wire(s)")
             if len(wires(first)) != 1:
                 failures.append(f"the save did not reach OPFS with one wire: {first!r}")
+                print(f"OPFS now: {p.opfs_tree()}")
+                print(f"OPFS createWritable probe: {p.opfs_probe()!r}")
             p.key("a", ctrl=True)
             p.key("c", ctrl=True)
             clip = None
