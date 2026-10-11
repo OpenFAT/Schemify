@@ -3304,7 +3304,7 @@ impl Editor {
                 }
             }
             (Edit::Extend(_, ext), Outcome::Committed { seq }) => {
-                let entry = self.commits.iter_mut().rev();
+                let mut entry = self.commits.iter_mut().rev();
                 if let Some(c) = entry.find(|c| c.0 == r.doc && c.1 == *seq) {
                     c.2.extend(ext.iter().cloned());
                 }
