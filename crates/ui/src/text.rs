@@ -29,11 +29,44 @@ static NOTO_SANS: &[u8] = include_bytes!("../fonts/NotoSans-UI.ttf");
 /// Monospace face for code (prose code spans and blocks); KaTeX's, already embedded for math.
 static MONO: &[u8] = include_bytes!("../fonts/KaTeX_Typewriter-Regular.ttf");
 
-/// Font database, shaping scratch, and the cache of shaped UI strings and math.
+/// A decoded image the app registered for prose (`![alt](path)`, [`TextSystem::set_image`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Image {
+    /// The path prose names it by (project-relative, as written in the source).
+    pub path: String,
+    /// Width in pixels (> 0).
+    pub width: u32,
+    /// Height in pixels (> 0).
+    pub height: u32,
+    /// `width × height × 4` bytes of premultiplied RGBA8, rows top to bottom. Shared, so a
+    /// renderer can hand it to the GPU without copying.
+    pub rgba: Arc<Vec<u8>>,
+}
+
+impl Image {
+    /// An image named `path` from premultiplied RGBA8 pixels.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a side is 0 or `rgba` is not `width × height × 4` bytes.
+    pub fn new(path: &str, width: u32, height: u32, rgba: Vec<u8>) -> Image {
+        assert!(width > 0 && height > 0, "an image has pixels");
+        assert_eq!(rgba.len() as u64, u64::from(width) * u64::from(height) * 4);
+        Image {
+            path: path.to_owned(),
+            width,
+            height,
+            rgba: Arc::new(rgba),
+        }
+    }
+}
+
+/// Font database, shaping scratch, the cache of shaped UI strings and math, and the images
+/// prose draws.
 ///
 /// Capacity: [`TextSystem::CACHE_CAPACITY`] cached layouts; beyond that the whole cache is
 /// dropped at the next [`TextSystem::begin_frame`] (a phase boundary), so a session that keeps
-/// producing new strings stays bounded.
+/// producing new strings stays bounded. Images: [`TextSystem::IMAGES_MAX`], never evicted.
 pub struct TextSystem {
     pub(crate) font_cx: FontContext,
     pub(crate) layout_cx: LayoutContext<()>,
@@ -46,6 +79,7 @@ pub struct TextSystem {
     math_cache: HashMap<(Sym, u16), u32>,
     proses: Vec<ProseList>,
     prose_cache: HashMap<(Sym, u16, u16), u32>,
+    images: Vec<Image>,
 }
 
 impl Default for TextSystem {
@@ -65,6 +99,8 @@ impl std::fmt::Debug for TextSystem {
 impl TextSystem {
     /// Cached layouts kept across frames before the cache is reset.
     pub const CACHE_CAPACITY: usize = 1 << 14;
+    /// Images registered at once ([`TextSystem::set_image`]).
+    pub const IMAGES_MAX: usize = 64;
 
     /// Creates the system and registers the embedded fonts. UI text asks for the Noto Sans
     /// subset, then KaTeX Main (already embedded for math) for the arrows and relations Noto
@@ -99,6 +135,7 @@ impl TextSystem {
             math_cache: HashMap::new(),
             proses: Vec::new(),
             prose_cache: HashMap::new(),
+            images: Vec::new(),
         }
     }
 
@@ -192,6 +229,41 @@ impl TextSystem {
     /// A prose layout from [`TextSystem::prose`].
     pub fn prose_list(&self, id: u32) -> &ProseList {
         &self.proses[id as usize]
+    }
+
+    /// Registers `image` for prose that names its path, replacing one of the same path.
+    /// Prose is laid out again at its next [`TextSystem::prose`] (ids handed out before stay
+    /// valid until the next evicting [`TextSystem::begin_frame`]). Returns false, registering
+    /// nothing, when [`TextSystem::IMAGES_MAX`] other images are registered.
+    pub fn set_image(&mut self, image: Image) -> bool {
+        debug_assert_eq!(
+            image.rgba.len() as u64,
+            u64::from(image.width) * u64::from(image.height) * 4
+        );
+        match self.images.iter().position(|i| i.path == image.path) {
+            Some(k) => self.images[k] = image,
+            None if self.images.len() >= Self::IMAGES_MAX => return false,
+            None => self.images.push(image),
+        }
+        self.prose_cache.clear();
+        true
+    }
+
+    /// Id of the registered image named `path`.
+    pub fn image_id(&self, path: &str) -> Option<u32> {
+        self.images
+            .iter()
+            .position(|i| i.path == path)
+            .map(|k| k as u32)
+    }
+
+    /// A registered image.
+    ///
+    /// # Panics
+    ///
+    /// Panics on an id [`TextSystem::image_id`] did not return.
+    pub fn image(&self, id: u32) -> &Image {
+        &self.images[id as usize]
     }
 
     /// A shaped layout.
@@ -381,7 +453,7 @@ mod tests {
     #[test]
     fn ui_characters_come_from_the_embedded_fonts() {
         // ASCII, the non-ASCII characters in the app/ui/render/default-UI sources, Greek.
-        let probe = "AZaz09!~ µΩ±×°→≤≥−…§Δ—· αβγδΣπ € ½";
+        let probe = "AZaz09!~ µΩ±×°→≤≥−…§Δ—· αβγδΣπ € ½ ⁰¹²³⁴⁵⁶⁷⁸⁹";
         let mut text = TextSystem::new();
         let mut layout = Layout::new();
         text.shape_into(probe, 14.0, &mut layout);

@@ -14,11 +14,15 @@
 //! 6. Parallel: no (one writer, a few hundred rows).
 
 use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
 
 use schemify_doc::{DocHandle, Document, Loc, NEW_ID, Op, RecordBuf, RecordKind, TableId, Target};
 use schemify_elab::{CellState, Val};
 use schemify_expr::{Mode, Program, Scratch, Value};
 use schemify_ui::prose::{Segment, split_plots};
+use schemify_ui::{Image, TextSystem};
+
+use crate::platform;
 
 /// The page's interaction state (owner: the editor).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -31,7 +35,17 @@ pub struct Page {
     pub editing: Option<(u32, String)>,
     /// The editor field has had keyboard focus (so losing it means "done").
     pub focused: bool,
+    /// Prose image paths that failed to load (they show their alt text); retried when the
+    /// page is shown for another document and back. At most [`IMAGES_FAILED_MAX`].
+    pub images_failed: Vec<String>,
 }
+
+/// Failed image paths a page remembers; past it, the oldest is retried.
+pub const IMAGES_FAILED_MAX: usize = 64;
+/// Largest image file read for the docs page.
+pub const IMAGE_BYTES_MAX: usize = 16 << 20;
+/// Longest image side, in pixels.
+pub const IMAGE_SIDE_MAX: u32 = 4096;
 
 impl Page {
     /// Resets the state when the shown document changes.
@@ -88,6 +102,112 @@ pub fn plot_exprs(doc: &Document) -> Vec<String> {
         }
     }
     out
+}
+
+/// Registers in `text` every image the prose blocks of `doc` show (`![alt](path)` alone on a
+/// line, [`schemify_ui::prose::image_line`]) that is not registered yet and not in `failed`:
+/// [`load_image`] from the project at `root`. A path that fails joins `failed` (it shows its
+/// alt text). Returns whether one loaded (the page needs a new layout) and the last failure.
+///
+/// Cost: one pass over the prose lines; file reads only for new paths.
+pub fn load_images(
+    doc: &Document,
+    root: &Path,
+    text: &mut TextSystem,
+    failed: &mut Vec<String>,
+) -> (bool, Option<String>) {
+    let b = doc.doc_blocks();
+    let (mut loaded, mut err) = (false, None);
+    for r in 0..b.kind.len() {
+        if b.kind[r] != RecordKind::Prose {
+            continue;
+        }
+        let rec = doc.record(Loc {
+            table: TableId::DocBlocks,
+            row: r as u32,
+        });
+        for line in &rec.verbatim {
+            let Some((_, path)) = schemify_ui::prose::image_line(line.trim()) else {
+                continue;
+            };
+            if text.image_id(path).is_some() || failed.iter().any(|f| f == path) {
+                continue;
+            }
+            match load_image(root, path) {
+                Ok(img) => {
+                    loaded |= text.set_image(img);
+                    if text.image_id(path).is_none() {
+                        err = Some(format!("{path}: too many images on the page"));
+                    }
+                }
+                Err(e) => err = Some(e),
+            }
+            if text.image_id(path).is_none() {
+                if failed.len() >= IMAGES_FAILED_MAX {
+                    failed.remove(0);
+                }
+                failed.push(path.to_owned());
+            }
+        }
+    }
+    debug_assert!(failed.len() <= IMAGES_FAILED_MAX);
+    (loaded, err)
+}
+
+/// The file of image `path` in the project at `root`: `path` must be project-relative with `/`
+/// separators, without an empty, `.` or `..` segment, `\`, `:` or NUL (the plugin ABI's path
+/// rule, plugin-abi §5), so prose cannot name a file outside the project.
+///
+/// # Errors
+///
+/// Any other path, with the reason.
+pub fn image_path(root: &Path, path: &str) -> Result<PathBuf, String> {
+    let inside = path.len() <= 4096
+        && !path.contains(['\\', ':', '\0'])
+        && path
+            .split('/')
+            .all(|seg| !seg.is_empty() && seg != "." && seg != "..");
+    if !inside {
+        return Err(format!("{path}: images must be inside the project"));
+    }
+    let file = root.join(path);
+    debug_assert!(file.starts_with(root));
+    Ok(file)
+}
+
+/// Reads and decodes PNG image `path` of the project at `root` (premultiplied RGBA8).
+///
+/// # Errors
+///
+/// A path outside the project ([`image_path`]), an unreadable file, more than
+/// [`IMAGE_BYTES_MAX`] bytes, not a PNG, a side of 0 or over [`IMAGE_SIDE_MAX`] (checked in the
+/// header, before anything is allocated for the pixels), or a decoding error.
+pub fn load_image(root: &Path, path: &str) -> Result<Image, String> {
+    let bytes = platform::read(&image_path(root, path)?)?;
+    if bytes.len() > IMAGE_BYTES_MAX {
+        return Err(format!("{path}: over {} MiB", IMAGE_BYTES_MAX >> 20));
+    }
+    let (w, h) = png_size(&bytes).ok_or_else(|| format!("{path}: not a PNG image"))?;
+    if w == 0 || h == 0 || w > IMAGE_SIDE_MAX || h > IMAGE_SIDE_MAX {
+        return Err(format!(
+            "{path}: {w}×{h} px (at most {IMAGE_SIDE_MAX} a side)"
+        ));
+    }
+    let px = schemify_render::Pixmap::from_png(std::io::Cursor::new(&bytes))
+        .map_err(|e| format!("{path}: {e}"))?;
+    let (pw, ph) = (u32::from(px.width()), u32::from(px.height()));
+    assert_eq!((pw, ph), (w, h), "the decoder read the header's size");
+    Ok(Image::new(path, w, h, px.data_as_u8_slice().to_vec()))
+}
+
+/// Width and height from a PNG's signature and IHDR chunk; `None` when it is not one.
+fn png_size(b: &[u8]) -> Option<(u32, u32)> {
+    const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    if b.len() < 24 || b[..8] != SIGNATURE || b[12..16] != *b"IHDR" {
+        return None;
+    }
+    let be = |at: usize| u32::from_be_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+    Some((be(16), be(20)))
 }
 
 /// What the page shows besides its document.
@@ -594,6 +714,42 @@ mod tests {
         assert_eq!(row_of("docs.page"), None);
         assert_eq!(row_of("docs.b.x"), None);
         assert_eq!(quote("a\"b\\\nc\t"), "\"a\\\"b\\\\\\nc\\t\"");
+    }
+
+    /// Prose names images inside the project only (the plugin ABI's rule); every way out is
+    /// refused before any file is touched.
+    #[test]
+    fn image_paths_stay_inside_the_project() {
+        let root = Path::new("proj");
+        assert_eq!(image_path(root, "img/a.png"), Ok(root.join("img/a.png")));
+        for bad in [
+            "",
+            "../a.png",
+            "img/../../a.png",
+            "/etc/passwd",
+            "./a.png",
+            "img//a.png",
+            "img\\a.png",
+            "C:/a.png",
+            "a\0.png",
+        ] {
+            assert!(image_path(root, bad).is_err(), "{bad:?}");
+        }
+    }
+
+    /// The size check reads the PNG header only, so a huge declared image is refused before
+    /// its pixels are allocated; anything else is not a PNG.
+    #[test]
+    fn png_size_reads_the_header() {
+        let mut b = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13];
+        b.extend_from_slice(b"IHDR");
+        b.extend_from_slice(&100_000u32.to_be_bytes());
+        b.extend_from_slice(&7u32.to_be_bytes());
+        assert_eq!(png_size(&b), Some((100_000, 7)));
+        assert_eq!(png_size(&b[..23]), None, "truncated");
+        b[1] = b'J';
+        assert_eq!(png_size(&b), None, "not the signature");
+        assert_eq!(png_size(b"GIF89a"), None);
     }
 
     #[test]

@@ -8,7 +8,7 @@
 
 use parley::{FontFamily, PlainEditor, StyleProperty};
 
-use crate::layout::{Shown, UiLayout};
+use crate::layout::{Shown, UiLayout, area_scroll_max};
 use crate::strings::{Strings, Sym};
 use crate::tables::{Chord, Key, Kind, Mods, NO_NODE, NodeIx, Prop, StyleProp, UiTables};
 use crate::text::TextSystem;
@@ -550,6 +550,19 @@ pub fn route_input(
                     out.canvas.push(ev);
                     continue;
                 }
+                // A text area taller than its box scrolls inside itself (not the pane).
+                if let Some((r, n, Shown::Normal)) = h
+                    && nodes.kind[n as usize] == Kind::TextArea
+                {
+                    let max = area_scroll_max(tables, layout, text, state, r);
+                    if max > 0.0 {
+                        let id = ids[n as usize];
+                        let now = state.scroll_of(id);
+                        state.set_scroll(id, now - dy * UiState::WHEEL_PX, max);
+                        out.redraw |= state.scroll_of(id) != now;
+                        continue;
+                    }
+                }
                 // Over a scroll pane (or anything inside one): scroll it. Wheel away from the
                 // user (positive `dy`) moves the content down, like every text view.
                 let pane = h.map(|(r, n, _)| {
@@ -576,6 +589,9 @@ pub fn route_input(
                     edit_key(tables, text, state, chord, area, out);
                     out.redraw = true;
                     out.relayout |= area; // the field grows and shrinks with its lines
+                    if area {
+                        follow_caret(tables, layout, text, state);
+                    }
                 } else if chord == Chord::new(Mods::default(), Key::ESCAPE)
                     && (!state.open.is_empty() || modal)
                 {
@@ -594,9 +610,13 @@ pub fn route_input(
                     d.insert_or_replace_selection(s);
                     d.refresh_layout();
                     out.redraw = true;
-                    out.relayout |= nodes
+                    let area = nodes
                         .find(state.focus)
                         .is_some_and(|n| nodes.kind[n as usize] == Kind::TextArea);
+                    out.relayout |= area;
+                    if area {
+                        follow_caret(tables, layout, text, state);
+                    }
                 }
             }
             InputEvent::Preedit { start, end } => {
@@ -666,10 +686,47 @@ fn focus_field(
         state.editor = Some(ed);
         state.focus = id;
     }
+    // A text area may be scrolled inside itself: the point is in its text's coordinates.
+    let scrolled = if area { state.scroll_of(id) } else { 0.0 };
     let ed = state.editor.as_mut().expect("editor just created");
     let mut d = ed.driver(&mut text.font_cx, &mut text.layout_cx);
-    d.move_to_point(x - rect.x - pad, y - rect.y - top);
+    d.move_to_point(x - rect.x - pad, y - rect.y - top + scrolled);
     d.refresh_layout();
+}
+
+/// Scrolls the focused text area inside itself so the caret stays in view (after an edit or
+/// a caret move). Uses the area's last laid-out box.
+fn follow_caret(tables: &UiTables, layout: &UiLayout, text: &TextSystem, state: &mut UiState) {
+    let Some(n) = tables.nodes.find(state.focus) else {
+        return;
+    };
+    debug_assert_eq!(tables.nodes.kind[n as usize], Kind::TextArea);
+    let (Some(r), Some(caret)) = (
+        layout.row_of(n),
+        state.editor.as_ref().and_then(|e| e.cursor_geometry(1.0)),
+    ) else {
+        return;
+    };
+    let pad_y = crate::layout::row_style(
+        tables,
+        layout.title_style,
+        n,
+        Shown::Normal,
+        StyleProp::PadY,
+    ) as f32;
+    let view = layout.rect[r].h - 2.0 * pad_y;
+    let max = area_scroll_max(tables, layout, text, state, r);
+    let now = state.scroll_of(state.focus);
+    let (top, bottom) = (caret.y0 as f32, caret.y1 as f32);
+    let want = if bottom > now + view {
+        bottom - view
+    } else if top < now {
+        top
+    } else {
+        now
+    };
+    state.set_scroll(state.focus, want, max);
+    debug_assert!(state.scroll_of(state.focus) <= max.max(0.0));
 }
 
 /// Applies an editing key to the focused field; Enter submits (Ctrl+Enter in a `text_area`,
