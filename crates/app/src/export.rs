@@ -1021,13 +1021,13 @@ fn type42(face: u8, glyphs: &Glyphs) -> String {
     for part in &strings {
         s.push('<');
         for (i, byte) in part.iter().enumerate() {
-            if i > 0 && i % 64 == 0 {
+            if i > 0 && i.is_multiple_of(64) {
                 s.push('\n');
             }
             let _ = write!(s, "{byte:02X}");
         }
         // An odd-length string ends in a pad byte the interpreter drops (Type 42).
-        if part.len() % 2 == 1 {
+        if !part.len().is_multiple_of(2) {
             s.push_str("00");
         }
         s.push_str(">\n");
@@ -1165,7 +1165,7 @@ mod tests {
             if g == "<0000>" && u == "<FFFF>" {
                 continue; // the codespace range
             }
-            let units: Vec<u16> = u[1..u.len() - 1].as_bytes().chunks(4).map(hex16).collect();
+            let units: Vec<u16> = u.as_bytes()[1..u.len() - 1].chunks(4).map(hex16).collect();
             map.insert(
                 hex16(&g.as_bytes()[1..5]),
                 String::from_utf16(&units).unwrap(),
@@ -1214,7 +1214,7 @@ mod tests {
                     .filter(|c| !c.is_whitespace())
                     .collect();
                 assert!(
-                    hex.len() % 4 == 0 && hex.len() / 2 <= SFNTS_MAX,
+                    hex.len().is_multiple_of(4) && hex.len() / 2 <= SFNTS_MAX,
                     "{}",
                     hex.len()
                 );

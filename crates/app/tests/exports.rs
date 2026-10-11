@@ -186,7 +186,7 @@ const VRES: &str = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\nim
 const VA_BENCH: &str = "schemify 1 shbench\n\ninst 0aaaaa ./vres\n  at 0 0 R0\n  name N1\n\n\
 label 0bbbba 0 0 R0 out\nlabel 0bbbbb 0 20 R0 0\n\nvar R 1\n";
 
-/// Simulates the bench in `dir` and returns the runner's error messages.
+/// Simulates the active bench to idle and returns the runner's error messages.
 fn simulate_errors(s: &mut Session) -> Vec<String> {
     run(s, "sim.simulate", "");
     let t = Instant::now();
