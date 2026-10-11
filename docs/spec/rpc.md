@@ -5,7 +5,7 @@ Implements D27's "one JSON-RPC command stream (stdio/socket) over the same comma
 - **`schemify rpc [--listen <socket>]`**, the headless core: no editor, no window. Its methods are the CLI's commands and a stateless document edit (§3.1).
 - **`schemify-gui --rpc <socket>`** (also through `schemify edit … --rpc <socket>`): the running editor. Its methods are the editor's command table: every core command and every plugin command, exactly what menus, keys, Lua keymaps and plugins name (§3.2).
 
-Implementation: `crates/cli/src/rpc.rs` (codec, framing, sockets, the headless server), `crates/app/src/rpc.rs` (the editor's server). No JSON dependency: the codec is a few hundred lines with its own oracles (§7).
+Implementation: `crates/cli/src/rpc.rs` (codec, framing, sockets, the headless server), `crates/app/src/rpc.rs` (the editor's server). No JSON dependency: the codec is a few hundred lines with its own oracles (§8).
 
 ## 1. Transport and framing
 
@@ -79,8 +79,17 @@ Every editor event the plugin host and the user config see is sent to every conn
 
 Arguments are data; no method evaluates code. The socket is local (loopback TCP or a Unix socket file, whose permissions are the OS's). Anyone who can connect can run commands the user could run, including CLI runs that start simulators (`run`): do not expose the socket to other users.
 
-## 7. Oracles (TESTING.md `rpc`)
+## 7. MCP bridge (`schemify mcp`)
+
+D27's "MCP = thin plugin": a Model Context Protocol server on stdio, so an agent can call the headless methods as tools. Same framing (§1) and codec; it adds no method of its own. It lives in the core binary, not in a wasm plugin, because a plugin owns no stdio (plugin-abi §5).
+
+- `initialize` → `{"protocolVersion", "capabilities": {"tools": {}}, "serverInfo": {"name": "schemify", "version"}}`; the client's `protocolVersion` is echoed when it is one of `2024-11-05`, `2025-03-26`, `2025-06-18`, else `2025-06-18`. `ping` → `{}`. Notifications (`notifications/initialized`, …) are accepted silently. Other methods: `-32601`.
+- `tools/list` → one tool per headless method except `rpc.methods` (§3.1), in that order: the CLI tools take `{"args": [<string>…]}`, `edit` takes `{"file", "ops", "label"?}` (JSON Schema `inputSchema` for each).
+- `tools/call {"name", "arguments"}` → `{"content": [{"type": "text", "text"}], "isError"}`: a CLI tool's text is `exit code <n>`, a line break, then its stdout and stderr; `edit`'s is its JSON result. `isError` is true when the method failed or the command exited non-zero. An unknown tool or a call without `name` is `-32602`.
+
+## 8. Oracles (TESTING.md `rpc`)
 
 - The codec: `parse(write(v)) == v` for generated values (property); RFC 8259 acceptance and rejection cases; any bytes decode to a request or a declared `-32700`/`-32600` response, never a panic (property, and the `cli/fuzz` `rpc_decode` target, nightly).
 - Headless: every method of `rpc.methods` is reachable; CLI methods return the CLI's own exit code and output for the same arguments; `edit` changes exactly the edited attribute (`schemify diff` as oracle) and refuses invalid ops without touching the file; garbage lines do not stop the stream; the Unix-socket listener answers like stdio.
 - Editor: every command `rpc.methods` lists (core and plugin, suffix arguments) is queued, unknown names and bad params are declared errors; a client on a socket drives the frame spine (select all, delete) and gets its answers and the `doc_changed` notification.
+- MCP: the lifecycle (version negotiation, the initialized notification unanswered), `tools/list` equals the headless methods minus `rpc.methods`, a failing tool is a result with `isError`, unknown tools and methods are errors.

@@ -52,7 +52,7 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 - The editor's server has no `edit`/`netlist` methods of its own (its table is the command table; use the headless server for files the editor does not hold open). Command answers carry the status line only, not structured results (a `sim.netlist` answer does not include the text).
 - `schemify rpc --listen` serves one client at a time; Windows has no Unix-domain sockets in `std` (TCP loopback only; named pipes need `windows-sys`).
-- D27's MCP bridge ("MCP = thin plugin") is not built: a stdio MCP server mapping tools to these methods.
+- `schemify mcp` exposes the headless methods only (no editor tools, no MCP resources or prompts); a bridge to a running editor's socket would add its command table as tools.
 
 ## plugins
 

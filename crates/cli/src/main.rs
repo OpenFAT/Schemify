@@ -34,6 +34,7 @@ commands:
                                        manage the user packages of init.lua
   rpc [--listen <socket>]              JSON-RPC command stream on stdio, or on a local socket
                                        (a socket path, or 127.0.0.1:<port>; docs/spec/rpc.md)
+  mcp                                  the same methods as MCP tools on stdio (for agents)
 
 --clean skips init.lua and user packages; -u runs another init file (docs/spec/config.md).
 ";
@@ -74,6 +75,7 @@ fn main() -> ExitCode {
         "run" => run(&config, rest),
         "pack" => schemify_cli::pack::main(&config, rest),
         "rpc" => rpc(&start, rest),
+        "mcp" => mcp(&start, rest),
         "-h" | "--help" | "help" => {
             print!("{USAGE}");
             OK
@@ -164,6 +166,27 @@ fn rpc(start: &Startup, args: &[String]) -> u8 {
         Ok(()) => OK,
         Err(e) => {
             eprintln!("rpc: {e}");
+            USAGE_ERROR
+        }
+    }
+}
+
+/// `mcp`: the MCP bridge (D27) on stdio until it ends; exit 0 then, 2 for usage or I/O errors.
+fn mcp(start: &Startup, args: &[String]) -> u8 {
+    if !args.is_empty() {
+        eprint!("{USAGE}");
+        return USAGE_ERROR;
+    }
+    let h = schemify_cli::rpc::Headless {
+        exe: std::env::current_exe().ok(),
+        flags: start.flags(),
+        seed: schemify_cli::platform::seed(),
+    };
+    let (stdin, stdout) = (std::io::stdin(), std::io::stdout());
+    match schemify_cli::mcp::serve(&mut stdin.lock(), &mut stdout.lock(), &h) {
+        Ok(()) => OK,
+        Err(e) => {
+            eprintln!("mcp: {e}");
             USAGE_ERROR
         }
     }
