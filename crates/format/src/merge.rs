@@ -199,6 +199,36 @@ pub fn merge3(o: &Document<'_>, a: &Document<'_>, b: &Document<'_>) -> Merged {
                         );
                     }
                 }
+                None if sorted => {
+                    // Only the `Unknown` records' file order can conflict here: known kinds
+                    // merge by identity as usual, and the unknown ones (written after them,
+                    // in file order) form the conflict block, so it stays contiguous in the
+                    // writer's canonical order (fuzz crash dceebe51).
+                    let mut known: Vec<u32> = seqs
+                        .iter()
+                        .flatten()
+                        .copied()
+                        .filter(|&i| {
+                            let i = idents[i as usize];
+                            let s = [A, B, O].into_iter().find(|&s| i[s] != NONE);
+                            let s = s.expect("identity has a record");
+                            docs[s].record_kind(i[s]) != RecordKind::Unknown
+                        })
+                        .filter(|&i| flags[i as usize] & KEEP != 0)
+                        .collect();
+                    known.sort_unstable();
+                    known.dedup();
+                    for i in known {
+                        let (recs, outcome) = (idents[i as usize], outcomes[i as usize]);
+                        emit(&mut out, &mut spans, &docs, recs, outcome, &picks);
+                    }
+                    let unknown = |s: usize| -> Vec<u32> {
+                        let doc = docs[s];
+                        let keep = |r: &&u32| doc.record_kind(**r) == RecordKind::Unknown;
+                        blocks[s].iter().filter(keep).copied().collect()
+                    };
+                    push_conflict(&mut out, &mut spans, &docs, &unknown(A), &unknown(B));
+                }
                 None => push_conflict(&mut out, &mut spans, &docs, blocks[A], blocks[B]),
             }
         }
