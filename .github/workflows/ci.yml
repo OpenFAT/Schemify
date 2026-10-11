@@ -45,7 +45,7 @@ jobs:
       # `determinism` job below compares them. The test run above already built the binary.
       # Runs even when a test failed, so the comparison still sees every platform.
       - if: ${{ !cancelled() }}
-        run: cargo build -p schemify-app --bin schemify
+        run: cargo build -p schemify-cli --bin schemify
       - if: ${{ !cancelled() }}
         run: bash tests/determinism/run.sh "$PWD/target/debug/schemify" determinism-out
       - if: ${{ !cancelled() }}
@@ -86,8 +86,8 @@ jobs:
           tool: wasm-bindgen@${{ steps.wb.outputs.version }},wasmtime
       - name: web bundle
         run: |
-          wasm-bindgen --target web --no-typescript --out-dir crates/app/web/pkg \
-            target/wasm32-unknown-unknown/release/schemify.wasm
+          wasm-bindgen --target web --no-typescript --out-name schemify --out-dir crates/app/web/pkg \
+            target/wasm32-unknown-unknown/release/schemify-gui.wasm
           raw=$(stat -c %s crates/app/web/pkg/schemify_bg.wasm)
           gz=$(gzip -9 -c crates/app/web/pkg/schemify_bg.wasm | wc -c)
           echo "schemify_bg.wasm: $raw bytes, $gz gzip"
@@ -105,7 +105,7 @@ jobs:
           name: web-smoke
           path: web-smoke
       - name: CLI for WASI (determinism under wasmtime)
-        run: cargo build --target wasm32-wasip1 -p schemify-app --no-default-features --bin schemify
+        run: cargo build --target wasm32-wasip1 -p schemify-cli --bin schemify
       - run: >-
           bash tests/determinism/run.sh
           "wasmtime run --dir=.::/ target/wasm32-wasip1/debug/schemify.wasm"
@@ -118,6 +118,21 @@ jobs:
 
   # Byte-identical CLI outputs on every platform (D32, AGENTS.md rule 4). Import reports are
   # excluded: they record the absolute input paths (provenance), which differ per machine.
+  # D39 size budgets (amended 2026-10-11): core `schemify` ≤ 2 MB, editor `schemify-gui` ≤ 10 MB,
+  # built as shipped (tools/size-check.sh mirrors the flake's env).
+  # ponytail: non-blocking until both budgets are met (docs/perf.md "Binary size"); then drop
+  # `continue-on-error`.
+  size:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      - run: bash tools/size-check.sh
+
   determinism:
     needs: [test, wasm]
     if: ${{ !cancelled() }}

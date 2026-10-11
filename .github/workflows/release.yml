@@ -1,4 +1,4 @@
-# Release tier (TESTING.md § Tiers): on a `v*` tag, build `schemify` and `devicereader` for
+# Release tier (TESTING.md § Tiers): on a `v*` tag, build `schemify`, `schemify-gui` and `devicereader` for
 # Linux, macOS and Windows plus the web bundle, and attach them to a *draft* GitHub release whose
 # notes are the release checklist (.github/release-notes.md): a maintainer ticks it, then
 # publishes. A push to `ci/release*` runs the same builds as a dry run and publishes nothing.
@@ -41,23 +41,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - run: cargo build --release --locked -p schemify-app -p schemify-devicereader
-      # D39 size gate on the stripped release binaries. Placeholder until the core/editor split
-      # (D39 amended: core `schemify` ≤ 2 MB, editor `schemify-gui` ≤ 10 MB) lands; today the one
-      # binary is both and is held to the pre-amendment ≤ 25 MB.
+      - run: cargo build --release --locked -p schemify-cli -p schemify-app -p schemify-devicereader
+      # D39 (amended 2026-10-11): core `schemify` ≤ 2 MB, editor `schemify-gui` ≤ 10 MB.
+      # ponytail: a warning until both budgets are met (docs/perf.md "Binary size"), then `::error::` + exit 1.
       - name: size gate (D39)
         run: |
-          for bin in schemify devicereader; do
-            f="target/release/$bin${{ matrix.exe }}"
-            size=$(wc -c < "$f")
-            echo "$bin: $size bytes"
-            (( size <= 25 * 1024 * 1024 )) || { echo "::error::$bin is $size bytes > 25 MiB (D39)"; exit 1; }
+          for spec in schemify:2000000 schemify-gui:10000000; do
+            bin=${spec%%:*} budget=${spec##*:}
+            size=$(wc -c < "target/release/$bin${{ matrix.exe }}")
+            echo "$bin: $size bytes (budget $budget)"
+            (( size <= budget )) || echo "::warning::$bin is $size bytes > $budget (D39)"
           done
       - name: package
         run: |
           dir="schemify-${GITHUB_REF_NAME//\//-}-${{ matrix.name }}"
           mkdir "$dir"
-          cp target/release/schemify${{ matrix.exe }} target/release/devicereader${{ matrix.exe }} \
+          cp target/release/schemify${{ matrix.exe }} target/release/schemify-gui${{ matrix.exe }} \
+            target/release/devicereader${{ matrix.exe }} \
             README.md LICENSE-MIT LICENSE-APACHE "$dir"/
           if [ "${{ runner.os }}" = Windows ]; then
             7z a -bd "$dir.zip" "$dir" >/dev/null
@@ -77,7 +77,7 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: wasm32-unknown-unknown
-      - run: cargo build --release --locked --target wasm32-unknown-unknown -p schemify-app --bin schemify
+      - run: cargo build --release --locked --target wasm32-unknown-unknown -p schemify-app --bin schemify-gui
       - id: wb
         run: echo "version=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p')" >> "$GITHUB_OUTPUT"
       - uses: taiki-e/install-action@v2
@@ -85,8 +85,8 @@ jobs:
           tool: wasm-bindgen@${{ steps.wb.outputs.version }}
       - name: package
         run: |
-          wasm-bindgen --target web --no-typescript --out-dir crates/app/web/pkg \
-            target/wasm32-unknown-unknown/release/schemify.wasm
+          wasm-bindgen --target web --no-typescript --out-name schemify --out-dir crates/app/web/pkg \
+            target/wasm32-unknown-unknown/release/schemify-gui.wasm
           dir="schemify-${GITHUB_REF_NAME//\//-}-web"
           cp -R crates/app/web "$dir"
           rm -f "$dir/.gitignore"

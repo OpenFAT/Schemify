@@ -15,9 +15,14 @@ ported; behaviour is checked against netlists produced by running xschem.
 
 Pre-release. What works today:
 
-- The CLI: `import` (xschem libraries and PDKs), `netlist`, `check`, `run` (ngspice), `fmt`,
-  `diff` and a git merge driver for design files.
-- The editor (`schemify edit`): xschem-style editing and keys, a docs pane with live
+- Two binaries, shaped like Neovim: the headless core `schemify` (`import` of xschem libraries
+  and PDKs, `netlist`, `check`, `run` with ngspice, `fmt`, `diff`, a git merge driver, the `pack`
+  plugin manager) and the editor `schemify-gui` (`schemify edit` starts it).
+- A Lua user config (`~/.config/schemify/init.lua`; `%LOCALAPPDATA%\schemify` on Windows) with
+  options, keymaps, simulator commands, event hooks and lazy.nvim-style plugin specs
+  (`schemify.pack.add`), pinned by a lockfile next to it. See
+  [docs/spec/config.md](docs/spec/config.md) and [docs/examples/init.lua](docs/examples/init.lua).
+- The editor: xschem-style editing and keys (every menu command of the default UI), a docs pane with live
   expressions, live checks, net highlighting, non-blocking simulation with a waveform viewer,
   and a default UI that is itself a plugin.
 - Netlists agree with xschem's on 246 of 301 SPICE corpus benches (sky130, GF180, IHP and
@@ -33,15 +38,15 @@ items.
 With Nix (flakes):
 
 ```sh
-nix run github:OmarSiwy/Schemify -- edit path/to/cell.shcomp   # the packaged editor
+nix run github:OmarSiwy/Schemify -- path/to/cell.shcomp   # the packaged editor
 nix develop      # toolchain, Zig, simulators, xschem for the golden corpus
 ```
 
 With Cargo (Rust 1.95 or newer; Linux needs the Wayland or X11 and Vulkan libraries at runtime):
 
 ```sh
-cargo run --release -p schemify-app -- edit crates/app/tests/fixtures/inv/top.shcomp
-cargo run --release -p schemify-app -- netlist crates/app/tests/fixtures/rc/tb.shbench
+cargo run --release -p schemify-app -- crates/app/tests/fixtures/inv/top.shcomp   # editor
+cargo run --release -p schemify-cli -- netlist crates/app/tests/fixtures/rc/tb.shbench
 cargo test --workspace
 ```
 
@@ -49,9 +54,9 @@ Web build (needs the `wasm32-unknown-unknown` target, the `wasm-bindgen` CLI at 
 `Cargo.lock` and a browser with WebGPU):
 
 ```sh
-cargo build --release --target wasm32-unknown-unknown -p schemify-app --bin schemify
-wasm-bindgen --target web --no-typescript --out-dir crates/app/web/pkg \
-    target/wasm32-unknown-unknown/release/schemify.wasm
+cargo build --release --target wasm32-unknown-unknown -p schemify-app --bin schemify-gui
+wasm-bindgen --target web --no-typescript --out-name schemify --out-dir crates/app/web/pkg \
+    target/wasm32-unknown-unknown/release/schemify-gui.wasm
 python3 -m http.server --directory crates/app/web 8080
 ```
 
