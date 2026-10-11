@@ -119,6 +119,9 @@ pub struct Options {
     /// Copy/cut/paste also go through the system clipboard (`platform::clipboard_*`).
     /// [`run`] turns it on; headless tests keep the editor's own clipboard only.
     pub system_clipboard: bool,
+    /// Which user config runs (config spec §2). The default is `--clean`, so tests never read
+    /// the developer's own `init.lua`; the binary passes its flags.
+    pub config: schemify_config::Startup,
 }
 
 /// Interaction options (xschem Options/View state).
@@ -609,7 +612,23 @@ impl Editor {
             None => std::env::current_dir().map_err(|e| e.to_string())?,
         };
         let mut session = Session::load(&root, opts.seed)?;
-        let (host, notes) = Host::new(&session.project, &root, opts.no_default_ui);
+        let (host, notes) = Host::new(&session.project, &root, opts.no_default_ui, &opts.config);
+        let user = host.user();
+        let edit_opts = EditOpts {
+            snap: user.opts.snap,
+            grid: user.opts.grid,
+            show_grid: user.opts.show_grid,
+            light: user.opts.light,
+            ..EditOpts::default()
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let sim_cmd = opts.sim.clone().or_else(|| {
+            user.sim(schemify_config::SimKind::Ngspice)
+                .map(|s| schemify_run::SimCommand {
+                    path: s.path.clone(),
+                    args: s.args.clone(),
+                })
+        });
         let mut status = std::mem::take(&mut session.status);
         for n in notes {
             push_note(&mut status, &n);
@@ -627,7 +646,7 @@ impl Editor {
             palette: Palette::xschem_dark(),
             sel_color: 0xe0e0_e0ff,
             tool: Tool::Idle,
-            opts: EditOpts::default(),
+            opts: edit_opts,
             pointer: (0.0, 0.0),
             mods: 0,
             pan: None,
@@ -672,7 +691,7 @@ impl Editor {
             op_on: true,
             op_job: None,
             #[cfg(not(target_arch = "wasm32"))]
-            sim: Sim::new(opts.sim.clone()),
+            sim: Sim::new(sim_cmd),
             graphs: Vec::new(),
             env: spines::env_pairs(),
             now: 0,
@@ -1281,6 +1300,8 @@ impl Editor {
                     }
                     true
                 }
+                // A Lua keymap function or a lazy package's first command (config spec §3, §5).
+                Target::Unknown if self.host.user_command(&name, &arg) => true,
                 Target::Unknown => {
                     self.session.status = format!("{name}: not available yet");
                     true
@@ -3051,6 +3072,17 @@ impl Editor {
             .snapshot(&self.session.project, active, &sel, cell, &rows);
         let root = self.session.root.clone();
         let d = self.host.deliver(&self.session.project, &root, self.now);
+        if !d.commands.is_empty() {
+            // `schemify.cmd` from the user config: dispatched like key presses.
+            let mut cmds = CommandRequests::default();
+            for (name, args) in &d.commands {
+                cmds.command.push(self.shell.strings.intern(name));
+                cmds.node.push(schemify_ui::Sym::NONE);
+                cmds.args.push_str(args);
+                cmds.arg_end.push(cmds.args.len() as u32);
+            }
+            self.dispatch_all(&cmds, reqs);
+        }
         #[cfg(not(target_arch = "wasm32"))]
         self.sim.enqueue(d.runs);
         for (doc, label, text, stage) in d.edits {

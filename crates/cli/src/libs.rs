@@ -1,7 +1,7 @@
 //! The project on disk, without any GUI state: the `load` spine (manifest + lockfile →
 //! library directories → `doc::index_library` per local library → the bundled `core`
 //! library) and cell bytes by (library, path). Shared by the headless CLI spines and the
-//! editor's [`Session`](crate::session).
+//! editor's `Session` (`schemify_app::session`).
 
 use std::path::{Path, PathBuf};
 
@@ -96,7 +96,7 @@ pub fn load(root: &Path, seed: u64) -> Result<Loaded, String> {
 /// # Errors
 ///
 /// A file cannot be read, or indexing reports a diagnostic (the first).
-pub(crate) fn index(
+pub fn index(
     project: &mut Project,
     row: usize,
     dir: &Path,

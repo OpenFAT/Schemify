@@ -5,7 +5,7 @@
 use core::cmp::Ordering;
 use core::fmt::Write;
 
-use rustfft::num_complex::Complex64;
+use num_complex::Complex64;
 
 use crate::compile::{Builtin, Mode, OpKind, Program};
 use crate::dmath;

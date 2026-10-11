@@ -16,12 +16,18 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - **doc**: keep rank 2 (symbol graphics) in indexed interfaces (`parse_prefix(bytes, 2)`); the editor currently opens every instantiated cell to get its symbol.
 - **render**: `draw_canvas` shares one text cache between scene and overlay (re-shapes labels every frame; the editor works around it, the demo doesn't); window has no exit hook.
 - **ui**: text fields commit only on Enter (the app copies typed text every frame).
-- Editor gaps vs xschem (after the parity pass, `tests/parity.rs`): partial wire selection (xschem's Ctrl+drag box selects only the inside ends of crossing wires; here a stretch follows wire ends on moved connection points); vertex editing of a selected wire/line/polygon/rect corner; symbol `stext` orientation (only schematic `text` records turn); the context menu closes with Esc or a row, not a click outside; recent files outside the current project do not open (one project per session); layer colors, dim and line width are not persisted (no user-config writer yet); the web build has no system clipboard (D2 glue) and no exports to disk (OPFS); plugin I/O capabilities fetch/clipboard in the app.
+- Editor gaps vs xschem (after the parity pass, `tests/parity.rs`): partial wire selection (xschem's Ctrl+drag box selects only the inside ends of crossing wires; here a stretch follows wire ends on moved connection points); vertex editing of a selected wire/line/polygon/rect corner; symbol `stext` orientation (only schematic `text` records turn); the context menu closes with Esc or a row, not a click outside; recent files outside the current project do not open (one project per session); layer colors, dim and line width are not persisted (set them in `init.lua`: `schemify.opt` has no keys for them yet); the web build has no system clipboard (D2 glue) and no exports to disk (OPFS); plugin I/O capabilities fetch/clipboard in the app.
 - **Exports**: PDF/EPS text uses the base-14 Helvetica (not embedded, ASCII only, others print `?`); one A4 landscape page per drawing; arcs are polylines of 6° steps; the PNG is the visible canvas at screen resolution (no DPI/size option).
 - **Make subcircuit** (Ctrl+Shift+H) connects the new instance by net labels at the old boundary points and on its pins (xschem rewires); the new cell's symbol is the generated box.
 - **Join/trim** does not merge diagonal wires or wires with attributes other than `bus`.
-- No user-config reader: the `sim ngspice` command line (format spec §4) is not read; the CLI and the editor use `ngspice -b -r {raw} {netlist}` (tests pass `editor::Options::sim`).
 - Plugin `eval` requests still answer `E_GONE` (elab evaluator not wired to the host).
+
+## user config and packages (config spec)
+
+- **config**: no Lua on the web: C Lua 5.4 (mlua vendored) has no `wasm32-unknown-unknown` build, so the web runs without `init.lua`. Upgrade: a pure-Rust Lua 5.4 (piccolo, once it covers `error(msg, level)`, `tonumber`, `load` semantics) or C Lua on a wasi-libc shim; OPFS `/config` then holds `init.lua`.
+- **config**: a single C library call (a pattern match over a huge string) runs between budget checks; only the memory cap bounds it.
+- **app**: the editor applies `sim ngspice` only (openvaf/iverilog paths reach the CLI's runner through `spines::tools`, not the editor's `Sim`); no "Packages" status view (use `schemify pack status`).
+- **cli/pack**: `url` packages are one `.wasm` file (no archives); `pack` has no parallel fetches.
 
 ## docs page (D19–D21)
 
@@ -99,7 +105,6 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - **elab**: `E002` doesn't yet compare a SPICE `body`'s `.subckt` ports with the symbol pins; `global true` names are gathered from every reachable schematic, including unselected impls; `net_<id>` may collide with a user label of the same spelling; `CellState` doesn't observe edits to other documents.
 - **format**: verbatim blocks merge as a unit (line-level diff3 is the upgrade); a clean merge can still violate kind rules (doc/elab must check).
 - **plugin**: an earlier plugin's `set X p` survives a later full redefinition of node `X`; no auto-quarantine of repeatedly trapping plugins.
-- **expr**: FFT twiddles use platform math (calculator output only, never netlists).
 - **ui**: status text that changes every frame grows the string table; IME candidate window not positioned.
 - **wave**: per-sweep-step readouts; FFT traces share the time-domain x axis.
 - **import (readers)**: `.spiceinit` `sourcepath` lines, Magic `include`, `.if` blocks; cdfDump untested against real dumps.

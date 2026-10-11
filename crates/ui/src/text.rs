@@ -1,7 +1,9 @@
-//! Text shaping and measurement (parley) with embedded fonts only.
+//! Text shaping and measurement (parley).
 //!
-//! System fonts are never consulted, so layout and golden images are identical on every
-//! platform (D32) and the web build needs no font discovery.
+//! The embedded UI font (a Noto Sans subset, `fonts/README.md`) is registered and named by
+//! every style, so every string the UI ships shapes the same on every platform (D32) and the
+//! golden images stay deterministic. System fonts (fontique) are consulted only for
+//! characters outside the subset; the web build has none.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,7 +24,8 @@ pub type TextId = u32;
 /// "No text" sentinel for [`TextId`] columns.
 pub const NO_TEXT: TextId = u32::MAX;
 
-static NOTO_SANS: &[u8] = include_bytes!("../fonts/NotoSans.ttf");
+/// Noto Sans subset to the UI's scripts and symbols (fonts/README.md has the command).
+static NOTO_SANS: &[u8] = include_bytes!("../fonts/NotoSans-UI.ttf");
 /// Monospace face for code (prose code spans and blocks); KaTeX's, already embedded for math.
 static MONO: &[u8] = include_bytes!("../fonts/KaTeX_Typewriter-Regular.ttf");
 
@@ -63,26 +66,27 @@ impl TextSystem {
     /// Cached layouts kept across frames before the cache is reset.
     pub const CACHE_CAPACITY: usize = 1 << 14;
 
-    /// Creates the system and registers the embedded UI font.
+    /// Creates the system and registers the embedded fonts. UI text asks for the Noto Sans
+    /// subset, then KaTeX Main (already embedded for math) for the arrows and relations Noto
+    /// Sans lacks (→ ≤ ≥), and only then the system fallback.
     pub fn new() -> Self {
         let mut font_cx = FontContext::default();
-        let families = font_cx
-            .collection
-            .register_fonts(Blob::new(Arc::new(NOTO_SANS)), None);
-        let family = families
-            .first()
-            .and_then(|(id, _)| font_cx.collection.family_name(*id))
-            .expect("embedded UI font registers a family")
-            .to_owned();
-        let monos = font_cx
-            .collection
-            .register_fonts(Blob::new(Arc::new(MONO)), None);
-        let mono = monos
-            .first()
-            .and_then(|(id, _)| font_cx.collection.family_name(*id))
-            .expect("embedded mono font registers a family")
-            .to_owned();
-        assert_ne!(family, mono);
+        let mut register = |bytes: &'static [u8]| {
+            let families = font_cx
+                .collection
+                .register_fonts(Blob::new(Arc::new(bytes)), None);
+            families
+                .first()
+                .and_then(|(id, _)| font_cx.collection.family_name(*id))
+                .expect("an embedded font registers a family")
+                .to_owned()
+        };
+        let noto = register(NOTO_SANS);
+        let symbols = register(crate::math::face_bytes("Main-Regular"));
+        let mono = register(MONO);
+        // A CSS family list: every builder parses it (`FontFamily::from(&str)`).
+        let family = format!("\"{noto}\", \"{symbols}\"");
+        assert!(noto != mono && symbols != mono);
         TextSystem {
             font_cx,
             layout_cx: LayoutContext::new(),
@@ -244,5 +248,37 @@ mod tests {
         assert!(l.height() > 10.0 && l.height() < 25.0);
         let wide = text.shape(&strings, strings.find("File").unwrap(), 20);
         assert!(text.layout(wide).width() > w13);
+    }
+
+    /// The embedded fonts cover every character the UI ships (D39 cut, `fonts/README.md`),
+    /// so system fonts never shape UI text: each cluster is a real glyph of the Noto subset,
+    /// or of KaTeX Main for the arrows and relations Noto Sans lacks.
+    #[test]
+    fn ui_characters_come_from_the_embedded_fonts() {
+        // ASCII, the non-ASCII characters in the app/ui/render/default-UI sources, Greek.
+        let probe = "AZaz09!~ µΩ±×°→≤≥−…§Δ—· αβγδΣπ € ½";
+        let mut text = TextSystem::new();
+        let mut layout = Layout::new();
+        text.shape_into(probe, 14.0, &mut layout);
+        let mut glyphs = 0;
+        for line in layout.lines() {
+            for item in line.items() {
+                let parley::PositionedLayoutItem::GlyphRun(run) = item else {
+                    continue;
+                };
+                let font = run.run().font().data.data().as_ptr();
+                let symbols = crate::math::face_bytes("Main-Regular").as_ptr();
+                assert!(
+                    font == NOTO_SANS.as_ptr() || font == symbols,
+                    "a glyph from another font"
+                );
+                for g in run.glyphs() {
+                    assert_ne!(g.id, 0, "notdef in the embedded font");
+                    glyphs += 1;
+                }
+            }
+        }
+        assert!(glyphs >= probe.chars().filter(|c| !c.is_whitespace()).count());
+        assert!(NOTO_SANS.len() < 200 * 1024, "the UI font is the subset");
     }
 }

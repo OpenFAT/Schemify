@@ -1,0 +1,31 @@
+[package]
+name = "schemify-cli"
+description = "The headless core: the `schemify` CLI spines, the user config and the package manager (D39)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "schemify_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "schemify"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+# D39: no GPU, window, text-shaping, accessibility or LaTeX crate may appear here
+# (tests/deps.rs checks the resolved graph).
+[dependencies]
+schemify-format.workspace = true
+schemify-expr.workspace = true
+schemify-doc.workspace = true
+schemify-elab.workspace = true
+schemify-netlist.workspace = true
+schemify-import.workspace = true
+schemify-devicereader.workspace = true
+schemify-run.workspace = true
+schemify-config.workspace = true

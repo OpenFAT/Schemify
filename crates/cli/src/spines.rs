@@ -4,7 +4,7 @@
 //! CLI waits and the editor polls (ARCHITECTURE.md § Spines, `netlist` and `run`).
 //!
 //! Both callers own their project differently (the CLI a bare `doc::Project`, the editor a
-//! [`Session`](crate::session) with journals), so opening a cell is the one step behind a
+//! `Session` (`schemify_app::session`) with journals), so opening a cell is the one step behind a
 //! trait, [`Cells`], resolved at compile time.
 //!
 //! Data design (the run): one [`Run`] per Simulate/Optimize. Jobs ≤ `run::JOBS_MAX` (2^20),
@@ -113,6 +113,114 @@ pub fn env_pairs() -> Vec<(String, String)> {
     let mut v: Vec<(String, String)> = Vec::new();
     v.sort_unstable();
     v
+}
+
+/// A project loaded from disk with one cell file open: the CLI's `load` spine (the editor's
+/// equivalent is its session).
+#[derive(Debug)]
+pub struct Opened {
+    /// Design data.
+    pub project: Project,
+    /// Directory per library row (`libs::Loaded::lib_dir`).
+    pub lib_dir: Vec<Option<PathBuf>>,
+    /// The opened file.
+    pub top: DocHandle,
+}
+
+impl Cells for Opened {
+    fn project(&self) -> &Project {
+        &self.project
+    }
+
+    fn open_row(&mut self, row: u32) -> Result<(), String> {
+        let row = row as usize;
+        let lib = self.project.cells().lib[row];
+        let rel = crate::libs::cell_relpath(&self.project, row);
+        let (_, bytes, _) = crate::libs::cell_bytes(&self.lib_dir, &self.project, lib, &rel)
+            .map_err(|e| format!("{rel}: {e}"))?;
+        let name = self.project.libs().name[usize::from(lib)].clone();
+        self.project
+            .open(&name, &rel, &bytes, None)
+            .map(|_| ())
+            .map_err(|e| format!("{name}:{rel}: cannot open: {e:?}"))
+    }
+}
+
+/// Why [`open_file`] failed: the CLI exits 2 on `Io`, 1 on `Design`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum OpenError {
+    /// The project or file cannot be read, or the file is outside every library.
+    Io(String),
+    /// The file does not parse or is refused by `doc`.
+    Design(String),
+}
+
+/// Loads the project around `file` (nearest `schemify.project`) and opens `file` in the
+/// library whose directory holds it (deepest wins). Returns the load notes (unfetched
+/// libraries, index findings) beside the result.
+///
+/// # Errors
+///
+/// See [`OpenError`].
+pub fn open_file(file: &Path, seed: u64) -> Result<(Opened, Vec<String>), OpenError> {
+    use crate::libs;
+    let root = libs::project_root(file);
+    let loaded = libs::load(&root, seed).map_err(OpenError::Io)?;
+    let mut project = loaded.project;
+    let abs = libs::absolute(file);
+    let mut best: Option<(usize, String, usize)> = None;
+    for (row, dir) in loaded.lib_dir.iter().enumerate() {
+        let Some(dir) = dir else { continue };
+        let dir = libs::absolute(dir);
+        if let Some(rel) = libs::rel_path(&dir, &abs) {
+            let depth = dir.components().count();
+            if best.as_ref().is_none_or(|b| depth > b.2) {
+                best = Some((row, rel, depth));
+            }
+        }
+    }
+    let Some((row, rel, _)) = best else {
+        return Err(OpenError::Io(format!(
+            "outside every library of the project at {}",
+            root.display()
+        )));
+    };
+    let bytes = crate::platform::read(file).map_err(OpenError::Io)?;
+    let name = project.libs().name[row].clone();
+    let top = project
+        .open(&name, &rel, &bytes, None)
+        .map_err(|e| OpenError::Design(format!("cannot open: {e:?}")))?
+        .handle;
+    assert!(project.doc(top).is_some());
+    let opened = Opened {
+        project,
+        lib_dir: loaded.lib_dir,
+        top,
+    };
+    Ok((opened, loaded.notes))
+}
+
+/// The external programs of run spec §5 from the user config's `schemify.sim` rows; the
+/// defaults for rows it does not set (this fixes "no user-config reader": documents never
+/// name a program, D7).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn tools(user: &schemify_config::Table) -> schemify_run::Tools {
+    use schemify_config::SimKind;
+    let mut t = schemify_run::Tools::default();
+    if let Some(s) = user.sim(SimKind::Ngspice) {
+        t.sim = schemify_run::SimCommand {
+            path: s.path.clone(),
+            args: s.args.clone(),
+        };
+    }
+    if let Some(s) = user.sim(SimKind::Openvaf) {
+        t.openvaf.clone_from(&s.path);
+    }
+    if let Some(s) = user.sim(SimKind::Iverilog) {
+        t.iverilog.clone_from(&s.path);
+    }
+    assert!(!t.sim.path.is_empty());
+    t
 }
 
 #[cfg(not(target_arch = "wasm32"))]

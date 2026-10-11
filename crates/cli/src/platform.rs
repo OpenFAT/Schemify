@@ -187,17 +187,7 @@ mod imp {
     }
 
     pub fn state_dir() -> Option<PathBuf> {
-        let env = |k: &str| {
-            std::env::var_os(k)
-                .filter(|v| !v.is_empty())
-                .map(PathBuf::from)
-        };
-        if cfg!(target_os = "windows") {
-            return env("LOCALAPPDATA").map(|d| d.join("schemify"));
-        }
-        env("XDG_STATE_HOME")
-            .or_else(|| env("HOME").map(|h| h.join(".local").join("state")))
-            .map(|d| d.join("schemify"))
+        schemify_config::dirs::here(schemify_config::dirs::Dir::State).ok()
     }
 
     pub fn list(dir: &Path, depth: u32, skip: &[PathBuf], out: &mut Vec<PathBuf>) {
@@ -434,11 +424,9 @@ pub fn clipboard_get() -> Result<String, String> {
     imp::clipboard_get()
 }
 
-/// The user state directory (`$XDG_STATE_HOME/schemify`, else `~/.local/state/schemify`;
-/// `%LOCALAPPDATA%\schemify` on Windows): the recent-files list lives here. `None` when the
-/// environment names none (and on the web).
-// ponytail: a local copy of the Neovim-style `stdpath("state")`; the config crate's
-// stdpath replaces it at merge (integrator note, 2026-10-11).
+/// The user state directory, `stdpath("state")` of the config spec §1 (honours
+/// `SCHEMIFY_APPNAME`): the recent-files list lives here. `None` when the environment names
+/// none (and on the web).
 pub fn state_dir() -> Option<PathBuf> {
     imp::state_dir()
 }
