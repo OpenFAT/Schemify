@@ -80,7 +80,9 @@ pub use elaborate::{
 pub use graph::Graph;
 pub use iface::{Domain, Iface, ParamKind};
 pub use names::{NAMES_MAX, Name, Names};
+// `Iface::pin_dir`'s element type, so readers of elab need not depend on doc.
 pub use netexpr::{WIDTH_MAX, is_global};
+pub use schemify_doc::PinDir;
 pub use state::{CellState, Recomputed};
 pub use values::{Funcs, Val, cached_text, no_funcs};
 

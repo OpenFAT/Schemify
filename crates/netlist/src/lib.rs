@@ -60,7 +60,7 @@ mod name_map;
 pub use name_map::NameMap;
 
 use inst::{Plans, Tmp, Uses};
-use schemify_doc::PinDir;
+use schemify_elab::PinDir;
 use schemify_elab::{CornerLine, Dialect, Elab, Ignore, Name, Target};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
