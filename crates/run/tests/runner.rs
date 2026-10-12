@@ -651,12 +651,15 @@ fn project_variable_corner_paths_are_relative_to_the_project_root() {
         common::run_env(&p, top, &plan, jobs, &env, |d| cfg(&dir, d, sh(FAKE), 1));
     assert_eq!(jobs.state(0), State::Done);
     let netlist = std::fs::read_to_string(runner.job_dir(0).join("netlist.cir")).unwrap();
-    let abs = |rel: &str| dir.join(rel).to_string_lossy().into_owned();
+    // Joined as the runner joins them (one component per base), so the separators match on
+    // Windows too.
+    let from = |base: &Path, rel: &str| base.join(rel).to_string_lossy().into_owned();
+    let bench_dir = dir.join("benches");
     let want = format!(
         "\n.lib {} tt\n.include {}\n.lib {} ss\n",
-        abs(".schemify/pdks/k/v/models/corners.lib"),
-        abs("benches/sub/extra.inc"),
-        abs("benches/envlib/x.lib")
+        from(&dir, ".schemify/pdks/k/v/models/corners.lib"),
+        from(&bench_dir, "sub/extra.inc"),
+        from(&bench_dir, "envlib/x.lib")
     );
     assert!(netlist.contains(&want), "{want}\n{netlist}");
 }

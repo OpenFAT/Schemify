@@ -205,13 +205,14 @@ jobs:
             crates/app/assets/*.wasm
             crates/app/tests/fixtures/ota/plugins/*.wasm
             plugins/cktimg/cktimg.wasm
+            plugins/pdk-manager/pdk_manager.wasm
           if-no-files-found: error
       # The crates with native tests (rlib + the built guest driven through wasmi); the others
       # are cdylib guests whose `guest` module exists only on wasm32.
       - name: plugins workspace tests (native + built guests)
         run: >-
           nix develop -c cargo test --manifest-path plugins/Cargo.toml
-          -p gmid-lut -p cktimg --no-fail-fast
+          -p gmid-lut -p cktimg -p pdk-manager --no-fail-fast
       # cktimg's fixtures over the default fuel, at the manifest's fuel ceiling (10^11 per
       # event): needs an optimized wasmi, so its own profile.
       - name: cktimg over-budget fixtures at the fuel ceiling
