@@ -141,7 +141,7 @@ key Ctrl+Shift+P symbol.place_schematic_output_port
 
 # q: edit properties; Ctrl+q: quit; Alt+q: edit the file in a text editor
 key Q properties.edit
-key Ctrl+Q file.quit_xschem
+key Ctrl+Q file.quit
 key Alt+Q properties.edit_file_danger
 # Q: edit properties in an editor; Ctrl+Q: view properties
 key Shift+Q properties.edit_with_editor
@@ -260,7 +260,7 @@ key < layers.draw_all_layers
 
 # ?: help text; /: key-binding help
 key ? help.help
-key / help.show_keybindings
+key / help.keys
 
 # :: toggle flat netlist
 key : options.netlist_format_symbol_mode.flat_netlist

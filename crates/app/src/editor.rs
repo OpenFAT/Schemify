@@ -1591,6 +1591,14 @@ impl Editor {
         let Some((h, view)) = self.active() else {
             return false;
         };
+        // A command that acts on other file kinds (its UI nodes are greyed out, but a key or a
+        // script can still name it) changes nothing but the status line.
+        if let Some(kind) = self.session.project.doc(h).map(Document::kind)
+            && !cmd.accepts(kind)
+        {
+            self.session.status = kind_refusal(cmd, kind);
+            return true;
+        }
         if self.session.text_view().is_some() && !text_tab_cmd(cmd) && !parity::text_tab_ok(cmd) {
             self.session.status = "read-only text view: switch to a schematic tab".into();
             return true;
@@ -2060,6 +2068,18 @@ impl Editor {
                     None => return false,
                 }
             }
+            Cmd::CellAddBench => {
+                let word = node.strip_prefix("cell.add.").unwrap_or(arg);
+                let Some(b) = cell::Bench::ALL.iter().copied().find(|b| b.word() == word) else {
+                    self.session.status = format!("cell.add_bench: unknown table {word}");
+                    return true;
+                };
+                match self.with_doc(h, |d, _| Some(cell::add_bench_ops(d, b))) {
+                    Some(Ok(ops)) => self.commit(reqs, h, "add bench record", ops),
+                    Some(Err(why)) => self.session.status = why,
+                    None => return false,
+                }
+            }
             Cmd::CellAddParam => {
                 let ops = self.with_doc(h, |d, _| cell::add_param_ops(d));
                 self.commit(reqs, h, "add parameter", ops);
@@ -2079,6 +2099,11 @@ impl Editor {
                         cell::delete_param_ops(d, r)
                     } else if let Some(r) = cell::button_row(node, "impl", "del") {
                         cell::delete_impl_ops(d, r)
+                    } else if let Some((b, r)) = cell::Bench::ALL
+                        .iter()
+                        .find_map(|&b| cell::button_row(node, b.word(), "del").map(|r| (b, r)))
+                    {
+                        cell::delete_bench_ops(d, b, r)
                     } else {
                         Vec::new()
                     }
@@ -4192,6 +4217,29 @@ impl Editor {
             }
             None => t.push_str("remove view.switch\n"),
         }
+        // Commands that act on other file kinds (`Cmd::file_kinds`): every node bound to one is
+        // disabled, so menus, toolbar buttons and panels grey it out.
+        if let Some(kind) = self
+            .active()
+            .and_then(|(h, _)| s.project.doc(h))
+            .map(Document::kind)
+        {
+            let nodes = &self.shell.tables.nodes;
+            let commands = nodes.prop(schemify_ui::Prop::Command);
+            for (i, &c) in commands.iter().enumerate() {
+                if c.is_none() {
+                    continue;
+                }
+                let Target::Core(cmd) = self.commands.resolve(self.shell.strings.get(c)) else {
+                    continue;
+                };
+                if !cmd.accepts(kind) {
+                    let id = self.shell.strings.get(nodes.id()[i]);
+                    let _ = writeln!(t, "set {id} disabled 1");
+                    let _ = writeln!(t, "set {id} tooltip {}", q(&kind_refusal(cmd, kind)));
+                }
+            }
+        }
         // The cell settings panel: the active cell's header, pins, params and impls.
         let shown = s.text_view().is_none() && s.tabs.get(s.active).is_some_and(|tab| tab.cell);
         match self
@@ -4379,6 +4427,19 @@ fn push_note(status: &mut String, note: &str) {
 }
 
 /// A `.shprim` has only a symbol; everything else opens on its schematic.
+/// The status line for `cmd` refused on a file of `kind`: what the command needs.
+fn kind_refusal(cmd: Cmd, kind: FileKind) -> String {
+    let ext = |k: &FileKind| format!(".{}", format!("{k:?}").to_lowercase());
+    let want: Vec<String> = cmd.file_kinds().unwrap_or(&[]).iter().map(ext).collect();
+    debug_assert!(!want.is_empty(), "only a restricted command is refused");
+    format!(
+        "{}: needs a {} file (this is a {})",
+        cmd.name(),
+        want.join(" or "),
+        ext(&kind)
+    )
+}
+
 /// Whether a cell of `kind` has the `view` side: a `.shcomp` has both, a `.shprim` only a
 /// symbol, a `.shbench` only a schematic; project, lock, config and journal files neither.
 pub(crate) fn has_view(kind: FileKind, view: View) -> bool {

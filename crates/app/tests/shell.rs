@@ -781,3 +781,69 @@ fn view_switcher_floats_over_the_canvas() {
     m.click_node("switch.symbol");
     assert_eq!(m.ed.active().map(|a| a.1), Some(View::Schematic));
 }
+
+/// Commands that act on other file kinds are greyed out (`disabled`, with a tooltip saying
+/// what they need) in every menu, toolbar and bar that binds them, and refused from a key or
+/// script with the same message; on the right file kind they are enabled.
+#[test]
+fn commands_grey_out_on_the_wrong_file_kind() {
+    use schemify_ui::Prop;
+    let disabled = |s: &Session, id: &str| node_prop(s, id, Prop::Disabled) == "1";
+    // A component: no simulation, no optimizer; symbol generation available.
+    let mut c = Session::open("inv", "top.shcomp", "grey-comp", true);
+    for id in [
+        "sim.simulate",
+        "sim.optimize",
+        "menubar.simulate",
+        "tb.simulate",
+    ] {
+        assert!(disabled(&c, id), "{id} greyed in a .shcomp");
+    }
+    assert!(node_prop(&c, "sim.simulate", Prop::Tooltip).contains(".shbench"));
+    assert!(!disabled(&c, "symbol.make_symbol_from_schematic"));
+    assert!(!disabled(&c, "sim.new_bench"));
+    c.click_node("tb.simulate");
+    assert!(!c.ed.sim().busy());
+    c.ed.command("sim.simulate", "");
+    c.frame(InputEvents::default());
+    assert!(
+        c.ed.session.status.contains("needs a .shbench"),
+        "{}",
+        c.ed.session.status
+    );
+    // A bench: simulation on, symbol generation and new-bench off.
+    let b = Session::open("rc", "tb.shbench", "grey-bench", true);
+    for id in ["sim.simulate", "sim.optimize", "tb.simulate"] {
+        assert!(!disabled(&b, id), "{id} enabled in a .shbench");
+    }
+    assert!(disabled(&b, "symbol.make_symbol_from_schematic"));
+    assert!(disabled(&b, "sim.new_bench"));
+    // A primitive: no schematic-to-symbol either.
+    let p = Session::open("rc", "res.shprim", "grey-prim", true);
+    assert!(disabled(&p, "symbol.make_symbol_from_schematic"));
+    assert!(disabled(&p, "sim.simulate"));
+}
+
+/// Help has one key-bindings item (bound to `/`) and "About Schemify" (#49); nothing names
+/// xschem.
+#[test]
+fn help_menu_is_schemify_branded_without_duplicates() {
+    use schemify_ui::Prop;
+    let s = Session::open("inv", "top.shcomp", "help-menu", true);
+    let sh = &s.ed.shell;
+    assert!(
+        sh.strings
+            .find("help.show_keybindings")
+            .and_then(|i| sh.tables.nodes.find(i))
+            .is_none()
+    );
+    assert_eq!(node_prop(&s, "help.keys", Prop::Accel), "/");
+    assert_eq!(node_prop(&s, "help.about", Prop::Label), "About Schemify");
+    let labels = sh.tables.nodes.prop(Prop::Label);
+    assert!(
+        labels
+            .iter()
+            .all(|&l| !sh.strings.get(l).to_lowercase().contains("xschem")),
+        "no menu label names xschem"
+    );
+}

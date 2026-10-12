@@ -304,6 +304,10 @@ style results-dim
   width 90
   fg 909090
 
+style results-log
+  fg 303030
+  font 12
+
 style results-yield
   fg 1a3a8a
 
@@ -612,10 +616,10 @@ node file.close_schematic item
   label "Close schematic"
   command file.close_schematic
   accel Ctrl+W
-node file.quit_xschem item
+node file.quit item
   parent menu.file
-  label "Quit Xschem"
-  command file.quit_xschem
+  label Quit
+  command file.quit
   accel Ctrl+Q
 node menu.edit menu
   parent menubar
@@ -1493,16 +1497,13 @@ node help.help item
   accel ?
 node help.keys item
   parent menu.help
-  label Keys
+  label "Key bindings"
   command help.keys
-node help.show_keybindings item
+  accel /
+node help.about item
   parent menu.help
-  label "Show Keybindings"
-  command help.show_keybindings
-node help.about_xschem item
-  parent menu.help
-  label "About XSCHEM"
-  command help.about_xschem
+  label "About Schemify"
+  command help.about
 node menubar.sep label
   parent menubar
   label -

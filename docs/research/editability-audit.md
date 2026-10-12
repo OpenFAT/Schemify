@@ -60,7 +60,8 @@ Status values:
 | var name | cells | **yes** | — (no rename) | RAW-ONLY |
 | var `unit/min/max/doc` | cells | gate / no | — (displayed only) | RAW-ONLY |
 | var `dist` | bench | **yes** (Monte Carlo) | — | RAW-ONLY |
-| `corner` `config` `sweep` `montecarlo` `optimize` `output` `spec` | bench | **yes** | — (results panel and `sim.optimize` only read them) | RAW-ONLY |
+| `optimize` `output` `spec` | bench | **yes** | cell panel ✅ (#48) | STRUCTURED |
+| `corner` `config` `sweep` `montecarlo` | bench | **yes** | — | RAW-ONLY |
 | `code` | bench/comp | **yes** | `sim.new_bench` seeds `.op` (editor/integrate.rs:479); no edit | PARTIAL |
 | comments | all | no | — | RAW-ONLY |
 
@@ -73,7 +74,7 @@ Status values:
 5. Instance `inherit`, `ignore open|short`, and swapping `cellref`.
 6. Label `global`.
 7. Var name and `dist`; var bounds also gate a run.
-8. All bench rank-6 tables, plus editing `code`.
+8. ✅ `optimize`, `output`, `spec` (cell panel, #48). Open: `corner`, `config`, `sweep`, `montecarlo`, and editing `code`.
 
 ## Defects found on the way
 

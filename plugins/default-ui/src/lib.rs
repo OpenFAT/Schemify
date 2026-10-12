@@ -7,8 +7,8 @@
 //! - `ui` — `ui.records`: menus, toolbar, tabs, canvas, status bar, dialogs, theme and the
 //!   canvas palette (`canvas.<dark|light>.<layer>`, `.grid`, `.sel` style selectors, `fg`).
 //! - `keymap` — `keymap.records`: xschem's canvas bindings (D25).
-//! - `commands` — the commands this plugin implements itself: `help.keys` and
-//!   `help.show_keybindings`, which toggle a key-summary panel (`keys.panel`), and
+//! - `commands` — the commands this plugin implements itself: `help.keys` (key `/`), which
+//!   toggles a key-summary panel (`keys.panel`), and
 //!   `view.theme_modern`, which toggles the `modern.records` style preset; both re-contribute
 //!   the `ui` set.
 //!
@@ -68,7 +68,8 @@ const MODERN: &str = include_str!("../modern.records");
 /// The `keymap` contribution set.
 const KEYMAP: &str = include_str!("../keymap.records");
 /// Commands owned by this plugin (routed to it by the app as `Event::Command`).
-const COMMANDS: &str = "command help.keys \"Key bindings\"\ncommand help.show_keybindings \"Show keybindings\"\ncommand view.theme_modern \"Modern theme\"\n";
+const COMMANDS: &str =
+    "command help.keys \"Key bindings\"\ncommand view.theme_modern \"Modern theme\"\n";
 /// The key-summary panel `help.keys` toggles: appended to the `ui` set while shown.
 const KEYS_PANEL: &str = "
 style keys-panel
@@ -122,7 +123,7 @@ fn on_event(ev: Event<'_>, _host: &Host, out: &mut Out) {
             out.contribute_commands(COMMANDS);
         }
         Event::Command {
-            name: "help.keys" | "help.show_keybindings",
+            name: "help.keys",
             ..
         } => {
             KEYS_SHOWN.set(!KEYS_SHOWN.get());

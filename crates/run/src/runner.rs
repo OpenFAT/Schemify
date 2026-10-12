@@ -30,6 +30,8 @@ pub const RAW: &str = "out.raw";
 pub const STDOUT: &str = "stdout.log";
 /// Simulator stderr.
 pub const STDERR: &str = "stderr.log";
+/// The simulator command line the job ran, one line (for the run log view).
+pub const COMMAND: &str = "command.log";
 /// Results file name inside a run directory.
 pub const RESULTS: &str = "results";
 /// Most workers one runner starts at once.
@@ -453,10 +455,17 @@ impl Runner {
         };
         let (out, err) = (log(STDOUT)?, log(STDERR)?);
         let sim = &self.cfg.tools.sim;
-        let args = sim
+        let args: Vec<String> = sim
             .args
             .iter()
-            .map(|a| a.replace("{netlist}", NETLIST).replace("{raw}", RAW));
+            .map(|a| a.replace("{netlist}", NETLIST).replace("{raw}", RAW))
+            .collect();
+        let line = std::iter::once(sim.path.clone())
+            .chain(args.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        fs::write(dir.join(COMMAND), line + "\n")
+            .map_err(|e| format!("cannot create {COMMAND}: {e}"))?;
         let proc = Proc::spawn(
             Command::new(&sim.path).args(args).current_dir(&dir),
             out,

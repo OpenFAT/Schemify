@@ -235,6 +235,9 @@ style results-dim
 style results-yield
   fg 7fb0ff
 
+style results-log
+  fg c9cdd3
+
 style results-pick
   bg 23262c
 

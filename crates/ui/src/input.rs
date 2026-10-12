@@ -233,6 +233,11 @@ pub struct UiState {
     pub(crate) split: Vec<(Sym, f32)>,
     /// The `split` node whose divider the pointer is dragging (`Sym::NONE` when none).
     pub(crate) split_drag: Sym,
+    /// Top-left corner the user dragged a centered dialog to (layout keeps it inside the
+    /// viewport); reset when another dialog opens.
+    pub(crate) dialog_pos: Option<(f32, f32)>,
+    /// While a dialog is dragged: the pointer's offset from the dialog's top-left corner.
+    pub(crate) dialog_grab: Option<(f32, f32)>,
 }
 
 impl std::fmt::Debug for UiState {
@@ -334,6 +339,8 @@ impl UiState {
         self.open.clear();
         self.dialog = id;
         self.dialog_at = at.filter(|_| !id.is_none());
+        self.dialog_pos = None;
+        self.dialog_grab = None;
         self.blur();
     }
 
@@ -493,6 +500,11 @@ pub fn route_input(
         };
         match ev {
             InputEvent::PointerMove { x, y } => {
+                if let Some((gx, gy)) = state.dialog_grab {
+                    state.dialog_pos = Some((x - gx, y - gy));
+                    out.relayout = true;
+                    continue;
+                }
                 if !state.split_drag.is_none() {
                     drag_split(tables, layout, state, x, y);
                     out.relayout = true;
@@ -583,6 +595,22 @@ pub fn route_input(
                     out.redraw = true;
                     out.relayout = true; // a text_area shrinks back to its value
                 }
+                // A press on a centered dialog's own surface (its frame, a panel or a plain
+                // label, not a control) grabs the dialog: dragging moves it.
+                let surface = match nodes.kind[i] {
+                    Kind::Dialog | Kind::Panel => true,
+                    Kind::Label => nodes.prop(Prop::Command)[i].is_none(),
+                    _ => false,
+                };
+                if modal && surface && button == Button::Left && state.dialog_at.is_none() {
+                    let d = layout.rect[layout.floats().end];
+                    debug_assert_eq!(
+                        layout.node[layout.floats().end],
+                        nodes.find(state.dialog).unwrap_or(NO_NODE)
+                    );
+                    state.dialog_grab = Some((x - d.x, y - d.y));
+                    continue;
+                }
                 match (nodes.kind[i], shown) {
                     (_, Shown::Title) => {
                         let reopen = state.open.first() != Some(&id);
@@ -633,7 +661,9 @@ pub fn route_input(
                 }
             }
             InputEvent::PointerUp { .. } => {
-                if !state.split_drag.is_none() {
+                if state.dialog_grab.take().is_some() {
+                    out.redraw = true;
+                } else if !state.split_drag.is_none() {
                     state.split_drag = Sym::NONE;
                     out.redraw = true;
                 } else if state.capture {

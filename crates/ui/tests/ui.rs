@@ -196,7 +196,7 @@ fn plugins_override_last_wins_with_health_report() {
         "last wins"
     );
     assert!(
-        n.find(f.sym("menu.help")).is_none() && n.find(f.sym("help.about_xschem")).is_none(),
+        n.find(f.sym("menu.help")).is_none() && n.find(f.sym("help.about")).is_none(),
         "subtree removed"
     );
     let first_tool = n.children(f.node("menu.tools")).next().unwrap();
@@ -723,11 +723,7 @@ fn menus_by_keyboard_arrows_enter_escape_and_mnemonics() {
     assert_eq!(f.state.hover(), f.sym("file.clear_symbol"));
     key(&mut f, "Up");
     key(&mut f, "Up");
-    assert_eq!(
-        f.state.hover(),
-        f.sym("file.quit_xschem"),
-        "wraps to the last row"
-    );
+    assert_eq!(f.state.hover(), f.sym("file.quit"), "wraps to the last row");
     assert!(key(&mut f, "Ctrl+S").commands.is_empty(), "bindings wait");
     assert_eq!(f.state.open(), [f.sym("menu.file")]);
     key(&mut f, "o");
@@ -1043,4 +1039,59 @@ fn toolbar_buttons_draw_icons_and_keep_labels_for_access() {
     let tree = access::access_tree(&f.tables, &f.frame, &f.strings, &f.state);
     let dump = access::dump(&tree);
     assert!(dump.contains("Button \"Wire\""), "{dump}");
+}
+
+/// A centered dialog moves by dragging its own surface (its title, frame or a plain label),
+/// not its controls; it stays inside the viewport, stays modal (a click outside neither
+/// closes it nor reaches the UI below), and the next dialog opens centered again (#46).
+#[test]
+fn a_dialog_drags_by_its_surface_and_stays_modal() {
+    let mut f = fixture(&[]);
+    f.state.set_dialog(f.sym("dialog.enter_text"));
+    f.relayout();
+    let at = |f: &Fixture| f.frame.rect()[f.frame.floats().end];
+    let d0 = at(&f);
+    let drag = |f: &mut Fixture, (x, y): (f32, f32), (dx, dy): (f32, f32)| {
+        let mut ev = InputEvents::default();
+        ev.push(InputEvent::PointerDown {
+            x,
+            y,
+            button: Button::Left,
+        });
+        ev.push(InputEvent::PointerMove {
+            x: x + dx,
+            y: y + dy,
+        });
+        ev.push(InputEvent::PointerUp {
+            x: x + dx,
+            y: y + dy,
+            button: Button::Left,
+        });
+        f.route(&ev)
+    };
+    let c = f.center("dialog.enter_text.title");
+    let out = drag(&mut f, c, (-100.0, 60.0));
+    assert!(out.commands.is_empty());
+    let d1 = at(&f);
+    assert!(
+        (d1.x - (d0.x - 100.0)).abs() < 0.5 && (d1.y - (d0.y + 60.0)).abs() < 0.5,
+        "{d0:?} → {d1:?}"
+    );
+    // Modal: a click outside closes nothing and runs nothing.
+    assert!(f.click("tb.wire").commands.is_empty());
+    assert_eq!(f.state.dialog(), f.sym("dialog.enter_text"));
+    // A press on a control does not move the dialog.
+    let c = f.center("dialog.enter_text.input");
+    drag(&mut f, c, (200.0, 200.0));
+    assert_eq!(at(&f), d1);
+    // Far off-screen: kept inside the viewport.
+    let c = f.center("dialog.enter_text.title");
+    drag(&mut f, c, (-5000.0, -5000.0));
+    let d2 = at(&f);
+    assert_eq!((d2.x, d2.y), (0.0, 0.0));
+    // The next dialog opens centered.
+    f.state.set_dialog(schemify_ui::Sym::NONE);
+    f.state.set_dialog(f.sym("dialog.enter_text"));
+    f.relayout();
+    assert_eq!(at(&f), d0);
 }

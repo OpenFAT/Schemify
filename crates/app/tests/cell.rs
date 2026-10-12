@@ -420,3 +420,82 @@ fn symbol_from_ports_redraws_a_primitive_in_port_order() {
     s.key("u");
     assert_eq!(s.text(), before, "one undo");
 }
+
+/// A testbench's outputs, specs and optimizer setups edit through the panel (#48): every
+/// rank-6 attribute the optimizer reads, with the goal grammar checked. The fixture bench
+/// starts with outputs `tau`, `v1m`, a spec on `v1m` and an optimizer `fit`.
+#[test]
+fn bench_outputs_specs_and_optimizers_edit_through_the_panel() {
+    let mut s = Session::open("rc", "tb.shbench", "cell-bench-edit", true);
+    let has = |s: &Session, line: &str| s.text().lines().any(|l| l == line);
+    run(&mut s, "view.cell", "");
+    assert!(has_node(&s, "cell.add.output") && has_node(&s, "cell.add.opt"));
+    assert_eq!(value(&s, "cell.output.1.name"), "v1m");
+
+    // A new output is appended (row 2) and edited.
+    run(&mut s, "cell.add_bench", "output");
+    set(&mut s, "cell.output.2.name", "vout_final");
+    set(&mut s, "cell.output.2.expr", "v(out)");
+    set(&mut s, "cell.output.2.unit", "V");
+    assert!(
+        has(&s, "output vout_final v(out)") && has(&s, "  unit V"),
+        "{}",
+        s.text()
+    );
+
+    // Specs go to outputs without one, in order: tau, then vout_final; then none is left.
+    run(&mut s, "cell.add_bench", "spec");
+    assert!(has(&s, "spec tau"), "{}", s.text());
+    run(&mut s, "cell.add_bench", "spec");
+    assert!(has(&s, "spec vout_final"), "{}", s.text());
+    set(&mut s, "cell.spec.2.min", "0.9");
+    assert!(has(&s, "  min 0.9"), "{}", s.text());
+    run(&mut s, "cell.add_bench", "spec");
+    assert!(
+        s.ed.session.status.contains("already has a spec"),
+        "{}",
+        s.ed.session.status
+    );
+
+    // A second optimizer (row 1) with every field.
+    run(&mut s, "cell.add_bench", "opt");
+    assert!(has(&s, "optimize opt1"), "{}", s.text());
+    run(&mut s, "cell.set", "cell.opt.1.algo=random");
+    set(&mut s, "cell.opt.1.goals", "vout_final target 1 weight 2");
+    set(&mut s, "cell.opt.1.vary", "R C");
+    set(&mut s, "cell.opt.1.budget", "40");
+    let t = s.text();
+    for line in [
+        "  algo random",
+        "  goal vout_final target 1 weight 2",
+        "  vary R",
+        "  vary C",
+        "  budget 40",
+    ] {
+        assert!(t.lines().any(|l| l == line), "{line}: {t}");
+    }
+    assert_eq!(value(&s, "cell.opt.1.vary"), "R C");
+    // Rejected values leave the document untouched.
+    let before = s.text();
+    for (arg, why) in [
+        ("cell.opt.1.goals vout_final sideways", "expected"),
+        ("cell.opt.1.budget lots", "whole number"),
+        ("cell.output.2.expr ", "needs an expression"),
+    ] {
+        run(&mut s, "cell.set", arg);
+        assert!(
+            s.ed.session.status.contains(why),
+            "{arg}: {}",
+            s.ed.session.status
+        );
+        assert_eq!(s.text(), before);
+    }
+    // Replacing a repeatable list is one undo.
+    set(&mut s, "cell.opt.1.vary", "R");
+    assert!(!s.text().contains("  vary C"));
+    s.key("u");
+    assert_eq!(s.text(), before);
+    run(&mut s, "cell.delete", "cell.opt.1.del");
+    assert!(!s.text().contains("optimize opt1"));
+    assert!(has(&s, "optimize fit"), "the fixture's optimizer stays");
+}

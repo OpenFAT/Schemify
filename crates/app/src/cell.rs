@@ -95,7 +95,53 @@ pub enum Field<'a> {
     Format(u32, &'a str),
     /// Impl row's `body` text.
     Body(u32),
+    /// A bench record (`.shbench` rank 6): table, row, attribute.
+    Bench(Bench, u32, &'a str),
 }
+
+/// The bench tables the panel edits (format rank 6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Bench {
+    /// `output <name> <expr>`: `expr`, `unit`.
+    Output,
+    /// `spec <output>`: `min`, `max`.
+    Spec,
+    /// `optimize <name>`: `algo`, `goals`, `vary`, `corners`, `configs`, `budget`, `seed`.
+    Optimize,
+}
+
+impl Bench {
+    /// The node id word of the table.
+    pub fn word(self) -> &'static str {
+        match self {
+            Bench::Output => "output",
+            Bench::Spec => "spec",
+            Bench::Optimize => "opt",
+        }
+    }
+
+    fn table(self) -> TableId {
+        match self {
+            Bench::Output => TableId::Outputs,
+            Bench::Spec => TableId::Specs,
+            Bench::Optimize => TableId::Optimizes,
+        }
+    }
+
+    fn kind(self) -> RecordKind {
+        match self {
+            Bench::Output => RecordKind::Output,
+            Bench::Spec => RecordKind::Spec,
+            Bench::Optimize => RecordKind::Optimize,
+        }
+    }
+
+    /// Every bench table, in panel order.
+    pub const ALL: [Bench; 3] = [Bench::Output, Bench::Spec, Bench::Optimize];
+}
+
+/// Optimizer algorithms (format rank 6).
+pub const ALGOS: [&str; 2] = ["nelder-mead", "random"];
 
 /// Decodes a field node id; a dropdown choice id (`<field>=<value>`) also returns the value.
 /// `None` for an id that is not a panel field.
@@ -121,6 +167,9 @@ pub fn parse_field(node: &str) -> Option<(Field<'_>, Option<&str>)> {
             Some(d) => Field::Format(row, d),
             None => Field::Impl(row, a),
         },
+        ("output", a) => Field::Bench(Bench::Output, row, a),
+        ("spec", a) => Field::Bench(Bench::Spec, row, a),
+        ("opt", a) => Field::Bench(Bench::Optimize, row, a),
         _ => return None,
     };
     Some((field, choice))
@@ -162,6 +211,9 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
         let v = doc.header_value("default").unwrap_or("");
         let choices: Vec<&str> = impls.iter().map(String::as_str).collect();
         dropdown(t, "cell.hdr.default", "default", v, &choices, "cell.page");
+    }
+    if kind == FileKind::Shbench {
+        bench_sections(t, doc);
     }
     if !cellish {
         return;
@@ -543,6 +595,9 @@ fn record(doc: &Document, table: TableId, row: u32) -> Option<RecordBuf> {
         TableId::Pins => doc.pins().name.len(),
         TableId::Params => doc.params().kind.len(),
         TableId::Impls => doc.impls().kind.len(),
+        TableId::Outputs => doc.outputs().kind.len(),
+        TableId::Specs => doc.specs().kind.len(),
+        TableId::Optimizes => doc.optimizes().kind.len(),
         _ => 0,
     };
     ((row as usize) < n).then(|| doc.record(Loc { table, row }))
@@ -719,6 +774,10 @@ pub fn set_ops(doc: &Document, field: Field<'_>, value: &str) -> Result<Vec<Op>,
                 return Err("a schematic impl has no body".into());
             }
             body_ops(doc, name, v)
+        }
+        Field::Bench(b, row, a) => {
+            let rec = record(doc, b.table(), row).ok_or_else(|| format!("no such {}", b.word()))?;
+            return bench_ops(b, &rec, a, v);
         }
     };
     debug_assert!(ops.len() <= 2);
@@ -977,6 +1036,306 @@ pub fn move_pin_ops(doc: &Document, row: u32, up: bool) -> Vec<Op> {
         target: Target::new(RecordKind::Pin, &rec.fields[0]),
         to,
     }]
+}
+
+// ------------------------------------------------------------------- bench tables
+
+/// The Outputs, Specs and Optimizers sections of a `.shbench`.
+fn bench_sections(t: &mut String, doc: &Document) {
+    let rows = |b: Bench| record_count(doc, b.table());
+    section(t, "cell.s.output", "Outputs (one number per job)");
+    for r in 0..rows(Bench::Output) {
+        let rec = doc.record(Loc {
+            table: TableId::Outputs,
+            row: r as u32,
+        });
+        let blk = block(t, &format!("cell.output.{r}"));
+        input(
+            t,
+            &format!("cell.output.{r}.name"),
+            "name",
+            &rec.fields[0],
+            &blk,
+        );
+        let expr = rec.fields.get(1).map_or("", String::as_str);
+        input(t, &format!("cell.output.{r}.expr"), "expr", expr, &blk);
+        input(
+            t,
+            &format!("cell.output.{r}.unit"),
+            "unit",
+            attr_of(&rec, "unit").unwrap_or(""),
+            &blk,
+        );
+        button(
+            t,
+            &format!("cell.output.{r}.del"),
+            "Delete output",
+            "cell.delete",
+            "",
+            &blk,
+        );
+    }
+    button(
+        t,
+        "cell.add.output",
+        "+ Output",
+        "cell.add_bench",
+        "Add an output expression",
+        "cell.page",
+    );
+
+    section(t, "cell.s.spec", "Specs");
+    for r in 0..rows(Bench::Spec) {
+        let rec = doc.record(Loc {
+            table: TableId::Specs,
+            row: r as u32,
+        });
+        let blk = block(t, &format!("cell.spec.{r}"));
+        node(t, &format!("cell.spec.{r}.title"), "label", &blk);
+        attr(t, "label", &rec.fields[0]);
+        attr(t, "style", "cell-title");
+        for a in ["min", "max"] {
+            input(
+                t,
+                &format!("cell.spec.{r}.{a}"),
+                a,
+                attr_of(&rec, a).unwrap_or(""),
+                &blk,
+            );
+        }
+        button(
+            t,
+            &format!("cell.spec.{r}.del"),
+            "Delete spec",
+            "cell.delete",
+            "",
+            &blk,
+        );
+    }
+    button(
+        t,
+        "cell.add.spec",
+        "+ Spec",
+        "cell.add_bench",
+        "Add a spec for an output without one",
+        "cell.page",
+    );
+
+    section(t, "cell.s.opt", "Optimizers");
+    for r in 0..rows(Bench::Optimize) {
+        let rec = doc.record(Loc {
+            table: TableId::Optimizes,
+            row: r as u32,
+        });
+        let blk = block(t, &format!("cell.opt.{r}"));
+        node(t, &format!("cell.opt.{r}.title"), "label", &blk);
+        attr(t, "label", &format!("optimize {}", rec.fields[0]));
+        attr(t, "style", "cell-title");
+        let algo = attr_of(&rec, "algo").unwrap_or("nelder-mead");
+        dropdown(t, &format!("cell.opt.{r}.algo"), "algo", algo, &ALGOS, &blk);
+        let goals = joined(&rec, "goal", "; ");
+        input(t, &format!("cell.opt.{r}.goals"), "goals", &goals, &blk);
+        input(
+            t,
+            &format!("cell.opt.{r}.vary"),
+            "vary",
+            &joined(&rec, "vary", " "),
+            &blk,
+        );
+        input(
+            t,
+            &format!("cell.opt.{r}.corners"),
+            "corners",
+            &joined(&rec, "corner", " "),
+            &blk,
+        );
+        input(
+            t,
+            &format!("cell.opt.{r}.configs"),
+            "configs",
+            &joined(&rec, "config", " "),
+            &blk,
+        );
+        for a in ["budget", "seed"] {
+            input(
+                t,
+                &format!("cell.opt.{r}.{a}"),
+                a,
+                attr_of(&rec, a).unwrap_or(""),
+                &blk,
+            );
+        }
+        note(
+            t,
+            &format!("cell.opt.{r}.hint"),
+            "goals: `<output> min|max|target <expr> [weight <w>]`, separated by `;`. vary: docs variables (their bounds apply).",
+        );
+        button(
+            t,
+            &format!("cell.opt.{r}.del"),
+            "Delete optimizer",
+            "cell.delete",
+            "",
+            &blk,
+        );
+    }
+    button(
+        t,
+        "cell.add.opt",
+        "+ Optimizer",
+        "cell.add_bench",
+        "Add an optimizer setup",
+        "cell.page",
+    );
+}
+
+fn record_count(doc: &Document, table: TableId) -> usize {
+    match table {
+        TableId::Outputs => doc.outputs().kind.len(),
+        TableId::Specs => doc.specs().kind.len(),
+        TableId::Optimizes => doc.optimizes().kind.len(),
+        _ => 0,
+    }
+}
+
+/// The values of every `key` line of `rec`, one line per item, joined by `sep`.
+fn joined(rec: &RecordBuf, key: &str, sep: &str) -> String {
+    rec.attrs
+        .iter()
+        .filter(|a| a.key == key)
+        .map(|a| a.values.join(" "))
+        .collect::<Vec<_>>()
+        .join(sep)
+}
+
+/// Ops replacing every `key` line of `target` by one line per item of `items`.
+fn lines_ops(target: &Target, rec: &RecordBuf, key: &str, items: Vec<Vec<String>>) -> Vec<Op> {
+    let current: Vec<Vec<String>> = rec
+        .attrs
+        .iter()
+        .filter(|a| a.key == key)
+        .map(|a| a.values.clone())
+        .collect();
+    if current == items {
+        return Vec::new();
+    }
+    let mut ops = Vec::with_capacity(items.len() + 1);
+    if !current.is_empty() {
+        ops.push(Op::RemoveAttr {
+            target: target.clone(),
+            key: key.to_owned(),
+            first: None,
+        });
+    }
+    // ponytail: SetAttr replaces a repeatable line by its first value, so items sharing a
+    // first value (two goals on one output) keep only the last; split the record if needed.
+    for values in items {
+        ops.push(Op::SetAttr {
+            target: target.clone(),
+            key: key.to_owned(),
+            values,
+        });
+    }
+    ops
+}
+
+/// Parses an optimizer goal list `<output> min|max|target <expr> [weight <w>]; …`.
+fn parse_goals(v: &str) -> Result<Vec<Vec<String>>, String> {
+    let mut out = Vec::new();
+    for g in v.split(';').map(str::trim).filter(|g| !g.is_empty()) {
+        let w: Vec<String> = g.split_whitespace().map(str::to_owned).collect();
+        let ok = match w.get(1).map(String::as_str) {
+            Some("min" | "max") => w.len() == 2 || (w.len() == 4 && w[2] == "weight"),
+            Some("target") => w.len() == 3 || (w.len() == 5 && w[3] == "weight"),
+            _ => false,
+        };
+        if !ok {
+            return Err(format!(
+                "goal `{g}`: expected `<output> min|max|target <expr> [weight <w>]`"
+            ));
+        }
+        out.push(w);
+    }
+    Ok(out)
+}
+
+fn bench_ops(b: Bench, rec: &RecordBuf, a: &str, v: &str) -> Result<Vec<Op>, String> {
+    let target = Target::new(b.kind(), &rec.fields[0]);
+    let words = |v: &str| {
+        v.split_whitespace()
+            .map(|w| vec![w.to_owned()])
+            .collect::<Vec<_>>()
+    };
+    let ops = match (b, a) {
+        (Bench::Output, "name") => {
+            word(v, "an output name")?;
+            set_field(target, rec, 0, v)
+        }
+        (Bench::Output, "expr") => {
+            if v.is_empty() {
+                return Err("an output needs an expression".into());
+            }
+            set_field(target, rec, 1, v)
+        }
+        (Bench::Output, "unit") | (Bench::Spec, "min" | "max") => {
+            attr_ops(target, attr_of(rec, a), a, v, vec![v.to_owned()])
+        }
+        (Bench::Optimize, "algo") => {
+            one_of(v, &ALGOS, "algo")?;
+            let v = if v == "nelder-mead" { "" } else { v };
+            attr_ops(target, attr_of(rec, "algo"), "algo", v, vec![v.to_owned()])
+        }
+        (Bench::Optimize, "budget" | "seed") => {
+            if !v.is_empty() && v.parse::<u64>().is_err() {
+                return Err(format!("{a} must be a whole number"));
+            }
+            attr_ops(target, attr_of(rec, a), a, v, vec![v.to_owned()])
+        }
+        (Bench::Optimize, "goals") => lines_ops(&target, rec, "goal", parse_goals(v)?),
+        (Bench::Optimize, "vary") => lines_ops(&target, rec, "vary", words(v)),
+        (Bench::Optimize, "corners") => lines_ops(&target, rec, "corner", words(v)),
+        (Bench::Optimize, "configs") => lines_ops(&target, rec, "config", words(v)),
+        _ => return Err(format!("{} has no field {a}", b.word())),
+    };
+    Ok(ops)
+}
+
+/// Ops adding a bench record: an output `out<k>` = `0`, a spec for the first output without
+/// one, or an optimizer `opt<k>` (defaults: nelder-mead, budget 100).
+pub fn add_bench_ops(doc: &Document, b: Bench) -> Result<Vec<Op>, String> {
+    if doc.kind() != FileKind::Shbench {
+        return Err("only a testbench has outputs, specs and optimizers".into());
+    }
+    let n = record_count(doc, b.table());
+    let have = names(doc, b.table(), n);
+    let free = |base: &str| {
+        (1..=n + 1)
+            .map(|k| format!("{base}{k}"))
+            .find(|c| !have.contains(c))
+            .expect("one of n + 1 names is free")
+    };
+    let rec = match b {
+        Bench::Output => RecordBuf::new(RecordKind::Output)
+            .field(&free("out"))
+            .field("0"),
+        Bench::Spec => {
+            let outs = names(doc, TableId::Outputs, record_count(doc, TableId::Outputs));
+            let out = outs
+                .into_iter()
+                .find(|o| !have.contains(o))
+                .ok_or("every output already has a spec (add an output first)")?;
+            RecordBuf::new(RecordKind::Spec).field(&out)
+        }
+        Bench::Optimize => RecordBuf::new(RecordKind::Optimize).field(&free("opt")),
+    };
+    Ok(vec![Op::Insert { rec, at: None }])
+}
+
+/// Ops deleting bench record `row` of table `b`.
+pub fn delete_bench_ops(doc: &Document, b: Bench, row: u32) -> Vec<Op> {
+    record(doc, b.table(), row).map_or_else(Vec::new, |rec| {
+        vec![Op::Delete(Target::new(b.kind(), &rec.fields[0]))]
+    })
 }
 
 #[cfg(test)]

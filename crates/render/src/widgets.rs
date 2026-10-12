@@ -54,6 +54,16 @@ pub(crate) fn rect(r: schemify_ui::Rect) -> Rect {
     )
 }
 
+/// Alpha of a disabled row's text and icon, as a fraction (numerator over 256) of its style's.
+pub const DISABLED_ALPHA: u32 = 102;
+
+/// `rrggbbaa` with its alpha scaled by [`DISABLED_ALPHA`].
+fn dim_alpha(c: u32) -> u32 {
+    let a = (c & 0xff) * DISABLED_ALPHA / 256;
+    debug_assert!(a <= 0xff);
+    (c & !0xff) | a
+}
+
 /// Paints the rows of one layer. Call with [`Layer::Main`], draw the canvas into the canvas
 /// row's rect, then call with [`Layer::Overlay`] so popups cover the schematic.
 #[allow(clippy::too_many_arguments)]
@@ -95,7 +105,10 @@ pub fn draw_ui<P: Painter>(
         let id = n.id()[i];
         let style = |prop| row_style(tables, layout.title_style(), node, shown, prop);
         let area = rect(layout.rect()[r]);
-        let hovered = state.hover() == id && shown != Shown::Popup;
+        // A disabled row neither lights under the pointer nor reads as available: its text and
+        // icon are drawn at [`DISABLED_ALPHA`] of the style's alpha.
+        let disabled = n.is_disabled(strings, node);
+        let hovered = state.hover() == id && shown != Shown::Popup && !disabled;
         let active = match shown {
             Shown::Title | Shown::Cascade => state.open().contains(&id),
             Shown::Normal => {
@@ -115,7 +128,8 @@ pub fn draw_ui<P: Painter>(
             if v & 0xff != 0 { v } else { style(base) }
         };
         let bg = pick(StyleProp::Bg, StyleProp::HoverBg, StyleProp::ActiveBg);
-        let fg = rgba(pick(StyleProp::Fg, StyleProp::HoverFg, StyleProp::ActiveFg));
+        let fg = pick(StyleProp::Fg, StyleProp::HoverFg, StyleProp::ActiveFg);
+        let fg = rgba(if disabled { dim_alpha(fg) } else { fg });
         if bg & 0xff != 0 && kind != Kind::Canvas {
             p.fill_rect(area, rgba(bg));
         }

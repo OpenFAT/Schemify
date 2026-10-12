@@ -61,7 +61,7 @@ Job states: `pending`, `queued`, `running`, `done` (simulator exited 0 and its r
 
 ## 5. Native runner (not on the web)
 
-- Directories: run `<project>/.schemify/runs/<first 16 hex digits of the design hash>/`, one sub-directory per job index holding `netlist.cir`, `out.raw`, `stdout.log`, `stderr.log`; compiled sources cached in `<project>/.schemify/build/`. `.schemify/` is git-ignored.
+- Directories: run `<project>/.schemify/runs/<first 16 hex digits of the design hash>/`, one sub-directory per job index holding `netlist.cir`, `out.raw`, `stdout.log`, `stderr.log` and `command.log` (the simulator command line the job ran, one line); compiled sources cached in `<project>/.schemify/build/`. `.schemify/` is git-ignored.
 - Corner paths: a corner `lib`/`include` path that is relative (not starting with `/`, `\`, `~`, `$`, a quote or a drive letter `C:`) names a file beside the bench. The netlist keeps it as written (netlist spec §7.6.14: the output must not depend on the checkout); the runner writes it into the job's `netlist.cir` joined onto the bench's directory (the library's directory joined with the bench's), quoted when that holds whitespace.
 - The simulator command line comes from the user config `sim ngspice` (`path`, `args`), never from a document (D7); default `ngspice -b -r {raw} {netlist}`. `{netlist}` and `{raw}` are replaced by the job's file names; the working directory is the job directory; stdin is empty.
 - At most `workers` simulators at once (default: available cores, at most 1024), started in submission order. A simulator past the timeout (default 1 h) is killed and the job fails. Exit 0 with a raw file: results are recorded (§4). Non-zero exit, or no raw file: the job fails with the last stderr line. A program that cannot be found fails the job naming it.
@@ -117,3 +117,8 @@ The selected job (job 0 after a run; a results row picks another) feeds the wave
 4. (M2 editor) The app writes a `bench` sidecar beside `results` (§7a) and runs the spine without blocking; `crates/run` gained `Jobs::cancel_pending` for jobs never handed to a runner.
 5. (2026-10-11) Monte Carlo samples fix the simulator seed (§3); inline `body` sources compile and compilers never block a poll (§5); relative corner paths resolve against the bench (§5); the optimizer runs over configs and corners with goal weights (§6).
 6. (2026-10-11, editor) Several runs at once with a queue per bench; the results table sorts, filters and scrolls any number of rows, with yield and best rows; the `Results` snapshot's `pass`; probe lines; Xyce OP naming; cross-probe of device currents (§7, §7a).
+
+## Run log view (editor)
+
+The results pane shows the selected job's run log below its table: the command line from `command.log` (`$ <simulator> <args>`), then the last 12 non-blank lines of `stdout.log` and of `stderr.log` (stderr in the failure style). The editor re-reads these bounded tails (at most 8 KiB per file) only when the runner is polled while a job runs or results change, when a job is selected and when a run starts: never in the frame path. A failing simulator's message is therefore visible without opening a file; "last job data/errors" still open the full logs in a text tab.
+

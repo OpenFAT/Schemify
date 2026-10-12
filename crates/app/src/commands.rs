@@ -8,6 +8,7 @@
 //! `<menu>.<action>` words; a command that takes an argument may also be named
 //! `<name>.<word>` ([`Commands::resolve_arg`]).
 
+use schemify_format::FileKind;
 use schemify_plugin::PluginId;
 use schemify_plugin::abi::Kind;
 
@@ -28,6 +29,9 @@ macro_rules! commands {
 }
 
 commands! {
+    /// Cell panel: add a bench output, spec or optimizer (`cell.add.output|spec|opt`; from a
+    /// script, the word as argument).
+    CellAddBench = "cell.add_bench",
     /// Cell panel: add an impl of the language its node id names (`cell.add_impl.<lang>`;
     /// from a script, the language as argument).
     CellAddImpl = "cell.add_impl",
@@ -202,7 +206,7 @@ commands! {
     /// Reopen entry `<i>` of the recent-files list (`file.open_recent.<i>`).
     OpenRecent = "file.open_recent",
     /// Quit.
-    Quit = "file.quit_xschem",
+    Quit = "file.quit",
     /// Reload the active document from disk.
     Reload = "file.reload",
     /// Save the active document.
@@ -212,7 +216,7 @@ commands! {
     /// Save As, then show the new file's symbol (a cell file carries its symbol, D11).
     SaveAsSymbol = "file.save_as_symbol",
     /// About Schemify, in a text tab.
-    About = "help.about_xschem",
+    About = "help.about",
     /// The help text, in a text tab.
     Help = "help.help",
     /// Toggle highlighting the selection's nets on every selection change.
@@ -532,6 +536,25 @@ impl Cmd {
             .find(|(_, c)| *c == self)
             .map(|(n, _)| *n)
             .expect("every variant has a row")
+    }
+
+    /// The file kinds this command acts on, `None` when it acts on any. The one table both
+    /// the dispatcher (a refusal) and the UI (every node bound to the command is disabled,
+    /// so it greys out) read; a handler may still refine the check.
+    pub fn file_kinds(self) -> Option<&'static [FileKind]> {
+        use FileKind::{Shbench, Shcomp, Shprim};
+        match self {
+            Cmd::Simulate | Cmd::Optimize | Cmd::CellAddBench => Some(&[Shbench]),
+            Cmd::NewBench => Some(&[Shcomp, Shprim]),
+            Cmd::MakeSymbol | Cmd::MakeSchematic | Cmd::PinsFromPorts => Some(&[Shcomp]),
+            Cmd::MakeSubcircuit => Some(&[Shcomp, Shbench]),
+            _ => None,
+        }
+    }
+
+    /// Whether this command acts on a file of `kind` ([`Cmd::file_kinds`]).
+    pub fn accepts(self, kind: FileKind) -> bool {
+        self.file_kinds().is_none_or(|ks| ks.contains(&kind))
     }
 
     /// Whether `<name>.<word>` names this command with `<word>` as its argument (D27:

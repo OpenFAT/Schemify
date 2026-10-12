@@ -800,8 +800,8 @@ pub fn layout(
         let root = b.build(d, Shown::Normal, NO_ROW, 0.0);
         b.place(start, root, max_content, (0.0, 0.0), &mut f);
         let (w, h) = (f.rect[start].w, f.rect[start].h);
-        let (dx, dy) = match state.dialog_at {
-            // At a point (a context menu): kept inside the viewport.
+        // At a point (a context menu) or where the user dragged it: kept inside the viewport.
+        let (dx, dy) = match state.dialog_at.or(state.dialog_pos) {
             Some((x, y)) => (
                 x.min(viewport.0 - w).max(0.0),
                 y.min(viewport.1 - h).max(0.0),

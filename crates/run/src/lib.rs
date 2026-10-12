@@ -79,5 +79,6 @@ pub use prepare::{Blocked, Origin, Prepared, Source, Tool, design, prepare, sour
 pub use results::{JOB_LEVEL, Pass, Results, read_results, write_results};
 #[cfg(not(target_arch = "wasm32"))]
 pub use runner::{
-    NETLIST, RAW, RESULTS, Runner, RunnerConfig, STDERR, STDOUT, SimCommand, Tools, WORKERS_MAX,
+    COMMAND, NETLIST, RAW, RESULTS, Runner, RunnerConfig, STDERR, STDOUT, SimCommand, Tools,
+    WORKERS_MAX,
 };
