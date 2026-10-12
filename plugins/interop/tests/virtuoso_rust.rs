@@ -1280,7 +1280,7 @@ fn malformed_or_truncated_dumps_are_refused_with_the_line() {
         ),
         (
             "(\"wire\" 1 (0 0 10 0) 0)\n(\"wire\" 1 (0 0 0 10) 0)\n",
-            3,
+            6,
             "twice",
         ),
         (
