@@ -1,7 +1,7 @@
 //! Deterministic math. Every transcendental goes through `libm` (pure Rust), so
 //! a value is bit-identical on Linux, macOS, Windows and wasm (D32). The
-//! platform libm (`f64::sin`, `num_complex`'s methods) may differ by an ulp
-//! between targets, which would make netlists differ byte-wise.
+//! platform libm (`f64::sin`) may differ by an ulp between targets, which
+//! would make netlists differ byte-wise.
 //!
 //! `sqrt` and the four arithmetic operators are IEEE correctly rounded on every
 //! target, so they need no wrapper.
@@ -9,9 +9,99 @@
 //! Hidden public module: the test-only reference evaluator shares this math
 //! kernel (and nothing else) so the differential oracle checks evaluator logic.
 
-use num_complex::Complex64 as C;
+use core::ops::{Add, Div, Mul, MulAssign, Neg, Sub};
 
 use crate::compile::Builtin;
+
+type C = Complex;
+
+/// A complex number over two `f64`s: the calculator's `cnum` element and the
+/// `fft` sample.
+///
+/// The operators use the textbook formulas (no scaling, no fused multiply-add),
+/// so results are bit-identical to `num_complex::Complex64`'s (tested); `/` by a zero divisor yields non-finite parts, which callers turn
+/// into `X010`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Complex {
+    /// Real part.
+    pub re: f64,
+    /// Imaginary part.
+    pub im: f64,
+}
+
+impl Complex {
+    /// `re + i·im`.
+    pub const fn new(re: f64, im: f64) -> C {
+        C { re, im }
+    }
+
+    /// The complex conjugate `re − i·im`.
+    pub fn conj(self) -> C {
+        C::new(self.re, -self.im)
+    }
+}
+
+impl Add for Complex {
+    type Output = C;
+    fn add(self, o: C) -> C {
+        C::new(self.re + o.re, self.im + o.im)
+    }
+}
+
+impl Sub for Complex {
+    type Output = C;
+    fn sub(self, o: C) -> C {
+        C::new(self.re - o.re, self.im - o.im)
+    }
+}
+
+impl Mul for Complex {
+    type Output = C;
+    fn mul(self, o: C) -> C {
+        C::new(
+            self.re * o.re - self.im * o.im,
+            self.re * o.im + self.im * o.re,
+        )
+    }
+}
+
+impl MulAssign for Complex {
+    fn mul_assign(&mut self, o: C) {
+        *self = *self * o;
+    }
+}
+
+impl Div for Complex {
+    type Output = C;
+    fn div(self, o: C) -> C {
+        let d = o.re * o.re + o.im * o.im;
+        C::new(
+            (self.re * o.re + self.im * o.im) / d,
+            (self.im * o.re - self.re * o.im) / d,
+        )
+    }
+}
+
+impl Mul<f64> for Complex {
+    type Output = C;
+    fn mul(self, k: f64) -> C {
+        C::new(self.re * k, self.im * k)
+    }
+}
+
+impl Div<f64> for Complex {
+    type Output = C;
+    fn div(self, k: f64) -> C {
+        C::new(self.re / k, self.im / k)
+    }
+}
+
+impl Neg for Complex {
+    type Output = C;
+    fn neg(self) -> C {
+        C::new(-self.re, -self.im)
+    }
+}
 
 pub fn pow(x: f64, y: f64) -> f64 {
     libm::pow(x, y)
@@ -167,11 +257,45 @@ fn csqrt(z: C) -> C {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The oracle: num-complex, reached through the rustfft dev-dependency.
+    use rustfft::num_complex::Complex64 as N;
 
-    type Case = (Builtin, fn(C) -> C);
+    fn n(z: C) -> N {
+        N::new(z.re, z.im)
+    }
 
-    fn close(a: C, b: C) -> bool {
-        (a - b).norm() <= 1e-12 * (1.0 + b.norm())
+    fn close(a: C, b: N) -> bool {
+        (n(a) - b).norm() <= 1e-12 * (1.0 + b.norm())
+    }
+
+    #[test]
+    fn operators_are_bit_identical_to_num_complex() {
+        // An LCG over wide magnitudes and both signs, so failures replay.
+        let mut s = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let m = (s >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0;
+            m * libm::pow(10.0, ((s & 0xff) as f64 - 128.0) / 8.0)
+        };
+        let same =
+            |a: C, b: N| a.re.to_bits() == b.re.to_bits() && a.im.to_bits() == b.im.to_bits();
+        for _ in 0..10_000 {
+            let (a, b, k) = (C::new(next(), next()), C::new(next(), next()), next());
+            assert!(same(a + b, n(a) + n(b)), "{a:?} + {b:?}");
+            assert!(same(a - b, n(a) - n(b)), "{a:?} - {b:?}");
+            assert!(same(a * b, n(a) * n(b)), "{a:?} * {b:?}");
+            assert!(same(a / b, n(a) / n(b)), "{a:?} / {b:?}");
+            assert!(same(a * k, n(a) * k) && same(a / k, n(a) / k), "{a:?}, {k}");
+            assert!(same(-a, -n(a)) && same(a.conj(), n(a).conj()));
+            let mut m = a;
+            m *= b;
+            assert!(same(m, n(a) * n(b)));
+        }
+        // A zero divisor gives non-finite parts, never a panic.
+        let q = C::new(1.0, 1.0) / C::new(0.0, 0.0);
+        assert!(!q.re.is_finite() && !q.im.is_finite());
     }
 
     #[test]
@@ -183,33 +307,34 @@ mod tests {
             C::new(0.0, -3.0),
             C::new(-0.7, -0.2),
         ];
+        type Case = (Builtin, fn(N) -> N);
         let cases: [Case; 13] = [
-            (Builtin::Sqrt, C::sqrt),
-            (Builtin::Exp, C::exp),
-            (Builtin::Ln, C::ln),
-            (Builtin::Log10, C::log10),
-            (Builtin::Sin, C::sin),
-            (Builtin::Cos, C::cos),
-            (Builtin::Tan, C::tan),
-            (Builtin::Sinh, C::sinh),
-            (Builtin::Cosh, C::cosh),
-            (Builtin::Tanh, C::tanh),
-            (Builtin::Asin, C::asin),
-            (Builtin::Acos, C::acos),
-            (Builtin::Atan, C::atan),
+            (Builtin::Sqrt, N::sqrt),
+            (Builtin::Exp, N::exp),
+            (Builtin::Ln, N::ln),
+            (Builtin::Log10, N::log10),
+            (Builtin::Sin, N::sin),
+            (Builtin::Cos, N::cos),
+            (Builtin::Tan, N::tan),
+            (Builtin::Sinh, N::sinh),
+            (Builtin::Cosh, N::cosh),
+            (Builtin::Tanh, N::tanh),
+            (Builtin::Asin, N::asin),
+            (Builtin::Acos, N::acos),
+            (Builtin::Atan, N::atan),
         ];
         for z in zs {
             for (b, reference) in cases {
-                let (ours, theirs) = (complex(b, z), reference(z));
+                let (ours, theirs) = (complex(b, z), reference(n(z)));
                 assert!(
                     close(ours, theirs),
-                    "{b:?}({z}) = {ours}, num_complex {theirs}"
+                    "{b:?}({z:?}) = {ours:?}, num_complex {theirs}"
                 );
             }
         }
         assert!(close(
             cpow(C::new(-2.0, 0.5), C::new(0.5, 1.5)),
-            C::new(-2.0, 0.5).powc(C::new(0.5, 1.5))
+            N::new(-2.0, 0.5).powc(N::new(0.5, 1.5))
         ));
         assert_eq!(cpow(C::new(0.0, 0.0), C::new(2.0, 0.0)), C::new(0.0, 0.0));
     }

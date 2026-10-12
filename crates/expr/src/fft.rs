@@ -7,7 +7,7 @@
 
 use core::f64::consts::PI;
 
-use num_complex::Complex64 as C;
+use crate::dmath::Complex as C;
 
 /// Transforms `buf` in place: `X[k] = Σₙ x[n]·e^(−2πi·kn/N)`, unscaled.
 /// Cost O(N log N) for every N; any N that is not a power of two allocates two scratch
@@ -103,6 +103,7 @@ fn bluestein(buf: &mut [C]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dmath::norm;
 
     /// Deterministic inputs (an LCG), so failures replay.
     fn signal(n: usize, seed: u64) -> Vec<C> {
@@ -125,18 +126,18 @@ mod tests {
             .map(|k| {
                 (0..n)
                     .map(|j| x[j] * cis(-2.0 * PI * ((k * j) % n) as f64 / n as f64))
-                    .sum()
+                    .fold(C::default(), |acc, t| acc + t)
             })
             .collect()
     }
 
     fn assert_close(ours: &[C], theirs: &[C], tol: f64) {
         assert_eq!(ours.len(), theirs.len());
-        let scale = theirs.iter().map(|z| z.norm()).fold(1.0, f64::max);
-        for (k, (a, b)) in ours.iter().zip(theirs).enumerate() {
+        let scale = theirs.iter().map(|&z| norm(z)).fold(1.0, f64::max);
+        for (k, (&a, &b)) in ours.iter().zip(theirs).enumerate() {
             assert!(
-                (a - b).norm() <= tol * scale,
-                "bin {k} of {}: {a} vs {b}",
+                norm(a - b) <= tol * scale,
+                "bin {k} of {}: {a:?} vs {b:?}",
                 ours.len()
             );
         }
@@ -159,8 +160,12 @@ mod tests {
             let x = signal(n, 7 + n as u64);
             let mut ours = x.clone();
             forward(&mut ours);
-            let mut theirs = x;
+            let mut theirs: Vec<_> = x
+                .iter()
+                .map(|z| rustfft::num_complex::Complex64::new(z.re, z.im))
+                .collect();
             planner.plan_fft_forward(n).process(&mut theirs);
+            let theirs: Vec<C> = theirs.iter().map(|z| C::new(z.re, z.im)).collect();
             assert_close(&ours, &theirs, 1e-10);
         }
     }
@@ -171,19 +176,19 @@ mod tests {
         let mut imp = vec![C::new(0.0, 0.0); 12];
         imp[0] = C::new(1.0, 0.0);
         forward(&mut imp);
-        assert!(imp.iter().all(|z| (z - C::new(1.0, 0.0)).norm() < 1e-14));
+        assert!(imp.iter().all(|&z| norm(z - C::new(1.0, 0.0)) < 1e-14));
         let mut dc = vec![C::new(2.0, 0.0); 8];
         forward(&mut dc);
         assert_eq!(dc[0], C::new(16.0, 0.0));
-        assert!(dc[1..].iter().all(|z| z.norm() < 1e-14));
+        assert!(dc[1..].iter().all(|&z| norm(z) < 1e-14));
         // F(a + b) = F(a) + F(b), on a Bluestein length.
         let (a, b) = (signal(45, 1), signal(45, 2));
-        let mut sum: Vec<C> = a.iter().zip(&b).map(|(x, y)| x + y).collect();
+        let mut sum: Vec<C> = a.iter().zip(&b).map(|(&x, &y)| x + y).collect();
         let (mut fa, mut fb) = (a, b);
         forward(&mut fa);
         forward(&mut fb);
         forward(&mut sum);
-        let both: Vec<C> = fa.iter().zip(&fb).map(|(x, y)| x + y).collect();
+        let both: Vec<C> = fa.iter().zip(&fb).map(|(&x, &y)| x + y).collect();
         assert_close(&sum, &both, 1e-12);
     }
 }

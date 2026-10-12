@@ -5,10 +5,8 @@
 use core::cmp::Ordering;
 use core::fmt::Write;
 
-use num_complex::Complex64;
-
 use crate::compile::{Builtin, Mode, OpKind, Program};
-use crate::dmath;
+use crate::dmath::{self, Complex};
 use crate::text::{Bytes, fmt_eng, fmt_num};
 use crate::{Code, Error, MAX_PLUGIN_ARGS, MAX_STR_BYTES, Span, Value};
 
@@ -304,7 +302,7 @@ pub(crate) fn load_value(v: &Value<'_>, strs: &mut Vec<u8>) -> Result<V, Error> 
         Value::Int(x) => Ok(V::Int(x)),
         Value::Num(x) => fin(x, "input"),
         Value::Bool(b) => Ok(V::Bool(b)),
-        Value::Cnum { re, im } => cfin(Complex64::new(re, im), "input"),
+        Value::Cnum { re, im } => cfin(Complex::new(re, im), "input"),
         Value::Str(s) => push_str(strs, s.as_bytes()),
     }
 }
@@ -413,7 +411,7 @@ pub(crate) fn fin(x: f64, what: &str) -> Result<V, Error> {
     ))
 }
 
-fn cfin(z: Complex64, what: &str) -> Result<V, Error> {
+fn cfin(z: Complex, what: &str) -> Result<V, Error> {
     if z.re.is_finite() && z.im.is_finite() {
         return Ok(V::Cnum(z.re, z.im));
     }
@@ -471,10 +469,10 @@ fn real(v: V) -> f64 {
     }
 }
 
-fn complex(v: V) -> Complex64 {
+fn complex(v: V) -> Complex {
     match v {
-        V::Cnum(re, im) => Complex64::new(re, im),
-        v => Complex64::new(real(v), 0.0),
+        V::Cnum(re, im) => Complex::new(re, im),
+        v => Complex::new(real(v), 0.0),
     }
 }
 
@@ -508,7 +506,7 @@ fn num_binary(op: OpKind, x: f64, y: f64) -> Result<V, Error> {
 }
 
 /// Complex arithmetic; `Err(())` for operators complex numbers lack.
-fn cnum_binary(op: OpKind, a: Complex64, b: Complex64) -> Result<Result<V, Error>, ()> {
+fn cnum_binary(op: OpKind, a: Complex, b: Complex) -> Result<Result<V, Error>, ()> {
     let r = match op {
         OpKind::Add => a + b,
         OpKind::Sub => a - b,
@@ -597,7 +595,7 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut Vec<u8>) -> Result<V, Erro
         | Builtin::Sinh
         | Builtin::Cosh
         | Builtin::Tanh => match a0 {
-            V::Cnum(re, im) => cfin(dmath::complex(b, Complex64::new(re, im)), name),
+            V::Cnum(re, im) => cfin(dmath::complex(b, Complex::new(re, im)), name),
             v => fin(dmath::real(b, num(v)?), name),
         },
         Builtin::Atan2 => fin(dmath::atan2(num(a0)?, num(args[1])?), name),
@@ -712,8 +710,8 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut Vec<u8>) -> Result<V, Erro
         },
         Builtin::Re | Builtin::Im | Builtin::Mag | Builtin::Ph | Builtin::Db | Builtin::Conj => {
             let z = match a0 {
-                V::Cnum(re, im) => Complex64::new(re, im),
-                v => Complex64::new(num(v)?, 0.0),
+                V::Cnum(re, im) => Complex::new(re, im),
+                v => Complex::new(num(v)?, 0.0),
             };
             match b {
                 Builtin::Re => Ok(V::Num(z.re)),
