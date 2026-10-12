@@ -20,6 +20,7 @@ param m 1
 
 impl osdi veriloga
   format spice "N{name} {d} {g} {s} {b} {model} nfin={nfin} nf={nf} m={m}"
+  format espice "N{name} {d} {g} {s} {b} 0 {model} nfin={nfin} nf={nf} mfactor={m}"
   file ../../va/code/bsimcmg/vacode/bsimcmg.va
 
 line -20 0 -10 0

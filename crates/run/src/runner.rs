@@ -9,7 +9,7 @@
 //! sources compile, one compiler per stale output serves every job that needs it, and
 //! the outputs are cached by mtime in a shared build directory and copied into each job
 //! directory. ESPice's Verilog-A sources ([`Tool::Copy`]) skip the compiler: the source
-//! itself is cached and copied.
+//! itself is cached and copied, with the files it `` `include``s copied beside it.
 
 use crate::jobs::{Jobs, State};
 use crate::plan::Plan;
@@ -37,6 +37,18 @@ pub const COMMAND: &str = "command.log";
 pub const RESULTS: &str = "results";
 /// Most workers one runner starts at once.
 pub const WORKERS_MAX: u16 = 1024;
+/// Most files one copied Verilog-A source may `` `include`` (transitively).
+pub const INCLUDES_MAX: usize = 256;
+/// Deepest `` `include`` nesting of a copied Verilog-A source.
+pub const INCLUDE_DEPTH_MAX: u32 = 16;
+/// Headers VerA (ESPice's Verilog-A compiler) supplies itself, so a source may include them
+/// without a copy beside it.
+const STANDARD_HEADERS: [&str; 4] = [
+    "disciplines.vams",
+    "constants.vams",
+    "discipline.h",
+    "constants.h",
+];
 
 /// A simulator command line from the user config (`sim <name>` with `path`, `args`,
 /// `env`; config spec §3). `{netlist}` and `{raw}` in `args` become the job's file names;
@@ -177,6 +189,9 @@ pub struct Runner {
     /// Cache outputs whose compile failed this run, with the message every job needing
     /// one fails with.
     failed: Vec<(String, String)>,
+    /// Per copied source ([`Tool::Copy`] of a `file`) found this run: its output name, its
+    /// directory, and the files it includes relative to that directory.
+    includes: Vec<(String, PathBuf, Vec<String>)>,
     running: Vec<Running>,
 }
 
@@ -199,6 +214,7 @@ impl Runner {
             waiting: Vec::new(),
             compiling: Vec::new(),
             failed: Vec::new(),
+            includes: Vec::new(),
             running: Vec::new(),
         }
     }
@@ -385,12 +401,25 @@ impl Runner {
     }
 
     /// Starts the compiler of `s` unless its output is fresh, already compiling, or
-    /// failed this run; a compiler that cannot start fails the output.
+    /// failed this run; a compiler that cannot start fails the output. A copied `file`
+    /// first has its includes found (once per run); a missing one fails the output.
     fn ensure_compiled(&mut self, s: &Source) {
         if self.failed.iter().any(|(o, _)| *o == s.out)
             || self.compiling.iter().any(|c| c.out == s.out)
         {
             return;
+        }
+        if let (Tool::Copy, Origin::File { lib, path }) = (s.tool, &s.origin)
+            && !self.includes.iter().any(|i| i.0 == s.out)
+        {
+            let found = source_file(&self.cfg, *lib, path).and_then(|src| {
+                let dir = src.parent().map_or_else(PathBuf::new, Path::to_path_buf);
+                va_includes(&src).map(|inc| (dir, inc))
+            });
+            match found {
+                Ok((dir, inc)) => self.includes.push((s.out.clone(), dir, inc)),
+                Err(msg) => return self.failed.push((s.out.clone(), msg)),
+            }
         }
         match spawn_compile(&self.cfg, s) {
             Ok(None) => {}
@@ -469,13 +498,42 @@ impl Runner {
         );
     }
 
-    /// Copies the compiled sources into the job directory and spawns the simulator.
+    /// Copies the compiled sources (and a copied source's includes, at their paths
+    /// relative to it) into the job directory and spawns the simulator.
     fn start(&mut self, q: &Queued) -> Result<(), String> {
         let dir = self.job_dir(q.job);
+        // Include paths placed so far, with the file each came from: two sources that
+        // include one relative path from different files cannot share the job directory.
+        let mut placed: Vec<(&str, PathBuf)> = Vec::new();
         for s in &q.sources {
             fs::copy(self.cfg.cache.join(&s.out), dir.join(&s.out))
                 .map_err(|e| format!("copy {}: {e}", s.out))?;
+            let Some((_, src_dir, rels)) = self.includes.iter().find(|i| i.0 == s.out) else {
+                continue;
+            };
+            for rel in rels {
+                let from = src_dir.join(rel);
+                match placed.iter().find(|p| p.0 == rel) {
+                    Some((_, other)) if *other == from => continue,
+                    Some((_, other)) => {
+                        return Err(format!(
+                            "`include \"{rel}\" names two files: {} and {}",
+                            other.display(),
+                            from.display()
+                        ));
+                    }
+                    None => {}
+                }
+                let to = dir.join(rel);
+                if let Some(parent) = to.parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|e| format!("create {}: {e}", parent.display()))?;
+                }
+                fs::copy(&from, &to).map_err(|e| format!("copy {}: {e}", from.display()))?;
+                placed.push((rel, from));
+            }
         }
+        assert!(placed.len() <= INCLUDES_MAX * q.sources.len());
         let log = |name: &str| {
             File::create(dir.join(name)).map_err(|e| format!("cannot create {name}: {e}"))
         };
@@ -579,11 +637,7 @@ impl Drop for Runner {
 fn spawn_compile(cfg: &RunnerConfig, s: &Source) -> Result<Option<Compiling>, String> {
     let cache = |e: io::Error| format!("cache {}: {e}", cfg.cache.display());
     let src = match &s.origin {
-        Origin::File { lib, path } => cfg
-            .lib_dirs
-            .get(usize::from(*lib))
-            .ok_or_else(|| format!("no directory for library row {lib}"))?
-            .join(path),
+        Origin::File { lib, path } => source_file(cfg, *lib, path)?,
         Origin::Body(text) => {
             fs::create_dir_all(&cfg.cache).map_err(cache)?;
             let stem = s.out.rsplit_once('.').map_or(s.out.as_str(), |(st, _)| st);
@@ -643,6 +697,112 @@ fn spawn_compile(cfg: &RunnerConfig, s: &Source) -> Result<Option<Compiling>, St
     };
     assert!(!c.out.is_empty());
     Ok(Some(c))
+}
+
+/// The on-disk path of a `file` source: `path` under library row `lib`'s directory.
+fn source_file(cfg: &RunnerConfig, lib: u8, path: &str) -> Result<PathBuf, String> {
+    let dir = cfg
+        .lib_dirs
+        .get(usize::from(lib))
+        .ok_or_else(|| format!("no directory for library row {lib}"))?;
+    Ok(dir.join(path))
+}
+
+/// Returns the files the Verilog-A source `src` includes, transitively, as paths relative
+/// to its directory, sorted: each `` `include "<name>"`` resolves against the directory of
+/// the file that names it (as ESPice's compiler does), so the copies keep their layout
+/// beside the copied source (run spec §5). An absolute name is left to resolve by itself;
+/// a missing [`STANDARD_HEADERS`] name is the compiler's own. Each file is read once, so
+/// include cycles end.
+///
+/// # Errors
+///
+/// A file that cannot be read, a missing include (naming it and the file that includes
+/// it), a name that leaves the source's directory (`..` above it), more than
+/// [`INCLUDES_MAX`] files, or nesting deeper than [`INCLUDE_DEPTH_MAX`].
+fn va_includes(src: &Path) -> Result<Vec<String>, String> {
+    let dir = src.parent().unwrap_or(Path::new(""));
+    let mut out: Vec<String> = Vec::new();
+    // (including file relative to `dir`, `None` for `src` itself; its depth)
+    let mut stack: Vec<(Option<String>, u32)> = vec![(None, 0)];
+    while let Some((file, depth)) = stack.pop() {
+        assert!(depth <= INCLUDE_DEPTH_MAX);
+        let path = file
+            .as_ref()
+            .map_or_else(|| src.to_path_buf(), |f| dir.join(f));
+        let text =
+            fs::read_to_string(&path).map_err(|e| format!("source {}: {e}", path.display()))?;
+        let base = file
+            .as_deref()
+            .and_then(|f| f.rsplit_once('/'))
+            .map(|p| p.0);
+        for name in include_names(&text) {
+            if Path::new(name).is_absolute() {
+                continue;
+            }
+            let joined = base.map_or_else(|| name.to_owned(), |b| format!("{b}/{name}"));
+            let rel = normalize(&joined).ok_or_else(|| {
+                format!(
+                    "{} includes \"{name}\", outside the source's directory (unsupported: \
+                     the copy beside the job's netlist cannot reach it)",
+                    path.display()
+                )
+            })?;
+            if out.contains(&rel) {
+                continue;
+            }
+            if !dir.join(&rel).is_file() {
+                if STANDARD_HEADERS.contains(&name) {
+                    continue;
+                }
+                return Err(format!(
+                    "{} includes \"{name}\": no file {}",
+                    path.display(),
+                    dir.join(&rel).display()
+                ));
+            }
+            if depth + 1 > INCLUDE_DEPTH_MAX || out.len() >= INCLUDES_MAX {
+                return Err(format!(
+                    "{}: includes nest deeper than {INCLUDE_DEPTH_MAX} or name more than \
+                     {INCLUDES_MAX} files",
+                    src.display()
+                ));
+            }
+            out.push(rel.clone());
+            stack.push((Some(rel), depth + 1));
+        }
+    }
+    out.sort_unstable();
+    assert!(out.len() <= INCLUDES_MAX && out.windows(2).all(|w| w[0] < w[1]));
+    Ok(out)
+}
+
+/// The quoted names of a Verilog-A text's `` `include`` directives, outside `//` comments.
+// ponytail: `/* */` comments and `ifdef`-disabled branches are not skipped, so an include
+// there must exist too; handle them when a model needs it.
+fn include_names(text: &str) -> impl Iterator<Item = &str> {
+    text.lines().filter_map(|line| {
+        let code = line.split("//").next().unwrap_or("");
+        let after = &code[code.find("`include")? + "`include".len()..];
+        let name = &after[after.find('"')? + 1..];
+        Some(&name[..name.find('"')?])
+    })
+}
+
+/// `p` with `.` segments dropped and `..` applied, `/`-separated; `None` when it climbs
+/// above its start or names nothing.
+fn normalize(p: &str) -> Option<String> {
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in p.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            s => parts.push(s),
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
 }
 
 /// A child process and its start time: the crate's one subprocess boundary. Simulators and

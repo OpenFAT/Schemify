@@ -1,0 +1,5 @@
+* inv (schemify espice)
+NM1 Y A VDD VDD 0 pmos_rvt nfin=15 nf=2 mfactor=1
+NM2 Y A VSS VSS 0 nmos_rvt nfin=15 nf=1 mfactor=1
+.hdl "bsimcmg.va"
+.end

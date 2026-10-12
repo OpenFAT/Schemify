@@ -70,7 +70,7 @@ For an inherited pin `P` with default net `D` on cell `c`, at instance path `p`:
 
 ### 7.1 Common rules
 
-- Dialect ∈ `ngspice espice xyce cdl spectre verilog`. `spice` templates serve `ngspice`, `espice`, `xyce` and `cdl` unless a dialect-specific `format` exists.
+- Dialect ∈ `ngspice espice xyce cdl spectre verilog`. `spice` templates serve `ngspice`, `espice`, `xyce` and `cdl` unless a dialect-specific `format` exists (`format espice`, `format xyce`, `format cdl`).
 - Instances (or impls) with `ignore true` are not emitted; `ignore open` is not emitted and its pins are left unconnected; `ignore short` is not emitted and all its pin nets are merged into one net (named by §3 rules). Ignored instances still elaborate for checks.
 - Instance lines come from the selected impl's template ([expr.md §6](expr.md)). Default templates when an impl has none:
 
@@ -78,7 +78,7 @@ For an inherited pin `P` with default net `D` on cell `c`, at instance path `p`:
   |---|---|---|
   | `schematic` | `X{name} {pins} {cell}` | `X{name} {pins} {cell}` |
   | `spice` (text body) | `X{name} {pins} {cell}` | same |
-  | `veriloga` | `N{name} {pins} {model}` (ngspice OSDI, espice `.hdl`); xyce → `E013` | `E013` |
+  | `veriloga` | `N{name} {pins} {model}` (ngspice OSDI); espice `N{name} {pins} {model} {params}` with `m` written `mfactor` and the `model` param left out (§7.2a); xyce → `E013` | `E013` |
   | `verilog` | `A{name} [{in_pins}] [{out_pins}] {model}` (ngspice d_cosim); espice, xyce → `E013` | `E013` |
 
   `in_pins`/`out_pins` are the template identifiers for digital-domain pins by direction.
@@ -101,7 +101,8 @@ For an inherited pin `P` with default net `D` on cell `c`, at instance path `p`:
 
 ESPice reads ngspice decks (`--tokenizer=ngspice`) and compiles Verilog-A itself (its built-in VerA compiler); it refuses OSDI (`pre_osdi` is its `OsdiUnsupported` error). The `espice` dialect is the `ngspice` text with two differences:
 
-- Each Verilog-A source the runner handles (a `file`, or a `body` that is source, §7.6.8) is loaded with one line `.hdl "<stem>.va"` in place of the ngspice `.control` / `pre_osdi <stem>.osdi` / `.endc` block, in the same slot (once per stem, sorted). The runner copies the source into the job directory under that name (run spec §5), so the text names no checkout path (§7.6.14). `.model <model> <stem>` and the `N` instance lines are the ngspice ones.
+- Each Verilog-A source the runner handles (a `file`, or a `body` that is source, §7.6.8) is loaded with one line `.hdl "<stem>.va"` in place of the ngspice `.control` / `pre_osdi <stem>.osdi` / `.endc` block, in the same slot (once per stem, sorted). The runner copies the source, and the files it `` `include``s, into the job directory (run spec §5), so the text names no checkout path (§7.6.14). `.model <model> <stem>` lines are the ngspice ones.
+- `N` lines of the default template carry the instance parameters: `N{name} {pins} {model}` followed by ` k=v` for every non-computed param whose value differs from the cell default, in schema order, except the `model` param (it names the card); a param named `m` (any case) is written `mfactor`, the Verilog-A LRM multiplicity ESPice's instances take (`m=` is its `UnknownParameter`). ESPice reads a Verilog-A instance's parameters from its `N` line; the ngspice default template stays without them (ngspice's OSDI loader separates model from instance parameters, and which of a module's parameters it accepts on an `N` line has not been checked against OpenVAF output; open issue) (give such cells a `format spice` naming their instance parameters, or put the values on the `.model`). A cell whose ESPice line differs in more than that (a module with an extra port, such as BSIM-CMG's thermal node `t`) gives it a `format espice`, which espice prefers to `format spice` (§7.1).
 - A `verilog` leaf has no default template (ESPice has no XSPICE `d_cosim`): `E013`, unless it has a `format spice`. ESPice's `.hdl` also loads Verilog (`.v`) modules, but how a deck instantiates one is not documented yet; open issue.
 
 Code blocks of lang `spice`, `ngspice` or `espice` are emitted. A precompiled `veriloga` body (no `endmodule` line, SPICE text with its own OSDI load) is emitted as is, so ESPice refuses it: give such cells their Verilog-A source.

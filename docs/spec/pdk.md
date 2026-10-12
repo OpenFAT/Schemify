@@ -119,7 +119,13 @@ A kit without xschem symbols gets one `.shprim` per recipe device in
   netlist spec §7). ngspice has no built-in BSIM-CMG (level 72), so the install derives each
   corner card: `.model <m> nmos|pmos level = 72` becomes `.model <m> bsimcmg_va type=1|-1`
   (the compiled module, `TYPE` 1 = n, -1 = p), every other line kept; a MOS card of another
-  level fails the install. The gate length is the cards' fixed 21 nm (no `l`).
+  level fails the install. The gate length is the cards' fixed 21 nm (no `l`). For ESPice the
+  cells add `format espice "N{name} {d} {g} {s} {b} 0 {model} nfin={nfin} nf={nf} mfactor={m}"`
+  (netlist spec §7.2a): ESPice compiles the same checkout itself (`.hdl "bsimcmg.va"`, its
+  `` `include``s copied beside it, run spec §5) and needs every port of `bsimcmg_va(d, g, s, e, t)`
+  connected, so the thermal node `t` is grounded (no self-heating; the kit's cards set
+  `shmod = 0`, where the node carries nothing), and a Verilog-A instance's multiplier is
+  `mfactor`. Kits installed before this line was added need a reinstall to get it.
 
 ## 3. Commands (plugin)
 
