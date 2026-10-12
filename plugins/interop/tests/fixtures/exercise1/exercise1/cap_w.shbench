@@ -1,0 +1,334 @@
+schemify 1 shbench
+  doc "Ex. 1 (b)2: |cgs| |cgd| |cdb| |csb| vs W 80 nm..10 um at L = 4 Lmin, |VDS| = VDS, Id/W held at IDW by a dc loop (F + 1 F); 1 MHz ac on drain / source / bulk copies; cgsi, cgdi from Spectre's oppoint of MNM, MPM"
+  corner tt
+
+inst 1wa1mn core:vsource
+  at -630 60 R0
+  name VDN
+  value "dc {VDS}"
+inst 3gca3v core:isource
+  at 700 255 R0
+  name IREFP
+  value "dc {IDW*W/1u}"
+inst 3vwyq9 core:vsource
+  at -750 60 R0
+  name VDD
+  value {VDD}
+inst 46kqme core:ammeter
+  at 1020 60 R0
+  name VMSPB
+  savecurrent false
+inst 4wn6js tech:pmos
+  at 940 330 R0
+  name MPS
+  w W
+  l L
+inst 5w13hn core:vsource
+  at 190 60 MR180
+  name VDP
+  value "dc {-VDS}"
+inst 70mjs5 core:vsource
+  at -390 60 R0
+  name VSNA
+  value "dc 0 ac 1"
+inst 71abdb tech:nmos
+  at 680 465 R0
+  name MNS
+  w W
+  l L
+inst 8zh1mv core:ammeter
+  at 310 405 MR180
+  name VMNM
+  savecurrent false
+inst bzjn0f core:vsource
+  at -510 60 R0
+  name VDNA
+  value "dc {VDS} ac 1"
+inst cnd5q2 tech:nmos
+  at 50 60 R0
+  name MNB
+  w W
+  l L
+inst dm706d core:vsource
+  at 310 60 MR180
+  name VDPA
+  value "dc {-VDS} ac 1"
+inst edtxra core:isource
+  at 500 330 R0
+  name IREFN
+  value "dc {IDW*W/1u}"
+inst ez7xys core:vsource
+  at 890 60 MR180
+  name VBPA
+  value "dc 0 ac 1"
+inst fvv3kj core:ammeter
+  at 890 255 R0
+  name VMGPS
+  savecurrent false
+inst kp1d7c core:ammeter
+  at 630 405 R0
+  name VMGNS
+  savecurrent false
+inst m1j5dp core:cap
+  at 500 255 R0
+  name CP
+  value 1
+inst n5cvjg core:ammeter
+  at 190 135 MR180
+  name VMPM
+  savecurrent false
+inst nm687g core:vsource
+  at -270 60 R0
+  name VBNA
+  value "dc 0 ac 1"
+inst pm055x tech:nmos
+  at 330 330 R180
+  name MNM
+  w W
+  l L
+inst pn8a53 tech:pmos
+  at 270 195 MR0
+  name MPM
+  w W
+  l L
+inst pt0ne8 core:ammeter
+  at 960 405 MR180
+  name VMDPB
+  savecurrent false
+inst qxp3s6 tech:pmos
+  at 750 60 R0
+  name MPD
+  w W
+  l L
+inst r8yhdh tech:pmos
+  at 1000 195 R0
+  name MPB
+  w W
+  l L
+inst rbst6k core:cccs
+  at 310 255 MR180
+  name FP
+  vnam VMPM
+  value 1
+inst v0csy5 core:cccs
+  at 630 330 MR180
+  name FN
+  vnam VMNM
+  value 1
+inst v9ftge core:cap
+  at 770 330 MR180
+  name CN
+  value 1
+inst x46jb4 core:ammeter
+  at 130 60 R0
+  name VMDNB
+  savecurrent false
+inst y1ndad core:ammeter
+  at 500 405 R0
+  name VMGND
+  savecurrent false
+inst yagaxn core:ammeter
+  at -150 60 R0
+  name VMSNB
+  savecurrent false
+inst z4m3x6 core:vsource
+  at 830 60 MR180
+  name VSPA
+  value "dc 0 ac 1"
+inst zg4t3a core:ammeter
+  at 700 135 MR180
+  name VMGPD
+  savecurrent false
+inst zjzyf7 tech:nmos
+  at 550 465 MR180
+  name MND
+  w W
+  l L
+
+wire 0z3haw -750 90 -750 120
+wire 0zzwb7 770 0 830 0
+wire 2d0z6v -630 90 -630 120
+wire 30mpbb 500 435 500 465
+wire 32y1za -510 0 -510 30
+wire 350vq0 630 285 700 285
+wire 407tfr 630 285 630 300
+wire 4sg8kt 960 435 960 465
+wire 5ahpej 890 195 980 195
+wire 5djejp 310 435 310 465
+wire 5xm0kg 310 360 310 375
+wire 5z3hxc 1020 0 1020 30
+wire 6tp627 310 195 500 195
+wire 75779w 770 0 770 30
+wire 7c60f6 500 360 500 375
+wire 7rv2td -270 0 -270 30
+wire 7vj427 890 0 890 30
+wire 807n7a 830 0 890 0
+wire 8j0vh3 700 405 700 435
+wire 99aq4q 770 360 770 405
+wire affgja 70 90 70 135
+wire atngbc 960 360 960 375
+wire b0tzjr 310 90 310 135
+wire b933c6 -750 0 -750 30
+wire bvad91 570 495 570 525
+wire c73jh7 0 60 30 60
+wire c8qfq9 -270 90 -270 120
+wire ck5nzj 310 0 770 0
+wire cy99zw -390 0 -390 30
+wire d19keh -510 90 -510 120
+wire d1fn31 960 255 960 300
+wire et8ssb 250 0 250 165
+wire f8mvkc 700 495 700 525
+wire f9g7ta 500 285 500 300
+wire fwfcxm 890 330 920 330
+wire g0xp72 770 285 770 300
+wire g5fxsp 570 285 570 435
+wire gpjng9 500 525 570 525
+wire gy5ewp 890 195 890 225
+wire hk16zy 310 195 310 225
+wire hn81h3 700 60 700 105
+wire hs1jhn 630 435 630 465
+wire jdrqpb 1020 90 1020 165
+wire kevw6v 500 465 530 465
+wire kktbmh 500 195 700 195
+wire kybj37 -150 90 -150 120
+wire m1fggn 500 195 500 225
+wire m9sadd 190 165 190 195
+wire m9stqd 830 285 830 330
+wire mwyxn5 250 0 310 0
+wire nb7ht1 130 0 130 30
+wire nh77r5 70 0 70 30
+wire nm4md7 700 165 700 195
+wire pmb3f3 570 285 630 285
+wire qbj5jh 190 0 250 0
+wire qgzn1b 890 285 890 330
+wire qrdxr4 190 0 190 30
+wire rey5xe -630 0 -630 30
+wire rk8jz6 700 195 890 195
+wire rmcs8w 250 225 250 255
+wire rs54rz -390 90 -390 120
+wire tdpq4b 190 90 190 105
+wire tm50x7 630 360 630 375
+wire v9wjr9 830 0 830 30
+wire vp2vxc 630 465 660 465
+wire x24e6n 1020 225 1020 255
+wire x31gqe 130 90 130 135
+wire xcq73z 830 90 830 135
+wire xjvjhn 700 285 770 285
+wire xwwvkf 700 195 700 225
+wire xy2tk5 310 0 310 30
+wire xycjxa 770 285 830 285
+wire y0jk91 630 525 700 525
+wire yfaq0f 890 0 1020 0
+wire yvjycf 310 285 310 300
+wire yw0gjj 290 195 310 195
+wire zd72d5 770 90 770 135
+wire zt59r3 350 330 380 330
+wire zyy2p9 700 60 730 60
+wire zz5tmh -150 0 -150 30
+
+label 0ejsfd 1020 127 R0 spb
+label 1czzwq -150 120 R90 0
+label 1q2hyd -630 0 R270 dn
+label 2a99gk 700 82 R0 gpd
+label 3a7t0f 70 60 R0 bna
+label 3mnev3 70 0 R270 dnb
+label 3n8f0d -510 0 R180 dna
+label 3sjvat 570 465 R0 0
+label 3tphme 960 330 R0 vdd
+label 414xne 960 255 R270 spa
+label 4b6kbf 700 465 R0 0
+label 4egvnb 515 465 R0 gnd1
+label 55b0w3 500 293 R180 0
+label 62xe0w 600 195 R0 gpc
+label 66fpyh 310 293 R180 0
+label 6z33g3 -750 120 R90 0
+label 7rq02w 770 0 R270 vdd
+label 8n5ehs 500 368 R180 gnc
+label 92t45t 190 98 R180 dp
+label 9abr39 960 368 R180 dp
+label 9ffkw9 960 465 R90 dpb
+label 9xzn50 190 195 R90 dpm
+label 9z8pfq 830 330 R90 0
+label a0s5ea 130 0 R270 dn
+label a8mya7 70 135 R90 snb
+label ag2c1m 770 135 R90 dpa
+label b326y5 830 135 R90 spa
+label c81cse 310 135 R90 dpa
+label cetzaf -630 120 R90 0
+label egn7gx 890 90 R90 bpa
+label ff35ta 310 330 R180 0
+label fpphja 310 367 R0 dnm
+label fs3j5w 890 307 R0 gps
+label h0g355 630 525 R180 sna
+label h2qx2f -390 0 R180 sna
+label jgy5zx -270 0 R180 bna
+label kgshpy -390 120 R90 0
+label krzc9c 700 405 R270 dn
+label mhkp90 130 135 R90 dnb
+label mrpsqc 645 465 R0 gns
+label n38evq 0 60 R180 gnc
+label n3ydv8 250 195 R180 vdd
+label nyg7bq 1020 255 R90 dpb
+label nzsjmy -270 120 R90 0
+label pht0ye 1020 195 R0 bpa
+label q1x7hq 250 255 R90 dpm
+label q6pma6 380 330 R0 gnc
+label tbnsbx 770 60 R0 vdd
+label x17nqf 500 525 R180 dna
+label xdy0gf -510 120 R90 0
+label xgjfk5 -150 0 R270 snb
+label xsagnw -750 0 R270 vdd
+label y8w6at 310 465 R90 dn
+label zaxvdf 770 405 R90 gnc
+label zgem2w 630 368 R180 gnc
+
+var Lmin 20n
+  unit m
+  doc "minimum L of the target PDK (server: 20 nm); FreePDK45 dry run: --set Lmin=50n"
+var p 2
+  doc "length exponent: L = 2^p * Lmin (swept 0..4: Lmin, 2Lmin, 4Lmin, 8Lmin, 16Lmin)"
+var L Lmin*2^p
+  unit m
+var W 1u
+  unit m
+  doc "channel width (single finger, nf 1)"
+var VDD 0.8
+  unit V
+  doc "supply; the PMOS source and bulk sit at VDD, so every PMOS bias is |VGS|, |VDS| below it"
+var VDS 0.35
+  unit V
+  doc "|VDS| of the measured devices"
+var IDW 30u
+  unit A/um
+  doc "Id/W held constant as W changes (strong-inversion saturation at L = 4 Lmin; re-check gm/Id < 10 on the target PDK)"
+
+corner tt
+  lib ${PDK_MODELS} tt
+
+sweep W
+  var W
+  values 80n 250n 500n 1u 1.5u 2u 3u 4u 5u 6u 7u 8u 9u 10u
+
+output cdb_n abs(im(i(VMDNB)))/(2*pi*x())
+  unit F
+output cdb_p abs(im(i(VMDPB)))/(2*pi*x())
+  unit F
+output cgd_n abs(im(i(VMGND)))/(2*pi*x())
+  unit F
+output cgd_p abs(im(i(VMGPD)))/(2*pi*x())
+  unit F
+output cgs_n abs(im(i(VMGNS)))/(2*pi*x())
+  unit F
+output cgs_p abs(im(i(VMGPS)))/(2*pi*x())
+  unit F
+output csb_n abs(im(i(VMSNB)))/(2*pi*x())
+  unit F
+output csb_p abs(im(i(VMSPB)))/(2*pi*x())
+  unit F
+
+code cap_w spice
+  | .op
+  | .ac lin 1 1meg 1meg
+code oppoint spectre
+  | // Spectre only: the intrinsic cgsi/cgdi (and cgsovl, cgdovl, cjd, cjs) of the dc-loop masters
+  | save MNM:oppoint MPM:oppoint

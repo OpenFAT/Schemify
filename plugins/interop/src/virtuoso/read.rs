@@ -1850,6 +1850,35 @@ fn push_graphic(
     }
 }
 
+/// The `[@…]` groups of NLP text that is nothing but groups (`\` escapes inside); `None`
+/// when text sits outside a group or a group is unclosed.
+fn nlp_groups(t: &str) -> Option<Vec<&str>> {
+    let mut out = Vec::new();
+    let mut rest = t;
+    while !rest.is_empty() {
+        if !rest.starts_with("[@") {
+            return None;
+        }
+        let mut esc = false;
+        let end = rest.char_indices().find_map(|(k, ch)| match ch {
+            _ if esc => {
+                esc = false;
+                None
+            }
+            '\\' => {
+                esc = true;
+                None
+            }
+            ']' => Some(k),
+            _ => None,
+        })?;
+        out.push(&rest[..=end]);
+        rest = &rest[end + 1..];
+    }
+    debug_assert!(out.iter().all(|g| g.starts_with("[@") && g.ends_with(']')));
+    Some(out)
+}
+
 /// NLP label text → Schemify template (§3.5 import), `None` when dropped.
 fn nlp_in(text: &str, label_set: &str) -> Option<String> {
     let t = text.trim();
@@ -1866,6 +1895,12 @@ fn nlp_in(text: &str, label_set: &str) -> Option<String> {
     }
     if t == "cdsName()" {
         return Some("{name}".into());
+    }
+    // Several groups (`[@w:%/][@l]`, what export writes for a stext with several holes):
+    // each translated, concatenated.
+    let groups = nlp_groups(t)?;
+    if groups.len() > 1 {
+        return groups.iter().map(|g| nlp_in(g, label_set)).collect();
     }
     let inner = t.strip_prefix("[@")?.strip_suffix(']')?;
     // Split on unescaped ':'.

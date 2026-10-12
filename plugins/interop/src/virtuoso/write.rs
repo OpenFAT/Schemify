@@ -49,6 +49,10 @@ pub const TEXT_SIZE_MILLI: i32 = 400;
 /// Bytes per `schemifyRecords<k>` property (§7.3).
 pub const STASH_CHUNK: usize = 4000;
 
+/// Core params that only shape the ngspice netlist: never sent to an analogLib master and
+/// never reported (§6.5).
+const NGSPICE_ONLY: [&str; 1] = ["savecurrent"];
+
 /// Virtuoso DBU per user unit the off-grid check assumes (§3.1).
 const DBU: i32 = 160;
 
@@ -70,6 +74,7 @@ pub fn export(
         producer: opts.producer.clone(),
         ..Dump::default()
     };
+    let mut ocean: Vec<ade::BenchExport> = Vec::new();
     // (dump cell index, design cell index) of every written cell.
     let mut written = Vec::new();
     for ci in 0..d.cells.len() {
@@ -78,9 +83,18 @@ pub fn export(
         }
         let c = cell_out(d, ci, &plan, m, opts.retarget, &mut notes);
         if d.cells[ci].kind() == FileKind::Shbench {
-            let recs = ade::export(d, ci, &plan.lib[ci], &mut notes);
-            if !recs.is_empty() {
-                dump.maestro.push(recs);
+            let target = opts.target_map.as_ref();
+            let mut b = ade::export(
+                d,
+                ci,
+                &plan.lib[ci],
+                target,
+                |p| inst_info(d, &plan, m, opts, ci, p),
+                &mut notes,
+            );
+            if !b.records.is_empty() {
+                dump.maestro.push(std::mem::take(&mut b.records));
+                ocean.push(b);
             }
         }
         written.push((dump.cells.len(), ci));
@@ -122,9 +136,133 @@ pub fn export(
         recs.first().is_some_and(|r| r.tag == "sfyx")
             && recs.last().is_some_and(|r| r.tag == "end")
     );
+    // One script per test; a second bench whose test has the same name gets `_2`, `_3`, ….
+    let mut scripts: Vec<(String, String)> = Vec::new();
+    for ade::BenchExport {
+        test,
+        ocean: text,
+        defns,
+        ..
+    } in ocean
+    {
+        let mut name = test.clone();
+        let mut k = 1;
+        while scripts.iter().any(|s| s.0 == format!("{name}.ocn")) {
+            k += 1;
+            name = format!("{test}_{k}");
+        }
+        for (f, t) in defns {
+            scripts.push((format!("{name}/{f}"), t));
+        }
+        let text = if name == test {
+            text
+        } else {
+            text.replace(&format!("\"{test}/"), &format!("\"{name}/"))
+        };
+        scripts.push((format!("{name}.ocn"), text));
+    }
+    scripts.sort();
+    // §12: one `off-grid` row per cell (the count and the first point), not one per point:
+    // a symbol drawn on a half grid has dozens and they all mean the same thing.
+    let mut grid: Vec<(String, usize, String)> = Vec::new();
+    notes.rows.retain(|r| {
+        if r.class != "off-grid" {
+            return true;
+        }
+        match grid.iter_mut().find(|g| g.0 == r.cell) {
+            Some(g) => g.1 += 1,
+            None => grid.push((r.cell.clone(), 1, r.detail.clone())),
+        }
+        false
+    });
+    for (cell, n, first) in grid {
+        notes.add(
+            "off-grid",
+            &cell,
+            format!("{n} point(s) off the 1/160\" grid (Virtuoso snaps them), first: {first}"),
+        );
+    }
     Ok(Export {
         sfyx: sfyx::write(&recs),
         notes,
+        ocean: scripts,
+    })
+}
+
+/// What the output translator needs about instance path `path` (Schemify instance names
+/// joined by `/`, a subcircuit's SPICE name `X<name>` accepted for `<name>`) of bench `ci`
+/// (§9.1): its Virtuoso path, the terminal `i()` reads (the exported master's first pin:
+/// analogLib's, a map row's, a retarget class pin through the `--target` map, else the
+/// pin's own name) and, for a placeholder whose `--target` class has `op <dev>.<inner>`,
+/// the segments inside it holding the operating point. `None` when a segment names no
+/// instance.
+fn inst_info(
+    d: &Design,
+    plan: &Plan,
+    m: &Mapping,
+    opts: &ExportOptions,
+    ci: usize,
+    path: &str,
+) -> Option<ade::InstInfo> {
+    let mut cur = ci;
+    let mut vpath: Vec<String> = Vec::new();
+    let mut last: Option<(usize, &str)> = None;
+    for seg in path.split('/') {
+        let c = &d.cells[cur];
+        let by_name = |n: &str| {
+            c.records(RecordKind::Inst)
+                .find(|&r| c.attr(r, "name") == Some(n))
+        };
+        let r = by_name(seg).or_else(|| {
+            seg.strip_prefix(['X', 'x']).and_then(by_name).filter(|&r| {
+                d.resolve(cur, c.field(r, 1))
+                    .is_some_and(|mi| d.cells[mi].kind() == FileKind::Shcomp)
+            })
+        })?;
+        let name = c.attr(r, "name").expect("found by name");
+        vpath.push(profile::inst_to_virtuoso(name).unwrap_or_else(|| name.to_owned()));
+        let cref = c.field(r, 1);
+        let mi = d.resolve(cur, cref)?;
+        last = Some((mi, cref));
+        cur = mi;
+    }
+    let (mi, cref) = last?;
+    let first_pin = sym_pins(&d.cells[mi])
+        .name
+        .first()
+        .cloned()
+        .unwrap_or_default();
+    let class = tech_class(cref).filter(|_| opts.retarget).and_then(|cl| {
+        opts.target_map
+            .as_ref()?
+            .classes
+            .iter()
+            .find(|x| x.name == cl)
+    });
+    let terminal = match (class, plan.how[mi]) {
+        (Some(cl), _) => cl
+            .pins
+            .iter()
+            .find(|p| p.0 == first_pin)
+            .map_or(first_pin.clone(), |p| p.1.clone()),
+        (None, How::AnalogLib(row)) => devices::DEVICES[row as usize]
+            .alib_pins
+            .first()
+            .map_or(first_pin.clone(), |p| (*p).to_owned()),
+        (None, How::Map(row)) => m.maps[row as usize]
+            .pins
+            .iter()
+            .find(|p| p.0 == first_pin)
+            .map_or_else(|| vname(&first_pin), |p| p.1.clone()),
+        _ => vname(&first_pin),
+    };
+    let op_inner = class
+        .map(|cl| cl.op.split('.').skip(1).map(str::to_owned).collect())
+        .unwrap_or_default();
+    Some(ade::InstInfo {
+        path: vpath.join("/"),
+        terminal,
+        op_inner,
     })
 }
 
@@ -1348,20 +1486,48 @@ fn stext_out(c: &Cell, r: u32, ids: &mut Ids, notes: &mut Notes) -> Option<Label
             "drawing",
         ),
         _ => {
-            let holes: Vec<&(bool, String)> = items.iter().filter(|x| x.0).collect();
-            let p = holes[0].1.as_str();
-            if holes.len() != 1 || !params.contains(&p) {
+            // Every hole a parameter, bare or through the display formatter `eng(p)` (NLP
+            // shows the value as entered): one `[@p:pre%post]` group per hole, the literal
+            // before the first hole its `pre`, each literal after a hole its `post`.
+            fn param<'a>(h: &'a str, params: &[&str]) -> Option<&'a str> {
+                let p = h
+                    .strip_prefix("eng(")
+                    .and_then(|x| x.strip_suffix(')'))
+                    .unwrap_or(h)
+                    .trim();
+                params.contains(&p).then_some(p)
+            }
+            let Some(names) = items
+                .iter()
+                .filter(|x| x.0)
+                .map(|x| param(&x.1, &params))
+                .collect::<Option<Vec<&str>>>()
+            else {
                 notes.review("template", &c.path, format!("stext `{t}` dropped"));
                 return None;
-            }
-            let pos = items.iter().position(|x| x.0).expect("one hole");
-            let pre: String = items[..pos].iter().map(|x| x.1.as_str()).collect();
-            let post: String = items[pos + 1..].iter().map(|x| x.1.as_str()).collect();
-            let text = if pre.is_empty() && post.is_empty() {
-                format!("[@{p}]")
-            } else {
-                format!("[@{p}:{}%{}]", nlp_escape(&pre), nlp_escape(&post))
             };
+            let first = items.iter().position(|x| x.0).expect("a hole");
+            let mut pre: String = items[..first].iter().map(|x| x.1.as_str()).collect();
+            let mut text = String::new();
+            let mut k = first;
+            for p in names {
+                let next = items[k + 1..]
+                    .iter()
+                    .position(|x| x.0)
+                    .map_or(items.len(), |n| k + 1 + n);
+                let post: String = items[k + 1..next].iter().map(|x| x.1.as_str()).collect();
+                if pre.is_empty() && post.is_empty() {
+                    text.push_str(&format!("[@{p}]"));
+                } else {
+                    text.push_str(&format!(
+                        "[@{p}:{}%{}]",
+                        nlp_escape(&pre),
+                        nlp_escape(&post)
+                    ));
+                }
+                pre.clear();
+                k = next;
+            }
             (text, "NLP", "annotate", "drawing")
         }
     };
@@ -1537,11 +1703,29 @@ fn source_props(
     inst: &str,
     notes: &mut Notes,
 ) -> devices::Source {
-    devices::parse_source(value, current).unwrap_or_else(|| {
+    // A `{expr}` hole becomes its §3.4 value (bench vars bare: ADE design variables); a hole
+    // without an AEL form makes the whole text unparsable, never a half-translated CDF.
+    let mut reviews: Vec<(&'static str, String)> = Vec::new();
+    let parsed = devices::parse_source_with(value, current, |e| {
+        let t = ael::to_ael(e, parent_scope(c)).ok()?;
+        if let Some(why) = t.review {
+            reviews.push((why, format!("{inst}: `{e}` → `{}`", t.text)));
+        }
+        Some(t.text)
+    });
+    if parsed.is_some() {
+        for (why, detail) in reviews {
+            notes.review(why, &c.path, detail);
+        }
+    }
+    parsed.unwrap_or_else(|| {
         notes.review(
             "source",
             &c.path,
-            format!("{inst}: `{value}` is not SPICE source text; sent as the DC value"),
+            format!(
+                "{inst}: `{value}` is not SPICE source text with number or {{expr}} values; \
+                 sent as the DC value"
+            ),
         );
         devices::Source {
             wave: 0,
@@ -1551,6 +1735,114 @@ fn source_props(
             )],
         }
     })
+}
+
+/// A class placeholder of a schematic (§10): a gm/Id intent, or a fixed-size instance of a
+/// technology class (`tech:nmos` with explicit `w l nf m`, §10.5).
+enum Holder {
+    Intent(crate::retarget::Intent),
+    Fixed {
+        inst_id: String,
+        class: String,
+        /// `(w|l|nf|m, AEL value)`, in that order.
+        fields: Vec<(&'static str, String)>,
+    },
+}
+
+impl Holder {
+    fn inst_id(&self) -> &str {
+        match self {
+            Holder::Intent(t) => &t.inst_id,
+            Holder::Fixed { inst_id, .. } => inst_id,
+        }
+    }
+
+    fn class(&self) -> &str {
+        match self {
+            Holder::Intent(t) => &t.class,
+            Holder::Fixed { class, .. } => class,
+        }
+    }
+
+    /// The `intent` record (§4.2): a gm/Id intent's numbers, or a fixed size's AEL values
+    /// (`(("w" "W") ("l" "L") ("nf" "1") ("m" "1"))`, no `gmid`).
+    fn to_record(&self, r: i32) -> Record {
+        match self {
+            Holder::Intent(t) => t.to_record(r),
+            Holder::Fixed { class, fields, .. } => {
+                assert!(r > 0 && fields.len() == 4);
+                Record::new(
+                    "intent",
+                    vec![
+                        i(r),
+                        s(class),
+                        pairs(fields.iter().map(|(k, v)| (*k, v.as_str()))),
+                    ],
+                )
+            }
+        }
+    }
+}
+
+/// The class of a `tech:<class>` instance cellref (`tech:nmos` → `nmos`), else `None`.
+pub fn tech_class(cellref: &str) -> Option<&str> {
+    cellref.strip_prefix("tech:").filter(|c| !c.is_empty())
+}
+
+/// §10.5: every instance of cell `ci` whose cellref is a technology class (`tech:nmos`) and
+/// that is not sized by intent (`taken`) becomes a fixed-size placeholder carrying its `w l
+/// nf m` (the override, any case, else the master's default) as AEL values in the parent's
+/// scope (bench vars bare, so a swept `W` stays a design variable). An instance with a
+/// value that has no AEL form stays the generic device (`needs_review: retarget`).
+fn fixed_holders(d: &Design, ci: usize, taken: &[Holder], notes: &mut Notes) -> Vec<Holder> {
+    let c = &d.cells[ci];
+    let mut out = Vec::new();
+    for r in c.records(RecordKind::Inst) {
+        let id = c.field(r, 0);
+        let Some(class) = tech_class(c.field(r, 1)) else {
+            continue;
+        };
+        if taken.iter().any(|h| h.inst_id() == id) {
+            continue;
+        }
+        let master = d.resolve(ci, c.field(r, 1)).map(|mi| &d.cells[mi]);
+        let mut fields = Vec::with_capacity(4);
+        let mut bad = None;
+        for key in ["w", "l", "nf", "m"] {
+            let over = c
+                .doc
+                .attrs(r)
+                .find(|&a| c.doc.attr_key(a).eq_ignore_ascii_case(key))
+                .and_then(|a| c.doc.attr_value(a, 0));
+            let default = master.and_then(|mc| {
+                mc.records(RecordKind::Param)
+                    .find(|p| mc.field(*p, 0).eq_ignore_ascii_case(key))
+                    .map(|p| mc.field(p, 1))
+            });
+            let text = over.or(default).unwrap_or("1");
+            match ael::to_ael(text, parent_scope(c)) {
+                Ok(t) if t.review.is_none() => fields.push((key, t.text)),
+                _ => bad = Some(format!("{key} `{text}` has no AEL form")),
+            }
+        }
+        match bad {
+            None => out.push(Holder::Fixed {
+                inst_id: id.to_owned(),
+                class: class.to_owned(),
+                fields,
+            }),
+            Some(why) => notes.review(
+                "retarget",
+                &c.path,
+                format!("inst {id}: {why}; exported as the generic device"),
+            ),
+        }
+    }
+    debug_assert!(
+        out.iter()
+            .all(|h| matches!(h, Holder::Fixed { fields, .. } if fields.len() == 4))
+    );
+    out
 }
 
 fn schematic_out(
@@ -1565,15 +1857,18 @@ fn schematic_out(
     let c = &d.cells[ci];
     let g = geom(d, ci);
     let n = nets::extract(d, ci, &g);
-    // §10.1: instances sized by gm/Id intent become class placeholders.
-    let intents: Vec<crate::retarget::Intent> = if retarget {
+    // §10.1: instances sized by gm/Id intent, and (§10.5) every other instance of a
+    // technology class, become class placeholders the target machine binds.
+    let holders: Vec<Holder> = if retarget {
         let (v, rn) = crate::retarget::intents(d, ci, |e| crate::retarget::cell_value(d, ci, e));
         notes.rows.extend(rn.rows);
-        v
+        let mut h: Vec<Holder> = v.into_iter().map(Holder::Intent).collect();
+        h.extend(fixed_holders(d, ci, &h, notes));
+        h
     } else {
         Vec::new()
     };
-    let intent_of = |k: usize| intents.iter().find(|t| t.inst_id == g.inst_id[k]);
+    let intent_of = |k: usize| holders.iter().find(|t| t.inst_id() == g.inst_id[k]);
     let mut cv = Cv {
         view: "schematic".into(),
         vtype: "schematic".into(),
@@ -1645,14 +1940,18 @@ fn schematic_out(
                 .collect(),
             new_pins,
         });
-        notes.add(
-            "remapped",
-            &c.path,
-            format!(
-                "{}: {} → {}/{}",
-                g.inst_name[k], d.cells[mi].name, target.0, target.1
-            ),
-        );
+        // A core cell on its §6.5 analogLib master is the export's default, not news; a
+        // mapping-file row is reported.
+        if matches!(plan.how[mi], How::Map(_)) {
+            notes.add(
+                "remapped",
+                &c.path,
+                format!(
+                    "{}: {} → {}/{}",
+                    g.inst_name[k], d.cells[mi].name, target.0, target.1
+                ),
+            );
+        }
     }
     let edits = remap::apply(&g, &n, &todo);
     // Wires (after the edits) in Schemify coordinates, for gluing labels.
@@ -1708,11 +2007,7 @@ fn schematic_out(
         if let Some(t) = intent_of(k) {
             // A class placeholder: library "", the class as the cell, no parameters (§10.1).
             id_prop(&mut cv, r, &g.inst_id[k]);
-            let class = m
-                .classes
-                .iter()
-                .find(|cl| cl.name == t.class)
-                .map_or(t.class.clone(), |cl| cl.name.clone());
+            let class = t.class().to_owned();
             cv.intents.push(t.to_record(r as i32));
             cv.insts.push(Inst {
                 r,
@@ -1802,6 +2097,16 @@ fn schematic_out(
             } else if let Some(dv) = dev {
                 match dv.params.iter().find(|p| p.0 == key) {
                     Some(p) => (p.1.to_owned(), None),
+                    // An override equal to the core default, or of a param that only steers
+                    // the ngspice netlist (`savecurrent`: Spectre saves through the test),
+                    // loses nothing by staying behind.
+                    None if NGSPICE_ONLY.contains(&key)
+                        || master
+                            .records(RecordKind::Param)
+                            .any(|q| master.field(q, 0) == key && master.field(q, 1) == val) =>
+                    {
+                        continue;
+                    }
                     None => {
                         notes.add(
                             "remapped",
@@ -2023,6 +2328,9 @@ fn schematic_out(
                     ty: "string".into(),
                     value: "1".into(),
                 });
+                // A second label on this point (a label kept on a re-mastered pin) glues
+                // here too instead of drawing an identical stub, which Virtuoso refuses.
+                segs.push((sr, [at[0], at[1], to[0], to[1]]));
                 sr
             }
         };

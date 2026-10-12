@@ -27,6 +27,7 @@ use schemify_format::{Document, FileKind, RecordKind};
 use super::ael::{self, AelName, Name};
 use crate::design::{Cell, Design};
 use crate::notes::Notes;
+use crate::retarget::Target;
 use crate::sfyx::{Error, Record, Value, i, pairs, s, text};
 
 /// Rows per kind (vars, analyses, corners, models, outputs, specs, definition files) of one
@@ -138,16 +139,39 @@ impl Test {
 /// Code languages whose text is SPICE (format.md rank 6).
 const SPICE_LANGS: [&str; 3] = ["spice", "ngspice", "xyce"];
 
-/// The maestro records of bench cell `ci` (§9.1), in §9 order, the `maestro` record naming
-/// Virtuoso library `vlib` (the plan's library of the cell) and the cell's name. Bench
-/// content §9.1 does not map is reported in `notes` (`needs_review:` `code sweep output
-/// spec expression design-variable montecarlo optimize config`); the caller stashes it
-/// (§7.3).
+/// One bench's export: its maestro records and its OCEAN script (§9.6).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BenchExport {
+    /// The maestro records in §9 order; empty for a bench with no simulation setup.
+    pub records: Vec<Record>,
+    /// The test's name (the analysis block's, else the cell's; Virtuoso-safe).
+    pub test: String,
+    /// The OCEAN script text; empty when `records` is.
+    pub ocean: String,
+    /// Definition files the script loads (`definitionFile`), `(file, text)`: the same
+    /// files as the `defn` records, written beside the script under `<test>/`.
+    pub defns: Vec<(String, String)>,
+}
+
+/// The maestro records and the OCEAN script of bench cell `ci` (§9.1, §9.6), the
+/// `maestro` record naming Virtuoso library `vlib` (the plan's library of the cell) and the
+/// cell's name. `target` (a `.retarget` file given with `--target`) replaces the models of
+/// every corner it names; `inst` answers the output translator's instance questions
+/// ([`InstInfo`]). Bench content §9.1 does not map is reported in `notes`
+/// (`needs_review:` `code sweep output spec plot expression design-variable montecarlo
+/// optimize config corner`); the caller stashes it (§7.3).
 ///
 /// # Panics
 ///
 /// When `ci` is not a `.shbench` of `d`.
-pub fn export(d: &Design, ci: usize, vlib: &str, notes: &mut Notes) -> Vec<Record> {
+pub fn export<F: Fn(&str) -> Option<InstInfo>>(
+    d: &Design,
+    ci: usize,
+    vlib: &str,
+    target: Option<&Target>,
+    inst: F,
+    notes: &mut Notes,
+) -> BenchExport {
     let c = &d.cells[ci];
     assert_eq!(
         c.kind(),
@@ -169,7 +193,7 @@ pub fn export(d: &Design, ci: usize, vlib: &str, notes: &mut Notes) -> Vec<Recor
         RecordKind::Config,
     ];
     if !setup.iter().any(|k| c.records(*k).next().is_some()) {
-        return Vec::new();
+        return BenchExport::default();
     }
     let cell = c.path.as_str();
     let vars: Vec<String> = c
@@ -193,7 +217,13 @@ pub fn export(d: &Design, ci: usize, vlib: &str, notes: &mut Notes) -> Vec<Recor
         let lines: Vec<&str> = c.doc.verbatim(r).collect();
         if Some(r) == src {
             let spice = SPICE_LANGS.contains(&lang);
-            for (k, line) in lines.iter().enumerate() {
+            // `.options errpreset=…` sets an option of the tran analysis: after the analyses.
+            let mut order: Vec<usize> = (0..lines.len()).collect();
+            order.sort_by_key(|&k| {
+                spice && matches!(spice_line(lines[k]), Some(SpiceLine::ErrPreset(_)))
+            });
+            for k in order {
+                let line = &lines[k];
                 if !source_line(line, spice, &vars, &mut t, cell, notes) && !line.trim().is_empty()
                 {
                     notes.review(
@@ -257,9 +287,17 @@ pub fn export(d: &Design, ci: usize, vlib: &str, notes: &mut Notes) -> Vec<Recor
     for r in c.records(RecordKind::Corner) {
         let corner = c.field(r, 0).to_owned();
         t.corners.push((corner.clone(), true));
+        // The target machine's model files for this corner (`--target`, §10.2) win.
+        let bound = target.and_then(|tg| tg.corners.iter().find(|x| x.name == corner));
+        if let Some(b) = bound {
+            for (f, sec) in &b.models {
+                t.models.push((corner.clone(), path_to_ade(f), sec.clone()));
+            }
+        }
         for a in c.doc.attrs(r) {
             let vals: Vec<&str> = c.doc.attr_values(a).collect();
             match (c.doc.attr_key(a), vals.as_slice()) {
+                ("lib", [_, _]) | ("include", [_]) if bound.is_some() => {}
                 ("lib", [p, sec]) => t
                     .models
                     .push((corner.clone(), path_to_ade(p), (*sec).into())),
@@ -284,18 +322,66 @@ pub fn export(d: &Design, ci: usize, vlib: &str, notes: &mut Notes) -> Vec<Recor
             }
         }
     }
-    // Outputs and specs.
+    // Outputs (maestro and OCEAN spellings) and their plots.
     let letter = signal_letter(&t.analyses);
+    let mut scope = OutScope {
+        vars: &vars,
+        letter,
+        inst,
+    };
+    let mut ocean_outs: Vec<(String, String)> = Vec::new();
     for r in c.records(RecordKind::Output) {
         let (name, e) = (c.field(r, 0), c.field(r, 1));
-        match out_to_ade(e, &vars, letter) {
-            Some(x) => t.outputs.push((name.to_owned(), "point".into(), x)),
-            None => notes.review(
+        // `analysis <a>` picks the dataset (format.md rank 6), else the test's default.
+        scope.letter = match c.attr(r, "analysis") {
+            None => letter,
+            Some(a) => match analysis_letter(a, &t.analyses) {
+                Some(l) => l,
+                None => {
+                    notes.review(
+                        "output",
+                        cell,
+                        format!("output {name}: analysis `{a}` is not one the test runs"),
+                    );
+                    continue;
+                }
+            },
+        };
+        // One spelling serves both: OCEAN evaluates ADE's expression functions.
+        match out_expr(e, &scope) {
+            Some(x) => {
+                t.outputs.push((name.to_owned(), "point".into(), x.clone()));
+                ocean_outs.push((name.to_owned(), x));
+            }
+            _ => notes.review(
                 "output",
                 cell,
                 format!("output {name}: `{e}` has no ADE form"),
             ),
         }
+    }
+    let mut plots: Vec<(String, String)> = Vec::new();
+    for r in c.records(RecordKind::Output) {
+        let (name, Some(x)) = (c.field(r, 0), c.attr(r, "vs")) else {
+            continue;
+        };
+        if !ocean_outs.iter().any(|o| o.0 == name) || !ocean_outs.iter().any(|o| o.0 == x) {
+            notes.review(
+                "plot",
+                cell,
+                format!("output {name} vs {x}: an output of the plot does not map"),
+            );
+            continue;
+        }
+        plots.push((name.to_owned(), x.to_owned()));
+        notes.review(
+            "plot",
+            cell,
+            format!(
+                "output {name} vs {x}: plotted by the OCEAN script only (a maestro output is \
+                 one value per point; the plot spans the sweep)"
+            ),
+        );
     }
     for r in c.records(RecordKind::Spec) {
         let out = c.field(r, 0);
@@ -304,10 +390,33 @@ pub fn export(d: &Design, ci: usize, vlib: &str, notes: &mut Notes) -> Vec<Recor
             continue;
         }
         for (key, op) in [("min", "gt"), ("max", "lt")] {
-            if let Some(e) = c.attr(r, key)
-                && let Some(v) = to_ael(e, &vars, cell, notes)
-            {
+            let Some(e) = c.attr(r, key) else { continue };
+            // A bound over bench vars (`min A0_spec/(1+A0_spec)`) is folded to its number
+            // (an ADE spec target is a value); one over a swept var varies per point and has
+            // no single target.
+            let idents: Vec<String> = Program::compile(e, Mode::Scalar)
+                .map(|p| p.idents().map(str::to_owned).collect())
+                .unwrap_or_default();
+            if idents.is_empty() {
+                if let Some(v) = to_ael(e, &vars, cell, notes) {
+                    t.specs.push((out.to_owned(), op.into(), v));
+                }
+            } else if let Some(s) = idents.iter().find(|n| swept.iter().any(|x| &x.0 == *n)) {
+                notes.review(
+                    "spec",
+                    cell,
+                    format!("spec {out} {key} `{e}`: depends on swept var {s}; not sent"),
+                );
+            } else if let Some(x) = crate::retarget::cell_value(d, ci, e) {
+                let mut v = String::new();
+                write_num(&mut v, x);
                 t.specs.push((out.to_owned(), op.into(), v));
+            } else {
+                notes.review(
+                    "spec",
+                    cell,
+                    format!("spec {out} {key} `{e}`: does not evaluate over the bench vars"),
+                );
             }
         }
     }
@@ -336,7 +445,36 @@ pub fn export(d: &Design, ci: usize, vlib: &str, notes: &mut Notes) -> Vec<Recor
             "{cell}: a bench holds at most 2^22 records"
         );
     }
-    t.records()
+    let default_corner = c
+        .header("corner")
+        .map(str::to_owned)
+        .or_else(|| t.corners.first().map(|x| x.0.clone()));
+    if t.corners.len() > 1 {
+        notes.review(
+            "corner",
+            cell,
+            format!(
+                "the OCEAN script runs corner {} only (maestro has all {})",
+                default_corner.as_deref().unwrap_or(""),
+                t.corners.len()
+            ),
+        );
+    }
+    let ocean = ocean_script(
+        &t,
+        cell,
+        &swept,
+        &ocean_outs,
+        &plots,
+        default_corner.as_deref(),
+        notes,
+    );
+    BenchExport {
+        records: t.records(),
+        test: t.name.clone(),
+        ocean,
+        defns: t.defns.clone(),
+    }
 }
 
 /// The code block whose analyses map: the first (by name) SPICE block with a line that is
@@ -401,6 +539,13 @@ fn source_line(
     let has_global = |t: &Test, n: &str| t.vars.iter().any(|v| v.0 == n && v.2.is_empty());
     match parsed {
         None => false,
+        Some(SpiceLine::ErrPreset(p)) => match t.analyses.iter_mut().find(|a| a.0 == "tran") {
+            Some(a) if !a.2.iter().any(|o| o.0 == "errpreset") => {
+                a.2.push(kv("errpreset", &p));
+                true
+            }
+            _ => false,
+        },
         Some(SpiceLine::Analysis(name, opts)) => {
             let op_only = |o: &[(String, String)]| o.len() == 1 && o[0].0 == "saveOppoint";
             match t.analyses.iter_mut().find(|a| a.0 == name) {
@@ -458,9 +603,14 @@ fn source_line(
     }
 }
 
+/// Spectre's transient accuracy presets (`tran` parameter `errpreset`).
+const ERRPRESETS: [&str; 3] = ["liberal", "moderate", "conservative"];
+
 /// What one line of an analysis block means.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SpiceLine {
+    /// `.options errpreset=<preset>`: the transient analysis's accuracy preset.
+    ErrPreset(String),
     /// An ADE analysis and its options (values already AEL).
     Analysis(String, Vec<(String, String)>),
     /// A model file and section (`""` for `.include`).
@@ -552,6 +702,15 @@ fn spice_line(line: &str) -> Option<SpiceLine> {
                 out.push((k.to_owned(), v.to_owned()));
             }
             SpiceLine::Param(out)
+        }
+        (".options" | ".option", [kv]) => {
+            let p = kv.strip_prefix("errpreset=")?;
+            SpiceLine::ErrPreset(
+                ERRPRESETS
+                    .iter()
+                    .find(|x| x.eq_ignore_ascii_case(p))?
+                    .to_string(),
+            )
         }
         (".include" | ".inc", [f]) => SpiceLine::Model(unquote_path(f), String::new()),
         (".lib", [f, sec]) => SpiceLine::Model(unquote_path(f), (*sec).to_owned()),
@@ -789,7 +948,11 @@ fn sweep_list(c: &Cell, r: u32, vars: &[String]) -> Result<String, String> {
 }
 
 /// `n` points from `a` to `b` (run.md §2): linear, or geometric through the expression
-/// language (bit-identical on every target), the last exactly `b`; canonical number text.
+/// language (bit-identical on every target), the last exactly `b`; each point rounded to
+/// 15 significant digits, then canonical number text (`0.01`, never the binary noise
+/// `0.010000000000000002` of `0.8 · 1/80`). The rounding moves a point by at most 5e-16
+/// relative, far below any simulator's resolution, and makes the list the decimal grid the
+/// bench means.
 fn grid(a: f64, b: f64, n: u32, log: bool) -> Option<Vec<String>> {
     assert!((1..=SWEEP_POINTS_MAX).contains(&n));
     if log && (a == 0.0 || b == 0.0 || (a < 0.0) != (b < 0.0)) {
@@ -815,6 +978,7 @@ fn grid(a: f64, b: f64, n: u32, log: bool) -> Option<Vec<String>> {
                 }
             }
         };
+        let x: f64 = format!("{x:.14e}").parse().expect("Rust float text parses");
         let mut s = String::new();
         write_num(&mut s, x);
         out.push(s);
@@ -847,11 +1011,251 @@ fn top_level_split(s: &str) -> Vec<&str> {
 }
 
 // ---------------------------------------------------------------------------------------
+// OCEAN script (§9.6)
+// ---------------------------------------------------------------------------------------
+
+/// Maestro analysis options that are ADE form fields (the sweep and step choosers) with no
+/// OCEAN `analysis` keyword: the OCEAN call infers them from the keywords present.
+const FORM_ONLY: [&str; 4] = ["sweep", "incrType", "stepTypeLin", "stepTypeLog"];
+
+/// `s` as a SKILL string literal (`\` and `"` escaped).
+fn skill_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' | '\\' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            '\n' => out.push_str("\\n"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Whether AEL text `v` is one number SKILL reads as such (`20n`, `-0.35`, `1e-6`).
+fn skill_number(v: &str) -> bool {
+    let body = v.strip_prefix('-').unwrap_or(v);
+    ael::from_ael(body, |_| AelName::Unknown, |_| None)
+        .and_then(|t| ael::number_to_ael(&t.text))
+        .is_some()
+}
+
+/// The signals an OCEAN expression reads, `(kind, path)` with kind `'v` or `'i`, in first
+/// appearance order without repeats: what the script `save`s.
+fn signals_of(expr: &str, out: &mut Vec<(char, String)>) {
+    const FNS: [&str; 8] = [
+        "VT(\"", "VF(\"", "VS(\"", "VDC(\"", "IT(\"", "IF(\"", "IS(\"", "IDC(\"",
+    ];
+    let b = expr.as_bytes();
+    for start in 0..b.len() {
+        let rest = &expr[start..];
+        let Some(f) = FNS.iter().find(|f| rest.starts_with(**f)) else {
+            continue;
+        };
+        if start > 0 && (b[start - 1].is_ascii_alphanumeric() || b[start - 1] == b'_') {
+            continue; // `myVT("…`: another function
+        }
+        let tail = &rest[f.len()..];
+        let Some(end) = tail.find('"') else { continue };
+        let row = (
+            if f.starts_with('V') { 'v' } else { 'i' },
+            tail[..end].to_owned(),
+        );
+        if !out.contains(&row) {
+            out.push(row);
+        }
+    }
+}
+
+/// The OCEAN script of test `t` (§9.6): runnable headless (`ocean -nograph < <test>.ocn`)
+/// after `SfyImport` (and `SfyRetarget`) created the bench schematic. Corner `corner` (the
+/// bench's default, else its first) supplies the model files, var overrides and
+/// temperature; every swept var is a nested `paramAnalysis`; each output is one
+/// `ocnPrint` table `<test>/<output>.txt`, each plot one `<test>/<y>_vs_<x>.txt` of
+/// `waveVsWave`. A swept point that is not a number literal is reported (`sweep`) and the
+/// sweep runs without it.
+fn ocean_script(
+    t: &Test,
+    cell: &str,
+    swept: &[(String, String)],
+    outs: &[(String, String)],
+    plots: &[(String, String)],
+    corner: Option<&str>,
+    notes: &mut Notes,
+) -> String {
+    use std::fmt::Write as _;
+    assert!(!t.name.is_empty(), "a test has a name");
+    let dir = &t.name;
+    let mut o = String::new();
+    let _ = writeln!(
+        o,
+        "; {dir}.ocn: OCEAN script of bench {cell}, written by schemify-interop (interop.md §9.6).\n\
+         ; Run where {dir}/ may be created, after SfyImport (and SfyRetarget) of the same .sfyx:\n\
+         ;   ocean -nograph < {dir}.ocn\n\
+         ; Writes {dir}/psf (results) and {dir}/<output>.txt (one ocnPrint table per output)."
+    );
+    let _ = writeln!(o, "createDir({})", skill_str(dir));
+    let _ = writeln!(o, "simulator('spectre)");
+    let _ = writeln!(
+        o,
+        "design({} {} {})",
+        skill_str(&t.lib),
+        skill_str(&t.cell),
+        skill_str(&t.view)
+    );
+    let _ = writeln!(o, "resultsDir({})", skill_str(&format!("{dir}/psf")));
+    let in_scope = |sc: &str| sc.is_empty() || Some(sc) == corner;
+    let models: Vec<String> = t
+        .models
+        .iter()
+        .filter(|m| in_scope(&m.0))
+        .map(|m| format!("'({} {})", skill_str(&m.1), skill_str(&m.2)))
+        .collect();
+    if !models.is_empty() {
+        let _ = writeln!(o, "modelFile({})", models.join(" "));
+    }
+    let mut defns = t.defns.clone();
+    defns.sort();
+    for (f, _) in &defns {
+        let _ = writeln!(o, "definitionFile({})", skill_str(&format!("{dir}/{f}")));
+    }
+    // Design variables: globals, then the corner's overrides; a swept var starts at its
+    // first point (paramAnalysis sets the rest).
+    let mut vars: Vec<(String, String)> = Vec::new();
+    for (n, v, sc) in &t.vars {
+        if !in_scope(sc) {
+            continue;
+        }
+        let v = match swept.iter().find(|s| &s.0 == n) {
+            Some((_, list)) => top_level_split(list)[0].to_owned(),
+            None => v.clone(),
+        };
+        match vars.iter_mut().find(|x| &x.0 == n) {
+            Some(x) if !sc.is_empty() => x.1 = v,
+            Some(_) => {}
+            None => vars.push((n.clone(), v)),
+        }
+    }
+    vars.sort();
+    for (n, v) in &vars {
+        if n == "temperature" {
+            let _ = writeln!(o, "temp({v})");
+        } else if skill_number(v) {
+            let _ = writeln!(o, "desVar({} {v})", skill_str(n));
+        } else {
+            let _ = writeln!(o, "desVar({} {})", skill_str(n), skill_str(v));
+        }
+    }
+    let mut analyses = t.analyses.clone();
+    analyses.sort_by(|a, b| a.0.cmp(&b.0));
+    for (name, en, opts) in &analyses {
+        if !en {
+            continue;
+        }
+        let mut line = format!("analysis('{name}");
+        for (k, v) in opts {
+            if FORM_ONLY.contains(&k.as_str()) {
+                continue;
+            }
+            if k == "saveOppoint" {
+                line.push_str(" ?saveOppoint t");
+            } else {
+                let _ = write!(line, " ?{k} {}", skill_str(v));
+            }
+        }
+        line.push(')');
+        let _ = writeln!(o, "{line}");
+    }
+    let mut sigs = Vec::new();
+    for (_, e) in outs {
+        signals_of(e, &mut sigs);
+    }
+    for kind in ['v', 'i'] {
+        let paths: Vec<String> = sigs
+            .iter()
+            .filter(|s| s.0 == kind)
+            .map(|s| skill_str(&s.1))
+            .collect();
+        if !paths.is_empty() {
+            let _ = writeln!(o, "save('{kind} {})", paths.join(" "));
+        }
+    }
+    // Sweeps: one nested paramAnalysis per swept var, by var name.
+    let mut sweeps: Vec<(String, Vec<String>)> = Vec::new();
+    for (var, list) in swept {
+        let pts: Vec<String> = top_level_split(list)
+            .into_iter()
+            .filter(|p| {
+                let ok = skill_number(p);
+                if !ok {
+                    notes.review(
+                        "sweep",
+                        cell,
+                        format!("sweep {var}: OCEAN point `{p}` is not a number; left out"),
+                    );
+                }
+                ok
+            })
+            .map(str::to_owned)
+            .collect();
+        if !pts.is_empty() {
+            sweeps.push((var.clone(), pts));
+        }
+    }
+    sweeps.sort();
+    if sweeps.is_empty() {
+        let _ = writeln!(o, "run()");
+    } else {
+        let mut call = String::new();
+        for (var, pts) in sweeps.iter().rev() {
+            let inner = if call.is_empty() {
+                String::new()
+            } else {
+                format!("\n  {call}")
+            };
+            call = format!(
+                "paramAnalysis({} ?values '({}){inner})",
+                skill_str(var),
+                pts.join(" ")
+            );
+        }
+        let _ = writeln!(o, "{call}");
+        let _ = writeln!(o, "paramRun()");
+    }
+    for (name, e) in outs {
+        let _ = writeln!(
+            o,
+            "ocnPrint(?output {} ?numberNotation 'scientific ?precision 8 {e})",
+            skill_str(&format!("{dir}/{name}.txt"))
+        );
+    }
+    for (y, x) in plots {
+        let ye = &outs.iter().find(|q| &q.0 == y).expect("plots map").1;
+        let xe = &outs.iter().find(|q| &q.0 == x).expect("plots map").1;
+        let _ = writeln!(
+            o,
+            "ocnPrint(?output {} ?numberNotation 'scientific ?precision 8 waveVsWave(?x {xe} ?y {ye}))",
+            skill_str(&format!("{dir}/{y}_vs_{x}.txt"))
+        );
+    }
+    let _ = writeln!(o, "exit()");
+    debug_assert!(o.ends_with("exit()\n") && o.contains("design("));
+    o
+}
+
+// ---------------------------------------------------------------------------------------
 // Outputs (calculator ⇄ ADE expressions)
 // ---------------------------------------------------------------------------------------
 
-/// Calculator functions with an ADE spelling: (Schemify, ADE).
-const OUT_FNS: [(&str, &str); 9] = [
+/// One-argument calculator functions with an ADE spelling, both ways: (Schemify, ADE). The
+/// ADE ones are the waveform calculator's (*ADE Calculator* / *OCEAN Reference*): `real`
+/// `imag` for `re` `im`, `phaseDeg` (degrees, as `ph`), `dB20` for `db`, `peakToPeak` for
+/// `pp`, `average` for `avg`.
+const OUT_FNS: [(&str, &str); 19] = [
     ("ymax", "ymax"),
     ("ymin", "ymin"),
     ("avg", "average"),
@@ -861,7 +1265,59 @@ const OUT_FNS: [(&str, &str); 9] = [
     ("abs", "abs"),
     ("sqrt", "sqrt"),
     ("exp", "exp"),
+    ("ln", "ln"),
+    ("log10", "log10"),
+    ("re", "real"),
+    ("im", "imag"),
+    ("mag", "mag"),
+    ("ph", "phaseDeg"),
+    ("db", "dB20"),
+    ("pp", "peakToPeak"),
+    ("phase_margin", "phaseMargin"),
+    ("gain_margin", "gainMargin"),
 ];
+
+/// What the output translator knows about one instance path of the bench.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InstInfo {
+    /// The instance's Virtuoso path, segments joined by `/` (`DUT/M1` for SPICE's
+    /// `XDUT.M1`).
+    pub path: String,
+    /// The Virtuoso terminal `i(dev)` reads: the exported master's first terminal (`p` of a
+    /// `schemify_core` source or ammeter, `PLUS` on analogLib).
+    pub terminal: String,
+    /// Path segments inside the instance that hold the operating point when the placed
+    /// device is a subcircuit macro (`["main"]` for a `.retarget` class with `op
+    /// M0.main`); empty for a plain device.
+    pub op_inner: Vec<String>,
+}
+
+/// The bench facts an output translation reads.
+pub struct OutScope<'a, F: Fn(&str) -> Option<InstInfo>> {
+    /// The bench's vars (written `VAR("x")`).
+    pub vars: &'a [String],
+    /// The signal letter of `v()`/`i()`: `T` (tran), `F` (ac), `S` (dc sweep) or `DC` (§9.1).
+    pub letter: &'a str,
+    /// Instance path (segments joined by `/`) → its facts; `None` when the path names no
+    /// instance (then `i()` reads terminal `PLUS` and `op()` the path as written).
+    pub inst: F,
+}
+
+/// The signal letter of an output's `analysis <a>` attribute: `tran` `T`, `ac` `F`, `dc` (a
+/// sweep) `S`, `op` (the operating point) `DC`; `None` for another name or one the test
+/// does not run (`op` needs a dc analysis with `saveOppoint`, `dc` one with a sweep).
+fn analysis_letter(a: &str, analyses: &[Analysis]) -> Option<&'static str> {
+    let dc = analyses.iter().find(|x| x.0 == "dc");
+    let has = |k: &str| dc.is_some_and(|d| d.2.iter().any(|o| o.0 == k));
+    match a {
+        "tran" | "ac" if analyses.iter().any(|x| x.0 == a) => {
+            Some(if a == "tran" { "T" } else { "F" })
+        }
+        "dc" if has("sweep") => Some("S"),
+        "op" if has("saveOppoint") => Some("DC"),
+        _ => None,
+    }
+}
 
 /// The ADE signal letter for `v()`/`i()` (§9.1): the first of tran (`T`), ac (`F`), a dc
 /// sweep (`S`), an operating point (`DC`) the test runs; `T` without analyses.
@@ -980,13 +1436,171 @@ fn one_arg<'a>(t: &[(Tk, &'a str)], k: usize) -> Option<((Tk, &'a str), usize)> 
     (t.get(close)?.1 == ")").then(|| (t[a], close + 1))
 }
 
-/// A calculator output expression as an ADE expression (§9.1); `None` when it uses
-/// anything the table lacks.
+/// Most nested calls an output expression may hold (bounds the recursion of [`emit`]).
+const OUT_DEPTH_MAX: u32 = 64;
+
+/// A calculator output expression as a maestro output (§9.1, the old three-argument form
+/// kept for the tests): `i()` on terminal `PLUS`, no instance facts.
+#[cfg(test)]
 fn out_to_ade(e: &str, vars: &[String], letter: &str) -> Option<String> {
+    out_expr(
+        e,
+        &OutScope {
+            vars,
+            letter,
+            inst: |_: &str| None,
+        },
+    )
+}
+
+/// A calculator output expression as an ADE (maestro) or OCEAN expression (§9.1 outputs
+/// table): signals `v(n)`/`i(dev)` → `V<L>("/n")`/`I<L>("/dev/<terminal>")`, bench vars →
+/// `VAR("x")`, `re im mag ph db` → `real imag mag phaseDeg dB20`, `at(y,x)` → `value(y x)`,
+/// `x()` → `xval(<the expression's first signal>)`, `max`/`min` of two or more values →
+/// the exact `((a)+(b)±abs((a)-(b)))/2` (the calculator's `max` is not element-wise),
+/// `pow(a,b)` and `^` → `**`, `pi` → its value, `cross(y,l[,edge[,n]])` → `cross(y l n
+/// "rising|falling|either")`, `settle(y,tol)` → `settlingTime` over the whole data,
+/// `phase_margin`/`gain_margin` → `phaseMargin`/`gainMargin`, `op("M1","gm")` →
+/// `OP("/M1" "gm")`. The same text serves maestro and OCEAN. The source's spacing is kept
+/// outside rewritten calls, so a value needing no rewrite comes back byte for byte.
+///
+/// `None` when the expression uses anything else (strings outside `v`/`i`/`op`, other
+/// functions, comparisons, `?:`, `x()` without a signal, nesting deeper than 64 calls):
+/// the caller reports it and never writes a partial output.
+pub fn out_expr<F: Fn(&str) -> Option<InstInfo>>(e: &str, s: &OutScope<'_, F>) -> Option<String> {
     let t = out_tokens(e)?;
-    let mut out = String::with_capacity(e.len() + 16);
-    let mut k = 0;
-    while k < t.len() {
+    // `x()` is the x axis of the expression's own data: the first signal's.
+    let first = (0..t.len()).find_map(|k| {
+        let is_sig = t[k].0 == Tk::Ident && matches!(t[k].1, "v" | "V" | "i" | "I");
+        let open = next_tok(&t, k + 1);
+        (is_sig && t.get(open).is_some_and(|n| n.1 == "("))
+            .then(|| signal(&t, k, open, s))
+            .flatten()
+    });
+    let out = emit(&t, 0, t.len(), s, first.as_ref().map(|x| x.0.as_str()), 0)?;
+    debug_assert!(
+        !out.contains(['^', ',']),
+        "AEL has no `^`, SKILL lists no commas"
+    );
+    Some(out)
+}
+
+/// The signal call `v(…)`/`i(…)` whose name is at `k` and `(` at `open`: (ADE text, index
+/// after its `)`).
+fn signal<F: Fn(&str) -> Option<InstInfo>>(
+    t: &[(Tk, &str)],
+    k: usize,
+    open: usize,
+    s: &OutScope<'_, F>,
+) -> Option<(String, usize)> {
+    let ((ak, a), after) = one_arg(t, open)?;
+    let name = match ak {
+        Tk::Ident => a.to_owned(),
+        Tk::Str if !a.contains('\\') => a[1..a.len() - 1].to_owned(),
+        _ => return None,
+    };
+    let path = name.replace('.', "/");
+    let letter = s.letter;
+    let bus = |p: &str| p.replace('[', "<").replace(']', ">");
+    let text = if t[k].1.eq_ignore_ascii_case("v") {
+        // A net inside a subcircuit: its instance prefix through the bench's names.
+        let p = match path.rsplit_once('/') {
+            Some((insts, net)) => match (s.inst)(insts) {
+                Some(i) => format!("{}/{net}", i.path),
+                None => path.clone(),
+            },
+            None => path.clone(),
+        };
+        format!("V{letter}(\"/{}\")", bus(&p))
+    } else {
+        let (p, term) = (s.inst)(&path).map_or_else(
+            || (path.clone(), "PLUS".to_owned()),
+            |i| (i.path, i.terminal),
+        );
+        format!("I{letter}(\"/{}/{term}\")", bus(&p))
+    };
+    Some((text, after))
+}
+
+/// Index of the `)` matching the `(` at `open`.
+fn close_of(t: &[(Tk, &str)], open: usize) -> Option<usize> {
+    let mut depth = 0u32;
+    for (k, tok) in t.iter().enumerate().skip(open) {
+        match tok.1 {
+            "(" => depth += 1,
+            ")" => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(k);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The argument token ranges of the call whose `(` is at `open` and `)` at `close`, each
+/// trimmed of white space; `[]` for `()`. `None` for an empty argument.
+fn call_args(t: &[(Tk, &str)], open: usize, close: usize) -> Option<Vec<(usize, usize)>> {
+    let trim = |mut a: usize, mut b: usize| {
+        while a < b && t[a].0 == Tk::Ws {
+            a += 1;
+        }
+        while b > a && t[b - 1].0 == Tk::Ws {
+            b -= 1;
+        }
+        (a < b).then_some((a, b))
+    };
+    let mut out = Vec::new();
+    let (mut depth, mut start) = (0u32, open + 1);
+    for (k, tok) in t.iter().enumerate().take(close).skip(open + 1) {
+        match tok.1 {
+            "(" => depth += 1,
+            ")" => depth -= 1,
+            "," if depth == 0 => {
+                out.push(trim(start, k)?);
+                start = k + 1;
+            }
+            _ => {}
+        }
+    }
+    match trim(start, close) {
+        Some(r) => out.push(r),
+        None if out.is_empty() => {}
+        None => return None,
+    }
+    Some(out)
+}
+
+/// The text of a string or bare-identifier argument (`"M1"`, `M1`).
+fn word_arg<'a>(t: &[(Tk, &'a str)], r: (usize, usize)) -> Option<&'a str> {
+    if r.1 != r.0 + 1 {
+        return None;
+    }
+    match t[r.0] {
+        (Tk::Ident, x) => Some(x),
+        (Tk::Str, x) if !x.contains('\\') => Some(&x[1..x.len() - 1]),
+        _ => None,
+    }
+}
+
+/// Emits tokens `lo..hi` (see [`out_expr`]); `first` is the expression's first signal.
+fn emit<F: Fn(&str) -> Option<InstInfo>>(
+    t: &[(Tk, &str)],
+    lo: usize,
+    hi: usize,
+    s: &OutScope<'_, F>,
+    first: Option<&str>,
+    depth: u32,
+) -> Option<String> {
+    if depth >= OUT_DEPTH_MAX {
+        return None;
+    }
+    assert!(lo <= hi && hi <= t.len());
+    let mut out = String::new();
+    let mut k = lo;
+    while k < hi {
         let (kind, x) = t[k];
         match kind {
             Tk::Ws => out.push_str(x),
@@ -997,34 +1611,117 @@ fn out_to_ade(e: &str, vars: &[String], letter: &str) -> Option<String> {
                 "^" => out.push_str("**"),
                 _ => return None,
             },
-            Tk::Ident => {
-                let open = next_tok(&t, k + 1);
-                let is_call = t.get(open).is_some_and(|n| n.1 == "(");
-                if is_call && matches!(x, "v" | "V" | "i" | "I") {
-                    let ((ak, a), after) = one_arg(&t, open)?;
-                    let name = match ak {
-                        Tk::Ident => a.to_owned(),
-                        Tk::Str if !a.contains('\\') => a[1..a.len() - 1].to_owned(),
-                        _ => return None,
-                    };
-                    let path = name.replace('.', "/").replace('[', "<").replace(']', ">");
-                    if x.eq_ignore_ascii_case("v") {
-                        out.push_str(&format!("V{letter}(\"/{path}\")"));
-                    } else {
-                        out.push_str(&format!("I{letter}(\"/{path}/PLUS\")"));
-                    }
-                    k = after;
-                    continue;
-                } else if is_call {
-                    out.push_str(OUT_FNS.iter().find(|f| f.0 == x)?.1);
-                } else if vars.iter().any(|v| v == x) {
-                    out.push_str(&format!("VAR(\"{x}\")"));
-                } else {
+            Tk::Ident => {}
+        }
+        if kind != Tk::Ident {
+            k += 1;
+            continue;
+        }
+        let open = next_tok(t, k + 1);
+        if !(open < hi && t[open].1 == "(") {
+            if s.vars.iter().any(|v| v == x) {
+                out.push_str(&format!("VAR(\"{x}\")"));
+            } else if x == "pi" {
+                write_num(&mut out, std::f64::consts::PI);
+            } else {
+                return None;
+            }
+            k += 1;
+            continue;
+        }
+        if matches!(x, "v" | "V" | "i" | "I") {
+            let (text, after) = signal(t, k, open, s)?;
+            out.push_str(&text);
+            k = after;
+            continue;
+        }
+        let close = close_of(t, open).filter(|c| *c < hi)?;
+        let args = call_args(t, open, close)?;
+        let arg = |r: (usize, usize)| emit(t, r.0, r.1, s, first, depth + 1);
+        match (x, args.as_slice()) {
+            ("x", []) => out.push_str(&format!("xval({})", first?)),
+            ("at", [y, x0]) => {
+                let (y, x0) = (arg(*y)?, arg(*x0)?);
+                out.push_str(&format!("value({y} {x0})"));
+            }
+            ("pow", [a, b]) => {
+                let (a, b) = (arg(*a)?, arg(*b)?);
+                out.push_str(&format!("({a})**({b})"));
+            }
+            ("max" | "min", [a, rest @ ..]) if !rest.is_empty() => {
+                let sign = if x == "max" { '+' } else { '-' };
+                let mut acc = arg(*a)?;
+                for b in rest {
+                    let b = arg(*b)?;
+                    acc = format!("(({acc})+({b}){sign}abs(({acc})-({b})))/2");
+                }
+                out.push_str(&acc);
+            }
+            ("op", [inst, param]) => {
+                let (inst, param) = (word_arg(t, *inst)?, word_arg(t, *param)?);
+                let segs: Vec<&str> = inst.strip_prefix('/').unwrap_or(inst).split('/').collect();
+                if param.is_empty() || segs.iter().any(|g| g.is_empty()) {
                     return None;
                 }
+                // The longest prefix naming instances; the rest names devices inside
+                // the placed PDK subcircuit, as written. Without such a rest the
+                // `.retarget` class's `op` path (`M0.main`) supplies it.
+                let (info, rest) = (1..=segs.len())
+                    .rev()
+                    .find_map(|n| (s.inst)(&segs[..n].join("/")).map(|i| (i, &segs[n..])))
+                    .unwrap_or_else(|| {
+                        let i = InstInfo {
+                            path: segs.join("/"),
+                            ..InstInfo::default()
+                        };
+                        (i, &segs[segs.len()..])
+                    });
+                let mut path: Vec<&str> = info.path.split('/').collect();
+                if rest.is_empty() {
+                    path.extend(info.op_inner.iter().map(String::as_str));
+                } else {
+                    path.extend(rest.iter().copied());
+                }
+                out.push_str(&format!("OP(\"/{}\" \"{param}\")", path.join("/")));
             }
+            ("cross", [y, level, more @ ..]) if more.len() <= 2 => {
+                let edge = match more
+                    .first()
+                    .map(|r| arg(*r))
+                    .map(|e| e.ok_or(()))
+                    .transpose()
+                    .ok()?
+                    .as_deref()
+                {
+                    None | Some("0") => "either",
+                    Some("1") => "rising",
+                    Some("-1") => "falling",
+                    Some(_) => return None,
+                };
+                let n = match more.get(1) {
+                    None => "1".to_owned(),
+                    Some(r) => arg(*r).filter(|n| n.parse::<u32>().is_ok_and(|n| n > 0))?,
+                };
+                let (y, level) = (arg(*y)?, arg(*level)?);
+                out.push_str(&format!("cross({y} {level} {n} \"{edge}\")"));
+            }
+            ("settle", [y, tol]) => {
+                // Absolute tolerance → settlingTime's percent of the whole step,
+                // from the first to the last point of the data.
+                let (y, tol) = (arg(*y)?, arg(*tol)?);
+                let (x0, x1) = (format!("ymin(xval({y}))"), format!("ymax(xval({y}))"));
+                out.push_str(&format!(
+                    "settlingTime({y} {x0} t {x1} t \
+                             100*({tol})/abs(value({y} {x1})-value({y} {x0})))"
+                ));
+            }
+            (_, [a]) => {
+                let f = OUT_FNS.iter().find(|f| f.0 == x)?.1;
+                out.push_str(&format!("{f}({})", arg(*a)?));
+            }
+            _ => return None,
         }
-        k += 1;
+        k = close + 1;
     }
     Some(out)
 }
@@ -1063,7 +1760,7 @@ fn out_from_ade(e: &str) -> Option<String> {
                     } else {
                         let p = a.strip_prefix('/')?;
                         let p = if x.starts_with('I') {
-                            p.strip_suffix("/PLUS")?
+                            p.strip_suffix("/PLUS").or_else(|| p.strip_suffix("/p"))?
                         } else {
                             p
                         };
@@ -1637,7 +2334,7 @@ fn spice_form(name: &str, opts: &[(String, String)]) -> Option<Vec<String>> {
         "lin",
     ];
     match name {
-        "tran" if only(&["stop", "start", "maxstep"]) => {
+        "tran" if only(&["stop", "start", "maxstep", "errpreset"]) => {
             let stop = num("stop")?;
             let x: f64 = ael::fold_numeric(&stop)?.parse().ok()?;
             let mut step = String::new();
@@ -1653,7 +2350,13 @@ fn spice_form(name: &str, opts: &[(String, String)]) -> Option<Vec<String>> {
                     l.push_str(&format!(" {} {}", st.unwrap_or(Some("0".into()))?, m?))
                 }
             }
-            Some(vec![l])
+            match get("errpreset") {
+                Some(p) if ERRPRESETS.contains(&p) => {
+                    Some(vec![format!(".options errpreset={p}"), l])
+                }
+                Some(_) => None,
+                None => Some(vec![l]),
+            }
         }
         "ac" if only(&FREQ) => Some(vec![format!(".ac {}", freq()?)]),
         "dc" => {
@@ -1714,10 +2417,116 @@ mod tests {
             out_from_ade(&out_to_ade("v(\"d[3]\")", &[], "F").unwrap()).unwrap(),
             "v(\"d[3]\")"
         );
-        assert!(out_to_ade("cross(v(out), 0.5)", &vars, "T").is_none());
         assert!(out_to_ade("x > 1", &vars, "T").is_none());
         assert!(out_from_ade("bandwidth(mag(VF(\"/OUT\")) 3 \"low\")").is_none());
         assert!(out_from_ade("IT(\"/M1/D\")").is_none());
+        // A `schemify_core` ammeter's terminal `p` reads back as i().
+        assert_eq!(out_from_ade("IS(\"/VM/p\")").unwrap(), "i(VM)");
+    }
+
+    /// The Exercise 1/2 output forms, ADE text written from the *ADE Calculator* /
+    /// *OCEAN Reference* function list (independent of the code's tables).
+    #[test]
+    fn calculator_outputs_map_to_ade_functions() {
+        let vars: Vec<String> = ["VDD", "W", "VDS"].map(String::from).to_vec();
+        let info = |p: &str| -> Option<InstInfo> {
+            let (path, terminal, inner) = match p {
+                "VMDN" => ("VMDN", "p", vec![]),
+                "XDUT" | "DUT" => ("DUT", "", vec![]),
+                "XDUT/M1" | "DUT/M1" => ("DUT/M1", "D", vec!["main".to_owned()]),
+                "M7" => ("M7", "D", vec![]),
+                _ => return None,
+            };
+            Some(InstInfo {
+                path: path.into(),
+                terminal: terminal.into(),
+                op_inner: inner,
+            })
+        };
+        let tr = |e: &str, letter: &str| {
+            out_expr(
+                e,
+                &OutScope {
+                    vars: &vars,
+                    letter,
+                    inst: info,
+                },
+            )
+        };
+        for (e, l, want) in [
+            (
+                "abs(at(i(VMDN),VDD))",
+                "S",
+                r#"abs(value(IS("/VMDN/p") VAR("VDD")))"#,
+            ),
+            (
+                "1/at(deriv(i(VMDN)),VDS)",
+                "S",
+                r#"1/value(deriv(IS("/VMDN/p")) VAR("VDS"))"#,
+            ),
+            (
+                "1000*ymin(1/max(deriv(log10(abs(i(VMDN)))),1m))",
+                "S",
+                r#"1000*ymin(1/((deriv(log10(abs(IS("/VMDN/p")))))+(1m)+abs((deriv(log10(abs(IS("/VMDN/p")))))-(1m)))/2)"#,
+            ),
+            (
+                "abs(im(i(VMDN)))/(2*pi*x())",
+                "F",
+                r#"abs(imag(IF("/VMDN/p")))/(2*3.141592653589793*xval(IF("/VMDN/p")))"#,
+            ),
+            ("abs(re(i(VMDN)))", "F", r#"abs(real(IF("/VMDN/p")))"#),
+            ("db(at(v(out),10))", "F", r#"dB20(value(VF("/out") 10))"#),
+            (
+                "cross(db(v(out)),0,-1)",
+                "F",
+                r#"cross(dB20(VF("/out")) 0 1 "falling")"#,
+            ),
+            (
+                "cross(v(XDUT.n1), 0.5, 1, 2)",
+                "T",
+                r#"cross(VT("/DUT/n1") 0.5 2 "rising")"#,
+            ),
+            ("phase_margin(-v(out))", "F", r#"phaseMargin(-VF("/out"))"#),
+            (
+                "settle(v(out),10u)-20n",
+                "T",
+                r#"settlingTime(VT("/out") ymin(xval(VT("/out"))) t ymax(xval(VT("/out"))) t 100*(10u)/abs(value(VT("/out") ymax(xval(VT("/out"))))-value(VT("/out") ymin(xval(VT("/out"))))))-20n"#,
+            ),
+            (
+                "min(v(a), v(b), 1)",
+                "T",
+                r#"((((VT("/a"))+(VT("/b"))-abs((VT("/a"))-(VT("/b"))))/2)+(1)-abs((((VT("/a"))+(VT("/b"))-abs((VT("/a"))-(VT("/b"))))/2)-(1)))/2"#,
+            ),
+            ("pow(v(a), 2)", "T", r#"(VT("/a"))**(2)"#),
+            // op(): the bench path, the class's inner device, or an explicit inner device.
+            (r#"op("M7","gm")"#, "F", r#"OP("/M7" "gm")"#),
+            (r#"op("/XDUT/M1","id")"#, "F", r#"OP("/DUT/M1/main" "id")"#),
+            (
+                r#"op("XDUT/M1/mx","gds")"#,
+                "F",
+                r#"OP("/DUT/M1/mx" "gds")"#,
+            ),
+            (r#"op("Q9","vth")"#, "F", r#"OP("/Q9" "vth")"#),
+        ] {
+            assert_eq!(tr(e, l).as_deref(), Some(want), "{e}");
+        }
+        // Negative space: no ADE form, never a partial output.
+        for e in [
+            "x()",
+            "cross(v(a), 0.5, 2)",
+            "cross(v(a), 0.5, 1, 0)",
+            "slope(v(a))",
+            "if(v(a)>0, 1, 2)",
+            "v(a) > 1",
+            r#"op("M1")"#,
+            r#"op("M1", "")"#,
+            r#"op("M1//x", "gm")"#,
+            "at(v(a))",
+            "delay(v(a), 0.5, v(b), 0.5)",
+            "unknown_var * 2",
+        ] {
+            assert_eq!(tr(e, "T"), None, "{e}");
+        }
     }
 
     #[test]
@@ -1745,5 +2554,18 @@ mod tests {
         let v: Vec<String> = ["1k", "2"].map(String::from).to_vec();
         assert_eq!(sweep_shape(&v).0, "values");
         assert!(grid(0.0, 1.0, 2, true).is_none());
+        // Gap: 81 points 0..0.8 were written with binary noise (0.010000000000000002).
+        let fine = grid(0.0, 0.8, 81, false).unwrap();
+        assert_eq!(&fine[..4], ["0", "0.01", "0.02", "0.03"]);
+        assert_eq!(fine[7], "0.07");
+        assert!(fine.iter().all(|p| p.len() <= 4), "{fine:?}");
+        assert_eq!(
+            sweep_shape(&fine),
+            ("lin", vec!["0".into(), "0.8".into(), "81".into()])
+        );
+        assert_eq!(
+            grid(1.0, 1000.0, 4, true).unwrap(),
+            ["1", "10", "100", "1000"]
+        );
     }
 }

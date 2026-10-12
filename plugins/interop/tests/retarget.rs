@@ -797,6 +797,8 @@ fn target_map_parses_the_spec_example_and_rejects_junk() {
             vdd: 0.9,
             lgrid: Some(30.0 * 1e-9),
             fingerw_max: Some(2.0 * 1e-6),
+            fingerw_min: None,
+            split_above: None,
             polarity: Polarity::N,
             width: WidthMode::Finger,
         }]
@@ -830,9 +832,17 @@ fn target_map_parses_the_spec_example_and_rejects_junk() {
             "line 3: param `w` given twice",
         ),
         (
-            "class nmos lib a cell b\n  param m m\n  param w w\n  param l l\n  model m\n  device d\n  vdd -1\n",
-            "line 2: param `m`",
+            "class nmos lib a cell b\n  param q q\n  param w w\n  param l l\n  model m\n  device d\n  vdd -1\n",
+            "line 2: param `q`",
         ),
+        ("corner tt\n", "line 1: corner tt: no `lib`"),
+        ("corner tt\n  lib a\n", "line 2: `lib`: a corner takes"),
+        ("corner\n", "line 1: expected `corner <name>`"),
+        (
+            "corner tt\n  include a\ncorner tt\n  include b\n",
+            "line 3: corner tt defined twice",
+        ),
+        ("  lib a b\n", "line 1: attribute outside a class or corner"),
         (
             "class nmos lib a cell b\n  param w w\n  param l l\n  model \"unterminated\n  device d\n  vdd 1\n",
             "line 4:",
@@ -841,6 +851,28 @@ fn target_map_parses_the_spec_example_and_rejects_junk() {
         let e = retarget::parse_target_map(bad).unwrap_err();
         assert!(e.iter().any(|l| l.starts_with(want)), "{bad:?}: {e:?}");
     }
+    // `corner` records (§10.2): the target's model files per bench corner, beside classes.
+    let t = retarget::parse_target(&format!(
+        "corner tt\n  lib \"/pdk/m.scs\" tt_lib\n  include /pdk/extra.scs\n{SPEC_MAP}corner ff\n  lib /pdk/m.scs ff_lib\n"
+    ))
+    .unwrap();
+    assert_eq!(t.classes.len(), 1);
+    assert_eq!(
+        t.corners,
+        [
+            retarget::TargetCorner {
+                name: "tt".into(),
+                models: vec![
+                    ("/pdk/m.scs".into(), "tt_lib".into()),
+                    ("/pdk/extra.scs".into(), String::new())
+                ],
+            },
+            retarget::TargetCorner {
+                name: "ff".into(),
+                models: vec![("/pdk/m.scs".into(), "ff_lib".into())],
+            },
+        ]
+    );
     let dup = format!("{SPEC_MAP}{SPEC_MAP}");
     assert!(retarget::parse_target_map(&dup).unwrap_err()[0].contains("defined twice"));
     for (s, v) in [
@@ -1179,4 +1211,158 @@ fn cached_plugin_vars_feed_the_intent() {
             interop::retarget::intents(&d, 0, |e| interop::retarget::cell_value(&d, 0, e));
         assert_eq!(v.len(), usize::from(want.is_some()), "{}", notes.text());
     }
+}
+
+/// The assignment's finger rule (§10.3 `fingerw_min`, `split_above`): W > 10 µm splits into
+/// equal fingers of at least 5 µm, W ≤ 10 µm never splits; Rust and SKILL agree.
+#[test]
+fn finger_rule_splits_only_above_the_threshold() {
+    use retarget::finger_rule;
+    let (max, min, split) = (Some(10e-6), Some(5e-6), Some(10e-6));
+    for (w, nf, want) in [
+        (12e-6, 3, 2), // the gap: fingerw_max alone gave 3 × 4 µm
+        (10e-6, 3, 1), // at the threshold: one finger
+        (8e-6, 2, 1),  // below it: never split
+        (25e-6, 1, 3), // 3 × 8.33 µm: ≤ 10 µm and ≥ 5 µm
+        (30e-6 * (1.0 + 1e-12), 1, 3),
+        (100e-6, 1, 10),
+    ] {
+        assert_eq!(finger_rule(w, nf, max, min, split), want, "{w} {nf}");
+    }
+    // Without split_above: the intent's nf, capped by fingerw_min, raised by fingerw_max.
+    assert_eq!(finger_rule(12e-6, 3, max, min, None), 2);
+    assert_eq!(finger_rule(12e-6, 3, max, None, None), 3);
+    assert_eq!(
+        finger_rule(12e-6, 1, max, None, None),
+        fingers(12e-6, 1, max)
+    );
+    // fingerw_max wins over fingerw_min when both cannot hold (W/2 > max, W/3 < min).
+    assert_eq!(finger_rule(21e-6, 1, Some(10e-6), Some(8e-6), None), 3);
+    let mut i = interp();
+    for (w, nf, mx, mn, sp) in [
+        (12e-6, 3u32, max, min, split),
+        (10e-6, 3, max, min, split),
+        (25e-6, 1, max, min, split),
+        (12e-6, 3, max, min, None),
+        (21e-6, 1, Some(10e-6), Some(8e-6), None),
+        (3e-6, 2, None, None, None),
+    ] {
+        let f = |x: Option<f64>| x.map_or(V::Nil, V::Float);
+        let got = i
+            .call(
+                "SfyRtFingerRule",
+                vec![V::Float(w), V::Int(i64::from(nf)), f(mx), f(mn), f(sp)],
+            )
+            .unwrap();
+        assert_eq!(
+            got.as_int(),
+            Some(i64::from(finger_rule(w, nf, mx, mn, sp))),
+            "{w} {nf}"
+        );
+    }
+}
+
+/// §10.5: the Exercise 1 benches place `tech:nmos`/`tech:pmos` at fixed sizes (`w W`, `l
+/// L`, design variables): the Rust export writes placeholders with their ADE values,
+/// `SfyImport` skips them and `SfyRetarget` places the map's PDK cells with those strings,
+/// without characterizing.
+#[test]
+fn fixed_size_placeholders_place_pdk_cells_with_their_expressions() {
+    use interop::job::{Command, Job, Step};
+    use interop::virtuoso::ExportOptions;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/exercise1");
+    let mut job = Job::new(Command::VirtuosoExport {
+        tops: vec!["exercise1/dc_vds.shbench".into()],
+        out: "x.sfyx".into(),
+        opts: ExportOptions {
+            producer: "e2e".into(),
+            retarget: true,
+            ..ExportOptions::default()
+        },
+    });
+    let sfyx = loop {
+        match job.step() {
+            Step::Read(ps) => {
+                for p in ps {
+                    job.supply(&p, std::fs::read(root.join(&p)).ok());
+                }
+            }
+            Step::Done { writes, .. } => {
+                let x = writes.into_iter().find(|w| w.0 == "x.sfyx").unwrap().1;
+                break String::from_utf8(x).unwrap();
+            }
+            Step::Failed(p) => panic!("{p:?}"),
+        }
+    };
+    let fixed: Vec<&str> = sfyx
+        .lines()
+        .filter(|l| l.starts_with("(\"intent\""))
+        .collect();
+    assert_eq!(fixed.len(), 2, "{sfyx}");
+    assert!(
+        fixed
+            .iter()
+            .all(|l| l.ends_with(r#"(("w" "W") ("l" "L") ("nf" "1") ("m" "1")))"#)),
+        "{fixed:?}"
+    );
+    let mut i = Interp::new(MockDb::default());
+    for l in ["analogLib", "basic", "schemify", "schemify_core", "tgt"] {
+        i.host.add_lib(l);
+    }
+    i.load(&interop::skill::schemify_il()).unwrap();
+    i.load(include_str!("fixtures/skill/build.il")).unwrap();
+    i.load("(SfyFixStdlib) (SfyFixMos \"tgt\" \"nch\") (SfyFixMos \"tgt\" \"pch\")")
+        .unwrap();
+    i.files.insert("/w/x.sfyx".into(), sfyx.clone());
+    let ok = i.load("(SfyImport \"/w/x.sfyx\")").unwrap();
+    let log = i.files["/w/x.sfyx.log"].clone();
+    assert!(ok.truthy() && log.contains("count placeholder 2"), "{log}");
+    let map = |class: &str, cell: &str| {
+        format!(
+            "class {class} lib tgt cell {cell}\n  pin d D\n  pin g G\n  pin s S\n  pin b B\n  param w w\n  param l l\n  model \"include \\\"/pdk/m.scs\\\" section=tt\"\n  device \"M0 (d g s b) {cell}\"\n  vdd 0.8\n"
+        )
+    };
+    // m is 1, so the map needs no `param m`; the corner record is skipped by the reader.
+    i.files.insert(
+        "/w/t.retarget".into(),
+        format!(
+            "{}{}corner tt\n  lib /pdk/m.scs tt\n",
+            map("nmos", "nch"),
+            map("pmos", "pch")
+        ),
+    );
+    let ok = i
+        .load("(SfyRetarget \"/w/x.sfyx\" \"/w/t.retarget\")")
+        .unwrap();
+    let rlog = i.files["/w/x.sfyx.retarget.log"].clone();
+    assert!(ok.truthy() && rlog.ends_with("PASS\n"), "{rlog}");
+    assert_eq!(rlog.matches(": fixed ").count(), 2, "{rlog}");
+    assert_eq!(i.host.ocean.runs, 0, "nothing to characterize");
+    i.load("(SfyExport \"/w/after.sfyx\" \"schemify\" (list \"dc_vds\") ?ref nil)")
+        .unwrap();
+    let after = i.files["/w/after.sfyx"].clone();
+    assert_eq!(
+        after
+            .lines()
+            .filter(|l| l.starts_with("(\"inst\"") && l.contains("\"tgt\""))
+            .count(),
+        2,
+        "{after}"
+    );
+    for want in [r#""w" "string" "W")"#, r#""l" "string" "L")"#] {
+        assert_eq!(after.matches(want).count(), 2, "{want}\n{after}");
+    }
+    // Negative space: nf 3 without a mapped param nf is not placed and fails the run.
+    i.files.insert(
+        "/w/y.sfyx".into(),
+        sfyx.replace(r#"("nf" "1")"#, r#"("nf" "3")"#),
+    );
+    let ok = i
+        .load("(SfyRetarget \"/w/y.sfyx\" \"/w/t.retarget\")")
+        .unwrap();
+    let ylog = i.files["/w/y.sfyx.retarget.log"].clone();
+    assert!(
+        !ok.truthy() && ylog.contains("nf 3 but the class maps no param nf"),
+        "{ylog}"
+    );
 }

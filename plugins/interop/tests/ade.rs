@@ -242,7 +242,7 @@ fn gen_bench(seed: u64, with_param: bool) -> Bench {
     t.push_str(
         "output vmax \"ymax(v(out))\"\noutput gain \"(ymax(v(out)) - ymin(v(out))) / vdd\"\n",
     );
-    t.push_str("output tr \"cross(v(out), 0.9)\"\n");
+    t.push_str("output tr \"delay(v(in), 0.9, v(out), 0.9)\"\n");
     t.push_str("spec vmax\n  min 1\n  max 1.7\nspec gain\n  max 2\nspec tr\n  max 1n\n");
     exact.extend([
         "output vmax".into(),
@@ -660,4 +660,56 @@ fn skill_loader_refuses_bad_options_with_their_line() {
     let log = &i.files["/t/bad.sfyx.log"];
     assert!(!ok.truthy());
     assert!(log.contains("refused line 6: maestro t: analysis"), "{log}");
+}
+
+/// Exercise 2 forms (§9.1): one test holding the op table and the ac outputs (`analysis`),
+/// a plot (`vs`), spec bounds over bench vars folded, a bound over a swept var reported,
+/// `.options errpreset` on the tran analysis, `slope`-style column conditions reported.
+#[test]
+fn op_and_ac_outputs_share_one_test() {
+    let bench = "schemify 1 shbench\n\nvar A0_spec 40\nvar GBW_spec 50meg\nvar R 1k\n\
+                 sweep R\n  var R\n  values 1k 2k\n\
+                 code sim spice\n  | .options errpreset=conservative\n  | .op\n  | .ac dec 50 1 10G\n  | .tran 10p 200n\n\
+                 output A0 at(mag(v(out)),10)\n  analysis ac\n\
+                 output Vout v(out)\n  analysis op\n\
+                 output gm \"op(\\\"M1\\\",\\\"gm\\\")\"\n\
+                 output gmid \"op(\\\"M1\\\",\\\"gm\\\")/op(\\\"M1\\\",\\\"id\\\")\"\n  vs Vout\n\
+                 output slope ymin(if(db(v(out))>=0,deriv(db(v(out))),0))\n\
+                 output bad v(out)\n  analysis noise\n\
+                 spec A0\n  min A0_spec/(1+A0_spec)\n  max GBW_spec\n\
+                 spec Vout\n  min R/1k\n";
+    let (text, notes) = export(&project(bench));
+    let got: Vec<String> = maestro(&text)
+        .iter()
+        .map(|r| {
+            let mut s = String::new();
+            sfyx::write_record(r, &mut s);
+            s.trim_end().to_owned()
+        })
+        .collect();
+    for want in [
+        r#"("analysis" "tran" 1 (("stop" "200n") ("errpreset" "conservative")))"#,
+        r#"("output" "A0" "point" "value(mag(VF(\"/out\")) 10)")"#,
+        r#"("output" "Vout" "point" "VDC(\"/out\")")"#,
+        r#"("output" "gm" "point" "OP(\"/M1\" \"gm\")")"#,
+        r#"("output" "gmid" "point" "OP(\"/M1\" \"gm\")/OP(\"/M1\" \"id\")")"#,
+        r#"("spec" "A0" "gt" "0.975609756097561")"#,
+        r#"("spec" "A0" "lt" "50000000")"#,
+    ] {
+        assert!(got.iter().any(|l| l == want), "{want}\n{got:#?}");
+    }
+    let rows = notes.text();
+    for want in [
+        "output slope: `ymin(if(",
+        "output bad: analysis `noise` is not one the test runs",
+        "spec Vout min `R/1k`: depends on swept var R",
+        "output gmid vs Vout: plotted by the OCEAN script only",
+    ] {
+        assert!(rows.contains(want), "{want}\n{rows}");
+    }
+    assert!(!rows.contains("errpreset"), "{rows}");
+    assert!(
+        !got.iter().any(|l| l.starts_with(r#"("spec" "Vout""#)),
+        "{got:#?}"
+    );
 }

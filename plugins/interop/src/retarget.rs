@@ -354,6 +354,38 @@ pub fn fingers(w: f64, nf: u32, fingerw_max: Option<f64>) -> u32 {
     nf.max(k)
 }
 
+/// The finger count SfyRetarget places (§10.3): [`fingers`] (`nf` raised so no finger is
+/// wider than `fingerw_max`), then the target map's finger rule: with `split_above`, a
+/// total width at or below it is one finger (never split) and a wider one at least two;
+/// with `fingerw_min`, no more fingers than keep each at least that wide — unless
+/// `fingerw_max` needs them (the upper bound wins). The assignment rule "W > 10 µm splits
+/// into equal fingers of at least 5 µm, W ≤ 10 µm never splits" is `fingerw_max 10u
+/// fingerw_min 5u split_above 10u`: 12 µm with an intent of 3 fingers gives 2 × 6 µm.
+/// Comparisons carry the 1e-9 relative slack of [`fingers`].
+///
+/// # Panics
+///
+/// As [`fingers`]; a non-positive `fingerw_min` or `split_above`.
+pub fn finger_rule(
+    w: f64,
+    nf: u32,
+    fingerw_max: Option<f64>,
+    fingerw_min: Option<f64>,
+    split_above: Option<f64>,
+) -> u32 {
+    assert!(fingerw_min.is_none_or(|m| m > 0.0) && split_above.is_none_or(|s| s > 0.0));
+    let lo = fingers(w, 1, fingerw_max);
+    let base = match split_above {
+        Some(s) if w <= s * (1.0 + 1e-9) => 1,
+        Some(_) => lo.max(2),
+        None => nf.max(lo),
+    };
+    let hi = fingerw_min.map_or(NF_MAX, |m| ((w / m * (1.0 + 1e-9)).floor() as u32).max(1));
+    let out = lo.max(base.min(hi));
+    debug_assert!((1..=NF_MAX).contains(&out));
+    out
+}
+
 /// gm/Id of `[id, gm, gds, cgg]`; 0 off the usable branch (a zero or non-positive value).
 fn gm_id_of(q: &[f64; 4]) -> f64 {
     if q.iter().all(|&x| x > 0.0) {
@@ -740,24 +772,60 @@ pub struct TargetClass {
     pub lgrid: Option<f64>,
     /// Widest finger (m); `None` = never split.
     pub fingerw_max: Option<f64>,
+    /// Narrowest finger of a split device (m), [`finger_rule`].
+    pub fingerw_min: Option<f64>,
+    /// Total width (m) at or below which a device is never split, [`finger_rule`].
+    pub split_above: Option<f64>,
     /// Channel type.
     pub polarity: Polarity,
     /// Meaning of the width parameter.
     pub width: WidthMode,
 }
 
-/// Parses a `.retarget` target map (§10.2): `class <name> lib <lib> cell <cell>` records
-/// with indented attributes, `#` comments and blank lines.
+/// One `corner` of a `.retarget` file: the target's model files for a bench corner of that
+/// name (§10.2), which replace the bench's own on export with `--target`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TargetCorner {
+    /// The bench corner name.
+    pub name: String,
+    /// `(file, section)` in file order; section `""` for `include`.
+    pub models: Vec<(String, String)>,
+}
+
+/// A whole `.retarget` file: device classes and corner model files.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Target {
+    /// `class` records, in file order.
+    pub classes: Vec<TargetClass>,
+    /// `corner` records, in file order.
+    pub corners: Vec<TargetCorner>,
+}
+
+/// Parses the `class` records of a `.retarget` target map (§10.2); see [`parse_target`],
+/// whose `corner` records this drops.
+///
+/// # Errors
+///
+/// As [`parse_target`].
+pub fn parse_target_map(src: &str) -> Result<Vec<TargetClass>, Vec<String>> {
+    parse_target(src).map(|t| t.classes)
+}
+
+/// Parses a `.retarget` target map (§10.2): `class <name> lib <lib> cell <cell>` and
+/// `corner <name>` records with indented attributes, `#` comments and blank lines.
 ///
 /// # Errors
 ///
 /// Every problem found, one per entry, as `line N: <reason>`: malformed lines, unknown
-/// records or attributes, a repeated single attribute or class, a missing `model`,
-/// `device`, `vdd`, `param w` or `param l`, a number that is not
+/// records or attributes, a repeated single attribute, class or corner, a missing `model`,
+/// `device`, `vdd`, `param w` or `param l`, a corner without models, a number that is not
 /// `digits[.digits][e±digits][f|p|n|u|m|k|meg|g|t]` and positive, more than
-/// [`CLASSES_MAX`] classes.
-pub fn parse_target_map(src: &str) -> Result<Vec<TargetClass>, Vec<String>> {
+/// [`CLASSES_MAX`] classes or corners.
+pub fn parse_target(src: &str) -> Result<Target, Vec<String>> {
     let mut out: Vec<TargetClass> = Vec::new();
+    let mut corners: Vec<TargetCorner> = Vec::new();
+    // (corner under construction, its first line); at most one of it and `cur` is open.
+    let mut corner: Option<(TargetCorner, usize)> = None;
     let mut errs: Vec<String> = Vec::new();
     // (class under construction, its first line) — attributes go to it.
     let mut cur: Option<(TargetClass, usize)> = None;
@@ -799,16 +867,32 @@ pub fn parse_target_map(src: &str) -> Result<Vec<TargetClass>, Vec<String>> {
         let mut err = |why: String| errs.push(format!("line {n}: {why}"));
         if at_col0 {
             finish(cur.take(), &mut out, &mut errs);
+            finish_corner(corner.take(), &mut corners, &mut errs);
             let mut err = |why: String| errs.push(format!("line {n}: {why}"));
             let Ok((word, rest)) = text::split_word(line) else {
                 err("malformed record".into());
                 continue;
             };
-            if word != "class" {
-                err(format!("unknown record `{word}` (only `class`)"));
+            let vals: Result<Vec<Cow<str>>, _> = text::values(rest).collect();
+            if word == "corner" {
+                match vals.as_deref() {
+                    Ok([name]) if text::is_word(name) => {
+                        corner = Some((
+                            TargetCorner {
+                                name: name.to_string(),
+                                models: Vec::new(),
+                            },
+                            n,
+                        ));
+                    }
+                    _ => err("expected `corner <name>`".into()),
+                }
                 continue;
             }
-            let vals: Result<Vec<Cow<str>>, _> = text::values(rest).collect();
+            if word != "class" {
+                err(format!("unknown record `{word}` (only `class`, `corner`)"));
+                continue;
+            }
             match vals.as_deref() {
                 Ok([name, kl, lib, kc, cell])
                     if kl == "lib" && kc == "cell" && text::is_word(name) =>
@@ -826,6 +910,8 @@ pub fn parse_target_map(src: &str) -> Result<Vec<TargetClass>, Vec<String>> {
                             vdd: 0.0,
                             lgrid: None,
                             fingerw_max: None,
+                            fingerw_min: None,
+                            split_above: None,
                             polarity: Polarity::N,
                             width: WidthMode::Finger,
                         },
@@ -836,10 +922,6 @@ pub fn parse_target_map(src: &str) -> Result<Vec<TargetClass>, Vec<String>> {
             }
             continue;
         }
-        let Some((c, _)) = cur.as_mut() else {
-            err("attribute outside a class".into());
-            continue;
-        };
         let (key, rest) = match text::body_line(line) {
             Ok(BodyLine::Attr(k, r)) => (k, r),
             _ => {
@@ -853,6 +935,20 @@ pub fn parse_target_map(src: &str) -> Result<Vec<TargetClass>, Vec<String>> {
                 err(format!("`{key}`: malformed value"));
                 continue;
             }
+        };
+        if let Some((co, _)) = corner.as_mut() {
+            match (key, vals.as_slice()) {
+                ("lib", [f, s]) => co.models.push((f.to_string(), s.to_string())),
+                ("include", [f]) => co.models.push((f.to_string(), String::new())),
+                _ => err(format!(
+                    "`{key}`: a corner takes `lib <file> <section>` or `include <file>`"
+                )),
+            }
+            continue;
+        }
+        let Some((c, _)) = cur.as_mut() else {
+            err("attribute outside a class or corner".into());
+            continue;
         };
         let one = |v: &[Cow<str>]| match v {
             [x] => Ok(x.to_string()),
@@ -870,8 +966,8 @@ pub fn parse_target_map(src: &str) -> Result<Vec<TargetClass>, Vec<String>> {
                     } else {
                         &mut c.params
                     };
-                    if key == "param" && !matches!(a.as_ref(), "w" | "l" | "nf") {
-                        Err(format!("param `{a}`: only w, l and nf are set"))
+                    if key == "param" && !matches!(a.as_ref(), "w" | "l" | "nf" | "m") {
+                        Err(format!("param `{a}`: only w, l, nf and m are set"))
                     } else if list.iter().any(|(s, _)| s == a) {
                         Err(format!("{key} `{a}` given twice"))
                     } else {
@@ -903,11 +999,12 @@ pub fn parse_target_map(src: &str) -> Result<Vec<TargetClass>, Vec<String>> {
                 c.vdd = v;
                 Ok(())
             }),
-            "lgrid" | "fingerw_max" => num(&vals).and_then(|v| {
-                let slot = if key == "lgrid" {
-                    &mut c.lgrid
-                } else {
-                    &mut c.fingerw_max
+            "lgrid" | "fingerw_max" | "fingerw_min" | "split_above" => num(&vals).and_then(|v| {
+                let slot = match key {
+                    "lgrid" => &mut c.lgrid,
+                    "fingerw_max" => &mut c.fingerw_max,
+                    "fingerw_min" => &mut c.fingerw_min,
+                    _ => &mut c.split_above,
                 };
                 if slot.replace(v).is_some() {
                     return Err(format!("`{key}` given twice"));
@@ -937,6 +1034,7 @@ pub fn parse_target_map(src: &str) -> Result<Vec<TargetClass>, Vec<String>> {
         }
     }
     finish(cur.take(), &mut out, &mut errs);
+    finish_corner(corner.take(), &mut corners, &mut errs);
     for c in &mut out {
         if c.op.is_empty() {
             c.op = c.device.split_whitespace().next().unwrap_or("").to_owned();
@@ -944,9 +1042,34 @@ pub fn parse_target_map(src: &str) -> Result<Vec<TargetClass>, Vec<String>> {
     }
     if errs.is_empty() {
         debug_assert!(out.len() <= CLASSES_MAX && out.iter().all(|c| !c.op.is_empty()));
-        Ok(out)
+        debug_assert!(corners.iter().all(|c| !c.models.is_empty()));
+        Ok(Target {
+            classes: out,
+            corners,
+        })
     } else {
         Err(errs)
+    }
+}
+
+/// Closes a `corner` record of [`parse_target`]: at least one model, a name used once.
+fn finish_corner(
+    c: Option<(TargetCorner, usize)>,
+    out: &mut Vec<TargetCorner>,
+    errs: &mut Vec<String>,
+) {
+    let Some((c, at)) = c else { return };
+    if c.models.is_empty() {
+        errs.push(format!(
+            "line {at}: corner {}: no `lib` or `include`",
+            c.name
+        ));
+    } else if out.iter().any(|o| o.name == c.name) {
+        errs.push(format!("line {at}: corner {} defined twice", c.name));
+    } else if out.len() >= CLASSES_MAX {
+        errs.push(format!("line {at}: more than {CLASSES_MAX} corners"));
+    } else {
+        out.push(c);
     }
 }
 

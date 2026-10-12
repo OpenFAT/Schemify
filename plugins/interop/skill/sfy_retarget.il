@@ -165,6 +165,21 @@
         (max nf k))
       nf)))
 
+;; The finger rule of the target map (Rust retarget::finger_rule): SfyRtFingers from one
+;; finger, then split_above (never split at or below it, at least two above) or the
+;; intent's nf, capped so each finger stays at least fingerwMin wide unless fingerwMax
+;; needs more. nil arguments are absent attributes.
+(procedure (SfyRtFingerRule w nf fingerwMax fingerwMin splitAbove)
+  (let ((lo 1) (base 1) (hi 4096))
+    (setq lo (SfyRtFingers w 1 fingerwMax))
+    (cond
+      ((and splitAbove (leqp w (times splitAbove (plus 1.0 1.0e-9)))) (setq base 1))
+      (splitAbove (setq base (max lo 2)))
+      (t (setq base (max nf lo))))
+    (when fingerwMin
+      (setq hi (max 1 (fix (times (quotient w fingerwMin) (plus 1.0 1.0e-9))))))
+    (max lo (min base hi))))
+
 ;; True when a and b agree within rel relative (both nil also agrees).
 (procedure (SfyRtClose a b rel)
   (cond
@@ -260,9 +275,10 @@
 
 ;; Reads a .retarget file: a list of classes, each (header attrRow...), header =
 ;; ("class" name "lib" lib "cell" cell), attrRow = (key value...), numbers still text.
+;; corner records (the export's --target, spec section 10.2) are skipped here.
 ;; Returns (classes) or (nil "line N: reason").
 (procedure (SfyRtReadMap path)
-  (prog (port line words classes cur ln)
+  (prog (port line words classes cur ln incorner)
     (setq port (infile path))
     (unless port
       (return (list nil (strcat "cannot read " path))))
@@ -272,15 +288,22 @@
       (setq words (SfyRtWords line))
       (cond
         ((or (null words) (equal (substring (car words) 1 1) "#")) nil)
+        ((and incorner (member (substring line 1 1) (list " " "\t"))) nil)
         ((member (substring line 1 1) (list " " "\t"))
           (unless cur
             (close port)
             (return (list nil (sprintf nil "line %d: attribute outside a class" ln))))
           (setq cur (append1 cur words)))
+        ((and (equal (car words) "corner") (equal (length words) 2))
+          (when cur
+            (setq classes (cons cur classes)))
+          (setq cur nil)
+          (setq incorner t))
         ((and (equal (car words) "class") (equal (length words) 6)
               (equal (nth 2 words) "lib") (equal (nth 4 words) "cell"))
           (when cur
             (setq classes (cons cur classes)))
+          (setq incorner nil)
           (setq cur (list words)))
         (t
           (close port)
@@ -318,7 +341,8 @@
 ;; Contract with sfy_cells.il (the SKILL-cells part provides these; TODO until it lands):
 ;;   (SfySetParams inst params callbacks) -> t/nil
 ;;     inst: a schematic instance; params: list of (cdfName value) where value is a float
-;;     (w, l in metres) or an integer (nf). Sets each through the instance CDF with the
+;;     (w, l in metres), an integer (nf) or a string (a fixed size's ADE expression; int
+;;     and float CDF parameters read it with atoi/atof). Sets each through the instance CDF with the
 ;;     CDF's own type and full precision (never a 7-digit print), then, when callbacks is
 ;;     non-nil, runs the CDF callbacks of the set params in CDF order inside errset and logs
 ;;     what the PDK clamped (spec section 5.3).
@@ -426,10 +450,47 @@
       (setq vg (cons (quotient (times k vdd) (float steps)) vg)))
     (return (SfyRtTableMake (quotient vdd 2.0) ls vdss (reverse vg) 1.0e-6 (reverse rows)))))
 
-;; Places one solved intent e (see SfyRtReadIntents) as an instance of class cls.
-;; Returns t, or a string naming the failure.
-(procedure (SfyRtPlace e cls w nf l callbacks)
-  (prog (inst cv master obj upi params conns wv)
+;; The (cdfName value) list of a solved size: w (per finger unless the map's width is
+;; total) and l in metres, nf when the class maps it.
+(procedure (SfyRtSizeParams cls w nf l)
+  (let ((params nil))
+    (setq params (list (list (SfyRtMapName cls "param" "w")
+                             (if (equal (SfyRtAttr cls "width") "total") w (quotient w nf)))
+                       (list (SfyRtMapName cls "param" "l") l)))
+    (when (SfyRtMapName cls "param" "nf")
+      (setq params (append1 params (list (SfyRtMapName cls "param" "nf") nf))))
+    params))
+
+;; The (cdfName value) list of a fixed-size placeholder (spec section 10.5): its values are
+;; ADE expressions (strings, so a swept design variable stays one); w over nf for a
+;; finger-width map; nf and m other than "1" need a mapped param. A string names a failure.
+(procedure (SfyRtFixedParams cls intent)
+  (prog (w l nf m params)
+    (setq w (cadr (assoc "w" (nth 3 intent))))
+    (setq l (cadr (assoc "l" (nth 3 intent))))
+    (setq nf (cadr (assoc "nf" (nth 3 intent))))
+    (setq m (cadr (assoc "m" (nth 3 intent))))
+    (unless (and w l nf m)
+      (return "a fixed size needs w, l, nf and m"))
+    (when (and (nequal nf "1") (null (SfyRtMapName cls "param" "nf")))
+      (return (strcat "nf " nf " but the class maps no param nf")))
+    (when (and (nequal m "1") (null (SfyRtMapName cls "param" "m")))
+      (return (strcat "m " m " but the class maps no param m")))
+    (setq params (list (list (SfyRtMapName cls "param" "w")
+                             (if (or (equal nf "1") (equal (SfyRtAttr cls "width") "total"))
+                               w
+                               (strcat "(" w ")/(" nf ")")))
+                       (list (SfyRtMapName cls "param" "l") l)))
+    (when (SfyRtMapName cls "param" "nf")
+      (setq params (append1 params (list (SfyRtMapName cls "param" "nf") nf))))
+    (when (SfyRtMapName cls "param" "m")
+      (setq params (append1 params (list (SfyRtMapName cls "param" "m") m))))
+    (return params)))
+
+;; Places one intent e (see SfyRtReadIntents) as an instance of class cls with the
+;; (cdfName value) list params. Returns t, or a string naming the failure.
+(procedure (SfyRtPlace e cls params callbacks)
+  (prog (inst cv master obj upi conns)
     (setq inst (nth 4 e))
     (setq upi (float (nth 3 e)))
     (setq cv (dbOpenCellViewByType (nth 0 e) (nth 1 e) (nth 2 e) nil "a"))
@@ -442,10 +503,6 @@
       (list (quotient (float (nth 6 inst)) upi) (quotient (float (nth 7 inst)) upi)) (nth 8 inst)))
     (unless obj
       (return "schCreateInst failed"))
-    (setq wv (if (equal (SfyRtAttr cls "width") "total") w (quotient w nf)))
-    (setq params (list (list (SfyRtMapName cls "param" "w") wv) (list (SfyRtMapName cls "param" "l") l)))
-    (when (SfyRtMapName cls "param" "nf")
-      (setq params (append1 params (list (SfyRtMapName cls "param" "nf") nf))))
     (unless (SfySetParams obj params callbacks)
       (return "SfySetParams failed"))
     (setq conns nil)
@@ -462,7 +519,7 @@
 ;; the solved w, l, nf and draws the conn stubs. Writes <path>.retarget.log; returns t when
 ;; every intent was placed.
 (procedure (SfyRetarget path map @key (lib nil) (characterize t) (callbacks nil))
-  (prog (m classes log entries used plan tab sol cls l vds nf w ok res lsnap)
+  (prog (m classes log entries fixed used plan tab sol cls l vds nf w ok res lsnap params)
     (setq log (outfile (strcat path ".retarget.log") "w"))
     (setq m (SfyRtReadMap map))
     (unless (car m)
@@ -473,6 +530,9 @@
     (setq entries (SfyRtReadIntents path))
     (when lib
       (setq entries (setof e entries (equal (nth 0 e) lib))))
+    ;; Fixed-size placeholders (no gmid, section 10.5) need no characterization.
+    (setq fixed (setof e entries (null (assoc "gmid" (nth 3 (nth 6 e))))))
+    (setq entries (setof e entries (assoc "gmid" (nth 3 (nth 6 e)))))
     (setq ok t)
     ;; Classes used, each with its snapped lengths and drain voltages (vdd/2 always).
     (foreach e entries
@@ -497,9 +557,18 @@
     (foreach p plan
       (fprintf log "class %s L %L VDS %L VGS 0..vdd in 72 steps\n" (car p) (nth 2 p) (nth 3 p)))
     (unless characterize
-      (fprintf log "plan only (characterize nil)\n")
+      (fprintf log "plan only (characterize nil): %d fixed\n" (length fixed))
       (close log)
       (return ok))
+    (foreach e fixed
+      (setq cls (car (exists c classes (equal (nth 1 (car c)) (nth 2 (nth 6 e))))))
+      (setq params (if cls (SfyRtFixedParams cls (nth 6 e)) "its class is not in the map"))
+      (setq res (if (stringp params) params (SfyRtPlace e cls params callbacks)))
+      (if (equal res t)
+        (fprintf log "inst %s: fixed %L\n" (nth 2 (nth 4 e)) params)
+        (progn
+          (fprintf log "inst %s: not placed: %s\n" (nth 2 (nth 4 e)) res)
+          (setq ok nil))))
     ;; Characterize, then solve and place each intent of the class.
     (foreach p plan
       (setq tab (SfyRtCharacterize (nth 1 p) (nth 2 p) (nth 3 p) (strcat path ".rt." (car p))))
@@ -520,11 +589,13 @@
                 (setq ok nil))
               (progn
                 (setq w (nth 2 sol))
-                (setq nf (SfyRtFingers w (or (atoi (cadr (assoc "nf" (nth 3 (nth 6 e))))) 1)
-                  (and (SfyRtAttr cls "fingerw_max") (SfyRtNum (SfyRtAttr cls "fingerw_max")))))
+                (setq nf (SfyRtFingerRule w (or (atoi (cadr (assoc "nf" (nth 3 (nth 6 e))))) 1)
+                  (and (SfyRtAttr cls "fingerw_max") (SfyRtNum (SfyRtAttr cls "fingerw_max")))
+                  (and (SfyRtAttr cls "fingerw_min") (SfyRtNum (SfyRtAttr cls "fingerw_min")))
+                  (and (SfyRtAttr cls "split_above") (SfyRtNum (SfyRtAttr cls "split_above")))))
                 (fprintf log "inst %s: intent %L -> W %L nf %d L %L VGS %L residual %L\n" (nth 2 (nth 4 e))
                   (nth 3 (nth 6 e)) w nf l (nth 0 sol) (nth 3 sol))
-                (setq res (SfyRtPlace e cls w nf l callbacks))
+                (setq res (SfyRtPlace e cls (SfyRtSizeParams cls w nf l) callbacks))
                 (unless (equal res t)
                   (fprintf log "inst %s: not placed: %s\n" (nth 2 (nth 4 e)) res)
                   (setq ok nil))))))))
