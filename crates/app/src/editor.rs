@@ -1150,8 +1150,14 @@ impl Editor {
         if self.sel_changed && self.opts.auto_highlight {
             self.auto_highlight();
         }
+        let cam0 = self.camera();
         let stale = self.build_scene();
         changed |= stale;
+        if self.camera() != cam0 {
+            // The first fit runs after compose (it needs the laid-out canvas): compose again
+            // so the status line reads the fitted camera this frame, not at the next input.
+            self.compose_ui(false);
+        }
         let decor = self.build_decor(stale);
         changed |= decor;
         self.build_shown();
@@ -3945,7 +3951,8 @@ impl Editor {
     }
 
     /// `scene::build` when the active document, view, edit epoch or symbols changed; then
-    /// the selection bitmap and marks when the selection changed.
+    /// the selection bitmap and marks when the selection changed; fits a level that has no
+    /// camera yet once the canvas has a size. True when the scene or the camera changed.
     fn build_scene(&mut self) -> bool {
         let Some((h, view)) = self.active() else {
             return false;
@@ -3984,16 +3991,19 @@ impl Editor {
                 .collect();
             self.set_selection(sel);
             self.sel_changed = true;
-            let unfitted = self.session.level().is_some_and(|l| l.cam.is_none());
-            if unfitted && self.canvas_rect().width() > 0.0 {
-                let e = self.scene.extent;
-                let empty = e == [0; 4];
-                self.fit(if empty {
-                    [-400 * UNIT, -300 * UNIT, 400 * UNIT, 300 * UNIT]
-                } else {
-                    e
-                });
-            }
+        }
+        // Outside `stale`: the first viewport can be empty (the web canvas has no size until
+        // its first `Resized`), and the scene is not rebuilt when the real size arrives.
+        let unfitted = self.session.level().is_some_and(|l| l.cam.is_none());
+        let fitted = unfitted && self.canvas_rect().width() > 0.0;
+        if fitted {
+            let e = self.scene.extent;
+            let empty = e == [0; 4];
+            self.fit(if empty {
+                [-400 * UNIT, -300 * UNIT, 400 * UNIT, 300 * UNIT]
+            } else {
+                e
+            });
         }
         if self.sel_changed {
             self.selected = vec![false; self.scene.objs.len()];
@@ -4007,7 +4017,7 @@ impl Editor {
             self.sel_changed = false;
             let _ = self.host.push(None, &Event::SelectionChanged);
         }
-        stale
+        stale || fitted
     }
 
     /// Rubber bands and previews of the gesture in progress (overlay primitives).

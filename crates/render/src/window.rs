@@ -76,9 +76,11 @@ enum UserEvent {
     Access(accesskit_winit::Event),
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     GpuReady,
-    /// Web: no WebGPU adapter; frames go to the CPU overlay (`cpu_view`).
+    /// Web: WebGPU is unusable (no adapter or device, the device lost, or presented frames
+    /// that never reach the page), for the reason given; frames go to the CPU overlay
+    /// (`cpu_view`) from now on. The first one is logged; later ones are ignored.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    NoGpu,
+    NoGpu(String),
 }
 
 impl From<accesskit_winit::Event> for UserEvent {
@@ -125,6 +127,9 @@ struct Shell<A: App> {
     /// Web without a GPU: the CPU-rastered overlay (web spec §7).
     #[cfg(target_arch = "wasm32")]
     cpu: Option<crate::cpu_view::CpuView>,
+    /// Web: the first GPU frame was presented and `cpu_view::shows_frames` checks it.
+    #[cfg(target_arch = "wasm32")]
+    probed: bool,
     adapter: Option<accesskit_winit::Adapter>,
     events: InputEvents,
     mods: u8,
@@ -145,8 +150,10 @@ struct Shell<A: App> {
 ///
 /// # Errors
 ///
-/// Fails when no event loop can be created (no display server). A GPU without WebGPU/Vulkan/
-/// Metal/DX12 support is reported on stderr and leaves the window blank.
+/// Fails when no event loop can be created (no display server). Native: a GPU without
+/// Vulkan/Metal/DX12 support is reported on stderr and leaves the window blank. Web: when
+/// WebGPU is unusable (no adapter, the device lost, or frames that never reach the page) the
+/// editor draws on the CPU instead, logged once as `gpu: …; drawing on the CPU` (web spec §7).
 pub fn run<A: App + 'static>(title: &str, app: A) -> Result<(), RunError> {
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
@@ -162,6 +169,8 @@ pub fn run<A: App + 'static>(title: &str, app: A) -> Result<(), RunError> {
         pending: Default::default(),
         #[cfg(target_arch = "wasm32")]
         cpu: None,
+        #[cfg(target_arch = "wasm32")]
+        probed: false,
         adapter: None,
         events: InputEvents::default(),
         mods: 0,
@@ -291,6 +300,20 @@ impl<A: App> Shell<A> {
         dev.queue.submit([encoder.finish()]);
         window.pre_present_notify();
         dev.queue.present(frame);
+        // Web: a browser can take every WebGPU call and still show nothing (web spec §7).
+        #[cfg(target_arch = "wasm32")]
+        if !std::mem::replace(&mut self.probed, true) {
+            use winit::platform::web::WindowExtWebSys;
+            if let Some(canvas) = window.canvas() {
+                let proxy = self.proxy.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if !crate::cpu_view::shows_frames(canvas).await {
+                        let why = "WebGPU frames do not reach the page".to_owned();
+                        let _ = proxy.send_event(UserEvent::NoGpu(why));
+                    }
+                });
+            }
+        }
     }
 
     fn push_key(&mut self, key: &WKey, text: Option<&str>) {
@@ -411,12 +434,20 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
             wasm_bindgen_futures::spawn_local(async move {
                 match Gpu::new(win, w, h).await {
                     Ok(g) => {
+                        let lost = proxy.clone();
+                        let device = &g.cx.devices[g.surface.dev_id].device;
+                        // `Destroyed` is our own drop of the device after a fallback.
+                        device.set_device_lost_callback(move |reason, msg| {
+                            if reason != wgpu::DeviceLostReason::Destroyed {
+                                let why = format!("device lost ({msg})");
+                                let _ = lost.send_event(UserEvent::NoGpu(why));
+                            }
+                        });
                         *pending.borrow_mut() = Some(g);
                         let _ = proxy.send_event(UserEvent::GpuReady);
                     }
                     Err(e) => {
-                        web_sys::console::error_1(&format!("gpu: {e}; drawing on the CPU").into());
-                        let _ = proxy.send_event(UserEvent::NoGpu);
+                        let _ = proxy.send_event(UserEvent::NoGpu(e));
                     }
                 }
             });
@@ -451,10 +482,14 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
                     w.request_redraw();
                 }
             }
-            UserEvent::NoGpu =>
-            {
+            #[cfg_attr(not(target_arch = "wasm32"), allow(unused_variables))]
+            UserEvent::NoGpu(why) => {
                 #[cfg(target_arch = "wasm32")]
-                if let Some(w) = &self.window {
+                if let (Some(w), None) = (&self.window, &self.cpu) {
+                    // Once per page: the console line the smoke test looks for (web spec §7).
+                    web_sys::console::error_1(&format!("gpu: {why}; drawing on the CPU").into());
+                    self.gpu = None;
+                    self.pending.borrow_mut().take();
                     match crate::cpu_view::CpuView::new(w) {
                         Ok(v) => self.cpu = Some(v),
                         Err(e) => web_sys::console::error_1(&format!("cpu view: {e}").into()),
