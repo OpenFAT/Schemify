@@ -329,3 +329,38 @@ fn parse_of_every_output_cell_is_canonical() {
         assert_eq!(schemify_format::write(&d).as_bytes(), b.as_slice(), "{p}");
     }
 }
+
+/// Regression (proptest `mutated_inputs_translate_to_valid_outputs`, CI 2026-10-11): a
+/// mutated `nand.sym` whose `K` block swallows its pin boxes and whose `template` fused
+/// into `format` has no pin, yet its `extra` net `VDD` is a standalone `@VDD` in the
+/// format. It was classified a cell with only inherited pins, but no template value
+/// backs `VDD`, so it got none: a `.shprim` with zero pins (`E025`). The classification
+/// now uses the pin rule itself, so the symbol is netlist text, and no file is invalid.
+#[test]
+fn pinless_symbol_without_inherited_pins_is_no_cell() {
+    let mutated = r#"v {schem version=3.4.7 file_version=1.2}
+K {type=primitive
+format="@name @@A @@B @VDD VSS @@Y @prefix\\\\nand2"template="name=x1 VDD=VDD VSS=VSS prefix=pdk_"
+extra="VDD "SS prefix"
+B 5 -42.5 -12.5 -37.5 -7.5 {name=A dir=in
+B 5 -42.5 7.5 -37.5 12.5 {name=B dir=in}
+B 5 37.5 -2.542.5 2.5 {name=Y dir=out}
+"#;
+    let mut files = fixture();
+    files
+        .iter_mut()
+        .find(|f| f.0 == "x/lib/nand.sym")
+        .expect("fixture")
+        .1 = mutated.to_owned();
+    let (out, report) = run(&files);
+    report.assert_conservation();
+    let problems = check_output(&out);
+    assert!(problems.is_empty(), "{problems:#?}");
+    assert!(
+        !out.iter().any(|f| f.0.starts_with("lib/nand")),
+        "no cell (and no variant) for a pinless symbol without inherited pins"
+    );
+    // Positive space: the unmutated nand is still a cell.
+    let (out, _) = run(&fixture());
+    assert!(out.iter().any(|f| f.0 == "lib/nand.shprim"));
+}

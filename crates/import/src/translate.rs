@@ -711,35 +711,9 @@ impl<'o> Tables<'o> {
         let tpl = &iface.template;
         let attrs = &iface.attrs;
         let fmt = attrs.get("format");
-        let lvs = attrs.get("lvs_format");
         let mut reviews: Vec<Review> = Vec::new();
         let mut tokens: Vec<String> = Vec::new();
-        let extra: Vec<&str> = attrs
-            .get("extra")
-            .unwrap_or("")
-            .split_whitespace()
-            .collect();
-        let standalone = |f: Option<&str>, k: &str| {
-            f.is_some_and(|f| f.split_whitespace().any(|w| w.strip_prefix('@') == Some(k)))
-        };
-        // Inherited pins: `extra=` nets in `extra` order, then the `@body` idiom (spec §2;
-        // goldens append extra pins to `.subckt` lines in that order).
-        let mut implicit: Vec<(String, String)> = Vec::new();
-        for k in extra.iter().copied().chain(["body"]) {
-            let Some(net) = tpl.get(k) else { continue };
-            let net_param = standalone(fmt, k) || standalone(lvs, k);
-            if net_param && is_ident(k) && !implicit.iter().any(|(n, _)| n == k) {
-                let net = net.trim();
-                implicit.push((
-                    k.to_owned(),
-                    if net.is_empty() {
-                        "0".to_owned()
-                    } else {
-                        net.to_owned()
-                    },
-                ));
-            }
-        }
+        let implicit = implicit_nets(iface);
         // Pins in netlist order.
         let mut pins: Vec<PinOut> = Vec::new();
         for p in 0..iface.pins.name.len() {
@@ -1546,6 +1520,20 @@ impl<'o> Tables<'o> {
             let active = std::mem::replace(&mut acc.active, false);
             let plan = self.plan_symbol(s2 as usize, acc);
             acc.active = active;
+            if plan.pins.is_empty() {
+                // The instance's text leaves a pinless symbol without its inherited pins:
+                // no valid cell (`E025`), so the instance keeps its symbol's netlisting.
+                acc.review(
+                    x,
+                    line,
+                    Review {
+                        reason: Reason::InstanceText,
+                        detail: format!("{}: the variant would have no pin", text.join(" ")),
+                    },
+                    0,
+                );
+                continue;
+            }
             if sch.is_none() && plan.leaf.ignore.as_deref() == Some("true") {
                 acc.review(
                     x,
@@ -1780,6 +1768,11 @@ impl<'o> Tables<'o> {
                 .as_ref()
                 .expect("cell symbols are planned")
         });
+        assert!(
+            cell.kind != FileKind::Shprim || plan.is_some_and(|p| !p.pins.is_empty()),
+            "{}: a .shprim has at least one pin (E025)",
+            cell.name
+        );
         // Header.
         let impls = self.impls_of(cell, plan);
         if impls.len() > 1 {
@@ -3317,12 +3310,39 @@ fn param_pairs(
 /// Whether a symbol's `format` names an `extra` net as a standalone `@x` word: its
 /// connections are inherited pins (spec §2, implicit pins).
 fn implicit_only(iface: &SymbolInterface) -> bool {
-    let extra = iface.attrs.get("extra").unwrap_or("");
-    let fmt = iface.get(SymKey::Format).unwrap_or("");
-    extra.split_whitespace().any(|x| {
-        fmt.split_whitespace()
-            .any(|w| w.strip_prefix('@') == Some(x))
-    })
+    // The same rule that makes the pins (`plan_symbol`): a pinless symbol is a cell only
+    // when it will have at least one inherited pin, else it would be a `.shprim` with no
+    // pin (`E025`).
+    !implicit_nets(iface).is_empty()
+}
+
+/// The inherited pins of a symbol (spec §2): `extra=` nets in `extra` order, then the
+/// `@body` idiom, each an identifier with a template value that `format` or `lvs_format`
+/// uses as a standalone `@x` word, with its default net (`0` when the value is empty).
+/// Goldens append extra pins to `.subckt` lines in that order.
+fn implicit_nets(iface: &SymbolInterface) -> Vec<(String, String)> {
+    let (attrs, tpl) = (&iface.attrs, &iface.template);
+    let (fmt, lvs) = (attrs.get("format"), attrs.get("lvs_format"));
+    let standalone = |f: Option<&str>, k: &str| {
+        f.is_some_and(|f| f.split_whitespace().any(|w| w.strip_prefix('@') == Some(k)))
+    };
+    let mut implicit: Vec<(String, String)> = Vec::new();
+    for k in attrs
+        .get("extra")
+        .unwrap_or("")
+        .split_whitespace()
+        .chain(["body"])
+    {
+        let Some(net) = tpl.get(k) else { continue };
+        let net_param = standalone(fmt, k) || standalone(lvs, k);
+        if net_param && is_ident(k) && !implicit.iter().any(|(n, _)| n == k) {
+            let net = net.trim();
+            let net = if net.is_empty() { "0" } else { net };
+            implicit.push((k.to_owned(), net.to_owned()));
+        }
+    }
+    assert!(implicit.iter().all(|(k, n)| !k.is_empty() && !n.is_empty()));
+    implicit
 }
 
 /// Whether instance `row` of `f` sets `only_toplevel=true`.
