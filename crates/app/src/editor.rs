@@ -1991,6 +1991,32 @@ impl Editor {
                     t.docs = !t.docs;
                 }
             }
+            Cmd::ViewSchematic | Cmd::ViewSymbol => {
+                let want = if cmd == Cmd::ViewSymbol {
+                    View::Symbol
+                } else {
+                    View::Schematic
+                };
+                let kind = self.session.project.doc(h).map(Document::kind);
+                if !kind.is_some_and(|k| has_view(k, want)) {
+                    self.session.status = match want {
+                        View::Schematic => "a primitive has no schematic".to_owned(),
+                        View::Symbol => "a testbench has no symbol".to_owned(),
+                    };
+                    return true;
+                }
+                if view != want {
+                    let l = self.session.level_mut().expect("an active level");
+                    l.view = want;
+                    // Schematic and symbol coordinates are unrelated: refit, drop the selection.
+                    l.cam = None;
+                    l.sel.clear();
+                    l.ends.clear();
+                    self.tool = Tool::Idle;
+                    self.scene_dirty = true;
+                }
+                debug_assert_eq!(self.active().map(|(_, v)| v), Some(want));
+            }
             Cmd::DocsSelect => self.page.sel = docs::row_of(node),
             Cmd::DocsEdit => {
                 let Some(row) = docs::row_of(node) else {
@@ -4000,6 +4026,30 @@ impl Editor {
             }
             _ => t.push_str("remove docs.pane\n"),
         }
+        // The view switcher over the canvas: the shown side is `viewsw-on`, a side the file
+        // kind lacks is disabled and `viewsw-off`; a text tab has no canvas and no switcher.
+        match self.active().filter(|_| s.text_view().is_none()) {
+            Some((h, view)) => {
+                let kind = s.project.doc(h).map(Document::kind);
+                for (id, v) in [
+                    ("switch.schematic", View::Schematic),
+                    ("switch.symbol", View::Symbol),
+                ] {
+                    let has = kind.is_some_and(|k| has_view(k, v));
+                    let style = match (has, view == v) {
+                        (false, _) => "viewsw-off",
+                        (true, true) => "viewsw-on",
+                        (true, false) => "viewsw",
+                    };
+                    let _ = writeln!(t, "set {id} style {style}");
+                    let _ = writeln!(t, "set {id} disabled {}", u8::from(!has));
+                }
+                let docs = s.tabs.get(s.active).is_some_and(|tab| tab.docs);
+                let style = if docs { "viewsw-on" } else { "viewsw" };
+                let _ = writeln!(t, "set switch.docs style {style}");
+            }
+            None => t.push_str("remove view.switch\n"),
+        }
         match &self.dialog {
             Dialog::None => {}
             Dialog::Text(_, title, typed) => {
@@ -4172,6 +4222,17 @@ fn push_note(status: &mut String, note: &str) {
 }
 
 /// A `.shprim` has only a symbol; everything else opens on its schematic.
+/// Whether a cell of `kind` has the `view` side: a `.shcomp` has both, a `.shprim` only a
+/// symbol, a `.shbench` only a schematic; project, lock, config and journal files neither.
+pub(crate) fn has_view(kind: FileKind, view: View) -> bool {
+    matches!(
+        (kind, view),
+        (FileKind::Shcomp, _)
+            | (FileKind::Shprim, View::Symbol)
+            | (FileKind::Shbench, View::Schematic)
+    )
+}
+
 fn default_view(doc: Option<&Document>) -> View {
     match doc.map(Document::kind) {
         Some(FileKind::Shprim) => View::Symbol,

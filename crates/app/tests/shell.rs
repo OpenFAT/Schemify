@@ -636,3 +636,148 @@ fn waves_dock_divider_drags() {
     drag(&mut s, at - 40.0, 600.0);
     assert!(s.ed.canvas_rect().y1 <= f64::from(VIEW.1 * 0.15) + 1.0);
 }
+
+/// A primitive under the Modern preset: the symbol view, and the view switcher with
+/// Schematic greyed out (a `.shprim` has none).
+#[test]
+fn golden_primitive_modern() {
+    let mut s = Session::open("rc", "res.shprim", "golden-prim", true);
+    s.ed.command("view.theme_modern", "");
+    s.frame(InputEvents::default());
+    check_golden("primitive_modern", s.render());
+}
+
+/// Prop `p` of UI node `id` as text ("" when absent).
+fn node_prop(s: &Session, id: &str, p: schemify_ui::Prop) -> String {
+    let sh = &s.ed.shell;
+    let n = sh
+        .strings
+        .find(id)
+        .and_then(|i| sh.tables.nodes.find(i))
+        .unwrap_or_else(|| panic!("{id} composed"));
+    sh.strings
+        .get(sh.tables.nodes.prop(p)[n as usize])
+        .to_owned()
+}
+
+/// `(style, disabled)` of the three view-switcher buttons, schematic / symbol / docs.
+fn switch_state(s: &Session) -> [(String, String); 3] {
+    use schemify_ui::Prop;
+    ["switch.schematic", "switch.symbol", "switch.docs"].map(|id| {
+        (
+            node_prop(s, id, Prop::Style),
+            node_prop(s, id, Prop::Disabled),
+        )
+    })
+}
+
+fn st(style: &str, disabled: &str) -> (String, String) {
+    (style.to_owned(), disabled.to_owned())
+}
+
+/// The view switcher over the canvas follows the file kind: a `.shcomp` has a schematic and
+/// a symbol, a `.shprim` only a symbol, a `.shbench` only a schematic. The missing side is
+/// disabled (clicks do nothing; the command itself is refused with a status message).
+#[test]
+fn view_switcher_follows_the_file_kind() {
+    use schemify_app::session::View;
+    // .shcomp: both sides; clicking switches and the `on` style follows.
+    let mut s = Session::open("inv", "top.shcomp", "switch-comp", true);
+    assert_eq!(s.ed.active().map(|a| a.1), Some(View::Schematic));
+    let [sch, sym, _] = switch_state(&s);
+    assert_eq!((sch, sym), (st("viewsw-on", "0"), st("viewsw", "0")));
+    s.click_node("switch.symbol");
+    assert_eq!(s.ed.active().map(|a| a.1), Some(View::Symbol));
+    let [sch, sym, _] = switch_state(&s);
+    assert_eq!((sch, sym), (st("viewsw", "0"), st("viewsw-on", "0")));
+    s.click_node("switch.schematic");
+    assert_eq!(s.ed.active().map(|a| a.1), Some(View::Schematic));
+    // Docs toggles the docs pane and lights while it is shown.
+    let docs_before = switch_state(&s)[2].0.clone();
+    s.click_node("switch.docs");
+    assert_ne!(switch_state(&s)[2].0, docs_before);
+
+    // .shprim: no schematic.
+    let mut p = Session::open("rc", "res.shprim", "switch-prim", true);
+    assert_eq!(p.ed.active().map(|a| a.1), Some(View::Symbol));
+    let [sch, sym, _] = switch_state(&p);
+    assert_eq!((sch, sym), (st("viewsw-off", "1"), st("viewsw-on", "0")));
+    p.click_node("switch.schematic");
+    assert_eq!(
+        p.ed.active().map(|a| a.1),
+        Some(View::Symbol),
+        "disabled: no-op"
+    );
+    p.ed.command("view.schematic", "");
+    p.frame(InputEvents::default());
+    assert_eq!(p.ed.active().map(|a| a.1), Some(View::Symbol));
+    assert!(
+        p.ed.session.status.contains("no schematic"),
+        "{}",
+        p.ed.session.status
+    );
+
+    // .shbench: no symbol.
+    let mut b = Session::open("rc", "tb.shbench", "switch-bench", true);
+    assert_eq!(b.ed.active().map(|a| a.1), Some(View::Schematic));
+    let [sch, sym, _] = switch_state(&b);
+    assert_eq!((sch, sym), (st("viewsw-on", "0"), st("viewsw-off", "1")));
+    b.ed.command("view.symbol", "");
+    b.frame(InputEvents::default());
+    assert_eq!(b.ed.active().map(|a| a.1), Some(View::Schematic));
+    assert!(
+        b.ed.session.status.contains("no symbol"),
+        "{}",
+        b.ed.session.status
+    );
+}
+
+/// The switcher floats: centred along the canvas's top edge, painted after the canvas
+/// (overlay layer), lit under the pointer only when enabled, and dead under a modal dialog.
+#[test]
+fn view_switcher_floats_over_the_canvas() {
+    use schemify_app::session::View;
+    use schemify_ui::{FLOAT_INSET, Layer};
+    let mut s = Session::open("rc", "res.shprim", "switch-float", true);
+    let sh = &s.ed.shell;
+    let row = |id: &str| {
+        let n = sh.tables.nodes.find(sh.strings.find(id).unwrap()).unwrap();
+        sh.layout.row_of(n).unwrap()
+    };
+    let r = row("view.switch");
+    assert!(
+        sh.layout.rows(Layer::Overlay).contains(&r),
+        "painted above the canvas"
+    );
+    let sw = sh.layout.rect()[r];
+    let c = s.ed.canvas_rect();
+    assert!((f64::from(sw.y) - (c.y0 + f64::from(FLOAT_INSET))).abs() < 0.5);
+    let mid = f64::from(sw.x + sw.w / 2.0);
+    assert!(
+        (mid - (c.x0 + c.x1) / 2.0).abs() < 1.0,
+        "centred: {mid} vs {c:?}"
+    );
+    let (on, off) = (
+        sh.layout.rect()[row("switch.docs")],
+        sh.layout.rect()[row("switch.schematic")],
+    );
+    // Hover: the enabled button lights, the disabled one keeps its colour. Probe the left
+    // padding, clear of the label.
+    let probe = |s: &mut Session, b: schemify_ui::Rect| {
+        let px = s.render();
+        let c = px.sample((b.x + 3.0) as u16, (b.y + b.h / 2.0) as u16);
+        (c.r, c.g, c.b)
+    };
+    s.move_screen(0.0, 400.0);
+    let (on0, off0) = (probe(&mut s, on), probe(&mut s, off));
+    s.move_screen(on.x + 3.0, on.y + on.h / 2.0);
+    assert_ne!(probe(&mut s, on), on0, "an enabled button lights up");
+    s.move_screen(off.x + 3.0, off.y + off.h / 2.0);
+    assert_eq!(probe(&mut s, off), off0, "a disabled button does not");
+    // Modal: with the insert-symbol chooser open, clicking the switcher does nothing.
+    let mut m = Session::open("inv", "top.shcomp", "switch-modal", true);
+    m.key("Ins");
+    assert!(!m.ed.shell.ui.dialog().is_none(), "a dialog is open");
+    m.click_node("switch.symbol");
+    assert_eq!(m.ed.active().map(|a| a.1), Some(View::Schematic));
+}

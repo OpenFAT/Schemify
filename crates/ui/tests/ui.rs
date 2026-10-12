@@ -255,7 +255,15 @@ fn layout_stacks_bars_and_fills_canvas() {
     assert_eq!(docs.w, 560.0, "the theme's docs-pane width");
     let (file, edit) = (r("menu.file"), r("menu.edit"));
     assert!(file.x < edit.x && (file.y - edit.y).abs() < 0.5 && file.x + file.w <= edit.x + 0.5);
-    assert!(f.frame.rows(Layer::Overlay).is_empty(), "nothing open");
+    // The overlay holds only the canvas's floats (the view switcher): no dialog, no popup.
+    assert_eq!(f.frame.floats().end, f.frame.len(), "nothing open");
+    let fl = f.frame.floats();
+    assert!(!fl.is_empty() && fl.start == f.frame.rows(Layer::Overlay).start);
+    let sw = f.frame.rect()[fl.start];
+    assert!(
+        sw.x > canvas.x && sw.x + sw.w < canvas.x + canvas.w,
+        "floats inside the canvas"
+    );
 }
 
 #[test]
@@ -500,8 +508,12 @@ fn dialog_is_modal_and_escape_closes_it() {
     let mut f = fixture(&[]);
     f.state.set_dialog(f.sym("dialog.enter_text"));
     f.relayout();
-    let d = f.frame.rect()[f.frame.rows(Layer::Overlay).start];
+    let d = f.frame.rect()[f.frame.floats().end];
     assert!(d.x > 0.0 && d.w > 300.0, "centered dialog");
+    assert!(
+        f.click("switch.symbol").commands.is_empty(),
+        "a float over the canvas is dead under a modal dialog"
+    );
     assert!(
         f.click("tb.wire").commands.is_empty(),
         "main window is blocked"
@@ -945,7 +957,7 @@ fn context_menu_closes_on_a_click_outside() {
     f.state
         .set_dialog_at(f.sym("dialog.ctx"), Some((300.0, 200.0)));
     f.relayout();
-    let d = f.frame.rect()[f.frame.rows(Layer::Overlay).start];
+    let d = f.frame.rect()[f.frame.floats().end];
     let mut ev = InputEvents::default();
     ev.push(InputEvent::PointerDown {
         x: d.x + d.w / 2.0,

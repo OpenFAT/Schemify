@@ -104,6 +104,26 @@ style list-row
 style keys-panel
   bg 23262c
 
+style view-switch
+  bg 23262c
+  border-color 3a3f48
+  radius 6
+
+style viewsw
+  bg 23262c
+  fg 8b919a
+  hover-bg 2f343c
+  hover-fg ffffff
+
+style viewsw-on
+  bg 2f4a7a
+  fg ffffff
+  hover-bg 2f4a7a
+
+style viewsw-off
+  fg 4a4f57
+  hover-bg 23262c
+
 # --- docs pane -----------------------------------------------------------------------------------
 
 style docs-pane

@@ -442,6 +442,8 @@ commands! {
     ResetColors = "view.reset_all_colors_to_default",
     /// Show / hide the results panel.
     ResultsToggle = "view.results",
+    /// Show the active cell's schematic (refused for a `.shprim`, which has none).
+    ViewSchematic = "view.schematic",
     /// Grid from the status field.
     SetGrid = "view.set_grid",
     /// Grid spacing dialog.
@@ -462,6 +464,8 @@ commands! {
     SymbolText = "view.show_hide.symbol_text",
     /// Per-layer visibility dialog.
     LayersDialog = "view.show_hide.visible_layers",
+    /// Show the active cell's symbol (refused for a `.shbench`, which has none).
+    ViewSymbol = "view.symbol",
     /// Dark / light canvas.
     ToggleTheme = "view.toggle_colorscheme",
     /// Toggle filling of filled layers.

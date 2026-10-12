@@ -14,7 +14,7 @@ Blocks are the rank-4 records of [format.md](format.md) §4; nothing here adds a
   them with a 560 px pane; the core base (no UI plugin) declares the same nodes, so docs render
   without plugins (D21).
 - Shown per tab: a tab opens with its page shown when the document has at least one doc block.
-  `view.docs` (default key Alt+D, View → Docs page, the pane's `x` button) toggles it. While
+  `view.docs` (default key Alt+D, View → Docs page, the pane's `x` button, the Docs button of the view switcher over the canvas, plugin-abi §11 item 16) toggles it. While
   hidden the app's state contribution removes `docs.pane` and the canvas takes the width.
 - The page shows the doc blocks of the tab's active level (descending into a cell shows the
   cell's page) in file order, one `docs.b.<row>` panel per block under `docs.page`. The wheel

@@ -354,6 +354,42 @@ style dialog-buttons
   dir row
   gap 8
 
+# View switcher floating over the canvas (a child of `canvas`): the app sets each button's
+# style to viewsw-on (shown), viewsw (available) or viewsw-off (the file kind lacks it, disabled).
+style view-switch
+  bg d9d9d9
+  dir row
+  pad 2
+  pad-y 2
+  gap 2
+  border 1
+  border-color 808080
+  radius 4
+
+style viewsw
+  bg d9d9d9
+  pad 10
+  height 22
+  font 12
+  hover-bg f4f4f4
+  radius 3
+
+style viewsw-on
+  bg ffffff
+  pad 10
+  height 22
+  font 12
+  hover-bg ffffff
+  radius 3
+
+style viewsw-off
+  fg 9a9a9a
+  pad 10
+  height 22
+  font 12
+  hover-bg d9d9d9
+  radius 3
+
 # --- window ---------------------------------------------------------------------------------------
 
 node window window
@@ -1596,6 +1632,27 @@ node work split
   style work
 node canvas canvas
   parent work
+node view.switch panel
+  parent canvas
+  style view-switch
+node switch.schematic button
+  parent view.switch
+  label Schematic
+  command view.schematic
+  tooltip "Show the cell's schematic"
+  style viewsw
+node switch.symbol button
+  parent view.switch
+  label Symbol
+  command view.symbol
+  tooltip "Show the cell's symbol"
+  style viewsw
+node switch.docs button
+  parent view.switch
+  label Docs
+  command view.docs
+  tooltip "Docs page (Alt+D)"
+  style viewsw
 node docs.pane panel
   parent work
   style docs-pane

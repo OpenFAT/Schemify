@@ -22,6 +22,10 @@
 //!   `docs.delete_block`, `view.docs`) and the `docs.page` scroll node, under which the app adds
 //!   one `docs.b.<row>` panel per doc block (`docs/spec/docs-page.md`);
 //! - `status.snap`, `status.grid` (text fields, values), `status.mode`, `status.msg` (labels);
+//! - `view.switch`, a child of `canvas` (so it floats over the schematic), holding the buttons
+//!   `switch.schematic`, `switch.symbol`, `switch.docs`: the app sets each one's `style` to
+//!   `viewsw-on`, `viewsw` or `viewsw-off` and `disabled` on the side the file kind lacks, and
+//!   removes `view.switch` in a text tab;
 //! - `dialog.enter_text` with `dialog.enter_text.title` / `.input` (command
 //!   `dialog.enter_text.ok`);
 //! - `dialog.choose` with `dialog.choose.title`, `.filter` (command `choose.filter`) and
