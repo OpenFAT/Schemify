@@ -188,6 +188,52 @@ enum Request {
     Plugin(RunRequest),
 }
 
+/// Lines of each output stream the run log keeps (the tail).
+pub const LOG_LINES: usize = 12;
+/// Bytes read from the end of a log file to find its tail.
+const LOG_TAIL_BYTES: u64 = 8 << 10;
+
+/// The run log of one job: what ran and the tail of what it printed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct JobLog {
+    /// The job (`u32::MAX` before any refresh).
+    pub job: u32,
+    /// The simulator command line (`command.log`); empty before the job started.
+    pub command: String,
+    /// Last [`LOG_LINES`] lines of stdout.
+    pub out: Vec<String>,
+    /// Last [`LOG_LINES`] lines of stderr.
+    pub err: Vec<String>,
+}
+
+/// The last [`LOG_LINES`] lines of `path` (at most [`LOG_TAIL_BYTES`] read); empty when
+/// the file is missing.
+fn tail(path: &Path) -> Vec<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let len = f.metadata().map_or(0, |m| m.len());
+    let from = len.saturating_sub(LOG_TAIL_BYTES);
+    let mut buf = Vec::new();
+    if f.seek(SeekFrom::Start(from)).is_err()
+        || f.take(LOG_TAIL_BYTES).read_to_end(&mut buf).is_err()
+    {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    // A cut first line (read from mid-file) is dropped.
+    let skip = usize::from(from > 0 && !lines.is_empty());
+    let keep = &lines[skip..];
+    let out: Vec<String> = keep[keep.len().saturating_sub(LOG_LINES)..]
+        .iter()
+        .map(|l| (*l).to_owned())
+        .collect();
+    debug_assert!(out.len() <= LOG_LINES);
+    out
+}
+
 /// The editor's runs.
 pub struct Sim {
     tools: Tools,
@@ -198,6 +244,9 @@ pub struct Sim {
     snapshot: Option<DocHandle>,
     /// The job whose raw file the waves, plots and OP annotation show.
     pub selected: u32,
+    /// The run log of the selected job (command line and output tails), refreshed by
+    /// [`Sim::poll`], [`Sim::select`] and [`Sim::start`], never in the frame path.
+    pub log: JobLog,
     stale: bool,
     stale_gen: Option<u32>,
     /// Earlier run directories of the shown bench, newest first.
@@ -232,6 +281,7 @@ impl Sim {
             queue: Vec::new(),
             snapshot: None,
             selected: 0,
+            log: JobLog::default(),
             stale: false,
             stale_gen: None,
             history: Vec::new(),
@@ -461,6 +511,7 @@ impl Sim {
 
     fn reset_view(&mut self) {
         self.selected = 0;
+        self.log = JobLog::default();
         self.stale = false;
         self.stale_gen = None;
         self.raw = None;
@@ -721,6 +772,9 @@ impl Sim {
         }
         if self.shown_run().is_some() {
             self.status = self.progress();
+            if out.changed || self.running() > 0 {
+                self.refresh_log();
+            }
         }
         for n in notes {
             let _ = write!(self.status, "; {n}");
@@ -930,7 +984,22 @@ impl Sim {
         if self.tables().is_some_and(|t| j < t.1.len()) {
             self.selected = j;
             self.plots.clear();
+            self.refresh_log();
         }
+    }
+
+    /// Re-reads the selected job's run log ([`JobLog`]): bounded tails of three small files.
+    pub fn refresh_log(&mut self) {
+        let Some(dir) = self.dir().map(|d| d.join(self.selected.to_string())) else {
+            self.log = JobLog::default();
+            return;
+        };
+        self.log = JobLog {
+            job: self.selected,
+            command: tail(&dir.join(schemify_run::COMMAND)).join(" "),
+            out: tail(&dir.join(schemify_run::STDOUT)),
+            err: tail(&dir.join(schemify_run::STDERR)),
+        };
     }
 
     /// Rebuilds the plot slots for `exprs` (the shown page's `plot` fences): each a one-pane
@@ -1380,6 +1449,34 @@ impl Sim {
         if shown < jobs.len() {
             let more = format!("{} of {} job(s) match the filter", shown, jobs.len());
             cell(t, "results.filtered", "results.list", &more, "results-dim");
+        }
+        // The run log of the selected job: what ran and the tail of what it printed.
+        let log = &self.log;
+        if !log.command.is_empty() || !log.out.is_empty() || !log.err.is_empty() {
+            let head = format!("job {} log", log.job);
+            cell(t, "results.log.title", "results.list", &head, "results-key");
+            if !log.command.is_empty() {
+                let cmd = format!("$ {}", log.command);
+                cell(t, "results.log.cmd", "results.list", &cmd, "results-log");
+            }
+            for (i, l) in log.out.iter().enumerate() {
+                cell(
+                    t,
+                    &format!("results.log.out.{i}"),
+                    "results.list",
+                    l,
+                    "results-log",
+                );
+            }
+            for (i, l) in log.err.iter().enumerate() {
+                cell(
+                    t,
+                    &format!("results.log.err.{i}"),
+                    "results.list",
+                    l,
+                    "results-fail",
+                );
+            }
         }
         for (e, (j, o, msg)) in res.errors().take(8).enumerate() {
             let what = if o == JOB_LEVEL {

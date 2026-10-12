@@ -7,8 +7,9 @@
 //! - `ui` — `ui.records`: menus, toolbar, tabs, canvas, status bar, dialogs, theme and the
 //!   canvas palette (`canvas.<dark|light>.<layer>`, `.grid`, `.sel` style selectors, `fg`).
 //! - `keymap` — `keymap.records`: xschem's canvas bindings (D25).
-//! - `commands` — the commands this plugin implements itself: `help.keys` and
-//!   `help.show_keybindings`, which toggle a key-summary panel (`keys.panel`) by re-contributing
+//! - `commands` — the commands this plugin implements itself: `help.keys` (key `/`), which
+//!   toggles a key-summary panel (`keys.panel`), and
+//!   `view.theme_modern`, which toggles the `modern.records` style preset; both re-contribute
 //!   the `ui` set.
 //!
 //! Every other command named by a menu item or key (`file.save`, `edit.undo`, …) is a core
@@ -18,9 +19,18 @@
 //! - `tab.0` (first tab; the app retitles it and adds `tab.<i>` siblings), `tabs`, `canvas`;
 //! - `docs.pane` (removed by the app while the active tab hides its docs) holding the `docs.bar`
 //!   toolbar (`docs.add_prose`, `docs.add_var`, `docs.move_up`, `docs.move_down`,
-//!   `docs.delete_block`, `view.docs`) and the `docs.page` scroll node, under which the app adds
-//!   one `docs.b.<row>` panel per doc block (`docs/spec/docs-page.md`);
+//!   `docs.delete_block`, `view.docs`, and the `docs.source` button, whose `label`, `checked`
+//!   and `style` (`docs-toggle` / `docs-toggle-on`) the app sets) and the `docs.page` scroll
+//!   node, under which the app adds one `docs.b.<row>` panel per doc block, styled with
+//!   `docs-block`, `docs-source`, `docs-preview-cap`, `docs-preview` … (`docs/spec/docs-page.md`);
 //! - `status.snap`, `status.grid` (text fields, values), `status.mode`, `status.msg` (labels);
+//! - `view.switch`, a child of `canvas` (so it floats over the schematic), holding the buttons
+//!   `switch.schematic`, `switch.symbol`, `switch.docs`: the app sets each one's `style` to
+//!   `viewsw-on`, `viewsw` or `viewsw-off` and `disabled` on the side the file kind lacks, and
+//!   removes `view.switch` in a text tab;
+//! - `cell.pane` with the `cell.bar` toolbar and the `cell.page` scroll node (the cell settings
+//!   panel, `view.cell`): the app removes `cell.pane` while hidden and adds its rows under
+//!   `cell.page` (`crates/app/src/cell.rs`);
 //! - `dialog.enter_text` with `dialog.enter_text.title` / `.input` (command
 //!   `dialog.enter_text.ok`);
 //! - `dialog.choose` with `dialog.choose.title`, `.filter` (command `choose.filter`) and
@@ -52,11 +62,14 @@ guest::export!(on_event);
 
 /// The `ui` contribution set.
 const UI: &str = include_str!("../ui.records");
+/// The "Modern" preset: style overrides appended after [`UI`] (later edits win); nodes and
+/// keys unchanged.
+const MODERN: &str = include_str!("../modern.records");
 /// The `keymap` contribution set.
 const KEYMAP: &str = include_str!("../keymap.records");
 /// Commands owned by this plugin (routed to it by the app as `Event::Command`).
 const COMMANDS: &str =
-    "command help.keys \"Key bindings\"\ncommand help.show_keybindings \"Show keybindings\"\n";
+    "command help.keys \"Key bindings\"\ncommand view.theme_modern \"Modern theme\"\n";
 /// The key-summary panel `help.keys` toggles: appended to the `ui` set while shown.
 const KEYS_PANEL: &str = "
 style keys-panel
@@ -82,6 +95,24 @@ node keys.view label
 thread_local! {
     /// Whether `keys.panel` is shown. The guest is single-threaded; the cell outlives events.
     static KEYS_SHOWN: Cell<bool> = const { Cell::new(false) };
+    /// Whether the [`MODERN`] preset is applied. Not persisted across restarts.
+    // ponytail: session-only; persist through an init.lua option once config reaches plugins.
+    static MODERN_ON: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The `ui` set for the current toggles: the base, the keys panel, then the preset last so its
+/// styles win.
+fn ui_set() -> String {
+    let mut s = String::with_capacity(UI.len() + MODERN.len() + KEYS_PANEL.len());
+    s.push_str(UI);
+    if KEYS_SHOWN.get() {
+        s.push_str(KEYS_PANEL);
+    }
+    if MODERN_ON.get() {
+        s.push_str(MODERN);
+    }
+    assert!(s.len() >= UI.len());
+    s
 }
 
 fn on_event(ev: Event<'_>, _host: &Host, out: &mut Out) {
@@ -92,17 +123,20 @@ fn on_event(ev: Event<'_>, _host: &Host, out: &mut Out) {
             out.contribute_commands(COMMANDS);
         }
         Event::Command {
-            name: "help.keys" | "help.show_keybindings",
+            name: "help.keys",
             ..
         } => {
-            let shown = !KEYS_SHOWN.get();
-            KEYS_SHOWN.set(shown);
+            KEYS_SHOWN.set(!KEYS_SHOWN.get());
             // Immediate mode: re-declare the whole set; the host replaces the previous one.
-            if shown {
-                out.contribute(Kind::Ui, &format!("{UI}{KEYS_PANEL}"));
-            } else {
-                out.contribute(Kind::Ui, UI);
-            }
+            out.contribute(Kind::Ui, &ui_set());
+            assert!(out.as_str().starts_with("contribute ui"));
+        }
+        Event::Command {
+            name: "view.theme_modern",
+            ..
+        } => {
+            MODERN_ON.set(!MODERN_ON.get());
+            out.contribute(Kind::Ui, &ui_set());
             assert!(out.as_str().starts_with("contribute ui"));
         }
         _ => {}

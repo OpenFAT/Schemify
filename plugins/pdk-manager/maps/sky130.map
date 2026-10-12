@@ -1,0 +1,15 @@
+schemify 1 techmap
+  pdk sky130
+  vdd 1.8
+
+# sky130_fd_pr symbols take W and L in microns; nf and m are the class params themselves.
+class nmos core
+  cell sky130_fd_pr:nfet_01v8
+  param W w/1u
+  param L l/1u
+  param mult m
+class pmos core
+  cell sky130_fd_pr:pfet_01v8
+  param W w/1u
+  param L l/1u
+  param mult m

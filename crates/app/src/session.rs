@@ -67,6 +67,11 @@ pub struct Tab {
     /// The docs page is shown beside the canvas (`view.docs`); starts on when the opened
     /// document has doc blocks.
     pub docs: bool,
+    /// The docs page shows prose blocks as their Markdown / LaTeX source instead of rendered
+    /// (`docs.source`); kept per tab, so it survives switching tabs.
+    pub docs_source: bool,
+    /// The cell settings panel is shown beside the canvas (`view.cell`).
+    pub cell: bool,
     /// A read-only text view (a netlist, xschem's "show netlist") shown instead of the
     /// canvas; `stack` then holds the level it was made from, which editing commands skip.
     pub text: Option<TextView>,
@@ -139,6 +144,21 @@ impl Session {
             untitled: 0,
             recovery: Vec::new(),
         })
+    }
+
+    /// `project.reload` (pdk spec §9.2): re-reads `schemify.project` and `schemify.lock` and
+    /// re-indexes every library, keeping the open documents and tabs. Cell rows change:
+    /// callers drop anything keyed by row. The status line takes the load notes.
+    ///
+    /// # Errors
+    ///
+    /// A file does not parse or an open document's library is gone; nothing changed then.
+    pub fn reload(&mut self) -> Result<(), String> {
+        let (lib_dir, notes) = libs::reload(&mut self.project, &self.root)?;
+        self.lib_dir = lib_dir;
+        self.status = notes.join("; ");
+        assert_eq!(self.lib_dir.len(), self.project.libs().name.len());
+        Ok(())
     }
 
     /// Returns the directory of library row `lib`, if it is local.
@@ -488,6 +508,8 @@ impl Session {
                 ends: Vec::new(),
             }],
             docs,
+            docs_source: false,
+            cell: false,
             text: None,
         });
         self.active = self.tabs.len() - 1;
@@ -516,6 +538,8 @@ impl Session {
         self.tabs.push(Tab {
             stack: vec![level],
             docs: false,
+            docs_source: false,
+            cell: false,
             text: Some(view),
         });
         self.active = self.tabs.len() - 1;

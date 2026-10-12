@@ -48,6 +48,7 @@ use schemify_ui::{
     Button, CommandRequests, InputEvent, InputEvents, Layer, Mods, Routed, route_input,
 };
 
+use crate::cell;
 use crate::checks::Members;
 use crate::commands::{Cmd, Commands, Target};
 use crate::docs::{self, Page, quote as q};
@@ -567,6 +568,9 @@ pub struct Editor {
     cell_ops: Vec<Op>,
     /// The docs page.
     page: Page,
+    /// The cell panel's pending "Sync pins from ports" with the document and edit epoch it
+    /// was read at; stale (ignored, then dropped) once either changes.
+    port_sync: Option<(DocHandle, u32, cell::PortSync)>,
     /// This frame's docs-page commit (document, label, ops, its journal seq once applied): a
     /// D20 cache write it causes extends the same undo entry (`Edit::Extend`), and its
     /// journal record waits for it (flushed at the end of the elab step).
@@ -763,6 +767,7 @@ impl Editor {
             cell_key: None,
             cell_ops: Vec::new(),
             page: Page::default(),
+            port_sync: None,
             amend: None,
             parked: Vec::new(),
             undid: false,
@@ -904,6 +909,14 @@ impl Editor {
             .tabs
             .get(self.session.active)
             .is_some_and(|t| t.docs)
+    }
+
+    /// Whether the active tab's docs page shows prose blocks as source (`docs.source`).
+    pub fn docs_source(&self) -> bool {
+        self.session
+            .tabs
+            .get(self.session.active)
+            .is_some_and(|t| t.docs_source)
     }
 
     /// The plugin host (loaded plugins, D20 function registry).
@@ -1137,8 +1150,14 @@ impl Editor {
         if self.sel_changed && self.opts.auto_highlight {
             self.auto_highlight();
         }
+        let cam0 = self.camera();
         let stale = self.build_scene();
         changed |= stale;
+        if self.camera() != cam0 {
+            // The first fit runs after compose (it needs the laid-out canvas): compose again
+            // so the status line reads the fitted camera this frame, not at the next input.
+            self.compose_ui(false);
+        }
         let decor = self.build_decor(stale);
         changed |= decor;
         self.build_shown();
@@ -1575,9 +1594,22 @@ impl Editor {
         if cmd != Cmd::Close && cmd != Cmd::Quit {
             self.confirm = None;
         }
+        if cmd == Cmd::ProjectReload {
+            // Project-wide: needs no active document.
+            self.reload_project();
+            return true;
+        }
         let Some((h, view)) = self.active() else {
             return false;
         };
+        // A command that acts on other file kinds (its UI nodes are greyed out, but a key or a
+        // script can still name it) changes nothing but the status line.
+        if let Some(kind) = self.session.project.doc(h).map(Document::kind)
+            && !cmd.accepts(kind)
+        {
+            self.session.status = kind_refusal(cmd, kind);
+            return true;
+        }
         if self.session.text_view().is_some() && !text_tab_cmd(cmd) && !parity::text_tab_ok(cmd) {
             self.session.status = "read-only text view: switch to a schematic tab".into();
             return true;
@@ -1991,9 +2023,165 @@ impl Editor {
                     t.docs = !t.docs;
                 }
             }
-            Cmd::DocsSelect => self.page.sel = docs::row_of(node),
+            Cmd::DocsSource => {
+                let a = self.session.active;
+                if let Some(t) = self.session.tabs.get_mut(a) {
+                    t.docs_source = !t.docs_source;
+                }
+            }
+            Cmd::ViewSchematic | Cmd::ViewSymbol => {
+                let want = if cmd == Cmd::ViewSymbol {
+                    View::Symbol
+                } else {
+                    View::Schematic
+                };
+                let kind = self.session.project.doc(h).map(Document::kind);
+                if !kind.is_some_and(|k| has_view(k, want)) {
+                    self.session.status = match want {
+                        View::Schematic => "a primitive has no schematic".to_owned(),
+                        View::Symbol => "a testbench has no symbol".to_owned(),
+                    };
+                    return true;
+                }
+                if view != want {
+                    let l = self.session.level_mut().expect("an active level");
+                    l.view = want;
+                    // Schematic and symbol coordinates are unrelated: refit, drop the selection.
+                    l.cam = None;
+                    l.sel.clear();
+                    l.ends.clear();
+                    self.tool = Tool::Idle;
+                    self.scene_dirty = true;
+                }
+                debug_assert_eq!(self.active().map(|(_, v)| v), Some(want));
+            }
+            Cmd::CellToggle => {
+                let a = self.session.active;
+                if let Some(t) = self.session.tabs.get_mut(a) {
+                    t.cell = !t.cell;
+                }
+            }
+            Cmd::CellSet => {
+                // From the panel the node is the field; from a script (RPC, init.lua) the
+                // argument is `<field id> <value>`.
+                let (node, arg) = if node.is_empty() {
+                    arg.split_once(' ').unwrap_or((arg, ""))
+                } else {
+                    (node, arg)
+                };
+                let Some((field, choice)) = cell::parse_field(node) else {
+                    return false;
+                };
+                let value = choice.unwrap_or(arg);
+                match self.with_doc(h, |d, _| Some(cell::set_ops(d, field, value))) {
+                    Some(Ok(ops)) => self.commit(reqs, h, "edit cell", ops),
+                    Some(Err(why)) => self.session.status = why,
+                    None => return false,
+                }
+            }
+            Cmd::CellAddBench => {
+                let word = node.strip_prefix("cell.add.").unwrap_or(arg);
+                let Some(b) = cell::Bench::ALL.iter().copied().find(|b| b.word() == word) else {
+                    self.session.status = format!("cell.add_bench: unknown table {word}");
+                    return true;
+                };
+                match self.with_doc(h, |d, _| Some(cell::add_bench_ops(d, b))) {
+                    Some(Ok(ops)) => self.commit(reqs, h, "add bench record", ops),
+                    Some(Err(why)) => self.session.status = why,
+                    None => return false,
+                }
+            }
+            Cmd::CellAddParam => {
+                let ops = self.with_doc(h, |d, _| cell::add_param_ops(d));
+                self.commit(reqs, h, "add parameter", ops);
+            }
+            Cmd::CellAddImpl => {
+                let lang = node.strip_prefix("cell.add_impl.").unwrap_or(arg);
+                match self.with_doc(h, |d, _| Some(cell::add_impl_ops(d, lang))) {
+                    Some(Ok(ops)) => self.commit(reqs, h, "add implementation", ops),
+                    Some(Err(why)) => self.session.status = why,
+                    None => return false,
+                }
+            }
+            Cmd::CellDelete => {
+                let node = if node.is_empty() { arg } else { node };
+                let ops = self.with_doc(h, |d, _| {
+                    if let Some(r) = cell::button_row(node, "param", "del") {
+                        cell::delete_param_ops(d, r)
+                    } else if let Some(r) = cell::button_row(node, "impl", "del") {
+                        cell::delete_impl_ops(d, r)
+                    } else if let Some((b, r)) = cell::Bench::ALL
+                        .iter()
+                        .find_map(|&b| cell::button_row(node, b.word(), "del").map(|r| (b, r)))
+                    {
+                        cell::delete_bench_ops(d, b, r)
+                    } else {
+                        Vec::new()
+                    }
+                });
+                self.commit(reqs, h, "delete", ops);
+            }
+            Cmd::CellPinUp | Cmd::CellPinDown => {
+                let node = if node.is_empty() { arg } else { node };
+                let up = cmd == Cmd::CellPinUp;
+                let action = if up { "up" } else { "down" };
+                let Some(r) = cell::button_row(node, "pin", action) else {
+                    return false;
+                };
+                let ops = self.with_doc(h, |d, _| cell::move_pin_ops(d, r, up));
+                self.commit(reqs, h, "reorder pins", ops);
+            }
+            Cmd::CellSyncPorts | Cmd::CellSymbolFromPorts => {
+                let node = if node.is_empty() { arg } else { node };
+                let sync = cmd == Cmd::CellSyncPorts;
+                let action = if sync { "sync" } else { "symbol" };
+                let Some(r) = cell::button_row(node, "impl", action) else {
+                    return false;
+                };
+                self.port_sync = None;
+                let ports = match self.with_doc(h, |d, _| Some(cell::impl_ports(d, r))) {
+                    Some(Ok(p)) => p,
+                    Some(Err(why)) => {
+                        self.session.status = why;
+                        return true;
+                    }
+                    None => return false,
+                };
+                if sync {
+                    let epoch = self.session.epoch(h);
+                    let p = cell::PortSync { impl_row: r, ports };
+                    self.port_sync = Some((h, epoch, p));
+                    self.session.status = "sync pins: review the changes, then Apply".into();
+                } else {
+                    let w = self.opts.symbol_width;
+                    let ops = self.with_doc(h, |d, _| parity::symbol_from_ports_ops(d, &ports, w));
+                    if ops.is_empty() {
+                        self.session.status =
+                            "symbol from ports: the body declares no ports".into();
+                    }
+                    self.commit(reqs, h, "symbol from ports", ops);
+                }
+            }
+            Cmd::CellSyncApply => {
+                let epoch = self.session.epoch(h);
+                let Some((_, _, p)) = self
+                    .port_sync
+                    .take()
+                    .filter(|(d, e, _)| *d == h && *e == epoch)
+                else {
+                    self.session.status = "sync pins: nothing pending".into();
+                    return true;
+                };
+                let ops = self.with_doc(h, |d, _| cell::sync_ops(d, &p.ports).1);
+                if ops.is_empty() {
+                    self.session.status = "pins already match the ports".into();
+                }
+                self.commit(reqs, h, "sync pins from ports", ops);
+            }
+            Cmd::CellSyncCancel => self.port_sync = None,
+            Cmd::DocsSelect => self.page.sel = docs::row_of(node).or_else(|| arg.parse().ok()),
             Cmd::DocsEdit => {
-                let Some(row) = docs::row_of(node) else {
+                let Some(row) = docs::row_of(node).or_else(|| arg.parse().ok()) else {
                     return false;
                 };
                 self.page.sel = Some(row);
@@ -3581,6 +3769,29 @@ impl Editor {
         assert!(self.parked.len() <= PARKED_MAX);
     }
 
+    /// `project.reload` (pdk spec §9.2): the session re-reads the manifest and lockfile and
+    /// re-indexes; everything keyed by cell row (symbol cache, cell states, scenes) rebuilds.
+    fn reload_project(&mut self) {
+        match self.session.reload() {
+            Ok(()) => {
+                let n = self.session.project.libs().name.len() - 1;
+                if self.session.status.is_empty() {
+                    self.session.status = format!("project reloaded: {n} libraries");
+                }
+            }
+            Err(e) => self.session.status = e,
+        }
+        self.symbols = scene::Symbols::default();
+        self.symbols_key = None;
+        self.invalidate_cells();
+        let docs: Vec<DocHandle> = self.session.project.handles().collect();
+        for d in docs {
+            self.session.bump(d);
+        }
+        self.scene_dirty = true;
+        assert!(self.cell_key.is_none() && self.symbols_key.is_none());
+    }
+
     /// Drops every cell state (active and parked): plugin functions may answer differently,
     /// a document was recovered or the cell index changed.
     fn invalidate_cells(&mut self) {
@@ -3740,7 +3951,8 @@ impl Editor {
     }
 
     /// `scene::build` when the active document, view, edit epoch or symbols changed; then
-    /// the selection bitmap and marks when the selection changed.
+    /// the selection bitmap and marks when the selection changed; fits a level that has no
+    /// camera yet once the canvas has a size. True when the scene or the camera changed.
     fn build_scene(&mut self) -> bool {
         let Some((h, view)) = self.active() else {
             return false;
@@ -3779,16 +3991,19 @@ impl Editor {
                 .collect();
             self.set_selection(sel);
             self.sel_changed = true;
-            let unfitted = self.session.level().is_some_and(|l| l.cam.is_none());
-            if unfitted && self.canvas_rect().width() > 0.0 {
-                let e = self.scene.extent;
-                let empty = e == [0; 4];
-                self.fit(if empty {
-                    [-400 * UNIT, -300 * UNIT, 400 * UNIT, 300 * UNIT]
-                } else {
-                    e
-                });
-            }
+        }
+        // Outside `stale`: the first viewport can be empty (the web canvas has no size until
+        // its first `Resized`), and the scene is not rebuilt when the real size arrives.
+        let unfitted = self.session.level().is_some_and(|l| l.cam.is_none());
+        let fitted = unfitted && self.canvas_rect().width() > 0.0;
+        if fitted {
+            let e = self.scene.extent;
+            let empty = e == [0; 4];
+            self.fit(if empty {
+                [-400 * UNIT, -300 * UNIT, 400 * UNIT, 300 * UNIT]
+            } else {
+                e
+            });
         }
         if self.sel_changed {
             self.selected = vec![false; self.scene.objs.len()];
@@ -3802,7 +4017,7 @@ impl Editor {
             self.sel_changed = false;
             let _ = self.host.push(None, &Event::SelectionChanged);
         }
-        stale
+        stale || fitted
     }
 
     /// Rubber bands and previews of the gesture in progress (overlay primitives).
@@ -3992,13 +4207,91 @@ impl Editor {
                     .collect();
                 #[cfg(target_arch = "wasm32")]
                 let plots: Vec<(String, Option<String>)> = Vec::new();
+                let source = self.docs_source();
                 let extras = docs::Extras {
                     plots: &plots,
                     staged: self.staged.as_ref().map(|(l, d)| (l.as_str(), d)),
+                    source,
                 };
                 docs::contribute(&mut t, doc, cell, &self.page, extras, &mut graphs);
+                // The Source / Rendered toggle names the mode shown; pressed while source.
+                let (label, style) = if source {
+                    ("Source", "docs-toggle-on")
+                } else {
+                    ("Rendered", "docs-toggle")
+                };
+                let _ = writeln!(t, "set docs.source label {label}");
+                let _ = writeln!(t, "set docs.source style {style}");
+                let _ = writeln!(t, "set docs.source checked {}", u8::from(source));
             }
             _ => t.push_str("remove docs.pane\n"),
+        }
+        // The view switcher over the canvas: the shown side is `viewsw-on`, a side the file
+        // kind lacks is disabled and `viewsw-off`; a text tab has no canvas and no switcher.
+        match self.active().filter(|_| s.text_view().is_none()) {
+            Some((h, view)) => {
+                let kind = s.project.doc(h).map(Document::kind);
+                for (id, v) in [
+                    ("switch.schematic", View::Schematic),
+                    ("switch.symbol", View::Symbol),
+                ] {
+                    let has = kind.is_some_and(|k| has_view(k, v));
+                    let style = match (has, view == v) {
+                        (false, _) => "viewsw-off",
+                        (true, true) => "viewsw-on",
+                        (true, false) => "viewsw",
+                    };
+                    let _ = writeln!(t, "set {id} style {style}");
+                    let _ = writeln!(t, "set {id} disabled {}", u8::from(!has));
+                }
+                let tab = s.tabs.get(s.active);
+                for (id, on) in [
+                    ("switch.docs", tab.is_some_and(|tab| tab.docs)),
+                    ("switch.cell", tab.is_some_and(|tab| tab.cell)),
+                ] {
+                    let style = if on { "viewsw-on" } else { "viewsw" };
+                    let _ = writeln!(t, "set {id} style {style}");
+                }
+            }
+            None => t.push_str("remove view.switch\n"),
+        }
+        // Commands that act on other file kinds (`Cmd::file_kinds`): every node bound to one is
+        // disabled, so menus, toolbar buttons and panels grey it out.
+        if let Some(kind) = self
+            .active()
+            .and_then(|(h, _)| s.project.doc(h))
+            .map(Document::kind)
+        {
+            let nodes = &self.shell.tables.nodes;
+            let commands = nodes.prop(schemify_ui::Prop::Command);
+            for (i, &c) in commands.iter().enumerate() {
+                if c.is_none() {
+                    continue;
+                }
+                let Target::Core(cmd) = self.commands.resolve(self.shell.strings.get(c)) else {
+                    continue;
+                };
+                if !cmd.accepts(kind) {
+                    let id = self.shell.strings.get(nodes.id()[i]);
+                    let _ = writeln!(t, "set {id} disabled 1");
+                    let _ = writeln!(t, "set {id} tooltip {}", q(&kind_refusal(cmd, kind)));
+                }
+            }
+        }
+        // The cell settings panel: the active cell's header, pins, params and impls.
+        let shown = s.text_view().is_none() && s.tabs.get(s.active).is_some_and(|tab| tab.cell);
+        match self
+            .active()
+            .filter(|_| shown)
+            .and_then(|(h, _)| s.project.doc(h))
+        {
+            Some(doc) => {
+                let sync = self.port_sync.as_ref().filter(|(d, e, _)| {
+                    self.active().is_some_and(|(h, _)| h == *d) && s.epoch(*d) == *e
+                });
+                cell::contribute(&mut t, doc, sync.map(|p| &p.2));
+            }
+            None => t.push_str("remove cell.pane\n"),
         }
         match &self.dialog {
             Dialog::None => {}
@@ -4172,6 +4465,30 @@ fn push_note(status: &mut String, note: &str) {
 }
 
 /// A `.shprim` has only a symbol; everything else opens on its schematic.
+/// The status line for `cmd` refused on a file of `kind`: what the command needs.
+fn kind_refusal(cmd: Cmd, kind: FileKind) -> String {
+    let ext = |k: &FileKind| format!(".{}", format!("{k:?}").to_lowercase());
+    let want: Vec<String> = cmd.file_kinds().unwrap_or(&[]).iter().map(ext).collect();
+    debug_assert!(!want.is_empty(), "only a restricted command is refused");
+    format!(
+        "{}: needs a {} file (this is a {})",
+        cmd.name(),
+        want.join(" or "),
+        ext(&kind)
+    )
+}
+
+/// Whether a cell of `kind` has the `view` side: a `.shcomp` has both, a `.shprim` only a
+/// symbol, a `.shbench` only a schematic; project, lock, config and journal files neither.
+pub(crate) fn has_view(kind: FileKind, view: View) -> bool {
+    matches!(
+        (kind, view),
+        (FileKind::Shcomp, _)
+            | (FileKind::Shprim, View::Symbol)
+            | (FileKind::Shbench, View::Schematic)
+    )
+}
+
 fn default_view(doc: Option<&Document>) -> View {
     match doc.map(Document::kind) {
         Some(FileKind::Shprim) => View::Symbol,

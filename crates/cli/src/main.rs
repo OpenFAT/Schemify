@@ -575,6 +575,14 @@ fn run(config: &Config, args: &[String]) -> u8 {
     };
     let root = schemify_cli::libs::project_root(Path::new(a.cell.as_deref().expect("parsed")));
     let top = o.top;
+    // Every library row's directory (the project root standing in for builtin ones): a
+    // Verilog-A `file` of a library cell (a generated PDK device) is compiled from there.
+    let lib_dirs: Vec<PathBuf> = o
+        .lib_dir
+        .iter()
+        .map(|d| d.clone().unwrap_or_else(|| root.clone()))
+        .collect();
+    assert_eq!(lib_dirs.len(), o.lib_dir.len());
     let started = schemify_cli::spines::start_run(
         &mut o,
         top,
@@ -583,6 +591,7 @@ fn run(config: &Config, args: &[String]) -> u8 {
         &mut schemify_elab::no_funcs,
         |digest| {
             let mut cfg = run::RunnerConfig::new(&root, digest);
+            cfg.lib_dirs = lib_dirs.clone();
             cfg.tools = schemify_cli::spines::tools(config.table());
             if let Some(n) = a.jobs {
                 cfg.workers = n;

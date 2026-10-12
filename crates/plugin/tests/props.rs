@@ -465,11 +465,12 @@ proptest! {
         grants in proptest::sample::subsequence(
             vec!["read_project", "write_project", "network", "clipboard", "spawn:ngspice", "spawn:xyce"], 0..=6),
         op in proptest::sample::select(vec![
-            IoOp::FsRead, IoOp::FsWrite, IoOp::Spawn, IoOp::Fetch, IoOp::ClipboardGet, IoOp::ClipboardSet,
+            IoOp::FsRead, IoOp::FsWrite, IoOp::FsRemove, IoOp::Spawn, IoOp::Fetch, IoOp::ClipboardGet, IoOp::ClipboardSet,
         ]),
         args in proptest::collection::vec(prop_oneof![
             proptest::sample::select(vec![
                 "lib/a.shcomp", "../x", "/abs", "a/./b", "a//b", "c:x", "ngspice", "xyce", "sh", "", "https://x",
+                ".schemify/pdks/a", ".schemify", ".schemify/../x", ".schemify/schemify.lock", "schemify.project",
             ]).prop_map(String::from),
             "\\PC{0,8}",
         ], 0..3),
@@ -478,7 +479,7 @@ proptest! {
         let got = authorize(&g, op, &args);
         prop_assert!(matches!(got, Ok(()) | Err(Code::Denied) | Err(Code::Parse)));
         let arity = match op {
-            IoOp::FsRead | IoOp::FsWrite | IoOp::Fetch => args.len() == 1,
+            IoOp::FsRead | IoOp::FsWrite | IoOp::FsRemove | IoOp::Fetch => args.len() == 1,
             IoOp::Spawn => !args.is_empty(),
             IoOp::ClipboardGet | IoOp::ClipboardSet => args.is_empty(),
         };
@@ -493,6 +494,9 @@ proptest! {
         };
         let allowed = g.has(op.cap()) && match op {
             IoOp::FsRead | IoOp::FsWrite => clean(&args[0]) && args[0].len() <= 4096,
+            IoOp::FsRemove => clean(&args[0]) && args[0].len() <= 4096
+                && args[0].split('/').count() >= 2 && args[0].split('/').next() == Some(".schemify")
+                && !matches!(args[0].rsplit('/').next(), Some("schemify.project" | "schemify.lock")),
             IoOp::Spawn => grants.iter().any(|gr| gr.strip_prefix("spawn:") == Some(args[0].as_str())),
             IoOp::Fetch => !args[0].is_empty(),
             IoOp::ClipboardGet | IoOp::ClipboardSet => true,

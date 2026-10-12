@@ -23,15 +23,18 @@ pub enum FileKind {
     /// The `doc` crate's edit journal and op text (edits spec §1, §3). It has no known
     /// record words: every record is kept like a §5 unknown record, at any version.
     Journal,
+    /// `tech.map`: a PDK's technology-class map (pdk spec §6): one `class` record per
+    /// (class, flavor) the PDK provides.
+    Techmap,
 }
 
-const FILE_WORDS: [&str; 7] = [
-    "shprim", "shcomp", "shbench", "project", "lock", "config", "journal",
+const FILE_WORDS: [&str; 8] = [
+    "shprim", "shcomp", "shbench", "project", "lock", "config", "journal", "techmap",
 ];
 
 impl FileKind {
     /// Every file kind, in declaration order.
-    pub const ALL: [FileKind; 7] = [
+    pub const ALL: [FileKind; 8] = [
         FileKind::Shprim,
         FileKind::Shcomp,
         FileKind::Shbench,
@@ -39,6 +42,7 @@ impl FileKind {
         FileKind::Lock,
         FileKind::Config,
         FileKind::Journal,
+        FileKind::Techmap,
     ];
 
     /// Returns the header word (`shcomp`, `project`, ...).
@@ -132,6 +136,9 @@ pub enum RecordKind {
     Sim,
     /// User config `plugin <name>` (load order).
     PluginOrder,
+    /// Techmap `class <class> <flavor>`: the PDK cell a technology class becomes and its
+    /// param expressions (pdk spec §6).
+    Class,
     /// A record word unknown to this reader, kept verbatim because the file's
     /// version is newer (spec §5). Its word lives in the document.
     Unknown,
@@ -408,8 +415,12 @@ const fn sorted(mut r: RecordSchema) -> RecordSchema {
 }
 
 const SOURCE: Ty = Ty::Choice(&["path", "git", "url"]);
+/// A `lib` source: the plugin sources plus `map` (`lib tech map <relpath>`, pdk spec §5).
+const LIB_SOURCE: Ty = Ty::Choice(&["path", "git", "url", "map"]);
 const LAYER: AttrSchema = attr("layer", &[N]);
 const FILL: AttrSchema = attr("fill", &[B]);
+const DASH: AttrSchema = attr("dash", &[N]);
+const WIDTH: AttrSchema = attr("width", &[N]);
 const DOC: AttrSchema = attr("doc", &[A]);
 const UNIT: AttrSchema = attr("unit", &[A]);
 const MIN: AttrSchema = attr("min", &[A]);
@@ -498,16 +509,28 @@ static RECORDS: [RecordSchema; RecordKind::Unknown as usize + 1] = [
         ],
     ),
     // rank 2: symbol graphics, draw order
+    rec("line", 2, KP, fixed(&[C, C, C, C]), &[LAYER, DASH, WIDTH]),
     rec(
-        "line",
+        "rect",
         2,
         KP,
         fixed(&[C, C, C, C]),
-        &[LAYER, attr("dash", &[N]), attr("width", &[N])],
+        &[LAYER, FILL, DASH, WIDTH],
     ),
-    rec("rect", 2, KP, fixed(&[C, C, C, C]), &[LAYER, FILL]),
-    rec("arc", 2, KP, fixed(&[C, C, C, N, N]), &[LAYER, FILL]),
-    rec("circle", 2, KP, fixed(&[C, C, C]), &[LAYER, FILL]),
+    rec(
+        "arc",
+        2,
+        KP,
+        fixed(&[C, C, C, N, N]),
+        &[LAYER, FILL, DASH, WIDTH],
+    ),
+    rec(
+        "circle",
+        2,
+        KP,
+        fixed(&[C, C, C]),
+        &[LAYER, FILL, DASH, WIDTH],
+    ),
     rec(
         "poly",
         2,
@@ -516,7 +539,7 @@ static RECORDS: [RecordSchema; RecordKind::Unknown as usize + 1] = [
             fixed: &[C, C, C, C],
             rest: Rest::Pairs(C),
         },
-        &[LAYER, FILL, attr("closed", &[B])],
+        &[LAYER, FILL, DASH, WIDTH, attr("closed", &[B])],
     ),
     rec(
         "stext",
@@ -561,13 +584,7 @@ static RECORDS: [RecordSchema; RecordKind::Unknown as usize + 1] = [
             fixed: &[Ty::Id, Ty::Choice(SHAPE_FORMS)],
             rest: Rest::Many(C),
         },
-        &[
-            LAYER,
-            FILL,
-            attr("dash", &[N]),
-            attr("width", &[N]),
-            attr("closed", &[B]),
-        ],
+        &[LAYER, FILL, DASH, WIDTH, attr("closed", &[B])],
     ),
     open(rec(
         "constraint",
@@ -681,7 +698,7 @@ static RECORDS: [RecordSchema; RecordKind::Unknown as usize + 1] = [
         1,
         KN,
         Shape {
-            fixed: &[A, SOURCE, A],
+            fixed: &[A, LIB_SOURCE, A],
             rest: Rest::Optional(A),
         },
         &[attr("subdir", &[A])],
@@ -715,6 +732,19 @@ static RECORDS: [RecordSchema; RecordKind::Unknown as usize + 1] = [
         &[attr("path", &[A]), many("args", &[])],
     )),
     rec("plugin", 1, KN, fixed(&[A]), &[]),
+    // techmap
+    rec(
+        "class",
+        1,
+        KT,
+        fixed(&[A, A]),
+        &[
+            required("cell", &[A]),
+            repeat("param", &[A, A]),
+            attr("vdd", &[A]),
+            repeat("limits", &[A, Ty::Choice(&["min", "max"]), A]),
+        ],
+    ),
     // Unknown: kept verbatim; identified by its word and first field.
     RecordSchema {
         word: "",
@@ -756,7 +786,7 @@ const BENCH: [RecordKind; 8] = [
 ];
 
 /// Allowed record kinds per [`FileKind`], in declaration order of `FileKind`.
-static FILE_RECORDS: [&[RecordKind]; 7] = [
+static FILE_RECORDS: [&[RecordKind]; 8] = [
     // shprim: symbol, docs, bodies
     &concat::<9, 3, 12>(SYMBOL, [R::Prose, R::Var, R::Body]),
     // shcomp: symbol, schematic, docs, bodies, code (D17 as amended 2026-10-11: netlist
@@ -800,6 +830,8 @@ static FILE_RECORDS: [&[RecordKind]; 7] = [
     &[R::Set, R::Key, R::Sim, R::PluginOrder],
     // journal: no known words, every record is free-form
     &[],
+    // techmap
+    &[R::Class],
 ];
 
 const fn concat<const X: usize, const Y: usize, const Z: usize>(

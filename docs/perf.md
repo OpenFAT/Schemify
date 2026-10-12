@@ -76,6 +76,31 @@ Open + first build: 22 ms (10k), 248 ms (100k, under load; 166–174 ms idle), 1
 The 10k zoom p99 is one frame: the first crisp frame after a zoom records every visible tile
 when no stand-in covers them yet.
 
+### Canvas floats over the layers (issue #45, 2026-10-12)
+
+The view switcher floating over the canvas (`c11ca50`) is painted after the canvas layer, and
+`Layers::reusable` refused any frame that painted after its layers: from then on every pan
+and zoom frame went through vello (0 of 240 pan frames composed). Now what a frame paints
+over its layers (floats, popups) is also recorded on its own (`Layers::top`), rasterized
+once per change into a frame-sized texture, and blended over the layer quads; composed
+frames match vello's within 1/255 (`gpu.rs` `composed_frames_equal_vello_frames`). A float
+inside a clip opened before the layers, or under a later layer draw, still goes through vello.
+
+`grid_keeps_up_with_pan_and_zoom` (symbol contact sheet, GPU p50 / p95 ms per frame, Intel
+iGPU, timestamp floor ≈ 1.9 ms included; it fails unless every camera frame is composed):
+
+| Frame | 1× before | 1× after | 2× before | 2× after | 2× after, RTX 4060 |
+|---|---|---|---|---|---|
+| pan | 5.5 / 7.2 | 1.1 / 2.1 | 14.1 / 17.8 | 4.1 / 5.7 | 0.13 / 0.14 |
+| zoom | 6.7 / 10.6 | 1.3 / 2.7 | 21.4 / 26.5 | 4.4 / 9.4 | — |
+
+`frame_times_10k` pan on the Intel iGPU: 5.7 → 2.1 ms (floor 1.9). The grid itself is not a
+cost here: turning it off changes neither number. After a zoom settled, the view needed 4 frames
+at 2× to record every tile (16 tiles per frame, top-left first), so a zoom-out showed bare
+background at the bottom for those frames. `TILES_PER_FRAME` is now 64 and `COST_PER_FRAME`
+alone bounds the frame: a settled zoom is whole in the next frame at 1× and after 2 extra frames
+at 2× (`grid_keeps_up_with_pan_and_zoom`); the 10k/100k/1M budgets still hold.
+
 Retained layer at 1M for comparison: pan 0.08 / 0.22 / 107 CPU, 0.063 / 0.075 / 39 GPU; zoom
 0.07 / 103 / 109 CPU, 0.082 / 39 / 39 GPU.
 

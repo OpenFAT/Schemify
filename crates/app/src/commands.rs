@@ -8,6 +8,7 @@
 //! `<menu>.<action>` words; a command that takes an argument may also be named
 //! `<name>.<word>` ([`Commands::resolve_arg`]).
 
+use schemify_format::FileKind;
 use schemify_plugin::PluginId;
 use schemify_plugin::abi::Kind;
 
@@ -28,6 +29,36 @@ macro_rules! commands {
 }
 
 commands! {
+    /// Cell panel: add a bench output, spec or optimizer (`cell.add.output|spec|opt`; from a
+    /// script, the word as argument).
+    CellAddBench = "cell.add_bench",
+    /// Cell panel: add an impl of the language its node id names (`cell.add_impl.<lang>`;
+    /// from a script, the language as argument).
+    CellAddImpl = "cell.add_impl",
+    /// Cell panel: add a parameter.
+    CellAddParam = "cell.add_param",
+    /// Cell panel: delete the parameter or impl its node id (or argument) names
+    /// (`cell.param.<r>.del`, `cell.impl.<r>.del`).
+    CellDelete = "cell.delete",
+    /// Cell panel: move a pin one place later in port order.
+    CellPinDown = "cell.pin_down",
+    /// Cell panel: move a pin one place earlier in port order.
+    CellPinUp = "cell.pin_up",
+    /// Cell panel: a field submitted (Enter; Ctrl+Enter in a body; a dropdown choice). From a
+    /// script the argument is `<field id> <value>` (ids in `cell.rs`).
+    CellSet = "cell.set",
+    /// Cell panel: regenerate the symbol (pins in port order, box, labels) from the ports of
+    /// the impl body its node id (or argument) names (`cell.impl.<r>.symbol`). One undo.
+    CellSymbolFromPorts = "cell.symbol_from_ports",
+    /// Cell panel: apply the pending pin sync (one undo); refused when the document changed
+    /// since `cell.sync_ports`.
+    CellSyncApply = "cell.sync_apply",
+    /// Cell panel: drop the pending pin sync; the document is untouched.
+    CellSyncCancel = "cell.sync_cancel",
+    /// Cell panel: read the ports of the impl body its node id (or argument) names
+    /// (`cell.impl.<r>.sync`) and show what syncing the pins to them changes, without
+    /// editing; `cell.sync_apply` applies it.
+    CellSyncPorts = "cell.sync_ports",
     /// Click on a row of the checks panel: select and zoom to its object.
     ChecksPick = "checks.pick",
     /// Enter in the chooser filter.
@@ -52,7 +83,8 @@ commands! {
     DocsAddVar = "docs.add_var",
     /// Docs page: delete the selected block.
     DocsDelete = "docs.delete_block",
-    /// Docs page: click on a text block (select it and open its editor).
+    /// Docs page: click on a text block (select it and open its editor, with a live preview);
+    /// from a script, the block row as argument.
     DocsEdit = "docs.edit",
     /// Docs page: move the selected block down.
     DocsDown = "docs.move_down",
@@ -62,6 +94,9 @@ commands! {
     DocsProseOk = "docs.prose_ok",
     /// Docs page: select a block (click on a variable's name).
     DocsSelect = "docs.select",
+    /// Docs page: show every prose block as its Markdown / LaTeX source, or rendered again
+    /// (a toggle per tab; var blocks are unchanged).
+    DocsSource = "docs.source",
     /// Docs page: a variable's expression field submitted (Enter).
     DocsVarOk = "docs.var_ok",
     /// Commit the staged edit under review (visual diff reviewed, D18), or stage `<k>` of
@@ -171,7 +206,7 @@ commands! {
     /// Reopen entry `<i>` of the recent-files list (`file.open_recent.<i>`).
     OpenRecent = "file.open_recent",
     /// Quit.
-    Quit = "file.quit_xschem",
+    Quit = "file.quit",
     /// Reload the active document from disk.
     Reload = "file.reload",
     /// Save the active document.
@@ -181,7 +216,7 @@ commands! {
     /// Save As, then show the new file's symbol (a cell file carries its symbol, D11).
     SaveAsSymbol = "file.save_as_symbol",
     /// About Schemify, in a text tab.
-    About = "help.about_xschem",
+    About = "help.about",
     /// The help text, in a text tab.
     Help = "help.help",
     /// Toggle highlighting the selection's nets on every selection change.
@@ -259,6 +294,11 @@ commands! {
     PngScale = "options.png_export_scale",
     /// Toggle the SVG background rectangle.
     ExportTransparent = "options.transparent_svg_background",
+    /// Re-read `schemify.project` and `schemify.lock`, re-index every library and refresh
+    /// the open documents' symbols and elaboration, without a restart (pdk spec §9.2). Open
+    /// documents and their undo history stay; refused while an open document's library is
+    /// no longer declared. Also run after a plugin writes the manifest or lockfile.
+    ProjectReload = "project.reload",
     /// Properties dialog of the selection.
     Props = "properties.edit",
     /// Edit the active document as text; OK applies it as one undoable edit.
@@ -412,6 +452,8 @@ commands! {
     SelectConnected = "tools.select_all_connected_wires_labels_pins",
     /// As `SelectConnected`, stopping at junctions of three or more wires.
     SelectConnectedStop = "tools.select_conn_wires_stop_at_junctions",
+    /// Show / hide the active tab's cell settings panel.
+    CellToggle = "view.cell",
     /// Color of the current drawing layer: dialog, or `rrggbb` as argument.
     LayerColor = "view.change_current_layer_color",
     /// Show / hide the checks panel.
@@ -442,6 +484,8 @@ commands! {
     ResetColors = "view.reset_all_colors_to_default",
     /// Show / hide the results panel.
     ResultsToggle = "view.results",
+    /// Show the active cell's schematic (refused for a `.shprim`, which has none).
+    ViewSchematic = "view.schematic",
     /// Grid from the status field.
     SetGrid = "view.set_grid",
     /// Grid spacing dialog.
@@ -462,6 +506,8 @@ commands! {
     SymbolText = "view.show_hide.symbol_text",
     /// Per-layer visibility dialog.
     LayersDialog = "view.show_hide.visible_layers",
+    /// Show the active cell's symbol (refused for a `.shbench`, which has none).
+    ViewSymbol = "view.symbol",
     /// Dark / light canvas.
     ToggleTheme = "view.toggle_colorscheme",
     /// Toggle filling of filled layers.
@@ -495,6 +541,25 @@ impl Cmd {
             .find(|(_, c)| *c == self)
             .map(|(n, _)| *n)
             .expect("every variant has a row")
+    }
+
+    /// The file kinds this command acts on, `None` when it acts on any. The one table both
+    /// the dispatcher (a refusal) and the UI (every node bound to the command is disabled,
+    /// so it greys out) read; a handler may still refine the check.
+    pub fn file_kinds(self) -> Option<&'static [FileKind]> {
+        use FileKind::{Shbench, Shcomp, Shprim};
+        match self {
+            Cmd::Simulate | Cmd::Optimize | Cmd::CellAddBench => Some(&[Shbench]),
+            Cmd::NewBench => Some(&[Shcomp, Shprim]),
+            Cmd::MakeSymbol | Cmd::MakeSchematic | Cmd::PinsFromPorts => Some(&[Shcomp]),
+            Cmd::MakeSubcircuit => Some(&[Shcomp, Shbench]),
+            _ => None,
+        }
+    }
+
+    /// Whether this command acts on a file of `kind` ([`Cmd::file_kinds`]).
+    pub fn accepts(self, kind: FileKind) -> bool {
+        self.file_kinds().is_none_or(|ks| ks.contains(&kind))
     }
 
     /// Whether `<name>.<word>` names this command with `<word>` as its argument (D27:

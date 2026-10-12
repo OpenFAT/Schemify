@@ -1077,3 +1077,32 @@ fn netlist_tab_finds_lines_of_the_whole_file() {
     assert!(s.ed.session.text_view().unwrap().found.is_none());
     assert_eq!(node_kind(&s, "textview.found"), None);
 }
+
+/// The results pane shows the selected job's run log (#47): the simulator command line that
+/// ran on the netlist, and the tail of what the simulator printed; a failing simulator's
+/// stderr is visible without opening a file.
+#[test]
+fn results_pane_shows_the_run_log() {
+    let mut s = open("rc", "tb.shbench", "runlog", Some(sh(FAKE)));
+    s.key("s");
+    run_to_idle(&mut s);
+    let log = &s.ed.sim().log;
+    assert!(log.command.contains("netlist.cir"), "{log:?}");
+    assert!(
+        node_kind(&s, "results.log.cmd").is_some(),
+        "the command row is shown"
+    );
+
+    let failing = "echo starting; echo 'fatal: no such model nfet' >&2; exit 3";
+    let mut f = open("rc", "tb.shbench", "runlog-fail", Some(sh(failing)));
+    f.key("s");
+    run_to_idle(&mut f);
+    let log = &f.ed.sim().log;
+    assert!(
+        log.err.iter().any(|l| l.contains("no such model")),
+        "{log:?}"
+    );
+    assert!(log.out.iter().any(|l| l == "starting"), "{log:?}");
+    assert!(node_kind(&f, "results.log.err.0").is_some());
+    assert!(log.out.len() <= schemify_app::sim::LOG_LINES);
+}

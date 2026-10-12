@@ -29,8 +29,11 @@ use crate::painter::Painter;
 /// it, so tile corners sit on whole logical px and pixel snapping agrees across tiles).
 pub const TILE_PX: u32 = 256;
 /// Tiles (or tile parts) one frame records at most by default (see
-/// [`CanvasCache::tiles_per_frame`]).
-pub const TILES_PER_FRAME: usize = 16;
+/// [`CanvasCache::tiles_per_frame`]). The frame-time guard is [`COST_PER_FRAME`] (each tile
+/// also costs `TILE_COST`, so cheap content stops near 40 tiles); this cap only bounds the
+/// tile count. At 16, a zoom-out at 2× device scale left the uncovered bottom of the canvas
+/// blank for ~4 frames (#45).
+pub const TILES_PER_FRAME: usize = 64;
 /// Cost (what `draw` reports, see [`draw_cached`]) one frame spends on recording by default
 /// (see [`CanvasCache::cost_per_frame`]): ~1–1.5 ms in [`draw_prims_in`]'s units.
 ///

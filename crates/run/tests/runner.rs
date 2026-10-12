@@ -565,3 +565,101 @@ fn a_verilog_body_compiles_with_icarus() {
     let src = std::fs::read_to_string(dir.join("cache/inv.v")).unwrap();
     assert!(src.starts_with("module inv(input a, output y);\n"), "{src}");
 }
+
+/// A generated FinFET cell (pdk spec §2.2): an OSDI device whose Verilog-A `file` is relative
+/// to the PDK cell, reached through a `tech:` class.
+const FINFET: &str = "schemify 1 shprim\n  prefix M\n\npin d inout 20 -30\npin g in -20 0\npin s inout 20 30\npin b in 20 0\n\nparam nfin 1\nparam m 1\n\nimpl osdi veriloga\n  format spice \"N{name} {d} {g} {s} {b} nfet nfin={nfin} m={m}\"\n  file ../../va/cmg.va\n";
+const NMOS4: &str = "schemify 1 shprim\n  prefix M\n\npin d inout 20 -30\npin g in -20 0\npin s inout 20 30\npin b in 20 0\n\nparam model nmos\n  kind string\nparam w 1u\nparam l 0.18u\nparam m 1\n\nimpl spice spice\n\nline -20 0 -10 0\n";
+const FIN_MAP: &str = "schemify 1 techmap\n  pdk fin\n\nclass nmos core\n  cell fin:nfet\n  param nfin max(1,ceil(w/70.5n))\n";
+const FIN_BENCH: &str = "schemify 1 shbench\n\ninst 0aaaaa tech:nmos\n  at 0 0 R0\n  name M1\n  w 1u\n\nlabel 0bbbba 20 -30 R0 d\nlabel 0bbbbb -20 0 R0 g\nlabel 0bbbbc 20 30 R0 0\nlabel 0bbbbd 20 0 R0 0\n";
+
+#[test]
+fn tech_cells_compile_their_pdk_cells_sources() {
+    let manifest = "schemify 1 project\nlib fin path pdk/lib/fin\nlib tech map pdk/tech.map\n";
+    let mut p = Project::new(Some(manifest.as_bytes()), None, 7).unwrap();
+    p.index_library("core", "<builtin>", &[("nmos4.shprim", NMOS4.as_bytes())])
+        .unwrap();
+    p.index_library("", "", &[("tb.shbench", FIN_BENCH.as_bytes())])
+        .unwrap();
+    p.index_library("fin", "pdk/lib/fin", &[("nfet.shprim", FINFET.as_bytes())])
+        .unwrap();
+    p.index_library("tech", "pdk/tech.map", &[("tech.map", FIN_MAP.as_bytes())])
+        .unwrap();
+    let top = p
+        .open("", "tb.shbench", FIN_BENCH.as_bytes(), None)
+        .unwrap()
+        .handle;
+    let req = schemify_elab::Request {
+        config: None,
+        corner: None,
+        overrides: &[],
+        env: &[],
+        dialect: Dialect::Ngspice,
+    };
+    let e = schemify_elab::elaborate(&p, top, &req, &mut no_funcs);
+    assert!(!e.violations.blocking(), "{:?}", e.violations.rows);
+    // The source is the PDK cell's file, from the PDK cell's library and directory (not
+    // `core/…` in the `tech` library: the derived row has no directory on disk).
+    let fin = p.libs().find("fin").unwrap() as u8;
+    assert_eq!(
+        schemify_run::sources(&p, &e),
+        [schemify_run::Source {
+            tool: schemify_run::Tool::Openvaf,
+            origin: schemify_run::Origin::File {
+                lib: fin,
+                path: "../../va/cmg.va".into()
+            },
+            out: "cmg.osdi".into(),
+        }]
+    );
+}
+
+/// A corner path that starts with a project variable (`${PDK_MODELS}`, written by
+/// `pdk.use` as a project-relative path) is relative to the project root, wherever the bench
+/// lives; a literal relative path stays relative to the bench's directory (pdk spec Q3).
+#[test]
+fn project_variable_corner_paths_are_relative_to_the_project_root() {
+    let bench = RC_BENCH.replace(
+        "corner tt\n  set C 1u\n",
+        "corner tt\n  lib ${PDK_MODELS} tt\n  include sub/extra.inc\n  lib ${HOME_LIB}/x.lib ss\n  \
+         set C 1u\n",
+    );
+    let manifest = b"schemify 1 project\n\nset PDK_MODELS .schemify/pdks/k/v/models/corners.lib\n";
+    let mut p = Project::new(Some(manifest), None, 7).unwrap();
+    let files = [
+        ("benches/res.shprim", RES),
+        ("benches/cap.shprim", CAP),
+        ("benches/tb.shbench", bench.as_str()),
+    ];
+    let listing: Vec<(&str, &[u8])> = files.iter().map(|(n, t)| (*n, t.as_bytes())).collect();
+    p.index_library("", "", &listing).unwrap();
+    let mut top = None;
+    for (name, text) in files {
+        let h = p.open("", name, text.as_bytes(), None).unwrap().handle;
+        if name.ends_with(".shbench") {
+            top = Some(h);
+        }
+    }
+    let top = top.unwrap();
+    let plan = Plan::read(p.doc(top).unwrap()).unwrap();
+    let mut jobs = Jobs::new();
+    jobs.push(None, Some("tt"), NO_SAMPLE, &[]).unwrap();
+    let dir = tmp("project-var-paths");
+    // `HOME_LIB` comes from the environment, not the project: it stays bench-relative.
+    let env = [("HOME_LIB", "envlib")];
+    let (jobs, _, runner) =
+        common::run_env(&p, top, &plan, jobs, &env, |d| cfg(&dir, d, sh(FAKE), 1));
+    assert_eq!(jobs.state(0), State::Done);
+    let netlist = std::fs::read_to_string(runner.job_dir(0).join("netlist.cir")).unwrap();
+    // Joined as the runner joins them (one component per base), so the separators match on
+    // Windows too.
+    let from = |base: &Path, rel: &str| base.join(rel).to_string_lossy().into_owned();
+    let bench_dir = dir.join("benches");
+    let want = format!(
+        "\n.lib {} tt\n.include {}\n.lib {} ss\n",
+        from(&dir, ".schemify/pdks/k/v/models/corners.lib"),
+        from(&bench_dir, "sub/extra.inc"),
+        from(&bench_dir, "envlib/x.lib")
+    );
+    assert!(netlist.contains(&want), "{want}\n{netlist}");
+}

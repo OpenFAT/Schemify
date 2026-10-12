@@ -233,6 +233,11 @@ pub struct UiState {
     pub(crate) split: Vec<(Sym, f32)>,
     /// The `split` node whose divider the pointer is dragging (`Sym::NONE` when none).
     pub(crate) split_drag: Sym,
+    /// Top-left corner the user dragged a centered dialog to (layout keeps it inside the
+    /// viewport); reset when another dialog opens.
+    pub(crate) dialog_pos: Option<(f32, f32)>,
+    /// While a dialog is dragged: the pointer's offset from the dialog's top-left corner.
+    pub(crate) dialog_grab: Option<(f32, f32)>,
 }
 
 impl std::fmt::Debug for UiState {
@@ -334,6 +339,8 @@ impl UiState {
         self.open.clear();
         self.dialog = id;
         self.dialog_at = at.filter(|_| !id.is_none());
+        self.dialog_pos = None;
+        self.dialog_grab = None;
         self.blur();
     }
 
@@ -493,6 +500,11 @@ pub fn route_input(
         };
         match ev {
             InputEvent::PointerMove { x, y } => {
+                if let Some((gx, gy)) = state.dialog_grab {
+                    state.dialog_pos = Some((x - gx, y - gy));
+                    out.relayout = true;
+                    continue;
+                }
                 if !state.split_drag.is_none() {
                     drag_split(tables, layout, state, x, y);
                     out.relayout = true;
@@ -583,6 +595,22 @@ pub fn route_input(
                     out.redraw = true;
                     out.relayout = true; // a text_area shrinks back to its value
                 }
+                // A press on a centered dialog's own surface (its frame, a panel or a plain
+                // label, not a control) grabs the dialog: dragging moves it.
+                let surface = match nodes.kind[i] {
+                    Kind::Dialog | Kind::Panel => true,
+                    Kind::Label => nodes.prop(Prop::Command)[i].is_none(),
+                    _ => false,
+                };
+                if modal && surface && button == Button::Left && state.dialog_at.is_none() {
+                    let d = layout.rect[layout.floats().end];
+                    debug_assert_eq!(
+                        layout.node[layout.floats().end],
+                        nodes.find(state.dialog).unwrap_or(NO_NODE)
+                    );
+                    state.dialog_grab = Some((x - d.x, y - d.y));
+                    continue;
+                }
                 match (nodes.kind[i], shown) {
                     (_, Shown::Title) => {
                         let reopen = state.open.first() != Some(&id);
@@ -633,7 +661,9 @@ pub fn route_input(
                 }
             }
             InputEvent::PointerUp { .. } => {
-                if !state.split_drag.is_none() {
+                if state.dialog_grab.take().is_some() {
+                    out.redraw = true;
+                } else if !state.split_drag.is_none() {
                     state.split_drag = Sym::NONE;
                     out.redraw = true;
                 } else if state.capture {
@@ -804,7 +834,7 @@ fn toggle_popup(tables: &UiTables, state: &mut UiState, n: NodeIx) {
 }
 
 /// Moves the divider of the dragged `split` to the pointer: the second pane takes the space
-/// from the pointer to the split's far edge, leaving each pane at least
+/// from the pointer to its own far edge (later panes keep their size), leaving each pane at least
 /// [`crate::layout::SPLIT_MIN`].
 fn drag_split(tables: &UiTables, layout: &UiLayout, state: &mut UiState, x: f32, y: f32) {
     let id = state.split_drag;
@@ -817,14 +847,27 @@ fn drag_split(tables: &UiTables, layout: &UiLayout, state: &mut UiState, x: f32,
         |p| crate::layout::row_style(tables, layout.title_style, n, Shown::Normal, p) as f32;
     let gap = style(StyleProp::Gap).max(crate::layout::SPLIT_GAP);
     let rect = layout.rect[r];
-    let (far, pos, pad, len) = if style(StyleProp::Dir) != 0.0 {
-        (rect.x + rect.w, x, style(StyleProp::Pad), rect.w)
+    let horiz = style(StyleProp::Dir) != 0.0;
+    let (start, end, pos, pad) = if horiz {
+        (rect.x, rect.x + rect.w, x, style(StyleProp::Pad))
     } else {
-        (rect.y + rect.h, y, style(StyleProp::PadY), rect.h)
+        (rect.y, rect.y + rect.h, y, style(StyleProp::PadY))
     };
-    let total = (len - 2.0 * pad - gap).max(0.0);
+    // The second pane ends at its own far edge: panes after it keep their size.
+    let second = tables
+        .nodes
+        .children(n)
+        .nth(1)
+        .and_then(|c| layout.row_of(c))
+        .map(|s| layout.rect[s]);
+    let far = match second {
+        Some(s) if horiz => s.x + s.w,
+        Some(s) => s.y + s.h,
+        None => end - pad,
+    };
+    let total = (far - (start + pad) - gap).max(0.0);
     let min = crate::layout::SPLIT_MIN.min(total / 2.0);
-    let px = (far - pad - pos - gap / 2.0).clamp(min, total - min);
+    let px = (far - pos - gap / 2.0).clamp(min, total - min);
     state.set_split(id, px);
     debug_assert!(px >= 0.0 && px <= total);
 }

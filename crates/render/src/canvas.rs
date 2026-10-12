@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 
 use vello::Glyph;
-use vello::kurbo::{Affine, BezPath, Rect};
+use vello::kurbo::{Affine, BezPath, Cap, Join, Rect, Stroke};
 use vello::peniko::FontData;
 
 use schemify_ui::TextSystem;
@@ -124,17 +124,76 @@ pub struct Lines {
     pub y1: Vec<i32>,
     /// Palette layer.
     pub layer: Vec<u8>,
+    /// Stroke weight and dash, in step with `layer`.
+    pub style: Vec<LineStyle>,
 }
 
 impl Lines {
-    fn push(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, layer: u8) {
+    fn push(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, layer: u8, style: LineStyle) {
         assert!(self.x0.len() < CanvasPrims::CAPACITY && usize::from(layer) < LAYERS);
+        assert_eq!(self.style.len(), self.x0.len(), "style column in step");
         self.x0.push(x0);
         self.y0.push(y0);
         self.x1.push(x1);
         self.y1.push(y1);
         self.layer.push(layer);
+        self.style.push(style);
     }
+}
+
+/// A primitive's stroke weight, dash and fill (format spec §4 rank 2, `width`, `dash`,
+/// `fill true`), packed in a byte: bits 0–1 hold `weight − 1`, bits 2–5 the dash, bit 6 the
+/// fill. [`LineStyle::PLAIN`] (weight 1, solid, filled only if its layer fills) is the zero
+/// value, so a table filled without styles draws exactly as before.
+///
+/// Both are in screen terms, not world units: a stroke is `weight` × its layer's
+/// [`Palette::width`] logical pixels and a dash `n` draws dashes and gaps of `2n` logical
+/// pixels each, at every zoom. So a stroke never thins below the layer width when zoomed out,
+/// and a body drawn at weight 2 stays twice its wire at every zoom.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash, PartialOrd, Ord)]
+pub struct LineStyle(pub u8);
+
+impl LineStyle {
+    /// Weight 1, solid: the layer's own stroke.
+    pub const PLAIN: LineStyle = LineStyle(0);
+    /// Heaviest weight.
+    pub const WEIGHT_MAX: u8 = 4;
+    /// Longest dash.
+    pub const DASH_MAX: u8 = 15;
+
+    /// The style of weight `weight` (clamped to `[1, WEIGHT_MAX]`) and dash `dash` (0 = solid,
+    /// clamped to `DASH_MAX`). Clamping, not failing: the file stores any number (format spec
+    /// §4) and the renderer draws the nearest it can.
+    pub fn new(weight: u8, dash: u8) -> LineStyle {
+        let w = weight.clamp(1, Self::WEIGHT_MAX) - 1;
+        let d = dash.min(Self::DASH_MAX);
+        let s = LineStyle(w | (d << 2));
+        assert!(s.weight() == w + 1 && s.dash() == d);
+        s
+    }
+
+    /// Stroke weight, `[1, WEIGHT_MAX]`, in multiples of the layer width.
+    pub fn weight(self) -> u8 {
+        (self.0 & 3) + 1
+    }
+
+    /// Dash, `[0, DASH_MAX]`; 0 is solid.
+    pub fn dash(self) -> u8 {
+        (self.0 >> 2) & 15
+    }
+
+    /// This style, also filling a closed shape (rect, full circle, polygon) in its layer's
+    /// colour whatever the layer's [`Palette::fill`] bit says; an open shape ignores it.
+    pub fn filled(self) -> LineStyle {
+        LineStyle(self.0 | Self::FILL)
+    }
+
+    /// True when [`LineStyle::filled`] was applied.
+    pub fn fills(self) -> bool {
+        self.0 & Self::FILL != 0
+    }
+
+    const FILL: u8 = 1 << 6;
 }
 
 /// Axis-aligned rectangles between two opposite corners (outlined; also filled when the
@@ -157,6 +216,8 @@ pub struct Arcs {
     pub sweep: Vec<i32>,
     /// Palette layer.
     pub layer: Vec<u8>,
+    /// Stroke weight and dash.
+    pub style: Vec<LineStyle>,
 }
 
 /// Point chains: polyline `i` uses points `end[i-1]..end[i]`.
@@ -170,6 +231,8 @@ pub struct Polys {
     pub y: Vec<i32>,
     /// Palette layer per chain.
     pub layer: Vec<u8>,
+    /// Stroke weight and dash per chain.
+    pub style: Vec<LineStyle>,
 }
 
 /// Text labels: top-left anchored, `size` = font size in milli-units.
@@ -212,30 +275,63 @@ impl CanvasPrims {
     /// Maximum primitives per kind.
     pub const CAPACITY: usize = 1 << 22;
 
-    /// Appends a segment.
+    /// Appends a segment in the layer's plain stroke.
     pub fn line(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, layer: u8) {
-        self.lines.push(x0, y0, x1, y1, layer);
+        self.lines.push(x0, y0, x1, y1, layer, LineStyle::PLAIN);
     }
 
-    /// Appends a rectangle.
+    /// Appends a segment drawn in `style`.
+    pub fn line_styled(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, layer: u8, style: LineStyle) {
+        self.lines.push(x0, y0, x1, y1, layer, style);
+    }
+
+    /// Appends a rectangle in the layer's plain stroke.
     pub fn rect(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, layer: u8) {
-        self.rects.push(x0, y0, x1, y1, layer);
+        self.rects.push(x0, y0, x1, y1, layer, LineStyle::PLAIN);
     }
 
-    /// Appends an arc (`sweep = 360_000` for a circle).
+    /// Appends a rectangle outlined in `style`.
+    pub fn rect_styled(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, layer: u8, style: LineStyle) {
+        self.rects.push(x0, y0, x1, y1, layer, style);
+    }
+
+    /// Appends an arc (`sweep = 360_000` for a circle) in the layer's plain stroke.
     pub fn arc(&mut self, cx: i32, cy: i32, r: i32, start: i32, sweep: i32, layer: u8) {
+        self.arc_styled(cx, cy, r, start, sweep, layer, LineStyle::PLAIN);
+    }
+
+    /// Appends an arc stroked in `style`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn arc_styled(
+        &mut self,
+        cx: i32,
+        cy: i32,
+        r: i32,
+        start: i32,
+        sweep: i32,
+        layer: u8,
+        style: LineStyle,
+    ) {
         let t = &mut self.arcs;
         assert!(t.cx.len() < Self::CAPACITY && usize::from(layer) < LAYERS && r >= 0);
+        assert_eq!(t.style.len(), t.cx.len(), "style column in step");
         t.cx.push(cx);
         t.cy.push(cy);
         t.r.push(r);
         t.start.push(start);
         t.sweep.push(sweep);
         t.layer.push(layer);
+        t.style.push(style);
     }
 
-    /// Appends a polyline (`closed = false`) or polygon (`closed = true`) of at least 2 points.
+    /// Appends a polyline (`closed = false`) or polygon (`closed = true`) of at least 2 points
+    /// in the layer's plain stroke.
     pub fn poly(&mut self, pts: &[(i32, i32)], closed: bool, layer: u8) {
+        self.poly_styled(pts, closed, layer, LineStyle::PLAIN);
+    }
+
+    /// Appends a polyline or polygon stroked in `style`.
+    pub fn poly_styled(&mut self, pts: &[(i32, i32)], closed: bool, layer: u8, style: LineStyle) {
         assert!(
             pts.len() >= 2 && usize::from(layer) < LAYERS,
             "poly needs 2 points"
@@ -246,10 +342,12 @@ impl CanvasPrims {
             &mut self.polylines
         };
         assert!(t.end.len() < Self::CAPACITY);
+        assert_eq!(t.style.len(), t.end.len(), "style column in step");
         t.x.extend(pts.iter().map(|p| p.0));
         t.y.extend(pts.iter().map(|p| p.1));
         t.end.push(t.x.len() as u32);
         t.layer.push(layer);
+        t.style.push(style);
     }
 
     /// Appends a label.
@@ -389,6 +487,8 @@ pub struct CanvasScratch {
     closed: Vec<Chains>,
     curves: Vec<BezPath>,
     fill: Vec<BezPath>,
+    /// Strokes of rows not in [`LineStyle::PLAIN`], one path per (layer, style) seen so far.
+    styled: Vec<(u8, LineStyle, BezPath)>,
     dots: Chains,
     path: BezPath,
     lod: Lod,
@@ -727,6 +827,17 @@ pub fn draw_prims_in<P: Painter>(
     for path in sc.curves.iter_mut().chain(sc.fill.iter_mut()) {
         path.truncate(0);
     }
+    for b in &mut sc.styled {
+        b.2.truncate(0);
+    }
+    assert!(
+        l.style.len() == l.x0.len()
+            && prims.rects.style.len() == prims.rects.x0.len()
+            && prims.arcs.style.len() == prims.arcs.cx.len()
+            && prims.polylines.style.len() == prims.polylines.end.len()
+            && prims.polygons.style.len() == prims.polygons.end.len(),
+        "style columns in step"
+    );
     sc.lod.begin(view);
     let mut paths = 0; // rows drawn as paths or glyph runs (the costly ones)
     let (ox, oy) = cam.origin(view);
@@ -748,8 +859,15 @@ pub fn draw_prims_in<P: Painter>(
         {
             continue;
         }
-        sc.open[layer].push(&[pt(ax, ay), pt(bx, by)]);
         paths += 1;
+        let st = l.style[i];
+        if st != LineStyle::PLAIN {
+            let (path, o) = styled(&mut sc.styled, layer, st, palette);
+            path.move_to(pt_at(ax, ay, o));
+            path.line_to(pt_at(bx, by, o));
+            continue;
+        }
+        sc.open[layer].push(&[pt(ax, ay), pt(bx, by)]);
     }
 
     let r = &prims.rects;
@@ -761,11 +879,18 @@ pub fn draw_prims_in<P: Painter>(
         if outside(ax, ay, bx, by) || sc.lod.mark(layer, x0, y0, x1, y1) {
             continue;
         }
-        sc.closed[layer].push(&[pt(x0, y0), pt(x1, y0), pt(x1, y1), pt(x0, y1)]);
         paths += 1;
-        if palette.fill & (1 << layer) != 0 {
+        if palette.fill & (1 << layer) != 0 || r.style[i].fills() {
             push_rect(&mut sc.fill[layer], Rect::new(x0, y0, x1, y1));
         }
+        let st = r.style[i];
+        if st != LineStyle::PLAIN {
+            let (path, o) = styled(&mut sc.styled, layer, st, palette);
+            let (a, b) = (pt_at(x0, y0, o), pt_at(x1, y1, o));
+            push_rect(path, Rect::new(a.0, a.1, b.0, b.1));
+            continue;
+        }
+        sc.closed[layer].push(&[pt(x0, y0), pt(x1, y0), pt(x1, y1), pt(x0, y1)]);
     }
 
     let a = &prims.arcs;
@@ -782,9 +907,15 @@ pub fn draw_prims_in<P: Painter>(
             continue;
         }
         let (start, sweep) = arc_angles(a, i);
-        push_arc(&mut sc.curves[layer], cx, cy, rad, start, sweep);
+        let st = a.style[i];
+        let curves = if st == LineStyle::PLAIN {
+            &mut sc.curves[layer]
+        } else {
+            styled(&mut sc.styled, layer, st, palette).0
+        };
+        push_arc(curves, cx, cy, rad, start, sweep);
         paths += 1;
-        if a.sweep[i].abs() >= 360_000 && palette.fill & (1 << layer) != 0 {
+        if a.sweep[i].abs() >= 360_000 && (palette.fill & (1 << layer) != 0 || st.fills()) {
             push_arc(&mut sc.fill[layer], cx, cy, rad, start, sweep);
         }
     }
@@ -811,20 +942,40 @@ pub fn draw_prims_in<P: Painter>(
             if outside(x0, y0, x1, y1) || sc.lod.mark(layer, x0, y0, x1, y1) {
                 continue;
             }
-            let chains = if closed {
-                &mut sc.closed[layer]
+            let st = polys.style[k];
+            if st == LineStyle::PLAIN {
+                let chains = if closed {
+                    &mut sc.closed[layer]
+                } else {
+                    &mut sc.open[layer]
+                };
+                for j in start..end {
+                    chains.pts.push(pt(
+                        f64::from(polys.x[j]) * s + ox,
+                        f64::from(polys.y[j]) * s + oy,
+                    ));
+                }
+                chains.end.push(chains.pts.len() as u32);
             } else {
-                &mut sc.open[layer]
-            };
-            for j in start..end {
-                chains.pts.push(pt(
-                    f64::from(polys.x[j]) * s + ox,
-                    f64::from(polys.y[j]) * s + oy,
-                ));
+                let (path, o) = styled(&mut sc.styled, layer, st, palette);
+                for j in start..end {
+                    let q = pt_at(
+                        f64::from(polys.x[j]) * s + ox,
+                        f64::from(polys.y[j]) * s + oy,
+                        o,
+                    );
+                    if j == start {
+                        path.move_to(q);
+                    } else {
+                        path.line_to(q);
+                    }
+                }
+                if closed {
+                    path.close_path();
+                }
             }
-            chains.end.push(chains.pts.len() as u32);
             paths += 1;
-            if closed && palette.fill & (1 << layer) != 0 {
+            if closed && (palette.fill & (1 << layer) != 0 || st.fills()) {
                 let f = &mut sc.fill[layer];
                 f.move_to((
                     f64::from(polys.x[start]) * s + ox,
@@ -855,12 +1006,68 @@ pub fn draw_prims_in<P: Painter>(
         if !sc.curves[layer].is_empty() {
             p.stroke_path(&sc.curves[layer], width, color);
         }
+        for (_, st, path) in sc.styled.iter().filter(|b| usize::from(b.0) == layer) {
+            if !path.is_empty() {
+                p.stroke_styled(path, &stroke_of(*st, width), color);
+            }
+        }
         sc.lod.flush(p, layer, color);
     }
     assert_eq!(sc.lod.used, 0, "every mask drawn");
     let listed = rows.map(|r| &r.texts[..]);
     paths += draw_texts(p, view, cam, &prims.texts, listed, palette, text, scratch);
     rows.map_or(prims.len(), Rows::len) + PATH_COST * paths
+}
+
+/// The stroke of `style` over a layer `width` logical px wide: `weight × width`, round caps
+/// and joins (a thick zigzag mitres into spikes), dashes and gaps of `2 · dash` px.
+pub fn stroke_of(style: LineStyle, width: f64) -> Stroke {
+    assert!(width > 0.0, "zero-width layer");
+    let w = width * f64::from(style.weight());
+    let stroke = Stroke::new(w).with_caps(Cap::Round).with_join(Join::Round);
+    let d = 2.0 * f64::from(style.dash());
+    let out = if d > 0.0 {
+        stroke.with_dashes(0.0, [d, d])
+    } else {
+        stroke
+    };
+    assert!(out.width >= width);
+    out
+}
+
+/// The path that collects `layer`'s rows in `style` (made on first use; at most one per pair,
+/// so the list stays as short as the distinct styles drawn) and the pixel offset its points
+/// snap to: a pixel center for an odd stroke width, the pixel edge for an even one, so both
+/// stay crisp.
+fn styled<'a>(
+    buckets: &'a mut Vec<(u8, LineStyle, BezPath)>,
+    layer: usize,
+    style: LineStyle,
+    palette: &Palette,
+) -> (&'a mut BezPath, f64) {
+    assert!(layer < LAYERS && style != LineStyle::PLAIN);
+    let w = f64::from(palette.width[layer]) * f64::from(style.weight());
+    let o = if (w.round() as i64) % 2 == 0 {
+        0.0
+    } else {
+        0.5
+    };
+    let l = layer as u8;
+    let at = match buckets.iter().position(|b| b.0 == l && b.1 == style) {
+        Some(at) => at,
+        None => {
+            assert!(buckets.len() < LAYERS * 64, "styles are a byte per layer");
+            buckets.push((l, style, BezPath::new()));
+            buckets.len() - 1
+        }
+    };
+    (&mut buckets[at].2, o)
+}
+
+/// A screen point snapped to whole pixels plus `o` (see [`styled`]).
+#[inline]
+fn pt_at(x: f64, y: f64, o: f64) -> (f64, f64) {
+    (pixel(x) + o, pixel(y) + o)
 }
 
 /// Every row `0..n`, or the listed ones.
@@ -1038,6 +1245,139 @@ mod tests {
         assert!((sx3 - sx - 10.0).abs() < 1e-6 && (sy3 - sy + 5.0).abs() < 1e-6);
         cam.zoom_at(view, 0.0, 0.0, 1e30);
         assert_eq!(cam.scale, Camera::SCALE_MAX, "zoom is clamped");
+    }
+
+    /// Renders `prims` on a 100 × 100 black view at `scale` px per milli-unit centred on the
+    /// origin and returns the green channel (layer 4, xschem's symbol green).
+    fn lit(prims: &CanvasPrims, scale: f64) -> Vec<u8> {
+        let view = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let cam = Camera {
+            cx: 0.0,
+            cy: 0.0,
+            scale,
+        };
+        let mut p = crate::CpuPainter::new(100, 100, 1.0);
+        let mut text = schemify_ui::TextSystem::new();
+        let mut sc = CanvasScratch::default();
+        let palette = Palette::xschem_dark();
+        draw_prims(&mut p, view, &cam, prims, &palette, &mut text, &mut sc);
+        let px = p.finish(rgba(0x0000_00ff));
+        let out: Vec<u8> = px.data().iter().map(|c| c.g).collect();
+        assert_eq!(out.len(), 100 * 100);
+        out
+    }
+
+    fn ink(px: &[u8]) -> u32 {
+        px.iter().map(|&g| u32::from(g)).sum()
+    }
+
+    #[test]
+    fn style_packs_and_clamps() {
+        assert_eq!(LineStyle::new(1, 0), LineStyle::PLAIN);
+        let s = LineStyle::new(3, 7);
+        assert_eq!((s.weight(), s.dash()), (3, 7));
+        let c = LineStyle::new(9, 200);
+        assert_eq!((c.weight(), c.dash()), (4, 15), "out of range clamps");
+        assert_eq!(LineStyle::new(0, 0).weight(), 1, "weight 0 is weight 1");
+    }
+
+    #[test]
+    fn weight_two_draws_twice_the_ink_of_weight_one() {
+        let at = |w: u8| {
+            let mut p = CanvasPrims::default();
+            p.line_styled(-40_000, 0, 40_000, 0, 4, LineStyle::new(w, 0));
+            ink(&lit(&p, 1e-3))
+        };
+        let (one, two, four) = (at(1), at(2), at(4));
+        assert!(one > 0, "weight 1 draws");
+        let r2 = f64::from(two) / f64::from(one);
+        let r4 = f64::from(four) / f64::from(one);
+        assert!((1.8..2.3).contains(&r2), "weight 2 / weight 1 ink = {r2}");
+        assert!((3.6..4.5).contains(&r4), "weight 4 / weight 1 ink = {r4}");
+    }
+
+    #[test]
+    fn dash_leaves_gaps_and_solid_does_not() {
+        // A vertical segment down column 50; count unlit rows along it.
+        let gaps = |dash: u8| {
+            let mut p = CanvasPrims::default();
+            p.line_styled(0, -40_000, 0, 40_000, 4, LineStyle::new(1, dash));
+            let px = lit(&p, 1e-3);
+            (15..85)
+                .filter(|&y| (48..53).all(|x| px[y * 100 + x] < 40))
+                .count()
+        };
+        assert_eq!(gaps(0), 0, "solid has no gap");
+        let g = gaps(3);
+        assert!(
+            (20..50).contains(&g),
+            "dash 3 (6 px on, 6 off) leaves gaps: {g}"
+        );
+        // Dashes apply to every kind, not only lines.
+        let mut p = CanvasPrims::default();
+        p.arc_styled(0, 0, 40_000, 0, 360_000, 4, LineStyle::new(1, 3));
+        let mut solid = CanvasPrims::default();
+        solid.arc(0, 0, 40_000, 0, 360_000, 4);
+        assert!(ink(&lit(&p, 1e-3)) < ink(&lit(&solid, 1e-3)) * 3 / 4);
+    }
+
+    #[test]
+    fn fill_bit_fills_closed_shapes_only() {
+        let tri = [(-30_000, -30_000), (30_000, 0), (-30_000, 30_000)];
+        let draw = |closed: bool, st: LineStyle| {
+            let mut p = CanvasPrims::default();
+            p.poly_styled(&tri, closed, 4, st);
+            ink(&lit(&p, 1e-3))
+        };
+        let (outline, filled) = (
+            draw(true, LineStyle::PLAIN),
+            draw(true, LineStyle::PLAIN.filled()),
+        );
+        assert!(
+            filled > outline * 5,
+            "layer 4 does not fill; the bit does: {outline} {filled}"
+        );
+        assert!(LineStyle::new(2, 3).filled().fills() && !LineStyle::new(2, 3).fills());
+        assert!(
+            draw(false, LineStyle::PLAIN.filled()) < filled / 3,
+            "an open chain never fills"
+        );
+    }
+
+    #[test]
+    fn strokes_keep_a_pixel_when_zoomed_far_out() {
+        // 8·10^6 milli-units at 10^-5 px each = 80 px long; the stroke stays ≥ 1 px across.
+        for w in [1u8, 2] {
+            let mut p = CanvasPrims::default();
+            p.line_styled(-4_000_000, 0, 4_000_000, 0, 4, LineStyle::new(w, 0));
+            let px = lit(&p, 1e-5);
+            for x in 15..85 {
+                let col: u32 = (0..100).map(|y| u32::from(px[y * 100 + x])).sum();
+                let want = 0xdd * u32::from(w) * 9 / 10;
+                assert!(col >= want, "column {x} weight {w}: {col} < {want}");
+            }
+        }
+    }
+
+    #[test]
+    fn plain_style_draws_exactly_like_unstyled() {
+        let mut a = CanvasPrims::default();
+        let mut b = CanvasPrims::default();
+        let tri = [(0, 0), (10_000, 30_000), (-25_000, 30_000)];
+        a.line(-30_000, -10_000, 30_000, 20_000, 4);
+        a.rect(-20_000, -20_000, 10_000, 5_000, 4);
+        a.arc(5_000, 5_000, 12_000, 0, 270_000, 4);
+        a.poly(&tri, true, 4);
+        let plain = LineStyle::PLAIN;
+        b.line_styled(-30_000, -10_000, 30_000, 20_000, 4, plain);
+        b.rect_styled(-20_000, -20_000, 10_000, 5_000, 4, plain);
+        b.arc_styled(5_000, 5_000, 12_000, 0, 270_000, 4, plain);
+        b.poly_styled(&tri, true, 4, plain);
+        assert_eq!(a, b);
+        assert_eq!(lit(&a, 1e-3), lit(&b, 1e-3));
+        // ...and a styled row does not.
+        b.line_styled(-30_000, 30_000, 30_000, 30_000, 4, LineStyle::new(2, 0));
+        assert_ne!(lit(&a, 1e-3), lit(&b, 1e-3));
     }
 
     #[test]

@@ -21,6 +21,22 @@ fn fails(text: &str, code: Code, line: u32, col: u32) {
 
 const BENCH: &str = "schemify 1 shbench\n";
 
+/// Every rank-2 graphic takes the stroke attributes `width` and `dash` (spec §4); they are
+/// numbers, so a word there is `E029`.
+#[test]
+fn stroke_attributes_on_every_graphic() {
+    let ok = "schemify 1 shprim\npin A in 0 0\nimpl s spice\nline 0 0 1 0\n  width 2\n  dash 1\nrect 0 0 1 1\n  width 2\n\
+              arc 0 0 1 0 90\n  dash 3\ncircle 0 0 1\n  width 3\n  dash 2\n\
+              poly 0 0 1 0 1 1\n  width 2\n";
+    assert!(parse(ok.as_bytes()).is_ok());
+    fails(
+        "schemify 1 shprim\npin A in 0 0\nimpl s spice\ncircle 0 0 1\n  width thick\n",
+        Code::E029,
+        5,
+        0,
+    );
+}
+
 #[test]
 fn e022_coordinates() {
     fails(
@@ -445,4 +461,43 @@ fn shape_forms_and_arity() {
         4,
         0,
     );
+}
+
+/// `tech.map` (pdk spec §6): header attributes `pdk`/`vdd`, `class <class> <flavor>` records
+/// with a required `cell`; a missing `cell`, a duplicate (class, flavor), a bad `limits`
+/// bound word and a schematic record are refused. A manifest `lib` takes the `map` source,
+/// a `plugin` does not.
+#[test]
+fn techmap_records() {
+    let ok = "schemify 1 techmap\n  pdk sky130\n  vdd 1.8\n\nclass nmos core\n  cell sky130_fd_pr:nfet_01v8\n  param W w/1u\n  param L l/1u\n  limits l min 0.15u\nclass nmos io\n  cell sky130_fd_pr:nfet_g5v0d10v5\n  vdd 3.3\n";
+    let doc = parse(ok.as_bytes()).expect("a tech map parses");
+    assert_eq!(schemify_format::write(&doc), ok, "canonical round trip");
+    let tm = "schemify 1 techmap\n";
+    fails(
+        &format!("{tm}class nmos core\n  param W w\n"),
+        Code::E029,
+        2,
+        0,
+    );
+    fails(
+        &format!("{tm}class nmos core\n  cell a:b\nclass nmos core\n  cell a:c\n"),
+        Code::E024,
+        4,
+        0,
+    );
+    fails(
+        &format!("{tm}class nmos core\n  cell a:b\n  limits l least 1\n"),
+        Code::E029,
+        4,
+        0,
+    );
+    fails(
+        &format!("{tm}inst 0abc x:y\n  at 0 0 R0\n"),
+        Code::E027,
+        2,
+        0,
+    );
+    let manifest = "schemify 1 project\nlib tech map .schemify/pdks/sky130/v1/tech.map\n";
+    assert!(parse(manifest.as_bytes()).is_ok());
+    fails("schemify 1 project\nplugin p map x\n", Code::E029, 2, 0);
 }

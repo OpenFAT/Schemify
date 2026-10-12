@@ -205,6 +205,35 @@ style docs-staged
   fg 107010
   font 13
 
+style docs-toggle
+  border 1
+  border-color b0b0b0
+
+style docs-toggle-on
+  bg c3c3c3
+  hover-bg c3c3c3
+  border 1
+  border-color 808080
+
+style docs-preview-cap
+  fg 707070
+  font 11
+  pad-y 2
+
+style docs-preview
+  bg fbfbfb
+  border 1
+  border-color d8d8d8
+  pad 8
+  pad-y 6
+
+style docs-source
+  font 14
+  border 1
+  border-color d0d0d0
+  pad 4
+  pad-y 2
+
 style bottom
   dir column
 
@@ -274,6 +303,10 @@ style results-fail
 style results-dim
   width 90
   fg 909090
+
+style results-log
+  fg 303030
+  font 12
 
 style results-yield
   fg 1a3a8a
@@ -353,6 +386,102 @@ style dialog-button
 style dialog-buttons
   dir row
   gap 8
+
+# Cell settings panel (`view.cell`): the app adds sections, blocks and key/value rows under
+# `cell.page`.
+style cell-pane
+  bg ffffff
+  dir column
+  width 380
+  border 1
+  border-color a0a0a0
+
+style cell-page
+  grow 1
+  dir column
+  pad 10
+  pad-y 8
+  gap 4
+
+style cell-section
+  font 14
+  pad-y 6
+  fg 1a3a8a
+
+style cell-block
+  dir column
+  gap 2
+  pad 6
+  pad-y 4
+  bg f4f4f4
+
+style cell-row
+  dir row
+  gap 6
+  height 24
+
+style cell-key
+  width 110
+  font 12
+  fg 404040
+
+style cell-input
+  bg ffffff
+  border 1
+  border-color d0d0d0
+  grow 1
+  pad 4
+
+style cell-title
+  font 13
+  pad-y 2
+
+style cell-bar
+  dir row
+  gap 4
+
+style cell-body
+  bg ffffff
+  border 1
+  border-color d0d0d0
+  font 12
+  height 120
+
+# View switcher floating over the canvas (a child of `canvas`): the app sets each button's
+# style to viewsw-on (shown), viewsw (available) or viewsw-off (the file kind lacks it, disabled).
+style view-switch
+  bg d9d9d9
+  dir row
+  pad 2
+  pad-y 2
+  gap 2
+  border 1
+  border-color 808080
+  radius 4
+
+style viewsw
+  bg d9d9d9
+  pad 10
+  height 22
+  font 12
+  hover-bg f4f4f4
+  radius 3
+
+style viewsw-on
+  bg ffffff
+  pad 10
+  height 22
+  font 12
+  hover-bg ffffff
+  radius 3
+
+style viewsw-off
+  fg 9a9a9a
+  pad 10
+  height 22
+  font 12
+  hover-bg d9d9d9
+  radius 3
 
 # --- window ---------------------------------------------------------------------------------------
 
@@ -487,10 +616,10 @@ node file.close_schematic item
   label "Close schematic"
   command file.close_schematic
   accel Ctrl+W
-node file.quit_xschem item
+node file.quit item
   parent menu.file
-  label "Quit Xschem"
-  command file.quit_xschem
+  label Quit
+  command file.quit
   accel Ctrl+Q
 node menu.edit menu
   parent menubar
@@ -731,6 +860,10 @@ node view.docs item
   label "Docs page"
   command view.docs
   accel Alt+D
+node view.cell item
+  parent menu.view
+  label "Cell settings"
+  command view.cell
 node view.fullscreen item
   parent menu.view
   label Fullscreen
@@ -769,6 +902,11 @@ node view.toggle_colorscheme item
   label "Toggle colorscheme"
   command view.toggle_colorscheme
   accel Shift+O
+node view.theme_modern item
+  parent menu.view
+  label "Modern theme"
+  command view.theme_modern
+  checked 0
 node view.dim_colors item
   parent menu.view
   label "Dim colors"
@@ -1359,16 +1497,13 @@ node help.help item
   accel ?
 node help.keys item
   parent menu.help
-  label Keys
+  label "Key bindings"
   command help.keys
-node help.show_keybindings item
+  accel /
+node help.about item
   parent menu.help
-  label "Show Keybindings"
-  command help.show_keybindings
-node help.about_xschem item
-  parent menu.help
-  label "About XSCHEM"
-  command help.about_xschem
+  label "About Schemify"
+  command help.about
 node menubar.sep label
   parent menubar
   label -
@@ -1591,6 +1726,33 @@ node work split
   style work
 node canvas canvas
   parent work
+node view.switch panel
+  parent canvas
+  style view-switch
+node switch.schematic button
+  parent view.switch
+  label Schematic
+  command view.schematic
+  tooltip "Show the cell's schematic"
+  style viewsw
+node switch.symbol button
+  parent view.switch
+  label Symbol
+  command view.symbol
+  tooltip "Show the cell's symbol"
+  style viewsw
+node switch.docs button
+  parent view.switch
+  label Docs
+  command view.docs
+  tooltip "Docs page (Alt+D)"
+  style viewsw
+node switch.cell button
+  parent view.switch
+  label Settings
+  command view.cell
+  tooltip "Cell settings: header, pins, parameters, implementations"
+  style viewsw
 node docs.pane panel
   parent work
   style docs-pane
@@ -1601,6 +1763,13 @@ node docs.title label
   parent docs.bar
   label Docs
   style docs-title
+node docs.source button
+  parent docs.bar
+  label Rendered
+  command docs.source
+  tooltip "Show prose as Markdown / LaTeX source, or rendered (toggle)"
+  style docs-toggle
+  checked 0
 node docs.bar.spacer panel
   parent docs.bar
   style spacer
@@ -1634,6 +1803,27 @@ node docs.close button
 node docs.page scroll
   parent docs.pane
   style docs-page
+node cell.pane panel
+  parent work
+  style cell-pane
+node cell.bar toolbar
+  parent cell.pane
+  style docs-bar
+node cell.title label
+  parent cell.bar
+  label "Cell settings"
+  style docs-title
+node cell.bar.spacer panel
+  parent cell.bar
+  style spacer
+node cell.close button
+  parent cell.bar
+  label x
+  command view.cell
+  tooltip "Hide the cell settings"
+node cell.page scroll
+  parent cell.pane
+  style cell-page
 
 # The app puts the checks panel (`view.checks`) or the results table (`view.results`) here.
 node bottom panel

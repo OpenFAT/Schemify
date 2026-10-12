@@ -3,8 +3,10 @@
 //!
 //! Data design:
 //! 1. In: per slot a recorded vello scene; per frame a log of what was painted outside the
-//!    layers (a hash) and where each layer was drawn. Out: layer textures; the frame either
-//!    through vello or, when only layer placements changed, as quads over the last frame.
+//!    layers (a hash), where each layer was drawn, and what was painted over the layers (the
+//!    top part: canvas floats, popups). Out: layer textures; the frame either through vello
+//!    or, when only layer placements changed, as quads over the last frame with the top part's
+//!    texture blended over them.
 //! 2. How many: [`LAYER_SLOTS`] slots (one per cached canvas); a handful of draws per frame.
 //! 3. Widths: placements in device pixels (`f64` transforms); the hash is a `u64`.
 //! 4. Access: the log is appended by every painter call and read once by the window.
@@ -36,6 +38,13 @@ pub struct Layers {
     pub(crate) log: FrameLog,
     /// Hash and target size of the last frame vello rendered (what the target texture holds).
     shown: Option<(u64, u32, u32)>,
+    /// This frame's calls painted over its layers (see [`FrameLog::after`]), recorded beside
+    /// the frame scene: a composed frame lays them over the layer quads.
+    pub(crate) top: Scene,
+    /// `top` rasterized (straight alpha, transparent elsewhere), and the frame hash and target
+    /// size it was rasterized for.
+    top_texture: Option<wgpu::Texture>,
+    top_shown: Option<(u64, u32, u32)>,
     quad: Option<Quad>,
     /// Where a frame's patches are rendered together before their copies: grown to the
     /// largest batch, kept.
@@ -71,6 +80,13 @@ pub(crate) struct FrameLog {
     pub(crate) after: bool,
     /// Inside [`crate::Painter::layer`]: calls belong to the layer, not to the frame.
     pub(crate) recording: bool,
+    /// Frame clips open (outside layer recordings), and how many of them are the top part's
+    /// (opened after the first layer draw; the innermost ones, as clips nest).
+    pub(crate) depth: u32,
+    pub(crate) top_depth: u32,
+    /// The top part cannot be laid over the layer quads on its own: it was painted inside a
+    /// clip opened before the layers, or a layer was drawn after it.
+    pub(crate) tangled: bool,
 }
 
 impl FrameLog {
@@ -104,6 +120,7 @@ impl Layers {
     /// Starts logging a frame painted with device scale `base`. Call before painting it.
     pub fn begin_frame(&mut self, base: Affine) {
         self.log = FrameLog::default();
+        self.top.reset();
         base.as_coeffs().map(f64::to_bits).hash(&mut self.log.hash);
     }
 
@@ -142,11 +159,14 @@ impl Layers {
 
     /// Rasterizes every layer recorded since the last call into its texture (vello renders it
     /// into an `Rgba8Unorm` texture registered as the layer's image), then every part patched
-    /// since (rendered side by side into a scratch texture, each copied over its place). Call
-    /// once per frame after painting and before rendering or composing the frame.
+    /// since (rendered side by side into a scratch texture, each copied over its place), then
+    /// the part painted over the layers when the frame may be composed and that part's texture
+    /// is out of date (see [`Layers::reusable`]). Call once per frame after painting and before
+    /// rendering or composing the frame.
     ///
     /// Cost: one vello render per recorded layer and per 2048-px-square batch of
-    /// patches (one, for a frame's few tiles); nothing when none was recorded.
+    /// patches (one, for a frame's few tiles), plus one target-sized render of the top part
+    /// on the first composed frame after it changed; nothing when none was recorded.
     ///
     /// # Errors
     ///
@@ -301,15 +321,60 @@ impl Layers {
             assert!(!at.is_empty(), "a batch holds a patch");
             next += at.len();
         }
+        // The top part, once per picture of it: when this frame paints what vello last
+        // rendered (so it may be composed) and the texture holds an older top part.
+        let hash = self.log.hash.finish();
+        let due = self
+            .shown
+            .filter(|s| s.0 == hash && self.top_shown != Some(*s));
+        if let (Some((_, w, h)), true, false) = (due, self.log.after, self.log.tangled) {
+            let stale = self
+                .top_texture
+                .as_ref()
+                .is_none_or(|t| t.size().width != w || t.size().height != h);
+            if stale {
+                self.top_texture = Some(device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("layers top"),
+                    size: wgpu::Extent3d {
+                        width: w,
+                        height: h,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::STORAGE_BINDING
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                }));
+            }
+            let texture = self.top_texture.as_ref().expect("made above");
+            let params = RenderParams {
+                base_color: Color::TRANSPARENT,
+                width: w,
+                height: h,
+                antialiasing_method: AaConfig::Area,
+            };
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.top_shown = None; // until it is rendered
+            renderer.render_to_texture(device, queue, &self.top, &view, &params)?;
+            self.top_shown = due;
+        }
+        assert!(self.top_shown.is_none() || self.top_texture.is_some());
         Ok(())
     }
 
     /// Whether this frame may skip vello: it painted exactly what the frame vello last rendered
-    /// into a `w × h` target painted, apart from where its layers are drawn, and nothing after
-    /// them. Then [`Layers::compose`] over a copy of that target is the whole frame.
+    /// into a `w × h` target painted, apart from where its layers are drawn. Then
+    /// [`Layers::compose`] over a copy of that target is the whole frame: the layer quads, then
+    /// what was painted over them (canvas floats, popups) from its own texture, which
+    /// [`Layers::raster`] renders once per change of it. Not when that part was painted inside
+    /// a clip opened before the layers or under a later layer draw.
     pub fn reusable(&self, w: u32, h: u32) -> bool {
         let hash = self.log.hash.finish();
-        !self.log.after
+        !self.log.tangled
+            && (!self.log.after || self.top_shown == Some((hash, w, h)))
             && !self.log.draws.is_empty()
             && self.log.draws.len() <= DRAWS_MAX
             && self.shown == Some((hash, w, h))
@@ -327,9 +392,11 @@ impl Layers {
 
     /// Draws this frame's layer placements as textured quads into `target` (a `format`
     /// render attachment of `w × h` device px), over whatever it holds: nearest sampling for
-    /// a copy, bilinear for a stretched stand-in (whose uncovered clip pixels get its fill).
+    /// a copy, bilinear for a stretched stand-in (whose uncovered clip pixels get its fill);
+    /// then, when the frame painted over its layers, that top part blended over them
+    /// ("over", as vello composes it). Call only when [`Layers::reusable`].
     ///
-    /// Cost: one render pass, one quad per layer draw.
+    /// Cost: one render pass, one quad per layer draw plus one for the top part.
     pub fn compose(
         &mut self,
         device: &wgpu::Device,
@@ -347,7 +414,31 @@ impl Layers {
             Some(q) if q.format == format => self.quad.as_ref().expect("checked"),
             _ => self.quad.insert(Quad::new(device, format)),
         };
-        let mut groups = Vec::with_capacity(self.log.draws.len());
+        let bind = |view: &wgpu::TextureView, sampler: &wgpu::Sampler, offset: u64| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("layer quad"),
+                layout: &quad.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &quad.uniforms,
+                            offset,
+                            size: wgpu::BufferSize::new(32),
+                        }),
+                    },
+                ],
+            })
+        };
+        let mut groups = Vec::with_capacity(self.log.draws.len() + 1);
         for (k, &(slot, at, clip, stretch)) in self.log.draws.iter().enumerate() {
             let l = &self.slots[slot];
             let (Some(texture), Some(image)) = (&l.texture, &l.image) else {
@@ -374,32 +465,33 @@ impl Layers {
             let offset = (k * Quad::STRIDE) as u64;
             queue.write_buffer(&quad.uniforms, offset, &bytes);
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("layer quad"),
-                layout: &quad.layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(match stretch {
-                            Some(_) => &quad.linear,
-                            None => &quad.nearest,
-                        }),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &quad.uniforms,
-                            offset,
-                            size: wgpu::BufferSize::new(32),
-                        }),
-                    },
-                ],
-            });
-            groups.push((group, clip));
+            let sampler = match stretch {
+                Some(_) => &quad.linear,
+                None => &quad.nearest,
+            };
+            let group = bind(&view, sampler, offset);
+            groups.push((group, clip, &quad.pipeline));
+        }
+        // The top part over everything, from the slot after the draws' last.
+        if self.log.after {
+            let texture = self
+                .top_texture
+                .as_ref()
+                .expect("Layers::reusable: rasterized");
+            assert_eq!(
+                (texture.width(), texture.height()),
+                (w, h),
+                "the top part fits"
+            );
+            let offset = (DRAWS_MAX * Quad::STRIDE) as u64;
+            let mut bytes = [0u8; 32];
+            for (i, v) in [0.0f32, 0.0, 1.0, 1.0].into_iter().enumerate() {
+                bytes[4 * i..4 * i + 4].copy_from_slice(&v.to_ne_bytes());
+            }
+            queue.write_buffer(&quad.uniforms, offset, &bytes);
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let full = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+            groups.push((bind(&view, &quad.nearest, offset), full, &quad.over));
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("layer quads"),
@@ -414,8 +506,8 @@ impl Layers {
             })],
             ..Default::default()
         });
-        pass.set_pipeline(&quad.pipeline);
-        for (group, clip) in &groups {
+        for (group, clip, pipeline) in &groups {
+            pass.set_pipeline(pipeline);
             pass.set_viewport(
                 clip.x0 as f32,
                 clip.y0 as f32,
@@ -433,7 +525,9 @@ impl Layers {
 /// The quad pipeline: one textured quad per layer draw, its viewport the draw's clip.
 struct Quad {
     format: wgpu::TextureFormat,
+    /// Replaces the target's pixels (a layer draw) or blends over them (the top part).
     pipeline: wgpu::RenderPipeline,
+    over: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
     nearest: wgpu::Sampler,
@@ -505,34 +599,36 @@ struct Out { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("layer quad"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipeline = |blend| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("layer quad"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
         let sampler = |filter| {
             device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("layer quad"),
@@ -543,16 +639,114 @@ struct Out { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
         };
         Quad {
             format,
-            pipeline,
+            pipeline: pipeline(None),
+            // vello stores straight (unpremultiplied) alpha in its targets.
+            over: pipeline(Some(wgpu::BlendState::ALPHA_BLENDING)),
             layout,
             uniforms: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("layer quad"),
-                size: (Self::STRIDE * DRAWS_MAX) as u64,
+                // One slot per layer draw, then the top part's.
+                size: (Self::STRIDE * (DRAWS_MAX + 1)) as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
             nearest: sampler(wgpu::FilterMode::Nearest),
             linear: sampler(wgpu::FilterMode::Linear),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::painter::{Painter, ScenePainter};
+
+    const CANVAS: Rect = Rect::new(0.0, 0.0, 64.0, 64.0);
+    const FLOAT: Rect = Rect::new(8.0, 8.0, 40.0, 20.0);
+
+    /// Paints one frame: `before`, a draw of layer slot 0 (recorded on first use), then
+    /// `after`; returns (painted after the layers, tangled, paths in the top part).
+    fn frame(
+        layers: &mut Layers,
+        before: impl FnOnce(&mut ScenePainter),
+        after: impl FnOnce(&mut ScenePainter),
+    ) -> (bool, bool, u32) {
+        let mut scene = Scene::new();
+        layers.begin_frame(Affine::IDENTITY);
+        let mut p = ScenePainter {
+            scene: &mut scene,
+            base: Affine::IDENTITY,
+            layers: Some(layers),
+        };
+        if !p.holds_layer(0, 1) {
+            assert!(p.layer(0, 1, 64, 64, |p| p.fill_rect(CANVAS, Color::BLACK)));
+        }
+        before(&mut p);
+        assert!(p.draw_layer(0, 1, Affine::IDENTITY, CANVAS, None));
+        after(&mut p);
+        let log = &layers.log;
+        (log.after, log.tangled, layers.top.encoding().n_paths)
+    }
+
+    #[test]
+    fn what_is_painted_over_the_layers_is_the_top_part() {
+        let mut layers = Layers::default();
+        let float = |p: &mut ScenePainter| {
+            p.push_clip(FLOAT);
+            p.fill_rect(FLOAT, Color::WHITE);
+            p.pop_clip();
+        };
+        // A float in its own clip: composable, the top part holds it.
+        let (after, tangled, paths) = frame(&mut layers, |_| {}, float);
+        assert!(after && !tangled && paths > 0, "{after} {tangled} {paths}");
+        assert_eq!((layers.log.depth, layers.log.top_depth), (0, 0));
+        // Nothing over the layers: no top part (painting before them stays out of it).
+        let (after, tangled, paths) =
+            frame(&mut layers, |p| p.fill_rect(CANVAS, Color::WHITE), |_| {});
+        assert!(
+            !after && !tangled && paths == 0,
+            "{after} {tangled} {paths}"
+        );
+        // Negative space: a float inside a clip opened before the layers cannot be laid over
+        // them alone; nor can a float under a later layer draw.
+        let (after, tangled, _) = frame(
+            &mut layers,
+            |p| p.push_clip(CANVAS),
+            |p| {
+                p.fill_rect(FLOAT, Color::WHITE);
+                p.pop_clip();
+            },
+        );
+        assert!(after && tangled);
+        assert_eq!((layers.log.depth, layers.log.top_depth), (0, 0));
+        // A float in its own clip inside an outer one: the clips still balance in both scenes.
+        let (_, tangled, _) = frame(
+            &mut layers,
+            |p| p.push_clip(CANVAS),
+            |p| {
+                float(p);
+                let open = p.layers.as_deref().map(|l| (l.log.depth, l.log.top_depth));
+                assert_eq!(
+                    open,
+                    Some((1, 0)),
+                    "the float's clip closed in the top part"
+                );
+                p.pop_clip();
+            },
+        );
+        assert!(tangled);
+        assert_eq!((layers.log.depth, layers.log.top_depth), (0, 0));
+        let (_, tangled, _) = frame(
+            &mut layers,
+            |_| {},
+            |p| {
+                float(p);
+                assert!(p.draw_layer(0, 1, Affine::IDENTITY, CANVAS, None));
+            },
+        );
+        assert!(tangled);
+        // The top part was never rasterized (no GPU here): no frame is reusable.
+        let _ = frame(&mut layers, |_| {}, float);
+        assert!(!layers.reusable(64, 64));
     }
 }

@@ -400,7 +400,13 @@ fn require_reads_config_modules_once() {
     let tag = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.subsec_nanos());
-    let root = std::env::temp_dir().join(format!("schemify-config-req-{tag}"));
+    // `std::env::temp_dir()` panics on WASI ("not supported by WASI yet"); the CI runner maps
+    // the host's /tmp into the sandbox (`wasmtime run --dir=/tmp::/tmp`).
+    #[cfg(not(target_os = "wasi"))]
+    let tmp = std::env::temp_dir();
+    #[cfg(target_os = "wasi")]
+    let tmp = PathBuf::from("/tmp");
+    let root = tmp.join(format!("schemify-config-req-{tag}"));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("lua/keys")).unwrap();
     std::fs::write(

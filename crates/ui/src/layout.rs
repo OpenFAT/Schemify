@@ -1,9 +1,10 @@
 //! `ui_layout`: one frame's rectangles for every visible node, computed with taffy (flexbox).
 //!
-//! Rows are in paint order: the window tree in pre-order (layer [`Layer::Main`]), then the open
-//! dialog and each open popup, menus and dropdowns (layer [`Layer::Overlay`]). Renderers paint
-//! the main layer, then the canvas, then the overlay, so popups always sit above the schematic
-//! and above the dialog that holds their dropdown.
+//! Rows are in paint order: the window tree in pre-order (layer [`Layer::Main`]), then the
+//! canvas's floats (children of the `canvas` node, centred along its top edge), the open dialog
+//! and each open popup, menus and dropdowns (layer [`Layer::Overlay`]). Renderers paint the main
+//! layer, then the canvas, then the overlay, so floats and popups sit above the schematic and a
+//! popup above the dialog that holds its dropdown. A modal dialog leaves floats unhittable.
 
 use taffy::prelude::*;
 
@@ -25,6 +26,9 @@ const PROSE_W_MAX: f32 = 8192.0;
 /// Tallest text area, in font sizes (plus its padding): it grows with its lines up to this,
 /// then scrolls inside itself ([`area_scroll_max`]).
 pub const AREA_EM_MAX: f32 = 24.0;
+
+/// Gap between the canvas's top edge and a float (a child of the canvas node), in pixels.
+pub const FLOAT_INSET: f32 = 8.0;
 
 /// Narrowest divider of a `split` node (its gap), so the pointer can grab it.
 pub const SPLIT_GAP: f32 = 4.0;
@@ -108,6 +112,8 @@ pub struct UiLayout {
     pub(crate) scroller: Vec<NodeIx>,
     pub(crate) scroll_max: Vec<(NodeIx, f32)>,
     pub(crate) overlay_start: u32,
+    /// First row a modal dialog leaves hittable: the dialog's own (floats sit below it).
+    pub(crate) modal_start: u32,
     pub(crate) title_style: u16,
 }
 
@@ -195,6 +201,13 @@ impl UiLayout {
         }
     }
 
+    /// Rows of the canvas's floats: the start of [`Layer::Overlay`], before the dialog and
+    /// popups (empty when the canvas has no children).
+    pub fn floats(&self) -> std::ops::Range<usize> {
+        debug_assert!(self.overlay_start <= self.modal_start);
+        self.overlay_start as usize..self.modal_start as usize
+    }
+
     /// Style row of the `menu-title` selector ([`NO_STYLE`] if the theme has none).
     pub fn title_style(&self) -> u16 {
         self.title_style
@@ -207,11 +220,7 @@ impl UiLayout {
 
     /// Topmost row under `(x, y)`. While a dialog is open only its rows can be hit (modal).
     pub fn hit(&self, x: f32, y: f32, modal: bool) -> Option<usize> {
-        let lo = if modal {
-            self.overlay_start as usize
-        } else {
-            0
-        };
+        let lo = if modal { self.modal_start as usize } else { 0 };
         (lo..self.len())
             .rev()
             .find(|&r| self.rect[r].contains(x, y) && self.clip[r].contains(x, y))
@@ -763,6 +772,24 @@ pub fn layout(
         width: AvailableSpace::MaxContent,
         height: AvailableSpace::MaxContent,
     };
+    // Floats: each child of the canvas, laid out at its content size and centred along the
+    // canvas's top edge, so it paints above the schematic but under any dialog or popup.
+    // ponytail: every float takes the same spot; add an anchor style prop for a second one.
+    let canvas_row =
+        (0..overlay_start as usize).find(|&r| nodes.kind[b.rows[r].node as usize] == Kind::Canvas);
+    if let Some(cr) = canvas_row {
+        let c = f.rect[cr];
+        let kids: Vec<NodeIx> = nodes.children(b.rows[cr].node).collect();
+        for k in kids {
+            let start = b.rows.len();
+            let root = b.build(k, Shown::Normal, NO_ROW, 0.0);
+            b.place(start, root, max_content, (0.0, 0.0), &mut f);
+            let w = f.rect[start].w;
+            f.shift(start, c.x + ((c.w - w) / 2.0).max(0.0), c.y + FLOAT_INSET);
+        }
+    }
+    let modal_start = b.rows.len() as u32;
+    debug_assert!(modal_start >= overlay_start);
     // The dialog first: a dropdown inside it anchors its popup to a laid-out row, and the
     // popup paints (and hits) above it.
     if let Some(d) = nodes
@@ -773,8 +800,8 @@ pub fn layout(
         let root = b.build(d, Shown::Normal, NO_ROW, 0.0);
         b.place(start, root, max_content, (0.0, 0.0), &mut f);
         let (w, h) = (f.rect[start].w, f.rect[start].h);
-        let (dx, dy) = match state.dialog_at {
-            // At a point (a context menu): kept inside the viewport.
+        // At a point (a context menu) or where the user dragged it: kept inside the viewport.
+        let (dx, dy) = match state.dialog_at.or(state.dialog_pos) {
             Some((x, y)) => (
                 x.min(viewport.0 - w).max(0.0),
                 y.min(viewport.1 - h).max(0.0),
@@ -821,6 +848,7 @@ pub fn layout(
         scroller: f.scroller,
         scroll_max: f.scroll_max,
         overlay_start,
+        modal_start,
         title_style,
     };
     debug_assert_eq!(out.rect.len(), out.node.len());

@@ -1283,7 +1283,7 @@ fn simulation_help_and_waves_commands() {
     );
     run(&mut s, "simulation.list_running_sub_processes", "");
     assert!(s.ed.session.text_view().unwrap().body.contains("no run"));
-    run(&mut s, "help.about_xschem", "");
+    run(&mut s, "help.about", "");
     assert!(s.ed.session.text_view().unwrap().body.contains("Schemify"));
     run(&mut s, "help.help", "");
     assert!(

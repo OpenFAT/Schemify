@@ -30,6 +30,8 @@ pub const RAW: &str = "out.raw";
 pub const STDOUT: &str = "stdout.log";
 /// Simulator stderr.
 pub const STDERR: &str = "stderr.log";
+/// The simulator command line the job ran, one line (for the run log view).
+pub const COMMAND: &str = "command.log";
 /// Results file name inside a run directory.
 pub const RESULTS: &str = "results";
 /// Most workers one runner starts at once.
@@ -190,7 +192,8 @@ impl Runner {
     }
 
     /// Writes job `j`'s netlist into its directory (removing an old raw file; relative
-    /// corner paths made absolute against the bench's directory, [`Prepared::resolved`])
+    /// corner paths made absolute against the bench's directory, or the project root for a
+    /// path from a project variable, [`Prepared::resolved`])
     /// and queues it. A write failure fails the job.
     pub fn submit(&mut self, jobs: &mut Jobs, results: &mut Results, j: u32, p: &Prepared) {
         assert_eq!(jobs.state(j), State::Pending, "submit job {j} once");
@@ -198,7 +201,10 @@ impl Runner {
         let dir = self.job_dir(j);
         let base = self.cfg.lib_dirs.get(usize::from(p.base.0));
         let text = match base {
-            Some(lib) if !p.relative.is_empty() => p.resolved(&lib.join(&p.base.1)),
+            // Library row 0 is the project directory (RunnerConfig::new).
+            Some(lib) if !p.relative.is_empty() => {
+                p.resolved(&lib.join(&p.base.1), &self.cfg.lib_dirs[0])
+            }
             _ => p.netlist.clone(),
         };
         let written = fs::create_dir_all(&dir).and_then(|()| {
@@ -453,10 +459,17 @@ impl Runner {
         };
         let (out, err) = (log(STDOUT)?, log(STDERR)?);
         let sim = &self.cfg.tools.sim;
-        let args = sim
+        let args: Vec<String> = sim
             .args
             .iter()
-            .map(|a| a.replace("{netlist}", NETLIST).replace("{raw}", RAW));
+            .map(|a| a.replace("{netlist}", NETLIST).replace("{raw}", RAW))
+            .collect();
+        let line = std::iter::once(sim.path.clone())
+            .chain(args.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        fs::write(dir.join(COMMAND), line + "\n")
+            .map_err(|e| format!("cannot create {COMMAND}: {e}"))?;
         let proc = Proc::spawn(
             Command::new(&sim.path).args(args).current_dir(&dir),
             out,

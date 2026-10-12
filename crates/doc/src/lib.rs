@@ -55,15 +55,18 @@ mod record;
 mod sha256;
 mod strings;
 mod tables;
+mod techmap;
 
 pub use document::{Document, Loc, TableId};
 pub use edit::{Mode, NEW_ID, OPS_MAX, Op, OpError, Target, Transaction};
 pub use journal::{ops_from_text, ops_to_text};
-pub use library::{CELLS_MAX, CellRef, Cells, LIBS_MAX, LibSource, Libs, LockStatus, Locked};
+pub use library::{
+    CELLS_MAX, CellRef, Cells, LIBS_MAX, LibSource, Libs, LockStatus, Locked, TECH_LIB,
+};
 pub use project::{
     Choice, ConflictBlock, DOCS_MAX, DocHandle, Edit, EditRequest, External, JournalWrite,
-    OpenError, Opened, Outcome, Project, Recovery, STAGES_MAX, SaveRequest, Stage, UNDO_MAX,
-    apply_edits,
+    OpenError, Opened, Outcome, Project, Recovery, ReloadError, STAGES_MAX, SaveRequest, Stage,
+    UNDO_MAX, apply_edits,
 };
 pub use record::{Attr, RecordBuf};
 /// Format types that appear in this crate's columns and edit targets, re-exported so
@@ -75,6 +78,7 @@ pub use tables::{
     Graphics, Instances, Noconns, POOL_MAX, PinDir, Pins, Placed, Pool, Records, Shapes, Span,
     Wires,
 };
+pub use techmap::{CLASS_PARAMS, CLASSES, CLASSES_MAX, FLAVORS, TechMap, core_symbol};
 
 use std::fmt;
 

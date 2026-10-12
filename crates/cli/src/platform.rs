@@ -113,6 +113,18 @@ mod imp {
         std::fs::remove_file(path).map_err(|e| format!("{}: {e}", path.display()))
     }
 
+    pub fn remove_tree(path: &Path) -> Result<(), String> {
+        // `symlink_metadata`: a link is removed itself, never followed out of the tree.
+        let meta =
+            std::fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if meta.is_dir() {
+            std::fs::remove_dir_all(path)
+        } else {
+            std::fs::remove_file(path)
+        }
+        .map_err(|e| format!("{}: {e}", path.display()))
+    }
+
     pub fn mtime_unix_s(path: &Path) -> Option<u64> {
         let t = std::fs::metadata(path).ok()?.modified().ok()?;
         t.duration_since(std::time::UNIX_EPOCH)
@@ -484,6 +496,17 @@ pub const CLIPBOARD_BYTES_MAX: usize = 64 << 20;
 /// The OS error, prefixed with the path (also for a directory).
 pub fn remove(path: &Path) -> Result<(), String> {
     imp::remove(path)
+}
+
+/// Deletes a file, or a directory with everything under it (a plugin's `fs_remove`, plugin
+/// ABI §5: the caller has already confined `path` to `.schemify/`). A symbolic link is
+/// removed, never followed. On the web every file under the directory is removed from OPFS.
+///
+/// # Errors
+///
+/// The OS error, prefixed with the path; a missing `path` is an error.
+pub fn remove_tree(path: &Path) -> Result<(), String> {
+    imp::remove_tree(path)
 }
 
 /// Modification time in seconds since the Unix epoch; `None` when unknown.

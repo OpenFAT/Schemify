@@ -1,0 +1,29 @@
+[package]
+name = "pdk-manager"
+description = "Per-project PDK installs (ciel, git, url or a local kit), switching technologies by rewriting the manifest (docs/spec/pdk.md)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "pdk_manager"
+# cdylib: the wasm guest. rlib: the pure modules (recipes, argv, manifest rewrite, prune plan,
+# panel records) are unit-tested natively.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+schemify-abi.workspace = true
+
+[dev-dependencies]
+# The oracle for the manifest rewrite (canonical text the format writer reproduces) and the
+# shipped maps. Not linked into the guest: it would take it past the size limit.
+schemify-format = { path = "../../crates/format" }
+# Drives the built guest through the real host (capability checks included).
+schemify-plugin = { path = "../../crates/plugin" }
+
+[lints.rust]
+# `deny`, not `forbid`: `guest::export!` allows `unsafe(no_mangle)` on its exports.
+unsafe_code = "deny"
+missing_docs = "warn"

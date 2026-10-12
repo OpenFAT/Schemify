@@ -1,0 +1,20 @@
+schemify 1 techmap
+  pdk freepdk45
+  vdd 1.1
+
+# Generated freepdk45 cells take w, l and m in metres: the class params themselves. VTL is the
+# kit's default device (its standard cells use it), VTH the high-threshold one, THKOX the
+# thick-oxide one. The general-purpose VTG devices have no class flavor: place
+# freepdk45:nmos_vtg / pmos_vtg directly.
+class nmos core
+  cell freepdk45:nmos_vtl
+class pmos core
+  cell freepdk45:pmos_vtl
+class nmos hvt
+  cell freepdk45:nmos_vth
+class pmos hvt
+  cell freepdk45:pmos_vth
+class nmos io
+  cell freepdk45:nmos_thkox
+class pmos io
+  cell freepdk45:pmos_thkox

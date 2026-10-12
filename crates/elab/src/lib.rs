@@ -67,6 +67,7 @@ mod iface;
 mod live;
 mod names;
 mod netexpr;
+mod ports;
 mod state;
 mod values;
 
@@ -82,6 +83,7 @@ pub use iface::{Domain, Iface, ParamKind};
 pub use names::{NAMES_MAX, Name, Names};
 // `Iface::pin_dir`'s element type, so readers of elab need not depend on doc.
 pub use netexpr::{WIDTH_MAX, is_global};
+pub use ports::{PORTS_MAX, PortError, impl_ports};
 pub use schemify_doc::PinDir;
 pub use state::{CellState, Recomputed};
 pub use values::{Funcs, Val, cached_text, no_funcs};

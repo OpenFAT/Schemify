@@ -108,10 +108,22 @@ pub fn run(
     p: &Project,
     top: DocHandle,
     plan: &Plan,
-    mut jobs: Jobs,
+    jobs: Jobs,
     cfg: impl FnOnce(&Digest) -> RunnerConfig,
 ) -> (Jobs, Results, Runner) {
-    let digest = design(p, top, &jobs, &[], &mut no_funcs).expect("not blocked");
+    run_env(p, top, plan, jobs, &[], cfg)
+}
+
+/// [`run`] with environment variables for `${NAME}` expansion.
+pub fn run_env(
+    p: &Project,
+    top: DocHandle,
+    plan: &Plan,
+    mut jobs: Jobs,
+    env: &[(&str, &str)],
+    cfg: impl FnOnce(&Digest) -> RunnerConfig,
+) -> (Jobs, Results, Runner) {
+    let digest = design(p, top, &jobs, env, &mut no_funcs).expect("not blocked");
     let mut results = Results::new(plan, digest);
     let mut runner = Runner::new(cfg(&digest));
     for j in 0..jobs.len() {
@@ -120,7 +132,7 @@ pub fn run(
             top,
             &mut jobs,
             j,
-            &[],
+            env,
             Dialect::Ngspice,
             &mut no_funcs,
             &mut results,

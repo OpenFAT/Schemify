@@ -14,7 +14,7 @@ Blocks are the rank-4 records of [format.md](format.md) §4; nothing here adds a
   them with a 560 px pane; the core base (no UI plugin) declares the same nodes, so docs render
   without plugins (D21).
 - Shown per tab: a tab opens with its page shown when the document has at least one doc block.
-  `view.docs` (default key Alt+D, View → Docs page, the pane's `x` button) toggles it. While
+  `view.docs` (default key Alt+D, View → Docs page, the pane's `x` button, the Docs button of the view switcher over the canvas, plugin-abi §11 item 16) toggles it. While
   hidden the app's state contribution removes `docs.pane` and the canvas takes the width.
 - The page shows the doc blocks of the tab's active level (descending into a cell shows the
   cell's page) in file order, one `docs.b.<row>` panel per block under `docs.page`. The wheel
@@ -58,6 +58,23 @@ itself: the wheel over it scrolls it (not the page), and caret moves and typing 
 in view. Enter breaks a line; Ctrl+Enter applies; a click elsewhere applies; Esc cancels.
 Applying is one transaction: `put prose <id>` with the new verbatim lines (trailing spaces
 trimmed), or `delete prose <id>` when the text is blank.
+
+Live preview: while the editor is open, a `Preview` caption (`docs-preview-cap`) and the typed
+text laid out by the same `prose` widget (`docs.b.<row>.preview`, style `docs-preview`, math
+included) sit directly below the area, following every keystroke (`field.typed`). Blank text
+previews as `(empty: applying deletes this block)`. A ```` ```plot ```` fence previews as a code
+block, and an image path not yet on the page as its alt text (images load once applied). The
+preview carries no command: a click on it is a click elsewhere, so it applies. Applying or
+cancelling removes it. Nothing is written to the document until applying. Cost: the state
+contribution is reparsed only when its text changed, and a prose layout is cached per (source,
+size, width), so the rest of the page is not laid out again while typing.
+
+Source view: `docs.source` (the toolbar's `Rendered` / `Source` toggle, pressed and `checked`
+while source shows) shows every prose block as its verbatim lines, monospace on a faint shade
+in a `docs-source` frame: no markup, no math, no plot slots (`$x^2$` reads `$x^2$`). Var blocks
+are unchanged. A click on a block still opens the editor with its preview. The mode is kept per
+tab (switching tabs and back keeps it; a new tab starts rendered) and never touches the
+document.
 
 ## 3. Var rows
 
@@ -149,8 +166,9 @@ objects it changes.
 | Command | Effect |
 |---|---|
 | `view.docs` | show / hide the active tab's page |
-| `docs.edit` | (click on prose) select the block, open its editor |
-| `docs.select` | (click on a var name) select the block |
+| `docs.edit` | (click on prose) select the block, open its editor with the live preview; from a script the argument is the block row |
+| `docs.select` | (click on a var name) select the block; from a script the argument is the block row |
+| `docs.source` | show the active tab's prose blocks as source, or rendered again |
 | `docs.var_ok` | (Enter in a var field) set the var's expression |
 | `docs.prose_ok` | apply the open prose editor (argument: the text) |
 | `docs.add_prose`, `docs.add_var` | insert a block after the selection (end when none); a new var is `v<k> 0` with the first free `k`, its field focused |

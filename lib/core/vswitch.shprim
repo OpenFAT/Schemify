@@ -15,16 +15,21 @@ param model sw
 impl spice spice
   format spice "{name} {p} {n} {cp} {cn} {model}"
 
-line 0 -30 0 -10
-line 0 10 0 30
-line 0 10 -10 -10
-line -40 0 -20 0
-line -40 20 -20 20
+line 0 -30 0 -11.25
+line 0 11.25 0 30
 
-rect -20 -10 -10 30
-  fill false
+circle 0 -10 1.25
+circle 0 10 1.25
 
-stext 10 -10 R0 {name}
-  size 0.2
-stext 10 0 R0 {model}
-  size 0.2
+line 0 8.75 -8.75 -6.25
+  width 2
+line -40 0 -30 0
+line -27.5 0 -22.5 0
+line -25 -2.5 -25 2.5
+line -40 20 -30 20
+line -27.5 20 -22.5 20
+
+stext 7.5 -9 R0 {name}
+  size 0.14
+stext 7.5 0 R0 {model}
+  size 0.14

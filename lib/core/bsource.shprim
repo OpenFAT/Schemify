@@ -19,12 +19,17 @@ param m 1
 impl spice spice
   format spice "{name} {p} {n} {src} = {func} m={m}"
 
-line 0 -30 0 -20
-line 0 20 0 30
+poly 0 -8.75 8.75 0 0 8.75 -8.75 0
+  width 2
+  closed true
 
-circle 0 0 20
+line 0 -30 0 -8.75
+line 0 8.75 0 30
 
-stext 30 -10 R0 {name}
-  size 0.2
-stext 30 0 R0 {src}={func}
-  size 0.2
+stext 0 -3.5 R0 f(·)
+  size 0.1
+  hcenter
+stext 13.75 -9 R0 {name}
+  size 0.14
+stext 13.75 0 R0 {src}={func}
+  size 0.14

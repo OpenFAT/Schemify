@@ -34,6 +34,47 @@ pub fn load(root: &Path, seed: u64) -> Result<Loaded, String> {
     let lock = platform::read(&root.join("schemify.lock")).ok();
     let mut project = Project::new(manifest.as_deref(), lock.as_deref(), seed)
         .map_err(|e| format!("schemify.project: {:?}", e.diagnostics.first()))?;
+    let (lib_dir, notes) = index_all(&mut project, root)?;
+    Ok(Loaded {
+        project,
+        lib_dir,
+        notes,
+    })
+}
+
+/// `project.reload` (pdk spec §9.2): re-reads `schemify.project` and `schemify.lock` into
+/// `project`, keeping its open documents, and indexes every library again. Returns the
+/// directory per library row and the notes, as [`load`] does. Invalidates every cell row.
+///
+/// # Errors
+///
+/// A file does not parse, an open document's library is no longer declared, or the bundled
+/// core library is refused; the project keeps its previous manifest on a refusal.
+pub fn reload(
+    project: &mut Project,
+    root: &Path,
+) -> Result<(Vec<Option<PathBuf>>, Vec<String>), String> {
+    let manifest = platform::read(&root.join("schemify.project")).ok();
+    let lock = platform::read(&root.join("schemify.lock")).ok();
+    project
+        .reload_manifest(manifest.as_deref(), lock.as_deref())
+        .map_err(|e| match e {
+            schemify_doc::ReloadError::Parse(p) => {
+                format!("schemify.project: {:?}", p.diagnostics.first())
+            }
+            schemify_doc::ReloadError::LibraryInUse(l) => {
+                format!("project.reload: close the documents of library `{l}` first")
+            }
+        })?;
+    index_all(project, root)
+}
+
+/// The load spine after the manifest: library directories → `index_library` per local
+/// library and the technology map → the bundled `core` library.
+fn index_all(
+    project: &mut Project,
+    root: &Path,
+) -> Result<(Vec<Option<PathBuf>>, Vec<String>), String> {
     let libs = project.libs();
     let mut lib_dir = Vec::with_capacity(libs.name.len());
     let mut notes = Vec::new();
@@ -48,6 +89,8 @@ pub fn load(root: &Path, seed: u64) -> Result<Loaded, String> {
                 Some(d)
             }
             LibSource::Builtin => None,
+            // A one-file library: indexed below, after the libraries its cells name.
+            LibSource::Map { .. } => None,
             other => {
                 notes.push(format!(
                     "lib {}: {} sources are not fetched yet",
@@ -64,8 +107,33 @@ pub fn load(root: &Path, seed: u64) -> Result<Loaded, String> {
     for (row, dir) in lib_dir.iter().enumerate() {
         let Some(dir) = dir else { continue };
         let others: Vec<PathBuf> = nested.iter().filter(|d| *d != dir).cloned().collect();
-        if let Err(e) = index(&mut project, row, dir, &others) {
+        if let Err(e) = index(project, row, dir, &others) {
             notes.push(e);
+        }
+    }
+    // pdk spec §5: `lib tech map <file>` is indexed as a one-file listing.
+    let map =
+        project
+            .libs()
+            .find(schemify_doc::TECH_LIB)
+            .and_then(|r| match &project.libs().source[r] {
+                LibSource::Map { path } => Some(path.clone()),
+                _ => None,
+            });
+    if let Some(path) = map {
+        match platform::read(&root.join(&path)) {
+            Ok(bytes) => {
+                project
+                    .index_library(schemify_doc::TECH_LIB, &path, &[("tech.map", &bytes)])
+                    .map_err(|c| format!("lib tech: {c}"))?;
+                if project.techmap().is_none() {
+                    notes.push(format!(
+                        "lib tech: {}",
+                        project.explain_tech("nmos", "core")
+                    ));
+                }
+            }
+            Err(e) => notes.push(format!("lib tech: {e}")),
         }
     }
     // D10: `lib core builtin` is implicit; its cells live in the binary.
@@ -83,11 +151,7 @@ pub fn load(root: &Path, seed: u64) -> Result<Loaded, String> {
         );
     }
     assert_eq!(lib_dir.len(), project.libs().name.len());
-    Ok(Loaded {
-        project,
-        lib_dir,
-        notes,
-    })
+    Ok((lib_dir, notes))
 }
 
 /// Indexes library `row` from the cell files under `dir`, skipping `skip` subtrees (also

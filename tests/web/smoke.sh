@@ -4,11 +4,11 @@
 # (`drive.py`, web spec §8): the editor opens its window (winit's canvas) without a trap or
 # panic, a wire drawn in a project and saved reaches OPFS and survives a reload, Ctrl+C reaches the
 # system clipboard and Ctrl+V pastes from it. Console output, the Chrome log and a screenshot
-# land in <out-dir>. WebGPU is requested through SwiftShader; without an adapter (`gpu: ...`,
-# headless runners) the editor draws on the CPU and its frame is compared with the native
-# golden (web spec §7). The page mounts OPFS before the
-# editor starts, so the checks wait in real time (Chrome's virtual-time budget skips past
-# storage I/O).
+# land in <out-dir>. WebGPU is requested through SwiftShader; without a usable one (`gpu: ...`:
+# no adapter, or frames that never reach the page, as on headless runners) the editor draws on
+# the CPU and its frame is compared with the native golden (web spec §7). The page mounts OPFS
+# before the editor starts, so the checks wait in real time (Chrome's virtual-time budget skips
+# past storage I/O).
 #
 #   tests/web/smoke.sh <web-dir> [<out-dir>] [<chrome-binary>]
 set -euo pipefail
