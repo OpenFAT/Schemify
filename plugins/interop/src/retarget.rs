@@ -439,8 +439,10 @@ impl Intent {
 
 /// Evaluates `src` in cell `ci`'s own scope for [`intents`] (the CLI's evaluator, §10.1):
 /// identifiers resolve to the cell's vars, then its parameter defaults, recursively (at most 16
-/// levels); a plugin call (`gmid.w`, …) or anything else that does not evaluate gives `None`,
-/// so the sample width is simply left out.
+/// levels). A var with a D20 `cached` value (docs-page.md §6: a plugin-computed number, e.g.
+/// `L1 "gmid.l(…)"`) stands for that value, as it does wherever the plugin is not loaded; any
+/// other plugin call or anything else that does not evaluate gives `None`, so the sample width
+/// is simply left out.
 pub fn cell_value(d: &Design, ci: usize, src: &str) -> Option<f64> {
     fn go(c: &crate::design::Cell, src: &str, depth: u32) -> Option<f64> {
         if depth >= 16 {
@@ -456,9 +458,16 @@ pub fn cell_value(d: &Design, ci: usize, src: &str) -> Option<f64> {
                 .or_else(|| c.records(RecordKind::Param).find(|r| c.field(*r, 0) == n))
                 .map(|r| c.field(r, 1).to_owned())
         };
+        let cached = |n: &str| -> Option<f64> {
+            let r = c.records(RecordKind::Var).find(|r| c.field(*r, 0) == n)?;
+            c.attr(r, "cached")?
+                .parse::<f64>()
+                .ok()
+                .filter(|x| x.is_finite())
+        };
         let vals: Vec<Option<f64>> = p
             .idents()
-            .map(|n| lookup(n).and_then(|e| go(c, &e, depth + 1)))
+            .map(|n| cached(n).or_else(|| lookup(n).and_then(|e| go(c, &e, depth + 1))))
             .collect();
         let mut inputs = Vec::new();
         let mut k = 0;

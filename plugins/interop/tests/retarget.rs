@@ -1152,3 +1152,31 @@ class pfet_01v8 lib tgt cell pch\n  pin d D\n  pin g G\n  pin s S\n  pin b B\n  
         "{after}"
     );
 }
+
+/// A gmid argument that is itself a plugin-computed var (`L1 "gmid.l(…)"`, cached by the docs
+/// page) evaluates to its D20 cached value, so the instance still travels as intent; without
+/// a cache it stays a `needs_review:retarget` note.
+#[test]
+fn cached_plugin_vars_feed_the_intent() {
+    let cell = |cache: &str| {
+        format!(
+            "schemify 1 shcomp\n\npin d inout 0 0\n\nimpl schematic schematic\n\n\
+             inst aaaaaa core:nmos4\n  at 0 0 R0\n  name M1\n  w W1\n  l L1\n\n\
+             var L1 \"gmid.l(\\\"nmos\\\", 150n)\"\n{cache}\
+             var W1 \"gmid.w(\\\"nmos\\\", 12, L1, 5u)\"\n  cached 1.4e-7 0000000000000000\n"
+        )
+    };
+    for (cache, want) in [
+        ("  cached 1.5e-7 0000000000000000\n", Some(1.5e-7)),
+        ("", None),
+    ] {
+        let mut files = Files::new();
+        files.insert("a.shcomp".into(), cell(cache).into_bytes());
+        let absent: BTreeSet<String> = ["schemify.project".to_owned()].into();
+        let d = design::load(&files, &absent, &["a.shcomp"]).unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(interop::retarget::cell_value(&d, 0, "L1"), want);
+        let (v, notes) =
+            interop::retarget::intents(&d, 0, |e| interop::retarget::cell_value(&d, 0, e));
+        assert_eq!(v.len(), usize::from(want.is_some()), "{}", notes.text());
+    }
+}
