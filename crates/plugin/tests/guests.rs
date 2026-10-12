@@ -282,8 +282,20 @@ fn fuel_is_configurable_and_exhaustion_discards_everything() {
         before.get(bad, Kind::Commands, ""),
         Some("command bad.spin \"Spin\"")
     );
+    let recorded = w.plugins.health().recorded();
     let faults = w.command(bad, "bad.spin");
     assert_eq!(World::codes(&faults), [Code::Fuel]);
+    // The report names the plugin, the event and the budget (plugin-abi §2).
+    assert_eq!(
+        faults[0].detail,
+        "bad: command bad.spin: out of fuel (budget 1000000), outputs discarded"
+    );
+    assert_eq!(w.plugins.health().recorded(), recorded + 1);
+    // The aborted event counts as finished: nothing of `bad` is left to wait for.
+    let (given, finished) = w.plugins.event_counts(bad).unwrap();
+    assert!(given >= 2, "load and the command");
+    assert_eq!(given, finished);
+    assert_eq!(w.plugins.event_counts(PluginId(u32::MAX - 1)), None);
     assert_eq!(
         w.queues,
         RequestQueues::default(),

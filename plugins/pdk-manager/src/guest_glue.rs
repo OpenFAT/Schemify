@@ -302,10 +302,15 @@ fn list_remote(s: &mut State, host: &Host, out: &mut Out, family: &str) {
             Source::Git { .. } => "git",
             _ => "url",
         };
-        s.m.message = format!("{family}: the pinned {from} version");
+        say(
+            s,
+            out,
+            Level::Info,
+            &format!("{family}: the pinned {from} version"),
+        );
         return;
     }
-    s.m.message = format!("listing {family} versions…");
+    say(s, out, Level::Info, &format!("listing {family} versions…"));
     let a = crate::ls_remote_argv(r);
     issue(
         s,
@@ -326,6 +331,10 @@ fn install(s: &mut State, host: &Host, out: &mut Out, fv: Fv, local: Option<&str
         tail: Vec::new(),
     });
     s.m.message.clear();
+    // The status line too (an RPC caller sees no panel); the panel shows the step instead.
+    if let Some(j) = &s.m.job {
+        out.log(&format!("pdk: installing {} {}…", j.family, j.version));
+    }
     run_step(s, host, out, 0, b"");
 }
 
@@ -512,7 +521,8 @@ fn done(s: &mut State, host: &Host, out: &mut Out, io: Io, status: i32, bytes: &
                 return;
             }
             s.m.remote = parse_versions(&String::from_utf8_lossy(bytes));
-            s.m.message = format!("{} {f} versions", s.m.remote.len());
+            let n = s.m.remote.len();
+            say(s, out, Level::Info, &format!("{n} {f} versions"));
         }
         // Install chain.
         Io::Step(i) => step_done(s, host, out, i, status, bytes),
@@ -658,7 +668,7 @@ fn refreshed(s: &mut State, host: &Host, out: &mut Out) {
                 (true, Some(listed)) => {
                     let go: Vec<Fv> = plan.into_iter().filter(|x| listed.contains(x)).collect();
                     if go.is_empty() {
-                        s.m.message = "nothing to prune".to_owned();
+                        say(s, out, Level::Info, "nothing to prune");
                     } else {
                         remove_batch(s, host, out, go);
                     }

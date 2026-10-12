@@ -88,6 +88,20 @@ const ZOOM_SETTLE_MS: u32 = 120;
 const CHOOSER_ROWS: usize = 512;
 /// Commands [`Editor::command`] queues between frames.
 pub const QUEUED_MAX: usize = 256;
+
+/// The status an answered command ([`Editor::command_answered`]) left: `status` is `None`
+/// while a plugin command's event has not completed (it may run on a worker, plugin-abi §2).
+#[derive(Debug)]
+struct Said {
+    ticket: u32,
+    plugin: Option<schemify_plugin::PluginId>,
+    status: Option<String>,
+    /// The plugin's event count right after the delivery that took its command
+    /// ([`schemify_plugin::Plugins::event_counts`]): finished once that many have.
+    target: Option<u64>,
+    /// The plugin's last log line (or fault) since that delivery.
+    last: Option<String>,
+}
 /// Edit requests one frame may carry.
 const REQUESTS_MAX: usize = 1 << 10;
 /// Cell states kept for documents that are not active ([`Editor`]'s `parked`).
@@ -661,8 +675,13 @@ pub struct Editor {
     shown: Option<CanvasPrims>,
     /// (scene build, symbol mode) `shown` was made for.
     shown_key: Option<ShownKey>,
-    /// Commands queued by [`Editor::command`]: (name, argument).
-    queued: Vec<(String, String)>,
+    /// Commands queued by [`Editor::command`]: (name, argument, ticket of an answered one).
+    queued: Vec<(String, String, Option<u32>)>,
+    /// What each answered command ([`Editor::command_answered`]) said, at most
+    /// [`QUEUED_MAX`] waiting to be taken.
+    said: Vec<Said>,
+    /// The next answered command's ticket.
+    next_ticket: u32,
     /// A wire edit to follow with join/trim once applied (Options → auto join/trim).
     trim_after: Option<DocHandle>,
     /// The options this session started with: opening a recent file of another project
@@ -815,6 +834,8 @@ impl Editor {
             shown_key: None,
             trim_after: None,
             queued: Vec::new(),
+            said: Vec::new(),
+            next_ticket: 0,
             startup: opts,
         };
         let opened = match &path {
@@ -940,7 +961,51 @@ impl Editor {
             self.session.status = format!("{name}: command queue full");
             return;
         }
-        self.queued.push((name.to_owned(), arg.to_owned()));
+        self.queued.push((name.to_owned(), arg.to_owned(), None));
+    }
+
+    /// [`Editor::command`] for a caller that wants the command's own status message (the
+    /// JSON-RPC stream, rpc spec §3.2): returns a ticket for [`Editor::take_said`]. A core
+    /// command's message is the status line it set while running (empty when it set none:
+    /// the status line then keeps the previous message); a plugin command's is the last log
+    /// line or fault of that plugin in the delivery that completed its event, frames later
+    /// for a plugin on a worker. At most [`QUEUED_MAX`] answers wait; a caller that never
+    /// takes its tickets stops getting new ones answered (they say `command queue full`).
+    pub fn command_answered(&mut self, name: &str, arg: &str) -> u32 {
+        let ticket = self.next_ticket;
+        self.next_ticket = self.next_ticket.wrapping_add(1);
+        if self.queued.len() >= QUEUED_MAX || self.said.len() >= QUEUED_MAX {
+            let full = format!("{name}: command queue full");
+            if self.said.len() < QUEUED_MAX {
+                self.said.push(Said {
+                    ticket,
+                    plugin: None,
+                    status: Some(full.clone()),
+                    target: None,
+                    last: None,
+                });
+            }
+            self.session.status = full;
+            assert!(self.said.len() <= QUEUED_MAX);
+            return ticket;
+        }
+        self.queued
+            .push((name.to_owned(), arg.to_owned(), Some(ticket)));
+        assert!(self.queued.len() <= QUEUED_MAX);
+        ticket
+    }
+
+    /// Takes the message answered command `ticket` left (see [`Editor::command_answered`]):
+    /// `None` while it has not run or its plugin event has not completed. A ticket taken
+    /// already, or never issued, answers an empty message.
+    pub fn take_said(&mut self, ticket: u32) -> Option<String> {
+        let Some(i) = self.said.iter().position(|s| s.ticket == ticket) else {
+            let waiting = self.queued.iter().any(|q| q.2 == Some(ticket));
+            return if waiting { None } else { Some(String::new()) };
+        };
+        let status = self.said[i].status.take()?;
+        self.said.remove(i);
+        Some(status)
     }
 
     /// The scene as the canvas shows it: instances as boxes or without their texts when the
@@ -1532,16 +1597,22 @@ impl Editor {
         changed
     }
 
-    /// Runs the commands [`Editor::command`] queued, in order.
+    /// Runs the commands [`Editor::command`] queued, in order, recording what each
+    /// answered one said (a plugin command's answer waits for its event, see
+    /// [`Editor::resolve_said`]).
     fn dispatch_queued(&mut self, reqs: &mut Vec<EditRequest>) -> bool {
         let mut changed = false;
-        for (name, arg) in std::mem::take(&mut self.queued) {
+        for (name, arg, ticket) in std::mem::take(&mut self.queued) {
             let (target, suffix) = self.commands.resolve_arg(&name);
             let arg = if arg.is_empty() {
                 suffix.to_owned()
             } else {
                 arg
             };
+            // Each command's own message: the status line starts empty for it and gets the
+            // previous message back when the command says nothing.
+            let before = std::mem::take(&mut self.session.status);
+            let mut plugin = None;
             changed |= match target {
                 Target::Core(cmd) => self.run(cmd, &arg, "", reqs),
                 Target::Plugin(id) => {
@@ -1549,8 +1620,9 @@ impl Editor {
                         name: &name,
                         args: &arg,
                     };
-                    if let Err(e) = self.host.push(Some(id), &ev) {
-                        self.session.status = e;
+                    match self.host.push(Some(id), &ev) {
+                        Ok(()) => plugin = Some(id),
+                        Err(e) => self.session.status = e,
                     }
                     true
                 }
@@ -1559,9 +1631,57 @@ impl Editor {
                     true
                 }
             };
+            if let Some(ticket) = ticket {
+                let status = plugin.is_none().then(|| self.session.status.clone());
+                self.said.push(Said {
+                    ticket,
+                    plugin,
+                    status,
+                    target: None,
+                    last: None,
+                });
+            }
+            if self.session.status.is_empty() {
+                self.session.status = before;
+            }
         }
         assert!(self.queued.is_empty());
+        assert!(
+            self.said.len() <= 2 * QUEUED_MAX,
+            "the RPC pump takes its answers"
+        );
         changed
+    }
+
+    /// After a delivery: answers the waiting plugin commands whose event has finished,
+    /// with the plugin's last line in `logs` (`<plugin>: <text>`, faults included) since the
+    /// delivery that took the command, or an empty message. Exact for a plugin on a worker
+    /// too: it counts the plugin's events, not whether it looks idle (one that gets an
+    /// event every frame never does).
+    fn resolve_said(&mut self, logs: &[String]) {
+        let plugins = &self.host.plugins;
+        for s in self.said.iter_mut().filter(|s| s.status.is_none()) {
+            let id = s.plugin.expect("only plugin commands wait");
+            let Some((given, finished)) = plugins.event_counts(id) else {
+                // Unloaded meanwhile (quarantined): the delivery's last word is about it.
+                s.status = Some(
+                    s.last
+                        .take()
+                        .or_else(|| logs.last().cloned())
+                        .unwrap_or_default(),
+                );
+                continue;
+            };
+            let name = plugins.name(id).expect("loaded");
+            let prefix = format!("{name}: ");
+            if let Some(l) = logs.iter().rev().find(|l| l.starts_with(&prefix)) {
+                s.last = Some(l.clone());
+            }
+            let target = *s.target.get_or_insert(given);
+            if finished >= target {
+                s.status = Some(s.last.take().unwrap_or_default());
+            }
+        }
     }
 
     /// Runs one core command. Returns whether anything visible changed.
@@ -3570,6 +3690,7 @@ impl Editor {
         if let Some(l) = d.logs.last() {
             self.session.status.clone_from(l);
         }
+        self.resolve_said(&d.logs);
         if d.state_changed {
             self.invalidate_cells(); // plugin functions may answer differently now (D20)
         }

@@ -193,6 +193,11 @@ default UI's cell-panel styles (`cell-pane`, `docs-bar`, `cell-page`, `cell-sect
   `failed`) and the last 6 lines of the previous step's output.
 - **Prune:** lists what it would remove, then Confirm.
 
+Every message the panel shows (a result, a refusal, `listing … versions…`, `N … versions`,
+`installing F V…`, `installed F V`, `nothing to prune`) is also logged, so it reaches the status
+line and a JSON-RPC caller's answer (rpc spec §3.2): a script that runs `pdk.*` without the panel
+sees what happened.
+
 Long steps (`ciel enable`, import, `git`, `curl`, `tar`) run through `spawn`, which never
 blocks the frame (plugin-abi §11 item 12). Grants the plugin needs: `read_project`,
 `write_project`, and the `spawn:` of the families used: `ciel` and `schemify-interop` (ciel families; the xschem importer is the interop plugin's CLI, D24 as amended 2026-10-12, so it is spawned, never linked),

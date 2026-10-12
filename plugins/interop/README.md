@@ -24,7 +24,14 @@ Add the plugin to the project manifest:
 plugin interop path plugins/interop
   grant read_project
   grant write_project
+  fuel 100000000000
 ```
+
+`fuel` is the per-event instruction budget (plugin-abi §2). The default, 10^8, is too small for
+a conversion of a real design (a Virtuoso export of a small project with a PDK needed about
+10^11), so give the ceiling, 10^11: with more fuel than the default the plugin runs on a worker
+thread and the editor does not freeze while it converts. A conversion that runs out says so in
+the status line (`interop: command interop.virtuoso_export: out of fuel (budget N), …`).
 
 In the editor the File menu gains **Export to Virtuoso (.sfyx)…**, **Import from Virtuoso
 (.sfyx)…**, **Export to xschem…** and **Write Virtuoso SKILL bridge (schemify.il)**. Without
