@@ -348,17 +348,15 @@ pub struct Source {
 /// `PULSE(...)`/`SIN(...)`/`PWL(...)`/`EXP(...)`; case-insensitive, commas or spaces) into
 /// waveform params. `current` selects the i-source names.
 ///
-/// # Errors
-///
-/// Text outside that grammar, a value that is not a number literal, or a PWL with more
-/// than [`PWL_PAIRS_MAX`] pairs: the caller exports `vdc` = the whole text and reviews it
-/// (`source`).
-pub fn parse_source(text: &str, current: bool) -> Result<Source, ()> {
+/// `None` for text outside that grammar, a value that is not a number literal, or a PWL
+/// with more than [`PWL_PAIRS_MAX`] pairs: the caller exports `vdc` = the whole text and
+/// reviews it (`source`).
+pub fn parse_source(text: &str, current: bool) -> Option<Source> {
     let dcname = if current { "idc" } else { "vdc" };
     let mut params: Vec<(String, String)> = Vec::new();
     let mut wave = 0;
     let mut k = 0;
-    let num = |w: &str| number_to_ael(w).ok_or(());
+    let num = number_to_ael;
     let mut have_dc = false;
     let mut have_ac = false;
     let toks: Vec<String> = text
@@ -388,18 +386,18 @@ pub fn parse_source(text: &str, current: bool) -> Result<Source, ()> {
         match w.as_str() {
             "DC" => {
                 if have_dc {
-                    return Err(());
+                    return None;
                 }
-                let v = toks.get(k + 1).ok_or(())?;
+                let v = toks.get(k + 1)?;
                 params.push((dcname.into(), num(v)?));
                 have_dc = true;
                 k += 2;
             }
             "AC" => {
                 if have_ac {
-                    return Err(());
+                    return None;
                 }
-                let v = toks.get(k + 1).ok_or(())?;
+                let v = toks.get(k + 1)?;
                 params.push(("acm".into(), num(v)?));
                 k += 2;
                 if let Some(p) = toks.get(k).and_then(|p| number_to_ael(p)) {
@@ -410,20 +408,23 @@ pub fn parse_source(text: &str, current: bool) -> Result<Source, ()> {
             }
             kw if WAVEFORMS.iter().skip(1).any(|w| w.0 == kw) => {
                 if wave != 0 {
-                    return Err(());
+                    return None;
                 }
                 wave = WAVEFORMS.iter().position(|w| w.0 == kw).expect("matched");
                 if toks.get(k + 1).map(String::as_str) != Some("(") {
-                    return Err(());
+                    return None;
                 }
-                let close = toks[k + 2..].iter().position(|t| t == ")").ok_or(())? + k + 2;
+                let close = toks[k + 2..].iter().position(|t| t == ")")? + k + 2;
                 let vals: Vec<String> = toks[k + 2..close]
                     .iter()
                     .map(|v| num(v))
-                    .collect::<Result<_, _>>()?;
+                    .collect::<Option<_>>()?;
                 if wave == 3 {
-                    if vals.len() % 2 != 0 || vals.len() / 2 > PWL_PAIRS_MAX || vals.is_empty() {
-                        return Err(());
+                    if !vals.len().is_multiple_of(2)
+                        || vals.len() / 2 > PWL_PAIRS_MAX
+                        || vals.is_empty()
+                    {
+                        return None;
                     }
                     params.push(("tvpairs".into(), (vals.len() / 2).to_string()));
                     let vn = if current { "i" } else { "v" };
@@ -438,7 +439,7 @@ pub fn parse_source(text: &str, current: bool) -> Result<Source, ()> {
                         WAVEFORMS[wave].2
                     };
                     if vals.len() > names.len() {
-                        return Err(());
+                        return None;
                     }
                     for (n, v) in names.iter().zip(vals) {
                         params.push(((*n).into(), v));
@@ -451,11 +452,11 @@ pub fn parse_source(text: &str, current: bool) -> Result<Source, ()> {
                 have_dc = true;
                 k += 1;
             }
-            _ => return Err(()),
+            _ => return None,
         }
     }
     assert!(wave < WAVEFORMS.len());
-    Ok(Source { wave, params })
+    Some(Source { wave, params })
 }
 
 /// Formats waveform params back as SPICE source text (`DC 1 AC 1 0 PULSE(0 1.8 0 10p 10p
@@ -587,7 +588,7 @@ mod tests {
             ("pwl(0 0 1n 1.8)", 3, "PWL(0 0 1n 1.8)"),
             ("EXP(0 1 1n 2n 3n 4n)", 4, "EXP(0 1 1n 2n 3n 4n)"),
         ] {
-            let s = parse_source(text, false).unwrap_or_else(|_| panic!("{text}"));
+            let s = parse_source(text, false).unwrap_or_else(|| panic!("{text}"));
             assert_eq!(s.wave, wave, "{text}");
             let get = |n: &str| {
                 s.params
@@ -603,7 +604,7 @@ mod tests {
             [("i1".into(), "0".into()), ("i2".into(), "1m".into())]
         );
         for bad in ["dc {v}", "PULSE 0 1", "foo", "dc 1 dc 2", "pwl(0)"] {
-            assert!(parse_source(bad, false).is_err(), "{bad}");
+            assert!(parse_source(bad, false).is_none(), "{bad}");
         }
         assert!(source_cdf_params(false).contains(&"t8"));
     }

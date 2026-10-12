@@ -58,6 +58,12 @@ pub struct ImportOptions {
     /// Project-relative directory for libraries the manifest does not know (default: the
     /// library name).
     pub lib_dir: std::collections::BTreeMap<String, String>,
+    /// Virtuoso library → Schemify library (`--into`, the inverse of an export's `--lib`);
+    /// unlisted libraries keep their name, `schemify` maps to the project root and
+    /// `schemify_core` to the bundled `core`.
+    pub lib_map: std::collections::BTreeMap<String, String>,
+    /// Re-master analogLib instances (§6.5 rows) onto core cells (§6.4).
+    pub analoglib: bool,
 }
 
 /// An import's result: files to write (project-relative path, bytes) and the report.

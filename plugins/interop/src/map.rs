@@ -397,8 +397,8 @@ pub fn resolve(
         view: vec![String::new(); n],
     };
     let mut errs = Vec::new();
-    for ci in 0..n {
-        if !used[ci] {
+    for (ci, &u) in used.iter().enumerate() {
+        if !u {
             continue;
         }
         let c = &d.cells[ci];

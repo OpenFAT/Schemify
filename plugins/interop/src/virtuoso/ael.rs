@@ -428,10 +428,7 @@ impl Parser<'_> {
             return self.unary();
         }
         let mut l = self.binary(level + 1)?;
-        loop {
-            let Some(t) = self.toks.get(self.i).copied() else {
-                break;
-            };
+        while let Some(t) = self.toks.get(self.i).copied() {
             let op = &self.src[t.start..t.end];
             if t.kind != Tk::Op || !LEVELS[level as usize].contains(&op) {
                 break;
@@ -719,6 +716,12 @@ fn to_ael_inner<F: FnMut(&str) -> Name>(
         text: out,
         review: e.review,
     })
+}
+
+/// Canonical number text of `src` when it is an identifier-free numeric expression
+/// (`(2)*(1e-6)` → `0.000002`); `None` otherwise.
+pub fn fold_numeric(src: &str) -> Option<String> {
+    fold(src).ok().map(|t| t.text)
 }
 
 /// Constant-folds an identifier-free numeric expression into canonical number text.
