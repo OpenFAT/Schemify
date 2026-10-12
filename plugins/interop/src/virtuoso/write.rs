@@ -1835,6 +1835,7 @@ fn schematic_out(
                 },
             });
         }
+        // ponytail: O(labels × wires) gluing; a sorted segment index for 10^5-wire cells.
         let parent = match segs.iter().find(|(_, s)| nets::on_segment(at, *s)) {
             Some((wr, _)) => *wr,
             None => {

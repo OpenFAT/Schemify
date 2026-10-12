@@ -2283,7 +2283,18 @@ fn schematic_in(
     // Every schemifyId in dump order claims first; duplicates get fresh ids (§7.2).
     let reserved: BTreeSet<String> = BTreeSet::new();
     let mut ids = Ids::new(format!("{}/{}", c.lib, c.name));
-    let id_of = |r: u32| sv.prop(r, "schemifyId");
+    // Properties by owner: one pass, so per-object lookups stay logarithmic.
+    let mut by_owner: BTreeMap<u32, Vec<&Prop>> = BTreeMap::new();
+    for p in &sv.props {
+        by_owner.entry(p.r).or_default().push(p);
+    }
+    let prop = |r: u32, name: &str| {
+        by_owner
+            .get(&r)
+            .and_then(|v| v.iter().find(|p| p.name == name))
+            .map(|p| p.value.as_str())
+    };
+    let id_of = |r: u32| prop(r, "schemifyId");
     // Pre-claim: ids wanted by objects, in dump order, so a fresh id never steals one.
     let mut claimed: BTreeSet<String> = BTreeSet::new();
     for p in sv
@@ -2425,7 +2436,7 @@ fn schematic_in(
         doc.push_value_coord(at[1]);
         doc.push_value(o.as_str());
         kv(doc, "name", &profile::inst_from_virtuoso(&inst.name));
-        let props: Vec<&Prop> = sv.props.iter().filter(|p| p.r == inst.r).collect();
+        let props: Vec<&Prop> = by_owner.get(&inst.r).cloned().unwrap_or_default();
         if props
             .iter()
             .any(|p| p.name == "nlAction" && p.value == "ignore")
@@ -2623,7 +2634,7 @@ fn schematic_in(
             .map(|p| pt(*p, upi, "wire", &cell, notes))
             .collect();
         wire_pts.insert(w.r, pts.clone());
-        if sv.prop(w.r, "schemifyStub").is_some() {
+        if prop(w.r, "schemifyStub").is_some() {
             continue;
         }
         let mut first = true;
@@ -2687,7 +2698,7 @@ fn schematic_in(
                 };
                 let (text, global) = if let Some((p, _)) = parse_netexpr(&l.text) {
                     (net_from_virtuoso(&p).text, false)
-                } else if let Some(sn) = sv.prop(l.r, "schemifyNet") {
+                } else if let Some(sn) = prop(l.r, "schemifyNet") {
                     match sn.strip_suffix(" global") {
                         Some(n) => (n.to_owned(), true),
                         None => (sn.to_owned(), false),

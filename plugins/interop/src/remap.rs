@@ -117,6 +117,8 @@ fn step_toward(p: [i32; 2], q: [i32; 2], len: f64) -> [i32; 2] {
 ///
 /// When `todo` names an instance outside `g`, holds more than [`REMASTERED_MAX`] rows,
 /// or when `n` was not extracted from `g`.
+// ponytail: O(re-mastered pins × (wires + nodes)); a spatial index when a cell re-masters
+// thousands of instances.
 pub fn apply(g: &Geom, n: &Nets, todo: &[Remaster]) -> Edits {
     assert!(
         todo.len() <= REMASTERED_MAX,
