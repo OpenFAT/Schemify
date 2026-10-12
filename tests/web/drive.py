@@ -2,9 +2,11 @@
 """Drives the web editor in headless Chrome through the DevTools protocol (over a pipe,
 Python stdlib only) and checks what the web spec promises end to end:
 
-0. pixels (web spec §7): without a WebGPU adapter the editor draws on the CPU, and the
-   frame of the `inv` project matches the native CPU golden
-   `crates/app/tests/golden/editor_dark.png` (≤ 0.1% of pixels off by more than 2 levels);
+0. pixels (web spec §7): when WebGPU is unusable (no adapter, or frames that never reach
+   the page, as on CI's SwiftShader) the editor draws on the CPU, and the frame of the `inv`
+   project matches the native CPU golden `crates/app/tests/golden/editor_dark.png` (≤ 0.1%
+   of pixels off by more than 2 levels); whichever painter draws, the page screenshot is
+   within 5% of that golden (never blank);
 1. storage (web spec §2): the `inv` fixture, written into OPFS by the browser's own API,
    opens (the mount reads files it did not write); a wire drawn and saved (Ctrl+S) reaches
    OPFS and is still there after a reload;
@@ -117,6 +119,13 @@ class Page:
             self.call(f"{domain}.enable")
         # Headless pages are never focused; the Clipboard API needs focus.
         self.call("Emulation.setFocusEmulationEnabled", {"enabled": True})
+        # `--window-size` includes the headless browser's own UI (the page got 1280×713):
+        # the editor's 1280×800 canvas then overflowed, scrollbars covered the clicks at
+        # y = 700, and no frame could match the 1280×800 native golden.
+        self.call(
+            "Emulation.setDeviceMetricsOverride",
+            {"width": 1280, "height": 800, "deviceScaleFactor": 1, "mobile": False},
+        )
 
     def call(self, method, params=None, timeout=60):
         return self.b.call(method, params, self.s, timeout)
@@ -151,6 +160,9 @@ class Page:
         """Loads `url` afresh (a changed fragment alone would not restart the editor)."""
         before = self.eval("performance.timeOrigin")
         self.call("Page.navigate", {"url": url})
+        # A fragment-only navigate returns before the URL commits; a reload issued at once
+        # reloads the old URL (the editor then opens the default project, not `url`).
+        self.wait(f"the URL {url}", f"location.href === {json.dumps(url)}")
         self.call("Page.reload", {"ignoreCache": False})
         self.wait(
             f"the editor's canvas at {url}",
@@ -434,6 +446,23 @@ def main():
                     if bad > limit:
                         failures.append(f"the web CPU frame differs from the native golden in "
                                         f"{bad} pixels (limit {limit}): see web_cpu.png")
+            # 0b. Whatever drew it (GPU, or the CPU fallback after a GPU that shows nothing),
+            #     the page itself must show the editor: the compositor's screenshot is near
+            #     the golden (a blank page differs almost everywhere; the GPU's antialiasing
+            #     only along edges, hence the loose 5%).
+            p.screenshot(os.path.join(out, "page.png"))
+            with open(os.path.join(out, "page.png"), "rb") as f:
+                shot = png_rgba(f.read())
+            with open(GOLDEN, "rb") as f:
+                want = png_rgba(f.read())
+            if shot[:2] != want[:2]:
+                failures.append(f"page {shot[:2]}, golden {want[:2]}: see page.png")
+            else:
+                bad, limit = differing_pixels(shot[2], want[2]), shot[0] * shot[1] // 20
+                print(f"page vs editor_dark.png: {bad} pixels differ (limit {limit})")
+                if bad > limit:
+                    failures.append(f"the page does not show the editor ({bad} pixels off the "
+                                    f"golden, limit {limit}): see page.png")
             p.click(250, 700)  # focus the canvas (winit takes keys only when focused)
             p.key("w")
             p.click(500, 700)

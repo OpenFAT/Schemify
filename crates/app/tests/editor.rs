@@ -308,6 +308,41 @@ fn save_writes_the_canonical_file_and_clears_dirty() {
     assert!(journal.exists(), "edits are journaled (D28)");
 }
 
+/// The web canvas has no size until its first `Resized` (web spec §7): frames at an empty
+/// viewport come first, then the real one with nothing else changed. The cell must still be
+/// fitted to the real viewport, exactly as when the size is known from the start.
+#[test]
+fn fits_when_the_first_viewport_is_empty() {
+    let want = Session::open("inv", "top.shcomp", "fit-ref", true)
+        .ed
+        .camera();
+    let mut ed = schemify_app::editor::Editor::new(schemify_app::editor::Options {
+        path: Some(common::fixture("inv", "fit-late").join("top.shcomp")),
+        seed: 7,
+        ..Default::default()
+    })
+    .unwrap();
+    let none = schemify_ui::InputEvents::default();
+    ed.update(&none, (0.0, 0.0), 1000);
+    ed.update(&none, (0.0, 0.0), 2000);
+    let unfitted = ed.camera();
+    assert!(
+        (unfitted.scale - want.scale).abs() > 1e-9,
+        "no fit at an empty viewport"
+    );
+    assert!(
+        ed.update(&none, common::VIEW, 3000),
+        "the fit asks for a frame"
+    );
+    ed.update(&none, common::VIEW, 4000);
+    let got = ed.camera();
+    assert!(
+        (got.scale - want.scale).abs() < 1e-12,
+        "{got:?} vs {want:?}"
+    );
+    assert!((got.cx - want.cx).abs() < 1e-9 && (got.cy - want.cy).abs() < 1e-9);
+}
+
 #[test]
 fn zoom_pan_and_snap_keys() {
     let mut s = Session::open("inv", "top.shcomp", "view", true);
