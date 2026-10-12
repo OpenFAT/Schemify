@@ -3,6 +3,8 @@
 //!
 //! Written against the raw ABI (no SDK) so it can lie about buffers and sizes.
 
+#![warn(missing_docs)]
+
 use std::hint::black_box;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,11 +41,13 @@ fn publish(bytes: Vec<u8>) -> u64 {
     ((out.as_ptr() as u64) << 32) | out.len() as u64
 }
 
+/// The ABI version (honest: the host must load the module to test the rest).
 #[unsafe(no_mangle)]
 pub extern "C" fn schemify_abi() -> u32 {
     1
 }
 
+/// The input buffer, except once after `bad.lie_alloc`: an address past linear memory.
 #[unsafe(no_mangle)]
 pub extern "C" fn schemify_alloc(n: u32) -> u32 {
     if LIE_ALLOC.swap(false, Ordering::Relaxed) {
@@ -54,6 +58,8 @@ pub extern "C" fn schemify_alloc(n: u32) -> u32 {
     input.as_mut_ptr() as u32
 }
 
+/// Answers `load`, `rejected` and each `bad.*` command with its fault (module comment);
+/// 0 (no output) for anything else.
 #[unsafe(no_mangle)]
 pub extern "C" fn schemify_on_event(_ptr: u32, _len: u32) -> u64 {
     let input = INPUT.lock().unwrap().clone();

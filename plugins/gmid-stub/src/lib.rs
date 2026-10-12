@@ -3,6 +3,8 @@
 //!
 //! Placeholder math, not a gm/Id lookup: `W = L · I_D · (gm/I_D)² / 4`.
 
+#![deny(unsafe_code)] // not `forbid`: the SDK's `export!` allows `unsafe(no_mangle)`
+
 use std::fmt::Write as _;
 
 use schemify_abi::guest::{self, Host};

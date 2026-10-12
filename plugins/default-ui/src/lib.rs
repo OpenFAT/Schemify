@@ -41,6 +41,8 @@
 //!   `simulation.show_netlist_after_netlist_command` and `waves.op_annotate`, whose `checked`
 //!   the app sets.
 
+#![deny(unsafe_code)] // not `forbid`: the SDK's `export!` allows `unsafe(no_mangle)`
+
 use std::cell::Cell;
 
 use schemify_abi::guest::{self, Host};
