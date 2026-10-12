@@ -437,6 +437,49 @@ impl Intent {
     }
 }
 
+/// Evaluates `src` in cell `ci`'s own scope for [`intents`] (the CLI's evaluator, §10.1):
+/// identifiers resolve to the cell's vars, then its parameter defaults, recursively (at most 16
+/// levels); a plugin call (`gmid.w`, …) or anything else that does not evaluate gives `None`,
+/// so the sample width is simply left out.
+pub fn cell_value(d: &Design, ci: usize, src: &str) -> Option<f64> {
+    fn go(c: &crate::design::Cell, src: &str, depth: u32) -> Option<f64> {
+        if depth >= 16 {
+            return None;
+        }
+        let p = Program::compile(src, Mode::Scalar).ok()?;
+        if p.plugin_fns().len() > 0 {
+            return None;
+        }
+        let lookup = |n: &str| -> Option<String> {
+            c.records(RecordKind::Var)
+                .find(|r| c.field(*r, 0) == n)
+                .or_else(|| c.records(RecordKind::Param).find(|r| c.field(*r, 0) == n))
+                .map(|r| c.field(r, 1).to_owned())
+        };
+        let vals: Vec<Option<f64>> = p
+            .idents()
+            .map(|n| lookup(n).and_then(|e| go(c, &e, depth + 1)))
+            .collect();
+        let mut inputs = Vec::new();
+        let mut k = 0;
+        p.bind(&mut inputs, |_| {
+            let v = vals[k].map(schemify_expr::Value::Num);
+            k += 1;
+            v
+        })
+        .ok()?;
+        match p
+            .eval(&inputs, &mut schemify_expr::Scratch::default())
+            .ok()?
+        {
+            schemify_expr::Value::Num(x) => Some(x),
+            schemify_expr::Value::Int(i) => Some(i as f64),
+            _ => None,
+        }
+    }
+    go(&d.cells[ci], src, 0)
+}
+
 /// Finds the instances of cell `ci` sized by intent: a width override (param `w`, any case)
 /// that is `gmid.w(dev, gm_id, l, id)` or `gmid.w_at(dev, gm_id, l, id, vds)`, directly or
 /// through a chain of the cell's vars (`W W_in` with `var W_in "gmid.w(…)"`, the OTA idiom).

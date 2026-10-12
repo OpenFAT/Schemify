@@ -1049,3 +1049,106 @@ fn sfy_retarget_characterizes_solves_and_places() {
         i.host.ocean.runs
     );
 }
+
+/// The whole PDK-agnostic flow from the real exporter (§10): the OTA fixture (widths by
+/// `gmid.w` through vars) exported with `--retarget` → `SfyImport` (placeholders skipped) →
+/// `SfyRetarget` with a target map onto a mock PDK (EKV device in the mock OCEAN) → every
+/// transistor placed on the target master with a solved width, connected by its `conn`s.
+#[test]
+fn ota_retarget_from_the_rust_exporter_to_placed_target_devices() {
+    use interop::map::Mapping;
+    use interop::virtuoso::{self, ExportOptions};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/app/tests/fixtures/ota");
+    let mut files = Files::new();
+    for p in [
+        "schemify.project",
+        "ota.shcomp",
+        "dev/nfet_01v8.shprim",
+        "dev/pfet_01v8.shprim",
+    ] {
+        files.insert(p.to_owned(), std::fs::read(root.join(p)).unwrap());
+    }
+    let d =
+        design::load(&files, &BTreeSet::new(), &["ota.shcomp"]).unwrap_or_else(|e| panic!("{e:?}"));
+    let mut eo = ExportOptions {
+        producer: "e2e".into(),
+        retarget: true,
+        ..ExportOptions::default()
+    };
+    eo.lib_map.insert(String::new(), "top".into());
+    let e =
+        virtuoso::export(&d, &[0], &Mapping::default(), &eo).unwrap_or_else(|e| panic!("{e:?}"));
+    let n_intents = e
+        .sfyx
+        .lines()
+        .filter(|l| l.starts_with("(\"intent\""))
+        .count();
+    let n_holders = e
+        .sfyx
+        .lines()
+        .filter(|l| l.starts_with("(\"inst\"") && l.contains(" \"\" "))
+        .count();
+    assert_eq!(
+        (n_intents, n_holders),
+        (5, 5),
+        "{}\n{}",
+        e.sfyx,
+        e.notes.text()
+    );
+    assert!(
+        e.sfyx
+            .lines()
+            .filter(|l| l.starts_with("(\"conn\""))
+            .count()
+            >= 20,
+        "{}",
+        e.sfyx
+    );
+
+    let mut i = Interp::new(MockDb::default());
+    for l in ["analogLib", "basic", "top", "dev", "tgt"] {
+        i.host.add_lib(l);
+    }
+    i.host.ocean.device = Some(ekv);
+    i.load(&interop::skill::schemify_il()).unwrap();
+    i.load(include_str!("fixtures/skill/build.il")).unwrap();
+    i.load("(SfyFixStdlib) (SfyFixMos \"tgt\" \"nch\") (SfyFixMos \"tgt\" \"pch\")")
+        .unwrap();
+    i.files.insert("/w/ota.sfyx".into(), e.sfyx.clone());
+    let ok = i.load("(SfyImport \"/w/ota.sfyx\")").unwrap();
+    let log = i.files["/w/ota.sfyx.log"].clone();
+    assert!(ok.truthy() && log.contains("count placeholder 5"), "{log}");
+    let map = "class nfet_01v8 lib tgt cell nch\n  pin d D\n  pin g G\n  pin s S\n  pin b B\n  param w w\n  param l l\n  model \"include \\\"/pdk/m.scs\\\" section=tt\"\n  device \"M0 (d g s b) nch\"\n  vdd 1.8\n  lgrid 10n\n  fingerw_max 50u\n\
+class pfet_01v8 lib tgt cell pch\n  pin d D\n  pin g G\n  pin s S\n  pin b B\n  param w w\n  param l l\n  model \"include \\\"/pdk/m.scs\\\" section=tt\"\n  device \"M0 (d g s b) pch\"\n  vdd 1.8\n  lgrid 10n\n  fingerw_max 50u\n  polarity p\n";
+    i.files.insert("/w/tgt.retarget".into(), map.into());
+    let ok = i
+        .load("(SfyRetarget \"/w/ota.sfyx\" \"/w/tgt.retarget\")")
+        .unwrap();
+    let rlog = i.files["/w/ota.sfyx.retarget.log"].clone();
+    assert!(ok.truthy() && rlog.ends_with("PASS\n"), "{rlog}");
+    assert_eq!(
+        rlog.lines()
+            .filter(|l| l.starts_with("inst ") && l.contains("-> W "))
+            .count(),
+        5,
+        "{rlog}"
+    );
+    // The library now holds five target devices with their solved widths.
+    i.load("(SfyExport \"/w/after.sfyx\" \"top\" (list \"ota\") ?ref nil)")
+        .unwrap();
+    let after = i.files["/w/after.sfyx"].clone();
+    let placed = after
+        .lines()
+        .filter(|l| l.starts_with("(\"inst\"") && l.contains("\"tgt\""))
+        .count();
+    assert_eq!(placed, 5, "{after}");
+    assert!(
+        after
+            .lines()
+            .filter(|l| l.starts_with("(\"prop\"") && l.contains("\"w\" \"string\""))
+            .count()
+            >= 5,
+        "{after}"
+    );
+}

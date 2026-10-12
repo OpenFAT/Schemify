@@ -76,7 +76,7 @@ pub fn export(
         if !matches!(plan.how[ci], How::Design | How::Core) {
             continue;
         }
-        let c = cell_out(d, ci, &plan, m, &mut notes);
+        let c = cell_out(d, ci, &plan, m, opts.retarget, &mut notes);
         if d.cells[ci].kind() == FileKind::Shbench {
             let recs = ade::export(d, ci, &mut notes);
             if !recs.is_empty() {
@@ -420,7 +420,14 @@ fn cv_records(cv: &Cv, out: &mut Vec<Record>) {
 // ---------------------------------------------------------------------------------------
 
 /// Builds the dump tables of Design cell `ci`.
-fn cell_out(d: &Design, ci: usize, plan: &Plan, m: &Mapping, notes: &mut Notes) -> DCell {
+fn cell_out(
+    d: &Design,
+    ci: usize,
+    plan: &Plan,
+    m: &Mapping,
+    retarget: bool,
+    notes: &mut Notes,
+) -> DCell {
     let c = &d.cells[ci];
     let mut out = DCell {
         lib: plan.lib[ci].clone(),
@@ -451,13 +458,13 @@ fn cell_out(d: &Design, ci: usize, plan: &Plan, m: &Mapping, notes: &mut Notes) 
             out.cvs
                 .push(keep(c, super::Part::Symbol, symbol_out(c, &mut ids, notes)));
             if c.kind() == FileKind::Shcomp {
-                let sch = schematic_out(d, ci, plan, m, &mut ids, notes);
+                let sch = schematic_out(d, ci, plan, m, retarget, &mut ids, notes);
                 out.cvs.push(keep(c, super::Part::Schematic, sch));
             }
             out.textviews = textviews_out(c, notes);
         }
         FileKind::Shbench => {
-            let sch = schematic_out(d, ci, plan, m, &mut ids, notes);
+            let sch = schematic_out(d, ci, plan, m, retarget, &mut ids, notes);
             out.cvs.push(keep(c, super::Part::Schematic, sch));
         }
         k => unreachable!("design cells are cell files, got {k:?}"),
@@ -1541,12 +1548,22 @@ fn schematic_out(
     ci: usize,
     plan: &Plan,
     m: &Mapping,
+    retarget: bool,
     ids: &mut Ids,
     notes: &mut Notes,
 ) -> Cv {
     let c = &d.cells[ci];
     let g = geom(d, ci);
     let n = nets::extract(d, ci, &g);
+    // §10.1: instances sized by gm/Id intent become class placeholders.
+    let intents: Vec<crate::retarget::Intent> = if retarget {
+        let (v, rn) = crate::retarget::intents(d, ci, |e| crate::retarget::cell_value(d, ci, e));
+        notes.rows.extend(rn.rows);
+        v
+    } else {
+        Vec::new()
+    };
+    let intent_of = |k: usize| intents.iter().find(|t| t.inst_id == g.inst_id[k]);
     let mut cv = Cv {
         view: "schematic".into(),
         vtype: "schematic".into(),
@@ -1557,6 +1574,20 @@ fn schematic_out(
     let mut todo = Vec::new();
     for k in 0..g.inst_id.len() {
         let mi = g.inst_master[k] as usize;
+        if intent_of(k).is_some() {
+            // The target master is chosen on the target machine: every drawn pin goes
+            // through a `conn` record under its own name (the class pin, §10.2 `pin`).
+            let pins = sym_pins(&d.cells[mi]);
+            todo.push(Remaster {
+                inst: k,
+                pins: (0..pins.name.len())
+                    .filter(|&p| pins.inherit[p].is_none() && pins.alias[p].is_none())
+                    .map(|p| (p, pins.name[p].clone()))
+                    .collect(),
+                new_pins: None,
+            });
+            continue;
+        }
         if !plan.remastered(mi, m) {
             continue;
         }
@@ -1664,6 +1695,31 @@ fn schematic_out(
             g.inst_name[k].clone()
         });
         names.push(name.clone());
+        if let Some(t) = intent_of(k) {
+            // A class placeholder: library "", the class as the cell, no parameters (§10.1).
+            id_prop(&mut cv, r, &g.inst_id[k]);
+            let class = m
+                .classes
+                .iter()
+                .find(|cl| cl.name == t.class)
+                .map_or(t.class.clone(), |cl| cl.name.clone());
+            cv.intents.push(t.to_record(r as i32));
+            cv.insts.push(Inst {
+                r,
+                name,
+                lib: String::new(),
+                cell: class,
+                view: String::new(),
+                xy: conv(
+                    g.inst_at[k],
+                    &format!("instance {}", g.inst_name[k]),
+                    c,
+                    notes,
+                ),
+                orient: profile::orient_to_virtuoso(g.inst_orient[k]).into(),
+            });
+            continue;
+        }
         let mut cell = plan.cell[mi].clone();
         let master = &d.cells[mi];
         let src = match plan.how[mi] {
@@ -2083,6 +2139,30 @@ fn schematic_out(
             term: term.clone(),
             net: net_to_virtuoso(&l.net, l.global).0,
         });
+    }
+    // A retarget placeholder's inherited pins (a bulk on `VSS`) have no drawn node: their
+    // net is the instance's `inherit` override, else the pin's default global (netlist §5).
+    for k in 0..g.inst_id.len() {
+        if intent_of(k).is_none() {
+            continue;
+        }
+        let pins = sym_pins(&d.cells[g.inst_master[k] as usize]);
+        for (p, default) in pins.inherit.iter().enumerate() {
+            let Some(default) = default else { continue };
+            let over = c.doc.attrs(g.inst_rec[k]).find(|a| {
+                c.doc.attr_key(*a) == "inherit"
+                    && c.doc.attr_value(*a, 0) == Some(pins.name[p].as_str())
+            });
+            let (net, global) = match over.and_then(|a| c.doc.attr_value(a, 1)) {
+                Some(n) => (n.to_owned(), false),
+                None => (default.clone(), true),
+            };
+            cv.conns.push(Conn {
+                r: inst_ref[k],
+                term: pins.name[p].clone(),
+                net: net_to_virtuoso(&net, global).0,
+            });
+        }
     }
     assert_eq!(inst_ref.len(), g.inst_id.len());
     cv
