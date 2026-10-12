@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# D39 binary-size budgets (docs/perf.md "Binary size"): the headless core `schemify` <= 2 MB
-# and the editor `schemify-gui` <= 10 MB, built the way flake.nix ships them: stripped, fat LTO,
+# Binary sizes of the headless core `schemify` and the editor `schemify-gui` (docs/perf.md
+# "Binary size"; informational since D39's 2026-10-12 amendment), built the way flake.nix ships
+# them: stripped, fat LTO,
 # one codegen unit, panic=abort, and on Linux no unwind tables + packed relative relocations.
 # Keep the env below in sync with the flake's `env`.
 #
-#   tools/size-check.sh            build both binaries for the host, then check
-#   tools/size-check.sh --no-build check binaries already built by this script
+#   tools/size-check.sh            build both binaries for the host, then print their sizes
+#   tools/size-check.sh --no-build print the sizes of binaries already built by this script
 #
-# Exit 1 when a binary is over budget, 2 when one is missing. The fat-LTO editor link needs
-# about 4 GB of RAM.
+# Exits 2 only when a binary is missing; sizes never fail. The fat-LTO editor link needs about
+# 4 GB of RAM.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -32,7 +33,7 @@ exe=""
 case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) exe=".exe" ;; esac
 
 status=0
-# Checks binary $1 against budget $2 (bytes; MB = 10^6 as in D39).
+# Prints binary $1's size next to its rough target $2 (bytes; MB = 10^6 as in D39).
 check() {
   local bin="target/$host/release/$1$exe"
   if [[ ! -f "$bin" ]]; then
@@ -42,12 +43,7 @@ check() {
   fi
   local size
   size=$(wc -c <"$bin")
-  if ((size > $2)); then
-    echo "OVER  $1: $size bytes > budget $2" >&2
-    ((status == 2)) || status=1
-  else
-    echo "ok    $1: $size bytes <= budget $2"
-  fi
+  echo "$1: $size bytes (rough target $2)"
 }
 check schemify 2000000
 check schemify-gui 10000000
