@@ -13,6 +13,7 @@ Implements D9, D10, D11, D13, D17, D19, D20, D29, D30, D33, D35, D40. Rationale 
 | `schemify.lock` | `lock` | resolved sources + content hashes (written by the tool only) |
 | `schemify-pack.lock` (user, next to `init.lua`) | `lock` | user packages pinned ([config.md](config.md) §5); same rows as `schemify.lock` |
 | — | `config` | reserved: the user config is Lua since the 2026-10-11 D9 amendment ([config.md](config.md)) |
+| `tech.map` (a PDK's, [pdk.md](pdk.md) §6) | `techmap` | technology-class map: the PDK cell each (class, flavor) becomes and its param expressions |
 | `.schemify/journal/<cell path>.journal` | `journal` | edit journal and op text ([edits.md](edits.md) §1, §3); tool-written; no known record words: every record is kept as written, like a §5 unknown record, at any version |
 
 A library is a directory; one cell per file; the cell name is the file stem. Two files with the same stem and different kinds in one library is an error (`E020`).
@@ -25,7 +26,7 @@ A library is a directory; one cell per file; the cell name is the file stem. Two
 file      = header *line
 header    = "schemify" WS version WS kind EOL          ; line 1, always
 version   = 1*DIGIT                                     ; this spec: 1
-kind      = "shprim" / "shcomp" / "shbench" / "project" / "lock" / "config" / "journal"
+kind      = "shprim" / "shcomp" / "shbench" / "project" / "lock" / "config" / "journal" / "techmap"
 line      = blank / comment / record / attr / verbatim
 blank     = *WSP EOL
 comment   = *WSP "#" *CHAR EOL                          ; whole-line only; attaches to the next record
@@ -62,7 +63,7 @@ EOL       = LF / CRLF
 
 Records appear in rank order; a record of lower rank after a higher rank is an error (`E023`). Within rank 3 the writer emits kinds in the order listed and each kind sorted by id (bytewise); the reader accepts any order within rank 3. Ranks 1, 2, 4, 5 keep file order (it is semantic). Rank 6 is written with kinds in the order listed, each sorted bytewise by name. Project and config records are rank 1 in file order; lockfile records are rank 1 sorted by (type, name).
 
-Shapes: a record line or attribute line with the wrong number of values, or a value of the wrong form in a typed slot (id, coordinate, number, orientation, `true|false`, or one of the listed words such as pin `dir`), is `E029`; so are a missing required attribute and `|` verbatim lines under a record kind that takes none (only `prose`, `body`, `code` and unknown records do). Flag attributes (`hcenter`, `vcenter`) take no value. A second line of a non-repeatable known attribute is `E024`; repeatable ones are `format` (impl), `inherit` (inst), `member` (constraint), `lib`/`include`/`set` (corner), `cell`/`inst` (config), `goal`/`vary`/`config`/`corner` (optimize) and `grant` (plugin).
+Shapes: a record line or attribute line with the wrong number of values, or a value of the wrong form in a typed slot (id, coordinate, number, orientation, `true|false`, or one of the listed words such as pin `dir`), is `E029`; so are a missing required attribute and `|` verbatim lines under a record kind that takes none (only `prose`, `body`, `code` and unknown records do). Flag attributes (`hcenter`, `vcenter`) take no value. A second line of a non-repeatable known attribute is `E024`; repeatable ones are `format` (impl), `inherit` (inst), `member` (constraint), `lib`/`include`/`set` (corner), `cell`/`inst` (config), `goal`/`vary`/`config`/`corner` (optimize), `grant` (plugin) and `param`/`limits` (class).
 
 Ids: 1–13 chars of lowercase Crockford base32 (`0-9 a-h j k m n p-t v-z`); the writer generates 6 (random, caller-seeded; importers seed from FNV-1a of (source path, record ordinal) and redraw on collision). A malformed id is `E029`. Unique per file across all id-bearing kinds; a duplicate on load is reported as warning `W001` on the later occurrence and re-id'd by the `doc` layer. Names (pins, params, impls, vars, bodies, every rank-6 kind, project/config entries; `locked` by (type, name)) are unique within their kind (`E024`). The reader also normalizes wires so `(x1, y1) < (x2, y2)`.
 
@@ -162,10 +163,19 @@ Document order is preserved.
 | Record | Attributes |
 |---|---|
 | `lib <name> path <relpath>` / `lib <name> git <url> <rev>` / `lib <name> url <url> <sha256>` | `subdir <relpath>` |
+| `lib tech map <relpath>` | — |
 | `plugin <name> path\|git\|url …` (same forms) | `grant <capability>` (repeatable), `fuel <n>` (per-event instruction budget, plugin ABI §2; whole number in [10^6, 10^11], default 10^8) |
 | `set <key> <value>` | |
 
-`lib core builtin` is implicit (the bundled core library).
+`lib core builtin` is implicit (the bundled core library). `tech` is a reserved library name: it takes only the `map` source, whose `<relpath>` is a `tech.map` file ([pdk.md](pdk.md) §5), and no other library takes `map` (both `E028` on load). The app indexes it as a one-file listing, so the lockfile pins it like any library (`locked lib tech map <relpath> <sha256>`).
+
+### Technology map (`tech.map`, kind `techmap`)
+
+Header attributes `pdk <family>` (the name messages use) and `vdd <volts>` (nominal core supply). Records, rank 1, file order:
+
+| Record | Attributes | Notes |
+|---|---|---|
+| `class <class> <flavor>` | `cell <lib:cell>` (required), `param <name> <expr>` (repeatable), `vdd <volts>`, `limits <param> min\|max <expr>` (repeatable) | Identified by (class, flavor), unique (`E024`). `flavor` ∈ `core io lvt hvt`. `param` assigns a PDK param of `cell` an expression over the class params, written as an instance override of that param would be (an expression for number params). `limits` is parsed and kept; enforcement is not implemented yet ([pdk.md](pdk.md) §6). |
 
 ### Lockfile (`schemify.lock`)
 
