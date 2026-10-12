@@ -337,6 +337,20 @@ const fn repeat(key: &'static str, values: &'static [Ty]) -> AttrSchema {
     }
 }
 
+/// An attribute of one or more values: `fixed`, then any number of `Any`.
+const fn many(key: &'static str, fixed: &'static [Ty]) -> AttrSchema {
+    assert!(!key.is_empty() && fixed.len() <= 8);
+    AttrSchema {
+        key,
+        shape: Shape {
+            fixed,
+            rest: Rest::Many(A),
+        },
+        required: false,
+        repeat: false,
+    }
+}
+
 const fn required(key: &'static str, values: &'static [Ty]) -> AttrSchema {
     assert!(!key.is_empty() && !values.is_empty());
     AttrSchema {
@@ -465,15 +479,7 @@ static RECORDS: [RecordSchema; RecordKind::Unknown as usize + 1] = [
             MAX,
             attr("step", &[A]),
             attr("grid", &[A]),
-            AttrSchema {
-                key: "choices",
-                shape: Shape {
-                    fixed: &[A],
-                    rest: Rest::Many(A),
-                },
-                required: false,
-                repeat: false,
-            },
+            many("choices", &[A]),
             attr("computed", &[A]),
             attr("show", &[A]),
             DOC,
@@ -623,15 +629,7 @@ static RECORDS: [RecordSchema; RecordKind::Unknown as usize + 1] = [
         KN,
         fixed(&[A]),
         &[
-            AttrSchema {
-                key: "order",
-                shape: Shape {
-                    fixed: &[A],
-                    rest: Rest::Many(A),
-                },
-                required: false,
-                repeat: false,
-            },
+            many("order", &[A]),
             repeat("cell", &[A, A]),
             repeat("inst", &[A, A]),
         ],
@@ -643,15 +641,7 @@ static RECORDS: [RecordSchema; RecordKind::Unknown as usize + 1] = [
         fixed(&[A]),
         &[
             attr("var", &[A]),
-            AttrSchema {
-                key: "values",
-                shape: Shape {
-                    fixed: &[A],
-                    rest: Rest::Many(A),
-                },
-                required: false,
-                repeat: false,
-            },
+            many("values", &[A]),
             attr("lin", &[A, A, A]),
             attr("log", &[A, A, A]),
         ],
@@ -672,13 +662,8 @@ static RECORDS: [RecordSchema; RecordKind::Unknown as usize + 1] = [
             attr("algo", &[A]),
             // `<output> min|max|target <expr> [weight <w>]`: run checks the tail.
             AttrSchema {
-                key: "goal",
-                shape: Shape {
-                    fixed: &[A, Ty::Choice(&["min", "max", "target"])],
-                    rest: Rest::Many(A),
-                },
-                required: false,
                 repeat: true,
+                ..many("goal", &[A, Ty::Choice(&["min", "max", "target"])])
             },
             repeat("vary", &[A]),
             repeat("config", &[A]),
@@ -727,18 +712,7 @@ static RECORDS: [RecordSchema; RecordKind::Unknown as usize + 1] = [
         1,
         KN,
         fixed(&[A]),
-        &[
-            attr("path", &[A]),
-            AttrSchema {
-                key: "args",
-                shape: Shape {
-                    fixed: &[],
-                    rest: Rest::Many(A),
-                },
-                required: false,
-                repeat: false,
-            },
-        ],
+        &[attr("path", &[A]), many("args", &[])],
     )),
     rec("plugin", 1, KN, fixed(&[A]), &[]),
     // Unknown: kept verbatim; identified by its word and first field.

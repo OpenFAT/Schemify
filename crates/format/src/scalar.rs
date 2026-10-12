@@ -19,25 +19,21 @@ pub enum CoordError {
 }
 
 /// Returns whether `s` is a file-level number literal: `-?digits(.digits)?`, with no
-/// exponent, no `+` and no SI suffix (those belong to expressions).
+/// exponent, no `+` and no SI suffix (those belong to expressions). Any number of
+/// digits is a number, representable as a coordinate or not.
 pub fn is_number(s: &str) -> bool {
-    let body = s.strip_prefix('-').unwrap_or(s);
-    let (whole, frac) = match body.split_once('.') {
-        Some((w, f)) => (w, Some(f)),
-        None => (body, None),
-    };
-    let digits = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
-    digits(whole) && frac.is_none_or(digits)
+    parse_coord(s) != Err(CoordError::NotNumber)
 }
 
-/// Parses a coordinate into exact i32 milli-units.
+/// Parses a coordinate into exact i32 milli-units, in one pass over the bytes.
 ///
 /// Fractional digits beyond the third are accepted only when they are zeros
 /// (`1.5000` is exact; `0.0005` is not).
 ///
 /// # Errors
 ///
-/// [`CoordError::NotNumber`] when `s` is not a number literal; [`CoordError::NotRepresentable`]
+/// [`CoordError::NotNumber`] when `s` is not a number literal (checked over the whole
+/// text first, so `99999999999x` is `NotNumber`); [`CoordError::NotRepresentable`]
 /// when the value needs a fourth fractional digit or falls outside `[-2^31, 2^31 - 1]`
 /// milli-units.
 ///
@@ -50,33 +46,34 @@ pub fn is_number(s: &str) -> bool {
 /// assert_eq!(parse_coord("1e3"), Err(CoordError::NotNumber));
 /// ```
 pub fn parse_coord(s: &str) -> Result<i32, CoordError> {
-    if !is_number(s) {
+    let b = s.as_bytes();
+    let negative = b.first() == Some(&b'-');
+    let body = &b[usize::from(negative)..];
+    let whole_len = body.iter().take_while(|c| c.is_ascii_digit()).count();
+    if whole_len == 0 {
         return Err(CoordError::NotNumber);
     }
-    let (negative, body) = match s.strip_prefix('-') {
-        Some(b) => (true, b),
-        None => (false, s),
-    };
-    let (whole_text, frac_text) = body.split_once('.').unwrap_or((body, ""));
-    let frac_text = frac_text.trim_end_matches('0');
-    if frac_text.len() > 3 {
-        return Err(CoordError::NotRepresentable);
-    }
-    assert!(
-        !whole_text.is_empty(),
-        "is_number guarantees an integer part"
-    );
-    let mut whole: i64 = 0;
-    for d in whole_text.bytes() {
-        whole = whole * 10 + i64::from(d - b'0');
-        if whole > COORD_WHOLE_MAX {
-            return Err(CoordError::NotRepresentable);
+    // Saturates one past the limit, so the i64 never overflows on long digit runs.
+    let whole = body[..whole_len].iter().fold(0i64, |w, d| {
+        (w * 10 + i64::from(d - b'0')).min(COORD_WHOLE_MAX + 1)
+    });
+    let (mut frac, mut exact) = (0i64, true);
+    if let Some(rest) = body.get(whole_len..).filter(|r| !r.is_empty()) {
+        let digits = &rest[1..];
+        if rest[0] != b'.' || digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+            return Err(CoordError::NotNumber);
+        }
+        for (i, d) in digits.iter().enumerate() {
+            match [100, 10, 1].get(i) {
+                Some(scale) => frac += i64::from(d - b'0') * scale,
+                None => exact &= *d == b'0',
+            }
         }
     }
-    let mut milli = whole * i64::from(MILLI_PER_UNIT);
-    for (d, scale) in frac_text.bytes().zip([100, 10, 1]) {
-        milli += i64::from(d - b'0') * scale;
+    if !exact || whole > COORD_WHOLE_MAX {
+        return Err(CoordError::NotRepresentable);
     }
+    let milli = whole * i64::from(MILLI_PER_UNIT) + frac;
     let value = if negative { -milli } else { milli };
     assert!(value.unsigned_abs() <= (COORD_WHOLE_MAX as u64 + 1) * 1000);
     i32::try_from(value).map_err(|_| CoordError::NotRepresentable)
@@ -209,6 +206,53 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    /// A split-then-convert implementation, independent of the one-pass scanner: the
+    /// oracle for `parse_coord`.
+    fn oracle(s: &str) -> Result<i32, CoordError> {
+        let body = s.strip_prefix('-').unwrap_or(s);
+        let (whole, frac) = body.split_once('.').unwrap_or((body, ""));
+        let digits = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
+        if !digits(whole) || (body.contains('.') && !digits(frac)) {
+            return Err(CoordError::NotNumber);
+        }
+        let frac = frac.trim_end_matches('0');
+        if frac.len() > 3 || whole.trim_start_matches('0').len() > 7 {
+            return Err(CoordError::NotRepresentable);
+        }
+        let padded = format!("{whole}{frac:0<3}");
+        let milli: i64 = padded.parse().expect("digits");
+        let value = if s.starts_with('-') { -milli } else { milli };
+        i32::try_from(value).map_err(|_| CoordError::NotRepresentable)
+    }
+
+    #[test]
+    fn one_pass_parse_matches_the_oracle_exhaustively() {
+        // Every string of length 0..=6 over the bytes that matter, plus long digit runs.
+        let alphabet = b"-.0159x";
+        let mut checked = 0u32;
+        for len in 0..=6u32 {
+            for mut n in 0..7usize.pow(len) {
+                let mut s = String::new();
+                for _ in 0..len {
+                    s.push(char::from(alphabet[n % 7]));
+                    n /= 7;
+                }
+                assert_eq!(parse_coord(&s), oracle(&s), "{s:?}");
+                checked += 1;
+            }
+        }
+        for s in [
+            "2147483.647",
+            "-2147483.648",
+            "2147483.6470",
+            "0002147483.648",
+            "99999999999x",
+        ] {
+            assert_eq!(parse_coord(s), oracle(s), "{s:?}");
+        }
+        assert_eq!(checked, (0..=6).map(|l| 7u32.pow(l)).sum::<u32>());
     }
 
     #[test]

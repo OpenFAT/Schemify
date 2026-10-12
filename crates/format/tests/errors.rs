@@ -213,6 +213,10 @@ fn e028_lexical() {
         2,
         8,
     );
+    for sign in ["+41", "-41", "+", " 41"] {
+        let text = format!("schemify 1 shbench\nvar W \"\\u{{{sign}}}\"\n");
+        fails(&text, Code::E028, 2, 8);
+    }
     fails("schemify 1 shbench\nvar W \"a\"b\n", Code::E028, 2, 10);
     fails("schemify 1 shbench\nvar W a\"b\n", Code::E028, 2, 8);
     fails("schemify 1 shbench\nvar W #x\n", Code::E028, 2, 7);
