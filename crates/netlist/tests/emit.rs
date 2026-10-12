@@ -145,6 +145,61 @@ fn tb_name_map_round_trips() {
 }
 
 #[test]
+fn name_map_lookups_follow_the_dialect() {
+    // Spectre and verilog names are case-sensitive and escaped (spec §7.6); reverse
+    // lookups take a net name with or without the escapes; a path below a leaf is none.
+    let files = fixtures();
+    let (p, top) = fixture(&files, "tb.shbench");
+    let n = emit(&elab(&p, top, Dialect::Spectre), Dialect::Spectre);
+    let m = &n.name_map;
+    assert_eq!(m.inst_name("/C[0]").as_deref(), Some(r"C\[0\]"));
+    assert_eq!(m.inst_path(r"C\[0\]").as_deref(), Some("/C[0]"));
+    assert_eq!(m.inst_path(r"c\[0\]"), None, "no case folding");
+    assert_eq!(m.net_name("/ld[0]").as_deref(), Some(r"ld\[0\]"));
+    for name in [r"ld\[0\]", "ld[0]"] {
+        assert_eq!(m.net_path(name).as_deref(), Some("/ld[0]"), "{name}");
+    }
+    assert_eq!(m.net_path(r"LD\[0\]"), None);
+    assert_eq!(m.net_path(r"vdd\!").as_deref(), Some("/vdd!"));
+    assert_eq!(m.inst_name("/X1/X1/MN/deeper"), None);
+    assert_eq!(m.net_name("/X1/X1/MN/deeper"), None);
+
+    let (p, top) = fixture(&files, "dig_tb.shbench");
+    let n = emit(&elab(&p, top, Dialect::Verilog), Dialect::Verilog);
+    let m = &n.name_map;
+    assert_eq!(m.inst_path("UX").as_deref(), Some("/UX"));
+    assert_eq!(m.inst_path("ux"), None, "no case folding");
+    assert_eq!(m.inst_path(r"\B[0]").as_deref(), Some("/B[0]"));
+    assert_eq!(m.net_name("/d[0]").as_deref(), Some(r"\d[0] "));
+    for name in [r"\d[0] ", "d[0]", r"\B[1].net_0w0001"] {
+        assert!(m.net_path(name).is_some(), "{name}");
+    }
+    assert_eq!(m.net_path(r"\D[0] "), None);
+}
+
+#[test]
+fn spice_reverse_lookups_prefer_the_exact_spelling() {
+    // ngspice folds case, so `R1` and `r1` (or nets `ab` and `AB`) fold together; the
+    // exact spelling picks one, any other spelling the first.
+    let res = "schemify 1 shprim\n\npin p inout 0 -30\npin n inout 0 30\n\nimpl s spice\n  \
+               format spice \"{name} {p} {n} 1k\"\n";
+    let bench = "schemify 1 shbench\n\ninst 0a0001 ./res\n  at 0 0 R0\n  name R1\n\
+                 inst 0a0002 ./res\n  at 100 0 R0\n  name r1\n\n\
+                 label 0n0001 0 -30 R0 ab\nlabel 0n0002 0 30 R0 0\n\
+                 label 0n0003 100 -30 R0 AB\nlabel 0n0004 100 30 R0 0\n";
+    let (p, hs) = project(&[("res.shprim", res), ("tb.shbench", bench)]);
+    let n = emit(&elab(&p, hs[1], Dialect::Ngspice), Dialect::Ngspice);
+    let m = &n.name_map;
+    for name in ["R1", "r1"] {
+        assert_eq!(m.inst_path(name).as_deref(), Some(&*format!("/{name}")));
+    }
+    for name in ["ab", "AB"] {
+        assert_eq!(m.net_path(name).as_deref(), Some(&*format!("/{name}")));
+    }
+    assert!(m.inst_path("R1").is_some() && m.net_path("Ab").is_some());
+}
+
+#[test]
 fn logic_and_mixed_benches() {
     let files = fixtures();
     for (bench, dialects) in [
@@ -310,4 +365,168 @@ fn veriloga_bodies_are_source_or_precompiled_text() {
     // CDL: neither is LVS text.
     let cdl = emit(&elab(&p, hs[2], Dialect::Cdl), Dialect::Cdl).text;
     assert!(!cdl.contains("osdi") && !cdl.contains("endmodule"), "{cdl}");
+}
+
+/// The instance lines of a leaf prim `u` (spice impl with `attrs` and `format`),
+/// instantiated as U1 (defaults) and U2 (param lines `params2`), in ngspice.
+fn u_lines(attrs: &str, format: &str, params2: &str) -> Vec<String> {
+    let u = format!(
+        "schemify 1 shprim\n\npin A[1:0] in -20 0\npin C in -20 20\npin Y out 20 0\npin Z inout 20 20\n\n\
+         param X 0\nparam W 1\nparam P 3\nparam Q 4\nparam ad 0\n  computed W*0.3\n\n\
+         impl s spice\n{attrs}  format spice \"{format}\"\n"
+    );
+    let bench = format!(
+        "schemify 1 shbench\n\ninst 0a0001 ./u\n  at 0 0 R0\n  name U1\ninst 0a0002 ./u\n  at 100 0 R0\n  name U2\n{params2}\n\
+         label 0n0001 -20 0 R0 a[1:0]\nlabel 0n0002 -20 20 R0 c\nlabel 0n0003 20 0 R0 y\nlabel 0n0004 20 20 R0 z\n\
+         label 0n0005 80 0 R0 b[1:0]\nlabel 0n0006 80 20 R0 c\nlabel 0n0007 120 0 R0 y\nlabel 0n0008 120 20 R0 z\n"
+    );
+    let (p, hs) = project(&[("u.shprim", &u), ("tb.shbench", &bench)]);
+    let text = emit(&elab(&p, hs[1], Dialect::Ngspice), Dialect::Ngspice).text;
+    text.lines()
+        .skip(1)
+        .filter(|l| *l != ".end")
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn template_identifiers_render_their_sources() {
+    // Every identifier kind of spec §6 / §7.1, hand-checked: `params` lists the non-default,
+    // non-computed params in schema order; `out_pins` is every pin but the `in` ones.
+    let ids = [
+        "name", "cell", "pins", "in_pins", "out_pins", "params", "model", "file", "A", "C", "Y",
+        "Z", "X", "W", "P", "Q", "ad",
+    ];
+    let bare: Vec<String> = ids.iter().map(|i| format!("{{{i}}}")).collect();
+    let attrs = "  model mx\n  file lib/u.inc\n";
+    let set = "  W 5\n  P 7\n";
+    let lines = u_lines(attrs, &bare.join("|"), set);
+    assert_eq!(
+        lines,
+        [
+            "U1|u|a[1] a[0] c y z|a[1] a[0] c|y z||mx|lib/u.inc|a[1] a[0]|c|y|z|0|1|3|4|0.3",
+            "U2|u|b[1] b[0] c y z|b[1] b[0] c|y z|W=5 P=7|mx|lib/u.inc|b[1] b[0]|c|y|z|0|5|7|4|1.5",
+        ]
+    );
+    // The expression path (more holes than its inline input buffer) renders the same.
+    let wrapped: Vec<String> = ids.iter().map(|i| format!("{{({i})}}")).collect();
+    assert_eq!(u_lines(attrs, &wrapped.join("|"), set), lines);
+    // Negative space: `model` and `file` without the impl attr name nothing (X004).
+    for (id, attrs) in [("model", "  file f\n"), ("file", "  model m\n")] {
+        let lines = u_lines(attrs, &format!("U{{name}} {{{id}}}"), "");
+        let err = format!("* error in U1: X004: unknown identifier `{id}`");
+        assert_eq!(lines[0], err);
+    }
+}
+
+#[test]
+fn a_cnum_param_fails_its_line_only() {
+    // The fast form copies texts; a `cnum` value must take the template path and fail
+    // with X003 (spec §7.6.1), on that row only. Error comments sort before names.
+    let lines = u_lines("", "U{name} {A} {X} {P}", "  P cplx(1,2)\n");
+    let err = "* error in U2: X003 at 16..19: a cnum has no text form; use re/im/mag/ph";
+    assert_eq!(lines, [err, "UU1 a[1] a[0] 0 3"]);
+}
+
+/// The ngspice text of prim `v` (`in` pins A[1:0], B, C; `out` pin Y) with `format`,
+/// whose pins carry the bus-bit nets d[1:0], e[0], f[0] and y[0].
+fn xspice_line(format: &str) -> String {
+    let v = format!(
+        "schemify 1 shprim\n\npin A[1:0] in -20 0\npin B in -20 20\npin C in -20 40\npin Y out 20 0\n\n\
+         impl s spice\n  format spice \"{format}\"\n"
+    );
+    let bench = "schemify 1 shbench\n\ninst 0a0001 ./v\n  at 0 0 R0\n  name 1\n\n\
+                 label 0n0001 -20 0 R0 d[1:0]\nlabel 0n0002 -20 20 R0 e[0]\n\
+                 label 0n0003 -20 40 R0 f[0]\nlabel 0n0004 20 0 R0 y[0]\n";
+    let (p, hs) = project(&[("v.shprim", &v), ("tb.shbench", bench)]);
+    let text = emit(&elab(&p, hs[1], Dialect::Ngspice), Dialect::Ngspice).text;
+    text.lines().nth(1).expect("one line").to_owned()
+}
+
+#[test]
+fn template_port_vectors_respell_exactly_their_nets() {
+    // A hole inside `[ … ]` of the literal text is in an XSPICE vector (spec §7.2); an
+    // escaped `{{[}}` is a literal bracket too, and `]` closes the vector.
+    for (format, want) in [
+        (
+            "A{name} {{[}} {B} ] [{A}] [{out_pins}] {C} m",
+            "A1 {[} e_0 ] [d_1 d_0] [y_0] f[0] m",
+        ),
+        ("A{name} [{pins}] m", "A1 [d_1 d_0 e_0 f_0 y_0] m"),
+        ("A{name} [{in_pins}] {Y} m", "A1 [d_1 d_0 e_0 f_0] y[0] m"),
+        (
+            "A{name} {A} {pins} m",
+            "A1 d[1] d[0] d[1] d[0] e[0] f[0] y[0] m",
+        ),
+    ] {
+        assert_eq!(xspice_line(format), want, "{format}");
+    }
+}
+
+#[test]
+fn verilog_default_template_connects_ordinary_then_inherited_pins() {
+    // Spec §7.5: `<model> <name> (.<bit>(<net>), …);` over the ordinary pins' bits (an
+    // alias pin is its target's connection, listed once), then the inherited pins.
+    let g = "schemify 1 shprim\n\npin A in -20 0\n  domain digital\npin A_2 in -20 20\n  alias A\n\
+             pin B in -20 40\n  domain digital\npin V inout 0 -40\n  inherit vdd\n\
+             pin Y out 20 0\n  domain digital\n\nimpl v verilog\n  model gm\n  file g.v\n";
+    let bench = "schemify 1 shbench\n\ninst 0a0001 ./g\n  at 0 0 R0\n  name U1\n\n\
+                 label 0n0001 -20 0 R0 a\nlabel 0n0002 -20 40 R0 b\nlabel 0n0003 20 0 R0 y\n";
+    let (p, hs) = project(&[("g.shprim", g), ("tb.shbench", bench)]);
+    let text = emit(&elab(&p, hs[1], Dialect::Verilog), Dialect::Verilog).text;
+    assert!(
+        text.contains("\n  gm U1 (.A(a), .B(b), .Y(y), .V(vdd));\n"),
+        "{text}"
+    );
+    // ngspice d_cosim: `in` pins in the first vector, the others in pin order.
+    let text = emit(&elab(&p, hs[1], Dialect::Ngspice), Dialect::Ngspice).text;
+    assert!(text.contains("\nAU1 [ a b ] [ vdd y ] gm\n"), "{text}");
+}
+
+#[test]
+fn once_only_text_follows_the_rows_that_use_it() {
+    // Spec §7.1/§7.2: a compiled Verilog-A impl without a `model` attr is loaded once per
+    // file stem and gets one `.model` per distinct `model` param of its rows; a verilog
+    // impl's model is a d_cosim of its stem; a spice body is emitted once, wrapped in
+    // `lang=spice` for spectre; an impl no row uses emits nothing.
+    let va = "schemify 1 shprim\n\npin p inout 0 -30\npin n inout 0 30\n\nparam model m1\n  kind string\n\n\
+              impl va veriloga\n  file va/amp1.va\n";
+    let dv = "schemify 1 shprim\n\npin A in -20 0\n  domain digital\npin Y out 20 0\n  domain digital\n\n\
+              impl v verilog\n  model dvm\n  file hdl/dv.v\n";
+    let sp = "schemify 1 shprim\n\npin p inout 0 -30\npin n inout 0 30\n\nimpl s spice\n  \
+              format spice \"R{name} {p} {n} rm\"\n  format spectre \"{name} ({p} {n}) rm\"\n\n\
+              body s\n  | .model rm r\n";
+    let unused = "schemify 1 shprim\n\npin p inout 0 -30\n\nimpl s spice\n  format spice \"Q{name}\"\n\n\
+                  body s\n  | .model never r\n";
+    let bench = "schemify 1 shbench\n\ninst 0a0001 ./va\n  at 0 0 R0\n  name 1\n\
+                 inst 0a0002 ./va\n  at 100 0 R0\n  name 2\n  model m2\n\
+                 inst 0a0003 ./va\n  at 200 0 R0\n  name 3\n  model m2\n\
+                 inst 0a0004 ./dv\n  at 300 0 R0\n  name 4\ninst 0a0005 ./sp\n  at 400 0 R0\n  name 5\n\n\
+                 label 0n0001 0 -30 R0 a\nlabel 0n0002 0 30 R0 0\nlabel 0n0003 100 -30 R0 a\n\
+                 label 0n0004 100 30 R0 0\nlabel 0n0005 200 -30 R0 a\nlabel 0n0006 200 30 R0 0\n\
+                 label 0n0007 280 0 R0 a\nlabel 0n0008 320 0 R0 y\nlabel 0n0009 400 -30 R0 a\n\
+                 label 0n000a 400 30 R0 0\n";
+    let (p, hs) = project(&[
+        ("va.shprim", va),
+        ("dv.shprim", dv),
+        ("sp.shprim", sp),
+        ("unused.shprim", unused),
+        ("tb.shbench", bench),
+    ]);
+    let text = emit(&elab(&p, hs[4], Dialect::Ngspice), Dialect::Ngspice).text;
+    let once = &text[text.find(".control").expect("an OSDI load")..];
+    assert_eq!(
+        once,
+        ".control\npre_osdi amp1.osdi\n.endc\n.model dvm d_cosim simulation=\"dv.vvp\"\n\
+         .model m1 amp1\n.model m2 amp1\n.model rm r\n.end\n"
+    );
+    assert!(
+        text.contains("\nN1 a 0 m1\nN2 a 0 m2\nN3 a 0 m2\n"),
+        "{text}"
+    );
+    let s = emit(&elab(&p, hs[4], Dialect::Spectre), Dialect::Spectre).text;
+    assert!(
+        s.ends_with("\n5 (a 0) rm\nsimulator lang=spice\n.model rm r\nsimulator lang=spectre\n"),
+        "{s}"
+    );
 }

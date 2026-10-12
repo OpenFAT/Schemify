@@ -34,6 +34,8 @@ fn hierarchical_and_flat_emission_are_equivalent() {
         let e = elab(&p, top, d);
         let (hier, flat) = (emit(&e, d).text, emit_flat(&e, d));
         assert!(!flat.contains(".subckt chain"), "flattened");
+        // CDL wraps the top in a `.SUBCKT` (spec §7.4), flat or not.
+        assert_eq!(flat.contains(".ENDS\n"), d == Dialect::Cdl, "{flat}");
         let r = schemify_spicecmp::compare(&hier, &flat, &Default::default());
         assert!(r.is_equal(), "{bench} {d:?}: {:#?}\n{flat}", r.diffs);
         // Negative space: the oracle notices one moved connection.

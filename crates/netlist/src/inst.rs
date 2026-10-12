@@ -100,48 +100,10 @@ impl Plan {
     }
 }
 
-/// Which pins of `f` the template `src` writes inside `[ … ]` (outside holes): a hole
-/// naming a pin marks it, `pins` marks every pin, `in_pins`/`out_pins` the `in` pins /
-/// the others. Same lexical rules as `Template::parse` (`{{`/`}}` literal, a hole ends
-/// at the first `}`).
-fn vector_pins(src: &str, f: &schemify_elab::Iface, names: &schemify_elab::Names) -> Vec<bool> {
-    let n = f.pin_name.len();
-    let mut out = vec![false; n];
-    let is_in = |p: usize| f.pin_dir[p] == PinDir::In && f.pin_inherit[p] == Name::NONE;
-    let b = src.as_bytes();
-    let (mut i, mut depth) = (0usize, 0u32);
-    while i < b.len() {
-        match (b[i], b.get(i + 1)) {
-            (b'{', Some(b'{')) | (b'}', Some(b'}')) => i += 2,
-            (b'{', _) => {
-                let end = src[i..].find('}').map_or(b.len(), |k| i + k);
-                let id = src[i + 1..end].trim();
-                if depth > 0 {
-                    for p in 0..n {
-                        let named = names.get(f.pin_name[p]).split('[').next() == Some(id);
-                        out[p] |= match id {
-                            "pins" => true,
-                            "in_pins" => is_in(p),
-                            "out_pins" => !is_in(p),
-                            _ => named,
-                        };
-                    }
-                }
-                i = end + 1;
-            }
-            (b'[', _) => {
-                depth += 1;
-                i += 1;
-            }
-            (b']', _) => {
-                depth = depth.saturating_sub(1);
-                i += 1;
-            }
-            _ => i += 1,
-        }
-    }
-    assert_eq!(out.len(), n);
-    out
+/// Whether pin `p` of `f` is an input for `in_pins` (an ordinary `in` pin); every other
+/// pin is an `out_pins` one.
+fn is_input(f: &schemify_elab::Iface, p: usize) -> bool {
+    f.pin_dir[p] == PinDir::In && f.pin_inherit[p] == Name::NONE
 }
 
 /// Plans for every leaf impl row and every reached cell's schematic impl.
@@ -216,11 +178,16 @@ fn plan(e: &Elab, c: u32, k: u32, template: Name) -> Plan {
     }
     let param = |n: &str| f.param_name.iter().position(|p| names.get(*p) == n);
     let attr = |col: &[Name]| col.get(k as usize).copied().filter(|n| *n != Name::NONE);
+    // A template names a pin by its base name (`D` for `D[3:0]`).
+    let base = |p: usize| names.get(f.pin_name[p]).split('[').next().unwrap_or("");
     let model = match (attr(&f.impl_model), param("model")) {
         (Some(m), _) => Src::Text(m),
         (None, Some(p)) => Src::Param(p as u32),
         (None, None) => Src::Cell,
     };
+    let n = f.pin_name.len();
+    // The default `verilog` template writes `[{in_pins}] [{out_pins}]`: every pin.
+    let mut vector = vec![template == Name::NONE && lang == Lang::Verilog; n];
     let form = if template == Name::NONE {
         Form::Default
     } else {
@@ -228,10 +195,10 @@ fn plan(e: &Elab, c: u32, k: u32, template: Name) -> Plan {
         match Template::parse(text) {
             Err(err) => Form::Bad(err.to_string()),
             Ok(tmpl) => {
-                let srcs: Vec<Src> = tmpl
-                    .program()
-                    .idents()
-                    .map(|id| match id {
+                let idents: Vec<&str> = tmpl.program().idents().collect();
+                let srcs: Vec<Src> = idents
+                    .iter()
+                    .map(|&id| match id {
                         "name" => Src::Name,
                         "cell" => Src::Cell,
                         "pins" => Src::Pins,
@@ -240,38 +207,32 @@ fn plan(e: &Elab, c: u32, k: u32, template: Name) -> Plan {
                         "params" => Src::Params,
                         "model" if model != Src::Cell => model,
                         "file" => attr(&f.impl_file).map_or(Src::Missing, Src::Text),
-                        _ => {
-                            let pin = (0..f.pin_name.len()).find(|&p| {
-                                let n = names.get(f.pin_name[p]);
-                                n.split('[').next() == Some(id)
-                            });
-                            match (pin, param(id)) {
-                                (Some(p), _) => Src::Pin(p as u32),
-                                (None, Some(q)) => Src::Param(q as u32),
-                                (None, None) => Src::Missing,
-                            }
-                        }
+                        _ => match ((0..n).find(|&p| base(p) == id), param(id)) {
+                            (Some(p), _) => Src::Pin(p as u32),
+                            (None, Some(q)) => Src::Param(q as u32),
+                            (None, None) => Src::Missing,
+                        },
                     })
                     .collect();
-                let fast = if srcs.contains(&Src::Missing) {
-                    None
-                } else {
-                    fast_form(text, &tmpl)
-                };
+                let (fast, in_vector) = scan(text, &idents);
+                for (p, v) in vector.iter_mut().enumerate() {
+                    *v = in_vector.iter().any(|&id| match id {
+                        "pins" => true,
+                        "in_pins" => is_input(f, p),
+                        "out_pins" => !is_input(f, p),
+                        _ => base(p) == id,
+                    });
+                }
                 Form::Template {
                     tmpl: Box::new(tmpl),
+                    fast: fast.filter(|_| !srcs.contains(&Src::Missing)),
                     srcs,
-                    fast,
                 }
             }
         }
     };
-    assert_eq!(slots.len(), f.pin_name.len());
-    let vector = match (&form, lang) {
-        (Form::Default, Lang::Verilog) => vector_pins("[{in_pins}] [{out_pins}]", f, names),
-        (Form::Template { .. }, _) => vector_pins(names.get(template), f, names),
-        _ => vec![false; f.pin_name.len()],
-    };
+    assert_eq!(slots.len(), n);
+    assert_eq!(vector.len(), n);
     Plan {
         lang,
         form,
@@ -281,42 +242,49 @@ fn plan(e: &Elab, c: u32, k: u32, template: Name) -> Plan {
     }
 }
 
-/// The fast form of `src` when every hole is a bare identifier (`[A-Za-z_][A-Za-z0-9_]*`,
-/// not `true`/`false`/`pi`), else `None`. Same lexical rules as `Template::parse`:
-/// `{{`/`}}` are literal braces, a hole ends at the first `}`.
-fn fast_form(src: &str, tmpl: &Template) -> Option<Fast> {
-    let idents: Vec<&str> = tmpl.program().idents().collect();
-    let (mut segs, mut lits) = (Vec::new(), String::new());
-    let mut lit_start = 0usize;
+/// Lexes the source of a parsed template once (`Template::parse`'s rules: `{{`/`}}` are
+/// literal braces, a hole ends at the first `}`). Returns its fast form when every hole
+/// is one of `idents` spelled bare (else `None`), and the trimmed text of every hole
+/// written inside `[ … ]` of the literal text (an XSPICE port vector).
+///
+/// Precondition: `src` parsed as a template whose identifiers are `idents`.
+fn scan<'s>(src: &'s str, idents: &[&str]) -> (Option<Fast>, Vec<&'s str>) {
+    let (mut segs, mut lits, mut in_vector) = (Vec::new(), String::new(), Vec::new());
+    let (mut fast, mut depth, mut lit_start, mut i) = (true, 0u32, 0usize, 0usize);
     let b = src.as_bytes();
-    let mut i = 0;
     while i < b.len() {
         match (b[i], b.get(i + 1)) {
             (b'{', Some(b'{')) | (b'}', Some(b'}')) => {
-                lits.push(b[i] as char);
+                lits.push(char::from(b[i]));
                 i += 2;
             }
             (b'{', _) => {
-                let end = i + 1 + src[i + 1..].find('}')?;
+                let end = i + 1 + src[i + 1..].find('}').expect("a parsed hole closes");
                 let id = src[i + 1..end].trim();
-                let bare = id.bytes().enumerate().all(|(k, c)| {
-                    c == b'_' || c.is_ascii_alphabetic() || (k > 0 && c.is_ascii_digit())
-                }) && !id.is_empty()
-                    && !matches!(id, "true" | "false" | "pi");
-                if !bare {
-                    return None;
+                if depth > 0 {
+                    in_vector.push(id);
                 }
                 if lits.len() > lit_start {
                     segs.push(Seg::Lit(lit_start as u32, lits.len() as u32));
                 }
                 lit_start = lits.len();
-                let k = idents.iter().position(|x| *x == id)?;
-                segs.push(Seg::Hole(k as u32));
+                // An expression hole (`{(W)}`, `{true}`) never equals an identifier.
+                match idents.iter().position(|x| *x == id) {
+                    Some(k) => segs.push(Seg::Hole(k as u32)),
+                    None => fast = false,
+                }
                 i = end + 1;
             }
-            (b'}', _) => return None,
+            (b'}', _) => unreachable!("a parsed template has no lone `}}`"),
             _ => {
                 let next = src[i..].find(['{', '}']).map_or(src.len(), |k| i + k);
+                for c in src[i..next].bytes() {
+                    match c {
+                        b'[' => depth += 1,
+                        b']' => depth = depth.saturating_sub(1),
+                        _ => {}
+                    }
+                }
                 lits.push_str(&src[i..next]);
                 i = next;
             }
@@ -326,11 +294,11 @@ fn fast_form(src: &str, tmpl: &Template) -> Option<Fast> {
         segs.push(Seg::Lit(lit_start as u32, lits.len() as u32));
     }
     assert!(lits.len() <= src.len());
-    assert!(
-        segs.iter()
-            .all(|s| !matches!(s, Seg::Hole(k) if *k as usize >= idents.len()))
-    );
-    Some(Fast { segs, lits })
+    assert!(segs.iter().all(|s| match *s {
+        Seg::Hole(k) => (k as usize) < idents.len(),
+        Seg::Lit(a, z) => a < z,
+    }));
+    (fast.then_some(Fast { segs, lits }), in_vector)
 }
 
 /// What once-only text the emitted rows need.
@@ -467,13 +435,12 @@ fn fast_ok<F>(row: &Row<'_, F>, srcs: &[Src]) -> bool {
         row.e.params_of(row.r).len(),
         row.e.cells[cell_of(row)].param_name.len()
     );
-    srcs.iter().all(|s| match s {
-        Src::Param(k) => !matches!(
+    // A plan with a `Missing` source has no fast form.
+    !srcs.iter().any(|s| {
+        matches!(s, Src::Param(k) if matches!(
             row.e.insts.param_val[p0 + *k as usize],
             Val::Cnum(..) | Val::Err(_) | Val::Upstream
-        ),
-        Src::Text(_) => true,
-        _ => !matches!(s, Src::Missing),
+        ))
     })
 }
 
@@ -584,15 +551,14 @@ fn push_nets<'n, F: Fn(Name) -> &'n str>(out: &mut String, nets: &[Name], row: &
 }
 
 /// Appends the connections of the cell's `in` pins (`inputs`), or of all other pins
-/// (ordinary `out`/`inout` pins, then inherited pins), space-separated.
+/// (`out`, `inout`, inherited), in pin order, space-separated; alias pins are skipped.
 fn dir_nets<'n, F: Fn(Name) -> &'n str>(out: &mut String, row: &Row<'_, F>, inputs: bool) {
     let f = &row.e.cells[cell_of(row)];
     assert_eq!(row.plan.slots.len(), f.pin_name.len());
     let conn = row.conn;
     let start = out.len();
     for p in 0..f.pin_name.len() {
-        let is_in = f.pin_dir[p] == PinDir::In && f.pin_inherit[p] == Name::NONE;
-        if is_in != inputs || f.pin_alias[p] != u32::MAX {
+        if is_input(f, p) != inputs || f.pin_alias[p] != u32::MAX {
             continue; // an alias pin is its target's connection, listed once
         }
         let (a, w) = row.plan.slots[p];
@@ -735,4 +701,43 @@ fn module_ports<'p, 'n, F: Fn(Name) -> &'n str>(
         out.push(')');
     }
     out.push_str(");");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `scan` against hand-lexed expectations: the fast form spelled back with holes
+    /// as `<ident>`, and the holes inside `[ … ]`.
+    #[test]
+    fn scan_lexes_like_the_template_parser() {
+        for (src, want_fast, want_vector) in [
+            ("M{name} {D}", Some("M<name> <D>"), &[][..]),
+            ("{ D }{{x}}", Some("<D>{x}"), &[]),
+            (
+                "{{[}} {B} ] [{A}] {C}",
+                Some("{[} <B> ] [<A>] <C>"),
+                &["B", "A"],
+            ),
+            ("a]] {B} [[{A}]] {C}]", Some("a]] <B> [[<A>]] <C>]"), &["A"]),
+            ("[{(B)}] {true} {A}", None, &["(B)"]),
+            ("{pins}", Some("<pins>"), &[]),
+        ] {
+            let tmpl = Template::parse(src).expect("a template");
+            let idents: Vec<&str> = tmpl.program().idents().collect();
+            let (fast, vector) = scan(src, &idents);
+            let spelled = fast.map(|f| {
+                let mut s = String::new();
+                for seg in &f.segs {
+                    match *seg {
+                        Seg::Lit(a, b) => s.push_str(&f.lits[a as usize..b as usize]),
+                        Seg::Hole(k) => s.push_str(&format!("<{}>", idents[k as usize])),
+                    }
+                }
+                s
+            });
+            assert_eq!(spelled.as_deref(), want_fast, "{src}");
+            assert_eq!(vector, want_vector, "{src}");
+        }
+    }
 }

@@ -9,9 +9,10 @@
 use crate::{is_spice, push_name};
 use schemify_elab::{Dialect, Elab, Name};
 use std::cmp::Ordering;
+use std::ops::Range;
 use std::sync::OnceLock;
 
-const NONE: u32 = u32::MAX;
+use crate::NONE;
 
 /// A `(start, len)` range of [`NameMap`]'s text arena.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -96,7 +97,7 @@ impl NameMap {
     /// then a binary search per level, retried at each `.` when names contain dots.
     pub fn inst_path(&self, name: &str) -> Option<String> {
         let mut path = String::new();
-        let found = !self.def_rows.is_empty() && self.walk_inst(0, name, &mut path, 0);
+        let found = self.walk_inst(0, name, &mut path, 0);
         assert!(!found || path.starts_with('/'));
         found.then_some(path)
     }
@@ -147,19 +148,9 @@ impl NameMap {
     /// (`x1.n1` → `/X1/n1`; a global's bare name → `/<name>`). Cost as
     /// [`NameMap::inst_path`].
     pub fn net_path(&self, name: &str) -> Option<String> {
-        if self.def_rows.is_empty() {
-            return None;
-        }
-        let ix = self.index();
-        let bare = self.unescape(name);
-        let g = ix
-            .globals
-            .binary_search_by(|&id| self.key_cmp(self.s(self.net_name[id as usize]), &bare));
-        if let Ok(k) = g {
-            return Some(format!(
-                "/{}",
-                self.s(self.net_name[ix.globals[k] as usize])
-            ));
+        let globals = &self.index().globals;
+        if let Some(id) = self.find_spelled(globals, &self.net_name, &self.unescape(name)) {
+            return Some(format!("/{}", self.s(self.net_name[id as usize])));
         }
         let mut path = String::new();
         let found = self.walk_net(0, name, &mut path, 0);
@@ -217,19 +208,14 @@ impl NameMap {
         &self.text[sp.0 as usize..(sp.0 + sp.1) as usize]
     }
 
-    fn rows_of(&self, d: u32) -> std::ops::Range<usize> {
-        assert!((d as usize) + 1 < self.def_rows.len());
-        self.def_rows[d as usize] as usize..self.def_rows[d as usize + 1] as usize
+    /// Rows of definition `d`; `d` is a definition of this map.
+    fn rows_of(&self, d: u32) -> Range<usize> {
+        group(&self.def_rows, d).expect("a definition of the map")
     }
 
-    fn nets_of(&self, d: u32) -> std::ops::Range<usize> {
-        assert!((d as usize) + 1 < self.def_nets.len());
-        self.def_nets[d as usize] as usize..self.def_nets[d as usize + 1] as usize
-    }
-
+    /// Port net ids of definition `d`; `d` is a definition of this map.
     fn ports(&self, d: u32) -> &[u32] {
-        assert!((d as usize) + 1 < self.def_ports.len());
-        &self.port[self.def_ports[d as usize] as usize..self.def_ports[d as usize + 1] as usize]
+        &self.port[group(&self.def_ports, d).expect("a definition of the map")]
     }
 
     fn fold(&self) -> bool {
@@ -269,63 +255,44 @@ impl NameMap {
         }
     }
 
+    /// The row of definition `d` (`NONE`: a leaf, none) whose local name is `seg`.
     fn find_local(&self, d: u32, seg: &str) -> Option<usize> {
-        if d == NONE || d as usize + 1 >= self.def_rows.len() {
-            return None;
-        }
-        let rows = self.rows_of(d);
-        let slice = &self.row_local[rows.clone()];
-        let k = slice.binary_search_by(|sp| self.s(*sp).cmp(seg)).ok()?;
+        let rows = group(&self.def_rows, d)?;
+        let k = self.row_local[rows.clone()]
+            .binary_search_by(|sp| self.s(*sp).cmp(seg))
+            .ok()?;
         assert!(rows.start + k < rows.end);
         Some(rows.start + k)
     }
 
-    /// The row of definition `d` emitted as `name`, preferring an exact spelling.
+    /// The row of definition `d` emitted as `name`.
     fn find_emitted(&self, d: u32, name: &str) -> Option<usize> {
-        let ix = self.index();
-        let group = &ix.rows[self.rows_of(d)];
-        let k0 = group.partition_point(|&r| {
-            self.key_cmp(self.s(self.row_emitted[r as usize]), name) == Ordering::Less
-        });
-        let equal = group[k0..].iter().take_while(|&&r| {
-            self.key_cmp(self.s(self.row_emitted[r as usize]), name)
-                .is_eq()
-        });
-        let mut first = None;
-        for &r in equal {
-            if self.s(self.row_emitted[r as usize]) == name {
-                return Some(r as usize);
-            }
-            first = first.or(Some(r as usize));
-        }
-        first
+        let rows = &self.index().rows[group(&self.def_rows, d)?];
+        let r = self.find_spelled(rows, &self.row_emitted, name)?;
+        Some(r as usize)
     }
 
-    /// The net of definition `d` named `name` (unescaped), preferring an exact
-    /// spelling.
+    /// The net of definition `d` (`NONE`: a leaf, none) named `name` (unescaped).
     fn find_net(&self, d: u32, name: &str) -> Option<u32> {
-        if d == NONE || d as usize + 1 >= self.def_nets.len() {
-            return None;
-        }
-        let ix = self.index();
-        let group = &ix.nets[self.nets_of(d)];
-        let k0 = group.partition_point(|&id| {
-            self.key_cmp(self.s(self.net_name[id as usize]), name) == Ordering::Less
-        });
-        let equal = group[k0..].iter().take_while(|&&id| {
-            self.key_cmp(self.s(self.net_name[id as usize]), name)
-                .is_eq()
-        });
+        let nets = &self.index().nets[group(&self.def_nets, d)?];
+        self.find_spelled(nets, &self.net_name, name)
+    }
+
+    /// The id among `ids` (sorted by [`NameMap::key_cmp`] of their `text`) whose text is
+    /// `name`, preferring the exact spelling over a case-folded match.
+    fn find_spelled(&self, ids: &[u32], text: &[Span], name: &str) -> Option<u32> {
+        let key = |id: u32| self.key_cmp(self.s(text[id as usize]), name);
+        let k0 = ids.partition_point(|&id| key(id).is_lt());
+        let equal = ids[k0..].iter().copied().take_while(|&id| key(id).is_eq());
         let mut first = None;
-        for &id in equal {
-            if self.s(self.net_name[id as usize]) == name {
+        for id in equal {
+            if self.s(text[id as usize]) == name {
                 return Some(id);
             }
             first = first.or(Some(id));
         }
         first
     }
-
     /// Candidate `(head, rest)` splits of a dotted name: at each `.`, then whole.
     fn splits(name: &str) -> impl Iterator<Item = (&str, Option<&str>)> {
         name.match_indices('.')
@@ -390,35 +357,24 @@ impl NameMap {
 
     fn index(&self) -> &Index {
         self.index.get_or_init(|| {
-            let defs = self.def_rows.len().saturating_sub(1) as u32;
+            let sort = |ids: &mut [u32], text: &[Span]| {
+                ids.sort_by(|a, b| {
+                    self.key_cmp(self.s(text[*a as usize]), self.s(text[*b as usize]))
+                });
+            };
             let mut rows: Vec<u32> = (0..self.row_local.len() as u32).collect();
             let mut nets = self.net.clone();
-            for d in 0..defs {
-                let by_emitted = |a: &u32, b: &u32| {
-                    self.key_cmp(
-                        self.s(self.row_emitted[*a as usize]),
-                        self.s(self.row_emitted[*b as usize]),
-                    )
-                };
-                rows[self.rows_of(d)].sort_by(by_emitted);
-                let by_name = |a: &u32, b: &u32| {
-                    self.key_cmp(
-                        self.s(self.net_name[*a as usize]),
-                        self.s(self.net_name[*b as usize]),
-                    )
-                };
-                nets[self.nets_of(d)].sort_by(by_name);
+            for d in 0..self.def_rows.len().saturating_sub(1) as u32 {
+                sort(&mut rows[self.rows_of(d)], &self.row_emitted);
+                let group = group(&self.def_nets, d).expect("a definition of the map");
+                sort(&mut nets[group], &self.net_name);
             }
             let mut globals: Vec<u32> = (0..self.net_name.len() as u32)
                 .filter(|&id| self.net_global[id as usize])
                 .collect();
-            globals.sort_by(|a, b| {
-                self.key_cmp(
-                    self.s(self.net_name[*a as usize]),
-                    self.s(self.net_name[*b as usize]),
-                )
-            });
+            sort(&mut globals, &self.net_name);
             assert_eq!(rows.len(), self.row_local.len());
+            assert_eq!(nets.len(), self.net.len());
             Index {
                 rows,
                 nets,
@@ -426,6 +382,23 @@ impl NameMap {
             }
         })
     }
+}
+
+/// Group `d` of the CSR offsets `csr`; `None` past the last group (`NONE`, the child of
+/// a leaf, included), so a walk below a leaf finds nothing.
+fn group(csr: &[u32], d: u32) -> Option<Range<usize>> {
+    match csr.get(d as usize..)? {
+        [a, b, ..] => Some(*a as usize..*b as usize),
+        _ => None,
+    }
+}
+
+/// Appends `s` to the text arena `text` and returns its span.
+fn span(text: &mut String, s: &str) -> Span {
+    let start = text.len();
+    text.push_str(s);
+    assert!(text.len() < u32::MAX as usize, "name map holds < 4 GiB");
+    Span(start as u32, s.len() as u32)
 }
 
 /// Builds a [`NameMap`] while the emitter writes, definition by definition.
@@ -465,16 +438,6 @@ impl Builder {
         }
     }
 
-    fn span(&mut self, text: &str) -> Span {
-        let start = self.map.text.len();
-        self.map.text.push_str(text);
-        assert!(
-            self.map.text.len() < u32::MAX as usize,
-            "name map holds < 4 GiB"
-        );
-        Span(start as u32, text.len() as u32)
-    }
-
     /// The net id of elab name `n` (interning it), listed in the current definition.
     fn net(&mut self, e: &Elab, n: Name) -> u32 {
         if n == Name::NONE {
@@ -486,16 +449,8 @@ impl Builder {
             self.remap[n.0 as usize] = id;
             // Copied straight from elab's arena (no owned copy per new net: 10^6 in a flat
             // design); `respell` and `map` are disjoint fields.
-            let text = crate::spelled(e, &self.respell, n);
-            let start = self.map.text.len();
-            self.map.text.push_str(text);
-            assert!(
-                self.map.text.len() < u32::MAX as usize,
-                "name map holds < 4 GiB"
-            );
-            self.map
-                .net_name
-                .push(Span(start as u32, text.len() as u32));
+            let name = span(&mut self.map.text, crate::spelled(e, &self.respell, n));
+            self.map.net_name.push(name);
             let global = e.globals.binary_search_by(|g| e.names.cmp(*g, n)).is_ok();
             self.map.net_global.push(global);
             self.stamp.push(NONE);
@@ -528,8 +483,8 @@ impl Builder {
             !self.map.def_rows.is_empty(),
             "a row belongs to a definition"
         );
-        let local = self.span(e.names.get(e.insts.name[r]));
-        let emitted = self.span(emitted);
+        let local = span(&mut self.map.text, e.names.get(e.insts.name[r]));
+        let emitted = span(&mut self.map.text, emitted);
         self.map.row_local.push(local);
         self.map.row_emitted.push(emitted);
         self.map.row_child.push(child);
