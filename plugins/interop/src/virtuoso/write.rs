@@ -2142,7 +2142,7 @@ fn schematic_out(
     }
     // A retarget placeholder's inherited pins (a bulk on `VSS`) have no drawn node: their
     // net is the instance's `inherit` override, else the pin's default global (netlist §5).
-    for k in 0..g.inst_id.len() {
+    for (k, &ir) in inst_ref.iter().enumerate() {
         if intent_of(k).is_none() {
             continue;
         }
@@ -2158,7 +2158,7 @@ fn schematic_out(
                 None => (default.clone(), true),
             };
             cv.conns.push(Conn {
-                r: inst_ref[k],
+                r: ir,
                 term: pins.name[p].clone(),
                 net: net_to_virtuoso(&net, global).0,
             });
