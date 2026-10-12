@@ -328,7 +328,7 @@ def main():
             n = p.write_opfs("/projects/inv", FIXTURE)
             top = "/projects/inv/top.shcomp"
             p.load(f"{url}#{top}")
-            p.move(250, 700)
+            p.click(250, 700)  # focus the canvas (winit takes keys only when focused)
             p.key("w")
             p.click(500, 700)
             p.key("Escape")
@@ -354,7 +354,7 @@ def main():
             p.reload()
             if len(wires(p.opfs(top))) != n0 + 1:
                 failures.append("top.shcomp changed or vanished across the reload")
-            p.move(400, 160)
+            p.click(400, 160)  # focus the canvas again (a fresh page)
             p.key("v", ctrl=True)
             time.sleep(1.0)  # the browser answers the clipboard read; the paste follows
             p.click(400, 160)
