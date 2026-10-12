@@ -10,7 +10,7 @@
 //!   paths and control text.
 //! - The first line is *not* a title: xschem and Schemify both start with a comment.
 //!
-//! `schemify-import` has its own SPICE scanner (model cards, `.lib` sections,
+//! The `interop` plugin has its own SPICE scanner (model cards, `.lib` sections,
 //! `.if`); this one stays separate on purpose: an oracle that shared the
 //! tokenizer of the code under test would agree with that code's bugs.
 

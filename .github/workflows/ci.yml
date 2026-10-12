@@ -38,8 +38,19 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            plugins -> target
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # The interop plugin (D24 as amended: the xschem importer, never linked into the core)
+      # is native-testable and its output must match on every platform, so it is linted and
+      # tested here with its native CLI, not only in the Linux `plugins` job.
+      - run: cargo fmt --manifest-path plugins/Cargo.toml -p interop --check
+      - run: >-
+          cargo clippy --manifest-path plugins/Cargo.toml -p interop --all-targets --features cli
+          -- -D warnings
       # Second oracle for the Verilog dialect (xschem has no Verilog golden):
       # Icarus Verilog parses and elaborates our netlists (crates/netlist/tests/iverilog.rs).
       - if: runner.os == 'Linux'
@@ -47,6 +58,7 @@ jobs:
           sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends iverilog
           echo "SCHEMIFY_IVERILOG=iverilog" >> "$GITHUB_ENV"
       - run: cargo test --workspace --no-fail-fast
+      - run: cargo test --manifest-path plugins/Cargo.toml -p interop --features cli --no-fail-fast
       # Golden images and snapshots a test rejected (`<name>.actual.*` in CARGO_TARGET_TMPDIR):
       # a PR that changes a picture on purpose re-blesses from them without a local build.
       - if: failure()
@@ -56,12 +68,17 @@ jobs:
           path: target/tmp/*.actual.*
           if-no-files-found: ignore
       # Determinism (D32): the CLI outputs every platform must write byte for byte; the
-      # `determinism` job below compares them. The test run above already built the binary.
+      # `determinism` job below compares them. The test runs above already built the binaries
+      # (`schemify`, and the interop plugin's native CLI for the import step).
       # Runs even when a test failed, so the comparison still sees every platform.
       - if: ${{ !cancelled() }}
-        run: cargo build -p schemify-cli --bin schemify
+        run: |
+          cargo build -p schemify-cli --bin schemify
+          cargo build --manifest-path plugins/Cargo.toml -p interop --features cli --bin schemify-interop
       - if: ${{ !cancelled() }}
-        run: bash tests/determinism/run.sh "$PWD/target/debug/schemify" determinism-out
+        run: >-
+          bash tests/determinism/run.sh "$PWD/target/debug/schemify"
+          "$PWD/plugins/target/debug/schemify-interop" determinism-out
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
@@ -95,7 +112,7 @@ jobs:
         run: >-
           cargo build --release --target wasm32-unknown-unknown
           -p schemify-format -p schemify-expr -p schemify-doc -p schemify-elab
-          -p schemify-netlist -p schemify-import -p schemify-wave -p schemify-abi
+          -p schemify-netlist -p schemify-wave -p schemify-abi
           -p schemify-plugin -p schemify-ui -p schemify-render -p schemify-app
       - name: wasm-bindgen CLI (the version Cargo.lock pins)
         id: wb
@@ -129,11 +146,17 @@ jobs:
         env:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime run --dir=/tmp::/tmp
         run: cargo test --target wasm32-wasip1 -p schemify-config --test config
-      - name: CLI for WASI (determinism under wasmtime)
-        run: cargo build --target wasm32-wasip1 -p schemify-cli --bin schemify
+      # The interop plugin's CLI builds for WASI too (its guest glue is
+      # wasm32-unknown-unknown only), so the import step joins the comparison.
+      - name: CLIs for WASI (determinism under wasmtime)
+        run: |
+          cargo build --target wasm32-wasip1 -p schemify-cli --bin schemify
+          cargo build --manifest-path plugins/Cargo.toml --target wasm32-wasip1 -p interop \
+            --features cli --bin schemify-interop
       - run: >-
           bash tests/determinism/run.sh
           "wasmtime run --dir=.::/ target/wasm32-wasip1/debug/schemify.wasm"
+          "wasmtime run --dir=.::/ plugins/target/wasm32-wasip1/debug/schemify-interop.wasm"
           determinism-out
       - uses: actions/upload-artifact@v4
         with:
