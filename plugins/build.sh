@@ -4,7 +4,8 @@
 # app with include_bytes!), the gm/Id plugin of the app's OTA fixture project (loaded through
 # its manifest's `plugin` entry, not embedded) and the cktimg plugin next to its source (a
 # project loads it with `plugin cktimg path plugins/cktimg`). Fails if a module reaches its
-# size limit: 200 KB, except cktimg (550 KB: cktImg's layout engine is linked in; see its README).
+# size limit: 200 KB, except cktimg (550 KB: cktImg's layout engine is linked in; see its README)
+# and interop (1500 KB: the format, doc, expr crates and every converter are linked in).
 #
 # Needs the wasm32-unknown-unknown std (rustup: `rustup target add wasm32-unknown-unknown`;
 # the NixOS rustc ships it) and, for cktimg, Zig 0.17 (its build.rs compiles extern/cktimg;
@@ -66,3 +67,4 @@ done
 install_wasm default_ui "$assets"
 install_wasm gmid_lut "$here/../crates/app/tests/fixtures/ota/plugins"
 install_wasm cktimg "$here/cktimg" 550
+install_wasm interop "$here/interop" 1500

@@ -35,5 +35,7 @@ schemify-elab = { path = "../../crates/elab" }
 schemify-netlist = { path = "../../crates/netlist" }
 schemify-spicecmp = { path = "../../tools/spicecmp" }
 schemify-wave = { path = "../../crates/wave" }
+# The built guest through the real host (tests/guest.rs).
+schemify-plugin = { path = "../../crates/plugin" }
 # `std` only: no fork/timeout runners (rusty-fork, tempfile) or bit-set strategies used.
 proptest = { version = "1", default-features = false, features = ["std"] }
