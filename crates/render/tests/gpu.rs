@@ -329,64 +329,86 @@ fn composed_frames_equal_vello_frames() {
     let (mut text, mut scratch) = (TextSystem::new(), CanvasScratch::default());
     let bg = schemify_render::rgba(Palette::xschem_dark().background);
     // One window frame: a UI rect, the cached canvas; vello or composed, as the window does.
-    let mut frame = |cam: &Camera, crisp: bool, ui: Color, full: bool| -> (bool, Drawn, Vec<u8>) {
-        scene.reset();
-        layers.begin_frame(Affine::IDENTITY);
-        let mut p = ScenePainter {
-            scene: &mut scene,
-            base: Affine::IDENTITY,
-            layers: Some(&mut layers),
-        };
-        p.fill_rect(Rect::new(0.0, 0.0, 640.0, 400.0), ui);
-        let drawn = canvas::draw_cached(
-            &mut p,
-            &mut cache,
-            view,
-            cam,
-            1,
-            Some(&[]),
-            crisp,
-            bg,
-            |p, v, c| {
-                p.fill_rect(v, schemify_render::rgba(Palette::xschem_dark().background));
-                canvas::draw_prims(
-                    p,
-                    v,
-                    c,
-                    &prims,
-                    &Palette::xschem_dark(),
-                    &mut text,
-                    &mut scratch,
-                )
-            },
-        );
-        layers
-            .raster(&g.device, &g.queue, &mut g.renderer)
-            .expect("raster");
-        let reuse = layers.reusable(size.0, size.1) && !full;
-        if !reuse {
-            let params = RenderParams {
-                base_color: Color::BLACK,
-                width: size.0,
-                height: size.1,
-                antialiasing_method: AaConfig::Area,
+    // `float`: 0 none; 1 a translucent rounded panel over the canvas in its own clip, painted
+    // after it (the editor's canvas floats, e.g. the view switcher); 2 the same inside a clip
+    // opened before the canvas.
+    let mut frame =
+        |cam: &Camera, crisp: bool, ui: Color, full: bool, float: u8| -> (bool, Drawn, Vec<u8>) {
+            scene.reset();
+            layers.begin_frame(Affine::IDENTITY);
+            let mut p = ScenePainter {
+                scene: &mut scene,
+                base: Affine::IDENTITY,
+                layers: Some(&mut layers),
             };
-            g.renderer
-                .render_to_texture(&g.device, &g.queue, &scene, &target_view, &params)
-                .expect("render");
-            layers.rendered(size.0, size.1);
-        }
-        let mut enc = g.device.create_command_encoder(&Default::default());
-        blitter.copy(&g.device, &mut enc, &target_view, &surface_view);
-        if reuse {
-            let format = wgpu::TextureFormat::Rgba8Unorm;
-            layers.compose(&g.device, &g.queue, &mut enc, &surface_view, format, size);
-        }
-        g.queue.submit([enc.finish()]);
-        (reuse, drawn, read(&g, &surface))
-    };
+            p.fill_rect(Rect::new(0.0, 0.0, 640.0, 400.0), ui);
+            if float == 2 {
+                p.push_clip(Rect::new(0.0, 0.0, 640.0, 400.0));
+            }
+            let drawn = canvas::draw_cached(
+                &mut p,
+                &mut cache,
+                view,
+                cam,
+                1,
+                Some(&[]),
+                crisp,
+                bg,
+                |p, v, c| {
+                    p.fill_rect(v, schemify_render::rgba(Palette::xschem_dark().background));
+                    canvas::draw_prims(
+                        p,
+                        v,
+                        c,
+                        &prims,
+                        &Palette::xschem_dark(),
+                        &mut text,
+                        &mut scratch,
+                    )
+                },
+            );
+            if float > 0 {
+                use schemify_render::vello::kurbo::{RoundedRect, Shape};
+                let panel = Rect::new(250.0, 40.0, 420.0, 72.0);
+                p.push_clip(panel.inflate(2.0, 2.0));
+                let path = RoundedRect::from_rect(panel, 8.0).to_path(0.1);
+                p.fill_path(&path, Color::from_rgba8(230, 230, 240, 200));
+                p.fill_rect(
+                    Rect::new(262.0, 50.0, 330.0, 62.0),
+                    Color::from_rgba8(20, 90, 200, 255),
+                );
+                p.pop_clip();
+            }
+            if float == 2 {
+                p.pop_clip();
+            }
+            layers
+                .raster(&g.device, &g.queue, &mut g.renderer)
+                .expect("raster");
+            let reuse = layers.reusable(size.0, size.1) && !full;
+            if !reuse {
+                let params = RenderParams {
+                    base_color: Color::BLACK,
+                    width: size.0,
+                    height: size.1,
+                    antialiasing_method: AaConfig::Area,
+                };
+                g.renderer
+                    .render_to_texture(&g.device, &g.queue, &scene, &target_view, &params)
+                    .expect("render");
+                layers.rendered(size.0, size.1);
+            }
+            let mut enc = g.device.create_command_encoder(&Default::default());
+            blitter.copy(&g.device, &mut enc, &target_view, &surface_view);
+            if reuse {
+                let format = wgpu::TextureFormat::Rgba8Unorm;
+                layers.compose(&g.device, &g.queue, &mut enc, &surface_view, format, size);
+            }
+            g.queue.submit([enc.finish()]);
+            (reuse, drawn, read(&g, &surface))
+        };
     let gray = Color::from_rgba8(60, 60, 60, 255);
-    let (reused, drawn, _) = frame(&cam, true, gray, false);
+    let (reused, drawn, _) = frame(&cam, true, gray, false, 0);
     assert!(
         !reused && drawn == Drawn::Recorded,
         "the first frame goes through vello"
@@ -394,43 +416,84 @@ fn composed_frames_equal_vello_frames() {
 
     // A pan: composed without vello, equal to vello's frame.
     cam.pan(17.0, -9.0);
-    let (reused, drawn, composed) = frame(&cam, true, gray, false);
+    let (reused, drawn, composed) = frame(&cam, true, gray, false, 0);
     assert!(
         reused && drawn == Drawn::Copied,
         "a pan reuses ({reused}, {drawn:?})"
     );
-    let (_, _, full) = frame(&cam, true, gray, true);
+    let (_, _, full) = frame(&cam, true, gray, true, 0);
     let (mean, bad) = diff_px(&composed, &full);
     println!("pan: composed vs vello mean |Δ| {mean:.4}, {bad} pixels off by > 2");
     assert!(bad * 1000 <= composed.len() / 4, "pan frame differs: {bad}");
 
     // A zoom stand-in: the layer stretched; bilinear on both sides, so within tolerance.
     cam.zoom_at(view, 300.0, 200.0, 1.2);
-    let (reused, drawn, composed) = frame(&cam, false, gray, false);
+    let (reused, drawn, composed) = frame(&cam, false, gray, false, 0);
     assert!(
         reused && drawn == Drawn::Stretched,
         "a zoom stand-in reuses"
     );
-    let (_, _, full) = frame(&cam, false, gray, true);
+    let (_, _, full) = frame(&cam, false, gray, true, 0);
     let (mean, bad) = diff_px(&composed, &full);
     println!("zoom stand-in: composed vs vello mean |Δ| {mean:.4}, {bad} pixels off by > 2");
     assert!(mean < 2.0, "zoom stand-in differs: mean {mean}");
 
     // A zoom-out past the margin: still a stand-in, the uncovered view filled with background.
     cam.zoom_at(view, 300.0, 200.0, 1.0 / 4.0);
-    let (reused, drawn, composed) = frame(&cam, false, gray, false);
+    let (reused, drawn, composed) = frame(&cam, false, gray, false, 0);
     assert!(
         reused && drawn == Drawn::Stretched,
         "a zoom-out stand-in reuses"
     );
-    let (_, _, full) = frame(&cam, false, gray, true);
+    let (_, _, full) = frame(&cam, false, gray, true, 0);
     let (mean, bad) = diff_px(&composed, &full);
     println!("zoom-out stand-in: composed vs vello mean |Δ| {mean:.4}, {bad} pixels off by > 2");
     assert!(mean < 2.0, "zoom-out stand-in differs: mean {mean}");
 
     // Anything painted differently outside the layer: through vello again.
-    let (reused, _, _) = frame(&cam, false, Color::from_rgba8(61, 60, 60, 255), false);
+    let (reused, _, _) = frame(&cam, false, Color::from_rgba8(61, 60, 60, 255), false, 0);
     assert!(!reused, "a changed UI is rendered by vello");
+
+    // Issue #45: a float painted over the canvas. Its first frame goes through vello; then a
+    // pan composes the tiles with the float laid over them, equal to vello's frame.
+    cam.zoom_at(view, 300.0, 200.0, 4.0);
+    let (reused, _, _) = frame(&cam, true, gray, false, 1);
+    assert!(!reused, "the float's first frame is rendered by vello");
+    for _ in 0..64 {
+        if frame(&cam, true, gray, false, 1).1 != Drawn::Partial {
+            break;
+        }
+    }
+    for k in 0..4 {
+        cam.pan(23.0, 7.0 - 5.0 * f64::from(k));
+        let (reused, drawn, composed) = frame(&cam, true, gray, false, 1);
+        assert!(
+            reused && drawn != Drawn::Partial,
+            "a pan under a float reuses ({reused}, {drawn:?})"
+        );
+        let (_, _, full) = frame(&cam, true, gray, true, 1);
+        let (mean, bad) = diff_px(&composed, &full);
+        println!(
+            "pan under a float: composed vs vello mean |Δ| {mean:.4}, {bad} pixels off by > 2"
+        );
+        assert!(
+            bad * 1000 <= composed.len() / 4,
+            "pan under a float differs: {bad}"
+        );
+        // Negative space: the composed frame does show the float (not the bare canvas).
+        let (_, _, bare) = frame(&cam, true, gray, true, 0);
+        let (_, off) = diff_px(&composed, &bare);
+        assert!(
+            off > 1000,
+            "the float is in the composed frame ({off} px differ)"
+        );
+        frame(&cam, true, gray, true, 1); // vello's frame again: the next pan may compose
+    }
+    // Negative space: a float inside a clip opened before the canvas is not composed.
+    frame(&cam, true, gray, true, 2);
+    cam.pan(11.0, 0.0);
+    let (reused, _, _) = frame(&cam, true, gray, false, 2);
+    assert!(!reused, "a float under an outer clip is rendered by vello");
 }
 
 /// D39 edits on the GPU: a layer patched where `CanvasDiff` says the content changed (each part
@@ -512,6 +575,7 @@ fn patched_layers_equal_recorded_layers() {
             col.swap_remove(key as usize * 37);
         }
         l.layer.swap_remove(key as usize * 37);
+        l.style.swap_remove(key as usize * 37);
         boxes.clear();
         assert!(diff.update(&[(&prims, true)], (&prims, &marks, true), &mut boxes));
         let (drawn, patched) = frame(&mut layers, &mut cache, &prims, key, Some(&boxes));

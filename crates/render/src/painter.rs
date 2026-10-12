@@ -340,23 +340,41 @@ impl ScenePainter<'_> {
             l.log.call(data);
         }
     }
+
+    /// Paints `f` into the frame scene and, when the call lands over this frame's layers, into
+    /// [`Layers`]'s top part too (what a composed frame lays over the layer quads).
+    fn paint(&mut self, f: impl Fn(&mut Scene)) {
+        f(self.scene);
+        let Some(l) = self.layers.as_deref_mut() else {
+            return;
+        };
+        if l.log.recording || l.log.draws.is_empty() {
+            return;
+        }
+        // Clipped by a clip opened before the layers: the top part alone cannot reproduce it.
+        l.log.tangled |= l.log.depth != l.log.top_depth;
+        f(&mut l.top);
+        debug_assert!(l.log.top_depth <= l.log.depth);
+    }
 }
 
 impl Painter for ScenePainter<'_> {
     fn fill_rect(&mut self, r: Rect, color: Color) {
         self.log((1u8, rect_bits(r), color_bits(color)));
-        self.scene.fill(Fill::NonZero, self.base, color, None, &r);
+        let base = self.base;
+        self.paint(|s| s.fill(Fill::NonZero, base, color, None, &r));
     }
 
     fn fill_path(&mut self, path: &BezPath, color: Color) {
         self.log((2u8, PathBits(path), color_bits(color)));
-        self.scene.fill(Fill::NonZero, self.base, color, None, path);
+        let base = self.base;
+        self.paint(|s| s.fill(Fill::NonZero, base, color, None, path));
     }
 
     fn stroke_path(&mut self, path: &BezPath, width: f64, color: Color) {
         self.log((3u8, PathBits(path), width.to_bits(), color_bits(color)));
-        self.scene
-            .stroke(&Stroke::new(width), self.base, color, None, path);
+        let (base, stroke) = (self.base, Stroke::new(width));
+        self.paint(|s| s.stroke(&stroke, base, color, None, path));
     }
 
     fn stroke_styled(&mut self, path: &BezPath, stroke: &Stroke, color: Color) {
@@ -368,7 +386,8 @@ impl Painter for ScenePainter<'_> {
             dashes,
         );
         self.log((10u8, PathBits(path), style, color_bits(color)));
-        self.scene.stroke(stroke, self.base, color, None, path);
+        let base = self.base;
+        self.paint(|s| s.stroke(stroke, base, color, None, path));
     }
 
     fn glyphs(
@@ -390,24 +409,43 @@ impl Painter for ScenePainter<'_> {
             color_bits(color),
         ));
         self.log((at_bits, GlyphBits(glyphs)));
-        self.scene
-            .draw_glyphs(font)
-            .font_size(px)
-            .normalized_coords(coords)
-            .transform(self.base * at)
-            .brush(color)
-            .draw(Fill::NonZero, glyphs.iter().copied());
+        let base = self.base;
+        self.paint(|s| {
+            s.draw_glyphs(font)
+                .font_size(px)
+                .normalized_coords(coords)
+                .transform(base * at)
+                .brush(color)
+                .draw(Fill::NonZero, glyphs.iter().copied());
+        });
     }
 
     fn push_clip(&mut self, r: Rect) {
         self.log((5u8, rect_bits(r)));
         self.scene.push_clip_layer(Fill::NonZero, self.base, &r);
+        if let Some(l) = self.layers.as_deref_mut().filter(|l| !l.log.recording) {
+            // A clip opened over the layers is the top part's too.
+            l.log.depth += 1;
+            if !l.log.draws.is_empty() {
+                l.top.push_clip_layer(Fill::NonZero, self.base, &r);
+                l.log.top_depth += 1;
+            }
+            assert!(l.log.top_depth <= l.log.depth);
+        }
     }
 
     fn pop_clip(&mut self) {
         // Ends a clip without painting: not something that could cover a layer.
-        if let Some(l) = self.layers.as_deref_mut() {
+        if let Some(l) = self.layers.as_deref_mut().filter(|l| !l.log.recording) {
             l.log.mark(6u8);
+            assert!(l.log.depth > 0, "a clip to pop");
+            // Clips nest, and the top part's open after the others: the innermost open clip is
+            // the top part's while any of its clips is open.
+            if l.log.top_depth > 0 {
+                l.top.pop_layer();
+                l.log.top_depth -= 1;
+            }
+            l.log.depth -= 1;
         }
         self.scene.pop_layer();
     }
@@ -415,7 +453,8 @@ impl Painter for ScenePainter<'_> {
     fn image(&mut self, image: &ImageData, r: Rect) {
         // The blob's id names the pixels (it is cached per image, see `image_data`).
         self.log((9u8, image.data.id(), rect_bits(r)));
-        self.scene.draw_image(image, self.base * image_to(image, r));
+        let at = self.base * image_to(image, r);
+        self.paint(|s| s.draw_image(image, at));
     }
 
     fn stroke_chains(&mut self, chains: &Chains, closed: bool, width: f64, color: Color) {
@@ -427,12 +466,14 @@ impl Painter for ScenePainter<'_> {
             width.to_bits(),
             color_bits(color),
         ));
-        self.encode_chains(chains, closed, Some(width), color);
+        let base = self.base;
+        self.paint(|s| encode_chains(s, base, chains, closed, Some(width), color));
     }
 
     fn fill_chains(&mut self, chains: &Chains, color: Color) {
         self.log((8u8, ChainBits(chains), color_bits(color)));
-        self.encode_chains(chains, true, None, color);
+        let base = self.base;
+        self.paint(|s| encode_chains(s, base, chains, true, None, color));
     }
 
     fn device_scale(&self) -> f64 {
@@ -515,6 +556,11 @@ impl Painter for ScenePainter<'_> {
         // the caller's clip around them names the covered area.
         let to_device = base * at * Affine::scale(1.0 / s);
         let draw = (slot, to_device, base.transform_rect_bbox(clip), stretch);
+        if layers.log.draws.is_empty() {
+            layers.log.mark(11u8); // where the layers start: what comes after is the top part
+        }
+        // A layer over the top part would be composed under it.
+        layers.log.tangled |= layers.log.after;
         layers.log.draws.push(draw);
         if let Some(bg) = stretch {
             self.scene.fill(Fill::NonZero, base, bg, None, &clip);
@@ -546,37 +592,44 @@ impl ScenePainter<'_> {
         layers.log.recording = false;
         scene
     }
+}
 
-    /// Encodes straight into vello's path stream: no `PathEl` per segment. This is what
-    /// `Scene::stroke`/`Scene::fill` do internally (transform, style, path, brush), minus the
-    /// intermediate path.
-    fn encode_chains(&mut self, chains: &Chains, closed: bool, stroke: Option<f64>, color: Color) {
-        let enc = self.scene.encoding_mut();
-        enc.encode_transform(Transform::from_kurbo(&self.base));
-        match stroke {
-            Some(w) => {
-                let encoded = enc.encode_stroke_style(&Stroke::new(w));
-                debug_assert!(encoded, "non-zero width always encodes");
-            }
-            None => enc.encode_fill_style(Fill::NonZero),
+/// Encodes `chains` into `scene` straight into vello's path stream: no `PathEl` per segment.
+/// This is what `Scene::stroke`/`Scene::fill` do internally (transform, style, path, brush),
+/// minus the intermediate path.
+fn encode_chains(
+    scene: &mut Scene,
+    base: Affine,
+    chains: &Chains,
+    closed: bool,
+    stroke: Option<f64>,
+    color: Color,
+) {
+    let enc = scene.encoding_mut();
+    enc.encode_transform(Transform::from_kurbo(&base));
+    match stroke {
+        Some(w) => {
+            let encoded = enc.encode_stroke_style(&Stroke::new(w));
+            debug_assert!(encoded, "non-zero width always encodes");
         }
-        let mut pe = enc.encode_path(stroke.is_none());
-        let mut start = 0usize;
-        for &end in &chains.end {
-            let end = end as usize;
-            let [x, y] = chains.pts[start];
-            pe.move_to(x, y);
-            for &[x, y] in &chains.pts[start + 1..end] {
-                pe.line_to(x, y);
-            }
-            if closed {
-                pe.close();
-            }
-            start = end;
+        None => enc.encode_fill_style(Fill::NonZero),
+    }
+    let mut pe = enc.encode_path(stroke.is_none());
+    let mut start = 0usize;
+    for &end in &chains.end {
+        let end = end as usize;
+        let [x, y] = chains.pts[start];
+        pe.move_to(x, y);
+        for &[x, y] in &chains.pts[start + 1..end] {
+            pe.line_to(x, y);
         }
-        if pe.finish(true) != 0 {
-            enc.encode_brush(color, 1.0);
+        if closed {
+            pe.close();
         }
+        start = end;
+    }
+    if pe.finish(true) != 0 {
+        enc.encode_brush(color, 1.0);
     }
 }
 
