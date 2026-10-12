@@ -14,7 +14,7 @@ use schemify_ui::{
     UiTables, row_style,
 };
 
-use crate::painter::{Painter, rgba};
+use crate::painter::{Painter, outline, rgba};
 
 /// Columns bound to a `graph` node for one frame (the waveform viewer's hook, D23).
 #[derive(Clone, Copy, Debug)]
@@ -44,7 +44,8 @@ pub struct UiScratch {
     images: Vec<vello::peniko::ImageData>,
 }
 
-fn rect(r: schemify_ui::Rect) -> Rect {
+/// A `ui_layout` rect as a kurbo rect.
+pub(crate) fn rect(r: schemify_ui::Rect) -> Rect {
     Rect::new(
         f64::from(r.x),
         f64::from(r.y),
@@ -120,16 +121,9 @@ pub fn draw_ui<P: Painter>(
         }
         let border = style(StyleProp::Border);
         if border > 0 {
-            let path = &mut scratch.path;
-            path.truncate(0);
             let w = f64::from(border);
-            let b = area.inset(-w / 2.0);
-            path.move_to((b.x0, b.y0));
-            path.line_to((b.x1, b.y0));
-            path.line_to((b.x1, b.y1));
-            path.line_to((b.x0, b.y1));
-            path.close_path();
-            p.stroke_path(path, w, rgba(style(StyleProp::BorderColor)));
+            let color = rgba(style(StyleProp::BorderColor));
+            outline(p, &mut scratch.path, area.inset(-w / 2.0), w, color);
         }
         let pad = f64::from(style(StyleProp::Pad));
         let indent = f64::from(layout.indent()[r]);
@@ -283,19 +277,15 @@ pub fn draw_icon<P: Painter>(
     let s = side / f64::from(ICON_BOX);
     let c = area.center();
     let at = Affine::translate((c.x - side / 2.0, c.y - side / 2.0)) * Affine::scale(s);
-    for (paths, fill) in [(&icon.fill, true), (&icon.stroke, false)] {
-        let (mut v0, mut pt) = (0usize, 0usize);
-        for &v1 in &paths.verb_end {
-            build_math_path(paths, v0, v1 as usize, &mut pt, at, &mut scratch.path);
-            if fill {
-                p.fill_path(&scratch.path, color);
-            } else {
-                p.stroke_path(&scratch.path, f64::from(ICON_STROKE) * s, color);
-            }
-            v0 = v1 as usize;
-        }
-        debug_assert_eq!(pt, paths.pt.len(), "every point drawn");
-    }
+    let width = f64::from(ICON_STROKE) * s;
+    draw_paths(
+        p,
+        [&icon.fill, &icon.stroke],
+        at,
+        width,
+        color,
+        &mut scratch.path,
+    );
 }
 
 /// Draws prose layout `id` ([`TextSystem::prose`]) with its top-left at `at`: code shades,
@@ -429,49 +419,59 @@ pub fn draw_math<P: Painter>(
         p.fill_rect(Rect::from_points(a, b), color);
     }
     let em = list.glyph_px.first().copied().unwrap_or(16.0);
-    for (paths, fill) in [(&list.fills, true), (&list.strokes, false)] {
-        let mut v0 = 0usize;
-        let mut pt = 0usize;
+    let width = f64::from(em) * 0.04;
+    draw_paths(
+        p,
+        [&list.fills, &list.strokes],
+        at,
+        width,
+        color,
+        &mut scratch.path,
+    );
+}
+
+/// Fills every path of `fill`, then strokes every path of `stroke` `width` px wide, each
+/// mapped through `at` and built in `out`: icons and math delimiters share the encoding.
+fn draw_paths<P: Painter>(
+    p: &mut P,
+    [fill, stroke]: [&MathPaths; 2],
+    at: Affine,
+    width: f64,
+    color: Color,
+    out: &mut BezPath,
+) {
+    for (paths, filled) in [(fill, true), (stroke, false)] {
+        let (mut v0, mut pt) = (0usize, 0usize);
         for &v1 in &paths.verb_end {
-            build_math_path(paths, v0, v1 as usize, &mut pt, at, &mut scratch.path);
-            if fill {
-                p.fill_path(&scratch.path, color);
+            out.truncate(0);
+            let mut take = || {
+                let q = paths.pt[pt];
+                pt += 1;
+                at * vello::kurbo::Point::new(f64::from(q[0]), f64::from(q[1]))
+            };
+            for v in &paths.verb[v0..v1 as usize] {
+                match v {
+                    Verb::Move => out.move_to(take()),
+                    Verb::Line => out.line_to(take()),
+                    Verb::Quad => {
+                        let (a, b) = (take(), take());
+                        out.quad_to(a, b);
+                    }
+                    Verb::Cubic => {
+                        let (a, b, c) = (take(), take(), take());
+                        out.curve_to(a, b, c);
+                    }
+                    Verb::Close => out.close_path(),
+                }
+            }
+            if filled {
+                p.fill_path(out, color);
             } else {
-                p.stroke_path(&scratch.path, f64::from(em) * 0.04, color);
+                p.stroke_path(out, width, color);
             }
             v0 = v1 as usize;
         }
-    }
-}
-
-fn build_math_path(
-    paths: &MathPaths,
-    v0: usize,
-    v1: usize,
-    pt: &mut usize,
-    at: Affine,
-    out: &mut BezPath,
-) {
-    out.truncate(0);
-    let take = |pt: &mut usize| {
-        let q = paths.pt[*pt];
-        *pt += 1;
-        at * vello::kurbo::Point::new(f64::from(q[0]), f64::from(q[1]))
-    };
-    for v in &paths.verb[v0..v1] {
-        match v {
-            Verb::Move => out.move_to(take(pt)),
-            Verb::Line => out.line_to(take(pt)),
-            Verb::Quad => {
-                let (a, b) = (take(pt), take(pt));
-                out.quad_to(a, b);
-            }
-            Verb::Cubic => {
-                let (a, b, c) = (take(pt), take(pt), take(pt));
-                out.curve_to(a, b, c);
-            }
-            Verb::Close => out.close_path(),
-        }
+        debug_assert_eq!(pt, paths.pt.len(), "every point drawn");
     }
 }
 

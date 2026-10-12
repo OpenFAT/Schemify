@@ -10,8 +10,14 @@
 //! ```
 //!
 //! Every drawing function is generic over [`Painter`], so the same code fills a GPU
-//! [`vello::Scene`] ([`ScenePainter`]) or rasterizes on the CPU ([`CpuPainter`]) for golden
-//! images.
+//! [`vello::Scene`] ([`ScenePainter`]) or rasterizes on the CPU ([`CpuPainter`]: golden
+//! images, and the web's frames when the browser has no WebGPU adapter). No `dyn`: the trait
+//! is a compile-time bound only.
+//!
+//! The canvas is cached as raster tiles (D39): [`canvas::draw_cached`] keeps world-anchored
+//! tiles in one painter layer ([`Layers`] on the GPU), patches the rows [`canvas::CanvasDiff`]
+//! finds changed, and reads rows near a tile through [`canvas::PrimIndex`]. A frame that only
+//! moved its layers is composed without vello ([`Layers::reusable`]).
 //!
 //! ```
 //! use schemify_render::{CpuPainter, Painter, canvas::*};

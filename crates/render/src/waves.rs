@@ -17,8 +17,8 @@ use schemify_ui::waves::{Drag, Geometry, WaveUi, plot_area};
 use schemify_ui::{Rect as UiRect, TextSystem};
 use schemify_wave::{Axis, Cursor, PaneMode, Run, Scale, Waves, decimate, format_si, logic_runs};
 
-use crate::painter::{Chains, Painter, rgba};
-use crate::widgets::{UiScratch, draw_text};
+use crate::painter::{Chains, Painter, outline, push_rect, rgba};
+use crate::widgets::{UiScratch, draw_text, rect as kr};
 
 /// Colors of the pane chrome (RGBA8). The default follows xschem's graphs: black plot, grey
 /// grid, light labels.
@@ -60,15 +60,6 @@ pub struct WaveScratch {
     runs: Vec<Run>,
     bins: Vec<u32>,
     ui: UiScratch,
-}
-
-fn kr(r: UiRect) -> Rect {
-    Rect::new(
-        f64::from(r.x),
-        f64::from(r.y),
-        f64::from(r.x + r.w),
-        f64::from(r.y + r.h),
-    )
 }
 
 /// Tick label size in logical pixels.
@@ -251,12 +242,8 @@ pub fn draw_pane<P: Painter>(
 
     if digital {
         // Lane names in the y-label strip, in their trace's colour.
-        let lanes = (0..waves.trace_count())
-            .filter(|&i| waves.pane_of(i) == k)
-            .count();
-        let lh = plot.height() / lanes.max(1) as f64;
-        let mine = (0..waves.trace_count()).filter(|&i| waves.pane_of(i) == k);
-        for (j, i) in mine.enumerate() {
+        let lh = plot.height() / traces_of(waves, k).count().max(1) as f64;
+        for (j, i) in traces_of(waves, k).enumerate() {
             let name: String = waves.src(i).chars().take(9).collect();
             let y = plot.y0 + (j as f64 + 0.5) * lh - 7.0;
             let color = rgba(waves.color(i));
@@ -266,7 +253,7 @@ pub fn draw_pane<P: Painter>(
         // Legend: trace names in their colors, with the value at cursor A (as xschem's labels
         // do) where the pane shows the shared x.
         let mut lx = plot.x0 + 2.0;
-        for i in (0..waves.trace_count()).filter(|&i| waves.pane_of(i) == k) {
+        for i in traces_of(waves, k) {
             s.text.clear();
             if waves.is_magnitude(i) {
                 s.text.push('|');
@@ -303,6 +290,11 @@ pub fn draw_pane<P: Painter>(
     }
 }
 
+/// The traces drawn in pane `k`, in trace order.
+fn traces_of(waves: &Waves, k: u8) -> impl Iterator<Item = usize> + '_ {
+    (0..waves.trace_count()).filter(move |&i| waves.pane_of(i) == k)
+}
+
 /// Analog mode: each trace's shown steps as decimated polylines.
 fn draw_lines<P: Painter>(
     p: &mut P,
@@ -312,7 +304,7 @@ fn draw_lines<P: Painter>(
     sy: &Scale,
     s: &mut WaveScratch,
 ) {
-    for i in (0..waves.trace_count()).filter(|&i| waves.pane_of(i) == k) {
+    for i in traces_of(waves, k) {
         let (x, y) = waves.xy(i);
         s.chains.clear();
         for st in &waves.steps(i)[waves.shown_steps(i)] {
@@ -348,11 +340,8 @@ fn draw_lanes<P: Painter>(
     s: &mut WaveScratch,
 ) {
     let props = waves.props(usize::from(k));
-    let mine: Vec<usize> = (0..waves.trace_count())
-        .filter(|&i| waves.pane_of(i) == k)
-        .collect();
-    let lh = plot.height() / mine.len().max(1) as f64;
-    for (j, &i) in mine.iter().enumerate() {
+    let lh = plot.height() / traces_of(waves, k).count().max(1) as f64;
+    for (j, i) in traces_of(waves, k).enumerate() {
         let top = plot.y0 + j as f64 * lh;
         let (hi, lo) = (top + 0.2 * lh, top + 0.8 * lh);
         let bus = waves.bus_bits(i) > 0;
@@ -382,11 +371,7 @@ fn draw_lanes<P: Painter>(
                 continue;
             };
             if bus {
-                s.path.move_to((x0, hi));
-                s.path.line_to((x1, hi));
-                s.path.line_to((x1, lo));
-                s.path.line_to((x0, lo));
-                s.path.close_path();
+                push_rect(&mut s.path, Rect::new(x0, hi, x1, lo));
                 if x1 - x0 >= 16.0 {
                     text.shape_into(&props.radix.format(v), TICK_PX, &mut s.label);
                     let w = f64::from(s.label.width());
@@ -442,7 +427,7 @@ fn draw_histogram<P: Painter>(
     s: &mut WaveScratch,
 ) {
     let base = plot.y1 as f32;
-    for i in (0..waves.trace_count()).filter(|&i| waves.pane_of(i) == k) {
+    for i in traces_of(waves, k) {
         let mut bins = std::mem::take(&mut s.bins);
         waves.histogram(i, &mut bins);
         let n = bins.len();
@@ -669,16 +654,6 @@ fn label_at<P: Painter>(
     };
     draw_text(p, &s.label, x, y, color, &mut s.ui);
     w
-}
-
-fn outline<P: Painter>(p: &mut P, path: &mut BezPath, r: Rect, w: f64, color: Color) {
-    path.truncate(0);
-    path.move_to((r.x0, r.y0));
-    path.line_to((r.x1, r.y0));
-    path.line_to((r.x1, r.y1));
-    path.line_to((r.x0, r.y1));
-    path.close_path();
-    p.stroke_path(path, w, color);
 }
 
 /// Significant digits that tell neighbouring ticks apart: at least 3, more when the view is

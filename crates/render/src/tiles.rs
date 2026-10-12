@@ -85,6 +85,25 @@ struct Cell {
 }
 
 impl Cell {
+    /// Whether this cell was recorded at grid `g`'s zoom and phase (whatever content).
+    fn on(&self, g: &Grid) -> bool {
+        self.scale == g.scale
+            && (self.phase.0 - g.phase.0).abs() < 1e-6
+            && (self.phase.1 - g.phase.1).abs() < 1e-6
+    }
+
+    /// World box `b` in device px from this cell's tile corner (`s` device px per logical
+    /// px, tile edge `t`): `[x0, y0, x1, y1]`.
+    fn device_box(&self, b: [i32; 4], s: f64, t: f64) -> [f64; 4] {
+        let d = |w: i32, ph: f64, i: i32| f64::from(w) * self.scale * s + ph - f64::from(i) * t;
+        [
+            d(b[0], self.phase.0, self.tile.0),
+            d(b[1], self.phase.1, self.tile.1),
+            d(b[2], self.phase.0, self.tile.0),
+            d(b[3], self.phase.1, self.tile.1),
+        ]
+    }
+
     /// Whether every part is recorded.
     fn whole(&self) -> bool {
         let n = u32::from(self.split).pow(2);
@@ -104,7 +123,7 @@ pub struct CanvasCache {
     pub tiles_per_frame: usize,
     /// Cost a frame records at most: it records nothing further once the cost spent plus the
     /// estimate of the next part would pass it (the first part always records). A tile whose
-    /// estimate passes it is recorded in parts, up to [`SPLIT_MAX`]² of them.
+    /// estimate passes it is recorded in parts, up to 16 of them.
     pub cost_per_frame: usize,
     /// The last tile part's cost times the parts, at zoom `last_scale`: the estimate of a
     /// tile no recorded cell overlaps (see [`CanvasCache::estimate`]).
@@ -316,11 +335,6 @@ pub fn draw_cached<P: Painter>(
         phase: (dx - int.0, dy - int.1),
         int,
     };
-    let same = |c: &Cell| {
-        c.scale == g.scale
-            && (c.phase.0 - g.phase.0).abs() < 1e-6
-            && (c.phase.1 - g.phase.1).abs() < 1e-6
-    };
     // New content: cells away from the damage keep showing it; damaged ones need patches.
     let mut dirty: Vec<usize> = Vec::new();
     let mut boxes: Vec<[i32; 4]> = Vec::new();
@@ -354,18 +368,18 @@ pub fn draw_cached<P: Painter>(
     let find = |cells: &[Cell], tile: (i32, i32)| {
         cells
             .iter()
-            .position(|c| c.key == key && c.tile == tile && same(c) && c.whole())
+            .position(|c| c.key == key && c.tile == tile && c.on(&g) && c.whole())
     };
     let building = |cells: &[Cell], tile: (i32, i32)| {
         cells
             .iter()
-            .position(|c| c.key == key && c.tile == tile && same(c) && !c.whole())
+            .position(|c| c.key == key && c.tile == tile && c.on(&g) && !c.whole())
     };
     let mut patched = false;
     for k in dirty {
         let c = cache.cells[k];
         let visible =
-            same(&c) && (i0..=i1).contains(&c.tile.0) && (j0..=j1).contains(&c.tile.1) && crisp;
+            c.on(&g) && (i0..=i1).contains(&c.tile.0) && (j0..=j1).contains(&c.tile.1) && crisp;
         if visible && patch_tile(p, cache, k, &g, &boxes, &mut draw) {
             cache.cells[k].key = key;
             cache.cells[k].used = cache.frame;
@@ -380,7 +394,7 @@ pub fn draw_cached<P: Painter>(
             let stale = cache
                 .cells
                 .iter()
-                .position(|c| c.tile == (i, j) && same(c) && c.key != key && c.scale != 0.0);
+                .position(|c| c.tile == (i, j) && c.on(&g) && c.key != key && c.scale != 0.0);
             if let (Some(k), true, None) = (stale, crisp, find(&cache.cells, (i, j))) {
                 claim(cache, k, (i, j), &g, key);
                 while !cache.cells[k].whole() {
@@ -653,11 +667,7 @@ fn stand_ins<P: Painter>(
     let (o0, o1) = (g.int.0 + g.phase.0, g.int.1 + g.phase.1);
     for k in 0..cache.cells.len() {
         let c = cache.cells[k];
-        let current = c.key == key
-            && c.scale == g.scale
-            && (c.phase.0 - g.phase.0).abs() < 1e-6
-            && (c.phase.1 - g.phase.1).abs() < 1e-6;
-        if c.scale == 0.0 || current || !c.whole() {
+        if c.scale == 0.0 || (c.key == key && c.on(g)) || !c.whole() {
             continue;
         }
         // Atlas px q of the cell ↔ screen device X = (q - corner + i·T - φ0)·z + O.
@@ -689,16 +699,8 @@ fn stand_ins<P: Painter>(
 /// Whether world box `b` (padded) reaches into cell `c`'s tile.
 fn touches(c: &Cell, b: [i32; 4], t: f64, s: f64) -> bool {
     let pad = PATCH_PAD_PX * s;
-    let d = |w: i32, ph: f64, i: i32| f64::from(w) * c.scale * s + ph - f64::from(i) * t;
-    let (x0, x1) = (
-        d(b[0], c.phase.0, c.tile.0) - pad,
-        d(b[2], c.phase.0, c.tile.0) + pad,
-    );
-    let (y0, y1) = (
-        d(b[1], c.phase.1, c.tile.1) - pad,
-        d(b[3], c.phase.1, c.tile.1) + pad,
-    );
-    x1 > 0.0 && x0 < t && y1 > 0.0 && y0 < t
+    let [x0, y0, x1, y1] = c.device_box(b, s, t);
+    x1 + pad > 0.0 && x0 - pad < t && y1 + pad > 0.0 && y0 - pad < t
 }
 
 /// Redraws the parts of cell `k` that the damage `boxes` reach (or the whole tile when most of
@@ -718,18 +720,18 @@ fn patch_tile<P: Painter>(
     }
     let (t, c) = (f64::from(cache.edge), cache.cells[k]);
     let (pad, step) = (PATCH_PAD_PX * s, PATCH_GRID * s);
-    let d = |w: i32, ph: f64, i: i32| f64::from(w) * c.scale * s + ph - f64::from(i) * t;
     let snap = |v: f64, up: bool| {
         let q = v / step;
         (if up { q.ceil() } else { q.floor() } * step).clamp(0.0, t)
     };
     let mut parts: Vec<Rect> = Vec::new();
-    for b in boxes {
+    for &b in boxes {
+        let [x0, y0, x1, y1] = c.device_box(b, s, t);
         let part = Rect::new(
-            snap(d(b[0], c.phase.0, c.tile.0) - pad, false),
-            snap(d(b[1], c.phase.1, c.tile.1) - pad, false),
-            snap(d(b[2], c.phase.0, c.tile.0) + pad, true),
-            snap(d(b[3], c.phase.1, c.tile.1) + pad, true),
+            snap(x0 - pad, false),
+            snap(y0 - pad, false),
+            snap(x1 + pad, true),
+            snap(y1 + pad, true),
         );
         if part.width() > 0.0 && part.height() > 0.0 {
             parts.push(part);

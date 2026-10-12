@@ -227,6 +227,22 @@ impl Chains {
     }
 }
 
+/// Appends `r` as one closed subpath (corners clockwise on screen from the top-left).
+pub(crate) fn push_rect(path: &mut BezPath, r: Rect) {
+    path.move_to((r.x0, r.y0));
+    path.line_to((r.x1, r.y0));
+    path.line_to((r.x1, r.y1));
+    path.line_to((r.x0, r.y1));
+    path.close_path();
+}
+
+/// Strokes the outline of `r`, `w` px wide, building it in `path` (cleared first).
+pub(crate) fn outline<P: Painter>(p: &mut P, path: &mut BezPath, r: Rect, w: f64, color: Color) {
+    path.truncate(0);
+    push_rect(path, r);
+    p.stroke_path(path, w, color);
+}
+
 /// Converts packed `0xRRGGBBAA` (the `ui_styles` encoding) to a color.
 pub fn rgba(v: u32) -> Color {
     let [r, g, b, a] = v.to_be_bytes();
@@ -409,11 +425,9 @@ impl Painter for ScenePainter<'_> {
     }
 
     fn holds_layer(&self, slot: usize, stamp: u64) -> bool {
-        self.layers.as_deref().is_some_and(|l| {
-            l.slots
-                .get(slot)
-                .is_some_and(|x| stamp != 0 && x.stamp == stamp && x.image.is_some())
-        })
+        self.layers
+            .as_deref()
+            .is_some_and(|l| l.held(slot, stamp).is_some())
     }
 
     fn layer(
@@ -431,18 +445,11 @@ impl Painter for ScenePainter<'_> {
         let Some(layers) = self.layers.as_deref_mut() else {
             return false;
         };
-        // Record into the layer's own scene by swapping it in for the frame scene; the calls
-        // belong to the layer (its stamp names them), not to the frame log.
-        let mut other = std::mem::take(&mut layers.sized(slot, w, h).scene);
-        other.reset();
-        layers.log.recording = true;
-        std::mem::swap(self.scene, &mut other);
-        draw(self);
-        std::mem::swap(self.scene, &mut other);
-        let layers = self.layers.as_deref_mut().expect("checked above");
-        layers.log.recording = false;
-        let l = &mut layers.slots[slot];
-        l.scene = other;
+        let mut scene = std::mem::take(&mut layers.sized(slot, w, h).scene);
+        scene.reset();
+        let scene = self.record(scene, draw);
+        let l = &mut self.layers.as_deref_mut().expect("checked above").slots[slot];
+        l.scene = scene;
         l.stamp = stamp;
         l.dirty = true;
         l.patches.clear(); // the fresh picture covers them
@@ -459,30 +466,16 @@ impl Painter for ScenePainter<'_> {
         h: u32,
         draw: impl FnOnce(&mut Self),
     ) -> bool {
-        let Some(layers) = self.layers.as_deref_mut() else {
+        let Some(image) = self.layers.as_deref().and_then(|l| l.held(slot, stamp)) else {
             return false;
         };
-        let Some(l) = layers
-            .slots
-            .get(slot)
-            .filter(|l| stamp != 0 && l.stamp == stamp)
-        else {
-            return false;
-        };
-        let image = l.image.as_ref().expect("a recorded layer has an image");
         assert!(
             w > 0 && h > 0 && x + w <= image.width && y + h <= image.height,
             "patch outside its layer"
         );
-        // Like `layer`: record into a scene of its own, outside the frame log.
-        let mut other = Scene::new();
-        layers.log.recording = true;
-        std::mem::swap(self.scene, &mut other);
-        draw(self);
-        std::mem::swap(self.scene, &mut other);
+        let scene = self.record(Scene::new(), draw);
         let layers = self.layers.as_deref_mut().expect("checked above");
-        layers.log.recording = false;
-        layers.slots[slot].patches.push((other, [x, y, w, h]));
+        layers.slots[slot].patches.push((scene, [x, y, w, h]));
         true
     }
 
@@ -499,12 +492,7 @@ impl Painter for ScenePainter<'_> {
         let Some(layers) = self.layers.as_deref_mut() else {
             return false;
         };
-        let Some(image) = layers
-            .slots
-            .get(slot)
-            .filter(|l| stamp != 0 && l.stamp == stamp)
-            .and_then(|l| l.image.clone())
-        else {
+        let Some(image) = layers.held(slot, stamp).cloned() else {
             return false;
         };
         // Neither where it lands nor how many tiles there are is part of the frame hash: a
@@ -528,6 +516,22 @@ impl Painter for ScenePainter<'_> {
 }
 
 impl ScenePainter<'_> {
+    /// Paints `draw` into `scene` (swapped in for the frame scene) and returns it. The calls
+    /// belong to a layer (its stamp names them), not to the frame log.
+    fn record(&mut self, mut scene: Scene, draw: impl FnOnce(&mut Self)) -> Scene {
+        let layers = self
+            .layers
+            .as_deref_mut()
+            .expect("only a painter with layers records");
+        layers.log.recording = true;
+        std::mem::swap(self.scene, &mut scene);
+        draw(self);
+        std::mem::swap(self.scene, &mut scene);
+        let layers = self.layers.as_deref_mut().expect("checked above");
+        layers.log.recording = false;
+        scene
+    }
+
     /// Encodes straight into vello's path stream: no `PathEl` per segment. This is what
     /// `Scene::stroke`/`Scene::fill` do internally (transform, style, path, brush), minus the
     /// intermediate path.
@@ -595,6 +599,27 @@ impl CpuPainter {
             base: Affine::scale(scale),
             layers: Vec::new(),
         }
+    }
+
+    /// Pixels of layer `slot` when it is tagged `stamp`.
+    fn held(&self, slot: usize, stamp: u64) -> Option<&Arc<vello_cpu::Pixmap>> {
+        self.layers
+            .get(slot)
+            .filter(|l| stamp != 0 && l.0 == stamp)
+            .map(|l| &l.1)
+    }
+
+    /// Rasterizes `draw` into a fresh `w × h` pixmap (a context of that size swapped in for
+    /// the frame's).
+    fn record(&mut self, w: u16, h: u16, draw: impl FnOnce(&mut Self)) -> vello_cpu::Pixmap {
+        let mut other = vello_cpu::RenderContext::new(w, h);
+        std::mem::swap(&mut self.ctx, &mut other);
+        draw(self);
+        std::mem::swap(&mut self.ctx, &mut other);
+        let mut pixmap = vello_cpu::Pixmap::new(w, h);
+        other.flush();
+        other.render(&mut pixmap, &mut self.resources);
+        pixmap
     }
 
     /// Starts a new frame on the same target, keeping the raster layers.
@@ -673,9 +698,7 @@ impl Painter for CpuPainter {
     }
 
     fn holds_layer(&self, slot: usize, stamp: u64) -> bool {
-        self.layers
-            .get(slot)
-            .is_some_and(|l| stamp != 0 && l.0 == stamp)
+        self.held(slot, stamp).is_some()
     }
 
     fn layer(
@@ -694,14 +717,7 @@ impl Painter for CpuPainter {
             u16::try_from(w).expect("layer width fits u16"),
             u16::try_from(h).expect("layer height fits u16"),
         );
-        // Record into a context of the layer's size by swapping it in for the frame's.
-        let mut other = vello_cpu::RenderContext::new(w, h);
-        std::mem::swap(&mut self.ctx, &mut other);
-        draw(self);
-        std::mem::swap(&mut self.ctx, &mut other);
-        let mut pixmap = vello_cpu::Pixmap::new(w, h);
-        other.flush();
-        other.render(&mut pixmap, &mut self.resources);
+        let pixmap = self.record(w, h, draw);
         if self.layers.len() <= slot {
             self.layers
                 .resize_with(slot + 1, || (0, Arc::new(vello_cpu::Pixmap::new(1, 1))));
@@ -720,27 +736,15 @@ impl Painter for CpuPainter {
         h: u32,
         draw: impl FnOnce(&mut Self),
     ) -> bool {
-        if self
-            .layers
-            .get(slot)
-            .is_none_or(|l| stamp == 0 || l.0 != stamp)
-        {
+        let Some(layer) = self.held(slot, stamp) else {
             return false;
-        }
-        let lw = u32::from(self.layers[slot].1.width());
-        let lh = u32::from(self.layers[slot].1.height());
+        };
+        let (lw, lh) = (u32::from(layer.width()), u32::from(layer.height()));
         assert!(
             w > 0 && h > 0 && x + w <= lw && y + h <= lh,
             "patch outside its layer"
         );
-        let (pw, ph) = (w as u16, h as u16);
-        let mut other = vello_cpu::RenderContext::new(pw, ph);
-        std::mem::swap(&mut self.ctx, &mut other);
-        draw(self);
-        std::mem::swap(&mut self.ctx, &mut other);
-        let mut part = vello_cpu::Pixmap::new(pw, ph);
-        other.flush();
-        other.render(&mut part, &mut self.resources);
+        let part = self.record(w as u16, h as u16, draw);
         // Copy-on-write: a frame still sampling the old picture keeps it.
         let dst = Arc::make_mut(&mut self.layers[slot].1).data_mut();
         let (lw, w, x, y) = (lw as usize, w as usize, x as usize, y as usize);
@@ -759,7 +763,7 @@ impl Painter for CpuPainter {
         clip: Rect,
         stretch: Option<Color>,
     ) -> bool {
-        let Some((_, pixmap)) = self.layers.get(slot).filter(|l| stamp != 0 && l.0 == stamp) else {
+        let Some(pixmap) = self.held(slot, stamp) else {
             return false;
         };
         let s = self.device_scale();

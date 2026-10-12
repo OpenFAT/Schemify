@@ -31,10 +31,11 @@ use schemify_ui::parley::PositionedLayoutItem;
 
 pub use crate::damage::{CanvasDiff, DIFF_EDITS_MAX};
 pub use crate::index::{PrimIndex, Rows};
-use crate::painter::{Chains, Painter, rgba};
+use crate::painter::{Chains, Painter, push_rect, rgba};
 pub use crate::tiles::{CanvasCache, Drawn, PATCH_PAD_PX, TILE_PX, TILES_PER_FRAME, draw_cached};
 
-/// Number of palette layers.
+/// Palette layers: every layer index is below it, and [`Palette::fill`] keeps one bit per layer
+/// in a `u32`.
 pub const LAYERS: usize = 32;
 
 /// Pan/zoom: the world point at the view center and the zoom in pixels per milli-unit.
@@ -109,35 +110,36 @@ impl Camera {
     }
 }
 
-/// Line segments.
+/// Two points per row: a line segment, or (as [`Rects`]) the opposite corners of a rectangle.
+/// Columns stay equally long.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Lines {
-    /// Start x.
+    /// First point x.
     pub x0: Vec<i32>,
-    /// Start y.
+    /// First point y.
     pub y0: Vec<i32>,
-    /// End x.
+    /// Second point x.
     pub x1: Vec<i32>,
-    /// End y.
+    /// Second point y.
     pub y1: Vec<i32>,
     /// Palette layer.
     pub layer: Vec<u8>,
 }
 
-/// Axis-aligned rectangles (outlined; also filled when the layer's palette entry fills).
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Rects {
-    /// Corner x.
-    pub x0: Vec<i32>,
-    /// Corner y.
-    pub y0: Vec<i32>,
-    /// Opposite corner x.
-    pub x1: Vec<i32>,
-    /// Opposite corner y.
-    pub y1: Vec<i32>,
-    /// Palette layer.
-    pub layer: Vec<u8>,
+impl Lines {
+    fn push(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, layer: u8) {
+        assert!(self.x0.len() < CanvasPrims::CAPACITY && usize::from(layer) < LAYERS);
+        self.x0.push(x0);
+        self.y0.push(y0);
+        self.x1.push(x1);
+        self.y1.push(y1);
+        self.layer.push(layer);
+    }
 }
+
+/// Axis-aligned rectangles between two opposite corners (outlined; also filled when the
+/// layer's palette entry fills).
+pub type Rects = Lines;
 
 /// Circular arcs; a full circle is `sweep = 360_000`. Angles are millidegrees, clockwise on
 /// screen (y down), like the orientation transform in format spec §3.
@@ -212,24 +214,12 @@ impl CanvasPrims {
 
     /// Appends a segment.
     pub fn line(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, layer: u8) {
-        let t = &mut self.lines;
-        assert!(t.x0.len() < Self::CAPACITY && usize::from(layer) < LAYERS);
-        t.x0.push(x0);
-        t.y0.push(y0);
-        t.x1.push(x1);
-        t.y1.push(y1);
-        t.layer.push(layer);
+        self.lines.push(x0, y0, x1, y1, layer);
     }
 
     /// Appends a rectangle.
     pub fn rect(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, layer: u8) {
-        let t = &mut self.rects;
-        assert!(t.x0.len() < Self::CAPACITY && usize::from(layer) < LAYERS);
-        t.x0.push(x0);
-        t.y0.push(y0);
-        t.x1.push(x1);
-        t.y1.push(y1);
-        t.layer.push(layer);
+        self.rects.push(x0, y0, x1, y1, layer);
     }
 
     /// Appends an arc (`sweep = 360_000` for a circle).
@@ -382,7 +372,8 @@ pub struct Marks {
 }
 
 impl Marks {
-    /// Appends a mark.
+    /// Appends a mark. `index` must be a row of `kind`'s table in the [`CanvasPrims`] the marks
+    /// are drawn over ([`draw_marks`] panics on a row past its table's end).
     pub fn push(&mut self, kind: PrimKind, index: u32, color: u32) {
         self.kind.push(kind);
         self.index.push(index);
@@ -613,12 +604,18 @@ pub fn draw_grid<P: Painter>(
     p.fill_chains(dots, rgba(palette.grid));
 }
 
-fn push_rect(path: &mut BezPath, x0: f64, y0: f64, x1: f64, y1: f64) {
-    path.move_to((x0, y0));
-    path.line_to((x1, y0));
-    path.line_to((x1, y1));
-    path.line_to((x0, y1));
-    path.close_path();
+/// The points of chain `i` of a CSR table whose `end[i]` is one past its last point.
+#[inline]
+pub(crate) fn chain(end: &[u32], i: usize) -> std::ops::Range<usize> {
+    let start = if i == 0 { 0 } else { end[i - 1] as usize };
+    start..end[i] as usize
+}
+
+/// Start and sweep of arc `i` in radians.
+#[inline]
+fn arc_angles(a: &Arcs, i: usize) -> (f64, f64) {
+    let rad = |m: i32| f64::from(m).to_radians() / 1000.0;
+    (rad(a.start[i]), rad(a.sweep[i]))
 }
 
 /// Appends a circular arc as ≤ 4 cubics (one per started quarter turn); a sweep of a full turn
@@ -767,7 +764,7 @@ pub fn draw_prims_in<P: Painter>(
         sc.closed[layer].push(&[pt(x0, y0), pt(x1, y0), pt(x1, y1), pt(x0, y1)]);
         paths += 1;
         if palette.fill & (1 << layer) != 0 {
-            push_rect(&mut sc.fill[layer], x0, y0, x1, y1);
+            push_rect(&mut sc.fill[layer], Rect::new(x0, y0, x1, y1));
         }
     }
 
@@ -784,10 +781,7 @@ pub fn draw_prims_in<P: Painter>(
         {
             continue;
         }
-        let (start, sweep) = (
-            f64::from(a.start[i]).to_radians() / 1000.0,
-            f64::from(a.sweep[i]).to_radians() / 1000.0,
-        );
+        let (start, sweep) = arc_angles(a, i);
         push_arc(&mut sc.curves[layer], cx, cy, rad, start, sweep);
         paths += 1;
         if a.sweep[i].abs() >= 360_000 && palette.fill & (1 << layer) != 0 {
@@ -800,8 +794,7 @@ pub fn draw_prims_in<P: Painter>(
         (&prims.polygons, true, rows.map(|r| &r.polygons[..])),
     ] {
         for k in each(polys.end.len(), listed) {
-            let start = if k == 0 { 0 } else { polys.end[k - 1] as usize };
-            let end = polys.end[k] as usize;
+            let std::ops::Range { start, end } = chain(&polys.end, k);
             assert!(
                 end >= start + 2 && end <= polys.x.len(),
                 "malformed poly table"
@@ -891,8 +884,7 @@ fn draw_texts<P: Painter>(
     let (ox, oy) = cam.origin(view);
     let mut drawn = 0;
     for i in each(t.x.len(), rows) {
-        let start = if i == 0 { 0 } else { t.end[i - 1] as usize };
-        let end = t.end[i] as usize;
+        let bytes = chain(&t.end, i);
         let px = f64::from(t.size[i]) * cam.scale;
         let (x, y) = (
             f64::from(t.x[i]) * cam.scale + ox,
@@ -903,7 +895,7 @@ fn draw_texts<P: Painter>(
         let visible = px >= TEXT_MIN_PX
             && (rot != 0 || (x < view.x1 && y < view.y1 && y + px * 2.0 > view.y0));
         if visible {
-            let (g0, g1) = shaped(&t.text[start..end], text, scratch);
+            let (g0, g1) = shaped(&t.text[bytes], text, scratch);
             if let (Some(face), true) = (scratch.text_face.clone(), g1 > g0) {
                 let at = Affine::translate((x, y))
                     * Affine::rotate(f64::from(rot) * std::f64::consts::FRAC_PI_2)
@@ -985,15 +977,12 @@ pub fn draw_marks<P: Painter>(
                 PrimKind::Rect => {
                     let r = &prims.rects;
                     let (a, b) = (pt(r.x0[k], r.y0[k]), pt(r.x1[k], r.y1[k]));
-                    push_rect(path, a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1));
+                    push_rect(path, Rect::new(a.0, a.1, b.0, b.1).abs());
                 }
                 PrimKind::Arc => {
                     let a = &prims.arcs;
                     let (cx, cy) = (f64::from(a.cx[k]) * s + ox, f64::from(a.cy[k]) * s + oy);
-                    let (start, sweep) = (
-                        f64::from(a.start[k]).to_radians() / 1000.0,
-                        f64::from(a.sweep[k]).to_radians() / 1000.0,
-                    );
+                    let (start, sweep) = arc_angles(a, k);
                     push_arc(path, cx, cy, f64::from(a.r[k]) * s, start, sweep);
                 }
                 PrimKind::Polyline | PrimKind::Polygon => {
@@ -1002,8 +991,9 @@ pub fn draw_marks<P: Painter>(
                     } else {
                         &prims.polylines
                     };
-                    let start = if k == 0 { 0 } else { polys.end[k - 1] as usize };
-                    for j in start..polys.end[k] as usize {
+                    let pts = chain(&polys.end, k);
+                    let start = pts.start;
+                    for j in pts {
                         let q = pt(polys.x[j], polys.y[j]);
                         if j == start {
                             path.move_to(q)
