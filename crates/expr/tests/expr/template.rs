@@ -76,3 +76,49 @@ fn errors_and_atomicity() {
     assert_eq!(render("{cplx(1, 2)}", &[]).unwrap_err().code, Code::X003);
     assert_eq!(render("{missing}", &[]).unwrap_err().code, Code::X004);
 }
+
+/// `segments` spelled back (bare holes as `<ident>`, other holes as `<?>`) against
+/// hand-lexed expectations, and against `render` for templates of bare holes bound to
+/// their own spelling.
+#[test]
+fn segments_spell_the_template() {
+    use schemify_expr::Segment;
+    for (src, want) in [
+        ("M{name} {D}", "M<name> <D>"),
+        ("{ D }{{x}}", "<D>{x}"),
+        ("{{[}} {B} ] [{A}] {C}", "{[} <B> ] [<A>] <C>"),
+        ("[{(B)}] {true} {A}", "[<?>] <?> <A>"),
+        (r#"{"D"} {D+1} {D}"#, "<?> <?> <D>"),
+        ("{pins}", "<pins>"),
+        ("plain", "plain"),
+    ] {
+        let t = Template::parse(src).unwrap();
+        let idents: Vec<&str> = t.program().idents().collect();
+        let (mut spelled, mut bare) = (String::new(), true);
+        for seg in t.segments() {
+            match seg {
+                Segment::Lit(s) => {
+                    assert!(!s.is_empty());
+                    spelled.push_str(s);
+                }
+                Segment::Hole { ident: Some(k) } => {
+                    spelled.push_str(&format!("<{}>", idents[k as usize]));
+                }
+                Segment::Hole { ident: None } => {
+                    bare = false;
+                    spelled.push_str("<?>");
+                }
+            }
+        }
+        assert_eq!(spelled, want, "{src}");
+        if bare {
+            let own: Vec<String> = idents.iter().map(|i| format!("<{i}>")).collect();
+            let vars: Vec<(&str, Value<'_>)> = idents
+                .iter()
+                .zip(&own)
+                .map(|(i, o)| (*i, Value::Str(o)))
+                .collect();
+            assert_eq!(render(src, &vars).unwrap(), want, "{src}");
+        }
+    }
+}
