@@ -59,11 +59,11 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## cktimg plugin
 
-- **Fuel**: cktImg needs ~10^8 wasmi fuel per millisecond of native layout; 11 of 80 fixtures exceed the default 10^8 per event and abort with `E_FUEL` (up to > 4·10^10). Needs the per-plugin fuel override the plugin ABI (§2) specifies but the app does not implement yet (`plugins.load(.., FUEL_DEFAULT)` for every plugin), and/or a faster cktImg layout (`docs/upstream/cktimg-performance.md`). With a bigger budget, one cell per event (a timer between cells) keeps the editor responsive.
+- **Fuel**: cktImg needs ~10^8 wasmi fuel per millisecond of native layout; 11 of 80 fixtures (one large flat cell each) exceed the default 10^8 per event and abort with `E_FUEL` unless the project manifest sets `fuel` for the plugin (one cell per event, so the budget is per cell); at the ceiling (10^11) all but `bus_sram_cell_array` import. A faster cktImg layout (`docs/upstream/cktimg-performance.md`) is the other lever.
 - **Size**: `cktimg.wasm` is ~630 KB (`plugins/build.sh` allows 700 KB for it, 200 KB for the rest); `docs/upstream/cktimg-optional-zon.patch` takes it to ~480 KB.
 - **Upstream**: `docs/upstream/cktimg-lib-step.patch` (then `build.rs` can call `zig build lib`), `cktimg-optional-zon.patch`.
-- Block symbols of generated subckt cells are the plugin's own (inputs left, the rest right); cktImg's `*@ left/right/top/bottom` directives are not read yet (a probe placement of one instance would give cktImg's block geometry).
-- XSPICE `A/N/P/Y` and node-less `X` cards are kept as code text, not drawn.
+- Generated leaves are shared by every import into a directory and kept when they exist, but their stems do not encode their pin count (`spice_x0`, a stub `sub` of 2 pins vs 3): two imports that need different leaves of one name get the first one's.
+- `*@ expand` is ignored (every subckt stays a cell); cktImg's default block sides by name (supplies top, grounds bottom) are not used, only its directives.
 
 ## netlist
 

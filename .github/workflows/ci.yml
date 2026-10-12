@@ -201,6 +201,12 @@ jobs:
         run: >-
           nix develop -c cargo test --manifest-path plugins/Cargo.toml
           -p gmid-lut -p cktimg --no-fail-fast
+      # cktimg's fixtures over the default fuel, at the manifest's fuel ceiling (10^11 per
+      # event): needs an optimized wasmi, so its own profile.
+      - name: cktimg over-budget fixtures at the fuel ceiling
+        run: >-
+          nix develop -c cargo test --profile fuel --manifest-path plugins/Cargo.toml
+          -p cktimg --test guest -- --ignored over_budget --nocapture
       - name: host tests against the rebuilt guests
         run: nix develop -c cargo test -p schemify-plugin -p schemify-app --no-fail-fast
       - name: committed modules equal the rebuild (reproducible guests)
