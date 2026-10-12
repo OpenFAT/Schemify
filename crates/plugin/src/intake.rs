@@ -400,7 +400,7 @@ pub(crate) fn line_values(line: &str) -> Result<Vec<String>, Code> {
 /// arguments.
 pub fn authorize(grants: &Grants, op: IoOp, args: &[String]) -> Result<(), Code> {
     let arity_ok = match op {
-        IoOp::FsRead | IoOp::FsWrite | IoOp::Fetch => args.len() == 1,
+        IoOp::FsRead | IoOp::FsWrite | IoOp::FsRemove | IoOp::Fetch => args.len() == 1,
         IoOp::Spawn => !args.is_empty(),
         IoOp::ClipboardGet | IoOp::ClipboardSet => args.is_empty(),
     };
@@ -410,11 +410,26 @@ pub fn authorize(grants: &Grants, op: IoOp, args: &[String]) -> Result<(), Code>
     let allowed = grants.has(op.cap())
         && match op {
             IoOp::FsRead | IoOp::FsWrite => project_relative(&args[0]),
+            IoOp::FsRemove => removable(&args[0]),
             IoOp::Spawn => grants.may_spawn(&args[0]),
             IoOp::Fetch => !args[0].is_empty(),
             IoOp::ClipboardGet | IoOp::ClipboardSet => true,
         };
     if allowed { Ok(()) } else { Err(Code::Denied) }
+}
+
+/// `fs_remove` targets (§5): project-relative, strictly inside `.schemify/` (the tool's own
+/// git-ignored directory, never the directory itself), and never a manifest or lockfile
+/// name, so a plugin can delete what it installed and nothing a user wrote.
+fn removable(path: &str) -> bool {
+    let inside = path
+        .strip_prefix(".schemify/")
+        .is_some_and(|rest| !rest.is_empty());
+    let last = path.rsplit('/').next().unwrap_or(path);
+    let ok =
+        project_relative(path) && inside && !matches!(last, "schemify.project" | "schemify.lock");
+    assert!(!ok || path.starts_with(".schemify/"));
+    ok
 }
 
 fn project_relative(path: &str) -> bool {
@@ -509,6 +524,48 @@ mod tests {
         assert_eq!(c.get(p, Kind::Ui, ""), None);
         c.remove_plugin(p);
         assert!(c.is_empty());
+    }
+
+    /// `fs_remove` (§5): granted by `write_project`, only strictly inside `.schemify/`, never
+    /// a manifest or lockfile, never through `..`.
+    #[test]
+    fn fs_remove_is_scoped_to_the_tool_directory() {
+        let a = |v: &str| vec![v.to_owned()];
+        let w = Grants::parse(&["write_project"]).unwrap();
+        let r = Grants::parse(&["read_project"]).unwrap();
+        for ok in [
+            ".schemify/pdks/sky130/abc",
+            ".schemify/pdks/x/y/STATE",
+            ".schemify/a",
+        ] {
+            assert_eq!(authorize(&w, IoOp::FsRemove, &a(ok)), Ok(()), "{ok}");
+            assert_eq!(
+                authorize(&r, IoOp::FsRemove, &a(ok)),
+                Err(Code::Denied),
+                "{ok}"
+            );
+        }
+        for bad in [
+            "schemify.project",
+            "schemify.lock",
+            ".schemify",
+            ".schemify/",
+            ".schemify/schemify.project",
+            ".schemify/pdks/schemify.lock",
+            ".schemify/../schemify.project",
+            ".schemify/pdks/../../lib",
+            "lib/a.shcomp",
+            "/tmp/x",
+            ".schemifyx/a",
+            ".schemify//a",
+        ] {
+            assert_eq!(
+                authorize(&w, IoOp::FsRemove, &a(bad)),
+                Err(Code::Denied),
+                "{bad}"
+            );
+        }
+        assert_eq!(authorize(&w, IoOp::FsRemove, &[]), Err(Code::Parse));
     }
 
     #[test]

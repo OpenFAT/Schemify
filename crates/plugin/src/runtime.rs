@@ -130,6 +130,10 @@ pub(crate) fn linker(engine: &Engine) -> Linker<Ctx> {
         request(c, IoOp::FsWrite, (p, pl), (d, dl))
     })
     .expect(err);
+    l.func_wrap(m, "fs_remove", |c: Caller<'_, Ctx>, p: u32, pl: u32| {
+        request(c, IoOp::FsRemove, (p, pl), (0, 0))
+    })
+    .expect(err);
     l.func_wrap(m, "spawn", |c: Caller<'_, Ctx>, a, al, s, sl| {
         request(c, IoOp::Spawn, (a, al), (s, sl))
     })
@@ -543,7 +547,7 @@ fn request(mut caller: Caller<'_, Ctx>, op: IoOp, target: (u32, u32), data: (u32
             Ok(argv) => argv,
             Err(code) => return code.neg(),
         },
-        IoOp::FsRead | IoOp::FsWrite | IoOp::Fetch => vec![target.to_owned()],
+        IoOp::FsRead | IoOp::FsWrite | IoOp::FsRemove | IoOp::Fetch => vec![target.to_owned()],
     };
     if let Err(code) = authorize(&ctx.grants, op, &args) {
         ctx.faults.push((code, format!("{op:?} {args:?}")));

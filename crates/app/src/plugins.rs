@@ -857,6 +857,20 @@ impl Host {
                 } else {
                     run_io(root, r.op, &r.args, &r.data)
                 };
+                // pdk spec §3.1: a plugin that rewrote the manifest or lockfile gets the
+                // project reloaded (once per delivery) before its `IoDone` arrives.
+                let manifest = matches!(
+                    r.args.first().map(String::as_str),
+                    Some("schemify.project" | "schemify.lock")
+                );
+                let reload = ("project.reload".to_owned(), String::new());
+                if r.op == IoOp::FsWrite
+                    && status == 0
+                    && manifest
+                    && !out.commands.contains(&reload)
+                {
+                    out.commands.push(reload);
+                }
                 let ev = Event::IoDone {
                     handle: r.handle,
                     status,
@@ -1042,6 +1056,17 @@ fn run_io(root: &Path, op: IoOp, args: &[String], data: &[u8]) -> (i32, Vec<u8>)
             Ok(()) => (0, Vec::new()),
             Err(e) => (denied, e.into_bytes()),
         },
+        IoOp::FsRemove => {
+            let path = root.join(&args[0]);
+            if !platform::exists(&path) {
+                let gone = -(schemify_plugin::abi::Code::Gone as i32);
+                return (gone, format!("{}: nothing to remove", args[0]).into_bytes());
+            }
+            match platform::remove_tree(&path) {
+                Ok(()) => (0, Vec::new()),
+                Err(e) => (denied, e.into_bytes()),
+            }
+        }
         IoOp::Spawn => unreachable!("spawn runs through platform::spawn_start"),
         // ponytail: fetch and clipboard are M3; answer "denied".
         IoOp::Fetch | IoOp::ClipboardGet | IoOp::ClipboardSet => {
@@ -1185,5 +1210,34 @@ mod fuel_tests {
         assert!(manifest_fuel(Some(&attr("1e9"))).is_err());
         assert!(manifest_fuel(Some(&attr("-5"))).is_err());
         assert!(manifest_fuel(Some(&attr(""))).is_err());
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod io_tests {
+    use super::*;
+
+    /// `fs_remove` (plugin ABI §5) removes a whole tree or one file and answers `E_GONE` when
+    /// nothing is there; the host has already confined the path to `.schemify/`.
+    #[test]
+    fn fs_remove_removes_trees_and_files() {
+        let root = std::env::temp_dir().join(format!("schemify-fsremove-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let tree = root.join(".schemify/pdks/sky130/v1");
+        std::fs::create_dir_all(tree.join("lib/sky130_fd_pr")).unwrap();
+        std::fs::write(tree.join("lib/sky130_fd_pr/a.shprim"), "x").unwrap();
+        std::fs::write(tree.join("STATE"), "ok\n").unwrap();
+        std::fs::write(root.join("schemify.project"), "schemify 1 project\n").unwrap();
+        let rm = |p: &str| run_io(&root, IoOp::FsRemove, &[p.to_owned()], b"").0;
+        assert_eq!(rm(".schemify/pdks/sky130/v1/STATE"), 0);
+        assert!(!tree.join("STATE").exists() && tree.join("lib").exists());
+        assert_eq!(rm(".schemify/pdks/sky130/v1"), 0);
+        assert!(!tree.exists() && root.join(".schemify/pdks/sky130").exists());
+        assert_eq!(
+            rm(".schemify/pdks/sky130/v1"),
+            Code::Gone.neg(),
+            "nothing to remove"
+        );
+        assert!(root.join("schemify.project").exists(), "never touched");
     }
 }

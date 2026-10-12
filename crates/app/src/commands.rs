@@ -294,6 +294,11 @@ commands! {
     PngScale = "options.png_export_scale",
     /// Toggle the SVG background rectangle.
     ExportTransparent = "options.transparent_svg_background",
+    /// Re-read `schemify.project` and `schemify.lock`, re-index every library and refresh
+    /// the open documents' symbols and elaboration, without a restart (pdk spec §9.2). Open
+    /// documents and their undo history stay; refused while an open document's library is
+    /// no longer declared. Also run after a plugin writes the manifest or lockfile.
+    ProjectReload = "project.reload",
     /// Properties dialog of the selection.
     Props = "properties.edit",
     /// Edit the active document as text; OK applies it as one undoable edit.

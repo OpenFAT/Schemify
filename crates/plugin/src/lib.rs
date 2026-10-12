@@ -242,6 +242,8 @@ pub enum IoOp {
     FsRead,
     /// Write a project-relative file (`write_project`). `args = [path]`, `data` = bytes.
     FsWrite,
+    /// Remove a file or directory tree under `.schemify/` (`write_project`). `args = [path]`.
+    FsRemove,
     /// Run a binary (`spawn:<argv[0]>`, native only). `args` = argv, `data` = stdin.
     Spawn,
     /// HTTP request (`network`). `args = [url]`, `data` = body.
@@ -257,7 +259,7 @@ impl IoOp {
     pub const fn cap(self) -> Cap {
         match self {
             IoOp::FsRead => Cap::ReadProject,
-            IoOp::FsWrite => Cap::WriteProject,
+            IoOp::FsWrite | IoOp::FsRemove => Cap::WriteProject,
             IoOp::Spawn => Cap::Spawn,
             IoOp::Fetch => Cap::Network,
             IoOp::ClipboardGet | IoOp::ClipboardSet => Cap::Clipboard,

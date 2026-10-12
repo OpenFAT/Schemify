@@ -39,6 +39,7 @@ mod sys {
         pub fn log(level: u32, ptr: u32, len: u32);
         pub fn fs_read(path: u32, path_len: u32) -> i32;
         pub fn fs_write(path: u32, path_len: u32, data: u32, data_len: u32) -> i32;
+        pub fn fs_remove(path: u32, path_len: u32) -> i32;
         pub fn spawn(argv: u32, argv_len: u32, stdin: u32, stdin_len: u32) -> i32;
         pub fn fetch(url: u32, url_len: u32, body: u32, body_len: u32) -> i32;
         pub safe fn clipboard_get() -> i32;
@@ -230,6 +231,20 @@ impl Host {
         let p = path.as_bytes();
         // SAFETY: the host only reads the given byte ranges.
         Code::check(unsafe { sys::fs_write(addr(p), len32(p), addr(data), len32(data)) })
+    }
+
+    /// Requests removing a project-relative file or directory tree (capability
+    /// `write_project`, plugin ABI §5). Completion arrives as `Event::IoDone` (status 0, or
+    /// `-E_GONE` when nothing was there).
+    ///
+    /// # Errors
+    ///
+    /// `E_DENIED` without the grant, for a path outside `.schemify/` (or `.schemify` itself),
+    /// or one naming `schemify.project`/`schemify.lock`; `E_SPACE` when the host queue is full.
+    pub fn fs_remove(&self, path: &str) -> Result<u32, Code> {
+        let p = path.as_bytes();
+        // SAFETY: the host only reads the given byte range.
+        Code::check(unsafe { sys::fs_remove(addr(p), len32(p)) })
     }
 
     /// Requests running `argv` (capability `spawn:<argv[0]>`, native only); stdout arrives
