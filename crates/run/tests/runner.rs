@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::{CAP, RC_BENCH, RES, project, rc, run, tmp};
+use common::{CAP, RC_BENCH, RES, project, rc, run, run_dialect, tmp};
 use schemify_doc::{DocHandle, Project};
 use schemify_elab::{Dialect, no_funcs};
 use schemify_run::{
@@ -30,6 +30,7 @@ fn sh(script: &str) -> SimCommand {
         args: ["-c", script, "fake", "{netlist}", "{raw}"]
             .map(String::from)
             .to_vec(),
+        env: Vec::new(),
     }
 }
 
@@ -155,7 +156,7 @@ fn relative_corner_paths_become_absolute_in_the_job_netlist() {
 }
 
 fn digest(p: &Project, top: DocHandle, jobs: &Jobs, env: &[(&str, &str)]) -> schemify_doc::Digest {
-    design(p, top, jobs, env, &mut no_funcs).unwrap()
+    design(p, top, jobs, env, Dialect::Ngspice, &mut no_funcs).unwrap()
 }
 
 #[test]
@@ -222,7 +223,7 @@ fn blocked_designs_and_unnetlistable_jobs() {
         ("cap.shprim", CAP),
         ("tb.shbench", &broken),
     ]);
-    match design(&p, top, &Jobs::new(), &[], &mut no_funcs) {
+    match design(&p, top, &Jobs::new(), &[], Dialect::Ngspice, &mut no_funcs) {
         Err(Blocked::Violations(v)) => assert!(v.iter().any(|l| l.starts_with("E001")), "{v:?}"),
         other => panic!("{other:?}"),
     }
@@ -273,6 +274,7 @@ fn simulator_failures_fail_the_job_with_a_reason() {
     let missing = SimCommand {
         path: "no-such-simulator-xyz".into(),
         args: vec![],
+        env: Vec::new(),
     };
     assert!(failure(missing, "fail-missing", hour).contains("not found on PATH"));
     assert!(failure(sh("echo boom >&2; exit 3"), "fail-exit", hour).contains("boom"));
@@ -313,7 +315,7 @@ fn cancel_kills_running_and_drops_queued_jobs() {
     for _ in 0..3 {
         jobs.push(None, None, NO_SAMPLE, &[]).unwrap();
     }
-    let digest = design(&p, top, &jobs, &[], &mut no_funcs).unwrap();
+    let digest = design(&p, top, &jobs, &[], Dialect::Ngspice, &mut no_funcs).unwrap();
     let mut results = Results::new(&plan, digest);
     let dir = tmp("cancel");
     let mut runner = Runner::new(cfg(&dir, &digest, sh("sleep 5"), 1));
@@ -439,7 +441,7 @@ fn body_run(dir: &Path, openvaf: &Path) -> (Plan, Jobs, Results, Runner) {
     let mut jobs = Jobs::new();
     jobs.push(None, None, NO_SAMPLE, &[]).unwrap();
     jobs.push(None, None, NO_SAMPLE, &[]).unwrap();
-    let digest = design(&p, top, &jobs, &[], &mut no_funcs).unwrap();
+    let digest = design(&p, top, &jobs, &[], Dialect::Ngspice, &mut no_funcs).unwrap();
     let mut results = Results::new(&plan, digest);
     let mut c = cfg(dir, &digest, sh(FAKE), 2);
     c.cache = dir.join("cache");
@@ -602,7 +604,7 @@ fn tech_cells_compile_their_pdk_cells_sources() {
     // `core/…` in the `tech` library: the derived row has no directory on disk).
     let fin = p.libs().find("fin").unwrap() as u8;
     assert_eq!(
-        schemify_run::sources(&p, &e),
+        schemify_run::sources(&p, &e, Dialect::Ngspice),
         [schemify_run::Source {
             tool: schemify_run::Tool::Openvaf,
             origin: schemify_run::Origin::File {
@@ -662,4 +664,83 @@ fn project_variable_corner_paths_are_relative_to_the_project_root() {
         from(&bench_dir, "envlib/x.lib")
     );
     assert!(netlist.contains(&want), "{want}\n{netlist}");
+}
+
+/// A Verilog-A cell whose source is its `body`, beside `VRES` (a `file`) in one bench.
+const VGAIN: &str = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\n\
+impl va veriloga\n  model vgain_m\n\nbody va\n  | module vgain(p, n);\n  | endmodule\n";
+const ES_BENCH: &str = "schemify 1 shbench\n\ninst 0aaaaa ./vres\n  at 0 0 R0\n  name N1\n\
+inst 0aaaab ./vgain\n  at 100 0 R0\n  name N2\n\n\
+label 0bbbba 0 0 R0 out\nlabel 0bbbbb 0 20 R0 0\nlabel 0bbbbc 100 0 R0 out\nlabel 0bbbbd 100 20 R0 0\n\nvar R 1\n";
+
+/// A stand-in ESPice: fails unless the netlist loads both sources with `.hdl`, has no OSDI
+/// load, finds them in its working directory and gets `ZIG` from the `sim` row's `env`.
+const FAKE_ESPICE: &str = r#"grep -qx '.hdl "vres.va"' "$1" && grep -qx '.hdl "vgain.va"' "$1" || { echo 'no .hdl' >&2; exit 3; }
+grep -q pre_osdi "$1" && { echo 'pre_osdi' >&2; exit 4; }
+[ -f vres.va ] && [ -f vgain.va ] || { echo 'sources missing' >&2; exit 5; }
+[ "$ZIG" = /fake/zig ] || { echo "ZIG=$ZIG" >&2; exit 6; }
+printf 'Title: fake\nPlotname: Operating Point\nFlags: real\nNo. Variables: 1\nNo. Points: 1\nVariables:\n 0 v(out) voltage\nValues:\n0 1.5\n' > "$2"
+"#;
+
+/// The espice dialect (run spec §5): no compiler runs (OpenVAF is absent), each Verilog-A
+/// source (`file` and `body`) lands in the job directory as `<stem>.va` for `.hdl`, the
+/// simulator gets its `env`, and the design hash differs from the ngspice run's. A
+/// missing source file fails the job naming it.
+#[test]
+fn espice_copies_verilog_a_sources_without_compiling() {
+    let (p, top) = project(&[
+        ("vres.shprim", VRES),
+        ("vgain.shprim", VGAIN),
+        ("tb.shbench", ES_BENCH),
+    ]);
+    let plan = Plan::read(p.doc(top).unwrap()).unwrap();
+    let dir = tmp("espice");
+    std::fs::write(dir.join("vres.va"), "module vres(p, n); endmodule\n").unwrap();
+    let one = || {
+        let mut j = Jobs::new();
+        j.push(None, None, NO_SAMPLE, &[]).unwrap();
+        j
+    };
+    let espice = |c: &mut RunnerConfig| {
+        c.cache = dir.join("cache");
+        c.tools.openvaf = "openvaf-not-installed".into();
+        c.tools.sim = SimCommand {
+            env: vec![("ZIG".into(), "/fake/zig".into())],
+            ..sh(FAKE_ESPICE)
+        };
+    };
+    let (jobs, results, runner) = run_dialect(&p, top, &plan, one(), &[], Dialect::Espice, |d| {
+        let mut c = cfg(&dir, d, sh(FAKE), 1);
+        espice(&mut c);
+        c
+    });
+    let errs: Vec<_> = results.errors().collect();
+    assert_eq!(jobs.states(), [State::Done], "{errs:?}");
+    let job = runner.job_dir(0);
+    assert_eq!(
+        std::fs::read_to_string(job.join("vres.va")).unwrap(),
+        "module vres(p, n); endmodule\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(job.join("vgain.va")).unwrap(),
+        "module vgain(p, n);\nendmodule\n"
+    );
+    assert!(!job.join("vres.osdi").exists() && !dir.join("cache/vres.osdi").exists());
+    let netlist = std::fs::read_to_string(job.join("netlist.cir")).unwrap();
+    assert!(
+        netlist.contains("\n.model vgain_m vgain\n.model vres vres\n"),
+        "{netlist}"
+    );
+    let ng = design(&p, top, &one(), &[], Dialect::Ngspice, &mut no_funcs).unwrap();
+    assert_ne!(*results.design(), ng, "another simulator, another run");
+    // Negative space: the `file` is gone, so the job fails naming it.
+    std::fs::remove_file(dir.join("vres.va")).unwrap();
+    let (jobs, results, _) = run_dialect(&p, top, &plan, one(), &[], Dialect::Espice, |d| {
+        let mut c = cfg(&dir, d, sh(FAKE), 1);
+        espice(&mut c);
+        c
+    });
+    assert_eq!(jobs.states(), [State::Failed]);
+    let msg = results.errors().next().unwrap().2.to_owned();
+    assert!(msg.contains("vres.va"), "{msg}");
 }

@@ -16,7 +16,7 @@ For an instance at hierarchical path `p` (e.g. `/X1/X3`) of cell `c`, in the sel
 3. else the first name in `order` that `c` has;
 4. else `c`'s `default` (or its only impl).
 
-An impl named by 1–2 that `c` lacks is `E031`. The selected impl must support the dialect: `schematic` always; text/leaf impls need a `format <dialect>` (or `spice` fallback for `xyce`) or a default template from §6; otherwise `E013`.
+An impl named by 1–2 that `c` lacks is `E031`; an `inst` rule whose path no instance has is `W037` (§9.8). The selected impl must support the dialect: `schematic` always; text/leaf impls need a `format <dialect>` (or the `spice` fallback for `xyce`, `cdl` and `espice`) or a default template from §7.1; otherwise `E013`.
 
 ## 3. Connectivity (per cell, independent of instance)
 
@@ -70,16 +70,16 @@ For an inherited pin `P` with default net `D` on cell `c`, at instance path `p`:
 
 ### 7.1 Common rules
 
-- Dialect ∈ `ngspice xyce cdl spectre verilog`. `spice` templates serve `ngspice`, `xyce` and `cdl` unless a dialect-specific `format` exists.
+- Dialect ∈ `ngspice espice xyce cdl spectre verilog`. `spice` templates serve `ngspice`, `espice`, `xyce` and `cdl` unless a dialect-specific `format` exists.
 - Instances (or impls) with `ignore true` are not emitted; `ignore open` is not emitted and its pins are left unconnected; `ignore short` is not emitted and all its pin nets are merged into one net (named by §3 rules). Ignored instances still elaborate for checks.
 - Instance lines come from the selected impl's template ([expr.md §6](expr.md)). Default templates when an impl has none:
 
-  | impl lang | ngspice / xyce | cdl |
+  | impl lang | ngspice / espice / xyce | cdl |
   |---|---|---|
   | `schematic` | `X{name} {pins} {cell}` | `X{name} {pins} {cell}` |
   | `spice` (text body) | `X{name} {pins} {cell}` | same |
-  | `veriloga` | `N{name} {pins} {model}` (ngspice OSDI); xyce → `E013` | `E013` |
-  | `verilog` | `A{name} [{in_pins}] [{out_pins}] {model}` (ngspice d_cosim); xyce → `E013` | `E013` |
+  | `veriloga` | `N{name} {pins} {model}` (ngspice OSDI, espice `.hdl`); xyce → `E013` | `E013` |
+  | `verilog` | `A{name} [{in_pins}] [{out_pins}] {model}` (ngspice d_cosim); espice, xyce → `E013` | `E013` |
 
   `in_pins`/`out_pins` are the template identifiers for digital-domain pins by direction.
 - `body` text is emitted once per netlist per (cell, impl), verbatim except for `${NAME}` expansion.
@@ -96,6 +96,15 @@ For an inherited pin `P` with default net `D` on cell `c`, at instance path `p`:
 - Code blocks with lang `spice` or `ngspice` are emitted verbatim.
 
 - **Bus bits in XSPICE vectors (ngspice):** a net that connects to an XSPICE port vector (`[ … ]`, digital-domain pins of `verilog` impls) is spelled with `[k]` → `_k` (`d[0]` → `d_0`) everywhere in that netlist, because ngspice's tokenizer splits `d[0]` inside `[ … ]`. All other bus bits keep the `d[0]` spelling (xschem parity). The nets are those some emitted row writes inside `[ … ]`: a template hole inside brackets (outside holes) naming a pin, `pins`, `in_pins` (the `in` pins) or `out_pins` (the others), and every ordinary pin of a `verilog` impl on its default template. The respelling replaces `[` by `_` and drops `]` (`x[1][2]` → `x_1_2`); when the result is already another net's name, `_` is appended until it is not, so no two nets merge. Ports, instance lines and the name map use the same spelling. (Decided and implemented 2026-10-10; xschem writes `Y_NAND_Ax4x` there and leaves the bit spelled `[4]` elsewhere.)
+
+### 7.2a espice
+
+ESPice reads ngspice decks (`--tokenizer=ngspice`) and compiles Verilog-A itself (its built-in VerA compiler); it refuses OSDI (`pre_osdi` is its `OsdiUnsupported` error). The `espice` dialect is the `ngspice` text with two differences:
+
+- Each Verilog-A source the runner handles (a `file`, or a `body` that is source, §7.6.8) is loaded with one line `.hdl "<stem>.va"` in place of the ngspice `.control` / `pre_osdi <stem>.osdi` / `.endc` block, in the same slot (once per stem, sorted). The runner copies the source into the job directory under that name (run spec §5), so the text names no checkout path (§7.6.14). `.model <model> <stem>` and the `N` instance lines are the ngspice ones.
+- A `verilog` leaf has no default template (ESPice has no XSPICE `d_cosim`): `E013`, unless it has a `format spice`. ESPice's `.hdl` also loads Verilog (`.v`) modules, but how a deck instantiates one is not documented yet; open issue.
+
+Code blocks of lang `spice`, `ngspice` or `espice` are emitted. A precompiled `veriloga` body (no `endmodule` line, SPICE text with its own OSDI load) is emitted as is, so ESPice refuses it: give such cells their Verilog-A source.
 
 ### 7.3 xyce
 
@@ -115,7 +124,7 @@ Where §7.1–§7.5 left a choice open, `crates/netlist` decided as follows; the
 
 1. **API.** `emit(&Elab, Dialect) -> Netlist { text, name_map }`. It never fails: the caller gates on violations (§8). A template that fails to render (`X0xx`, a param without a value `E008`, a lang without a default `E013`) becomes the comment line `* error in <name>: <message>` (`//` for spectre/verilog) and gets no name-map row; an unconnected pin bit (`E011`, `ignore open`) is written `?`. A template that renders nothing emits no line.
 2. **Header:** one comment line `* <top cell> (schemify <dialect>)` (`//` for spectre and verilog; spectre adds `simulator lang=spectre`). No dates, paths or versions, so output is byte-identical across runs and machines.
-3. **Order.** Header; `.global`; bench vars one `.param k=v` per line in name order; corner lines in file order; the top block; code blocks (elab's order); definitions by name (each block: instance lines, then the cell's own code, §7.6.15); once-only text: OSDI `.control`/`pre_osdi <stem>.osdi`/`.endc` blocks by file stem, then generated `.model` lines sorted, then impl bodies by (cell display name, impl name); `.end`. Only definitions reachable through non-ignored rows are emitted, and only impls some emitted row uses contribute once-only text.
+3. **Order.** Header; `.global`; bench vars one `.param k=v` per line in name order; corner lines in file order; the top block; code blocks (elab's order); definitions by name (each block: instance lines, then the cell's own code, §7.6.15); once-only text: OSDI `.control`/`pre_osdi <stem>.osdi`/`.endc` blocks (espice: `.hdl "<stem>.va"` lines, §7.2a) by file stem, then generated `.model` lines sorted, then impl bodies by (cell display name, impl name); `.end`. Only definitions reachable through non-ignored rows are emitted, and only impls some emitted row uses contribute once-only text.
 4. **Instance order:** within a block, lines sort bytewise by emitted name, which is the first whitespace-delimited token of the rendered text (the second for verilog: `<module> <instance> (…);`); ties keep elab's row order. A multi-line template output sorts as one unit.
 5. **Device letters of default templates** (`X` schematic/spice, `N` veriloga, `A` verilog) are added only when the instance name does not already start with that letter, ASCII case-insensitively: `X1` stays `X1`, `M1` becomes `XM1` (so `/X1/M1` ↔ `X1.XM1` holds with xschem-style names). Explicit templates are rendered as written.
 6. **Template identifiers** (expr §6): `name` the local element name (`X1[3]`) in the dialect's spelling; `cell` the definition name for schematic targets, the cell stem for leaves; `model` the impl `model` attr, else the `model` param; `file` the impl `file` attr as written (relative to the cell file); `pins` every connection, ordinary then inherited; a pin by its name up to `[` (bus pins: space-joined bits); `in_pins` the nets of `in` pins, `out_pins` those of every other pin (`out`, `inout`, inherited); `params` the `k=v` of non-computed params whose value differs from the cell default for leaf rows, empty for schematic rows (a specialized subckt takes no params, §6). Builtins shadow pins, pins shadow params. A schematic impl's own `format <dialect>` is used when present (the importer writes `{name} {pins} {cell}`), else the default.
@@ -157,6 +166,7 @@ Severity `E` blocks Run and makes `schemify netlist` exit 1 (unless `--allow-err
 | E034 | E | undefined `${NAME}` in code, body or corner path |
 | E035 | E | unknown corner or config named by the request |
 | E036 | E | inherited pins of one name with different default nets in one definition |
+| W037 | W | config `inst` rule names a path no instance has |
 | I005 | I | waived violation |
 
 Violations are keyed by (code, cell, object id, instance path, param) and sorted bytewise on that key (code text first). A finding true for every path through an object has no path.
@@ -172,7 +182,7 @@ Where §1–§8 left a choice open, `crates/elab` decided as follows; these are 
 5. **Pins bind by name.** A `port` names its component with its pin's bits; every interface pin (ordinary or inherited) binds to the nets named by its bit names, so a label spelled like the pin binds it too. Inside a cell's schematic an inherited pin `P` is the net named `P` (not its default).
 6. **Inherited connections, hierarchically.** A definition takes as ports its cell's declared inherited pins (pin order) and every inherited pin its subtree leaves unresolved (sorted by name), after its ordinary pins. At the top they bind to their default net. An `inherit P <net>` override of a pin propagated from deeper is width-checked where it is resolved (`E011`); one pin name with two defaults in one definition is `E036`.
 7. **`global true` labels** are collected over every schematic reachable from the top (a superset of the selected impls, but path-independent); the editor's single-document view uses its own document's.
-8. **Checks:** `W004` = an instance pin alone in its component; `W016` = a non-global bit net with exactly one connection (instance pin bits, port bits, `inherit` overrides); `W010` per bit net; `E009` on element names after iterated expansion; `E002` once per schematic impl whose ports and pins disagree (alongside the per-object `E012`); `E031` from a `cell` rule has no path, from an `inst` rule the rule's path; a cell with no selectable impl is `E013`.
+8. **Checks:** `W037` = a config `inst` rule whose path no elaborated instance has (a typo, a path without the leading `/`, or a path under an instance this config makes a leaf), one per rule on the top cell with the rule's path and impl; a warning like `W007` (the rule does nothing, the run is still sound), not reported while cells still need opening (§9.14). `W004` = an instance pin alone in its component; `W016` = a non-global bit net with exactly one connection (instance pin bits, port bits, `inherit` overrides); `W010` per bit net; `E009` on element names after iterated expansion; `E002` once per schematic impl whose ports and pins disagree (alongside the per-object `E012`); `E031` from a `cell` rule has no path, from an `inst` rule the rule's path; a cell with no selectable impl is `E013`.
 9. **Specialization text:** the non-computed params as `k=v`, sorted bytewise by `k`, joined by single spaces; numbers in canonical text (expr §7), strings quoted with expression escapes. The hash digits are the Crockford lowercase alphabet of ids, most significant 5 bits first. The default tuple is the cell's defaults evaluated in its own scope. Two definitions of one cell with one tuple but different children (config `inst` rules) both hash `text|name=target,…` (children are named first; targets are child definition names or `cell:impl`). Distinct tuples whose 6 digits collide use all 13. Distinct cells sharing a stem use `<stem>__<6 digits of FNV-1a 64 of lib:dir/stem>` as their base name.
 10. **`ignore`:** the instance attr wins over the selected impl's. An impl-level `short` merges the instance's nets within the definition (renamed to the best name: global, then a definition port, then bytewise smallest).
 11. **Request:** corner `set` lines apply first, then the request's overrides in order (later wins); an override of an unknown var adds it. The default corner/config is the bench's header attr; an unknown name is `E035`. Corner `lib` sections are literal; `temp` is evaluated in the bench scope.

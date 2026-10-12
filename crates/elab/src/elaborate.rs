@@ -38,19 +38,22 @@ pub enum Dialect {
     Spectre,
     /// Structural Verilog.
     Verilog,
+    /// ESPice: ngspice text, except that Verilog-A sources load with `.hdl` (netlist
+    /// spec §7.2a) instead of OSDI, and `verilog` leaves have no default template.
+    Espice,
 }
 
 impl Dialect {
     /// Returns the dialect word (`ngspice`, …).
     pub fn as_str(self) -> &'static str {
-        ["ngspice", "xyce", "cdl", "spectre", "verilog"][self as usize]
+        ["ngspice", "xyce", "cdl", "spectre", "verilog", "espice"][self as usize]
     }
 
     /// `format <dialect>` words an impl may use for this dialect, most specific first
     /// (format spec §4: `spice` serves ngspice, xyce and cdl).
     pub fn format_words(self) -> &'static [&'static str] {
         match self {
-            Dialect::Ngspice => &["spice"],
+            Dialect::Ngspice | Dialect::Espice => &["spice"],
             Dialect::Xyce => &["xyce", "spice"],
             Dialect::Cdl => &["cdl", "spice"],
             Dialect::Spectre => &["spectre"],
@@ -64,6 +67,8 @@ impl Dialect {
         match self {
             Dialect::Cdl => false,
             Dialect::Ngspice => matches!(lang, "spice" | "ngspice"),
+            // ESPice reads ngspice decks: their code too.
+            Dialect::Espice => matches!(lang, "spice" | "ngspice" | "espice"),
             Dialect::Xyce => matches!(lang, "spice" | "xyce"),
             Dialect::Spectre | Dialect::Verilog => lang == self.as_str(),
         }
@@ -314,6 +319,8 @@ pub const DEPTH_MAX: u32 = 1024;
 
 struct Config {
     inst: Vec<(String, String)>,
+    /// Parallel to `inst`: some instance path matched the rule (`W037` otherwise).
+    inst_hit: Vec<bool>,
     cell: Vec<(usize, String)>,
     order: Vec<String>,
 }
@@ -419,6 +426,7 @@ pub fn elaborate<F: Funcs>(
         row_cell: HashMap::new(),
         config: Config {
             inst: Vec::new(),
+            inst_hit: Vec::new(),
             cell: Vec::new(),
             order: Vec::new(),
         },
@@ -494,6 +502,7 @@ pub fn elaborate<F: Funcs>(
     e.discover();
     let top_tuple = e.defaults(0);
     let top_def = e.build_def(0, top_tuple, String::new(), 0);
+    e.unmatched_inst_rules(top_cell);
 
     // ---- names, used flags, globals, bench lines
     e.name_defs();
@@ -596,6 +605,32 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         }
     }
 
+    /// `W037` per config `inst` rule whose path no elaborated instance has (a typo, or a
+    /// path under an impl this config does not select), on the top cell with the rule's
+    /// path. Skipped while cells still need opening: their children were not visited.
+    fn unmatched_inst_rules(&mut self, top_cell: Name) {
+        assert_eq!(self.config.inst.len(), self.config.inst_hit.len());
+        if !self.needs_open.is_empty() {
+            return;
+        }
+        for r in (0..self.config.inst.len()).filter(|&r| !self.config.inst_hit[r]) {
+            let (path, imp) = &self.config.inst[r];
+            let detail = format!(
+                "config `inst` rule `{path} {imp}` names no instance (paths are `/`-joined \
+                 instance names from the bench, e.g. `/X1/X3`)"
+            );
+            let (path, param) = (self.names.intern(path), self.names.intern(imp));
+            self.viol.push(Violation {
+                code: Code::W037,
+                cell: top_cell,
+                object: ObjId::NONE,
+                path,
+                param,
+                detail,
+            });
+        }
+    }
+
     fn request_finding(&mut self, cell: Name, detail: &str) {
         self.viol.push(Violation {
             code: Code::E035,
@@ -620,10 +655,12 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                     .config
                     .order
                     .extend(names.iter().map(|n| (*n).to_owned())),
-                ("inst", [path, imp]) => self
-                    .config
-                    .inst
-                    .push(((*path).to_owned(), (*imp).to_owned())),
+                ("inst", [path, imp]) => {
+                    self.config
+                        .inst
+                        .push(((*path).to_owned(), (*imp).to_owned()));
+                    self.config.inst_hit.push(false);
+                }
                 ("cell", [cellref, imp]) => match self.project.resolve(self.top, cellref) {
                     Ok(row) => self.config.cell.push((row, (*imp).to_owned())),
                     Err(_) => self.viol.push(Violation {
@@ -929,7 +966,11 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             |name: &str, names: &Names| f.impl_name.iter().position(|n| names.get(*n) == name);
         let mut finding = None;
         let mut chosen = None;
-        if let Some((_, imp)) = self.config.inst.iter().find(|(p, _)| p == path) {
+        let rule = self.config.inst.iter().position(|(p, _)| p == path);
+        if let Some(r) = rule {
+            self.config.inst_hit[r] = true;
+        }
+        if let Some((_, imp)) = rule.map(|r| &self.config.inst[r]) {
             match by_name(imp, &self.names) {
                 Some(k) => chosen = Some(k),
                 None => finding = Some((imp.clone(), "inst")),
@@ -1000,8 +1041,10 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         // Spec §7.1 default templates: which langs have one for which dialect.
         let default_ok = matches!(
             (lang, d),
-            ("spice", Dialect::Ngspice | Dialect::Xyce | Dialect::Cdl)
-                | ("veriloga", Dialect::Ngspice)
+            (
+                "spice",
+                Dialect::Ngspice | Dialect::Xyce | Dialect::Cdl | Dialect::Espice
+            ) | ("veriloga", Dialect::Ngspice | Dialect::Espice)
                 | ("verilog", Dialect::Ngspice | Dialect::Verilog)
         );
         if template.is_none() && !default_ok {

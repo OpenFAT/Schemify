@@ -20,7 +20,8 @@ use omnilua::{
 
 use crate::{
     BUDGET, Event, FnId, HOOKS_MAX, KEYMAPS_MAX, Level, MEMORY_MAX, PACKS_MAX, PackSpec,
-    REQUESTS_MAX, ReadFile, Request, SimKind, Source, Table, Target, USER_LAYERS, error,
+    REQUESTS_MAX, ReadFile, Request, SIM_ENV_MAX, SimKind, Source, Table, Target, USER_LAYERS,
+    error,
 };
 
 /// Most functions one config may keep (every keymap and hook, plus rebinding headroom).
@@ -430,6 +431,7 @@ fn get_opt(lua: &Lua, st: &Shared, key: Value) -> omnilua::Result<(Value, Option
         "light" => (Value::Boolean(o.light), None),
         "dim" => (Value::Number(f64::from(o.dim) / 100.0), None),
         "line_width" => (Value::Number(f64::from(o.line_width_tenths) / 10.0), None),
+        "simulator" => (Value::String(lua.create_string(o.simulator.word())?), None),
         // A copy: assigning to one of its entries changes nothing (spec §3).
         "layer_colors" => {
             let t = lua.create_table()?;
@@ -514,6 +516,14 @@ fn set_opt(_: &Lua, st: &Shared, (key, v): (Value, Value)) -> omnilua::Result<Op
             o.line_width_tenths = (w * 10.0).round().clamp(1.0, 100.0) as u8;
         }),
         "layer_colors" => layer_colors(&v).map(|c| o.layer_colors = c),
+        "simulator" => match &v {
+            // A Lua string only: `string` would also take a number.
+            Value::String(_) => [SimKind::Ngspice, SimKind::Espice]
+                .into_iter()
+                .find(|k| string(&v).as_deref() == Some(k.word()))
+                .map(|k| o.simulator = k),
+            _ => None,
+        },
         _ => return Ok(Some(format!("unknown option `{key}`"))),
     };
     Ok(match set {
@@ -617,7 +627,7 @@ fn sim(_: &Lua, st: &Shared, (name, spec): (Value, Value)) -> omnilua::Result<Op
     };
     let Some(kind) = SimKind::ALL.into_iter().find(|k| k.word() == name) else {
         return Ok(Some(format!(
-            "unknown program `{name}` (ngspice, openvaf, iverilog)"
+            "unknown program `{name}` (ngspice, espice, openvaf, iverilog)"
         )));
     };
     let Value::Table(spec) = spec else {
@@ -642,8 +652,46 @@ fn sim(_: &Lua, st: &Shared, (name, spec): (Value, Value)) -> omnilua::Result<Op
             )));
         }
     };
-    st.borrow_mut().table.sims[kind as usize] = Some(crate::Sim { path, args });
+    let env = match field(&spec, "env") {
+        Value::Nil => Vec::new(),
+        Value::Table(t) => match env_pairs(&t) {
+            Some(e) => e,
+            None => {
+                return Ok(Some(format!(
+                    "sim `{name}`: `env` must map at most {SIM_ENV_MAX} names to strings"
+                )));
+            }
+        },
+        _ => {
+            return Ok(Some(format!(
+                "sim `{name}`: `env` must map at most {SIM_ENV_MAX} names to strings"
+            )));
+        }
+    };
+    st.borrow_mut().table.sims[kind as usize] = Some(crate::Sim { path, args, env });
     Ok(None)
+}
+
+/// `{ NAME = "value", … }` as pairs sorted by name (so the table does not depend on Lua's
+/// iteration order); `None` for a key that is not a non-empty string without `=`, a value
+/// that is not a string, or more than [`SIM_ENV_MAX`] entries.
+fn env_pairs(t: &LTable) -> Option<Vec<(String, String)>> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for pair in t.pairs().ok()? {
+        let (k, v): (Value, Value) = pair.ok()?;
+        let Value::String(_) = k else { return None };
+        let k = string(&k).filter(|k| !k.is_empty() && !k.contains(['=', '\0']))?;
+        out.push((k, string(&v)?));
+        if out.len() > SIM_ENV_MAX {
+            return None;
+        }
+    }
+    out.sort_unstable();
+    assert!(
+        out.windows(2).all(|w| w[0].0 < w[1].0),
+        "table keys are unique"
+    );
+    Some(out)
 }
 
 /// The sequence part of `t` as strings; `None` if an element is not a string.

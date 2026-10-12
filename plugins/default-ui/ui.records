@@ -840,6 +840,12 @@ node options.netlist_format_symbol_mode.spice_netlist item
   accel Ctrl+Shift+V
   checked 0
   style radio
+node options.netlist_format_symbol_mode.espice_netlist item
+  parent menu.options.netlist_format_symbol_mode
+  label "ESPice netlist"
+  command sim.dialect.espice
+  checked 0
+  style radio
 node options.netlist_format_symbol_mode.verilog_netlist item
   parent menu.options.netlist_format_symbol_mode
   label "Verilog netlist"
@@ -1411,6 +1417,12 @@ node sim.dialect.ngspice item
   label ngspice
   command sim.dialect
   checked 1
+  style radio
+node sim.dialect.espice item
+  parent menu.simulation.dialect
+  label ESPice
+  command sim.dialect
+  checked 0
   style radio
 node sim.dialect.xyce item
   parent menu.simulation.dialect

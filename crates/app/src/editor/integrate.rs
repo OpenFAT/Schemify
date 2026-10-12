@@ -387,6 +387,11 @@ impl Editor {
                 None
             };
             let probe = probe.unwrap_or_default();
+            // The netlist dialect picks the simulator: espice runs ESPice, any other ngspice.
+            self.sim.dialect = match self.dialect {
+                schemify_elab::Dialect::Espice => schemify_elab::Dialect::Espice,
+                _ => schemify_elab::Dialect::Ngspice,
+            };
             let env = env_refs(&self.env);
             let host = &mut self.host;
             let mut funcs = |name: &str, args: &[Value<'_>]| host.call_fn(name, args);

@@ -726,11 +726,13 @@ impl Editor {
             ..EditOpts::default()
         };
         let layer_colors = parity::user_layer_colors(&user.opts);
+        let dialect = spines::sim_dialect(user);
         // The user config's simulator and compilers (`sim` rows), the simulator overridable.
         #[cfg(not(target_arch = "wasm32"))]
         let tools = {
             let mut t = spines::tools(user);
             if let Some(s) = opts.sim.clone() {
+                t.espice.clone_from(&s);
                 t.sim = s;
             }
             t
@@ -799,7 +801,7 @@ impl Editor {
             hier: None,
             panel: Panel::None,
             blocked: Vec::new(),
-            dialect: Dialect::Ngspice,
+            dialect,
             show_netlist: true,
             op_on: true,
             op_job: None,
@@ -838,6 +840,10 @@ impl Editor {
             next_ticket: 0,
             startup: opts,
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            ed.sim.dialect = dialect;
+        }
         let opened = match &path {
             Some(p) if !platform::is_dir(p) => Some(ed.session.open_path(p)?),
             _ => None,

@@ -35,7 +35,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use schemify_doc::{DocHandle, Project};
-use schemify_elab::{AnnotationRequest, Funcs, Mark, Severity};
+use schemify_elab::{AnnotationRequest, Dialect, Funcs, Mark, Severity};
 use schemify_netlist::NameMap;
 use schemify_plugin::{PluginId, RunRequest};
 use schemify_run::{
@@ -237,6 +237,9 @@ fn tail(path: &Path) -> Vec<String> {
 /// The editor's runs.
 pub struct Sim {
     tools: Tools,
+    /// The dialect new runs netlist for, which picks the simulator: [`Dialect::Ngspice`] or
+    /// [`Dialect::Espice`] (the editor sets it from its netlist dialect before Simulate).
+    pub dialect: Dialect,
     runs: Vec<BenchRun>,
     shown: Option<DocHandle>,
     queue: Vec<Request>,
@@ -276,6 +279,7 @@ impl Sim {
     pub fn new(tools: Tools) -> Sim {
         Sim {
             tools,
+            dialect: Dialect::Ngspice,
             runs: Vec::new(),
             shown: None,
             queue: Vec::new(),
@@ -446,7 +450,8 @@ impl Sim {
         };
         // The optimizer pushes its own candidates: no plan selection.
         let select = simulate.then_some(&select);
-        let mut run = spines::start_run(session, top, select, env, funcs, self.config(session))?;
+        let cfg = self.config(session);
+        let mut run = spines::start_run(session, top, select, env, self.dialect, funcs, cfg)?;
         run.extra = probe.to_owned();
         let kind = match &opt_name {
             Some(n) => {
@@ -637,7 +642,7 @@ impl Sim {
         if self.index_of(top).is_none() || stale {
             let fresh = self.make_room(top).and_then(|()| {
                 let cfg = self.config(session);
-                spines::start_run(session, top, None, env, funcs, cfg)
+                spines::start_run(session, top, None, env, self.dialect, funcs, cfg)
             });
             match fresh {
                 Ok(run) => {
@@ -858,7 +863,8 @@ impl Sim {
         // the run was started (or loaded) with. Each round opens at least one new cell.
         let mut stale = true;
         for _ in 0..=session.project.cells().lib.len() {
-            match schemify_run::design(&session.project, br.bench, &br.base, env, funcs) {
+            let (bench, base, dialect) = (br.bench, &br.base, br.run.dialect);
+            match schemify_run::design(&session.project, bench, base, env, dialect, funcs) {
                 Ok(d) => stale = d != br.run.digest,
                 Err(schemify_run::Blocked::NeedsOpen(rows))
                     if rows.iter().all(|&r| session.open_cell(r as usize).is_ok()) =>
@@ -924,6 +930,9 @@ impl Sim {
             digest,
             finished: Vec::new(),
             extra: String::new(),
+            // A saved run does not record its simulator: it is current only for the one
+            // selected now (the design hash covers the dialect).
+            dialect: self.dialect,
         };
         let name = session_name(session, top);
         self.install(BenchRun {

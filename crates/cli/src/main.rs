@@ -23,11 +23,13 @@ commands:
   diff <A> <B>                         record-level semantic diff of two files
   git-setup                            register the merge driver in this clone
   netlist <cell> [--dialect D] [--config C] [--corner K] [--set VAR=EXPR]...
-          [-o FILE] [--allow-errors]   write the netlist (dialects: ngspice xyce cdl spectre verilog)
+          [-o FILE] [--allow-errors]   write the netlist (dialects: ngspice espice xyce cdl spectre
+                                       verilog; default: schemify.opt.simulator)
   check <cell> [--config C] [--corner K]
                                        report violations (exit 1 on errors)
   run <bench> [--config C]... [--corner K]... [--sweep S]... [--mc M] [--set VAR=EXPR]...
-          [--jobs N]                   simulate a .shbench and print outputs and specs
+          [--jobs N] [--dialect D]     simulate a .shbench and print outputs and specs
+                                       (D: ngspice or espice; default: schemify.opt.simulator)
   pack sync|update|restore|clean|status
                                        manage the user packages of init.lua
   rpc [--listen <socket>]              JSON-RPC command stream on stdio, or on a local socket
@@ -67,7 +69,7 @@ fn main() -> ExitCode {
         "merge-driver" => merge_driver(rest),
         "diff" => diff(rest),
         "git-setup" => git_setup(rest),
-        "netlist" => netlist(rest),
+        "netlist" => netlist(&config, rest),
         "check" => check(rest),
         "run" => run(&config, rest),
         "pack" => schemify_cli::pack::main(&config, rest),
@@ -471,15 +473,26 @@ fn pairs(owned: &[(String, String)]) -> Vec<(&str, &str)> {
         .collect()
 }
 
+/// The `--dialect` of `a`, else the user config's simulator; `None` (reported) for an
+/// unknown word.
+fn dialect(config: &Config, a: &DesignArgs) -> Option<schemify_elab::Dialect> {
+    let Some(word) = a.dialect.as_deref() else {
+        return Some(schemify_cli::spines::sim_dialect(config.table()));
+    };
+    let d = schemify_cli::spines::dialect_of(word);
+    if d.is_none() {
+        eprintln!("unknown dialect `{word}` (ngspice espice xyce cdl spectre verilog)");
+    }
+    d
+}
+
 /// `netlist`: load → elaborate → check → gate → emit (netlist spine).
-fn netlist(args: &[String]) -> u8 {
+fn netlist(config: &Config, args: &[String]) -> u8 {
     let Some(a) = design_args(args) else {
         eprint!("{USAGE}");
         return USAGE_ERROR;
     };
-    let word = a.dialect.as_deref().unwrap_or("ngspice");
-    let Some(dialect) = schemify_cli::spines::dialect_of(word) else {
-        eprintln!("unknown dialect (ngspice xyce cdl spectre verilog)");
+    let Some(dialect) = dialect(config, &a) else {
         return USAGE_ERROR;
     };
     let mut o = match open_design(a.cell.as_deref().expect("parsed")) {
@@ -552,6 +565,14 @@ fn run(config: &Config, args: &[String]) -> u8 {
         eprint!("{USAGE}");
         return USAGE_ERROR;
     };
+    let dialect = match dialect(config, &a) {
+        Some(d @ (schemify_elab::Dialect::Ngspice | schemify_elab::Dialect::Espice)) => d,
+        Some(d) => {
+            eprintln!("run: no simulator for `{}` (ngspice or espice)", d.as_str());
+            return USAGE_ERROR;
+        }
+        None => return USAGE_ERROR,
+    };
     let mut o = match open_design(a.cell.as_deref().expect("parsed")) {
         Ok(o) => o,
         Err(c) => return c,
@@ -584,6 +605,7 @@ fn run(config: &Config, args: &[String]) -> u8 {
         top,
         Some(&select),
         &env,
+        dialect,
         &mut schemify_elab::no_funcs,
         |digest| {
             let mut cfg = run::RunnerConfig::new(&root, digest);
