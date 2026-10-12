@@ -516,6 +516,51 @@ fn golden_editor_light_selection() {
     check_golden("editor_light_selection", px);
 }
 
+/// The default UI's "Modern" preset (View → Modern theme, `plugins/default-ui/modern.records`)
+/// over the dark and light canvas: one golden each. Toggling it twice restores the parity look.
+#[test]
+fn golden_editor_modern() {
+    let mut s = Session::open("inv", "top.shcomp", "golden-modern", true);
+    let rgb = |px: &schemify_render::Pixmap, x, y| {
+        let c = px.sample(x, y);
+        (c.r, c.g, c.b)
+    };
+    // Parity: xschem's black canvas and Tk-grey menubar.
+    let parity = s.render();
+    assert_eq!(rgb(&parity, 1100, 200), (0, 0, 0));
+    assert_eq!(rgb(&parity, 1100, 5), (0xd9, 0xd9, 0xd9));
+    s.ed.command("view.theme_modern", "");
+    s.frame(InputEvents::default());
+    let px = s.render();
+    // The canvas background is the preset's (15171b), not xschem's black.
+    assert_eq!(
+        rgb(&px, 1100, 200),
+        (0x15, 0x17, 0x1b),
+        "the preset's canvas"
+    );
+    assert_eq!(
+        rgb(&px, 1100, 5),
+        (0x1e, 0x21, 0x27),
+        "the preset's menubar"
+    );
+    check_golden("editor_modern_dark", px);
+    s.click((10 * U, 0));
+    s.key("Shift+O");
+    assert!(s.ed.opts.light);
+    check_golden("editor_modern_light_selection", s.render());
+    s.key("Shift+O");
+    s.key("Esc");
+    s.ed.command("view.theme_modern", "");
+    s.frame(InputEvents::default());
+    let back = s.render();
+    assert_eq!(
+        rgb(&back, 1100, 200),
+        (0, 0, 0),
+        "toggling back restores parity"
+    );
+    assert_eq!(rgb(&back, 1100, 5), (0xd9, 0xd9, 0xd9));
+}
+
 /// Pointer moves rewrite the status line (coordinates) every frame; the UI string table stays
 /// the same size (live strings), so a long session cannot fill it.
 #[test]

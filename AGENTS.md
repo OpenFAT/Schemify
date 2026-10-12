@@ -11,6 +11,7 @@ Load these **before writing or reviewing any code** (Claude Code: `Skill` tool; 
 | `data-oriented-design` | Every struct/table layout. Answer the six questions in writing first; narrowest types; SoA by default; existence-based tables; handles not pointers. |
 | `simd-loops` | Every hot loop over large data (parsers, connectivity, netlist emission, waveform columns). Triage first; scalar loop stays as tail + oracle. |
 | `doc-comments` | Every `pub` item. Each `///` carries a fact the signature cannot (precondition, invalidation, ownership, failure, cost, why). |
+| `analog-eda-ux`, `schemify-theme`, `schemify-ui-loop`, `schemify-symbols` (repo `.claude/skills/`) | Any UI or visual change: designer-taste rules + checklist, colour tokens + `check_theme.py` gate, edit → render → critique → bless loop, device-symbol kit. Evidence: [docs/research/eda-ui-preferences.md](docs/research/eda-ui-preferences.md), [symbol-conventions.md](docs/research/symbol-conventions.md). |
 | `codebase-clean-code` | Program shape: tables, transforms, one spine per pipeline, single owner per table, variation by data. State the change radius before coding a feature. |
 
 ## Read before touching code

@@ -769,6 +769,11 @@ node view.toggle_colorscheme item
   label "Toggle colorscheme"
   command view.toggle_colorscheme
   accel Shift+O
+node view.theme_modern item
+  parent menu.view
+  label "Modern theme"
+  command view.theme_modern
+  checked 0
 node view.dim_colors item
   parent menu.view
   label "Dim colors"
