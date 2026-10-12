@@ -182,6 +182,8 @@ exactly to the totals.
 | System-font fallback for glyphs outside the subset (fontique `system`, dlopen'ed fontconfig) | 0 | ≈ +65 K | fontique, fontconfig-sys symbols |
 | winit without `wayland-csd-adwaita` | 0 | ≈ −309 K | tiny-skia, ttf-parser, ab_glyph, sctk-adwaita symbols |
 | Lua 5.4 user config + package manager (phase 2: mlua, vendored Lua, `config`, `pack`) | ≈ +350 K | ≈ +330 K | core built before/after; probe: mlua +434 K at opt 3 |
+| mlua + C Lua → omnilua (pure Rust, every target; 2026-10-12): core 2,565,216 → 3,589,264 | +1,024 K | — | core built before/after; omnilua's `lua_*` crates ≈ 830 K of symbols at opt 3 |
+| omnilua's crates at `opt-level = "z"` (cold: startup, keymap/hook calls) | −369 K (3,589,264 → 3,220,624) | — | core built before/after |
 | `[profile.release.package]`: cold crates at `opt-level = "z"`, GPU setup at `"s"` | −352 K | −2,945 K | built with and without the table |
 | Linux: no unwind tables, packed relative relocations (DT_RELR) | −131 K | −1,364 K | built with and without the flags |
 

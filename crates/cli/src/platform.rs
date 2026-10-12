@@ -1,4 +1,4 @@
-//! The OS boundary (ARCHITECTURE: only `app` talks to the OS), split by `cfg` (D31):
+//! The OS boundary (ARCHITECTURE: only `cli` and `app` talk to the OS), split by `cfg` (D31):
 //! native and WASI builds use `std::fs`, child processes and the OS clipboard tools; the web
 //! build (`wasm32-unknown-unknown`) keeps OPFS in a synchronous in-memory table written back
 //! asynchronously, uses the async Clipboard API, and turns exports into downloads (web spec,
@@ -286,8 +286,7 @@ mod imp {
 /// Panics if `argv` is empty.
 pub fn spawn(cwd: &Path, argv: &[String], stdin: &[u8]) -> (i32, Vec<u8>) {
     assert!(!argv.is_empty(), "spawn needs a binary");
-    let (status, out) = imp::spawn(cwd, argv, stdin);
-    (status, out)
+    imp::spawn(cwd, argv, stdin)
 }
 
 /// A child process started by [`spawn_start`]: poll it with [`Spawned::try_finish`].

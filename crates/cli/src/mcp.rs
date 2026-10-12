@@ -8,9 +8,7 @@
 
 use std::io::{self, BufRead, Write};
 
-use crate::rpc::{
-    self, Frame, Headless, INVALID_PARAMS, Json, METHOD_NOT_FOUND, METHODS, PARSE_ERROR,
-};
+use crate::rpc::{self, Headless, INVALID_PARAMS, Json, METHOD_NOT_FOUND, METHODS};
 
 /// The protocol revision answered when the client asks for one this bridge does not list.
 pub const PROTOCOL: &str = "2025-06-18";
@@ -24,27 +22,7 @@ pub const PROTOCOLS: [&str; 3] = ["2024-11-05", "2025-03-26", "2025-06-18"];
 ///
 /// I/O errors of `input` or `output` only; every request-level failure is a response.
 pub fn serve<R: BufRead, W: Write>(input: &mut R, output: &mut W, h: &Headless) -> io::Result<()> {
-    let mut buf = Vec::new();
-    // Bounded by the input: every pass consumes a line.
-    loop {
-        let reply = match rpc::read_frame(input, &mut buf)? {
-            Frame::End => return Ok(()),
-            Frame::TooLong => Some(rpc::error(&Json::Null, PARSE_ERROR, "line over 16 MiB")),
-            Frame::Line if buf.iter().all(u8::is_ascii_whitespace) => None,
-            Frame::Line => match rpc::decode(&buf) {
-                Err(reply) => Some(reply),
-                Ok(req) => req.id.map(|id| match call(h, &req.method, &req.params) {
-                    Ok(v) => rpc::result(&id, &v),
-                    Err((code, msg)) => rpc::error(&id, code, &msg),
-                }),
-            },
-        };
-        if let Some(reply) = reply {
-            assert!(reply.ends_with('\n'));
-            output.write_all(reply.as_bytes())?;
-            output.flush()?;
-        }
-    }
+    rpc::serve_with(input, output, |method, params| call(h, method, params))
 }
 
 /// One MCP method.

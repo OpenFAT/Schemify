@@ -7,7 +7,8 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use schemify_cli::spines::{OpenError, Opened};
+use schemify_cli::platform::write_atomic;
+use schemify_cli::spines::{OpenError, Opened, env_pairs};
 use schemify_config::{Config, Level, Request, Startup};
 use schemify_format as format;
 
@@ -194,8 +195,8 @@ fn mcp(start: &Startup, args: &[String]) -> u8 {
 
 /// Reads a file, mapping I/O errors to a printed message.
 fn read(path: &str) -> Result<Vec<u8>, u8> {
-    std::fs::read(path).map_err(|e| {
-        eprintln!("{path}: {e}");
+    schemify_cli::platform::read(Path::new(path)).map_err(|e| {
+        eprintln!("{e}");
         USAGE_ERROR
     })
 }
@@ -239,7 +240,7 @@ fn fmt(args: &[String]) -> u8 {
             eprintln!("{path}: not in canonical form");
             worst = worst.max(DESIGN_ERROR);
         } else if let Err(e) = write_atomic(Path::new(path), canonical.as_bytes()) {
-            eprintln!("{path}: {e}");
+            eprintln!("{e}");
             return USAGE_ERROR;
         }
     }
@@ -266,7 +267,7 @@ fn merge_driver(args: &[String]) -> u8 {
     };
     let merged = format::merge3(&od, &ad, &bd);
     if let Err(e) = write_atomic(Path::new(a), merged.text.as_bytes()) {
-        eprintln!("{a}: {e}");
+        eprintln!("{e}");
         return USAGE_ERROR;
     }
     if merged.conflicts > 0 {
@@ -382,15 +383,6 @@ fn git_setup(args: &[String]) -> u8 {
     OK
 }
 
-/// Writes `bytes` to a sibling temp file, then renames it over `path`, so a
-/// crash never leaves a half-written design file (edits spec §5).
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".schemify-tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
-}
-
 // ---------------------------------------------------------------- design spines
 
 /// Flags shared by `netlist`, `check` and `run`.
@@ -431,11 +423,6 @@ fn design_args(args: &[String]) -> Option<DesignArgs> {
         }
     }
     a.cell.is_some().then_some(a)
-}
-
-/// The process environment for `${NAME}` expansion (netlist spec §7.1).
-fn env_pairs() -> Vec<(String, String)> {
-    schemify_cli::spines::env_pairs()
 }
 
 fn open_design(file: &str) -> Result<Opened, u8> {
@@ -480,8 +467,12 @@ fn report(e: &schemify_elab::Elab) -> bool {
     errors
 }
 
-fn dialect_of(word: Option<&str>) -> Option<schemify_elab::Dialect> {
-    schemify_cli::spines::dialect_of(word.unwrap_or("ngspice"))
+/// Borrows owned `(key, value)` pairs as the `&str` pairs the elab and run requests take.
+fn pairs(owned: &[(String, String)]) -> Vec<(&str, &str)> {
+    owned
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect()
 }
 
 /// `netlist`: load → elaborate → check → gate → emit (netlist spine).
@@ -490,7 +481,8 @@ fn netlist(args: &[String]) -> u8 {
         eprint!("{USAGE}");
         return USAGE_ERROR;
     };
-    let Some(dialect) = dialect_of(a.dialect.as_deref()) else {
+    let word = a.dialect.as_deref().unwrap_or("ngspice");
+    let Some(dialect) = schemify_cli::spines::dialect_of(word) else {
         eprintln!("unknown dialect (ngspice xyce cdl spectre verilog)");
         return USAGE_ERROR;
     };
@@ -499,12 +491,8 @@ fn netlist(args: &[String]) -> u8 {
         Err(c) => return c,
     };
     let env = env_pairs();
-    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    let sets: Vec<(&str, &str)> = a
-        .sets
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
+    let env = pairs(&env);
+    let sets = pairs(&a.sets);
     let req = schemify_elab::Request {
         config: a.configs.first().map(String::as_str),
         corner: a.corners.first().map(String::as_str),
@@ -523,8 +511,8 @@ fn netlist(args: &[String]) -> u8 {
     let text = schemify_netlist::emit(&e, dialect).text;
     match &a.out {
         Some(out) => {
-            if let Err(err) = write_atomic(Path::new(out), text.as_bytes()) {
-                eprintln!("{out}: {err}");
+            if let Err(e) = write_atomic(Path::new(out), text.as_bytes()) {
+                eprintln!("{e}");
                 return USAGE_ERROR;
             }
         }
@@ -544,7 +532,7 @@ fn check(args: &[String]) -> u8 {
         Err(c) => return c,
     };
     let env = env_pairs();
-    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let env = pairs(&env);
     let req = schemify_elab::Request {
         config: a.configs.first().map(String::as_str),
         corner: a.corners.first().map(String::as_str),
@@ -573,15 +561,11 @@ fn run(config: &Config, args: &[String]) -> u8 {
         Err(c) => return c,
     };
     let env = env_pairs();
-    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let env = pairs(&env);
     let configs: Vec<&str> = a.configs.iter().map(String::as_str).collect();
     let corners: Vec<&str> = a.corners.iter().map(String::as_str).collect();
     let sweeps: Vec<&str> = a.sweeps.iter().map(String::as_str).collect();
-    let sets: Vec<(&str, &str)> = a
-        .sets
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
+    let sets = pairs(&a.sets);
     let select = run::Select {
         configs: &configs,
         corners: &corners,

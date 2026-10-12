@@ -202,11 +202,8 @@ pub fn rel_path(dir: &Path, path: &Path) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("/"))
 }
 
-/// `p` made absolute against the working directory.
+/// `p` made absolute against the working directory (`.` components dropped, `..` and
+/// symlinks kept); `p` itself when there is no working directory (the web) or it is empty.
 pub fn absolute(p: &Path) -> PathBuf {
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        std::env::current_dir().map_or_else(|_| p.to_path_buf(), |d| d.join(p))
-    }
+    std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
 }
