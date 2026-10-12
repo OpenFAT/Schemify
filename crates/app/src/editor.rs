@@ -48,6 +48,7 @@ use schemify_ui::{
     Button, CommandRequests, InputEvent, InputEvents, Layer, Mods, Routed, route_input,
 };
 
+use crate::cell;
 use crate::checks::Members;
 use crate::commands::{Cmd, Commands, Target};
 use crate::docs::{self, Page, quote as q};
@@ -2016,6 +2017,65 @@ impl Editor {
                     self.scene_dirty = true;
                 }
                 debug_assert_eq!(self.active().map(|(_, v)| v), Some(want));
+            }
+            Cmd::CellToggle => {
+                let a = self.session.active;
+                if let Some(t) = self.session.tabs.get_mut(a) {
+                    t.cell = !t.cell;
+                }
+            }
+            Cmd::CellSet => {
+                // From the panel the node is the field; from a script (RPC, init.lua) the
+                // argument is `<field id> <value>`.
+                let (node, arg) = if node.is_empty() {
+                    arg.split_once(' ').unwrap_or((arg, ""))
+                } else {
+                    (node, arg)
+                };
+                let Some((field, choice)) = cell::parse_field(node) else {
+                    return false;
+                };
+                let value = choice.unwrap_or(arg);
+                match self.with_doc(h, |d, _| Some(cell::set_ops(d, field, value))) {
+                    Some(Ok(ops)) => self.commit(reqs, h, "edit cell", ops),
+                    Some(Err(why)) => self.session.status = why,
+                    None => return false,
+                }
+            }
+            Cmd::CellAddParam => {
+                let ops = self.with_doc(h, |d, _| cell::add_param_ops(d));
+                self.commit(reqs, h, "add parameter", ops);
+            }
+            Cmd::CellAddImpl => {
+                let lang = node.strip_prefix("cell.add_impl.").unwrap_or(arg);
+                match self.with_doc(h, |d, _| Some(cell::add_impl_ops(d, lang))) {
+                    Some(Ok(ops)) => self.commit(reqs, h, "add implementation", ops),
+                    Some(Err(why)) => self.session.status = why,
+                    None => return false,
+                }
+            }
+            Cmd::CellDelete => {
+                let node = if node.is_empty() { arg } else { node };
+                let ops = self.with_doc(h, |d, _| {
+                    if let Some(r) = cell::button_row(node, "param", "del") {
+                        cell::delete_param_ops(d, r)
+                    } else if let Some(r) = cell::button_row(node, "impl", "del") {
+                        cell::delete_impl_ops(d, r)
+                    } else {
+                        Vec::new()
+                    }
+                });
+                self.commit(reqs, h, "delete", ops);
+            }
+            Cmd::CellPinUp | Cmd::CellPinDown => {
+                let node = if node.is_empty() { arg } else { node };
+                let up = cmd == Cmd::CellPinUp;
+                let action = if up { "up" } else { "down" };
+                let Some(r) = cell::button_row(node, "pin", action) else {
+                    return false;
+                };
+                let ops = self.with_doc(h, |d, _| cell::move_pin_ops(d, r, up));
+                self.commit(reqs, h, "reorder pins", ops);
             }
             Cmd::DocsSelect => self.page.sel = docs::row_of(node),
             Cmd::DocsEdit => {
@@ -4044,11 +4104,26 @@ impl Editor {
                     let _ = writeln!(t, "set {id} style {style}");
                     let _ = writeln!(t, "set {id} disabled {}", u8::from(!has));
                 }
-                let docs = s.tabs.get(s.active).is_some_and(|tab| tab.docs);
-                let style = if docs { "viewsw-on" } else { "viewsw" };
-                let _ = writeln!(t, "set switch.docs style {style}");
+                let tab = s.tabs.get(s.active);
+                for (id, on) in [
+                    ("switch.docs", tab.is_some_and(|tab| tab.docs)),
+                    ("switch.cell", tab.is_some_and(|tab| tab.cell)),
+                ] {
+                    let style = if on { "viewsw-on" } else { "viewsw" };
+                    let _ = writeln!(t, "set {id} style {style}");
+                }
             }
             None => t.push_str("remove view.switch\n"),
+        }
+        // The cell settings panel: the active cell's header, pins, params and impls.
+        let shown = s.text_view().is_none() && s.tabs.get(s.active).is_some_and(|tab| tab.cell);
+        match self
+            .active()
+            .filter(|_| shown)
+            .and_then(|(h, _)| s.project.doc(h))
+        {
+            Some(doc) => cell::contribute(&mut t, doc),
+            None => t.push_str("remove cell.pane\n"),
         }
         match &self.dialog {
             Dialog::None => {}

@@ -26,6 +26,9 @@
 //!   `switch.schematic`, `switch.symbol`, `switch.docs`: the app sets each one's `style` to
 //!   `viewsw-on`, `viewsw` or `viewsw-off` and `disabled` on the side the file kind lacks, and
 //!   removes `view.switch` in a text tab;
+//! - `cell.pane` with the `cell.bar` toolbar and the `cell.page` scroll node (the cell settings
+//!   panel, `view.cell`): the app removes `cell.pane` while hidden and adds its rows under
+//!   `cell.page` (`crates/app/src/cell.rs`);
 //! - `dialog.enter_text` with `dialog.enter_text.title` / `.input` (command
 //!   `dialog.enter_text.ok`);
 //! - `dialog.choose` with `dialog.choose.title`, `.filter` (command `choose.filter`) and

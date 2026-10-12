@@ -28,6 +28,21 @@ macro_rules! commands {
 }
 
 commands! {
+    /// Cell panel: add an impl of the language its node id names (`cell.add_impl.<lang>`;
+    /// from a script, the language as argument).
+    CellAddImpl = "cell.add_impl",
+    /// Cell panel: add a parameter.
+    CellAddParam = "cell.add_param",
+    /// Cell panel: delete the parameter or impl its node id (or argument) names
+    /// (`cell.param.<r>.del`, `cell.impl.<r>.del`).
+    CellDelete = "cell.delete",
+    /// Cell panel: move a pin one place later in port order.
+    CellPinDown = "cell.pin_down",
+    /// Cell panel: move a pin one place earlier in port order.
+    CellPinUp = "cell.pin_up",
+    /// Cell panel: a field submitted (Enter; Ctrl+Enter in a body; a dropdown choice). From a
+    /// script the argument is `<field id> <value>` (ids in `cell.rs`).
+    CellSet = "cell.set",
     /// Click on a row of the checks panel: select and zoom to its object.
     ChecksPick = "checks.pick",
     /// Enter in the chooser filter.
@@ -412,6 +427,8 @@ commands! {
     SelectConnected = "tools.select_all_connected_wires_labels_pins",
     /// As `SelectConnected`, stopping at junctions of three or more wires.
     SelectConnectedStop = "tools.select_conn_wires_stop_at_junctions",
+    /// Show / hide the active tab's cell settings panel.
+    CellToggle = "view.cell",
     /// Color of the current drawing layer: dialog, or `rrggbb` as argument.
     LayerColor = "view.change_current_layer_color",
     /// Show / hide the checks panel.

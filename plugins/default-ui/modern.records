@@ -285,3 +285,26 @@ style canvas.light.17
   fg 5c180a
 style canvas.light.21
   fg 959504
+
+# --- cell settings panel --------------------------------------------------------------------------
+
+style cell-pane
+  bg 1e2127
+  border-color 3a3f48
+
+style cell-section
+  fg 7fb0ff
+
+style cell-block
+  bg 23262c
+
+style cell-key
+  fg 8b919a
+
+style cell-input
+  bg 15171b
+  border-color 3a3f48
+
+style cell-body
+  bg 15171b
+  border-color 3a3f48

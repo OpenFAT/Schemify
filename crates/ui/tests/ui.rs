@@ -251,8 +251,12 @@ fn layout_stacks_bars_and_fills_canvas() {
         (canvas.w + SPLIT_GAP, canvas.y, canvas.h),
         "beyond the split's divider"
     );
-    assert_eq!(canvas.w + SPLIT_GAP + docs.w, VIEW.0);
+    // Then the cell settings pane (likewise removed by the app while hidden).
+    let cell = r("cell.pane");
+    assert_eq!(cell.x, docs.x + docs.w + SPLIT_GAP);
+    assert_eq!(canvas.w + SPLIT_GAP + docs.w + SPLIT_GAP + cell.w, VIEW.0);
     assert_eq!(docs.w, 560.0, "the theme's docs-pane width");
+    assert_eq!(cell.w, 380.0, "the theme's cell-pane width");
     let (file, edit) = (r("menu.file"), r("menu.edit"));
     assert!(file.x < edit.x && (file.y - edit.y).abs() < 0.5 && file.x + file.w <= edit.x + 0.5);
     // The overlay holds only the canvas's floats (the view switcher): no dialog, no popup.
@@ -929,9 +933,10 @@ fn split_divider_drags_the_second_pane() {
         d2.w,
         docs.w
     );
+    let cell = r(&f, "cell.pane").w;
     assert!(
-        (c2.w + SPLIT_GAP + d2.w - VIEW.0).abs() <= 1.0,
-        "the first pane takes the rest"
+        (c2.w + SPLIT_GAP + d2.w + SPLIT_GAP + cell - VIEW.0).abs() <= 1.0,
+        "the first pane takes the rest; a third pane keeps its width"
     );
     // After the release a move drags nothing.
     let mut ev = InputEvents::default();

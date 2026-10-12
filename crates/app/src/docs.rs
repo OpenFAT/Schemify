@@ -518,12 +518,14 @@ fn eval_in_cell(src: &str, cell: &CellState) -> Option<f64> {
     }
 }
 
-fn node(t: &mut String, id: &str, kind: &str, parent: &str) {
+/// Writes a `node` record header: `id` of `kind` under `parent`.
+pub(crate) fn node(t: &mut String, id: &str, kind: &str, parent: &str) {
     let _ = writeln!(t, "node {id} {kind}");
     let _ = writeln!(t, "  parent {parent}");
 }
 
-fn attr(t: &mut String, key: &str, value: &str) {
+/// Writes one quoted attribute line of the current node.
+pub(crate) fn attr(t: &mut String, key: &str, value: &str) {
     let _ = writeln!(t, "  {key} {}", quote(value));
 }
 

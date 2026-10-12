@@ -67,6 +67,8 @@ pub struct Tab {
     /// The docs page is shown beside the canvas (`view.docs`); starts on when the opened
     /// document has doc blocks.
     pub docs: bool,
+    /// The cell settings panel is shown beside the canvas (`view.cell`).
+    pub cell: bool,
     /// A read-only text view (a netlist, xschem's "show netlist") shown instead of the
     /// canvas; `stack` then holds the level it was made from, which editing commands skip.
     pub text: Option<TextView>,
@@ -488,6 +490,7 @@ impl Session {
                 ends: Vec::new(),
             }],
             docs,
+            cell: false,
             text: None,
         });
         self.active = self.tabs.len() - 1;
@@ -516,6 +519,7 @@ impl Session {
         self.tabs.push(Tab {
             stack: vec![level],
             docs: false,
+            cell: false,
             text: Some(view),
         });
         self.active = self.tabs.len() - 1;

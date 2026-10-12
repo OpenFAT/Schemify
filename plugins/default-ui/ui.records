@@ -354,6 +354,66 @@ style dialog-buttons
   dir row
   gap 8
 
+# Cell settings panel (`view.cell`): the app adds sections, blocks and key/value rows under
+# `cell.page`.
+style cell-pane
+  bg ffffff
+  dir column
+  width 380
+  border 1
+  border-color a0a0a0
+
+style cell-page
+  grow 1
+  dir column
+  pad 10
+  pad-y 8
+  gap 4
+
+style cell-section
+  font 14
+  pad-y 6
+  fg 1a3a8a
+
+style cell-block
+  dir column
+  gap 2
+  pad 6
+  pad-y 4
+  bg f4f4f4
+
+style cell-row
+  dir row
+  gap 6
+  height 24
+
+style cell-key
+  width 110
+  font 12
+  fg 404040
+
+style cell-input
+  bg ffffff
+  border 1
+  border-color d0d0d0
+  grow 1
+  pad 4
+
+style cell-title
+  font 13
+  pad-y 2
+
+style cell-bar
+  dir row
+  gap 4
+
+style cell-body
+  bg ffffff
+  border 1
+  border-color d0d0d0
+  font 12
+  height 120
+
 # View switcher floating over the canvas (a child of `canvas`): the app sets each button's
 # style to viewsw-on (shown), viewsw (available) or viewsw-off (the file kind lacks it, disabled).
 style view-switch
@@ -767,6 +827,10 @@ node view.docs item
   label "Docs page"
   command view.docs
   accel Alt+D
+node view.cell item
+  parent menu.view
+  label "Cell settings"
+  command view.cell
 node view.fullscreen item
   parent menu.view
   label Fullscreen
@@ -1653,6 +1717,12 @@ node switch.docs button
   command view.docs
   tooltip "Docs page (Alt+D)"
   style viewsw
+node switch.cell button
+  parent view.switch
+  label Settings
+  command view.cell
+  tooltip "Cell settings: header, pins, parameters, implementations"
+  style viewsw
 node docs.pane panel
   parent work
   style docs-pane
@@ -1696,6 +1766,27 @@ node docs.close button
 node docs.page scroll
   parent docs.pane
   style docs-page
+node cell.pane panel
+  parent work
+  style cell-pane
+node cell.bar toolbar
+  parent cell.pane
+  style docs-bar
+node cell.title label
+  parent cell.bar
+  label "Cell settings"
+  style docs-title
+node cell.bar.spacer panel
+  parent cell.bar
+  style spacer
+node cell.close button
+  parent cell.bar
+  label x
+  command view.cell
+  tooltip "Hide the cell settings"
+node cell.page scroll
+  parent cell.pane
+  style cell-page
 
 # The app puts the checks panel (`view.checks`) or the results table (`view.results`) here.
 node bottom panel
