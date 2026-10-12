@@ -3,8 +3,8 @@
 //! minimal-parentheses printer (spec §3 precedence), and proptest generators.
 //! Test-only; slow and allocation-heavy on purpose.
 
-use num_complex::Complex64;
 use proptest::prelude::*;
+use schemify_expr::dmath::Complex;
 use schemify_expr::{Code, Value};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -198,7 +198,7 @@ fn fin(x: f64) -> R {
     }
 }
 
-fn cfin(z: Complex64) -> R {
+fn cfin(z: Complex) -> R {
     if z.re.is_finite() && z.im.is_finite() {
         Ok(RV::C(z.re, z.im))
     } else {
@@ -242,11 +242,11 @@ fn num(v: &RV) -> Result<f64, Code> {
     }
 }
 
-fn cplx(v: &RV) -> Option<Complex64> {
+fn cplx(v: &RV) -> Option<Complex> {
     match v {
-        RV::Int(x) => Some(Complex64::new(*x as f64, 0.0)),
-        RV::Num(x) => Some(Complex64::new(*x, 0.0)),
-        RV::C(a, b) => Some(Complex64::new(*a, *b)),
+        RV::Int(x) => Some(Complex::new(*x as f64, 0.0)),
+        RV::Num(x) => Some(Complex::new(*x, 0.0)),
+        RV::C(a, b) => Some(Complex::new(*a, *b)),
         _ => None,
     }
 }
@@ -402,7 +402,7 @@ fn builtin(f: &str, v: &[RV]) -> R {
         "sqrt" | "exp" | "ln" | "log10" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan"
         | "sinh" | "cosh" | "tanh" => {
             if let RV::C(a, b) = v[0] {
-                let z = Complex64::new(a, b);
+                let z = Complex::new(a, b);
                 return cfin(schemify_expr::dmath::complex_named(f, z).expect("elementary"));
             }
             let x = n0()?;
@@ -487,8 +487,8 @@ fn builtin(f: &str, v: &[RV]) -> R {
         }
         "re" | "im" | "mag" | "ph" | "db" | "conj" => {
             let z = match &v[0] {
-                RV::C(a, b) => Complex64::new(*a, *b),
-                o => Complex64::new(num(o)?, 0.0),
+                RV::C(a, b) => Complex::new(*a, *b),
+                o => Complex::new(num(o)?, 0.0),
             };
             match f {
                 "re" => Ok(RV::Num(z.re)),

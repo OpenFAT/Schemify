@@ -13,10 +13,8 @@
 
 use core::ops::Range;
 
-use num_complex::Complex64;
-
 use crate::compile::{Builtin, Mode, OpKind, Program};
-use crate::dmath;
+use crate::dmath::{self, Complex};
 use crate::eval::{
     PluginValue, Scratch, V, binary, call, call_plugin, fin, load_const, load_value, no_plugins,
     not_bool, op_str, to_value, type_name, unary,
@@ -1042,7 +1040,7 @@ fn settle(x: &[f64], y: &[f64], tol: f64) -> f64 {
 /// 0°. NaN when the crossing does not exist.
 fn margin(gain: bool, re: &[f64], im: &[f64]) -> f64 {
     let n = re.len();
-    let z = |i: usize| Complex64::new(re[i], if im.is_empty() { 0.0 } else { im[i] });
+    let z = |i: usize| Complex::new(re[i], if im.is_empty() { 0.0 } else { im[i] });
     let db = |i: usize| 20.0 * dmath::log10(dmath::norm(z(i)));
     let mut prev_ph = 0.0;
     let mut phase = Vec::with_capacity(n);
@@ -1074,14 +1072,14 @@ fn margin(gain: bool, re: &[f64], im: &[f64]) -> f64 {
 
 /// `m` uniform samples over `[x0, x_end)` by linear interpolation; one
 /// forward pass, so O(n + m). Assumes `xs` non-decreasing (a sweep axis).
-fn resample(xs: &[f64], ys: &[f64], m: usize) -> Vec<Complex64> {
+fn resample(xs: &[f64], ys: &[f64], m: usize) -> Vec<Complex> {
     assert!(
         xs.len() >= 2 && xs.len() == ys.len(),
         "resample needs two points per step"
     );
     let (x0, span) = (xs[0], xs[xs.len() - 1] - xs[0]);
     let mut k = 0;
-    let out: Vec<Complex64> = (0..m)
+    let out: Vec<Complex> = (0..m)
         .map(|i| {
             let t = x0 + span * i as f64 / m as f64;
             while k + 2 < xs.len() && xs[k + 1] <= t {
@@ -1093,7 +1091,7 @@ fn resample(xs: &[f64], ys: &[f64], m: usize) -> Vec<Complex64> {
             } else {
                 ys[k]
             };
-            Complex64::new(y, 0.0)
+            Complex::new(y, 0.0)
         })
         .collect();
     debug_assert_eq!(out.len(), m);

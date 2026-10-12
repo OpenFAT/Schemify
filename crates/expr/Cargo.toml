@@ -9,12 +9,11 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-# Complex arithmetic (scalar complex values, the calculator's columns and `fft`).
-num-complex.workspace = true
 # Pure-Rust libm: transcendentals bit-identical on every target (D32).
 libm.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-# Differential oracle for our `fft` only (src/fft.rs tests); never linked into binaries.
+# Differential oracle for our `fft` and, through its `num_complex` re-export, for
+# `dmath::Complex`; never linked into binaries.
 rustfft.workspace = true
