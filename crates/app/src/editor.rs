@@ -4118,7 +4118,7 @@ pub struct Window {
 }
 
 impl Window {
-    /// Wraps an editor.
+    /// Wraps an editor; the frame clock (`Editor::update`'s `now_ms`) starts at this call.
     pub fn new(ed: Editor) -> Window {
         Window {
             ed,

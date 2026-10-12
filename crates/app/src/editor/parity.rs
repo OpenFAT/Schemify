@@ -1980,7 +1980,7 @@ impl Editor {
             self.session.status = "choose a cell to compare with first".into();
             return;
         };
-        let Some(prev_row) = self.row_of(h) else {
+        let Some(prev_row) = super::row_of_doc(&self.session.project, h).map(|r| r as usize) else {
             return;
         };
         match self.session.open_cell(c.row) {
@@ -2001,18 +2001,6 @@ impl Editor {
             }
             Err(e) => self.session.status = e,
         }
-    }
-
-    /// The indexed cell row of open document `h`, if it is a project cell.
-    fn row_of(&self, h: DocHandle) -> Option<usize> {
-        let path = self.session.path(h)?;
-        let p = &self.session.project;
-        (0..p.cells().lib.len()).find(|&r| {
-            let lib = p.cells().lib[r];
-            self.session
-                .lib_dir(lib)
-                .is_some_and(|d| d.join(crate::session::cell_relpath(p, r)) == path)
-        })
     }
 
     /// Rebuilds the parity decor (`extra`): the comparison (objects added or changed here

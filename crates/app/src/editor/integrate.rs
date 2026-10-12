@@ -72,6 +72,11 @@ pub(super) fn text_tab_cmd(cmd: Cmd) -> bool {
     )
 }
 
+/// Borrows the session's `${NAME}` environment pairs in the shape elab and run take.
+fn env_refs(env: &[(String, String)]) -> Vec<(&str, &str)> {
+    env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
+}
+
 /// The ngspice spelling of an emitted name: ngspice lowercases every name it writes.
 fn spice_case(name: &str) -> String {
     name.to_ascii_lowercase()
@@ -102,11 +107,7 @@ impl Editor {
             .as_ref()
             .is_some_and(|(d, g, _)| *d == top && *g == self.generation);
         if !fresh {
-            let env: Vec<(&str, &str)> = self
-                .env
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
+            let env = env_refs(&self.env);
             let req = Request {
                 config: None,
                 corner: None,
@@ -273,11 +274,7 @@ impl Editor {
             return;
         };
         let dialect = self.dialect;
-        let env: Vec<(&str, &str)> = self
-            .env
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
+        let env = env_refs(&self.env);
         let req = Request {
             config: None,
             corner: None,
@@ -390,11 +387,7 @@ impl Editor {
                 None
             };
             let probe = probe.unwrap_or_default();
-            let env: Vec<(&str, &str)> = self
-                .env
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
+            let env = env_refs(&self.env);
             let host = &mut self.host;
             let mut funcs = |name: &str, args: &[Value<'_>]| host.call_fn(name, args);
             let what = optimize.then_some(arg.trim());
@@ -769,11 +762,7 @@ impl Editor {
             self.results_for = Some(b);
             changed |= self.sim.load_latest(&self.session, b);
         }
-        let env: Vec<(&str, &str)> = self
-            .env
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
+        let env = env_refs(&self.env);
         let host = &mut self.host;
         let mut funcs = |name: &str, args: &[Value<'_>]| host.call_fn(name, args);
         self.sim.serve_queue(&mut self.session, &env, &mut funcs);

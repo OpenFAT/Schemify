@@ -231,14 +231,6 @@ impl Shell {
             })
     }
 
-    /// Health rows caused by plugins (the state contribution's own overrides excluded).
-    pub fn health_rows(&self) -> usize {
-        let state = self.tables.owners.len().saturating_sub(1) as u8;
-        (0..self.tables.health.len())
-            .filter(|&i| self.tables.health.by[i] != state)
-            .count()
-    }
-
     /// The canvas palette for `light` or dark from the `canvas.<theme>.<n>` / `.grid` /
     /// `.sel` selectors (`fg`); layers without a selector keep the built-in xschem dark
     /// colors. Returns the palette and the selection color.
