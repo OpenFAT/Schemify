@@ -1236,29 +1236,6 @@ impl Editor {
         out
     }
 
-    /// Makes the symbol cache current for every cell `d` instantiates.
-    fn refresh_symbols_of(&mut self, d: DocHandle) {
-        let refs: Vec<String> = self.session.project.doc(d).map_or_else(Vec::new, |doc| {
-            let s = doc.strings();
-            doc.instances()
-                .cell
-                .iter()
-                .map(|&x| s.get(x).to_owned())
-                .collect()
-        });
-        for r in refs {
-            let Ok(row) = self.session.project.resolve(d, &r) else {
-                continue;
-            };
-            if let Ok(c) = self.session.open_cell(row) {
-                let epoch = self.session.epoch(c);
-                if let Some(doc) = self.session.project.doc(c) {
-                    self.symbols.refresh(row, c, epoch, doc);
-                }
-            }
-        }
-    }
-
     // ------------------------------------------------------------------ shapes and wires
 
     /// A click while a shape tool is active: adds the point, closes a polygon on its first

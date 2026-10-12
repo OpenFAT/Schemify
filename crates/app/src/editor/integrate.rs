@@ -780,7 +780,7 @@ impl Editor {
         let polled = self.sim.poll(&self.session.project, &env, &mut funcs);
         if self.sim.tables().is_some() {
             self.sim
-                .check_stale(&self.session.project, &env, &mut funcs, self.generation);
+                .check_stale(&mut self.session, &env, &mut funcs, self.generation);
         }
         drop(env);
         for &(p, j) in &polled.run_done {

@@ -357,3 +357,19 @@ fn tabs_open_new_and_switch() {
         "a .shprim opens on its symbol"
     );
 }
+
+#[test]
+fn draws_instances_from_the_library_index_without_opening_their_cells() {
+    let s = Session::open("inv", "top.shcomp", "index-symbols", false);
+    assert_eq!(
+        s.ed.session.project.handles().count(),
+        1,
+        "only the edited cell is open"
+    );
+    let rects = &s.ed.scene().prims.rects.layer;
+    assert!(
+        !rects.contains(&schemify_app::scene::LAYER_MISSING),
+        "every instance resolves to a drawn symbol"
+    );
+    assert!(rects.contains(&5), "pin squares drawn");
+}

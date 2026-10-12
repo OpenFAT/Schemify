@@ -302,7 +302,7 @@ fn walk(seed: u64, steps: usize) {
         .handle;
     let mut symbols = Symbols::default();
     let row = p.resolve(h, "./res").expect("resolves");
-    symbols.refresh(row, res, 0, p.doc(res).unwrap());
+    symbols.refresh(row, Some(res), 0, p.doc(res).unwrap());
     let mut inc = Scene::default();
     scene::build(&mut inc, &p, h, View::Schematic, &symbols, 0, None);
     let (mut updated, mut epoch) = (0, 0u32);

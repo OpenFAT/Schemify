@@ -7,7 +7,7 @@
 //! app::gesture(tool_state, canvas events)              → edit_requests, selection, tool_state
 //! plugin::deliver(plugins, plugin_events, snapshots)   → request_queues (edits, logs, io)
 //! doc::apply_edits(edit_requests ∪ plugin edits)       → doc tables, journal
-//! app::load_symbols(active doc)                        → open symbol cells (I/O)
+//! app::load_symbols(active doc)                        → symbol cache from the library index
 //! elab::CellState::recompute(doc, ops, plugin fns)     → values (D19; incremental per edit)
 //! docs::cache_ops(values) → doc::apply_edits           → D20 `cached` write-back, same undo
 //! elab::apply_annotations(checks, op)                  → annotations (replace per source)
@@ -3696,39 +3696,39 @@ impl Editor {
         true
     }
 
-    /// Opens every cell the active schematic instantiates (their symbols draw it) and
-    /// refreshes the symbol cache. Skipped while nothing changed since the last call.
+    /// Refreshes the symbol cache for the active schematic. Skipped while nothing changed
+    /// since the last call.
     fn load_symbols(&mut self) {
         let Some((h, View::Schematic)) = self.active() else {
             return;
         };
         let key = (h, self.generation);
-        if self.symbols_key == Some(key) {
-            return;
+        if self.symbols_key != Some(key) {
+            self.symbols_key = Some(key);
+            self.refresh_symbols_of(h);
         }
-        self.symbols_key = Some(key);
-        let refs: Vec<String> = {
-            let Some(doc) = self.session.project.doc(h) else {
-                return;
-            };
-            let s = doc.strings();
-            let mut cells: Vec<_> = doc.instances().cell.clone();
-            cells.sort_unstable_by_key(|c| c.0);
-            cells.dedup();
-            cells.iter().map(|&c| s.get(c).to_owned()).collect()
+    }
+
+    /// Makes the symbol cache current for every cell `d` instantiates, from the library
+    /// index (`Project::interface`): an open cell draws its edited document, any other its
+    /// indexed symbol, so nothing is opened. Cost: one resolve and one scan of the open
+    /// documents per distinct cell; a symbol is rebuilt only when its source changed.
+    fn refresh_symbols_of(&mut self, d: DocHandle) {
+        let project = &self.session.project;
+        let Some(doc) = project.doc(d) else {
+            return;
         };
-        for cellref in refs {
-            let Ok(row) = self.session.project.resolve(h, &cellref) else {
+        let mut cells = doc.instances().cell.clone();
+        cells.sort_unstable_by_key(|c| c.0);
+        cells.dedup();
+        for c in cells {
+            let Ok(row) = project.resolve(d, doc.strings().get(c)) else {
                 continue;
             };
-            match self.session.open_cell(row) {
-                Ok(d) => {
-                    let epoch = self.session.epoch(d);
-                    if let Some(doc) = self.session.project.doc(d) {
-                        self.symbols.refresh(row, d, epoch, doc);
-                    }
-                }
-                Err(e) => self.session.status = e,
+            let open = project.open_handle(row);
+            let epoch = open.map_or(0, |o| self.session.epoch(o));
+            if let Some(iface) = project.interface(row) {
+                self.symbols.refresh(row, open, epoch, iface);
             }
         }
     }
