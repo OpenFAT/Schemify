@@ -66,7 +66,7 @@ pub struct Review {
     pub detail: String,
 }
 
-fn review(reason: Reason, detail: impl Into<String>) -> Review {
+pub(crate) fn review(reason: Reason, detail: impl Into<String>) -> Review {
     Review {
         reason,
         detail: detail.into(),
@@ -687,64 +687,32 @@ fn map_word(word: &str, call: bool, mode: ExprMode, known: &[String]) -> Option<
 /// Lexes a SPICE number at the start of `s`: returns the expr literal and the bytes
 /// consumed. `None` when a digit run is followed by something no literal allows.
 fn number_token(s: &str) -> Option<(String, usize)> {
-    let b = s.as_bytes();
-    let mut i = 0;
-    while i < b.len() && b[i].is_ascii_digit() {
-        i += 1;
-    }
-    let mut mantissa_end = i;
-    if b.get(i) == Some(&b'.') {
-        i += 1;
-        while i < b.len() && b[i].is_ascii_digit() {
-            i += 1;
-        }
-        mantissa_end = i;
-    }
-    if !s[..mantissa_end].bytes().any(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    let mut lit = s[..mantissa_end].to_owned();
-    if lit.ends_with('.') {
-        lit.pop();
-    }
+    let [mantissa, number, letters] = crate::spice::lex_number(s)?;
+    let mut lit = s[..mantissa].trim_end_matches('.').to_owned();
     if lit.starts_with('.') {
         lit.insert(0, '0');
     }
-    if matches!(b.get(i), Some(b'e' | b'E')) {
-        let mut j = i + 1;
-        if matches!(b.get(j), Some(b'+' | b'-')) {
-            j += 1;
-        }
-        let digits = j;
-        while j < b.len() && b[j].is_ascii_digit() {
-            j += 1;
-        }
-        if j > digits {
-            lit.push_str(&s[i..j]);
-            i = j;
-        }
-    }
-    let letters_start = i;
-    while i < b.len() && b[i].is_ascii_alphabetic() {
-        i += 1;
-    }
-    let letters = s[letters_start..i].to_ascii_lowercase();
-    if letters.starts_with("meg") {
+    lit.push_str(&s[mantissa..number]);
+    let unit = s[number..letters].to_ascii_lowercase();
+    if unit.starts_with("meg") {
         lit.push_str("meg");
-    } else if letters.starts_with("mil") {
+    } else if unit.starts_with("mil") {
         lit.push_str("mil");
-    } else if let Some(f) = letters.chars().next() {
+    } else if let Some(f) = unit.chars().next() {
         match f {
             'f' | 'p' | 'n' | 'u' | 'm' | 'k' | 'g' | 't' => lit.push(f),
             'a' => lit.push_str("e-18"),
             _ => {} // unit letters only (`V`, `Hz`, `ohm`): stripped
         }
     }
-    if i < b.len() && (b[i].is_ascii_digit() || b[i] == b'_' || b[i] == b'.') {
+    if s.as_bytes()
+        .get(letters)
+        .is_some_and(|c| c.is_ascii_digit() || *c == b'_' || *c == b'.')
+    {
         return None;
     }
     assert!(!lit.is_empty());
-    Some((lit, i))
+    Some((lit, letters))
 }
 
 /// Returns the expr literal for `text` when the whole text is one SPICE number

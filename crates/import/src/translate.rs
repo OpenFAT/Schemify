@@ -29,11 +29,12 @@ use crate::cdf::{CdfDump, CdfType};
 use crate::core::{self, DeviceMap};
 use crate::limits;
 use crate::report::{Class, Drop, Item, Report};
-use crate::spice::ModelScan;
-use crate::symbol::{self, PinDir, SymKey, SymbolInterface};
+use crate::spice::{self, ModelScan};
+use crate::symbol::{self, PinDir, SymbolInterface};
 use crate::tcl::{self, DrcProc};
 use crate::template::{
-    self, ExprMode, FormatCtx, Reason, Review, is_ident, literal, spice_number, string_value,
+    self, ExprMode, FormatCtx, Reason, Review, is_ident, literal, review, spice_number,
+    string_value,
 };
 use crate::xschem::{self, GlobalTag, NumField, XschemFile};
 
@@ -336,10 +337,6 @@ impl Acc {
             });
         }
     }
-
-    fn review(&mut self, file: u32, line: u32, r: Review, records: u32) {
-        self.item(file, line, Class::Review(r.reason), records, r.detail);
-    }
 }
 
 struct Tables<'o> {
@@ -367,7 +364,7 @@ struct Tables<'o> {
 }
 
 /// Normalises a `/` path lexically (`.`/`..`/empty components).
-pub fn normalize(path: &str) -> String {
+fn normalize(path: &str) -> String {
     let abs = path.starts_with('/');
     let mut parts: Vec<&str> = Vec::new();
     for c in path.split('/') {
@@ -571,14 +568,15 @@ impl<'o> Tables<'o> {
                 continue;
             }
             let iface = symbol::extract(&self.srcs[s].file);
-            let raw = iface.get(SymKey::Type).unwrap_or("").trim().to_owned();
+            let raw = iface.attrs.get("type").unwrap_or("").trim().to_owned();
             let ty = if raw.starts_with("tcleval(") && raw.contains("[symtype]") {
                 "subcircuit".to_owned() // the known default of IHP's `symtype` proc
             } else {
                 raw
             };
             let has_format = iface
-                .get(SymKey::Format)
+                .attrs
+                .get("format")
                 .is_some_and(|f| !f.trim().is_empty());
             let class = match ty.as_str() {
                 "label" => SymClass::Label,
@@ -602,7 +600,11 @@ impl<'o> Tables<'o> {
                 "probe" if !has_format => SymClass::Drop(Drop::Display),
                 // A pinless symbol whose format uses `extra` nets is a device with only
                 // inherited pins (sky130 `fill_1`, `tap_1`: LVS goldens list them).
-                _ if iface.pins.name.is_empty() && has_format && implicit_only(&iface) => {
+                // (`plan_symbol`'s pin rule: without one, a `.shprim` with no pin, E025.)
+                _ if iface.pins.name.is_empty()
+                    && has_format
+                    && !implicit_nets(&iface).is_empty() =>
+                {
                     SymClass::Cell
                 }
                 _ if iface.pins.name.is_empty() && has_format => SymClass::Code,
@@ -719,10 +721,7 @@ impl<'o> Tables<'o> {
         for p in 0..iface.pins.name.len() {
             let mut name = iface.pin_name(p).trim().to_owned();
             if name.is_empty() || name.contains(char::is_whitespace) {
-                reviews.push(Review {
-                    reason: Reason::Name,
-                    detail: format!("pin {p} has no usable name"),
-                });
+                reviews.push(review(Reason::Name, format!("pin {p} has no usable name")));
                 name = format!("pin{p}");
             }
             // A repeated name is the same port at a second position (xschem shorts them:
@@ -771,10 +770,10 @@ impl<'o> Tables<'o> {
         }
         for (k, net) in &implicit {
             if pins.iter().any(|q| &q.name == k) {
-                reviews.push(Review {
-                    reason: Reason::Name,
-                    detail: format!("net parameter {k} is also a pin"),
-                });
+                reviews.push(review(
+                    Reason::Name,
+                    format!("net parameter {k} is also a pin"),
+                ));
                 continue;
             }
             pins.push(PinOut {
@@ -817,10 +816,10 @@ impl<'o> Tables<'o> {
                 || matches!(k, "at" | "ignore" | "inherit")
                 || implicit.iter().any(|(n, _)| n == k);
             if reserved {
-                reviews.push(Review {
-                    reason: Reason::Name,
-                    detail: format!("parameter `{k}` cannot be represented"),
-                });
+                reviews.push(review(
+                    Reason::Name,
+                    format!("parameter `{k}` cannot be represented"),
+                ));
                 continue;
             }
             let v = tpl.value(i);
@@ -942,10 +941,7 @@ impl<'o> Tables<'o> {
                     Err(r) => {
                         if !schematic {
                             spice_failed |= dialect == "spice";
-                            reviews.push(Review {
-                                reason: r.reason,
-                                detail: format!("{key}: {}", r.detail),
-                            });
+                            reviews.push(review(r.reason, format!("{key}: {}", r.detail)));
                         }
                     }
                 }
@@ -971,10 +967,7 @@ impl<'o> Tables<'o> {
         {
             match netlist_text(text, self.opts.pdk_vars) {
                 Ok(t) => body.extend(lines(&t)),
-                Err(detail) => reviews.push(Review {
-                    reason: Reason::Tcl,
-                    detail,
-                }),
+                Err(detail) => reviews.push(review(Reason::Tcl, detail)),
             }
         }
         // `spice_sym_def` is the cell's netlist text (it replaces the schematic in xschem),
@@ -996,13 +989,13 @@ impl<'o> Tables<'o> {
                         *t = t.replace("{pins}", &holes);
                     }
                 }
-                None => reviews.push(Review {
-                    reason: Reason::PinToken,
-                    detail: format!(
+                None => reviews.push(review(
+                    Reason::PinToken,
+                    format!(
                         "spice_sym_def .subckt ports `{}` do not match the pins",
                         ports.join(" ")
                     ),
-                }),
+                )),
             }
         }
         let ignore_src = attrs
@@ -1010,10 +1003,7 @@ impl<'o> Tables<'o> {
             .or_else(|| tpl.get("spice_ignore"));
         let ignore = match ignore_src.map(str::trim) {
             Some(v) if v.starts_with("tcleval(") => {
-                reviews.push(Review {
-                    reason: Reason::Tcl,
-                    detail: format!("spice_ignore={v}"),
-                });
+                reviews.push(review(Reason::Tcl, format!("spice_ignore={v}")));
                 None
             }
             Some(v @ ("open" | "short")) => Some(v.to_owned()),
@@ -1049,10 +1039,7 @@ impl<'o> Tables<'o> {
                 p.attrs.push((l.attr, l.expr));
             }
         }
-        reviews.extend(lim_review.into_iter().map(|detail| Review {
-            reason: Reason::Drc,
-            detail,
-        }));
+        reviews.extend(lim_review.into_iter().map(|d| review(Reason::Drc, d)));
         // CDF choices.
         if let Some(cdf) = self.opts.cdf {
             apply_cdf(cdf, stem_of(&file_name), &mut params, &mut reviews);
@@ -1067,7 +1054,7 @@ impl<'o> Tables<'o> {
             })
             .filter(|p| !p.is_empty());
         for r in reviews {
-            acc.review(file_id, line, r, 0);
+            acc.item(file_id, line, Class::Review(r.reason), 0, r.detail);
         }
         for t in tokens {
             acc.item(file_id, line, Class::Token, 0, t);
@@ -1114,7 +1101,7 @@ impl<'o> Tables<'o> {
     /// symbol); the subckt named `stem` (case-insensitively) if several, else the first.
     /// `None` when there is no such line or the file is not an input.
     fn subckt_ports(&self, src: u32, text: &[String], stem: &str) -> Option<Vec<String>> {
-        let mut found = subckt_lines(text.iter().map(String::as_str));
+        let mut found = spice::subckt_lines(&text.join("\n"));
         if found.is_empty() {
             let inc = text.iter().find_map(|l| {
                 let w: Vec<&str> = l.split_whitespace().collect();
@@ -1122,7 +1109,7 @@ impl<'o> Tables<'o> {
                     .then(|| w[1].trim_matches(['"', '\'']))
             })?;
             let path = join(dir_of(&self.srcs[src as usize].path), inc);
-            found = subckt_lines(self.side.get(&path)?.lines());
+            found = spice::subckt_lines(self.side.get(&path)?);
         }
         let pick = found
             .iter()
@@ -1154,12 +1141,13 @@ impl<'o> Tables<'o> {
         let sym = &self.syms[s];
         let path = &self.srcs[sym.src as usize].path;
         let (dir, stem) = (dir_of(path), stem_of(path));
-        if sym.iface.get(SymKey::DefaultSchematic).map(str::trim) == Some("ignore") {
+        if sym.iface.attrs.get("default_schematic").map(str::trim) == Some("ignore") {
             return None;
         }
         match sym
             .iface
-            .get(SymKey::Schematic)
+            .attrs
+            .get("schematic")
             .map(str::trim)
             .filter(|v| !v.is_empty())
         {
@@ -1168,14 +1156,12 @@ impl<'o> Tables<'o> {
                 self.index.get(&format!("{sch_dir}/{stem}.sch")).copied()
             }
             Some(v) if v.starts_with("tcleval(") => {
-                acc.review(
+                acc.item(
                     sym.src,
                     0,
-                    Review {
-                        reason: Reason::Tcl,
-                        detail: format!("schematic={v}"),
-                    },
+                    Class::Review(Reason::Tcl),
                     0,
+                    format!("schematic={v}"),
                 );
                 None
             }
@@ -1523,26 +1509,22 @@ impl<'o> Tables<'o> {
             if plan.pins.is_empty() {
                 // The instance's text leaves a pinless symbol without its inherited pins:
                 // no valid cell (`E025`), so the instance keeps its symbol's netlisting.
-                acc.review(
+                acc.item(
                     x,
                     line,
-                    Review {
-                        reason: Reason::InstanceText,
-                        detail: format!("{}: the variant would have no pin", text.join(" ")),
-                    },
+                    Class::Review(Reason::InstanceText),
                     0,
+                    format!("{}: the variant would have no pin", text.join(" ")),
                 );
                 continue;
             }
             if sch.is_none() && plan.leaf.ignore.as_deref() == Some("true") {
-                acc.review(
+                acc.item(
                     x,
                     line,
-                    Review {
-                        reason: Reason::InstanceText,
-                        detail: format!("{}: the variant does not netlist", text.join(" ")),
-                    },
+                    Class::Review(Reason::InstanceText),
                     0,
+                    format!("{}: the variant does not netlist", text.join(" ")),
                 );
             }
             self.sym_ifaces[s2 as usize] = Some(iface_of_plan(&plan));
@@ -1621,8 +1603,6 @@ impl<'o> Tables<'o> {
         let mut iface = symbol::extract(f);
         iface.pins = symbol::Pins::default();
         iface.names.clear();
-        iface.rounded_centers.clear();
-        iface.order = symbol::PinOrder::File;
         // Port rows ranked by the owning symbol's pin order (stable: others after, in
         // file order): xschem's `.subckt` of a placed schematic follows its `.sym`
         // (golden poweramp_lcc `mos_power_ampli`, loading `switch_rreal`).
@@ -1632,7 +1612,7 @@ impl<'o> Tables<'o> {
                 .get("lab")
                 .map(|l| l.trim().to_owned())
         };
-        rows.sort_by_key(|&row| {
+        rows.sort_by_cached_key(|&row| {
             lab_of(row)
                 .and_then(|l| order.iter().position(|o| *o == l))
                 .unwrap_or(order.len())
@@ -1656,7 +1636,6 @@ impl<'o> Tables<'o> {
             let Some(at) = self.anchor(f, row, p).filter(|_| !lab.is_empty() && !taken) else {
                 continue;
             };
-            iface.pins.box_row.push(u32::MAX);
             iface
                 .pins
                 .name
@@ -1667,12 +1646,11 @@ impl<'o> Tables<'o> {
                 _ => PinDir::InOut,
             });
             iface.pins.center.push(at);
-            iface.pins.sim_pinnumber.push(None);
         }
         if iface.pins.name.is_empty() {
             return None;
         }
-        let ty = match iface.get(SymKey::Type).map(str::trim) {
+        let ty = match iface.attrs.get("type").map(str::trim) {
             Some(t) if !t.is_empty() => t.to_owned(),
             _ => "subcircuit".to_owned(),
         };
@@ -2114,15 +2092,7 @@ impl<'o> Tables<'o> {
                         ));
                         acc.out(fid, 1);
                     }
-                    Err(d) => acc.review(
-                        fid,
-                        g.line[i],
-                        Review {
-                            reason: Reason::Tcl,
-                            detail: d,
-                        },
-                        1,
-                    ),
+                    Err(d) => acc.item(fid, g.line[i], Class::Review(Reason::Tcl), 1, d),
                 }
             }
         }
@@ -2171,7 +2141,7 @@ impl<'o> Tables<'o> {
                     out.codes.push((name, lang, lines(&text)));
                     acc.out(fid, 1);
                 }
-                Err(r) => acc.review(fid, line, r, 1),
+                Err(r) => acc.item(fid, line, Class::Review(r.reason), 1, r.detail),
             }
         }
         // A bench's `.param` lines become its variables; a component's stay in its
@@ -2219,14 +2189,12 @@ impl<'o> Tables<'o> {
                     (_, true) => "a symbol generator",
                     _ => "symbol not found",
                 };
-                acc.review(
+                acc.item(
                     fid,
                     line,
-                    Review {
-                        reason,
-                        detail: format!("{what}: {symref}"),
-                    },
+                    Class::Review(reason),
                     1,
+                    format!("{what}: {symref}"),
                 );
                 continue;
             };
@@ -2246,15 +2214,7 @@ impl<'o> Tables<'o> {
                 SymClass::Noconn => self.emit_noconn(doc, ids, sc, row, s, acc),
                 SymClass::Code => {} // pass 1
                 SymClass::Drop(d) => acc.item(fid, line, Class::Dropped(d), 1, symref),
-                SymClass::Review(r) => acc.review(
-                    fid,
-                    line,
-                    Review {
-                        reason: r,
-                        detail: symref.to_owned(),
-                    },
-                    1,
-                ),
+                SymClass::Review(r) => acc.item(fid, line, Class::Review(r), 1, symref.to_owned()),
             }
         }
         // Texts.
@@ -2370,28 +2330,24 @@ impl<'o> Tables<'o> {
             };
             match resolved {
                 Some(a) => target = Target::Cell(a),
-                None => acc.review(
+                None => acc.item(
                     fid,
                     line,
-                    Review {
-                        reason: Reason::Unsupported,
-                        detail: format!("schematic={alt}"),
-                    },
+                    Class::Review(Reason::Unsupported),
                     0,
+                    format!("schematic={alt}"),
                 ),
             }
         }
         let name = match props.get("name").map(str::trim).filter(|n| !n.is_empty()) {
             Some(n) => dotted_bus(n),
             None => {
-                acc.review(
+                acc.item(
                     fid,
                     line,
-                    Review {
-                        reason: Reason::Name,
-                        detail: "instance without name".into(),
-                    },
+                    Class::Review(Reason::Name),
                     0,
+                    "instance without name",
                 );
                 format!("x{line}")
             }
@@ -2420,14 +2376,12 @@ impl<'o> Tables<'o> {
         doc.push_value(&name);
         let mut used: Vec<&str> = vec!["name", "schematic", "spice_ignore", "lvs_ignore", "embed"];
         match props.get("spice_ignore").map(str::trim) {
-            Some(v) if v.starts_with("tcleval(") => acc.review(
+            Some(v) if v.starts_with("tcleval(") => acc.item(
                 fid,
                 line,
-                Review {
-                    reason: Reason::Tcl,
-                    detail: format!("spice_ignore={v}"),
-                },
+                Class::Review(Reason::Tcl),
                 0,
+                format!("spice_ignore={v}"),
             ),
             Some(v @ ("open" | "short")) => {
                 doc.push_attr("ignore");
@@ -2463,14 +2417,12 @@ impl<'o> Tables<'o> {
                 .unwrap_or(default)
                 .trim();
             if v.is_empty() || v.contains(['@', ' ', '\t', '\n', '{', '[']) {
-                acc.review(
+                acc.item(
                     fid,
                     line,
-                    Review {
-                        reason: Reason::Expression,
-                        detail: format!("{pin}={v}"),
-                    },
+                    Class::Review(Reason::Expression),
                     0,
+                    format!("{pin}={v}"),
                 );
                 continue;
             }
@@ -2496,14 +2448,12 @@ impl<'o> Tables<'o> {
                     doc.push_attr(pname);
                     doc.push_value(&text);
                 }
-                Err(r) => acc.review(
+                Err(r) => acc.item(
                     fid,
                     line,
-                    Review {
-                        reason: r.reason,
-                        detail: format!("{pname}={}", r.detail),
-                    },
+                    Class::Review(r.reason),
                     0,
+                    format!("{pname}={}", r.detail),
                 ),
             }
         }
@@ -2545,15 +2495,7 @@ impl<'o> Tables<'o> {
                         out.body.extend(t);
                     }
                 }
-                Err(d) => acc.review(
-                    fid,
-                    line,
-                    Review {
-                        reason: Reason::Tcl,
-                        detail: d,
-                    },
-                    0,
-                ),
+                Err(d) => acc.item(fid, line, Class::Review(Reason::Tcl), 0, d),
             }
         }
         for key in ["format", "lvs_format", "spice_sym_def", "spiceprefix"] {
@@ -2576,14 +2518,12 @@ impl<'o> Tables<'o> {
             // spiceprefix only matters where it was folded into the template.
             let inert = key == "spiceprefix" && plan.is_none_or(|p| p.spiceprefix.is_none());
             if !is_param && !inert && sym_v.map(collapse_ws) != Some(collapse_ws(v)) {
-                acc.review(
+                acc.item(
                     fid,
                     line,
-                    Review {
-                        reason: Reason::InstanceText,
-                        detail: format!("{key}={v}"),
-                    },
+                    Class::Review(Reason::InstanceText),
                     0,
+                    format!("{key}={v}"),
                 );
             }
         }
@@ -2619,26 +2559,22 @@ impl<'o> Tables<'o> {
             .unwrap_or("")
             .trim();
         let Some(anchor) = self.anchor(f, row, s) else {
-            acc.review(
+            acc.item(
                 fid,
                 line,
-                Review {
-                    reason: Reason::Unsupported,
-                    detail: "label symbol without one pin".into(),
-                },
+                Class::Review(Reason::Unsupported),
                 1,
+                "label symbol without one pin",
             );
             return;
         };
         if lab.is_empty() || lab.contains(['@', '\n']) || lab.contains("tcleval(") {
-            acc.review(
+            acc.item(
                 fid,
                 line,
-                Review {
-                    reason: Reason::Expression,
-                    detail: format!("lab={lab}"),
-                },
+                Class::Review(Reason::Expression),
                 1,
+                format!("lab={lab}"),
             );
             return;
         }
@@ -2650,14 +2586,12 @@ impl<'o> Tables<'o> {
             .map(|(_, p)| p.as_str());
         let is_port = port && !sc.bench && bound.is_some();
         if port && !sc.bench && !is_port {
-            acc.review(
+            acc.item(
                 fid,
                 line,
-                Review {
-                    reason: Reason::Port,
-                    detail: format!("{lab} is not a symbol pin; kept as a label"),
-                },
+                Class::Review(Reason::Port),
                 0,
+                format!("{lab} is not a symbol pin; kept as a label"),
             );
         }
         doc.begin_record(if is_port {
@@ -2703,14 +2637,12 @@ impl<'o> Tables<'o> {
         let f = &self.srcs[sc.file as usize].file;
         let line = f.instances.line[row];
         let Some(at) = self.anchor(f, row, s) else {
-            acc.review(
+            acc.item(
                 sc.file,
                 line,
-                Review {
-                    reason: Reason::Unsupported,
-                    detail: "noconn without one pin".into(),
-                },
+                Class::Review(Reason::Unsupported),
                 1,
+                "noconn without one pin",
             );
             return;
         };
@@ -2744,10 +2676,7 @@ impl<'o> Tables<'o> {
             .get("format")
             .or_else(|| sym.iface.attrs.get("format"))
             .unwrap_or("@value");
-        let tcl_err = |detail: String| Review {
-            reason: Reason::Tcl,
-            detail,
-        };
+        let tcl_err = |detail: String| review(Reason::Tcl, detail);
         if fmt.contains("sim_is_") {
             let lang = get("simulator")
                 .map(str::trim)
@@ -3155,10 +3084,7 @@ fn override_text(
     parents: &[String],
 ) -> Result<String, Review> {
     let t = v.trim();
-    let fail = |reason| Review {
-        reason,
-        detail: t.to_owned(),
-    };
+    let fail = |reason| review(reason, t);
     if t.contains("tcleval(") {
         return Err(fail(Reason::Tcl));
     }
@@ -3237,54 +3163,19 @@ fn param_pairs(
     fixed: &[(String, String)],
     known: &[(String, String)],
 ) -> Option<Vec<(String, String)>> {
-    let b = s.as_bytes();
-    let mut i = 0;
-    let mut out: Vec<(String, String)> = Vec::new();
-    while i < b.len() {
-        while i < b.len() && b[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i == b.len() {
-            break;
-        }
-        let start = i;
-        while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
-            i += 1;
-        }
-        let name = &s[start..i];
-        while i < b.len() && b[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if b.get(i) != Some(&b'=')
-            || !is_ident(name)
-            || !name.starts_with(|c: char| c.is_ascii_alphabetic())
-        {
+    let words = spice::words(s);
+    let mut out: Vec<(String, String)> = Vec::with_capacity(words.len() / 3);
+    for w in words.chunks(3) {
+        let [name, "=", value] = w else { return None };
+        if !is_ident(name) || !name.starts_with(|c: char| c.is_ascii_alphabetic()) {
             return None;
         }
-        i += 1;
-        while i < b.len() && b[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        let vstart = i;
-        let close = match b.get(i) {
-            Some(b'\'') => Some(b'\''),
-            Some(b'{') => Some(b'}'),
-            _ => None,
-        };
-        let value = match close {
-            Some(c) => {
-                let end = s[i + 1..].find(c as char)? + i + 1;
-                i = end + 1;
-                &s[vstart + 1..end]
-            }
-            None => {
-                while i < b.len() && !b[i].is_ascii_whitespace() {
-                    i += 1;
-                }
-                &s[vstart..i]
-            }
-        };
-        out.push((name.to_owned(), value.to_owned()));
+        let value = value
+            .strip_prefix('\'')
+            .and_then(|v| v.strip_suffix('\''))
+            .or_else(|| value.strip_prefix('{').and_then(|v| v.strip_suffix('}')))
+            .unwrap_or(value);
+        out.push(((*name).to_owned(), value.to_owned()));
     }
     let mut names: Vec<String> = known.iter().map(|v| v.0.clone()).collect();
     names.extend(out.iter().map(|p| p.0.clone()));
@@ -3305,15 +3196,6 @@ fn param_pairs(
         res.push((n, e));
     }
     (!res.is_empty()).then_some(res)
-}
-
-/// Whether a symbol's `format` names an `extra` net as a standalone `@x` word: its
-/// connections are inherited pins (spec §2, implicit pins).
-fn implicit_only(iface: &SymbolInterface) -> bool {
-    // The same rule that makes the pins (`plan_symbol`): a pinless symbol is a cell only
-    // when it will have at least one inherited pin, else it would be a `.shprim` with no
-    // pin (`E025`).
-    !implicit_nets(iface).is_empty()
 }
 
 /// The inherited pins of a symbol (spec §2): `extra=` nets in `extra` order, then the
@@ -3465,10 +3347,7 @@ fn infer(v: &str, avail: &[&str], keys: &[String]) -> (Kind, String, Option<Revi
             None => (
                 Kind::Str,
                 String::new(),
-                Some(Review {
-                    reason: Reason::Expression,
-                    detail: t.to_owned(),
-                }),
+                Some(review(Reason::Expression, t.to_owned())),
             ),
         };
     }
@@ -3476,10 +3355,7 @@ fn infer(v: &str, avail: &[&str], keys: &[String]) -> (Kind, String, Option<Revi
         return (
             Kind::Str,
             String::new(),
-            Some(Review {
-                reason: Reason::Tcl,
-                detail: t.to_owned(),
-            }),
+            Some(review(Reason::Tcl, t.to_owned())),
         );
     }
     if !avail.is_empty() && avail.contains(&t) {
@@ -3503,10 +3379,10 @@ fn apply_cdf(cdf: &CdfDump, cell: &str, params: &mut [ParamOut], reviews: &mut V
         }
         let callback = cdf.str(cdf.params.callback[p]);
         if !callback.trim().is_empty() {
-            reviews.push(Review {
-                reason: Reason::Tcl,
-                detail: format!("CDF callback on {name}: {callback}"),
-            });
+            reviews.push(review(
+                Reason::Tcl,
+                format!("CDF callback on {name}: {callback}"),
+            ));
         }
     }
 }
@@ -3545,39 +3421,6 @@ fn lines(text: &str) -> Vec<String> {
         .rposition(|l| !l.trim().is_empty())
         .map_or(start, |e| e + 1);
     v[start..end].to_vec()
-}
-
-/// `(name, ports)` of every `.subckt` line in SPICE text (`+` continuations joined,
-/// `*` comment lines skipped), ports up to the first `k=v` or `params:` word.
-fn subckt_lines<'a>(text: impl Iterator<Item = &'a str>) -> Vec<(String, Vec<String>)> {
-    let mut logical: Vec<String> = Vec::new();
-    for l in text {
-        let t = l.trim();
-        match t.strip_prefix('+') {
-            Some(rest) if !logical.is_empty() => {
-                let last = logical.last_mut().expect("checked");
-                last.push(' ');
-                last.push_str(rest);
-            }
-            _ if t.starts_with('*') || t.is_empty() => {}
-            _ => logical.push(t.to_owned()),
-        }
-    }
-    let mut out = Vec::new();
-    for l in &logical {
-        let mut w = l.split_whitespace();
-        if !w.next().is_some_and(|k| k.eq_ignore_ascii_case(".subckt")) {
-            continue;
-        }
-        let Some(name) = w.next() else { continue };
-        let ports: Vec<String> = w
-            .take_while(|p| !p.contains('=') && !p.eq_ignore_ascii_case("params:"))
-            .map(str::to_owned)
-            .collect();
-        out.push((name.to_owned(), ports));
-    }
-    assert!(out.len() <= logical.len());
-    out
 }
 
 /// The bit names of a pin name: `A[2:0]` → `A[2] A[1] A[0]`, `A[3]`, a bundle `a,b`,
@@ -3655,7 +3498,8 @@ fn pin_order(pins: &[PinOut], ports: &[String]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PinOut, dotted_bus, pin_order, subckt_lines};
+    use super::{PinOut, dotted_bus, pin_order};
+    use crate::spice::subckt_lines;
 
     fn pin(name: &str) -> PinOut {
         PinOut {
@@ -3672,7 +3516,7 @@ mod tests {
     fn subckt_ports_order_the_pinlist() {
         // golden tb_symbol_include: `.subckt symbol_include z y[5] … VCC VSS A[2] … B C`.
         let text = "* a file\n.subckt symbol_include z y[5] y[4] y[3] y[2]\n+ VCC VSS\n* note\n+ A[2] A[1] A[0] B C W=10 L=1\n...\n.ends\n";
-        let found = subckt_lines(text.lines());
+        let found = subckt_lines(text);
         assert_eq!(found.len(), 1);
         let (name, ports) = &found[0];
         assert_eq!(name, "symbol_include");
@@ -3691,7 +3535,9 @@ mod tests {
         assert_eq!(pin_order(&pins[..2], &ports[..1]), None);
         let unknown: Vec<String> = ["q"].map(String::from).to_vec();
         assert_eq!(pin_order(&pins[1..2], &unknown), None);
-        assert!(subckt_lines("R1 a b 1k\n.ends\n".lines()).is_empty());
+        assert!(subckt_lines("R1 a b 1k\n.ends\n").is_empty());
+        // An inline comment is no port.
+        assert_eq!(subckt_lines(".subckt x a b ; c\n")[0].1, ["a", "b"]);
     }
 
     #[test]

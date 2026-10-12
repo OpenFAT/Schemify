@@ -15,11 +15,16 @@
 //! | [`tcl::pdk_vars`], [`tcl::drc_procs`] | PDK `xschemrc` text | project `set` entries, `drc` rules |
 //! | [`check_output`] | translated outputs | list of problems (empty = valid) |
 //! | [`xschem::read`] | `.sch`/`.sym` text | [`xschem::XschemFile`]: record tables, dropped-record issues, D33 roundings |
-//! | [`attr::Attrs::parse_into`] | one attribute string | key/value rows with an [`attr::Idioms`] set per value |
+//! | [`attr::Attrs::parse_into`] | one attribute string | key/value rows (unescaped, source spans) |
+//! | [`attr::classify`] | one value or text | [`attr::Idioms`] bitset (corpus audit) |
 //! | [`symbol::extract`] | [`xschem::XschemFile`] | [`symbol::SymbolInterface`]: attributes, template, pins in netlist order |
 //! | [`spice::scan`] | model cards, through a caller loader | [`spice::ModelScan`]: models, bins, subckts, OSDI evidence |
 //! | [`tech::read_lyt`], [`tech::read_magic`] | KLayout / Magic tech files | manufacturing grid in picometres |
 //! | [`cdf::read`] | `cdfDump` SKILL text | [`cdf::CdfDump`]: parameter tables and a review list |
+//!
+//! One lexer per syntax: [`xschem::read`] for records, [`attr`] for attribute strings,
+//! `spice` (`logical_lines`, `words`, `lex_number`) for every SPICE text the translator
+//! reads (model cards, `.subckt` ports, bench `.param`s, numbers in expressions).
 //!
 //! Every reader is total over its input: malformed parts land in an issue table with a
 //! location instead of a panic, and each reader asserts a count-conservation invariant on

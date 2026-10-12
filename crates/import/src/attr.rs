@@ -7,8 +7,8 @@
 //! layer: separators are space, TAB, newline, `;` and NUL outside quotes; `"` toggles
 //! quoting unless escaped; `\` escapes the next char; the value handed out drops every
 //! unescaped `"` and `\` (xschem's normal lookup). Nothing is evaluated: `tcleval(…)`,
-//! `expr(…)`, `@tokens` stay as text, and [`Idioms`] records which of them a value uses so
-//! the translator can count and route them.
+//! `expr(…)`, `@tokens` stay as text; [`classify`] reports which of them a text uses (the
+//! corpus audit counts them against the research tables).
 
 use std::ops::{BitOr, BitOrAssign};
 
@@ -26,7 +26,6 @@ pub struct Attrs {
     value: Vec<Span>,
     raw: Vec<Span>,
     flag: Vec<bool>,
-    idioms: Vec<Idioms>,
 }
 
 impl Attrs {
@@ -35,11 +34,10 @@ impl Attrs {
     /// # Examples
     ///
     /// ```
-    /// use schemify_import::attr::{Attrs, ValueClass};
+    /// use schemify_import::attr::Attrs;
     /// let a = Attrs::parse("name=M1 ;  W = 1\nad=\"expr('@W * 0.29')\" lock");
     /// assert_eq!(a.get("W"), Some("1"));
     /// assert_eq!(a.get("ad"), Some("expr('@W * 0.29')"));
-    /// assert_eq!(a.class(a.find("ad").unwrap()), ValueClass::Expr);
     /// assert!(a.is_flag(a.find("lock").unwrap()));
     /// ```
     pub fn parse(s: &str) -> Attrs {
@@ -56,14 +54,13 @@ impl Attrs {
     ///
     /// # Time complexity
     ///
-    /// O(len) to tokenize plus O(len) per value to classify.
+    /// O(len).
     pub fn parse_into(&mut self, s: &str) {
         self.arena.clear();
         self.key.clear();
         self.value.clear();
         self.raw.clear();
         self.flag.clear();
-        self.idioms.clear();
         let b = s.as_bytes();
         let n = b.len();
         let blank = |c: u8| matches!(c, b' ' | b'\t' | b'\n');
@@ -114,7 +111,7 @@ impl Attrs {
             }
         }
         assert!(self.key.len() <= n);
-        debug_assert!(self.key.len() == self.value.len() && self.key.len() == self.idioms.len());
+        debug_assert!(self.key.len() == self.value.len() && self.key.len() == self.flag.len());
     }
 
     fn push(
@@ -132,9 +129,7 @@ impl Attrs {
         let raw = value.clone().unwrap_or(key.end..key.end);
         let v_start = self.arena.len();
         unescape(&s[raw.clone()], &mut self.arena);
-        let value_span = Span::new(v_start, self.arena.len());
-        self.idioms.push(classify(value_span.of(&self.arena)));
-        self.value.push(value_span);
+        self.value.push(Span::new(v_start, self.arena.len()));
         self.raw.push(Span::new(raw.start, raw.end));
         self.flag.push(value.is_none());
     }
@@ -170,16 +165,6 @@ impl Attrs {
         self.flag[i]
     }
 
-    /// Returns the idioms row `i`'s value uses.
-    pub fn idioms(&self, i: usize) -> Idioms {
-        self.idioms[i]
-    }
-
-    /// Returns the routing class of row `i`'s value.
-    pub fn class(&self, i: usize) -> ValueClass {
-        self.idioms[i].class()
-    }
-
     /// Returns the row of the first occurrence of `key` (exact, case-sensitive match).
     pub fn find(&self, key: &str) -> Option<usize> {
         (0..self.len()).find(|&i| self.key(i) == key)
@@ -202,7 +187,6 @@ impl Attrs {
         self.value.insert(0, v);
         self.raw.insert(0, Span::new(0, 0));
         self.flag.insert(0, false);
-        self.idioms.insert(0, classify(value));
         assert_eq!(self.len(), n + 1);
         assert_eq!(self.get(key), Some(value));
     }
@@ -416,22 +400,6 @@ impl Idioms {
     pub fn intersects(self, other: Idioms) -> bool {
         self.0 & other.0 != 0
     }
-
-    /// Returns the routing class: the most demanding idiom present wins
-    /// (`Tcleval` > `Expr` > `SpiceQuoted` > `AtSubst` > `Plain`).
-    pub fn class(self) -> ValueClass {
-        if self.intersects(Idioms::TCLEVAL) {
-            ValueClass::Tcleval
-        } else if self.intersects(Idioms(Idioms::EXPR.0 | Idioms::EXPR_ENG.0)) {
-            ValueClass::Expr
-        } else if self.intersects(Idioms::SPICE_QUOTED) {
-            ValueClass::SpiceQuoted
-        } else if self.intersects(Idioms::AT_ANY) {
-            ValueClass::AtSubst
-        } else {
-            ValueClass::Plain
-        }
-    }
 }
 
 impl BitOr for Idioms {
@@ -445,21 +413,6 @@ impl BitOrAssign for Idioms {
     fn bitor_assign(&mut self, rhs: Idioms) {
         self.0 |= rhs.0;
     }
-}
-
-/// How the translator must treat a value, derived from its [`Idioms`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ValueClass {
-    /// Literal text.
-    Plain,
-    /// Contains `@`/`%` substitutions only: template conversion.
-    AtSubst,
-    /// Contains a SPICE-side quoted expression: emitted verbatim.
-    SpiceQuoted,
-    /// Contains `expr(…)`/`expr_eng(…)`: needs the expression evaluator.
-    Expr,
-    /// Contains `tcleval(…)`: needs pattern rewriting or review.
-    Tcleval,
 }
 
 /// Known Tcl commands after `tcleval(`, by exact name (PDK doc §5.5 classes a–d).
@@ -479,11 +432,10 @@ const TCL_COMMANDS: &[(&str, Idioms)] = &[
 /// # Examples
 ///
 /// ```
-/// use schemify_import::attr::{classify, Idioms, ValueClass};
+/// use schemify_import::attr::{classify, Idioms};
 /// let i = classify("tcleval(Q@name le=[ev { @El * 1.0e-6 } ])");
 /// assert!(i.contains(Idioms::TCLEVAL | Idioms::TCL_EV | Idioms::AT_ATTR));
-/// assert_eq!(i.class(), ValueClass::Tcleval);
-/// assert_eq!(classify("$[@model\\]").class(), ValueClass::AtSubst);
+/// assert!(!classify("$[@model\\]").intersects(Idioms::TCL_COMMAND | Idioms::TCL_VAR));
 /// ```
 pub fn classify(text: &str) -> Idioms {
     let mut bits = Idioms::default();
@@ -629,7 +581,7 @@ mod tests {
         // `…@@P\\, …` → value `…@@P\, …` (§5.4).
         let a = Attrs::parse("verilog_format=\"tran @name (@@P\\\\, @@M\\\\);\"");
         assert_eq!(a.get("verilog_format"), Some("tran @name (@@P\\, @@M\\);"));
-        let i = a.idioms(0);
+        let i = classify(a.value(0));
         assert!(i.contains(Idioms::AT_ATTR | Idioms::AT_PIN_NET | Idioms::AT_TERMINATOR));
         // sky130 template: nested quoted values survive as text.
         let k = Attrs::parse(
@@ -640,8 +592,8 @@ mod tests {
             t.get("ad"),
             Some("expr('int((@nf + 1)/2) * @W / @nf * 0.29')")
         );
-        assert_eq!(t.class(t.find("ad").unwrap()), ValueClass::Expr);
-        assert!(!t.idioms(1).contains(Idioms::SPICE_QUOTED));
+        assert!(classify(t.get("ad").unwrap()).contains(Idioms::EXPR));
+        assert!(!classify(t.value(1)).contains(Idioms::SPICE_QUOTED));
     }
 
     #[test]
@@ -672,7 +624,7 @@ mod tests {
     #[test]
     fn idiom_bits() {
         assert_eq!(classify("plain text 10% off"), Idioms::default());
-        assert_eq!(classify("W='@W * @nf '").class(), ValueClass::SpiceQuoted);
+        assert!(classify("W='@W * @nf '").contains(Idioms::SPICE_QUOTED));
         assert!(!classify("'abc' 'd'").intersects(Idioms::SPICE_QUOTED));
         assert!(classify("expr_eng( 70.0e-6 / @w )").contains(Idioms::EXPR_ENG | Idioms::AT_ATTR));
         assert!(!classify("myexpr(1)").intersects(Idioms::EXPR));
