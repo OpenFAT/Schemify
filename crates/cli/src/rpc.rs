@@ -714,6 +714,20 @@ pub struct Headless {
 ///
 /// I/O errors of `input` or `output` only; every request-level failure is a response.
 pub fn serve<R: BufRead, W: Write>(input: &mut R, output: &mut W, h: &Headless) -> io::Result<()> {
+    serve_with(input, output, |method, params| h.call(method, params))
+}
+
+/// The stream loop behind [`serve`] and [`crate::mcp::serve`]: `call` answers one decoded request,
+/// `Err((code, message))` becoming its error response. Same framing and errors as [`serve`].
+///
+/// # Errors
+///
+/// I/O errors of `input` or `output` only.
+pub fn serve_with<R: BufRead, W: Write>(
+    input: &mut R,
+    output: &mut W,
+    mut call: impl FnMut(&str, &Json) -> Result<Json, (i32, String)>,
+) -> io::Result<()> {
     let mut buf = Vec::new();
     // Bounded by the input: every pass consumes a line.
     loop {
@@ -724,7 +738,7 @@ pub fn serve<R: BufRead, W: Write>(input: &mut R, output: &mut W, h: &Headless) 
             Frame::Line => match decode(&buf) {
                 Err(reply) => Some(reply),
                 Ok(req) => {
-                    let out = h.call(&req.method, &req.params);
+                    let out = call(&req.method, &req.params);
                     req.id.map(|id| match out {
                         Ok(v) => result(&id, &v),
                         Err((code, msg)) => error(&id, code, &msg),

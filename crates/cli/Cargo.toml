@@ -21,7 +21,6 @@ workspace = true
 # (tests/deps.rs checks the resolved graph).
 [dependencies]
 schemify-format.workspace = true
-schemify-expr.workspace = true
 schemify-doc.workspace = true
 schemify-elab.workspace = true
 schemify-netlist.workspace = true
@@ -29,9 +28,10 @@ schemify-import.workspace = true
 schemify-devicereader.workspace = true
 schemify-run.workspace = true
 schemify-config.workspace = true
-# Inflate for imported project zips (`zip`, web spec §3). Already in the graph through
-# vello_cpu → png; pure Rust, `forbid(unsafe_code)`. Integrator: a root
-# `[workspace.dependencies]` row can replace this version.
+# Inflate only, for imported project zips (`zip::read`, web spec §3: OS archivers deflate,
+# so a stored-only reader would refuse most real archives). Pure Rust, `forbid(unsafe_code)`,
+# deps: adler2. The native core never calls `zip::read`, so LTO drops it there (the writer
+# stores). The editor has it already through vello_cpu → png.
 miniz_oxide = "0.8"
 
 # The browser side of `platform` (D2: generated glue only; web spec): OPFS, the Clipboard

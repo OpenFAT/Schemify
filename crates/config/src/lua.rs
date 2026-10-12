@@ -349,25 +349,11 @@ fn pcall(lua: &Lua, st: &Shared, a: Variadic<Value>) -> omnilua::Result<Variadic
         ));
     }
     let f = a.remove(0);
-    let result = match f {
-        Value::Function(f) => f.call::<_, Variadic<Value>>(Variadic::from(a)),
-        other => Err(runtime(format!(
-            "attempt to call a {} value",
-            type_name(&other)
-        ))),
+    let failed = match protected(lua, st, f, a)? {
+        Ok(v) => return Ok(v),
+        Err(msg) => Value::String(lua.create_string(msg)?),
     };
-    match result {
-        Ok(v) => {
-            let mut all = vec![Value::Boolean(true)];
-            all.extend(v.into_vec());
-            Ok(Variadic::from(all))
-        }
-        Err(e) => {
-            let msg = caught(lua, st, e)?;
-            let msg = Value::String(lua.create_string(msg)?);
-            Ok(Variadic::from(vec![Value::Boolean(false), msg]))
-        }
-    }
+    Ok(Variadic::from(vec![Value::Boolean(false), failed]))
 }
 
 /// `xpcall` with the same rule as [`pcall`]; the handler gets the message string.
@@ -383,8 +369,23 @@ fn xpcall(lua: &Lua, st: &Shared, a: Variadic<Value>) -> omnilua::Result<Variadi
         Value::Function(h) => h,
         other => return Err(runtime(bad_arg(2, "xpcall", "function", &other))),
     };
+    let failed: Value = match protected(lua, st, f, a)? {
+        Ok(v) => return Ok(v),
+        Err(msg) => handler.call(msg)?,
+    };
+    Ok(Variadic::from(vec![Value::Boolean(false), failed]))
+}
+
+/// Calls `f(args…)` for [`pcall`]/[`xpcall`]: `Ok(true, results…)`, or `Err(message)` for an
+/// error a protected call may catch; budget exhaustion propagates as the outer `Err`.
+fn protected(
+    lua: &Lua,
+    st: &Shared,
+    f: Value,
+    args: Vec<Value>,
+) -> omnilua::Result<Result<Variadic<Value>, String>> {
     let result = match f {
-        Value::Function(f) => f.call::<_, Variadic<Value>>(Variadic::from(a)),
+        Value::Function(f) => f.call::<_, Variadic<Value>>(Variadic::from(args)),
         other => Err(runtime(format!(
             "attempt to call a {} value",
             type_name(&other)
@@ -394,13 +395,9 @@ fn xpcall(lua: &Lua, st: &Shared, a: Variadic<Value>) -> omnilua::Result<Variadi
         Ok(v) => {
             let mut all = vec![Value::Boolean(true)];
             all.extend(v.into_vec());
-            Ok(Variadic::from(all))
+            Ok(Ok(Variadic::from(all)))
         }
-        Err(e) => {
-            let msg = caught(lua, st, e)?;
-            let handled: Value = handler.call(msg)?;
-            Ok(Variadic::from(vec![Value::Boolean(false), handled]))
-        }
+        Err(e) => caught(lua, st, e).map(Err),
     }
 }
 

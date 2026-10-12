@@ -49,7 +49,7 @@ pub const APP: &str = "schemify";
 ///
 /// `SCHEMIFY_APPNAME` is not one plain path segment, or the variable the default needs
 /// (`HOME`; `LOCALAPPDATA`, `TEMP` on Windows) is unset or relative. The message names it.
-pub fn stdpath(dir: Dir, os: Os, env: &dyn Fn(&str) -> Option<String>) -> Result<PathBuf, String> {
+pub fn stdpath(dir: Dir, os: Os, env: impl Fn(&str) -> Option<String>) -> Result<PathBuf, String> {
     if os == Os::Web {
         let p = match dir {
             Dir::Config => "/config",
@@ -106,7 +106,7 @@ pub fn stdpath(dir: Dir, os: Os, env: &dyn Fn(&str) -> Option<String>) -> Result
 ///
 /// As [`stdpath`].
 pub fn here(dir: Dir) -> Result<PathBuf, String> {
-    stdpath(dir, Os::current(), &|k| std::env::var(k).ok())
+    stdpath(dir, Os::current(), |k| std::env::var(k).ok())
 }
 
 /// One path segment of `A–Z a–z 0–9 . _ -`, not `.` or `..`.
@@ -145,7 +145,7 @@ mod tests {
     }
 
     fn at(dir: Dir, os: Os, pairs: &[(&str, &str)]) -> Result<String, String> {
-        stdpath(dir, os, &env(pairs)).map(|p| p.to_string_lossy().into_owned())
+        stdpath(dir, os, env(pairs)).map(|p| p.to_string_lossy().into_owned())
     }
 
     #[test]

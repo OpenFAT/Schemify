@@ -2790,7 +2790,6 @@ dependencies = [
  "schemify-devicereader",
  "schemify-doc",
  "schemify-elab",
- "schemify-expr",
  "schemify-format",
  "schemify-import",
  "schemify-netlist",

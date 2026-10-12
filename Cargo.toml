@@ -80,11 +80,21 @@ debug = 1
 # (schemify-cli, schemify-app) take no override: cargo then drops `CARGO_PROFILE_RELEASE_STRIP`
 # for their link (cargo 1.95), and the release env would ship symbols.
 [profile.release.package]
-# Core: importer, runner, user config (Lua C sources compile at -Os too).
+# Core: importer, runner, user config.
 schemify-import = { opt-level = "z" }
 schemify-devicereader = { opt-level = "z" }
 schemify-run = { opt-level = "z" }
 schemify-config = { opt-level = "z" }
+# The user config's Lua (omnilua, pure Rust): cold (startup, keymap and hook calls), bounded by
+# its 10^8-instruction budget.
+omnilua = { opt-level = "z" }
+lua-vm = { opt-level = "z" }
+lua-stdlib = { opt-level = "z" }
+lua-parse = { opt-level = "z" }
+lua-lex = { opt-level = "z" }
+lua-code = { opt-level = "z" }
+lua-types = { opt-level = "z" }
+lua-gc = { opt-level = "z" }
 # Editor: accessibility over D-Bus (kept: accessibility is not optional) and its async runtime.
 accesskit = { opt-level = "z" }
 accesskit_atspi_common = { opt-level = "z" }
