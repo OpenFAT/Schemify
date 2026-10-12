@@ -1,0 +1,11 @@
+schemify 1 shcomp
+  o in20 40
+
+impl sch schematic
+
+line -60 -20 -40 -20
+line -60 20 -40 20
+line 40 0 60 0
+prose d00004
+  | ## Open-loresponse
+  |

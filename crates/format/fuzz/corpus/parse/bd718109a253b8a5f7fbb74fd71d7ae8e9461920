@@ -1,0 +1,8 @@
+schemify 2 shbench
+  doc "inv transient"
+  co  X1
+  n 0.5
+is400 0 R0
+  nameR0
+  N
+  dc

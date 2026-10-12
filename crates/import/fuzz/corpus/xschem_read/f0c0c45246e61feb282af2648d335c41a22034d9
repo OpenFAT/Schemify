@@ -1,0 +1,6 @@
+v {xhem versn=3.4.7 file_version=2}
+K {type=el
+global=true
+f="*.ab"
+template="name=l1 lab=GND"}
+B 5 -1.5 -2.5 2.5 2.5 {name=p dir=inout}

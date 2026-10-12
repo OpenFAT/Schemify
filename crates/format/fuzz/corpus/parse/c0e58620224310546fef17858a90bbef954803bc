@@ -1,0 +1,53 @@
+schemify 1 shbench
+  doc "tR0 0
+lab&l 0n0005 -40 0 R0 0n0005 -40 0 R0 in
+label 0n0006 -40 200 R0 in
+label 0n0007 -40 400 R1 in
+label 0n0008 40 0 P0 o1
+label 1n0009 40 200 R0 o2
+label 0n0010 40 400 R0 o3
+label 0n0011 0 40 R0 ib
+label 0n0012 0 240 R0 ib
+label 0n001 in
+label 0n0006 -40 200 R0 in
+label 0n0007 -40 400 R1 in
+label 0n0008 40 0 P0 o1
+l  at0R0 0n0005 -40 0 R0 in
+label 0n0006 -40 200 R0 in
+label 0n0007 -40 400 R1 in
+label 0n0008 40 0 P0 o1
+label 1n0009 40 200 0n0012 0 240 R0 ib
+label 0n001 in
+label 0n0006 -40 200 R0 in
+label 0n0007 -40 400 R1 in
+label 0n0008 40 0 P0 o1
+inst 0v0002 ./v -200 30 R0 0
+lab&l 0n0005 -40 0 R0 0n0005 -40 0 R0 in
+label 0 -40 400 R1 in
+label 0n0008 40 0 P0 o1
+label 1n0009 40 200 R0 o2
+label 0n0010 40 400 R0 o3
+label 0n0011 0 40 R0 ib
+label 0n0012 0 240 R0 ib
+label 0n001 in
+label 0n0006 -40 200 R0 in
+label 0n0007 -40 400 R1 in
+label 0n0008 40 0 P0 o1
+label 1n0009 40 200 R0 o2
+label 0n0010 40 400 R0 o3
+label 0n0011 0 40 R0 ib
+label 0n0012 0 240 R0 ib
+la006 -40 200 M0 in
+label 0n0006 -40 400 R1 in
+label 0n0008 40 0 P0 o1
+la"e0009 40 200 R0 o2
+label 0n0010 40 400 R0 o3
+label 0n00 R0 in
+label 0n0007 -40 400 R1 in
+label 0n0008 40 0 P0 o1
+label 1n0009 40 200 R0 o2
+label 0n0010240 R0 ib
+label 0n0013M0 440 0i h
+R
+corner tt
+  temp 27

@@ -1,0 +1,11 @@
+schemify	1   shcomp
+  doc     "5-transistor OTir"
+	pdk "sky130"
+  category "amplifier"
+
+   r
+pin INP in -80.008 -20
+pin INN in -80 20
+  unit um
+impl sch schematic
+# --- 

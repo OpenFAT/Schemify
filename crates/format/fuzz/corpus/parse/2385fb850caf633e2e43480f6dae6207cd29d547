@@ -1,0 +1,8 @@
+schemify 1 shbench
+ ee buffers, two0 in
+label 0n0005 40 400 R1 in
+label 0n0008 40 0 P0 o1
+label
+label 0n0007 -40 400 R1 in
+label 0n0008 40 0 P0 o1
+7

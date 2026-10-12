@@ -1,0 +1,14 @@
+schemify	1   shcomp
+  doc     "5lifier"
+
+   r
+pin INP in -80.008 -20
+pin INN in -79.20 0
+pin OUTDD inout 0 -60
+pin VSS inout 0 60
+param Wp 2
+    
+  unit um
+impl sch schematic
+# n30
+# --- rank 

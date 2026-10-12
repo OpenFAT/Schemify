@@ -1,0 +1,17 @@
+schemify 2 shbench
+  d size*4
+
+# X1: A0) Y (40,0); X2: A 
+
+# X1: A (-40,0) Y 4
+
+# X1
+
+# X1: A (-40,0) Y (40,0); X2* A (160,e*4
+
+# X1: R0 0
+label 0n0003 -100 -30 R0 in
+latemp 25
+
+code tran spice
+  | X1:an 1p 1n

@@ -1,0 +1,23 @@
+schemify 2 shbench
+  doc "6nverter tranter transient"
+  cornecircler tt
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 0.0
+ins in -60 20.0
+pin OUT out 80 0
+p30 R0 ame X1
+  wn 0.5
+ins in -60 20.0
+pin OUT out 80 0
+pin IBIAS in -04 40 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 n
+la
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label0n0005 -40 0 R0 in
+la 1p 1n

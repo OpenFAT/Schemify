@@ -1,0 +1,159 @@
+schemify 1 shprim
+  doc "generic PMOS (fixture)"
+  prefix M
+
+pin S inout 20 -30
+schemify 1 shpsweep doc "generic PMOS (fixture)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inout 20 30
+Pinpin B inout 20 0
+
+param W 2
+pa
+  si ntdkring
+
+impl spice spice
+  format spice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}uwire"
+  format spectre "{name} ({D} {G} {S} {B}) {model} w={e)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param model pch
+  si ntdkring
+me} {D} {G} {Spin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L} 2B} {model} W={W}u Linout%20 -30
+pin G in -20 0
+piin A in -20 0
+pin Y o -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice "M{name} {D} {G} {Spin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L} {B} {model} W={W}u Linout%20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param 
+
+param W 2
+param L} {B} {model} W={W}u Linout%20 -30
+pin G in -20 0
+piin A in -20 0
+pin Y o -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice "M{name} {D} {G} {Spin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L} {B} {model} W={W}u Linout%20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice 0.15
+param model pch
+  si ntdkring
+
+impl spice spice
+  format spice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}uwire"
+  format spectre "{name} ({D} {G} {S} {B}) {model} w={e)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0} {G} {S} {B}) {model} w={e)"
+  prefix M
+
+pn -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice 0.15
+param model pch
+  si ntdkring
+
+impl spice spice
+  format spice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}uwire"
+  format spectre "{name} ({D} {G} {S} {B}) {model} w={e)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0} {G} {S} {B}) {model} w={e)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pinice "M{name} {D} {G} {Spin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L} {B} {model} W={W}u Linout%20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 2 spice
+  format spice "M{name} {D} {G} {S} {B} {model} W={W}u L={}uwire"
+  format spectre "{name} ({D} {G} {S} {B}) {model} w={e)"
+  prefix M
+
+pin S ierilog
+  model dif
+vn i le hdl/dinv.v
+
+bn digital
+
+impl verilog verilogf
+vn i le hdl/dinv.v
+
+body verildoc "eric PMOS (fixture)"
+  prefix M
+
+pin S inout 20 -30
+piGn G in -20 0
+pin D inmat sp The middl} w={W}u lectre "{name} (W}u l={=L}u){L}u"
+"

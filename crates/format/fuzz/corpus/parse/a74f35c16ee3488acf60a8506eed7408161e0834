@@ -1,0 +1,75 @@
+schemify 2 project
+ pdkc "inverter transient"
+  corner tt
+
+inst 2x0001 ./inv
+  at 0 0 R0
+  nawn 
+label 0n0002 -20 -30 R0 v in
+label 0n0004 -100 30pice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+spec gbw
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+  mi 10meg
+
+code control spi20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003
+label 0n0003 -100 -30 R in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n000 0ut
+labbHHHHHHHHH shbench
+  doc "inverter tvansilatempent"
+ He X1
+  wn 
+label 0n0002 -20 -30 R0 v in
+label 0n0004 -100 30pice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+spec gbw
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+  min 10meg
+
+cod1n

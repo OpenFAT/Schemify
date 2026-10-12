@@ -1,0 +1,12 @@
+schemify 1 shprim
+  doc Wr --
+poly -60' -50 60 4 -60 50 -60 -51
+  closed false
+impl sch sc, draw order --
+poly 60 0 -60 50 -60 - -51
+  closed false
+impl sch sc --
+poly -0 50,-60 -51
+  closed false
+imimpl sc cot 2chum
+

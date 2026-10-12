@@ -91,12 +91,17 @@ pub fn merge3(o: &Document<'_>, a: &Document<'_>, b: &Document<'_>) -> Merged {
                 ident_of[s][recs[s] as usize] = i as u32;
             }
         }
-        // One rank per identity (sides can disagree only for inherited `Unknown` ranks).
-        let s = [A, B, O]
-            .into_iter()
-            .find(|&s| recs[s] != NONE)
-            .expect("identity has a record");
-        rank_of[i] = doc_ranks[s][recs[s] as usize];
+        // One rank per identity. Sides can disagree only for `Unknown` records, whose rank
+        // is inherited from their position: the side that moved the record wins, like any
+        // other component (fuzz crash 13af0e2c: `merge3(o, o, b)` must keep b's position).
+        let rank = |s: usize| (recs[s] != NONE).then(|| doc_ranks[s][recs[s] as usize]);
+        let (ro, ra, rb) = (rank(O), rank(A), rank(B));
+        rank_of[i] = match (ra, rb) {
+            (Some(a), Some(b)) if a != b && ro == Some(a) => b,
+            (Some(a), _) => a,
+            (None, Some(b)) => b,
+            (None, None) => ro.expect("identity has a record"),
+        };
     }
 
     let mut picks = Picks::default();
@@ -193,6 +198,36 @@ pub fn merge3(o: &Document<'_>, a: &Document<'_>, b: &Document<'_>) -> Merged {
                             &picks,
                         );
                     }
+                }
+                None if sorted => {
+                    // Only the `Unknown` records' file order can conflict here: known kinds
+                    // merge by identity as usual, and the unknown ones (written after them,
+                    // in file order) form the conflict block, so it stays contiguous in the
+                    // writer's canonical order (fuzz crash dceebe51).
+                    let mut known: Vec<u32> = seqs
+                        .iter()
+                        .flatten()
+                        .copied()
+                        .filter(|&i| {
+                            let i = idents[i as usize];
+                            let s = [A, B, O].into_iter().find(|&s| i[s] != NONE);
+                            let s = s.expect("identity has a record");
+                            docs[s].record_kind(i[s]) != RecordKind::Unknown
+                        })
+                        .filter(|&i| flags[i as usize] & KEEP != 0)
+                        .collect();
+                    known.sort_unstable();
+                    known.dedup();
+                    for i in known {
+                        let (recs, outcome) = (idents[i as usize], outcomes[i as usize]);
+                        emit(&mut out, &mut spans, &docs, recs, outcome, &picks);
+                    }
+                    let unknown = |s: usize| -> Vec<u32> {
+                        let doc = docs[s];
+                        let keep = |r: &&u32| doc.record_kind(**r) == RecordKind::Unknown;
+                        blocks[s].iter().filter(keep).copied().collect()
+                    };
+                    push_conflict(&mut out, &mut spans, &docs, &unknown(A), &unknown(B));
                 }
                 None => push_conflict(&mut out, &mut spans, &docs, blocks[A], blocks[B]),
             }
@@ -764,13 +799,17 @@ fn reid_collisions<'s>(
     let (io, ia, ib) = (ids(o), ids(a), ids(b));
     let find =
         |v: &[(u128, u32)], k: u128| v.binary_search_by_key(&k, |e| e.0).ok().map(|i| v[i].1);
-    let colliding: Vec<u32> = ib
+    let mut colliding: Vec<(u128, u32)> = ib
         .iter()
         .filter(|&&(k, rb)| {
             find(&io, k).is_none() && find(&ia, k).is_some_and(|ra| !record_eq(a, ra, b, rb))
         })
-        .map(|&(_, rb)| rb)
+        .copied()
         .collect();
+    // One rename per id: `rename_id` rewrites every record of `b` with it, so a duplicate
+    // id in `b` (W001) is renamed with its first occurrence (fuzz crash ded040dc).
+    colliding.dedup_by_key(|e| e.0);
+    let colliding: Vec<u32> = colliding.into_iter().map(|(_, rb)| rb).collect();
     if colliding.is_empty() {
         return None;
     }

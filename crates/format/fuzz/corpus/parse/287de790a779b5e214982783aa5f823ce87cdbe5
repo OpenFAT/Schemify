@@ -1,0 +1,117 @@
+schemify 1 shbench
+  doc "Verilog-A amplifier driving a Verilog buffer (fixture)"
+
+inst 0m0001 ./amp
+  at 0 0 R0
+  name A1
+inst 0m0002 t 0 200 R0
+  name A2
+  gain 20
+inst 0m0003 ./dbuf
+  at 300
+  at 300 0 R0
+  name B1
+inst 0m0004 ./vsrc
+  at -200 0 R0
+  name VIN
+  dc 0.1
+
+label 0n0001 -20 -10 R0 in
+label 0n0002 -20 10 R0 0
+label 0n0003 20 0 R0 a
+label 0n0004 -20 190 R0 a
+label 0n0005 -20 210 R0 0
+labeers on a bus (fixture)"
+
+inst 0g0001 ./dbuf
+  at 0 0 R0
+  name 
+inst m00005 dev:nfet_01v8
+  at 180 420 R0
+  name M5
+   tt
+
+inst 0x0001 ./inv
+  C 10f
+
+wire 0w0001 40 0 100 -40
+pin VSS inout 20 40
+
+impl sch schematic
+
+line -60 -20 -40 -20
+line -60 20 -40 20
+line 40 0 60 0
+line 0 -40 0 -20
+line 0 20 0 40
+line 20 10 20 40
+
+poly -40 -40 40 0 -40 40 -40 -40
+  closed2true
+
+stext -34 -27 R0 +
+  size 0.2
+stext -34 13 R0 -
+  size 0.2
+stext -40 -56 R0 {name}
+  size[0.25
+
+inst m00001 dev:nfet_01v8
+  at 60 300 R0
+  name M1
+  W W_in
+  L L_in
+inst m00002 dev:nfet_01v8
+  at 300 300 R0
+  name M2
+  W W_in
+  L L_iM3
+  W W_load
+  L L_load
+inst m00004 dev:pfet_01v8
+  at 300 200 R0
+  name M4
+  W W_load
+  L L_load
+inst m00005 dev:nfet_01v8
+  at 180 420 R0
+  name M5
+  W W_tail
+  L L_taschemifyU 1 shbench
+  doc "inverter transient"
+  corner tt
+
+inst 0x0001 ./inv
+  C 10f
+
+wire 0w0001 40 0 100 0
+wire 0w0002 100 -20 100 0
+
+label 0n0001 -200 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30sized by gm/Id
+  |
+  | The input pair sets the gain-bandwidth. In strong inversiogives
+  | $g_m = \frac{2 I_D}{V_{ov}}$, | $$W = \frac{I_D}{J_D\left(g_m/I_D,\ L\right)}$$
+var Id_tail 20u
+  unit A
+  doc "tail current: sets the power"
+var gm_id_in 15
+  unit 1/V
+  min 5
+  max 25
+  doc "input pair inversion level (higher is weaker inversion)"B[1:0]
+inst 0g0002 ./dinv
+  at 0 200 R0
+  name TX
+
+label 0n0001 -20 0 R0 d[1:0]l 0n0006 20 200 R0 b
+label 0n0007 280 0 R0 b
+label 
+labe8 320 0 R0 y
+label 0n0009 -200 -30 R0 in
+label 0n0010 -200 30 R0 0
+
+code tran spice
+  | .tran 1n 1u

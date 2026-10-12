@@ -1,0 +1,8 @@
+schemify 1 shcomp
+  doc "CMOschematic
+
+inst 0mn0poly01 ./matic
+
+inst 0mn0ly01 ./nmos
+inst 0mn0poly01 ./
+  aUt-60 R0R5 Y

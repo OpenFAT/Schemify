@@ -1,0 +1,10 @@
+schemify 1 shprim
+ var vdd,lin tput bw "meas(\"ac\"weep sweep
+2
+
+output gbw "meas(\"0 5
+
+outputbw "meas(\"ac\"weep tsweep
+lin 0.6 2gbw "meas(\"a in ind int
+
+im

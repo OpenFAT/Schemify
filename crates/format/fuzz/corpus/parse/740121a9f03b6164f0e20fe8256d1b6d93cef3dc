@@ -1,0 +1,10 @@
+schemify 1 shprim
+  prefix R
+
+pin p inout 5 -3
+pin n inout 0 30
+
+param R 1k
+
+impl spice spice
+  form "R{{R}"

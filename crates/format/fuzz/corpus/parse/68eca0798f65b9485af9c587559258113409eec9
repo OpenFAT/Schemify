@@ -1,0 +1,13 @@
+schemify 2 shcomp
+ 
+pi 0 40
+
+pze 1
+
+impl sch schematic
+
+inst 0x0001 ./opamp
+  at 0 0 R0
+  name X
+wir 0p0002 40 0 R0 OUT
+port 0p0004 0 40 R0 IB

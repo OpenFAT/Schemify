@@ -7,6 +7,10 @@ on:
   schedule:
     - cron: "41 1 * * 0"
   workflow_dispatch:
+    inputs:
+      crates:
+        description: JSON list of crates to mutate (default all five)
+        default: ""
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,8 +20,10 @@ jobs:
   mutants:
     strategy:
       fail-fast: false
+      # Hours-long shards share the account's job concurrency with every PR's CI.
+      max-parallel: 5
       matrix:
-        crate: [format, expr, doc, elab, netlist]
+        crate: ${{ fromJSON(inputs.crates || '["format", "expr", "doc", "elab", "netlist"]') }}
         # ~1100 mutants per crate (format, doc, elab): three shards keep each under the 5 h cap.
         shard: [0, 1, 2]
     runs-on: ubuntu-latest

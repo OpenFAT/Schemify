@@ -1,0 +1,5 @@
+schemify 1 shprim
+
+pin B insc 20i01n .5
+param W 1 
+ kind w

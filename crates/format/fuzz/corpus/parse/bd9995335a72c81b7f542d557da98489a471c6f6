@@ -1,0 +1,15 @@
+schemify 1 shprim
+  doc)"
+  prefix M
+
+pin D inout 20  in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0ectre0
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param mmat spectre "{nae} (W}u l={L}u"

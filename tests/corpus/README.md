@@ -19,8 +19,11 @@ Shallow, blob-filtered, sparse checkouts, about 30 MB in total:
 | [IHP-Open-PDK](https://github.com/IHP-GmbH/IHP-Open-PDK) | `5e6d592` | `ihp-sg13g2/libs.tech/{xschem,ngspice,verilog-a}/`, `libs.ref/sg13g2_stdcell/{sym,sch,spice,cdl,verilog}/`, `libs.ref/sg13g2_io/{spice,cdl}/` | Apache-2.0 |
 
 The xschem tag matches the binary `golden.sh` runs (nixpkgs `331800d`,
-xschem 3.4.7). sky130 model files are not fetched: open_pdks generates them,
-and netlisting only needs their paths. GF180 models ship as `sm141064.spice`
+xschem 3.4.7). sky130 model files are not fetched here: open_pdks generates them,
+and netlisting only needs their paths. For the ngspice second oracle the nightly
+`corpus` job installs a prebuilt open_pdks release with `volare` (pinned in
+`.github/workflows/nightly.yml`) and links its `libs.tech/combined`, `libs.tech/ngspice`
+and `libs.ref` into `.cache/pdk/sky130A` after `golden.sh`. GF180 models ship as `sm141064.spice`
 while the benches reference `sm141064.ngspice` (open_pdks renames them);
 rename or symlink before simulating.
 

@@ -1,0 +1,128 @@
+schemify 2 project
+ pdkc "inverter transient"
+  corner tt
+
+inst 2x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 -2200 30 R0 0
+lab-100 30 R0 0
+l30 R0 0
+label 0n0003 -100 -30 R0 i
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 v in
+label 0n0004 -100 30pice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+spec gbw
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec ga_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+l30 R0 0
+label 0n0003 -100 -30 R0 i
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 v in
+label 0n0004 -1 lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+sp gcbew
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+ gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+sp gcbew
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 0.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+swpec gbw
+  min 10meg
+
+code control se0006 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp 250 0n000-  202-30 R0 vdd!
+label 0n0002 -250 0n000-  202-30 R0 vdd!
+label 0n0002 -200 30 R0 0n
+label 0n0004 -1 lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+sp gcbew
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+  min 10meg
+
+code control spi20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label-2200 30 R0 0
+lab-100 30 R0 100 -30 R0 i
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 v____________________________ 24
+
+code tran spice
+  | .tran 1p 1n

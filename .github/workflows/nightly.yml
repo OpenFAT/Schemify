@@ -1,5 +1,5 @@
-# Nightly tier (TESTING.md § Tiers): xschem differential ratchet on the full corpus, fuzzing,
-# perf regression gate.
+# Nightly tier (TESTING.md § Tiers): xschem differential ratchet on the full corpus with the
+# ngspice second oracle, fuzzing, perf regression gate, coverage ratchet.
 name: nightly
 
 on:
@@ -10,6 +10,14 @@ on:
       fuzz_minutes:
         description: minutes per fuzz target
         default: "60"
+      only:
+        description: >-
+          run one job only (corpus, fuzz, perf, coverage, or the manual fuzz-corpus);
+          empty runs the nightly set
+        default: ""
+      perf_rounds:
+        description: perf rounds (the gate takes each metric's median over the rounds)
+        default: "5"
 
 env:
   CARGO_TERM_COLOR: always
@@ -17,10 +25,18 @@ env:
 
 jobs:
   # Goldens from a pinned xschem (nix), our netlists of every bench, spicecmp comparison;
-  # fails when the agree counts drop below tests/corpus/RATCHET.md.
+  # fails when the agree counts drop below tests/corpus/RATCHET.md. Then the second oracle:
+  # ngspice results of our netlists and xschem's agree (sky130 models from volare).
   corpus:
+    if: ${{ !inputs.only || inputs.only == 'corpus' }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    env:
+      CACHE: ${{ github.workspace }}/tests/corpus/.cache
+      # open_pdks build that volare serves (release sky130-<commit>, 2025-08); its
+      # libs.tech/combined is what xschem_sky130's SKYWATER_MODELS points at.
+      SKY130_OPEN_PDKS: c6d73a35f524070e85faff4a6a9eef49553ebc2b
+      VOLARE_VERSION: "0.20.6"
     steps:
       - uses: actions/checkout@v5
       - uses: cachix/install-nix-action@v31
@@ -39,10 +55,32 @@ jobs:
         run: cargo test --release -p schemify-spicecmp -- --include-ignored
       - name: differential vs xschem
         run: >-
-          SCHEMIFY_CORPUS=$PWD/tests/corpus/.cache
+          SCHEMIFY_CORPUS=$CACHE
           cargo test -p schemify-netlist --release --test corpus -- --nocapture
       - name: ratchet (RATCHET.md)
         run: tests/corpus/ratchet.sh tests/corpus/.cache/netlist-out/TABLE.md
+      # golden.sh points PDK_ROOT at $CACHE/pdk with only the xschem libraries; the model
+      # files open_pdks generates come from volare's prebuilt release, linked in beside them.
+      - name: sky130 models (volare)
+        if: ${{ !cancelled() }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          pipx install "volare==$VOLARE_VERSION"
+          volare enable --pdk sky130 --pdk-root "$CACHE/volare" \
+            -l sky130_fd_pr -l sky130_fd_sc_hd "$SKY130_OPEN_PDKS"
+          for d in libs.tech/combined libs.tech/ngspice libs.ref; do
+            ln -sfn "$CACHE/volare/sky130A/$d" "$CACHE/pdk/sky130A/$d"
+          done
+          ls "$CACHE/pdk/sky130A/libs.tech/combined/sky130.lib.spice"
+      - name: second oracle (ngspice results of ours vs xschem's netlists)
+        if: ${{ !cancelled() }}
+        run: |
+          ngspice="$(nix build --no-link --print-out-paths \
+            "github:NixOS/nixpkgs/$(jq -r .nodes.nixpkgs.locked.rev flake.lock)#ngspice")"
+          PATH="$ngspice/bin:$PATH" SCHEMIFY_CORPUS=$CACHE \
+            cargo test -p schemify-netlist --release --test corpus -- \
+            --ignored ngspice_results_agree --nocapture
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -53,10 +91,12 @@ jobs:
             tests/corpus/.cache/netlist-out/RESULTS.txt
           if-no-files-found: ignore
 
-  # cargo-fuzz on every harness (crates/*/fuzz). The corpus carries over between nights through
-  # the actions cache and is uploaded with any crash inputs; a crash fails the job and its
-  # input becomes a checked-in regression test (TESTING.md).
+  # cargo-fuzz on every harness (crates/*/fuzz), starting from the checked-in corpus. The
+  # corpus carries over between nights through the actions cache and is uploaded with any
+  # crash inputs; a crash fails the job and its input becomes a checked-in regression test
+  # (TESTING.md).
   fuzz:
+    if: ${{ !inputs.only || inputs.only == 'fuzz' }}
     strategy:
       fail-fast: false
       matrix:
@@ -82,18 +122,9 @@ jobs:
           path: ${{ env.CORPUS }}
           key: fuzz-${{ matrix.target }}-${{ github.run_id }}
           restore-keys: fuzz-${{ matrix.target }}-
+      # xschem_read also gets the fetched PDK files (TESTING.md: seeded with real PDK files).
       - name: seeds
-        run: |
-          mkdir -p "$CORPUS"
-          case "${{ matrix.target }}" in
-            parse) find crates/*/tests/fixtures -name '*.sh*' -type f -exec cp {} "$CORPUS"/ \; ;;
-            xschem_read)
-              # Real PDK files (TESTING.md: seeded with real PDK files) plus the hand-written set.
-              tests/corpus/fetch.sh >/dev/null
-              find tests/corpus/.cache/src tests/determinism/xschem \( -name '*.sch' -o -name '*.sym' \) \
-                -type f -size -64k | head -4000 | while read -r f; do cp "$f" "$CORPUS/$(echo "$f" | sha1sum | cut -c1-16)"; done ;;
-          esac
-          echo "$(ls "$CORPUS" | wc -l) corpus inputs"
+        run: tests/fuzz/seeds.sh ${{ matrix.target }} "$CORPUS" --fetched
       - name: fuzz ${{ matrix.target }} for ${{ env.MINUTES }} min
         working-directory: crates/${{ matrix.crate }}/fuzz
         run: >-
@@ -108,11 +139,61 @@ jobs:
             crates/${{ matrix.crate }}/fuzz/artifacts
           if-no-files-found: ignore
 
+  # Manual only (`gh workflow run nightly.yml -f only=fuzz-corpus`): the minimized corpora to
+  # check in for the merge-tier replay (`<crate>/tests/fuzz_corpus.rs`). Commits nothing:
+  # download the `fuzz-corpus-<target>` artifacts and commit them as
+  # crates/<crate>/fuzz/corpus/<target>/. Seeds are the checked-in corpus and this
+  # repository's own files only (no cache, no fetched xschem or PDK files), so every
+  # committed input derives from nothing third-party.
+  fuzz-corpus:
+    if: ${{ inputs.only == 'fuzz-corpus' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { crate: format, target: parse }
+          - { crate: format, target: merge3 }
+          - { crate: expr, target: compile }
+          - { crate: import, target: xschem_read }
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      MINUTES: ${{ inputs.fuzz_minutes || '60' }}
+      CORPUS: crates/${{ matrix.crate }}/fuzz/corpus/${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: seeds (this repository only)
+        run: tests/fuzz/seeds.sh ${{ matrix.target }} "$CORPUS"
+      # Inputs up to 4 KiB: a corpus of small inputs replays fast in debug builds.
+      - name: fuzz ${{ matrix.target }} for ${{ env.MINUTES }} min
+        working-directory: crates/${{ matrix.crate }}/fuzz
+        run: >-
+          cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} --
+          -max_total_time=$((MINUTES * 60)) -max_len=4096 -rss_limit_mb=4096 -timeout=30
+          -print_final_stats=1
+      - name: minimize (cargo fuzz cmin)
+        working-directory: crates/${{ matrix.crate }}/fuzz
+        run: |
+          cargo fuzz cmin --target x86_64-unknown-linux-gnu ${{ matrix.target }}
+          echo "$(ls "corpus/${{ matrix.target }}" | wc -l) inputs, $(du -sh "corpus/${{ matrix.target }}" | cut -f1)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus-${{ matrix.target }}
+          path: ${{ env.CORPUS }}
+          if-no-files-found: error
+
   # D39 budgets (each perf test asserts its own) and a > 10% regression gate against
   # tests/perf/baseline.txt, measured on this runner class.
   perf:
+    if: ${{ !inputs.only || inputs.only == 'perf' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 150
+    env:
+      ROUNDS: ${{ inputs.perf_rounds || '5' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
@@ -121,16 +202,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # The budget asserts are calibrated for D39's reference machine (a mid-range laptop), not
       # a shared runner: a miss here is a warning; the gate below is the regression check.
-      # Two rounds: the gate takes each metric's faster value (runner hiccups).
-      - name: perf tests (--ignored --release, one at a time, two rounds)
+      # Each test reports the best of its own repetitions; the gate takes each metric's median
+      # over the rounds, so one slow (or lucky) round moves nothing.
+      - name: perf tests (--ignored --release, one at a time, ${{ env.ROUNDS }} rounds)
         run: |
           set -o pipefail
           missed=""
-          for round in 1 2; do
+          for round in $(seq "$ROUNDS"); do
+            echo "::group::round $round"
             for p in format doc elab netlist render app; do
               cargo test --release -p "schemify-$p" --test perf -- --ignored --nocapture --test-threads=1 2>&1 | tee -a perf.log || missed="$missed $p"
             done
             cargo test --release -p schemify-expr --test expr perf -- --ignored --nocapture --test-threads=1 2>&1 | tee -a perf.log || missed="$missed expr"
+            echo "::endgroup::"
           done
           grep -a '^PERF ' perf.log > perf-results.txt || true
           [ -z "$missed" ] || echo "::warning::perf tests failed (D39 budget asserts on this runner?):$missed"
@@ -144,3 +228,33 @@ jobs:
           path: |
             perf.log
             perf-results.txt
+
+  # Coverage as a gap-finder (TESTING.md): workspace line coverage of `cargo test` may not
+  # fall below the floor in tests/coverage/floor.txt (tests/coverage/ratchet.sh). Test
+  # failures are the merge tier's to report; this job measures coverage regardless.
+  coverage:
+    if: ${{ !inputs.only || inputs.only == 'coverage' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: cargo llvm-cov (workspace tests)
+        run: >-
+          cargo llvm-cov --workspace --ignore-run-fail
+          --json --summary-only --output-path coverage.json
+      - name: ratchet (tests/coverage/floor.txt)
+        run: tests/coverage/ratchet.sh coverage.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: coverage.json
+          if-no-files-found: ignore

@@ -1,0 +1,110 @@
+schemify 1 shprim
+  prefix R
+
+pin ice
+  | .subckt r
+b "
+odyspice
+  \ .subckt rcor r
+b "
+ospice
+  \ .subckt rcormatl}"
+  format spectre "{name} ix R
+
+pin ice
+  |ubckt r
+b "
+odyspicefy 1 shprim
+  prefix R
+
+pin ice
+  | .subckt r
+b "
+odyspice
+  \ .subckt rcorma"
+odyspice
+  \ .subckt rcormatl}"
+  format spectre "{name} ix R
+
+pin ice
+  | .stl}"
+  format spectre "{name} ix R
+
+pin ice
+  | .subckt r
+b "
+odyspicerim
+  p2efix R
+
+pin ice
+  | .subckt r
+b.subckt rce
+  \ .subckt rcormat}"
+  format spectre "{name(} ix R
+
+pin ice
+  
+pin ice
+  | .subckt r
+b "
+odyspice
+  \ ma"
+odyspi \ .subckt rcormatl}"
+  formaname} ix R
+
+pin ice
+  | .stl}"
+  format spectre "{name} ix R
+
+pin ice
+  | .subckt r
+b "
+odyspicerim
+  p2efix R
+
+pin ice
+  | .subckt r
+b "
+odyspice
+  \ pectre "{name(} ix R
+
+pin ice
+  
+pin ice
+  | .subckt r
+b "
+odyspicefy 1 shpri  preft(} ix R
+
+pin ice
+  
+pin ice
+  | .subckt r
+b "
+odyspice
+  \ .subckt rcormatl}"
+  format spectre "{name} ix R
+
+pin ice
+  | .subcubctre "{name(} ix R
+
+pin ice
+  
+pin ice
+  | .subckt r
+b "
+odyspicefy 1 shpri  preftr% "{name(} ix R
+
+pin ice
+  
+pin ice
+  | .subckt r
+b "
+odyspice
+  \ .subckt rcormatl}"
+  format se "{name}
+pin ice
+  | .subckt r
+b "
+
+  \ .su
+  \ .subckt rcor({pR}"

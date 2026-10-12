@@ -1,0 +1,104 @@
+schemify 1 shcomp
+  do. A library browser or netlister stops reading here. ---
+# pin <name> <dir> <x> <y>; file order = port order
+pin INP in -80 T out 40 0
+pin IBIAS in 0 40
+
+param wn 2
+param wp 4
+param l 0.5
+param cc 1p
+
+impl sch schematic
+
+# Devices at x = 0, 100, ..., all R0. NMOS pins: D (x+20,-30) G (x-20,0) S (x+20,30)
+# B (x+20,0); PMOS: S (x+20,-30) Gt 300 0 R0
+  name M4006 ./pmos
+  at 500 0 R0
+  name M6
+  W wp*4
+  L l
+inst 0m0007 ./nmos
+  at 600 0 R0
+  name M7
+  W wn*2
+  L l
+inst 0m0008 ./nmos
+  at 700 0 R0
+  name M8
+  W wn
+  L l
+inst 0c0001 ./cap
+  at 800 0 R0
+  name CC
+  C cc
+
+# Tail: the pair's sources share a wire.
+wire 0w0001 20 30 120 30
+
+label 0n0001 20 -30 R0 n1
+label 0n0002 20 0 R0 0
+label 0n0003 120 -30 R0 n2
+label 0n0004 120 0 R0 0
+label 0nIBIAS
+label 0n0026 720 30 R0 0
+label 0n0027 720 0 R0 0
+label 0n0028 800 -20 R0 n2
+label 0n0029 800 20 R0 OUT
+
+port 0p0001 -20 0 R0 INP
+port 0p0002 80 0 R0 INN
+port 0p0003 520 30 R0 OUT
+p-20
+pin INN in -80 20
+pin OUT out 80 0
+pin IBIAS in -80 40
+pin VDD inout 0 -60
+pin VSS inout 0 60
+
+p.5
+  unit um
+
+impl sch schematic
+
+# --- rank 2: symbol graphics, draw order ---
+poly -60 -50 60 0 -60 50 -60 -50
+  closed true
+
+line -80 -20 -60 -20
+line -80 20 -60 20
+line 20 0 80 0
+
+stext -55 nf 2
+inst 4szjc8 sky130:pfet_01v8
+  at -60 -480 R0
+  name M3
+  W 4
+  L 1
+inst 4tyd1p sky130:pfet_01v8
+  at 120 -480 MR0
+  name M4
+  W 4
+  L 1
+inst 9vdm2q sky130:nfet_01v8
+  at 30 -160 R0
+  name M5
+  W 4
+  L 1
+
+# Wires are geometry only: no net names, so renaming a net never touches them.
+wire 0d2k1m -40 -450 100 -450
+wire 3fk2a1 -40 -270 -40 -190
+wire 7q3vxa d"
+  size 0.4
+
+constraint s4m3tr match
+  member 0gsrp0
+  member 1j446r
+  pattermonc mon-centroid
+
+prose v1d0c5
+  | # 5T OTA
+  |
+  | Gain is $g_m r_o / 2$, with $r_nit S
+  doc "transconductance target"

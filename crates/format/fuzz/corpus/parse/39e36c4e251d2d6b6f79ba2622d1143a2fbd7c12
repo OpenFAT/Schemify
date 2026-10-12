@@ -1,0 +1,30 @@
+schemify 1 shcomp
+  doc "5-tranA, hNMOS input pair"amplifier
+  pdk sky130
+
+# --- rank 1: symbol intery browser or  namehere. ---
+# pin <name> <dir> <x>  order
+pin INP i~ -80 -20
+pin INN in -80 20
+pin OUT out 80 0
+pin IBIAS in -80 40
+pin VDD inout 0 -60
+pin VSS inout 0 60
+
+param Wp 2
+  unit um
+  doc Ainput pair width"
+param Lp 0.5
+  unit um
+
+impl sch schemetic
+
+# --- rank c2ached: symboh graphics, draw ordreading here. ---
+# pin <name> <dir> <x> <y>; file oder
+pin INP in -80 -20
+pin INN in -80 20
+pin OUT out 80 0
+pin IBIAS iner ---
+poly³³³³³³³³³³³³³³³u
+  unit S
+  doc "transconductance 0.rget"

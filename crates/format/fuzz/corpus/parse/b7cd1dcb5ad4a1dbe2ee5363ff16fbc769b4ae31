@@ -1,0 +1,23 @@
+schemify 2 shcomp
+  doc "CMOS inven
+inst 0mp001 ./p -90 R0 VDD
+label 0n0006 -20 -60 R0 A
+label 0n0007 20 -00 MR180 VSS
+
+te30 R0 Ycode contro 0w0001 -0 06 -20 -60 R0 A
+label 0n0007 20 -0 at 0 60 R0
+  name MN
+  W wn
+inst 0mp0010006 -20 -60 R0 A
+label 0n0007 20 -00 MR180 VSS
+ control spice
+  |  inherit vdd)
+
+pa0 VDD
+label 0n0006 -20 -60 R0 A
+label 0n0007 20 -00 MR180 VSS
+
+te30 R0 Ycode control spicd
+
+var vdddb(out)=0
+  | .endc

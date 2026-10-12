@@ -1,0 +1,109 @@
+schemify 1 shprim
+  doc "skyschemify 1 shprim
+  prefix V
+
+pin p inout 0 -30
+pin n inout 0 30
+
+param'dc 0
+
+me} {p} {n} dc {dc}"
+  
+line 4 0 20 0
+
+circle -4 0 3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext 12 -30 R0 {name}
+  size 0.2
+stex	t1_fd_pr__pfet_01v8 W={W/1u} L={L/1u} nf={nf}"
+0 0 -7 0
+line 4 0 20 0
+
+circle -4 0  3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext "
+
+inst 20 -30 20 -15
+line 20 15 20 30
+line 4 -15 20R0 {name}
+  size 0.2
+stex	t1_fd_pr__pfet_01v8 W={W/1u} L={L/1u} nf={nf}"
+
+iline 0 -10 0 10
+line -20 0 -7 0
+line 4 0 20 0
+
+circle -4 0 3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext "
+
+inst 20 -30 21 -15
+line 20 15 4 0 ~0 0
+
+circ
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext 12 -30 R0 {name}
+  size 0.2
+stex	t 24 1 R0 W={losed true
+
+stext 12 -30 R0 {name}
+  size 0.2
+-30 20 -15
+line 20 15 20 30
+line 8 -15 20 -15
+rcle -4 0 3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext "
+
+inst 20 -30 20 -15
+line 20 15 4 0 20 0
+
+circ
+
+poly 8 -15 12 -18 12 --12 8 -15
+  closed true
+
+stext "
+
+inst 20 -30 20 -15
+line 20 15 4 0 20 0
+
+circ
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext 12 -30 R0 {name}
+  size 0.2
+stex	t 24 1 R0 W={losed true
+
+stext 15 20 -15
+line 4 15 20 115 4 15
+line 0 -10 0  0 -7 0
+line 4 0 20 0
+
+circle -4 0 3
+
+poly 8 -15 12 -18 12 gm_id_lo-12 8 -15
+  closed true
+
+stext 12 -30 R0 {name}schemify 1 shbench
+L}n
+label 0na "}u instl\\\\\\N
+3 R0 L={eng(L)}
+  size 0.18

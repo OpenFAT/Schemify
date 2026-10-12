@@ -1,0 +1,5 @@
+schemify 2 shcomp
+  doc "CMOS i A
+label 0n0007 20 -00 MR180 VSS
+
+te30 R0 Ycode controlodulvs

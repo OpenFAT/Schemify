@@ -1,0 +1,12 @@
+schemify 1 shcomp
+  doc "Two-inver﻿ter vececell"
+  p 40 0
+
+impl sEEEEEEEEEEEEEEEEEE schematic
+
+rect -0 -20 20 20
+
+line -40 0 -20 0
+line 20 0 40 0
+
+stext -20 -28 R0 {naY

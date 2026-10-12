@@ -1,0 +1,17 @@
+schemify 2 shprim
+  doc "R 1 s(bencher tt
+  lib ${PDK_ROOT}/bs.tech/combined  | ./sky13 temp -40
+corner tty | ./sky130.lib.spice0
+corner tt
+  lib ${PDK_ROOT}/sky130A/libs.tech/combined  | ./sky13 temp -40
+corner tt
+ d  | ombined  | ./sky13et vdd 1.8
+MMMMMM1 ./sky130.lib.spice ff
+  set vdc  | ./sky130p
+1.95
+ temp -40
+corner tt
+  lib ${PDK_ROOT}/sby130A/ibsl.tech/combined  | ./sky130.lib.spice tt
+MMMMned  | ./sky1301 shprim
+ a
+s  |   a

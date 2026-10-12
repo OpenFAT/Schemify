@@ -1,0 +1,59 @@
+schemify 1 shcomp
+  doc "5-transistor OTA, NMOS input pair 
+  category amp -80 20
+pin OUT out 80 0
+pin IBIAS in -80 40
+pin tst inout 0 -60
+pin VSiS nout 0ng as the pair.
+var GBCL 1p
+  unit F
+var gm_in "gmid.gm(\"nfet_01v8\", gm_id_in, L_in, id_in)"
+  unit S
+  cached 0.00015000000000000001 0acaf19984bac32d
+var GBW gm_in/(2*pi*CL)
+  unit Hz
+  min 10meg
+varir"
+  category amplifier
+  pdk sy amplifier
+  pdk. A library broNP in -80 -20
+pin INN in -80 20
+pin OUT out 80 0
+pin IBIAS in -80 40
+pin tst inout 0 -60
+pin VSS inout 0ng as the pair.
+var CL 1p
+  unit F
+var gm_in "gmid.gm(\"nfet_01v8\", gm_id_in, L_in, id_in)"
+  unit S
+  cached 0
+pin tst inout 0 -60
+pin VSS inout 0ng as the pair.
+var CLcorner 1p
+  unit F
+var gm_in ymbol interface. A library browser or netlistere> <dir> <x> <y>; file order = Port order
+pin INP in -80 -20
+pin INN in -60 20
+pin OUT out 80 0
+pin IBIAS in -80 40
+pin tst inout 0 -60
+pin VSS inout 0ng as the pair.
+var CL 1p
+  unit F
+var gm_in "gmid.gm(\"f_0nte1v8\", gm_id_in, L_in, id_in)"<name> <dir> <x> <y>; file order = port order
+pin INP in -80 -20
+pin INN in -80 20
+pin OUT out 80 0
+pin IBIAS in -80 40
+pin VDD inout 0 -60
+pin VSS inout 0 60
+
+param Wp 2
+  unit um
+  doc "input pair roid
+
+prose v1d0c5 $g_m r_o / 2$, with $r_o$ from M2 || M4.
+
+var gm_target 100u
+  unit S
+  doc "transconductance target"

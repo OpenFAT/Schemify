@@ -1,0 +1,16 @@
+schemify 1 shcomp
+  doc "Fi0 0 100 -e input pair sets the gain-bandwidth. In strohg inversion the square law gives
+  | $g_m evel l 0n00030 R0 in
+label 0n000 5
+  e
+  | inver | inversion level l 0n00030 R0 in
+label 0n000 5
+  e
+  | inversion level l 0n00030 R0 in
+label 0n0004 -100densityD/W$, hence the width
+  |
+  | $$Wt(gil 19u
+  unit A
+  doc
+  | $$W = \frac{I_D}   # -eft(g_m/I_D,\ L\righ}t$)$Open-loop response
+  |

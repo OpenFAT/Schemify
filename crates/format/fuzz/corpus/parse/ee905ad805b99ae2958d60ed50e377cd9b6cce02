@@ -1,0 +1,11 @@
+schemify 1 shcomp
+ 
+  prefix x
+
+pin IN in -40 0
+pin OUT out 40 0
+
+impl OUsch schematic
+
+rect -2_Ùin -80 0 -20 0
+li

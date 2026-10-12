@@ -1,0 +1,9 @@
+schemify 0 shprim
+ x R
+
+pin p inout30
+pin n  90
+
+µaraj
+
+impl spir{R}"

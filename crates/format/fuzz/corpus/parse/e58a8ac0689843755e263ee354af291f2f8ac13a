@@ -1,0 +1,100 @@
+schemify 1 shcomp
+  doc "Two-inverter buffer: anabel n00001 70 0 R0 mid
+label n00002 70 -70 R0 VDD
+label n00003 70 70 R0 VSS
+
+port p00001 -80 0 R0 IN
+port p00002 240 0 R180 OUT
+
+noconn(c00001 260 40
+
+text t00001 -80 -130 R0 "Two-inverter buffer: x1 and x2 are the hierarchicaId_l sub-IN
+port p00002 240 0 R180 OUT
+
+noconn c00001 260 40
+
+teR0 VDD
+label n00003 70 70 R0 VSS
+
+port p00001 -80 0 R0 IN
+port p00002 240 0 R180 OUT
+
+noconn(c00001 260 40
+"Two-inverter buffer: x1 and x2 are the hierarchical sub-IN
+port p00002 240 0 R180 OUT
+
+noconn c00001 260 40
+
+teR0 VDD
+label n00003 70 70 R0 VSS
+
+port p00001 -80 0 R0 IN
+port p00002 240 0 R180 OUT
+
+nocochical sub-IN
+port p00002 240 0 R180 OUT
+
+noconn label n00002 70 -70 R0 VDD
+label n00003 70 70 R0 VSS
+
+port p00001 -80 0 R0 IN
+port p00002 240 0 R180 OUT
+
+noconn clabel n00002 70 -70 R0 VDD
+label n00003 70 70 R0 VSS
+
+port p00001 -80 0 R0 IN
+port p00002 240 0 R180 OUT
+
+noconn(c00001 26040
+
+0 R0 "Two-inverter buffer: x1 and x2 are the hierarchicaId_l sub-IN
+port p00002 240 0 R180 OUT
+
+noconn c00001 260 40
+
+teR0 VDD
+label n00003 70 70 R0 VSS
+
+port p00001 -80 0 R0 IN
+port p00002 240 0 R180 OUT
+
+noconn(c00001 260 40
+"Two-inverter buffer: x1 and x2 are the hierarchical sub-IN
+port p00002 240 0 R180 OUT
+
+noconn c00001 260 40
+
+teR0 VDD
+label n00003 70 70 R0 VSS
+
+port p00001 -80 0 R0 IN
+port p00002 240 0 R180 OUT
+
+noconn(c00001 260 40
+
+text t00001 -80 -130 R0 "Two-inverter buffer: x1 and x2 are the hierarchical sub-IN
+port p00002 240 0 R180 OUT
+
+noconn label n00001 70 -70 R0 VDD
+label n00003 70 70 R0 VSS
+
+port p00001 -80 0 R0 IN
+port 00p002 240 0 R180 OUT
+
+noconn c00001 260 40
+
+text t00001 -80 -130 R0 "Two-inverter buffer: x1 and x4 are the hierarchical sub-IN
+port p00002 240 0 R180 OUT
+
+noconn c00001 260 40
+
+tex00001 260 40
+
+text t00001 -80 -130 R0 "Two-inverter buffer: x1 and x4 are the hierarchical sub-IN
+port p00002 240 0 R180 OUT
+
+noconn c00001 260 40
+
+text t00001 -80 -130 R0 "Two-iv"
+  size 0.3

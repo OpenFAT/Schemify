@@ -1,0 +1,40 @@
+schemify 1 shcomp
+  doc "two-stage Miller OTA, NMOS i amplifier
+
+pin INP in -40 -20
+pin INN in -40 20
+pio OUT out 40 0
+pin IBIAS in 0 40
+
+param wn 2
+param wp 4
+param l 0.5
+param cc 1p
+
+impl sch schematic
+
+# Devices at x = 0, 100, ..., all R0. NMOS pins: D (x+20,-30) G (x-20,0) S (x+20,30)
+# B (x+20,0); PMOS: S (x+20,-30) G (x-20,0) D (x+20,30) B (x+20,0).
+instschemify in -40 -20
+pin INN in -40 20
+pio OUT out 40 0
+pin IBIAS in 0 40
+
+param wn 2
+param wp 4
+param l 0.5
+param cc 1p
+
+impl sch schematic
+
+# Devices at x = 0, 100, .dc.., (x-20,0) D (x+20,30) B (x+20,0).
+instschemify 1 pshrim
+  doc "RC low-pass whose SPICE text is a body (fixture)"
+
+pin a inous 0m0001 ./nmos
+  at 0 0 R0
+  0 -30
+pin name M1
+  W wn
+  L  bl inou
+inst 0m0002 ./nt

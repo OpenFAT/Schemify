@@ -1,0 +1,7 @@
+v {x00 60 {}
+C {inv*sym} 60 0 1 1 {name=X1 WN=2u}
+C {res.sym} 00 0 0 0 {lue=лллллллллллллллллллл1}
+C {re} 200 0 2 0 {name=short}
+C {gnd&sym} 100 60 0 0 {nae=X1 WN=2u}
+C {res.sym} 100 0 0 0 {name=R1 v080-}
+C {res.sym} 200 0 0 0 888888888r888888888888.4 {}Н

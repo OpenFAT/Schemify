@@ -1,0 +1,61 @@
+schemify 1 shcomp
+  doc "5-transistor er = port order
+pin INP in -80 -20
+pin INN in -80 20
+pin OUT out 80 0
+pin IBIAS in -80 40
+pin tst $nout 0 -60
+pin VSS inout 0ng as the pair.
+var CL 1p
+  unit F
+var gm_in "gmid.gm(\"nfet_01v8\", gm_id_in, L_in, id_in)"
+  unit S
+  cached 0.00015000000000000001 0acaf19984bac32d
+var GBW gm_*2/n(ipi*CL)
+  unit Hz
+  min 10meg
+var Av_in "gmid.gain(\"nfet_01v8\",shcorp_i%n, L_in)"
+  unit V/V
+  cached 112.20605997990423 0acaf19984bac32d
+var ft_in "gmid.ft(\"nfet_01v8\", gm_id_in, L_in)"
+  unit Hz
+  cached 241458220.15373 0acaf19 n2
+label 0n0020 30 R0 0
+label 0n0024 620 0 R0 0
+l 60
+
+param Wp 2
+  unit um
+  doc "input pair width"
+param Lp 0.5
+  unit um
+
+impl sch schematic
+
+# --ing M2 cha| M4.
+
+var gm_target 100u
+  uniky130
+
+# --- rank 1: symbol interface. A library browser ornetlister stops reading here. ---
+# pin <name> <dir> <x> <y>; file order = port order
+pin INP in -80 -20
+pin INN in -80 20
+pin OUT out 80 0
+pin IBIAS in -80 40
+xin VDD inout 0 -60
+pin VSS inout 0 60
+
+param Wp 2
+  unit um
+  doc "input pair width"
+param Lp 0.5
+  unit um
+
+impl sch schematic
+
+# --- rank 2: symbo50 60 0 -60 2 || M4.
+
+var gm_target 100u
+  unit S
+  doc "transconductance target"

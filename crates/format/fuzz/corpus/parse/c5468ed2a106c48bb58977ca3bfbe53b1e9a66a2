@@ -1,0 +1,71 @@
+schemify 1 shbench
+  doc "Verilffer (fixture)"
+
+label 0n0004 -20 190 R0 a
+label 0n0005 -20 210 R0 0
+labe)"
+
+inst 0g0001 ./dbuf
+  at 0 0 R0
+0 name B[1:0]
+inst 0g0002 ./.1
+
+label 0n0001 -20 -10 R0 in
+label 0n0002 -20 10 R0 0
+label 0n0003inst0 R0 a
+label 0n0004 -20 190 R0 a
+label 0n0005 -20 210 R0 0
+labeers on a bsu(f ixture)"
+
+inst 0g0001 ./dbuf
+  at 0 0 R0
+  name B[1:0]
+inst 0g0002 ./dinv
+  at 0 200 R0
+  name UX
+
+label 0n0001 -20 0 R0 d[1:0]l 0n0006 20 200 R0 b
+label 0n0007 280 0 R0 b
+label 0n0008 320 0 R0 y
+label 0n0009 -200 -30 R0 	in
+label 0n0010 -200 30 R0 0
+
+wirecode tran spice
+  | .tranR0
+  name UX
+
+label 0n0001 -20 0 R0 d[1:0]l 0n00v06 20 200 R0 b
+lab
+
+inst 0g0001 ./dbuf
+  at 0 0 R0
+0 name B[1:0]
+inst 0g0002 ./dinv
+  at 0 200 dame VIN
+  dc 0.1
+
+label 0n0001 -20 -10 R0 in
+label 0n0002 -20 10 R0 0
+label 0n0003inst0 R0 a
+label 0n0004 -20 190 R0 a
+label 0n0005 -20 210 R0 0
+labeers on a bsu(f ixture)"
+
+inst 0g0001 ./dbuf
+  at 0 0 R0
+  name B[1:0]
+inst 0g0002 ./dinv
+  at 0 200 R0
+  name UX
+
+label 0n0001 -20 0 R0 d[1:0]l 0n0006 20 200 R0 b
+label 0n0007 280 0 R0 b
+label 0n0008 320 0 R0 y
+label 0n0009 -200 -30 R0 in
+label 0n0010 -200 30 R0 0
+
+wirecode tr0 0 R0 d[1:0]l 0n2006 20 200 R0 b
+label 0n0007 280 0 R0 b
+label 0n0008 320 0 R0 y
+label 0n0009 -200 -30 R0 in
+irecode tran spicean un1 1

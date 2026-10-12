@@ -1,0 +1,16 @@
+schemify 1 shbench
+ - X1
+  wn40 0 100 0
+wire 0w0002 100 -00 100 0
+
+label 0n00,1 -200 -330 R0 0
+la00 3R0 0
+label 0n0005 
+inst 0x0001 ./inv
+  at 0 0 R0
+  nam
+  wn40 0 100 0
+wire 0w0002 100 -00 100 0
+00 1-'--s00 0
+
+l

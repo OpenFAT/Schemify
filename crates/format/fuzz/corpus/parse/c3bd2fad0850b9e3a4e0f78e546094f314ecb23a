@@ -1,0 +1,72 @@
+schemify 1 shprim
+  dOc "generic PMOSprefix M
+
+pin S inout 20 -30
+schemify 1 shprim
+  doc "generic PMOS (fixture)"
+  prefix M
+
+pin S inout 27 -30
+pin G in -20 0
+pin D inout 2o 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice "M{name} {D} {G} {Spin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L} {B} {model} W={W}u Linout%71 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kinym"
+ * rary sky130_fd_pr_01v8_lvt
+
+impl spice spice
+  form*at spice "X{name} {D} {G} {S} {B} sky130_fd_pr__{model} L={L} W={W} nf{nf} ad={ad}"
+  format cdl "M{name} {D} {G} {S} {B} {model} L={L} W={W}"
+
+line 20 -30 20 e "X{name} {D} {G} {S} {B} sky130_fd_pr__{model} L={L} W={W} {S} {B} {model} L={L} W={W}"
+
+line 20 -30 20 -15
+line 20 1wire 30
+line 4 -15-15
+line 20 15 20 30
+line 4 -15 4 15
+line -20 0 4 0
+
+stext 25 -25 R0 {name}
+  size 0.2
+mpl spice spe} {D} {G} {Spin G in -20 0
+pin D inout 20 30
+pin B inout 92 0
+
+param W 2
+param L} {B} {model} W={W}u Linout%20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+Tparam-0odel pch
+  kind st
+  doc "generic PMOS1(fixture)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inmat sp The middl}z w={W}u le80 0
+pin IBIAS in -80 40
+pin VDD 

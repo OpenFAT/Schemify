@@ -11,12 +11,26 @@
 # `nix develop` has it, and `git submodule update --init` fetches the source). The nix-built
 # rustc has no rust-lld, so without one on the toolchain the script re-runs itself under
 # `nix shell nixpkgs#lld` and links with wasm-ld.
+#
+# Reproducible: the CI `plugins` job rebuilds every guest and fails when a committed module
+# differs. The bytes depend only on the sources, the lockfiles and the toolchain: build in
+# `nix develop` (the rustc, wasm-ld and Zig flake.lock pins; CI does) or commit the modules
+# of the CI `plugin-guests` artifact. Host paths are remapped out of the modules (panic
+# locations of path and registry crates would otherwise name this checkout).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root="$(cd "$here/.." && pwd)"
 fixtures="$here/../crates/plugin/tests/fixtures"
 assets="$here/../crates/app/assets"
 host="$(rustc -vV | sed -n 's/^host: //p')"
+pinned="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' "$here/Cargo.toml")"
+if ! rustc -V | grep -q "^rustc $pinned\(\.0\)\? "; then
+  echo "warning: $(rustc -V) is not the pinned rustc $pinned (nix develop): the modules will" \
+    "not match the committed ones byte for byte" >&2
+fi
+# Unit separator between flags: paths may contain spaces.
+export CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=$root=/schemify"$'\x1f'"--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo"
 
 if [[ ! -x "$(rustc --print sysroot)/lib/rustlib/$host/bin/rust-lld" ]] \
    && [[ -z "${CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER:-}" ]]; then

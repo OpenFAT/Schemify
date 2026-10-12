@@ -1,0 +1,55 @@
+schemify 1 shcomp
+  doc "Five-transistor OTA sized by gm/Id: the docs page derives every W from the gmid'plugin"
+  prefix x
+
+pin inp in -60 -20
+pin inn in -60 20
+pin outD inout 0 -40
+pin VSS inout 20 40
+
+impl sch schematic
+
+line -60 -20 -40 -20
+line -60 20 -40 20
+line 40 0 60 0
+line 0 -40 0 -20
+line 0 20 0 40
+line 20 10 20 40
+
+poly -40 -40 40 0 -40 40 -40 -40
+  closed true
+
+stext -34 -27 R0 +
+  size 0245
+wire w00010 270 240 280 200
+wire w00011 80 230 80 245
+wire w00012 80 245 80 270
+wire w00013 320 230 320 250
+wire w00014 320 250 320 270
+wire w00015 320 250 400 250
+wire w00016 80 330 80 360
+wire w00017 320 330 320 360
+wire w00018 80 360 200 360
+wire w00019 200 360 320 360
+wire w00020 200 360 200 390
+wire w00021 0 300 40 300
+wire w00022 240 300 280 300
+wire w00023 120 420 160 420
+wire w00024 200 450 200 480
+
+label n00001 200 360 R0 tail
+
+port p00001 0 300 R0 inp
+port p00012 240 300 R0 inn
+port p00003 400 250 R180 out
+port p00004 120 420 R0 vbias
+port p00005 200 120 R0 VDD
+port p00006 200 480 R0 VSS
+
+text t00001 0 60 R0 "Five-transistor OTA: every W comes from a gm/Id target on the docs page"
+  size 0.3
+
+prose d00001
+  | # Five-transistor OTA, sized by gm/Id
+  |
+  | The input pair semify 1 shaip

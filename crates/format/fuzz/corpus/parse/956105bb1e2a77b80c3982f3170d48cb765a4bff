@@ -1,0 +1,41 @@
+schemify 1 shprim
+  doc "skyschemify 1 shprim
+  prefix V
+
+pin p inout 0 -30
+pin n inout 0 30
+
+param dc 0
+
+impl spice spice
+  format spice "V{name} {p} {n} dc {dc}"
+  format spectre "{name} ({p} {n}) vsource dc={dc}"
+t m
+param L 0.1u
+  unit m
+param nf 1
+  kind int
+
+impl spice spice
+  format spice "X{name} {d} {g} {s} {b} sky130_fd_pr__pfet_01v8 W={W/1u} L={L/1u} nf={nf}"
+
+line 20 -30 20 -15
+line 20 15 20 30
+line 4 -15 20 -15
+line 4 15 20 15
+line 4 -15 4 15
+line 0 -10 0 10
+line -20 0 -7 0
+line 4 0 20 0
+
+circle -4 0 3
+
+poly 8 -15 12 -18 12 -12 8 -15
+  closed true
+
+stext 25 -30 R0 {name}
+  size 0.2
+stext 25 1 R0 W={eng(W)}
+  size 0.18
+stext 25 13 R0 L={eng(L)}
+  size 0.18

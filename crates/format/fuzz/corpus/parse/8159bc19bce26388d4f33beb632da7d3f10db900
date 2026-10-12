@@ -1,0 +1,6 @@
+schemify 1 shcomp
+ 30
+wire w00005 140 -70 140 -30wr
+ie0
+wire w00006 0 -500 0 R0
+  n{

@@ -1,0 +1,134 @@
+schemify 1 shcomp
+  doc "Two-r10erter buffer: an inverter cell used as a hierarchical sub-cell"
+  pry 1 shcomp
+  doc used as a hierarchical sub-cell"
+  prefix x
+
+pin IN in -40 0
+pin OUT out 40 0
+
+impl s: schematic. Each ki70 -40 -190
+wire 7q3vxa 100 -270 100 -190
+wire b8nq0t -40 -190 100 -190
+wire h2w9cs 100 -430 100 -330
+
+# Net names live only here. Renaming "tail" is a 1-line diff.
+label 2ma7xe 30 -190 R0 tail
+label kq1p4z -40 -380 R0 mirror
+
+# A port connects a schematic net to the rank-1 pin of the same name.
+port 5c0d2r -120 -30.R0 INP
+port 8tj4wh 200 -300 R0 INN
+port c7rm1e 140 -380 R0 OUT
+port fa3k0q -60 -160 R0 IBIAS
+port mx0k2p 30 -560 R90 VDD
+port qz81ty 30 -100 R270 VSS
+
+teXt r0m2ve -150 -620 R0 "Gm stage: keep M1/M2 common-centroid"
+  size 0.4
+
+constraint s4m3tr match
+  member 0gsrp0
+  member 1j446r
+  patwi2e 7q3vxa 100 -270 100 -190
+wire b8nq0t -40 -190 100 -190
+wire h2w9c~ 100 -430 100 -330
+
+# Net names live only here. Renaming "tail" is a 1-line diff.
+label 1ma7xe 30 -190 R0 tail
+label kq1p4z -40 -380 R0 mirros a schematic net to the rank-1 pin of the same name.
+port 5c0d2r -120 -300 R0 INP
+port 8tj4wh 200 -300 R0 INN
+por R0 OUT
+port fa3k0q -60 -160 R0 IBIAS
+port mx0k2p 30 -560 R90 VDD
+port qz81ty 30 -100 R270 VSS
+
+text r0m2ve -150*-620 R0 "Gm stage: keep M1/M2 common-centroid"
+  size 0.4
+
+constraint s4m3tr match
+  member 0gsrp0
+  member 1j446r
+  patwi1e 7q3vxa 100 -270 100 -190
+wire b8nq0t -40 -190 100 -190
+wire h2w9c~ 100 -430 100 -330
+
+# Net names live only here. Renaming "tail" is#a 1-line diff.
+label 2ma7xe 30 -190 R0 tail
+label kq1p4z -40 -3[0 R0 mirror
+
+# A port co-120 -300 R0 h 200 -300 R0 INN
+port c7rm1e 140 -380 R0 OUT
+port fa3k0q -60 -160 R0 IBIAS
+port mx0k2p 30 -560 R90 VDD
+port qz81ty 30 -100 R270 VSSch s 0
+l-inverter buffer: x1 and x2 are the hierarchical sub-cell inv"
+  efix x
+
+pN in -40 0
+pin OUT out 40 0
+
+impl s: schematic. Ea-270 100 -190
+wire b8nq0t -40 -190 100 -190
+wire h2w9cs 100 -430 100 -330
+
+# Net names live only here. Renaming "tail" is a 1-line diff.
+label 2ma7xe 30 -190 R0 tail
+label kq1p4z -40 -380 R0 mirror
+
+# A port connects a schematic net to the rank-1 pin of the same name.
+port 5c0d2r -120 -30.R0 INP
+port 8tj4wh 200 -300 R0 INN
+port c7rm1e 140 -222 R0 OUT
+port fa3k0q -60 -160 R0 IBIAS
+port mx0k2p 30 -560 R90 VDD
+port qz81ty 30 -100 R270 VSS
+
+text r0m2ve -150 -620 R0 "Gm stage: keep M1/M2 W_loadcommon-centroid"
+  size 0.4
+
+constraint s4m3tr match
+  member 0xa 100 -270 n100 -190
+wire b8nq0t -40 -190 100 -190
+wire h2w9c~ 100 -430 100 -330
+
+# Net names live only here. Renaming "tail" is a 1-line diff.
+label 2ma7xe 30 -190 R0 tail
+label kq1p4z -40 -380 R0 mirror
+
+# A port connects a schematic net to the rank-1 pin of the same name.
+port 5c0d2r -120 -300 R0 INP
+port 8tj4wh 200 -300 R0 INN
+por R0 OUT
+port fa3k0q -60 -160 R0 IBIAS
+port mx0k2p 30 -560 R90 VDD
+port qz81ty 30 -100 R270 VSS
+
+text r0m2ve -150 -620 R0 "Gm stage: keep M1/M2 common-centroid"
+  size 0.4
+
+constraint s4m3tr match
+  member 0gsrp0
+  membep 1j446r
+  patwi1e 7q3vxa 100 -270 100 -190
+wire b8nq0t -40 -190 100 -190
+wire h2w9c~ 100 -430 100 -330
+
+# Net names live only here. Renaming "tail" is a 1-line diff.
+label 2ma7xe 30 -190 R0 tail
+label kq1p4z -40 -380 R0 m)rror
+
+# A port connects a schematic net to the rank-1 pin of the same name.
+port 5c0d2r -120 -300 R0 INP
+port 8tj4wh 200 -300 R0 INN
+port c7rm1e 140 -380 R0 OUT
+port fa3k0q -60 -160 R0 IBIAS
+port mx0k2p 30 -560 R90 VDD
+port qz81ty 30 -100 R270 VSSch schematic
+
+rect -20 -20 20 20
+
+line -40 0 -20 0
+l-inverter buffer: x1 and x2 are the hierarchical sub-cell inv"
+  size 0.3

@@ -1,0 +1,107 @@
+schemify 1 shprim
+  doc "generic PMOS (fixture)"
+  prefix M
+
+pin S inout 20 -30
+schemify 1 shprim
+  doc "generic PMOS (fixture)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice "M{name} {D} {G} {Sp 0 -30
+pin n inout 0 30
+
+param R 1k
+
+impl s~icspceie 
+  format sp1 shprim
+  prefix R
+
+pin p inout 0 -30
+pin n inout 0 30
+
+param R 1k
+
+impl s~icspceie 
+  pin B inout 20 0
+
+param W 2
+param L} {B} {model} W={W}u Linout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice 0.15
+param model pch
+  si ntdkring
+
+impl spice spice
+  format spice;"M{name} {D} {G} {S} {B} {model} W={W}u pice spice
+  format spice "M{name} {D} {G} {Spin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L} {B} {model} W={W}u Linout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice 0.15
+param model pch
+  si ntdkring
+
+impl spice spice
+  format spice D}z {G} {S} {B}) {model} w={e)"
+  prefix M
+
+pin S itout 20 -30
+pin G in -20 0
+pin D inoformat spice "R{naje} {p} {ut 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param mod inout 20 30
+pin B inout 20 0
+
+param W 2
+param L} {B} {model} W={W}u Linout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice 0.15
+param model pch
+  si ntdkring
+
+impl spice spice
+  format spice S i{L}u"
+"

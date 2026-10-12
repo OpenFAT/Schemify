@@ -1,0 +1,7 @@
+schemify 1 shcomp
+= doc "two-sx+20,0).
+inst 0m0&001 ./nmos 30
+
+label vn00/
+ 2
+label /n0023om

@@ -1,36 +1,13 @@
-//! Fuzz target: the xschem reader, symbol extraction and the attribute layer.
+//! Fuzz target: the xschem reader, symbol extraction and the attribute layer. The oracle
+//! (`../oracles/xschem_read.rs`) is shared with the merge-tier replay of the checked-in
+//! corpus (`crates/import/tests/fuzz_corpus.rs`).
 //!
-//! Oracle: no panic. The reader asserts record conservation and arena bounds on exit, so
-//! an assertion failure here is a reader bug. Seed the corpus with real `.sym`/`.sch`
-//! files: `cargo +nightly fuzz run xschem_read corpus/xschem_read $SCHEMIFY_CORPUS`.
+//! Seed the corpus with real `.sym`/`.sch` files:
+//! `cargo +nightly fuzz run xschem_read corpus/xschem_read $SCHEMIFY_CORPUS`.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use schemify_import::attr::{Attrs, at_tokens, classify};
-use schemify_import::{symbol, xschem};
 
-fuzz_target!(|data: &[u8]| {
-    let text = String::from_utf8_lossy(data);
-    let Ok(file) = xschem::read(&text) else {
-        return;
-    };
-    let interface = symbol::extract(&file);
-    assert!(interface.pins.name.len() <= file.boxes.layer.len());
-    let mut attrs = Attrs::default();
-    let props = file
-        .lines
-        .props
-        .iter()
-        .chain(&file.boxes.props)
-        .chain(&file.instances.props)
-        .chain(&file.globals.text);
-    for span in props {
-        attrs.parse_into(file.str(*span));
-        for i in 0..attrs.len() {
-            let _ = at_tokens(attrs.value(i)).count();
-        }
-    }
-    for span in &file.texts.text {
-        let _ = classify(file.str(*span));
-    }
-});
+include!("../oracles/xschem_read.rs");
+
+fuzz_target!(|data: &[u8]| xschem_read_oracle(data));

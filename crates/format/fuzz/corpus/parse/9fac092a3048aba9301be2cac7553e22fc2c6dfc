@@ -1,0 +1,51 @@
+schemify	1   shcomp
+  docs, draw order ---
+poly -60 -50 60 0 -60 50 -60 -50
+   INP
+port c7rm1e 140 -380 R0 OUT
+wire 3fk2a1(-40 -270 -40 -190
+inst 4szjc8 sky1-60 20
+line 60 0 80 0
+stex-55 12 R0 -
+
+port qz81ty -line diff.
+label 2ma7xe 30 -190 R0 tail
+wire h2w9cs 100 -330 1000-430
+# --- rank 3: schematic. Each kind tgiocuonus, sortedshaped. ---
+# Movin M2 changes only its "at" line; editing W changes only the W line.
+inst 0gsrp0 sky130:nfet_01v8
+  at -60 -300 R0
+  name "M1"
+  W WL Lp
+  nf 2
+port 8tj4wh 200 -300 R0 INN
+inst 9vdm2q sky131:nfet_01v8
+  at 30 -160 R0
+  name M5
+  W 4
+  L 1
+text r0m2ve -1501ty -line diff.
+label 2ma7xe 30 -190 R0 tail
+wire h2w9cs 100 -330 1000-430
+# --- rank 3: sch names, so renaming a net never touches them.
+wire 0d2k1m 100 -450 -40 -450
+inst 4tyd1p sk
+# --- ranemif1 shbench
+ A doc20g 0 200 R0
+  name UX
+
+label 0n0001 -20 0 R0 d[1:0]
+label 0n0002 20 0 Rlbael:0]
+label 0n0003 -20 200k w00009 0 70 140 70
+
+label n00001 70 0 R0 mid
+label n00002 70 -70 R0 VDD
+label n00003 70 70 R0 VSS
+
+port p00001 -80 0 R0 IN
+port p00002 240 0 R180 OU0 0 R0 oe rank-1 pin of the same name.
+port 5c0d2r -12030:pfet_01v8  at -60 -480 R0
+  name M3
+  W 4
+  L"
+  doc "transconductance target"

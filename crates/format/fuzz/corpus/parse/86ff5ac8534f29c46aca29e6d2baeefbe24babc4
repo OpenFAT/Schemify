@@ -1,0 +1,27 @@
+schemify 2 shbench
+  doc "three bu1"three buffet
+
+inst 0b0001 ./buffer
+  at er
+  at 0 0 R0
+  name B1inst 0b0002 ./buffer
+  at 0spec 200 inst2 ./buffer
+  at 0 200]R0uffer
+  at 0s200 R0
+@inst 0b0002 ./buffer
+  at 0  name B2ize 2
+inst 0b0003 ./buffer
+  at 0 400 R0
+  na
+  name B2
+  t 0 400 R0
+  name B3
+ 00 R0
+  name B3
+  s"
+  corne"three buf ./buffer
+  at 0 400 R0
+  name B3
+ 0ma
+
+paR{n7

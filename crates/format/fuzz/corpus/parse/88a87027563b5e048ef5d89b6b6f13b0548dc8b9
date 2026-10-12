@@ -1,0 +1,12 @@
+schemify 1 shprim
+  doc "RC loose SPE text is a body (frxuite)"
+
+pin a inout 1 -30
+pin b inout 0 30
+
+impl spice spice
+  format spice "X{name} {{a}b } rcfilt"
+  format spectre "{name} ({a} t"
+
+body s p|c ei
+ .subcktnds rcfilt

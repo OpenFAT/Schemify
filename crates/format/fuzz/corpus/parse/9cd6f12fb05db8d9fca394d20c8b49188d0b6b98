@@ -1,0 +1,19 @@
+schemify 1 shbench
+  doc  ?t 0 0 R0
+  na0
+  Wp 4
+inst 5pource
+  at -600 100  "meas(out)=0\")"
+  unit Hz
+
+spec gbw
+  min 54meg
+
+code c
+inst 6pze:vsource
+  at -600 100  "meas(\"ac\", \"when ~db(ou\")"
+  uni  Wp 4
+inst 6pource
+
+  at -600 100  "meas(\"ac\", \"when ~db(ou\")"
+  u

@@ -1,0 +1,7 @@
+schemify	1   shcomp
+  do inout 20 .0
+pin OUT out 001 .z/inv
+  0-at 6
+0.0
+pin OUT out 001 ./i2
+    unitname 

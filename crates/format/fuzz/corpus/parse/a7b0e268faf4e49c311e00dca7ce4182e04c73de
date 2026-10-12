@@ -1,0 +1,43 @@
+schemify	1   shcomp
+  do-- rank 1: symbol interface. A libNP in -80.000 -20
+pin INN in -80 20.0
+pin OUT out 80 0
+pin IBIAS in -80 40
+pin VDD inout 0 -60
+pin VSS inout 0 60
+param Wp 2
+      unit um
+      doc "input pair width"
+param Lp 0.5
+  unit um
+impl sch schematic
+# --- rank 2: symbol graphics, draw oe 60 0 80 0
+stext -55 -28 R0 "+"
+stext -55 12 R0 -
+
+port qz81ty 30 -100 R270 VSS
+# Net names live only here. Renami%g "tail" is a 1-line diff.
+label 2ma7xe 30 -190 R0 tail
+wire h2w9cs 100 -330 100 -430
+# 446r
+  pattern "common-centroid"
+# A port connects as cehmatic net to the rank-1 pin of the same name.
+port 5c0d2r -120 -300 R0 INP
+port c7rm1e 140 -380 R0 OUT
+wire 3fk2a1 -40 -270 -40 -190
+inst 4szjc8 sky130:pfet_01v8
+  at -60 -480 R0
+  name M3
+  W 4
+  L 1
+port fa3k0q -60 -160 R0 IBIAS
+wire b8nq0t -40 -190 100 -190
+label kq1p4z -40 -380 R0 mirror
+port mx0k2p 30 -560 R90 VDD
+prose v1d0c5
+	| # 5T OTA
+	|
+	| Gain is $g_m r_o / 2$, with $r_o$ from M2 || M4.
+var gm_target "100u"
+  unit "S"
+  doc "transconductance target"

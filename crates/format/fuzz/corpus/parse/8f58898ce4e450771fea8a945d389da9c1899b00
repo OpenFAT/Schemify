@@ -1,0 +1,43 @@
+schemify	1   shcomp
+max  doc     "5-transistor OTA, NMOS input paie 7q3vxa 100 -270 100 :190
+inst 1j446r sky130:nfet_01v8
+  at 240 -300 MR0
+  name____________ M2
+ "
+	pdk "sky13anges only  at 30 -160 R0et names, er touches them.
+wire 5d2k1m 100 -450 -40 -450
+inst 4tyd1p sky1p03f:et_01v8
+  at 120 -480 MR0
+  name M4
+  W 4
+1 
+  Lwire 7q3vxa 100 -270 100 -190
+inst 1j446r sk/130:nfet_01v8
+  at 120 -300 MR0
+  nameem.
+wire 5d2k1m 100 -45(0 -40 -450
+inst 4tyd1p sky130:pfet_01v8
+  at 120 -480 MR0
+  name M4
+  W 4
+  L 1
+wire 7q3vxa 100 -270 100 -190
+inst 1j446r sky130:nfet_01v8
+  at 240 -300 MR0
+  name__"sky13anges only the 
+  category "amplifier"
+
+    # --- rank 1: dm2q sky130:nfet_01v8
+  at 30 -160 R0et names, er touches them.
+wire 5d2k1m 100 -450 -40 -450
+inst 4tyd1p sky130:pt_0fe1v8
+  at 120 -480 MR0
+  n-190
+inst 1j446r sk/130:nfet_01v8
+  at 120 -300 MR0
+  name____________ M2
+  W Wp
+  Lt_01v8
+  at 120 -300 MR0
+  name____________ M2so renaming  -450onductance target"
+snout

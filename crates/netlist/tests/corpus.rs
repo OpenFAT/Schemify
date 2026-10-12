@@ -230,9 +230,10 @@ fn bench_cell(handles: &BTreeMap<String, DocHandle>, path: &str, cdl: bool) -> O
 }
 
 /// Benches whose control blocks write `.raw` files and whose models are in the cache
-/// (xschem's self-contained examples; gf180 with its fetched ngspice models): the
-/// second oracle runs ngspice on ours and on xschem's golden.
-const SIMULATED: [(&str, &str); 10] = [
+/// (xschem's self-contained examples; gf180 with its fetched ngspice models; sky130 with
+/// the models the nightly fetches with volare into `pdk/sky130A`): the second oracle runs
+/// ngspice on ours and on xschem's golden.
+const SIMULATED: [(&str, &str); 12] = [
     ("xschem", "xs-ex-rlc"),
     ("xschem", "xs-ex-cmos_example"),
     ("xschem", "xs-ex-test_jfet"),
@@ -243,6 +244,8 @@ const SIMULATED: [(&str, &str); 10] = [
     ("gf180", "gf180-test_npolyf_u"),
     ("gf180", "gf180-test_cap_mim_1f0fF"),
     ("gf180", "gf180-test_diode_nd2ps_03v3"),
+    ("sky130", "sky130-n_diffamp"),
+    ("sky130", "sky130-test_diode"),
 ];
 
 /// Runs `ngspice -b` on `netlist` in a fresh `dir`; returns the `.raw` files it wrote,

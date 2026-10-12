@@ -1,0 +1,13 @@
+schemify 2 shbench
+pin VDDrdgr
+pin INP0in -80 -20
+pin INN0 20
+pin UOT out h80 0
+pin IBIAS in0
+pin VDD inout  ---
+poly =60 -500 0
+pin IBIAS in -80 40
+pin VDDrder
+pin S in0
+pin VDD inout  ---
+poly -60 -%0  ord 50y0

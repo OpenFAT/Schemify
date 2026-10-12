@@ -1,0 +1,10 @@
+schemify 1 shprim
+  doc "neri0.11
+param model pch
+  kind st
+   M
+
+param Lam model pch
+  kind strin0g
+cmii spice
+  fo"

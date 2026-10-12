@@ -1,0 +1,6 @@
+v {xschem v 22.5 -:7t}
+B 5 -202.5 -2.5 -17.5 2.5 {name=expr_eng('  -:7.5 {ut}
+B 5 -202.5 -2.5 -17.5 2.5 {name=expr_eng('}
+K |ÿ}d -202.2 -2.5 -17.5 2.5 {name=expr_eng(' dir=}5 {name=b 22.5 22.5 -:t}
+B 5 -202.5 -2.5 -17.5 2.5 {name=expr_eng('}
+Kir=in}

@@ -1,0 +1,7 @@
+schemify 1 shprim
+  doc "RC ixture)"
+
+pin a inout 1 -30
+pin b inout 0 30
+
+impl spice spicermatilt
