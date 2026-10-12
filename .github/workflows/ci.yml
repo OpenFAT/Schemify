@@ -125,17 +125,23 @@ jobs:
           path: web-smoke
       # The user config runs the same Lua interpreter on every target (web spec §5): its tests
       # again on a wasm target, under wasmtime (the browser target has no test harness).
+      # The WASI steps do not depend on the browser test: run them even when it failed, so its
+      # failure never also hides the determinism comparison (determinism-wasi).
       - name: config tests on wasm32-wasip1
+        if: ${{ !cancelled() }}
         env:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime run --dir=/tmp::/tmp
         run: cargo test --target wasm32-wasip1 -p schemify-config --test config
       - name: CLI for WASI (determinism under wasmtime)
+        if: ${{ !cancelled() }}
         run: cargo build --target wasm32-wasip1 -p schemify-cli --bin schemify
-      - run: >-
+      - if: ${{ !cancelled() }}
+        run: >-
           bash tests/determinism/run.sh
           "wasmtime run --dir=.::/ target/wasm32-wasip1/debug/schemify.wasm"
           determinism-out
       - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
         with:
           name: determinism-wasi
           path: determinism-out
