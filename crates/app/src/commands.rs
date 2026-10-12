@@ -67,7 +67,8 @@ commands! {
     DocsAddVar = "docs.add_var",
     /// Docs page: delete the selected block.
     DocsDelete = "docs.delete_block",
-    /// Docs page: click on a text block (select it and open its editor).
+    /// Docs page: click on a text block (select it and open its editor, with a live preview);
+    /// from a script, the block row as argument.
     DocsEdit = "docs.edit",
     /// Docs page: move the selected block down.
     DocsDown = "docs.move_down",
@@ -77,6 +78,9 @@ commands! {
     DocsProseOk = "docs.prose_ok",
     /// Docs page: select a block (click on a variable's name).
     DocsSelect = "docs.select",
+    /// Docs page: show every prose block as its Markdown / LaTeX source, or rendered again
+    /// (a toggle per tab; var blocks are unchanged).
+    DocsSource = "docs.source",
     /// Docs page: a variable's expression field submitted (Enter).
     DocsVarOk = "docs.var_ok",
     /// Commit the staged edit under review (visual diff reviewed, D18), or stage `<k>` of

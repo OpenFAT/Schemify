@@ -700,3 +700,160 @@ fn prose_images_load_from_inside_the_project_only() {
     assert_eq!(list.image_rect.len(), 1, "one image drawn, two alt texts");
     assert_eq!(list.image_rect[0][2..], [40.0, 20.0]);
 }
+
+/// Prop `p` of UI node `id`, `None` when the node is not composed.
+fn prop_of(s: &Session, id: &str, p: schemify_ui::Prop) -> Option<String> {
+    let sh = &s.ed.shell;
+    let n = sh.strings.find(id).and_then(|i| sh.tables.nodes.find(i))?;
+    Some(
+        sh.strings
+            .get(sh.tables.nodes.prop(p)[n as usize])
+            .to_owned(),
+    )
+}
+
+/// `(text runs, formulas)` of prose node `id` as laid out this frame.
+fn laid_out(s: &Session, id: &str) -> (usize, usize) {
+    let sh = &s.ed.shell;
+    let n = sh
+        .tables
+        .nodes
+        .find(sh.strings.find(id).unwrap())
+        .unwrap_or_else(|| panic!("{id} composed"));
+    let r = sh
+        .layout
+        .row_of(n)
+        .unwrap_or_else(|| panic!("{id} laid out"));
+    let p = sh.layout.prose()[r];
+    assert_ne!(p, u32::MAX, "{id} is prose");
+    let list = sh.text.prose_list(p);
+    (list.text_id.len(), list.math_id.len())
+}
+
+const PREVIEW: &str = "docs.b.0.preview";
+
+#[test]
+fn the_prose_editor_previews_what_is_typed_until_applied_or_cancelled() {
+    use schemify_ui::Prop::{Label, Value};
+    let mut s = open("preview");
+    let before = s.text();
+    assert_eq!(prop_of(&s, PREVIEW, Value), None, "no preview while closed");
+    s.click_node("docs.b.0.0");
+    // Opening previews the block's own source, its formulas rendered.
+    let (h, _) = s.ed.active().unwrap();
+    let src = schemify_app::docs::prose_text(s.ed.session.project.doc(h).unwrap(), 0);
+    assert_eq!(prop_of(&s, PREVIEW, Value).as_deref(), Some(src.trim_end()));
+    assert!(
+        laid_out(&s, PREVIEW).1 >= 3,
+        "the fixture's formulas render"
+    );
+    assert_eq!(
+        prop_of(&s, "docs.b.0.preview.cap", Label).as_deref(),
+        Some("Preview")
+    );
+    // It follows every keystroke; the document is untouched.
+    s.key("Ctrl+A");
+    s.type_text("Gain $A_0$");
+    assert_eq!(prop_of(&s, PREVIEW, Value).as_deref(), Some("Gain $A_0$"));
+    assert_eq!(laid_out(&s, PREVIEW).1, 1);
+    s.type_text(" and $x^2$");
+    assert_eq!(laid_out(&s, PREVIEW).1, 2);
+    s.key("Ctrl+A");
+    s.type_text("plain words");
+    assert_eq!(laid_out(&s, PREVIEW), (1, 0), "no math, one paragraph");
+    s.key("Ctrl+A");
+    s.key("Delete");
+    let empty = prop_of(&s, PREVIEW, Value).unwrap();
+    assert!(empty.contains("applying deletes"), "{empty}");
+    assert_eq!(s.text(), before, "preview never edits the document");
+    // Esc cancels: preview gone, document unchanged.
+    s.key("Esc");
+    assert_eq!(prop_of(&s, PREVIEW, Value), None);
+    assert_eq!(s.text(), before);
+    // Ctrl+Enter applies: preview gone, text written.
+    s.click_node("docs.b.0.0");
+    s.key("Ctrl+A");
+    s.type_text("Applied $y$");
+    s.key("Ctrl+Enter");
+    assert_eq!(prop_of(&s, PREVIEW, Value), None);
+    assert!(s.text().contains("  | Applied $y$\n"), "{}", s.text());
+    // A click on the preview is a click away from the editor: it applies.
+    s.click_node("docs.b.0.0");
+    s.key("Ctrl+A");
+    s.type_text("Clicked away");
+    s.click_node(PREVIEW);
+    assert!(s.ed.page().editing.is_none());
+    assert_eq!(prop_of(&s, PREVIEW, Value), None);
+    assert!(s.text().contains("  | Clicked away\n"));
+}
+
+#[test]
+fn the_source_toggle_shows_prose_verbatim_per_tab() {
+    use schemify_ui::Prop::{Checked, Label, Value};
+    let mut s = open("source");
+    s.ed.command("docs.edit", "0");
+    s.frame(Default::default());
+    s.key("Ctrl+A");
+    s.type_text("Body with $x^2$ and **bold**.");
+    s.key("Ctrl+Enter");
+    let before = s.text();
+    assert_eq!(laid_out(&s, "docs.b.0.0").1, 1, "rendered: one formula");
+    assert_eq!(
+        prop_of(&s, "docs.source", Label).as_deref(),
+        Some("Rendered")
+    );
+    assert_eq!(prop_of(&s, "docs.source", Checked).as_deref(), Some("0"));
+    let w = row(&s, "W_in");
+    let var_before = prop_of(&s, &format!("docs.b.{w}.expr"), Value);
+    assert!(var_before.is_some());
+    // Source: the prose block shows its text literally, math and markup unrendered.
+    s.click_node("docs.source");
+    assert!(s.ed.docs_source());
+    let v = prop_of(&s, "docs.b.0.0", Value).unwrap();
+    assert!(v.contains("\nBody with $x^2$ and **bold**.\n"), "{v}");
+    assert_eq!(
+        laid_out(&s, "docs.b.0.0"),
+        (1, 0),
+        "one verbatim run, no math"
+    );
+    assert_eq!(prop_of(&s, "docs.source", Label).as_deref(), Some("Source"));
+    assert_eq!(prop_of(&s, "docs.source", Checked).as_deref(), Some("1"));
+    // Var blocks are unchanged: same field, no prose node.
+    assert_eq!(prop_of(&s, &format!("docs.b.{w}.expr"), Value), var_before);
+    assert_eq!(prop_of(&s, &format!("docs.b.{w}.0"), Value), None);
+    // A click still opens the editor, with its preview rendered.
+    s.click_node("docs.b.0.0");
+    assert_eq!(laid_out(&s, PREVIEW).1, 1);
+    s.key("Esc");
+    assert_eq!(s.text(), before);
+    // Per tab: a new tab starts rendered; coming back keeps source.
+    s.ed.command("tab.new", "");
+    s.frame(Default::default());
+    assert!(!s.ed.docs_source());
+    s.ed.command("tab.prev", "");
+    s.frame(Default::default());
+    assert!(s.ed.docs_source());
+    assert_eq!(laid_out(&s, "docs.b.0.0").1, 0);
+    // Back to rendered; the document never changed.
+    s.ed.command("docs.source", "");
+    s.frame(Default::default());
+    assert!(!s.ed.docs_source());
+    assert_eq!(laid_out(&s, "docs.b.0.0").1, 1);
+    assert_eq!(s.text(), before);
+}
+
+/// The prose editor open with its live preview, under the Modern preset.
+#[test]
+fn golden_docs_preview_modern() {
+    let mut s = open("golden-preview");
+    s.ed.command("view.theme_modern", "");
+    s.frame(Default::default());
+    s.click_node("docs.b.0.0");
+    s.key("Ctrl+A");
+    s.type_text("## Gain");
+    s.key("Enter");
+    s.key("Enter");
+    s.type_text("The DC gain is $A_0 = g_m r_o$, about **40 dB**.");
+    let px = s.render();
+    check_golden("docs_preview_modern", px);
+}

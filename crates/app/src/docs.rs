@@ -223,6 +223,9 @@ pub struct Extras<'a> {
     /// The staged edit under review (D18 optimizer, plugin stages): its label and the
     /// document with it applied (`doc::Project::preview`).
     pub staged: Option<(&'a str, &'a Document)>,
+    /// Show prose blocks as their verbatim Markdown / LaTeX source (`docs.source`) instead of
+    /// rendered; var blocks and an open editor are unaffected.
+    pub source: bool,
 }
 
 // ---------------------------------------------------------------------- projection
@@ -290,6 +293,7 @@ pub fn contribute(
                     attr(t, "value", text);
                     attr(t, "command", "docs.prose_ok");
                     attr(t, "input", "field.typed");
+                    preview(t, &id, text);
                     node(t, &format!("{id}.hint"), "label", &id);
                     attr(
                         t,
@@ -298,6 +302,7 @@ pub fn contribute(
                     );
                     attr(t, "style", "docs-hint");
                 }
+                _ if extras.source => source(t, &id, &prose_text(doc, r)),
                 _ => prose(t, &id, &prose_text(doc, r), extras.plots, graphs),
             },
             RecordKind::Var => {
@@ -339,6 +344,58 @@ fn var_expr<'d>(doc: &'d Document, name: &str) -> Option<&'d str> {
     (0..b.kind.len())
         .find(|&r| b.kind[r] == RecordKind::Var && s.get(b.fields[r][0]) == name)
         .map(|r| s.get(b.fields[r][1]))
+}
+
+/// The live preview under an open prose editor: a caption and `text` (what the user has
+/// typed so far) through the same prose renderer, math included. It carries no command, so a
+/// click on it is a click away from the editor (which applies). A ```` ```plot ```` fence
+/// previews as a code block; images not yet on the page preview as their alt text.
+fn preview(t: &mut String, id: &str, text: &str) {
+    debug_assert!(id.starts_with("docs.b."));
+    node(t, &format!("{id}.preview.cap"), "label", id);
+    attr(t, "label", "Preview");
+    attr(t, "style", "docs-preview-cap");
+    let pid = format!("{id}.preview");
+    node(t, &pid, "prose", id);
+    let shown = text.trim_end();
+    attr(
+        t,
+        "value",
+        if shown.trim().is_empty() {
+            "*(empty: applying deletes this block)*"
+        } else {
+            shown
+        },
+    );
+    attr(t, "style", "docs-preview");
+    debug_assert!(
+        t.ends_with("\"docs-preview\"\n"),
+        "the preview is the last node written"
+    );
+}
+
+/// A prose block shown as its source (`docs.source`): one prose node holding `text` inside a
+/// code fence, so it lays out verbatim in monospace on a faint shade (no markup, no math).
+/// Clicking it opens the editor like a rendered block.
+fn source(t: &mut String, id: &str, text: &str) {
+    debug_assert!(id.starts_with("docs.b."));
+    let pid = format!("{id}.0");
+    node(t, &pid, "prose", id);
+    attr(t, "command", "docs.edit");
+    attr(t, "style", "docs-source");
+    let text = text.trim_end();
+    if text.trim().is_empty() {
+        attr(t, "value", "*(empty text block: click to edit)*");
+        return;
+    }
+    // A fence the text does not use, so the code block cannot end early.
+    // ponytail: a block using both ``` and ~~~ fences shows the rest after its first ~~~ line
+    // rendered; a fence of more backticks than the text's longest run lifts that ceiling.
+    let fenced = |f: &str| text.lines().any(|l| l.trim_start().starts_with(f));
+    let fence = if fenced("~~~") { "```" } else { "~~~" };
+    let value = format!("{fence}\n{text}\n{fence}");
+    debug_assert!(value.starts_with(fence) && value.ends_with(fence));
+    attr(t, "value", &value);
 }
 
 /// A prose block: prose segments and `plot` slots in source order. A slot whose expression

@@ -205,6 +205,35 @@ style docs-staged
   fg 107010
   font 13
 
+style docs-toggle
+  border 1
+  border-color b0b0b0
+
+style docs-toggle-on
+  bg c3c3c3
+  hover-bg c3c3c3
+  border 1
+  border-color 808080
+
+style docs-preview-cap
+  fg 707070
+  font 11
+  pad-y 2
+
+style docs-preview
+  bg fbfbfb
+  border 1
+  border-color d8d8d8
+  pad 8
+  pad-y 6
+
+style docs-source
+  font 14
+  border 1
+  border-color d0d0d0
+  pad 4
+  pad-y 2
+
 style bottom
   dir column
 
@@ -1733,6 +1762,13 @@ node docs.title label
   parent docs.bar
   label Docs
   style docs-title
+node docs.source button
+  parent docs.bar
+  label Rendered
+  command docs.source
+  tooltip "Show prose as Markdown / LaTeX source, or rendered (toggle)"
+  style docs-toggle
+  checked 0
 node docs.bar.spacer panel
   parent docs.bar
   style spacer

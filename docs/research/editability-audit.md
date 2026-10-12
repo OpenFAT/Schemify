@@ -55,7 +55,7 @@ Status values:
 | `shape` + attrs | comp/bench | no | insert tools; attrs at creation | STRUCTURED / PARTIAL |
 | `constraint` | comp/bench | no | — | RAW-ONLY |
 | `waive` | comp/bench | run gate | — | RAW-ONLY |
-| `prose` | cells | no | docs.add_prose/edit/move/delete | STRUCTURED |
+| `prose` | cells | no | docs.add_prose/edit (live preview)/move/delete; docs.source shows the raw text | STRUCTURED |
 | `var` create, expr | cells | **yes** | docs.add_var (fixed name `v<k>`, docs.rs:626), docs.var_ok docs.rs:564 | STRUCTURED |
 | var name | cells | **yes** | — (no rename) | RAW-ONLY |
 | var `unit/min/max/doc` | cells | gate / no | — (displayed only) | RAW-ONLY |

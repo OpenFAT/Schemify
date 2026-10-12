@@ -67,6 +67,9 @@ pub struct Tab {
     /// The docs page is shown beside the canvas (`view.docs`); starts on when the opened
     /// document has doc blocks.
     pub docs: bool,
+    /// The docs page shows prose blocks as their Markdown / LaTeX source instead of rendered
+    /// (`docs.source`); kept per tab, so it survives switching tabs.
+    pub docs_source: bool,
     /// The cell settings panel is shown beside the canvas (`view.cell`).
     pub cell: bool,
     /// A read-only text view (a netlist, xschem's "show netlist") shown instead of the
@@ -490,6 +493,7 @@ impl Session {
                 ends: Vec::new(),
             }],
             docs,
+            docs_source: false,
             cell: false,
             text: None,
         });
@@ -519,6 +523,7 @@ impl Session {
         self.tabs.push(Tab {
             stack: vec![level],
             docs: false,
+            docs_source: false,
             cell: false,
             text: Some(view),
         });

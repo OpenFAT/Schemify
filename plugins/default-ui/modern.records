@@ -156,6 +156,25 @@ style docs-plot
   bg 15171b
   fg c9cdd3
 
+style docs-toggle
+  border-color 3a3f48
+
+style docs-toggle-on
+  bg 2f4a7a
+  fg ffffff
+  hover-bg 2f4a7a
+  border-color 2f4a7a
+
+style docs-preview-cap
+  fg 8b919a
+
+style docs-preview
+  bg 191b20
+  border-color 3a3f48
+
+style docs-source
+  border-color 3a3f48
+
 style text-view
   bg 15171b
 

@@ -19,8 +19,10 @@
 //! - `tab.0` (first tab; the app retitles it and adds `tab.<i>` siblings), `tabs`, `canvas`;
 //! - `docs.pane` (removed by the app while the active tab hides its docs) holding the `docs.bar`
 //!   toolbar (`docs.add_prose`, `docs.add_var`, `docs.move_up`, `docs.move_down`,
-//!   `docs.delete_block`, `view.docs`) and the `docs.page` scroll node, under which the app adds
-//!   one `docs.b.<row>` panel per doc block (`docs/spec/docs-page.md`);
+//!   `docs.delete_block`, `view.docs`, and the `docs.source` button, whose `label`, `checked`
+//!   and `style` (`docs-toggle` / `docs-toggle-on`) the app sets) and the `docs.page` scroll
+//!   node, under which the app adds one `docs.b.<row>` panel per doc block, styled with
+//!   `docs-block`, `docs-source`, `docs-preview-cap`, `docs-preview` … (`docs/spec/docs-page.md`);
 //! - `status.snap`, `status.grid` (text fields, values), `status.mode`, `status.msg` (labels);
 //! - `view.switch`, a child of `canvas` (so it floats over the schematic), holding the buttons
 //!   `switch.schematic`, `switch.symbol`, `switch.docs`: the app sets each one's `style` to

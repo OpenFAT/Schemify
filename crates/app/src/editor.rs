@@ -907,6 +907,14 @@ impl Editor {
             .is_some_and(|t| t.docs)
     }
 
+    /// Whether the active tab's docs page shows prose blocks as source (`docs.source`).
+    pub fn docs_source(&self) -> bool {
+        self.session
+            .tabs
+            .get(self.session.active)
+            .is_some_and(|t| t.docs_source)
+    }
+
     /// The plugin host (loaded plugins, D20 function registry).
     pub fn host(&self) -> &Host {
         &self.host
@@ -1992,6 +2000,12 @@ impl Editor {
                     t.docs = !t.docs;
                 }
             }
+            Cmd::DocsSource => {
+                let a = self.session.active;
+                if let Some(t) = self.session.tabs.get_mut(a) {
+                    t.docs_source = !t.docs_source;
+                }
+            }
             Cmd::ViewSchematic | Cmd::ViewSymbol => {
                 let want = if cmd == Cmd::ViewSymbol {
                     View::Symbol
@@ -2077,9 +2091,9 @@ impl Editor {
                 let ops = self.with_doc(h, |d, _| cell::move_pin_ops(d, r, up));
                 self.commit(reqs, h, "reorder pins", ops);
             }
-            Cmd::DocsSelect => self.page.sel = docs::row_of(node),
+            Cmd::DocsSelect => self.page.sel = docs::row_of(node).or_else(|| arg.parse().ok()),
             Cmd::DocsEdit => {
-                let Some(row) = docs::row_of(node) else {
+                let Some(row) = docs::row_of(node).or_else(|| arg.parse().ok()) else {
                     return false;
                 };
                 self.page.sel = Some(row);
@@ -4078,11 +4092,22 @@ impl Editor {
                     .collect();
                 #[cfg(target_arch = "wasm32")]
                 let plots: Vec<(String, Option<String>)> = Vec::new();
+                let source = self.docs_source();
                 let extras = docs::Extras {
                     plots: &plots,
                     staged: self.staged.as_ref().map(|(l, d)| (l.as_str(), d)),
+                    source,
                 };
                 docs::contribute(&mut t, doc, cell, &self.page, extras, &mut graphs);
+                // The Source / Rendered toggle names the mode shown; pressed while source.
+                let (label, style) = if source {
+                    ("Source", "docs-toggle-on")
+                } else {
+                    ("Rendered", "docs-toggle")
+                };
+                let _ = writeln!(t, "set docs.source label {label}");
+                let _ = writeln!(t, "set docs.source style {style}");
+                let _ = writeln!(t, "set docs.source checked {}", u8::from(source));
             }
             _ => t.push_str("remove docs.pane\n"),
         }
