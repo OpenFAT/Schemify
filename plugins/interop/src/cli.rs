@@ -165,7 +165,7 @@ pub fn run(args: &[String]) -> u8 {
 
 const JOB_USAGE: &str = "\
 usage: schemify-interop virtuoso-export <project-dir> <cell-file>... -o <file.sfyx> [--analoglib] [--retarget] [--lib L=V]...
-       schemify-interop virtuoso-import <project-dir> <file.sfyx>
+       schemify-interop virtuoso-import <project-dir> <file.sfyx> [--analoglib] [--lib L=V]...
        schemify-interop xschem-export <project-dir> <cell-file>... -o <out-dir>
        schemify-interop install-skill <dir>
 (cell files, .sfyx paths and output paths are relative to <project-dir>)";
@@ -184,6 +184,7 @@ fn job_command(cmd: &str, args: &[String]) -> Option<(PathBuf, crate::job::Comma
     let (project, rest) = args.split_first()?;
     let mut paths = Vec::new();
     let mut out = None;
+    let mut iopts = ImportOptions::default();
     let mut opts = ExportOptions {
         producer: format!("schemify-interop {}", env!("CARGO_PKG_VERSION")),
         ..ExportOptions::default()
@@ -192,11 +193,16 @@ fn job_command(cmd: &str, args: &[String]) -> Option<(PathBuf, crate::job::Comma
     while let Some(a) = it.next() {
         match a.as_str() {
             "-o" => out = Some(it.next()?.clone()),
-            "--analoglib" => opts.analoglib = true,
+            "--analoglib" => {
+                opts.analoglib = true;
+                iopts.analoglib = true;
+            }
             "--retarget" => opts.retarget = true,
             "--lib" => {
+                // Export: Schemify library L → Virtuoso library V. Import: Virtuoso V → Schemify L.
                 let (l, v) = it.next()?.split_once('=')?;
                 opts.lib_map.insert(l.to_owned(), v.to_owned());
+                iopts.lib_map.insert(v.to_owned(), l.to_owned());
             }
             f if f.starts_with("--") => return None,
             p => paths.push(p.replace('\\', "/")),
@@ -210,7 +216,7 @@ fn job_command(cmd: &str, args: &[String]) -> Option<(PathBuf, crate::job::Comma
         },
         "virtuoso-import" if paths.len() == 1 && out.is_none() => Command::VirtuosoImport {
             sfyx: paths.remove(0),
-            opts: ImportOptions::default(),
+            opts: iopts,
         },
         "xschem-export" if !paths.is_empty() => Command::XschemExport {
             tops: paths,
