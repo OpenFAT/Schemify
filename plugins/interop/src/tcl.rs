@@ -17,7 +17,7 @@
 /// # Examples
 ///
 /// ```
-/// use schemify_import::tcl::pdk_vars;
+/// use interop::tcl::pdk_vars;
 /// let v = pdk_vars("  set PDK_ROOT $env(PDK_ROOT)\n  set SKYWATER_MODELS ${PDK_ROOT}/$PDK/libs.tech/combined\n");
 /// assert_eq!(v, [("SKYWATER_MODELS".to_string(), "${PDK_ROOT}/${PDK}/libs.tech/combined".to_string())]);
 /// ```
@@ -216,7 +216,7 @@ pub struct DrcProc {
 /// # Examples
 ///
 /// ```
-/// use schemify_import::tcl::{drc_procs, Bound};
+/// use interop::tcl::{drc_procs, Bound};
 /// let p = drc_procs("proc d {instance symbol model w l} {\n set res {}\n switch -regexp $model {\n  {nfet$} {\n   if { $w < 0.42 } {\n    append res x\n   }\n  }\n }\n return $res\n}\n");
 /// assert_eq!(p[0].arms[0].rules[0].bound, Bound::Min);
 /// assert!(p[0].unknown.is_empty());
@@ -432,7 +432,7 @@ fn division(l: &str) -> Option<Division> {
 /// # Examples
 ///
 /// ```
-/// use schemify_import::tcl::regex_match;
+/// use interop::tcl::regex_match;
 /// assert!(regex_match("[np]fet_01v8$", "sky130_fd_pr__nfet_01v8"));
 /// assert!(!regex_match("[np]fet_01v8$", "nfet_01v8_lvt"));
 /// assert!(regex_match("rsil$|rppd$", "rppd"));

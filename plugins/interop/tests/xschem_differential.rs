@@ -1,9 +1,10 @@
-//! The xschem differential oracle (TESTING.md, netlist row), gated on `SCHEMIFY_CORPUS`
+//! The xschem differential oracle (TESTING.md, netlist row; it lives with the importer it
+//! needs, which the core never links), gated on `SCHEMIFY_CORPUS`
 //! (the `tests/corpus/.cache` directory: `src/` from `fetch.sh`, `golden/` from
 //! `golden.sh`). Without it the test prints a skip note and passes.
 //!
 //! For every bench of `tests/corpus/benches.txt`: import its library group with
-//! `schemify_import` (the groups and search paths of `import_all.sh`), elaborate the
+//! `interop` (the groups and search paths of `import_all.sh`), elaborate the
 //! bench's cell (see `bench_cell`), emit ngspice and cdl, and compare each with xschem's golden under
 //! `schemify_spicecmp::compare`. Prints the ratchet table (`tests/corpus/RATCHET.md`)
 //! and writes the imported files, our netlists and the diffs to
@@ -11,9 +12,10 @@
 //!
 //! `SCHEMIFY_CORPUS_FILTER=<substring>` restricts the benches (for working one down).
 
+use interop::{Options, tcl, translate_library};
+use schemify_doc::core_library;
 use schemify_doc::{DocHandle, Project};
 use schemify_elab::{Dialect, Request, elaborate, no_funcs};
-use schemify_import::{Options, core_library, tcl, translate_library};
 use schemify_netlist::emit;
 use schemify_spicecmp::{Options as CmpOptions, Section, compare};
 use std::collections::BTreeMap;
@@ -124,7 +126,7 @@ fn slash(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
-/// Translates a group the way `devicereader` does (search path, PDK vars, drc procs).
+/// Translates a group the way `schemify-interop xschem-import` does (search path, PDK vars, drc procs).
 fn import(g: &Group) -> Vec<(String, Vec<u8>)> {
     let mut roots = Vec::new();
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();

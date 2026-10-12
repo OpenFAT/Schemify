@@ -48,11 +48,11 @@ pub enum TechError {
 /// # Examples
 ///
 /// ```
-/// use schemify_import::tech::read_lyt;
+/// use interop::tech::read_lyt;
 /// let g = read_lyt("<?xml version=\"1.0\"?>\n<technology><dbu>0.001</dbu>\
 ///                   <default-grids>0.005!,0.01</default-grids></technology>")?;
 /// assert_eq!((g.dbu_pm, g.default_grid_pm), (Some(1_000), Some(5_000)));
-/// # Ok::<(), schemify_import::tech::TechError>(())
+/// # Ok::<(), interop::tech::TechError>(())
 /// ```
 pub fn read_lyt(text: &str) -> Result<LytGrid, TechError> {
     let b = text.as_bytes();
@@ -190,7 +190,7 @@ impl MagicTech {
 /// # Examples
 ///
 /// ```
-/// use schemify_import::tech::read_magic;
+/// use interop::tech::read_magic;
 /// let t = read_magic("cifoutput\nstyle gdsii\n scalefactor 50 nanometers\n gridlimit 5\nend\n");
 /// assert_eq!(t.manufacturing_grid_pm(), Some(5_000));
 /// assert_eq!(t.styles.lambda_pm[0], Some(50_000));
@@ -269,7 +269,7 @@ pub const MAGIC_INCLUDE_DEPTH: u8 = 8;
 /// # Examples
 ///
 /// ```
-/// use schemify_import::tech::read_magic_with;
+/// use interop::tech::read_magic_with;
 /// let t = read_magic_with("tech\nend\ninclude cif\n", |n| {
 ///     (n == "cif").then(|| "cifoutput\nstyle gds\n scalefactor 10 nanometers\n gridlimit 5\nend\n".to_string())
 /// });

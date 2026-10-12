@@ -303,7 +303,7 @@ const XSPICE: &[&str] = &[
 ///
 /// ```
 /// use std::path::Path;
-/// use schemify_import::spice::{scan, ScanOptions};
+/// use interop::spice::{scan, ScanOptions};
 /// let lib = ".lib tt\n.subckt nfet d g s b\nm1 d g s b nfet__model l=1 w=1\n\
 ///            .model nfet__model.0 nmos lmin=1e-6 lmax=2e-6\n+ wmin=1e-6 wmax=5e-6\n.ends\n.endl tt\n";
 /// let s = scan(Path::new("m.lib"), &ScanOptions { section: Some("tt"), ..Default::default() },
@@ -893,7 +893,7 @@ pub fn contains(bins: &[Bin], l: f64, w: f64) -> bool {
 /// # Examples
 ///
 /// ```
-/// use schemify_import::spice::parse_number;
+/// use interop::spice::parse_number;
 /// assert_eq!(parse_number("0.15u"), Some(0.15e-6));
 /// assert_eq!(parse_number("10Meg"), Some(10e6));
 /// assert_eq!(parse_number("2.0e-05"), Some(2.0e-5));
@@ -1124,7 +1124,7 @@ fn normalize(p: &Path) -> PathBuf {
 /// # Examples
 ///
 /// ```
-/// use schemify_import::spice::spiceinit_sourcepath;
+/// use interop::spice::spiceinit_sourcepath;
 /// let init = "* IHP\nsetcs sourcepath = ( $sourcepath $PDK_ROOT/models )\nsetcs sourcepath = ( $sourcepath $PDK_ROOT/io )\n";
 /// assert_eq!(spiceinit_sourcepath(init), ["$PDK_ROOT/models", "$PDK_ROOT/io"]);
 /// ```

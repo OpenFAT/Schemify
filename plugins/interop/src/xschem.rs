@@ -321,7 +321,7 @@ impl XschemFile {
 /// # Examples
 ///
 /// ```
-/// use schemify_import::xschem::read;
+/// use interop::xschem::read;
 /// let f = read("v {xschem version=3.4.7 file_version=1.2}\nN 290 -240 290 -220 {lab=A}\n").unwrap();
 /// assert_eq!(f.wires.xy[0], [290_000, -240_000, 290_000, -220_000]);
 /// assert_eq!(f.str(f.wires.props[0]), "lab=A");

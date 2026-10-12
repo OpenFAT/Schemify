@@ -3,12 +3,12 @@
 //! (`check_output`), count conservation (asserted inside `translate_library`),
 //! byte-identical re-import, and no panic on mutated inputs.
 
+use interop::report::{Class, Drop};
+use interop::template::Reason;
+use interop::translate::{ORIENT_TABLE, orient, place};
+use interop::{Options, check_output, translate_library};
 use proptest::prelude::*;
 use schemify_format::{Orient, parse};
-use schemify_import::report::{Class, Drop};
-use schemify_import::template::Reason;
-use schemify_import::translate::{ORIENT_TABLE, orient, place};
-use schemify_import::{Options, check_output, translate_library};
 
 /// A minimal library in xschem's file format, written for these tests: a `devices`
 /// directory (mapped to `core` by name and pin geometry) and a design library.
@@ -80,7 +80,7 @@ fn opts<'a>(roots: &'a [String], vars: &'a [(String, String)]) -> Options<'a> {
     }
 }
 
-fn run(files: &[(String, String)]) -> (Vec<(String, Vec<u8>)>, schemify_import::Report) {
+fn run(files: &[(String, String)]) -> (Vec<(String, Vec<u8>)>, interop::Report) {
     let roots = vec!["x/devices".to_owned(), "x".to_owned()];
     let vars = vec![("MODELS".to_owned(), "${PDK_ROOT}/models".to_owned())];
     let inputs: Vec<(&str, &[u8])> = files

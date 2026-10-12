@@ -1,5 +1,11 @@
-//! Clean-room importers (D1, D14, D24): xschem `.sch`/`.sym` designs and PDK libraries,
-//! SPICE model-card bin ranges, tech-file grids and Cadence `cdfDump` output.
+//! The interop plugin (D24 as amended 2026-10-12): conversions between Schemify and other
+//! tools' formats. Today that is the clean-room xschem importer (D1, D14): `.sch`/`.sym`
+//! designs and PDK libraries, SPICE model-card bin ranges, tech-file grids and Cadence
+//! `cdfDump` output. Virtuoso import/export and xschem export are to come, beside these
+//! modules. It is never linked into the core: the editor loads it as a wasm guest (the
+//! `plugin` module, `wasm32-unknown-unknown` only), and the native command line
+//! `schemify-interop` (the `cli` module, feature `cli`) runs the same code over the file
+//! system.
 //!
 //! Two layers. The **readers** turn text into data-oriented tables and never evaluate,
 //! execute or resolve anything. The **translation** ([`translate_library`], spec
@@ -34,9 +40,14 @@
 // ~60 MB, read in ~0.1 s), every scanner is a byte state machine (a chain dependency),
 // so the scalar loops stay.
 
+#![deny(unsafe_code)] // `forbid` would reject the guest SDK's `export!` (it allows it)
+#![warn(missing_docs)]
+
 pub mod attr;
 pub mod cdf;
 pub mod check;
+#[cfg(feature = "cli")]
+pub mod cli;
 pub mod core;
 pub mod decimal;
 mod limits;
@@ -48,6 +59,11 @@ pub mod tech;
 pub mod template;
 pub mod translate;
 pub mod xschem;
+
+// The guest target only: the WASI build of `schemify-interop` (CI determinism) must not
+// export guest entry points that import the `schemify` host module.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod plugin;
 
 pub use crate::core::DEVICE_MAP;
 pub use check::check_output;

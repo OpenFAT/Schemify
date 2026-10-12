@@ -37,7 +37,7 @@ Every server answers `rpc.methods`: the sorted list of method names it serves (t
 
 | Method | Params | Result |
 |---|---|---|
-| `fmt`, `diff`, `import`, `netlist`, `check`, `run` | the CLI arguments after the command, as an array of strings (`["top.shbench", "--dialect", "xyce"]`) | `{"code", "stdout", "stderr"}`: the exit code (D27: 0 ok, 1 design errors, 2 usage/I/O; −1 killed) and the output text (lossy UTF-8) |
+| `fmt`, `diff`, `netlist`, `check`, `run` | the CLI arguments after the command, as an array of strings (`["top.shbench", "--dialect", "xyce"]`) | `{"code", "stdout", "stderr"}`: the exit code (D27: 0 ok, 1 design errors, 2 usage/I/O; −1 killed) and the output text (lossy UTF-8) |
 | `edit` | `{"file": <path>, "ops": <op text>, "label"?: <undo label>}` | `{"changed": bool}` |
 | `rpc.methods` | none | the method names |
 

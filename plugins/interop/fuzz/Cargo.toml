@@ -1,5 +1,5 @@
 [package]
-name = "schemify-import-fuzz"
+name = "interop-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-schemify-import = { path = ".." }
+interop = { path = ".." }
 
 # Own workspace: cargo-fuzz needs nightly + sanitizer flags the main workspace must not see.
 [workspace]

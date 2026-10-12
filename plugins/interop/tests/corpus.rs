@@ -8,10 +8,10 @@
 
 use std::path::{Path, PathBuf};
 
-use schemify_import::attr::{Attrs, Idioms, at_tokens, classify};
-use schemify_import::symbol;
-use schemify_import::xschem::{self, NumField};
-use schemify_import::{spice, tech};
+use interop::attr::{Attrs, Idioms, at_tokens, classify};
+use interop::symbol;
+use interop::xschem::{self, NumField};
+use interop::{spice, tech};
 
 fn corpus() -> Option<PathBuf> {
     let root = std::env::var_os("SCHEMIFY_CORPUS").map(PathBuf::from);

@@ -9,10 +9,10 @@
 
 use std::path::{Path, PathBuf};
 
+use interop::attr::{Attrs, at_tokens, classify};
+use interop::xschem::{self, XschemFile};
+use interop::{cdf, spice, symbol, tech};
 use proptest::prelude::*;
-use schemify_import::attr::{Attrs, at_tokens, classify};
-use schemify_import::xschem::{self, XschemFile};
-use schemify_import::{cdf, spice, symbol, tech};
 
 /// Characters that drive every branch of the xschem, attribute and SPICE grammars.
 const ALPHABET: &[char] = &[

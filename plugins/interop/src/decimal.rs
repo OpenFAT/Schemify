@@ -41,12 +41,12 @@ pub enum DecimalError {
 /// # Examples
 ///
 /// ```
-/// use schemify_import::decimal::parse_scaled;
+/// use interop::decimal::parse_scaled;
 /// let s = parse_scaled("-2.5e-1", 3)?;
 /// assert_eq!((s.value, s.exact), (-250, true));
 /// let r = parse_scaled("0.078125", 3)?;
 /// assert_eq!((r.value, r.exact, r.error_milli), (78, false, 125));
-/// # Ok::<(), schemify_import::decimal::DecimalError>(())
+/// # Ok::<(), interop::decimal::DecimalError>(())
 /// ```
 pub fn parse_scaled(text: &str, scale: i32) -> Result<Scaled, DecimalError> {
     assert!((-38..=38).contains(&scale), "scale {scale} out of range");

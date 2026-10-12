@@ -1,6 +1,6 @@
 //! Fuzz target: the xschem reader, symbol extraction and the attribute layer. The oracle
 //! (`../oracles/xschem_read.rs`) is shared with the merge-tier replay of the checked-in
-//! corpus (`crates/import/tests/fuzz_corpus.rs`).
+//! corpus (`plugins/interop/tests/fuzz_corpus.rs`).
 //!
 //! Seed the corpus with real `.sym`/`.sch` files:
 //! `cargo +nightly fuzz run xschem_read corpus/xschem_read $SCHEMIFY_CORPUS`.

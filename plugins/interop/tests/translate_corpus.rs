@@ -12,11 +12,11 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
+use interop::attr::Attrs;
+use interop::symbol;
+use interop::translate::{ORIENT_TABLE, place};
+use interop::{Options, check_output, translate_library, xschem};
 use schemify_format::Orient;
-use schemify_import::attr::Attrs;
-use schemify_import::symbol;
-use schemify_import::translate::{ORIENT_TABLE, place};
-use schemify_import::{Options, check_output, translate_library, xschem};
 
 fn cache() -> Option<PathBuf> {
     let root = std::env::var_os("SCHEMIFY_CACHE").map(PathBuf::from);
@@ -156,7 +156,7 @@ fn every_corpus_group_translates_checks_and_reimports_identically() {
         let reviews = report
             .items
             .iter()
-            .filter(|i| matches!(i.class, schemify_import::report::Class::Review(_)))
+            .filter(|i| matches!(i.class, interop::report::Class::Review(_)))
             .count();
         eprintln!(
             "{}: {} inputs, {} outputs, {} records in, {} needs_review, devices→core {}/{}",

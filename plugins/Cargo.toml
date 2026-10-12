@@ -6,7 +6,7 @@
 # fixtures with `plugins/build.sh`.
 [workspace]
 resolver = "3"
-members = ["hello", "bad-actor", "gmid-stub", "default-ui", "gmid-lut", "cktimg"]
+members = ["hello", "bad-actor", "gmid-stub", "default-ui", "gmid-lut", "cktimg", "interop"]
 
 [workspace.package]
 version = "0.1.0"

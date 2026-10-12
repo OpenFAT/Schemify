@@ -22,9 +22,6 @@ commands:
   merge-driver <O> <A> <B> [<path>]    git merge driver (writes the result to A)
   diff <A> <B>                         record-level semantic diff of two files
   git-setup                            register the merge driver in this clone
-  import <xschem-dir>... -o <out-dir> [--root D]... [--xschemrc F]... [--models F[:S]]...
-         [--tech F] [--cdf F] [--no-core]
-                                       convert xschem libraries (designs or PDK devices)
   netlist <cell> [--dialect D] [--config C] [--corner K] [--set VAR=EXPR]...
           [-o FILE] [--allow-errors]   write the netlist (dialects: ngspice xyce cdl spectre verilog)
   check <cell> [--config C] [--corner K]
@@ -70,7 +67,6 @@ fn main() -> ExitCode {
         "merge-driver" => merge_driver(rest),
         "diff" => diff(rest),
         "git-setup" => git_setup(rest),
-        "import" => schemify_devicereader::run(rest),
         "netlist" => netlist(rest),
         "check" => check(rest),
         "run" => run(&config, rest),

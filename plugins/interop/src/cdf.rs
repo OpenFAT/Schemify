@@ -189,7 +189,7 @@ enum Tok {
 /// # Examples
 ///
 /// ```
-/// use schemify_import::cdf::{read, CdfType};
+/// use interop::cdf::{read, CdfType};
 /// let d = read("LIBRARY = \"base\"\nCELL = \"res\"\ncdfCreateParam( cdfId\n ?name \"r\" ?type \"radio\"\n \
 ///               ?defValue \"ideal\" ?choices list(\"ideal\" \"thin film\") ?callback \"myCB()\")\n");
 /// assert_eq!(d.str(d.params.name[0]), "r");

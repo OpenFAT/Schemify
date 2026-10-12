@@ -34,7 +34,7 @@ impl Attrs {
     /// # Examples
     ///
     /// ```
-    /// use schemify_import::attr::Attrs;
+    /// use interop::attr::Attrs;
     /// let a = Attrs::parse("name=M1 ;  W = 1\nad=\"expr('@W * 0.29')\" lock");
     /// assert_eq!(a.get("W"), Some("1"));
     /// assert_eq!(a.get("ad"), Some("expr('@W * 0.29')"));
@@ -264,7 +264,7 @@ pub struct AtTokens<'a> {
 /// # Examples
 ///
 /// ```
-/// use schemify_import::attr::{at_tokens, AtKind};
+/// use interop::attr::{at_tokens, AtKind};
 /// let t: Vec<_> = at_tokens("@spiceprefix@name @@D \\@lit @prefix\\a21").collect();
 /// assert_eq!(t.iter().map(|t| t.name).collect::<Vec<_>>(), ["spiceprefix", "name", "D", "prefix"]);
 /// assert_eq!(t[2].kind, AtKind::PinNet);
@@ -432,7 +432,7 @@ const TCL_COMMANDS: &[(&str, Idioms)] = &[
 /// # Examples
 ///
 /// ```
-/// use schemify_import::attr::{classify, Idioms};
+/// use interop::attr::{classify, Idioms};
 /// let i = classify("tcleval(Q@name le=[ev { @El * 1.0e-6 } ])");
 /// assert!(i.contains(Idioms::TCLEVAL | Idioms::TCL_EV | Idioms::AT_ATTR));
 /// assert!(!classify("$[@model\\]").intersects(Idioms::TCL_COMMAND | Idioms::TCL_VAR));

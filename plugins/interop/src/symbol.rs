@@ -80,7 +80,7 @@ impl SymbolInterface {
 /// # Examples
 ///
 /// ```
-/// use schemify_import::{symbol::extract, xschem::read};
+/// use interop::{symbol::extract, xschem::read};
 /// let f = read("K {type=res template=\"name=R1 spiceprefix=X\"}\n\
 ///               B 5 -2.5 27.5 2.5 32.5 {name=M dir=inout sim_pinnumber=2}\n\
 ///               B 5 -2.5 -32.5 2.5 -27.5 {name=P dir=inout sim_pinnumber=1}\n").unwrap();

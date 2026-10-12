@@ -1,11 +1,14 @@
-//! `devicereader`: converts xschem libraries — a PDK's device library or whole design
+//! The plugin's native command line (feature `cli`, binary `schemify-interop`): the
+//! converters over the file system, for scripts, CI and corpus runs.
+//!
+//! `xschem-import` converts xschem libraries — a PDK's device library or whole design
 //! trees — into Schemify libraries, with device limits from model cards, `drc=` procs
 //! and tech files (D14), then checks every output with the import oracle.
 //!
 //! ```text
-//! devicereader <lib-dir>... [--root <dir>]... [--models <file>[:<section>]]...
-//!              [--spiceinit <file>] [--tech <file>] [--cdf <dump>] [--xschemrc <file>]...
-//!              [--no-core] -o <out-dir>
+//! schemify-interop xschem-import <lib-dir>... [--root <dir>]... [--models <file>[:<section>]]...
+//!     [--spiceinit <file>] [--tech <file>] [--cdf <dump>] [--xschemrc <file>]...
+//!     [--no-core] -o <out-dir>
 //! ```
 //!
 //! Each `<lib-dir>` is one element of the xschem library search path, in the order
@@ -20,8 +23,8 @@
 
 use std::path::{Path, PathBuf};
 
-use schemify_import::report::Class;
-use schemify_import::{Options, check_output, spice, tcl, tech, translate_library};
+use crate::report::Class;
+use crate::{Options, check_output, spice, tcl, tech, translate_library};
 
 struct Args {
     /// Search path in order: (dir, convert its files).
@@ -37,7 +40,7 @@ struct Args {
 
 fn usage() -> u8 {
     eprintln!(
-        "usage: devicereader <lib-dir>... [--root <dir>]... [--models <file>[:<section>]]... \
+        "usage: schemify-interop xschem-import <lib-dir>... [--root <dir>]... [--models <file>[:<section>]]... \
          [--spiceinit <file>] [--tech <file>] [--cdf <dump>] [--xschemrc <file>]... \
          [--no-core] -o <out-dir>"
     );
@@ -133,10 +136,21 @@ fn slash(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
-/// Runs the importer on `args` (the command line without the program name) and returns
-/// the exit status: 0 ok, 1 an output failed its check, 2 usage or I/O error. Shared by
-/// `devicereader` and `schemify import`.
+/// Runs the subcommand `args[0]` on the rest of `args` (the command line without the
+/// program name) and returns the exit status: 0 ok, 1 an output failed its check, 2 an
+/// unknown subcommand, a usage error or an I/O error.
 pub fn run(args: &[String]) -> u8 {
+    match args.split_first() {
+        Some((cmd, rest)) if cmd == "xschem-import" => xschem_import(rest),
+        _ => {
+            eprintln!("usage: schemify-interop xschem-import <args>...");
+            2
+        }
+    }
+}
+
+/// `xschem-import` (module docs): `args` are the subcommand's arguments.
+fn xschem_import(args: &[String]) -> u8 {
     let Some(args) = parse_args(args) else {
         return usage();
     };
@@ -237,7 +251,7 @@ pub fn run(args: &[String]) -> u8 {
         .cdf
         .as_ref()
         .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|t| schemify_import::cdf::read(&t));
+        .map(|t| crate::cdf::read(&t));
     let opts = Options {
         roots: &roots,
         pdk_vars: &vars,
@@ -274,7 +288,7 @@ pub fn run(args: &[String]) -> u8 {
 
 fn summarize(
     outputs: &[(String, Vec<u8>)],
-    report: &schemify_import::Report,
+    report: &crate::Report,
     procs: usize,
     grid_pm: Option<u32>,
 ) {
