@@ -1,0 +1,21 @@
+schemify 1 shcomp
+  vsym 905fddb874dca681
+  vsch 496fd5c900f5bdf9
+
+pin A in -40 0
+pin Y out 40 0
+
+impl schematic schematic
+
+rect -20 -20 20 20
+
+inst 9c1317 analogLib:res
+  at 0 0 R0
+  name R0
+  r 2k
+
+wire p797v3 0 -60 0 -30
+wire xxpxay 0 30 0 60
+
+port 4xnrrh 0 60 R0 Y
+port 5a7szc 0 -60 R0 A

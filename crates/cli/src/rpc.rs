@@ -680,14 +680,13 @@ impl Write for Stream {
 // ------------------------------------------------------------------ the headless server
 
 /// The CLI commands the headless server runs as methods (params: their argv, as strings).
-pub const CLI_METHODS: [&str; 6] = ["check", "diff", "fmt", "import", "netlist", "run"];
+pub const CLI_METHODS: [&str; 5] = ["check", "diff", "fmt", "netlist", "run"];
 /// Every method the headless server answers, sorted.
-pub const METHODS: [&str; 8] = [
+pub const METHODS: [&str; 7] = [
     "check",
     "diff",
     "edit",
     "fmt",
-    "import",
     "netlist",
     "rpc.methods",
     "run",

@@ -143,7 +143,7 @@ fn index_all(
         .expect("doc always declares core");
     if project.libs().source[core] == LibSource::Builtin {
         let (_, diags) = project
-            .index_library("core", BUILTIN_DIR, schemify_import::core_library())
+            .index_library("core", BUILTIN_DIR, schemify_doc::core_library())
             .map_err(|c| format!("lib core: {c}"))?;
         assert!(
             diags.is_empty(),
@@ -215,8 +215,8 @@ pub fn cell_bytes(
         return Err(format!("library row {lib} is not local"));
     }
     let stem = relpath.rsplit_once('.').map_or(relpath, |(s, _)| s);
-    let bytes = schemify_import::core::core_file(stem)
-        .ok_or_else(|| format!("core:{stem}: not a bundled cell"))?;
+    let bytes =
+        schemify_doc::core_file(stem).ok_or_else(|| format!("core:{stem}: not a bundled cell"))?;
     Ok((Path::new(BUILTIN_DIR).join(relpath), bytes.to_vec(), true))
 }
 

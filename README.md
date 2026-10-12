@@ -26,8 +26,8 @@ Linux, macOS, Windows and in a browser.
 - **Opening a file never runs anything.** Designs are pure data. Simulator commands live in your
   config and in plugins, never in a file you received.
 - **Small core, everything else is a plugin.** Like Neovim: a headless `schemify` binary
-  (netlist, check, run, import) and a separate editor. The xschem-style menus and toolbar are
-  themselves a WASM plugin you can replace. Plugins run sandboxed with the permissions you grant.
+  (netlist, check, run) and a separate editor; xschem import is the `interop` plugin. The
+  xschem-style menus and toolbar are themselves a WASM plugin you can replace. Plugins run sandboxed with the permissions you grant.
 - **Documentation next to the circuit.** A `.shcomp` holds the symbol, the schematic and a docs
   page: Markdown, LaTeX math, variables and plots that recompute when a value changes.
 - **Same output everywhere.** Netlists are byte-identical on Linux, macOS, Windows and WASI;
@@ -61,10 +61,12 @@ cargo run --release -p schemify-cli -- netlist crates/app/tests/fixtures/rc/tb.s
 cargo run --release -p schemify-cli -- run crates/app/tests/fixtures/rc/tb.shbench   # needs ngspice
 ```
 
-Bring an existing xschem library or PDK across:
+Bring an existing xschem library or PDK across with the `interop` plugin's command line
+(`schemify-interop`, shipped next to `schemify`; `nix run .#interop` or
+`cargo run --manifest-path plugins/Cargo.toml -p interop --features cli --`):
 
 ```sh
-schemify import ~/xschem/my_lib -o my_lib
+schemify-interop xschem-import ~/xschem/my_lib -o my_lib
 ```
 
 ## The command line
@@ -77,7 +79,6 @@ schemify import ~/xschem/my_lib -o my_lib
 | `schemify netlist <cell> [--dialect D]` | write a netlist: `ngspice`, `xyce`, `cdl`, `spectre`, `verilog` |
 | `schemify check <cell>` | report violations (dangling pins, shorted labels, parameter ranges, …) |
 | `schemify run <bench> [--sweep S] [--mc M] [--corner K]` | simulate a `.shbench` and print its outputs and specs |
-| `schemify import <xschem-dir>… -o <dir>` | convert xschem designs and PDK device libraries |
 | `schemify fmt [--check] <file>…` | rewrite files in canonical form |
 | `schemify diff <A> <B>` | object-level diff of two design files |
 | `schemify git-setup` | register the merge driver in this clone |
@@ -147,6 +148,7 @@ in [plugins/](plugins/):
 | `default-ui` | the xschem-style menus, toolbar, dialogs and keys (embedded in the editor) |
 | `gmid-lut` | gm/Id sizing functions for docs pages, from ngspice-characterized lookup tables |
 | `cktimg` | SPICE netlist → placed and routed schematic, via [cktImg](https://github.com/OmarSiwy/cktImg) |
+| `interop` | xschem designs and PDK device libraries → Schemify (native CLI `schemify-interop xschem-import`; editor commands to come) |
 
 ## Status
 

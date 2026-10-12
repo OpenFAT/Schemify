@@ -44,6 +44,10 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            plugins -> target
       - name: fetch corpus (pinned, sparse)
         run: tests/corpus/fetch.sh
       - name: golden netlists from pinned xschem (nix)
@@ -56,7 +60,8 @@ jobs:
       - name: differential vs xschem
         run: >-
           SCHEMIFY_CORPUS=$CACHE
-          cargo test -p schemify-netlist --release --test corpus -- --nocapture
+          cargo test --manifest-path plugins/Cargo.toml -p interop --release
+          --test xschem_differential -- --nocapture
       - name: ratchet (RATCHET.md)
         run: tests/corpus/ratchet.sh tests/corpus/.cache/netlist-out/TABLE.md
       # golden.sh points PDK_ROOT at $CACHE/pdk with only the xschem libraries; the model
@@ -79,8 +84,8 @@ jobs:
           ngspice="$(nix build --no-link --print-out-paths \
             "github:NixOS/nixpkgs/$(jq -r .nodes.nixpkgs.locked.rev flake.lock)#ngspice")"
           PATH="$ngspice/bin:$PATH" SCHEMIFY_CORPUS=$CACHE \
-            cargo test -p schemify-netlist --release --test corpus -- \
-            --ignored ngspice_results_agree --nocapture
+            cargo test --manifest-path plugins/Cargo.toml -p interop --release \
+            --test xschem_differential -- --ignored ngspice_results_agree --nocapture
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -91,7 +96,7 @@ jobs:
             tests/corpus/.cache/netlist-out/RESULTS.txt
           if-no-files-found: ignore
 
-  # cargo-fuzz on every harness (crates/*/fuzz), starting from the checked-in corpus. The
+  # cargo-fuzz on every harness (`<dir>/fuzz`: crates/*/fuzz, plugins/interop/fuzz), starting from the checked-in corpus. The
   # corpus carries over between nights through the actions cache and is uploaded with any
   # crash inputs; a crash fails the job and its input becomes a checked-in regression test
   # (TESTING.md).
@@ -101,16 +106,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { crate: format, target: parse }
-          - { crate: format, target: merge3 }
-          - { crate: expr, target: compile }
-          - { crate: import, target: xschem_read }
-          - { crate: cli, target: rpc_decode }
+          - { dir: crates/format, target: parse }
+          - { dir: crates/format, target: merge3 }
+          - { dir: crates/expr, target: compile }
+          - { dir: plugins/interop, target: xschem_read }
+          - { dir: plugins/interop, target: sfyx_import }
+          - { dir: crates/cli, target: rpc_decode }
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
       MINUTES: ${{ inputs.fuzz_minutes || '60' }}
-      CORPUS: crates/${{ matrix.crate }}/fuzz/corpus/${{ matrix.target }}
+      CORPUS: ${{ matrix.dir }}/fuzz/corpus/${{ matrix.target }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
@@ -126,7 +132,7 @@ jobs:
       - name: seeds
         run: tests/fuzz/seeds.sh ${{ matrix.target }} "$CORPUS" --fetched
       - name: fuzz ${{ matrix.target }} for ${{ env.MINUTES }} min
-        working-directory: crates/${{ matrix.crate }}/fuzz
+        working-directory: ${{ matrix.dir }}/fuzz
         run: >-
           cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} --
           -max_total_time=$((MINUTES * 60)) -rss_limit_mb=4096 -timeout=30 -print_final_stats=1
@@ -136,13 +142,13 @@ jobs:
           name: fuzz-${{ matrix.target }}
           path: |
             ${{ env.CORPUS }}
-            crates/${{ matrix.crate }}/fuzz/artifacts
+            ${{ matrix.dir }}/fuzz/artifacts
           if-no-files-found: ignore
 
   # Manual only (`gh workflow run nightly.yml -f only=fuzz-corpus`): the minimized corpora to
-  # check in for the merge-tier replay (`<crate>/tests/fuzz_corpus.rs`). Commits nothing:
+  # check in for the merge-tier replay (`<dir>/tests/fuzz_corpus.rs`). Commits nothing:
   # download the `fuzz-corpus-<target>` artifacts and commit them as
-  # crates/<crate>/fuzz/corpus/<target>/. Seeds are the checked-in corpus and this
+  # <dir>/fuzz/corpus/<target>/. Seeds are the checked-in corpus and this
   # repository's own files only (no cache, no fetched xschem or PDK files), so every
   # committed input derives from nothing third-party.
   fuzz-corpus:
@@ -151,15 +157,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { crate: format, target: parse }
-          - { crate: format, target: merge3 }
-          - { crate: expr, target: compile }
-          - { crate: import, target: xschem_read }
+          - { dir: crates/format, target: parse }
+          - { dir: crates/format, target: merge3 }
+          - { dir: crates/expr, target: compile }
+          - { dir: plugins/interop, target: xschem_read }
+          - { dir: plugins/interop, target: sfyx_import }
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
       MINUTES: ${{ inputs.fuzz_minutes || '60' }}
-      CORPUS: crates/${{ matrix.crate }}/fuzz/corpus/${{ matrix.target }}
+      CORPUS: ${{ matrix.dir }}/fuzz/corpus/${{ matrix.target }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
@@ -170,13 +177,13 @@ jobs:
         run: tests/fuzz/seeds.sh ${{ matrix.target }} "$CORPUS"
       # Inputs up to 4 KiB: a corpus of small inputs replays fast in debug builds.
       - name: fuzz ${{ matrix.target }} for ${{ env.MINUTES }} min
-        working-directory: crates/${{ matrix.crate }}/fuzz
+        working-directory: ${{ matrix.dir }}/fuzz
         run: >-
           cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} --
           -max_total_time=$((MINUTES * 60)) -max_len=4096 -rss_limit_mb=4096 -timeout=30
           -print_final_stats=1
       - name: minimize (cargo fuzz cmin)
-        working-directory: crates/${{ matrix.crate }}/fuzz
+        working-directory: ${{ matrix.dir }}/fuzz
         run: |
           cargo fuzz cmin --target x86_64-unknown-linux-gnu ${{ matrix.target }}
           echo "$(ls "corpus/${{ matrix.target }}" | wc -l) inputs, $(du -sh "corpus/${{ matrix.target }}" | cut -f1)"

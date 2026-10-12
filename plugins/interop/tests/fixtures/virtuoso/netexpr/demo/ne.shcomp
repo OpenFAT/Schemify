@@ -1,0 +1,22 @@
+schemify 1 shcomp
+  vsym 8e133b8fbce45af2
+  vsch 6e11f422b4d7bcec
+
+pin A in -40 0
+pin vdd inout 0 0
+  inherit vdd
+
+impl schematic schematic
+
+rect -20 -20 20 20
+
+inst nbwwat analogLib:res
+  at 0 0 R0
+  name R0
+
+wire kcf1wb 0 -50 0 -30
+wire ppt8fj 0 30 0 60
+
+label cc2c60 0 -48 R270 vdd
+
+port pq533p 0 60 R270 A

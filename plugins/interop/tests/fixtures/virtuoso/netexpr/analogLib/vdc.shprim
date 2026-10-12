@@ -1,0 +1,23 @@
+schemify 1 shprim
+  provenance "virtuoso analogLib/vdc"
+  vsym 8cf0d67c19744433
+
+pin PLUS inout 0 -30
+pin MINUS inout 0 30
+
+param vdc ""
+  kind string
+  unit V
+  doc "DC voltage"
+param acm 0
+  unit V
+  doc "AC magnitude"
+param acp 0
+  unit deg
+  doc "AC phase"
+
+impl spice spice
+  format spice "V{name} {PLUS} {MINUS} dc {vdc} ac {acm} {acp}"
+  format spectre "{name} ({PLUS} {MINUS}) vsource{vdc != \"\" ? \" dc=\" + vdc : \"\"} mag={acm} phase={acp}"
+
+circle 0 0 15

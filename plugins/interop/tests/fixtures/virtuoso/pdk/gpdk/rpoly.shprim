@@ -1,0 +1,25 @@
+schemify 1 shprim
+  provenance "virtuoso gpdk/rpoly"
+  vsym 9b03fc94d2760e4e
+
+pin PLUS inout 0 -30
+pin MINUS inout 0 30
+
+param r 1k
+  unit Ohm
+  doc Resistance
+param w 1u
+  unit m
+  doc Width
+param l 10u
+  unit m
+  doc Length
+param kind ""
+  kind string
+  doc Kind
+
+impl spice spice
+  format spectre "{name} ({PLUS} {MINUS}) resistor r={r} w={w} l={l}{kind != \"\" ? \" kind=\" + kind : \"\"}"
+  format cdl "R{name} {PLUS} {MINUS} W={w} L={l} $[RP]"
+
+rect -6 -20 6 20
