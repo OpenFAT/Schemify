@@ -1,6 +1,6 @@
 [package]
 name = "pdk-manager"
-description = "Per-project PDK installs through ciel, switching technologies by rewriting the manifest (docs/spec/pdk.md)."
+description = "Per-project PDK installs (ciel, git, url or a local kit), switching technologies by rewriting the manifest (docs/spec/pdk.md)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

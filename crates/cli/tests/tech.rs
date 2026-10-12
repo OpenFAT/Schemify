@@ -68,7 +68,12 @@ fn golden(name: &str, text: &str) {
 
 #[test]
 fn one_inverter_two_technologies() {
-    for (family, lib) in [("sky130", "sky130_fd_pr"), ("gf180mcu", "gf180mcu_fd_pr")] {
+    for (family, lib) in [
+        ("sky130", "sky130_fd_pr"),
+        ("gf180mcu", "gf180mcu_fd_pr"),
+        ("freepdk45", "freepdk45"),
+        ("asap7", "asap7"),
+    ] {
         let dir = project(family, &manifest(family, lib));
         let (code, text) = schemify(&dir, &["netlist", "inv.shcomp"]);
         assert_eq!(code, 0, "{family}: {text}");
@@ -78,7 +83,7 @@ fn one_inverter_two_technologies() {
 
 #[test]
 fn shipped_maps_parse() {
-    for family in ["sky130", "gf180mcu", "ihp-sg13g2"] {
+    for family in ["sky130", "gf180mcu", "ihp-sg13g2", "freepdk45", "asap7"] {
         let bytes = std::fs::read(Path::new(MAPS).join(format!("{family}.map"))).unwrap();
         let map = schemify_doc::TechMap::parse(&bytes).expect(family);
         assert_eq!(map.pdk, family);

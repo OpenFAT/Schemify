@@ -1,0 +1,7 @@
+* inv (schemify ngspice)
+NM1 Y A VDD VDD pmos_rvt nfin=15 nf=2 m=1
+NM2 Y A VSS VSS nmos_rvt nfin=15 nf=1 m=1
+.control
+pre_osdi bsimcmg.osdi
+.endc
+.end

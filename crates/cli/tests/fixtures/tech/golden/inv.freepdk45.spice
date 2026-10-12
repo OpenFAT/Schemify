@@ -1,0 +1,4 @@
+* inv (schemify ngspice)
+MM1 Y A VDD VDD PMOS_VTL w=2e-6 l=5e-7 nf=2 m=1
+MM2 Y A VSS VSS NMOS_VTL w=1e-6 l=5e-7 nf=1 m=1
+.end

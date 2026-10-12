@@ -565,3 +565,51 @@ fn a_verilog_body_compiles_with_icarus() {
     let src = std::fs::read_to_string(dir.join("cache/inv.v")).unwrap();
     assert!(src.starts_with("module inv(input a, output y);\n"), "{src}");
 }
+
+/// A generated FinFET cell (pdk spec §2.2): an OSDI device whose Verilog-A `file` is relative
+/// to the PDK cell, reached through a `tech:` class.
+const FINFET: &str = "schemify 1 shprim\n  prefix M\n\npin d inout 20 -30\npin g in -20 0\npin s inout 20 30\npin b in 20 0\n\nparam nfin 1\nparam m 1\n\nimpl osdi veriloga\n  format spice \"N{name} {d} {g} {s} {b} nfet nfin={nfin} m={m}\"\n  file ../../va/cmg.va\n";
+const NMOS4: &str = "schemify 1 shprim\n  prefix M\n\npin d inout 20 -30\npin g in -20 0\npin s inout 20 30\npin b in 20 0\n\nparam model nmos\n  kind string\nparam w 1u\nparam l 0.18u\nparam m 1\n\nimpl spice spice\n\nline -20 0 -10 0\n";
+const FIN_MAP: &str = "schemify 1 techmap\n  pdk fin\n\nclass nmos core\n  cell fin:nfet\n  param nfin max(1,ceil(w/70.5n))\n";
+const FIN_BENCH: &str = "schemify 1 shbench\n\ninst 0aaaaa tech:nmos\n  at 0 0 R0\n  name M1\n  w 1u\n\nlabel 0bbbba 20 -30 R0 d\nlabel 0bbbbb -20 0 R0 g\nlabel 0bbbbc 20 30 R0 0\nlabel 0bbbbd 20 0 R0 0\n";
+
+#[test]
+fn tech_cells_compile_their_pdk_cells_sources() {
+    let manifest = "schemify 1 project\nlib fin path pdk/lib/fin\nlib tech map pdk/tech.map\n";
+    let mut p = Project::new(Some(manifest.as_bytes()), None, 7).unwrap();
+    p.index_library("core", "<builtin>", &[("nmos4.shprim", NMOS4.as_bytes())])
+        .unwrap();
+    p.index_library("", "", &[("tb.shbench", FIN_BENCH.as_bytes())])
+        .unwrap();
+    p.index_library("fin", "pdk/lib/fin", &[("nfet.shprim", FINFET.as_bytes())])
+        .unwrap();
+    p.index_library("tech", "pdk/tech.map", &[("tech.map", FIN_MAP.as_bytes())])
+        .unwrap();
+    let top = p
+        .open("", "tb.shbench", FIN_BENCH.as_bytes(), None)
+        .unwrap()
+        .handle;
+    let req = schemify_elab::Request {
+        config: None,
+        corner: None,
+        overrides: &[],
+        env: &[],
+        dialect: Dialect::Ngspice,
+    };
+    let e = schemify_elab::elaborate(&p, top, &req, &mut no_funcs);
+    assert!(!e.violations.blocking(), "{:?}", e.violations.rows);
+    // The source is the PDK cell's file, from the PDK cell's library and directory (not
+    // `core/…` in the `tech` library: the derived row has no directory on disk).
+    let fin = p.libs().find("fin").unwrap() as u8;
+    assert_eq!(
+        schemify_run::sources(&p, &e),
+        [schemify_run::Source {
+            tool: schemify_run::Tool::Openvaf,
+            origin: schemify_run::Origin::File {
+                lib: fin,
+                path: "../../va/cmg.va".into()
+            },
+            out: "cmg.osdi".into(),
+        }]
+    );
+}

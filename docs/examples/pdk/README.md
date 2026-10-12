@@ -110,3 +110,100 @@ leaves the manifest.
 `pdk.remove sky130 <version>` deletes a version that is neither active nor pinned by
 `schemify.lock`. `pdk.prune` lists every such version (incomplete installs included) and
 `pdk.prune confirm` deletes them.
+
+## 7. FreePDK45 (NCSU, 45 nm, BSIM4)
+
+Grant `spawn:curl` and `spawn:tar` as well. `freepdk45` installs one pinned version: GitHub's
+archive of a mirror of the v1.4 release (NCSU's own download needs a registration), checked
+against its sha256 before it is unpacked:
+
+```
+pdk.install freepdk45 5b93a0b1e12d
+pdk.use freepdk45 5b93a0b1e12d
+```
+
+The kit has no xschem symbols, so the install generates its devices
+(`freepdk45:{n,p}mos_{vtl,vtg,vth,thkox}`, drawn like the core MOS symbols) and a corner
+library with sections `tt ff ss`. The manifest gains:
+
+```
+lib freepdk45 path .schemify/pdks/freepdk45/5b93a0b1e12d/lib/freepdk45
+lib tech map .schemify/pdks/freepdk45/5b93a0b1e12d/tech.map
+
+set PDK_ROOT .schemify/pdks/freepdk45/5b93a0b1e12d/root
+set PDK_MODELS .schemify/pdks/freepdk45/5b93a0b1e12d/models/corners.lib
+```
+
+The inverter of §4 netlists as BSIM4 M elements (`tech:` core = VTL; `flavor hvt` is VTH,
+`flavor io` THKOX):
+
+```
+MM1 Y A VDD VDD PMOS_VTL w=2e-6 l=5e-7 nf=2 m=1
+MM2 Y A VSS VSS NMOS_VTL w=1e-6 l=5e-7 nf=1 m=1
+```
+
+A DC-sweep bench at the project root, with the nominal 1.1 V supply:
+
+```
+schemify 1 shbench
+  corner tt
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  name X1
+
+label 0n0001 -40 0 R0 a
+label 0n0002 40 0 R0 y
+label 0n0003 0 -30 R0 vdd
+label 0n0004 0 30 R0 0
+
+var vdd 1.1
+
+corner tt
+  lib ${PDK_MODELS} tt
+
+output vm "cross(v(y)-v(a),0)"
+
+code dc spice
+  | VDD vdd 0 {vdd}
+  | VIN a 0 0
+  | .dc VIN 0 {vdd} {vdd/200}
+```
+
+`schemify run inv_tb.shbench` gives `vm` ≈ 0.54 V. If you registered with NCSU, install your
+own copy in place instead (nothing is copied; `pdk.remove` never deletes it):
+
+```
+pdk.install freepdk45 ncsu /opt/FreePDK45-1.4      # the directory that holds FreePDK45/
+```
+
+## 8. ASAP7 (ASU/Arm, 7 nm FinFET, BSIM-CMG)
+
+Grant `spawn:git`, and name OpenVAF in `init.lua` (nixpkgs installs it as `openvaf-r`):
+
+```
+schemify.sim("openvaf", { path = "openvaf-r" })
+```
+
+```
+pdk.install asap7 58d72c9d291e186a77468586ab0c43d8a21eda6a
+pdk.use asap7 58d72c9d291e186a77468586ab0c43d8a21eda6a
+```
+
+The install checks out the kit and the BSIM-CMG Verilog-A source (ngspice has no built-in
+level 72), rewrites the kit's TT/FF/SS cards for the compiled module, and generates
+`asap7:{n,p}mos_{rvt,lvt,slvt,sram}`. A device is sized in fins: the map turns the class
+width into `nfin = ceil(w / nf / 70.5n)`; the gate length is the kit's fixed 21 nm.
+
+```
+NM1 Y A VDD VDD pmos_rvt nfin=15 nf=2 m=1
+NM2 Y A VSS VSS nmos_rvt nfin=15 nf=1 m=1
+.control
+pre_osdi bsimcmg.osdi
+.endc
+```
+
+The same bench with `var vdd 0.7` runs unchanged (`lib ${PDK_MODELS} tt`): the runner
+compiles `bsimcmg.osdi` once into `.schemify/build/` and `vm` is ≈ 0.36 V. A copy of the kit
+inside the project installs in place with `pdk.install asap7 mine kits/asap7` (the path must be
+project-relative: the plugin reads its cards).

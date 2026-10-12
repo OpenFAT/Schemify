@@ -4,11 +4,12 @@
 //!
 //! - refresh: read the index, the manifest and the lockfile (then each `STATE`); when the last
 //!   read lands, recompute the references and run the action that asked for fresh data;
-//! - `pdk.install F V`: remove `STATE` → add to the index → `ciel enable` → `schemify import`
-//!   → write `tech.map` → write `STATE` = `ok`; a failing step stops the chain, so `STATE`
-//!   stays absent (spec §3);
-//! - `pdk.use F V`: refresh → refuse unless complete → read the import's manifest → write
-//!   `schemify.project` (the app then runs `project.reload`);
+//! - `pdk.install F V [path]`: the recipe's [`install_steps`] in order (remove `STATE` → add
+//!   to the index → fetch or record the local path → import or generate devices → corner
+//!   library → `tech.map` → `STATE` = `ok`); a failing step stops the chain, so `STATE` stays
+//!   absent (spec §3);
+//! - `pdk.use F V`: refresh → refuse unless complete → read `ROOT` (a local kit) → read the
+//!   library manifest → write `schemify.project` (the app then runs `project.reload`);
 //! - `pdk.remove F V` / `pdk.prune [confirm]`: refresh → refuse active/locked → `fs_remove`
 //!   each version directory → rewrite the index → refresh.
 
@@ -17,14 +18,18 @@ use std::cell::RefCell;
 use schemify_abi::guest::{self, Host};
 use schemify_abi::{Code, Event, Kind, Level, Out, text};
 
+use crate::install::{ARCHIVE_BYTES_MAX, HASH_CHUNK, Sha256, Step, derive_cmg, install_steps};
 use crate::{
-    Fv, INDEX, Job, Model, RECIPES, parse_index, parse_versions, prune_plan, recipe, references,
-    remove_refusal, tail, use_manifest, valid_version, version_dir, write_index,
+    Fv, INDEX, Job, Model, RECIPES, Source, local_refusal, parse_index, parse_versions,
+    pinned_version, prune_plan, recipe, references, remove_refusal, tail, use_manifest,
+    valid_version, version_dir, write_index,
 };
 
 guest::export!(on_event);
 
 const PENDING_MAX: usize = 64;
+/// The timer that resumes hashing a download in the next event (plugin-abi §5 `timer`).
+const HASH_TIMER: u32 = 1;
 const EMPTY_MANIFEST: &[u8] = b"schemify 1 project\n";
 
 /// What a pending handle is for.
@@ -34,13 +39,12 @@ enum Io {
     Manifest,
     Lock,
     ListRemote(String),
-    ClearState,
-    InstallIndex,
-    Fetch,
-    Import,
-    Map,
-    StateOk,
-    UseImport(Fv),
+    /// Install step `i` of `State::steps`.
+    Step(usize),
+    /// The write half of a [`Step::Derive`].
+    DeriveWrite(usize),
+    UseRoot(Fv),
+    UseImport(Fv, String),
     UseWrite(Fv),
     Remove(Fv),
     RemoveIndex,
@@ -65,6 +69,18 @@ struct State {
     /// Removals of the running batch still outstanding, and the ones done.
     removing: u32,
     removed: Vec<Fv>,
+    /// The running install's steps.
+    steps: Vec<Step>,
+    /// A download being hashed, [`HASH_CHUNK`] bytes per event.
+    hashing: Option<Hashing>,
+}
+
+/// The [`Step::Verify`] in progress: its step, the file, how far it is hashed.
+struct Hashing {
+    step: usize,
+    data: Vec<u8>,
+    at: usize,
+    sha: Sha256,
 }
 
 thread_local! {
@@ -78,6 +94,7 @@ fn on_event(ev: Event<'_>, host: &Host, out: &mut Out) {
         match ev {
             Event::Load => refresh(&mut s, host, out, None),
             Event::Command { name, args } => command(&mut s, host, out, name, args),
+            Event::Timer { id: HASH_TIMER } => hash_some(&mut s, host, out),
             Event::IoDone {
                 handle,
                 status,
@@ -108,7 +125,7 @@ fn issue(s: &mut State, out: &mut Out, handle: Result<u32, Code>, io: Io) -> boo
         }
         Err(c) => {
             let msg = format!(
-                "pdk: I/O refused ({c}): grant read_project, write_project, spawn:ciel and spawn:schemify"
+                "pdk: I/O refused ({c}): grant read_project, write_project and the spawn:<binary> of the family's source (ciel, schemify, git, curl, tar)"
             );
             say(s, out, Level::Error, &msg);
             false
@@ -128,6 +145,36 @@ fn argv(v: &[String]) -> Vec<&str> {
 
 /// `F V` from command args.
 fn family_version(args: &str) -> Result<Fv, String> {
+    let (fv, local) = family_version_local(args)?;
+    match local {
+        None => Ok(fv),
+        Some(_) => Err("expected <family> <version>".to_owned()),
+    }
+}
+
+/// `F V [path]` from `pdk.install` args: a path installs a `local` kit (spec §2.1), any
+/// version name; without one a `git`/`url` family installs only its pinned version.
+fn install_args(args: &str) -> Result<(Fv, Option<String>), String> {
+    let (fv, local) = family_version_local(args)?;
+    let r = recipe(&fv.0).expect("validated");
+    match (&local, pinned_version(r)) {
+        (Some(p), _) => {
+            if let Some(why) = local_refusal(r, p) {
+                return Err(format!("`{p}`: {why}"));
+            }
+        }
+        (None, Some(pin)) if pin != fv.1 => {
+            return Err(format!(
+                "{} installs version {pin} (or a kit on disk: pdk.install {} <name> <path>)",
+                fv.0, fv.0
+            ));
+        }
+        (None, _) => {}
+    }
+    Ok((fv, local))
+}
+
+fn family_version_local(args: &str) -> Result<(Fv, Option<String>), String> {
     let mut v = text::values(args);
     let f = v
         .need()
@@ -144,7 +191,15 @@ fn family_version(args: &str) -> Result<Fv, String> {
     if !valid_version(&ver) {
         return Err(format!("`{ver}` is not a version id (never `latest`)"));
     }
-    Ok((f, ver))
+    let local = match v.next() {
+        None => None,
+        Some(Ok(p)) => Some(p.into_owned()),
+        Some(Err(_)) => return Err("bad local path".to_owned()),
+    };
+    if v.next().is_some() {
+        return Err("expected <family> <version> [path]".to_owned());
+    }
+    Ok(((f, ver), local))
 }
 
 fn command(s: &mut State, host: &Host, out: &mut Out, name: &str, args: &str) {
@@ -166,8 +221,8 @@ fn command(s: &mut State, host: &Host, out: &mut Out, name: &str, args: &str) {
             let f = name["pdk.family.".len()..].to_owned();
             list_remote(s, host, out, &f);
         }
-        "pdk.install" => match family_version(args) {
-            Ok(fv) if !busy => install(s, host, out, fv),
+        "pdk.install" => match install_args(args) {
+            Ok((fv, local)) if !busy => install(s, host, out, fv, local.as_deref()),
             Ok(_) => say(s, out, Level::Warn, "pdk.install: an install is running"),
             Err(e) => say(s, out, Level::Error, &format!("pdk.install: {e}")),
         },
@@ -176,7 +231,7 @@ fn command(s: &mut State, host: &Host, out: &mut Out, name: &str, args: &str) {
             match s.m.remote.get(k).cloned() {
                 Some(v) if !busy => {
                     let f = s.m.family.clone();
-                    install(s, host, out, (f, v));
+                    install(s, host, out, (f, v), None);
                 }
                 Some(_) => say(s, out, Level::Warn, "pdk.install: an install is running"),
                 None => {}
@@ -241,6 +296,15 @@ fn list_remote(s: &mut State, host: &Host, out: &mut Out, family: &str) {
     };
     s.m.family = family.to_owned();
     s.m.remote.clear();
+    if let Some(pin) = pinned_version(r) {
+        s.m.remote.push(pin.to_owned());
+        let from = match r.source {
+            Source::Git { .. } => "git",
+            _ => "url",
+        };
+        s.m.message = format!("{family}: the pinned {from} version");
+        return;
+    }
     s.m.message = format!("listing {family} versions…");
     let a = crate::ls_remote_argv(r);
     issue(
@@ -251,8 +315,10 @@ fn list_remote(s: &mut State, host: &Host, out: &mut Out, family: &str) {
     );
 }
 
-fn install(s: &mut State, host: &Host, out: &mut Out, fv: Fv) {
-    let dir = version_dir(&fv.0, &fv.1);
+fn install(s: &mut State, host: &Host, out: &mut Out, fv: Fv, local: Option<&str>) {
+    let r = recipe(&fv.0).expect("validated");
+    s.steps = install_steps(r, &fv.1, local);
+    s.hashing = None;
     s.m.job = Some(Job {
         family: fv.0,
         version: fv.1,
@@ -260,12 +326,120 @@ fn install(s: &mut State, host: &Host, out: &mut Out, fv: Fv) {
         tail: Vec::new(),
     });
     s.m.message.clear();
-    issue(
+    run_step(s, host, out, 0, b"");
+}
+
+/// Issues install step `i` (the previous step's output `bytes` becomes the panel's tail).
+fn run_step(s: &mut State, host: &Host, out: &mut Out, i: usize, bytes: &[u8]) {
+    assert!(i < s.steps.len());
+    let Some(fv) = job_fv(s) else { return };
+    let step = s.steps[i].clone();
+    if let Some(j) = &mut s.m.job {
+        j.step = step.label();
+        if !bytes.is_empty() {
+            j.tail = tail(bytes);
+        }
+    }
+    let handle = match &step {
+        Step::Remove(path) => host.fs_remove(path),
+        Step::Index => {
+            let mut rows = s.m.installs.clone();
+            rows.push(fv);
+            host.fs_write(INDEX, write_index(&rows).as_bytes())
+        }
+        Step::Spawn(_, a) => host.spawn(&argv(a), b""),
+        Step::Verify(path, _) | Step::Derive(path, _) => host.fs_read(path),
+        Step::Write(_, path, text) => host.fs_write(path, text.as_bytes()),
+    };
+    issue(s, out, handle, Io::Step(i));
+}
+
+/// Step `i` completed: check it, then run the next one (or fail the install).
+fn step_done(s: &mut State, host: &Host, out: &mut Out, i: usize, status: i32, bytes: &[u8]) {
+    assert!(i < s.steps.len());
+    let gone = Code::Gone.neg();
+    let failure = match &s.steps[i] {
+        Step::Remove(_) => (status < 0 && status != gone).then(|| "cannot remove".to_owned()),
+        Step::Spawn(_, a) => (status != 0).then(|| format!("{} exit {status}", a[0])),
+        Step::Verify(path, _) if status < 0 || bytes.len() > ARCHIVE_BYTES_MAX => {
+            Some(format!("cannot read {path}"))
+        }
+        Step::Verify(..) => {
+            s.hashing = Some(Hashing {
+                step: i,
+                data: bytes.to_vec(),
+                at: 0,
+                sha: Sha256::default(),
+            });
+            hash_some(s, host, out);
+            return;
+        }
+        Step::Derive(from, to) if status >= 0 => {
+            match derive_cmg(&String::from_utf8_lossy(bytes)) {
+                Ok(text) => {
+                    let h = host.fs_write(to, text.as_bytes());
+                    issue(s, out, h, Io::DeriveWrite(i));
+                    return;
+                }
+                Err(e) => Some(format!("{from}: {e}")),
+            }
+        }
+        Step::Derive(from, _) => Some(format!("cannot read {from}")),
+        Step::Index | Step::Write(..) => (status < 0).then(|| "cannot write".to_owned()),
+    };
+    // Only a spawn's bytes are output worth showing (a read's are the file).
+    let shown: &[u8] = if matches!(s.steps[i], Step::Spawn(..)) {
+        bytes
+    } else {
+        b""
+    };
+    match failure {
+        Some(what) => fail(s, host, out, &what, shown),
+        None => next_step(s, host, out, i, shown),
+    }
+}
+
+/// Hashes the next [`HASH_CHUNK`] of the download; asks for a timer event to go on, or checks
+/// the digest and runs the next step.
+fn hash_some(s: &mut State, host: &Host, out: &mut Out) {
+    let Some(h) = &mut s.hashing else { return };
+    let whole = h.data.len() / 64 * 64;
+    let end = (h.at + HASH_CHUNK).min(whole);
+    assert!(h.at <= end && HASH_CHUNK.is_multiple_of(64));
+    h.sha.blocks(&h.data[h.at..end]);
+    h.at = end;
+    if end < whole {
+        out.timer(HASH_TIMER, 0);
+        return;
+    }
+    let h = s.hashing.take().expect("checked");
+    let got = h.sha.finish(&h.data[whole..]);
+    let Step::Verify(_, want) = &s.steps[h.step] else {
+        unreachable!("hashing runs for a verify step")
+    };
+    if got == *want {
+        next_step(s, host, out, h.step, b"");
+    } else {
+        let what = format!("sha256 mismatch: got {got}, want {want}");
+        fail(s, host, out, &what, b"");
+    }
+}
+
+fn next_step(s: &mut State, host: &Host, out: &mut Out, i: usize, bytes: &[u8]) {
+    if i + 1 < s.steps.len() {
+        run_step(s, host, out, i + 1, bytes);
+        return;
+    }
+    let Some((f, v)) = job_fv(s) else { return };
+    s.m.job = None;
+    s.steps.clear();
+    say(
         s,
         out,
-        host.fs_remove(&format!("{dir}/STATE")),
-        Io::ClearState,
+        Level::Info,
+        &format!("pdk: installed {f} {v} (pdk.use {f} {v} to switch to it)"),
     );
+    refresh(s, host, out, None);
 }
 
 fn fail(s: &mut State, host: &Host, out: &mut Out, what: &str, bytes: &[u8]) {
@@ -282,24 +456,6 @@ fn fail(s: &mut State, host: &Host, out: &mut Out, what: &str, bytes: &[u8]) {
     let msg = format!("pdk.install {family} {version}: {step} failed ({what}) {last}");
     say(s, out, Level::Error, msg.trim_end());
     refresh(s, host, out, None);
-}
-
-/// Advances the install to `step`, issuing `handle` for it.
-fn step(
-    s: &mut State,
-    out: &mut Out,
-    name: &'static str,
-    bytes: &[u8],
-    handle: Result<u32, Code>,
-    io: Io,
-) {
-    if let Some(j) = &mut s.m.job {
-        j.step = name;
-        if !bytes.is_empty() {
-            j.tail = tail(bytes);
-        }
-    }
-    issue(s, out, handle, io);
 }
 
 fn job_fv(s: &State) -> Option<Fv> {
@@ -359,106 +515,33 @@ fn done(s: &mut State, host: &Host, out: &mut Out, io: Io, status: i32, bytes: &
             s.m.message = format!("{} {f} versions", s.m.remote.len());
         }
         // Install chain.
-        Io::ClearState => {
-            let Some(fv) = job_fv(s) else { return };
-            let mut rows = s.m.installs.clone();
-            rows.push(fv);
-            let text = write_index(&rows);
-            step(
-                s,
-                out,
-                "prepare",
-                b"",
-                host.fs_write(INDEX, text.as_bytes()),
-                Io::InstallIndex,
-            );
-        }
-        Io::InstallIndex if !ok => fail(s, host, out, "cannot write the install index", bytes),
-        Io::InstallIndex => {
-            let Some((f, v)) = job_fv(s) else { return };
-            let a = crate::fetch_argv(recipe(&f).expect("validated"), &v);
-            step(
-                s,
-                out,
-                "fetch (ciel)",
-                b"",
-                host.spawn(&argv(&a), b""),
-                Io::Fetch,
-            );
-        }
-        Io::Fetch if status != 0 => fail(s, host, out, &format!("ciel exit {status}"), bytes),
-        Io::Fetch => {
-            let Some((f, v)) = job_fv(s) else { return };
-            let a = crate::import_argv(recipe(&f).expect("validated"), &v);
-            step(
-                s,
-                out,
-                "import (schemify)",
-                bytes,
-                host.spawn(&argv(&a), b""),
-                Io::Import,
-            );
-        }
-        Io::Import if status != 0 => fail(
-            s,
-            host,
-            out,
-            &format!("schemify import exit {status}"),
-            bytes,
-        ),
-        Io::Import => {
-            let Some((f, v)) = job_fv(s) else { return };
-            let map = recipe(&f).expect("validated").map;
-            let path = format!("{}/tech.map", version_dir(&f, &v));
-            step(
-                s,
-                out,
-                "tech.map",
-                bytes,
-                host.fs_write(&path, map.as_bytes()),
-                Io::Map,
-            );
-        }
-        Io::Map if !ok => fail(s, host, out, "cannot write tech.map", bytes),
-        Io::Map => {
-            let Some((f, v)) = job_fv(s) else { return };
-            let path = format!("{}/STATE", version_dir(&f, &v));
-            step(
-                s,
-                out,
-                "state",
-                b"",
-                host.fs_write(&path, b"ok\n"),
-                Io::StateOk,
-            );
-        }
-        Io::StateOk if !ok => fail(s, host, out, "cannot write STATE", bytes),
-        Io::StateOk => {
-            let Some((f, v)) = job_fv(s) else { return };
-            s.m.job = None;
-            say(
-                s,
-                out,
-                Level::Info,
-                &format!("pdk: installed {f} {v} (pdk.use {f} {v} to switch to it)"),
-            );
-            refresh(s, host, out, None);
-        }
+        Io::Step(i) => step_done(s, host, out, i, status, bytes),
+        Io::DeriveWrite(_) if !ok => fail(s, host, out, "cannot write the derived cards", b""),
+        Io::DeriveWrite(i) => next_step(s, host, out, i, b""),
         // Use chain.
-        Io::UseImport(fv) if !ok => {
+        Io::UseRoot(fv) => {
+            let dir = version_dir(&fv.0, &fv.1);
+            let root = match String::from_utf8_lossy(bytes).lines().next() {
+                Some(p) if ok && !p.trim().is_empty() => p.trim().to_owned(),
+                _ => format!("{dir}/root"),
+            };
+            let path = format!("{dir}/lib/schemify.project");
+            issue(s, out, host.fs_read(&path), Io::UseImport(fv, root));
+        }
+        Io::UseImport(fv, _) if !ok => {
             let msg = format!(
                 "pdk.use {} {}: no import manifest (install it again)",
                 fv.0, fv.1
             );
             say(s, out, Level::Error, &msg);
         }
-        Io::UseImport(fv) => {
+        Io::UseImport(fv, root) => {
             let manifest = s
                 .manifest
                 .clone()
                 .unwrap_or_else(|| EMPTY_MANIFEST.to_vec());
             let r = recipe(&fv.0).expect("validated");
-            match use_manifest(&manifest, bytes, r, &fv.1) {
+            match use_manifest(&manifest, bytes, r, &fv.1, &root) {
                 Ok(text) => {
                     issue(
                         s,
@@ -553,8 +636,8 @@ fn refreshed(s: &mut State, host: &Host, out: &mut Out) {
                 say(s, out, Level::Error, &msg);
                 return;
             }
-            let path = format!("{}/lib/schemify.project", version_dir(&fv.0, &fv.1));
-            issue(s, out, host.fs_read(&path), Io::UseImport(fv));
+            let path = format!("{}/ROOT", version_dir(&fv.0, &fv.1));
+            issue(s, out, host.fs_read(&path), Io::UseRoot(fv));
         }
         Some(Action::Remove(fv)) => match remove_refusal(&fv, &s.m.active, &s.m.locked) {
             Some(why) => say(

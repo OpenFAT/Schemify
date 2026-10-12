@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 
 use schemify_abi::text::push_value;
 
-use crate::{Model, RECIPES, remove_refusal};
+use crate::{Model, RECIPES, Source, remove_refusal};
 
 /// Commands this plugin owns: the public ones (spec §3) and the panel's row commands.
 pub fn commands(m: &Model) -> String {
@@ -20,9 +20,12 @@ pub fn commands(m: &Model) -> String {
         ("pdk.panel", "PDKs: show or hide the panel"),
         (
             "pdk.list_remote",
-            "PDKs: list a family's versions (ciel ls-remote)",
+            "PDKs: list a family's versions (ciel ls-remote; git/url families: the pinned one)",
         ),
-        ("pdk.install", "PDKs: install <family> <version>"),
+        (
+            "pdk.install",
+            "PDKs: install <family> <version> [kit path on disk]",
+        ),
         ("pdk.use", "PDKs: use <family> <version> in this project"),
         ("pdk.remove", "PDKs: remove <family> <version>"),
         (
@@ -273,7 +276,7 @@ pub fn ui(m: &Model) -> String {
         "pdk.available",
         "label",
         "pdk.page",
-        &[("label", "Available (ciel)"), ("style", "cell-section")],
+        &[("label", "Available"), ("style", "cell-section")],
     );
     node(
         &mut t,
@@ -322,6 +325,11 @@ pub fn ui(m: &Model) -> String {
         let installed = m.installs.iter().any(|fv| fv.0 == m.family && fv.1 == *v);
         let why = busy.then_some("an install is running");
         let label = if installed { "Reinstall" } else { "Install" };
+        let help = match crate::recipe(&m.family).map(|r| r.source) {
+            Some(Source::Git { .. }) => "git checkout of the pinned rev, then generate its devices",
+            Some(Source::Url { .. }) => "download, check its sha256, unpack, generate its devices",
+            _ => "ciel enable, then import its symbols",
+        };
         button(
             &mut t,
             &format!("{row}.install"),
@@ -329,7 +337,7 @@ pub fn ui(m: &Model) -> String {
             label,
             &format!("pdk.remote.install.{k}"),
             why,
-            "ciel enable, then import its symbols",
+            help,
         );
     }
     // Progress.

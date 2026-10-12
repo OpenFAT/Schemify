@@ -617,6 +617,32 @@ impl Project {
         why.unwrap_or_else(|| format!("tech:{class} ({flavor}) resolves"))
     }
 
+    /// The PDK cell row derived `tech` cell `row` was built from (pdk spec §5), `None` for a
+    /// row outside the `tech` library. A derived cell has no file of its own, so what its
+    /// impls name relative to their cell (a Verilog-A `file`) resolves against this row's
+    /// library and directory.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `row` is not a row of the current index.
+    pub fn tech_source(&self, row: usize) -> Option<usize> {
+        assert!(row < self.cells.lib.len(), "cell row from a previous index");
+        let tech = self.libs.find(TECH_LIB)?;
+        if self.cells.lib[row] as usize != tech {
+            return None;
+        }
+        let map = self.techmap()?;
+        let (flavor, class) = (
+            self.strings.get(self.cells.dir[row]),
+            self.strings.get(self.cells.stem[row]),
+        );
+        let pdk = self
+            .resolve_at(0, Sym::NONE, &map.cell[map.find(class, flavor)?])
+            .ok()?;
+        assert!(self.cells.lib[pdk] as usize != tech);
+        Some(pdk)
+    }
+
     /// Pins library `name` in the lockfile at its last indexed content.
     ///
     /// # Errors

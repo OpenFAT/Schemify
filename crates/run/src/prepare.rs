@@ -362,7 +362,11 @@ pub fn sources(project: &Project, e: &Elab) -> Vec<Source> {
                 continue; // not a project cell: no directory to resolve `file` against
             }
             let file = e.names.get(iface.impl_file[k]);
-            let dir = project.strings().get(cells.dir[iface.row as usize]);
+            // A derived `tech` cell's impls are its PDK cell's: `file` is relative to that.
+            let row = project
+                .tech_source(iface.row as usize)
+                .unwrap_or(iface.row as usize);
+            let dir = project.strings().get(cells.dir[row]);
             let path = if dir.is_empty() {
                 file.to_owned()
             } else {
@@ -370,7 +374,7 @@ pub fn sources(project: &Project, e: &Elab) -> Vec<Source> {
             };
             let stem = file.rsplit(['/', '\\']).next().unwrap_or(file);
             let stem = stem.rsplit_once('.').map_or(stem, |(s, _)| s);
-            let lib = cells.lib[iface.row as usize];
+            let lib = cells.lib[row];
             (Origin::File { lib, path }, stem)
         };
         let src = Source {

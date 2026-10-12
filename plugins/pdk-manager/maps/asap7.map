@@ -1,0 +1,21 @@
+schemify 1 techmap
+  pdk asap7
+  vdd 0.7
+
+# ASAP7 FinFETs (BSIM-CMG): a device is sized in fins. One fin is 2 hfin + tfin = 70.5 nm of
+# channel width (the cards' hfin = 32 nm, tfin = 6.5 nm), so the class width w over nf
+# fingers becomes nfin = ceil(w / nf / 70.5n) fins per finger, at least 1. The gate length is
+# the cards' fixed 21 nm: the class l does not reach the device. No hvt or io devices; slvt
+# and sram cells are placed directly (asap7:nmos_slvt, asap7:nmos_sram).
+class nmos core
+  cell asap7:nmos_rvt
+  param nfin max(1,ceil(w/nf/70.5n))
+class pmos core
+  cell asap7:pmos_rvt
+  param nfin max(1,ceil(w/nf/70.5n))
+class nmos lvt
+  cell asap7:nmos_lvt
+  param nfin max(1,ceil(w/nf/70.5n))
+class pmos lvt
+  cell asap7:pmos_lvt
+  param nfin max(1,ceil(w/nf/70.5n))

@@ -67,6 +67,11 @@ fn tech_cells_derive_from_the_map() {
     assert_eq!(doc.table_len(TableId::Graphics), 1, "the core drawing");
     // `tech:nmos` means the core flavor, through the ordinary resolver.
     assert_eq!(p.resolve_in(row, "tech:nmos"), Ok(row));
+    // Its impls (a Verilog-A `file`) resolve where the PDK cell lives.
+    let pdk = p.tech_source(row).expect("derived from pdk:nfet");
+    assert_eq!(p.cells().lib[pdk] as usize, p.libs().find("pdk").unwrap());
+    assert_eq!(p.strings().get(p.cells().stem[pdk]), "nfet");
+    assert_eq!(p.tech_source(pdk), None, "a PDK cell is its own source");
 }
 
 #[test]
