@@ -45,7 +45,10 @@ thiserror = "2"
 proptest = "1"
 # D3: the one plugin engine (native + web); only `plugin` may depend on it (AGENTS rule 7).
 # No `wat` (text parser) or `memory64` in production; `deterministic` canonicalizes NaNs so
-# plugin results are bit-identical on every platform (rule 4, D20 cached values).
+# plugin results are bit-identical on every platform (rule 4, D20 cached values). Measured
+# 2026-10-12 (release, stripped): wasmparser (with `validate`'s validator) is ~650 KB of code but stays,
+# since plugins are untrusted input; `portable-dispatch` instead of `auto-dispatch` saves
+# nothing (+4 KB) and runs a guest loop 3x slower.
 wasmi = { version = "2", default-features = false, features = ["std", "validate", "auto-dispatch", "deterministic"] }
 # GUI (WS5): only crates/ui and crates/render may use these (AGENTS.md rule 7)
 taffy = { version = "0.14", default-features = false, features = ["std", "taffy_tree", "flexbox"] }

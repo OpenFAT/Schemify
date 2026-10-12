@@ -692,11 +692,6 @@ impl Plugins {
         self.row(id).map(|row| &*self.names[row])
     }
 
-    /// Returns the grants of a loaded plugin.
-    pub fn grants(&self, id: PluginId) -> Option<&Grants> {
-        self.row(id).map(|row| &self.stores[row].data().grants)
-    }
-
     /// Returns every plugin's current contribution sets.
     pub fn contributions(&self) -> &Contributions {
         &self.contributions

@@ -117,93 +117,34 @@ pub(crate) fn linker(engine: &Engine) -> Linker<Ctx> {
     let err = "import names are unique";
     l.func_wrap(m, "table_len", table_len).expect(err);
     l.func_wrap(m, "table_epoch", table_epoch).expect(err);
-    l.func_wrap(
-        m,
-        "read_column",
-        |mut c: Caller<'_, Ctx>, t: u32, col: u32, s: u32, n: u32, d: u32, dl: u32| {
-            let r = read_column(&mut c, t, col, s, n, d, dl);
-            charge(&mut c, r.max(0) as usize);
-            r
-        },
-    )
-    .expect(err);
-    l.func_wrap(
-        m,
-        "read_strings",
-        |mut c: Caller<'_, Ctx>, t: u32, col: u32, s: u32, n: u32, d: u32, dl: u32| {
-            let r = read_strings(&mut c, t, col, s, n, d, dl);
-            charge(&mut c, r.max(0) as usize);
-            r
-        },
-    )
-    .expect(err);
-    l.func_wrap(
-        m,
-        "read_record",
-        |mut c: Caller<'_, Ctx>, doc: u32, id: u32, d: u32, dl: u32| {
-            let r = read_record(&mut c, doc, id, d, dl);
-            charge(&mut c, r.max(0) as usize);
-            r
-        },
-    )
-    .expect(err);
-    l.func_wrap(
-        m,
-        "eval",
-        |mut c: Caller<'_, Ctx>, doc: u32, p: u32, pl: u32| {
-            charge(&mut c, pl as usize);
-            eval(&mut c, doc, p, pl)
-        },
-    )
-    .expect(err);
-    l.func_wrap(
-        m,
-        "log",
-        |mut c: Caller<'_, Ctx>, level: u32, p: u32, pl: u32| {
-            charge(&mut c, pl as usize);
-            log(&mut c, level, p, pl)
-        },
-    )
-    .expect(err);
-    l.func_wrap(m, "fs_read", |mut c: Caller<'_, Ctx>, p: u32, pl: u32| {
-        request(&mut c, IoOp::FsRead, (p, pl), (0, 0))
+    l.func_wrap(m, "read_column", read_column).expect(err);
+    l.func_wrap(m, "read_strings", read_strings).expect(err);
+    l.func_wrap(m, "read_record", read_record).expect(err);
+    l.func_wrap(m, "eval", eval).expect(err);
+    l.func_wrap(m, "log", log).expect(err);
+    l.func_wrap(m, "fs_read", |c: Caller<'_, Ctx>, p: u32, pl: u32| {
+        request(c, IoOp::FsRead, (p, pl), (0, 0))
     })
     .expect(err);
-    l.func_wrap(
-        m,
-        "fs_write",
-        |mut c: Caller<'_, Ctx>, p: u32, pl: u32, d: u32, dl: u32| {
-            request(&mut c, IoOp::FsWrite, (p, pl), (d, dl))
-        },
-    )
-    .expect(err);
-    l.func_wrap(
-        m,
-        "spawn",
-        |mut c: Caller<'_, Ctx>, a: u32, al: u32, s: u32, sl: u32| {
-            request(&mut c, IoOp::Spawn, (a, al), (s, sl))
-        },
-    )
-    .expect(err);
-    l.func_wrap(
-        m,
-        "fetch",
-        |mut c: Caller<'_, Ctx>, u: u32, ul: u32, b: u32, bl: u32| {
-            request(&mut c, IoOp::Fetch, (u, ul), (b, bl))
-        },
-    )
-    .expect(err);
-    l.func_wrap(m, "clipboard_get", |mut c: Caller<'_, Ctx>| {
-        request(&mut c, IoOp::ClipboardGet, (0, 0), (0, 0))
+    l.func_wrap(m, "fs_write", |c: Caller<'_, Ctx>, p, pl, d, dl| {
+        request(c, IoOp::FsWrite, (p, pl), (d, dl))
     })
     .expect(err);
-    l.func_wrap(
-        m,
-        "clipboard_set",
-        |mut c: Caller<'_, Ctx>, p: u32, pl: u32| {
-            request(&mut c, IoOp::ClipboardSet, (0, 0), (p, pl))
-        },
-    )
+    l.func_wrap(m, "spawn", |c: Caller<'_, Ctx>, a, al, s, sl| {
+        request(c, IoOp::Spawn, (a, al), (s, sl))
+    })
+    .expect(err);
+    l.func_wrap(m, "fetch", |c: Caller<'_, Ctx>, u, ul, b, bl| {
+        request(c, IoOp::Fetch, (u, ul), (b, bl))
+    })
+    .expect(err);
+    l.func_wrap(m, "clipboard_get", |c: Caller<'_, Ctx>| {
+        request(c, IoOp::ClipboardGet, (0, 0), (0, 0))
+    })
+    .expect(err);
+    l.func_wrap(m, "clipboard_set", |c: Caller<'_, Ctx>, p: u32, pl: u32| {
+        request(c, IoOp::ClipboardSet, (0, 0), (p, pl))
+    })
     .expect(err);
     l
 }
@@ -383,10 +324,11 @@ fn charge(caller: &mut Caller<'_, Ctx>, bytes: usize) {
         .expect("fuel metering is enabled");
 }
 
-/// Splits the caller into its linear memory and store data; `None` before the memory is
-/// resolved (inside the start function).
-fn split<'a>(caller: &'a mut Caller<'_, Ctx>) -> Option<(&'a mut [u8], &'a mut Ctx)> {
-    let memory = caller.data().memory?;
+/// Splits the caller into its linear memory and store data; `None` outside an event handler
+/// (start function, `schemify_alloc` outside an event, pure `schemify_call`), where every
+/// import is denied.
+fn live<'a>(caller: &'a mut Caller<'_, Ctx>) -> Option<(&'a mut [u8], &'a mut Ctx)> {
+    let memory = caller.data().memory.filter(|_| caller.data().live)?;
     Some(memory.data_and_store_mut(caller))
 }
 
@@ -432,10 +374,8 @@ fn need_more(mem: &mut [u8], dst: u32, dst_len: u32, need: usize) -> i32 {
 
 fn table_len(caller: Caller<'_, Ctx>, table: u32) -> i32 {
     let ctx = caller.data();
-    if !ctx.live {
-        return Code::Denied.neg();
-    }
     match Table::from_raw(table) {
+        _ if !ctx.live => Code::Denied.neg(),
         None => Code::Table.neg(),
         Some(t) => i32::try_from(ctx.snapshots.rows(t)).expect("rows <= ROWS_MAX"),
     }
@@ -445,17 +385,16 @@ fn table_len(caller: Caller<'_, Ctx>, table: u32) -> i32 {
 /// every change (until it wraps).
 fn table_epoch(caller: Caller<'_, Ctx>, table: u32) -> i32 {
     let ctx = caller.data();
-    if !ctx.live {
-        return Code::Denied.neg();
-    }
     match Table::from_raw(table) {
+        _ if !ctx.live => Code::Denied.neg(),
         None => Code::Table.neg(),
         Some(t) => (ctx.snapshots.epoch(t) & 0x7fff_ffff) as i32,
     }
 }
 
+/// Like every bulk read, charges for the bytes it copied.
 fn read_column(
-    caller: &mut Caller<'_, Ctx>,
+    mut caller: Caller<'_, Ctx>,
     table: u32,
     column: u32,
     start: u32,
@@ -463,20 +402,19 @@ fn read_column(
     dst: u32,
     dst_len: u32,
 ) -> i32 {
-    let Some((mem, ctx)) = split(caller) else {
-        return Code::Denied.neg();
+    let r = match live(&mut caller) {
+        None => Code::Denied.neg(),
+        Some((mem, ctx)) => match ctx.snapshots.column_bytes(table, column, start, count) {
+            Err(code) => code.neg(),
+            Ok(src) => copy_out(mem, dst, dst_len, src),
+        },
     };
-    if !ctx.live {
-        return Code::Denied.neg();
-    }
-    match ctx.snapshots.column_bytes(table, column, start, count) {
-        Err(code) => code.neg(),
-        Ok(src) => copy_out(mem, dst, dst_len, src),
-    }
+    charge(&mut caller, r.max(0) as usize);
+    r
 }
 
 fn read_strings(
-    caller: &mut Caller<'_, Ctx>,
+    mut caller: Caller<'_, Ctx>,
     table: u32,
     column: u32,
     start: u32,
@@ -484,47 +422,42 @@ fn read_strings(
     dst: u32,
     dst_len: u32,
 ) -> i32 {
-    let Some((mem, ctx)) = split(caller) else {
-        return Code::Denied.neg();
+    let r = match live(&mut caller) {
+        None => Code::Denied.neg(),
+        Some((mem, ctx)) => match ctx.snapshots.strings_len(table, column, start, count) {
+            Err(code) => code.neg(),
+            Ok(need) if need > dst_len as usize => need_more(mem, dst, dst_len, need),
+            Ok(need) => match guest_mut(mem, dst, need) {
+                None => Code::Range.neg(),
+                Some(window) => {
+                    ctx.snapshots
+                        .write_strings(table, column, start, count, window);
+                    i32::try_from(need).expect("string slices stay under 2 GiB")
+                }
+            },
+        },
     };
-    if !ctx.live {
-        return Code::Denied.neg();
-    }
-    let need = match ctx.snapshots.strings_len(table, column, start, count) {
-        Err(code) => return code.neg(),
-        Ok(n) => n,
-    };
-    if need > dst_len as usize {
-        return need_more(mem, dst, dst_len, need);
-    }
-    let Some(window) = guest_mut(mem, dst, need) else {
-        return Code::Range.neg();
-    };
-    ctx.snapshots
-        .write_strings(table, column, start, count, window);
-    i32::try_from(need).expect("string slices stay under 2 GiB")
+    charge(&mut caller, r.max(0) as usize);
+    r
 }
 
-fn read_record(caller: &mut Caller<'_, Ctx>, doc: u32, id: u32, dst: u32, dst_len: u32) -> i32 {
-    let Some((mem, ctx)) = split(caller) else {
-        return Code::Denied.neg();
+fn read_record(mut caller: Caller<'_, Ctx>, doc: u32, id: u32, dst: u32, dst_len: u32) -> i32 {
+    let r = match live(&mut caller) {
+        None => Code::Denied.neg(),
+        Some((mem, ctx)) => match ctx.snapshots.record(doc, id) {
+            None => Code::Gone.neg(),
+            Some(text) => copy_out(mem, dst, dst_len, text),
+        },
     };
-    if !ctx.live {
-        return Code::Denied.neg();
-    }
-    match ctx.snapshots.record(doc, id) {
-        None => Code::Gone.neg(),
-        Some(text) => copy_out(mem, dst, dst_len, text),
-    }
+    charge(&mut caller, r.max(0) as usize);
+    r
 }
 
-fn eval(caller: &mut Caller<'_, Ctx>, doc: u32, ptr: u32, len: u32) -> i32 {
-    let Some((mem, ctx)) = split(caller) else {
+fn eval(mut caller: Caller<'_, Ctx>, doc: u32, ptr: u32, len: u32) -> i32 {
+    charge(&mut caller, len as usize);
+    let Some((mem, ctx)) = live(&mut caller) else {
         return Code::Denied.neg();
     };
-    if !ctx.live {
-        return Code::Denied.neg();
-    }
     if len as usize > EXPR_BYTES_MAX {
         return Code::Space.neg();
     }
@@ -554,13 +487,11 @@ fn eval(caller: &mut Caller<'_, Ctx>, doc: u32, ptr: u32, len: u32) -> i32 {
     i32::try_from(handle).expect("handles are positive i32")
 }
 
-fn log(caller: &mut Caller<'_, Ctx>, level: u32, ptr: u32, len: u32) {
-    let Some((mem, ctx)) = split(caller) else {
+fn log(mut caller: Caller<'_, Ctx>, level: u32, ptr: u32, len: u32) {
+    charge(&mut caller, len as usize);
+    let Some((mem, ctx)) = live(&mut caller) else {
         return;
     };
-    if !ctx.live {
-        return;
-    }
     let level = usize::try_from(level)
         .ok()
         .and_then(|l| Level::ALL.get(l).copied());
@@ -585,16 +516,17 @@ fn log(caller: &mut Caller<'_, Ctx>, level: u32, ptr: u32, len: u32) {
 
 /// The capability imports (§5): validate, authorize, stage an [`IoRequest`], return its
 /// handle. Denials are also recorded as faults.
-fn request(caller: &mut Caller<'_, Ctx>, op: IoOp, target: (u32, u32), data: (u32, u32)) -> i32 {
-    charge(caller, target.1 as usize + data.1 as usize);
-    let Some((mem, ctx)) = split(caller) else {
+fn request(mut caller: Caller<'_, Ctx>, op: IoOp, target: (u32, u32), data: (u32, u32)) -> i32 {
+    charge(&mut caller, target.1 as usize + data.1 as usize);
+    let Some((mem, ctx)) = live(&mut caller) else {
+        // Inside the start function (no memory yet) the denial is not recorded.
+        let ctx = caller.data_mut();
+        if ctx.memory.is_some() {
+            let detail = format!("{op:?} outside an event handler");
+            ctx.faults.push((Code::Denied, detail));
+        }
         return Code::Denied.neg();
     };
-    if !ctx.live {
-        ctx.faults
-            .push((Code::Denied, format!("{op:?} outside an event handler")));
-        return Code::Denied.neg();
-    }
     if target.1 as usize > TARGET_BYTES_MAX || data.1 as usize > IO_BYTES_MAX {
         return Code::Space.neg();
     }
