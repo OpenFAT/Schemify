@@ -21,3 +21,10 @@ path = "fuzz_targets/xschem_read.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "sfyx_import"
+path = "fuzz_targets/sfyx_import.rs"
+test = false
+doc = false
+bench = false

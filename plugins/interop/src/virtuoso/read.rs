@@ -198,6 +198,8 @@ pub struct Cv {
     pub shapes: Vec<Shape>,
     /// Properties.
     pub props: Vec<Prop>,
+    /// Every ref an object record of this cellview defined (§4.2: unique per cellview).
+    pub refs: BTreeSet<u32>,
     /// Connection requests.
     pub conns: Vec<Conn>,
     /// `intent` records (§10), kept whole.
@@ -597,6 +599,9 @@ pub fn dump(records: &[Record]) -> Result<Dump, Error> {
                     return Err(err(r, format!("view {view} twice")));
                 }
                 let vtype = r.str(1)?;
+                if !c.design && vtype == "schematic" {
+                    return Err(err(r, "a ref cell carries its symbol and CDF only (§4.2)"));
+                }
                 if vtype != "schematic" && vtype != "schematicSymbol" {
                     return Err(err(r, format!("view type `{vtype}`")));
                 }
@@ -665,6 +670,35 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
             .filter(|v| *v > 0)
             .ok_or_else(|| err(r, "refs are positive"))
     };
+    // Objects belong to one kind of cellview (§4.2, §6.2): terminals and pin figures to a
+    // symbol (a schematic's terminals travel as `spin`s), wires, schematic pins and loader
+    // records to a schematic.
+    let schematic_only = matches!(r.tag.as_str(), "spin" | "wire" | "conn" | "intent");
+    let symbol_only = matches!(r.tag.as_str(), "term" | "pinfig");
+    if (schematic_only && cv.vtype != "schematic") || (symbol_only && cv.vtype != "schematicSymbol")
+    {
+        return Err(err(
+            r,
+            format!("`{}` does not belong in a {} cellview", r.tag, cv.vtype),
+        ));
+    }
+    // An instance inside a symbol (a pin master placed without flattening) has no Schemify
+    // form: it is reported, not refused, since a real symbol may hold one.
+    if r.tag == "inst" && cv.vtype == "schematicSymbol" {
+        cv.unknown.push(r.clone());
+        return Ok(());
+    }
+    // A record that defines an object must not reuse a ref (a duplicated line would
+    // otherwise become two objects of one identity).
+    if matches!(
+        r.tag.as_str(),
+        "pinfig" | "inst" | "spin" | "wire" | "label" | "shape"
+    ) {
+        let ref_ = pos(r, 0)?;
+        if !cv.refs.insert(ref_) {
+            return Err(err(r, format!("ref {ref_} defined twice in this cellview")));
+        }
+    }
     match r.tag.as_str() {
         "term" => {
             arity(r, 3)?;

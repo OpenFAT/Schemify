@@ -110,6 +110,7 @@ jobs:
           - { dir: crates/format, target: merge3 }
           - { dir: crates/expr, target: compile }
           - { dir: plugins/interop, target: xschem_read }
+          - { dir: plugins/interop, target: sfyx_import }
           - { dir: crates/cli, target: rpc_decode }
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -160,6 +161,7 @@ jobs:
           - { dir: crates/format, target: merge3 }
           - { dir: crates/expr, target: compile }
           - { dir: plugins/interop, target: xschem_read }
+          - { dir: plugins/interop, target: sfyx_import }
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
