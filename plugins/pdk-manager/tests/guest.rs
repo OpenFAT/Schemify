@@ -415,6 +415,7 @@ fn real_ciel_installs_sky130() {
     std::fs::write(dir.join("schemify.project"), "schemify 1 project\n").unwrap();
     let path = std::env::var("PATH").unwrap_or_default();
     let mut w = World::with(wasm, dir.clone(), path, dir.join(".log"));
+    w.cmd("pdk.panel", "");
     w.cmd("pdk.family.sky130", "");
     let ui = w.ui();
     let v = ui

@@ -21,8 +21,11 @@ use schemify_abi::text;
 /// One PDK family (pdk spec §2). Adding a family is adding a row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Recipe {
-    /// Family name: the store directory, the ciel `--pdk-family`.
+    /// Family name: the store directory and the name commands take.
     pub family: &'static str,
+    /// ciel's `--pdk-family` (`ihp-sg13` for the `ihp-sg13g2` family: ciel names the family,
+    /// not the variant).
+    pub ciel: &'static str,
     /// The variant directory under ciel's PDK root (`sky130A`).
     pub variant: &'static str,
     /// ciel `-l` libraries; empty = ciel's default set.
@@ -36,10 +39,11 @@ pub struct Recipe {
 }
 
 /// The ciel families of the MVP (spec §10). Section names checked against the upstream model
-/// files (spec Q1); install paths for gf180mcu are from the open_pdks layout.
+/// files and installed trees (spec Q1, checked with ciel 3.0.1 on 2026-10-12).
 pub const RECIPES: [Recipe; 3] = [
     Recipe {
         family: "sky130",
+        ciel: "sky130",
         variant: "sky130A",
         libs: &["sky130_fd_pr"],
         models: "libs.tech/combined/sky130.lib.spice",
@@ -48,6 +52,7 @@ pub const RECIPES: [Recipe; 3] = [
     },
     Recipe {
         family: "gf180mcu",
+        ciel: "gf180mcu",
         variant: "gf180mcuD",
         libs: &["gf180mcu_fd_pr"],
         models: "libs.tech/ngspice/sm141064.ngspice",
@@ -56,6 +61,7 @@ pub const RECIPES: [Recipe; 3] = [
     },
     Recipe {
         family: "ihp-sg13g2",
+        ciel: "ihp-sg13",
         variant: "ihp-sg13g2",
         libs: &[],
         models: "libs.tech/ngspice/models/cornerMOSlv.lib",
@@ -103,7 +109,7 @@ pub fn version_dir(family: &str, version: &str) -> String {
 
 /// `ciel ls-remote --pdk-family <family>`.
 pub fn ls_remote_argv(r: &Recipe) -> Vec<String> {
-    ["ciel", "ls-remote", "--pdk-family", r.family]
+    ["ciel", "ls-remote", "--pdk-family", r.ciel]
         .map(str::to_owned)
         .to_vec()
 }
@@ -112,7 +118,7 @@ pub fn ls_remote_argv(r: &Recipe) -> Vec<String> {
 /// links `<root>/<variant>` to it (spec §3 step 1).
 pub fn fetch_argv(r: &Recipe, version: &str) -> Vec<String> {
     let root = format!("{}/root", version_dir(r.family, version));
-    let mut argv: Vec<String> = ["ciel", "enable", "--pdk-family", r.family, "--pdk-root"]
+    let mut argv: Vec<String> = ["ciel", "enable", "--pdk-family", r.ciel, "--pdk-root"]
         .map(str::to_owned)
         .to_vec();
     argv.push(root);
@@ -513,11 +519,11 @@ mod tests {
         let ihp = recipe("ihp-sg13g2").unwrap();
         assert_eq!(
             fetch_argv(ihp, "v1").join(" "),
-            "ciel enable --pdk-family ihp-sg13g2 --pdk-root .schemify/pdks/ihp-sg13g2/v1/root v1"
+            "ciel enable --pdk-family ihp-sg13 --pdk-root .schemify/pdks/ihp-sg13g2/v1/root v1"
         );
         assert_eq!(
             ls_remote_argv(ihp).join(" "),
-            "ciel ls-remote --pdk-family ihp-sg13g2"
+            "ciel ls-remote --pdk-family ihp-sg13"
         );
         assert!(recipe("asap7").is_none());
     }
