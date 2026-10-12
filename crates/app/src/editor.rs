@@ -89,10 +89,6 @@ const CHOOSER_ROWS: usize = 512;
 pub const QUEUED_MAX: usize = 256;
 /// Edit requests one frame may carry.
 const REQUESTS_MAX: usize = 1 << 10;
-/// Commits whose ops the editor keeps to recompute an undo or redo of them incrementally.
-// ponytail: older undos rebuild the derived state (136 ms at 100k objects); doc reporting an
-// undo's touched records would retire this mirror.
-const COMMITS_KEPT: usize = 64;
 /// Cell states kept for documents that are not active ([`Editor`]'s `parked`).
 const PARKED_MAX: usize = 8;
 
@@ -569,10 +565,6 @@ pub struct Editor {
     cell_key: Option<(DocHandle, u32, u32)>,
     /// Ops committed to the active document that `cell` has not seen yet.
     cell_ops: Vec<Op>,
-    /// The last [`COMMITS_KEPT`] commits' (document, journal seq, ops): undoing or redoing
-    /// one touches the records its ops name, so `cell` recomputes over those ops instead
-    /// of rebuilding (`doc` reports only the seq).
-    commits: std::collections::VecDeque<(DocHandle, u64, Vec<Op>)>,
     /// The docs page.
     page: Page,
     /// This frame's docs-page commit (document, label, ops, its journal seq once applied): a
@@ -770,7 +762,6 @@ impl Editor {
             cell: None,
             cell_key: None,
             cell_ops: Vec::new(),
-            commits: std::collections::VecDeque::new(),
             page: Page::default(),
             amend: None,
             parked: Vec::new(),
@@ -3462,42 +3453,21 @@ impl Editor {
         if !design {
             return;
         }
-        match (&r.edit, o) {
-            (Edit::Tx(tx), Outcome::Committed { seq }) => {
-                if self.commits.len() == COMMITS_KEPT {
-                    self.commits.pop_front();
-                }
-                self.commits.push_back((r.doc, *seq, tx.ops.clone()));
-                if let Some((d, _, a_ops, done)) = self.amend.as_mut()
-                    && *d == r.doc
-                    && tx.ops.starts_with(a_ops)
-                {
-                    *done = Some(*seq);
-                }
-            }
-            (Edit::Extend(_, ext), Outcome::Committed { seq }) => {
-                let mut entry = self.commits.iter_mut().rev();
-                if let Some(c) = entry.find(|c| c.0 == r.doc && c.1 == *seq) {
-                    c.2.extend(ext.iter().cloned());
-                }
-            }
-            _ => {}
+        if let (Edit::Tx(tx), Outcome::Committed { seq }) = (&r.edit, o)
+            && let Some((d, _, a_ops, done)) = self.amend.as_mut()
+            && *d == r.doc
+            && tx.ops.starts_with(a_ops)
+        {
+            *done = Some(*seq);
         }
         let epoch = self.session.epoch(r.doc);
-        // The ops this outcome applied: an undo or redo touches what the entry's ops touched,
-        // the same records, so the same recompute (their direction does not matter to it).
-        let applied: Option<&Vec<Op>> = match (&r.edit, o) {
-            (Edit::Tx(tx), Outcome::Committed { .. }) => Some(&tx.ops),
-            (Edit::Extend(_, ext), Outcome::Committed { .. }) => Some(ext),
-            (_, Outcome::Undone { seq } | Outcome::Redone { seq }) => self
-                .commits
-                .iter()
-                .rev()
-                .find(|c| c.0 == r.doc && c.1 == *seq)
-                .map(|c| &c.2),
-            _ => None,
-        };
         let project = &self.session.project;
+        // The ops this outcome applied, as `doc` resolved them (fresh ids, an undo's inverse);
+        // an extension's are the tail of its entry (the rest was queued with the commit).
+        let applied = project.applied(r.doc, o).map(|ops| match &r.edit {
+            Edit::Extend(_, ext) => &ops[ops.len() - ext.len()..],
+            _ => ops,
+        });
         let mut row: Option<Option<u32>> = None;
         let mut reads_edited = |state: &CellState| {
             let row = *row.get_or_insert_with(|| row_of_doc(project, r.doc));
@@ -3536,7 +3506,7 @@ impl Editor {
 
     /// `elab::CellState::recompute` for the active document: incremental over the queued ops
     /// when `cell` is current, else a full build (a document shown for the first time or
-    /// since dropped, an undo of a commit older than [`COMMITS_KEPT`], a plugin change).
+    /// since dropped, an undo whose entry `doc` no longer holds, a plugin change).
     /// Switching documents parks the state of the one left and takes back the parked state
     /// of the one shown while its key holds (D19: values kept for every open document).
     /// Plugin functions are called through the host (D20). Returns whether values may have
