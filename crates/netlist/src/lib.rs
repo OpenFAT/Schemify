@@ -74,7 +74,7 @@ pub struct Netlist {
 }
 
 /// "No row / no definition" in `u32` columns.
-const NONE: u32 = u32::MAX;
+pub(crate) const NONE: u32 = u32::MAX;
 
 /// Emits `elab` in `dialect` (netlist spec §7).
 ///
@@ -104,7 +104,7 @@ pub fn emit(elab: &Elab, dialect: Dialect) -> Netlist {
     if elab.top != NONE {
         w.def_block(elab.top, true);
     }
-    code(&mut w.out, elab, dialect);
+    code(&mut w.out, elab);
     for &d in &order {
         w.def_block(d, false);
     }
@@ -173,7 +173,7 @@ pub fn emit_flat(elab: &Elab, dialect: Dialect) -> String {
     if dialect == Dialect::Cdl {
         out.push_str(".ENDS\n");
     }
-    code(&mut out, elab, dialect);
+    code(&mut out, elab);
     once_only(&mut out, elab, dialect, &tmp);
     end(&mut out, dialect);
     out
@@ -217,6 +217,26 @@ pub(crate) fn push_name(out: &mut String, name: &str, d: Dialect) {
     }
 }
 
+#[cfg(test)]
+#[test]
+fn push_name_spells_identifiers_per_dialect() {
+    for (name, d, want) in [
+        ("a[0]", Dialect::Cdl, "a[0]"),
+        ("a[0]", Dialect::Spectre, r"a\[0\]"),
+        ("a_b9", Dialect::Spectre, "a_b9"),
+        ("_x$1", Dialect::Verilog, "_x$1"),
+        ("x", Dialect::Verilog, "x"),
+        ("1a", Dialect::Verilog, r"\1a "),
+        ("$a", Dialect::Verilog, r"\$a "),
+        ("a-b", Dialect::Verilog, r"\a-b "),
+        ("", Dialect::Verilog, r"\ "),
+    ] {
+        let mut out = String::from(">");
+        push_name(&mut out, name, d);
+        assert_eq!(out, format!(">{want}"), "{name} {d:?}");
+    }
+}
+
 /// The text of net `n`; `?` for an unconnected bit ([`Name::NONE`]).
 pub(crate) fn net_text(e: &Elab, n: Name) -> &str {
     if n == Name::NONE { "?" } else { e.names.get(n) }
@@ -231,14 +251,9 @@ fn xspice_spellings(e: &Elab, plans: &Plans, d: Dialect) -> Vec<(Name, String)> 
     if d != Dialect::Ngspice {
         return Vec::new();
     }
-    let mut defs: Vec<u32> = (0..e.defs.cell.len() as u32)
-        .filter(|&c| e.defs.used[c as usize])
-        .collect();
-    if e.top != NONE && !defs.contains(&e.top) {
-        defs.push(e.top);
-    }
     let mut hits: Vec<Name> = Vec::new();
-    for &c in &defs {
+    // The emitted definitions: the used ones (elab marks the top used).
+    for c in (0..e.defs.cell.len() as u32).filter(|&c| e.defs.used[c as usize]) {
         for r in e.insts_of(c).filter(|&r| e.insts.ignore[r] == Ignore::No) {
             let plan = plans.of_row(e, r);
             let conns = e.conns(r);
@@ -423,13 +438,11 @@ fn corners(out: &mut String, e: &Elab, d: Dialect) {
     }
 }
 
-/// Bench code blocks for the dialect, already selected and sorted by elab, verbatim.
-fn code(out: &mut String, e: &Elab, d: Dialect) {
+/// Bench code blocks for the dialect, already selected (none for cdl, spec §7.4) and
+/// sorted by elab, verbatim.
+fn code(out: &mut String, e: &Elab) {
     let b = &e.bench;
-    if d == Dialect::Cdl || b.code_name.is_empty() {
-        return; // spec §7.4: no code in cdl (elab selects none either)
-    }
-    assert_eq!(b.code_start.len(), b.code_name.len() + 1);
+    assert!(b.code_lines.is_empty() || b.code_start.len() == b.code_name.len() + 1);
     for &l in &b.code_lines {
         out.push_str(e.names.get(l));
         out.push('\n');
@@ -926,22 +939,15 @@ fn render(
 /// The byte range of the emitted instance name of the line starting at `start`: its
 /// first token, the second for verilog (`<module> <instance> (…);`). Lines sort by it.
 fn emitted_name(out: &str, start: usize, d: Dialect) -> (usize, usize) {
-    let b = out.as_bytes();
-    let mut i = start;
+    let rest = &out[start..];
     let skip = usize::from(d == Dialect::Verilog);
-    let mut tok = (start, start);
-    for _ in 0..=skip {
-        while i < b.len() && b[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        let t0 = i;
-        while i < b.len() && !b[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        tok = (t0, i);
-    }
-    assert!(tok.0 <= tok.1 && tok.1 <= b.len());
-    tok
+    let Some(tok) = rest.split_ascii_whitespace().nth(skip) else {
+        return (out.len(), out.len());
+    };
+    // `tok` borrows `rest`, so its address gives its offset.
+    let a = start + (tok.as_ptr() as usize - rest.as_ptr() as usize);
+    assert!(out[a..].starts_with(tok) && !tok.is_empty());
+    (a, a + tok.len())
 }
 
 /// Reorders the lines written since `seg` by emitted name (stable). `lines` are
