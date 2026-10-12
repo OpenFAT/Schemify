@@ -166,9 +166,45 @@ pub fn place(x: i32, y: i32, mirrored: bool, turns: u8, at_x: i32, at_y: i32) ->
 }
 
 /// Name classes in precedence order (§3): globals win, then ports, then labels.
-const GLOBAL: u8 = 0;
-const PORT: u8 = 1;
-const LABEL: u8 = 2;
+pub(crate) const GLOBAL: u8 = 0;
+pub(crate) const PORT: u8 = 1;
+pub(crate) const LABEL: u8 = 2;
+
+/// Whether bit name `n` is global: by spelling (`0`, `…!`) or made so by a `global true`
+/// label (`globals`, sorted).
+pub(crate) fn glob(globals: &[Name], names: &Names, n: Name) -> bool {
+    is_global(names.get(n)) || globals.binary_search(&n).is_ok()
+}
+
+/// Bus slicing (§4): whether a `w`-bit pin of an `elems`-element instance takes its whole
+/// `net`-bit net (`Ok(false)`) or one `w`-bit slice per element (`Ok(true)`).
+///
+/// # Errors
+///
+/// The `E011` detail when the net is neither width.
+pub(crate) fn slicing(pin: &str, w: usize, elems: usize, net: u32) -> Result<bool, String> {
+    let net = net as usize;
+    if net == w {
+        Ok(false)
+    } else if net == w * elems {
+        Ok(true)
+    } else {
+        Err(format!(
+            "pin `{pin}` ({w} bits × {elems}) on a {net}-bit net"
+        ))
+    }
+}
+
+/// Whether `(x, y)` lies on the segment `(x1, y1)`–`(x2, y2)` (ends included). Exact over
+/// the whole i32 plane: each cross-product term reaches 2^64, so it is computed in i128.
+pub(crate) fn on_segment(x: i32, y: i32, x1: i32, y1: i32, x2: i32, y2: i32) -> bool {
+    let (dx, dy) = (
+        i128::from(x2) - i128::from(x1),
+        i128::from(y2) - i128::from(y1),
+    );
+    let cross = (i128::from(x) - i128::from(x1)) * dy - (i128::from(y) - i128::from(y1)) * dx;
+    cross == 0 && (x1.min(x2)..=x1.max(x2)).contains(&x) && (y1.min(y2)..=y1.max(y2)).contains(&y)
+}
 
 /// Appends `v` in decimal (what `to_string` writes, without its allocation: generated net
 /// names are built once per unnamed bit).
@@ -560,8 +596,6 @@ pub(crate) fn connect_seeded(
         out,
         owner: Vec::new(),
     };
-    let glob =
-        |n: Name, names: &Names| is_global(names.get(n)) || globals.binary_search(&n).is_ok();
     let s = doc.strings();
     let (inst, wires, labels, ports, noconns) = (
         doc.instances(),
@@ -681,13 +715,9 @@ pub(crate) fn connect_seeded(
                 let (xa, xb) = (x1.min(x2), x1.max(x2));
                 let start = xy.partition_point(|e| e.0 < key(xa, i32::MIN));
                 let end = xy.partition_point(|e| e.0 <= key(xb, i32::MAX));
-                let (dx, dy) = (i64::from(x2) - i64::from(x1), i64::from(y2) - i64::from(y1));
-                let (ya, yb) = (y1.min(y2), y1.max(y2));
                 for &(_, node) in &xy[start..end] {
                     let (x, y) = (px[node as usize], py[node as usize]);
-                    let cross =
-                        (i64::from(x) - i64::from(x1)) * dy - (i64::from(y) - i64::from(y1)) * dx;
-                    if cross == 0 && (ya..=yb).contains(&y) {
+                    if on_segment(x, y, x1, y1, x2, y2) {
                         union(&mut parent, node, wn);
                     }
                 }
@@ -860,7 +890,7 @@ pub(crate) fn connect_seeded(
                 );
                 return;
             }
-            let global = src_bits[before..].iter().all(|b| glob(*b, names));
+            let global = src_bits[before..].iter().all(|b| glob(globals, names, *b));
             src_comp.push(c);
             src_class.push(if global { GLOBAL } else { class });
             src_text.push(names.intern(text));
@@ -957,7 +987,11 @@ pub(crate) fn connect_seeded(
         let c = src_comp[k] as usize;
         let class = src_class[k];
         for (j, &b) in bits(k).iter().enumerate() {
-            let class = if glob(b, names) { GLOBAL } else { class };
+            let class = if glob(globals, names, b) {
+                GLOBAL
+            } else {
+                class
+            };
             pairs.push((b, slot_start[c] + j as u32, class));
         }
     }
@@ -968,7 +1002,11 @@ pub(crate) fn connect_seeded(
      -> (u32, u32) {
         let first = nslots;
         for &b in text_bits {
-            let class = if glob(b, names) { GLOBAL } else { class };
+            let class = if glob(globals, names, b) {
+                GLOBAL
+            } else {
+                class
+            };
             pairs.push((b, nslots, class));
             nslots += 1;
         }
@@ -1051,21 +1089,15 @@ pub(crate) fn connect_seeded(
             let c = comp[k_node] as usize;
             k_node += 1;
             let w = f.bits(p).len();
-            let nwidth = comp_width[c] as usize;
-            let sliced = if nwidth == w {
-                false
-            } else if nwidth == w * elems {
-                true
-            } else {
-                let detail = format!(
-                    "pin `{}` ({w} bits × {elems}) on a {nwidth}-bit net",
-                    names.get(f.pin_name[p])
-                );
-                out.push(
-                    c as u32,
-                    finding(Code::E011, inst.id[i], f.pin_name[p], detail),
-                );
-                continue;
+            let sliced = match slicing(names.get(f.pin_name[p]), w, elems, comp_width[c]) {
+                Ok(sliced) => sliced,
+                Err(detail) => {
+                    out.push(
+                        c as u32,
+                        finding(Code::E011, inst.id[i], f.pin_name[p], detail),
+                    );
+                    continue;
+                }
             };
             for e in 0..elems {
                 for j in 0..w {
@@ -1181,7 +1213,7 @@ pub(crate) fn connect_seeded(
     names.intern_batch(&texts, &mut gen_name);
     cn.bit_global = vec![false; nb];
     for (b, best) in best.iter().enumerate().filter(|(_, b)| b.1 != Name::NONE) {
-        cn.bit_global[b] = glob(best.1, names);
+        cn.bit_global[b] = glob(globals, names, best.1);
     }
     // A generated bit's text is at hand: no second read of the arena per bit.
     for (g, &b) in gen_bit.iter().enumerate() {
@@ -1391,5 +1423,69 @@ mod tests {
             want.sort_unstable();
             assert_eq!(sorted_nodes(&a, &b), want, "n {n} range {range}");
         }
+    }
+
+    #[test]
+    fn slicing_matches_the_bus_rule_over_a_small_domain() {
+        // Oracle (§4): whole when the net is the pin's width, sliced when it is
+        // width × elements, else E011; whole wins when both hold (one element).
+        for w in 0..5usize {
+            for elems in 1..5usize {
+                for net in 0..20u32 {
+                    let want = if net as usize == w {
+                        Some(false)
+                    } else if net as usize == w * elems {
+                        Some(true)
+                    } else {
+                        None
+                    };
+                    let got = slicing("p", w, elems, net);
+                    assert_eq!(got.as_ref().ok().copied(), want, "{w} {elems} {net}");
+                    if let Err(d) = got {
+                        let text = format!("pin `p` ({w} bits × {elems}) on a {net}-bit net");
+                        assert_eq!(d, text);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn on_segment_equals_a_point_walk() {
+        // Oracle: a segment's lattice points are its ends and the steps of
+        // (dx, dy) / gcd between them; every other point of a small box is off it.
+        fn gcd(a: i32, b: i32) -> i32 {
+            if b == 0 { a.abs() } else { gcd(b, a % b) }
+        }
+        let segments = [
+            (0, 0, 3, 3),
+            (-2, 1, 2, -1),
+            (1, -3, 1, 2),
+            (-3, 0, 3, 0),
+            (2, 2, 2, 2),
+            (0, 0, 3, -2),
+        ];
+        for (x1, y1, x2, y2) in segments {
+            let g = gcd(x2 - x1, y2 - y1).max(1);
+            let (sx, sy) = ((x2 - x1) / g, (y2 - y1) / g);
+            let on: Vec<(i32, i32)> = (0..=g).map(|k| (x1 + k * sx, y1 + k * sy)).collect();
+            for x in -3..=3 {
+                for y in -3..=3 {
+                    let want = on.contains(&(x, y));
+                    let got = on_segment(x, y, x1, y1, x2, y2);
+                    assert_eq!(got, want, "({x}, {y}) on {x1},{y1}–{x2},{y2}");
+                }
+            }
+        }
+        // No overflow at the coordinate extremes.
+        assert!(on_segment(
+            i32::MAX,
+            i32::MAX,
+            i32::MIN,
+            i32::MIN,
+            i32::MAX,
+            i32::MAX
+        ));
+        assert!(!on_segment(0, 1, i32::MIN, i32::MIN, i32::MAX, i32::MAX));
     }
 }

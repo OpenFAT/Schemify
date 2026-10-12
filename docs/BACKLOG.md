@@ -4,7 +4,7 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## Cross-crate API requests
 
-- **elab**: adopt the doc and expr APIs that replaced its workarounds: `Project::resolve_in(row, ref)` and `Project::open_handle(row)` (for `cells::resolve_in_row` / `is_open`), `Project::applied(doc, outcome)` (ops of commits, undos and redos, borrowed, instead of the caller passing ops back; the app's `commits` deque in `editor.rs` goes with it), `expr::topo_order_all` (every cycle in one pass, instead of `Graph::finish` cutting one cycle per round).
+- **app**: feed `CellState::recompute` the ops `Project::applied(doc, outcome)` lends (resolved commit ops, undo inverses) and drop the `commits` deque in `editor.rs` (elab and its oracle take those ops since `pr/clean-elab`).
 - **ui**: switch the local line-record lexer to `schemify-format`. (**plugin** host done; `abi::text` stays the guests' encoder/decoder until `format` has a public value lexer, pinned to the format by `abi_and_format_lexers_agree`.)
 
 ## app / editor

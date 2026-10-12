@@ -10,10 +10,8 @@
 //! context → checks → select impls → recurse) → name definitions → mark used →
 //! globals → bench lines → sort violations.
 
-use crate::cells::{display, is_open, resolve_in_row, row_of};
-use crate::check::{
-    CellCtx, Code, Violation, Violations, check_overrides, check_values, waivers_found,
-};
+use crate::cells::{display, readable, row_of};
+use crate::check::{CellCtx, Code, Violation, Violations, check_overrides, check_values, waivers};
 use crate::connect::{CellNets, Ignore, NO_NET, connect};
 use crate::graph::{Graph, OWN, Work};
 use crate::iface::Iface;
@@ -667,7 +665,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             .interface(row)
             .expect("resolution checked the interface");
         let (cell, stem) = display(self.project, row);
-        let open = is_open(self.project, row);
+        let open = self.project.open_handle(row).is_some();
         let iface = Iface::from_doc(doc, &cell, &stem, row as u32, open, &mut self.names);
         let ci = self.push_cell(doc, iface);
         self.row_cell.insert(row as u32, ci);
@@ -691,13 +689,13 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 Some(r) => r.clone(),
                 None => {
                     let text = s.get(sym);
-                    let row = if ci == 0 {
-                        self.project
-                            .resolve(self.top, text)
-                            .map_err(|_| format!("cannot resolve `{text}`"))
+                    let found = if ci == 0 {
+                        self.project.resolve(self.top, text)
                     } else {
-                        resolve_in_row(self.project, self.ifaces[ci as usize].row as usize, text)
+                        let row = self.ifaces[ci as usize].row as usize;
+                        self.project.resolve_in(row, text)
                     };
+                    let row = readable(self.project, found.ok(), text);
                     let r = row.map(|row| self.cell_of_row(row));
                     seen.insert(sym, r.clone());
                     r
@@ -793,7 +791,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         let unresolved = std::mem::take(&mut self.cells[ci as usize].unresolved);
         let subst = self.subst_of(ci);
         let subst: Vec<(Name, &str)> = subst.iter().map(|(n, t)| (*n, t.as_str())).collect();
-        let waiv = waivers_found(doc, &self.names);
+        let waiv = waivers(doc, &self.names);
         let mut found = Vec::new();
         let parallel = crate::parallel_ok(doc.instances().id.len());
         let Elaborator {

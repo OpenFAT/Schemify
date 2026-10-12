@@ -15,6 +15,13 @@
 //! - netlist: [`elaborate`]`(project, top, request)` → gate on
 //!   [`Elab::violations`] (`blocking`) → `netlist::emit(&elab, dialect)`.
 //!
+//! Connectivity has two paths with one result: [`connect`] (a whole cell: two radix
+//! sorts and a union-find, what elaboration and every rebuild run) and the editor's
+//! per-net patch inside [`CellState::recompute`] (ordered sets over the touched nodes).
+//! They are not one spine because the patch's ordered sets cost several times the sorts
+//! on a whole cell; the incremental-equals-full oracle (`tests/incremental.rs`) holds
+//! them equal.
+//!
 //! # What the netlister reads
 //!
 //! [`Elab`] is self-contained: walk [`Elab::defs`] (each a subckt: name, port nets),

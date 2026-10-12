@@ -487,6 +487,67 @@ fn expression_errors_and_cycles_are_e008() {
     );
 }
 
+/// Netlist spec §1: an instance of a cell that indexed but whose symbol does not parse is
+/// `E001` (not a panic), from the top and below it, in the editor state and elaboration;
+/// an unknown cell is `E001` with its own reason.
+#[test]
+fn an_unreadable_or_missing_cell_is_e001() {
+    let bad = "schemify 1 shprim\n\npin A sideways 0 0\n";
+    let mid = "schemify 1 shcomp\n\npin P inout 0 0\n\nimpl sch schematic\n\ninst 0m0001 ./bad\n  at 0 0 R0\n  name X1\ninst 0m0002 ./nope\n  at 0 40 R0\n  name X2\n\nport 0p0001 0 0 R0 P\n";
+    let top = "schemify 1 shbench\n\ninst 0t0001 ./mid\n  at 0 0 R0\n  name X1\ninst 0t0002 ./bad\n  at 100 0 R0\n  name X2\n";
+    let mut p = Project::new(None, None, 11).unwrap();
+    let files = [
+        ("bad.shprim", bad),
+        ("mid.shcomp", mid),
+        ("tb.shbench", top),
+    ];
+    let listing: Vec<(&str, &[u8])> = files.iter().map(|(n, t)| (*n, t.as_bytes())).collect();
+    let (_, diags) = p.index_library("", "", &listing).unwrap();
+    assert!(!diags.is_empty(), "bad.shprim does not index its symbol");
+    p.open("", "mid.shcomp", mid.as_bytes(), None).unwrap();
+    let h = p
+        .open("", "tb.shbench", top.as_bytes(), None)
+        .unwrap()
+        .handle;
+    let details = |v: &schemify_elab::Violations| -> Vec<String> {
+        let mut d: Vec<String> = v
+            .with(schemify_elab::Code::E001)
+            .map(|v| v.detail.clone())
+            .collect();
+        d.sort();
+        d
+    };
+    let unreadable = "`./bad` has no readable interface";
+    let st = CellState::build(&p, h, &mut no_funcs).unwrap();
+    assert_eq!(details(&st.violations), [unreadable]);
+    let e = elaborate(&p, h, &common::ngspice(), &mut no_funcs);
+    assert_eq!(
+        details(&e.violations),
+        [unreadable, unreadable, "cannot resolve `./nope`"]
+    );
+}
+
+/// Expr spec §4: every expression on a cycle is `X005`, and no other. `a` lies on two
+/// cycles (`a -> b -> a`, `a -> c -> a`) of one component; `d` only reads it.
+#[test]
+fn every_node_of_a_cyclic_component_is_x005() {
+    let cell = "schemify 1 shcomp\n\npin P inout 0 0\n\nparam a b+c\nparam b a\nparam c a+1\nparam d a*2\nparam e 3\n\nimpl sch schematic\n\nport 0p0001 0 0 R0 P\n";
+    let (p, hs) = project(&[("res.shprim", RES), ("cell.shcomp", cell)]);
+    let st = CellState::build(&p, hs[1], &mut no_funcs).unwrap();
+    let mut x005: Vec<&str> = st
+        .violations
+        .with(schemify_elab::Code::E008)
+        .filter(|v| v.detail.starts_with("X005"))
+        .map(|v| st.names.get(v.param))
+        .collect();
+    x005.sort_unstable();
+    assert_eq!(x005, ["a", "b", "c"]);
+    let g = &st.graph;
+    assert!((0..3).all(|k| g.vals[k].is_err()), "cycle nodes are errors");
+    assert_eq!(g.vals[3], Val::Upstream, "d waits upstream");
+    assert_eq!(g.vals[4], Val::Int(3));
+}
+
 #[test]
 fn gating_waivers_flip_only_the_named_param() {
     // Exhaustive small domain: L over a lattice × waiver on L (on/off), with W always
