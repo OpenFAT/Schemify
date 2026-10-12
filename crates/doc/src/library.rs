@@ -50,6 +50,13 @@ pub enum LibSource {
         /// Expected archive hash as written in the manifest.
         sha256: String,
     },
+    /// `lib tech map <relpath>` (pdk spec §5): the project-relative `tech.map` file that
+    /// resolves `tech:` cells. Only the reserved library `tech` takes this source; the app
+    /// indexes it as a one-file listing, so the lockfile pins the map like any library.
+    Map {
+        /// Project-relative path of the `tech.map` file.
+        path: String,
+    },
 }
 
 impl LibSource {
@@ -61,9 +68,13 @@ impl LibSource {
             LibSource::Path { .. } => "path",
             LibSource::Git { .. } => "git",
             LibSource::Url { .. } => "url",
+            LibSource::Map { .. } => "map",
         }
     }
 }
+
+/// The reserved library name of technology classes (pdk spec §5).
+pub const TECH_LIB: &str = "tech";
 
 /// Library rows (manifest order after the two implicit rows).
 #[derive(Clone, Debug, Default)]
@@ -204,7 +215,7 @@ pub struct Cells {
 }
 
 impl Cells {
-    fn retain_not_lib(&mut self, lib: u8) {
+    pub(crate) fn retain_not_lib(&mut self, lib: u8) {
         fn retain_by<T>(v: &mut Vec<T>, keep: &[bool]) {
             let mut k = keep.iter();
             v.retain(|_| *k.next().expect("one flag per row"));
@@ -217,6 +228,29 @@ impl Cells {
         retain_by(&mut self.iface, &keep);
         retain_by(&mut self.lib, &keep);
         assert!(self.columns_ok() && !self.lib.contains(&lib));
+    }
+
+    /// Appends one row.
+    pub(crate) fn push_row(
+        &mut self,
+        lib: u8,
+        dir: Sym,
+        stem: Sym,
+        kind: FileKind,
+        hash: Digest,
+        iface: Option<Document>,
+    ) {
+        assert!(
+            self.lib.len() < CELLS_MAX,
+            "a project indexes at most 2^16 cells"
+        );
+        self.lib.push(lib);
+        self.dir.push(dir);
+        self.stem.push(stem);
+        self.kind.push(kind);
+        self.hash.push(hash);
+        self.iface.push(iface);
+        assert!(self.columns_ok());
     }
 
     fn columns_ok(&self) -> bool {
@@ -313,8 +347,15 @@ pub(crate) fn parse_manifest(
                         url: f[2].to_owned(),
                         sha256: (*h).to_owned(),
                     },
+                    ("map", None) => LibSource::Map {
+                        path: f[2].to_owned(),
+                    },
                     _ => return Err(not_kind()),
                 };
+                // `tech` is reserved for the technology map, and only it takes a map.
+                if (f[0] == TECH_LIB) != matches!(source, LibSource::Map { .. }) {
+                    return Err(not_kind());
+                }
                 let subdir = d
                     .find_attr(r, "subdir")
                     .and_then(|a| d.attr_value(a, 0))

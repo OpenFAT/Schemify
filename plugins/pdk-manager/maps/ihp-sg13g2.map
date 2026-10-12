@@ -1,0 +1,11 @@
+schemify 1 techmap
+  pdk ihp-sg13g2
+  vdd 1.2
+
+# sg13g2_pr symbols take w and l in metres (the class params themselves) and fingers as ng.
+class nmos core
+  cell sg13g2_pr:sg13_lv_nmos
+  param ng nf
+class pmos core
+  cell sg13g2_pr:sg13_lv_pmos
+  param ng nf

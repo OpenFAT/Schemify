@@ -1,0 +1,13 @@
+schemify 1 techmap
+  pdk gf180mcu
+  vdd 3.3
+
+# gf180mcu_fd_pr symbols take W and L in metres; nf and m are the class params themselves.
+class nmos core
+  cell gf180mcu_fd_pr:nfet_03v3
+  param W w
+  param L l
+class pmos core
+  cell gf180mcu_fd_pr:pfet_03v3
+  param W w
+  param L l

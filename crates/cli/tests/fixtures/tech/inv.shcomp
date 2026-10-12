@@ -1,0 +1,42 @@
+schemify 1 shcomp
+  doc "CMOS inverter drawn with technology classes only (pdk spec §5)"
+  prefix x
+
+pin A in -40 0
+pin Y out 40 0
+pin VDD inout 0 -30
+pin VSS inout 0 30
+
+impl sch schematic
+
+poly -20 -20 15 0 -20 20 -20 -20
+circle 18 0 3
+
+inst m00001 tech:pmos
+  at 0 -50 R0
+  name M1
+  w 2u
+  l 0.5u
+  nf 2
+inst m00002 tech:nmos
+  at 0 50 R0
+  name M2
+  w 1u
+  l 0.5u
+
+wire w00001 20 -20 20 20
+wire w00002 20 0 80 0
+wire w00003 -20 -50 -20 50
+wire w00004 -60 0 -20 0
+wire w00005 20 -110 20 -80
+wire w00006 20 80 20 110
+wire w00007 20 -50 50 -50
+wire w00008 20 50 50 50
+
+label n00001 50 -50 R0 VDD
+label n00002 50 50 R0 VSS
+
+port p00001 -60 0 R0 A
+port p00002 80 0 R180 Y
+port p00003 20 -110 R90 VDD
+port p00004 20 110 R270 VSS

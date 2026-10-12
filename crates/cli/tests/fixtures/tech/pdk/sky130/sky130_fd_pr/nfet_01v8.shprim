@@ -1,0 +1,20 @@
+schemify 1 shprim
+  doc "test stand-in for the imported sky130_fd_pr nfet_01v8 (W, L in microns)"
+  prefix X
+
+pin D inout 20 -30
+pin G in -20 0
+pin S inout 20 30
+pin B in 20 0
+
+param W 1
+param L 0.15
+param nf 1
+param mult 1
+param model nfet_01v8
+  kind string
+
+impl spice spice
+  format spice "X{name} {D} {G} {S} {B} sky130_fd_pr__{model} L={L} W={W} nf={nf} mult={mult} m={mult}"
+
+rect -10 -30 20 30
