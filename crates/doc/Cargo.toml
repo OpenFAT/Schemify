@@ -11,5 +11,3 @@ workspace = true
 [dependencies]
 schemify-format.workspace = true
 
-[dev-dependencies]
-proptest.workspace = true

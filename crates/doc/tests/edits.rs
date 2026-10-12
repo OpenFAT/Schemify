@@ -6,9 +6,8 @@
 mod common;
 
 use common::*;
-use proptest::prelude::*;
 use schemify_doc::{
-    Code, Edit, Mode, Op, Outcome, Project, Transaction, apply_edits, apply_edits_report,
+    Code, Edit, Mode, Op, Outcome, Project, RecordKind, Target, Transaction, UNDO_MAX, apply_edits,
 };
 
 fn stage_tx(ops: Vec<Op>) -> Edit {
@@ -148,16 +147,18 @@ fn check_model(seed: u64, steps: usize) {
     assert_eq!(canon(&p, h), forward, "redo-all, seed {seed}");
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
-
-    #[test]
-    fn edits_match_the_naive_model(seed: u64) {
+/// Property over generated inputs: 48 seeds drawn from one fixed stream, so a failure
+/// replays from the printed seed.
+#[test]
+fn edits_match_the_naive_model() {
+    let mut seeds = Mix::new(0x5eed);
+    for _ in 0..48 {
+        let seed = seeds.next();
         check_model(seed, 150);
     }
 }
 
-/// `apply_edits_report` oracle: the reported ops, committed as one transaction to a
+/// `Project::applied` oracle: the reported ops, committed as one transaction to a
 /// mirror document that saw every earlier report, reproduce the edited document after
 /// every request (commits, undo, redo, stage, accept, reject, rejections); requests
 /// that change nothing report no ops.
@@ -182,26 +183,28 @@ fn reported_ops_replay_to_the_same_document() {
                 _ => Edit::Reject(stages.pop().unwrap_or(u16::MAX)),
             };
             let before = canon(&p, h);
-            let applied = apply_edits_report(&mut p, &[req(h, edit)]).remove(0);
-            if let Outcome::Staged { stage } = applied.outcome {
+            let outcome = apply_edits(&mut p, &[req(h, edit)]).remove(0);
+            if let Outcome::Staged { stage } = outcome {
                 stages.push(stage);
             }
             let after = canon(&p, h);
-            if applied.ops.is_empty() {
-                assert_eq!(before, after, "no ops, no change: {ctx} {applied:?}");
+            let design = matches!(
+                outcome,
+                Outcome::Committed { .. } | Outcome::Undone { .. } | Outcome::Redone { .. }
+            );
+            let Some(ops) = p.applied(h, &outcome) else {
+                assert!(
+                    !design,
+                    "a design change reports its ops: {ctx} {outcome:?}"
+                );
+                assert_eq!(before, after, "no ops, no change: {ctx} {outcome:?}");
                 unchanged += 1;
                 continue;
-            }
-            assert!(
-                matches!(
-                    applied.outcome,
-                    Outcome::Committed { .. } | Outcome::Undone { .. } | Outcome::Redone { .. }
-                ),
-                "{ctx} {applied:?}"
-            );
-            let out = run(&mut mirror, m, tx(applied.ops.clone()));
+            };
+            assert!(design, "{ctx} {outcome:?}");
+            let out = run(&mut mirror, m, tx(ops.to_vec()));
             assert!(matches!(out, Outcome::Committed { .. }), "{ctx} {out:?}");
-            assert_eq!(canon(&mirror, m), after, "{ctx} {applied:?}");
+            assert_eq!(canon(&mirror, m), after, "{ctx} {outcome:?}");
             changed += 1;
         }
         assert!(
@@ -209,17 +212,42 @@ fn reported_ops_replay_to_the_same_document() {
             "seed {seed}: {changed}/{unchanged}"
         );
     }
-    // The plain entry point reports the same outcomes.
+}
+
+/// `Project::applied` negative space: an undone entry's ops are gone once a later commit
+/// clears redo, and a stale handle reports nothing.
+#[test]
+fn applied_forgets_cleared_entries_and_stale_handles() {
     let (mut p, h) = open(SEED_DOC, "cell.shcomp");
-    let (mut q, g) = open(SEED_DOC, "cell.shcomp");
-    let mut rng = Mix::new(99);
-    for _ in 0..40 {
-        let ops = vec![gen_op(&mut rng, p.doc(h).unwrap())];
-        let a = apply_edits(&mut p, &[req(h, tx(ops.clone()))]).remove(0);
-        let b = apply_edits_report(&mut q, &[req(g, tx(ops))]).remove(0);
-        assert_eq!(a, b.outcome);
+    let mut rng = Mix::new(7);
+    let committed = loop {
+        let op = gen_op(&mut rng, p.doc(h).unwrap());
+        let o = run(&mut p, h, tx(vec![op]));
+        if matches!(o, Outcome::Committed { .. }) {
+            break o;
+        }
+    };
+    let undone = run(&mut p, h, Edit::Undo);
+    assert!(p.applied(h, &undone).is_some_and(|ops| !ops.is_empty()));
+    assert!(
+        p.applied(h, &committed).is_none(),
+        "undone: off the undo stack"
+    );
+    loop {
+        let op = gen_op(&mut rng, p.doc(h).unwrap());
+        let o = run(&mut p, h, tx(vec![op]));
+        if matches!(o, Outcome::Committed { .. }) {
+            assert!(p.applied(h, &o).is_some());
+            break;
+        }
     }
-    assert_eq!(canon(&p, h), canon(&q, g));
+    assert!(
+        p.applied(h, &undone).is_none(),
+        "redo cleared by the commit"
+    );
+    assert!(p.applied(h, &Outcome::Nothing).is_none());
+    assert!(p.close(h).is_ok());
+    assert!(p.applied(h, &Outcome::Committed { seq: 0 }).is_none());
 }
 
 #[test]
@@ -295,4 +323,39 @@ fn a_new_commit_clears_redo_and_history_is_per_document() {
     ));
     assert_eq!(p.history_len(a), (1, 0), "a commit clears redo");
     assert_eq!(run(&mut p, a, Edit::Redo), Outcome::Nothing);
+}
+
+/// Undo cap oracle: past `UNDO_MAX` commits the oldest entry drops and the saved depth
+/// follows it down, so undoing back to the saved state (and only there) is clean.
+#[test]
+fn the_undo_cap_drops_the_oldest_entry_and_keeps_the_saved_depth() {
+    const SAVED: usize = 10;
+    let (mut p, h) = open("schemify 1 shbench\n\nwire 0d2k1m 0 0 10 0\n", "b.shbench");
+    let mut x2 = 10u32;
+    let mut edit = |p: &mut Project| {
+        x2 = if x2 == 10 { 20 } else { 10 };
+        let op = Op::SetField {
+            target: Target::new(RecordKind::Wire, "0d2k1m"),
+            index: 3,
+            value: x2.to_string(),
+        };
+        assert!(matches!(run(p, h, tx(vec![op])), Outcome::Committed { .. }));
+    };
+    for _ in 0..SAVED {
+        edit(&mut p);
+    }
+    let bytes = p.save(h).unwrap().expect("dirty").bytes;
+    p.saved(h, bytes).unwrap();
+    for _ in 0..UNDO_MAX - SAVED + 1 {
+        edit(&mut p);
+    }
+    assert_eq!(p.history_len(h), (UNDO_MAX, 0), "one entry dropped");
+    // The saved state is now at depth SAVED - 1.
+    for _ in 0..UNDO_MAX - SAVED + 1 {
+        assert!(p.is_dirty(h));
+        assert!(matches!(run(&mut p, h, Edit::Undo), Outcome::Undone { .. }));
+    }
+    assert!(!p.is_dirty(h), "saved depth followed the drop");
+    assert!(matches!(run(&mut p, h, Edit::Undo), Outcome::Undone { .. }));
+    assert!(p.is_dirty(h));
 }

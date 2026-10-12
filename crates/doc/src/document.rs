@@ -483,11 +483,6 @@ impl Document {
         &self.pool
     }
 
-    /// Returns the header's attribute lines (`doc`, `default`, `prefix`, ...).
-    pub fn header_attrs(&self) -> Span {
-        self.header
-    }
-
     /// Returns the value of header attribute `key` (first value), e.g. `default`.
     pub fn header_value(&self, key: &str) -> Option<&str> {
         let v = self.pool.find_attr(&self.strings, self.header, key)?;

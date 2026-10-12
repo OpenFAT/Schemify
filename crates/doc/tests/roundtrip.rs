@@ -5,7 +5,6 @@
 mod common;
 
 use common::*;
-use proptest::prelude::*;
 use schemify_doc::{Code, Edit, ObjId, Op, Outcome, Project, RecordBuf, Target};
 use schemify_format::{Document as FormatDoc, FileKind, RecordKind, parse, write};
 
@@ -389,11 +388,13 @@ fn round_trip(seed: u64) {
     }
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
-
-    #[test]
-    fn load_save_round_trips_generated_documents(seed: u64) {
+/// Property over generated inputs: 256 seeds drawn from one fixed stream, so a failure
+/// replays from the printed seed.
+#[test]
+fn load_save_round_trips_generated_documents() {
+    let mut seeds = Mix::new(0x5eed);
+    for _ in 0..256 {
+        let seed = seeds.next();
         round_trip(seed);
     }
 }
