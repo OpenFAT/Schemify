@@ -30,6 +30,9 @@ pub struct CanvasDiff {
     seqs: Vec<Seq>,
     /// The sequences replaced by the last call, kept for their allocations.
     spare: Vec<Seq>,
+    /// Per sequence: the rows the last call found removed and added (see
+    /// [`CanvasDiff::edits_of`]).
+    last: Vec<(Vec<u32>, Vec<u32>)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -79,6 +82,11 @@ impl CanvasDiff {
             self.seqs = vec![Seq::default(); n];
         }
         self.spare.resize_with(n, Seq::default);
+        self.last.resize_with(n, Default::default);
+        for (g, a) in &mut self.last {
+            g.clear();
+            a.clear();
+        }
         let (mut gone, mut new) = (Vec::new(), Vec::new());
         let mut known = !first;
         let jobs = tables
@@ -101,11 +109,31 @@ impl CanvasDiff {
             if known {
                 out.extend(gone.iter().map(|&i| a.boxes[i as usize]));
                 out.extend(new.iter().map(|&i| b.boxes[i as usize]));
+                self.last[k].0.extend_from_slice(&gone);
+                self.last[k].1.extend_from_slice(&new);
             }
             std::mem::swap(&mut self.seqs[k], &mut self.spare[k]);
         }
         assert_eq!(self.seqs.len(), n);
         known
+    }
+}
+
+impl CanvasDiff {
+    /// The rows of input table `table` (an index into the last [`CanvasDiff::update`]'s
+    /// `tables`) that call found removed (old indices) and added (new indices), per kind in
+    /// [`CanvasPrims`] order: what [`PrimIndex::apply`](crate::canvas::PrimIndex::apply)
+    /// follows. Empty for a table flagged unchanged; meaningless when that call returned
+    /// false.
+    pub fn edits_of(&self, table: usize) -> [(&[u32], &[u32]); 6] {
+        assert!(
+            self.last.len() > (table + 1) * TABLES.len(),
+            "a table of the last call"
+        );
+        std::array::from_fn(|k| {
+            let (g, a) = &self.last[table * TABLES.len() + k];
+            (&g[..], &a[..])
+        })
     }
 }
 

@@ -18,6 +18,12 @@ use crate::damage::{TABLES, len, row};
 const SPAN_CELLS: u64 = 16;
 /// Most cells of one grid.
 const CELLS_MAX: usize = 1 << 16;
+/// Edit scripts an index follows (see [`PrimIndex::apply`]) before it asks to be rebuilt:
+/// each one costs a query a binary search and a pass over its additions per row.
+const EDITS_MAX: usize = 16;
+/// Rows added since the build an index keeps before it asks to be rebuilt (each query tests
+/// every one).
+const ADDED_MAX: usize = 4096;
 
 /// Row indices per primitive kind, ascending.
 #[derive(Clone, Debug, Default)]
@@ -71,7 +77,7 @@ impl Rows {
 }
 
 /// The grid of one table version. Build it with [`PrimIndex::build`]; it describes that
-/// version only (rows added or moved later are not in it).
+/// version, plus the later versions [`PrimIndex::apply`] told it about.
 #[derive(Clone, Debug, Default)]
 pub struct PrimIndex {
     /// World origin of cell (0, 0) and the cell edge, milli-units.
@@ -85,6 +91,27 @@ pub struct PrimIndex {
     items: [Vec<u32>; 6],
     /// Per kind: rows touching more than [`SPAN_CELLS`] cells.
     wide: [Vec<u32>; 6],
+    /// Edit scripts since the build, oldest first: per kind the rows removed (indices before
+    /// the edit) and added (after), ascending.
+    edits: Vec<[(Vec<u32>, Vec<u32>); 6]>,
+    /// Per kind: the rows added since the build that are still there, current indices.
+    added: [Vec<u32>; 6],
+}
+
+/// Where kept row `i` (not in `gone`) lands after an edit script: its rank among the kept
+/// rows, pushed past each added row at or before it (`gone`, `new` ascending).
+fn remap(i: u32, gone: &[u32], new: &[u32]) -> Option<u32> {
+    if gone.binary_search(&i).is_ok() {
+        return None;
+    }
+    let mut j = i - gone.partition_point(|&g| g < i) as u32;
+    for &p in new {
+        if p > j {
+            break;
+        }
+        j += 1;
+    }
+    Some(j)
 }
 
 impl PrimIndex {
@@ -190,26 +217,85 @@ impl PrimIndex {
         ]
     }
 
-    /// Replaces `out` with the rows whose cells touch world box `b` (a superset of the rows
-    /// drawn inside it), ascending per kind.
+    /// Follows one edit of the table: `edits[k]` lists, for kind `k` (in [`CanvasPrims`]
+    /// order), the rows removed (indices in the old version) and added (in the new version
+    /// `t`), as [`CanvasDiff`](crate::canvas::CanvasDiff) finds them; every other row kept
+    /// its content and order. Returns false, changing nothing, once the index has followed
+    /// enough edits that a rebuild is due (the caller then rebuilds or stops using it).
+    ///
+    /// Cost: O(added rows since the build); a query after it costs O(log removed + added)
+    /// more per listed row and edit.
+    pub fn apply(&mut self, edits: [(&[u32], &[u32]); 6]) -> bool {
+        let added: usize = self.added.iter().map(Vec::len).sum::<usize>()
+            + edits.iter().map(|e| e.1.len()).sum::<usize>();
+        if self.edits.len() >= EDITS_MAX || added > ADDED_MAX {
+            return false;
+        }
+        let mut step: [(Vec<u32>, Vec<u32>); 6] = Default::default();
+        for (k, (gone, new)) in edits.into_iter().enumerate() {
+            let (mut g, mut n) = (gone.to_vec(), new.to_vec());
+            g.sort_unstable();
+            n.sort_unstable();
+            let a = &mut self.added[k];
+            a.retain_mut(|r| match remap(*r, &g, &n) {
+                Some(j) => {
+                    *r = j;
+                    true
+                }
+                None => false,
+            });
+            a.extend_from_slice(&n);
+            a.sort_unstable();
+            step[k] = (g, n);
+        }
+        self.edits.push(step);
+        assert!(self.edits.len() <= EDITS_MAX);
+        true
+    }
+
+    /// Replaces `out` with the rows of `t` (the version this index describes) whose cells
+    /// touch world box `b`: a superset of the rows drawn inside it, ascending per kind.
     ///
     /// Cost: O(k + n/64) for the k rows listed in those cells out of n (a bitmap pass), or
-    /// O(k log k) when k is small next to n.
-    pub fn query(&self, b: [i32; 4], out: &mut Rows) {
+    /// O(k log k) when k is small next to n; see [`PrimIndex::apply`] for followed edits.
+    pub fn query(&self, t: &CanvasPrims, b: [i32; 4], out: &mut Rows) {
         assert!(b[0] <= b[2] && b[1] <= b[3], "inverted box");
         let r = self.range(b);
         let (kinds, seen) = out.kinds();
         for (k, rows) in kinds.into_iter().enumerate() {
             rows.clear();
             rows.extend_from_slice(&self.wide[k]);
-            if self.start[k].is_empty() {
-                continue;
+            if !self.start[k].is_empty() {
+                for cy in r[1]..=r[3] {
+                    let c0 = cy * self.cols + r[0];
+                    let c1 = cy * self.cols + r[2] + 1;
+                    let (a, z) = (self.start[k][c0] as usize, self.start[k][c1] as usize);
+                    rows.extend_from_slice(&self.items[k][a..z]);
+                }
             }
-            for cy in r[1]..=r[3] {
-                let c0 = cy * self.cols + r[0];
-                let c1 = cy * self.cols + r[2] + 1;
-                let (a, z) = (self.start[k][c0] as usize, self.start[k][c1] as usize);
-                rows.extend_from_slice(&self.items[k][a..z]);
+            if !self.edits.is_empty() {
+                // Rows of the build through every edit since (dropped when removed), then
+                // the rows added since that meet `b`.
+                rows.retain_mut(|row| {
+                    let mut i = *row;
+                    for e in &self.edits {
+                        match remap(i, &e[k].0, &e[k].1) {
+                            Some(j) => i = j,
+                            None => return false,
+                        }
+                    }
+                    *row = i;
+                    true
+                });
+                let meets =
+                    |q: [i32; 4]| q[0] <= b[2] && q[2] >= b[0] && q[1] <= b[3] && q[3] >= b[1];
+                let table = TABLES[k];
+                rows.extend(
+                    self.added[k]
+                        .iter()
+                        .filter(|&&i| meets(row(t, table, i as usize).1)),
+                );
+                debug_assert!(rows.iter().all(|&i| (i as usize) < len(t, table)));
             }
             ascending(rows, seen);
         }
@@ -283,7 +369,7 @@ mod tests {
         for _ in 0..200 {
             let (x, y) = (next(1_100_000) - 50_000, next(700_000) - 50_000);
             let b = [x, y, x + next(200_000), y + next(200_000)];
-            ix.query(b, &mut got);
+            ix.query(&t, b, &mut got);
             let meets = |r: [i32; 4]| r[0] <= b[2] && r[2] >= b[0] && r[1] <= b[3] && r[3] >= b[1];
             let lists = [
                 &got.lines,
@@ -310,6 +396,107 @@ mod tests {
             got.lines.contains(&(t.lines.x0.len() as u32 - 1)),
             "a wide row is listed"
         );
+    }
+
+    /// Oracle: after random edit scripts (rows removed, added and moved, found by the canvas
+    /// diff), a query still lists every row of the current table whose box meets the query
+    /// box, ascending, and nothing past the table's end.
+    #[test]
+    fn queries_follow_applied_edits() {
+        let mut rng = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move |m: i32| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng % m as u64) as i32
+        };
+        let mut t = CanvasPrims::default();
+        for _ in 0..2000 {
+            let (x, y) = (next(1_000_000), next(600_000));
+            match next(3) {
+                0 => t.line(x, y, x + next(30_000), y + next(9_000), 1),
+                1 => t.rect(x, y, x + next(20_000), y + next(20_000), 4),
+                _ => t.text(x, y, 5_000, 3, "abc"),
+            }
+        }
+        let mut ix = PrimIndex::build(&t);
+        let mut diff = crate::canvas::CanvasDiff::default();
+        let mut boxes = Vec::new();
+        assert!(!diff.update(
+            &[(&t, true)],
+            (&t, &crate::canvas::Marks::default(), true),
+            &mut boxes
+        ));
+        let mut got = Rows::default();
+        let mut followed = 0;
+        for step in 0..40 {
+            // Remove a few lines (swap-remove, as the scene does) and add some rows.
+            for _ in 0..next(4) {
+                let n = t.lines.x0.len();
+                let i = next(n as i32) as usize;
+                for c in [
+                    &mut t.lines.x0,
+                    &mut t.lines.y0,
+                    &mut t.lines.x1,
+                    &mut t.lines.y1,
+                ] {
+                    c.swap_remove(i);
+                }
+                t.lines.layer.swap_remove(i);
+            }
+            for _ in 0..next(5) {
+                let (x, y) = (next(1_000_000), next(600_000));
+                if next(2) == 0 {
+                    t.line(x, y, x + next(30_000), y, 1);
+                } else {
+                    t.rect(x, y, x + next(20_000), y + next(20_000), 4);
+                }
+            }
+            boxes.clear();
+            let marks = crate::canvas::Marks::default();
+            assert!(
+                diff.update(&[(&t, true)], (&t, &marks, false), &mut boxes),
+                "step {step}"
+            );
+            let e = diff.edits_of(0);
+            if !ix.apply(e) {
+                ix = PrimIndex::build(&t);
+            } else {
+                followed += 1;
+            }
+            for _ in 0..20 {
+                let (x, y) = (next(1_100_000) - 50_000, next(700_000) - 50_000);
+                let b = [x, y, x + next(200_000), y + next(200_000)];
+                ix.query(&t, b, &mut got);
+                let meets =
+                    |r: [i32; 4]| r[0] <= b[2] && r[2] >= b[0] && r[1] <= b[3] && r[3] >= b[1];
+                let lists = [
+                    &got.lines,
+                    &got.rects,
+                    &got.arcs,
+                    &got.polylines,
+                    &got.polygons,
+                    &got.texts,
+                ];
+                for (k, table) in TABLES.into_iter().enumerate() {
+                    let rows = lists[k];
+                    assert!(rows.windows(2).all(|w| w[0] < w[1]), "ascending");
+                    assert!(
+                        rows.iter().all(|&i| (i as usize) < len(&t, table)),
+                        "in the table"
+                    );
+                    for i in 0..len(&t, table) {
+                        if meets(row(&t, table, i).1) {
+                            assert!(
+                                rows.binary_search(&(i as u32)).is_ok(),
+                                "step {step} kind {k} row {i}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(followed >= 20, "{followed} edits followed");
     }
 
     /// Oracle: both routes of `ascending` (bitmap for many rows, sort for few) equal a sort
