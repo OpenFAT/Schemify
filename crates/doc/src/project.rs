@@ -285,6 +285,32 @@ struct Open {
     fixups: bool,
 }
 
+impl Open {
+    /// A document with no history and no disk state (a new, unsaved cell); `open`
+    /// overrides the disk fields.
+    fn new(lib: u8, dir: Sym, stem: Sym, doc: Document) -> Open {
+        Open {
+            lib,
+            dir,
+            stem,
+            doc,
+            undo: VecDeque::new(),
+            redo: Vec::new(),
+            next_seq: 1,
+            saved_depth: None,
+            stages: Vec::new(),
+            next_stage: 0,
+            journal: JournalOut::default(),
+            disk: Vec::new(),
+            disk_hash: None,
+            pending_save: None,
+            conflict: None,
+            tail: None,
+            fixups: false,
+        }
+    }
+}
+
 /// Returns whether the document differs from its last loaded/saved bytes.
 fn dirty(open: &Open) -> bool {
     open.fixups || open.saved_depth != Some(open.undo.len())
@@ -438,11 +464,6 @@ impl Project {
         Ok(())
     }
 
-    /// Pins a plugin in the lockfile (the plugin host computes its hash).
-    pub fn lock_plugin(&mut self, name: &str, kind: &str, resolved: &str, hash: &str) {
-        self.lock.set("plugin", name, kind, resolved, hash);
-    }
-
     /// Returns the lockfile bytes (canonical; sorted by type, then name).
     pub fn write_lock(&self) -> String {
         self.lock.write()
@@ -566,23 +587,10 @@ impl Project {
         let loaded = Document::from_format(&model);
         let reids = loaded.diags.iter().any(|d| d.code == Code::W001);
         let mut open = Open {
-            lib,
-            dir,
-            stem,
-            doc: loaded.doc,
-            undo: VecDeque::new(),
-            redo: Vec::new(),
-            next_seq: 1,
             saved_depth: Some(0),
-            stages: Vec::new(),
-            next_stage: 0,
-            journal: JournalOut::default(),
             disk: bytes.to_vec(),
-            disk_hash: None,
-            pending_save: None,
-            conflict: None,
-            tail: None,
             fixups: reids,
+            ..Open::new(lib, dir, stem, loaded.doc)
         };
         let recovery = match journal.map(|j| parse_journal(j, open.doc.kind())) {
             Some(Ok(recs)) => {
@@ -621,26 +629,7 @@ impl Project {
         }
         let (dir, stem) = split_path(relpath);
         let (dir, stem) = (self.strings.intern(dir), self.strings.intern(stem));
-        let open = Open {
-            lib,
-            dir,
-            stem,
-            doc: Document::new(kind),
-            undo: VecDeque::new(),
-            redo: Vec::new(),
-            next_seq: 1,
-            saved_depth: None,
-            stages: Vec::new(),
-            next_stage: 0,
-            journal: JournalOut::default(),
-            disk: Vec::new(),
-            disk_hash: None,
-            pending_save: None,
-            conflict: None,
-            tail: None,
-            fixups: false,
-        };
-        let h = self.alloc(open)?;
+        let h = self.alloc(Open::new(lib, dir, stem, Document::new(kind)))?;
         assert!(self.is_dirty(h), "a new document is unsaved");
         Ok(h)
     }
@@ -685,6 +674,30 @@ impl Project {
     pub fn history_len(&self, h: DocHandle) -> (usize, usize) {
         self.open_ref(h)
             .map_or((0, 0), |o| (o.undo.len(), o.redo.len()))
+    }
+
+    /// Returns the ops an [`apply_edits`] outcome applied to document `h`, in application
+    /// order, borrowed from its undo entry: a commit's or redo's forward ops (fresh ids
+    /// drawn, values snapped; an extended entry's ops include the extension), an undo's
+    /// inverse ops. Committed as one transaction on the state before the request, they
+    /// give the state after it; [`Op::subject`] names each changed record.
+    ///
+    /// `None` when the outcome changed nothing (staged, dropped, nothing, rejected,
+    /// refused), the handle is stale, or the entry is gone: a later commit to `h` clears
+    /// the redo stack an undone entry sits on, and the oldest undo entries drop past
+    /// [`UNDO_MAX`]. Read it before the next request to `h` to be sure of an answer.
+    /// Cost: a scan from the top of one stack, O(1) right after the request.
+    pub fn applied(&self, h: DocHandle, outcome: &Outcome) -> Option<&[Op]> {
+        let open = self.open_ref(h)?;
+        let ops = match *outcome {
+            Outcome::Committed { seq } | Outcome::Redone { seq } => {
+                let e = open.undo.iter().rev().find(|e| e.seq == seq)?;
+                &e.forward
+            }
+            Outcome::Undone { seq } => &open.redo.iter().rev().find(|e| e.seq == seq)?.inverse,
+            _ => return None,
+        };
+        Some(ops)
     }
 
     /// Returns the labels of the undo stack, oldest first (for undo menus).
@@ -1204,66 +1217,9 @@ impl Project {
 /// Applies edit requests in order (the frame spine's `doc::apply_edits`): transactions
 /// (commit or stage), undo, redo, accept and reject. Each request is all-or-nothing;
 /// a failing request does not stop the ones after it. Journal output accumulates per
-/// document for [`Project::take_journal`].
+/// document for [`Project::take_journal`]; [`Project::applied`] reads back the ops a
+/// request applied, without copying them.
 pub fn apply_edits(project: &mut Project, requests: &[EditRequest]) -> Vec<Outcome> {
-    let out: Vec<Outcome> = apply(project, requests, false)
-        .into_iter()
-        .map(|a| a.outcome)
-        .collect();
-    assert_eq!(out.len(), requests.len());
-    out
-}
-
-/// One request's [`Outcome`] and the ops that changed its document.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Applied {
-    /// What the request did.
-    pub outcome: Outcome,
-    /// The ops applied to the document, in application order: a commit's resolved ops
-    /// (fresh ids drawn, values snapped), an undo's inverse ops, a redo's ops. Empty
-    /// when the document did not change (staged, dropped, nothing, rejected, refused).
-    /// Committed as one transaction on the state before the request, they give the
-    /// state after it; [`Op::subject`] names each changed record.
-    pub ops: Vec<Op>,
-}
-
-/// [`apply_edits`] that also reports, per request, the ops it applied, so a consumer
-/// (elab's incremental recompute) needs no copy of the requests and sees undo and
-/// redo as ops too. Cost: one clone of each applied op list.
-pub fn apply_edits_report(project: &mut Project, requests: &[EditRequest]) -> Vec<Applied> {
-    let out = apply(project, requests, true);
-    assert_eq!(out.len(), requests.len());
-    assert!(out.iter().all(|a| a.ops.is_empty()
-        || matches!(
-            a.outcome,
-            Outcome::Committed { .. } | Outcome::Undone { .. } | Outcome::Redone { .. }
-        )));
-    out
-}
-
-/// The ops request outcome `outcome` applied to document `h`, read back from the top of
-/// the stack the request just pushed.
-fn applied_ops(project: &Project, h: DocHandle, outcome: &Outcome) -> Vec<Op> {
-    let Some(open) = project.open_ref(h) else {
-        return Vec::new();
-    };
-    let ops = match outcome {
-        Outcome::Committed { seq } | Outcome::Redone { seq } => open
-            .undo
-            .back()
-            .filter(|e| e.seq == *seq)
-            .map(|e| e.forward.clone()),
-        Outcome::Undone { seq } => open
-            .redo
-            .last()
-            .filter(|e| e.seq == *seq)
-            .map(|e| e.inverse.clone()),
-        _ => Some(Vec::new()),
-    };
-    ops.expect("the entry a request applied is on top of its stack")
-}
-
-fn apply(project: &mut Project, requests: &[EditRequest], report: bool) -> Vec<Applied> {
     let mut out = Vec::with_capacity(requests.len());
     for req in requests {
         let outcome = match &req.edit {
@@ -1323,12 +1279,7 @@ fn apply(project: &mut Project, requests: &[EditRequest], report: bool) -> Vec<A
                 },
             },
         };
-        let ops = if report {
-            applied_ops(project, req.doc, &outcome)
-        } else {
-            Vec::new()
-        };
-        out.push(Applied { outcome, ops });
+        out.push(outcome);
     }
     assert_eq!(out.len(), requests.len());
     out
@@ -1454,9 +1405,9 @@ fn undo_top(open: &mut Open) -> Result<Option<u64>, Vec<OpError>> {
     let seq = entry.seq;
     entry.inverse = ops;
     open.redo.push(entry);
-    if open.redo.len() > UNDO_MAX {
-        open.redo.remove(0);
-    }
+    // Entries only move between the stacks, and a commit clears redo: their sum is
+    // bounded by the undo cap, so redo needs no cap of its own.
+    assert!(open.undo.len() + open.redo.len() <= UNDO_MAX);
     assert!(open.redo.last().is_some_and(|e| e.seq == seq));
     Ok(Some(seq))
 }
