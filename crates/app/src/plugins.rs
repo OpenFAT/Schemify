@@ -283,7 +283,12 @@ impl Host {
         let mut plugins = Plugins::new();
         let mut notes = Vec::new();
         let mut hashes = Vec::new();
-        let (user, startup_out) = Config::load(startup);
+        // Through the platform: on the web `init.lua` lives in OPFS `/config` (web spec §5).
+        let (user, startup_out) = Config::load_with(startup, |p| {
+            platform::read(p)
+                .ok()
+                .and_then(|b| String::from_utf8(b).ok())
+        });
         if !no_default_ui {
             match plugins.load("default-ui", DEFAULT_UI_WASM, &[], FUEL_DEFAULT) {
                 Ok(id) => hashes.push((id, content_hash(DEFAULT_UI_WASM))),

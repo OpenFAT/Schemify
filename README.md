@@ -158,7 +158,7 @@ and [docs/BACKLOG.md](docs/BACKLOG.md).
 | Linux | ✅ | ✅ | |
 | macOS | ✅ | ✅ | |
 | Windows | ✅ | ✅ | |
-| Browser (WASM) | builds, starts in headless Chrome | ✅ (WASI) | drawing needs WebGPU; files are not persisted yet; no Lua config yet |
+| Browser (WASM) | builds, starts in headless Chrome | ✅ (WASI) | drawing needs WebGPU; files persist in the browser (OPFS), projects in/out as zip; Lua config from `/config/init.lua` |
 
 - **xschem compatibility:** netlists of 246 of 301 corpus benches (sky130, GF180, IHP and xschem's
   examples) are equivalent to xschem's SPICE output, and 227 of 301 for CDL (comparing without

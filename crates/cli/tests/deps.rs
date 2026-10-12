@@ -72,7 +72,7 @@ fn the_core_links_no_editor_crate() {
         .filter_map(|l| l.split_whitespace().next())
         .collect();
     assert!(
-        names.contains(&"schemify-cli") && names.contains(&"mlua"),
+        names.contains(&"schemify-cli") && names.contains(&"omnilua"),
         "{names:?}"
     );
     let bad: Vec<&&str> = names.iter().filter(|n| EDITOR_ONLY.contains(n)).collect();

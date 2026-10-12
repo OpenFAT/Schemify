@@ -191,6 +191,18 @@ class Page:
         )
         return base64.b64decode(url.split(",", 1)[1]) if url else None
 
+    def write_text(self, path, text):
+        """Writes OPFS file `path` (test-only JS, as the browser's own API would)."""
+        segs = [s for s in path.split("/") if s]
+        self.eval(
+            "(async () => { let d = await navigator.storage.getDirectory();"
+            f" for (const s of {json.dumps(segs[:-1])})"
+            " d = await d.getDirectoryHandle(s, {create: true});"
+            f" const w = await (await d.getFileHandle({json.dumps(segs[-1])}, {{create: true}}))"
+            ".createWritable();"
+            f" await w.write({json.dumps(text)}); await w.close(); return true; }})()"
+        )
+
     def wait_file(self, path, ok, timeout=20):
         """The text of OPFS file `path` once `ok(text)` holds (or the last text read)."""
         text, deadline = None, time.time() + timeout
@@ -228,7 +240,7 @@ class Page:
 
     def key(self, key, ctrl=False):
         """A printable key (`w`), a named one (`Escape`), or Ctrl + a letter."""
-        named = {"Escape": ("Escape", 27)}
+        named = {"Escape": ("Escape", 27), "F9": ("F9", 120)}
         if key in named:
             code, vk = named[key]
             text = None
@@ -392,6 +404,9 @@ def main():
             with open(os.path.join(FIXTURE, "top.shcomp")) as f:
                 n0 = len(wires(f.read()))
             n = p.write_opfs("/projects/inv", FIXTURE)
+            # The user config is OPFS `/config/init.lua` (web spec §5): F9 saves, so the first
+            # save below works only when the config ran.
+            p.write_text("/config/init.lua", 'schemify.keymap.set("F9", "file.save")\n')
             top = "/projects/inv/top.shcomp"
             p.load(f"{url}#{top}")
             # 0. Pixels (web spec §7): without a WebGPU adapter the editor draws on the CPU;
@@ -423,11 +438,12 @@ def main():
             p.key("w")
             p.click(500, 700)
             p.key("Escape")
-            p.key("s", ctrl=True)
+            p.key("F9")
             first = p.wait_file(top, lambda t: len(wires(t)) == n0 + 1)
             print(f"inv ({n} files via OPFS): top.shcomp {n0} -> {len(wires(first))} wires")
             if len(wires(first)) != n0 + 1:
-                failures.append(f"the save did not reach OPFS with {n0 + 1} wires")
+                failures.append(f"the save (F9, bound by /config/init.lua) did not reach OPFS "
+                                f"with {n0 + 1} wires")
                 print(f"OPFS now: {p.opfs_tree()}")
             p.click(375, 700)
             p.key("c", ctrl=True)

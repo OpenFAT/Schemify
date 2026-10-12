@@ -88,7 +88,9 @@ jobs:
           -- -D warnings
       # The browser side of the OS boundary (`platform/web.rs`, web spec) lives in the core.
       - name: clippy (web cfg paths of the core)
-        run: cargo clippy --target wasm32-unknown-unknown -p schemify-cli --lib -- -D warnings
+        run: >-
+          cargo clippy --target wasm32-unknown-unknown -p schemify-cli -p schemify-config --lib
+          -- -D warnings
       - name: build web crates
         run: >-
           cargo build --release --target wasm32-unknown-unknown
@@ -121,6 +123,12 @@ jobs:
         with:
           name: web-smoke
           path: web-smoke
+      # The user config runs the same Lua interpreter on every target (web spec §5): its tests
+      # again on a wasm target, under wasmtime (the browser target has no test harness).
+      - name: config tests on wasm32-wasip1
+        env:
+          CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime run --dir=/tmp::/tmp
+        run: cargo test --target wasm32-wasip1 -p schemify-config --test config
       - name: CLI for WASI (determinism under wasmtime)
         run: cargo build --target wasm32-wasip1 -p schemify-cli --bin schemify
       - run: >-

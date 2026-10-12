@@ -14,10 +14,8 @@
 //!     None,
 //! );
 //! assert!(out.is_empty());
-//! # #[cfg(not(target_arch = "wasm32"))] {
 //! assert_eq!(cfg.table().opts.snap, 5_000);
 //! assert_eq!(cfg.table().keymaps.target[0], Target::Command("simulation.simulate".into()));
-//! # }
 //! ```
 //!
 //! Data design (six questions):
@@ -38,7 +36,6 @@
 use std::path::{Path, PathBuf};
 
 pub mod dirs;
-#[cfg(not(target_arch = "wasm32"))]
 mod lua;
 
 /// Most keymaps in one config.
@@ -55,6 +52,16 @@ pub const BUDGET: u64 = 100_000_000;
 pub const MEMORY_MAX: usize = 64 << 20;
 /// Canvas layers a colour can be set for (`layer_colors`, xschem's 22 `cadlayers`).
 pub const USER_LAYERS: usize = 22;
+
+/// Reads a config file (`init.lua`, a `lua/` module) as text; `None` when it is missing or
+/// not UTF-8. The web build passes one over its storage (web spec §2); native callers use
+/// [`read_std`].
+pub type ReadFile = fn(&Path) -> Option<String>;
+
+/// [`ReadFile`] over `std::fs`.
+pub fn read_std(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path).ok()
+}
 
 /// Where the user config comes from (`--clean`, the default, `-u <file>`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -392,7 +399,6 @@ pub enum Request {
 pub struct Config {
     table: Table,
     root: Option<PathBuf>,
-    #[cfg(not(target_arch = "wasm32"))]
     lua: Option<lua::Runtime>,
 }
 
@@ -411,38 +417,43 @@ impl Config {
         Config {
             table: Table::default(),
             root: None,
-            #[cfg(not(target_arch = "wasm32"))]
             lua: None,
         }
     }
 
     /// Runs the init file `start` names (spec §2) and returns the config with the requests
     /// the run queued; errors are [`Level::Error`] notifications, never fatal. Reads the
-    /// init file and the `lua/` modules it requires; nothing else.
+    /// init file and the `lua/` modules it requires through `std::fs`; nothing else.
     ///
-    /// Cost: one Lua state (≈ 100 µs) plus the script, bounded by [`BUDGET`] instructions.
+    /// Cost: one Lua state (a few ms) plus the script, bounded by [`BUDGET`] instructions.
     pub fn load(start: &Startup) -> (Config, Vec<Request>) {
+        Config::load_with(start, read_std)
+    }
+
+    /// [`Config::load`] reading the init file and its modules through `read` (the web
+    /// build's storage holds `/config/init.lua`).
+    pub fn load_with(start: &Startup, read: ReadFile) -> (Config, Vec<Request>) {
         let file = match start {
             Startup::Clean => return (Config::empty(), Vec::new()),
             Startup::File(p) => p.clone(),
             Startup::User => match dirs::here(dirs::Dir::Config) {
                 Ok(dir) => {
                     let f = dir.join("init.lua");
-                    if !f.is_file() {
+                    let Some(src) = read(&f) else {
                         let mut c = Config::empty();
                         c.root = Some(dir);
                         return (c, Vec::new());
-                    }
-                    f
+                    };
+                    return Config::run(&src, &f, read);
                 }
                 Err(e) => return (Config::empty(), vec![error(format!("user config: {e}"))]),
             },
         };
-        match std::fs::read_to_string(&file) {
-            Ok(src) => Config::run(&src, &file),
-            Err(e) => (
+        match read(&file) {
+            Some(src) => Config::run(&src, &file, read),
+            None => (
                 Config::empty(),
-                vec![error(format!("{}: {e}", file.display()))],
+                vec![error(format!("{}: cannot read the file", file.display()))],
             ),
         }
     }
@@ -451,13 +462,12 @@ impl Config {
     /// `None` = no modules). For tests and embedders; [`Config::load`] reads the file.
     pub fn from_source(src: &str, root: Option<&Path>) -> (Config, Vec<Request>) {
         let file = root.map_or_else(|| PathBuf::from("init.lua"), |r| r.join("init.lua"));
-        let (mut c, out) = Config::run(src, &file);
+        let (mut c, out) = Config::run(src, &file, read_std);
         c.root = root.map(Path::to_path_buf);
         (c, out)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn run(src: &str, file: &Path) -> (Config, Vec<Request>) {
+    fn run(src: &str, file: &Path, read: ReadFile) -> (Config, Vec<Request>) {
         let root = file
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -466,22 +476,13 @@ impl Config {
             || "init.lua".to_owned(),
             |n| n.to_string_lossy().into_owned(),
         );
-        let (rt, table, out) = lua::Runtime::start(src, &name, root.as_deref());
+        let (rt, table, out) = lua::Runtime::start(src, &name, root.as_deref(), read);
         let c = Config {
             table,
             root,
             lua: rt,
         };
         (c, out)
-    }
-
-    // ponytail: no Lua on wasm32-unknown-unknown (C Lua needs a libc); the web runs without
-    // a user config. Upgrade: a pure-Rust Lua (piccolo) once it covers Lua 5.4, or C Lua on
-    // a wasi-libc shim (BACKLOG).
-    #[cfg(target_arch = "wasm32")]
-    fn run(_: &str, file: &Path) -> (Config, Vec<Request>) {
-        let note = format!("{}: no user config on the web yet", file.display());
-        (Config::empty(), vec![error(note)])
     }
 
     /// The user-config table.
@@ -519,7 +520,6 @@ impl Config {
         out
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn invoke(&mut self, f: FnId, ev: Option<Event>, fields: &[(&str, i64)]) -> Vec<Request> {
         let Some(rt) = self.lua.as_mut() else {
             return vec![error(format!("function {} called without a config", f.0))];
@@ -528,11 +528,6 @@ impl Config {
         let (table, out) = rt.call(table, f, ev, fields);
         self.table = table;
         out
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn invoke(&mut self, f: FnId, _: Option<Event>, _: &[(&str, i64)]) -> Vec<Request> {
-        vec![error(format!("function {} called without a config", f.0))]
     }
 }
 

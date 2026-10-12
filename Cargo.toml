@@ -37,8 +37,10 @@ schemify-cli = { path = "crates/cli" }
 rustfft = "6"
 num-complex = "0.4"
 libm = "0.2"
-# User config (D9 amended): Lua 5.4 compiled from vendored C sources; only `config` may use it.
-mlua = { version = "0.12", features = ["lua54", "vendored"] }
+# User config (D9 amended): Lua 5.4 in pure Rust (no C, builds for every target incl. the
+# web; user decision 2026-10-12, web spec §5); only `config` may use it. No `io`, `os`,
+# `package` libraries are compiled in; `debug` serves the API prelude and is stripped after.
+omnilua = { version = "0.7.1", default-features = false, features = ["debug", "utf8"] }
 thiserror = "2"
 proptest = "1"
 # D3: the one plugin engine (native + web); only `plugin` may depend on it (AGENTS rule 7).
@@ -83,8 +85,6 @@ schemify-import = { opt-level = "z" }
 schemify-devicereader = { opt-level = "z" }
 schemify-run = { opt-level = "z" }
 schemify-config = { opt-level = "z" }
-mlua = { opt-level = "z" }
-mlua-sys = { opt-level = "z" }
 # Editor: accessibility over D-Bus (kept: accessibility is not optional) and its async runtime.
 accesskit = { opt-level = "z" }
 accesskit_atspi_common = { opt-level = "z" }

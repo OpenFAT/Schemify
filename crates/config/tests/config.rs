@@ -1,8 +1,11 @@
 //! Oracles for the user config (TESTING.md, config spec §2–§5): the Lua API against the table
 //! written directly, and the sandbox's negative space (absent libraries, budget, memory cap,
 //! errors located at `file:line`).
+//!
+//! The same interpreter runs natively and on the web (web spec §5), so CI also runs this file
+//! for `wasm32-wasip1` under wasmtime. The browser target has no test harness.
 
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -277,6 +280,25 @@ fn sandbox_has_no_io_os_debug_or_loaders() {
     assert!(errors(&out)[0].contains("binary chunk"), "{out:?}");
 }
 
+/// The ceiling C Lua had (spec §4, BACKLOG): one library call ran between budget checks. The
+/// pattern matcher now charges the budget as it backtracks, so a pathological match stops.
+#[test]
+fn a_pathological_pattern_is_killed_by_the_budget() {
+    let t = Instant::now();
+    let (_, out) = run("local s = string.rep('a', 4000)\nstring.find(s, '.-.-.-.-.-.-b')");
+    assert!(
+        t.elapsed() < Duration::from_secs(20),
+        "took {:?}",
+        t.elapsed()
+    );
+    let e = errors(&out);
+    assert_eq!(e.len(), 1, "{out:?}");
+    assert!(e[0].contains("instruction budget exhausted"), "{e:?}");
+    // Negative space: a cheap match in the same state runs.
+    let (_, out) = run("assert(string.find(string.rep('a', 4000) .. 'b', 'a-b') == 1)");
+    assert!(out.is_empty(), "{out:?}");
+}
+
 #[test]
 fn an_infinite_loop_is_killed_by_the_budget() {
     for src in [
@@ -371,7 +393,14 @@ fn bad_pack_specs_are_reported_and_dropped() {
 
 #[test]
 fn require_reads_config_modules_once() {
-    let root = std::env::temp_dir().join(format!("schemify-config-req-{}", std::process::id()));
+    // WASI has no process ids: a clock stamp keeps parallel runs apart there.
+    #[cfg(not(target_os = "wasi"))]
+    let tag = std::process::id();
+    #[cfg(target_os = "wasi")]
+    let tag = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let root = std::env::temp_dir().join(format!("schemify-config-req-{tag}"));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("lua/keys")).unwrap();
     std::fs::write(
