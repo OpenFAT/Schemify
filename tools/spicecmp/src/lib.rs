@@ -160,17 +160,11 @@ pub fn compare(a: &str, b: &str, opts: &Options) -> Report {
         );
     }
     let colours = connectivity(&fa, &fb, &mut report.diffs);
-    let (mut da, mut db) = (na.directives.clone(), nb.directives.clone());
-    match &colours {
-        Some([(dca, nca), (dcb, ncb)]) => {
-            da.extend(saves(&na, &fa, Some((dca, nca))));
-            db.extend(saves(&nb, &fb, Some((dcb, ncb))));
-        }
-        None => {
-            da.extend(saves(&na, &fa, None));
-            db.extend(saves(&nb, &fb, None));
-        }
-    }
+    let pick = |i: usize| colours.as_ref().map(|c| (&c[i].0[..], &c[i].1[..]));
+    let mut da = na.directives.clone();
+    da.extend(saves(&na, &fa, pick(0)));
+    let mut db = nb.directives.clone();
+    db.extend(saves(&nb, &fb, pick(1)));
     multiset(Section::Params, &fa.params, &fb.params, &mut report.diffs);
     multiset(Section::Models, &fa.models, &fb.models, &mut report.diffs);
     multiset(
@@ -195,7 +189,7 @@ pub fn compare(a: &str, b: &str, opts: &Options) -> Report {
 /// there either, and a save inside a subckt is the same save whatever the
 /// subckt is called or however its instances are split between definitions.
 /// Without colours, or for vectors naming nothing, `scope: .save vector` text.
-fn saves(nl: &parse::Netlist, f: &Flat, colours: Option<(&Vec<u64>, &Vec<u64>)>) -> Vec<String> {
+fn saves(nl: &parse::Netlist, f: &Flat, colours: Option<(&[u64], &[u64])>) -> Vec<String> {
     let dev_index: std::collections::HashMap<&str, u32> = f
         .dev_name
         .iter()
@@ -226,37 +220,16 @@ fn alias(text: &str, opts: &Options) -> String {
     out
 }
 
-/// Multiset difference of normalized lines.
+/// Multiset difference of normalized lines, each side in sorted order.
 fn multiset(section: Section, a: &[String], b: &[String], diffs: &mut Vec<Diff>) {
-    let mut a: Vec<&String> = a.iter().collect();
-    let mut b: Vec<&String> = b.iter().collect();
-    a.sort();
-    b.sort();
-    let (mut only_a, mut only_b) = (Vec::new(), Vec::new());
-    let (mut i, mut j) = (0, 0);
-    while i < a.len() || j < b.len() {
-        match (a.get(i), b.get(j)) {
-            (Some(x), Some(y)) if x == y => {
-                i += 1;
-                j += 1;
-            }
-            (Some(x), Some(y)) if x < y => {
-                only_a.push(format!("- {x}"));
-                i += 1;
-            }
-            (Some(x), None) => {
-                only_a.push(format!("- {x}"));
-                i += 1;
-            }
-            (_, Some(y)) => {
-                only_b.push(format!("+ {y}"));
-                j += 1;
-            }
-            (None, None) => unreachable!("loop condition"),
-        }
-    }
-    push_capped(section, only_a, diffs);
-    push_capped(section, only_b, diffs);
+    let (oa, ob) = unmatched(a, b);
+    let lines = |v: &[String], ids: Vec<usize>, sign: char| -> Vec<String> {
+        ids.into_iter()
+            .map(|i| format!("{sign} {}", v[i]))
+            .collect()
+    };
+    push_capped(section, lines(a, oa, '-'), diffs);
+    push_capped(section, lines(b, ob, '+'), diffs);
 }
 
 fn push_capped(section: Section, lines: Vec<String>, diffs: &mut Vec<Diff>) {
@@ -349,35 +322,41 @@ fn distinct(a: &[u64], b: &[u64]) -> usize {
     all.len()
 }
 
-/// Indices of `a`'s elements not matched (as a multiset) in `b`, and vice versa.
-fn unmatched(a: &[u64], b: &[u64]) -> (Vec<usize>, Vec<usize>) {
+/// Indices of `a`'s elements not matched (as a multiset) in `b`, and vice
+/// versa, each list in value order (ties by index).
+fn unmatched<T: Ord>(a: &[T], b: &[T]) -> (Vec<usize>, Vec<usize>) {
+    use std::cmp::Ordering;
     let mut ia: Vec<usize> = (0..a.len()).collect();
     let mut ib: Vec<usize> = (0..b.len()).collect();
-    ia.sort_by_key(|&i| (a[i], i));
-    ib.sort_by_key(|&i| (b[i], i));
+    ia.sort_by(|&x, &y| a[x].cmp(&a[y]).then(x.cmp(&y)));
+    ib.sort_by(|&x, &y| b[x].cmp(&b[y]).then(x.cmp(&y)));
     let (mut oa, mut ob) = (Vec::new(), Vec::new());
     let (mut i, mut j) = (0, 0);
-    while i < ia.len() || j < ib.len() {
-        match (ia.get(i), ib.get(j)) {
-            (Some(&x), Some(&y)) if a[x] == b[y] => {
+    while i < ia.len() && j < ib.len() {
+        match a[ia[i]].cmp(&b[ib[j]]) {
+            Ordering::Less => {
+                oa.push(ia[i]);
+                i += 1;
+            }
+            Ordering::Greater => {
+                ob.push(ib[j]);
+                j += 1;
+            }
+            Ordering::Equal => {
                 i += 1;
                 j += 1;
             }
-            (Some(&x), Some(&y)) if a[x] < b[y] => {
-                oa.push(x);
-                i += 1;
-            }
-            (Some(&x), None) => {
-                oa.push(x);
-                i += 1;
-            }
-            (_, Some(&y)) => {
-                ob.push(y);
-                j += 1;
-            }
-            (None, None) => unreachable!("loop condition"),
         }
     }
+    oa.extend_from_slice(&ia[i..]);
+    ob.extend_from_slice(&ib[j..]);
+    debug_assert!(oa.len() + ob.len() >= a.len().abs_diff(b.len()));
+    (oa, ob)
+}
+
+/// [`unmatched`] with both lists in index (netlist) order, for diff output.
+fn unmatched_by_index(a: &[u64], b: &[u64]) -> (Vec<usize>, Vec<usize>) {
+    let (mut oa, mut ob) = unmatched(a, b);
     oa.sort_unstable();
     ob.sort_unstable();
     (oa, ob)
@@ -398,7 +377,7 @@ fn connectivity(fa: &Flat, fb: &Flat, diffs: &mut Vec<Diff>) -> Option<Colours> 
     // Each round that is not stable splits at least one class.
     let rounds_max = da.len() + na.len() + db.len() + nb.len() + 1;
     for round in 0..=rounds_max {
-        let (oa, ob) = unmatched(&da, &db);
+        let (oa, ob) = unmatched_by_index(&da, &db);
         if !oa.is_empty() || !ob.is_empty() {
             report_devices(fa, fb, &oa, &ob, round, diffs);
             return None;
@@ -411,12 +390,12 @@ fn connectivity(fa: &Flat, fb: &Flat, diffs: &mut Vec<Diff>) -> Option<Colours> 
             continue;
         }
         // Both partitions stable: further rounds cannot separate anything.
-        let (oa, ob) = unmatched(&da, &db);
+        let (oa, ob) = unmatched_by_index(&da, &db);
         if !oa.is_empty() || !ob.is_empty() {
             report_devices(fa, fb, &oa, &ob, round + 1, diffs);
             return None;
         }
-        let (ona, onb) = unmatched(&na, &nb);
+        let (ona, onb) = unmatched_by_index(&na, &nb);
         if ona.is_empty() && onb.is_empty() {
             return Some([(da, na), (db, nb)]);
         }

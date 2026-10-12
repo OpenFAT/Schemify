@@ -198,9 +198,7 @@ impl Flat {
         }
         self.net(format!("{prefix}{node}"), "net")
     }
-}
 
-impl Flat {
     /// The `.save` vector `vector` written in `scope`, once per expansion of
     /// that scope, with each net or device it names replaced by its colour
     /// (`v(#…)`, `i(#…)`, `@#…[param]`). `None` when the scope is never
