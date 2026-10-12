@@ -1,6 +1,6 @@
 //! The built guest (`plugins/pdk-manager/pdk_manager.wasm`, from `plugins/build.sh`) through the
 //! real host (`schemify_plugin`: grants and path checks included), with fake `ciel`,
-//! `schemify`, `git`, `curl` and `tar` first on `PATH` (shell scripts that write a tiny tree and
+//! `schemify-interop`, `git`, `curl` and `tar` first on `PATH` (shell scripts that write a tiny tree and
 //! log their argv).
 //! Filesystem and canonical-text oracles: the argv of every step, the store layout, `STATE`,
 //! `tech.map`, the manifest after `pdk.use`, that a failing step leaves no `STATE ok`, that
@@ -8,7 +8,7 @@
 //! the unreferenced ones. Skips when the module has not been built.
 //!
 //! Ignored, nightly-style, against the network: `real_ciel_installs_sky130` (real `ciel` and
-//! `schemify` on `PATH`) and `real_kits_simulate_an_inverter` (FreePDK45 and ASAP7 installed
+//! `schemify-interop` on `PATH`) and `real_kits_simulate_an_inverter` (FreePDK45 and ASAP7 installed
 //! for real, then the inverter's DC sweep in ngspice): `cargo test -p pdk-manager -- --ignored`.
 
 use std::path::{Path, PathBuf};
@@ -21,7 +21,7 @@ const GRANTS: [&str; 7] = [
     "read_project",
     "write_project",
     "spawn:ciel",
-    "spawn:schemify",
+    "spawn:schemify-interop",
     "spawn:git",
     "spawn:curl",
     "spawn:tar",
@@ -48,10 +48,10 @@ esac
 exit 64
 "#;
 
-/// The fake `schemify import`: logs its argv; writes `<out>/schemify.project` and one cell, or
+/// The fake `schemify-interop xschem-import`: logs its argv; writes `<out>/schemify.project` and one cell, or
 /// fails when the output directory names `$FAIL_IMPORT`.
-const FAKE_SCHEMIFY: &str = r#"#!/bin/sh
-echo "schemify $*" >> "$FAKE_LOG"
+const FAKE_INTEROP: &str = r#"#!/bin/sh
+echo "schemify-interop $*" >> "$FAKE_LOG"
 out="$4"
 case "$out" in *"/$FAIL_IMPORT/"*) echo "import: no symbols found" >&2; exit 2 ;; esac
 mkdir -p "$out/sky130_fd_pr"
@@ -116,7 +116,7 @@ impl World {
         std::fs::create_dir_all(&bin).unwrap();
         for (name, body) in [
             ("ciel", FAKE_CIEL),
-            ("schemify", FAKE_SCHEMIFY),
+            ("schemify-interop", FAKE_INTEROP),
             ("git", FAKE_GIT),
             ("curl", FAKE_CURL),
             ("tar", FAKE_TAR),
@@ -304,7 +304,7 @@ fn install_use_remove_prune() {
         [
             format!("ciel enable --pdk-family sky130 --pdk-root {d}/root -l sky130_fd_pr {V1}"),
             format!(
-                "schemify import {d}/root/sky130A/libs.tech/xschem -o {d}/lib --xschemrc {d}/root/sky130A/libs.tech/xschem/xschemrc"
+                "schemify-interop xschem-import {d}/root/sky130A/libs.tech/xschem -o {d}/lib --xschemrc {d}/root/sky130A/libs.tech/xschem/xschemrc"
             ),
         ]
     );
@@ -639,7 +639,7 @@ fn git_url_and_local_kits() {
     assert!(w.faults().is_empty(), "{:?}", w.faults());
 }
 
-/// Nightly-style: the real `ciel` (network) and `schemify` on `PATH` install the newest sky130
+/// Nightly-style: the real `ciel` (network) and `schemify-interop` on `PATH` install the newest sky130
 /// into a scratch project, and the store holds an imported `sky130_fd_pr` library.
 #[test]
 #[ignore = "network and a real ciel: run with --ignored"]

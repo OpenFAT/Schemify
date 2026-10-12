@@ -2759,11 +2759,9 @@ dependencies = [
  "miniz_oxide 0.8.9",
  "proptest",
  "schemify-config",
- "schemify-devicereader",
  "schemify-doc",
  "schemify-elab",
  "schemify-format",
- "schemify-import",
  "schemify-netlist",
  "schemify-run",
  "wasm-bindgen-futures",
@@ -2775,14 +2773,6 @@ name = "schemify-config"
 version = "0.1.0"
 dependencies = [
  "omnilua",
-]
-
-[[package]]
-name = "schemify-devicereader"
-version = "0.1.0"
-dependencies = [
- "schemify-format",
- "schemify-import",
 ]
 
 [[package]]
@@ -2819,16 +2809,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "schemify-import"
-version = "0.1.0"
-dependencies = [
- "proptest",
- "schemify-doc",
- "schemify-expr",
- "schemify-format",
-]
-
-[[package]]
 name = "schemify-netlist"
 version = "0.1.0"
 dependencies = [
@@ -2837,9 +2817,7 @@ dependencies = [
  "schemify-elab",
  "schemify-expr",
  "schemify-format",
- "schemify-import",
  "schemify-spicecmp",
- "schemify-wave",
 ]
 
 [[package]]

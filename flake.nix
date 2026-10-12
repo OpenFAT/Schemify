@@ -76,16 +76,14 @@
           # Tracked files only (git), so the gitignored corpus cache never enters the store.
           src = self;
           cargoLock.lockFile = ./Cargo.lock;
-          # D39: the headless core `schemify` (CLI, config, package manager), the editor
-          # `schemify-gui` (`schemify edit` runs it) and the standalone importer; plugins are
-          # prebuilt wasm assets.
+          # D39: the headless core `schemify` (CLI, config, package manager) and the editor
+          # `schemify-gui` (`schemify edit` runs it); plugins are prebuilt wasm assets (the
+          # interop plugin's native CLI is the `interop` package below).
           cargoBuildFlags = [
             "-p"
             "schemify-cli"
             "-p"
             "schemify-app"
-            "-p"
-            "schemify-devicereader"
           ];
           # Shipped binaries carry no debug info (D39: core ≤ 2 MB, editor ≤ 10 MB; checked by
           # tools/size-check.sh, which uses this same env); the workspace release profile keeps
@@ -126,11 +124,42 @@
             platforms = systems;
           };
         };
+
+      # The interop plugin's native CLI (`schemify-interop xschem-import …`), from the plugins
+      # workspace (D24 as amended 2026-10-12: interop is a plugin, never part of the core).
+      interop =
+        pkgs:
+        pkgs.rustPlatform.buildRustPackage {
+          pname = "schemify-interop";
+          version = "0.1.0";
+          src = self;
+          cargoLock.lockFile = ./plugins/Cargo.lock;
+          buildAndTestSubdir = "plugins";
+          cargoBuildFlags = [
+            "-p"
+            "interop"
+            "--features"
+            "cli"
+            "--bin"
+            "schemify-interop"
+          ];
+          doCheck = false;
+          meta = {
+            description = "Schemify interop plugin, native CLI (xschem import)";
+            license = with pkgs.lib.licenses; [
+              mit
+              asl20
+            ];
+            mainProgram = "schemify-interop";
+            platforms = systems;
+          };
+        };
     in
     {
       packages = forAll (pkgs: {
         default = schemify pkgs;
         schemify = schemify pkgs;
+        interop = interop pkgs;
         wasm-bindgen-cli = wasmBindgenCli pkgs;
       });
 
@@ -144,9 +173,9 @@
           type = "app";
           program = "${schemify pkgs}/bin/schemify";
         };
-        devicereader = {
+        interop = {
           type = "app";
-          program = "${schemify pkgs}/bin/devicereader";
+          program = "${interop pkgs}/bin/schemify-interop";
         };
       });
 

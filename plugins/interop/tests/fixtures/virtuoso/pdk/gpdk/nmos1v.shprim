@@ -1,0 +1,43 @@
+schemify 1 shprim
+  provenance "virtuoso gpdk/nmos1v"
+  vsym 1a8081d359d24b28
+
+pin D inout 20 -30
+pin G in -20 0
+pin S inout 20 30
+pin B inout 20 0
+
+param model g45n1svt
+  kind string
+  doc "Model name"
+param w 120n
+  unit m
+  doc "Total width"
+param l 45n
+  unit m
+  doc Length
+param nf 1
+  kind int
+  doc Fingers
+param m 1
+  doc Multiplier
+param fingers 1
+  kind choice
+  choices 1 2
+  doc "Finger mode"
+param ad w*90n
+  doc "Drain area"
+
+impl spice spice
+  format spectre "{name} ({D} {G} {S} {B}) {model} w={w} l={l} nf={nf} m={m} ad={ad}"
+  format cdl "M{name} {D} {G} {S} {B} g45n1svt m={m} L={l} W={w}"
+
+line -20 0 0 0
+
+poly 5 -15 20 -15 20 -30
+poly 5 15 20 15 20 30
+
+stext 25 -8 R0 {name}
+  size 0.6
+stext 25 2 R0 w={w}
+  size 0.6

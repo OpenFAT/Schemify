@@ -39,12 +39,12 @@ dependencies = [
 name = "cktimg"
 version = "0.1.0"
 dependencies = [
+ "interop",
  "proptest",
  "schemify-abi",
  "schemify-doc",
  "schemify-elab",
  "schemify-format",
- "schemify-import",
  "schemify-plugin",
  "schemify-run",
  "schemify-spicecmp",
@@ -141,6 +141,22 @@ checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
  "hashbrown 0.17.1",
+]
+
+[[package]]
+name = "interop"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "schemify-abi",
+ "schemify-doc",
+ "schemify-elab",
+ "schemify-expr",
+ "schemify-format",
+ "schemify-netlist",
+ "schemify-plugin",
+ "schemify-spicecmp",
+ "schemify-wave",
 ]
 
 [[package]]
@@ -274,15 +290,6 @@ dependencies = [
 [[package]]
 name = "schemify-format"
 version = "0.1.0"
-
-[[package]]
-name = "schemify-import"
-version = "0.1.0"
-dependencies = [
- "schemify-doc",
- "schemify-expr",
- "schemify-format",
-]
 
 [[package]]
 name = "schemify-netlist"

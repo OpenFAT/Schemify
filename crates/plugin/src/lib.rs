@@ -332,6 +332,7 @@ pub struct Fault {
 pub struct Health {
     faults: VecDeque<Fault>,
     dropped: u32,
+    recorded: u64,
     overrides: Vec<Override>,
 }
 
@@ -344,6 +345,13 @@ impl Health {
     /// Returns how many faults were dropped to keep the ring bounded (saturating).
     pub fn dropped(&self) -> u32 {
         self.dropped
+    }
+
+    /// Returns how many faults were ever recorded: a reader that remembers it finds the
+    /// faults recorded since as the last `recorded() - seen` of [`Health::faults`] (fewer if
+    /// the ring dropped some meanwhile).
+    pub fn recorded(&self) -> u64 {
+        self.recorded
     }
 
     /// Returns every record of the current composition that a later plugin overrode.
@@ -361,7 +369,9 @@ impl Health {
             code,
             detail,
         });
+        self.recorded += 1;
         debug_assert!(self.faults.len() <= FAULTS_MAX);
+        debug_assert!(self.recorded >= self.faults.len() as u64);
     }
 }
 
@@ -439,6 +449,9 @@ pub struct Plugins {
     worker: Vec<bool>,
     /// The row's event running on a worker; its store is then away and an idle one stands in.
     jobs: Vec<Option<std::thread::JoinHandle<Done>>>,
+    /// Per row: events handed to [`deliver`] for it, and events finished (taken in, or
+    /// dropped while waiting), so a caller can tell when an event it queued has run.
+    events: Vec<(u64, u64)>,
     jobs_done: u32,
     next_id: u32,
     contributions: Contributions,
@@ -482,6 +495,7 @@ impl Plugins {
             strikes: Vec::new(),
             worker: Vec::new(),
             jobs: Vec::new(),
+            events: Vec::new(),
             jobs_done: 0,
             next_id: 1,
             contributions: Contributions::new(),
@@ -551,6 +565,7 @@ impl Plugins {
         self.strikes.push((0, Code::Trap));
         self.worker.push(false);
         self.jobs.push(None);
+        self.events.push((0, 0));
         debug_assert!(self.ids.len() <= PLUGINS_MAX && self.ids.len() == self.stores.len());
         debug_assert!(self.jobs.len() == self.ids.len() && self.strikes.len() == self.ids.len());
         Ok(id)
@@ -618,6 +633,17 @@ impl Plugins {
         self.row(id).is_some_and(|row| self.jobs[row].is_some())
     }
 
+    /// Returns `(given, finished)` for `id`: how many events [`deliver`] has handed it
+    /// (host events and queued ones, broadcasts included) and how many of those finished
+    /// (completed, aborted, or dropped while waiting for its worker). An event queued
+    /// before a delivery has finished once `finished` reaches the `given` read right after
+    /// that delivery. `None` if `id` is not loaded.
+    pub fn event_counts(&self, id: PluginId) -> Option<(u64, u64)> {
+        let counts = self.events[self.row(id)?];
+        debug_assert!(counts.1 <= counts.0);
+        Some(counts)
+    }
+
     /// Returns a counter that advances (wrapping) whenever [`deliver`] or
     /// [`Plugins::unload`] takes in an event that ran on a worker.
     pub fn jobs_done(&self) -> u32 {
@@ -664,8 +690,15 @@ impl Plugins {
         }
         match outcome {
             Err(code) => {
-                self.health
-                    .fault(plugin, code, format!("call {fn_id} aborted"));
+                let detail = if code == Code::Fuel {
+                    format!(
+                        "{}: call {fn_id}: out of fuel (budget {})",
+                        self.names[row], self.fuel[row]
+                    )
+                } else {
+                    format!("{}: call {fn_id} aborted ({code:?})", self.names[row])
+                };
+                self.health.fault(plugin, code, detail);
                 self.strike(row, code);
                 self.quarantine();
                 Err(code)
@@ -782,6 +815,7 @@ impl Plugins {
         queues: &mut RequestQueues,
     ) {
         let id = self.ids[row];
+        self.events[row].1 += 1;
         let ctx = self.stores[row].data_mut();
         assert!(!ctx.live, "taken in after the call returned");
         let staged = std::mem::take(&mut ctx.staged);
@@ -789,11 +823,20 @@ impl Plugins {
             self.health.fault(id, code, detail);
         }
         if let Err(code) = outcome {
-            let kind =
-                String::from_utf8_lossy(event.split(|&b| b == b'\n').next().unwrap_or_default())
-                    .into_owned();
-            self.health
-                .fault(id, code, format!("{kind}: aborted, outputs discarded"));
+            // The event's first line names it (`event command x.run <args>`), cut to 128 bytes.
+            let line = event.split(|&b| b == b'\n').next().unwrap_or_default();
+            let line = line.strip_prefix(b"event ").unwrap_or(line);
+            let kind = String::from_utf8_lossy(&line[..line.len().min(128)]).into_owned();
+            let name = &self.names[row];
+            let detail = if code == Code::Fuel {
+                format!(
+                    "{name}: {kind}: out of fuel (budget {}), outputs discarded",
+                    self.fuel[row]
+                )
+            } else {
+                format!("{name}: {kind}: aborted ({code:?}), outputs discarded")
+            };
+            self.health.fault(id, code, detail);
             self.strike(row, code);
             return;
         }
@@ -843,6 +886,7 @@ impl Plugins {
         if self.deferred[row].len() >= DEFERRED_MAX {
             let detail = "event dropped: too many wait for its worker".to_owned();
             self.health.fault(self.ids[row], Code::Space, detail);
+            self.events[row].1 += 1;
             return;
         }
         self.deferred[row].push_back(Pending {
@@ -969,6 +1013,7 @@ impl Plugins {
         self.strikes.remove(row);
         self.worker.remove(row);
         self.jobs.remove(row);
+        self.events.remove(row);
         self.contributions.remove_plugin(id);
         self.recompose();
         debug_assert!(self.row(id).is_none() && self.jobs.len() == self.ids.len());
@@ -1024,6 +1069,7 @@ pub fn deliver(
         // Host events first, then the events that waited for the worker, in arrival order;
         // whatever meets a new worker event waits again, in the same order.
         let mut queue = std::mem::take(&mut plugins.pending[row]);
+        plugins.events[row].0 += queue.len() as u64; // deferred ones were counted already
         queue.append(&mut plugins.deferred[row]);
         for p in queue {
             plugins.deliver_one(row, &p.bytes, p.echo, snapshots, queues);
@@ -1034,11 +1080,15 @@ pub fn deliver(
         match target {
             None => {
                 for row in 0..plugins.ids.len() {
+                    plugins.events[row].0 += 1;
                     plugins.deliver_one(row, bytes, true, snapshots, queues);
                 }
             }
             Some(id) => match plugins.row(id) {
-                Some(row) => plugins.deliver_one(row, bytes, true, snapshots, queues),
+                Some(row) => {
+                    plugins.events[row].0 += 1;
+                    plugins.deliver_one(row, bytes, true, snapshots, queues);
+                }
                 None => plugins.health.fault(
                     id,
                     Code::Gone,

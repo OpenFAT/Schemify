@@ -238,6 +238,8 @@ pub struct Host {
     notes: std::collections::VecDeque<String>,
     /// Editor events recorded so far (the sequence number of the newest note).
     notes_seq: u64,
+    /// Health faults already surfaced ([`schemify_plugin::Health::recorded`]).
+    faults_seen: u64,
 }
 
 /// Editor events kept for the command stream ([`Host::notes_since`]); a client that falls
@@ -348,6 +350,7 @@ impl Host {
                 Err(e) => notes.push(format!("plugin {name}: {e}")),
             }
         }
+        let faults_seen = plugins.health().recorded();
         let host = Host {
             plugins,
             events: PluginEvents::new(),
@@ -369,6 +372,8 @@ impl Host {
             user_ready: false,
             notes: std::collections::VecDeque::new(),
             notes_seq: 0,
+            // Load faults are in the startup notes already.
+            faults_seen,
         };
         let mut host = host;
         // Startup errors go out with the load notes (all of them reach the status line).
@@ -881,6 +886,18 @@ impl Host {
         }
         // A worker event that finished may have loaded what a pure function reads (D20).
         out.state_changed |= self.plugins.jobs_done() != jobs_done;
+        // Aborted calls (out of fuel, traps) and quarantines reach the status line, so a
+        // plugin never fails silently (plugin-abi §2); the rest stay in the health report.
+        let health = self.plugins.health();
+        let fresh = (health.recorded() - self.faults_seen).min(health.faults().len() as u64);
+        let skip = health.faults().len() - fresh as usize;
+        for f in health.faults().iter().skip(skip) {
+            let quarantined = f.code == Code::Gone && f.detail.contains(" quarantined: ");
+            if matches!(f.code, Code::Fuel | Code::Trap) || quarantined {
+                out.logs.push(f.detail.clone());
+            }
+        }
+        self.faults_seen = health.recorded();
         assert!(states.len() <= ROUNDS_MAX as usize * schemify_plugin::EVALS_MAX);
         out
     }

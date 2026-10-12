@@ -1,6 +1,6 @@
 Schemify {{TAG}} (commit {{SHA}}).
 
-Assets: `schemify`, `schemify-gui` and `devicereader` for Linux x86_64 (glibc ≥ 2.28), macOS
+Assets: `schemify`, `schemify-gui` and `schemify-interop` (xschem import) for Linux x86_64 (glibc ≥ 2.28), macOS
 aarch64 and x86_64, and Windows x86_64 (stripped, LTO); `schemify-{{TAG}}-web.tar.gz` is the
 browser build (serve the directory with any static file server; WebGPU required).
 
@@ -13,7 +13,7 @@ This release stays a draft until every box is ticked. Link the evidence (run URL
 - [ ] Corpus: 100% pass with only annotated XFAILs; the xschem-differential agree counts are
       ≥ the previous release (`tests/corpus/RATCHET.md`) and every difference is triaged.
 - [ ] Fuzzing: ≥ 24 CPU-h per target (`format/parse`, `format/merge3`, `expr/compile`,
-      `import/xschem_read`) with no new crash and a plateaued corpus.
+      `interop/xschem_read`) with no new crash and a plateaued corpus.
 - [ ] Coverage not below the last release (nightly `coverage` job, `tests/coverage/floor.txt`).
 - [ ] D39 budgets met: the last `nightly` perf job is green (no > 10% regression against
       `tests/perf/baseline.txt`, every budget assert passing); binary and wasm sizes within D39.

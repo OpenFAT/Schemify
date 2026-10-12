@@ -1,6 +1,6 @@
 //! PDK manager (docs/spec/pdk.md): installs PDKs per project (through `ciel`, a pinned `git`
 //! checkout, a sha256-checked download, or a kit already on disk), imports their xschem
-//! symbols with `schemify import` or generates device cells from the recipe, switches the
+//! symbols with `schemify-interop xschem-import` or generates device cells from the recipe, switches the
 //! project between versions and technologies by rewriting `schemify.project`, and removes what
 //! nothing references.
 //!
@@ -87,7 +87,7 @@ pub struct Device {
 /// Where a family's device cells come from (spec §2, §2.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Devices {
-    /// `schemify import` of the kit's xschem symbols (`<root>/<variant>/libs.tech/xschem`).
+    /// `schemify-interop xschem-import` of the kit's xschem symbols (`<root>/<variant>/libs.tech/xschem`).
     Import,
     /// Generated M-element cells sized by `w`, `l` (metres) and `m` (BSIM4 cards).
     Mos {
@@ -403,7 +403,7 @@ pub fn fetch_argv(r: &Recipe, version: &str) -> Vec<String> {
     argv
 }
 
-/// `schemify import <root>/<variant>/libs.tech/xschem -o <dir>/lib --xschemrc …/xschemrc`
+/// `schemify-interop xschem-import <root>/<variant>/libs.tech/xschem -o <dir>/lib --xschemrc …/xschemrc`
 /// (spec §3 step 2); `root` is the version's `root/`, or a `local` kit's path.
 ///
 /// # Panics
@@ -416,15 +416,15 @@ pub fn import_argv(r: &Recipe, version: &str, root: &str) -> Vec<String> {
     let dir = version_dir(r.family, version);
     let xschem = format!("{root}/{variant}/libs.tech/xschem");
     let argv = vec![
-        "schemify".to_owned(),
-        "import".to_owned(),
+        "schemify-interop".to_owned(),
+        "xschem-import".to_owned(),
         xschem.clone(),
         "-o".to_owned(),
         format!("{dir}/lib"),
         "--xschemrc".to_owned(),
         format!("{xschem}/xschemrc"),
     ];
-    assert_eq!(argv[0], "schemify");
+    assert_eq!(argv[..2], ["schemify-interop", "xschem-import"]);
     argv
 }
 
@@ -797,7 +797,7 @@ mod tests {
         );
         assert_eq!(
             import_argv(r, "abc123", ".schemify/pdks/sky130/abc123/root").join(" "),
-            "schemify import .schemify/pdks/sky130/abc123/root/sky130A/libs.tech/xschem -o .schemify/pdks/sky130/abc123/lib --xschemrc .schemify/pdks/sky130/abc123/root/sky130A/libs.tech/xschem/xschemrc"
+            "schemify-interop xschem-import .schemify/pdks/sky130/abc123/root/sky130A/libs.tech/xschem -o .schemify/pdks/sky130/abc123/lib --xschemrc .schemify/pdks/sky130/abc123/root/sky130A/libs.tech/xschem/xschemrc"
         );
         let ihp = recipe("ihp-sg13g2").unwrap();
         assert_eq!(

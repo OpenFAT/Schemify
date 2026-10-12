@@ -449,6 +449,24 @@ fn require_reads_config_modules_once() {
     };
     assert_eq!(PathBuf::from(url), root.join("../repo"));
     assert_eq!(cfg.table().packs[1].source, Source::Path(root.join("plug")));
+    // `./` segments are dropped lexically (PathBuf equality ignores them, the lockfile and
+    // `pack status` text does not); `..` stays, since only the filesystem can resolve it.
+    let (cfg, out) = Config::from_source(
+        "schemify.pack.add { { src = './repo', name = 'r' }, { path = './a/./plug' }, \
+         { path = '../up' } }",
+        Some(&root),
+    );
+    assert!(out.is_empty(), "{out:?}");
+    let shown = |i: usize| match &cfg.table().packs[i].source {
+        Source::Git { url, .. } => url.clone(),
+        Source::Path(p) => p.display().to_string(),
+        Source::Url { .. } => panic!("no url source here"),
+    };
+    let r = root.display();
+    assert_eq!(shown(0), format!("{r}/repo"));
+    assert_eq!(shown(1), format!("{r}/a/plug"));
+    assert_eq!(shown(2), format!("{r}/../up"));
+    assert!((0..3).all(|i| !shown(i).contains("/./")));
     for (name, why) in [
         ("../etc/passwd", "bad module name"),
         ("/abs", "bad module name"),

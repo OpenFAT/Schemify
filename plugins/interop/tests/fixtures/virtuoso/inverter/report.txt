@@ -1,0 +1,8 @@
+dropped:display-only	demo/tb_inv	1 wire alias label(s)
+dropped:pin-label	analogLib/nmos4	1 object(s)
+dropped:pin-label	demo/inv	2 object(s)
+dropped:selection-box	analogLib/nmos4	1 object(s)
+dropped:selection-box	analogLib/pmos4	1 object(s)
+dropped:selection-box	demo/inv	1 object(s)
+needs_review:cdl-approximate	analogLib/nmos4	auCdl format from simInfo (research §3.4)
+needs_review:template	analogLib/nmos4	symbol label `cdsTerm("S")` dropped

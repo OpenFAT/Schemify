@@ -93,7 +93,7 @@ pub fn install_steps(r: &Recipe, version: &str, local: Option<&str>) -> Vec<Step
     }
     match r.devices {
         Devices::Import => s.push(Step::Spawn(
-            "import (schemify)",
+            "import (schemify-interop)",
             import_argv(r, version, &root),
         )),
         Devices::Mos { cells, .. } | Devices::FinOsdi { cells, .. } => {
@@ -537,7 +537,7 @@ mod tests {
             "mine",
             Some("/pdk"),
         ));
-        assert!(c.contains("import (schemify): schemify import /pdk/sky130A/libs.tech/xschem -o .schemify/pdks/sky130/mine/lib"));
+        assert!(c.contains("import (schemify-interop): schemify-interop xschem-import /pdk/sky130A/libs.tech/xschem -o .schemify/pdks/sky130/mine/lib"));
         assert!(!c.contains("ciel"));
     }
 
@@ -550,7 +550,7 @@ mod tests {
             format!(
                 "remove {d}/STATE\nindex\nremove {d}/ROOT\n\
                  fetch (ciel): ciel enable --pdk-family sky130 --pdk-root {d}/root -l sky130_fd_pr v1\n\
-                 import (schemify): schemify import {d}/root/sky130A/libs.tech/xschem -o {d}/lib --xschemrc {d}/root/sky130A/libs.tech/xschem/xschemrc\n\
+                 import (schemify-interop): schemify-interop xschem-import {d}/root/sky130A/libs.tech/xschem -o {d}/lib --xschemrc {d}/root/sky130A/libs.tech/xschem/xschemrc\n\
                  tech.map: write {d}/tech.map\nstate: write {d}/STATE\n"
             )
         );

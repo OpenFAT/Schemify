@@ -30,7 +30,7 @@ Every installed PDK lives under the project's git-ignored `.schemify/` directory
     root/          the kit: ciel's PDK root (root/<variant> links into root/ciel/…), the git
                    checkout, or the unpacked archive (§2.1); absent for a `local` kit
     ROOT           a `local` kit only: one line, the kit's path (§2.1)
-    lib/           what `schemify import -o` wrote: one library directory per xschem symbol
+    lib/           what `schemify-interop xschem-import -o` wrote: one library directory per xschem symbol
                    directory (sky130_fd_pr, …) and its schemify.project (lib + set records);
                    or the generated library lib/<family>/ and its schemify.project (§2.2)
     models/        corner library corners.lib and derived model cards (§7; generated kits)
@@ -72,7 +72,7 @@ files.
 gf180mcu `1e35547…`, ihp-sg13 `22f4335…`): ciel's IHP family is `ihp-sg13` (variants
 `ihp-sg13g2`, `ihp-sg13cmos5l`); every models path above exists; the section names are the
 files' `.lib` sections (sky130 also has `ll hh hl lh`, gf180mcu `statistical`, IHP `*_mismatch`
-and `*_stat`). Running `schemify import` on each tree and netlisting the §5 inverter with the
+and `*_stat`). Running `schemify-interop xschem-import` on each tree and netlisting the §5 inverter with the
 shipped maps gives each PDK's device line (`sky130_fd_pr__pfet_01v8 L=0.5 W=2 nf=2 … mult=1`,
 `pfet_03v3 L=5e-7 W=2e-6 nf=2 … m=1`, `sg13_lv_pmos w=2e-6 l=5e-7 ng=2 m=1`).
 
@@ -134,7 +134,7 @@ All commands are plugin commands (D27 table), reachable from the panel (§4), ke
 | Command | Effect |
 |---|---|
 | `pdk.list_remote <family>` | ciel: `ciel ls-remote --pdk-family <ciel family>` → the 40-digit version ids it prints, shown in the panel (at most 24); git/url: the pinned version, nothing spawned |
-| `pdk.install <family> <version> [path]` | The recipe's steps (`install::install_steps`), in order: 1. remove `STATE`; 2. add the version to `INSTALLS`; 3. fetch (§2.1: `ciel enable --pdk-family <ciel family> --pdk-root .schemify/pdks/F/V/root [-l LIB]… V`, the git checkout, or download + sha256 + unpack), or for a `path` write `ROOT`; 4. devices: `schemify import <root>/<variant>/libs.tech/xschem -o .schemify/pdks/F/V/lib --xschemrc <root>/<variant>/libs.tech/xschem/xschemrc`, or (§2.2) the Verilog-A checkout, the derived cards, `models/corners.lib`, the generated cells and `lib/schemify.project`; 5. write `tech.map`; 6. write `STATE` = `ok`. Each step starts when the previous one completed; a failing step stops the chain, so `STATE` stays absent, and its output tail is shown. One install runs at a time. A git/url family refuses any version but its pinned one unless a `path` is given. |
+| `pdk.install <family> <version> [path]` | The recipe's steps (`install::install_steps`), in order: 1. remove `STATE`; 2. add the version to `INSTALLS`; 3. fetch (§2.1: `ciel enable --pdk-family <ciel family> --pdk-root .schemify/pdks/F/V/root [-l LIB]… V`, the git checkout, or download + sha256 + unpack), or for a `path` write `ROOT`; 4. devices: `schemify-interop xschem-import <root>/<variant>/libs.tech/xschem -o .schemify/pdks/F/V/lib --xschemrc <root>/<variant>/libs.tech/xschem/xschemrc`, or (§2.2) the Verilog-A checkout, the derived cards, `models/corners.lib`, the generated cells and `lib/schemify.project`; 5. write `tech.map`; 6. write `STATE` = `ok`. Each step starts when the previous one completed; a failing step stops the chain, so `STATE` stays absent, and its output tail is shown. One install runs at a time. A git/url family refuses any version but its pinned one unless a `path` is given. |
 | `pdk.use <family> <version>` | Makes the version active for the project (§3.1). Refused unless `STATE` is `ok`. |
 | `pdk.remove <family> <version>` | Refused while the version is active (a `lib` path in the manifest is under its directory) or referenced by `schemify.lock` (a `locked` row's resolved path is); otherwise removes `.schemify/pdks/F/V/` and its `INSTALLS` line (§3.2). |
 | `pdk.prune` | Lists every install that is neither active nor locked, complete or not, and needs a second invocation (`pdk.prune confirm`, or `pdk.prune.confirm`) to remove them. The confirm removes only versions it listed that are still unreferenced; an active or locked install is never pruned, even when incomplete. |
@@ -195,13 +195,18 @@ default UI's cell-panel styles (`cell-pane`, `docs-bar`, `cell-page`, `cell-sect
   Remove, greyed when refused with the reason as tooltip (already active; incomplete; pinned by
   `schemify.lock`; an install is running).
 - **Available:** family dropdown → `ls-remote` versions → Install (Reinstall when present).
-- **Install:** the current step (`fetch (ciel)`, `import (schemify)`, `tech.map`, `state`, or
+- **Install:** the current step (`fetch (ciel)`, `import (schemify-interop)`, `tech.map`, `state`, or
   `failed`) and the last 6 lines of the previous step's output.
 - **Prune:** lists what it would remove, then Confirm.
 
+Every message the panel shows (a result, a refusal, `listing … versions…`, `N … versions`,
+`installing F V…`, `installed F V`, `nothing to prune`) is also logged, so it reaches the status
+line and a JSON-RPC caller's answer (rpc spec §3.2): a script that runs `pdk.*` without the panel
+sees what happened.
+
 Long steps (`ciel enable`, import, `git`, `curl`, `tar`) run through `spawn`, which never
 blocks the frame (plugin-abi §11 item 12). Grants the plugin needs: `read_project`,
-`write_project`, and the `spawn:` of the families used: `ciel` and `schemify` (ciel families),
+`write_project`, and the `spawn:` of the families used: `ciel` and `schemify-interop` (ciel families; the xschem importer is the interop plugin's CLI, D24 as amended 2026-10-12, so it is spawned, never linked),
 `git` (asap7, and asap7's Verilog-A for a `local` asap7), `curl` and `tar` (freepdk45). A missing
 grant fails the step that needs it, naming the grants:
 
@@ -210,7 +215,7 @@ plugin pdk-manager path plugins/pdk-manager/pdk_manager.wasm
   grant read_project
   grant write_project
   grant spawn:ciel
-  grant spawn:schemify
+  grant spawn:schemify-interop
   grant spawn:git
   grant spawn:curl
   grant spawn:tar
@@ -345,7 +350,7 @@ are listed, not changed. One transaction (one undo), shown in the visual diff be
   limits, `vdd_nom`, corner-name mapping for sectioned kits and §8 retargeting follow.
 - **Oracles:**
   - `plugins/pdk-manager/tests/guest.rs`: the built guest through the real plugin host with a
-    fake `ciel` and `schemify` on `PATH` (shell scripts writing a tiny tree and logging argv):
+    fake `ciel` and `schemify-interop` on `PATH` (shell scripts writing a tiny tree and logging argv):
     exact argv of every step, store layout, `STATE`, `tech.map`, `INSTALLS`, the manifest after
     `pdk.use` (canonical text), a failed fetch or import (and a failed re-install of a complete
     version) leaves no `STATE ok`, `pdk.use` refuses an incomplete install, `pdk.remove` refuses
@@ -355,7 +360,7 @@ are listed, not changed. One transaction (one undo), shown in the visual diff be
     `tech.map`), the manifest after `pdk.use`, a failing checkout and a level-54 card leave no
     `STATE ok`, a sha256 mismatch never unpacks, refused versions and paths spawn nothing, a
     `local` kit is never copied and `pdk.remove`/`pdk.prune` of it leave the kit in place.
-    `real_ciel_installs_sky130` (ignored, nightly: real `ciel` and `schemify` on `PATH`) installs
+    `real_ciel_installs_sky130` (ignored, nightly: real `ciel` and `schemify-interop` on `PATH`) installs
     and uses sky130; `real_kits_simulate_an_inverter` (ignored, nightly: network, `git`, `curl`,
     `tar`, `schemify`, ngspice, `openvaf-r` or `$OPENVAF`) installs freepdk45 and asap7, uses
     each and runs the `tech:` inverter's DC sweep with `schemify run`: output above 0.9 vdd at
