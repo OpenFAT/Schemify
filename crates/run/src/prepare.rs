@@ -382,7 +382,7 @@ pub fn sources(project: &Project, e: &Elab) -> Vec<Source> {
             out.push(src);
         }
     }
-    out.sort_by(|a, b| a.out.cmp(&b.out));
+    crate::plan::sort_by_name(&mut out, |s| &s.out);
     assert!(out.windows(2).all(|w| w[0].out < w[1].out));
     out
 }
