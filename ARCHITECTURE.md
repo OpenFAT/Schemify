@@ -81,6 +81,7 @@ Each spine lives in `app` as one function, one line per transform. Branches that
 - **`netlist`**: `elab::elaborate(project, top, request{config, corner, overrides, env, dialect}) → defs, def_insts, leaf_impls, globals, bench lines, violations` (open `needs_open` cells and repeat if non-empty) → **gate** (`violations.blocking()`; waived rows are `I005`, D13) → `netlist::emit(&elab, dialect) → netlist_text, name_map`
 - **`run`** (`crates/run`, spec `docs/spec/run.md`; shared CLI/editor steps in `app::spines`): `Plan::read(bench)` → `expand(plan, select) → jobs` → `design(project, top, jobs) → digest` (gate: errors or unopened cells block) → per job: `prepare` (elaborate with the job's assignments → `netlist::emit`) → `Runner::submit` (native subprocess; web: runner plugin) → `Runner::wait` (CLI) or `Runner::poll` from the frame spine (editor) → `Results::record(raw)` → outputs/specs → `Run::save` (`results` + `bench` sidecar in `.schemify/runs/<design>/`); optimizer = `OptRun::step` ask → job → tell loop, best point → staged edit; MC yield via `yield_summary`
 - **`import`** (in `plugins/interop`, outside the core): `interop::xschem::read → records` → `interop::translate_library(files, Options{roots, pdk_vars, models, drc, …}) → (path, bytes) outputs + Report (needs_review, rounded coords)` → `interop::check_output` (every output loads in `doc`)
+- **`interop`** (`plugins/interop`, spec `docs/spec/interop.md`): one `job::Job` per conversion, driven by the editor guest (inverted I/O) and the `schemify-interop` CLI (file system). Export: `design::load(files, tops) → Design` → `map::resolve → Plan` → `nets::extract` + `remap::apply` (re-mastered instances, retarget placeholders) → `virtuoso::write → .sfyx` (+ `ade::export`, `retarget::intents`) or `xschem_out::export → .sch/.sym`. Import: `sfyx::read` → `virtuoso::read → Schemify documents` (+ `ade::import`) → `merge::merge(local, stash)` → fingerprints (§7.5) → files. The Virtuoso side is `schemify.il` (`skill/*.il`): a data mover (`SfyExport`, `SfyExportLib`, `SfyImport`, `SfyRetarget`, `SfySelfTest`) whose input is never evaluated.
 - **`merge-driver`**: `format::parse(O, A, B)` → `format::merge3` (by record id, by field line) → `format::write` (no semantics needed; D34)
 
 ## Tables (initial)
@@ -171,7 +172,7 @@ Both drills pass only because three tables exist on day one: `annotations` (+ re
 |---|---|---|
 | WS1 Data | `format`, `doc` (load/save, transactions, journal, merge) | M1 |
 | WS2 Semantics | `expr`, `elab` (graph, connectivity, elaboration, checks) | M1 |
-| WS3 Interop and output | `netlist`, `plugins/interop` (xschem import; native CLI `schemify-interop`) | M1 |
+| WS3 Interop and output | `netlist`, `plugins/interop` (xschem import and export, Cadence Virtuoso bridge (D41); native CLI `schemify-interop`) | M1 |
 | WS7 Test infra | golden corpus from running xschem, differential harness vs xschem/ngspice, fuzz targets, CI ×4 platforms (D37) | M1, ongoing |
 | WS4 Simulation | `run`, `wave`, analysis engines | M2 slice, then M3 |
 | WS5 Frontend | `ui`, `render`, `plugins/default-ui` | M2 |
