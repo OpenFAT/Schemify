@@ -13,9 +13,12 @@ impl spice spice
   ignore true
 
 line 0 0 0 10
-line -10 10 10 10
-line -10 10 0 20
-line 10 10 0 20
+line -7.5 10 7.5 10
+  width 2
+line -5 13.75 5 13.75
+  width 2
+line -2.5 17.5 2.5 17.5
+  width 2
 
-stext 10 10 R0 {lab}
-  size 0.2
+stext 10 6 R0 {lab}
+  size 0.14

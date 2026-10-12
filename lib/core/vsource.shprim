@@ -16,15 +16,17 @@ param savecurrent false
 impl spice spice
   format spice "{name} {p} {n} {value}{savecurrent ? \"\\n.save i(\" + name + \")\" : \"\"}"
 
-line 0 -30 0 -20
-line 0 20 0 30
-line -5 -10 5 -10
-line 0 -15 0 -5
-line -5 10 5 10
+line 0 -30 0 -7.5
+line 0 7.5 0 30
 
-circle 0 0 20
+circle 0 0 7.5
+  width 2
 
-stext 30 -10 R0 {name}
-  size 0.2
-stext 30 0 R0 {value}
-  size 0.2
+line -2.5 -3.75 2.5 -3.75
+line 0 -6.25 0 -1.25
+line -2.5 3.75 2.5 3.75
+
+stext 12.5 -9 R0 {name}
+  size 0.14
+stext 12.5 0 R0 {value}
+  size 0.14

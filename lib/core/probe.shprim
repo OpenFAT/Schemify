@@ -12,7 +12,7 @@ param attrs ""
 impl spice spice
   format spice ".save {attrs} v( {p} )"
 
-line 0 0 10 -10
-line 10 -10 20 -10
+line 0 0 8.232 -8.232
 
-circle 20 -10 5
+circle 10 -10 2.5
+  width 2

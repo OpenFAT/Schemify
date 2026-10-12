@@ -1,0 +1,232 @@
+schemify 1 shcomp
+  doc "Contact sheet: every lib/core cell with pin stubs, and a 5-transistor OTA (render fixture for the symbol kit)"
+  prefix x
+
+impl sch schematic
+
+inst c001 core:nmos4
+  at 0 0 R0
+  name M1
+  w 2u
+inst c006 core:pmos4
+  at 160 0 R0
+  name M2
+  w 4u
+inst c011 core:npn
+  at 320 0 R0
+  name Q1
+inst c015 core:pnp
+  at 480 0 R0
+  name Q2
+inst c019 core:diode
+  at 640 0 R0
+  name D1
+inst c022 core:res
+  at 800 0 R0
+  name R1
+  value 10k
+inst c025 core:cap
+  at 0 140 R0
+  name C1
+  value 2p
+inst c028 core:parax_cap
+  at 160 140 R0
+  name C2
+inst c030 core:ind
+  at 320 140 R0
+  name L1
+  value 5n
+inst c033 core:vsource
+  at 480 140 R0
+  name V1
+  value 1.8
+inst c036 core:isource
+  at 640 140 R0
+  name I1
+  value 10u
+inst c039 core:vcvs
+  at 800 140 R0
+  name E1
+  value 10
+inst c044 core:vccs
+  at 0 280 R0
+  name G1
+  value 1m
+inst c049 core:ccvs
+  at 160 280 R0
+  name H1
+  vnam V1
+inst c052 core:cccs
+  at 320 280 R0
+  name F1
+  vnam V1
+inst c055 core:bsource
+  at 480 280 R0
+  name B1
+  func "v(a)*2"
+inst c058 core:switch
+  at 640 280 R0
+  name W1
+  vnam V1
+inst c061 core:vswitch
+  at 800 280 R0
+  name S1
+inst c066 core:tline
+  at 40 420 R0
+  name T1
+inst c071 core:ammeter
+  at 160 420 R0
+  name VA
+inst c074 core:probe
+  at 320 420 R0
+  name P1
+inst c076 core:vdd
+  at 480 420 R0
+  name S2
+inst c078 core:gnd
+  at 640 420 R0
+  name G2
+inst c080 core:pmos4
+  at 1180 40 MR0
+  name M3
+  w 4u
+  l 0.5u
+inst c081 core:pmos4
+  at 1300 40 R0
+  name M4
+  w 4u
+  l 0.5u
+inst c082 core:nmos4
+  at 1140 140 R0
+  name M5
+  w 2u
+  l 0.5u
+inst c083 core:nmos4
+  at 1340 140 MR0
+  name M6
+  w 2u
+  l 0.5u
+inst c084 core:nmos4
+  at 1220 230 R0
+  name M7
+  w 4u
+  l 1u
+inst c085 core:nmos4
+  at 1000 230 MR0
+  name M8
+  w 4u
+  l 1u
+inst c086 core:isource
+  at 980 150 R0
+  name I2
+  value 20u
+inst c087 core:cap
+  at 1460 120 R0
+  name CL
+  value 1p
+inst c088 core:vdd
+  at 1240 -10 R0
+  name S3
+inst c089 core:vdd
+  at 980 100 R0
+  name S4
+inst c090 core:gnd
+  at 1240 270 R0
+  name G3
+inst c091 core:gnd
+  at 980 270 R0
+  name G4
+inst c092 core:gnd
+  at 1460 160 R0
+  name G5
+
+wire w002 20 -40 20 -30
+wire w003 -30 0 -20 0
+wire w004 20 30 20 40
+wire w005 20 0 30 0
+wire w007 180 -40 180 -30
+wire w008 130 0 140 0
+wire w009 180 30 180 40
+wire w010 180 0 190 0
+wire w012 340 -40 340 -30
+wire w013 290 0 300 0
+wire w014 340 30 340 40
+wire w016 500 -40 500 -30
+wire w017 450 0 460 0
+wire w018 500 30 500 40
+wire w020 640 -40 640 -30
+wire w021 640 30 640 40
+wire w023 800 -40 800 -30
+wire w024 800 30 800 40
+wire w026 0 100 0 110
+wire w027 0 170 0 180
+wire w029 160 120 160 130
+wire w031 320 100 320 110
+wire w032 320 170 320 180
+wire w034 480 100 480 110
+wire w035 480 170 480 180
+wire w037 640 100 640 110
+wire w038 640 170 640 180
+wire w040 800 100 800 110
+wire w041 800 170 800 180
+wire w042 750 120 760 120
+wire w043 750 160 760 160
+wire w045 0 240 0 250
+wire w046 0 310 0 320
+wire w047 -50 260 -40 260
+wire w048 -50 300 -40 300
+wire w050 160 240 160 250
+wire w051 160 310 160 320
+wire w053 320 240 320 250
+wire w054 320 310 320 320
+wire w056 480 240 480 250
+wire w057 480 310 480 320
+wire w059 640 240 640 250
+wire w060 640 310 640 320
+wire w062 800 240 800 250
+wire w063 800 310 800 320
+wire w064 750 280 760 280
+wire w065 750 300 760 300
+wire w067 -50 410 -40 410
+wire w068 -50 430 -40 430
+wire w069 120 410 130 410
+wire w070 120 430 130 430
+wire w072 160 380 160 390
+wire w073 160 450 160 460
+wire w075 310 420 320 420
+wire w077 480 420 480 430
+wire w079 640 410 640 420
+wire w093 1200 40 1280 40
+wire w094 1200 40 1200 90
+wire w095 1160 90 1200 90
+wire w096 1160 70 1160 90
+wire w097 1160 90 1160 110
+wire w098 1320 70 1320 90
+wire w099 1320 90 1320 110
+wire w100 1160 10 1240 10
+wire w101 1240 10 1320 10
+wire w102 1240 -10 1240 10
+wire w103 1160 10 1160 40
+wire w104 1320 10 1320 40
+wire w105 1160 140 1160 170
+wire w106 1320 140 1320 170
+wire w107 1240 230 1240 260
+wire w108 980 230 980 260
+wire w109 1160 170 1240 170
+wire w110 1240 170 1320 170
+wire w111 1240 170 1240 200
+wire w112 1240 260 1240 270
+wire w113 1020 230 1200 230
+wire w114 1020 200 1020 230
+wire w115 980 200 1020 200
+wire w116 980 180 980 200
+wire w117 980 100 980 120
+wire w118 980 260 980 270
+wire w119 1080 140 1120 140
+wire w120 1360 140 1400 140
+wire w121 1320 90 1460 90
+wire w122 1460 150 1460 160
+
+label n123 1080 140 R0 vinp
+label n124 1400 140 R0 vinm
+label n125 1460 90 R0 vout

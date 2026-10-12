@@ -141,9 +141,10 @@ impl Lines {
     }
 }
 
-/// A primitive's stroke weight and dash (format spec §4 rank 2, `width` and `dash`), packed
-/// in a byte: bits 0–1 hold `weight − 1`, bits 2–5 the dash. [`LineStyle::PLAIN`] (weight 1,
-/// solid) is the zero value, so a table filled without styles draws exactly as before.
+/// A primitive's stroke weight, dash and fill (format spec §4 rank 2, `width`, `dash`,
+/// `fill true`), packed in a byte: bits 0–1 hold `weight − 1`, bits 2–5 the dash, bit 6 the
+/// fill. [`LineStyle::PLAIN`] (weight 1, solid, filled only if its layer fills) is the zero
+/// value, so a table filled without styles draws exactly as before.
 ///
 /// Both are in screen terms, not world units: a stroke is `weight` × its layer's
 /// [`Palette::width`] logical pixels and a dash `n` draws dashes and gaps of `2n` logical
@@ -180,6 +181,19 @@ impl LineStyle {
     pub fn dash(self) -> u8 {
         (self.0 >> 2) & 15
     }
+
+    /// This style, also filling a closed shape (rect, full circle, polygon) in its layer's
+    /// colour whatever the layer's [`Palette::fill`] bit says; an open shape ignores it.
+    pub fn filled(self) -> LineStyle {
+        LineStyle(self.0 | Self::FILL)
+    }
+
+    /// True when [`LineStyle::filled`] was applied.
+    pub fn fills(self) -> bool {
+        self.0 & Self::FILL != 0
+    }
+
+    const FILL: u8 = 1 << 6;
 }
 
 /// Axis-aligned rectangles between two opposite corners (outlined; also filled when the
@@ -866,7 +880,7 @@ pub fn draw_prims_in<P: Painter>(
             continue;
         }
         paths += 1;
-        if palette.fill & (1 << layer) != 0 {
+        if palette.fill & (1 << layer) != 0 || r.style[i].fills() {
             push_rect(&mut sc.fill[layer], Rect::new(x0, y0, x1, y1));
         }
         let st = r.style[i];
@@ -901,7 +915,7 @@ pub fn draw_prims_in<P: Painter>(
         };
         push_arc(curves, cx, cy, rad, start, sweep);
         paths += 1;
-        if a.sweep[i].abs() >= 360_000 && palette.fill & (1 << layer) != 0 {
+        if a.sweep[i].abs() >= 360_000 && (palette.fill & (1 << layer) != 0 || st.fills()) {
             push_arc(&mut sc.fill[layer], cx, cy, rad, start, sweep);
         }
     }
@@ -961,7 +975,7 @@ pub fn draw_prims_in<P: Painter>(
                 }
             }
             paths += 1;
-            if closed && palette.fill & (1 << layer) != 0 {
+            if closed && (palette.fill & (1 << layer) != 0 || st.fills()) {
                 let f = &mut sc.fill[layer];
                 f.move_to((
                     f64::from(polys.x[start]) * s + ox,
@@ -1305,6 +1319,29 @@ mod tests {
         let mut solid = CanvasPrims::default();
         solid.arc(0, 0, 40_000, 0, 360_000, 4);
         assert!(ink(&lit(&p, 1e-3)) < ink(&lit(&solid, 1e-3)) * 3 / 4);
+    }
+
+    #[test]
+    fn fill_bit_fills_closed_shapes_only() {
+        let tri = [(-30_000, -30_000), (30_000, 0), (-30_000, 30_000)];
+        let draw = |closed: bool, st: LineStyle| {
+            let mut p = CanvasPrims::default();
+            p.poly_styled(&tri, closed, 4, st);
+            ink(&lit(&p, 1e-3))
+        };
+        let (outline, filled) = (
+            draw(true, LineStyle::PLAIN),
+            draw(true, LineStyle::PLAIN.filled()),
+        );
+        assert!(
+            filled > outline * 5,
+            "layer 4 does not fill; the bit does: {outline} {filled}"
+        );
+        assert!(LineStyle::new(2, 3).filled().fills() && !LineStyle::new(2, 3).fills());
+        assert!(
+            draw(false, LineStyle::PLAIN.filled()) < filled / 3,
+            "an open chain never fills"
+        );
     }
 
     #[test]

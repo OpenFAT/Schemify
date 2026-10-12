@@ -16,11 +16,16 @@ param model csw
 impl spice spice
   format spice "{name} {p} {n} {vnam} {model}"
 
-line 0 -30 0 -10
-line 0 10 0 30
-line 0 10 -10 -10
+line 0 -30 0 -11.25
+line 0 11.25 0 30
 
-stext 10 -10 R0 {name}
-  size 0.2
-stext 10 0 R0 {vnam}
-  size 0.2
+circle 0 -10 1.25
+circle 0 10 1.25
+
+line 0 8.75 -8.75 -6.25
+  width 2
+
+stext 7.5 -9 R0 {name}
+  size 0.14
+stext 7.5 0 R0 {vnam}
+  size 0.14

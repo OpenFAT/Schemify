@@ -543,8 +543,10 @@ fn layer_attr(doc: &Document, span: schemify_doc::Span, default: u8) -> u8 {
         .unwrap_or(default)
 }
 
-/// The `width` and `dash` attributes of a graphic (format spec §4, stroke attributes): a
-/// value that is not a number reads as absent; the rest rounds and clamps in [`LineStyle::new`].
+/// The `width`, `dash` and `fill` attributes of a graphic (format spec §4, stroke attributes):
+/// a value that is not a number reads as absent; the rest rounds and clamps in
+/// [`LineStyle::new`]. `fill true` fills a closed shape; absent or `false` leaves it to the
+/// layer.
 fn style_attr(doc: &Document, span: schemify_doc::Span) -> LineStyle {
     let n = |key: &str, absent: u8| {
         attr(doc, span, key)
@@ -552,7 +554,12 @@ fn style_attr(doc: &Document, span: schemify_doc::Span) -> LineStyle {
             .filter(|v| v.is_finite())
             .map_or(absent, |v| v.round().clamp(0.0, 255.0) as u8)
     };
-    LineStyle::new(n("width", 1), n("dash", 0))
+    let st = LineStyle::new(n("width", 1), n("dash", 0));
+    if attr(doc, span, "fill") == Some("true") {
+        st.filled()
+    } else {
+        st
+    }
 }
 
 fn size_of(text: Option<&str>, default: f64) -> i32 {
@@ -659,14 +666,20 @@ fn rotated_extent((w, h): (i32, i32), rot: u8) -> (i32, i32) {
     }
 }
 
-/// Where a symbol text turned `rot` quarter turns with its anchor at `q` starts: the anchor,
-/// or for `hcenter` half its width back along its direction.
-fn sym_text_at(q: Pt, t: &SymText, text: &str, rot: u8) -> Pt {
-    if !t.hcenter {
+/// Where a symbol text turned `rot` quarter turns with its anchor at `q` starts: the anchor;
+/// for `hcenter` half its width back along its direction; under a mirror (`mirrored`, the
+/// composed orientation's) its whole width back, so the text ends at the anchor and a label
+/// column right of the body stays clear of the mirrored body (format spec §4, `stext`).
+fn sym_text_at(q: Pt, t: &SymText, text: &str, rot: u8, mirrored: bool) -> Pt {
+    if !t.hcenter && !mirrored {
         return q;
     }
     let (w, _) = text_size(t.size, text);
-    let (dx, dy) = rotated_extent((-w / 2, 0), rot);
+    // ponytail: right alignment uses the 0.6 em/char estimate, so a mirrored column is
+    // ragged by the estimate's error; shape in the scene if that shows.
+    let back = if t.hcenter { w / 2 } else { w };
+    let (dx, dy) = rotated_extent((-back, 0), rot);
+    assert!(back >= 0);
     (q.0 + dx, q.1 + dy)
 }
 
@@ -1278,8 +1291,9 @@ fn instance<'d>(
             text.clear();
             text.push_str(&t.raw);
         }
-        let rot = crate::geometry::compose(o, t.orient).quarter_turns();
-        let at = sym_text_at(x(t.at), t, text, rot);
+        let turned = crate::geometry::compose(o, t.orient);
+        let rot = turned.quarter_turns();
+        let at = sym_text_at(x(t.at), t, text, rot, turned.mirrored());
         b.text_rot(at, t.size, t.layer, text, rot, obj);
     }
 }
@@ -1640,7 +1654,7 @@ fn symbol(b: &mut Build<'_>, doc: &Document) {
                 ti += 1;
                 let obj = b.sc.objs.push(key, [t.at.0, t.at.1, t.at.0, t.at.1], false);
                 let rot = t.orient.quarter_turns();
-                let at = sym_text_at(t.at, t, &t.raw, rot);
+                let at = sym_text_at(t.at, t, &t.raw, rot, t.orient.mirrored());
                 let bx = b.text_rot(at, t.size, t.layer, &t.raw, rot, obj);
                 b.sc.objs.geom[obj as usize] = bx;
             }

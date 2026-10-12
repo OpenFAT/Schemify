@@ -280,7 +280,7 @@ pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
         };
         let (x0, x1) = (r.x0[i].min(r.x1[i]), r.x0[i].max(r.x1[i]));
         let (y0, y1) = (r.y0[i].min(r.y1[i]), r.y0[i].max(r.y1[i]));
-        let fill = if look.filled(r.layer[i]) {
+        let fill = if look.filled(r.layer[i]) || r.style[i].fills() {
             format!("#{c:06x}")
         } else {
             "none".to_owned()
@@ -301,7 +301,7 @@ pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
             continue;
         };
         let full = a.sweep[i].unsigned_abs() >= 360_000;
-        let fill = if full && look.filled(a.layer[i]) {
+        let fill = if full && (look.filled(a.layer[i]) || a.style[i].fills()) {
             format!("#{c:06x}")
         } else {
             "none".to_owned()
@@ -353,7 +353,7 @@ pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
                     units(polys.y[j].into())
                 );
             }
-            let fill = if closed && look.filled(layer) {
+            let fill = if closed && (look.filled(layer) || polys.style[k].fills()) {
                 format!("#{c:06x}")
             } else {
                 "none".to_owned()
@@ -616,7 +616,7 @@ fn page_ops(
     }
     // One stroked (and, closed on a filled layer, filled) path built by the operators `body`.
     let finish = |o: &mut String, body: &str, closed: bool, layer: u8, st: LineStyle, c: u32| {
-        let fill = closed && look.filled(layer);
+        let fill = closed && (look.filled(layer) || st.fills());
         color(o, c, false);
         if fill {
             color(o, c, true);

@@ -16,15 +16,19 @@ param m 1
 impl spice spice
   format spice "{name} {p} {n} {value} m={m}"
 
-line 0 -30 0 -20
-line 0 20 0 30
+line 0 -30 0 -15
+line 0 15 0 30
 
-arc 0 -15 5 270 180
-arc 0 -5 5 270 180
-arc 0 5 5 270 180
-arc 0 15 5 270 180
+arc 0 -11.25 3.75 270 180
+  width 2
+arc 0 -3.75 3.75 270 180
+  width 2
+arc 0 3.75 3.75 270 180
+  width 2
+arc 0 11.25 3.75 270 180
+  width 2
 
-stext 20 -10 R0 {name}
-  size 0.2
-stext 20 0 R0 {value}
-  size 0.2
+stext 8.75 -9 R0 {name}
+  size 0.14
+stext 8.75 0 R0 {value}
+  size 0.14
