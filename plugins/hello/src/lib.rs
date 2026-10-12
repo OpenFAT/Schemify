@@ -4,6 +4,8 @@
 //! `hello.inspect` exercises the rest of the read path (string columns, `read_record`,
 //! inverted `eval` and `fs_read`) for the host's end-to-end test.
 
+#![deny(unsafe_code)] // not `forbid`: the SDK's `export!` allows `unsafe(no_mangle)`
+
 use schemify_abi::guest::{self, Host};
 use schemify_abi::{Event, Level, Out, Table, col};
 

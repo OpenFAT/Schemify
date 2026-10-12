@@ -473,16 +473,20 @@ impl<'a> Reader<'a> {
     fn f64s(&mut self, n: usize) -> Result<Vec<f64>, &'static str> {
         let raw = self.take(n * 8)?;
         Ok(raw
-            .chunks_exact(8)
-            .map(|c| f64::from_le_bytes(c.try_into().expect("8 bytes")))
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|&c| f64::from_le_bytes(c))
             .collect())
     }
 
     fn f32s(&mut self, n: usize) -> Result<Vec<f32>, &'static str> {
         let raw = self.take(n * 4)?;
         Ok(raw
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().expect("4 bytes")))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&c| f32::from_le_bytes(c))
             .collect())
     }
 }
