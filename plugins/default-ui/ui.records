@@ -468,6 +468,18 @@ node file.image_export.svg_export item
   label "SVG Export"
   command file.image_export.svg_export
   accel Alt+*
+node file.export_project item
+  parent menu.file
+  label "Export project (zip)"
+  command file.export_project
+node file.import_project item
+  parent menu.file
+  label "Import project (zip)"
+  command file.import_project
+node file.import_project.folder item
+  parent menu.file
+  label "Import project folder"
+  command file.import_project.folder
 node menu.file.sep1 separator
   parent menu.file
 node file.close_schematic item

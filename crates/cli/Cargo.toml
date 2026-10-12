@@ -29,6 +29,45 @@ schemify-import.workspace = true
 schemify-devicereader.workspace = true
 schemify-run.workspace = true
 schemify-config.workspace = true
+# Inflate for imported project zips (`zip`, web spec §3). Already in the graph through
+# vello_cpu → png; pure Rust, `forbid(unsafe_code)`. Integrator: a root
+# `[workspace.dependencies]` row can replace this version.
+miniz_oxide = "0.8"
+
+# The browser side of `platform` (D2: generated glue only; web spec): OPFS, the Clipboard
+# API, downloads, the file picker. Both crates are in the graph already (render, winit).
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+wasm-bindgen-futures.workspace = true
+web-sys = { workspace = true, features = [
+  "BeforeUnloadEvent",
+  "Blob",
+  "Clipboard",
+  "Document",
+  "DomException",
+  "Element",
+  "Event",
+  "EventTarget",
+  "File",
+  "FileList",
+  "FileSystemDirectoryHandle",
+  "FileSystemFileHandle",
+  "FileSystemGetDirectoryOptions",
+  "FileSystemGetFileOptions",
+  "FileSystemHandle",
+  "FileSystemHandleKind",
+  "FileSystemRemoveOptions",
+  "FileSystemWritableFileStream",
+  "HtmlAnchorElement",
+  "HtmlElement",
+  "HtmlInputElement",
+  "Location",
+  "Navigator",
+  "StorageManager",
+  "Url",
+  "Window",
+  "WritableStream",
+  "console",
+] }
 
 [dev-dependencies]
 # The JSON-RPC codec's round-trip and malformed-input properties (TESTING.md `rpc`).

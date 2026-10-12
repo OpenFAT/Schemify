@@ -17,9 +17,21 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## user config and packages (config spec)
 
-- **config**: no Lua on the web: C Lua 5.4 (mlua vendored) has no `wasm32-unknown-unknown` build, so the web runs without `init.lua`. Upgrade: a pure-Rust Lua 5.4 (piccolo, once it covers `error(msg, level)`, `tonumber`, `load` semantics) or C Lua on a wasi-libc shim; OPFS `/config` then holds `init.lua`.
+- **config**: no Lua on the web (web spec §5 has the evaluation): `lua-src` refuses `wasm32-unknown-unknown` and a C build needs a libc shim with wasm-EH `setjmp`/`longjmp`; piccolo lacks most of the stdlib. Needs the user decision under "Decisions pending"; OPFS `/config` then holds `init.lua`.
 - **config**: a single C library call (a pattern match over a huge string) runs between budget checks; only the memory cap bounds it.
 - **cli/pack**: `url` packages are one `.wasm` file (no archives); `pack` has no parallel fetches.
+
+## web (web spec)
+
+- **cli/platform**: the whole OPFS tree lives in memory and a changed file is rewritten whole (a journal append rewrites the journal). Upgrade: mount the open project with `/config` and `/state` only; append in place (`createWritable({keepExistingData})` + `seek`).
+- **cli/platform**: a refused mount or a failed OPFS write is reported on the browser console only (plus the unload guard), not in the status line.
+- **app**: the URL fragment is the only argument on the web (no `--clean`, `-u`, `--no-default-ui`).
+- **Simulation on the web** (D16; designed in web spec §6, not implemented). In order, by owner:
+  1. **abi/plugin**: `RunJob { job, lang, dir }` + the netlist as NUL payload; output record `job <job> done|failed <message>` into a `jobs` request queue, taken after the delivery's file writes.
+  2. **cli/platform** (web): `fetch_start(url, body) -> Spawned` (natively `curl`, on the web `window.fetch`); **app/plugins.rs**: execute `fetch` through it, as `spawn`.
+  3. **run + cli/spines**: on the web `Run` holds a plugin runner with `Runner`'s five calls; `RunnerConfig`/`SimCommand` build for wasm.
+  4. **app/sim.rs**: compile on wasm (run history through `platform::list_files`, not `std::fs`); route `RunJob`/`job` between the run and the host.
+  5. **web**: `plugins/remote-runner` and a fake endpoint in the smoke test.
 
 ## docs page (D19–D21)
 
@@ -27,7 +39,7 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - Plot overlays: at most 16 jobs per slot, read from disk on each refresh (no per-job raw cache); cells below the bench are found among open documents (results reloaded at open reach the bench's direct children only, by stem).
 - D20 caches of parked (shown before, not active) documents are written when they are activated again.
 - `gmid-lut` characterization uses `spawn:ngspice`, not `run` requests: the ABI cannot (**abi**/**plugin**) run a bench the plugin just wrote (cells are indexed at project load) or hand back a job's raw file/directory (`RunDone` and `Results` carry scalar outputs; the LUT needs the (L, VDS, VGS) grid). Needs a "run this written bench" request and the job directory in `RunDone`.
-- Integration points still stubbed: symbols via elab, web OPFS.
+- Integration points still stubbed: symbols via elab.
 
 ## run in the editor (M2 integration)
 
@@ -41,6 +53,8 @@ Open items collected from workstream reports. Each item names its owner crate. R
 ## Decisions pending (user)
 
 - **cktImg upstream PR** OmarSiwy/cktImg #5 (separations batched past 256 rounds only; fixes #4's slowdown on regular decks): merge, then re-point `extern/cktimg` at the merged `main` commit.
+
+- **Lua on the web** (web spec §5): the one viable runtime found is `omnilua` (pure Rust, passes the PUC-Rio 5.4 suite, builds for `wasm32-unknown-unknown`; 0.7.1, 4 months old, one maintainer, 6 new crates). Identical behaviour on both targets means replacing mlua's vendored C Lua natively too and rewriting `config/src/lua.rs` on its API. Adopt it, or keep the web without a user config until a runtime matures.
 
 
 ## command stream (rpc, D27)

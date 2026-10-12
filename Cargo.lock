@@ -2774,6 +2774,7 @@ dependencies = [
 name = "schemify-cli"
 version = "0.1.0"
 dependencies = [
+ "miniz_oxide 0.8.9",
  "proptest",
  "schemify-config",
  "schemify-devicereader",
@@ -2784,6 +2785,8 @@ dependencies = [
  "schemify-import",
  "schemify-netlist",
  "schemify-run",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

@@ -100,7 +100,7 @@ Functions (keymap targets, hooks) run under the same sandbox and limits as the i
 
 A runaway config is reported and stopped; it never hangs the tool. Known ceiling: a single C library call (a pattern match over a huge string) runs between hook checks; the memory cap bounds the string it can build.
 
-On the web the config is not run in this version (no Lua build for `wasm32-unknown-unknown` yet); see `docs/BACKLOG.md`.
+On the web the config is not run in this version (no Lua build for `wasm32-unknown-unknown` yet; the evaluation of C Lua and pure-Rust Lua is [web.md](web.md) §5); see `docs/BACKLOG.md`.
 
 ## 5. Packages
 

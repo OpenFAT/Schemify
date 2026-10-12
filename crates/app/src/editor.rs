@@ -1028,7 +1028,9 @@ impl Editor {
                 .min(u64::from(ZOOM_SETTLE_MS)) as u32
         });
         let tiles = self.partial.then_some(0);
-        [sim, self.host.wake_ms(self.now), queued, crisp, tiles]
+        // The browser owes an answer (web: a clipboard read).
+        let platform = platform::wake_ms();
+        [sim, self.host.wake_ms(self.now), queued, crisp, tiles, platform]
             .into_iter()
             .flatten()
             .min()
@@ -1085,6 +1087,10 @@ impl Editor {
         changed |= self.sync_page(events, &routed.commands, &mut reqs);
         // 2. dispatch → edit_requests, plugin_events, ui state
         changed |= self.dispatch_all(&routed.commands, &mut reqs);
+        if platform::clipboard_ready() {
+            // Web: the browser answered a paste's clipboard read; that paste runs again now.
+            self.command(Cmd::Paste.name(), "");
+        }
         changed |= self.dispatch_queued(&mut reqs);
         for &ev in &routed.canvas {
             changed |= self.gesture(ev, &mut reqs, now_ms);
@@ -1620,11 +1626,17 @@ impl Editor {
             Cmd::Paste => {
                 // The system clipboard wins when it holds a Schemify fragment (another
                 // window, another process, a text editor); else the editor's own.
-                if self.system_clipboard
-                    && let Ok(text) = platform::clipboard_get()
-                    && let Ok(recs) = crate::clip::decode(&text)
-                {
-                    self.clipboard = recs;
+                if self.system_clipboard {
+                    match platform::clipboard_get() {
+                        Ok(text) => {
+                            if let Ok(recs) = crate::clip::decode(&text) {
+                                self.clipboard = recs;
+                            }
+                        }
+                        // Web: the read is in flight; this paste runs again when it lands.
+                        Err(e) if e == platform::CLIPBOARD_PENDING => return false,
+                        Err(_) => {}
+                    }
                 }
                 if !self.clipboard.is_empty() {
                     self.tool = Tool::Place {
@@ -4112,9 +4124,11 @@ impl Window {
         {
             self.start.elapsed().as_millis() as u64
         }
+        // Web: `Instant` panics in a browser; the page's clock (web spec §1). A frozen clock
+        // made every second click a double click and kept plugin timers from firing.
         #[cfg(target_arch = "wasm32")]
         {
-            0
+            platform::unix_ms()
         }
     }
 }
