@@ -142,6 +142,8 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
 /// A headless GPU with timestamp queries: renders each benchmark frame as the window does.
 struct Gpu {
     name: String,
+    /// Target size in device px.
+    size: (u32, u32),
     device: wgpu::Device,
     queue: wgpu::Queue,
     renderer: Renderer,
@@ -160,7 +162,8 @@ struct Gpu {
 }
 
 impl Gpu {
-    fn new() -> Option<Gpu> {
+    /// A GPU rendering `scale` device px per logical px of [`VIEW`].
+    fn new(scale: f64) -> Option<Gpu> {
         let inst = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let want = std::env::var("SCHEMIFY_GPU")
             .unwrap_or_default()
@@ -188,8 +191,8 @@ impl Gpu {
                 .create_texture(&wgpu::TextureDescriptor {
                     label: None,
                     size: wgpu::Extent3d {
-                        width: VIEW.0 as u32,
-                        height: VIEW.1 as u32,
+                        width: (f64::from(VIEW.0) * scale) as u32,
+                        height: (f64::from(VIEW.1) * scale) as u32,
                         depth_or_array_layers: 1,
                     },
                     mip_level_count: 1,
@@ -232,6 +235,10 @@ impl Gpu {
         );
         Some(Gpu {
             name,
+            size: (
+                (f64::from(VIEW.0) * scale) as u32,
+                (f64::from(VIEW.1) * scale) as u32,
+            ),
             device,
             queue,
             renderer,
@@ -254,7 +261,7 @@ impl Gpu {
             layers
                 .raster(&g.device, &g.queue, &mut g.renderer)
                 .expect("layer raster");
-            let (w, h) = (VIEW.0 as u32, VIEW.1 as u32);
+            let (w, h) = g.size;
             let reuse = layers.reusable(w, h);
             if !reuse {
                 let params = RenderParams {
@@ -328,6 +335,8 @@ impl Gpu {
 /// One benchmark run: the editor, its frame scene and layers, the clock, and the samples.
 struct Bench {
     ed: Editor,
+    /// Device px per logical px (the window's scale factor).
+    scale: f64,
     scene: Scene,
     layers: Layers,
     now: u64,
@@ -344,10 +353,11 @@ impl Bench {
         let t = Instant::now();
         self.ed.update(ev, VIEW, self.now);
         self.scene.reset();
-        self.layers.begin_frame(Affine::IDENTITY);
+        let base = Affine::scale(self.scale);
+        self.layers.begin_frame(base);
         let mut p = ScenePainter {
             scene: &mut self.scene,
-            base: Affine::IDENTITY,
+            base,
             layers: Some(&mut self.layers),
         };
         self.ed.paint(&mut p);
@@ -422,7 +432,7 @@ fn frame_times(n: u32) {
     let open = t0.elapsed().as_secs_f64() * 1e3;
     let (objs, prims) = (ed.scene().objs.len(), ed.scene().prims.len());
     assert!(objs >= n as usize, "{objs} objects");
-    let mut gpu = Gpu::new();
+    let mut gpu = Gpu::new(1.0);
     let floor = gpu.as_mut().map_or(0.0, Gpu::floor);
     eprintln!(
         "{n} objects ({objs} drawn, {prims} primitives): open + first build {open:.0} ms; GPU: {} \
@@ -431,6 +441,7 @@ fn frame_times(n: u32) {
     );
     let mut b = Bench {
         ed,
+        scale: 1.0,
         scene: Scene::new(),
         layers: Layers::default(),
         now: 0,
@@ -569,4 +580,125 @@ fn frame_times_100k() {
 #[ignore = "release-mode benchmark; run explicitly"]
 fn frame_times_1m() {
     frame_times(1_000_000);
+}
+
+/// With a GPU: every measured frame since the last report was composed from the layer
+/// textures without vello (the canvas floats painted over the canvas included).
+fn composed_all(b: &Bench) {
+    if let Some(g) = &b.gpu {
+        assert!(
+            g.reused >= b.cpu.len(),
+            "{} of {} camera frames composed without vello",
+            g.reused,
+            b.cpu.len()
+        );
+    }
+}
+
+/// Issue #45: grid dots lag behind pan and zoom. Opens the symbol contact sheet (light content:
+/// the picture is mostly grid) at device scale `scale`, pans with a middle drag (`step` px per
+/// 8 ms frame) and zooms in bursts of wheel notches, and counts the frames that leave part of
+/// the canvas unrecorded (stand-ins or bare background where the grid belongs): `(pan frames
+/// left partial, most frames a settled zoom took to show whole)`. `grid` false turns the grid
+/// off (its share of the frame). With a GPU, panics unless every camera frame was composed
+/// without vello: before the fix the view switcher floating over the canvas sent every frame
+/// through vello (5.5 ms GPU per pan frame at 1×, 14 ms at 2×, on the Intel iGPU).
+///
+/// Prints frame times (`report`) and the partial counts; `grid_keeps_up_with_pan_and_zoom` runs
+/// it at 1× and 2×, 6 and 40 px per frame, grid on and off.
+fn grid_lag(scale: f64, step: f32, grid: bool) -> (usize, usize) {
+    let dir = fixture("symbols", &format!("perf-grid-{scale}-{step}-{grid}"));
+    let ed = Editor::new(Options {
+        no_default_ui: false,
+        path: Some(dir.join("sheet.shcomp")),
+        seed: 1,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut b = Bench {
+        ed,
+        scale,
+        scene: Scene::new(),
+        layers: Layers::default(),
+        now: 0,
+        gpu: Gpu::new(scale),
+        cpu: Vec::new(),
+        vello: Vec::new(),
+        gpu_ms: Vec::new(),
+    };
+    let partial = |b: &Bench| b.ed.wake_ms() == Some(0);
+    if !grid {
+        b.ed.command("options.draw_grid", "");
+    }
+    b.frame(&InputEvents::default(), 1000, false);
+    while partial(&b) {
+        b.frame(&InputEvents::default(), 8, false);
+    }
+    let (cx, cy) = (640.0f32, 400.0f32);
+    b.frame(&event(InputEvent::PointerMove { x: cx, y: cy }), 8, false);
+    let mid = Button::Middle;
+    let down = InputEvent::PointerDown {
+        x: cx,
+        y: cy,
+        button: mid,
+    };
+    b.frame(&event(down), 8, false);
+    let (mut x, mut pan_partial) = (cx, 0);
+    for i in 0..240 {
+        x += if (i / 60) % 2 == 0 { step } else { -step };
+        b.frame(&event(InputEvent::PointerMove { x, y: cy }), 8, true);
+        pan_partial += usize::from(partial(&b));
+    }
+    let up = InputEvent::PointerUp {
+        x,
+        y: cy,
+        button: mid,
+    };
+    b.frame(&event(up), 8, false);
+    while partial(&b) {
+        b.frame(&InputEvents::default(), 8, false);
+    }
+    composed_all(&b);
+    b.report("pan");
+    let mut zoom_catch_up = 0;
+    for burst in 0..10 {
+        let dy = if burst % 2 == 0 { 1.0 } else { -1.0 };
+        for _ in 0..3 {
+            let wheel = InputEvent::Wheel {
+                x: cx,
+                y: cy,
+                dx: 0.0,
+                dy,
+            };
+            b.frame(&event(wheel), 16, true);
+        }
+        // Frames after the settle frame until the view is whole.
+        let mut extra = 0;
+        for _ in 0..256 {
+            let Some(wake) = b.ed.wake_ms() else { break };
+            extra += usize::from(wake == 0);
+            b.frame(&InputEvents::default(), u64::from(wake) + 1, true);
+        }
+        zoom_catch_up = zoom_catch_up.max(extra);
+    }
+    composed_all(&b);
+    b.report("zoom");
+    eprintln!(
+        "grid {grid} @{scale}x, pan {step} px/frame: {pan_partial}/240 pan frames partial; a \
+         settled zoom takes {zoom_catch_up} extra frame(s) to show whole"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    (pan_partial, zoom_catch_up)
+}
+
+#[test]
+#[ignore = "release-mode benchmark; run explicitly"]
+fn grid_keeps_up_with_pan_and_zoom() {
+    for scale in [1.0, 2.0] {
+        for step in [6.0, 40.0] {
+            for grid in [true, false] {
+                grid_lag(scale, step, grid);
+            }
+        }
+    }
 }
