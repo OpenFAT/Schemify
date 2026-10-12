@@ -216,6 +216,16 @@
       (setq out (cons (SfyDbu (yCoord p) upi) (cons (SfyDbu (xCoord p) upi) out))))
     (reverse out)))
 
+;; A wire's points: a two-point wire is written from its smaller end (x, then y), so a
+;; wire's drawing direction, which nothing reads, never shows as a difference (spec 4.2).
+(procedure (SfyWirePts pts upi)
+  (let ((f (SfyFlatPts pts upi)))
+    (if (and (equal (length f) 4)
+             (or (greaterp (car f) (caddr f))
+                 (and (equal (car f) (caddr f)) (greaterp (cadr f) (cadddr f)))))
+      (list (caddr f) (cadddr f) (car f) (cadr f))
+      f)))
+
 ;; A box ((x0 y0) (x1 y1)) as (x0 y0 x1 y1) in database units.
 (procedure (SfyBoxDbu b upi)
   (SfyFlatPts (list (lowerLeft b) (upperRight b)) upi))
@@ -247,7 +257,7 @@
 
 ;; One cellview in spec 4.2 order: cv, term, pinfig, inst, spin, wire, label, shape, prop.
 (procedure (SfyDumpCvBody port cv view)
-  (let ((upi (round (getSGq cv DBUPerUU))) (refs (makeTable "sfyRefs" nil)) (n 0)
+  (let ((upi 160000) (refs (makeTable "sfyRefs" nil)) (n 0)
         (pinfigs nil) (insts nil) (spins nil) (wires nil) (labels nil) (shapes nil)
         (ot nil) (par nil) (b nil))
     (SfyPut port "cv" (list view (getSGq cv cellViewType) upi))
@@ -295,7 +305,7 @@
       refs n))
     (setq n (SfyEmit port "wire"
       (mapcar (lambda (f)
-                (setq b (list (SfyFlatPts (getSGq f points) upi) (SfyWidth f upi)))
+                (setq b (list (SfyWirePts (getSGq f points) upi) (SfyWidth f upi)))
                 (list b f b))
         wires)
       refs n))
@@ -495,10 +505,24 @@
       (SfyRefuse (arrayref c "line") (sprintf nil "library %s is not in cds.lib" (arrayref c "lib")))
       (setarray c "skip" t))
     (progn
-      (when (arrayref c "cdf") (SfyLoadCdf c))
+      ;; A kept symbol (spec 7.5) keeps its CDF too: the CDF is the symbol part's.
+      (cond
+        ((SfyKeptP c "symbol") (SfyCount "kept unchanged CDF"))
+        ((arrayref c "cdf") (SfyLoadCdf c)))
       (foreach v (arrayref c "cvs")
         (unless (equal (arrayref v "type") "schematic") (SfyLoadCv c v)))
       (foreach lr (arrayref c "texts") (SfyLoadText c lr)))))
+
+;; True when the dump marks cellview `view` of cell c schemifyKeep (unchanged in Schemify
+;; since it was imported, spec 7.5) and the library has that cellview: the loader leaves it,
+;; and for a symbol its CDF, exactly as they are.
+(procedure (SfyKeptP c view)
+  (exists v (arrayref c "cvs")
+    (and (equal (arrayref v "view") view)
+         (ddGetObj (arrayref c "lib") (arrayref c "name") view)
+         (exists lr (arrayref v "recs")
+           (and (equal (car (cadr lr)) "prop") (equal (nth 1 (cadr lr)) 0)
+                (equal (nth 2 (cadr lr)) "schemifyKeep"))))))
 
 ;; ---------------------------------------------------------------- CDF
 
@@ -599,8 +623,15 @@
   (let ((tlib (arrayref c "lib")) (cell (arrayref c "name")) (view (arrayref v "view"))
         (line (arrayref v "line")) (sfyCv nil) (sfyUpi (arrayref v "upi"))
         (sfyRefs (makeTable "sfyObjs" nil)) (sfyTerms (makeTable "sfyTerms" nil))
-        (props nil) (conns nil) (tag nil))
+        (props nil) (conns nil) (tag nil)
+        (keep (exists lr (arrayref v "recs")
+                (and (equal (car (cadr lr)) "prop") (equal (nth 1 (cadr lr)) 0)
+                     (equal (nth 2 (cadr lr)) "schemifyKeep")))))
     (cond
+      ;; Unchanged in Schemify since it was imported from here (spec 7.5): the cellview in
+      ;; the library stays exactly as it is.
+      ((and keep (ddGetObj tlib cell view))
+        (SfyCount "kept unchanged"))
       ((and (ddGetObj tlib cell view) (not sfyOverwrite))
         (SfyRefuse line (sprintf nil "%s/%s/%s exists; pass ?overwrite t" tlib cell view)))
       ((null (setq sfyCv (dbOpenCellViewByType tlib cell view (arrayref v "type") "w")))
@@ -617,7 +648,7 @@
             ("wire" (SfyLoadWire lr))
             ("label" (SfyLoadLabel lr))
             ("shape" (SfyLoadShape lr))
-            ("prop" (setq props (cons lr props)))
+            ("prop" (unless (equal (nth 2 (cadr lr)) "schemifyKeep") (setq props (cons lr props))))
             ("conn" (setq conns (cons lr conns)))
             (t (SfyCount (strcat "skipped:" tag)))))
         (SfyLoadProps (reverse props))

@@ -1,5 +1,6 @@
 schemify 1 shprim
   provenance "virtuoso gpdk/nmos1v"
+  vsym 1a8081d359d24b28
 
 pin D inout 20 -30
 pin G in -20 0

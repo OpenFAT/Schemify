@@ -2359,16 +2359,35 @@ fn schematic_in(
                     (at, format!("{}!", inst.cell))
                 }
             };
-            let n = net_from_virtuoso(&net);
+            let n = match prop(inst.r, "schemifyNet") {
+                Some(sn) => match sn.strip_suffix(" global") {
+                    Some(t) => profile::Net {
+                        text: t.to_owned(),
+                        global: true,
+                        review: false,
+                    },
+                    None => profile::Net {
+                        text: sn.to_owned(),
+                        global: false,
+                        review: false,
+                    },
+                },
+                None => net_from_virtuoso(&net),
+            };
             let id = ids.next(id_of(inst.r), &reserved);
             begin(doc, RecordKind::Label);
             doc.push_field(&id);
             doc.push_field_coord(pin_at[0]);
             doc.push_field_coord(pin_at[1]);
-            doc.push_field("R0");
+            doc.push_field(o.as_str());
             doc.push_field(&n.text);
             if n.global {
                 kv(doc, "global", "true");
+            }
+            // The symbol instance's name, so export draws the same instance (§6.1); a name
+            // the exporter generated (`sfyG<n>`) is not worth keeping.
+            if !inst.name.starts_with("sfyG") {
+                kv(doc, "vinst", &inst.name);
             }
             continue;
         }
@@ -3062,6 +3081,7 @@ pub fn import(
             &cell,
             &mut notes,
         );
+        let out = with_fingerprints(&out, &doc);
         let text = schemify_format::write(&out);
         if let Some(old) = existing.get(&path)
             && old.as_slice() != text.as_bytes()
@@ -3085,6 +3105,38 @@ pub fn import(
         "one file per path"
     );
     Ok(Import { files, notes })
+}
+
+/// `doc` (the merged file) with header attributes `vsym`/`vsch` set to the fingerprints of
+/// the parts its kind has, taken from `fresh` (what the dump holds, before local data was
+/// merged, §7.5): an export can then tell a cellview nobody changed on the Schemify side.
+fn with_fingerprints(doc: &Document<'static>, fresh: &Document<'static>) -> Document<'static> {
+    use super::{Part, fingerprint, fingerprint_attr};
+    let parts: &[Part] = match doc.kind() {
+        FileKind::Shprim => &[Part::Symbol],
+        FileKind::Shcomp => &[Part::Symbol, Part::Schematic],
+        _ => &[Part::Schematic],
+    };
+    let mut out = Document::new(doc.kind());
+    for a in doc.attrs(0) {
+        let k = doc.attr_key(a);
+        if k == "vsym" || k == "vsch" {
+            continue;
+        }
+        out.push_attr(k);
+        for v in doc.attr_values(a) {
+            out.push_value(v);
+        }
+    }
+    for p in parts {
+        out.push_attr(fingerprint_attr(*p));
+        out.push_value(&fingerprint(fresh, *p));
+    }
+    for r in 1..doc.record_count() {
+        out.copy_record(doc, r);
+    }
+    assert_eq!(out.record_count(), doc.record_count());
+    out
 }
 
 /// The manifest with `lib <name> path <dir>` rows added for `new`.

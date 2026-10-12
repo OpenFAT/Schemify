@@ -2,7 +2,7 @@
 //! strings, integers and lists, so Virtuoso's `lineread` parses it without evaluating
 //! anything and without SKILL's scale suffixes, octal zeros or 7-digit floats touching it.
 //!
-//! This module is the codec only: [`read`] text into [`Record`]s and [`write`] them back,
+//! This module is the codec only: [`read`] text into [`Record`]s and [`write()`] them back,
 //! byte-identically to the SKILL dumper. What the records mean is `virtuoso`'s business.
 
 use std::fmt::Write as _;

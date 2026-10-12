@@ -1,5 +1,6 @@
 schemify 1 shprim
   provenance "virtuoso analogLib/res"
+  vsym f21bf605bff99116
 
 pin PLUS inout 0 -30
 pin MINUS inout 0 30

@@ -211,10 +211,10 @@ impl Lint {
     fn find_optional(&mut self, forms: &[V]) {
         for f in forms {
             let i = f.items();
-            if i.first().and_then(sym) == Some("fboundp") {
-                if let Some(n) = i.get(1).and_then(quoted) {
-                    self.optional.insert(n.to_owned());
-                }
+            if i.first().and_then(sym) == Some("fboundp")
+                && let Some(n) = i.get(1).and_then(quoted)
+            {
+                self.optional.insert(n.to_owned());
             }
             if !i.is_empty() {
                 self.find_optional(i);
@@ -385,10 +385,10 @@ impl Lint {
                 }
                 if matches!(head, "mapcar" | "apply" | "funcall" | "sort") {
                     let f = if head == "sort" { a.get(1) } else { a.first() };
-                    if let Some(n) = f.and_then(quoted) {
-                        if !self.known(n) {
-                            self.err(format!("{head} of unknown function {n}"));
-                        }
+                    if let Some(n) = f.and_then(quoted)
+                        && !self.known(n)
+                    {
+                        self.err(format!("{head} of unknown function {n}"));
                     }
                 }
                 self.walk_all(a, scope, head);

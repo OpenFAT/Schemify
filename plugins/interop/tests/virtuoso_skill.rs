@@ -276,7 +276,7 @@ fn export_dumps_the_expected_objects() {
     );
     assert!(
         t.contains("\"spin\" ")
-            && t.contains("\"in\" \"input\" \"basic\" \"ipin\" \"symbol\" -80 0 \"R0\""),
+            && t.contains("\"in\" \"input\" \"basic\" \"ipin\" \"symbol\" -80000 0 \"R0\""),
         "{t}"
     );
     assert!(t.contains("\"w\" \"string\" \"2u\"") && t.contains("\"l\" \"string\" \"200n\""));
@@ -290,10 +290,10 @@ fn export_dumps_the_expected_objects() {
     let t = file(&i, "/t/symkit.sfyx");
     assert_eq!(t.matches("(\"pinfig\"").count(), 3);
     assert!(
-        t.contains("\"arc\" \"device\" \"drawing\" (-10 -30 10 -10 0 1570796) 0"),
+        t.contains("\"arc\" \"device\" \"drawing\" (-10000 -30000 10000 -10000 0 1570796) 0"),
         "{t}"
     );
-    assert!(t.contains("\"path\" \"device\" \"drawing1\" (30 0 40 0) 5"));
+    assert!(t.contains("\"path\" \"device\" \"drawing1\" (30000 0 40000 0) 5000"));
     assert!(t.contains("\"a\\\"b\\\\c\\td\\001 \u{3bc}A\""), "{t}");
     for kind in ["\"normal\"", "\"NLP\"", "\"IL\""] {
         assert!(t.contains(kind), "{kind}");
@@ -615,12 +615,9 @@ fn conn_records_draw_a_labelled_stub_at_the_real_pin() {
     );
     let t = file(&i, "/t/c2.sfyx");
     // R90 turns PLUS (0 40) to (-40 0): the stub runs one grid step further out, labelled.
-    assert!(
-        t.contains("(\"wire\" 2 (-50 0 -40 0) 0)") || t.contains("(\"wire\" 2 (-40 0 -50 0) 0)"),
-        "{t}"
-    );
-    assert!(t.contains("\"out\" -50 0"), "{t}");
-    assert!(t.contains("\"gnd!\" 50 0"), "{t}");
+    assert!(t.contains("(\"wire\" 2 (-50000 0 -40000 0) 0)"), "{t}");
+    assert!(t.contains("\"out\" -50000 0"), "{t}");
+    assert!(t.contains("\"gnd!\" 50000 0"), "{t}");
     assert!(t.contains("\"schemifyStub\" \"string\" \"1\""), "{t}");
 }
 

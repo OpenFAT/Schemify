@@ -1,5 +1,6 @@
 schemify 1 shprim
   provenance "virtuoso demo/shapes"
+  vsym 619a19abed39814b
 
 pin A in -60 0
 pin B out 60 0

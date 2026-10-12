@@ -4,6 +4,8 @@
 //! Design), `write` (Design → records), `ael` (values, §3.4), `devices` (§6.5–§6.6),
 //! `ade` (maestro ⇄ bench, §9).
 
+use schemify_format::{Document, RecordKind};
+
 use crate::design::{Design, Files};
 use crate::map::Mapping;
 use crate::notes::Notes;
@@ -98,4 +100,109 @@ pub fn import(
     opts: &ImportOptions,
 ) -> Result<Import, Vec<String>> {
     read::import(sfyx, existing, map, opts)
+}
+
+/// The part of a cell one Virtuoso cellview carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part {
+    /// Rank 1 and 2: pins, params, impls, symbol graphics (the symbol view and its CDF).
+    Symbol,
+    /// Rank 3 drawn objects (the schematic view).
+    Schematic,
+}
+
+/// A fingerprint of what the records of `doc` that make up `part` give Virtuoso (FNV-1a 64
+/// of their Virtuoso-owned fields, 16 hex digits). Import stores it as header attribute `vsym`/`vsch`; export marks a
+/// cellview whose fingerprint still matches with `schemifyKeep` so the loader leaves the
+/// library's cellview untouched (spec §7.5). Cost: one canonical write of the part.
+pub fn fingerprint(doc: &Document<'_>, part: Part) -> String {
+    use RecordKind as K;
+    let kinds: &[RecordKind] = match part {
+        Part::Symbol => &[
+            K::Pin,
+            K::Param,
+            K::Impl,
+            K::Line,
+            K::Rect,
+            K::Arc,
+            K::Circle,
+            K::Poly,
+            K::Stext,
+        ],
+        Part::Schematic => &[
+            K::Inst,
+            K::Wire,
+            K::Label,
+            K::Port,
+            K::Noconn,
+            K::Text,
+            K::Shape,
+        ],
+    };
+    // The projection: only what Virtuoso holds. Schemify-only attributes (§7.1) are left
+    // out, so adding a bound or an ngspice format never counts as a change to the cellview,
+    // while any edit to what the cellview carries does.
+    let mut lines: Vec<String> = Vec::new();
+    for r in 1..doc.record_count() {
+        let k = doc.record_kind(r);
+        if !kinds.contains(&k) {
+            continue;
+        }
+        let mut text = String::new();
+        text.push_str(doc.record_word(r));
+        for f in doc.fields(r) {
+            text.push(' ');
+            text.push_str(f);
+        }
+        text.push('\n');
+        for a in doc.attrs(r) {
+            let key = doc.attr_key(a);
+            let schemify_only = match k {
+                K::Param => matches!(
+                    key,
+                    "min" | "max" | "step" | "grid" | "show" | "computed" | "cached"
+                ),
+                K::Pin => matches!(key, "domain" | "number"),
+                K::Impl => {
+                    key == "format" && !matches!(doc.attr_value(a, 0), Some("spectre" | "cdl"))
+                }
+                _ => false,
+            };
+            if schemify_only {
+                continue;
+            }
+            text.push_str("  ");
+            text.push_str(key);
+            for v in doc.attr_values(a) {
+                text.push(' ');
+                text.push_str(v);
+            }
+            text.push('\n');
+        }
+        for v in doc.verbatim(r) {
+            text.push_str("  | ");
+            text.push_str(v);
+            text.push('\n');
+        }
+        lines.push(text);
+    }
+    // Rank 3 is a sorted rank (format spec §4): its order is the writer's, not meaning.
+    if part == Part::Schematic {
+        lines.sort();
+    }
+    let text = lines.concat();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in text.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// Header attribute holding the fingerprint of `part`.
+pub fn fingerprint_attr(part: Part) -> &'static str {
+    match part {
+        Part::Symbol => "vsym",
+        Part::Schematic => "vsch",
+    }
 }

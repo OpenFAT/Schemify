@@ -1,5 +1,6 @@
 schemify 1 shprim
   provenance "virtuoso gpdk/rpoly"
+  vsym 9b03fc94d2760e4e
 
 pin PLUS inout 0 -30
 pin MINUS inout 0 30

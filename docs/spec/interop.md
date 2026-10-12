@@ -58,7 +58,7 @@ Coordinates are Schemify milli-units, y down, orientations Schemify's, net expre
 | xschem | 1 xschem unit = 1000 milli | down | identity (import.md, D33) |
 | Virtuoso | user unit inch; `.sfyx` integers in 1/`upi` inch, `upi` per cellview | up | `x_milli = x · 160000 / upi`, `y_milli = −y · 160000 / upi` |
 
-One Virtuoso schematic DBU at the standard `DBUPerUU = 160` is one xschem unit: the 1/16″ snap grid is xschem's 10-unit grid and the 1/8″ pin pitch its 20-unit pitch. The SKILL dumper writes `round(v · DBUPerUU)` with `upi = round(cv~>DBUPerUU)`; the exporter writes milli-units with `upi = 160000`. A conversion that is not exact rounds to the nearest milli-unit and is reported (`rounding`). The loader places at `v / float(upi)` inch; Virtuoso snaps to its DBU grid, and the exporter reports every coordinate that is not a multiple of `160000 / DBUPerUU` milli (`off-grid`, assuming 160).
+One Virtuoso schematic DBU at the standard `DBUPerUU = 160` is one xschem unit: the 1/16″ snap grid is xschem's 10-unit grid and the 1/8″ pin pitch its 20-unit pitch. Both writers use milli-units, `upi = 160000`: the SKILL dumper writes `round(v · 160000)`, exact for every coordinate on any DBU grid that divides 160000 (160, 1000, …) and keeping sub-DBU values such as text heights (a 0.15-size text is 1.5 DBU at 160 per inch; dumping whole DBU would round it), so both sides produce the same numbers for the same object. Readers accept any `upi`. A conversion that is not exact rounds to the nearest milli-unit and is reported (`rounding`). The loader places at `v / float(upi)` inch; Virtuoso snaps to its DBU grid, and the exporter reports every coordinate that is not a multiple of `160000 / DBUPerUU` milli (`off-grid`, assuming 160).
 
 ### 3.2 Orientation
 
@@ -354,6 +354,17 @@ Decided (`merge`): a document is cut into **units** — the header, the rank-1 b
 ### 7.4 Oracle
 
 `import(export(x)) ≡ x` for every fixture project and generated designs (property: random cells with every record kind, buses, iterated instances, globals, inherited pins, params of every kind, benches): files byte-identical after `schemify fmt` except the documented losses of this spec (listed per fixture). With the stash (§7.3) the round trip is byte-identical; without it (`tests/virtuoso_rust.rs` strips the `schemifyRecords` props) the documented losses are: header attributes other than `provenance` (added to every `.shprim`); pin `domain`/`number`; param `min max step grid show computed cached` and units outside §6.3; impl names and formats other than spectre/cdl; symbol graphic order, attributes and closing points, `stext` templates outside §3.5; text sizes; the order and spelling of instance overrides (suffix case, `mil`, `^`), the cellref spelling (`./c` vs `lib:c`), `ignore open|short`; ground spellings `0`/`gnd` (→ `GND`); shape `layer fill width`; ranks 4–6 (bench tables while `ade` carries none); comments. Wires, labels, ports, noconns, instance placement and names, pins and param names and kinds come back exactly. `export(import(d)) ≡ d` for every dump fixture, and through the interpreter + mock (§5.4) in both directions.
+
+### 7.5 Untouched cellviews stay as Virtuoso drew them
+
+Virtuoso keeps cosmetic fields Schemify has no slot for (label justification, pin-label heights, `cdsName()` versus `[@instanceName]`, wire drawing direction, note fonts). So that a round trip through Schemify never rewrites a cellview nobody edited there:
+- **Import** writes header attributes `vsym <fp>` (shprim, shcomp) and `vsch <fp>` (shcomp, shbench): the fingerprint (`virtuoso::fingerprint`, FNV-1a 64) of what the *dump* gave that part, over the Virtuoso-owned fields only (param `min max step grid show computed cached`, pin `domain number` and formats other than `spectre`/`cdl` are left out; rank-3 lines are sorted, rank 1–2 keep their order).
+- **Export** recomputes the fingerprint of the current file; when it still equals the header attribute, the cellview's records carry `("prop" 0 "schemifyKeep" "string" "1")`.
+- **The loader** leaves an existing cellview marked so exactly as it is (counted `kept unchanged`), and for a kept symbol also its CDF (`kept unchanged CDF`); the marker itself is never stored. A cellview edited in Schemify (any Virtuoso-owned field) has no marker and is regenerated; one edited in Virtuoso since the last import keeps the Virtuoso edit, since Schemify did not touch it.
+- Two-point wires are written from their smaller end by both writers, so drawing direction never shows as a difference.
+- Global labels whose Virtuoso name is an analogLib global symbol's (`gnd!`, `vdd!`, … `devices::GLOBAL_SYMBOLS`) and that sit on no wire, or that came from such a symbol, are written as that symbol (GUESS G3: its pin is its origin); import turns the symbol into a global label carrying attribute `vinst <instance name>` (an unknown attribute, kept by the format, §5 there), so export draws the same instance again.
+
+Oracle (`tests/virtuoso_e2e.rs`): Rust export → SKILL load → SKILL dump → Rust import is byte-identical on every fixture project; SKILL dump → Rust import → Rust export → SKILL load over the original library → SKILL dump equals the first dump on every SKILL fixture; an edit in Schemify clears the marker of that cellview only and reaches the dump.
 
 ## 8. PDK flows and the mapping file
 

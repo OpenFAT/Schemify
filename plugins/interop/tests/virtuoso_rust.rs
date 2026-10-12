@@ -64,6 +64,15 @@ fn design(files: &Files) -> Design {
     }
 }
 
+/// `text` without the import fingerprints (`vsym`, `vsch` header lines, §7.5), which an
+/// import adds by design.
+fn strip_fp(text: &str) -> String {
+    text.lines()
+        .filter(|l| !l.starts_with("  vsym ") && !l.starts_with("  vsch "))
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
 /// Canonical text of a cell file (what the format writer produces).
 fn canonical(bytes: &[u8]) -> String {
     let d = schemify_format::parse(bytes).unwrap();
@@ -139,7 +148,7 @@ fn export_import_round_trip_is_exact_with_the_stash() {
             .files
             .iter()
             .filter(|(p, _)| is_cell(p))
-            .map(|(p, b)| (p.clone(), String::from_utf8(b.clone()).unwrap()))
+            .map(|(p, b)| (p.clone(), strip_fp(&String::from_utf8(b.clone()).unwrap())))
             .collect();
         let want = cells(&files);
         assert_eq!(
@@ -519,7 +528,7 @@ fn round_trip(files: &Files, what: &str) {
             .files
             .iter()
             .filter(|(p, _)| is_cell(p))
-            .map(|(p, b)| (p.clone(), String::from_utf8(b.clone()).unwrap()))
+            .map(|(p, b)| (p.clone(), strip_fp(&String::from_utf8(b.clone()).unwrap())))
             .collect();
         assert_eq!(
             got.keys().collect::<Vec<_>>(),
@@ -600,7 +609,11 @@ fn the_core_library_round_trips() {
             .iter()
             .find(|f| f.0 == path)
             .unwrap_or_else(|| panic!("{path} missing"));
-        assert_eq!(String::from_utf8_lossy(&got.1), canonical(bytes), "{path}");
+        assert_eq!(
+            strip_fp(&String::from_utf8_lossy(&got.1)),
+            canonical(bytes),
+            "{path}"
+        );
     }
     // Without the stash the core cells keep pins, params and graphics (§7.4 losses only).
     let bare = virtuoso::import(
@@ -953,7 +966,10 @@ fn import_onto_existing_files_keeps_schemify_only_data() {
         &ImportOptions::default(),
     )
     .unwrap();
-    assert_eq!(file(&again.files, "gpdk/nmos1v.shprim"), local);
+    assert_eq!(
+        strip_fp(file(&again.files, "gpdk/nmos1v.shprim")),
+        strip_fp(&local)
+    );
     // Changed in Virtuoso (a new default for w): the CDF wins, the bound, doc and spice
     // format stay.
     let changed = text.replace("\"w\" \"string\" \"120n\"", "\"w\" \"string\" \"240n\"");

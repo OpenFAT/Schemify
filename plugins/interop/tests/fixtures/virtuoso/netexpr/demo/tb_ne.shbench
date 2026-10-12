@@ -1,4 +1,5 @@
 schemify 1 shbench
+  vsch a6528dd2b896d44e
 
 inst 4hmqt8 ./ne
   at 0 0 R0
@@ -20,6 +21,8 @@ wire nvehcj -80 0 -80 10
 label 5yde3w -120 -10 R0 VDDA
 label 65rkdg -120 70 R0 GND
   global true
+  vinst I1
 label 6n20v1 -80 70 R0 GND
   global true
+  vinst I2
 label jaq0zs -60 0 R0 a

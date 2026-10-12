@@ -1,5 +1,6 @@
 schemify 1 shprim
   provenance "virtuoso analogLib/pmos4"
+  vsym c064a15cdeb2a0d9
 
 pin D inout 20 30
 pin G in -20 0

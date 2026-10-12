@@ -1,4 +1,5 @@
 schemify 1 shbench
+  vsch ff93b7c5874a44ff
 
 inst maz0aa ./buf4
   at 0 0 R0
@@ -18,4 +19,5 @@ label 05h9fz -60 0 R0 d[3:0]
 label 8k8map 120 -10 R0 q[0]
 label faj5kc 120 70 R0 GND
   global true
+  vinst I5
 label fm55j9 60 0 R0 q[3:0]

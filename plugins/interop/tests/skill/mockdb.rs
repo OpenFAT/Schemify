@@ -98,7 +98,15 @@ pub const SIGNATURES: &[(&str, &str)] = &[
 
 /// Functions with a [`SIGNATURES`] row whose body is in `mock_ocean.rs` or `mock_mae.rs`.
 pub const DELEGATED: &[&str] = &[
-    "simulator", "design", "resultsDir", "save", "analysis", "desVar", "run", "getData", "value",
+    "simulator",
+    "design",
+    "resultsDir",
+    "save",
+    "analysis",
+    "desVar",
+    "run",
+    "getData",
+    "value",
 ];
 
 /// The arity a signature allows: (required positional, max positional, keywords).
@@ -652,10 +660,9 @@ impl MockDb {
             if let (Some(ddc), Some(ddv)) = (
                 Self::obj(&self.a(cv, "cell")),
                 Self::obj(&self.a(cv, "sfyView")),
-            ) {
-                if !self.a(ddv, "files").truthy() {
-                    self.unlink(ddc, "views", ddv);
-                }
+            ) && !self.a(ddv, "files").truthy()
+            {
+                self.unlink(ddc, "views", ddv);
             }
         }
     }
@@ -1763,10 +1770,10 @@ impl MockDb {
             }
             return v.clone();
         }
-        if ty == "cdf" {
-            if let Some(p) = self.cdf_param(id, attr) {
-                return V::Obj(p);
-            }
+        if ty == "cdf"
+            && let Some(p) = self.cdf_param(id, attr)
+        {
+            return V::Obj(p);
         }
         match self.find_prop(id, attr) {
             Some(p) => self.prop_read(p),

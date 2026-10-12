@@ -1,4 +1,6 @@
 schemify 1 shcomp
+  vsym 429fbe168443a2cc
+  vsch 22e26de3eafc7a1a
 
 pin in[3:0] in -40 0
 pin out[3:0] out 40 0

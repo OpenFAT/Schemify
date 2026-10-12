@@ -2201,10 +2201,10 @@ pub fn called_names(forms: &[V]) -> Vec<String> {
             "let" | "prog" => {
                 if let Some(V::List(b)) = rest.first() {
                     for bind in b.iter() {
-                        if let V::List(p) = bind {
-                            if let Some(init) = p.get(1) {
-                                walk(init, out, false);
-                            }
+                        if let V::List(p) = bind
+                            && let Some(init) = p.get(1)
+                        {
+                            walk(init, out, false);
                         }
                     }
                 }
@@ -2219,10 +2219,10 @@ pub fn called_names(forms: &[V]) -> Vec<String> {
             }
             "cond" | "case" => {
                 let start = usize::from(&**head == "case");
-                if start == 1 {
-                    if let Some(k) = rest.first() {
-                        walk(k, out, false);
-                    }
+                if start == 1
+                    && let Some(k) = rest.first()
+                {
+                    walk(k, out, false);
                 }
                 for clause in &rest[start.min(rest.len())..] {
                     if let V::List(c) = clause {

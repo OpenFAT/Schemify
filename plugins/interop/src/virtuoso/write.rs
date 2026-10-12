@@ -226,6 +226,30 @@ pub fn records(d: &Dump) -> Vec<Record> {
     out
 }
 
+/// Marks `cv` with `schemifyKeep` when `part` of `c` is unchanged since it was imported
+/// (its fingerprint equals the header attribute import wrote, §7.5).
+fn keep(c: &Cell, part: super::Part, mut cv: Cv) -> Cv {
+    if c.header(super::fingerprint_attr(part)) == Some(super::fingerprint(&c.doc, part).as_str()) {
+        cv.props.push(Prop {
+            r: 0,
+            name: "schemifyKeep".into(),
+            ty: "string".into(),
+            value: "1".into(),
+        });
+    }
+    cv
+}
+
+/// A wire's points as written: a two-point wire from its smaller end (x, then y), as the
+/// SKILL dumper writes it, so drawing direction never shows as a difference (§4.2).
+fn canon(p: &[[i32; 2]]) -> Vec<[i32; 2]> {
+    let mut v = p.to_vec();
+    if v.len() == 2 && v[1] < v[0] {
+        v.swap(0, 1);
+    }
+    v
+}
+
 fn pts(v: &[[i32; 2]]) -> Value {
     Value::List(v.iter().flat_map(|p| [i(p[0]), i(p[1])]).collect())
 }
@@ -263,7 +287,7 @@ fn cv_records(cv: &Cv, out: &mut Vec<Record>) {
     sp.sort_by(|a, b| (&a.term, a.xy).cmp(&(&b.term, b.xy)));
     let sp: Vec<(u32, &Spin)> = sp.into_iter().map(|p| (renum(p.r, &mut map), p)).collect();
     let mut wi: Vec<&Wire> = cv.wires.iter().collect();
-    wi.sort_by(|a, b| (&a.pts, a.width).cmp(&(&b.pts, b.width)));
+    wi.sort_by_key(|w| (canon(&w.pts), w.width));
     let wi: Vec<(u32, &Wire)> = wi.into_iter().map(|p| (renum(p.r, &mut map), p)).collect();
     let mut la: Vec<&Label> = cv.labels.iter().collect();
     la.sort_by(|a, b| {
@@ -331,7 +355,7 @@ fn cv_records(cv: &Cv, out: &mut Vec<Record>) {
     for (r, w) in wi {
         out.push(Record::new(
             "wire",
-            vec![i(r as i32), pts(&w.pts), i(w.width)],
+            vec![i(r as i32), pts(&canon(&w.pts)), i(w.width)],
         ));
     }
     for (r, l) in la {
@@ -408,14 +432,34 @@ fn cell_out(d: &Design, ci: usize, plan: &Plan, m: &Mapping, notes: &mut Notes) 
     let mut ids = Ids::default();
     match c.kind() {
         FileKind::Shprim | FileKind::Shcomp => {
-            out.cdf = Some(cdf_out(c, core, notes));
-            out.cvs.push(symbol_out(c, &mut ids, notes));
+            let cdf = cdf_out(c, core, notes);
+            // A component without parameters whose pins are in Virtuoso's default order
+            // (sorted names, §6.3) needs no CDF: none is written, so a cell that had none
+            // in Virtuoso gets none back.
+            let names: Vec<String> = {
+                let p = sym_pins(c);
+                p.name
+                    .into_iter()
+                    .zip(p.alias)
+                    .filter(|(_, a)| a.is_none())
+                    .map(|(n, _)| vname(&n))
+                    .collect()
+            };
+            let sorted = names.windows(2).all(|w| w[0].as_bytes() < w[1].as_bytes());
+            let bare = c.kind() == FileKind::Shcomp && cdf.params.is_empty() && sorted;
+            out.cdf = (!bare).then_some(cdf);
+            out.cvs
+                .push(keep(c, super::Part::Symbol, symbol_out(c, &mut ids, notes)));
             if c.kind() == FileKind::Shcomp {
-                out.cvs.push(schematic_out(d, ci, plan, m, &mut ids, notes));
+                let sch = schematic_out(d, ci, plan, m, &mut ids, notes);
+                out.cvs.push(keep(c, super::Part::Schematic, sch));
             }
             out.textviews = textviews_out(c, notes);
         }
-        FileKind::Shbench => out.cvs.push(schematic_out(d, ci, plan, m, &mut ids, notes)),
+        FileKind::Shbench => {
+            let sch = schematic_out(d, ci, plan, m, &mut ids, notes);
+            out.cvs.push(keep(c, super::Part::Schematic, sch));
+        }
         k => unreachable!("design cells are cell files, got {k:?}"),
     }
     assert!(!out.cvs.is_empty());
@@ -1721,7 +1765,27 @@ fn schematic_out(
                 None => val,
             };
             if let Some(p) = override_prop(c, r, &pname, kind, val, &g.inst_name[k], notes) {
-                cv.props.push(p);
+                // Virtuoso stores no CDF value equal to its default (storeDefault "no"), so an
+                // override equal to the master's default is not sent: the stash (§7.3) keeps
+                // it as Schemify-only data and a round trip restores it.
+                let default = master
+                    .records(RecordKind::Param)
+                    .find(|q| master.field(*q, 0) == key)
+                    .map(|q| master.field(q, 1).to_owned());
+                let same = default.is_some_and(|dv| {
+                    let dv = match &scale {
+                        Some(f) => {
+                            let e = format!("({dv})*({f})");
+                            ael::fold_numeric(&e).unwrap_or(e)
+                        }
+                        None => dv,
+                    };
+                    override_prop(c, r, &pname, kind, &dv, "", &mut Notes::default())
+                        .is_some_and(|d| d.ty == p.ty && d.value == p.value)
+                });
+                if !same {
+                    cv.props.push(p);
+                }
             }
         }
         if let Some(current) = src {
@@ -1788,8 +1852,15 @@ fn schematic_out(
                 .collect::<Vec<_>>()
         })
         .collect();
-    // (id, anchor, net, global, orientation)
-    type LabelOut<'a> = (Option<&'a str>, [i32; 2], String, bool, Orient);
+    // (id, anchor, net, global, orientation, Virtuoso instance name of a global symbol)
+    type LabelOut<'a> = (
+        Option<&'a str>,
+        [i32; 2],
+        String,
+        bool,
+        Orient,
+        Option<&'a str>,
+    );
     let mut all_labels: Vec<LabelOut> = (0..g.label_at.len())
         .map(|k| {
             let o = Orient::parse(c.field(g.label_rec[k], 3)).unwrap_or(Orient::R0);
@@ -1799,11 +1870,12 @@ fn schematic_out(
                 g.label_net[k].clone(),
                 g.label_global[k],
                 o,
+                c.attr(g.label_rec[k], "vinst"),
             )
         })
         .collect();
     for l in &edits.labels {
-        all_labels.push((None, l.at, l.net.clone(), l.global, Orient::R0));
+        all_labels.push((None, l.at, l.net.clone(), l.global, Orient::R0, None));
     }
     for (from, l) in &edits.stubs {
         let r = ids.take();
@@ -1814,9 +1886,9 @@ fn schematic_out(
             width: 0,
         });
         segs.push((r, [from[0], from[1], l.at[0], l.at[1]]));
-        all_labels.push((None, l.at, l.net.clone(), l.global, Orient::R0));
+        all_labels.push((None, l.at, l.net.clone(), l.global, Orient::R0, None));
     }
-    for (id, at, net, global, o) in all_labels {
+    for (id, at, net, global, o, vinst) in all_labels {
         let r = ids.take();
         let (text, review) = net_to_virtuoso(&net, global);
         if review {
@@ -1834,6 +1906,31 @@ fn schematic_out(
                     net.clone()
                 },
             });
+        }
+        // A global net with an analogLib global symbol (`gnd!`, `vdd!`, …) is drawn as that
+        // symbol, Virtuoso's idiom; import turns the symbol back into this label (§6.1).
+        // GUESS(G3): the symbol's pin sits at its origin.
+        // Only a label that came from such a symbol, or one on no wire (which would
+        // otherwise need a stub), becomes the symbol; a wire label stays a wire label.
+        let on_wire = segs.iter().any(|(_, s)| nets::on_segment(at, *s));
+        if let Some(sym) = text
+            .strip_suffix('!')
+            .filter(|b| devices::GLOBAL_SYMBOLS.contains(b))
+            .filter(|_| vinst.is_some() || !on_wire)
+        {
+            if let Some(id) = id {
+                id_prop(&mut cv, r, id);
+            }
+            cv.insts.push(Inst {
+                r,
+                name: vinst.map_or_else(|| format!("sfyG{r}"), str::to_owned),
+                lib: "analogLib".into(),
+                cell: sym.to_owned(),
+                view: "symbol".into(),
+                xy: conv(at, "label", c, notes),
+                orient: profile::orient_to_virtuoso(o).into(),
+            });
+            continue;
         }
         // ponytail: O(labels × wires) gluing; a sorted segment index for 10^5-wire cells.
         let parent = match segs.iter().find(|(_, s)| nets::on_segment(at, *s)) {

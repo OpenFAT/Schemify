@@ -1,4 +1,6 @@
 schemify 1 shcomp
+  vsym f37cafeb1d11cf2b
+  vsch 9eb23198b95e9203
 
 pin A in -40 0
 pin Y out 40 0
@@ -47,6 +49,7 @@ wire zz835z -60 0 -20 0
 label htaex2 20 -88 R270 vdd!
 label peb7yn 20 90 R0 GND
   global true
+  vinst I2
 
 port n1rj7r -60 0 R0 A
 port y7sr15 60 0 R0 Y

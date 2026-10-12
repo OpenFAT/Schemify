@@ -1,4 +1,6 @@
 schemify 1 shcomp
+  vsym 8e133b8fbce45af2
+  vsch 6e11f422b4d7bcec
 
 pin A in -40 0
 pin vdd inout 0 0
