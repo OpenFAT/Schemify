@@ -151,7 +151,13 @@ pub fn minmax_scalar(y: &[f64]) -> (f64, f64) {
 /// # Panics
 ///
 /// Panics if the columns differ in length or a step lies outside them.
-pub fn extent(xs: &[f64], ys: &[f64], steps: &[Range<u32>], x_lo: f64, x_hi: f64) -> (f64, f64) {
+pub(crate) fn extent(
+    xs: &[f64],
+    ys: &[f64],
+    steps: &[Range<u32>],
+    x_lo: f64,
+    x_hi: f64,
+) -> (f64, f64) {
     assert_eq!(xs.len(), ys.len(), "x and y columns differ in length");
     let (mut a, mut b) = (f64::INFINITY, f64::NEG_INFINITY);
     for s in steps {
@@ -303,8 +309,6 @@ pub fn logic_runs(xs: &[f64], ys: &[f64], threshold: Option<f64>, sx: &Scale, ou
         // ponytail: a non-ascending step (an X-Y sweep) has no time order to hold values in.
         return;
     }
-    // ponytail: a scalar fold per column. It is an accumulator in the `minmax` shape; vectorize
-    // it when a profile of million-sample digital lanes asks for it.
     let before = out.len();
     let cols = ((sx.p1 - sx.p0).floor() as usize).max(1);
     let edge = |c: usize| sx.value(sx.p0 + c as f32);
@@ -312,19 +316,24 @@ pub fn logic_runs(xs: &[f64], ys: &[f64], threshold: Option<f64>, sx: &Scale, ou
     let mut i = xs.partition_point(|&x| x < edge(0));
     for c in 0..cols {
         let j = gallop(xs, i, n, edge(c + 1));
-        // The value held into the column needs a sample before it and one at or after it.
-        let held = (i > 0 && i < n).then(|| logic(ys[i - 1], threshold));
-        let mut state = held.map(Some);
-        for &y in &ys[i..j] {
-            let v = logic(y, threshold);
-            state = match state {
-                None => Some(Some(v)),
-                Some(Some(w)) if w == v => Some(Some(w)),
-                Some(_) => Some(None),
-            };
-        }
+        let col = &ys[i..j];
+        // The value held into the column needs a sample before it and one at or after it;
+        // without one the column's first sample sets the value.
+        let first = if i > 0 && i < n {
+            ys[i - 1]
+        } else if let Some(&y) = col.first() {
+            y
+        } else {
+            i = j;
+            continue;
+        };
         i = j;
-        let Some(value) = state else { continue };
+        let v0 = logic(first, threshold);
+        // A fold with no early exit: one compare and or per sample, no branch.
+        let busy = col
+            .iter()
+            .fold(false, |b, &y| b | (logic(y, threshold) != v0));
+        let value = (!busy).then_some(v0);
         let c = c as u32;
         let extend =
             out.len() > before && out.last().is_some_and(|r| r.c1 == c && r.value == value);
@@ -356,6 +365,8 @@ pub fn bin_counts(y: &[f64], t0: f64, t1: f64, log: bool, bins: &mut [u32]) {
     );
     let n = bins.len();
     let k = n as f64 / (t1 - t0);
+    // ponytail: a branch per sample. Branchless (add 0 to a clamped bin) measured 1.7x slower:
+    // the clamped misses serialize on one bin's store. Four sub-histograms if a profile asks.
     for &v in y {
         let t = if log { v.log10() } else { v };
         if !(t >= t0 && t <= t1) {
@@ -576,6 +587,35 @@ mod tests {
              decimate to 1500 columns: vector {d_v:.3} ms, scalar {d_s:.3} ms ({:.1}x)",
             mm_s / mm_v,
             d_s / d_v
+        );
+        // Digital lanes and histogram bins over the same million samples.
+        let lr = |thr: Option<f64>| {
+            let mut out = Vec::with_capacity(1500);
+            logic_runs(black_box(&xs), black_box(&ys), thr, &sx, &mut out);
+            out.len()
+        };
+        let lr_t = time(&|| lr(Some(0.0)));
+        let bus: Vec<f64> = ys.iter().map(|v| (v * 4.0 + 4.0).floor()).collect();
+        let lr_b = time(&|| {
+            let mut out = Vec::with_capacity(1500);
+            logic_runs(black_box(&xs), black_box(&bus), None, &sx, &mut out);
+            out.len()
+        });
+        let hist = |log: bool| {
+            let mut bins = [0u32; 64];
+            bin_counts(
+                black_box(&ys),
+                if log { -3.0 } else { -1.0 },
+                0.0,
+                log,
+                &mut bins,
+            );
+            bins[0] as usize
+        };
+        let (h_lin, h_log) = (time(&|| hist(false)), time(&|| hist(true)));
+        println!(
+            "1M f64: logic_runs threshold {lr_t:.3} ms, bus {lr_b:.3} ms; \
+             bin_counts linear {h_lin:.3} ms, log {h_log:.3} ms"
         );
     }
 }

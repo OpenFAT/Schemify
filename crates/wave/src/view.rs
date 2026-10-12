@@ -23,7 +23,6 @@
 use core::ops::Range;
 
 use schemify_expr::{CalcResult, ColKind, Mode, Program, Scratch, Value};
-use thiserror::Error;
 
 use crate::calc;
 use crate::data::RawPlot;
@@ -410,39 +409,52 @@ pub enum Applied {
 }
 
 /// Why a request was refused. Refused requests change nothing.
-#[derive(Clone, Debug, Error, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ViewError {
     /// The expression failed to compile or evaluate.
-    #[error("{0}")]
     Expr(schemify_expr::Error),
     /// A table is at capacity.
-    #[error("too many {0}")]
     Full(&'static str),
     /// No such trace row.
-    #[error("no trace {0}")]
     NoTrace(u8),
     /// No such pane.
-    #[error("no pane {0}")]
     NoPane(u8),
     /// No such dataset.
-    #[error("no dataset {0}")]
     NoDataset(u8),
     /// A log axis was requested over data with no positive value.
-    #[error("no positive values for a log axis")]
     NotPositive,
     /// An axis range that is empty, reversed, not finite, or not positive on a log axis.
-    #[error("invalid range {0} .. {1}")]
     Range(f64, f64),
     /// Pane properties outside spec waves §3.
-    #[error("invalid pane properties (threshold must be finite, bins 2..=1024)")]
     Props,
     /// A trace on its own x axis (`fft`, per-step results) would share a locked pane's axis.
-    #[error("a trace on its own x axis cannot be in a locked pane")]
     OwnAxis,
     /// A malformed bus (`{b1, …, bn}`).
-    #[error("bus: {0}")]
     Bus(String),
 }
+
+impl std::fmt::Display for ViewError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ViewError::Expr(e) => write!(f, "{e}"),
+            ViewError::Full(what) => write!(f, "too many {what}"),
+            ViewError::NoTrace(t) => write!(f, "no trace {t}"),
+            ViewError::NoPane(p) => write!(f, "no pane {p}"),
+            ViewError::NoDataset(d) => write!(f, "no dataset {d}"),
+            ViewError::NotPositive => f.write_str("no positive values for a log axis"),
+            ViewError::Range(lo, hi) => write!(f, "invalid range {lo} .. {hi}"),
+            ViewError::Props => {
+                f.write_str("invalid pane properties (threshold must be finite, bins 2..=1024)")
+            }
+            ViewError::OwnAxis => {
+                f.write_str("a trace on its own x axis cannot be in a locked pane")
+            }
+            ViewError::Bus(m) => write!(f, "bus: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for ViewError {}
 
 /// Where a trace's displayed y values live.
 #[derive(Clone, Debug)]
@@ -477,6 +489,10 @@ struct Traces {
 }
 
 /// The viewer tables. See the module docs for the data design.
+///
+/// Accessors that take a trace row `i` panic when `i >= trace_count()`. Rows shift up when an
+/// earlier trace is removed, so a row index is only meaningful until the next [`Waves::apply`]
+/// or [`Waves::reload`].
 #[derive(Clone, Debug)]
 pub struct Waves {
     datasets: Vec<RawPlot>,
@@ -591,11 +607,6 @@ impl Waves {
     /// Pane of trace `i`.
     pub fn pane_of(&self, i: usize) -> u8 {
         self.traces.pane[i]
-    }
-
-    /// Dataset of trace `i`.
-    pub fn dataset_of(&self, i: usize) -> u8 {
-        self.traces.dataset[i]
     }
 
     /// RGBA8 color of trace `i`.
