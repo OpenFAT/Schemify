@@ -1,13 +1,14 @@
 //! D19 oracle (TESTING.md `expr`/`elab`): after any sequence of edits, undos and redos
-//! applied with `doc::apply_edits_report` (whose reported ops `recompute` takes), the incrementally recomputed state equals a state built from
-//! scratch — values, unverified flags, nets and violations.
+//! applied with `doc::apply_edits` (`recompute` takes the ops `Project::applied` lends),
+//! the incrementally recomputed state equals a state built from scratch — values,
+//! unverified flags, nets and violations.
 
 mod common;
 
 use common::*;
 use schemify_doc::{
-    Applied, DocHandle, Edit, EditRequest, Mode, Op, Outcome, Project, RecordBuf, Target,
-    Transaction, apply_edits_report,
+    DocHandle, Edit, EditRequest, Mode, Op, Outcome, Project, RecordBuf, Target, Transaction,
+    apply_edits,
 };
 use schemify_elab::{CellState, no_funcs};
 use schemify_format::RecordKind;
@@ -44,10 +45,16 @@ fn commit(p: &mut Project, h: DocHandle, ops: Vec<Op>) -> bool {
     matches!(edit(p, h, Edit::Tx(tx)).outcome, Outcome::Committed { .. })
 }
 
-/// Applies one request; its reported ops are what the editor hands `recompute` (a
-/// commit's resolved ops, an undo's inverse ops, a redo's ops).
+/// One request's outcome and the ops it applied.
+struct Applied {
+    outcome: Outcome,
+    ops: Vec<Op>,
+}
+
+/// Applies one request; its applied ops (`Project::applied`: a commit's resolved ops, an
+/// undo's inverse ops, a redo's ops) are what the editor hands `recompute`.
 fn edit(p: &mut Project, h: DocHandle, edit: Edit) -> Applied {
-    let mut out = apply_edits_report(
+    let mut out = apply_edits(
         p,
         &[EditRequest {
             doc: h,
@@ -55,7 +62,9 @@ fn edit(p: &mut Project, h: DocHandle, edit: Edit) -> Applied {
             unix_ms: 1,
         }],
     );
-    out.pop().expect("one outcome per request")
+    let outcome = out.pop().expect("one outcome per request");
+    let ops = p.applied(h, &outcome).map_or_else(Vec::new, <[Op]>::to_vec);
+    Applied { outcome, ops }
 }
 
 /// The ops of a random undo or redo, or `None` when there was nothing to revert.
@@ -687,7 +696,7 @@ fn nets_view(st: &CellState, doc: &schemify_doc::Document) -> Vec<String> {
     out
 }
 
-/// Random geometry edit sequences, with undo and redo, through `doc::apply_edits_report`: after
+/// Random geometry edit sequences, with undo and redo, through `doc::apply_edits`: after
 /// every step the patched state equals a fresh build (connectivity, names, values,
 /// violations) and the pass's delta turns the previous rows into the current ones.
 /// Returns how many steps were patched (not rebuilt).

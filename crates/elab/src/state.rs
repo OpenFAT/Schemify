@@ -118,8 +118,8 @@ impl CellState {
     }
 
     /// Brings the state up to date after `ops` were applied to document `h` (the frame
-    /// spine's `elab::recompute`): the ops `doc::apply_edits_report` reports for a commit,
-    /// an undo (its inverse ops) or a redo. Value edits (an existing override's or var's
+    /// spine's `elab::recompute`): the ops `Project::applied` lends for a commit, an undo
+    /// (its inverse ops) or a redo. Value edits (an existing override's or var's
     /// expression) re-evaluate only their dependents; geometry edits patch the touched
     /// nets; structural edits (instances, params, vars added or removed, overrides added
     /// or removed, changed dependencies) rebuild. Ops of other documents are not seen:
