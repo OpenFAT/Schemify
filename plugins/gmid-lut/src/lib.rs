@@ -21,8 +21,9 @@ use lut::Lut;
 /// Exported functions as `(name, arity)`; the index is the function's `fn_id` modulo
 /// [`FN_STRIDE`]. Arguments: device name, gm/Id (1/V), L (m), for the sized ones Id (A), and
 /// for the `_at` rows (index [`AT`] and up, row `AT + k` is row `k` plus the argument) |VDS|
-/// (V) last. The rows without it answer at the table's nominal VDS (`vdd / 2`).
-pub const FUNCTIONS: [(&str, u8); 14] = [
+/// (V) last. The rows without it answer at the table's nominal VDS (`vdd / 2`). The last row,
+/// [`CLAMP_L`], is `gmid.l(dev, l)`: `l` clamped into the device table's L range.
+pub const FUNCTIONS: [(&str, u8); 15] = [
     ("gmid.vgs", 3),
     ("gmid.jd", 3),
     ("gmid.w", 4),
@@ -37,10 +38,15 @@ pub const FUNCTIONS: [(&str, u8); 14] = [
     ("gmid.gds_at", 5),
     ("gmid.gain_at", 4),
     ("gmid.ft_at", 4),
+    ("gmid.l", 2),
 ];
 
 /// Index of the first function taking VDS as its last argument (see [`FUNCTIONS`]).
 pub const AT: usize = 7;
+
+/// Index of `gmid.l(dev, l)`: the nearest length the device's table covers, so a design asks
+/// for an L and gets what the PDK can do (ASAP7 gates are fixed: its table has one L).
+pub const CLAMP_L: usize = 14;
 
 /// `fn_id = index + FN_STRIDE × generation`: the generation moves whenever the loaded tables
 /// change, so the re-declared `functions` set differs and the host recomposes and re-evaluates
@@ -105,7 +111,20 @@ impl Tables {
 pub fn eval(tables: &Tables, fn_id: u32, args: &str) -> Result<f64, Code> {
     let f = (fn_id % FN_STRIDE) as usize;
     let &(_, arity) = FUNCTIONS.get(f).ok_or(Code::Range)?;
-    let at_vds = f >= AT;
+    if f == CLAMP_L {
+        let mut v = text::values(args);
+        let dev = v.need().map_err(|_| Code::Range)?;
+        let l = v.need_num::<f64>().map_err(|_| Code::Range)?;
+        v.end().map_err(|_| Code::Range)?;
+        let ls = &tables.get(&dev).ok_or(Code::Range)?.l;
+        assert!(!ls.is_empty(), "a loaded table has an L axis");
+        return if l.is_finite() && l > 0.0 {
+            Ok(l.clamp(ls[0], ls[ls.len() - 1]))
+        } else {
+            Err(Code::Range)
+        };
+    }
+    let at_vds = (AT..CLAMP_L).contains(&f);
     let sized = arity - u8::from(at_vds) == 4;
     let mut v = text::values(args);
     let dev = v.need().map_err(|_| Code::Range)?;
@@ -429,6 +448,32 @@ mod tests {
         (a - b).abs() / b.abs()
     }
 
+    #[test]
+    fn l_clamps_into_the_table_and_refuses_bad_input() {
+        let (_, t) = tables();
+        let ls = &t.get("nsynth").unwrap().l;
+        let (lo, hi) = (ls[0], ls[ls.len() - 1]);
+        let mid = (lo * hi).sqrt();
+        assert_eq!(call(&t, "gmid.l", &format!("\"nsynth\" {mid}")), Ok(mid));
+        assert_eq!(
+            call(&t, "gmid.l", &format!("\"nsynth\" {}", lo / 10.0)),
+            Ok(lo)
+        );
+        assert_eq!(
+            call(&t, "gmid.l", &format!("\"nsynth\" {}", hi * 10.0)),
+            Ok(hi)
+        );
+        for bad in [
+            "\"nsynth\" 0",
+            "\"nsynth\" -1e-6",
+            "\"nope\" 1e-6",
+            "\"nsynth\"",
+            "\"nsynth\" 1e-6 2",
+        ] {
+            assert_eq!(call(&t, "gmid.l", bad), Err(Code::Range), "{bad}");
+        }
+    }
+
     /// LUT answers vs the analytic model solved exactly, at grid and off-grid L, across weak,
     /// moderate and strong inversion: every quantity within 2 % (VGS within 2 mV).
     #[test]
@@ -658,7 +703,7 @@ mod tests {
         assert!(functions_text(2).contains("function gmid.ft 38 3\n"));
         assert!(functions_text(2).contains("function gmid.w_at 41 5\n"));
         assert_eq!(functions_text(0).lines().count(), FUNCTIONS.len());
-        for (k, (name, arity)) in FUNCTIONS[AT..].iter().enumerate() {
+        for (k, (name, arity)) in FUNCTIONS[AT..CLAMP_L].iter().enumerate() {
             assert_eq!(*name, format!("{}_at", FUNCTIONS[k].0));
             assert_eq!(
                 *arity,
