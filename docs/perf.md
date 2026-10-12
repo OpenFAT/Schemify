@@ -138,9 +138,13 @@ name, device moves) on a tiled schematic with shared `gnd`/`vdd!` nets.
 
 ## Where the time still goes
 
-At 100k objects an edit spends ~0.1–0.2 ms in elab (was ~28 ms), ~7 ms
-refilling plugin snapshots (two delivery rounds), ~4.5 ms rebuilding decor, ~3.4 ms diffing
-the canvas tables, ~1.5 ms in the scene update and ~1 ms painting the patch. See
+At 100k objects an edit (delete a wire, undo) now costs 23 / 28 / 45 ms CPU (p50/p95/p99,
+RTX run on `pr/perf-edit`; 1M: 251 / 331 / 452 ms). Elab spends ~0.1–0.2 ms (was ~28 ms).
+Plugin snapshots refill only the groups whose fingerprint moved (a hash pass over the
+document's columns instead of copies of every table). An edit's patches read the rows near
+them through `PrimIndex`, which follows the diff's edit script instead of being rebuilt.
+What is left: ~4.5 ms rebuilding decor, ~3.4 ms diffing the canvas tables (the diff hashes
+every row of a changed table), ~1.5 ms in the scene update, and the fingerprint pass. See
 `docs/BACKLOG.md` (Performance) for the next steps.
 
 ## Binary size

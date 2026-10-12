@@ -16,7 +16,7 @@
 
 use std::path::Path;
 
-use schemify_doc::{DocHandle, Project};
+use schemify_doc::{DocHandle, ObjId, Project, Sym};
 use schemify_elab::{CellState, Funcs, Val};
 use schemify_expr::{Code as XCode, Error as XError, Mode, Program, Scratch, Span, Value};
 use schemify_plugin::abi::{Code, Event, FUEL_DEFAULT, Kind, Table, col};
@@ -44,6 +44,156 @@ pub const WAITING_MAX: usize = 256;
 /// Tick period while a child process runs (its completion is polled, not signalled).
 const IO_POLL_MS: u32 = 20;
 
+/// Fills the snapshot groups flagged `stale` (Instances; Wires; Labels; Nets with
+/// Violations; Results) from document `doc` (snapshot id `id`), its state `cell` and the run's
+/// `results`; see [`Host::snapshot`].
+fn fill_groups(
+    s: &mut Snapshots,
+    doc: &schemify_doc::Document,
+    id: u32,
+    cell: Option<&CellState>,
+    results: &ResultRows,
+    stale: [bool; 5],
+) {
+    let st = doc.strings();
+    let (inst, w, l) = (doc.instances(), doc.wires(), doc.labels());
+    // Net ids are elab's component rows; u32::MAX = not elaborated.
+    let nets_of = |col: &[u32], n: usize| match cell {
+        Some(_) if col.len() == n => col.to_vec(),
+        _ => vec![u32::MAX; n],
+    };
+    if stale[0] {
+        let n = inst.id.len();
+        s.fill::<u32>(Table::Instances, col::instances::DOC, &vec![id; n]);
+        let raw: Vec<u32> = inst.id.iter().map(|i| i.0).collect();
+        s.fill::<u32>(Table::Instances, col::instances::ID, &raw);
+        s.fill::<i32>(Table::Instances, col::instances::X, &inst.x);
+        s.fill::<i32>(Table::Instances, col::instances::Y, &inst.y);
+        let o: Vec<u8> = inst.orient.iter().map(|&o| o as u8).collect();
+        s.fill::<u8>(Table::Instances, col::instances::ORIENT, &o);
+        let cells: Vec<&str> = inst.cell.iter().map(|&c| st.get(c)).collect();
+        s.fill_strings(Table::Instances, col::instances::CELL, &cells);
+        let names: Vec<&str> = inst.name.iter().map(|&c| st.get(c)).collect();
+        s.fill_strings(Table::Instances, col::instances::NAME, &names);
+    }
+    if stale[1] {
+        let n = w.id.len();
+        s.fill::<u32>(Table::Wires, col::wires::DOC, &vec![id; n]);
+        let raw: Vec<u32> = w.id.iter().map(|i| i.0).collect();
+        s.fill::<u32>(Table::Wires, col::wires::ID, &raw);
+        s.fill::<i32>(Table::Wires, col::wires::X1, &w.x1);
+        s.fill::<i32>(Table::Wires, col::wires::Y1, &w.y1);
+        s.fill::<i32>(Table::Wires, col::wires::X2, &w.x2);
+        s.fill::<i32>(Table::Wires, col::wires::Y2, &w.y2);
+        s.fill::<u32>(
+            Table::Wires,
+            col::wires::NET,
+            &nets_of(cell.map_or(&[][..], |c| &c.nets.wire_net), n),
+        );
+    }
+    if stale[2] {
+        let n = l.id.len();
+        s.fill::<u32>(Table::Labels, col::labels::DOC, &vec![id; n]);
+        let raw: Vec<u32> = l.id.iter().map(|i| i.0).collect();
+        s.fill::<u32>(Table::Labels, col::labels::ID, &raw);
+        s.fill::<i32>(Table::Labels, col::labels::X, &l.x);
+        s.fill::<i32>(Table::Labels, col::labels::Y, &l.y);
+        s.fill::<u32>(
+            Table::Labels,
+            col::labels::NET,
+            &nets_of(cell.map_or(&[][..], |c| &c.nets.label_net), n),
+        );
+        let texts: Vec<&str> = l.text.iter().map(|&t| st.get(t)).collect();
+        s.fill_strings(Table::Labels, col::labels::TEXT, &texts);
+    }
+    if stale[3] {
+        let empty = CellState::default();
+        let c = cell.unwrap_or(&empty);
+        let nets = &c.nets;
+        let names: Vec<&str> = nets.net_name.iter().map(|&n| c.names.get(n)).collect();
+        s.fill_strings(Table::Nets, col::nets::NAME, &names);
+        s.fill::<u16>(Table::Nets, col::nets::WIDTH, &nets.net_width);
+        let global: Vec<u8> = nets.net_global.iter().map(|&g| u8::from(g)).collect();
+        s.fill::<u8>(Table::Nets, col::nets::GLOBAL, &global);
+        s.fill::<u32>(Table::Nets, col::nets::PIN_COUNT, &nets.net_pins);
+        let v = &c.violations.rows;
+        let codes: Vec<&str> = v.iter().map(|r| r.code.as_str()).collect();
+        s.fill_strings(Table::Violations, col::violations::CODE, &codes);
+        let sev: Vec<u8> = v.iter().map(|r| r.code.severity() as u8).collect();
+        s.fill::<u8>(Table::Violations, col::violations::SEVERITY, &sev);
+        let obj: Vec<u32> = v.iter().map(|r| r.object.0).collect();
+        s.fill::<u32>(Table::Violations, col::violations::OBJECT, &obj);
+        let none = schemify_elab::Name::NONE;
+        let param: Vec<&str> = v
+            .iter()
+            .map(|r| {
+                if r.param == none {
+                    ""
+                } else {
+                    c.names.get(r.param)
+                }
+            })
+            .collect();
+        s.fill_strings(Table::Violations, col::violations::PARAM, &param);
+    }
+    if stale[4] {
+        let jobs: Vec<u32> = results.iter().map(|r| r.0).collect();
+        s.fill::<u32>(Table::Results, col::results::JOB, &jobs);
+        let outs: Vec<&str> = results.iter().map(|r| r.1.as_str()).collect();
+        s.fill_strings(Table::Results, col::results::OUTPUT, &outs);
+        let vals: Vec<&str> = results.iter().map(|r| r.2.as_str()).collect();
+        s.fill_strings(Table::Results, col::results::VALUE, &vals);
+        let pass: Vec<u8> = results.iter().map(|r| r.3).collect();
+        s.fill::<u8>(Table::Results, col::results::PASS, &pass);
+    }
+    debug_assert_eq!(s.check(), Ok(()));
+}
+
+/// A snapshot's debug text without its table epochs (they count fills, not content).
+#[cfg(debug_assertions)]
+fn without_epochs(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find("epoch: ") {
+        out.push_str(&rest[..i]);
+        rest = rest[i + 7..].trim_start_matches(|c: char| c.is_ascii_digit());
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Folds `values` into fingerprint `h` (a multiply-xorshift per value: ~0.3 ns each, no
+/// allocation; a fingerprint, not a cryptographic hash).
+fn fold(mut h: u64, values: impl Iterator<Item = u32>) -> u64 {
+    let mut n = 0u64;
+    for v in values {
+        h = (h ^ u64::from(v)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        h ^= h >> 29;
+        n += 1;
+    }
+    (h ^ n).wrapping_mul(0xbf58_476d_1ce4_e5b9)
+}
+
+fn obj_ids(v: &[ObjId]) -> impl Iterator<Item = u32> + '_ {
+    v.iter().map(|i| i.0)
+}
+
+fn sym_ids(v: &[Sym]) -> impl Iterator<Item = u32> + '_ {
+    v.iter().map(|i| i.0)
+}
+
+fn as_u32(v: &[i32]) -> impl Iterator<Item = u32> + '_ {
+    v.iter().map(|&x| x as u32)
+}
+
+/// The std hash of `v`.
+fn hash_of(v: impl std::hash::Hash) -> u64 {
+    use std::hash::Hasher;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    v.hash(&mut h);
+    h.finish()
+}
+
 /// Results rows a run exposes to plugins (the `Results` snapshot): `(job, output, value
 /// text, pass)`; `pass` is 1 pass, 2 fail, 0 unknown or no spec.
 pub type ResultRows = Vec<(u32, String, String, u8)>;
@@ -57,6 +207,9 @@ pub struct Host {
     snapshots: Snapshots,
     /// What the document tables in `snapshots` were filled from (see [`Host::snapshot`]).
     snapshot_key: Option<u64>,
+    /// Fingerprints of what each group of tables was filled from: Instances, Wires, Labels,
+    /// Nets with Violations, Results (see [`Host::snapshot`]).
+    group_keys: [Option<u64>; 5],
     queues: RequestQueues,
     /// Epoch of the last composition the app consumed.
     pub seen_epoch: Option<u32>,
@@ -195,6 +348,7 @@ impl Host {
             events: PluginEvents::new(),
             snapshots: Snapshots::new(),
             snapshot_key: None,
+            group_keys: [None; 5],
             queues: RequestQueues::default(),
             seen_epoch: None,
             hashes,
@@ -521,7 +675,10 @@ impl Host {
     /// labels, Nets, Violations; `u32::MAX` nets and empty tables without it) and the last
     /// run's `results` rows. `key` names everything but `selection` (document epochs, the
     /// check pass, the results): with the previous call's key only the Selection table is
-    /// refilled. Cost: one copy of those columns, or of the selection.
+    /// refilled. Otherwise each group of tables (Instances; Wires; Labels; Nets with
+    /// Violations; Results) is refilled only when its source changed: a fingerprint of the
+    /// document's columns, the check pass, the rows. Cost: a hash pass over the instance, wire
+    /// and label columns, plus one copy of the groups that changed (or of the selection).
     pub fn snapshot(
         &mut self,
         project: &Project,
@@ -565,88 +722,50 @@ impl Host {
         let id = doc_id(h.expect("doc implies handle"));
         let st = doc.strings();
         let inst = doc.instances();
-        let n = inst.id.len();
-        s.fill::<u32>(Table::Instances, col::instances::DOC, &vec![id; n]);
-        let raw: Vec<u32> = inst.id.iter().map(|i| i.0).collect();
-        s.fill::<u32>(Table::Instances, col::instances::ID, &raw);
-        s.fill::<i32>(Table::Instances, col::instances::X, &inst.x);
-        s.fill::<i32>(Table::Instances, col::instances::Y, &inst.y);
-        let o: Vec<u8> = inst.orient.iter().map(|&o| o as u8).collect();
-        s.fill::<u8>(Table::Instances, col::instances::ORIENT, &o);
-        let cells: Vec<&str> = inst.cell.iter().map(|&c| st.get(c)).collect();
-        s.fill_strings(Table::Instances, col::instances::CELL, &cells);
-        let names: Vec<&str> = inst.name.iter().map(|&c| st.get(c)).collect();
-        s.fill_strings(Table::Instances, col::instances::NAME, &names);
-        let w = doc.wires();
-        let n = w.id.len();
-        s.fill::<u32>(Table::Wires, col::wires::DOC, &vec![id; n]);
-        let raw: Vec<u32> = w.id.iter().map(|i| i.0).collect();
-        s.fill::<u32>(Table::Wires, col::wires::ID, &raw);
-        s.fill::<i32>(Table::Wires, col::wires::X1, &w.x1);
-        s.fill::<i32>(Table::Wires, col::wires::Y1, &w.y1);
-        s.fill::<i32>(Table::Wires, col::wires::X2, &w.x2);
-        s.fill::<i32>(Table::Wires, col::wires::Y2, &w.y2);
-        // Net ids are elab's component rows; u32::MAX = not elaborated.
-        let nets_of = |col: &[u32], n: usize| match cell {
-            Some(_) if col.len() == n => col.to_vec(),
-            _ => vec![u32::MAX; n],
-        };
-        s.fill::<u32>(
-            Table::Wires,
-            col::wires::NET,
-            &nets_of(cell.map_or(&[][..], |c| &c.nets.wire_net), n),
-        );
-        let l = doc.labels();
-        let n = l.id.len();
-        s.fill::<u32>(Table::Labels, col::labels::DOC, &vec![id; n]);
-        let raw: Vec<u32> = l.id.iter().map(|i| i.0).collect();
-        s.fill::<u32>(Table::Labels, col::labels::ID, &raw);
-        s.fill::<i32>(Table::Labels, col::labels::X, &l.x);
-        s.fill::<i32>(Table::Labels, col::labels::Y, &l.y);
-        s.fill::<u32>(
-            Table::Labels,
-            col::labels::NET,
-            &nets_of(cell.map_or(&[][..], |c| &c.nets.label_net), n),
-        );
-        let texts: Vec<&str> = l.text.iter().map(|&t| st.get(t)).collect();
-        s.fill_strings(Table::Labels, col::labels::TEXT, &texts);
-        let empty = CellState::default();
-        let c = cell.unwrap_or(&empty);
-        let nets = &c.nets;
-        let names: Vec<&str> = nets.net_name.iter().map(|&n| c.names.get(n)).collect();
-        s.fill_strings(Table::Nets, col::nets::NAME, &names);
-        s.fill::<u16>(Table::Nets, col::nets::WIDTH, &nets.net_width);
-        let global: Vec<u8> = nets.net_global.iter().map(|&g| u8::from(g)).collect();
-        s.fill::<u8>(Table::Nets, col::nets::GLOBAL, &global);
-        s.fill::<u32>(Table::Nets, col::nets::PIN_COUNT, &nets.net_pins);
-        let v = &c.violations.rows;
-        let codes: Vec<&str> = v.iter().map(|r| r.code.as_str()).collect();
-        s.fill_strings(Table::Violations, col::violations::CODE, &codes);
-        let sev: Vec<u8> = v.iter().map(|r| r.code.severity() as u8).collect();
-        s.fill::<u8>(Table::Violations, col::violations::SEVERITY, &sev);
-        let obj: Vec<u32> = v.iter().map(|r| r.object.0).collect();
-        s.fill::<u32>(Table::Violations, col::violations::OBJECT, &obj);
-        let none = schemify_elab::Name::NONE;
-        let param: Vec<&str> = v
-            .iter()
-            .map(|r| {
-                if r.param == none {
-                    ""
-                } else {
-                    c.names.get(r.param)
-                }
-            })
-            .collect();
-        s.fill_strings(Table::Violations, col::violations::PARAM, &param);
-        let jobs: Vec<u32> = results.iter().map(|r| r.0).collect();
-        s.fill::<u32>(Table::Results, col::results::JOB, &jobs);
-        let outs: Vec<&str> = results.iter().map(|r| r.1.as_str()).collect();
-        s.fill_strings(Table::Results, col::results::OUTPUT, &outs);
-        let vals: Vec<&str> = results.iter().map(|r| r.2.as_str()).collect();
-        s.fill_strings(Table::Results, col::results::VALUE, &vals);
-        let pass: Vec<u8> = results.iter().map(|r| r.3).collect();
-        s.fill::<u8>(Table::Results, col::results::PASS, &pass);
-        debug_assert_eq!(s.check(), Ok(()));
+        let (w, l) = (doc.wires(), doc.labels());
+        let pass = cell.map(|c| c.pass);
+        // A group is refilled when its fingerprint moved (always on the first call).
+        // ponytail: names are fingerprinted by symbol, with the string count: a reload whose
+        // interner gave the same symbols to other strings at the same count would keep stale
+        // names. Key on a per-document reload counter if that ever shows.
+        let seed = hash_of((id, st.len()));
+        let keys = [
+            {
+                let f = fold(
+                    fold(fold(seed, obj_ids(&inst.id)), as_u32(&inst.x)),
+                    as_u32(&inst.y),
+                );
+                let f = fold(fold(f, sym_ids(&inst.cell)), sym_ids(&inst.name));
+                fold(f, inst.orient.iter().map(|&o| o as u32))
+            },
+            {
+                let f = fold(fold(seed ^ hash_of(pass), obj_ids(&w.id)), as_u32(&w.x1));
+                fold(fold(fold(f, as_u32(&w.y1)), as_u32(&w.x2)), as_u32(&w.y2))
+            },
+            {
+                let f = fold(fold(seed ^ hash_of(pass), obj_ids(&l.id)), as_u32(&l.x));
+                fold(fold(f, as_u32(&l.y)), sym_ids(&l.text))
+            },
+            hash_of((id, pass)),
+            hash_of(results),
+        ];
+        let mut stale = [false; 5];
+        for (g, k) in keys.into_iter().enumerate() {
+            stale[g] = self.group_keys[g].replace(k) != Some(k);
+        }
+        fill_groups(&mut self.snapshots, doc, id, cell, results, stale);
+        // Oracle (debug builds, small documents): the refilled groups equal a full refill.
+        #[cfg(debug_assertions)]
+        if inst.id.len() + w.id.len() + l.id.len() < 20_000 {
+            let mut full = self.snapshots.clone();
+            fill_groups(&mut full, doc, id, cell, results, [true; 5]);
+            debug_assert_eq!(
+                without_epochs(&format!("{:?}", self.snapshots)),
+                without_epochs(&format!("{full:?}")),
+                "incremental snapshot == full refill"
+            );
+        }
+        debug_assert_eq!(self.snapshots.check(), Ok(()));
     }
 
     /// The spine's `plugin::deliver` plus queue draining, at most `ROUNDS_MAX` (4) rounds:

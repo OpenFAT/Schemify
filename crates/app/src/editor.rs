@@ -1341,6 +1341,13 @@ impl Editor {
             ];
             let marks = (&self.scene.prims, &self.marks, changed(0) || changed(3));
             let known = diff.update(&tables, marks, &mut out);
+            // An index current before the change follows its edits (a patch then reads the
+            // rows near it, not every row); else it waits for the next tile to rebuild it.
+            for (k, ix) in self.canvas_index.iter_mut().enumerate() {
+                if known && changed(k) && ix.0 == diff_gen[k] + 1 && ix.1.apply(diff.edits_of(k)) {
+                    ix.0 = self.canvas_gen[k] + 1;
+                }
+            }
             *boxes = (known && *diff_style == style).then_some(out);
             (*diff_gen, *diff_style) = (self.canvas_gen, style);
         } else if let Some(b) = boxes.as_mut() {
@@ -4266,7 +4273,7 @@ fn rows_near(
         }
         *ix = (version + 1, PrimIndex::build(t));
     }
-    ix.1.query(near, rows);
+    ix.1.query(t, near, rows);
     true
 }
 

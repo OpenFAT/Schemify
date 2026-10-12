@@ -102,9 +102,9 @@ for it; the goal set for this work was ≤ 1 ms).
   id-column diff and violation-table memmoves dominate (1 ms p50). The 1M flat netlist:
   generated-name interning, the rows loop and page faults on fresh buffers are what remain.
 - **elab**: edits that change an expression's dependencies rebuild the whole graph (17 ms at 30k nodes).
-- **app**: per edit, plugin snapshots are refilled twice (one delivery before the edit is
-  applied, one after: ~3.5 ms each at 100k) and decor is rebuilt (~4.5 ms): per-table
-  snapshot keys and an incremental decor (changed marks and objects only).
+- **app**: per edit, decor is rebuilt (~4.5 ms at 100k): an incremental decor (changed
+  marks and objects only). Plugin snapshots still hash the document's columns per edit to
+  find the changed groups; the edit's own ops could name them.
 - **render/app**: `CanvasDiff` hashes every row of a changed table (~3.4 ms for the 320k
   rows of a 100k-object scene and its decor): `scene::update` and the decor builder
   reporting their changed rows would make it O(change). A click at 1M objects costs 17 ms
