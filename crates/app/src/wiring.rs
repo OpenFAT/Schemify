@@ -16,7 +16,7 @@
 //! Connectivity follows elab (netlist spec §3): objects connect where a connection point
 //! (instance pin, wire end, label/port/noconn anchor) equals another or lies on a wire.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use schemify_doc::{DocHandle, Document, Op, Project, RecordBuf, TableId, Target};
 use schemify_format::{RecordKind, format_coord, parse_coord};
@@ -156,45 +156,78 @@ pub struct Stretched {
     pub wires: Vec<ObjKey>,
 }
 
-/// Moves the selection through `x` (one `put` per record, as `edit::transform`) and keeps it
-/// connected (xschem "stretch"): an unselected wire with an end on a moved connection point
-/// gets that end moved (both ends: the whole wire moves; routed as an L by Manhattan mode
-/// `manhattan` when it would turn diagonal; deleted when it shrinks to a point). With `kiss`,
-/// every moved connection point that touched an unselected pin, anchor or wire interior also
-/// gets a new wire from its old to its new position, so no connection is lost.
+/// What a move carries: objects moved whole and the moving ends of partially selected wires.
+#[derive(Clone, Copy, Debug)]
+pub struct Moved<'a> {
+    /// Objects moved whole.
+    pub sel: &'a [ObjKey],
+    /// Selected ends of partially selected wires (xschem's Ctrl+drag box): (wire, end
+    /// position). A row whose position is not an end of its wire is ignored.
+    pub ends: &'a [(ObjKey, Pt)],
+    /// Unselected wires with an end on a moved connection point follow it (xschem
+    /// "stretch"); without it only the partial ends move.
+    pub follow: bool,
+    /// Also adds a wire wherever a moved point touched an unselected pin, anchor or wire
+    /// ("kissing"); needs `follow`.
+    pub kiss: bool,
+}
+
+/// Moves `m.sel` through `x` (one `put` per record, as `edit::transform`) and keeps it
+/// connected (xschem "stretch", `m.follow`): an unselected wire with an end on a moved
+/// connection point gets that end moved (both ends: the whole wire moves; routed as an L by
+/// Manhattan mode `manhattan` when it would turn diagonal; deleted when it shrinks to a
+/// point). The ends `m.ends` of partially selected wires are moved points too, so they move
+/// with any move. With `m.kiss`, every moved connection point that touched an unselected
+/// pin, anchor or wire interior also gets a new wire from its old to its new position, so
+/// no connection is lost.
 ///
 /// # Panics
 ///
 /// Panics if `x` is not a pure translation (stretches follow drags; rotations of attached
-/// wires have no single meaning).
+/// wires have no single meaning), if `m.kiss` is set without `m.follow`, or if an end row
+/// names another table than wires.
 pub fn stretch(
     project: &Project,
     h: DocHandle,
-    sel: &[ObjKey],
+    m: Moved<'_>,
     x: Xform,
-    kiss: bool,
     manhattan: u8,
     ids: &mut Ids<'_>,
 ) -> Stretched {
     assert!(x.is_translation(), "stretch moves translate");
+    assert!(m.follow || !m.kiss, "kissing implies stretching");
     let Some(doc) = project.doc(h) else {
         return Stretched::default();
     };
+    let (sel, kiss) = (m.sel, m.kiss);
     let mut out = Stretched {
         ops: edit::transform(doc, sel, x),
         wires: Vec::new(),
     };
     let selset: HashSet<ObjKey> = sel.iter().copied().collect();
-    let mut moved: Vec<Pt> = sel
-        .iter()
-        .flat_map(|&k| points_of(project, h, doc, k))
-        .collect();
+    let mut moved: Vec<Pt> = if m.follow {
+        sel.iter()
+            .flat_map(|&k| points_of(project, h, doc, k))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    for &(k, p) in m.ends {
+        assert_eq!(k.table, TableId::Wires, "partial selections are wire ends");
+        let Some(loc) = edit::loc_of(doc, k) else {
+            continue; // deleted since it was selected
+        };
+        let (r, w) = (loc.row as usize, doc.wires());
+        if p == (w.x1[r], w.y1[r]) || p == (w.x2[r], w.y2[r]) {
+            moved.push(p);
+        }
+    }
     moved.sort_unstable();
     moved.dedup();
     let is_moved = |p: Pt| moved.binary_search(&p).is_ok();
     let w = doc.wires();
     let s = doc.strings();
-    let budget = ADDED_PER_OBJECT * sel.len().max(1);
+    let budget = ADDED_PER_OBJECT * (sel.len() + m.ends.len()).max(1);
     let mut added = 0usize;
     for r in 0..w.id.len() {
         let key = ObjKey {
@@ -292,15 +325,68 @@ pub fn stretch(
     out
 }
 
-/// Joins and trims wires (xschem "Join/Trim wires"): collinear axis-aligned wires that
-/// overlap or touch are merged and duplicates disappear; a merged wire is cut where another
-/// wire ends on it (a T junction) and where its pieces met at a pin, port or noconn (that
-/// joint is kept). Labels never cut. Wires with attributes other than `bus` and diagonal
-/// wires are kept as they are (their ends still cut others). Idempotent: on a trimmed
-/// document it returns no ops. Connectivity is unchanged (elab connects points on wire
-/// interiors).
+/// A wire's line: its reduced direction `(dx, dy)` (coprime, `dx > 0`, or `dx == 0` and
+/// `dy > 0`) and the offset `dx·y − dy·x`, which is the same for every point of the line.
+type Line = (i64, i64, i64);
+
+/// Attribute lines of a wire as merge sees them: sorted, with `bus` other than `true` left
+/// out (it is the default). Wires merge only when these are equal.
+type AttrKey = Vec<(String, Vec<String>)>;
+
+fn gcd(mut a: i64, mut b: i64) -> i64 {
+    (a, b) = (a.abs(), b.abs());
+    // Bounded: Euclid's algorithm takes O(log min(a, b)) steps.
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
+/// The line through `a` and `b`.
 ///
-/// Cost: O(W log W + W·P_line) with P_line the points on one wire's line.
+/// # Panics
+///
+/// Panics if `a == b` (a zero-length wire has no direction; the reader rejects them, E026).
+fn line_of(a: Pt, b: Pt) -> Line {
+    let (dx, dy) = (
+        i64::from(b.0) - i64::from(a.0),
+        i64::from(b.1) - i64::from(a.1),
+    );
+    let g = gcd(dx, dy);
+    assert!(g > 0, "a wire has two distinct ends");
+    let (mut dx, mut dy) = (dx / g, dy / g);
+    if dx < 0 || (dx == 0 && dy < 0) {
+        (dx, dy) = (-dx, -dy);
+    }
+    (dx, dy, offset((dx, dy), a))
+}
+
+/// `dx·y − dy·x`: equal for all points of one line of direction `d`.
+fn offset(d: (i64, i64), p: Pt) -> i64 {
+    d.0 * i64::from(p.1) - d.1 * i64::from(p.0)
+}
+
+/// Position of `p` along direction `d` (grows from a wire's first end to its second).
+fn along(d: (i64, i64), p: Pt) -> i64 {
+    d.0 * i64::from(p.0) + d.1 * i64::from(p.1)
+}
+
+/// Whether position `t` lies in one of the sorted, disjoint closed intervals `iv`.
+fn covered(iv: &[(i64, i64)], t: i64) -> bool {
+    let i = iv.partition_point(|x| x.0 <= t);
+    i > 0 && iv[i - 1].1 >= t
+}
+
+/// Joins and trims wires (xschem "Join/Trim wires"): collinear wires (axis-aligned or
+/// diagonal) with equal attributes that overlap or touch are merged and duplicates disappear;
+/// a merged wire is cut where another wire ends on it (a T junction) and where its pieces met
+/// at a pin, port or noconn (that joint is kept). Labels never cut. Wires whose attributes
+/// differ never merge (`bus false` counts as no attribute); where they overlap, each is cut
+/// at the other's ends. Idempotent: on a trimmed document it returns no ops. Connectivity is
+/// unchanged (elab connects points on wire interiors). A merged wire carries the attributes
+/// of the first wire of its group (by row).
+///
+/// Cost: O(W log W + E·D) with E the wire ends and D the distinct wire directions.
 pub fn join_trim(project: &Project, h: DocHandle, ids: &mut Ids<'_>) -> Vec<Op> {
     let Some(doc) = project.doc(h) else {
         return Vec::new();
@@ -313,110 +399,105 @@ pub fn join_trim(project: &Project, h: DocHandle, ids: &mut Ids<'_>) -> Vec<Op> 
     anchors.retain(|p| !labels.contains(p));
     let w = doc.wires();
     let s = doc.strings();
-    // Group key: (vertical, bus, line coordinate); value: rows. BTreeMap keeps it ordered.
-    let mut groups: BTreeMap<(bool, bool, i32), Vec<usize>> = BTreeMap::new();
+    let ends = |r: usize| [(w.x1[r], w.y1[r]), (w.x2[r], w.y2[r])];
+    // Groups: (line, attributes) → rows, ordered (BTreeMap) so ids are drawn deterministically.
+    let mut by_key: BTreeMap<(Line, AttrKey), Vec<usize>> = BTreeMap::new();
     for r in 0..w.id.len() {
-        let attrs = doc.pool().attrs(w.attrs[r]).collect::<Vec<_>>();
-        let bus = attrs
-            .iter()
-            .any(|(k, v)| s.get(*k) == "bus" && v.first().is_some_and(|x| s.get(*x) == "true"));
-        let plain = attrs.iter().all(|(k, _)| s.get(*k) == "bus");
-        if !plain {
+        let [a, b] = ends(r);
+        if a == b {
             continue;
         }
-        if w.y1[r] == w.y2[r] {
-            groups.entry((false, bus, w.y1[r])).or_default().push(r);
-        } else if w.x1[r] == w.x2[r] {
-            groups.entry((true, bus, w.x1[r])).or_default().push(r);
-        }
-    }
-    // Junctions: wire ends lying on wires of two or more groups (a T, an L, one wire ending
-    // on another's crossing). Every group is cut at the junctions on its line — computed
-    // before anything merges, so trimming the result again finds the same points (a
-    // fixpoint).
-    let mut row_group: Vec<Option<(bool, bool, i32)>> = vec![None; w.id.len()];
-    for (k, rows) in &groups {
-        for &r in rows {
-            row_group[r] = Some(*k);
-        }
-    }
-    let loose: Vec<usize> = (0..w.id.len())
-        .filter(|&r| row_group[r].is_none())
-        .collect();
-    let covers = |k: (bool, bool, i32), p: Pt| -> bool {
-        let Some(rows) = groups.get(&k) else {
-            return false;
-        };
-        let (vertical, _, line) = k;
-        let (on, at) = if vertical {
-            (p.0 == line, p.1)
-        } else {
-            (p.1 == line, p.0)
-        };
-        on && rows.iter().any(|&r| {
-            let (lo, hi) = if vertical {
-                (w.y1[r].min(w.y2[r]), w.y1[r].max(w.y2[r]))
-            } else {
-                (w.x1[r].min(w.x2[r]), w.x1[r].max(w.x2[r]))
-            };
-            lo <= at && at <= hi
-        })
-    };
-    let mut junctions: Vec<Pt> = (0..w.id.len())
-        .flat_map(|r| [(w.x1[r], w.y1[r]), (w.x2[r], w.y2[r])])
-        .collect();
-    junctions.sort_unstable();
-    junctions.dedup();
-    junctions.retain(|&p| {
-        let lines = [false, true]
-            .into_iter()
-            .flat_map(|bus| [(false, bus, p.1), (true, bus, p.0)])
-            .filter(|&k| covers(k, p))
-            .count();
-        let others = loose
-            .iter()
-            .filter(|&&r| {
-                let (a, b) = ((w.x1[r], w.y1[r]), (w.x2[r], w.y2[r]));
-                p == a || p == b || on_interior(p, a, b)
+        let mut key: AttrKey = doc
+            .pool()
+            .attrs(w.attrs[r])
+            .map(|(k, v)| {
+                let v: Vec<String> = v.iter().map(|&x| s.get(x).to_owned()).collect();
+                (s.get(k).to_owned(), v)
             })
-            .count();
-        lines + others >= 2
-    });
-    let mut ops = Vec::new();
-    for ((vertical, bus, line), rows) in groups.clone() {
-        // Intervals along the line (`lo < hi` after the reader's normalization).
-        let span = |r: usize| {
-            if vertical {
-                (w.y1[r].min(w.y2[r]), w.y1[r].max(w.y2[r]))
-            } else {
-                (w.x1[r].min(w.x2[r]), w.x1[r].max(w.x2[r]))
+            .filter(|(k, v)| k != "bus" || v.first().map(String::as_str) == Some("true"))
+            .collect();
+        key.sort();
+        by_key.entry((line_of(a, b), key)).or_default().push(r);
+    }
+    let groups: Vec<((Line, AttrKey), Vec<usize>)> = by_key.into_iter().collect();
+    // Each group's merged intervals along its line (sorted, disjoint).
+    let merged: Vec<Vec<(i64, i64)>> = groups
+        .iter()
+        .map(|((l, _), rows)| {
+            let d = (l.0, l.1);
+            let mut iv: Vec<(i64, i64)> = rows
+                .iter()
+                .map(|&r| {
+                    let [a, b] = ends(r);
+                    let (ta, tb) = (along(d, a), along(d, b));
+                    (ta.min(tb), ta.max(tb))
+                })
+                .collect();
+            iv.sort_unstable();
+            let mut m: Vec<(i64, i64)> = Vec::with_capacity(iv.len());
+            for (lo, hi) in iv {
+                match m.last_mut() {
+                    Some(x) if lo <= x.1 => x.1 = x.1.max(hi),
+                    _ => m.push((lo, hi)),
+                }
             }
-        };
-        let mut iv: Vec<(i32, i32)> = rows.iter().map(|&r| span(r)).collect();
-        iv.sort_unstable();
-        let mut merged: Vec<(i32, i32)> = Vec::new();
-        for (lo, hi) in iv {
-            match merged.last_mut() {
-                Some(m) if lo <= m.1 => m.1 = m.1.max(hi),
-                _ => merged.push((lo, hi)),
+            m
+        })
+        .collect();
+    let mut on_line: HashMap<Line, Vec<usize>> = HashMap::new();
+    for (g, ((l, _), _)) in groups.iter().enumerate() {
+        on_line.entry(*l).or_default().push(g);
+    }
+    let mut dirs: Vec<(i64, i64)> = groups.iter().map(|((l, _), _)| (l.0, l.1)).collect();
+    dirs.sort_unstable();
+    dirs.dedup();
+    // Junctions: wire ends lying on wires of two or more groups (a T, an L, one wire ending
+    // on another's crossing, overlapping wires that may not merge). Every group is cut at the
+    // junctions on its line — computed before anything merges, so trimming the result again
+    // finds the same points (a fixpoint). Bucketed by line for the per-group pass.
+    let mut points: Vec<Pt> = (0..w.id.len()).flat_map(ends).collect();
+    points.sort_unstable();
+    points.dedup();
+    let mut cuts_on: HashMap<Line, Vec<i64>> = HashMap::new();
+    for p in points {
+        let lines: Vec<Line> = dirs
+            .iter()
+            .map(|&d| (d.0, d.1, offset(d, p)))
+            .filter(|l| on_line.contains_key(l))
+            .collect();
+        let count: usize = lines
+            .iter()
+            .map(|l| {
+                let t = along((l.0, l.1), p);
+                on_line[l]
+                    .iter()
+                    .filter(|&&g| covered(&merged[g], t))
+                    .count()
+            })
+            .sum();
+        if count >= 2 {
+            for l in lines {
+                cuts_on.entry(l).or_default().push(along((l.0, l.1), p));
             }
         }
+    }
+    let mut ops = Vec::new();
+    for (g, ((line, _), rows)) in groups.iter().enumerate() {
+        let d = (line.0, line.1);
         // Cut points on this line: the junctions, and the group's own wire ends where a pin,
         // port or noconn sits (kept joints).
-        let on_line = |p: &Pt| if vertical { p.0 == line } else { p.1 == line };
-        let along = |p: &Pt| if vertical { p.1 } else { p.0 };
-        let mut cuts: Vec<i32> = junctions.iter().filter(|p| on_line(p)).map(along).collect();
-        for &r in &rows {
-            for p in [(w.x1[r], w.y1[r]), (w.x2[r], w.y2[r])] {
+        let mut cuts: Vec<i64> = cuts_on.get(line).cloned().unwrap_or_default();
+        for &r in rows {
+            for p in ends(r) {
                 if anchors.binary_search(&p).is_ok() {
-                    cuts.push(along(&p));
+                    cuts.push(along(d, p));
                 }
             }
         }
         cuts.sort_unstable();
         cuts.dedup();
-        let mut want: Vec<(i32, i32)> = Vec::new();
-        for (lo, hi) in merged {
+        let mut want: Vec<(i64, i64)> = Vec::new();
+        for &(lo, hi) in &merged[g] {
             let mut start = lo;
             for &c in cuts.iter().filter(|&&c| c > lo && c < hi) {
                 want.push((start, c));
@@ -424,22 +505,39 @@ pub fn join_trim(project: &Project, h: DocHandle, ids: &mut Ids<'_>) -> Vec<Op> 
             }
             want.push((start, hi));
         }
-        let mut have: Vec<((i32, i32), usize)> = rows.iter().map(|&r| (span(r), r)).collect();
+        let span = |r: usize| {
+            let [a, b] = ends(r);
+            let (ta, tb) = (along(d, a), along(d, b));
+            (ta.min(tb), ta.max(tb))
+        };
+        let mut have: Vec<((i64, i64), usize)> = rows.iter().map(|&r| (span(r), r)).collect();
         have.sort_unstable();
         if have.iter().map(|h| h.0).eq(want.iter().copied()) {
             continue; // already trimmed
         }
-        let pt = |v: i32| if vertical { (line, v) } else { (v, line) };
-        let attrs: Vec<schemify_doc::Attr> = if bus {
-            vec![schemify_doc::Attr {
-                key: "bus".into(),
-                values: vec!["true".into()],
-            }]
-        } else {
-            Vec::new()
+        // Positions back to points: every lattice point of the line is p0 + k·d.
+        let p0 = ends(rows[0])[0];
+        let (t0, n2) = (along(d, p0), d.0 * d.0 + d.1 * d.1);
+        let pt = |t: i64| -> Pt {
+            assert_eq!(
+                (t - t0) % n2,
+                0,
+                "cut points are lattice points of the line"
+            );
+            let k = (t - t0) / n2;
+            let c = |p: i32, dp: i64| {
+                i32::try_from(i64::from(p) + k * dp).expect("on the line between wire ends")
+            };
+            (c(p0.0, d.0), c(p0.1, d.1))
         };
+        let attrs = doc
+            .record(schemify_doc::Loc {
+                table: TableId::Wires,
+                row: rows[0] as u32,
+            })
+            .attrs;
         // Keep the wires whose span is wanted as is (first occurrence), replace the rest.
-        let mut kept: HashSet<(i32, i32)> = HashSet::new();
+        let mut kept: HashSet<(i64, i64)> = HashSet::new();
         for (sp, r) in &have {
             let keep = want.binary_search(sp).is_ok() && kept.insert(*sp);
             if !keep {
@@ -749,6 +847,24 @@ mod tests {
         assert!(!on_interior((5, 1), a, b));
         assert!(!on_interior((11, 0), a, b));
         assert!(on_interior((2, 2), (0, 0), (4, 4)), "diagonal");
+    }
+
+    #[test]
+    fn lines_are_canonical_in_both_directions_and_on_diagonals() {
+        assert_eq!(line_of((0, 0), (10, 0)), (1, 0, 0));
+        assert_eq!(line_of((10, 5), (0, 5)), (1, 0, 5));
+        assert_eq!(line_of((0, 0), (0, -7)), (0, 1, 0));
+        assert_eq!(line_of((3, 0), (3, 9)), (0, 1, -3));
+        assert_eq!(line_of((0, 0), (4, 4)), (1, 1, 0));
+        assert_eq!(line_of((6, 6), (2, 2)), line_of((0, 0), (4, 4)));
+        assert_ne!(line_of((0, 1), (4, 5)), line_of((0, 0), (4, 4)), "parallel");
+        assert_eq!(line_of((0, 0), (6, -4)), (3, -2, 0), "reduced by the gcd");
+        assert_eq!(gcd(-12, 18), 6);
+        assert!(covered(&[(0, 10), (20, 30)], 10));
+        assert!(covered(&[(0, 10), (20, 30)], 20));
+        assert!(!covered(&[(0, 10), (20, 30)], 15));
+        assert!(!covered(&[(0, 10)], -1));
+        assert!(!covered(&[], 0));
     }
 
     #[test]

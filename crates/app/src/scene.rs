@@ -491,6 +491,8 @@ struct SymText {
     size: i32,
     layer: u8,
     hcenter: bool,
+    /// The record's orientation: the text turns like a `text` record's (format spec §4).
+    orient: Orient,
     /// Parsed template; `None` for plain text or a template that does not parse (drawn raw).
     template: Option<Template>,
     raw: String,
@@ -609,6 +611,7 @@ pub fn sym_prims(doc: &Document) -> SymPrims {
                     size: size_of(attr(doc, g.attrs[i], "size"), 0.3),
                     layer: layer_attr(doc, g.attrs[i], 3),
                     hcenter: attr(doc, g.attrs[i], "hcenter").is_some(),
+                    orient: g.orient[i],
                     template,
                     raw,
                 });
@@ -638,6 +641,17 @@ fn rotated_extent((w, h): (i32, i32), rot: u8) -> (i32, i32) {
         2 => (-w, -h),
         _ => (h, -w),
     }
+}
+
+/// Where a symbol text turned `rot` quarter turns with its anchor at `q` starts: the anchor,
+/// or for `hcenter` half its width back along its direction.
+fn sym_text_at(q: Pt, t: &SymText, text: &str, rot: u8) -> Pt {
+    if !t.hcenter {
+        return q;
+    }
+    let (w, _) = text_size(t.size, text);
+    let (dx, dy) = rotated_extent((-w / 2, 0), rot);
+    (q.0 + dx, q.1 + dy)
 }
 
 /// Approximate text box: 0.6 em per character (the renderer shapes the real glyphs).
@@ -1239,10 +1253,9 @@ fn instance<'d>(
             text.clear();
             text.push_str(&t.raw);
         }
-        let q = x(t.at);
-        let (w, _) = text_size(t.size, text);
-        let left = if t.hcenter { q.0 - w / 2 } else { q.0 };
-        b.text((left, q.1), t.size, t.layer, text, obj);
+        let rot = crate::geometry::compose(o, t.orient).quarter_turns();
+        let at = sym_text_at(x(t.at), t, text, rot);
+        b.text_rot(at, t.size, t.layer, text, rot, obj);
     }
 }
 
@@ -1598,9 +1611,9 @@ fn symbol(b: &mut Build<'_>, doc: &Document) {
                 let t = &p.texts[ti];
                 ti += 1;
                 let obj = b.sc.objs.push(key, [t.at.0, t.at.1, t.at.0, t.at.1], false);
-                let (w, _) = text_size(t.size, &t.raw);
-                let left = if t.hcenter { t.at.0 - w / 2 } else { t.at.0 };
-                let bx = b.text((left, t.at.1), t.size, t.layer, &t.raw, obj);
+                let rot = t.orient.quarter_turns();
+                let at = sym_text_at(t.at, t, &t.raw, rot);
+                let bx = b.text_rot(at, t.size, t.layer, &t.raw, rot, obj);
                 b.sc.objs.geom[obj as usize] = bx;
             }
             _ => {}

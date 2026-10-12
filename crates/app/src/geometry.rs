@@ -71,6 +71,16 @@ pub fn place(o: Orient, at: Pt, p: Pt) -> Pt {
     (sat(q.0), sat(q.1))
 }
 
+/// The orientation of something placed with `inner` inside a symbol placed with `outer`
+/// (a symbol text in an instance): `place(compose(outer, inner), at, p)` equals
+/// `place(outer, at, place(inner, (0, 0), p))`.
+pub fn compose(outer: Orient, inner: Orient) -> Orient {
+    orient_of(mat_mul(
+        ORIENT_MATRIX[outer as usize],
+        ORIENT_MATRIX[inner as usize],
+    ))
+}
+
 fn sat(v: i64) -> i32 {
     v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
@@ -324,6 +334,28 @@ mod tests {
             assert_eq!(place(o, (0, 0), p), (x, y), "{}", o.as_str());
             assert_eq!(orient_of(ORIENT_MATRIX[i]), o);
         }
+    }
+
+    #[test]
+    fn composed_orientations_place_like_nested_placements() {
+        let at = (7, -3);
+        for &o in &ORIENTS {
+            for &i in &ORIENTS {
+                for p in [(1, 2), (-4, 9), (0, -6)] {
+                    assert_eq!(
+                        place(compose(o, i), at, p),
+                        place(o, at, place(i, (0, 0), p)),
+                        "{} ∘ {}",
+                        o.as_str(),
+                        i.as_str()
+                    );
+                }
+            }
+            assert_eq!(compose(o, Orient::R0), o);
+            assert_eq!(compose(Orient::R0, o), o);
+        }
+        assert_eq!(compose(Orient::R90, Orient::R90), Orient::R180);
+        assert_eq!(compose(Orient::R270, Orient::R180).quarter_turns(), 1);
     }
 
     #[test]

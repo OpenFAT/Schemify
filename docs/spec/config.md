@@ -83,8 +83,11 @@ Options:
 | `grid` | number > 0 | 20 | Grid step, schematic units. |
 | `show_grid` | boolean | true | Draw the grid. |
 | `light` | boolean | false | Light canvas colours. |
+| `layer_colors` | table `{ [layer] = "rrggbb" }` | `{}` | Canvas colour per layer `0`–`21` over the theme's (View → Change current layer color); `"#rrggbb"` is accepted. Assign the whole table: reading returns a copy, so changing one of its entries sets nothing. |
+| `dim` | number in [0, 1] | 0 | Dims the canvas toward its background (View → Dim colors), stored in percent. |
+| `line_width` | number in [0.1, 10] | 1 | Canvas line width in pixels (View → Set line width), stored in tenths of a pixel. |
 
-Steps are stored in milli-units (D33), rounded to the nearest; a step that rounds to 0 or exceeds 10^6 units is an error. The editor reads the options once, at startup.
+Steps are stored in milli-units (D33), rounded to the nearest; a step that rounds to 0 or exceeds 10^6 units is an error. A layer outside `0`–`21`, a colour that is not six hex digits, or a number out of its range is an error. The editor reads the options once, at startup; changing a colour, the dim factor or the line width in the editor lasts for the session (put it in `init.lua` to keep it).
 
 Functions (keymap targets, hooks) run under the same sandbox and limits as the init file (§4), one budget per call. A function's error is reported as `<file>:<line>: <message>` and the editor carries on.
 
@@ -164,7 +167,7 @@ The user-config table (owner: `crates/config`; readers: both binaries):
 
 | Table | Rows | Capacity |
 |---|---|---|
-| options | the four keys of §3 | fixed |
+| options | the seven keys of §3 | fixed |
 | keymaps | chord, target (command name or function id), description | 4096 |
 | sims | `ngspice`, `openvaf`, `iverilog`: path, args | 3 |
 | packages | the specs of §5 | 128 |

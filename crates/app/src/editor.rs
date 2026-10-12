@@ -63,8 +63,10 @@ use crate::sim::Sim;
 use crate::spines;
 use crate::waves::{Shifted, WavesView};
 
+mod gestures;
 mod integrate;
 mod parity;
+mod subckt;
 use integrate::text_tab_cmd;
 
 /// Pointer travel (logical px) before a press becomes a drag (xschem: 8 px).
@@ -311,6 +313,9 @@ pub enum Tool {
         additive: bool,
         /// Alt: remove from the selection.
         unselect: bool,
+        /// Ctrl (a plain drag with Options → enable stretch): wires crossing the box edge get
+        /// only their inside end selected (`gestures::box_partial`).
+        partial: bool,
     },
     /// Moving or copying the selection from `from` to `to`, transformed by `lin` (rotations
     /// and flips about `from` made in flight).
@@ -357,6 +362,18 @@ pub enum Tool {
         at: Pt,
         /// Rotation/flip made in flight.
         lin: Xform,
+    },
+    /// Dragging vertex `index` of the one selected wire, line, rectangle or polygon
+    /// (`gestures::vertex_press`); ends on release.
+    Vertex {
+        /// The object.
+        key: ObjKey,
+        /// Its vertex (`gestures::vertices` order).
+        index: u32,
+        /// Where the vertex was.
+        from: Pt,
+        /// Current (snapped) position.
+        to: Pt,
     },
     /// `z`: the next press starts a zoom box.
     ZoomArmed,
@@ -650,6 +667,9 @@ pub struct Editor {
     queued: Vec<(String, String)>,
     /// A wire edit to follow with join/trim once applied (Options → auto join/trim).
     trim_after: Option<DocHandle>,
+    /// The options this session started with: opening a recent file of another project
+    /// starts that project's session with them (`parity::switch_project`).
+    startup: Options,
 }
 
 impl std::fmt::Debug for Editor {
@@ -684,8 +704,11 @@ impl Editor {
             grid: user.opts.grid,
             show_grid: user.opts.show_grid,
             light: user.opts.light,
+            dim: user.opts.dim,
+            width_tenths: user.opts.line_width_tenths,
             ..EditOpts::default()
         };
+        let layer_colors = parity::user_layer_colors(&user.opts);
         #[cfg(not(target_arch = "wasm32"))]
         let sim_cmd = opts.sim.clone().or_else(|| {
             user.sim(schemify_config::SimKind::Ngspice)
@@ -784,7 +807,7 @@ impl Editor {
                 .map_or_else(Vec::new, crate::recent::load),
             state_dir: opts.state_dir.clone(),
             system_clipboard: opts.system_clipboard,
-            layer_colors: Vec::new(),
+            layer_colors,
             pending_delete: None,
             compare: None,
             extra: CanvasPrims::default(),
@@ -792,6 +815,7 @@ impl Editor {
             shown_key: None,
             trim_after: None,
             queued: Vec::new(),
+            startup: opts,
         };
         let opened = match &path {
             Some(p) if !platform::is_dir(p) => Some(ed.session.open_path(p)?),
@@ -1622,7 +1646,8 @@ impl Editor {
                     Cmd::MoveKiss => 2,
                     _ => 0,
                 };
-                if !self.selection().is_empty() {
+                let partial = cmd != Cmd::Duplicate && !self.partial_ends().is_empty();
+                if !self.selection().is_empty() || partial {
                     self.tool = Tool::Move {
                         from: ptr,
                         to: ptr,
@@ -1908,6 +1933,7 @@ impl Editor {
                 self.space_pan = false;
                 self.pan = None;
                 self.set_selection(Vec::new());
+                self.set_partial(Vec::new());
             }
             Cmd::TabSelect => {
                 let i = node
@@ -2795,8 +2821,11 @@ impl Editor {
                             // The press already selected what it hit (unless Alt), so a drag
                             // that starts on an object moves the selection (intuitive mode).
                             let keys = self.session.level().map_or(&[][..], |l| &l.sel);
-                            let on_selected = hit
-                                .is_some_and(|o| keys.contains(&self.scene.objs.key[o as usize]));
+                            let ends = self.partial_ends();
+                            let on_selected = hit.is_some_and(|o| {
+                                let k = self.scene.objs.key[o as usize];
+                                keys.contains(&k) || ends.iter().any(|e| e.0 == k)
+                            });
                             // xschem: Ctrl+drag stretches (swapped by `enable_stretch`),
                             // Ctrl+Shift+drag stretches with kissing wires, Shift+drag copies.
                             let stretch = match (ctrl, shift) {
@@ -2819,6 +2848,7 @@ impl Editor {
                                     to: raw,
                                     additive: shift,
                                     unselect: alt,
+                                    partial: !alt && ctrl != self.opts.stretch,
                                 }
                             };
                         }
@@ -2830,7 +2860,7 @@ impl Editor {
                         let last = *pts.last().expect("a shape tool has its first point");
                         *to = constrain(last, w, self.opts.constrain);
                     }
-                    Tool::Place { at, .. } => *at = w,
+                    Tool::Place { at, .. } | Tool::Vertex { to: at, .. } => *at = w,
                     Tool::Idle | Tool::ZoomArmed | Tool::UnselectArmed => {
                         // The status line shows the pointer coordinates.
                         return prev != (x, y);
@@ -2891,6 +2921,7 @@ impl Editor {
                             to: p,
                             additive: false,
                             unselect: true,
+                            partial: false,
                         };
                     }
                     _ => {
@@ -2910,6 +2941,10 @@ impl Editor {
                             let key = self.scene.objs.key[o as usize];
                             self.set_selection(vec![key]);
                             self.open_props(h);
+                            return true;
+                        }
+                        // A vertex of the one selected wire, line, rect or polygon: drag it.
+                        if !shift && !alt && !ctrl && self.vertex_press((x, y)) {
                             return true;
                         }
                         // Intuitive wire start: the snapped press equals a connection point of
@@ -2934,15 +2969,30 @@ impl Editor {
                             }
                         }
                         let mut sel: Vec<ObjKey> = self.selection().to_vec();
-                        match hit.map(|o| self.scene.objs.key[o as usize]) {
+                        let hit_key = hit.map(|o| self.scene.objs.key[o as usize]);
+                        // A press on a partially selected wire keeps the selection, so a drag
+                        // moves it like a press on a selected object; a new selection drops it.
+                        let partial =
+                            hit_key.is_some_and(|k| self.partial_ends().iter().any(|e| e.0 == k));
+                        let mut fresh = false;
+                        match hit_key {
                             Some(k) if alt => sel.retain(|&s| s != k),
                             Some(k) if shift => sel.push(k),
-                            Some(k) if !sel.contains(&k) => sel = vec![k],
+                            Some(k) if !sel.contains(&k) && !partial => {
+                                sel = vec![k];
+                                fresh = true;
+                            }
                             Some(_) => {}
-                            None if !shift => sel.clear(),
+                            None if !shift => {
+                                sel.clear();
+                                fresh = true;
+                            }
                             None => {}
                         }
                         self.set_selection(sel);
+                        if fresh {
+                            self.set_partial(Vec::new());
+                        }
                         self.tool = Tool::Press {
                             at: (x, y),
                             world: w,
@@ -2989,11 +3039,15 @@ impl Editor {
                         to,
                         drag: true,
                     } => self.finish_wire(reqs, h, from, to),
+                    Tool::Vertex { key, index, to, .. } => {
+                        self.finish_vertex(reqs, h, key, index, to);
+                    }
                     Tool::Box {
                         from,
                         to,
                         additive,
                         unselect,
+                        partial,
                     } => {
                         let touch = to.0 < from.0; // right-to-left drag selects touching
                         let hits = scene::box_select(
@@ -3016,6 +3070,7 @@ impl Editor {
                             sel.extend(keys);
                         }
                         self.set_selection(sel);
+                        self.box_partial(from, to, partial, additive, unselect);
                     }
                     Tool::Zoom { from, to } => {
                         if from != to {
@@ -3114,7 +3169,7 @@ impl Editor {
         if x == Xform::IDENTITY && !copy {
             return;
         }
-        if !copy && stretch > 0 {
+        if !copy && (stretch > 0 || !self.partial_ends().is_empty()) {
             self.finish_stretch(reqs, h, x, stretch);
             if self.opts.auto_trim {
                 self.trim_after = Some(h);
@@ -3799,7 +3854,11 @@ impl Editor {
                     }
                 }
             }
-            Tool::Idle | Tool::Press { .. } | Tool::ZoomArmed | Tool::UnselectArmed => {}
+            Tool::Idle
+            | Tool::Press { .. }
+            | Tool::ZoomArmed
+            | Tool::UnselectArmed
+            | Tool::Vertex { .. } => {} // `gesture_overlay` previews vertex drags
         }
         self.parity_overlay(&mut o);
         // Selected texts have no stroke to recolor: outline them (in object order; a frame

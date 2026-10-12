@@ -18,6 +18,7 @@ use schemify_doc::{DocHandle, OpenError, Project, Recovery};
 use schemify_format::FileKind;
 use schemify_render::canvas::Camera;
 
+use crate::geometry::Pt;
 pub use crate::libs::cell_relpath;
 use crate::libs::{self, BUILTIN_DIR, absolute, rel_path};
 use crate::platform;
@@ -50,6 +51,11 @@ pub struct Level {
     pub cam: Option<Camera>,
     /// Selection, kept per level so returning from a child restores it.
     pub sel: Vec<ObjKey>,
+    /// Partially selected wires (xschem's Ctrl+drag box): one row per selected end, (wire
+    /// key, the end's position), sorted. A move moves just those ends and the rows follow
+    /// them; a row whose position is no longer an end of its wire (after an undo) selects
+    /// nothing. A wire also in `sel` moves whole.
+    pub ends: Vec<(ObjKey, Pt)>,
 }
 
 /// One tab: a stack of levels; the last is shown (D28: undo stacks live in `doc`, per
@@ -473,6 +479,7 @@ impl Session {
                 inst: String::new(),
                 cam: None,
                 sel: Vec::new(),
+                ends: Vec::new(),
             }],
             docs,
             text: None,
@@ -554,6 +561,7 @@ impl Session {
             inst: inst.to_owned(),
             cam: None,
             sel: Vec::new(),
+            ends: Vec::new(),
         });
         Ok(())
     }
