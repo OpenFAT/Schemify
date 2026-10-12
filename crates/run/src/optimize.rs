@@ -38,24 +38,13 @@ pub struct Param {
     pub init: f64,
 }
 
-/// What "good" means for one measured objective.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Target {
-    /// Smaller is better.
-    Minimize,
-    /// Larger is better.
-    Maximize,
-    /// Closer to the value is better.
-    Approach(f64),
-}
-
 /// A named, weighted objective.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Objective {
     /// Name (the output).
     pub name: String,
-    /// Direction.
-    pub target: Target,
+    /// What "good" means ([`Goal::err`]).
+    pub goal: Goal,
     /// Score weight.
     pub weight: f64,
 }
@@ -312,14 +301,7 @@ fn score_of(objectives: &[Objective], measured: &[f64]) -> f64 {
     objectives
         .iter()
         .zip(measured)
-        .map(|(o, &v)| {
-            let err = match o.target {
-                Target::Minimize => v,
-                Target::Maximize => -v,
-                Target::Approach(t) => (v - t).abs(),
-            };
-            o.weight * err
-        })
+        .map(|(o, &v)| o.weight * o.goal.err(v))
         .sum()
 }
 
@@ -386,13 +368,9 @@ impl OptRun {
             .goals
             .iter()
             .zip(&rec.weights)
-            .map(|(&(o, g), &weight)| Objective {
+            .map(|(&(o, goal), &weight)| Objective {
                 name: plan.outputs[o as usize].name.clone(),
-                target: match g {
-                    Goal::Min => Target::Minimize,
-                    Goal::Max => Target::Maximize,
-                    Goal::Target(t) => Target::Approach(t),
-                },
+                goal,
                 weight,
             })
             .collect();
@@ -495,18 +473,14 @@ impl OptRun {
     fn worst(&self, jobs: &Jobs, results: &Results, r: Range<u32>) -> Option<Vec<f64>> {
         let mut out = Vec::with_capacity(self.goal_outputs.len());
         for (g, &o) in self.goal_outputs.iter().enumerate() {
-            let target = self.opt.objectives()[g].target;
+            let goal = self.opt.objectives()[g].goal;
             let mut worst: Option<(f64, f64)> = None;
             for j in r.clone() {
                 if jobs.state(j) != State::Done {
                     return None;
                 }
                 let v = results.value(j, o)?;
-                let err = match target {
-                    Target::Minimize => v,
-                    Target::Maximize => -v,
-                    Target::Approach(t) => (v - t).abs(),
-                };
+                let err = goal.err(v);
                 if worst.is_none_or(|(e, _)| err > e) {
                     worst = Some((err, v));
                 }
@@ -538,7 +512,7 @@ impl OptRun {
 mod tests {
     use super::*;
 
-    fn opt(algo: Algorithm, bounds: &[(f64, f64, f64)], target: Target, budget: u32) -> Optimizer {
+    fn opt(algo: Algorithm, bounds: &[(f64, f64, f64)], goal: Goal, budget: u32) -> Optimizer {
         let params = bounds
             .iter()
             .enumerate()
@@ -551,7 +525,7 @@ mod tests {
             .collect();
         let obj = vec![Objective {
             name: "f".into(),
-            target,
+            goal,
             weight: 1.0,
         }];
         Optimizer::new(params, obj, algo, 42, budget).unwrap()
@@ -581,7 +555,7 @@ mod tests {
         let mut o = opt(
             Algorithm::NelderMead,
             &[(-2.0, 2.0, -1.2), (-2.0, 2.0, 1.0)],
-            Target::Minimize,
+            Goal::Min,
             2000,
         );
         run(&mut o, rosenbrock);
@@ -601,7 +575,7 @@ mod tests {
         let mut o = opt(
             Algorithm::NelderMead,
             &[(-1.0, 1.0, 0.0), (-1.0, 1.0, 0.0)],
-            Target::Minimize,
+            Goal::Min,
             400,
         );
         run(&mut o, |x| (x[0] - 3.0).powi(2) + (x[1] + 3.0).powi(2));
@@ -618,7 +592,7 @@ mod tests {
         let mut o = opt(
             Algorithm::NelderMead,
             &[(0.0, 10.0, 9.0)],
-            Target::Approach(4.0),
+            Goal::Target(4.0),
             200,
         );
         run(&mut o, |x| x[0] * x[0]);
@@ -628,12 +602,7 @@ mod tests {
 
     #[test]
     fn random_improves_a_sphere_inside_bounds() {
-        let mut o = opt(
-            Algorithm::Random,
-            &[(-5.0, 5.0, 4.0); 3],
-            Target::Minimize,
-            400,
-        );
+        let mut o = opt(Algorithm::Random, &[(-5.0, 5.0, 4.0); 3], Goal::Min, 400);
         run(&mut o, |x| x.iter().map(|v| v * v).sum());
         assert_eq!(o.n_evals(), 400);
         let (first, best) = (o.eval(0).unwrap().score, o.best().unwrap().score);
@@ -643,7 +612,7 @@ mod tests {
     #[test]
     fn seeded_runs_are_deterministic() {
         for algo in [Algorithm::Random, Algorithm::NelderMead] {
-            let mut a = opt(algo, &[(-5.0, 5.0, 4.0); 2], Target::Maximize, 60);
+            let mut a = opt(algo, &[(-5.0, 5.0, 4.0); 2], Goal::Max, 60);
             let mut b = a.clone();
             run(&mut a, |x| -x[0].abs() - x[1].abs());
             run(&mut b, |x| -x[0].abs() - x[1].abs());
@@ -653,12 +622,7 @@ mod tests {
 
     #[test]
     fn failures_budget_and_errors() {
-        let mut o = opt(
-            Algorithm::NelderMead,
-            &[(0.0, 1.0, 0.5)],
-            Target::Minimize,
-            2,
-        );
+        let mut o = opt(Algorithm::NelderMead, &[(0.0, 1.0, 0.5)], Goal::Min, 2);
         let x0 = o.ask().unwrap().to_vec();
         assert_eq!(o.ask().unwrap(), x0, "ask is a pure read");
         assert_eq!(
@@ -684,7 +648,7 @@ mod tests {
         let obj = || {
             vec![Objective {
                 name: "f".into(),
-                target: Target::Minimize,
+                goal: Goal::Min,
                 weight: 1.0,
             }]
         };

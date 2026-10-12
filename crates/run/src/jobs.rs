@@ -87,7 +87,8 @@ pub struct Select<'a> {
 }
 
 /// The jobs of one run. Rows are appended by [`expand`] and [`Jobs::push`] (plugin `run`
-/// requests, the optimizer) and never removed; a job index is stable for the run.
+/// requests, the optimizer) and never removed; a job index is stable for the run. Every
+/// method taking a job index `j` panics when `j >= len()`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Jobs {
     configs: Vec<String>,
@@ -342,13 +343,15 @@ pub fn expand(plan: &Plan, select: &Select<'_>) -> Result<Jobs, PlanError> {
         return Err(feature("mc"));
     }
 
-    let configs: Vec<Option<&str>> = dim(select.configs);
-    let corners: Vec<Option<&str>> = dim(select.corners);
-    let samples = mc.map_or(1, |m| m.samples);
-    let total = sweeps.iter().fold(
-        configs.len() as u64 * corners.len() as u64 * u64::from(samples),
-        |n, s| n * s.values.len() as u64,
-    );
+    // One table spine: every dimension is a digit of one odometer, outermost first
+    // (config, corner, each sweep, sample); job `j` is the odometer after `j` steps.
+    let configs = dim(select.configs);
+    let corners = dim(select.corners);
+    let samples = mc.map_or(1, |m| m.samples) as usize;
+    let mut radix = vec![configs.len(), corners.len()];
+    radix.extend(sweeps.iter().map(|s| s.values.len()));
+    radix.push(samples);
+    let total = radix.iter().fold(1u64, |n, &r| n.saturating_mul(r as u64));
     if total > u64::from(JOBS_MAX) {
         return Err(plan_err(
             "select",
@@ -359,42 +362,36 @@ pub fn expand(plan: &Plan, select: &Select<'_>) -> Result<Jobs, PlanError> {
 
     let mut jobs = Jobs::new();
     let mut assigns: Vec<(&str, String)> = Vec::new();
-    let mut point = vec![0usize; sweeps.len()];
-    for &config in &configs {
-        for &corner in &corners {
-            point.iter_mut().for_each(|p| *p = 0);
-            loop {
-                for s in 0..samples {
-                    assigns.clear();
-                    for (sw, &k) in sweeps.iter().zip(&point) {
-                        assigns.push((&sw.var, sw.values[k].clone()));
-                    }
-                    #[cfg(feature = "mc")]
-                    if let Some(m) = mc {
-                        crate::mc::sample(
-                            plan,
-                            corner.or(plan.default_corner.as_deref()),
-                            m,
-                            s,
-                            &mut assigns,
-                        );
-                    }
-                    let mut list: Vec<(&str, &str)> =
-                        assigns.iter().map(|(v, x)| (*v, x.as_str())).collect();
-                    list.extend_from_slice(select.overrides);
-                    let sample = if mc.is_some() { s } else { NO_SAMPLE };
-                    let j = jobs.push(config, corner, sample, &list)?;
-                    #[cfg(feature = "mc")]
-                    if let Some(m) = mc {
-                        jobs.set_seed(j, crate::mc::sim_seed(m.seed, s));
-                    }
-                    #[cfg(not(feature = "mc"))]
-                    let _ = j;
-                }
-                if !odometer(&mut point, &sweeps) {
-                    break;
-                }
+    let mut digit = vec![0usize; radix.len()];
+    let last = radix.len() - 1;
+    for _ in 0..total {
+        let (config, corner, s) = (configs[digit[0]], corners[digit[1]], digit[last] as u32);
+        assigns.clear();
+        for (sw, &k) in sweeps.iter().zip(&digit[2..last]) {
+            assigns.push((&sw.var, sw.values[k].clone()));
+        }
+        #[cfg(feature = "mc")]
+        if let Some(m) = mc {
+            let corner = corner.or(plan.default_corner.as_deref());
+            crate::mc::sample(plan, corner, m, s, &mut assigns);
+        }
+        let mut list: Vec<(&str, &str)> = assigns.iter().map(|(v, x)| (*v, x.as_str())).collect();
+        list.extend_from_slice(select.overrides);
+        let sample = if mc.is_some() { s } else { NO_SAMPLE };
+        let j = jobs.push(config, corner, sample, &list)?;
+        #[cfg(feature = "mc")]
+        if let Some(m) = mc {
+            jobs.set_seed(j, crate::mc::sim_seed(m.seed, s));
+        }
+        #[cfg(not(feature = "mc"))]
+        let _ = j;
+        // Last digit fastest.
+        for d in (0..=last).rev() {
+            digit[d] += 1;
+            if digit[d] < radix[d] {
+                break;
             }
+            digit[d] = 0;
         }
     }
     assert_eq!(
@@ -412,16 +409,4 @@ fn dim<'a>(names: &[&'a str]) -> Vec<Option<&'a str>> {
     } else {
         names.iter().map(|n| Some(*n)).collect()
     }
-}
-
-/// Advances the sweep point (last sweep fastest); false after the last point.
-fn odometer(point: &mut [usize], sweeps: &[&crate::plan::Sweep]) -> bool {
-    for i in (0..point.len()).rev() {
-        point[i] += 1;
-        if point[i] < sweeps[i].values.len() {
-            return true;
-        }
-        point[i] = 0;
-    }
-    false
 }

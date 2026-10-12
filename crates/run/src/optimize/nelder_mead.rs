@@ -19,18 +19,15 @@ pub(crate) const UNEVALUATED: f64 = f64::MAX;
 /// Where the state machine is waiting for its next evaluation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Phase {
-    /// Evaluating the initial simplex; `next` is the vertex awaiting a score.
-    BuildingSimplex {
+    /// Scoring simplex rows `next..=n` one tell at a time: the initial simplex (from row
+    /// 0) or the shrunk one (from row 1).
+    Scoring {
         next: u32,
     },
     Reflecting,
     Expanding,
     Contracting {
         outside: bool,
-    },
-    /// Re-evaluating shrunk vertices one at a time; `next` is the row index.
-    Shrinking {
-        next: u32,
     },
 }
 
@@ -89,7 +86,7 @@ impl NelderMead {
             candidate: init,
             simplex,
             fvals: vec![UNEVALUATED; n + 1],
-            phase: Phase::BuildingSimplex { next: 0 },
+            phase: Phase::Scoring { next: 0 },
             reflected: Vec::new(),
             f_reflected: UNEVALUATED,
         }
@@ -104,12 +101,12 @@ impl NelderMead {
         assert!(!score.is_nan(), "scores must be comparable");
         let n = self.n();
         match self.phase {
-            Phase::BuildingSimplex { next } => {
+            Phase::Scoring { next } => {
                 self.fvals[next as usize] = score;
                 let next = next as usize + 1;
                 if next <= n {
                     self.candidate = self.row(next).to_vec();
-                    self.phase = Phase::BuildingSimplex { next: next as u32 };
+                    self.phase = Phase::Scoring { next: next as u32 };
                 } else {
                     self.sort();
                     self.begin_iteration();
@@ -120,14 +117,7 @@ impl NelderMead {
                     // Best so far: try going further in the same direction.
                     self.reflected = self.candidate.clone();
                     self.f_reflected = score;
-                    let c = self.centroid();
-                    let mut xe: Vec<f64> = c
-                        .iter()
-                        .zip(&self.reflected)
-                        .map(|(&c, &r)| c + GAMMA * (r - c))
-                        .collect();
-                    self.clamp(&mut xe);
-                    self.candidate = xe;
+                    self.candidate = self.along_centroid(&self.reflected, GAMMA);
                     self.phase = Phase::Expanding;
                 } else if score < self.fvals[n - 1] {
                     let point = std::mem::take(&mut self.candidate);
@@ -136,19 +126,12 @@ impl NelderMead {
                     self.reflected = self.candidate.clone();
                     self.f_reflected = score;
                     let outside = score < self.fvals[n];
-                    let c = self.centroid();
                     let toward = if outside {
-                        self.reflected.clone()
+                        &self.reflected
                     } else {
-                        self.row(n).to_vec()
+                        self.row(n)
                     };
-                    let mut xc: Vec<f64> = c
-                        .iter()
-                        .zip(&toward)
-                        .map(|(&c, &t)| c + RHO * (t - c))
-                        .collect();
-                    self.clamp(&mut xc);
-                    self.candidate = xc;
+                    self.candidate = self.along_centroid(toward, RHO);
                     self.phase = Phase::Contracting { outside };
                 }
             }
@@ -182,18 +165,7 @@ impl NelderMead {
                         self.fvals[i] = UNEVALUATED;
                     }
                     self.candidate = self.row(1).to_vec();
-                    self.phase = Phase::Shrinking { next: 1 };
-                }
-            }
-            Phase::Shrinking { next } => {
-                self.fvals[next as usize] = score;
-                let next = next as usize + 1;
-                if next <= n {
-                    self.candidate = self.row(next).to_vec();
-                    self.phase = Phase::Shrinking { next: next as u32 };
-                } else {
-                    self.sort();
-                    self.begin_iteration();
+                    self.phase = Phase::Scoring { next: 1 };
                 }
             }
         }
@@ -208,10 +180,16 @@ impl NelderMead {
         &self.simplex[i * n..(i + 1) * n]
     }
 
-    fn clamp(&self, x: &mut [f64]) {
-        for ((x, &lo), &hi) in x.iter_mut().zip(&self.lo).zip(&self.hi) {
-            *x = x.clamp(lo, hi);
-        }
+    /// `c + k·(t − c)` clamped into the bounds, `c` the centroid: reflection (`t` the
+    /// worst row, `k = −ALPHA`), expansion and contraction.
+    fn along_centroid(&self, t: &[f64], k: f64) -> Vec<f64> {
+        let c = self.centroid();
+        assert_eq!(t.len(), c.len());
+        let x: Vec<f64> = (0..c.len())
+            .map(|i| (c[i] + k * (t[i] - c[i])).clamp(self.lo[i], self.hi[i]))
+            .collect();
+        assert_eq!(x.len(), self.n());
+        x
     }
 
     /// Centroid of the best n vertices (all rows but the worst).
@@ -258,15 +236,7 @@ impl NelderMead {
     /// Start a fresh iteration: reflect the worst vertex through the
     /// centroid of the rest and hand that out as the candidate.
     fn begin_iteration(&mut self) {
-        let n = self.n();
-        let c = self.centroid();
-        let mut xr: Vec<f64> = c
-            .iter()
-            .zip(self.row(n))
-            .map(|(&c, &w)| c + ALPHA * (c - w))
-            .collect();
-        self.clamp(&mut xr);
-        self.candidate = xr;
+        self.candidate = self.along_centroid(self.row(self.n()), -ALPHA);
         self.phase = Phase::Reflecting;
     }
 }

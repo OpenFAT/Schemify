@@ -88,7 +88,7 @@ pub struct RunnerConfig {
     pub dir: PathBuf,
     /// Compiled-source cache shared by runs.
     pub cache: PathBuf,
-    /// On-disk directory of each library row ([`Source::lib`]).
+    /// On-disk directory of each library row (the `lib` of [`Origin::File`] and [`Prepared::base`]).
     pub lib_dirs: Vec<PathBuf>,
     /// Simulators running at once, `1..=WORKERS_MAX`.
     pub workers: u16,
@@ -127,16 +127,14 @@ struct Queued {
 /// One compiler child writing `out` into the build cache.
 struct Compiling {
     out: String,
-    child: Child,
-    started: Instant,
+    proc: Proc,
     /// `` `openvaf` on <src> ``, for messages.
     what: String,
 }
 
 struct Running {
     job: u32,
-    child: Child,
-    started: Instant,
+    proc: Proc,
     /// Bytes of stdout already scanned.
     log_pos: u64,
     /// Last non-empty stdout line.
@@ -258,20 +256,11 @@ impl Runner {
             let dir = self.job_dir(self.running[i].job);
             let r = &mut self.running[i];
             tail(&dir, r);
-            let outcome = match r.child.try_wait() {
-                Ok(Some(status)) => Ok(status),
-                Ok(None) if r.started.elapsed() <= self.cfg.timeout => {
-                    i += 1;
-                    continue;
-                }
-                Ok(None) => Err(format!("timed out after {:?}", self.cfg.timeout)),
-                Err(e) => Err(format!("cannot wait for the simulator: {e}")),
+            let Some(outcome) = r.proc.reap(self.cfg.timeout, "simulator") else {
+                i += 1;
+                continue;
             };
-            let mut r = self.running.remove(i);
-            if outcome.is_err() {
-                let _ = r.child.kill();
-                let _ = r.child.wait();
-            }
+            let r = self.running.remove(i);
             self.finish(plan, jobs, results, r.job, outcome);
             finished.push(r.job);
         }
@@ -328,9 +317,7 @@ impl Runner {
             self.waiting.remove(i);
             jobs.set_state(j, State::Cancelled);
         } else if let Some(i) = self.running.iter().position(|r| r.job == j) {
-            let mut r = self.running.remove(i);
-            let _ = r.child.kill();
-            let _ = r.child.wait();
+            self.running.remove(i).proc.kill();
             jobs.set_state(j, State::Cancelled);
         }
         assert!(!self.queue.iter().any(|q| q.job == j) && !self.running.iter().any(|r| r.job == j));
@@ -350,8 +337,7 @@ impl Runner {
             self.cancel(jobs, j);
         }
         for mut c in self.compiling.drain(..) {
-            let _ = c.child.kill();
-            let _ = c.child.wait();
+            c.proc.kill();
         }
         assert!(!self.busy());
     }
@@ -391,21 +377,11 @@ impl Runner {
     fn reap_compiles(&mut self) {
         let mut i = 0;
         while i < self.compiling.len() {
-            let c = &mut self.compiling[i];
-            let outcome = match c.child.try_wait() {
-                Ok(Some(status)) => Ok(status),
-                Ok(None) if c.started.elapsed() <= self.cfg.timeout => {
-                    i += 1;
-                    continue;
-                }
-                Ok(None) => Err(format!("timed out after {:?}", self.cfg.timeout)),
-                Err(e) => Err(format!("cannot wait for the compiler: {e}")),
+            let Some(outcome) = self.compiling[i].proc.reap(self.cfg.timeout, "compiler") else {
+                i += 1;
+                continue;
             };
-            let mut c = self.compiling.remove(i);
-            if outcome.is_err() {
-                let _ = c.child.kill();
-                let _ = c.child.wait();
-            }
+            let c = self.compiling.remove(i);
             let wrote = self.cfg.cache.join(&c.out).exists();
             let why = match outcome {
                 Ok(status) if status.success() && wrote => continue,
@@ -481,18 +457,15 @@ impl Runner {
             .args
             .iter()
             .map(|a| a.replace("{netlist}", NETLIST).replace("{raw}", RAW));
-        let child = Command::new(&sim.path)
-            .args(args)
-            .current_dir(&dir)
-            .stdin(Stdio::null())
-            .stdout(out)
-            .stderr(err)
-            .spawn()
-            .map_err(|e| spawn_error(&sim.path, "simulator", "the user config `sim` entry", &e))?;
+        let proc = Proc::spawn(
+            Command::new(&sim.path).args(args).current_dir(&dir),
+            out,
+            err,
+        )
+        .map_err(|e| spawn_error(&sim.path, "simulator", "the user config `sim` entry", &e))?;
         self.running.push(Running {
             job: q.job,
-            child,
-            started: Instant::now(),
+            proc,
             log_pos: 0,
             last: String::new(),
         });
@@ -552,12 +525,10 @@ impl Runner {
 impl Drop for Runner {
     fn drop(&mut self) {
         for r in &mut self.running {
-            let _ = r.child.kill();
-            let _ = r.child.wait();
+            r.proc.kill();
         }
         for c in &mut self.compiling {
-            let _ = c.child.kill();
-            let _ = c.child.wait();
+            c.proc.kill();
         }
     }
 }
@@ -611,26 +582,60 @@ fn spawn_compile(cfg: &RunnerConfig, s: &Source) -> Result<Option<Compiling>, St
     };
     let log = File::create(cfg.cache.join(format!("{}.log", s.out))).map_err(cache)?;
     let log2 = log.try_clone().map_err(cache)?;
-    let child = cmd
-        .stdin(Stdio::null())
-        .stdout(log)
-        .stderr(log2)
-        .spawn()
-        .map_err(|e| {
-            let need = format!("needed to compile {} ({what})", src.display());
-            format!(
-                "{}; {need}",
-                spawn_error(prog, "compiler", "the user config", &e)
-            )
-        })?;
+    let proc = Proc::spawn(&mut cmd, log, log2).map_err(|e| {
+        let need = format!("needed to compile {} ({what})", src.display());
+        format!(
+            "{}; {need}",
+            spawn_error(prog, "compiler", "the user config", &e)
+        )
+    })?;
     let c = Compiling {
         out: s.out.clone(),
-        child,
-        started: Instant::now(),
+        proc,
         what: format!("`{prog}` on {}", src.display()),
     };
     assert!(!c.out.is_empty());
     Ok(Some(c))
+}
+
+/// A child process and its start time: the crate's one subprocess boundary. Simulators and
+/// compilers are spawned, reaped and killed only through it.
+struct Proc {
+    child: Child,
+    started: Instant,
+}
+
+impl Proc {
+    /// Spawns `cmd` with stdin closed and stdout/stderr into `out`/`err`.
+    fn spawn(cmd: &mut Command, out: File, err: File) -> io::Result<Proc> {
+        let child = cmd.stdin(Stdio::null()).stdout(out).stderr(err).spawn()?;
+        Ok(Proc {
+            child,
+            started: Instant::now(),
+        })
+    }
+
+    /// Returns `None` while the child runs within `timeout`, else its outcome: the exit
+    /// status, or why it was killed (timeout, or `try_wait` failed). Never blocks on a
+    /// live child.
+    fn reap(&mut self, timeout: Duration, what: &str) -> Option<Result<ExitStatus, String>> {
+        let outcome = match self.child.try_wait() {
+            Ok(Some(status)) => Ok(status),
+            Ok(None) if self.started.elapsed() <= timeout => return None,
+            Ok(None) => Err(format!("timed out after {timeout:?}")),
+            Err(e) => Err(format!("cannot wait for the {what}: {e}")),
+        };
+        if outcome.is_err() {
+            self.kill();
+        }
+        Some(outcome)
+    }
+
+    /// Kills the child and reaps it (no zombie); errors mean it already exited.
+    fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 fn spawn_error(prog: &str, what: &str, config: &str, e: &io::Error) -> String {
