@@ -258,29 +258,16 @@ pub(crate) fn cmp_key(a: &Violation, b: &Violation, names: &Names) -> Ordering {
         .then_with(|| names.cmp(a.param, b.param))
 }
 
-/// [`waivers`] without interning: a waiver naming a param no interface has (its name not
-/// in `names`) can match no finding and is left out.
-pub(crate) fn waivers_found(doc: &Document, names: &Names) -> Vec<(ObjId, Name)> {
+/// Waivers of one document: `(instance id, param)` pairs, sorted. A waiver naming a param
+/// no interface has (its name not in `names`) can match no finding (only gating codes on
+/// interface params are waivable) and is left out.
+pub(crate) fn waivers(doc: &Document, names: &Names) -> Vec<(ObjId, Name)> {
     let s = doc.strings();
     let w = doc.waivers();
     let mut out: Vec<(ObjId, Name)> = (0..w.kind.len())
         .filter_map(|r| {
             let inst = ObjId::find(s.get(w.fields[r][1]), s)?;
             Some((inst, names.find(s.get(w.fields[r][2]))?))
-        })
-        .collect();
-    out.sort_unstable();
-    out
-}
-
-/// Waivers of one document: `(instance id, param)` pairs, sorted.
-pub(crate) fn waivers(doc: &Document, names: &mut Names) -> Vec<(ObjId, Name)> {
-    let s = doc.strings();
-    let w = doc.waivers();
-    let mut out: Vec<(ObjId, Name)> = (0..w.kind.len())
-        .filter_map(|r| {
-            let inst = ObjId::find(s.get(w.fields[r][1]), s)?;
-            Some((inst, names.intern(s.get(w.fields[r][2]))))
         })
         .collect();
     out.sort_unstable();

@@ -272,7 +272,8 @@ impl Graph {
             topo_order_all(deps, &mut self.order, &mut cycles);
             for c in &cycles {
                 let err = c.error(|n| self.node_name(n, ifaces, names));
-                self.cyclic.extend(c.nodes.iter().map(|&node| (node, err.clone())));
+                self.cyclic
+                    .extend(c.nodes.iter().map(|&node| (node, err.clone())));
             }
             // A node on several cycles reports the first.
             self.cyclic.sort_by_key(|e| e.0);

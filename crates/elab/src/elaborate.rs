@@ -11,9 +11,7 @@
 //! globals → bench lines → sort violations.
 
 use crate::cells::{display, readable, row_of};
-use crate::check::{
-    CellCtx, Code, Violation, Violations, check_overrides, check_values, waivers_found,
-};
+use crate::check::{CellCtx, Code, Violation, Violations, check_overrides, check_values, waivers};
 use crate::connect::{CellNets, Ignore, NO_NET, connect};
 use crate::graph::{Graph, OWN, Work};
 use crate::iface::Iface;
@@ -793,7 +791,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         let unresolved = std::mem::take(&mut self.cells[ci as usize].unresolved);
         let subst = self.subst_of(ci);
         let subst: Vec<(Name, &str)> = subst.iter().map(|(n, t)| (*n, t.as_str())).collect();
-        let waiv = waivers_found(doc, &self.names);
+        let waiv = waivers(doc, &self.names);
         let mut found = Vec::new();
         let parallel = crate::parallel_ok(doc.instances().id.len());
         let Elaborator {

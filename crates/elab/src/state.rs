@@ -117,13 +117,14 @@ impl CellState {
         Some(st)
     }
 
-    /// Brings the state up to date after `ops` were committed to document `h` (the
-    /// frame spine's `elab::recompute`). Value edits (an existing override's or var's
-    /// expression) re-evaluate only their dependents; geometry edits rebuild the
-    /// connectivity; structural edits (instances, params, vars added or removed,
-    /// overrides added or removed, changed dependencies) rebuild the graph. Ops of
-    /// other documents are not seen: rebuild with [`CellState::build`] when an
-    /// instantiated cell's interface changes.
+    /// Brings the state up to date after `ops` were applied to document `h` (the frame
+    /// spine's `elab::recompute`): the ops `doc::apply_edits_report` reports for a commit,
+    /// an undo (its inverse ops) or a redo. Value edits (an existing override's or var's
+    /// expression) re-evaluate only their dependents; geometry edits patch the touched
+    /// nets; structural edits (instances, params, vars added or removed, overrides added
+    /// or removed, changed dependencies) rebuild. Ops of other documents are not seen:
+    /// rebuild with [`CellState::build`] when an instantiated cell's interface changes.
+    /// The result always equals a fresh [`CellState::build`] (the incremental oracle).
     ///
     /// # Panics
     ///
@@ -138,13 +139,7 @@ impl CellState {
         let doc = project.doc(h).expect("recompute needs the edited document");
         if self.live.instances_moved(doc) {
             // Row-indexed state is stale: a rejected transaction permuted the instances.
-            *self = CellState::build(project, h, funcs).expect("live handle");
-            return Recomputed {
-                nets: true,
-                patched: false,
-                graph: true,
-                evaluated: 0,
-            };
+            return self.rebuild(project, h, funcs);
         }
         let mut done = Recomputed::default();
         // `nets`: rebuild the connectivity; `geom`: patch it (`live`).
@@ -170,13 +165,7 @@ impl CellState {
                     },
                     _ => {
                         // Insert, delete, put, cell reference: rows and interfaces move.
-                        *self = CellState::build(project, h, funcs).expect("live handle");
-                        return Recomputed {
-                            nets: true,
-                            patched: false,
-                            graph: true,
-                            evaluated: 0,
-                        };
+                        return self.rebuild(project, h, funcs);
                     }
                 },
                 RecordKind::Var => match op {
@@ -194,13 +183,7 @@ impl CellState {
                     cached_params.push(key);
                 }
                 RecordKind::Param | RecordKind::Pin | RecordKind::Impl | RecordKind::Header => {
-                    *self = CellState::build(project, h, funcs).expect("live handle");
-                    return Recomputed {
-                        nets: true,
-                        patched: false,
-                        graph: true,
-                        evaluated: 0,
-                    };
+                    return self.rebuild(project, h, funcs);
                 }
                 _ => {}
             }
@@ -246,6 +229,17 @@ impl CellState {
         assert!(!(done.graph && done.evaluated > 0));
         assert!(!(done.patched && nets), "patched or rebuilt, not both");
         done
+    }
+
+    /// Replaces the state by a fresh build (what every edit `recompute` cannot patch does).
+    fn rebuild<F: Funcs>(&mut self, project: &Project, h: DocHandle, funcs: &mut F) -> Recomputed {
+        *self = CellState::build(project, h, funcs).expect("live handle");
+        Recomputed {
+            nets: true,
+            patched: false,
+            graph: true,
+            evaluated: 0,
+        }
     }
 
     /// Recompiles the expressions whose text changed. Returns `false` when the change
@@ -498,7 +492,7 @@ impl CellState {
 
     /// Recomputes every finding.
     fn check<F: Funcs>(&mut self, doc: &Document, funcs: &mut F) {
-        self.waivers = waivers(doc, &mut self.names);
+        self.waivers = waivers(doc, &self.names);
         let mut net = self.live.rows(&self.nets, &self.ifaces[0], &self.names);
         net.sort_by(|a, b| cmp_key(a, b, &self.names));
         self.net_rows = net;

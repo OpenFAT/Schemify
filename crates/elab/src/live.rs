@@ -38,12 +38,13 @@
 
 use crate::check::{Code, Violation};
 use crate::connect::{
-    CellNets, Ignore, NO_NET, NONE_PIN, OWN_BITS, OWN_PORTS, OWN_STATIC, Seed, bit_findings,
-    id_cmp, place, port_findings, push_decimal, unkey, write_key,
+    CellNets, GLOBAL, Ignore, LABEL, NO_NET, NONE_PIN, OWN_BITS, OWN_PORTS, OWN_STATIC, PORT, Seed,
+    bit_findings, find, glob, id_cmp, on_segment, place, port_findings, push_decimal, slicing,
+    union, unkey, write_key,
 };
 use crate::iface::{Domain, Iface};
 use crate::names::{Name, Names};
-use crate::netexpr::{self, is_global};
+use crate::netexpr;
 use crate::values::NONE;
 use schemify_doc::{Document, ObjId, Op};
 use schemify_format::RecordKind;
@@ -67,11 +68,6 @@ const LABELS: usize = 1;
 const PORTS: usize = 2;
 const NOCONNS: usize = 3;
 const INSTS: usize = 4;
-
-/// Name classes of `connect` (§3): globals win, then ports, then labels.
-const GLOBAL: u8 = 0;
-const PORT: u8 = 1;
-const LABEL: u8 = 2;
 
 /// Findings an edit removed and added (`connect` codes only), unordered.
 pub(crate) type Delta = (Vec<Violation>, Vec<Violation>);
@@ -197,17 +193,6 @@ fn label_is_global(doc: &Document, l: usize) -> bool {
 /// Geometric (non-inherited) pins of `f`, in order: an instance's node `k` is the `k`-th.
 fn geometric(f: &Iface) -> impl Iterator<Item = usize> + '_ {
     (0..f.pin_name.len()).filter(|&p| f.pin_inherit[p] == Name::NONE)
-}
-
-/// Whether `(x, y)` lies on the segment `(x1, y1)`–`(x2, y2)` (ends included).
-fn on_segment(x: i32, y: i32, x1: i32, y1: i32, x2: i32, y2: i32) -> bool {
-    let (dx, dy) = (i64::from(x2) - i64::from(x1), i64::from(y2) - i64::from(y1));
-    let cross = (i64::from(x) - i64::from(x1)) * dy - (i64::from(y) - i64::from(y1)) * dx;
-    cross == 0 && (x1.min(x2)..=x1.max(x2)).contains(&x) && (y1.min(y2)..=y1.max(y2)).contains(&y)
-}
-
-fn glob(globals: &[Name], names: &Names, n: Name) -> bool {
-    is_global(names.get(n)) || globals.binary_search(&n).is_ok()
 }
 
 impl Live {
@@ -597,7 +582,7 @@ impl Live {
                     assert!(c != NONE, "an indexed node is live");
                     self.make_dirty(c, cx, cn, names);
                 }
-                self.union(v, m);
+                union(&mut self.uf, v, m);
             }
         }
 
@@ -606,7 +591,7 @@ impl Live {
         let mut pieces: Vec<Vec<u32>> = Vec::new();
         for k in 0..self.region.len() {
             let v = self.region[k];
-            let r = self.find(v);
+            let r = find(&mut self.uf, v);
             let at = *piece.entry(r).or_insert_with(|| {
                 pieces.push(Vec::new());
                 pieces.len() - 1
@@ -862,22 +847,6 @@ impl Live {
         self.region.push(v);
     }
 
-    fn find(&mut self, mut v: u32) -> u32 {
-        while self.uf[v as usize] != v {
-            let p = self.uf[self.uf[v as usize] as usize];
-            self.uf[v as usize] = p;
-            v = p;
-        }
-        v
-    }
-
-    fn union(&mut self, a: u32, b: u32) {
-        let (ra, rb) = (self.find(a), self.find(b));
-        if ra != rb {
-            self.uf[ra.max(rb) as usize] = ra.min(rb);
-        }
-    }
-
     /// Takes component `c` out (once per edit): its findings leave, its pins' counts leave
     /// its bits, its bits are released (a named one when no slot carries its name any
     /// more), its live nodes join the region and its handle is freed.
@@ -959,7 +928,6 @@ impl Live {
         let f = &cx.ifaces[cx.inst_iface[i] as usize];
         let w = f.bits(p).len();
         let elems = (cn.elem_start[i + 1] - cn.elem_start[i]) as usize;
-        let nwidth = usize::from(cn.net_width[c as usize]);
         // An alias pin shares its target's connection slots (same component, same width):
         // the target writes and counts them.
         let alias = f.pin_alias[p] != NONE;
@@ -967,31 +935,25 @@ impl Live {
             cn.conn_start[i] as usize + f.pin_off[p] as usize,
             f.bits_total as usize,
         );
-        let sliced = if nwidth == w {
-            false
-        } else if nwidth == w * elems {
-            true
-        } else {
-            if !add {
-                return None;
-            }
-            if !alias {
-                for e in 0..elems {
-                    cn.conns[base + e * stride..base + e * stride + w].fill(NO_NET);
+        let net = u32::from(cn.net_width[c as usize]);
+        let sliced = match slicing(names.get(f.pin_name[p]), w, elems, net) {
+            Ok(sliced) => sliced,
+            Err(_) if !add => return None,
+            Err(detail) => {
+                if !alias {
+                    for e in 0..elems {
+                        cn.conns[base + e * stride..base + e * stride + w].fill(NO_NET);
+                    }
                 }
+                return Some(Violation {
+                    code: Code::E011,
+                    cell: cx.own.cell,
+                    object: cx.doc.instances().id[i],
+                    path: Name::NONE,
+                    param: f.pin_name[p],
+                    detail,
+                });
             }
-            let detail = format!(
-                "pin `{}` ({w} bits × {elems}) on a {nwidth}-bit net",
-                names.get(f.pin_name[p])
-            );
-            return Some(Violation {
-                code: Code::E011,
-                cell: cx.own.cell,
-                object: cx.doc.instances().id[i],
-                path: Name::NONE,
-                param: f.pin_name[p],
-                detail,
-            });
         };
         let start = cn.net_bit_start[c as usize] as usize;
         let counted = !alias && cn.ignore[i] != Ignore::Open;
