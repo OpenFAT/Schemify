@@ -443,6 +443,7 @@ mod tests {
                     c.swap_remove(i);
                 }
                 t.lines.layer.swap_remove(i);
+                t.lines.style.swap_remove(i);
             }
             for _ in 0..next(5) {
                 let (x, y) = (next(1_000_000), next(600_000));

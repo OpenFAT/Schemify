@@ -181,6 +181,12 @@ fn fold(seed: i64, fields: &[i32]) -> u64 {
         .fold(mix(0, seed), |h, &v| mix(h, i64::from(v)))
 }
 
+/// A row's layer and stroke style as one hashed field.
+#[inline]
+fn pen(layer: u8, style: crate::canvas::LineStyle) -> i32 {
+    i32::from(layer) | (i32::from(style.0) << 8)
+}
+
 /// Row `i` of `table`: its hash (everything drawn about it) and its world box.
 #[inline]
 pub(crate) fn row(t: &CanvasPrims, table: Table, i: usize) -> (u64, [i32; 4]) {
@@ -189,18 +195,37 @@ pub(crate) fn row(t: &CanvasPrims, table: Table, i: usize) -> (u64, [i32; 4]) {
     match table {
         Table::Lines => {
             let l = &t.lines;
-            let f = [l.x0[i], l.y0[i], l.x1[i], l.y1[i], i32::from(l.layer[i])];
+            let f = [
+                l.x0[i],
+                l.y0[i],
+                l.x1[i],
+                l.y1[i],
+                pen(l.layer[i], l.style[i]),
+            ];
             (fold(1, &f), span(f[0], f[1], f[2], f[3]))
         }
         Table::Rects => {
             let r = &t.rects;
-            let f = [r.x0[i], r.y0[i], r.x1[i], r.y1[i], i32::from(r.layer[i])];
+            let f = [
+                r.x0[i],
+                r.y0[i],
+                r.x1[i],
+                r.y1[i],
+                pen(r.layer[i], r.style[i]),
+            ];
             (fold(2, &f), span(f[0], f[1], f[2], f[3]))
         }
         Table::Arcs => {
             let a = &t.arcs;
             let (cx, cy, r) = (a.cx[i], a.cy[i], a.r[i]);
-            let f = [cx, cy, r, a.start[i], a.sweep[i], i32::from(a.layer[i])];
+            let f = [
+                cx,
+                cy,
+                r,
+                a.start[i],
+                a.sweep[i],
+                pen(a.layer[i], a.style[i]),
+            ];
             let b = [
                 cx.saturating_sub(r),
                 cy.saturating_sub(r),
@@ -220,7 +245,7 @@ pub(crate) fn row(t: &CanvasPrims, table: Table, i: usize) -> (u64, [i32; 4]) {
             let h = xs
                 .iter()
                 .zip(ys)
-                .fold(fold(seed, &[i32::from(p.layer[i])]), |h, (&x, &y)| {
+                .fold(fold(seed, &[pen(p.layer[i], p.style[i])]), |h, (&x, &y)| {
                     mix(mix(h, i64::from(x)), i64::from(y))
                 });
             let b = [

@@ -24,6 +24,9 @@ pub trait Painter {
     fn fill_path(&mut self, path: &BezPath, color: Color);
     /// Strokes a path with butt caps and miter joins; `width` in logical pixels.
     fn stroke_path(&mut self, path: &BezPath, width: f64, color: Color);
+    /// Strokes a path in a full style (width in logical pixels, caps, joins, dashes): the
+    /// canvas's weighted and dashed primitives.
+    fn stroke_styled(&mut self, path: &BezPath, stroke: &Stroke, color: Color);
     /// Draws glyphs of one font at `px` pixels, positioned in the space of `at`.
     fn glyphs(
         &mut self,
@@ -356,6 +359,18 @@ impl Painter for ScenePainter<'_> {
             .stroke(&Stroke::new(width), self.base, color, None, path);
     }
 
+    fn stroke_styled(&mut self, path: &BezPath, stroke: &Stroke, color: Color) {
+        let dashes: Vec<u64> = stroke.dash_pattern.iter().map(|d| d.to_bits()).collect();
+        let style = (
+            stroke.width.to_bits(),
+            stroke.join as u8,
+            stroke.start_cap as u8,
+            dashes,
+        );
+        self.log((10u8, PathBits(path), style, color_bits(color)));
+        self.scene.stroke(stroke, self.base, color, None, path);
+    }
+
     fn glyphs(
         &mut self,
         font: &FontData,
@@ -657,6 +672,13 @@ impl Painter for CpuPainter {
         self.ctx.set_transform(self.base);
         self.ctx.set_paint(color);
         self.ctx.set_stroke(Stroke::new(width));
+        self.ctx.stroke_path(path);
+    }
+
+    fn stroke_styled(&mut self, path: &BezPath, stroke: &Stroke, color: Color) {
+        self.ctx.set_transform(self.base);
+        self.ctx.set_paint(color);
+        self.ctx.set_stroke(stroke.clone());
         self.ctx.stroke_path(path);
     }
 
