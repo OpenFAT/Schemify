@@ -30,12 +30,15 @@ const LAMBDA0: f64 = 0.1;
 const L0: f64 = 0.15e-6;
 const COX: f64 = 8.8e-3;
 
+// The synthetic model's transcendentals come from `libm` (pure Rust): the platform's own
+// exp/ln can differ in the last bit (MSVC vs glibc), and the embedded SKILL vectors are
+// compared as text, so they must be identical on every OS (D32).
 fn softplus(u: f64) -> f64 {
-    if u > 30.0 { u } else { u.exp().ln_1p() }
+    if u > 30.0 { u } else { libm::log1p(libm::exp(u)) }
 }
 
 fn sigmoid(u: f64) -> f64 {
-    1.0 / (1.0 + (-u).exp())
+    1.0 / (1.0 + libm::exp(-u))
 }
 
 /// `[id, gm, gds, cgg]` per metre of width.
@@ -109,7 +112,7 @@ fn synth_grid() -> Grid {
     let vgs = (0..=72).map(|k| 1.8 * f64::from(k) / 72.0).collect();
     let vds = (1..=12).map(|k| 1.8 * f64::from(k) / 12.0).collect();
     let l = (0..14)
-        .map(|k| 0.15e-6 * (8.0f64 / 0.15).powf(f64::from(k) / 13.0))
+        .map(|k| 0.15e-6 * libm::pow(8.0f64 / 0.15, f64::from(k) / 13.0))
         .collect();
     grid(l, vds, vgs, 0.9, 1e-6)
 }
