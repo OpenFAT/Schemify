@@ -568,6 +568,9 @@ pub struct Editor {
     cell_ops: Vec<Op>,
     /// The docs page.
     page: Page,
+    /// The cell panel's pending "Sync pins from ports" with the document and edit epoch it
+    /// was read at; stale (ignored, then dropped) once either changes.
+    port_sync: Option<(DocHandle, u32, cell::PortSync)>,
     /// This frame's docs-page commit (document, label, ops, its journal seq once applied): a
     /// D20 cache write it causes extends the same undo entry (`Edit::Extend`), and its
     /// journal record waits for it (flushed at the end of the elab step).
@@ -764,6 +767,7 @@ impl Editor {
             cell_key: None,
             cell_ops: Vec::new(),
             page: Page::default(),
+            port_sync: None,
             amend: None,
             parked: Vec::new(),
             undid: false,
@@ -2077,6 +2081,54 @@ impl Editor {
                 let ops = self.with_doc(h, |d, _| cell::move_pin_ops(d, r, up));
                 self.commit(reqs, h, "reorder pins", ops);
             }
+            Cmd::CellSyncPorts | Cmd::CellSymbolFromPorts => {
+                let node = if node.is_empty() { arg } else { node };
+                let sync = cmd == Cmd::CellSyncPorts;
+                let action = if sync { "sync" } else { "symbol" };
+                let Some(r) = cell::button_row(node, "impl", action) else {
+                    return false;
+                };
+                self.port_sync = None;
+                let ports = match self.with_doc(h, |d, _| Some(cell::impl_ports(d, r))) {
+                    Some(Ok(p)) => p,
+                    Some(Err(why)) => {
+                        self.session.status = why;
+                        return true;
+                    }
+                    None => return false,
+                };
+                if sync {
+                    let epoch = self.session.epoch(h);
+                    let p = cell::PortSync { impl_row: r, ports };
+                    self.port_sync = Some((h, epoch, p));
+                    self.session.status = "sync pins: review the changes, then Apply".into();
+                } else {
+                    let w = self.opts.symbol_width;
+                    let ops = self.with_doc(h, |d, _| parity::symbol_from_ports_ops(d, &ports, w));
+                    if ops.is_empty() {
+                        self.session.status =
+                            "symbol from ports: the body declares no ports".into();
+                    }
+                    self.commit(reqs, h, "symbol from ports", ops);
+                }
+            }
+            Cmd::CellSyncApply => {
+                let epoch = self.session.epoch(h);
+                let Some((_, _, p)) = self
+                    .port_sync
+                    .take()
+                    .filter(|(d, e, _)| *d == h && *e == epoch)
+                else {
+                    self.session.status = "sync pins: nothing pending".into();
+                    return true;
+                };
+                let ops = self.with_doc(h, |d, _| cell::sync_ops(d, &p.ports).1);
+                if ops.is_empty() {
+                    self.session.status = "pins already match the ports".into();
+                }
+                self.commit(reqs, h, "sync pins from ports", ops);
+            }
+            Cmd::CellSyncCancel => self.port_sync = None,
             Cmd::DocsSelect => self.page.sel = docs::row_of(node),
             Cmd::DocsEdit => {
                 let Some(row) = docs::row_of(node) else {
@@ -4122,7 +4174,12 @@ impl Editor {
             .filter(|_| shown)
             .and_then(|(h, _)| s.project.doc(h))
         {
-            Some(doc) => cell::contribute(&mut t, doc),
+            Some(doc) => {
+                let sync = self.port_sync.as_ref().filter(|(d, e, _)| {
+                    self.active().is_some_and(|(h, _)| h == *d) && s.epoch(*d) == *e
+                });
+                cell::contribute(&mut t, doc, sync.map(|p| &p.2));
+            }
             None => t.push_str("remove cell.pane\n"),
         }
         match &self.dialog {

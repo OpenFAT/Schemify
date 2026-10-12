@@ -9,7 +9,9 @@
 //! `cell.pin.<r>.<attr>`, `cell.param.<r>.<attr>`, `cell.impl.<r>.<attr>`,
 //! `cell.impl.<r>.format.<dialect>`, `cell.impl.<r>.body`; a dropdown choice is the field id
 //! plus `=<value>`; buttons are `cell.pin.<r>.up|down`, `cell.param.<r>.del`,
-//! `cell.impl.<r>.del`, `cell.add_impl.<lang>`.
+//! `cell.impl.<r>.del`, `cell.add_impl.<lang>`, `cell.impl.<r>.sync` (sync pins from the
+//! body's ports: shows a [`PortSync`] diff first, then `cell.sync.apply` /
+//! `cell.sync.cancel`), `cell.impl.<r>.symbol` (regenerate the symbol from the body's ports).
 //!
 //! Data design:
 //! 1. In: one document's header, `pins`, `params`, `impls` and `bodies`. Out: state
@@ -18,12 +20,45 @@
 //!    all of them. Rows are `u32` (doc tables hold < 2^16).
 //! 3. Access: every row once per frame while the panel is shown, through owned
 //!    [`RecordBuf`] copies (cold path: the contribution is reparsed only when it changed).
-//! 4. Lifetime: nothing persists here; whether the panel is shown is `Tab::cell`.
+//! 4. Lifetime: nothing persists here; whether the panel is shown is `Tab::cell`, and a
+//!    pending sync is the editor's ([`PortSync`], passed in).
 
-use schemify_doc::{Document, Loc, Op, RecordBuf, RecordKind, TableId, Target};
+use schemify_doc::{Document, Loc, Op, PinDir, RecordBuf, RecordKind, TableId, Target};
 use schemify_format::FileKind;
 
 use crate::docs::{attr, node};
+use crate::scene::UNIT;
+
+/// A "Sync pins from ports" waiting for Apply or Cancel: the ports parsed from impl
+/// `impl_row`'s body when the user asked. Editor state (it never reaches the document);
+/// valid only for the document and edit epoch it was made at, so any edit drops it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PortSync {
+    /// Impl row whose body was read.
+    pub impl_row: u32,
+    /// Its ports in port order (unique names, ≤ `schemify_elab::PORTS_MAX`).
+    pub ports: Vec<(String, PinDir)>,
+}
+
+/// What syncing the pins to a port list changes (shown before it is applied).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SyncPlan {
+    /// Ports with no pin, in port order: added.
+    pub add: Vec<(String, PinDir)>,
+    /// Pins with no port, in file order: deleted.
+    pub remove: Vec<String>,
+    /// Pins whose dir differs from their port's: (name, now, then).
+    pub redir: Vec<(String, PinDir, PinDir)>,
+    /// The pins end up reordered to port order.
+    pub reorder: bool,
+}
+
+impl SyncPlan {
+    /// Whether the pins already match the ports.
+    pub fn is_empty(&self) -> bool {
+        self.add.is_empty() && self.remove.is_empty() && self.redir.is_empty() && !self.reorder
+    }
+}
 
 /// Pin directions (format rank 1).
 pub const PIN_DIRS: [&str; 3] = ["in", "out", "inout"];
@@ -104,8 +139,9 @@ pub fn button_row(node: &str, section: &str, action: &str) -> Option<u32> {
 // ------------------------------------------------------------------- projection
 
 /// Projects `doc` into the panel: rows under the plugin-declared `cell.page` node. A file
-/// kind without an interface (a `.shbench`) shows only its header.
-pub fn contribute(t: &mut String, doc: &Document) {
+/// kind without an interface (a `.shbench`) shows only its header. `sync`, a pending
+/// "Sync pins from ports" of `doc`, shows its diff with Apply / Cancel under its impl.
+pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
     let kind = doc.kind();
     let cellish = matches!(kind, FileKind::Shprim | FileKind::Shcomp);
     let impls = names(doc, TableId::Impls, doc.impls().kind.len());
@@ -298,6 +334,30 @@ pub fn contribute(t: &mut String, doc: &Document) {
                 "Definition text (Verilog-A, Verilog, SPICE); Ctrl+Enter applies",
             );
             attr(t, "style", "cell-body");
+            if body_row(doc, name).is_some() {
+                let bar = format!("cell.impl.{r}.ports");
+                node(t, &bar, "panel", &blk);
+                attr(t, "style", "cell-bar");
+                button(
+                    t,
+                    &format!("cell.impl.{r}.sync"),
+                    "Sync pins from ports",
+                    "cell.sync_ports",
+                    "Make the pins match the body's port list (shows the changes first)",
+                    &bar,
+                );
+                button(
+                    t,
+                    &format!("cell.impl.{r}.symbol"),
+                    "Symbol from ports",
+                    "cell.symbol_from_ports",
+                    "Regenerate the symbol (pins, box, labels) from the body's ports",
+                    &bar,
+                );
+            }
+            if let Some(p) = sync.filter(|p| p.impl_row == r as u32) {
+                sync_rows(t, &sync_ops(doc, &p.ports).0, &p.ports, &blk);
+            }
         }
         button(
             t,
@@ -329,6 +389,54 @@ pub fn contribute(t: &mut String, doc: &Document) {
             );
         }
     }
+}
+
+/// The pending sync's diff rows and its Apply / Cancel buttons, under `parent`.
+fn sync_rows(t: &mut String, plan: &SyncPlan, ports: &[(String, PinDir)], parent: &str) {
+    let mut rows: Vec<(String, &str)> = Vec::new();
+    if plan.is_empty() {
+        rows.push(("Pins already match the ports.".into(), "docs-hint"));
+    }
+    for (name, dir) in &plan.add {
+        rows.push((format!("+ pin {name} {}", dir.as_str()), "check-info"));
+    }
+    for name in &plan.remove {
+        rows.push((format!("− pin {name}"), "check-error"));
+    }
+    for (name, from, to) in &plan.redir {
+        let text = format!("pin {name}: {} → {}", from.as_str(), to.as_str());
+        rows.push((text, "check-warning"));
+    }
+    if plan.reorder {
+        let order: Vec<&str> = ports.iter().map(|p| p.0.as_str()).collect();
+        rows.push((format!("order: {}", order.join(" ")), "check-warning"));
+    }
+    for (k, (text, style)) in rows.iter().enumerate() {
+        node(t, &format!("cell.sync.{k}"), "label", parent);
+        attr(t, "label", text);
+        attr(t, "style", style);
+    }
+    let bar = "cell.sync.bar";
+    node(t, bar, "panel", parent);
+    attr(t, "style", "cell-bar");
+    if !plan.is_empty() {
+        button(
+            t,
+            "cell.sync.apply",
+            "Apply",
+            "cell.sync_apply",
+            "Apply these pin changes (one undo)",
+            bar,
+        );
+    }
+    button(
+        t,
+        "cell.sync.cancel",
+        "Cancel",
+        "cell.sync_cancel",
+        "Leave the pins as they are",
+        bar,
+    );
 }
 
 fn section(t: &mut String, id: &str, title: &str) {
@@ -648,6 +756,110 @@ fn body_ops(doc: &Document, name: &str, text: &str) -> Vec<Op> {
         Some(_) => vec![Op::Put { target, rec }],
         None => vec![Op::Insert { rec, at: None }],
     }
+}
+
+/// The ports impl `row`'s body declares (`schemify_elab::impl_ports`). `Err` in words when
+/// the row is no impl, the impl is a schematic or has no body, or the body does not parse
+/// (with its line).
+pub fn impl_ports(doc: &Document, row: u32) -> Result<Vec<(String, PinDir)>, String> {
+    let rec = record(doc, TableId::Impls, row).ok_or("no such impl")?;
+    let (name, lang) = (&rec.fields[0], rec.fields.get(1).map_or("", String::as_str));
+    if lang == "schematic" {
+        return Err("a schematic impl's ports are its schematic's".into());
+    }
+    if body_row(doc, name).is_none() {
+        return Err(format!("impl {name} has no body to read ports from"));
+    }
+    let ports = schemify_elab::impl_ports(lang, &body_text(doc, name))
+        .map_err(|e| format!("impl {name} body {e}"))?;
+    debug_assert!(ports.len() <= schemify_elab::PORTS_MAX);
+    Ok(ports)
+}
+
+/// What syncing `doc`'s pins to `ports` (unique names, port order) changes, and the ops
+/// that do it in one transaction: delete pins with no port, set dirs, add a pin per new
+/// port, reorder to port order. Existing pins keep their coordinates and attributes; new
+/// pins stack below the lowest pin on the 10-unit grid, inputs in the leftmost pin column,
+/// the rest in the rightmost. No ops when the pins already match.
+pub fn sync_ops(doc: &Document, ports: &[(String, PinDir)]) -> (SyncPlan, Vec<Op>) {
+    assert!(ports.len() <= schemify_elab::PORTS_MAX);
+    let (s, pins) = (doc.strings(), doc.pins());
+    let have: Vec<&str> = pins.name.iter().map(|&n| s.get(n)).collect();
+    let mut plan = SyncPlan::default();
+    let mut ops = Vec::new();
+    for name in &have {
+        if !ports.iter().any(|p| p.0 == *name) {
+            plan.remove.push((*name).to_owned());
+            ops.push(Op::Delete(Target::new(RecordKind::Pin, name)));
+        }
+    }
+    for (name, dir) in ports {
+        match have.iter().position(|h| h == name) {
+            Some(i) if pins.dir[i] != *dir => {
+                plan.redir.push((name.clone(), pins.dir[i], *dir));
+                ops.push(Op::SetField {
+                    target: Target::new(RecordKind::Pin, name),
+                    index: 1,
+                    value: dir.as_str().to_owned(),
+                });
+            }
+            Some(_) => {}
+            None => plan.add.push((name.clone(), *dir)),
+        }
+    }
+    // ponytail: new pins go below every pin, not outside the drawn body's bbox; a symbol
+    // whose graphics reach below its pins may overlap them. "Symbol from ports" redraws
+    // cleanly; read the graphics' extent here if that bites.
+    let grid = 10 * UNIT;
+    let (left, right, bottom) = match (pins.x.iter().min(), pins.x.iter().max()) {
+        (Some(&l), Some(&r)) => {
+            let r = if r == l { l + 4 * grid } else { r };
+            (l, r, pins.y.iter().copied().max().unwrap_or(0))
+        }
+        _ => (-2 * grid, 2 * grid, 0),
+    };
+    let c = |v: i32| {
+        let mut t = String::new();
+        schemify_format::format_coord(v, &mut t);
+        t
+    };
+    for (k, (name, dir)) in plan.add.iter().enumerate() {
+        let x = if *dir == PinDir::In { left } else { right };
+        let y = bottom + (k as i32 + 1) * grid;
+        let rec = RecordBuf::new(RecordKind::Pin)
+            .field(name)
+            .field(dir.as_str())
+            .field(&c(x))
+            .field(&c(y));
+        ops.push(Op::Insert { rec, at: None });
+    }
+    // Pin order after the deletes and appends, then moved into port order one by one.
+    let mut order: Vec<&str> = have
+        .iter()
+        .copied()
+        .filter(|h| ports.iter().any(|p| p.0 == *h))
+        .chain(plan.add.iter().map(|a| a.0.as_str()))
+        .collect();
+    assert_eq!(order.len(), ports.len());
+    for (k, (name, _)) in ports.iter().enumerate() {
+        if order[k] != name {
+            let from = order[k..]
+                .iter()
+                .position(|o| o == name)
+                .expect("every port has a pin")
+                + k;
+            let moved = order.remove(from);
+            order.insert(k, moved);
+            plan.reorder = true;
+            ops.push(Op::Reorder {
+                target: Target::new(RecordKind::Pin, name),
+                to: k as u32,
+            });
+        }
+    }
+    debug_assert!(order.iter().zip(ports).all(|(o, p)| *o == p.0));
+    debug_assert_eq!(plan.is_empty(), ops.is_empty());
+    (plan, ops)
 }
 
 /// Ops adding a parameter `p<k>` (the first free `k`) with default `0`.

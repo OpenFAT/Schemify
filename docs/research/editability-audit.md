@@ -69,7 +69,7 @@ Status values:
 1. ✅ Header `default`; bench `corner` and `config`.
 2. ✅ Pin `domain` and pin order. Open: `inherit`, `alias`.
 3. ✅ Every `param` definition and its attributes (except `show`).
-4. ✅ `impl` add/delete, `format`, `model`, `file`, and `body`. Open: impl rename and `ignore`; port → pin sync from a Verilog-A/Verilog body.
+4. ✅ `impl` add/delete, `format`, `model`, `file`, and `body`. ✅ Port → pin sync and symbol from ports for a Verilog-A/Verilog/SPICE body (cell panel, plugin-abi §11 item 18). Open: impl rename and `ignore`.
 5. Instance `inherit`, `ignore open|short`, and swapping `cellref`.
 6. Label `global`.
 7. Var name and `dist`; var bounds also gate a run.
