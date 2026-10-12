@@ -64,7 +64,8 @@ commands! {
     DocsSelect = "docs.select",
     /// Docs page: a variable's expression field submitted (Enter).
     DocsVarOk = "docs.var_ok",
-    /// Commit the active document's staged edit (visual diff reviewed, D18).
+    /// Commit the staged edit under review (visual diff reviewed, D18), or stage `<k>` of
+    /// the active document (`edit.accept_staged.<k>`).
     AcceptStaged = "edit.accept_staged",
     /// Constrain the next move/wire horizontally.
     ConstrainH = "edit.constrained_horizontal_move",
@@ -103,7 +104,7 @@ commands! {
     DescendSymbol = "edit.push_symbol",
     /// Redo.
     Redo = "edit.redo",
-    /// Drop the active document's staged edit.
+    /// Drop the staged edit under review, or stage `<k>` (`edit.reject_staged.<k>`).
     RejectStaged = "edit.reject_staged",
     /// Rotate each selected object about its own anchor.
     RotateInPlace = "edit.rotate_in_place_selected_objects",
@@ -111,6 +112,9 @@ commands! {
     Rotate = "edit.rotate_selected_objects",
     /// Select every object.
     SelectAll = "edit.select_all",
+    /// Review another staged edit of the active document (`edit.show_staged.next|prev|<k>`):
+    /// the visual diff and the docs banner follow it.
+    ShowStaged = "edit.show_staged",
     /// Remove the axis constraint.
     Unconstrained = "edit.unconstrained_move",
     /// Undo.
@@ -266,10 +270,15 @@ commands! {
     PropsField = "props.field",
     /// OK in the properties dialog.
     PropsOk = "props.ok",
+    /// Results panel: filter the job rows (the filter field's text: every word must appear).
+    ResultsFilter = "results.filter",
     /// Results panel: load an earlier run of the bench (`results.hist.<i>`, results history).
     ResultsHistory = "results.history",
     /// Results panel: pick a job (waves, plots and OP annotation follow it).
     ResultsPick = "results.pick",
+    /// Results panel: sort the job rows by a header column (`results.head.<col>`; again:
+    /// reversed).
+    ResultsSort = "results.sort",
     /// Results panel: open the selected job's raw file in the waves dock.
     ResultsWaves = "results.waves",
     /// Cancel the simulation or optimization in flight.
@@ -354,6 +363,8 @@ commands! {
     TabPrev = "tab.prev",
     /// Activate a tab.
     TabSelect = "tab.select",
+    /// Find in the text tab (the field's text): the file's lines containing it, numbered.
+    TextFind = "text.find",
     /// Snap every coordinate of the selection (else everything) to the snap.
     AlignGrid = "tools.align_to_grid",
     /// Cut the wire under the pointer at the exact pointer position.
@@ -486,7 +497,14 @@ impl Cmd {
     pub fn takes_suffix(self) -> bool {
         matches!(
             self,
-            Cmd::SetDialect | Cmd::SetLayer | Cmd::ToggleLayer | Cmd::OpenRecent | Cmd::WavesLoad
+            Cmd::SetDialect
+                | Cmd::SetLayer
+                | Cmd::ToggleLayer
+                | Cmd::OpenRecent
+                | Cmd::WavesLoad
+                | Cmd::AcceptStaged
+                | Cmd::RejectStaged
+                | Cmd::ShowStaged
         )
     }
 }

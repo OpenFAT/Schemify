@@ -209,6 +209,14 @@ jobs:
           -p cktimg --test guest -- --ignored over_budget --nocapture
       - name: host tests against the rebuilt guests
         run: nix develop -c cargo test -p schemify-plugin -p schemify-app --no-fail-fast
+      # The Nix shell has ngspice, Xyce, Icarus and OpenVAF: the run crate's real-tool
+      # differentials (Monte Carlo seeds, corner paths, OSDI and VVP compiles) must run here,
+      # so a missing tool fails instead of skipping (TESTING.md `run`).
+      - name: run tests against the real simulators and compilers
+        if: ${{ !cancelled() }}
+        env:
+          SCHEMIFY_REQUIRE_SIMULATORS: "1"
+        run: nix develop -c cargo test -p schemify-run --no-fail-fast
       - name: committed modules equal the rebuild (reproducible guests)
         if: ${{ !cancelled() }}
         run: |

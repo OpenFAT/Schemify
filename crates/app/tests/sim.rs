@@ -16,7 +16,7 @@ use schemify_app::checks::{LAYER_ERROR, LAYER_INFO, LAYER_WARN, SOURCE_CHECKS, S
 use schemify_app::editor::{Editor, Options, Panel};
 use schemify_app::scene::ObjKey;
 use schemify_doc::{ObjId, TableId};
-use schemify_run::{SimCommand, State};
+use schemify_run::{SimCommand, State, Tools};
 use schemify_ui::{InputEvent, InputEvents, Kind};
 
 /// Reads `.param R=` from the netlist, sleeps, then writes an ASCII raw file with an operating
@@ -36,9 +36,31 @@ fn sh(script: &str) -> SimCommand {
     }
 }
 
+/// The fake simulator `script` with the default compilers.
+fn tools(script: &str) -> Tools {
+    Tools {
+        sim: sh(script),
+        ..Tools::default()
+    }
+}
+
 /// Opens `file` of fixture `name` with the default UI and the simulator `sim`.
 fn open(name: &str, file: &str, tag: &str, sim: Option<SimCommand>) -> Session {
+    open_with(name, &[], file, tag, sim)
+}
+
+/// [`open`] after writing `files` (name, text) into the fixture's copy.
+fn open_with(
+    name: &str,
+    files: &[(&str, &str)],
+    file: &str,
+    tag: &str,
+    sim: Option<SimCommand>,
+) -> Session {
     let dir = fixture(name, tag);
+    for (f, text) in files {
+        std::fs::write(dir.join(f), text).unwrap();
+    }
     let ed = Editor::new(Options {
         path: Some(dir.join(file)),
         seed: 7,
@@ -349,6 +371,13 @@ fn simulate_polls_a_fake_simulator_to_results_waves_and_op() {
         (tau - 0.632_120_558_828_557_7 / 3300.0).abs() < 1e-9,
         "{tau}"
     );
+    // OP annotation is on: the job's netlist saves currents and every vector (run §7a).
+    let job0 = s.ed.sim().dir().unwrap().join("0").join("netlist.cir");
+    let netlist = std::fs::read_to_string(job0).unwrap();
+    assert!(
+        netlist.ends_with(".save all\n.options savecurrents\n.end\n"),
+        "{netlist}"
+    );
     // Results table, plot slot, OP marks.
     assert_eq!(node_kind(&s, "results.r.0"), Some(Kind::Panel));
     assert_eq!(node_kind(&s, "results.r.0.s0"), Some(Kind::Label));
@@ -417,14 +446,14 @@ fn simulate_polls_a_fake_simulator_to_results_waves_and_op() {
     let (_, jobs, res2) = s2.ed.sim().tables().expect("results reloaded");
     assert_eq!(jobs.state(0), State::Done);
     assert_eq!(res2.value(0, 0), Some(tau));
-    assert!(!s2.ed.sim().stale);
+    assert!(!s2.ed.sim().stale());
     // An edit to the bench makes them stale.
     activate(&mut s2, "view.results");
     s2.click_node("docs.b.1.expr");
     s2.key("Ctrl+A");
     s2.type_text("4.7k");
     s2.key("Enter");
-    assert!(s2.ed.sim().stale, "{}", s2.ed.session.status);
+    assert!(s2.ed.sim().stale(), "{}", s2.ed.session.status);
 }
 
 /// A swept bench overlays its plot slot: one trace per finished job (each sweep point), the
@@ -569,7 +598,7 @@ fn plugin_run_requests_join_the_queue_and_report_done() {
     use schemify_plugin::{PluginId, RunRequest};
     let dir = fixture("rc", "plugin-run");
     let mut session = Project::load(&dir, 1).unwrap();
-    let mut sim = Sim::new(Some(sh(&FAKE.replace("sleep 0.3", ""))));
+    let mut sim = Sim::new(tools(&FAKE.replace("sleep 0.3", "")));
     sim.enqueue(vec![RunRequest {
         plugin: PluginId(7),
         bench: "tb".into(),
@@ -591,6 +620,11 @@ fn plugin_run_requests_join_the_queue_and_report_done() {
     let (_, jobs, res) = sim.tables().unwrap();
     assert_eq!(jobs.assigned(0, "R"), Some("1k"));
     assert_eq!(res.var_value(0, 0), Some(1000.0));
+    // The `Results` snapshot carries each output's spec verdict: v1m = R·1e-3 = 1 > 0.9.
+    let rows = sim.result_rows();
+    let verdict = |o: &str| rows.iter().find(|r| r.0 == 0 && r.1 == o).map(|r| r.3);
+    assert_eq!(verdict("v1m"), Some(2), "{rows:?}");
+    assert_eq!(verdict("tau"), Some(0), "no spec: unknown");
     assert!(!sim.busy());
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -645,4 +679,401 @@ fn real_ngspice_simulates_the_rc_bench() {
         let px = s.render();
         common::save_png(&px, Path::new(&path));
     }
+}
+
+/// Two benches simulate at once; a Simulate of a bench whose run is in flight waits for it
+/// (a queue per bench) and starts when it is idle.
+#[test]
+fn two_benches_run_at_once_and_each_bench_queues_its_own() {
+    use schemify_app::session::Session as Project;
+    use schemify_app::sim::Sim;
+    let dir = fixture("rc", "two-runs");
+    let tb = std::fs::read_to_string(dir.join("tb.shbench")).unwrap();
+    std::fs::write(dir.join("tb2.shbench"), &tb).unwrap();
+    let mut session = Project::load(&dir, 1).unwrap();
+    let a = session.open_path(&dir.join("tb.shbench")).unwrap();
+    let b = session.open_path(&dir.join("tb2.shbench")).unwrap();
+    let mut sim = Sim::new(tools(&FAKE.replace("sleep 0.3", "sleep 0.5")));
+    let env: Vec<(&str, &str)> = Vec::new();
+    let funcs = &mut schemify_elab::no_funcs;
+    sim.start(&mut session, a, None, "", &env, funcs).unwrap();
+    sim.start(&mut session, b, None, "", &env, funcs).unwrap();
+    let msg = sim.start(&mut session, a, None, "", &env, funcs).unwrap();
+    assert!(msg.contains("queued"), "{msg}");
+    assert_eq!(sim.queued(), 1);
+    let (mut both, mut a_done, mut a_again) = (false, false, false);
+    let t = Instant::now();
+    while sim.busy() {
+        assert!(t.elapsed() < Duration::from_secs(60), "{}", sim.status);
+        sim.serve_queue(&mut session, &env, funcs);
+        sim.poll(&session.project, &env, funcs);
+        let state = |h| sim.tables_of(h).map(|(_, j, _)| j.state(0));
+        both |= state(a) == Some(State::Running) && state(b) == Some(State::Running);
+        match state(a) {
+            Some(s) if s.finished() => a_done = true,
+            Some(_) if a_done => a_again = true,
+            _ => {}
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(both, "the two benches' simulators ran at the same time");
+    assert!(a_again, "the queued Simulate of tb ran after its first run");
+    assert_eq!(sim.queued(), 0);
+    for h in [a, b] {
+        let (plan, jobs, res) = sim.tables_of(h).unwrap();
+        let errs: Vec<_> = res.errors().collect();
+        assert_eq!(jobs.state(0), State::Done, "{errs:?}");
+        let tau = res.value(0, plan.output("tau").unwrap()).unwrap();
+        assert!(
+            (tau - 0.632_120_558_828_557_7 / 3300.0).abs() < 1e-9,
+            "{tau}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The results table over 200 jobs (100 sweep points × 2 Monte Carlo samples): a window of
+/// rows around the scroll position with spacers for the rest, header buttons that sort
+/// (again: reversed), a filter, and the Monte Carlo yield as a table row.
+#[test]
+fn results_table_sorts_filters_and_scrolls_any_number_of_jobs() {
+    let src = fixture("rc", "table-src");
+    let tb = std::fs::read_to_string(src.join("tb.shbench")).unwrap();
+    let _ = std::fs::remove_dir_all(&src);
+    let many = tb.replace("  max 10k\n", "  max 10k\n  dist gauss 50\n")
+        + "\nsweep rsw\n  var R\n  lin 1k 10k 100\n\nmontecarlo mc\n  samples 2\n  seed 3\n";
+    assert_ne!(many, tb);
+    let fast = FAKE.replace("sleep 0.3", "");
+    let mut s = open_with(
+        "rc",
+        &[("many.shbench", &many)],
+        "many.shbench",
+        "table",
+        Some(sh(&fast)),
+    );
+    s.key("s");
+    run_to_idle(&mut s);
+    let (plan, jobs, res) = s.ed.sim().tables().unwrap();
+    assert_eq!(jobs.len(), 200);
+    assert!(jobs.states().iter().all(|&st| st == State::Done));
+    let tau = plan.output("tau").unwrap();
+    let values: Vec<f64> = (0..200).map(|j| res.value(j, tau).unwrap()).collect();
+    // A window of rows, spacers for the rest; the Monte Carlo yield is a row.
+    assert_eq!(node_kind(&s, "results.r.0"), Some(Kind::Panel));
+    assert_eq!(node_kind(&s, "results.r.150"), None);
+    assert_eq!(node_kind(&s, "results.gap-bottom.0"), Some(Kind::Panel));
+    assert_eq!(node_kind(&s, "results.yield"), Some(Kind::Panel));
+    assert_eq!(node_kind(&s, "results.yield.s0"), Some(Kind::Label));
+    let list = s.ed.shell.strings.find("results.list").unwrap();
+    s.ed.shell.ui.set_scroll(list, 152.0 * 19.0, 1e9);
+    s.frame(InputEvents::default());
+    s.frame(InputEvents::default());
+    assert_eq!(
+        node_kind(&s, "results.r.150"),
+        Some(Kind::Panel),
+        "scrolled to it"
+    );
+    assert_eq!(node_kind(&s, "results.r.0"), None);
+    assert_eq!(node_kind(&s, "results.gap-top.0"), Some(Kind::Panel));
+    // Sort by tau (output 0: names sort `tau` < `v1m`), then reversed.
+    s.ed.shell.ui.set_scroll(list, 0.0, 1e9);
+    activate(&mut s, "results.head.o0");
+    let rows = s.ed.sim().table.rows.clone();
+    assert_eq!(rows.len(), 200);
+    let ordered = |rows: &[u32], up: bool| {
+        rows.windows(2).all(|w| {
+            let (a, b) = (values[w[0] as usize], values[w[1] as usize]);
+            if up { a <= b } else { a >= b }
+        })
+    };
+    assert!(ordered(&rows, true), "ascending tau");
+    assert_eq!(
+        node_kind(&s, &format!("results.r.{}", rows[0])),
+        Some(Kind::Panel)
+    );
+    activate(&mut s, "results.head.o0");
+    let rows = s.ed.sim().table.rows.clone();
+    assert!(ordered(&rows, false), "descending tau");
+    // Filter: the last sweep point (R = 10000), both samples.
+    s.click_node("results.filter");
+    s.type_text("r=10000");
+    s.key("Enter");
+    let (_, jobs, _) = s.ed.sim().tables().unwrap();
+    let want: Vec<u32> = (0..200)
+        .filter(|&j| jobs.assignments(j).next() == Some(("R", "10000")))
+        .collect();
+    assert_eq!(want.len(), 2);
+    let mut got = s.ed.sim().table.rows.clone();
+    got.sort_unstable();
+    assert_eq!(got, want, "filter {:?}", s.ed.sim().table.filter);
+    assert_eq!(node_kind(&s, "results.filtered"), Some(Kind::Label));
+}
+
+/// Xyce writes `.op` as a one-point DC plot with bare upper-case node names: the OP marks
+/// read it like ngspice's operating point.
+#[test]
+fn op_annotation_reads_xyce_naming() {
+    let xyce = r#"printf 'Title: fake\nPlotname: DC transfer characteristic\nFlags: real\nNo. Variables: 4\nNo. Points: 1\nVariables:\n 0 sweep voltage\n 1 IN voltage\n 2 OUT voltage\n 3 V1#branch current\nValues:\n0 0\n 1\n 0.5\n -0.001\n' > "$2"
+"#;
+    let mut s = open("rc", "tb.shbench", "xyce-op", Some(sh(xyce)));
+    s.key("s");
+    run_to_idle(&mut s);
+    let op: Vec<(&str, &str)> =
+        s.ed.annotations()
+            .source
+            .iter()
+            .zip(&s.ed.annotations().marks)
+            .filter(|(src, _)| *src == SOURCE_OP)
+            .map(|(_, m)| (m.target.as_str(), m.text.as_str()))
+            .collect();
+    assert!(op.contains(&("out", "500mV")), "{op:?}");
+    assert!(op.contains(&("in", "1V")), "{op:?}");
+    assert!(
+        !op.iter().any(|m| m.0 == "sweep"),
+        "the sweep scale is no net"
+    );
+}
+
+/// With ngspice on `PATH`: an NMOS (level 1, kp 100µ, vto 0.5, W/L 1) at Vgs 1 V, Vds 1.8 V
+/// is in saturation, so gm = kp·(Vgs − vto) = 50 µS and id = kp/2·(Vgs − vto)² = 12.5 µA.
+/// OP annotation saved `@m1[gm]` (a `.save` the editor added), and `.options
+/// savecurrents` wrote the drain current under the name cross-probe asks for.
+#[test]
+fn real_ngspice_saves_mos_op_quantities_and_terminal_currents() {
+    let found = std::env::var_os("PATH")
+        .is_some_and(|p| std::env::split_paths(&p).any(|d| Path::new(&d).join("ngspice").exists()));
+    if !found {
+        eprintln!("ngspice not on PATH: skipped");
+        return;
+    }
+    let nmos = "schemify 1 shprim\n  prefix M\n\npin d inout 0 -30\npin g in -30 0\n\
+                pin s inout 0 30\npin b inout 30 0\n\nimpl spice spice\n  \
+                format spice \"M{name} {d} {g} {s} {b} nm W=1u L=1u\"\n";
+    let bench = "schemify 1 shbench\n\ninst 0aaaaa ./nmos\n  at 0 0 R0\n  name 1\n\n\
+                 label 0bbbba 0 -30 R0 d\nlabel 0bbbbb -30 0 R0 g\nlabel 0bbbbc 0 30 R0 0\n\
+                 label 0bbbbd 30 0 R0 0\n\ncode op spice\n  | Vd d 0 1.8\n  | Vg g 0 1\n  \
+                 | .model nm nmos level=1 vto=0.5 kp=100u\n  | .op\n";
+    let mut s = open_with(
+        "rc",
+        &[("nmos.shprim", nmos), ("mos.shbench", bench)],
+        "mos.shbench",
+        "mos-op",
+        None,
+    );
+    s.key("s");
+    run_to_idle(&mut s);
+    let (_, jobs, res) = s.ed.sim().tables().unwrap();
+    let errs: Vec<_> = res.errors().collect();
+    assert_eq!(jobs.state(0), State::Done, "{errs:?}");
+    let marks: Vec<&str> =
+        s.ed.annotations()
+            .marks
+            .iter()
+            .filter(|m| m.target == "/1")
+            .map(|m| m.text.as_str())
+            .collect();
+    let gm = format!("gm={}", schemify_wave::format_si(50e-6, 4));
+    let id = format!("id={}", schemify_wave::format_si(12.5e-6, 4));
+    assert!(marks.contains(&gm.as_str()), "{marks:?}");
+    assert!(marks.contains(&id.as_str()), "{marks:?}");
+    // The vector cross-probe asks for on the drain pin is the one ngspice wrote.
+    let probe = schemify_app::waves::current_probe("M1", "d");
+    assert_eq!(probe, "i(\"@m1[id]\")");
+    // ngspice writes saved device vectors wrapped by kind; `i("@m1[id]")` binds `i(@m1[id])`.
+    let raw = std::fs::read(s.ed.sim().job_raw(0).unwrap()).unwrap();
+    let plots = schemify_wave::parse_raw(&raw).unwrap();
+    assert!(
+        plots
+            .iter()
+            .any(|p| p.vars().iter().any(|v| v.name == "i(@m1[id])")),
+        "savecurrents wrote i(@m1[id])"
+    );
+}
+
+/// A bus highlights by every bit: `k` on the single-bit wire `d[0]` lights the bus `d[1:0]`
+/// that carries it (not `d[1]`, which only the bus shares); `k` on the bus lights both bit
+/// wires. The oracle is elab's membership: components carrying any highlighted bit.
+#[test]
+fn bus_components_highlight_by_every_bit() {
+    let bench = "schemify 1 shbench\n\nwire 0w0001 0 0 100 0\n  bus true\nwire 0w0002 0 100 100 100\n\
+                 wire 0w0003 0 200 100 200\n\nlabel 0n0001 0 0 R0 d[1:0]\nlabel 0n0002 0 100 R0 d[0]\n\
+                 label 0n0003 0 200 R0 d[1]\n";
+    let mut s = open_with(
+        "inv",
+        &[("bus.shbench", bench)],
+        "bus.shbench",
+        "bus-hilite",
+        None,
+    );
+    let keys = |s: &Session, rows: &[usize]| {
+        let (h, _) = s.ed.active().unwrap();
+        let doc = s.ed.session.project.doc(h).unwrap();
+        let mut k: Vec<ObjKey> = rows
+            .iter()
+            .flat_map(|&r| {
+                [
+                    ObjKey {
+                        table: TableId::Wires,
+                        key: doc.wires().id[r].0,
+                    },
+                    ObjKey {
+                        table: TableId::Labels,
+                        key: doc.labels().id[r].0,
+                    },
+                ]
+            })
+            .collect();
+        k.sort_unstable();
+        k
+    };
+    // Rows follow the ids: 0 the bus, 1 `d[0]`, 2 `d[1]`.
+    s.click((50 * U, 100 * U));
+    assert_eq!(s.ed.selection().len(), 1);
+    s.key("k");
+    assert_eq!(
+        s.ed.highlighted().keys,
+        keys(&s, &[0, 1]),
+        "{}",
+        s.ed.session.status
+    );
+    s.key("Shift+K");
+    assert!(s.ed.highlighted().keys.is_empty());
+    s.click((50 * U, 0));
+    s.key("k");
+    assert_eq!(s.ed.highlight_keys().len(), 2, "one key per bit");
+    assert_eq!(s.ed.highlighted().keys, keys(&s, &[0, 1, 2]));
+}
+
+/// Staged edits under review: inserted records are drawn where they will be, deleted objects
+/// crossed out, changed ones outlined; with two stages the banner steps between them and
+/// Accept / Reject act on the one under review.
+#[test]
+fn staged_edits_draw_inserts_and_deletes_and_review_one_stage_at_a_time() {
+    use schemify_app::checks::LAYER_DIFF;
+    use schemify_doc::{
+        Edit, EditRequest, FileKind, Mode, Transaction, apply_edits, ops_from_text,
+    };
+    let mut s = open("rc", "tb.shbench", "stages", None);
+    let before = s.text();
+    let (h, _) = s.ed.active().unwrap();
+    for (label, ops) in [
+        ("s1", "insert wire - 0 200 50 200\ndelete label 0bbbbd\n"),
+        ("s2", "set_field label 0bbbba 4 vin\n"),
+    ] {
+        let ops = ops_from_text(ops, FileKind::Shbench).unwrap();
+        let tx = Transaction {
+            label: label.into(),
+            mode: Mode::Stage,
+            ops,
+        };
+        let req = EditRequest {
+            doc: h,
+            edit: Edit::Tx(tx),
+            unix_ms: 0,
+        };
+        let out = apply_edits(&mut s.ed.session.project, &[req]);
+        assert!(
+            matches!(out[0], schemify_doc::Outcome::Staged { .. }),
+            "{out:?}"
+        );
+    }
+    if !s.ed.docs_shown() {
+        activate(&mut s, "view.docs");
+    }
+    s.frame(InputEvents::default());
+    assert_eq!(s.ed.session.project.stages(h).len(), 2);
+    let lines_on = |s: &Session, layer: u8| -> Vec<[i32; 4]> {
+        let l = &s.ed.decor().lines;
+        (0..l.layer.len())
+            .filter(|&i| l.layer[i] == layer)
+            .map(|i| [l.x0[i], l.y0[i], l.x1[i], l.y1[i]])
+            .collect()
+    };
+    let rects_on = |s: &Session, layer: u8| {
+        s.ed.decor()
+            .rects
+            .layer
+            .iter()
+            .filter(|&&l| l == layer)
+            .count()
+    };
+    // Stage 1 under review: the new wire drawn, the deleted label crossed out.
+    assert!(
+        lines_on(&s, LAYER_DIFF).contains(&[0, 200 * U, 50 * U, 200 * U]),
+        "{:?}",
+        lines_on(&s, LAYER_DIFF)
+    );
+    assert_eq!(lines_on(&s, LAYER_ERROR).len(), 2, "one cross");
+    assert_eq!(node_kind(&s, "docs.staged.next"), Some(Kind::Button));
+    // Stage 2: only the renamed label, outlined.
+    activate(&mut s, "docs.staged.next");
+    assert!(lines_on(&s, LAYER_DIFF).is_empty());
+    assert!(lines_on(&s, LAYER_ERROR).is_empty());
+    assert_eq!(rects_on(&s, LAYER_DIFF), 1);
+    // Accept acts on the stage under review; the other stays, and is reviewed next.
+    activate(&mut s, "docs.staged.accept");
+    assert!(
+        s.text().contains("label 0bbbba 0 -30 R0 vin\n"),
+        "{}",
+        s.text()
+    );
+    assert_eq!(s.ed.session.project.stages(h).len(), 1);
+    assert_eq!(
+        lines_on(&s, LAYER_ERROR).len(),
+        2,
+        "stage 1 under review again"
+    );
+    assert_eq!(
+        node_kind(&s, "docs.staged.next"),
+        None,
+        "one stage: no stepping"
+    );
+    activate(&mut s, "edit.reject_staged");
+    assert!(s.ed.session.project.stages(h).is_empty());
+    assert_eq!(
+        s.text(),
+        before.replace("label 0bbbba 0 -30 R0 in\n", "label 0bbbba 0 -30 R0 vin\n"),
+        "only the accepted stage changed the file"
+    );
+}
+
+/// Find in the netlist tab: the numbered lines of the whole file that contain the text,
+/// case-insensitively; an empty find shows the netlist again.
+#[test]
+fn netlist_tab_finds_lines_of_the_whole_file() {
+    let mut s = open("inv", "top.shcomp", "find", None);
+    s.key("n");
+    let text = std::fs::read_to_string(s.dir.join(".schemify/netlist/top.spice")).unwrap();
+    assert!(
+        s.ed.session.text_view().is_some(),
+        "{}",
+        s.ed.session.status
+    );
+    let find = |s: &mut Session, q: &str| {
+        s.click_node("textview.find");
+        s.key("Ctrl+A");
+        s.key("Del");
+        if !q.is_empty() {
+            s.type_text(q);
+        }
+        s.key("Enter");
+    };
+    find(&mut s, "SUBCKT");
+    let want: Vec<String> = text
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| l.to_ascii_lowercase().contains("subckt"))
+        .map(|(i, l)| format!("{:>6}: {l}", i + 1))
+        .collect();
+    assert!(!want.is_empty(), "{text}");
+    let (count, lines) = s.ed.session.text_view().unwrap().found.clone().unwrap();
+    assert_eq!(count as usize, want.len());
+    assert_eq!(lines.lines().collect::<Vec<_>>(), want);
+    assert_eq!(node_kind(&s, "textview.found"), Some(Kind::Label));
+    find(&mut s, "no such text anywhere");
+    let (count, lines) = s.ed.session.text_view().unwrap().found.clone().unwrap();
+    assert_eq!((count, lines.as_str()), (0, ""));
+    find(&mut s, "");
+    assert!(s.ed.session.text_view().unwrap().found.is_none());
+    assert_eq!(node_kind(&s, "textview.found"), None);
 }

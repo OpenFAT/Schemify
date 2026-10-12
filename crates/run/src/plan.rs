@@ -135,8 +135,16 @@ pub struct Optimize {
     pub algo: String,
     /// `(output index, goal)` per `goal` line, file order.
     pub goals: Vec<(u16, Goal)>,
+    /// Score weight of each goal (`weight <w>`, 1 when absent), parallel to `goals`.
+    pub weights: Vec<f64>,
     /// Varied vars, file order; each has constant `min` and `max` bounds.
     pub vary: Vec<String>,
+    /// Configs every candidate runs at (`config` lines, file order); empty: the bench
+    /// default.
+    pub configs: Vec<String>,
+    /// Corners every candidate runs at (`corner` lines, file order); empty: the bench
+    /// default.
+    pub corners: Vec<String>,
     /// Most evaluations, `1..=BUDGET_MAX` (100 when absent).
     pub budget: u32,
     /// Seed of the random draws (1 when absent).
@@ -406,19 +414,31 @@ fn read_optimize<'a>(
             .and_then(|v| v.first().map(|x| (*x).to_owned()))
     };
     let mut goals = Vec::new();
+    let mut weights = Vec::new();
+    let shape = || bad("goal: expected `<output> min|max|target <expr> [weight <w>]`".into());
     for g in lines("goal") {
         let output = plan
             .output(g[0])
             .ok_or_else(|| bad(format!("goal names no output `{}`", g[0])))?;
-        let goal = match (g.get(1).copied(), g.get(2)) {
-            (Some("min"), None) => Goal::Min,
-            (Some("max"), None) => Goal::Max,
-            (Some("target"), Some(t)) => {
-                Goal::Target(const_value(t).map_err(|e| bad(format!("target: {e}")))?)
-            }
-            _ => return Err(bad("goal: expected `<output> min|max|target <expr>`".into())),
+        let (goal, rest) = match (g.get(1).copied(), g.get(2)) {
+            (Some("min"), _) => (Goal::Min, &g[2..]),
+            (Some("max"), _) => (Goal::Max, &g[2..]),
+            (Some("target"), Some(t)) => (
+                Goal::Target(const_value(t).map_err(|e| bad(format!("target: {e}")))?),
+                &g[3..],
+            ),
+            _ => return Err(shape()),
         };
+        let weight = match rest {
+            [] => 1.0,
+            ["weight", w] => const_value(w).map_err(|e| bad(format!("weight: {e}")))?,
+            _ => return Err(shape()),
+        };
+        if !(weight.is_finite() && weight > 0.0) {
+            return Err(bad(format!("weight {weight} is not a positive number")));
+        }
         goals.push((output, goal));
+        weights.push(weight);
     }
     if goals.is_empty() {
         return Err(bad("has no `goal`".into()));
@@ -430,6 +450,20 @@ fn read_optimize<'a>(
     for v in &vary {
         var_bounds(plan, v).map_err(|e| bad(format!("vary {v}: {e}")))?;
     }
+    let configs: Vec<String> = lines("config")
+        .into_iter()
+        .map(|v| v[0].to_owned())
+        .collect();
+    if let Some(c) = configs.iter().find(|c| !plan.configs.contains(c)) {
+        return Err(bad(format!("names no config `{c}`")));
+    }
+    let corners: Vec<String> = lines("corner")
+        .into_iter()
+        .map(|v| v[0].to_owned())
+        .collect();
+    if let Some(c) = corners.iter().find(|c| plan.corner(c).is_none()) {
+        return Err(bad(format!("names no corner `{c}`")));
+    }
     let budget = one("budget").map_or(Ok(100), |b| parse_count(&b, BUDGET_MAX));
     let seed = one("seed").map_or(Ok(1), |x| {
         x.parse::<u64>().map_err(|_| "not a u64".to_owned())
@@ -438,11 +472,15 @@ fn read_optimize<'a>(
         name: name.to_owned(),
         algo: one("algo").unwrap_or_else(|| "nelder-mead".to_owned()),
         goals,
+        weights,
         vary,
+        configs,
+        corners,
         budget: budget.map_err(|e| bad(format!("budget: {e}")))?,
         seed: seed.map_err(|e| bad(format!("seed: {e}")))?,
     };
     assert!(!opt.goals.is_empty() && !opt.vary.is_empty());
+    assert_eq!(opt.goals.len(), opt.weights.len());
     Ok(opt)
 }
 

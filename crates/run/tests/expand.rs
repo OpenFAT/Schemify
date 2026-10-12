@@ -12,7 +12,7 @@ use common::project;
 use proptest::prelude::*;
 use schemify_expr::{Mode, Program, Scratch, Value};
 use schemify_run::{
-    Corner, Dist, DistKind, MonteCarlo, NO_SAMPLE, Plan, Select, Sweep, Var, expand,
+    Corner, Dist, DistKind, MonteCarlo, NO_SAMPLE, Plan, Select, Sweep, Var, expand, sim_seed,
 };
 
 fn plan(configs: usize, corners: usize, sweeps: &[usize], samples: u32, dists: usize) -> Plan {
@@ -107,6 +107,8 @@ proptest! {
                         prop_assert_eq!(jobs.corner(j), (nk > 0).then(|| ks[k]));
                         let mc = samples > 0;
                         prop_assert_eq!(jobs.sample(j), if mc { s } else { NO_SAMPLE });
+                        // The simulator seed of a sample (run spec §3), none otherwise.
+                        prop_assert_eq!(jobs.seed(j), mc.then(|| sim_seed(5, s)));
                         let a: Vec<(&str, &str)> = jobs.assignments(j).collect();
                         let ndist = if mc { dists } else { 0 };
                         prop_assert_eq!(a.len(), sweeps.len() + ndist + 1);
@@ -215,11 +217,7 @@ fn bench_records_read_into_a_plan() {
     ]);
     let plan = Plan::read(p.doc(top).unwrap()).unwrap();
     assert_eq!(plan.vars.len(), 2);
-    assert_eq!(
-        plan.dists.len(),
-        1,
-        "`dist` is an unknown attribute the format keeps"
-    );
+    assert_eq!(plan.dists.len(), 1, "the var `dist` attribute");
     assert_eq!(plan.dists[0].kind, DistKind::Gauss);
     assert_eq!(
         plan.corners
@@ -266,9 +264,48 @@ fn records_that_cannot_run_are_refused() {
         let (p, top) = project(&[("tb.shbench", &bench)]);
         Plan::read(p.doc(top).unwrap()).unwrap_err().detail
     };
-    assert!(bad_dist("lognormal 1").contains("gauss|uniform"));
     assert!(bad_dist("gauss 0.1*R").contains("cannot reference"));
-    assert!(bad_dist("gauss 1 abs").contains("gauss|uniform"));
+    assert!(bad_dist("uniform 1+").contains("dist"));
+    // `dist` is a known attribute: a wrong shape is the format's E029, never a plan.
+    for d in ["lognormal 1", "gauss 1 abs", "gauss"] {
+        let bench = format!("schemify 1 shbench\n\nvar R 1k\n  dist {d}\n");
+        let mut p = schemify_doc::Project::new(None, None, 7).unwrap();
+        let _ = p.index_library("", "", &[("tb.shbench", bench.as_bytes())]);
+        let opened = p.open("", "tb.shbench", bench.as_bytes(), None);
+        assert!(
+            matches!(opened, Err(schemify_doc::OpenError::Parse(_))),
+            "{d}"
+        );
+    }
+    // Optimize: goal tails, weights, and the configs and corners it runs at.
+    let opt = |lines: &str| {
+        read_err(&format!(
+            "corner tt\n  set R 2k\n\noptimize o\n{lines}  vary R\n\noutput x \"1\"\n"
+        ))
+    };
+    let bounded = |extra: &str| {
+        let bench = format!(
+            "schemify 1 shbench\n\nvar R 1k\n  min 1\n  max 9k\n\ncorner tt\n  set R 2k\n\n\
+             optimize o\n{extra}  vary R\n\noutput x \"1\"\n"
+        );
+        let (p, top) = project(&[("tb.shbench", &bench)]);
+        Plan::read(p.doc(top).unwrap())
+    };
+    assert!(opt("  goal x min 2\n").contains("weight <w>"));
+    assert!(opt("  goal x target\n").contains("weight <w>"));
+    let err = |extra: &str| bounded(extra).unwrap_err().detail;
+    assert!(err("  goal x min weight 0\n").contains("positive"));
+    assert!(err("  goal x min weight -1\n").contains("positive"));
+    assert!(err("  goal x min weight w\n").contains("weight"));
+    assert!(err("  goal x min\n  corner ss\n").contains("no corner `ss`"));
+    assert!(err("  goal x min\n  config b\n").contains("no config `b`"));
+    let plan = bounded("  goal x target 1m weight 2.5\n  goal x max\n  corner tt\n").unwrap();
+    let o = &plan.optimizes[0];
+    assert_eq!(o.weights, [2.5, 1.0]);
+    assert_eq!(
+        (o.corners.as_slice(), o.configs.len()),
+        (&["tt".to_owned()][..], 0)
+    );
 }
 
 #[test]

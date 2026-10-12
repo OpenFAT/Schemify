@@ -89,6 +89,18 @@ pub fn draw(kind: DistKind, seed: u64, sample: u32, var: &str) -> f64 {
     }
 }
 
+/// The simulator's random seed for sample `sample` of a Monte Carlo record seeded `seed`
+/// (run spec §3): in `1..=2^30`, pure in `(seed, sample)`. The netlist sets it, so the
+/// simulator's own random functions (PDK `agauss` in `.param` and model cards) draw the
+/// same values for the same sample in every run, corner and sweep point.
+pub fn sim_seed(seed: u64, sample: u32) -> u32 {
+    // The stream of the empty name: no var is named "" (format names are nonempty).
+    let mut st = stream(seed, sample, "");
+    let s = (splitmix64(&mut st) >> 34) as u32 + 1;
+    assert!((1..=1 << 30).contains(&s));
+    s
+}
+
 fn stream(seed: u64, sample: u32, var: &str) -> u64 {
     // FNV-1a 64 of the var name keys the stream by name, not by position.
     let h = var.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
@@ -217,6 +229,25 @@ mod tests {
         let c: Vec<f64> = (0..n).map(|s| draw(DistKind::Gauss, 3, s, "C")).collect();
         let cov = r.iter().zip(&c).map(|(a, b)| a * b).sum::<f64>() / f64::from(n);
         assert!(cov.abs() < 5.0 / f64::from(n).sqrt(), "cov {cov}");
+    }
+
+    #[test]
+    fn sim_seeds_are_pure_distinct_and_in_range() {
+        assert_eq!(sim_seed(11, 3), sim_seed(11, 3));
+        let mut seen: Vec<u32> = (0..1000).map(|s| sim_seed(11, s)).collect();
+        assert!(seen.iter().all(|s| (1..=1 << 30).contains(s)));
+        seen.sort_unstable();
+        seen.dedup();
+        assert!(
+            seen.len() > 995,
+            "samples get distinct seeds: {}",
+            seen.len()
+        );
+        assert_ne!(
+            sim_seed(11, 0),
+            sim_seed(12, 0),
+            "the record's seed matters"
+        );
     }
 
     #[test]

@@ -20,6 +20,7 @@ use crate::plan::{Goal, Plan, PlanError, plan_err, var_bounds};
 use crate::results::Results;
 use nelder_mead::{NelderMead, UNEVALUATED};
 use std::fmt;
+use std::ops::Range;
 
 /// Seed used for 0, which xorshift cannot leave (the golden-ratio constant).
 const DEFAULT_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
@@ -333,14 +334,19 @@ fn next_unit(state: &mut u64) -> f64 {
 }
 
 /// An optimizer bound to a bench `optimize` record and a run's tables (run spec §6):
-/// params are the `vary` vars with their bounds, objectives the `goal` outputs (weight
-/// 1), one job per candidate at the bench's default config and corner.
+/// params are the `vary` vars with their bounds, objectives the `goal` outputs with their
+/// weights; each candidate is one job per (config, corner) of the record (config outer,
+/// corner inner; the bench defaults when it names none), scored on its worst job per goal.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OptRun {
     /// The optimizer.
     pub opt: Optimizer,
     goal_outputs: Vec<u16>,
-    pending: Option<u32>,
+    /// `(config, corner)` of each job of a candidate; `None` is the bench default.
+    points: Vec<(Option<String>, Option<String>)>,
+    /// The jobs of the candidate in flight.
+    pending: Option<Range<u32>>,
+    /// First job of each evaluation's candidate.
     eval_job: Vec<u32>,
 }
 
@@ -379,61 +385,85 @@ impl OptRun {
         let objectives = rec
             .goals
             .iter()
-            .map(|&(o, g)| Objective {
+            .zip(&rec.weights)
+            .map(|(&(o, g), &weight)| Objective {
                 name: plan.outputs[o as usize].name.clone(),
                 target: match g {
                     Goal::Min => Target::Minimize,
                     Goal::Max => Target::Maximize,
                     Goal::Target(t) => Target::Approach(t),
                 },
-                weight: 1.0,
+                weight,
             })
             .collect();
         let opt = Optimizer::new(params, objectives, algo, rec.seed, rec.budget)
             .map_err(|e| bad(e.to_string()))?;
+        let dim = |names: &[String]| -> Vec<Option<String>> {
+            if names.is_empty() {
+                vec![None]
+            } else {
+                names.iter().cloned().map(Some).collect()
+            }
+        };
+        let corners = dim(&rec.corners);
+        let points = dim(&rec.configs)
+            .into_iter()
+            .flat_map(|cf| corners.iter().map(move |co| (cf.clone(), co.clone())))
+            .collect();
         let run = OptRun {
             opt,
             goal_outputs: rec.goals.iter().map(|g| g.0).collect(),
+            points,
             pending: None,
             eval_job: Vec::new(),
         };
         assert_eq!(run.goal_outputs.len(), run.opt.objectives().len());
+        assert!(!run.points.is_empty());
         Ok(run)
     }
 
-    /// Advances the loop: if the pending job finished, tells its goal outputs (a failed
-    /// job or a missing output is a failed evaluation); then, if nothing is pending and
-    /// budget remains, pushes the next candidate as a job and returns it for the caller
-    /// to prepare and dispatch. `Ok(None)`: still waiting, or done ([`OptRun::done`]).
+    /// Returns the number of jobs each candidate runs (configs × corners of the record).
+    pub fn jobs_per_candidate(&self) -> u32 {
+        self.points.len() as u32
+    }
+
+    /// Advances the loop: once every job of the pending candidate finished, tells the
+    /// optimizer its goal outputs (per goal, the value of the job that is worst for it; a
+    /// failed job or a missing output makes the evaluation failed); then, if nothing is
+    /// pending and budget remains, pushes the next candidate's jobs and returns them for
+    /// the caller to prepare and dispatch. `Ok(None)`: still waiting, or done
+    /// ([`OptRun::done`]).
     ///
     /// # Errors
     ///
-    /// The jobs table is full.
-    pub fn step(&mut self, jobs: &mut Jobs, results: &Results) -> Result<Option<u32>, PlanError> {
-        if let Some(j) = self.pending {
-            let st = jobs.state(j);
-            if !st.finished() {
+    /// The jobs table cannot hold another candidate.
+    pub fn step(
+        &mut self,
+        jobs: &mut Jobs,
+        results: &Results,
+    ) -> Result<Option<Range<u32>>, PlanError> {
+        if let Some(r) = self.pending.clone() {
+            if !r.clone().all(|j| jobs.state(j).finished()) {
                 return Ok(None);
             }
-            let measured: Option<Vec<f64>> = (st == State::Done)
-                .then(|| {
-                    self.goal_outputs
-                        .iter()
-                        .map(|&o| results.value(j, o))
-                        .collect()
-                })
-                .flatten();
-            match measured {
+            match self.worst(jobs, results, r.clone()) {
                 Some(m) => self.opt.tell(&m),
                 None => self.opt.tell_failed(),
             }
             .expect("one tell per asked candidate, with one value per goal");
-            self.eval_job.push(j);
+            self.eval_job.push(r.start);
             self.pending = None;
         }
         let Some(x) = self.opt.ask() else {
             return Ok(None);
         };
+        if u64::from(jobs.len()) + self.points.len() as u64 > u64::from(crate::JOBS_MAX) {
+            return Err(plan_err(
+                "select",
+                "jobs",
+                format!("more than {} jobs", crate::JOBS_MAX),
+            ));
+        }
         let texts: Vec<String> = x
             .iter()
             .map(|&v| {
@@ -449,10 +479,42 @@ impl OptRun {
             .zip(&texts)
             .map(|(p, t)| (p.name.as_str(), t.as_str()))
             .collect();
-        let j = jobs.push(None, None, NO_SAMPLE, &assigns)?;
-        self.pending = Some(j);
+        let start = jobs.len();
+        for (config, corner) in &self.points {
+            jobs.push(config.as_deref(), corner.as_deref(), NO_SAMPLE, &assigns)?;
+        }
+        let r = start..jobs.len();
+        assert_eq!(r.len(), self.points.len());
+        self.pending = Some(r.clone());
         assert_eq!(self.eval_job.len() as u32, self.opt.n_evals());
-        Ok(Some(j))
+        Ok(Some(r))
+    }
+
+    /// Per goal, the value of the job in `r` that is worst for it (largest error), or
+    /// `None` when a job failed or lacks a goal output.
+    fn worst(&self, jobs: &Jobs, results: &Results, r: Range<u32>) -> Option<Vec<f64>> {
+        let mut out = Vec::with_capacity(self.goal_outputs.len());
+        for (g, &o) in self.goal_outputs.iter().enumerate() {
+            let target = self.opt.objectives()[g].target;
+            let mut worst: Option<(f64, f64)> = None;
+            for j in r.clone() {
+                if jobs.state(j) != State::Done {
+                    return None;
+                }
+                let v = results.value(j, o)?;
+                let err = match target {
+                    Target::Minimize => v,
+                    Target::Maximize => -v,
+                    Target::Approach(t) => (v - t).abs(),
+                };
+                if worst.is_none_or(|(e, _)| err > e) {
+                    worst = Some((err, v));
+                }
+            }
+            out.push(worst?.1);
+        }
+        assert_eq!(out.len(), self.goal_outputs.len());
+        Some(out)
     }
 
     /// Returns whether the budget is spent and nothing is pending.
@@ -460,12 +522,13 @@ impl OptRun {
         self.pending.is_none() && self.opt.ask().is_none()
     }
 
-    /// Returns the job of evaluation `i`.
+    /// Returns the first job of evaluation `i`'s candidate (its jobs are the next
+    /// [`OptRun::jobs_per_candidate`]).
     pub fn eval_job(&self, i: u32) -> u32 {
         self.eval_job[i as usize]
     }
 
-    /// Returns the job of the best evaluation so far.
+    /// Returns the first job of the best evaluation so far.
     pub fn best_job(&self) -> Option<u32> {
         self.opt.best().map(|e| self.eval_job[e.index as usize])
     }

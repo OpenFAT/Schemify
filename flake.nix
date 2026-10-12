@@ -175,6 +175,9 @@
               # Misc.
               socat
               nixfmt
+              # Verilog-A → OSDI for the runner's compile step (run spec §5); dev shell only,
+              # not wrapped into the package (its LLVM closure is large).
+              openvaf
             ])
             ++ simulators pkgs;
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (runtimeLibs pkgs);

@@ -167,7 +167,51 @@ impl NameMap {
         found.then_some(path)
     }
 
+    /// Returns the emitted hierarchical names of the first `max` leaf instances (rows with
+    /// no child definition: `MM1`, `X1.RR2`), depth first in each definition's row order.
+    ///
+    /// Cost: O(`max` + the definitions walked); the hierarchy is walked, never flattened in
+    /// memory, so a design of 10^6 leaves costs `max` names.
+    pub fn leaves(&self, max: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.def_rows.len() >= 2 {
+            let mut prefix = String::new();
+            self.walk_leaves(0, &mut prefix, max, &mut out, 0);
+        }
+        assert!(out.len() <= max);
+        out
+    }
+
     // ---------------------------------------------------------------- internals
+
+    fn walk_leaves(
+        &self,
+        d: u32,
+        prefix: &mut String,
+        max: usize,
+        out: &mut Vec<String>,
+        depth: u32,
+    ) {
+        assert!(
+            depth <= schemify_elab::DEPTH_MAX,
+            "deeper than any elaboration"
+        );
+        let len0 = prefix.len();
+        for r in self.rows_of(d) {
+            if out.len() >= max {
+                return;
+            }
+            prefix.push_str(self.s(self.row_emitted[r]));
+            match self.row_child[r] {
+                NONE => out.push(prefix.clone()),
+                c => {
+                    prefix.push('.');
+                    self.walk_leaves(c, prefix, max, out, depth + 1);
+                }
+            }
+            prefix.truncate(len0);
+        }
+    }
 
     fn s(&self, sp: Span) -> &str {
         &self.text[sp.0 as usize..(sp.0 + sp.1) as usize]

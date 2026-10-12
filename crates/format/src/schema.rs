@@ -579,7 +579,29 @@ static RECORDS: [RecordSchema; RecordKind::Unknown as usize + 1] = [
     ),
     // rank 4: docs, document order
     verbatim(rec("prose", 4, KI, fixed(&[Ty::Id]), &[])),
-    rec("var", 4, KN, fixed(&[A, A]), &[UNIT, MIN, MAX, DOC, CACHED]),
+    rec(
+        "var",
+        4,
+        KN,
+        fixed(&[A, A]),
+        &[
+            UNIT,
+            MIN,
+            MAX,
+            DOC,
+            CACHED,
+            // `dist gauss|uniform <spread> [rel]` (run spec §3).
+            AttrSchema {
+                key: "dist",
+                shape: Shape {
+                    fixed: &[Ty::Choice(&["gauss", "uniform"]), A],
+                    rest: Rest::Optional(Ty::Choice(&["rel"])),
+                },
+                required: false,
+                repeat: false,
+            },
+        ],
+    ),
     // rank 5: impl bodies
     verbatim(rec("body", 5, KN, fixed(&[A]), &[])),
     // rank 6: bench, sorted by (kind, name)
@@ -648,17 +670,21 @@ static RECORDS: [RecordSchema; RecordKind::Unknown as usize + 1] = [
         fixed(&[A]),
         &[
             attr("algo", &[A]),
+            // `<output> min|max|target <expr> [weight <w>]`: run checks the tail.
             AttrSchema {
                 key: "goal",
                 shape: Shape {
                     fixed: &[A, Ty::Choice(&["min", "max", "target"])],
-                    rest: Rest::Optional(A),
+                    rest: Rest::Many(A),
                 },
                 required: false,
                 repeat: true,
             },
             repeat("vary", &[A]),
+            repeat("config", &[A]),
+            repeat("corner", &[A]),
             attr("budget", &[N]),
+            attr("seed", &[N]),
         ],
     ),
     rec("output", 6, KN, fixed(&[A, A]), &[UNIT]),

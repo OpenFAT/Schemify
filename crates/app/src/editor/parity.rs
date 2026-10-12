@@ -2208,6 +2208,8 @@ impl Editor {
             title: title.to_owned(),
             path: self.session.root.join(".schemify").join("text").join(key),
             body,
+            find: String::new(),
+            found: None,
         });
         self.scene_dirty = true;
     }

@@ -68,14 +68,14 @@ mod sweep;
 
 pub use jobs::{DEFAULT, JOBS_MAX, Jobs, NO_SAMPLE, Select, State, expand};
 #[cfg(feature = "mc")]
-pub use mc::{Yield, draw, wilson, yield_summary};
+pub use mc::{Yield, draw, sim_seed, wilson, yield_summary};
 #[cfg(feature = "optimize")]
 pub use optimize::{Algorithm, Evaluation, Objective, OptError, OptRun, Optimizer, Param, Target};
 pub use plan::{
     BUDGET_MAX, Corner, Dist, DistKind, Goal, MonteCarlo, Optimize, Output, Plan, PlanError,
     SAMPLES_MAX, SWEEP_POINTS_MAX, Spec, Sweep, TABLE_MAX, Var,
 };
-pub use prepare::{Blocked, Prepared, Source, Tool, design, prepare, sources};
+pub use prepare::{Blocked, Origin, Prepared, Source, Tool, design, prepare, sources};
 pub use results::{JOB_LEVEL, Pass, Results, read_results, write_results};
 #[cfg(not(target_arch = "wasm32"))]
 pub use runner::{

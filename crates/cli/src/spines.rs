@@ -250,6 +250,9 @@ mod native {
         pub next: u32,
         /// Jobs the last poll finished (cleared by the caller).
         pub finished: Vec<u32>,
+        /// Lines every job's ngspice netlist gets before its `.end` (the editor's
+        /// `.save`/`.options` for OP annotation and cross-probe, run spec §7a); empty: none.
+        pub extra: String,
     }
 
     impl std::fmt::Debug for Run {
@@ -309,6 +312,7 @@ mod native {
             digest,
             next: 0,
             finished: Vec::new(),
+            extra: String::new(),
         };
         assert!(run.next <= run.jobs.len());
         Ok(run)
@@ -346,7 +350,13 @@ mod native {
                     &mut self.results,
                 );
                 match prepared {
-                    Some(p) => self.runner.submit(&mut self.jobs, &mut self.results, j, &p),
+                    Some(mut p) => {
+                        if !self.extra.is_empty() && p.netlist.ends_with(".end\n") {
+                            let at = p.netlist.len() - ".end\n".len();
+                            p.netlist.insert_str(at, &self.extra);
+                        }
+                        self.runner.submit(&mut self.jobs, &mut self.results, j, &p);
+                    }
                     None => self.finished.push(j),
                 }
                 if self.jobs.state(j) == schemify_run::State::Failed && !self.finished.contains(&j)

@@ -36,3 +36,7 @@ required-features = ["sweep", "corners", "mc"]
 [[test]]
 name = "expand"
 required-features = ["sweep", "corners", "mc"]
+
+[[test]]
+name = "optimize"
+required-features = ["optimize"]

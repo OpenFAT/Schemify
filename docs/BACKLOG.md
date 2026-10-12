@@ -31,13 +31,11 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## run in the editor (M2 integration)
 
-- One run at a time (xschem-like); a plugin request for another bench waits until the current run is idle. Results table: ≤ 64 job rows, no sort/filter; MC yield and the optimizer's best point are text rows.
-- OP back-annotation maps ngspice names only (`v(net)`, `@dev[p]`); Xyce OP naming and `.save` of device quantities (ngspice saves `@dev[gm]` only when asked) are not added automatically. Cross-probe of currents: branch devices (`v`, `e`, `h`, `l`) only.
-- Staged edits: the canvas diff outlines changed objects only (inserted/deleted ones are not drawn until accepted); Accept/Reject act on the document's first stage.
+- OP quantities are `.save`d only for MOSFETs the netlist names (`M…` leaves): a PDK device wrapped in a model subcircuit (`XM1` → `m.xm1.msky130_fd_pr__nfet_01v8`) has an inner name the netlist does not know. Xyce runs get no probe lines (lead currents need `.print`).
+- Staged edits: an inserted instance is drawn as a box with its name, not its symbol (the stage's records are not elaborated).
 - Waves dock: keyboard focus follows the pointer; the divider position is not kept across sessions.
-- Netlist text tab: a prose code block capped at 2^14 lines / 256 KiB (the file has everything); no search.
-- Highlight keys a component by its first bit name (a bus component highlights by its first bit); keys of nets the name map lacks fall back to the level path (no cross-hierarchy match then).
-- `Results` snapshot `pass` is 0: spec verdicts are per spec, not per output.
+- Netlist text tab: a prose code block capped at 2^14 lines / 256 KiB (the file has everything); find lists matching lines, it does not scroll to them in the full text.
+- Highlight keys of nets the name map lacks fall back to the level path (no cross-hierarchy match then). OP voltage marks of a bus net use its first bit.
 - The OTA fixture has no bench; the GUI run tests and `docs/screenshots/simulate.png` use `crates/app/tests/fixtures/rc`.
 
 ## Decisions pending (user)
@@ -74,11 +72,8 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## run
 
-- `format`: make var `dist` and optimize `seed` known attributes (they work as preserved unknowns today).
-- ngspice's random seed isn't set per MC sample, so PDK `agauss` statistics aren't reproducible yet.
-- Inline Verilog-A/Verilog `body` sources aren't compiled (only `file`); OpenVAF/Icarus steps tested with stand-ins only (tools not installed); compile blocks `poll` the first time.
-- Optimizer runs only at the bench's default config/corner with unit goal weights.
-- Relative `.lib` paths resolve against the job directory.
+- Xyce runs get no Monte Carlo seed (`-randseed` is a command-line flag; the runner's simulator line comes from the user config).
+- ngspice `d_cosim` with an Icarus `.vvp` is compiled and wired but not simulated end to end in a test (Icarus needs `libvvp` for the `ivlng` shim).
 
 ## Performance
 

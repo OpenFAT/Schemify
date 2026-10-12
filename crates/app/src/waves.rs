@@ -369,3 +369,70 @@ impl<P: Painter> Painter for Shifted<'_, P> {
         self.p.pop_clip();
     }
 }
+
+/// ngspice's name of the device emitted as `emitted`: lowercase, and inside a subcircuit
+/// its type letter and a dot in front (`X1.MM2` → `m.x1.mm2`, top-level `MM1` → `mm1`).
+pub fn spice_device(emitted: &str) -> String {
+    let lower = emitted.to_ascii_lowercase();
+    match lower.rsplit_once('.') {
+        Some((_, last)) if !last.is_empty() => {
+            let letter = &last[..last.chars().next().map_or(0, char::len_utf8)];
+            format!("{letter}.{lower}")
+        }
+        _ => lower,
+    }
+}
+
+/// The waves calculator expression of the current into `pin` of the device emitted as
+/// `emitted` (cross-probe, D23), named as ngspice writes it ([`spice_device`]): a branch
+/// device's (`v`, `e`, `h`, `l`) is its branch current, `i(v1)` or `i("v.x1.v2")`; any other
+/// device's is the terminal current `.options savecurrents` saves, `i("@<dev>[<p>]")` with
+/// `p` = `i` + the pin's initial for MOS and JFET drain/gate/source/bulk and BJT
+/// collector/base/emitter/substrate pins (`id`, `ic` when the pin name says nothing), else
+/// `id` for a diode and `i` for two-terminal devices.
+pub fn current_probe(emitted: &str, pin: &str) -> String {
+    let dev = spice_device(emitted);
+    let last = emitted.rsplit('.').next().unwrap_or(emitted);
+    let letter = last.chars().next().map_or(' ', |c| c.to_ascii_lowercase());
+    if matches!(letter, 'v' | 'e' | 'h' | 'l') {
+        let ident = dev.bytes().all(|c| c == b'_' || c.is_ascii_alphanumeric());
+        return if ident {
+            format!("i({dev})")
+        } else {
+            format!("i(\"{dev}\")")
+        };
+    }
+    let initial = pin.chars().next().map_or(' ', |c| c.to_ascii_lowercase());
+    let param = match letter {
+        'm' | 'j' if matches!(initial, 'd' | 'g' | 's' | 'b') => format!("i{initial}"),
+        'm' | 'j' | 'd' => "id".to_owned(),
+        'q' if matches!(initial, 'c' | 'b' | 'e' | 's') => format!("i{initial}"),
+        'q' => "ic".to_owned(),
+        _ => "i".to_owned(),
+    };
+    let out = format!("i(\"@{dev}[{param}]\")");
+    assert!(out.len() > 6);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_names_and_current_probes_follow_ngspice() {
+        assert_eq!(spice_device("MM1"), "mm1");
+        assert_eq!(spice_device("X1.MM2"), "m.x1.mm2");
+        assert_eq!(spice_device("X1.X2.R7"), "r.x1.x2.r7");
+        assert_eq!(current_probe("V1", "p"), "i(v1)");
+        assert_eq!(current_probe("X1.E2", "p"), "i(\"e.x1.e2\")");
+        assert_eq!(current_probe("R1", "A"), "i(\"@r1[i]\")");
+        assert_eq!(current_probe("X1.MM2", "D"), "i(\"@m.x1.mm2[id]\")");
+        assert_eq!(current_probe("MM1", "G"), "i(\"@mm1[ig]\")");
+        assert_eq!(current_probe("MM1", "x"), "i(\"@mm1[id]\")");
+        assert_eq!(current_probe("Q3", "B"), "i(\"@q3[ib]\")");
+        assert_eq!(current_probe("Q3", "?"), "i(\"@q3[ic]\")");
+        assert_eq!(current_probe("D1", "K"), "i(\"@d1[id]\")");
+        assert_eq!(current_probe("C1", "B"), "i(\"@c1[i]\")");
+    }
+}
