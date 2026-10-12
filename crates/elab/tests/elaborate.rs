@@ -136,6 +136,44 @@ fn impl_selection_precedence() {
 }
 
 #[test]
+fn inst_rules_naming_no_instance_are_w037() {
+    // (config record, paths reported as W037)
+    let cases: &[(&str, &[&str])] = &[
+        ("config c\n  inst /X1 beh\n", &[]),
+        // Nested path through the selected schematic impl: a real instance.
+        ("config c\n  inst /X1/R1 spice\n", &[]),
+        ("config c\n  inst /X9 beh\n", &["/X9"]),
+        ("config c\n  inst X1 beh\n", &["X1"]),
+        // X1 is a leaf here, so nothing lives under it.
+        (
+            "config c\n  inst /X1 beh\n  inst /X1/R1 spice\n",
+            &["/X1/R1"],
+        ),
+        (
+            "config c\n  inst /X2 beh\n  inst /x2 va\n  inst /X3 va\n",
+            &["/X3", "/x2"],
+        ),
+    ];
+    for (rec, want) in cases {
+        let e = elab_cfg(&bench_with(rec), Some("c"), Dialect::Ngspice);
+        let got: Vec<&str> = e
+            .violations
+            .rows
+            .iter()
+            .filter(|v| v.code.as_str() == "W037")
+            .map(|v| {
+                assert_eq!(e.names.get(v.cell), "tb", "located on the bench");
+                assert!(v.detail.contains("names no instance"), "{}", v.detail);
+                e.names.get(v.path)
+            })
+            .collect();
+        assert_eq!(got, *want, "{rec}");
+        // A warning: it never blocks the run.
+        assert!(!e.violations.blocking(), "{rec}");
+    }
+}
+
+#[test]
 fn dialect_support_and_templates() {
     let cfg = "config c\n  order va\n";
     let e = elab_cfg(&bench_with(cfg), Some("c"), Dialect::Xyce);

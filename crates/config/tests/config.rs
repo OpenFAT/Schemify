@@ -47,6 +47,8 @@ schemify.keymap.set("F5", function() schemify.cmd("simulation.simulate") end)
 schemify.keymap.set("Ctrl+S", "file.save_as")
 schemify.sim("ngspice", {{ path = "/opt/ng/bin/ngspice", args = {{ "-b", "-r", "{{raw}}", "{{netlist}}" }} }})
 schemify.sim("openvaf", {{ path = "openvaf-r" }})
+schemify.sim("espice", {{ path = "/e/espice", env = {{ ZIG = "/z/zig", A = "1" }} }})
+schemify.opt.simulator = "espice"
 schemify.on("saved", function(ev) end)
 schemify.pack.add {{
   {{ src = "https://example.org/u/gmid-lut.git", version = "v1.2.0", grant = {{ "read_project", "spawn:ngspice" }} }},
@@ -58,16 +60,24 @@ schemify.pack.add {{
     );
     let (cfg, out) = run(&src);
     assert!(out.is_empty(), "{out:?}");
-    let mut sims: [Option<Sim>; 3] = [None, None, None];
+    let mut sims: [Option<Sim>; 4] = [None, None, None, None];
     sims[0] = Some(Sim {
         path: "/opt/ng/bin/ngspice".into(),
         args: ["-b", "-r", "{raw}", "{netlist}"]
             .map(String::from)
             .to_vec(),
+        env: Vec::new(),
     });
     sims[1] = Some(Sim {
         path: "openvaf-r".into(),
         args: Vec::new(),
+        env: Vec::new(),
+    });
+    // `env` sorted by name whatever Lua's table order.
+    sims[3] = Some(Sim {
+        path: "/e/espice".into(),
+        args: Vec::new(),
+        env: vec![("A".into(), "1".into()), ("ZIG".into(), "/z/zig".into())],
     });
     let spec = |name: &str, source: Source| PackSpec {
         name: name.into(),
@@ -83,6 +93,7 @@ schemify.pack.add {{
             grid: 25_500,
             show_grid: false,
             light: true,
+            simulator: schemify_config::SimKind::Espice,
             ..Opts::default()
         },
         keymaps: Keymaps {
@@ -163,6 +174,7 @@ fn canvas_options_set_read_back_and_reject_bad_values() {
         "local c = schemify.opt.layer_colors\n",
         "assert(c[4] == 'ff8000' and c[1] == '00ccff' and c[21] == '000001' and c[0] == nil)\n",
         "assert(schemify.opt.dim == 0.25 and schemify.opt.line_width == 1.5)\n",
+        "assert(schemify.opt.simulator == 'ngspice')\n",
         "c[5] = '123456' -- a copy: sets nothing\n",
     ));
     assert!(out.is_empty(), "{out:?}");
@@ -193,6 +205,9 @@ fn canvas_options_set_read_back_and_reject_bad_values() {
         "schemify.opt.dim = 'half'",
         "schemify.opt.line_width = 0",
         "schemify.opt.line_width = 11",
+        "schemify.opt.simulator = 'openvaf'",
+        "schemify.opt.simulator = 'xyce'",
+        "schemify.opt.simulator = true",
     ] {
         let (cfg, out) = run(bad);
         let e = errors(&out);
@@ -479,5 +494,27 @@ fn startup_flags_parse() {
         let mut flags = s.flags();
         flags.push("edit".into());
         assert_eq!(Startup::parse(&flags), Ok((s.clone(), flags.len() - 1)));
+    }
+}
+
+/// `schemify.sim` `env` (ESPice's `ZIG`): a map of names to strings, else one located error
+/// that leaves the row unset.
+#[test]
+fn sim_env_must_map_names_to_strings() {
+    let (cfg, out) = run("schemify.sim('espice', { path = 'espice', env = { ZIG = '/z' } })");
+    assert!(out.is_empty(), "{out:?}");
+    let row = cfg.table().sim(schemify_config::SimKind::Espice).unwrap();
+    assert_eq!(row.env, vec![("ZIG".to_owned(), "/z".to_owned())]);
+    for bad in [
+        "schemify.sim('espice', { path = 'espice', env = 'ZIG=/z' })",
+        "schemify.sim('espice', { path = 'espice', env = { ZIG = true } })",
+        "schemify.sim('espice', { path = 'espice', env = { '/z' } })",
+        "schemify.sim('espice', { path = 'espice', env = { ['A=B'] = 'x' } })",
+    ] {
+        let (cfg, out) = run(bad);
+        let e = errors(&out);
+        assert_eq!(e.len(), 1, "{bad}: {out:?}");
+        assert!(e[0].contains("`env` must map"), "{bad}: {}", e[0]);
+        assert!(cfg.table().sim(schemify_config::SimKind::Espice).is_none());
     }
 }

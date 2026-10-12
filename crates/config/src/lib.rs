@@ -23,7 +23,7 @@
 //!    [`Table`] (options, keymaps, sims, package specs, hooks) and, per Lua call, a list of
 //!    [`Request`]s (queued commands, notifications, errors).
 //! 2. One config per process. Keymaps ≤ [`KEYMAPS_MAX`], packages ≤ [`PACKS_MAX`], hooks ≤
-//!    [`HOOKS_MAX`], three sims, seven options; ≤ [`REQUESTS_MAX`] requests per call.
+//!    [`HOOKS_MAX`], four sims, eight options; ≤ [`REQUESTS_MAX`] requests per call.
 //! 3. Steps are i32 milli-units (D33) in `[1, 10^9]`; a Lua function is a [`FnId`] (u16:
 //!    keymaps + hooks < 2^13); `fuel` u64 in `[10^6, 10^11]` (plugin ABI §2).
 //! 4. The binaries read the table at startup (the editor re-reads keymaps when they change);
@@ -133,6 +133,9 @@ pub struct Opts {
     pub dim: u8,
     /// Canvas line width in tenths of a pixel `[1, 100]` (`line_width`, pixels in Lua).
     pub line_width_tenths: u8,
+    /// The simulator Simulate and `schemify run` start by default (`simulator`):
+    /// [`SimKind::Ngspice`] or [`SimKind::Espice`], never a compiler.
+    pub simulator: SimKind,
 }
 
 impl Default for Opts {
@@ -145,6 +148,7 @@ impl Default for Opts {
             layer_colors: [None; USER_LAYERS],
             dim: 0,
             line_width_tenths: 10,
+            simulator: SimKind::Ngspice,
         }
     }
 }
@@ -206,17 +210,24 @@ pub fn fn_of_command(name: &str) -> Option<FnId> {
 /// The external programs of run spec §5.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SimKind {
-    /// The simulator command line.
+    /// The ngspice command line.
     Ngspice,
-    /// The Verilog-A compiler.
+    /// The Verilog-A compiler (ngspice's OSDI route).
     Openvaf,
     /// The Verilog compiler.
     Iverilog,
+    /// The ESPice command line (it compiles Verilog-A itself, run spec §5).
+    Espice,
 }
 
 impl SimKind {
     /// Every kind, in table order.
-    pub const ALL: [SimKind; 3] = [SimKind::Ngspice, SimKind::Openvaf, SimKind::Iverilog];
+    pub const ALL: [SimKind; 4] = [
+        SimKind::Ngspice,
+        SimKind::Openvaf,
+        SimKind::Iverilog,
+        SimKind::Espice,
+    ];
 
     /// The `schemify.sim` name.
     pub fn word(self) -> &'static str {
@@ -224,6 +235,7 @@ impl SimKind {
             SimKind::Ngspice => "ngspice",
             SimKind::Openvaf => "openvaf",
             SimKind::Iverilog => "iverilog",
+            SimKind::Espice => "espice",
         }
     }
 }
@@ -233,9 +245,15 @@ impl SimKind {
 pub struct Sim {
     /// Program (on `PATH` when it has no directory part).
     pub path: String,
-    /// Arguments (`{netlist}`, `{raw}` placeholders for ngspice).
+    /// Arguments (`{netlist}`, `{raw}` placeholders for the simulators).
     pub args: Vec<String>,
+    /// Variables set for the program on top of the inherited environment (ESPice's `ZIG`),
+    /// sorted by name, names unique, at most [`SIM_ENV_MAX`].
+    pub env: Vec<(String, String)>,
 }
+
+/// Most `env` entries of one `schemify.sim` row.
+pub const SIM_ENV_MAX: usize = 64;
 
 /// Where a package comes from (spec §5).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -351,7 +369,7 @@ pub struct Table {
     /// Keymaps.
     pub keymaps: Keymaps,
     /// Program per [`SimKind`] (index = position in [`SimKind::ALL`]); `None` = the default.
-    pub sims: [Option<Sim>; 3],
+    pub sims: [Option<Sim>; 4],
     /// Package specs, in declaration order; names unique.
     pub packs: Vec<PackSpec>,
     /// Event hooks in registration order.

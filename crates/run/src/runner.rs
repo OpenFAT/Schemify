@@ -8,7 +8,8 @@
 //! as child processes too, polled the same way: a job holds its worker slot while its
 //! sources compile, one compiler per stale output serves every job that needs it, and
 //! the outputs are cached by mtime in a shared build directory and copied into each job
-//! directory.
+//! directory. ESPice's Verilog-A sources ([`Tool::Copy`]) skip the compiler: the source
+//! itself is cached and copied.
 
 use crate::jobs::{Jobs, State};
 use crate::plan::Plan;
@@ -37,15 +38,18 @@ pub const RESULTS: &str = "results";
 /// Most workers one runner starts at once.
 pub const WORKERS_MAX: u16 = 1024;
 
-/// A simulator command line from the user config (`sim <name>` with `path`, `args`;
-/// format spec §4). `{netlist}` and `{raw}` in `args` become the job's file names; the
-/// working directory is the job directory.
+/// A simulator command line from the user config (`sim <name>` with `path`, `args`,
+/// `env`; config spec §3). `{netlist}` and `{raw}` in `args` become the job's file names;
+/// the working directory is the job directory; the process environment is inherited with
+/// `env` set on top.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SimCommand {
     /// Program, looked up on `PATH` when it has no directory part.
     pub path: String,
     /// Arguments.
     pub args: Vec<String>,
+    /// Variables set for the simulator (ESPice's `ZIG`, the Zig its `.hdl` compiles with).
+    pub env: Vec<(String, String)>,
 }
 
 impl SimCommand {
@@ -56,6 +60,20 @@ impl SimCommand {
             args: ["-b", "-r", "{raw}", "{netlist}"]
                 .map(String::from)
                 .to_vec(),
+            env: Vec::new(),
+        }
+    }
+
+    /// `espice -b --tokenizer=ngspice -r {raw} {netlist}`: batch mode, the ngspice deck
+    /// syntax the espice dialect writes, an ngspice binary raw file (ESPice's default
+    /// `--format`, which the raw reader loads).
+    pub fn espice() -> SimCommand {
+        SimCommand {
+            path: "espice".into(),
+            args: ["-b", "--tokenizer=ngspice", "-r", "{raw}", "{netlist}"]
+                .map(String::from)
+                .to_vec(),
+            env: Vec::new(),
         }
     }
 }
@@ -63,8 +81,11 @@ impl SimCommand {
 /// External programs a runner may start, all from the user config.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tools {
-    /// The simulator.
+    /// The simulator the runner starts for every job. The app's run spine puts
+    /// [`Tools::espice`] here for an espice run.
     pub sim: SimCommand,
+    /// The ESPice command line, for runs of the espice dialect.
+    pub espice: SimCommand,
     /// OpenVAF (`<src> -o <out>`).
     pub openvaf: String,
     /// Icarus Verilog (`-o <out> <src>`).
@@ -75,6 +96,7 @@ impl Default for Tools {
     fn default() -> Tools {
         Tools {
             sim: SimCommand::ngspice(),
+            espice: SimCommand::espice(),
             openvaf: "openvaf".into(),
             iverilog: "iverilog".into(),
         }
@@ -471,7 +493,10 @@ impl Runner {
         fs::write(dir.join(COMMAND), line + "\n")
             .map_err(|e| format!("cannot create {COMMAND}: {e}"))?;
         let proc = Proc::spawn(
-            Command::new(&sim.path).args(args).current_dir(&dir),
+            Command::new(&sim.path)
+                .args(args)
+                .envs(sim.env.iter().map(|(k, v)| (k, v)))
+                .current_dir(&dir),
             out,
             err,
         )
@@ -549,7 +574,8 @@ impl Drop for Runner {
 /// Starts compiling `s` into the build cache, or returns `None` when the cached output is
 /// at least as new as the source. A `body` source is first written to the cache as
 /// `<stem>.va|.v` (only when its text changed, so the mtime check holds across runs).
-/// The compiler's output goes to `<cache>/<out>.log`.
+/// The compiler's output goes to `<cache>/<out>.log`. A [`Tool::Copy`] source never
+/// starts a process: a `body` is its own output, a `file` is copied over a stale one.
 fn spawn_compile(cfg: &RunnerConfig, s: &Source) -> Result<Option<Compiling>, String> {
     let cache = |e: io::Error| format!("cache {}: {e}", cfg.cache.display());
     let src = match &s.origin {
@@ -562,7 +588,7 @@ fn spawn_compile(cfg: &RunnerConfig, s: &Source) -> Result<Option<Compiling>, St
             fs::create_dir_all(&cfg.cache).map_err(cache)?;
             let stem = s.out.rsplit_once('.').map_or(s.out.as_str(), |(st, _)| st);
             let ext = match s.tool {
-                Tool::Openvaf => "va",
+                Tool::Openvaf | Tool::Copy => "va",
                 Tool::Iverilog => "v",
             };
             let p = cfg.cache.join(format!("{stem}.{ext}"));
@@ -587,11 +613,19 @@ fn spawn_compile(cfg: &RunnerConfig, s: &Source) -> Result<Option<Compiling>, St
     let (prog, what) = match s.tool {
         Tool::Openvaf => (&cfg.tools.openvaf, "Verilog-A → OSDI"),
         Tool::Iverilog => (&cfg.tools.iverilog, "Verilog → VVP"),
+        Tool::Copy => {
+            // A body was written as the output itself, which is never stale (above).
+            assert_ne!(src, cached, "a copied body is its own output");
+            fs::copy(&src, &cached)
+                .map_err(|e| format!("copy {} to {}: {e}", src.display(), cached.display()))?;
+            return Ok(None);
+        }
     };
     let mut cmd = Command::new(prog);
     match s.tool {
         Tool::Openvaf => cmd.arg(&src).arg("-o").arg(&cached),
         Tool::Iverilog => cmd.arg("-o").arg(&cached).arg(&src),
+        Tool::Copy => unreachable!("returned above"),
     };
     let log = File::create(cfg.cache.join(format!("{}.log", s.out))).map_err(cache)?;
     let log2 = log.try_clone().map_err(cache)?;

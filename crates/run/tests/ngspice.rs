@@ -107,7 +107,7 @@ fn optimizer_sizes_r_for_a_target_time_constant() {
     let plan = Plan::read(p.doc(top).unwrap()).unwrap();
     let mut opt = OptRun::new(&plan, "fit").unwrap();
     let mut jobs = Jobs::new();
-    let digest = design(&p, top, &jobs, &[], &mut no_funcs).unwrap();
+    let digest = design(&p, top, &jobs, &[], Dialect::Ngspice, &mut no_funcs).unwrap();
     let mut results = Results::new(&plan, digest);
     let dir = tmp("ngspice-opt");
     let mut runner = Runner::new(RunnerConfig::new(&dir, &digest));

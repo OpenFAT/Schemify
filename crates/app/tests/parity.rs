@@ -1300,6 +1300,8 @@ fn simulation_help_and_waves_commands() {
     run(&mut s, "waves.clear", "");
     assert!(!s.ed.waves_open());
     run(&mut s, "options.cycle_netlist_format", "");
+    assert_eq!(s.ed.dialect(), schemify_elab::Dialect::Espice);
+    run(&mut s, "options.cycle_netlist_format", "");
     assert_eq!(s.ed.dialect(), schemify_elab::Dialect::Xyce);
     run(
         &mut s,

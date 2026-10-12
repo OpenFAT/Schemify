@@ -179,10 +179,13 @@ pub fn emit_flat(elab: &Elab, dialect: Dialect) -> String {
     out
 }
 
-/// Whether `d` is one of the SPICE-syntax dialects (ngspice, xyce, cdl): verbatim
+/// Whether `d` is one of the SPICE-syntax dialects (ngspice, espice, xyce, cdl): verbatim
 /// names, `*` comments, `.subckt` blocks, case-insensitive names.
 pub(crate) fn is_spice(d: Dialect) -> bool {
-    matches!(d, Dialect::Ngspice | Dialect::Xyce | Dialect::Cdl)
+    matches!(
+        d,
+        Dialect::Ngspice | Dialect::Espice | Dialect::Xyce | Dialect::Cdl
+    )
 }
 
 /// Appends `name` as the dialect spells an identifier (spec §7.6): SPICE dialects
@@ -191,7 +194,7 @@ pub(crate) fn is_spice(d: Dialect) -> bool {
 #[inline]
 pub(crate) fn push_name(out: &mut String, name: &str, d: Dialect) {
     match d {
-        Dialect::Ngspice | Dialect::Xyce | Dialect::Cdl => out.push_str(name),
+        Dialect::Ngspice | Dialect::Espice | Dialect::Xyce | Dialect::Cdl => out.push_str(name),
         Dialect::Spectre => {
             for c in name.chars() {
                 if !(c.is_ascii_alphanumeric() || c == '_') {
@@ -339,7 +342,7 @@ fn header(out: &mut String, e: &Elab, d: Dialect) {
 /// verilog has no global nets (§7.6).
 fn globals(out: &mut String, e: &Elab, d: Dialect) {
     let word = match d {
-        Dialect::Ngspice | Dialect::Xyce => ".global",
+        Dialect::Ngspice | Dialect::Espice | Dialect::Xyce => ".global",
         Dialect::Cdl => ".GLOBAL",
         Dialect::Spectre => "global",
         Dialect::Verilog => return,
@@ -368,7 +371,7 @@ fn bench_params(out: &mut String, e: &Elab, d: Dialect) {
     assert_eq!(b.var_name.len(), b.var_text.len());
     for v in 0..b.var_name.len() {
         match d {
-            Dialect::Ngspice | Dialect::Xyce => out.push_str(".param "),
+            Dialect::Ngspice | Dialect::Espice | Dialect::Xyce => out.push_str(".param "),
             Dialect::Spectre if v == 0 => out.push_str("parameters "),
             Dialect::Spectre => out.push(' '),
             Dialect::Cdl | Dialect::Verilog => return,
@@ -493,7 +496,8 @@ fn once_only(out: &mut String, e: &Elab, d: Dialect, tmp: &Tmp) {
             }
         }
     };
-    // OSDI loads and models (ngspice only: elab rejects veriloga/verilog elsewhere). A
+    // OSDI (`.hdl` for espice) loads and models (ngspice and espice only: elab rejects
+    // veriloga elsewhere, and verilog outside ngspice and the verilog dialect). A
     // Verilog-A source (a `file`, or a `body` that is source) is compiled by the runner:
     // one OSDI load per stem and a `.model` per model name (the impl's `model` attr, and
     // each default-template row's model). Any other `veriloga` impl is precompiled: its
@@ -511,11 +515,13 @@ fn once_only(out: &mut String, e: &Elab, d: Dialect, tmp: &Tmp) {
                 models.push(format!(".model {m} {stem}"));
                 osdi.push(stem);
             }
-            "verilog" => models.push(format!(".model {m} d_cosim simulation=\"{stem}.vvp\"")),
+            "verilog" if d == Dialect::Ngspice => {
+                models.push(format!(".model {m} d_cosim simulation=\"{stem}.vvp\""))
+            }
             _ => {}
         }
     };
-    if d == Dialect::Ngspice {
+    if matches!(d, Dialect::Ngspice | Dialect::Espice) {
         for l in (0..e.impls.cell.len()).filter(|&l| uses.impl_used[l]) {
             let f = &e.cells[e.impls.cell[l] as usize];
             match f.impl_model[e.impls.index[l] as usize] {
@@ -534,10 +540,18 @@ fn once_only(out: &mut String, e: &Elab, d: Dialect, tmp: &Tmp) {
     osdi.dedup();
     models.sort();
     models.dedup();
+    // ESPice compiles Verilog-A itself and refuses OSDI (`OsdiUnsupported`): it loads the
+    // source the runner copied into the job directory as `<stem>.va` (spec §7.2a).
     for s in &osdi {
-        out.push_str(".control\npre_osdi ");
-        out.push_str(s);
-        out.push_str(".osdi\n.endc\n");
+        if d == Dialect::Espice {
+            out.push_str(".hdl \"");
+            out.push_str(s);
+            out.push_str(".va\"\n");
+        } else {
+            out.push_str(".control\npre_osdi ");
+            out.push_str(s);
+            out.push_str(".osdi\n.endc\n");
+        }
     }
     for m in &models {
         out.push_str(m);
@@ -593,7 +607,7 @@ fn once_only(out: &mut String, e: &Elab, d: Dialect, tmp: &Tmp) {
 
 fn end(out: &mut String, d: Dialect) {
     match d {
-        Dialect::Ngspice | Dialect::Xyce => out.push_str(".end\n"),
+        Dialect::Ngspice | Dialect::Espice | Dialect::Xyce => out.push_str(".end\n"),
         Dialect::Cdl => out.push_str(".END\n"),
         Dialect::Spectre | Dialect::Verilog => {}
     }
@@ -695,7 +709,7 @@ impl<'e> Writer<'e> {
         }
         if wrap {
             match dialect {
-                Dialect::Ngspice | Dialect::Xyce => self.out.push_str(".ends "),
+                Dialect::Ngspice | Dialect::Espice | Dialect::Xyce => self.out.push_str(".ends "),
                 Dialect::Cdl => self.out.push_str(".ENDS "),
                 Dialect::Spectre => self.out.push_str("ends "),
                 Dialect::Verilog => self.out.push_str("endmodule"),
@@ -711,7 +725,7 @@ impl<'e> Writer<'e> {
         let (e, dialect, out) = (self.e, self.d, &mut self.out);
         let ports = e.ports(d);
         let (open, sep, close) = match dialect {
-            Dialect::Ngspice | Dialect::Xyce => (".subckt ", " ", ""),
+            Dialect::Ngspice | Dialect::Espice | Dialect::Xyce => (".subckt ", " ", ""),
             Dialect::Cdl => (".SUBCKT ", " ", ""),
             Dialect::Spectre => ("subckt ", " ", ")"),
             Dialect::Verilog => ("module ", ", ", ");"),

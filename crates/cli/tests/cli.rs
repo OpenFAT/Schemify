@@ -236,3 +236,105 @@ fn user_config_flags_and_pack_commands() {
         "no config, no packages"
     );
 }
+
+/// A bench whose two configs reach different cells: `beh` makes `amp` a leaf (no `res`),
+/// `sch` (the default) reaches `res` through amp's schematic.
+const AMP: &str = "schemify 1 shcomp\n  default sch\n\npin IN in 0 0\npin OUT out 0 20\n\n\
+impl sch schematic\nimpl beh spice\n  format spice \"R{name} {IN} {OUT} 2k\"\n\n\
+inst 0r0000 ./res\n  at 0 0 R0\n  name R1\n\nport 0p0001 0 0 R0 IN\nport 0p0002 0 20 R0 OUT\n";
+const RES: &str = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\n\
+impl spice spice\n  format spice \"R{name} {A} {B} 1k\"\n";
+const BENCH: &str = "schemify 1 shbench\n\ninst 0x0001 ./amp\n  at 0 0 R0\n  name X1\n\n\
+label 0n0001 0 0 R0 a\nlabel 0n0002 0 20 R0 0\n\n\
+config beh\n  cell ./amp beh\nconfig sch\n  order sch\n\ncode op spice\n  | V1 a 0 1\n  | .op\n";
+
+/// Writes an ASCII raw file (one operating point) for the netlist `$1` into `$2`; with
+/// `$WANT` set, refuses a netlist whose header is not `(schemify $WANT)` and, with `$ZIG`
+/// unset, an espice one.
+const FAKE: &str = r#"if [ -n "$WANT" ]; then head -1 "$1" | grep -q "(schemify $WANT)" || { echo "not $WANT" >&2; exit 3; }; fi
+if head -1 "$1" | grep -q espice && [ -z "$ZIG" ]; then echo 'no ZIG' >&2; exit 4; fi
+printf 'Title: fake\nPlotname: Operating Point\nFlags: real\nNo. Variables: 1\nNo. Points: 1\nVariables:\n 0 v(a) voltage\nValues:\n0 1\n' > "$2"
+"#;
+
+fn run_project(name: &str) -> PathBuf {
+    let dir = scratch(name);
+    std::fs::write(dir.join("schemify.project"), "schemify 1 project\n").unwrap();
+    std::fs::write(dir.join("amp.shcomp"), AMP).unwrap();
+    std::fs::write(dir.join("res.shprim"), RES).unwrap();
+    std::fs::write(dir.join("tb.shbench"), BENCH).unwrap();
+    dir
+}
+
+/// `init.lua` lines naming the fake simulator for `sim` (with `extra` fields).
+fn fake_sim(sim: &str, extra: &str) -> String {
+    format!(
+        "schemify.sim('{sim}', {{ path = 'sh', args = {{ '-c', [==[{FAKE}]==], 'fake', \
+         '{{netlist}}', '{{raw}}' }}{extra} }})\n"
+    )
+}
+
+/// Bug fix: `run` with several `--config`s opens the cells every config reaches, not only
+/// the first's (the second config's job used to fail "cells not open").
+#[test]
+fn run_opens_the_cells_of_every_selected_config() {
+    let dir = run_project("run-configs");
+    std::fs::write(dir.join("init.lua"), fake_sim("ngspice", "")).unwrap();
+    for order in [["beh", "sch"], ["sch", "beh"]] {
+        let (code, text) = schemify(
+            &dir,
+            &[
+                "-u",
+                "init.lua",
+                "run",
+                "tb.shbench",
+                "--config",
+                order[0],
+                "--config",
+                order[1],
+            ],
+        );
+        assert_eq!(code, 0, "{order:?}: {text}");
+        assert_eq!(text.matches(" done\n").count(), 2, "{text}");
+        assert!(!text.contains("not open"), "{text}");
+    }
+    // Negative space: a config the bench lacks still refuses the run.
+    let (code, text) = schemify(
+        &dir,
+        &["-u", "init.lua", "run", "tb.shbench", "--config", "nope"],
+    );
+    assert_ne!(code, 0, "{text}");
+}
+
+/// `run --dialect espice` and `schemify.opt.simulator = "espice"` netlist for espice and start
+/// the `espice` sim row with its `env`; `netlist --dialect espice` writes the espice text;
+/// a dialect no simulator reads is a usage error for `run`.
+#[test]
+fn run_and_netlist_select_espice() {
+    let dir = run_project("run-espice");
+    let init = fake_sim("espice", ", env = { ZIG = '/z/zig', WANT = 'espice' }")
+        + &fake_sim("ngspice", ", env = { WANT = 'ngspice' }");
+    std::fs::write(dir.join("init.lua"), &init).unwrap();
+    let run = |args: &[&str]| {
+        let mut all = vec!["-u", "init.lua", "run", "tb.shbench"];
+        all.extend_from_slice(args);
+        schemify(&dir, &all)
+    };
+    let (code, text) = run(&["--dialect", "espice"]);
+    assert_eq!((code, text.matches(" done\n").count()), (0, 1), "{text}");
+    let (code, text) = run(&[]);
+    assert_eq!(code, 0, "ngspice by default: {text}");
+    std::fs::write(
+        dir.join("init.lua"),
+        init.clone() + "schemify.opt.simulator = 'espice'\n",
+    )
+    .unwrap();
+    let (code, text) = run(&[]);
+    assert_eq!(code, 0, "the configured simulator: {text}");
+    let (code, text) = run(&["--dialect", "ngspice"]);
+    assert_eq!(code, 0, "--dialect wins: {text}");
+    assert_eq!(run(&["--dialect", "xyce"]).0, 2);
+    assert_eq!(run(&["--dialect", "bogus"]).0, 2);
+    let (code, text) = schemify(&dir, &["netlist", "tb.shbench", "--dialect", "espice"]);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.starts_with("* tb (schemify espice)\n"), "{text}");
+}

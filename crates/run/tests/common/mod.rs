@@ -119,11 +119,24 @@ pub fn run_env(
     p: &Project,
     top: DocHandle,
     plan: &Plan,
-    mut jobs: Jobs,
+    jobs: Jobs,
     env: &[(&str, &str)],
     cfg: impl FnOnce(&Digest) -> RunnerConfig,
 ) -> (Jobs, Results, Runner) {
-    let digest = design(p, top, &jobs, env, &mut no_funcs).expect("not blocked");
+    run_dialect(p, top, plan, jobs, env, Dialect::Ngspice, cfg)
+}
+
+/// [`run_env`] netlisting for `dialect`.
+pub fn run_dialect(
+    p: &Project,
+    top: DocHandle,
+    plan: &Plan,
+    mut jobs: Jobs,
+    env: &[(&str, &str)],
+    dialect: Dialect,
+    cfg: impl FnOnce(&Digest) -> RunnerConfig,
+) -> (Jobs, Results, Runner) {
+    let digest = design(p, top, &jobs, env, dialect, &mut no_funcs).expect("not blocked");
     let mut results = Results::new(plan, digest);
     let mut runner = Runner::new(cfg(&digest));
     for j in 0..jobs.len() {
@@ -133,7 +146,7 @@ pub fn run_env(
             &mut jobs,
             j,
             env,
-            Dialect::Ngspice,
+            dialect,
             &mut no_funcs,
             &mut results,
         );

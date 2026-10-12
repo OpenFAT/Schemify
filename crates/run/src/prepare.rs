@@ -1,7 +1,7 @@
 //! The spine's design steps (run spec §4, §5): the gate and design hash of a run, and
 //! per job `elaborate(overrides) → netlist::emit`, plus the sources the simulator needs
-//! compiled first (Verilog-A → OSDI, Verilog → VVP) and the relative corner paths the
-//! runner makes absolute.
+//! compiled (Verilog-A → OSDI, Verilog → VVP) or copied (Verilog-A for ESPice's `.hdl`)
+//! first, and the relative corner paths the runner makes absolute.
 
 use crate::jobs::Jobs;
 use crate::results::Results;
@@ -19,15 +19,15 @@ pub enum Blocked {
     Violations(Vec<String>),
 }
 
-/// A source a job's simulator needs compiled into the job directory first.
+/// A source a job's simulator needs compiled (or copied) into the job directory first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Source {
     /// Compiler.
     pub tool: Tool,
     /// Where the source text is.
     pub origin: Origin,
-    /// File name the netlist expects in the job directory (`<stem>.osdi|.vvp`: the `file`
-    /// stem, else the cell stem).
+    /// File name the netlist expects in the job directory (`<stem>.osdi|.vvp|.va`: the
+    /// `file` stem, else the cell stem).
     pub out: String,
 }
 
@@ -47,7 +47,8 @@ pub enum Origin {
     Body(String),
 }
 
-/// External compilers (their paths come from the user config, D7).
+/// How a source reaches the job directory: an external compiler (its path from the user
+/// config, D7), or a plain copy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Tool {
@@ -55,6 +56,9 @@ pub enum Tool {
     Openvaf,
     /// Icarus Verilog: Verilog → VVP (ngspice `d_cosim`).
     Iverilog,
+    /// No compiler: the Verilog-A source itself, copied as `<stem>.va` for ESPice's
+    /// `.hdl` (ESPice compiles it, netlist spec §7.2a).
+    Copy,
 }
 
 /// What a runner needs to simulate one job.
@@ -104,12 +108,13 @@ impl Prepared {
     }
 }
 
-/// Gates the run and returns its design hash (run spec §4): elaborates `top` once per
-/// distinct config of `jobs` (the bench default when `jobs` is empty) at the default
-/// corner, refuses on blocking violations, and hashes the lockfile, the project
-/// settings, `env`, the canonical bytes of the bench and of every cell those
-/// elaborations reached, and the job list. Any edit that can change a job's netlist
-/// changes the hash, so results tagged with an older one are stale.
+/// Gates the run and returns its design hash (run spec §4): elaborates `top` for
+/// `dialect` once per distinct config of `jobs` (the bench default when `jobs` is empty)
+/// at the default corner, refuses on blocking violations, and hashes the lockfile, the
+/// project settings, `env`, the canonical bytes of the bench and of every cell those
+/// elaborations reached, the job list, and the dialect unless it is ngspice. Any edit
+/// that can change a job's netlist changes the hash, so results tagged with an older one
+/// are stale.
 ///
 /// Cost: one elaboration per config plus one canonical write per reached cell.
 ///
@@ -125,6 +130,7 @@ pub fn design<F: Funcs>(
     top: DocHandle,
     jobs: &Jobs,
     env: &[(&str, &str)],
+    dialect: Dialect,
     funcs: &mut F,
 ) -> Result<Digest, Blocked> {
     let bench = project.doc(top).expect("design needs an open top document");
@@ -143,7 +149,7 @@ pub fn design<F: Funcs>(
             corner: None,
             overrides: &[],
             env,
-            dialect: Dialect::Ngspice,
+            dialect,
         };
         let e = elaborate(project, top, &req, funcs);
         gate(&e)?;
@@ -181,6 +187,11 @@ pub fn design<F: Funcs>(
         key.clear();
         jobs.write_key(j, &mut key);
         part(key.as_bytes());
+    }
+    // Another simulator's results are another run (ngspice adds nothing: the hashes of
+    // results saved before dialects were hashed stay current).
+    if dialect != Dialect::Ngspice {
+        part(dialect.as_str().as_bytes());
     }
     let digest = h.finish();
     assert_ne!(digest, [0; 32]);
@@ -261,8 +272,9 @@ pub fn prepare<F: Funcs>(
         relative_paths(&e, dialect, &text).into_iter().unzip();
     // A Monte Carlo sample fixes the simulator's random seed (run spec §3). ngspice reads
     // `.option seed` before it evaluates `.param` wherever the line stands: before `.end`.
-    // ponytail: ngspice only; Xyce takes its seed on the command line (`-randseed`).
-    if let (Some(seed), Dialect::Ngspice) = (jobs.seed(j), dialect) {
+    // ponytail: ngspice and espice only; Xyce takes its seed on the command line
+    // (`-randseed`).
+    if let (Some(seed), Dialect::Ngspice | Dialect::Espice) = (jobs.seed(j), dialect) {
         assert!(
             text.ends_with(".end\n"),
             "an ngspice netlist ends with .end"
@@ -282,7 +294,7 @@ pub fn prepare<F: Funcs>(
     };
     let p = Prepared {
         netlist: text,
-        sources: sources(project, &e),
+        sources: sources(project, &e, dialect),
         relative,
         project: from_project,
         base,
@@ -298,7 +310,9 @@ pub fn prepare<F: Funcs>(
 fn relative_paths(e: &Elab, dialect: Dialect, text: &str) -> Vec<(Range<u32>, bool)> {
     let mut out = Vec::new();
     let b = &e.bench;
-    if !matches!(dialect, Dialect::Ngspice | Dialect::Xyce) || b.corner_kind.is_empty() {
+    if !matches!(dialect, Dialect::Ngspice | Dialect::Espice | Dialect::Xyce)
+        || b.corner_kind.is_empty()
+    {
         return out;
     }
     let mut from = 0;
@@ -344,8 +358,10 @@ fn relative(path: &str) -> bool {
 
 /// Returns the Verilog-A and Verilog sources of the leaf impls `e` uses (a `file`, or a
 /// `body` that is source: `netlist::compiled_source`; run spec §5), deduplicated by
-/// output name.
-pub fn sources(project: &Project, e: &Elab) -> Vec<Source> {
+/// output name. For [`Dialect::Espice`] a Verilog-A source is [`Tool::Copy`] to
+/// `<stem>.va` (ESPice compiles it); otherwise it compiles with OpenVAF to `<stem>.osdi`.
+/// `e` must be elaborated for `dialect`.
+pub fn sources(project: &Project, e: &Elab, dialect: Dialect) -> Vec<Source> {
     let mut out: Vec<Source> = Vec::new();
     let cells = project.cells();
     for i in 0..e.impls.cell.len() {
@@ -354,8 +370,9 @@ pub fn sources(project: &Project, e: &Elab) -> Vec<Source> {
         }
         let iface = &e.cells[e.impls.cell[i] as usize];
         let k = e.impls.index[i] as usize;
-        let (tool, ext) = match e.names.get(iface.impl_lang[k]) {
-            "veriloga" => (Tool::Openvaf, "osdi"),
+        let (tool, ext) = match (e.names.get(iface.impl_lang[k]), dialect) {
+            ("veriloga", Dialect::Espice) => (Tool::Copy, "va"),
+            ("veriloga", _) => (Tool::Openvaf, "osdi"),
             _ => (Tool::Iverilog, "vvp"),
         };
         let (origin, stem) = if iface.impl_file[k] == Name::NONE {
@@ -397,5 +414,6 @@ pub fn sources(project: &Project, e: &Elab) -> Vec<Source> {
     }
     crate::plan::sort_by_name(&mut out, |s| &s.out);
     assert!(out.windows(2).all(|w| w[0].out < w[1].out));
+    assert!(dialect == Dialect::Espice || out.iter().all(|s| s.tool != Tool::Copy));
     out
 }

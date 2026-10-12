@@ -17,7 +17,7 @@ use schemify_app::editor::{Editor, Options, Panel};
 use schemify_app::scene::ObjKey;
 use schemify_doc::{ObjId, TableId};
 use schemify_run::{SimCommand, State, Tools};
-use schemify_ui::{InputEvent, InputEvents, Kind};
+use schemify_ui::{InputEvent, InputEvents, Kind, Prop};
 
 /// Reads `.param R=` from the netlist, sleeps, then writes an ASCII raw file with an operating
 /// point (v(in) = 1, v(out) = 0.5) and a transient where v(out) rises linearly from 0 to R
@@ -33,6 +33,7 @@ fn sh(script: &str) -> SimCommand {
         args: ["-c", script, "fake", "{netlist}", "{raw}"]
             .map(String::from)
             .to_vec(),
+        env: Vec::new(),
     }
 }
 
@@ -1105,4 +1106,48 @@ fn results_pane_shows_the_run_log() {
     assert!(log.out.iter().any(|l| l == "starting"), "{log:?}");
     assert!(node_kind(&f, "results.log.err.0").is_some());
     assert!(log.out.len() <= schemify_app::sim::LOG_LINES);
+}
+
+/// The label of composed UI node `id`.
+fn label(s: &Session, id: &str) -> String {
+    let sh = &s.ed.shell;
+    let n = sh
+        .strings
+        .find(id)
+        .and_then(|i| sh.tables.nodes.find(i))
+        .unwrap_or_else(|| panic!("{id} composed"));
+    sh.strings
+        .get(sh.tables.nodes.prop(Prop::Label)[n as usize])
+        .to_owned()
+}
+
+/// Simulation → Netlist dialect → ESPice: the status shows it, and Simulate netlists the
+/// bench for espice (the fake simulator refuses any other deck) and records its results.
+/// Back on ngspice the next run is ngspice again (negative space).
+#[test]
+fn the_espice_dialect_simulates_an_espice_deck() {
+    let only = |word: &str| {
+        format!(
+            "head -1 \"$1\" | grep -q '(schemify {word})' || {{ echo 'not {word}' >&2; exit 3; }}\n{FAKE}"
+        )
+    };
+    let mut s = open("rc", "tb.shbench", "espice", Some(sh(&only("espice"))));
+    assert_eq!(label(&s, "status.mode"), "ngspice");
+    activate(&mut s, "sim.dialect.espice");
+    assert_eq!(label(&s, "status.mode"), "espice");
+    s.key("s");
+    run_to_idle(&mut s);
+    let (_, jobs, res) = s.ed.sim().tables().unwrap();
+    assert_eq!(
+        jobs.state(0),
+        State::Done,
+        "{:?}",
+        res.errors().collect::<Vec<_>>()
+    );
+    activate(&mut s, "sim.dialect.ngspice");
+    s.key("s");
+    run_to_idle(&mut s);
+    let (_, jobs, res) = s.ed.sim().tables().unwrap();
+    assert_eq!(jobs.state(0), State::Failed, "an ngspice deck this time");
+    assert!(res.errors().any(|e| e.2.contains("not espice")));
 }

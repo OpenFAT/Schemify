@@ -588,7 +588,7 @@ fn default_line<'n, F: Fn(Name) -> &'n str>(
                 .flat_map(|p| f.bits(p).iter().map(|b| e.names.get(*b)));
             module_ports(out, row, bits);
         }
-        (Lang::VerilogA, Dialect::Ngspice) => {
+        (Lang::VerilogA, Dialect::Ngspice | Dialect::Espice) => {
             push_prefixed(out, b'N', row.name, d);
             for &n in conn {
                 out.push(' ');
