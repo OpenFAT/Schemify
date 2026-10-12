@@ -126,6 +126,19 @@ pub enum Goal {
     Target(f64),
 }
 
+impl Goal {
+    /// Returns the error of `value` under this goal, lower is better: `value` (min),
+    /// `−value` (max) or `|value − target|` (target). The optimizer scores the weighted
+    /// sum and, over one candidate's jobs, keeps each goal's largest.
+    pub fn err(self, value: f64) -> f64 {
+        match self {
+            Goal::Min => value,
+            Goal::Max => -value,
+            Goal::Target(t) => (value - t).abs(),
+        }
+    }
+}
+
 /// One `optimize` record.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Optimize {

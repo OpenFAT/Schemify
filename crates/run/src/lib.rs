@@ -70,7 +70,7 @@ pub use jobs::{DEFAULT, JOBS_MAX, Jobs, NO_SAMPLE, Select, State, expand};
 #[cfg(feature = "mc")]
 pub use mc::{Yield, draw, sim_seed, wilson, yield_summary};
 #[cfg(feature = "optimize")]
-pub use optimize::{Algorithm, Evaluation, Objective, OptError, OptRun, Optimizer, Param, Target};
+pub use optimize::{Algorithm, Evaluation, Objective, OptError, OptRun, Optimizer, Param};
 pub use plan::{
     BUDGET_MAX, Corner, Dist, DistKind, Goal, MonteCarlo, Optimize, Output, Plan, PlanError,
     SAMPLES_MAX, SWEEP_POINTS_MAX, Spec, Sweep, TABLE_MAX, Var,

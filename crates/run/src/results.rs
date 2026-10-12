@@ -35,7 +35,7 @@ pub enum Pass {
 
 /// Results of one run. Written only by this crate: [`crate::prepare`] (var values),
 /// [`Results::record`] and [`Results::fail`].
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Results {
     design: Digest,
     outputs: Vec<String>,
@@ -60,13 +60,7 @@ impl Results {
             outputs: plan.outputs.iter().map(|o| o.name.clone()).collect(),
             specs: plan.specs.iter().map(|s| s.output).collect(),
             vars: plan.vars.iter().map(|v| v.name.clone()).collect(),
-            rows: 0,
-            value: Vec::new(),
-            pass: Vec::new(),
-            var_value: Vec::new(),
-            err_job: Vec::new(),
-            err_output: Vec::new(),
-            err_msg: Vec::new(),
+            ..Results::default()
         };
         assert!(r.specs.iter().all(|&o| (o as usize) < r.outputs.len()));
         r
@@ -474,19 +468,7 @@ pub fn read_results(text: &str) -> Result<(Jobs, Results), String> {
         Some((_, "schemify 1 results")) => {}
         _ => return Err(bad(0, "not a results file")),
     }
-    let mut r = Results {
-        design: [0; 32],
-        outputs: Vec::new(),
-        specs: Vec::new(),
-        vars: Vec::new(),
-        rows: 0,
-        value: Vec::new(),
-        pass: Vec::new(),
-        var_value: Vec::new(),
-        err_job: Vec::new(),
-        err_output: Vec::new(),
-        err_msg: Vec::new(),
-    };
+    let mut r = Results::default();
     let mut jobs = Jobs::new();
     // A job's record is complete when the next record starts; its fields gather here.
     struct Pending {
