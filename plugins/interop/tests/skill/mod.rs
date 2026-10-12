@@ -586,6 +586,12 @@ const BUILTINS: &[&str] = &[
     "upperRight",
     "evenp",
     "oddp",
+    // Retarget (sfy_retarget.il): pure math, string → float, raw line reads, work dirs.
+    "log",
+    "expt",
+    "atof",
+    "gets",
+    "createDir",
 ];
 
 /// Every function name the interpreter defines itself (special forms and builtins).
@@ -1867,6 +1873,74 @@ impl<H: Host> Interp<H> {
                         i += 1;
                     }
                     V::list(keyed)
+                }
+                // Retarget builtins (SKILL Language Reference ICADVM20.1).
+                "log" => {
+                    need(1)?;
+                    let x = num(&a[0])?;
+                    if x <= 0.0 {
+                        return Err(Flow::Err("log: not a positive number".into()));
+                    }
+                    V::Float(x.ln())
+                }
+                "expt" => {
+                    need(2)?;
+                    match (&a[0], &a[1]) {
+                        (V::Int(0), V::Int(0)) => V::Float(1.0),
+                        (V::Int(b), V::Int(e)) if *e >= 0 => V::Int(
+                            u32::try_from(*e)
+                                .ok()
+                                .and_then(|e| b.checked_pow(e))
+                                .ok_or("expt: integer overflow")?,
+                        ),
+                        (b, e) => V::Float(num(b)?.powf(num(e)?)),
+                    }
+                }
+                "atof" => {
+                    if !(1..=2).contains(&n) {
+                        return Err(Flow::Err("atof: (atof s [t])".into()));
+                    }
+                    // strtod: leading white space skipped; the longest numeric prefix, or with
+                    // `t` the whole string.
+                    let s = text(&a[0])?;
+                    let s = s.trim_start();
+                    let strict = n == 2 && a[1].truthy();
+                    let parsed = if strict {
+                        s.parse::<f64>().ok()
+                    } else {
+                        (1..=s.len())
+                            .rev()
+                            .filter(|&k| s.is_char_boundary(k))
+                            .find_map(|k| s[..k].parse::<f64>().ok())
+                    };
+                    parsed.map_or(V::Nil, V::Float)
+                }
+                "gets" => {
+                    // (gets nil port): the variable form needs assignment, which a builtin
+                    // cannot do, so only `nil` is accepted.
+                    need(2)?;
+                    if a[0].truthy() {
+                        return Err(Flow::Err("gets: only (gets nil port)".into()));
+                    }
+                    let V::Port(k) = a[1] else {
+                        return Err(Flow::Err("gets: expected a port".into()));
+                    };
+                    let Some(Port::In { lines, next }) = self.ports.get_mut(k as usize) else {
+                        return Err(Flow::Err("gets: not an open input port".into()));
+                    };
+                    match lines.get(*next) {
+                        None => V::Nil,
+                        Some(l) => {
+                            *next += 1;
+                            V::str(l)
+                        }
+                    }
+                }
+                "createDir" => {
+                    // Files are keyed by absolute path; directories need no existence.
+                    need(1)?;
+                    text(&a[0])?;
+                    V::T
                 }
                 _ => return Err(Flow::Err(String::from("\u{0}not builtin"))),
             })
