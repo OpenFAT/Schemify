@@ -21,7 +21,17 @@ accesskit_winit.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster.workspace = true
 
+# GPU backends, one set per platform (vello draws through wgpu, D5): Vulkan with a GL
+# fallback on Linux/BSD, Metal on macOS, DX12 on Windows, WebGPU on the web.
+[target.'cfg(not(any(target_arch = "wasm32", target_vendor = "apple", windows)))'.dependencies]
+wgpu = { workspace = true, features = ["vulkan", "gles"] }
+[target.'cfg(target_vendor = "apple")'.dependencies]
+wgpu = { workspace = true, features = ["metal"] }
+[target.'cfg(windows)'.dependencies]
+wgpu = { workspace = true, features = ["dx12"] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { workspace = true, features = ["webgpu"] }
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 # `cpu_view`: the CPU-rastered 2D overlay when the browser has no WebGPU adapter (web spec §7).

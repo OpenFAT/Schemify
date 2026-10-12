@@ -107,6 +107,14 @@ impl Layers {
         base.as_coeffs().map(f64::to_bits).hash(&mut self.log.hash);
     }
 
+    /// The image of layer `slot` when it is tagged `stamp` (recorded and not replaced since).
+    pub(crate) fn held(&self, slot: usize, stamp: u64) -> Option<&ImageData> {
+        self.slots
+            .get(slot)
+            .filter(|l| stamp != 0 && l.stamp == stamp)
+            .and_then(|l| l.image.as_ref())
+    }
+
     /// Records a fresh image of `w × h` for `slot` when its size changed (a new image id: the
     /// next raster binds a texture of that size).
     pub(crate) fn sized(&mut self, slot: usize, w: u32, h: u32) -> &mut GpuLayer {
@@ -137,7 +145,7 @@ impl Layers {
     /// since (rendered side by side into a scratch texture, each copied over its place). Call
     /// once per frame after painting and before rendering or composing the frame.
     ///
-    /// Cost: one vello render per recorded layer and per [`BATCH_PX`]-square batch of
+    /// Cost: one vello render per recorded layer and per 2048-px-square batch of
     /// patches (one, for a frame's few tiles); nothing when none was recorded.
     ///
     /// # Errors

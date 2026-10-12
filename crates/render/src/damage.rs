@@ -16,7 +16,7 @@
 //! SIMD triage: hashing is per row over a few SoA columns (variable width for polys and
 //! texts); the diff is a chain. Scalar.
 
-use crate::canvas::{CanvasPrims, Marks, PrimKind};
+use crate::canvas::{CanvasPrims, Marks, PrimKind, chain};
 
 /// Edits (rows removed plus rows added) one table may differ by before the diff gives up and
 /// the whole layer is recorded instead.
@@ -214,11 +214,8 @@ pub(crate) fn row(t: &CanvasPrims, table: Table, i: usize) -> (u64, [i32; 4]) {
                 Table::Polylines => (4, &t.polylines),
                 _ => (5, &t.polygons),
             };
-            let start = if i == 0 { 0 } else { p.end[i - 1] as usize };
-            let (xs, ys) = (
-                &p.x[start..p.end[i] as usize],
-                &p.y[start..p.end[i] as usize],
-            );
+            let pts = chain(&p.end, i);
+            let (xs, ys) = (&p.x[pts.clone()], &p.y[pts]);
             assert!(xs.len() >= 2);
             let h = xs
                 .iter()
@@ -236,8 +233,7 @@ pub(crate) fn row(t: &CanvasPrims, table: Table, i: usize) -> (u64, [i32; 4]) {
         }
         Table::Texts => {
             let tx = &t.texts;
-            let start = if i == 0 { 0 } else { tx.end[i - 1] as usize };
-            let bytes = &tx.text.as_bytes()[start..tx.end[i] as usize];
+            let bytes = &tx.text.as_bytes()[chain(&tx.end, i)];
             let rot = tx.rot.get(i).copied().unwrap_or(0);
             let f = [
                 tx.x[i],

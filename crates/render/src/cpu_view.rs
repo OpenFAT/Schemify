@@ -86,7 +86,7 @@ impl CpuView {
         }
         let p = self.painter.as_mut().expect("made above");
         p.reset();
-        let viewport = ((f64::from(w) / scale) as f32, (f64::from(h) / scale) as f32);
+        let viewport = crate::window::logical(w, h, scale);
         app.paint(p, viewport);
         let pixels = p.finish(app.background());
         assert_eq!((pixels.width(), pixels.height()), (w16, h16));

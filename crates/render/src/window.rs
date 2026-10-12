@@ -194,10 +194,7 @@ impl<A: App> Shell<A> {
             .window
             .as_ref()
             .map_or(Default::default(), |w| w.inner_size());
-        (
-            (f64::from(size.width) / self.scale) as f32,
-            (f64::from(size.height) / self.scale) as f32,
-        )
+        logical(size.width, size.height, self.scale)
     }
 
     fn render(&mut self) {
@@ -220,10 +217,7 @@ impl<A: App> Shell<A> {
             gpu.cx
                 .resize_surface(&mut gpu.surface, size.width, size.height);
         }
-        let viewport = (
-            (f64::from(size.width) / self.scale) as f32,
-            (f64::from(size.height) / self.scale) as f32,
-        );
+        let viewport = logical(size.width, size.height, self.scale);
         self.scene.reset();
         let base = Affine::scale(self.scale);
         self.layers.begin_frame(base);
@@ -314,6 +308,12 @@ impl<A: App> Shell<A> {
             self.events.push_text(t);
         }
     }
+}
+
+/// A `w × h` physical-pixel size in logical pixels at `scale` physical per logical.
+pub(crate) fn logical(w: u32, h: u32, scale: f64) -> (f32, f32) {
+    debug_assert!(scale > 0.0);
+    ((f64::from(w) / scale) as f32, (f64::from(h) / scale) as f32)
 }
 
 fn named_key(n: NamedKey) -> Option<Key> {
