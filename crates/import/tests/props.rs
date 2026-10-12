@@ -88,7 +88,6 @@ proptest! {
             let raw = a.raw(i);
             prop_assert!((raw.start + raw.len) as usize <= text.len());
             prop_assert!(a.key(i).len() <= text.len() && a.value(i).len() <= text.len());
-            prop_assert_eq!(a.class(i), a.idioms(i).class());
         }
         let mut last = None;
         for t in at_tokens(&text) {

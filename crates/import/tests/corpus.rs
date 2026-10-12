@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use schemify_import::attr::{Attrs, Idioms, at_tokens, classify};
-use schemify_import::symbol::{self, SymKey};
+use schemify_import::symbol;
 use schemify_import::xschem::{self, NumField};
 use schemify_import::{spice, tech};
 
@@ -198,7 +198,8 @@ fn idiom_rows(text: &str) -> [bool; 19] {
         s.attrs
             .get("type")
             .is_some_and(|v| classify(v).intersects(Idioms::TCL_SYMTYPE)),
-        s.get(SymKey::Schematic)
+        s.attrs
+            .get("schematic")
             .is_some_and(|v| classify(v).intersects(Idioms::TCL_HIER_CONFIG)),
         s.attrs.get("drc").is_some_and(|v| !v.trim().is_empty()),
         has(label, Idioms::AT_SIM_VALUE),

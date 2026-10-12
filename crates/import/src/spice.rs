@@ -441,30 +441,11 @@ impl ModelScan {
             subckts: Vec::new(),
             conds: Vec::new(),
         };
-        let mut pending: Option<(u32, String)> = None;
-        for (i, physical) in text.lines().enumerate() {
-            let number = i as u32 + 1;
-            let content = strip_comment(physical);
-            let trimmed = content.trim_start();
-            if trimmed.is_empty() || trimmed.starts_with('*') {
-                self.count(LineKind::Comment);
-            } else if let Some(rest) = trimmed.strip_prefix('+') {
-                match &mut pending {
-                    Some((_, l)) => {
-                        l.push(' ');
-                        l.push_str(rest);
-                    }
-                    None => self.count(LineKind::Other),
-                }
-            } else {
-                if let Some((n, l)) = pending.take() {
-                    self.logical_line(st, load, opts, &mut cx, n, &l, depth);
-                }
-                pending = Some((number, content.to_string()));
-            }
-        }
-        if let Some((n, l)) = pending.take() {
-            self.logical_line(st, load, opts, &mut cx, n, &l, depth);
+        let (lines, comments, stray) = logical_lines(text);
+        (0..comments).for_each(|_| self.count(LineKind::Comment));
+        (0..stray).for_each(|_| self.count(LineKind::Other));
+        for (n, l) in &lines {
+            self.logical_line(st, load, opts, &mut cx, *n, l, depth);
         }
         cx.found
     }
@@ -919,37 +900,13 @@ pub fn contains(bins: &[Bin], l: f64, w: f64) -> bool {
 /// assert_eq!(parse_number("{l*2}"), None);
 /// ```
 pub fn parse_number(text: &str) -> Option<f64> {
-    let b = text.as_bytes();
-    let mut i = usize::from(matches!(b.first(), Some(b'+' | b'-')));
-    let digits = |i: &mut usize| {
-        let s = *i;
-        while *i < b.len() && b[*i].is_ascii_digit() {
-            *i += 1;
-        }
-        *i > s
-    };
-    let mut any = digits(&mut i);
-    if b.get(i) == Some(&b'.') {
-        i += 1;
-        any |= digits(&mut i);
-    }
-    if !any {
+    let sign = usize::from(matches!(text.as_bytes().first(), Some(b'+' | b'-')));
+    let [_, number, letters] = lex_number(&text[sign..])?;
+    if sign + letters != text.len() {
         return None;
     }
-    if matches!(b.get(i), Some(b'e' | b'E')) {
-        let mut j = i + 1;
-        if matches!(b.get(j), Some(b'+' | b'-')) {
-            j += 1;
-        }
-        if digits(&mut j) {
-            i = j;
-        }
-    }
-    let mantissa: f64 = text[..i].parse().ok()?;
-    let suffix = text[i..].to_ascii_lowercase();
-    if !suffix.bytes().all(|c| c.is_ascii_alphabetic()) {
-        return None;
-    }
+    let mantissa: f64 = text[..sign + number].parse().ok()?;
+    let suffix = text[sign + number..].to_ascii_lowercase();
     let scale = if suffix.starts_with("meg") {
         1e6
     } else if suffix.starts_with("mil") {
@@ -972,6 +929,93 @@ pub fn parse_number(text: &str) -> Option<f64> {
     Some(mantissa * scale)
 }
 
+/// Lexes the unsigned SPICE number at the start of `s`: digits with an optional `.`
+/// fraction, an optional exponent (taken only when digits follow the `e`), then a run
+/// of letters (scale suffix and unit). Returns the byte ends `[mantissa, number,
+/// letters]`, or `None` when the mantissa has no digit. The one number lexer behind
+/// [`parse_number`] and the expression translator.
+pub(crate) fn lex_number(s: &str) -> Option<[usize; 3]> {
+    let b = s.as_bytes();
+    let digits = |mut i: usize| {
+        while b.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+        }
+        i
+    };
+    let int = digits(0);
+    let mantissa = if b.get(int) == Some(&b'.') {
+        digits(int + 1)
+    } else {
+        int
+    };
+    if !b[..mantissa].iter().any(u8::is_ascii_digit) {
+        return None;
+    }
+    let mut number = mantissa;
+    if matches!(b.get(mantissa), Some(b'e' | b'E')) {
+        let sign = usize::from(matches!(b.get(mantissa + 1), Some(b'+' | b'-')));
+        let end = digits(mantissa + 1 + sign);
+        if end > mantissa + 1 + sign {
+            number = end;
+        }
+    }
+    let mut letters = number;
+    while b.get(letters).is_some_and(u8::is_ascii_alphabetic) {
+        letters += 1;
+    }
+    assert!(mantissa <= number && number <= letters && letters <= b.len());
+    Some([mantissa, number, letters])
+}
+
+/// Joins SPICE text into logical lines: inline comments cut, blank and `*` lines
+/// skipped (they do not break a continuation), `+` lines appended to the line before.
+/// Returns `(1-based first line, text)` per logical line, the comment-line count and
+/// the count of `+` lines with nothing to continue. The one line joiner behind [`scan`]
+/// and [`subckt_lines`].
+pub(crate) fn logical_lines(text: &str) -> (Vec<(u32, String)>, u32, u32) {
+    let (mut out, mut comments, mut stray) = (Vec::<(u32, String)>::new(), 0, 0);
+    for (i, physical) in text.lines().enumerate() {
+        let content = strip_comment(physical);
+        let trimmed = content.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('*') {
+            comments += 1;
+        } else if let Some(rest) = trimmed.strip_prefix('+') {
+            match out.last_mut() {
+                Some((_, l)) => {
+                    l.push(' ');
+                    l.push_str(rest);
+                }
+                None => stray += 1,
+            }
+        } else {
+            out.push((i as u32 + 1, content.to_owned()));
+        }
+    }
+    assert!(out.windows(2).all(|w| w[0].0 < w[1].0));
+    (out, comments, stray)
+}
+
+/// `(name, ports)` of every `.subckt` line in SPICE text, ports up to the first `k=v`
+/// or `params:` word.
+pub(crate) fn subckt_lines(text: &str) -> Vec<(String, Vec<String>)> {
+    let (lines, _, _) = logical_lines(text);
+    let mut out = Vec::new();
+    for (_, l) in &lines {
+        let mut w = l.split_whitespace();
+        if !w.next().is_some_and(|k| k.eq_ignore_ascii_case(".subckt")) {
+            continue;
+        }
+        let Some(name) = w.next() else { continue };
+        let ports: Vec<String> = w
+            .take_while(|p| !p.contains('=') && !p.eq_ignore_ascii_case("params:"))
+            .map(str::to_owned)
+            .collect();
+        out.push((name.to_owned(), ports));
+    }
+    assert!(out.len() <= lines.len());
+    out
+}
+
 /// Cuts a physical line at its inline comment (`;`, a blank-delimited `$`, ` //`).
 fn strip_comment(line: &str) -> &str {
     let b = line.as_bytes();
@@ -992,7 +1036,7 @@ fn strip_comment(line: &str) -> &str {
 
 /// Splits a logical line into words: whitespace-separated, `=` a word of its own,
 /// `{…}` `(…)` `'…'` `"…"` kept whole.
-fn words(line: &str) -> Vec<&str> {
+pub(crate) fn words(line: &str) -> Vec<&str> {
     let b = line.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;

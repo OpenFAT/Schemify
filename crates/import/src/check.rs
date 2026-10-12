@@ -113,6 +113,25 @@ fn pins_of(d: &Document) -> Vec<String> {
         .collect()
 }
 
+/// Compiles expression `text`; `Err` names the failure or the first identifier outside
+/// `scope`.
+fn expr(text: &str, scope: impl Fn(&str) -> bool) -> Result<(), String> {
+    let p = Program::compile(text, Mode::Scalar).map_err(|e| format!("{:?} {}", e.code, e.msg))?;
+    match p.idents().find(|i| !scope(i)) {
+        Some(i) => Err(format!("unknown identifier {i}")),
+        None => Ok(()),
+    }
+}
+
+/// [`expr`] for a template.
+fn template(text: &str, scope: impl Fn(&str) -> bool) -> Result<(), String> {
+    let t = Template::parse(text).map_err(|e| format!("{:?} {}", e.code, e.msg))?;
+    match t.program().idents().find(|i| !scope(i)) {
+        Some(i) => Err(format!("unknown identifier {i}")),
+        None => Ok(()),
+    }
+}
+
 fn check_expressions(
     at: &str,
     lib: &str,
@@ -130,21 +149,6 @@ fn check_expressions(
     let mut fail = |line: u32, what: &str, text: &str, why: String| {
         problems.push(format!("{at}:{line}: {what} `{text}`: {why}"));
     };
-    let expr = |text: &str, scope: &dyn Fn(&str) -> bool| -> Result<(), String> {
-        let p =
-            Program::compile(text, Mode::Scalar).map_err(|e| format!("{:?} {}", e.code, e.msg))?;
-        match p.idents().find(|i| !scope(i)) {
-            Some(i) => Err(format!("unknown identifier {i}")),
-            None => Ok(()),
-        }
-    };
-    let template = |text: &str, scope: &dyn Fn(&str) -> bool| -> Result<(), String> {
-        let t = Template::parse(text).map_err(|e| format!("{:?} {}", e.code, e.msg))?;
-        match t.program().idents().find(|i| !scope(i)) {
-            Some(i) => Err(format!("unknown identifier {i}")),
-            None => Ok(()),
-        }
-    };
     for r in 1..d.record_count() {
         let line = d.record_line(r);
         match d.record_kind(r) {
@@ -155,15 +159,15 @@ fn check_expressions(
                     .map_or("number", |p| p.1.as_str());
                 let default = d.field(r, 1).unwrap_or("");
                 let res = match kind {
-                    "string" | "choice" => template(default, &|i| is_param(i)),
-                    _ => expr(default, &|i| is_param(i)),
+                    "string" | "choice" => template(default, is_param),
+                    _ => expr(default, is_param),
                 };
                 if let Err(e) = res {
                     fail(line, "param default", default, e);
                 }
                 for key in ["min", "max", "step", "grid"] {
                     if let Some(v) = d.find_attr(r, key).and_then(|a| d.attr_value(a, 0))
-                        && let Err(e) = expr(v, &|i| is_param(i))
+                        && let Err(e) = expr(v, is_param)
                     {
                         fail(line, key, v, e);
                     }
@@ -175,20 +179,20 @@ fn check_expressions(
                     let scope = |i: &str| {
                         is_param(i) || pins.iter().any(|p| p == i) || BUILTINS.contains(&i)
                     };
-                    if let Err(e) = template(tpl, &scope) {
+                    if let Err(e) = template(tpl, scope) {
                         fail(line, "format", tpl, e);
                     }
                 }
             }
             RecordKind::Stext => {
                 let tpl = d.field(r, 3).unwrap_or("");
-                if let Err(e) = template(tpl, &|i| i == "name" || i == "cell" || is_param(i)) {
+                if let Err(e) = template(tpl, |i| i == "name" || i == "cell" || is_param(i)) {
                     fail(line, "stext", tpl, e);
                 }
             }
             RecordKind::Var => {
                 let v = d.field(r, 1).unwrap_or("");
-                if let Err(e) = expr(v, &|i| vars.iter().any(|x| x == i)) {
+                if let Err(e) = expr(v, |i| vars.iter().any(|x| x == i)) {
                     fail(line, "var", v, e);
                 }
             }
@@ -214,7 +218,7 @@ fn check_expressions(
                         continue;
                     };
                     let res = match kind.as_str() {
-                        "string" | "choice" => template(v, &scope),
+                        "string" | "choice" => template(v, scope),
                         // Number overrides may name bench `.param`s kept in code blocks:
                         // only the syntax is checked here; elab resolves the names.
                         _ => Program::compile(v, Mode::Scalar)

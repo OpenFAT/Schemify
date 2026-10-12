@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use schemify_format::Orient;
 use schemify_import::attr::Attrs;
-use schemify_import::symbol::{self, SymKey};
+use schemify_import::symbol;
 use schemify_import::translate::{ORIENT_TABLE, place};
 use schemify_import::{Options, check_output, translate_library, xschem};
 
@@ -345,7 +345,7 @@ fn bench(sch: &Path, roots: &[PathBuf]) -> Option<Bench> {
         });
         let Some(iface) = iface else { continue };
         let props = Attrs::parse(f.str(f.instances.props[row]));
-        let ty = iface.get(SymKey::Type).unwrap_or("");
+        let ty = iface.attrs.get("type").unwrap_or("");
         let at = f.instances.xy[row];
         if matches!(ty, "label" | "ipin" | "opin" | "iopin") {
             let lab = props
@@ -358,7 +358,7 @@ fn bench(sch: &Path, roots: &[PathBuf]) -> Option<Bench> {
             }
             continue;
         }
-        let fmt = iface.get(SymKey::Format).unwrap_or("").trim();
+        let fmt = iface.attrs.get("format").unwrap_or("").trim();
         let simple =
             fmt.starts_with("@name @pinlist ") || fmt.starts_with("@spiceprefix@name @pinlist ");
         let name = props.get("name").unwrap_or("").trim();
