@@ -50,15 +50,26 @@ pub mod check;
 pub mod cli;
 pub mod core;
 pub mod decimal;
+pub mod design;
 mod limits;
+pub mod map;
+pub mod nets;
+pub mod notes;
+pub mod profile;
+pub mod remap;
 pub mod report;
+pub mod retarget;
+pub mod sfyx;
+pub mod skill;
 pub mod spice;
 pub mod symbol;
 pub mod tcl;
 pub mod tech;
 pub mod template;
 pub mod translate;
+pub mod virtuoso;
 pub mod xschem;
+pub mod xschem_out;
 
 // The guest target only: the WASI build of `schemify-interop` (CI determinism) must not
 // export guest entry points that import the `schemify` host module.
