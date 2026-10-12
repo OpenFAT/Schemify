@@ -125,7 +125,7 @@ fn issue(s: &mut State, out: &mut Out, handle: Result<u32, Code>, io: Io) -> boo
         }
         Err(c) => {
             let msg = format!(
-                "pdk: I/O refused ({c}): grant read_project, write_project and the spawn:<binary> of the family's source (ciel, schemify, git, curl, tar)"
+                "pdk: I/O refused ({c}): grant read_project, write_project and the spawn:<binary> of the family's source (ciel, schemify-interop, git, curl, tar)"
             );
             say(s, out, Level::Error, &msg);
             false
