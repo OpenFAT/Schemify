@@ -275,6 +275,12 @@ fn a_var_edit_recomputes_page_and_instances_in_one_undo() {
     assert_eq!(inst_param(&s, "M1", "W").0, Val::Num(w_before));
     s.key("Shift+U");
     assert_eq!(s.text(), text, "redo replays both");
+    // Oracle: the state recomputed over undo's and redo's applied ops equals a fresh
+    // elaboration (plugin-less: it reads the D20 caches, so compare values only).
+    let fresh = CellState::build(&s.ed.session.project, h, &mut no_funcs).unwrap();
+    for name in ["gm_id_in", "W_in", "W_tail"] {
+        assert_eq!(var_in(&fresh, name).0, var(&s, name).0, "{name}");
+    }
     // Oracle from the plugin's own sky130 sample checks: gmid.w(nfet, 10, 1u, 20u) = 4.930µm.
     edit_var(&mut s, "L_in", "1u");
     edit_var(&mut s, "Id_tail", "40u");

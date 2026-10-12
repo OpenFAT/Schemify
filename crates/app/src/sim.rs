@@ -776,14 +776,15 @@ impl Sim {
     }
 
     /// Marks the shown results stale when the design changed (run spec §4): recomputes the
-    /// design hash of the bench over the run's job list once per edit generation `gen`.
-    /// Cost: one elaboration per config of the jobs, only after an edit and only while
-    /// results are shown.
+    /// design hash of the bench over the run's job list once per edit generation `gen`,
+    /// opening the cells it reaches (the canvas draws instances from the library index, so
+    /// they may not be open yet). Cost: one elaboration per config of the jobs (plus one
+    /// per round of newly opened cells), only after an edit and only while results are shown.
     // ponytail: every edit anywhere re-hashes once; skip edits to documents the bench does
     // not reach if benches get large.
     pub fn check_stale<F: Funcs>(
         &mut self,
-        project: &Project,
+        session: &mut Session,
         env: &[(&str, &str)],
         funcs: &mut F,
         generation: u32,
@@ -791,15 +792,27 @@ impl Sim {
         let Some(br) = self.shown_run() else {
             return;
         };
-        if self.stale_gen == Some(generation) || !br.idle() || project.doc(br.bench).is_none() {
+        if self.stale_gen == Some(generation)
+            || !br.idle()
+            || session.project.doc(br.bench).is_none()
+        {
             return;
         }
         // Optimizer candidates and plugin jobs are pushed after the gate: hash the job list
-        // the run was started (or loaded) with.
-        let stale = match schemify_run::design(project, br.bench, &br.base, env, funcs) {
-            Ok(d) => d != br.run.digest,
-            Err(_) => true,
-        };
+        // the run was started (or loaded) with. Each round opens at least one new cell.
+        let mut stale = true;
+        for _ in 0..=session.project.cells().lib.len() {
+            match schemify_run::design(&session.project, br.bench, &br.base, env, funcs) {
+                Ok(d) => stale = d != br.run.digest,
+                Err(schemify_run::Blocked::NeedsOpen(rows))
+                    if rows.iter().all(|&r| session.open_cell(r as usize).is_ok()) =>
+                {
+                    continue;
+                }
+                Err(_) => {}
+            }
+            break;
+        }
         self.stale = stale;
         self.stale_gen = Some(generation);
     }

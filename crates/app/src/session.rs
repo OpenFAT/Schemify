@@ -377,7 +377,7 @@ impl Session {
         self.project.doc(h).map(|_| h)
     }
 
-    /// File path of an open document.
+    /// File path of an open document; `None` once `h` is closed.
     pub fn path(&self, h: DocHandle) -> Option<&Path> {
         self.row(h).map(|i| self.docs.path[i].as_path())
     }
@@ -395,7 +395,8 @@ impl Session {
         self.row(h).map_or(0, |i| self.docs.epoch[i])
     }
 
-    /// Advances the edit epoch of `h`.
+    /// Advances the edit epoch of `h`, so the scene and the symbol cache rebuild from it on
+    /// the next frame. A closed `h` is ignored.
     pub fn bump(&mut self, h: DocHandle) {
         if let Some(i) = self.row(h) {
             self.docs.epoch[i] = self.docs.epoch[i].wrapping_add(1);

@@ -583,11 +583,6 @@ impl Commands {
         }
         (Target::Unknown, "")
     }
-
-    /// Number of plugin rows.
-    pub fn plugin_rows(&self) -> usize {
-        self.name.len()
-    }
 }
 
 #[cfg(test)]

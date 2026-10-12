@@ -1236,29 +1236,6 @@ impl Editor {
         out
     }
 
-    /// Makes the symbol cache current for every cell `d` instantiates.
-    fn refresh_symbols_of(&mut self, d: DocHandle) {
-        let refs: Vec<String> = self.session.project.doc(d).map_or_else(Vec::new, |doc| {
-            let s = doc.strings();
-            doc.instances()
-                .cell
-                .iter()
-                .map(|&x| s.get(x).to_owned())
-                .collect()
-        });
-        for r in refs {
-            let Ok(row) = self.session.project.resolve(d, &r) else {
-                continue;
-            };
-            if let Ok(c) = self.session.open_cell(row) {
-                let epoch = self.session.epoch(c);
-                if let Some(doc) = self.session.project.doc(c) {
-                    self.symbols.refresh(row, c, epoch, doc);
-                }
-            }
-        }
-    }
-
     // ------------------------------------------------------------------ shapes and wires
 
     /// A click while a shape tool is active: adds the point, closes a polygon on its first
@@ -2003,7 +1980,7 @@ impl Editor {
             self.session.status = "choose a cell to compare with first".into();
             return;
         };
-        let Some(prev_row) = self.row_of(h) else {
+        let Some(prev_row) = super::row_of_doc(&self.session.project, h).map(|r| r as usize) else {
             return;
         };
         match self.session.open_cell(c.row) {
@@ -2024,18 +2001,6 @@ impl Editor {
             }
             Err(e) => self.session.status = e,
         }
-    }
-
-    /// The indexed cell row of open document `h`, if it is a project cell.
-    fn row_of(&self, h: DocHandle) -> Option<usize> {
-        let path = self.session.path(h)?;
-        let p = &self.session.project;
-        (0..p.cells().lib.len()).find(|&r| {
-            let lib = p.cells().lib[r];
-            self.session
-                .lib_dir(lib)
-                .is_some_and(|d| d.join(crate::session::cell_relpath(p, r)) == path)
-        })
     }
 
     /// Rebuilds the parity decor (`extra`): the comparison (objects added or changed here

@@ -29,7 +29,6 @@ schemify-elab.workspace = true
 schemify-netlist.workspace = true
 schemify-wave.workspace = true
 schemify-run.workspace = true
-schemify-abi.workspace = true
 schemify-plugin.workspace = true
 # Path deps (no root `[workspace.dependencies]` row yet), the same way `render` names `ui`.
 schemify-ui = { path = "../ui" }

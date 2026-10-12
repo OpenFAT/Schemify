@@ -501,7 +501,8 @@ struct SymText {
 /// Symbol primitives per indexed cell row, rebuilt when the cell's document changes.
 #[derive(Debug, Default)]
 pub struct Symbols {
-    rows: Vec<Option<(DocHandle, u32, SymPrims)>>,
+    /// Per row: the open document drawn (`None`: the indexed symbol) and its edit epoch.
+    rows: Vec<Option<(Option<DocHandle>, u32, SymPrims)>>,
     /// Advances whenever an entry changes; part of the scene's built key.
     pub epoch: u32,
 }
@@ -510,8 +511,10 @@ impl Symbols {
     // ponytail: libraries are indexed once per session; when re-indexing lands (file
     // watching), clear this cache with it, since `index_library` invalidates cell rows.
 
-    /// Makes the entry of cell `row` current for document `h` at edit epoch `epoch`.
-    pub fn refresh(&mut self, row: usize, h: DocHandle, epoch: u32, doc: &Document) {
+    /// Makes the entry of cell `row` current for `doc`: open document `h` at edit epoch
+    /// `epoch`, or the indexed symbol (`h == None`, epoch 0). Rebuilds the primitives and
+    /// advances [`Symbols::epoch`] only when that source changed.
+    pub fn refresh(&mut self, row: usize, h: Option<DocHandle>, epoch: u32, doc: &Document) {
         if self.rows.len() <= row {
             self.rows.resize_with(row + 1, || None);
         }
