@@ -123,6 +123,9 @@ pub fn manifest_libs(text: &[u8]) -> Result<BTreeMap<String, String>, Vec<String
                 };
                 libs.insert(name.to_owned(), dir);
             }
+            // The technology map (pdk.md §5) is not a cell library: `tech:` cells resolve to
+            // their class drawing (see `candidates`).
+            (Some("map"), Some(_)) if name == "tech" => {}
             _ => problems.push(format!(
                 "lib {name}: only `path` libraries can be converted"
             )),
@@ -265,6 +268,17 @@ fn candidates(
     } else if let Some((lib, stem)) = cref.split_once(':') {
         if lib == "core" {
             return Ok(vec![format!("core/{stem}.shprim")]);
+        }
+        // A technology class (pdk.md §5) is exported as the core cell it is drawn from: the
+        // same pins, technology-neutral. With `--retarget` its gm/Id-sized instances become
+        // class placeholders the target PDK resolves (§10). ponytail: the active tech.map's
+        // PDK cell and `param` rewrites are not applied, so a non-retarget export carries
+        // generic nmos4/pmos4 devices; read the map here when someone exports a fixed size.
+        if lib == "tech" {
+            return match stem {
+                "nmos" | "pmos" => Ok(vec![format!("core/{stem}4.shprim")]),
+                _ => Err(format!("{cref}: no technology class {stem}")),
+            };
         }
         match libs.get(lib) {
             Some(d) => (d.clone(), stem),
@@ -564,6 +578,39 @@ mod tests {
             d.cells[1].text(),
             std::str::from_utf8(&all["dev/amp.shcomp"]).unwrap()
         );
+    }
+
+    #[test]
+    fn technology_classes_load_as_their_core_drawing() {
+        let f = files(&[
+            (
+                "schemify.project",
+                "schemify 1 project\n\nlib tech map pdk/tech.map\n",
+            ),
+            (
+                "a.shcomp",
+                "schemify 1 shcomp\n\nimpl schematic schematic\n\ninst aaaaaa tech:nmos\n  at 0 0 R0\n  name M1\n  w 1u\ninst bbbbbb tech:pmos\n  at 0 100 R0\n  name M2\n",
+            ),
+        ]);
+        let d = load(&f, &BTreeSet::new(), &["a.shcomp"]).unwrap();
+        assert!(d.libs.is_empty(), "the map is not a library");
+        let names: Vec<&str> = d.cells.iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(
+            names,
+            ["a.shcomp", "core/nmos4.shprim", "core/pmos4.shprim"]
+        );
+        assert_eq!(d.resolve(0, "tech:nmos"), Some(1));
+        let bad = files(&[(
+            "b.shcomp",
+            "schemify 1 shcomp\n\nimpl schematic schematic\n\ninst aaaaaa tech:res\n  at 0 0 R0\n  name R1\n",
+        )]);
+        let absent: BTreeSet<String> = ["schemify.project".to_owned()].into();
+        match load(&bad, &absent, &["b.shcomp"]) {
+            Err(LoadError::Invalid(p)) => {
+                assert!(p[0].contains("no technology class res"), "{p:?}")
+            }
+            other => panic!("{:?}", other.err()),
+        }
     }
 
     #[test]
