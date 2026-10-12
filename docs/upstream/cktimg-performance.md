@@ -58,6 +58,26 @@ after `batch_after` rounds; separation requests are not, so a drawing with many 
 `setXY` + `buildRoutes` once per request. Batching the separation requests the way clashes
 are batched, or updating levels incrementally after `addOrdered`, are the two places to look.
 
+## Separation requests batched (cktImg PR #4)
+
+Past `batch_after` every separation request of a round is ordered at once (one per class,
+each checked against the constraints before it). `gallery deck.cir out.svg`, ReleaseFast,
+GitHub `ubuntu-24.04`, the meshes above:
+
+| devices | before | batched |
+|---:|---:|---:|
+| 50 | 0.166 s | 0.141 s |
+| 75 | 0.980 s | 0.463 s |
+| 100 | 3.19 s | 1.19 s |
+| 125 | 9.32 s | 3.45 s |
+| 150 | 18.0 s | 4.49 s |
+
+As merged (#4) the batch also applied from round one to drawings of more than 256 nodes, and
+that over-separates regular ones (AnalogIOC write_dac 16152 → 23153 rounds, 3.4 s → 12 s).
+#5 batches separations only past 256 rounds, at most 16 a round: write_dac 3.7 / 4.4 s
+(before #4 / now), rstring_ladder 4.7 / 3.3 s, 150-MOSFET mesh 19 / 9.2 s. Incremental levels
+remain the next step for regular cells.
+
 ## wasm fuel
 
 Under wasmi one millisecond of native layout costs about 10^8 fuel (sr_latch: 1.08 ms native,
@@ -68,6 +88,6 @@ instead of ReleaseSmall saves ~30 % fuel (sr_latch 7.2·10^7) for a 1.0 MB modul
 
 ## Size
 
-The wasm guest is ~630 KB: cktImg ~290 KB of code, Zig's ZON parser ~110 KB (linked for
+The wasm guest was ~630 KB: cktImg ~290 KB of code, Zig's ZON parser ~110 KB (linked for
 `Config.parse` though the plugin passes no settings), the plugin's Rust ~180 KB.
-`cktimg-optional-zon.patch` removes the parser (measured: 478 KB).
+`-Dzon_config=false` (cktImg PR #3) removes the parser (measured: 478 KB).

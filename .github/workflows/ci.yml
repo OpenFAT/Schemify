@@ -154,7 +154,7 @@ jobs:
           exit $status
 
   # Guest plugins (Linux, Nix: Zig 0.17 for extern/cktimg, wasm-ld). build.sh fails when a module
-  # reaches its size limit (200 KB; cktimg 700 KB). build.sh is byte-reproducible, so the last
+  # reaches its size limit (200 KB; cktimg 550 KB). build.sh is byte-reproducible, so the last
   # step fails when a committed module differs from its rebuild (a plugin source changed
   # without its module, or a module built elsewhere): commit the `plugin-guests` artifact.
   plugins:
