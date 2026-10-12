@@ -430,22 +430,37 @@ The interpolation and solve are written once in pure SKILL (no database calls) a
 
 ## 11. xschem export
 
-Schemify → xschem `.sch`/`.sym` (file format from xschem-feature-inventory §5, checked by running xschem):
+Schemify → xschem `.sch`/`.sym` (file format from xschem-feature-inventory §5, checked by running xschem 3.4.7). `interop::xschem_out::export(design, tops) → files + notes` (pure, byte-deterministic); refused (one line each) for no tops, an unknown index, or a `core` cell as a top.
+
+**Layout.** Each written cell becomes `<lib>/<cell>.sym` and/or `<lib>/<cell>.sch` (project-root cells: `root/`, `root_2/`, … while a library has that name; `core` cells without an xschem device: `schemify_core/`). Own cells are referenced as `<lib>/<cell>.sym`, xschem devices by bare name (`res.sym`, on xschem's default path). `xschemrc` (a fragment for `--rcfile` or sourcing) appends the output directory to `XSCHEM_LIBRARY_PATH` and lists the libraries in comments. A non-top cell with header `provenance xschem <lib>/<file>` is not written: instances reference `<lib>/<file>` (`devices/<file>` → `<file>`).
 
 | Schemify | xschem |
 |---|---|
-| `.shcomp` | `<cell>.sym` (`type=subcircuit`, `format="@name @pinlist @symname"`, `template` = params with defaults, `B 5` pin boxes with `name dir`, graphics on layer 4, `T` texts by §3.5) + `<cell>.sch` |
-| `.shprim` | `<cell>.sym` with `type=primitive`, `format` = its `spice` template converted by §3.5 (`{p}` → `@p`, `{pins}` → `@pinlist`, `{name}` → `@name`), `template`; cells with xschem provenance are not written: instances point at the original symbol |
-| `.shbench` | `<cell>.sch`; bench `code` → `code_shown.sym` instances (`value=`), vars → one `.param` code block, corners → `.lib`/`.include` lines of the default corner (others reviewed), sweeps/outputs/specs/optimizer → reviewed |
-| `core:*` | `devices/<sym>.sym` by inverting `DEVICE_MAP` (import.md §6) |
-| `inst` | `C {sym} x y rot flip {name=… overrides}` (§3.2 inverted) |
+| `.shcomp` (default impl `schematic`) | `<cell>.sym` with `type=subcircuit`, `format="@name @pinlist [@<inherited pin>…] @symname k=@k…"` (every overridable param passed by name; the importer strips the pairs again), plus `<cell>.sch` |
+| `.shprim`, or a `.shcomp` whose default impl is a leaf | `type=primitive`; `format`/`lvs_format`/`spectre_format`/`verilog_format` from `format spice`/`cdl`/`spectre`/`verilog` of the default impl (templates below; `xyce`, a non-default impl, `file` → reviewed); a `spice`/`schematic` impl `body` → `device_model`; impl `ignore` → `spice_ignore`; a leaf with no translatable spice format gets none (xschem does not netlist it), reviewed |
+| symbol `template` | `name=<header prefix, else x (subcircuit) / U>1`, every overridable param default (values below), and `<pin>=<net>` per inherited pin, whose names also go to `extra=` (import.md §2 implicit pins, inverted) |
+| `pin` | `B 5 x±2.5 y±2.5 {name=… dir=…}` in pin order; an `alias` pin takes its target's name (xschem shorts same-named pins); inherited pins get no box. `domain`, `number` and the param attributes `unit min max step grid choices show doc cached` have no field: reviewed (`param-attr`) |
+| rank-2 graphics, rank-3 `shape` | `line` → `L`, `rect` → `B` (`fill=false` unless `fill true`), `arc` → `A` (same angles), `circle` → `A … 0 360`, `poly` → `P` (`closed` repeats the first point); `layer` kept (default 4; a symbol graphic on layer 5, xschem's pin layer, moves to 4, reviewed), `dash` kept, `width` reviewed. A symbol with no graphics gets a box around its pins and `T {@symname}` |
+| `stext` | `T` with `size` as both scales, `layer`, `hcenter`/`vcenter`; template by §3.5 (other holes dropped from the text, reviewed) |
+| `core:*` | `devices/<sym>.sym` by inverting `DEVICE_MAP` (first row per core cell: `cap` → `capa.sym`); **every** param written (xschem's device defaults differ: `nmos4` w=5u against core 1u), names through the row's param renames inverted (`src` → `VAR`). `core:gnd`/`core:vdd` → `gnd.sym`/`vdd.sym` with `lab`. Other core cells (`switch`) are written to `schemify_core/` like any `.shprim` |
+| `inst` | `C {ref} x y rot flip {name=… overrides}`, `(rot, flip)` = the inverse of import.md §3.1's table; only overrides (D40) for own and xschem cells; `ignore` → `spice_ignore`; `inherit <pin> <net>` → `<pin>=<net>`. A call through Schemify's default template (`X{name} {pins} {cell}`, netlist §7.6.5) whose name lacks the `X` is written `X<name>` (xschem prints names as written), reviewed (`name`) |
 | `wire` | `N x1 y1 x2 y2 {}` (`bus=true` for buses) |
-| `label` | `lab_pin.sym` instance (`lab=`; globals as `vdd.sym`/`gnd.sym`-style `global=true` attribute) at the point |
-| `port` | `ipin.sym`/`opin.sym`/`iopin.sym` by the pin's dir |
-| `noconn` | `noconn.sym` |
-| `text`, `shape` | `T`, `L B A P` on layer 4 |
+| `label` | `lab_pin.sym` at the point with `lab=<netexpr>` (same bus syntax); `global=true` for `global true` and names ending in `!` |
+| `port` | `ipin.sym`/`opin.sym`/`iopin.sym` by the interface pin's dir, `lab=` the pin name (an alias pin's target) |
+| `noconn`, `text` | `noconn.sym`; `T {text} x y rot flip s s {}` (`size`, default 0.4) |
+| `code` (lang `spice`/`ngspice`) | `code_shown.sym` (`name=<code name> only_toplevel=false value="<text>"`, `$$` → `$`) in a column under the drawing; in a `.shcomp` xschem emits it inside the `.subckt` (netlist §7.6.15). Other langs and text using `${NAME}` → reviewed. A `.shcomp`'s schematic-impl `body` → a `body` block |
+| `.shbench` | `<cell>.sch` only; vars → one `params` block of `.param k=v` lines in file order (the default corner's `set`s applied; a var calling a plugin function by its `cached` value, reviewed); the default corner (header `corner`) → a `corner` block (`.lib path section`, `.include path`, `.temp t`); other corners, `sweep`, `montecarlo` (and var `dist`), `optimize`, `output`, `spec`, `config` → reviewed |
+| `prose`, header `doc`/`category`/`config`, `constraint`, `waive` | reviewed (`docs`, `config`, `constraint`, `waive`) |
 
-Oracles: for every fixture, `xschem import(xschem export(x))` netlists like `x` (spicecmp), and the exported files netlisted by a real xschem (nightly, `nix develop`) equal Schemify's own ngspice netlist of `x` under spicecmp.
+**Templates** (import.md §4 inverted): `{name}` → `@name`, `{cell}` → `@symname`, `{pins}` → `@pinlist` then ` @<p>` per inherited pin, a pin → `@@<pin>` (alias pins by target), an inherited pin or a param → `@<p>`, `{model}` with an impl `model` attribute → that name, the `savecurrent ? …` idiom → `@savecurrent`. Literal `@ % \` are escaped with `\`, and a literal right after a token is `\`-escaped too, since only white space or the next `@`/`%` ends a token (`v({p})` → `v(@@p\)`). `{params}`, `{file}`, unknown names, strings and non-SPICE functions → the format is reviewed and omitted.
+
+**Values** (refining §3.4's xschem paragraph): number literals as written; other number expressions as SPICE `'…'` (`^` → `**`, functions `abs sqrt exp ln log10 sin cos tan asin acos atan sinh cosh tanh floor ceil int min max pow`), parent params and bench vars verbatim. A component's vars and computed params have no xschem place: they are inlined in parentheses (a plugin-call var by its `cached` value, reviewed `expression`). **Raw parameters:** xschem pastes values into formats as text, so `W='wn*2'` meets `{W}u` as `W='wn*2'u`. A param that a format uses as a number — a hole followed by a glued scale suffix (`f p n u m k meg g t mil`) or read inside an arithmetic hole — is written in every format as `'(@W)'` (a glued suffix folded in: `'(@W)*1u'`; arithmetic holes become SPICE expressions over `(@p)`, computed params inlined), and its values (template default and overrides) unquoted (`W=wn*2`). `bool` → `true`/`false`; `string`/`choice` templates → literal text with each hole naming one identifier written as that bare name (`'{WP}*2'` → `'WP*2'`). Anything else (`if`, `?:`, comparisons, strings, plugin calls without a cache) → reviewed, the attribute is not written (the symbol default applies).
+
+**Losses** (beyond the reviewed rows): the importer drops schematic graphics (import.md §3), so they do not survive a round trip; inlined vars come back as numbers; a param default that references another param lands on xschem's `.subckt` line as written.
+
+Report reasons of this export: `needs_review:` `expression template format name param-attr layer shape code corner docs config constraint waive sweep montecarlo optimize output spec header`.
+
+**Oracles** (`plugins/interop/tests/xschem_export.rs`): (1) round trip — for the app fixtures `rc`, `inv`, `ota`, the elab fixtures `inv_tb`, `bus_tb`, `opamp_tb` and generated benches of core devices (one with all ten in all eight orientations, seven random), `translate_library(export(x))` netlists like `x` under spicecmp (search roots: the export and xschem's system `devices`, else hand-written interface stand-ins in `tests/fixtures/xschem_export/devices`); (2) real xschem — `xschem -q -x -n -s -r --rcfile <out>/xschemrc --netlist_path <dir> <top>.sch` on the export equals Schemify's own ngspice netlist of `x` under spicecmp (skipped without an `xschem` on PATH unless `SCHEMIFY_REQUIRE_XSCHEM=1`; 14 of 14 agree with xschem 3.4.7); (3) untranslatable values, templates and bench records give notes and write no attribute; (4) byte determinism.
 
 ## 12. Report
 
