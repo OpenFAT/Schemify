@@ -913,16 +913,28 @@ fn finish_spec(
     })
 }
 
-/// `~/x` against `HOME`, a relative path against the config root.
+/// `~/x` against `HOME`, a relative path against the config root; `.` segments are dropped
+/// lexically (the lockfile and `pack status` print the result), `..` is kept because only
+/// the filesystem can resolve it past a symlink.
 fn expand(p: &str, root: Option<&Path>) -> PathBuf {
-    if let Some(rest) = p.strip_prefix("~/")
+    let joined = if let Some(rest) = p.strip_prefix("~/")
         && let Some(home) = std::env::var_os("HOME")
     {
-        return PathBuf::from(home).join(rest);
-    }
-    let path = PathBuf::from(p);
-    match root {
-        Some(r) if path.is_relative() => r.join(path),
-        _ => path,
-    }
+        PathBuf::from(home).join(rest)
+    } else {
+        let path = PathBuf::from(p);
+        match root {
+            Some(r) if path.is_relative() => r.join(path),
+            _ => path,
+        }
+    };
+    // `components()` skips every `.` except a leading one.
+    let clean: PathBuf = joined.components().collect();
+    debug_assert!(
+        clean
+            .components()
+            .skip(1)
+            .all(|c| c != std::path::Component::CurDir)
+    );
+    clean
 }
