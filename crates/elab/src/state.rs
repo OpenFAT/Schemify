@@ -584,18 +584,10 @@ impl CellState {
 
 /// The record an op is about: (kind, key, attribute key for attribute ops).
 pub(crate) fn subject(op: &Op) -> (RecordKind, &str, Option<&str>) {
-    match op {
-        Op::Insert { rec, .. } => (
-            rec.kind,
-            rec.fields.first().map_or("", String::as_str),
-            None,
-        ),
-        Op::Delete(t)
-        | Op::Put { target: t, .. }
-        | Op::SetField { target: t, .. }
-        | Op::Reorder { target: t, .. } => (t.kind, t.key.as_str(), None),
-        Op::SetAttr { target, key, .. } | Op::RemoveAttr { target, key, .. } => {
-            (target.kind, target.key.as_str(), Some(key.as_str()))
-        }
-    }
+    let (kind, key) = op.subject();
+    let attr = match op {
+        Op::SetAttr { key, .. } | Op::RemoveAttr { key, .. } => Some(key.as_str()),
+        _ => None,
+    };
+    (kind, key, attr)
 }
