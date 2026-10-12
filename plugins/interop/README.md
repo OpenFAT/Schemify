@@ -105,6 +105,25 @@ Virtuoso drew them, including fonts, label justification and instance-label styl
 you edited is redrawn. Object identity rides on `schemifyId` properties, so round trips give
 clean Schemify diffs.
 
+### Testbenches and ADE (maestro)
+
+A `.shbench` exports as the testbench schematic plus a maestro view with one test (Spectre):
+
+| Schemify bench | Maestro |
+|---|---|
+| `var` | design variable (values in Spectre syntax: `1meg` → `1M`) |
+| a `sweep` named after its var | the variable's comma list of points |
+| `corner` (`lib`, `include`, `set`, `temp`) | corner with model files and sections, corner variables, `temperature` |
+| `.tran .ac .dc .op .noise` lines of the analysis code block | analyses with their options |
+| `.temp`, `.param`, `.include`, `.lib` | variables and test model files |
+| `code … spectre` blocks | definition files |
+| `output` (`v()`, `i()`, `max`, `avg`, …) | outputs (`VT("/net")`, `ymax`, `average`, …) |
+| `spec` `min`/`max` | spec `>`/`<` |
+
+Importing goes the other way. A comma list comes back as a `lin`/`log`/`values` sweep, and the
+analyses come back as one code block named after the test. Monte Carlo and optimizer records,
+configs, and anything without a maestro form stay on the Schemify side; the report lists them.
+
 ### PDK-agnostic sizing (gm/Id retarget)
 
 Size transistors in Schemify on a sample PDK with the `gmid` plugin. Write widths as
