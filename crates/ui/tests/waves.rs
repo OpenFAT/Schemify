@@ -806,3 +806,35 @@ fn keys_place_horizontal_cursors_track_steps_and_measure() {
     assert!(w.last.redraw, "the tooltip moves with the pointer");
     assert_eq!(w.ui.pointer(), Some((x + 5.0, y)));
 }
+
+/// Every field of the window follows typing through its `input` command (plugin-abi §11.14):
+/// the filter applies at once, and the expression and a dialog field typed then confirmed by a
+/// button (no argument) use the typed text.
+#[test]
+fn fields_follow_typing_through_input_commands() {
+    let mut w = Win::new(data());
+    w.command("waves.props", "", "", 0);
+    let input = w.tables.nodes.prop(Prop::Input);
+    let fields = (w.tables.nodes.kind().iter())
+        .enumerate()
+        .filter(|&(_, &k)| k == Kind::TextInput);
+    let mut n = 0;
+    for (i, _) in fields {
+        let id = w.strings.get(w.tables.nodes.id()[i]);
+        assert!(!input[i].is_none(), "{id} has no input command");
+        n += 1;
+    }
+    assert!(n >= 13, "expression, filter and the dialog's fields: {n}");
+    w.command("waves.props.field", "48", "waves.props.f.1", 0);
+    assert!(w.last.recompose);
+    let reqs = w.command("waves.props.ok", "", "waves.props.ok", 0);
+    assert_eq!(w.last.dialog, DialogFx::Close);
+    w.apply(reqs);
+    assert_eq!(w.waves.props(0).bins, 48);
+    w.command("waves.filter", "net11", "waves.filter", 0);
+    assert_eq!(w.signal_rows().len(), 11);
+    w.command("waves.expr", "v(net3)", "waves.expr", 0);
+    assert!(!w.last.redraw && !w.last.recompose, "kept for Enter");
+    let reqs = w.command("waves.plot_button", "", "waves.plot", 0);
+    assert!(matches!(&reqs[..], [Request::AddTrace { src, .. }] if src == "v(net3)"));
+}

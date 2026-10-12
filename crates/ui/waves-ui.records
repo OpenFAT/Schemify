@@ -120,6 +120,7 @@ node waves.expr text_input
   parent waves.toolbar
   style wexpr
   command waves.plot
+  input waves.expr
   tooltip "Calculator expression, e.g. db(v(out)/v(in)); Enter plots it"
 node waves.plot button
   parent waves.toolbar
@@ -185,6 +186,7 @@ node waves.filter text_input
   parent waves.browser
   style wfilter
   command waves.filter
+  input waves.filter
   tooltip "Filter signals (live)"
 node waves.signals list
   parent waves.browser
@@ -295,6 +297,7 @@ node waves.props.l.0 label
 node waves.props.f.0 text_input
   parent waves.props.row1
   command waves.props.ok
+  input waves.props.field
   style wfield
   tooltip "Logic 1 at or above this y (digital lanes, bus bits)"
 node waves.props.l.1 label
@@ -304,6 +307,7 @@ node waves.props.l.1 label
 node waves.props.f.1 text_input
   parent waves.props.row1
   command waves.props.ok
+  input waves.props.field
   style wfield
   tooltip "Histogram bins, 2 to 1024"
 node waves.props.l.2 label
@@ -313,6 +317,7 @@ node waves.props.l.2 label
 node waves.props.f.2 text_input
   parent waves.props.row1
   command waves.props.ok
+  input waves.props.field
   style wfield
   tooltip "Sweep step shown (empty: every step)"
 
@@ -326,6 +331,7 @@ node waves.props.l.3 label
 node waves.props.f.3 text_input
   parent waves.props.row2
   command waves.props.ok
+  input waves.props.field
   style wfield
 node waves.props.l.4 label
   parent waves.props.row2
@@ -334,6 +340,7 @@ node waves.props.l.4 label
 node waves.props.f.4 text_input
   parent waves.props.row2
   command waves.props.ok
+  input waves.props.field
   style wfield
 
 node waves.props.row3 panel
@@ -346,6 +353,7 @@ node waves.props.l.5 label
 node waves.props.f.5 text_input
   parent waves.props.row3
   command waves.props.ok
+  input waves.props.field
   style wfield
 node waves.props.l.6 label
   parent waves.props.row3
@@ -354,6 +362,7 @@ node waves.props.l.6 label
 node waves.props.f.6 text_input
   parent waves.props.row3
   command waves.props.ok
+  input waves.props.field
   style wfield
 
 node waves.props.row4 panel
@@ -366,6 +375,7 @@ node waves.props.l.7 label
 node waves.props.f.7 text_input
   parent waves.props.row4
   command waves.props.ok
+  input waves.props.field
   style wfield
   tooltip "x of cursor a (empty hides it)"
 node waves.props.l.8 label
@@ -375,6 +385,7 @@ node waves.props.l.8 label
 node waves.props.f.8 text_input
   parent waves.props.row4
   command waves.props.ok
+  input waves.props.field
   style wfield
 
 node waves.props.row5 panel
@@ -387,6 +398,7 @@ node waves.props.l.9 label
 node waves.props.f.9 text_input
   parent waves.props.row5
   command waves.props.ok
+  input waves.props.field
   style wfield
   tooltip "y of horizontal cursor A (empty hides it)"
 node waves.props.l.10 label
@@ -396,6 +408,7 @@ node waves.props.l.10 label
 node waves.props.f.10 text_input
   parent waves.props.row5
   command waves.props.ok
+  input waves.props.field
   style wfield
 
 # Colour swatches (wave::PALETTE, in order): a click recolours the selected trace.

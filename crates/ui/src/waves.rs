@@ -23,7 +23,7 @@ use schemify_wave::{
     TRACE_COLORS, ViewError, Waves, parse_num, write_num,
 };
 
-use crate::input::{Button, InputEvent, InputEvents, UiState};
+use crate::input::{Button, InputEvent, InputEvents};
 use crate::layout::{Rect, UiLayout};
 use crate::strings::{Strings, Sym};
 use crate::tables::{Contribution, Edit, Kind, Mods, Prop, StyleProp, UiTables};
@@ -540,34 +540,6 @@ impl WaveUi {
         Contribution { edits: e }
     }
 
-    /// Copies the focused field's text into the live state (the filter applies as typed, the
-    /// dialog's fields are kept for OK). Returns true when that changes the contribution.
-    pub fn sync_fields(&mut self, state: &UiState, strings: &Strings) -> bool {
-        let (Some(ed), focus) = (state.editor(), state.focus()) else {
-            return false;
-        };
-        let text = ed.raw_text();
-        if Some(focus) == strings.find("waves.expr") {
-            if self.expr != text {
-                self.expr = text.to_owned();
-            }
-            return false;
-        }
-        if Some(focus) == strings.find("waves.filter") && self.filter != text {
-            self.filter = text.to_owned();
-            self.scroll = 0;
-            return true;
-        }
-        let field = field_index(strings.get(focus));
-        if let (Some(k), Some(d)) = (field, self.dialog.as_mut())
-            && d.text[k] != text
-        {
-            d.text[k] = text.to_owned();
-            return true;
-        }
-        false
-    }
-
     /// Routes one frame of pointer input over the panes (and the wheel over the signal list):
     /// wheel zooms x about the pointer (y with Shift or over the y-axis strip), left drag pans
     /// or moves a cursor, right drag box-zooms, double-click (or a right click on a cursor)
@@ -964,10 +936,22 @@ impl WaveUi {
                     });
                 }
             }
+            // The fields' `input` commands (plugin-abi §11.14): the filter applies as typed,
+            // the expression and the dialog's fields are kept for Enter/OK.
+            "waves.expr" => {
+                self.expr = arg.to_owned();
+                fx.redraw = false;
+            }
             "waves.filter" => {
                 self.filter = arg.to_owned();
                 self.scroll = 0;
                 fx.recompose = true;
+            }
+            "waves.props.field" => {
+                if let (Some(k), Some(d)) = (field_index(node), self.dialog.as_mut()) {
+                    d.text[k] = arg.to_owned();
+                    fx.recompose = true;
+                }
             }
             "waves.signal" => {
                 let Some(v) = node.strip_prefix("waves.sig.").and_then(|v| v.parse().ok()) else {

@@ -112,7 +112,7 @@ for it; the goal set for this work was ≤ 1 ms).
 ## Correctness / semantics
 
 - **elab**: `E002` doesn't yet compare a SPICE `body`'s `.subckt` ports with the symbol pins; `global true` names are gathered from every reachable schematic, including unselected impls; `net_<id>` may collide with a user label of the same spelling; `CellState` doesn't observe edits to other documents.
-- **ui**: the waves window's own fields (`ui/src/waves.rs` `WaveUi::sync_fields`, waves-owned) still copy the focused editor's text every frame; the `input` prop (plugin-abi §11.14) replaces that. A live string handle is never reused before its 31-bit counter wraps; the shaped-text cache would need a generation in its key past that.
+- **ui**: a live string handle is never reused before its 31-bit counter wraps; the shaped-text cache would need a generation in its key past that.
 - **import (readers)**: cdfDump untested against a real dump: producing one needs Cadence Virtuoso (`cdfDump` is a SKILL function), which no CI or this machine has; the reader follows the documented format only.
 
 ## Parity gaps vs xschem (UI)

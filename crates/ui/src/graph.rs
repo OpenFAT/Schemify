@@ -42,24 +42,14 @@ pub fn decimate(
         } else {
             run.partition_point(|&x| x < hi)
         };
-        let (lo, hi) = minmax(&ys[i0..i0 + n]);
+        // NaN-ignoring; the kernel and its oracle test live in `wave`.
+        let (lo, hi) = schemify_wave::minmax(&ys[i0..i0 + n]);
         let empty = lo > hi;
         min.push(if empty { f32::NAN } else { lo as f32 });
         max.push(if empty { f32::NAN } else { hi as f32 });
         i0 += n;
     }
     debug_assert_eq!(min.len(), usize::from(columns));
-}
-
-/// Min and max of `y`, ignoring NaN; `(+inf, -inf)` when nothing is finite-comparable. The
-/// vectorized kernel lives with the column data in `schemify_wave` (one kernel, one oracle).
-fn minmax(y: &[f64]) -> (f64, f64) {
-    schemify_wave::minmax(y)
-}
-
-#[cfg(test)]
-fn minmax_scalar(y: &[f64]) -> (f64, f64) {
-    schemify_wave::minmax_scalar(y)
 }
 
 /// Writes "nice" tick positions (steps of 1, 2 or 5 × 10^k) covering `[lo, hi]` into `out`,
@@ -151,18 +141,6 @@ mod tests {
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
         ((*seed >> 11) as f64) / ((1u64 << 53) as f64) * 2.0 - 1.0
-    }
-
-    #[test]
-    fn minmax_matches_scalar_oracle_at_every_tail_length() {
-        let mut seed = 7;
-        for len in 0..=16 {
-            let mut y: Vec<f64> = (0..len).map(|_| lcg(&mut seed)).collect();
-            if len > 5 {
-                y[3] = f64::NAN;
-            }
-            assert_eq!(minmax(&y), minmax_scalar(&y), "len {len}");
-        }
     }
 
     #[test]
