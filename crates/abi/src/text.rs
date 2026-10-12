@@ -239,6 +239,30 @@ pub fn push_value(out: &mut String, v: &str) {
     debug_assert!(!out[before..].contains(['\n', '\r', '\0']));
 }
 
+/// Appends the canonical number text of `x` (expr spec §7), byte-identical to
+/// `schemify_expr::write_num`: what a guest function returns so the host reads the
+/// same value back. An integer when `x` is integral with |x| < 1e15 (`-0` is `0`),
+/// the shortest round-trip decimal when 1e-4 ≤ |x| < 1e15, else the shortest
+/// round-trip mantissa with an exponent (`2.5e-15`).
+///
+/// # Panics
+///
+/// If `x` is NaN or infinite (never an expression value).
+pub fn push_num(out: &mut String, x: f64) {
+    // ponytail: a copy of expr's `fmt_num` so guests need not link expr; the abi test
+    // `push_num_matches_expr` is the differential that keeps the two identical.
+    assert!(x.is_finite(), "canonical text of a non-finite number");
+    let a = x.abs();
+    let r = if x.fract() == 0.0 && a < 1e15 {
+        write!(out, "{}", x as i64)
+    } else if (1e-4..1e15).contains(&a) {
+        write!(out, "{x}")
+    } else {
+        write!(out, "{x:e}")
+    };
+    r.expect("writing to a String");
+}
+
 /// Appends `body` as verbatim lines (`  | text`, or `  |` for an empty line). A trailing
 /// newline in `body` adds no extra line; a lone `\r` before a newline is dropped.
 pub fn push_verbatim(out: &mut String, body: &str) {
@@ -454,7 +478,64 @@ mod tests {
         assert_eq!(chunks(b"\n\n# only\n").next(), None);
     }
 
+    fn num(x: f64) -> (String, String) {
+        let (mut ours, mut theirs) = (String::new(), String::new());
+        push_num(&mut ours, x);
+        schemify_expr::write_num(&mut theirs, x);
+        (ours, theirs)
+    }
+
+    /// Differential against expr's formatter at the special values and every branch
+    /// boundary (integral cutoff 1e15, decimal window 1e-4, SI decades), each nudged one
+    /// ulp either way and negated.
+    #[test]
+    fn push_num_matches_expr() {
+        let mut xs = vec![
+            0.0,
+            -0.0,
+            f64::MIN_POSITIVE,
+            5e-324,
+            f64::MAX,
+            f64::EPSILON,
+            0.1 + 0.2,
+            1.0 / 3.0,
+            2.5e-15,
+            1.2e15,
+            999_999_999_999_999.0,
+            999_999_999_999_999.5,
+            (1u64 << 53) as f64,
+        ];
+        for e in -24..=24 {
+            let p = 10f64.powi(e);
+            for x in [p, 1.5 * p, 4.7 * p, 999.0 * p] {
+                xs.extend([
+                    x,
+                    f64::from_bits(x.to_bits() + 1),
+                    f64::from_bits(x.to_bits() - 1),
+                ]);
+            }
+        }
+        for x in xs {
+            for x in [x, -x] {
+                let (ours, theirs) = num(x);
+                assert_eq!(ours, theirs, "{x:?}");
+            }
+        }
+        assert_eq!(num(-0.0).0, "0");
+        assert_eq!(num(1e-4).0, "0.0001");
+        assert_eq!(num(1e15).0, "1e15");
+        assert_eq!(num(2.5e-15).0, "2.5e-15");
+    }
+
     proptest! {
+        #[test]
+        fn push_num_matches_expr_on_any_finite(bits in any::<u64>()) {
+            let x = f64::from_bits(bits);
+            prop_assume!(x.is_finite());
+            let (ours, theirs) = num(x);
+            prop_assert_eq!(ours, theirs);
+        }
+
         #[test]
         fn push_value_round_trips(v in "\\PC{0,24}|[\\x00-\\x7f]{0,24}") {
             let mut out = String::new();

@@ -2731,6 +2731,7 @@ name = "schemify-abi"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "schemify-expr",
 ]
 
 [[package]]

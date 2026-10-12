@@ -25,3 +25,5 @@ guest = []
 
 [dev-dependencies]
 proptest.workspace = true
+# `text::push_num` is differential-tested against expr's canonical formatter.
+schemify-expr.workspace = true
