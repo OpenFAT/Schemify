@@ -354,7 +354,14 @@ pub fn print(v: &V, out: &mut String) {
         V::Nil => out.push_str("nil"),
         V::T => out.push('t'),
         V::Int(i) => write!(out, "{i}").unwrap(),
-        V::Float(f) => write!(out, "{}", fmt_g(*f, 7)).unwrap(),
+        V::Float(f) => {
+            // SKILL prints a float with 7 significant digits and always as a float: 2.0.
+            let g = fmt_g(*f, 7);
+            out.push_str(&g);
+            if !g.contains(['.', 'e', 'i', 'n']) {
+                out.push_str(".0");
+            }
+        }
         V::Str(s) => {
             out.push('"');
             for c in s.chars() {
@@ -406,6 +413,10 @@ pub trait Host {
     fn get(&mut self, obj: u32, attr: &str) -> Result<V, String>;
     /// `obj~>attr = value`.
     fn set(&mut self, obj: u32, attr: &str, value: V) -> Result<V, String>;
+    /// True when [`Host::call`] defines `name` (what `fboundp` sees of the host).
+    fn bound(&self, _name: &str) -> bool {
+        false
+    }
 }
 
 enum Flow {
@@ -493,6 +504,7 @@ const SPECIAL: &[&str] = &[
     "dbSetq",
     "unwindProtect",
     "boundp",
+    "gets",
 ];
 
 const BUILTINS: &[&str] = &[
@@ -586,6 +598,12 @@ const BUILTINS: &[&str] = &[
     "upperRight",
     "evenp",
     "oddp",
+    "fboundp",
+    "evalstring",
+    "linereadstring",
+    "charToInt",
+    "intToChar",
+    "atof",
 ];
 
 /// Every function name the interpreter defines itself (special forms and builtins).
@@ -705,7 +723,7 @@ impl<H: Host> Interp<H> {
             "quote" => Ok(a.first().cloned().unwrap_or(V::Nil)),
             "progn" => self.body(a),
             "setq" => {
-                if a.len() % 2 != 0 || a.is_empty() {
+                if !a.len().is_multiple_of(2) || a.is_empty() {
                     return Err(Flow::Err("setq: needs symbol/value pairs".into()));
                 }
                 let mut v = V::Nil;
@@ -981,6 +999,29 @@ impl<H: Host> Interp<H> {
                     V::Nil
                 })
             }
+            "gets" => {
+                // (gets var port): a syntax form (*SKILL Language Reference*): stores the next
+                // line, keeping its "\n", into `var`; nil at end of file.
+                if a.len() != 2 {
+                    return Err(Flow::Err("gets: (gets var port)".into()));
+                }
+                let var = self.sym_arg(&a[0], "gets")?.to_owned();
+                let V::Port(k) = self.eval(&a[1])? else {
+                    return Err(Flow::Err("gets: expected a port".into()));
+                };
+                let Some(Port::In { lines, next }) = self.ports.get_mut(k as usize) else {
+                    return Err(Flow::Err("gets: not an open input port".into()));
+                };
+                let v = match lines.get(*next) {
+                    Some(l) => {
+                        *next += 1;
+                        V::str(l)
+                    }
+                    None => V::Nil,
+                };
+                self.assign(&var, v.clone());
+                Ok(v)
+            }
             "getSGq" | "dbGetq" => {
                 if a.len() != 2 {
                     return Err(Flow::Err(format!("{head}: (getSGq obj attr)")));
@@ -1127,7 +1168,11 @@ impl<H: Host> Interp<H> {
         }
         let r = self.body(&p.body);
         self.stack.truncate(base);
-        r
+        match r {
+            // The call chain, innermost first, for the test's failure message.
+            Err(Flow::Err(e)) => Err(Flow::Err(format!("{e}\n  in {name}"))),
+            r => r,
+        }
     }
 
     fn fn_value(&self, f: &V) -> Result<String, Flow> {
@@ -1576,8 +1621,7 @@ impl<H: Host> Interp<H> {
                         return Err(Flow::Err("buildString: (buildString list [glue])".into()));
                     }
                     let glue = if n == 2 { text(&a[1])? } else { " ".into() };
-                    let parts: Result<Vec<String>, Flow> =
-                        list(&a[0])?.iter().map(|x| text(x)).collect();
+                    let parts: Result<Vec<String>, Flow> = list(&a[0])?.iter().map(&text).collect();
                     V::str(&parts?.join(&glue))
                 }
                 "parseString" => {
@@ -1738,6 +1782,60 @@ impl<H: Host> Interp<H> {
                         V::T
                     } else {
                         V::list(forms)
+                    }
+                }
+                "fboundp" => {
+                    need(1)?;
+                    let f = text(&a[0])?;
+                    let known = self.funcs.contains_key(f.as_str())
+                        || defined_by_interp().any(|b| b == f)
+                        || self.host.bound(&f);
+                    if known { V::T } else { V::Nil }
+                }
+                "evalstring" => {
+                    // Reads and evaluates every form of the string (the loader's only use: a
+                    // PDK's CDF callback, spec §5.3); the value of the last.
+                    need(1)?;
+                    let forms = read_all(&text(&a[0])?).map_err(|e| format!("evalstring: {e}"))?;
+                    let mut last = V::Nil;
+                    for f in &forms {
+                        last = self.eval(f)?;
+                    }
+                    last
+                }
+                "linereadstring" => {
+                    // Parses (never evaluates) the first form of the string.
+                    need(1)?;
+                    let forms =
+                        read_all(&text(&a[0])?).map_err(|e| format!("linereadstring: {e}"))?;
+                    forms.into_iter().next().unwrap_or(V::Nil)
+                }
+                "charToInt" => {
+                    // The first byte of the symbol's name (a byte-string SKILL's character code).
+                    need(1)?;
+                    let V::Sym(s) = &a[0] else {
+                        return Err(Flow::Err("charToInt: expected a symbol".into()));
+                    };
+                    match s.as_bytes().first() {
+                        Some(b) => V::Int(i64::from(*b)),
+                        None => return Err(Flow::Err("charToInt: empty symbol".into())),
+                    }
+                }
+                "intToChar" => {
+                    need(1)?;
+                    let c = int(&a[0])?;
+                    if !(1..=127).contains(&c) {
+                        return Err(Flow::Err(format!(
+                            "intToChar: {c} is outside 1..127 (no NUL, ASCII only here)"
+                        )));
+                    }
+                    V::sym(&char::from(c as u8).to_string())
+                }
+                "atof" => {
+                    need(1)?;
+                    match text(&a[0])?.trim().parse::<f64>() {
+                        Ok(f) if f.is_finite() => V::Float(f),
+                        _ => V::Nil,
                     }
                 }
                 "isFile" => {
@@ -1912,9 +2010,40 @@ fn balanced(text: &str) -> bool {
     depth <= 0 && !in_str
 }
 
+/// C's `%.<p>g` of a finite float (SKILL formats through C `printf`): `p` significant
+/// digits, exponent form when the exponent is below -4 or at least `p`, trailing zeros cut.
+fn fmt_c_g(f: f64, p: usize) -> String {
+    if !f.is_finite() {
+        return if f.is_nan() {
+            "nan".into()
+        } else if f > 0.0 {
+            "inf".into()
+        } else {
+            "-inf".into()
+        };
+    }
+    let p = p.max(1);
+    let e = format!("{:.*e}", p - 1, f);
+    let (mant, exp) = e.split_once('e').expect("exponent form");
+    let x: i64 = exp.parse().expect("exponent");
+    let trim = |s: &str| -> String {
+        if s.contains('.') {
+            s.trim_end_matches('0').trim_end_matches('.').to_owned()
+        } else {
+            s.to_owned()
+        }
+    };
+    if x < -4 || x >= p as i64 {
+        let sign = if x < 0 { '-' } else { '+' };
+        format!("{}e{sign}{:02}", trim(mant), x.abs())
+    } else {
+        trim(&format!("{:.*}", (p as i64 - 1 - x) as usize, f))
+    }
+}
+
 /// SKILL `sprintf` directives: `%d` (integers only — a float is an error, as SKILL
 /// silently returns nil there), `%s` (string or symbol), `%L` (print form), `%c`, `%%`,
-/// with optional `-` and width.
+/// `%g` (floats only, C semantics, with `.precision`), with optional `-` and width.
 fn format(who: &str, fmt: &str, args: &[V]) -> Result<String, Flow> {
     let mut out = String::new();
     let mut args = args.iter();
@@ -1926,6 +2055,7 @@ fn format(who: &str, fmt: &str, args: &[V]) -> Result<String, Flow> {
         }
         let mut left = false;
         let mut width = 0usize;
+        let mut precision: Option<usize> = None;
         if chars.peek() == Some(&'-') {
             left = true;
             chars.next();
@@ -1933,6 +2063,15 @@ fn format(who: &str, fmt: &str, args: &[V]) -> Result<String, Flow> {
         while let Some(d) = chars.peek().and_then(|d| d.to_digit(10)) {
             width = width * 10 + d as usize;
             chars.next();
+        }
+        if chars.peek() == Some(&'.') {
+            chars.next();
+            let mut p = 0usize;
+            while let Some(d) = chars.peek().and_then(|d| d.to_digit(10)) {
+                p = p * 10 + d as usize;
+                chars.next();
+            }
+            precision = Some(p);
         }
         let Some(code) = chars.next() else {
             return Err(Flow::Err(format!("{who}: format ends in %")));
@@ -1966,6 +2105,10 @@ fn format(who: &str, fmt: &str, args: &[V]) -> Result<String, Flow> {
                 print(v, &mut s);
                 s
             }
+            'g' => match v {
+                V::Float(f) => fmt_c_g(*f, precision.unwrap_or(6)),
+                _ => return Err(Flow::Err(format!("{who}: %g of a non-float"))),
+            },
             other => {
                 return Err(Flow::Err(format!(
                     "{who}: directive %{other} is outside the subset"
