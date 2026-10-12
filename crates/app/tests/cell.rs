@@ -275,3 +275,148 @@ fn golden_cell_panel_modern() {
         .count();
     assert!(bad <= want.data().len() / 1000, "{bad} pixels differ");
 }
+
+fn label(s: &Session, id: &str) -> String {
+    let sh = &s.ed.shell;
+    let n = sh
+        .strings
+        .find(id)
+        .and_then(|i| sh.tables.nodes.find(i))
+        .unwrap_or_else(|| panic!("{id} composed"));
+    sh.strings
+        .get(sh.tables.nodes.prop(Prop::Label)[n as usize])
+        .to_owned()
+}
+
+/// The resistor with a Verilog-A impl (row 1) whose module declares `C` (out), `B` (in),
+/// `D` (only `electrical`: inout): against pins `A B` (both inout) a sync removes A, turns
+/// B into an input, adds C and D, and reorders to C B D.
+fn with_va_body(tag: &str) -> Session {
+    let mut s = Session::open("rc", "res.shprim", tag, true);
+    run(&mut s, "view.cell", "");
+    run(&mut s, "cell.add_impl", "veriloga");
+    let body = "`include \"disciplines.vams\"\n// r with three ports\nmodule r(C, B, D);\n  \
+                output C; input B;\n  electrical B, C, D;\n  analog V(C) <+ V(B);\nendmodule";
+    set(&mut s, "cell.impl.1.body", body);
+    assert!(s.text().contains("module r(C, B, D);"), "{}", s.text());
+    s
+}
+
+#[test]
+fn sync_pins_shows_the_diff_then_applies_it_as_one_edit() {
+    let mut s = with_va_body("cell-sync");
+    let before = s.text();
+    assert!(has_node(&s, "cell.impl.1.sync") && has_node(&s, "cell.impl.1.symbol"));
+    assert!(
+        !has_node(&s, "cell.impl.0.sync"),
+        "an impl without a body has nothing to read"
+    );
+
+    // Pending: the diff is shown, the document is untouched.
+    run(&mut s, "cell.sync_ports", "cell.impl.1.sync");
+    assert_eq!(s.text(), before, "a pending sync edits nothing");
+    let rows: Vec<String> = (0..5)
+        .map(|k| label(&s, &format!("cell.sync.{k}")))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "+ pin C out",
+            "+ pin D inout",
+            "− pin A",
+            "pin B: inout → in",
+            "order: C B D"
+        ]
+    );
+    assert!(!has_node(&s, "cell.sync.5"));
+    assert!(has_node(&s, "cell.sync.apply") && has_node(&s, "cell.sync.cancel"));
+
+    // Apply: one transaction. Kept pins keep their place; new ones stack below them.
+    run(&mut s, "cell.sync_apply", "");
+    assert_eq!(
+        common::lines(&s.text(), "pin "),
+        ["pin C out 40 40", "pin B in 0 30", "pin D inout 40 50"],
+        "{}",
+        s.text()
+    );
+    assert!(!has_node(&s, "cell.sync.apply"), "applied: nothing pending");
+    // Synced pins match: a second sync shows no change and offers no Apply.
+    run(&mut s, "cell.sync_ports", "cell.impl.1.sync");
+    assert_eq!(label(&s, "cell.sync.0"), "Pins already match the ports.");
+    assert!(!has_node(&s, "cell.sync.apply"));
+    run(&mut s, "cell.sync_cancel", "");
+
+    // One undo reverts the whole sync.
+    s.key("u");
+    assert_eq!(s.text(), before);
+}
+
+#[test]
+fn cancel_errors_and_stale_syncs_leave_the_document_untouched() {
+    let mut s = with_va_body("cell-sync-cancel");
+    let before = s.text();
+    run(&mut s, "cell.sync_ports", "cell.impl.1.sync");
+    run(&mut s, "cell.sync_cancel", "");
+    assert!(!has_node(&s, "cell.sync.cancel"));
+    run(&mut s, "cell.sync_apply", "");
+    assert_eq!(s.text(), before, "cancelled: Apply has nothing to apply");
+    assert!(s.ed.session.status.contains("nothing pending"));
+
+    // Any edit after the sync was read makes it stale: it is neither shown nor applied.
+    run(&mut s, "cell.sync_ports", "cell.impl.1.sync");
+    set(&mut s, "cell.param.0.default", "2k");
+    let edited = s.text();
+    assert!(!has_node(&s, "cell.sync.0"), "a stale sync is not shown");
+    run(&mut s, "cell.sync_apply", "");
+    assert_eq!(s.text(), edited);
+
+    // A body that does not parse: its line in the status, nothing changes or is pending.
+    set(&mut s, "cell.impl.1.body", "// a\nmodule r(A,\n  B");
+    let broken = s.text();
+    run(&mut s, "cell.sync_ports", "cell.impl.1.sync");
+    assert!(
+        s.ed.session
+            .status
+            .contains("line 2: unterminated port list"),
+        "{}",
+        s.ed.session.status
+    );
+    assert!(!has_node(&s, "cell.sync.0"));
+    run(&mut s, "cell.symbol_from_ports", "cell.impl.1.symbol");
+    assert!(s.ed.session.status.contains("line 2"));
+    assert_eq!(s.text(), broken);
+    // An impl without a body has no ports to read.
+    run(&mut s, "cell.sync_ports", "cell.impl.0.sync");
+    assert!(s.ed.session.status.contains("has no body"));
+    assert_eq!(s.text(), broken);
+}
+
+#[test]
+fn symbol_from_ports_redraws_a_primitive_in_port_order() {
+    let mut s = with_va_body("cell-symbol");
+    let before = s.text();
+    run(&mut s, "cell.symbol_from_ports", "cell.impl.1.symbol");
+    let t = s.text();
+    let pins: Vec<(&str, &str)> = common::lines(&t, "pin ")
+        .iter()
+        .map(|l| {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            (w[1], w[2])
+        })
+        .collect();
+    assert_eq!(pins, [("C", "out"), ("B", "in"), ("D", "inout")], "{t}");
+    // The input is left of the box, the others right.
+    let x = |name: &str| {
+        let l = common::lines(&t, &format!("pin {name} "))[0];
+        l.split_whitespace().nth(3).unwrap().parse::<f64>().unwrap()
+    };
+    assert!(x("B") < 0.0 && x("C") > 0.0 && x("D") > 0.0, "{t}");
+    assert!(
+        !t.contains("line 0 -30 0 -15"),
+        "the old graphics are gone: {t}"
+    );
+    assert_eq!(common::lines(&t, "rect ").len(), 1, "{t}");
+    assert!(t.contains("{name}"));
+    s.key("u");
+    assert_eq!(s.text(), before, "one undo");
+}

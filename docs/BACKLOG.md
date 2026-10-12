@@ -77,6 +77,7 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - **elab**: xschem replicates a 1-pin instance on an N-bit bus (`.save v(count[k])` per bit) and sizes an unnamed net on an iterated instance by pin width × elements; both need a rule that keeps the sky130 adders' broadcast.
 - `file` stays relative in templates (netlist §7.6.14): absolute paths would break byte-identical output across checkouts; decide on project-relative paths if a template needs one.
 - Precompiled OSDI cells stay lang `veriloga` (no `file`): their body is simulation-only text the netlister keeps out of CDL, as xschem keeps it in its architecture block; lang `spice` would put `pre_osdi` loads into LVS netlists.
+- **elab**: `E002` checks only a schematic impl against the pins (connect.rs `port_findings`). The format spec's kind rules (rank 1) say every impl matches the cell's pins: run `elab::impl_ports` over each Verilog/Verilog-A/SPICE `body` and compare names (and order, for a positional subckt) with the pins. Bodiless impls (a `format` template, an external `file`) stay unchecked.
 - Spectre has no second oracle (snapshots only): no Spectre-syntax simulator runs in CI. Verilog is compiled by Icarus in CI (`netlist/tests/iverilog.rs`).
 
 ## run

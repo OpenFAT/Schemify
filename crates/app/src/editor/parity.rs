@@ -1771,19 +1771,7 @@ impl Editor {
             self.session.status = "make symbol: the schematic has no ports".into();
             return Vec::new();
         }
-        let mut ops = Vec::new();
-        for i in 0..doc.pins().name.len() {
-            ops.push(Op::Delete(Target::new(
-                RecordKind::Pin,
-                s.get(doc.pins().name[i]),
-            )));
-        }
-        // Row 0 each time: the rows of the graphics still to delete shift up.
-        for &kind in &doc.graphics().shape {
-            ops.push(Op::Delete(Target::new(kind, "0")));
-        }
-        ops.extend(recs.into_iter().map(|rec| Op::Insert { rec, at: None }));
-        ops
+        replace_symbol_ops(doc, recs)
     }
 
     /// Symbol → Make schematic from symbol: a port for every pin without one, in a column
@@ -2945,6 +2933,58 @@ pub(super) fn symbol_records(ports: &[(String, Orient, Pt)], width: i32) -> Vec<
     assert_eq!(pins.len(), left.len() + right.len());
     pins.extend(graphics);
     pins
+}
+
+/// Ops replacing every pin and symbol graphic of `doc` with `recs` (pins and graphics, as
+/// [`symbol_records`] makes them).
+fn replace_symbol_ops(doc: &schemify_doc::Document, recs: Vec<RecordBuf>) -> Vec<Op> {
+    assert!(!recs.is_empty());
+    let (s, pins) = (doc.strings(), doc.pins());
+    let mut ops: Vec<Op> = pins
+        .name
+        .iter()
+        .map(|&n| Op::Delete(Target::new(RecordKind::Pin, s.get(n))))
+        .collect();
+    // Row 0 each time: the rows of the graphics still to delete shift up.
+    for &kind in &doc.graphics().shape {
+        ops.push(Op::Delete(Target::new(kind, "0")));
+    }
+    ops.extend(recs.into_iter().map(|rec| Op::Insert { rec, at: None }));
+    ops
+}
+
+/// Cell panel → Symbol from ports: the [`symbol_records`] symbol for an impl body's port
+/// list (`ports`: unique names, port order; `in` left, `out` and `inout` right), its pins
+/// written in port order, replacing `doc`'s pins and symbol graphics. Any cell kind with a
+/// symbol. Empty when `ports` is.
+pub(super) fn symbol_from_ports_ops(
+    doc: &schemify_doc::Document,
+    ports: &[(String, schemify_doc::PinDir)],
+    width: i32,
+) -> Vec<Op> {
+    use schemify_doc::PinDir;
+    // Positions only order each side top to bottom: port order.
+    let placed: Vec<(String, Orient, Pt)> = ports
+        .iter()
+        .enumerate()
+        .map(|(k, (name, dir))| {
+            let o = match dir {
+                PinDir::In => Orient::R0,
+                PinDir::Out => Orient::R180,
+                PinDir::Inout => Orient::R90,
+            };
+            (name.clone(), o, (0, k as i32 * PITCH))
+        })
+        .collect();
+    let mut recs = symbol_records(&placed, width);
+    if recs.is_empty() {
+        return Vec::new();
+    }
+    // symbol_records lists the left side's pins, then the right's: back to port order.
+    let n = ports.len();
+    assert!(recs[..n].iter().all(|r| r.kind == RecordKind::Pin));
+    recs[..n].sort_by_key(|r| ports.iter().position(|p| p.0 == r.fields[0]));
+    replace_symbol_ops(doc, recs)
 }
 
 /// Symbol → Create symbol pins from selected schematic ports: one pin per selected port

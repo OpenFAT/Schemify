@@ -43,6 +43,18 @@ commands! {
     /// Cell panel: a field submitted (Enter; Ctrl+Enter in a body; a dropdown choice). From a
     /// script the argument is `<field id> <value>` (ids in `cell.rs`).
     CellSet = "cell.set",
+    /// Cell panel: regenerate the symbol (pins in port order, box, labels) from the ports of
+    /// the impl body its node id (or argument) names (`cell.impl.<r>.symbol`). One undo.
+    CellSymbolFromPorts = "cell.symbol_from_ports",
+    /// Cell panel: apply the pending pin sync (one undo); refused when the document changed
+    /// since `cell.sync_ports`.
+    CellSyncApply = "cell.sync_apply",
+    /// Cell panel: drop the pending pin sync; the document is untouched.
+    CellSyncCancel = "cell.sync_cancel",
+    /// Cell panel: read the ports of the impl body its node id (or argument) names
+    /// (`cell.impl.<r>.sync`) and show what syncing the pins to them changes, without
+    /// editing; `cell.sync_apply` applies it.
+    CellSyncPorts = "cell.sync_ports",
     /// Click on a row of the checks panel: select and zoom to its object.
     ChecksPick = "checks.pick",
     /// Enter in the chooser filter.
