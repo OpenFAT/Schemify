@@ -41,7 +41,7 @@ libm = "0.2"
 # web; user decision 2026-10-12, web spec §5); only `config` may use it. No `io`, `os`,
 # `package` libraries are compiled in; `debug` serves the API prelude and is stripped after.
 omnilua = { version = "0.7.1", default-features = false, features = ["debug", "utf8"] }
-proptest = "1"
+proptest = { version = "1", default-features = false, features = ["std"] }
 # D3: the one plugin engine (native + web); only `plugin` may depend on it (AGENTS rule 7).
 # No `wat` (text parser) or `memory64` in production; `deterministic` canonicalizes NaNs so
 # plugin results are bit-identical on every platform (rule 4, D20 cached values). Measured
