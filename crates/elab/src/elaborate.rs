@@ -10,7 +10,7 @@
 //! context → checks → select impls → recurse) → name definitions → mark used →
 //! globals → bench lines → sort violations.
 
-use crate::cells::{display, is_open, resolve_in_row, row_of};
+use crate::cells::{display, readable, row_of};
 use crate::check::{
     CellCtx, Code, Violation, Violations, check_overrides, check_values, waivers_found,
 };
@@ -667,7 +667,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             .interface(row)
             .expect("resolution checked the interface");
         let (cell, stem) = display(self.project, row);
-        let open = is_open(self.project, row);
+        let open = self.project.open_handle(row).is_some();
         let iface = Iface::from_doc(doc, &cell, &stem, row as u32, open, &mut self.names);
         let ci = self.push_cell(doc, iface);
         self.row_cell.insert(row as u32, ci);
@@ -691,13 +691,13 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 Some(r) => r.clone(),
                 None => {
                     let text = s.get(sym);
-                    let row = if ci == 0 {
-                        self.project
-                            .resolve(self.top, text)
-                            .map_err(|_| format!("cannot resolve `{text}`"))
+                    let found = if ci == 0 {
+                        self.project.resolve(self.top, text)
                     } else {
-                        resolve_in_row(self.project, self.ifaces[ci as usize].row as usize, text)
+                        let row = self.ifaces[ci as usize].row as usize;
+                        self.project.resolve_in(row, text)
                     };
+                    let row = readable(self.project, found.ok(), text);
                     let r = row.map(|row| self.cell_of_row(row));
                     seen.insert(sym, r.clone());
                     r

@@ -487,6 +487,27 @@ fn expression_errors_and_cycles_are_e008() {
     );
 }
 
+/// Expr spec §4: every expression on a cycle is `X005`, and no other. `a` lies on two
+/// cycles (`a -> b -> a`, `a -> c -> a`) of one component; `d` only reads it.
+#[test]
+fn every_node_of_a_cyclic_component_is_x005() {
+    let cell = "schemify 1 shcomp\n\npin P inout 0 0\n\nparam a b+c\nparam b a\nparam c a+1\nparam d a*2\nparam e 3\n\nimpl sch schematic\n\nport 0p0001 0 0 R0 P\n";
+    let (p, hs) = project(&[("res.shprim", RES), ("cell.shcomp", cell)]);
+    let st = CellState::build(&p, hs[1], &mut no_funcs).unwrap();
+    let mut x005: Vec<&str> = st
+        .violations
+        .with(schemify_elab::Code::E008)
+        .filter(|v| v.detail.starts_with("X005"))
+        .map(|v| st.names.get(v.param))
+        .collect();
+    x005.sort_unstable();
+    assert_eq!(x005, ["a", "b", "c"]);
+    let g = &st.graph;
+    assert!((0..3).all(|k| g.vals[k].is_err()), "cycle nodes are errors");
+    assert_eq!(g.vals[3], Val::Upstream, "d waits upstream");
+    assert_eq!(g.vals[4], Val::Int(3));
+}
+
 #[test]
 fn gating_waivers_flip_only_the_named_param() {
     // Exhaustive small domain: L over a lattice × waiver on L (on/off), with W always

@@ -1,13 +1,13 @@
-//! D19 oracle (TESTING.md `expr`/`elab`): after any sequence of edits committed with
-//! `doc::apply_edits`, the incrementally recomputed state equals a state built from
+//! D19 oracle (TESTING.md `expr`/`elab`): after any sequence of edits, undos and redos
+//! applied with `doc::apply_edits_report` (whose reported ops `recompute` takes), the incrementally recomputed state equals a state built from
 //! scratch — values, unverified flags, nets and violations.
 
 mod common;
 
 use common::*;
 use schemify_doc::{
-    DocHandle, Edit, EditRequest, Mode, Op, Outcome, Project, RecordBuf, Target, Transaction,
-    apply_edits,
+    Applied, DocHandle, Edit, EditRequest, Mode, Op, Outcome, Project, RecordBuf, Target,
+    Transaction, apply_edits_report,
 };
 use schemify_elab::{CellState, no_funcs};
 use schemify_format::RecordKind;
@@ -41,11 +41,13 @@ fn commit(p: &mut Project, h: DocHandle, ops: Vec<Op>) -> bool {
         mode: Mode::Commit,
         ops,
     };
-    matches!(edit(p, h, Edit::Tx(tx)), Outcome::Committed { .. })
+    matches!(edit(p, h, Edit::Tx(tx)).outcome, Outcome::Committed { .. })
 }
 
-fn edit(p: &mut Project, h: DocHandle, edit: Edit) -> Outcome {
-    let mut out = apply_edits(
+/// Applies one request; its reported ops are what the editor hands `recompute` (a
+/// commit's resolved ops, an undo's inverse ops, a redo's ops).
+fn edit(p: &mut Project, h: DocHandle, edit: Edit) -> Applied {
+    let mut out = apply_edits_report(
         p,
         &[EditRequest {
             doc: h,
@@ -54,6 +56,21 @@ fn edit(p: &mut Project, h: DocHandle, edit: Edit) -> Outcome {
         }],
     );
     out.pop().expect("one outcome per request")
+}
+
+/// The ops of a random undo or redo, or `None` when there was nothing to revert.
+fn revert(p: &mut Project, h: DocHandle, rng: &mut Mix) -> Option<Vec<Op>> {
+    let e = if rng.chance(50) {
+        Edit::Undo
+    } else {
+        Edit::Redo
+    };
+    let done = edit(p, h, e);
+    matches!(
+        done.outcome,
+        Outcome::Undone { .. } | Outcome::Redone { .. }
+    )
+    .then_some(done.ops)
 }
 
 /// Everything comparable between two states, as text.
@@ -176,23 +193,13 @@ fn incremental_recompute_equals_full_rebuild_after_random_edits() {
         let h = hs[1];
         let mut st = CellState::build(&p, h, &mut no_funcs).unwrap();
         let mut rng = Mix(seed);
-        // (journal seq, ops) of each commit: an undo or redo is recomputed over the ops of
-        // the entry it reverts or replays (what the editor does).
-        let mut commits: Vec<(u64, Vec<Op>)> = Vec::new();
         for step in 0..60 {
             let ops = if rng.chance(25) {
-                let e = if rng.chance(50) {
-                    Edit::Undo
-                } else {
-                    Edit::Redo
+                let Some(ops) = revert(&mut p, h, &mut rng) else {
+                    continue;
                 };
-                let seq = match edit(&mut p, h, e) {
-                    Outcome::Undone { seq } | Outcome::Redone { seq } => seq,
-                    _ => continue,
-                };
-                let entry = commits.iter().find(|c| c.0 == seq);
                 reverted += 1;
-                entry.expect("an entry committed here").1.clone()
+                ops
             } else {
                 let ops: Vec<Op> = (0..1 + rng.below(3))
                     .map(|_| random_op(&mut rng, n))
@@ -200,13 +207,13 @@ fn incremental_recompute_equals_full_rebuild_after_random_edits() {
                 let tx = Transaction {
                     label: "t".into(),
                     mode: Mode::Commit,
-                    ops: ops.clone(),
+                    ops,
                 };
-                match edit(&mut p, h, Edit::Tx(tx)) {
-                    Outcome::Committed { seq } => commits.push((seq, ops.clone())),
-                    _ => continue,
+                let done = edit(&mut p, h, Edit::Tx(tx));
+                if !matches!(done.outcome, Outcome::Committed { .. }) {
+                    continue;
                 }
-                ops
+                done.ops
             };
             let (before, pass) = (st.violations.rows.clone(), st.pass);
             let done = st.recompute(&p, h, &ops, &mut no_funcs);
@@ -680,7 +687,7 @@ fn nets_view(st: &CellState, doc: &schemify_doc::Document) -> Vec<String> {
     out
 }
 
-/// Random geometry edit sequences, with undo and redo, through `doc::apply_edits`: after
+/// Random geometry edit sequences, with undo and redo, through `doc::apply_edits_report`: after
 /// every step the patched state equals a fresh build (connectivity, names, values,
 /// violations) and the pass's delta turns the previous rows into the current ones.
 /// Returns how many steps were patched (not rebuilt).
@@ -690,39 +697,26 @@ fn geometry_run(seed: u64, steps: usize) -> usize {
     let (mut p, hs) = project(&[("dev.shprim", common::DEV), ("cell.shcomp", &cell)]);
     let h = hs[1];
     let mut st = CellState::build(&p, h, &mut no_funcs).unwrap();
-    let mut commits: Vec<(u64, Vec<Op>)> = Vec::new();
     let mut patched = 0;
     for step in 0..steps {
         let ops = if rng.chance(20) {
-            let e = if rng.chance(50) {
-                Edit::Undo
-            } else {
-                Edit::Redo
+            let Some(ops) = revert(&mut p, h, &mut rng) else {
+                continue;
             };
-            let seq = match edit(&mut p, h, e) {
-                Outcome::Undone { seq } | Outcome::Redone { seq } => seq,
-                _ => continue,
-            };
-            commits
-                .iter()
-                .find(|c| c.0 == seq)
-                .expect("committed here")
-                .1
-                .clone()
+            ops
         } else {
-            let ops = geo_ops(&mut rng, p.doc(h).unwrap());
             let tx = Transaction {
                 label: "g".into(),
                 mode: Mode::Commit,
-                ops: ops.clone(),
+                ops: geo_ops(&mut rng, p.doc(h).unwrap()),
             };
-            match edit(&mut p, h, Edit::Tx(tx)) {
-                Outcome::Committed { seq } => commits.push((seq, ops.clone())),
-                // A rejected transaction still permutes rows (its replayed inverses
-                // re-insert deletions at the end): the next step must cope.
-                _ => continue,
+            let done = edit(&mut p, h, Edit::Tx(tx));
+            // A rejected transaction still permutes rows (its replayed inverses
+            // re-insert deletions at the end): the next step must cope.
+            if !matches!(done.outcome, Outcome::Committed { .. }) {
+                continue;
             }
-            ops
+            done.ops
         };
         let (before, pass) = (st.violations.rows.clone(), st.pass);
         let done = st.recompute(&p, h, &ops, &mut no_funcs);

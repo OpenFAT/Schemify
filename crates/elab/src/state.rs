@@ -5,7 +5,7 @@
 //! within 8 ms), geometry edits patch only the nets they touch (`live`) and post only the
 //! findings they change; everything else rebuilds what it touched.
 
-use crate::cells::{display, row_of};
+use crate::cells::{display, readable, row_of};
 use crate::check::{
     CellCtx, Violation, Violations, check_overrides, check_values, cmp_key, waivers,
 };
@@ -83,14 +83,14 @@ impl CellState {
         let mut by_row: HashMap<usize, u32> = HashMap::new();
         for i in 0..doc.instances().id.len() {
             let text = s.get(doc.instances().cell[i]);
-            match project.resolve(h, text) {
+            match readable(project, project.resolve(h, text).ok(), text) {
                 Ok(row) => {
                     let next = st.ifaces.len() as u32;
                     let at = *by_row.entry(row).or_insert(next);
                     if at == next {
-                        let iface_doc = project.interface(row).expect("resolve checked the row");
+                        let iface_doc = project.interface(row).expect("readable");
                         let (cell, stem) = display(project, row);
-                        let open = crate::cells::is_open(project, row);
+                        let open = project.open_handle(row).is_some();
                         let f = Iface::from_doc(
                             iface_doc,
                             &cell,
@@ -104,9 +104,9 @@ impl CellState {
                     st.inst_iface.push(at);
                     st.unresolved.push(None);
                 }
-                Err(_) => {
+                Err(why) => {
                     st.inst_iface.push(NONE);
-                    st.unresolved.push(Some(format!("cannot resolve `{text}`")));
+                    st.unresolved.push(Some(why));
                 }
             }
         }

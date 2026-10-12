@@ -23,7 +23,9 @@ use crate::iface::{GRID, Iface, MAX, MIN, STEP};
 use crate::names::{Name, Names};
 use crate::values::{Code as PCode, Funcs, NONE, Progs, Ref, Syntax, VAR, Val};
 use schemify_doc::{Document, Instances, Sym};
-use schemify_expr::{Cycle, Deps, Error as XError, Scratch, Value, affected, reverse, topo_order};
+use schemify_expr::{
+    Deps, Error as XError, Scratch, Value, affected, reverse, topo_order, topo_order_all,
+};
 use std::collections::HashMap;
 
 /// Program table of a node: the graph's own table (overrides, substituted vars), or the
@@ -254,26 +256,29 @@ impl Graph {
         }
     }
 
-    /// Builds reverse edges and the topological order; nodes on cycles get `X005` and
-    /// lose their edges until no cycle remains (bounded: each round removes ≥ 1 node).
+    /// Builds reverse edges and the topological order. Every node on a cycle gets `X005`
+    /// (expr spec §4: all cycles in one pass) and loses its edges, which leaves the order
+    /// valid: an edge inside a cyclic component starts at a cycle node.
     fn finish(&mut self, ifaces: &[Iface], names: &Names) {
         let n = self.owner.len();
         assert_eq!(self.dep_start.len(), n + 1);
-        let mut rounds = 0;
-        loop {
-            let deps = Deps {
-                offsets: &self.dep_start,
-                targets: &self.deps,
-            };
-            match topo_order(deps, &mut self.order) {
-                Ok(()) => break,
-                Err(cycle) => {
-                    rounds += 1;
-                    assert!(rounds <= n, "each round removes a cycle node");
-                    let err = cycle.error(|n| self.node_name(n, ifaces, names));
-                    self.cut(&cycle, err);
-                }
+        let deps = Deps {
+            offsets: &self.dep_start,
+            targets: &self.deps,
+        };
+        // The acyclic case (nearly every cell) takes the cheaper order.
+        if topo_order(deps, &mut self.order).is_err() {
+            let mut cycles = Vec::new();
+            topo_order_all(deps, &mut self.order, &mut cycles);
+            for c in &cycles {
+                let err = c.error(|n| self.node_name(n, ifaces, names));
+                self.cyclic.extend(c.nodes.iter().map(|&node| (node, err.clone())));
             }
+            // A node on several cycles reports the first.
+            self.cyclic.sort_by_key(|e| e.0);
+            self.cyclic.dedup_by_key(|e| e.0);
+            assert!(!self.cyclic.is_empty(), "a failed order has a cycle");
+            self.cut();
         }
         let deps = Deps {
             offsets: &self.dep_start,
@@ -304,11 +309,8 @@ impl Graph {
         }
     }
 
-    fn cut(&mut self, cycle: &Cycle, err: XError) {
-        for &node in &cycle.nodes {
-            self.cyclic.push((node, err.clone()));
-        }
-        self.cyclic.sort_by_key(|e| e.0);
+    /// Drops the edges of the `cyclic` nodes (rebuilds the CSR).
+    fn cut(&mut self) {
         // Rebuild the CSR without the cyclic nodes' edges.
         let mut start = vec![0u32];
         let mut deps = Vec::with_capacity(self.deps.len());
