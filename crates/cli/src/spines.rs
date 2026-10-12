@@ -70,15 +70,16 @@ pub fn violation_line(names: &Names, v: &Violation) -> String {
 }
 
 /// The core dialects (D22): CLI word, dialect, netlist file extension.
-pub const DIALECTS: [(&str, Dialect, &str); 5] = [
+pub const DIALECTS: [(&str, Dialect, &str); 6] = [
     ("ngspice", Dialect::Ngspice, "spice"),
+    ("espice", Dialect::Espice, "sp"),
     ("xyce", Dialect::Xyce, "cir"),
     ("cdl", Dialect::Cdl, "cdl"),
     ("spectre", Dialect::Spectre, "scs"),
     ("verilog", Dialect::Verilog, "v"),
 ];
 
-/// The dialect a CLI word names (`ngspice xyce cdl spectre verilog`).
+/// The dialect a CLI word names (`ngspice espice xyce cdl spectre verilog`).
 pub fn dialect_of(word: &str) -> Option<Dialect> {
     DIALECTS.iter().find(|d| d.0 == word).map(|d| d.1)
 }
@@ -200,18 +201,37 @@ pub fn open_file(file: &Path, seed: u64) -> Result<(Opened, Vec<String>), OpenEr
     Ok((opened, loaded.notes))
 }
 
+/// The simulator dialect the user config selects (`schemify.opt.simulator`, config spec
+/// §3): what Simulate and `schemify run` netlist for unless told otherwise.
+pub fn sim_dialect(user: &schemify_config::Table) -> Dialect {
+    match user.opts.simulator {
+        schemify_config::SimKind::Espice => Dialect::Espice,
+        _ => Dialect::Ngspice,
+    }
+}
+
 /// The external programs of run spec §5 from the user config's `schemify.sim` rows; the
 /// defaults for rows it does not set (this fixes "no user-config reader": documents never
-/// name a program, D7).
+/// name a program, D7). A row without `args` keeps the default arguments.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn tools(user: &schemify_config::Table) -> schemify_run::Tools {
     use schemify_config::SimKind;
     let mut t = schemify_run::Tools::default();
-    if let Some(s) = user.sim(SimKind::Ngspice) {
-        t.sim = schemify_run::SimCommand {
+    let command =
+        |s: &schemify_config::Sim, default: schemify_run::SimCommand| schemify_run::SimCommand {
             path: s.path.clone(),
-            args: s.args.clone(),
+            args: if s.args.is_empty() {
+                default.args
+            } else {
+                s.args.clone()
+            },
+            env: s.env.clone(),
         };
+    if let Some(s) = user.sim(SimKind::Ngspice) {
+        t.sim = command(s, schemify_run::SimCommand::ngspice());
+    }
+    if let Some(s) = user.sim(SimKind::Espice) {
+        t.espice = command(s, schemify_run::SimCommand::espice());
     }
     if let Some(s) = user.sim(SimKind::Openvaf) {
         t.openvaf.clone_from(&s.path);
@@ -219,7 +239,7 @@ pub fn tools(user: &schemify_config::Table) -> schemify_run::Tools {
     if let Some(s) = user.sim(SimKind::Iverilog) {
         t.iverilog.clone_from(&s.path);
     }
-    assert!(!t.sim.path.is_empty());
+    assert!(!t.sim.path.is_empty() && !t.espice.path.is_empty());
     t
 }
 
@@ -253,6 +273,9 @@ mod native {
         /// Lines every job's ngspice netlist gets before its `.end` (the editor's
         /// `.save`/`.options` for OP annotation and cross-probe, run spec §7a); empty: none.
         pub extra: String,
+        /// The dialect every job is netlisted in ([`Dialect::Ngspice`] or
+        /// [`Dialect::Espice`]); the design hash covers it.
+        pub dialect: Dialect,
     }
 
     impl std::fmt::Debug for Run {
@@ -264,32 +287,49 @@ mod native {
         }
     }
 
-    /// The run spine up to submission (run spec §1–§4): opens every reached cell, reads the
-    /// plan, expands `select` (`None`: no jobs, for an optimizer or plugin requests that push
-    /// their own), gates and hashes the design, and creates the results and the runner
-    /// (`cfg` builds its configuration from the digest). Jobs are not prepared yet.
+    /// The run spine up to submission (run spec §1–§4): opens every cell each selected
+    /// config reaches, reads the plan, expands `select` (`None`: no jobs, for an optimizer
+    /// or plugin requests that push their own), gates and hashes the design for `dialect`,
+    /// and creates the results and the runner (`cfg` builds its configuration from the
+    /// digest; an espice run starts `Tools::espice`). Jobs are not prepared yet.
+    ///
+    /// Cost: one [`elaborate_all`] per selected config (at least one), then the gate's.
     ///
     /// # Errors
     ///
     /// A cell cannot be opened, the plan or selection is refused, or the gate blocks (one
     /// message, blocking violations joined by `; `).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `dialect` is neither ngspice nor espice (the simulators the runner starts).
     pub fn start_run<C: Cells, F: Funcs>(
         c: &mut C,
         top: DocHandle,
         select: Option<&Select<'_>>,
         env: &[(&str, &str)],
+        dialect: Dialect,
         funcs: &mut F,
         cfg: impl FnOnce(&Digest) -> RunnerConfig,
     ) -> Result<Run, String> {
-        // Open every reached cell first (each config may reach different ones).
-        let probe = Request {
-            config: select.and_then(|s| s.configs.first().copied()),
-            corner: None,
-            overrides: &[],
-            env,
-            dialect: Dialect::Ngspice,
+        assert!(matches!(dialect, Dialect::Ngspice | Dialect::Espice));
+        // Open every cell each selected config reaches (configs select different impls,
+        // so different cells); no selection or no config: the bench default. Bounded by
+        // the selection, which names each bench config at most once per entry.
+        let configs: Vec<Option<&str>> = match select.map(|s| s.configs) {
+            Some(cs) if !cs.is_empty() => cs.iter().map(|c| Some(*c)).collect(),
+            _ => vec![None],
         };
-        elaborate_all(c, top, &probe, funcs)?;
+        for config in configs {
+            let probe = Request {
+                config,
+                corner: None,
+                overrides: &[],
+                env,
+                dialect,
+            };
+            elaborate_all(c, top, &probe, funcs)?;
+        }
         let project = c.project();
         let bench = project.doc(top).expect("checked by elaborate_all");
         let plan = Plan::read(bench).map_err(|e| format!("bench: {e:?}"))?;
@@ -297,13 +337,18 @@ mod native {
             Some(s) => schemify_run::expand(&plan, s).map_err(|e| format!("bench: {e:?}"))?,
             None => Jobs::new(),
         };
-        let digest =
-            schemify_run::design(project, top, &jobs, env, funcs).map_err(|b| match b {
+        let digest = schemify_run::design(project, top, &jobs, env, dialect, funcs).map_err(
+            |b| match b {
                 schemify_run::Blocked::NeedsOpen(rows) => format!("cells not open: rows {rows:?}"),
                 schemify_run::Blocked::Violations(v) => format!("run blocked: {}", v.join("; ")),
-            })?;
+            },
+        )?;
         let results = Results::new(&plan, digest);
-        let runner = Runner::new(cfg(&digest));
+        let mut config = cfg(&digest);
+        if dialect == Dialect::Espice {
+            config.tools.sim = config.tools.espice.clone();
+        }
+        let runner = Runner::new(config);
         let run = Run {
             plan,
             jobs,
@@ -313,6 +358,7 @@ mod native {
             next: 0,
             finished: Vec::new(),
             extra: String::new(),
+            dialect,
         };
         assert!(run.next <= run.jobs.len());
         Ok(run)
@@ -345,7 +391,7 @@ mod native {
                     &mut self.jobs,
                     j,
                     env,
-                    Dialect::Ngspice,
+                    self.dialect,
                     funcs,
                     &mut self.results,
                 );

@@ -1,7 +1,7 @@
 //! Checks (netlist spec §8): the code table, the [`Violations`] table, D13 gating on
 //! evaluated values with waivers, and the per-cell checks over instances and the
 //! expression graph. Connectivity findings come from `connect`; hierarchy findings
-//! (`E013`, `E014`, `E031`, `E033`–`E036`) from `elaborate`.
+//! (`E013`, `E014`, `E031`, `E033`–`E036`, `W037`) from `elaborate`.
 
 use crate::graph::{Graph, Work};
 use crate::iface::{GRID, Iface, MAX, MIN, STEP};
@@ -10,7 +10,7 @@ use crate::values::{Code as PCode, Funcs, NONE, Val};
 use schemify_doc::{Document, Instances, ObjId};
 use std::cmp::Ordering;
 
-/// Check codes (netlist spec §8; `E035`, `E036` are elab amendments).
+/// Check codes (netlist spec §8; `E035`, `E036`, `W037` are elab amendments).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[allow(missing_docs)] // meanings: `Code::meaning`
 pub enum Code {
@@ -36,6 +36,7 @@ pub enum Code {
     E034,
     E035,
     E036,
+    W037,
     I005,
 }
 
@@ -54,10 +55,10 @@ pub enum Severity {
 impl Code {
     /// Returns the code as written in reports (`"E005"`).
     pub fn as_str(self) -> &'static str {
-        const S: [&str; 23] = [
+        const S: [&str; 24] = [
             "E001", "E002", "E003", "W004", "E005", "E006", "W007", "E008", "E009", "W010", "E011",
             "E012", "E013", "E014", "W016", "E030", "E031", "E032", "E033", "E034", "E035", "E036",
-            "I005",
+            "W037", "I005",
         ];
         S[self as usize]
     }
@@ -101,6 +102,7 @@ impl Code {
             Code::E034 => "undefined ${NAME} in code, body or corner path",
             Code::E035 => "unknown corner or config",
             Code::E036 => "inherited pins of one name with different default nets",
+            Code::W037 => "config inst rule names a path no instance has",
             Code::I005 => "waived violation",
         }
     }

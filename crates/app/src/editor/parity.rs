@@ -2629,6 +2629,10 @@ impl Editor {
                 self.dialect == schemify_elab::Dialect::Ngspice,
             ),
             (
+                "options.netlist_format_symbol_mode.espice_netlist",
+                self.dialect == schemify_elab::Dialect::Espice,
+            ),
+            (
                 "options.netlist_format_symbol_mode.verilog_netlist",
                 self.dialect == schemify_elab::Dialect::Verilog,
             ),

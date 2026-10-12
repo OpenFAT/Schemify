@@ -13,6 +13,8 @@ schemify.opt.light = true
 schemify.keymap.set("Ctrl+Shift+N", "sim.netlist", { desc = "netlist" })
 schemify.keymap.set("F5", function() schemify.cmd("sim.simulate") end)
 schemify.sim("ngspice", { path = "/opt/ngspice/bin/ngspice", args = { "-b", "-r", "{raw}", "{netlist}" } })
+schemify.sim("espice", { path = "/opt/espice/bin/espice", env = { ZIG = "/opt/zig-0.17/bin/zig" } })
+schemify.opt.simulator = "espice"              -- Simulate and `schemify run` use ESPice
 schemify.on("saved", function(ev) schemify.notify("saved document " .. ev.doc) end)
 schemify.pack.add {
   { src = "https://github.com/someone/gmid-lut.git", version = "v1.2.0", grant = { "read_project", "spawn:ngspice" } },
@@ -71,7 +73,7 @@ The init file and every function it registers run in one Lua 5.4 state that only
 | `schemify.keymap.set(chord, target, opts?)` | Binds `chord` (the keymap record syntax, `Ctrl+Shift+N`, `F5`, `w`) to `target`: a command name ([plugin-abi.md](plugin-abi.md) §7, the D27 command table) or a Lua function. `opts.desc` is a description string. A later `set` of the same chord replaces the earlier one. |
 | `schemify.cmd(name, args?)` | Queues command `name` with the argument string `args` (default empty). The editor runs queued commands in order at its next delivery; the core has no command table yet and ignores them. |
 | `schemify.on(event, fn)` | Calls `fn(ev)` after each `event` the editor delivers to plugins. Events (plugin-abi §6 wire words): `load` (the editor is ready), `doc_opened`, `doc_closed`, `doc_changed`, `selection_changed`, `saved`, `run_done`. `ev` holds the event's fields (`ev.doc`, `ev.epoch`, `ev.job`). Hooks run in registration order. |
-| `schemify.sim(name, { path = , args = })` | The external programs of [run.md](run.md) §5: `ngspice` (the simulator command line; `{netlist}` and `{raw}` are replaced by the job's files), `openvaf`, `iverilog` (compilers; `args` unused). `path` is required; `args` is a list of strings. Another name is an error. The core's runner and the editor's Simulate both use all three. |
+| `schemify.sim(name, { path = , args = , env = })` | The external programs of [run.md](run.md) §5: `ngspice` and `espice` (simulator command lines; `{netlist}` and `{raw}` are replaced by the job's files; without `args` the defaults of run.md §5), `openvaf`, `iverilog` (compilers; `args` unused). `path` is required; `args` is a list of strings; `env` maps variable names (non-empty, no `=`) to strings, at most 64, set for the program on top of the inherited environment and stored sorted by name (ESPice's `ZIG`, the Zig 0.17 it compiles Verilog-A with). Another name, or a bad `args`/`env`, is an error that leaves the row unset. The core's runner and the editor's Simulate both use all four. |
 | `schemify.notify(msg, level?)` | Shows `msg`: `level` is `"error"`, `"warn"` or `"info"` (default). |
 | `schemify.pack.add { spec, … }` | Declares user packages (§5). Each call appends; a later spec with the same name replaces the earlier one. |
 
@@ -86,6 +88,7 @@ Options:
 | `layer_colors` | table `{ [layer] = "rrggbb" }` | `{}` | Canvas colour per layer `0`–`21` over the theme's (View → Change current layer color); `"#rrggbb"` is accepted. Assign the whole table: reading returns a copy, so changing one of its entries sets nothing. |
 | `dim` | number in [0, 1] | 0 | Dims the canvas toward its background (View → Dim colors), stored in percent. |
 | `line_width` | number in [0.1, 10] | 1 | Canvas line width in pixels (View → Set line width), stored in tenths of a pixel. |
+| `simulator` | `"ngspice"` or `"espice"` | `"ngspice"` | The simulator Simulate and `schemify run` start, and the dialect `schemify netlist` and the editor's netlist dialect default to ([run.md](run.md) §5). `--dialect` and the Netlist dialect menu override it. |
 
 Steps are stored in milli-units (D33), rounded to the nearest; a step that rounds to 0 or exceeds 10^6 units is an error. A layer outside `0`–`21`, a colour that is not six hex digits, or a number out of its range is an error. The editor reads the options once, at startup; changing a colour, the dim factor or the line width in the editor lasts for the session (put it in `init.lua` to keep it).
 
@@ -170,9 +173,9 @@ The user-config table (owner: `crates/config`; readers: both binaries):
 
 | Table | Rows | Capacity |
 |---|---|---|
-| options | the seven keys of §3 | fixed |
+| options | the eight keys of §3 | fixed |
 | keymaps | chord, target (command name or function id), description | 4096 |
-| sims | `ngspice`, `openvaf`, `iverilog`: path, args | 3 |
+| sims | `ngspice`, `openvaf`, `iverilog`, `espice`: path, args, env (≤ 64 each) | 4 |
 | packages | the specs of §5 | 128 |
 | hooks | event word, function id | 1024 |
 | requests (output of each call) | queued commands, notifications, errors | 256 per call |

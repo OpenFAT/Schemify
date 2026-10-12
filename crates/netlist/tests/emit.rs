@@ -530,3 +530,71 @@ fn once_only_text_follows_the_rows_that_use_it() {
         "{s}"
     );
 }
+
+#[test]
+fn espice_loads_verilog_a_sources_with_hdl_and_is_ngspice_text_otherwise() {
+    // Spec §7.2a: the espice text is the ngspice text with each OSDI load block
+    // `.control`/`pre_osdi <stem>.osdi`/`.endc` replaced by `.hdl "<stem>.va"` (and the
+    // header's dialect word); `.model` and `N` lines unchanged. One inline-body source and
+    // one `file` source.
+    let body = "schemify 1 shprim\n\npin p inout 0 -30\npin n inout 0 30\n\nimpl va veriloga\n  \
+                model vgain_m\n\nbody va\n  | `include \"disciplines.vams\"\n  \
+                | module vgain(p, n);\n  |   electrical p, n;\n  \
+                |   analog V(n) <+ 3 * V(p);\n  | endmodule\n";
+    let file = "schemify 1 shprim\n\npin p inout 0 -30\npin n inout 0 30\n\nparam model m1\n  kind string\n\n\
+                impl va veriloga\n  file va/amp1.va\n";
+    let bench = "schemify 1 shbench\n\ninst 0a0001 ./vgain\n  at 0 0 R0\n  name N1\n\
+                 inst 0a0002 ./amp\n  at 100 0 R0\n  name 2\n\n\
+                 label 0n0001 0 -30 R0 a\nlabel 0n0002 0 30 R0 y\nlabel 0n0003 100 -30 R0 a\n\
+                 label 0n0004 100 30 R0 0\n";
+    let (p, hs) = project(&[
+        ("vgain.shprim", body),
+        ("amp.shprim", file),
+        ("tb.shbench", bench),
+    ]);
+    let ng = emit(&elab(&p, hs[2], Dialect::Ngspice), Dialect::Ngspice).text;
+    let e = elab(&p, hs[2], Dialect::Espice);
+    assert!(blocking(&e).is_empty(), "{:?}", blocking(&e));
+    let es = emit(&e, Dialect::Espice).text;
+    let want = ng
+        .replace("(schemify ngspice)", "(schemify espice)")
+        .replace(
+            ".control\npre_osdi amp1.osdi\n.endc\n",
+            ".hdl \"amp1.va\"\n",
+        )
+        .replace(
+            ".control\npre_osdi vgain.osdi\n.endc\n",
+            ".hdl \"vgain.va\"\n",
+        );
+    assert_ne!(es, ng);
+    assert_eq!(es, want);
+    assert!(!es.contains("pre_osdi") && !es.contains(".control"), "{es}");
+    assert!(
+        es.contains(".hdl \"amp1.va\"\n.hdl \"vgain.va\"\n.model m1 amp1\n.model vgain_m vgain\n"),
+        "{es}"
+    );
+    assert!(
+        es.contains("\nN1 a y vgain_m\n") && es.contains("\nN2 a 0 m1\n"),
+        "{es}"
+    );
+    // No checkout path in the text (§7.6.14): the runner copies the sources beside it.
+    assert!(!es.contains('/'), "{es}");
+}
+
+#[test]
+fn espice_has_no_default_template_for_verilog_leaves() {
+    // ESPice has no XSPICE d_cosim: a `verilog` leaf without a `format spice` is E013.
+    let g = "schemify 1 shprim\n\npin A in -20 0\n  domain digital\npin Y out 20 0\n  domain digital\n\n\
+             impl v verilog\n  model gm\n  file g.v\n";
+    let bench = "schemify 1 shbench\n\ninst 0a0001 ./g\n  at 0 0 R0\n  name U1\n\n\
+                 label 0n0001 -20 0 R0 a\nlabel 0n0003 20 0 R0 y\n";
+    let (p, hs) = project(&[("g.shprim", g), ("tb.shbench", bench)]);
+    let e = elab(&p, hs[1], Dialect::Espice);
+    assert!(
+        blocking(&e).iter().any(|b| b.starts_with("E013")),
+        "{:?}",
+        blocking(&e)
+    );
+    // ngspice still takes it (positive space).
+    assert!(blocking(&elab(&p, hs[1], Dialect::Ngspice)).is_empty());
+}
