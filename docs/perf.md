@@ -95,9 +95,11 @@ iGPU, timestamp floor ≈ 1.9 ms included; it fails unless every camera frame is
 | zoom | 6.7 / 10.6 | 1.3 / 2.7 | 21.4 / 26.5 | 4.4 / 9.4 | — |
 
 `frame_times_10k` pan on the Intel iGPU: 5.7 → 2.1 ms (floor 1.9). The grid itself is not a
-cost here: turning it off changes neither number. Still open: after a zoom settles at 2× the
-view needs 4 frames to record every tile (16 tiles per frame, top-left first), so on a
-zoom-out the bottom of the canvas shows background for those frames.
+cost here: turning it off changes neither number. After a zoom settled, the view needed 4 frames
+at 2× to record every tile (16 tiles per frame, top-left first), so a zoom-out showed bare
+background at the bottom for those frames. `TILES_PER_FRAME` is now 64 and `COST_PER_FRAME`
+alone bounds the frame: a settled zoom is whole in the next frame at 1× and after 2 extra frames
+at 2× (`grid_keeps_up_with_pan_and_zoom`); the 10k/100k/1M budgets still hold.
 
 Retained layer at 1M for comparison: pan 0.08 / 0.22 / 107 CPU, 0.063 / 0.075 / 39 GPU; zoom
 0.07 / 103 / 109 CPU, 0.082 / 39 / 39 GPU.
