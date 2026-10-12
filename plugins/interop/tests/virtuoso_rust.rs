@@ -703,15 +703,16 @@ fn gen_symbol(g: &mut Gen, t: &mut String, params: &[&str]) {
                 90 * g.n(4),
                 90 * (1 + g.n(3))
             )),
-            _ => t.push_str(&format!(
-                "poly {} {} {} {} {} {}\n  closed true\n",
-                g.c(),
-                g.c(),
-                g.c() + 20,
-                g.c(),
-                g.c(),
-                g.c() + 20
-            )),
+            _ => {
+                // A real triangle: collinear points are no polygon (Virtuoso needs three
+                // distinct corners; the exporter sends a degenerate one as a line).
+                let (x, y) = (g.c(), g.c());
+                t.push_str(&format!(
+                    "poly {x} {y} {} {y} {x} {}\n  closed true\n",
+                    x + 20,
+                    y + 20
+                ))
+            }
         }
     }
     t.push_str(&format!(
@@ -1488,4 +1489,11 @@ proptest::proptest! {
         let tol = 1e-12 * want.abs().max(1e-300);
         proptest::prop_assert!((got - want).abs() <= tol, "{} → {} → {}: {} vs {}", e, a.text, back.text, want, got);
     }
+}
+
+/// A seed the generator once failed on: a closed `poly` whose points collapse (spec §6.2).
+#[test]
+fn generated_project_regression_seeds() {
+    let seed = 14_947_292_216_081_295_580_u64;
+    round_trip(&gen_project(seed), &format!("seed {seed}"));
 }

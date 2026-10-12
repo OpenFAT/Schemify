@@ -95,7 +95,15 @@ fn import(text: &str, existing: &Files) -> (String, Notes) {
                 imp.files.iter().map(|f| &f.0).collect::<Vec<_>>()
             )
         });
-    (String::from_utf8(tb.1.clone()).unwrap(), imp.notes)
+    // Without the import fingerprints (`vsym`/`vsch` header lines, spec §7.5), which an
+    // import adds by design.
+    let text: String = String::from_utf8(tb.1.clone())
+        .unwrap()
+        .lines()
+        .filter(|l| !l.starts_with("  vsym ") && !l.starts_with("  vsch "))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    (text, imp.notes)
 }
 
 /// Rank-4/6 records of a bench as `kind name` → record text (fields and attributes).

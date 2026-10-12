@@ -219,7 +219,17 @@ pub fn records(d: &Dump) -> Vec<Record> {
             ));
         }
     }
-    for test in &d.maestro {
+    // Maestro tests by (cell, test name), as the SKILL dumper writes them (§4.2).
+    let mut tests: Vec<&Vec<Record>> = d.maestro.iter().collect();
+    let key = |t: &Vec<Record>| -> (String, String) {
+        let r = &t[0];
+        (
+            r.str(2).unwrap_or("").to_owned(),
+            r.str(0).unwrap_or("").to_owned(),
+        )
+    };
+    tests.sort_by_key(|t| key(t));
+    for test in tests {
         out.extend(test.iter().cloned());
     }
     out.push(Record::new("end", vec![]));

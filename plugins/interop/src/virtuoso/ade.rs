@@ -155,6 +155,22 @@ pub fn export(d: &Design, ci: usize, vlib: &str, notes: &mut Notes) -> Vec<Recor
         "{}: maestro is a bench's",
         c.path
     );
+    // A bench with no simulation setup (a schematic with no symbol, as a Virtuoso
+    // testbench without maestro imports) gets no maestro view: none is created in Virtuoso.
+    let setup = [
+        RecordKind::Var,
+        RecordKind::Corner,
+        RecordKind::Sweep,
+        RecordKind::Output,
+        RecordKind::Spec,
+        RecordKind::Code,
+        RecordKind::Montecarlo,
+        RecordKind::Optimize,
+        RecordKind::Config,
+    ];
+    if !setup.iter().any(|k| c.records(*k).next().is_some()) {
+        return Vec::new();
+    }
     let cell = c.path.as_str();
     let vars: Vec<String> = c
         .records(RecordKind::Var)
