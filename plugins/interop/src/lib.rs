@@ -54,6 +54,7 @@ pub mod design;
 pub mod job;
 mod limits;
 pub mod map;
+pub mod merge;
 pub mod nets;
 pub mod notes;
 pub mod profile;

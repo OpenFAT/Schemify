@@ -1,0 +1,38 @@
+schemify 1 shprim
+  provenance "virtuoso analogLib/nmos4"
+
+pin D inout 20 -30
+pin G in -20 0
+pin S inout 20 30
+pin B inout 20 0
+
+param model ""
+  kind string
+  doc "Model name"
+param w 1u
+  unit m
+  doc Width
+param l 180n
+  unit m
+  doc Length
+param m 1
+  doc Multiplier
+
+impl spice spice
+  format spice "M{name} {D} {G} {S} {B} {model} w={w} l={l} m={m}"
+  format spectre "{name} ({D} {G} {S} {B}) nmos4 w={w} l={l} m={m}"
+  format cdl "M{name} {D} {G} {S} {B} {model} m={m} L={l} W={w}"
+
+line -20 0 0 0
+line 0 -15 0 15
+line 5 -15 5 15
+
+poly 5 -15 20 -15 20 -30
+poly 5 15 20 15 20 30
+
+line 5 0 20 0
+
+stext 25 8 R0 w={w}
+  size 0.6
+stext 25 -8 R0 {name}
+  size 0.6

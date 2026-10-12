@@ -1,0 +1,26 @@
+schemify 1 shbench
+
+inst 1p2r0r analogLib:vdc
+  at -120 40 R0
+  name V0
+  vdc 1.8
+inst w54bez analogLib:vdc
+  at -80 40 R0
+  name V1
+  vdc 900m
+inst zkgh4n ./inv
+  at 0 0 R0
+  name I0
+
+wire 2zr01d -120 -10 -120 10
+wire 9vhjhq 40 0 80 0
+wire yeffrx -80 0 -80 10
+wire zx3b16 -80 0 -40 0
+
+label 7wv0vq -120 70 R0 GND
+  global true
+label 8ss5gh -80 70 R0 GND
+  global true
+label cntqnv 60 0 R0 out
+label eqzgqp -60 0 R0 in
+label th4x8q -120 -10 R0 vdd!

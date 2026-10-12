@@ -1,0 +1,4 @@
+schemify 1 project
+
+lib analogLib path analogLib
+lib demo path demo

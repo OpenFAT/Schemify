@@ -46,7 +46,8 @@ Coordinates are Schemify milli-units, y down, orientations Schemify's, net expre
 ## 2. Design load and store
 
 - **load:** every file of the closure is opened through `schemify_doc` (so only valid files are exported; a file that fails to load stops the export with its diagnostics) and its records are converted to Design rows. Closure = the named cells plus every `cellref` reachable from their schematics, through `lib:cell` and `./cell`; `core:*` cells come from `schemify_doc::core_library()`.
-- **store:** Design rows → canonical Schemify text (`schemify_format::write`). When the target file exists, its **Schemify-only data is kept** (§7.3): the stored file is the existing file with the tool-owned parts replaced. Ids come from the source (`schemifyId`, §6.2); objects without one get `IdRng::for_import("<lib>/<cell>", ordinal)` ids, the ordinal being the object's rank in the dump's deterministic order, so re-importing an unchanged dump is a no-op diff.
+- **store:** Design rows → canonical Schemify text (`schemify_format::write`). When the target file exists, its **Schemify-only data is kept** (§7.3): the stored file is the existing file with the tool-owned parts replaced. Ids come from the source (`schemifyId`, §6.2); objects without one get `IdRng::for_import("<lib>/<cell>", ordinal)` ids (Virtuoso library and cell), the ordinal being the object's rank in the dump's deterministic order (instances, schematic pins, wire segments, labels, shapes; every `schemifyId` of the cellview is reserved first, so a fresh id never takes one a later object wants), so re-importing an unchanged dump is a no-op diff. The store is `merge` (§7.3); a library the manifest lacks is added as `lib <name> path <dir>` (dir: `ImportOptions::lib_dir`, else the name) and the manifest returned as a file.
+- **Library names.** The project root (Schemify library `""`) is the Virtuoso library `schemify`, bundled `core` cells are `schemify_core`, every other library keeps its name; `--lib L=V` (export) and `ImportOptions::lib_map` (import, the inverse) rename. An instance whose master lands in its own directory is written `./cell`, else `lib:cell`.
 
 ## 3. Profiles (tool syntax as data)
 
@@ -91,8 +92,8 @@ Schemify expressions (expr.md) ↔ Virtuoso CDF/AEL strings (Spectre semantics: 
 
 | Schemify | Virtuoso |
 |---|---|
-| number with suffix `f p n u m k meg g t` (any case; `M` = milli) | the canonical decimal with `f p n u m k M G T` (`1meg` → `1M`, `2M` → `2m`); never `meg`, never milli `M` |
-| `mil` | `*25.4u` folded into the number |
+| number with suffix `f p n u m k meg g t` (any case; `M` = milli) | the number's digits as written with the suffix respelled `f p n u m k M G T` (`1meg` → `1M`, `2M` → `2m`, `1.50K` → `1.50k`); never `meg`, never milli `M`; a number with both an exponent and a suffix folds to canonical number text (expr §7: Spectre ignores a factor after an exponent) |
+| `mil` | folded into the number: canonical text of `v · 25.4e-6` |
 | a parameter of the containing cell | `pPar("x")` |
 | a bench var | the bare name (an ADE design variable) |
 | a var of the containing component | its expression, inlined (Virtuoso cells have no variables), `needs_review: inlined-var` |
@@ -102,6 +103,12 @@ Schemify expressions (expr.md) ↔ Virtuoso CDF/AEL strings (Spectre semantics: 
 | anything else (`if`, `?:`, comparisons, strings, plugin functions) | a constant-folded number when it has no identifiers; otherwise `needs_review: expression` and the instance keeps the CDF default |
 
 Import is the inverse, plus: `iPar("x")` → the instance's own value of `x` (its override, else the cell default) in parentheses; a bare identifier that is no parent parameter and no bench var is a design variable — imported as a bench var when the cell is a bench, else `needs_review: design-variable`. String-kind parameters (`model`, choices) are literal text both ways (template braces doubled on import).
+
+Decided (`virtuoso::ael`):
+- Both directions rewrite text token by token and keep the source's spacing and parentheses, so a value needing no rewrite comes back byte for byte; only `x^y` is restructured (`pow(x,y)`, comes back `pow(x,y)`). `pi` is written as its value.
+- A CDF *default* is evaluated in the cell's own scope: a parameter of the same cell is `iPar("x")` on export and `x` on import.
+- Import respells Spectre factors `T G M K k m u n p f` as `t g meg k k m u n p f`; `a c % _` (no Schemify suffix) and a factor after an exponent fold to canonical number text; unit letters after a factor are dropped (`1pF` → `1p`); `5.` becomes `5.0`; `**` becomes `^`; `log` becomes `ln`. A value naming an AEL-only function (`hypot fmod asinh acosh atanh`) or `pPar` of a non-parameter is reviewed (`expression`); a translated override that does not compile as a Schemify expression is dropped and reviewed, never written.
+- A string-kind value with template holes has no CDF form: it is sent as its text and reviewed (`template`).
 
 xschem export values: a number with a suffix is written as is (Schemify's suffixes are SPICE's); an expression with identifiers becomes a SPICE-quoted `'…'` expression (`^` → `**`, `ln` → `ln`, `log10` → `log10`, the identifiers verbatim: parent parameters are subcircuit parameters in xschem's netlist, bench vars are `.param`s) — the inverse of import.md §3's instance-value rule; anything untranslatable (strings, `if`, plugin functions) is reviewed and the instance keeps the symbol default.
 
@@ -116,6 +123,8 @@ xschem export values: a number with a suffix is written as is (Schemify's suffix
 | any other hole | dropped, `needs_review: template` | dropped |
 
 Virtuoso → Schemify adds: ILLabel `cdsName()` → `{name}`; `cdsParam(n)` → `<p>={<p>}` where `p` is the n-th entry of the cell CDF's `paramLabelSet` (dropped when it has none); `cdsTerm("t")` and `[@refDes]`, `[@userPartName…]` → dropped (runtime annotation); `[@p:a%b:c]` → `a{p}b` (the fallback `c` is lost, reviewed).
+
+Decided: parameter NLP labels and literal labels sit on `annotate drawing`; literal text inside an NLP format escapes `\ [ ] : %` with `\` (and is unescaped on import); `[@partName]`/`[@cellName]` → `{cell}`. A `stext` anchor maps to `justify`: no flag `upperLeft`, `hcenter` `upperCenter`, `vcenter` `centerLeft`, both `centerCenter`; on import a justification containing `Center`/starting with `center` sets the flag. Text height is `size · 10000` milli-units, i.e. `size = height · 16 / upi` (a `stext`/`text` without `size` exports the editor's defaults 0.3/0.4; import always writes `size`).
 
 ## 4. The `.sfyx` exchange file
 
@@ -223,6 +232,8 @@ Tests (`tests/virtuoso_skill.rs`, `tests/skill_lint.rs`): every shipped line rea
 | `config` view | `needs_review: config` (§9.3) |
 | analogLib / basic masters | the `analogLib`/`basic` mirror library (`"ref"` cells), with the built-in ngspice templates of §6.5; `basic/ipin opin iopin` are ports, `basic/noConn` is `noconn`, analogLib/basic global symbols (`gnd vdd vss vcc …`) are global labels |
 
+Decided (import): `basic/ipin opin iopin noConn` and the global symbols are consumed by the objects they become and get no mirror file; `schemify_core` cells are the bundled core (`core:*`) and are never written; a derived interface puts inputs on the left (x = −40), outputs and inouts on the right (x = 40), 20 units apart, inside a box with `{name}`; impls are named `schematic`, `spice` (devices), `veriloga`, `verilog`, the first being `default` when there are several. With `ImportOptions::analoglib`, analogLib instances move onto their §6.5 core cells (§6.4 on the Schemify side), else they instantiate the analogLib mirror.
+
 Export is the inverse: `.shcomp` → symbol + schematic + CDF; `.shprim` → symbol + CDF + simInfo (spectre and auCdl from its `format spectre`/`format cdl`, §6.3); `.shbench` → schematic (no symbol) + maestro; `core:*` cells → library `schemify_core` (symbols drawn as in Schemify, CDF from the core params, simInfo from §6.5) unless the mapping sends them elsewhere; cells whose provenance is `virtuoso <lib>/<cell>` are never exported (they *are* the Virtuoso cell) and instantiate `<lib>/<cell>/symbol`.
 
 ### 6.2 Objects
@@ -235,7 +246,7 @@ Export is the inverse: `.shcomp` → symbol + schematic + CDF; `.shprim` → sym
 | net-expression label `[@p:%:d!]` on a wire | the cell gains inherited pin `p` (`inherit d`, §3.3) and a label `p` there (elab §9.5) |
 | schematic pin (`spin`) | `port` bound to the interface pin of that name, at the pin instance's origin; in a bench a `label` |
 | `basic/noConn` instance | `noconn` at its origin |
-| note label (text/drawing) | `text`, size = height · 160000 / upi / 10 (xschem text scale), orient by §3.2 |
+| note label (text/drawing) | `text`, size = height · 16 / upi (§3.5), orient by §3.2 |
 | note shape (text/drawing, drawing1 = dashed) | `shape`; ellipse → `circle` when square, else a 32-point closed `poly` (reviewed) |
 | symbol shape (device/drawing, drawing1 = filled) | rank-2 graphics; same ellipse rule; arcs with sweep > π are two Virtuoso arcs (export) / merged when they share centre and radius (import) |
 | symbol label | `stext` by §3.5; pin-name labels (pin/label) are written by export and ignored by import (Schemify draws pin names) |
@@ -245,6 +256,14 @@ Export is the inverse: `.shcomp` → symbol + schematic + CDF; `.shprim` → sym
 | cellview props `schemifyRecords1…N` | the Schemify-only records (§7.3) |
 
 Port order: export writes simInfo `termOrder` (spectre and auCdl) = Schemify pin order; import takes `termOrder` of the cell's spectre simInfo, else Virtuoso's default (terminal names sorted ASCII, research §2.1).
+
+Decided (exact forms, `virtuoso::write`/`read`):
+- **Pins.** Each pin is a `pinfig` square of ±2000 export units (1/80″) around the pin point; an alias pin is a further `pinfig` of its target's terminal carrying prop `schemifyPin` (its Schemify name; a dump without it names extra rectangles `<term>_<k>`); the main pin is the first rectangle without `schemifyPin`. An inherited pin is a terminal with net expression `[@<pin>:%:<default>]` (default by §3.3 with `global`) plus a CDF `netSet` param of the pin's name; an instance's `inherit <pin> <net>` is a string prop of that name. On import a default `x!` becomes `x` (inherited defaults are global by definition) and `gnd!` becomes `GND`.
+- **Names.** Prop `schemifyNet` (labels and schematic pins) holds the Schemify spelling when the default inverse of the export spelling differs; its value is the net expression, followed by ` global` when the label carries `global true` (`VDD global` for the export spelling `VDD!`).
+- **Wires** export width 5000 for `bus true`. **Wire labels** are `normal` labels on `wire label`, height 10000, `lowerLeft`, font `stick`. A label not glued to anything imports at its origin, reviewed.
+- **Schematic pins** use `basic/ipin`, `opin`, `iopin` (`symbol` view) by the interface pin's direction (inout/unknown: `iopin`). **Noconns** are `basic/noConn` instances named `NC<k>` (the first number no instance uses); the pin is the origin.
+- **Notes**: `text` → `normal` label on `text drawing`, `upperLeft`; `shape` → `text drawing`, or `text drawing1` when `dash` is non-zero (import: `dash 1`); `layer`, `fill`, `width` are Schemify-only.
+- **Graphics.** Schemify arcs turn clockwise on screen (y down): the Virtuoso arc runs counter-clockwise from −(start+sweep) to −start, angles in micro-radians rounded; import rounds to milli-degrees and merges arcs that continue one another on the same box. A closed `poly` exports as a `polygon` without a repeated closing point; an open `poly` (and a `path`, whose width is lost) is a multi-point `line`. An ellipse or arc with a non-square box imports as a 32-point closed `poly`, reviewed. `fill true` ↔ `device drawing1`. The selection box is the bounding box of the shapes', pin rectangles' and labels' points.
 
 Labels must glue to a wire. A Schemify label whose point lies on no wire gets a **stub**: a wire of one grid step (10 units) from the point away from the instance whose pin it sits on (or to the right when on none), the label glued to it, and prop `schemifyStub` `"1"` on the wire so import deletes it again.
 
@@ -271,6 +290,8 @@ simInfo → impl formats of a device (`.shprim`):
 - **auCdl** → `format cdl`: `ansCdlSubcktCall` → `X{name} {pins} / <componentName|cell> k={c}…`; otherwise (`ansCdlCompPrim` and unknown procedures) `<namePrefix>{name} {pins} <modelName|{model}> K={c}…` with `propMapping` names, plus `$[<model>]` for namePrefix `R C L D` (research §3.4: LIKELY; reviewed `cdl-approximate`).
 - **ngspice/xyce**: from the mapping file (§8) or the built-in analogLib table; otherwise none (netlisting such a device to ngspice is `E013`, as the report says).
 
+Decided: the pin list of a generated format is `{t1} {t2} …` when every terminal is a template identifier, else `{pins}` (terminal names such as `NC+` are not identifiers; `pins` is the terminal order because import takes the pin order from `termOrder`). A string param of `instParameters` is exactly `{c != "" ? " k=" + c : ""}` (no space before the hole). "Numeric default" (import) means the default translates by §3.4, compiles, and names only params of the same cell. An auCdl `ansCdlCompPrim` with namePrefix `R C L D` and a `modelName` is `<P>{name} {pins} K={c}… $[<modelName>]` (no positional model). A `.shcomp` exports spectre simInfo `termOrder` + `instParameters` (its non-computed params) and auCdl `ansCdlSubcktCall` with the same and namePrefix `X`; a `.shprim` without a matching `format spectre` still exports spectre `termOrder`. A `schemify_core` source exports CDF params `srcType` (cyclic `dc pulse sine pwl exp`) and every waveform param of §6.6 (PWL as `tvpairs`, `t1…t8`, `v1…v8`/`i1…i8`) with defaults from parsing the core default, in place of `value`; spectre `propMapping` covers DC, AC and the pulse/sine/exp params (PWL has no simInfo mapping and is reviewed).
+
 Export of a `.shprim` reverses the spectre rule when its `format spectre` matches that shape (`{name} ({pins…}) master k={p}…` with every hole a pin or param) and the cdl rule likewise; any other template exports the symbol and CDF only, `needs_review: format` (the cell then netlists in Virtuoso only through a text view the user adds).
 
 ### 6.4 Re-mastered instances
@@ -280,6 +301,8 @@ When the mapping (§8) sends an instance to a master with **different pin geomet
 2. the instance gets the new master at the same origin and orientation; if the new master's pin geometry is known (it is in the Design), a stub + label per pin is drawn at its real pins; otherwise `("conn" inst term net)` records tell the loader to do it at the pins it finds in Virtuoso;
 3. after loading, the loader reports every real pin that coincides with a pulled-back end of another net (`schCheck` would call it a short).
 Geometry-identical masters (mirrors, `schemify_core`, the user's own cells) are never re-mastered.
+
+Decided: a step is 10 units; a pin whose new position equals its old one keeps its connection by geometry (no pull-back, no stub); a point other objects still share after the pull-back (labels, ports, pins of instances keeping their master, a wire passing through) keeps a label of the net; a stub leaves the new pin away from the instance origin, turning to the first direction whose segment touches no existing wire or node. `remap::apply` returns the edits as a request table: the exporter applies it while writing records, `remap::apply_to_doc` on a Schemify document (import with `ImportOptions::analoglib`).
 
 ### 6.5 Built-in device table (analogLib ↔ core)
 
@@ -304,11 +327,13 @@ Used for the ngspice templates of analogLib mirror cells (import) and for the si
 | parax_cap | cap | p gnd ↔ PLUS MINUS | value ↔ c | (as cap) |
 | bsource, probe, switch, vswitch | — | | | not mapped: exported in `schemify_core` only |
 
+The ngspice templates of `vcvs`, `vccs` and `tline` use `{pins}` (their terminals `NC+`, `IN+`… are not template identifiers; terminal order is the pin order); `vpulse`/`vsin`/`vpwl`/`vexp` write `pulse({v1} {v2} {td} {tr} {tf} {pw} {per})`, `sin({vo} {va} {freq} {td} {theta})`, `pwl({t1} {v1} {t2} {v2})` (`ponytail:` two pairs), `exp({v1} {v2} {td1} {tau1} {td2} {tau2})`, i-sources likewise.
+
 Spectre simInfo of `schemify_core` cells: res → `resistor` `r=`, cap → `capacitor` `c=`, ind → `inductor` `l=`, vsource/isource → `vsource`/`isource` with `type=` and the waveform params of §6.6, vcvs/vccs/cccs/ccvs → `vcvs gain=`, `vccs gm=`, `cccs gain= probe=`, `ccvs rm= probe=`, diode/nmos4/pmos4/npn/pnp → master `{model}`, ammeter → `iprobe`, tline → `tline z0= td=`; bsource → `bsource` with `v=`/`i=` from `src`/`func`; probe → nothing (a `.save` in SPICE; not netlisted to spectre, reviewed); switch/vswitch → `relay`-free: not netlisted (reviewed).
 
 ### 6.6 SPICE source text ↔ waveform params
 
-`value` of `core:vsource`/`isource` is parsed as SPICE independent-source text: `[DC] v`, `AC mag [phase]`, and one of `PULSE(v1 v2 td tr tf pw per)`, `SIN(vo va freq td theta)`, `PWL(t1 v1 t2 v2 …)`, `EXP(v1 v2 td1 tau1 td2 tau2)` (case-insensitive, commas or spaces). Export picks the analogLib cell by waveform (`vdc` when none) and the Spectre `vsource type=` likewise; params: `vdc acm acp` + pulse `v1 v2 td tr tf pw per`, sine `vo va freq td theta`, pwl `tvpairs t1 v1 …`, exp `v1 v2 td1 tau1 td2 tau2` (i-sources: `idc i1 i2 io ia` names). Import formats the same text back (`DC 1 AC 1 0 PULSE(0 1.8 0 10p 10p 5n 10n)`). Text that does not parse exports as `vdc` with `vdc` = the whole text, `needs_review: source`.
+`value` of `core:vsource`/`isource` is parsed as SPICE independent-source text: `[DC] v`, `AC mag [phase]`, and one of `PULSE(v1 v2 td tr tf pw per)`, `SIN(vo va freq td theta)`, `PWL(t1 v1 t2 v2 …)`, `EXP(v1 v2 td1 tau1 td2 tau2)` (case-insensitive, commas or spaces). Export picks the analogLib cell by waveform (`vdc` when none) and the Spectre `vsource type=` likewise; params: `vdc acm acp` + pulse `v1 v2 td tr tf pw per`, sine `vo va freq td theta`, pwl `tvpairs t1 v1 …`, exp `v1 v2 td1 tau1 td2 tau2` (i-sources: `idc i1 i2 io ia` names). Import formats the same text back (`DC 1 AC 1 0 PULSE(0 1.8 0 10p 10p 5n 10n)`). Text that does not parse exports as `vdc` with `vdc` = the whole text, `needs_review: source`. Decided: a leading bare number is the DC value; every value must be a number literal (a template hole or expression does not parse); a PWL keeps at most 8 pairs; keywords are written upper-case; a waveform's trailing unset params are omitted and an unset one inside is `0`; only an instance override is sent to `schemify_core` (D40), an analogLib master gets the parsed effective value.
 
 ## 7. Round trip and teamwork
 
@@ -324,9 +349,11 @@ Every exported object carries prop `schemifyId` (instances, wires, labels, pins,
 
 Export writes the Schemify-only data of each cell as canonical record text into cellview props `schemifyRecords1…N` (strings ≤ 2000 bytes) on the schematic (benches: the schematic; devices: the symbol). Import rebuilds each target file from the dump, then takes the Schemify-only data from the **existing local file** when there is one, else from those props, and drops every piece whose subject is gone: a waiver whose instance id is absent, a param attribute whose param is gone, a format of an impl that no longer exists — each listed in the report (`dropped: stale-schemify-data`). A cell edited only in Virtuoso therefore keeps its docs and waivers, and a Schemify file is never silently overwritten: when the target exists and differs, the import writes it (the editor's watched-file merge, D28, shows the change) and the report lists the cell as `updated`.
 
+Decided (`merge`): a document is cut into **units** — the header, the rank-1 block, the rank-2 block, and every other record by identity (kind and id or name). The export computes the *image* (the import of its own records) and stashes every unit of the cell the image does not reproduce, as canonical text of a document of the cell's kind (the rank-1 block is always present for kind rules; header attributes `vimg_header vimg_rank1 vimg_rank2` and record attribute `vimg` hold the FNV-1a 64 digest of the unit the import will produce; a unit without a digest has no Virtuoso form). On import, per unit: when the fresh unit's digest equals the stashed one, or — without a stash — it equals the local unit with its Schemify-only attributes stripped, the Virtuoso side did not change it and the local unit (else the stashed one) is written; otherwise the fresh unit is written, a rank-1 block enriched by name with the local pin `domain number`, param `min max step grid show computed cached`, impl names, `model file ignore` and formats of dialects other than spectre/cdl (the local `format spice` wins, §8.1). Schemify-only records absent from the fresh document are kept; a waiver whose instance is gone, a constraint with a gone member and a body whose impl is gone are dropped with `dropped:stale-schemify-data`. ponytail: without a stash, a Virtuoso-owned record the local file changed since the export cannot be told from a Virtuoso edit, and the dump's version wins (the D28 merge shows it).
+
 ### 7.4 Oracle
 
-`import(export(x)) ≡ x` for every fixture project and generated designs (property: random cells with every record kind, buses, iterated instances, globals, inherited pins, params of every kind, benches): files byte-identical after `schemify fmt` except the documented losses of this spec (listed per fixture). `export(import(d)) ≡ d` for every dump fixture, and through the interpreter + mock (§5.4) in both directions.
+`import(export(x)) ≡ x` for every fixture project and generated designs (property: random cells with every record kind, buses, iterated instances, globals, inherited pins, params of every kind, benches): files byte-identical after `schemify fmt` except the documented losses of this spec (listed per fixture). With the stash (§7.3) the round trip is byte-identical; without it (`tests/virtuoso_rust.rs` strips the `schemifyRecords` props) the documented losses are: header attributes other than `provenance` (added to every `.shprim`); pin `domain`/`number`; param `min max step grid show computed cached` and units outside §6.3; impl names and formats other than spectre/cdl; symbol graphic order, attributes and closing points, `stext` templates outside §3.5; text sizes; the order and spelling of instance overrides (suffix case, `mil`, `^`), the cellref spelling (`./c` vs `lib:c`), `ignore open|short`; ground spellings `0`/`gnd` (→ `GND`); shape `layer fill width`; ranks 4–6 (bench tables while `ade` carries none); comments. Wires, labels, ports, noconns, instance placement and names, pins and param names and kinds come back exactly. `export(import(d)) ≡ d` for every dump fixture, and through the interpreter + mock (§5.4) in both directions.
 
 ## 8. PDK flows and the mapping file
 
@@ -360,6 +387,7 @@ class nmos virtuoso_target nch
 - `map <schemify cellref> virtuoso <lib> <cell> [view]` (view default `symbol`): one cell each way. `pin <schemify> <virtuoso>`, `param <schemify> <virtuoso> [scale <factor>]` (Virtuoso value = Schemify value × factor, both as expressions; import divides), `drop <param>` (not sent / not taken), `set <virtuoso param> <value>` (always sent), `spice "<template>"` (the ngspice format for the Virtuoso cell's mirror). `same` (no other attribute) declares identical geometry: no re-mastering.
 - `class <name> virtuoso_target <hint>` + `role n|p`: a retarget class (§10).
 - Lookups: an instance's cell has a `map` row → it; else the cell is a mirror (provenance) → itself; else `core:*` → `schemify_core` (or analogLib with `--analoglib`); else a user cell exported with the design. Errors (a pin of the cell left unmapped, an unknown cell) refuse the export with the list.
+- Decided: the file is read by the format crate's reader behind a `journal` header (so quoting and attribute lines are exactly format.md §2); errors carry the file's own line. `Mapping::parse` refuses, all listed: a record other than `map`/`class`, wrong arity, a `lib:cell` that is not one, an attribute a record does not take, a `scale` that does not compile, `same` beside other attributes, a second `spice`, a pin or param mapped twice, a param both mapped and dropped, a Schemify cell mapped twice, two rows with the same Virtuoso target (import's reverse lookup must be unique), a class defined twice, `role` other than `n`/`p`. `map::resolve` checks only rows of cells the export uses: every non-alias pin of the cell has a `pin` row (unless `same`), every `pin`/`param` row names something the cell has. A scaled value folds to a number when it has no identifiers (`W 2` × `1e-6` → `0.000002`), else `(v)*(k)`; import divides likewise. On import `set` params are not taken and unmapped Virtuoso params keep their names.
 
 ## 9. ADE (maestro) ↔ bench
 
@@ -490,7 +518,7 @@ Report reasons of this export: `needs_review:` `expression template format name 
 
 ## 12. Report
 
-`interop-report.md` + `.txt` beside the outputs, like import.md §7: classes `needs_review:<reason>` (`expression template name callback design-variable inlined-var computed format cdl-approximate source code output config montecarlo optimize retarget`), `dropped:<reason>` (`display-only selection-box solder-dot stale-schemify-data pin-label`), `rounding`, `off-grid`, `remapped` (per instance: old and new master), `clamped` (from the loader log), `updated` (cells changed by an import). Count conservation per cellview: objects in = records out + reported.
+`interop-report.md` + `.txt` beside the outputs, like import.md §7: classes `needs_review:<reason>` (`expression template name callback design-variable inlined-var computed format cdl-approximate source code output config montecarlo optimize retarget`), `dropped:<reason>` (`display-only selection-box solder-dot stale-schemify-data pin-label unknown-record`), `rounding`, `off-grid`, `remapped` (per instance: old and new master), `clamped` (from the loader log), `updated` (cells changed by an import). Count conservation per cellview: objects in = records out + reported. Decided: every record of a cellview is consumed by exactly one builder or reported (dropped kinds as one row per cellview and reason with the count, unknown tags one row each with their line), and the import asserts the equality; records outside any cellview with an unknown tag are reported likewise; `conn` and `intent` records are reported on import (loader-only, §10).
 
 ## 13. GUESSes and their probes
 

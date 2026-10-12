@@ -1,0 +1,67 @@
+schemify 1 shprim
+  provenance "virtuoso demo/shapes"
+
+pin A in -60 0
+pin B out 60 0
+pin C inout 0 -40
+pin C_2 inout 0 40
+  alias C
+pin VDD inout 20 -40
+  inherit vdd
+
+param w 1u
+  unit m
+  doc Width
+param l 180n
+  unit m
+  doc Length
+param mode fast
+  kind choice
+  choices fast slow
+  doc Mode
+param flag false
+  kind bool
+  doc Flag
+param count 2
+  kind int
+
+impl spice spice
+  format spectre "{name} ({A} {B} {C} {VDD}) shapes_dev w={w} l={l} count={count}"
+
+line -60 0 -40 0
+
+poly 40 0 50 0 50 -10 60 -10
+
+rect -40 -20 40 20
+  fill true
+
+poly 0 -20 10 -30 -10 -30
+  closed true
+
+circle 0 0 10
+
+poly 20 25 19.616 25.975 18.478 26.913 16.629 27.778 14.142 28.536 11.111 29.157 7.654 29.619 3.902 29.904 0 30 -3.902 29.904 -7.654 29.619 -11.111 29.157 -14.142 28.536 -16.629 27.778 -18.478 26.913 -19.616 25.975 -20 25 -19.616 24.025 -18.478 23.087 -16.629 22.222 -14.142 21.464 -11.111 20.843 -7.654 20.381 -3.902 20.096 0 20 3.902 20.096 7.654 20.381 11.111 20.843 14.142 21.464 16.629 22.222 18.478 23.087 19.616 24.025
+  closed true
+
+arc -20 0 10 270 90
+arc 20 0 10 90 270
+
+line 0 -40 0 -20
+line 0 40 0 20
+
+stext -20 -25 R0 SHAPES
+  size 0.8
+  hcenter
+  vcenter
+stext -50 -30 R0 {name}
+  size 0.8
+stext -50 30 R0 {cell}
+  size 0.8
+stext 30 -20 R270 w={w}
+  size 0.6
+stext 30 -10 R0 l={l}
+  size 0.6
+stext 30 10 R0 {name}
+  size 0.6
+stext 30 20 R0 l={l}
+  size 0.6
