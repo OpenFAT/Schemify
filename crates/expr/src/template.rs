@@ -22,8 +22,25 @@ pub struct Template {
 enum Seg {
     /// Byte range of `text`.
     Lit(u32, u32),
-    /// Root index in `program`, and the hole's span for errors.
-    Hole(u32, Span),
+    /// Root index in `program`, the hole's span for errors, and the index in
+    /// `program.idents` of the identifier the hole is spelled as (`NOT_IDENT`
+    /// for any other expression).
+    Hole(u32, Span, u32),
+}
+
+const NOT_IDENT: u32 = u32::MAX;
+
+/// One piece of a parsed template, in source order (see [`Template::segments`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Segment<'t> {
+    /// Literal text with `{{`/`}}` resolved to one brace; never empty.
+    Lit(&'t str),
+    /// A hole.
+    Hole {
+        /// `Some(k)` when the hole is spelled as one bare identifier (`{ W }`,
+        /// not `{(W)}` or `{W*1}`), `k` indexing [`Program::idents`].
+        ident: Option<u32>,
+    },
 }
 
 impl Template {
@@ -62,7 +79,7 @@ impl Template {
                     flush(&text, &mut segs, &mut lit_start);
                     let root = c.roots_len();
                     c.add_root(src, i + 1, end)?;
-                    segs.push(Seg::Hole(root, Span::new(i, end + 1)));
+                    segs.push(Seg::Hole(root, Span::new(i, end + 1), NOT_IDENT));
                     i = end + 1;
                 }
                 (b'}', _) => {
@@ -85,6 +102,16 @@ impl Template {
             program.roots.len(),
             segs.iter().filter(|s| matches!(s, Seg::Hole(..))).count()
         );
+        // A hole whose trimmed text equals an input identifier is that identifier
+        // alone: any other expression using it is longer than its name.
+        for seg in &mut segs {
+            if let Seg::Hole(_, span, ident) = seg {
+                let hole = src[span.start as usize + 1..span.end as usize - 1].trim();
+                if let Some(k) = program.idents().position(|id| id == hole) {
+                    *ident = k as u32;
+                }
+            }
+        }
         Ok(Template {
             program,
             text,
@@ -98,6 +125,18 @@ impl Template {
     /// ordinary identifiers the caller binds.
     pub fn program(&self) -> &Program {
         &self.program
+    }
+
+    /// The template as literal text and holes, in source order. Lets a caller
+    /// that already holds the text of every bare-identifier hole (the
+    /// netlister's params and nets) copy it without evaluating.
+    pub fn segments(&self) -> impl Iterator<Item = Segment<'_>> + '_ {
+        self.segs.iter().map(|seg| match *seg {
+            Seg::Lit(a, b) => Segment::Lit(&self.text[a as usize..b as usize]),
+            Seg::Hole(_, _, k) => Segment::Hole {
+                ident: (k != NOT_IDENT).then_some(k),
+            },
+        })
     }
 
     /// Renders onto `out`: literals verbatim, `int`/`num` as canonical number
@@ -160,7 +199,7 @@ impl Template {
         for seg in &self.segs {
             match *seg {
                 Seg::Lit(a, b) => out.push_str(&self.text[a as usize..b as usize]),
-                Seg::Hole(root, span) => {
+                Seg::Hole(root, span, _) => {
                     let (start, end) = self.program.roots[root as usize];
                     match eval::run(&self.program, start, end, inputs, plugins, scratch)? {
                         V::Int(x) => write!(out, "{x}").expect("String write"),

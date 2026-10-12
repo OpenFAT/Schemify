@@ -79,7 +79,7 @@ pub use calc::{AxisOut, CalcResult, ColKind, ColOut, Column, Plot};
 pub use compile::{Mode, Program, SignalKind};
 pub use eval::{PluginValue, Scratch};
 pub use graph::{Cycle, Deps, affected, reverse, topo_order, topo_order_all};
-pub use template::Template;
+pub use template::{Segment, Template};
 pub use text::{parse_num, write_int, write_num};
 
 /// Maximum AST nodes per expression (spec §3); more is [`Code::X002`].

@@ -9,9 +9,8 @@
 //! fast one (`tests/metamorphic.rs`).
 
 use crate::{is_spice, push_name};
-use schemify_doc::PinDir;
-use schemify_elab::{COMPUTED, DEFAULT, Dialect, Elab, Name, Target, Val};
-use schemify_expr::{Scratch, Template, Value};
+use schemify_elab::{COMPUTED, DEFAULT, Dialect, Elab, Name, PinDir, Target, Val};
+use schemify_expr::{Scratch, Segment, Template, Value};
 
 /// Where a template identifier's value comes from (expr spec §6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,21 +47,6 @@ enum Lang {
     Other,
 }
 
-#[derive(Clone, Copy, Debug)]
-enum Seg {
-    /// Byte range of [`Fast::lits`].
-    Lit(u32, u32),
-    /// Identifier index (into the plan's sources).
-    Hole(u32),
-}
-
-/// The fast form of a template whose holes are all bare identifiers.
-#[derive(Debug)]
-struct Fast {
-    segs: Vec<Seg>,
-    lits: String,
-}
-
 #[derive(Debug)]
 enum Form {
     /// The lang's default template.
@@ -71,7 +55,8 @@ enum Form {
     Template {
         tmpl: Box<Template>,
         srcs: Vec<Src>,
-        fast: Option<Fast>,
+        /// Every hole is a bare identifier with a source: rows copy texts (see `fast_ok`).
+        fast: bool,
     },
     /// The template does not parse: every line using it is this error.
     Bad(String),
@@ -214,7 +199,27 @@ fn plan(e: &Elab, c: u32, k: u32, template: Name) -> Plan {
                         },
                     })
                     .collect();
-                let (fast, in_vector) = scan(text, &idents);
+                // Bare-identifier holes written inside `[ … ]` of the literal text
+                // (an XSPICE port vector).
+                let (mut in_vector, mut depth, mut fast) = (Vec::new(), 0u32, true);
+                for seg in tmpl.segments() {
+                    match seg {
+                        Segment::Lit(s) => {
+                            for c in s.bytes() {
+                                match c {
+                                    b'[' => depth += 1,
+                                    b']' => depth = depth.saturating_sub(1),
+                                    _ => {}
+                                }
+                            }
+                        }
+                        Segment::Hole { ident: Some(k) } if depth > 0 => {
+                            in_vector.push(idents[k as usize]);
+                        }
+                        Segment::Hole { ident: Some(_) } => {}
+                        Segment::Hole { ident: None } => fast = false,
+                    }
+                }
                 for (p, v) in vector.iter_mut().enumerate() {
                     *v = in_vector.iter().any(|&id| match id {
                         "pins" => true,
@@ -225,7 +230,7 @@ fn plan(e: &Elab, c: u32, k: u32, template: Name) -> Plan {
                 }
                 Form::Template {
                     tmpl: Box::new(tmpl),
-                    fast: fast.filter(|_| !srcs.contains(&Src::Missing)),
+                    fast: fast && !srcs.contains(&Src::Missing),
                     srcs,
                 }
             }
@@ -240,65 +245,6 @@ fn plan(e: &Elab, c: u32, k: u32, template: Name) -> Plan {
         model,
         vector,
     }
-}
-
-/// Lexes the source of a parsed template once (`Template::parse`'s rules: `{{`/`}}` are
-/// literal braces, a hole ends at the first `}`). Returns its fast form when every hole
-/// is one of `idents` spelled bare (else `None`), and the trimmed text of every hole
-/// written inside `[ … ]` of the literal text (an XSPICE port vector).
-///
-/// Precondition: `src` parsed as a template whose identifiers are `idents`.
-fn scan<'s>(src: &'s str, idents: &[&str]) -> (Option<Fast>, Vec<&'s str>) {
-    let (mut segs, mut lits, mut in_vector) = (Vec::new(), String::new(), Vec::new());
-    let (mut fast, mut depth, mut lit_start, mut i) = (true, 0u32, 0usize, 0usize);
-    let b = src.as_bytes();
-    while i < b.len() {
-        match (b[i], b.get(i + 1)) {
-            (b'{', Some(b'{')) | (b'}', Some(b'}')) => {
-                lits.push(char::from(b[i]));
-                i += 2;
-            }
-            (b'{', _) => {
-                let end = i + 1 + src[i + 1..].find('}').expect("a parsed hole closes");
-                let id = src[i + 1..end].trim();
-                if depth > 0 {
-                    in_vector.push(id);
-                }
-                if lits.len() > lit_start {
-                    segs.push(Seg::Lit(lit_start as u32, lits.len() as u32));
-                }
-                lit_start = lits.len();
-                // An expression hole (`{(W)}`, `{true}`) never equals an identifier.
-                match idents.iter().position(|x| *x == id) {
-                    Some(k) => segs.push(Seg::Hole(k as u32)),
-                    None => fast = false,
-                }
-                i = end + 1;
-            }
-            (b'}', _) => unreachable!("a parsed template has no lone `}}`"),
-            _ => {
-                let next = src[i..].find(['{', '}']).map_or(src.len(), |k| i + k);
-                for c in src[i..next].bytes() {
-                    match c {
-                        b'[' => depth += 1,
-                        b']' => depth = depth.saturating_sub(1),
-                        _ => {}
-                    }
-                }
-                lits.push_str(&src[i..next]);
-                i = next;
-            }
-        }
-    }
-    if lits.len() > lit_start {
-        segs.push(Seg::Lit(lit_start as u32, lits.len() as u32));
-    }
-    assert!(lits.len() <= src.len());
-    assert!(segs.iter().all(|s| match *s {
-        Seg::Hole(k) => (k as usize) < idents.len(),
-        Seg::Lit(a, z) => a < z,
-    }));
-    (fast.then_some(Fast { segs, lits }), in_vector)
 }
 
 /// What once-only text the emitted rows need.
@@ -411,18 +357,17 @@ pub(crate) fn line<'n, F: Fn(Name) -> &'n str>(
     match &plan.form {
         Form::Bad(msg) => Err(msg.clone()),
         Form::Default => default_line(&row, leaf, out, &mut tmp.uses),
-        Form::Template { tmpl, srcs, fast } => match fast {
-            Some(f) if fast_ok(&row, srcs) => {
-                for seg in &f.segs {
-                    match *seg {
-                        Seg::Lit(a, b) => out.push_str(&f.lits[a as usize..b as usize]),
-                        Seg::Hole(i) => write_src(&row, srcs[i as usize], out),
-                    }
+        Form::Template { tmpl, srcs, fast } if *fast && fast_ok(&row, srcs) => {
+            for seg in tmpl.segments() {
+                match seg {
+                    Segment::Lit(s) => out.push_str(s),
+                    Segment::Hole { ident: Some(i) } => write_src(&row, srcs[i as usize], out),
+                    Segment::Hole { ident: None } => unreachable!("a fast plan has bare holes"),
                 }
-                Ok(())
             }
-            _ => slow_line(&row, tmpl, srcs, out, tmp),
-        },
+            Ok(())
+        }
+        Form::Template { tmpl, srcs, .. } => slow_line(&row, tmpl, srcs, out, tmp),
     }
 }
 
@@ -701,43 +646,4 @@ fn module_ports<'p, 'n, F: Fn(Name) -> &'n str>(
         out.push(')');
     }
     out.push_str(");");
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// `scan` against hand-lexed expectations: the fast form spelled back with holes
-    /// as `<ident>`, and the holes inside `[ … ]`.
-    #[test]
-    fn scan_lexes_like_the_template_parser() {
-        for (src, want_fast, want_vector) in [
-            ("M{name} {D}", Some("M<name> <D>"), &[][..]),
-            ("{ D }{{x}}", Some("<D>{x}"), &[]),
-            (
-                "{{[}} {B} ] [{A}] {C}",
-                Some("{[} <B> ] [<A>] <C>"),
-                &["B", "A"],
-            ),
-            ("a]] {B} [[{A}]] {C}]", Some("a]] <B> [[<A>]] <C>]"), &["A"]),
-            ("[{(B)}] {true} {A}", None, &["(B)"]),
-            ("{pins}", Some("<pins>"), &[]),
-        ] {
-            let tmpl = Template::parse(src).expect("a template");
-            let idents: Vec<&str> = tmpl.program().idents().collect();
-            let (fast, vector) = scan(src, &idents);
-            let spelled = fast.map(|f| {
-                let mut s = String::new();
-                for seg in &f.segs {
-                    match *seg {
-                        Seg::Lit(a, b) => s.push_str(&f.lits[a as usize..b as usize]),
-                        Seg::Hole(k) => s.push_str(&format!("<{}>", idents[k as usize])),
-                    }
-                }
-                s
-            });
-            assert_eq!(spelled.as_deref(), want_fast, "{src}");
-            assert_eq!(vector, want_vector, "{src}");
-        }
-    }
 }

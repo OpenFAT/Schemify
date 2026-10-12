@@ -141,21 +141,6 @@ pub fn eval(tables: &Tables, fn_id: u32, args: &str) -> Result<f64, Code> {
     }
 }
 
-/// Appends canonical number text (expr spec §7): integers below 1e15 plainly, 1e-4 ≤ |x| <
-/// 1e15 as the shortest round-trip decimal, everything else in shortest exponent form.
-pub fn canonical(x: f64, out: &mut String) {
-    assert!(x.is_finite(), "canonical text of a non-finite value");
-    let a = x.abs();
-    let r = if x.fract() == 0.0 && a < 1e15 {
-        write!(out, "{}", x as i64)
-    } else if (1e-4..1e15).contains(&a) {
-        write!(out, "{x}")
-    } else {
-        write!(out, "{x:e}")
-    };
-    r.expect("writing to a String");
-}
-
 #[cfg(target_arch = "wasm32")]
 mod guest_glue {
     //! Events → I/O chains → tables. Every I/O completion is matched to the request that issued
@@ -173,7 +158,7 @@ mod guest_glue {
     use schemify_abi::{Code, Event, Kind, Level, Out, text};
 
     use crate::chars::{self, Block, Device};
-    use crate::{Tables, canonical, eval, functions_text, lut::Lut};
+    use crate::{Tables, eval, functions_text, lut::Lut};
 
     guest::export!(on_event, call);
 
@@ -417,7 +402,7 @@ mod guest_glue {
 
     fn call(fn_id: u32, args: &str, result: &mut String) -> Result<(), Code> {
         let x = STATE.with(|s| eval(&s.borrow().tables, fn_id, args))?;
-        canonical(x, result);
+        text::push_num(result, x);
         Ok(())
     }
 }
@@ -665,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn registry_text_and_canonical_numbers() {
+    fn registry_text() {
         assert_eq!(
             functions_text(0).lines().next(),
             Some("function gmid.vgs 0 3")
@@ -682,14 +667,5 @@ mod tests {
             );
         }
         assert!(FUNCTIONS.len() as u32 <= FN_STRIDE);
-        let s = |x: f64| {
-            let mut o = String::new();
-            canonical(x, &mut o);
-            o
-        };
-        assert_eq!(
-            [s(2.0), s(-0.0), s(0.0025), s(2.5e-12), s(1.2e15)],
-            ["2", "0", "0.0025", "2.5e-12", "1.2e15"]
-        );
     }
 }

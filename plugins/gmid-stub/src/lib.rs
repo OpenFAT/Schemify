@@ -5,8 +5,6 @@
 
 #![deny(unsafe_code)] // not `forbid`: the SDK's `export!` allows `unsafe(no_mangle)`
 
-use std::fmt::Write as _;
-
 use schemify_abi::guest::{self, Host};
 use schemify_abi::{Code, Event, Kind, Out, text};
 
@@ -32,19 +30,7 @@ fn call(fn_id: u32, args: &str, result: &mut String) -> Result<(), Code> {
     if !w.is_finite() || gm_id <= 0.0 {
         return Err(Code::Range);
     }
-    canonical(w, result);
+    text::push_num(result, w);
     Ok(())
 }
 
-/// Canonical number text (expr spec §7).
-fn canonical(x: f64, out: &mut String) {
-    let a = x.abs();
-    let r = if x.fract() == 0.0 && a < 1e15 {
-        write!(out, "{}", x as i64)
-    } else if (1e-4..1e15).contains(&a) {
-        write!(out, "{x}")
-    } else {
-        write!(out, "{x:e}")
-    };
-    r.expect("writing to a String");
-}

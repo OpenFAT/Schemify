@@ -50,7 +50,7 @@ use schemify_ui::{
 
 use crate::checks::Members;
 use crate::commands::{Cmd, Commands, Target};
-use crate::docs::{self, Page};
+use crate::docs::{self, Page, quote as q};
 use crate::edit::{self, Ids};
 use crate::geometry::{Pt, Xform, snap};
 use crate::platform;
@@ -4062,22 +4062,6 @@ impl Editor {
         self.contribute_parity(&mut t);
         (t, graphs)
     }
-}
-
-/// Quotes a record value (format spec §2 escapes), replacing control characters.
-fn q(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            c if c.is_control() => out.push(' '),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
 
 /// The window shell's view of an [`Editor`] (`render::run` drives it).

@@ -10,11 +10,12 @@ workspace = true
 
 [dependencies]
 schemify-elab.workspace = true
-schemify-doc.workspace = true
 schemify-expr.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# Doctest and tests build `Project`s to elaborate.
+schemify-doc.workspace = true
 # Corpus differential (TESTING.md netlist row): import xschem, compare semantically,
 # and read ngspice results for the second oracle.
 schemify-import.workspace = true
