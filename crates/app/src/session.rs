@@ -146,6 +146,21 @@ impl Session {
         })
     }
 
+    /// `project.reload` (pdk spec §9.2): re-reads `schemify.project` and `schemify.lock` and
+    /// re-indexes every library, keeping the open documents and tabs. Cell rows change:
+    /// callers drop anything keyed by row. The status line takes the load notes.
+    ///
+    /// # Errors
+    ///
+    /// A file does not parse or an open document's library is gone; nothing changed then.
+    pub fn reload(&mut self) -> Result<(), String> {
+        let (lib_dir, notes) = libs::reload(&mut self.project, &self.root)?;
+        self.lib_dir = lib_dir;
+        self.status = notes.join("; ");
+        assert_eq!(self.lib_dir.len(), self.project.libs().name.len());
+        Ok(())
+    }
+
     /// Returns the directory of library row `lib`, if it is local.
     pub fn lib_dir(&self, lib: u8) -> Option<&Path> {
         self.lib_dir.get(usize::from(lib))?.as_deref()

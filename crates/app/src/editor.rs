@@ -1588,6 +1588,11 @@ impl Editor {
         if cmd != Cmd::Close && cmd != Cmd::Quit {
             self.confirm = None;
         }
+        if cmd == Cmd::ProjectReload {
+            // Project-wide: needs no active document.
+            self.reload_project();
+            return true;
+        }
         let Some((h, view)) = self.active() else {
             return false;
         };
@@ -3756,6 +3761,29 @@ impl Editor {
         }
         self.parked.push(p);
         assert!(self.parked.len() <= PARKED_MAX);
+    }
+
+    /// `project.reload` (pdk spec §9.2): the session re-reads the manifest and lockfile and
+    /// re-indexes; everything keyed by cell row (symbol cache, cell states, scenes) rebuilds.
+    fn reload_project(&mut self) {
+        match self.session.reload() {
+            Ok(()) => {
+                let n = self.session.project.libs().name.len() - 1;
+                if self.session.status.is_empty() {
+                    self.session.status = format!("project reloaded: {n} libraries");
+                }
+            }
+            Err(e) => self.session.status = e,
+        }
+        self.symbols = scene::Symbols::default();
+        self.symbols_key = None;
+        self.invalidate_cells();
+        let docs: Vec<DocHandle> = self.session.project.handles().collect();
+        for d in docs {
+            self.session.bump(d);
+        }
+        self.scene_dirty = true;
+        assert!(self.cell_key.is_none() && self.symbols_key.is_none());
     }
 
     /// Drops every cell state (active and parked): plugin functions may answer differently,

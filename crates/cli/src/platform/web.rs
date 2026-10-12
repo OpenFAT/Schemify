@@ -97,6 +97,20 @@ pub fn remove(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+pub fn remove_tree(path: &Path) -> Result<(), String> {
+    if !is_dir(path) {
+        return remove(path);
+    }
+    // ponytail: hidden entries (`.x`) are skipped by `list`, so they stay; the PDK store
+    // writes none. Add a raw prefix walk to the vfs if one ever does.
+    let mut files = Vec::new();
+    list(path, 0, &[], &mut files);
+    for f in &files {
+        remove(f)?;
+    }
+    Ok(())
+}
+
 pub fn mtime_unix_s(path: &Path) -> Option<u64> {
     FS.with_borrow(|fs| fs.mtime(&vfs::key(path)))
 }

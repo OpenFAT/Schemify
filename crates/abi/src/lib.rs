@@ -207,7 +207,7 @@ named_enum! {
     pub enum Cap {
         /// `fs_read` of project-relative paths.
         ReadProject = "read_project",
-        /// `fs_write` of project-relative paths.
+        /// `fs_write` of project-relative paths, and `fs_remove` under `.schemify/`.
         WriteProject = "write_project",
         /// `spawn` of one exact binary name; the grant is written `spawn:<binary>`.
         Spawn = "spawn",

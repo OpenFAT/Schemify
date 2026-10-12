@@ -1,0 +1,4 @@
+* inv (schemify ngspice)
+XM1 Y A VDD VDD pfet_03v3 L=5e-7 W=2e-6 nf=2 m=1
+XM2 Y A VSS VSS nfet_03v3 L=5e-7 W=1e-6 nf=1 m=1
+.end

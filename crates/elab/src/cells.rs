@@ -34,7 +34,16 @@ pub(crate) fn readable(
     found: Option<usize>,
     cellref: &str,
 ) -> Result<usize, String> {
-    let row = found.ok_or_else(|| format!("cannot resolve `{cellref}`"))?;
+    let row = found.ok_or_else(|| match cellref.strip_prefix("tech:") {
+        // `tech:<class>` or, from elaboration, `tech:<class> (<flavor>)`.
+        Some(rest) => {
+            let (class, flavor) = rest
+                .split_once(" (")
+                .map_or((rest, "core"), |(c, f)| (c, f.trim_end_matches(')')));
+            format!("`{cellref}`: {}", project.explain_tech(class, flavor))
+        }
+        None => format!("cannot resolve `{cellref}`"),
+    })?;
     if project.interface(row).is_none() {
         return Err(format!("`{cellref}` has no readable interface"));
     }

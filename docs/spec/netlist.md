@@ -5,6 +5,7 @@ Implements D11a, D13, D22, D29, D40. Inputs: a project (manifest + lockfile), a 
 ## 1. Cell resolution
 
 - `lib:cell` resolves through the manifest's `lib` entries (D10); `./cell` resolves in the referencing file's directory (open or only indexed: the library index keeps each cell's directory). A cell is found by trying `<cell>.shcomp`, then `<cell>.shprim`; `.shbench` is never instantiable (`E001`).
+- `tech:<class>` (a technology class, [pdk.md](pdk.md) §5) resolves to the derived cell of (`<class>`, flavor) in the `tech.map` the manifest's `lib tech map <file>` names; the flavor is the instance's `flavor` override (default `core`). The derived cell draws as the class's core symbol and netlists as the PDK cell the map names, with the map's param expressions over the class params as `computed` params, so the emitters see an ordinary leaf. No `lib tech`, a class the core does not resolve, a (class, flavor) the map lacks, or a map row whose PDK cell does not resolve → `E001` with the reason (`no technology selected`, `sky130 has no lvt pmos`, …).
 - Missing lib or cell → `E001` (error). Hierarchy recursion (a cell instantiating itself at any depth under the selected impls) → `E014`.
 
 ## 2. Impl selection (per instance path)

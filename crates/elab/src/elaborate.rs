@@ -665,7 +665,10 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             .interface(row)
             .expect("resolution checked the interface");
         let (cell, stem) = display(self.project, row);
-        let open = self.project.open_handle(row).is_some();
+        // A derived `tech` cell has no file: its interface is the whole cell (pdk spec §5).
+        let derived = self.project.libs().name[self.project.cells().lib[row] as usize]
+            == schemify_doc::TECH_LIB;
+        let open = derived || self.project.open_handle(row).is_some();
         let iface = Iface::from_doc(doc, &cell, &stem, row as u32, open, &mut self.names);
         let ci = self.push_cell(doc, iface);
         self.row_cell.insert(row as u32, ci);
@@ -685,6 +688,19 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         let mut seen: HashMap<Sym, Result<u32, String>> = HashMap::new();
         for i in 0..ni {
             let sym = doc.instances().cell[i];
+            // A technology class instance resolves per its `flavor` override (pdk spec §5).
+            let flavor = crate::graph::override_of(doc, i, "flavor")
+                .map(|f| s.get(f))
+                .filter(|f| *f != "core");
+            if let (Some(class), Some(flavor)) = (s.get(sym).strip_prefix("tech:"), flavor) {
+                let found = self.project.resolve_tech(class, flavor).ok();
+                let text = format!("tech:{class} ({flavor})");
+                match crate::cells::readable(self.project, found, &text) {
+                    Ok(row) => inst_iface[i] = self.cell_of_row(row),
+                    Err(why) => unresolved[i] = Some(why),
+                }
+                continue;
+            }
             let r = match seen.get(&sym) {
                 Some(r) => r.clone(),
                 None => {
