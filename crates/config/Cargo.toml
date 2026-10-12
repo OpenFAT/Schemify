@@ -9,7 +9,6 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
-# Lua 5.4 (C, vendored) has no wasm32-unknown-unknown build: the web has no user config yet
-# (config spec §4, BACKLOG).
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-mlua.workspace = true
+# Lua 5.4 in pure Rust: the same interpreter natively and on the web (web spec §5).
+[dependencies]
+omnilua.workspace = true

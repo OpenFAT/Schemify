@@ -93,14 +93,17 @@ Functions (keymap targets, hooks) run under the same sandbox and limits as the i
 
 ## 4. Sandbox
 
+One interpreter on every target: omnilua, a pure-Rust Lua 5.4 (`crates/config/src/lua.rs`; the user's decision of 2026-10-12, [web.md](web.md) §5), built without its `io`, `os` and `package` libraries.
+
 - **Present:** the base library without `dofile`, `loadfile`, `load`, `collectgarbage` and `require` (replaced by §2's); `string`, `table`, `math`, `utf8`. `print(...)` is an info notification (`schemify.notify`). `pcall` and `xpcall` return the error as its message string and never catch budget exhaustion (otherwise `while true do pcall(f) end` would outlive any budget).
 - **Absent:** `io`, `os`, `debug`, `package` (so no `package.loadlib`), `coroutine`, binary chunks. Nothing in the config can open a file other than its own modules, start a process or reach the network (D7); packages are wasm and get capabilities only through grants (§5).
-- **Instruction budget:** 10^8 Lua VM instructions per call (the init file with everything it requires, or one function call), counted by a hook every 1000 instructions, like plugin fuel. Exhaustion stops the call with `instruction budget exhausted`.
-- **Memory cap:** 64 MiB for the whole Lua state (allocator limit). An allocation past it fails with `not enough memory` and the call stops.
+- **Instruction budget:** 10^8 Lua VM instructions per call (the init file with everything it requires, or one function call), charged every 1000 instructions, like plugin fuel; the pattern matcher charges it as it backtracks, so one library call cannot outrun it. Exhaustion stops the call with `instruction budget exhausted`, located at the running line.
+- **Memory cap:** 64 MiB of collected memory for the whole Lua state, sampled with the budget; a buffer of known size (`string.rep`, `table.concat`, `string.pack`) is checked before it is built. Past the cap the call stops with `not enough memory`; `pcall` may catch that one (the state stays usable and the call keeps the budget it has left).
+- **Locations:** errors read `<file>:<line>: <message>`. The API functions raise at the calling line, as `luaL_error` does; a small prelude, compiled before `debug` is removed, keeps `debug.getinfo` private for that.
 
-A runaway config is reported and stopped; it never hangs the tool. Known ceiling: a single C library call (a pattern match over a huge string) runs between hook checks; the memory cap bounds the string it can build.
+A runaway config is reported and stopped; it never hangs the tool.
 
-On the web the config is not run in this version (no Lua build for `wasm32-unknown-unknown` yet; the evaluation of C Lua and pure-Rust Lua is [web.md](web.md) §5); see `docs/BACKLOG.md`.
+On the web the init file is OPFS `/config/init.lua` and its modules `/config/lua/` ([web.md](web.md) §2, §5); everything else is as natively.
 
 ## 5. Packages
 

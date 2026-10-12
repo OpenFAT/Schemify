@@ -1,52 +1,69 @@
-//! The sandboxed Lua 5.4 state (spec §4) and the `schemify.*` API (spec §3).
+//! The sandboxed Lua 5.4 state (spec §4) and the `schemify.*` API (spec §3), on omnilua: a
+//! pure-Rust Lua 5.4, so native and web builds run the same interpreter (web spec §5).
 //!
-//! During a call the [`Table`] being written and the request list live in the state's app
-//! data ([`State`]); [`Runtime::with_state`] moves them in before and out after, so the
-//! table has one writer and the callers never see Lua values. Lua functions the config keeps
-//! (keymap targets, hooks) live in a registry table indexed by [`FnId`].
+//! The API surface is a short Lua prelude (`prelude.lua`) over Rust functions (`raw`): each
+//! Rust function validates its arguments and returns an error string instead of raising, and
+//! the prelude raises it at the caller's line (`error(msg, 2)`), the way C Lua's `luaL_error`
+//! locates errors. During a call the [`Table`] being written and the request list live in
+//! [`St`], shared by the Rust functions; [`Runtime::with_state`] moves the table in before and
+//! out after, so it has one writer and callers never see Lua values. Lua functions the config
+//! keeps (keymap targets, hooks) live in [`St::fns`] indexed by [`FnId`].
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
-use mlua::chunk::ChunkMode;
-use mlua::debug::Debug;
-use mlua::{
-    Error as LuaError, Function, HookTriggers, Lua, LuaOptions, MultiValue, StdLib,
-    Table as LTable, Value, VmState,
+use omnilua::{
+    Error as LuaError, Function, HostHooks, Lua, LuaError as RawError, LuaVersion, Sandbox,
+    SandboxConfig, Table as LTable, TripReason, Value, Variadic,
 };
 
 use crate::{
     BUDGET, Event, FnId, HOOKS_MAX, KEYMAPS_MAX, Level, MEMORY_MAX, PACKS_MAX, PackSpec,
-    REQUESTS_MAX, Request, SimKind, Source, Table, Target, USER_LAYERS, error,
+    REQUESTS_MAX, ReadFile, Request, SimKind, Source, Table, Target, USER_LAYERS, error,
 };
 
-/// Registry table of kept functions (`FnId` n is at index n + 1).
-const FNS: &str = "schemify.fns";
-/// Registry table of loaded modules (`require`).
-const LOADED: &str = "schemify.loaded";
 /// Most functions one config may keep (every keymap and hook, plus rebinding headroom).
 const FNS_MAX: usize = 8192;
-/// VM instructions between budget checks.
-const HOOK_EVERY: u32 = 1000;
+/// VM instructions between budget and memory checks.
+const CHECK_EVERY: u32 = 1000;
+/// The API prelude (its chunk name is `schemify`, never a `.lua` file).
+const PRELUDE: &str = include_str!("prelude.lua");
+/// Globals the config never sees (spec §4): host access, code loading, the collector.
+/// `require`, `print`, `pcall` and `xpcall` are replaced by the prelude's.
+const REMOVED: [&str; 9] = [
+    "io",
+    "os",
+    "debug",
+    "package",
+    "coroutine",
+    "dofile",
+    "loadfile",
+    "load",
+    "collectgarbage",
+];
 
 /// The Lua state of one config.
 pub(crate) struct Runtime {
     lua: Lua,
+    sandbox: Sandbox,
+    st: Rc<RefCell<St>>,
 }
 
-/// The table and outputs of the call in progress (Lua app data).
-struct State {
+/// What the Rust functions share: the table and outputs of the call in progress, the kept
+/// functions, the config root.
+struct St {
     table: Table,
     out: Vec<Request>,
+    fns: Vec<Function>,
+    root: Option<PathBuf>,
+    read: ReadFile,
+    /// The budget handle, for the protected calls; taken out on drop (it holds the state, the
+    /// state holds the functions that hold this).
+    sandbox: Option<Sandbox>,
 }
 
-/// Instructions left in the call in progress (Lua app data, read by the hook).
-struct Budget {
-    left: i64,
-    exhausted: bool,
-}
-
-/// The config root `require` resolves against (Lua app data).
-struct Root(Option<PathBuf>);
+type Shared = Rc<RefCell<St>>;
 
 impl Runtime {
     /// Builds the sandbox and runs the init file `src` (chunk name `name`, root `root`).
@@ -55,21 +72,28 @@ impl Runtime {
         src: &str,
         name: &str,
         root: Option<&Path>,
+        read: ReadFile,
     ) -> (Option<Runtime>, Table, Vec<Request>) {
-        let lua = match sandbox(root) {
+        let st = Rc::new(RefCell::new(St {
+            table: Table::default(),
+            out: Vec::new(),
+            fns: Vec::new(),
+            root: root.map(Path::to_path_buf),
+            read,
+            sandbox: None,
+        }));
+        let (lua, sandbox) = match sandbox(&st) {
             Ok(l) => l,
             Err(e) => {
-                let msg = format!("{name}: cannot start Lua: {}", describe(&e));
+                let msg = format!("{name}: cannot start Lua: {}", first_line(&e));
                 return (None, Table::default(), vec![error(msg)]);
             }
         };
-        let rt = Runtime { lua };
+        st.borrow_mut().sandbox = Some(sandbox.clone());
+        let rt = Runtime { lua, sandbox, st };
         let chunk = format!("@{name}");
         let (table, out) = rt.with_state(Table::default(), name, |lua| {
-            lua.load(src)
-                .set_name(chunk)
-                .set_mode(ChunkMode::Text)
-                .exec()
+            text_chunk(lua, src, &chunk)?.call::<_, ()>(())
         });
         (Some(rt), table, out)
     }
@@ -83,46 +107,49 @@ impl Runtime {
         fields: &[(&str, i64)],
     ) -> (Table, Vec<Request>) {
         let what = format!("function {}", f.0);
+        let func = self.st.borrow().fns.get(usize::from(f.0)).cloned();
         self.with_state(table, &what, |lua| {
-            let fns: LTable = lua.named_registry_value(FNS)?;
-            let func: Function = fns.raw_get(usize::from(f.0) + 1)?;
+            let func = func.ok_or_else(|| runtime(format!("no function {}", f.0)))?;
             match ev {
-                None => func.call::<()>(()),
+                None => func.call::<_, ()>(()),
                 Some(e) => {
                     let t = lua.create_table()?;
                     t.raw_set("event", e.word())?;
                     for &(k, v) in fields {
                         t.raw_set(k, v)?;
                     }
-                    func.call::<()>(t)
+                    func.call::<_, ()>(t)
                 }
             }
         })
     }
 
-    /// Runs `run` with `table` and a fresh budget in the app data; returns the table and the
-    /// requests, plus one error request when `run` fails (`what` names it when the error
-    /// carries no location).
+    /// Runs `run` with `table` and a fresh budget; returns the table and the requests, plus
+    /// one error request when `run` fails (`what` names it when the error carries no
+    /// location).
     fn with_state(
         &self,
         table: Table,
         what: &str,
-        run: impl FnOnce(&Lua) -> mlua::Result<()>,
+        run: impl FnOnce(&Lua) -> omnilua::Result<()>,
     ) -> (Table, Vec<Request>) {
-        let lua = &self.lua;
-        lua.set_app_data(State {
-            table,
-            out: Vec::new(),
-        });
-        lua.set_app_data(Budget {
-            left: BUDGET as i64,
-            exhausted: false,
-        });
-        let result = run(lua);
-        let mut st = lua.remove_app_data::<State>().expect("set above");
-        lua.remove_app_data::<Budget>();
+        {
+            let mut st = self.st.borrow_mut();
+            st.table = table;
+            st.out.clear();
+        }
+        arm(&self.lua, &self.sandbox, BUDGET);
+        let result = run(&self.lua);
+        let trip = self.sandbox.tripped();
+        let mut st = self.st.borrow_mut();
         if let Err(e) = result {
-            let msg = describe(&e);
+            let msg = match trip {
+                Some(TripReason::Instructions) => {
+                    format!("instruction budget exhausted ({BUDGET} per call)")
+                }
+                Some(TripReason::Memory) => out_of_memory(),
+                None => first_line(&e),
+            };
             let located = msg.contains(".lua:") || msg.starts_with(what);
             let text = match (located, traceback_location(&e)) {
                 (true, _) => msg,
@@ -131,151 +158,131 @@ impl Runtime {
             };
             st.out.push(error(text));
         }
-        assert!(st.out.len() <= REQUESTS_MAX + 1);
-        assert!(st.table.keymaps.chord.len() == st.table.keymaps.target.len());
-        (st.table, st.out)
+        let out = std::mem::take(&mut st.out);
+        let table = std::mem::take(&mut st.table);
+        assert!(out.len() <= REQUESTS_MAX + 1);
+        assert!(table.keymaps.chord.len() == table.keymaps.target.len());
+        (table, out)
     }
 }
 
-/// A Lua state with only the safe libraries, the budget hook, the memory cap and the
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        // Break the cycle state → functions → `St` → sandbox → state.
+        let mut st = self.st.borrow_mut();
+        st.sandbox = None;
+        st.fns.clear();
+    }
+}
+
+/// Refills the instruction budget to `budget` and clears a trip.
+fn arm(lua: &Lua, sandbox: &Sandbox, budget: u64) {
+    sandbox.reset();
+    let cfg = SandboxConfig {
+        instruction_limit: Some(budget),
+        memory_limit_bytes: Some(MEMORY_MAX),
+        check_interval: CHECK_EVERY,
+        remove_globals: Vec::new(),
+    };
+    lua.install_sandbox(cfg)
+        .expect("re-arming the sandbox only sets limits");
+}
+
+/// A Lua state with only the safe libraries, the budget, the memory cap and the
 /// `schemify` API.
-fn sandbox(root: Option<&Path>) -> mlua::Result<Lua> {
-    let libs = StdLib::STRING | StdLib::TABLE | StdLib::MATH | StdLib::UTF8;
-    let lua = Lua::new_with(libs, LuaOptions::new())?;
-    lua.set_memory_limit(MEMORY_MAX)?;
-    lua.set_app_data(Root(root.map(Path::to_path_buf)));
-    lua.set_named_registry_value(FNS, lua.create_table()?)?;
-    lua.set_named_registry_value(LOADED, lua.create_table()?)?;
-    lua.set_hook(
-        HookTriggers::new().every_nth_instruction(HOOK_EVERY),
-        |lua, debug| {
-            let Some(mut b) = lua.app_data_mut::<Budget>() else {
-                return Ok(VmState::Continue);
-            };
-            b.left -= i64::from(HOOK_EVERY);
-            if b.left >= 0 {
-                return Ok(VmState::Continue);
-            }
-            b.exhausted = true;
-            drop(b);
-            Err(LuaError::runtime(format!(
-                "{}instruction budget exhausted ({BUDGET} per call)",
-                location(debug)
-            )))
-        },
-    )?;
-    let g = lua.globals();
-    // Everything that reads files, loads code or bypasses the budget.
-    for name in ["dofile", "loadfile", "load", "collectgarbage"] {
-        g.raw_set(name, Value::Nil)?;
-    }
-    g.raw_set("print", lua.create_function(print)?)?;
-    g.raw_set("pcall", lua.create_function(pcall)?)?;
-    g.raw_set("xpcall", lua.create_function(xpcall)?)?;
-    g.raw_set("require", lua.create_function(require)?)?;
-    g.raw_set("schemify", api(&lua)?)?;
-    Ok(lua)
+fn sandbox(st: &Shared) -> omnilua::Result<(Lua, Sandbox)> {
+    // No host hooks: no files, processes, environment or dynamic libraries.
+    let lua = Lua::with_hooks_versioned(HostHooks::default(), LuaVersion::V54)?;
+    lua.set_capture_tracebacks(true);
+    let raw = api(&lua, st)?;
+    let getinfo: Function = lua.globals().get::<_, LTable>("debug")?.get("getinfo")?;
+    lua.load(PRELUDE)
+        .set_name("=schemify")
+        .into_function()?
+        .call::<_, ()>((raw, getinfo))?;
+    let cfg = SandboxConfig {
+        instruction_limit: Some(BUDGET),
+        memory_limit_bytes: Some(MEMORY_MAX),
+        check_interval: CHECK_EVERY,
+        remove_globals: REMOVED.iter().map(|g| g.as_bytes().to_vec()).collect(),
+    };
+    let sandbox = lua.install_sandbox(cfg)?;
+    Ok((lua, sandbox))
 }
 
-/// The `schemify` table.
-fn api(lua: &Lua) -> mlua::Result<LTable> {
-    let s = lua.create_table()?;
-    let opt = lua.create_table()?;
-    let mt = lua.create_table()?;
-    mt.raw_set(
-        "__index",
-        lua.create_function(|lua, (_, k): (Value, String)| get_opt(lua, &k))?,
-    )?;
-    mt.raw_set(
-        "__newindex",
-        lua.create_function(|lua, (_, k, v): (Value, String, Value)| set_opt(lua, &k, v))?,
-    )?;
-    opt.set_metatable(Some(mt))?;
-    s.raw_set("opt", opt)?;
-    let keymap = lua.create_table()?;
-    keymap.raw_set("set", lua.create_function(keymap_set)?)?;
-    s.raw_set("keymap", keymap)?;
-    s.raw_set("cmd", lua.create_function(cmd)?)?;
-    s.raw_set("on", lua.create_function(on)?)?;
-    s.raw_set("sim", lua.create_function(sim)?)?;
-    s.raw_set("notify", lua.create_function(notify)?)?;
-    let pack = lua.create_table()?;
-    pack.raw_set("add", lua.create_function(pack_add)?)?;
-    s.raw_set("pack", pack)?;
-    Ok(s)
+/// Compiles `src` as a text chunk: precompiled bytecode (which can crash a VM) never loads.
+fn text_chunk(lua: &Lua, src: &str, name: &str) -> omnilua::Result<Function> {
+    if src.as_bytes().first() == Some(&0x1b) {
+        return Err(runtime(format!(
+            "{}: attempt to load a binary chunk (mode is 't')",
+            name.trim_start_matches('@')
+        )));
+    }
+    lua.load(src).set_name(name).into_function()
+}
+
+/// The `raw` table the prelude wraps.
+fn api(lua: &Lua, st: &Shared) -> omnilua::Result<LTable> {
+    let t = lua.create_table()?;
+    macro_rules! raw {
+        ($name:literal, $f:expr) => {{
+            let st = st.clone();
+            let f = $f;
+            t.raw_set($name, lua.create_function(move |lua, a| f(lua, &st, a))?)?;
+        }};
+    }
+    raw!("get_opt", get_opt);
+    raw!("set_opt", set_opt);
+    raw!("keymap_set", keymap_set);
+    raw!("cmd", cmd);
+    raw!("on", on);
+    raw!("sim", sim);
+    raw!("notify", notify);
+    raw!("pack_add", pack_add);
+    raw!("find_module", find_module);
+    raw!("pcall", pcall);
+    raw!("xpcall", xpcall);
+    Ok(t)
 }
 
 // ------------------------------------------------------------------ helpers
 
-/// `file:line: ` of the Lua code that called the running callback (stack level 1).
-fn here(lua: &Lua) -> String {
-    lua.inspect_stack(1, location).unwrap_or_default()
+fn runtime(msg: String) -> LuaError {
+    RawError::runtime(format_args!("{msg}")).into()
 }
 
-fn location(d: &Debug) -> String {
-    let src = d.source();
-    match (src.short_src.as_deref(), d.current_line()) {
-        (Some(s), Some(l)) => format!("{s}:{l}: "),
-        (Some(s), None) => format!("{s}: "),
-        _ => String::new(),
-    }
-}
-
-/// An error at the calling Lua line.
-fn fail<T>(lua: &Lua, msg: impl std::fmt::Display) -> mlua::Result<T> {
-    Err(LuaError::runtime(format!("{}{msg}", here(lua))))
-}
-
-/// The first line of the innermost message of `e`.
-fn describe(e: &LuaError) -> String {
-    let text = match e {
-        LuaError::CallbackError { cause, .. } => return describe(cause),
-        LuaError::WithContext { cause, .. } => return describe(cause),
-        LuaError::RuntimeError(s) => s.clone(),
-        LuaError::SyntaxError { message, .. } => message.clone(),
-        LuaError::MemoryError(_) => format!("not enough memory ({} MiB cap)", MEMORY_MAX >> 20),
-        other => other.to_string(),
+/// The first line of an error's message.
+fn first_line(e: &LuaError) -> String {
+    let text = match &**e {
+        RawError::Memory => out_of_memory(),
+        other => other.message_lossy(),
     };
     text.lines().next().unwrap_or("").to_owned()
 }
 
-/// `file:line` of the innermost Lua frame in a callback error's traceback (argument
-/// conversion errors carry no location of their own).
-fn traceback_location(e: &LuaError) -> Option<String> {
-    let LuaError::CallbackError { traceback, cause } = e else {
-        return None;
-    };
-    let frame = traceback
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.starts_with("[C]") && !l.starts_with("stack traceback"))
-        .find_map(|l| l.split_once(": in ").map(|(at, _)| at.to_owned()));
-    frame.or_else(|| traceback_location(cause))
+fn out_of_memory() -> String {
+    format!("not enough memory ({} MiB cap)", MEMORY_MAX >> 20)
 }
 
-fn with<R>(lua: &Lua, f: impl FnOnce(&mut State) -> R) -> R {
-    let mut st = lua
-        .app_data_mut::<State>()
-        .expect("API called inside a call");
-    f(&mut st)
+/// `file:line` of the innermost config frame (`*.lua`) in an error's traceback: budget and
+/// memory trips carry no location of their own.
+fn traceback_location(e: &LuaError) -> Option<String> {
+    let tb = e.traceback_lossy()?;
+    tb.lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with("[C]") && !l.starts_with("stack traceback"))
+        .filter_map(|l| l.split_once(": in ").map(|(at, _)| at.to_owned()))
+        .find(|at| at.contains(".lua:"))
 }
 
 /// Queues a request; past [`REQUESTS_MAX`] the call fails.
-fn push(lua: &Lua, r: Request) -> mlua::Result<()> {
-    let full = with(lua, |st| {
-        if st.out.len() >= REQUESTS_MAX {
-            return true;
-        }
-        st.out.push(r);
-        false
-    });
-    if full {
-        return fail(
-            lua,
-            format!("more than {REQUESTS_MAX} requests in one call"),
-        );
+fn push(st: &Shared, r: Request) -> Option<String> {
+    let mut st = st.borrow_mut();
+    if st.out.len() >= REQUESTS_MAX {
+        return Some(format!("more than {REQUESTS_MAX} requests in one call"));
     }
-    Ok(())
+    st.out.push(r);
+    None
 }
 
 /// One word: non-empty, no whitespace, at most `max` bytes.
@@ -283,151 +290,160 @@ fn is_word(s: &str, max: usize) -> bool {
     !s.is_empty() && s.len() <= max && !s.chars().any(char::is_whitespace)
 }
 
-fn keep(lua: &Lua, f: Function) -> mlua::Result<FnId> {
-    let fns: LTable = lua.named_registry_value(FNS)?;
-    let n = fns.raw_len();
-    if n >= FNS_MAX {
-        return fail(lua, format!("more than {FNS_MAX} functions kept"));
+fn type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Nil => "nil",
+        Value::Boolean(_) => "boolean",
+        Value::Integer(_) | Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Table(_) => "table",
+        Value::Function(_) => "function",
+        Value::UserData(_) | Value::LightUserData(_) => "userdata",
+        Value::Thread(_) => "thread",
     }
-    fns.raw_set(n + 1, f)?;
-    Ok(FnId(u16::try_from(n).expect("FNS_MAX < 2^16")))
 }
 
-fn exhausted(lua: &Lua) -> bool {
-    lua.app_data_ref::<Budget>().is_some_and(|b| b.exhausted)
+/// A string argument (numbers convert, as Lua's `tostring` would for `luaL_checkstring`).
+fn string(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => s.to_str().ok(),
+        Value::Integer(i) => Some(i.to_string()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
 }
 
-// ------------------------------------------------------------------ globals
-
-/// `print(...)`: an info notification (no stdout from a config).
-fn print(lua: &Lua, args: MultiValue) -> mlua::Result<()> {
-    let parts: Vec<String> = args
-        .iter()
-        .map(|v| v.to_string())
-        .collect::<mlua::Result<_>>()?;
-    push(
-        lua,
-        Request::Notify {
-            level: Level::Info,
-            text: parts.join("\t"),
-        },
+fn bad_arg(n: u8, func: &str, want: &str, got: &Value) -> String {
+    format!(
+        "bad argument #{n} to '{func}' ({want} expected, got {})",
+        type_name(got)
     )
 }
 
+fn keep(st: &Shared, f: Function) -> Result<FnId, String> {
+    let mut st = st.borrow_mut();
+    if st.fns.len() >= FNS_MAX {
+        return Err(format!("more than {FNS_MAX} functions kept"));
+    }
+    st.fns.push(f);
+    Ok(FnId(
+        u16::try_from(st.fns.len() - 1).expect("FNS_MAX < 2^16"),
+    ))
+}
+
+/// A table field (`nil` when absent).
+fn field(t: &LTable, k: &str) -> Value {
+    t.raw_get::<_, Value>(k).unwrap_or(Value::Nil)
+}
+
+// ------------------------------------------------------------------ pcall
+
 /// `pcall` that cannot swallow budget exhaustion (a `while true do pcall(f) end` would
-/// otherwise outlive any budget). The error value is its message string.
-fn pcall(lua: &Lua, (f, args): (Function, MultiValue)) -> mlua::Result<MultiValue> {
-    match f.call::<MultiValue>(args) {
+/// otherwise outlive any budget). A memory-cap error is caught like any error, and the cap is
+/// re-armed with the budget left. The error value is its message string.
+fn pcall(lua: &Lua, st: &Shared, a: Variadic<Value>) -> omnilua::Result<Variadic<Value>> {
+    let mut a = a.into_vec();
+    if a.is_empty() {
+        return Err(runtime(
+            "bad argument #1 to 'pcall' (value expected)".into(),
+        ));
+    }
+    let f = a.remove(0);
+    let result = match f {
+        Value::Function(f) => f.call::<_, Variadic<Value>>(Variadic::from(a)),
+        other => Err(runtime(format!(
+            "attempt to call a {} value",
+            type_name(&other)
+        ))),
+    };
+    match result {
         Ok(v) => {
             let mut all = vec![Value::Boolean(true)];
             all.extend(v.into_vec());
-            Ok(MultiValue::from_vec(all))
+            Ok(Variadic::from(all))
         }
-        Err(e) if exhausted(lua) => Err(e),
         Err(e) => {
-            let msg = Value::String(lua.create_string(describe(&e))?);
-            Ok(MultiValue::from_vec(vec![Value::Boolean(false), msg]))
+            let msg = caught(lua, st, e)?;
+            let msg = Value::String(lua.create_string(msg)?);
+            Ok(Variadic::from(vec![Value::Boolean(false), msg]))
         }
     }
 }
 
 /// `xpcall` with the same rule as [`pcall`]; the handler gets the message string.
-fn xpcall(
-    lua: &Lua,
-    (f, handler, args): (Function, Function, MultiValue),
-) -> mlua::Result<MultiValue> {
-    match f.call::<MultiValue>(args) {
+fn xpcall(lua: &Lua, st: &Shared, a: Variadic<Value>) -> omnilua::Result<Variadic<Value>> {
+    let mut a = a.into_vec();
+    if a.len() < 2 {
+        return Err(runtime(
+            "bad argument #2 to 'xpcall' (value expected)".into(),
+        ));
+    }
+    let f = a.remove(0);
+    let handler = match a.remove(0) {
+        Value::Function(h) => h,
+        other => return Err(runtime(bad_arg(2, "xpcall", "function", &other))),
+    };
+    let result = match f {
+        Value::Function(f) => f.call::<_, Variadic<Value>>(Variadic::from(a)),
+        other => Err(runtime(format!(
+            "attempt to call a {} value",
+            type_name(&other)
+        ))),
+    };
+    match result {
         Ok(v) => {
             let mut all = vec![Value::Boolean(true)];
             all.extend(v.into_vec());
-            Ok(MultiValue::from_vec(all))
+            Ok(Variadic::from(all))
         }
-        Err(e) if exhausted(lua) => Err(e),
         Err(e) => {
-            let handled: Value = handler.call(describe(&e))?;
-            Ok(MultiValue::from_vec(vec![Value::Boolean(false), handled]))
+            let msg = caught(lua, st, e)?;
+            let handled: Value = handler.call(msg)?;
+            Ok(Variadic::from(vec![Value::Boolean(false), handled]))
         }
     }
 }
 
-/// `require "a.b"`: `<root>/lua/a/b.lua` or `<root>/lua/a/b/init.lua`, once.
-fn require(lua: &Lua, name: String) -> mlua::Result<Value> {
-    let ok = !name.is_empty()
-        && name.split('.').all(|seg| {
-            !seg.is_empty()
-                && seg
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
-        });
-    if !ok {
-        return fail(lua, format!("bad module name `{name}`"));
-    }
-    let loaded: LTable = lua.named_registry_value(LOADED)?;
-    match loaded.raw_get::<Value>(name.as_str())? {
-        Value::Nil => {}
-        Value::LightUserData(_) => return fail(lua, format!("loop requiring `{name}`")),
-        v => return Ok(v),
-    }
-    let root = lua.app_data_ref::<Root>().and_then(|r| r.0.clone());
-    let Some(root) = root else {
-        return fail(lua, format!("module `{name}`: no config directory"));
-    };
-    let rel = name.replace('.', "/");
-    let candidates = [format!("lua/{rel}.lua"), format!("lua/{rel}/init.lua")];
-    let Some((file, src)) = candidates
-        .iter()
-        .find_map(|c| std::fs::read_to_string(root.join(c)).ok().map(|s| (c, s)))
-    else {
-        return fail(
-            lua,
-            format!("module `{name}` not found under {}/lua", root.display()),
-        );
-    };
-    // A sentinel while the module runs, so a cycle fails instead of recursing.
-    loaded.raw_set(
-        name.as_str(),
-        Value::LightUserData(mlua::LightUserData(std::ptr::null_mut())),
-    )?;
-    let chunk = lua
-        .load(&src)
-        .set_name(format!("@{file}"))
-        .set_mode(ChunkMode::Text);
-    let result = chunk.call::<Value>(name.as_str());
-    let v = match result {
-        Ok(Value::Nil) => Value::Boolean(true),
-        Ok(v) => v,
-        Err(e) => {
-            loaded.raw_set(name.as_str(), Value::Nil)?;
-            return Err(e);
+/// The message a protected call returns for `e`, or `e` itself when it must propagate (the
+/// instruction budget). A memory trip is recoverable: the sandbox is re-armed with the
+/// instructions this call has left, so a retry loop still ends.
+fn caught(lua: &Lua, st: &Shared, e: LuaError) -> omnilua::Result<String> {
+    let sandbox = st.borrow().sandbox.clone().expect("armed while Lua runs");
+    match sandbox.tripped() {
+        Some(TripReason::Instructions) => Err(e),
+        Some(TripReason::Memory) => {
+            let left = sandbox.instructions_remaining().unwrap_or(1).max(1);
+            arm(lua, &sandbox, left);
+            Ok(out_of_memory())
         }
-    };
-    loaded.raw_set(name.as_str(), v.clone())?;
-    Ok(v)
+        None => Ok(first_line(&e)),
+    }
 }
 
 // ------------------------------------------------------------------ schemify.*
 
-fn get_opt(lua: &Lua, key: &str) -> mlua::Result<Value> {
-    let o = with(lua, |st| st.table.opts);
+fn get_opt(lua: &Lua, st: &Shared, key: Value) -> omnilua::Result<(Value, Option<String>)> {
+    let o = st.borrow().table.opts;
     let step = |milli: i32| Value::Number(f64::from(milli) / 1000.0);
-    Ok(match key {
-        "snap" => step(o.snap),
-        "grid" => step(o.grid),
-        "show_grid" => Value::Boolean(o.show_grid),
-        "light" => Value::Boolean(o.light),
-        "dim" => Value::Number(f64::from(o.dim) / 100.0),
-        "line_width" => Value::Number(f64::from(o.line_width_tenths) / 10.0),
+    let key = string(&key).unwrap_or_default();
+    Ok(match key.as_str() {
+        "snap" => (step(o.snap), None),
+        "grid" => (step(o.grid), None),
+        "show_grid" => (Value::Boolean(o.show_grid), None),
+        "light" => (Value::Boolean(o.light), None),
+        "dim" => (Value::Number(f64::from(o.dim) / 100.0), None),
+        "line_width" => (Value::Number(f64::from(o.line_width_tenths) / 10.0), None),
         // A copy: assigning to one of its entries changes nothing (spec §3).
         "layer_colors" => {
             let t = lua.create_table()?;
             for (layer, c) in o.layer_colors.iter().enumerate() {
                 if let Some(rgb) = c {
-                    t.raw_set(layer, format!("{rgb:06x}"))?;
+                    t.raw_set(layer as i64, format!("{rgb:06x}"))?;
                 }
             }
-            Value::Table(t)
+            (Value::Table(t), None)
         }
-        _ => return fail(lua, format!("unknown option `{key}`")),
+        _ => (Value::Nil, Some(format!("unknown option `{key}`"))),
     })
 }
 
@@ -448,7 +464,7 @@ fn layer_colors(v: &Value) -> Option<[Option<u32>; USER_LAYERS]> {
     };
     let mut out = [None; USER_LAYERS];
     let mut n = 0usize;
-    for pair in t.pairs::<Value, Value>() {
+    for pair in t.pairs().ok()? {
         let (k, c) = pair.ok()?;
         n += 1;
         if n > USER_LAYERS {
@@ -462,8 +478,7 @@ fn layer_colors(v: &Value) -> Option<[Option<u32>; USER_LAYERS]> {
             return None;
         };
         let text = c.to_str().ok()?;
-        let text: &str = &text;
-        let hex = text.strip_prefix('#').unwrap_or(text);
+        let hex = text.strip_prefix('#').unwrap_or(&text);
         if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
             return None;
         }
@@ -473,7 +488,7 @@ fn layer_colors(v: &Value) -> Option<[Option<u32>; USER_LAYERS]> {
     Some(out)
 }
 
-fn set_opt(lua: &Lua, key: &str, v: Value) -> mlua::Result<()> {
+fn set_opt(_: &Lua, st: &Shared, (key, v): (Value, Value)) -> omnilua::Result<Option<String>> {
     let step = |v: &Value| -> Option<i32> {
         let units = match *v {
             Value::Integer(i) => i as f64,
@@ -487,165 +502,255 @@ fn set_opt(lua: &Lua, key: &str, v: Value) -> mlua::Result<()> {
         Value::Boolean(b) => Some(b),
         _ => None,
     };
-    let set = match key {
-        "snap" => step(&v).map(|s| with(lua, |st| st.table.opts.snap = s)),
-        "grid" => step(&v).map(|s| with(lua, |st| st.table.opts.grid = s)),
-        "show_grid" => flag(&v).map(|b| with(lua, |st| st.table.opts.show_grid = b)),
-        "light" => flag(&v).map(|b| with(lua, |st| st.table.opts.light = b)),
+    let key = string(&key).unwrap_or_default();
+    let mut s = st.borrow_mut();
+    let o = &mut s.table.opts;
+    let set = match key.as_str() {
+        "snap" => step(&v).map(|x| o.snap = x),
+        "grid" => step(&v).map(|x| o.grid = x),
+        "show_grid" => flag(&v).map(|b| o.show_grid = b),
+        "light" => flag(&v).map(|b| o.light = b),
         "dim" => number(&v)
             .filter(|f| (0.0..=1.0).contains(f))
-            .map(|f| with(lua, |st| st.table.opts.dim = (f * 100.0).round() as u8)),
+            .map(|f| o.dim = (f * 100.0).round() as u8),
         "line_width" => number(&v).filter(|w| (0.1..=10.0).contains(w)).map(|w| {
-            let tenths = (w * 10.0).round().clamp(1.0, 100.0) as u8;
-            with(lua, |st| st.table.opts.line_width_tenths = tenths)
+            o.line_width_tenths = (w * 10.0).round().clamp(1.0, 100.0) as u8;
         }),
-        "layer_colors" => layer_colors(&v).map(|c| with(lua, |st| st.table.opts.layer_colors = c)),
-        _ => return fail(lua, format!("unknown option `{key}`")),
+        "layer_colors" => layer_colors(&v).map(|c| o.layer_colors = c),
+        _ => return Ok(Some(format!("unknown option `{key}`"))),
     };
-    match set {
-        Some(()) => Ok(()),
-        None => fail(
-            lua,
-            format!("option `{key}`: bad value ({})", v.type_name()),
-        ),
-    }
+    Ok(match set {
+        Some(()) => None,
+        None => Some(format!("option `{key}`: bad value ({})", type_name(&v))),
+    })
 }
 
 fn keymap_set(
-    lua: &Lua,
-    (chord, target, opts): (String, Value, Option<LTable>),
-) -> mlua::Result<()> {
+    _: &Lua,
+    st: &Shared,
+    (chord, target, opts): (Value, Value, Value),
+) -> omnilua::Result<Option<String>> {
+    let Some(chord) = string(&chord) else {
+        return Ok(Some(bad_arg(1, "set", "string", &chord)));
+    };
     if !is_word(&chord, 64) {
-        return fail(lua, format!("bad chord `{chord}`"));
+        return Ok(Some(format!("bad chord `{chord}`")));
     }
     let target = match target {
         Value::String(s) => {
-            let s = s.to_str()?.to_owned();
+            let s = s.to_str()?;
             if !is_word(&s, 128) {
-                return fail(lua, format!("bad command name `{s}`"));
+                return Ok(Some(format!("bad command name `{s}`")));
             }
             Target::Command(s)
         }
-        Value::Function(f) => Target::Function(keep(lua, f)?),
-        other => {
-            return fail(
-                lua,
-                format!(
-                    "keymap target must be a command name or a function, not {}",
-                    other.type_name()
-                ),
-            );
-        }
-    };
-    let desc: String = match opts {
-        Some(t) => t.raw_get::<Option<String>>("desc")?.unwrap_or_default(),
-        None => String::new(),
-    };
-    let full = with(lua, |st| {
-        let k = &mut st.table.keymaps;
-        if let Some(i) = k.chord.iter().position(|c| *c == chord) {
-            k.target[i] = target;
-            k.desc[i] = desc;
-            return false;
-        }
-        if k.chord.len() >= KEYMAPS_MAX {
-            return true;
-        }
-        k.chord.push(chord);
-        k.target.push(target);
-        k.desc.push(desc);
-        false
-    });
-    if full {
-        return fail(lua, format!("more than {KEYMAPS_MAX} keymaps"));
-    }
-    Ok(())
-}
-
-fn cmd(lua: &Lua, (name, args): (String, Option<String>)) -> mlua::Result<()> {
-    if !is_word(&name, 128) {
-        return fail(lua, format!("bad command name `{name}`"));
-    }
-    push(
-        lua,
-        Request::Command {
-            name,
-            args: args.unwrap_or_default(),
+        Value::Function(f) => match keep(st, f) {
+            Ok(id) => Target::Function(id),
+            Err(e) => return Ok(Some(e)),
         },
-    )
-}
-
-fn on(lua: &Lua, (event, f): (String, Function)) -> mlua::Result<()> {
-    let Some(ev) = Event::from_word(&event) else {
-        return fail(lua, format!("unknown event `{event}`"));
+        other => {
+            return Ok(Some(format!(
+                "keymap target must be a command name or a function, not {}",
+                type_name(&other)
+            )));
+        }
     };
-    if with(lua, |st| st.table.hooks.len()) >= HOOKS_MAX {
-        return fail(lua, format!("more than {HOOKS_MAX} hooks"));
+    let desc = match &opts {
+        Value::Table(t) => string(&field(t, "desc")).unwrap_or_default(),
+        _ => String::new(),
+    };
+    let mut s = st.borrow_mut();
+    let k = &mut s.table.keymaps;
+    if let Some(i) = k.chord.iter().position(|c| *c == chord) {
+        k.target[i] = target;
+        k.desc[i] = desc;
+        return Ok(None);
     }
-    let id = keep(lua, f)?;
-    with(lua, |st| st.table.hooks.push((ev, id)));
-    Ok(())
+    if k.chord.len() >= KEYMAPS_MAX {
+        return Ok(Some(format!("more than {KEYMAPS_MAX} keymaps")));
+    }
+    k.chord.push(chord);
+    k.target.push(target);
+    k.desc.push(desc);
+    Ok(None)
 }
 
-fn sim(lua: &Lua, (name, spec): (String, LTable)) -> mlua::Result<()> {
+fn cmd(_: &Lua, st: &Shared, (name, args): (Value, Value)) -> omnilua::Result<Option<String>> {
+    let Some(name) = string(&name) else {
+        return Ok(Some(bad_arg(1, "cmd", "string", &name)));
+    };
+    if !is_word(&name, 128) {
+        return Ok(Some(format!("bad command name `{name}`")));
+    }
+    let args = match &args {
+        Value::Nil => String::new(),
+        v => match string(v) {
+            Some(s) => s,
+            None => return Ok(Some(bad_arg(2, "cmd", "string", v))),
+        },
+    };
+    Ok(push(st, Request::Command { name, args }))
+}
+
+fn on(_: &Lua, st: &Shared, (event, f): (Value, Value)) -> omnilua::Result<Option<String>> {
+    let Some(event) = string(&event) else {
+        return Ok(Some(bad_arg(1, "on", "string", &event)));
+    };
+    let Value::Function(f) = f else {
+        return Ok(Some(bad_arg(2, "on", "function", &f)));
+    };
+    let Some(ev) = Event::from_word(&event) else {
+        return Ok(Some(format!("unknown event `{event}`")));
+    };
+    if st.borrow().table.hooks.len() >= HOOKS_MAX {
+        return Ok(Some(format!("more than {HOOKS_MAX} hooks")));
+    }
+    match keep(st, f) {
+        Ok(id) => {
+            st.borrow_mut().table.hooks.push((ev, id));
+            Ok(None)
+        }
+        Err(e) => Ok(Some(e)),
+    }
+}
+
+fn sim(_: &Lua, st: &Shared, (name, spec): (Value, Value)) -> omnilua::Result<Option<String>> {
+    let Some(name) = string(&name) else {
+        return Ok(Some(bad_arg(1, "sim", "string", &name)));
+    };
     let Some(kind) = SimKind::ALL.into_iter().find(|k| k.word() == name) else {
-        return fail(
-            lua,
-            format!("unknown program `{name}` (ngspice, openvaf, iverilog)"),
-        );
+        return Ok(Some(format!(
+            "unknown program `{name}` (ngspice, openvaf, iverilog)"
+        )));
     };
-    let path: Option<String> = spec.raw_get("path")?;
-    let Some(path) = path.filter(|p| !p.is_empty()) else {
-        return fail(lua, format!("sim `{name}`: `path` is required"));
+    let Value::Table(spec) = spec else {
+        return Ok(Some(bad_arg(2, "sim", "table", &spec)));
     };
-    let args: Vec<String> = match spec.raw_get::<Option<LTable>>("args")? {
-        Some(t) => t.sequence_values::<String>().collect::<mlua::Result<_>>()?,
-        None => Vec::new(),
+    let Some(path) = string(&field(&spec, "path")).filter(|p| !p.is_empty()) else {
+        return Ok(Some(format!("sim `{name}`: `path` is required")));
     };
-    with(lua, |st| {
-        st.table.sims[kind as usize] = Some(crate::Sim { path, args });
-    });
-    Ok(())
+    let args = match field(&spec, "args") {
+        Value::Nil => Vec::new(),
+        Value::Table(t) => match strings(&t) {
+            Some(a) => a,
+            None => {
+                return Ok(Some(format!(
+                    "sim `{name}`: `args` must be a list of strings"
+                )));
+            }
+        },
+        _ => {
+            return Ok(Some(format!(
+                "sim `{name}`: `args` must be a list of strings"
+            )));
+        }
+    };
+    st.borrow_mut().table.sims[kind as usize] = Some(crate::Sim { path, args });
+    Ok(None)
 }
 
-fn notify(lua: &Lua, (msg, level): (String, Option<String>)) -> mlua::Result<()> {
-    let level = match level.as_deref() {
+/// The sequence part of `t` as strings; `None` if an element is not a string.
+fn strings(t: &LTable) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    for i in 1..=t.len().ok()? {
+        out.push(string(&t.raw_get::<_, Value>(i as i64).ok()?)?);
+    }
+    Some(out)
+}
+
+fn notify(_: &Lua, st: &Shared, (msg, level): (Value, Value)) -> omnilua::Result<Option<String>> {
+    let Some(text) = string(&msg) else {
+        return Ok(Some(bad_arg(1, "notify", "string", &msg)));
+    };
+    let level = match string(&level).as_deref() {
         None | Some("info") => Level::Info,
         Some("warn") => Level::Warn,
         Some("error") => Level::Error,
-        Some(other) => return fail(lua, format!("unknown level `{other}`")),
+        Some(other) => return Ok(Some(format!("unknown level `{other}`"))),
     };
-    push(lua, Request::Notify { level, text: msg })
+    Ok(push(st, Request::Notify { level, text }))
 }
 
-/// `schemify.pack.add { spec, … }`: a bad spec is reported and dropped, the rest stay.
-fn pack_add(lua: &Lua, specs: LTable) -> mlua::Result<()> {
-    let root = lua.app_data_ref::<Root>().and_then(|r| r.0.clone());
-    for v in specs.sequence_values::<Value>() {
-        let spec = match pack_spec(v?, root.as_deref()) {
+/// `schemify.pack.add { spec, … }`: a bad spec is reported (at `here`, the caller's
+/// `file:line: `) and dropped; the rest stay.
+fn pack_add(
+    _: &Lua,
+    st: &Shared,
+    (here, specs): (Value, Value),
+) -> omnilua::Result<Option<String>> {
+    let here = string(&here).unwrap_or_default();
+    let Value::Table(specs) = specs else {
+        return Ok(Some(bad_arg(1, "add", "table", &specs)));
+    };
+    let root = st.borrow().root.clone();
+    let n = specs.len()?;
+    for i in 1..=n {
+        let v: Value = specs.raw_get(i as i64)?;
+        let spec = match pack_spec(v, root.as_deref()) {
             Ok(s) => s,
             Err(msg) => {
-                push(lua, error(format!("{}pack spec: {msg}", here(lua))))?;
+                if let Some(e) = push(st, error(format!("{here}pack spec: {msg}"))) {
+                    return Ok(Some(e));
+                }
                 continue;
             }
         };
-        let full = with(lua, |st| {
-            let packs = &mut st.table.packs;
-            if let Some(i) = packs.iter().position(|p| p.name == spec.name) {
-                packs[i] = spec;
-                return false;
-            }
-            if packs.len() >= PACKS_MAX {
-                return true;
-            }
-            packs.push(spec);
-            false
-        });
-        if full {
-            return fail(lua, format!("more than {PACKS_MAX} packages"));
+        let mut s = st.borrow_mut();
+        let packs = &mut s.table.packs;
+        if let Some(i) = packs.iter().position(|p| p.name == spec.name) {
+            packs[i] = spec;
+            continue;
         }
+        if packs.len() >= PACKS_MAX {
+            return Ok(Some(format!("more than {PACKS_MAX} packages")));
+        }
+        packs.push(spec);
     }
-    Ok(())
+    Ok(None)
+}
+
+/// `require "a.b"`'s file: `<root>/lua/a/b.lua` or `<root>/lua/a/b/init.lua`, compiled (the
+/// prelude runs it once and caches the result). Returns the chunk, or `nil` and the error.
+fn find_module(lua: &Lua, st: &Shared, name: Value) -> omnilua::Result<(Value, Option<String>)> {
+    let name = string(&name).unwrap_or_default();
+    let ok = !name.is_empty()
+        && name.split('.').all(|seg| {
+            !seg.is_empty()
+                && seg
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+        });
+    if !ok {
+        return Ok((Value::Nil, Some(format!("bad module name `{name}`"))));
+    }
+    let (root, read) = {
+        let s = st.borrow();
+        (s.root.clone(), s.read)
+    };
+    let Some(root) = root else {
+        return Ok((
+            Value::Nil,
+            Some(format!("module `{name}`: no config directory")),
+        ));
+    };
+    let rel = name.replace('.', "/");
+    let candidates = [format!("lua/{rel}.lua"), format!("lua/{rel}/init.lua")];
+    let Some((file, src)) = candidates
+        .iter()
+        .find_map(|c| read(&root.join(c)).map(|s| (c, s)))
+    else {
+        return Ok((
+            Value::Nil,
+            Some(format!(
+                "module `{name}` not found under {}/lua",
+                root.display()
+            )),
+        ));
+    };
+    match text_chunk(lua, &src, &format!("@{file}")) {
+        Ok(f) => Ok((Value::Function(f), None)),
+        Err(e) => Ok((Value::Nil, Some(first_line(&e)))),
+    }
 }
 
 const SPEC_FIELDS: [&str; 10] = [
@@ -656,7 +761,7 @@ const SPEC_FIELDS: [&str; 10] = [
 fn pack_spec(v: Value, root: Option<&Path>) -> Result<PackSpec, String> {
     let t = match v {
         Value::String(s) => {
-            let url = s.to_str().map_err(|e| e.to_string())?.to_owned();
+            let url = s.to_str().map_err(|e| e.to_string())?;
             return finish_spec(
                 Source::Git { url, rev: None },
                 None,
@@ -666,23 +771,24 @@ fn pack_spec(v: Value, root: Option<&Path>) -> Result<PackSpec, String> {
             );
         }
         Value::Table(t) => t,
-        other => return Err(format!("a spec is a table, not {}", other.type_name())),
+        other => return Err(format!("a spec is a table, not {}", type_name(&other))),
     };
     let s = |k: &str| -> Result<Option<String>, String> {
-        t.raw_get::<Option<String>>(k)
-            .map_err(|_| format!("`{k}` must be a string"))
+        match field(&t, k) {
+            Value::Nil => Ok(None),
+            Value::String(v) => v.to_str().map(Some).map_err(|e| e.to_string()),
+            _ => Err(format!("`{k}` must be a string")),
+        }
     };
-    for pair in t.pairs::<Value, Value>() {
+    for pair in t.pairs().map_err(|e| e.to_string())? {
         let (k, _) = pair.map_err(|e| e.to_string())?;
         let known = match &k {
-            Value::String(k) => k.to_str().is_ok_and(|k| SPEC_FIELDS.contains(&&*k)),
+            Value::String(k) => k.to_str().is_ok_and(|k| SPEC_FIELDS.contains(&k.as_str())),
             _ => false,
         };
         if !known {
-            return Err(format!(
-                "unknown field {}",
-                k.to_string().unwrap_or_default()
-            ));
+            let shown = string(&k).unwrap_or_else(|| type_name(&k).to_owned());
+            return Err(format!("unknown field {shown}"));
         }
     }
     let (src, url, path) = (s("src")?, s("url")?, s("path")?);
@@ -718,23 +824,20 @@ fn pack_spec(v: Value, root: Option<&Path>) -> Result<PackSpec, String> {
     if rev.is_some() && !matches!(source, Source::Git { .. }) {
         return Err("`rev`/`version` apply to `src` (git) only".into());
     }
-    let grant: Vec<String> = match t.raw_get::<Option<LTable>>("grant") {
-        Ok(Some(g)) => g
-            .sequence_values::<String>()
-            .collect::<mlua::Result<_>>()
-            .map_err(|_| "`grant` must be a list of strings".to_owned())?,
-        Ok(None) => Vec::new(),
-        Err(_) => return Err("`grant` must be a list of strings".into()),
+    let grant: Vec<String> = match field(&t, "grant") {
+        Value::Nil => Vec::new(),
+        Value::Table(g) => strings(&g).ok_or("`grant` must be a list of strings")?,
+        _ => return Err("`grant` must be a list of strings".into()),
     };
     if let Some(g) = grant.iter().find(|g| !is_word(g, 128)) {
         return Err(format!("bad grant `{g}`"));
     }
-    let fuel = match t.raw_get::<Value>("fuel").map_err(|e| e.to_string())? {
+    let fuel = match field(&t, "fuel") {
         Value::Nil => None,
         Value::Integer(n) if (1_000_000..=100_000_000_000).contains(&n) => Some(n as u64),
         _ => return Err("`fuel` must be a whole number in [10^6, 10^11]".into()),
     };
-    let lazy = match t.raw_get::<Value>("lazy").map_err(|e| e.to_string())? {
+    let lazy = match field(&t, "lazy") {
         Value::Nil => (Vec::new(), Vec::new()),
         Value::Table(l) => {
             let cmds = words(&l, "cmd")?;
@@ -755,13 +858,10 @@ fn pack_spec(v: Value, root: Option<&Path>) -> Result<PackSpec, String> {
 /// `cmd = "x"` or `cmd = { "x", "y" }`.
 fn words(t: &LTable, key: &str) -> Result<Vec<String>, String> {
     let bad = || format!("`lazy.{key}` must be a word or a list of words");
-    let v: Vec<String> = match t.raw_get::<Value>(key).map_err(|e| e.to_string())? {
+    let v: Vec<String> = match field(t, key) {
         Value::Nil => Vec::new(),
-        Value::String(s) => vec![s.to_str().map_err(|_| bad())?.to_owned()],
-        Value::Table(l) => l
-            .sequence_values::<String>()
-            .collect::<mlua::Result<_>>()
-            .map_err(|_| bad())?,
+        Value::String(s) => vec![s.to_str().map_err(|_| bad())?],
+        Value::Table(l) => strings(&l).ok_or_else(bad)?,
         _ => return Err(bad()),
     };
     if v.iter().any(|w| !is_word(w, 128)) {

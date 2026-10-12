@@ -20,7 +20,7 @@ Ctrl+C / Ctrl+V                                      the system clipboard
 - Before the editor starts, the storage is mounted (§2) and an unload guard installed; then the editor runs exactly as natively (`Editor::new` → `render::run`).
 - One project per page, as one per native process: importing a project reloads the page on it (§3).
 - The clock is the page's (`Date.now`): journal stamps, file times, double clicks and plugin timers use it. Object-id seeds mix `Math.random` and the clock (ids need uniqueness, not secrecy).
-- No user config yet: see §5.
+- The user config is `/config/init.lua` (§5).
 
 ## 2. Storage (OPFS)
 
@@ -69,10 +69,13 @@ The Clipboard API, secure contexts only (HTTPS or localhost):
 
 ## 5. User config (Lua)
 
-Not run on the web in this version (config spec §4). Evaluation (2026-10-11):
+The init file is OPFS `/config/init.lua`, its modules `/config/lua/` (config spec §1–§4), read through the platform (`Config::load_with`). The interpreter is omnilua, a pure-Rust Lua 5.4, on the web and natively alike (user decision 2026-10-12), so a config behaves the same everywhere; CI runs the config tests on `wasm32-wasip1` too, and the browser smoke test binds a key in `/config/init.lua` and uses it.
 
-- *C Lua 5.4 for `wasm32-unknown-unknown`*: `lua-src` 551.0.2 (mlua's `vendored` build) refuses the target (`don't know how to build Lua for wasm32-unknown-unknown`; only `-emscripten` and `-wasi` have branches, and `mlua-sys` panics without `vendored` on wasm32). A build would need a C toolchain for the target, a libc shim (the `printf` family with exact float formatting, `strtod`, string and math functions) and `setjmp`/`longjmp`, which clang lowers to the wasm exception-handling proposal only with a runtime (`__wasm_setjmp`, `__wasm_longjmp`) that wasi-libc ships and this target lacks — C code outside the `forbid(unsafe_code)` rule, plus a patched `lua-src` in the root manifest.
-- *Pure-Rust Lua*: `piccolo` 0.3.3 (the candidate named in BACKLOG) lacks most of the standard library the config API and real configs use (`tonumber`, `string.rep/format/find/gsub/match/byte/char`, `table.insert/concat/remove/sort`, `utf8`), and its `rand` dependency pulls `getrandom`, which does not build for this target without a JS backend feature. `omnilua` 0.7.1 passes the PUC-Rio 5.4 suite and builds for the target, but it is four months old, has one maintainer and churned 17 releases in six weeks, its API is not mlua's (the 770-line runtime would be rewritten), and identical behaviour on both targets would mean running it natively too, replacing the vendored C Lua: a dependency and runtime decision for the user (AGENTS rule 7), not part of this change.
+Why omnilua (evaluation of 2026-10-11):
+
+- *C Lua 5.4 for `wasm32-unknown-unknown`*: `lua-src` 551.0.2 (mlua's `vendored` build) refuses the target; a build would need a libc shim (the `printf` family, `strtod`, string and math functions) and `setjmp`/`longjmp` over the wasm exception-handling proposal with a runtime this target lacks: C outside the `forbid(unsafe_code)` rule and a patched `lua-src`.
+- *piccolo* 0.3.3 lacks most of the standard library real configs use (`tonumber`, most of `string` and `table`, `utf8`) and pulls `getrandom`, which needs a JS backend on this target.
+- *omnilua* 0.7.1 passes the PUC-Rio 5.4 suite, has no C and no third-party dependency (eight `lua-*` crates of its own), and builds for every target. Its sandbox covers the config spec's contract: an instruction budget, a memory ceiling, stripped globals. Risk accepted with it: a young crate (four months, one maintainer); the config API sits behind `crates/config/src/lua.rs` and the prelude, so another runtime replaces one file.
 
 ## 6. Simulation
 

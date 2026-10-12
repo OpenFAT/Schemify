@@ -17,8 +17,6 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## user config and packages (config spec)
 
-- **config**: no Lua on the web (web spec §5 has the evaluation): `lua-src` refuses `wasm32-unknown-unknown` and a C build needs a libc shim with wasm-EH `setjmp`/`longjmp`; piccolo lacks most of the stdlib. Needs the user decision under "Decisions pending"; OPFS `/config` then holds `init.lua`.
-- **config**: a single C library call (a pattern match over a huge string) runs between budget checks; only the memory cap bounds it.
 - **cli/pack**: `url` packages are one `.wasm` file (no archives); `pack` has no parallel fetches.
 
 ## web (web spec)
@@ -53,8 +51,6 @@ Open items collected from workstream reports. Each item names its owner crate. R
 ## Decisions pending (user)
 
 - **cktImg upstream PR** OmarSiwy/cktImg #5 (separations batched past 256 rounds only; fixes #4's slowdown on regular decks): merge, then re-point `extern/cktimg` at the merged `main` commit.
-
-- **Lua on the web** (web spec §5): the one viable runtime found is `omnilua` (pure Rust, passes the PUC-Rio 5.4 suite, builds for `wasm32-unknown-unknown`; 0.7.1, 4 months old, one maintainer, 6 new crates). Identical behaviour on both targets means replacing mlua's vendored C Lua natively too and rewriting `config/src/lua.rs` on its API. Adopt it, or keep the web without a user config until a runtime matures.
 
 
 ## command stream (rpc, D27)
