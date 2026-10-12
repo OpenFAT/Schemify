@@ -84,18 +84,18 @@
 
 ;; A text field (spec 4.1) from segs, strings whose concatenation is the text (each under
 ;; SKILL's 8191-character limit; a file's lines, say): one string when the text is at most
-;; 4000 bytes, else a list of chunks of at most 4000 bytes cut on character boundaries,
+;; 2000 bytes, else a list of chunks of at most 2000 bytes cut on character boundaries,
 ;; greedily, as interop::sfyx::text does.
 (procedure (SfyText segs)
   (let ((total 0) (chunks nil) (cur nil) (n 0) k)
     (foreach s segs (setq total (plus total (strlen s))))
-    (if (leqp total 4000)
+    (if (leqp total 2000)
       (buildString segs "")
       (progn
         (foreach s segs
           (foreach c (parseString s "")
             (setq k (SfyCharBytes c))
-            (when (and (greaterp k 0) (greaterp (plus n k) 4000))
+            (when (and (greaterp k 0) (greaterp (plus n k) 2000))
               (setq chunks (cons (buildString (reverse cur) "") chunks))
               (setq cur nil)
               (setq n 0))

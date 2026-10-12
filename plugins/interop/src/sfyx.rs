@@ -151,9 +151,10 @@ impl std::fmt::Display for Error {
     }
 }
 
-/// Longest string element a writer emits whole; longer *text* is chunked (SKILL's parser
-/// refuses string literals over 8191 characters).
-pub const CHUNK_MAX: usize = 4000;
+/// Longest string element a writer emits whole; longer *text* is chunked. SKILL's parser
+/// refuses string literals over 8191 characters and an escape takes up to 4 characters per
+/// byte, so 2000 bytes always fit.
+pub const CHUNK_MAX: usize = 2000;
 
 /// Records per file, a bound on the reader's work.
 pub const RECORDS_MAX: usize = 1 << 24;
@@ -412,6 +413,8 @@ pub fn write_str(s: &str, out: &mut String) {
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
             '\r' => out.push_str("\\r"),
+            // ponytail: a SKILL string cannot hold NUL (§4.1); it is dropped, not escaped.
+            '\0' => {}
             c if (c as u32) < 0x20 || c as u32 == 0x7f => {
                 write!(out, "\\{:03o}", c as u32).expect("string write");
             }
