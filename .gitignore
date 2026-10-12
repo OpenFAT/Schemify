@@ -5,3 +5,5 @@
 /.claude/worktrees/
 result
 result-*
+/target-b
+__pycache__/
