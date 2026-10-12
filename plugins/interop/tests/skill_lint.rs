@@ -16,6 +16,9 @@ use skill::{V, defined_by_interp, read_all};
 /// (builtin, min args, max args or None for any), per the SKILL Language Reference.
 const BUILTIN_ARITY: &[(&str, usize, Option<usize>)] = &[
     ("list", 0, None),
+    ("log", 1, Some(1)),
+    ("expt", 2, Some(2)),
+    ("createDir", 1, Some(1)),
     ("cons", 2, Some(2)),
     ("car", 1, Some(1)),
     ("cdr", 1, Some(1)),

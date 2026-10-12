@@ -660,10 +660,14 @@
     (reverse out)))
 
 ;; The created object of ref r, or nil after refusing record lr.
+;; The object created for ref r; nil (refused) when none was. A retarget placeholder's ref
+;; (spec 10.1) answers nil without a refusal: SfyRetarget places it later.
 (procedure (SfyRef r lr)
   (let ((o (arrayref sfyRefs r)))
-    (unless o (SfyRefuse (car lr) (sprintf nil "%s: ref %d names no created object" (car (cadr lr)) r)))
-    o))
+    (cond
+      ((equal o "sfyPlaceholder") (SfyCount "deferred to SfyRetarget") nil)
+      ((null o) (SfyRefuse (car lr) (sprintf nil "%s: ref %d names no created object" (car (cadr lr)) r)) nil)
+      (t o))))
 
 ;; Records object o under the ref of record lr and counts it; refuses when o is nil.
 (procedure (SfyCreated o lr what)
@@ -731,7 +735,12 @@
 ;; ("inst" ref name lib cell view x y orient)
 (procedure (SfyLoadInst lr)
   (let ((f (cdr (cadr lr))) (m nil))
-    (when (SfySchematicP lr)
+    (when (and (SfySchematicP lr) (equal (nth 2 f) ""))
+      ;; A retarget placeholder (library ""): its master is chosen on the target machine by
+      ;; SfyRetarget (spec 10.1); it and its props and conn records are skipped here.
+      (setarray sfyRefs (nth 0 f) "sfyPlaceholder")
+      (SfyCount "placeholder"))
+    (when (and (SfySchematicP lr) (nequal (nth 2 f) ""))
       (setq m (SfyMaster (nth 2 f) (nth 3 f) (nth 4 f)))
       (if (null m)
         (SfyRefuse (car lr) (sprintf nil "no master %s/%s/%s" (nth 2 f) (nth 3 f) (nth 4 f)))
@@ -890,17 +899,22 @@
         (SfyLog (sprintf nil "clamped line %d: %s %s sent %s now %s" (car (caddr e))
                   (getSGq inst name) (getSGq (car e) name) (cadr e) now))))))
 
-;; Runs a PDK callback as the form would: cdfgData and cdfgForm bound to the instance CDF,
-;; inside errset. This is the only evalstring in the file, and it evaluates PDK code, never
-;; file data. ponytail: no cdfgData->id rewrite (CCSinvokeCdfCallbacks does it).
-(procedure (SfyRunCallback inst p cdf lr)
+;; Runs a PDK callback string as the form would: cdfgData and cdfgForm bound to the
+;; instance CDF, inside errset; returns t when it ran without error. This is the only
+;; evalstring in the file, and it evaluates PDK code, never file data. ponytail: no
+;; cdfgData->id rewrite (CCSinvokeCdfCallbacks does it).
+(procedure (SfyEvalCallback cdf cb)
   (let ((cdfgData cdf) (cdfgForm cdf))
-    (if (errset (evalstring (getSGq p callback)) t)
-      (SfyCount "callback")
-      (progn
-        (SfyCount "callback failed")
-        (SfyLog (sprintf nil "callback failed line %d: %s %s: %s" (car lr) (getSGq inst name)
-                  (getSGq p name) (getSGq p callback)))))))
+    (if (errset (evalstring cb) t) t nil)))
+
+;; The loader's callback run: counts and logs a failure against the record's line.
+(procedure (SfyRunCallback inst p cdf lr)
+  (if (SfyEvalCallback cdf (getSGq p callback))
+    (SfyCount "callback")
+    (progn
+      (SfyCount "callback failed")
+      (SfyLog (sprintf nil "callback failed line %d: %s %s: %s" (car lr) (getSGq inst name)
+                (getSGq p name) (getSGq p callback))))))
 
 ;; ---------------------------------------------------------------- stubs, text views
 
@@ -911,31 +925,87 @@
 ;; ("conn" ref term net): a one-step stub from the terminal's real pin, away from the
 ;; instance, labelled with the net (spec 6.4); the stub carries schemifyStub "1".
 (procedure (SfyLoadConn lr)
-  (let ((f (cdr (cadr lr))) (inst nil) (term nil) (fig nil) (p nil) (c nil) (dx 0.0)
-        (dy 0.0) (q nil) (step (SfyUU 10)) (snap (quotient 1.0 sfyUpi)) (w nil))
+  (let ((f (cdr (cadr lr))) (inst nil) (why nil))
     (setq inst (SfyRef (nth 0 f) lr))
     (when inst
-      (when (equal (getSGq inst objType) "inst")
-        (setq term (dbFindTermByName (getSGq inst master) (nth 1 f))))
-      (when term (setq fig (getSGq (car (getSGq term pins)) fig)))
-      (if (null fig)
-        (SfyRefuse (car lr) (sprintf nil "conn: no pin %s on the instance" (nth 1 f)))
-        (progn
-          (setq p (SfyCenter (dbTransformBBox (getSGq fig bBox) (getSGq inst transform))))
-          (setq c (SfyCenter (getSGq inst bBox)))
-          (setq dx (difference (car p) (car c)))
-          (setq dy (difference (cadr p) (cadr c)))
-          (setq q
-            (if (geqp (abs dx) (abs dy))
-              (list (plus (car p) (if (lessp dx 0.0) (minus step) step)) (cadr p))
-              (list (car p) (plus (cadr p) (if (lessp dy 0.0) (minus step) step)))))
-          (setq w (car (schCreateWire sfyCv "draw" "full" (list p q) snap snap 0.0)))
+      (setq why (SfyStubAt sfyCv inst (nth 1 f) (nth 2 f)))
+      (if (stringp why)
+        (SfyRefuse (car lr) why)
+        (SfyCount "conn")))))
+
+;; Draws the stub + label for terminal term of instance inst in cellview cv: one grid step
+;; (10 DBU of cv, 1/16 inch at the standard 160) from the terminal's real pin, away from the
+;; instance's centre, the wire marked schemifyStub "1", the label glued at its far end.
+;; Returns t, or a string saying what failed. Shared by the loader's conn records and by
+;; SfyPlaceConn (the retarget flow).
+(procedure (SfyStubAt cv inst term net)
+  (prog (t0 fig p c dx dy q step w dbu)
+    (setq dbu (getSGq cv DBUPerUU))
+    (setq step (quotient 10.0 dbu))
+    (when (equal (getSGq inst objType) "inst")
+      (setq t0 (dbFindTermByName (getSGq inst master) term)))
+    (when t0 (setq fig (getSGq (car (getSGq t0 pins)) fig)))
+    (unless fig
+      (return (sprintf nil "conn: no pin %s on %s" term (getSGq inst name))))
+    (setq p (SfyCenter (dbTransformBBox (getSGq fig bBox) (getSGq inst transform))))
+    (setq c (SfyCenter (getSGq inst bBox)))
+    (setq dx (difference (car p) (car c)))
+    (setq dy (difference (cadr p) (cadr c)))
+    (setq q
+      (if (geqp (abs dx) (abs dy))
+        (list (plus (car p) (if (lessp dx 0.0) (minus step) step)) (cadr p))
+        (list (car p) (plus (cadr p) (if (lessp dy 0.0) (minus step) step)))))
+    (setq w (car (schCreateWire cv "draw" "full" (list p q) (quotient 1.0 dbu) (quotient 1.0 dbu) 0.0)))
+    (unless w
+      (return (sprintf nil "conn: stub wire for %s.%s failed" (getSGq inst name) term)))
+    (unless (and (dbReplaceProp w "schemifyStub" "string" "1")
+                 (schCreateWireLabel cv w q net "lowerLeft" "R0" "stick" step nil))
+      (return (sprintf nil "conn: label %s failed" net)))
+    (return t)))
+
+;; Contract with sfy_retarget.il (spec 10.3): draws a stub + label for each (terminal net)
+;; of conns; returns the number drawn, or nil when any failed (each failure printed).
+(procedure (SfyPlaceConn cv inst conns)
+  (let ((n 0) (ok t) (why nil))
+    (foreach c conns
+      (setq why (SfyStubAt cv inst (car c) (cadr c)))
+      (if (stringp why)
+        (progn (setq ok nil) (printf "schemify: %s\n" why))
+        (setq n (add1 n))))
+    (and ok n)))
+
+;; Contract with sfy_retarget.il (spec 10.3): sets each (cdfName value) of params on the
+;; instance CDF in the CDF's own type (numbers as %.17g text for string parameters, so no
+;; 7-digit print touches them); with callbacks, runs each set parameter's callback in CDF
+;; order as SfyRunCallback does. Returns t, or nil when a parameter is missing or a callback
+;; failed (printed).
+(procedure (SfySetParams inst params callbacks)
+  (prog (cdf p v ty ok)
+    (setq cdf (cdfGetInstCDF inst))
+    (unless cdf (return nil))
+    (setq ok t)
+    (foreach q (getSGq cdf parameters)
+      (setq p (assoc (getSGq q name) params))
+      (when p
+        (setq ty (getSGq q paramType))
+        (setq v (cadr p))
+        (setq v
           (cond
-            ((null w) (SfyRefuse (car lr) "conn: stub wire failed"))
-            ((not (and (dbReplaceProp w "schemifyStub" "string" "1")
-                       (schCreateWireLabel sfyCv w q (nth 2 f) "lowerLeft" "R0" "stick" step nil)))
-              (SfyRefuse (car lr) (sprintf nil "conn: label %s failed" (nth 2 f))))
-            (t (SfyCount "conn"))))))))
+            ((equal ty "int") (if (fixp v) v (round v)))
+            ((equal ty "float") (float v))
+            ((stringp v) v)
+            ((fixp v) (sprintf nil "%d" v))
+            (t (sprintf nil "%.17g" v))))
+        (setSGq q v value)
+        (when (and callbacks (stringp (getSGq q callback)) (nequal (getSGq q callback) ""))
+          (unless (SfyEvalCallback cdf (getSGq q callback))
+            (setq ok nil)
+            (printf "schemify: callback of %s on %s failed\n" (getSGq q name) (getSGq inst name))))))
+    (foreach p params
+      (unless (cdfFindParamByName cdf (car p))
+        (setq ok nil)
+        (printf "schemify: %s has no CDF parameter %s\n" (getSGq inst name) (car p))))
+    (return ok)))
 
 ;; ("textview" view file text): writes the view's master file.
 (procedure (SfyLoadText c lr)

@@ -190,7 +190,7 @@ Every `.il` line the plugin ships is read by `tests/skill`'s reader, which refus
 | `(SfyExport path lib cells @key (ref t) (maestro t))` | Dumps `cells` (a list of names, `nil` = every cell of `lib`) of library `lib` to `path` as `"design"` cells, together with every cell of `lib` their schematics instantiate, transitively (a hierarchy crosses whole). Per design cell: base CDF, the views named `schematic` and `symbol`, text views (the `veriloga.va`/`verilog.v` master of any other view), maestro when `maestro` (`SfyAdeExport port lib cells`, when `sfy_ade.il` defines it). With `ref`, every master outside `lib` that a design schematic instantiates (schematic pins excepted) is a `"ref"` cell: its base CDF and the views the instances name. Writes `<path>.log` (counts per record kind, skipped objects, refusals, `PASS`/`FAIL`); returns `t` on PASS. |
 | `(SfyExportLib path lib)` | A PDK library: every cell with a `symbol` view as a `"ref"` cell (CDF, simInfo, symbol); cells without one are skipped. Log as above. |
 | `(SfyImport path @key (lib nil) (callbacks nil) (check t) (overwrite nil))` | Loads `path`. The whole file is read with `lineread` and checked first (header, `end`, every record's field kinds, every record in its context); a malformed or truncated file is refused with its line and nothing is created. Creates or replaces (with `overwrite`; else an existing view, text view or base CDF is refused) each `"design"` cell's base CDF, views and text views in library `lib` (default: the record's library; must already exist in cds.lib); never touches `"ref"` cells. Two passes: first every design cell's CDF, symbol and text views, then the schematics, so the dump's own masters exist (an instance of a design cell of the dump resolves to the target library) and the cross-view check sees the new symbol. Instances are created with `schCreateInst`, wires with `schCreateWire "draw"`, labels glued with `schCreateWireLabel`, schematic pins with `schCreatePin`, symbols with `db*` shapes, terminals with `dbMakeNet`/`dbCreateTerm`/`dbCreatePin`, net expressions with `dbCreateTermNetExpr`/`schCreateNetExpression`. Instance parameters go through `cdfGetInstCDF` (so the property type is the CDF's); with `callbacks`, each set parameter's CDF callback runs in CDF order under a locally bound `cdfgData`/`cdfgForm`, inside `errset` (§5.3). Each schematic is `schCheck`ed and saved only when the check reports no error (`check nil` saves anyway); an unsaved cellview is purged. Maestro records go to `SfyAdeImport records lib` when `sfy_ade.il` defines it. Writes `<path>.log`: `refused line N: …` per refusal, `check lib/cell/view: E errors W warnings` per schematic, `callback failed line N: inst param: callback`, `clamped line N: inst param sent X now Y`, then `count <kind> <n>` (sorted) and the final `PASS` (nothing refused; callback failures and clamps are not refusals) or `FAIL`; returns `t` on PASS. |
-| `(SfyRetarget path map @key (lib nil) (characterize t))` | §10. |
+| `(SfyRetarget path map @key (lib nil) (characterize t) (callbacks nil))` | §10. Run after `SfyImport` of the same file: `SfyImport` skips placeholder instances (library `""`) and their props and `conn` records (counted `placeholder`, `deferred to SfyRetarget`); `SfyRetarget` places them through `SfySetParams` and `SfyPlaceConn` (`sfy_cells.il`). |
 | `(SfySelfTest lib cell scratchLib)` | Dumps `lib/cell` to `/tmp/sfy_selftest_a.sfyx`, loads it into `scratchLib` under the same cell names (`?overwrite t ?check nil`), dumps that to `/tmp/sfy_selftest_b.sfyx` and compares the two record by record, a string equal to `lib` in the first matching `scratchLib` in the second (the `lib` record, instances of the dump's own cells); prints `PASS` or the first differing records. Also runs `SfyRetargetSelfTest` (the pure-SKILL retarget math on built-in vectors, §10.4) when defined. The only test a user needs to run. |
 
 Every database call whose `nil` result means failure is checked; a failure is logged with the record's line number and the object is skipped; the import continues (the log is the oracle of what landed).
@@ -397,11 +397,11 @@ Config views (impl selection) ↔ bench `config`: stashed. Monte Carlo settings,
 
 ### 10.1 Intent
 
-An instance whose width override calls `gmid.w(dev, gm_id, l, id)` or `gmid.w_at(dev, gm_id, l, id, vds)` (plugin `gmid-lut`) is sized by intent. With `--retarget`, export evaluates the arguments in the instance's scope (host `eval` in the editor; `schemify_expr` + the bench vars in the CLI), maps `dev` through `class` rows of `interop.map` (`dev` = the class name, or a `class` row's name whose `role` matches), and writes `("intent" ref class (("gmid" g) ("l" l) ("id" id) ("vds" v) ("w" w_sample) ("nf" nf)))` with numbers as canonical text. The instance's master becomes the class placeholder: `("inst" ref name "" class "" …)` and `conn` records (§6.4).
+An instance whose width override (param `w`, any case) is `gmid.w(dev, gm_id, l, id)` or `gmid.w_at(dev, gm_id, l, id, vds)` (plugin `gmid-lut`) — the whole override, or a var of the cell reached through a chain of at most 8 var names (`W W_in` with `var W_in "gmid.w(…)"`) — is sized by intent. `dev` must be a string literal. With `--retarget`, export evaluates the other arguments, the override itself (the sample width) and `nf` (any case, default 1) in the instance's scope (host `eval` in the editor; `schemify_expr` + the bench vars in the CLI), maps `dev` through `class` rows of `interop.map` (`dev` = the class name, or a `class` row's name whose `role` matches), and writes `("intent" ref class (("gmid" g) ("l" l) ("id" id) ("vds" v) ("w" w_sample) ("nf" nf)))` with numbers as canonical text (expr §7); `vds` only for `gmid.w_at` (the target then uses `vdd/2`), `w` only when the sample width evaluates. A call that cannot become an intent — inside a larger expression, wrong arity, non-literal `dev`, an argument that does not evaluate to a positive number, `nf` not an integer in 1..4096 — is `needs_review: retarget`, and the instance is exported with its evaluated width. The instance's master becomes the class placeholder: `("inst" ref name "" class "" …)` and `conn` records (§6.4). Reference: `retarget::intents`, `Intent::to_record`.
 
 ### 10.2 Target map (on the target machine only)
 
-`<name>.retarget` (line records), written by the target user:
+`<name>.retarget` (line records, no header), written by the target user:
 
 ```
 class nmos lib tsmc28 cell nch_lvt_mac
@@ -419,15 +419,40 @@ class nmos lib tsmc28 cell nch_lvt_mac
   fingerw_max 2u
 ```
 
+| Attribute | Meaning |
+|---|---|
+| `pin <class pin> <terminal>` | terminal of the target master for each `conn` (unmapped pins keep their name) |
+| `param w\|l\|nf <cdf param>` | the target CDF parameter receiving the width, length, fingers; `w` and `l` required |
+| `model <text>` | the Spectre line(s) that load the models (required) |
+| `device <text>` | the Spectre instance on nodes `d g s b`, without width, length and fingers (required) |
+| `op <prefix>` | operating-point prefix, default the first word of `device` (`M0.main` for a subcircuit macro) |
+| `vdd <num>` | supply (required): the VGS sweep spans `[0, vdd]`, the default VDS is `vdd/2` |
+| `lgrid <num>` | L grid: L is rounded to the nearest multiple, at least one step |
+| `fingerw_max <num>` | widest finger |
+| `polarity n\|p` | default `n`; `p` sweeps negative VGS/VDS and stores magnitudes |
+| `width finger\|total` | what the `w` CDF parameter means: one finger's width `W/nf` (default) or the total `W` |
+
+Numbers are a decimal times one suffix factor (`f p n u m k meg g t`, any case; no `mil`), positive. Unknown records or attributes, a repeated single attribute, a repeated class and a missing required attribute are errors (`line N: …`). Reference: `retarget::parse_target_map`; the SKILL reader (`SfyRtReadMap`) checks the required attributes and number syntax.
+
 ### 10.3 Target procedure (`SfyRetarget`)
 
-1. For each class used: characterize with Spectre through OCEAN — one netlist per class (the `model` line, the `device` line, DC sources on d/g/s/b), a DC sweep of `vgs` over `[0, vdd]` at each L of the intents (snapped to `lgrid`) and the intent's `vds` (else `vdd/2`), saving `gm`, `id`, `gds`, `cgg` op points; results kept in a SKILL table per (class, L).
-2. For each intent: find the VGS where `gm/id` equals `gmid` (monotone inverse lookup from high VGS down, crossing local dips — the gmid-lut rule, its README "Query semantics"), interpolate `id/W` there, `W = id / (id/W)`; split into fingers when `W / nf > fingerw_max`; place the class's master with the solved `w l nf` (snapped to the PDK grid by the CDF callbacks when `?callbacks t`), then stubs + labels from the `conn` records.
-3. Write `<path>.retarget.log`: per instance the intent, the solved W, nf, L, VGS, and the residual `gm/id` at the solution; per class the characterization grid. Nothing about the target PDK leaves this log.
+`(SfyRetarget path map @key (lib nil) (characterize t) (callbacks nil))` runs after `(SfyImport path)`: the loader skips class placeholders (instances whose `lib` is `""`) and their `conn` records, and `SfyRetarget` places them. `lib` restricts it to one library; `characterize nil` only plans (reads, checks, logs the grid).
+
+1. For each class used: characterize with Spectre through OCEAN. In `<path>.rt.<class>/` it writes `netlistHeader` (`simulator lang=spectre`), an empty `netlistFooter` and `netlist`: the `model` text, `vsource`s `VG (g 0) dc=vgs`, `VD (d 0) dc=vds`, `VS`/`VB` at 0, and the `device` line + ` <w>=1u <l>=lch [<nf>=1]`. Then `simulator 'spectre`, `design <dir>/netlist`, `resultsDir <dir>/psf`, `save 'i "<op>:ids" "<op>:gm" "<op>:gds" "<op>:cgg"`, `analysis 'dc ?param "vgs" ?start 0 ?stop vdd ?step vdd/72` (`-vdd … 0` for `p`), and per L × VDS `desVar "vgs" 0 "vds" ±v "lch" l`, `run`, `getData "<op>:<q>" ?result 'dc` and `value` at the 73 VGS points. Ls = the intents' L snapped to `lgrid`; VDS rows = the intents' `vds` plus `vdd/2`, sorted, without repeats. Results form one SKILL table per class (per metre: values / 1 µm).
+2. For each intent: solve by the gmid-lut rule (its README "Query semantics": monotone inverse lookup of gm/Id from high VGS down crossing dips, geometric interpolation in the VGS cell, log-L blending, linear VDS blending), `W = id / (id/W)`; `nf' = max(nf, ceil(W / fingerw_max · (1 − 1e-9)))`; place the class master (`dbOpenCellViewByType lib cell "symbol"`, `schCreateInst` at the placeholder's origin and orientation) and hand the parameters to `SfySetParams` and the connections to `SfyPlaceConn` (both in `sfy_cells.il`):
+   - `(SfySetParams inst params callbacks)` → `t`/`nil`: `params` = list of `(cdfName value)`, a float in metres for `w` (`W/nf'` or `W` per `width`) and `l`, an integer for `nf`; sets each through the instance CDF with the CDF's type at full precision, then (with `callbacks`) runs the CDF callbacks of the set params as §5.3 and logs what the PDK clamped.
+   - `(SfyPlaceConn cv inst conns)` → count or `nil`: `conns` = list of `(terminal net)` (class pins mapped through `pin`); draws a stub + label at each terminal's real pin (§6.4 step 2).
+3. Write `<path>.retarget.log`: per class `class <c> L (…) VDS (…) VGS 0..vdd in 72 steps`; per instance `inst <name>: intent <fields> -> W <w> nf <nf> L <l> VGS <vgs> residual <gm/Id − target>`, or why it was not solved or placed; last line `PASS`/`FAIL`. Nothing about the target PDK leaves this log.
+
+GUESSes (settled by the first run on a real Virtuoso): the Spectre BSIM operating-point names `ids gm gds cgg` and their saving along a DC sweep by `save`; the direct-netlist layout `design` expects; `desVar` reaching netlist parameters.
 
 ### 10.4 Oracle
 
-The interpolation and solve are written once in pure SKILL (no database calls) and once in Rust (`retarget.rs`, the reference); test vectors over a synthetic EKV table (`plugins/gmid-lut/src/synth.rs`) must agree within 1e-9 relative between the interpreter running the SKILL and the Rust reference, and within gmid-lut's own 2 % of the analytic answer. `SfySelfTest` re-runs the same vectors inside Virtuoso (no simulation) and prints PASS/FAIL.
+The interpolation and solve are written once in pure SKILL (`skill/sfy_retarget.il`, no database calls) and once in Rust (`retarget.rs`, the reference), operation for operation; `tests/retarget.rs`:
+- the Rust reference over a synthetic EKV table (gmid-lut's `src/synth.rs` model on its characterization grid) is within gmid-lut's 2 % of the analytic width and 2 mV of its VGS, on and off the L grid and the VDS rows;
+- ≥ 200 random vectors (gm/Id reachable or not, L on and off the grid and off the axis, VDS on and off the rows and off the axis) agree within 1e-9 relative between the interpreter running the SKILL and the Rust reference, misses included (measured: bit-identical);
+- the vectors embedded in `sfy_retarget.il` (`SfyRtSelfData`) equal what the Rust reference produces now (`SCHEMIFY_BLESS=1` regenerates them), and `SfyRetargetSelfTest` prints `PASS` in the interpreter; `SfySelfTest` runs it inside Virtuoso (no simulation);
+- the SKILL map reader agrees with `parse_target_map` on the §10.2 example; `SfyRetarget` runs end to end on a mock OCEAN (the EKV device) with stub placement and places the widths the Rust reference solves on the same grid.
 
 ## 11. xschem export
 
@@ -465,7 +490,7 @@ Report reasons of this export: `needs_review:` `expression template format name 
 
 ## 12. Report
 
-`interop-report.md` + `.txt` beside the outputs, like import.md §7: classes `needs_review:<reason>` (`expression template name callback design-variable inlined-var computed format cdl-approximate source code output config montecarlo optimize`), `dropped:<reason>` (`display-only selection-box solder-dot stale-schemify-data pin-label`), `rounding`, `off-grid`, `remapped` (per instance: old and new master), `clamped` (from the loader log), `updated` (cells changed by an import). Count conservation per cellview: objects in = records out + reported.
+`interop-report.md` + `.txt` beside the outputs, like import.md §7: classes `needs_review:<reason>` (`expression template name callback design-variable inlined-var computed format cdl-approximate source code output config montecarlo optimize retarget`), `dropped:<reason>` (`display-only selection-box solder-dot stale-schemify-data pin-label`), `rounding`, `off-grid`, `remapped` (per instance: old and new master), `clamped` (from the loader log), `updated` (cells changed by an import). Count conservation per cellview: objects in = records out + reported.
 
 ## 13. GUESSes and their probes
 

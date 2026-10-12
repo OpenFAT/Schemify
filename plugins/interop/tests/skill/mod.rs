@@ -604,6 +604,10 @@ const BUILTINS: &[&str] = &[
     "charToInt",
     "intToChar",
     "atof",
+    // Retarget (sfy_retarget.il): pure math, work dirs.
+    "log",
+    "expt",
+    "createDir",
 ];
 
 /// Every function name the interpreter defines itself (special forms and builtins).
@@ -1831,13 +1835,6 @@ impl<H: Host> Interp<H> {
                     }
                     V::sym(&char::from(c as u8).to_string())
                 }
-                "atof" => {
-                    need(1)?;
-                    match text(&a[0])?.trim().parse::<f64>() {
-                        Ok(f) if f.is_finite() => V::Float(f),
-                        _ => V::Nil,
-                    }
-                }
                 "isFile" => {
                     need(1)?;
                     if self.files.contains_key(&text(&a[0])?) {
@@ -1965,6 +1962,53 @@ impl<H: Host> Interp<H> {
                         i += 1;
                     }
                     V::list(keyed)
+                }
+                // Retarget builtins (SKILL Language Reference ICADVM20.1).
+                "log" => {
+                    need(1)?;
+                    let x = num(&a[0])?;
+                    if x <= 0.0 {
+                        return Err(Flow::Err("log: not a positive number".into()));
+                    }
+                    V::Float(x.ln())
+                }
+                "expt" => {
+                    need(2)?;
+                    match (&a[0], &a[1]) {
+                        (V::Int(0), V::Int(0)) => V::Float(1.0),
+                        (V::Int(b), V::Int(e)) if *e >= 0 => V::Int(
+                            u32::try_from(*e)
+                                .ok()
+                                .and_then(|e| b.checked_pow(e))
+                                .ok_or("expt: integer overflow")?,
+                        ),
+                        (b, e) => V::Float(num(b)?.powf(num(e)?)),
+                    }
+                }
+                "atof" => {
+                    if !(1..=2).contains(&n) {
+                        return Err(Flow::Err("atof: (atof s [t])".into()));
+                    }
+                    // strtod: leading white space skipped; the longest numeric prefix, or with
+                    // `t` the whole string.
+                    let s = text(&a[0])?;
+                    let s = s.trim_start();
+                    let strict = n == 2 && a[1].truthy();
+                    let parsed = if strict {
+                        s.parse::<f64>().ok()
+                    } else {
+                        (1..=s.len())
+                            .rev()
+                            .filter(|&k| s.is_char_boundary(k))
+                            .find_map(|k| s[..k].parse::<f64>().ok())
+                    };
+                    parsed.map_or(V::Nil, V::Float)
+                }
+                "createDir" => {
+                    // Files are keyed by absolute path; directories need no existence.
+                    need(1)?;
+                    text(&a[0])?;
+                    V::T
                 }
                 _ => return Err(Flow::Err(String::from("\u{0}not builtin"))),
             })

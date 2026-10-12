@@ -83,6 +83,22 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("cdfSaveCDF", "d"),
     ("cdfGetInstCDF", "d"),
     ("cdfFindParamByName", "d t"),
+    // OCEAN (OCEAN Reference 5.1.41, "Simulation Commands", "Data Access Commands");
+    // `...` repeats the last argument kind.
+    ("simulator", "S"),
+    ("design", "[t t t] ?lib ?cell ?view"),
+    ("resultsDir", "t"),
+    ("save", "S [t] ... ?categ"),
+    ("analysis", "S ?param ?start ?stop ?step ?saveOppoint ?dev"),
+    ("desVar", "t g [t g] ..."),
+    ("run", "[g] ?jobName ?host"),
+    ("getData", "t ?result ?resultsDir"),
+    ("value", "g g [g]"),
+];
+
+/// Functions with a [`SIGNATURES`] row whose body is in `mock_ocean.rs` or `mock_mae.rs`.
+pub const DELEGATED: &[&str] = &[
+    "simulator", "design", "resultsDir", "save", "analysis", "desVar", "run", "getData", "value",
 ];
 
 /// The arity a signature allows: (required positional, max positional, keywords).
@@ -92,6 +108,10 @@ pub fn arity(sig: &str) -> (usize, usize, Vec<&str>) {
     let mut opt = false;
     let mut keys = Vec::new();
     for tok in sig.split_whitespace() {
+        if tok == "..." {
+            max = usize::MAX;
+            continue;
+        }
         if let Some(k) = tok.strip_prefix('?') {
             keys.push(k);
             continue;
@@ -103,7 +123,7 @@ pub fn arity(sig: &str) -> (usize, usize, Vec<&str>) {
         if t.is_empty() {
             continue;
         }
-        max += 1;
+        max = max.saturating_add(1);
         if !opt {
             req += 1;
         }
@@ -1009,6 +1029,10 @@ impl MockDb {
 
     fn call_db(&mut self, name: &str, args: &[V]) -> Option<Result<V, String>> {
         let sig = SIGNATURES.iter().find(|(n, _)| *n == name)?.1;
+        if DELEGATED.contains(&name) {
+            // Signature checked here; the body lives in mock_ocean.rs / mock_mae.rs.
+            return check(name, sig, args).err().map(Err);
+        }
         Some(check(name, sig, args).and_then(|(a, kw)| self.dispatch(name, &a, &kw)))
     }
 
@@ -1414,11 +1438,14 @@ impl MockDb {
                 };
                 let (xs, ys) = (num(&a[4]).unwrap_or(0.0), num(&a[5]).unwrap_or(0.0));
                 let snap = |v: f64, g: f64| if g > 0.0 { (v / g).round() * g } else { v };
+                // The database stores every point on the cellview's DBU grid (research §1.4),
+                // so a segment shorter than half a DBU vanishes.
+                let dbu = num(&self.a(cv, "DBUPerUU")).unwrap_or(160.0);
                 let pts: Vec<(f64, f64)> = pts
                     .items()
                     .iter()
                     .filter_map(pt)
-                    .map(|(x, y)| (snap(x, xs), snap(y, ys)))
+                    .map(|(x, y)| (snap(snap(x, xs), 1.0 / dbu), snap(snap(y, ys), 1.0 / dbu)))
                     .collect();
                 let width = num(&a[6]).unwrap_or(0.0);
                 // A segment that already exists makes the call return nil (research §4.2, VCLI).
