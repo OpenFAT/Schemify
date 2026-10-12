@@ -267,7 +267,17 @@ pub fn prepare<F: Funcs>(
         return None;
     }
     results.set_vars(j, &e);
-    let mut text = netlist::emit(&e, dialect).text;
+    let emitted = netlist::emit(&e, dialect);
+    let mut text = emitted.text;
+    // `op(…)` outputs (run spec §4): the device vectors they read, saved before `.end`.
+    let saves = results.set_ops(j, &emitted.name_map, dialect);
+    if !saves.is_empty() {
+        assert!(
+            text.ends_with(".end\n"),
+            "an ngspice netlist ends with .end"
+        );
+        text.insert_str(text.len() - ".end\n".len(), &saves);
+    }
     let (relative, from_project): (Vec<_>, Vec<_>) =
         relative_paths(&e, dialect, &text).into_iter().unzip();
     // A Monte Carlo sample fixes the simulator's random seed (run spec §3). ngspice reads

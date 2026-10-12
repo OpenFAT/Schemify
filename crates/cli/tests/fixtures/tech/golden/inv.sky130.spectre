@@ -1,0 +1,4 @@
+// inv (schemify spectre)
+simulator lang=spectre
+M1 (Y A VDD VDD) sky130_fd_pr__pfet_01v8 l=0.5 w=2 nf=2 mult=1 m=1
+M2 (Y A VSS VSS) sky130_fd_pr__nfet_01v8 l=0.5 w=1 nf=1 mult=1 m=1

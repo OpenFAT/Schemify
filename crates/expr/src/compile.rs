@@ -36,6 +36,21 @@ pub enum SignalKind {
     V,
     /// `i(dev)`: device current.
     I,
+    /// `op(inst, param)`: a device's DC operating-point value, one number; the
+    /// signal name is `<inst>[<param>]` (split it with [`op_parts`]).
+    Op,
+}
+
+/// Splits an [`SignalKind::Op`] signal name `<inst>[<param>]` into its
+/// instance path and parameter (`("x1/m2", "gm")`).
+///
+/// # Panics
+/// If `name` is not shaped so; the compiler only makes such names.
+pub fn op_parts(name: &str) -> (&str, &str) {
+    let (inst, rest) = name.rsplit_once('[').expect("an op signal name");
+    let param = rest.strip_suffix(']').expect("an op signal name");
+    assert!(!inst.is_empty() && !param.is_empty());
+    (inst, param)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,6 +147,7 @@ pub(crate) enum Builtin {
     Db,
     Conj,
     Cplx,
+    SpectreSource,
     V,
     I,
     X,
@@ -149,12 +165,13 @@ pub(crate) enum Builtin {
     Fft,
     GainMargin,
     PhaseMargin,
+    Op,
 }
 
 const VARIADIC: u32 = u32::MAX;
 
 /// `(name, builtin, min args, max args)`, in discriminant order.
-pub(crate) const BUILTINS: [(&str, Builtin, u32, u32); 54] = [
+pub(crate) const BUILTINS: [(&str, Builtin, u32, u32); 56] = [
     ("abs", Builtin::Abs, 1, 1),
     ("sqrt", Builtin::Sqrt, 1, 1),
     ("exp", Builtin::Exp, 1, 1),
@@ -192,6 +209,7 @@ pub(crate) const BUILTINS: [(&str, Builtin, u32, u32); 54] = [
     ("db", Builtin::Db, 1, 1),
     ("conj", Builtin::Conj, 1, 1),
     ("cplx", Builtin::Cplx, 2, 2),
+    ("spectre_source", Builtin::SpectreSource, 1, 1),
     ("v", Builtin::V, 1, 1),
     ("i", Builtin::I, 1, 1),
     ("x", Builtin::X, 0, 0),
@@ -209,6 +227,7 @@ pub(crate) const BUILTINS: [(&str, Builtin, u32, u32); 54] = [
     ("fft", Builtin::Fft, 1, 1),
     ("gain_margin", Builtin::GainMargin, 1, 1),
     ("phase_margin", Builtin::PhaseMargin, 1, 1),
+    ("op", Builtin::Op, 2, 2),
 ];
 
 impl Builtin {
@@ -266,6 +285,8 @@ pub struct Program {
     pub(crate) idents: Vec<Name>,
     pub(crate) ident_spans: Vec<Span>,
     pub(crate) signals: Vec<(SignalKind, Name)>,
+    /// Parallel to `signals`: the call that first names each one.
+    pub(crate) signal_spans: Vec<Span>,
     /// `(namespace, function)` per plugin slot.
     pub(crate) plugins: Vec<(Name, Name)>,
     /// Code range per root: one for an expression, one per template hole.
@@ -300,6 +321,15 @@ impl Program {
     /// [`Plot::signals`](crate::Plot::signals) must follow. Empty in scalar mode.
     pub fn signals(&self) -> impl ExactSizeIterator<Item = (SignalKind, &str)> + '_ {
         self.signals.iter().map(|&(k, n)| (k, self.name(n)))
+    }
+
+    /// The source span of the call that first names signal `k` (`v(out)`,
+    /// `op("M1", "gm")`): callers that fail to bind a signal report it there.
+    ///
+    /// # Panics
+    /// If `k >= signals().len()`.
+    pub fn signal_span(&self, k: usize) -> Span {
+        self.signal_spans[k]
     }
 
     /// Plugin functions `(namespace, name)` in slot order: the slot number a
@@ -383,6 +413,7 @@ impl Compiler {
                 idents: Vec::new(),
                 ident_spans: Vec::new(),
                 signals: Vec::new(),
+                signal_spans: Vec::new(),
                 plugins: Vec::new(),
                 roots: Vec::new(),
                 mode,
@@ -396,10 +427,25 @@ impl Compiler {
         }
     }
 
+    /// Emits a load of signal `(kind, name)`, adding it on first use.
+    fn signal(&mut self, kind: SignalKind, name: &str, span: Span) {
+        let next = self.prog.signals.len() as u32;
+        let slot = *self.signals.entry((kind, name.to_string())).or_insert(next);
+        if slot == next {
+            let nm = self.intern(name);
+            self.prog.signals.push((kind, nm));
+            self.prog.signal_spans.push(span);
+        }
+        assert!((slot as usize) < self.prog.signals.len());
+        self.emit(OpKind::Signal, 0, slot, span);
+        self.done.push(false);
+    }
+
     pub(crate) fn finish(self) -> Program {
         let p = self.prog;
         assert_eq!(p.ops.len(), p.spans.len());
         assert_eq!(p.idents.len(), p.ident_spans.len());
+        assert_eq!(p.signals.len(), p.signal_spans.len());
         p
     }
 
@@ -636,14 +682,36 @@ impl Compiler {
                 } else {
                     SignalKind::I
                 };
-                let next = self.prog.signals.len() as u32;
-                let slot = *self.signals.entry((kind, net.to_string())).or_insert(next);
-                if slot == next {
-                    let nm = self.intern(net);
-                    self.prog.signals.push((kind, nm));
-                }
-                self.emit(OpKind::Signal, 0, slot, span);
-                self.done.push(false);
+                self.signal(kind, net, span);
+            }
+            Builtin::Op => {
+                // Both arguments are names taken verbatim, like `v`/`i`'s.
+                let text = |k: u32| {
+                    let a = arg(k) as usize;
+                    match ast.kind[a] {
+                        Node::Str => {
+                            Some(&ast.pool[ast.a[a] as usize..(ast.a[a] + ast.b[a]) as usize])
+                        }
+                        Node::Ident => {
+                            Some(&src[ast.span[a].start as usize..ast.span[a].end as usize])
+                        }
+                        _ => None,
+                    }
+                };
+                let inst = text(0).filter(|i| {
+                    !i.is_empty() && !i.contains(|c: char| c.is_whitespace() || c == ']')
+                });
+                let param = text(1).filter(|p| {
+                    !p.is_empty() && p.bytes().all(|c| c == b'_' || c.is_ascii_alphanumeric())
+                });
+                let (Some(inst), Some(param)) = (inst, param) else {
+                    return Err(Error::new(
+                        Code::X003,
+                        span,
+                        "`op` takes an instance path and a parameter name (`op(\"x1/m2\", \"gm\")`)",
+                    ));
+                };
+                self.signal(SignalKind::Op, &format!("{inst}[{param}]"), span);
             }
             Builtin::X => {
                 self.emit(OpKind::Axis, 0, 0, span);

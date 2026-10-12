@@ -250,7 +250,7 @@ pub fn device_shprim(r: &Recipe, d: &Device) -> String {
     match r.devices {
         Devices::Mos { w, l, .. } => {
             t.push_str(&format!(
-                "param w {w}\n  unit m\n  doc \"total channel width\"\nparam l {l}\n  unit m\n  doc \"channel length\"\nparam nf 1\n  doc \"number of fingers\"\nparam m 1\n  doc \"parallel multiplier\"\n\nimpl spice spice\n  format spice \"M{{name}} {{d}} {{g}} {{s}} {{b}} {{model}} w={{w}} l={{l}} nf={{nf}} m={{m}}\"\n\n"
+                "param w {w}\n  unit m\n  doc \"total channel width\"\nparam l {l}\n  unit m\n  doc \"channel length\"\nparam nf 1\n  doc \"number of fingers\"\nparam m 1\n  doc \"parallel multiplier\"\n\nimpl spice spice\n  format spice \"M{{name}} {{d}} {{g}} {{s}} {{b}} {{model}} w={{w}} l={{l}} nf={{nf}} m={{m}}\"\n  format spectre \"{{name}} ({{d}} {{g}} {{s}} {{b}}) {{model}} w={{w}} l={{l}} nf={{nf}} m={{m}}\"\n\n"
             ));
             t.push_str(drawing);
         }
@@ -633,6 +633,19 @@ mod tests {
         );
         assert!(asap7.contains("impl osdi veriloga\n  format spice \"N{name} {d} {g} {s} {b} {model} nfin={nfin} nf={nf} m={m}\"\n  file ../../va/code/bsimcmg/vacode/bsimcmg.va\n"));
         assert!(!asap7.contains("param w ") && !asap7.contains("param l "));
+        // FinFET OSDI cells have no Spectre form (Verilog-A in Spectre is `ahdl_include`).
+        assert!(!asap7.contains("format spectre"));
+        let fp45 = device_shprim(
+            recipe("freepdk45").unwrap(),
+            &crate::Device {
+                cell: "x",
+                model: "NMOS_VTL",
+                pmos: false,
+            },
+        );
+        assert!(fp45.contains(
+            "\n  format spectre \"{name} ({d} {g} {s} {b}) {model} w={w} l={l} nf={nf} m={m}\"\n"
+        ));
     }
 
     #[test]

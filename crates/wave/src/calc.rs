@@ -4,9 +4,7 @@
 //! Binding copies nothing: every [`Column`] borrows the plot's column-major storage, the sweep
 //! axis is the plot's scale column and the sweep steps are the plot's steps.
 
-use schemify_expr::{
-    CalcResult, Code, Column, Error, Plot, Program, Scratch, SignalKind, Span, Value,
-};
+use schemify_expr::{CalcResult, Code, Column, Error, Plot, Program, Scratch, SignalKind, Value};
 
 use crate::data::{RawPlot, VarKind};
 
@@ -15,19 +13,49 @@ use crate::data::{RawPlot, VarKind};
 ///
 /// # Errors
 ///
-/// `X004` naming the first signal the plot does not hold.
+/// `X004` naming the first signal the plot does not hold; `X006` for an `op(…)` signal, which
+/// only a run's job binds ([`eval_ops`]).
 pub fn bind<'a>(
     prog: &Program,
     plot: &'a RawPlot,
     cols: &mut Vec<Column<'a>>,
 ) -> Result<(), Error> {
+    bind_ops(prog, plot, None, cols)
+}
+
+/// [`bind`], with `ops[k]` the value of the `k`-th [`SignalKind::Op`] signal of `prog` (in
+/// signal order), or `None` when there are no operating-point values here.
+fn bind_ops<'a>(
+    prog: &Program,
+    plot: &'a RawPlot,
+    ops: Option<&'a [f64]>,
+    cols: &mut Vec<Column<'a>>,
+) -> Result<(), Error> {
     cols.clear();
-    for (kind, name) in prog.signals() {
+    let mut op_k = 0;
+    for (k, (kind, name)) in prog.signals().enumerate() {
+        if kind == SignalKind::Op {
+            let Some(x) = ops.and_then(|o| o.get(op_k)) else {
+                return Err(Error::new(
+                    Code::X006,
+                    prog.signal_span(k),
+                    format!(
+                        "op({name}) needs a simulation job's operating point: use it in a bench `output`"
+                    ),
+                ));
+            };
+            op_k += 1;
+            cols.push(Column {
+                re: core::slice::from_ref(x),
+                im: &[],
+            });
+            continue;
+        }
         let Some(v) = plot.find_signal(kind, name) else {
             let f = if kind == SignalKind::V { "v" } else { "i" };
             return Err(Error::new(
                 Code::X004,
-                Span::default(),
+                prog.signal_span(k),
                 format!("no signal `{f}({name})` in `{}`", plot.name()),
             ));
         };
@@ -37,6 +65,10 @@ pub fn bind<'a>(
         });
     }
     debug_assert_eq!(cols.len(), prog.signals().len());
+    assert!(
+        ops.is_none_or(|o| o.len() == op_k),
+        "one value per op() signal"
+    );
     Ok(())
 }
 
@@ -45,8 +77,8 @@ pub fn bind<'a>(
 ///
 /// # Errors
 ///
-/// `X004` for an unknown signal or identifier, then every error of
-/// [`Program::eval_calc_plain`] (`X003`, `X010`, `X011`, …).
+/// `X004` for an unknown signal or identifier, `X006` for `op(…)` (see [`eval_ops`]), then
+/// every error of [`Program::eval_calc_plain`] (`X003`, `X010`, `X011`, …).
 ///
 /// # Panics
 ///
@@ -57,8 +89,40 @@ pub fn eval<'s, 'v>(
     lookup: impl FnMut(&str) -> Option<Value<'v>>,
     scratch: &'s mut Scratch,
 ) -> Result<CalcResult<'s>, Error> {
+    eval_with(prog, plot, None, lookup, scratch)
+}
+
+/// [`eval`] for a run's job: `ops[k]` is the operating-point value of the `k`-th `op(…)` signal
+/// of `prog` in [`Program::signals`] order (the caller reads them from the job's operating
+/// point, run spec §4); each is one number wherever it is used.
+///
+/// # Errors
+///
+/// As [`eval`], without the `X006` of `op(…)`.
+///
+/// # Panics
+///
+/// Panics if `prog` was not compiled in calculator mode or `ops` does not hold one value per
+/// `op(…)` signal.
+pub fn eval_ops<'s, 'v>(
+    prog: &Program,
+    plot: &RawPlot,
+    ops: &[f64],
+    lookup: impl FnMut(&str) -> Option<Value<'v>>,
+    scratch: &'s mut Scratch,
+) -> Result<CalcResult<'s>, Error> {
+    eval_with(prog, plot, Some(ops), lookup, scratch)
+}
+
+fn eval_with<'s, 'v>(
+    prog: &Program,
+    plot: &RawPlot,
+    ops: Option<&[f64]>,
+    lookup: impl FnMut(&str) -> Option<Value<'v>>,
+    scratch: &'s mut Scratch,
+) -> Result<CalcResult<'s>, Error> {
     let mut cols = Vec::with_capacity(prog.signals().len());
-    bind(prog, plot, &mut cols)?;
+    bind_ops(prog, plot, ops, &mut cols)?;
     let mut inputs = Vec::with_capacity(prog.idents().len());
     prog.bind(&mut inputs, lookup)?;
     let p = Plot {
@@ -67,6 +131,34 @@ pub fn eval<'s, 'v>(
         signals: &cols,
     };
     prog.eval_calc_plain(&inputs, &p, scratch)
+}
+
+/// The operating-point dataset of a raw file's plots: the one whose plot name says
+/// "operating point" (ngspice, ESPice), else a one-point `dc` plot (Xyce writes `.op` that way).
+pub fn op_dataset(plots: &[RawPlot]) -> Option<&RawPlot> {
+    let named = |p: &&RawPlot, s: &str| p.name().to_ascii_lowercase().contains(s);
+    let found = plots
+        .iter()
+        .find(|p| named(p, "operating point"))
+        .or_else(|| {
+            plots
+                .iter()
+                .find(|p| named(p, "dc") && !p.vars().is_empty() && p.col(0).len() == 1)
+        });
+    assert!(found.is_none_or(|p| !p.vars().is_empty()));
+    found
+}
+
+/// The value of ngspice device vector `vector` (`@m.x1.mm2[gm]`) at the operating point `op`:
+/// the vector by that name, or as ngspice writes saved device vectors (`i(@…)`, `v(@…)`),
+/// compared case-insensitively; `None` when `op` lacks it.
+pub fn op_value(op: &RawPlot, vector: &str) -> Option<f64> {
+    assert!(vector.starts_with('@'), "a device vector: {vector}");
+    let v = op
+        .find_var(vector)
+        .or_else(|| op.find_var(&format!("i({vector})")))
+        .or_else(|| op.find_var(&format!("v({vector})")))?;
+    op.col(v).first().copied()
 }
 
 /// The calculator expression that names column `v` of `plot`: `v(out)`, `i(v1)`, or the quoted

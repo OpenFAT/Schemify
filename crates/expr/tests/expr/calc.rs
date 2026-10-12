@@ -348,3 +348,90 @@ fn calc_type_errors() {
         Code::X010
     );
 }
+
+/// `op(inst, param)` is one number from the operating point, broadcast like a scalar
+/// over the plot's columns; its name is `<inst>[<param>]`; bad arguments are `X003`,
+/// scalar mode `X006`, and a column bound to it `X011`.
+#[test]
+fn op_is_one_operating_point_number() {
+    use schemify_expr::{SignalKind, op_parts};
+    let p = Program::compile(
+        r#"op("x1/m2", "gm") / op(M1, id) + v(a) - v(a)"#,
+        Mode::Calc,
+    )
+    .unwrap();
+    let sigs: Vec<_> = p.signals().collect();
+    assert_eq!(
+        sigs,
+        [
+            (SignalKind::Op, "x1/m2[gm]"),
+            (SignalKind::Op, "M1[id]"),
+            (SignalKind::V, "a")
+        ]
+    );
+    assert_eq!(op_parts("x[3]/m2[gm]"), ("x[3]/m2", "gm"));
+    // The span of the first call naming each signal.
+    let s0 = p.signal_span(0);
+    assert_eq!((s0.start, s0.end), (0, 17));
+    let x = [0.0, 1.0, 2.0];
+    let a = [5.0, 6.0, 7.0];
+    let (gm, id) = ([2e-3], [1e-4]);
+    let cols = [
+        Column { re: &gm, im: &[] },
+        Column { re: &id, im: &[] },
+        Column { re: &a, im: &[] },
+    ];
+    let plot = Plot {
+        x: &x,
+        steps: &[],
+        signals: &cols,
+    };
+    let c = match p.eval_calc_plain(&[], &plot, &mut Scratch::default()) {
+        Ok(CalcResult::Column(c)) => c,
+        other => panic!("{other:?}"),
+    };
+    assert!(c.re.iter().all(|v| (v - 20.0).abs() < 1e-12), "{c:?}");
+    // Alone it stays a scalar.
+    let q = Program::compile(r#"op("M1", "gm")"#, Mode::Calc).unwrap();
+    let plot1 = Plot {
+        x: &x,
+        steps: &[],
+        signals: &cols[..1],
+    };
+    assert_eq!(
+        q.eval_calc_plain(&[], &plot1, &mut Scratch::default()),
+        Ok(CalcResult::Scalar(Value::Num(2e-3)))
+    );
+    // A column where one number belongs.
+    let wrong = [Column { re: &a, im: &[] }];
+    let plot2 = Plot {
+        x: &x,
+        steps: &[],
+        signals: &wrong,
+    };
+    let e = q
+        .eval_calc_plain(&[], &plot2, &mut Scratch::default())
+        .unwrap_err();
+    assert_eq!(e.code, Code::X011);
+    for bad in [
+        r#"op("M1", 1)"#,
+        r#"op("", "gm")"#,
+        r#"op("M1", "g m")"#,
+        r#"op(1+2, "gm")"#,
+    ] {
+        let e = Program::compile(bad, Mode::Calc).unwrap_err();
+        assert_eq!(e.code, Code::X003, "{bad}");
+    }
+    assert_eq!(
+        Program::compile(r#"op("M1", "gm")"#, Mode::Scalar)
+            .unwrap_err()
+            .code,
+        Code::X006
+    );
+    assert_eq!(
+        Program::compile(r#"op("M1")"#, Mode::Calc)
+            .unwrap_err()
+            .code,
+        Code::X008
+    );
+}

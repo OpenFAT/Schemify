@@ -14,6 +14,7 @@ param value 1u
 
 impl spice spice
   format spice "{name} {p} {n} {cp} {cn} {value}"
+  format spectre "{name} ({p} {n} {cp} {cn}) vccs gm={num(value)}"
 
 poly 0 -8.75 8.75 0 0 8.75 -8.75 0
   width 2

@@ -15,6 +15,7 @@ param value 1
 
 impl spice spice
   format spice "{name} {p} {n} {vnam} {value}"
+  format spectre "{name} ({p} {n}) ccvs probe={vnam} rm={num(value)}"
 
 poly 0 -8.75 8.75 0 0 8.75 -8.75 0
   width 2

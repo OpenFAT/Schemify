@@ -70,13 +70,14 @@ mod fft;
 mod graph;
 mod lex;
 mod parse;
+mod spectre;
 mod template;
 mod text;
 
 use core::fmt;
 
 pub use calc::{AxisOut, CalcResult, ColKind, ColOut, Column, Plot};
-pub use compile::{Mode, Program, SignalKind};
+pub use compile::{Mode, Program, SignalKind, op_parts};
 pub use eval::{PluginValue, Scratch};
 pub use graph::{Cycle, Deps, affected, reverse, topo_order, topo_order_all};
 pub use template::{Segment, Template};

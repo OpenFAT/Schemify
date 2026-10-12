@@ -20,6 +20,7 @@ param m 1
 
 impl spice spice
   format spice "{spiceprefix}{name} {c} {b} {e} {model} area={area} m={m}"
+  format spectre "{name} ({c} {b} {e}) {model} area={area} m={m}"
 
 line -20 0 0 0
 line 0 -10 0 10

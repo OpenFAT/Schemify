@@ -90,6 +90,57 @@ impl NameMap {
         Some(out)
     }
 
+    /// Returns the ngspice name of the device at instance path `path` (`op()`, run spec
+    /// §4): the emitted names of the path's instances, lowercased and joined with `.`,
+    /// with the device's type letter and a dot in front inside a subcircuit (`/M1` →
+    /// `m1`, `/X1/M2` → `m.x1.mm2`). Segments after a leaf name devices inside the leaf's
+    /// own subcircuit, which Schemify does not elaborate (a PDK device model), verbatim:
+    /// `/M1/msky130_fd_pr__nfet_01v8` → `m.xm1.msky130_fd_pr__nfet_01v8` when `M1` is
+    /// emitted `XM1`. The leading `/` is optional.
+    ///
+    /// # Errors
+    ///
+    /// The message naming the problem: an empty path or segment, a segment no emitted
+    /// instance has (ignored and failed rows have none), or a path that ends at a
+    /// subcircuit instance rather than a device.
+    ///
+    /// Cost: one binary search per schematic level.
+    pub fn spice_device(&self, path: &str) -> Result<String, String> {
+        let rest = path.strip_prefix('/').unwrap_or(path);
+        if rest.is_empty() || rest.split('/').any(str::is_empty) {
+            return Err(format!("`{path}` is not an instance path"));
+        }
+        let (mut d, mut out, mut last) = (0u32, String::new(), "");
+        for seg in rest.split('/') {
+            if !out.is_empty() {
+                out.push('.');
+            }
+            if d == NONE {
+                out.push_str(seg); // inside a leaf's own subcircuit
+                last = seg;
+                continue;
+            }
+            let Some(r) = self.find_local(d, seg) else {
+                return Err(format!("no instance `{seg}` on the path `{path}`"));
+            };
+            last = self.s(self.row_emitted[r]);
+            out.push_str(last);
+            d = self.row_child[r];
+        }
+        if d != NONE {
+            return Err(format!("`{path}` is a subcircuit instance, not a device"));
+        }
+        out.make_ascii_lowercase();
+        let nested = out.contains('.');
+        let letter = last.chars().next().map(|c| c.to_ascii_lowercase());
+        let dev = match letter {
+            Some(c) if nested => format!("{c}.{out}"),
+            _ => out,
+        };
+        assert!(!dev.is_empty());
+        Ok(dev)
+    }
+
     /// Returns the path of the instance whose emitted hierarchical name is `name`
     /// (`x1.xm1` → `/X1/M1`).
     ///

@@ -17,6 +17,7 @@ param td 10n
 
 impl spice spice
   format spice "{name} {p1} {n1} {p2} {n2} z0={z0} td={td}"
+  format spectre "{name} ({p1} {n1} {p2} {n2}) tline z0={z0} td={td}"
 
 line -80 -10 -66.18 -10
 line 66.18 -10 80 -10

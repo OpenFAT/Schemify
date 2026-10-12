@@ -15,6 +15,7 @@ param m 1
 
 impl spice spice
   format spice "{name} {p} {n} {value} m={m}"
+  format spectre "{name} ({p} {n}) resistor r={num(value)} m={m}"
 
 line 0 -30 0 -15
 line 0 15 0 30

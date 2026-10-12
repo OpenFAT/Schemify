@@ -1,0 +1,24 @@
+// tb (schemify spectre)
+simulator lang=spectre
+global 0
+C1 (out 0) capacitor c=1e-12 m=1
+CP1 (out 0) capacitor c=4e-15 m=1
+D1 (in 0) dmod area=1
+E1 (e 0 in 0) vcvs gain=10
+F1 (f 0) cccs probe=VM1 gain=2
+G1 (g 0 in 0) vccs gm=0.001
+H1 (h 0) ccvs probe=VM1 rm=1000
+IB (vdd bias) isource dc=1e-5 type=sine sinedc=1e-5 ampl=1e-6 freq=1000000
+IX (x 0) isource type=exp val0=0 val1=0.001 td1=1e-9 tau1=2e-9 td2=5e-9 tau2=1e-9
+L1 (in l) inductor l=1e-8 m=1
+M1 (out in 0 0) nch w=2e-6 l=1.5e-7  m=1
+M2 (out in vdd vdd) pch w=4e-6 l=1.5e-7  m=1
+Q1 (c1 bias 0) qn area=1 m=1
+Q2 (c2 bias vdd) qp area=1 m=1
+R1 (outm 0) resistor r=2200000 m=1
+T1 (clk 0 tout 0) tline z0=50 td=1e-8
+VCLK (clk 0) vsource type=pulse val0=0 val1=1.8 delay=1e-9 rise=1e-11 fall=1e-11 width=5e-9 period=1e-8
+VDD (vdd 0) vsource dc=1.8
+VIN (in 0) vsource dc=0.9 mag=1 phase=0
+VM1 (out outm) vsource dc=0
+VPWL (ramp 0) vsource type=pwl wave=[0 0 1e-9 1.8 2e-9 0]

@@ -81,6 +81,26 @@ fn one_inverter_two_technologies() {
     }
 }
 
+/// Under `--dialect spectre` a `tech:` device is its PDK cell's `format spectre` (the PDK cell
+/// decides, like for every other dialect); a PDK cell without one is refused with `E013`,
+/// never netlisted from its SPICE text.
+#[test]
+fn tech_cells_take_their_pdk_cells_spectre_format() {
+    for (family, lib) in [("sky130", "sky130_fd_pr"), ("freepdk45", "freepdk45")] {
+        let dir = project(&format!("{family}-spectre"), &manifest(family, lib));
+        let (code, text) = schemify(&dir, &["netlist", "--dialect", "spectre", "inv.shcomp"]);
+        assert_eq!(code, 0, "{family}: {text}");
+        golden(&format!("inv.{family}.spectre"), &text);
+    }
+    let dir = project("gf180mcu-spectre", &manifest("gf180mcu", "gf180mcu_fd_pr"));
+    let (code, text) = schemify(&dir, &["netlist", "--dialect", "spectre", "inv.shcomp"]);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains("E013") && text.contains("no format for spectre"),
+        "{text}"
+    );
+}
+
 #[test]
 fn shipped_maps_parse() {
     for family in ["sky130", "gf180mcu", "ihp-sg13g2", "freepdk45", "asap7"] {
