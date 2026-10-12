@@ -410,6 +410,8 @@ const fn sorted(mut r: RecordSchema) -> RecordSchema {
 const SOURCE: Ty = Ty::Choice(&["path", "git", "url"]);
 const LAYER: AttrSchema = attr("layer", &[N]);
 const FILL: AttrSchema = attr("fill", &[B]);
+const DASH: AttrSchema = attr("dash", &[N]);
+const WIDTH: AttrSchema = attr("width", &[N]);
 const DOC: AttrSchema = attr("doc", &[A]);
 const UNIT: AttrSchema = attr("unit", &[A]);
 const MIN: AttrSchema = attr("min", &[A]);
@@ -498,16 +500,28 @@ static RECORDS: [RecordSchema; RecordKind::Unknown as usize + 1] = [
         ],
     ),
     // rank 2: symbol graphics, draw order
+    rec("line", 2, KP, fixed(&[C, C, C, C]), &[LAYER, DASH, WIDTH]),
     rec(
-        "line",
+        "rect",
         2,
         KP,
         fixed(&[C, C, C, C]),
-        &[LAYER, attr("dash", &[N]), attr("width", &[N])],
+        &[LAYER, FILL, DASH, WIDTH],
     ),
-    rec("rect", 2, KP, fixed(&[C, C, C, C]), &[LAYER, FILL]),
-    rec("arc", 2, KP, fixed(&[C, C, C, N, N]), &[LAYER, FILL]),
-    rec("circle", 2, KP, fixed(&[C, C, C]), &[LAYER, FILL]),
+    rec(
+        "arc",
+        2,
+        KP,
+        fixed(&[C, C, C, N, N]),
+        &[LAYER, FILL, DASH, WIDTH],
+    ),
+    rec(
+        "circle",
+        2,
+        KP,
+        fixed(&[C, C, C]),
+        &[LAYER, FILL, DASH, WIDTH],
+    ),
     rec(
         "poly",
         2,
@@ -516,7 +530,7 @@ static RECORDS: [RecordSchema; RecordKind::Unknown as usize + 1] = [
             fixed: &[C, C, C, C],
             rest: Rest::Pairs(C),
         },
-        &[LAYER, FILL, attr("closed", &[B])],
+        &[LAYER, FILL, DASH, WIDTH, attr("closed", &[B])],
     ),
     rec(
         "stext",
@@ -561,13 +575,7 @@ static RECORDS: [RecordSchema; RecordKind::Unknown as usize + 1] = [
             fixed: &[Ty::Id, Ty::Choice(SHAPE_FORMS)],
             rest: Rest::Many(C),
         },
-        &[
-            LAYER,
-            FILL,
-            attr("dash", &[N]),
-            attr("width", &[N]),
-            attr("closed", &[B]),
-        ],
+        &[LAYER, FILL, DASH, WIDTH, attr("closed", &[B])],
     ),
     open(rec(
         "constraint",

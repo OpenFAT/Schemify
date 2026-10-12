@@ -17,9 +17,9 @@ Grid: **G = 10 units**, the pin pitch. Every pin endpoint is on G. Body detail m
 |---|---|
 | Body stroke | 2 × wire stroke. Leads (pin to body) stay 1 × so the body reads as "the device" |
 | Joins and caps | round |
-| Arrowhead | filled, one size everywhere: 0.35G long × 0.25G wide, at the pin end of its lead |
+| Arrowhead | filled, one size everywhere: 0.5G long × 0.375G wide, at the pin end of its lead (0.35G × 0.25G vanished at fit zoom on the contact sheet) |
 | Fill | none. Bodies are open outlines (KLC S3.3; the "puristic" look users praised in Qucs) |
-| Text | 0.5G high (floor 0.3G for pin names), in a **label column** right of the body at body edge + 0.5G: name on top, then value/model, then W/L/nf |
+| Text | 0.5G cap height, i.e. `size 0.14` (a 0.7G em; floor 0.3G for pin names), in a **label column** right of the body at body edge + 0.5G: name on top, then value/model, then W/L/nf |
 | Op-point slots | up to 5 rows continuing the label column, plus one voltage slot per pin 0.25G off its lead; shown in the annotation colour and hidden first when zoomed out |
 | Variants | data, not new shapes: thick-oxide = 2× gate stroke; IEC resistor box and "lazy MOS" are alternate glyphs of the same cell |
 
@@ -27,7 +27,7 @@ Grid: **G = 10 units**, the pin pitch. Every pin endpoint is on G. Body detail m
 
 - **MOS (nmos4/pmos4):** solid channel 2G, gate plate parallel with a 0.25G gap, gate lead 1G and centred. Arrow on the **source** lead (out for N, in for P), no PMOS bubble. Bulk is a short 1× lead from the channel's back centre, so a 4-terminal device still reads as the textbook 3-terminal one.
 - **BJT:** no envelope circle (the circle means a discrete package). Emitter arrow at the pin end, same C–E span as the MOS.
-- **Resistor:** ANSI zigzag with 3 full cycles; body 2.5G × 0.75G; peaks on the G/8 grid. The IEC box is the alternate.
+- **Resistor:** ANSI zigzag with 3 full cycles; body 3G × 1G (3 cycles on the G/8 grid need 2.25G or 3G; 3G reads better); peaks on the G/8 grid. The IEC box is the alternate.
 - **Inductor:** 3–4 semicircular humps over the same body length as the resistor.
 - **Capacitor:** two straight plates 1.5G long with a 0.4G gap; the plates are drawn heavier than the body. **parax_cap:** same shape, dashed or half weight, muted, so it reads as "not a real device".
 - **Sources:** independent = circle 1.5G across, with +/− for V or an arrow for I. Controlled = diamond ~17% larger, and the four kinds differ only in the inner mark. **bsource** = diamond plus a small `f(·)` tag. Control leads are short, on the left, with their own +/−.
@@ -35,9 +35,9 @@ Grid: **G = 10 units**, the pin pitch. Every pin endpoint is on G. Body detail m
 - **gnd:** three shrinking bars on a 1G stem, pointing down. **vdd:** a T bar on a 1G stem, pointing up, labelled with its net.
 - **Junction dots** (canvas, not symbols): 0.35G across, only where 3+ wire ends meet, never smaller than 4 px.
 
-## Renderer prerequisites (check before the first pass)
+## Renderer support
 
-On 2026-10-12 the canvas drew every layer at 1 px (`Palette::width`, `crates/render/src/canvas.rs`) and ignored the spec's per-primitive `width` and `dash` attributes (format.md rank 2). Until that changes, the 2× body stroke, heavy cap plates and dashed parax_cap cannot be drawn. Land the renderer change, owned by `schemify-render`, first or in the same pass: per-layer width as theme data, and the spec's `width`/`dash` honoured.
+Every rank-2 graphic takes `width <1-4>` (multiples of the wire stroke), `dash <n>` and `fill true` (format.md §4, stroke and fill attributes). Weights are screen-space: a body is 2 px over a 1 px wire at every zoom. Mirrored instances right-align their symbol texts, so the label column flips to the left of the body. The sheet is `crates/app/tests/fixtures/symbols/sheet.shcomp`, rendered by `crates/app/tests/symbols.rs`; its ignored `symbol_crops` test writes an 8× crop per cell to `$SCHEMIFY_SHOTS` for review.
 
 ## Loop
 

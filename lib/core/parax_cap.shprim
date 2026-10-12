@@ -16,11 +16,13 @@ param m 1
 impl spice spice
   format spice "{name} {p} {gnd} {value} m={m}"
 
-line 0 -10 0 0
-line -10 0 10 0
-line -10 10 10 10
+line 0 -10 0 -5
+line -7.5 -5 7.5 -5
+  dash 1
+line -7.5 0 7.5 0
+  dash 1
 
-stext 20 -10 R0 {name}
-  size 0.2
-stext 20 0 R0 {value}
-  size 0.2
+stext 12.5 -14 R0 {name}
+  size 0.14
+stext 12.5 -5 R0 {eng(value)}
+  size 0.14

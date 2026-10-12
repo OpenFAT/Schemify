@@ -97,13 +97,21 @@ Kind rules (`E025`): `shprim` has ≥1 pin and ≥1 impl, none with lang `schema
 | Record | Attributes |
 |---|---|
 | `line <x1> <y1> <x2> <y2>` | `layer <n>`, `dash <n>`, `width <n>` |
-| `rect <x1> <y1> <x2> <y2>` | `layer`, `fill true\|false` |
-| `arc <cx> <cy> <r> <start_deg> <sweep_deg>` | `layer`, `fill` |
-| `circle <cx> <cy> <r>` | `layer`, `fill` |
-| `poly <x> <y> <x> <y> …` (≥ 2 points) | `layer`, `fill`, `closed true\|false` |
+| `rect <x1> <y1> <x2> <y2>` | `layer`, `fill true\|false`, `dash`, `width` |
+| `arc <cx> <cy> <r> <start_deg> <sweep_deg>` | `layer`, `fill`, `dash`, `width` |
+| `circle <cx> <cy> <r>` | `layer`, `fill`, `dash`, `width` |
+| `poly <x> <y> <x> <y> …` (≥ 2 points) | `layer`, `fill`, `closed true\|false`, `dash`, `width` |
 | `stext <x> <y> <orient> <template>` | `size <s>`, `hcenter`, `vcenter`, `layer` |
 
-`stext` templates may reference `name`, params and `cell` (render-time only). Its `<orient>` turns the text about its anchor like a `text` record's (quarter turns clockwise; a mirror keeps the text readable); in an instance the text turns by the instance's orientation composed with its own.
+**Stroke and fill attributes** (every rank-2 graphic and every rank-3 `shape`; render-only, never connectivity or netlist):
+
+- `width <n>`: stroke weight in multiples of the layer's base stroke (the wire stroke on the symbol and wire layers). Integer `1`–`4`; absent means `1`. A renderer rounds a fractional value and clamps it into `1`–`4`; the file keeps what was written.
+- `dash <n>`: `0` or absent is solid; `n` in `1`–`15` draws dashes and gaps of `2n` logical pixels each. Out-of-range values clamp like `width`.
+- Both are **screen-space**: a weight-`w` stroke is `w` × the layer width in logical pixels at every zoom, never thinner than the layer width (1 logical px by default) however far out, and a dash pattern keeps its pixel length. So a weight-2 body is twice its wires at every zoom, and a zoomed-out sheet never loses a stroke. Geometry scales with zoom; stroke weight does not, unless the viewer's variable-line-width option (`_`) scales the layer widths themselves, which carries every weight along.
+- `fill true` fills a closed shape (rect, full circle, closed poly) in its layer's colour on any layer; absent or `false` leaves filling to the layer (the pin layer fills). An open shape never fills.
+- Strokes with `width` > 1 or a `dash` use round caps and joins (a thick zigzag mitres into spikes otherwise); plain strokes keep butt caps and mitre joins.
+
+`stext` templates may reference `name`, params and `cell` (render-time only). Its `<orient>` turns the text about its anchor like a `text` record's (quarter turns clockwise; a mirror keeps the text readable and right-aligns it, so a text that started at its anchor now ends there and a label column right of the body lands left of the mirrored body; `hcenter` text stays centred); in an instance the text turns by the instance's orientation composed with its own.
 
 ### Rank 3 — schematic (shcomp, shbench)
 

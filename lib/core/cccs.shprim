@@ -16,15 +16,19 @@ param value 1
 impl spice spice
   format spice "{name} {p} {n} {vnam} {value}"
 
-line 0 -30 0 -20
-line 0 20 0 30
-line 0 -20 20 0
-line 20 0 0 20
-line 0 20 -20 0
-line -20 0 0 -20
-line 0 -10 0 10
+poly 0 -8.75 8.75 0 0 8.75 -8.75 0
+  width 2
+  closed true
 
-stext 30 -10 R0 {name}
-  size 0.2
-stext 30 0 R0 {vnam}
-  size 0.2
+line 0 -30 0 -8.75
+line 0 8.75 0 30
+line 0 -5 0 0
+
+poly 0 5 -1.875 0 1.875 0
+  fill true
+  closed true
+
+stext 13.75 -9 R0 {name}
+  size 0.14
+stext 13.75 0 R0 {value}·i({vnam})
+  size 0.14

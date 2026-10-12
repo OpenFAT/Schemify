@@ -273,6 +273,7 @@ fn edit(prims: &mut CanvasPrims, sel: &mut Vec<u32>, rng: &mut Rng) -> bool {
                 col.swap_remove(i);
             }
             l.layer.swap_remove(i);
+            l.style.swap_remove(i);
             sel.retain(|&s| (s as usize) < l.x0.len());
         }
         1 => {

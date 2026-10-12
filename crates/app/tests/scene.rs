@@ -12,7 +12,7 @@ use schemify_doc::{
 };
 use schemify_format::FileKind;
 
-const RES: &str = "schemify 1 shprim\n\npin A inout 0 -30\npin B inout 0 30\n\nparam R 1k\n\nimpl spice spice\n  format spice \"R{name} {A} {B} {R}\"\n\nline 0 -30 0 -15\nline 0 15 0 30\nrect -5 -15 5 15\narc 0 0 8 0 90\ncircle 10 0 2\npoly -5 -15 5 -15 0 -20 -5 -15\n  closed true\n\nstext 8 -10 R0 {name}\n  size 0.2\nstext 8 2 R0 R={R}\n  size 0.15\n";
+const RES: &str = "schemify 1 shprim\n\npin A inout 0 -30\npin B inout 0 30\n\nparam R 1k\n\nimpl spice spice\n  format spice \"R{name} {A} {B} {R}\"\n\nline 0 -30 0 -15\nline 0 15 0 30\nrect -5 -15 5 15\n  width 2\narc 0 0 8 0 90\ncircle 10 0 2\n  dash 2\npoly -5 -15 5 -15 0 -20 -5 -15\n  closed true\n\nstext 8 -10 R0 {name}\n  size 0.2\nstext 8 2 R0 R={R}\n  size 0.15\n";
 
 struct Rng(u64);
 
@@ -49,16 +49,16 @@ fn canonical(sc: &Scene) -> (Vec<String>, Vec<(i32, i32)>) {
         let l = &p.lines;
         let k = key(sc.owner.lines[i]);
         rows.push(format!(
-            "{k:?} line {} {} {} {} {}",
-            l.x0[i], l.y0[i], l.x1[i], l.y1[i], l.layer[i]
+            "{k:?} line {} {} {} {} {} {:?}",
+            l.x0[i], l.y0[i], l.x1[i], l.y1[i], l.layer[i], l.style[i]
         ));
     }
     for i in 0..p.rects.x0.len() {
         let r = &p.rects;
         let k = key(sc.owner.rects[i]);
         rows.push(format!(
-            "{k:?} rect {} {} {} {} {}",
-            r.x0[i], r.y0[i], r.x1[i], r.y1[i], r.layer[i]
+            "{k:?} rect {} {} {} {} {} {:?}",
+            r.x0[i], r.y0[i], r.x1[i], r.y1[i], r.layer[i], r.style[i]
         ));
     }
     let mut dots = Vec::new();
@@ -67,8 +67,8 @@ fn canonical(sc: &Scene) -> (Vec<String>, Vec<(i32, i32)>) {
         match key(sc.owner.arcs[i]) {
             None => dots.push((a.cx[i], a.cy[i])),
             k => rows.push(format!(
-                "{k:?} arc {} {} {} {} {} {}",
-                a.cx[i], a.cy[i], a.r[i], a.start[i], a.sweep[i], a.layer[i]
+                "{k:?} arc {} {} {} {} {} {} {:?}",
+                a.cx[i], a.cy[i], a.r[i], a.start[i], a.sweep[i], a.layer[i], a.style[i]
             )),
         }
     }
@@ -82,9 +82,10 @@ fn canonical(sc: &Scene) -> (Vec<String>, Vec<(i32, i32)>) {
                 .map(|j| (polys.x[j], polys.y[j]))
                 .collect();
             rows.push(format!(
-                "{:?} {name} {pts:?} {}",
+                "{:?} {name} {pts:?} {} {:?}",
                 key(owners[k]),
-                polys.layer[k]
+                polys.layer[k],
+                polys.style[k]
             ));
             start = end as usize;
         }
@@ -185,7 +186,8 @@ fn random_ops(rng: &mut Rng, p: &Project, h: DocHandle, next: &mut u64) -> Strin
                 3 => ("arc", format!("{x} {y} {d} 0 90")),
                 _ => ("poly", format!("{x} {y} {} {y} {x} {}", x + d, y + d)),
             };
-            let layer = ["", "  layer 7\n"][rng.below(2) as usize];
+            let layer =
+                ["", "  layer 7\n", "  width 2\n", "  dash 3\n  width 3\n"][rng.below(4) as usize];
             format!("insert shape {} {form} {values}\n{layer}", fresh())
         }
         16 => {
@@ -194,8 +196,9 @@ fn random_ops(rng: &mut Rng, p: &Project, h: DocHandle, next: &mut u64) -> Strin
             match pick(rng, t.id.len()) {
                 Some(i) if rng.below(3) == 0 => format!("delete shape {}\n", t.id[i].text(s)),
                 Some(i) if rng.below(2) == 0 => {
+                    let attr = ["layer", "width", "dash"][rng.below(3) as usize];
                     format!(
-                        "set_attr shape {} layer {}\n",
+                        "set_attr shape {} {attr} {}\n",
                         t.id[i].text(s),
                         rng.below(8) + 1
                     )
@@ -346,10 +349,63 @@ fn walk(seed: u64, steps: usize) {
     );
     let doc = p.doc(h).expect("open");
     assert!(!doc.shapes().id.is_empty(), "the walk drew shapes");
+    use schemify_render::canvas::LineStyle;
+    let p = &inc.prims;
+    let styles = p
+        .lines
+        .style
+        .iter()
+        .chain(&p.rects.style)
+        .chain(&p.arcs.style);
+    assert!(
+        styles.clone().any(|s| s.weight() > 1) && styles.clone().any(|s| s.dash() > 0),
+        "the walk drew weighted and dashed strokes"
+    );
+    assert!(p.lines.style.contains(&LineStyle::PLAIN), "and plain ones");
     assert!(
         inc.prims.texts.rot.iter().any(|&r| r != 0),
         "and turned texts"
     );
+}
+
+/// A symbol graphic's `width` and `dash` reach every placed instance's primitive row; the
+/// graphics without them stay plain (format spec §4, stroke attributes).
+#[test]
+fn symbol_stroke_attributes_reach_the_scene() {
+    use schemify_render::canvas::LineStyle;
+    let top =
+        "schemify 1 shcomp\n\nimpl sch schematic\n\ninst aaaaaa ./res\n  at 0 0 R90\n  name R1\n";
+    let mut p = Project::new(None, None, 1).unwrap();
+    let files: [(&str, &[u8]); 2] = [
+        ("res.shprim", RES.as_bytes()),
+        ("top.shcomp", top.as_bytes()),
+    ];
+    p.index_library("", "", &files).unwrap();
+    let res = p
+        .open("", "res.shprim", RES.as_bytes(), None)
+        .unwrap()
+        .handle;
+    let h = p
+        .open("", "top.shcomp", top.as_bytes(), None)
+        .unwrap()
+        .handle;
+    let mut symbols = Symbols::default();
+    let row = p.resolve(h, "./res").expect("resolves");
+    symbols.refresh(row, Some(res), 0, p.doc(res).unwrap());
+    let mut sc = Scene::default();
+    scene::build(&mut sc, &p, h, View::Schematic, &symbols, 0, None);
+    let pr = &sc.prims;
+    // The body rect (weight 2) and the four pin squares (plain).
+    let mut rects: Vec<LineStyle> = pr.rects.style.clone();
+    rects.sort();
+    assert_eq!(
+        rects,
+        [LineStyle::PLAIN, LineStyle::PLAIN, LineStyle::new(2, 0)]
+    );
+    assert!(pr.lines.style.iter().all(|&s| s == LineStyle::PLAIN));
+    let arcs: Vec<LineStyle> = pr.arcs.style.clone();
+    assert!(arcs.contains(&LineStyle::new(1, 2)) && arcs.contains(&LineStyle::PLAIN));
+    assert!(pr.polygons.style.iter().all(|&s| s == LineStyle::PLAIN));
 }
 
 #[test]

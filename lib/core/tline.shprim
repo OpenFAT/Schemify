@@ -18,15 +18,22 @@ param td 10n
 impl spice spice
   format spice "{name} {p1} {n1} {p2} {n2} z0={z0} td={td}"
 
-line -80 -10 -60 -10
-line -80 10 -60 10
-line 60 -10 80 -10
-line 60 10 80 10
+line -80 -10 -66.18 -10
+line 66.18 -10 80 -10
+line -80 10 -66.18 10
+line 66.18 10 80 10
+line -55 -15 55 -15
+  width 2
+line -55 15 55 15
+  width 2
 
-rect -60 -20 60 20
-  fill false
+circle -55 0 15
+  width 2
 
-stext -60 -40 R0 {name}
-  size 0.2
-stext -60 30 R0 "z0={z0} td={td}"
-  size 0.2
+arc 55 0 15 270 180
+  width 2
+
+stext -55 -28 R0 {name}
+  size 0.14
+stext -55 19 R0 "z0={eng(z0)} td={eng(td)}"
+  size 0.14

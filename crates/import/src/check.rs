@@ -242,7 +242,7 @@ mod tests {
     #[test]
     fn core_library_is_valid() {
         let files: Vec<(String, Vec<u8>)> = Vec::new();
-        assert!(check_output(&files).is_empty());
+        assert_eq!(check_output(&files), Vec::<String>::new());
         for (name, bytes) in core_library() {
             let d = parse(bytes).unwrap_or_else(|e| panic!("{name}: {e:?}"));
             assert_eq!(

@@ -26,7 +26,7 @@ use schemify_doc::{
 use schemify_elab::CellState;
 use schemify_expr::{Scratch, Template, Value};
 use schemify_format::{Orient, RecordKind};
-use schemify_render::canvas::{CanvasPrims, Marks, PrimKind};
+use schemify_render::canvas::{CanvasPrims, LineStyle, Marks, PrimKind};
 
 use crate::geometry::{Pt, Xform, place};
 use crate::session::View;
@@ -476,10 +476,10 @@ impl Scene {
 /// One cell's symbol in symbol-local coordinates: what every instance of it stamps.
 #[derive(Clone, Debug, Default)]
 pub struct SymPrims {
-    lines: Vec<([i32; 4], u8)>,
-    rects: Vec<([i32; 4], u8)>,
-    arcs: Vec<([i32; 5], u8)>,
-    polys: Vec<(Vec<Pt>, bool, u8)>,
+    lines: Vec<([i32; 4], u8, LineStyle)>,
+    rects: Vec<([i32; 4], u8, LineStyle)>,
+    arcs: Vec<([i32; 5], u8, LineStyle)>,
+    polys: Vec<(Vec<Pt>, bool, u8, LineStyle)>,
     texts: Vec<SymText>,
     pins: Vec<Pt>,
     bbox: [i32; 4],
@@ -543,6 +543,25 @@ fn layer_attr(doc: &Document, span: schemify_doc::Span, default: u8) -> u8 {
         .unwrap_or(default)
 }
 
+/// The `width`, `dash` and `fill` attributes of a graphic (format spec §4, stroke attributes):
+/// a value that is not a number reads as absent; the rest rounds and clamps in
+/// [`LineStyle::new`]. `fill true` fills a closed shape; absent or `false` leaves it to the
+/// layer.
+fn style_attr(doc: &Document, span: schemify_doc::Span) -> LineStyle {
+    let n = |key: &str, absent: u8| {
+        attr(doc, span, key)
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|v| v.is_finite())
+            .map_or(absent, |v| v.round().clamp(0.0, 255.0) as u8)
+    };
+    let st = LineStyle::new(n("width", 1), n("dash", 0));
+    if attr(doc, span, "fill") == Some("true") {
+        st.filled()
+    } else {
+        st
+    }
+}
+
 fn size_of(text: Option<&str>, default: f64) -> i32 {
     let s = text.and_then(|t| t.parse::<f64>().ok()).unwrap_or(default);
     (s.clamp(0.01, 100.0) * TEXT_PER_SIZE) as i32
@@ -568,14 +587,15 @@ pub fn sym_prims(doc: &Document) -> SymPrims {
     for i in 0..g.shape.len() {
         let c = &coords[g.coords[i].range()];
         let layer = layer_attr(doc, g.attrs[i], 4);
+        let style = style_attr(doc, g.attrs[i]);
         match g.shape[i] {
             RecordKind::Line => {
-                p.lines.push(([c[0], c[1], c[2], c[3]], layer));
+                p.lines.push(([c[0], c[1], c[2], c[3]], layer, style));
                 grow(&mut bbox, c[0], c[1]);
                 grow(&mut bbox, c[2], c[3]);
             }
             RecordKind::Rect => {
-                p.rects.push(([c[0], c[1], c[2], c[3]], layer));
+                p.rects.push(([c[0], c[1], c[2], c[3]], layer, style));
                 grow(&mut bbox, c[0], c[1]);
                 grow(&mut bbox, c[2], c[3]);
             }
@@ -589,7 +609,7 @@ pub fn sym_prims(doc: &Document) -> SymPrims {
                     (0, 360_000)
                 };
                 p.arcs
-                    .push(([c[0], c[1], c[2].max(0), start, sweep], layer));
+                    .push(([c[0], c[1], c[2].max(0), start, sweep], layer, style));
                 grow(&mut bbox, c[0] - c[2], c[1] - c[2]);
                 grow(&mut bbox, c[0] + c[2], c[1] + c[2]);
             }
@@ -600,7 +620,7 @@ pub fn sym_prims(doc: &Document) -> SymPrims {
                 }
                 let closed = attr(doc, g.attrs[i], "closed") == Some("true");
                 if pts.len() >= 2 {
-                    p.polys.push((pts, closed, layer));
+                    p.polys.push((pts, closed, layer, style));
                 }
             }
             RecordKind::Stext => {
@@ -646,14 +666,20 @@ fn rotated_extent((w, h): (i32, i32), rot: u8) -> (i32, i32) {
     }
 }
 
-/// Where a symbol text turned `rot` quarter turns with its anchor at `q` starts: the anchor,
-/// or for `hcenter` half its width back along its direction.
-fn sym_text_at(q: Pt, t: &SymText, text: &str, rot: u8) -> Pt {
-    if !t.hcenter {
+/// Where a symbol text turned `rot` quarter turns with its anchor at `q` starts: the anchor;
+/// for `hcenter` half its width back along its direction; under a mirror (`mirrored`, the
+/// composed orientation's) its whole width back, so the text ends at the anchor and a label
+/// column right of the body stays clear of the mirrored body (format spec §4, `stext`).
+fn sym_text_at(q: Pt, t: &SymText, text: &str, rot: u8, mirrored: bool) -> Pt {
+    if !t.hcenter && !mirrored {
         return q;
     }
     let (w, _) = text_size(t.size, text);
-    let (dx, dy) = rotated_extent((-w / 2, 0), rot);
+    // ponytail: right alignment uses the 0.6 em/char estimate, so a mirrored column is
+    // ragged by the estimate's error; shape in the scene if that shows.
+    let back = if t.hcenter { w / 2 } else { w };
+    let (dx, dy) = rotated_extent((-back, 0), rot);
+    assert!(back >= 0);
     (q.0 + dx, q.1 + dy)
 }
 
@@ -676,26 +702,29 @@ impl Build<'_> {
         self.ext[2] = self.ext[2].max(x);
         self.ext[3] = self.ext[3].max(y);
     }
-    fn line(&mut self, a: Pt, b: Pt, layer: u8, o: u32) {
-        self.sc.prims.line(a.0, a.1, b.0, b.1, layer);
+    fn line(&mut self, a: Pt, b: Pt, layer: u8, style: LineStyle, o: u32) {
+        self.sc.prims.line_styled(a.0, a.1, b.0, b.1, layer, style);
         self.sc.owner.lines.push(o);
         self.grow(a.0, a.1);
         self.grow(b.0, b.1);
     }
-    fn rect(&mut self, a: Pt, b: Pt, layer: u8, o: u32) {
-        self.sc.prims.rect(a.0, a.1, b.0, b.1, layer);
+    fn rect(&mut self, a: Pt, b: Pt, layer: u8, style: LineStyle, o: u32) {
+        self.sc.prims.rect_styled(a.0, a.1, b.0, b.1, layer, style);
         self.sc.owner.rects.push(o);
         self.grow(a.0, a.1);
         self.grow(b.0, b.1);
     }
-    fn arc(&mut self, c: Pt, r: i32, start: i32, sweep: i32, layer: u8, o: u32) {
-        self.sc.prims.arc(c.0, c.1, r, start, sweep, layer);
+    #[allow(clippy::too_many_arguments)]
+    fn arc(&mut self, c: Pt, r: i32, start: i32, sweep: i32, layer: u8, style: LineStyle, o: u32) {
+        self.sc
+            .prims
+            .arc_styled(c.0, c.1, r, start, sweep, layer, style);
         self.sc.owner.arcs.push(o);
         self.grow(c.0 - r, c.1 - r);
         self.grow(c.0 + r, c.1 + r);
     }
-    fn poly(&mut self, pts: &[Pt], closed: bool, layer: u8, o: u32) {
-        self.sc.prims.poly(pts, closed, layer);
+    fn poly(&mut self, pts: &[Pt], closed: bool, layer: u8, style: LineStyle, o: u32) {
+        self.sc.prims.poly_styled(pts, closed, layer, style);
         if closed {
             self.sc.owner.polygons.push(o);
         } else {
@@ -1002,6 +1031,7 @@ fn remove_object(sc: &mut Scene, key: ObjKey) {
             col.swap_remove(i);
         }
         l.layer.swap_remove(i);
+        l.style.swap_remove(i);
         own.lines.swap_remove(i);
     }
     for i in rows_of(&own.rects, o) {
@@ -1010,6 +1040,7 @@ fn remove_object(sc: &mut Scene, key: ObjKey) {
             col.swap_remove(i);
         }
         r.layer.swap_remove(i);
+        r.style.swap_remove(i);
         own.rects.swap_remove(i);
     }
     for i in rows_of(&own.arcs, o) {
@@ -1018,6 +1049,7 @@ fn remove_object(sc: &mut Scene, key: ObjKey) {
             col.swap_remove(i);
         }
         a.layer.swap_remove(i);
+        a.style.swap_remove(i);
         own.arcs.swap_remove(i);
     }
     for (polys, owners) in [
@@ -1035,6 +1067,7 @@ fn remove_object(sc: &mut Scene, key: ObjKey) {
             }
             polys.end.remove(k);
             polys.layer.remove(k);
+            polys.style.remove(k);
             owners.remove(k);
         }
     }
@@ -1196,6 +1229,7 @@ fn instance<'d>(
             (at.0 - u, at.1 - u),
             (at.0 + u, at.1 + u),
             LAYER_MISSING,
+            LineStyle::PLAIN,
             obj,
         );
         b.text(
@@ -1210,19 +1244,19 @@ fn instance<'d>(
     let x = |q: Pt| place(o, at, q);
     let (c0, c1) = (x((p.bbox[0], p.bbox[1])), x((p.bbox[2], p.bbox[3])));
     let obj = b.sc.objs.push(key, [c0.0, c0.1, c1.0, c1.1], false);
-    for (l, layer) in &p.lines {
-        b.line(x((l[0], l[1])), x((l[2], l[3])), *layer, obj);
+    for &(l, layer, st) in &p.lines {
+        b.line(x((l[0], l[1])), x((l[2], l[3])), layer, st, obj);
     }
-    for (r, layer) in &p.rects {
-        b.rect(x((r[0], r[1])), x((r[2], r[3])), *layer, obj);
+    for &(r, layer, st) in &p.rects {
+        b.rect(x((r[0], r[1])), x((r[2], r[3])), layer, st, obj);
     }
-    for (a, layer) in &p.arcs {
+    for &(a, layer, st) in &p.arcs {
         let (start, sweep) = arc_placed(o, a[3], a[4]);
-        b.arc(x((a[0], a[1])), a[2], start, sweep, *layer, obj);
+        b.arc(x((a[0], a[1])), a[2], start, sweep, layer, st, obj);
     }
-    for (pts, closed, layer) in &p.polys {
+    for (pts, closed, layer, st) in &p.polys {
         let q: Vec<Pt> = pts.iter().map(|&q| x(q)).collect();
-        b.poly(&q, *closed, *layer, obj);
+        b.poly(&q, *closed, *layer, *st, obj);
     }
     for &pin in &p.pins {
         let q = x(pin);
@@ -1230,6 +1264,7 @@ fn instance<'d>(
             (q.0 - PIN_HALF, q.1 - PIN_HALF),
             (q.0 + PIN_HALF, q.1 + PIN_HALF),
             5,
+            LineStyle::PLAIN,
             obj,
         );
         b.sc.conn.push((q, obj));
@@ -1256,8 +1291,9 @@ fn instance<'d>(
             text.clear();
             text.push_str(&t.raw);
         }
-        let rot = crate::geometry::compose(o, t.orient).quarter_turns();
-        let at = sym_text_at(x(t.at), t, text, rot);
+        let turned = crate::geometry::compose(o, t.orient);
+        let rot = turned.quarter_turns();
+        let at = sym_text_at(x(t.at), t, text, rot, turned.mirrored());
         b.text_rot(at, t.size, t.layer, text, rot, obj);
     }
 }
@@ -1272,7 +1308,7 @@ fn wire(b: &mut Build<'_>, doc: &Document, i: usize) {
     };
     let bus = attr(doc, w.attrs[i], "bus").is_some_and(|v| v == "true");
     let obj = b.sc.objs.push(key, [a.0, a.1, c.0, c.1], true);
-    b.line(a, c, if bus { LAYER_BUS } else { 1 }, obj);
+    b.line(a, c, if bus { LAYER_BUS } else { 1 }, LineStyle::PLAIN, obj);
     b.sc.conn.push((a, obj));
     b.sc.conn.push((c, obj));
 }
@@ -1335,8 +1371,8 @@ fn one_other(b: &mut Build<'_>, doc: &Document, table: TableId, i: usize) {
             let (x, y) = (n.x[i], n.y[i]);
             let r = 4 * UNIT;
             let obj = b.sc.objs.push(key, [x - r, y - r, x + r, y + r], false);
-            b.line((x - r, y - r), (x + r, y + r), 4, obj);
-            b.line((x - r, y + r), (x + r, y - r), 4, obj);
+            b.line((x - r, y - r), (x + r, y + r), 4, LineStyle::PLAIN, obj);
+            b.line((x - r, y + r), (x + r, y - r), 4, LineStyle::PLAIN, obj);
             b.sc.conn.push(((x, y), obj));
         }
         TableId::Texts => {
@@ -1371,14 +1407,15 @@ fn shape(b: &mut Build<'_>, doc: &Document, i: usize) {
     };
     let c = &doc.pool().coords[sh.coords[i].range()];
     let layer = layer_attr(doc, sh.attrs[i], 4);
+    let st = style_attr(doc, sh.attrs[i]);
     match sh.form[i] {
         RecordKind::Line if c.len() == 4 => {
             let obj = b.sc.objs.push(key, [c[0], c[1], c[2], c[3]], true);
-            b.line((c[0], c[1]), (c[2], c[3]), layer, obj);
+            b.line((c[0], c[1]), (c[2], c[3]), layer, st, obj);
         }
         RecordKind::Rect if c.len() == 4 => {
             let obj = b.sc.objs.push(key, [c[0], c[1], c[2], c[3]], false);
-            b.rect((c[0], c[1]), (c[2], c[3]), layer, obj);
+            b.rect((c[0], c[1]), (c[2], c[3]), layer, st, obj);
         }
         RecordKind::Arc | RecordKind::Circle if c.len() >= 3 => {
             let (start, sweep) = match c {
@@ -1389,7 +1426,7 @@ fn shape(b: &mut Build<'_>, doc: &Document, i: usize) {
             let obj =
                 b.sc.objs
                     .push(key, [c[0] - r, c[1] - r, c[0] + r, c[1] + r], false);
-            b.arc((c[0], c[1]), r, start, sweep, layer, obj);
+            b.arc((c[0], c[1]), r, start, sweep, layer, st, obj);
         }
         RecordKind::Poly if c.len() >= 4 => {
             let pts: Vec<Pt> = c.chunks_exact(2).map(|q| (q[0], q[1])).collect();
@@ -1397,7 +1434,7 @@ fn shape(b: &mut Build<'_>, doc: &Document, i: usize) {
             let obj =
                 b.sc.objs
                     .push(key, [pts[0].0, pts[0].1, pts[0].0, pts[0].1], false);
-            b.poly(&pts, closed, layer, obj);
+            b.poly(&pts, closed, layer, st, obj);
         }
         _ => {}
     }
@@ -1490,7 +1527,7 @@ fn placed(b: &mut Build<'_>, key: ObjKey, at: Pt, o: Orient, name: &str, port: b
             p(25 * UNIT, 5 * UNIT),
             p(5 * UNIT, 5 * UNIT),
         ];
-        b.poly(&arrow, true, 5, obj);
+        b.poly(&arrow, true, 5, LineStyle::PLAIN, obj);
         for q in arrow {
             bx = [
                 bx[0].min(q.0),
@@ -1504,6 +1541,7 @@ fn placed(b: &mut Build<'_>, key: ObjKey, at: Pt, o: Orient, name: &str, port: b
             (at.0 - PIN_HALF, at.1 - PIN_HALF),
             (at.0 + PIN_HALF, at.1 + PIN_HALF),
             5,
+            LineStyle::PLAIN,
             obj,
         );
     }
@@ -1551,6 +1589,7 @@ fn redot(b: &mut Build<'_>, points: &[Pt]) {
                     col.swap_remove(i);
                 }
                 a.layer.swap_remove(i);
+                a.style.swap_remove(i);
                 own.swap_remove(i);
             }
             _ => {}
@@ -1571,32 +1610,32 @@ fn symbol(b: &mut Build<'_>, doc: &Document) {
         };
         match g.shape[row] {
             RecordKind::Line => {
-                let (l, layer) = p.lines[li];
+                let (l, layer, st) = p.lines[li];
                 li += 1;
                 let obj = b.sc.objs.push(key, l, true);
-                b.line((l[0], l[1]), (l[2], l[3]), layer, obj);
+                b.line((l[0], l[1]), (l[2], l[3]), layer, st, obj);
             }
             RecordKind::Rect => {
-                let (r, layer) = p.rects[ri];
+                let (r, layer, st) = p.rects[ri];
                 ri += 1;
                 let obj = b.sc.objs.push(key, r, false);
-                b.rect((r[0], r[1]), (r[2], r[3]), layer, obj);
+                b.rect((r[0], r[1]), (r[2], r[3]), layer, st, obj);
             }
             RecordKind::Arc | RecordKind::Circle => {
-                let (a, layer) = p.arcs[ai];
+                let (a, layer, st) = p.arcs[ai];
                 ai += 1;
                 let obj = b.sc.objs.push(
                     key,
                     [a[0] - a[2], a[1] - a[2], a[0] + a[2], a[1] + a[2]],
                     false,
                 );
-                b.arc((a[0], a[1]), a[2], a[3], a[4], layer, obj);
+                b.arc((a[0], a[1]), a[2], a[3], a[4], layer, st, obj);
             }
             RecordKind::Poly => {
                 if pi >= p.polys.len() {
                     continue;
                 }
-                let (pts, closed, layer) = &p.polys[pi];
+                let (pts, closed, layer, st) = &p.polys[pi];
                 pi += 1;
                 let mut bx = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
                 for q in pts {
@@ -1608,14 +1647,14 @@ fn symbol(b: &mut Build<'_>, doc: &Document) {
                     ];
                 }
                 let obj = b.sc.objs.push(key, bx, false);
-                b.poly(pts, *closed, *layer, obj);
+                b.poly(pts, *closed, *layer, *st, obj);
             }
             RecordKind::Stext => {
                 let t = &p.texts[ti];
                 ti += 1;
                 let obj = b.sc.objs.push(key, [t.at.0, t.at.1, t.at.0, t.at.1], false);
                 let rot = t.orient.quarter_turns();
-                let at = sym_text_at(t.at, t, &t.raw, rot);
+                let at = sym_text_at(t.at, t, &t.raw, rot, t.orient.mirrored());
                 let bx = b.text_rot(at, t.size, t.layer, &t.raw, rot, obj);
                 b.sc.objs.geom[obj as usize] = bx;
             }
@@ -1644,6 +1683,7 @@ fn symbol(b: &mut Build<'_>, doc: &Document) {
             (q.0 - PIN_HALF, q.1 - PIN_HALF),
             (q.0 + PIN_HALF, q.1 + PIN_HALF),
             5,
+            LineStyle::PLAIN,
             obj,
         );
         let tb = b.text(
@@ -1837,20 +1877,20 @@ pub fn stamp(symbols: &Symbols, row: usize, o: Orient, at: Pt, out: &mut CanvasP
         return false;
     };
     let x = |q: Pt| place(o, at, q);
-    for (l, _) in &p.lines {
+    for (l, ..) in &p.lines {
         let (a, b) = (x((l[0], l[1])), x((l[2], l[3])));
         out.line(a.0, a.1, b.0, b.1, LAYER_SEL);
     }
-    for (r, _) in &p.rects {
+    for (r, ..) in &p.rects {
         let (a, b) = (x((r[0], r[1])), x((r[2], r[3])));
         out.rect(a.0, a.1, b.0, b.1, LAYER_SEL);
     }
-    for (a, _) in &p.arcs {
+    for (a, ..) in &p.arcs {
         let c = x((a[0], a[1]));
         let (s, w) = arc_placed(o, a[3], a[4]);
         out.arc(c.0, c.1, a[2], s, w, LAYER_SEL);
     }
-    for (pts, closed, _) in &p.polys {
+    for (pts, closed, ..) in &p.polys {
         let q: Vec<Pt> = pts.iter().map(|&q| x(q)).collect();
         out.poly(&q, *closed, LAYER_SEL);
     }

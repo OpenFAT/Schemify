@@ -21,6 +21,22 @@ fn fails(text: &str, code: Code, line: u32, col: u32) {
 
 const BENCH: &str = "schemify 1 shbench\n";
 
+/// Every rank-2 graphic takes the stroke attributes `width` and `dash` (spec §4); they are
+/// numbers, so a word there is `E029`.
+#[test]
+fn stroke_attributes_on_every_graphic() {
+    let ok = "schemify 1 shprim\npin A in 0 0\nimpl s spice\nline 0 0 1 0\n  width 2\n  dash 1\nrect 0 0 1 1\n  width 2\n\
+              arc 0 0 1 0 90\n  dash 3\ncircle 0 0 1\n  width 3\n  dash 2\n\
+              poly 0 0 1 0 1 1\n  width 2\n";
+    assert!(parse(ok.as_bytes()).is_ok());
+    fails(
+        "schemify 1 shprim\npin A in 0 0\nimpl s spice\ncircle 0 0 1\n  width thick\n",
+        Code::E029,
+        5,
+        0,
+    );
+}
+
 #[test]
 fn e022_coordinates() {
     fails(

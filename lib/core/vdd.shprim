@@ -12,8 +12,10 @@ param lab VDD
 impl spice spice
   ignore true
 
-line 0 0 0 -20
-line -10 -20 10 -20
+line 0 0 0 -10
+line -7.5 -10 7.5 -10
+  width 2
 
-stext -10 -40 R0 {lab}
-  size 0.2
+stext 0 -20 R0 {lab}
+  size 0.14
+  hcenter

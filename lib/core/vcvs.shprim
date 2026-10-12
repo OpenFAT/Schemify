@@ -15,16 +15,22 @@ param value 1
 impl spice spice
   format spice "{name} {p} {n} {cp} {cn} {value}"
 
-line 0 -30 0 -20
-line 0 20 0 30
-line -40 -20 -20 -20
-line -40 20 -20 20
-line 0 -20 20 0
-line 20 0 0 20
-line 0 20 -20 0
-line -20 0 0 -20
+poly 0 -8.75 8.75 0 0 8.75 -8.75 0
+  width 2
+  closed true
 
-stext 30 -10 R0 {name}
-  size 0.2
-stext 30 0 R0 {value}
-  size 0.2
+line 0 -30 0 -8.75
+line 0 8.75 0 30
+line -2.5 -3.75 2.5 -3.75
+line 0 -6.25 0 -1.25
+line -2.5 3.75 2.5 3.75
+line -40 -20 -30 -20
+line -27.5 -20 -22.5 -20
+line -25 -22.5 -25 -17.5
+line -40 20 -30 20
+line -27.5 20 -22.5 20
+
+stext 13.75 -9 R0 {name}
+  size 0.14
+stext 13.75 0 R0 {value}
+  size 0.14

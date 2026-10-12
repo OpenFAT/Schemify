@@ -22,7 +22,7 @@
 //! differences do not reach the bytes; font tables are written from ordered maps.
 
 use schemify_format::format_coord;
-use schemify_render::canvas::{CanvasPrims, LAYERS, Palette};
+use schemify_render::canvas::{CanvasPrims, LAYERS, LineStyle, Palette};
 
 use crate::scene::Scene;
 
@@ -74,19 +74,22 @@ pub fn subset(sc: &Scene, keep: &[bool]) -> CanvasPrims {
     for i in 0..p.lines.x0.len() {
         if on(o.lines[i]) {
             let l = &p.lines;
-            out.line(l.x0[i], l.y0[i], l.x1[i], l.y1[i], l.layer[i]);
+            out.line_styled(l.x0[i], l.y0[i], l.x1[i], l.y1[i], l.layer[i], l.style[i]);
         }
     }
     for i in 0..p.rects.x0.len() {
         if on(o.rects[i]) {
             let r = &p.rects;
-            out.rect(r.x0[i], r.y0[i], r.x1[i], r.y1[i], r.layer[i]);
+            out.rect_styled(r.x0[i], r.y0[i], r.x1[i], r.y1[i], r.layer[i], r.style[i]);
         }
     }
     for i in 0..p.arcs.cx.len() {
         if on(o.arcs[i]) {
             let a = &p.arcs;
-            out.arc(a.cx[i], a.cy[i], a.r[i], a.start[i], a.sweep[i], a.layer[i]);
+            let (start, sweep) = (a.start[i], a.sweep[i]);
+            out.arc_styled(
+                a.cx[i], a.cy[i], a.r[i], start, sweep, a.layer[i], a.style[i],
+            );
         }
     }
     for (polys, owners, closed) in [
@@ -98,7 +101,7 @@ pub fn subset(sc: &Scene, keep: &[bool]) -> CanvasPrims {
             let end = end as usize;
             if on(owners[k]) && end - start >= 2 {
                 let pts: Vec<(i32, i32)> = (start..end).map(|j| (polys.x[j], polys.y[j])).collect();
-                out.poly(&pts, closed, polys.layer[k]);
+                out.poly_styled(&pts, closed, polys.layer[k], polys.style[k]);
             }
             start = end;
         }
@@ -230,8 +233,20 @@ pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
         units(w.max(1)),
         units(h.max(1))
     );
-    // Stroke width in user units: the palette's pixels at one pixel per xschem unit.
-    let stroke = |l: u8| look.palette.width[usize::from(l) % LAYERS].max(0.1);
+    // Stroke attributes in user units: the palette's pixels at one pixel per xschem unit,
+    // times the row's weight; a styled row also gets round caps/joins and its dashes.
+    let stroke = |l: u8, st: LineStyle| {
+        let w = look.palette.width[usize::from(l) % LAYERS].max(0.1);
+        let mut a = format!("stroke-width=\"{}\"", w * f32::from(st.weight()));
+        if st != LineStyle::PLAIN {
+            a.push_str(" stroke-linecap=\"round\" stroke-linejoin=\"round\"");
+        }
+        if st.dash() > 0 {
+            let d = 2.0 * f32::from(st.dash()) * w;
+            a.push_str(&format!(" stroke-dasharray=\"{d} {d}\""));
+        }
+        a
+    };
     if !look.transparent {
         let _ = writeln!(
             s,
@@ -250,12 +265,12 @@ pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
         };
         let _ = writeln!(
             s,
-            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#{c:06x}\" stroke-width=\"{}\"/>",
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#{c:06x}\" {}/>",
             units(l.x0[i].into()),
             units(l.y0[i].into()),
             units(l.x1[i].into()),
             units(l.y1[i].into()),
-            stroke(l.layer[i])
+            stroke(l.layer[i], l.style[i])
         );
     }
     let r = &prims.rects;
@@ -265,19 +280,19 @@ pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
         };
         let (x0, x1) = (r.x0[i].min(r.x1[i]), r.x0[i].max(r.x1[i]));
         let (y0, y1) = (r.y0[i].min(r.y1[i]), r.y0[i].max(r.y1[i]));
-        let fill = if look.filled(r.layer[i]) {
+        let fill = if look.filled(r.layer[i]) || r.style[i].fills() {
             format!("#{c:06x}")
         } else {
             "none".to_owned()
         };
         let _ = writeln!(
             s,
-            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{fill}\" stroke=\"#{c:06x}\" stroke-width=\"{}\"/>",
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{fill}\" stroke=\"#{c:06x}\" {}/>",
             units(x0.into()),
             units(y0.into()),
             units(i64::from(x1) - i64::from(x0)),
             units(i64::from(y1) - i64::from(y0)),
-            stroke(r.layer[i])
+            stroke(r.layer[i], r.style[i])
         );
     }
     let a = &prims.arcs;
@@ -286,7 +301,7 @@ pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
             continue;
         };
         let full = a.sweep[i].unsigned_abs() >= 360_000;
-        let fill = if full && look.filled(a.layer[i]) {
+        let fill = if full && (look.filled(a.layer[i]) || a.style[i].fills()) {
             format!("#{c:06x}")
         } else {
             "none".to_owned()
@@ -294,11 +309,11 @@ pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
         if full {
             let _ = writeln!(
                 s,
-                "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{fill}\" stroke=\"#{c:06x}\" stroke-width=\"{}\"/>",
+                "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{fill}\" stroke=\"#{c:06x}\" {}/>",
                 units(a.cx[i].into()),
                 units(a.cy[i].into()),
                 units(a.r[i].into()),
-                stroke(a.layer[i])
+                stroke(a.layer[i], a.style[i])
             );
             continue;
         }
@@ -310,14 +325,14 @@ pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
         let dir = u8::from(a.sweep[i] > 0);
         let _ = writeln!(
             s,
-            "<path d=\"M {} {} A {} {} 0 {large} {dir} {} {}\" fill=\"none\" stroke=\"#{c:06x}\" stroke-width=\"{}\"/>",
+            "<path d=\"M {} {} A {} {} 0 {large} {dir} {} {}\" fill=\"none\" stroke=\"#{c:06x}\" {}/>",
             units(p0.0),
             units(p0.1),
             units(a.r[i].into()),
             units(a.r[i].into()),
             units(p1.0),
             units(p1.1),
-            stroke(a.layer[i])
+            stroke(a.layer[i], a.style[i])
         );
     }
     for (polys, closed) in [(&prims.polylines, false), (&prims.polygons, true)] {
@@ -338,7 +353,7 @@ pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
                     units(polys.y[j].into())
                 );
             }
-            let fill = if closed && look.filled(layer) {
+            let fill = if closed && (look.filled(layer) || polys.style[k].fills()) {
                 format!("#{c:06x}")
             } else {
                 "none".to_owned()
@@ -346,9 +361,9 @@ pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
             let tag = if closed { "polygon" } else { "polyline" };
             let _ = writeln!(
                 s,
-                "<{tag} points=\"{}\" fill=\"{fill}\" stroke=\"#{c:06x}\" stroke-width=\"{}\"/>",
+                "<{tag} points=\"{}\" fill=\"{fill}\" stroke=\"#{c:06x}\" {}/>",
                 pts.trim_end(),
-                stroke(layer)
+                stroke(layer, polys.style[k])
             );
             start = end;
         }
@@ -534,12 +549,30 @@ fn page_ops(
             (Lang::Ps, _) => writeln!(o, "{r:.3} {g:.3} {bl:.3} setrgbcolor"),
         };
     };
-    let width = |o: &mut String, l: u8| {
+    // Line width (and, for a dashed row, its dash, which `undash` resets after the stroke).
+    let width = |o: &mut String, l: u8, st: LineStyle| {
         let w = f64::from(look.palette.width[usize::from(l) % LAYERS]).max(0.1) * 0.5;
+        let lw = w * f64::from(st.weight());
         let _ = match lang {
-            Lang::Pdf => writeln!(o, "{w:.2} w"),
-            Lang::Ps => writeln!(o, "{w:.2} setlinewidth"),
+            Lang::Pdf => writeln!(o, "{lw:.2} w"),
+            Lang::Ps => writeln!(o, "{lw:.2} setlinewidth"),
         };
+        if st.dash() > 0 {
+            let d = 2.0 * f64::from(st.dash()) * w;
+            let _ = match lang {
+                Lang::Pdf => writeln!(o, "[{d:.2} {d:.2}] 0 d"),
+                Lang::Ps => writeln!(o, "[{d:.2} {d:.2}] 0 setdash"),
+            };
+        }
+    };
+    let undash = |o: &mut String, st: LineStyle| {
+        if st.dash() > 0 {
+            o.push_str(if lang == Lang::Pdf {
+                "[] 0 d\n"
+            } else {
+                "[] 0 setdash\n"
+            });
+        }
     };
     let (mv, ln, stroke, close) = match lang {
         Lang::Pdf => ("m", "l", "S", "h"),
@@ -570,7 +603,7 @@ fn page_ops(
             continue;
         };
         color(&mut o, c, false);
-        width(&mut o, l.layer[i]);
+        width(&mut o, l.layer[i], l.style[i]);
         let _ = writeln!(
             o,
             "{:.2} {:.2} {mv} {:.2} {:.2} {ln} {stroke}",
@@ -579,15 +612,16 @@ fn page_ops(
             px(l.x1[i]),
             py(l.y1[i])
         );
+        undash(&mut o, l.style[i]);
     }
     // One stroked (and, closed on a filled layer, filled) path built by the operators `body`.
-    let finish = |o: &mut String, body: &str, closed: bool, layer: u8, c: u32| {
-        let fill = closed && look.filled(layer);
+    let finish = |o: &mut String, body: &str, closed: bool, layer: u8, st: LineStyle, c: u32| {
+        let fill = closed && (look.filled(layer) || st.fills());
         color(o, c, false);
         if fill {
             color(o, c, true);
         }
-        width(o, layer);
+        width(o, layer, st);
         if lang == Lang::Ps {
             o.push_str("newpath ");
         }
@@ -602,15 +636,17 @@ fn page_ops(
             _ => stroke,
         };
         let _ = writeln!(o, "{end}");
+        undash(o, st);
     };
-    let path = |o: &mut String, pts: &[(f64, f64)], closed: bool, layer: u8, c: u32| {
-        let mut body = String::with_capacity(pts.len() * 16);
-        for (k, p) in pts.iter().enumerate() {
-            let op = if k == 0 { mv } else { ln };
-            let _ = write!(body, "{:.2} {:.2} {op} ", p.0, p.1);
-        }
-        finish(o, &body, closed, layer, c);
-    };
+    let path =
+        |o: &mut String, pts: &[(f64, f64)], closed: bool, layer: u8, st: LineStyle, c: u32| {
+            let mut body = String::with_capacity(pts.len() * 16);
+            for (k, p) in pts.iter().enumerate() {
+                let op = if k == 0 { mv } else { ln };
+                let _ = write!(body, "{:.2} {:.2} {op} ", p.0, p.1);
+            }
+            finish(o, &body, closed, layer, st, c);
+        };
     let r = &prims.rects;
     for i in 0..r.x0.len() {
         let Some(c) = look.rgb(r.layer[i]) else {
@@ -622,7 +658,7 @@ fn page_ops(
             (px(r.x1[i]), py(r.y1[i])),
             (px(r.x0[i]), py(r.y1[i])),
         ];
-        path(&mut o, &pts, true, r.layer[i], c);
+        path(&mut o, &pts, true, r.layer[i], r.style[i], c);
     }
     let a = &prims.arcs;
     for i in 0..a.cx.len() {
@@ -667,7 +703,7 @@ fn page_ops(
                 }
             }
         }
-        finish(&mut o, &body, full, a.layer[i], c);
+        finish(&mut o, &body, full, a.layer[i], a.style[i], c);
     }
     for (polys, closed) in [(&prims.polylines, false), (&prims.polygons, true)] {
         let mut start = 0usize;
@@ -677,7 +713,7 @@ fn page_ops(
                 let pts: Vec<(f64, f64)> = (start..end)
                     .map(|j| (px(polys.x[j]), py(polys.y[j])))
                     .collect();
-                path(&mut o, &pts, closed, polys.layer[k], c);
+                path(&mut o, &pts, closed, polys.layer[k], polys.style[k], c);
             }
             start = end;
         }
@@ -1262,6 +1298,27 @@ mod tests {
         let mut hidden = look();
         hidden.palette.color[1] &= !0xff;
         assert_eq!(svg_counts(&svg(&p, [0, 0, 10_000, 10_000], &hidden))[0], 0);
+    }
+
+    #[test]
+    fn exports_honour_stroke_weight_and_dash() {
+        let mut p = CanvasPrims::default();
+        p.line(0, 0, 10_000, 0, 1);
+        let plain = svg(&p, [0, 0, 10_000, 10_000], &look());
+        assert!(!plain.contains("linecap") && !plain.contains("dasharray"));
+        p.line_styled(0, 5_000, 10_000, 5_000, 1, LineStyle::new(2, 3));
+        let s = svg(&p, [0, 0, 10_000, 10_000], &look());
+        let w = look().palette.width[1];
+        assert!(s.contains(&format!("stroke-width=\"{}\"", w * 2.0)), "{s}");
+        assert!(
+            s.contains(&format!("stroke-dasharray=\"{0} {0}\"", 6.0 * w)),
+            "{s}"
+        );
+        assert!(s.contains("stroke-linecap=\"round\""));
+        // PDF: the dash is set for the dashed row only and reset after it.
+        let pages = [(&p, [0, 0, 10_000, 10_000])];
+        let doc = String::from_utf8_lossy(&pdf(&pages, &look(), Page::default())).into_owned();
+        assert_eq!(doc.matches("] 0 d\n").count(), 2, "set once, reset once");
     }
 
     #[test]

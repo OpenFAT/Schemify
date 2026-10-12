@@ -11,7 +11,7 @@
 
 use schemify_render::Painter;
 use schemify_render::vello::Glyph;
-use schemify_render::vello::kurbo::{Affine, BezPath, Rect as KRect};
+use schemify_render::vello::kurbo::{Affine, BezPath, Rect as KRect, Stroke};
 use schemify_render::vello::peniko::{Color, FontData};
 use schemify_render::waves::{WaveLook, WaveScratch, draw_window};
 use schemify_render::widgets::{UiScratch, draw_ui};
@@ -344,6 +344,11 @@ impl<P: Painter> Painter for Shifted<'_, P> {
     fn stroke_path(&mut self, path: &BezPath, width: f64, color: Color) {
         let path = self.path(path);
         self.p.stroke_path(&path, width, color);
+    }
+
+    fn stroke_styled(&mut self, path: &BezPath, stroke: &Stroke, color: Color) {
+        let path = self.path(path);
+        self.p.stroke_styled(&path, stroke, color);
     }
 
     fn glyphs(
