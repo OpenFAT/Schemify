@@ -39,7 +39,7 @@ No Virtuoso runs in CI. The SKILL side is therefore (a) written in a subset a te
 
 Coordinates are Schemify milli-units, y down, orientations Schemify's, net expressions, templates and expressions in Schemify syntax: the Design is Schemify-shaped, and every tool-specific spelling is produced or consumed at the tool edge through the profile tables (§3). A tool difference is a row in a profile table, never a branch in a shared transform.
 
-**Native CLI** `schemify-interop` (feature `cli`): `xschem-import …` (import.md), `xschem-export <project> <cell>… -o <dir>`, `virtuoso-export <project> <cell>… -o <file.sfyx> [--map F] [--lib L=V]… [--retarget] [--target <map.retarget>] [--core-cells]` (also writes the OCEAN scripts `ocean/<test>.ocn` beside the `.sfyx`, §9.6; core devices go to their analogLib masters unless `--core-cells`, §6.5), `virtuoso-import <file.sfyx> <project> [--map F] [--into <lib>]`, `install-skill <dir>` (writes `schemify.il`). Exit codes as the core CLI (0 ok, 1 design problems reported, 2 usage/I/O).
+**Native CLI** `schemify-interop` (feature `cli`): `xschem-import …` (import.md), `xschem-export <project> <cell>… -o <dir>`, `virtuoso-export <project> <cell>… -o <file.sfyx> [--map F] [--lib L=V]… [--retarget] [--target <map.retarget>] [--core-cells]` (also writes the OCEAN scripts `ocean/<cell>.ocn` beside the `.sfyx`, §9.6; core devices go to their analogLib masters unless `--core-cells`, §6.5), `virtuoso-import <file.sfyx> <project> [--map F] [--into <lib>]`, `install-skill <dir>` (writes `schemify.il`). Exit codes as the core CLI (0 ok, 1 design problems reported, 2 usage/I/O).
 
 **Editor commands** (wasm guest, capabilities `read_project` + `write_project`): `interop.virtuoso_export <cell> [<out.sfyx>]`, `interop.virtuoso_import <file.sfyx>`, `interop.xschem_export <cell> [<dir>]`, `interop.xschem_import <file.sch|.sym>…`, `interop.install_skill`. File ▸ Interop submenu; each without arguments opens a path panel (cktimg's pattern). Reads follow references from the named cells (the guest has no directory listing): the closure of `cellref`s through the project manifest, plus `interop.map` and the existing target files for merging.
 
@@ -454,7 +454,7 @@ Decided: ADE's `>`/`<` are taken for Schemify's inclusive `min`/`max` (an equali
 
 **Spec bounds**: a number by §3.4; an expression over bench vars none of which is swept is folded to its canonical number (`min A0_spec/(1+A0_spec)` → `0.975609756097561`; an ADE spec target is a value); one naming a swept var, or not evaluating, is `needs_review: spec` and that bound is not sent.
 
-**Plots**: an `output y …` with attribute `vs x` (another output; format.md rank 6) is plotted by the OCEAN script as `waveVsWave(?x X ?y Y)` printed to `<test>/<y>_vs_<x>.txt` — over a sweep, each output is a family of per-point values. A maestro output is one value per point, so the plot itself is OCEAN-only (`needs_review: plot`, one row per plot); `y` and `x` are maestro outputs as usual.
+**Plots**: an `output y …` with attribute `vs x` (another output; format.md rank 6) is plotted by the OCEAN script as `waveVsWave(?x X ?y Y)` printed to `<cell>/<y>_vs_<x>.txt` — over a sweep, each output is a family of per-point values. A maestro output is one value per point, so the plot itself is OCEAN-only (`needs_review: plot`, one row per plot); `y` and `x` are maestro outputs as usual.
 
 ### 9.2 Import
 
@@ -489,7 +489,7 @@ Signatures (rows of `tests/skill/mockdb.rs` `SIGNATURES`; source: the IC23.1 *AD
 
 ### 9.6 OCEAN script per bench
 
-The export writes one script per maestro test, `ocean/<test>.ocn` beside the `.sfyx` (a test name taken twice gets `_2`, …), and the test's definition files under `ocean/<test>/`. Run headless after `SfyImport` (and `SfyRetarget`) of the same `.sfyx`: `cd ocean && ocean -nograph < <test>.ocn`. Syntax from the *OCEAN Reference*; one call per line, in this order:
+The export writes one script per maestro test, `ocean/<cell>.ocn` beside the `.sfyx`, named after the bench cell (tests of different benches may share a name; a cell name taken twice gets `_2`, …), and the test's definition files under `ocean/<cell>/`. Run headless after `SfyImport` (and `SfyRetarget`) of the same `.sfyx`: `cd ocean && ocean -nograph < <cell>.ocn`. Syntax from the *OCEAN Reference*; one call per line, in this order:
 
 ```
 ; dc_vds.ocn: OCEAN script of bench exercise1/dc_vds.shbench, written by schemify-interop (interop.md §9.6).
@@ -514,7 +514,7 @@ exit()
 - `analysis('<name> ?<key> "<value>" …)` per enabled analysis by name, the maestro options without the ADE form's choosers (`sweep incrType stepTypeLin stepTypeLog`; OCEAN infers them), `saveOppoint` as `?saveOppoint t` (GUESS G26: OCEAN takes the maestro option names and string values).
 - `save('v …)` / `save('i …)` of every signal the outputs read.
 - Swept vars (§9.1 sweeps, by name): nested `paramAnalysis("<var>" ?values '(<points>) …)` then `paramRun()`; else `run()`. A point that is not a number is left out (`needs_review: sweep`).
-- One `ocnPrint` table per output (`<test>/<output>.txt`; over a sweep a table per swept point), one per plot (§9.1), then `exit()`.
+- One `ocnPrint` table per output (`<cell>/<output>.txt`; over a sweep a table per swept point), one per plot (§9.1), then `exit()`.
 
 Oracle (`tests/exercise1.rs`): the four Exercise 1 benches export to goldens (`tests/fixtures/exercise1/ocean`, `SCHEMIFY_BLESS=1`), every line is a comment or one of the calls above with balanced parentheses and quotes; their maestro records carry every output and spec, the decimal sweep grid and the `--target` models; the report has no `needs_review: output spec source sweep retarget` row.
 

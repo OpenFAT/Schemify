@@ -44,8 +44,8 @@ pub struct Export {
     pub sfyx: String,
     /// Report rows.
     pub notes: Notes,
-    /// The OCEAN scripts (§9.6), `(relative path, text)` sorted by path: `<test>.ocn` per
-    /// maestro test and its definition files `<test>/<file>`.
+    /// The OCEAN scripts (§9.6), `(relative path, text)` sorted by path: `<cell>.ocn` per
+    /// bench (its maestro test) and its definition files `<cell>/<file>`.
     pub ocean: Vec<(String, String)>,
 }
 

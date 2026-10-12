@@ -144,12 +144,12 @@ const SPICE_LANGS: [&str; 3] = ["spice", "ngspice", "xyce"];
 pub struct BenchExport {
     /// The maestro records in §9 order; empty for a bench with no simulation setup.
     pub records: Vec<Record>,
-    /// The test's name (the analysis block's, else the cell's; Virtuoso-safe).
-    pub test: String,
+    /// The bench cell's name: the script's name and results directory.
+    pub cell: String,
     /// The OCEAN script text; empty when `records` is.
     pub ocean: String,
     /// Definition files the script loads (`definitionFile`), `(file, text)`: the same
-    /// files as the `defn` records, written beside the script under `<test>/`.
+    /// files as the `defn` records, written beside the script under `<cell>/`.
     pub defns: Vec<(String, String)>,
 }
 
@@ -471,7 +471,7 @@ pub fn export<F: Fn(&str) -> Option<InstInfo>>(
     );
     BenchExport {
         records: t.records(),
-        test: t.name.clone(),
+        cell: t.cell.clone(),
         ocean,
         defns: t.defns.clone(),
     }
@@ -1071,11 +1071,11 @@ fn signals_of(expr: &str, out: &mut Vec<(char, String)>) {
     }
 }
 
-/// The OCEAN script of test `t` (§9.6): runnable headless (`ocean -nograph < <test>.ocn`)
+/// The OCEAN script of test `t` (§9.6): runnable headless (`ocean -nograph < <cell>.ocn`)
 /// after `SfyImport` (and `SfyRetarget`) created the bench schematic. Corner `corner` (the
 /// bench's default, else its first) supplies the model files, var overrides and
 /// temperature; every swept var is a nested `paramAnalysis`; each output is one
-/// `ocnPrint` table `<test>/<output>.txt`, each plot one `<test>/<y>_vs_<x>.txt` of
+/// `ocnPrint` table `<cell>/<output>.txt`, each plot one `<cell>/<y>_vs_<x>.txt` of
 /// `waveVsWave`. A swept point that is not a number literal is reported (`sweep`) and the
 /// sweep runs without it.
 fn ocean_script(
@@ -1088,8 +1088,9 @@ fn ocean_script(
     notes: &mut Notes,
 ) -> String {
     use std::fmt::Write as _;
-    assert!(!t.name.is_empty(), "a test has a name");
-    let dir = &t.name;
+    assert!(!t.cell.is_empty(), "a test names its bench cell");
+    // Named after the bench cell: tests of different benches may share a name.
+    let dir = &t.cell;
     let mut o = String::new();
     let _ = writeln!(
         o,

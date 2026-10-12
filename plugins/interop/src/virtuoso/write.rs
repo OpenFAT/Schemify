@@ -136,10 +136,10 @@ pub fn export(
         recs.first().is_some_and(|r| r.tag == "sfyx")
             && recs.last().is_some_and(|r| r.tag == "end")
     );
-    // One script per test; a second bench whose test has the same name gets `_2`, `_3`, ….
+    // One script per bench cell; a second cell of the same name (another library) gets `_2`, ….
     let mut scripts: Vec<(String, String)> = Vec::new();
     for ade::BenchExport {
-        test,
+        cell: test,
         ocean: text,
         defns,
         ..

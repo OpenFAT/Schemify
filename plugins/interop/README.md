@@ -129,8 +129,8 @@ A `.shbench` exports as the testbench schematic plus a maestro view with one tes
 | `spec` `min`/`max` | spec `>`/`<` (bounds over bench vars folded to numbers) |
 | core sources, passives, ammeters | their analogLib cells (`vdc`, `idc`, `cap`, `iprobe`, …; `--core-cells` keeps the `schemify_core` mirrors); `dc {VGS} ac 1` → `vdc` `VGS`, `acm` `1` |
 
-Each test also gets an OCEAN script, `ocean/<test>.ocn` beside the `.sfyx`, that runs the same
-setup headless and prints every output to `<test>/<output>.txt` (sweeps as `paramAnalysis`; an
+Each bench also gets an OCEAN script, `ocean/<cell>.ocn` beside the `.sfyx`, that runs the same
+setup headless and prints every output to `<cell>/<output>.txt` (sweeps as `paramAnalysis`; an
 output with `vs <other output>` is also printed as a `waveVsWave` plot):
 
 ```
