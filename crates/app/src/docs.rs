@@ -527,7 +527,9 @@ fn attr(t: &mut String, key: &str, value: &str) {
     let _ = writeln!(t, "  {key} {}", quote(value));
 }
 
-/// Quotes a record value with the format §2 escapes (multi-line prose survives).
+/// Quotes a record value in the format §2 writer's canonical form, so any text
+/// (multi-line prose, a status message with a newline) reads back unchanged.
+/// The one quoting helper for doc pages, UI records and plugin arguments.
 pub fn quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -537,7 +539,8 @@ pub fn quote(s: &str) -> String {
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
-            c if c.is_control() => {
+            // CR, the other C0 controls and DEL; C1 controls are written raw.
+            c if c < ' ' || c == '\x7f' => {
                 let _ = write!(out, "\\u{{{:x}}}", c as u32);
             }
             c => out.push(c),
@@ -871,6 +874,8 @@ mod tests {
         assert_eq!(row_of("docs.page"), None);
         assert_eq!(row_of("docs.b.x"), None);
         assert_eq!(quote("a\"b\\\nc\t"), "\"a\\\"b\\\\\\nc\\t\"");
+        // Format §2: CR, other C0 and DEL as `\u{hex}`; C1 and the rest raw.
+        assert_eq!(quote("\r\x01\x7f\u{85}é"), "\"\\u{d}\\u{1}\\u{7f}\u{85}é\"");
     }
 
     /// Prose names images inside the project only (the plugin ABI's rule); every way out is
