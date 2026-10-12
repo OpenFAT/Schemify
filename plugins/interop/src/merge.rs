@@ -179,6 +179,25 @@ pub fn stash(orig: &Document<'_>, image: Option<&Document<'_>>) -> Option<String
     let img_keys: Vec<(Key, u32)> = image.map_or(Vec::new(), |i| {
         others(i).into_iter().map(|r| (key(i, r), r)).collect()
     });
+    // Rank-4 order is semantic (format.md §4): when the image orders the rank-4 units it
+    // shares with `orig` differently, every rank-4 unit is stashed, so the merge (which
+    // keeps the base's order) restores it.
+    let rank4 = |d: &Document<'_>| -> Vec<Key> {
+        (1..d.record_count())
+            .filter(|&r| d.record_kind(r).rank() == 4)
+            .map(|r| key(d, r))
+            .collect()
+    };
+    let reorder4 = image.is_some_and(|i| {
+        let (o, m) = (rank4(orig), rank4(i));
+        let shared = |a: &[Key], b: &[Key]| {
+            a.iter()
+                .filter(|k| b.contains(k))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        shared(&o, &m) != shared(&m, &o)
+    });
     for r in others(orig) {
         let k = key(orig, r);
         let mine = text(orig, &[r], &[]);
@@ -186,7 +205,7 @@ pub fn stash(orig: &Document<'_>, image: Option<&Document<'_>>) -> Option<String
             .iter()
             .find(|(ik, _)| *ik == k)
             .map(|(_, ir)| text(image.expect("keys come from the image"), &[*ir], &[]));
-        if theirs.as_ref() == Some(&mine) {
+        if theirs.as_ref() == Some(&mine) && !(reorder4 && k.0.rank() == 4) {
             continue;
         }
         any = true;
@@ -388,8 +407,12 @@ pub fn merge(
             if find(&fkeys, k).is_some() {
                 continue;
             }
+            // A unit stashed without a digest had no Virtuoso form: it stays Schemify's.
+            let unexported = |s: &Document<'_>| {
+                find(&skeys, k).is_some_and(|sr| s.find_attr(sr, VIMG).is_none())
+            };
             let owned = if local.is_some() {
-                schemify_owned(k.0, fk, maestro)
+                schemify_owned(k.0, fk, maestro) || stash.is_some_and(unexported)
             } else {
                 b.find_attr(*br, VIMG).is_none()
             };
@@ -397,6 +420,17 @@ pub fn merge(
                 kept.push((k.clone(), b, *br, false));
             }
         }
+    }
+    // Ranks 4 and 5 keep file order (format.md §4): units the base has keep the base's
+    // order, fresh-only units follow (the writer sorts ranks 3 and 6 anyway).
+    if base.is_some() {
+        let bkeys = if local.is_some() { &lkeys } else { &skeys };
+        kept.sort_by_key(|e| {
+            bkeys
+                .iter()
+                .position(|(x, _)| *x == e.0)
+                .unwrap_or(usize::MAX)
+        });
     }
     // Subjects still alive?
     let ids: BTreeSet<String> = kept

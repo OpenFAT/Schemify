@@ -78,7 +78,7 @@ pub fn export(
         }
         let c = cell_out(d, ci, &plan, m, &mut notes);
         if d.cells[ci].kind() == FileKind::Shbench {
-            let recs = ade::export(d, ci, &mut notes);
+            let recs = ade::export(d, ci, &plan.lib[ci], &mut notes);
             if !recs.is_empty() {
                 dump.maestro.push(recs);
             }

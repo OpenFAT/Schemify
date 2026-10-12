@@ -638,6 +638,9 @@ pub fn dump(records: &[Record]) -> Result<Dump, Error> {
             })?;
         }
     }
+    for t in &d.maestro {
+        ade::check(t)?;
+    }
     Ok(d)
 }
 
