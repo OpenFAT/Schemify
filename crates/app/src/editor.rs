@@ -1030,10 +1030,17 @@ impl Editor {
         let tiles = self.partial.then_some(0);
         // The browser owes an answer (web: a clipboard read).
         let platform = platform::wake_ms();
-        [sim, self.host.wake_ms(self.now), queued, crisp, tiles, platform]
-            .into_iter()
-            .flatten()
-            .min()
+        [
+            sim,
+            self.host.wake_ms(self.now),
+            queued,
+            crisp,
+            tiles,
+            platform,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     // ------------------------------------------------------------------ the frame spine
