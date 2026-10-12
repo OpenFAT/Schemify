@@ -41,6 +41,18 @@ fn naive_runs(xs: &[f64], ys: &[f64], thr: Option<f64>, sx: &Scale) -> Vec<Run> 
 
 /// Samples on a 1/64 grid with ascending x (repeats allowed), so scaling by powers of two and
 /// offsets on the grid are exact, and thresholds on the 1/128 half-grid are never hit.
+/// Bins by skipping every sample outside `[t0, t1]` (or NaN after the transform).
+fn naive_bins(y: &[f64], t0: f64, t1: f64, log: bool, n: usize) -> Vec<u32> {
+    let mut bins = vec![0u32; n];
+    for &v in y {
+        let t = if log { v.log10() } else { v };
+        if t >= t0 && t <= t1 {
+            bins[(((t - t0) * n as f64 / (t1 - t0)) as usize).min(n - 1)] += 1;
+        }
+    }
+    bins
+}
+
 fn lane() -> impl Strategy<Value = (Vec<f64>, Vec<f64>)> {
     prop::collection::vec((0u8..5, -64i32..64), 1..300).prop_map(|s| {
         let mut t = 0.0;
@@ -140,6 +152,10 @@ proptest! {
                 .count() as u32
         };
         prop_assert_eq!(ca.iter().sum::<u32>(), inside(&a));
+        // The branchy loop `bin_counts` replaced, with the special values mixed in.
+        let mut special = a.clone();
+        special.extend([f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -0.0, t0, t1]);
+        prop_assert_eq!(count(&special), naive_bins(&special, t0, t1, log, n));
         // Additivity over concatenation, invariance under reordering.
         let ab: Vec<f64> = a.iter().chain(&b).copied().collect();
         let sum: Vec<u32> = ca.iter().zip(&cb).map(|(p, q)| p + q).collect();

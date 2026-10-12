@@ -16,21 +16,16 @@
 
 use std::borrow::Cow;
 
-use thiserror::Error;
-
 use crate::data::{RawPlot, VarKind, Variable};
 
 /// Why a `.raw` file could not be read.
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum RawError {
     /// No bytes at all.
-    #[error("empty file")]
     Empty,
     /// A header field is missing, malformed or inconsistent.
-    #[error("malformed header: {0}")]
     Header(String),
     /// The data section is shorter than the header's point × variable count requires.
-    #[error("data truncated: expected {expected} bytes, found {found}")]
     Truncated {
         /// Bytes the header implies.
         expected: usize,
@@ -38,12 +33,29 @@ pub enum RawError {
         found: usize,
     },
     /// An ASCII value (or point index) is missing or not a number.
-    #[error("malformed ascii values at point {0}")]
     Values(u32),
     /// Only blank lines.
-    #[error("no plots found in file")]
     NoPlots,
 }
+
+impl std::fmt::Display for RawError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RawError::Empty => f.write_str("empty file"),
+            RawError::Header(m) => write!(f, "malformed header: {m}"),
+            RawError::Truncated { expected, found } => {
+                write!(
+                    f,
+                    "data truncated: expected {expected} bytes, found {found}"
+                )
+            }
+            RawError::Values(p) => write!(f, "malformed ascii values at point {p}"),
+            RawError::NoPlots => f.write_str("no plots found in file"),
+        }
+    }
+}
+
+impl std::error::Error for RawError {}
 
 /// Parses a complete `.raw` file into one [`RawPlot`] per analysis block.
 ///
@@ -321,6 +333,12 @@ fn parse_binary(
     Ok((re, Vec::new()))
 }
 
+/// Token separator of the `Values:` section: ASCII whitespace or `,`.
+#[inline]
+fn is_sep(u: u8) -> bool {
+    u == b',' || u == b' ' || (0x09..=0x0d).contains(&u)
+}
+
 #[inline]
 fn f64_le(b: &[u8]) -> f64 {
     f64::from_le_bytes(b[..8].try_into().expect("8 bytes"))
@@ -419,8 +437,10 @@ impl<'a> Reader<'a> {
     /// Next number token: separators are ASCII whitespace and `,`. `None` at end of input, for a
     /// token over 63 units, or one that is not a number.
     fn number(&mut self) -> Option<f64> {
+        // ponytail: one unit at a time for both encodings. `str::parse::<f64>` dominates (a byte
+        // slicing fast path measured no faster on 8 MB of ngspice ASCII).
         while let Some(u) = self.peek() {
-            if !(u == u32::from(b',') || u == 0x20 || (0x09..=0x0d).contains(&u)) {
+            if !(u < 0x80 && is_sep(u as u8)) {
                 break;
             }
             self.pos += self.unit;
@@ -428,7 +448,7 @@ impl<'a> Reader<'a> {
         let mut buf = [0u8; 64];
         let mut len = 0;
         while let Some(u) = self.peek() {
-            if u == u32::from(b',') || u == 0x20 || (0x09..=0x0d).contains(&u) {
+            if u < 0x80 && is_sep(u as u8) {
                 break;
             }
             if len == buf.len() || u > 0x7f {
@@ -580,6 +600,58 @@ Values:
         let plots = parse_raw(&f).unwrap();
         assert_eq!(plots.len(), 2);
         assert_eq!(plots[1].col(1), &[0.0, 0.5, 0.8, 0.95]);
+    }
+
+    /// `cargo test --release -p schemify-wave -- --ignored --nocapture bench_parse`
+    #[test]
+    #[ignore = "release-mode benchmark; run explicitly"]
+    fn bench_parse() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let (n, nv) = (1_000_000usize, 4usize);
+        let mut head = format!(
+            "Title: t\nPlotname: Transient Analysis\nFlags: real\nNo. Variables: {nv}\n\
+             No. Points: {n}\nVariables:\n 0 time time\n 1 v(a) voltage\n 2 v(b) voltage\n\
+             3 i(v1) current\n"
+        );
+        let mut bin = head.clone().into_bytes();
+        bin.extend_from_slice(b"Binary:\n");
+        head.push_str("Values:\n");
+        let mut ascii = head.into_bytes();
+        for p in 0..n {
+            let row = [
+                p as f64 * 1e-9,
+                (p as f64).sin(),
+                (p as f64).cos(),
+                1e-3 / (1.0 + p as f64),
+            ];
+            for v in row {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+            if p < n / 10 {
+                ascii.extend_from_slice(format!("{p}\t{:.15e}\n", row[0]).as_bytes());
+                for v in &row[1..] {
+                    ascii.extend_from_slice(format!("\t{v:.15e}\n").as_bytes());
+                }
+            }
+        }
+        let fix = ascii.windows(9).position(|w| w == b"Points: 1").unwrap();
+        ascii.splice(fix + 8..fix + 15, b"100000".iter().copied());
+        let time = |b: &[u8], reps: usize| {
+            let mut best = f64::INFINITY;
+            for _ in 0..reps {
+                let t = Instant::now();
+                black_box(parse_raw(black_box(b)).unwrap());
+                best = best.min(t.elapsed().as_secs_f64() * 1e3);
+            }
+            best
+        };
+        let (tb, ta) = (time(&bin, 10), time(&ascii, 5));
+        println!(
+            "parse_raw: binary 1M x {nv} ({} MB) {tb:.1} ms; ascii 100k x {nv} ({} MB) {ta:.1} ms",
+            bin.len() >> 20,
+            ascii.len() >> 20
+        );
     }
 
     #[test]
