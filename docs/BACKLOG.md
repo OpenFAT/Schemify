@@ -158,4 +158,3 @@ xschem menu items and keys with no meaning in Schemify, removed from the default
 
 ## Testing infrastructure
 
-- **render** (web): no WebGPU device in headless Chrome (CI, SwiftShader) means a blank canvas; the browser smoke test can only check that the editor starts (canvas created, no trap). A `vello_cpu` fallback when no adapter is found would let it compare pixels against the native goldens.

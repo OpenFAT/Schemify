@@ -4,8 +4,9 @@
 # (`drive.py`, web spec §8): the editor opens its window (winit's canvas) without a trap or
 # panic, a wire drawn in a project and saved reaches OPFS and survives a reload, Ctrl+C reaches the
 # system clipboard and Ctrl+V pastes from it. Console output, the Chrome log and a screenshot
-# land in <out-dir>. WebGPU is requested through SwiftShader; a missing adapter (`gpu: ...`)
-# is reported, not failed: headless runners have no GPU. The page mounts OPFS before the
+# land in <out-dir>. WebGPU is requested through SwiftShader; without an adapter (`gpu: ...`,
+# headless runners) the editor draws on the CPU and its frame is compared with the native
+# golden (web spec §7). The page mounts OPFS before the
 # editor starts, so the checks wait in real time (Chrome's virtual-time budget skips past
 # storage I/O).
 #
@@ -29,6 +30,6 @@ done
 status=0
 python3 "$(dirname "$0")/drive.py" "$chrome" "http://127.0.0.1:$port/" "$out" || status=1
 if grep -aq 'gpu: ' "$out/drive-console.txt"; then
-  echo "::warning::no WebGPU device in this browser: the editor runs but draws nothing"
+  echo "::notice::no WebGPU device in this browser: the editor draws on the CPU"
 fi
 exit $status

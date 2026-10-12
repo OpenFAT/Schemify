@@ -2,6 +2,9 @@
 """Drives the web editor in headless Chrome through the DevTools protocol (over a pipe,
 Python stdlib only) and checks what the web spec promises end to end:
 
+0. pixels (web spec §7): without a WebGPU adapter the editor draws on the CPU, and the
+   frame of the `inv` project matches the native CPU golden
+   `crates/app/tests/golden/editor_dark.png` (≤ 0.1% of pixels off by more than 2 levels);
 1. storage (web spec §2): the `inv` fixture, written into OPFS by the browser's own API,
    opens (the mount reads files it did not write); a wire drawn and saved (Ctrl+S) reaches
    OPFS and is still there after a reload;
@@ -23,10 +26,14 @@ import os
 import select
 import subprocess
 import sys
+import struct
 import time
+import zlib
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FIXTURE = os.path.join(REPO, "crates/app/tests/fixtures/inv")
+GOLDEN = os.path.join(REPO, "crates/app/tests/golden/editor_dark.png")
+CPU_CANVAS = "schemify-cpu"  # render::cpu_view::ID
 
 
 class Browser:
@@ -176,6 +183,14 @@ class Page:
         self.eval(js)
         return len(files)
 
+    def cpu_png(self):
+        """The CPU overlay's pixels as PNG bytes, or None when the page draws on a GPU."""
+        url = self.eval(
+            f"(() => {{ const c = document.getElementById('{CPU_CANVAS}');"
+            " return c ? c.toDataURL('image/png') : null; })()"
+        )
+        return base64.b64decode(url.split(",", 1)[1]) if url else None
+
     def wait_file(self, path, ok, timeout=20):
         """The text of OPFS file `path` once `ok(text)` holds (or the last text read)."""
         text, deadline = None, time.time() + timeout
@@ -280,6 +295,57 @@ class Page:
             f.write(base64.b64decode(data))
 
 
+def png_rgba(data):
+    """(width, height, RGBA bytes) of an 8-bit RGB or RGBA, non-interlaced PNG."""
+    assert data[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
+    pos, idat = 8, b""
+    w = h = bpp = 0
+    while pos < len(data):
+        n = int.from_bytes(data[pos:pos + 4], "big")
+        kind, body = data[pos + 4:pos + 8], data[pos + 8:pos + 8 + n]
+        pos += 12 + n
+        if kind == b"IHDR":
+            w, h, depth, color, _, _, interlace = struct.unpack(">IIBBBBB", body)
+            assert depth == 8 and color in (2, 6) and interlace == 0, (depth, color, interlace)
+            bpp = 4 if color == 6 else 3
+        elif kind == b"IDAT":
+            idat += body
+        elif kind == b"IEND":
+            break
+    raw, stride = zlib.decompress(idat), w * bpp
+    out, prev, i = bytearray(), bytearray(stride), 0
+    for _ in range(h):
+        f, line = raw[i], bytearray(raw[i + 1:i + 1 + stride])
+        i += 1 + stride
+        for x in range(stride):
+            a = line[x - bpp] if x >= bpp else 0
+            b, c = prev[x], prev[x - bpp] if x >= bpp else 0
+            if f == 1:
+                line[x] = (line[x] + a) & 255
+            elif f == 2:
+                line[x] = (line[x] + b) & 255
+            elif f == 3:
+                line[x] = (line[x] + ((a + b) >> 1)) & 255
+            elif f == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[x] = (line[x] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        out += line
+        prev = line
+    if bpp == 3:
+        out = bytearray(b for k in range(0, len(out), 3) for b in (*out[k:k + 3], 255))
+    return w, h, bytes(out)
+
+
+def differing_pixels(a, b):
+    """Pixels where some channel differs by more than 2 levels (the native golden rule)."""
+    return sum(
+        1
+        for k in range(0, len(a), 4)
+        if any(abs(a[k + j] - b[k + j]) > 2 for j in range(4))
+    )
+
+
 def console_lines(events):
     out = []
     for e in events:
@@ -328,6 +394,31 @@ def main():
             n = p.write_opfs("/projects/inv", FIXTURE)
             top = "/projects/inv/top.shcomp"
             p.load(f"{url}#{top}")
+            # 0. Pixels (web spec §7): without a WebGPU adapter the editor draws on the CPU;
+            #    before any synthetic input moves the pointer (the status line shows it), the
+            #    frame must match the native CPU golden under the native test's tolerance.
+            png, deadline = None, time.time() + 15
+            while time.time() < deadline and png is None:
+                png = p.cpu_png()
+                time.sleep(0.25)
+            if png is None:
+                print("::notice::the browser has a WebGPU adapter: no CPU frame to compare")
+            else:
+                time.sleep(2.0)  # the editor settles (plugin load, compose, a tick)
+                png = p.cpu_png()
+                with open(os.path.join(out, "web_cpu.png"), "wb") as f:
+                    f.write(png)
+                got = png_rgba(png)
+                with open(GOLDEN, "rb") as f:
+                    want = png_rgba(f.read())
+                if got[:2] != want[:2]:
+                    failures.append(f"CPU frame {got[:2]}, golden {want[:2]}")
+                else:
+                    bad, limit = differing_pixels(got[2], want[2]), got[0] * got[1] // 1000
+                    print(f"CPU frame vs editor_dark.png: {bad} pixels differ (limit {limit})")
+                    if bad > limit:
+                        failures.append(f"the web CPU frame differs from the native golden in "
+                                        f"{bad} pixels (limit {limit}): see web_cpu.png")
             p.click(250, 700)  # focus the canvas (winit takes keys only when focused)
             p.key("w")
             p.click(500, 700)

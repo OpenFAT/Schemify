@@ -24,4 +24,15 @@ pollster.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
-web-sys = { workspace = true, features = ["console"] }
+# `cpu_view`: the CPU-rastered 2D overlay when the browser has no WebGPU adapter (web spec §7).
+web-sys = { workspace = true, features = [
+  "CanvasRenderingContext2d",
+  "CssStyleDeclaration",
+  "Document",
+  "Element",
+  "HtmlCanvasElement",
+  "HtmlElement",
+  "ImageData",
+  "Node",
+  "console",
+] }
