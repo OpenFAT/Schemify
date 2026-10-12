@@ -684,7 +684,7 @@ impl<'o> Tables<'o> {
         }
         let map = core::device_map(stem_of(path))?;
         let iface = self.core_ifaces.entry(map.cell).or_insert_with(|| {
-            iface_of_cell_bytes(core::core_file(map.cell).expect("mapped cell exists"))
+            iface_of_cell_bytes(schemify_doc::core_file(map.cell).expect("mapped cell exists"))
         });
         let sym = &self.syms[s].iface;
         let same = sym.pins.name.len() == iface.pins.len()

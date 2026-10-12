@@ -49,7 +49,7 @@ pub mod template;
 pub mod translate;
 pub mod xschem;
 
-pub use crate::core::{DEVICE_MAP, core_library};
+pub use crate::core::DEVICE_MAP;
 pub use check::check_output;
 pub use report::Report;
 pub use translate::{Options, translate_library};
