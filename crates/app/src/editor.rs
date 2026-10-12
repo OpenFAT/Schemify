@@ -38,7 +38,8 @@ use schemify_expr::Value;
 use schemify_format::{FileKind, IdRng, Orient, RecordKind};
 use schemify_plugin::abi::Event;
 use schemify_render::canvas::{
-    self, Camera, CanvasCache, CanvasDiff, CanvasPrims, CanvasScratch, Marks, Palette,
+    self, Camera, CanvasCache, CanvasDiff, CanvasPrims, CanvasScratch, Marks, Palette, PrimIndex,
+    Rows,
 };
 use schemify_render::vello::kurbo::Rect as KRect;
 use schemify_render::widgets::{UiScratch, draw_ui};
@@ -522,11 +523,17 @@ pub struct Editor {
     /// there): the diff's snapshot, the `canvas_gen` and style key it was taken at, and the
     /// changed boxes (`None` = unknown).
     canvas_diff: (CanvasDiff, [u64; 4], u64, Option<Vec<[i32; 4]>>),
+    /// Spatial indexes of the shown scene, decor and extra (with the generation each was built
+    /// for), so recording one canvas tile looks only at the rows near it; and the rows buffer.
+    canvas_index: [(u64, PrimIndex); 3],
+    canvas_rows: Rows,
     /// Clock (ms) until which the zoom counts as changing: frames before it stretch the
     /// recorded canvas layer instead of re-recording it.
     zoom_until: u64,
     /// The last frame showed a stretched layer: a crisp frame is due at `zoom_until`.
     stretched: bool,
+    /// The last frame left canvas tiles unrecorded (a per-frame budget): the next is due now.
+    partial: bool,
     ui_scratch: UiScratch,
     waves: Option<WavesView>,
     confirm: Option<Cmd>,
@@ -720,8 +727,11 @@ impl Editor {
             canvas_cache: CanvasCache::default(),
             canvas_gen: [0; 4],
             canvas_diff: (CanvasDiff::default(), [0; 4], 0, None),
+            canvas_index: Default::default(),
+            canvas_rows: Rows::default(),
             zoom_until: 0,
             stretched: false,
+            partial: false,
             ui_scratch: UiScratch::default(),
             waves: None,
             confirm: None,
@@ -989,13 +999,15 @@ impl Editor {
         let sim: Option<u32> = None;
         // Events queued for plugins (a `RunDone`, a completion) are delivered on the next tick.
         let queued = self.host.has_work().then_some(1);
-        // A stretched canvas (mid-zoom) is redrawn crisp once the zoom has settled.
+        // A stretched canvas (mid-zoom) is redrawn crisp once the zoom has settled; a partly
+        // recorded one goes on at once.
         let crisp = self.stretched.then(|| {
             self.zoom_until
                 .saturating_sub(self.now)
                 .min(u64::from(ZOOM_SETTLE_MS)) as u32
         });
-        [sim, self.host.wake_ms(self.now), queued, crisp]
+        let tiles = self.partial.then_some(0);
+        [sim, self.host.wake_ms(self.now), queued, crisp, tiles]
             .into_iter()
             .flatten()
             .min()
@@ -1115,6 +1127,7 @@ impl Editor {
             self.stretched = false;
             changed = true;
         }
+        changed |= std::mem::take(&mut self.partial);
         self.routed = routed;
         changed
     }
@@ -1311,6 +1324,13 @@ impl Editor {
         let (prims, decor, extra, marks) =
             (&self.scene.prims, &self.decor, &self.extra, &self.marks);
         let (text, scratch) = (&mut self.shell.text, &mut self.canvas_scratch);
+        let (index, rows, gens) = (
+            &mut self.canvas_index,
+            &mut self.canvas_rows,
+            self.canvas_gen,
+        );
+        // A sixteenth of a tile: the smallest part a costly tile is recorded in.
+        let part_area = (f64::from(canvas::TILE_PX) / 4.0).powi(2) * 0.99;
         let drawn = canvas::draw_cached(
             p,
             &mut self.canvas_cache,
@@ -1323,13 +1343,23 @@ impl Editor {
             |p, v, c| {
                 p.fill_rect(v, schemify_render::rgba(palette.background));
                 canvas::draw_grid(p, v, c, grid, palette, scratch);
-                canvas::draw_prims(p, v, c, shown, palette, text, scratch);
-                canvas::draw_prims(p, v, c, decor, palette, text, scratch);
-                canvas::draw_prims(p, v, c, extra, palette, text, scratch);
+                // A tile or a part of one looks at the rows near it (the index, rebuilt after a
+                // change); a smaller patch (an edit's, right after the change) culls every row
+                // while the index is stale.
+                let tile = v.area() * p.device_scale().powi(2) >= part_area;
+                let near = world_box(v, c);
+                let mut cost = 0;
+                for (k, t) in [shown, decor, extra].into_iter().enumerate() {
+                    let listed = rows_near(&mut index[k], t, gens[k], tile, near, rows);
+                    let listed = listed.then_some(&*rows);
+                    cost += canvas::draw_prims_in(p, v, c, t, listed, palette, text, scratch);
+                }
                 canvas::draw_marks(p, v, c, prims, marks, scratch);
+                cost
             },
         );
         self.stretched = drawn == canvas::Drawn::Stretched;
+        self.partial = drawn == canvas::Drawn::Partial;
         if !self.overlay.is_empty() {
             p.push_clip(view);
             canvas::draw_prims(p, view, &cam, &self.overlay, palette, text, scratch);
@@ -4121,4 +4151,48 @@ fn project_root(file: &Path) -> PathBuf {
     }
     abs.parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+}
+
+/// Tables smaller than this are drawn whole: culling them costs less than an index.
+const INDEX_ROWS_MIN: usize = 4096;
+
+/// Lists in `rows` the rows of `t` near world box `near`, from its index `ix` (rebuilt for
+/// generation `version` when stale, but only for a tile or a part of one: a small patch right
+/// after an edit culls every row instead of paying for a rebuild). Returns false (draw every row) for a small
+/// table or a stale index.
+fn rows_near(
+    ix: &mut (u64, PrimIndex),
+    t: &CanvasPrims,
+    version: u64,
+    tile: bool,
+    near: [i32; 4],
+    rows: &mut Rows,
+) -> bool {
+    if t.len() < INDEX_ROWS_MIN {
+        return false;
+    }
+    // Generation 0 is the never-built state of a fresh index, so the stored one is plus 1.
+    if ix.0 != version + 1 {
+        if !tile {
+            return false;
+        }
+        *ix = (version + 1, PrimIndex::build(t));
+    }
+    ix.1.query(near, rows);
+    true
+}
+
+/// The world box `view` shows through `cam`, widened by the patch pad (strokes and labels
+/// reach that far beyond their rows' boxes).
+fn world_box(view: KRect, cam: &Camera) -> [i32; 4] {
+    let (a0, b0) = cam.to_world(view, view.x0, view.y0);
+    let (a1, b1) = cam.to_world(view, view.x1, view.y1);
+    let pad = canvas::PATCH_PAD_PX / cam.scale;
+    let c = |v: f64| v.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+    [
+        c((a0.min(a1) - pad).floor()),
+        c((b0.min(b1) - pad).floor()),
+        c((a0.max(a1) + pad).ceil()),
+        c((b0.max(b1) + pad).ceil()),
+    ]
 }

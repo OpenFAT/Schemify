@@ -105,6 +105,13 @@ pub trait Painter {
         false
     }
 
+    /// Whether this painter holds layer `slot` tagged `stamp` (recorded by it and not
+    /// replaced since).
+    fn holds_layer(&self, slot: usize, stamp: u64) -> bool {
+        let _ = (slot, stamp);
+        false
+    }
+
     /// Draws layer `slot` through `at` (layer logical px → logical px), clipped to `clip`.
     /// `stretch: None` copies pixels (`at` must cover `clip`); `Some(bg)` samples bilinearly (a
     /// scaled stand-in) and paints the part of `clip` the layer misses with `bg`. Returns
@@ -367,11 +374,16 @@ impl Painter for ScenePainter<'_> {
     }
 
     fn pop_clip(&mut self) {
-        self.log(6u8);
+        // Ends a clip without painting: not something that could cover a layer.
+        if let Some(l) = self.layers.as_deref_mut() {
+            l.log.mark(6u8);
+        }
         self.scene.pop_layer();
     }
 
     fn image(&mut self, image: &ImageData, r: Rect) {
+        // The blob's id names the pixels (it is cached per image, see `image_data`).
+        self.log((9u8, image.data.id(), rect_bits(r)));
         self.scene.draw_image(image, self.base * image_to(image, r));
     }
 
@@ -394,6 +406,14 @@ impl Painter for ScenePainter<'_> {
 
     fn device_scale(&self) -> f64 {
         self.base.as_coeffs()[0]
+    }
+
+    fn holds_layer(&self, slot: usize, stamp: u64) -> bool {
+        self.layers.as_deref().is_some_and(|l| {
+            l.slots
+                .get(slot)
+                .is_some_and(|x| stamp != 0 && x.stamp == stamp && x.image.is_some())
+        })
     }
 
     fn layer(
@@ -487,9 +507,9 @@ impl Painter for ScenePainter<'_> {
         else {
             return false;
         };
-        // Where and how it lands is not part of the frame hash: a frame that only moved its
-        // layers can be composed without vello (`Layers::reusable`).
-        layers.log.call((9u8, slot, rect_bits(clip)));
+        // Neither where it lands nor how many tiles there are is part of the frame hash: a
+        // frame that only moved its layers can be composed without vello (`Layers::reusable`);
+        // the caller's clip around them names the covered area.
         let to_device = base * at * Affine::scale(1.0 / s);
         let draw = (slot, to_device, base.transform_rect_bbox(clip), stretch);
         layers.log.draws.push(draw);
@@ -650,6 +670,12 @@ impl Painter for CpuPainter {
 
     fn device_scale(&self) -> f64 {
         self.base.as_coeffs()[0]
+    }
+
+    fn holds_layer(&self, slot: usize, stamp: u64) -> bool {
+        self.layers
+            .get(slot)
+            .is_some_and(|l| stamp != 0 && l.0 == stamp)
     }
 
     fn layer(

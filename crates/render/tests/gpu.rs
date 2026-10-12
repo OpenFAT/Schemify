@@ -357,7 +357,7 @@ fn composed_frames_equal_vello_frames() {
                     &Palette::xschem_dark(),
                     &mut text,
                     &mut scratch,
-                );
+                )
             },
         );
         layers
@@ -485,7 +485,7 @@ fn patched_layers_equal_recorded_layers() {
                     &Palette::xschem_dark(),
                     &mut text,
                     &mut scratch,
-                );
+                )
             },
         );
         layers

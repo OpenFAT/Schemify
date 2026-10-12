@@ -103,9 +103,8 @@ for it; the goal set for this work was ≤ 1 ms).
   rows of a 100k-object scene and its decor): `scene::update` and the decor builder
   reporting their changed rows would make it O(change). A click at 1M objects costs 17 ms
   (`scene::marks` scans every primitive's owner).
-- **render**: a crisp zoom frame or a pan past the margin re-records the whole layer
-  (~12 ms CPU, 3–5 ms RTX / ~47 ms Intel GPU at 100k): tiles (record only the newly uncovered
-  part) and a level-of-detail table for zoomed-out views.
+- **render**: tile frames on the Intel iGPU are not measured since the tiles landed (the
+  retained layer had 47 ms p99 there).
 - **format**: 100k-object parse ~52–60 ms; doc open 89 ms (budget 200 ms, OK); the 100k parse test sits near 100 ms under load.
 
 ## Correctness / semantics

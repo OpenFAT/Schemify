@@ -32,11 +32,11 @@ fn content<P: Painter>(
     prims: &CanvasPrims,
     text: &mut TextSystem,
     scratch: &mut CanvasScratch,
-) {
+) -> usize {
     let palette = Palette::xschem_dark();
     p.fill_rect(view, rgba(palette.background));
     canvas::draw_grid(p, view, cam, 10_000, &palette, scratch);
-    canvas::draw_prims(p, view, cam, prims, &palette, text, scratch);
+    canvas::draw_prims(p, view, cam, prims, &palette, text, scratch)
 }
 
 /// The canvas background `content` fills first.
@@ -73,11 +73,12 @@ fn walk(scale: f64, seed: u32) {
         scale,
     );
     let mut cache = CanvasCache::default();
+    cache.tiles_per_frame = 4; // small content costs little: cap the tiles to see partial frames
     let mut rng = Rng(seed);
     let mut key = 1u64;
-    let (mut copied, mut recorded) = (0, 0);
+    let (mut copied, mut partial) = (0, 0);
     for step in 0..60 {
-        // One random camera move (or a content change), then the frame both ways.
+        // One random camera move (or a content change), then frames until the view is whole.
         let expect = match rng.below(8) {
             0..=3 => {
                 let (dx, dy) = (
@@ -85,11 +86,11 @@ fn walk(scale: f64, seed: u32) {
                     f64::from(rng.below(61)) - 30.0,
                 );
                 cam.pan(dx, dy);
-                None // a whole-pixel pan: copied while it stays inside the margin
+                None // a whole-pixel pan: copied, plus the tiles it uncovers
             }
             4 => {
                 cam.pan(0.5, 0.25);
-                Some(Drawn::Recorded) // off the pixel grid: never served from the layer
+                None // off the pixel grid: every tile is recorded again, a few per frame
             }
             5 => {
                 let f = [0.5, 0.8, 1.25, 2.0][rng.below(4) as usize];
@@ -98,33 +99,42 @@ fn walk(scale: f64, seed: u32) {
                     view.y0 + f64::from(rng.below(view.height() as u32)),
                 );
                 cam.zoom_at(view, sx, sy, f);
-                Some(Drawn::Recorded) // a crisp frame at a new zoom records
+                None // a crisp frame at a new zoom records, a few tiles per frame
             }
             6 => {
                 key += 1;
-                Some(Drawn::Recorded) // the content changed
+                Some(Drawn::Patched) // the content changed: the visible tiles at once
             }
-            _ => Some(Drawn::Copied), // nothing moved
+            _ => Some(Drawn::Copied), // nothing moved (the ring may still fill in)
         };
-        cached.reset();
-        let drawn = canvas::draw_cached(
-            &mut cached,
-            &mut cache,
-            view,
-            &cam,
-            key,
-            None, // where the content changed is not known: record
-            true,
-            bg(),
-            |p, v, c| content(p, v, c, &prims, &mut text, &mut scratch),
-        );
-        if let Some(e) = expect {
-            assert_eq!(drawn, e, "step {step}");
+        let (mut frames, mut drawn) = (0, Drawn::Partial);
+        let mut got = None;
+        while drawn == Drawn::Partial && frames < 64 {
+            cached.reset();
+            drawn = canvas::draw_cached(
+                &mut cached,
+                &mut cache,
+                view,
+                &cam,
+                key,
+                None, // where the content changed is not known: record
+                true,
+                bg(),
+                |p, v, c| content(p, v, c, &prims, &mut text, &mut scratch),
+            );
+            if frames == 0
+                && let Some(e) = expect
+            {
+                assert_eq!(drawn, e, "step {step}");
+            }
+            frames += 1;
+            partial += usize::from(drawn == Drawn::Partial);
+            got = Some(cached.finish(Color::BLACK));
         }
+        assert_ne!(drawn, Drawn::Partial, "step {step}: the view completes");
         assert_ne!(drawn, Drawn::Direct, "the CPU painter keeps layers");
         copied += usize::from(drawn == Drawn::Copied);
-        recorded += usize::from(drawn == Drawn::Recorded);
-        let got = cached.finish(Color::BLACK);
+        let got = got.expect("drawn");
 
         let mut direct = CpuPainter::new(got.width(), got.height(), scale);
         direct.push_clip(view);
@@ -138,8 +148,8 @@ fn walk(scale: f64, seed: u32) {
         );
     }
     assert!(
-        copied >= 10 && recorded >= 10,
-        "{copied} copied, {recorded} recorded"
+        copied >= 10 && partial >= 3,
+        "{copied} copied, {partial} partial frames"
     );
 }
 
@@ -154,8 +164,9 @@ fn cached_frames_equal_direct_renders_at_scale_two() {
     walk(2.0, 0x1234_5678);
 }
 
-/// A zoom while not crisp stretches the recorded layer (a stand-in) and never re-records, even
-/// once a zoom-out uncovers the view (background shows there); the next crisp frame records.
+/// A zoom while not crisp stretches the recorded tiles (stand-ins) and never records, even once
+/// a zoom-out uncovers the view (background shows there); crisp frames then record the new
+/// zoom's tiles, a few per frame, until the view is whole.
 #[test]
 fn zoom_stretches_until_crisp() {
     let prims = common::thousand_prims();
@@ -168,6 +179,7 @@ fn zoom_stretches_until_crisp() {
     let (mut text, mut scratch) = (TextSystem::new(), CanvasScratch::default());
     let mut p = CpuPainter::new(400, 300, 1.0);
     let mut cache = CanvasCache::default();
+    cache.tiles_per_frame = 1;
     let mut frame = |p: &mut CpuPainter, cam: &Camera, crisp: bool| {
         p.reset();
         let drawn = canvas::draw_cached(
@@ -203,11 +215,19 @@ fn zoom_stretches_until_crisp() {
         "the uncovered corner shows the background, not the white under it"
     );
     cam.zoom_at(view, 200.0, 150.0, 1.2);
+    let mut drawn = frame(&mut p, &cam, true).0;
     assert_eq!(
-        frame(&mut p, &cam, true).0,
-        Drawn::Recorded,
-        "crisp re-records"
+        drawn,
+        Drawn::Partial,
+        "crisp records, a few tiles per frame"
     );
+    for _ in 0..8 {
+        if drawn != Drawn::Partial {
+            break;
+        }
+        drawn = frame(&mut p, &cam, true).0;
+    }
+    assert_eq!(drawn, Drawn::Recorded, "the last tiles complete the view");
     assert_eq!(frame(&mut p, &cam, true).0, Drawn::Copied);
 }
 
@@ -284,9 +304,9 @@ fn edit(prims: &mut CanvasPrims, sel: &mut Vec<u32>, rng: &mut Rng) -> bool {
     true
 }
 
-/// D39 oracle for edits: a layer patched where [`CanvasDiff`] says the tables changed equals
-/// the same frame recorded afresh, pixel for pixel, while the camera stays (and within the
-/// golden tolerance of a direct render after pans).
+/// D39 oracle for edits: tiles patched where [`CanvasDiff`] says the tables changed equal the
+/// same frame recorded afresh within one level per channel, pans included (tiles are anchored
+/// to the world, so a pan by whole pixels keeps their pixel grid).
 fn patch_walk(scale: f64, seed: u32) {
     use schemify_render::canvas::{CanvasDiff, Marks, PrimKind};
     let mut prims = common::thousand_prims();
@@ -310,14 +330,24 @@ fn patch_walk(scale: f64, seed: u32) {
                      damage: Option<&[[i32; 4]]>,
                      prims: &CanvasPrims,
                      marks: &Marks| {
-        p.reset();
-        let drawn = canvas::draw_cached(p, cache, view, cam, key, damage, true, bg(), |p, v, c| {
-            content(p, v, c, prims, &mut text, &mut scratch);
-            canvas::draw_marks(p, v, c, prims, marks, &mut scratch);
-        });
-        (drawn, p.finish(Color::BLACK))
+        // Frames until the view is whole (a pan may uncover more tiles than one frame records).
+        let mut damage = damage;
+        for _ in 0..64 {
+            p.reset();
+            let drawn =
+                canvas::draw_cached(p, cache, view, cam, key, damage, true, bg(), |p, v, c| {
+                    let cost = content(p, v, c, prims, &mut text, &mut scratch);
+                    canvas::draw_marks(p, v, c, prims, marks, &mut scratch);
+                    cost
+                });
+            damage = Some(&[]);
+            if drawn != Drawn::Partial {
+                return (drawn, p.finish(Color::BLACK));
+            }
+        }
+        panic!("the view never completed");
     };
-    let (mut patched, mut moved) = (0, false);
+    let mut patched = 0;
     for step in 0..50 {
         let mut changed = false;
         if rng.below(6) == 0 {
@@ -325,7 +355,6 @@ fn patch_walk(scale: f64, seed: u32) {
                 f64::from(rng.below(21)) - 10.0,
                 f64::from(rng.below(21)) - 10.0,
             );
-            moved = true;
         } else {
             changed = edit(&mut prims, &mut sel, &mut rng);
             key += 1;
@@ -340,9 +369,6 @@ fn patch_walk(scale: f64, seed: u32) {
         let damage = known.then_some(&boxes[..]);
         let (drawn, got) = draws(&mut p, &mut cache, &cam, key, damage, &prims, &marks);
         patched += usize::from(drawn == Drawn::Patched);
-        if drawn == Drawn::Recorded {
-            moved = false; // the layer grid follows the camera again
-        }
         let mut fresh = CpuPainter::new(size(w), size(h), scale);
         let (again, want) = draws(
             &mut fresh,
@@ -355,8 +381,7 @@ fn patch_walk(scale: f64, seed: u32) {
         );
         assert_eq!(again, Drawn::Recorded);
         // A stale row would differ by its full contrast; a part redrawn alone may round its
-        // unsnapped coordinates (arcs, glyphs) differently, by 1. After a pan the two layers'
-        // pixel grids differ too: the golden tolerance, as for copied frames.
+        // unsnapped coordinates (arcs, glyphs) differently, by 1.
         let worst = got
             .data()
             .iter()
@@ -373,7 +398,7 @@ fn patch_walk(scale: f64, seed: u32) {
             .unwrap_or(0);
         let bad = differing(&got, &want);
         assert!(
-            (moved || worst <= 1) && bad <= want.data().len() / 1000,
+            worst <= 1 && bad == 0,
             "step {step} ({drawn:?}, scale {scale}): off by {worst}, {bad} pixels by more than 2"
         );
     }
@@ -392,7 +417,7 @@ fn patched_layers_equal_recordings_at_scale_two() {
 }
 
 /// Negative space for the oracle above: damage that misses the change leaves the old pixels
-/// (the comparison would catch a diff that forgot a row), and unknown damage records.
+/// (the comparison would catch a diff that forgot a row), and unknown damage redraws.
 #[test]
 fn withheld_damage_shows_stale_pixels() {
     let mut prims = common::thousand_prims();
@@ -418,7 +443,7 @@ fn withheld_damage_shows_stale_pixels() {
     );
     prims.line(100_000, 100_000, 500_000, 300_000, 1);
     let (drawn, stale) = frame(&mut p, &mut cache, 2, Some(&[]), &prims);
-    assert_eq!(drawn, Drawn::Patched);
+    assert_eq!(drawn, Drawn::Copied, "no damage, nothing redrawn");
     let (_, fresh) = frame(
         &mut CpuPainter::new(400, 300, 1.0),
         &mut CanvasCache::default(),
@@ -427,8 +452,111 @@ fn withheld_damage_shows_stale_pixels() {
         &prims,
     );
     assert!(differing(&stale, &fresh) > 100, "the new line is missing");
+    let (drawn, again) = frame(&mut p, &mut cache, 3, None, &prims);
     assert_eq!(
-        frame(&mut p, &mut cache, 3, None, &prims).0,
-        Drawn::Recorded
+        drawn,
+        Drawn::Patched,
+        "unknown damage redraws the visible tiles"
     );
+    assert!(differing(&again, &fresh) == 0, "and they show the line");
+}
+
+/// Oracle (D39 level of detail): at far zooms, where most rows are drawn as the pixels their
+/// box touches, the tiled frame equals a direct render pixel for pixel, at two device scales.
+#[test]
+fn far_zoom_tiles_equal_direct_renders() {
+    let prims = common::thousand_prims();
+    let view = Rect::new(13.0, 21.0, 460.0, 300.0);
+    let mut fit = Camera {
+        cx: 0.0,
+        cy: 0.0,
+        scale: 1.0,
+    };
+    fit.fit(view, [0, 0, 600_000, 380_000]);
+    let (mut text, mut scratch) = (TextSystem::new(), CanvasScratch::default());
+    for (f, s) in [(0.25, 1.0), (0.125, 1.0), (1.0 / 32.0, 1.0), (0.125, 2.0)] {
+        let cam = Camera {
+            cx: fit.cx + 1234.5,
+            cy: fit.cy - 777.0,
+            scale: fit.scale * f,
+        };
+        let (w, h) = ((480.0 * s) as u16, (320.0 * s) as u16);
+        let mut tiled = CpuPainter::new(w, h, s);
+        let mut cache = CanvasCache::default();
+        (cache.tiles_per_frame, cache.cost_per_frame) = (usize::MAX, usize::MAX);
+        let drawn = canvas::draw_cached(
+            &mut tiled,
+            &mut cache,
+            view,
+            &cam,
+            1,
+            None,
+            true,
+            bg(),
+            |p, v, c| content(p, v, c, &prims, &mut text, &mut scratch),
+        );
+        assert_eq!(drawn, Drawn::Recorded);
+        let got = tiled.finish(Color::BLACK);
+        let mut direct = CpuPainter::new(w, h, s);
+        direct.push_clip(view);
+        content(&mut direct, view, &cam, &prims, &mut text, &mut scratch);
+        direct.pop_clip();
+        let want = direct.finish(Color::BLACK);
+        assert_eq!(differing(&got, &want), 0, "zoom ×{f}, device scale {s}");
+    }
+}
+
+/// Oracle: tiles recorded in parts across frames (a budget smaller than any tile) show what
+/// whole tiles do, pixel for pixel, after a fresh atlas and after pans that uncover tiles.
+#[test]
+fn tiles_recorded_in_parts_equal_direct_renders() {
+    let prims = common::thousand_prims();
+    let view = Rect::new(13.0, 21.0, 460.0, 300.0);
+    let mut cam = Camera {
+        cx: 0.0,
+        cy: 0.0,
+        scale: 1.0,
+    };
+    cam.fit(view, [0, 0, 600_000, 380_000]);
+    cam.scale *= 1.7;
+    let (mut text, mut scratch) = (TextSystem::new(), CanvasScratch::default());
+    for s in [1.0, 2.0] {
+        let (w, h) = ((480.0 * s) as u16, (320.0 * s) as u16);
+        let mut tiled = CpuPainter::new(w, h, s);
+        let mut cache = CanvasCache::default();
+        cache.cost_per_frame = 1; // every tile after the first costs more: 16 parts each
+        let mut cam = cam;
+        let mut partial = 0;
+        for (dx, dy) in [(0.0, 0.0), (-300.0, -170.0), (260.0, 90.0)] {
+            cam.pan(dx, dy);
+            let mut drawn = Drawn::Partial;
+            for _ in 0..4096 {
+                tiled.reset();
+                drawn = canvas::draw_cached(
+                    &mut tiled,
+                    &mut cache,
+                    view,
+                    &cam,
+                    1,
+                    Some(&[]),
+                    true,
+                    bg(),
+                    |p, v, c| content(p, v, c, &prims, &mut text, &mut scratch),
+                );
+                if drawn != Drawn::Partial {
+                    break;
+                }
+                partial += 1;
+            }
+            assert_ne!(drawn, Drawn::Partial, "the view completes");
+            let got = tiled.finish(Color::BLACK);
+            let mut direct = CpuPainter::new(w, h, s);
+            direct.push_clip(view);
+            content(&mut direct, view, &cam, &prims, &mut text, &mut scratch);
+            direct.pop_clip();
+            let want = direct.finish(Color::BLACK);
+            assert_eq!(differing(&got, &want), 0, "pan ({dx}, {dy}), scale {s}");
+        }
+        assert!(partial >= 16, "{partial} partial frames: parts span frames");
+    }
 }
