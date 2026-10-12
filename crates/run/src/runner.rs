@@ -192,7 +192,8 @@ impl Runner {
     }
 
     /// Writes job `j`'s netlist into its directory (removing an old raw file; relative
-    /// corner paths made absolute against the bench's directory, [`Prepared::resolved`])
+    /// corner paths made absolute against the bench's directory, or the project root for a
+    /// path from a project variable, [`Prepared::resolved`])
     /// and queues it. A write failure fails the job.
     pub fn submit(&mut self, jobs: &mut Jobs, results: &mut Results, j: u32, p: &Prepared) {
         assert_eq!(jobs.state(j), State::Pending, "submit job {j} once");
@@ -200,7 +201,10 @@ impl Runner {
         let dir = self.job_dir(j);
         let base = self.cfg.lib_dirs.get(usize::from(p.base.0));
         let text = match base {
-            Some(lib) if !p.relative.is_empty() => p.resolved(&lib.join(&p.base.1)),
+            // Library row 0 is the project directory (RunnerConfig::new).
+            Some(lib) if !p.relative.is_empty() => {
+                p.resolved(&lib.join(&p.base.1), &self.cfg.lib_dirs[0])
+            }
             _ => p.netlist.clone(),
         };
         let written = fs::create_dir_all(&dir).and_then(|()| {

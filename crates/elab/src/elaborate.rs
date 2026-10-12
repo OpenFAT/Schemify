@@ -220,6 +220,9 @@ pub struct Bench {
     /// Paths (with `${NAME}` unexpanded: the app expands with the environment),
     /// sections, temperature text.
     pub corner_args: Vec<Name>,
+    /// Per corner line: its path began with a `${NAME}` the project's `set` table expanded,
+    /// so a relative result is relative to the project root, not to the bench (run spec §5).
+    pub corner_project: Vec<bool>,
     /// Code blocks for the dialect, sorted by name.
     pub code_name: Vec<Name>,
     /// Their lang.
@@ -1824,16 +1827,29 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                             continue;
                         }
                     }
+                    b.corner_project.push(false);
                 } else {
-                    // The path expands `${NAME}`; a `lib` section word is literal.
+                    // The path expands `${NAME}`; a `lib` section word is literal. A path that
+                    // starts with a project variable is the project's (run spec §5).
+                    let mut from_project = false;
                     for (j, &x) in v.iter().enumerate() {
                         let n = if j == 0 {
-                            self.expand_vars(self.ifaces[0].cell, s.get(x))
+                            let raw = s.get(x);
+                            // The leading `${NAME}` is one of the project's `set` entries
+                            // (not an environment variable).
+                            from_project = raw
+                                .strip_prefix("${")
+                                .and_then(|r| r.split_once('}'))
+                                .is_some_and(|(name, _)| {
+                                    self.project.settings().iter().any(|(k, _)| k == name)
+                                });
+                            self.expand_vars(self.ifaces[0].cell, raw)
                         } else {
                             self.names.intern(s.get(x))
                         };
                         b.corner_args.push(n);
                     }
+                    b.corner_project.push(from_project);
                 }
                 b.corner_kind.push(kind);
                 b.corner_start.push(b.corner_args.len() as u32);

@@ -302,9 +302,10 @@ A bench corner that should follow the active PDK writes `lib ${PDK_MODELS} <sect
   derived card beside the library (asap7). The section names are the recipe's corner names,
   `tt ff ss` for both academic kits, so `lib ${PDK_MODELS} tt` is the same line under freepdk45
   and asap7. This answers **Q2** for generated kits: corner names live in the recipe.
-- `PDK_MODELS` expands to a project-relative path; the runner joins a relative corner path
-  onto the bench's directory (run spec §5), so a bench using it lives at the project root.
-  **Q3:** resolve `${PDK_ROOT}`-derived corner paths against the project root instead.
+- `PDK_MODELS` expands to a project-relative path. **Q3 (resolved 2026-10-12):** a corner path
+  that starts with a project `set` variable is joined onto the project root (run spec §5), so a
+  bench using `lib ${PDK_MODELS} tt` works from any directory; a literal relative path still
+  names a file beside the bench.
 
 ## 8. Retargeting existing designs (draft)
 

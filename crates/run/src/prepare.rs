@@ -67,21 +67,27 @@ pub struct Prepared {
     /// Byte ranges in `netlist` of relative corner `lib`/`include` paths, in order: the
     /// native runner rewrites them against [`Prepared::base`] (run spec §5).
     pub relative: Vec<Range<u32>>,
+    /// Parallel to [`Prepared::relative`]: the path came from a project variable
+    /// (`${PDK_MODELS}/…`), so it is joined onto the project root instead.
+    pub project: Vec<bool>,
     /// The bench's library row and its directory relative to that library.
     pub base: (u8, String),
 }
 
 impl Prepared {
     /// Returns the netlist with every [`Prepared::relative`] path joined onto `base_dir`
-    /// (the bench's directory on disk; quoted when it holds whitespace).
-    pub fn resolved(&self, base_dir: &std::path::Path) -> String {
+    /// (the bench's directory on disk), or onto `project_dir` for a path from a project
+    /// variable ([`Prepared::project`]); quoted when it holds whitespace.
+    pub fn resolved(&self, base_dir: &std::path::Path, project_dir: &std::path::Path) -> String {
+        assert_eq!(self.relative.len(), self.project.len());
         let mut out = String::with_capacity(self.netlist.len() + 64 * self.relative.len());
         let mut at = 0;
-        for r in &self.relative {
+        for (r, &from_project) in self.relative.iter().zip(&self.project) {
             let (start, end) = (r.start as usize, r.end as usize);
             assert!(at <= start && start < end && end <= self.netlist.len());
             out.push_str(&self.netlist[at..start]);
-            let abs = base_dir.join(&self.netlist[start..end]);
+            let dir = if from_project { project_dir } else { base_dir };
+            let abs = dir.join(&self.netlist[start..end]);
             let abs = abs.to_string_lossy();
             if abs.contains(char::is_whitespace) {
                 out.push('"');
@@ -251,7 +257,8 @@ pub fn prepare<F: Funcs>(
     }
     results.set_vars(j, &e);
     let mut text = netlist::emit(&e, dialect).text;
-    let relative = relative_paths(&e, dialect, &text);
+    let (relative, from_project): (Vec<_>, Vec<_>) =
+        relative_paths(&e, dialect, &text).into_iter().unzip();
     // A Monte Carlo sample fixes the simulator's random seed (run spec §3). ngspice reads
     // `.option seed` before it evaluates `.param` wherever the line stands: before `.end`.
     // ponytail: ngspice only; Xyce takes its seed on the command line (`-randseed`).
@@ -277,6 +284,7 @@ pub fn prepare<F: Funcs>(
         netlist: text,
         sources: sources(project, &e),
         relative,
+        project: from_project,
         base,
     };
     assert!(!p.netlist.is_empty());
@@ -287,7 +295,7 @@ pub fn prepare<F: Funcs>(
 /// emitted for `dialect` (SPICE dialects only: `.lib <path> <section>`, `.include
 /// <path>`). Corner lines follow the header, globals and `.param` lines in file order, so
 /// each one's first match after the previous one is the line itself.
-fn relative_paths(e: &Elab, dialect: Dialect, text: &str) -> Vec<Range<u32>> {
+fn relative_paths(e: &Elab, dialect: Dialect, text: &str) -> Vec<(Range<u32>, bool)> {
     let mut out = Vec::new();
     let b = &e.bench;
     if !matches!(dialect, Dialect::Ngspice | Dialect::Xyce) || b.corner_kind.is_empty() {
@@ -318,10 +326,11 @@ fn relative_paths(e: &Elab, dialect: Dialect, text: &str) -> Vec<Range<u32>> {
         from = at + line.len() - 1;
         if relative(path) {
             let start = (at + prefix) as u32;
-            out.push(start..start + path.len() as u32);
+            let from_project = b.corner_project.get(k).copied().unwrap_or(false);
+            out.push((start..start + path.len() as u32, from_project));
         }
     }
-    assert!(out.windows(2).all(|w| w[0].end <= w[1].start));
+    assert!(out.windows(2).all(|w| w[0].0.end <= w[1].0.start));
     out
 }
 

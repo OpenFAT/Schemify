@@ -613,3 +613,50 @@ fn tech_cells_compile_their_pdk_cells_sources() {
         }]
     );
 }
+
+/// A corner path that starts with a project variable (`${PDK_MODELS}`, written by
+/// `pdk.use` as a project-relative path) is relative to the project root, wherever the bench
+/// lives; a literal relative path stays relative to the bench's directory (pdk spec Q3).
+#[test]
+fn project_variable_corner_paths_are_relative_to_the_project_root() {
+    let bench = RC_BENCH.replace(
+        "corner tt\n  set C 1u\n",
+        "corner tt\n  lib ${PDK_MODELS} tt\n  include sub/extra.inc\n  lib ${HOME_LIB}/x.lib ss\n  \
+         set C 1u\n",
+    );
+    let manifest = b"schemify 1 project\n\nset PDK_MODELS .schemify/pdks/k/v/models/corners.lib\n";
+    let mut p = Project::new(Some(manifest), None, 7).unwrap();
+    let files = [
+        ("benches/res.shprim", RES),
+        ("benches/cap.shprim", CAP),
+        ("benches/tb.shbench", bench.as_str()),
+    ];
+    let listing: Vec<(&str, &[u8])> = files.iter().map(|(n, t)| (*n, t.as_bytes())).collect();
+    p.index_library("", "", &listing).unwrap();
+    let mut top = None;
+    for (name, text) in files {
+        let h = p.open("", name, text.as_bytes(), None).unwrap().handle;
+        if name.ends_with(".shbench") {
+            top = Some(h);
+        }
+    }
+    let top = top.unwrap();
+    let plan = Plan::read(p.doc(top).unwrap()).unwrap();
+    let mut jobs = Jobs::new();
+    jobs.push(None, Some("tt"), NO_SAMPLE, &[]).unwrap();
+    let dir = tmp("project-var-paths");
+    // `HOME_LIB` comes from the environment, not the project: it stays bench-relative.
+    let env = [("HOME_LIB", "envlib")];
+    let (jobs, _, runner) =
+        common::run_env(&p, top, &plan, jobs, &env, |d| cfg(&dir, d, sh(FAKE), 1));
+    assert_eq!(jobs.state(0), State::Done);
+    let netlist = std::fs::read_to_string(runner.job_dir(0).join("netlist.cir")).unwrap();
+    let abs = |rel: &str| dir.join(rel).to_string_lossy().into_owned();
+    let want = format!(
+        "\n.lib {} tt\n.include {}\n.lib {} ss\n",
+        abs(".schemify/pdks/k/v/models/corners.lib"),
+        abs("benches/sub/extra.inc"),
+        abs("benches/envlib/x.lib")
+    );
+    assert!(netlist.contains(&want), "{want}\n{netlist}");
+}

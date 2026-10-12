@@ -338,7 +338,11 @@ mod tests {
     }
 
     /// (lang, body, expected ports)
-    type Case = (&'static str, &'static str, &'static [(&'static str, PinDir)]);
+    type Case = (
+        &'static str,
+        &'static str,
+        &'static [(&'static str, PinDir)],
+    );
 
     #[test]
     fn verilog_headers() {

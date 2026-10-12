@@ -121,3 +121,31 @@ fn refused_without_technology_or_class() {
     assert_ne!(code, 0, "{text}");
     assert!(text.contains("`npn` is not a technology class"), "{text}");
 }
+
+/// ASAP7 sizes in fins of 70.5 nm: a width that is an exact multiple gives exactly that many
+/// fins, also when it is computed (`57*70.5n` divides back to 57.00000000000001 in floats, which
+/// a bare `ceil` rounds up to 58); one nanometre more gives one more fin.
+#[test]
+fn asap7_fins_round_exact_multiples_down() {
+    for (w, nfin) in [
+        ("211.5n", 3),
+        ("57*70.5n", 57),
+        ("61*70.5n", 61),
+        ("114*70.5n", 114),
+        ("212.5n", 4),
+        ("1n", 1),
+    ] {
+        let dir = project(&format!("fins-{nfin}"), &manifest("asap7", "asap7"));
+        let inv = std::fs::read_to_string(dir.join("inv.shcomp")).unwrap();
+        // The nmos (nf 1): its width becomes `w`.
+        let inv = inv.replacen("  w 1u\n", &format!("  w {w}\n"), 1);
+        std::fs::write(dir.join("inv.shcomp"), inv).unwrap();
+        let (code, text) = schemify(&dir, &["netlist", "inv.shcomp"]);
+        assert_eq!(code, 0, "{w}: {text}");
+        let line = text
+            .lines()
+            .find(|l| l.contains("nmos_rvt"))
+            .expect("nmos line");
+        assert!(line.contains(&format!(" nfin={nfin} ")), "{w}: {line}");
+    }
+}
