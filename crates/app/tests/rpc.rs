@@ -289,3 +289,40 @@ fn out_of_fuel_is_reported_not_silent() {
         );
     }
 }
+
+/// `file.open <cell>` (rpc spec §3.2, the case a script needs): with an argument it opens
+/// that cell (`lib:cell`, a project cell's stem, or a project-relative path) without the
+/// chooser; a name that is no cell is an error in the status line and changes nothing;
+/// without an argument it opens the chooser as before.
+#[test]
+fn file_open_with_an_argument_opens_that_cell() {
+    let mut s = Session::open("inv", "top.shcomp", "rpc-open", true);
+    let mut c = Client::connect(&s);
+    let active = |s: &Session| s.ed.session.name(s.ed.active().unwrap().0);
+    assert_eq!(active(&s), "top.shcomp");
+    for (arg, want) in [
+        ("inv", "inv.shcomp"),
+        ("dev:nmos", "nmos.shprim"),
+        ("top.shcomp", "top.shcomp"),
+        ("dev/pmos.shprim", "pmos.shprim"),
+    ] {
+        let said = c.status(&mut s, "file.open", &[arg]);
+        assert_eq!(active(&s), want, "{arg}: {said}");
+        assert_eq!(said, format!("opened {want}"), "{arg}");
+        assert!(s.ed.shell.ui.dialog().is_none(), "{arg}: no chooser");
+    }
+    for bad in ["nope", "dev:nope", "../outside.shcomp"] {
+        let said = c.status(&mut s, "file.open", &[bad]);
+        assert!(
+            said.starts_with(&format!("file.open {bad}: ")),
+            "{bad}: {said}"
+        );
+        assert_eq!(active(&s), "pmos.shprim", "{bad}: nothing opened");
+        assert!(s.ed.shell.ui.dialog().is_none(), "{bad}: no chooser");
+    }
+    c.status(&mut s, "file.open", &[]);
+    assert!(
+        !s.ed.shell.ui.dialog().is_none(),
+        "no argument: the chooser"
+    );
+}

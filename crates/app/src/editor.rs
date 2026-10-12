@@ -1875,6 +1875,8 @@ impl Editor {
                 }
                 self.scene_dirty = true;
             }
+            // With an argument (a script, a JSON-RPC caller): that cell, no dialog.
+            Cmd::Open if !arg.trim().is_empty() => self.open_named(arg),
             Cmd::Open => self.open_chooser(ChooseFor::Open),
             Cmd::ComponentBrowser | Cmd::InsertSymbol => self.open_chooser(ChooseFor::Insert),
             Cmd::Waves => self.open_chooser(ChooseFor::Waves),
@@ -2722,6 +2724,46 @@ impl Editor {
         };
     }
 
+    /// `file.open <arg>`: the cell `arg` names ([`crate::session::find_cell`]), else the
+    /// file at `arg` relative to the project root; a failure goes to the status line.
+    fn open_named(&mut self, arg: &str) {
+        let name = match schemify_plugin::abi::text::values(arg).next() {
+            Some(Ok(v)) => v.into_owned(),
+            _ => arg.trim().to_owned(),
+        };
+        assert!(!name.is_empty(), "the chooser handles no argument");
+        let opened = match crate::session::find_cell(&self.session.project, &name) {
+            Some(row) => self.session.open_cell(row),
+            None => {
+                let path = self.session.root.join(&name);
+                self.session.open_path(&path)
+            }
+        };
+        match opened {
+            Ok(d) => {
+                self.show_opened(d);
+                self.session.status = format!("opened {}", self.session.name(d));
+            }
+            Err(e) => self.session.status = format!("file.open {name}: {e}"),
+        }
+    }
+
+    /// Shows opened document `d` in a tab in its default view, remembers it as recent and
+    /// tells the plugins.
+    fn show_opened(&mut self, d: DocHandle) {
+        let view = default_view(self.session.project.doc(d));
+        self.session.open_tab(d, view);
+        self.remember(d);
+        let _ = self.host.push(
+            None,
+            &Event::DocOpened {
+                doc: plugins::doc_id(d),
+            },
+        );
+        self.scene_dirty = true;
+        debug_assert!(self.session.project.doc(d).is_some());
+    }
+
     fn open_chooser(&mut self, purpose: ChooseFor) {
         self.tool = Tool::Idle;
         self.dialog = Dialog::Choose(Chooser {
@@ -2844,18 +2886,7 @@ impl Editor {
                 };
             }
             (ChooseFor::Open, Pick::Cell(row)) => match self.session.open_cell(row) {
-                Ok(d) => {
-                    let view = default_view(self.session.project.doc(d));
-                    self.session.open_tab(d, view);
-                    self.remember(d);
-                    let _ = self.host.push(
-                        None,
-                        &Event::DocOpened {
-                            doc: plugins::doc_id(d),
-                        },
-                    );
-                    self.scene_dirty = true;
-                }
+                Ok(d) => self.show_opened(d),
                 Err(e) => self.session.status = e,
             },
             (ChooseFor::Waves, Pick::File(f)) => self.open_waves(f),

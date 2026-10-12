@@ -582,10 +582,12 @@ impl Sim {
         while i < self.queue.len() {
             let bench = match &self.queue[i] {
                 Request::User { bench, .. } => Ok(*bench),
-                Request::Plugin(req) => match find_cell(&session.project, &req.bench) {
-                    None => Err(format!("plugin run: no bench {}", req.bench)),
-                    Some(row) => session.open_cell(row),
-                },
+                Request::Plugin(req) => {
+                    match crate::session::find_cell(&session.project, &req.bench) {
+                        None => Err(format!("plugin run: no bench {}", req.bench)),
+                        Some(row) => session.open_cell(row),
+                    }
+                }
             };
             let top = match bench {
                 Ok(h) => h,
@@ -1601,18 +1603,6 @@ fn session_name(session: &Session, h: DocHandle) -> String {
         };
     }
     session.name(h)
-}
-
-/// The indexed cell a plugin's `lib:cell` (or a project cell's `dir/stem`) names.
-fn find_cell(p: &Project, name: &str) -> Option<usize> {
-    let (lib, rest) = name.split_once(':').unwrap_or(("", name));
-    let rest = rest.strip_suffix(".shbench").unwrap_or(rest);
-    let cells = p.cells();
-    (0..cells.lib.len()).find(|&r| {
-        let rel = crate::libs::cell_relpath(p, r);
-        let stem = rel.rsplit_once('.').map_or(rel.as_str(), |(s, _)| s);
-        p.libs().name[usize::from(cells.lib[r])] == lib && stem == rest
-    })
 }
 
 /// Run directories under `<root>/.schemify/runs/` whose `bench` sidecar names `bench`,
