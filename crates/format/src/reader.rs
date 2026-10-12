@@ -504,11 +504,12 @@ fn unicode_escape(b: &[u8]) -> Option<(char, usize)> {
     }
     let close = b.iter().take(10).position(|&c| c == b'}')?;
     let hex = &b[3..close];
-    if hex.is_empty() || hex.len() > 6 {
+    // `1*6HEXDIG`: checked here because `from_str_radix` also takes a sign (`\u{+41}`).
+    if hex.is_empty() || hex.len() > 6 || !hex.iter().all(u8::is_ascii_hexdigit) {
         return None;
     }
-    let text = std::str::from_utf8(hex).ok()?;
-    let value = u32::from_str_radix(text, 16).ok()?;
+    let text = std::str::from_utf8(hex).expect("hex digits are ASCII");
+    let value = u32::from_str_radix(text, 16).expect("1-6 hex digits fit u32");
     assert!(
         (5..=10).contains(&(close + 1)),
         "escape is 5 to 10 bytes long"
@@ -837,11 +838,12 @@ pub(crate) fn check_kind_rules(doc: &Document<'_>, diags: &mut Vec<Diagnostic>) 
 /// Returns whether a valid coordinate literal is already its shortest decimal: no `-0`,
 /// no leading zeros, and 1–3 fractional digits not ending in `0`.
 fn is_shortest_coord(t: &str) -> bool {
-    assert!(is_number(t), "only called on validated coordinates");
-    let body = t.strip_prefix('-').unwrap_or(t);
-    let (whole, frac) = body.split_once('.').unwrap_or((body, ""));
-    let whole_ok = whole == "0" || !whole.starts_with('0');
-    let frac_ok = !body.contains('.') || (frac.len() <= 3 && !frac.ends_with('0'));
+    let body = t.strip_prefix('-').unwrap_or(t).as_bytes();
+    let dot = body.iter().position(|&c| c == b'.');
+    let whole = &body[..dot.unwrap_or(body.len())];
+    assert!(!whole.is_empty(), "only called on validated coordinates");
+    let whole_ok = whole == b"0" || whole[0] != b'0';
+    let frac_ok = dot.is_none_or(|d| body.len() - d - 1 <= 3 && !body.ends_with(b"0"));
     whole_ok && frac_ok && t != "-0"
 }
 
@@ -853,24 +855,24 @@ fn normalize(doc: &mut Document<'_>) {
     let mut buf = String::new();
     for r in 0..doc.record_count() {
         let schema = doc.record_kind(r).schema();
-        let start = doc.rec_field_start[r as usize] as usize;
-        for i in 0..doc.field_spans(r).len() {
-            if schema.fields.ty(i) == Some(Ty::Coord) {
-                doc.fields[start + i] = canonical_coord(doc, doc.fields[start + i], &mut buf);
+        let fields = doc.field_range(r);
+        for f in fields.clone() {
+            if schema.fields.ty(f - fields.start) == Some(Ty::Coord) {
+                doc.fields[f] = canonical_coord(doc, doc.fields[f], &mut buf);
             }
         }
         for a in doc.attrs(r) {
             let Some((_, attr)) = schema.attr(doc.attr_key(a)) else {
                 continue;
             };
-            let first = doc.attr_value_start[a as usize] as usize;
-            for i in 0..doc.value_spans(a).len() {
-                if attr.shape.ty(i) == Some(Ty::Coord) {
-                    doc.attr_values[first + i] =
-                        canonical_coord(doc, doc.attr_values[first + i], &mut buf);
+            let values = doc.value_range(a);
+            for v in values.clone() {
+                if attr.shape.ty(v - values.start) == Some(Ty::Coord) {
+                    doc.attr_values[v] = canonical_coord(doc, doc.attr_values[v], &mut buf);
                 }
             }
         }
+        let start = fields.start;
         if doc.wire_reversed(r) {
             doc.fields.swap(start + 1, start + 3);
             doc.fields.swap(start + 2, start + 4);

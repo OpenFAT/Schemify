@@ -843,7 +843,7 @@ fn rename_id(doc: &mut Document<'_>, old: &str, new: &str) {
     let mut renamed = 0u32;
     for r in 0..doc.record_count() {
         let schema = doc.record_kind(r).schema();
-        let fields = field_range(doc, r);
+        let fields = doc.field_range(r);
         for f in fields.clone() {
             let is_ref = matches!(schema.fields.ty(f - fields.start), Some(Ty::Id | Ty::IdRef));
             if is_ref && doc.text(doc.fields[f]) == old {
@@ -855,7 +855,7 @@ fn rename_id(doc: &mut Document<'_>, old: &str, new: &str) {
             let Some((_, attr)) = schema.attr(doc.attr_key(a)) else {
                 continue;
             };
-            let values = value_range(doc, a);
+            let values = doc.value_range(a);
             for v in values.clone() {
                 if attr.shape.ty(v - values.start) == Some(Ty::IdRef)
                     && doc.text(doc.attr_values[v]) == old
@@ -866,20 +866,6 @@ fn rename_id(doc: &mut Document<'_>, old: &str, new: &str) {
         }
     }
     assert!(renamed >= 1, "renamed id must define a record");
-}
-
-fn field_range(doc: &Document<'_>, r: u32) -> Range<usize> {
-    let start = doc.rec_field_start[r as usize] as usize;
-    let range = start..start + doc.fields(r).len();
-    assert!(range.end <= doc.fields.len());
-    range
-}
-
-fn value_range(doc: &Document<'_>, a: u32) -> Range<usize> {
-    let start = doc.attr_value_start[a as usize] as usize;
-    let range = start..start + doc.attr_values(a).len();
-    assert!(range.end <= doc.attr_values.len());
-    range
 }
 
 // ---------------------------------------------------------------- diff

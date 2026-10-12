@@ -6,7 +6,6 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 - **elab**: adopt the doc and expr APIs that replaced its workarounds: `Project::resolve_in(row, ref)` and `Project::open_handle(row)` (for `cells::resolve_in_row` / `is_open`), `apply_edits_report` (ops of commits, undos and redos, instead of the caller passing ops back), `expr::topo_order_all` (every cycle in one pass, instead of `Graph::finish` cutting one cycle per round).
 - **ui**: switch the local line-record lexer to `schemify-format`. (**plugin** host done; `abi::text` stays the guests' encoder/decoder until `format` has a public value lexer, pinned to the format by `abi_and_format_lexers_agree`.)
-- **format**: a `\u{+41}` escape is accepted (`u32::from_str_radix` takes a sign; the grammar says `1*6HEXDIG`). `abi::text` rejects it.
 
 ## app / editor
 

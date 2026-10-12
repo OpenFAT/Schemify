@@ -303,14 +303,24 @@ impl<'s> Document<'s> {
         &self.warnings
     }
 
+    /// Returns where record `r`'s fields sit in `self.fields`.
+    pub(crate) fn field_range(&self, r: u32) -> Range<usize> {
+        csr(&self.rec_field_start, r, self.fields.len())
+    }
+
+    /// Returns where attribute `a`'s values sit in `self.attr_values`.
+    pub(crate) fn value_range(&self, a: u32) -> Range<usize> {
+        csr(&self.attr_value_start, a, self.attr_values.len())
+    }
+
     /// Returns record `r`'s field spans (for in-crate checks that need positions).
     pub(crate) fn field_spans(&self, r: u32) -> &[Str] {
-        &self.fields[csr(&self.rec_field_start, r, self.fields.len())]
+        &self.fields[self.field_range(r)]
     }
 
     /// Returns attribute `a`'s value spans.
     pub(crate) fn value_spans(&self, a: u32) -> &[Str] {
-        &self.attr_values[csr(&self.attr_value_start, a, self.attr_values.len())]
+        &self.attr_values[self.value_range(a)]
     }
 
     pub(crate) fn text(&self, s: Str) -> &str {
@@ -353,7 +363,11 @@ impl<'s> Document<'s> {
         if self.record_kind(r) != RecordKind::Wire {
             return false;
         }
-        let c = |i| self.field(r, i).and_then(|t| parse_coord(t).ok());
+        let f = self.field_spans(r);
+        if f.len() != 5 {
+            return false;
+        }
+        let c = |i: usize| parse_coord(self.text(f[i])).ok();
         match (c(1), c(2), c(3), c(4)) {
             (Some(x1), Some(y1), Some(x2), Some(y2)) => (x2, y2) < (x1, y1),
             _ => false,

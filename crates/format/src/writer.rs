@@ -163,7 +163,8 @@ fn emission_order(doc: &Document<'_>) -> Vec<u32> {
         (rank, 0, kind as u8, k0, k1)
     };
     let mut order: Vec<u32> = (0..doc.record_count()).collect();
-    order.sort_by(|&x, &y| key(x).cmp(&key(y)));
+    // Stable, and each key is computed once instead of twice per comparison.
+    order.sort_by_cached_key(|&r| key(r));
     assert_eq!(order.len(), doc.record_count() as usize);
     order
 }
@@ -182,7 +183,7 @@ fn write_record(doc: &Document<'_>, r: u32, out: &mut String) {
         push_comment(c, out);
     }
     out.push_str(doc.record_word(r));
-    let fields: Vec<&str> = doc.fields(r).collect();
+    let fields = doc.field_spans(r);
     let reversed = doc.wire_reversed(r);
     for i in 0..fields.len() {
         // A reversed wire `id x1 y1 x2 y2` is written `id x2 y2 x1 y1`.
@@ -192,7 +193,7 @@ fn write_record(doc: &Document<'_>, r: u32, out: &mut String) {
             i
         };
         out.push(' ');
-        push_value(fields[j], out);
+        push_value(doc.text(fields[j]), out);
     }
     out.push('\n');
     let kind = doc.record_kind(r);
