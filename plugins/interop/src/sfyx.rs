@@ -350,12 +350,10 @@ impl Parser<'_> {
         if n > 1 && self.s[digits] == b'0' {
             return Err(self.err("leading zero (SKILL reads it as octal)"));
         }
-        if let Some(&c) = self.s.get(self.i) {
-            if !matches!(c, b' ' | b'\t' | b')') {
-                return Err(
-                    self.err("a number is followed by a separator (no floats, no suffixes)")
-                );
-            }
+        if let Some(&c) = self.s.get(self.i)
+            && !matches!(c, b' ' | b'\t' | b')')
+        {
+            return Err(self.err("a number is followed by a separator (no floats, no suffixes)"));
         }
         let text = std::str::from_utf8(&self.s[start..self.i]).expect("ascii");
         if text == "-0" {

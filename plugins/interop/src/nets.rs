@@ -106,10 +106,10 @@ pub fn extract(d: &Design, ci: usize, g: &Geom) -> Nets {
             let node = push(&mut n, at, None);
             pin_owner.insert(node, (g.inst_id[k].clone(), p));
             nodes.push(node);
-            if let Some(target) = &pins.alias[p] {
-                if let Some(t) = pins.name.iter().position(|x| x == target) {
-                    alias_joins.push((k, p, t));
-                }
+            if let Some(target) = &pins.alias[p]
+                && let Some(t) = pins.name.iter().position(|x| x == target)
+            {
+                alias_joins.push((k, p, t));
             }
         }
         n.inst_pin.push(nodes);
@@ -199,17 +199,17 @@ pub fn extract(d: &Design, ci: usize, g: &Geom) -> Nets {
     }
     let mut gen_id: Vec<Option<String>> = vec![None; nets];
     let mut gen_pin: Vec<Option<(String, usize)>> = vec![None; nets];
-    for v in 0..count {
+    for (v, owner) in owner_id.iter().enumerate() {
         let net = n.node_net[v] as usize;
-        if let Some(id) = &owner_id[v] {
-            if gen_id[net].as_ref().is_none_or(|x| id < x) {
-                gen_id[net] = Some(id.clone());
-            }
+        if let Some(id) = owner
+            && gen_id[net].as_ref().is_none_or(|x| id < x)
+        {
+            gen_id[net] = Some(id.clone());
         }
-        if let Some(po) = pin_owner.get(&(v as u32)) {
-            if gen_pin[net].as_ref().is_none_or(|x| po < x) {
-                gen_pin[net] = Some(po.clone());
-            }
+        if let Some(po) = pin_owner.get(&(v as u32))
+            && gen_pin[net].as_ref().is_none_or(|x| po < x)
+        {
+            gen_pin[net] = Some(po.clone());
         }
     }
     for k in 0..nets {

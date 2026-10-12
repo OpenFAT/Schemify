@@ -142,9 +142,121 @@ fn slash(p: &Path) -> String {
 pub fn run(args: &[String]) -> u8 {
     match args.split_first() {
         Some((cmd, rest)) if cmd == "xschem-import" => xschem_import(rest),
+        Some((cmd, rest))
+            if cmd == "virtuoso-export"
+                || cmd == "virtuoso-import"
+                || cmd == "xschem-export"
+                || cmd == "install-skill" =>
+        {
+            match job_command(cmd, rest) {
+                Some((project, c)) => drive(&project, c),
+                None => {
+                    eprintln!("{JOB_USAGE}");
+                    2
+                }
+            }
+        }
         _ => {
-            eprintln!("usage: schemify-interop xschem-import <args>...");
+            eprintln!("usage: schemify-interop xschem-import <args>...\n{JOB_USAGE}");
             2
+        }
+    }
+}
+
+const JOB_USAGE: &str = "\
+usage: schemify-interop virtuoso-export <project-dir> <cell-file>... -o <file.sfyx> [--analoglib] [--retarget] [--lib L=V]...
+       schemify-interop virtuoso-import <project-dir> <file.sfyx>
+       schemify-interop xschem-export <project-dir> <cell-file>... -o <out-dir>
+       schemify-interop install-skill <dir>
+(cell files, .sfyx paths and output paths are relative to <project-dir>)";
+
+/// Parses the arguments of a job subcommand into (project directory, command).
+fn job_command(cmd: &str, args: &[String]) -> Option<(PathBuf, crate::job::Command)> {
+    use crate::job::Command;
+    use crate::virtuoso::{ExportOptions, ImportOptions};
+    if cmd == "install-skill" {
+        let [dir] = args else { return None };
+        return Some((
+            PathBuf::from(dir),
+            Command::InstallSkill { dir: String::new() },
+        ));
+    }
+    let (project, rest) = args.split_first()?;
+    let mut paths = Vec::new();
+    let mut out = None;
+    let mut opts = ExportOptions {
+        producer: format!("schemify-interop {}", env!("CARGO_PKG_VERSION")),
+        ..ExportOptions::default()
+    };
+    let mut it = rest.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "-o" => out = Some(it.next()?.clone()),
+            "--analoglib" => opts.analoglib = true,
+            "--retarget" => opts.retarget = true,
+            "--lib" => {
+                let (l, v) = it.next()?.split_once('=')?;
+                opts.lib_map.insert(l.to_owned(), v.to_owned());
+            }
+            f if f.starts_with("--") => return None,
+            p => paths.push(p.replace('\\', "/")),
+        }
+    }
+    let c = match cmd {
+        "virtuoso-export" if !paths.is_empty() => Command::VirtuosoExport {
+            tops: paths,
+            out: out?,
+            opts,
+        },
+        "virtuoso-import" if paths.len() == 1 && out.is_none() => Command::VirtuosoImport {
+            sfyx: paths.remove(0),
+            opts: ImportOptions::default(),
+        },
+        "xschem-export" if !paths.is_empty() => Command::XschemExport {
+            tops: paths,
+            out_dir: out?,
+        },
+        _ => return None,
+    };
+    Some((PathBuf::from(project), c))
+}
+
+/// Runs a job against the file system under `project`: 0 written, 1 refused (problems
+/// printed), 2 an I/O error.
+fn drive(project: &Path, command: crate::job::Command) -> u8 {
+    use crate::job::{Job, Step};
+    let mut job = Job::new(command);
+    loop {
+        match job.step() {
+            Step::Read(paths) => {
+                for p in paths {
+                    let bytes = std::fs::read(project.join(&p)).ok();
+                    job.supply(&p, bytes);
+                }
+            }
+            Step::Done { writes, summary } => {
+                for (p, b) in &writes {
+                    let path = project.join(p);
+                    if let Some(dir) = path.parent()
+                        && let Err(e) = std::fs::create_dir_all(dir)
+                    {
+                        eprintln!("schemify-interop: {}: {e}", dir.display());
+                        return 2;
+                    }
+                    if let Err(e) = std::fs::write(&path, b) {
+                        eprintln!("schemify-interop: {}: {e}", path.display());
+                        return 2;
+                    }
+                }
+                println!("{summary}");
+                return 0;
+            }
+            Step::Failed(problems) => {
+                for p in problems {
+                    eprintln!("schemify-interop: {p}");
+                }
+                return 1;
+            }
         }
     }
 }
