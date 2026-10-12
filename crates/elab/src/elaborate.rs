@@ -521,7 +521,7 @@ pub fn elaborate<F: Funcs>(
         }
     }
     drop(seen);
-    globals.sort_unstable_by(|a, b| e.names.cmp(*a, *b));
+    e.names.sort(&mut globals);
     out.bench = if bench {
         e.bench_lines(doc, corner_row)
     } else {
@@ -1514,15 +1514,16 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             .map(|(i, r)| (r.prefix, i as u32))
             .collect();
         let mut keys = crate::connect::radix_sort(keys);
-        let mut lo = 0;
+        let (mut lo, mut run) = (0, Vec::new());
         while lo < keys.len() {
             let hi = lo + keys[lo..].iter().take_while(|k| k.0 == keys[lo].0).count();
             if hi - lo > 1 {
-                keys[lo..hi].sort_by(|a, b| {
-                    names
-                        .cmp(rows[a.1 as usize].name, rows[b.1 as usize].name)
-                        .then(a.1.cmp(&b.1))
-                });
+                run.clear();
+                run.extend(keys[lo..hi].iter().map(|k| (rows[k.1 as usize].name, k.1)));
+                names.sort_by_text(&mut run);
+                for (k, r) in keys[lo..hi].iter_mut().zip(&run) {
+                    k.1 = r.1;
+                }
             }
             lo = hi;
         }
@@ -1577,17 +1578,19 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             }
         }
         if !is_top {
-            let mut extra: Vec<(Name, Name)> = propagated
+            let extra: Vec<(Name, Name)> = propagated
                 .into_iter()
                 .filter(|(p, _)| {
                     !(0..f.pin_name.len())
                         .any(|q| f.pin_name[q] == *p && f.pin_inherit[q] != Name::NONE)
                 })
                 .collect();
-            extra.sort_by(|a, b| self.names.cmp(a.0, b.0));
+            let mut order: Vec<(Name, u32)> =
+                (0..extra.len()).map(|i| (extra[i].0, i as u32)).collect();
+            self.names.sort_by_text(&mut order);
             let mut tmp = Vec::new();
             let mut buf = String::new();
-            for (pin, default) in extra {
+            for (pin, default) in order.into_iter().map(|o| extra[o.1 as usize]) {
                 tmp.clear();
                 let text = self.names.get(pin).to_owned();
                 let _ = netexpr::expand(&text, &mut self.names, &mut tmp, &mut buf);
@@ -1741,10 +1744,10 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             self.defs.name[d] = self.names.intern(&name);
         }
         // 30-bit hash collisions between different tuples: use all 13 digits.
-        let mut order: Vec<usize> = (0..nd).collect();
-        order.sort_by(|a, b| self.names.cmp(self.defs.name[*a], self.defs.name[*b]));
+        let mut order: Vec<(Name, u32)> = (0..nd).map(|d| (self.defs.name[d], d as u32)).collect();
+        self.names.sort_by_text(&mut order);
         for w in 0..order.len().saturating_sub(1) {
-            let (a, b) = (order[w], order[w + 1]);
+            let (a, b) = (order[w].1 as usize, order[w + 1].1 as usize);
             if self.defs.name[a] == self.defs.name[b] {
                 for d in [a, b] {
                     let ci = self.defs.cell[d];
@@ -1774,9 +1777,10 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             val.write_text(&mut text);
             vars.push((g.var_name[v], self.names.intern(&text)));
         }
-        vars.sort_by(|a, c| self.names.cmp(a.0, c.0));
-        b.var_name = vars.iter().map(|v| v.0).collect();
-        b.var_text = vars.iter().map(|v| v.1).collect();
+        let mut order: Vec<(Name, u32)> = (0..vars.len()).map(|i| (vars[i].0, i as u32)).collect();
+        self.names.sort_by_text(&mut order);
+        b.var_name = order.iter().map(|o| o.0).collect();
+        b.var_text = order.iter().map(|o| vars[o.1 as usize].1).collect();
         // Corner lines in file order.
         b.corner_start.push(0);
         if let Some(r) = corner {

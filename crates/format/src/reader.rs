@@ -160,7 +160,7 @@ pub(crate) fn parse_with(
         assert!(doc.warnings.iter().all(|d| d.code.is_warning()));
         return Ok(doc);
     }
-    diags.sort_by_key(|d| (d.line, d.col, d.code));
+    sort_diags(&mut diags);
     diags.truncate(DIAGNOSTICS_MAX);
     Err(ParseError { diagnostics: diags })
 }
@@ -741,6 +741,16 @@ fn check_records(doc: &Document<'_>, diags: &mut Vec<Diagnostic>) {
     );
 }
 
+/// Sorts diagnostics by (line, column, code), stably: the crate's one diagnostic sort.
+fn sort_diags(diags: &mut [Diagnostic]) {
+    diags.sort_by_key(|d| (d.line, d.col, d.code));
+    assert!(
+        diags
+            .windows(2)
+            .all(|w| (w[0].line, w[0].col) <= (w[1].line, w[1].col))
+    );
+}
+
 /// Reports duplicate ids (`W001`, into the document's warnings) and duplicate names
 /// within a kind (`E024`). Cost: two sorts, O(n log n) in records.
 fn check_keys(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
@@ -789,7 +799,7 @@ fn check_keys(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
             });
         }
     }
-    warnings.sort_by_key(|d| d.line);
+    sort_diags(&mut warnings); // all W001 at column 1: by line
     assert!(
         warnings
             .iter()

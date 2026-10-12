@@ -120,6 +120,32 @@ impl Names {
         }
     }
 
+    /// Sorts `rows` by the text of the name ([`Names::cmp`]), then by the tag. With
+    /// distinct tags the order is total, so tagging each row with its position gives a
+    /// stable sort by text.
+    ///
+    /// Why one routine: text sorts of names share this one sort instead of instantiating
+    /// a sort per call-site closure (smaller code, one place that defines the order).
+    ///
+    /// Cost: O(n log n) text compares, no allocation.
+    pub fn sort_by_text(&self, rows: &mut [(Name, u32)]) {
+        rows.sort_unstable_by(|a, b| self.cmp(a.0, b.0).then(a.1.cmp(&b.1)));
+        debug_assert!(rows.windows(2).all(|w| self.cmp(w[0].0, w[1].0).is_le()));
+    }
+
+    /// Sorts `v` by text ([`Names::cmp`]); equal names are equal handles, so the order is
+    /// total.
+    ///
+    /// Cost: [`Names::sort_by_text`] plus one scratch copy of `v`.
+    pub fn sort(&self, v: &mut [Name]) {
+        let mut rows: Vec<(Name, u32)> = v.iter().map(|&n| (n, 0)).collect();
+        self.sort_by_text(&mut rows);
+        for (d, r) in v.iter_mut().zip(&rows) {
+            *d = r.0;
+        }
+        assert_eq!(rows.len(), v.len());
+    }
+
     /// Interns `text`; equal text always yields the same name.
     ///
     /// Cost: one hash and one probe sequence (absent text is placed where the lookup
@@ -340,6 +366,34 @@ pub(crate) fn push_base32(h: u64, chars: u32, out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Oracle: a stable `sort_by(Names::cmp)`, over names with duplicates, NONE and "".
+    #[test]
+    fn text_sorts_equal_a_stable_sort_by_cmp() {
+        let mut n = Names::default();
+        let pool: Vec<Name> = ["b", "a10", "", "a", "a1", "B", "a"]
+            .iter()
+            .map(|t| n.intern(t))
+            .chain([Name::NONE])
+            .collect();
+        let mut seed = 0x9e37_79b9_u32;
+        for len in 0..40 {
+            let v: Vec<Name> = (0..len)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    pool[(seed >> 16) as usize % pool.len()]
+                })
+                .collect();
+            let mut want: Vec<(Name, u32)> = (0..len).map(|i| (v[i], i as u32)).collect();
+            want.sort_by(|a, b| n.cmp(a.0, b.0));
+            let mut got: Vec<(Name, u32)> = (0..len).map(|i| (v[i], i as u32)).collect();
+            n.sort_by_text(&mut got);
+            assert_eq!(got, want);
+            let mut names = v.clone();
+            n.sort(&mut names);
+            assert_eq!(names, want.iter().map(|w| w.0).collect::<Vec<_>>());
+        }
+    }
 
     #[test]
     fn interning_dedups_and_survives_growth() {

@@ -267,7 +267,7 @@ fn xspice_spellings(e: &Elab, plans: &Plans, d: Dialect) -> Vec<(Name, String)> 
             }
         }
     }
-    hits.sort_unstable_by(|a, b| e.names.cmp(*a, *b));
+    e.names.sort(&mut hits);
     hits.dedup();
     if hits.is_empty() {
         return Vec::new();
@@ -310,15 +310,13 @@ fn comment(d: Dialect) -> &'static str {
 
 /// Used definitions other than the top, sorted by subckt name (spec §7.1).
 fn defs_by_name(e: &Elab) -> Vec<u32> {
-    let mut order: Vec<u32> = (0..e.defs.cell.len() as u32)
+    let mut order: Vec<(Name, u32)> = (0..e.defs.cell.len() as u32)
         .filter(|&d| e.defs.used[d as usize] && d != e.top)
+        .map(|d| (e.defs.name[d as usize], d))
         .collect();
-    order.sort_by(|a, b| {
-        e.names
-            .cmp(e.defs.name[*a as usize], e.defs.name[*b as usize])
-    });
+    e.names.sort_by_text(&mut order);
     assert!(order.len() < e.defs.cell.len().max(1));
-    order
+    order.into_iter().map(|k| k.1).collect()
 }
 
 // ------------------------------------------------------------------ sections
@@ -774,7 +772,7 @@ impl<'e> Writer<'e> {
         self.wires.sort_unstable();
         self.wires.dedup();
         self.wires.retain(|n| !ports.contains(n));
-        self.wires.sort_by(|a, b| e.names.cmp(*a, *b));
+        e.names.sort(&mut self.wires);
         for n in &self.wires {
             out.push_str("  wire ");
             push_name(out, e.names.get(*n), Dialect::Verilog);
@@ -959,13 +957,12 @@ fn sort_lines(out: &mut String, seg: usize, lines: &[(usize, usize, usize, usize
     // ponytail: the out-of-order case copies the definition's text once; fine for
     // templates that reorder names (rare), revisit if a PDK makes it common.
     let text = out[seg..].to_owned();
-    let mut order: Vec<usize> = (0..lines.len()).collect();
-    order.sort_by(|&a, &b| {
-        let key = |l: (usize, usize, usize, usize)| &text.as_bytes()[l.2 - seg..l.3 - seg];
-        key(lines[a]).cmp(key(lines[b]))
-    });
+    let mut order: Vec<(&str, u32)> = (0..lines.len())
+        .map(|i| (&text[lines[i].2 - seg..lines[i].3 - seg], i as u32))
+        .collect();
+    order.sort_unstable();
     out.truncate(seg);
-    for i in order {
+    for i in order.into_iter().map(|o| o.1 as usize) {
         out.push_str(&text[lines[i].0 - seg..lines[i].1 - seg]);
     }
     assert_eq!(out.len(), seg + text.len());

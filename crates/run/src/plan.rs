@@ -254,7 +254,7 @@ impl Plan {
                 name,
             });
         }
-        plan.dists.sort_by(|a, b| a.var.cmp(&b.var));
+        sort_by_name(&mut plan.dists, |d| &d.var);
 
         // ---- corners and configs
         let t = doc.corners();
@@ -269,7 +269,7 @@ impl Plan {
                 sets,
             });
         }
-        plan.corners.sort_by(|a, b| a.name.cmp(&b.name));
+        sort_by_name(&mut plan.corners, |x| &x.name);
         let t = doc.configs();
         plan.configs = (0..t.kind.len())
             .map(|r| s.get(t.fields[r][0]).to_owned())
@@ -297,7 +297,7 @@ impl Plan {
             };
             plan.sweeps.push(Sweep { name, var, values });
         }
-        plan.sweeps.sort_by(|a, b| a.name.cmp(&b.name));
+        sort_by_name(&mut plan.sweeps, |x| &x.name);
 
         // ---- Monte Carlo
         let t = doc.montecarlos();
@@ -316,7 +316,7 @@ impl Plan {
                 seed,
             });
         }
-        plan.montecarlos.sort_by(|a, b| a.name.cmp(&b.name));
+        sort_by_name(&mut plan.montecarlos, |x| &x.name);
 
         // ---- outputs and specs (before optimize: goals name outputs)
         let t = doc.outputs();
@@ -327,7 +327,7 @@ impl Plan {
                 .map_err(|e| plan_err("output", &name, e.to_string()))?;
             plan.outputs.push(Output { name, src, prog });
         }
-        plan.outputs.sort_by(|a, b| a.name.cmp(&b.name));
+        sort_by_name(&mut plan.outputs, |x| &x.name);
         assert!(plan.outputs.len() <= TABLE_MAX, "doc caps bench tables");
         let t = doc.specs();
         for r in 0..t.kind.len() {
@@ -361,7 +361,7 @@ impl Plan {
                     .collect()
             })?);
         }
-        plan.optimizes.sort_by(|a, b| a.name.cmp(&b.name));
+        sort_by_name(&mut plan.optimizes, |x| &x.name);
 
         assert!(plan.vars.len() <= TABLE_MAX && plan.corners.len() <= TABLE_MAX);
         assert!(plan.specs.windows(2).all(|w| w[0].output <= w[1].output));
@@ -387,6 +387,28 @@ impl Plan {
     pub fn corner(&self, name: &str) -> Option<&Corner> {
         self.corners.iter().find(|c| c.name == name)
     }
+}
+
+/// Sorts `v` stably by `name`: one `(name, position)` sort shared by every row type,
+/// instead of one merge sort instantiated per type and closure.
+pub(crate) fn sort_by_name<T>(v: &mut Vec<T>, name: impl Fn(&T) -> &String) {
+    let mut keyed: Vec<(&str, u32)> = (0..v.len())
+        .map(|i| (name(&v[i]).as_str(), i as u32))
+        .collect();
+    keyed.sort_unstable();
+    let order: Vec<u32> = keyed.into_iter().map(|k| k.1).collect();
+    permute(v, order);
+}
+
+/// Reorders `v` so that row `k` is the old row `order[k]`; `order` is a permutation.
+fn permute<T>(v: &mut Vec<T>, order: impl IntoIterator<Item = u32>) {
+    let mut old: Vec<Option<T>> = v.drain(..).map(Some).collect();
+    v.extend(
+        order
+            .into_iter()
+            .map(|i| old[i as usize].take().expect("a permutation")),
+    );
+    assert_eq!(v.len(), old.len(), "a permutation");
 }
 
 fn read_dist(var: &str, d: &[&str]) -> Result<Dist, PlanError> {

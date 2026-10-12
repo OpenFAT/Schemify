@@ -1220,9 +1220,13 @@ pub(crate) fn connect_seeded(
         cn.bit_name[b] = gen_name[g];
         cn.bit_global[b] = is_global(texts[g]) || globals.binary_search(&gen_name[g]).is_ok();
     }
-    // All pairs with one name were merged above, so one net per name.
+    // All pairs with one name were merged above, so one net per name; `pairs` is sorted
+    // by name, so `by_name` already is (no sort).
     cn.by_name = pairs.iter().map(|p| (p.0, net_of[p.1 as usize])).collect();
-    cn.by_name.sort_unstable();
+    assert!(
+        cn.by_name.windows(2).all(|w| w[0] <= w[1]),
+        "pairs sorted by name"
+    );
     cn.by_name.dedup_by_key(|p| p.0);
     debug_assert!(cn.by_name.windows(2).all(|w| w[0].0 < w[1].0));
 

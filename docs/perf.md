@@ -186,6 +186,7 @@ exactly to the totals.
 | omnilua's crates at `opt-level = "z"` (cold: startup, keymap/hook calls) | −369 K (3,589,264 → 3,220,624) | — | core built before/after |
 | `[profile.release.package]`: cold crates at `opt-level = "z"`, GPU setup at `"s"` | −352 K | −2,945 K | built with and without the table |
 | Linux: no unwind tables, packed relative relocations (DT_RELR) | −131 K | −1,364 K | built with and without the flags |
+| Shared sorts (2026-10-12): elab/netlist name sorts through `Names::sort_by_text`, run's plan tables through one `(name, position)` sort, connect's `by_name` not re-sorted | −135 K (3,220,624 → 3,085,456) | not measured | core built before/after (main 953362e); `core::slice::sort` symbols 461 K → 322 K |
 
 Not cut, measured: the GLES backend (glow, khronos-egl, wgpu-hal `gles`, naga GLSL out) is
 ≈ 176 K; it is the only GPU path on Linux machines without Vulkan, so it stays. `cargo tree -d`
