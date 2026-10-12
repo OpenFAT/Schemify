@@ -579,8 +579,8 @@ fn write_schematic(
                     _ => RecordKind::Poly,
                 };
                 let vals: Vec<i32> = (2..).map_while(|i| c.coord(r, i)).collect();
-                for p in vals.chunks_exact(2) {
-                    grow([p[0], p[1]]);
+                for p in vals.as_chunks::<2>().0 {
+                    grow(*p);
                 }
                 shape(&mut out, c, r, kind, &vals, false, notes);
             }
