@@ -147,7 +147,6 @@ impl WavesView {
             events,
             &mut routed,
         );
-        recompose |= self.ui.sync_fields(&self.state, &self.strings);
         for i in 0..routed.commands.len() {
             let name = self.strings.get(routed.commands.command[i]).to_owned();
             let node = self.strings.get(routed.commands.node[i]).to_owned();

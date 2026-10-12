@@ -59,7 +59,9 @@ ratex-parser = "0.1.14"
 ratex-layout = "0.1.14"
 ratex-types = "0.1.14"
 ratex-font = "0.1.14"
-skrifa = "0.44"
+# Only metrics and advances of the embedded faces: no autohinter shaping (vello turns it on
+# for the renderer).
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
 # No `wayland-csd-adwaita` (D39: tiny-skia + ab_glyph + ttf-parser for a title bar). Where the
 # compositor has no server-side decorations (GNOME) the window gets smithay's plain fallback
 # frame: move/resize/close/maximize/minimize, no title text, no Adwaita styling.

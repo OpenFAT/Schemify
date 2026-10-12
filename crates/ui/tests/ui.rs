@@ -726,8 +726,10 @@ fn menus_by_keyboard_arrows_enter_escape_and_mnemonics() {
         f.sym("file.open_most_recent"),
         "the next one"
     );
-    // A unique letter activates: here a cascade, which opens on its first row.
+    // "i" lands on the cascade (first of several I rows); Right opens it on its first row.
     key(&mut f, "i");
+    assert_eq!(f.state.hover(), f.sym("menu.file.image_export"));
+    key(&mut f, "Right");
     assert_eq!(
         f.state.open(),
         [f.sym("menu.file"), f.sym("menu.file.image_export")]
@@ -736,6 +738,10 @@ fn menus_by_keyboard_arrows_enter_escape_and_mnemonics() {
     key(&mut f, "Left");
     assert_eq!(f.state.open(), [f.sym("menu.file")]);
     assert_eq!(f.state.hover(), f.sym("menu.file.image_export"));
+    for _ in 0..3 {
+        key(&mut f, "Down");
+    }
+    assert_eq!(f.state.hover(), f.sym("file.import_project.folder"));
     key(&mut f, "Down");
     assert_eq!(
         f.state.hover(),
@@ -764,6 +770,7 @@ fn menus_by_keyboard_arrows_enter_escape_and_mnemonics() {
     assert!(f.state.open().is_empty());
     key(&mut f, "F10");
     key(&mut f, "i");
+    key(&mut f, "Right");
     key(&mut f, "Escape");
     assert_eq!(
         f.state.open(),
