@@ -34,7 +34,11 @@ const COX: f64 = 8.8e-3;
 // exp/ln can differ in the last bit (MSVC vs glibc), and the embedded SKILL vectors are
 // compared as text, so they must be identical on every OS (D32).
 fn softplus(u: f64) -> f64 {
-    if u > 30.0 { u } else { libm::log1p(libm::exp(u)) }
+    if u > 30.0 {
+        u
+    } else {
+        libm::log1p(libm::exp(u))
+    }
 }
 
 fn sigmoid(u: f64) -> f64 {
