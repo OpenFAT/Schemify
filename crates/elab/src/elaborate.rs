@@ -50,10 +50,12 @@ impl Dialect {
     }
 
     /// `format <dialect>` words an impl may use for this dialect, most specific first
-    /// (format spec §4: `spice` serves ngspice, xyce and cdl).
+    /// (format spec §4: `spice` serves ngspice, espice, xyce and cdl; netlist spec §7.2a:
+    /// `format espice` overrides it where ESPice needs another line, e.g. `mfactor=`).
     pub fn format_words(self) -> &'static [&'static str] {
         match self {
-            Dialect::Ngspice | Dialect::Espice => &["spice"],
+            Dialect::Ngspice => &["spice"],
+            Dialect::Espice => &["espice", "spice"],
             Dialect::Xyce => &["xyce", "spice"],
             Dialect::Cdl => &["cdl", "spice"],
             Dialect::Spectre => &["spectre"],

@@ -744,3 +744,72 @@ fn espice_copies_verilog_a_sources_without_compiling() {
     let msg = results.errors().next().unwrap().2.to_owned();
     assert!(msg.contains("vres.va"), "{msg}");
 }
+
+/// A Verilog-A `file` cell whose source includes other files (BSIM-CMG's layout).
+const VTOP: &str = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\nimpl va veriloga\n  model vtop\n  file va/vtop.va\n";
+const INC_BENCH: &str = "schemify 1 shbench\n\ninst 0aaaaa ./vtop\n  at 0 0 R0\n  name N1\n\n\
+label 0bbbba 0 0 R0 out\nlabel 0bbbbb 0 20 R0 0\n\nvar R 1\n";
+
+/// A stand-in ESPice that fails unless the includes sit beside `vtop.va` in their layout.
+const FAKE_INC: &str = r#"for f in vtop.va macros.include sub/a.inc sub/b.inc; do [ -f "$f" ] || { echo "missing $f" >&2; exit 5; }; done
+[ -e nope.inc ] && { echo 'copied a commented include' >&2; exit 6; }
+printf 'Title: fake\nPlotname: Operating Point\nFlags: real\nNo. Variables: 1\nNo. Points: 1\nVariables:\n 0 v(out) voltage\nValues:\n0 1\n' > "$2"
+"#;
+
+/// Run spec §5: an espice job gets a copied source's `` `include``s beside it, each
+/// resolved against the file that names it (`sub/a.inc` includes `b.inc` = `sub/b.inc`),
+/// standard headers (`disciplines.vams`) left to the compiler, commented ones skipped and
+/// cycles ended. Negative space: a missing include, or one above the source's directory,
+/// fails the job naming it.
+#[test]
+fn espice_copies_verilog_a_includes_beside_the_source() {
+    let (p, top) = project(&[("vtop.shprim", VTOP), ("tb.shbench", INC_BENCH)]);
+    let plan = Plan::read(p.doc(top).unwrap()).unwrap();
+    let dir = tmp("espice-inc");
+    let va = dir.join("va");
+    std::fs::create_dir_all(va.join("sub")).unwrap();
+    let write = |f: &str, t: &str| std::fs::write(va.join(f), t).unwrap();
+    write(
+        "vtop.va",
+        "`include \"disciplines.vams\"\n`include \"macros.include\"\n  `include \"sub/a.inc\" // two\n\
+         // `include \"nope.inc\"\nmodule vtop(p, n); endmodule\n",
+    );
+    write("macros.include", "`define K 2\n");
+    write("sub/a.inc", "`include \"b.inc\"\n");
+    write(
+        "sub/b.inc",
+        "`include \"../macros.include\"\n`include \"a.inc\"\n",
+    );
+    let go = |name: &str| {
+        let mut j = Jobs::new();
+        j.push(None, None, NO_SAMPLE, &[]).unwrap();
+        run_dialect(&p, top, &plan, j, &[], Dialect::Espice, |d| {
+            let mut c = cfg(&dir, d, sh(FAKE_INC), 1);
+            c.dir = dir.join(name);
+            c.cache = dir.join("cache");
+            c
+        })
+    };
+    let (jobs, results, runner) = go("ok");
+    let errs: Vec<_> = results.errors().collect();
+    assert_eq!(jobs.states(), [State::Done], "{errs:?}");
+    let job = runner.job_dir(0);
+    assert_eq!(
+        std::fs::read_to_string(job.join("sub/b.inc")).unwrap(),
+        "`include \"../macros.include\"\n`include \"a.inc\"\n"
+    );
+    assert!(!job.join("disciplines.vams").exists() && !job.join("nope.inc").exists());
+
+    std::fs::remove_file(va.join("sub/b.inc")).unwrap();
+    let (jobs, results, _) = go("missing");
+    assert_eq!(jobs.states(), [State::Failed]);
+    let msg = results.errors().next().unwrap().2.to_owned();
+    assert!(msg.contains("a.inc") && msg.contains("\"b.inc\""), "{msg}");
+
+    write("sub/b.inc", "`include \"../../outside.inc\"\n");
+    std::fs::write(dir.join("outside.inc"), "").unwrap();
+    let (jobs, results, _) = go("outside");
+    assert_eq!(jobs.states(), [State::Failed]);
+    let msg = results.errors().next().unwrap().2.to_owned();
+    assert!(msg.contains("outside the source's directory"), "{msg}");
+}
