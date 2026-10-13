@@ -39,7 +39,7 @@ No Virtuoso runs in CI. The SKILL side is therefore (a) written in a subset a te
 
 Coordinates are Schemify milli-units, y down, orientations Schemify's, net expressions, templates and expressions in Schemify syntax: the Design is Schemify-shaped, and every tool-specific spelling is produced or consumed at the tool edge through the profile tables (§3). A tool difference is a row in a profile table, never a branch in a shared transform.
 
-**Native CLI** `schemify-interop` (feature `cli`): `xschem-import …` (import.md), `xschem-export <project> <cell>… -o <dir>`, `virtuoso-export <project> <cell>… -o <file.sfyx> [--map F] [--lib L=V]… [--retarget]`, `virtuoso-import <file.sfyx> <project> [--map F] [--into <lib>]`, `install-skill <dir>` (writes `schemify.il`). Exit codes as the core CLI (0 ok, 1 design problems reported, 2 usage/I/O).
+**Native CLI** `schemify-interop` (feature `cli`): `xschem-import …` (import.md), `xschem-export <project> <cell>… -o <dir>`, `virtuoso-export <project> <cell>… -o <file.sfyx> [--map F] [--lib L=V]… [--retarget] [--target <map.retarget>] [--core-cells]` (also writes the OCEAN scripts `ocean/<cell>.ocn` beside the `.sfyx`, §9.6; core devices go to their analogLib masters unless `--core-cells`, §6.5), `virtuoso-import <file.sfyx> <project> [--map F] [--into <lib>]`, `install-skill <dir>` (writes `schemify.il`). Exit codes as the core CLI (0 ok, 1 design problems reported, 2 usage/I/O).
 
 **Editor commands** (wasm guest, capabilities `read_project` + `write_project`): `interop.virtuoso_export <cell> [<out.sfyx>]`, `interop.virtuoso_import <file.sfyx>`, `interop.xschem_export <cell> [<dir>]`, `interop.xschem_import <file.sch|.sym>…`, `interop.install_skill`. File ▸ Interop submenu; each without arguments opens a path panel (cktimg's pattern). Reads follow references from the named cells (the guest has no directory listing): the closure of `cellref`s through the project manifest, plus `interop.map` and the existing target files for merging.
 
@@ -124,7 +124,7 @@ xschem export values: a number with a suffix is written as is (Schemify's suffix
 
 Virtuoso → Schemify adds: ILLabel `cdsName()` → `{name}`; `cdsParam(n)` → `<p>={<p>}` where `p` is the n-th entry of the cell CDF's `paramLabelSet` (dropped when it has none); `cdsTerm("t")` and `[@refDes]`, `[@userPartName…]` → dropped (runtime annotation); `[@p:a%b:c]` → `a{p}b` (the fallback `c` is lost, reviewed).
 
-Decided: parameter NLP labels and literal labels sit on `annotate drawing`; literal text inside an NLP format escapes `\ [ ] : %` with `\` (and is unescaped on import); `[@partName]`/`[@cellName]` → `{cell}`. A `stext` anchor maps to `justify`: no flag `upperLeft`, `hcenter` `upperCenter`, `vcenter` `centerLeft`, both `centerCenter`; on import a justification containing `Center`/starting with `center` sets the flag. Text height is `size · 10000` milli-units, i.e. `size = height · 16 / upi` (a `stext`/`text` without `size` exports the editor's defaults 0.3/0.4; import always writes `size`).
+Decided: parameter NLP labels and literal labels sit on `annotate drawing`; literal text inside an NLP format escapes `\ [ ] : %` with `\` (and is unescaped on import); `[@partName]`/`[@cellName]` → `{cell}`. A `stext` anchor maps to `justify`: no flag `upperLeft`, `hcenter` `upperCenter`, `vcenter` `centerLeft`, both `centerCenter`; on import a justification containing `Center`/starting with `center` sets the flag. Text height is `size · 10000` milli-units, i.e. `size = height · 16 / upi` (a `stext`/`text` without `size` exports the editor's defaults 0.3/0.4; import always writes `size`). A template with several holes, each a parameter or `eng(<parameter>)` (a display formatter: NLP shows the value as entered), is one NLP label of consecutive groups, the literal before the first hole the first group's `pre`, each literal after a hole that hole's `post`: `{eng(w)}/{eng(l)}` → `[@w:%/][@l]`, `{value}·i({vnam})` → `[@value:%·i(][@vnam:%)]` (GUESS G23: Virtuoso evaluates several groups in one NLP label); import concatenates the groups' templates (the `eng()` is lost).
 
 ## 4. The `.sfyx` exchange file
 
@@ -169,7 +169,7 @@ Context records set the target of the records after them. `ref`s are positive in
 | `("output" name kind expr)` | kind `"point"`/`"net"`; `expr` the expression or signal | output |
 | `("spec" output op value)` | op `lt gt` | spec bound |
 | `("defn" file text)` | file name, *text* | a definition file the loader writes beside the maestro view and lists in the test's `definitionFiles` |
-| `("intent" ref class fields)` | `fields` list of `(key value)` strings: `gmid l id vds w nf` | gm/Id sizing intent for an instance (§10) |
+| `("intent" ref class fields)` | `fields` list of `(key value)` strings: `gmid l id vds w nf` (gm/Id intent, numbers), or `w l nf m` (a fixed size, ADE values, no `gmid`, §10.5) | class placeholder of an instance (§10) |
 | `("end")` | | last line; a file without it is truncated and refused |
 
 Order: `sfyx`; the `"ref"` cells, then the `"design"` cells, each group by library (libraries sorted by name, a `lib` record at each change) and by cell name; per cell `cell`, `cdf` + `param`s (CDF order) + `siminfo`s (by simulator name), then per view (sorted by view name) `cv` and its objects in the order `term pinfig inst spin wire label shape prop conn intent`, then the text views (by view name); then maestro records; `end`. Each kind is sorted by its key: `term` name; `pinfig` (term x1 y1 x2 y2); `inst` name; `spin` term; `wire` (points width); `label` (x y text layer purpose orient justify font height kind); `shape` (coords kind layer purpose width); `prop` (ref name); `conn` (ref term); `intent` ref. Keys compare integers by value, strings by bytes (G12), lists element by element with a prefix first, and integer < string < list. Refs are assigned in write order after sorting, so the same cellview always dumps to the same bytes.
@@ -306,7 +306,9 @@ Decided: a step is 10 units; a pin whose new position equals its old one keeps i
 
 ### 6.5 Built-in device table (analogLib ↔ core)
 
-Used for the ngspice templates of analogLib mirror cells (import) and for the simInfo of `schemify_core` cells (export), and by `--analoglib` re-mastering. Pins by order; values through §3.4.
+Used for the ngspice templates of analogLib mirror cells (import) and for the simInfo of `schemify_core` cells (export), and by analogLib re-mastering. Pins by order; values through §3.4.
+
+Decided (2026-10-12): the command line and the editor command export core devices onto these analogLib masters by default (ADE users place analogLib; the `schemify_core` mirror stays available with `--core-cells`); `ExportOptions::analoglib` keeps its library default `false`. A re-mastering onto analogLib is not a report row (it is the default); a `map` row's is (`remapped`). A core param with no analogLib counterpart is reported (`remapped`) unless its override equals the core default or it only shapes the ngspice netlist (`savecurrent`: Spectre saves currents through the test, §9.6).
 
 | core | analogLib | pins (core ↔ analogLib) | params (core ↔ analogLib) | ngspice template for the analogLib mirror |
 |---|---|---|---|---|
@@ -333,7 +335,7 @@ Spectre simInfo of `schemify_core` cells: res → `resistor` `r=`, cap → `capa
 
 ### 6.6 SPICE source text ↔ waveform params
 
-`value` of `core:vsource`/`isource` is parsed as SPICE independent-source text: `[DC] v`, `AC mag [phase]`, and one of `PULSE(v1 v2 td tr tf pw per)`, `SIN(vo va freq td theta)`, `PWL(t1 v1 t2 v2 …)`, `EXP(v1 v2 td1 tau1 td2 tau2)` (case-insensitive, commas or spaces). Export picks the analogLib cell by waveform (`vdc` when none) and the Spectre `vsource type=` likewise; params: `vdc acm acp` + pulse `v1 v2 td tr tf pw per`, sine `vo va freq td theta`, pwl `tvpairs t1 v1 …`, exp `v1 v2 td1 tau1 td2 tau2` (i-sources: `idc i1 i2 io ia` names). Import formats the same text back (`DC 1 AC 1 0 PULSE(0 1.8 0 10p 10p 5n 10n)`). Text that does not parse exports as `vdc` with `vdc` = the whole text, `needs_review: source`. Decided: a leading bare number is the DC value; every value must be a number literal (a template hole or expression does not parse); a PWL keeps at most 8 pairs; keywords are written upper-case; a waveform's trailing unset params are omitted and an unset one inside is `0`; only an instance override is sent to `schemify_core` (D40), an analogLib master gets the parsed effective value.
+`value` of `core:vsource`/`isource` is parsed as SPICE independent-source text: `[DC] v`, `AC mag [phase]`, and one of `PULSE(v1 v2 td tr tf pw per)`, `SIN(vo va freq td theta)`, `PWL(t1 v1 t2 v2 …)`, `EXP(v1 v2 td1 tau1 td2 tau2)` (case-insensitive, commas or spaces). Export picks the analogLib cell by waveform (`vdc` when none) and the Spectre `vsource type=` likewise; params: `vdc acm acp` + pulse `v1 v2 td tr tf pw per`, sine `vo va freq td theta`, pwl `tvpairs t1 v1 …`, exp `v1 v2 td1 tau1 td2 tau2` (i-sources: `idc i1 i2 io ia` names). Import formats the same text back (`DC 1 AC 1 0 PULSE(0 1.8 0 10p 10p 5n 10n)`). Every value is a number literal (optionally negative), one whole `{expr}` template hole, or a bare name (the hole of that one name: `VCM`, `dc VDD`): `dc {VGS} ac 1` → `vdc` `VGS`, `acm` `1`; `{VDD}` → `vdc` `VDD`; `dc {IDW*W/1u}` → `vdc` `IDW*W/1u` — the hole's expression by §3.4 in the instance's parent scope (bench vars bare: ADE design variables; a parent parameter `pPar("x")`), its review reasons reported. Text that does not parse — a hole without an AEL form, a hole glued to other text (`{a}u`), an empty or unclosed hole, any other word — exports as `vdc` with `vdc` = the whole text, `needs_review: source` (one row; never a CDF with part of the text). Import writes a value that is not a number literal back as a hole (`DC {VGS} AC 1`). Decided: a leading bare value is the DC value; a PWL keeps at most 8 pairs; keywords are written upper-case; a waveform's trailing unset params are omitted and an unset one inside is `0`; only an instance override is sent to `schemify_core` (D40), an analogLib master gets the parsed effective value.
 
 ## 7. Round trip and teamwork
 
@@ -409,7 +411,7 @@ One maestro view on the bench cell with one test, design = the bench schematic, 
 | Bench | Maestro |
 |---|---|
 | `var name expr` | `("var" name value "")`, value by §3.4 (bench vars bare) |
-| `sweep <v>` of var `v` (named after it): `values a b c` / `lin a b n` / `log a b n` | the var's value becomes the comma list `"a,b,c"`: `values` entries by §3.4, `lin`/`log` points by run.md §2 as canonical number text. A sweep named otherwise, a second sweep of a var, a one-point sweep or an entry without a comma-free AEL form: `needs_review: sweep` |
+| `sweep <v>` of var `v` (named after it): `values a b c` / `lin a b n` / `log a b n` | the var's value becomes the comma list `"a,b,c"`: `values` entries by §3.4, `lin`/`log` points by run.md §2 rounded to 15 significant digits, then canonical number text (`lin 0 0.8 81` → `0,0.01,…,0.8`, never the binary noise `0.010000000000000002`; the import recognizes `lin`/`log` by the same grid). This list *is* the maestro parametric sweep (ADE Assembler sweeps a global variable whose value is a comma list); the OCEAN script (§9.6) writes the same points as a `paramAnalysis`. A sweep named otherwise, a second sweep of a var, a one-point sweep or an entry without a comma-free AEL form: `needs_review: sweep` |
 | `corner name` with `lib path section`, `include path`, `set var expr`, `temp t` | `("corner" name 1)`, `("model" name path section)` (include: section `""`), `("var" var value name)`, `("var" "temperature" t name)`; `${NAME}` in paths → `$NAME` |
 | `.tran tstep tstop [tstart [tmax]]` | `("analysis" "tran" 1 (("stop" tstop) ("start" tstart) ("maxstep" tmax)))` (tstep has no field) |
 | `.ac dec\|lin n f1 f2` | `("analysis" "ac" 1 (("start" f1) ("stop" f2) ("incrType" "Logarithmic") ("stepTypeLog" "Points Per Decade") ("dec" n)))`; `lin` → `("incrType" "Linear") ("stepTypeLin" "Number of Steps") ("lin" n)`; `oct` is not mapped |
@@ -417,18 +419,42 @@ One maestro view on the bench cell with one test, design = the bench schematic, 
 | `.op` | `("analysis" "dc" 1 (("saveOppoint" "t")))`; with a `.dc` both share the one dc analysis, sweep options first |
 | `.noise v(out) src dec\|lin n f1 f2` | `("analysis" "noise" 1 (("start" f1) ("stop" f2) <the five sweep options of .ac> ("oprobe" "/out") ("iprobe" "/src")))`; `v(out,ref)` is not mapped |
 | `.temp t` | var `temperature` (global) |
+| `.options errpreset=liberal\|moderate\|conservative` | option `("errpreset" p)` of the test's `tran` analysis (any line order); with no `.tran`, another option, or a second preset: `needs_review: code`. Import writes it back as that line before `.tran` |
 | `.param k=v …` | var `k` (global); a `k` that is also a bench var is not mapped |
 | `.include f` / `.lib f s` | `("model" "" f s)` (quotes dropped, `${NAME}` → `$NAME`) |
 | any other line of the analysis block (device lines, `.ic`, `.save`, `.option`, `.meas`, a line with extra words such as `uic`, a value that is no number literal, a second analysis of a kind) | `needs_review: code` (stashed, §7.3) |
 | other `code` blocks: lang `spectre` | `("defn" "<name>.scs" text)` (the lines joined by LF, a final LF) |
 | other `code` blocks: SPICE, other langs | `needs_review: code` (stashed) |
-| `output name expr` | `("output" name "point" ade)`: `v(n)` → `VT("/n")` with `.` → `/` and `[ ]` → `< >`, the letter by the test's analyses (tran `VT`, else ac `VF`, else a dc sweep `VS`, else an operating point `VDC`); `i(dev)` → `IT("/dev/PLUS")` (same letters); a bench var `x` → `VAR("x")`; numbers by §3.4; `+ - * / ( )`; `^` → `**`; functions `ymax ymin avg rms integ deriv abs sqrt exp` → `ymax ymin average rms integ deriv abs sqrt exp`. Anything else (other functions, strings, comparisons, `?:`): `needs_review: output` (stashed) |
-| `spec out min a max b` | `("spec" out "gt" a)` and `("spec" out "lt" b)` (values by §3.4; one record per bound present). A spec of an output that does not map: `needs_review: spec` |
+| `output name expr` | `("output" name "point" ade)` by the outputs table below (`v(n)` → `VT("/n")`, `i(dev)` → `IT("/dev/<terminal>")`, bench vars → `VAR("x")`, `^` → `**`, …). Anything it does not cover: `needs_review: output` (stashed) |
+| `spec out min a max b` | `("spec" out "gt" a)` and `("spec" out "lt" b)` (one record per bound present; bounds below). A spec of an output that does not map: `needs_review: spec` |
 | `montecarlo`, `optimize`, `config` | stashed (§7.3), `needs_review: <kind>` |
 
 Record order (the SKILL dumper writes the same): `maestro`; global `var`s by name; `analysis` by name; the test's `model`s in block order; per corner (by name) `corner`, its `model`s in attribute order and its `var`s by name; `output`s by name; `spec`s by (output, op); `defn`s by file. Several benches give several tests, each after the previous one's records.
 
 Decided: ADE's `>`/`<` are taken for Schemify's inclusive `min`/`max` (an equality at the bound may judge differently). A bench var named `temperature` exports as the test temperature.
+
+**Outputs in detail** (`ade::out_expr`; the same text is the maestro output and the OCEAN expression, OCEAN evaluating ADE's calculator functions). The source's spacing is kept outside rewritten calls. Signals: `v(a.b.n)` → `V<L>("/<path>/n")`, the instance prefix through the bench's own instances (a subcircuit's SPICE name `X<name>` is the instance `<name>`: `v(XDUT.n1)` → `VF("/DUT/n1")`); `i(dev)` → `I<L>("/<path>/<terminal>")` with the terminal the *exported* master's first pin (analogLib `PLUS`, a `schemify_core` cell's own `p`, a map row's or `--target` class's mapping), `PLUS` for a name that is no instance; import reads `I<L>` of terminal `PLUS` or `p` back as `i()`. Letter `<L>`: the test's (tran `T`, else ac `F`, else a dc sweep `S`, else `DC`), or the output's attribute `analysis tran|ac|dc|op` (format.md rank 6) — one test can then hold the dc operating-point table and the ac outputs; an `analysis` the test does not run is `needs_review: output`. Functions:
+
+| Schemify | ADE |
+|---|---|
+| `ymax ymin avg rms integ deriv abs sqrt exp ln log10` | `ymax ymin average rms integ deriv abs sqrt exp ln log10` |
+| `re im mag ph db pp` | `real imag mag phaseDeg dB20 peakToPeak` |
+| `phase_margin gain_margin` | `phaseMargin gainMargin` |
+| `at(y, x0)` | `value(y x0)` |
+| `x()` | `xval(<the expression's first signal>)` (none: not mapped) |
+| `max(a, b, …)`, `min(…)` | `((a)+(b)±abs((a)-(b)))/2`, folded left (exact; the calculator's `max` is not element-wise) |
+| `pow(a, b)`, `a^b` | `(a)**(b)`, `a**b` |
+| `cross(y, l[, edge[, n]])` | `cross(y l n "rising"\|"falling"\|"either")` (edge `1` `-1` `0`, default either; `n` default 1; anything but those literals: not mapped) |
+| `settle(y, tol)` | `settlingTime(y ymin(xval(y)) t ymax(xval(y)) t 100*(tol)/abs(value(y ymax(xval(y)))-value(y ymin(xval(y)))))` (GUESS G24: `settlingTime` returns the absolute x, percent of the whole step) |
+| `op("M1", "gm")`, `op("/X1/M2", "id")` | `OP("/M1" "gm")`, `OP("/X1/M2" "id")` (below) |
+| `pi` | its value |
+| bench var `x` | `VAR("x")` |
+
+`op(inst, param)` (expr.md: the device parameter at the job's DC operating point; `inst` `/`-separated schematic instance names, leading `/` optional; segments after the device name a device inside its PDK subcircuit): the longest prefix that names instances of the bench is written by its Virtuoso path, the rest as written; with no rest, a placeholder whose `--target` class has `op <dev>.<inner>` (§10.2) appends `/<inner>` (`op("XDUT/M1","gm")` → `OP("/DUT/M1/main" "gm")`). OCEAN uses the same `OP()` (GUESS G25: OCEAN's `OP` reads `dcOpInfo` after `run`/`paramRun`; the fallback is `pv("/M1" "gm" ?result 'dcOpInfo)`). The bench needs `.op` (a `saveOppoint` dc analysis). Not mapped (`needs_review: output`, never a partial output): strings elsewhere, comparisons, `?:`/`if` (a column condition has no calculator form), `delay settle` with other arities, `fft cross` with other arguments, functions not in the table, nesting deeper than 64 calls.
+
+**Spec bounds**: a number by §3.4; an expression over bench vars none of which is swept is folded to its canonical number (`min A0_spec/(1+A0_spec)` → `0.975609756097561`; an ADE spec target is a value); one naming a swept var, or not evaluating, is `needs_review: spec` and that bound is not sent.
+
+**Plots**: an `output y …` with attribute `vs x` (another output; format.md rank 6) is plotted by the OCEAN script as `waveVsWave(?x X ?y Y)` printed to `<cell>/<y>_vs_<x>.txt` — over a sweep, each output is a family of per-point values. A maestro output is one value per point, so the plot itself is OCEAN-only (`needs_review: plot`, one row per plot); `y` and `x` are maestro outputs as usual.
 
 ### 9.2 Import
 
@@ -460,6 +486,37 @@ Signatures (rows of `tests/skill/mockdb.rs` `SIGNATURES`; source: the IC23.1 *AD
 ### 9.5 Oracles
 
 `tests/ade.rs`: (a) 32 generated benches (vars with lin/log/values sweeps, corners with `lib`/`include`/`set`/`temp`, every analysis kind, test models, `.temp`, `.param`, spectre blocks, outputs and specs, unmapped parts) export deterministically, report every unmapped part, import without the stash to exactly the §9 records, re-export to the same maestro records, and import with the stash (and onto the existing file) byte for byte; the §9.1 table record by record; (b) hand-written maestro dumps (`tests/fixtures/ade/*.sfyx`, the dumper's shape) import to golden benches and reports; (c) the Rust export of a bench → `SfyImport` on the mock maestro → the setup §9.1 says (tests, options, vars, corners, models, outputs, specs, env options, definition files) → `SfyExport` gives the same maestro records → the Rust import gives the bench back byte for byte (and the §9 records without the stash); `?overwrite` replaces the test; (d) malformed records are refused with their line on both sides, analyses without a SPICE form are reported and kept as Spectre, and that Spectre block exports back to the same analyses.
+
+### 9.6 OCEAN script per bench
+
+The export writes one script per maestro test, `ocean/<cell>.ocn` beside the `.sfyx`, named after the bench cell (tests of different benches may share a name; a cell name taken twice gets `_2`, …), and the test's definition files under `ocean/<cell>/`. Run headless after `SfyImport` (and `SfyRetarget`) of the same `.sfyx`: `cd ocean && ocean -nograph < <cell>.ocn`. Syntax from the *OCEAN Reference*; one call per line, in this order:
+
+```
+; dc_vds.ocn: OCEAN script of bench exercise1/dc_vds.shbench, written by schemify-interop (interop.md §9.6).
+createDir("dc_vds")
+simulator('spectre)
+design("schemify" "dc_vds" "schematic")
+resultsDir("dc_vds/psf")
+modelFile('("/pdk/models/spectre/toplevel.scs" "tt_lib"))
+desVar("L" "Lmin*pow(2,p)")
+desVar("Lmin" 20n)
+desVar("p" 0)
+analysis('dc ?dev "/VD" ?param "dc" ?start "0" ?stop "0.8" ?step "1m")
+save('i "/VMDN/PLUS" "/VMDP/PLUS")
+paramAnalysis("p" ?values '(0 1 2 3 4))
+paramRun()
+ocnPrint(?output "dc_vds/ro_n.txt" ?numberNotation 'scientific ?precision 8 1/value(deriv(IS("/VMDN/PLUS")) VAR("VDS")))
+exit()
+```
+
+- `design` names the maestro test's library, cell and view; `modelFile` the test's model files and those of the bench's default corner (header `corner`, else the first; with `--target`, the map's, §10.2); one corner per script (a bench with several: `needs_review: corner`, maestro has them all). `definitionFile` per definition file.
+- `desVar` per global var and default-corner `set`, by name: a SKILL number unquoted, an expression as a string; a swept var starts at its first point. The temperature is `temp(t)`.
+- `analysis('<name> ?<key> "<value>" …)` per enabled analysis by name, the maestro options without the ADE form's choosers (`sweep incrType stepTypeLin stepTypeLog`; OCEAN infers them), `saveOppoint` as `?saveOppoint t` (GUESS G26: OCEAN takes the maestro option names and string values).
+- `save('v …)` / `save('i …)` of every signal the outputs read.
+- Swept vars (§9.1 sweeps, by name): nested `paramAnalysis("<var>" ?values '(<points>) …)` then `paramRun()`; else `run()`. A point that is not a number is left out (`needs_review: sweep`).
+- One `ocnPrint` table per output (`<cell>/<output>.txt`; over a sweep a table per swept point), one per plot (§9.1), then `exit()`.
+
+Oracle (`tests/exercise1.rs`): the four Exercise 1 benches export to goldens (`tests/fixtures/exercise1/ocean`, `SCHEMIFY_BLESS=1`), every line is a comment or one of the calls above with balanced parentheses and quotes; their maestro records carry every output and spec, the decimal sweep grid and the `--target` models; the report has no `needs_review: output spec source sweep retarget` row.
 
 ## 10. gm/Id retarget (PDK-agnostic)
 
@@ -495,6 +552,11 @@ class nmos lib tsmc28 cell nch_lvt_mac
 | `device <text>` | the Spectre instance on nodes `d g s b`, without width, length and fingers (required) |
 | `op <prefix>` | operating-point prefix, default the first word of `device` (`M0.main` for a subcircuit macro) |
 | `vdd <num>` | supply (required): the VGS sweep spans `[0, vdd]`, the default VDS is `vdd/2` |
+| `fingerw_min <num>` | narrowest finger of a split device (§10.3 finger rule) |
+| `split_above <num>` | total width at or below which a device is never split (§10.3) |
+| `param m <cdf param>` | the multiplier parameter (fixed-size placeholders, §10.5) |
+
+A top-level `corner <name>` record with attributes `lib <file> <section>` / `include <file>` (repeatable, in order) gives the target's model files for the bench corner `<name>`: the export with `--target <file>` writes them in place of the bench corner's own, in maestro (`model` records) and the OCEAN script (§9.6); `SfyRetarget` skips these records. A corner without models or named twice is an error. The exported `.sfyx` then holds the target's model paths (not its device data).
 | `lgrid <num>` | L grid: L is rounded to the nearest multiple, at least one step |
 | `fingerw_max <num>` | widest finger |
 | `polarity n\|p` | default `n`; `p` sweeps negative VGS/VDS and stores magnitudes |
@@ -510,6 +572,7 @@ Numbers are a decimal times one suffix factor (`f p n u m k meg g t`, any case; 
 2. For each intent: solve by the gmid-lut rule (its README "Query semantics": monotone inverse lookup of gm/Id from high VGS down crossing dips, geometric interpolation in the VGS cell, log-L blending, linear VDS blending), `W = id / (id/W)`; `nf' = max(nf, ceil(W / fingerw_max · (1 − 1e-9)))`; place the class master (`dbOpenCellViewByType lib cell "symbol"`, `schCreateInst` at the placeholder's origin and orientation) and hand the parameters to `SfySetParams` and the connections to `SfyPlaceConn` (both in `sfy_cells.il`):
    - `(SfySetParams inst params callbacks)` → `t`/`nil`: `params` = list of `(cdfName value)`, a float in metres for `w` (`W/nf'` or `W` per `width`) and `l`, an integer for `nf`; sets each through the instance CDF with the CDF's type at full precision, then (with `callbacks`) runs the CDF callbacks of the set params as §5.3 and logs what the PDK clamped.
    - `(SfyPlaceConn cv inst conns)` → count or `nil`: `conns` = list of `(terminal net)` (class pins mapped through `pin`); draws a stub + label at each terminal's real pin (§6.4 step 2).
+   **Finger rule** (`retarget::finger_rule`, `SfyRtFingerRule`, operation for operation): `lo = max(1, ceil(W / fingerw_max · (1 − 1e-9)))` (1 without `fingerw_max`); with `split_above`, `base = 1` when `W ≤ split_above · (1 + 1e-9)` else `max(2, lo)`, without it `base = max(nf, lo)`; with `fingerw_min`, `hi = max(1, floor(W / fingerw_min · (1 + 1e-9)))`; `nf' = max(lo, min(base, hi))`. The assignment's rule (W > 10 µm: equal fingers of at least 5 µm; never split at or below 10 µm) is `fingerw_max 10u fingerw_min 5u split_above 10u`: 12 µm with an intent of `nf 3` gives 2 × 6 µm (before: 3 × 4 µm).
 3. Write `<path>.retarget.log`: per class `class <c> L (…) VDS (…) VGS 0..vdd in 72 steps`; per instance `inst <name>: intent <fields> -> W <w> nf <nf> L <l> VGS <vgs> residual <gm/Id − target>`, or why it was not solved or placed; last line `PASS`/`FAIL`. Nothing about the target PDK leaves this log.
 
 GUESSes (settled by the first run on a real Virtuoso): the Spectre BSIM operating-point names `ids gm gds cgg` and their saving along a DC sweep by `save`; the direct-netlist layout `design` expects; `desVar` reaching netlist parameters.
@@ -521,6 +584,14 @@ The interpolation and solve are written once in pure SKILL (`skill/sfy_retarget.
 - ≥ 200 random vectors (gm/Id reachable or not, L on and off the grid and off the axis, VDS on and off the rows and off the axis) agree within 1e-9 relative between the interpreter running the SKILL and the Rust reference, misses included (measured: bit-identical);
 - the vectors embedded in `sfy_retarget.il` (`SfyRtSelfData`) equal what the Rust reference produces now (`SCHEMIFY_BLESS=1` regenerates them), and `SfyRetargetSelfTest` prints `PASS` in the interpreter; `SfySelfTest` runs it inside Virtuoso (no simulation);
 - the SKILL map reader agrees with `parse_target_map` on the §10.2 example; `SfyRetarget` runs end to end on a mock OCEAN (the EKV device) with stub placement and places the widths the Rust reference solves on the same grid.
+
+### 10.5 Fixed-size placeholders
+
+With `--retarget`, every instance of a technology class (`tech:nmos`, `tech:pmos`) that is not sized by intent becomes a placeholder too: `("inst" ref name "" class "" …)`, its `conn` records, and `("intent" ref class (("w" W) ("l" L) ("nf" NF) ("m" M)))` — no `gmid`; each value is the instance's override (any case) else the class drawing's default, by §3.4 in the parent's scope (bench vars bare, so a swept `W` stays a design variable). A value without an AEL form keeps the generic device (`needs_review: retarget`). `SfyRetarget` places these without characterizing: the class master of the map with `param w` = W (or `(W)/(NF)` for a finger-width map with NF ≠ "1"), `param l` = L, `param nf` = NF and `param m` = M when mapped, set as strings through `SfySetParams` (an int/float CDF parameter reads them with `atoi`/`atof`); NF or M other than `"1"` without a mapped param is not placed (`inst <name>: not placed: …`, FAIL). Log line `inst <name>: fixed <params>`. With `characterize nil` nothing is placed. Outputs reading a placeholder resolve its terminal and operating-point path through the `--target` map (§9.1).
+
+### 10.6 Design rules after a retarget
+
+The target PDK re-solves widths (and the server's devices differ), so rules a docs page checks on the sample PDK (a common-mode window from `VGS`/`VDsat`, a bias headroom, gain margins) are not re-evaluated by interop: docs-page vars that call plugin functions have no ADE form. Decided: a rule that must hold on the target is written in the bench as an `output` over the simulated circuit — node voltages, `op(…)` device parameters — with a `spec` (`output VB v(ib)` + `spec VB min VB_min`; `output VCM_hi min(0.5, 0.8-0.2-abs(op("XDUT/M1","vgs")))`); these map to maestro specs and OCEAN tables like any output, and a failing one is the server's report. A bench input derived on the sample PDK (the Exercise 2 `VCM`) is likewise recomputed by such outputs on the server and set by hand there (ponytail: carrying docs-page rules as SKILL checks needs an expression evaluator over OCEAN results in `sfy_retarget.il`).
 
 ## 11. xschem export
 
@@ -558,7 +629,7 @@ Report reasons of this export: `needs_review:` `expression template format name 
 
 ## 12. Report
 
-`interop-report.md` + `.txt` beside the outputs, like import.md §7: classes `needs_review:<reason>` (`expression template name callback design-variable inlined-var computed format cdl-approximate source code output spec sweep config montecarlo optimize retarget`), `dropped:<reason>` (`display-only selection-box solder-dot stale-schemify-data pin-label unknown-record`), `rounding`, `off-grid`, `remapped` (per instance: old and new master), `clamped` (from the loader log), `updated` (cells changed by an import). Count conservation per cellview: objects in = records out + reported. Decided: every record of a cellview is consumed by exactly one builder or reported (dropped kinds as one row per cellview and reason with the count, unknown tags one row each with their line), and the import asserts the equality; records outside any cellview with an unknown tag are reported likewise; `conn` and `intent` records are reported on import (loader-only, §10).
+`interop-report.md` + `.txt` beside the outputs, like import.md §7: classes `needs_review:<reason>` (`expression template name callback design-variable inlined-var computed format cdl-approximate source code output spec sweep plot corner config montecarlo optimize retarget`), `dropped:<reason>` (`display-only selection-box solder-dot stale-schemify-data pin-label unknown-record`), `rounding`, `off-grid` (export: one row per cell with the count and the first point), `remapped` (per instance re-mastered by a `map` row: old and new master), `clamped` (from the loader log), `updated` (cells changed by an import). Count conservation per cellview: objects in = records out + reported. Decided: every record of a cellview is consumed by exactly one builder or reported (dropped kinds as one row per cellview and reason with the count, unknown tags one row each with their line), and the import asserts the equality; records outside any cellview with an unknown tag are reported likewise; `conn` and `intent` records are reported on import (loader-only, §10).
 
 ## 13. GUESSes and their probes
 
@@ -586,5 +657,12 @@ Report reasons of this export: `needs_review:` `expression template format name 
 | G20 | `maeSetAnalysis ?options` takes every value as a string (`"t"` for `saveOppoint`) and `maeGetAnalysis` returns what was set | self-test; compare `maeGetAnalysis` after the load |
 | G21 | `axlGetSpecData` returns `(op value)` pairs (`gt`, `lt`, `range` with `(lo hi)`); `maeSetSpec ?range` takes `(lo hi)`; one spec per output | self-test on an output with both bounds |
 | G22 | the `definitionFiles` environment option is a list of file paths (`maeSetEnvOption`/`maeGetEnvOption`) | self-test with a spectre code block |
+| G23 | an NLP label evaluates several `[@…]` groups in one text | place a core `nmos4` symbol and read its label |
+| G24 | `settlingTime(y x0 t x1 t pct)` returns the absolute x at which `y` stays within `pct`% of the step from y(x0) to y(x1) | a tran with a known exponential settle |
+| G25 | OCEAN's `OP("/inst" "param")` reads the dc operating point after `run`/`paramRun` (else `pv(… ?result 'dcOpInfo)`) | the Exercise 2 `ota_op` script |
+| G26 | OCEAN `analysis` takes the maestro option names with string values (`?stop "1u"`), `?saveOppoint t`, `?errpreset "conservative"` | the Exercise 1/2 scripts |
+| G27 | `desVar("L" "Lmin*pow(2,p)")` (a string) is re-evaluated per `paramAnalysis` point | `dc_vgs.ocn` against its maestro run |
 
 ## 14. Amendments
+
+- 2026-10-12 (Cadence export gaps, `feat/interop-ade`): source values with `{expr}` holes and bare names (§6.6); sweep points on the decimal grid (§9.1); the outputs table (`re im mag db at x() max min cross settle phase_margin op()`, per-output `analysis`, `vs` plots), folded spec bounds and `.options errpreset` (§9.1); OCEAN scripts (§9.6); `--target` corner models, `param m`, `fingerw_min`, `split_above` (§10.2–10.3); fixed-size placeholders (§10.5); analogLib masters by default (§6.5); multi-hole symbol labels (§3.5); one `off-grid` row per cell (§12).

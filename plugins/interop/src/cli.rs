@@ -164,7 +164,7 @@ pub fn run(args: &[String]) -> u8 {
 }
 
 const JOB_USAGE: &str = "\
-usage: schemify-interop virtuoso-export <project-dir> <cell-file>... -o <file.sfyx> [--analoglib] [--retarget] [--lib L=V]...
+usage: schemify-interop virtuoso-export <project-dir> <cell-file>... -o <file.sfyx> [--core-cells] [--retarget] [--target <map.retarget>] [--lib L=V]...
        schemify-interop virtuoso-import <project-dir> <file.sfyx> [--analoglib] [--lib L=V]...
        schemify-interop xschem-export <project-dir> <cell-file>... -o <out-dir>
        schemify-interop install-skill <dir>
@@ -185,8 +185,11 @@ fn job_command(cmd: &str, args: &[String]) -> Option<(PathBuf, crate::job::Comma
     let mut paths = Vec::new();
     let mut out = None;
     let mut iopts = ImportOptions::default();
+    // Export defaults to analogLib masters (§6.5): what ADE users place; `--core-cells`
+    // keeps the `schemify_core` mirror cells.
     let mut opts = ExportOptions {
         producer: format!("schemify-interop {}", env!("CARGO_PKG_VERSION")),
+        analoglib: true,
         ..ExportOptions::default()
     };
     let mut it = rest.iter();
@@ -197,7 +200,9 @@ fn job_command(cmd: &str, args: &[String]) -> Option<(PathBuf, crate::job::Comma
                 opts.analoglib = true;
                 iopts.analoglib = true;
             }
+            "--core-cells" => opts.analoglib = false,
             "--retarget" => opts.retarget = true,
+            "--target" => opts.target = Some(it.next()?.replace('\\', "/")),
             "--lib" => {
                 // Export: Schemify library L → Virtuoso library V. Import: Virtuoso V → Schemify L.
                 let (l, v) = it.next()?.split_once('=')?;

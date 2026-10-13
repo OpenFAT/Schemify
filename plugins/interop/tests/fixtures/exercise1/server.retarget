@@ -1,0 +1,29 @@
+class nmos lib tpdk cell nch_mac
+  pin d D
+  pin g G
+  pin s S
+  pin b B
+  param w w
+  param l l
+  param nf nf
+  param m mult
+  model "include \"/pdk/models/spectre/toplevel.scs\" section=tt_lib"
+  device "M0 (d g s b) nch_mac"
+  op M0.main
+  vdd 0.8
+class pmos lib tpdk cell pch_mac
+  pin d D
+  pin g G
+  pin s S
+  pin b B
+  param w w
+  param l l
+  param nf nf
+  param m mult
+  model "include \"/pdk/models/spectre/toplevel.scs\" section=tt_lib"
+  device "M0 (d g s b) pch_mac"
+  op M0.main
+  vdd 0.8
+  polarity p
+corner tt
+  lib /pdk/models/spectre/toplevel.scs tt_lib

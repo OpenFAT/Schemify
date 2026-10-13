@@ -1,0 +1,23 @@
+; dc_vds.ocn: OCEAN script of bench exercise1/dc_vds.shbench, written by schemify-interop (interop.md §9.6).
+; Run where dc_vds/ may be created, after SfyImport (and SfyRetarget) of the same .sfyx:
+;   ocean -nograph < dc_vds.ocn
+; Writes dc_vds/psf (results) and dc_vds/<output>.txt (one ocnPrint table per output).
+createDir("dc_vds")
+simulator('spectre)
+design("schemify" "dc_vds" "schematic")
+resultsDir("dc_vds/psf")
+modelFile('("/pdk/models/spectre/toplevel.scs" "tt_lib"))
+desVar("L" "Lmin*pow(2,p)")
+desVar("Lmin" 20n)
+desVar("VDD" 0.8)
+desVar("VDS" 0.35)
+desVar("VGS" 0.4)
+desVar("W" 1u)
+desVar("p" 0)
+analysis('dc ?dev "/VD" ?param "dc" ?start "0" ?stop "0.8" ?step "1m")
+save('i "/VMDN/p" "/VMDP/p")
+paramAnalysis("p" ?values '(0 1 2 3 4))
+paramRun()
+ocnPrint(?output "dc_vds/ro_n.txt" ?numberNotation 'scientific ?precision 8 1/value(deriv(IS("/VMDN/p")) VAR("VDS")))
+ocnPrint(?output "dc_vds/ro_p.txt" ?numberNotation 'scientific ?precision 8 1/value(deriv(IS("/VMDP/p")) VAR("VDS")))
+exit()
