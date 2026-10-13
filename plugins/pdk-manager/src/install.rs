@@ -226,7 +226,9 @@ const WL_LABEL: &str = "{eng(w)}/{eng(l)}";
 /// the kit's model name and size params, and its instance line: `M{name} … {model} w={w}
 /// l={l} nf={nf} m={m}` for [`Devices::Mos`]; for [`Devices::FinOsdi`] `N{name} … {model} nfin={nfin}
 /// nf={nf} m={m}` in a `veriloga` impl whose `file` is the checked-out BSIM-CMG source, which the
-/// runner compiles to `<stem>.osdi` (run spec §5).
+/// runner compiles to `<stem>.osdi` (run spec §5), plus a `format espice` line for ESPice, which
+/// compiles that source itself and needs every port connected (the 5th, thermal `t`, grounded)
+/// and `mfactor=` for the multiplier (netlist spec §7.2a).
 ///
 /// # Panics
 ///
@@ -256,7 +258,7 @@ pub fn device_shprim(r: &Recipe, d: &Device) -> String {
         }
         Devices::FinOsdi { va, .. } => {
             t.push_str(&format!(
-                "param nfin 1\n  doc \"fins per finger\"\nparam nf 1\n  doc \"number of fingers\"\nparam m 1\n  doc \"parallel multiplier\"\n\nimpl osdi veriloga\n  format spice \"N{{name}} {{d}} {{g}} {{s}} {{b}} {{model}} nfin={{nfin}} nf={{nf}} m={{m}}\"\n  file ../../{}/{}\n\n",
+                "param nfin 1\n  doc \"fins per finger\"\nparam nf 1\n  doc \"number of fingers\"\nparam m 1\n  doc \"parallel multiplier\"\n\nimpl osdi veriloga\n  format spice \"N{{name}} {{d}} {{g}} {{s}} {{b}} {{model}} nfin={{nfin}} nf={{nf}} m={{m}}\"\n  format espice \"N{{name}} {{d}} {{g}} {{s}} {{b}} 0 {{model}} nfin={{nfin}} nf={{nf}} mfactor={{m}}\"\n  file ../../{}/{}\n\n",
                 va.dir, va.source
             ));
             t.push_str(&drawing.replace(WL_LABEL, "nfin={nfin}"));
@@ -631,7 +633,7 @@ mod tests {
                 pmos: false,
             },
         );
-        assert!(asap7.contains("impl osdi veriloga\n  format spice \"N{name} {d} {g} {s} {b} {model} nfin={nfin} nf={nf} m={m}\"\n  file ../../va/code/bsimcmg/vacode/bsimcmg.va\n"));
+        assert!(asap7.contains("impl osdi veriloga\n  format spice \"N{name} {d} {g} {s} {b} {model} nfin={nfin} nf={nf} m={m}\"\n  format espice \"N{name} {d} {g} {s} {b} 0 {model} nfin={nfin} nf={nf} mfactor={m}\"\n  file ../../va/code/bsimcmg/vacode/bsimcmg.va\n"));
         assert!(!asap7.contains("param w ") && !asap7.contains("param l "));
         // FinFET OSDI cells have no Spectre form (Verilog-A in Spectre is `ahdl_include`).
         assert!(!asap7.contains("format spectre"));

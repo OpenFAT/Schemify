@@ -79,6 +79,16 @@ fn one_inverter_two_technologies() {
         assert_eq!(code, 0, "{family}: {text}");
         golden(&format!("inv.{family}.spice"), &text);
     }
+    // ESPice (netlist spec §7.2a): the generated BSIM-CMG cells' `format espice` connects the
+    // thermal port and writes `mfactor=`; the source loads with `.hdl`.
+    let dir = project("asap7-espice", &manifest("asap7", "asap7"));
+    let (code, text) = schemify(&dir, &["netlist", "inv.shcomp", "--dialect", "espice"]);
+    assert_eq!(code, 0, "{text}");
+    golden("inv.asap7.espice.spice", &text);
+    assert!(
+        text.contains(" 0 nmos_rvt ") && !text.contains(" m="),
+        "{text}"
+    );
 }
 
 /// Under `--dialect spectre` a `tech:` device is its PDK cell's `format spectre` (the PDK cell
