@@ -14,6 +14,7 @@ param area 1
 
 impl spice spice
   format spice "{name} {p} {n} {model} area={area}"
+  format spectre "{name} ({p} {n}) {model} area={area}"
 
 line 0 -30 0 -6.25
 line 0 6.25 0 30

@@ -117,7 +117,20 @@ For LVS: no code blocks, no corners, no `.param`, no `.control`. Top is the netl
 
 ### 7.5 spectre, verilog
 
-Spectre: `subckt <name> (<ports>)` … `ends <name>`, instances `<name> (<nets>) <cell> k=v`, `simulator lang=spectre` header; spice-format templates are not reused (an impl without `format spectre` and not `schematic` → `E013`). Structural Verilog: one `module` per schematic cell, `wire` per internal net, named port connections; leaf impls need `format verilog` or a `verilog` body. Details in §7.6.
+Spectre: `subckt <name> (<ports>)` … `ends <name>`, instances `<name> (<nets>) <cell> k=v`, `simulator lang=spectre` header; spice-format templates are not reused (an impl without `format spectre` and not `schematic` → `E013`). Every device of the core library carries a `format spectre` (2026-10-12; Spectre syntax facts and their public sources in [docs/research/spectre-netlist.md](../research/spectre-netlist.md)):
+
+  | cell | Spectre line |
+  |---|---|
+  | `vsource`, `isource` | `<name> (p n) vsource\|isource <spectre_source(value)>` ([expr.md](expr.md) §5: `dc`, `ac mag [phase]`, `pulse`/`sin`/`exp`/`pwl`) |
+  | `ammeter` | `<name> (p n) vsource dc=0` |
+  | `vcvs`, `vccs` | `<name> (p n cp cn) vcvs gain=<value>` / `vccs gm=<value>` |
+  | `ccvs`, `cccs` | `<name> (p n) ccvs probe=<vnam> rm=<value>` / `cccs probe=<vnam> gain=<value>` |
+  | `res`, `cap`, `ind`, `parax_cap` | `resistor r=` / `capacitor c=` / `inductor l=`, then `m=` |
+  | `diode`, `nmos4`, `pmos4`, `npn`, `pnp` | `<name> (<pins>) <model> <params>` (the SPICE params; `spiceprefix` is not needed: Spectre calls a model and a subcircuit alike) |
+  | `tline` | `<name> (p1 n1 p2 n2) tline z0= td=` |
+  | `probe` | nothing (it is a SPICE `.save`; Spectre saves through its own analysis setup) |
+
+  A value that is SPICE text (string params: `value` of sources, passives and controlled sources) goes through `num()` or `spectre_source()`, so it is written in canonical number text: SPICE and Spectre suffixes disagree (`1M` is milli in SPICE, mega in Spectre; Spectre has no `meg`). Text neither accepts (`"1k tc1=0.01"`, `sffm(…)`) fails that instance's line (`// error in <name>: X001|X009 …`, §7.6.1), never written through. The `savecurrent` param of `vsource`/`ammeter` emits nothing for Spectre. `bsource` (an ngspice expression, whose syntax Spectre's `bsource` does not share), `switch` and `vswitch` (SPICE `CSW`/`SW` model cards, which Spectre's `relay` does not read) have no `format spectre`: `E013`. A `tech:` instance netlists through the PDK cell the map names (§1), so its Spectre line is that cell's `format spectre`; a PDK cell without one is `E013` (generated freepdk45 cells have one, pdk spec §2.2). Structural Verilog: one `module` per schematic cell, `wire` per internal net, named port connections; leaf impls need `format verilog` or a `verilog` body. Details in §7.6.
 
 ### 7.6 Emission decisions (amendments, WS3 `netlist`)
 

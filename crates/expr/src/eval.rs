@@ -727,7 +727,18 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut Vec<u8>) -> Result<V, Erro
             }
         }
         Builtin::Cplx => Ok(V::Cnum(num(a0)?, num(args[1])?)),
-        Builtin::If | Builtin::V | Builtin::I | Builtin::X => {
+        Builtin::SpectreSource => match a0 {
+            V::Str(s, len) => {
+                let spec = core::str::from_utf8(&strs[s as usize..(s + len) as usize])
+                    .expect("scratch strings are UTF-8")
+                    .to_owned();
+                let mut out = String::with_capacity(spec.len() + 16);
+                crate::spectre::source(&spec, &mut out)?;
+                write_str(strs, |w| w.write_str(&out))
+            }
+            v => Err(bad(v)),
+        },
+        Builtin::If | Builtin::V | Builtin::I | Builtin::X | Builtin::Op => {
             unreachable!("`{name}` compiles to dedicated ops")
         }
         _ => {

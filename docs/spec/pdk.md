@@ -110,10 +110,13 @@ A kit without xschem symbols gets one `.shprim` per recipe device in
   `nfin={nfin}` for FinFETs;
 - `param model <kit model>` (string) and the size params;
 - BSIM4 kits (freepdk45): `w` `l` (defaults: the kit minimum, 90n/50n), `nf`, `m`, and
-  `impl spice spice` with `format spice "M{name} {d} {g} {s} {b} {model} w={w} l={l} nf={nf} m={m}"`;
+  `impl spice spice` with `format spice "M{name} {d} {g} {s} {b} {model} w={w} l={l} nf={nf} m={m}"`
+  and `format spectre "{name} ({d} {g} {s} {b}) {model} w={w} l={l} nf={nf} m={m}"` (netlist
+  spec §7.5: a `tech:` instance netlists for Spectre through its PDK cell's `format spectre`);
   `w l nf m` are the class params themselves, so the map assigns nothing;
 - OSDI kits (asap7): `nfin`, `nf`, `m`, and `impl osdi veriloga` with
-  `format spice "N{name} {d} {g} {s} {b} {model} nfin={nfin} nf={nf} m={m}"` and
+  `format spice "N{name} {d} {g} {s} {b} {model} nfin={nfin} nf={nf} m={m}"` (no `format
+  spectre`: Spectre loads Verilog-A through `ahdl_include`, not generated; `E013`) and
   `file ../../va/code/bsimcmg/vacode/bsimcmg.va` (the checkout, relative to the cell): the runner
   compiles it with OpenVAF and the netlist loads it with `pre_osdi bsimcmg.osdi` (run spec §5,
   netlist spec §7). ngspice has no built-in BSIM-CMG (level 72), so the install derives each

@@ -122,3 +122,32 @@ fn segments_spell_the_template() {
         }
     }
 }
+
+/// `spectre_source` in a template: a vsource line from a SPICE source spec; untranslatable
+/// specs fail the render with `X009` and a non-string with `X003`.
+#[test]
+fn spectre_source_in_a_template() {
+    let t = "{name} ({p} {n}) vsource {spectre_source(value)}";
+    let line = render(
+        t,
+        &[
+            ("name", Value::Str("V1")),
+            ("p", Value::Str("in")),
+            ("n", Value::Str("0")),
+            (
+                "value",
+                Value::Str("dc 0.9 ac 1 pulse(0 1.8 1n 1n 1n 5n 10n)"),
+            ),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        line,
+        "V1 (in 0) vsource dc=0.9 mag=1 type=pulse val0=0 val1=1.8 delay=1e-9 rise=1e-9 \
+         fall=1e-9 width=5e-9 period=1e-8"
+    );
+    let e = render("{spectre_source(v)}", &[("v", Value::Str("sffm(0 1 1k)"))]).unwrap_err();
+    assert_eq!(e.code, Code::X009, "{e}");
+    let e = render("{spectre_source(v)}", &[("v", Value::Num(1.0))]).unwrap_err();
+    assert_eq!(e.code, Code::X003, "{e}");
+}

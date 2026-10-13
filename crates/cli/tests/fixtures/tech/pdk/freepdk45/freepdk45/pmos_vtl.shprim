@@ -24,6 +24,7 @@ param m 1
 
 impl spice spice
   format spice "M{name} {d} {g} {s} {b} {model} w={w} l={l} nf={nf} m={m}"
+  format spectre "{name} ({d} {g} {s} {b}) {model} w={w} l={l} nf={nf} m={m}"
 
 line -20 0 -10 0
 line -10 -10 -10 10

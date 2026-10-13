@@ -42,6 +42,7 @@ use schemify_run::{
     JOB_LEVEL, Jobs, NO_SAMPLE, OptRun, Pass, Plan, Results, RunnerConfig, Select, State, Tools,
     read_results, yield_summary,
 };
+use schemify_wave::calc::op_dataset;
 use schemify_wave::{RawPlot, Request as WaveRequest, Waves, format_si, group_datasets, parse_raw};
 
 use crate::checks::SOURCE_OP;
@@ -1684,18 +1685,6 @@ fn plot(jobs: &[Vec<RawPlot>], expr: &str) -> Result<Waves, String> {
     let _ = w.apply(&WaveRequest::Autoscale);
     debug_assert_eq!(w.trace_count(), traces);
     Ok(w)
-}
-
-/// The operating point of a job's datasets: ngspice's "Operating Point" plot, else a
-/// one-point DC plot (Xyce's `.op`).
-fn op_dataset(data: &[RawPlot]) -> Option<&RawPlot> {
-    let named = |p: &&RawPlot, s: &str| p.name().to_ascii_lowercase().contains(s);
-    data.iter()
-        .find(|p| named(p, "operating point"))
-        .or_else(|| {
-            data.iter()
-                .find(|p| named(p, "dc") && p.vars().first().is_some_and(|_| p.col(0).len() == 1))
-        })
 }
 
 /// One OP mark from raw vector `name` = `x`, ngspice or Xyce spelling (case-insensitive,

@@ -1,0 +1,25 @@
+* tb (schemify ngspice)
+.save  v( out )
+C1 out 0 1p m=1
+CP1 out 0 4e-15 m=1
+D1 in 0 dmod area=1
+E1 e 0 in 0 10
+F1 f 0 VM1 2
+G1 g 0 in 0 1m
+H1 h 0 VM1 1k
+IB vdd bias dc 10u sin(10u 1u 1meg)
+IX x 0 exp(0 1m 1n 2n 5n 1n)
+L1 in l 10n m=1
+M1 out in 0 0 nch w=2e-6 l=1.5e-7  m=1
+M2 out in vdd vdd pch w=4e-6 l=1.5e-7  m=1
+Q1 c1 bias 0 qn area=1 m=1
+Q2 c2 bias vdd qp area=1 m=1
+R1 outm 0 2.2meg m=1
+T1 clk 0 tout 0 z0=50 td=1e-8
+VCLK clk 0 pulse(0 1.8 1n 10p 10p 5n 10n)
+VDD vdd 0 1.8
+VIN in 0 dc 0.9 ac 1 0
+VM1 out outm 0
+.save i(VM1)
+VPWL ramp 0 pwl(0 0 1n 1.8 2n 0)
+.end

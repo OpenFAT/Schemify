@@ -16,5 +16,6 @@ param model pfet_01v8
 
 impl spice spice
   format spice "X{name} {D} {G} {S} {B} sky130_fd_pr__{model} L={L} W={W} nf={nf} mult={mult} m={mult}"
+  format spectre "{name} ({D} {G} {S} {B}) sky130_fd_pr__{model} l={L} w={W} nf={nf} mult={mult} m={mult}"
 
 rect -10 -30 20 30
