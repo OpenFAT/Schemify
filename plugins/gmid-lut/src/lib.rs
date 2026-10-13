@@ -1,9 +1,11 @@
 //! gm/Id sizing plugin (D20, D26): exports the pure expression functions `gmid.*` backed by
 //! per-device lookup tables, loads those tables from the project, and characterizes devices
-//! with ngspice. Ported from the UW-ASIC `gmid-lut` salvage (own code). Spec: `README.md`.
+//! with ngspice or ESPice. Ported from the UW-ASIC `gmid-lut` salvage (own code). Spec:
+//! `README.md`.
 //!
 //! - [`lut`] — the table, its `.glut` v2 file format, and the one query ([`lut::Lut::point_at`]);
-//! - [`chars`] — the `gmid.chars` config, the sweep netlist, `wrdata` parsing, LUT building;
+//! - [`chars`] — the `gmid.chars` config, the sweep netlists, `wrdata` and raw-file parsing,
+//!   LUT building;
 //! - this module — the function set ([`FUNCTIONS`], [`eval`]), the loaded tables
 //!   ([`Tables`]), and on wasm32 the guest glue (events, I/O chain, `schemify_call`).
 
@@ -166,9 +168,10 @@ mod guest_glue {
     //! it by handle; at most [`PENDING_MAX`] requests are outstanding.
     //!
     //! Load / `gmid.reload`: read `gmid.chars` → read each device's LUT → insert, re-declare.
-    //! `gmid.characterize [dev]`: write netlist → spawn ngspice → read the per-L wrdata files
-    //! (all at once; each parses in its own event, inside its own fuel) → when the last arrives,
-    //! build, insert, re-declare → write LUT. Each step waits for the previous one's `IoDone`,
+    //! `gmid.characterize [dev]`: write netlist → spawn the simulator → ngspice: read the
+    //! per-L wrdata files (all at once; each parses in its own event, inside its own fuel);
+    //! ESPice: read its one binary raw file → when the last block arrives, build, insert,
+    //! re-declare → write LUT. Each step waits for the previous one's `IoDone`,
     //! so nothing relies on the host executing requests in issue order.
 
     use std::cell::RefCell;
@@ -176,7 +179,7 @@ mod guest_glue {
     use schemify_abi::guest::{self, Host};
     use schemify_abi::{Code, Event, Kind, Level, Out, text};
 
-    use crate::chars::{self, Block, Device};
+    use crate::chars::{self, Block, Device, Sim};
     use crate::{Tables, eval, functions_text, lut::Lut};
 
     guest::export!(on_event, call);
@@ -198,6 +201,8 @@ mod guest_glue {
         Spawn(String),
         /// Device, 1-based instance (L) number.
         Data(String, usize),
+        /// ESPice's raw file of a device.
+        Raw(String),
         Save(String),
     }
 
@@ -330,16 +335,38 @@ mod guest_glue {
                 );
             }
             Io::Netlist(name) => {
-                let h = host.spawn(&["ngspice", "-b", &chars::netlist_path(&name)], b"");
+                let Some(argv) = sweep_of(s, &name).map(|sw| chars::spawn_argv(&name, sw)) else {
+                    return;
+                };
+                let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+                let h = host.spawn(&argv, b"");
                 issue(s, out, h, Io::Spawn(name));
             }
             Io::Spawn(name) if status != 0 => {
                 let tail = &bytes[bytes.len().saturating_sub(300)..];
                 let tail = String::from_utf8_lossy(tail);
+                let sim = sweep_of(s, &name).map_or("simulator", |sw| sw.sim.program());
                 out.log_at(
                     Level::Error,
-                    &format!("gmid: {name}: ngspice exited {status}: {tail}"),
+                    &format!("gmid: {name}: {sim} exited {status}: {tail}"),
                 );
+            }
+            Io::Spawn(name) if sweep_of(s, &name).is_some_and(|sw| sw.sim == Sim::Espice) => {
+                issue(s, out, host.fs_read(&chars::raw_path(&name)), Io::Raw(name));
+            }
+            Io::Raw(name) => {
+                let Some(sw) = sweep_of(s, &name).cloned() else {
+                    return;
+                };
+                let blocks = if status < 0 {
+                    Err("espice wrote no raw file".to_owned())
+                } else {
+                    chars::parse_espice(&sw, bytes)
+                };
+                match blocks {
+                    Ok(blocks) => finish(s, host, out, &name, &blocks),
+                    Err(e) => out.log_at(Level::Error, &format!("gmid: {name}: {e}")),
+                }
             }
             Io::Spawn(name) => {
                 let Some(nl) = sweep_of(s, &name).map(|sw| sw.l_um.len()) else {
@@ -377,30 +404,37 @@ mod guest_glue {
                 }
                 let (_, blocks) = s.partial.swap_remove(at);
                 let blocks: Vec<Block> = blocks.into_iter().flatten().collect();
-                let Some(d) = s.devices.iter().find(|d| d.name == name).cloned() else {
-                    return;
-                };
-                let Some(sw) = d.sweep.as_ref() else { return };
-                match chars::build(&name, sw, &blocks) {
-                    Ok(lut) => {
-                        let mut file = Vec::new();
-                        lut.encode(&mut file);
-                        let summary = format!(
-                            "gmid: {name} characterized: {} L × {} VDS × {} VGS",
-                            lut.l.len(),
-                            lut.vds.len(),
-                            lut.vgs.len()
-                        );
-                        insert(s, out, &name, lut, &summary);
-                        issue(s, out, host.fs_write(&d.lut, &file), Io::Save(name));
-                    }
-                    Err(e) => out.log_at(Level::Error, &format!("gmid: {name}: {e}")),
-                }
+                finish(s, host, out, &name, &blocks);
             }
             Io::Save(name) if status < 0 => {
                 out.log_at(Level::Error, &format!("gmid: {name}: cannot write the LUT"));
             }
             Io::Save(name) => out.log(&format!("gmid: {name}: LUT saved")),
+        }
+    }
+
+    /// Builds `name`'s LUT from its blocks (one per L), loads it and writes its file.
+    fn finish(s: &mut State, host: &Host, out: &mut Out, name: &str, blocks: &[Block]) {
+        let Some(d) = s.devices.iter().find(|d| d.name == name).cloned() else {
+            return;
+        };
+        let Some(sw) = d.sweep.as_ref() else { return };
+        match chars::build(name, sw, blocks) {
+            Ok(lut) => {
+                let mut file = Vec::new();
+                lut.encode(&mut file);
+                let summary = format!(
+                    "gmid: {name} characterized ({}): {} L × {} VDS × {} VGS",
+                    sw.sim.program(),
+                    lut.l.len(),
+                    lut.vds.len(),
+                    lut.vgs.len()
+                );
+                insert(s, out, name, lut, &summary);
+                let h = host.fs_write(&d.lut, &file);
+                issue(s, out, h, Io::Save(name.to_owned()));
+            }
+            Err(e) => out.log_at(Level::Error, &format!("gmid: {name}: {e}")),
         }
     }
 

@@ -250,7 +250,7 @@ fn guest_characterizes_and_answers_calls_within_the_fuel_budget() {
         worst = worst.max(fuel);
         let last = k + 1 == sweep.l_um.len();
         assert_eq!(
-            out.contains("nsim characterized: 8 L × 12 VDS × 73 VGS"),
+            out.contains("nsim characterized (ngspice): 8 L × 12 VDS × 73 VGS"),
             last,
             "{out}"
         );
@@ -301,4 +301,155 @@ fn guest_characterizes_and_answers_calls_within_the_fuel_budget() {
         "{out}"
     );
     assert!(g.call(1, "\"nsim\" 15 5e-7").is_ok());
+}
+
+const ES_CHARS: &str = "\
+device nes
+  deck models/tt.spice
+  inst \"M{n} d g s b nch w={w}u l={l}u\"
+  sim espice
+  vdd 0.8
+  l 0.05 0.07 0.1 0.15 0.2 0.3 0.5 1
+";
+
+/// An ESPice binary raw file (the layout of `tests/fixtures/espice_op_ac.raw`) for `sweep`:
+/// per `.step` point an `.op` plot and a one-point `.ac` plot, values from the smooth model of
+/// [`wrdata`]. The real files are this size (≈ 2 MB for 8 lengths).
+fn espice_raw(sweep: &chars::Sweep) -> Vec<u8> {
+    let (vgs, vds) = chars::grid(sweep);
+    let nl = sweep.l_um.len();
+    let w = 2.0 * std::f64::consts::PI * chars::F_AC;
+    let mut raw = Vec::new();
+    for (k, (d, g)) in vds
+        .iter()
+        .flat_map(|d| vgs.iter().map(move |g| (*d, *g)))
+        .enumerate()
+    {
+        for complex in [false, true] {
+            let (kind, flags) = if complex {
+                ("AC Analysis", "complex")
+            } else {
+                ("Operating Point", "real")
+            };
+            let mut head = format!(
+                "Title: * gmid-lut espice sweep\nDate: Thu Jan  1 00:00:00 1970\n\
+                 Plotname: {kind} (vds={d}, vgs={g})\nFlags: {flags}\nNo. Variables: {}\n\
+                 No. Points: 1\nVariables:\n",
+                3 * nl + usize::from(complex)
+            );
+            let mut v = 0;
+            if complex {
+                head.push_str("\t0\tfrequency\tfrequency\n");
+                v = 1;
+            }
+            for n in 1..=nl {
+                for a in ["vda", "vga", "vdb"] {
+                    head.push_str(&format!("\t{v}\ti({a}{n})\tcurrent\n"));
+                    v += 1;
+                }
+            }
+            head.push_str("Binary:\n");
+            raw.extend_from_slice(head.as_bytes());
+            let mut push = |x: f64| raw.extend_from_slice(&x.to_le_bytes());
+            if complex {
+                push(chars::F_AC);
+                push(0.0);
+            }
+            for &l in &sweep.l_um {
+                let u = (g - 0.25) / 0.0672;
+                let f = u.exp().ln_1p();
+                let clm = 1.0 + 0.015 * d / l;
+                let id = 2.4e-6 / l * f * f * clm + 1e-12 * (k + 1) as f64;
+                let gm = 2.4e-6 / l * 2.0 * f / (1.0 + (-u).exp()) / 0.0672 * clm;
+                if complex {
+                    for (re, im) in [
+                        (gm, -1e-9),
+                        (1e-12, 8.8e-15 * l * w),
+                        (id * 0.015 / l, 3e-9),
+                    ] {
+                        push(re);
+                        push(im);
+                    }
+                } else {
+                    for x in [id, 1e-12, id] {
+                        push(x);
+                    }
+                }
+            }
+        }
+    }
+    raw
+}
+
+/// The ESPice path (README "The sweep"): `sim espice` spawns `espice … -r <raw>`, reads its
+/// one binary raw file of the real size (8 L × 876 points) and builds the LUT inside one
+/// event's fuel; a run whose raw file is missing logs and keeps the table.
+#[test]
+fn guest_characterizes_with_espice_within_the_fuel_budget() {
+    let mut g = Guest::load();
+    g.event(&Event::Load);
+    g.done(1, 0, ES_CHARS.as_bytes());
+    assert_eq!(io(&g, 1).1, ".schemify/gmid/nes.glut");
+    g.done(2, -5, b"");
+    g.event(&Event::Command {
+        name: "gmid.characterize",
+        args: "",
+    });
+    let (op, path, netlist) = io(&g, 2);
+    assert_eq!(
+        (op, path.as_str()),
+        ("fs_write", ".schemify/gmid/work/nes.sp")
+    );
+    let netlist = String::from_utf8(netlist).unwrap();
+    assert!(
+        netlist.contains("Ma8 da8 ga8 s b nch w=1u l=1u\n") && netlist.contains(".step param vgs"),
+        "{netlist}"
+    );
+    g.done(3, 0, b"");
+    let (op, argv, _) = io(&g, 3);
+    assert_eq!(op, "spawn");
+    assert!(
+        argv.starts_with("espice -b ")
+            && argv.contains(".schemify/gmid/work/nes.raw")
+            && argv.ends_with(" .schemify/gmid/work/nes.sp"),
+        "{argv}"
+    );
+    g.done(4, 0, b"espice output");
+    assert_eq!(
+        (io(&g, 4).0, io(&g, 4).1.as_str()),
+        ("fs_read", ".schemify/gmid/work/nes.raw")
+    );
+    let sweep = chars::parse(ES_CHARS).unwrap().remove(0).sweep.unwrap();
+    let raw = espice_raw(&sweep);
+    let (out, fuel) = g.done(5, 0, &raw);
+    eprintln!(
+        "espice raw file {} bytes parsed and built in {fuel} fuel (budget {FUEL_DEFAULT})",
+        raw.len()
+    );
+    assert!(
+        out.contains("nes characterized (espice): 8 L × 12 VDS × 73 VGS"),
+        "{out}"
+    );
+    let (op, path, file) = io(&g, 5);
+    assert_eq!((op, path.as_str()), ("fs_write", ".schemify/gmid/nes.glut"));
+    let lut = Lut::decode(&file).unwrap();
+    assert!(
+        lut.provenance.contains("cgg includes overlap"),
+        "{}",
+        lut.provenance
+    );
+    let native = chars::build("nes", &sweep, &chars::parse_espice(&sweep, &raw).unwrap()).unwrap();
+    assert_eq!(lut, native, "the guest built what the native code builds");
+
+    // No raw file (ESPice failed before writing one): logged, the table stays.
+    g.done(6, 0, b"");
+    g.event(&Event::Command {
+        name: "gmid.characterize",
+        args: "nes",
+    });
+    g.done(7, 0, b"");
+    g.done(8, 0, b"");
+    let (out, _) = g.done(9, -5, b"");
+    assert!(out.contains("espice wrote no raw file"), "{out}");
+    assert!(g.call(1, "\"nes\" 15 5e-7").is_ok());
 }

@@ -598,3 +598,49 @@ fn espice_has_no_default_template_for_verilog_leaves() {
     // ngspice still takes it (positive space).
     assert!(blocking(&elab(&p, hs[1], Dialect::Ngspice)).is_empty());
 }
+
+#[test]
+fn espice_verilog_a_lines_carry_instance_params_and_mfactor() {
+    // Spec §7.2a: on the default template ESPice gets every param that differs from its
+    // default on the `N` line (it reads instance parameters there), `m` as `mfactor`, and the
+    // `model` param only as the model name; ngspice keeps `N{name} {pins} {model}`. A
+    // `format espice` overrides the `spice` one for espice only.
+    let va = "schemify 1 shprim\n\npin p inout 0 -30\npin n inout 0 30\n\n\
+              param model gain_m\n  kind string\nparam a 10\nparam m 1\nparam k 2\n\n\
+              impl va veriloga\n  file gain.va\n";
+    let fin = "schemify 1 shprim\n\npin d inout 0 -30\npin g in -20 0\npin s inout 0 30\npin b in 20 0\n\n\
+               param nfin 1\nparam m 1\n\nimpl osdi veriloga\n  \
+               format spice \"N{name} {d} {g} {s} {b} nch nfin={nfin} m={m}\"\n  \
+               format espice \"N{name} {d} {g} {s} {b} 0 nch nfin={nfin} mfactor={m}\"\n  \
+               file fin.va\n";
+    let bench = "schemify 1 shbench\n\ninst 0a0001 ./gain\n  at 0 0 R0\n  name G1\n  a 4\n  m 2\n  model gain_x\n\
+                 inst 0a0002 ./gain\n  at 100 0 R0\n  name G2\n\
+                 inst 0a0003 ./fin\n  at 200 0 R0\n  name M1\n  nfin 3\n\n\
+                 label 0n0001 0 -30 R0 in\nlabel 0n0002 0 30 R0 out\nlabel 0n0003 100 -30 R0 in\n\
+                 label 0n0004 100 30 R0 0\nlabel 0n0005 200 -30 R0 out\nlabel 0n0006 180 0 R0 in\n\
+                 label 0n0007 200 30 R0 0\nlabel 0n0008 220 0 R0 0\n";
+    let (p, hs) = project(&[
+        ("gain.shprim", va),
+        ("fin.shprim", fin),
+        ("tb.shbench", bench),
+    ]);
+    let e = elab(&p, hs[2], Dialect::Espice);
+    assert!(blocking(&e).is_empty(), "{:?}", blocking(&e));
+    let es = emit(&e, Dialect::Espice).text;
+    assert!(es.contains("\nNG1 in out gain_x a=4 mfactor=2\n"), "{es}");
+    assert!(
+        es.contains("\nNG2 in 0 gain_m\n"),
+        "defaults stay off the line: {es}"
+    );
+    assert!(
+        es.contains("\nNM1 out in 0 0 0 nch nfin=3 mfactor=1\n"),
+        "format espice: {es}"
+    );
+    assert!(!es.contains(" m="), "{es}");
+    let ng = emit(&elab(&p, hs[2], Dialect::Ngspice), Dialect::Ngspice).text;
+    assert!(
+        ng.contains("\nNG1 in out gain_x\n") && ng.contains("\nNG2 in 0 gain_m\n"),
+        "{ng}"
+    );
+    assert!(ng.contains("\nNM1 out in 0 0 nch nfin=3 m=1\n"), "{ng}");
+}

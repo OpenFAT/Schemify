@@ -596,6 +596,9 @@ fn default_line<'n, F: Fn(Name) -> &'n str>(
             }
             out.push(' ');
             model(out);
+            if d == Dialect::Espice {
+                va_params(row, out);
+            }
             push_model(uses, model_name(), leaf);
         }
         (Lang::Verilog, Dialect::Ngspice) => {
@@ -616,6 +619,34 @@ fn default_line<'n, F: Fn(Name) -> &'n str>(
         }
     }
     Ok(())
+}
+
+/// Appends ` k=v` for every param of a Verilog-A leaf row that differs from its default
+/// (spec §7.2a: ESPice reads instance parameters from the `N` line), except computed params
+/// and the `model` param the line already names; `m` is written `mfactor`, the LRM name
+/// ESPice's Verilog-A instances take (`m=` is its `UnknownParameter`).
+fn va_params<'n, F: Fn(Name) -> &'n str>(row: &Row<'_, F>, out: &mut String) {
+    let e = row.e;
+    let params = e.params_of(row.r);
+    let model = match row.plan.model {
+        Src::Param(k) => params.start + k as usize,
+        _ => usize::MAX,
+    };
+    assert!(model == usize::MAX || params.contains(&model));
+    for k in params {
+        if e.insts.param_flags[k] & (COMPUTED | DEFAULT) != 0 || k == model {
+            continue;
+        }
+        let name = e.names.get(e.insts.param_name[k]);
+        out.push(' ');
+        out.push_str(if name.eq_ignore_ascii_case("m") {
+            "mfactor"
+        } else {
+            name
+        });
+        out.push('=');
+        out.push_str(e.names.get(e.insts.param_text[k]));
+    }
 }
 
 fn push_model(uses: &mut Uses, model: Name, leaf: u32) {
