@@ -14,6 +14,7 @@ param value 1
 
 impl spice spice
   format spice "{name} {p} {n} {cp} {cn} {value}"
+  format spectre "{name} ({p} {n} {cp} {cn}) vcvs gain={num(value)}"
 
 poly 0 -8.75 8.75 0 0 8.75 -8.75 0
   width 2

@@ -224,6 +224,8 @@ impl RawPlot {
         let f = match kind {
             SignalKind::V => "v",
             SignalKind::I => "i",
+            // A device's operating-point value is no column of a plot (run spec §4).
+            SignalKind::Op => return None,
         };
         let mut buf = String::with_capacity(name.len() + 8);
         buf.push_str(f);

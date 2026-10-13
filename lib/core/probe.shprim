@@ -11,6 +11,7 @@ param attrs ""
 
 impl spice spice
   format spice ".save {attrs} v( {p} )"
+  format spectre ""
 
 line 0 0 8.232 -8.232
 

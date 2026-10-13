@@ -12,6 +12,7 @@ param value 0
 
 impl spice spice
   format spice "{name} {p} {n} {value}"
+  format spectre "{name} ({p} {n}) isource {spectre_source(value)}"
 
 line 0 -30 0 -7.5
 line 0 7.5 0 30

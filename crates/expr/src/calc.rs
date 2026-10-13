@@ -229,6 +229,14 @@ fn check_plot(prog: &Program, plot: &Plot<'_>) -> Result<Vec<Range<u32>>, Error>
     let n = plot.x.len();
     assert!(n <= u32::MAX as usize, "plot longer than u32 points");
     for (k, (sig, (kind, name))) in plot.signals.iter().zip(prog.signals()).enumerate() {
+        if kind == crate::SignalKind::Op {
+            if sig.re.len() != 1 || !sig.im.is_empty() || !sig.re[0].is_finite() {
+                return Err(x011(format!(
+                    "signal {k} `op({name})` must be one finite real number"
+                )));
+            }
+            continue;
+        }
         let im_ok = sig.im.is_empty() || sig.im.len() == n;
         if sig.re.len() != n || !im_ok {
             let f = if kind == crate::SignalKind::V {
@@ -294,6 +302,10 @@ where
             OpKind::Input => stack.push(CV::S(
                 load_value(&inputs[op.arg as usize], strs).map_err(at)?,
             )),
+            OpKind::Signal if prog.signals[op.arg as usize].0 == crate::SignalKind::Op => {
+                // One number from the operating point, never a column (check_plot).
+                stack.push(CV::S(V::Num(plot.signals[op.arg as usize].re[0])));
+            }
             OpKind::Signal => {
                 let sig = plot.signals[op.arg as usize];
                 let kind = if sig.im.is_empty() {

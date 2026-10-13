@@ -15,6 +15,7 @@ param m 1
 
 impl spice spice
   format spice "{name} {p} {gnd} {value} m={m}"
+  format spectre "{name} ({p} {gnd}) capacitor c={value} m={m}"
 
 line 0 -10 0 -5
 line -7.5 -5 7.5 -5

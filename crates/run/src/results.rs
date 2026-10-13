@@ -13,8 +13,13 @@
 use crate::jobs::{Jobs, NO_SAMPLE, State};
 use crate::plan::Plan;
 use schemify_doc::Digest;
+use schemify_elab::Dialect;
 use schemify_elab::Elab;
-use schemify_expr::{CalcResult, Program, Scratch, Value, parse_num, write_num};
+use schemify_expr::{
+    CalcResult, Code, Error, Program, Scratch, SignalKind, Value, op_parts, parse_num, write_num,
+};
+use schemify_netlist::NameMap;
+use schemify_wave::calc::{op_dataset, op_value};
 use schemify_wave::{RawPlot, group_datasets, parse_raw};
 use std::fmt::Write;
 
@@ -49,6 +54,12 @@ pub struct Results {
     err_job: Vec<u32>,
     err_output: Vec<u16>,
     err_msg: Vec<String>,
+    /// The `op(…)` signals of every output (`<inst>[<param>]`), sorted, distinct.
+    ops: Vec<String>,
+    /// Per job and op (dense, `rows × ops`): the simulator's vector for it
+    /// (`@m.x1.mm2[gm]`), or why the job has none (written by [`crate::prepare`]; not
+    /// persisted: only [`Results::record`] of the same run reads it).
+    op_vector: Vec<Result<String, (Code, String)>>,
 }
 
 impl Results {
@@ -60,6 +71,18 @@ impl Results {
             outputs: plan.outputs.iter().map(|o| o.name.clone()).collect(),
             specs: plan.specs.iter().map(|s| s.output).collect(),
             vars: plan.vars.iter().map(|v| v.name.clone()).collect(),
+            ops: {
+                let mut ops: Vec<String> = plan
+                    .outputs
+                    .iter()
+                    .flat_map(|o| o.prog.signals())
+                    .filter(|(k, _)| *k == SignalKind::Op)
+                    .map(|(_, n)| n.to_owned())
+                    .collect();
+                ops.sort();
+                ops.dedup();
+                ops
+            },
             ..Results::default()
         };
         assert!(r.specs.iter().all(|&o| (o as usize) < r.outputs.len()));
@@ -137,6 +160,10 @@ impl Results {
         self.value.resize(n * self.outputs.len(), f64::NAN);
         self.pass.resize(n * self.specs.len(), Pass::Unknown);
         self.var_value.resize(n * self.vars.len(), f64::NAN);
+        self.op_vector.resize(
+            n * self.ops.len(),
+            Err((Code::X006, "the job was not netlisted".to_owned())),
+        );
         assert!(self.value.len() == n * self.outputs.len());
     }
 
@@ -160,6 +187,48 @@ impl Results {
                 self.var_value[j as usize * self.vars.len() + v] = x;
             }
         }
+    }
+
+    /// Resolves job `j`'s `op(…)` signals against its netlist's name map (run spec §4) and
+    /// returns the lines that make the simulator keep them, for the end of the netlist:
+    /// `.save all` then one `.save` of every resolved device vector (ngspice), or nothing
+    /// (no `op(…)`, or a dialect without device operating-point vectors, whose `op(…)`
+    /// outputs then fail with the reason).
+    pub(crate) fn set_ops(&mut self, j: u32, map: &NameMap, dialect: Dialect) -> String {
+        self.ensure(j);
+        let n = self.ops.len();
+        let mut saves = String::new();
+        for k in 0..n {
+            let (inst, param) = op_parts(&self.ops[k]);
+            let v = match dialect {
+                Dialect::Ngspice => map
+                    .spice_device(inst)
+                    .map(|dev| format!("@{dev}[{}]", param.to_ascii_lowercase()))
+                    .map_err(|why| (Code::X004, format!("op(): {why}"))),
+                d => Err((
+                    Code::X006,
+                    format!(
+                        "op() needs device operating-point data, which {} does not provide",
+                        d.as_str()
+                    ),
+                )),
+            };
+            if let Ok(vec) = &v {
+                saves.push_str(if saves.is_empty() {
+                    ".save all\n.save"
+                } else {
+                    ""
+                });
+                saves.push(' ');
+                saves.push_str(vec);
+            }
+            self.op_vector[j as usize * n + k] = v;
+        }
+        if !saves.is_empty() {
+            saves.push('\n');
+        }
+        assert!(saves.is_empty() || saves.starts_with(".save all\n"));
+        saves
     }
 
     /// Marks job `j` failed with a job-level message (gate, netlist, compile, simulator,
@@ -204,8 +273,49 @@ impl Results {
         };
         let mut scratch = Scratch::default();
         let width = self.outputs.len();
+        let op_plot = op_dataset(&plots);
+        let n_ops = self.ops.len();
         for (o, out) in plan.outputs.iter().enumerate() {
-            match eval_output(&out.prog, &plots, lookup, &mut scratch) {
+            // One value per `op(…)` signal, from the job's operating point.
+            let mut ops = Vec::new();
+            let mut failed = None;
+            for (k, (kind, name)) in out.prog.signals().enumerate() {
+                if kind != SignalKind::Op {
+                    continue;
+                }
+                let at = out.prog.signal_span(k);
+                let slot = self.ops.binary_search_by(|x| x.as_str().cmp(name));
+                let slot = slot.expect("Results::new lists every op signal");
+                let x = match &self.op_vector[j as usize * n_ops + slot] {
+                    Err((code, why)) => Err(Error::new(*code, at, why.clone())),
+                    Ok(vec) => match op_plot {
+                        None => Err(Error::new(
+                            Code::X010,
+                            at,
+                            "op() reads the operating point: the job has none (add `.op` to the bench)",
+                        )),
+                        Some(p) => op_value(p, vec).ok_or_else(|| {
+                            Error::new(
+                                Code::X004,
+                                at,
+                                format!("no vector `{vec}` in the operating point (op({name}))"),
+                            )
+                        }),
+                    },
+                };
+                match x {
+                    Ok(x) => ops.push(x),
+                    Err(e) => {
+                        failed = Some(e.to_string());
+                        break;
+                    }
+                }
+            }
+            if let Some(e) = failed {
+                self.error(j, o as u16, e);
+                continue;
+            }
+            match eval_output(&out.prog, &plots, &ops, lookup, &mut scratch) {
                 Ok(x) => self.value[j as usize * width + o] = x,
                 Err(e) => self.error(j, o as u16, e),
             }
@@ -248,16 +358,22 @@ impl Results {
 fn eval_output<'v>(
     prog: &Program,
     plots: &[RawPlot],
+    ops: &[f64],
     lookup: impl Fn(&str) -> Option<Value<'v>> + Copy,
     scratch: &mut Scratch,
 ) -> Result<f64, String> {
-    let has_all = |p: &RawPlot| prog.signals().all(|(k, n)| p.find_signal(k, n).is_some());
+    // `op(…)` values come from the operating point, whatever dataset the rest reads.
+    let has_all = |p: &RawPlot| {
+        prog.signals()
+            .all(|(k, n)| k == SignalKind::Op || p.find_signal(k, n).is_some())
+    };
     let plot = plots
         .iter()
         .rev()
         .find(|p| has_all(p))
         .unwrap_or(&plots[plots.len() - 1]);
-    let r = schemify_wave::calc::eval(prog, plot, lookup, scratch).map_err(|e| e.to_string())?;
+    let r = schemify_wave::calc::eval_ops(prog, plot, ops, lookup, scratch)
+        .map_err(|e| e.to_string())?;
     let x = match r {
         CalcResult::Scalar(Value::Num(x)) => x,
         CalcResult::Scalar(Value::Int(i)) => i as f64,
