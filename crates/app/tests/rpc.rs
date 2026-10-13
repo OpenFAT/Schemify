@@ -245,8 +245,9 @@ fn with_bad_actor(tag: &str, fuel: u64) -> Session {
     let manifest = dir.join("schemify.project");
     let mut text = std::fs::read_to_string(&manifest).unwrap();
     text.push_str(&format!(
-        "\nplugin bad path \"{}\"\n  grant read_project\n  fuel {fuel}\n",
-        wasm.display()
+        "\nplugin bad path {}\n  grant read_project\n  fuel {fuel}\n",
+        // Quoted with the format's escapes: a Windows path holds `\`.
+        schemify_app::docs::quote(&wasm.display().to_string())
     ));
     std::fs::write(&manifest, text).unwrap();
     let ed = schemify_app::editor::Editor::new(schemify_app::editor::Options {
