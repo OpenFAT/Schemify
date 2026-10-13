@@ -160,7 +160,10 @@ pub(crate) fn source(spec: &str, out: &mut String) -> Result<(), Error> {
                 return Err(bad(spec, format_args!("`{a}` inside `{t}(…)`")));
             }
             let n = args.len();
-            if n < 2 || (ty == "pwl" && !n.is_multiple_of(2)) || (!names.is_empty() && n > names.len()) {
+            if n < 2
+                || (ty == "pwl" && !n.is_multiple_of(2))
+                || (!names.is_empty() && n > names.len())
+            {
                 let want = if ty == "pwl" {
                     "time-value pairs".to_owned()
                 } else {
