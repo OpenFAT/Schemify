@@ -199,7 +199,8 @@ commands! {
     ImportProject = "file.import_project",
     /// Insert another cell's schematic attached to the pointer (xschem merge).
     Merge = "file.merge",
-    /// The open-cell chooser.
+    /// The open-cell chooser; with an argument (`lib:cell`, a project cell, or a path
+    /// relative to the project root) opens that cell directly, errors in the status line.
     Open = "file.open",
     /// Reopen the most recently opened file.
     OpenMostRecent = "file.open_most_recent",

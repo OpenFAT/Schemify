@@ -41,8 +41,10 @@ pub struct Sweep {
     /// Instance line template; `{n}` instance number, `{l}` / `{w}` in µm; nodes `d g s b`.
     pub inst: String,
     /// OP-parameter vector prefix template (`@m.x{n}.msky130_fd_pr__nfet_01v8`); the sweep
-    /// saves `<prefix>[id]`, `[gm]`, `[gds]`, `[cgg]`.
+    /// saves `<prefix>[<id>]`, `[gm]`, `[gds]`, `[cgg]`.
     pub op: String,
+    /// OP name of the drain current: `id` (BSIM4, the default), `ids` (BSIM-CMG via OSDI).
+    pub id: String,
     /// Channel type: p sweeps negative VGS/VDS and stores magnitudes.
     pub polarity: Polarity,
     /// Supply (V); VGS sweeps 0..VDD, VDS VDD/12..VDD, queries at VDD/2.
@@ -114,6 +116,7 @@ struct Attrs {
     deck: Option<String>,
     inst: Option<String>,
     op: Option<String>,
+    id: Option<String>,
     polarity: Option<Polarity>,
     vdd: Option<f64>,
     l: Option<Vec<f64>>,
@@ -143,6 +146,13 @@ impl Attrs {
             "deck" => self.deck.replace(one(&mut v)?).is_some(),
             "inst" => self.inst.replace(one(&mut v)?).is_some(),
             "op" => self.op.replace(one(&mut v)?).is_some(),
+            "id" => {
+                let id = one(&mut v)?;
+                if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                    return Err(format!("`id`: {id:?} is not an OP parameter name"));
+                }
+                self.id.replace(id).is_some()
+            }
             "note" => self.note.replace(one(&mut v)?).is_some(),
             "polarity" => {
                 let p = match one(&mut v)?.as_str() {
@@ -182,8 +192,11 @@ impl Attrs {
 
     fn sweep(self) -> Result<Option<Sweep>, String> {
         let Some(deck) = self.deck else {
-            let any =
-                self.inst.is_some() || self.op.is_some() || self.vdd.is_some() || self.l.is_some();
+            let any = self.inst.is_some()
+                || self.op.is_some()
+                || self.id.is_some()
+                || self.vdd.is_some()
+                || self.l.is_some();
             return if any {
                 Err("characterization attributes need `deck`".to_owned())
             } else {
@@ -207,6 +220,7 @@ impl Attrs {
             deck,
             inst,
             op,
+            id: self.id.unwrap_or_else(|| "id".to_owned()),
             polarity: self.polarity.unwrap_or(Polarity::N),
             vdd,
             l_um: self.l.ok_or("characterization needs `l`")?,
@@ -275,10 +289,10 @@ pub fn netlist(name: &str, s: &Sweep) -> String {
     t
 }
 
-/// Instance `n`'s saved vectors: `<op>[id] <op>[gm] <op>[gds] <op>[cgg]`.
+/// Instance `n`'s saved vectors: `<op>[<id>] <op>[gm] <op>[gds] <op>[cgg]`.
 fn vectors(s: &Sweep, n: usize) -> String {
     let prefix = s.op.replace("{n}", &n.to_string());
-    let v: Vec<String> = ["id", "gm", "gds", "cgg"]
+    let v: Vec<String> = [s.id.as_str(), "gm", "gds", "cgg"]
         .iter()
         .map(|q| format!("{prefix}[{q}]"))
         .collect();
@@ -472,6 +486,8 @@ device ext
             "device a\n  deck d.sp\n  inst \"X{n} d g s b m L={l}\"\n  op p{n}\n  vdd -1\n  l 1\n",
             "device a\n  lut x\n  lut y\n",
             "device \"a b\"\n",
+            "device a\n  id ids\n",
+            "device a\n  deck d.sp\n  inst \"N{n} d g s b m l={l}u\"\n  op @n{n}\n  id \"i[d]\"\n  vdd 1\n  l 1\n",
         ] {
             assert!(parse(bad).is_err(), "accepted {bad:?}");
         }
@@ -498,6 +514,13 @@ device ext
             n.matches("[cgg]").count(),
             4,
             "save + wrdata, two instances"
+        );
+        let osdi = "device n\n  deck d.sp\n  inst \"N{n} d g s b nmos_rvt nfin=14 l={l}u\"\n  op @n{n}\n  id ids\n  vdd 0.8\n  l 0.021\n";
+        let d = parse(osdi).unwrap();
+        let n = netlist(&d[0].name, d[0].sweep.as_ref().unwrap());
+        assert!(
+            n.contains("wrdata .schemify/gmid/work/n.1.data @n1[ids] @n1[gm] @n1[gds] @n1[cgg]\n"),
+            "{n}"
         );
         let mut p = s.clone();
         p.polarity = Polarity::P;
@@ -529,6 +552,7 @@ device ext
             deck: "d.sp".into(),
             inst: "X{n} d g s b m L={l}".into(),
             op: "@m.x{n}.m".into(),
+            id: "id".into(),
             polarity: Polarity::N,
             vdd: 1.8,
             l_um: vec![0.5],

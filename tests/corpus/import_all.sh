@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Import every corpus library group with tools/devicereader (spec docs/spec/import.md),
+# Import every corpus library group with `schemify-interop xschem-import` (the interop
+# plugin's native CLI, plugins/interop; spec docs/spec/import.md),
 # so the netlister can be compared against the xschem goldens.
 #
 #   tests/corpus/import_all.sh [out-dir]          (default: a fresh mktemp directory)
@@ -8,7 +9,7 @@
 # For each rcfile group of golden.sh (xschem, sky130, gf180, ihp) it converts the
 # group's xschem search path into <out>/<group>/ (one Schemify library per xschem
 # library directory, schemify.project, import-report.{md,txt}) and checks every output
-# with the import oracle (devicereader exits 1 if any output fails to load).
+# with the import oracle (schemify-interop exits 1 if any output fails to load).
 #
 # It then writes <out>/benches.map, one line per benches.txt entry:
 #   <bench-name> <group> <cell-file relative to <out>/<group>> <PDK_ROOT> <PDK>
@@ -22,7 +23,8 @@
 # %cell% is the absolute cell path, %dialect% is ngspice or cdl, %out% the target file
 # (<out>/netlists/<bench>.spice|.cdl), run with PDK_ROOT/PDK/HOME exported as golden.sh
 # did. NETLIST=none stops after the map. The authoritative ratchet (golden code blocks
-# stripped for CDL, golden-unevaluated parameters) is crates/netlist/tests/corpus.rs.
+# stripped for CDL, golden-unevaluated parameters) is
+# plugins/interop/tests/xschem_differential.rs.
 # Exit status: 0 ok, 1 an import check failed, 2 usage or setup error.
 set -euo pipefail
 
@@ -34,17 +36,18 @@ out="${1:-$(mktemp -d)}"
 [[ -d "$src" ]] || { echo "no corpus: run tests/corpus/fetch.sh" >&2; exit 2; }
 mkdir -p "$out"
 
-cargo build -q --release -p schemify-devicereader --manifest-path "$repo/Cargo.toml"
-dr="${CARGO_TARGET_DIR:-$repo/target}/release/devicereader"
+cargo build -q --release --manifest-path "$repo/plugins/Cargo.toml" -p interop --features cli \
+  --bin schemify-interop
+dr="${CARGO_TARGET_DIR:-$repo/plugins/target}/release/schemify-interop"
 
 lib="$src/xschem/xschem_library"
 ihp="$src/ihp_open_pdk/ihp-sg13g2"
 status=0
-run() { # group, then devicereader arguments
+run() { # group, then xschem-import arguments
   local g=$1; shift
   rm -rf "${out:?}/$g"
   echo "== $g"
-  if ! "$dr" "$@" -o "$out/$g" | grep -v '^  limit'; then status=1; fi
+  if ! "$dr" xschem-import "$@" -o "$out/$g" | grep -v '^  limit'; then status=1; fi
 }
 
 run xschem $(for d in devices examples ngspice ngspice_verilog_cosim logic xschem_simulator \

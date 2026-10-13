@@ -24,8 +24,6 @@ schemify-format.workspace = true
 schemify-doc.workspace = true
 schemify-elab.workspace = true
 schemify-netlist.workspace = true
-schemify-import.workspace = true
-schemify-devicereader.workspace = true
 schemify-run.workspace = true
 schemify-config.workspace = true
 # Inflate only, for imported project zips (`zip::read`, web spec §3: OS archivers deflate,

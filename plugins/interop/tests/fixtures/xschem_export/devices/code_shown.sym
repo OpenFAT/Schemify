@@ -1,0 +1,7 @@
+v {xschem version=3.4.7 file_version=1.2}
+K {type=netlist_commands
+template="name=s1 only_toplevel=false value=blabla"
+format="
+@value
+"}
+L 4 0 -10 70 -10 {}

@@ -37,7 +37,7 @@ Every server answers `rpc.methods`: the sorted list of method names it serves (t
 
 | Method | Params | Result |
 |---|---|---|
-| `fmt`, `diff`, `import`, `netlist`, `check`, `run` | the CLI arguments after the command, as an array of strings (`["top.shbench", "--dialect", "xyce"]`) | `{"code", "stdout", "stderr"}`: the exit code (D27: 0 ok, 1 design errors, 2 usage/I/O; −1 killed) and the output text (lossy UTF-8) |
+| `fmt`, `diff`, `netlist`, `check`, `run` | the CLI arguments after the command, as an array of strings (`["top.shbench", "--dialect", "xyce"]`) | `{"code", "stdout", "stderr"}`: the exit code (D27: 0 ok, 1 design errors, 2 usage/I/O; −1 killed) and the output text (lossy UTF-8) |
 | `edit` | `{"file": <path>, "ops": <op text>, "label"?: <undo label>}` | `{"changed": bool}` |
 | `rpc.methods` | none | the method names |
 
@@ -48,7 +48,8 @@ Every server answers `rpc.methods`: the sorted list of method names it serves (t
 
 - A method is a **command name** from the command table (`commands.rs`, `Commands::resolve_arg`): a core command (`edit.undo`, `file.save`, `view.zoom_full`, …), a plugin command (`count_nets.run`), or a core command with its argument as a name suffix (`layers.set_current.3`, `sim.dialect.xyce`). Anything else is `-32601`.
 - `params`: an array of strings, passed to the command as its arguments in line-record value form (format spec §2: bare when legal, else quoted), the same text a menu row's or key's `args` carries; `-32602` for anything else. A plugin command receives them as `Event::Command { args }`.
-- The command is queued (`Editor::command`) between frames and runs in the next frame, after that frame's input, exactly as a key press would. The response comes after that frame: `{"status": <the status line>}`. At most 256 requests are taken per frame; the rest wait for the next one.
+- A command that opens a dialog in the editor takes its answer as an argument instead where a script needs one: `file.open` with params `["<cell>"]` opens that cell without the chooser — `lib:cell`, a project cell with or without its extension (`inv`, `inv.shcomp`), or a path relative to the project root — and answers `opened <file>`; a name that is no cell answers `file.open <name>: <why>` and opens nothing. Without params it opens the chooser, as the menu does.
+- The command is queued (`Editor::command_answered`) between frames and runs in the next frame, after that frame's input, exactly as a key press would. The response is `{"status": <what this command said>}`: for a core command, the status line it set while running, or `""` when it set none (the status line itself then keeps the previous message); for a plugin command, the plugin's last log line or fault (plugin-abi §2, e.g. `out of fuel (budget n)`) from the delivery that took the command until its event finished, or `""`. A core command is answered after the frame that ran it; a plugin command after the frame in which its event finished, frames later for a plugin on a worker (plugin-abi §2). Answers to one client keep its request order (a later answer waits behind a plugin command still running); other clients are not held up. At most 256 answers wait at once; further requests wait unread.
 - While the server runs the editor ticks every 50 ms to look for requests (so an idle editor answers within that); without `--rpc` nothing changes (D39 idle CPU 0%).
 
 ## 4. Errors
@@ -91,5 +92,5 @@ D27's "MCP = thin plugin": a Model Context Protocol server on stdio, so an agent
 
 - The codec: `parse(write(v)) == v` for generated values (property); RFC 8259 acceptance and rejection cases; any bytes decode to a request or a declared `-32700`/`-32600` response, never a panic (property, and the `cli/fuzz` `rpc_decode` target, nightly).
 - Headless: every method of `rpc.methods` is reachable; CLI methods return the CLI's own exit code and output for the same arguments; `edit` changes exactly the edited attribute (`schemify diff` as oracle) and refuses invalid ops without touching the file; garbage lines do not stop the stream; the Unix-socket listener answers like stdio.
-- Editor: every command `rpc.methods` lists (core and plugin, suffix arguments) is queued, unknown names and bad params are declared errors; a client on a socket drives the frame spine (select all, delete) and gets its answers and the `doc_changed` notification.
+- Editor: every command `rpc.methods` lists (core and plugin, suffix arguments) is queued, unknown names and bad params are declared errors; a client on a socket drives the frame spine (select all, delete) and gets its answers and the `doc_changed` notification; each answer carries its own command's message (the one the status line shows after it, `""` for a silent command, never the previous command's), including a plugin command that runs out of fuel, on the frame thread and on a worker (`crates/app/tests/rpc.rs`).
 - MCP: the lifecycle (version negotiation, the initialized notification unanswered), `tools/list` equals the headless methods minus `rpc.methods`, a failing tool is a result with `isError`, unknown tools and methods are errors.

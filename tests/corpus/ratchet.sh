@@ -3,7 +3,7 @@
 #
 #   tests/corpus/ratchet.sh <TABLE.md> [<RATCHET.md>]
 #
-# <TABLE.md> is what `crates/netlist/tests/corpus.rs` (xschem_differential) writes into
+# <TABLE.md> is what `plugins/interop/tests/xschem_differential.rs` writes into
 # `.cache/netlist-out/`. Both files hold the same per-set table (`| set | mode | agree | … |`):
 # the gated numbers are the SPICE agree count (column 3 of the `spice` rows) and the CDL agree
 # count against the code-stripped golden (column 7 of the `cdl` rows), summed over sets.

@@ -1,7 +1,9 @@
 # PDKs per project: install sky130, draw with `tech:` devices, switch to gf180mcu
 
 The end-to-end flow of [docs/spec/pdk.md](../../spec/pdk.md). You need `ciel` on `PATH`
-(`pip install ciel`, or a venv) and the `schemify` CLI.
+(`pip install ciel`, or a venv) and the interop plugin's CLI `schemify-interop` on `PATH`
+(`nix run .#interop`, or the release archive; D24: the xschem importer is a plugin, not part
+of `schemify`).
 
 ## 1. Load the PDK manager
 
@@ -14,7 +16,7 @@ plugin pdk-manager path plugins/pdk-manager/pdk_manager.wasm
   grant read_project
   grant write_project
   grant spawn:ciel
-  grant spawn:schemify
+  grant spawn:schemify-interop
 ```
 
 (`plugins/pdk-manager` holds `pdk_manager.wasm`; copy it into your project or point the path at
@@ -31,9 +33,9 @@ pdk.list_remote sky130
 pdk.install sky130 1e3554706ddbb2529193bdabbc7128296f3cb44a
 ```
 
-The panel shows each step (`fetch (ciel)`, `import (schemify)`, `tech.map`, `state`) and the
+The panel shows each step (`fetch (ciel)`, `import (schemify-interop)`, `tech.map`, `state`) and the
 tail of its output. The result lands in `.schemify/pdks/sky130/<version>/` (`root/` from ciel,
-`lib/` from `schemify import`, `tech.map`, `STATE`). Nothing else changes yet.
+`lib/` from `schemify-interop xschem-import`, `tech.map`, `STATE`). Nothing else changes yet.
 
 ## 3. Use it
 

@@ -46,6 +46,7 @@
 
 #![forbid(unsafe_code)]
 
+mod core_lib;
 mod document;
 mod edit;
 mod journal;
@@ -57,6 +58,7 @@ mod strings;
 mod tables;
 mod techmap;
 
+pub use core_lib::{core_file, core_library};
 pub use document::{Document, Loc, TableId};
 pub use edit::{Mode, NEW_ID, OPS_MAX, Op, OpError, Target, Transaction};
 pub use journal::{ops_from_text, ops_to_text};

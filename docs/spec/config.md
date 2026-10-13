@@ -118,9 +118,9 @@ A package is a prebuilt wasm plugin ([plugin-abi.md](plugin-abi.md)). Packages n
 
 | Field | Meaning |
 |---|---|
-| `src` | Git repository: anything `git clone` accepts; a path starting `./`, `../` or `~/` is relative to the config root (or the home directory). |
+| `src` | Git repository: anything `git clone` accepts; a path starting `./`, `../` or `~/` is relative to the config root (or the home directory). Local paths (here and in `path`) are cleaned lexically: `.` segments are dropped, `..` is kept (no filesystem lookup), so the lockfile and `pack status` print `<root>/plugins/x`, never `<root>/./plugins/x`. |
 | `url` + `sha256` | One `.wasm` file fetched with `curl`; `sha256` (64 lowercase hex digits) is required and checked before anything is installed. |
-| `path` | A local package directory used in place (development); never copied. |
+| `path` | A local package directory used in place (development); never copied. Relative to the config root, or the home directory with `~/`. |
 | `name` | Package name; default: the last segment of the source without `.git`/`.wasm`. One word of `A–Z a–z 0–9 . _ -`. |
 | `rev` / `version` | Git only: the branch, tag or commit to check out (`version` is a tag; give one of the two). Default: the remote's default branch. |
 | `grant` | List of capabilities the user grants (plugin-abi §5). |

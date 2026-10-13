@@ -1,12 +1,12 @@
 # Netlist ratchet (xschem differential)
 
 The `netlist` row of [TESTING.md](../../TESTING.md): every bench of
-[benches.txt](benches.txt) imported with `schemify_import`, elaborated, emitted
+[benches.txt](benches.txt) imported with the `interop` plugin, elaborated, emitted
 (ngspice and cdl) and compared with xschem's golden under `schemify_spicecmp`.
-Produced by `crates/netlist/tests/corpus.rs`:
+Produced by `plugins/interop/tests/xschem_differential.rs`:
 
 ```text
-SCHEMIFY_CORPUS=tests/corpus/.cache cargo test -p schemify-netlist --release --test corpus -- --nocapture
+SCHEMIFY_CORPUS=tests/corpus/.cache cargo test --manifest-path plugins/Cargo.toml -p interop --release --test xschem_differential -- --nocapture
 ```
 
 (our netlists, the diffs and the imported files land in `.cache/netlist-out/`; the

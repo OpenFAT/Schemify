@@ -20,6 +20,22 @@ use schemify_render::canvas::Camera;
 
 use crate::geometry::Pt;
 pub use crate::libs::cell_relpath;
+
+/// The indexed cell row `name` names: `lib:cell` or, for the project library, `cell`, where
+/// `cell` is the cell's path in its library with or without its extension (`inv`,
+/// `inv.shcomp`, `sub/amp`). `None` when no indexed cell matches. Cost: one pass over the
+/// cell index.
+pub fn find_cell(p: &Project, name: &str) -> Option<usize> {
+    let (lib, rest) = name.split_once(':').unwrap_or(("", name));
+    let cells = p.cells();
+    let row = (0..cells.lib.len()).find(|&r| {
+        let rel = cell_relpath(p, r);
+        let stem = rel.rsplit_once('.').map_or(rel.as_str(), |(s, _)| s);
+        p.libs().name[usize::from(cells.lib[r])] == lib && (stem == rest || rel == rest)
+    });
+    debug_assert!(row.is_none_or(|r| r < cells.lib.len()));
+    row
+}
 use crate::libs::{self, BUILTIN_DIR, absolute, rel_path};
 use crate::platform;
 use crate::scene::ObjKey;

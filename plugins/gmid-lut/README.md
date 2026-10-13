@@ -33,6 +33,7 @@ drain-source voltage magnitude in volts.
 | `gmid.gain(dev, gm_id, l)` | 3 | intrinsic gain gm/gds (V/V) |
 | `gmid.ft(dev, gm_id, l)` | 3 | transit frequency gm / (2π·Cgg) (Hz) |
 | `gmid.<f>_at(…, vds)` | +1 | each of the above at \|VDS\| = `vds` instead of the nominal VDS |
+| `gmid.l(dev, l)` | 2 | `l` clamped into the device table's L range (m): the nearest length the PDK offers, e.g. ASAP7's one fixed 21 nm gate |
 
 The `_at` variants (`gmid.vgs_at(dev, gm_id, l, vds)`, …, `gmid.w_at(dev, gm_id, l, id, vds)`)
 take `vds` as their last argument; at the nominal VDS they return exactly what the plain
@@ -41,7 +42,7 @@ characterization).
 
 Registry records (`contribute functions`, plugin-abi §7): `function <name> <fn_id> <arity>` with
 `fn_id = index + 16 × generation`, index in the table order above (vgs 0 … ft 6, then vgs_at 7
-… ft_at 13). The generation starts at 0 on `Load` and advances whenever the loaded tables
+… ft_at 13, then l 14). The generation starts at 0 on `Load` and advances whenever the loaded tables
 change (a LUT loads or a characterization finishes); the plugin then re-declares the set, so the
 host's registry epoch moves and it re-evaluates every expression that calls `gmid.*` (an
 identical re-declaration would be ignored). `schemify_call` reads `fn_id % 16`.
@@ -82,7 +83,8 @@ Project-root config in line-record syntax (format spec §2; no `schemify` header
 | `lut <path>` | project-relative LUT file; default `.schemify/gmid/<name>.glut` |
 | `deck <path>` | project-relative SPICE file with the model includes and options; its presence makes the device characterizable |
 | `inst "<template>"` | instance line; `{n}` instance number, `{l}` / `{w}` in µm; nodes `d g s b` |
-| `op "<template>"` | OP-parameter vector prefix; `{n}` instance number; the sweep saves `<prefix>[id]`, `[gm]`, `[gds]`, `[cgg]` |
+| `op "<template>"` | OP-parameter vector prefix; `{n}` instance number; the sweep saves `<prefix>[<id>]`, `[gm]`, `[gds]`, `[cgg]` |
+| `id <name>` | OP name of the drain current, default `id` (BSIM4); `ids` for BSIM-CMG through OSDI (ASAP7) |
 | `polarity n\|p` | default `n`; `p` sweeps negative VGS/VDS and stores magnitudes |
 | `vdd <V>` | supply (required with `deck`) |
 | `l <µm>…` | lengths to simulate (required with `deck`; sorted, ≤ 64) |
