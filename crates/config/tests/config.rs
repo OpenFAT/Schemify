@@ -462,11 +462,18 @@ fn require_reads_config_modules_once() {
         Source::Path(p) => p.display().to_string(),
         Source::Url { .. } => panic!("no url source here"),
     };
-    let r = root.display();
-    assert_eq!(shown(0), format!("{r}/repo"));
-    assert_eq!(shown(1), format!("{r}/a/plug"));
-    assert_eq!(shown(2), format!("{r}/../up"));
-    assert!((0..3).all(|i| !shown(i).contains("/./")));
+    // Joined per component, as the expansion does, so the separators match on Windows too.
+    let want = |parts: &[&str]| {
+        parts
+            .iter()
+            .fold(root.clone(), |p, c| p.join(c))
+            .display()
+            .to_string()
+    };
+    assert_eq!(shown(0), want(&["repo"]));
+    assert_eq!(shown(1), want(&["a", "plug"]));
+    assert_eq!(shown(2), want(&["..", "up"]));
+    assert!((0..3).all(|i| !shown(i).contains("/./") && !shown(i).contains("\\.\\")));
     for (name, why) in [
         ("../etc/passwd", "bad module name"),
         ("/abs", "bad module name"),

@@ -147,6 +147,7 @@ dependencies = [
 name = "interop"
 version = "0.1.0"
 dependencies = [
+ "libm",
  "proptest",
  "schemify-abi",
  "schemify-doc",
