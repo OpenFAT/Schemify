@@ -27,7 +27,6 @@ code stimuli spectre
 --- report
 needs_review:code	tb	analysis noise is disabled in maestro: dropped
 needs_review:code	tb	analysis pss has no SPICE form: kept in the spectre block
-needs_review:code	tb	analysis tran has no SPICE form: kept in the spectre block
 needs_review:config	tb	corner fast is disabled in maestro
 needs_review:config	tb	maestro test TRAN2: only the first test of a view maps
 needs_review:design-variable	tb	`foo*2` → `foo*2`

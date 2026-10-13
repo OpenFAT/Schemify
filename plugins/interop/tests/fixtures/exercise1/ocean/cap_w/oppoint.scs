@@ -1,0 +1,2 @@
+// Spectre only: the intrinsic cgsi/cgdi (and cgsovl, cgdovl, cjd, cjs) of the dc-loop masters
+save MNM:oppoint MPM:oppoint

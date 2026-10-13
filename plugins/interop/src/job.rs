@@ -156,11 +156,33 @@ impl Job {
                     ),
                 }
             }
-            Command::VirtuosoExport { tops, out, opts } => {
+            Command::VirtuosoExport {
+                tops,
+                out,
+                mut opts,
+            } => {
                 let map = match self.mapping() {
                     Ok(m) => m,
                     Err(s) => return s,
                 };
+                if let Some(p) = opts.target.clone().filter(|_| opts.target_map.is_none()) {
+                    if !self.known(&p) {
+                        return self.ask(vec![p]);
+                    }
+                    let parsed = match self.files.get(&p).map(|b| std::str::from_utf8(b)) {
+                        None => return Step::Failed(vec![format!("{p}: cannot read")]),
+                        Some(Err(_)) => return Step::Failed(vec![format!("{p}: not UTF-8")]),
+                        Some(Ok(t)) => crate::retarget::parse_target(t),
+                    };
+                    match parsed {
+                        Ok(t) => opts.target_map = Some(t),
+                        Err(e) => {
+                            return Step::Failed(
+                                e.into_iter().map(|x| format!("{p}: {x}")).collect(),
+                            );
+                        }
+                    }
+                }
                 let refs: Vec<&str> = tops.iter().map(String::as_str).collect();
                 let d = match load(&self.files, &self.absent, &refs) {
                     Ok(d) => d,
@@ -169,12 +191,20 @@ impl Job {
                 };
                 let top_ix: Vec<usize> = (0..tops.len()).collect();
                 match virtuoso::export(&d, &top_ix, &map, &opts) {
-                    Ok(e) => finish(
-                        vec![(out.clone(), e.sfyx.into_bytes())],
-                        &out,
-                        &e.notes,
-                        "Virtuoso export",
-                    ),
+                    Ok(e) => {
+                        // OCEAN scripts beside the .sfyx, under `ocean/` (§9.6).
+                        let dir = out.rsplit_once('/').map_or("", |(d, _)| d);
+                        let mut writes = vec![(out.clone(), e.sfyx.into_bytes())];
+                        for (p, t) in e.ocean {
+                            let path = if dir.is_empty() {
+                                format!("ocean/{p}")
+                            } else {
+                                format!("{dir}/ocean/{p}")
+                            };
+                            writes.push((path, t.into_bytes()));
+                        }
+                        finish(writes, &out, &e.notes, "Virtuoso export")
+                    }
                     Err(p) => Step::Failed(p),
                 }
             }

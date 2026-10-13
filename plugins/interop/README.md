@@ -40,7 +40,7 @@ the editor, the same conversions run from the command line:
 ```
 cargo run --manifest-path plugins/Cargo.toml -p interop --features cli --bin schemify-interop -- <command>
 
-schemify-interop virtuoso-export <project> <cell-file>... -o <file.sfyx> [--lib L=V]... [--analoglib] [--retarget]
+schemify-interop virtuoso-export <project> <cell-file>... -o <file.sfyx> [--lib L=V]... [--core-cells] [--retarget] [--target <map.retarget>]
 schemify-interop virtuoso-import <project> <file.sfyx> [--lib L=V]... [--analoglib]
 schemify-interop xschem-export   <project> <cell-file>... -o <dir>
 schemify-interop xschem-import   <lib-dir>... -o <out-dir> [...]        (spec import.md)
@@ -122,10 +122,21 @@ A `.shbench` exports as the testbench schematic plus a maestro view with one tes
 | a `sweep` named after its var | the variable's comma list of points |
 | `corner` (`lib`, `include`, `set`, `temp`) | corner with model files and sections, corner variables, `temperature` |
 | `.tran .ac .dc .op .noise` lines of the analysis code block | analyses with their options |
+| `.options errpreset=conservative` | the tran analysis's `errpreset` |
 | `.temp`, `.param`, `.include`, `.lib` | variables and test model files |
 | `code … spectre` blocks | definition files |
-| `output` (`v()`, `i()`, `max`, `avg`, …) | outputs (`VT("/net")`, `ymax`, `average`, …) |
-| `spec` `min`/`max` | spec `>`/`<` |
+| `output` (`v()`, `i()`, `at`, `re`/`im`, `x()`, `deriv`, `max`, `cross`, `settle`, `phase_margin`, `op("M1","gm")`, …) | outputs (`VS("/net")`, `IF("/V1/PLUS")`, `value`, `real`/`imag`, `xval`, `cross`, `settlingTime`, `phaseMargin`, `OP("/M1" "gm")`, …); attribute `analysis op` picks the dataset per output |
+| `spec` `min`/`max` | spec `>`/`<` (bounds over bench vars folded to numbers) |
+| core sources, passives, ammeters | their analogLib cells (`vdc`, `idc`, `cap`, `iprobe`, …; `--core-cells` keeps the `schemify_core` mirrors); `dc {VGS} ac 1` → `vdc` `VGS`, `acm` `1` |
+
+Each bench also gets an OCEAN script, `ocean/<cell>.ocn` beside the `.sfyx`, that runs the same
+setup headless and prints every output to `<cell>/<output>.txt` (sweeps as `paramAnalysis`; an
+output with `vs <other output>` is also printed as a `waveVsWave` plot):
+
+```
+SfyImport("/abs/ex.sfyx")                      ; in the CIW (and SfyRetarget, below)
+cd ocean && ocean -nograph < dc_vgs.ocn         ; in a shell
+```
 
 Importing goes the other way. A comma list comes back as a `lin`/`log`/`values` sweep, and the
 analyses come back as one code block named after the test. Monte Carlo and optimizer records,
@@ -151,6 +162,13 @@ uses, then solves each width by the same gm/Id lookup the `gmid` plugin uses. It
 real devices with those widths and draws their connections. `<file>.retarget.log` records the
 solved W, fingers, L, VGS and the gm/Id residual for each device. The target PDK never leaves
 that machine.
+
+Every other `tech:nmos`/`tech:pmos` instance travels as a fixed-size placeholder (its `w l nf
+m`, as design-variable expressions) that `SfyRetarget` places on the same PDK cell. The map's
+`fingerw_max`, `fingerw_min` and `split_above` set the finger rule (`fingerw_max 10u fingerw_min
+5u split_above 10u`: W > 10 µm splits into equal fingers of at least 5 µm). A `corner tt` record
+in the map (`lib /pdk/models.scs tt_lib`) gives the server's model files; pass the map to the
+export with `--target` so maestro and the OCEAN scripts use them.
 
 ### Different libraries for the same devices (`interop.map`)
 
@@ -212,4 +230,4 @@ No Cadence tool runs here, so:
 | `src/xschem_out.rs`, `src/translate.rs` … | xschem export and import |
 | `src/job.rs` | one conversion as pure steps, driven by `src/plugin.rs` (editor) and `src/cli.rs` |
 | `skill/*.il` | the parts of `schemify.il` |
-| `tests/` | `virtuoso_rust`, `virtuoso_skill`, `skill_lint`, `virtuoso_e2e`, `retarget`, `ade`, `xschem_export`, and the xschem import suites |
+| `tests/` | `virtuoso_rust`, `virtuoso_skill`, `skill_lint`, `virtuoso_e2e`, `retarget`, `ade`, `exercise1` (a course's benches: maestro + OCEAN goldens), `xschem_export`, and the xschem import suites |

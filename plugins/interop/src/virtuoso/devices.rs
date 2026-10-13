@@ -346,41 +346,93 @@ pub struct Source {
 
 /// Parses SPICE independent-source text (`[DC] v`, `AC mag [phase]`, one of
 /// `PULSE(...)`/`SIN(...)`/`PWL(...)`/`EXP(...)`; case-insensitive, commas or spaces) into
-/// waveform params. `current` selects the i-source names.
+/// waveform params. `current` selects the i-source names. Every value is a number literal;
+/// [`parse_source_with`] also takes `{expr}` template holes.
 ///
 /// `None` for text outside that grammar, a value that is not a number literal, or a PWL
 /// with more than [`PWL_PAIRS_MAX`] pairs: the caller exports `vdc` = the whole text and
 /// reviews it (`source`).
 pub fn parse_source(text: &str, current: bool) -> Option<Source> {
+    parse_source_with(text, current, |_| None)
+}
+
+/// Splits source text into words: a `{…}` hole whole (nested braces and string literals
+/// inside), `(` and `)` alone, the rest at white space and commas. `None` for an unclosed
+/// hole.
+fn source_words(text: &str) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut it = text.chars();
+    while let Some(ch) = it.next() {
+        match ch {
+            '{' => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                let (mut depth, mut quoted) = (0u32, false);
+                let mut hole = String::from("{");
+                loop {
+                    let c = it.next()?;
+                    hole.push(c);
+                    match c {
+                        '\\' if quoted => hole.push(it.next()?),
+                        '"' => quoted = !quoted,
+                        '{' if !quoted => depth += 1,
+                        '}' if !quoted && depth == 0 => break,
+                        '}' if !quoted => depth -= 1,
+                        _ => {}
+                    }
+                }
+                out.push(hole);
+            }
+            '(' | ')' => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                out.push(ch.to_string());
+            }
+            c if c.is_whitespace() || c == ',' => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    debug_assert!(out.iter().all(|w| !w.is_empty()));
+    Some(out)
+}
+
+/// [`parse_source`] where a value may also be one whole `{expr}` template hole (`dc {VGS}
+/// ac 1`, `{VDD}`, `dc {IDW*W/1u}`) or a bare name, read as the hole of that one name (`VCM`,
+/// `dc VDD`): `hole` gets the trimmed expression and returns its CDF/AEL text, or `None`
+/// when it has none — the whole text then does not parse (never a partly translated CDF).
+/// A hole glued to other text (`{a}u`) does not parse either.
+pub fn parse_source_with(
+    text: &str,
+    current: bool,
+    mut hole: impl FnMut(&str) -> Option<String>,
+) -> Option<Source> {
     let dcname = if current { "idc" } else { "vdc" };
     let mut params: Vec<(String, String)> = Vec::new();
     let mut wave = 0;
     let mut k = 0;
-    let num = number_to_ael;
+    let mut num = |v: &str| -> Option<String> {
+        match v.strip_prefix('{').and_then(|x| x.strip_suffix('}')) {
+            Some(e) if !e.trim().is_empty() => hole(e.trim()),
+            Some(_) => None,
+            None if v.contains(['{', '}']) => None,
+            // A bare name (`VCM`, `dc VDD`) is the one-identifier hole `{VCM}`.
+            None if is_name(v) => hole(v),
+            None => signed_number(v),
+        }
+    };
     let mut have_dc = false;
     let mut have_ac = false;
-    let toks: Vec<String> = text
-        .split(|c: char| c.is_whitespace() || c == ',')
-        .flat_map(|w| {
-            // Split `PULSE(0` into `PULSE`, `(`, `0`.
-            let mut out = Vec::new();
-            let mut cur = String::new();
-            for ch in w.chars() {
-                if ch == '(' || ch == ')' {
-                    if !cur.is_empty() {
-                        out.push(std::mem::take(&mut cur));
-                    }
-                    out.push(ch.to_string());
-                } else {
-                    cur.push(ch);
-                }
-            }
-            if !cur.is_empty() {
-                out.push(cur);
-            }
-            out
-        })
-        .collect();
+    let toks = source_words(text)?;
     while k < toks.len() {
         let w = toks[k].to_ascii_uppercase();
         match w.as_str() {
@@ -400,8 +452,8 @@ pub fn parse_source(text: &str, current: bool) -> Option<Source> {
                 let v = toks.get(k + 1)?;
                 params.push(("acm".into(), num(v)?));
                 k += 2;
-                if let Some(p) = toks.get(k).and_then(|p| number_to_ael(p)) {
-                    params.push(("acp".into(), p));
+                if let Some(p) = toks.get(k).filter(|p| p.starts_with('{') || is_number(p)) {
+                    params.push(("acp".into(), num(p)?));
                     k += 1;
                 }
                 have_ac = true;
@@ -459,15 +511,52 @@ pub fn parse_source(text: &str, current: bool) -> Option<Source> {
     Some(Source { wave, params })
 }
 
+/// Whether `v` is an identifier (`[A-Za-z_][A-Za-z0-9_]*`) other than a source keyword.
+fn is_name(v: &str) -> bool {
+    let mut ch = v.chars();
+    ch.next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && ch.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !matches!(v.to_ascii_uppercase().as_str(), "DC" | "AC")
+        && !WAVEFORMS
+            .iter()
+            .skip(1)
+            .any(|w| w.0.eq_ignore_ascii_case(v))
+}
+
+/// A number literal with an optional leading `-` as CDF/AEL text; `None` for anything else.
+fn signed_number(v: &str) -> Option<String> {
+    match v.strip_prefix('-') {
+        Some(rest) => number_to_ael(rest).map(|n| format!("-{n}")),
+        None => number_to_ael(v),
+    }
+}
+
+/// Whether `v` is a number literal with an optional leading `-` (either syntax's suffixes).
+fn is_number(v: &str) -> bool {
+    signed_number(v).is_some()
+}
+
 /// Formats waveform params back as SPICE source text (`DC 1 AC 1 0 PULSE(0 1.8 0 10p 10p
-/// 5n 10n)`): `get` returns each param's value already in Schemify number syntax. A
-/// waveform's trailing unset params are omitted; an unset param inside is `0`.
+/// 5n 10n)`): `get` returns each param's value in Schemify syntax; a value that is not a
+/// number literal (a design variable, an expression) is written as a `{…}` hole, the
+/// inverse of [`parse_source_with`]. A waveform's trailing unset params are omitted; an
+/// unset param inside is `0`.
 pub fn format_source(
     wave: usize,
     current: bool,
-    mut get: impl FnMut(&str) -> Option<String>,
+    mut get_raw: impl FnMut(&str) -> Option<String>,
 ) -> String {
     assert!(wave < WAVEFORMS.len(), "waveform index {wave}");
+    let mut get = |n: &str| {
+        get_raw(n).map(|v| {
+            if is_number(&v) || n == "tvpairs" {
+                v
+            } else {
+                format!("{{{v}}}")
+            }
+        })
+    };
     let mut out = String::new();
     if let Some(v) = get(if current { "idc" } else { "vdc" }) {
         out.push_str("DC ");
@@ -607,5 +696,49 @@ mod tests {
             assert!(parse_source(bad, false).is_none(), "{bad}");
         }
         assert!(source_cdf_params(false).contains(&"t8"));
+    }
+
+    #[test]
+    fn source_holes_become_design_variable_values() {
+        // The hole translator: the bench-var rule of §3.4 (identifiers bare), `^` refused.
+        let hole = |e: &str| (!e.contains('^')).then(|| e.replace(' ', ""));
+        let get = |s: &Source, n: &str| s.params.iter().find(|p| p.0 == n).map(|p| p.1.clone());
+        for (text, wave, want) in [
+            ("dc {VGS} ac 1", 0, vec![("vdc", "VGS"), ("acm", "1")]),
+            ("{VDD}", 0, vec![("vdc", "VDD")]),
+            ("dc {-VDS} ac 1", 0, vec![("vdc", "-VDS"), ("acm", "1")]),
+            ("dc {IDW * W/1u}", 0, vec![("vdc", "IDW*W/1u")]),
+            (
+                "dc 0 ac {a} {ph}",
+                0,
+                vec![("vdc", "0"), ("acm", "a"), ("acp", "ph")],
+            ),
+            ("dc -1", 0, vec![("vdc", "-1")]),
+            (
+                "pulse(0 {vh} 0 1n 1n {tw} 10n)",
+                1,
+                vec![("v1", "0"), ("v2", "vh"), ("pw", "tw"), ("per", "10n")],
+            ),
+            ("AC {m}", 0, vec![("acm", "m")]),
+            ("VCM", 0, vec![("vdc", "VCM")]),
+            ("dc VDD ac 1", 0, vec![("vdc", "VDD"), ("acm", "1")]),
+        ] {
+            let s = parse_source_with(text, false, hole).unwrap_or_else(|| panic!("{text}"));
+            assert_eq!(s.wave, wave, "{text}");
+            for (n, v) in want {
+                assert_eq!(get(&s, n).as_deref(), Some(v), "{text}: {n}");
+            }
+        }
+        // Negative space: an untranslatable hole, a glued hole, an empty or unclosed hole,
+        // and a hole where the plain parser takes none.
+        for bad in [
+            "dc {a^2}", "dc {a}u", "dc {}", "dc {a", "dc 1 {x}", "dc a^2", "VCM VDD",
+        ] {
+            assert!(parse_source_with(bad, false, hole).is_none(), "{bad}");
+        }
+        assert!(parse_source("dc {VGS}", false).is_none());
+        // Back to text: a non-number value is a hole again (the import, §6.6).
+        let s = parse_source_with("dc {VGS} ac 1", false, hole).unwrap();
+        assert_eq!(format_source(0, false, |n| get(&s, n)), "DC {VGS} AC 1");
     }
 }

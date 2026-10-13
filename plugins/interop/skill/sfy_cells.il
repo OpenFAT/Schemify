@@ -1007,7 +1007,7 @@
 
 ;; Contract with sfy_retarget.il (spec 10.3): sets each (cdfName value) of params on the
 ;; instance CDF in the CDF's own type (numbers as %.17g text for string parameters, so no
-;; 7-digit print touches them); with callbacks, runs each set parameter's callback in CDF
+;; 7-digit print touches them; a string value is read by atoi/atof for int/float ones); with callbacks, runs each set parameter's callback in CDF
 ;; order as SfyRunCallback does. Returns t, or nil when a parameter is missing or a callback
 ;; failed (printed).
 (procedure (SfySetParams inst params callbacks)
@@ -1022,7 +1022,9 @@
         (setq v (cadr p))
         (setq v
           (cond
+            ((and (equal ty "int") (stringp v)) (atoi v))
             ((equal ty "int") (if (fixp v) v (round v)))
+            ((and (equal ty "float") (stringp v)) (atof v))
             ((equal ty "float") (float v))
             ((stringp v) v)
             ((fixp v) (sprintf nil "%d" v))
