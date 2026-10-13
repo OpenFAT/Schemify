@@ -767,7 +767,30 @@ fn call_cv(
             if y.kind == ColKind::Bool {
                 want_real(&y, name)?;
             }
-            let x0 = want_num(&rest[0], name)?;
+            // x is a number, or one value per sweep step of `y` (a reduction such as
+            // `cross(...)` or `ymax(...)`): step k is read at its own x.
+            let per_step_ax = axes
+                .iter()
+                .position(|a| a.kind == AxisKind::PerStep && a.parent == y.axis);
+            let xs: Vec<f64> = match &rest[0] {
+                CV::C(c) if c.kind == ColKind::Real && per_step_ax == Some(c.axis as usize) => {
+                    c.re.clone()
+                }
+                CV::C(_) => {
+                    return Err(Error::new(
+                        Code::X003,
+                        Span::default(),
+                        format!(
+                            "`{name}` needs a number or one value per sweep step (e.g. cross(...)) \
+                             as its x, got a column"
+                        ),
+                    ));
+                }
+                v => vec![want_num(v, name)?],
+            };
+            let steps = axes[y.axis as usize].steps.len();
+            assert!(xs.len() == 1 || xs.len() == steps, "one x per sweep step");
+            let x_of = |k: usize| if xs.len() == 1 { xs[0] } else { xs[k] };
             let complex = y.kind == ColKind::Complex;
             let (re_col, im_col) = (
                 Col {
@@ -782,9 +805,17 @@ fn call_cv(
                     ..y
                 },
             );
-            let re = per_step(axes, &re_col, name, |x, v| Ok(interp(x, v, x0)))?;
+            let mut k = 0;
+            let re = per_step(axes, &re_col, name, |x, v| {
+                k += 1;
+                Ok(interp(x, v, x_of(k - 1)))
+            })?;
             if complex {
-                let im = per_step(axes, &im_col, name, |x, v| Ok(interp(x, v, x0)))?;
+                let mut k = 0;
+                let im = per_step(axes, &im_col, name, |x, v| {
+                    k += 1;
+                    Ok(interp(x, v, x_of(k - 1)))
+                })?;
                 Col {
                     kind: ColKind::Complex,
                     im: im.re,

@@ -435,3 +435,38 @@ fn op_is_one_operating_point_number() {
         Code::X008
     );
 }
+
+/// `at`'s x may be a reduction such as `cross(...)`: one value per sweep step, each step read
+/// at its own x (MiniProj1's slope-at-ft output `at(deriv(...), cross(...))`); a full
+/// waveform as x is refused.
+#[test]
+fn at_takes_a_per_step_x() {
+    let n = 101;
+    let t = grid(n, 10.0);
+    // Two sweep steps on the same time grid: the ramp crosses 0 at 2.5, then at 3.5.
+    let x: Vec<f64> = t.iter().chain(t.iter()).copied().collect();
+    let steps = [0..n as u32, n as u32..2 * n as u32];
+    let a: Vec<f64> = t
+        .iter()
+        .map(|s| 2.0 * s - 5.0)
+        .chain(t.iter().map(|s| 2.0 * s - 7.0))
+        .collect();
+    let b: Vec<f64> = x.iter().map(|s| 10.0 * s).collect();
+    let sigs: [(&[f64], &[f64]); 2] = [(&a, &[]), (&b, &[])];
+    let r = col(calc("at(v(b), cross(v(a), 0))", &x, &steps, &sigs));
+    assert_eq!(r.re.len(), 2, "one value per step");
+    assert!(
+        (r.re[0] - 25.0).abs() < 1e-9 && (r.re[1] - 35.0).abs() < 1e-9,
+        "{:?}",
+        r.re
+    );
+    // The slope at the crossing: deriv of a ramp is its slope, 2, in both steps.
+    let d = col(calc("at(deriv(v(a)), cross(v(a), 0))", &x, &steps, &sigs));
+    assert!(d.re.iter().all(|v| (v - 2.0).abs() < 1e-9), "{:?}", d.re);
+    // A plain number still works; a whole waveform as x does not.
+    assert!((col(calc("at(v(b), 2.5)", &x, &steps, &sigs)).re[1] - 25.0).abs() < 1e-9);
+    assert_eq!(
+        calc("at(v(b), v(a))", &x, &steps, &sigs).unwrap_err(),
+        Code::X003
+    );
+}
