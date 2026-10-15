@@ -459,17 +459,18 @@ fn cv_records(cv: &Cv, out: &mut Vec<Record>) {
         }
     };
     for (r, p) in pf {
-        out.push(Record::new(
-            "pinfig",
-            vec![
-                i(r as i32),
-                s(&p.term),
-                i(p.b[0]),
-                i(p.b[1]),
-                i(p.b[2]),
-                i(p.b[3]),
-            ],
-        ));
+        let mut f = vec![
+            i(r as i32),
+            s(&p.term),
+            i(p.b[0]),
+            i(p.b[1]),
+            i(p.b[2]),
+            i(p.b[3]),
+        ];
+        if !p.dir.is_empty() {
+            f.push(s(&p.dir));
+        }
+        out.push(Record::new("pinfig", f));
     }
     for (r, x) in ins {
         out.push(Record::new(
@@ -1362,6 +1363,7 @@ fn symbol_out(c: &Cell, ids: &mut Ids, notes: &mut Notes) -> Cv {
                 at[0] + PIN_HALF,
                 at[1] + PIN_HALF,
             ],
+            dir: String::new(),
         });
         grow([at[0] - PIN_HALF, at[1] - PIN_HALF], &mut bbox);
         grow([at[0] + PIN_HALF, at[1] + PIN_HALF], &mut bbox);
@@ -2277,15 +2279,8 @@ fn schematic_out(
                 .collect::<Vec<_>>()
         })
         .collect();
-    // (id, anchor, net, global, orientation, Virtuoso instance name of a global symbol)
-    type LabelOut<'a> = (
-        Option<&'a str>,
-        [i32; 2],
-        String,
-        bool,
-        Orient,
-        Option<&'a str>,
-    );
+    // (id, anchor, net, global, orientation, the label record)
+    type LabelOut<'a> = (Option<&'a str>, [i32; 2], String, bool, Orient, Option<u32>);
     let mut all_labels: Vec<LabelOut> = (0..g.label_at.len())
         .map(|k| {
             let o = Orient::parse(c.field(g.label_rec[k], 3)).unwrap_or(Orient::R0);
@@ -2295,7 +2290,7 @@ fn schematic_out(
                 g.label_net[k].clone(),
                 g.label_global[k],
                 o,
-                c.attr(g.label_rec[k], "vinst"),
+                Some(g.label_rec[k]),
             )
         })
         .collect();
@@ -2313,7 +2308,10 @@ fn schematic_out(
         segs.push((r, [from[0], from[1], l.at[0], l.at[1]]));
         all_labels.push((None, l.at, l.net.clone(), l.global, Orient::R0, None));
     }
-    for (id, at, net, global, o, vinst) in all_labels {
+    for (id, at, net, global, o, rec) in all_labels {
+        // The Virtuoso instance name and library of the global symbol it came from.
+        let vinst = rec.and_then(|r| c.attr(r, "vinst"));
+        let vlib = rec.and_then(|r| c.attr(r, "vlib")).unwrap_or("analogLib");
         let r = ids.take();
         let (text, review) = net_to_virtuoso(&net, global);
         if review {
@@ -2349,7 +2347,7 @@ fn schematic_out(
             cv.insts.push(Inst {
                 r,
                 name: vinst.map_or_else(|| format!("sfyG{r}"), str::to_owned),
-                lib: "analogLib".into(),
+                lib: vlib.into(),
                 cell: sym.to_owned(),
                 view: "symbol".into(),
                 xy: conv(at, "label", c, notes),
@@ -2426,6 +2424,21 @@ fn schematic_out(
         }
         let o = Orient::parse(c.field(g.port_rec[k], 3)).unwrap_or(Orient::R0);
         id_prop(&mut cv, r, &g.port_id[k]);
+        // A pin that came in as a bare pin shape (`vfig <w> <h>`) goes back as one.
+        let fig = c.doc.find_attr(g.port_rec[k], "vfig").and_then(|a| {
+            let v = |n| c.doc.attr_value(a, n).and_then(|t| parse_coord(t).ok());
+            Some([v(0)?, v(1)?])
+        });
+        if let Some([w, h]) = fig {
+            let at = conv(g.port_at[k], "port", c, notes);
+            cv.pinfigs.push(PinFig {
+                r,
+                term,
+                b: [at[0] - w / 2, at[1] - h / 2, at[0] + w / 2, at[1] + h / 2],
+                dir: dir.into(),
+            });
+            continue;
+        }
         cv.spins.push(Spin {
             r,
             term,

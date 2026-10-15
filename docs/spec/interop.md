@@ -156,7 +156,7 @@ Context records set the target of the records after them. `ref`s are positive in
 | `("label" ref parent text x y orient justify font height kind layer purpose)` | `parent` = ref of the glued figure (a `pinfig`, `inst`, `spin` or `wire`, written earlier) or 0 (none, or a figure the dump does not write); `kind` `normal`/`NLP`/`IL` | a label (wire name, note text, symbol label) |
 | `("spin" ref term dir lib cell view x y orient)` | `dir` `input output inputOutput switch` | a schematic pin (an instance of `basic/ipin` …) |
 | `("term" name dir netexpr)` | `netexpr` the inherited-connection expression or `""` | a terminal of a symbol (a schematic's terminals are its `spin`s); its pins follow as `pinfig`s |
-| `("pinfig" ref term x1 y1 x2 y2)` | | a symbol pin rectangle (one per pin of the terminal) |
+| `("pinfig" ref term x1 y1 x2 y2 [dir])` | `dir` (the terminal's direction) only in a schematic, which dumps no `term`s | a symbol pin rectangle (one per pin of the terminal); in a schematic, a pin drawn as a bare pin shape (Cadence's `sample` library) |
 | `("shape" ref kind layer purpose coords width)` | `kind` `line rect polygon ellipse arc path`; `coords`: points for line/polygon/path, `x1 y1 x2 y2` box for rect/ellipse, `x1 y1 x2 y2 a0 a1` for arc (ellipse box, start and stop angle as `round(angle · 10^6)` micro-radians, counter-clockwise); `width` 0 except paths | any other figure (solder dots and text displays are not dumped, G15) |
 | `("conn" ref term net)` | instance ref, terminal name, Virtuoso net name | loader-only: draw a stub + label for this terminal at its real pin position (§6.4) |
 | `("textview" view file text)` | view name, master file name, *text* | a text view (`veriloga`/`veriloga.va`, `functional`/`verilog.v`) |
@@ -244,6 +244,7 @@ Export is the inverse: `.shcomp` → symbol + schematic + CDF; `.shprim` → sym
 | wire label (wire/label, glued) | `label` at the point of its wire nearest the label origin (on a horizontal or vertical segment the projection; else the nearest end); its text through §3.3; an alias label is one of these too (Virtuoso stores it on wire/label, live ICADVM20.1); an `annotate drawing3` label is dropped |
 | net-expression label `[@p:%:d!]` on a wire | the cell gains inherited pin `p` (`inherit d`, §3.3) and a label `p` there (elab §9.5) |
 | schematic pin (`spin`) | `port` bound to the interface pin of that name, at the pin instance's origin; in a bench a `label` |
+| schematic pin drawn as a bare pin shape (`pinfig` with `dir`) | `port` at the rectangle centre with attribute `vfig <w> <h>` (the rectangle's size; export draws such a port as the same shape, with its terminal, instead of a `basic` pin instance); in a bench a `label` |
 | `basic/noConn` instance | `noconn` at its origin |
 | note label (text/drawing) | `text`, size = height · 16 / upi (§3.5), orient by §3.2 |
 | note shape (text/drawing, drawing1 = dashed) | `shape`; ellipse → `circle` when square, else a 32-point closed `poly` (reviewed) |
@@ -363,7 +364,7 @@ Virtuoso keeps cosmetic fields Schemify has no slot for (label justification, pi
 - **Export** recomputes the fingerprint of the current file; when it still equals the header attribute, the cellview's records carry `("prop" 0 "schemifyKeep" "string" "1")`.
 - **The loader** leaves an existing cellview marked so exactly as it is (counted `kept unchanged`), and for a kept symbol also its CDF (`kept unchanged CDF`); the marker itself is never stored. A cellview edited in Schemify (any Virtuoso-owned field) has no marker and is regenerated; one edited in Virtuoso since the last import keeps the Virtuoso edit, since Schemify did not touch it.
 - Two-point wires are written from their smaller end by both writers, so drawing direction never shows as a difference.
-- Global labels whose Virtuoso name is an analogLib global symbol's (`gnd!`, `vdd!`, … `devices::GLOBAL_SYMBOLS`) and that sit on no wire, or that came from such a symbol, are written as that symbol (GUESS G3: its pin is its origin); import turns the symbol into a global label carrying attribute `vinst <instance name>` (an unknown attribute, kept by the format, §5 there), so export draws the same instance again.
+- Global labels whose Virtuoso name is an analogLib global symbol's (`gnd!`, `vdd!`, … `devices::GLOBAL_SYMBOLS`) and that sit on no wire, or that came from such a symbol, are written as that symbol (GUESS G3: its pin is its origin); import turns the symbol into a global label carrying attribute `vinst <instance name>` (an unknown attribute, kept by the format, §5 there), so export draws the same instance again; `vlib <library>` when that symbol is not analogLib's (`basic/gnd`), so export draws the same master.
 
 Oracle (`tests/virtuoso_e2e.rs`): Rust export → SKILL load → SKILL dump → Rust import is byte-identical on every fixture project; SKILL dump → Rust import → Rust export → SKILL load over the original library → SKILL dump equals the first dump on every SKILL fixture; an edit in Schemify clears the marker of that cellview only and reaches the dump.
 

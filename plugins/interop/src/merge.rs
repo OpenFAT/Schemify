@@ -12,9 +12,9 @@
 //! the local one. Schemify-only records (docs, waivers, constraints, …) come from the
 //! local file, else the stash, and are dropped with a note when their subject is gone.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use schemify_format::{Document, FileKind, RecordKind, parse, write};
+use schemify_format::{Document, FileKind, RecordKind, parse, parse_coord, write};
 
 use crate::notes::Notes;
 
@@ -121,6 +121,34 @@ fn others(doc: &Document<'_>) -> Vec<u32> {
         .collect()
 }
 
+/// Wires that meet a collinear wire at an end. Virtuoso merges such a run and splits it
+/// again where wires T-join, and the pieces' ids can come back exchanged (live ICADVM20.1
+/// run), so the stash keeps their geometry and the import puts the ids back (§7.3).
+fn collinear_joints(doc: &Document<'_>) -> BTreeSet<u32> {
+    let mut at: BTreeMap<[i32; 2], Vec<(u32, [i64; 2])>> = BTreeMap::new();
+    for r in (1..doc.record_count()).filter(|&r| doc.record_kind(r) == RecordKind::Wire) {
+        let c = |k| doc.field(r, k).and_then(|f| parse_coord(f).ok());
+        let (Some(x0), Some(y0), Some(x1), Some(y1)) = (c(1), c(2), c(3), c(4)) else {
+            continue;
+        };
+        let d = [i64::from(x1) - i64::from(x0), i64::from(y1) - i64::from(y0)];
+        at.entry([x0, y0]).or_default().push((r, d));
+        at.entry([x1, y1]).or_default().push((r, d));
+    }
+    let mut out = BTreeSet::new();
+    for ends in at.values() {
+        for (k, (r, d)) in ends.iter().enumerate() {
+            for (q, e) in &ends[k + 1..] {
+                if q != r && d[0] * e[1] == d[1] * e[0] {
+                    out.extend([*r, *q]);
+                }
+            }
+        }
+    }
+    debug_assert!(out.iter().all(|&r| doc.record_kind(r) == RecordKind::Wire));
+    out
+}
+
 fn header_attr<'d>(doc: &'d Document<'_>, k: &str) -> Option<&'d str> {
     doc.find_attr(0, k).and_then(|a| doc.attr_value(a, 0))
 }
@@ -198,6 +226,7 @@ pub fn stash(orig: &Document<'_>, image: Option<&Document<'_>>) -> Option<String
         };
         shared(&o, &m) != shared(&m, &o)
     });
+    let joints = collinear_joints(orig);
     for r in others(orig) {
         let k = key(orig, r);
         let mine = text(orig, &[r], &[]);
@@ -205,7 +234,8 @@ pub fn stash(orig: &Document<'_>, image: Option<&Document<'_>>) -> Option<String
             .iter()
             .find(|(ik, _)| *ik == k)
             .map(|(_, ir)| text(image.expect("keys come from the image"), &[*ir], &[]));
-        if theirs.as_ref() == Some(&mine) && !(reorder4 && k.0.rank() == 4) {
+        if theirs.as_ref() == Some(&mine) && !(reorder4 && k.0.rank() == 4) && !joints.contains(&r)
+        {
             continue;
         }
         any = true;
@@ -755,5 +785,28 @@ mod tests {
         assert!(!write(&m).contains("waive"));
         assert_eq!(notes.rows.len(), 1, "{notes:?}");
         assert!(stash(&image, Some(&image)).is_none());
+    }
+
+    #[test]
+    fn wires_meeting_collinear_are_stashed_even_when_reproduced() {
+        // The ota pair: two vertical pieces meeting at (320, 250), a T from the right.
+        let orig = doc("schemify 1 shbench
+
+wire w00013 320 230 320 250
+
+wire w00014 320 250 320 270
+
+wire w00015 320 250 400 250
+");
+        let st = stash(&orig, Some(&orig)).expect("the collinear pair is stashed");
+        assert!(st.contains("w00013") && st.contains("w00014"), "{st}");
+        assert!(
+            !st.contains("w00015"),
+            "a T-joining wire is not collinear: {st}"
+        );
+        let mut notes = Notes::default();
+        let s = parse_stash(&st, FileKind::Shbench).unwrap();
+        let m = merge(&orig, None, Some(&s), false, "c", &mut notes);
+        assert_eq!(write(&m), write(&orig));
     }
 }

@@ -43,7 +43,7 @@ pub struct Term {
     pub netexpr: String,
 }
 
-/// A symbol pin rectangle (`pinfig`).
+/// A pin rectangle (`pinfig`): a symbol pin, or a schematic pin drawn as a bare shape.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PinFig {
     /// Ref.
@@ -52,6 +52,9 @@ pub struct PinFig {
     pub term: String,
     /// `x1 y1 x2 y2`, 1/upi inch, y up.
     pub b: [i32; 4],
+    /// In a schematic, the terminal's direction (a schematic dumps no `term`); empty in a
+    /// symbol.
+    pub dir: String,
 }
 
 /// An instance (`inst`).
@@ -679,8 +682,9 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
     let schematic_only = matches!(r.tag.as_str(), "conn" | "intent")
         || (matches!(r.tag.as_str(), "spin" | "wire") && cv.vtype != "schematicSymbol");
     let symbol_only = r.tag == "term";
-    // A pin figure in a schematic (Cadence's sample library has them) is reported below.
-    if r.tag == "pinfig" && cv.vtype != "schematicSymbol" {
+    // A pin figure in a schematic (Cadence's sample library has them) from a dumper that
+    // did not write its direction is reported below.
+    if r.tag == "pinfig" && cv.vtype != "schematicSymbol" && r.fields.len() != 7 {
         cv.unknown.push(r.clone());
         return Ok(());
     }
@@ -723,11 +727,16 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
             });
         }
         "pinfig" => {
-            arity(r, 6)?;
+            arity(r, if cv.vtype == "schematicSymbol" { 6 } else { 7 })?;
             cv.pinfigs.push(PinFig {
                 r: pos(r, 0)?,
                 term: r.str(1)?.to_owned(),
                 b: [r.int(2)?, r.int(3)?, r.int(4)?, r.int(5)?],
+                dir: if r.fields.len() == 7 {
+                    r.str(6)?.to_owned()
+                } else {
+                    String::new()
+                },
             });
         }
         "inst" => {
@@ -880,7 +889,7 @@ fn check_refs(cv: &Cv) -> Result<(), String> {
             return Err(format!("conn of unknown instance {}", c.r));
         }
     }
-    for f in &cv.pinfigs {
+    for f in cv.pinfigs.iter().filter(|f| f.dir.is_empty()) {
         if !cv.terms.iter().any(|t| t.name == f.term) {
             return Err(format!("pinfig {} of unknown terminal {}", f.r, f.term));
         }
@@ -2584,6 +2593,9 @@ fn schematic_in(
             if !inst.name.starts_with("sfyG") {
                 kv(doc, "vinst", &inst.name);
             }
+            if inst.lib != "analogLib" {
+                kv(doc, "vlib", &inst.lib);
+            }
             continue;
         }
         let m = ctx.master(&inst.lib, &inst.cell);
@@ -2866,6 +2878,48 @@ fn schematic_in(
         doc.push_field_coord(at[1]);
         doc.push_field(o.as_str());
         doc.push_field(&name);
+    }
+    // Schematic pins drawn as bare pin shapes: ports at the rectangle centre, carrying the
+    // rectangle's size (`vfig <w> <h>`, an unknown attribute the format keeps) so export
+    // draws the same shape again; in a bench, labels (as `spin`s).
+    for f in &sv.pinfigs {
+        tally.out += 1;
+        let a = pt(
+            [f.b[0], f.b[1]],
+            upi,
+            &format!("pin {}", f.term),
+            &cell,
+            notes,
+        );
+        let b = pt(
+            [f.b[2], f.b[3]],
+            upi,
+            &format!("pin {}", f.term),
+            &cell,
+            notes,
+        );
+        let name = sv
+            .prop(f.r, "schemifyNet")
+            .map_or_else(|| net_from_virtuoso(&f.term).text, str::to_owned);
+        let id = ids.next(id_of(f.r), &reserved);
+        begin(
+            doc,
+            if bench {
+                RecordKind::Label
+            } else {
+                RecordKind::Port
+            },
+        );
+        doc.push_field(&id);
+        doc.push_field_coord((a[0] + b[0]) / 2);
+        doc.push_field_coord((a[1] + b[1]) / 2);
+        doc.push_field(Orient::R0.as_str());
+        doc.push_field(&name);
+        if !bench {
+            doc.push_attr("vfig");
+            doc.push_value_coord((b[0] - a[0]).abs());
+            doc.push_value_coord((b[1] - a[1]).abs());
+        }
     }
     // Wires: segments, stubs removed.
     let mut wire_pts: BTreeMap<u32, Vec<[i32; 2]>> = BTreeMap::new();

@@ -302,9 +302,14 @@
       (foreach e (SfySortByKey (mapcar (lambda (t0) (list (getSGq t0 name) t0)) (getSGq cv terminals)))
         (SfyPut port "term"
           (list (car e) (getSGq (cadr e) direction) (SfyStrOr (dbGetTermNetExpr (cadr e)))))))
+    ;; A schematic's pin figure (a pin drawn as a bare shape; Cadence's sample library has
+    ;; them) carries its terminal's direction: a schematic dumps no terms.
     (setq n (SfyEmit port "pinfig"
       (mapcar (lambda (f)
-                (setq b (cons (getSGq (getSGq (getSGq f pin) term) name) (SfyBoxDbu (getSGq f bBox) upi)))
+                (setq ot (getSGq (getSGq f pin) term))
+                (setq b (cons (getSGq ot name) (SfyBoxDbu (getSGq f bBox) upi)))
+                (when (equal (getSGq cv cellViewType) "schematic")
+                  (setq b (append b (list (getSGq ot direction)))))
                 (list b f b))
         pinfigs)
       refs n))
@@ -837,10 +842,15 @@
           (setarray sfyTerms (nth 0 f) term)
           (SfyCount "term"))))))
 
-;; ("pinfig" ref term x1 y1 x2 y2): a pin rectangle of the terminal.
+;; ("pinfig" ref term x1 y1 x2 y2 [dir]): a pin rectangle of the terminal; in a schematic
+;; (with dir) the terminal is made here, as a schematic dumps no terms.
 (procedure (SfyLoadPinFig lr)
-  (let ((f (cdr (cadr lr))) (term nil) (rect nil))
-    (when (SfySymbolP lr)
+  (let ((f (cdr (cadr lr))) (term nil) (rect nil) (net nil)
+        (sch (equal (getSGq sfyCv cellViewType) "schematic")))
+    (when (and sch (nth 6 f) (null (arrayref sfyTerms (nth 1 f))))
+      (setq net (dbMakeNet sfyCv (nth 1 f)))
+      (when net (setarray sfyTerms (nth 1 f) (dbCreateTerm net (nth 1 f) (nth 6 f)))))
+    (when (if (and sch (nth 6 f)) t (SfySymbolP lr))
       (setq term (arrayref sfyTerms (nth 1 f)))
       (if (null term)
         (SfyRefuse (car lr) (sprintf nil "pinfig of unknown terminal %s" (nth 1 f)))

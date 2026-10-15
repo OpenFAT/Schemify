@@ -92,6 +92,7 @@
     (SfyFixSymbol "basic" "opin" nil)
     (SfyFixSymbol "basic" "iopin" nil)
     (SfyFixSymbol "basic" "noConn" (list (list "noConn" "inputOutput" 0 0)))
+    (SfyFixSymbol "basic" "gnd" (list (list "gnd!" "inputOutput" 0 0)))
     t))
 
 ;; pdk/nch: a PDK device with a parameter of every CDF type and two simulators; pdk/padonly:
@@ -165,7 +166,7 @@
     (SfyFixSave cv)))
 
 ;; work/bus: a bus (wide wire) with a vector label, an iterated instance, a net-expression
-;; label and an alias label; schematic only.
+;; label, an alias label and basic's ground symbol; schematic only.
 (procedure (SfyFixBus)
   (let ((cv (SfyFixOpen "work" "bus" "schematic" "schematic")) (w nil) (r nil))
     (setq w (car (schCreateWire cv "draw" "full" (list (SfyFixP 0 0) (SfyFixP 200 0)) 0.0625 0.0625 (SfyFixU 5))))
@@ -178,6 +179,7 @@
     (schCreateWireLabel cv w (SfyFixP 0 180) "supply" "lowerLeft" "R90" "stick" (SfyFixU 10) t)
     (setq w (car (schCreateWire cv "draw" "full" (list (SfyFixP 100 -140) (SfyFixP 100 -200)) 0.0625 0.0625 0.0)))
     (schCreateWireLabel cv w (SfyFixP 100 -180) "d<0>" "lowerLeft" "R0" "stick" (SfyFixU 10) nil)
+    (schCreateInst cv (dbOpenCellViewByType "basic" "gnd" "symbol" nil "r") "G1" (SfyFixP 100 -200) "R0")
     (schCheck cv)
     (SfyFixSave cv)))
 
@@ -241,7 +243,10 @@
     (setq w (car (schCreateWire cv "draw" "full" (list (SfyFixP 0 40) (SfyFixP 0 80)) 0.0625 0.0625 0.0)))
     (schCreateNetExpression cv "[@vdd:%:vdd!]" w (SfyFixP 0 60) "lowerLeft" "R90" "stick" (SfyFixU 10))
     (schCreatePin cv (dbOpenCellViewByType "basic" "ipin" "symbol" nil "r") "a" "input" nil (SfyFixP -80 0) "R0")
-    (schCreatePin cv (dbOpenCellViewByType "basic" "opin" "symbol" nil "r") "y" "output" nil (SfyFixP 80 0) "R180")
+    ;; y as a bare pin shape, as Cadence's sample library draws schematic pins.
+    (setq net (dbMakeNet cv "y"))
+    (dbCreatePin net (dbCreateRect cv (list "pin" "drawing") (list (SfyFixP 75 -5) (SfyFixP 85 5)))
+      nil (dbCreateTerm net "y" "output"))
     (schCreatePin cv (dbOpenCellViewByType "basic" "iopin" "symbol" nil "r") "vdd" "inputOutput" nil (SfyFixP 0 80) "R90")
     (schCheck cv)
     (SfyFixSave cv)))

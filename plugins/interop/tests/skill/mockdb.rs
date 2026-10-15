@@ -1175,6 +1175,20 @@ impl MockDb {
 
     /// `param~>value = v` on an instance CDF: stores the instance property with the CDF's
     /// type.
+    /// The value Virtuoso stores for a parseAsNumber param with units: kilo as AEL's `K`
+    /// (live ICADVM20.1 run: `r` "10k" of analogLib res came back "10K").
+    fn ael_kilo(&self, p: u32, v: V) -> V {
+        let numeric = s(&self.a(p, "parseAsNumber")) == Some("yes")
+            && s(&self.a(p, "units")).is_some_and(|u| !u.is_empty());
+        match &v {
+            V::Str(x) if numeric => match x.strip_suffix('k') {
+                Some(m) if m.parse::<f64>().is_ok() => V::str(&format!("{m}K")),
+                _ => v,
+            },
+            _ => v,
+        }
+    }
+
     fn set_inst_param(&mut self, p: u32, inst: u32, v: V) -> Result<V, String> {
         let ty = s(&self.a(p, "paramType")).unwrap_or("string").to_owned();
         let name = s(&self.a(p, "name")).unwrap_or("").to_owned();
@@ -1206,7 +1220,7 @@ impl MockDb {
             // G13: an inherited-connection override is a netSet-typed property (as
             // virtuoso-bridge-lite writes it with dbReplaceProp ... "netSet").
             "netSet" => ("netSet", v.clone()),
-            _ => ("string", v.clone()),
+            _ => ("string", self.ael_kilo(p, v.clone())),
         };
         self.set_prop(inst, &name, pty, pv);
         Ok(v)

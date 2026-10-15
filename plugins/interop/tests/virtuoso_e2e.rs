@@ -334,6 +334,43 @@ fn skill_dump_rust_import_rust_export_skill_import_skill_dump_is_exact() {
         let second = virtuoso::export(&d, &top_ix, &Mapping::default(), &eo)
             .unwrap_or_else(|e| panic!("{name}: {e:?}"))
             .sfyx;
+        // Every instance and pin figure of a design cell goes out as it came in (a basic/gnd
+        // stays basic's, a bare pin shape stays one), checked on the export itself: the load
+        // below keeps unchanged cellviews (§7.5).
+        // (A symbol-only cell goes out as a reference to the original, §8.1.)
+        let placed = |text: &str| -> BTreeSet<(String, String)> {
+            let mut design: Option<String> = None;
+            let mut out = BTreeSet::new();
+            for mut r in sfyx::read(text).unwrap_or_else(|e| panic!("{name}: {}", e.msg)) {
+                if r.tag == "cell" {
+                    design = r
+                        .str(1)
+                        .is_ok_and(|x| x == "design")
+                        .then(|| r.str(0).unwrap_or_default().to_owned());
+                }
+                if let Some(c) = design
+                    .as_ref()
+                    .filter(|_| matches!(r.tag.as_str(), "inst" | "pinfig"))
+                {
+                    r.fields.remove(0);
+                    let mut s = String::new();
+                    sfyx::write_record(&r, &mut s);
+                    out.insert((c.clone(), s));
+                }
+            }
+            out
+        };
+        let m2 = placed(&second);
+        let sent: BTreeSet<&String> = m2.iter().map(|x| &x.0).collect();
+        let m1: BTreeSet<_> = placed(&first)
+            .into_iter()
+            .filter(|x| sent.contains(&x.0))
+            .collect();
+        assert!(
+            m1.is_subset(&m2),
+            "{name}: changed on export: {:?}",
+            m1.difference(&m2)
+        );
         // A fresh Virtuoso with the reference libraries, load, dump again.
         let mut i = Interp::new(MockDb::default());
         for l in ["analogLib", "basic", "pdk", "cb", "work"] {

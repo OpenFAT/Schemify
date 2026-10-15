@@ -214,6 +214,8 @@
       ((not (stringp (car rec))) "a record starts with a string tag")
       ((setq msg (SfyCheckData rec 0)) msg)
       ((null (setq schema (SfySchema (car rec)))) (sprintf nil "unknown record %s" (car rec)))
+      ;; A schematic's pinfig carries its terminal's direction as a seventh field.
+      ((and (equal (car rec) "pinfig") (equal (length (cdr rec)) 7) (setq schema "isiiiis") nil) nil)
       ((nequal (strlen schema) (length (cdr rec)))
         (sprintf nil "%s takes %d fields, has %d" (car rec) (strlen schema) (length (cdr rec))))
       (t
