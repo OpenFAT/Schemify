@@ -10,32 +10,32 @@ X1 in out vdd! chain
 X2 out out2 vdd! chain__h4shwd
 XF1 out filt rcfilt
 .ENDS tb
-.SUBCKT chain IN OUT VDD
+.SUBCKT chain IN OUT VDD size=1
 *.PININFO IN:I OUT:O VDD:B
 X1 IN net_0w0001 VDD inv
 X2 net_0w0001 OUT VDD inv__8hc2h8
 .ENDS chain
-.SUBCKT chain__h4shwd IN OUT VDD
+.SUBCKT chain__h4shwd IN OUT VDD size=2
 *.PININFO IN:I OUT:O VDD:B
 X1 IN net_0w0001 VDD inv__8hc2x8
 X2 net_0w0001 OUT VDD inv__sty8mw
 .ENDS chain__h4shwd
-.SUBCKT inv A Y VDD
+.SUBCKT inv A Y VDD wn=1 wp=2
 *.PININFO A:I Y:O VDD:B
 MMN Y A 0 0 nch W=1u L=0.15u
 MMP Y A VDD VDD pch W=2u L=0.15u
 .ENDS inv
-.SUBCKT inv__8hc2h8 A Y VDD
+.SUBCKT inv__8hc2h8 A Y VDD wn=2 wp=4
 *.PININFO A:I Y:O VDD:B
 MMN Y A 0 0 nch W=2u L=0.15u
 MMP Y A VDD VDD pch W=4u L=0.15u
 .ENDS inv__8hc2h8
-.SUBCKT inv__8hc2x8 A Y VDD
+.SUBCKT inv__8hc2x8 A Y VDD wn=2 wp=2
 *.PININFO A:I Y:O VDD:B
 MMN Y A 0 0 nch W=2u L=0.15u
 MMP Y A VDD VDD pch W=2u L=0.15u
 .ENDS inv__8hc2x8
-.SUBCKT inv__sty8mw A Y VDD
+.SUBCKT inv__sty8mw A Y VDD wn=4 wp=8
 *.PININFO A:I Y:O VDD:B
 MMN Y A 0 0 nch W=4u L=0.15u
 MMP Y A VDD VDD pch W=8u L=0.15u

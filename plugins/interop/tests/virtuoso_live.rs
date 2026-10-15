@@ -457,6 +457,19 @@ fn cell_roles(text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// CDL text without its `$[model]` tokens.
+fn without_cdl_models(cdl: &str) -> String {
+    let mut out = String::with_capacity(cdl.len());
+    let mut rest = cdl;
+    while let Some(k) = rest.find("$[") {
+        out.push_str(&rest[..k]);
+        rest = rest[k..].find(']').map_or("", |e| &rest[k + e + 1..]);
+    }
+    out.push_str(rest);
+    debug_assert!(!out.contains("$["));
+    out
+}
+
 /// The first difference of two record lists, or `None`.
 fn first_diff(a: &[String], b: &[String]) -> Option<String> {
     for (k, (x, y)) in a.iter().zip(b).enumerate() {
@@ -1840,9 +1853,12 @@ fn verify(work: &Path, o: &Opts) -> Report {
                 let files = read_tree(&project_dir(PROJECTS[4].1));
                 match netlist_of(&files, "rcfilter.shcomp", schemify_elab::Dialect::Cdl) {
                     Ok(ours) => {
+                        // analogLib's auCdl names its LVS models (`$[RP]`, `$[CP]`); Schemify's
+                        // core devices follow xschem's LVS netlist, which has none (the corpus
+                        // ratchet), so the models are left out of the comparison.
                         let c = schemify_spicecmp::compare(
                             &ours,
-                            &net,
+                            &without_cdl_models(&net),
                             &schemify_spicecmp::Options::default(),
                         );
                         r.add(
@@ -1853,7 +1869,7 @@ fn verify(work: &Path, o: &Opts) -> Report {
                                 Grade::Warn
                             },
                             if c.is_equal() {
-                                "Schemify CDL = Virtuoso auCdl".into()
+                                "Schemify CDL = Virtuoso auCdl (apart from analogLib's $[model] names)".into()
                             } else {
                                 format!("differs (settles GUESS G7): {:?}", c.diffs.first())
                             },

@@ -16,7 +16,6 @@ param m 1
 impl spice spice
   format spice "{name} {p} {n} {value} m={m}"
   format spectre "{name} ({p} {n}) capacitor c={num(value)} m={m}"
-  format cdl "C{name} {p} {n} {value} $[CP] m={m}"
 
 line 0 -30 0 -2.5
 line 0 2.5 0 30

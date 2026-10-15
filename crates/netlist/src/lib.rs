@@ -167,6 +167,7 @@ pub fn emit_flat(elab: &Elab, dialect: Dialect) -> String {
             out.push(' ');
             out.push_str(net_text(elab, *p));
         }
+        cdl_params(&mut out, elab, elab.top);
         out.push('\n');
     }
     lines.iter().for_each(|l| out.push_str(l));
@@ -177,6 +178,23 @@ pub fn emit_flat(elab: &Elab, dialect: Dialect) -> String {
     once_only(&mut out, elab, dialect, &tmp);
     end(&mut out, dialect);
     out
+}
+
+/// ` name=value` for each parameter of definition `d`'s tuple (spec §7.4): CDL has no
+/// `.param`, so instance text that names a cell parameter (`R1 in out R`) resolves only from
+/// the `.SUBCKT` line, as Virtuoso's auCdl writes it (`.SUBCKT rcfilter gnd in out R=1K C=1u`).
+fn cdl_params(out: &mut String, e: &Elab, d: u32) {
+    let (a, b) = (
+        e.defs.param_start[d as usize] as usize,
+        e.defs.param_start[d as usize + 1] as usize,
+    );
+    debug_assert!(a <= b && b <= e.defs.param_name.len());
+    for k in a..b {
+        out.push(' ');
+        out.push_str(e.names.get(e.defs.param_name[k]));
+        out.push('=');
+        out.push_str(e.names.get(e.defs.param_text[k]));
+    }
 }
 
 /// Whether `d` is one of the SPICE-syntax dialects (ngspice, espice, xyce, cdl): verbatim
@@ -740,6 +758,9 @@ impl<'e> Writer<'e> {
                 out.push_str(sep);
             }
             push_name(out, spelled(e, &self.respell, *p), dialect);
+        }
+        if dialect == Dialect::Cdl {
+            cdl_params(out, e, d);
         }
         out.push_str(close);
         out.push('\n');

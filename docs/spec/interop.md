@@ -644,7 +644,7 @@ Report reasons of this export: `needs_review:` `expression template format name 
 | G4 | setting a CDF value equal to its default removes nothing (we never set it, §5.3) | — |
 | G5 | `schCreateWire "draw"` adds no segments and no solder-dot figures we would dump | self-test round trip |
 | G6 | maestro read in a background session (`maeOpenSetup ?mode "r"`) works without a window | self-test on a bench |
-| G7 | auCdl formatting of devices (`$[model]`, case of `W L M`) | compare with a real CDL netlist. Settled for analogLib `res`/`cap` (live ICADVM20.1, kit `netlist.cdl-matches-aucdl`): `RR1 in out R $[RP]`, `CC1 out gnd C $[CP]`, the CDF `namePrefix` before the instance name, no `m` at 1; the core `res`/`cap` `format cdl` writes the same. Still open for MOS (`W L M` case) |
+| G7 | auCdl formatting of devices (`$[model]`, case of `W L M`) | compare with a real CDL netlist. Settled for analogLib `res`/`cap` (live ICADVM20.1): `RR1 in out R $[RP]`, `CC1 out gnd C $[CP]` (the CDF `namePrefix` before the instance name, no `m` at 1) under `.SUBCKT rcfilter gnd in out R=1K C=1u`. Schemify's core devices keep xschem's LVS form without `$[model]` (the corpus ratchet), so the kit compares without the model names; the `.SUBCKT` parameter defaults are now written (netlist §7.6.10). Still open for MOS (`W L M` case) |
 | G8 | Spectre port order default = sorted terminal names | compare with a real netlist |
 | G9 | `%d` of `round(…)` and our escaper round-trip every byte | self-test |
 | G10 | `dbCreateArc` + setting `startAngle`/`stopAngle` gives the arc | self-test; probe `arc` |
