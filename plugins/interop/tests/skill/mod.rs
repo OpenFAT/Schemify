@@ -503,6 +503,7 @@ const SPECIAL: &[&str] = &[
     "dbGetq",
     "dbSetq",
     "unwindProtect",
+    "getqq",
     "boundp",
     "gets",
 ];
@@ -572,6 +573,9 @@ const BUILTINS: &[&str] = &[
     "parseString",
     "symbolToString",
     "stringToSymbol",
+    "isCallable",
+    "getVersion",
+    "drain",
     "atoi",
     "sort",
     "alphalessp",
@@ -971,8 +975,14 @@ impl<H: Host> Interp<H> {
                     return Err(Flow::Err("errset: missing form".into()));
                 };
                 let depth = self.stack.len();
+                // errset.errset (the property errset of the symbol errset, read with
+                // `getqq`) holds the caught error; a form that completes clears it, so a
+                // later errset (an unwindProtect cleanup, say) loses an earlier message.
                 match self.eval(x) {
-                    Ok(v) => Ok(V::list(vec![v])),
+                    Ok(v) => {
+                        self.set_global("errset.errset", V::Nil);
+                        Ok(V::list(vec![v]))
+                    }
                     Err(Flow::Err(e)) => {
                         self.stack.truncate(depth);
                         self.set_global("errset.errset", V::list(vec![V::str(&e)]));
@@ -981,6 +991,16 @@ impl<H: Host> Interp<H> {
                     Err(r) => Err(r),
                 }
             }
+            // (getqq sym prop): the property prop of symbol sym, unevaluated; the scripts read
+            // only errset.errset, kept as the global of that dotted name.
+            "getqq" => match a {
+                [V::Sym(x), V::Sym(y)] => Ok(self
+                    .globals
+                    .get(format!("{x}.{y}").as_str())
+                    .cloned()
+                    .unwrap_or(V::Nil)),
+                _ => Err(Flow::Err("getqq: (getqq symbol property)".into())),
+            },
             "unwindProtect" => {
                 if a.len() != 2 {
                     return Err(Flow::Err(
@@ -1611,6 +1631,21 @@ impl<H: Host> Interp<H> {
                 "stringToSymbol" => {
                     need(1)?;
                     V::sym(&text(&a[0])?)
+                }
+                "isCallable" => {
+                    need(1)?;
+                    let V::Sym(n) = &a[0] else {
+                        return Err(Flow::Err("isCallable: not a symbol".into()));
+                    };
+                    let known = self.funcs.contains_key(&**n)
+                        || defined_by_interp().any(|b| b == &**n)
+                        || mockdb::SIGNATURES.iter().any(|(f, _)| f == &&**n);
+                    if known { V::T } else { V::Nil }
+                }
+                "getVersion" => V::str("sfy test interpreter"),
+                "drain" => {
+                    need(1)?;
+                    V::T
                 }
                 "atoi" => {
                     need(1)?;

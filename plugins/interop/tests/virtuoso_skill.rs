@@ -426,7 +426,7 @@ fn cb_dump(n: &str) -> String {
         "(\"sfyx\" 1 \"test\")\n(\"lib\" \"cb\")\n(\"cell\" \"top\" \"design\")\n(\"cv\" \"schematic\" \"schematic\" 160)\n\
          (\"inst\" 1 \"I0\" \"cb\" \"dev\" \"symbol\" 0 0 \"R0\")\n\
          (\"prop\" 1 \"a\" \"string\" \"1\")\n(\"prop\" 1 \"b\" \"string\" \"3\")\n(\"prop\" 1 \"c\" \"string\" \"2\")\n\
-         (\"prop\" 1 \"n\" \"int\" \"{n}\")\n(\"prop\" 1 \"x\" \"string\" \"free\")\n(\"end\")\n"
+         (\"prop\" 1 \"d\" \"string\" \"7\")\n(\"prop\" 1 \"n\" \"int\" \"{n}\")\n(\"prop\" 1 \"x\" \"string\" \"free\")\n(\"end\")\n"
     )
 }
 
@@ -435,6 +435,7 @@ fn callbacks_run_in_cdf_order_and_failures_are_logged_not_fatal() {
     let mut i = fixtures();
     i.set_global("sfyCbOrder", V::Nil);
     i.files.insert("/t/cb.sfyx".into(), cb_dump("0"));
+    let open_before = run(&mut i, "(length (dbGetOpenCellViews))");
     let ok = run(&mut i, r#"(SfyImport "/t/cb.sfyx" ?callbacks t)"#);
     let log = file(&i, "/t/cb.sfyx.log");
     assert!(ok.truthy() && log.ends_with("PASS\n"), "{log}");
@@ -457,6 +458,29 @@ fn callbacks_run_in_cdf_order_and_failures_are_logged_not_fatal() {
     assert_eq!(i.host.attr(inst, "b").as_str(), Some("5"));
     assert_eq!(i.host.attr(inst, "x").as_str(), Some("free"));
     assert!(!i.host.attr(inst, "n").truthy());
+    // As the form runs them: every value is set before the first callback (a, before b in
+    // CDF order, sees b's new value), and cdfgData is the cell CDF (id: the cell).
+    let seen = run(&mut i, "sfyCbSeen");
+    let mut s = String::new();
+    skill::print(&seen, &mut s);
+    assert_eq!(s, "(\"3\" \"ddCell\")");
+    // The read-only d is left to the callbacks: b's callback derives it, the file's stale
+    // 7 is not sent.
+    assert_eq!(i.host.attr(inst, "d").as_str(), Some("9"));
+    assert!(log.contains("count skipped:read-only param 1\n"), "{log}");
+    // Read back after the callbacks: what the PDK derived differs from the file's value.
+    assert!(log.contains("derived line 9: I0 d file 7 now 9"), "{log}");
+    // The cell CDF gets its own values back.
+    let b = run(
+        &mut i,
+        r#"(getSGq (getSGq (cdfGetCellCDF (ddGetObj "cb" "dev")) b) value)"#,
+    );
+    assert_eq!(b.as_str(), Some("0"));
+    // The masters the import opened are closed again (the build left its own open).
+    assert_eq!(
+        run(&mut i, "(length (dbGetOpenCellViews))").as_int(),
+        open_before.as_int()
+    );
     // Callbacks are opt-in.
     let mut i = fixtures();
     i.set_global("sfyCbOrder", V::Nil);
@@ -470,6 +494,11 @@ fn callbacks_run_in_cdf_order_and_failures_are_logged_not_fatal() {
     };
     assert!(matches!(i.host.attr(inst, "n"), V::Int(4)));
     assert_eq!(i.host.attr(inst, "b").as_str(), Some("3"));
+    // Without callbacks the file's d is the only source, so it is sent; the log says which
+    // callbacks did not run.
+    assert_eq!(i.host.attr(inst, "d").as_str(), Some("7"));
+    let log = file(&i, "/t/cb.sfyx.log");
+    assert!(log.contains("count callback not run 3\n"), "{log}");
 }
 
 #[test]
@@ -625,14 +654,31 @@ fn conn_records_draw_a_labelled_stub_at_the_real_pin() {
 fn the_probe_runs_on_the_mock() {
     let mut i = fixtures();
     i.load(interop::skill::PROBE).expect("probe loads");
-    assert!(run(&mut i, r#"(SfyProbe "scratch")"#).truthy());
+    assert!(
+        run(
+            &mut i,
+            r#"(SfyProbe "scratch" ?pdkLib "pdk" ?pdkCell "nch")"#
+        )
+        .truthy()
+    );
     let t = file(&i, "/tmp/sfy_probe.txt");
     assert!(!t.contains("ERROR"), "{t}");
     for want in [
+        "version \"sfy test interpreter\"",
+        "not callable nil",
+        "errmsg SfyErrMsg",
         "orient MYR90 (-2.0 -1.0)",
         "escaper PASS",
         "schCreatePin returns objType=\"inst\"",
         "boolean prop reads \"TRUE\"",
+        "mode w-open \"w\"",
+        "(\"sfyNet\" \"netSet\" \"VDDA\")",
+        // The fixture's w callback calls an undefined pdkWidthCB: reported, not fatal.
+        "pdk callbacks of \"w\" -> failed (\"w\")",
+        "mae getAnalysis tran (((\"anaName\" \"tran\")",
+        "mae getSimOption temp (\"55\")",
+        "mae output name=(\"o1\") expression=(\"ymax(VT(\\\"/n1\\\"))\")",
+        "mae reopen r",
         "end\n",
     ] {
         assert!(t.contains(want), "{want:?} missing from\n{t}");
@@ -642,5 +688,196 @@ fn the_probe_runs_on_the_mock() {
         i.host
             .cellview("scratch", "sfy_probe", "schematic")
             .is_none()
+    );
+}
+
+#[test]
+fn netset_overrides_dump_and_load_with_their_type() {
+    let mut i = fixtures();
+    // An inherited-connection override as Virtuoso stores it (dbReplaceProp … "netSet").
+    run(
+        &mut i,
+        r#"(let ((cv (dbOpenCellViewByType "cb" "ns" "schematic" "schematic" "w")) (x nil))
+             (setq x (schCreateInst cv (dbOpenCellViewByType "cb" "dev" "symbol" nil "r") "I0"
+                       (list 0.0 0.0) "R0"))
+             (dbReplaceProp x "bulk" "netSet" "VDDA")
+             (dbSave cv) (dbClose cv))"#,
+    );
+    let ok = run(
+        &mut i,
+        r#"(SfyExport "/t/ns.sfyx" "cb" (list "ns") ?ref nil)"#,
+    );
+    let log = file(&i, "/t/ns.sfyx.log");
+    let t = file(&i, "/t/ns.sfyx");
+    assert!(ok.truthy() && !log.contains("skipped:prop"), "{log}");
+    assert!(t.contains("\"bulk\" \"netSet\" \"VDDA\")"), "{t}");
+    // Rust reads the type (a net override below the master's own pins is reviewed).
+    interop::sfyx::read(&t).expect("canonical");
+    // Loaded back, the property keeps its type.
+    let ok = run(&mut i, r#"(SfyImport "/t/ns.sfyx" ?lib "scratch")"#);
+    assert!(ok.truthy(), "{}", file(&i, "/t/ns.sfyx.log"));
+    let ty = run(
+        &mut i,
+        r#"(let ((cv (dbOpenCellViewByType "scratch" "ns" "schematic" nil "r")))
+             (car (setof p (getSGq (car (getSGq cv instances)) prop)
+                    (equal (getSGq p name) "bulk"))))"#,
+    );
+    let V::Obj(p) = ty else { panic!("{ty:?}") };
+    assert_eq!(i.host.attr(p, "valueType").as_str(), Some("netSet"));
+}
+
+#[test]
+fn an_unbound_master_is_refused_and_the_rest_dumps() {
+    let mut i = fixtures();
+    run(
+        &mut i,
+        r#"(let ((cv (dbOpenCellViewByType "cb" "ub" "schematic" "schematic" "w")))
+             (schCreateInst cv (dbOpenCellViewByType "cb" "dev" "symbol" nil "r") "I0"
+               (list 0.0 0.0) "R0")
+             (dbSave cv) (dbClose cv))"#,
+    );
+    // The master's library leaves cds.lib after the schematic was drawn.
+    i.host.forget_cell("cb", "dev");
+    let ok = run(&mut i, r#"(SfyExport "/t/ub.sfyx" "cb" (list "ub"))"#);
+    let log = file(&i, "/t/ub.sfyx.log");
+    assert!(!ok.truthy() && log.ends_with("FAIL\n"), "{log}");
+    assert!(log.contains("refused: master cb/dev not found"), "{log}");
+    let t = file(&i, "/t/ub.sfyx");
+    assert!(
+        t.ends_with("(\"end\")\n") && t.contains("(\"cell\" \"ub\" \"design\")"),
+        "{t}"
+    );
+}
+
+#[test]
+fn a_target_open_for_editing_is_refused() {
+    let mut i = fixtures();
+    run(&mut i, DUMPS[0].1);
+    let t = file(&i, "/t/inv.sfyx");
+    i.files.insert("/t/in.sfyx".into(), t);
+    assert!(run(&mut i, r#"(SfyImport "/t/in.sfyx" ?lib "scratch")"#).truthy());
+    // The user opens the schematic in an editor window, then imports again.
+    run(
+        &mut i,
+        r#"(setq sfyWin (dbOpenCellViewByType "scratch" "inv" "schematic" nil "a"))"#,
+    );
+    let ok = run(
+        &mut i,
+        r#"(SfyImport "/t/in.sfyx" ?lib "scratch" ?overwrite t)"#,
+    );
+    let log = file(&i, "/t/in.sfyx.log");
+    assert!(!ok.truthy(), "{log}");
+    assert!(
+        log.contains("scratch/inv/schematic is open for editing in Virtuoso; close it first"),
+        "{log}"
+    );
+    // Read-only opens (another view's master, a viewer) do not block.
+    run(&mut i, "(dbClose sfyWin)");
+    run(
+        &mut i,
+        r#"(setq sfyWin (dbOpenCellViewByType "scratch" "inv" "schematic" nil "r"))"#,
+    );
+    assert!(
+        run(
+            &mut i,
+            r#"(SfyImport "/t/in.sfyx" ?lib "scratch" ?overwrite t)"#
+        )
+        .truthy(),
+        "{}",
+        file(&i, "/t/in.sfyx.log")
+    );
+}
+
+#[test]
+fn set_params_refuses_locked_params_and_prints_numbers_without_noise() {
+    let mut i = fixtures();
+    run(
+        &mut i,
+        r#"(let ((cv (dbOpenCellViewByType "cb" "sp" "schematic" "schematic" "w")))
+             (setq sfyInst (schCreateInst cv (dbOpenCellViewByType "cb" "dev" "symbol" nil "r")
+                             "I0" (list 0.0 0.0) "R0")))"#,
+    );
+    // 0.18e-6 is 1.7999999999999999e-07 in binary: a string parameter gets 1.8e-07.
+    assert!(
+        run(
+            &mut i,
+            r#"(SfySetParams sfyInst (list (list "a" 1.8e-7)) nil)"#
+        )
+        .truthy()
+    );
+    let inst = match run(&mut i, "sfyInst") {
+        V::Obj(o) => o,
+        v => panic!("{v:?}"),
+    };
+    assert_eq!(i.host.attr(inst, "a").as_str(), Some("1.8e-07"));
+    // d is read-only in the PDK: refused with the reason, not written.
+    let why = run(
+        &mut i,
+        r#"(SfySetParams sfyInst (list (list "d" "1")) nil)"#,
+    );
+    assert!(
+        why.as_str().is_some_and(|w| w.contains("d is read-only")),
+        "{why:?}"
+    );
+    assert!(!i.host.attr(inst, "d").truthy());
+    // A failing callback is a "callback:" answer: the value is set, the device kept.
+    let why = run(&mut i, r#"(SfySetParams sfyInst (list (list "c" "1")) t)"#);
+    assert!(
+        why.as_str()
+            .is_some_and(|w| w.starts_with("callback: the CDF callback of c")),
+        "{why:?}"
+    );
+    assert_eq!(i.host.attr(inst, "c").as_str(), Some("1"));
+}
+
+#[test]
+fn a_bad_field_writes_no_half_record() {
+    let mut i = fixtures();
+    let r = run(
+        &mut i,
+        r#"(let ((p (outfile "/t/half.sfyx" "w")) (r nil))
+             (setq r (errset (SfyPut p "inst" (list 1 "a" 1.5))))
+             (close p)
+             r)"#,
+    );
+    assert!(matches!(r, V::Nil), "a float field signals");
+    assert_eq!(
+        file(&i, "/t/half.sfyx"),
+        "",
+        "nothing written before the check"
+    );
+}
+
+#[test]
+fn a_skill_error_costs_one_cellview_and_the_log_still_closes() {
+    let mut i = fixtures();
+    run(&mut i, DUMPS[0].1);
+    let t = file(&i, "/t/inv.sfyx");
+    i.files.insert("/t/in.sfyx".into(), t);
+    // A release whose label call signals (an unexpected argument shape, say).
+    run(&mut i, "(procedure (SfyLoadLabel lr) (error \"boom\"))");
+    let ok = run(&mut i, r#"(SfyImport "/t/in.sfyx" ?lib "scratch")"#);
+    let log = file(&i, "/t/in.sfyx.log");
+    assert!(!ok.truthy() && log.ends_with("FAIL\n"), "{log}");
+    assert!(log.contains("SKILL error") && log.contains("boom"), "{log}");
+    // Each cellview with a label is refused on its own line (symbol, then schematic), the
+    // rest of the import went on (instances, wires); nothing is left open for writing.
+    assert_eq!(log.matches("SKILL error").count(), 2, "{log}");
+    assert!(log.contains("count wire "), "{log}");
+    let writing = run(
+        &mut i,
+        r#"(setof cv (dbGetOpenCellViews) (equal (getSGq cv mode) "w"))"#,
+    );
+    assert!(matches!(writing, V::Nil), "{writing:?}");
+    // Export: the same backstop ends the log with the message.
+    run(
+        &mut i,
+        "(procedure (SfyDumpTextViews port lib cell) (error \"bang\"))",
+    );
+    let ok = run(&mut i, DUMPS[0].1);
+    let log = file(&i, "/t/inv.sfyx.log");
+    assert!(
+        !ok.truthy() && log.ends_with("FAIL\n") && log.contains("bang"),
+        "{log}"
     );
 }

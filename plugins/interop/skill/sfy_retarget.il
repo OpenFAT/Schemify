@@ -236,7 +236,7 @@
             ((and (equal c "\\") (lessp i n))
               (setq i (add1 i))
               (setq c (substring line i 1))
-              (setq tok (strcat tok (case c ("n" "\n") ("t" "\t") (t c)))))
+              (setq tok (strcat tok (case c ("n" (SfyChr 10)) ("t" (SfyChr 9)) (t c)))))
             ((equal c "\"")
               (setq out (cons tok out))
               (setq tok nil)
@@ -245,7 +245,7 @@
         ((equal c "\"")
           (setq inq t)
           (setq tok ""))
-        ((member c (list " " "\t" "\r" "\n"))
+        ((member c (list " " (SfyChr 9) (SfyChr 13) (SfyChr 10)))
           (when tok
             (setq out (cons tok out))
             (setq tok nil)))
@@ -268,10 +268,17 @@
       ((and suf (greaterp n 1))
         (setq scale (cadr suf))
         (setq body (substring s 1 (sub1 n)))))
-    (when (member (substring body 1 1) (list "0" "1" "2" "3" "4" "5" "6" "7" "8" "9"))
-      (setq v (atof body t)))
+    (when (and (member (substring body 1 1) (list "0" "1" "2" "3" "4" "5" "6" "7" "8" "9"))
+               (SfyRtNumeric body))
+      (setq v (atof body)))
     (when (and v (greaterp v 0.0))
       (times v scale))))
+
+;; t when every character of s can belong to a decimal number (digits . e E + -): with it,
+;; atof of s reads all of s (atof takes one argument on every release).
+(procedure (SfyRtNumeric s)
+  (not (exists ch (parseString s "")
+         (not (member ch (list "0" "1" "2" "3" "4" "5" "6" "7" "8" "9" "." "e" "E" "+" "-"))))))
 
 ;; Reads a .retarget file: a list of classes, each (header attrRow...), header =
 ;; ("class" name "lib" lib "cell" cell), attrRow = (key value...), numbers still text.
@@ -288,8 +295,8 @@
       (setq words (SfyRtWords line))
       (cond
         ((or (null words) (equal (substring (car words) 1 1) "#")) nil)
-        ((and incorner (member (substring line 1 1) (list " " "\t"))) nil)
-        ((member (substring line 1 1) (list " " "\t"))
+        ((and incorner (member (substring line 1 1) (list " " (SfyChr 9)))) nil)
+        ((member (substring line 1 1) (list " " (SfyChr 9)))
           (unless cur
             (close port)
             (return (list nil (sprintf nil "line %d: attribute outside a class" ln))))
@@ -319,7 +326,10 @@
         (unless (SfyRtMapName c "param" k)
           (return (list nil (sprintf nil "class %s: missing param %s" (nth 1 (car c)) k)))))
       (unless (SfyRtNum (SfyRtAttr c "vdd"))
-        (return (list nil (sprintf nil "class %s: vdd is not a positive number" (nth 1 (car c)))))))
+        (return (list nil (sprintf nil "class %s: vdd is not a positive number" (nth 1 (car c))))))
+      ;; No default: kits differ (TSMC's w is the total width, others' one finger's).
+      (unless (member (SfyRtAttr c "width") (list "finger" "total"))
+        (return (list nil (sprintf nil "class %s: missing width (finger or total)" (nth 1 (car c)))))))
     (return (list (reverse classes)))))
 
 ;; First value of attribute key of class cls, or nil.
@@ -338,14 +348,15 @@
 ;; Target procedure (spec section 10.3)
 ;; ---------------------------------------------------------------------------------------
 
-;; Contract with sfy_cells.il (the SKILL-cells part provides these; TODO until it lands):
+;; Contract with sfy_cells.il:
 ;;   (SfySetParams inst params callbacks) -> t/nil
 ;;     inst: a schematic instance; params: list of (cdfName value) where value is a float
 ;;     (w, l in metres), an integer (nf) or a string (a fixed size's ADE expression; int
-;;     and float CDF parameters read it with atoi/atof). Sets each through the instance CDF with the
-;;     CDF's own type and full precision (never a 7-digit print), then, when callbacks is
-;;     non-nil, runs the CDF callbacks of the set params in CDF order inside errset and logs
-;;     what the PDK clamped (spec section 5.3).
+;;     and float CDF parameters read it with atoi/atof). Sets each through the instance CDF
+;;     with the CDF's own type (never a 7-digit print), refusing a parameter the PDK locks;
+;;     then, when callbacks is non-nil (the default here: derived parameters such as nf
+;;     follow fingers only through them), runs the set params' CDF callbacks the way the
+;;     form does (spec section 5.3).
 ;;   (SfyPlaceConn cv inst conns) -> number of stubs drawn, or nil
 ;;     conns: list of (terminal net), terminal a pin of inst's master. Draws one grid-step
 ;;     stub away from the instance at each terminal's real pin and glues a wire label with
@@ -384,7 +395,7 @@
 ;; Intent field key as a float, or nil.
 (procedure (SfyRtField intent key)
   (let ((kv (assoc key (nth 3 intent))))
-    (and kv (atof (cadr kv) t))))
+    (and kv (atof (cadr kv)))))
 
 ;; Sorted list without repeats.
 (procedure (SfyRtUniq xs)
@@ -399,13 +410,10 @@
 ;; (dir)/netlist with netlistHeader/netlistFooter beside it (OCEAN's direct-simulator
 ;; layout). ponytail: one run per (L, VDS); a paramAnalysis would batch them.
 (procedure (SfyRtCharacterize cls ls vdss dir)
-  (prog (vdd sign op port wname lname nfname steps rows rowL rowD ws vg)
+  (prog (vdd sign op port steps rows rowL rowD ws vg)
     (setq vdd (SfyRtNum (SfyRtAttr cls "vdd")))
     (setq sign (if (equal (SfyRtAttr cls "polarity") "p") -1.0 1.0))
     (setq op (or (SfyRtAttr cls "op") (car (parseString (SfyRtAttr cls "device")))))
-    (setq wname (SfyRtMapName cls "param" "w"))
-    (setq lname (SfyRtMapName cls "param" "l"))
-    (setq nfname (SfyRtMapName cls "param" "nf"))
     (setq steps 72)
     (createDir dir)
     (setq port (outfile (strcat dir "/netlistHeader") "w"))
@@ -417,8 +425,10 @@
     (fprintf port "%s\n" (SfyRtAttr cls "model"))
     (fprintf port "VG (g 0) vsource dc=vgs\nVD (d 0) vsource dc=vds\n")
     (fprintf port "VS (s 0) vsource dc=0\nVB (b 0) vsource dc=0\n")
-    (fprintf port "%s %s=1u %s=lch%s\n" (SfyRtAttr cls "device") wname lname
-      (if nfname (strcat " " nfname "=1") ""))
+    ;; Spectre's instance parameters w and l, one finger (Spectre's default, so w is both
+    ;; the finger and the total width): the map's param names are CDF names (TSMC's
+    ;; fingers, a kit's wf), which are not Spectre's.
+    (fprintf port "%s w=1u l=lch\n" (SfyRtAttr cls "device"))
     (close port)
     (unless (simulator 'spectre)
       (return "simulator spectre is not available"))
@@ -487,121 +497,163 @@
       (setq params (append1 params (list (SfyRtMapName cls "param" "m") m))))
     (return params)))
 
-;; Places one intent e (see SfyRtReadIntents) as an instance of class cls with the
-;; (cdfName value) list params. Returns t, or a string naming the failure.
-(procedure (SfyRtPlace e cls params callbacks)
-  (prog (inst cv master obj upi conns)
-    (setq inst (nth 4 e))
-    (setq upi (float (nth 3 e)))
-    (setq cv (dbOpenCellViewByType (nth 0 e) (nth 1 e) (nth 2 e) nil "a"))
-    (unless cv
-      (return "cannot open the cellview (run SfyImport on the same file first)"))
-    (setq master (dbOpenCellViewByType (nth 3 (car cls)) (nth 5 (car cls)) "symbol" nil "r"))
-    (unless master
-      (return "cannot open the class master symbol"))
-    (setq obj (schCreateInst cv master (nth 2 inst)
-      (list (quotient (float (nth 6 inst)) upi) (quotient (float (nth 7 inst)) upi)) (nth 8 inst)))
-    (unless obj
-      (return "schCreateInst failed"))
-    (unless (SfySetParams obj params callbacks)
-      (return "SfySetParams failed"))
-    (setq conns nil)
-    (foreach c (nth 5 e)
-      (setq conns (append1 conns (list (or (SfyRtMapName cls "pin" (car c)) (car c)) (cadr c)))))
-    (unless (SfyPlaceConn cv obj conns)
-      (return "SfyPlaceConn failed"))
-    (dbSave cv)
-    (return t)))
+;; Places one intent sfyE (see SfyRtReadIntents) as an instance of class sfyCls with the
+;; (cdfName value) list sfyParams in the cellview's library sfyLib. The cellview is
+;; schCheck'ed, saved and closed after the placement; a placement that fails part-way is
+;; deleted before that, so nothing half-built is saved. Returns t, or a string for the log:
+;; "not placed: <why>", or "placed, but <a CDF callback failed>". Locals carry the sfy
+;; prefix: PDK callbacks run under this frame (SfySetParams).
+(procedure (SfyRtPlace sfyE sfyCls sfyParams sfyCallbacks sfyLib)
+  (prog (sfyInst sfyCv sfyMaster sfyObj sfyUpi sfyConns sfyWhy sfyWarn)
+    (setq sfyInst (nth 4 sfyE))
+    (setq sfyUpi (float (nth 3 sfyE)))
+    (setq sfyCv (dbOpenCellViewByType sfyLib (nth 1 sfyE) (nth 2 sfyE) nil "a"))
+    (unless sfyCv
+      (return (sprintf nil "not placed: cannot open %s/%s/%s (run SfyImport of the same file, with the same ?lib, first)"
+                sfyLib (nth 1 sfyE) (nth 2 sfyE))))
+    (setq sfyMaster (dbOpenCellViewByType (nth 3 (car sfyCls)) (nth 5 (car sfyCls)) "symbol" nil "r"))
+    (unless sfyMaster
+      (dbClose sfyCv)
+      (return "not placed: cannot open the class master symbol"))
+    (setq sfyObj (schCreateInst sfyCv sfyMaster (nth 2 sfyInst)
+      (list (quotient (float (nth 6 sfyInst)) sfyUpi) (quotient (float (nth 7 sfyInst)) sfyUpi))
+      (nth 8 sfyInst)))
+    ;; In errset: a call that signals still reaches the delete and the closes below, and the
+    ;; loop goes on with the next intent. A failed CDF callback (sfyWarn) keeps the device:
+    ;; its sizes are set, only what the callback derives may be stale.
+    (unless (errset
+              (cond
+                ((null sfyObj) (setq sfyWhy "schCreateInst failed"))
+                ((stringp (setq sfyWhy (SfySetParams sfyObj sfyParams sfyCallbacks)))
+                  (if (equal (substring sfyWhy 1 9) "callback:")
+                    (progn (setq sfyWarn sfyWhy) (setq sfyWhy nil))
+                    (setq sfyWhy (strcat "SfySetParams: " sfyWhy)))))
+              t)
+      (setq sfyWhy (sprintf nil "SKILL error %s" (SfyErrMsg))))
+    (when (eq sfyWhy t) (setq sfyWhy nil))
+    (unless sfyWhy
+      (foreach sfyC (nth 5 sfyE)
+        (setq sfyConns (append1 sfyConns
+                         (list (or (SfyRtMapName sfyCls "pin" (car sfyC)) (car sfyC)) (cadr sfyC)))))
+      (unless (errset
+                (unless (SfyPlaceConn sfyCv sfyObj sfyConns)
+                  (setq sfyWhy "SfyPlaceConn failed (the CIW names the pin)"))
+                t)
+        (setq sfyWhy (sprintf nil "SKILL error %s" (SfyErrMsg)))))
+    (when (and sfyWhy sfyObj)
+      (errset (dbDeleteObject sfyObj)))
+    (unless sfyWhy
+      (errset (schCheck sfyCv))
+      (unless (car (errset (dbSave sfyCv)))
+        (setq sfyWhy "dbSave failed")))
+    (dbClose sfyMaster)
+    (dbClose sfyCv)
+    (return
+      (cond
+        (sfyWhy (strcat "not placed: " sfyWhy))
+        (sfyWarn (strcat "placed, but " sfyWarn))
+        (t t)))))
 
 ;; Entry point (spec sections 5.2 and 10.3). Run after (SfyImport path) has created the
-;; cellviews: it reads the intents of path, characterizes every class used with Spectre
-;; (characterize nil: plan and log only), solves each width, places the class master with
-;; the solved w, l, nf and draws the conn stubs. Writes <path>.retarget.log; returns t when
-;; every intent was placed.
-(procedure (SfyRetarget path map @key (lib nil) (characterize t) (callbacks nil))
-  (prog (m classes log entries fixed used plan tab sol cls l vds nf w ok res lsnap params)
-    (setq log (outfile (strcat path ".retarget.log") "w"))
-    (setq m (SfyRtReadMap map))
-    (unless (car m)
-      (fprintf log "map %s: %s\nFAIL\n" map (cadr m))
-      (close log)
+;; cellviews, with the same lib (the library the import wrote; nil: the dump's): it reads
+;; the intents of path, characterizes every class used with Spectre (characterize nil: plan
+;; and log only), solves each width, places the class master with the solved w, l, nf and
+;; draws the conn stubs. Writes <path>.retarget.log (flushed line by line, the Virtuoso
+;; version and missing functions first, a SKILL error's message last); returns t when every
+;; intent was placed.
+(procedure (SfyRetarget path map @key (lib nil) (characterize t) (callbacks t))
+  (let ((sfyLogPort (outfile (strcat path ".retarget.log") "w")) (sfyRes nil))
+    (unless sfyLogPort (error "schemify: cannot write %s.retarget.log" path))
+    (SfyLog (sprintf nil "SfyRetarget %s map %s" path map))
+    (SfyPreflight)
+    (setq sfyRes (errset (SfyRtRun path map lib characterize callbacks) t))
+    (unless sfyRes
+      (SfyLog (sprintf nil "SKILL error %s" (SfyErrMsg)))
+      (SfyLog "FAIL"))
+    (close sfyLogPort)
+    (and sfyRes (car sfyRes))))
+
+;; The body of SfyRetarget, logging to sfyLogPort; ends the log with PASS or FAIL. Locals
+;; carry the sfy prefix: PDK callbacks run under this frame (SfySetParams).
+(procedure (SfyRtRun sfyPath sfyMap sfyLib sfyCharacterize sfyCallbacks)
+  (prog (sfyM sfyClasses sfyEntries sfyFixed sfyUsed sfyPlan sfyTab sfySol sfyCls sfyL sfyVds sfyNf sfyW sfyOk sfyRes sfyLsnap sfyParams)
+    (setq sfyM (SfyRtReadMap sfyMap))
+    (unless (car sfyM)
+      (SfyLog (sprintf nil "map %s: %s" sfyMap (cadr sfyM)))
+      (SfyLog "FAIL")
       (return nil))
-    (setq classes (car m))
-    (setq entries (SfyRtReadIntents path))
-    (when lib
-      (setq entries (setof e entries (equal (nth 0 e) lib))))
+    (setq sfyClasses (car sfyM))
+    (setq sfyEntries (SfyRtReadIntents sfyPath))
     ;; Fixed-size placeholders (no gmid, section 10.5) need no characterization.
-    (setq fixed (setof e entries (null (assoc "gmid" (nth 3 (nth 6 e))))))
-    (setq entries (setof e entries (assoc "gmid" (nth 3 (nth 6 e)))))
-    (setq ok t)
+    (setq sfyFixed (setof sfyE sfyEntries (null (assoc "gmid" (nth 3 (nth 6 sfyE))))))
+    (setq sfyEntries (setof sfyE sfyEntries (assoc "gmid" (nth 3 (nth 6 sfyE)))))
+    (setq sfyOk t)
     ;; Classes used, each with its snapped lengths and drain voltages (vdd/2 always).
-    (foreach e entries
-      (setq cls (exists c classes (equal (nth 1 (car c)) (nth 2 (nth 6 e)))))
-      (if (null cls)
+    (foreach sfyE sfyEntries
+      (setq sfyCls (exists sfyC sfyClasses (equal (nth 1 (car sfyC)) (nth 2 (nth 6 sfyE)))))
+      (if (null sfyCls)
         (progn
-          (fprintf log "inst %s: class %s is not in the map\n" (nth 2 (nth 4 e)) (nth 2 (nth 6 e)))
-          (setq ok nil))
-        (let ((c (car cls)) (row nil))
-          (setq row (assoc (nth 1 (car c)) used))
-          (unless row
-            (setq row (list (nth 1 (car c)) c nil (list (quotient (SfyRtNum (SfyRtAttr c "vdd")) 2.0))))
-            (setq used (cons row used)))
-          (setq lsnap (SfyRtSnapL (SfyRtField (nth 6 e) "l") (and (SfyRtAttr c "lgrid") (SfyRtNum (SfyRtAttr c "lgrid")))))
-          (setq vds (SfyRtField (nth 6 e) "vds"))
-          (setq used (cons (list (car row) c (cons lsnap (nth 2 row)) (if vds (cons vds (nth 3 row)) (nth 3 row)))
-                           (setof u used (nequal (car u) (car row))))))))
-    (setq plan nil)
-    (foreach u (reverse used)
-      (setq plan (cons (list (car u) (cadr u) (SfyRtUniq (nth 2 u)) (SfyRtUniq (nth 3 u))) plan)))
-    (setq plan (reverse plan))
-    (foreach p plan
-      (fprintf log "class %s L %L VDS %L VGS 0..vdd in 72 steps\n" (car p) (nth 2 p) (nth 3 p)))
-    (unless characterize
-      (fprintf log "plan only (characterize nil): %d fixed\n" (length fixed))
-      (close log)
-      (return ok))
-    (foreach e fixed
-      (setq cls (car (exists c classes (equal (nth 1 (car c)) (nth 2 (nth 6 e))))))
-      (setq params (if cls (SfyRtFixedParams cls (nth 6 e)) "its class is not in the map"))
-      (setq res (if (stringp params) params (SfyRtPlace e cls params callbacks)))
-      (if (equal res t)
-        (fprintf log "inst %s: fixed %L\n" (nth 2 (nth 4 e)) params)
+          (SfyLog (sprintf nil "inst %s: class %s is not in the map" (nth 2 (nth 4 sfyE)) (nth 2 (nth 6 sfyE))))
+          (setq sfyOk nil))
+        (let ((sfyC (car sfyCls)) (sfyRow nil))
+          (setq sfyRow (assoc (nth 1 (car sfyC)) sfyUsed))
+          (unless sfyRow
+            (setq sfyRow (list (nth 1 (car sfyC)) sfyC nil (list (quotient (SfyRtNum (SfyRtAttr sfyC "vdd")) 2.0))))
+            (setq sfyUsed (cons sfyRow sfyUsed)))
+          (setq sfyLsnap (SfyRtSnapL (SfyRtField (nth 6 sfyE) "l") (and (SfyRtAttr sfyC "lgrid") (SfyRtNum (SfyRtAttr sfyC "lgrid")))))
+          (setq sfyVds (SfyRtField (nth 6 sfyE) "vds"))
+          (setq sfyUsed (cons (list (car sfyRow) sfyC (cons sfyLsnap (nth 2 sfyRow)) (if sfyVds (cons sfyVds (nth 3 sfyRow)) (nth 3 sfyRow)))
+                           (setof sfyU sfyUsed (nequal (car sfyU) (car sfyRow))))))))
+    (setq sfyPlan nil)
+    (foreach sfyU (reverse sfyUsed)
+      (setq sfyPlan (cons (list (car sfyU) (cadr sfyU) (SfyRtUniq (nth 2 sfyU)) (SfyRtUniq (nth 3 sfyU))) sfyPlan)))
+    (setq sfyPlan (reverse sfyPlan))
+    (foreach sfyP sfyPlan
+      (SfyLog (sprintf nil "class %s L %L VDS %L VGS 0..vdd in 72 steps" (car sfyP) (nth 2 sfyP) (nth 3 sfyP))))
+    (unless sfyCharacterize
+      (SfyLog (sprintf nil "plan only (characterize nil): %d fixed" (length sfyFixed)))
+      (return sfyOk))
+    (foreach sfyE sfyFixed
+      (setq sfyCls (car (exists sfyC sfyClasses (equal (nth 1 (car sfyC)) (nth 2 (nth 6 sfyE))))))
+      (setq sfyParams (if sfyCls (SfyRtFixedParams sfyCls (nth 6 sfyE)) "its class is not in the map"))
+      (setq sfyRes (if (stringp sfyParams) (strcat "not placed: " sfyParams) (SfyRtPlace sfyE sfyCls sfyParams sfyCallbacks (or sfyLib (nth 0 sfyE)))))
+      (if (equal sfyRes t)
+        (SfyLog (sprintf nil "inst %s: fixed %L" (nth 2 (nth 4 sfyE)) sfyParams))
         (progn
-          (fprintf log "inst %s: not placed: %s\n" (nth 2 (nth 4 e)) res)
-          (setq ok nil))))
+          (SfyLog (sprintf nil "inst %s: %s" (nth 2 (nth 4 sfyE)) sfyRes))
+          (setq sfyOk nil))))
     ;; Characterize, then solve and place each intent of the class.
-    (foreach p plan
-      (setq tab (SfyRtCharacterize (nth 1 p) (nth 2 p) (nth 3 p) (strcat path ".rt." (car p))))
-      (if (stringp tab)
+    (foreach sfyP sfyPlan
+      (setq sfyTab (SfyRtCharacterize (nth 1 sfyP) (nth 2 sfyP) (nth 3 sfyP) (strcat sfyPath ".rt." (car sfyP))))
+      (if (stringp sfyTab)
         (progn
-          (fprintf log "class %s: characterization failed: %s\n" (car p) tab)
-          (setq ok nil))
-        (foreach e entries
-          (when (equal (nth 2 (nth 6 e)) (car p))
-            (setq cls (nth 1 p))
-            (setq l (SfyRtSnapL (SfyRtField (nth 6 e) "l") (and (SfyRtAttr cls "lgrid") (SfyRtNum (SfyRtAttr cls "lgrid")))))
-            (setq vds (SfyRtField (nth 6 e) "vds"))
-            (setq sol (SfyRtSolve tab (SfyRtField (nth 6 e) "gmid") l (SfyRtField (nth 6 e) "id") vds))
-            (if (null sol)
+          (SfyLog (sprintf nil "class %s: characterization failed: %s" (car sfyP) sfyTab))
+          (setq sfyOk nil))
+        (foreach sfyE sfyEntries
+          (when (equal (nth 2 (nth 6 sfyE)) (car sfyP))
+            (setq sfyCls (nth 1 sfyP))
+            (setq sfyL (SfyRtSnapL (SfyRtField (nth 6 sfyE) "l") (and (SfyRtAttr sfyCls "lgrid") (SfyRtNum (SfyRtAttr sfyCls "lgrid")))))
+            (setq sfyVds (SfyRtField (nth 6 sfyE) "vds"))
+            (setq sfySol (SfyRtSolve sfyTab (SfyRtField (nth 6 sfyE) "gmid") sfyL (SfyRtField (nth 6 sfyE) "id") sfyVds))
+            (if (null sfySol)
               (progn
-                (fprintf log "inst %s: gm/Id %s not reachable at L %L\n" (nth 2 (nth 4 e))
-                  (cadr (assoc "gmid" (nth 3 (nth 6 e)))) l)
-                (setq ok nil))
+                (SfyLog (sprintf nil "inst %s: gm/Id %s not reachable at L %L" (nth 2 (nth 4 sfyE))
+                  (cadr (assoc "gmid" (nth 3 (nth 6 sfyE)))) sfyL))
+                (setq sfyOk nil))
               (progn
-                (setq w (nth 2 sol))
-                (setq nf (SfyRtFingerRule w (or (atoi (cadr (assoc "nf" (nth 3 (nth 6 e))))) 1)
-                  (and (SfyRtAttr cls "fingerw_max") (SfyRtNum (SfyRtAttr cls "fingerw_max")))
-                  (and (SfyRtAttr cls "fingerw_min") (SfyRtNum (SfyRtAttr cls "fingerw_min")))
-                  (and (SfyRtAttr cls "split_above") (SfyRtNum (SfyRtAttr cls "split_above")))))
-                (fprintf log "inst %s: intent %L -> W %L nf %d L %L VGS %L residual %L\n" (nth 2 (nth 4 e))
-                  (nth 3 (nth 6 e)) w nf l (nth 0 sol) (nth 3 sol))
-                (setq res (SfyRtPlace e cls (SfyRtSizeParams cls w nf l) callbacks))
-                (unless (equal res t)
-                  (fprintf log "inst %s: not placed: %s\n" (nth 2 (nth 4 e)) res)
-                  (setq ok nil))))))))
-    (fprintf log (if ok "PASS\n" "FAIL\n"))
-    (close log)
-    (return ok)))
+                (setq sfyW (nth 2 sfySol))
+                (setq sfyNf (SfyRtFingerRule sfyW (or (atoi (cadr (assoc "nf" (nth 3 (nth 6 sfyE))))) 1)
+                  (and (SfyRtAttr sfyCls "fingerw_max") (SfyRtNum (SfyRtAttr sfyCls "fingerw_max")))
+                  (and (SfyRtAttr sfyCls "fingerw_min") (SfyRtNum (SfyRtAttr sfyCls "fingerw_min")))
+                  (and (SfyRtAttr sfyCls "split_above") (SfyRtNum (SfyRtAttr sfyCls "split_above")))))
+                (SfyLog (sprintf nil "inst %s: intent %L -> W %L nf %d L %L VGS %L residual %L" (nth 2 (nth 4 sfyE))
+                  (nth 3 (nth 6 sfyE)) sfyW sfyNf sfyL (nth 0 sfySol) (nth 3 sfySol)))
+                (setq sfyRes (SfyRtPlace sfyE sfyCls (SfyRtSizeParams sfyCls sfyW sfyNf sfyL) sfyCallbacks (or sfyLib (nth 0 sfyE))))
+                (unless (equal sfyRes t)
+                  (SfyLog (sprintf nil "inst %s: %s" (nth 2 (nth 4 sfyE)) sfyRes))
+                  (setq sfyOk nil))))))))
+    (SfyLog (if sfyOk "PASS" "FAIL"))
+    (return sfyOk)))
 
 ;; ---- BEGIN GENERATED by plugins/interop/tests/retarget.rs (SCHEMIFY_BLESS=1 rewrites it)
 (procedure (SfyRtSelfData)

@@ -82,6 +82,10 @@ const BUILTIN_ARITY: &[(&str, usize, Option<usize>)] = &[
     ("parseString", 1, Some(3)),
     ("symbolToString", 1, Some(1)),
     ("stringToSymbol", 1, Some(1)),
+    ("isCallable", 1, Some(1)),
+    ("getVersion", 0, Some(1)),
+    ("drain", 1, Some(1)),
+    ("getqq", 2, Some(2)),
     ("atoi", 1, Some(2)),
     ("atof", 1, Some(2)),
     ("sort", 2, Some(2)),
@@ -469,4 +473,105 @@ fn the_lint_catches_what_it_should() {
     ] {
         assert!(all.contains(want), "{want:?} not reported:\n{all}");
     }
+}
+
+/// Procedures active on the stack while a PDK CDF callback runs (`evalstring` under
+/// `SfyCallbacks`): from `SfyImport` and from `SfyRetarget` (spec §5.3), and the probe's.
+const CALLBACK_STACK: &[&str] = &[
+    "SfyImport",
+    "SfyLoadCv",
+    "SfyLoadProps",
+    "SfyLoadPropGroup",
+    "SfyLoadParams",
+    "SfyCallbacks",
+    "SfyEvalCallback",
+    "SfySetParams",
+    "SfyRtRun",
+    "SfyRtPlace",
+    "SfyProbe",
+];
+
+/// Every variable a form binds (let/prog lists, foreach/setof/exists/for variables),
+/// skipping quoted data.
+fn bound_names(f: &V, out: &mut Vec<String>) {
+    let items = f.items();
+    let Some(head) = items.first().and_then(V::as_str) else {
+        return;
+    };
+    if head == "quote" {
+        return;
+    }
+    match (head, items.get(1)) {
+        ("let" | "prog", Some(vars)) => {
+            for v in vars.items() {
+                let n = match v {
+                    V::List(_) => v.items().first().and_then(V::as_str),
+                    _ => v.as_str(),
+                };
+                out.extend(n.map(str::to_owned));
+            }
+        }
+        ("foreach" | "setof" | "exists" | "for", Some(V::Sym(n))) => out.push(n.to_string()),
+        _ => {}
+    }
+    for x in items {
+        bound_names(x, out);
+    }
+}
+
+#[test]
+fn callback_stack_binds_only_sfy_names_and_preflight_lists_every_function() {
+    // SKILL scope is dynamic: a PDK callback that sets an undeclared w, p or inst reaches
+    // the bindings of every procedure under it, so those bind only sfy-prefixed names
+    // (keyword parameters, the entry points' API, excepted).
+    let mut seen = Vec::new();
+    let mut fns: Option<Vec<String>> = None;
+    let mut sources: Vec<&str> = interop::skill::PARTS.iter().map(|(_, t)| *t).collect();
+    sources.push(interop::skill::PROBE);
+    for src in sources {
+        for f in read_all(src).unwrap() {
+            let items = f.items();
+            if items.first().and_then(V::as_str) != Some("procedure") {
+                continue;
+            }
+            let header = items[1].items();
+            let name = header[0].as_str().unwrap();
+            if name == "SfyCadenceFns" {
+                let quoted = items[2].items()[1].items();
+                fns = Some(
+                    quoted
+                        .iter()
+                        .map(|x| x.as_str().unwrap().to_owned())
+                        .collect(),
+                );
+            }
+            if !CALLBACK_STACK.contains(&name) {
+                continue;
+            }
+            seen.push(name.to_owned());
+            let mut names: Vec<String> = header[1..]
+                .iter()
+                .take_while(|p| !p.as_str().is_some_and(|s| s.starts_with('@')))
+                .filter_map(|p| p.as_str().map(str::to_owned))
+                .collect();
+            for x in &items[2..] {
+                bound_names(x, &mut names);
+            }
+            let bad: Vec<&String> = names
+                .iter()
+                .filter(|n| !n.starts_with("sfy") && !matches!(n.as_str(), "cdfgData" | "cdfgForm"))
+                .collect();
+            assert!(bad.is_empty(), "{name} binds {bad:?}");
+        }
+    }
+    seen.sort();
+    let mut want: Vec<String> = CALLBACK_STACK.iter().map(|s| s.to_string()).collect();
+    want.sort();
+    assert_eq!(seen, want, "every callback-stack procedure exists");
+    // The preflight's list (SfyCadenceFns) is the mock's signature table.
+    let mut got = fns.expect("SfyCadenceFns");
+    got.sort();
+    let mut sig: Vec<String> = SIGNATURES.iter().map(|(n, _)| n.to_string()).collect();
+    sig.sort();
+    assert_eq!(got, sig);
 }

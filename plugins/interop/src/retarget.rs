@@ -737,10 +737,12 @@ pub enum Polarity {
     P,
 }
 
-/// What the target's width parameter means.
+/// What the target's width parameter means. Required in every class: kits differ (TSMC's
+/// `w` is the total width, others' one finger's), and a wrong guess sizes every multi-finger
+/// device `nf` times off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WidthMode {
-    /// The width parameter is one finger's width (`W / nf`); default.
+    /// The width parameter is one finger's width (`W / nf`).
     Finger,
     /// The width parameter is the total width `W`.
     Total,
@@ -818,7 +820,7 @@ pub fn parse_target_map(src: &str) -> Result<Vec<TargetClass>, Vec<String>> {
 ///
 /// Every problem found, one per entry, as `line N: <reason>`: malformed lines, unknown
 /// records or attributes, a repeated single attribute, class or corner, a missing `model`,
-/// `device`, `vdd`, `param w` or `param l`, a corner without models, a number that is not
+/// `device`, `vdd`, `width`, `param w` or `param l`, a corner without models, a number that is not
 /// `digits[.digits][e±digits][f|p|n|u|m|k|meg|g|t]` and positive, more than
 /// [`CLASSES_MAX`] classes or corners.
 pub fn parse_target(src: &str) -> Result<Target, Vec<String>> {
@@ -828,34 +830,39 @@ pub fn parse_target(src: &str) -> Result<Target, Vec<String>> {
     let mut corner: Option<(TargetCorner, usize)> = None;
     let mut errs: Vec<String> = Vec::new();
     // (class under construction, its first line) — attributes go to it.
-    let mut cur: Option<(TargetClass, usize)> = None;
-    let finish =
-        |c: Option<(TargetClass, usize)>, out: &mut Vec<TargetClass>, errs: &mut Vec<String>| {
-            let Some((c, at)) = c else { return };
-            let mut miss =
-                |what: &str| errs.push(format!("line {at}: class {}: missing {what}", c.name));
-            if c.model.is_empty() {
-                miss("model");
+    // The third field: `width` seen (it has no default).
+    let mut cur: Option<(TargetClass, usize, bool)> = None;
+    let finish = |c: Option<(TargetClass, usize, bool)>,
+                  out: &mut Vec<TargetClass>,
+                  errs: &mut Vec<String>| {
+        let Some((c, at, has_width)) = c else { return };
+        let mut miss =
+            |what: &str| errs.push(format!("line {at}: class {}: missing {what}", c.name));
+        if c.model.is_empty() {
+            miss("model");
+        }
+        if c.device.is_empty() {
+            miss("device");
+        }
+        if c.vdd <= 0.0 {
+            miss("vdd");
+        }
+        if !has_width {
+            miss("width (finger or total)");
+        }
+        for p in ["w", "l"] {
+            if !c.params.iter().any(|(s, _)| s == p) {
+                miss(&format!("param {p}"));
             }
-            if c.device.is_empty() {
-                miss("device");
-            }
-            if c.vdd <= 0.0 {
-                miss("vdd");
-            }
-            for p in ["w", "l"] {
-                if !c.params.iter().any(|(s, _)| s == p) {
-                    miss(&format!("param {p}"));
-                }
-            }
-            if out.iter().any(|o| o.name == c.name) {
-                errs.push(format!("line {at}: class {} defined twice", c.name));
-            } else if out.len() >= CLASSES_MAX {
-                errs.push(format!("line {at}: more than {CLASSES_MAX} classes"));
-            } else {
-                out.push(c);
-            }
-        };
+        }
+        if out.iter().any(|o| o.name == c.name) {
+            errs.push(format!("line {at}: class {} defined twice", c.name));
+        } else if out.len() >= CLASSES_MAX {
+            errs.push(format!("line {at}: more than {CLASSES_MAX} classes"));
+        } else {
+            out.push(c);
+        }
+    };
     for (k, raw) in src.split('\n').enumerate() {
         let n = k + 1;
         let line = raw.strip_suffix('\r').unwrap_or(raw);
@@ -916,6 +923,7 @@ pub fn parse_target(src: &str) -> Result<Target, Vec<String>> {
                             width: WidthMode::Finger,
                         },
                         n,
+                        false,
                     ));
                 }
                 _ => err("expected `class <name> lib <lib> cell <cell>`".into()),
@@ -946,7 +954,7 @@ pub fn parse_target(src: &str) -> Result<Target, Vec<String>> {
             }
             continue;
         }
-        let Some((c, _)) = cur.as_mut() else {
+        let Some((c, _, has_width)) = cur.as_mut() else {
             err("attribute outside a class or corner".into());
             continue;
         };
@@ -1019,7 +1027,9 @@ pub fn parse_target(src: &str) -> Result<Target, Vec<String>> {
                 };
                 Ok(())
             }),
+            "width" if *has_width => Err("`width` given twice".into()),
             "width" => one(&vals).and_then(|s| {
+                *has_width = true;
                 c.width = match s.as_str() {
                     "finger" => WidthMode::Finger,
                     "total" => WidthMode::Total,

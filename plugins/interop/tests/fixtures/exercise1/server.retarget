@@ -11,6 +11,7 @@ class nmos lib tpdk cell nch_mac
   device "M0 (d g s b) nch_mac"
   op M0.main
   vdd 0.8
+  width finger
 class pmos lib tpdk cell pch_mac
   pin d D
   pin g G
@@ -25,5 +26,6 @@ class pmos lib tpdk cell pch_mac
   op M0.main
   vdd 0.8
   polarity p
+  width finger
 corner tt
   lib /pdk/models/spectre/toplevel.scs tt_lib

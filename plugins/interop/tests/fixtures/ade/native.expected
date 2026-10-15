@@ -14,7 +14,7 @@ spec vavg
   max 0.5
 
 code AC spectre
-  | include /pdk/models/toplevel.scs
+  | include "/pdk/models/toplevel.scs"
   | pss pss fund=1G harms=10 errpreset=conservative
   | tran tran stop=60n errpreset=moderate
   | // ade output BW point: bandwidth(mag(VF("/OUT")) 3 "low")

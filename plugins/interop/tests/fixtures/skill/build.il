@@ -253,7 +253,8 @@
   t)
 
 ;; cb/dev: a device whose CDF callbacks record their order (c, a, b in CDF order); c's
-;; callback fails, b's clamps b to "5".
+;; callback fails; a's records what it sees (b's value, the type of cdfgData->id); b's
+;; clamps b to "5" and derives the read-only d as "9".
 (procedure (SfyFixCb)
   (let ((cdf nil))
     (SfyFixSymbol "cb" "dev" (list (list "p" "inputOutput" 0 40) (list "n" "inputOutput" 0 -40)))
@@ -261,9 +262,10 @@
     (cdfCreateParam cdf ?name "c" ?type "string" ?defValue "0" ?prompt "C"
       ?callback "(progn (setq sfyCbOrder (cons \"c\" sfyCbOrder)) (error \"c refuses\"))")
     (cdfCreateParam cdf ?name "a" ?type "string" ?defValue "0" ?prompt "A"
-      ?callback "(setq sfyCbOrder (cons \"a\" sfyCbOrder))")
+      ?callback "(progn (setq sfyCbOrder (cons \"a\" sfyCbOrder)) (setq sfyCbSeen (list (getSGq (getSGq cdfgData b) value) (getSGq (getSGq cdfgData id) objType))))")
     (cdfCreateParam cdf ?name "b" ?type "string" ?defValue "0" ?prompt "B"
-      ?callback "(progn (setq sfyCbOrder (cons \"b\" sfyCbOrder)) (setSGq (getSGq cdfgData b) \"5\" value))")
+      ?callback "(progn (setq sfyCbOrder (cons \"b\" sfyCbOrder)) (setSGq (getSGq cdfgData b) \"5\" value) (setSGq (getSGq cdfgData d) \"9\" value))")
+    (cdfCreateParam cdf ?name "d" ?type "string" ?defValue "0" ?prompt "D" ?editable "nil")
     (cdfCreateParam cdf ?name "n" ?type "int" ?defValue 0 ?prompt "N")
     (cdfSaveCDF cdf)
     t))

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use interop::design::{Design, Files, LoadError, load};
 use interop::map::Mapping;
 use interop::notes::Notes;
-use interop::sfyx::{self, Record};
+use interop::sfyx::{self, Record, Value};
 use interop::virtuoso::{self, ExportOptions, ImportOptions};
 use skill::mockdb::MockDb;
 use skill::{Interp, V};
@@ -473,6 +473,23 @@ fn skill_loader_and_dumper_round_trip_on_the_mock_maestro() {
     assert_eq!(tran.2[0].0, "stop");
     let var = |n: &str| su.vars.iter().find(|v| v.0 == n).map(|v| v.1.clone());
     assert_eq!(var("vdd").as_deref(), Some("1.8"));
+    // The test temperature is the simulator option temp, not a design variable (which
+    // would set nothing); saveOppoint is the boolean t, not the string "t".
+    assert!(
+        t.sim
+            .iter()
+            .any(|o| o.0 == "temp" && o.1.as_str() == Some("50")),
+        "{:?}",
+        t.sim
+    );
+    assert!(var("temperature").is_none());
+    let dc = t.analyses.iter().find(|a| a.0 == "dc").expect("dc");
+    assert!(
+        dc.2.iter()
+            .any(|o| o.0 == "saveOppoint" && matches!(o.1, V::T)),
+        "{:?}",
+        dc.2
+    );
     let ff = su.corners.iter().find(|c| c.name == "ff").expect("ff");
     assert!(ff.enabled);
     assert_eq!(
@@ -538,8 +555,31 @@ fn skill_loader_and_dumper_round_trip_on_the_mock_maestro() {
         "{}",
         i.files["/t/out.sfyx.log"]
     );
+    // IC23.1 (and the mock) echo form fields nothing set: anaName on every analysis, the
+    // ac sweep chooser. The dump carries them; the import drops them (§9.2).
+    let echoed = |r: &Record| {
+        let Ok(n) = r.str(0) else { return r.clone() };
+        if r.tag != "analysis" {
+            return r.clone();
+        }
+        let mut f = r.fields.clone();
+        if let Value::List(opts) = &mut f[2] {
+            assert_eq!(
+                opts.first().map(|o| o.items().to_vec()),
+                Some(vec![Value::Str("anaName".into()), Value::Str(n.into())]),
+                "{n}: anaName echoed first"
+            );
+            opts.retain(|o| match o.items() {
+                [Value::Str(k), Value::Str(v)] => {
+                    !((k == "anaName" && v == n) || (k == "sweep" && v == "Frequency"))
+                }
+                _ => true,
+            });
+        }
+        Record::new(&r.tag, f)
+    };
     assert_eq!(
-        maestro(&dumped),
+        maestro(&dumped).iter().map(echoed).collect::<Vec<_>>(),
         maestro(&text),
         "SKILL dump vs Rust export"
     );
@@ -569,6 +609,132 @@ fn skill_loader_and_dumper_round_trip_on_the_mock_maestro() {
         1
     );
     assert!(i.host.mae.calls.iter().any(|c| c == "maeDeleteTest"));
+}
+
+#[test]
+fn test_variables_override_globals_and_one_view_takes_several_tests() {
+    let (text, _) = export(&project(&canonical(&gen_bench(5, false).text)));
+    // The same test twice under two names, in one maestro view.
+    let k = text.find("(\"maestro\" \"sim\"").expect("a maestro test");
+    let end = text.rfind("(\"end\")").expect("end");
+    let second = text[k..end].replacen("(\"maestro\" \"sim\"", "(\"maestro\" \"sim2\"", 1);
+    let two = format!("{}{second}(\"end\")\n", &text[..end]);
+    let mut i = interp();
+    i.files.insert("/t/two.sfyx".into(), two);
+    let ok = run(&mut i, r#"(SfyImport "/t/two.sfyx")"#);
+    let log = i.files["/t/two.sfyx.log"].clone();
+    assert!(ok.truthy() && log.contains("count maestro 2"), "{log}");
+    // A test-level vdd in sim (set in the GUI, say) overrides the global 1.8 there only.
+    let key = ("schemify".to_owned(), "tb".to_owned());
+    let su = i.host.mae.saved.get_mut(&key).expect("saved");
+    let sim = su.tests.iter_mut().find(|t| t.name == "sim").expect("sim");
+    sim.vars.push(("vdd".into(), "2.5".into()));
+    run(
+        &mut i,
+        r#"(SfyExport "/t/out.sfyx" "schemify" (list "tb"))"#,
+    );
+    let mut test = String::new();
+    let mut vdd = Vec::new();
+    for r in sfyx::read(&i.files["/t/out.sfyx"]).unwrap() {
+        match r.tag.as_str() {
+            "maestro" => test = r.str(0).unwrap().to_owned(),
+            "var" if r.str(0) == Ok("vdd") && r.str(2) == Ok("") => {
+                vdd.push((test.clone(), r.str(1).unwrap().to_owned()));
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        vdd,
+        [
+            ("sim".to_owned(), "2.5".to_owned()),
+            ("sim2".into(), "1.8".into())
+        ]
+    );
+}
+
+#[test]
+fn an_unnamed_maestro_output_is_skipped_not_fatal() {
+    let (text, _) = export(&project(&canonical(&gen_bench(5, false).text)));
+    let mut i = interp();
+    i.files.insert("/t/in.sfyx".into(), text);
+    assert!(run(&mut i, r#"(SfyImport "/t/in.sfyx")"#).truthy());
+    // ADE allows a saved or plotted signal without a name.
+    let key = ("schemify".to_owned(), "tb".to_owned());
+    let su = i.host.mae.saved.get_mut(&key).expect("saved");
+    su.tests[0].outputs.push(skill::mockdb::mae::Output {
+        name: String::new(),
+        kind: "net".into(),
+        signal: Some("/out".into()),
+        ..Default::default()
+    });
+    let ok = run(
+        &mut i,
+        r#"(SfyExport "/t/out.sfyx" "schemify" (list "tb"))"#,
+    );
+    let log = i.files["/t/out.sfyx.log"].clone();
+    assert!(ok.truthy(), "{log}");
+    assert!(
+        log.contains("skipped: maestro sim output without a name"),
+        "{log}"
+    );
+    // The dump still imports.
+    let mut man = Files::new();
+    man.insert("schemify.project".into(), b"schemify 1 project\n".to_vec());
+    import(&i.files["/t/out.sfyx"].clone(), &man);
+}
+
+#[test]
+fn a_maestro_skill_error_is_logged_and_the_session_released() {
+    let (text, _) = export(&project(&canonical(&gen_bench(5, false).text)));
+    let mut i = interp();
+    i.load("(procedure (SfyAdeFill test tlib cell sess) (error \"boom\"))")
+        .unwrap();
+    i.files.insert("/t/in.sfyx".into(), text);
+    let ok = run(&mut i, r#"(SfyImport "/t/in.sfyx")"#);
+    let log = i.files["/t/in.sfyx.log"].clone();
+    assert!(!ok.truthy() && log.ends_with("FAIL\n"), "{log}");
+    // The message survives the close (a completing errset clears errset.errset).
+    assert!(
+        log.contains("maestro sim: SKILL error") && log.contains("boom"),
+        "{log}"
+    );
+    // The schematic before it landed; the session is closed (no maestro lock left).
+    assert!(log.contains("count saved schematic"), "{log}");
+    assert!(i.host.mae.sessions.iter().all(Option::is_none));
+}
+
+#[test]
+fn colon_sweeps_and_echoed_form_fields_import() {
+    let text = format!(
+        "{HEAD}(\"var\" \"VDD\" \"0.81:0.09:0.99\" \"\")\n\
+         (\"analysis\" \"ac\" 1 ((\"anaName\" \"ac\") (\"sweep\" \"Frequency\") (\"start\" \"1\") (\"stop\" \"1G\") (\"incrType\" \"Logarithmic\") (\"stepTypeLog\" \"Points Per Decade\") (\"dec\" \"10\")))\n\
+         (\"analysis\" \"tran\" 1 ((\"anaName\" \"tran\") (\"stop\" \"1n\") (\"incrType\" \"Linear\") (\"stepTypeLin\" \"Step Size\")))\n(\"end\")\n"
+    );
+    let (got, _) = import(&text, &Files::new());
+    // ADE's start:step:stop is a lin sweep of its points.
+    assert!(got.contains("var VDD 0.81\n"), "{got}");
+    assert!(
+        got.contains("sweep VDD\n  var VDD\n  lin 0.81 0.99 3\n"),
+        "{got}"
+    );
+    // tran by step size has no SPICE form, so the block stays Spectre: its lines carry
+    // neither the echoed anaName nor a form-only field.
+    assert!(got.contains("  | ac ac start=1 stop=1G dec=10\n"), "{got}");
+    assert!(got.contains("  | tran tran stop=1n\n"), "{got}");
+    // Alone, the echoed ac still maps to SPICE.
+    let ac_only: String = text
+        .lines()
+        .filter(|l| !l.contains("\"tran\""))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let (got, _) = import(&ac_only, &Files::new());
+    assert!(got.contains(".ac dec 10 1 1g"), "{got}");
+    // A colon form that does not land on stop is no sweep.
+    let bad = format!("{HEAD}(\"var\" \"VDD\" \"0.8:0.07:1\" \"\")\n(\"end\")\n");
+    let (got, notes) = import(&bad, &Files::new());
+    assert!(!got.contains("sweep VDD"), "{got}");
+    assert!(notes.text().contains("0.8:0.07:1"), "{}", notes.text());
 }
 
 // ---------------------------------------------------------------------------------------
