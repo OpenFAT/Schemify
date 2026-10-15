@@ -1119,6 +1119,11 @@
     (unless fig
       (return (sprintf nil "conn: no pin %s on %s" term (getSGq inst name))))
     (setq p (SfyCenter (dbTransformBBox (getSGq fig bBox) (getSGq inst transform))))
+    ;; A drawn wire already ends on the real pin (the symbols line up): it connects there,
+    ;; no stub or label is needed.
+    (when (SfyWireEndAt cv p)
+      (SfyCount "conn on a wire")
+      (return t))
     (setq c (SfyCenter (getSGq inst bBox)))
     (setq dx (difference (car p) (car c)))
     (setq dy (difference (cadr p) (cadr c)))
@@ -1133,6 +1138,15 @@
                  (schCreateWireLabel cv w q net "lowerLeft" "R0" "stick" step nil))
       (return (sprintf nil "conn: label %s failed" net)))
     (return t)))
+
+;; t when a wire of cellview cv has an end at point p (user units, within a micro-unit).
+(procedure (SfyWireEndAt cv p)
+  (exists sfyF (getSGq cv shapes)
+    (and (member (getSGq sfyF objType) (list "line" "path"))
+         (equal (getSGq sfyF layerName) "wire")
+         (exists sfyQ (getSGq sfyF points)
+           (and (lessp (abs (difference (car sfyQ) (car p))) 0.000001)
+                (lessp (abs (difference (cadr sfyQ) (cadr p))) 0.000001))))))
 
 ;; The figure of pin object pin: ~>fig, else the first of ~>figs (virtuoso-bridge-lite
 ;; reads both: a release may answer only one); nil for nil.

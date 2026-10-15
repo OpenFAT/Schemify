@@ -637,6 +637,10 @@ fn prepare(work: &Path, o: &Opts) {
     for l in &libs {
         s.call(format!("(SfyLiveLib {} {})", q(l), q(&lib_path(work, l))));
     }
+    s.call(format!(
+        "(SfyLiveExportLib \"analoglib.dump\" {} \"analogLib\")",
+        q(&path_str(&out.join("analogLib.sfyx")))
+    ));
     let (pdk_lib, pdk_cell) = match &o.pdk {
         Some((l, c)) => (Some(l.as_str()), c.as_deref()),
         None => (None, None),
@@ -1339,6 +1343,96 @@ fn check_alib_round_trip(r: &mut Report, work: &Path, name: &str, dir: &Path) {
     );
 }
 
+/// Where each analogLib symbol (as this Virtuoso has it) puts its pins, against the core
+/// device it stands for (spec §6.5, pins by order): a WARN names every pin that does not
+/// line up, which the re-mastering stub then has to bridge in Virtuoso.
+fn check_alib_pins(r: &mut Report, work: &Path) {
+    let Some(text) = read(&work.join("out/analogLib.sfyx")) else {
+        return r.add("analoglib.pins", Grade::Fail, "no dump of analogLib");
+    };
+    let Ok(recs) = sfyx::read(&text) else {
+        return r.add(
+            "analoglib.pins",
+            Grade::Fail,
+            "the analogLib dump does not read",
+        );
+    };
+    // analogLib cell → terminal → pin centre in Schemify units (y down).
+    let mut alib: BTreeMap<String, BTreeMap<String, (f64, f64)>> = BTreeMap::new();
+    let (mut cell, mut sym) = (String::new(), false);
+    for rec in &recs {
+        match rec.tag.as_str() {
+            "cell" => cell = rec.str(0).unwrap_or_default().to_owned(),
+            "cv" => sym = rec.str(0).is_ok_and(|v| v == "symbol"),
+            "pinfig" if sym => {
+                let (Ok(t), Ok(x1), Ok(y1), Ok(x2), Ok(y2)) =
+                    (rec.str(1), rec.int(2), rec.int(3), rec.int(4), rec.int(5))
+                else {
+                    continue;
+                };
+                // `+ 0.0` turns -0 into 0 for the report.
+                let c = (
+                    f64::from(x1 + x2) / 2000.0 + 0.0,
+                    -f64::from(y1 + y2) / 2000.0 + 0.0,
+                );
+                alib.entry(cell.clone())
+                    .or_default()
+                    .entry(t.to_owned())
+                    .or_insert(c);
+            }
+            _ => {}
+        }
+    }
+    // Core cell → its pins in order.
+    let mut core: BTreeMap<String, Vec<(String, f64, f64)>> = BTreeMap::new();
+    for (file, bytes) in schemify_doc::core_library() {
+        let name = file.trim_end_matches(".shprim").to_owned();
+        for l in String::from_utf8_lossy(bytes).lines() {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            if let ["pin", n, _, x, y, ..] = w[..]
+                && let (Ok(x), Ok(y)) = (x.parse::<f64>(), y.parse::<f64>())
+            {
+                core.entry(name.clone())
+                    .or_default()
+                    .push((n.to_owned(), x, y));
+            }
+        }
+    }
+    let rows: Vec<(&str, &str, Vec<&str>)> = interop::virtuoso::devices::DEVICES
+        .iter()
+        .flat_map(|d| {
+            d.alib
+                .iter()
+                .map(move |a| (d.core, *a, d.alib_pins.to_vec()))
+        })
+        .chain([("gnd", "gnd", vec!["gnd!"]), ("vdd", "vdd", vec!["vdd!"])])
+        .collect();
+    for (c, a, terms) in rows {
+        let id = format!("analoglib.pins.{c}.{a}");
+        let (Some(cp), Some(ap)) = (core.get(c), alib.get(a)) else {
+            r.add(id, Grade::Info, "not in this analogLib or the core library");
+            continue;
+        };
+        let mut off = Vec::new();
+        let mut all = Vec::new();
+        for ((pn, px, py), t) in cp.iter().zip(&terms) {
+            let Some(&(ax, ay)) = ap.get(*t) else {
+                off.push(format!("{pn}: analogLib has no terminal {t}"));
+                continue;
+            };
+            all.push(format!("{pn} ({px},{py}) {t} ({ax},{ay})"));
+            if (ax - px).abs() > 1e-6 || (ay - py).abs() > 1e-6 {
+                off.push(format!("{pn} at ({px},{py}), {t} at ({ax},{ay})"));
+            }
+        }
+        if off.is_empty() {
+            r.add(id, Grade::Pass, format!("pins line up: {}", all.join(", ")));
+        } else {
+            r.add(id, Grade::Warn, off.join("; "));
+        }
+    }
+}
+
 /// The last number in an OCEAN `ocnPrint` table.
 fn last_number(text: &str) -> Option<f64> {
     text.split_whitespace()
@@ -1703,6 +1797,8 @@ fn verify(work: &Path, o: &Opts) -> Report {
             }
         }
     }
+
+    check_alib_pins(&mut r, work);
 
     // Optional areas left out.
     if o.cells.is_empty() {
