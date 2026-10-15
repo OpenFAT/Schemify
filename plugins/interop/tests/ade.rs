@@ -2,12 +2,14 @@
 //! maestro records (Rust only, and through the SKILL loader/dumper on the mock maestro),
 //! hand-written maestro dumps import to golden benches, malformed records are refused.
 
+mod common;
 mod skill;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use interop::design::{Design, Files, LoadError, load};
+use common::{load_tops, strip_stash};
+use interop::design::{Design, Files};
 use interop::map::Mapping;
 use interop::notes::Notes;
 use interop::sfyx::{self, Record, Value};
@@ -32,14 +34,7 @@ fn project(bench: &str) -> Files {
 }
 
 fn design(files: &Files) -> Design {
-    let mut absent = BTreeSet::new();
-    loop {
-        match load(files, &absent, &["tb.shbench"]) {
-            Ok(d) => return d,
-            Err(LoadError::Missing(m)) => absent.extend(m),
-            Err(LoadError::Invalid(p)) => panic!("{p:?}"),
-        }
-    }
+    load_tops(files, &["tb.shbench"])
 }
 
 /// The `.sfyx` export of `tb.shbench` and its notes.
@@ -65,15 +60,6 @@ fn maestro(text: &str) -> Vec<Record> {
         .iter()
         .map(|r| Record::new(&r.tag, r.fields.clone()))
         .collect()
-}
-
-fn strip_stash(text: &str) -> String {
-    let recs = sfyx::read(text).unwrap();
-    let kept: Vec<Record> = recs
-        .into_iter()
-        .filter(|r| !(r.tag == "prop" && r.str(1).is_ok_and(|n| n.starts_with("schemifyRecords"))))
-        .collect();
-    sfyx::write(&kept)
 }
 
 /// The bench an import of `text` writes (`existing`: the files it merges with).
@@ -416,11 +402,7 @@ fn maestro_dumps_import_to_their_golden_benches() {
 // ---------------------------------------------------------------------------------------
 
 fn interp() -> Interp<MockDb> {
-    let mut i = Interp::new(MockDb::default());
-    i.host.add_lib("schemify");
-    i.load(&interop::skill::schemify_il())
-        .expect("schemify.il loads");
-    i
+    skill::virtuoso(&["schemify"])
 }
 
 fn run(i: &mut Interp<MockDb>, src: &str) -> V {

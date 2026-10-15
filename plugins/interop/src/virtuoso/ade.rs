@@ -25,7 +25,7 @@ use schemify_expr::{Mode, Program, Scratch, Value as XValue, write_num};
 use schemify_format::{Document, FileKind, RecordKind};
 
 use super::ael::{self, AelName, Name};
-use crate::design::{Cell, Design};
+use crate::design::{Cell, Design, push_attr, push_record};
 use crate::notes::Notes;
 use crate::retarget::Target;
 use crate::sfyx::{Error, Record, Value, i, pairs, s, text};
@@ -1965,26 +1965,11 @@ fn out_from_ade(e: &str) -> Option<String> {
 // Parse (records → Test), the import's boundary check
 // ---------------------------------------------------------------------------------------
 
-fn bad(r: &Record, msg: impl Into<String>) -> Error {
-    Error {
-        line: r.line,
-        msg: format!("{}: {}", r.tag, msg.into()),
-    }
-}
-
-fn arity(r: &Record, n: usize) -> Result<(), Error> {
-    if r.fields.len() == n {
-        Ok(())
-    } else {
-        Err(bad(r, format!("{} fields, expected {n}", r.fields.len())))
-    }
-}
-
 fn flag(r: &Record, k: usize) -> Result<bool, Error> {
     match r.int(k)? {
         0 => Ok(false),
         1 => Ok(true),
-        v => Err(bad(r, format!("enable {v} (0 or 1)"))),
+        v => Err(r.err(format!("enable {v} (0 or 1)"))),
     }
 }
 
@@ -1998,9 +1983,9 @@ fn parse(records: &[Record]) -> Result<Test, Error> {
         msg: "maestro: an empty test".into(),
     })?;
     if m.tag != "maestro" {
-        return Err(bad(m, "a test starts with its maestro record"));
+        return Err(m.err("a test starts with its maestro record"));
     }
-    arity(m, 5)?;
+    m.arity(5)?;
     let mut t = Test {
         name: m.str(0)?.to_owned(),
         lib: m.str(1)?.to_owned(),
@@ -2010,27 +1995,26 @@ fn parse(records: &[Record]) -> Result<Test, Error> {
         ..Test::default()
     };
     if t.name.is_empty() || t.cell.is_empty() {
-        return Err(bad(m, "empty test or cell name"));
+        return Err(m.err("empty test or cell name"));
     }
     for r in &records[1..] {
         let scope_ok = |t: &Test, sc: &str| sc.is_empty() || t.corners.iter().any(|c| c.0 == sc);
         match r.tag.as_str() {
             "var" => {
-                arity(r, 3)?;
+                r.arity(3)?;
                 let (n, v, sc) = (r.str(0)?, r.str(1)?, r.str(2)?);
                 if n.is_empty() || !scope_ok(&t, sc) {
-                    return Err(bad(
-                        r,
-                        format!("var `{n}` in scope `{sc}`: no such corner before it"),
-                    ));
+                    return Err(r.err(format!(
+                        "var `{n}` in scope `{sc}`: no such corner before it"
+                    )));
                 }
                 if t.vars.iter().any(|x| x.0 == n && x.2 == sc) {
-                    return Err(bad(r, format!("var {n} twice in scope `{sc}`")));
+                    return Err(r.err(format!("var {n} twice in scope `{sc}`")));
                 }
                 t.vars.push((n.into(), v.into(), sc.into()));
             }
             "analysis" => {
-                arity(r, 3)?;
+                r.arity(3)?;
                 let n = r.str(0)?;
                 let en = flag(r, 1)?;
                 let mut opts = Vec::new();
@@ -2038,15 +2022,14 @@ fn parse(records: &[Record]) -> Result<Test, Error> {
                     match o.items() {
                         [Value::Str(k), Value::Str(v)] => opts.push((k.clone(), v.clone())),
                         _ => {
-                            return Err(bad(
-                                r,
-                                format!("analysis {n}: an option is not (key value) strings"),
-                            ));
+                            return Err(r.err(format!(
+                                "analysis {n}: an option is not (key value) strings"
+                            )));
                         }
                     }
                 }
                 if n.is_empty() || t.analyses.iter().any(|a| a.0 == n) {
-                    return Err(bad(r, format!("analysis `{n}` empty or twice")));
+                    return Err(r.err(format!("analysis `{n}` empty or twice")));
                 }
                 // maeGetAnalysis answers form fields nothing set: `anaName` (the analysis
                 // name) and the ac/noise sweep chooser `sweep "Frequency"`. They carry no
@@ -2059,64 +2042,60 @@ fn parse(records: &[Record]) -> Result<Test, Error> {
                 t.analyses.push((n.into(), en, opts));
             }
             "corner" => {
-                arity(r, 2)?;
+                r.arity(2)?;
                 let n = r.str(0)?;
                 let en = flag(r, 1)?;
                 if n.is_empty() || t.corners.iter().any(|c| c.0 == n) {
-                    return Err(bad(r, format!("corner `{n}` empty or twice")));
+                    return Err(r.err(format!("corner `{n}` empty or twice")));
                 }
                 t.corners.push((n.into(), en));
             }
             "model" => {
-                arity(r, 3)?;
+                r.arity(3)?;
                 let (sc, f, sec) = (r.str(0)?, r.str(1)?, r.str(2)?);
                 if f.is_empty() || !scope_ok(&t, sc) {
-                    return Err(bad(
-                        r,
-                        format!("model `{f}` of `{sc}`: empty file or no such corner before it"),
-                    ));
+                    return Err(r.err(format!(
+                        "model `{f}` of `{sc}`: empty file or no such corner before it"
+                    )));
                 }
                 t.models.push((sc.into(), f.into(), sec.into()));
             }
             "output" => {
-                arity(r, 3)?;
+                r.arity(3)?;
                 let (n, k, e) = (r.str(0)?, r.str(1)?, r.str(2)?);
                 if !matches!(k, "point" | "net") {
-                    return Err(bad(r, format!("output {n}: kind `{k}` (point or net)")));
+                    return Err(r.err(format!("output {n}: kind `{k}` (point or net)")));
                 }
                 if n.is_empty() || t.outputs.iter().any(|o| o.0 == n) {
-                    return Err(bad(r, format!("output `{n}` empty or twice")));
+                    return Err(r.err(format!("output `{n}` empty or twice")));
                 }
                 t.outputs.push((n.into(), k.into(), e.into()));
             }
             "spec" => {
-                arity(r, 3)?;
+                r.arity(3)?;
                 let (o, op, v) = (r.str(0)?, r.str(1)?, r.str(2)?);
                 if !matches!(op, "lt" | "gt") {
-                    return Err(bad(r, format!("spec {o}: op `{op}` (lt or gt)")));
+                    return Err(r.err(format!("spec {o}: op `{op}` (lt or gt)")));
                 }
                 if !t.outputs.iter().any(|x| x.0 == o) {
-                    return Err(bad(
-                        r,
-                        format!("spec names output `{o}`, not declared before it"),
-                    ));
+                    return Err(r.err(format!("spec names output `{o}`, not declared before it")));
                 }
                 if t.specs.iter().any(|x| x.0 == o && x.1 == op) {
-                    return Err(bad(r, format!("spec {o} {op} twice")));
+                    return Err(r.err(format!("spec {o} {op} twice")));
                 }
                 t.specs.push((o.into(), op.into(), v.into()));
             }
             "defn" => {
-                arity(r, 2)?;
+                r.arity(2)?;
                 let f = r.str(0)?;
                 let body = r.text(1)?;
                 if f.is_empty() || f.contains(['/', '\\']) || t.defns.iter().any(|d| d.0 == f) {
-                    return Err(bad(r, format!("defn `{f}`: empty, a path, or twice")));
+                    return Err(r.err(format!("defn `{f}`: empty, a path, or twice")));
                 }
                 t.defns.push((f.into(), body));
             }
-            "maestro" => return Err(bad(r, "a second test in one test's records")),
-            o => return Err(bad(r, format!("`{o}` is not a maestro record"))),
+            "maestro" => return Err(r.err("a second test in one test's records")),
+            o => return Err(r.err(format!("`{o}` is not a maestro record"))),
         }
         let rows = [
             t.vars.len(),
@@ -2129,7 +2108,7 @@ fn parse(records: &[Record]) -> Result<Test, Error> {
             .chain(&[t.outputs.len(), t.specs.len(), t.defns.len()])
             .any(|&n| n > ROWS_MAX)
         {
-            return Err(bad(r, "more than 2^16 rows of one kind"));
+            return Err(r.err("more than 2^16 rows of one kind"));
         }
     }
     Ok(t)
@@ -2244,12 +2223,12 @@ pub fn import(records: &[Record], bench: &mut Document<'static>, cell: &str, not
         if pts.len() != parts.len() {
             continue;
         }
-        begin(bench, RecordKind::Var, &[n, &pts[0]]);
+        push_record(bench, RecordKind::Var, &[n, &pts[0]]);
         if pts.len() > 1 {
-            begin(bench, RecordKind::Sweep, &[n]);
-            attr(bench, "var", &[n]);
+            push_record(bench, RecordKind::Sweep, &[n]);
+            push_attr(bench, "var", &[n]);
             let (key, vals) = sweep_shape(&pts);
-            attr(
+            push_attr(
                 bench,
                 key,
                 &vals.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -2261,16 +2240,16 @@ pub fn import(records: &[Record], bench: &mut Document<'static>, cell: &str, not
         if !en {
             notes.review("config", cell, format!("corner {c} is disabled in maestro"));
         }
-        begin(bench, RecordKind::Corner, &[c]);
+        push_record(bench, RecordKind::Corner, &[c]);
         for (_, f, sec) in t.models.iter().filter(|m| &m.0 == c) {
             let sec = sec
                 .strip_prefix('"')
                 .and_then(|x| x.strip_suffix('"'))
                 .unwrap_or(sec);
             if sec.is_empty() {
-                attr(bench, "include", &[&path_from_ade(f)]);
+                push_attr(bench, "include", &[&path_from_ade(f)]);
             } else {
-                attr(bench, "lib", &[&path_from_ade(f), sec]);
+                push_attr(bench, "lib", &[&path_from_ade(f), sec]);
             }
         }
         let mut temp = None;
@@ -2287,11 +2266,11 @@ pub fn import(records: &[Record], bench: &mut Document<'static>, cell: &str, not
             if n == "temperature" {
                 temp = Some(x);
             } else {
-                attr(bench, "set", &[n, &x]);
+                push_attr(bench, "set", &[n, &x]);
             }
         }
         if let Some(x) = temp {
-            attr(bench, "temp", &[&x]);
+            push_attr(bench, "temp", &[&x]);
         }
     }
     // The analysis block: SPICE when every analysis has a SPICE form, else Spectre.
@@ -2383,7 +2362,7 @@ pub fn import(records: &[Record], bench: &mut Document<'static>, cell: &str, not
     for (n, k, e) in &t.outputs {
         match (k.as_str(), out_from_ade(e)) {
             ("point", Some(x)) => {
-                begin(bench, RecordKind::Output, &[n, &x]);
+                push_record(bench, RecordKind::Output, &[n, &x]);
                 kept.push(n);
             }
             _ => {
@@ -2406,9 +2385,9 @@ pub fn import(records: &[Record], bench: &mut Document<'static>, cell: &str, not
             }
         }
         if !bounds.is_empty() {
-            begin(bench, RecordKind::Spec, &[o]);
+            push_record(bench, RecordKind::Spec, &[o]);
             for (key, x) in bounds {
-                attr(bench, key, &[&x]);
+                push_attr(bench, key, &[&x]);
             }
         }
     }
@@ -2422,7 +2401,7 @@ pub fn import(records: &[Record], bench: &mut Document<'static>, cell: &str, not
         }
     }
     if !lines.is_empty() {
-        begin(
+        push_record(
             bench,
             RecordKind::Code,
             &[&t.name, if as_spice { "spice" } else { "spectre" }],
@@ -2442,26 +2421,12 @@ pub fn import(records: &[Record], bench: &mut Document<'static>, cell: &str, not
             );
             continue;
         }
-        begin(bench, RecordKind::Code, &[stem, "spectre"]);
+        push_record(bench, RecordKind::Code, &[stem, "spectre"]);
         for l in body.lines() {
             bench.push_verbatim(&l.replace('\r', ""));
         }
     }
     assert!(bench.record_count() >= before, "the import only appends");
-}
-
-fn begin(doc: &mut Document<'static>, k: RecordKind, fields: &[&str]) {
-    doc.begin_record(k);
-    for f in fields {
-        doc.push_field(f);
-    }
-}
-
-fn attr(doc: &mut Document<'static>, key: &str, vals: &[&str]) {
-    doc.push_attr(key);
-    for v in vals {
-        doc.push_value(v);
-    }
 }
 
 /// The points of ADE's `start:step:stop` sweep form (`"0.81:0.09:0.99"`), `None` for any

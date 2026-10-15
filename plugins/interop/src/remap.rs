@@ -7,7 +7,7 @@
 
 use schemify_format::{Document, FileKind, Orient, RecordKind};
 
-use crate::design::{Geom, place};
+use crate::design::{Geom, copy_attr, copy_header, place, push_attr};
 use crate::nets::{NO_NODE, Nets, on_segment};
 
 /// One grid step in milli-units (10 xschem units, 1/16 inch): pull-back and stub length.
@@ -291,12 +291,7 @@ pub fn apply_to_doc(
 ) -> Document<'static> {
     assert!(matches!(doc.kind(), FileKind::Shcomp | FileKind::Shbench));
     let mut out = Document::new(doc.kind());
-    for a in doc.attrs(0) {
-        out.push_attr(doc.attr_key(a));
-        for v in doc.attr_values(a) {
-            out.push_value(v);
-        }
-    }
+    copy_header(&mut out, doc, &[]);
     let wire_of = |r: u32| g.wire_rec.iter().position(|x| *x == r);
     let inst_of = |r: u32| g.inst_rec.iter().position(|x| *x == r);
     for r in 1..doc.record_count() {
@@ -322,28 +317,21 @@ pub fn apply_to_doc(
                 if attrs.is_some() && !matches!(key, "at" | "name" | "ignore" | "inherit") {
                     continue;
                 }
-                out.push_attr(key);
                 match moved.filter(|_| key == "at") {
                     // Aligned (§6.4): the new origin, the orientation kept.
                     Some(at) => {
+                        out.push_attr(key);
                         out.push_value_coord(at[0]);
                         out.push_value_coord(at[1]);
                         for v in doc.attr_values(a).skip(2) {
                             out.push_value(v);
                         }
                     }
-                    None => {
-                        for v in doc.attr_values(a) {
-                            out.push_value(v);
-                        }
-                    }
+                    None => copy_attr(&mut out, doc, a),
                 }
             }
             for (k, vs) in attrs.iter().flatten() {
-                out.push_attr(k);
-                for v in vs {
-                    out.push_value(v);
-                }
+                push_attr(&mut out, k, vs);
             }
             continue;
         }
@@ -357,18 +345,14 @@ pub fn apply_to_doc(
         out.push_field(Orient::R0.as_str());
         out.push_field(&l.net);
         if l.global {
-            out.push_attr("global");
-            out.push_value("true");
+            push_attr(out, "global", &["true"]);
         }
     };
     for l in &e.labels {
         label(&mut out, l, new_id());
     }
     for (from, l) in &e.stubs {
-        let mut seg = [from[0], from[1], l.at[0], l.at[1]];
-        if (seg[2], seg[3]) < (seg[0], seg[1]) {
-            seg = [seg[2], seg[3], seg[0], seg[1]];
-        }
+        let seg = [from[0], from[1], l.at[0], l.at[1]];
         push_wire(&mut out, &new_id(), seg, false);
         label(&mut out, l, new_id());
     }
@@ -376,17 +360,19 @@ pub fn apply_to_doc(
     out
 }
 
-fn push_wire(out: &mut Document<'static>, id: &str, mut seg: [i32; 4], bus: bool) {
+/// Appends wire `id` over `seg` (`[x1, y1, x2, y2]`), written from its smaller end (x, then
+/// y) as every Schemify writer of wires does, with `bus true` when `bus`.
+pub(crate) fn push_wire(out: &mut Document<'static>, id: &str, mut seg: [i32; 4], bus: bool) {
     if (seg[2], seg[3]) < (seg[0], seg[1]) {
         seg = [seg[2], seg[3], seg[0], seg[1]];
     }
+    debug_assert!((seg[0], seg[1]) <= (seg[2], seg[3]));
     out.begin_record(RecordKind::Wire);
     out.push_field(id);
     for v in seg {
         out.push_field_coord(v);
     }
     if bus {
-        out.push_attr("bus");
-        out.push_value("true");
+        push_attr(out, "bus", &["true"]);
     }
 }

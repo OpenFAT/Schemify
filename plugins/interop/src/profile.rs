@@ -84,6 +84,96 @@ pub fn on_dbu_grid(v: i32, dbu: i32) -> bool {
     (i64::from(v) * i64::from(dbu)) % MILLI_PER_INCH == 0
 }
 
+/// Text height per Schemify `size`, both in milli-units: `height = size × 10` (§3.5).
+pub const HEIGHT_PER_SIZE_MILLI: i32 = 10;
+
+/// The export height (milli-units) of a Schemify text `size` (milli): `size × 10`, rounded
+/// half up to whole database units of 1/160 inch and at least one, as Virtuoso stores label
+/// heights (live ICADVM20.1 run: size 0.18 came back 0.2, 0.25 came back 0.3). Saturates at
+/// the largest whole-unit height an `i32` holds.
+pub fn height_of_size(size_milli: i32) -> i32 {
+    let dbu = MILLI_PER_INCH / 160;
+    let h = i64::from(size_milli) * i64::from(HEIGHT_PER_SIZE_MILLI);
+    let out = ((h + dbu / 2).div_euclid(dbu) * dbu).max(dbu);
+    let max = i64::from(i32::MAX) / dbu * dbu;
+    let out = i32::try_from(out.min(max)).expect("clamped into i32");
+    debug_assert!(out >= 1000 && out % 1000 == 0);
+    out
+}
+
+/// A dump text height (1/`upi` inch) in milli-units, the export's own units.
+///
+/// # Panics
+///
+/// `upi` must be positive (the reader refuses any other `cv`).
+pub fn height_from_virtuoso(height: i32, upi: i32) -> i64 {
+    assert!(upi > 0, "units per inch must be positive, got {upi}");
+    i64::from(height) * MILLI_PER_INCH / i64::from(upi)
+}
+
+/// The Schemify `size` (milli) of a text `height_milli` high: a tenth, rounded half up
+/// (`i32::MAX` past the range).
+pub fn size_of_height(height_milli: i64) -> i32 {
+    let out = i32::try_from((height_milli + 5) / 10).unwrap_or(i32::MAX);
+    debug_assert!(height_milli < 0 || out >= 0);
+    out
+}
+
+/// The box with corners `a` and `b` (any two opposite corners) as `[min x, min y, max x,
+/// max y]`, the form both tools store a rectangle in.
+pub fn norm_box(a: [i32; 2], b: [i32; 2]) -> [i32; 4] {
+    let out = [
+        a[0].min(b[0]),
+        a[1].min(b[1]),
+        a[0].max(b[0]),
+        a[1].max(b[1]),
+    ];
+    debug_assert!(out[0] <= out[2] && out[1] <= out[3]);
+    out
+}
+
+/// A milli-unit coordinate as Schemify text (the format's shortest decimal, `1.5`, `-20`).
+pub fn coord_text(milli: i32) -> String {
+    let mut s = String::new();
+    schemify_format::format_coord(milli, &mut s);
+    debug_assert!(!s.is_empty());
+    s
+}
+
+// ---------------------------------------------------------------------------------------
+// Directions
+// ---------------------------------------------------------------------------------------
+
+/// The Virtuoso terminal direction of a Schemify pin direction: `in` → `input`, `out` →
+/// `output`, anything else → `inputOutput`.
+pub fn dir_to_virtuoso(dir: &str) -> &'static str {
+    match dir {
+        "in" => "input",
+        "out" => "output",
+        _ => "inputOutput",
+    }
+}
+
+/// The Schemify pin direction of a Virtuoso terminal direction: `input` → `in`, `output` →
+/// `out`, anything else (`inputOutput`, `switch`, `jumper`, …) → `inout`.
+pub fn dir_from_virtuoso(dir: &str) -> &'static str {
+    match dir {
+        "input" => "in",
+        "output" => "out",
+        _ => "inout",
+    }
+}
+
+/// The `basic` pin master export draws a schematic pin of Virtuoso direction `dir` with
+/// (`ipin`, `opin`, else `iopin`); import keeps any other master as `vpin`.
+pub fn pin_master(dir: &str) -> &'static str {
+    match dir {
+        "input" => "ipin",
+        "output" => "opin",
+        _ => "iopin",
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // Names
 // ---------------------------------------------------------------------------------------
@@ -624,6 +714,89 @@ mod tests {
             ["A<2>", "A<1>", "A<0>", "B", "C<3>", "C<4>"]
         );
         assert_eq!(e("b<0,1:3:4*1,2:2>"), ["b<0>", "b<1>", "b<2>"]);
+    }
+
+    #[test]
+    fn directions_map_both_ways_and_default_to_inout() {
+        for d in ["in", "out", "inout"] {
+            assert_eq!(dir_from_virtuoso(dir_to_virtuoso(d)), d);
+        }
+        // Negative space: every other spelling is bidirectional on both sides.
+        for other in ["", "IN", "input ", "switch", "jumper", "unknown"] {
+            assert_eq!(dir_to_virtuoso(other), "inputOutput", "{other:?}");
+            assert_eq!(dir_from_virtuoso(other), "inout", "{other:?}");
+            assert_eq!(pin_master(other), "iopin", "{other:?}");
+        }
+        assert_eq!(
+            ["input", "output", "inputOutput"].map(pin_master),
+            ["ipin", "opin", "iopin"]
+        );
+    }
+
+    #[test]
+    fn coordinate_text_is_the_format_spelling() {
+        for (v, t) in [(0, "0"), (1500, "1.5"), (-20_000, "-20"), (156, "0.156")] {
+            assert_eq!(coord_text(v), t);
+            assert_eq!(schemify_format::parse_coord(t), Ok(v));
+        }
+    }
+
+    proptest::proptest! {
+        /// A box is the same whichever two opposite corners name it, and holds both.
+        #[test]
+        fn boxes_do_not_depend_on_corner_order(a: [i32; 2], b: [i32; 2]) {
+            let n = norm_box(a, b);
+            proptest::prop_assert_eq!(n, norm_box(b, a));
+            proptest::prop_assert_eq!(n, norm_box([a[0], b[1]], [b[0], a[1]]));
+            for p in [a, b] {
+                proptest::prop_assert!(n[0] <= p[0] && p[0] <= n[2] && n[1] <= p[1] && p[1] <= n[3]);
+            }
+        }
+    }
+
+    /// The export height of a size against a float reference: ×10, rounded half up to
+    /// whole 1/160 inch (1000 milli), at least one unit.
+    #[test]
+    fn text_heights_round_to_whole_database_units() {
+        for size in -2_000..=200_000 {
+            let h = f64::from(size) * 10.0 / 1000.0;
+            let want = ((h + 0.5).floor() * 1000.0).max(1000.0) as i32;
+            assert_eq!(height_of_size(size), want, "size {size}");
+        }
+        // The live observations (ICADVM20.1): 0.18 → 0.2, 0.25 → 0.3.
+        assert_eq!(size_of_height(i64::from(height_of_size(180))), 200);
+        assert_eq!(size_of_height(i64::from(height_of_size(250))), 300);
+        // Import of an export: the size rounded half up to 0.1, never below it.
+        for size in 0..=50_000 {
+            let back = size_of_height(i64::from(height_of_size(size)));
+            assert_eq!(back, ((size + 50) / 100 * 100).max(100), "size {size}");
+        }
+    }
+
+    /// Sizes whose height leaves `i32` saturate at the largest whole-unit height instead of
+    /// overflowing (a `size 300000` attribute panicked the export in debug builds).
+    #[test]
+    fn huge_text_sizes_saturate() {
+        let top = i32::MAX / 1000 * 1000;
+        for size in [i32::MAX / 10, i32::MAX / 10 + 1, 300_000_000, i32::MAX] {
+            assert_eq!(height_of_size(size), top, "size {size}");
+        }
+        assert_eq!(height_of_size(i32::MIN), 1000);
+        assert_eq!(size_of_height(i64::MAX / 2), i32::MAX);
+    }
+
+    #[test]
+    fn heights_read_in_milli_units() {
+        // 1/16 inch at 160 DBU per inch and at the exporter's own resolution.
+        assert_eq!(height_from_virtuoso(10, 160), 10_000);
+        assert_eq!(height_from_virtuoso(10_000, 160_000), 10_000);
+        assert_eq!(size_of_height(height_from_virtuoso(10, 160)), 1000);
+    }
+
+    #[test]
+    #[should_panic(expected = "units per inch must be positive")]
+    fn heights_need_a_resolution() {
+        height_from_virtuoso(10, 0);
     }
 
     #[test]

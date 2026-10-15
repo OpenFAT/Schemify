@@ -15,12 +15,16 @@
 //! place of the real one, so a FAIL on a real Virtuoso is a difference between Virtuoso and
 //! our reading of its manuals, not a bug in the kit.
 
+mod common;
 mod skill;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use common::{
+    canonical, design_libs, is_cell, line_of, located, read_tree, record_of, root, strip_fp,
+};
 use interop::job::{Command, Job, Step};
 use interop::sfyx::{self, Record};
 use interop::virtuoso::{ExportOptions, ImportOptions};
@@ -56,42 +60,8 @@ const SCRATCH: &str = "sfy_scratch";
 /// The library the refusal checks target.
 const NEG_LIB: &str = "sfyn_rclive";
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
-}
-
-fn is_cell(p: &str) -> bool {
-    [".shprim", ".shcomp", ".shbench"]
-        .iter()
-        .any(|e| p.ends_with(e))
-}
-
-/// Every file under `dir`, project-relative with `/`.
-fn read_dir(dir: &Path) -> BTreeMap<String, Vec<u8>> {
-    fn walk(base: &Path, d: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
-        let Ok(rd) = std::fs::read_dir(d) else { return };
-        let mut entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
-        entries.sort();
-        for p in entries {
-            if p.is_dir() {
-                walk(base, &p, out);
-            } else {
-                let rel = p
-                    .strip_prefix(base)
-                    .unwrap()
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                out.insert(rel, std::fs::read(&p).unwrap());
-            }
-        }
-    }
-    let mut out = BTreeMap::new();
-    walk(dir, dir, &mut out);
-    out
 }
 
 fn write(path: &Path, bytes: impl AsRef<[u8]>) {
@@ -101,18 +71,6 @@ fn write(path: &Path, bytes: impl AsRef<[u8]>) {
 
 fn read(path: &Path) -> Option<String> {
     std::fs::read_to_string(path).ok()
-}
-
-fn canonical(bytes: &[u8]) -> String {
-    schemify_format::write(&schemify_format::parse(bytes).unwrap())
-}
-
-/// A cell file without the import fingerprints (§7.5), which only an import writes.
-fn strip_fp(text: &str) -> String {
-    text.lines()
-        .filter(|l| !l.starts_with("  vsym ") && !l.starts_with("  vsch "))
-        .map(|l| format!("{l}\n"))
-        .collect()
 }
 
 /// A SKILL string literal.
@@ -329,7 +287,7 @@ fn project_dir(rel: &str) -> PathBuf {
 
 /// The cell files of a project (every cell is a top: the closure adds nothing new).
 fn cell_files(project: &Path) -> Vec<String> {
-    read_dir(project)
+    read_tree(project)
         .into_keys()
         .filter(|p| is_cell(p))
         .collect()
@@ -375,22 +333,6 @@ fn export_project(
     ))
 }
 
-/// Libraries holding `"design"` cells of a dump, in file order.
-fn design_libs(text: &str) -> Vec<String> {
-    let mut cur = String::new();
-    let mut out: Vec<String> = Vec::new();
-    for r in sfyx::read(text).unwrap_or_default() {
-        match r.tag.as_str() {
-            "lib" => cur = r.str(0).unwrap_or_default().to_owned(),
-            "cell" if r.str(1).is_ok_and(|k| k == "design") && !out.contains(&cur) => {
-                out.push(cur.clone());
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
 /// The `"design"` part of a dump: every record of its design cells and maestro tests, the
 /// library names `from` renamed `to` in every string field, without the header and the
 /// `schemify*` properties (ids and stash, which only the Rust exporter writes).
@@ -405,36 +347,22 @@ fn design_records(text: &str, from: &[&str], to: &str) -> Result<Vec<String>, St
         }
     }
     let recs = sfyx::read(text).map_err(|e| format!("line {}: {}", e.line, e.msg))?;
-    let mut keep = false;
     let mut out = Vec::new();
-    for r in recs {
-        match r.tag.as_str() {
-            "sfyx" | "end" => continue,
-            "lib" => {
-                keep = false;
-                continue;
-            }
-            "cell" => keep = r.str(1).is_ok_and(|k| k == "design"),
-            "maestro" => keep = true,
-            _ => {}
-        }
-        if !keep || (r.tag == "prop" && r.str(1).is_ok_and(|n| n.starts_with("schemify"))) {
+    for (at, r) in located(&recs) {
+        let keep = at.design || at.maestro;
+        if !keep
+            || matches!(r.tag.as_str(), "sfyx" | "end" | "lib")
+            || (r.tag == "prop" && r.str(1).is_ok_and(|n| n.starts_with("schemify")))
+        {
             continue;
         }
+        let mut fields: Vec<sfyx::Value> = r.fields.iter().map(|v| rename(v, from, to)).collect();
         // Which piece of a split wire a label stays glued to is Virtuoso's choice (a live run
         // reglued a label to the other piece): the parent ref of a label is not compared.
-        let mut r = r;
-        if r.tag == "label" && r.fields.len() > 1 {
-            r.fields[1] = sfyx::Value::Int(0);
+        if r.tag == "label" && fields.len() > 1 {
+            fields[1] = sfyx::Value::Int(0);
         }
-        let r = Record {
-            tag: r.tag.clone(),
-            fields: r.fields.iter().map(|v| rename(v, from, to)).collect(),
-            line: 0,
-        };
-        let mut s = String::new();
-        sfyx::write_record(&r, &mut s);
-        out.push(s.trim_end().to_owned());
+        out.push(line_of(&Record::new(&r.tag, fields)));
     }
     Ok(out)
 }
@@ -453,14 +381,6 @@ fn design_cells(text: &str, from: &[&str], to: &str) -> BTreeMap<String, Vec<Str
         }
     }
     out
-}
-
-/// One record line of [`design_records`], parsed.
-fn record_of(line: &str) -> Option<Record> {
-    sfyx::read(&format!("(\"sfyx\" 1 \"x\")\n{line}\n(\"end\")\n"))
-        .ok()?
-        .into_iter()
-        .nth(1)
 }
 
 /// How a cell's records came back from a library round trip (`--lib`), CDF aside: the
@@ -490,14 +410,11 @@ fn cell_back(a: &[String], b: &[String]) -> CellBack {
                         continue;
                     };
                     for kv in pairs {
-                        let one = Record {
-                            tag: r.tag.clone(),
-                            fields: vec![r.fields[0].clone(), sfyx::Value::List(vec![kv.clone()])],
-                            line: 0,
-                        };
-                        let mut s = String::new();
-                        sfyx::write_record(&one, &mut s);
-                        cdf.insert(s.trim_end().to_owned());
+                        let one = Record::new(
+                            &r.tag,
+                            vec![r.fields[0].clone(), sfyx::Value::List(vec![kv.clone()])],
+                        );
+                        cdf.insert(line_of(&one));
                     }
                 }
                 _ => rest.push(l.clone()),
@@ -689,7 +606,7 @@ fn prepare(work: &Path, o: &Opts) {
     let mut retarget = None;
     if let Some(t) = &o.target {
         let ex = work.join("projects/exercise1");
-        for (p, b) in read_dir(&fixtures().join("exercise1")) {
+        for (p, b) in read_tree(&fixtures().join("exercise1")) {
             write(&ex.join(p), b);
         }
         match std::fs::read(t) {
@@ -955,7 +872,7 @@ fn mid(work: &Path, o: &Opts) {
     let map = lib_map("rclive", Mode::Core, &rclive);
     let team = work.join("projects/team");
     let _ = std::fs::remove_dir_all(&team);
-    for (p, b) in read_dir(&rclive) {
+    for (p, b) in read_tree(&rclive) {
         write(&team.join(p), b);
     }
     let dump = out.join("rclive.core.sfyc_rclive.sfyx");
@@ -1013,7 +930,7 @@ fn mid(work: &Path, o: &Opts) {
                         // Snapshot of what Schemify holds before session 2.
                         let snap = work.join("projects/team_before");
                         let _ = std::fs::remove_dir_all(&snap);
-                        for (p, b) in read_dir(&team) {
+                        for (p, b) in read_tree(&team) {
                             write(&snap.join(p), b);
                         }
                         s.call(format!(
@@ -1256,7 +1173,7 @@ fn check_exact_round_trip(r: &mut Report, work: &Path, name: &str, dir: &Path) {
             }
         }
     }
-    let want: BTreeMap<String, String> = read_dir(dir)
+    let want: BTreeMap<String, String> = read_tree(dir)
         .into_iter()
         .filter(|(p, _)| is_cell(p))
         .map(|(p, b)| (p, canonical(&b)))
@@ -1402,8 +1319,8 @@ fn check_alib_round_trip(r: &mut Report, work: &Path, name: &str, dir: &Path) {
             }
         }
     }
-    let before = read_dir(dir);
-    let after = read_dir(&proj);
+    let before = read_tree(dir);
+    let after = read_tree(&proj);
     let mut tops: Vec<&String> = before.keys().filter(|p| p.ends_with(".shbench")).collect();
     if tops.is_empty() {
         tops = before.keys().filter(|p| p.ends_with(".shcomp")).collect();
@@ -1463,12 +1380,10 @@ fn check_alib_pins(r: &mut Report, work: &Path) {
     };
     // analogLib cell → terminal → pin centre, milli-units, y down.
     let mut live: BTreeMap<String, BTreeMap<String, [i32; 2]>> = BTreeMap::new();
-    let (mut cell, mut sym) = (String::new(), false);
-    for rec in &recs {
+    for (at, rec) in located(&recs) {
+        let cell = at.cell;
         match rec.tag.as_str() {
-            "cell" => cell = rec.str(0).unwrap_or_default().to_owned(),
-            "cv" => sym = rec.str(0).is_ok_and(|v| v == "symbol"),
-            "pinfig" if sym => {
+            "pinfig" if at.view == "symbol" => {
                 let (Ok(t), Ok(x1), Ok(y1), Ok(x2), Ok(y2)) =
                     (rec.str(1), rec.int(2), rec.int(3), rec.int(4), rec.int(5))
                 else {
@@ -1922,7 +1837,7 @@ fn verify(work: &Path, o: &Opts) -> Report {
                 && !net.trim().is_empty()
             {
                 // G7: our CDL of the same cell against Virtuoso's auCdl.
-                let files = read_dir(&project_dir(PROJECTS[4].1));
+                let files = read_tree(&project_dir(PROJECTS[4].1));
                 match netlist_of(&files, "rcfilter.shcomp", schemify_elab::Dialect::Cdl) {
                     Ok(ours) => {
                         let c = schemify_spicecmp::compare(
@@ -2090,14 +2005,10 @@ fn sfy_live_reads_in_the_subset() {
 /// The mock Virtuoso a kit run talks to: every library the kit creates, analogLib with the
 /// masters the analogLib-mode exports use, and the two functions the mock lacks.
 fn mock(work: &Path) -> Interp<MockDb> {
-    let mut i = Interp::new(MockDb::default());
-    for l in ["analogLib", "basic"] {
-        i.host.add_lib(l);
-    }
-    for l in read(&work.join("libs.txt")).unwrap().lines() {
-        i.host.add_lib(l);
-    }
-    i.load(&interop::skill::schemify_il()).unwrap();
+    let libs = read(&work.join("libs.txt")).unwrap();
+    let mut all = vec!["analogLib", "basic"];
+    all.extend(libs.lines());
+    let mut i = skill::virtuoso(&all);
     i.load(interop::skill::PROBE).unwrap();
     i.load(LIVE_IL).unwrap();
     i.load(BUILD).unwrap();
@@ -2133,7 +2044,7 @@ fn mock(work: &Path) -> Interp<MockDb> {
 /// Runs a generated session on the mock: disk files in, the session's writes out.
 fn run_on_mock(i: &mut Interp<MockDb>, work: &Path, session: &str) {
     for sub in ["in", "out", "skill", "projects"] {
-        for (p, b) in read_dir(&work.join(sub)) {
+        for (p, b) in read_tree(&work.join(sub)) {
             if let Ok(t) = String::from_utf8(b) {
                 i.files.insert(path_str(&work.join(sub).join(p)), t);
             }

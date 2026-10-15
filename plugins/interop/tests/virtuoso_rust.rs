@@ -2,81 +2,20 @@
 //! export → import round trips, hand-written dumps → golden files and netlists, merge,
 //! re-mastering, and malformed dumps.
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use interop::design::{Design, Files, LoadError, load};
+use common::{canonical, is_cell, load_all, project, read_tree, root, strip_fp, strip_stash};
+use interop::design::{Design, Files};
 use interop::map::Mapping;
 use interop::sfyx;
 use interop::virtuoso::{self, ExportOptions, ImportOptions};
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-/// Every file under `dir`, keyed by its `/`-separated path relative to `dir`.
-fn read_dir(dir: &Path) -> Files {
-    fn walk(base: &Path, d: &Path, out: &mut Files) {
-        let mut entries: Vec<PathBuf> = std::fs::read_dir(d)
-            .unwrap()
-            .flatten()
-            .map(|e| e.path())
-            .collect();
-        entries.sort();
-        for p in entries {
-            if p.is_dir() {
-                walk(base, &p, out);
-            } else {
-                let rel = p
-                    .strip_prefix(base)
-                    .unwrap()
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                out.insert(rel, std::fs::read(&p).unwrap());
-            }
-        }
-    }
-    let mut out = Files::new();
-    walk(dir, dir, &mut out);
-    out
-}
-
-fn is_cell(p: &str) -> bool {
-    [".shprim", ".shcomp", ".shbench"]
-        .iter()
-        .any(|e| p.ends_with(e))
-}
-
 /// Loads every cell file of `files`.
 fn design(files: &Files) -> Design {
-    let tops: Vec<&str> = files
-        .keys()
-        .map(String::as_str)
-        .filter(|p| is_cell(p))
-        .collect();
-    let mut absent = BTreeSet::new();
-    loop {
-        match load(files, &absent, &tops) {
-            Ok(d) => return d,
-            Err(LoadError::Missing(m)) => absent.extend(m),
-            Err(LoadError::Invalid(p)) => panic!("{p:?}"),
-        }
-    }
-}
-
-/// `text` without the import fingerprints (`vsym`, `vsch` header lines, §7.5), which an
-/// import adds by design.
-fn strip_fp(text: &str) -> String {
-    text.lines()
-        .filter(|l| !l.starts_with("  vsym ") && !l.starts_with("  vsch "))
-        .map(|l| format!("{l}\n"))
-        .collect()
-}
-
-/// Canonical text of a cell file (what the format writer produces).
-fn canonical(bytes: &[u8]) -> String {
-    let d = schemify_format::parse(bytes).unwrap();
-    schemify_format::write(&d)
+    load_all(files)
 }
 
 /// Exports every cell of `files`, the root library as `top`.
@@ -101,16 +40,6 @@ fn import_opts() -> ImportOptions {
     o
 }
 
-/// The `.sfyx` text without its stash properties.
-fn strip_stash(text: &str) -> String {
-    let recs = sfyx::read(text).unwrap();
-    let kept: Vec<sfyx::Record> = recs
-        .into_iter()
-        .filter(|r| !(r.tag == "prop" && r.str(1).is_ok_and(|n| n.starts_with("schemifyRecords"))))
-        .collect();
-    sfyx::write(&kept)
-}
-
 fn fixture_projects() -> Vec<PathBuf> {
     let r = root();
     vec![
@@ -133,7 +62,7 @@ fn cells(files: &Files) -> BTreeMap<String, String> {
 #[test]
 fn export_import_round_trip_is_exact_with_the_stash() {
     for dir in fixture_projects() {
-        let files = read_dir(&dir);
+        let files = project(&dir);
         let (text, _) = export_all(&files);
         // Deterministic.
         assert_eq!(text, export_all(&files).0, "{}", dir.display());
@@ -201,7 +130,7 @@ fn golden(name: &str, files: &[(String, Vec<u8>)], report: &str) {
         }
         return;
     }
-    let want = read_dir(&dir);
+    let want = read_tree(&dir);
     let got: Files = all.into_iter().collect();
     assert_eq!(
         got.keys().collect::<Vec<_>>(),
@@ -557,7 +486,7 @@ fn round_trip(files: &Files, what: &str) {
 #[test]
 fn round_trip_without_the_stash_loses_only_what_is_documented() {
     for dir in fixture_projects() {
-        round_trip(&read_dir(&dir), &dir.display().to_string());
+        round_trip(&project(&dir), &dir.display().to_string());
     }
 }
 
@@ -1091,7 +1020,7 @@ fn reimporting_an_unchanged_dump_is_a_no_op() {
     }
     // Also for a project exported from Schemify and imported twice.
     for dir in fixture_projects() {
-        let files = read_dir(&dir);
+        let files = project(&dir);
         let (text, _) = export_all(&files);
         let man: Files = files
             .iter()
@@ -1501,4 +1430,21 @@ proptest::proptest! {
 fn generated_project_regression_seeds() {
     let seed = 14_947_292_216_081_295_580_u64;
     round_trip(&gen_project(seed), &format!("seed {seed}"));
+}
+
+/// A text size whose height leaves `i32` exports at the largest whole-unit height: the
+/// height computation overflowed (a panic in debug builds) before.
+#[test]
+fn a_huge_text_size_exports_saturated() {
+    let mut files = Files::new();
+    files.insert("schemify.project".into(), b"schemify 1 project\n".to_vec());
+    let sym = "schemify 1 shprim\n\npin a inout 0 0\n\nimpl spice spice\n  format spice \"{name} {a} big\"\n\nstext 10 0 R0 hello\n  size 300000\n";
+    files.insert("big.shprim".into(), sym.as_bytes().to_vec());
+    let (text, _) = export_all(&files);
+    let label = sfyx::read(&text)
+        .unwrap()
+        .into_iter()
+        .find(|r| r.tag == "label" && r.str(2) == Ok("hello"))
+        .expect("the stext goes out as a label");
+    assert_eq!(label.int(8), Ok(i32::MAX / 1000 * 1000));
 }

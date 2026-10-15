@@ -14,12 +14,12 @@
 //!    and leave the xschem default (no attribute written).
 //! 4. **Determinism.** The same Design exports to the same bytes.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use interop::design::{self, Design, Files, LoadError};
+use interop::design::{self, Design, Files};
 use interop::xschem_out::{XschemExport, export};
 use interop::{Options, translate_library};
 use schemify_doc::{DocHandle, Project, core_file, core_library};
@@ -239,15 +239,7 @@ fn generated(seed: u64) -> Fixture {
 
 /// Loads the closure of `top` from `files` (every path not in `files` is absent).
 fn load_design(files: &Files, top: &str) -> Design {
-    let mut absent = BTreeSet::new();
-    for _ in 0..16 {
-        match design::load(files, &absent, &[top]) {
-            Ok(d) => return d,
-            Err(LoadError::Missing(p)) => absent.extend(p),
-            Err(LoadError::Invalid(p)) => panic!("{top}: {p:?}"),
-        }
-    }
-    panic!("{top}: load did not converge");
+    design::load_closed(files, &[top]).unwrap_or_else(|p| panic!("{top}: {p:?}"))
 }
 
 /// A Schemify project over `files` (project-relative paths), every cell opened.

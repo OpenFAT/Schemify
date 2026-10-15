@@ -8,6 +8,7 @@ use schemify_format::{Document, RecordKind};
 
 use crate::design::{Design, Files};
 use crate::map::Mapping;
+use crate::merge;
 use crate::notes::Notes;
 
 pub mod ade;
@@ -169,14 +170,10 @@ pub fn fingerprint(doc: &Document<'_>, part: Part) -> String {
         for a in doc.attrs(r) {
             let key = doc.attr_key(a);
             let schemify_only = match k {
-                K::Param => matches!(
-                    key,
-                    "min" | "max" | "step" | "grid" | "show" | "computed" | "cached"
-                ),
-                K::Pin => matches!(key, "domain" | "number"),
-                K::Impl => {
-                    key == "format" && !matches!(doc.attr_value(a, 0), Some("spectre" | "cdl"))
-                }
+                K::Pin | K::Param => merge::schemify_only_attr(k, key, doc.attr_value(a, 0)),
+                // Only the format: an impl's `model file ignore` stay in the fingerprint, which
+                // is stored in files and so never changes meaning.
+                K::Impl => key == "format" && !merge::virtuoso_format(doc.attr_value(a, 0)),
                 _ => false,
             };
             if schemify_only {
@@ -201,13 +198,7 @@ pub fn fingerprint(doc: &Document<'_>, part: Part) -> String {
     if part == Part::Schematic {
         lines.sort();
     }
-    let text = lines.concat();
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in text.bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{h:016x}")
+    merge::digest(&lines.concat())
 }
 
 /// Header attribute holding the fingerprint of `part`.

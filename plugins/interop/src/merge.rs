@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use schemify_format::{Document, FileKind, RecordKind, parse, parse_coord, write};
 
+use crate::design::{copy_attr, copy_header, owned_doc};
 use crate::notes::Notes;
 
 /// Header attribute of a stash: digest of the header the import produces.
@@ -28,17 +29,52 @@ const VIMG_RANK2: &str = "vimg_rank2";
 /// Record attribute of a stash: digest of the record the import produces.
 const VIMG: &str = "vimg";
 
+/// Pin attributes no Virtuoso terminal holds (§7.1).
+pub(crate) const SCHEMIFY_PIN_ATTRS: [&str; 2] = ["domain", "number"];
+/// Param attributes no CDF parameter holds (§7.1).
+pub(crate) const SCHEMIFY_PARAM_ATTRS: [&str; 7] =
+    ["min", "max", "step", "grid", "show", "computed", "cached"];
+/// Impl attributes no Virtuoso view holds (§7.1).
+pub(crate) const SCHEMIFY_IMPL_ATTRS: [&str; 3] = ["model", "file", "ignore"];
+
+/// Whether an impl `format` of `dialect` is one the Virtuoso side produces (from simInfo:
+/// `spectre`, and `cdl` from auCdl); any other dialect's format is Schemify's (§8.1).
+pub(crate) fn virtuoso_format(dialect: Option<&str>) -> bool {
+    matches!(dialect, Some("spectre" | "cdl"))
+}
+
+/// Whether attribute `key` (first value `first`) of a rank-1 record of `kind` is Schemify's
+/// alone (§7.1): the attribute lists above, and an impl `format` the Virtuoso side does not
+/// produce.
+///
+/// # Panics
+///
+/// When `kind` is not a rank-1 kind (pin, param, impl).
+pub(crate) fn schemify_only_attr(kind: RecordKind, key: &str, first: Option<&str>) -> bool {
+    match kind {
+        RecordKind::Pin => SCHEMIFY_PIN_ATTRS.contains(&key),
+        RecordKind::Param => SCHEMIFY_PARAM_ATTRS.contains(&key),
+        RecordKind::Impl => {
+            SCHEMIFY_IMPL_ATTRS.contains(&key) || (key == "format" && !virtuoso_format(first))
+        }
+        k => panic!("{k:?} is not a rank-1 record"),
+    }
+}
+
 /// Units per document this module handles (format.md's per-file rank-3 bound).
 pub const UNITS_MAX: usize = 1 << 22;
 
-/// FNV-1a 64 of `text`, as 16 lowercase hex digits.
+/// FNV-1a 64 of `text`, as 16 lowercase hex digits: the stash digests and the cellview
+/// fingerprints (§7.5). Stable across releases, since both are stored in files.
 pub fn digest(text: &str) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in text.bytes() {
         h ^= u64::from(b);
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    format!("{h:016x}")
+    let out = format!("{h:016x}");
+    debug_assert_eq!(out.len(), 16);
+    out
 }
 
 /// Identity of a record outside ranks 0–2.
@@ -59,15 +95,7 @@ fn text(doc: &Document<'_>, rs: &[u32], skip: &[&str]) -> String {
     let mut d = Document::new(doc.kind());
     for &r in rs {
         if r == 0 {
-            for a in doc.attrs(0) {
-                if skip.contains(&doc.attr_key(a)) {
-                    continue;
-                }
-                d.push_attr(doc.attr_key(a));
-                for v in doc.attr_values(a) {
-                    d.push_value(v);
-                }
-            }
+            copy_header(&mut d, doc, skip);
             continue;
         }
         copy_skipping(&mut d, doc, r, skip);
@@ -96,12 +124,8 @@ fn copy_skipping(out: &mut Document<'static>, src: &Document<'_>, r: u32, skip: 
         out.push_field(f);
     }
     for a in src.attrs(r) {
-        if skip.contains(&src.attr_key(a)) {
-            continue;
-        }
-        out.push_attr(src.attr_key(a));
-        for v in src.attr_values(a) {
-            out.push_value(v);
+        if !skip.contains(&src.attr_key(a)) {
+            copy_attr(out, src, a);
         }
     }
     for v in src.verbatim(r) {
@@ -171,12 +195,7 @@ pub fn stash(orig: &Document<'_>, image: Option<&Document<'_>>) -> Option<String
     let r2i = image.map(|i| text(i, &ranked(i, 2), &[]));
     if hi.as_ref() != Some(&ht) {
         any = true;
-        for a in orig.attrs(0) {
-            s.push_attr(orig.attr_key(a));
-            for v in orig.attr_values(a) {
-                s.push_value(v);
-            }
-        }
+        copy_header(&mut s, orig, &[]);
         if let Some(h) = &hi {
             s.push_attr(VIMG_HEADER);
             s.push_value(&digest(h));
@@ -268,16 +287,7 @@ pub fn parse_stash(text: &str, kind: FileKind) -> Result<Document<'static>, Stri
     if d.kind() != kind {
         return Err(format!("stash is a {:?}, the cell a {kind:?}", d.kind()));
     }
-    let mut out = Document::new(kind);
-    for a in d.attrs(0) {
-        out.push_attr(d.attr_key(a));
-        for v in d.attr_values(a) {
-            out.push_value(v);
-        }
-    }
-    for r in 1..d.record_count() {
-        out.copy_record(&d, r);
-    }
+    let mut out = owned_doc(&d);
     for c in d.eof_comments() {
         out.push_eof_comment(c);
     }
@@ -348,10 +358,7 @@ pub fn merge(
             for a in src.attrs(0) {
                 let k = src.attr_key(a);
                 if !vimgs.contains(&k) && fresh.find_attr(0, k).is_none() {
-                    out.push_attr(k);
-                    for v in src.attr_values(a) {
-                        out.push_value(v);
-                    }
+                    copy_attr(&mut out, src, a);
                 }
             }
         }
@@ -506,10 +513,7 @@ pub fn merge(
                         && src.find_attr(r, key).is_none()
                         && ["layer", "fill", "width", "closed"].contains(&key)
                     {
-                        out.push_attr(key);
-                        for v in b.attr_values(a) {
-                            out.push_value(v);
-                        }
+                        copy_attr(&mut out, b, a);
                     }
                 }
             }
@@ -560,8 +564,6 @@ fn canonical_impl_name<'a>(l: &'a Document<'_>, name: &'a str) -> &'a str {
 /// The rank-1 block of a local file without the Schemify-only attributes (§7.1), impl
 /// names as the import spells them: the "unchanged" test when there is no stash.
 fn stripped_rank1(l: &Document<'_>) -> String {
-    const SKIP_PIN: [&str; 2] = ["domain", "number"];
-    const SKIP_PARAM: [&str; 7] = ["min", "max", "step", "grid", "show", "computed", "cached"];
     let mut d = Document::new(l.kind());
     for r in ranked(l, 1) {
         let kind = l.record_kind(r);
@@ -574,37 +576,12 @@ fn stripped_rank1(l: &Document<'_>) -> String {
             });
         }
         for a in l.attrs(r) {
-            let k = l.attr_key(a);
-            let skip = match kind {
-                RecordKind::Pin => SKIP_PIN.contains(&k),
-                RecordKind::Param => SKIP_PARAM.contains(&k),
-                _ => {
-                    matches!(k, "model" | "file" | "ignore")
-                        || (k == "format" && !matches!(l.attr_value(a, 0), Some("spectre" | "cdl")))
-                }
-            };
-            if skip {
-                continue;
-            }
-            d.push_attr(k);
-            for v in l.attr_values(a) {
-                d.push_value(v);
+            if !schemify_only_attr(kind, l.attr_key(a), l.attr_value(a, 0)) {
+                copy_attr(&mut d, l, a);
             }
         }
     }
     text(&d, &ranked(&d, 1), &[])
-}
-
-fn copy_header(out: &mut Document<'static>, src: &Document<'_>, skip: &[&str]) {
-    for a in src.attrs(0) {
-        if skip.contains(&src.attr_key(a)) {
-            continue;
-        }
-        out.push_attr(src.attr_key(a));
-        for v in src.attr_values(a) {
-            out.push_value(v);
-        }
-    }
 }
 
 /// A `default` naming an impl that exists whenever there is more than one (format E025).
@@ -619,15 +596,7 @@ fn fix_default(out: &mut Document<'static>) {
     }
     // Rebuild with a corrected header (documents are append-only).
     let mut d = Document::new(out.kind());
-    for a in out.attrs(0) {
-        if out.attr_key(a) == "default" {
-            continue;
-        }
-        d.push_attr(out.attr_key(a));
-        for v in out.attr_values(a) {
-            d.push_value(v);
-        }
-    }
+    copy_header(&mut d, out, &["default"]);
     d.push_attr("default");
     d.push_value(&impls[0]);
     for r in 1..out.record_count() {
@@ -649,9 +618,6 @@ fn enrich_rank1(
     cell: &str,
     notes: &mut Notes,
 ) {
-    const PIN: [&str; 2] = ["domain", "number"];
-    const PARAM: [&str; 7] = ["min", "max", "step", "grid", "show", "computed", "cached"];
-    const IMPL: [&str; 3] = ["model", "file", "ignore"];
     let find = |kind: RecordKind, name: &str| {
         ranked(base, 1)
             .into_iter()
@@ -682,38 +648,24 @@ fn enrich_rank1(
                 f
             });
         }
-        let extra: &[&str] = match kind {
-            RecordKind::Pin => &PIN,
-            RecordKind::Param => &PARAM,
-            _ => &IMPL,
-        };
         for a in fresh.attrs(r) {
             let k = fresh.attr_key(a);
             if kind == RecordKind::Impl
                 && k == "format"
-                && !matches!(fresh.attr_value(a, 0), Some("spectre" | "cdl"))
+                && !virtuoso_format(fresh.attr_value(a, 0))
                 && base.attrs(b).any(|x| {
                     base.attr_key(x) == "format" && base.attr_value(x, 0) == fresh.attr_value(a, 0)
                 })
             {
                 continue; // the local spice/xyce/verilog format wins (§8.1)
             }
-            out.push_attr(k);
-            for v in fresh.attr_values(a) {
-                out.push_value(v);
-            }
+            copy_attr(out, fresh, a);
         }
         for a in base.attrs(b) {
             let k = base.attr_key(a);
-            let keep = extra.contains(&k)
-                || (kind == RecordKind::Impl
-                    && k == "format"
-                    && !matches!(base.attr_value(a, 0), Some("spectre" | "cdl")));
+            let keep = schemify_only_attr(kind, k, base.attr_value(a, 0));
             if keep && (k == "format" || fresh.find_attr(r, k).is_none()) {
-                out.push_attr(k);
-                for v in base.attr_values(a) {
-                    out.push_value(v);
-                }
+                copy_attr(out, base, a);
             }
         }
         if kind == RecordKind::Impl {
@@ -754,18 +706,55 @@ mod tests {
     use super::*;
 
     fn doc(t: &str) -> Document<'static> {
-        let d = parse(t.as_bytes()).unwrap();
-        let mut o = Document::new(d.kind());
-        for a in d.attrs(0) {
-            o.push_attr(d.attr_key(a));
-            for v in d.attr_values(a) {
-                o.push_value(v);
+        owned_doc(&parse(t.as_bytes()).unwrap())
+    }
+
+    /// The rank-1 attributes of spec §7.3's enrichment list are Schemify's; every other key
+    /// of the format's pin, param and impl schemas is the Virtuoso side's (negative space).
+    #[test]
+    fn schemify_only_attributes_are_the_spec_list() {
+        use RecordKind as K;
+        let spec: [(K, &[&str]); 3] = [
+            (K::Pin, &["domain", "number"]),
+            (
+                K::Param,
+                &["min", "max", "step", "grid", "show", "computed", "cached"],
+            ),
+            (K::Impl, &["model", "file", "ignore"]),
+        ];
+        let others: [(K, &[&str]); 3] = [
+            (K::Pin, &["inherit", "alias", "vplabel"]),
+            (K::Param, &["kind", "unit", "choices", "doc"]),
+            (K::Impl, &["default", "lang"]),
+        ];
+        for (k, keys) in spec {
+            for key in keys {
+                assert!(schemify_only_attr(k, key, None), "{k:?} {key}");
             }
         }
-        for r in 1..d.record_count() {
-            o.copy_record(&d, r);
+        for (k, keys) in others {
+            for key in keys {
+                assert!(!schemify_only_attr(k, key, None), "{k:?} {key}");
+            }
         }
-        o
+        // Formats: spectre and cdl come from simInfo, every other dialect is Schemify's.
+        for (dialect, theirs) in [("spectre", true), ("cdl", true), ("spice", false)] {
+            assert_eq!(
+                schemify_only_attr(K::Impl, "format", Some(dialect)),
+                !theirs,
+                "{dialect}"
+            );
+        }
+        assert!(schemify_only_attr(K::Impl, "format", Some("xyce")));
+        assert!(schemify_only_attr(K::Impl, "format", None));
+        // A pin or param `format` is no impl format.
+        assert!(!schemify_only_attr(K::Pin, "format", Some("spice")));
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a rank-1 record")]
+    fn schemify_only_attributes_are_a_rank_1_question() {
+        schemify_only_attr(RecordKind::Wire, "bus", None);
     }
 
     #[test]

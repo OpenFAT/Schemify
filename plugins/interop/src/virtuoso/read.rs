@@ -16,11 +16,11 @@ use super::ade;
 use super::ael::{self, AelName};
 use super::devices;
 use super::{Import, ImportOptions};
-use crate::design::Files;
+use crate::design::{Files, cell_path, copy_header, push_attr, push_lib, push_record};
 use crate::map::{CORE_LIB, Mapping, ROOT_LIB};
 use crate::merge;
 use crate::notes::Notes;
-use crate::profile::{self, net_from_virtuoso, point_from_virtuoso};
+use crate::profile::{self, coord_text, net_from_virtuoso, point_from_virtuoso};
 use crate::sfyx::{self, Error, Record, Value};
 
 // Data design (six questions): in = one `.sfyx` text (≤ 2^30 bytes, ≤ 2^24 records); out
@@ -163,6 +163,23 @@ pub struct Prop {
     pub ty: String,
     /// Value text.
     pub value: String,
+}
+
+impl Prop {
+    /// A property of object `r` (0: the cellview) of SKILL type `ty`.
+    pub fn new(r: u32, name: &str, ty: &str, value: impl Into<String>) -> Prop {
+        Prop {
+            r,
+            name: name.to_owned(),
+            ty: ty.to_owned(),
+            value: value.into(),
+        }
+    }
+
+    /// A `string` property, the type of every `schemify*` marker and of override text.
+    pub fn string(r: u32, name: &str, value: impl Into<String>) -> Prop {
+        Prop::new(r, name, "string", value)
+    }
 }
 
 /// A loader-only connection request (`conn`).
@@ -387,26 +404,11 @@ const ADE_TAGS: [&str; 8] = [
     "maestro", "var", "analysis", "corner", "model", "output", "spec", "defn",
 ];
 
-fn err(r: &Record, msg: impl Into<String>) -> Error {
-    Error {
-        line: r.line,
-        msg: format!("{}: {}", r.tag, msg.into()),
-    }
-}
-
-fn arity(r: &Record, n: usize) -> Result<(), Error> {
-    if r.fields.len() == n {
-        Ok(())
-    } else {
-        Err(err(r, format!("{} fields, expected {n}", r.fields.len())))
-    }
-}
-
 fn ints(r: &Record, v: &[Value], what: &str) -> Result<Vec<i32>, Error> {
     v.iter()
         .map(|x| {
             x.as_int()
-                .ok_or_else(|| err(r, format!("{what} holds a non-integer")))
+                .ok_or_else(|| r.err(format!("{what} holds a non-integer")))
         })
         .collect()
 }
@@ -416,7 +418,7 @@ fn strs(r: &Record, v: &[Value], what: &str) -> Result<Vec<String>, Error> {
         .map(|x| {
             x.as_str()
                 .map(str::to_owned)
-                .ok_or_else(|| err(r, format!("{what} holds a non-string")))
+                .ok_or_else(|| r.err(format!("{what} holds a non-string")))
         })
         .collect()
 }
@@ -425,7 +427,7 @@ fn orient(r: &Record, i: usize) -> Result<String, Error> {
     let o = r.str(i)?;
     profile::orient_from_virtuoso(o)
         .map(|_| o.to_owned())
-        .ok_or_else(|| err(r, format!("unknown orientation `{o}`")))
+        .ok_or_else(|| r.err(format!("unknown orientation `{o}`")))
 }
 
 /// Parses records into a [`Dump`]: every record's arity and element types, its context
@@ -456,7 +458,7 @@ pub fn dump(records: &[Record]) -> Result<Dump, Error> {
             } else if in_maestro {
                 d.maestro.last_mut().expect("in maestro").push(r.clone());
             } else {
-                return Err(err(r, "outside a maestro context"));
+                return Err(r.err("outside a maestro context"));
             }
             continue;
         }
@@ -467,26 +469,26 @@ pub fn dump(records: &[Record]) -> Result<Dump, Error> {
                     "lib" | "cell" | "cv" | "cdf" | "param" | "siminfo" | "textview"
                 ))
         {
-            return Err(err(r, "cell records after the maestro records"));
+            return Err(r.err("cell records after the maestro records"));
         }
         match tag {
             "lib" => {
-                arity(r, 1)?;
+                r.arity(1)?;
                 lib = Some(r.str(0)?.to_owned());
                 in_cell = false;
                 in_cdf = false;
             }
             "cell" => {
-                arity(r, 2)?;
-                let l = lib.clone().ok_or_else(|| err(r, "before any `lib`"))?;
+                r.arity(2)?;
+                let l = lib.clone().ok_or_else(|| r.err("before any `lib`"))?;
                 let design = match r.str(1)? {
                     "design" => true,
                     "ref" => false,
-                    o => return Err(err(r, format!("role `{o}` (design or ref)"))),
+                    o => return Err(r.err(format!("role `{o}` (design or ref)"))),
                 };
                 let name = r.str(0)?.to_owned();
                 if !cells_seen.insert((l.clone(), name.clone())) {
-                    return Err(err(r, format!("{l}/{name} appears twice")));
+                    return Err(r.err(format!("{l}/{name} appears twice")));
                 }
                 d.cells.push(DCell {
                     lib: l,
@@ -499,13 +501,13 @@ pub fn dump(records: &[Record]) -> Result<Dump, Error> {
                 in_cdf = false;
             }
             "cdf" | "param" | "siminfo" | "textview" | "cv" if !in_cell => {
-                return Err(err(r, "outside a cell"));
+                return Err(r.err("outside a cell"));
             }
             "cdf" => {
-                arity(r, 1)?;
+                r.arity(1)?;
                 let c = d.cells.last_mut().expect("in cell");
                 if c.cdf.is_some() {
-                    return Err(err(r, "second cdf"));
+                    return Err(r.err("second cdf"));
                 }
                 c.cdf = Some(Cdf {
                     label_set: r.text(0)?,
@@ -513,12 +515,12 @@ pub fn dump(records: &[Record]) -> Result<Dump, Error> {
                 });
                 in_cdf = true;
             }
-            "param" | "siminfo" if !in_cdf => return Err(err(r, "before the cell's `cdf`")),
+            "param" | "siminfo" if !in_cdf => return Err(r.err("before the cell's `cdf`")),
             "param" => {
-                arity(r, 8)?;
+                r.arity(8)?;
                 let ty = r.str(1)?;
                 if !CDF_TYPES.contains(&ty) {
-                    return Err(err(r, format!("type `{ty}`")));
+                    return Err(r.err(format!("type `{ty}`")));
                 }
                 let p = CdfParam {
                     name: r.str(0)?.to_owned(),
@@ -532,12 +534,12 @@ pub fn dump(records: &[Record]) -> Result<Dump, Error> {
                 };
                 let cdf = d.cells.last_mut().unwrap().cdf.as_mut().unwrap();
                 if cdf.params.iter().any(|x| x.name == p.name) {
-                    return Err(err(r, format!("param {} twice", p.name)));
+                    return Err(r.err(format!("param {} twice", p.name)));
                 }
                 cdf.params.push(p);
             }
             "siminfo" => {
-                arity(r, 2)?;
+                r.arity(2)?;
                 let mut s = SimInfo {
                     sim: r.str(0)?.to_owned(),
                     fields: Vec::new(),
@@ -546,7 +548,7 @@ pub fn dump(records: &[Record]) -> Result<Dump, Error> {
                     let kv = f.items();
                     let (Some(Value::Str(k)), Some(v), 2) = (kv.first(), kv.get(1), kv.len())
                     else {
-                        return Err(err(r, "a field is not (key value)"));
+                        return Err(r.err("a field is not (key value)"));
                     };
                     let val = match v {
                         Value::Str(s) => SimVal::Str(s.clone()),
@@ -562,28 +564,27 @@ pub fn dump(records: &[Record]) -> Result<Dump, Error> {
                                         pairs.push((a.clone(), b.clone()))
                                     }
                                     _ => {
-                                        return Err(err(
-                                            r,
-                                            format!("{k}: a pair is not (name name)"),
-                                        ));
+                                        return Err(
+                                            r.err(format!("{k}: a pair is not (name name)"))
+                                        );
                                     }
                                 }
                             }
                             SimVal::Pairs(pairs)
                         }
                         Value::List(items) => SimVal::List(strs(r, items, k)?),
-                        Value::Int(_) => return Err(err(r, format!("{k}: an integer value"))),
+                        Value::Int(_) => return Err(r.err(format!("{k}: an integer value"))),
                     };
                     s.fields.push((k.clone(), val));
                 }
                 let cdf = d.cells.last_mut().unwrap().cdf.as_mut().unwrap();
                 if cdf.sim(&s.sim).is_some() {
-                    return Err(err(r, format!("second {} simInfo", s.sim)));
+                    return Err(r.err(format!("second {} simInfo", s.sim)));
                 }
                 cdf.siminfo.push(s);
             }
             "textview" => {
-                arity(r, 3)?;
+                r.arity(3)?;
                 d.cells.last_mut().unwrap().textviews.push(TextView {
                     view: r.str(0)?.to_owned(),
                     file: r.str(1)?.to_owned(),
@@ -591,22 +592,22 @@ pub fn dump(records: &[Record]) -> Result<Dump, Error> {
                 });
             }
             "cv" => {
-                arity(r, 3)?;
+                r.arity(3)?;
                 let upi = r.int(2)?;
                 if upi <= 0 {
-                    return Err(err(r, "units per inch must be positive"));
+                    return Err(r.err("units per inch must be positive"));
                 }
                 let c = d.cells.last_mut().unwrap();
                 let view = r.str(0)?.to_owned();
                 if c.cv(&view).is_some() {
-                    return Err(err(r, format!("view {view} twice")));
+                    return Err(r.err(format!("view {view} twice")));
                 }
                 let vtype = r.str(1)?;
                 if !c.design && vtype == "schematic" {
-                    return Err(err(r, "a ref cell carries its symbol and CDF only (§4.2)"));
+                    return Err(r.err("a ref cell carries its symbol and CDF only (§4.2)"));
                 }
                 if vtype != "schematic" && vtype != "schematicSymbol" {
-                    return Err(err(r, format!("view type `{vtype}`")));
+                    return Err(r.err(format!("view type `{vtype}`")));
                 }
                 c.cvs.push(Cv {
                     view,
@@ -623,16 +624,13 @@ pub fn dump(records: &[Record]) -> Result<Dump, Error> {
                     None
                 }) else {
                     if is_object(tag) {
-                        return Err(err(r, "outside a cellview"));
+                        return Err(r.err("outside a cellview"));
                     }
                     d.unknown.push(r.clone());
                     continue;
                 };
                 if cv.objects() >= OBJECTS_MAX {
-                    return Err(err(
-                        r,
-                        format!("more than {OBJECTS_MAX} objects in a cellview"),
-                    ));
+                    return Err(r.err(format!("more than {OBJECTS_MAX} objects in a cellview")));
                 }
                 object(cv, r)?;
             }
@@ -674,7 +672,7 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
         u32::try_from(v)
             .ok()
             .filter(|v| *v > 0)
-            .ok_or_else(|| err(r, "refs are positive"))
+            .ok_or_else(|| r.err("refs are positive"))
     };
     // Objects belong to one kind of cellview (§4.2, §6.2): terminals and pin figures to a
     // symbol (a schematic's terminals travel as `spin`s), wires, schematic pins and loader
@@ -690,10 +688,10 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
     }
     if (schematic_only && cv.vtype != "schematic") || (symbol_only && cv.vtype != "schematicSymbol")
     {
-        return Err(err(
-            r,
-            format!("`{}` does not belong in a {} cellview", r.tag, cv.vtype),
-        ));
+        return Err(r.err(format!(
+            "`{}` does not belong in a {} cellview",
+            r.tag, cv.vtype
+        )));
     }
     // An instance inside a symbol (a pin master placed without flattening; the dumper writes
     // one of a pin cell as `spin`, a live run found such symbols in Cadence's `sample`
@@ -710,15 +708,15 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
     ) {
         let ref_ = pos(r, 0)?;
         if !cv.refs.insert(ref_) {
-            return Err(err(r, format!("ref {ref_} defined twice in this cellview")));
+            return Err(r.err(format!("ref {ref_} defined twice in this cellview")));
         }
     }
     match r.tag.as_str() {
         "term" => {
-            arity(r, 3)?;
+            r.arity(3)?;
             let name = r.str(0)?.to_owned();
             if cv.terms.iter().any(|t| t.name == name) {
-                return Err(err(r, format!("terminal {name} twice")));
+                return Err(r.err(format!("terminal {name} twice")));
             }
             cv.terms.push(Term {
                 name,
@@ -727,7 +725,7 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
             });
         }
         "pinfig" => {
-            arity(r, if cv.vtype == "schematicSymbol" { 6 } else { 7 })?;
+            r.arity(if cv.vtype == "schematicSymbol" { 6 } else { 7 })?;
             cv.pinfigs.push(PinFig {
                 r: pos(r, 0)?,
                 term: r.str(1)?.to_owned(),
@@ -740,7 +738,7 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
             });
         }
         "inst" => {
-            arity(r, 8)?;
+            r.arity(8)?;
             cv.insts.push(Inst {
                 r: pos(r, 0)?,
                 name: r.str(1)?.to_owned(),
@@ -752,7 +750,7 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
             });
         }
         "spin" => {
-            arity(r, 9)?;
+            r.arity(9)?;
             cv.spins.push(Spin {
                 r: pos(r, 0)?,
                 term: r.str(1)?.to_owned(),
@@ -765,10 +763,10 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
             });
         }
         "wire" => {
-            arity(r, 3)?;
+            r.arity(3)?;
             let p = ints(r, r.list(1)?, "points")?;
             if p.len() < 4 || p.len() % 2 != 0 {
-                return Err(err(r, "points: an even count of at least 4"));
+                return Err(r.err("points: an even count of at least 4"));
             }
             cv.wires.push(Wire {
                 r: pos(r, 0)?,
@@ -777,15 +775,15 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
             });
         }
         "label" => {
-            arity(r, 12)?;
+            r.arity(12)?;
             let kind = r.str(9)?;
             if !matches!(kind, "normal" | "NLP" | "IL") {
-                return Err(err(r, format!("kind `{kind}`")));
+                return Err(r.err(format!("kind `{kind}`")));
             }
             let parent = r.int(1)?;
             cv.labels.push(Label {
                 r: pos(r, 0)?,
-                parent: u32::try_from(parent).map_err(|_| err(r, "negative parent"))?,
+                parent: u32::try_from(parent).map_err(|_| r.err("negative parent"))?,
                 text: r.str(2)?.to_owned(),
                 xy: [r.int(3)?, r.int(4)?],
                 orient: orient(r, 5)?,
@@ -798,7 +796,7 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
             });
         }
         "shape" => {
-            arity(r, 6)?;
+            r.arity(6)?;
             let kind = r.str(1)?;
             let coords = ints(r, r.list(4)?, "coords")?;
             let ok = match kind {
@@ -806,10 +804,10 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
                 "polygon" => coords.len() >= 6 && coords.len() % 2 == 0,
                 "rect" | "ellipse" => coords.len() == 4,
                 "arc" => coords.len() == 6,
-                _ => return Err(err(r, format!("kind `{kind}`"))),
+                _ => return Err(r.err(format!("kind `{kind}`"))),
             };
             if !ok {
-                return Err(err(r, format!("{} coordinates for a {kind}", coords.len())));
+                return Err(r.err(format!("{} coordinates for a {kind}", coords.len())));
             }
             cv.shapes.push(Shape {
                 r: pos(r, 0)?,
@@ -821,24 +819,24 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
             });
         }
         "prop" => {
-            arity(r, 4)?;
+            r.arity(4)?;
             let ty = r.str(2)?;
             if !matches!(
                 ty,
                 "string" | "int" | "float" | "boolean" | "ILList" | "netSet"
             ) {
-                return Err(err(r, format!("type `{ty}`")));
+                return Err(r.err(format!("type `{ty}`")));
             }
             let owner = r.int(0)?;
             cv.props.push(Prop {
-                r: u32::try_from(owner).map_err(|_| err(r, "negative owner"))?,
+                r: u32::try_from(owner).map_err(|_| r.err("negative owner"))?,
                 name: r.str(1)?.to_owned(),
                 ty: ty.to_owned(),
                 value: r.str(3)?.to_owned(),
             });
         }
         "conn" => {
-            arity(r, 3)?;
+            r.arity(3)?;
             cv.conns.push(Conn {
                 r: pos(r, 0)?,
                 term: r.str(1)?.to_owned(),
@@ -846,7 +844,7 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
             });
         }
         "intent" => {
-            arity(r, 3)?;
+            r.arity(3)?;
             pos(r, 0)?;
             cv.intents.push(r.clone());
         }
@@ -918,12 +916,11 @@ struct Target {
 
 impl Target {
     fn path(&self) -> String {
-        let ext = self.kind.map_or("shprim", FileKind::word);
-        if self.dir.is_empty() {
-            format!("{}.{ext}", self.stem)
-        } else {
-            format!("{}/{}.{ext}", self.dir, self.stem)
-        }
+        cell_path(
+            &self.dir,
+            &self.stem,
+            self.kind.map_or("shprim", FileKind::word),
+        )
     }
 }
 
@@ -1260,11 +1257,7 @@ impl<'a> Ctx<'a> {
         }
         let dir = self.dir_of(slib);
         ["shcomp", "shprim"].iter().find_map(|ext| {
-            let p = if dir.is_empty() {
-                format!("{stem}.{ext}")
-            } else {
-                format!("{dir}/{stem}.{ext}")
-            };
+            let p = cell_path(&dir, stem, ext);
             self.existing.get(&p).and_then(|b| Ctx::iface_of_text(b))
         })
     }
@@ -1320,6 +1313,19 @@ fn pt(xy: [i32; 2], upi: i32, what: &str, cell: &str, notes: &mut Notes) -> [i32
     }
 }
 
+/// A dump box (`x1 y1 x2 y2`, either corner first) converted (roundings reported as `what`)
+/// and normalized to `[min x, min y, max x, max y]`.
+///
+/// # Panics
+///
+/// When `b` holds fewer than 4 coordinates.
+fn box_in(b: &[i32], upi: i32, what: &str, cell: &str, notes: &mut Notes) -> [i32; 4] {
+    assert!(b.len() >= 4, "a box has 4 coordinates");
+    let p = pt([b[0], b[1]], upi, what, cell, notes);
+    let q = pt([b[2], b[3]], upi, what, cell, notes);
+    profile::norm_box(p, q)
+}
+
 /// The centre of a box (exact through doubling).
 fn centre(b: [i32; 4], upi: i32, what: &str, cell: &str, notes: &mut Notes) -> [i32; 2] {
     let x = i64::from(b[0]) + i64::from(b[2]);
@@ -1357,11 +1363,7 @@ fn pins_in(c: &DCell, sym: &Cv, notes: &mut Notes) -> Vec<PinRow> {
                 format!("terminal `{}` kept verbatim", t.name),
             );
         }
-        let dir = match t.dir.as_str() {
-            "input" => "in",
-            "output" => "out",
-            _ => "inout",
-        };
+        let dir = profile::dir_from_virtuoso(&t.dir);
         let inherit = parse_netexpr(&t.netexpr).map(|(_, d)| d);
         let figs: Vec<&PinFig> = sym.pinfigs.iter().filter(|f| f.term == t.name).collect();
         let main = figs
@@ -1732,25 +1734,9 @@ struct Tally {
     reported: usize,
 }
 
-fn begin(doc: &mut Document<'static>, k: RecordKind) {
-    doc.begin_record(k);
-}
-
-fn kv(doc: &mut Document<'static>, k: &str, v: &str) {
-    doc.push_attr(k);
-    doc.push_value(v);
-}
-
-/// Text height → Schemify `size` milli (`size = height · 16 / upi`, §3.5).
+/// Text height (1/`upi` inch) → Schemify `size` milli (§3.5).
 fn size_milli(height: i32, upi: i32) -> i32 {
-    let h = i64::from(height) * profile::MILLI_PER_INCH / i64::from(upi);
-    i32::try_from((h + 5) / 10).unwrap_or(i32::MAX)
-}
-
-fn coord_text(milli: i32) -> String {
-    let mut s = String::new();
-    schemify_format::format_coord(milli, &mut s);
-    s
+    profile::size_of_height(profile::height_from_virtuoso(height, upi))
 }
 
 /// A Schemify graphic: form, values (milli-units), arc angles (micro-radians), closed.
@@ -1782,18 +1768,8 @@ fn shape_in(sh: &Shape, upi: i32, cell: &str, notes: &mut Notes) -> Option<Graph
             Some(("poly".into(), pts, None, true))
         }
         "rect" => {
-            let (a, b) = (p(0, notes), p(1, notes));
-            Some((
-                "rect".into(),
-                vec![
-                    a[0].min(b[0]),
-                    a[1].min(b[1]),
-                    a[0].max(b[0]),
-                    a[1].max(b[1]),
-                ],
-                None,
-                false,
-            ))
+            let b = box_in(&sh.coords, upi, &sh.kind, cell, notes);
+            Some(("rect".into(), b.to_vec(), None, false))
         }
         "ellipse" | "arc" => {
             let (a, b) = (p(0, notes), p(1, notes));
@@ -1894,21 +1870,16 @@ fn push_graphic(
 ) {
     let Style { closed, fill, dash } = style;
     match id {
-        Some(id) => {
-            begin(doc, RecordKind::Shape);
-            doc.push_field(id);
-            doc.push_field(form);
-        }
-        None => begin(
-            doc,
-            match form {
+        Some(id) => push_record(doc, RecordKind::Shape, &[id, form]),
+        None => {
+            doc.begin_record(match form {
                 "line" => RecordKind::Line,
                 "rect" => RecordKind::Rect,
                 "arc" => RecordKind::Arc,
                 "circle" => RecordKind::Circle,
                 _ => RecordKind::Poly,
-            },
-        ),
+            });
+        }
     }
     for v in vals {
         doc.push_field_coord(*v);
@@ -1919,13 +1890,13 @@ fn push_graphic(
         doc.push_field(&coord_text(w));
     }
     if dash {
-        kv(doc, "dash", "1");
+        push_attr(doc, "dash", &["1"]);
     }
     if fill && form != "line" {
-        kv(doc, "fill", "true");
+        push_attr(doc, "fill", &["true"]);
     }
     if closed {
-        kv(doc, "closed", "true");
+        push_attr(doc, "closed", &["true"]);
     }
 }
 
@@ -1982,22 +1953,25 @@ fn nlp_in(text: &str, label_set: &str) -> Option<String> {
         return groups.iter().map(|g| nlp_in(g, label_set)).collect();
     }
     let inner = t.strip_prefix("[@")?.strip_suffix(']')?;
-    // Split on unescaped ':'.
-    let mut parts: Vec<String> = vec![String::new()];
+    // Split on unescaped ':', keeping which chars were escaped: an escaped `%` is text, only
+    // a bare one stands for the value.
+    let mut parts: Vec<Vec<(char, bool)>> = vec![Vec::new()];
     let mut esc = false;
     for ch in inner.chars() {
         if esc {
-            parts.last_mut().expect("one").push(ch);
+            parts.last_mut().expect("one").push((ch, true));
             esc = false;
         } else if ch == '\\' {
             esc = true;
         } else if ch == ':' {
-            parts.push(String::new());
+            parts.push(Vec::new());
         } else {
-            parts.last_mut().expect("one").push(ch);
+            parts.last_mut().expect("one").push((ch, false));
         }
     }
-    let p = parts[0].as_str();
+    let text = |p: &[(char, bool)]| -> String { p.iter().map(|c| c.0).collect() };
+    let name = text(&parts[0]);
+    let p = name.as_str();
     let hole = match p {
         "instanceName" => "name",
         "partName" | "cellName" => "cell",
@@ -2010,11 +1984,14 @@ fn nlp_in(text: &str, label_set: &str) -> Option<String> {
         2 | 3 => {
             // pre%post; the fallback (third part) is lost.
             let fmt = &parts[1];
-            let (pre, post) = fmt.split_once('%').unwrap_or((fmt.as_str(), ""));
+            let (pre, post) = match fmt.iter().position(|&c| c == ('%', false)) {
+                Some(k) => (text(&fmt[..k]), text(&fmt[k + 1..])),
+                None => (text(fmt), String::new()),
+            };
             Some(format!(
                 "{}{{{hole}}}{}",
-                ael::literal_to_template(pre),
-                ael::literal_to_template(post)
+                ael::literal_to_template(&pre),
+                ael::literal_to_template(&post)
             ))
         }
         _ => None,
@@ -2045,40 +2022,22 @@ fn build(
             .filter(|s| s.layer == "instance" && s.purpose == "drawing" && s.kind == "rect")
             .collect();
         match boxes[..] {
-            [] => kv(&mut doc, "vibox", "none"),
+            [] => push_attr(&mut doc, "vibox", &["none"]),
             [b] if b.coords.len() == 4 => {
-                let p = pt(
-                    [b.coords[0], b.coords[1]],
-                    sv.upi,
-                    "selection box",
-                    &cell,
-                    notes,
-                );
-                let q = pt(
-                    [b.coords[2], b.coords[3]],
-                    sv.upi,
-                    "selection box",
-                    &cell,
-                    notes,
-                );
+                let v = box_in(&b.coords, sv.upi, "selection box", &cell, notes);
                 doc.push_attr("vibox");
-                for v in [
-                    p[0].min(q[0]),
-                    p[1].min(q[1]),
-                    p[0].max(q[0]),
-                    p[1].max(q[1]),
-                ] {
-                    doc.push_value_coord(v);
+                for x in v {
+                    doc.push_value_coord(x);
                 }
             }
             _ => {}
         }
     }
     if kind == FileKind::Shprim {
-        kv(
+        push_attr(
             &mut doc,
             "provenance",
-            &format!("virtuoso {}/{}", c.lib, c.name),
+            &[&format!("virtuoso {}/{}", c.lib, c.name)],
         );
     }
     // Inherited pins from net-expression labels (§6.2).
@@ -2214,62 +2173,54 @@ fn build(
         impls.push((name.into(), lang.into(), Vec::new(), Some(tv.text.clone())));
     }
     if impls.len() > 1 {
-        kv(&mut doc, "default", &impls[0].0);
+        push_attr(&mut doc, "default", &[&impls[0].0]);
     }
     // Rank 1.
     for p in &pins {
-        begin(&mut doc, RecordKind::Pin);
+        doc.begin_record(RecordKind::Pin);
         doc.push_field(&p.name);
         doc.push_field(&p.dir);
         doc.push_field_coord(p.at[0]);
         doc.push_field_coord(p.at[1]);
         if let Some(i) = &p.inherit {
-            kv(&mut doc, "inherit", i);
+            push_attr(&mut doc, "inherit", &[i]);
         }
         if let Some(a) = &p.alias {
-            kv(&mut doc, "alias", a);
+            push_attr(&mut doc, "alias", &[a]);
         }
         // The pin's name label as drawn, where export would draw another (§6.2); after the
         // format's own attributes, where the writer puts unknown ones (the fingerprint).
         if let Some(sv) = sym.filter(|_| p.alias.is_none())
             && let Some(v) = pin_label_as_drawn(sv, &p.name, p.at, &cell, notes)
         {
-            doc.push_attr("vplabel");
-            for x in &v {
-                doc.push_value(x);
-            }
+            push_attr(&mut doc, "vplabel", &v);
         }
     }
     if kind != FileKind::Shbench {
         for p in &params {
-            begin(&mut doc, RecordKind::Param);
+            doc.begin_record(RecordKind::Param);
             doc.push_field(&p.name);
             doc.push_field(&p.default);
             if p.kind != "number" {
-                kv(&mut doc, "kind", &p.kind);
+                push_attr(&mut doc, "kind", &[&p.kind]);
             }
             if let Some(u) = p.unit {
-                kv(&mut doc, "unit", u);
+                push_attr(&mut doc, "unit", &[u]);
             }
             if p.kind == "choice" && !p.choices.is_empty() {
-                doc.push_attr("choices");
-                for ch in &p.choices {
-                    doc.push_value(ch);
-                }
+                push_attr(&mut doc, "choices", &p.choices);
             }
             if let Some(d) = &p.doc {
-                kv(&mut doc, "doc", d);
+                push_attr(&mut doc, "doc", &[d]);
             }
         }
     }
     for (name, lang, formats, _) in &impls {
-        begin(&mut doc, RecordKind::Impl);
+        doc.begin_record(RecordKind::Impl);
         doc.push_field(name);
         doc.push_field(lang);
         for (d, f) in formats {
-            doc.push_attr("format");
-            doc.push_value(d);
-            doc.push_value(f);
+            push_attr(&mut doc, "format", &[d, f]);
         }
     }
     // Rank 2: the symbol.
@@ -2327,7 +2278,7 @@ fn build(
                 continue;
             };
             let at = pt(l.xy, sv.upi, "label", &cell, notes);
-            begin(&mut doc, RecordKind::Stext);
+            doc.begin_record(RecordKind::Stext);
             doc.push_field_coord(at[0]);
             doc.push_field_coord(at[1]);
             doc.push_field(
@@ -2336,7 +2287,11 @@ fn build(
                     .as_str(),
             );
             doc.push_field(&tmpl);
-            kv(&mut doc, "size", &coord_text(size_milli(l.height, sv.upi)));
+            push_attr(
+                &mut doc,
+                "size",
+                &[&coord_text(size_milli(l.height, sv.upi))],
+            );
             if l.justify.ends_with("Center") {
                 doc.push_attr("hcenter");
             }
@@ -2344,12 +2299,10 @@ fn build(
                 doc.push_attr("vcenter");
             }
             // As drawn, for export while the template stays this one (§6.2).
-            doc.push_attr("vlabel");
-            for x in [
+            let drawn = [
                 &l.layer, &l.purpose, &l.justify, &l.font, &l.kind, &l.text, &tmpl,
-            ] {
-                doc.push_value(x);
-            }
+            ];
+            push_attr(&mut doc, "vlabel", &drawn);
         }
         if pin_labels > 0 {
             notes.dropped("pin-label", &cell, format!("{pin_labels} object(s)"));
@@ -2379,7 +2332,7 @@ fn build(
     // Rank 5: text view bodies.
     for (name, _, _, body) in &impls {
         if let Some(b) = body {
-            begin(&mut doc, RecordKind::Body);
+            doc.begin_record(RecordKind::Body);
             doc.push_field(name);
             for line in b.strip_suffix('\n').unwrap_or(b).split('\n') {
                 doc.push_verbatim(line.trim_end_matches('\r'));
@@ -2398,12 +2351,7 @@ fn derived_pins(sv: &Cv) -> Vec<PinRow> {
         .map(|s| {
             (
                 net_from_virtuoso(&s.term).text,
-                match s.dir.as_str() {
-                    "input" => "in",
-                    "output" => "out",
-                    _ => "inout",
-                }
-                .to_owned(),
+                profile::dir_from_virtuoso(&s.dir).to_owned(),
             )
         })
         .collect();
@@ -2430,18 +2378,18 @@ fn derived_pins(sv: &Cv) -> Vec<PinRow> {
 
 fn derived_symbol(doc: &mut Document<'static>, pins: &[PinRow]) {
     let rows = pins.iter().map(|p| p.at[1]).max().unwrap_or(0);
-    begin(doc, RecordKind::Rect);
+    doc.begin_record(RecordKind::Rect);
     for v in [-20_000, -10_000, 20_000, rows + 10_000] {
         doc.push_field_coord(v);
     }
     for p in pins {
-        begin(doc, RecordKind::Line);
+        doc.begin_record(RecordKind::Line);
         let edge = if p.at[0] < 0 { -20_000 } else { 20_000 };
         for v in [p.at[0].min(edge), p.at[1], p.at[0].max(edge), p.at[1]] {
             doc.push_field_coord(v);
         }
     }
-    begin(doc, RecordKind::Stext);
+    doc.begin_record(RecordKind::Stext);
     doc.push_field_coord(-20_000);
     doc.push_field_coord(-20_000);
     doc.push_field("R0");
@@ -2587,7 +2535,7 @@ fn schematic_in(
         let o = profile::orient_from_virtuoso(&inst.orient).unwrap_or(Orient::R0);
         if inst.lib == "basic" && inst.cell == "noConn" {
             let id = ids.next(id_of(inst.r), &reserved);
-            begin(doc, RecordKind::Noconn);
+            doc.begin_record(RecordKind::Noconn);
             doc.push_field(&id);
             doc.push_field_coord(at[0]);
             doc.push_field_coord(at[1]);
@@ -2634,22 +2582,22 @@ fn schematic_in(
                 None => net_from_virtuoso(&net),
             };
             let id = ids.next(id_of(inst.r), &reserved);
-            begin(doc, RecordKind::Label);
+            doc.begin_record(RecordKind::Label);
             doc.push_field(&id);
             doc.push_field_coord(pin_at[0]);
             doc.push_field_coord(pin_at[1]);
             doc.push_field(o.as_str());
             doc.push_field(&n.text);
             if n.global {
-                kv(doc, "global", "true");
+                push_attr(doc, "global", &["true"]);
             }
             // The symbol instance's name, so export draws the same instance (§6.1); a name
             // the exporter generated (`sfyG<n>`) is not worth keeping.
             if !inst.name.starts_with("sfyG") {
-                kv(doc, "vinst", &inst.name);
+                push_attr(doc, "vinst", &[&inst.name]);
             }
             if inst.lib != "analogLib" {
-                kv(doc, "vlib", &inst.lib);
+                push_attr(doc, "vlib", &[&inst.lib]);
             }
             continue;
         }
@@ -2709,20 +2657,20 @@ fn schematic_in(
             }
         };
         let id = ids.next(id_of(inst.r), &reserved);
-        begin(doc, RecordKind::Inst);
+        doc.begin_record(RecordKind::Inst);
         doc.push_field(&id);
         doc.push_field(&cref);
         doc.push_attr("at");
         doc.push_value_coord(at[0]);
         doc.push_value_coord(at[1]);
         doc.push_value(o.as_str());
-        kv(doc, "name", &profile::inst_from_virtuoso(&inst.name));
+        push_attr(doc, "name", &[&profile::inst_from_virtuoso(&inst.name)]);
         let props: Vec<&Prop> = by_owner.get(&inst.r).cloned().unwrap_or_default();
         if props
             .iter()
             .any(|p| p.name == "nlAction" && p.value == "ignore")
         {
-            kv(doc, "ignore", "true");
+            push_attr(doc, "ignore", &["true"]);
         }
         let iface = m.iface.clone().unwrap_or_default();
         let row = m.row.map(|r| &ctx.map.maps[r]);
@@ -2899,12 +2847,10 @@ fn schematic_in(
             continue;
         }
         for (n, v) in overrides {
-            kv(doc, &n, &v);
+            push_attr(doc, &n, &[&v]);
         }
         for (p, n) in inherits {
-            doc.push_attr("inherit");
-            doc.push_value(&p);
-            doc.push_value(&n);
+            push_attr(doc, "inherit", &[p, n]);
         }
     }
     // Schematic pins.
@@ -2917,7 +2863,7 @@ fn schematic_in(
             .map_or_else(|| net_from_virtuoso(&s.term).text, str::to_owned);
         let id = ids.next(id_of(s.r), &reserved);
         if bench {
-            begin(doc, RecordKind::Label);
+            doc.begin_record(RecordKind::Label);
         } else {
             if !pins.iter().any(|p| p.name == name) {
                 notes.review(
@@ -2926,7 +2872,7 @@ fn schematic_in(
                     format!("schematic pin {name} has no symbol terminal"),
                 );
             }
-            begin(doc, RecordKind::Port);
+            doc.begin_record(RecordKind::Port);
         }
         doc.push_field(&id);
         doc.push_field_coord(at[0]);
@@ -2935,16 +2881,9 @@ fn schematic_in(
         doc.push_field(&name);
         // A pin master other than the one export picks for the direction (Cadence's
         // sample library uses basic/sympin view symbolr): kept, so export uses it again.
-        let usual = match s.dir.as_str() {
-            "input" => "ipin",
-            "output" => "opin",
-            _ => "iopin",
-        };
+        let usual = profile::pin_master(&s.dir);
         if (s.lib.as_str(), s.cell.as_str(), s.view.as_str()) != ("basic", usual, "symbol") {
-            doc.push_attr("vpin");
-            for v in [&s.lib, &s.cell, &s.view] {
-                doc.push_value(v);
-            }
+            push_attr(doc, "vpin", &[&s.lib, &s.cell, &s.view]);
         }
     }
     // Schematic pins drawn as bare pin shapes: ports at the rectangle centre, carrying the
@@ -2952,41 +2891,25 @@ fn schematic_in(
     // draws the same shape again; in a bench, labels (as `spin`s).
     for f in &sv.pinfigs {
         tally.out += 1;
-        let a = pt(
-            [f.b[0], f.b[1]],
-            upi,
-            &format!("pin {}", f.term),
-            &cell,
-            notes,
-        );
-        let b = pt(
-            [f.b[2], f.b[3]],
-            upi,
-            &format!("pin {}", f.term),
-            &cell,
-            notes,
-        );
+        let b = box_in(&f.b, upi, &format!("pin {}", f.term), &cell, notes);
         let name = sv
             .prop(f.r, "schemifyNet")
             .map_or_else(|| net_from_virtuoso(&f.term).text, str::to_owned);
         let id = ids.next(id_of(f.r), &reserved);
-        begin(
-            doc,
-            if bench {
-                RecordKind::Label
-            } else {
-                RecordKind::Port
-            },
-        );
+        doc.begin_record(if bench {
+            RecordKind::Label
+        } else {
+            RecordKind::Port
+        });
         doc.push_field(&id);
-        doc.push_field_coord((a[0] + b[0]) / 2);
-        doc.push_field_coord((a[1] + b[1]) / 2);
+        doc.push_field_coord((b[0] + b[2]) / 2);
+        doc.push_field_coord((b[1] + b[3]) / 2);
         doc.push_field(Orient::R0.as_str());
         doc.push_field(&name);
         if !bench {
             doc.push_attr("vfig");
-            doc.push_value_coord((b[0] - a[0]).abs());
-            doc.push_value_coord((b[1] - a[1]).abs());
+            doc.push_value_coord(b[2] - b[0]);
+            doc.push_value_coord(b[3] - b[1]);
         }
     }
     // Wires: segments, stubs removed.
@@ -3041,19 +2964,8 @@ fn schematic_in(
             }
             let id = ids.next(if first { id_of(w.r) } else { None }, &reserved);
             first = false;
-            let (a, b) = if (seg[1][0], seg[1][1]) < (seg[0][0], seg[0][1]) {
-                (seg[1], seg[0])
-            } else {
-                (seg[0], seg[1])
-            };
-            begin(doc, RecordKind::Wire);
-            doc.push_field(&id);
-            for v in [a[0], a[1], b[0], b[1]] {
-                doc.push_field_coord(v);
-            }
-            if w.width > 0 {
-                kv(doc, "bus", "true");
-            }
+            let xy = [seg[0][0], seg[0][1], seg[1][0], seg[1][1]];
+            crate::remap::push_wire(doc, &id, xy, w.width > 0);
         }
     }
     // Labels.
@@ -3087,19 +2999,16 @@ fn schematic_in(
             // attribute the format keeps) so it comes back as drawn.
             _ => {
                 let id = ids.next(id_of(l.r), &reserved);
-                begin(doc, RecordKind::Text);
+                doc.begin_record(RecordKind::Text);
                 doc.push_field(&id);
                 doc.push_field_coord(origin[0]);
                 doc.push_field_coord(origin[1]);
                 doc.push_field(o.as_str());
                 doc.push_field(&l.text);
-                kv(doc, "size", &coord_text(size_milli(l.height, upi)));
+                push_attr(doc, "size", &[&coord_text(size_milli(l.height, upi))]);
                 let v = [&l.layer, &l.purpose, &l.justify, &l.font, &l.kind];
                 if v != ["text", "drawing", "upperLeft", "stick", "normal"] {
-                    doc.push_attr("vlabel");
-                    for x in v {
-                        doc.push_value(x);
-                    }
+                    push_attr(doc, "vlabel", &v);
                 }
                 continue;
             }
@@ -3134,29 +3043,26 @@ fn schematic_in(
                     (n.text, n.global)
                 };
                 let id = ids.next(id_of(l.r), &reserved);
-                begin(doc, RecordKind::Label);
+                doc.begin_record(RecordKind::Label);
                 doc.push_field(&id);
                 doc.push_field_coord(at[0]);
                 doc.push_field_coord(at[1]);
                 doc.push_field(o.as_str());
                 doc.push_field(&text);
                 if global {
-                    kv(doc, "global", "true");
+                    push_attr(doc, "global", &["true"]);
                 }
                 // What export would draw otherwise (§6.2): the net expression itself, and a
                 // style other than export's (lowerLeft, stick, LABEL_HEIGHT), so the label
                 // comes back as drawn.
                 if parse_netexpr(&l.text).is_some() {
-                    kv(doc, "vexpr", &l.text);
+                    push_attr(doc, "vexpr", &[&l.text]);
                 }
-                let h = i64::from(l.height) * i64::from(super::write::UPI) / i64::from(upi.max(1));
+                let h = profile::height_from_virtuoso(l.height, upi);
                 if (l.justify.as_str(), l.font.as_str(), h)
                     != ("lowerLeft", "stick", i64::from(super::write::LABEL_HEIGHT))
                 {
-                    doc.push_attr("vstyle");
-                    doc.push_value(&l.justify);
-                    doc.push_value(&l.font);
-                    doc.push_value(&h.to_string());
+                    push_attr(doc, "vstyle", &[&l.justify, &l.font, &h.to_string()]);
                 }
             }
             _ => unreachable!("other labels are texts"),
@@ -3306,7 +3212,7 @@ fn remaster(
     pending: &[Vec<Pending>],
     notes: &mut Notes,
 ) {
-    use crate::design::{geom, load, sym_pins};
+    use crate::design::{geom, load_closed, sym_pins};
     let mut files: Files = ctx.existing.clone();
     for (k, d) in docs.iter().enumerate() {
         if let Some((doc, _, _)) = d {
@@ -3318,10 +3224,7 @@ fn remaster(
     }
     let mut manifest = Document::new(FileKind::Project);
     for (l, d) in &ctx.libs {
-        begin(&mut manifest, RecordKind::Lib);
-        manifest.push_field(l);
-        manifest.push_field("path");
-        manifest.push_field(d);
+        push_lib(&mut manifest, l, d);
     }
     for t in ctx
         .targets
@@ -3329,10 +3232,7 @@ fn remaster(
         .filter(|t| t.write && !t.slib.is_empty() && !ctx.libs.contains_key(&t.slib))
     {
         if (1..manifest.record_count()).all(|r| manifest.field(r, 0) != Some(t.slib.as_str())) {
-            begin(&mut manifest, RecordKind::Lib);
-            manifest.push_field(&t.slib);
-            manifest.push_field("path");
-            manifest.push_field(&t.dir);
+            push_lib(&mut manifest, &t.slib, &t.dir);
         }
     }
     files.insert(
@@ -3344,22 +3244,14 @@ fn remaster(
             continue;
         }
         let path = ctx.targets[k].path();
-        let mut absent = BTreeSet::new();
-        let d = loop {
-            match load(&files, &absent, &[path.as_str()]) {
-                Ok(d) => break Some(d),
-                Err(crate::design::LoadError::Missing(m)) => absent.extend(m),
-                Err(crate::design::LoadError::Invalid(p)) => {
-                    notes.review(
-                        "name",
-                        &path,
-                        format!("re-mastering skipped: {}", p.join("; ")),
-                    );
-                    break None;
-                }
+        let d = match load_closed(&files, &[path.as_str()]) {
+            Ok(d) => d,
+            Err(p) => {
+                let why = format!("re-mastering skipped: {}", p.join("; "));
+                notes.review("name", &path, why);
+                continue;
             }
         };
-        let Some(d) = d else { continue };
         let ci = d.find(&path).expect("loaded");
         let g = geom(&d, ci);
         let n = crate::nets::extract(&d, ci, &g);
@@ -3390,18 +3282,8 @@ fn remaster(
             // Pin-pattern alignment (§6.4): the core cell goes where its pins land on the
             // Virtuoso master's, in the instance's orientation.
             let at = new_pins.as_ref().and_then(|np| {
-                let old: Vec<[i32; 2]> = pairs
-                    .iter()
-                    .map(|(q, _)| {
-                        crate::design::place(old_pins.at[*q], g.inst_orient[inst], g.inst_at[inst])
-                            .unwrap_or(g.inst_at[inst])
-                    })
-                    .collect();
-                let new: Vec<Option<[i32; 2]>> = pairs
-                    .iter()
-                    .map(|(_, nm)| np.iter().find(|(x, _)| x == nm).map(|(_, p)| *p))
-                    .collect();
-                crate::align::fit(&old, &new, g.inst_orient[inst]).map(|f| f.origin)
+                let (o, at) = (g.inst_orient[inst], g.inst_at[inst]);
+                crate::align::fit_instance(&old_pins.at, &pairs, np, o, at)
             });
             rem.push(crate::remap::Remaster {
                 inst,
@@ -3454,11 +3336,7 @@ pub fn targets(sfyx: &str) -> Result<Vec<String>, Vec<String>> {
             continue;
         }
         for ext in ["shcomp", "shprim", "shbench"] {
-            out.insert(if slib.is_empty() {
-                format!("{}.{ext}", c.name)
-            } else {
-                format!("{slib}/{}.{ext}", c.name)
-            });
+            out.insert(cell_path(&slib, &c.name, ext));
         }
     }
     Ok(out.into_iter().collect())
@@ -3551,16 +3429,7 @@ fn with_fingerprints(doc: &Document<'static>, fresh: &Document<'static>) -> Docu
         _ => &[Part::Schematic],
     };
     let mut out = Document::new(doc.kind());
-    for a in doc.attrs(0) {
-        let k = doc.attr_key(a);
-        if k == "vsym" || k == "vsch" {
-            continue;
-        }
-        out.push_attr(k);
-        for v in doc.attr_values(a) {
-            out.push_value(v);
-        }
-    }
+    copy_header(&mut out, doc, &["vsym", "vsch"]);
     for p in parts {
         out.push_attr(fingerprint_attr(*p));
         out.push_value(&fingerprint(fresh, *p));
@@ -3574,23 +3443,12 @@ fn with_fingerprints(doc: &Document<'static>, fresh: &Document<'static>) -> Docu
 
 /// The manifest with `lib <name> path <dir>` rows added for `new`.
 fn manifest_with(old: Option<&Vec<u8>>, new: &BTreeMap<String, String>) -> String {
-    let mut doc = Document::new(FileKind::Project);
-    if let Some(src) = old.and_then(|b| parse(b).ok()) {
-        for a in src.attrs(0) {
-            doc.push_attr(src.attr_key(a));
-            for v in src.attr_values(a) {
-                doc.push_value(v);
-            }
-        }
-        for r in 1..src.record_count() {
-            doc.copy_record(&src, r);
-        }
-    }
+    let mut doc = match old.and_then(|b| parse(b).ok()) {
+        Some(src) => crate::design::owned_doc(&src),
+        None => Document::new(FileKind::Project),
+    };
     for (l, d) in new {
-        begin(&mut doc, RecordKind::Lib);
-        doc.push_field(l);
-        doc.push_field("path");
-        doc.push_field(d);
+        push_lib(&mut doc, l, d);
     }
     schemify_format::write(&doc)
 }
@@ -3615,10 +3473,7 @@ pub(crate) fn image(
     let mut files: Files = Files::new();
     let mut manifest = Document::new(FileKind::Project);
     for (l, dir) in &d.libs {
-        begin(&mut manifest, RecordKind::Lib);
-        manifest.push_field(l);
-        manifest.push_field("path");
-        manifest.push_field(dir);
+        push_lib(&mut manifest, l, dir);
     }
     files.insert(
         "schemify.project".into(),
@@ -3719,7 +3574,7 @@ fn pin_label_as_drawn(
     };
     let xy = pt(l.xy, sv.upi, "pin label", cell, notes);
     let d = [xy[0] - at[0], xy[1] - at[1]];
-    let h = i64::from(l.height) * i64::from(super::write::UPI) / i64::from(sv.upi.max(1));
+    let h = profile::height_from_virtuoso(l.height, sv.upi);
     let o = profile::orient_from_virtuoso(&l.orient).unwrap_or(Orient::R0);
     let usual = i64::from(super::write::LABEL_HEIGHT / 2);
     if d == [0, 0]
@@ -3797,8 +3652,64 @@ fn rejoin_split_wires(wires: &[DumpWire<'_>]) -> (BTreeMap<u32, Vec<[i32; 2]>>, 
 }
 
 #[cfg(test)]
-mod si_tests {
-    use super::{BTreeMap, seg_key, si_text, unswap_wire_ids};
+mod tests {
+    use super::super::write::{template_items, template_to_nlp};
+    use super::{BTreeMap, nlp_in, seg_key, si_text, unswap_wire_ids};
+    use proptest::prelude::*;
+
+    /// A label template from literals and holes, braces of the literals doubled.
+    fn template(lits: &[String], holes: &[&str]) -> String {
+        let mut t = lits[0].replace('{', "{{").replace('}', "}}");
+        for (h, l) in holes.iter().zip(&lits[1..]) {
+            t.push_str(&format!("{{{h}}}"));
+            t.push_str(&l.replace('{', "{{").replace('}', "}}"));
+        }
+        t
+    }
+
+    proptest! {
+        /// Export's NLP text of a symbol label reads back as the same template (§3.5),
+        /// whatever NLP-reserved characters (`\ [ ] : %`) and braces the literals hold.
+        #[test]
+        fn label_templates_round_trip_through_nlp(
+            (holes, lits) in (1usize..4).prop_flat_map(|n| (
+                prop::collection::vec(prop::sample::select(vec!["w", "l", "m", "nf"]), n),
+                prop::collection::vec("[a-z %:\\[\\]\\\\{}=/]{0,5}", n + 1),
+            )),
+        ) {
+            let t = template(&lits, &holes);
+            let items = template_items(&t).expect("balanced");
+            let nlp = template_to_nlp(&items, &["w", "l", "m", "nf"]).expect("every hole a param");
+            prop_assert_eq!(nlp_in(&nlp, ""), Some(t.clone()), "{} via {}", t, nlp);
+        }
+    }
+
+    proptest! {
+        /// Respelling a number keeps its value (to rounding of the suffix scale), whatever
+        /// its magnitude and sign: both sides of the stash comparison read numbers through
+        /// `si_text`, so a respelling that moved the value would hide an edit.
+        #[test]
+        fn engineering_text_keeps_the_value(m in 1u32..10_000_000, e in -21i32..17, neg: bool) {
+            let t = format!("{}{m}e{e}", if neg { "-" } else { "" });
+            let x = schemify_expr::parse_num(&t).unwrap();
+            let back = si_text(&t);
+            let y = schemify_expr::parse_num(&back)
+                .unwrap_or_else(|_| panic!("{t} became unreadable {back}"));
+            prop_assert!((x - y).abs() <= x.abs() * 1e-14, "{} = {} became {} = {}", t, x, back, y);
+        }
+    }
+
+    #[test]
+    fn an_escaped_percent_is_text() {
+        // `\%` is a literal percent (NLP); only the first bare `%` is the value.
+        assert_eq!(nlp_in("[@w:50\\%=%]", "").as_deref(), Some("50%={w}"));
+        assert_eq!(nlp_in("[@w:a\\%b%c]", "").as_deref(), Some("a%b{w}c"));
+        assert_eq!(nlp_in("[@w:%:fallback]", "").as_deref(), Some("{w}"));
+        assert_eq!(nlp_in("[@w:no value]", "").as_deref(), Some("no value{w}"));
+        assert_eq!(nlp_in("[@refDes]", ""), None);
+        assert_eq!(nlp_in("[@w:a:b:c]", ""), None);
+        assert_eq!(nlp_in("[@w", ""), None);
+    }
 
     #[test]
     fn swapped_wire_ids_go_back_only_as_a_permutation() {

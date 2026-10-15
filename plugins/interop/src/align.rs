@@ -74,6 +74,37 @@ pub fn fit(old: &[[i32; 2]], new: &[Option<[i32; 2]>], o: Orient) -> Option<Fit>
     out
 }
 
+/// [`fit`] for one placed instance: the origin of its replacement master. The instance sits
+/// at `at` in orientation `o`; `old_at` holds its old master's symbol-local pins, `pairs`
+/// `(old pin index, new pin name)` the connections to carry, `new_pins` the replacement's
+/// `(name, symbol-local point)`. A pair whose name the replacement lacks places nothing.
+/// Export (onto analogLib or a map row) and import (back onto a core cell) both place by it.
+///
+/// # Panics
+///
+/// When a pair indexes past `old_at`, or as [`fit`].
+pub fn fit_instance(
+    old_at: &[[i32; 2]],
+    pairs: &[(usize, String)],
+    new_pins: &[(String, [i32; 2])],
+    o: Orient,
+    at: [i32; 2],
+) -> Option<[i32; 2]> {
+    assert!(
+        pairs.iter().all(|(p, _)| *p < old_at.len()),
+        "a pair names a pin the old master lacks"
+    );
+    let old: Vec<[i32; 2]> = pairs
+        .iter()
+        .map(|(p, _)| place(old_at[*p], o, at).unwrap_or(at))
+        .collect();
+    let new: Vec<Option<[i32; 2]>> = pairs
+        .iter()
+        .map(|(_, nm)| new_pins.iter().find(|(x, _)| x == nm).map(|(_, p)| *p))
+        .collect();
+    fit(&old, &new, o).map(|f| f.origin)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,6 +172,12 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "a pair names a pin the old master lacks")]
+    fn instance_fits_check_their_pairs() {
+        fit_instance(&[[0, 0]], &[(1, "a".into())], &[], Orient::R0, [0, 0]);
+    }
+
+    #[test]
     fn a_missing_terminal_and_no_pairs() {
         let old = [[0, 0], [0, 60_000]];
         assert_eq!(fit(&old, &[None, None], Orient::R0), None);
@@ -150,6 +187,34 @@ mod tests {
     }
 
     proptest! {
+        /// `fit_instance`'s origin is a certificate: placed there in the instance's
+        /// orientation, every renamed replacement pin lands on the drawn pin it pairs with.
+        /// Names the replacement lacks place nothing (negative space).
+        #[test]
+        fn instance_fits_land_every_pair(
+            pins in prop::collection::btree_set((-50i32..50, -50i32..50), 2..6),
+            shift in (-30i32..30, -30i32..30),
+            at in (-500i32..500, -500i32..500),
+            oi in 0usize..8,
+        ) {
+            let o = ORIENTS[oi];
+            let at = [at.0 * 1000, at.1 * 1000];
+            let old_at: Vec<[i32; 2]> = pins.iter().map(|(x, y)| [x * 1000, y * 1000]).collect();
+            let new_pins: Vec<(String, [i32; 2])> = old_at
+                .iter()
+                .enumerate()
+                .map(|(k, p)| (format!("p{k}"), [p[0] - shift.0 * 1000, p[1] - shift.1 * 1000]))
+                .collect();
+            let pairs: Vec<(usize, String)> = (0..old_at.len()).map(|k| (k, format!("p{k}"))).collect();
+            let origin = fit_instance(&old_at, &pairs, &new_pins, o, at).expect("a moved master fits");
+            for (k, name) in &pairs {
+                let new = new_pins.iter().find(|(n, _)| n == name).unwrap().1;
+                prop_assert_eq!(place(new, o, origin), place(old_at[*k], o, at));
+            }
+            let unknown: Vec<(usize, String)> = (0..old_at.len()).map(|k| (k, format!("q{k}"))).collect();
+            prop_assert_eq!(fit_instance(&old_at, &unknown, &new_pins, o, at), None);
+        }
+
         /// Any pattern moved by any translation, in any orientation, fits back exactly; one
         /// pin moved off the pattern no longer lands (negative space).
         #[test]

@@ -128,11 +128,30 @@ impl Record {
             .ok_or_else(|| self.bad(i, "text"))
     }
 
-    fn bad(&self, i: usize, what: &str) -> Error {
+    /// An error on this record's line, its message prefixed with the tag (`"inst: …"`): the
+    /// one shape every reader of records reports in.
+    pub fn err(&self, msg: impl Into<String>) -> Error {
         Error {
             line: self.line,
-            msg: format!("{}: field {} is not {what}", self.tag, i + 1),
+            msg: format!("{}: {}", self.tag, msg.into()),
         }
+    }
+
+    /// Checks that the record has exactly `n` fields.
+    ///
+    /// # Errors
+    ///
+    /// Any other field count, as `"<tag>: <k> fields, expected <n>"`.
+    pub fn arity(&self, n: usize) -> Result<(), Error> {
+        if self.fields.len() == n {
+            Ok(())
+        } else {
+            Err(self.err(format!("{} fields, expected {n}", self.fields.len())))
+        }
+    }
+
+    fn bad(&self, i: usize, what: &str) -> Error {
+        self.err(format!("field {} is not {what}", i + 1))
     }
 }
 
@@ -430,17 +449,31 @@ pub fn text(s: &str) -> Value {
     if s.len() <= CHUNK_MAX {
         return Value::Str(s.to_owned());
     }
-    let mut chunks = Vec::new();
-    let mut rest = s;
+    Value::List(chunks(s, CHUNK_MAX).into_iter().map(self::s).collect())
+}
+
+/// Splits `text` into pieces of at most `max` bytes, cut on char boundaries; no piece is
+/// empty, so `""` gives none. Every chunked string of the exchange (text fields, the stash
+/// properties) is cut by this.
+///
+/// # Panics
+///
+/// When `max` < 4: a piece must hold any char.
+pub fn chunks(text: &str, max: usize) -> Vec<&str> {
+    assert!(max >= 4, "chunks must hold any char");
+    let mut out = Vec::with_capacity(text.len().div_ceil(max));
+    let mut rest = text;
     while !rest.is_empty() {
-        let mut cut = rest.len().min(CHUNK_MAX);
+        let mut cut = rest.len().min(max);
         while !rest.is_char_boundary(cut) {
             cut -= 1;
         }
-        chunks.push(Value::Str(rest[..cut].to_owned()));
-        rest = &rest[cut..];
+        let (head, tail) = rest.split_at(cut);
+        out.push(head);
+        rest = tail;
     }
-    Value::List(chunks)
+    debug_assert_eq!(out.iter().map(|c| c.len()).sum::<usize>(), text.len());
+    out
 }
 
 /// Shorthand: a string value.
@@ -465,6 +498,63 @@ pub fn pairs<'a>(kv: impl IntoIterator<Item = (&'a str, &'a str)>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// `chunks` is the greedy cut: the pieces concatenate to the input, none is empty or
+        /// longer than `max`, and each but the last is as long as a char boundary allows
+        /// (the next char would not fit). Multi-byte chars sit on every boundary somewhere.
+        #[test]
+        fn chunks_are_greedy_char_boundary_cuts(t in "[a\u{e9}\u{20ac}\u{1d11e}]{0,40}", max in 4usize..12) {
+            let pieces = chunks(&t, max);
+            prop_assert_eq!(pieces.concat(), t.clone());
+            for (k, p) in pieces.iter().enumerate() {
+                prop_assert!(!p.is_empty() && p.len() <= max);
+                if let Some(next) = pieces.get(k + 1) {
+                    let c = next.chars().next().unwrap();
+                    prop_assert!(p.len() + c.len_utf8() > max, "{:?} could take {:?}", p, c);
+                }
+            }
+            // A text field reads back whole, chunked or not.
+            prop_assert_eq!(text(&t).as_text(), Some(t.clone()));
+        }
+    }
+
+    #[test]
+    fn chunks_of_nothing_and_exact_fits() {
+        assert!(chunks("", 4).is_empty());
+        assert_eq!(chunks("abcd", 4), ["abcd"]);
+        assert_eq!(chunks("abcde", 4), ["abcd", "e"]);
+        // A 4-byte char never splits, and a 3-byte one waits for the next piece.
+        assert_eq!(chunks("a\u{1d11e}", 4), ["a", "\u{1d11e}"]);
+        assert_eq!(chunks("ab\u{20ac}", 4), ["ab", "\u{20ac}"]);
+        assert_eq!(
+            text(&"x".repeat(CHUNK_MAX)),
+            Value::Str("x".repeat(CHUNK_MAX))
+        );
+        assert!(matches!(text(&"x".repeat(CHUNK_MAX + 1)), Value::List(v) if v.len() == 2));
+    }
+
+    #[test]
+    #[should_panic(expected = "chunks must hold any char")]
+    fn chunks_refuse_a_max_below_one_char() {
+        chunks("abc", 3);
+    }
+
+    #[test]
+    fn record_errors_name_the_tag_and_line() {
+        let r = Record {
+            tag: "inst".into(),
+            fields: vec![i(1), s("x")],
+            line: 7,
+        };
+        assert_eq!(r.arity(2), Ok(()));
+        let e = r.arity(3).unwrap_err();
+        assert_eq!((e.line, e.msg.as_str()), (7, "inst: 2 fields, expected 3"));
+        assert_eq!(r.err("bad").to_string(), "line 7: inst: bad");
+        assert_eq!(r.int(1).unwrap_err().msg, "inst: field 2 is not an integer");
+        assert_eq!(r.str(5).unwrap_err().msg, "inst: field 6 is not a string");
+    }
 
     #[test]
     fn round_trips_escapes_and_chunks() {

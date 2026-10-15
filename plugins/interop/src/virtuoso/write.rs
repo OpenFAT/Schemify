@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use schemify_format::{FileKind, Orient, RecordKind, format_coord, parse_coord};
+use schemify_format::{FileKind, Orient, RecordKind, parse_coord};
 
 use super::ael::{self, Name};
 use super::devices;
@@ -18,12 +18,14 @@ use super::read::{
 };
 use super::{Export, ExportOptions, ade};
 use crate::align;
-use crate::design::{Cell, Design, geom, place, sym_pins};
+use crate::design::{Cell, Design, geom, sym_pins};
 use crate::map::{self, How, Mapping, Plan};
 use crate::merge;
 use crate::nets;
 use crate::notes::Notes;
-use crate::profile::{self, MILLI_PER_INCH, net_from_virtuoso, net_to_virtuoso};
+use crate::profile::{
+    self, MILLI_PER_INCH, coord_text, dir_to_virtuoso, net_from_virtuoso, net_to_virtuoso, norm_box,
+};
 use crate::remap::{self, Remaster, STEP};
 use crate::sfyx::{self, Record, Value, i, pairs, s};
 
@@ -39,9 +41,6 @@ pub const BUS_WIDTH: i32 = 6_000;
 
 /// Height of exported wire and pin-name labels (1/16 inch).
 pub const LABEL_HEIGHT: i32 = 10_000;
-
-/// Text size whose height is one milli-unit × 10: `height = size × 10_000` (§3.5).
-pub const HEIGHT_PER_SIZE_MILLI: i32 = 10;
 
 /// Default `size` of a `stext` and of a `text` when the record has none (the editor's).
 pub const STEXT_SIZE_MILLI: i32 = 300;
@@ -124,13 +123,9 @@ pub fn export(
             .iter_mut()
             .find(|v| v.view == view)
             .expect("every cell kind has its stash view");
-        for (n, chunk) in chunk_text(&text, STASH_CHUNK).into_iter().enumerate() {
-            cv.props.push(Prop {
-                r: 0,
-                name: format!("schemifyRecords{}", n + 1),
-                ty: "string".into(),
-                value: chunk,
-            });
+        for (n, chunk) in sfyx::chunks(&text, STASH_CHUNK).into_iter().enumerate() {
+            cv.props
+                .push(Prop::string(0, &format!("schemifyRecords{}", n + 1), chunk));
         }
     }
     let recs = records(&dump);
@@ -268,22 +263,6 @@ fn inst_info(
     })
 }
 
-/// Splits `text` into chunks of at most `max` bytes on char boundaries.
-pub fn chunk_text(text: &str, max: usize) -> Vec<String> {
-    assert!(max >= 4, "chunks must hold any char");
-    let mut out = Vec::new();
-    let mut rest = text;
-    while !rest.is_empty() {
-        let mut cut = rest.len().min(max);
-        while !rest.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        out.push(rest[..cut].to_owned());
-        rest = &rest[cut..];
-    }
-    out
-}
-
 // ---------------------------------------------------------------------------------------
 // Serialization: Dump → records (§4.2 order, refs assigned after sorting)
 // ---------------------------------------------------------------------------------------
@@ -380,12 +359,7 @@ pub fn records(d: &Dump) -> Vec<Record> {
 /// (its fingerprint equals the header attribute import wrote, §7.5).
 fn keep(c: &Cell, part: super::Part, mut cv: Cv) -> Cv {
     if c.header(super::fingerprint_attr(part)) == Some(super::fingerprint(&c.doc, part).as_str()) {
-        cv.props.push(Prop {
-            r: 0,
-            name: "schemifyKeep".into(),
-            ty: "string".into(),
-            value: "1".into(),
-        });
+        cv.props.push(Prop::string(0, "schemifyKeep", "1"));
     }
     cv
 }
@@ -643,16 +617,10 @@ fn conv(p: [i32; 2], what: &str, cell: &Cell, notes: &mut Notes) -> [i32; 2] {
         notes.add(
             "off-grid",
             &cell.path,
-            format!("{what} at ({}, {})", milli(p[0]), milli(p[1])),
+            format!("{what} at ({}, {})", coord_text(p[0]), coord_text(p[1])),
         );
     }
     profile::point_to_virtuoso(p).unwrap_or([p[0], i32::MAX])
-}
-
-fn milli(v: i32) -> String {
-    let mut s = String::new();
-    format_coord(v, &mut s);
-    s
 }
 
 /// Coordinates of a Schemify record's fields `from..` as milli-units.
@@ -662,14 +630,6 @@ fn coords(c: &Cell, r: u32, from: usize) -> Vec<i32> {
         .skip(from)
         .map(|t| parse_coord(t).unwrap_or(0))
         .collect()
-}
-
-fn vdir(dir: &str) -> &'static str {
-    match dir {
-        "in" => "input",
-        "out" => "output",
-        _ => "inputOutput",
-    }
 }
 
 /// The Virtuoso spelling of a pin or terminal name.
@@ -982,10 +942,10 @@ fn param_out(c: &Cell, r: u32, notes: &mut Notes) -> CdfParam {
         "choice" => {
             p.ty = "cyclic".into();
             p.choices = c
-                .doc
-                .find_attr(r, "choices")
-                .map(|a| c.doc.attr_values(a).map(str::to_owned).collect())
-                .unwrap_or_default();
+                .attr_values(r, "choices")
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
             p.def = literal(default, name, c, notes);
         }
         "string" => {
@@ -1022,7 +982,7 @@ pub fn optional_param(k: &str, c: &str) -> String {
 
 /// Splits a template into literal runs and `{hole}`s (`{{`/`}}` kept as text). `None` on
 /// unbalanced braces.
-fn template_items(t: &str) -> Option<Vec<(bool, String)>> {
+pub(crate) fn template_items(t: &str) -> Option<Vec<(bool, String)>> {
     let mut out: Vec<(bool, String)> = Vec::new();
     let mut lit = String::new();
     let b: Vec<char> = t.chars().collect();
@@ -1074,8 +1034,9 @@ fn template_items(t: &str) -> Option<Vec<(bool, String)>> {
     Some(out)
 }
 
-/// The `k={c}` tail items of a format: `( k, c )` per item, or `None` when the tail has
-/// another shape. `sep` is the separator a plain item starts with.
+/// The `k={c}` tail items of a format: `(k, c)` per item, each ` k={c}` or the optional
+/// form [`optional_param`] writes, every `c` one of `params`; `None` when the tail has any
+/// other shape.
 fn param_tail(
     items: &[(bool, String)],
     params: &[(String, String)],
@@ -1350,7 +1311,7 @@ fn symbol_out(c: &Cell, ids: &mut Ids, notes: &mut Notes) -> Cv {
             });
             cv.terms.push(Term {
                 name: term.clone(),
-                dir: vdir(&pins.dir[k]).into(),
+                dir: dir_to_virtuoso(&pins.dir[k]).into(),
                 netexpr,
             });
         }
@@ -1369,20 +1330,12 @@ fn symbol_out(c: &Cell, ids: &mut Ids, notes: &mut Notes) -> Cv {
         grow([at[0] - PIN_HALF, at[1] - PIN_HALF], &mut bbox);
         grow([at[0] + PIN_HALF, at[1] + PIN_HALF], &mut bbox);
         if pins.alias[k].is_some() {
-            cv.props.push(Prop {
-                r,
-                name: "schemifyPin".into(),
-                ty: "string".into(),
-                value: pins.name[k].clone(),
-            });
+            cv.props
+                .push(Prop::string(r, "schemifyPin", pins.name[k].clone()));
         }
         // The name label as Virtuoso drew it (`vplabel <dx> <dy> <orient> <justify> <font>
         // <height>` from the pin, or `vplabel none`), else export's.
-        let v: Vec<&str> = c
-            .doc
-            .find_attr(pin_rec, "vplabel")
-            .map(|a| c.doc.attr_values(a).collect())
-            .unwrap_or_default();
+        let v: Vec<&str> = c.attr_values(pin_rec, "vplabel");
         let (xy, orient, justify, font, height) = match v[..] {
             ["none"] => continue,
             [dx, dy, o, j, f, h] => {
@@ -1398,19 +1351,10 @@ fn symbol_out(c: &Cell, ids: &mut Ids, notes: &mut Notes) -> Cv {
             }
             _ => (at, "R0", "centerLeft", "stick", LABEL_HEIGHT / 2),
         };
-        cv.labels.push(Label {
-            r: ids.take(),
-            parent: r,
-            text: term,
-            xy,
-            orient: profile::orient_to_virtuoso(Orient::parse(orient).unwrap_or(Orient::R0)).into(),
-            justify: justify.into(),
-            font: font.into(),
-            height,
-            kind: "normal".into(),
-            layer: "pin".into(),
-            purpose: "label".into(),
-        });
+        let o = Orient::parse(orient).unwrap_or(Orient::R0);
+        let style = ["pin", "label", justify, font, "normal"];
+        cv.labels
+            .push(label(ids.take(), r, term, xy, o, height, style));
     }
     for r in 1..c.doc.record_count() {
         let kind = c.doc.record_kind(r);
@@ -1450,11 +1394,7 @@ fn symbol_out(c: &Cell, ids: &mut Ids, notes: &mut Notes) -> Cv {
     // The selection box as Virtuoso drew it (`vibox`), else the box around the contents.
     // ponytail: a kept box goes stale when the symbol grows in Schemify; union it with the
     // contents' box if that bites.
-    let vibox: Vec<&str> = c
-        .doc
-        .find_attr(0, "vibox")
-        .map(|a| c.doc.attr_values(a).collect())
-        .unwrap_or_default();
+    let vibox: Vec<&str> = c.attr_values(0, "vibox");
     let bbox = match vibox[..] {
         ["none"] => None,
         [x0, y0, x1, y1] => {
@@ -1466,12 +1406,7 @@ fn symbol_out(c: &Cell, ids: &mut Ids, notes: &mut Notes) -> Cv {
                 conv([v[0], v[1]], "selection box", c, notes),
                 conv([v[2], v[3]], "selection box", c, notes),
             );
-            Some([
-                p[0].min(q[0]),
-                p[1].min(q[1]),
-                p[0].max(q[0]),
-                p[1].max(q[1]),
-            ])
+            Some(norm_box(p, q))
         }
         _ => bbox,
     };
@@ -1498,17 +1433,44 @@ pub fn justify(hcenter: bool, vcenter: bool) -> &'static str {
     }
 }
 
+/// A label row of object `r` glued to `parent` (0: none). `style` is `[layer, purpose,
+/// justify, font, kind]`, the order the `vlabel` attribute keeps them in, so a label read
+/// back from `vlabel` and one export draws go through the same door.
+fn label(
+    r: u32,
+    parent: u32,
+    text: String,
+    xy: [i32; 2],
+    o: Orient,
+    height: i32,
+    style: [&str; 5],
+) -> Label {
+    debug_assert!(r > 0 && r != parent, "a label is its own object");
+    let [layer, purpose, justify, font, kind] = style;
+    Label {
+        r,
+        parent,
+        text,
+        xy,
+        orient: profile::orient_to_virtuoso(o).into(),
+        justify: justify.into(),
+        font: font.into(),
+        height,
+        kind: kind.into(),
+        layer: layer.into(),
+        purpose: purpose.into(),
+    }
+}
+
 /// `height = size × 10_000` milli (§3.5); `size` absent → `default_milli`.
 fn height(c: &Cell, r: u32, default_milli: i32) -> i32 {
     let s = c
         .attr(r, "size")
         .and_then(|t| parse_coord(t).ok())
         .unwrap_or(default_milli);
-    // Virtuoso stores label heights in whole database units (live ICADVM20.1 run: size 0.18
-    // came back 0.2, 0.25 came back 0.3), so the image predicts the rounding (half up) and
-    // an untouched symbol keeps its stashed sizes (§7.3).
-    let h = s.saturating_mul(HEIGHT_PER_SIZE_MILLI);
-    ((h + 500).div_euclid(1000) * 1000).max(1000)
+    // Rounded as Virtuoso stores it, so the image predicts the read-back and an untouched
+    // symbol keeps its stashed sizes (§7.3).
+    profile::height_of_size(s)
 }
 
 /// Escapes NLP-reserved characters of literal text.
@@ -1534,27 +1496,13 @@ fn stext_out(c: &Cell, r: u32, ids: &mut Ids, notes: &mut Notes) -> Option<Label
     let t = c.field(r, 3);
     // A label from Virtuoso whose template is still the one it imported as goes back as
     // drawn: `vlabel <layer> <purpose> <justify> <font> <kind> <text> <template>`.
-    let v: Vec<&str> = c
-        .doc
-        .find_attr(r, "vlabel")
-        .map(|a| c.doc.attr_values(a).collect())
-        .unwrap_or_default();
+    let v: Vec<&str> = c.attr_values(r, "vlabel");
     if let [layer, purpose, justify, font, kind, text, tmpl] = v[..]
         && tmpl == t
     {
-        return Some(Label {
-            r: ids.take(),
-            parent: 0,
-            text: text.into(),
-            xy: at,
-            orient: profile::orient_to_virtuoso(o).into(),
-            justify: justify.into(),
-            font: font.into(),
-            height: height(c, r, STEXT_SIZE_MILLI),
-            kind: kind.into(),
-            layer: layer.into(),
-            purpose: purpose.into(),
-        });
+        let style = [layer, purpose, justify, font, kind];
+        let h = height(c, r, STEXT_SIZE_MILLI);
+        return Some(label(ids.take(), 0, text.into(), at, o, h, style));
     }
     let items = template_items(t)?;
     let params: Vec<&str> = c
@@ -1572,68 +1520,72 @@ fn stext_out(c: &Cell, r: u32, ids: &mut Ids, notes: &mut Notes) -> Option<Label
             "drawing",
         ),
         _ => {
-            // Every hole a parameter, bare or through the display formatter `eng(p)` (NLP
-            // shows the value as entered): one `[@p:pre%post]` group per hole, the literal
-            // before the first hole its `pre`, each literal after a hole its `post`.
-            fn param<'a>(h: &'a str, params: &[&str]) -> Option<&'a str> {
-                let p = h
-                    .strip_prefix("eng(")
-                    .and_then(|x| x.strip_suffix(')'))
-                    .unwrap_or(h)
-                    .trim();
-                params.contains(&p).then_some(p)
-            }
-            let Some(names) = items
-                .iter()
-                .filter(|x| x.0)
-                .map(|x| param(&x.1, &params))
-                .collect::<Option<Vec<&str>>>()
-            else {
+            let Some(text) = template_to_nlp(&items, &params) else {
                 notes.review("template", &c.path, format!("stext `{t}` dropped"));
                 return None;
             };
-            let first = items.iter().position(|x| x.0).expect("a hole");
-            let mut pre: String = items[..first].iter().map(|x| x.1.as_str()).collect();
-            let mut text = String::new();
-            let mut k = first;
-            for p in names {
-                let next = items[k + 1..]
-                    .iter()
-                    .position(|x| x.0)
-                    .map_or(items.len(), |n| k + 1 + n);
-                let post: String = items[k + 1..next].iter().map(|x| x.1.as_str()).collect();
-                if pre.is_empty() && post.is_empty() {
-                    text.push_str(&format!("[@{p}]"));
-                } else {
-                    text.push_str(&format!(
-                        "[@{p}:{}%{}]",
-                        nlp_escape(&pre),
-                        nlp_escape(&post)
-                    ));
-                }
-                pre.clear();
-                k = next;
-            }
             (text, "NLP", "annotate", "drawing")
         }
     };
-    Some(Label {
-        r: ids.take(),
-        parent: 0,
+    let j = justify(
+        c.doc.find_attr(r, "hcenter").is_some(),
+        c.doc.find_attr(r, "vcenter").is_some(),
+    );
+    let h = height(c, r, STEXT_SIZE_MILLI);
+    Some(label(
+        ids.take(),
+        0,
         text,
-        xy: at,
-        orient: profile::orient_to_virtuoso(o).into(),
-        justify: justify(
-            c.doc.find_attr(r, "hcenter").is_some(),
-            c.doc.find_attr(r, "vcenter").is_some(),
-        )
-        .into(),
-        font: "stick".into(),
-        height: height(c, r, STEXT_SIZE_MILLI),
-        kind: kind.into(),
-        layer: layer.into(),
-        purpose: purpose.into(),
-    })
+        at,
+        o,
+        h,
+        [layer, purpose, j, "stick", kind],
+    ))
+}
+
+/// The NLP text of a symbol label template with holes (§3.5): every hole a parameter of
+/// `params`, bare or through the display formatter `eng(p)` (NLP shows the value as
+/// entered), one `[@p:pre%post]` group per hole (`[@p]` when both are empty), the literal
+/// before the first hole its `pre`, each literal after a hole its `post`, NLP-escaped.
+/// `None` when a hole is anything else. Import's `read::nlp_in` reads it back.
+pub(crate) fn template_to_nlp(items: &[(bool, String)], params: &[&str]) -> Option<String> {
+    fn param<'a>(h: &'a str, params: &[&str]) -> Option<&'a str> {
+        let p = h
+            .strip_prefix("eng(")
+            .and_then(|x| x.strip_suffix(')'))
+            .unwrap_or(h)
+            .trim();
+        params.contains(&p).then_some(p)
+    }
+    let names = items
+        .iter()
+        .filter(|x| x.0)
+        .map(|x| param(&x.1, params))
+        .collect::<Option<Vec<&str>>>()?;
+    let first = items.iter().position(|x| x.0)?;
+    let mut pre: String = items[..first].iter().map(|x| x.1.as_str()).collect();
+    let mut text = String::new();
+    let mut k = first;
+    for p in &names {
+        let next = items[k + 1..]
+            .iter()
+            .position(|x| x.0)
+            .map_or(items.len(), |n| k + 1 + n);
+        let post: String = items[k + 1..next].iter().map(|x| x.1.as_str()).collect();
+        if pre.is_empty() && post.is_empty() {
+            text.push_str(&format!("[@{p}]"));
+        } else {
+            text.push_str(&format!(
+                "[@{p}:{}%{}]",
+                nlp_escape(&pre),
+                nlp_escape(&post)
+            ));
+        }
+        pre.clear();
+        k = next;
+    }
+    debug_assert!(text.starts_with("[@"));
+    Some(text)
 }
 
 /// Micro-radians of `deg` degrees, normalized into `[0, 2π)`.
@@ -1685,16 +1637,7 @@ fn graphic_out(
         }
         "rect" if v.len() == 4 => {
             let (a, b) = (p(0, notes), p(1, notes));
-            vec![shape(
-                "rect",
-                vec![
-                    a[0].min(b[0]),
-                    a[1].min(b[1]),
-                    a[0].max(b[0]),
-                    a[1].max(b[1]),
-                ],
-                ids,
-            )]
+            vec![shape("rect", norm_box(a, b).to_vec(), ids)]
         }
         "circle" if v.len() == 3 => {
             let o = conv([v[0], v[1]], form, c, notes);
@@ -2047,18 +1990,8 @@ fn schematic_out(
             .collect();
         // Pin-pattern alignment (§6.4): the new master goes where its pins land on the
         // drawn ones, in the instance's orientation; the pins that still miss get stubs.
-        let at = new_pins.as_ref().and_then(|np: &Vec<(String, [i32; 2])>| {
-            let old: Vec<[i32; 2]> = pairs
-                .iter()
-                .map(|(p, _)| {
-                    place(pins.at[*p], g.inst_orient[k], g.inst_at[k]).unwrap_or(g.inst_at[k])
-                })
-                .collect();
-            let new: Vec<Option<[i32; 2]>> = pairs
-                .iter()
-                .map(|(_, nm)| np.iter().find(|(x, _)| x == nm).map(|(_, p)| *p))
-                .collect();
-            align::fit(&old, &new, g.inst_orient[k]).map(|f| f.origin)
+        let at = new_pins.as_ref().and_then(|np| {
+            align::fit_instance(&pins.at, &pairs, np, g.inst_orient[k], g.inst_at[k])
         });
         if let Some(a) = at {
             aligned.insert(k, a);
@@ -2170,12 +2103,7 @@ fn schematic_out(
         );
         id_prop(&mut cv, r, &g.inst_id[k]);
         match c.attr(rec, "ignore") {
-            Some("true") => cv.props.push(Prop {
-                r,
-                name: "nlAction".into(),
-                ty: "string".into(),
-                value: "ignore".into(),
-            }),
+            Some("true") => cv.props.push(Prop::string(r, "nlAction", "ignore")),
             Some(o) => notes.review(
                 "expression",
                 &c.path,
@@ -2202,12 +2130,12 @@ fn schematic_out(
                     let net = c.doc.attr_value(a, 1).unwrap_or("");
                     // A netSet-typed property: the type the netlister reads as an
                     // inherited-connection override (G13).
-                    cv.props.push(Prop {
+                    cv.props.push(Prop::new(
                         r,
-                        name: vname(pin),
-                        ty: "netSet".into(),
-                        value: net_to_virtuoso(net, false).0,
-                    });
+                        &vname(pin),
+                        "netSet",
+                        net_to_virtuoso(net, false).0,
+                    ));
                     continue;
                 }
                 _ => {}
@@ -2303,32 +2231,18 @@ fn schematic_out(
                 if let Some(dv) = dev {
                     cell = dv.alib[sp.wave].into();
                 } else {
-                    cv.props.push(Prop {
-                        r,
-                        name: "srcType".into(),
-                        ty: "string".into(),
-                        value: devices::WAVEFORMS[sp.wave].1.into(),
-                    });
+                    cv.props
+                        .push(Prop::string(r, "srcType", devices::WAVEFORMS[sp.wave].1));
                 }
                 for (pn, pv) in sp.params {
                     let ty = if pn == "tvpairs" { "int" } else { "string" };
-                    cv.props.push(Prop {
-                        r,
-                        name: pn,
-                        ty: ty.into(),
-                        value: pv,
-                    });
+                    cv.props.push(Prop::new(r, &pn, ty, pv));
                 }
             }
         }
         if let Some(row) = row {
             for (p, v) in &row.sets {
-                cv.props.push(Prop {
-                    r,
-                    name: p.clone(),
-                    ty: "string".into(),
-                    value: v.clone(),
-                });
+                cv.props.push(Prop::string(r, p, v.clone()));
             }
         }
         cv.insts.push(Inst {
@@ -2394,16 +2308,12 @@ fn schematic_out(
         }
         let back = net_from_virtuoso(&text);
         if (back.text.as_str(), back.global) != (net.as_str(), global) {
-            cv.props.push(Prop {
-                r,
-                name: "schemifyNet".into(),
-                ty: "string".into(),
-                value: if global {
-                    format!("{net} global")
-                } else {
-                    net.clone()
-                },
-            });
+            let value = if global {
+                format!("{net} global")
+            } else {
+                net.clone()
+            };
+            cv.props.push(Prop::string(r, "schemifyNet", value));
         }
         // A global net with an analogLib global symbol (`gnd!`, `vdd!`, …) is drawn as that
         // symbol, Virtuoso's idiom; import turns the symbol back into this label (§6.1).
@@ -2449,12 +2359,7 @@ fn schematic_out(
                     pts: vec![a, b],
                     width: 0,
                 });
-                cv.props.push(Prop {
-                    r: sr,
-                    name: "schemifyStub".into(),
-                    ty: "string".into(),
-                    value: "1".into(),
-                });
+                cv.props.push(Prop::string(sr, "schemifyStub", "1"));
                 // A second label on this point (a label kept on a re-mastered pin) glues
                 // here too instead of drawing an identical stub, which Virtuoso refuses.
                 segs.push((sr, [at[0], at[1], to[0], to[1]]));
@@ -2467,27 +2372,16 @@ fn schematic_out(
         // What a label from Virtuoso was there: a net expression (`vexpr <text>`) and a style
         // (`vstyle <justify> <font> <height>`), drawn so again.
         let vexpr = rec.and_then(|r| c.attr(r, "vexpr"));
-        let vstyle: Vec<&str> = rec
-            .and_then(|r| c.doc.find_attr(r, "vstyle"))
-            .map(|a| c.doc.attr_values(a).collect())
-            .unwrap_or_default();
+        let vstyle: Vec<&str> = rec.map_or_else(Vec::new, |r| c.attr_values(r, "vstyle"));
         let (justify, font, height) = match vstyle[..] {
             [j, f, h] => (j, f, h.parse().unwrap_or(LABEL_HEIGHT)),
             _ => ("lowerLeft", "stick", LABEL_HEIGHT),
         };
-        cv.labels.push(Label {
-            r,
-            parent,
-            text: vexpr.map_or(text, str::to_owned),
-            xy: conv(at, "label", c, notes),
-            orient: profile::orient_to_virtuoso(o).into(),
-            justify: justify.into(),
-            font: font.into(),
-            height,
-            kind: if vexpr.is_some() { "NLP" } else { "normal" }.into(),
-            layer: "wire".into(),
-            purpose: "label".into(),
-        });
+        let kind = if vexpr.is_some() { "NLP" } else { "normal" };
+        let text = vexpr.map_or(text, str::to_owned);
+        let xy = conv(at, "label", c, notes);
+        let style = ["wire", "label", justify, font, kind];
+        cv.labels.push(label(r, parent, text, xy, o, height, style));
     }
     // Ports → schematic pins.
     let own = sym_pins(c);
@@ -2498,24 +2392,19 @@ fn schematic_out(
             .name
             .iter()
             .position(|p| p == pin)
-            .map_or("inputOutput", |q| vdir(&own.dir[q]));
+            .map_or("inputOutput", |q| dir_to_virtuoso(&own.dir[q]));
         let term = vname(pin);
         if net_from_virtuoso(&term).text != *pin {
-            cv.props.push(Prop {
-                r,
-                name: "schemifyNet".into(),
-                ty: "string".into(),
-                value: pin.clone(),
-            });
+            cv.props.push(Prop::string(r, "schemifyNet", pin.clone()));
         }
         let o = Orient::parse(c.field(g.port_rec[k], 3)).unwrap_or(Orient::R0);
         id_prop(&mut cv, r, &g.port_id[k]);
         // A pin that came in as a bare pin shape (`vfig <w> <h>`) goes back as one.
-        let fig = c.doc.find_attr(g.port_rec[k], "vfig").and_then(|a| {
-            let v = |n| c.doc.attr_value(a, n).and_then(|t| parse_coord(t).ok());
-            Some([v(0)?, v(1)?])
-        });
-        if let Some([w, h]) = fig {
+        let fig = match c.attr_values(g.port_rec[k], "vfig")[..] {
+            [w, h, ..] => parse_coord(w).ok().zip(parse_coord(h).ok()),
+            _ => None,
+        };
+        if let Some((w, h)) = fig {
             let at = conv(g.port_at[k], "port", c, notes);
             cv.pinfigs.push(PinFig {
                 r,
@@ -2527,19 +2416,10 @@ fn schematic_out(
         }
         // The pin master it came in on (`vpin <lib> <cell> <view>`), else basic's for the
         // direction.
-        let vpin: Vec<&str> = c
-            .doc
-            .find_attr(g.port_rec[k], "vpin")
-            .map(|a| c.doc.attr_values(a).collect())
-            .unwrap_or_default();
-        let usual = match dir {
-            "input" => "ipin",
-            "output" => "opin",
-            _ => "iopin",
-        };
+        let vpin: Vec<&str> = c.attr_values(g.port_rec[k], "vpin");
         let [lib, cell, view] = match vpin[..] {
             [l, c, v] => [l, c, v],
-            _ => ["basic", usual, "symbol"],
+            _ => ["basic", profile::pin_master(dir), "symbol"],
         };
         cv.spins.push(Spin {
             r,
@@ -2581,33 +2461,20 @@ fn schematic_out(
         id_prop(&mut cv, lr, c.field(r, 0));
         // A label that came from Virtuoso on another layer or with another style (`vlabel
         // <layer> <purpose> <justify> <font> <kind>`) goes back as drawn.
-        let v: Vec<&str> = c
-            .doc
-            .find_attr(r, "vlabel")
-            .map(|a| c.doc.attr_values(a).collect())
-            .unwrap_or_default();
+        let v: Vec<&str> = c.attr_values(r, "vlabel");
         let [layer, purpose, justify, font, kind] = match v[..] {
             [a, b, j, f, k] => [a, b, j, f, k],
             _ => ["text", "drawing", "upperLeft", "stick", "normal"],
         };
-        cv.labels.push(Label {
-            r: lr,
-            parent: 0,
-            text: c.field(r, 4).to_owned(),
-            xy: conv(
-                [c.coord(r, 1).unwrap_or(0), c.coord(r, 2).unwrap_or(0)],
-                "text",
-                c,
-                notes,
-            ),
-            orient: profile::orient_to_virtuoso(o).into(),
-            justify: justify.into(),
-            font: font.into(),
-            height: height(c, r, TEXT_SIZE_MILLI),
-            kind: kind.into(),
-            layer: layer.into(),
-            purpose: purpose.into(),
-        });
+        let xy = conv(
+            [c.coord(r, 1).unwrap_or(0), c.coord(r, 2).unwrap_or(0)],
+            "text",
+            c,
+            notes,
+        );
+        let (text, h) = (c.field(r, 4).to_owned(), height(c, r, TEXT_SIZE_MILLI));
+        let style = [layer, purpose, justify, font, kind];
+        cv.labels.push(label(lr, 0, text, xy, o, h, style));
     }
     for r in c.records(RecordKind::Shape) {
         let dashed = c.attr(r, "dash").is_some_and(|x| x != "0");
@@ -2662,12 +2529,7 @@ fn schematic_out(
 }
 
 fn id_prop(cv: &mut Cv, r: u32, id: &str) {
-    cv.props.push(Prop {
-        r,
-        name: "schemifyId".into(),
-        ty: "string".into(),
-        value: id.to_owned(),
-    });
+    cv.props.push(Prop::string(r, "schemifyId", id));
 }
 
 /// One instance override as a CDF property (§6.2, §3.4); `None` (reviewed) when it has
@@ -2681,12 +2543,7 @@ fn override_prop(
     inst: &str,
     notes: &mut Notes,
 ) -> Option<Prop> {
-    let prop = |ty: &str, value: String| Prop {
-        r,
-        name: pname.to_owned(),
-        ty: ty.into(),
-        value,
-    };
+    let prop = |ty: &str, value: String| Prop::new(r, pname, ty, value);
     match kind {
         Some("int") => match val.trim().parse::<i64>() {
             Ok(_) => Some(prop("int", val.trim().to_owned())),

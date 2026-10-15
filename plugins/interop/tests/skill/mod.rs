@@ -621,6 +621,18 @@ pub fn defined_by_interp() -> impl Iterator<Item = &'static str> {
     SPECIAL.iter().chain(BUILTINS.iter()).copied()
 }
 
+/// A mock Virtuoso with libraries `libs` in cds.lib and the shipped `schemify.il` loaded: the
+/// state every test of the Virtuoso side starts from.
+pub fn virtuoso(libs: &[&str]) -> Interp<mockdb::MockDb> {
+    let mut i = Interp::new(mockdb::MockDb::default());
+    for l in libs {
+        i.host.add_lib(l);
+    }
+    i.load(&interop::skill::schemify_il())
+        .expect("schemify.il loads");
+    i
+}
+
 impl<H: Host> Interp<H> {
     pub fn new(host: H) -> Self {
         Interp {

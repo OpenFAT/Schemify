@@ -65,6 +65,15 @@ impl Cell {
         self.doc.attr_value(a, 0)
     }
 
+    /// Every value of attribute `key` of record `r`, empty when the attribute is absent. The
+    /// shape an attribute the format keeps but does not know (`vlabel`, `vpin`, `vibox`, …)
+    /// is matched against: `match c.attr_values(r, "vpin")[..] { [l, c, v] => …, _ => … }`.
+    pub fn attr_values(&self, r: u32, key: &str) -> Vec<&str> {
+        self.doc
+            .find_attr(r, key)
+            .map_or_else(Vec::new, |a| self.doc.attr_values(a).collect())
+    }
+
     /// Field `i` of record `r` (`""` when absent).
     pub fn field(&self, r: u32, i: usize) -> &str {
         self.doc.field(r, i).unwrap_or("")
@@ -257,6 +266,54 @@ pub fn load(files: &Files, absent: &BTreeSet<String>, tops: &[&str]) -> Result<D
     Ok(d)
 }
 
+/// [`load`] over a closed file set: every path `files` lacks is absent. The in-memory
+/// callers (an import's re-mastering pass, tests) need no read rounds; the guest and the CLI
+/// still go through [`load`] round by round.
+///
+/// # Errors
+///
+/// The [`LoadError::Invalid`] problems, including a reference no file satisfies.
+pub fn load_closed(files: &Files, tops: &[&str]) -> Result<Design, Vec<String>> {
+    let mut absent = BTreeSet::new();
+    // Each round marks at least one new path absent and the paths come from the closure's
+    // finitely many cellrefs, so the loop ends; the bound is the job's.
+    for _ in 0..crate::job::ROUNDS_MAX {
+        match load(files, &absent, tops) {
+            Ok(d) => return Ok(d),
+            Err(LoadError::Missing(m)) => {
+                let before = absent.len();
+                absent.extend(m);
+                assert!(absent.len() > before, "load asked again for absent paths");
+            }
+            Err(LoadError::Invalid(p)) => return Err(p),
+        }
+    }
+    Err(vec![format!(
+        "more than {} load rounds",
+        crate::job::ROUNDS_MAX
+    )])
+}
+
+/// The project path of cell `stem` with extension `ext` in directory `dir` (`""`: the
+/// project root).
+pub(crate) fn cell_path(dir: &str, stem: &str, ext: &str) -> String {
+    if dir.is_empty() {
+        format!("{stem}.{ext}")
+    } else {
+        format!("{dir}/{stem}.{ext}")
+    }
+}
+
+/// Appends the manifest row `lib <name> path <dir>`.
+pub(crate) fn push_lib(manifest: &mut Document<'static>, name: &str, dir: &str) {
+    assert_eq!(
+        manifest.kind(),
+        FileKind::Project,
+        "lib rows live in a manifest"
+    );
+    push_record(manifest, RecordKind::Lib, &[name, "path", dir]);
+}
+
 /// The candidate paths of `cref` referenced from `cell`, in netlist.md §1 order.
 fn candidates(
     cell: &Cell,
@@ -290,12 +347,10 @@ fn candidates(
     if stem.is_empty() || stem.contains(['/', '\\']) {
         return Err(format!("{cref}: bad cell name"));
     }
-    let base = if dir.is_empty() {
-        stem.to_owned()
-    } else {
-        format!("{dir}/{stem}")
-    };
-    Ok(vec![format!("{base}.shcomp"), format!("{base}.shprim")])
+    Ok(vec![
+        cell_path(&dir, stem, "shcomp"),
+        cell_path(&dir, stem, "shprim"),
+    ])
 }
 
 /// Parses `bytes` into an owned [`Cell`].
@@ -308,16 +363,7 @@ fn owned(path: &str, bytes: &[u8], libs: &BTreeMap<String, String>) -> Result<Ce
     ) {
         return Err(format!("{path}: not a cell file"));
     }
-    let mut doc = Document::new(kind);
-    for a in src.attrs(0) {
-        doc.push_attr(src.attr_key(a));
-        for v in src.attr_values(a) {
-            doc.push_value(v);
-        }
-    }
-    for r in 1..src.record_count() {
-        doc.copy_record(&src, r);
-    }
+    let doc = owned_doc(&src);
     let file = path.rsplit_once('/').map_or(path, |(_, f)| f);
     let name = file.rsplit_once('.').map_or(file, |(s, _)| s).to_owned();
     let dir = path.rsplit_once('/').map_or("", |(d, _)| d);
@@ -367,6 +413,75 @@ impl Design {
         self.cells.push(cell);
         self.cells.len() - 1
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// Building documents (shared by every converter that writes Schemify records)
+// ---------------------------------------------------------------------------------------
+
+/// Appends a record of `kind` with text fields `fields` and makes it current.
+///
+/// # Panics
+///
+/// As [`Document::begin_record`]: `kind` not allowed in this file kind.
+pub(crate) fn push_record(doc: &mut Document<'static>, kind: RecordKind, fields: &[&str]) {
+    let r = doc.begin_record(kind);
+    for f in fields {
+        doc.push_field(f);
+    }
+    debug_assert_eq!(doc.fields(r).len(), fields.len());
+}
+
+/// Appends attribute `key` with `values` to the current record.
+///
+/// # Panics
+///
+/// As [`Document::push_attr`]: `key` not a spec word.
+pub(crate) fn push_attr<S: AsRef<str>>(doc: &mut Document<'static>, key: &str, values: &[S]) {
+    let a = doc.push_attr(key);
+    for v in values {
+        doc.push_value(v.as_ref());
+    }
+    debug_assert_eq!(doc.attr_values(a).len(), values.len());
+}
+
+/// Appends a copy of attribute `a` of `src` (key and every value) to the current record.
+pub(crate) fn copy_attr(out: &mut Document<'static>, src: &Document<'_>, a: u32) {
+    let n = out.push_attr(src.attr_key(a));
+    for v in src.attr_values(a) {
+        out.push_value(v);
+    }
+    debug_assert_eq!(out.attr_values(n).len(), src.attr_values(a).len());
+}
+
+/// Appends the header attributes of `src` but those named in `skip` to `out`'s header.
+///
+/// # Panics
+///
+/// When `out` already holds a record past the header (header attributes come first).
+pub(crate) fn copy_header(out: &mut Document<'static>, src: &Document<'_>, skip: &[&str]) {
+    assert_eq!(
+        out.record_count(),
+        1,
+        "header attributes precede every record"
+    );
+    for a in src.attrs(0) {
+        if !skip.contains(&src.attr_key(a)) {
+            copy_attr(out, src, a);
+        }
+    }
+}
+
+/// An owned copy of `src`: its header attributes and records. Comments after the last
+/// record are not copied (a [`Cell`] never carries them).
+pub(crate) fn owned_doc(src: &Document<'_>) -> Document<'static> {
+    let mut out = Document::new(src.kind());
+    copy_header(&mut out, src, &[]);
+    for r in 1..src.record_count() {
+        out.copy_record(src, r);
+    }
+    assert_eq!(out.record_count(), src.record_count());
+    out
 }
 
 // ---------------------------------------------------------------------------------------
@@ -578,6 +693,82 @@ mod tests {
             d.cells[1].text(),
             std::str::from_utf8(&all["dev/amp.shcomp"]).unwrap()
         );
+    }
+
+    /// `load_closed` over a closed file set equals the round-by-round load the guest does
+    /// (the test above); a missing cell is an error naming the reference, never a loop.
+    #[test]
+    fn closed_loads_equal_round_loads_and_name_what_is_missing() {
+        let mut all = files(&[
+            (
+                "schemify.project",
+                "schemify 1 project\n\nlib dev path dev\n",
+            ),
+            (
+                "tb.shbench",
+                "schemify 1 shbench\n\ninst aaaaaa dev:amp\n  at 0 0 R0\n  name X1\n",
+            ),
+            (
+                "dev/amp.shcomp",
+                "schemify 1 shcomp\n\npin a in 0 0\n\nimpl schematic schematic\n\ninst bbbbbb core:res\n  at 0 0 R0\n  name R1\n\nport cccccc 0 -30 R0 a\n",
+            ),
+        ]);
+        let d = load_closed(&all, &["tb.shbench"]).unwrap();
+        let names: Vec<&str> = d.cells.iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(names, ["tb.shbench", "dev/amp.shcomp", "core/res.shprim"]);
+        assert_eq!(d.resolve(0, "dev:amp"), Some(1));
+        all.remove("dev/amp.shcomp");
+        let p = load_closed(&all, &["tb.shbench"])
+            .err()
+            .expect("a missing cell");
+        assert!(
+            p.iter()
+                .any(|x| x.contains("dev:amp") && x.contains("no cell file")),
+            "{p:?}"
+        );
+        assert!(load_closed(&all, &["nope.shcomp"]).is_err());
+    }
+
+    #[test]
+    fn attribute_values_and_document_copies() {
+        let src = parse(
+            b"schemify 1 shprim\n  doc hi\n  vibox 0 0 10 10\n\npin a in 0 0\n  vplabel none\n\nimpl spice spice\n",
+        )
+        .unwrap();
+        let c = Cell {
+            path: "x.shprim".into(),
+            lib: String::new(),
+            name: "x".into(),
+            doc: owned_doc(&src),
+        };
+        assert_eq!(
+            write(&c.doc),
+            write(&src),
+            "an owned copy writes the same text"
+        );
+        assert_eq!(c.attr_values(0, "vibox"), ["0", "0", "10", "10"]);
+        assert_eq!(c.attr_values(1, "vplabel"), ["none"]);
+        assert!(c.attr_values(1, "vibox").is_empty(), "absent: no values");
+        let mut h = Document::new(FileKind::Shprim);
+        copy_header(&mut h, &src, &["vibox"]);
+        assert_eq!(write(&h), "schemify 1 shprim\n  doc hi\n");
+        assert_eq!(cell_path("", "inv", "shcomp"), "inv.shcomp");
+        assert_eq!(cell_path("lib/dev", "inv", "shprim"), "lib/dev/inv.shprim");
+        let mut m = Document::new(FileKind::Project);
+        push_lib(&mut m, "dev", "lib/dev");
+        assert_eq!(
+            manifest_libs(write(&m).as_bytes()).unwrap()["dev"],
+            "lib/dev"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "header attributes precede every record")]
+    fn header_copies_come_first() {
+        let src = parse(b"schemify 1 shbench\n  doc hi\n").unwrap();
+        let mut out = Document::new(FileKind::Shbench);
+        out.begin_record(RecordKind::Wire);
+        copy_header(&mut out, &src, &[]);
     }
 
     #[test]

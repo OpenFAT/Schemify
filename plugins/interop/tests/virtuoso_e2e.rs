@@ -5,12 +5,17 @@
 //! file written by one side is read by the other in both directions, so it is the one that
 //! catches disagreements about record forms, ordering, units and stashes.
 
+mod common;
 mod skill;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use interop::design::{Design, Files, LoadError, load};
+use common::{
+    canonical, design_libs, is_cell, line_of, load_all, load_tops, located, project, read_tree,
+    root, strip_fp,
+};
+use interop::design::Files;
 use interop::map::Mapping;
 use interop::sfyx;
 use interop::virtuoso::{self, ExportOptions, ImportOptions};
@@ -19,67 +24,20 @@ use skill::{Interp, V};
 
 const BUILD: &str = include_str!("fixtures/skill/build.il");
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-fn read_dir(dir: &Path) -> Files {
-    fn walk(base: &Path, d: &Path, out: &mut Files) {
-        let mut entries: Vec<PathBuf> = std::fs::read_dir(d)
-            .unwrap()
-            .flatten()
-            .map(|e| e.path())
-            .collect();
-        entries.sort();
-        for p in entries {
-            if p.is_dir() {
-                walk(base, &p, out);
-            } else {
-                let rel = p
-                    .strip_prefix(base)
-                    .unwrap()
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                out.insert(rel, std::fs::read(&p).unwrap());
-            }
-        }
-    }
-    let mut out = Files::new();
-    walk(dir, dir, &mut out);
-    out
-}
-
-fn is_cell(p: &str) -> bool {
-    [".shprim", ".shcomp", ".shbench"]
-        .iter()
-        .any(|e| p.ends_with(e))
-}
-
-fn design(files: &Files) -> Design {
-    let tops: Vec<&str> = files
-        .keys()
-        .map(String::as_str)
-        .filter(|p| is_cell(p))
-        .collect();
-    let mut absent = BTreeSet::new();
-    loop {
-        match load(files, &absent, &tops) {
-            Ok(d) => return d,
-            Err(LoadError::Missing(m)) => absent.extend(m),
-            Err(LoadError::Invalid(p)) => panic!("{p:?}"),
-        }
-    }
-}
-
-fn canonical(bytes: &[u8]) -> String {
-    schemify_format::write(&schemify_format::parse(bytes).unwrap())
+/// A mock Virtuoso with `libs`, `schemify.il` and the fixture builders, the standard
+/// libraries (`analogLib`, `basic`) drawn.
+fn with_stdlib(libs: &[&str]) -> Interp<MockDb> {
+    let mut i = skill::virtuoso(libs);
+    i.load(BUILD).expect("build.il loads");
+    i.load("(SfyFixStdlib)").expect("stdlib fixtures");
+    i
 }
 
 /// Runs one fixture project through Rust export → SKILL import → SKILL export → Rust
 /// import and returns (original cells, round-tripped cells, SKILL logs).
 fn round_trip(dir: &Path) -> (BTreeMap<String, String>, BTreeMap<String, String>, String) {
-    let files = read_dir(dir);
-    let d = design(&files);
+    let files = project(dir);
+    let d = load_all(&files);
     let tops: Vec<usize> = (0..d.cells.len())
         .filter(|&k| d.cells[k].lib != "core")
         .collect();
@@ -93,20 +51,13 @@ fn round_trip(dir: &Path) -> (BTreeMap<String, String>, BTreeMap<String, String>
     let recs = sfyx::read(&exported.sfyx).unwrap();
 
     // The SKILL side: every library the dump names exists in cds.lib, plus analogLib/basic.
-    let mut i = Interp::new(MockDb::default());
-    let mut libs: BTreeSet<String> = ["analogLib".into(), "basic".into()].into();
+    let mut libs: BTreeSet<&str> = ["analogLib", "basic"].into();
     for r in &recs {
         if r.tag == "lib" {
-            libs.insert(r.str(0).unwrap().to_owned());
+            libs.insert(r.str(0).unwrap());
         }
     }
-    for l in &libs {
-        i.host.add_lib(l);
-    }
-    i.load(&interop::skill::schemify_il())
-        .expect("schemify.il loads");
-    i.load(BUILD).expect("build.il loads");
-    i.load("(SfyFixStdlib)").expect("stdlib fixtures");
+    let mut i = with_stdlib(&libs.into_iter().collect::<Vec<_>>());
     i.files.insert("/e2e/in.sfyx".into(), exported.sfyx.clone());
     let ok = i
         .load("(SfyImport \"/e2e/in.sfyx\")")
@@ -120,20 +71,8 @@ fn round_trip(dir: &Path) -> (BTreeMap<String, String>, BTreeMap<String, String>
     );
 
     // Dump every design library back and import each into Rust.
-    let design_libs: BTreeSet<String> = {
-        let mut cur = String::new();
-        let mut out = BTreeSet::new();
-        for r in &recs {
-            match r.tag.as_str() {
-                "lib" => cur = r.str(0).unwrap().to_owned(),
-                "cell" if r.str(1).unwrap() == "design" => {
-                    out.insert(cur.clone());
-                }
-                _ => {}
-            }
-        }
-        out
-    };
+    let design_libs = design_libs(&exported.sfyx);
+    assert!(!design_libs.is_empty(), "{}: no design cell", dir.display());
     let manifest: Files = files
         .iter()
         .filter(|(p, _)| *p == "schemify.project")
@@ -168,13 +107,7 @@ fn round_trip(dir: &Path) -> (BTreeMap<String, String>, BTreeMap<String, String>
             });
         for (p, b) in imp.files {
             if is_cell(&p) {
-                let t: String = String::from_utf8(b)
-                    .unwrap()
-                    .lines()
-                    .filter(|l| !l.starts_with("  vsym ") && !l.starts_with("  vsch "))
-                    .map(|l| format!("{l}\n"))
-                    .collect();
-                got.insert(p, t);
+                got.insert(p, strip_fp(&String::from_utf8(b).unwrap()));
             }
         }
     }
@@ -216,8 +149,8 @@ fn debug_dump_cell() {
     // SFY_DUMP_DIR=<fixture> SFY_DUMP_CELL=<cell>: prints that cell's records from both sides.
     let dir = PathBuf::from(std::env::var("SFY_DUMP_DIR").unwrap());
     let cell = std::env::var("SFY_DUMP_CELL").unwrap();
-    let files = read_dir(&dir);
-    let d = design(&files);
+    let files = read_tree(&dir);
+    let d = load_all(&files);
     let tops: Vec<usize> = (0..d.cells.len())
         .filter(|&k| d.cells[k].lib != "core")
         .collect();
@@ -245,17 +178,13 @@ fn debug_dump_cell() {
     };
     println!("=== RUST\n{}", section(&text));
     let recs = sfyx::read(&text).unwrap();
-    let mut i = Interp::new(MockDb::default());
-    for r in &recs {
-        if r.tag == "lib" {
-            i.host.add_lib(r.str(0).unwrap());
-        }
-    }
-    i.host.add_lib("analogLib");
-    i.host.add_lib("basic");
-    i.load(&interop::skill::schemify_il()).unwrap();
-    i.load(BUILD).unwrap();
-    i.load("(SfyFixStdlib)").unwrap();
+    let mut libs: Vec<&str> = recs
+        .iter()
+        .filter(|r| r.tag == "lib")
+        .map(|r| r.str(0).unwrap())
+        .collect();
+    libs.extend(["analogLib", "basic"]);
+    let mut i = with_stdlib(&libs);
     i.files.insert("/e2e/in.sfyx".into(), text.clone());
     i.load("(SfyImport \"/e2e/in.sfyx\")").unwrap();
     let lib = std::env::var("SFY_DUMP_LIB").unwrap_or("dev".into());
@@ -318,14 +247,7 @@ fn skill_dump_rust_import_rust_export_skill_import_skill_dump_is_exact() {
             files.keys().collect::<Vec<_>>()
         );
         let refs: Vec<&str> = tops.iter().map(String::as_str).collect();
-        let mut absent = BTreeSet::new();
-        let d = loop {
-            match load(&files, &absent, &refs) {
-                Ok(d) => break d,
-                Err(LoadError::Missing(m)) => absent.extend(m),
-                Err(LoadError::Invalid(p)) => panic!("{name}: {p:?}"),
-            }
-        };
+        let d = load_tops(&files, &refs);
         let top_ix: Vec<usize> = (0..tops.len()).collect();
         let eo = ExportOptions {
             producer: "e2e".into(),
@@ -340,27 +262,17 @@ fn skill_dump_rust_import_rust_export_skill_import_skill_dump_is_exact() {
         // unchanged cellviews (§7.5). Refs and label parents are renumbered.
         // (A symbol-only cell goes out as a reference to the original, §8.1.)
         let placed = |text: &str| -> BTreeSet<(String, String)> {
-            let mut design: Option<String> = None;
+            let recs = sfyx::read(text).unwrap_or_else(|e| panic!("{name}: {}", e.msg));
             let mut out = BTreeSet::new();
-            for mut r in sfyx::read(text).unwrap_or_else(|e| panic!("{name}: {}", e.msg)) {
-                if r.tag == "cell" {
-                    design = r
-                        .str(1)
-                        .is_ok_and(|x| x == "design")
-                        .then(|| r.str(0).unwrap_or_default().to_owned());
+            for (at, r) in located(&recs) {
+                if !at.design || !matches!(r.tag.as_str(), "inst" | "pinfig" | "spin" | "label") {
+                    continue;
                 }
-                if let Some(c) = design
-                    .as_ref()
-                    .filter(|_| matches!(r.tag.as_str(), "inst" | "pinfig" | "spin" | "label"))
-                {
-                    r.fields.remove(0);
-                    if r.tag == "label" {
-                        r.fields[0] = sfyx::Value::Int(0);
-                    }
-                    let mut s = String::new();
-                    sfyx::write_record(&r, &mut s);
-                    out.insert((c.clone(), s));
+                let mut fields = r.fields[1..].to_vec();
+                if r.tag == "label" {
+                    fields[0] = sfyx::Value::Int(0);
                 }
+                out.insert((at.cell, line_of(&sfyx::Record::new(&r.tag, fields))));
             }
             out
         };
@@ -376,13 +288,7 @@ fn skill_dump_rust_import_rust_export_skill_import_skill_dump_is_exact() {
             m1.difference(&m2)
         );
         // A fresh Virtuoso with the reference libraries, load, dump again.
-        let mut i = Interp::new(MockDb::default());
-        for l in ["analogLib", "basic", "pdk", "cb", "work"] {
-            i.host.add_lib(l);
-        }
-        i.load(&interop::skill::schemify_il()).unwrap();
-        i.load(BUILD).unwrap();
-        i.load("(SfyFixStdlib)").unwrap();
+        let mut i = with_stdlib(&["analogLib", "basic", "pdk", "cb", "work"]);
         i.load("(SfyFixPdk)").unwrap();
         // The team's library already holds the cells (the first dump came from it).
         i.files.insert("/e2e/first.sfyx".into(), first.clone());
@@ -458,14 +364,7 @@ fn an_edit_in_schemify_reaches_virtuoso_and_untouched_views_stay() {
         "fixture changed: no `w 2u` override"
     );
     files.insert(path.clone(), edited.into_bytes());
-    let mut absent = BTreeSet::new();
-    let d = loop {
-        match load(&files, &absent, &[path.as_str()]) {
-            Ok(d) => break d,
-            Err(LoadError::Missing(m)) => absent.extend(m),
-            Err(LoadError::Invalid(p)) => panic!("{p:?}"),
-        }
-    };
+    let d = load_tops(&files, &[path.as_str()]);
     let eo = ExportOptions {
         producer: "e2e".into(),
         ..ExportOptions::default()
@@ -479,13 +378,7 @@ fn an_edit_in_schemify_reaches_virtuoso_and_untouched_views_stay() {
         .filter(|l| l.contains("schemifyKeep"))
         .collect();
     assert_eq!(keeps.len(), 1, "{second}");
-    let mut i = Interp::new(MockDb::default());
-    for l in ["analogLib", "basic", "work"] {
-        i.host.add_lib(l);
-    }
-    i.load(&interop::skill::schemify_il()).unwrap();
-    i.load(BUILD).unwrap();
-    i.load("(SfyFixStdlib)").unwrap();
+    let mut i = with_stdlib(&["analogLib", "basic", "work"]);
     i.files.insert("/e2e/first.sfyx".into(), first.clone());
     assert!(matches!(
         i.load("(SfyImport \"/e2e/first.sfyx\")").unwrap(),

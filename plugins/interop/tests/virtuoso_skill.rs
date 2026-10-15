@@ -28,20 +28,9 @@ fn va_text() -> String {
     s
 }
 
-/// An interpreter with schemify.il loaded and the given libraries in cds.lib.
-fn interp(libs: &[&str]) -> Interp<MockDb> {
-    let mut i = Interp::new(MockDb::default());
-    for l in libs {
-        i.host.add_lib(l);
-    }
-    i.load(&interop::skill::schemify_il())
-        .expect("schemify.il loads");
-    i
-}
-
 /// An interpreter with every fixture library built, the text views included.
 fn fixtures() -> Interp<MockDb> {
-    let mut i = interp(&["analogLib", "basic", "pdk", "cb", "work", "scratch"]);
+    let mut i = skill::virtuoso(&["analogLib", "basic", "pdk", "cb", "work", "scratch"]);
     i.load(BUILD).expect("build.il loads");
     i.load("(SfyFixAll)").expect("fixtures build");
     let va = i
@@ -172,7 +161,7 @@ proptest! {
     /// that line gives the string back (spec §4.1, §4.3). SKILL strings cannot hold NUL.
     #[test]
     fn skill_escaper_matches_rust(s in "[^\u{0}]{0,64}") {
-        let mut i = interp(&[]);
+        let mut i = skill::virtuoso(&[]);
         let got = skill_write_str(&mut i, &s);
         let mut want = String::new();
         sfyx::write_str(&s, &mut want);
@@ -186,7 +175,7 @@ proptest! {
     #[test]
     fn skill_text_chunks_match_rust(parts in proptest::collection::vec("[a\u{e9}\u{3bc}\u{1f600}\n\t\"]{0,400}", 0..30)) {
         let s: String = parts.concat();
-        let mut i = interp(&[]);
+        let mut i = skill::virtuoso(&[]);
         i.set_global("sfyTestSegs", V::list(parts.iter().map(|p| V::str(p)).collect()));
         run(&mut i, r#"(let ((p (outfile "/t/text" "w")) (sfyCountTab (makeTable "c" nil)) (sfyCountKeys nil))
                          (SfyPut p "x" (list (SfyText sfyTestSegs))) (close p))"#);
@@ -197,7 +186,7 @@ proptest! {
 
 #[test]
 fn escaper_covers_every_control_byte() {
-    let mut i = interp(&[]);
+    let mut i = skill::virtuoso(&[]);
     let all: String = (1u8..=127)
         .map(char::from)
         .chain("\u{e9}\u{10ffff}".chars())
@@ -344,7 +333,7 @@ fn export_lib_skips_cells_without_a_symbol_and_keeps_every_cdf_type() {
 fn imported_goldens_dump_back_identically() {
     for (name, _) in &DUMPS[..5] {
         let golden_text = std::fs::read_to_string(format!("{FIXTURES}/{name}")).expect("golden");
-        let mut i = interp(&["analogLib", "basic", "pdk", "cb", "scratch"]);
+        let mut i = skill::virtuoso(&["analogLib", "basic", "pdk", "cb", "scratch"]);
         i.load(BUILD).unwrap();
         run(&mut i, "(SfyFixStdlib)");
         i.files.insert("/t/in.sfyx".into(), golden_text.clone());
@@ -570,7 +559,7 @@ fn malformed_or_truncated_input_is_refused_and_nothing_is_saved() {
         ),
     ];
     for (text, line, what) in cases {
-        let mut i = interp(&["analogLib", "basic", "scratch"]);
+        let mut i = skill::virtuoso(&["analogLib", "basic", "scratch"]);
         i.load(BUILD).unwrap();
         run(&mut i, "(SfyFixStdlib)");
         i.files.insert("/t/bad.sfyx".into(), text);
@@ -596,7 +585,7 @@ fn schematic_with_check_errors_is_not_saved() {
     let text = "(\"sfyx\" 1 \"t\")\n(\"lib\" \"work\")\n(\"cell\" \"dangling\" \"design\")\n\
                 (\"cv\" \"schematic\" \"schematic\" 160)\n(\"wire\" 1 (0 0 20 0) 0)\n\
                 (\"label\" 2 0 \"x\" 40 0 \"R0\" \"lowerLeft\" \"stick\" 10 \"normal\" \"wire\" \"label\")\n(\"end\")\n";
-    let mut i = interp(&["scratch"]);
+    let mut i = skill::virtuoso(&["scratch"]);
     i.files.insert("/t/d.sfyx".into(), text.into());
     assert!(!run(&mut i, r#"(SfyImport "/t/d.sfyx" ?lib "scratch")"#).truthy());
     let log = file(&i, "/t/d.sfyx.log");
@@ -629,7 +618,7 @@ fn conn_records_draw_a_labelled_stub_at_the_real_pin() {
     let text = "(\"sfyx\" 1 \"t\")\n(\"lib\" \"work\")\n(\"cell\" \"remap\" \"design\")\n\
                 (\"cv\" \"schematic\" \"schematic\" 160)\n(\"inst\" 1 \"R0\" \"analogLib\" \"res\" \"symbol\" 0 0 \"R90\")\n\
                 (\"conn\" 1 \"PLUS\" \"out\")\n(\"conn\" 1 \"MINUS\" \"gnd!\")\n(\"end\")\n";
-    let mut i = interp(&["analogLib", "basic", "scratch"]);
+    let mut i = skill::virtuoso(&["analogLib", "basic", "scratch"]);
     i.load(BUILD).unwrap();
     run(&mut i, "(SfyFixStdlib)");
     i.files.insert("/t/c.sfyx".into(), text.into());
