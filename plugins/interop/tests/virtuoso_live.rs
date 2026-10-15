@@ -1612,9 +1612,16 @@ fn verify(work: &Path, o: &Opts) -> Report {
             let id = format!("netlist.{sim}.{lib}.{cell}");
             let status = read(&nl.join(format!("{lib}.{cell}.{sim}.status"))).unwrap_or_default();
             let net = read(&nl.join(format!("{lib}.{cell}.{sim}.net"))).unwrap_or_default();
-            r.check(
+            // auCdl depends on the site's si setup more than on the plugin: a WARN.
+            let ok = status.trim() == "0" && !net.trim().is_empty();
+            let grade = match (ok, sim) {
+                (true, _) => Grade::Pass,
+                (false, "auCdl") => Grade::Warn,
+                _ => Grade::Fail,
+            };
+            r.add(
                 &id,
-                status.trim() == "0" && !net.trim().is_empty(),
+                grade,
                 if net.trim().is_empty() {
                     format!(
                         "si exit {}: see out/netlist/{lib}.{cell}.{sim}.log",
@@ -1858,11 +1865,7 @@ fn run_on_mock(i: &mut Interp<MockDb>, work: &Path, session: &str) {
 
 /// Plugin bugs the kit finds on the mock, so a real Virtuoso shows them too: (check, why).
 /// Remove a row when its bug is fixed; the test fails on a row that passes.
-const KNOWN_BUGS: [(&str, &str); 1] = [(
-    "roundtrip.rclive.alib",
-    "analogLib mode: the stub on V1.MINUS is labelled gnd!, which imports as a global GND \
-     beside the stashed ground label 0, so the bench fails E003 (GND shorted to 0)",
-)];
+const KNOWN_BUGS: [(&str, &str); 0] = [];
 
 /// The whole kit with the mock Virtuoso in place of a real one (no si or OCEAN): every
 /// check the mock can answer passes but the [`KNOWN_BUGS`], so the kit itself is sound.

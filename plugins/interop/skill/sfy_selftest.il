@@ -67,7 +67,8 @@
         (setq ok nil)
         (SfySelfNote out (sprintf nil "  dump of %s/%s FAILED: see %s.log" scratchLib cell b))))
     (when ok
-      (setq msg (SfyDiff (car (SfyReadRecords a)) (car (SfyReadRecords b)) lib scratchLib))
+      (setq msg (SfyDiff (SfySelfKeep (car (SfyReadRecords a))) (SfySelfKeep (car (SfyReadRecords b)))
+                  lib scratchLib))
       (when msg
         (setq ok nil)
         (SfySelfNote out (sprintf nil "  the dumps differ:\n  %s" msg))))
@@ -79,6 +80,16 @@
     (SfySelfNote out (sprintf nil "SfySelfTest: %s" (if ok "PASS" "FAIL")))
     (when out (close out))
     ok))
+
+;; The (line record) pairs of a dump without its schemify* properties: Schemify's ids and
+;; stash, which Virtuoso may move to the other piece of a wire it splits and joins again
+;; (live ICADVM20.1 run).
+(procedure (SfySelfKeep recs)
+  (setof r recs
+    (not (and (equal (car (cadr r)) "prop")
+              (stringp (nth 2 (cadr r)))
+              (geqp (strlen (nth 2 (cadr r))) 8)
+              (equal (substring (nth 2 (cadr r)) 1 8) "schemify")))))
 
 ;; One line to the CIW and to port out (when open), flushed.
 (procedure (SfySelfNote out msg)

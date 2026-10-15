@@ -1053,6 +1053,14 @@ impl<'a> Ctx<'a> {
             Some(FileKind::Shbench)
         } else if sym && sch.is_some() {
             Some(FileKind::Shcomp)
+        } else if c.cv("symbol").is_some_and(|s| s.terms.is_empty()) {
+            // A symbol without terminals (a title block, a graphic) is no device.
+            notes.dropped(
+                "display-only",
+                &format!("{}/{}", c.lib, c.name),
+                "a symbol without pins is not imported".to_owned(),
+            );
+            None
         } else if sym {
             Some(FileKind::Shprim)
         } else if let Some(s) = sch {
@@ -2037,11 +2045,55 @@ fn build(
             }
         }
     }
-    let params = c
+    let mut params = c
         .cdf
         .as_ref()
         .map(|d| params_in(c, d, notes))
         .unwrap_or_default();
+    // A symbol label may show an instance property the cell's CDF does not declare (live run:
+    // Cadence's sample library shows `[@w]/[@l]` on cells without a CDF). Such a name becomes
+    // an empty string param, so the label template and instances that set it stay valid.
+    if let Some(sv) = sym.filter(|_| kind != FileKind::Shbench) {
+        let label_set = c.cdf.as_ref().map_or("", |d| d.label_set.as_str());
+        let mut extra: BTreeSet<String> = BTreeSet::new();
+        for l in sv
+            .labels
+            .iter()
+            .filter(|l| l.kind != "normal" && l.layer != "pin")
+        {
+            let Some(tmpl) = nlp_in(&l.text, label_set) else {
+                continue;
+            };
+            let Ok(tp) = schemify_expr::Template::parse(&tmpl) else {
+                continue;
+            };
+            for id in tp.program().idents() {
+                // Template built-ins (elab): not params.
+                let builtin = matches!(
+                    id,
+                    "name" | "cell" | "pins" | "in_pins" | "out_pins" | "params"
+                );
+                if !builtin && !params.iter().any(|p| p.name == id) {
+                    extra.insert(id.to_owned());
+                }
+            }
+        }
+        for n in extra {
+            notes.review(
+                "template",
+                &cell,
+                format!("symbol label shows `{n}`, which the CDF does not declare: declared empty"),
+            );
+            params.push(ParamIn {
+                name: n,
+                kind: "string".into(),
+                default: String::new(),
+                unit: None,
+                doc: None,
+                choices: Vec::new(),
+            });
+        }
+    }
     let mut pins: Vec<PinRow> = match (sym, sch) {
         (Some(sv), _) => pins_in(c, sv, notes),
         (None, Some(sv)) if kind == FileKind::Shcomp => derived_pins(sv),
@@ -2847,8 +2899,19 @@ fn schematic_in(
     // Labels.
     let mut dropped_alias = 0;
     let mut dropped_display = 0;
+    let mut dropped_stub = 0;
     for l in &sv.labels {
         tally.out += 1;
+        // The label the loader glued to a re-mastering stub (§6.4) goes with its stub: the
+        // re-mastered instance's own pins meet the drawn wires again, and the stub's net name
+        // would be a second name for that net (E003 on a live analogLib round trip).
+        // A label with an id is the user's (one on a bare pin travels on a stub too): kept.
+        if l.parent != 0 && prop(l.parent, "schemifyStub").is_some() && id_of(l.r).is_none() {
+            dropped_stub += 1;
+            tally.out -= 1;
+            tally.reported += 1;
+            continue;
+        }
         let o = profile::orient_from_virtuoso(&l.orient).unwrap_or(Orient::R0);
         let origin = pt(l.xy, upi, "label", &cell, notes);
         match (l.layer.as_str(), l.purpose.as_str()) {
@@ -2912,6 +2975,13 @@ fn schematic_in(
                 tally.reported += 1;
             }
         }
+    }
+    if dropped_stub > 0 {
+        notes.dropped(
+            "display-only",
+            &cell,
+            format!("{dropped_stub} re-mastering stub label(s)"),
+        );
     }
     if dropped_alias > 0 {
         notes.dropped(

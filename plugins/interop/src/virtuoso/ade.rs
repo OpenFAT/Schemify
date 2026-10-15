@@ -1802,6 +1802,20 @@ fn emit<F: Fn(&str) -> Option<InstInfo>>(
 
 /// An ADE output expression as a calculator expression (the inverse of [`out_to_ade`]);
 /// `None` when it uses anything else or does not compile.
+/// A number as ADE stores it, 7 significant digits, in engineering text (`632.1206m`, `1m`);
+/// any other text unchanged.
+fn ade_number(t: &str) -> String {
+    match schemify_expr::parse_num(t.trim()) {
+        Ok(x) if x.is_finite() => {
+            let r: f64 = format!("{x:.6e}").parse().unwrap_or(x);
+            let mut s = String::new();
+            schemify_expr::write_num(&mut s, r);
+            crate::virtuoso::read::si_text(&s)
+        }
+        _ => t.to_owned(),
+    }
+}
+
 /// `value(y x)`, `cross(y l n "edge")`, `xval(y)` or `OP("/path" "param")`, the call of
 /// ADE function `f` between tokens `open` and `close` of `e`, as the calculator expression
 /// export turned into it.
@@ -1881,7 +1895,11 @@ fn out_from_ade(e: &str) -> Option<String> {
         let (kind, x) = t[k];
         match kind {
             Tk::Ws => out.push_str(x),
-            Tk::Num => out.push_str(&ael::from_ael(x, |_| AelName::Unknown, |_| None)?.text),
+            // ADE keeps 7 significant digits (live run: 0.6321205588285577 came back
+            // 0.6321206, 1m as 0.001); both sides of the stash comparison read numbers so.
+            Tk::Num => out.push_str(&ade_number(
+                &ael::from_ael(x, |_| AelName::Unknown, |_| None)?.text,
+            )),
             Tk::Str => return None,
             Tk::Op => match x {
                 "+" | "-" | "*" | "/" | "(" | ")" => out.push_str(x),
@@ -2597,18 +2615,22 @@ mod tests {
         for (ade, calc) in [
             (
                 r#"cross(VT("/out") 0.6321206 1 "either")"#,
-                "cross(v(out), 0.6321206)",
+                "cross(v(out), 632.1206m)",
+            ),
+            (
+                r#"cross(VT("/out") 0.6321205588285577 1 "either")"#,
+                "cross(v(out), 632.1206m)",
             ),
             (
                 r#"cross(VT("/out") 0.5 2 "rising")"#,
-                "cross(v(out), 0.5, 1, 2)",
+                "cross(v(out), 500m, 1, 2)",
             ),
             (
                 r#"cross(VT("/out") 0.5 1 "falling")"#,
-                "cross(v(out), 0.5, -1)",
+                "cross(v(out), 500m, -1)",
             ),
-            (r#"value(VT("/out") 0.001)"#, "at(v(out), 0.001)"),
-            (r#"value(VDC("/out") 0.001)"#, "at(v(out), 0.001)"),
+            (r#"value(VT("/out") 0.001)"#, "at(v(out), 1m)"),
+            (r#"value(VDC("/out") 1m)"#, "at(v(out), 1m)"),
             (r#"OP("/X1/M2" "gm")"#, r#"op("X1/M2", "gm")"#),
             (r#"2*value(VT("/a") 1m - 1u)"#, "2*at(v(a), 1m - 1u)"),
         ] {
