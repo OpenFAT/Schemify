@@ -3,8 +3,8 @@
 //! prints a skip note and passes.
 //!
 //! - Every `.sym`/`.sch` reads with zero dropped records.
-//! - The idiom frequency table of `docs/research/pdk-xschem-devices.md` §5.6 is
-//!   reproduced exactly: the classifier sees what the research saw.
+//! - The PDK idiom frequency table (the device survey made when the importer was designed)
+//!   is reproduced exactly: the classifier sees what the survey saw.
 
 use std::path::{Path, PathBuf};
 

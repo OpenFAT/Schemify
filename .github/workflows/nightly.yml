@@ -1,4 +1,4 @@
-# Nightly tier (TESTING.md § Tiers): xschem differential ratchet on the full corpus with the
+# Nightly tier (docs/dev/testing.md § Tiers): xschem differential ratchet on the full corpus with the
 # ngspice second oracle, fuzzing, perf regression gate, coverage ratchet.
 name: nightly
 
@@ -99,7 +99,7 @@ jobs:
   # cargo-fuzz on every harness (`<dir>/fuzz`: crates/*/fuzz, plugins/interop/fuzz), starting from the checked-in corpus. The
   # corpus carries over between nights through the actions cache and is uploaded with any
   # crash inputs; a crash fails the job and its input becomes a checked-in regression test
-  # (TESTING.md).
+  # (docs/dev/testing.md).
   fuzz:
     if: ${{ !inputs.only || inputs.only == 'fuzz' }}
     strategy:
@@ -128,7 +128,7 @@ jobs:
           path: ${{ env.CORPUS }}
           key: fuzz-${{ matrix.target }}-${{ github.run_id }}
           restore-keys: fuzz-${{ matrix.target }}-
-      # xschem_read also gets the fetched PDK files (TESTING.md: seeded with real PDK files).
+      # xschem_read also gets the fetched PDK files (docs/dev/testing.md: seeded with real PDK files).
       - name: seeds
         run: tests/fuzz/seeds.sh ${{ matrix.target }} "$CORPUS" --fetched
       - name: fuzz ${{ matrix.target }} for ${{ env.MINUTES }} min
@@ -236,7 +236,7 @@ jobs:
             perf.log
             perf-results.txt
 
-  # Coverage as a gap-finder (TESTING.md): workspace line coverage of `cargo test` may not
+  # Coverage as a gap-finder (docs/dev/testing.md): workspace line coverage of `cargo test` may not
   # fall below the floor in tests/coverage/floor.txt (tests/coverage/ratchet.sh). Test
   # failures are the merge tier's to report; this job measures coverage regardless.
   coverage:

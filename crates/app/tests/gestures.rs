@@ -1,5 +1,5 @@
 //! Edit gestures and commands closing xschem parity gaps, end to end through the frame spine
-//! (TESTING.md: oracles, negative space): partial wire selection and vertex editing, symbol
+//! (docs/dev/testing.md: oracles, negative space): partial wire selection and vertex editing, symbol
 //! text orientation, recent files of another project, the canvas options from `init.lua`,
 //! make-subcircuit rewiring and join/trim of diagonal and attributed wires. Oracles: the
 //! canonical text of the edited document (and undo restoring it byte for byte), elab

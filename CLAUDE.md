@@ -1,1 +1,1 @@
-@AGENTS.md
+@docs/dev/contributing.md

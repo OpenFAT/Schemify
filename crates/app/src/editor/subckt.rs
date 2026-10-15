@@ -1,5 +1,5 @@
 //! Symbol → Make schematic and symbol from selected components (xschem Ctrl+Shift+H,
-//! docs/research/xschem-feature-inventory.md §4A.10): the selection moves into a new cell and
+//! xschem's Make symbol from schematic): the selection moves into a new cell and
 //! an instance of that cell takes its place, **wired** to the nets the selection boundary
 //! cut, so the parent's connectivity is unchanged.
 //!

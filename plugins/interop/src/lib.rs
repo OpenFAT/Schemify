@@ -12,7 +12,7 @@
 //! `docs/spec/import.md`) turns those tables into Schemify files (`.shprim`/`.shcomp`/
 //! `.shbench`, a project manifest and an import report); [`check_output`] is its
 //! oracle (every file loads in `doc`, round-trips, and every expression compiles).
-//! Behaviour comes from `docs/research/` and from golden netlists produced by running
+//! Behaviour comes from `docs/spec/import.md` and from golden netlists produced by running
 //! xschem, never from xschem source (D1).
 //!
 //! | Transform | Reads | Writes |

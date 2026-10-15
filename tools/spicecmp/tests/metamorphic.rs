@@ -1,4 +1,4 @@
-//! Metamorphic and robustness tests for `compare` (TESTING.md `netlist` row).
+//! Metamorphic and robustness tests for `compare` (docs/dev/testing.md `netlist` row).
 //!
 //! Circuits are generated from a seed (replayable: proptest prints it), then
 //! rendered twice. Renderings that differ only in line order, subckt order,

@@ -1,4 +1,4 @@
-//! TESTING.md `format` oracles: `parse(write(d)) == d`, `write(parse(s)) == s` for
+//! docs/dev/testing.md `format` oracles: `parse(write(d)) == d`, `write(parse(s)) == s` for
 //! canonical `s`, and any reorder of rank-3 records parses to the same canonical file.
 
 mod common;

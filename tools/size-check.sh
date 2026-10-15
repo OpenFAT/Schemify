@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Binary sizes of the headless core `schemify` and the editor `schemify-gui` (docs/perf.md
+# Binary sizes of the headless core `schemify` and the editor `schemify-gui` (docs/dev/perf.md
 # "Binary size"; informational since D39's 2026-10-12 amendment), built the way flake.nix ships
 # them: stripped, fat LTO,
 # one codegen unit, panic=abort, and on Linux no unwind tables + packed relative relocations.

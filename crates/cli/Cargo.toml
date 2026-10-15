@@ -68,5 +68,5 @@ web-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
-# The JSON-RPC codec's round-trip and malformed-input properties (TESTING.md `rpc`).
+# The JSON-RPC codec's round-trip and malformed-input properties (docs/dev/testing.md `rpc`).
 proptest.workspace = true

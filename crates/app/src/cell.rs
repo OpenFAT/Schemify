@@ -3,7 +3,7 @@
 //! `cell.page` scroll pane beside the canvas, and the `doc` ops each submitted field makes
 //! (one transaction per field, so one undo). It is the structured editor for every rank-0,
 //! rank-1 interface and rank-5 record the netlister reads, so none of them needs the raw
-//! Edit-file dialog (`docs/research/editability-audit.md`).
+//! Edit-file dialog.
 //!
 //! Node ids carry their target, so the panel holds no state: `cell.hdr.<key>`,
 //! `cell.pin.<r>.<attr>`, `cell.param.<r>.<attr>`, `cell.impl.<r>.<attr>`,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Determinism oracle (D32, AGENTS.md rule 4): writes the CLI outputs that must be byte-identical
+# Determinism oracle (D32, docs/dev/contributing.md rule 4): writes the CLI outputs that must be byte-identical
 # on every platform. CI runs it on each OS (and the WASI build under wasmtime) and diffs the
 # trees (`.github/workflows/ci.yml`, job `determinism`).
 #

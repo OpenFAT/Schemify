@@ -16,6 +16,6 @@ schemify-expr.workspace = true
 proptest.workspace = true
 # Doctest and tests build `Project`s to elaborate.
 schemify-doc.workspace = true
-# Semantic netlist comparison (the netlist oracle of TESTING.md).
+# Semantic netlist comparison (the netlist oracle of docs/dev/testing.md).
 schemify-spicecmp.workspace = true
 schemify-format.workspace = true

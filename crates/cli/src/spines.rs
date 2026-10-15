@@ -1,7 +1,7 @@
 //! The design spines shared by the headless CLI (`schemify netlist|check|run`) and the editor
 //! (`n`, `s`, Optimize): elaboration that opens the cells elab asks for, the violation report
 //! line, the dialect words and netlist file names, and the run spine up to the point where the
-//! CLI waits and the editor polls (ARCHITECTURE.md § Spines, `netlist` and `run`).
+//! CLI waits and the editor polls (docs/dev/architecture.md § Spines, `netlist` and `run`).
 //!
 //! Both callers own their project differently (the CLI a bare `doc::Project`, the editor a
 //! `Session` (`schemify_app::session`) with journals), so opening a cell is the one step behind a

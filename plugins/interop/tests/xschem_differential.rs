@@ -1,4 +1,4 @@
-//! The xschem differential oracle (TESTING.md, netlist row; it lives with the importer it
+//! The xschem differential oracle (docs/dev/testing.md, netlist row; it lives with the importer it
 //! needs, which the core never links), gated on `SCHEMIFY_CORPUS`
 //! (the `tests/corpus/.cache` directory: `src/` from `fetch.sh`, `golden/` from
 //! `golden.sh`). Without it the test prints a skip note and passes.
@@ -320,7 +320,7 @@ fn same_results(golden: &[u8], ours: &[u8]) -> Result<usize, String> {
     Ok(compared)
 }
 
-/// The second oracle (TESTING.md): ngspice results of our netlist and of xschem's
+/// The second oracle (docs/dev/testing.md): ngspice results of our netlist and of xschem's
 /// agree within tolerance. Needs `SCHEMIFY_CORPUS` and ngspice on PATH.
 #[test]
 #[ignore]

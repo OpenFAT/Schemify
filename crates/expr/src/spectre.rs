@@ -4,7 +4,7 @@
 //!
 //! Numbers are rewritten in canonical text (§7) because the SI suffixes of the
 //! two languages disagree (`1M` is milli in SPICE, mega in Spectre; Spectre has
-//! no `meg`). Parameter names: docs/research/spectre-netlist.md.
+//! no `meg`).
 
 use core::fmt::Write;
 

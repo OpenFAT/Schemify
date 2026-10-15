@@ -62,7 +62,7 @@ macro_rules! named_enum {
 }
 
 named_enum!(
-    /// Widget kind: the closed set of node types (ARCHITECTURE.md `ui`). A new widget is a new
+    /// Widget kind: the closed set of node types (docs/dev/architecture.md `ui`). A new widget is a new
     /// variant plus its layout, paint and AccessKit arms.
     Kind {
         /// Root of the main window.

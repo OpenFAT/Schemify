@@ -1,6 +1,6 @@
 # Edits, undo, journal, external changes (normative)
 
-Implements D11b, D27, D28, D34 and the `staged_edits` table required by the change drill (ARCHITECTURE.md). Owner: `doc`. Every change to design data, from any source (UI, plugin, JSON-RPC, optimizer, importer, AI assistant), is an **edit request**; `doc::apply_edits` is the only code that mutates design tables.
+Implements D11b, D27, D28, D34 and the `staged_edits` table required by the change drill (docs/dev/architecture.md). Owner: `doc`. Every change to design data, from any source (UI, plugin, JSON-RPC, optimizer, importer, AI assistant), is an **edit request**; `doc::apply_edits` is the only code that mutates design tables.
 
 ## 1. Edit requests
 

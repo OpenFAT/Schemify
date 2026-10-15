@@ -1,4 +1,4 @@
-//! TESTING.md `merge3` oracles: `merge(O, A, O) == A`, `merge(O, O, B) == B`,
+//! docs/dev/testing.md `merge3` oracles: `merge(O, A, O) == A`, `merge(O, O, B) == B`,
 //! non-conflicting edits commute, and model-based PBT over random edit scripts (move,
 //! param change, insert, delete, label rename) against a naive model; plus `diff`.
 

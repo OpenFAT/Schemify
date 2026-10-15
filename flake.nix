@@ -3,7 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    # extern/cktimg needs Zig 0.17 (build.zig.zon), which nixpkgs doesn't ship yet.
+    # plugins/cktimg/vendor needs Zig 0.17 (build.zig.zon), which nixpkgs doesn't ship yet.
     zig-overlay.url = "github:mitchellh/zig-overlay";
     zig-overlay.inputs.nixpkgs.follows = "nixpkgs";
   };
@@ -95,7 +95,7 @@
             CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1";
             # No shipped code catches panics (only a corpus test does), so drop unwinding.
             CARGO_PROFILE_RELEASE_PANIC = "abort";
-            # Linux (docs/perf.md "Binary size"): with panic=abort and stripped symbols the unwind
+            # Linux (docs/dev/perf.md "Binary size"): with panic=abort and stripped symbols the unwind
             # tables only fed symbol-less backtraces (-0.5 MB editor), and packed relative
             # relocations (DT_RELR, glibc >= 2.36; nix's glibc) shrink the PIE relocation table
             # (-0.8 MB). buildRustPackage passes --target, so build scripts keep their defaults.
@@ -116,10 +116,7 @@
           '';
           meta = {
             description = "Schematic capture with simulation, docs pages and WASM plugins";
-            license = with pkgs.lib.licenses; [
-              mit
-              asl20
-            ];
+            license = pkgs.lib.licenses.mit;
             mainProgram = "schemify-gui";
             platforms = systems;
           };
@@ -146,10 +143,7 @@
           doCheck = false;
           meta = {
             description = "Schemify interop plugin, native CLI (xschem import)";
-            license = with pkgs.lib.licenses; [
-              mit
-              asl20
-            ];
+            license = pkgs.lib.licenses.mit;
             mainProgram = "schemify-interop";
             platforms = systems;
           };
@@ -191,13 +185,13 @@
               rust-analyzer
               # Plugins: wasm-ld (the nix rustc has no rust-lld); web glue.
               lld
-              # extern/cktimg (the cktimg plugin's layout engine, a Zig library with a C ABI).
+              # plugins/cktimg/vendor (the cktimg plugin's layout engine, a Zig library with a C ABI).
               zig-overlay.packages.${pkgs.stdenv.hostPlatform.system}."0.17.0"
               (wasmBindgenCli pkgs)
               # Golden corpus (tests/corpus): xschem to make goldens, tclsh for PDK generators.
               xschem
               tcl
-              # Headless GUI runs and screenshots (AGENTS.md).
+              # Headless GUI runs and screenshots (docs/dev/contributing.md).
               cage
               grim
               wtype

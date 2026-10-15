@@ -1,4 +1,4 @@
-//! Metamorphic and determinism oracles (TESTING.md, netlist row):
+//! Metamorphic and determinism oracles (docs/dev/testing.md, netlist row):
 //! - hierarchical and flattened emission are equivalent under `schemify_spicecmp`;
 //! - renaming an unlabeled net (re-id'ing its wire) changes only `net_<id>` names;
 //! - output is byte-identical across runs, across input file order and across record

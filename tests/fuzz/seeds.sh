@@ -4,7 +4,7 @@
 #   tests/fuzz/seeds.sh <target> <corpus dir> [--fetched]
 #
 # Seeds are this repository's own files. `--fetched` adds the corpus sources `fetch.sh`
-# downloads (xschem_read: real PDK and xschem library files, TESTING.md); those include GPL
+# downloads (xschem_read: real PDK and xschem library files, docs/dev/testing.md); those include GPL
 # xschem data, so a corpus seeded with them is never committed (the `fuzz-corpus` job omits it).
 set -eu # no pipefail: `head` closes the find pipe early on purpose
 

@@ -1,4 +1,4 @@
-//! Oracles for the user config (TESTING.md, config spec §2–§5): the Lua API against the table
+//! Oracles for the user config (docs/dev/testing.md, config spec §2–§5): the Lua API against the table
 //! written directly, and the sandbox's negative space (absent libraries, budget, memory cap,
 //! errors located at `file:line`).
 //!

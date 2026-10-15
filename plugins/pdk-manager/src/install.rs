@@ -216,8 +216,8 @@ pub fn corners_lib(r: &Recipe, up: &str) -> String {
     t
 }
 
-const NMOS4: &str = include_str!("../../../lib/core/nmos4.shprim");
-const PMOS4: &str = include_str!("../../../lib/core/pmos4.shprim");
+const NMOS4: &str = include_str!("../../../devices/nmos4.shprim");
+const PMOS4: &str = include_str!("../../../devices/pmos4.shprim");
 /// The size label of the core MOS drawing, replaced for cells without `w`/`l`.
 const WL_LABEL: &str = "{eng(w)}/{eng(l)}";
 

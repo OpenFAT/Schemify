@@ -88,7 +88,7 @@ D27's "MCP = thin plugin": a Model Context Protocol server on stdio, so an agent
 - `tools/list` → one tool per headless method except `rpc.methods` (§3.1), in that order: the CLI tools take `{"args": [<string>…]}`, `edit` takes `{"file", "ops", "label"?}` (JSON Schema `inputSchema` for each).
 - `tools/call {"name", "arguments"}` → `{"content": [{"type": "text", "text"}], "isError"}`: a CLI tool's text is `exit code <n>`, a line break, then its stdout and stderr; `edit`'s is its JSON result. `isError` is true when the method failed or the command exited non-zero. An unknown tool or a call without `name` is `-32602`.
 
-## 8. Oracles (TESTING.md `rpc`)
+## 8. Oracles (docs/dev/testing.md `rpc`)
 
 - The codec: `parse(write(v)) == v` for generated values (property); RFC 8259 acceptance and rejection cases; any bytes decode to a request or a declared `-32700`/`-32600` response, never a panic (property, and the `cli/fuzz` `rpc_decode` target, nightly).
 - Headless: every method of `rpc.methods` is reachable; CLI methods return the CLI's own exit code and output for the same arguments; `edit` changes exactly the edited attribute (`schemify diff` as oracle) and refuses invalid ops without touching the file; garbage lines do not stop the stream; the Unix-socket listener answers like stdio.

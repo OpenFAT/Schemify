@@ -1,4 +1,4 @@
-# Merge tier (TESTING.md § Tiers): every push to main or ci/*, and every PR.
+# Merge tier (docs/dev/testing.md § Tiers): every push to main or ci/*, and every PR.
 # D32: Linux, macOS, Windows and Web are all tier 1 and release-blocking.
 name: ci
 
@@ -170,7 +170,7 @@ jobs:
           path: determinism-out
           if-no-files-found: error
 
-  # Byte-identical CLI outputs on every platform (D32, AGENTS.md rule 4), import reports
+  # Byte-identical CLI outputs on every platform (D32, docs/dev/contributing.md rule 4), import reports
   # included (their paths are relative to the import roots, import spec §7).
   determinism:
     needs: [test, wasm]
@@ -193,7 +193,7 @@ jobs:
             echo "::error::missing platform outputs"; status=1; }
           exit $status
 
-  # Guest plugins (Linux, Nix: Zig 0.17 for extern/cktimg, wasm-ld). build.sh fails when a module
+  # Guest plugins (Linux, Nix: Zig 0.17 for plugins/cktimg/vendor, wasm-ld). build.sh fails when a module
   # reaches its size limit (200 KB; cktimg 550 KB; interop 1500 KB). build.sh is byte-reproducible, so the last
   # step fails when a committed module differs from its rebuild (a plugin source changed
   # without its module, or a module built elsewhere): commit the `plugin-guests` artifact.
@@ -259,7 +259,7 @@ jobs:
         run: nix develop -c cargo test -p schemify-plugin -p schemify-app --no-fail-fast
       # The Nix shell has ngspice, Xyce, Icarus and OpenVAF: the run crate's real-tool
       # differentials (Monte Carlo seeds, corner paths, OSDI and VVP compiles) must run here,
-      # so a missing tool fails instead of skipping (TESTING.md `run`).
+      # so a missing tool fails instead of skipping (docs/dev/testing.md `run`).
       - name: run tests against the real simulators and compilers
         if: ${{ !cancelled() }}
         env:

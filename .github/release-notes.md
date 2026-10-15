@@ -4,7 +4,7 @@ Assets: `schemify`, `schemify-gui` and `schemify-interop` (xschem import) for Li
 aarch64 and x86_64, and Windows x86_64 (stripped, LTO); `schemify-{{TAG}}-web.tar.gz` is the
 browser build (serve the directory with any static file server; WebGPU required).
 
-## Release checklist (TESTING.md § Release exit criteria)
+## Release checklist (docs/dev/testing.md § Release exit criteria)
 
 This release stays a draft until every box is ticked. Link the evidence (run URL or file) on each line.
 

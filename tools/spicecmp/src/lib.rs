@@ -1,4 +1,4 @@
-//! Semantic SPICE/CDL netlist comparison: the `netlist` oracle of TESTING.md.
+//! Semantic SPICE/CDL netlist comparison: the `netlist` oracle of docs/dev/testing.md.
 //!
 //! Two netlists are **equivalent** when all six sections agree:
 //!
@@ -46,7 +46,7 @@ use std::fmt;
 
 use flat::Flat;
 
-/// Comparison knobs. `Default` is the TESTING.md oracle.
+/// Comparison knobs. `Default` is the docs/dev/testing.md oracle.
 #[derive(Clone, Debug, Default)]
 pub struct Options {
     /// `(from, to)` literal replacements applied to both texts before

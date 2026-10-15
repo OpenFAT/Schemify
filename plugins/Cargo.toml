@@ -1,4 +1,7 @@
-# Guest plugins (the bundled default UI and examples), built for wasm32-unknown-unknown only.
+# Guest plugins, built for wasm32-unknown-unknown only: the four optional plugins here, the bundled
+# default UI (`../ui/default-plugin`) and the plugin host's test guests
+# (`../crates/plugin/tests/guests`). The members outside this directory point back here with
+# `package.workspace`.
 #
 # A workspace of its own, not a member of the root one: the root globs only `crates/*`
 # and `tools/*`, so `cargo test --workspace` never builds these cdylibs (their `schemify`
@@ -6,12 +9,18 @@
 # fixtures with `plugins/build.sh`.
 [workspace]
 resolver = "3"
-members = ["hello", "bad-actor", "gmid-stub", "default-ui", "gmid-lut", "cktimg", "pdk-manager", "interop"]
+members = [
+  "gmid-lut", "cktimg", "pdk-manager", "interop",
+  "../ui/default-plugin",
+  "../crates/plugin/tests/guests/hello",
+  "../crates/plugin/tests/guests/bad-actor",
+  "../crates/plugin/tests/guests/gmid-stub",
+]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 rust-version = "1.95"
 
 [workspace.dependencies]

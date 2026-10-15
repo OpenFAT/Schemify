@@ -1,4 +1,4 @@
-# Release tier (TESTING.md § Tiers): on a `v*` tag, build `schemify`, `schemify-gui` and `schemify-interop`
+# Release tier (docs/dev/testing.md § Tiers): on a `v*` tag, build `schemify`, `schemify-gui` and `schemify-interop`
 # (the interop plugin's native CLI, from the plugins workspace) for Linux, macOS (Apple silicon and Intel) and Windows plus the web bundle, and attach them to a *draft*
 # GitHub release whose notes are the release checklist (.github/release-notes.md): a maintainer ticks
 # it, then publishes. A push to `ci/release*` runs the same builds as a dry run and publishes nothing.
@@ -60,7 +60,7 @@ jobs:
           mkdir "$dir"
           cp "$bin/schemify${{ matrix.exe }}" "$bin/schemify-gui${{ matrix.exe }}" \
             "plugins/$bin/schemify-interop${{ matrix.exe }}" \
-            README.md LICENSE-MIT LICENSE-APACHE "$dir"/
+            README.md LICENSE "$dir"/
           if [ "${{ runner.os }}" = Windows ]; then
             7z a -bd "$dir.zip" "$dir" >/dev/null
           else
@@ -108,7 +108,7 @@ jobs:
           dir="schemify-${GITHUB_REF_NAME//\//-}-linux-x86_64"
           mkdir "$dir"
           cp target/release/schemify target/release/schemify-gui target/release/schemify-interop \
-            README.md LICENSE-MIT LICENSE-APACHE "$dir"/
+            README.md LICENSE "$dir"/
           tar czf "$dir.tar.gz" "$dir"
       - uses: actions/upload-artifact@v4
         with:

@@ -2,7 +2,7 @@
 //! canvas with 1k primitives, and a math expression. Re-bless with `SCHEMIFY_BLESS=1`.
 //!
 //! Tolerance: a pixel differs when any channel differs by more than 2; at most 0.1% of pixels may
-//! differ (SIMD paths may round differently across CPUs). The GPU-vs-CPU comparison TESTING.md
+//! differ (SIMD paths may round differently across CPUs). The GPU-vs-CPU comparison docs/dev/testing.md
 //! asks for needs an adapter in CI and is not here yet.
 
 use schemify_render::canvas::{self, Camera, CanvasPrims, CanvasScratch, Marks, Palette, PrimKind};

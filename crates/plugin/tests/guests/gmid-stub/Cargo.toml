@@ -1,0 +1,15 @@
+[package]
+name = "gmid-stub"
+description = "Example plugin proving D20 wiring: the pure expression function gmid.width (placeholder math)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+workspace = "../../../../../plugins"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+schemify-abi.workspace = true

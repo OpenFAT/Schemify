@@ -1,4 +1,4 @@
-//! Properties of the host's pure transforms (TESTING.md `plugin` row), no wasm involved:
+//! Properties of the host's pure transforms (docs/dev/testing.md `plugin` row), no wasm involved:
 //! stateful fuzz of output records against a naive model (malformed streams, stale
 //! documents, conflicting contributions, full queues), composition laws (last wins,
 //! unload == compose without, idempotence), and capability decisions.

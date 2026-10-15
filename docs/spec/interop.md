@@ -2,7 +2,6 @@
 
 Implements D24 as amended 2026-10-12 (interop is a plugin; xschem import **and export**; Cadence Virtuoso import and export) and D41 (this bridge). Readers and writers live in `plugins/interop`, never in a core crate. The xschem *import* is specified in [import.md](import.md); this spec covers everything else and the shared model under both.
 
-Evidence: [virtuoso-skill-db.md](../research/virtuoso-skill-db.md) (SKILL database API), [virtuoso-cdf-pdk.md](../research/virtuoso-cdf-pdk.md) (CDF, simInfo, analogLib, PDK structure), [virtuoso-netlist-ade.md](../research/virtuoso-netlist-ade.md) (netlists, values, ADE), [virtuoso-tooling-prior-art.md](../research/virtuoso-tooling-prior-art.md) (SKILL lexing, test strategy). Facts there carry VERIFIED/LIKELY/GUESS marks; every GUESS this spec relies on is listed in §13 with the probe that settles it.
 
 No Virtuoso runs in CI. The SKILL side is therefore (a) written in a subset a test-only interpreter executes exactly (§5.1), (b) kept free of translation logic — every decision is made in Rust, where it is tested — and (c) shipped with a self-test a user runs once in a real Virtuoso (§5.5).
 
@@ -82,7 +81,7 @@ Schemify netexpr (netlist.md §4) ↔ Virtuoso nameExpr:
 | instance `X1[3:0]` | `X1<3:0>` |
 | `x!` | `x!` |
 | global label `x` (`global true`) | `x!` |
-| ground: `0`, and global labels spelled `gnd` in any case | `gnd!` (Spectre maps `gnd!` to node 0; netlist research §1.3) |
+| ground: `0`, and global labels spelled `gnd` in any case | `gnd!` (Spectre maps `gnd!` to node 0) |
 
 Import: `gnd!` → global label `GND` (ngspice's ground alias, xschem's spelling); `x!` → `x!` (a global by name in Schemify); step ranges, suffix repeats and grouping (`a<0:6:2>`, `a<0:2*2>`, `<*2>(a,b)`) expand to the equivalent bundle (`a[0],a[2],a[4],a[6]`); a bare tap (`<3:0>` with no base) and a non-numeric parenthesis (`x(a)`) are verbatim scalar names + `needs_review: name`. Characters Schemify identifiers lack (`-`, `+`, `#`, …) keep the name verbatim (elab §9.4 treats it as one scalar). Every name whose export spelling is not the default inverse of its import spelling stores the exact Schemify spelling in property `schemifyNet` on its label, so a round trip is exact.
 
@@ -255,7 +254,7 @@ Export is the inverse: `.shcomp` → symbol + schematic + CDF; `.shprim` → sym
 | solder dots, markers, instance labels | dropped |
 | cellview props `schemifyRecords1…N` | the Schemify-only records (§7.3) |
 
-Port order: export writes simInfo `termOrder` (spectre and auCdl) = Schemify pin order; import takes `termOrder` of the cell's spectre simInfo, else Virtuoso's default (terminal names sorted ASCII, research §2.1).
+Port order: export writes simInfo `termOrder` (spectre and auCdl) = Schemify pin order; import takes `termOrder` of the cell's spectre simInfo, else Virtuoso's default (terminal names sorted ASCII).
 
 Decided (exact forms, `virtuoso::write`/`read`):
 - **Pins.** Each pin is a `pinfig` square of ±2000 export units (1/80″) around the pin point; an alias pin is a further `pinfig` of its target's terminal carrying prop `schemifyPin` (its Schemify name; a dump without it names extra rectangles `<term>_<k>`); the main pin is the first rectangle without `schemifyPin`. An inherited pin is a terminal with net expression `[@<pin>:%:<default>]` (default by §3.3 with `global`) plus a CDF `netSet` param of the pin's name; an instance's `inherit <pin> <net>` is a `netSet`-typed prop of that name (the type `dbReplaceProp … "netSet"` stores; G13). On import a default `x!` becomes `x` (inherited defaults are global by definition) and `gnd!` becomes `GND`.

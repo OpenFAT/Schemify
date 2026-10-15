@@ -1,5 +1,5 @@
 schemify 1 shcomp
-  doc "Contact sheet: every lib/core cell with pin stubs, and a 5-transistor OTA (render fixture for the symbol kit)"
+  doc "Contact sheet: every devices cell with pin stubs, and a 5-transistor OTA (render fixture for the symbol kit)"
   prefix x
 
 impl sch schematic

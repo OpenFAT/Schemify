@@ -1,4 +1,4 @@
-//! D19 oracle (TESTING.md `expr`/`elab`): after any sequence of edits, undos and redos
+//! D19 oracle (docs/dev/testing.md `expr`/`elab`): after any sequence of edits, undos and redos
 //! applied with `doc::apply_edits` (`recompute` takes the ops `Project::applied` lends),
 //! the incrementally recomputed state equals a state built from scratch — values,
 //! unverified flags, nets and violations.

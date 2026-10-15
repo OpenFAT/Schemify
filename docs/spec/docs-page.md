@@ -10,7 +10,7 @@ Blocks are the rank-4 records of [format.md](format.md) §4; nothing here adds a
 ## 1. Placement
 
 - The work area is a row: the schematic canvas, then the docs pane (`docs.pane`: a toolbar
-  `docs.bar` and a `scroll` node `docs.page`). The default UI (`plugins/default-ui`) declares
+  `docs.bar` and a `scroll` node `docs.page`). The default UI (`ui/default-plugin`) declares
   them with a 560 px pane; the core base (no UI plugin) declares the same nodes, so docs render
   without plugins (D21).
 - Shown per tab: a tab opens with its page shown when the document has at least one doc block.

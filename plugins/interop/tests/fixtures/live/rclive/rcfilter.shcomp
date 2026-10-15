@@ -1,0 +1,43 @@
+schemify 1 shcomp
+  doc "RC low-pass section: R from in to out, C from out to gnd (live Virtuoso kit fixture)"
+  prefix X
+
+pin in in -40 0
+pin out out 40 0
+pin gnd inout 0 40
+
+param R 1k
+  unit Ohm
+param C 1u
+  unit F
+
+impl sch schematic
+
+rect -20 -20 20 20
+
+line -40 0 -20 0
+line 20 0 40 0
+line 0 20 0 40
+
+stext -20 -28 R0 {name}
+  size 0.2
+stext -14 -5 R0 rc
+  size 0.18
+
+inst c00001 core:cap
+  at 0 90 R0
+  name C1
+  value C
+inst r00001 core:res
+  at 0 0 R0
+  name R1
+  value R
+
+wire w00001 -60 -30 0 -30
+wire w00002 0 30 0 60
+wire w00003 0 30 60 30
+wire w00004 0 120 0 150
+
+port p00001 -60 -30 R0 in
+port p00002 60 30 R180 out
+port p00003 0 150 R270 gnd

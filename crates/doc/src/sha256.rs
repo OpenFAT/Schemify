@@ -1,6 +1,6 @@
 //! SHA-256 (FIPS 180-4) for lockfile and journal hashes.
 //!
-//! In-crate rather than the `sha2` crate (AGENTS.md rule 7: a few lines of our own
+//! In-crate rather than the `sha2` crate (docs/dev/contributing.md rule 7: a few lines of our own
 //! before a new dependency): ~60 lines, verified against the NIST CAVP vectors in the
 //! tests, deterministic, no feature detection, builds for wasm32. `ponytail:` scalar
 //! code runs ~300 MB/s; switch to `sha2` (SHA-NI) if lockfile hashing of large PDKs

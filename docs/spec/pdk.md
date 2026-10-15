@@ -63,7 +63,6 @@ row (no code):
 | corners | `tt ff ss sf fs` | `typical ff ss sf fs` | `mos_tt mos_ff mos_ss mos_sf mos_fs` | `tt ff ss` | `tt ff ss` |
 | tech.map | `maps/sky130.map` | `maps/gf180mcu.map` | `maps/ihp-sg13g2.map` | `maps/freepdk45.map` | `maps/asap7.map` |
 
-Sources, licences and the checks behind the academic rows: [research/academic-pdks.md](../research/academic-pdks.md).
 NCSU's own FreePDK45 download needs a registration; a registered copy installs as a `local`
 kit (§2.1). We commit only recipe data (URLs, revs, paths, model names) and our maps, never kit
 files.

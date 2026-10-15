@@ -1,4 +1,4 @@
-// Merge-tier replay of a checked-in fuzz corpus (TESTING.md tiers), `include!`d by each
+// Merge-tier replay of a checked-in fuzz corpus (docs/dev/testing.md tiers), `include!`d by each
 // fuzzed crate's `tests/fuzz_corpus.rs` next to the target oracles in `fuzz/oracles/`.
 // The corpora are minimized (`cargo fuzz cmin`) by the manual `fuzz-corpus` job of
 // `.github/workflows/nightly.yml` and committed under `<crate>/fuzz/corpus/<target>/`.

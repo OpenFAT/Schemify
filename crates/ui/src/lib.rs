@@ -2,7 +2,7 @@
 //! accessibility, and the `math` and `graph` widget models. No GPU and no windowing here; the
 //! `render` crate draws what this crate lays out.
 //!
-//! The frame spine (ARCHITECTURE.md) touches this crate in order:
+//! The frame spine (docs/dev/architecture.md) touches this crate in order:
 //!
 //! ```text
 //! records::parse(text)                 -> Contribution      (per contribution, on change)
@@ -57,12 +57,12 @@ pub use text::{
 /// Re-exported so renderers name the same layout and font types as this crate.
 pub use parley;
 
-/// The bundled default-UI plugin's two contribution sets (`plugins/default-ui`, D6): its
+/// The bundled default-UI plugin's two contribution sets (`ui/default-plugin`, D6): its
 /// `contribute ui` records (menus, toolbar, tabs, canvas, status bar, dialogs, theme) followed by
 /// its `contribute keymap` records (xschem's bindings, D25), as one text [`records::parse`]
 /// accepts. The app loads the plugin itself; this copy is a fixture for the ui/render tests and
 /// the render demo, so they need no wasm host.
 pub const DEFAULT_UI: &str = concat!(
-    include_str!("../../../plugins/default-ui/ui.records"),
-    include_str!("../../../plugins/default-ui/keymap.records")
+    include_str!("../../../ui/default-plugin/ui.records"),
+    include_str!("../../../ui/default-plugin/keymap.records")
 );

@@ -25,7 +25,7 @@ use crate::decimal::{self, DecimalError};
 use crate::{MAX_INPUT_BYTES, Span};
 
 /// Records one file level (top level or one embedded body) may hold (2^22, the per-cell
-/// object cap in ARCHITECTURE.md). Reading stops with [`IssueKind::TooManyRecords`].
+/// object cap in docs/dev/architecture.md). Reading stops with [`IssueKind::TooManyRecords`].
 pub const MAX_RECORDS: u32 = 1 << 22;
 /// Points one `P` record may carry; more is reported as [`IssueKind::PointCount`].
 pub const MAX_POLYGON_POINTS: u32 = 1 << 16;

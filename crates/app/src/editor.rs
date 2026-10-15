@@ -1,5 +1,5 @@
 //! The editor: every table of an interactive session and the **frame spine** that
-//! transforms them, one line per transform (ARCHITECTURE.md § Spines, `frame`):
+//! transforms them, one line per transform (docs/dev/architecture.md § Spines, `frame`):
 //!
 //! ```text
 //! ui::route_input(ui_layout, keymap, events)          → command_requests, canvas events

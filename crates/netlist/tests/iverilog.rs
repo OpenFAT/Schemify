@@ -1,4 +1,4 @@
-//! Second oracle for the structural Verilog dialect (TESTING.md, netlist row): xschem has
+//! Second oracle for the structural Verilog dialect (docs/dev/testing.md, netlist row): xschem has
 //! no Verilog golden, so Icarus Verilog checks that our netlists are Verilog. Every fixture
 //! cell that elaborates for verilog without a blocking finding is compiled by `iverilog`
 //! (parse + elaboration: every instantiated module must exist, ports must match by name).

@@ -1,4 +1,4 @@
-# cargo-fuzz harness for the JSON-RPC command stream (TESTING.md: fuzz every parser).
+# cargo-fuzz harness for the JSON-RPC command stream (docs/dev/testing.md: fuzz every parser).
 # Run from this directory with a nightly toolchain:
 #   cargo +nightly fuzz run rpc_decode
 # Not a member of the repository workspace: it needs nightly, libfuzzer-sys and its

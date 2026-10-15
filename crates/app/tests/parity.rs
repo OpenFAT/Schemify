@@ -1,5 +1,5 @@
 //! xschem parity, end to end through the frame spine: the ratchet over every command the
-//! default UI names, then one oracle-backed test per parity feature (TESTING.md: oracles,
+//! default UI names, then one oracle-backed test per parity feature (docs/dev/testing.md: oracles,
 //! negative space). Oracles: the canonical record text of the edited document (and undo
 //! restoring it byte for byte), files written by exports and saves (decoded or parsed back),
 //! elab connectivity before/after (stretch), and properties over seeded inputs (stretch,
@@ -15,8 +15,8 @@ use schemify_app::editor::{Editor, Options, Tool};
 use schemify_doc::TableId;
 use schemify_ui::{Button, InputEvent, InputEvents};
 
-const UI: &str = include_str!("../../../plugins/default-ui/ui.records");
-const KEYMAP: &str = include_str!("../../../plugins/default-ui/keymap.records");
+const UI: &str = include_str!("../../../ui/default-plugin/ui.records");
+const KEYMAP: &str = include_str!("../../../ui/default-plugin/keymap.records");
 
 /// Unresolved command names allowed. Lower it when a command lands; never raise it.
 /// 2026-10-11: 198 before the parity pass, 0 after it.
@@ -480,7 +480,7 @@ fn export_project_zips_the_listed_files() {
 
 // ---------------------------------------------------------------------------- Edit
 
-/// Property (TESTING.md): after a kissing move (Shift+M) of any instance subset by any
+/// Property (docs/dev/testing.md): after a kissing move (Shift+M) of any instance subset by any
 /// grid offset, every pair of pins (instance pins and ports) connected before is still
 /// connected — the kissing wires keep every contact. Stretch alone (Ctrl+M) keeps them too
 /// here because every connection of the fixture runs through a wire.

@@ -1,4 +1,4 @@
-# cargo-fuzz harness for schemify-format (TESTING.md: fuzz every parser).
+# cargo-fuzz harness for schemify-format (docs/dev/testing.md: fuzz every parser).
 # Run from this directory with a nightly toolchain:
 #   cargo +nightly fuzz run parse
 #   cargo +nightly fuzz run merge3

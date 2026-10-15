@@ -1,4 +1,4 @@
-//! Property oracles for every reader (TESTING.md, `import` row):
+//! Property oracles for every reader (docs/dev/testing.md, `import` row):
 //! - totality: arbitrary and grammar-shaped input never panics, and each reader's
 //!   count-conservation invariant holds (the readers assert it on exit; these tests
 //!   re-check it from outside);

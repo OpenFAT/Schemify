@@ -1,4 +1,4 @@
-Embedded fonts, SIL Open Font License 1.1 (redistributable with MIT/Apache-2.0 code):
+Embedded fonts, SIL Open Font License 1.1 (redistributable with MIT code):
 
 - NotoSans-UI.ttf: Noto Sans 2.015 (variable), cut down for the UI (D39 binary size): width
   axis pinned at 100, weight axis limited to 400–700 (regular to bold), glyphs subset to Basic

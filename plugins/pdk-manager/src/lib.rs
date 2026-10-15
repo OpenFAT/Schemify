@@ -196,8 +196,7 @@ const ASAP7_CELLS: [Device; 8] = [
 
 /// The families (spec §2). ciel rows: section names checked against the upstream model files
 /// and installed trees (spec Q1, ciel 3.0.1, 2026-10-12). freepdk45 and asap7: paths, model
-/// names and an inverter DC sweep in ngspice checked at the pinned revisions
-/// (docs/research/academic-pdks.md).
+/// names and an inverter DC sweep in ngspice checked at the pinned revisions.
 pub const RECIPES: [Recipe; 5] = [
     Recipe {
         family: "sky130",

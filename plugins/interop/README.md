@@ -52,6 +52,10 @@ Paths after `<project>` are relative to it. Each conversion writes a report next
 
 ## First time with Virtuoso
 
+The quickest check is the live test kit: run [`live/run.sh`](live/README.md) from your
+Virtuoso project directory and read the verdict in `sfylive/out/report.md`. It does everything
+below and more, in batch mode. To do it by hand instead:
+
 The first session settles what this plugin could only guess about your Virtuoso release
 (spec §13). Run these steps in order, in one Virtuoso session; every step writes a file, and
 the files are what to send back.

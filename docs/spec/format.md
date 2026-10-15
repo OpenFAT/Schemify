@@ -1,6 +1,6 @@
 # File format v1 (normative)
 
-Implements D9, D10, D11, D13, D17, D19, D20, D29, D30, D33, D35, D40. Rationale and measurements: [../research/file-format.md](../research/file-format.md). Where this spec and the research doc differ, this spec wins.
+Implements D9, D10, D11, D13, D17, D19, D20, D29, D30, D33, D35, D40.
 
 ## 1. Files
 

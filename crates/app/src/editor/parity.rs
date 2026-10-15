@@ -1,4 +1,4 @@
-//! xschem-parity commands beyond the M2 core (docs/research/xschem-feature-inventory.md §1–3):
+//! xschem-parity commands beyond the M2 core:
 //! File (save as, merge, recent files, delete, image export), Edit (unselect area, stretch
 //! moves), Options/View toggles and the canvas palette they shape, Layers, Properties (edit
 //! file, header, ignore), Tools (shapes, align, cuts, join/trim, search, connected wires),
@@ -3036,7 +3036,7 @@ fn help_text() -> String {
      View: f zoom full, z zoom box, Shift+Z / Ctrl+Z zoom in / out, % grid, Alt+X crosshair.\n\n\
      Hierarchy: e / Ctrl+E descend / return, i symbol, Alt+E / Alt+I in a new tab.\n\n\
      Files: Ctrl+S save, Ctrl+Shift+S save as, Ctrl+Shift+O most recent, B merge.\n\n\
-     Specs: docs/spec/ (file format, expressions, netlisting); decisions: docs/DECISIONS.md.\n"
+     Specs: docs/spec/ (file format, expressions, netlisting); decisions: docs/dev/decisions.md.\n"
         .to_owned()
 }
 

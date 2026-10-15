@@ -1,4 +1,4 @@
-//! The reader is total (TESTING.md: fuzz the reader, assertions are the oracle): random bytes
+//! The reader is total (docs/dev/testing.md: fuzz the reader, assertions are the oracle): random bytes
 //! and mutated real files give `Ok` or a declared [`RawError`], never a panic or a hang, and
 //! every `Ok` satisfies the column-store invariants (which `RawPlot`'s constructor asserts).
 

@@ -1,4 +1,4 @@
-//! The translation oracle (TESTING.md `import` row): every generated cell file loads
+//! The translation oracle (docs/dev/testing.md `import` row): every generated cell file loads
 //! in `doc` with zero errors and round-trips byte for byte, every cell reference
 //! resolves through the generated manifest, and every expression and template compiles
 //! with only identifiers its scope defines.

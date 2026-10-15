@@ -1,4 +1,4 @@
-//! Oracle-backed tests for `schemify-expr` (TESTING.md, expr row). One test
+//! Oracle-backed tests for `schemify-expr` (docs/dev/testing.md, expr row). One test
 //! binary; one module per oracle.
 
 mod calc;

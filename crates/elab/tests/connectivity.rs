@@ -1,4 +1,4 @@
-//! Connectivity (netlist spec §3–§5) against its oracles (TESTING.md `elab`
+//! Connectivity (netlist spec §3–§5) against its oracles (docs/dev/testing.md `elab`
 //! connectivity): the naive O(n²) reference on random schematics, metamorphic
 //! transforms of the whole sheet (8 orientations, translation, record permutation,
 //! re-id), and tables of naming, bus, bundle and iterated-instance cases.

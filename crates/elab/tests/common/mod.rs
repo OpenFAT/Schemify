@@ -166,7 +166,7 @@ pub fn place_ref(x: i64, y: i64, orient: &str, at: (i64, i64)) -> (i64, i64) {
 /// Object keys of a schematic: `w:<id>`, `l:<id>`, `p:<inst id>:<pin index>`.
 pub type Partition = BTreeMap<String, usize>;
 
-/// The naive oracle (TESTING.md): nodes are wire ends, instance pins, labels and
+/// The naive oracle (docs/dev/testing.md): nodes are wire ends, instance pins, labels and
 /// noconns; union every coincident pair, every node lying on a wire (endpoints
 /// included), and the two ends of each wire. O(n²) pairs. Returns the geometric
 /// partition of wires, labels and pins.

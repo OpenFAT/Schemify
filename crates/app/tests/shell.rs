@@ -46,12 +46,12 @@ fn boots_without_the_default_ui_plugin() {
     assert_eq!((px.width(), px.height()), (VIEW.0 as u16, VIEW.1 as u16));
 }
 
-/// Expected chords from docs/research/xschem-feature-inventory.md §2.1: every canvas key
-/// row except graph-only, cadence-only, placeholder and Tk-dialog rows.
+/// Expected chords from xschem's canvas key table (`fixtures/xschem_keys.md`, captured by
+/// running xschem 3.4.7): every row except graph-only, cadence-only, placeholder and Tk-dialog rows.
 fn inventory_chords() -> Vec<(String, String)> {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/research/xschem-feature-inventory.md"
+        "/tests/fixtures/xschem_keys.md"
     );
     let text = std::fs::read_to_string(path).expect("inventory");
     let start = text.find("### 2.1").expect("§2.1");
@@ -110,7 +110,7 @@ fn keymap_covers_the_xschem_inventory() {
         "parsed {} inventory combos",
         expected.len()
     );
-    // xschem functions with no meaning here keep no binding (docs/BACKLOG.md "Parity:
+    // xschem functions with no meaning here keep no binding (docs/dev/backlog.md "Parity:
     // intentionally dropped"): the logic simulator (0-4), the launcher (Ctrl+h), insertion
     // order (Shift+S), floaters (Ctrl+u), X11 drawing modes ($, Ctrl+$).
     const DROPPED: [&str; 10] = [
@@ -516,7 +516,7 @@ fn golden_editor_light_selection() {
     check_golden("editor_light_selection", px);
 }
 
-/// The default UI's "Modern" preset (View → Modern theme, `plugins/default-ui/modern.records`)
+/// The default UI's "Modern" preset (View → Modern theme, `ui/default-plugin/modern.records`)
 /// over the dark and light canvas: one golden each. Toggling it twice restores the parity look.
 #[test]
 fn golden_editor_modern() {

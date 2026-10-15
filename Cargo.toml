@@ -6,7 +6,7 @@ exclude = ["tools/fmtbench"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 rust-version = "1.95"
 
 [workspace.lints.rust]
@@ -30,7 +30,7 @@ schemify-plugin = { path = "crates/plugin" }
 schemify-spicecmp = { path = "tools/spicecmp" }
 schemify-config = { path = "crates/config" }
 schemify-cli = { path = "crates/cli" }
-# third-party (justify additions in the PR, AGENTS.md rule 7)
+# third-party (justify additions in the PR, docs/dev/contributing.md rule 7)
 # Dev-only: the differential oracle of expr's own FFT (D39 size cut).
 rustfft = "6"
 libm = "0.2"
@@ -46,7 +46,7 @@ proptest = { version = "1", default-features = false, features = ["std"] }
 # since plugins are untrusted input; `portable-dispatch` instead of `auto-dispatch` saves
 # nothing (+4 KB) and runs a guest loop 3x slower.
 wasmi = { version = "2", default-features = false, features = ["std", "validate", "auto-dispatch", "deterministic"] }
-# GUI (WS5): only crates/ui and crates/render may use these (AGENTS.md rule 7)
+# GUI (WS5): only crates/ui and crates/render may use these (docs/dev/contributing.md rule 7)
 taffy = { version = "0.14", default-features = false, features = ["std", "taffy_tree", "flexbox"] }
 parley = { version = "0.12", default-features = false, features = ["std", "system"] }
 # Only to pick fontique's features: system fonts (fallback for glyphs outside the embedded
@@ -78,7 +78,7 @@ web-sys = "0.3"
 [profile.release]
 debug = 1
 
-# D39 binary size (docs/perf.md "Binary size"): code that is cold at run time is optimized for
+# D39 binary size (docs/dev/perf.md "Binary size"): code that is cold at run time is optimized for
 # size; the hot paths (parse, load, elaborate, netlist, expressions, waveforms, wasmi, render,
 # vello, text shaping, layout) stay at opt-level 3. The binary crates themselves
 # (schemify-cli, schemify-app) take no override: cargo then drops `CARGO_PROFILE_RELEASE_STRIP`

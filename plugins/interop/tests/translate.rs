@@ -1,4 +1,4 @@
-//! Translation oracles on a small hand-written xschem library (TESTING.md `import`
+//! Translation oracles on a small hand-written xschem library (docs/dev/testing.md `import`
 //! row): every output loads in `doc` and round-trips, every expression compiles
 //! (`check_output`), count conservation (asserted inside `translate_library`),
 //! byte-identical re-import, and no panic on mutated inputs.

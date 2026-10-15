@@ -1,6 +1,6 @@
 //! The optimizer bound to a bench `optimize` record, without a simulator: each job of a
 //! candidate gets a synthetic raw file whose outputs are analytic functions of the
-//! candidate's R and the job's corner, so the optimum is known in closed form (TESTING.md:
+//! candidate's R and the job's corner, so the optimum is known in closed form (docs/dev/testing.md:
 //! analytic optima). Goal weights and the worst-case aggregation over configs × corners
 //! are checked against it, and a failed job makes its candidate a failed evaluation.
 

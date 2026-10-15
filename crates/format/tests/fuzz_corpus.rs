@@ -1,4 +1,4 @@
-//! Merge-tier replay of the checked-in fuzz corpora (TESTING.md tiers): every input of
+//! Merge-tier replay of the checked-in fuzz corpora (docs/dev/testing.md tiers): every input of
 //! `fuzz/corpus/{parse,merge3}/` through the fuzz targets' own oracles.
 
 include!("../../../tests/fuzz/replay.rs");

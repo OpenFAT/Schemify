@@ -1,4 +1,4 @@
-//! Stateful model-based tests (TESTING.md `doc` row): random sequences of transactions,
+//! Stateful model-based tests (docs/dev/testing.md `doc` row): random sequences of transactions,
 //! undo, redo, stage, accept and reject against the naive model in `common`; undo-all
 //! equals the original; redo-all equals the forward state; load(save(x)) == x along
 //! the way.

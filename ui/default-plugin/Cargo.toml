@@ -1,0 +1,15 @@
+[package]
+name = "default-ui"
+description = "The bundled default UI (D6): xschem's menus, toolbar, tabs, status bar, dialogs, canvas palette and keymap as plugin contributions."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+workspace = "../../plugins"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+schemify-abi.workspace = true

@@ -10,7 +10,7 @@
 # and every converter are linked in).
 #
 # Needs the wasm32-unknown-unknown std (rustup: `rustup target add wasm32-unknown-unknown`;
-# the NixOS rustc ships it) and, for cktimg, Zig 0.17 (its build.rs compiles extern/cktimg;
+# the NixOS rustc ships it) and, for cktimg, Zig 0.17 (its build.rs compiles plugins/cktimg/vendor;
 # `nix develop` has it, and `git submodule update --init` fetches the source). The nix-built
 # rustc has no rust-lld, so without one on the toolchain the script re-runs itself under
 # `nix shell nixpkgs#lld` and links with wasm-ld.
@@ -44,7 +44,7 @@ if [[ ! -x "$(rustc --print sysroot)/lib/rustlib/$host/bin/rust-lld" ]] \
   fi
 fi
 
-# Six jobs: the machine's agents share its RAM (AGENTS.md).
+# Six jobs: the machine's agents share its RAM (docs/dev/contributing.md).
 CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}" \
   cargo build --manifest-path "$here/Cargo.toml" --release --target wasm32-unknown-unknown
 

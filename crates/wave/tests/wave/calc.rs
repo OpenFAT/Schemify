@@ -1,4 +1,4 @@
-//! Oracle 2 (TESTING.md): calculator metamorphic relations on real simulator output, through
+//! Oracle 2 (docs/dev/testing.md): calculator metamorphic relations on real simulator output, through
 //! the raw binding (names, steps, complex columns), for both ngspice and Xyce data.
 
 use schemify_expr::{CalcResult, ColKind, ColOut, Mode, Program, Scratch};

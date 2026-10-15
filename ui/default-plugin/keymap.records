@@ -1,0 +1,274 @@
+# Schemify default keymap: xschem's canvas bindings (D25).
+#
+# Body of the bundled default-UI plugin's `contribute keymap` set (plugin-abi §7). One `key`
+# record per combo, in the order of xschem's key table (crates/app/tests/fixtures/xschem_keys.md); the comment
+# above each group quotes the inventory action. Rows that exist only in a graph (`G only`), only
+# with `cadence_compat=1`, the disabled `; ~ |` placeholders and the Tk-level Ctrl+Enter are not
+# canvas bindings and are left out. An upper-case key in the inventory is Shift+letter. A later
+# plugin rebinds any chord with its own `key` record; last contribution wins (D8).
+
+# 0 1 2 3 4: xschem's built-in logic simulator (net values) — dropped: Schemify simulates through
+# runners (D15); see docs/dev/backlog.md "Parity: intentionally dropped".
+
+# Ctrl+0..9: set the current drawing layer
+key Ctrl+0 layers.set_current.0
+key Ctrl+1 layers.set_current.1
+key Ctrl+2 layers.set_current.2
+key Ctrl+3 layers.set_current.3
+key Ctrl+4 layers.set_current.4
+key Ctrl+5 layers.set_current.5
+key Ctrl+6 layers.set_current.6
+key Ctrl+7 layers.set_current.7
+key Ctrl+8 layers.set_current.8
+key Ctrl+9 layers.set_current.9
+
+# 5: toggle "view only probes"
+key 5 highlight.view_only_probes
+
+# a: make symbol from schematic; Ctrl+a: select all; A: toggle show netlist after netlisting
+key A symbol.make_symbol_from_schematic
+key Ctrl+A edit.select_all
+key Shift+A simulation.show_netlist_after_netlist_command
+
+# b: merge a file; Ctrl+b: toggle symbol text; Alt+b: cycle hide_symbols; B: edit header/license
+key B file.merge
+key Ctrl+B view.show_hide.symbol_text
+key Alt+B symbol.show_symbols.cycle
+key Shift+B properties.edit_header_license_text
+
+# c: duplicate; Ctrl+c: copy to clipboard; Alt+c: duplicate with connect_by_kissing
+key C edit.duplicate_objects
+key Ctrl+C edit.copy
+key Alt+C edit.duplicate_objects
+# C: start arc; Ctrl+C: start circle
+key Shift+C tools.insert_arc
+key Ctrl+Shift+C tools.insert_circle
+
+# Alt+d: show / hide the docs page beside the schematic (Schemify; xschem has no binding here)
+key Alt+D view.docs
+
+# d: unselect the object under the mouse; Ctrl+d: delete files; D: unselect by area
+key D edit.unselect_under_mouse
+key Ctrl+D file.delete_files
+key Shift+D edit.unselect_area
+
+# e: descend into schematic; Ctrl+e: back to parent; Alt+e: open sub-schematic in a new tab
+key E edit.push_schematic
+key Ctrl+E edit.pop
+key Alt+E edit.open_sub_schematic_tab
+# Alt+E: open the selected schematic in a new xschem process — one process here: a new tab
+key Alt+Shift+E edit.open_sub_schematic_tab
+
+# f: zoom full; Ctrl+f: find/select; Alt+f: flip each object in place
+key F view.zoom_full
+key Ctrl+F tools.search
+key Alt+F edit.horizontal_flip_in_place_selected_object
+# F: flip the selection as a group; Ctrl+F: zoom to the selection
+key Shift+F edit.horizontal_flip_selected_objects
+key Ctrl+Shift+F view.zoom_selection
+
+# g: halve snap; Ctrl+g: snap value dialog; Alt+g: send highlighted nets to the viewer; G: double snap
+key G options.half_snap_threshold
+key Ctrl+G view.set_snap_value
+key Alt+G highlight.send_selected_net_pins_to_viewer
+key Shift+G options.double_snap_threshold
+
+# h: horizontal constraint; Ctrl+h (launcher: runs an instance's url/program) is dropped (D7)
+key H edit.constrained_horizontal_move
+# Alt+h: symbol pins from schematic pins; H: attach net labels; Ctrl+H: schematic+symbol from selection
+key Alt+H symbol.create_symbol_pins_from_selected_schemat
+key Shift+H symbol.attach_net_labels_to_component_instance
+key Ctrl+Shift+H symbol.make_schematic_and_symbol_from_selected
+
+# i: descend into symbol; Ctrl+i: insert-symbol dialog; Alt+i: edit the symbol in a new tab
+key I edit.push_symbol
+key Ctrl+I file.component_browser
+key Alt+I edit.open_symbol_tab
+# I: insert symbol; Alt+I: edit the selected symbol in a new xschem process — a new tab here
+key Shift+I tools.insert_symbol
+key Alt+Shift+I edit.open_symbol_tab
+
+# j family: list / label / pin from highlighted nets
+key J symbol.list_of_nets.print_list_of_highlight_nets
+key Ctrl+J symbol.list_of_nets.create_pins_from_highlight_nets
+key Alt+J symbol.list_of_nets.create_labels_from_highlight_nets
+key Ctrl+Alt+J symbol.list_of_nets.print_list_of_highlight_nets_with_buses
+key Alt+Shift+J symbol.list_of_nets.create_labels_from_highlight_nets_with_i
+
+# k: highlight selected nets; Ctrl+k: unhighlight them; Alt+k: select the whole net
+key K highlight.highlight_selected_net_pins
+key Ctrl+K highlight.un_highlight_selected_net_pins
+key Alt+K highlight.select_hilight_nets_pins
+# K: clear all highlights; Ctrl+K: highlight with drill (no `propag` pins here: highlights are
+# hierarchy-wide already, so it highlights)
+key Shift+K highlight.un_highlight_all_net_pins
+key Ctrl+Shift+K highlight.highlight_selected_net_pins
+
+# l: start line; Ctrl+l: schematic from symbol; Alt+l: place a pin label
+key L tools.insert_line
+key Ctrl+L symbol.make_schematic_from_symbol
+key Alt+L symbol.place_net_pin_label
+# L: toggle orthogonal wiring; Alt+L: place a wire label
+key Shift+L options.enable_orthogonal_wiring
+key Alt+Shift+L symbol.place_net_wire_label
+
+# m: move; Ctrl+m: move stretching attached wires; Alt+m: move with connect_by_kissing
+key M edit.move_objects
+key Ctrl+M edit.move_objects_stretching_attached_wires
+key Alt+M edit.move_objects
+# M: move with connect_by_kissing; Ctrl+M: stretch-move with connect_by_kissing
+key Shift+M edit.move_objects_adding_wires_to_connected_p
+key Ctrl+Shift+M edit.move_objects_adding_wires_to_connected_p
+
+# n: hierarchical netlist; Ctrl+n: clear schematic; N: netlist this level; Ctrl+N: clear symbol
+key N sim.netlist
+key Ctrl+N file.clear_schematic
+key Shift+N sim.netlist_top_only
+key Ctrl+Shift+N file.clear_symbol
+
+# Ctrl+o: open; O: toggle colour scheme; Ctrl+O: open most recent
+key Ctrl+O file.open
+key Shift+O view.toggle_colorscheme
+key Ctrl+Shift+O file.open_most_recent
+
+# p: start polygon; Ctrl+p: place input port; Alt+p: place symbol pin
+key P tools.insert_polygon
+key Ctrl+P symbol.place_schematic_input_port
+key Alt+P symbol.place_symbol_pin
+# P: re-center on the mouse; Ctrl+P: place output port
+key Shift+P view.pan_center
+key Ctrl+Shift+P symbol.place_schematic_output_port
+
+# q: edit properties; Ctrl+q: quit; Alt+q: edit the file in a text editor
+key Q properties.edit
+key Ctrl+Q file.quit
+key Alt+Q properties.edit_file_danger
+# Q: edit properties in an editor; Ctrl+Q: view properties
+key Shift+Q properties.edit_with_editor
+key Ctrl+Shift+Q properties.view
+
+# r: start rectangle; Alt+r: rotate each object in place; R: rotate the selection
+key R tools.insert_rect
+key Alt+R edit.rotate_in_place_selected_objects
+key Shift+R edit.rotate_selected_objects
+
+# s: simulate; Ctrl+s: save; Alt+s: reload; Ctrl+Alt+s: save as symbol
+key S sim.simulate
+key Ctrl+S file.save
+key Alt+S file.reload
+key Ctrl+Alt+S file.save_as_symbol
+# S (change element order) is dropped: rank-3 order is by id (D9); Ctrl+S: save as
+key Ctrl+Shift+S file.save_as
+
+# t: place text; T: toggle *_ignore on the selected instances
+key T tools.insert_text
+key Shift+T properties.toggle_ignore_attribute_on_selected_inst
+
+# u: undo; Ctrl+u (unselect attached floaters) is dropped: no floater texts; Alt+u: align to
+# grid; U: redo
+key U edit.undo
+key Alt+U tools.align_to_grid
+key Shift+U edit.redo
+
+# v: vertical constraint; Ctrl+v: paste; Alt+v: vertical flip in place
+key V edit.constrained_vertical_move
+key Ctrl+V edit.paste
+key Alt+V edit.vertical_flip_in_place_selected_objects
+# V: vertical flip of the selection; Ctrl+V: cycle netlist type
+key Shift+V edit.vertical_flip_selected_objects
+key Ctrl+Shift+V options.cycle_netlist_format
+
+# w: start wire; Ctrl+w: close the schematic; W: wire snapped to the nearest pin/endpoint
+key W tools.insert_wire
+key Ctrl+W file.close_schematic
+key Shift+W tools.insert_snap_wire
+
+# x: new xschem process — one process here: a new tab; Ctrl+x: cut; Alt+x: toggle crosshair
+key X file.create_new_window_tab
+key Ctrl+X edit.cut
+key Alt+X options.crosshair.draw_crosshair
+# X: highlight pin/net name mismatches; Ctrl+X: xplot command file for highlighted nets
+key Shift+X highlight.highlight_net_pin_mismatches_on_sel_inst
+key Ctrl+Shift+X simulation.send_highlighted_nets_to_viewer
+
+# y: toggle enable_stretch
+key Y options.enable_stretch
+
+# z: zoom box; Ctrl+z: zoom out; Z: zoom in
+key Z view.zoom_box
+key Ctrl+Z view.zoom_out
+key Shift+Z view.zoom_in
+# Alt+z: snap cursor (xschem honours it only with cadence_compat; bound because the menu shows it)
+key Alt+Z options.crosshair.draw_snap_cursor
+
+# Space: cycle Manhattan routing while drawing/moving, else pan
+key Space tools.cycle_manhattan
+
+# _: line width follows zoom; %: toggle grid
+key _ view.toggle_variable_line_width
+key % options.draw_grid
+
+# $ / Ctrl+$ (X11 backing pixmap / direct drawing) are dropped: vello draws every frame
+
+# Ctrl+=: toggle fill patterns; Ctrl++ / Ctrl+-: line width ±0.5; Alt+-: line width dialog
+key Ctrl+= view.toggle_fill_pattern
+key Ctrl++ view.line_width_increase
+key Ctrl+- view.line_width_decrease
+key Alt+- view.set_line_width
+
+# Return: close the polygon being drawn
+key Enter tools.close_polygon
+
+# Escape: abort the current operation, unselect, redraw
+key Esc view.redraw
+
+# Delete: delete the selection
+key Del edit.delete
+
+# Arrows pan; Ctrl+Left/Right switch tabs
+key Right view.pan_right
+key Ctrl+Right tab.next
+key Left view.pan_left
+key Ctrl+Left tab.prev
+key Down view.pan_down
+key Up view.pan_up
+
+# BackSpace: back to the parent schematic
+key BackSpace edit.pop
+
+# Print: grab a screen area — the nearest here: a PNG of the visible canvas
+key Print file.image_export.png_export
+
+# Insert: insert symbol; Shift+Insert: persistent insert-symbol dialog
+key Ins tools.insert_symbol
+key Shift+Ins file.component_browser
+
+# *: PostScript/PDF export; Ctrl+*: PNG; Alt+*: SVG
+key * file.image_export.pdf_ps_export
+key Ctrl+* file.image_export.png_export
+key Alt+* file.image_export.svg_export
+
+# &: join/break/trim wires
+key & tools.join_trim_wires
+
+# \: toggle fullscreen
+key "\\" view.fullscreen
+
+# >: draw only the current layer; <: draw all layers
+key > layers.draw_current_layer_only
+key < layers.draw_all_layers
+
+# ?: help text; /: key-binding help
+key ? help.help
+key / help.keys
+
+# :: toggle flat netlist
+key : options.netlist_format_symbol_mode.flat_netlist
+
+# #: highlight duplicate instance names; Ctrl+#: rename them
+key "#" highlight.highlight_duplicate_instance_names
+key Ctrl+# highlight.rename_duplicate_instance_names
+
+# !: break wires at the selected instance pins; Ctrl+!: remove wires running through them
+key ! tools.break_wires_at_selected_instance_pins
+key Ctrl+! tools.remove_wires_running_through_selected_in

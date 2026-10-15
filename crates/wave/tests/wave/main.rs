@@ -1,4 +1,4 @@
-//! Oracle-backed tests for `schemify-wave` (TESTING.md, wave row). One test binary; one module per
+//! Oracle-backed tests for `schemify-wave` (docs/dev/testing.md, wave row). One test binary; one module per
 //! oracle. Fixtures in `tests/fixtures/` are real ngspice-44 and Xyce-7.10 outputs of the `.cir`
 //! decks beside them (binary and ASCII of the same run); `oracle::regenerate_and_compare` reruns
 //! the simulators when they are installed.

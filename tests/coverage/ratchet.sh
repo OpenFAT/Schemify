@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Nightly coverage ratchet (TESTING.md nightly tier; coverage is a gap-finder, not a goal).
+# Nightly coverage ratchet (docs/dev/testing.md nightly tier; coverage is a gap-finder, not a goal).
 #
 #   tests/coverage/ratchet.sh <coverage.json> [<floor>]     (floor default: tests/coverage/floor.txt)
 #

@@ -1,6 +1,6 @@
 [package]
 name = "schemify-spicecmp"
-description = "Semantic SPICE/CDL netlist comparator: the netlist oracle of TESTING.md."
+description = "Semantic SPICE/CDL netlist comparator: the netlist oracle of docs/dev/testing.md."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

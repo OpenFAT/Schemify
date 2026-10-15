@@ -2,7 +2,6 @@
 /tests/corpus/.cache/
 .schemify/
 *.raw
-/.claude/worktrees/
 result
 result-*
 /target-b

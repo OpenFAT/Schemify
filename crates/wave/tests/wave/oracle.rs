@@ -1,4 +1,4 @@
-//! Oracle 1 (TESTING.md): binary and ASCII `.raw` of the same simulation agree. Two independent
+//! Oracle 1 (docs/dev/testing.md): binary and ASCII `.raw` of the same simulation agree. Two independent
 //! checks of the decoded numbers back it up: ngspice and Xyce agree on the same deck, and the
 //! series RLC response matches its closed form.
 

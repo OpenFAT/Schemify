@@ -1,5 +1,5 @@
 //! Edit gestures beyond the M2 state machine (xschem parity,
-//! docs/research/xschem-feature-inventory.md §2.4, mouse gestures):
+//! xschem's mouse gestures):
 //!
 //! - **partial wire selection**: a Ctrl+drag box (a plain drag with Options → enable stretch)
 //!   selects the objects inside it and, of each wire crossing its edge, only the end inside;

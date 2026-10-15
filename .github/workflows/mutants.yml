@@ -1,4 +1,4 @@
-# Weekly mutation testing of the core crates (TESTING.md § Tiers, nightly tier): can the tests
+# Weekly mutation testing of the core crates (docs/dev/testing.md § Tiers, nightly tier): can the tests
 # fail? Report only: the survivors (`missed.txt`) are uploaded and summarized; the job fails
 # only when cargo-mutants itself cannot run (unmutated baseline red, usage error).
 name: mutants

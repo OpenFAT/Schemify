@@ -1,6 +1,6 @@
 # Waveform viewer
 
-Implements the viewer half of D23 (the calculator is [expr.md](expr.md) §5, the reader is `crates/wave/src/raw.rs`). Behaviour follows xschem's graphs as listed in [xschem-feature-inventory.md](../research/xschem-feature-inventory.md) §2.2, §3.4 and §4B.3, written from that inventory and from running xschem, never from its source (D1). Code: `crates/wave` (tables, `Waves::apply`, the only writer), `crates/ui/src/waves.rs` + `crates/ui/waves-ui.records` (window, input, dialog), `crates/render/src/waves.rs` (drawing), `crates/app/src/waves.rs` (the editor's dock).
+Implements the viewer half of D23 (the calculator is [expr.md](expr.md) §5, the reader is `crates/wave/src/raw.rs`). Behaviour follows xschem's graphs as observed by running xschem, never from its source (D1). Code: `crates/wave` (tables, `Waves::apply`, the only writer), `crates/ui/src/waves.rs` + `crates/ui/waves-ui.records` (window, input, dialog), `crates/render/src/waves.rs` (drawing), `crates/app/src/waves.rs` (the editor's dock).
 
 ## 1. Tables
 
