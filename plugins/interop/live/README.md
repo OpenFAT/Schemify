@@ -123,10 +123,17 @@ work directory at the same absolute path on both, for example on a shared disk.
   Virtuoso form, so Virtuoso gets the device's default width. The width comes back from the
   stash; `--retarget` is the flow that sizes such devices on the target PDK.
 
+- With `--lib`, a cell's CDF can come back with more than it had: export adds its netlisting
+  siminfo keys (`instParameters`, an auCdl entry), a `netSet` param for each pin with a net
+  expression, and an empty string param for each name a symbol label shows that the CDF did
+  not declare. The check accepts these additions and counts the cells; anything the original
+  CDF had and the copy lacks fails.
+
 ## How the kit is tested
 
 `tests/virtuoso_live.rs` runs the whole kit against the mock Virtuoso of `tests/skill` (the
-same interpreter and database model the plugin's other tests use) in `kit_passes_on_the_mock`.
+same interpreter and database model the plugin's other tests use) in `kit_passes_on_the_mock`,
+and `--lib` on the mock's fixture library in `kit_lib_round_trip_on_the_mock`.
 Every check passes there except the known failures above, and only si, OCEAN and the optional
 areas are skipped. So a failure on a real Virtuoso means Virtuoso behaves differently from our
 reading of its manuals; it does not point at the kit. `sfy_live.il` is parsed by the same

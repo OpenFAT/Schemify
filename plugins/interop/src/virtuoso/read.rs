@@ -2036,6 +2036,44 @@ fn build(
     let sym = c.cv("symbol");
     let sch = c.cv("schematic");
     // Header.
+    // The symbol's selection box as drawn (`vibox <x0> <y0> <x1> <y1>`, or `none`): export
+    // draws it again rather than the box around the symbol's contents.
+    if let Some(sv) = sym.filter(|_| kind != FileKind::Shbench) {
+        let boxes: Vec<&Shape> = sv
+            .shapes
+            .iter()
+            .filter(|s| s.layer == "instance" && s.purpose == "drawing" && s.kind == "rect")
+            .collect();
+        match boxes[..] {
+            [] => kv(&mut doc, "vibox", "none"),
+            [b] if b.coords.len() == 4 => {
+                let p = pt(
+                    [b.coords[0], b.coords[1]],
+                    sv.upi,
+                    "selection box",
+                    &cell,
+                    notes,
+                );
+                let q = pt(
+                    [b.coords[2], b.coords[3]],
+                    sv.upi,
+                    "selection box",
+                    &cell,
+                    notes,
+                );
+                doc.push_attr("vibox");
+                for v in [
+                    p[0].min(q[0]),
+                    p[1].min(q[1]),
+                    p[0].max(q[0]),
+                    p[1].max(q[1]),
+                ] {
+                    doc.push_value_coord(v);
+                }
+            }
+            _ => {}
+        }
+    }
     if kind == FileKind::Shprim {
         kv(
             &mut doc,
@@ -2191,6 +2229,16 @@ fn build(
         if let Some(a) = &p.alias {
             kv(&mut doc, "alias", a);
         }
+        // The pin's name label as drawn, where export would draw another (§6.2); after the
+        // format's own attributes, where the writer puts unknown ones (the fingerprint).
+        if let Some(sv) = sym.filter(|_| p.alias.is_none())
+            && let Some(v) = pin_label_as_drawn(sv, &p.name, p.at, &cell, notes)
+        {
+            doc.push_attr("vplabel");
+            for x in &v {
+                doc.push_value(x);
+            }
+        }
     }
     if kind != FileKind::Shbench {
         for p in &params {
@@ -2294,6 +2342,13 @@ fn build(
             }
             if l.justify.starts_with("center") {
                 doc.push_attr("vcenter");
+            }
+            // As drawn, for export while the template stays this one (§6.2).
+            doc.push_attr("vlabel");
+            for x in [
+                &l.layer, &l.purpose, &l.justify, &l.font, &l.kind, &l.text, &tmpl,
+            ] {
+                doc.push_value(x);
             }
         }
         if pin_labels > 0 {
@@ -2878,6 +2933,19 @@ fn schematic_in(
         doc.push_field_coord(at[1]);
         doc.push_field(o.as_str());
         doc.push_field(&name);
+        // A pin master other than the one export picks for the direction (Cadence's
+        // sample library uses basic/sympin view symbolr): kept, so export uses it again.
+        let usual = match s.dir.as_str() {
+            "input" => "ipin",
+            "output" => "opin",
+            _ => "iopin",
+        };
+        if (s.lib.as_str(), s.cell.as_str(), s.view.as_str()) != ("basic", usual, "symbol") {
+            doc.push_attr("vpin");
+            for v in [&s.lib, &s.cell, &s.view] {
+                doc.push_value(v);
+            }
+        }
     }
     // Schematic pins drawn as bare pin shapes: ports at the rectangle centre, carrying the
     // rectangle's size (`vfig <w> <h>`, an unknown attribute the format keeps) so export
@@ -2990,7 +3058,6 @@ fn schematic_in(
     }
     // Labels.
     let mut dropped_alias = 0;
-    let mut dropped_display = 0;
     let mut dropped_stub = 0;
     for l in &sv.labels {
         tally.out += 1;
@@ -3011,8 +3078,14 @@ fn schematic_in(
                 dropped_alias += 1;
                 tally.out -= 1;
                 tally.reported += 1;
+                continue;
             }
-            ("text", "drawing") => {
+            ("wire", "label") | ("pin", "annotate") => {}
+            // Note text, and any other unglued label (a schematic pin's name on pin/label
+            // in Cadence's sample library): a text; what export would not draw by default
+            // goes in `vlabel <layer> <purpose> <justify> <font> <kind>` (an unknown
+            // attribute the format keeps) so it comes back as drawn.
+            _ => {
                 let id = ids.next(id_of(l.r), &reserved);
                 begin(doc, RecordKind::Text);
                 doc.push_field(&id);
@@ -3021,7 +3094,17 @@ fn schematic_in(
                 doc.push_field(o.as_str());
                 doc.push_field(&l.text);
                 kv(doc, "size", &coord_text(size_milli(l.height, upi)));
+                let v = [&l.layer, &l.purpose, &l.justify, &l.font, &l.kind];
+                if v != ["text", "drawing", "upperLeft", "stick", "normal"] {
+                    doc.push_attr("vlabel");
+                    for x in v {
+                        doc.push_value(x);
+                    }
+                }
+                continue;
             }
+        }
+        match (l.layer.as_str(), l.purpose.as_str()) {
             ("wire", "label") | ("pin", "annotate") => {
                 let at = match wire_pts.get(&l.parent) {
                     Some(p) => project(origin, p),
@@ -3060,12 +3143,23 @@ fn schematic_in(
                 if global {
                     kv(doc, "global", "true");
                 }
+                // What export would draw otherwise (§6.2): the net expression itself, and a
+                // style other than export's (lowerLeft, stick, LABEL_HEIGHT), so the label
+                // comes back as drawn.
+                if parse_netexpr(&l.text).is_some() {
+                    kv(doc, "vexpr", &l.text);
+                }
+                let h = i64::from(l.height) * i64::from(super::write::UPI) / i64::from(upi.max(1));
+                if (l.justify.as_str(), l.font.as_str(), h)
+                    != ("lowerLeft", "stick", i64::from(super::write::LABEL_HEIGHT))
+                {
+                    doc.push_attr("vstyle");
+                    doc.push_value(&l.justify);
+                    doc.push_value(&l.font);
+                    doc.push_value(&h.to_string());
+                }
             }
-            _ => {
-                dropped_display += 1;
-                tally.out -= 1;
-                tally.reported += 1;
-            }
+            _ => unreachable!("other labels are texts"),
         }
     }
     if dropped_stub > 0 {
@@ -3080,13 +3174,6 @@ fn schematic_in(
             "display-only",
             &cell,
             format!("{dropped_alias} wire alias label(s)"),
-        );
-    }
-    if dropped_display > 0 {
-        notes.dropped(
-            "display-only",
-            &cell,
-            format!("{dropped_display} display label(s)"),
         );
     }
     // Shapes.
@@ -3605,6 +3692,50 @@ fn unswap_wire_ids(
     let out: BTreeMap<u32, String> = moved.iter().map(|m| (m.0, m.2.to_owned())).collect();
     debug_assert!(out.len() == from.len());
     out
+}
+
+/// The `vplabel` values of symbol pin `name` at `at` (milli-units): `none` when its main
+/// pin figure has no pin label, the label's offset from the pin and its orient, justify,
+/// font and height when they differ from export's (at the pin, R0, centerLeft, stick, half
+/// LABEL_HEIGHT), else `None`.
+fn pin_label_as_drawn(
+    sv: &Cv,
+    name: &str,
+    at: [i32; 2],
+    cell: &str,
+    notes: &mut Notes,
+) -> Option<Vec<String>> {
+    let alias_fig = |r: u32| sv.props.iter().any(|p| p.r == r && p.name == "schemifyPin");
+    let fig = sv
+        .pinfigs
+        .iter()
+        .find(|f| net_from_virtuoso(&f.term).text == name && !alias_fig(f.r))?;
+    let Some(l) = sv
+        .labels
+        .iter()
+        .find(|l| l.parent == fig.r && l.layer == "pin")
+    else {
+        return Some(vec!["none".into()]);
+    };
+    let xy = pt(l.xy, sv.upi, "pin label", cell, notes);
+    let d = [xy[0] - at[0], xy[1] - at[1]];
+    let h = i64::from(l.height) * i64::from(super::write::UPI) / i64::from(sv.upi.max(1));
+    let o = profile::orient_from_virtuoso(&l.orient).unwrap_or(Orient::R0);
+    let usual = i64::from(super::write::LABEL_HEIGHT / 2);
+    if d == [0, 0]
+        && o == Orient::R0
+        && (l.justify.as_str(), l.font.as_str(), h) == ("centerLeft", "stick", usual)
+    {
+        return None;
+    }
+    Some(vec![
+        coord_text(d[0]),
+        coord_text(d[1]),
+        o.as_str().into(),
+        l.justify.clone(),
+        l.font.clone(),
+        h.to_string(),
+    ])
 }
 
 /// A dumped wire for [`rejoin_split_wires`]: (ref, points, its schemifyId when valid).

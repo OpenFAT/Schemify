@@ -1,8 +1,10 @@
 schemify 1 shcomp
-  vsym 8e133b8fbce45af2
-  vsch 6e11f422b4d7bcec
+  vibox none
+  vsym dbaf51c5ebf5ac30
+  vsch 4b80ea862fdcb615
 
 pin A in -40 0
+  vplabel none
 pin vdd inout 0 0
   inherit vdd
 
@@ -18,5 +20,6 @@ wire kcf1wb 0 -50 0 -30
 wire ppt8fj 0 30 0 60
 
 label cc2c60 0 -48 R270 vdd
+  vexpr [@vdd:%:vdd!]
 
 port pq533p 0 60 R270 A

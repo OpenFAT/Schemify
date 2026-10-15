@@ -93,6 +93,10 @@
     (SfyFixSymbol "basic" "iopin" nil)
     (SfyFixSymbol "basic" "noConn" (list (list "noConn" "inputOutput" 0 0)))
     (SfyFixSymbol "basic" "gnd" (list (list "gnd!" "inputOutput" 0 0)))
+    ;; A pin master in a view of another name, as Cadence's sample library uses.
+    (setq cdf (SfyFixOpen "basic" "sympin" "symbolr" "schematicSymbol"))
+    (dbCreateRect cdf (list "device" "drawing") (SfyFixBox -2 -2 2 2))
+    (SfyFixSave cdf)
     t))
 
 ;; pdk/nch: a PDK device with a parameter of every CDF type and two simulators; pdk/padonly:
@@ -247,7 +251,9 @@
     (setq net (dbMakeNet cv "y"))
     (dbCreatePin net (dbCreateRect cv (list "pin" "drawing") (list (SfyFixP 75 -5) (SfyFixP 85 5)))
       nil (dbCreateTerm net "y" "output"))
-    (schCreatePin cv (dbOpenCellViewByType "basic" "iopin" "symbol" nil "r") "vdd" "inputOutput" nil (SfyFixP 0 80) "R90")
+    ;; Its name on pin/label, glued to nothing, as the sample library draws it.
+    (dbCreateLabel cv (list "pin" "label") (SfyFixP 70 7) "y" "lowerLeft" "R0" "stick" (SfyFixU 10))
+    (schCreatePin cv (dbOpenCellViewByType "basic" "sympin" "symbolr" nil "r") "vdd" "inputOutput" nil (SfyFixP 0 80) "R90")
     (schCheck cv)
     (SfyFixSave cv)))
 

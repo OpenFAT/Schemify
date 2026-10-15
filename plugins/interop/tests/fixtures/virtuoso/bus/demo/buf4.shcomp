@@ -1,9 +1,12 @@
 schemify 1 shcomp
-  vsym 429fbe168443a2cc
+  vibox none
+  vsym 8c00b16877b7513c
   vsch 22e26de3eafc7a1a
 
 pin in[3:0] in -40 0
+  vplabel none
 pin out[3:0] out 40 0
+  vplabel none
 
 impl schematic schematic
 

@@ -1340,7 +1340,8 @@ fn symbol_out(c: &Cell, ids: &mut Ids, notes: &mut Notes) -> Cv {
         b[3] = b[3].max(p[1]);
     };
     let pins = sym_pins(c);
-    for k in 0..pins.name.len() {
+    let pin_recs: Vec<u32> = c.records(RecordKind::Pin).collect();
+    for (k, &pin_rec) in pin_recs.iter().enumerate() {
         let at = conv(pins.at[k], &format!("pin {}", pins.name[k]), c, notes);
         let term = vname(pins.alias[k].as_deref().unwrap_or(&pins.name[k]));
         if pins.alias[k].is_none() {
@@ -1375,15 +1376,37 @@ fn symbol_out(c: &Cell, ids: &mut Ids, notes: &mut Notes) -> Cv {
                 value: pins.name[k].clone(),
             });
         }
+        // The name label as Virtuoso drew it (`vplabel <dx> <dy> <orient> <justify> <font>
+        // <height>` from the pin, or `vplabel none`), else export's.
+        let v: Vec<&str> = c
+            .doc
+            .find_attr(pin_rec, "vplabel")
+            .map(|a| c.doc.attr_values(a).collect())
+            .unwrap_or_default();
+        let (xy, orient, justify, font, height) = match v[..] {
+            ["none"] => continue,
+            [dx, dy, o, j, f, h] => {
+                let d = [parse_coord(dx).unwrap_or(0), parse_coord(dy).unwrap_or(0)];
+                let p = [pins.at[k][0] + d[0], pins.at[k][1] + d[1]];
+                (
+                    conv(p, "pin label", c, notes),
+                    o,
+                    j,
+                    f,
+                    h.parse().unwrap_or(LABEL_HEIGHT / 2),
+                )
+            }
+            _ => (at, "R0", "centerLeft", "stick", LABEL_HEIGHT / 2),
+        };
         cv.labels.push(Label {
             r: ids.take(),
             parent: r,
             text: term,
-            xy: at,
-            orient: "R0".into(),
-            justify: "centerLeft".into(),
-            font: "stick".into(),
-            height: LABEL_HEIGHT / 2,
+            xy,
+            orient: profile::orient_to_virtuoso(Orient::parse(orient).unwrap_or(Orient::R0)).into(),
+            justify: justify.into(),
+            font: font.into(),
+            height,
             kind: "normal".into(),
             layer: "pin".into(),
             purpose: "label".into(),
@@ -1424,6 +1447,34 @@ fn symbol_out(c: &Cell, ids: &mut Ids, notes: &mut Notes) -> Cv {
             cv.shapes.push(sh);
         }
     }
+    // The selection box as Virtuoso drew it (`vibox`), else the box around the contents.
+    // ponytail: a kept box goes stale when the symbol grows in Schemify; union it with the
+    // contents' box if that bites.
+    let vibox: Vec<&str> = c
+        .doc
+        .find_attr(0, "vibox")
+        .map(|a| c.doc.attr_values(a).collect())
+        .unwrap_or_default();
+    let bbox = match vibox[..] {
+        ["none"] => None,
+        [x0, y0, x1, y1] => {
+            let v: Vec<i32> = [x0, y0, x1, y1]
+                .iter()
+                .map(|x| parse_coord(x).unwrap_or(0))
+                .collect();
+            let (p, q) = (
+                conv([v[0], v[1]], "selection box", c, notes),
+                conv([v[2], v[3]], "selection box", c, notes),
+            );
+            Some([
+                p[0].min(q[0]),
+                p[1].min(q[1]),
+                p[0].max(q[0]),
+                p[1].max(q[1]),
+            ])
+        }
+        _ => bbox,
+    };
     if let Some(b) = bbox {
         cv.shapes.push(Shape {
             r: ids.take(),
@@ -1481,6 +1532,30 @@ fn stext_out(c: &Cell, r: u32, ids: &mut Ids, notes: &mut Notes) -> Option<Label
     );
     let o = Orient::parse(c.field(r, 2)).unwrap_or(Orient::R0);
     let t = c.field(r, 3);
+    // A label from Virtuoso whose template is still the one it imported as goes back as
+    // drawn: `vlabel <layer> <purpose> <justify> <font> <kind> <text> <template>`.
+    let v: Vec<&str> = c
+        .doc
+        .find_attr(r, "vlabel")
+        .map(|a| c.doc.attr_values(a).collect())
+        .unwrap_or_default();
+    if let [layer, purpose, justify, font, kind, text, tmpl] = v[..]
+        && tmpl == t
+    {
+        return Some(Label {
+            r: ids.take(),
+            parent: 0,
+            text: text.into(),
+            xy: at,
+            orient: profile::orient_to_virtuoso(o).into(),
+            justify: justify.into(),
+            font: font.into(),
+            height: height(c, r, STEXT_SIZE_MILLI),
+            kind: kind.into(),
+            layer: layer.into(),
+            purpose: purpose.into(),
+        });
+    }
     let items = template_items(t)?;
     let params: Vec<&str> = c
         .records(RecordKind::Param)
@@ -2389,16 +2464,27 @@ fn schematic_out(
         if let Some(id) = id {
             id_prop(&mut cv, r, id);
         }
+        // What a label from Virtuoso was there: a net expression (`vexpr <text>`) and a style
+        // (`vstyle <justify> <font> <height>`), drawn so again.
+        let vexpr = rec.and_then(|r| c.attr(r, "vexpr"));
+        let vstyle: Vec<&str> = rec
+            .and_then(|r| c.doc.find_attr(r, "vstyle"))
+            .map(|a| c.doc.attr_values(a).collect())
+            .unwrap_or_default();
+        let (justify, font, height) = match vstyle[..] {
+            [j, f, h] => (j, f, h.parse().unwrap_or(LABEL_HEIGHT)),
+            _ => ("lowerLeft", "stick", LABEL_HEIGHT),
+        };
         cv.labels.push(Label {
             r,
             parent,
-            text,
+            text: vexpr.map_or(text, str::to_owned),
             xy: conv(at, "label", c, notes),
             orient: profile::orient_to_virtuoso(o).into(),
-            justify: "lowerLeft".into(),
-            font: "stick".into(),
-            height: LABEL_HEIGHT,
-            kind: "normal".into(),
+            justify: justify.into(),
+            font: font.into(),
+            height,
+            kind: if vexpr.is_some() { "NLP" } else { "normal" }.into(),
             layer: "wire".into(),
             purpose: "label".into(),
         });
@@ -2439,18 +2525,29 @@ fn schematic_out(
             });
             continue;
         }
+        // The pin master it came in on (`vpin <lib> <cell> <view>`), else basic's for the
+        // direction.
+        let vpin: Vec<&str> = c
+            .doc
+            .find_attr(g.port_rec[k], "vpin")
+            .map(|a| c.doc.attr_values(a).collect())
+            .unwrap_or_default();
+        let usual = match dir {
+            "input" => "ipin",
+            "output" => "opin",
+            _ => "iopin",
+        };
+        let [lib, cell, view] = match vpin[..] {
+            [l, c, v] => [l, c, v],
+            _ => ["basic", usual, "symbol"],
+        };
         cv.spins.push(Spin {
             r,
             term,
             dir: dir.into(),
-            lib: "basic".into(),
-            cell: match dir {
-                "input" => "ipin",
-                "output" => "opin",
-                _ => "iopin",
-            }
-            .into(),
-            view: "symbol".into(),
+            lib: lib.into(),
+            cell: cell.into(),
+            view: view.into(),
             xy: conv(g.port_at[k], "port", c, notes),
             orient: profile::orient_to_virtuoso(o).into(),
         });
@@ -2482,6 +2579,17 @@ fn schematic_out(
         let lr = ids.take();
         let o = Orient::parse(c.field(r, 3)).unwrap_or(Orient::R0);
         id_prop(&mut cv, lr, c.field(r, 0));
+        // A label that came from Virtuoso on another layer or with another style (`vlabel
+        // <layer> <purpose> <justify> <font> <kind>`) goes back as drawn.
+        let v: Vec<&str> = c
+            .doc
+            .find_attr(r, "vlabel")
+            .map(|a| c.doc.attr_values(a).collect())
+            .unwrap_or_default();
+        let [layer, purpose, justify, font, kind] = match v[..] {
+            [a, b, j, f, k] => [a, b, j, f, k],
+            _ => ["text", "drawing", "upperLeft", "stick", "normal"],
+        };
         cv.labels.push(Label {
             r: lr,
             parent: 0,
@@ -2493,12 +2601,12 @@ fn schematic_out(
                 notes,
             ),
             orient: profile::orient_to_virtuoso(o).into(),
-            justify: "upperLeft".into(),
-            font: "stick".into(),
+            justify: justify.into(),
+            font: font.into(),
             height: height(c, r, TEXT_SIZE_MILLI),
-            kind: "normal".into(),
-            layer: "text".into(),
-            purpose: "drawing".into(),
+            kind: kind.into(),
+            layer: layer.into(),
+            purpose: purpose.into(),
         });
     }
     for r in c.records(RecordKind::Shape) {

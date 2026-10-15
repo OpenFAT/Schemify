@@ -1,9 +1,12 @@
 schemify 1 shprim
   provenance "virtuoso gpdk/rpoly"
-  vsym 9b03fc94d2760e4e
+  vibox none
+  vsym b7066ba19f5079c0
 
 pin PLUS inout 0 -30
+  vplabel none
 pin MINUS inout 0 30
+  vplabel none
 
 param r 1k
   unit Ohm

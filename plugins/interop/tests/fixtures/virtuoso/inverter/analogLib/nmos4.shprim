@@ -1,11 +1,16 @@
 schemify 1 shprim
   provenance "virtuoso analogLib/nmos4"
-  vsym c0d646b77e2d5669
+  vibox -22 -32 25 32
+  vsym 4f8c38697a5d3d29
 
 pin D inout 20 -30
+  vplabel none
 pin G in -20 0
+  vplabel none
 pin S inout 20 30
+  vplabel none
 pin B inout 20 0
+  vplabel 4 0 R0 centerLeft stick 6000
 
 param model ""
   kind string
@@ -35,5 +40,7 @@ line 5 0 20 0
 
 stext 25 8 R0 w={w}
   size 0.6
+  vlabel annotate drawing lowerLeft stick IL cdsParam(1) w={w}
 stext 25 -8 R0 {name}
   size 0.6
+  vlabel annotate drawing7 lowerLeft stick IL cdsName() {name}

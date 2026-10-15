@@ -1,11 +1,16 @@
 schemify 1 shprim
   provenance "virtuoso gpdk/nmos1v"
-  vsym 1a8081d359d24b28
+  vibox none
+  vsym ef2f113358819558
 
 pin D inout 20 -30
+  vplabel none
 pin G in -20 0
+  vplabel none
 pin S inout 20 30
+  vplabel none
 pin B inout 20 0
+  vplabel none
 
 param model g45n1svt
   kind string
@@ -39,5 +44,7 @@ poly 5 15 20 15 20 30
 
 stext 25 -8 R0 {name}
   size 0.6
+  vlabel annotate drawing7 lowerLeft stick IL cdsName() {name}
 stext 25 2 R0 w={w}
   size 0.6
+  vlabel annotate drawing lowerLeft stick IL cdsParam(1) w={w}

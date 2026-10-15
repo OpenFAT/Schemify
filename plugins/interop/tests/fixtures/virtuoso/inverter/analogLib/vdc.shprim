@@ -1,9 +1,12 @@
 schemify 1 shprim
   provenance "virtuoso analogLib/vdc"
-  vsym 6f0b52b272135bad
+  vibox none
+  vsym 3f4bff96baab3e8a
 
 pin PLUS inout 0 -30
+  vplabel none
 pin MINUS inout 0 30
+  vplabel none
 
 param vdc ""
   kind string
@@ -30,3 +33,4 @@ line 0 15 0 30
 
 stext 18 0 R0 vdc={vdc}
   size 0.6
+  vlabel annotate drawing lowerLeft stick IL cdsParam(1) vdc={vdc}

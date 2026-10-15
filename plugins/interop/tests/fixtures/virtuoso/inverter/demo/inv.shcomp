@@ -1,9 +1,12 @@
 schemify 1 shcomp
-  vsym f37cafeb1d11cf2b
-  vsch 9eb23198b95e9203
+  vibox -42 -32 42 22
+  vsym aab279831c8cf04a
+  vsch f1cf04f9f8e7fb0f
 
 pin A in -40 0
+  vplabel 4 0 R0 centerLeft stick 6000
 pin Y out 40 0
+  vplabel -4 0 R0 centerRight stick 6000
 
 impl schematic schematic
 
@@ -18,8 +21,10 @@ line 21 0 40 0
 
 stext -20 -30 R0 {name}
   size 0.8
+  vlabel instance label lowerLeft stick NLP [@instanceName] {name}
 stext -20 30 R0 {cell}
   size 0.8
+  vlabel device label upperLeft stick NLP [@partName] {cell}
 
 inst bzm0kc analogLib:pmos4
   at 0 -40 R0
@@ -56,3 +61,4 @@ port y7sr15 60 0 R0 Y
 
 text 47v4a9 -60 -120 R0 "CMOS inverter"
   size 1
+  vlabel text drawing lowerLeft stick normal

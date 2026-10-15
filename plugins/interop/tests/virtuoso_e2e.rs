@@ -334,9 +334,10 @@ fn skill_dump_rust_import_rust_export_skill_import_skill_dump_is_exact() {
         let second = virtuoso::export(&d, &top_ix, &Mapping::default(), &eo)
             .unwrap_or_else(|e| panic!("{name}: {e:?}"))
             .sfyx;
-        // Every instance and pin figure of a design cell goes out as it came in (a basic/gnd
-        // stays basic's, a bare pin shape stays one), checked on the export itself: the load
-        // below keeps unchanged cellviews (§7.5).
+        // Every instance, pin, pin figure and label of a design cell goes out as it came in
+        // (a basic/gnd stays basic's, a bare pin shape stays one, a pin keeps its master, a
+        // pin-name label its layer), checked on the export itself: the load below keeps
+        // unchanged cellviews (§7.5). Refs and label parents are renumbered.
         // (A symbol-only cell goes out as a reference to the original, §8.1.)
         let placed = |text: &str| -> BTreeSet<(String, String)> {
             let mut design: Option<String> = None;
@@ -350,9 +351,12 @@ fn skill_dump_rust_import_rust_export_skill_import_skill_dump_is_exact() {
                 }
                 if let Some(c) = design
                     .as_ref()
-                    .filter(|_| matches!(r.tag.as_str(), "inst" | "pinfig"))
+                    .filter(|_| matches!(r.tag.as_str(), "inst" | "pinfig" | "spin" | "label"))
                 {
                     r.fields.remove(0);
+                    if r.tag == "label" {
+                        r.fields[0] = sfyx::Value::Int(0);
+                    }
                     let mut s = String::new();
                     sfyx::write_record(&r, &mut s);
                     out.insert((c.clone(), s));

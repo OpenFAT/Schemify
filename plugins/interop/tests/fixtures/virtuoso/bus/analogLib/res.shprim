@@ -1,9 +1,12 @@
 schemify 1 shprim
   provenance "virtuoso analogLib/res"
-  vsym f21bf605bff99116
+  vibox none
+  vsym cbd1141f3e24f5fc
 
 pin PLUS inout 0 -30
+  vplabel none
 pin MINUS inout 0 30
+  vplabel none
 
 param r 1k
   unit Ohm

@@ -1,14 +1,19 @@
 schemify 1 shprim
   provenance "virtuoso demo/shapes"
-  vsym 619a19abed39814b
+  vibox -62 -42 62 42
+  vsym 73e19a9e04bcd992
 
 pin A in -60 0
+  vplabel 4 0 R0 centerLeft stick 6000
 pin B out 60 0
+  vplabel none
 pin C inout 0 -40
+  vplabel none
 pin C_2 inout 0 40
   alias C
 pin VDD inout 20 -40
   inherit vdd
+  vplabel none
 
 param w 1u
   unit m
@@ -54,15 +59,22 @@ stext -20 -25 R0 SHAPES
   size 0.8
   hcenter
   vcenter
+  vlabel annotate drawing centerCenter stick normal SHAPES SHAPES
 stext -50 -30 R0 {name}
   size 0.8
+  vlabel instance label lowerLeft stick NLP [@instanceName] {name}
 stext -50 30 R0 {cell}
   size 0.8
+  vlabel device label upperLeft stick NLP [@partName] {cell}
 stext 30 -20 R270 w={w}
   size 0.6
+  vlabel annotate drawing lowerLeft stick NLP [@w:w=%] w={w}
 stext 30 -10 R0 l={l}
   size 0.6
+  vlabel annotate drawing lowerLeft stick NLP [@l:l=%:none] l={l}
 stext 30 10 R0 {name}
   size 0.6
+  vlabel annotate drawing7 lowerLeft stick IL cdsName() {name}
 stext 30 20 R0 l={l}
   size 0.6
+  vlabel annotate drawing lowerLeft stick IL cdsParam(2) l={l}

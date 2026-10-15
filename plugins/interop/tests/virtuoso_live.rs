@@ -464,10 +464,10 @@ fn record_of(line: &str) -> Option<Record> {
 }
 
 /// How a cell's records came back from a library round trip (`--lib`), CDF aside: the
-/// first difference of the rest, the CDF params and siminfo lost, and the params gained.
+/// first difference of the rest, the CDF params and siminfo keys lost, and those gained.
 /// Gaining is expected where the import declared an empty string param for a name a symbol
-/// label shows (spec `interop.md` §6.3) or the export added netlisting siminfo; a CDF
-/// without params or siminfo counts as none.
+/// label shows (spec `interop.md` §6.3), a netSet param for an inherited pin, or the export
+/// added netlisting siminfo; a CDF without params or siminfo counts as none.
 struct CellBack {
     diff: Option<String>,
     lost: Vec<String>,
@@ -475,13 +475,30 @@ struct CellBack {
 }
 
 fn cell_back(a: &[String], b: &[String]) -> CellBack {
+    // A siminfo record splits into one entry per key, so an added key is an addition.
     let split = |recs: &[String]| {
         let (mut rest, mut cdf) = (Vec::new(), BTreeSet::new());
         for l in recs {
-            match record_of(l).map(|r| r.tag) {
-                Some(t) if t == "cdf" => {}
-                Some(t) if t == "param" || t == "siminfo" => {
+            match record_of(l) {
+                Some(r) if r.tag == "cdf" => {}
+                Some(r) if r.tag == "param" => {
                     cdf.insert(l.clone());
+                }
+                Some(r) if r.tag == "siminfo" => {
+                    let Some(sfyx::Value::List(pairs)) = r.fields.get(1) else {
+                        cdf.insert(l.clone());
+                        continue;
+                    };
+                    for kv in pairs {
+                        let one = Record {
+                            tag: r.tag.clone(),
+                            fields: vec![r.fields[0].clone(), sfyx::Value::List(vec![kv.clone()])],
+                            line: 0,
+                        };
+                        let mut s = String::new();
+                        sfyx::write_record(&one, &mut s);
+                        cdf.insert(s.trim_end().to_owned());
+                    }
                 }
                 _ => rest.push(l.clone()),
             }
@@ -489,9 +506,12 @@ fn cell_back(a: &[String], b: &[String]) -> CellBack {
         (rest, cdf)
     };
     let ((ra, ca), (rb, cb)) = (split(a), split(b));
+    // Expected additions: export's netlisting siminfo, an empty string param for a name a
+    // symbol label shows, a netSet param for a pin with a net expression (§6.2).
     let declared = |l: &String| {
         record_of(l).is_some_and(|r| {
             r.tag == "siminfo"
+                || r.str(1).is_ok_and(|t| t == "netSet")
                 || (r.str(1).is_ok_and(|t| t == "string") && r.str(2).is_ok_and(str::is_empty))
         })
     };
@@ -1136,7 +1156,7 @@ fn mid(work: &Path, o: &Opts) {
 // ---------------------------------------------------------------------------------------
 // verify
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Grade {
     Fail,
     Skip,
@@ -2175,4 +2195,43 @@ fn kit_passes_on_the_mock() {
         skipped,
         ["callbacks", "netlist", "ocean", "pdk", "retarget", "user"].into()
     );
+}
+
+/// `--lib` on the mock: the fixture library `work` (cells drawn the Virtuoso way: bare pin
+/// shapes, pin masters of other views, alias labels, net expressions, symbols with IL
+/// labels) goes Virtuoso → Schemify → a fresh Virtuoso library and must dump the same, as
+/// `--lib sample` does on a live run.
+#[test]
+fn kit_lib_round_trip_on_the_mock() {
+    let work = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("virtuoso-live-mock-lib");
+    let _ = std::fs::remove_dir_all(&work);
+    let o = Opts {
+        cells: vec![("work".into(), "*".into())],
+        ..Opts::default()
+    };
+    prepare(&work, &o);
+    let mut i = mock(&work);
+    for l in ["work", "pdk", "cb"] {
+        i.host.add_lib(l);
+    }
+    i.load(
+        "(SfyFixPdk) (SfyFixCb) (SfyFixInv) (SfyFixBus) (SfyFixSymkit) (SfyFixNetx) (SfyFixVamod)",
+    )
+    .unwrap();
+    run_on_mock(&mut i, &work, "session1.il");
+    mid(&work, &o);
+    run_on_mock(&mut i, &work, "session2.il");
+    let r = verify(&work, &o);
+    let user: Vec<String> = r
+        .rows
+        .iter()
+        .filter(|x| x.0.starts_with("user.") && x.1 != Grade::Skip)
+        .map(|x| format!("{} {:?} {}", x.0, x.1, x.2))
+        .collect();
+    assert!(
+        user.iter().any(|x| x.starts_with("user.roundtrip.")),
+        "no round trip: {user:#?}"
+    );
+    let fails: Vec<&String> = user.iter().filter(|x| x.contains(" Fail ")).collect();
+    assert!(fails.is_empty(), "{fails:#?}");
 }
