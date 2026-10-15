@@ -637,6 +637,62 @@ pub fn source_cdf_params(current: bool) -> Vec<&'static str> {
     v
 }
 
+/// Two-terminal analogLib symbols: PLUS at the origin, MINUS 3/8 inch below.
+const ALIB_TWO: &[(&str, [i32; 2])] = &[("PLUS", [0, 0]), ("MINUS", [0, 60_000])];
+/// Controlled sources: the output pair as [`ALIB_TWO`], the controlling pair to the left.
+const ALIB_CONTROLLED: &[(&str, [i32; 2])] = &[
+    ("PLUS", [0, 0]),
+    ("MINUS", [0, 60_000]),
+    ("NC+", [-20_000, 20_000]),
+    ("NC-", [-20_000, 40_000]),
+];
+
+/// Where an analogLib symbol has its pins: (terminal, centre of its pin figure in the
+/// symbol's frame, milli-units, y down), for the cells of [`DEVICES`] and the global
+/// symbols. Measured on ICADVM20.1's analogLib by the live kit (`plugins/interop/live`,
+/// rows `analoglib.pins.*`, 2026-10-15), which compares this table with the analogLib it
+/// runs against every time. [`crate::align::fit`] places re-mastered instances by it;
+/// `None` for a cell it does not hold (connections then go through stubs).
+pub fn alib_pins(cell: &str) -> Option<&'static [(&'static str, [i32; 2])]> {
+    Some(match cell {
+        "res" | "cap" | "ind" | "diode" | "cccs" | "ccvs" | "vdc" | "vpulse" | "vsin" | "vpwl"
+        | "vexp" | "idc" | "ipulse" | "isin" | "ipwl" | "iexp" => ALIB_TWO,
+        "vcvs" | "vccs" => ALIB_CONTROLLED,
+        "nmos4" => &[
+            ("D", [40_000, -30_000]),
+            ("G", [0, 0]),
+            ("S", [40_000, 30_000]),
+            ("B", [40_000, 0]),
+        ],
+        "pmos4" => &[
+            ("D", [40_000, 30_000]),
+            ("G", [0, 0]),
+            ("S", [40_000, -30_000]),
+            ("B", [40_000, 0]),
+        ],
+        "npn" => &[
+            ("C", [40_000, -30_000]),
+            ("B", [0, 0]),
+            ("E", [40_000, 30_000]),
+        ],
+        "pnp" => &[
+            ("C", [40_000, 30_000]),
+            ("B", [0, 0]),
+            ("E", [40_000, -30_000]),
+        ],
+        "iprobe" => &[("PLUS", [-10_000, 50_000]), ("MINUS", [10_000, 50_000])],
+        "tline" => &[
+            ("IN+", [-40_000, 0]),
+            ("IN-", [-40_000, 60_000]),
+            ("OUT+", [40_000, 0]),
+            ("OUT-", [40_000, 60_000]),
+        ],
+        "gnd" => &[("gnd!", [0, 0])],
+        "vdd" => &[("vdd!", [0, 0])],
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

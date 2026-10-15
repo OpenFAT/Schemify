@@ -3205,12 +3205,30 @@ fn remaster(
             let new_names: Vec<String> = new_pins
                 .as_ref()
                 .map_or(Vec::new(), |v| v.iter().map(|x| x.0.clone()).collect());
+            let pairs: Vec<(usize, String)> = (0..old_pins.name.len())
+                .filter_map(|q| new_names.get(q).map(|nm| (q, nm.clone())))
+                .collect();
+            // Pin-pattern alignment (§6.4): the core cell goes where its pins land on the
+            // Virtuoso master's, in the instance's orientation.
+            let at = new_pins.as_ref().and_then(|np| {
+                let old: Vec<[i32; 2]> = pairs
+                    .iter()
+                    .map(|(q, _)| {
+                        crate::design::place(old_pins.at[*q], g.inst_orient[inst], g.inst_at[inst])
+                            .unwrap_or(g.inst_at[inst])
+                    })
+                    .collect();
+                let new: Vec<Option<[i32; 2]>> = pairs
+                    .iter()
+                    .map(|(_, nm)| np.iter().find(|(x, _)| x == nm).map(|(_, p)| *p))
+                    .collect();
+                crate::align::fit(&old, &new, g.inst_orient[inst]).map(|f| f.origin)
+            });
             rem.push(crate::remap::Remaster {
                 inst,
-                pins: (0..old_pins.name.len())
-                    .filter_map(|q| new_names.get(q).map(|nm| (q, nm.clone())))
-                    .collect(),
+                pins: pairs,
                 new_pins,
+                at,
             });
             masters.push((
                 inst,

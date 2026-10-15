@@ -43,6 +43,7 @@
 #![deny(unsafe_code)] // `forbid` would reject the guest SDK's `export!` (it allows it)
 #![warn(missing_docs)]
 
+pub mod align;
 pub mod attr;
 pub mod cdf;
 pub mod check;

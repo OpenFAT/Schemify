@@ -27,6 +27,9 @@ pub struct Remaster {
     /// The new master's pins (name, symbol-local point, Schemify coordinates) when its
     /// geometry is known; `None` asks the loader to connect (`conn` records).
     pub new_pins: Option<Vec<(String, [i32; 2])>>,
+    /// Where the new master's origin goes when it is not the instance's
+    /// ([`crate::align::fit`]: its pins then land on the old ones); `None`: in place.
+    pub at: Option<[i32; 2]>,
 }
 
 /// A label to add.
@@ -53,6 +56,8 @@ pub struct Edits {
     pub stubs: Vec<([i32; 2], NewLabel)>,
     /// `(instance index, new terminal, net)` for masters of unknown geometry.
     pub conns: Vec<(usize, String, NewLabel)>,
+    /// `(instance index, new origin)`: re-mastered instances placed by [`Remaster::at`].
+    pub moved: Vec<(usize, [i32; 2])>,
 }
 
 /// Direction of `p` seen from `o` along its dominant axis (right when they coincide).
@@ -135,6 +140,11 @@ pub fn apply(g: &Geom, n: &Nets, todo: &[Remaster]) -> Edits {
     for t in todo {
         assert!(t.inst < g.inst_id.len(), "instance {} out of range", t.inst);
         let k = t.inst;
+        // The new master's origin: aligned by the caller, else the instance's.
+        let base = t.at.unwrap_or(g.inst_at[k]);
+        if let Some(at) = t.at {
+            e.moved.push((k, at));
+        }
         for (p, node) in n.inst_pin[k].iter().enumerate() {
             if *node == NO_NODE {
                 continue;
@@ -149,7 +159,7 @@ pub fn apply(g: &Geom, n: &Nets, todo: &[Remaster]) -> Edits {
                 .is_some_and(|(_, nm)| {
                     t.new_pins.as_ref().is_some_and(|pins| {
                         pins.iter().any(|(x, local)| {
-                            x == nm && place(*local, g.inst_orient[k], g.inst_at[k]) == Some(at)
+                            x == nm && place(*local, g.inst_orient[k], base) == Some(at)
                         })
                     })
                 });
@@ -214,9 +224,8 @@ pub fn apply(g: &Geom, n: &Nets, todo: &[Remaster]) -> Edits {
             match &t.new_pins {
                 Some(pins) => {
                     if let Some((_, local)) = pins.iter().find(|(nm, _)| nm == new_name) {
-                        let q =
-                            place(*local, g.inst_orient[k], g.inst_at[k]).unwrap_or(g.inst_at[k]);
-                        let to = stub_end(g, n, q, away(g.inst_at[k], q));
+                        let q = place(*local, g.inst_orient[k], base).unwrap_or(base);
+                        let to = stub_end(g, n, q, away(base, q));
                         e.stubs.push((
                             q,
                             NewLabel {
@@ -303,18 +312,31 @@ pub fn apply_to_doc(
             push_wire(&mut out, doc.field(r, 0).unwrap_or(""), seg, g.wire_bus[w]);
             continue;
         }
-        if let Some((_, cref, attrs)) = inst_of(r).and_then(|k| masters.iter().find(|m| m.0 == k)) {
+        if let Some((k, cref, attrs)) = inst_of(r).and_then(|k| masters.iter().find(|m| m.0 == k)) {
             out.begin_record(RecordKind::Inst);
             out.push_field(doc.field(r, 0).unwrap_or(""));
             out.push_field(cref);
+            let moved = e.moved.iter().find(|m| m.0 == *k).map(|m| m.1);
             for a in doc.attrs(r) {
                 let key = doc.attr_key(a);
                 if attrs.is_some() && !matches!(key, "at" | "name" | "ignore" | "inherit") {
                     continue;
                 }
                 out.push_attr(key);
-                for v in doc.attr_values(a) {
-                    out.push_value(v);
+                match moved.filter(|_| key == "at") {
+                    // Aligned (§6.4): the new origin, the orientation kept.
+                    Some(at) => {
+                        out.push_value_coord(at[0]);
+                        out.push_value_coord(at[1]);
+                        for v in doc.attr_values(a).skip(2) {
+                            out.push_value(v);
+                        }
+                    }
+                    None => {
+                        for v in doc.attr_values(a) {
+                            out.push_value(v);
+                        }
+                    }
                 }
             }
             for (k, vs) in attrs.iter().flatten() {

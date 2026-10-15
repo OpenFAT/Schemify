@@ -17,7 +17,8 @@ use super::read::{
     Spin, Term, TextView, Wire,
 };
 use super::{Export, ExportOptions, ade};
-use crate::design::{Cell, Design, geom, sym_pins};
+use crate::align;
+use crate::design::{Cell, Design, geom, place, sym_pins};
 use crate::map::{self, How, Mapping, Plan};
 use crate::merge;
 use crate::nets;
@@ -1885,6 +1886,8 @@ fn schematic_out(
     };
     // §6.4: re-mastered instances.
     let mut todo = Vec::new();
+    // Instances placed by pin-pattern alignment (§6.4): index → the new master's origin.
+    let mut aligned: BTreeMap<usize, [i32; 2]> = BTreeMap::new();
     for k in 0..g.inst_id.len() {
         let mi = g.inst_master[k] as usize;
         if intent_of(k).is_some() {
@@ -1898,6 +1901,7 @@ fn schematic_out(
                     .map(|p| (p, pins.name[p].clone()))
                     .collect(),
                 new_pins: None,
+                at: None,
             });
             continue;
         }
@@ -1937,16 +1941,42 @@ fn schematic_out(
                     .iter()
                     .zip(&sp.at)
                     .map(|(nm, at)| (vname(nm), *at))
-                    .collect()
+                    .collect::<Vec<_>>()
+            })
+            // analogLib's pins, as measured (devices::alib_pins).
+            .or_else(|| match plan.how[mi] {
+                How::AnalogLib(_) => devices::alib_pins(target.1)
+                    .map(|v| v.iter().map(|(t, p)| ((*t).to_owned(), *p)).collect()),
+                _ => None,
             });
+        let pairs: Vec<(usize, String)> = names
+            .into_iter()
+            .enumerate()
+            .filter(|(_, n)| !n.is_empty())
+            .collect();
+        // Pin-pattern alignment (§6.4): the new master goes where its pins land on the
+        // drawn ones, in the instance's orientation; the pins that still miss get stubs.
+        let at = new_pins.as_ref().and_then(|np: &Vec<(String, [i32; 2])>| {
+            let old: Vec<[i32; 2]> = pairs
+                .iter()
+                .map(|(p, _)| {
+                    place(pins.at[*p], g.inst_orient[k], g.inst_at[k]).unwrap_or(g.inst_at[k])
+                })
+                .collect();
+            let new: Vec<Option<[i32; 2]>> = pairs
+                .iter()
+                .map(|(_, nm)| np.iter().find(|(x, _)| x == nm).map(|(_, p)| *p))
+                .collect();
+            align::fit(&old, &new, g.inst_orient[k]).map(|f| f.origin)
+        });
+        if let Some(a) = at {
+            aligned.insert(k, a);
+        }
         todo.push(Remaster {
             inst: k,
-            pins: names
-                .into_iter()
-                .enumerate()
-                .filter(|(_, n)| !n.is_empty())
-                .collect(),
+            pins: pairs,
             new_pins,
+            at,
         });
         // A core cell on its §6.5 analogLib master is the export's default, not news; a
         // mapping-file row is reported.
@@ -2042,7 +2072,7 @@ fn schematic_out(
             _ => None,
         };
         let at = conv(
-            g.inst_at[k],
+            aligned.get(&k).copied().unwrap_or(g.inst_at[k]),
             &format!("instance {}", g.inst_name[k]),
             c,
             notes,

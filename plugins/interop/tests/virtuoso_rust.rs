@@ -1174,6 +1174,7 @@ fn remastered_devices_keep_every_net() {
                     .zip(res2.at.iter().copied())
                     .collect(),
             ),
+            at: None,
         })
         .collect();
     let e = interop::remap::apply(&g, &n, &todo);

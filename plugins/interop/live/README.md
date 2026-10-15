@@ -103,6 +103,9 @@ work directory at the same absolute path on both, for example on a shared disk.
 | `refuse.*` | A truncated or malformed file is refused and creates nothing, an existing view needs `?overwrite`, and a cellview open for editing is never rewritten. |
 | `team.kept-unchanged` | Cellviews nobody edited in Schemify stay exactly as Virtuoso drew them (spec §7.5). |
 | `team.edits-arrive` | A Schemify edit reaches Virtuoso, a Virtuoso edit comes back to Schemify, and nothing else changes. |
+| `analoglib.table.<cell>` | The analogLib this Virtuoso has puts its pins where the plugin's table says (export places re-mastered devices by that table). |
+| `align.<device>.<cell>` | Whether a core device's pins line up with the analogLib cell's: PASS means no stubs; INFO rows name devices with another pin pattern, which keep stubs. |
+| `align.rclive.no-stubs` | The RC bench exported on analogLib masters came back from Virtuoso without a single stub. |
 | `netlist.<sim>.<lib>.<cell>` | Virtuoso's netlister writes a netlist of the loaded cell. |
 | `netlist.cdl-matches-aucdl` | Schemify's CDL of the RC section equals Virtuoso's auCdl. A WARN shows the difference, which settles GUESS G7. |
 | `ocean.rclive.<mode>.*` | The exported OCEAN script runs in Spectre and gives tau = RC = 1 ms and v(out) at 1 ms = 1 − 1/e, both within 1 %. |

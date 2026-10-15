@@ -1343,22 +1343,25 @@ fn check_alib_round_trip(r: &mut Report, work: &Path, name: &str, dir: &Path) {
     );
 }
 
-/// Where each analogLib symbol (as this Virtuoso has it) puts its pins, against the core
-/// device it stands for (spec §6.5, pins by order): a WARN names every pin that does not
-/// line up, which the re-mastering stub then has to bridge in Virtuoso.
+/// Pin-pattern alignment against the analogLib this Virtuoso has (spec §6.4, §6.5): the
+/// shipped geometry table (`devices::alib_pins`) must equal the live symbols, since export
+/// places re-mastered devices by it; per core device, whether its pins align with the
+/// analogLib cell's (no stubs), partly, or not at all; and the analogLib-mode RC bench, all
+/// of whose devices align, must come back from Virtuoso without a stub.
 fn check_alib_pins(r: &mut Report, work: &Path) {
+    use interop::virtuoso::devices;
     let Some(text) = read(&work.join("out/analogLib.sfyx")) else {
-        return r.add("analoglib.pins", Grade::Fail, "no dump of analogLib");
+        return r.add("analoglib.table", Grade::Fail, "no dump of analogLib");
     };
     let Ok(recs) = sfyx::read(&text) else {
         return r.add(
-            "analoglib.pins",
+            "analoglib.table",
             Grade::Fail,
             "the analogLib dump does not read",
         );
     };
-    // analogLib cell → terminal → pin centre in Schemify units (y down).
-    let mut alib: BTreeMap<String, BTreeMap<String, (f64, f64)>> = BTreeMap::new();
+    // analogLib cell → terminal → pin centre, milli-units, y down.
+    let mut live: BTreeMap<String, BTreeMap<String, [i32; 2]>> = BTreeMap::new();
     let (mut cell, mut sym) = (String::new(), false);
     for rec in &recs {
         match rec.tag.as_str() {
@@ -1370,12 +1373,9 @@ fn check_alib_pins(r: &mut Report, work: &Path) {
                 else {
                     continue;
                 };
-                // `+ 0.0` turns -0 into 0 for the report.
-                let c = (
-                    f64::from(x1 + x2) / 2000.0 + 0.0,
-                    -f64::from(y1 + y2) / 2000.0 + 0.0,
-                );
-                alib.entry(cell.clone())
+                // Dump units (1000 per DBU) are milli-units; y flips.
+                let c = [(x1 + x2) / 2, -((y1 + y2) / 2)];
+                live.entry(cell.clone())
                     .or_default()
                     .entry(t.to_owned())
                     .or_insert(c);
@@ -1383,53 +1383,103 @@ fn check_alib_pins(r: &mut Report, work: &Path) {
             _ => {}
         }
     }
-    // Core cell → its pins in order.
-    let mut core: BTreeMap<String, Vec<(String, f64, f64)>> = BTreeMap::new();
+    let show = |p: [i32; 2]| format!("({},{})", p[0] / 1000, p[1] / 1000);
+    let cells: BTreeSet<&str> = devices::DEVICES
+        .iter()
+        .flat_map(|d| d.alib.iter().copied())
+        .chain(["gnd", "vdd"])
+        .collect();
+    for a in &cells {
+        let id = format!("analoglib.table.{a}");
+        let (Some(table), Some(got)) = (devices::alib_pins(a), live.get(*a)) else {
+            r.add(id, Grade::Info, "not in this analogLib or not in the table");
+            continue;
+        };
+        let off: Vec<String> = table
+            .iter()
+            .filter(|(t, p)| got.get(*t) != Some(p))
+            .map(|(t, p)| {
+                let g = got.get(*t).map_or("missing".to_owned(), |q| show(*q));
+                format!("{t} table {} live {g}", show(*p))
+            })
+            .collect();
+        if off.is_empty() {
+            r.add(id, Grade::Pass, "the live symbol has the table's pins");
+        } else {
+            r.add(
+                id,
+                Grade::Fail,
+                format!("re-mastered devices would misplace: {}", off.join("; ")),
+            );
+        }
+    }
+    // Core pins, symbol frame.
+    let mut core: BTreeMap<String, Vec<[i32; 2]>> = BTreeMap::new();
     for (file, bytes) in schemify_doc::core_library() {
         let name = file.trim_end_matches(".shprim").to_owned();
         for l in String::from_utf8_lossy(bytes).lines() {
             let w: Vec<&str> = l.split_whitespace().collect();
-            if let ["pin", n, _, x, y, ..] = w[..]
+            if let ["pin", _, _, x, y, ..] = w[..]
                 && let (Ok(x), Ok(y)) = (x.parse::<f64>(), y.parse::<f64>())
             {
                 core.entry(name.clone())
                     .or_default()
-                    .push((n.to_owned(), x, y));
+                    .push([(x * 1000.0).round() as i32, (y * 1000.0).round() as i32]);
             }
         }
     }
-    let rows: Vec<(&str, &str, Vec<&str>)> = interop::virtuoso::devices::DEVICES
-        .iter()
-        .flat_map(|d| {
-            d.alib
-                .iter()
-                .map(move |a| (d.core, *a, d.alib_pins.to_vec()))
-        })
-        .chain([("gnd", "gnd", vec!["gnd!"]), ("vdd", "vdd", vec!["vdd!"])])
-        .collect();
-    for (c, a, terms) in rows {
-        let id = format!("analoglib.pins.{c}.{a}");
-        let (Some(cp), Some(ap)) = (core.get(c), alib.get(a)) else {
-            r.add(id, Grade::Info, "not in this analogLib or the core library");
-            continue;
-        };
-        let mut off = Vec::new();
-        let mut all = Vec::new();
-        for ((pn, px, py), t) in cp.iter().zip(&terms) {
-            let Some(&(ax, ay)) = ap.get(*t) else {
-                off.push(format!("{pn}: analogLib has no terminal {t}"));
+    for d in devices::DEVICES {
+        let Some(cp) = core.get(d.core) else { continue };
+        for a in d.alib {
+            let Some(table) = devices::alib_pins(a) else {
                 continue;
             };
-            all.push(format!("{pn} ({px},{py}) {t} ({ax},{ay})"));
-            if (ax - px).abs() > 1e-6 || (ay - py).abs() > 1e-6 {
-                off.push(format!("{pn} at ({px},{py}), {t} at ({ax},{ay})"));
+            let new: Vec<Option<[i32; 2]>> = d
+                .alib_pins
+                .iter()
+                .take(cp.len())
+                .map(|t| table.iter().find(|x| x.0 == *t).map(|x| x.1))
+                .collect();
+            let old = &cp[..new.len()];
+            let id = format!("align.{}.{a}", d.core);
+            match interop::align::fit(old, &new, schemify_format::Orient::R0) {
+                Some(f) if f.full() => r.add(
+                    id,
+                    Grade::Pass,
+                    format!(
+                        "pins line up with the analogLib origin at {}",
+                        show(f.origin)
+                    ),
+                ),
+                Some(f) => r.add(
+                    id,
+                    Grade::Info,
+                    format!(
+                        "{} of {} pins line up; the others get stubs",
+                        f.hit.iter().filter(|h| **h).count(),
+                        f.hit.len()
+                    ),
+                ),
+                None => r.add(
+                    id,
+                    Grade::Info,
+                    "another pin pattern: every pin gets a stub",
+                ),
             }
         }
-        if off.is_empty() {
-            r.add(id, Grade::Pass, format!("pins line up: {}", all.join(", ")));
-        } else {
-            r.add(id, Grade::Warn, off.join("; "));
-        }
+    }
+    // The RC bench on analogLib, every device aligned: no stub came back.
+    if let Some(dump) = read(&work.join("out/rclive.alib.sfya_rclive.sfyx")) {
+        let stubs = sfyx::read(&dump)
+            .unwrap_or_default()
+            .iter()
+            .filter(|x| x.tag == "prop" && x.str(1).is_ok_and(|n| n == "schemifyStub"))
+            .count();
+        r.check(
+            "align.rclive.no-stubs",
+            stubs == 0,
+            format!("{stubs} stub wire(s) in the analogLib-mode RC bench"),
+        );
     }
 }
 
@@ -1914,16 +1964,21 @@ fn mock(work: &Path) -> Interp<MockDb> {
     i.load(
         r#"
 (procedure (ddCreateLib n p) (ddGetObj n))
-;; analogLib two-terminal masters with pins 0.1875 inch above and below the origin (30 DBU,
-;; the pitch of the core cells), PLUS on top.
+;; analogLib two-terminal masters as the live ICADVM20.1 analogLib draws them
+;; (devices::alib_pins): PLUS at the origin, MINUS 60 DBU below.
 (procedure (SfyLiveFixTwo cell params)
   (let ((cdf nil))
-    (SfyFixSymbol "analogLib" cell (list (list "PLUS" "inputOutput" 0 30) (list "MINUS" "inputOutput" 0 -30)))
+    (SfyFixSymbol "analogLib" cell (list (list "PLUS" "inputOutput" 0 0) (list "MINUS" "inputOutput" 0 -60)))
     (setq cdf (or (cdfGetBaseCellCDF (ddGetObj "analogLib" cell)) (SfyFixCdf "analogLib" cell)))
     (foreach p params
       (cdfCreateParam cdf ?name p ?type "string" ?defValue "" ?prompt p ?parseAsNumber "yes" ?parseAsCEL "yes"))
     (setSGq cdf (list nil 'spectre (list nil 'termOrder '(PLUS MINUS))) simInfo)
     (cdfSaveCDF cdf)))
+;; MOS as the live analogLib draws them (y up here): gate at the origin, D/S/B 40 DBU right.
+(SfyFixSymbol "analogLib" "nmos4" (list (list "D" "inputOutput" 40 30) (list "G" "input" 0 0)
+                                        (list "S" "inputOutput" 40 -30) (list "B" "inputOutput" 40 0)))
+(SfyFixSymbol "analogLib" "pmos4" (list (list "D" "inputOutput" 40 -30) (list "G" "input" 0 0)
+                                        (list "S" "inputOutput" 40 30) (list "B" "inputOutput" 40 0)))
 (SfyLiveFixTwo "res" nil)
 (SfyLiveFixTwo "cap" '("c" "m"))
 (SfyLiveFixTwo "vdc" '("vdc" "acm" "acp"))
