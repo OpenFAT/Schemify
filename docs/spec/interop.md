@@ -377,6 +377,8 @@ Oracle (`tests/virtuoso_e2e.rs`): Rust export → SKILL load → SKILL dump → 
 2. **Map (two libraries that model the same devices differently)**, e.g. the open sky130 library imported from xschem (`sky130_fd_pr:nfet_01v8`, params `W L nf mult`) and a Virtuoso sky130 kit. Rules in `interop.map` (§8.2) translate cell, pins and params; instances are re-mastered (§6.4).
 3. **Retarget (PDK-agnostic).** The design is sized by gm/Id on a sample PDK in Schemify (`plugins/gmid-lut`); export carries the *intent* (§10), and the target PDK — present only on the target machine — is characterized and the widths solved there, in SKILL.
 
+**Callback-derived parameters.** A mirror carries a device's CDF params but not its CDF callbacks (SKILL, often encrypted): parameters a callback derives from what the user sets (GF22's `nfet` netlists `as ad ps pd`, `lle_*`, `sca scb scc`, `ngcon nscon ndcon`, … from `w l nf` and layout options; live ICADVM20.1) keep their defaults when a Schemify instance is resized. The live kit's `pdk.sweep` (`SfyLivePdkSweep`, with `--pdk LIB/CELL`) places the device on a scratch schematic, sets `w` ×1 ×4 ×16, `l` ×1 ×2 and the finger count 1 2 4 (each only when editable) with the callbacks running, and records every spectre `instParameters` value per point in `out/pdk_derived.tsv` (it names PDK parameters and values, so it stays on the user's machine); `pdk.derived` reports by name which netlisted parameters change with the inputs beyond the inputs themselves. Those are the ones Schemify needs Virtuoso's values for (the round trip with `?callbacks t` today).
+
 ### 8.2 `interop.map`
 
 Project-root file in line-record syntax (format.md §2, no header), read by both directions:

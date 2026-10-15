@@ -191,3 +191,78 @@
     (SfyLiveCheck id (and r (car r))
       (cond ((null r) (SfyLiveErr)) ((car r) "placed, log PASS")
             (t (sprintf nil "see %s.retarget.log" file))))))
+
+;; A CDF number string ("80n", "1.5u", "2") as a float; nil when it is not one.
+(procedure (SfyLiveNum s)
+  (let ((n (and (stringp s) (strlen s))) (scale 1.0) (c nil))
+    (when (and n (greaterp n 0))
+      (setq c (substring s n 1))
+      (setq scale (case c ("f" 1e-15) ("p" 1e-12) ("n" 1e-9) ("u" 1e-6) ("m" 1e-3)
+                          ("k" 1e3) ("K" 1e3) ("M" 1e6) ("G" 1e9) (t 1.0)))
+      (if (equal scale 1.0)
+        (atof s)
+        (and (greaterp n 1) (times (atof (substring s 1 (sub1 n))) scale))))))
+
+;; The PDK sweep (spec interop.md §8.2): device lib/cell placed on a scratch schematic that
+;; is never saved, w x1 x4 x16, l x1 x2 and the finger count 1 2 4 (each only when the CDF
+;; has it editable), set as SfyImport sets them with the PDK's callbacks running; per point
+;; the value of every netlisted parameter (spectre instParameters). One tab-separated row
+;; per point to out: the inputs, the callback status, then the parameters in a header's
+;; order. It names PDK parameters and values: the file stays on this machine.
+(procedure (SfyLivePdkSweep lib cell scratch out)
+  (let ((m nil) (cdf nil) (cv nil) (names nil) (inputs nil) (fing nil) (port nil) (k 0)
+        (ws nil) (ls nil) (nfs nil) (base nil) (inst nil) (status nil) (icdf nil) (p nil)
+        (row nil) (ok 0))
+    (setq m (car (errset (dbOpenCellViewByType lib cell "symbol" nil "r") t)))
+    (setq cdf (car (errset (cdfGetCellCDF (ddGetObj lib cell)) t)))
+    (setq names (and cdf (cadr (assoc "instParameters"
+                                  (cadr (assoc "spectre" (SfySimInfoFields (getSGq cdf simInfo))))))))
+    (setq cv (car (errset (dbOpenCellViewByType scratch "sfy_pdk_sweep" "schematic" "schematic" "w") t)))
+    (cond
+      ((not (and m cdf cv names))
+        (SfyLiveCheck "pdk.sweep" nil
+          (sprintf nil "cannot sweep %s/%s: symbol %L CDF %L scratch %L instParameters %L"
+            lib cell (and m t) (and cdf t) (and cv t) (and names t))))
+      (t
+        ;; Inputs: name, editable, base value.
+        (foreach n (list "w" "l" "nf" "nfin" "fingers")
+          (setq p (cdfFindParamByName cdf n))
+          (when (and p (nequal (getSGq p editable) "nil") (SfyLiveNum (SfyAtomStr (getSGq p defValue))))
+            (setq inputs (cons (list n (SfyLiveNum (SfyAtomStr (getSGq p defValue)))) inputs))))
+        (setq inputs (reverse inputs))
+        (setq base (cadr (assoc "w" inputs)))
+        (setq ws (if base (list base (times 4 base) (times 16 base)) '(nil)))
+        (setq base (cadr (assoc "l" inputs)))
+        (setq ls (if base (list base (times 2 base)) '(nil)))
+        (setq fing (car (setof n (list "nf" "nfin" "fingers") (assoc n inputs))))
+        (setq nfs (if fing '(1 2 4) '(nil)))
+        (setq port (outfile out "w"))
+        (fprintf port "point\tw\tl\t%s\tstatus" (or fing "fingers"))
+        (foreach n names (fprintf port "\t%s" n))
+        (fprintf port "\n")
+        (foreach w ws
+          (foreach l ls
+            (foreach f nfs
+              (setq k (add1 k))
+              (setq inst (car (errset (schCreateInst cv m (sprintf nil "S%d" k) (list (times 2.0 k) 0.0) "R0") t)))
+              (setq row nil)
+              (when w (setq row (cons (list "w" (sprintf nil "%g" w)) row)))
+              (when l (setq row (cons (list "l" (sprintf nil "%g" l)) row)))
+              (when f (setq row (cons (list fing (sprintf nil "%d" f)) row)))
+              (setq status
+                (cond
+                  ((null inst) "no instance")
+                  (t (car (errset (SfySetParams inst (reverse row) t) t)))))
+              (when (equal status t) (setq ok (add1 ok)))
+              (fprintf port "%d\t%s\t%s\t%s\t%s" k (if w (sprintf nil "%g" w) "") (if l (sprintf nil "%g" l) "")
+                (if f (sprintf nil "%d" f) "") (if (equal status t) "ok" (sprintf nil "%L" status)))
+              (setq icdf (and inst (car (errset (cdfGetInstCDF inst) t))))
+              (foreach n names
+                (setq p (and icdf (cdfFindParamByName icdf n)))
+                (fprintf port "\t%s" (if p (SfyAtomStr (getSGq p value)) "")))
+              (fprintf port "\n"))))
+        (close port)
+        (errset (dbPurge cv) t)
+        (SfyLiveCheck "pdk.sweep" (greaterp ok 0)
+          (sprintf nil "%d of %d points set with the callbacks running; table %s (stays on this machine)"
+            ok k out))))))
