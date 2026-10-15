@@ -387,7 +387,7 @@
         (cond
           ((and (zerop r) (nequal (substring (getSGq p name) 1 8) "schemify")) nil)
           ;; Read into its label's text (SfyNetExprOf), not a property of its own.
-          ((equal (getSGq p name) "schemifyNetExpr") nil)
+          ((equal (getSGq p name) "netExpression") nil)
           ((null v) (SfyCount (strcat "skipped:prop " (getSGq p valueType))))
           (t (setq entries (cons (list (list r (getSGq p name)) nil
                                    (list r (getSGq p name) (getSGq p valueType) v))
@@ -395,9 +395,10 @@
     (foreach e (SfySortByKey entries)
       (SfyPut port "prop" (caddr e)))))
 
-;; The net expression the loader stored on the label Virtuoso drew for it, or nil.
+;; The net expression of a cdsNetExpr() label: Virtuoso keeps it in the label's
+;; netExpression property (live ICADVM20.1 probe), nil for any other label.
 (procedure (SfyNetExprOf f)
-  (let ((p (car (setof x (getSGq f prop) (equal (getSGq x name) "schemifyNetExpr")))))
+  (let ((p (car (setof x (getSGq f prop) (equal (getSGq x name) "netExpression")))))
     (and p (getSGq p value))))
 
 ;; textview records for the veriloga.va / verilog.v masters of the cell's other views.
@@ -901,11 +902,9 @@
         (cond
           ((and wireP (equal lpp (list "wire" "label")) (equal lt "NLPLabel")
                 (equal (substring (nth 2 f) 1 2) "[@"))
-            ;; Virtuoso keeps the expression and shows its own IL label cdsNetExpr() (live
-            ;; ICADVM20.1 run): the expression goes on that label, for the dump.
-            (setq lbl (schCreateNetExpression sfyCv (nth 2 f) par pt (nth 6 f) (nth 5 f) (nth 7 f) h))
-            (when lbl (dbReplaceProp lbl "schemifyNetExpr" "string" (nth 2 f)))
-            lbl)
+            ;; Virtuoso shows its own IL label cdsNetExpr() and keeps the expression in the
+            ;; label's netExpression property (live ICADVM20.1 probe); the dump reads it.
+            (schCreateNetExpression sfyCv (nth 2 f) par pt (nth 6 f) (nth 5 f) (nth 7 f) h))
           ((and wireP (equal lpp (list "wire" "label")) (equal lt "normalLabel"))
             (schCreateWireLabel sfyCv par pt (nth 2 f) (nth 6 f) (nth 5 f) (nth 7 f) h nil))
           ((and wireP (equal lpp (list "annotate" "drawing3")) (equal lt "normalLabel"))

@@ -241,13 +241,13 @@ Export is the inverse: `.shcomp` → symbol + schematic + CDF; `.shprim` → sym
 |---|---|
 | instance (`inst`) | `inst`, name `I0<3:0>` ↔ `I0[3:0]`; CDF props → overrides (§3.4); prop `schemifyId` ↔ id; netSet props → `inherit <pin> <net>` (written as `netSet`-typed props; a netSet prop naming no inherited pin of the master overrides a net expression deeper down and is `needs_review: inherit`); prop `nlAction` `"ignore"` ↔ `ignore true` |
 | wire (`wire`, wire/drawing) | one `wire` per segment; width > 0 ↔ `bus true`; a multi-point wire splits, the first segment keeping its id |
-| wire label (wire/label, glued) | `label` at the point of its wire nearest the label origin (on a horizontal or vertical segment the projection; else the nearest end); its text through §3.3; `annotate drawing3` aliases are dropped |
+| wire label (wire/label, glued) | `label` at the point of its wire nearest the label origin (on a horizontal or vertical segment the projection; else the nearest end); its text through §3.3; an alias label is one of these too (Virtuoso stores it on wire/label, live ICADVM20.1); an `annotate drawing3` label is dropped |
 | net-expression label `[@p:%:d!]` on a wire | the cell gains inherited pin `p` (`inherit d`, §3.3) and a label `p` there (elab §9.5) |
 | schematic pin (`spin`) | `port` bound to the interface pin of that name, at the pin instance's origin; in a bench a `label` |
 | `basic/noConn` instance | `noconn` at its origin |
 | note label (text/drawing) | `text`, size = height · 16 / upi (§3.5), orient by §3.2 |
 | note shape (text/drawing, drawing1 = dashed) | `shape`; ellipse → `circle` when square, else a 32-point closed `poly` (reviewed) |
-| symbol shape (device/drawing, drawing1 = filled) | rank-2 graphics; same ellipse rule; arcs with sweep > π are two Virtuoso arcs (export) / merged when they share centre and radius (import) |
+| symbol shape (device/drawing, drawing1 = filled) | rank-2 graphics; same ellipse rule (export: a `circle` box goes out rounded outward to whole DBUs, as Virtuoso stores it, live ICADVM20.1; the stash keeps an untouched circle); arcs with sweep > π are two Virtuoso arcs (export) / merged when they share centre and radius (import) |
 | symbol label | `stext` by §3.5; pin-name labels (pin/label) are written by export and ignored by import (Schemify draws pin names) |
 | symbol pin (`term` + `pinfig`) | `pin` at the rectangle centre; `dir` input/output/inputOutput ↔ in/out/inout (switch, jumper, unused → inout); several pins of one terminal → `alias` pins; term net expression → `inherit` |
 | selection box (instance/drawing) | dropped on import; export writes the box around graphics, pins and labels |

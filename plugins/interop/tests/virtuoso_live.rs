@@ -392,12 +392,12 @@ fn design_libs(text: &str) -> Vec<String> {
 }
 
 /// The `"design"` part of a dump: every record of its design cells and maestro tests, the
-/// `lib` context renamed `from` → `to` in every string field, without the header and the
+/// library names `from` renamed `to` in every string field, without the header and the
 /// `schemify*` properties (ids and stash, which only the Rust exporter writes).
-fn design_records(text: &str, from: &str, to: &str) -> Result<Vec<String>, String> {
-    fn rename(v: &sfyx::Value, from: &str, to: &str) -> sfyx::Value {
+fn design_records(text: &str, from: &[&str], to: &str) -> Result<Vec<String>, String> {
+    fn rename(v: &sfyx::Value, from: &[&str], to: &str) -> sfyx::Value {
         match v {
-            sfyx::Value::Str(s) if s == from => sfyx::Value::Str(to.to_owned()),
+            sfyx::Value::Str(s) if from.contains(&s.as_str()) => sfyx::Value::Str(to.to_owned()),
             sfyx::Value::List(items) => {
                 sfyx::Value::List(items.iter().map(|x| rename(x, from, to)).collect())
             }
@@ -440,16 +440,12 @@ fn design_records(text: &str, from: &str, to: &str) -> Result<Vec<String>, Strin
 }
 
 /// The design cells of a dump, each with its records as [`design_records`] gives them
-/// (library `from` renamed `to`), by cell name.
-fn design_cells(text: &str, from: &str, to: &str) -> BTreeMap<String, Vec<String>> {
+/// (libraries `from` renamed `to`), by cell name.
+fn design_cells(text: &str, from: &[&str], to: &str) -> BTreeMap<String, Vec<String>> {
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut cur: Option<String> = None;
     for line in design_records(text, from, to).unwrap_or_default() {
-        if let Some(rec) = sfyx::read(&format!("(\"sfyx\" 1 \"x\")\n{line}\n(\"end\")\n"))
-            .ok()
-            .and_then(|v| v.into_iter().nth(1))
-            .filter(|r| r.tag == "cell")
-        {
+        if let Some(rec) = record_of(&line).filter(|r| r.tag == "cell") {
             cur = rec.str(0).ok().map(str::to_owned);
         }
         if let Some(c) = &cur {
@@ -457,6 +453,61 @@ fn design_cells(text: &str, from: &str, to: &str) -> BTreeMap<String, Vec<String
         }
     }
     out
+}
+
+/// One record line of [`design_records`], parsed.
+fn record_of(line: &str) -> Option<Record> {
+    sfyx::read(&format!("(\"sfyx\" 1 \"x\")\n{line}\n(\"end\")\n"))
+        .ok()?
+        .into_iter()
+        .nth(1)
+}
+
+/// How a cell's records came back from a library round trip (`--lib`), CDF aside: the
+/// first difference of the rest, the CDF params and siminfo lost, and the params gained.
+/// Gaining is expected where the import declared an empty string param for a name a symbol
+/// label shows (spec `interop.md` §6.3) or the export added netlisting siminfo; a CDF
+/// without params or siminfo counts as none.
+struct CellBack {
+    diff: Option<String>,
+    lost: Vec<String>,
+    gained: Vec<String>,
+}
+
+fn cell_back(a: &[String], b: &[String]) -> CellBack {
+    let split = |recs: &[String]| {
+        let (mut rest, mut cdf) = (Vec::new(), BTreeSet::new());
+        for l in recs {
+            match record_of(l).map(|r| r.tag) {
+                Some(t) if t == "cdf" => {}
+                Some(t) if t == "param" || t == "siminfo" => {
+                    cdf.insert(l.clone());
+                }
+                _ => rest.push(l.clone()),
+            }
+        }
+        (rest, cdf)
+    };
+    let ((ra, ca), (rb, cb)) = (split(a), split(b));
+    let declared = |l: &String| {
+        record_of(l).is_some_and(|r| {
+            r.tag == "siminfo"
+                || (r.str(1).is_ok_and(|t| t == "string") && r.str(2).is_ok_and(str::is_empty))
+        })
+    };
+    let gained: Vec<String> = cb.difference(&ca).cloned().collect();
+    let mut lost: Vec<String> = ca.difference(&cb).cloned().collect();
+    lost.extend(
+        gained
+            .iter()
+            .filter(|l| !declared(l))
+            .map(|l| format!("added {l}")),
+    );
+    CellBack {
+        diff: first_diff(&ra, &rb),
+        lost,
+        gained: gained.into_iter().filter(declared).collect(),
+    }
 }
 
 /// Every cell of a dump with its role (`design` or `ref`).
@@ -1597,13 +1648,13 @@ fn verify(work: &Path, o: &Opts) -> Report {
         let id = format!("dumpfix.{name}");
         let want = design_records(
             &read(&fixtures().join(rel)).unwrap(),
-            lib,
+            &[lib],
             &format!("sfyd_{name}"),
         );
         match (want, read(&out.join(format!("dump_{name}.sfyx")))) {
             (_, None) => r.add(id, Grade::Fail, "no dump"),
             (Err(e), _) => r.add(id, Grade::Fail, e),
-            (Ok(w), Some(t)) => match design_records(&t, "", "") {
+            (Ok(w), Some(t)) => match design_records(&t, &[], "") {
                 Err(e) => r.add(id, Grade::Fail, format!("the dump does not read: {e}")),
                 Ok(g) => match first_diff(&w, &g) {
                     None => r.add(
@@ -1718,37 +1769,49 @@ fn verify(work: &Path, o: &Opts) -> Report {
             (Some(a), Some(b)) => {
                 // A cell that is only a symbol and CDF came into Schemify as a device mirror
                 // and goes back as a reference to the original cell (§8.1), not a copy: the
-                // cells that travel as designs must dump the same, the others must come
-                // back as references.
-                let refs: BTreeSet<String> = cell_roles(&b)
+                // cells the export sent as designs must dump the same; the others stay
+                // where they were, and instances of them keep pointing at the original
+                // library (both library names compare as one).
+                let sent: BTreeSet<String> = read(&work.join(format!("in/user_{k}.rt.sfyx")))
+                    .map(|t| cell_roles(&t))
+                    .unwrap_or_default()
                     .into_iter()
-                    .filter(|x| x.1 == "ref")
+                    .filter(|x| x.1 == "design")
                     .map(|x| x.0)
                     .collect();
+                let copy = ulib('u', l, c);
                 let (a, b) = (
-                    design_cells(&a, l, &ulib('u', l, c)),
-                    design_cells(&b, "", ""),
+                    design_cells(&a, &[l, &copy], "L"),
+                    design_cells(&b, &[l, &copy], "L"),
                 );
                 let mut diffs = Vec::new();
                 let mut lost = Vec::new();
-                for (cell, recs) in &a {
+                let mut gained = 0;
+                for (cell, recs) in a.iter().filter(|x| sent.contains(x.0)) {
                     match b.get(cell) {
                         Some(got) => {
-                            if let Some(d) = first_diff(recs, got) {
+                            let back = cell_back(recs, got);
+                            if let Some(d) = back.diff {
                                 diffs.push(format!("{cell}: {d}"));
                             }
+                            if !back.lost.is_empty() {
+                                diffs.push(format!("{cell}: CDF lost {}", back.lost.join(", ")));
+                            }
+                            gained += usize::from(!back.gained.is_empty());
                         }
-                        None if refs.contains(cell) => {}
                         None => lost.push(cell.clone()),
                     }
                 }
-                let as_refs = a.keys().filter(|x| !b.contains_key(*x)).count() - lost.len();
+                if sent.is_empty() {
+                    diffs.push("the export sent no design cell".into());
+                }
+                let as_refs = a.len() - a.keys().filter(|x| sent.contains(*x)).count();
                 if diffs.is_empty() && lost.is_empty() {
                     r.add(
                         id,
                         Grade::Pass,
                         format!(
-                            "{} cells dump the same; {as_refs} device cell(s) went back as references to the original",
+                            "{} cells dump the same ({gained} with label params declared or siminfo added); {as_refs} device cell(s) went back as references to the original",
                             a.len() - as_refs
                         ),
                     );

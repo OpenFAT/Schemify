@@ -428,11 +428,15 @@ fn undocumented_losses(path: &str, orig: &str, got: &str) -> Vec<String> {
         }
     }
     // Symbol graphics: the same count per form (order, attributes, closing points and
-    // label templates outside §3.5 are documented losses).
+    // label templates outside §3.5 are documented losses; so is a circle off the DBU grid,
+    // which Virtuoso stores elliptic and reads back as a polygon).
     let forms = |d: &schemify_format::Document<'_>| -> BTreeMap<K, usize> {
         let mut m = BTreeMap::new();
         for r in 1..d.record_count() {
-            let k = d.record_kind(r);
+            let k = match d.record_kind(r) {
+                K::Circle => K::Poly,
+                k => k,
+            };
             if k.rank() == 2 && k != K::Stext {
                 *m.entry(k).or_insert(0) += 1;
             }

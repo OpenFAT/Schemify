@@ -1621,9 +1621,23 @@ fn graphic_out(
         }
         "circle" if v.len() == 3 => {
             let o = conv([v[0], v[1]], form, c, notes);
+            // Virtuoso stores the box in whole DBUs, rounded outward (live ICADVM20.1: the
+            // radius-2.5 bubble of a pmos at y 0 came back with box y -3..3), so the export
+            // writes that box and the image predicts the read-back; the stash keeps the
+            // circle (§7.3).
+            let g = (MILLI_PER_INCH / i64::from(DBU)) as i32;
+            let (lo, hi) = (
+                |x: i32| x.div_euclid(g) * g,
+                |x: i32| -(-x).div_euclid(g) * g,
+            );
             vec![shape(
                 "ellipse",
-                vec![o[0] - v[2], o[1] - v[2], o[0] + v[2], o[1] + v[2]],
+                vec![
+                    lo(o[0] - v[2]),
+                    lo(o[1] - v[2]),
+                    hi(o[0] + v[2]),
+                    hi(o[1] + v[2]),
+                ],
                 ids,
             )]
         }

@@ -24,7 +24,7 @@
 ("wire" 3 (0 100000 0 200000) 0)
 ("wire" 4 (100000 -200000 100000 -140000) 0)
 ("label" 5 3 "[@vdd:%:vdd!]" 0 150000 "R90" "lowerLeft" "stick" 10000 "NLP" "wire" "label")
-("label" 6 3 "supply" 0 180000 "R90" "lowerLeft" "stick" 10000 "normal" "annotate" "drawing3")
+("label" 6 3 "supply" 0 180000 "R90" "lowerLeft" "stick" 10000 "normal" "wire" "label")
 ("label" 7 4 "d<0>" 100000 -180000 "R0" "lowerLeft" "stick" 10000 "normal" "wire" "label")
 ("label" 8 2 "d<3:0>" 100000 0 "R0" "lowerCenter" "stick" 10000 "normal" "wire" "label")
 ("prop" 1 "r" "string" "10k")

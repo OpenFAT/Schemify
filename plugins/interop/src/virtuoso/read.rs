@@ -2387,25 +2387,34 @@ fn derived_symbol(doc: &mut Document<'static>, pins: &[PinRow]) {
 /// Cellview properties: the stash (`schemifyRecords<k>`, joined in numeric order) and
 /// everything else reported.
 fn cv_props(sv: &Cv, cell: &str, notes: &mut Notes, tally: &mut Tally) -> Option<String> {
-    let mut chunks: Vec<(u32, &str)> = Vec::new();
     for p in sv.props.iter().filter(|p| p.r == 0) {
-        match p
-            .name
-            .strip_prefix("schemifyRecords")
-            .and_then(|n| n.parse::<u32>().ok())
-        {
-            Some(n) => chunks.push((n, &p.value)),
-            None => {
-                notes.dropped(
-                    "display-only",
-                    cell,
-                    format!("cellview property {}", p.name),
-                );
-                tally.reported += 1;
-            }
+        if stash_chunk(&p.name).is_some() {
+            tally.out += 1;
+        } else {
+            notes.dropped(
+                "display-only",
+                cell,
+                format!("cellview property {}", p.name),
+            );
+            tally.reported += 1;
         }
     }
-    tally.out += chunks.len();
+    stash_of(sv)
+}
+
+/// The chunk number of a `schemifyRecords<k>` property name.
+fn stash_chunk(name: &str) -> Option<u32> {
+    name.strip_prefix("schemifyRecords")?.parse().ok()
+}
+
+/// The stash text of a cellview: its `schemifyRecords<k>` properties joined in numeric order.
+fn stash_of(sv: &Cv) -> Option<String> {
+    let mut chunks: Vec<(u32, &str)> = sv
+        .props
+        .iter()
+        .filter(|p| p.r == 0)
+        .filter_map(|p| Some((stash_chunk(&p.name)?, p.value.as_str())))
+        .collect();
     chunks.sort();
     (!chunks.is_empty()).then(|| chunks.iter().map(|c| c.1).collect())
 }
@@ -2874,6 +2883,23 @@ fn schematic_in(
         })
         .collect();
     let (rejoined, absorbed) = rejoin_split_wires(&all_pts);
+    let unswapped = {
+        let stashed = stash_of(sv)
+            .and_then(|s| merge::parse_stash(&s, kind).ok())
+            .map(|d| stash_wires(&d))
+            .unwrap_or_default();
+        let drawn: Vec<(u32, [[i32; 2]; 2], &str)> = all_pts
+            .iter()
+            .filter(|(r, _, _)| !absorbed.contains(r))
+            .filter_map(|(r, pts, id)| {
+                let pts = rejoined.get(r).unwrap_or(pts);
+                let [a, b] = pts[..] else { return None };
+                Some((*r, seg_key(a, b), (*id)?))
+            })
+            .collect();
+        unswap_wire_ids(&drawn, &stashed)
+    };
+    let id_of = |r: u32| unswapped.get(&r).map(String::as_str).or_else(|| id_of(r));
     for w in &sv.wires {
         tally.out += 1;
         let pts: Vec<[i32; 2]> = w
@@ -3474,6 +3500,59 @@ pub(crate) fn image(
     out
 }
 
+/// A segment with its ends in sorted order, the key two drawings of one wire share.
+fn seg_key(a: [i32; 2], b: [i32; 2]) -> [[i32; 2]; 2] {
+    if b < a { [b, a] } else { [a, b] }
+}
+
+/// The wires of a stash document: segment → id.
+fn stash_wires(d: &Document<'_>) -> BTreeMap<[[i32; 2]; 2], String> {
+    let mut out = BTreeMap::new();
+    for r in 1..d.record_count() {
+        if d.record_kind(r) != RecordKind::Wire {
+            continue;
+        }
+        let c = |k| {
+            d.field(r, k)
+                .and_then(|f| schemify_format::parse_coord(f).ok())
+        };
+        if let (Some(id), Some(x0), Some(y0), Some(x1), Some(y1)) =
+            (d.field(r, 0), c(1), c(2), c(3), c(4))
+        {
+            out.insert(seg_key([x0, y0], [x1, y1]), id.to_owned());
+        }
+    }
+    out
+}
+
+/// Virtuoso merges collinear wires that touch and splits them again where a wire T-joins,
+/// handing the pieces' schemifyIds out in its own order (live ICADVM20.1 run: two pieces came
+/// back with their ids exchanged). Where wires drawn exactly as stashed carry each other's
+/// stashed ids, the ids go back to their stashed segments. `drawn`: (ref, segment, id).
+/// Returns ref → id for the wires to re-id.
+// ponytail: all-or-nothing, applied only when the re-ids are a pure permutation of the ids
+// they replace; a partial match (a wire also moved in Virtuoso) keeps Virtuoso's ids.
+fn unswap_wire_ids(
+    drawn: &[(u32, [[i32; 2]; 2], &str)],
+    stashed: &BTreeMap<[[i32; 2]; 2], String>,
+) -> BTreeMap<u32, String> {
+    let moved: Vec<(u32, &str, &str)> = drawn
+        .iter()
+        .filter_map(|(r, s, id)| {
+            let want = stashed.get(s)?;
+            (want != id).then_some((*r, *id, want.as_str()))
+        })
+        .collect();
+    let from: BTreeSet<&str> = moved.iter().map(|m| m.1).collect();
+    let to: BTreeSet<&str> = moved.iter().map(|m| m.2).collect();
+    if from != to || from.len() != moved.len() {
+        return BTreeMap::new();
+    }
+    let out: BTreeMap<u32, String> = moved.iter().map(|m| (m.0, m.2.to_owned())).collect();
+    debug_assert!(out.len() == from.len());
+    out
+}
+
 /// A dumped wire for [`rejoin_split_wires`]: (ref, points, its schemifyId when valid).
 type DumpWire<'a> = (u32, Vec<[i32; 2]>, Option<&'a str>);
 
@@ -3534,7 +3613,24 @@ fn rejoin_split_wires(wires: &[DumpWire<'_>]) -> (BTreeMap<u32, Vec<[i32; 2]>>, 
 
 #[cfg(test)]
 mod si_tests {
-    use super::si_text;
+    use super::{BTreeMap, seg_key, si_text, unswap_wire_ids};
+
+    #[test]
+    fn swapped_wire_ids_go_back_only_as_a_permutation() {
+        let (lo, hi) = (
+            seg_key([320, 230], [320, 250]),
+            seg_key([320, 250], [320, 270]),
+        );
+        let stashed: BTreeMap<_, _> = [(lo, "w13".to_owned()), (hi, "w14".to_owned())].into();
+        // The ota run: the two pieces came back with each other's ids.
+        let got = unswap_wire_ids(&[(1, hi, "w13"), (2, lo, "w14")], &stashed);
+        assert_eq!(got, [(1, "w14".to_owned()), (2, "w13".to_owned())].into());
+        // As stashed: nothing to do.
+        assert!(unswap_wire_ids(&[(1, lo, "w13"), (2, hi, "w14")], &stashed).is_empty());
+        // One piece moved in Virtuoso as well: not a permutation, Virtuoso's ids stay.
+        let moved = seg_key([0, 0], [0, 10]);
+        assert!(unswap_wire_ids(&[(1, hi, "w13"), (2, moved, "w14")], &stashed).is_empty());
+    }
 
     #[test]
     fn numbers_read_as_engineering_text() {

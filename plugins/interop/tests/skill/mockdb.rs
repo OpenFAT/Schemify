@@ -1424,10 +1424,17 @@ impl MockDb {
                 if !self.editable(cv) {
                     return Ok(V::Nil);
                 }
-                let (p, q) = bb(&a[2]).expect("checked");
+                let (mut p, mut q) = bb(&a[2]).expect("checked");
                 let ty = if name == "dbCreateRect" {
                     "rect"
                 } else {
+                    // The ellipse box is stored in whole DBUs, rounded outward (live
+                    // ICADVM20.1: a radius-2.5 bubble at y 0 came back with box y -3..3).
+                    let dbu = num(&self.a(cv, "DBUPerUU")).unwrap_or(160.0);
+                    let (lo, hi) = (p.0.min(q.0), p.0.max(q.0));
+                    (p.0, q.0) = ((lo * dbu).floor() / dbu, (hi * dbu).ceil() / dbu);
+                    let (lo, hi) = (p.1.min(q.1), p.1.max(q.1));
+                    (p.1, q.1) = ((lo * dbu).floor() / dbu, (hi * dbu).ceil() / dbu);
                     "ellipse"
                 };
                 V::Obj(self.new_shape(cv, ty, &Self::lpp(&a[1]), vec![("bBox", vbox(p, q))]))
@@ -1680,11 +1687,8 @@ impl MockDb {
                 {
                     return Ok(V::Nil);
                 }
-                let lpp = if a[8].truthy() {
-                    ("annotate", "drawing3")
-                } else {
-                    ("wire", "label")
-                };
+                // An alias label too lands on wire/label (live ICADVM20.1 run).
+                let lpp = ("wire", "label");
                 let l = self.new_label(
                     cv,
                     &(lpp.0.into(), lpp.1.into()),
@@ -1730,6 +1734,9 @@ impl MockDb {
                     ],
                     "ILLabel",
                 )?;
+                // The expression itself is the label's netExpression property (live
+                // ICADVM20.1 probe).
+                self.set_prop(l, "netExpression", "string", V::str(&e));
                 self.glue(l, Some(glue));
                 V::Obj(l)
             }

@@ -153,7 +153,11 @@
                       (schCreateWire sfyCv "draw" "full" (list (list 4.5 -0.5) (list 4.5 0.5)) 0.0625 0.0625 0.0)
                       (setq sfyX (schSolder sfyCv (list 4.5 0.0)))
                       (fprintf sfyP "solder objType=%L lpp=%L\n" (and sfyX (getSGq sfyX objType)) (and sfyX (getSGq sfyX lpp)))
-                      (schCreateWireLabel sfyCv (car sfyWs) (list 0.25 0.0) "n1" "lowerLeft" "R0" "stick" 0.0625 nil))
+                      (schCreateWireLabel sfyCv (car sfyWs) (list 0.25 0.0) "n1" "lowerLeft" "R0" "stick" 0.0625 nil)
+                      (setq sfyX (schCreateWireLabel sfyCv (car sfyWs) (list 0.75 0.0) "n1a" "lowerLeft" "R0" "stick" 0.0625 t))
+                      (fprintf sfyP "alias label lpp=%L type=%L props=%L\n" (and sfyX (getSGq sfyX lpp))
+                        (and sfyX (getSGq sfyX labelType))
+                        (and sfyX (mapcar (lambda (sfyQ0) (list (getSGq sfyQ0 name) (getSGq sfyQ0 value))) (getSGq sfyX prop)))))
                     t)
             (fprintf sfyP "wires ERROR\n"))
           (unless (errset
