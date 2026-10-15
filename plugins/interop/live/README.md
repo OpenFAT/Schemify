@@ -28,6 +28,15 @@ answer it once in an interactive session with "Always", since batch mode has nob
 
 From your Virtuoso project directory (the one with `cds.lib`):
 
+`test.sh` is the shortest way: it starts clean, runs everything with the flags you give it, and
+writes what to send back into `sfylive/summary.txt`:
+
+```sh
+/path/to/Schemify/plugins/interop/live/test.sh --lib sample
+```
+
+`run.sh` alone does the same without the cleanup and the summary:
+
 ```sh
 /path/to/Schemify/plugins/interop/live/run.sh
 ```
