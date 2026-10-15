@@ -2663,7 +2663,19 @@ fn schematic_in(
                 _ => {}
             }
             if let Some((_, pin)) = iface.inherit_props.iter().find(|x| x.0 == p.name) {
-                inherits.push((pin.clone(), net_from_virtuoso(&p.value).text));
+                let net = net_from_virtuoso(&p.value).text;
+                // Virtuoso stores the pin's default net on every instance (live ICADVM20.1
+                // run: `VSS!` for a pin inheriting VSS); that is no override.
+                let default = iface
+                    .pins
+                    .iter()
+                    .find(|x| &x.name == pin)
+                    .and_then(|x| x.inherit.as_deref());
+                let bare = |n: &str| n.trim_end_matches('!').to_owned();
+                if default.is_some_and(|d| bare(d) == bare(&net)) {
+                    continue;
+                }
+                inherits.push((pin.clone(), net));
                 continue;
             }
             if p.ty == "netSet" {

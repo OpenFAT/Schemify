@@ -114,12 +114,17 @@ work directory at the same absolute path on both, for example on a shared disk.
 | `pdk.import` | The PDK mirror imports and every device cell loads. |
 | `retarget.*` | `SfyRetarget` placed every class placeholder, and its log ends in PASS. |
 
-## Known failures
+## Known differences
 
-`roundtrip.rclive.alib` fails today, on the mock Virtuoso and therefore on a real one. In
-analogLib mode the stub on the source's MINUS pin is labelled `gnd!`, which imports as a global
-`GND` label beside the bench's own ground label `0`, so the bench then fails check E003 (two
-net names on one net). It is listed in `KNOWN_BUGS` in `tests/virtuoso_live.rs`.
+- A very small circle (the 5-unit bubble of the test fixture `inv/dev/pmos`) comes back from
+  Virtuoso as a 40-sided polygon, so that symbol does not round-trip exactly
+  (`roundtrip.inv.core`). The core devices' circles are larger and come back as drawn.
+- A docs-page variable computed by a plugin (the OTA's `W W_in` with `gmid.w(...)`) has no
+  Virtuoso form, so Virtuoso gets the device's default width. The width comes back from the
+  stash; `--retarget` is the flow that sizes such devices on the target PDK.
+- A net expression drawn natively in Virtuoso shows as `cdsNetExpr()`. Ones that came from
+  Schemify round-trip; where Virtuoso keeps a native one is what the probe's `netexpr` lines
+  record.
 
 ## How the kit is tested
 
