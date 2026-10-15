@@ -2227,8 +2227,10 @@ fn build(
             .and_then(|sv| main_pin_fig(sv, &p.name).map(|f| (sv, f)))
         {
             let (sv, f) = f;
-            let a = pt([f.b[0], f.b[1]], sv.upi, "pin figure", &cell, notes);
-            let b = pt([f.b[2], f.b[3]], sv.upi, "pin figure", &cell, notes);
+            // pins_in already reported any rounding of this rectangle: a scratch report.
+            let scratch = &mut Notes::default();
+            let a = pt([f.b[0], f.b[1]], sv.upi, "pin figure", &cell, scratch);
+            let b = pt([f.b[2], f.b[3]], sv.upi, "pin figure", &cell, scratch);
             let (w, h) = ((b[0] - a[0]).abs(), (b[1] - a[1]).abs());
             let usual = 2 * super::write::PIN_HALF;
             if (w, h) != (usual, usual) {
