@@ -807,7 +807,10 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
         "prop" => {
             arity(r, 4)?;
             let ty = r.str(2)?;
-            if !matches!(ty, "string" | "int" | "float" | "boolean" | "ILList") {
+            if !matches!(
+                ty,
+                "string" | "int" | "float" | "boolean" | "ILList" | "netSet"
+            ) {
                 return Err(err(r, format!("type `{ty}`")));
             }
             let owner = r.int(0)?;
@@ -2550,6 +2553,19 @@ fn schematic_in(
             }
             if let Some((_, pin)) = iface.inherit_props.iter().find(|x| x.0 == p.name) {
                 inherits.push((pin.clone(), net_from_virtuoso(&p.value).text));
+                continue;
+            }
+            if p.ty == "netSet" {
+                // An override of a net expression deeper than the master's own inherited
+                // pins: Schemify's `inherit` names a pin of the master, so it has no place.
+                notes.review(
+                    "inherit",
+                    &cell,
+                    format!(
+                        "{}: netSet {} = {} overrides a net expression below {}/{}",
+                        inst.name, p.name, p.value, inst.lib, inst.cell
+                    ),
+                );
                 continue;
             }
             if let Some(current) = src

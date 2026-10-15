@@ -52,18 +52,52 @@ Paths after `<project>` are relative to it. Each conversion writes a report next
 
 ## First time with Virtuoso
 
-1. `schemify-interop install-skill interop/` (or the File menu item) writes `schemify.il` and
-   `sfy_probe.il`.
-2. In Virtuoso's CIW: `load("/absolute/path/interop/schemify.il")`. Add the same line to
-   `.cdsinit` to keep it loaded.
-3. Run the self-test once on any cell you have, with a scratch library defined in `cds.lib`:
-   `SfySelfTest("myLib" "someCell" "scratchLib")`. It dumps the cell, loads it into the scratch
-   library, dumps it again, compares the two dumps, and runs the gm/Id solver checks. It
-   prints `PASS` or the first lines that differ.
-4. Optionally run `load("/absolute/path/interop/sfy_probe.il")` then `SfyProbe("scratchLib")`,
-   and send back `/tmp/sfy_probe.txt`. It records how your Virtuoso version prints, orients,
-   names buses and stores CDF data. Those facts settle the open assumptions listed in the spec
-   (§13). The probe opens only `scratchLib/sfy_probe` and never saves it.
+The first session settles what this plugin could only guess about your Virtuoso release
+(spec §13). Run these steps in order, in one Virtuoso session; every step writes a file, and
+the files are what to send back.
+
+**Before you start**
+
+- Copy `schemify.il` and `sfy_probe.il` (written by `schemify-interop install-skill interop/`
+  or the File menu item) to the machine that runs Virtuoso. `/tmp` below is on that machine.
+- Create an empty library for scratch work in the Library Manager (`scratchLib` below; no
+  technology needed, or attach the PDK's). It must be writable, not under design management
+  (SOS/DesignSync), and never the library holding your designs.
+- Close every schematic and ADE/maestro window of the cells you will use. An import refuses a
+  cellview open for editing, and a maestro view open in a window keeps a lock.
+- Open one schematic for editing and one maestro view by hand, then close them. That clears
+  any "use next license level?" or PDK first-use dialog now, not halfway through a step. Answer
+  "Always" if asked.
+- Indent `.retarget` maps with spaces.
+
+**Steps**
+
+1. In the CIW: `load("/absolute/path/schemify.il")`, once per session (not also from
+   `.cdsinit` this time). Check with `isCallable('SfySelfTest)`, which should print `t`.
+2. `load("/absolute/path/sfy_probe.il")`, then
+   `SfyProbe("scratchLib" ?pdkLib "yourPdk" ?pdkCell "nch")` (any PDK transistor; leave out
+   the two keywords if there is no PDK). It writes `/tmp/sfy_probe.txt`, flushed section by
+   section: the release, any function it lacks, and how it prints, orients, stores CDF data and
+   answers the maestro calls. It touches only `scratchLib/sfy_probe` (a purged schematic and a
+   saved maestro view). The `pdk` lines name your PDK's parameters: remove what you cannot
+   share.
+3. `SfySelfTest("myLib" "someCell" "scratchLib")`, once on a cell with PDK transistors and once
+   on a testbench cell that has a maestro view. Each run dumps the cell, loads it into the
+   scratch library, dumps it again and compares the two dumps. It prints `PASS` or the first
+   lines that differ, and writes the same to `/tmp/sfy_selftest.txt`. The logs are
+   `/tmp/sfy_selftest_a.sfyx.log` and `_b.sfyx.log`.
+4. To try PDK callbacks, load that dump with callbacks on:
+   `SfyImport("/tmp/sfy_selftest_a.sfyx" ?lib "scratchLib" ?overwrite t ?callbacks t)`, then
+   look for `callback failed`, `clamped` and `derived` lines in its `.log`.
+
+Every log starts with the Virtuoso version and the functions this release cannot call. It is
+flushed line by line, so a run that stops on a dialog still leaves everything before it. The
+CIW shows a `schemify: loading …` line before each cellview, so `CDS.log` shows where a run
+stopped.
+
+**Send back:** `/tmp/sfy_probe.txt`, `/tmp/sfy_selftest.txt`, `/tmp/sfy_selftest_*.sfyx` and
+their `.log` files, every other `.sfyx.log` and `.retarget.log` you produced, and `~/CDS.log`
+(or the newest `CDS.log.N`).
 
 ## Workflows
 
@@ -153,9 +187,16 @@ On the machine with the real PDK, write a target map `tsmc.retarget` that binds 
 a PDK cell and gives its Spectre model line, supply and grids (spec §10.2). Then run:
 
 ```
-SfyImport("/abs/amp.sfyx")
-SfyRetarget("/abs/amp.sfyx" "/abs/tsmc.retarget" ?callbacks t)
+SfyImport("/abs/amp.sfyx" ?lib "myLib")
+SfyRetarget("/abs/amp.sfyx" "/abs/tsmc.retarget" ?lib "myLib")
 ```
+
+Give both the same `?lib` (leave it out of both to keep the dump's library names). The map
+must say what the kit's width parameter means (`width total` for TSMC's `w`, `width finger`
+where `w` is one finger) and name the parameter the Edit Properties form edits (`param nf
+fingers` on kits that lock `nf`). PDK CDF callbacks run by default, as the form runs them;
+`?callbacks nil` skips them. Each placed device's schematic is checked, saved and closed; a
+placement that fails is removed and its reason logged.
 
 `SfyRetarget` characterizes each class with Spectre (through OCEAN) at the lengths the design
 uses, then solves each width by the same gm/Id lookup the `gmid` plugin uses. It places the

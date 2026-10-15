@@ -7,7 +7,9 @@
 ;; ---------------------------------------------------------------- strings
 
 ;; The escape of every one-character string that needs one (spec 4.1): \\ \" \n \t \r, and
-;; \ooo for the other bytes below 0x20 and 0x7f. Built once into the global sfyEscapes.
+;; \ooo for the other bytes below 0x20 and 0x7f. Built once into the global sfyEscapes,
+;; which loading this file resets (a session that loaded an older schemify.il rebuilds it).
+(setq sfyEscapes nil)
 (procedure (SfyEscapes)
   (unless (and (boundp 'sfyEscapes) sfyEscapes)
     (setq sfyEscapes (makeTable "sfyEscapes" nil))
@@ -15,9 +17,11 @@
       (setarray sfyEscapes (symbolToString (intToChar i))
         (sprintf nil "\\%d%d%d" (quotient i 64) (mod (quotient i 8) 8) (mod i 8))))
     (setarray sfyEscapes (symbolToString (intToChar 127)) "\\177")
-    (setarray sfyEscapes "\n" "\\n")
-    (setarray sfyEscapes "\t" "\\t")
-    (setarray sfyEscapes "\r" "\\r")
+    ;; Keyed by character code: some IC builds do not honour \n \t in string literals
+    ;; (virtuoso-bridge-lite ramic_bridge.il), and a key read as "n" would escape every n.
+    (setarray sfyEscapes (SfyChr 10) "\\n")
+    (setarray sfyEscapes (SfyChr 9) "\\t")
+    (setarray sfyEscapes (SfyChr 13) "\\r")
     (setarray sfyEscapes "\\" "\\\\")
     (setarray sfyEscapes "\"" "\\\""))
   sfyEscapes)
@@ -55,8 +59,20 @@
         (fprintf port ")")))
     (t (error "SfyPutValue: %L is not a string, integer or list" v))))
 
-;; Writes the record line (tag fields...) and counts it under its tag.
+;; t when v can be written: a string, an integer, or a list of such (nil included).
+(procedure (SfyWritable v)
+  (cond
+    ((stringp v) t)
+    ((fixp v) t)
+    ((listp v) (not (exists x v (not (SfyWritable x)))))
+    (t nil)))
+
+;; Writes the record line (tag fields...) and counts it under its tag. Every field is
+;; checked first, so a bad one signals before anything is written: a caller's errset then
+;; costs that record, never a half line that would make the whole file unreadable.
 (procedure (SfyPut port tag fields)
+  (unless (SfyWritable fields)
+    (error "SfyPut: record %s has a field that is not a string, integer or list: %L" tag fields))
   (fprintf port "(")
   (SfyPutStr port tag)
   (foreach f fields
@@ -250,9 +266,59 @@
     (unless p (error "schemify: cannot write %s.log" path))
     p))
 
-;; One log line.
+;; One log line, flushed at once: a run that hangs on a dialog or is killed still leaves
+;; every line before it on disk.
 (procedure (SfyLog msg)
-  (fprintf sfyLogPort "%s\n" msg))
+  (fprintf sfyLogPort "%s\n" msg)
+  (drain sfyLogPort))
+
+;; The message of the error errset last caught, as printed text: errset.errset, the
+;; property errset of the symbol errset (getqq). Read it right after the errset that
+;; caught the error, and not inside another errset (virtuoso-bridge-lite reads it bare): an
+;; errset clears it.
+(procedure (SfyErrMsg)
+  (sprintf nil "%L" (getqq errset errset)))
+
+;; The one-character string of character code n (built from the code: some IC builds do
+;; not honour \n \t in string literals).
+(procedure (SfyChr n)
+  (symbolToString (intToChar n)))
+
+;; Every Cadence function the scripts call (tests/skill_lint.rs checks it equals the mock's
+;; signature table).
+(procedure (SfyCadenceFns)
+  '(
+    ddGetObj ddGetObjWritePath dbOpenCellViewByType dbSave dbClose dbPurge
+    dbGetOpenCellViews dbDeleteObject dbFindTermByName dbTransformPoint dbTransformBBox
+    dbGetTermNetExpr dbMakeNet dbCreateTerm dbCreatePin dbCreateTermNetExpr dbCreateRect
+    dbCreateLine dbCreatePath dbCreatePolygon dbCreateEllipse dbCreateArc dbCreateLabel
+    dbReplaceProp dbCreateProp dbProduceMemName schCreateInst schCreateWire
+    schCreateWireLabel schCreateNetExpression schCreatePin schCreateNoteLabel schGlueLabel
+    schCheck schSolder cdfGetBaseCellCDF cdfCreateBaseCellCDF cdfDeleteCDF cdfCreateParam
+    cdfSaveCDF cdfGetInstCDF cdfFindParamByName cdfGetCellCDF cdfUpdateInstParam simulator
+    design resultsDir save analysis desVar run getData value maeOpenSetup maeCloseSession
+    maeSaveSetup maeGetSetup maeCreateTest maeDeleteTest maeSetAnalysis
+    maeGetEnabledAnalysis maeGetAnalysis maeSetVar maeGetVar maeSetCorner maeAddOutput
+    maeGetTestOutputs maeSetSpec maeSetEnvOption maeGetEnvOption maeSetSimOption
+    maeGetSimOption axlGetTest axlGetMainSetupDB axlGetCorner axlGetEnabled axlGetModels
+    axlGetModel axlPutModel axlGetModelFile axlGetModelSection axlSetModelFile
+    axlSetModelSection axlGetVars axlGetVar axlGetVarValue axlGetSpecData))
+
+;; Logs the Virtuoso version and every Cadence function this release cannot call (also
+;; printed to the CIW), so one run tells what a missing function would cost.
+(procedure (SfyPreflight)
+  (let ((missing nil))
+    (SfyLog (sprintf nil "virtuoso %s" (SfyAtomStr (car (errset (getVersion t))))))
+    (foreach f (SfyCadenceFns)
+      (unless (car (errset (isCallable f)))
+        (setq missing (cons f missing))))
+    (setq missing (reverse missing))
+    (if missing
+      (progn
+        (SfyLog (sprintf nil "preflight: not callable here: %L" missing))
+        (printf "schemify: not callable in this Virtuoso: %L\n" missing))
+      (SfyLog "preflight: every function callable"))
+    missing))
 
 ;; Logs a refusal (an object or a cellview that did not land, or a malformed file) with
 ;; its .sfyx line (0: none) and counts it toward FAIL.

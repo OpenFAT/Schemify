@@ -41,6 +41,8 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("dbSave", "d [g t t]"),
     ("dbClose", "d"),
     ("dbPurge", "d"),
+    ("dbGetOpenCellViews", ""),
+    ("dbDeleteObject", "d"),
     ("dbFindTermByName", "d t"),
     ("dbTransformPoint", "p l"),
     ("dbTransformBBox", "b l"),
@@ -83,6 +85,8 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("cdfSaveCDF", "d"),
     ("cdfGetInstCDF", "d"),
     ("cdfFindParamByName", "d t"),
+    ("cdfGetCellCDF", "d"),
+    ("cdfUpdateInstParam", "d"),
     // OCEAN (OCEAN Reference 5.1.41, "Simulation Commands", "Data Access Commands");
     // `...` repeats the last argument kind.
     ("simulator", "S"),
@@ -125,6 +129,9 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ),
     ("maeSetEnvOption", "t ?options ?session"),
     ("maeGetEnvOption", "t ?includeEmpty ?option ?session"),
+    ("maeSetSimOption", "t ?options ?session"),
+    ("maeGetSimOption", "t ?includeEmpty ?option ?session"),
+    ("axlGetTest", "x t"),
     ("axlGetMainSetupDB", "t"),
     ("axlGetCorner", "x t"),
     ("axlGetEnabled", "x"),
@@ -169,6 +176,9 @@ pub const DELEGATED: &[&str] = &[
     "maeSetSpec",
     "maeSetEnvOption",
     "maeGetEnvOption",
+    "maeSetSimOption",
+    "maeGetSimOption",
+    "axlGetTest",
     "axlGetMainSetupDB",
     "axlGetCorner",
     "axlGetEnabled",
@@ -274,8 +284,8 @@ const FONTS: &[&str] = &[
 ];
 const LABEL_TYPES: &[&str] = &["normalLabel", "NLPLabel", "ILLabel"];
 const PROP_TYPES: &[&str] = &[
-    "boolean", "fileName", "float", "hierProp", "ILExpr", "ILList", "int", "NLPExpr", "string",
-    "time",
+    "boolean", "fileName", "float", "hierProp", "ILExpr", "ILList", "int", "NLPExpr", "netSet",
+    "string", "time",
 ];
 const CDF_TYPES: &[&str] = &[
     "string", "int", "float", "radio", "cyclic", "boolean", "button", "netSet",
@@ -447,6 +457,25 @@ impl MockDb {
             .iter()
             .copied()
             .find(|&l| s(&self.a(l, "name")) == Some(name))
+    }
+
+    /// Removes cell `lib/cell` from the library (as when its library leaves cds.lib, or the
+    /// cell is deleted on disk): `ddGetObj` no longer finds it, its cellviews are gone, and
+    /// instances drawn of it stay behind unbound.
+    pub fn forget_cell(&mut self, lib: &str, cell: &str) {
+        let l = self.lib(lib).expect("library defined");
+        let c = self
+            .dd_find(lib, Some(cell), None, None)
+            .expect("cell exists");
+        let kept: Vec<V> = self
+            .a(l, "cells")
+            .items()
+            .iter()
+            .filter(|x| Self::obj(x) != Some(c))
+            .cloned()
+            .collect();
+        self.put(l, "cells", V::list(kept));
+        self.cvs.retain(|k, _| !(k.0 == lib && k.1 == cell));
     }
 
     /// The cellview `lib/cell/view` if it exists (saved, or open and not yet saved).
@@ -980,7 +1009,9 @@ impl MockDb {
 
     fn prop_value_ok(ty: &str, v: &V) -> bool {
         match ty {
-            "string" | "time" | "fileName" | "ILExpr" | "NLPExpr" => matches!(v, V::Str(_)),
+            "string" | "time" | "fileName" | "ILExpr" | "NLPExpr" | "netSet" => {
+                matches!(v, V::Str(_))
+            }
             "int" => matches!(v, V::Int(_)),
             "float" => matches!(v, V::Float(_)),
             "boolean" => matches!(v, V::T | V::Nil),
@@ -1071,6 +1102,77 @@ impl MockDb {
         V::Obj(cdf)
     }
 
+    /// `cdfGetCellCDF(ddCell)`: the cell's effective CDF, here a copy of the base CDF held
+    /// by the cell as the one in memory (`cdfUpdateInstParam` reads it), made again when the
+    /// base CDF changed shape. Its params have no instance: setting `value` sets the
+    /// in-memory default, as on a real cell CDF, and it stays set for every later caller,
+    /// which is why callers restore it.
+    fn cell_cdf(&mut self, cell: u32) -> V {
+        if self.ty(cell) != "ddCell" {
+            return V::Nil;
+        }
+        let Some(base) = Self::obj(&self.a(cell, "sfyBaseCdf")) else {
+            return V::Nil;
+        };
+        if let Some(c) = Self::obj(&self.a(cell, "sfyCellCdf"))
+            && self.a(c, "parameters").items().len() == self.a(base, "parameters").items().len()
+        {
+            return V::Obj(c);
+        }
+        let cdf = self.new_obj(
+            "cdf",
+            vec![
+                ("type", V::str("cellData")),
+                ("id", V::Obj(cell)),
+                ("simInfo", self.a(base, "simInfo")),
+                ("paramLabelSet", self.a(base, "paramLabelSet")),
+            ],
+        );
+        for p in self.a(base, "parameters").items().to_vec() {
+            let Some(p) = Self::obj(&p) else { continue };
+            let o = self.objs[p as usize].clone();
+            self.objs.push(o);
+            let id = (self.objs.len() - 1) as u32;
+            self.push(cdf, "parameters", V::Obj(id));
+        }
+        self.put(cell, "sfyCellCdf", V::Obj(cdf));
+        V::Obj(cdf)
+    }
+
+    /// `cdfUpdateInstParam(inst)`: copies every value of the master cell's in-memory cell
+    /// CDF (the latest `cdfGetCellCDF`) onto the instance, through the base parameter so a
+    /// value equal to the default leaves no property. Without a cell CDF in memory it
+    /// changes nothing.
+    fn update_inst_params(&mut self, inst: u32) -> Result<V, String> {
+        let (lib, cell) = (self.a(inst, "libName"), self.a(inst, "cellName"));
+        let (Some(lib), Some(cell)) = (s(&lib).map(str::to_owned), s(&cell).map(str::to_owned))
+        else {
+            return Ok(V::Nil);
+        };
+        let Some(c) = self.dd_find(&lib, Some(&cell), None, None) else {
+            return Ok(V::Nil);
+        };
+        let (Some(cdf), Some(base)) = (
+            Self::obj(&self.a(c, "sfyCellCdf")),
+            self.base_cdf(&lib, &cell),
+        ) else {
+            return Ok(V::T);
+        };
+        for p in self.a(cdf, "parameters").items().to_vec() {
+            let Some(p) = Self::obj(&p) else { continue };
+            let n = s(&self.a(p, "name")).unwrap_or("").to_owned();
+            let Some(bp) = self.cdf_param(base, &n) else {
+                continue;
+            };
+            if s(&self.a(bp, "paramType")) == Some("button") {
+                continue;
+            }
+            let v = self.a(p, "defValue");
+            self.set_inst_param(bp, inst, v)?;
+        }
+        Ok(V::T)
+    }
+
     /// `param~>value = v` on an instance CDF: stores the instance property with the CDF's
     /// type.
     fn set_inst_param(&mut self, p: u32, inst: u32, v: V) -> Result<V, String> {
@@ -1101,7 +1203,9 @@ impl MockDb {
                     V::Nil
                 },
             ),
-            // GUESS(G13): netSet values are stored as string properties.
+            // G13: an inherited-connection override is a netSet-typed property (as
+            // virtuoso-bridge-lite writes it with dbReplaceProp ... "netSet").
+            "netSet" => ("netSet", v.clone()),
             _ => ("string", v.clone()),
         };
         self.set_prop(inst, &name, pty, pv);
@@ -1775,6 +1879,44 @@ impl MockDb {
                 self.inst_cdf(i)
             }
             "cdfFindParamByName" => self.cdf_param(o(0), &st(1)).map_or(V::Nil, V::Obj),
+            "cdfGetCellCDF" => self.cell_cdf(o(0)),
+            "cdfUpdateInstParam" => {
+                let i = o(0);
+                if self.ty(i) != "inst" {
+                    return Ok(V::Nil);
+                }
+                self.update_inst_params(i)?
+            }
+            // Instances only (what SfyRtPlace deletes): unlinked from their cellview.
+            "dbDeleteObject" => {
+                let x = o(0);
+                if self.ty(x) != "inst" {
+                    return Err("*Error* dbDeleteObject: the mock deletes instances only".into());
+                }
+                let Some(cv) = Self::obj(&self.a(x, "cellView")) else {
+                    return Ok(V::Nil);
+                };
+                if !self.editable(cv) {
+                    return Ok(V::Nil);
+                }
+                let kept: Vec<V> = self
+                    .a(cv, "instances")
+                    .items()
+                    .iter()
+                    .filter(|i| Self::obj(i) != Some(x))
+                    .cloned()
+                    .collect();
+                self.put(cv, "instances", V::list(kept));
+                self.touch(cv);
+                V::T
+            }
+            "dbGetOpenCellViews" => V::list(
+                self.cvs
+                    .values()
+                    .filter(|&&cv| num(&self.a(cv, "sfyOpen")).unwrap_or(0.0) > 0.0)
+                    .map(|&cv| V::Obj(cv))
+                    .collect(),
+            ),
             _ => unreachable!("{name} has a signature but no body"),
         })
     }

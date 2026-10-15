@@ -828,6 +828,16 @@ fn spectre_word(v: &str) -> String {
     out
 }
 
+/// `v` as a quoted Spectre string, `"` and `\` escaped.
+fn spectre_quoted(v: &str) -> String {
+    let w = spectre_word(v);
+    if w.starts_with('"') {
+        w
+    } else {
+        format!("\"{w}\"")
+    }
+}
+
 /// `${NAME}` → `$NAME` (§9.1).
 fn path_to_ade(p: &str) -> String {
     let mut out = String::with_capacity(p.len());
@@ -1015,7 +1025,8 @@ fn top_level_split(s: &str) -> Vec<&str> {
 // ---------------------------------------------------------------------------------------
 
 /// Maestro analysis options that are ADE form fields (the sweep and step choosers) with no
-/// OCEAN `analysis` keyword: the OCEAN call infers them from the keywords present.
+/// OCEAN `analysis` keyword or Spectre parameter: OCEAN and Spectre infer them from the
+/// keywords present.
 const FORM_ONLY: [&str; 4] = ["sweep", "incrType", "stepTypeLin", "stepTypeLog"];
 
 /// `s` as a SKILL string literal (`\` and `"` escaped).
@@ -1095,9 +1106,12 @@ fn ocean_script(
     let _ = writeln!(
         o,
         "; {dir}.ocn: OCEAN script of bench {cell}, written by schemify-interop (interop.md §9.6).\n\
-         ; Run where {dir}/ may be created, after SfyImport (and SfyRetarget) of the same .sfyx:\n\
+         ; Run after SfyImport (and SfyRetarget) of the same .sfyx, in a directory whose cds.lib\n\
+         ; defines library {lib} (OCEAN finds libraries through ./cds.lib) and where {dir}/ may\n\
+         ; be created; if SfyImport had ?lib, put that library in design() below:\n\
          ;   ocean -nograph < {dir}.ocn\n\
-         ; Writes {dir}/psf (results) and {dir}/<output>.txt (one ocnPrint table per output)."
+         ; Writes {dir}/psf (results) and {dir}/<output>.txt (one ocnPrint table per output).",
+        lib = t.lib
     );
     let _ = writeln!(o, "createDir({})", skill_str(dir));
     let _ = writeln!(o, "simulator('spectre)");
@@ -1876,6 +1890,13 @@ fn parse(records: &[Record]) -> Result<Test, Error> {
                 if n.is_empty() || t.analyses.iter().any(|a| a.0 == n) {
                     return Err(bad(r, format!("analysis `{n}` empty or twice")));
                 }
+                // maeGetAnalysis answers form fields nothing set: `anaName` (the analysis
+                // name) and the ac/noise sweep chooser `sweep "Frequency"`. They carry no
+                // meaning, so a dump of a setup we wrote reads as what we wrote.
+                opts.retain(|(k, v)| {
+                    !((k == "anaName" && v == n)
+                        || (k == "sweep" && v == "Frequency" && matches!(n, "ac" | "noise")))
+                });
                 t.analyses.push((n.into(), en, opts));
             }
             "corner" => {
@@ -2049,7 +2070,11 @@ pub fn import(records: &[Record], bench: &mut Document<'static>, cell: &str, not
         .filter(|v| v.2.is_empty() && v.0 != "temperature")
     {
         debug_assert!(sc.is_empty());
-        let parts = top_level_split(v);
+        let colon = colon_points(v);
+        let parts: Vec<&str> = match &colon {
+            Some(p) => p.iter().map(String::as_str).collect(),
+            None => top_level_split(v),
+        };
         let mut pts = Vec::new();
         for p in &parts {
             match from(p, notes) {
@@ -2171,7 +2196,9 @@ pub fn import(records: &[Record], bench: &mut Document<'static>, cell: &str, not
             }
         }
         for (_, f, sec) in t.models.iter().filter(|m| m.0.is_empty()) {
-            let mut l = format!("include {}", spectre_word(f));
+            // Always quoted: a bare `/pdk/m.scs` reads as an expression (`/` divides);
+            // ADE writes `include "…"`.
+            let mut l = format!("include {}", spectre_quoted(f));
             if !sec.is_empty() {
                 l.push_str(&format!(" section={}", spectre_word(sec)));
             }
@@ -2182,7 +2209,7 @@ pub fn import(records: &[Record], bench: &mut Document<'static>, cell: &str, not
         }
         for (n, _, opts) in &enabled {
             let mut l = format!("{n} {n}");
-            for (k, v) in opts {
+            for (k, v) in opts.iter().filter(|o| !FORM_ONLY.contains(&o.0.as_str())) {
                 l.push_str(&format!(" {k}={}", spectre_word(v)));
             }
             lines.push(l);
@@ -2273,6 +2300,28 @@ fn attr(doc: &mut Document<'static>, key: &str, vals: &[&str]) {
     for v in vals {
         doc.push_value(v);
     }
+}
+
+/// The points of ADE's `start:step:stop` sweep form (`"0.81:0.09:0.99"`), `None` for any
+/// other text or a step that does not land on `stop` within 1e-9 of a step. The points are
+/// [`grid`]'s, so the sweep reads back as `lin start stop n`.
+fn colon_points(v: &str) -> Option<Vec<String>> {
+    let f: Vec<f64> = v
+        .split(':')
+        .map(|x| ael::fold_numeric(x.trim())?.parse().ok())
+        .collect::<Option<_>>()?;
+    let [a, step, b] = f[..] else { return None };
+    if step == 0.0 || !(a.is_finite() && step.is_finite() && b.is_finite()) {
+        return None;
+    }
+    let k = (b - a) / step;
+    let n = k.round();
+    if (k - n).abs() > 1e-9 || n < 1.0 || n + 1.0 > f64::from(SWEEP_POINTS_MAX) {
+        return None;
+    }
+    let pts = grid(a, b, n as u32 + 1, false)?;
+    debug_assert!(pts.len() >= 2);
+    Some(pts)
 }
 
 /// The sweep attribute that reproduces `pts` exactly: `lin a b n`, else `log a b n`, else

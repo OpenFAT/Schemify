@@ -1,5 +1,7 @@
 ; cap_w.ocn: OCEAN script of bench exercise1/cap_w.shbench, written by schemify-interop (interop.md §9.6).
-; Run where cap_w/ may be created, after SfyImport (and SfyRetarget) of the same .sfyx:
+; Run after SfyImport (and SfyRetarget) of the same .sfyx, in a directory whose cds.lib
+; defines library schemify (OCEAN finds libraries through ./cds.lib) and where cap_w/ may
+; be created; if SfyImport had ?lib, put that library in design() below:
 ;   ocean -nograph < cap_w.ocn
 ; Writes cap_w/psf (results) and cap_w/<output>.txt (one ocnPrint table per output).
 createDir("cap_w")

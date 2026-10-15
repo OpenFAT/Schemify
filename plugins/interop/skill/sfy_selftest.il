@@ -32,31 +32,57 @@
         (b (sprintf nil "the second dump has more records from line %d" (car (car b))))
         (t nil)))))
 
-;; Prints PASS or the first differing records; returns t on PASS. Files go to /tmp
-;; (sfy_selftest_a.sfyx, sfy_selftest_b.sfyx and their .log). Also runs the retarget math
-;; on its built-in vectors when sfy_retarget.il defines SfyRetargetSelfTest.
+;; Prints PASS or the first differing records and writes the same to
+;; /tmp/sfy_selftest.txt; returns t on PASS. Files go to /tmp (sfy_selftest_a.sfyx,
+;; sfy_selftest_b.sfyx and their .log). Also runs the retarget math on its built-in vectors
+;; when sfy_retarget.il defines SfyRetargetSelfTest. Refuses a scratchLib that is lib (the
+;; load overwrites) or is not in cds.lib, before touching anything.
 (procedure (SfySelfTest lib cell scratchLib)
-  (let ((a "/tmp/sfy_selftest_a.sfyx") (b "/tmp/sfy_selftest_b.sfyx") (ok t) (msg nil))
-    (printf "SfySelfTest %s/%s through %s\n" lib cell scratchLib)
-    (unless (SfyExport a lib (list cell))
+  (let ((a "/tmp/sfy_selftest_a.sfyx") (b "/tmp/sfy_selftest_b.sfyx") (ok t) (msg nil)
+        (out nil) (r nil))
+    (setq out (outfile "/tmp/sfy_selftest.txt" "w"))
+    (setq msg
+      (cond
+        ((equal lib scratchLib)
+          "scratchLib must not be lib: the load overwrites it (create an empty library)")
+        ((null (ddGetObj scratchLib))
+          (sprintf nil "library %s is not in cds.lib: create it in the Library Manager first"
+            scratchLib))
+        ((null (ddGetObj lib cell)) (sprintf nil "no cell %s/%s" lib cell))
+        (t nil)))
+    (SfySelfNote out (sprintf nil "SfySelfTest %s/%s through %s" lib cell scratchLib))
+    (when msg
       (setq ok nil)
-      (printf "  dump of %s/%s FAILED: see %s.log\n" lib cell a))
+      (SfySelfNote out (strcat "  " msg)))
+    (when ok
+      (unless (SfyExport a lib (list cell))
+        (setq ok nil)
+        (SfySelfNote out (sprintf nil "  dump of %s/%s FAILED: see %s.log" lib cell a))))
     (when ok
       (unless (SfyImport a ?lib scratchLib ?overwrite t ?check nil)
         (setq ok nil)
-        (printf "  load into %s FAILED: see %s.log\n" scratchLib a)))
+        (SfySelfNote out (sprintf nil "  load into %s FAILED: see %s.log" scratchLib a))))
     (when ok
       (unless (SfyExport b scratchLib (list cell))
         (setq ok nil)
-        (printf "  dump of %s/%s FAILED: see %s.log\n" scratchLib cell b)))
+        (SfySelfNote out (sprintf nil "  dump of %s/%s FAILED: see %s.log" scratchLib cell b))))
     (when ok
       (setq msg (SfyDiff (car (SfyReadRecords a)) (car (SfyReadRecords b)) lib scratchLib))
       (when msg
         (setq ok nil)
-        (printf "  the dumps differ:\n  %s\n" msg)))
+        (SfySelfNote out (sprintf nil "  the dumps differ:\n  %s" msg))))
     (when (fboundp 'SfyRetargetSelfTest)
-      (unless (SfyRetargetSelfTest)
+      (setq r (errset (SfyRetargetSelfTest) t))
+      (unless (and r (car r))
         (setq ok nil)
-        (printf "  retarget math FAILED\n")))
-    (printf "SfySelfTest: %s\n" (if ok "PASS" "FAIL"))
+        (SfySelfNote out "  retarget math FAILED")))
+    (SfySelfNote out (sprintf nil "SfySelfTest: %s" (if ok "PASS" "FAIL")))
+    (when out (close out))
     ok))
+
+;; One line to the CIW and to port out (when open), flushed.
+(procedure (SfySelfNote out msg)
+  (printf "%s\n" msg)
+  (when out
+    (fprintf out "%s\n" msg)
+    (drain out)))

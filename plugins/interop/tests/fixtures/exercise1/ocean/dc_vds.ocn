@@ -1,5 +1,7 @@
 ; dc_vds.ocn: OCEAN script of bench exercise1/dc_vds.shbench, written by schemify-interop (interop.md §9.6).
-; Run where dc_vds/ may be created, after SfyImport (and SfyRetarget) of the same .sfyx:
+; Run after SfyImport (and SfyRetarget) of the same .sfyx, in a directory whose cds.lib
+; defines library schemify (OCEAN finds libraries through ./cds.lib) and where dc_vds/ may
+; be created; if SfyImport had ?lib, put that library in design() below:
 ;   ocean -nograph < dc_vds.ocn
 ; Writes dc_vds/psf (results) and dc_vds/<output>.txt (one ocnPrint table per output).
 createDir("dc_vds")

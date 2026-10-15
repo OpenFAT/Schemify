@@ -184,6 +184,9 @@ impl Grid {
 
 fn interp() -> Interp<MockDb> {
     let mut i = Interp::new(MockDb::default());
+    // sfy_retarget.il ships after sfy_io.il in schemify.il and uses its log and characters.
+    i.load(include_str!("../skill/sfy_io.il"))
+        .expect("sfy_io.il loads");
     i.load(include_str!("../skill/sfy_retarget.il"))
         .expect("sfy_retarget.il loads");
     i
@@ -775,12 +778,13 @@ const SPEC_MAP: &str = r#"class nmos lib tsmc28 cell nch_lvt_mac
   pin b B
   param w w
   param l l
-  param nf nf
+  param nf fingers
   model "include \"/pdk/models/spectre/toplevel.scs\" section=tt"
   device "M0 (d g s b) nch_lvt_mac"
   vdd 0.9
   lgrid 30n
   fingerw_max 2u
+  width total
 "#;
 
 #[test]
@@ -795,7 +799,7 @@ fn target_map_parses_the_spec_example_and_rejects_junk() {
             pins: [("d", "D"), ("g", "G"), ("s", "S"), ("b", "B")]
                 .map(|(a, b)| (a.to_owned(), b.to_owned()))
                 .to_vec(),
-            params: [("w", "w"), ("l", "l"), ("nf", "nf")]
+            params: [("w", "w"), ("l", "l"), ("nf", "fingers")]
                 .map(|(a, b)| (a.to_owned(), b.to_owned()))
                 .to_vec(),
             model: r#"include "/pdk/models/spectre/toplevel.scs" section=tt"#.into(),
@@ -807,7 +811,7 @@ fn target_map_parses_the_spec_example_and_rejects_junk() {
             fingerw_min: None,
             split_above: None,
             polarity: Polarity::N,
-            width: WidthMode::Finger,
+            width: WidthMode::Total,
         }]
     );
     let two = format!(
@@ -829,6 +833,14 @@ fn target_map_parses_the_spec_example_and_rejects_junk() {
         (
             "class nmos lib a cell b\n  param w w\n  model m\n  device d\n  vdd 1\n",
             "line 1: class nmos: missing param l",
+        ),
+        (
+            "class nmos lib a cell b\n  param w w\n  param l l\n  model m\n  device d\n  vdd 1\n",
+            "line 1: class nmos: missing width",
+        ),
+        (
+            "class nmos lib a cell b\n  param w w\n  param l l\n  model m\n  device d\n  vdd 1\n  width total\n  width finger\n",
+            "line 8: `width` given twice",
         ),
         (
             "class nmos lib a cell b\n  param w w\n  param l l\n  model m\n  device d\n  vdd 1\n  colour red\n",
@@ -964,6 +976,9 @@ const STUBS: &str = r#"
 (procedure (dbOpenCellViewByType lib cell view vt mode) (list "cv" lib cell view))
 (procedure (schCreateInst cv master name xy orient) (list "inst" name xy orient (nth 2 master)))
 (procedure (dbSave cv) t)
+(procedure (dbClose cv) t)
+(procedure (schCheck cv) (list 0 0))
+(procedure (dbDeleteObject o) t)
 (procedure (SfySetParams inst params callbacks)
   (setq sfyTestParams (append1 sfyTestParams (list (nth 1 inst) params (nth 4 inst)))) t)
 (procedure (SfyPlaceConn cv inst conns)
@@ -1045,7 +1060,7 @@ fn sfy_retarget_characterizes_solves_and_places() {
     );
     assert!(i.files.contains_key("/w/amp.sfyx.rt.nmos/netlist"));
     assert!(
-        i.files["/w/amp.sfyx.rt.nmos/netlist"].contains("M0 (d g s b) nch_lvt_mac w=1u l=lch nf=1")
+        i.files["/w/amp.sfyx.rt.nmos/netlist"].contains("M0 (d g s b) nch_lvt_mac w=1u l=lch\n")
     );
     // The Rust reference on the same characterization grid gives the same widths.
     let class = &retarget::parse_target_map(SPEC_MAP).unwrap()[0];
@@ -1073,7 +1088,11 @@ fn sfy_retarget_characterizes_solves_and_places() {
             V::Float(x) => *x,
             other => panic!("{other:?}"),
         };
-        assert_eq!(wv, s.w / f64::from(nf), "same arithmetic, same bits");
+        let want = match class.width {
+            WidthMode::Total => s.w,
+            WidthMode::Finger => s.w / f64::from(nf),
+        };
+        assert_eq!(wv, want, "same arithmetic, same bits");
         assert!(matches!(&p[1].items()[1], V::Float(x) if *x == l));
         assert_eq!(p[2].items()[1].as_int(), Some(i64::from(nf)));
         assert_eq!(row.items()[2].as_str(), Some("nch_lvt_mac"));
@@ -1158,8 +1177,8 @@ fn ota_retarget_from_the_rust_exporter_to_placed_target_devices() {
     let ok = i.load("(SfyImport \"/w/ota.sfyx\")").unwrap();
     let log = i.files["/w/ota.sfyx.log"].clone();
     assert!(ok.truthy() && log.contains("count placeholder 5"), "{log}");
-    let map = "class nfet_01v8 lib tgt cell nch\n  pin d D\n  pin g G\n  pin s S\n  pin b B\n  param w w\n  param l l\n  model \"include \\\"/pdk/m.scs\\\" section=tt\"\n  device \"M0 (d g s b) nch\"\n  vdd 1.8\n  lgrid 10n\n  fingerw_max 50u\n\
-class pfet_01v8 lib tgt cell pch\n  pin d D\n  pin g G\n  pin s S\n  pin b B\n  param w w\n  param l l\n  model \"include \\\"/pdk/m.scs\\\" section=tt\"\n  device \"M0 (d g s b) pch\"\n  vdd 1.8\n  lgrid 10n\n  fingerw_max 50u\n  polarity p\n";
+    let map = "class nfet_01v8 lib tgt cell nch\n  pin d D\n  pin g G\n  pin s S\n  pin b B\n  param w w\n  param l l\n  model \"include \\\"/pdk/m.scs\\\" section=tt\"\n  device \"M0 (d g s b) nch\"\n  vdd 1.8\n  lgrid 10n\n  fingerw_max 50u\n  width finger\n\
+class pfet_01v8 lib tgt cell pch\n  pin d D\n  pin g G\n  pin s S\n  pin b B\n  param w w\n  param l l\n  model \"include \\\"/pdk/m.scs\\\" section=tt\"\n  device \"M0 (d g s b) pch\"\n  vdd 1.8\n  lgrid 10n\n  fingerw_max 50u\n  polarity p\n  width finger\n";
     i.files.insert("/w/tgt.retarget".into(), map.into());
     let ok = i
         .load("(SfyRetarget \"/w/ota.sfyx\" \"/w/tgt.retarget\")")
@@ -1326,7 +1345,7 @@ fn fixed_size_placeholders_place_pdk_cells_with_their_expressions() {
     assert!(ok.truthy() && log.contains("count placeholder 2"), "{log}");
     let map = |class: &str, cell: &str| {
         format!(
-            "class {class} lib tgt cell {cell}\n  pin d D\n  pin g G\n  pin s S\n  pin b B\n  param w w\n  param l l\n  model \"include \\\"/pdk/m.scs\\\" section=tt\"\n  device \"M0 (d g s b) {cell}\"\n  vdd 0.8\n"
+            "class {class} lib tgt cell {cell}\n  pin d D\n  pin g G\n  pin s S\n  pin b B\n  param w w\n  param l l\n  model \"include \\\"/pdk/m.scs\\\" section=tt\"\n  device \"M0 (d g s b) {cell}\"\n  vdd 0.8\n  width finger\n"
         )
     };
     // m is 1, so the map needs no `param m`; the corner record is skipped by the reader.

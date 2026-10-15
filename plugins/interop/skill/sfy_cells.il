@@ -6,7 +6,8 @@
 ;; records and back. Prefix form only (spec 5.1). Dynamic variables, let-bound by the entry
 ;; points and read by the procedures they call: the log state of sfy_io.il; during an
 ;; import also sfyOverwrite sfyCallbacks sfyCheck (the keyword arguments), sfyTargets (dump
-;; library/cell -> target library of every design cell), sfyMasters (opened masters), and
+;; library/cell -> target library of every design cell), sfyMasters ((key cellview) of every
+;; master opened, closed when the import ends), and
 ;; per cellview sfyCv sfyUpi sfyRefs (ref -> created object, 0 = the cellview) sfyTerms.
 
 (procedure (SfyProducer) "schemify.il 1")
@@ -20,14 +21,19 @@
   (let ((sfyLogPort (SfyLogOpen path)) (sfyCountTab (makeTable "sfyCounts" nil))
         (sfyCountKeys nil) (sfyFails 0) (design nil) (refs nil))
     (SfyLog (sprintf nil "SfyExport %s library %s" path lib))
+    (SfyPreflight)
     (if (null (ddGetObj lib))
       (SfyRefuse 0 (sprintf nil "library %s is not in cds.lib" lib))
-      (progn
-        (setq design (SfyDesignClosure lib (or cells (SfyCellNames lib))))
-        (when ref (setq refs (SfyRefMasters lib design)))
-        (SfyDumpFile path refs
-          (mapcar (lambda (c) (list lib c nil)) design)
-          (and maestro lib) design)))
+      ;; Backstop: an unexpected SKILL error still ends the log with its message and FAIL.
+      (unless (errset
+                (progn
+                  (setq design (SfyDesignClosure lib (or cells (SfyCellNames lib))))
+                  (when ref (setq refs (SfyRefMasters lib design)))
+                  (SfyDumpFile path refs
+                    (mapcar (lambda (c) (list lib c nil)) design)
+                    (and maestro lib) design))
+                t)
+        (SfyRefuse 0 (sprintf nil "SKILL error %s" (SfyErrMsg)))))
     (SfyLogClose)))
 
 ;; Dumps every cell of PDK library lib that has a symbol as a "ref" cell (symbol, CDF,
@@ -36,12 +42,16 @@
   (let ((sfyLogPort (SfyLogOpen path)) (sfyCountTab (makeTable "sfyCounts" nil))
         (sfyCountKeys nil) (sfyFails 0))
     (SfyLog (sprintf nil "SfyExportLib %s library %s" path lib))
+    (SfyPreflight)
     (if (null (ddGetObj lib))
       (SfyRefuse 0 (sprintf nil "library %s is not in cds.lib" lib))
-      (SfyDumpFile path
-        (mapcar (lambda (c) (list lib c (list "symbol")))
-          (setof c (SfyCellNames lib) (ddGetObj lib c "symbol")))
-        nil nil nil))
+      (unless (errset
+                (SfyDumpFile path
+                  (mapcar (lambda (c) (list lib c (list "symbol")))
+                    (setof c (SfyCellNames lib) (ddGetObj lib c "symbol")))
+                  nil nil nil)
+                t)
+        (SfyRefuse 0 (sprintf nil "SKILL error %s" (SfyErrMsg)))))
     (SfyLogClose)))
 
 ;; Writes the file: header, ref cells, design cells, maestro records (sfy_ade.il, when
@@ -122,21 +132,33 @@
       (unless (equal (car e) cur)
         (setq cur (car e))
         (SfyPut port "lib" (list cur)))
-      (SfyDumpCell port (car e) (cadr e) role (caddr e)))))
+      ;; One cell's SKILL error costs that cell (its records so far stay; the import
+      ;; reports what does not fit), logged with its message, not the whole dump.
+      (printf "schemify: dumping %s/%s\n" (car e) (cadr e))
+      (unless (errset (SfyDumpCell port (car e) (cadr e) role (caddr e)) t)
+        (SfyRefuse 0 (sprintf nil "%s/%s: SKILL error %s" (car e) (cadr e) (SfyErrMsg)))))))
 
-;; One cell: cell record, base CDF, cellviews by view name, text views (design cells).
+;; One cell: cell record, CDF, cellviews by view name, text views (design cells). A master
+;; missing from cds.lib (an unbound instance) is refused and skipped, so the rest dumps.
 (procedure (SfyDumpCell port lib cell role views)
-  (SfyPut port "cell" (list cell role))
-  (SfyDumpCdf port lib cell)
-  (foreach v (or views (setof v0 (list "schematic" "symbol") (ddGetObj lib cell v0)))
-    (SfyDumpCv port lib cell v))
-  (when (equal role "design") (SfyDumpTextViews port lib cell)))
+  (if (null (ddGetObj lib cell))
+    (SfyRefuse 0 (sprintf nil "master %s/%s not found (is its library in cds.lib?)" lib cell))
+    (progn
+      (SfyPut port "cell" (list cell role))
+      (SfyDumpCdf port lib cell role)
+      (foreach v (or views (setof v0 (list "schematic" "symbol") (ddGetObj lib cell v0)))
+        (SfyDumpCv port lib cell v))
+      (when (equal role "design") (SfyDumpTextViews port lib cell)))))
 
 ;; ---------------------------------------------------------------- CDF
 
-;; The cell's base CDF: cdf, its parameters in CDF order, its simInfo by simulator name.
-(procedure (SfyDumpCdf port lib cell)
-  (let ((cdf (cdfGetBaseCellCDF (ddGetObj lib cell))))
+;; The cell's CDF: cdf, its parameters in CDF order, its simInfo by simulator name. A design
+;; cell gives its base CDF (what the loader recreates); a ref cell its effective CDF, which
+;; carries the library and user layers instances of it actually see.
+(procedure (SfyDumpCdf port lib cell role)
+  (let ((cdf (if (equal role "ref")
+               (cdfGetCellCDF (ddGetObj lib cell))
+               (cdfGetBaseCellCDF (ddGetObj lib cell)))))
     (when cdf
       (SfyPut port "cdf" (list (SfyText (list (SfyStrOr (getSGq cdf paramLabelSet))))))
       (foreach p (getSGq cdf parameters)
@@ -346,6 +368,8 @@
       ("float" (and (floatp v) (sprintf nil "%.17g" v)))
       ("boolean" (if (SfyYes v) "TRUE" "FALSE"))
       ("ILList" (sprintf nil "%L" v))
+      ;; An inherited-connection override: the net name (dbReplaceProp ... "netSet" net).
+      ("netSet" (and (stringp v) v))
       (t nil))))
 
 ;; prop records of every dumped object and of the cellview (ref 0; only properties named
@@ -386,33 +410,43 @@
 ;; views and text views in library lib (default: the record's library; it must be in
 ;; cds.lib); never touches "ref" cells. Writes <path>.log; t on PASS. A malformed or
 ;; truncated file is refused before anything is created.
-(procedure (SfyImport path @key (lib nil) (callbacks nil) (check t) (overwrite nil))
-  (let ((sfyLogPort (SfyLogOpen path)) (sfyCountTab (makeTable "sfyCounts" nil))
+(procedure (SfyImport sfyPath @key (lib nil) (callbacks nil) (check t) (overwrite nil))
+  (let ((sfyLogPort (SfyLogOpen sfyPath)) (sfyCountTab (makeTable "sfyCounts" nil))
         (sfyCountKeys nil) (sfyFails 0) (sfyOverwrite overwrite) (sfyCallbacks callbacks)
         (sfyCheck check) (sfyTargets (makeTable "sfyTargets" nil))
-        (sfyMasters (makeTable "sfyMasters" nil)) (read nil) (grouped nil))
-    (SfyLog (sprintf nil "SfyImport %s" path))
-    (setq read (SfyReadRecords path))
-    (when (car read) (setq grouped (SfyGroup (car read) lib)))
+        (sfyMasters nil) (sfyRead nil) (sfyGrouped nil))
+    (SfyLog (sprintf nil "SfyImport %s" sfyPath))
+    (SfyPreflight)
+    (setq sfyRead (SfyReadRecords sfyPath))
+    (when (car sfyRead) (setq sfyGrouped (SfyGroup (car sfyRead) lib)))
     (cond
-      ((null (car read)) (SfyRefuse (cadr read) (caddr read)))
-      ((null grouped) nil)
+      ((null (car sfyRead)) (SfyRefuse (cadr sfyRead) (caddr sfyRead)))
+      ((null sfyGrouped) nil)
       (t
-        (foreach c (car grouped)
-          (when (equal (arrayref c "role") "design")
-            (setarray sfyTargets (strcat (arrayref c "rlib") "/" (arrayref c "name")) (arrayref c "lib"))))
-        (foreach c (car grouped)
-          (if (equal (arrayref c "role") "design")
-            (SfyLoadCellFirst c)
+        (foreach sfyC (car sfyGrouped)
+          (when (equal (arrayref sfyC "role") "design")
+            (setarray sfyTargets (strcat (arrayref sfyC "rlib") "/" (arrayref sfyC "name")) (arrayref sfyC "lib"))))
+        ;; Backstops: an unexpected SKILL error costs one cell, cellview or the maestro
+        ;; part, logged with its message; a cellview it left open for writing is purged.
+        (foreach sfyC (car sfyGrouped)
+          (if (equal (arrayref sfyC "role") "design")
+            (unless (errset (SfyLoadCellFirst sfyC) t)
+              (SfyRefuse (arrayref sfyC "line") (sprintf nil "SKILL error %s" (SfyErrMsg)))
+              (SfyPurgeWriting (arrayref sfyC "lib") (arrayref sfyC "name")))
             (SfyCount "skipped:ref cell")))
-        (foreach c (car grouped)
-          (when (and (equal (arrayref c "role") "design") (not (arrayref c "skip")))
-            (foreach v (arrayref c "cvs")
-              (when (equal (arrayref v "type") "schematic") (SfyLoadCv c v)))))
-        (when (cadr grouped)
+        (foreach sfyC (car sfyGrouped)
+          (when (and (equal (arrayref sfyC "role") "design") (not (arrayref sfyC "skip")))
+            (foreach sfyV (arrayref sfyC "cvs")
+              (when (equal (arrayref sfyV "type") "schematic")
+                (unless (errset (SfyLoadCv sfyC sfyV) t)
+                  (SfyRefuse (arrayref sfyV "line") (sprintf nil "SKILL error %s" (SfyErrMsg)))
+                  (SfyPurgeWriting (arrayref sfyC "lib") (arrayref sfyC "name")))))))
+        (when (cadr sfyGrouped)
           (if (fboundp 'SfyAdeImport)
-            (SfyAdeImport (cadr grouped) lib)
+            (unless (errset (SfyAdeImport (cadr sfyGrouped) lib) t)
+              (SfyRefuse 0 (sprintf nil "maestro: SKILL error %s" (SfyErrMsg))))
             (SfyCount "skipped:maestro")))))
+    (foreach sfyE sfyMasters (dbClose (cadr sfyE)))
     (SfyLogClose)))
 
 ;; Groups records (line record) into cells: tables with "line" "lib" (target) "rlib"
@@ -619,41 +653,60 @@
 
 ;; Creates (or with overwrite replaces) one cellview from its records; a schematic is
 ;; schCheck'ed and saved only without check errors (unless ?check nil).
-(procedure (SfyLoadCv c v)
-  (let ((tlib (arrayref c "lib")) (cell (arrayref c "name")) (view (arrayref v "view"))
-        (line (arrayref v "line")) (sfyCv nil) (sfyUpi (arrayref v "upi"))
+(procedure (SfyLoadCv sfyC sfyV)
+  (let ((sfyTlib (arrayref sfyC "lib")) (sfyCell (arrayref sfyC "name")) (sfyView (arrayref sfyV "view"))
+        (sfyLine (arrayref sfyV "line")) (sfyCv nil) (sfyUpi (arrayref sfyV "upi"))
         (sfyRefs (makeTable "sfyObjs" nil)) (sfyTerms (makeTable "sfyTerms" nil))
-        (props nil) (conns nil) (tag nil)
-        (keep (exists lr (arrayref v "recs")
-                (and (equal (car (cadr lr)) "prop") (equal (nth 1 (cadr lr)) 0)
-                     (equal (nth 2 (cadr lr)) "schemifyKeep")))))
+        (sfyProps nil) (sfyConns nil) (sfyTag nil)
+        (sfyKeep (exists sfyLr (arrayref sfyV "recs")
+                (and (equal (car (cadr sfyLr)) "prop") (equal (nth 1 (cadr sfyLr)) 0)
+                     (equal (nth 2 (cadr sfyLr)) "schemifyKeep")))))
     (cond
       ;; Unchanged in Schemify since it was imported from here (spec 7.5): the cellview in
       ;; the library stays exactly as it is.
-      ((and keep (ddGetObj tlib cell view))
+      ((and sfyKeep (ddGetObj sfyTlib sfyCell sfyView))
         (SfyCount "kept unchanged"))
-      ((and (ddGetObj tlib cell view) (not sfyOverwrite))
-        (SfyRefuse line (sprintf nil "%s/%s/%s exists; pass ?overwrite t" tlib cell view)))
-      ((null (setq sfyCv (dbOpenCellViewByType tlib cell view (arrayref v "type") "w")))
-        (SfyRefuse line (sprintf nil "cannot open %s/%s/%s for writing" tlib cell view)))
+      ((and (ddGetObj sfyTlib sfyCell sfyView) (not sfyOverwrite))
+        (SfyRefuse sfyLine (sprintf nil "%s/%s/%s exists; pass ?overwrite t" sfyTlib sfyCell sfyView)))
+      ((SfyOpenForEdit sfyTlib sfyCell sfyView)
+        (SfyRefuse sfyLine (sprintf nil "%s/%s/%s is open for editing in Virtuoso; close it first"
+                          sfyTlib sfyCell sfyView)))
+      ((progn (printf "schemify: loading %s/%s/%s\n" sfyTlib sfyCell sfyView) nil) nil)
+      ((null (setq sfyCv (dbOpenCellViewByType sfyTlib sfyCell sfyView (arrayref sfyV "type") "w")))
+        (SfyRefuse sfyLine (sprintf nil "cannot open %s/%s/%s for writing" sfyTlib sfyCell sfyView)))
       (t
         (setarray sfyRefs 0 sfyCv)
-        (foreach lr (arrayref v "recs")
-          (setq tag (car (cadr lr)))
-          (case tag
-            ("term" (SfyLoadTerm lr))
-            ("pinfig" (SfyLoadPinFig lr))
-            ("inst" (SfyLoadInst lr))
-            ("spin" (SfyLoadSpin lr))
-            ("wire" (SfyLoadWire lr))
-            ("label" (SfyLoadLabel lr))
-            ("shape" (SfyLoadShape lr))
-            ("prop" (unless (equal (nth 2 (cadr lr)) "schemifyKeep") (setq props (cons lr props))))
-            ("conn" (setq conns (cons lr conns)))
-            (t (SfyCount (strcat "skipped:" tag)))))
-        (SfyLoadProps (reverse props))
-        (foreach lr (reverse conns) (SfyLoadConn lr))
-        (SfyFinishCv tlib cell view line)))))
+        (foreach sfyLr (arrayref sfyV "recs")
+          (setq sfyTag (car (cadr sfyLr)))
+          (case sfyTag
+            ("term" (SfyLoadTerm sfyLr))
+            ("pinfig" (SfyLoadPinFig sfyLr))
+            ("inst" (SfyLoadInst sfyLr))
+            ("spin" (SfyLoadSpin sfyLr))
+            ("wire" (SfyLoadWire sfyLr))
+            ("label" (SfyLoadLabel sfyLr))
+            ("shape" (SfyLoadShape sfyLr))
+            ("prop" (unless (equal (nth 2 (cadr sfyLr)) "schemifyKeep") (setq sfyProps (cons sfyLr sfyProps))))
+            ("conn" (setq sfyConns (cons sfyLr sfyConns)))
+            (t (SfyCount (strcat "skipped:" sfyTag)))))
+        (SfyLoadProps (reverse sfyProps))
+        (foreach sfyLr (reverse sfyConns) (SfyLoadConn sfyLr))
+        (SfyFinishCv sfyTlib sfyCell sfyView sfyLine)))))
+
+;; Purges every cellview of lib/cell still open for writing ("w"): what an import left
+;; behind when a SKILL error cut it short, so no half-written cellview stays open or locked.
+(procedure (SfyPurgeWriting lib cell)
+  (foreach cv (dbGetOpenCellViews)
+    (when (and (equal (getSGq cv libName) lib) (equal (getSGq cv cellName) cell)
+               (equal (getSGq cv mode) "w"))
+      (dbPurge cv))))
+
+;; t when lib/cell/view is open other than read-only (an editor window): reopening it "w"
+;; would rewrite the cellview under that window.
+(procedure (SfyOpenForEdit lib cell view)
+  (exists cv (dbGetOpenCellViews)
+    (and (equal (getSGq cv libName) lib) (equal (getSGq cv cellName) cell)
+         (equal (getSGq cv viewName) view) (nequal (getSGq cv mode) "r"))))
 
 ;; Checks (schematics) and saves the open cellview sfyCv, or purges it.
 (procedure (SfyFinishCv tlib cell view line)
@@ -708,17 +761,18 @@
       (SfyCount (car (cadr lr))))
     (SfyRefuse (car lr) (sprintf nil "%s failed" what))))
 
-;; The master cellview lib/cell/view, opened read-only once; a design cell of the dump
-;; resolves to its target library.
+;; The master cellview lib/cell/view, opened read-only once per import (SfyImport closes
+;; it); a design cell of the dump resolves to its target library.
 (procedure (SfyMaster lib cell view)
   (let ((t0 (arrayref sfyTargets (strcat lib "/" cell))) (k nil) (m nil))
     (when t0 (setq lib t0))
     (setq k (strcat lib "/" cell "/" view))
-    (setq m (arrayref sfyMasters k))
+    ;; ponytail: a linear assoc over the masters of one import (tens to hundreds); a table
+    ;; when an import opens thousands.
+    (setq m (cadr (assoc k sfyMasters)))
     (unless m
-      ;; ponytail: masters stay open for the session (Virtuoso refcounts them).
       (setq m (dbOpenCellViewByType lib cell view nil "r"))
-      (when m (setarray sfyMasters k m)))
+      (when m (setq sfyMasters (cons (list k m) sfyMasters))))
     m))
 
 (procedure (SfySchematicP lr)
@@ -788,7 +842,7 @@
         (progn
           (setq p (schCreatePin sfyCv m (nth 1 f) (nth 2 f) nil (SfyPt (nth 6 f) (nth 7 f)) (nth 8 f)))
           ;; GUESS(G11): schCreatePin returns the pin instance; a pin object gives its fig.
-          (when (and p (equal (getSGq p objType) "pin")) (setq p (getSGq p fig)))
+          (when (and p (equal (getSGq p objType) "pin")) (setq p (SfyPinFig p)))
           (SfyCreated p lr (sprintf nil "schematic pin %s" (nth 1 f))))))))
 
 ;; ("wire" ref points width): schCreateWire "draw", snapped to one database unit.
@@ -858,33 +912,33 @@
 
 ;; prop records (sorted by ref), one group per object: an instance with a CDF takes its
 ;; CDF parameters through the instance CDF (spec 5.3), everything else dbReplaceProp.
-(procedure (SfyLoadProps props)
-  (let ((groups nil) (cur nil) (curRef nil))
-    (foreach lr props
-      (unless (equal (cadr (cadr lr)) curRef)
-        (when cur (setq groups (cons (reverse cur) groups)))
-        (setq cur nil)
-        (setq curRef (cadr (cadr lr))))
-      (setq cur (cons lr cur)))
-    (when cur (setq groups (cons (reverse cur) groups)))
-    (foreach g (reverse groups)
-      (SfyLoadPropGroup g))))
+(procedure (SfyLoadProps sfyProps)
+  (let ((sfyGroups nil) (sfyCur nil) (sfyCurRef nil))
+    (foreach sfyLr sfyProps
+      (unless (equal (cadr (cadr sfyLr)) sfyCurRef)
+        (when sfyCur (setq sfyGroups (cons (reverse sfyCur) sfyGroups)))
+        (setq sfyCur nil)
+        (setq sfyCurRef (cadr (cadr sfyLr))))
+      (setq sfyCur (cons sfyLr sfyCur)))
+    (when sfyCur (setq sfyGroups (cons (reverse sfyCur) sfyGroups)))
+    (foreach sfyG (reverse sfyGroups)
+      (SfyLoadPropGroup sfyG))))
 
-(procedure (SfyLoadPropGroup g)
-  (let ((o (SfyRef (cadr (cadr (car g))) (car g))) (cdf nil))
-    (when (and o (nequal o sfyCv) (equal (getSGq o objType) "inst"))
-      (setq cdf (cdfGetInstCDF o)))
+(procedure (SfyLoadPropGroup sfyG)
+  (let ((sfyO (SfyRef (cadr (cadr (car sfyG))) (car sfyG))) (sfyCdf nil))
+    (when (and sfyO (nequal sfyO sfyCv) (equal (getSGq sfyO objType) "inst"))
+      (setq sfyCdf (cdfGetInstCDF sfyO)))
     (cond
-      ((null o) nil)
-      (cdf (SfyLoadParams o cdf g))
-      (t (foreach lr g (SfyReplaceProp o lr))))))
+      ((null sfyO) nil)
+      (sfyCdf (SfyLoadParams sfyO sfyCdf sfyG))
+      (t (foreach sfyLr sfyG (SfyReplaceProp sfyO sfyLr))))))
 
 ;; ("prop" ref name type value) through dbReplaceProp.
 (procedure (SfyReplaceProp o lr)
   (let ((f (cdr (cadr lr))) (v nil) (ok t))
     (setq v (nth 3 f))
     (case (nth 2 f)
-      ("string" nil)
+      (("string" "netSet") nil)
       ("int" (setq v (atoi v)) (setq ok (fixp v)))
       ("float" (setq v (atof v)) (setq ok (floatp v)))
       ("boolean" (setq v (SfyYes v)))
@@ -896,56 +950,115 @@
       (t (SfyRefuse (car lr) (sprintf nil "cannot set property %s" (nth 1 f)))))))
 
 ;; Sets an instance's CDF parameters in CDF order (spec 5.3): a value equal to the CDF
-;; default is not set unless the parameter has storeDefault; with ?callbacks t each set
-;; parameter's callback runs right after it. Afterwards every set parameter is read back
-;; and a difference is logged as clamped.
-(procedure (SfyLoadParams inst cdf g)
-  (let ((sent nil) (done nil) (lr nil) (ty nil) (v nil) (cb nil) (now nil))
-    (foreach r g
-      (if (cdfFindParamByName cdf (nth 2 (cadr r)))
-        (setq sent (cons r sent))
-        (SfyReplaceProp inst r)))
-    (foreach p (getSGq cdf parameters)
-      (setq lr (car (setof r sent (equal (nth 2 (cadr r)) (getSGq p name)))))
-      (when lr
-        (setq ty (getSGq p paramType))
-        (setq v (SfyCdfValue ty (nth 4 (cadr lr))))
+;; default is not set unless the parameter has storeDefault. With ?callbacks t a parameter
+;; the PDK locks (editable "nil": derived from others, as nf from fingers) is left to the
+;; callbacks, and once every value is set the callbacks of the set parameters run
+;; (SfyCallbacks). Afterwards every set parameter is read back and a difference is logged
+;; as clamped, and every locked one the file held is read back and a difference from the
+;; file logged as derived (a callback that did not derive it shows here).
+;; Locals and parameters of every procedure active while a PDK callback runs carry the sfy
+;; prefix: SKILL scope is dynamic, and a callback that sets an undeclared w, p or inst
+;; must not reach ours (tests/skill_lint.rs checks it).
+(procedure (SfyLoadParams sfyInst sfyCdf sfyG)
+  (let ((sfySent nil) (sfyDone nil) (sfyLocked nil) (sfyLr nil) (sfyTy nil) (sfyV nil)
+        (sfyNow nil) (sfyNames nil) (sfyBad nil) (sfyFresh nil) (sfyQ nil))
+    (foreach sfyR sfyG
+      (if (cdfFindParamByName sfyCdf (nth 2 (cadr sfyR)))
+        (setq sfySent (cons sfyR sfySent))
+        (SfyReplaceProp sfyInst sfyR)))
+    (foreach sfyP (getSGq sfyCdf parameters)
+      (setq sfyLr (car (setof sfyR sfySent (equal (nth 2 (cadr sfyR)) (getSGq sfyP name)))))
+      (when sfyLr
+        (setq sfyTy (getSGq sfyP paramType))
+        (setq sfyV (SfyCdfValue sfyTy (nth 4 (cadr sfyLr))))
         (cond
-          ((and (member ty (list "int" "float")) (null v))
-            (SfyRefuse (car lr) (sprintf nil "parameter %s: %s is not a number" (getSGq p name) (nth 4 (cadr lr)))))
-          ((and (equal (SfyCdfStr ty v) (SfyCdfStr ty (getSGq p defValue)))
-                (not (SfyYes (getSGq p storeDefault))))
+          ((and (member sfyTy (list "int" "float")) (null sfyV))
+            (SfyRefuse (car sfyLr) (sprintf nil "parameter %s: %s is not a number" (getSGq sfyP name) (nth 4 (cadr sfyLr)))))
+          ((and sfyCallbacks (equal (getSGq sfyP editable) "nil"))
+            (SfyCount "skipped:read-only param")
+            (setq sfyLocked (cons (list (getSGq sfyP name) (SfyCdfStr sfyTy sfyV) sfyLr) sfyLocked)))
+          ((and (equal (SfyCdfStr sfyTy sfyV) (SfyCdfStr sfyTy (getSGq sfyP defValue)))
+                (not (SfyYes (getSGq sfyP storeDefault))))
             (SfyCount "default"))
           (t
-            (setSGq p v value)
+            (setSGq sfyP sfyV value)
             (SfyCount "param")
-            (setq done (cons (list p (SfyCdfStr ty v) lr) done))
-            (setq cb (getSGq p callback))
-            (when (and sfyCallbacks (stringp cb) (nequal cb ""))
-              (SfyRunCallback inst p cdf lr))))))
-    (foreach e (reverse done)
-      (setq now (SfyCdfStr (getSGq (car e) paramType) (getSGq (car e) value)))
-      (unless (equal now (cadr e))
+            (setq sfyDone (cons (list (getSGq sfyP name) (SfyCdfStr sfyTy sfyV) sfyLr) sfyDone))
+            (when (SfyHasCallback sfyP)
+              (if sfyCallbacks
+                (setq sfyNames (cons (getSGq sfyP name) sfyNames))
+                (SfyCount "callback not run")))))))
+    (when sfyNames
+      (printf "schemify: CDF callbacks of %s\n" (getSGq sfyInst name))
+      (setq sfyBad (SfyCallbacks sfyInst (reverse sfyNames)))
+      (foreach sfyN (reverse sfyNames)
+        (if (member sfyN sfyBad)
+          (progn
+            (SfyCount "callback failed")
+            (SfyLog (sprintf nil "callback failed line %d: %s %s: %s"
+                      (car (caddr (assoc sfyN sfyDone))) (getSGq sfyInst name) sfyN
+                      (getSGq (cdfFindParamByName sfyCdf sfyN) callback))))
+          (SfyCount "callback"))))
+    (setq sfyFresh (cdfGetInstCDF sfyInst))
+    (foreach sfyE (reverse sfyDone)
+      (setq sfyQ (cdfFindParamByName sfyFresh (car sfyE)))
+      (setq sfyNow (SfyCdfStr (getSGq sfyQ paramType) (getSGq sfyQ value)))
+      (unless (equal sfyNow (cadr sfyE))
         (SfyCount "clamped")
-        (SfyLog (sprintf nil "clamped line %d: %s %s sent %s now %s" (car (caddr e))
-                  (getSGq inst name) (getSGq (car e) name) (cadr e) now))))))
+        (SfyLog (sprintf nil "clamped line %d: %s %s sent %s now %s" (car (caddr sfyE))
+                  (getSGq sfyInst name) (car sfyE) (cadr sfyE) sfyNow))))
+    (foreach sfyE (reverse sfyLocked)
+      (setq sfyQ (cdfFindParamByName sfyFresh (car sfyE)))
+      (setq sfyNow (SfyCdfStr (getSGq sfyQ paramType) (getSGq sfyQ value)))
+      (unless (equal sfyNow (cadr sfyE))
+        (SfyCount "derived")
+        (SfyLog (sprintf nil "derived line %d: %s %s file %s now %s" (car (caddr sfyE))
+                  (getSGq sfyInst name) (car sfyE) (cadr sfyE) sfyNow))))))
 
-;; Runs a PDK callback string as the form would: cdfgData and cdfgForm bound to the
-;; instance CDF, inside errset; returns t when it ran without error. This is the only
-;; evalstring in the file, and it evaluates PDK code, never file data. ponytail: no
-;; cdfgData->id rewrite (CCSinvokeCdfCallbacks does it).
-(procedure (SfyEvalCallback cdf cb)
-  (let ((cdfgData cdf) (cdfgForm cdf))
-    (if (errset (evalstring cb) t) t nil)))
+(procedure (SfyHasCallback sfyP)
+  (and (stringp (getSGq sfyP callback)) (nequal (getSGq sfyP callback) "")))
 
-;; The loader's callback run: counts and logs a failure against the record's line.
-(procedure (SfyRunCallback inst p cdf lr)
-  (if (SfyEvalCallback cdf (getSGq p callback))
-    (SfyCount "callback")
-    (progn
-      (SfyCount "callback failed")
-      (SfyLog (sprintf nil "callback failed line %d: %s %s: %s" (car lr) (getSGq inst name)
-                (getSGq p name) (getSGq p callback))))))
+;; Runs the CDF callbacks of the parameters sfyNames of instance sfyInst, in CDF order, the
+;; way the Edit Properties form does (the sequence virtuoso-bridge-lite runs on live PDKs):
+;; the master's cell CDF, loaded with the instance's values, is cdfgData and cdfgForm (so
+;; cdfgData->id is the cell, as PDK callbacks expect) through the callbacks and
+;; cdfUpdateInstParam, which writes the result (and doneProc's) to the instance; the cell
+;; CDF then gets its own values back, whatever happened. Returns the names whose callback
+;; failed (all of them when the master has no cell CDF or the update fails).
+(procedure (SfyCallbacks sfyInst sfyNames)
+  (let ((sfyIcdf (cdfGetInstCDF sfyInst)) (sfyCcdf nil) (sfySaved nil) (sfyIp nil)
+        (sfyBad nil) (cdfgData nil) (cdfgForm nil))
+    (setq sfyCcdf (car (errset (cdfGetCellCDF (ddGetObj (getSGq sfyInst libName)
+                                                        (getSGq sfyInst cellName))))))
+    (if (null sfyCcdf)
+      sfyNames
+      (progn
+        (foreach sfyP (getSGq sfyCcdf parameters)
+          (setq sfySaved (cons (list sfyP (getSGq sfyP value)) sfySaved)))
+        (setq cdfgData sfyCcdf)
+        (setq cdfgForm sfyCcdf)
+        (unwindProtect
+          (progn
+            (foreach sfyP (getSGq sfyCcdf parameters)
+              (setq sfyIp (cdfFindParamByName sfyIcdf (getSGq sfyP name)))
+              (when sfyIp (setSGq sfyP (getSGq sfyIp value) value)))
+            (foreach sfyP (getSGq sfyCcdf parameters)
+              (when (and (member (getSGq sfyP name) sfyNames)
+                         (not (SfyEvalCallback (getSGq sfyP callback))))
+                (setq sfyBad (cons (getSGq sfyP name) sfyBad))))
+            ;; Without the update nothing the callbacks did reaches the instance.
+            (unless (errset (cdfUpdateInstParam sfyInst) t)
+              (setq sfyBad (reverse sfyNames))))
+          ;; No errset here: one that completes would clear the message of an error
+          ;; on its way out to the import's backstop.
+          (foreach sfyX sfySaved (setSGq (car sfyX) (cadr sfyX) value)))
+        (reverse sfyBad)))))
+
+;; Runs a PDK callback string inside errset under the caller's cdfgData and cdfgForm; t
+;; when it ran without error. This is the only evalstring in the file, and it evaluates
+;; PDK code, never file data.
+(procedure (SfyEvalCallback sfyCb)
+  (if (errset (evalstring sfyCb) t) t nil))
 
 ;; ---------------------------------------------------------------- stubs, text views
 
@@ -974,8 +1087,11 @@
     (setq dbu (getSGq cv DBUPerUU))
     (setq step (quotient 10.0 dbu))
     (when (equal (getSGq inst objType) "inst")
-      (setq t0 (dbFindTermByName (getSGq inst master) term)))
-    (when t0 (setq fig (getSGq (car (getSGq t0 pins)) fig)))
+      (setq t0 (or (dbFindTermByName (getSGq inst master) term)
+                   ;; Kits differ in case (D in one, d in another).
+                   (car (setof x (getSGq (getSGq inst master) terminals)
+                          (equal (lowerCase (getSGq x name)) (lowerCase term)))))))
+    (when t0 (setq fig (SfyPinFig (car (getSGq t0 pins)))))
     (unless fig
       (return (sprintf nil "conn: no pin %s on %s" term (getSGq inst name))))
     (setq p (SfyCenter (dbTransformBBox (getSGq fig bBox) (getSGq inst transform))))
@@ -994,6 +1110,11 @@
       (return (sprintf nil "conn: label %s failed" net)))
     (return t)))
 
+;; The figure of pin object pin: ~>fig, else the first of ~>figs (virtuoso-bridge-lite
+;; reads both: a release may answer only one); nil for nil.
+(procedure (SfyPinFig pin)
+  (and pin (or (car (errset (getSGq pin fig))) (car (car (errset (getSGq pin figs)))))))
+
 ;; Contract with sfy_retarget.il (spec 10.3): draws a stub + label for each (terminal net)
 ;; of conns; returns the number drawn, or nil when any failed (each failure printed).
 (procedure (SfyPlaceConn cv inst conns)
@@ -1005,40 +1126,50 @@
         (setq n (add1 n))))
     (and ok n)))
 
-;; Contract with sfy_retarget.il (spec 10.3): sets each (cdfName value) of params on the
-;; instance CDF in the CDF's own type (numbers as %.17g text for string parameters, so no
-;; 7-digit print touches them; a string value is read by atoi/atof for int/float ones); with callbacks, runs each set parameter's callback in CDF
-;; order as SfyRunCallback does. Returns t, or nil when a parameter is missing or a callback
-;; failed (printed).
-(procedure (SfySetParams inst params callbacks)
-  (prog (cdf p v ty ok)
-    (setq cdf (cdfGetInstCDF inst))
-    (unless cdf (return nil))
-    (setq ok t)
-    (foreach q (getSGq cdf parameters)
-      (setq p (assoc (getSGq q name) params))
-      (when p
-        (setq ty (getSGq q paramType))
-        (setq v (cadr p))
-        (setq v
-          (cond
-            ((and (equal ty "int") (stringp v)) (atoi v))
-            ((equal ty "int") (if (fixp v) v (round v)))
-            ((and (equal ty "float") (stringp v)) (atof v))
-            ((equal ty "float") (float v))
-            ((stringp v) v)
-            ((fixp v) (sprintf nil "%d" v))
-            (t (sprintf nil "%.17g" v))))
-        (setSGq q v value)
-        (when (and callbacks (stringp (getSGq q callback)) (nequal (getSGq q callback) ""))
-          (unless (SfyEvalCallback cdf (getSGq q callback))
-            (setq ok nil)
-            (printf "schemify: callback of %s on %s failed\n" (getSGq q name) (getSGq inst name))))))
-    (foreach p params
-      (unless (cdfFindParamByName cdf (car p))
-        (setq ok nil)
-        (printf "schemify: %s has no CDF parameter %s\n" (getSGq inst name) (car p))))
-    (return ok)))
+;; Contract with sfy_retarget.il (spec 10.3): sets each (cdfName value) of sfyParams on
+;; the instance CDF in the CDF's own type (numbers as %.12g text for string parameters: SI
+;; precision without float noise such as 1.7999999999999999e-07, which a PDK callback that
+;; snaps to its grid with floor would drop one step; a string value is read by atoi/atof
+;; for int/float ones); with sfyCallbacks, then runs the set parameters' callbacks
+;; (SfyCallbacks). Returns t, or a string naming the first failure: a parameter missing, one
+;; the PDK locks (editable "nil": map the editable one, such as fingers rather than nf), or
+;; "callback: ..." for a callback that failed (the values are set; SfyRtPlace keeps the device).
+(procedure (SfySetParams sfyInst sfyParams sfyCallbacks)
+  (prog (sfyCdf sfyP sfyV sfyTy sfyWhy sfyNames)
+    (setq sfyCdf (cdfGetInstCDF sfyInst))
+    (unless sfyCdf (return "the instance has no CDF"))
+    (foreach sfyQ (getSGq sfyCdf parameters)
+      (setq sfyP (assoc (getSGq sfyQ name) sfyParams))
+      (cond
+        ((null sfyP) nil)
+        ((equal (getSGq sfyQ editable) "nil")
+          (unless sfyWhy
+            (setq sfyWhy (sprintf nil "parameter %s is read-only in the PDK; map the editable one"
+                           (getSGq sfyQ name)))))
+        (t
+          (setq sfyTy (getSGq sfyQ paramType))
+          (setq sfyV (cadr sfyP))
+          (setq sfyV
+            (cond
+              ((and (equal sfyTy "int") (stringp sfyV)) (atoi sfyV))
+              ((equal sfyTy "int") (if (fixp sfyV) sfyV (round sfyV)))
+              ((and (equal sfyTy "float") (stringp sfyV)) (atof sfyV))
+              ((equal sfyTy "float") (float sfyV))
+              ((stringp sfyV) sfyV)
+              ((fixp sfyV) (sprintf nil "%d" sfyV))
+              (t (sprintf nil "%.12g" sfyV))))
+          (setSGq sfyQ sfyV value)
+          (when (and sfyCallbacks (SfyHasCallback sfyQ))
+            (setq sfyNames (cons (getSGq sfyQ name) sfyNames))))))
+    (foreach sfyP sfyParams
+      (unless (or sfyWhy (cdfFindParamByName sfyCdf (car sfyP)))
+        (setq sfyWhy (sprintf nil "no CDF parameter %s" (car sfyP)))))
+    (when (and sfyNames (null sfyWhy))
+      (foreach sfyN (SfyCallbacks sfyInst (reverse sfyNames))
+        (unless sfyWhy
+          (setq sfyWhy (sprintf nil "callback: the CDF callback of %s failed; what it derives may be stale (?callbacks nil skips callbacks)"
+                         sfyN)))))
+    (return (or sfyWhy t))))
 
 ;; ("textview" view file text): writes the view's master file.
 (procedure (SfyLoadText c lr)
@@ -1056,4 +1187,7 @@
         (foreach chunk (if (stringp text) (list text) text)
           (fprintf p "%s" chunk))
         (close p)
+        ;; Not ahdlUpdateViewInfo: it may open a port-mismatch dialog that blocks the CIW.
+        (SfyLog (sprintf nil "wrote %s/%s/%s; if netlisting reports stale view info, run ahdlUpdateViewInfo(%L ?cell %L ?view %L)"
+                  tlib cell (nth 0 f) tlib cell (nth 0 f)))
         (SfyCount "textview")))))

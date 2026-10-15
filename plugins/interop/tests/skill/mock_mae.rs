@@ -54,6 +54,11 @@ pub struct Test {
     pub outputs: Vec<Output>,
     /// Environment options `(name, value)`.
     pub env: Vec<(String, V)>,
+    /// Test-level variables `(name, value)` in creation order: they override a global of
+    /// the same name in this test.
+    pub vars: Vec<(String, String)>,
+    /// Simulator options `(name, value)` (`temp`, `reltol`, …).
+    pub sim: Vec<(String, V)>,
 }
 
 /// One output of a test.
@@ -103,6 +108,8 @@ enum Handle {
     Corner(usize, String),
     Model(usize, String, String),
     Var(usize, String, String),
+    Test(usize, String),
+    TestVar(usize, String, String),
 }
 
 /// Maestro state: saved setups by (lib, cell), sessions, `axl*` handles, and the log of
@@ -190,7 +197,12 @@ impl Mae {
         let k = usize::try_from(v.as_int()? - HANDLE_BASE).ok()?;
         let h = self.handles.get(k)?.clone();
         let s = match &h {
-            Handle::Sdb(s) | Handle::Corner(s, _) | Handle::Model(s, ..) | Handle::Var(s, ..) => *s,
+            Handle::Sdb(s)
+            | Handle::Corner(s, _)
+            | Handle::Model(s, ..)
+            | Handle::Var(s, ..)
+            | Handle::Test(s, _)
+            | Handle::TestVar(s, ..) => *s,
         };
         self.sessions.get(s)?.as_ref().map(|_| h)
     }
@@ -368,14 +380,22 @@ pub fn call(db: &mut MockDb, name: &str, args: &[V]) -> Option<Result<V, String>
                 return Some(Ok(V::Nil));
             };
             let an = s0(1);
+            // IC23.1 answers form fields it was never given: `anaName` first, and the ac
+            // sweep chooser (virtuoso-bridge-lite maestro-skill-api.md: `(("anaName" "ac")
+            // ("sweep" "Frequency") ("start" "1") …)`).
             Ok(m.test(k, &s0(0))
                 .and_then(|t| t.analyses.iter().find(|x| x.0 == an))
                 .map_or(V::Nil, |x| {
-                    V::list(
+                    let mut l = vec![V::list(vec![V::str("anaName"), V::str(&an)])];
+                    if an == "ac" && !x.2.iter().any(|o| o.0 == "sweep") {
+                        l.push(V::list(vec![V::str("sweep"), V::str("Frequency")]));
+                    }
+                    l.extend(
                         x.2.iter()
-                            .map(|(kk, v)| V::list(vec![V::str(kk), v.clone()]))
-                            .collect(),
-                    )
+                            .filter(|o| o.0 != "anaName")
+                            .map(|(kk, v)| V::list(vec![V::str(kk), v.clone()])),
+                    );
+                    V::list(l)
                 }))
         }
         "maeSetVar" => {
@@ -411,6 +431,20 @@ pub fn call(db: &mut MockDb, name: &str, args: &[V]) -> Option<Result<V, String>
                     }
                     for c in cs {
                         upsert(&mut m.corner(k, &c).expect("checked").vars);
+                    }
+                    Ok(V::T)
+                }
+                Some("test") => {
+                    let Some(ts) = key(&kw, "typeValue").and_then(strs) else {
+                        return Some(Err(
+                            "*Error* maeSetVar: ?typeValue is a list of names".into()
+                        ));
+                    };
+                    if ts.is_empty() || ts.iter().any(|t| m.test(k, t).is_none()) {
+                        return Some(Ok(V::Nil));
+                    }
+                    for t in ts {
+                        upsert(&mut m.test(k, &t).expect("checked").vars);
                     }
                     Ok(V::T)
                 }
@@ -498,8 +532,10 @@ pub fn call(db: &mut MockDb, name: &str, args: &[V]) -> Option<Result<V, String>
                     vec![
                         ("name", V::str(&o.name)),
                         ("outputType", V::str(&o.kind)),
-                        ("signalName", opt(&o.signal)),
-                        ("expr", opt(&o.expr)),
+                        // The names IC23.1 answers (virtuoso-bridge-lite reads
+                        // `o~>signal o~>expression` live); `~>expr`/`~>signalName` are nil.
+                        ("signal", opt(&o.signal)),
+                        ("expression", opt(&o.expr)),
                     ],
                 );
                 objs.push(V::Obj(id));
@@ -597,6 +633,64 @@ pub fn call(db: &mut MockDb, name: &str, args: &[V]) -> Option<Result<V, String>
                 ),
             })
         }
+        // GUESS(G28): maeGetSimOption ?option names one option and answers its value as
+        // maeGetEnvOption does; maeSetSimOption takes (name value) strings.
+        "maeSetSimOption" => {
+            let Some(k) = m.session(&kw) else {
+                return Some(Ok(V::Nil));
+            };
+            let mut set = Vec::new();
+            for o in key(&kw, "options").map_or(&[][..], V::items) {
+                let [V::Str(n), v @ V::Str(_)] = o.items() else {
+                    return Some(Err(
+                        "*Error* maeSetSimOption: ?options is a list of (name value) strings"
+                            .into(),
+                    ));
+                };
+                set.push((n.to_string(), v.clone()));
+            }
+            let Some(t) = m.test(k, &s0(0)) else {
+                return Some(Ok(V::Nil));
+            };
+            for (n, v) in set {
+                t.sim.retain(|x| x.0 != n);
+                t.sim.push((n, v));
+            }
+            Ok(V::T)
+        }
+        "maeGetSimOption" => {
+            let Some(k) = m.session(&kw) else {
+                return Some(Ok(V::Nil));
+            };
+            let opt = st(key(&kw, "option"));
+            let Some(t) = m.test(k, &s0(0)) else {
+                return Some(Ok(V::Nil));
+            };
+            Ok(match opt {
+                Some(o) => t
+                    .sim
+                    .iter()
+                    .find(|x| x.0 == o)
+                    .map_or(V::Nil, |x| x.1.clone()),
+                None => V::list(
+                    t.sim
+                        .iter()
+                        .map(|(n, v)| V::list(vec![V::str(n), v.clone()]))
+                        .collect(),
+                ),
+            })
+        }
+        "axlGetTest" => match m.resolve(&a[0]) {
+            Some(Handle::Sdb(k)) => {
+                let n = s0(1);
+                Ok(if m.test(k, &n).is_some() {
+                    m.handle(Handle::Test(k, n))
+                } else {
+                    V::Nil
+                })
+            }
+            _ => Err("*Error* axlGetTest: argument #1 should be a setup database handle".into()),
+        },
         "axlGetMainSetupDB" => {
             let kw2 = vec![("session".to_owned(), V::str(&s0(0)))];
             Ok(match m.session(&kw2) {
@@ -684,7 +778,14 @@ pub fn call(db: &mut MockDb, name: &str, args: &[V]) -> Option<Result<V, String>
                 let h = m.handle(Handle::Corner(k, c));
                 Ok(V::list(vec![h, ns]))
             }
-            _ => Err("*Error* axlGetVars: the mock models corner handles only".into()),
+            Some(Handle::Test(k, t)) => {
+                let ns = m
+                    .test(k, &t)
+                    .map_or(V::Nil, |x| names(x.vars.iter().map(|v| &v.0)));
+                let h = m.handle(Handle::Test(k, t));
+                Ok(V::list(vec![h, ns]))
+            }
+            _ => Err("*Error* axlGetVars: the mock models corner and test handles only".into()),
         },
         "axlGetVar" => match m.resolve(&a[0]) {
             Some(Handle::Corner(k, c)) => {
@@ -698,11 +799,26 @@ pub fn call(db: &mut MockDb, name: &str, args: &[V]) -> Option<Result<V, String>
                     V::Nil
                 })
             }
-            _ => Err("*Error* axlGetVar: the mock models corner handles only".into()),
+            Some(Handle::Test(k, t)) => {
+                let n = s0(1);
+                let has = m
+                    .test(k, &t)
+                    .is_some_and(|x| x.vars.iter().any(|v| v.0 == n));
+                Ok(if has {
+                    m.handle(Handle::TestVar(k, t, n))
+                } else {
+                    V::Nil
+                })
+            }
+            _ => Err("*Error* axlGetVar: the mock models corner and test handles only".into()),
         },
         "axlGetVarValue" => match m.resolve(&a[0]) {
             Some(Handle::Var(k, c, n)) => Ok(m
                 .corner(k, &c)
+                .and_then(|x| x.vars.iter().find(|v| v.0 == n))
+                .map_or(V::Nil, |v| V::str(&v.1))),
+            Some(Handle::TestVar(k, t, n)) => Ok(m
+                .test(k, &t)
                 .and_then(|x| x.vars.iter().find(|v| v.0 == n))
                 .map_or(V::Nil, |v| V::str(&v.1))),
             _ => Err("*Error* axlGetVarValue: argument #1 should be a variable handle".into()),

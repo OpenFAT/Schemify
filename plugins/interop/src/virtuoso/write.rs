@@ -2071,10 +2071,12 @@ fn schematic_out(
                 "inherit" => {
                     let pin = val;
                     let net = c.doc.attr_value(a, 1).unwrap_or("");
+                    // A netSet-typed property: the type the netlister reads as an
+                    // inherited-connection override (G13).
                     cv.props.push(Prop {
                         r,
                         name: vname(pin),
-                        ty: "string".into(),
+                        ty: "netSet".into(),
                         value: net_to_virtuoso(net, false).0,
                     });
                     continue;
