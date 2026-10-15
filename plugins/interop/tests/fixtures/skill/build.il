@@ -38,6 +38,11 @@
     (setSGq lbl "ILLabel" labelType)
     (SfyFixSave cv)))
 
+;; The label schCreateNetExpression drew, tagged with its expression as SfyImport does.
+(procedure (SfyFixNetExpr lbl e)
+  (when lbl (dbReplaceProp lbl "schemifyNetExpr" "string" e))
+  lbl)
+
 (procedure (SfyFixCdf lib cell)
   (let ((cdf (cdfCreateBaseCellCDF (ddGetObj lib cell))))
     (unless cdf (error "fixture: no CDF for %s/%s" lib cell))
@@ -174,7 +179,10 @@
               (SfyFixP 100 -100) "R90"))
     (setSGq (cdfFindParamByName (cdfGetInstCDF r) "r") "10k" value)
     (setq w (car (schCreateWire cv "draw" "full" (list (SfyFixP 0 100) (SfyFixP 0 200)) 0.0625 0.0625 0.0)))
-    (schCreateNetExpression cv "[@vdd:%:vdd!]" w (SfyFixP 0 150) "lowerLeft" "R90" "stick" (SfyFixU 10))
+    ;; Tagged as SfyImport tags it: a natively drawn one has no tag, and where Virtuoso
+    ;; keeps its expression is what the probe's netexpr lines record.
+    (SfyFixNetExpr (schCreateNetExpression cv "[@vdd:%:vdd!]" w (SfyFixP 0 150) "lowerLeft" "R90" "stick"
+                     (SfyFixU 10)) "[@vdd:%:vdd!]")
     (schCreateWireLabel cv w (SfyFixP 0 180) "supply" "lowerLeft" "R90" "stick" (SfyFixU 10) t)
     (setq w (car (schCreateWire cv "draw" "full" (list (SfyFixP 100 -140) (SfyFixP 100 -200)) 0.0625 0.0625 0.0)))
     (schCreateWireLabel cv w (SfyFixP 100 -180) "d<0>" "lowerLeft" "R0" "stick" (SfyFixU 10) nil)
@@ -239,7 +247,10 @@
     (cdfSaveCDF cdf)
     (setq cv (SfyFixOpen "work" "netx" "schematic" "schematic"))
     (setq w (car (schCreateWire cv "draw" "full" (list (SfyFixP 0 40) (SfyFixP 0 80)) 0.0625 0.0625 0.0)))
-    (schCreateNetExpression cv "[@vdd:%:vdd!]" w (SfyFixP 0 60) "lowerLeft" "R90" "stick" (SfyFixU 10))
+    ;; Tagged as SfyImport tags it: a natively drawn one has no tag, and where Virtuoso
+    ;; keeps its expression is what the probe's netexpr lines record.
+    (SfyFixNetExpr (schCreateNetExpression cv "[@vdd:%:vdd!]" w (SfyFixP 0 60) "lowerLeft" "R90" "stick"
+                     (SfyFixU 10)) "[@vdd:%:vdd!]")
     (schCreatePin cv (dbOpenCellViewByType "basic" "ipin" "symbol" nil "r") "a" "input" nil (SfyFixP -80 0) "R0")
     (schCreatePin cv (dbOpenCellViewByType "basic" "opin" "symbol" nil "r") "y" "output" nil (SfyFixP 80 0) "R180")
     (schCreatePin cv (dbOpenCellViewByType "basic" "iopin" "symbol" nil "r") "vdd" "inputOutput" nil (SfyFixP 0 80) "R90")

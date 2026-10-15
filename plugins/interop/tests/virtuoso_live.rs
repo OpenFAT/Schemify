@@ -439,6 +439,36 @@ fn design_records(text: &str, from: &str, to: &str) -> Result<Vec<String>, Strin
     Ok(out)
 }
 
+/// The design cells of a dump, each with its records as [`design_records`] gives them
+/// (library `from` renamed `to`), by cell name.
+fn design_cells(text: &str, from: &str, to: &str) -> BTreeMap<String, Vec<String>> {
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut cur: Option<String> = None;
+    for line in design_records(text, from, to).unwrap_or_default() {
+        if let Some(rec) = sfyx::read(&format!("(\"sfyx\" 1 \"x\")\n{line}\n(\"end\")\n"))
+            .ok()
+            .and_then(|v| v.into_iter().nth(1))
+            .filter(|r| r.tag == "cell")
+        {
+            cur = rec.str(0).ok().map(str::to_owned);
+        }
+        if let Some(c) = &cur {
+            out.entry(c.clone()).or_default().push(line);
+        }
+    }
+    out
+}
+
+/// Every cell of a dump with its role (`design` or `ref`).
+fn cell_roles(text: &str) -> Vec<(String, String)> {
+    sfyx::read(text)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| r.tag == "cell")
+        .filter_map(|r| Some((r.str(0).ok()?.to_owned(), r.str(1).ok()?.to_owned())))
+        .collect()
+}
+
 /// The first difference of two record lists, or `None`.
 fn first_diff(a: &[String], b: &[String]) -> Option<String> {
     for (k, (x, y)) in a.iter().zip(b).enumerate() {
@@ -1686,20 +1716,48 @@ fn verify(work: &Path, o: &Opts) -> Report {
             read(&out.join(format!("user_{k}.second.sfyx"))),
         ) {
             (Some(a), Some(b)) => {
+                // A cell that is only a symbol and CDF came into Schemify as a device mirror
+                // and goes back as a reference to the original cell (§8.1), not a copy: the
+                // cells that travel as designs must dump the same, the others must come
+                // back as references.
+                let refs: BTreeSet<String> = cell_roles(&b)
+                    .into_iter()
+                    .filter(|x| x.1 == "ref")
+                    .map(|x| x.0)
+                    .collect();
                 let (a, b) = (
-                    design_records(&a, l, &ulib('u', l, c)),
-                    design_records(&b, "", ""),
+                    design_cells(&a, l, &ulib('u', l, c)),
+                    design_cells(&b, "", ""),
                 );
-                match (a, b) {
-                    (Ok(a), Ok(b)) => match first_diff(&a, &b) {
-                        None => r.add(
-                            id,
-                            Grade::Pass,
-                            format!("{} design records identical", a.len()),
+                let mut diffs = Vec::new();
+                let mut lost = Vec::new();
+                for (cell, recs) in &a {
+                    match b.get(cell) {
+                        Some(got) => {
+                            if let Some(d) = first_diff(recs, got) {
+                                diffs.push(format!("{cell}: {d}"));
+                            }
+                        }
+                        None if refs.contains(cell) => {}
+                        None => lost.push(cell.clone()),
+                    }
+                }
+                let as_refs = a.keys().filter(|x| !b.contains_key(*x)).count() - lost.len();
+                if diffs.is_empty() && lost.is_empty() {
+                    r.add(
+                        id,
+                        Grade::Pass,
+                        format!(
+                            "{} cells dump the same; {as_refs} device cell(s) went back as references to the original",
+                            a.len() - as_refs
                         ),
-                        Some(d) => r.add(id, Grade::Fail, d),
-                    },
-                    (Err(e), _) | (_, Err(e)) => r.add(id, Grade::Fail, e),
+                    );
+                } else {
+                    let mut why = diffs;
+                    if !lost.is_empty() {
+                        why.push(format!("did not come back: {}", lost.join(", ")));
+                    }
+                    r.add(id, Grade::Fail, why.join("; "));
                 }
             }
             _ => r.add(id, Grade::Fail, "a dump is missing"),

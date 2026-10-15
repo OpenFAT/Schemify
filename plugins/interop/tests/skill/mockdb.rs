@@ -1720,13 +1720,15 @@ impl MockDb {
                     &(lpp.0.into(), lpp.1.into()),
                     &[
                         a[3].clone(),
-                        a[1].clone(),
+                        // Virtuoso keeps the expression and labels it cdsNetExpr(), an IL
+                        // label (live ICADVM20.1 run).
+                        V::str("cdsNetExpr()"),
                         a[4].clone(),
                         a[5].clone(),
                         a[6].clone(),
                         a[7].clone(),
                     ],
-                    "NLPLabel",
+                    "ILLabel",
                 )?;
                 self.glue(l, Some(glue));
                 V::Obj(l)

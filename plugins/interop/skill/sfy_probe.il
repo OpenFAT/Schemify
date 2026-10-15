@@ -234,6 +234,27 @@
                           (getSGq sfyX stopAngle) (getSGq sfyX bBox))))
                     t)
             (fprintf sfyP "arcprop ERROR\n"))
+          ;; A net expression drawn natively: its label, and where Virtuoso keeps the
+          ;; expression (label, wire and net attributes and properties).
+          (unless (errset
+                    (progn
+                      (setq sfyWs (car (schCreateWire sfyCv "draw" "full" (list (list 6.0 0.0) (list 7.0 0.0))
+                                         0.0625 0.0625 0.0)))
+                      (setq sfyX (schCreateNetExpression sfyCv "[@sfyProbe:%:vdd!]" sfyWs (list 6.5 0.0)
+                                   "lowerLeft" "R0" "stick" 0.0625))
+                      (fprintf sfyP "netexpr label text=%L type=%L\n" (getSGq sfyX theLabel) (getSGq sfyX labelType))
+                      (fprintf sfyP "netexpr label attrs %L\n" (car (errset (getSGq sfyX ?))))
+                      (fprintf sfyP "netexpr label props %L\n"
+                        (mapcar (lambda (sfyQ0) (list (getSGq sfyQ0 name) (getSGq sfyQ0 value))) (getSGq sfyX prop)))
+                      (fprintf sfyP "netexpr wire props %L\n"
+                        (mapcar (lambda (sfyQ0) (list (getSGq sfyQ0 name) (getSGq sfyQ0 value))) (getSGq sfyWs prop)))
+                      (fprintf sfyP "netexpr net %L attrs %L\n" (car (errset (getSGq (getSGq sfyWs net) name)))
+                        (car (errset (getSGq (getSGq sfyWs net) ?))))
+                      (fprintf sfyP "netexpr net props %L\n"
+                        (car (errset (mapcar (lambda (sfyQ0) (list (getSGq sfyQ0 name) (getSGq sfyQ0 value)))
+                                       (getSGq (getSGq sfyWs net) prop))))))
+                    t)
+            (fprintf sfyP "netexpr ERROR %L\n" (getqq errset errset)))
           (unless (errset
                     (progn
                       (fprintf sfyP "check %L\n" (schCheck sfyCv))
