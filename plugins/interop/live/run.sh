@@ -2,8 +2,8 @@
 # Live Virtuoso test kit for the interop plugin: one command on a machine with Cadence
 # Virtuoso and this repository's Rust toolchain. See README.md next to this file.
 #
-#   plugins/interop/live/run.sh [--cdslib FILE] [--work DIR] [--cell LIB/CELL]...
-#       [--pdk LIB[/CELL]] [--callbacks] [--retarget MAP] [--step STEP]
+#   plugins/interop/live/run.sh [--cdslib FILE] [--work DIR] [--cell LIB/CELL]... [--lib LIB]...
+#       [--project DIR]... [--pdk LIB[/CELL]] [--callbacks] [--retarget MAP] [--step STEP]
 #
 # Steps, in order (--step runs one; the default runs all):
 #   prepare   Rust: exports and session1.il                    (needs cargo)
@@ -21,6 +21,7 @@ work="$PWD/sfylive"
 cdslib="$PWD/cds.lib"
 step=all
 cells=()
+projects=()
 pdk=""
 target=""
 callbacks=0
@@ -33,11 +34,13 @@ while (($#)); do
     --work) work="$2"; shift 2 ;;
     --cdslib) cdslib="$2"; shift 2 ;;
     --cell) cells+=("$2"); shift 2 ;;
+    --lib) cells+=("$2/*"); shift 2 ;;
+    --project) [[ -d "$2" ]] || die "no project directory $2"; projects+=("$(cd "$2" && pwd)"); shift 2 ;;
     --pdk) pdk="$2"; shift 2 ;;
     --callbacks) callbacks=1; shift ;;
     --retarget) target="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"; shift 2 ;;
     --step) step="$2"; shift 2 ;;
-    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument $1 (see --help)" ;;
   esac
 done
@@ -51,7 +54,7 @@ out="$work/out"
 host() {
   command -v cargo >/dev/null || die "cargo not found: the $1 step needs the Rust toolchain (README.md: Requirements)"
   SCHEMIFY_LIVE_DIR="$work" SCHEMIFY_LIVE_STEP="$1" \
-  SCHEMIFY_LIVE_CELLS="${cells[*]-}" SCHEMIFY_LIVE_PDK="$pdk" \
+  SCHEMIFY_LIVE_CELLS="${cells[*]-}" SCHEMIFY_LIVE_PROJECTS="${projects[*]-}" SCHEMIFY_LIVE_PDK="$pdk" \
   SCHEMIFY_LIVE_TARGET="$target" SCHEMIFY_LIVE_CALLBACKS="$callbacks" \
     cargo test --quiet --manifest-path "$repo/plugins/Cargo.toml" -p interop \
       --test virtuoso_live live_step -- --ignored --exact --nocapture
@@ -104,6 +107,7 @@ hnlNetlistFileName = "netlist"
 EOF
     (cd "$d" && timeout 600 si -batch -command nl > "$nl/$key.log" 2>&1 </dev/null)
     echo "$?" > "$nl/$key.status"
+    for l in "$d"/*.log; do [[ -f "$l" ]] && { echo "== $(basename "$l")"; cat "$l"; } >> "$nl/$key.log"; done
     local f
     f="$(cd "$d" && ls netlist input.scs *.cdl 2>/dev/null | head -1)"
     [[ -n "$f" ]] && cp "$d/$f" "$nl/$key.net"

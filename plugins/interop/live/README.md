@@ -37,6 +37,7 @@ retarget map:
 
 ```sh
 /path/to/Schemify/plugins/interop/live/run.sh \
+    --lib myLib --project ~/designs/my_schemify_project \
     --cell myLib/amp --cell myLib/amp_tb \
     --pdk tsmcN28/nch_mac --callbacks \
     --retarget ~/maps/tsmc28.retarget
@@ -44,6 +45,8 @@ retarget map:
 
 | Flag | Adds |
 |---|---|
+| `--lib LIB` | A whole Virtuoso library, repeatable: every cell is dumped, imported into Schemify, exported again, loaded into a scratch library and dumped there, and the two dumps must agree. This is the "move my project to Schemify and back" check. |
+| `--project DIR` | A whole Schemify project, repeatable: it gets everything the fixture projects get (both export modes, the load, the dump back, the exact round trip). This is the "move my Schemify project to Virtuoso and back" check. |
 | `--cell LIB/CELL` | Your own cell, repeatable. It gets the self-test and the full round trip (Virtuoso to Schemify to Virtuoso). Use one cell with PDK transistors and one testbench with a maestro view. |
 | `--pdk LIB[/CELL]` | The PDK mirror: every device of `LIB` dumped and imported as Schemify cells. With `/CELL`, the probe also records that transistor's CDF and callbacks. |
 | `--callbacks` | Loads your `--cell` cells again with the PDK's CDF callbacks running, as the Edit Properties form runs them. |
@@ -83,6 +86,7 @@ work directory at the same absolute path on both, for example on a shared disk.
 | `load.<project>.<mode>` | `SfyImport` loaded the export with nothing refused, and every schematic passed `schCheck` (`schcheck.*` lists the errors otherwise). |
 | `maestro.rclive.*` | The bench came with its maestro view. |
 | `dump.*` | `SfyExport` dumped every library back. |
+| `roundtrip.p_<dir>.*` | The same two round trips for each `--project`. |
 | `roundtrip.<project>.core` | The dumps import to the original Schemify files byte for byte. This is the exact round trip of spec §7.4. |
 | `roundtrip.<project>.alib` | On analogLib masters, every bench netlists the same before and after Virtuoso. |
 | `dumpfix.*` | Dumps that the SKILL dumper wrote load and dump back to the same records, covering every shape kind, label kind, bus, net expression and text view. |
@@ -93,7 +97,7 @@ work directory at the same absolute path on both, for example on a shared disk.
 | `netlist.<sim>.<lib>.<cell>` | Virtuoso's netlister writes a netlist of the loaded cell. |
 | `netlist.cdl-matches-aucdl` | Schemify's CDL of the RC section equals Virtuoso's auCdl. A WARN shows the difference, which settles GUESS G7. |
 | `ocean.rclive.<mode>.*` | The exported OCEAN script runs in Spectre and gives tau = RC = 1 ms and v(out) at 1 ms = 1 − 1/e, both within 1 %. |
-| `user.*` | Your cell passes the self-test, imports into Schemify with every file loading, and goes back to Virtuoso and dumps to the same records. |
+| `user.*` | Your cell (or with `--lib`, your whole library, as `user.*.<lib>.ALL`) passes the self-test, imports into Schemify with every file loading, and goes back to Virtuoso and dumps to the same records. |
 | `user.callbacks-run.*` | No CDF callback failed. INFO rows list the values the PDK clamped or derived. |
 | `pdk.import` | The PDK mirror imports and every device cell loads. |
 | `retarget.*` | `SfyRetarget` placed every class placeholder, and its log ends in PASS. |

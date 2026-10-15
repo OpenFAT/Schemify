@@ -21,15 +21,23 @@
     (when (ddGetObj lib cell "maestro")
       (SfyAdeDumpCell port lib cell))))
 
-;; One maestro view, opened read-only and always closed.
+;; One maestro view, opened read-only and always closed. A read-only session answers setup
+;; database 0 (ICADVM20.1, live run 2026-10-15: every axl call then signals ASSEMBLER-2404),
+;; so the view is opened again in "a" mode, which answers a real one; nothing is saved and
+;; the session is force-closed.
 (procedure (SfyAdeDumpCell port lib cell)
   (let ((sess (car (errset (maeOpenSetup lib cell "maestro" ?mode "r")))) (sdb nil))
+    (when sess
+      (setq sdb (car (errset (axlGetMainSetupDB sess))))
+      (when (or (null sdb) (equal sdb 0))
+        (SfyAdeClose sess)
+        (setq sess (car (errset (maeOpenSetup lib cell "maestro" ?mode "a"))))))
     (if (null sess)
       (SfyRefuse 0 (sprintf nil "cannot open %s/%s/maestro" lib cell))
       (unwindProtect
         (progn
           (setq sdb (car (errset (axlGetMainSetupDB sess))))
-          (if (null sdb)
+          (if (or (null sdb) (equal sdb 0))
             (SfyRefuse 0 (sprintf nil "%s/%s/maestro: no setup database" lib cell))
             (foreach test (sort (copy (car (errset (maeGetSetup ?session sess)))) nil)
               (unless (errset (SfyAdeDumpTest port lib cell sess sdb test) t)
@@ -109,7 +117,10 @@
     (unless (errset (progn
     (foreach so (maeGetTestOutputs test ?session sess)
       (setq e (car (errset (getSGq so expression))))
-      (unless (stringp e) (setq e (car (errset (getSGq so expr)))))
+      (unless (stringp e) (setq e (or (car (errset (getSGq so expr))) e)))
+      ;; ICADVM20.1 answers the parsed expression, a list such as ymax(VT("/n1")) (live
+      ;; probe 2026-10-15); its printed form is the ADE expression text.
+      (when (and e (listp e)) (setq e (sprintf nil "%L" e)))
       (setq o (car (errset (getSGq so signal))))
       (unless (stringp o) (setq o (car (errset (getSGq so signalName)))))
       (cond
@@ -258,11 +269,14 @@
                   (maeSetVar (nth 0 f) (nth 1 f) ?typeName "corner" ?typeValue (list (nth 2 f))
                     ?session sess))))
             ("analysis"
-              ;; saveOppoint is a boolean form field: t, not the string "t".
+              ;; Boolean form fields (saveOppoint, finalTimeOp) take t or nil, not the
+              ;; strings the dump holds: "t" sent as a string fails ADE-5019 (live run).
               (if (SfyAdeOptsOk (nth 2 f))
                 (maeSetAnalysis name (nth 0 f) ?enable (equal (nth 1 f) 1)
                   ?options (mapcar (lambda (kv)
-                                     (if (equal kv (list "saveOppoint" "t")) (list (car kv) t) kv))
+                                     (cond ((equal (cadr kv) "t") (list (car kv) t))
+                                           ((equal (cadr kv) "nil") (list (car kv) nil))
+                                           (t kv)))
                              (nth 2 f))
                   ?session sess)
                 nil))

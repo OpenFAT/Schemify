@@ -151,8 +151,11 @@ fn job(project: &Path, cmd: Command) -> Result<Vec<(String, Vec<u8>)>, Vec<Strin
 /// What the user asked for beyond the fixtures (`run.sh` flags, kept in `options.txt`).
 #[derive(Clone, Debug, Default)]
 struct Opts {
-    /// `--cell lib/cell`: the user's own cells for the self-test and the round trip.
+    /// `--cell lib/cell`: the user's own cells for the self-test and the round trip; `--lib
+    /// lib` is the cell `*`, the whole library.
     cells: Vec<(String, String)>,
+    /// `--project dir`: the user's own Schemify projects, round-tripped like the fixtures.
+    projects: Vec<PathBuf>,
     /// `--pdk lib[/cell]`: a PDK library to mirror, and a transistor for the probe.
     pdk: Option<(String, Option<String>)>,
     /// `--retarget map`: a target map for the gm/Id retarget of the Exercise 1 benches.
@@ -175,6 +178,11 @@ impl Opts {
                 Some((l, c)) => (l.to_owned(), Some(c.to_owned())),
                 None => (p, None),
             }),
+            projects: var("SCHEMIFY_LIVE_PROJECTS")
+                .unwrap_or_default()
+                .split_whitespace()
+                .map(PathBuf::from)
+                .collect(),
             target: var("SCHEMIFY_LIVE_TARGET").map(PathBuf::from),
             callbacks: var("SCHEMIFY_LIVE_CALLBACKS").is_some_and(|v| v == "1"),
         }
@@ -192,6 +200,9 @@ impl Opts {
                 c.as_ref().map(|c| format!("/{c}")).unwrap_or_default()
             )
             .unwrap();
+        }
+        for d in &self.projects {
+            writeln!(s, "project {}", path_str(d)).unwrap();
         }
         if let Some(t) = &self.target {
             writeln!(s, "target {}", path_str(t)).unwrap();
@@ -217,6 +228,7 @@ impl Opts {
                         None => (v.into(), None),
                     });
                 }
+                ("project", v) => o.projects.push(PathBuf::from(v)),
                 ("target", v) => o.target = Some(PathBuf::from(v)),
                 ("callbacks", _) => o.callbacks = true,
                 _ => {}
@@ -250,9 +262,47 @@ impl Mode {
     }
 }
 
-/// The user-cell key in file and check names.
+/// The user-cell key in file and check names (`ALL` for a whole library).
 fn ukey(lib: &str, cell: &str) -> String {
-    format!("{lib}.{cell}")
+    format!("{lib}.{}", whole_or(cell))
+}
+
+fn whole_or(cell: &str) -> &str {
+    if cell == "*" { "ALL" } else { cell }
+}
+
+/// The scratch library a user cell (or library) goes back to Virtuoso in; `kind` `u` for the
+/// round trip, `b` for the callback load.
+fn ulib(kind: char, lib: &str, cell: &str) -> String {
+    format!("sfy{kind}_{lib}_{}", whole_or(cell))
+}
+
+/// The SKILL cell list of a user entry: `nil` (every cell) for a whole library.
+fn cell_list(cell: &str) -> String {
+    if cell == "*" {
+        "nil".into()
+    } else {
+        format!("(list {})", q(cell))
+    }
+}
+
+/// Every project a run carries: the fixtures, then the user's (`--project`), named `p_<dir>`.
+fn all_projects(o: &Opts) -> Vec<(String, PathBuf)> {
+    let mut v: Vec<(String, PathBuf)> = PROJECTS
+        .iter()
+        .map(|(n, rel)| ((*n).to_owned(), project_dir(rel)))
+        .collect();
+    for d in &o.projects {
+        let base: String = d
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        v.push((format!("p_{base}"), d.clone()));
+    }
+    v
 }
 
 /// Schemify library → Virtuoso library for project `name` in `mode`: every library gets a
@@ -470,10 +520,9 @@ fn prepare(work: &Path, o: &Opts) {
 
     // Schemify → Virtuoso: every fixture project in both modes, and their dumps back.
     let mut loads = Vec::new();
-    for (name, rel) in PROJECTS {
-        let dir = project_dir(rel);
+    for (name, dir) in all_projects(o) {
         for mode in Mode::ALL {
-            let map = lib_map(name, mode, &dir);
+            let map = lib_map(&name, mode, &dir);
             match export_project(&dir, mode, &map) {
                 Ok((text, ocean)) => {
                     let file = inp.join(format!("{name}.{}.sfyx", mode.tag()));
@@ -483,7 +532,7 @@ fn prepare(work: &Path, o: &Opts) {
                     }
                     let dl = design_libs(&text);
                     libs.extend(dl.iter().cloned());
-                    loads.push((name, mode, file, dl));
+                    loads.push((name.clone(), mode, file, dl));
                 }
                 Err(e) => plan_fail.push(format!(
                     "FAIL export.{name}.{} {}",
@@ -524,9 +573,9 @@ fn prepare(work: &Path, o: &Opts) {
         libs.insert(format!("sfyd_{name}"));
     }
     for (l, c) in &o.cells {
-        libs.insert(format!("sfyu_{l}_{c}"));
+        libs.insert(ulib('u', l, c));
         if o.callbacks {
-            libs.insert(format!("sfyb_{l}_{c}"));
+            libs.insert(ulib('b', l, c));
         }
     }
     // Retarget: the Exercise 1 benches against the user's target map.
@@ -680,24 +729,26 @@ fn prepare(work: &Path, o: &Opts) {
     // The user's own cells.
     for (l, c) in &o.cells {
         let k = ukey(l, c);
-        s.call(format!(
-            "(SfyLiveSelfTest {} {} {} {} {})",
-            q(&format!("user.selftest.{k}")),
-            q(l),
-            q(c),
-            q(SCRATCH),
-            q(&path_str(&out))
-        ));
+        if c != "*" {
+            s.call(format!(
+                "(SfyLiveSelfTest {} {} {} {} {})",
+                q(&format!("user.selftest.{k}")),
+                q(l),
+                q(c),
+                q(SCRATCH),
+                q(&path_str(&out))
+            ));
+            netlists.push(format!("{l} {c} spectre"));
+            netlists.push(format!("{l} {c} auCdl"));
+        }
         let dump = path_str(&out.join(format!("user_{k}.sfyx")));
         s.call(format!(
-            "(SfyLiveExport {} {} {} (list {}))",
+            "(SfyLiveExport {} {} {} {})",
             q(&format!("user.dump.{k}")),
             q(&dump),
             q(l),
-            q(c)
+            cell_list(c)
         ));
-        netlists.push(format!("{l} {c} spectre"));
-        netlists.push(format!("{l} {c} auCdl"));
         if o.callbacks {
             let cb = path_str(&out.join(format!("user_{k}.cb.sfyx")));
             s.call(format!("(SfyLiveCopy {} {})", q(&dump), q(&cb)));
@@ -705,7 +756,7 @@ fn prepare(work: &Path, o: &Opts) {
                 "(SfyLiveImport {} {} t {} t t nil)",
                 q(&format!("user.callbacks.{k}")),
                 q(&cb),
-                q(&format!("sfyb_{l}_{c}"))
+                q(&ulib('b', l, c))
             ));
         }
     }
@@ -919,7 +970,7 @@ fn mid(work: &Path, o: &Opts) {
                 !t.contains("\n  provenance virtuoso")
             })
             .collect();
-        let copy = format!("sfyu_{l}_{c}");
+        let copy = ulib('u', l, c);
         let opts = ExportOptions {
             producer: "sfylive".into(),
             lib_map: [(l.clone(), copy.clone())].into(),
@@ -943,11 +994,11 @@ fn mid(work: &Path, o: &Opts) {
                         q(&path_str(&file))
                     ));
                     s.call(format!(
-                        "(SfyLiveExport {} {} {} (list {}))",
+                        "(SfyLiveExport {} {} {} {})",
                         q(&format!("user.dump2.{k}")),
                         q(&path_str(&out.join(format!("user_{k}.second.sfyx")))),
                         q(&copy),
-                        q(c)
+                        cell_list(c)
                     ));
                 }
             }
@@ -1055,9 +1106,8 @@ impl Report {
 
 /// The Rust round trip of one fixture project in core mode: the dumps of its libraries
 /// import to the original files byte for byte (fingerprints aside, §7.4 with the stash).
-fn check_exact_round_trip(r: &mut Report, work: &Path, name: &str, rel: &str) {
-    let dir = project_dir(rel);
-    let map = lib_map(name, Mode::Core, &dir);
+fn check_exact_round_trip(r: &mut Report, work: &Path, name: &str, dir: &Path) {
+    let map = lib_map(name, Mode::Core, dir);
     let id = format!("roundtrip.{name}.core");
     let Some(text) = read(&work.join(format!("in/{name}.core.sfyx"))) else {
         return r.add(id, Grade::Fail, "no export");
@@ -1095,7 +1145,7 @@ fn check_exact_round_trip(r: &mut Report, work: &Path, name: &str, rel: &str) {
             }
         }
     }
-    let want: BTreeMap<String, String> = read_dir(&dir)
+    let want: BTreeMap<String, String> = read_dir(dir)
         .into_iter()
         .filter(|(p, _)| is_cell(p))
         .map(|(p, b)| (p, canonical(&b)))
@@ -1196,9 +1246,8 @@ fn netlist_of(
 
 /// The analogLib-mode round trip of one fixture project: every bench (else every
 /// component) netlists the same before and after Virtuoso.
-fn check_alib_round_trip(r: &mut Report, work: &Path, name: &str, rel: &str) {
-    let dir = project_dir(rel);
-    let map = lib_map(name, Mode::Alib, &dir);
+fn check_alib_round_trip(r: &mut Report, work: &Path, name: &str, dir: &Path) {
+    let map = lib_map(name, Mode::Alib, dir);
     let id = format!("roundtrip.{name}.alib");
     let Some(text) = read(&work.join(format!("in/{name}.alib.sfyx"))) else {
         return r.add(id, Grade::Fail, "no export");
@@ -1234,7 +1283,7 @@ fn check_alib_round_trip(r: &mut Report, work: &Path, name: &str, rel: &str) {
             }
         }
     }
-    let before = read_dir(&dir);
+    let before = read_dir(dir);
     let after = read_dir(&proj);
     let mut tops: Vec<&String> = before.keys().filter(|p| p.ends_with(".shbench")).collect();
     if tops.is_empty() {
@@ -1351,9 +1400,9 @@ fn verify(work: &Path, o: &Opts) -> Report {
     }
 
     // Round trips of the fixture projects.
-    for (name, rel) in PROJECTS {
-        check_exact_round_trip(&mut r, work, name, rel);
-        check_alib_round_trip(&mut r, work, name, rel);
+    for (name, dir) in all_projects(o) {
+        check_exact_round_trip(&mut r, work, &name, &dir);
+        check_alib_round_trip(&mut r, work, &name, &dir);
     }
     // Virtuoso-shaped dumps: load → dump is the identity on the design records.
     for (name, rel, lib) in DUMPS {
@@ -1380,7 +1429,7 @@ fn verify(work: &Path, o: &Opts) -> Report {
         }
     }
     // Load logs: schCheck results of every loaded schematic.
-    for (name, _) in PROJECTS {
+    for (name, _) in all_projects(o) {
         for mode in Mode::ALL {
             let log =
                 read(&work.join(format!("in/{name}.{}.sfyx.log", mode.tag()))).unwrap_or_default();
@@ -1480,7 +1529,7 @@ fn verify(work: &Path, o: &Opts) -> Report {
         ) {
             (Some(a), Some(b)) => {
                 let (a, b) = (
-                    design_records(&a, l, &format!("sfyu_{l}_{c}")),
+                    design_records(&a, l, &ulib('u', l, c)),
                     design_records(&b, "", ""),
                 );
                 match (a, b) {

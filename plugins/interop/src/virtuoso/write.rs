@@ -988,6 +988,9 @@ fn param_out(c: &Cell, r: u32, notes: &mut Notes) -> CdfParam {
         "string" => {
             p.ty = "string".into();
             p.def = literal(default, name, c, notes);
+            // Virtuoso refuses units on a string parameter not parsed as a number (live
+            // ICADVM20.1: "'parseAsNumber' field must be set if 'units' field is set").
+            p.units.clear();
         }
         _ => {
             p.ty = "string".into();

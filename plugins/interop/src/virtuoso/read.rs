@@ -2733,6 +2733,20 @@ fn schematic_in(
     }
     // Wires: segments, stubs removed.
     let mut wire_pts: BTreeMap<u32, Vec<[i32; 2]>> = BTreeMap::new();
+    let all_pts: Vec<DumpWire<'_>> = sv
+        .wires
+        .iter()
+        .filter(|w| prop(w.r, "schemifyStub").is_none())
+        .map(|w| {
+            let pts = w
+                .pts
+                .iter()
+                .map(|p| pt(*p, upi, "wire", &cell, notes))
+                .collect();
+            (w.r, pts, id_of(w.r).filter(|i| is_id(i)))
+        })
+        .collect();
+    let (rejoined, absorbed) = rejoin_split_wires(&all_pts);
     for w in &sv.wires {
         tally.out += 1;
         let pts: Vec<[i32; 2]> = w
@@ -2741,9 +2755,10 @@ fn schematic_in(
             .map(|p| pt(*p, upi, "wire", &cell, notes))
             .collect();
         wire_pts.insert(w.r, pts.clone());
-        if prop(w.r, "schemifyStub").is_some() {
+        if prop(w.r, "schemifyStub").is_some() || absorbed.contains(&w.r) {
             continue;
         }
+        let pts = rejoined.get(&w.r).cloned().unwrap_or(pts);
         let mut first = true;
         for seg in pts.windows(2) {
             if seg[0] == seg[1] {
@@ -3294,4 +3309,62 @@ pub(crate) fn image(
         }
     }
     out
+}
+
+/// A dumped wire for [`rejoin_split_wires`]: (ref, points, its schemifyId when valid).
+type DumpWire<'a> = (u32, Vec<[i32; 2]>, Option<&'a str>);
+
+/// Virtuoso splits a wire where another wire T-joins it (`schCreateWire "draw"`, live
+/// ICADVM20.1 run 2026-10-15; GUESS G5 said it would not), and the extra piece comes back
+/// without the id or with a copy of it. Each such piece of a two-point wire is folded into the
+/// collinear two-point wire it touches that owns the id, so the wire reads back as drawn.
+/// Returns (owner ref → its rejoined two points, refs folded away). `wires`: (ref, points,
+/// schemifyId) in dump order, stubs excluded.
+fn rejoin_split_wires(wires: &[DumpWire<'_>]) -> (BTreeMap<u32, Vec<[i32; 2]>>, BTreeSet<u32>) {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut owners: Vec<(u32, [[i32; 2]; 2])> = Vec::new();
+    let mut pieces: Vec<(u32, [[i32; 2]; 2])> = Vec::new();
+    for (r, pts, id) in wires {
+        let [a, b] = pts[..] else { continue };
+        if a == b {
+            continue;
+        }
+        match id {
+            Some(i) if seen.insert(i) => owners.push((*r, [a, b])),
+            _ => pieces.push((*r, [a, b])),
+        }
+    }
+    let collinear = |s: [[i32; 2]; 2], p: [i32; 2]| {
+        let d = [i64::from(s[1][0] - s[0][0]), i64::from(s[1][1] - s[0][1])];
+        let v = [i64::from(p[0] - s[0][0]), i64::from(p[1] - s[0][1])];
+        d[0] * v[1] - d[1] * v[0] == 0
+    };
+    let mut absorbed = BTreeSet::new();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (pr, ps) in &pieces {
+            if absorbed.contains(pr) {
+                continue;
+            }
+            let hit = owners.iter_mut().find(|(_, os)| {
+                collinear(*os, ps[0])
+                    && collinear(*os, ps[1])
+                    && (os.contains(&ps[0]) || os.contains(&ps[1]))
+            });
+            if let Some((_, os)) = hit {
+                let mut all = [os[0], os[1], ps[0], ps[1]];
+                all.sort_unstable();
+                *os = [all[0], all[3]];
+                absorbed.insert(*pr);
+                changed = true;
+            }
+        }
+    }
+    let rejoined = owners
+        .into_iter()
+        .filter(|(r, s)| wires.iter().any(|(wr, pts, _)| wr == r && pts[..] != s[..]))
+        .map(|(r, s)| (r, s.to_vec()))
+        .collect();
+    (rejoined, absorbed)
 }

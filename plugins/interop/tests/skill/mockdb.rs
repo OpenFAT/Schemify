@@ -1641,7 +1641,9 @@ impl MockDb {
                         return Ok(V::Nil);
                     }
                 }
-                // GUESS(G5): "draw" adds exactly one figure per segment, no solder dots.
+                // "draw" adds one figure per segment, no solder dots, and splits a wire where
+                // another wire's end lands inside it (a T), the new piece without properties
+                // (live ICADVM20.1 run 2026-10-15; GUESS G5 had no split).
                 let mut out = Vec::new();
                 for w in pts.windows(2) {
                     if w[0] == w[1] {
@@ -1659,6 +1661,9 @@ impl MockDb {
                         "line"
                     };
                     out.push(V::Obj(self.new_shape(cv, ty, &lpp, extra)));
+                }
+                if entry == "draw" {
+                    self.split_at_tees(cv);
                 }
                 V::list(out)
             }
@@ -1846,6 +1851,13 @@ impl MockDb {
                 if self.ty(cdf) != "cdf" || self.cdf_param(cdf, &pname).is_some() {
                     return Ok(V::Nil); // an existing name is skipped silently
                 }
+                // ICADVM20.1 (live run 2026-10-15): "'parseAsNumber' field must be set if
+                // 'units' field is set for this type of parameter", and no parameter.
+                let units = matches!(key("units"), Some(V::Str(u)) if !u.is_empty());
+                let parsed = matches!(key("parseAsNumber"), Some(V::Str(y)) if &*y == "yes");
+                if &*ty == "string" && units && !parsed {
+                    return Ok(V::Nil);
+                }
                 // GUESS(G16): every attribute reads back as it was passed ("yes", "t", "nil");
                 // an unset one reads nil.
                 let mut attrs = vec![
@@ -1942,6 +1954,59 @@ impl MockDb {
             .map(|k| format!("{prefix}{k}"))
             .find(|n| !self.inst_named(cv, n))
             .expect("a free name")
+    }
+
+    /// Splits every two-point wire of `cv` at each wire end that lies strictly inside it
+    /// (collinear, between its ends), as Virtuoso's schematic editor does: the wire keeps its
+    /// first part and properties, a new figure takes the rest.
+    fn split_at_tees(&mut self, cv: u32) {
+        loop {
+            let wires: Vec<(u32, Vec<(f64, f64)>)> = self
+                .a(cv, "shapes")
+                .items()
+                .iter()
+                .filter_map(Self::obj)
+                .filter(|&f| self.is_wire(f))
+                .map(|f| {
+                    (
+                        f,
+                        self.a(f, "points").items().iter().filter_map(pt).collect(),
+                    )
+                })
+                .collect();
+            let ends: Vec<(f64, f64)> = wires
+                .iter()
+                .flat_map(|(_, p)| [p[0], p[p.len() - 1]])
+                .collect();
+            let inside = |a: (f64, f64), b: (f64, f64), e: (f64, f64)| {
+                let cross = (b.0 - a.0) * (e.1 - a.1) - (b.1 - a.1) * (e.0 - a.0);
+                let dot = (e.0 - a.0) * (b.0 - a.0) + (e.1 - a.1) * (b.1 - a.1);
+                let len = (b.0 - a.0).powi(2) + (b.1 - a.1).powi(2);
+                cross.abs() < 1e-9 && dot > 1e-12 && dot < len - 1e-12
+            };
+            let hit = wires.iter().find_map(|(f, p)| {
+                (p.len() == 2)
+                    .then(|| {
+                        ends.iter()
+                            .find(|&&e| inside(p[0], p[1], e))
+                            .map(|&e| (*f, p[0], p[1], e))
+                    })
+                    .flatten()
+            });
+            let Some((f, a, b, e)) = hit else { return };
+            self.put(f, "points", V::list(vec![vpt(a), vpt(e)]));
+            let lpp = ("wire".to_owned(), "drawing".to_owned());
+            let ty = self.ty(f);
+            let mut extra = vec![
+                ("points", V::list(vec![vpt(e), vpt(b)])),
+                ("nPoints", V::Int(2)),
+            ];
+            let w = self.a(f, "width");
+            if w.truthy() {
+                extra.push(("width", w));
+            }
+            self.new_shape(cv, &ty, &lpp, extra);
+        }
     }
 
     fn segment_exists(&self, cv: u32, p: (f64, f64), q: (f64, f64)) -> bool {

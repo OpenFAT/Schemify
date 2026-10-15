@@ -282,7 +282,7 @@ fn export_dumps_the_expected_objects() {
     assert!(t.contains("\"w\" \"string\" \"2u\"") && t.contains("\"l\" \"string\" \"200n\""));
     let log = file(&i, "/t/inv.sfyx.log");
     assert!(
-        log.contains("count inst ") && log.contains("count wire 6"),
+        log.contains("count inst ") && log.contains("count wire 8"),
         "{log}"
     );
     // A symbol with two pins on one terminal, every shape and label kind.
@@ -374,7 +374,7 @@ fn import_log_lists_counts_and_pass() {
     for line in [
         "count inst 4\n",
         "count spin 2\n",
-        "count wire 6\n",
+        "count wire 8\n",
         "count label 8\n",
         "count param 2\n",
         "count skipped:ref cell 4\n",
