@@ -1364,11 +1364,12 @@ impl<H: Host> Interp<H> {
                         v => V::Int(list(v)?.len() as i64),
                     }
                 }
+                // Exactly two lists, as Virtuoso's append (it signals "too many arguments (2
+                // expected, 6 given)"; a live run caught the dumper calling it with six).
                 "append" => {
-                    let mut v = Vec::new();
-                    for x in a {
-                        v.extend(list(x)?);
-                    }
+                    need(2)?;
+                    let mut v = list(&a[0])?;
+                    v.extend(list(&a[1])?);
                     V::list(v)
                 }
                 "append1" => {

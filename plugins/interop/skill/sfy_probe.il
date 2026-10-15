@@ -2,7 +2,8 @@
 ;; Not part of schemify.il. In a real Virtuoso:
 ;;   (load "/abs/path/schemify.il") (load "/abs/path/sfy_probe.il") (SfyProbe "scratchLib")
 ;; then send /tmp/sfy_probe.txt. It touches only scratchLib/sfy_probe: the schematic, opened
-;; "w" and purged, never saved, and a maestro view it creates and saves (to read it back).
+;; "w" and purged, never saved, an empty saved schematic sfy_probe_tb (the maestro test's
+;; design), and a maestro view it creates and saves (to read it back).
 ;; With ?pdkLib and ?pdkCell (a PDK transistor) it also places that device on the scratch
 ;; schematic and records its CDF and callbacks (the lines name PDK parameters). Each section
 ;; is trapped on its own; a failing section prints "<section> ERROR <message>" and the probe
@@ -254,12 +255,19 @@
     (unless (car (errset (isCallable 'maeOpenSetup)))
       (fprintf sfyP "mae skipped: maeOpenSetup is not callable\n"))
     (when (car (errset (isCallable 'maeOpenSetup)))
+      ;; maeCreateTest refuses a design that does not exist (ASSEMBLER-8062 on a live run),
+      ;; and the probe schematic above is purged: the test gets an empty saved one.
+      (setq sfyM (car (errset (dbOpenCellViewByType sfyScratchLib "sfy_probe_tb" "schematic" "schematic" "w"))))
+      (when sfyM
+        (errset (schCheck sfyM))
+        (fprintf sfyP "mae design saved %L\n" (car (errset (dbSave sfyM))))
+        (errset (dbClose sfyM)))
       (setq sfySess (car (errset (maeOpenSetup sfyScratchLib "sfy_probe" "maestro" ?mode "a"))))
       (fprintf sfyP "mae open a %L\n" sfySess)
       (when sfySess
         (setq sfySdb (car (errset (axlGetMainSetupDB sfySess))))
         (fprintf sfyP "mae createTest %L\n"
-          (errset (maeCreateTest "T" ?lib sfyScratchLib ?cell "sfy_probe" ?view "schematic"
+          (errset (maeCreateTest "T" ?lib sfyScratchLib ?cell "sfy_probe_tb" ?view "schematic"
                     ?simulator "spectre" ?session sfySess) t))
         (fprintf sfyP "mae setAnalysis tran %L dc %L ac %L\n"
           (errset (maeSetAnalysis "T" "tran" ?enable t ?options (list (list "stop" "1n")) ?session sfySess) t)

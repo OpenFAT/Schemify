@@ -13,8 +13,11 @@
   (SfyLiveLine "INFO" "session" (sprintf nil "virtuoso %L" (car (errset (getVersion t) nil))))
   t)
 
-;; Closes the results file. Call last, before (exit).
+;; Closes the results file. Call last, before (exit). Purges every cellview still open, so
+;; exit has nothing to offer for saving (its save form blocks a -nograph session forever).
 (procedure (SfyLiveEnd)
+  (foreach cv (or (car (errset (dbGetOpenCellViews))) nil)
+    (errset (dbPurge cv)))
   (SfyLiveLine "INFO" "session" "end")
   (when sfyLivePort (close sfyLivePort))
   (setq sfyLivePort nil)

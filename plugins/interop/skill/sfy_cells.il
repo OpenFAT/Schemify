@@ -357,7 +357,9 @@
                     (SfyShapeCoords f upi) (SfyWidth f upi))))
         shapes)
       refs n))
-    (SfyDumpProps port cv refs (append pinfigs insts spins wires labels shapes))))
+    ;; append takes exactly two lists in Virtuoso (a live IC23/ICADVM20 run signalled on six).
+    (SfyDumpProps port cv refs
+      (append pinfigs (append insts (append spins (append wires (append labels shapes))))))))
 
 ;; A property's value as dumped (spec 4.2 prop), or nil for a type the dump skips.
 (procedure (SfyPropValue p)

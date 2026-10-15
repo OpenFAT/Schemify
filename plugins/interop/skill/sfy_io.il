@@ -188,7 +188,7 @@
     ((greaterp depth 32) "lists nested too deeply")
     ((stringp x) nil)
     ((fixp x)
-      (if (and (geqp x -2147483648) (leqp x 2147483647)) nil "integer outside 32 bits"))
+      (if (and (geqp x (difference -2147483647 1)) (leqp x 2147483647)) nil "integer outside 32 bits"))
     ((listp x)
       (prog (msg)
         (foreach e x
