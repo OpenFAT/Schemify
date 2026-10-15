@@ -293,7 +293,7 @@ fn export_dumps_the_expected_objects() {
         t.contains("\"arc\" \"device\" \"drawing\" (-10000 -30000 10000 -10000 0 1570796) 0"),
         "{t}"
     );
-    assert!(t.contains("\"path\" \"device\" \"drawing1\" (30000 0 40000 0) 5000"));
+    assert!(t.contains("\"path\" \"device\" \"drawing1\" (30000 0 40000 0) 6000"));
     assert!(t.contains("\"a\\\"b\\\\c\\td\\001 \u{3bc}A\""), "{t}");
     for kind in ["\"normal\"", "\"NLP\"", "\"IL\""] {
         assert!(t.contains(kind), "{kind}");

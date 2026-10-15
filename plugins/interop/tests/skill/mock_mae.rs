@@ -291,7 +291,11 @@ pub fn call(db: &mut MockDb, name: &str, args: &[V]) -> Option<Result<V, String>
             let su = m.setup(k);
             Ok(match st(key(&kw, "typeName")).as_deref() {
                 None | Some("tests") => names(su.tests.iter().map(|t| &t.name)),
-                Some("corners") => names(su.corners.iter().map(|c| &c.name)),
+                // ADE lists its built-in nominal corner, whose handle is 0 (live run).
+                Some("corners") => {
+                    let nominal = "Nominal".to_owned();
+                    names(std::iter::once(&nominal).chain(su.corners.iter().map(|c| &c.name)))
+                }
                 Some("variables") => names(su.vars.iter().map(|v| &v.0)),
                 Some(_) => V::Nil,
             })
@@ -701,7 +705,9 @@ pub fn call(db: &mut MockDb, name: &str, args: &[V]) -> Option<Result<V, String>
         "axlGetCorner" => match m.resolve(&a[0]) {
             Some(Handle::Sdb(k)) => {
                 let n = s0(1);
-                Ok(if m.corner(k, &n).is_some() {
+                Ok(if n == "Nominal" {
+                    V::Int(0)
+                } else if m.corner(k, &n).is_some() {
                     m.handle(Handle::Corner(k, n))
                 } else {
                     V::Nil
@@ -824,18 +830,20 @@ pub fn call(db: &mut MockDb, name: &str, args: &[V]) -> Option<Result<V, String>
             _ => Err("*Error* axlGetVarValue: argument #1 should be a variable handle".into()),
         },
         "axlGetSpecData" => match m.resolve(&a[0]) {
-            // GUESS(G21): (op value) pairs.
+            // One flat (op value...) list, the last spec set: ("gt" "1"), ("range" "1" "2")
+            // (live ICADVM20.1 probe; G21 had a list of (op value) pairs).
             Some(Handle::Sdb(k)) => {
                 let o = s0(1);
                 Ok(m.test(k, &s0(2))
                     .and_then(|t| t.outputs.iter().find(|x| x.name == o))
-                    .map_or(V::Nil, |x| {
-                        V::list(
-                            x.spec
-                                .iter()
-                                .map(|(op, v)| V::list(vec![V::str(op), v.clone()]))
-                                .collect(),
-                        )
+                    .and_then(|x| x.spec.last())
+                    .map_or(V::Nil, |(op, v)| {
+                        let mut items = vec![V::str(op)];
+                        match v {
+                            V::List(l) => items.extend(l.iter().cloned()),
+                            other => items.push(other.clone()),
+                        }
+                        V::list(items)
                     }))
             }
             _ => {

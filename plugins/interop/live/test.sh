@@ -36,6 +36,26 @@ mkdir -p "$work"
   echo
   echo "== si errors"
   grep -h -i -e error -e '\*E' "$out"/netlist/*.log 2>/dev/null | sort -u | head -20
+  for f in "$out"/selftest.*.txt; do
+    [[ -f $f ]] || continue
+    if ! grep -q 'SfySelfTest: PASS' "$f"; then
+      echo
+      echo "== $(basename "$f")"
+      cat "$f"
+    fi
+  done
+  for f in "$out"/netlist/*.log; do
+    [[ -f $f ]] || continue
+    grep -q -i -e 'error' "$f" || continue
+    echo
+    echo "== $(basename "$f") (last lines)"
+    tail -12 "$f"
+  done
+  for w in $(find "$out/diffs" -name '*.want' 2>/dev/null | sort); do
+    echo
+    echo "== diff ${w#"$out"/diffs/}"
+    diff -u "$w" "${w%.want}.got" | head -40
+  done
   for n in 1 2; do
     if ! grep -q "INFO session end" "$out/session$n.txt" 2>/dev/null; then
       echo

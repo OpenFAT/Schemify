@@ -94,9 +94,14 @@
     (unless (errset (progn
     (foreach cn (sort (copy (maeGetSetup ?typeName "corners" ?session sess)) nil)
       (setq c (axlGetCorner sdb cn))
-      (if (null c)
-        (SfyRefuse 0 (sprintf nil "maestro %s: corner %s has no handle" test cn))
-        (progn
+      (cond
+        ;; ADE's built-in "Nominal" corner answers handle 0 (live ICADVM20.1 run): it is the
+        ;; test's own setup, not a corner.
+        ((and (or (null c) (equal c 0)) (equal cn "Nominal"))
+          nil)
+        ((or (null c) (equal c 0))
+          (SfyRefuse 0 (sprintf nil "maestro %s: corner %s has no handle" test cn)))
+        (t
           (SfyPut port "corner" (list cn (if (axlGetEnabled c) 1 0)))
           ;; GUESS(G19): axlGetModels gives the corner's model names in setup order.
           (foreach mn (axlGetModels c)
@@ -134,18 +139,24 @@
                           test (getSGq so name))))))
     (foreach x (SfySortByKey outs)
       (SfyPut port "output" x)
-      ;; GUESS(G21): axlGetSpecData gives (op value) pairs, op "gt" "lt" or "range" with
-      ;; value (lo hi).
+      ;; axlGetSpecData: op "gt" "lt" or "range" with its values (shape below).
       (setq sd (errset (axlGetSpecData sdb (car x) test)))
       (unless sd
         (SfyLog (sprintf nil "skipped: maestro %s spec of %s: axlGetSpecData failed" test (car x))))
-      (foreach sp (car sd)
+      ;; ICADVM20.1 answers one flat list, ("gt" "1") or ("range" "1" "2") (live probe);
+      ;; a list of such lists, or (op (lo hi)), is read too.
+      (setq sd (car sd))
+      (foreach sp (if (and sd (stringp (car sd))) (list sd) sd)
         (case (SfyAtomStr (car sp))
           ("gt" (setq specs (cons (list (list (car x) "gt") (SfyAtomStr (cadr sp))) specs)))
           ("lt" (setq specs (cons (list (list (car x) "lt") (SfyAtomStr (cadr sp))) specs)))
           ("range"
-            (setq specs (cons (list (list (car x) "gt") (SfyAtomStr (car (cadr sp)))) specs))
-            (setq specs (cons (list (list (car x) "lt") (SfyAtomStr (cadr (cadr sp)))) specs)))
+            (setq specs (cons (list (list (car x) "gt")
+                                (SfyAtomStr (if (listp (cadr sp)) (car (cadr sp)) (cadr sp))))
+                          specs))
+            (setq specs (cons (list (list (car x) "lt")
+                                (SfyAtomStr (if (listp (cadr sp)) (cadr (cadr sp)) (caddr sp))))
+                          specs)))
           (t (SfyLog (sprintf nil "skipped: maestro %s spec %s %L" test (car x) (car sp)))))))
     (foreach x (SfySortByKey specs)
       (SfyPut port "spec" (list (car (car x)) (cadr (car x)) (cadr x)))))

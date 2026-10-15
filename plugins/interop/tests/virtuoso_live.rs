@@ -421,6 +421,12 @@ fn design_records(text: &str, from: &str, to: &str) -> Result<Vec<String>, Strin
         if !keep || (r.tag == "prop" && r.str(1).is_ok_and(|n| n.starts_with("schemify"))) {
             continue;
         }
+        // Which piece of a split wire a label stays glued to is Virtuoso's choice (a live run
+        // reglued a label to the other piece): the parent ref of a label is not compared.
+        let mut r = r;
+        if r.tag == "label" && r.fields.len() > 1 {
+            r.fields[1] = sfyx::Value::Int(0);
+        }
         let r = Record {
             tag: r.tag.clone(),
             fields: r.fields.iter().map(|v| rename(v, from, to)).collect(),
@@ -1150,6 +1156,14 @@ fn check_exact_round_trip(r: &mut Report, work: &Path, name: &str, dir: &Path) {
         .filter(|(p, _)| is_cell(p))
         .map(|(p, b)| (p, canonical(&b)))
         .collect();
+    // Both versions of every file that differs, for `diff -u` (test.sh prints them).
+    let diffs = work.join("out/diffs").join(name);
+    for (p, w) in &want {
+        if let Some(g) = got.get(p).filter(|g| *g != w) {
+            write(&diffs.join(format!("{p}.want")), w);
+            write(&diffs.join(format!("{p}.got")), g);
+        }
+    }
     for (p, w) in &want {
         match got.get(p) {
             None => return r.add(id, Grade::Fail, format!("{p} did not come back")),

@@ -676,7 +676,8 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
     // Objects belong to one kind of cellview (§4.2, §6.2): terminals and pin figures to a
     // symbol (a schematic's terminals travel as `spin`s), wires, schematic pins and loader
     // records to a schematic.
-    let schematic_only = matches!(r.tag.as_str(), "spin" | "wire" | "conn" | "intent");
+    let schematic_only = matches!(r.tag.as_str(), "conn" | "intent")
+        || (matches!(r.tag.as_str(), "spin" | "wire") && cv.vtype != "schematicSymbol");
     let symbol_only = matches!(r.tag.as_str(), "term" | "pinfig");
     if (schematic_only && cv.vtype != "schematic") || (symbol_only && cv.vtype != "schematicSymbol")
     {
@@ -685,9 +686,10 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
             format!("`{}` does not belong in a {} cellview", r.tag, cv.vtype),
         ));
     }
-    // An instance inside a symbol (a pin master placed without flattening) has no Schemify
-    // form: it is reported, not refused, since a real symbol may hold one.
-    if r.tag == "inst" && cv.vtype == "schematicSymbol" {
+    // An instance inside a symbol (a pin master placed without flattening; the dumper writes
+    // one of a pin cell as `spin`, a live run found such symbols in Cadence's `sample`
+    // library) or a wire there has no Schemify form: reported, not refused.
+    if matches!(r.tag.as_str(), "inst" | "spin" | "wire") && cv.vtype == "schematicSymbol" {
         cv.unknown.push(r.clone());
         return Ok(());
     }

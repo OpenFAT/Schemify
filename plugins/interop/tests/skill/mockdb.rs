@@ -1447,7 +1447,9 @@ impl MockDb {
                     "dbCreateLine" => "line",
                     "dbCreatePolygon" => "polygon",
                     _ => {
-                        extra.push(("width", V::Float(num(&a[3]).expect("checked"))));
+                        let dbu = num(&self.a(cv, "DBUPerUU")).unwrap_or(160.0);
+                        let w = Self::width_on_grid(num(&a[3]).expect("checked"), dbu);
+                        extra.push(("width", V::Float(w)));
                         extra.push((
                             "pathStyle",
                             a.get(4).cloned().unwrap_or(V::str("truncateExtend")),
@@ -1634,7 +1636,7 @@ impl MockDb {
                     .filter_map(pt)
                     .map(|(x, y)| (snap(snap(x, xs), 1.0 / dbu), snap(snap(y, ys), 1.0 / dbu)))
                     .collect();
-                let width = num(&a[6]).unwrap_or(0.0);
+                let width = Self::width_on_grid(num(&a[6]).unwrap_or(0.0), dbu);
                 // A segment that already exists makes the call return nil (research §4.2, VCLI).
                 for w in pts.windows(2) {
                     if self.segment_exists(cv, w[0], w[1]) {
@@ -1954,6 +1956,16 @@ impl MockDb {
             .map(|k| format!("{prefix}{k}"))
             .find(|n| !self.inst_named(cv, n))
             .expect("a free name")
+    }
+
+    /// A path or wide-wire width as Virtuoso stores it: rounded up to a multiple of two
+    /// database units (0.0125 inch at 160; DB-270376 on a live ICADVM20.1 run).
+    fn width_on_grid(w: f64, dbu: f64) -> f64 {
+        if w <= 0.0 {
+            return w;
+        }
+        let step = 2.0 / dbu;
+        (w / step - 1e-9).ceil() * step
     }
 
     /// Splits every two-point wire of `cv` at each wire end that lies strictly inside it

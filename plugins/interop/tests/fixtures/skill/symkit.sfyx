@@ -19,7 +19,7 @@
 ("shape" 13 "arc" "device" "drawing" (-10000 -30000 10000 -10000 0 1570796) 0)
 ("shape" 14 "polygon" "device" "drawing1" (-10000 -10000 10000 0 -10000 10000) 0)
 ("shape" 15 "ellipse" "device" "drawing" (20000 -5000 30000 5000) 0)
-("shape" 16 "path" "device" "drawing1" (30000 0 40000 0) 5000)
+("shape" 16 "path" "device" "drawing1" (30000 0 40000 0) 6000)
 ("prop" 0 "schemifyRecords1" "string" "doc \"every shape\"")
 ("prop" 3 "schemifyId" "string" "p0002")
 ("end")

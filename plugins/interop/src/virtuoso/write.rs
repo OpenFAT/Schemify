@@ -32,8 +32,9 @@ pub const UPI: i32 = MILLI_PER_INCH as i32;
 /// Half the side of an exported symbol pin rectangle (1/80 inch).
 pub const PIN_HALF: i32 = 2_000;
 
-/// Width of an exported bus wire (1/32 inch); 0 is a narrow wire.
-pub const BUS_WIDTH: i32 = 5_000;
+/// Width of an exported bus wire (3/80 inch, on Virtuoso's 2-DBU width grid: 1/32 inch came
+/// back rounded up to this on a live run); 0 is a narrow wire.
+pub const BUS_WIDTH: i32 = 6_000;
 
 /// Height of exported wire and pin-name labels (1/16 inch).
 pub const LABEL_HEIGHT: i32 = 10_000;

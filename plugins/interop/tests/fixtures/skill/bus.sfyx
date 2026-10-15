@@ -20,7 +20,7 @@
 ("cell" "bus" "design")
 ("cv" "schematic" "schematic" 160000)
 ("inst" 1 "R<3:0>" "analogLib" "res" "symbol" 100000 -100000 "R90")
-("wire" 2 (0 0 200000 0) 5000)
+("wire" 2 (0 0 200000 0) 6000)
 ("wire" 3 (0 100000 0 200000) 0)
 ("wire" 4 (100000 -200000 100000 -140000) 0)
 ("label" 5 3 "[@vdd:%:vdd!]" 0 150000 "R90" "lowerLeft" "stick" 10000 "NLP" "wire" "label")
