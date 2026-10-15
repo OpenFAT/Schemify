@@ -921,16 +921,35 @@
         ("rect" (dbCreateRect sfyCv lpp (SfyPts c)))
         ("ellipse" (dbCreateEllipse sfyCv lpp (SfyPts c)))
         ("arc"
-          ;; GUESS(G10): an arc is created on its ellipse box, then its angles are set.
           ;; coords (x1 y1 x2 y2 a0 a1): the ellipse box, then the angles in micro-radians.
-          (setq s (dbCreateArc sfyCv lpp (SfyPts (list (nth 0 c) (nth 1 c) (nth 2 c) (nth 3 c)))
-                    (SfyPts (list (nth 0 c) (nth 1 c) (nth 2 c) (nth 3 c)))))
-          (when s
-            (setSGq s (quotient (float (nth 4 c)) 1000000.0) startAngle)
-            (setSGq s (quotient (float (nth 5 c)) 1000000.0) stopAngle))
-          s)
+          ;; dbCreateArc takes the ellipse box and the arc's own box, and the arc is the part
+          ;; of the ellipse inside that box (a live run refused the ellipse box twice:
+          ;; DB-270000).
+          (dbCreateArc sfyCv lpp (SfyPts (list (nth 0 c) (nth 1 c) (nth 2 c) (nth 3 c)))
+            (SfyPts (SfyArcBox c))))
         (t nil)))
     (SfyCreated s lr (sprintf nil "%s shape" (nth 1 f)))))
+
+;; The box of an arc (x1 y1 x2 y2 a0 a1: its ellipse box in dump units, then its angles in
+;; micro-radians, counter-clockwise, y up): its two ends and every axis point of the ellipse
+;; between them.
+(procedure (SfyArcBox c)
+  (let ((cx (quotient (plus (nth 0 c) (nth 2 c)) 2.0)) (cy (quotient (plus (nth 1 c) (nth 3 c)) 2.0))
+        (rx (quotient (difference (nth 2 c) (nth 0 c)) 2.0))
+        (ry (quotient (difference (nth 3 c) (nth 1 c)) 2.0))
+        (a0 (quotient (float (nth 4 c)) 1000000.0)) (a1 (quotient (float (nth 5 c)) 1000000.0))
+        (twopi 6.283185307179586) (xs nil) (ys nil) (q 0.0))
+    (when (lessp a1 a0) (setq a1 (plus a1 twopi)))
+    (foreach a (list a0 a1)
+      (setq xs (cons (plus cx (times rx (cos a))) xs))
+      (setq ys (cons (plus cy (times ry (sin a))) ys)))
+    (for k 0 7
+      (setq q (times k 1.5707963267948966))
+      (when (and (greaterp q a0) (lessp q a1))
+        (setq xs (cons (plus cx (times rx (cos q))) xs))
+        (setq ys (cons (plus cy (times ry (sin q))) ys))))
+    (list (round (apply 'min xs)) (round (apply 'min ys))
+          (round (apply 'max xs)) (round (apply 'max ys)))))
 
 ;; ---------------------------------------------------------------- properties
 

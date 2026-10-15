@@ -190,9 +190,8 @@
     (dbCreatePolygon cv (list "device" "drawing1") (list (SfyFixP -10 -10) (SfyFixP 10 0) (SfyFixP -10 10)))
     (dbCreateEllipse cv (list "device" "drawing") (SfyFixBox 20 -5 30 5))
     (dbCreateEllipse cv (list "device" "drawing") (SfyFixBox -30 30 -10 40))
-    (setq a (dbCreateArc cv (list "device" "drawing") (SfyFixBox -10 -30 10 -10) (SfyFixBox -10 -30 10 -10)))
-    (setSGq a 0.0 startAngle)
-    (setSGq a 1.5707963267948966 stopAngle)
+    ;; A quarter arc (0 to pi/2): its box is the quarter of the ellipse box it covers.
+    (setq a (dbCreateArc cv (list "device" "drawing") (SfyFixBox -10 -30 10 -10) (SfyFixBox 0 -20 10 -10)))
     (dbCreatePath cv (list "device" "drawing1") (list (SfyFixP 30 0) (SfyFixP 40 0)) (SfyFixU 5))
     (dbCreateRect cv (list "instance" "drawing") (SfyFixBox -50 -50 50 50))
     (setq net (dbMakeNet cv "A"))

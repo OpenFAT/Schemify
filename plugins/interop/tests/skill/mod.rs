@@ -554,6 +554,8 @@ const BUILTINS: &[&str] = &[
     "geqp",
     "zerop",
     "abs",
+    "sin",
+    "cos",
     "round",
     "fix",
     "float",
@@ -1501,6 +1503,11 @@ impl<H: Host> Interp<H> {
                         V::Int(i) => V::Int(i - 1),
                         v => V::Float(num(v)? - 1.0),
                     }
+                }
+                "sin" | "cos" => {
+                    need(1)?;
+                    let x = num(&a[0])?;
+                    V::Float(if name == "sin" { x.sin() } else { x.cos() })
                 }
                 "abs" => {
                     need(1)?;

@@ -1465,16 +1465,19 @@ impl MockDb {
                     return Ok(V::Nil);
                 }
                 let (p, q) = bb(&a[2]).expect("checked");
-                // GUESS(G10): the angles start as the arc box implies (modelled as 0..pi) and
-                // are then set through startAngle/stopAngle.
+                // The arc is the part of the ellipse inside the arc box (live ICADVM20.1: an
+                // arc box that is the ellipse box is refused, DB-270000).
+                let Some((s0, s1)) = bb(&a[3]).and_then(|arc| Self::arc_angles((p, q), arc)) else {
+                    return Ok(V::Nil);
+                };
                 V::Obj(self.new_shape(
                     cv,
                     "arc",
                     &Self::lpp(&a[1]),
                     vec![
                         ("ellipseBBox", vbox(p, q)),
-                        ("startAngle", V::Float(0.0)),
-                        ("stopAngle", V::Float(std::f64::consts::PI)),
+                        ("startAngle", V::Float(s0)),
+                        ("stopAngle", V::Float(s1)),
                     ],
                 ))
             }
@@ -1956,6 +1959,56 @@ impl MockDb {
             .map(|k| format!("{prefix}{k}"))
             .find(|n| !self.inst_named(cv, n))
             .expect("a free name")
+    }
+
+    /// The angles (counter-clockwise from +x, y up) of the part of the ellipse in box `e`
+    /// that lies inside box `arc`; `None` when that is all of it or nothing.
+    fn arc_angles(
+        e: ((f64, f64), (f64, f64)),
+        arc: ((f64, f64), (f64, f64)),
+    ) -> Option<(f64, f64)> {
+        use std::f64::consts::{FRAC_PI_2, PI, TAU};
+        let (cx, cy) = ((e.0.0 + e.1.0) / 2.0, (e.0.1 + e.1.1) / 2.0);
+        let (rx, ry) = ((e.1.0 - e.0.0) / 2.0, (e.1.1 - e.0.1) / 2.0);
+        let inside = |t: f64| {
+            let (x, y) = (cx + rx * t.cos(), cy + ry * t.sin());
+            x >= arc.0.0 - 1e-9 && x <= arc.1.0 + 1e-9 && y >= arc.0.1 - 1e-9 && y <= arc.1.1 + 1e-9
+        };
+        let mut cut = vec![0.0, FRAC_PI_2, PI, 3.0 * FRAC_PI_2];
+        for x in [arc.0.0, arc.1.0] {
+            let a = ((x - cx) / rx).clamp(-1.0, 1.0).acos();
+            cut.extend([a, TAU - a]);
+        }
+        for y in [arc.0.1, arc.1.1] {
+            let a = ((y - cy) / ry).clamp(-1.0, 1.0).asin();
+            cut.extend([a.rem_euclid(TAU), (PI - a).rem_euclid(TAU)]);
+        }
+        for c in &mut cut {
+            *c = c.rem_euclid(TAU);
+            if TAU - *c < 1e-12 {
+                *c = 0.0;
+            }
+        }
+        cut.sort_by(f64::total_cmp);
+        cut.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+        let n = cut.len();
+        let span = |k: usize| (cut[k], if k + 1 < n { cut[k + 1] } else { cut[0] + TAU });
+        let ins: Vec<bool> = (0..n)
+            .map(|k| {
+                let (a, b) = span(k);
+                inside((a + b) / 2.0)
+            })
+            .collect();
+        // The arc starts after an outside span and runs over the inside ones that follow.
+        let first = (0..n).find(|&k| ins[k] && !ins[(k + n - 1) % n])?;
+        let mut last = first;
+        while ins[(last + 1) % n] && (last + 1) % n != first {
+            last = (last + 1) % n;
+        }
+        let (s0, _) = span(first);
+        let (_, s1) = span(last);
+        let s1 = if s1 > TAU + 1e-12 { s1 - TAU } else { s1 };
+        Some((s0, s1))
     }
 
     /// A path or wide-wire width as Virtuoso stores it: rounded up to a multiple of two

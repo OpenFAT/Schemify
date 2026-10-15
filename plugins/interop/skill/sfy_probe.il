@@ -225,7 +225,7 @@
                       (dbReplaceProp sfyCv "sfyProbeB" "boolean" t)
                       (fprintf sfyP "boolean prop reads %L\n" (getSGq sfyCv sfyProbeB))
                       (setq sfyX (dbCreateArc sfyCv (list "text" "drawing") (list (list 0.0 2.0) (list 1.0 3.0))
-                                (list (list 0.0 2.0) (list 1.0 3.0))))
+                                (list (list 0.5 2.5) (list 1.0 3.0))))
                       (when sfyX
                         (fprintf sfyP "arc created start=%L stop=%L\n" (getSGq sfyX startAngle) (getSGq sfyX stopAngle))
                         (setSGq sfyX 0.5 startAngle)
