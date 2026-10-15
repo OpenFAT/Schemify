@@ -122,6 +122,9 @@ pub struct Mae {
     pub sessions: Vec<Option<Session>>,
     /// Names of the maestro functions called, in order.
     pub calls: Vec<String>,
+    /// Environment options every new test starts with, as a PDK's `libInit.il` sets them
+    /// (live GF22 run: its default model files).
+    pub default_env: Vec<(String, V)>,
     handles: Vec<Handle>,
 }
 
@@ -318,6 +321,7 @@ pub fn call(db: &mut MockDb, name: &str, args: &[V]) -> Option<Result<V, String>
                 name: n,
                 design: (get("lib"), get("cell"), get("view")),
                 simulator: get("simulator"),
+                env: m.default_env.clone(),
                 ..Test::default()
             };
             m.setup(k).tests.push(t);

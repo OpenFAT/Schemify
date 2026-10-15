@@ -2009,6 +2009,15 @@ fn mock(work: &Path) -> Interp<MockDb> {
     let mut all = vec!["analogLib", "basic"];
     all.extend(libs.lines());
     let mut i = skill::virtuoso(&all);
+    // Every new maestro test starts with a PDK's default model files, as GF22's libInit
+    // gives them (live run): the loads must clear them.
+    i.host.mae.default_env = vec![(
+        "modelFiles".to_owned(),
+        skill::V::list(vec![skill::V::list(vec![
+            skill::V::str("/pdk/design_wrapper.lib.scs"),
+            skill::V::str("tt_pre"),
+        ])]),
+    )];
     i.load(interop::skill::PROBE).unwrap();
     i.load(LIVE_IL).unwrap();
     i.load(BUILD).unwrap();

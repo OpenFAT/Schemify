@@ -593,6 +593,58 @@ fn skill_loader_and_dumper_round_trip_on_the_mock_maestro() {
     assert!(i.host.mae.calls.iter().any(|c| c == "maeDeleteTest"));
 }
 
+/// A session that gives every new test default model files (a PDK's libInit, live GF22
+/// run): a bench without models loads with none, and one with models with exactly its own.
+#[test]
+fn the_exported_model_list_replaces_the_session_defaults() {
+    let defaults = || {
+        vec![(
+            "modelFiles".to_owned(),
+            V::list(vec![V::list(vec![
+                V::str("/pdk/design_wrapper.lib.scs"),
+                V::str("tt_pre"),
+            ])]),
+        )]
+    };
+    let models_of = |text: &str| -> Vec<String> {
+        sfyx::read(text)
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.tag == "model" && r.str(0) == Ok(""))
+            .map(|r| r.str(1).unwrap().to_owned())
+            .collect()
+    };
+    let base: String = gen_bench(5, false)
+        .text
+        .lines()
+        .filter(|l| !l.starts_with("  | .include") && !l.starts_with("  | .lib"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    for (bench, want) in [
+        (canonical(&base), vec![]),
+        (
+            canonical(&base.replace(
+                "code sim spice\n",
+                "code sim spice\n  | .lib ${PDK}/m.lib tt\n",
+            )),
+            vec!["$PDK/m.lib".to_owned()],
+        ),
+    ] {
+        let (text, _) = export(&project(&bench));
+        let mut i = interp();
+        i.host.mae.default_env = defaults();
+        i.files.insert("/t/in.sfyx".into(), text);
+        let ok = run(&mut i, r#"(SfyImport "/t/in.sfyx")"#);
+        let log = i.files["/t/in.sfyx.log"].clone();
+        assert!(ok.truthy(), "{log}");
+        run(
+            &mut i,
+            r#"(SfyExport "/t/out.sfyx" "schemify" (list "tb"))"#,
+        );
+        assert_eq!(models_of(&i.files["/t/out.sfyx"]), want, "{log}");
+    }
+}
+
 #[test]
 fn test_variables_override_globals_and_one_view_takes_several_tests() {
     let (text, _) = export(&project(&canonical(&gen_bench(5, false).text)));

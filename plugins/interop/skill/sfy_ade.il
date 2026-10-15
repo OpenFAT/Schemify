@@ -346,5 +346,12 @@
       (when (and opts (null (car (errset (maeSetEnvOption name ?options (reverse opts)
                                                 ?session sess)))))
         (SfyRefuse (car (car test)) (sprintf nil "maestro %s: model or definition files did not land" name)))
+      ;; The export's model files are the test's: a bench without any clears what the session
+      ;; gave the new test (a PDK's libInit gives every new test its default model files; live
+      ;; GF22 run). Not clearing them is logged, not refused: the setup is still usable.
+      (unless models
+        (if (car (errset (maeSetEnvOption name ?options (list (list "modelFiles" nil)) ?session sess)))
+          (SfyCount "maestro default models cleared")
+          (SfyLog (sprintf nil "maestro %s: the session's default model files stay on the test" name))))
       (unless (car (errset (maeSaveSetup ?lib tlib ?cell cell ?view "maestro" ?session sess)))
         (SfyRefuse (car (car test)) (sprintf nil "cannot save %s/%s/maestro" tlib cell))))))
