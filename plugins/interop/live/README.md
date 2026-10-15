@@ -60,6 +60,7 @@ retarget map:
 | `--pdk LIB[/CELL]` | The PDK mirror: every device of `LIB` dumped and imported as Schemify cells. With `/CELL`, the probe also records that transistor's CDF and callbacks. |
 | `--callbacks` | Loads your `--cell` cells again with the PDK's CDF callbacks running, as the Edit Properties form runs them. |
 | `--retarget MAP` | The gm/Id retarget of the Exercise 1 benches onto your PDK, with your target map (spec `interop.md` §10.2). Needs `ocean` and `spectre`. |
+| `--env FILE` | A csh file that sets up Cadence (your site's `cadence.csh`): the kit sources it through csh and runs with that environment, so `test.sh --env cadence.csh …` works from bash or over `ssh host '…'` without sourcing anything first. |
 | `--cdslib FILE` | Another `cds.lib` (default `./cds.lib`). |
 | `--work DIR` | Where everything goes (default `./sfylive`). The Virtuoso libraries live in `DIR/libs`. |
 | `--step STEP` | Runs one step (below) instead of all. |
@@ -139,6 +140,6 @@ areas are skipped. So a failure on a real Virtuoso means Virtuoso behaves differ
 reading of its manuals; it does not point at the kit. `sfy_live.il` is parsed by the same
 SKILL reader that gates the shipped scripts.
 
-The `si.env` keys and the `si -batch -command nl` call follow common site setups and are not
-covered by the mock. If the netlist checks fail with an si usage error, the log is in
-`out/netlist/*.log`.
+The `si.env` keys and the `si -batch` calls (`-command nl` for Spectre, `-command netlist`
+plus the CDL Out form's keys for auCdl, both checked on ICADVM20.1) are not covered by the
+mock. If the netlist checks fail with an si usage error, the log is in `out/netlist/*.log`.

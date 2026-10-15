@@ -2,8 +2,13 @@
 # Live Virtuoso test kit for the interop plugin: one command on a machine with Cadence
 # Virtuoso and this repository's Rust toolchain. See README.md next to this file.
 #
-#   plugins/interop/live/run.sh [--cdslib FILE] [--work DIR] [--cell LIB/CELL]... [--lib LIB]...
-#       [--project DIR]... [--pdk LIB[/CELL]] [--callbacks] [--retarget MAP] [--step STEP]
+#   plugins/interop/live/run.sh [--env FILE] [--cdslib FILE] [--work DIR] [--cell LIB/CELL]...
+#       [--lib LIB]... [--project DIR]... [--pdk LIB[/CELL]] [--callbacks] [--retarget MAP]
+#       [--step STEP]
+#
+# --env FILE sources a csh environment file (a site's cadence.csh) through csh first and
+# runs everything with the environment it sets, so the kit runs from any shell, including a
+# non-interactive ssh command.
 #
 # Steps, in order (--step runs one; the default runs all):
 #   prepare   Rust: exports and session1.il                    (needs cargo)
@@ -29,8 +34,24 @@ virtuoso="${SFYLIVE_VIRTUOSO:-virtuoso -nograph -restore}"
 timeout_s="${SFYLIVE_TIMEOUT:-3600}"
 
 die() { echo "run.sh: $*" >&2; exit 2; }
+
+# Imports the environment a csh file sets (csh -f: only what the file does, not ~/.cshrc).
+load_env() {
+  [[ -f $1 ]] || die "no environment file $1"
+  command -v csh >/dev/null || die "--env needs csh to source $1"
+  local dir kv n
+  dir="$(cd "$(dirname "$1")" && pwd)"
+  while IFS= read -r -d '' kv; do
+    n="${kv%%=*}"
+    case "$n" in PWD|OLDPWD|SHLVL|_|"") continue ;; esac
+    [[ $n =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$kv" 2>/dev/null
+  done < <(cd "$dir" && csh -f -c "source '$1' >& /dev/null; env -0")
+  command -v virtuoso >/dev/null || die "$1 did not put virtuoso on PATH"
+}
+
 while (($#)); do
   case "$1" in
+    --env) load_env "$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"; shift 2 ;;
     --work) work="$2"; shift 2 ;;
     --cdslib) cdslib="$2"; shift 2 ;;
     --cell) cells+=("$2"); shift 2 ;;
@@ -40,10 +61,12 @@ while (($#)); do
     --callbacks) callbacks=1; shift ;;
     --retarget) target="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"; shift 2 ;;
     --step) step="$2"; shift 2 ;;
-    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument $1 (see --help)" ;;
   esac
 done
+# Rust installed with rustup lives in ~/.cargo/bin, which a non-interactive shell may lack.
+command -v cargo >/dev/null || [[ ! -x $HOME/.cargo/bin/cargo ]] || export PATH="$HOME/.cargo/bin:$PATH"
 [[ -f "$cdslib" ]] || die "no cds.lib at $cdslib: run from your Virtuoso project directory or pass --cdslib"
 cdslib="$(cd "$(dirname "$cdslib")" && pwd)/$(basename "$cdslib")"
 mkdir -p "$work/out" "$work/libs"
@@ -85,11 +108,14 @@ netlists() {
   rm -rf "$nl"; mkdir -p "$nl"
   if ! command -v si >/dev/null; then echo "si not on PATH" > "$nl/SKIPPED"; return; fi
   while read -r lib cell sim; do
-    local d="$work/si/$lib.$cell.$sim" key="$lib.$cell.$sim" views stop
+    local d="$work/si/$lib.$cell.$sim" key="$lib.$cell.$sim" views stop command=nl
     rm -rf "$d"; mkdir -p "$d"
     printf 'INCLUDE %s\n' "$work/cds.lib" > "$d/cds.lib"
     if [[ $sim == auCdl ]]; then
       views="'(\"auCdl\" \"schematic\")"; stop="'(\"auCdl\")"
+      # auCdl takes `-command netlist` (`nl` exits 255 silently) and the CDL Out form's
+      # keys (without them it stops after hnlInit, exit 255, empty netlist): ICADVM20.1.
+      command=netlist
     else
       views="'(\"spectre\" \"cmos_sch\" \"cmos.sch\" \"schematic\" \"veriloga\")"; stop="'(\"spectre\")"
     fi
@@ -105,7 +131,33 @@ simStopList = $stop
 simNetlistHier = 't
 hnlNetlistFileName = "netlist"
 EOF
-    (cd "$d" && timeout 600 si -batch -command nl > "$nl/$key.log" 2>&1 </dev/null)
+    [[ $sim == auCdl ]] && cat >> "$d/si.env" <<'EOF'
+resistorModel = ""
+shortRES = 2000.0
+preserveRES = 't
+checkRESVAL = 't
+checkRESSIZE = 'nil
+preserveCAP = 't
+checkCAPVAL = 't
+checkCAPAREA = 'nil
+checkCAPPERI = 'nil
+preserveDIO = 't
+checkDIOAREA = 't
+checkDIOPERI = 't
+simPrintInhConnAttributes = 'nil
+checkScale = "meter"
+checkLDD = 'nil
+pinMAP = 'nil
+preserveBangInNetlist = 'nil
+shrinkFACTOR = 0.0
+globalPowerSig = ""
+globalGndSig = ""
+displayPININFO = 't
+preserveALL = 't
+setEQUIV = ""
+incFILE = ""
+EOF
+    (cd "$d" && timeout 600 si -batch -command "$command" > "$nl/$key.log" 2>&1 </dev/null)
     echo "$?" > "$nl/$key.status"
     for l in "$d"/*.log; do [[ -f "$l" ]] && { echo "== $(basename "$l")"; cat "$l"; } >> "$nl/$key.log"; done
     local f
