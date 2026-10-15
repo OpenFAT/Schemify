@@ -1295,14 +1295,29 @@ fn verify(work: &Path, o: &Opts) -> Report {
                     r.add(
                         format!("session{n}"),
                         Grade::Fail,
-                        "stopped early: see out/CDS.log for the dialog or error",
+                        format!(
+                            "stopped early: see out/CDS.session{n}.log for the dialog or error"
+                        ),
                     );
                 }
+            }
+            None if n == 1 => {
+                // Nothing else can be graded: say so once instead of failing every check.
+                let why = "Virtuoso did not start or did not load session1.il: see \
+                           out/CDS.session1.log and run.sh's terminal output (a host that cannot \
+                           run Virtuoso shows an OpenAccess or licence error there)";
+                r.add("session1", Grade::Fail, why);
+                let md = format!(
+                    "# Virtuoso live test report\n\nVerdict: **NOT RUN**: Virtuoso did not start.\n\n\
+                     | Check | Result | Detail |\n|---|---|---|\n| session1 | FAIL | {why} |\n"
+                );
+                write(&out.join("report.md"), md);
+                return r;
             }
             None => r.add(
                 format!("session{n}"),
                 Grade::Fail,
-                "did not run: see out/CDS.log",
+                format!("did not run: see out/CDS.session{n}.log"),
             ),
         }
         if n == 1 {
