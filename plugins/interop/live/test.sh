@@ -42,11 +42,17 @@ mkdir -p "$work"
       echo
       echo "== $(basename "$f")"
       cat "$f"
+      # The two dumps, library names aligned: "SfySelfTest <lib>/<cell> through <scratch>".
+      read -r _ lc _ scratch < "$f"
+      a="${f%.txt}.a.sfyx" b="${f%.txt}.b.sfyx"
+      if [[ -f $a && -f $b ]]; then
+        diff <(sed "s/\"${lc%%/*}\"/\"L\"/g" "$a") <(sed "s/\"$scratch\"/\"L\"/g" "$b") | head -30
+      fi
     fi
   done
   for f in "$out"/netlist/*.log; do
     [[ -f $f ]] || continue
-    grep -q -i -e 'error' "$f" || continue
+    [[ $(cat "${f%.log}.status" 2>/dev/null) == 0 ]] && continue
     echo
     echo "== $(basename "$f") (last lines)"
     tail -12 "$f"

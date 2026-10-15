@@ -1802,6 +1802,77 @@ fn emit<F: Fn(&str) -> Option<InstInfo>>(
 
 /// An ADE output expression as a calculator expression (the inverse of [`out_to_ade`]);
 /// `None` when it uses anything else or does not compile.
+/// `value(y x)`, `cross(y l n "edge")`, `xval(y)` or `OP("/path" "param")`, the call of
+/// ADE function `f` between tokens `open` and `close` of `e`, as the calculator expression
+/// export turned into it.
+fn ade_call_back(e: &str, t: &[(Tk, &str)], f: &str, open: usize, close: usize) -> Option<String> {
+    // Arguments are separated by white space at depth 0 between two operands (`a - b`
+    // stays one argument).
+    let offset = |s: &str| s.as_ptr() as usize - e.as_ptr() as usize;
+    let mut args: Vec<&str> = Vec::new();
+    let mut depth = 0u32;
+    let mut start: Option<usize> = None;
+    let mut last: Option<(Tk, &str)> = None;
+    for k in open + 1..close {
+        let (kind, s) = t[k];
+        match kind {
+            Tk::Ws if depth == 0 => {
+                let next = t[next_tok(t, k)..close].first().copied();
+                let op = |x: Option<(Tk, &str)>| {
+                    x.is_some_and(|(k, s)| k == Tk::Op && !matches!(s, "(" | ")"))
+                };
+                if let Some(a) = start.filter(|_| !op(last) && !op(next)) {
+                    args.push(&e[a..offset(s)]);
+                    start = None;
+                }
+                continue;
+            }
+            Tk::Op if s == "(" => depth += 1,
+            Tk::Op if s == ")" => depth = depth.checked_sub(1)?,
+            _ => {}
+        }
+        start.get_or_insert(offset(s));
+        if kind != Tk::Ws {
+            last = Some((kind, s));
+        }
+    }
+    if let Some(a) = start {
+        args.push(e[a..offset(t[close].1)].trim_end());
+    }
+    let unquote = |s: &str| {
+        s.strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .filter(|s| !s.contains(['"', '\\']))
+            .map(str::to_owned)
+    };
+    Some(match (f, args.as_slice()) {
+        ("value", [y, x0]) => format!("at({}, {})", out_from_ade(y)?, out_from_ade(x0)?),
+        ("xval", [_]) => "x()".to_owned(),
+        ("cross", [y, l, n, edge]) => {
+            let e = match unquote(edge)?.as_str() {
+                "either" => "0",
+                "rising" => "1",
+                "falling" => "-1",
+                _ => return None,
+            };
+            let (y, l) = (out_from_ade(y)?, out_from_ade(l)?);
+            match (*n, e) {
+                ("1", "0") => format!("cross({y}, {l})"),
+                ("1", _) => format!("cross({y}, {l}, {e})"),
+                (n, _) if n.parse::<u32>().is_ok_and(|n| n > 0) => {
+                    format!("cross({y}, {l}, {e}, {n})")
+                }
+                _ => return None,
+            }
+        }
+        ("OP", [path, param]) => {
+            let (path, param) = (unquote(path)?, unquote(param)?);
+            format!("op(\"{}\", \"{param}\")", path.strip_prefix('/')?)
+        }
+        _ => return None,
+    })
+}
+
 fn out_from_ade(e: &str) -> Option<String> {
     let t = out_tokens(e)?;
     let mut out = String::with_capacity(e.len());
@@ -1848,6 +1919,16 @@ fn out_from_ade(e: &str) -> Option<String> {
                         }
                     }
                     k = after;
+                    continue;
+                }
+                // The calls export writes with several space-separated arguments, back to
+                // their calculator form (§9.1 outputs table read backwards).
+                if matches!(x, "value" | "cross" | "xval" | "OP")
+                    && t.get(open).is_some_and(|n| n.1 == "(")
+                {
+                    let close = close_of(&t, open)?;
+                    out.push_str(&ade_call_back(e, &t, x, open, close)?);
+                    k = close + 1;
                     continue;
                 }
                 if t.get(open).is_some_and(|n| n.1 == "(") {
@@ -2196,11 +2277,14 @@ pub fn import(records: &[Record], bench: &mut Document<'static>, cell: &str, not
         }
     }
     // The analysis block: SPICE when every analysis has a SPICE form, else Spectre.
+    // ADE answers the test temperature 27 when nothing set it (live run): no `.temp` line
+    // then (a bench that wrote `.temp 27` loses only that spelling of the default).
     let temp = t
         .vars
         .iter()
         .find(|v| v.0 == "temperature" && v.2.is_empty())
-        .map(|v| &v.1);
+        .map(|v| &v.1)
+        .filter(|v| v.parse::<f64>().is_ok_and(|x| x != 27.0) || v.parse::<f64>().is_err());
     let enabled: Vec<&Analysis> = t
         .analyses
         .iter()
@@ -2505,6 +2589,33 @@ fn spice_form(name: &str, opts: &[(String, String)]) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What ICADVM20.1 answered for exported outputs (live run 2026-10-15: numbers come back
+    /// reformatted, arguments space-separated) reads back as the calculator form.
+    #[test]
+    fn multi_argument_outputs_read_back_from_maestro() {
+        for (ade, calc) in [
+            (
+                r#"cross(VT("/out") 0.6321206 1 "either")"#,
+                "cross(v(out), 0.6321206)",
+            ),
+            (
+                r#"cross(VT("/out") 0.5 2 "rising")"#,
+                "cross(v(out), 0.5, 1, 2)",
+            ),
+            (
+                r#"cross(VT("/out") 0.5 1 "falling")"#,
+                "cross(v(out), 0.5, -1)",
+            ),
+            (r#"value(VT("/out") 0.001)"#, "at(v(out), 0.001)"),
+            (r#"value(VDC("/out") 0.001)"#, "at(v(out), 0.001)"),
+            (r#"OP("/X1/M2" "gm")"#, r#"op("X1/M2", "gm")"#),
+            (r#"2*value(VT("/a") 1m - 1u)"#, "2*at(v(a), 1m - 1u)"),
+        ] {
+            assert_eq!(out_from_ade(ade).as_deref(), Some(calc), "{ade}");
+        }
+        assert_eq!(out_from_ade(r#"cross(VT("/out") 0.5 1 "sideways")"#), None);
+    }
 
     #[test]
     fn outputs_translate_both_ways() {

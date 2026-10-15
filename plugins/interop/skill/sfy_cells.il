@@ -547,7 +547,29 @@
         ((arrayref c "cdf") (SfyLoadCdf c)))
       (foreach v (arrayref c "cvs")
         (unless (equal (arrayref v "type") "schematic") (SfyLoadCv c v)))
+      (unless (SfyKeptP c "symbol") (SfyLoadStopViews c))
       (foreach lr (arrayref c "texts") (SfyLoadText c lr)))))
+
+;; A primitive (simInfo, no schematic in the dump) gets its symbol a second time as the
+;; stopping view of each netlister it has simInfo for, spectre and auCdl, as analogLib cells
+;; have: without one the netlister descends into the cell and fails (OSSHNL-116 on a live
+;; ICADVM20.1 run). The dumper reads only symbol and schematic, so these never travel back.
+(procedure (SfyLoadStopViews c)
+  (let ((sfySym (car (setof sfyV (arrayref c "cvs") (equal (arrayref sfyV "view") "symbol"))))
+        (sfySims nil))
+    (foreach sfyLr (arrayref c "cdf")
+      (when (and (equal (car (cadr sfyLr)) "siminfo")
+                 (member (nth 1 (cadr sfyLr)) (list "spectre" "auCdl")))
+        (setq sfySims (cons (nth 1 (cadr sfyLr)) sfySims))))
+    (when (and sfySym
+               (not (exists sfyV (arrayref c "cvs") (equal (arrayref sfyV "type") "schematic"))))
+      (foreach sfySim (reverse sfySims)
+        (if (and (ddGetObj (arrayref c "lib") (arrayref c "name") sfySim) (not sfyOverwrite))
+          (SfyCount "kept stop view")
+          (progn
+            (setarray sfySym "view" sfySim)
+            (SfyLoadCv c sfySym)
+            (setarray sfySym "view" "symbol")))))))
 
 ;; True when the dump marks cellview `view` of cell c schemifyKeep (unchanged in Schemify
 ;; since it was imported, spec 7.5) and the library has that cellview: the loader leaves it,

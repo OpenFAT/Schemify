@@ -678,7 +678,12 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
     // records to a schematic.
     let schematic_only = matches!(r.tag.as_str(), "conn" | "intent")
         || (matches!(r.tag.as_str(), "spin" | "wire") && cv.vtype != "schematicSymbol");
-    let symbol_only = matches!(r.tag.as_str(), "term" | "pinfig");
+    let symbol_only = r.tag == "term";
+    // A pin figure in a schematic (Cadence's sample library has them) is reported below.
+    if r.tag == "pinfig" && cv.vtype != "schematicSymbol" {
+        cv.unknown.push(r.clone());
+        return Ok(());
+    }
     if (schematic_only && cv.vtype != "schematic") || (symbol_only && cv.vtype != "schematicSymbol")
     {
         return Err(err(
@@ -1480,7 +1485,59 @@ fn own_default(def: &str, names: &[&str]) -> Option<String> {
         return None;
     }
     let p = schemify_expr::Program::compile(&t.text, schemify_expr::Mode::Scalar).ok()?;
-    p.idents().all(|i| names.contains(&i)).then_some(t.text)
+    p.idents()
+        .all(|i| names.contains(&i))
+        .then(|| si_text(&t.text))
+}
+
+/// A number literal as engineering text (`150.00n` → `150n`, `900.0m`, `0.9` → `900m`); any
+/// other text unchanged. Virtuoso reformats the numbers of parseAsNumber CDF parameters
+/// (live ICADVM20.1 run: `0.15u` came back `150.00n`), so both sides of the stash
+/// comparison (§7.3) read them through this.
+pub fn si_text(t: &str) -> String {
+    let Ok(x) = schemify_expr::parse_num(t.trim()) else {
+        return t.to_owned();
+    };
+    if x == 0.0 || !x.is_finite() {
+        return if x == 0.0 { "0".into() } else { t.to_owned() };
+    }
+    // Shortest round-trip mantissa digits and decimal exponent of |x|.
+    let e = format!("{:e}", x.abs());
+    let Some((m, exp)) = e.split_once('e') else {
+        return t.to_owned();
+    };
+    let Ok(exp) = exp.parse::<i32>() else {
+        return t.to_owned();
+    };
+    let digits: String = m.chars().filter(char::is_ascii_digit).collect();
+    let eng = exp.div_euclid(3) * 3;
+    let suffix = match eng {
+        -15 => "f",
+        -12 => "p",
+        -9 => "n",
+        -6 => "u",
+        -3 => "m",
+        0 => "",
+        3 => "k",
+        6 => "meg",
+        9 => "g",
+        12 => "t",
+        _ => return t.to_owned(),
+    };
+    // The point goes after 1 + (exp - eng) digits.
+    let int_len = usize::try_from(exp - eng + 1).unwrap_or(1);
+    let mut d = digits;
+    while d.len() < int_len {
+        d.push('0');
+    }
+    let (i, f) = d.split_at(int_len);
+    let f = f.trim_end_matches('0');
+    let sign = if x < 0.0 { "-" } else { "" };
+    if f.is_empty() {
+        format!("{sign}{i}{suffix}")
+    } else {
+        format!("{sign}{i}.{f}{suffix}")
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2620,6 +2677,10 @@ fn schematic_in(
                                 .map(|v| format!("({v})"))
                         },
                     );
+                    let tr = tr.map(|mut x| {
+                        x.text = si_text(&x.text);
+                        x
+                    });
                     match tr {
                         Some(tr)
                             if schemify_expr::Program::compile(
@@ -3369,4 +3430,29 @@ fn rejoin_split_wires(wires: &[DumpWire<'_>]) -> (BTreeMap<u32, Vec<[i32; 2]>>, 
         .map(|(r, s)| (r, s.to_vec()))
         .collect();
     (rejoined, absorbed)
+}
+
+#[cfg(test)]
+mod si_tests {
+    use super::si_text;
+
+    #[test]
+    fn numbers_read_as_engineering_text() {
+        for (a, b) in [
+            ("150.00n", "150n"),
+            ("0.15u", "150n"),
+            ("900.0m", "900m"),
+            ("0.9", "900m"),
+            ("1", "1"),
+            ("2u", "2u"),
+            ("1.8", "1.8"),
+            ("-2.5meg", "-2.5meg"),
+            ("10k", "10k"),
+            ("0", "0"),
+            ("W/2", "W/2"),
+            ("1e-12", "1p"),
+        ] {
+            assert_eq!(si_text(a), b, "{a}");
+        }
+    }
 }

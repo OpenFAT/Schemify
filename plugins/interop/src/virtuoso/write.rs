@@ -1450,7 +1450,11 @@ fn height(c: &Cell, r: u32, default_milli: i32) -> i32 {
         .attr(r, "size")
         .and_then(|t| parse_coord(t).ok())
         .unwrap_or(default_milli);
-    s.saturating_mul(HEIGHT_PER_SIZE_MILLI)
+    // Virtuoso stores label heights in whole database units (live ICADVM20.1 run: size 0.18
+    // came back 0.2, 0.25 came back 0.3), so the image predicts the rounding (half up) and
+    // an untouched symbol keeps its stashed sizes (§7.3).
+    let h = s.saturating_mul(HEIGHT_PER_SIZE_MILLI);
+    ((h + 500).div_euclid(1000) * 1000).max(1000)
 }
 
 /// Escapes NLP-reserved characters of literal text.

@@ -720,10 +720,14 @@ pub fn call(db: &mut MockDb, name: &str, args: &[V]) -> Option<Result<V, String>
             _ => Err("*Error* axlGetEnabled: the mock models corner handles only".into()),
         },
         "axlGetModels" => match m.resolve(&a[0]) {
-            // GUESS(G19): the model names, in setup order.
-            Some(Handle::Corner(k, c)) => Ok(m.corner(k, &c).map_or(V::Nil, |x| {
-                V::list(x.models.iter().map(|md| V::str(&md.0)).collect())
-            })),
+            // (handle names), the names in setup order, as axlGetVars (live ICADVM20.1
+            // probe: (1053 ("m.scs"))).
+            Some(Handle::Corner(k, c)) => {
+                let names = m.corner(k, &c).map_or(V::Nil, |x| {
+                    V::list(x.models.iter().map(|md| V::str(&md.0)).collect())
+                });
+                Ok(V::list(vec![V::Int(1053), names]))
+            }
             _ => Err("*Error* axlGetModels: argument #1 should be a corner handle".into()),
         },
         "axlGetModel" | "axlPutModel" => match m.resolve(&a[0]) {

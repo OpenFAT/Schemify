@@ -22,7 +22,6 @@ spec vmax
 
 code TRAN spice
   | .lib ${PDK}/models/toplevel.scs top_tt
-  | .temp 27
   | .ac dec 20 1 10g
   | .op
   | .tran 6e-11 60n

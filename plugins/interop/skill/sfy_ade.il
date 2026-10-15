@@ -103,8 +103,10 @@
           (SfyRefuse 0 (sprintf nil "maestro %s: corner %s has no handle" test cn)))
         (t
           (SfyPut port "corner" (list cn (if (axlGetEnabled c) 1 0)))
-          ;; GUESS(G19): axlGetModels gives the corner's model names in setup order.
-          (foreach mn (axlGetModels c)
+          ;; axlGetModels answers (handle names), the names in setup order (live probe:
+          ;; (1053 ("m.scs"))); a bare list of names is read too.
+          (setq m (axlGetModels c))
+          (foreach mn (if (and m (not (stringp (car m)))) (cadr m) m)
             (setq m (axlGetModel c mn))
             (if (or (null m) (equal m 0))
               (SfyRefuse 0 (sprintf nil "maestro %s: corner %s model %s has no handle" test cn mn))
