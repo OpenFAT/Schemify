@@ -7,7 +7,10 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use common::{canonical, is_cell, load_all, project, read_tree, root, strip_fp, strip_stash};
+use common::{
+    canonical, export_cells, import_opts, is_cell, load_all, project, read_tree, root, strip_fp,
+    strip_stash,
+};
 use interop::design::{Design, Files};
 use interop::map::Mapping;
 use interop::sfyx;
@@ -21,23 +24,7 @@ fn design(files: &Files) -> Design {
 /// Exports every cell of `files`, the root library as `top`.
 fn export_all(files: &Files) -> (String, Design) {
     let d = design(files);
-    let tops: Vec<usize> = (0..d.cells.len())
-        .filter(|&k| d.cells[k].lib != "core")
-        .collect();
-    let mut opts = ExportOptions {
-        producer: "test".into(),
-        ..ExportOptions::default()
-    };
-    opts.lib_map.insert(String::new(), "top".into());
-    let e =
-        virtuoso::export(&d, &tops, &Mapping::default(), &opts).unwrap_or_else(|e| panic!("{e:?}"));
-    (e.sfyx, d)
-}
-
-fn import_opts() -> ImportOptions {
-    let mut o = ImportOptions::default();
-    o.lib_map.insert("top".into(), String::new());
-    o
+    (export_cells(&d, "test"), d)
 }
 
 fn fixture_projects() -> Vec<PathBuf> {

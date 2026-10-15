@@ -2572,6 +2572,146 @@ fn spice_form(name: &str, opts: &[(String, String)]) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    /// A maestro test whose every scope, spec and name is valid (§9): corners first, vars
+    /// and models scoped to the test or a corner, specs on declared outputs.
+    fn tests() -> impl Strategy<Value = Test> {
+        let name = "[a-z][a-z0-9]{0,3}";
+        (
+            prop::collection::btree_set(name, 0..3),
+            prop::collection::btree_map(
+                "a[a-z]{0,2}",
+                (
+                    any::<bool>(),
+                    prop::collection::btree_map(name, "[a-z0-9.]{0,3}", 0..3),
+                ),
+                0..3,
+            ),
+            prop::collection::btree_map(name, ("[a-z0-9]{1,3}", 0usize..4), 0..4),
+            prop::collection::vec(("[a-z]{1,4}\\.scs", "[a-z]{0,2}", 0usize..4), 0..3),
+            prop::collection::btree_map(name, (any::<bool>(), "[a-z()]{1,6}", 0u8..3), 0..3),
+            prop::collection::btree_map("[a-z]{1,4}\\.va", ".{0,8}", 0..2),
+        )
+            .prop_map(|(corners, analyses, vars, models, outputs, defns)| {
+                let corners: Vec<String> = corners.into_iter().collect();
+                // Index 0..len names a corner, past it the test's own scope.
+                let scope = |k: usize| corners.get(k).cloned().unwrap_or_default();
+                Test {
+                    name: "t".into(),
+                    lib: "lib".into(),
+                    cell: "tb".into(),
+                    view: "schematic".into(),
+                    sim: "spectre".into(),
+                    vars: vars
+                        .into_iter()
+                        .map(|(n, (v, k))| (n, v, scope(k)))
+                        .collect(),
+                    analyses: analyses
+                        .into_iter()
+                        .map(|(n, (en, o))| (n, en, o.into_iter().collect()))
+                        .collect(),
+                    corners: corners
+                        .iter()
+                        .map(|c| (c.clone(), c.len() % 2 == 0))
+                        .collect(),
+                    models: models
+                        .into_iter()
+                        .map(|(f, sec, k)| (scope(k), f, sec))
+                        .collect(),
+                    specs: outputs
+                        .iter()
+                        .filter(|(_, o)| o.2 > 0)
+                        .map(|(n, o)| {
+                            (
+                                n.clone(),
+                                ["lt", "gt"][usize::from(o.2 - 1)].into(),
+                                "1".into(),
+                            )
+                        })
+                        .collect(),
+                    outputs: outputs
+                        .into_iter()
+                        .map(|(n, (net, e, _))| (n, if net { "net" } else { "point" }.into(), e))
+                        .collect(),
+                    defns: defns.into_iter().collect(),
+                }
+            })
+    }
+
+    proptest! {
+        /// `parse` reads the records `records` writes back to the same test (compared as
+        /// records, the canonical form); dropping a corner a var or model is scoped to, or
+        /// the output a spec names, is refused (negative space).
+        #[test]
+        fn maestro_records_round_trip(t in tests()) {
+            let recs = t.records();
+            let back = parse(&recs).map_err(|e| TestCaseError::fail(e.to_string()))?;
+            prop_assert_eq!(back.records(), recs.clone());
+            for (k, r) in recs.iter().enumerate() {
+                let named = r.str(0).unwrap_or("");
+                let used = match r.tag.as_str() {
+                    // A var's scope is its third field, a model's its first.
+                    "corner" => recs.iter().any(|x| {
+                        (x.tag == "var" && x.str(2).ok() == Some(named))
+                            || (x.tag == "model" && x.str(0).ok() == Some(named))
+                    }),
+                    "output" => recs
+                        .iter()
+                        .any(|x| x.tag == "spec" && x.str(0).ok() == Some(named)),
+                    _ => false,
+                };
+                if used {
+                    let mut cut = recs.clone();
+                    cut.remove(k);
+                    prop_assert!(parse(&cut).is_err(), "{} {} dropped", r.tag, named);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn maestro_records_refuse_their_negative_space() {
+        let m = Record::new(
+            "maestro",
+            vec![s("t"), s("lib"), s("tb"), s("schematic"), s("spectre")],
+        );
+        let with = |r: Record| parse(&[m.clone(), r]);
+        assert!(parse(&[]).is_err());
+        assert!(parse(&[Record::new("var", vec![s("a"), s("1"), s("")])]).is_err());
+        assert!(
+            with(Record::new(
+                "analysis",
+                vec![s("tran"), i(2), Value::List(vec![])]
+            ))
+            .is_err()
+        );
+        assert!(with(Record::new("output", vec![s("o"), s("wave"), s("v")])).is_err());
+        assert!(with(Record::new("spec", vec![s("o"), s("lt"), s("1")])).is_err());
+        assert!(with(Record::new("defn", vec![s("a/b.va"), s("")])).is_err());
+        assert!(with(Record::new("var", vec![s("a"), s("1"), s("c0")])).is_err());
+        assert!(with(m.clone()).is_err(), "a second maestro record");
+        let twice = [
+            m.clone(),
+            Record::new("corner", vec![s("c"), i(1)]),
+            Record::new("corner", vec![s("c"), i(0)]),
+        ];
+        assert!(parse(&twice).is_err());
+        let ok = with(Record::new(
+            "analysis",
+            vec![
+                s("tran"),
+                i(1),
+                pairs([("stop", "1u"), ("anaName", "tran")]),
+            ],
+        ))
+        .unwrap();
+        assert_eq!(
+            ok.analyses,
+            [("tran".to_owned(), true, vec![("stop".into(), "1u".into())])],
+            "form fields dropped"
+        );
+    }
 
     /// What ICADVM20.1 answered for exported outputs (live run 2026-10-15: numbers come back
     /// reformatted, arguments space-separated) reads back as the calculator form.

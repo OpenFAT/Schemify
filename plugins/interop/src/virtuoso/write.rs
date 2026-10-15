@@ -1486,13 +1486,8 @@ pub fn nlp_escape(s: &str) -> String {
 }
 
 fn stext_out(c: &Cell, r: u32, ids: &mut Ids, notes: &mut Notes) -> Option<Label> {
-    let at = conv(
-        [c.coord(r, 0).unwrap_or(0), c.coord(r, 1).unwrap_or(0)],
-        "stext",
-        c,
-        notes,
-    );
-    let o = Orient::parse(c.field(r, 2)).unwrap_or(Orient::R0);
+    let at = conv(c.point(r, 0), "stext", c, notes);
+    let o = c.orient(r, 2);
     let t = c.field(r, 3);
     // A label from Virtuoso whose template is still the one it imported as goes back as
     // drawn: `vlabel <layer> <purpose> <justify> <font> <kind> <text> <template>`.
@@ -2272,7 +2267,7 @@ fn schematic_out(
     type LabelOut<'a> = (Option<&'a str>, [i32; 2], String, bool, Orient, Option<u32>);
     let mut all_labels: Vec<LabelOut> = (0..g.label_at.len())
         .map(|k| {
-            let o = Orient::parse(c.field(g.label_rec[k], 3)).unwrap_or(Orient::R0);
+            let o = c.orient(g.label_rec[k], 3);
             (
                 Some(g.label_id[k].as_str()),
                 g.label_at[k],
@@ -2308,12 +2303,8 @@ fn schematic_out(
         }
         let back = net_from_virtuoso(&text);
         if (back.text.as_str(), back.global) != (net.as_str(), global) {
-            let value = if global {
-                format!("{net} global")
-            } else {
-                net.clone()
-            };
-            cv.props.push(Prop::string(r, "schemifyNet", value));
+            cv.props
+                .push(Prop::string(r, "schemifyNet", read::net_prop(&net, global)));
         }
         // A global net with an analogLib global symbol (`gnd!`, `vdd!`, …) is drawn as that
         // symbol, Virtuoso's idiom; import turns the symbol back into this label (§6.1).
@@ -2395,9 +2386,10 @@ fn schematic_out(
             .map_or("inputOutput", |q| dir_to_virtuoso(&own.dir[q]));
         let term = vname(pin);
         if net_from_virtuoso(&term).text != *pin {
-            cv.props.push(Prop::string(r, "schemifyNet", pin.clone()));
+            cv.props
+                .push(Prop::string(r, "schemifyNet", read::net_prop(pin, false)));
         }
-        let o = Orient::parse(c.field(g.port_rec[k], 3)).unwrap_or(Orient::R0);
+        let o = c.orient(g.port_rec[k], 3);
         id_prop(&mut cv, r, &g.port_id[k]);
         // A pin that came in as a bare pin shape (`vfig <w> <h>`) goes back as one.
         let fig = match c.attr_values(g.port_rec[k], "vfig")[..] {
@@ -2457,7 +2449,7 @@ fn schematic_out(
     // Texts → note labels; shapes → note shapes.
     for r in c.records(RecordKind::Text) {
         let lr = ids.take();
-        let o = Orient::parse(c.field(r, 3)).unwrap_or(Orient::R0);
+        let o = c.orient(r, 3);
         id_prop(&mut cv, lr, c.field(r, 0));
         // A label that came from Virtuoso on another layer or with another style (`vlabel
         // <layer> <purpose> <justify> <font> <kind>`) goes back as drawn.
@@ -2466,12 +2458,7 @@ fn schematic_out(
             [a, b, j, f, k] => [a, b, j, f, k],
             _ => ["text", "drawing", "upperLeft", "stick", "normal"],
         };
-        let xy = conv(
-            [c.coord(r, 1).unwrap_or(0), c.coord(r, 2).unwrap_or(0)],
-            "text",
-            c,
-            notes,
-        );
+        let xy = conv(c.point(r, 1), "text", c, notes);
         let (text, h) = (c.field(r, 4).to_owned(), height(c, r, TEXT_SIZE_MILLI));
         let style = [layer, purpose, justify, font, kind];
         cv.labels.push(label(lr, 0, text, xy, o, h, style));

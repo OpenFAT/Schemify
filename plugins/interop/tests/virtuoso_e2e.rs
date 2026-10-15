@@ -12,8 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use common::{
-    canonical, design_libs, is_cell, line_of, load_all, load_tops, located, project, read_tree,
-    root, strip_fp,
+    canonical, design_libs, export_cells, import_opts, is_cell, line_of, load_all, load_tops,
+    located, project, read_tree, root, strip_fp,
 };
 use interop::design::Files;
 use interop::map::Mapping;
@@ -37,18 +37,8 @@ fn with_stdlib(libs: &[&str]) -> Interp<MockDb> {
 /// import and returns (original cells, round-tripped cells, SKILL logs).
 fn round_trip(dir: &Path) -> (BTreeMap<String, String>, BTreeMap<String, String>, String) {
     let files = project(dir);
-    let d = load_all(&files);
-    let tops: Vec<usize> = (0..d.cells.len())
-        .filter(|&k| d.cells[k].lib != "core")
-        .collect();
-    let mut eo = ExportOptions {
-        producer: "e2e".into(),
-        ..ExportOptions::default()
-    };
-    eo.lib_map.insert(String::new(), "top".into());
-    let exported =
-        virtuoso::export(&d, &tops, &Mapping::default(), &eo).unwrap_or_else(|e| panic!("{e:?}"));
-    let recs = sfyx::read(&exported.sfyx).unwrap();
+    let exported = export_cells(&load_all(&files), "e2e");
+    let recs = sfyx::read(&exported).unwrap();
 
     // The SKILL side: every library the dump names exists in cds.lib, plus analogLib/basic.
     let mut libs: BTreeSet<&str> = ["analogLib", "basic"].into();
@@ -58,7 +48,7 @@ fn round_trip(dir: &Path) -> (BTreeMap<String, String>, BTreeMap<String, String>
         }
     }
     let mut i = with_stdlib(&libs.into_iter().collect::<Vec<_>>());
-    i.files.insert("/e2e/in.sfyx".into(), exported.sfyx.clone());
+    i.files.insert("/e2e/in.sfyx".into(), exported.clone());
     let ok = i
         .load("(SfyImport \"/e2e/in.sfyx\")")
         .unwrap_or_else(|e| panic!("SfyImport: {e}\n{}", i.log));
@@ -71,15 +61,14 @@ fn round_trip(dir: &Path) -> (BTreeMap<String, String>, BTreeMap<String, String>
     );
 
     // Dump every design library back and import each into Rust.
-    let design_libs = design_libs(&exported.sfyx);
+    let design_libs = design_libs(&exported);
     assert!(!design_libs.is_empty(), "{}: no design cell", dir.display());
     let manifest: Files = files
         .iter()
         .filter(|(p, _)| *p == "schemify.project")
         .map(|(p, b)| (p.clone(), b.clone()))
         .collect();
-    let mut io = ImportOptions::default();
-    io.lib_map.insert("top".into(), String::new());
+    let io = import_opts();
     let mut got = BTreeMap::new();
     for lib in &design_libs {
         let path = format!("/e2e/{lib}.sfyx");
@@ -150,18 +139,7 @@ fn debug_dump_cell() {
     let dir = PathBuf::from(std::env::var("SFY_DUMP_DIR").unwrap());
     let cell = std::env::var("SFY_DUMP_CELL").unwrap();
     let files = read_tree(&dir);
-    let d = load_all(&files);
-    let tops: Vec<usize> = (0..d.cells.len())
-        .filter(|&k| d.cells[k].lib != "core")
-        .collect();
-    let mut eo = ExportOptions {
-        producer: "e2e".into(),
-        ..ExportOptions::default()
-    };
-    eo.lib_map.insert(String::new(), "top".into());
-    let text = virtuoso::export(&d, &tops, &Mapping::default(), &eo)
-        .unwrap()
-        .sfyx;
+    let text = export_cells(&load_all(&files), "e2e");
     let section = |t: &str| -> String {
         let mut on = false;
         let mut out = String::new();

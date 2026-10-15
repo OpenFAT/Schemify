@@ -7,7 +7,9 @@
 use std::path::{Path, PathBuf};
 
 use interop::design::{Design, Files, load_closed};
+use interop::map::Mapping;
 use interop::sfyx;
+use interop::virtuoso::{self, ExportOptions, ImportOptions};
 
 /// The repository root.
 pub fn root() -> PathBuf {
@@ -176,4 +178,31 @@ pub fn record_of(line: &str) -> Option<sfyx::Record> {
         .ok()?
         .into_iter()
         .nth(1)
+}
+
+/// The `.sfyx` export of every non-core cell of `d` with producer `producer`, the project
+/// root as Virtuoso library `top` (what [`import_opts`] maps back).
+///
+/// # Panics
+///
+/// With the export's problems when it refuses.
+pub fn export_cells(d: &Design, producer: &str) -> String {
+    let tops: Vec<usize> = (0..d.cells.len())
+        .filter(|&k| d.cells[k].lib != "core")
+        .collect();
+    let mut opts = ExportOptions {
+        producer: producer.into(),
+        ..ExportOptions::default()
+    };
+    opts.lib_map.insert(String::new(), "top".into());
+    virtuoso::export(d, &tops, &Mapping::default(), &opts)
+        .unwrap_or_else(|e| panic!("{e:?}"))
+        .sfyx
+}
+
+/// Import settings that map library `top` back to the project root ([`export_cells`]).
+pub fn import_opts() -> ImportOptions {
+    let mut o = ImportOptions::default();
+    o.lib_map.insert("top".into(), String::new());
+    o
 }

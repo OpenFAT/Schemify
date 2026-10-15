@@ -83,6 +83,20 @@ impl Cell {
     pub fn coord(&self, r: u32, i: usize) -> Option<i32> {
         parse_coord(self.doc.field(r, i)?).ok()
     }
+
+    /// Fields `i` and `i + 1` of record `r` as a point, each 0 when absent or not a
+    /// coordinate (a loaded file has passed the format's checks, so that is never news).
+    pub fn point(&self, r: u32, i: usize) -> [i32; 2] {
+        [
+            self.coord(r, i).unwrap_or(0),
+            self.coord(r, i + 1).unwrap_or(0),
+        ]
+    }
+
+    /// Field `i` of record `r` as an orientation, `R0` when absent or unknown.
+    pub fn orient(&self, r: u32, i: usize) -> Orient {
+        Orient::parse(self.field(r, i)).unwrap_or(Orient::R0)
+    }
 }
 
 /// Every cell of one conversion, plus the cellref resolution table.
@@ -432,6 +446,36 @@ pub(crate) fn push_record(doc: &mut Document<'static>, kind: RecordKind, fields:
     debug_assert_eq!(doc.fields(r).len(), fields.len());
 }
 
+/// Appends an anchored rank-3 record, `<kind> <id> <x> <y> <orient> <text>`: a `label`
+/// (net), `port` (pin) or `text` (note). Attributes follow with [`push_attr`].
+///
+/// # Panics
+///
+/// When `kind` is not one of those three.
+pub(crate) fn push_anchored(
+    doc: &mut Document<'static>,
+    kind: RecordKind,
+    id: &str,
+    at: [i32; 2],
+    o: Orient,
+    text: &str,
+) {
+    assert!(
+        matches!(
+            kind,
+            RecordKind::Label | RecordKind::Port | RecordKind::Text
+        ),
+        "{kind:?} is not anchored"
+    );
+    let r = doc.begin_record(kind);
+    doc.push_field(id);
+    doc.push_field_coord(at[0]);
+    doc.push_field_coord(at[1]);
+    doc.push_field(o.as_str());
+    doc.push_field(text);
+    debug_assert_eq!(doc.fields(r).len(), 5);
+}
+
 /// Appends attribute `key` with `values` to the current record.
 ///
 /// # Panics
@@ -509,7 +553,7 @@ pub fn sym_pins(cell: &Cell) -> SymPins {
     for r in cell.records(RecordKind::Pin) {
         p.name.push(cell.field(r, 0).to_owned());
         p.dir.push(cell.field(r, 1).to_owned());
-        p.at.push([cell.coord(r, 2).unwrap_or(0), cell.coord(r, 3).unwrap_or(0)]);
+        p.at.push(cell.point(r, 2));
         p.inherit.push(cell.attr(r, "inherit").map(str::to_owned));
         p.alias.push(cell.attr(r, "alias").map(str::to_owned));
     }
@@ -575,7 +619,6 @@ pub struct Geom {
 pub fn geom(d: &Design, ci: usize) -> Geom {
     let c = &d.cells[ci];
     let mut g = Geom::default();
-    let xy = |r: u32, i: usize| [c.coord(r, i).unwrap_or(0), c.coord(r, i + 1).unwrap_or(0)];
     for r in c.records(RecordKind::Inst) {
         g.inst_id.push(c.field(r, 0).to_owned());
         g.inst_name.push(c.attr(r, "name").unwrap_or("").to_owned());
@@ -601,28 +644,28 @@ pub fn geom(d: &Design, ci: usize) -> Geom {
     }
     for r in c.records(RecordKind::Wire) {
         g.wire_id.push(c.field(r, 0).to_owned());
-        let a = xy(r, 1);
-        let b = xy(r, 3);
+        let a = c.point(r, 1);
+        let b = c.point(r, 3);
         g.wire.push([a[0], a[1], b[0], b[1]]);
         g.wire_bus.push(c.attr(r, "bus") == Some("true"));
         g.wire_rec.push(r);
     }
     for r in c.records(RecordKind::Label) {
         g.label_id.push(c.field(r, 0).to_owned());
-        g.label_at.push(xy(r, 1));
+        g.label_at.push(c.point(r, 1));
         g.label_net.push(c.field(r, 4).to_owned());
         g.label_global.push(c.attr(r, "global") == Some("true"));
         g.label_rec.push(r);
     }
     for r in c.records(RecordKind::Port) {
         g.port_id.push(c.field(r, 0).to_owned());
-        g.port_at.push(xy(r, 1));
+        g.port_at.push(c.point(r, 1));
         g.port_pin.push(c.field(r, 4).to_owned());
         g.port_rec.push(r);
     }
     for r in c.records(RecordKind::Noconn) {
         g.noconn_id.push(c.field(r, 0).to_owned());
-        g.noconn_at.push(xy(r, 1));
+        g.noconn_at.push(c.point(r, 1));
         g.noconn_rec.push(r);
     }
     assert_eq!(g.inst_id.len(), g.inst_rec.len());
@@ -760,6 +803,55 @@ mod tests {
             manifest_libs(write(&m).as_bytes()).unwrap()["dev"],
             "lib/dev"
         );
+    }
+
+    /// Points and orientations read as the geometry does, with the documented fallbacks;
+    /// anchored records write the `<id> <x> <y> <orient> <text>` shape the format reads back.
+    #[test]
+    fn points_orients_and_anchored_records() {
+        let mut d = Document::new(FileKind::Shbench);
+        push_anchored(
+            &mut d,
+            RecordKind::Label,
+            "aaaaaa",
+            [1500, -20_000],
+            Orient::MR90,
+            "n<0>",
+        );
+        push_attr(&mut d, "global", &["true"]);
+        push_anchored(
+            &mut d,
+            RecordKind::Text,
+            "bbbbbb",
+            [0, 0],
+            Orient::R0,
+            "a note",
+        );
+        let text = write(&d);
+        assert_eq!(
+            text,
+            "schemify 1 shbench\n\nlabel aaaaaa 1.5 -20 MR90 n<0>\n  global true\n\ntext bbbbbb 0 0 R0 \"a note\"\n"
+        );
+        let c = Cell {
+            path: "tb.shbench".into(),
+            lib: String::new(),
+            name: "tb".into(),
+            doc: owned_doc(&parse(text.as_bytes()).unwrap()),
+        };
+        assert_eq!(
+            (c.point(1, 1), c.orient(1, 3)),
+            ([1500, -20_000], Orient::MR90)
+        );
+        // Past the fields, and a field that is no coordinate or orientation.
+        assert_eq!((c.point(1, 4), c.orient(1, 9)), ([0, 0], Orient::R0));
+        assert_eq!(c.orient(1, 4), Orient::R0, "`n<0>` is no orientation");
+    }
+
+    #[test]
+    #[should_panic(expected = "is not anchored")]
+    fn only_labels_ports_and_texts_are_anchored() {
+        let mut d = Document::new(FileKind::Shbench);
+        push_anchored(&mut d, RecordKind::Wire, "aaaaaa", [0, 0], Orient::R0, "x");
     }
 
     #[test]

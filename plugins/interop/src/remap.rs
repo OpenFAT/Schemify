@@ -7,7 +7,7 @@
 
 use schemify_format::{Document, FileKind, Orient, RecordKind};
 
-use crate::design::{Geom, copy_attr, copy_header, place, push_attr};
+use crate::design::{Geom, copy_attr, copy_header, place, push_anchored, push_attr};
 use crate::nets::{NO_NODE, Nets, on_segment};
 
 /// One grid step in milli-units (10 xschem units, 1/16 inch): pull-back and stub length.
@@ -338,12 +338,7 @@ pub fn apply_to_doc(
         out.copy_record(doc, r);
     }
     let label = |out: &mut Document<'static>, l: &NewLabel, id: String| {
-        out.begin_record(RecordKind::Label);
-        out.push_field(&id);
-        out.push_field_coord(l.at[0]);
-        out.push_field_coord(l.at[1]);
-        out.push_field(Orient::R0.as_str());
-        out.push_field(&l.net);
+        push_anchored(out, RecordKind::Label, &id, l.at, Orient::R0, &l.net);
         if l.global {
             push_attr(out, "global", &["true"]);
         }

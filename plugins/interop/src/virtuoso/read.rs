@@ -16,7 +16,9 @@ use super::ade;
 use super::ael::{self, AelName};
 use super::devices;
 use super::{Import, ImportOptions};
-use crate::design::{Files, cell_path, copy_header, push_attr, push_lib, push_record};
+use crate::design::{
+    Files, cell_path, copy_header, push_anchored, push_attr, push_lib, push_record,
+};
 use crate::map::{CORE_LIB, Mapping, ROOT_LIB};
 use crate::merge;
 use crate::notes::Notes;
@@ -1293,6 +1295,30 @@ impl Master {
     }
 }
 
+/// The orientation of a dump record; the reader checked it ([`dump`]), so `R0` stands
+/// only for a record built in memory.
+fn orient_in(s: &str) -> Orient {
+    profile::orient_from_virtuoso(s).unwrap_or(Orient::R0)
+}
+
+/// The `schemifyNet` property value export writes when Virtuoso's spelling of a net does not
+/// read back as it (§3.3): the Schemify net text, ` global` appended for a global label.
+pub(crate) fn net_prop(net: &str, global: bool) -> String {
+    if global {
+        format!("{net} global")
+    } else {
+        net.to_owned()
+    }
+}
+
+/// The net text and globality of a `schemifyNet` value (the inverse of [`net_prop`]).
+fn net_of_prop(v: &str) -> (String, bool) {
+    match v.strip_suffix(" global") {
+        Some(n) => (n.to_owned(), true),
+        None => (v.to_owned(), false),
+    }
+}
+
 /// Converts a dump point, reporting a rounded conversion.
 fn pt(xy: [i32; 2], upi: i32, what: &str, cell: &str, notes: &mut Notes) -> [i32; 2] {
     match point_from_virtuoso(xy[0], xy[1], upi) {
@@ -2281,11 +2307,7 @@ fn build(
             doc.begin_record(RecordKind::Stext);
             doc.push_field_coord(at[0]);
             doc.push_field_coord(at[1]);
-            doc.push_field(
-                profile::orient_from_virtuoso(&l.orient)
-                    .unwrap_or(Orient::R0)
-                    .as_str(),
-            );
+            doc.push_field(orient_in(&l.orient).as_str());
             doc.push_field(&tmpl);
             push_attr(
                 &mut doc,
@@ -2532,7 +2554,7 @@ fn schematic_in(
             &cell,
             notes,
         );
-        let o = profile::orient_from_virtuoso(&inst.orient).unwrap_or(Orient::R0);
+        let o = orient_in(&inst.orient);
         if inst.lib == "basic" && inst.cell == "noConn" {
             let id = ids.next(id_of(inst.r), &reserved);
             doc.begin_record(RecordKind::Noconn);
@@ -2566,29 +2588,16 @@ fn schematic_in(
                     (at, format!("{}!", inst.cell))
                 }
             };
-            let n = match prop(inst.r, "schemifyNet") {
-                Some(sn) => match sn.strip_suffix(" global") {
-                    Some(t) => profile::Net {
-                        text: t.to_owned(),
-                        global: true,
-                        review: false,
-                    },
-                    None => profile::Net {
-                        text: sn.to_owned(),
-                        global: false,
-                        review: false,
-                    },
-                },
-                None => net_from_virtuoso(&net),
+            let (text, global) = match prop(inst.r, "schemifyNet") {
+                Some(sn) => net_of_prop(sn),
+                None => {
+                    let n = net_from_virtuoso(&net);
+                    (n.text, n.global)
+                }
             };
             let id = ids.next(id_of(inst.r), &reserved);
-            doc.begin_record(RecordKind::Label);
-            doc.push_field(&id);
-            doc.push_field_coord(pin_at[0]);
-            doc.push_field_coord(pin_at[1]);
-            doc.push_field(o.as_str());
-            doc.push_field(&n.text);
-            if n.global {
+            push_anchored(doc, RecordKind::Label, &id, pin_at, o, &text);
+            if global {
                 push_attr(doc, "global", &["true"]);
             }
             // The symbol instance's name, so export draws the same instance (§6.1); a name
@@ -2857,28 +2866,24 @@ fn schematic_in(
     for s in &sv.spins {
         tally.out += 1;
         let at = pt(s.xy, upi, &format!("pin {}", s.term), &cell, notes);
-        let o = profile::orient_from_virtuoso(&s.orient).unwrap_or(Orient::R0);
+        let o = orient_in(&s.orient);
         let name = sv
             .prop(s.r, "schemifyNet")
             .map_or_else(|| net_from_virtuoso(&s.term).text, str::to_owned);
         let id = ids.next(id_of(s.r), &reserved);
-        if bench {
-            doc.begin_record(RecordKind::Label);
-        } else {
-            if !pins.iter().any(|p| p.name == name) {
-                notes.review(
-                    "name",
-                    &cell,
-                    format!("schematic pin {name} has no symbol terminal"),
-                );
-            }
-            doc.begin_record(RecordKind::Port);
+        if !bench && !pins.iter().any(|p| p.name == name) {
+            notes.review(
+                "name",
+                &cell,
+                format!("schematic pin {name} has no symbol terminal"),
+            );
         }
-        doc.push_field(&id);
-        doc.push_field_coord(at[0]);
-        doc.push_field_coord(at[1]);
-        doc.push_field(o.as_str());
-        doc.push_field(&name);
+        let kind = if bench {
+            RecordKind::Label
+        } else {
+            RecordKind::Port
+        };
+        push_anchored(doc, kind, &id, at, o, &name);
         // A pin master other than the one export picks for the direction (Cadence's
         // sample library uses basic/sympin view symbolr): kept, so export uses it again.
         let usual = profile::pin_master(&s.dir);
@@ -2896,16 +2901,13 @@ fn schematic_in(
             .prop(f.r, "schemifyNet")
             .map_or_else(|| net_from_virtuoso(&f.term).text, str::to_owned);
         let id = ids.next(id_of(f.r), &reserved);
-        doc.begin_record(if bench {
+        let kind = if bench {
             RecordKind::Label
         } else {
             RecordKind::Port
-        });
-        doc.push_field(&id);
-        doc.push_field_coord((b[0] + b[2]) / 2);
-        doc.push_field_coord((b[1] + b[3]) / 2);
-        doc.push_field(Orient::R0.as_str());
-        doc.push_field(&name);
+        };
+        let centre = [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
+        push_anchored(doc, kind, &id, centre, Orient::R0, &name);
         if !bench {
             doc.push_attr("vfig");
             doc.push_value_coord(b[2] - b[0]);
@@ -2983,37 +2985,14 @@ fn schematic_in(
             tally.reported += 1;
             continue;
         }
-        let o = profile::orient_from_virtuoso(&l.orient).unwrap_or(Orient::R0);
+        let o = orient_in(&l.orient);
         let origin = pt(l.xy, upi, "label", &cell, notes);
         match (l.layer.as_str(), l.purpose.as_str()) {
             ("annotate", "drawing3") => {
                 dropped_alias += 1;
                 tally.out -= 1;
                 tally.reported += 1;
-                continue;
             }
-            ("wire", "label") | ("pin", "annotate") => {}
-            // Note text, and any other unglued label (a schematic pin's name on pin/label
-            // in Cadence's sample library): a text; what export would not draw by default
-            // goes in `vlabel <layer> <purpose> <justify> <font> <kind>` (an unknown
-            // attribute the format keeps) so it comes back as drawn.
-            _ => {
-                let id = ids.next(id_of(l.r), &reserved);
-                doc.begin_record(RecordKind::Text);
-                doc.push_field(&id);
-                doc.push_field_coord(origin[0]);
-                doc.push_field_coord(origin[1]);
-                doc.push_field(o.as_str());
-                doc.push_field(&l.text);
-                push_attr(doc, "size", &[&coord_text(size_milli(l.height, upi))]);
-                let v = [&l.layer, &l.purpose, &l.justify, &l.font, &l.kind];
-                if v != ["text", "drawing", "upperLeft", "stick", "normal"] {
-                    push_attr(doc, "vlabel", &v);
-                }
-                continue;
-            }
-        }
-        match (l.layer.as_str(), l.purpose.as_str()) {
             ("wire", "label") | ("pin", "annotate") => {
                 let at = match wire_pts.get(&l.parent) {
                     Some(p) => project(origin, p),
@@ -3031,10 +3010,7 @@ fn schematic_in(
                 let (text, global) = if let Some((p, _)) = parse_netexpr(&l.text) {
                     (net_from_virtuoso(&p).text, false)
                 } else if let Some(sn) = prop(l.r, "schemifyNet") {
-                    match sn.strip_suffix(" global") {
-                        Some(n) => (n.to_owned(), true),
-                        None => (sn.to_owned(), false),
-                    }
+                    net_of_prop(sn)
                 } else {
                     let n = net_from_virtuoso(&l.text);
                     if n.review {
@@ -3043,12 +3019,7 @@ fn schematic_in(
                     (n.text, n.global)
                 };
                 let id = ids.next(id_of(l.r), &reserved);
-                doc.begin_record(RecordKind::Label);
-                doc.push_field(&id);
-                doc.push_field_coord(at[0]);
-                doc.push_field_coord(at[1]);
-                doc.push_field(o.as_str());
-                doc.push_field(&text);
+                push_anchored(doc, RecordKind::Label, &id, at, o, &text);
                 if global {
                     push_attr(doc, "global", &["true"]);
                 }
@@ -3065,7 +3036,19 @@ fn schematic_in(
                     push_attr(doc, "vstyle", &[&l.justify, &l.font, &h.to_string()]);
                 }
             }
-            _ => unreachable!("other labels are texts"),
+            // Note text, and any other unglued label (a schematic pin's name on pin/label
+            // in Cadence's sample library): a text; what export would not draw by default
+            // goes in `vlabel <layer> <purpose> <justify> <font> <kind>` (an unknown
+            // attribute the format keeps) so it comes back as drawn.
+            _ => {
+                let id = ids.next(id_of(l.r), &reserved);
+                push_anchored(doc, RecordKind::Text, &id, origin, o, &l.text);
+                push_attr(doc, "size", &[&coord_text(size_milli(l.height, upi))]);
+                let v = [&l.layer, &l.purpose, &l.justify, &l.font, &l.kind];
+                if v != ["text", "drawing", "upperLeft", "stick", "normal"] {
+                    push_attr(doc, "vlabel", &v);
+                }
+            }
         }
     }
     if dropped_stub > 0 {
@@ -3575,7 +3558,7 @@ fn pin_label_as_drawn(
     let xy = pt(l.xy, sv.upi, "pin label", cell, notes);
     let d = [xy[0] - at[0], xy[1] - at[1]];
     let h = profile::height_from_virtuoso(l.height, sv.upi);
-    let o = profile::orient_from_virtuoso(&l.orient).unwrap_or(Orient::R0);
+    let o = orient_in(&l.orient);
     let usual = i64::from(super::write::LABEL_HEIGHT / 2);
     if d == [0, 0]
         && o == Orient::R0
@@ -3653,9 +3636,138 @@ fn rejoin_split_wires(wires: &[DumpWire<'_>]) -> (BTreeMap<u32, Vec<[i32; 2]>>, 
 
 #[cfg(test)]
 mod tests {
-    use super::super::write::{template_items, template_to_nlp};
-    use super::{BTreeMap, nlp_in, seg_key, si_text, unswap_wire_ids};
+    use super::super::write::{
+        cdl_siminfo, spectre_siminfo, template_items, template_to_nlp, urad,
+    };
+    use super::{
+        BTreeMap, DCell, Notes, ParamIn, PinRow, SimInfo, SimVal, arc_angles, cdl_format,
+        net_from_virtuoso, net_of_prop, net_prop, nlp_in, seg_key, si_text, spectre_format,
+        unswap_wire_ids,
+    };
     use proptest::prelude::*;
+
+    fn pin(name: &str) -> PinRow {
+        PinRow {
+            name: name.into(),
+            dir: "inout".into(),
+            ..PinRow::default()
+        }
+    }
+
+    fn param(name: &str, string: bool) -> ParamIn {
+        ParamIn {
+            name: name.into(),
+            kind: if string { "string" } else { "number" }.into(),
+            default: "1".into(),
+            unit: None,
+            doc: None,
+            choices: Vec::new(),
+        }
+    }
+
+    /// A simInfo's netlisting fields in the order export writes them: `head`, then
+    /// `termOrder`, `instParameters` and `propMapping` (only for renamed parameters).
+    fn siminfo(
+        sim: &str,
+        head: Vec<(String, SimVal)>,
+        pins: &[String],
+        kc: &[(String, String)],
+    ) -> SimInfo {
+        let mut fields = head;
+        fields.push(("termOrder".into(), SimVal::List(pins.to_vec())));
+        let ks = kc.iter().map(|x| x.0.clone()).collect();
+        fields.push(("instParameters".into(), SimVal::List(ks)));
+        let pm: Vec<(String, String)> = kc.iter().filter(|x| x.0 != x.1).cloned().collect();
+        if !pm.is_empty() {
+            fields.push(("propMapping".into(), SimVal::Pairs(pm)));
+        }
+        SimInfo {
+            sim: sim.into(),
+            fields,
+        }
+    }
+
+    /// Distinct pin names (Virtuoso spelling, buses included), and CDF parameters
+    /// `(simulator name k, CDF name c, string)`.
+    fn netlisting() -> impl Strategy<Value = (Vec<String>, Vec<(String, String, bool)>)> {
+        (
+            prop::collection::btree_set("p[a-z]{0,2}(<[0-9]>)?", 0..4),
+            prop::collection::btree_map("q[a-z]{0,2}", (any::<bool>(), any::<bool>()), 0..4),
+        )
+            .prop_map(|(pins, params)| {
+                let ps = params
+                    .into_iter()
+                    .map(|(c, (renamed, string))| {
+                        let k = if renamed { format!("k{c}") } else { c.clone() };
+                        (k, c, string)
+                    })
+                    .collect();
+                (pins.into_iter().collect(), ps)
+            })
+    }
+
+    proptest! {
+        /// Import's spectre format of a simInfo reads back, through export's reverse rule, as
+        /// the same simInfo (§6.3): master, terminal order, parameters, renames, and the
+        /// optional form of string parameters.
+        #[test]
+        fn spectre_siminfo_round_trips_through_the_format(
+            (pins, ps) in netlisting(),
+            master in "[A-Za-z][A-Za-z0-9_]{0,5}",
+        ) {
+            let kc: Vec<(String, String)> = ps.iter().map(|x| (x.0.clone(), x.1.clone())).collect();
+            let head = vec![("componentName".to_owned(), SimVal::Str(master.clone()))];
+            let si = siminfo("spectre", head, &pins, &kc);
+            let names: Vec<String> = pins.iter().map(|p| net_from_virtuoso(p).text).collect();
+            let rows: Vec<PinRow> = names.iter().map(|p| pin(p)).collect();
+            let params: Vec<ParamIn> = ps.iter().map(|x| param(&x.1, x.2)).collect();
+            let t = spectre_format(&DCell::default(), &si, &params, &rows);
+            let kinds: Vec<(String, String)> =
+                params.iter().map(|p| (p.name.clone(), p.kind.clone())).collect();
+            prop_assert_eq!(spectre_siminfo(&t, &names, &kinds), Some(si), "via {}", t);
+        }
+
+        /// The same for auCdl's subcircuit call (`X{name} {pins} / comp k={c}…`).
+        #[test]
+        fn cdl_subckt_siminfo_round_trips_through_the_format(
+            (pins, ps) in netlisting(),
+            comp in "[A-Za-z][A-Za-z0-9_]{0,5}",
+            prefix in "[A-Z]{1,2}",
+        ) {
+            let kc: Vec<(String, String)> = ps.iter().map(|x| (x.0.clone(), x.1.clone())).collect();
+            let head = vec![
+                ("netlistProcedure".to_owned(), SimVal::Str("ansCdlSubcktCall".into())),
+                ("componentName".to_owned(), SimVal::Str(comp)),
+                ("namePrefix".to_owned(), SimVal::Str(prefix)),
+            ];
+            let si = siminfo("auCdl", head, &pins, &kc);
+            let names: Vec<String> = pins.iter().map(|p| net_from_virtuoso(p).text).collect();
+            let rows: Vec<PinRow> = names.iter().map(|p| pin(p)).collect();
+            let params: Vec<ParamIn> = ps.iter().map(|x| param(&x.1, x.2)).collect();
+            let t = cdl_format(&DCell::default(), &si, &params, &rows, &mut Notes::default());
+            let kinds: Vec<(String, String)> =
+                params.iter().map(|p| (p.name.clone(), p.kind.clone())).collect();
+            prop_assert_eq!(cdl_siminfo(&t, &names, &kinds), Some(si), "via {}", t);
+        }
+
+        /// A Schemify arc's `(start, sweep)` (milli-degrees, screen clockwise) exported as
+        /// Virtuoso's counter-clockwise micro-radian `(start, stop)` reads back exactly, start
+        /// normalized into a turn: a micro-radian is finer than half a milli-degree.
+        #[test]
+        fn arc_angles_round_trip(start in -720_000i32..720_000, sweep in 1i32..360_000) {
+            let deg = |m: i32| f64::from(m) / 1000.0;
+            // Export (`write::graphic_out`): y flips, so the angles negate and swap ends.
+            let a0 = urad(-(deg(start) + deg(sweep)));
+            let a1 = urad(-deg(start));
+            prop_assert_eq!(arc_angles(a0, a1), (start.rem_euclid(360_000), sweep));
+        }
+
+        /// `schemifyNet` reads back as written for any net text without a space.
+        #[test]
+        fn net_props_round_trip(net in "[A-Za-z0-9_!<>:,*\\[\\]]{1,12}", global: bool) {
+            prop_assert_eq!(net_of_prop(&net_prop(&net, global)), (net, global));
+        }
+    }
 
     /// A label template from literals and holes, braces of the literals doubled.
     fn template(lits: &[String], holes: &[&str]) -> String {

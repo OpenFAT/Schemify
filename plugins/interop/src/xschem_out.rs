@@ -396,7 +396,7 @@ fn write_symbol(c: &Cell, sc: &Scope, notes: &mut Notes) -> String {
                     ),
                 );
             }
-            let o = Orient::parse(c.field(r, 2)).unwrap_or(Orient::R0);
+            let o = c.orient(r, 2);
             let mut props = Vec::new();
             if let Some(l) = c.attr(r, "layer") {
                 props.push(kv("layer", l));
@@ -566,8 +566,8 @@ fn write_schematic(
         }
     };
     for r in 1..c.doc.record_count() {
-        let xy = |i| [c.coord(r, i).unwrap_or(0), c.coord(r, i + 1).unwrap_or(0)];
-        let orient = |i| Orient::parse(c.field(r, i)).unwrap_or(Orient::R0);
+        let xy = |i| c.point(r, i);
+        let orient = |i| c.orient(r, i);
         match c.doc.record_kind(r) {
             RecordKind::Shape => {
                 let form = c.field(r, 1);
