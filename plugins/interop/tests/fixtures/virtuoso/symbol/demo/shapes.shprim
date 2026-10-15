@@ -1,7 +1,7 @@
 schemify 1 shprim
   provenance "virtuoso demo/shapes"
   vibox -62 -42 62 42
-  vsym 73e19a9e04bcd992
+  vsym 939e3f2da1fa9a6c
 
 pin A in -60 0
   vplabel 4 0 R0 centerLeft stick 6000

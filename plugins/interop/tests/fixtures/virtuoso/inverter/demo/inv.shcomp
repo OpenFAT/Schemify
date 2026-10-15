@@ -1,7 +1,7 @@
 schemify 1 shcomp
   vibox -42 -32 42 22
   vsym aab279831c8cf04a
-  vsch f1cf04f9f8e7fb0f
+  vsch d58d03df2fbe20b5
 
 pin A in -40 0
   vplabel 4 0 R0 centerLeft stick 6000

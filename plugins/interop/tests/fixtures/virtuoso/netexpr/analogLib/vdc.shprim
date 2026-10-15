@@ -1,7 +1,7 @@
 schemify 1 shprim
   provenance "virtuoso analogLib/vdc"
   vibox none
-  vsym 73405efe7b33f255
+  vsym b2e0aa0db7f823b7
 
 pin PLUS inout 0 -30
   vplabel none

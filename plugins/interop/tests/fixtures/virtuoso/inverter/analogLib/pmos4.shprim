@@ -1,7 +1,7 @@
 schemify 1 shprim
   provenance "virtuoso analogLib/pmos4"
   vibox -22 -32 25 32
-  vsym 6ce242aecd55541e
+  vsym 42eb1bea59826902
 
 pin D inout 20 30
   vplabel none

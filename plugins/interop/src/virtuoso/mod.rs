@@ -167,6 +167,10 @@ pub fn fingerprint(doc: &Document<'_>, part: Part) -> String {
             text.push_str(f);
         }
         text.push('\n');
+        // Attribute lines sorted: the order attributes were pushed in is not meaning, and the
+        // writer reorders them (unknown ones last), so a fresh import and the file it writes
+        // must fingerprint the same (a mismatch silently loses §7.5 keep).
+        let mut attr_lines: Vec<String> = Vec::new();
         for a in doc.attrs(r) {
             let key = doc.attr_key(a);
             let schemify_only = match k {
@@ -179,14 +183,16 @@ pub fn fingerprint(doc: &Document<'_>, part: Part) -> String {
             if schemify_only {
                 continue;
             }
-            text.push_str("  ");
-            text.push_str(key);
+            let mut line = format!("  {key}");
             for v in doc.attr_values(a) {
-                text.push(' ');
-                text.push_str(v);
+                line.push(' ');
+                line.push_str(v);
             }
-            text.push('\n');
+            line.push('\n');
+            attr_lines.push(line);
         }
+        attr_lines.sort();
+        text.push_str(&attr_lines.concat());
         for v in doc.verbatim(r) {
             text.push_str("  | ");
             text.push_str(v);
@@ -206,5 +212,73 @@ pub fn fingerprint_attr(part: Part) -> &'static str {
     match part {
         Part::Symbol => "vsym",
         Part::Schematic => "vsch",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    use schemify_format::{FileKind, parse, write};
+
+    /// A symbol pin `p` with `attrs` pushed in the given order.
+    fn pin_doc(attrs: &[(&str, &str)]) -> Document<'static> {
+        let mut d = Document::new(FileKind::Shprim);
+        d.begin_record(RecordKind::Pin);
+        for f in ["p", "inout", "0", "0"] {
+            d.push_field(f);
+        }
+        for (k, v) in attrs {
+            d.push_attr(k);
+            d.push_value(v);
+        }
+        // A .shprim needs an impl (E025).
+        d.begin_record(RecordKind::Impl);
+        d.push_field("spice");
+        d.push_field("spice");
+        d.push_attr("format");
+        d.push_value("spice");
+        d.push_value("X{name} {p} sub");
+        d
+    }
+
+    const ATTRS: [(&str, &str); 4] = [
+        ("vplabel", "none"),
+        ("inherit", "vdd"),
+        ("vpfig", "8"),
+        ("alias", "q"),
+    ];
+
+    proptest! {
+        /// The fingerprint ignores attribute order and survives the writer (§7.5): a fresh
+        /// import and the file written from it agree, whatever order import pushed in.
+        #[test]
+        fn fingerprints_ignore_attribute_order(perm in Just(ATTRS.to_vec()).prop_shuffle()) {
+            let d = pin_doc(&perm);
+            let text = write(&d);
+            let reread = parse(text.as_bytes()).unwrap();
+            let fp = fingerprint(&d, Part::Symbol);
+            prop_assert_eq!(&fp, &fingerprint(&reread, Part::Symbol));
+            prop_assert_eq!(&fp, &fingerprint(&pin_doc(&ATTRS), Part::Symbol));
+        }
+    }
+
+    #[test]
+    fn any_value_change_changes_the_fingerprint() {
+        let base = fingerprint(&pin_doc(&ATTRS), Part::Symbol);
+        for k in 0..ATTRS.len() {
+            let mut changed = ATTRS.to_vec();
+            changed[k].1 = "other";
+            assert_ne!(
+                base,
+                fingerprint(&pin_doc(&changed), Part::Symbol),
+                "{}",
+                ATTRS[k].0
+            );
+        }
+        // A Schemify-only attribute (§7.1) is not part of what Virtuoso holds.
+        let mut extra = ATTRS.to_vec();
+        extra.push(("domain", "analog"));
+        assert_eq!(base, fingerprint(&pin_doc(&extra), Part::Symbol));
     }
 }

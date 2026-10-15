@@ -1,7 +1,7 @@
 schemify 1 shprim
   provenance "virtuoso gpdk/nmos1v"
   vibox none
-  vsym ef2f113358819558
+  vsym 77fb36e17de120ac
 
 pin D inout 20 -30
   vplabel none

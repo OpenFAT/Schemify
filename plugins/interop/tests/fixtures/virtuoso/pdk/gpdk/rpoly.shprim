@@ -1,7 +1,7 @@
 schemify 1 shprim
   provenance "virtuoso gpdk/rpoly"
   vibox none
-  vsym b7066ba19f5079c0
+  vsym 236ab8f289995d6c
 
 pin PLUS inout 0 -30
   vplabel none
