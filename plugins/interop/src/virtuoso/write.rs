@@ -1316,19 +1316,19 @@ fn symbol_out(c: &Cell, ids: &mut Ids, notes: &mut Notes) -> Cv {
             });
         }
         let r = ids.take();
+        // The rectangle as Virtuoso drew it (`vpfig <w> <h>`), else ±PIN_HALF.
+        let [hw, hh] = match c.attr_values(pin_rec, "vpfig")[..] {
+            [w, h] => [w, h].map(|x| parse_coord(x).map_or(PIN_HALF, |v| v / 2)),
+            _ => [PIN_HALF, PIN_HALF],
+        };
         cv.pinfigs.push(PinFig {
             r,
             term: term.clone(),
-            b: [
-                at[0] - PIN_HALF,
-                at[1] - PIN_HALF,
-                at[0] + PIN_HALF,
-                at[1] + PIN_HALF,
-            ],
+            b: [at[0] - hw, at[1] - hh, at[0] + hw, at[1] + hh],
             dir: String::new(),
         });
-        grow([at[0] - PIN_HALF, at[1] - PIN_HALF], &mut bbox);
-        grow([at[0] + PIN_HALF, at[1] + PIN_HALF], &mut bbox);
+        grow([at[0] - hw, at[1] - hh], &mut bbox);
+        grow([at[0] + hw, at[1] + hh], &mut bbox);
         if pins.alias[k].is_some() {
             cv.props
                 .push(Prop::string(r, "schemifyPin", pins.name[k].clone()));

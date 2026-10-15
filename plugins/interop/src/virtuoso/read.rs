@@ -2221,6 +2221,24 @@ fn build(
         {
             push_attr(&mut doc, "vplabel", &v);
         }
+        // Its pin rectangle as drawn, when not export's ±PIN_HALF square (`vpfig <w> <h>`).
+        if let Some(f) = sym
+            .filter(|_| p.alias.is_none())
+            .and_then(|sv| main_pin_fig(sv, &p.name).map(|f| (sv, f)))
+        {
+            let (sv, f) = f;
+            let a = pt([f.b[0], f.b[1]], sv.upi, "pin figure", &cell, notes);
+            let b = pt([f.b[2], f.b[3]], sv.upi, "pin figure", &cell, notes);
+            let (w, h) = ((b[0] - a[0]).abs(), (b[1] - a[1]).abs());
+            let usual = 2 * super::write::PIN_HALF;
+            if (w, h) != (usual, usual) {
+                push_attr(
+                    &mut doc,
+                    "vpfig",
+                    &[profile::coord_text(w), profile::coord_text(h)],
+                );
+            }
+        }
     }
     if kind != FileKind::Shbench {
         for p in &params {
@@ -3532,6 +3550,18 @@ fn unswap_wire_ids(
     out
 }
 
+/// The main pin figure of symbol pin `name`: its terminal's first rectangle without a
+/// `schemifyPin` prop (those are alias pins, §6.2).
+fn main_pin_fig<'a>(sv: &'a Cv, name: &str) -> Option<&'a PinFig> {
+    let alias_fig = |r: u32| sv.props.iter().any(|p| p.r == r && p.name == "schemifyPin");
+    let fig = sv
+        .pinfigs
+        .iter()
+        .find(|f| net_from_virtuoso(&f.term).text == name && !alias_fig(f.r));
+    debug_assert!(fig.is_none_or(|f| f.dir.is_empty()), "a symbol pin figure");
+    fig
+}
+
 /// The `vplabel` values of symbol pin `name` at `at` (milli-units): `none` when its main
 /// pin figure has no pin label, the label's offset from the pin and its orient, justify,
 /// font and height when they differ from export's (at the pin, R0, centerLeft, stick, half
@@ -3543,11 +3573,7 @@ fn pin_label_as_drawn(
     cell: &str,
     notes: &mut Notes,
 ) -> Option<Vec<String>> {
-    let alias_fig = |r: u32| sv.props.iter().any(|p| p.r == r && p.name == "schemifyPin");
-    let fig = sv
-        .pinfigs
-        .iter()
-        .find(|f| net_from_virtuoso(&f.term).text == name && !alias_fig(f.r))?;
+    let fig = main_pin_fig(sv, name)?;
     let Some(l) = sv
         .labels
         .iter()

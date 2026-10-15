@@ -15,7 +15,7 @@
 ("term" "a" "input" "")
 ("term" "vdd" "inputOutput" "[@vdd:%:vdd!]")
 ("term" "y" "output" "")
-("pinfig" 1 "a" -42000 -2000 -38000 2000)
+("pinfig" 1 "a" -44000 -4000 -36000 4000)
 ("pinfig" 2 "vdd" -2000 38000 2000 42000)
 ("pinfig" 3 "y" 38000 -2000 42000 2000)
 ("shape" 4 "polygon" "device" "drawing" (-20000 -20000 20000 0 -20000 20000) 0)
