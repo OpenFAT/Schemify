@@ -124,11 +124,12 @@ work directory at the same absolute path on both, for example on a shared disk.
   Virtuoso form, so Virtuoso gets the device's default width. The width comes back from the
   stash; `--retarget` is the flow that sizes such devices on the target PDK.
 
-- With `--lib`, a cell's CDF can come back with more than it had: export adds its netlisting
-  siminfo keys (`instParameters`, an auCdl entry), a `netSet` param for each pin with a net
-  expression, and an empty string param for each name a symbol label shows that the CDF did
-  not declare. The check accepts these additions and counts the cells; anything the original
-  CDF had and the copy lacks fails.
+- With `--lib`, a cell's CDF comes back exactly as it was while nobody changed the cell's
+  pins, params or impls in Schemify (the `vcdf` reverse stash). After such an edit, export
+  derives the CDF again and can add netlisting siminfo keys (`instParameters`, an auCdl
+  entry), a `netSet` param for each pin with a net expression, and an empty string param
+  for each name a symbol label shows. The check accepts these additions and counts the
+  cells; anything the original CDF had and the copy lacks fails.
 
 ## How the kit is tested
 

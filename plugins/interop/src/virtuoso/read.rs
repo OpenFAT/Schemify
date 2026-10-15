@@ -3395,7 +3395,7 @@ pub fn import(
             &cell,
             &mut notes,
         );
-        let out = with_fingerprints(&out, &doc);
+        let out = with_fingerprints(&out, &doc, ctx.dump.cells[k].cdf.as_ref());
         let text = schemify_format::write(&out);
         if let Some(old) = existing.get(&path)
             && old.as_slice() != text.as_bytes()
@@ -3424,18 +3424,32 @@ pub fn import(
 /// `doc` (the merged file) with header attributes `vsym`/`vsch` set to the fingerprints of
 /// the parts its kind has, taken from `fresh` (what the dump holds, before local data was
 /// merged, §7.5): an export can then tell a cellview nobody changed on the Schemify side.
-fn with_fingerprints(doc: &Document<'static>, fresh: &Document<'static>) -> Document<'static> {
+fn with_fingerprints(
+    doc: &Document<'static>,
+    fresh: &Document<'static>,
+    cdf: Option<&Cdf>,
+) -> Document<'static> {
     use super::{Part, fingerprint, fingerprint_attr};
     let parts: &[Part] = match doc.kind() {
         FileKind::Shprim => &[Part::Symbol],
-        FileKind::Shcomp => &[Part::Symbol, Part::Schematic],
+        FileKind::Shcomp => &[Part::Symbol, Part::Schematic, Part::Interface],
         _ => &[Part::Schematic],
     };
     let mut out = Document::new(doc.kind());
-    copy_header(&mut out, doc, &["vsym", "vsch"]);
+    copy_header(&mut out, doc, &["vsym", "vsch", "vcdf", "vcdfrec"]);
     for p in parts {
         out.push_attr(fingerprint_attr(*p));
         out.push_value(&fingerprint(fresh, *p));
+    }
+    // The reverse stash of the CDF (§7.5): a component's CDF records as Virtuoso had them,
+    // for export to send back while `vcdf` still matches (none: the cell had no CDF).
+    if doc.kind() == FileKind::Shcomp {
+        for r in cdf.map(super::write::cdf_records).unwrap_or_default() {
+            let mut s = String::new();
+            sfyx::write_record(&r, &mut s);
+            out.push_attr("vcdfrec");
+            out.push_value(s.trim_end());
+        }
     }
     for r in 1..doc.record_count() {
         out.copy_record(doc, r);

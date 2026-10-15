@@ -2,6 +2,9 @@ schemify 1 shcomp
   vibox none
   vsym dbaf51c5ebf5ac30
   vsch 4b80ea862fdcb615
+  vcdf 6b471fcf5fb59eec
+  vcdfrec "(\"cdf\" \"\")"
+  vcdfrec "(\"siminfo\" \"spectre\" ((\"termOrder\" (\"A\"))))"
 
 pin A in -40 0
   vplabel none

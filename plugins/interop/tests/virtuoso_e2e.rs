@@ -395,3 +395,66 @@ fn an_edit_in_schemify_reaches_virtuoso_and_untouched_views_stay() {
     };
     assert_eq!(sym(third), sym(&first));
 }
+
+/// The reverse stash of the CDF (§7.5): a component from Virtuoso goes back with its CDF
+/// exactly as Virtuoso had it while its interface is unchanged, and with a CDF derived from
+/// the cell once a param changed in Schemify.
+#[test]
+fn an_unedited_component_keeps_its_virtuoso_cdf_and_an_edit_regenerates_it() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/skill");
+    let first = std::fs::read_to_string(dir.join("netx.sfyx")).unwrap();
+    let cdf_of = |text: &str| -> Vec<String> {
+        let mut inside = false;
+        let mut out = Vec::new();
+        for r in sfyx::read(text).unwrap() {
+            if r.tag == "cell" {
+                inside = r.str(0) == Ok("netx");
+            }
+            if inside && matches!(r.tag.as_str(), "cdf" | "param" | "siminfo") {
+                let mut s = String::new();
+                sfyx::write_record(&r, &mut s);
+                out.push(s);
+            }
+        }
+        out
+    };
+    let imp = virtuoso::import(
+        &first,
+        &Files::new(),
+        &Mapping::default(),
+        &ImportOptions::default(),
+    )
+    .unwrap();
+    let mut files: Files = imp.files.into_iter().collect();
+    let export = |files: &Files| {
+        let d = load_tops(files, &["work/netx.shcomp"]);
+        let eo = ExportOptions {
+            producer: "e2e".into(),
+            ..ExportOptions::default()
+        };
+        virtuoso::export(&d, &[0], &Mapping::default(), &eo)
+            .unwrap()
+            .sfyx
+    };
+    let original = cdf_of(&first);
+    assert!(!original.is_empty(), "netx has a CDF");
+    assert_eq!(
+        cdf_of(&export(&files)),
+        original,
+        "unchanged: Virtuoso's CDF"
+    );
+    // A param edited in Schemify: the CDF is derived again, with the new default.
+    let path = "work/netx.shcomp".to_owned();
+    let edited = String::from_utf8(files[&path].clone())
+        .unwrap()
+        .replace("param gain 2", "param gain 3");
+    files.insert(path, edited.into_bytes());
+    let regenerated = cdf_of(&export(&files));
+    assert_ne!(regenerated, original);
+    assert!(
+        regenerated
+            .iter()
+            .any(|r| r.contains("\"gain\"") && r.contains("\"3\"")),
+        "{regenerated:#?}"
+    );
+}

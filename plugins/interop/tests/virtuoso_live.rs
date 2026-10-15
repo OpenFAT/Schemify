@@ -2230,6 +2230,12 @@ fn kit_lib_round_trip_on_the_mock() {
     );
     let fails: Vec<&String> = user.iter().filter(|x| x.contains(" Fail ")).collect();
     assert!(fails.is_empty(), "{fails:#?}");
+    // The reverse stash of the CDF: no cell's CDF changed on the way (§7.5).
+    assert!(
+        user.iter()
+            .any(|x| x.starts_with("user.roundtrip.") && x.contains("(0 with")),
+        "{user:#?}"
+    );
 }
 
 /// The PDK sweep on the mock: the fixture PDK's `nch` swept over w and fingers with its

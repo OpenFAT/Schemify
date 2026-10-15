@@ -95,7 +95,11 @@ pub fn canonical(bytes: &[u8]) -> String {
 /// an import adds by design.
 pub fn strip_fp(text: &str) -> String {
     text.lines()
-        .filter(|l| !l.starts_with("  vsym ") && !l.starts_with("  vsch "))
+        .filter(|l| {
+            !["  vsym ", "  vsch ", "  vcdf ", "  vcdfrec "]
+                .iter()
+                .any(|p| l.starts_with(p))
+        })
         .map(|l| format!("{l}\n"))
         .collect()
 }

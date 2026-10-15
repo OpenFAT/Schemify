@@ -267,6 +267,76 @@ fn inst_info(
 // Serialization: Dump → records (§4.2 order, refs assigned after sorting)
 // ---------------------------------------------------------------------------------------
 
+/// The `cdf`, `param` and `siminfo` records of `cdf` (§4.2): params in CDF order, siminfo
+/// as stored (the dump writes it sorted by simulator).
+pub fn cdf_records(cdf: &Cdf) -> Vec<Record> {
+    let mut out = vec![Record::new("cdf", vec![sfyx::text(&cdf.label_set)])];
+    for p in &cdf.params {
+        out.push(Record::new(
+            "param",
+            vec![
+                s(&p.name),
+                s(&p.ty),
+                s(&p.def),
+                s(&p.prompt),
+                s(&p.units),
+                Value::List(p.flags.iter().map(|f| s(f)).collect()),
+                Value::List(p.choices.iter().map(|f| s(f)).collect()),
+                sfyx::text(&p.callback),
+            ],
+        ));
+    }
+    for si in &cdf.siminfo {
+        let fields = si
+            .fields
+            .iter()
+            .map(|(k, v)| {
+                let v = match v {
+                    SimVal::Str(x) => s(x),
+                    SimVal::List(l) => Value::List(l.iter().map(|x| s(x)).collect()),
+                    SimVal::Pairs(p) => pairs(p.iter().map(|(a, b)| (a.as_str(), b.as_str()))),
+                };
+                Value::List(vec![s(k), v])
+            })
+            .collect();
+        out.push(Record::new(
+            "siminfo",
+            vec![s(&si.sim), Value::List(fields)],
+        ));
+    }
+    debug_assert_eq!(out.len(), 1 + cdf.params.len() + cdf.siminfo.len());
+    out
+}
+
+/// The CDF a cell from Virtuoso had, when its interface (pins, params, impls) is unchanged
+/// since the import (`vcdf` fingerprint, §7.5): `Some(None)` for a cell that had no CDF,
+/// `Some(Some(cdf))` for the stored records (`vcdfrec`), `None` when the cell is not from
+/// Virtuoso or was edited (export then derives the CDF, §6.3).
+fn cdf_as_imported(c: &Cell) -> Option<Option<Cdf>> {
+    let fp = c.header(super::fingerprint_attr(super::Part::Interface))?;
+    if fp != super::fingerprint(&c.doc, super::Part::Interface) {
+        return None;
+    }
+    let recs: Vec<&str> = (0..c.doc.attrs(0).len() as u32)
+        .map(|k| c.doc.attrs(0).start + k)
+        .filter(|&a| c.doc.attr_key(a) == "vcdfrec")
+        .filter_map(|a| c.doc.attr_value(a, 0))
+        .collect();
+    if recs.is_empty() {
+        return Some(None);
+    }
+    let text = format!(
+        "(\"sfyx\" 1 \"vcdf\")\n(\"lib\" \"l\")\n(\"cell\" \"c\" \"design\")\n{}\n(\"end\")\n",
+        recs.join("\n")
+    );
+    let cdf = sfyx::read(&text)
+        .ok()
+        .and_then(|r| read::dump(&r).ok())
+        .and_then(|d| d.cells.into_iter().next())
+        .and_then(|c| c.cdf)?;
+    Some(Some(cdf))
+}
+
 /// The records of `d` in §4.2 order: header; per library (sorted), its `ref` cells then
 /// its `design` cells (each sorted by name) with CDF, cellviews (sorted by view, objects
 /// in kind order, each kind sorted by name, else coordinates, else text) and text views;
@@ -287,42 +357,7 @@ pub fn records(d: &Dump) -> Vec<Record> {
             vec![s(&c.name), s(if c.design { "design" } else { "ref" })],
         ));
         if let Some(cdf) = &c.cdf {
-            out.push(Record::new("cdf", vec![sfyx::text(&cdf.label_set)]));
-            for p in &cdf.params {
-                out.push(Record::new(
-                    "param",
-                    vec![
-                        s(&p.name),
-                        s(&p.ty),
-                        s(&p.def),
-                        s(&p.prompt),
-                        s(&p.units),
-                        Value::List(p.flags.iter().map(|f| s(f)).collect()),
-                        Value::List(p.choices.iter().map(|f| s(f)).collect()),
-                        sfyx::text(&p.callback),
-                    ],
-                ));
-            }
-            for si in &cdf.siminfo {
-                let fields = si
-                    .fields
-                    .iter()
-                    .map(|(k, v)| {
-                        let v = match v {
-                            SimVal::Str(x) => s(x),
-                            SimVal::List(l) => Value::List(l.iter().map(|x| s(x)).collect()),
-                            SimVal::Pairs(p) => {
-                                pairs(p.iter().map(|(a, b)| (a.as_str(), b.as_str())))
-                            }
-                        };
-                        Value::List(vec![s(k), v])
-                    })
-                    .collect();
-                out.push(Record::new(
-                    "siminfo",
-                    vec![s(&si.sim), Value::List(fields)],
-                ));
-            }
+            out.extend(cdf_records(cdf));
         }
         let mut cvs: Vec<&Cv> = c.cvs.iter().collect();
         cvs.sort_by(|a, b| a.view.cmp(&b.view));
@@ -564,7 +599,13 @@ fn cell_out(
     let mut ids = Ids::default();
     match c.kind() {
         FileKind::Shprim | FileKind::Shcomp => {
-            let cdf = cdf_out(c, core, notes);
+            // A cell from Virtuoso whose interface nobody changed gets its CDF back as it
+            // was (the reverse stash, §7.5); otherwise the CDF is derived from the cell.
+            let as_imported = if core { None } else { cdf_as_imported(c) };
+            let cdf = as_imported
+                .clone()
+                .flatten()
+                .unwrap_or_else(|| cdf_out(c, core, notes));
             // A component without parameters whose pins are in Virtuoso's default order
             // (sorted names, §6.3) needs no CDF: none is written, so a cell that had none
             // in Virtuoso gets none back.
@@ -579,7 +620,10 @@ fn cell_out(
             };
             let sorted = names.windows(2).all(|w| w[0].as_bytes() < w[1].as_bytes());
             let bare = c.kind() == FileKind::Shcomp && cdf.params.is_empty() && sorted;
-            out.cdf = (!bare).then_some(cdf);
+            out.cdf = match as_imported {
+                Some(stored) => stored,
+                None => (!bare).then_some(cdf),
+            };
             out.cvs
                 .push(keep(c, super::Part::Symbol, symbol_out(c, &mut ids, notes)));
             if c.kind() == FileKind::Shcomp {

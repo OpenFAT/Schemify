@@ -121,6 +121,8 @@ pub enum Part {
     Symbol,
     /// Rank 3 drawn objects (the schematic view).
     Schematic,
+    /// Rank 1 only: pins, params, impls, what the export derives a CDF from (`vcdf`).
+    Interface,
 }
 
 /// A fingerprint of what the records of `doc` that make up `part` give Virtuoso (FNV-1a 64
@@ -141,6 +143,7 @@ pub fn fingerprint(doc: &Document<'_>, part: Part) -> String {
             K::Poly,
             K::Stext,
         ],
+        Part::Interface => &[K::Pin, K::Param, K::Impl],
         Part::Schematic => &[
             K::Inst,
             K::Wire,
@@ -212,6 +215,7 @@ pub fn fingerprint_attr(part: Part) -> &'static str {
     match part {
         Part::Symbol => "vsym",
         Part::Schematic => "vsch",
+        Part::Interface => "vcdf",
     }
 }
 
