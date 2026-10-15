@@ -3576,10 +3576,17 @@ fn pin_label_as_drawn(
     notes: &mut Notes,
 ) -> Option<Vec<String>> {
     let fig = main_pin_fig(sv, name)?;
+    // The label glued to the pin's rectangle, else an unglued pin label of its terminal's
+    // name (Cadence's sample library leaves them unglued; live run).
     let Some(l) = sv
         .labels
         .iter()
         .find(|l| l.parent == fig.r && l.layer == "pin")
+        .or_else(|| {
+            sv.labels
+                .iter()
+                .find(|l| l.parent == 0 && l.layer == "pin" && l.text == fig.term)
+        })
     else {
         return Some(vec!["none".into()]);
     };

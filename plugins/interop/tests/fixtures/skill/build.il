@@ -240,6 +240,8 @@
                   (SfyFixBox (difference (caddr p) (nth 5 p)) (difference (cadddr p) (nth 5 p))
                              (plus (caddr p) (nth 5 p)) (plus (cadddr p) (nth 5 p)))))
       (dbCreatePin net fig nil term))
+    ;; y's name, glued to nothing, as Cadence's sample library draws symbol pin labels.
+    (dbCreateLabel cv (list "pin" "label") (SfyFixP 40 -12) "y" "lowerCenter" "R0" "stick" (SfyFixU 10))
     (SfyFixSave cv)
     (setq cdf (SfyFixCdf "work" "netx"))
     (cdfCreateParam cdf ?name "gain" ?type "string" ?defValue "2" ?prompt "Gain" ?parseAsNumber "yes" ?parseAsCEL "yes")

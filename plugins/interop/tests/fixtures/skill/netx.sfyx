@@ -18,5 +18,6 @@
 ("pinfig" 1 "a" -44000 -4000 -36000 4000)
 ("pinfig" 2 "vdd" -2000 38000 2000 42000)
 ("pinfig" 3 "y" 38000 -2000 42000 2000)
-("shape" 4 "polygon" "device" "drawing" (-20000 -20000 20000 0 -20000 20000) 0)
+("label" 4 0 "y" 40000 -12000 "R0" "lowerCenter" "stick" 10000 "normal" "pin" "label")
+("shape" 5 "polygon" "device" "drawing" (-20000 -20000 20000 0 -20000 20000) 0)
 ("end")
