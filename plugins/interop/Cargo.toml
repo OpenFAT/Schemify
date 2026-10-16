@@ -39,5 +39,3 @@ schemify-wave = { path = "../../crates/wave" }
 schemify-plugin = { path = "../../crates/plugin" }
 # `std` only: no fork/timeout runners (rusty-fork, tempfile) or bit-set strategies used.
 proptest = { version = "1", default-features = false, features = ["std"] }
-# Bit-identical exp/ln/pow on every OS for the synthetic gm/Id model (tests/retarget.rs).
-libm = "0.2"
