@@ -37,6 +37,7 @@ pub enum Code {
     E035,
     E036,
     W037,
+    E038,
     I005,
 }
 
@@ -55,10 +56,10 @@ pub enum Severity {
 impl Code {
     /// Returns the code as written in reports (`"E005"`).
     pub fn as_str(self) -> &'static str {
-        const S: [&str; 24] = [
+        const S: [&str; 25] = [
             "E001", "E002", "E003", "W004", "E005", "E006", "W007", "E008", "E009", "W010", "E011",
             "E012", "E013", "E014", "W016", "E030", "E031", "E032", "E033", "E034", "E035", "E036",
-            "W037", "I005",
+            "W037", "E038", "I005",
         ];
         S[self as usize]
     }
@@ -74,7 +75,7 @@ impl Code {
 
     /// Returns whether a `waive` record can downgrade it to `I005` (D13).
     pub fn waivable(self) -> bool {
-        matches!(self, Code::E005 | Code::E006 | Code::E032)
+        matches!(self, Code::E005 | Code::E006 | Code::E032 | Code::E038)
     }
 
     /// Returns the spec meaning.
@@ -103,6 +104,7 @@ impl Code {
             Code::E035 => "unknown corner or config",
             Code::E036 => "inherited pins of one name with different default nets",
             Code::W037 => "config inst rule names a path no instance has",
+            Code::E038 => "param value fails its valid rule",
             Code::I005 => "waived violation",
         }
     }
@@ -243,7 +245,7 @@ impl Violations {
 pub(crate) fn value_code(code: Code) -> bool {
     matches!(
         code,
-        Code::E008 | Code::E005 | Code::E006 | Code::E032 | Code::I005
+        Code::E008 | Code::E005 | Code::E006 | Code::E032 | Code::E038 | Code::I005
     )
 }
 
@@ -280,7 +282,7 @@ pub(crate) fn waivers(doc: &Document, names: &Names) -> Vec<(ObjId, Name)> {
 /// violated rule; `bounds` are the evaluated `min`, `max`, `step`, `grid`.
 pub(crate) fn gate(
     v: &Val,
-    bounds: &[Option<Val>; 4],
+    bounds: &[Option<Val>; crate::iface::BOUNDS],
     choices: &[Name],
     names: &Names,
     out: &mut Vec<(Code, String)>,
@@ -357,6 +359,21 @@ pub(crate) fn gate(
         });
         if !hit {
             out.push((Code::E006, format!("{} is not one of the choices", text())));
+        }
+    }
+    // The param's legality rule (`valid`, D13 as amended 2026-10-15): a rule that does not
+    // hold, or that is not a bool, is a finding; one that could not be evaluated is already
+    // an E008.
+    match &bounds[crate::iface::VALID] {
+        None | Some(Val::Bool(true)) => {}
+        Some(Val::Bool(false)) => out.push((
+            Code::E038,
+            format!("{} is not a legal value (its valid rule is false)", text()),
+        )),
+        Some(other) => {
+            let mut t = String::new();
+            other.write_text(&mut t);
+            out.push((Code::E038, format!("its valid rule gives {t}, not a bool")));
         }
     }
 }
@@ -529,7 +546,11 @@ pub(crate) fn check_values<F: Funcs>(
             // that passes them has nothing to report.
             let konst = &c.bound_const[k];
             let fast = c.choice_start[k] == c.choice_start[k + 1]
-                && (0..4).all(|w| c.param_bound[k][w] == NONE || konst[w].is_some());
+                && (0..crate::iface::BOUNDS)
+                    .all(|w| c.param_bound[k][w] == NONE || konst[w].is_some())
+                && konst[crate::iface::VALID]
+                    .as_ref()
+                    .is_none_or(|v| matches!(v, Val::Bool(true)));
             if fast {
                 let b = |w: usize| konst[w].as_ref().and_then(Val::as_f64);
                 if v.as_f64()
@@ -538,7 +559,7 @@ pub(crate) fn check_values<F: Funcs>(
                     continue;
                 }
             }
-            let mut bounds: [Option<Val>; 4] = Default::default();
+            let mut bounds: [Option<Val>; crate::iface::BOUNDS] = Default::default();
             for (which, b) in bounds.iter_mut().enumerate() {
                 *b = g.bound(i, k, which, vals, cx.ifaces, funcs, ws);
             }
@@ -574,7 +595,8 @@ mod tests {
     fn run(v: Val, b: [Option<f64>; 4], choices: &[&str]) -> Vec<Code> {
         let mut names = Names::default();
         let choices: Vec<Name> = choices.iter().map(|c| names.intern(c)).collect();
-        let bounds = b.map(|x| x.map(Val::Num));
+        let [b0, b1, b2, b3] = b.map(|x| x.map(Val::Num));
+        let bounds = [b0, b1, b2, b3, None];
         let mut out = Vec::new();
         gate(&v, &bounds, &choices, &names, &mut out);
         // The fast path agrees: it passes exactly when gate finds nothing.

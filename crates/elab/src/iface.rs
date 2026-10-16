@@ -57,6 +57,10 @@ pub(crate) const MIN: usize = 0;
 pub(crate) const MAX: usize = 1;
 pub(crate) const STEP: usize = 2;
 pub(crate) const GRID: usize = 3;
+/// A param's legality rule (`valid <bool expr>`, D13 as amended 2026-10-15).
+pub(crate) const VALID: usize = 4;
+/// Bounds per param: `min max step grid valid`.
+pub(crate) const BOUNDS: usize = 5;
 
 /// One cell's interface digest. Pins keep file order (= port order).
 #[derive(Clone, Debug, Default)]
@@ -109,7 +113,7 @@ pub struct Iface {
     /// Choice texts.
     pub choices: Vec<Name>,
     pub(crate) param_prog: Vec<u32>,
-    pub(crate) param_bound: Vec<[u32; 4]>,
+    pub(crate) param_bound: Vec<[u32; BOUNDS]>,
 
     /// Var names (rank 4; present only when the document is open).
     pub var_name: Vec<Name>,
@@ -139,7 +143,7 @@ pub struct Iface {
 
     pub(crate) progs: Progs,
     /// Values of bounds that are constants, per param (`None`: absent or not constant).
-    pub(crate) bound_const: Vec<[Option<Val>; 4]>,
+    pub(crate) bound_const: Vec<[Option<Val>; BOUNDS]>,
 }
 
 impl Iface {
@@ -246,8 +250,14 @@ impl Iface {
             f.param_computed.push(computed.is_some());
             f.param_prog
                 .push(progs.push(s.get(text), syntax, cached, scope));
-            let mut bound = [NONE; 4];
-            for (slot, key) in [(MIN, "min"), (MAX, "max"), (STEP, "step"), (GRID, "grid")] {
+            let mut bound = [NONE; BOUNDS];
+            for (slot, key) in [
+                (MIN, "min"),
+                (MAX, "max"),
+                (STEP, "step"),
+                (GRID, "grid"),
+                (VALID, "valid"),
+            ] {
                 if let Some(v) = a(key).and_then(|v| v.first().copied()) {
                     bound[slot] = progs.push(s.get(v), Syntax::Expr, None, scope);
                 }
@@ -272,7 +282,7 @@ impl Iface {
         let mut scratch = schemify_expr::Scratch::default();
         let mut text = String::new();
         for bound in &f.param_bound {
-            let mut row: [Option<Val>; 4] = Default::default();
+            let mut row: [Option<Val>; BOUNDS] = Default::default();
             for (slot, &b) in bound.iter().enumerate() {
                 let constant = b != NONE
                     && progs.refs(b).is_empty()

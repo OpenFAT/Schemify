@@ -19,7 +19,7 @@
 //! node's deps (CSR). Lifetime: until a structural edit (the editor) or one
 //! elaboration. Parallel: one graph per cell, independent.
 
-use crate::iface::{GRID, Iface, MAX, MIN, STEP};
+use crate::iface::{GRID, Iface, MAX, MIN, STEP, VALID};
 use crate::names::{Name, Names};
 use crate::values::{Code as PCode, Funcs, NONE, Progs, Ref, Syntax, VAR, Val};
 use schemify_doc::{Document, Instances, Sym};
@@ -492,7 +492,7 @@ impl Graph {
         unv[node as usize] = u;
     }
 
-    /// Evaluates bound `which` (`MIN`, `MAX`, `STEP`, `GRID`) of param `k` for
+    /// Evaluates bound `which` (`MIN`, `MAX`, `STEP`, `GRID`, `VALID`) of param `k` for
     /// instance row `i` in its child scope; `None` when absent or failing.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn bound<F: Funcs>(
@@ -505,7 +505,7 @@ impl Graph {
         funcs: &mut F,
         ws: &mut Work,
     ) -> Option<Val> {
-        assert!(matches!(which, MIN | MAX | STEP | GRID));
+        assert!(matches!(which, MIN | MAX | STEP | GRID | VALID));
         let first = self.inst_first[i];
         assert!(first != NONE, "gating needs a resolved instance");
         let c = &ifaces[self.inst_iface[i] as usize];

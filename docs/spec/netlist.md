@@ -62,7 +62,7 @@ For an inherited pin `P` with default net `D` on cell `c`, at instance path `p`:
 - Evaluation scope: overrides are evaluated in the **parent** cell scope (parent's effective params, then parent vars); `computed` params and the cell's own vars are evaluated in the **child** scope with the child's effective params. Bench vars are the root scope, after corner `set`, sweep/MC/optimizer assignments, then CLI overrides.
 - Every param is evaluated to a concrete value by our evaluator (no SPICE-side expressions for design params). Gating (D13), per instance and param, on the evaluated value:
   - `grid`/`step`: values are snapped on edit by the editor; an off-grid value in a file is `E032` (error, waivable);
-  - outside `[min, max]` → `E005`; not in `choices` → `E006`;
+  - outside `[min, max]` → `E005`; not in `choices` → `E006`; a `valid` rule that is false (or not a bool) → `E038`;
   - a matching `waive <id> <inst_id> <param>` downgrades the violation to `I005` (info, reported, not blocking).
 - **Subckt specialization:** a `schematic` impl is emitted once per distinct tuple of its evaluated params. The tuple equal to the cell defaults is named `<cell>`; others `<cell>__<h>` where `<h>` is the first 6 base32 chars of a stable hash (FNV-1a 64) of the canonical text of the sorted `k=v` list. Identical tuples share one definition.
 
@@ -181,6 +181,7 @@ Severity `E` blocks Run and makes `schemify netlist` exit 1 (unless `--allow-err
 | E035 | E | unknown corner or config named by the request |
 | E036 | E | inherited pins of one name with different default nets in one definition |
 | W037 | W | config `inst` rule names a path no instance has |
+| E038 | E | param value fails its `valid` rule (waivable) |
 | I005 | I | waived violation |
 
 Violations are keyed by (code, cell, object id, instance path, param) and sorted bytewise on that key (code text first). A finding true for every path through an object has no path.

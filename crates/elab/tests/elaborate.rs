@@ -635,3 +635,53 @@ fn gating_waivers_flip_only_the_named_param() {
         }
     }
 }
+
+/// D13 as amended 2026-10-15: a param's `valid` rule. Lengths 10n, 12n and 14n..20n are legal
+/// (a measured PDK rule shape); every other length is E038, waivable to I005; a rule that is
+/// not a bool is E038 too; a computed param reads a legal length.
+#[test]
+fn valid_rules_gate_like_bounds() {
+    let dev = "schemify 1 shprim\n\npin D inout 0 0\n\nparam l 10n\n  valid \"abs(l - 10n) <= 1e-12 || abs(l - 12n) <= 1e-12 || (l >= 14n - 1e-12 && l <= 20n + 1e-12)\"\nparam k 1\n  valid k\nparam ext 0\n  computed \"steps(l, 10n, 5n, 14n, 7n, 20n)\"\n\nimpl spice spice\n";
+    for (l, legal) in [
+        ("10n", true),
+        ("11n", false),
+        ("12n", true),
+        ("13n", false),
+        ("14n", true),
+        ("17n", true),
+        ("20n", true),
+        ("21n", false),
+    ] {
+        for waive in [false, true] {
+            let w = if waive {
+                "\nwaive 0w0001 0m0001 l\n  reason \"deliberate\"\n"
+            } else {
+                ""
+            };
+            let bench = format!(
+                "schemify 1 shbench\n\ninst 0m0001 ./dev\n  at 0 0 R0\n  name M1\n  l {l}\n{w}"
+            );
+            let (p, hs) = project(&[("dev.shprim", dev), ("tb.shbench", &bench)]);
+            let st = CellState::build(&p, hs[1], &mut no_funcs).unwrap();
+            let mut got: Vec<(&str, &str)> = st
+                .violations
+                .rows
+                .iter()
+                .filter(|v| !v.code.as_str().starts_with('W'))
+                .map(|v| (v.code.as_str(), st.names.get(v.param)))
+                .collect();
+            got.sort_unstable();
+            // `k`'s rule is an int, never a bool: always E038 (not waived: the waiver names l).
+            let mut want = vec![("E038", "k")];
+            if !legal {
+                want.push((if waive { "I005" } else { "E038" }, "l"));
+            }
+            // Past the measured table, the computed param errors too: never extrapolated.
+            if l == "21n" {
+                want.push(("E008", "ext"));
+            }
+            want.sort_unstable();
+            assert_eq!(got, want, "l={l} waive={waive}");
+        }
+    }
+}

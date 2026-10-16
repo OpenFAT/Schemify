@@ -493,6 +493,7 @@ static RECORDS: [RecordSchema; RecordKind::Unknown as usize + 1] = [
             many("choices", &[A]),
             attr("computed", &[A]),
             attr("show", &[A]),
+            attr("valid", &[A]),
             DOC,
             CACHED,
         ],
