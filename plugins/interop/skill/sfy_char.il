@@ -119,10 +119,64 @@
           (setq changed (cons n changed)))
         (setq k (add1 k)))
       (setq changed (reverse changed))
-      (setq probes (cons (list (car c) (cadr c) (car (car r)) (cadr r) changed) probes))
-      (when (if names (member (car c) names) (and changed (equal (cadr r) "ok")))
-        (setq ins (cons c ins))))
-    (list (reverse ins) (reverse probes))))
+      (setq probes (cons (list (car c) (cadr c) (car (car r)) (cadr r) changed) probes)))
+    (setq probes (reverse probes))
+    (if names
+      (list (setof c cands (member (car c) names)) probes "named")
+      (SfyCharPick cands probes (SfyCharLabels cdf)))))
+
+;; The CDF's paramLabelSet names (a leading "-" stripped): the PDK's own declared sizing
+;; parameters.
+(procedure (SfyCharLabels cdf)
+  (let ((s (getSGq cdf paramLabelSet)))
+    (and (stringp s)
+         (mapcar (lambda (w) (if (equal (substring w 1 1) "-") (substring w 2) w))
+                 (parseString s " ")))))
+
+;; The names reachable from x over edges, a list of (name (names it moves)).
+(procedure (SfyCharReach x edges)
+  (let ((seen nil) (todo (list x)) (n nil) (e nil))
+    (while todo
+      (setq n (car todo))
+      (setq todo (cdr todo))
+      (setq e (assoc n edges))
+      (foreach y (and e (cadr e))
+        (unless (member y seen)
+          (setq seen (cons y seen))
+          (setq todo (cons y todo)))))
+    seen))
+
+;; The inputs, read from the probes as an influence graph (an edge x -> y when nudging x
+;; changes netlisted y, its callbacks all running). Seeds: the paramLabelSet params with
+;; an edge; then every other candidate with an edge that no seed moves (a param a seed
+;; moves is derived, even when it is editable). Without a useful label set: the sources of
+;; the graph (no edge into the strongly connected component from outside), at most 6.
+;; Returns (inputs probes how), how "labels" or "sources".
+(procedure (SfyCharPick cands probes labels)
+  (let ((edges nil) (seeds nil) (moved nil) (ins nil) (rx nil) (n 0))
+    (foreach pr probes
+      (when (and (car (last pr)) (equal (nth 3 pr) "ok"))
+        (setq edges (cons (list (car pr) (car (last pr))) edges))))
+    (setq seeds (setof c cands (and (member (car c) labels) (assoc (car c) edges))))
+    (cond
+      (seeds
+        (foreach s seeds
+          (foreach y (cadr (assoc (car s) edges))
+            (unless (member y moved) (setq moved (cons y moved)))))
+        (list (setof c cands (or (member c seeds)
+                                 (and (assoc (car c) edges) (not (member (car c) moved)))))
+              probes "labels"))
+      (t
+        (foreach c cands
+          (when (and (assoc (car c) edges) (lessp n 6))
+            (setq rx (SfyCharReach (car c) edges))
+            ;; A source: whatever reaches c, c reaches back (one component).
+            (unless (setof e edges (and (nequal (car e) (car c))
+                                        (member (car c) (SfyCharReach (car e) edges))
+                                        (not (member (car e) rx))))
+              (setq ins (cons c ins))
+              (setq n (add1 n)))))
+        (list (reverse ins) probes "sources")))))
 
 ;; Per-cell sweep state: the port, cellview, master, inputs, netlisted names, and the
 ;; points left in the budget (spec 8.3: at most 4000 a device).
@@ -289,6 +343,9 @@
                                 (cadr (assoc "spectre" (SfySimInfoFields (getSGq cdf simInfo))))))))
     (setq found (and m cdf outs (SfyCharDiscover cv m cdf outs names)))
     (setq ins (car found))
+    (when (equal (caddr found) "sources")
+      (SfyLog (sprintf nil "info %s/%s: no paramLabelSet param moves another; inputs are the influence graph's sources: %L"
+                       lib cell (mapcar 'car ins))))
     (cond
       ((not (and m cdf outs))
         (SfyRefuse 0 (sprintf nil "%s/%s: no symbol, CDF or spectre instParameters to characterize" lib cell))

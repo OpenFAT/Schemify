@@ -594,3 +594,35 @@ fn a_zero_count_does_not_break_legality() {
     let r = d.rules();
     assert!(r.unruled.iter().all(|u| u != "kappa"), "{r:?}");
 }
+
+/// The trap a live PDK set: a param editable with a callback (zq_area sets zq back from
+/// the area) that the declared sizing param zq moves is derived, not an input; inputs are
+/// read from the probes as an influence graph seeded by paramLabelSet, and a cell without
+/// one falls back to the graph's sources (reported as info).
+#[test]
+fn a_param_a_sizing_input_moves_is_derived_even_when_editable() {
+    let devs = characterize(&["ar", "tab"], "");
+    let ar = &devs[0];
+    assert_eq!(names(&ar.inputs), ["zq", "nn"]);
+    let probe = ar.probes.iter().find(|p| p.name == "zq_area").unwrap();
+    assert!(
+        !probe.changed.is_empty(),
+        "zq_area's own nudge moves zq: {probe:?}"
+    );
+    assert_eq!(ar.summary().derived, ["zq_area", "qa"]);
+    let r = ar.rules();
+    assert!(r.unexplained.is_empty(), "{r:?}");
+    assert_eq!(names(&devs[1].inputs), ["mu"]);
+    let mut i = skill::virtuoso(&["zpdk", "scratch"]);
+    i.load(BUILD).unwrap();
+    i.load(CHARPDK).unwrap();
+    i.load("(SfyFixCharPdk)").unwrap();
+    i.load(r#"(SfyCharacterize "/t/c.sfyx" "zpdk" (list "tab" "zeta") "scratch")"#)
+        .unwrap();
+    let log = &i.files["/t/c.sfyx.log"];
+    assert!(
+        log.contains("info zpdk/tab: no paramLabelSet param moves another"),
+        "{log}"
+    );
+    assert!(!log.contains("info zpdk/zeta"), "{log}");
+}

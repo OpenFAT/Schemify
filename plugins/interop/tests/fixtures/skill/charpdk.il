@@ -12,6 +12,11 @@
 ;;       2u 5u 9u).
 ;; chaos inputs pp (number) and qq (count); zz is a hash of both: no rule explains it. pp
 ;;       set to an odd number of thousandths gains 0.1: no legality pattern explains it.
+;; ar    the trap: zq (number) and nn (count) are its declared sizing params; zq_area is
+;;       editable with a callback (it sets zq back from the area) but zq moves it: derived,
+;;       like qa = zq_area*nn.
+;; zeta and sel declare their inputs in paramLabelSet; tab and chaos declare none (the
+;; influence graph's sources are their inputs).
 ;; sel   inputs gx (number), mode (a choice of a b c) and dbl (a boolean); pz is 3gx, 5gx or
 ;;       0.7u by mode, qz is gx or 2gx by dbl: one rule per value of the selector. gx is
 ;;       floored at 1u, at 3u in mode c: its legality depends on the choice.
@@ -63,6 +68,16 @@
     (zpdkSet "qz" (sprintf nil "%g" (if dbl (times 2 gx) gx)))
     t))
 
+(procedure (arCB)
+  (let ((zq (atof (zpdkGet "zq"))) (nn (zpdkGet "nn")))
+    (zpdkSet "zq_area" (sprintf nil "%g" (times zq 2e-07)))
+    (zpdkSet "qa" (sprintf nil "%g" (times zq 2e-07 nn)))
+    t))
+
+(procedure (arAreaCB)
+  (zpdkSet "zq" (sprintf nil "%g" (quotient (atof (zpdkGet "zq_area")) 2e-07)))
+  (arCB))
+
 (procedure (SfyFixCharPdk)
   (let ((cdf nil))
     (SfyFixSymbol "zpdk" "zeta" (list (list "A" "inputOutput" 0 40) (list "B" "inputOutput" 0 -40)))
@@ -76,6 +91,7 @@
     (cdfCreateParam cdf ?name "rho" ?type "string" ?defValue "2.5e-15" ?prompt "rho" ?parseAsNumber "yes")
     (cdfCreateParam cdf ?name "sig" ?type "string" ?defValue "2e-07" ?prompt "sig" ?parseAsNumber "yes")
     (setSGq cdf (list nil 'spectre (list nil 'termOrder '(A B) 'instParameters '(zq kappa ct rho sig))) simInfo)
+    (setSGq cdf "-model zq kappa ct" paramLabelSet)
     (cdfSaveCDF cdf)
     (SfyFixSymbol "zpdk" "tab" (list (list "A" "inputOutput" 0 40) (list "B" "inputOutput" 0 -40)))
     (setq cdf (SfyFixCdf "zpdk" "tab"))
@@ -98,5 +114,15 @@
     (cdfCreateParam cdf ?name "pz" ?type "string" ?defValue "6e-06" ?prompt "pz" ?parseAsNumber "yes")
     (cdfCreateParam cdf ?name "qz" ?type "string" ?defValue "2e-06" ?prompt "qz" ?parseAsNumber "yes")
     (setSGq cdf (list nil 'spectre (list nil 'termOrder '(A B) 'instParameters '(gx mode dbl pz qz))) simInfo)
+    (setSGq cdf "gx mode dbl" paramLabelSet)
+    (cdfSaveCDF cdf)
+    (SfyFixSymbol "zpdk" "ar" (list (list "A" "inputOutput" 0 40) (list "B" "inputOutput" 0 -40)))
+    (setq cdf (SfyFixCdf "zpdk" "ar"))
+    (cdfCreateParam cdf ?name "zq" ?type "string" ?defValue "1e-06" ?prompt "zq" ?parseAsNumber "yes" ?callback "(arCB)")
+    (cdfCreateParam cdf ?name "nn" ?type "int" ?defValue 1 ?prompt "nn" ?callback "(arCB)")
+    (cdfCreateParam cdf ?name "zq_area" ?type "string" ?defValue "2e-13" ?prompt "zq_area" ?parseAsNumber "yes" ?callback "(arAreaCB)")
+    (cdfCreateParam cdf ?name "qa" ?type "string" ?defValue "2e-13" ?prompt "qa" ?parseAsNumber "yes")
+    (setSGq cdf (list nil 'spectre (list nil 'termOrder '(A B) 'instParameters '(zq nn zq_area qa))) simInfo)
+    (setSGq cdf "-model zq nn" paramLabelSet)
     (cdfSaveCDF cdf)
     t))

@@ -557,8 +557,16 @@ fn apply_pdk_rules(proj: &Path, text: &str) -> Vec<String> {
                             rules.unruled.join(" ")
                         )
                     } else {
+                        let unruled = if rules.unruled.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                "; the rewrites of {} follow no legality rule",
+                                rules.unruled.join(" ")
+                            )
+                        };
                         format!(
-                            "WARN {id} {} computed ({}); no rule for {}: they keep Virtuoso's values",
+                            "WARN {id} {} computed ({}); no rule for {}: they keep Virtuoso's values{unruled}",
                             names.len(),
                             names.join(" "),
                             rules.unexplained.join(" ")
