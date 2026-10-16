@@ -21,16 +21,20 @@
         (setq h (substring s 1 1))
         (setq scale (case c ("f" 1e-15) ("p" 1e-12) ("n" 1e-9) ("u" 1e-6) ("m" 1e-3)
                             ("k" 1e3) ("K" 1e3) ("M" 1e6) ("G" 1e9) (t 1.0)))
-        (and (or (digitp h) (member h (list "-" "+" ".")))
+        (and (or (SfyCharDigit h) (member h (list "-" "+" ".")))
              (if (equal scale 1.0)
-               (and (or (digitp c) (equal c ".")) (atof s))
+               (and (or (SfyCharDigit c) (equal c ".")) (atof s))
                (and (greaterp n 1) (times (atof (substring s 1 (sub1 n))) scale)))))
       (t nil))))
+
+;; True when c is one decimal digit (SKILL has no digit predicate).
+(procedure (SfyCharDigit c)
+  (and (member c (list "0" "1" "2" "3" "4" "5" "6" "7" "8" "9")) t))
 
 ;; True when string s is a whole number written with digits only.
 (procedure (SfyCharWhole s)
   (and (stringp s) (greaterp (strlen s) 0)
-       (null (setof c (parseString s "") (not (digitp c))))))
+       (null (setof c (parseString s "") (not (SfyCharDigit c))))))
 
 ;; The candidate p as (name kind default choices), or nil when it is not numeric, boolean
 ;; or a choice: an int is a "count", a string or float with a numeric default a "num" (a
