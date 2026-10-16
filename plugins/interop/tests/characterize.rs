@@ -66,3 +66,59 @@ fn inputs_and_derived_params_are_found_by_experiment() {
     let named = characterize(&["zeta"], "?span 2 ?inputs (list \"kappa\")");
     assert_eq!(names(&named[0].inputs), ["kappa"]);
 }
+
+/// The axes find every place a derived value or a rewrite changes, by bisection, to a
+/// relative width of 1e-5; the point count stays within the budget.
+#[test]
+fn bisection_brackets_every_breakpoint_tightly() {
+    let devs = characterize(&["zeta", "tab", "chaos"], "");
+    for d in &devs {
+        assert!(
+            d.points.len() <= 4000,
+            "{}: {} points",
+            d.cell,
+            d.points.len()
+        );
+        // A continuously varying value (chaos's hash, zeta's areas) is not bisected: no
+        // device here comes near the budget.
+        assert!(
+            d.points.len() < 400,
+            "{}: {} points",
+            d.cell,
+            d.points.len()
+        );
+    }
+    let tab = &devs[1];
+    let nu = tab.outputs.iter().position(|o| o == "nu").unwrap();
+    // Points on mu's axis (every point that set mu), by the value set.
+    let mut axis: Vec<(f64, String)> = tab
+        .points
+        .iter()
+        .filter(|p| p.status.is_ok() && !p.set[0].is_empty())
+        .map(|p| {
+            (
+                characterize::ael_num(&p.set[0]).unwrap(),
+                p.values[nu].clone(),
+            )
+        })
+        .collect();
+    axis.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // Each true breakpoint (2u, 5u, 9u) lies in a bracket of two neighbours whose values
+    // differ, and the bracket is tight.
+    for want in [2e-6, 5e-6, 9e-6] {
+        let pair = axis
+            .windows(2)
+            .find(|w| w[0].1 != w[1].1 && w[0].0 < want && want <= w[1].0)
+            .unwrap_or_else(|| panic!("no bracket around {want}: {axis:?}"));
+        assert!(
+            pair[1].0 - pair[0].0 <= 1e-5 * want * 1.01,
+            "{want}: {pair:?}"
+        );
+    }
+    // The floor at 0.5u (set below it reads back 0.5u) is bracketed too.
+    let rewritten = |p: &characterize::Point| {
+        !p.set[0].is_empty()
+            && characterize::ael_num(&p.set[0]) != characterize::ael_num(&p.back[0])
+    };
+    assert!(tab.points.iter().any(rewritten), "no point below the floor");
+}
