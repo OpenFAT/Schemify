@@ -219,7 +219,7 @@
                           (fprintf sfyP "pdk callbacks of %L -> failed %L\n" (getSGq sfyPar name)
                             (SfyCallbacks sfyX (list (getSGq sfyPar name))))
                           ;; One line per property, each guarded: a PDK's instance carries ~90
-                          ;; of them, and one bad value must not cost the rest (live GF22 run:
+                          ;; of them, and one bad value must not cost the rest (live run:
                           ;; the single-line form printed nothing).
                           (foreach sfyQ0 (getSGq sfyX prop)
                             (unless (errset (fprintf sfyP "pdk prop after %s %L\n" (getSGq sfyQ0 name)

@@ -123,7 +123,7 @@ pub struct Mae {
     /// Names of the maestro functions called, in order.
     pub calls: Vec<String>,
     /// Environment options every new test starts with, as a PDK's `libInit.il` sets them
-    /// (live GF22 run: its default model files).
+    /// (live run: a PDK's default model files).
     pub default_env: Vec<(String, V)>,
     handles: Vec<Handle>,
 }

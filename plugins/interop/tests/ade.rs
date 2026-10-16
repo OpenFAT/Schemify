@@ -593,7 +593,7 @@ fn skill_loader_and_dumper_round_trip_on_the_mock_maestro() {
     assert!(i.host.mae.calls.iter().any(|c| c == "maeDeleteTest"));
 }
 
-/// A session that gives every new test default model files (a PDK's libInit, live GF22
+/// A session that gives every new test default model files (a PDK's libInit, live
 /// run): a bench without models loads with none, and one with models with exactly its own.
 #[test]
 fn the_exported_model_list_replaces_the_session_defaults() {
@@ -601,8 +601,8 @@ fn the_exported_model_list_replaces_the_session_defaults() {
         vec![(
             "modelFiles".to_owned(),
             V::list(vec![V::list(vec![
-                V::str("/pdk/design_wrapper.lib.scs"),
-                V::str("tt_pre"),
+                V::str("/pdk/models.lib.scs"),
+                V::str("tt"),
             ])]),
         )]
     };
