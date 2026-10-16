@@ -503,3 +503,76 @@ fn a_derived_value_goes_stale_in_schemify_and_comes_back_fresh() {
         findings(&files, "top.shcomp")
     );
 }
+
+/// Property: whatever a device's step table, the sweep stays within its 4000-point budget,
+/// and a table sparse enough to read as steps (at most a third of the scan's intervals
+/// change) has every breakpoint bracketed to 1e-5. Tables of 0 to 300 breakpoints at
+/// seeded log-spread positions between 0.3u and 90u.
+#[test]
+fn the_sweep_is_bounded_for_any_step_table() {
+    let mut seed: u64 = 7;
+    for k in [0usize, 1, 4, 9, 40, 300] {
+        let mut breaks: Vec<f64> = (0..k)
+            .map(|_| {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let u = (seed >> 11) as f64 / (1u64 << 53) as f64;
+                // Three significant digits: a breakpoint a PDK would write.
+                let x = 0.3e-6 * 300f64.powf(u);
+                let e = x.log10().floor() - 2.0;
+                (x / 10f64.powf(e)).round() * 10f64.powf(e)
+            })
+            .collect();
+        breaks.sort_by(f64::total_cmp);
+        breaks.dedup();
+        let list: Vec<String> = breaks.iter().map(|b| format!("{b:e}")).collect();
+        let mut i = skill::virtuoso(&["zpdk", "scratch"]);
+        i.load(BUILD).unwrap();
+        i.load(CHARPDK).unwrap();
+        i.load(&format!(
+            r#"(setq rndBreaks (list {}))
+(procedure (rndCB)
+  (let ((x (atof (zpdkGet "xx"))) (n 0))
+    (foreach b rndBreaks (when (geqp x b) (setq n (add1 n))))
+    (zpdkSet "yy" (sprintf nil "%d" n))
+    t))
+(SfyFixSymbol "zpdk" "rnd" (list (list "A" "inputOutput" 0 40) (list "B" "inputOutput" 0 -40)))
+(let ((cdf (SfyFixCdf "zpdk" "rnd")))
+  (cdfCreateParam cdf ?name "xx" ?type "string" ?defValue "1e-06" ?prompt "xx" ?parseAsNumber "yes" ?callback "(rndCB)")
+  (cdfCreateParam cdf ?name "yy" ?type "string" ?defValue "0" ?prompt "yy")
+  (setSGq cdf (list nil 'spectre (list nil 'termOrder '(A B) 'instParameters '(xx yy))) simInfo)
+  (cdfSaveCDF cdf))"#,
+            list.join(" ")
+        ))
+        .unwrap();
+        let ok = i
+            .load(r#"(SfyCharacterize "/t/r.sfyx" "zpdk" (list "rnd") "scratch" ?inputs (list "xx"))"#)
+            .unwrap();
+        assert!(ok.truthy(), "{}", i.files["/t/r.sfyx.log"]);
+        let d = characterize::read(&i.files["/t/r.sfyx"]).unwrap().remove(0);
+        assert!(d.points.len() <= 4000, "k={k}: {} points", d.points.len());
+        let mut axis: Vec<(f64, String)> = d
+            .points
+            .iter()
+            .filter(|p| p.status.is_ok())
+            .map(|p| {
+                (
+                    characterize::ael_num(d.set_value(p, 0)).unwrap(),
+                    p.values[1].clone(),
+                )
+            })
+            .collect();
+        axis.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // Scan intervals that change: the steps are located when few enough.
+        if k <= 9 {
+            for b in &breaks {
+                let w = axis
+                    .windows(2)
+                    .find(|w| w[0].0 < *b && *b <= w[1].0)
+                    .unwrap_or_else(|| panic!("k={k}: {b} outside the scan"));
+                assert!(w[1].0 - w[0].0 <= 1e-5 * b * 1.01, "k={k}: {b}: {w:?}");
+            }
+        }
+    }
+}
