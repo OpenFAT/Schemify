@@ -2,9 +2,13 @@
 //! against a made-up PDK whose parameter names mean nothing (`tests/fixtures/skill/
 //! charpdk.il`): inputs, derived params and rules are found by experiment, never by name.
 
+mod common;
 mod skill;
 
+use interop::design::Files;
+use interop::map::Mapping;
 use interop::virtuoso::characterize::{self, Device, Kind};
+use interop::virtuoso::{self, ExportOptions, ImportOptions};
 
 const BUILD: &str = include_str!("fixtures/skill/build.il");
 const CHARPDK: &str = include_str!("fixtures/skill/charpdk.il");
@@ -340,4 +344,162 @@ fn legality_accepts_exactly_the_values_the_callbacks_keep() {
             }
         }
     }
+}
+
+/// The blocking findings and I005s of `cell` in project `files` (`code param` each).
+fn findings(files: &Files, cell: &str) -> Vec<String> {
+    use schemify_doc::{Project, core_library};
+    use schemify_elab::{CellState, no_funcs};
+    let manifest = files.get("schemify.project").map(Vec::as_slice);
+    let mut p = Project::new(manifest, None, 7).unwrap();
+    let dirs = interop::design::manifest_libs(manifest.unwrap()).unwrap();
+    let mut libs: std::collections::BTreeMap<String, Vec<(&str, &[u8])>> = Default::default();
+    libs.insert("core".into(), core_library().to_vec());
+    for (path, bytes) in files.iter().filter(|f| common::is_cell(f.0)) {
+        let (dir, rel) = path.rsplit_once('/').unwrap_or(("", path));
+        let lib = dirs
+            .iter()
+            .find(|(_, d)| d.as_str() == dir)
+            .map_or(String::new(), |(l, _)| l.clone());
+        libs.entry(lib).or_default().push((rel, bytes));
+    }
+    for (lib, listing) in &libs {
+        p.index_library(lib, "t", listing).unwrap();
+    }
+    let h = p.open("", cell, &files[cell], None).unwrap().handle;
+    let st = CellState::build(&p, h, &mut no_funcs).unwrap();
+    st.violations
+        .rows
+        .iter()
+        .filter(|v| v.code.as_str().starts_with('E') || v.code.as_str() == "I005")
+        .map(|v| format!("{} {}", v.code.as_str(), st.names.get(v.param)))
+        .collect()
+}
+
+/// The `cached zz` line of the design's instance: (value, digest).
+fn cached_zz(files: &Files) -> Option<(String, String)> {
+    let d = schemify_format::parse(&files["top.shcomp"]).unwrap();
+    let r =
+        (1..d.record_count()).find(|&r| d.record_kind(r) == schemify_format::RecordKind::Inst)?;
+    let a = d
+        .attrs(r)
+        .find(|&a| d.attr_key(a) == "cached" && d.attr_value(a, 0) == Some("zz"))?;
+    Some((
+        d.attr_value(a, 1)?.to_owned(),
+        d.attr_value(a, 2)?.to_owned(),
+    ))
+}
+
+/// P2 end to end (D20 as amended 2026-10-15): a derived value no rule explains (`zz`, a
+/// hash of `pp` and `qq`) comes into Schemify from Virtuoso cached with the digest of its
+/// inputs, fresh; an edit of an input in Schemify makes it stale (E039) and the export
+/// leaves it out; Virtuoso's callbacks (`SfyImport ?callbacks t`) derive it again and the
+/// next import brings it back fresh, with the callbacks' value.
+#[test]
+fn a_derived_value_goes_stale_in_schemify_and_comes_back_fresh() {
+    let mut i = skill::virtuoso(&["zpdk", "scratch", "work", "analogLib", "basic"]);
+    i.load(BUILD).unwrap();
+    i.load("(SfyFixStdlib)").unwrap();
+    i.load(CHARPDK).unwrap();
+    i.load("(SfyFixCharPdk)").unwrap();
+    // The PDK mirror, with the characterization's rules.
+    assert!(
+        i.load("(SfyCharacterize \"/t/char.sfyx\" \"zpdk\" (list \"chaos\") \"scratch\")")
+            .unwrap()
+            .truthy()
+    );
+    let dev = characterize::read(&i.files["/t/char.sfyx"])
+        .unwrap()
+        .remove(0);
+    let rules = dev.rules();
+    assert_eq!(rules.unexplained, ["zz"]);
+    assert!(
+        i.load("(SfyExport \"/t/pdk.sfyx\" \"zpdk\" nil)")
+            .unwrap()
+            .truthy()
+    );
+    let pdk = virtuoso::import(
+        &i.files["/t/pdk.sfyx"],
+        &Files::new(),
+        &Mapping::default(),
+        &ImportOptions::default(),
+    )
+    .unwrap();
+    let mut files: Files = pdk.files.into_iter().collect();
+    let mirror = files
+        .keys()
+        .find(|k| k.ends_with("chaos.shprim"))
+        .unwrap()
+        .clone();
+    let applied = characterize::apply_rules(&files[&mirror], &rules).unwrap();
+    assert!(
+        applied.contains("  vinputs pp qq\n") && applied.contains("  vderived true"),
+        "{applied}"
+    );
+    files.insert(mirror, applied.into_bytes());
+    // A design instantiating it, sent to Virtuoso with its callbacks.
+    let design = |pp: &str| {
+        format!(
+            "schemify 1 shcomp\n\npin A inout 0 0\n\nimpl schematic schematic\n\ninst 0x0001 zpdk:chaos\n  at 0 0 R0\n  name X1\n  pp {pp}\n\nport 0p0001 0 0 R0 A\n"
+        )
+    };
+    files.insert("top.shcomp".into(), design("2.5").into_bytes());
+    let mut io = ImportOptions::default();
+    io.lib_map.insert("work".into(), String::new());
+    let mut eo = ExportOptions {
+        producer: "t".into(),
+        ..ExportOptions::default()
+    };
+    eo.lib_map.insert(String::new(), "work".into());
+    let mut trip = |files: &mut Files, overwrite: bool| -> (String, String) {
+        let d = common::load_tops(files, &["top.shcomp"]);
+        let out = virtuoso::export(&d, &[0], &Mapping::default(), &eo)
+            .unwrap()
+            .sfyx;
+        i.files.insert("/t/d.sfyx".into(), out.clone());
+        let keys = if overwrite { " ?overwrite t" } else { "" };
+        let ok = i
+            .load(&format!("(SfyImport \"/t/d.sfyx\" ?callbacks t{keys})"))
+            .unwrap();
+        assert!(ok.truthy(), "{}", i.files["/t/d.sfyx.log"]);
+        assert!(
+            i.load("(SfyExport \"/t/back.sfyx\" \"work\" (list \"top\"))")
+                .unwrap()
+                .truthy()
+        );
+        let back =
+            virtuoso::import(&i.files["/t/back.sfyx"], files, &Mapping::default(), &io).unwrap();
+        for (p, b) in back.files {
+            files.insert(p, b);
+        }
+        (out, i.files["/t/back.sfyx"].clone())
+    };
+    // zz is a string param (no parseAsNumber): its canonical value is quoted.
+    let zz = |pp: i64, qq: i64| format!("\"{}\"", (7 * pp + 13 * qq) % 11);
+    let (_, back) = trip(&mut files, false);
+    let top = String::from_utf8_lossy(&files["top.shcomp"]).into_owned();
+    let (v, d1) = cached_zz(&files).unwrap_or_else(|| panic!("{top}\n{back}"));
+    assert_eq!(v, zz(2500, 1));
+    assert!(
+        findings(&files, "top.shcomp").is_empty(),
+        "{:?}",
+        findings(&files, "top.shcomp")
+    );
+    // The edit: pp 2.5 -> 3.5. The cached value is stale.
+    let edited = String::from_utf8(files["top.shcomp"].clone())
+        .unwrap()
+        .replace("  pp 2.5\n", "  pp 3.5\n");
+    files.insert("top.shcomp".into(), edited.into_bytes());
+    assert_eq!(findings(&files, "top.shcomp"), ["E039 zz"]);
+    // The export leaves the stale value to the callbacks; they derive it again.
+    let (sent, _) = trip(&mut files, true);
+    assert!(!sent.contains("\"zz\""), "a stale value was sent:\n{sent}");
+    let (v, d2) = cached_zz(&files).expect("a cached zz line");
+    assert_eq!(v, zz(3500, 1));
+    assert_ne!(d1, d2);
+    assert!(
+        findings(&files, "top.shcomp").is_empty(),
+        "{:?}",
+        findings(&files, "top.shcomp")
+    );
 }

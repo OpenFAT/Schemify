@@ -101,8 +101,9 @@ impl RecordBuf {
     }
 }
 
-/// Attribute keys of an instance that are not parameter overrides.
-pub(crate) const INST_RESERVED: [&str; 4] = ["at", "name", "inherit", "ignore"];
+/// Attribute keys of an instance that are not parameter overrides (`cached <param> <value>
+/// <digest>` holds a value Virtuoso derived, D20 as amended 2026-10-15).
+pub(crate) const INST_RESERVED: [&str; 5] = ["at", "name", "inherit", "ignore", "cached"];
 
 /// Validates `rec` as a record of a `file` document: allowed kind (`E027`), positional
 /// shape and values (`E029`, `E022`), attribute shapes, duplicates (`E024`) and required

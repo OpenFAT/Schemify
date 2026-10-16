@@ -74,16 +74,42 @@ pub struct Graph {
 }
 
 /// Returns the override text symbol of `key` on instance row `i`: the last attribute
-/// line with that key (a duplicate is `E024` at load; the later line wins).
+/// line with that key (a duplicate is `E024` at load; the later line wins), else the value
+/// of its `cached <key> <value> <digest>` line (a value Virtuoso derived, D20 as amended
+/// 2026-10-15).
 pub(crate) fn override_of(doc: &Document, i: usize, key: &str) -> Option<Sym> {
     let s = doc.strings();
     let mut found = None;
+    let mut cached = None;
     for (k, vals) in doc.pool().attrs(doc.instances().attrs[i]) {
-        if Instances::is_override(s.get(k)) && s.get(k) == key {
+        let k = s.get(k);
+        if Instances::is_override(k) && k == key {
             found = vals.first().copied();
+        } else if k == "cached" && vals.first().is_some_and(|p| s.get(*p) == key) {
+            cached = vals.get(1).copied();
         }
     }
-    found
+    found.or(cached)
+}
+
+/// The `(value, digest)` of instance row `i`'s `cached <key> <value> <digest>` line, and
+/// whether `key` has an override of its own.
+pub(crate) fn cached_of<'d>(
+    doc: &'d Document,
+    i: usize,
+    key: &str,
+) -> (Option<(&'d str, &'d str)>, bool) {
+    let s = doc.strings();
+    let (mut cached, mut own) = (None, false);
+    for (k, vals) in doc.pool().attrs(doc.instances().attrs[i]) {
+        let k = s.get(k);
+        if Instances::is_override(k) && k == key {
+            own = true;
+        } else if k == "cached" && vals.len() == 3 && s.get(vals[0]) == key {
+            cached = Some((s.get(vals[1]), s.get(vals[2])));
+        }
+    }
+    (cached, own)
 }
 
 impl Graph {

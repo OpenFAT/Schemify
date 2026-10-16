@@ -1960,9 +1960,19 @@ fn schematic_out(
             _ => None,
         };
         let mut value_override: Option<String> = None;
+        let fresh = derived_digest(c, rec, master);
         for a in c.doc.attrs(rec) {
             let key = c.doc.attr_key(a);
             let val = c.doc.attr_value(a, 0).unwrap_or("");
+            // A value Virtuoso derived goes back only while its inputs are the ones it came
+            // from (D20 as amended 2026-10-15); a stale one is left to the callbacks.
+            let (key, val) = match key {
+                "cached" => match (c.doc.attr_value(a, 1), c.doc.attr_value(a, 2)) {
+                    (Some(v), Some(d)) if fresh.as_deref() == Some(d) => (val, v),
+                    _ => continue,
+                },
+                _ => (key, val),
+            };
             match key {
                 "at" | "name" | "ignore" => continue,
                 "inherit" => {
@@ -2338,6 +2348,27 @@ fn schematic_out(
 
 fn id_prop(cv: &mut Cv, r: u32, id: &str) {
     cv.props.push(Prop::string(r, "schemifyId", id));
+}
+
+/// The digest of instance record `rec`'s input values (its overrides, else `master`'s
+/// defaults) over `master`'s header `vinputs`, as [`super::characterize::inputs_digest`]
+/// computes it; `None` without `vinputs` or for an input that is not a constant.
+fn derived_digest(c: &Cell, rec: u32, master: &Cell) -> Option<String> {
+    let vinputs: Vec<String> = master
+        .attr_values(0, "vinputs")
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    if vinputs.is_empty() {
+        return None;
+    }
+    super::characterize::inputs_digest(&vinputs, |n| {
+        let p = master
+            .records(RecordKind::Param)
+            .find(|q| master.field(*q, 0) == n)?;
+        let template = matches!(master.attr(p, "kind"), Some("string" | "choice"));
+        Some((c.attr(rec, n).unwrap_or(master.field(p, 1)), template))
+    })
 }
 
 /// One instance override as a CDF property (§6.2, §3.4); `None` (reviewed) when it has

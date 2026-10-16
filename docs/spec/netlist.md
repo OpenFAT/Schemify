@@ -182,6 +182,7 @@ Severity `E` blocks Run and makes `schemify netlist` exit 1 (unless `--allow-err
 | E036 | E | inherited pins of one name with different default nets in one definition |
 | W037 | W | config `inst` rule names a path no instance has |
 | E038 | E | param value fails its `valid` rule (waivable) |
+| E039 | E | an instance's `cached` value of a `vderived` param is stale: the digest of its `vinputs` values differs, or it has none and an input is overridden (waivable; D20 as amended 2026-10-15) |
 | I005 | I | waived violation |
 
 Violations are keyed by (code, cell, object id, instance path, param) and sorted bytewise on that key (code text first). A finding true for every path through an object has no path.

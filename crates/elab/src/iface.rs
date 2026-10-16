@@ -114,6 +114,12 @@ pub struct Iface {
     pub choices: Vec<Name>,
     pub(crate) param_prog: Vec<u32>,
     pub(crate) param_bound: Vec<[u32; BOUNDS]>,
+    /// Whether the param is `vderived true`: a value only Virtuoso's callbacks compute
+    /// (no rule explains it), carried by an instance's `cached` attribute (D20 as amended
+    /// 2026-10-15) and stale once the inputs in [`Iface::vinputs`] change.
+    pub param_vderived: Vec<bool>,
+    /// The params a `vderived` value depends on (header `vinputs`), in digest order.
+    pub vinputs: Vec<Name>,
 
     /// Var names (rank 4; present only when the document is open).
     pub var_name: Vec<Name>,
@@ -248,6 +254,9 @@ impl Iface {
             };
             f.param_kind.push(kind);
             f.param_computed.push(computed.is_some());
+            let vderived = a("vderived").and_then(|v| v.first().copied());
+            f.param_vderived
+                .push(vderived.is_some_and(|v| s.get(v) == "true"));
             f.param_prog
                 .push(progs.push(s.get(text), syntax, cached, scope));
             let mut bound = [NONE; BOUNDS];
@@ -339,6 +348,11 @@ impl Iface {
             }
             f.fmt_start.push(f.fmt_dialect.len() as u32);
         }
+        f.vinputs = doc
+            .header_values("vinputs")
+            .into_iter()
+            .map(|n| names.intern(n))
+            .collect();
         f.default_impl = match doc.header_value("default") {
             Some(d) => f
                 .impl_name

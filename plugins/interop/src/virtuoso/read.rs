@@ -928,6 +928,13 @@ struct Iface {
     params: Vec<(String, String, String)>,
     /// `(virtuoso netSet prop, schemify pin)`.
     inherit_props: Vec<(String, String)>,
+    /// Params a rule computes (`computed`): an instance takes no value for them.
+    computed: Vec<String>,
+    /// Params only Virtuoso's callbacks derive (`vderived true`): an instance carries
+    /// their values as `cached` lines (D20 as amended 2026-10-15).
+    vderived: Vec<String>,
+    /// What those depend on (header `vinputs`).
+    vinputs: Vec<String>,
 }
 
 impl Iface {
@@ -937,6 +944,48 @@ impl Iface {
     fn def(&self, p: &str) -> Option<&str> {
         self.params.iter().find(|x| x.0 == p).map(|x| x.2.as_str())
     }
+}
+
+/// The `cached <param> <value> <digest>` lines of an instance (D20 as amended 2026-10-15):
+/// each derived param's value as Virtuoso had it (`derived`; a param Virtuoso did not store
+/// is at its default), with the digest of the instance's input values (`overrides`, else
+/// the master's defaults). None when an input or a value is not a constant: the instance
+/// then has no cached value, and elab reports it stale once an input is set (E039).
+fn cached_lines(
+    iface: &Iface,
+    overrides: &[(String, String)],
+    mut derived: Vec<(String, String)>,
+) -> Vec<[String; 3]> {
+    if iface.vderived.is_empty() || iface.vinputs.is_empty() {
+        return Vec::new();
+    }
+    let template = |n: &str| matches!(iface.kind(n), Some("string" | "choice"));
+    let digest = super::characterize::inputs_digest(&iface.vinputs, |n| {
+        let v = overrides
+            .iter()
+            .find(|o| o.0 == n)
+            .map(|o| o.1.as_str())
+            .or_else(|| iface.def(n))?;
+        Some((v, template(n)))
+    });
+    let Some(digest) = digest else {
+        return Vec::new();
+    };
+    for p in &iface.vderived {
+        if !derived.iter().any(|d| &d.0 == p)
+            && let Some(def) = iface.def(p)
+        {
+            derived.push((p.clone(), def.to_owned()));
+        }
+    }
+    derived.sort_by_key(|(n, _)| iface.params.iter().position(|p| &p.0 == n));
+    derived
+        .into_iter()
+        .filter_map(|(p, v)| {
+            let v = super::characterize::canonical_value(&v, template(&p))?;
+            Some([p, v, digest.clone()])
+        })
+        .collect()
 }
 
 /// One import's lookup tables.
@@ -1133,6 +1182,9 @@ impl<'a> Ctx<'a> {
     fn iface_of_text(bytes: &[u8]) -> Option<Iface> {
         let d = parse(bytes).ok()?;
         let mut i = Iface::default();
+        if let Some(a) = d.find_attr(0, "vinputs") {
+            i.vinputs = d.attr_values(a).map(str::to_owned).collect();
+        }
         for r in 1..d.record_count() {
             match d.record_kind(r) {
                 RecordKind::Pin => {
@@ -1162,11 +1214,16 @@ impl<'a> Ctx<'a> {
                         .find_attr(r, "kind")
                         .and_then(|a| d.attr_value(a, 0))
                         .unwrap_or("number");
-                    i.params.push((
-                        d.field(r, 0)?.to_owned(),
-                        kind.to_owned(),
-                        d.field(r, 1)?.to_owned(),
-                    ));
+                    let name = d.field(r, 0)?.to_owned();
+                    if d.find_attr(r, "computed").is_some() {
+                        i.computed.push(name.clone());
+                    }
+                    let derived = d.find_attr(r, "vderived").and_then(|a| d.attr_value(a, 0));
+                    if derived == Some("true") {
+                        i.vderived.push(name.clone());
+                    }
+                    i.params
+                        .push((name, kind.to_owned(), d.field(r, 1)?.to_owned()));
                 }
                 _ => {}
             }
@@ -1220,7 +1277,14 @@ impl<'a> Ctx<'a> {
             };
         }
         let iface = match self.find(lib, cell) {
-            Some(k) => self.ifaces[k].clone(),
+            // The dump's interface, with what only the project's mirror knows: the params
+            // its rules compute and the ones Virtuoso derives (§8.3).
+            Some(k) => self.ifaces[k].clone().map(|mut i| {
+                if let Some(p) = self.project_iface(&slib, cell) {
+                    (i.computed, i.vderived, i.vinputs) = (p.computed, p.vderived, p.vinputs);
+                }
+                i
+            }),
             None => self.project_iface(&slib, cell),
         };
         Master {
@@ -2683,6 +2747,7 @@ fn schematic_in(
         // Sources: the waveform params become the `value` text (§6.6).
         let src = m.source.or_else(|| dev.and_then(|d| d.source));
         let mut overrides: Vec<(String, String)> = Vec::new();
+        let mut derived: Vec<(String, String)> = Vec::new();
         let mut inherits: Vec<(String, String)> = Vec::new();
         let raw = |n: &str| props.iter().find(|p| p.name == n).map(|p| p.value.clone());
         let mut wave_params: BTreeMap<String, String> = BTreeMap::new();
@@ -2810,6 +2875,15 @@ fn schematic_in(
                     value = v;
                 }
             }
+            // A computed param's value is its rule's (an override would be E030); a
+            // derived one is Virtuoso's, cached with the inputs it came from (§8.3).
+            if iface.computed.contains(&sname) {
+                continue;
+            }
+            if iface.vderived.contains(&sname) {
+                derived.push((sname, value));
+                continue;
+            }
             overrides.push((sname, value));
         }
         if let Some(current) = src
@@ -2851,11 +2925,15 @@ fn schematic_in(
             });
             continue;
         }
+        let cached = cached_lines(&iface, &overrides, derived);
         for (n, v) in overrides {
             push_attr(doc, &n, &[&v]);
         }
         for (p, n) in inherits {
             push_attr(doc, "inherit", &[p, n]);
+        }
+        for [p, v, d] in cached {
+            push_attr(doc, "cached", &[p, v, d]);
         }
     }
     // Schematic pins.

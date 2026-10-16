@@ -685,3 +685,94 @@ fn valid_rules_gate_like_bounds() {
         }
     }
 }
+
+/// FNV-1a 64 as 16 hex digits, written independently of elab.
+fn fnv_hex(text: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in text.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// D20 as amended 2026-10-15: a `vderived` param's value comes from the instance's
+/// `cached <param> <value> <digest>` line. Fresh (the digest of the instance's `vinputs`
+/// values matches): the value, no finding. Stale (an input changed since): E039, waivable
+/// to I005, the cached value still used. No cache: fresh while no input is set, E039 once
+/// one is. The param's own override is the user's value, never stale.
+#[test]
+fn virtuoso_derived_values_are_cached_and_go_stale() {
+    let dev = "schemify 1 shprim\n  vinputs w nf\n\npin D inout 0 0\n\nparam w 1u\nparam nf 1\n  kind int\nparam ad 5f\n  vderived true\nparam m 1\n\nimpl spice spice\n  format spice \"M{name} {D} w={w} ad={ad}\"\n";
+    let at_2u = fnv_hex("w=2e-6\nnf=1\n");
+    let cases: [(&str, &str, Option<&str>, Option<&str>); 7] = [
+        // (overrides, cached line, finding, value of ad)
+        (
+            "  w 2u\n",
+            &format!("  cached ad 7f {at_2u}\n"),
+            None,
+            Some("7e-15"),
+        ),
+        (
+            "  w 3u\n",
+            &format!("  cached ad 7f {at_2u}\n"),
+            Some("E039"),
+            Some("7e-15"),
+        ),
+        (
+            "  w 3u\n  nf 1\n",
+            &format!("  cached ad 7f {at_2u}\n"),
+            Some("E039"),
+            None,
+        ),
+        ("", "", None, Some("5e-15")),
+        ("  w 3u\n", "", Some("E039"), Some("5e-15")),
+        (
+            "  w 3u\n  ad 9f\n",
+            &format!("  cached ad 7f {at_2u}\n"),
+            None,
+            Some("9e-15"),
+        ),
+        // An input that is no vinput (m) never stales the value.
+        (
+            "  w 2u\n  m 4\n",
+            &format!("  cached ad 7f {at_2u}\n"),
+            None,
+            Some("7e-15"),
+        ),
+    ];
+    for (ovr, cached, want, value) in cases {
+        for waive in [false, true] {
+            let w = if waive {
+                "\nwaive 0w0001 0m0001 ad\n  reason \"layout pending\"\n"
+            } else {
+                ""
+            };
+            let bench = format!(
+                "schemify 1 shbench\n\ninst 0m0001 ./dev\n  at 0 0 R0\n  name M1\n{ovr}{cached}{w}"
+            );
+            let (p, hs) = project(&[("dev.shprim", dev), ("tb.shbench", &bench)]);
+            let st = CellState::build(&p, hs[1], &mut no_funcs).unwrap();
+            let got: Vec<(&str, &str)> = st
+                .violations
+                .rows
+                .iter()
+                .filter(|v| !v.code.as_str().starts_with('W'))
+                .map(|v| (v.code.as_str(), st.names.get(v.param)))
+                .collect();
+            let want: Vec<(&str, &str)> = want
+                .map(|c| (if waive { "I005" } else { c }, "ad"))
+                .into_iter()
+                .collect();
+            assert_eq!(got, want, "{ovr}{cached} waive={waive}");
+            assert_eq!(st.violations.blocking(), !want.is_empty() && !waive);
+            if let Some(v) = value {
+                let g = &st.graph;
+                let ad = g.inst_param(0, 2).unwrap() as usize;
+                let mut t = String::new();
+                g.vals[ad].write_text(&mut t);
+                assert_eq!(t, v, "{ovr}{cached}");
+            }
+        }
+    }
+}

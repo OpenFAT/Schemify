@@ -564,6 +564,7 @@ static RECORDS: [RecordSchema; RecordKind::Unknown as usize + 1] = [
             required("at", &[C, C, Ty::Orient]),
             required("name", &[A]),
             repeat("inherit", &[A, A]),
+            repeat("cached", &[A, A, A]),
         ],
     )),
     rec(

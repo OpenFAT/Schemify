@@ -836,6 +836,9 @@ pub struct Rules {
     pub legal: Vec<(String, String)>,
     /// Inputs the callbacks rewrite in a way no legality pattern explains.
     pub unruled: Vec<String>,
+    /// The device's inputs: what an unexplained param's value depends on (the mirror's
+    /// header `vinputs`, the digest of an instance's `cached` values).
+    pub vinputs: Vec<String>,
     /// Points every rule was checked at.
     pub points: usize,
 }
@@ -852,6 +855,7 @@ impl Device {
         let s = self.summary();
         let mut rules = Rules {
             points: s.ok,
+            vinputs: self.inputs.clone(),
             ..Rules::default()
         };
         let Some(g) = Grid::new(self) else {
@@ -1281,8 +1285,9 @@ fn copy_without(out: &mut Document<'static>, src: &Document<'_>, r: u32, skip: &
 
 /// A mirror cell file with `rules` applied (spec §8.3): each explained param `computed
 /// <expr>`, each unexplained derived param `vderived true` (its value is Virtuoso's and goes
-/// stale when the inputs change), each input the callbacks rewrite `valid <expr>` (the
-/// values they keep; another is `E038`, D13 as amended 2026-10-15).
+/// stale when the inputs change; the header's `vinputs` names what it depends on, D20 as
+/// amended 2026-10-15), each input the callbacks rewrite `valid <expr>` (the values they
+/// keep; another is `E038`, D13 as amended 2026-10-15).
 ///
 /// # Errors
 ///
@@ -1290,7 +1295,11 @@ fn copy_without(out: &mut Document<'static>, src: &Document<'_>, r: u32, skip: &
 pub fn apply_rules(text: &[u8], rules: &Rules) -> Result<String, String> {
     let src = parse(text).map_err(|e| e.to_string())?;
     let mut out = Document::new(src.kind());
-    copy_header(&mut out, &src, &[]);
+    copy_header(&mut out, &src, &["vinputs"]);
+    if !rules.unexplained.is_empty() {
+        let v: Vec<&str> = rules.vinputs.iter().map(String::as_str).collect();
+        push_attr(&mut out, "vinputs", &v);
+    }
     for r in 1..src.record_count() {
         let name = src.field(r, 0).unwrap_or("");
         if src.record_kind(r) != RecordKind::Param {
@@ -1310,6 +1319,72 @@ pub fn apply_rules(text: &[u8], rules: &Rules) -> Result<String, String> {
     }
     debug_assert_eq!(out.record_count(), src.record_count());
     Ok(write(&out))
+}
+
+/// A param value's canonical text (expr spec §7; a string quoted as format §2 escapes it):
+/// what an instance's `cached` line holds and what [`inputs_digest`] hashes, the same text
+/// elab writes for the value. `template`: the param is a string or a choice (its value is
+/// the text itself). `None` when the value is not a constant.
+pub fn canonical_value(text: &str, template: bool) -> Option<String> {
+    use schemify_expr::{Mode, Program, Scratch, Value};
+    let mut out = String::new();
+    let quote = |s: &str, out: &mut String| {
+        out.push('"');
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str(r#"\""#),
+                '\\' => out.push_str(r"\\"),
+                '\n' => out.push_str(r"\n"),
+                '\t' => out.push_str(r"\t"),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+    };
+    if template {
+        if text.contains('{') {
+            return None;
+        }
+        quote(text, &mut out);
+        return Some(out);
+    }
+    let prog = Program::compile(text, Mode::Scalar).ok()?;
+    if prog.idents().len() > 0 {
+        return None;
+    }
+    match prog.eval(&[], &mut Scratch::default()).ok()? {
+        Value::Num(x) => schemify_expr::write_num(&mut out, x),
+        Value::Int(x) => schemify_expr::write_int(&mut out, x),
+        Value::Bool(b) => out.push_str(if b { "true" } else { "false" }),
+        Value::Str(s) => quote(s, &mut out),
+        _ => return None,
+    }
+    Some(out)
+}
+
+/// The digest of an instance's input values (D20 as amended 2026-10-15; elab computes the
+/// same to tell a `cached` value fresh from stale): FNV-1a 64 of one `<name>=<canonical
+/// value>` line per name of `vinputs`, in order, as 16 lowercase hex digits. `value(name)`
+/// gives the instance's value text (its override, else the cell's default) and whether the
+/// param is a string or a choice; `None` when one is missing or not a constant.
+pub fn inputs_digest<'a>(
+    vinputs: &[String],
+    mut value: impl FnMut(&str) -> Option<(&'a str, bool)>,
+) -> Option<String> {
+    let mut text = String::new();
+    for n in vinputs {
+        let (v, template) = value(n)?;
+        text.push_str(n);
+        text.push('=');
+        text.push_str(&canonical_value(v, template)?);
+        text.push('\n');
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in text.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    Some(format!("{h:016x}"))
 }
 
 /// `text` (a design file) without the overrides of `params` on instances of `cellref`, and
@@ -1385,6 +1460,36 @@ mod tests {
         assert_eq!(digits("-40"), 2);
     }
 
+    /// The digest elab compares a `cached` line against: FNV-1a 64 of the canonical
+    /// `name=value` lines, written here independently of the implementation.
+    #[test]
+    fn inputs_digest_hashes_canonical_values() {
+        let fnv = |t: &str| {
+            let h = t.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+                (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
+            });
+            format!("{h:016x}")
+        };
+        let vin = ["w".to_owned(), "nf".to_owned(), "mode".to_owned()];
+        let vals = [("w", "2u"), ("nf", "1"), ("mode", "lv\"t")];
+        let d = inputs_digest(&vin, |n| {
+            let v = vals.iter().find(|x| x.0 == n)?.1;
+            Some((v, n == "mode"))
+        });
+        assert_eq!(
+            d.as_deref(),
+            Some(fnv("w=2e-6\nnf=1\nmode=\"lv\\\"t\"\n").as_str())
+        );
+        assert_eq!(canonical_value("2*3", false).as_deref(), Some("6"));
+        assert_eq!(canonical_value("1.0", false).as_deref(), Some("1"));
+        assert_eq!(canonical_value("true", false).as_deref(), Some("true"));
+        // Not a constant: no digest.
+        assert!(canonical_value("w*2", false).is_none());
+        assert!(
+            inputs_digest(&vin, |n| Some((if n == "w" { "wn" } else { "1" }, false))).is_none()
+        );
+    }
+
     #[test]
     fn the_nicest_number_in_a_bracket_is_the_shortest() {
         let mid = |lo: f64, hi: f64| nicest(lo, hi, (lo + hi) / 2.0);
@@ -1412,6 +1517,7 @@ mod tests {
             unexplained: vec!["m".into()],
             legal: vec![("l".into(), "l >= 1e-8".into())],
             unruled: Vec::new(),
+            vinputs: vec!["w".into(), "l".into(), "nf".into()],
             points: 1,
         };
         let cell = b"schemify 1 shprim\n\npin d inout 0 0\n\nparam w 100n\nparam l 10n\nparam nf 1\nparam as 5f\n  unit m\nparam m 1\n\nimpl spice spice\n  format spice \"M{name} {d} x w={w} as={as}\"\n";
@@ -1421,6 +1527,10 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("param m 1\n  vderived true\n"), "{out}");
+        assert!(
+            out.starts_with("schemify 1 shprim\n  vinputs w l nf\n"),
+            "{out}"
+        );
         assert!(
             out.contains("param l 10n\n  valid \"l >= 1e-8\"\n"),
             "{out}"

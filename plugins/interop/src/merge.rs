@@ -31,9 +31,11 @@ const VIMG: &str = "vimg";
 
 /// Pin attributes no Virtuoso terminal holds (§7.1).
 pub(crate) const SCHEMIFY_PIN_ATTRS: [&str; 2] = ["domain", "number"];
-/// Param attributes no CDF parameter holds (§7.1).
-pub(crate) const SCHEMIFY_PARAM_ATTRS: [&str; 7] =
-    ["min", "max", "step", "grid", "show", "computed", "cached"];
+/// Param attributes no CDF parameter holds (§7.1): `valid` and `vderived` come from the
+/// characterization's rules (§8.3).
+pub(crate) const SCHEMIFY_PARAM_ATTRS: [&str; 9] = [
+    "min", "max", "step", "grid", "show", "computed", "cached", "valid", "vderived",
+];
 /// Impl attributes no Virtuoso view holds (§7.1).
 pub(crate) const SCHEMIFY_IMPL_ATTRS: [&str; 3] = ["model", "file", "ignore"];
 
@@ -718,7 +720,9 @@ mod tests {
             (K::Pin, &["domain", "number"]),
             (
                 K::Param,
-                &["min", "max", "step", "grid", "show", "computed", "cached"],
+                &[
+                    "min", "max", "step", "grid", "show", "computed", "cached", "valid", "vderived",
+                ],
             ),
             (K::Impl, &["model", "file", "ignore"]),
         ];

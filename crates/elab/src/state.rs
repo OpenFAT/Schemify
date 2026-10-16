@@ -161,6 +161,9 @@ impl CellState {
                     Op::SetAttr { .. } | Op::RemoveAttr { .. } => match attr {
                         Some("at") => geom = true,
                         Some("name" | "inherit" | "ignore") => nets = true,
+                        // A Virtuoso-derived value and its digest (E039): rare, from an
+                        // import; the values and their checks are rebuilt.
+                        Some("cached") => rebuild = true,
                         _ => touched_insts.extend(ObjId::find(key, doc.strings())),
                     },
                     _ => {

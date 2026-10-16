@@ -38,6 +38,7 @@ pub enum Code {
     E036,
     W037,
     E038,
+    E039,
     I005,
 }
 
@@ -56,10 +57,10 @@ pub enum Severity {
 impl Code {
     /// Returns the code as written in reports (`"E005"`).
     pub fn as_str(self) -> &'static str {
-        const S: [&str; 25] = [
+        const S: [&str; 26] = [
             "E001", "E002", "E003", "W004", "E005", "E006", "W007", "E008", "E009", "W010", "E011",
             "E012", "E013", "E014", "W016", "E030", "E031", "E032", "E033", "E034", "E035", "E036",
-            "W037", "E038", "I005",
+            "W037", "E038", "E039", "I005",
         ];
         S[self as usize]
     }
@@ -75,7 +76,10 @@ impl Code {
 
     /// Returns whether a `waive` record can downgrade it to `I005` (D13).
     pub fn waivable(self) -> bool {
-        matches!(self, Code::E005 | Code::E006 | Code::E032 | Code::E038)
+        matches!(
+            self,
+            Code::E005 | Code::E006 | Code::E032 | Code::E038 | Code::E039
+        )
     }
 
     /// Returns the spec meaning.
@@ -105,6 +109,7 @@ impl Code {
             Code::E036 => "inherited pins of one name with different default nets",
             Code::W037 => "config inst rule names a path no instance has",
             Code::E038 => "param value fails its valid rule",
+            Code::E039 => "Virtuoso-derived value is stale",
             Code::I005 => "waived violation",
         }
     }
@@ -245,7 +250,7 @@ impl Violations {
 pub(crate) fn value_code(code: Code) -> bool {
     matches!(
         code,
-        Code::E008 | Code::E005 | Code::E006 | Code::E032 | Code::E038 | Code::I005
+        Code::E008 | Code::E005 | Code::E006 | Code::E032 | Code::E038 | Code::E039 | Code::I005
     )
 }
 
@@ -532,6 +537,9 @@ pub(crate) fn check_values<F: Funcs>(
             continue;
         };
         let first = g.inst_first[i];
+        if !c.vinputs.is_empty() && c.param_vderived.iter().any(|d| *d) {
+            stale_derived(cx, c, i, &vals[first as usize..], names, out);
+        }
         for k in 0..c.param_name.len() {
             let has_rules = c.param_bound[k].iter().any(|b| *b != NONE)
                 || c.choice_start[k] != c.choice_start[k + 1];
@@ -585,6 +593,71 @@ pub(crate) fn check_values<F: Funcs>(
                 });
             }
         }
+    }
+}
+
+/// The digest of an instance's `vinputs` values (D20 as amended 2026-10-15): FNV-1a 64 of
+/// one `<name>=<cached text>` line per input, in `vinputs` order, as 16 lowercase hex
+/// digits; `None` when an input is not a param of the cell or has no value.
+pub(crate) fn inputs_digest(c: &Iface, vals: &[Val], names: &Names) -> Option<String> {
+    let mut text = String::new();
+    for &n in &c.vinputs {
+        let v = &vals[c.param(n)?];
+        if v.is_err() || matches!(v, Val::Cnum(..)) {
+            return None;
+        }
+        text.push_str(names.get(n));
+        text.push('=');
+        crate::values::cached_text(v, &mut text);
+        text.push('\n');
+    }
+    Some(format!("{:016x}", crate::names::fnv1a64(text.as_bytes())))
+}
+
+/// `E039` for each `vderived` param of instance row `i` (its param values `vals`, in the
+/// cell's param order) whose `cached` value was derived from other input values than the
+/// instance has now, or that has no cached value while an input is overridden; `I005`
+/// when waived. A param the instance overrides itself is the user's value: never stale.
+fn stale_derived(
+    cx: &CellCtx<'_>,
+    c: &Iface,
+    i: usize,
+    vals: &[Val],
+    names: &Names,
+    out: &mut Vec<Violation>,
+) {
+    let Some(now) = inputs_digest(c, vals, names) else {
+        return; // an input failed: its own E008 says so
+    };
+    let doc = cx.doc;
+    let set = c
+        .vinputs
+        .iter()
+        .any(|&n| crate::graph::cached_of(doc, i, names.get(n)).1);
+    for k in (0..c.param_name.len()).filter(|&k| c.param_vderived[k]) {
+        let (cached, own) = crate::graph::cached_of(doc, i, names.get(c.param_name[k]));
+        let detail = match cached {
+            _ if own => continue,
+            Some((_, d)) if d == now => continue,
+            Some(_) => "its inputs changed since Virtuoso derived it",
+            None if set => "an input is set, and Virtuoso never derived it for these values",
+            None => continue,
+        };
+        let id = doc.instances().id[i];
+        let waived = cx.waivers.binary_search(&(id, c.param_name[k])).is_ok();
+        let (code, detail) = if waived {
+            (Code::I005, format!("waived E039: {detail}"))
+        } else {
+            (Code::E039, detail.to_owned())
+        };
+        out.push(Violation {
+            code,
+            cell: cx.ifaces[cx.own as usize].cell,
+            object: id,
+            path: Name::NONE,
+            param: c.param_name[k],
+            detail,
+        });
     }
 }
 
@@ -678,6 +751,7 @@ mod tests {
             .filter(|c| c.waivable())
             .collect();
         assert_eq!(waivable, [Code::E005, Code::E006, Code::E032]);
+        assert!(Code::E039.waivable() && Code::E038.waivable());
         assert_eq!(Code::I005.as_str(), "I005");
         assert_eq!(Code::E035.as_str(), "E035");
     }

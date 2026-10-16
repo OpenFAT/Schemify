@@ -489,6 +489,16 @@ impl Document {
         v.first().map(|s| self.strings.get(*s))
     }
 
+    /// Returns every value of header attribute `key` (`vinputs` lists names), empty when
+    /// the header has none.
+    pub fn header_values(&self, key: &str) -> Vec<&str> {
+        self.pool
+            .find_attr(&self.strings, self.header, key)
+            .map_or_else(Vec::new, |v| {
+                v.iter().map(|s| self.strings.get(*s)).collect()
+            })
+    }
+
     /// `pin` rows in port order.
     pub fn pins(&self) -> &Pins {
         &self.pins
