@@ -468,7 +468,11 @@ impl<'a> Grid<'a> {
             if !mv.is_finite() || mv == 0.0 {
                 return None;
             }
-            z.push((y[i].0 / mv, y[i].1 / mv.abs()));
+            let zi = (y[i].0 / mv, y[i].1 / mv.abs());
+            if !(zi.0.is_finite() && zi.1.is_finite()) {
+                return None;
+            }
+            z.push(zi);
         }
         let mut alpha = 0.0;
         if let Some(u) = u {
@@ -1070,6 +1074,10 @@ impl Device {
                 (g.set[k][i] / n.0, g.back[k][i] / n.1)
             })
             .unzip();
+        // A count of 0 divides to nothing (the live run's device has one).
+        if xs.iter().chain(&bs).any(|x| !x.is_finite()) {
+            return None;
+        }
         let keep: Vec<bool> = idx
             .iter()
             .map(|&i| kept(self, &self.points[g.ok[i]], k))

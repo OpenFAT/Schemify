@@ -576,3 +576,21 @@ fn the_sweep_is_bounded_for_any_step_table() {
         }
     }
 }
+
+/// Negative space from a live run: a count input at 0 next to a rewritten number input. The
+/// floor per count reading divides by it and is skipped; the floor itself is found.
+#[test]
+fn a_zero_count_does_not_break_legality() {
+    let mut d = characterize(&["zeta"], "").remove(0);
+    let ct = d.inputs.iter().position(|i| i == "ct").unwrap();
+    let zq = d.inputs.iter().position(|i| i == "zq").unwrap();
+    for p in d.points.iter_mut().take(5) {
+        p.set[ct] = "0".into();
+        p.back[ct] = "0".into();
+        // 0 over 0: no number at all.
+        p.set[zq] = "0".into();
+        p.back[zq] = "0".into();
+    }
+    let r = d.rules();
+    assert!(r.unruled.iter().all(|u| u != "kappa"), "{r:?}");
+}
