@@ -1,5 +1,5 @@
 ; cap_w.ocn: OCEAN script of bench exercise1/cap_w.shbench, written by schemify-interop (interop.md §9.6).
-; Run after SfyImport (and SfyRetarget) of the same .sfyx, in a directory whose cds.lib
+; Run after SfyImport of the same .sfyx, in a directory whose cds.lib
 ; defines library schemify (OCEAN finds libraries through ./cds.lib) and where cap_w/ may
 ; be created; if SfyImport had ?lib, put that library in design() below:
 ;   ocean -nograph < cap_w.ocn
@@ -8,7 +8,7 @@ createDir("cap_w")
 simulator('spectre)
 design("schemify" "cap_w" "schematic")
 resultsDir("cap_w/psf")
-modelFile('("/pdk/models/spectre/toplevel.scs" "tt_lib"))
+modelFile('("$PDK_MODELS" "tt"))
 definitionFile("cap_w/oppoint.scs")
 desVar("IDW" 30u)
 desVar("L" "Lmin*pow(2,p)")

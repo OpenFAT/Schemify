@@ -7,8 +7,7 @@
 //! the origin for the replacement in the instance's own orientation, so a re-mastered
 //! device keeps every wire and needs no stub; pins that still miss get stubs from the
 //! caller ([`crate::remap`]). It knows nothing about libraries or device kinds: the pairing
-//! of pins comes from the caller (the §6.5 table, `interop.map` pin rows, `.retarget` class
-//! pins).
+//! of pins comes from the caller (the §6.5 table, `interop.map` pin rows).
 
 use schemify_format::Orient;
 

@@ -1,5 +1,5 @@
 ; dc_vds.ocn: OCEAN script of bench exercise1/dc_vds.shbench, written by schemify-interop (interop.md §9.6).
-; Run after SfyImport (and SfyRetarget) of the same .sfyx, in a directory whose cds.lib
+; Run after SfyImport of the same .sfyx, in a directory whose cds.lib
 ; defines library schemify (OCEAN finds libraries through ./cds.lib) and where dc_vds/ may
 ; be created; if SfyImport had ?lib, put that library in design() below:
 ;   ocean -nograph < dc_vds.ocn
@@ -8,7 +8,7 @@ createDir("dc_vds")
 simulator('spectre)
 design("schemify" "dc_vds" "schematic")
 resultsDir("dc_vds/psf")
-modelFile('("/pdk/models/spectre/toplevel.scs" "tt_lib"))
+modelFile('("$PDK_MODELS" "tt"))
 desVar("L" "Lmin*pow(2,p)")
 desVar("Lmin" 20n)
 desVar("VDD" 0.8)

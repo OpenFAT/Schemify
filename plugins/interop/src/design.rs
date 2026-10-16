@@ -341,10 +341,9 @@ fn candidates(
             return Ok(vec![format!("core/{stem}.shprim")]);
         }
         // A technology class (pdk.md §5) is exported as the core cell it is drawn from: the
-        // same pins, technology-neutral. With `--retarget` its gm/Id-sized instances become
-        // class placeholders the target PDK resolves (§10). ponytail: the active tech.map's
-        // PDK cell and `param` rewrites are not applied, so a non-retarget export carries
-        // generic nmos4/pmos4 devices; read the map here when someone exports a fixed size.
+        // same pins, technology-neutral. ponytail: the active tech.map's PDK cell and `param`
+        // rewrites are not applied, so the export carries generic nmos4/pmos4 devices; read
+        // the map here when a design should cross on its PDK's cells.
         if lib == "tech" {
             return match stem {
                 "nmos" | "pmos" => Ok(vec![format!("core/{stem}4.shprim")]),

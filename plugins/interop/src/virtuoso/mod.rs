@@ -24,16 +24,6 @@ pub struct ExportOptions {
     pub lib_map: std::collections::BTreeMap<String, String>,
     /// Re-master `core:*` instances onto analogLib (§6.4) instead of exporting `schemify_core`.
     pub analoglib: bool,
-    /// Write gm/Id intent for `gmid.w` instances and fixed-size placeholders for the other
-    /// technology-class instances (§10).
-    pub retarget: bool,
-    /// Project-relative path of a `.retarget` target map (`--target`, §10.2) the job reads
-    /// into [`ExportOptions::target_map`].
-    pub target: Option<String>,
-    /// The parsed target map: its `corner` records replace the bench corners' model files
-    /// (maestro and OCEAN), its classes give the terminals and operating-point paths of
-    /// placeholders in outputs. `None`: the bench's own models, class pins as drawn.
-    pub target_map: Option<crate::retarget::Target>,
     /// The producer string of the header.
     pub producer: String,
 }

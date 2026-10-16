@@ -44,7 +44,7 @@
 ;; Every entry point of schemify.il is callable, and the functions this release lacks.
 (procedure (SfyLiveEntryPoints)
   (let ((missing nil) (absent nil))
-    (foreach f '(SfyExport SfyExportLib SfyImport SfyRetarget SfySelfTest SfyAdeExport
+    (foreach f '(SfyExport SfyExportLib SfyImport SfySelfTest SfyAdeExport
                  SfyAdeImport SfyProbe)
       (unless (car (errset (isCallable f))) (setq missing (cons f missing))))
     (SfyLiveCheck "env.entry-points" (null missing)
@@ -184,13 +184,6 @@
             ((null p) (sprintf nil "%s has no CDF parameter %s" inst param))
             (ok (sprintf nil "%s %s = %s saved" inst param value))
             (t (SfyLiveErr))))))
-
-;; SfyRetarget of file with map into lib.
-(procedure (SfyLiveRetarget id file map lib)
-  (let ((r (errset (SfyRetarget file map ?lib lib) t)))
-    (SfyLiveCheck id (and r (car r))
-      (cond ((null r) (SfyLiveErr)) ((car r) "placed, log PASS")
-            (t (sprintf nil "see %s.retarget.log" file))))))
 
 ;; A CDF number string ("80n", "1.5u", "2") as a float; nil when it is not one.
 (procedure (SfyLiveNum s)

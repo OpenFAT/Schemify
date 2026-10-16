@@ -269,7 +269,7 @@ See [migrating.md](migrating.md) and [import.md](../spec/import.md).
 ### Virtuoso and xschem export
 
 ```
-schemify-interop virtuoso-export <project-dir> <cell-file>... -o <file.sfyx> [--core-cells] [--retarget] [--target <map.retarget>] [--lib L=V]...
+schemify-interop virtuoso-export <project-dir> <cell-file>... -o <file.sfyx> [--core-cells] [--lib L=V]...
 schemify-interop virtuoso-import <project-dir> <file.sfyx> [--analoglib] [--lib L=V]...
 schemify-interop xschem-export <project-dir> <cell-file>... -o <out-dir>
 schemify-interop install-skill <dir>
@@ -281,7 +281,6 @@ Cell files, `.sfyx` paths and output paths are relative to `<project-dir>`. Each
 |---|---|
 | `virtuoso-export` | Write the cells (and their testbench setups) to a `.sfyx` file that Virtuoso loads, plus OCEAN scripts under `ocean/`. |
 | `--core-cells` | Export core devices as `schemify_core` mirror cells instead of their analogLib masters (the default). |
-| `--retarget`, `--target <map.retarget>` | Carry gm/Id sizing intent so widths are solved on the target PDK in Virtuoso. |
 | `--lib L=V` | Map Schemify library `L` to Virtuoso library `V` (import: the other way). Repeatable. |
 | `virtuoso-import` | Read a `.sfyx` dump from Virtuoso into the project. |
 | `--analoglib` | On import, move analogLib instances onto Schemify's core devices. |

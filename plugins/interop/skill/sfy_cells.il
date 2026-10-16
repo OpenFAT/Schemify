@@ -782,13 +782,10 @@
       (setq flat (cddr flat)))
     (reverse out)))
 
-;; The created object of ref r, or nil after refusing record lr.
-;; The object created for ref r; nil (refused) when none was. A retarget placeholder's ref
-;; (spec 10.1) answers nil without a refusal: SfyRetarget places it later.
+;; The object created for ref r; nil (refused) when none was.
 (procedure (SfyRef r lr)
   (let ((o (arrayref sfyRefs r)))
     (cond
-      ((equal o "sfyPlaceholder") (SfyCount "deferred to SfyRetarget") nil)
       ((null o) (SfyRefuse (car lr) (sprintf nil "%s: ref %d names no created object" (car (cadr lr)) r)) nil)
       (t o))))
 
@@ -864,12 +861,7 @@
 ;; ("inst" ref name lib cell view x y orient)
 (procedure (SfyLoadInst lr)
   (let ((f (cdr (cadr lr))) (m nil))
-    (when (and (SfySchematicP lr) (equal (nth 2 f) ""))
-      ;; A retarget placeholder (library ""): its master is chosen on the target machine by
-      ;; SfyRetarget (spec 10.1); it and its props and conn records are skipped here.
-      (setarray sfyRefs (nth 0 f) "sfyPlaceholder")
-      (SfyCount "placeholder"))
-    (when (and (SfySchematicP lr) (nequal (nth 2 f) ""))
+    (when (SfySchematicP lr)
       (setq m (SfyMaster (nth 2 f) (nth 3 f) (nth 4 f)))
       (if (null m)
         (SfyRefuse (car lr) (sprintf nil "no master %s/%s/%s" (nth 2 f) (nth 3 f) (nth 4 f)))
@@ -1145,8 +1137,7 @@
 ;; Draws the stub + label for terminal term of instance inst in cellview cv: one grid step
 ;; (10 DBU of cv, 1/16 inch at the standard 160) from the terminal's real pin, away from the
 ;; instance's centre, the wire marked schemifyStub "1", the label glued at its far end.
-;; Returns t, or a string saying what failed. Shared by the loader's conn records and by
-;; SfyPlaceConn (the retarget flow).
+;; Returns t, or a string saying what failed.
 (procedure (SfyStubAt cv inst term net)
   (prog (t0 fig p c dx dy q step w dbu)
     (setq dbu (getSGq cv DBUPerUU))
@@ -1194,25 +1185,13 @@
 (procedure (SfyPinFig pin)
   (and pin (or (car (errset (getSGq pin fig))) (car (car (errset (getSGq pin figs)))))))
 
-;; Contract with sfy_retarget.il (spec 10.3): draws a stub + label for each (terminal net)
-;; of conns; returns the number drawn, or nil when any failed (each failure printed).
-(procedure (SfyPlaceConn cv inst conns)
-  (let ((n 0) (ok t) (why nil))
-    (foreach c conns
-      (setq why (SfyStubAt cv inst (car c) (cadr c)))
-      (if (stringp why)
-        (progn (setq ok nil) (printf "schemify: %s\n" why))
-        (setq n (add1 n))))
-    (and ok n)))
-
-;; Contract with sfy_retarget.il (spec 10.3): sets each (cdfName value) of sfyParams on
-;; the instance CDF in the CDF's own type (numbers as %.12g text for string parameters: SI
+;; Sets each (cdfName value) of sfyParams on the instance CDF in the CDF's own type (numbers as %.12g text for string parameters: SI
 ;; precision without float noise such as 1.7999999999999999e-07, which a PDK callback that
 ;; snaps to its grid with floor would drop one step; a string value is read by atoi/atof
 ;; for int/float ones); with sfyCallbacks, then runs the set parameters' callbacks
 ;; (SfyCallbacks). Returns t, or a string naming the first failure: a parameter missing, one
 ;; the PDK locks (editable "nil": map the editable one, such as fingers rather than nf), or
-;; "callback: ..." for a callback that failed (the values are set; SfyRtPlace keeps the device).
+;; "callback: ..." for a callback that failed (the values are set).
 (procedure (SfySetParams sfyInst sfyParams sfyCallbacks)
   (prog (sfyCdf sfyP sfyV sfyTy sfyWhy sfyNames)
     (setq sfyCdf (cdfGetInstCDF sfyInst))

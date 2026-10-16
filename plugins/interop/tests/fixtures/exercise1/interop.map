@@ -1,4 +1,0 @@
-class nmos virtuoso_target nch
-  role n
-class pmos virtuoso_target pch
-  role p

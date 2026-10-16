@@ -180,7 +180,7 @@
       ("label" "iisiisssisss") ("spin" "isssssiis") ("term" "sss") ("pinfig" "isiiii")
       ("shape" "isssli") ("conn" "iss") ("textview" "ssx") ("maestro" "sssss")
       ("var" "sss") ("analysis" "sil") ("corner" "si") ("model" "sss") ("output" "sss")
-      ("spec" "sss") ("defn" "sx") ("intent" "isl") ("end" "")))))
+      ("spec" "sss") ("defn" "sx") ("end" "")))))
 
 ;; nil when x is .sfyx data (strings, 32-bit integers, lists of them), else what is wrong.
 (procedure (SfyCheckData x depth)
@@ -297,8 +297,8 @@
     dbReplaceProp dbCreateProp dbProduceMemName schCreateInst schCreateWire
     schCreateWireLabel schCreateNetExpression schCreatePin schCreateNoteLabel schGlueLabel
     schCheck schSolder cdfGetBaseCellCDF cdfCreateBaseCellCDF cdfDeleteCDF cdfCreateParam
-    cdfSaveCDF cdfGetInstCDF cdfFindParamByName cdfGetCellCDF cdfUpdateInstParam simulator
-    design resultsDir save analysis desVar run getData value maeOpenSetup maeCloseSession
+    cdfSaveCDF cdfGetInstCDF cdfFindParamByName cdfGetCellCDF cdfUpdateInstParam
+    maeOpenSetup maeCloseSession
     maeSaveSetup maeGetSetup maeCreateTest maeDeleteTest maeSetAnalysis
     maeGetEnabledAnalysis maeGetAnalysis maeSetVar maeGetVar maeSetCorner maeAddOutput
     maeGetTestOutputs maeSetSpec maeSetEnvOption maeGetEnvOption maeSetSimOption

@@ -27,7 +27,6 @@ use schemify_format::{Document, FileKind, RecordKind};
 use super::ael::{self, AelName, Name};
 use crate::design::{Cell, Design, push_attr, push_record};
 use crate::notes::Notes;
-use crate::retarget::Target;
 use crate::sfyx::{Error, Record, Value, i, pairs, s, text};
 
 /// Rows per kind (vars, analyses, corners, models, outputs, specs, definition files) of one
@@ -155,8 +154,7 @@ pub struct BenchExport {
 
 /// The maestro records and the OCEAN script of bench cell `ci` (§9.1, §9.6), the
 /// `maestro` record naming Virtuoso library `vlib` (the plan's library of the cell) and the
-/// cell's name. `target` (a `.retarget` file given with `--target`) replaces the models of
-/// every corner it names; `inst` answers the output translator's instance questions
+/// cell's name. `inst` answers the output translator's instance questions
 /// ([`InstInfo`]). Bench content §9.1 does not map is reported in `notes`
 /// (`needs_review:` `code sweep output spec plot expression design-variable montecarlo
 /// optimize config corner`); the caller stashes it (§7.3).
@@ -168,7 +166,6 @@ pub fn export<F: Fn(&str) -> Option<InstInfo>>(
     d: &Design,
     ci: usize,
     vlib: &str,
-    target: Option<&Target>,
     inst: F,
     notes: &mut Notes,
 ) -> BenchExport {
@@ -287,17 +284,9 @@ pub fn export<F: Fn(&str) -> Option<InstInfo>>(
     for r in c.records(RecordKind::Corner) {
         let corner = c.field(r, 0).to_owned();
         t.corners.push((corner.clone(), true));
-        // The target machine's model files for this corner (`--target`, §10.2) win.
-        let bound = target.and_then(|tg| tg.corners.iter().find(|x| x.name == corner));
-        if let Some(b) = bound {
-            for (f, sec) in &b.models {
-                t.models.push((corner.clone(), path_to_ade(f), sec.clone()));
-            }
-        }
         for a in c.doc.attrs(r) {
             let vals: Vec<&str> = c.doc.attr_values(a).collect();
             match (c.doc.attr_key(a), vals.as_slice()) {
-                ("lib", [_, _]) | ("include", [_]) if bound.is_some() => {}
                 ("lib", [p, sec]) => t
                     .models
                     .push((corner.clone(), path_to_ade(p), (*sec).into())),
@@ -407,7 +396,7 @@ pub fn export<F: Fn(&str) -> Option<InstInfo>>(
                     cell,
                     format!("spec {out} {key} `{e}`: depends on swept var {s}; not sent"),
                 );
-            } else if let Some(x) = crate::retarget::cell_value(d, ci, e) {
+            } else if let Some(x) = cell_value(d, ci, e) {
                 let mut v = String::new();
                 write_num(&mut v, x);
                 t.specs.push((out.to_owned(), op.into(), v));
@@ -1141,8 +1130,59 @@ fn signals_of(expr: &str, out: &mut Vec<(char, String)>) {
     }
 }
 
+/// Evaluates `src` in cell `ci`'s own scope (a spec target over bench vars): identifiers
+/// resolve to the cell's vars, then its parameter defaults, recursively (at most 16 levels).
+/// A var with a D20 `cached` value stands for that value, as it does wherever the plugin is
+/// not loaded; any other plugin call or anything that does not evaluate gives `None`.
+fn cell_value(d: &Design, ci: usize, src: &str) -> Option<f64> {
+    fn go(c: &crate::design::Cell, src: &str, depth: u32) -> Option<f64> {
+        if depth >= 16 {
+            return None;
+        }
+        let p = Program::compile(src, Mode::Scalar).ok()?;
+        if p.plugin_fns().len() > 0 {
+            return None;
+        }
+        let lookup = |n: &str| -> Option<String> {
+            c.records(RecordKind::Var)
+                .find(|r| c.field(*r, 0) == n)
+                .or_else(|| c.records(RecordKind::Param).find(|r| c.field(*r, 0) == n))
+                .map(|r| c.field(r, 1).to_owned())
+        };
+        let cached = |n: &str| -> Option<f64> {
+            let r = c.records(RecordKind::Var).find(|r| c.field(*r, 0) == n)?;
+            c.attr(r, "cached")?
+                .parse::<f64>()
+                .ok()
+                .filter(|x| x.is_finite())
+        };
+        let vals: Vec<Option<f64>> = p
+            .idents()
+            .map(|n| cached(n).or_else(|| lookup(n).and_then(|e| go(c, &e, depth + 1))))
+            .collect();
+        let mut inputs = Vec::new();
+        let mut k = 0;
+        p.bind(&mut inputs, |_| {
+            let v = vals[k].map(schemify_expr::Value::Num);
+            k += 1;
+            v
+        })
+        .ok()?;
+        match p
+            .eval(&inputs, &mut schemify_expr::Scratch::default())
+            .ok()?
+        {
+            schemify_expr::Value::Num(x) => Some(x),
+            schemify_expr::Value::Int(i) => Some(i as f64),
+            _ => None,
+        }
+    }
+    assert!(ci < d.cells.len(), "cell {ci} of the design");
+    go(&d.cells[ci], src, 0)
+}
+
 /// The OCEAN script of test `t` (§9.6): runnable headless (`ocean -nograph < <cell>.ocn`)
-/// after `SfyImport` (and `SfyRetarget`) created the bench schematic. Corner `corner` (the
+/// after `SfyImport` created the bench schematic. Corner `corner` (the
 /// bench's default, else its first) supplies the model files, var overrides and
 /// temperature; every swept var is a nested `paramAnalysis`; each output is one
 /// `ocnPrint` table `<cell>/<output>.txt`, each plot one `<cell>/<y>_vs_<x>.txt` of
@@ -1165,7 +1205,7 @@ fn ocean_script(
     let _ = writeln!(
         o,
         "; {dir}.ocn: OCEAN script of bench {cell}, written by schemify-interop (interop.md §9.6).\n\
-         ; Run after SfyImport (and SfyRetarget) of the same .sfyx, in a directory whose cds.lib\n\
+         ; Run after SfyImport of the same .sfyx, in a directory whose cds.lib\n\
          ; defines library {lib} (OCEAN finds libraries through ./cds.lib) and where {dir}/ may\n\
          ; be created; if SfyImport had ?lib, put that library in design() below:\n\
          ;   ocean -nograph < {dir}.ocn\n\
@@ -1360,10 +1400,6 @@ pub struct InstInfo {
     /// The Virtuoso terminal `i(dev)` reads: the exported master's first terminal (`p` of a
     /// `schemify_core` source or ammeter, `PLUS` on analogLib).
     pub terminal: String,
-    /// Path segments inside the instance that hold the operating point when the placed
-    /// device is a subcircuit macro (`["main"]` for a `.retarget` class with `op
-    /// M0.main`); empty for a plain device.
-    pub op_inner: Vec<String>,
 }
 
 /// The bench facts an output translation reads.
@@ -1738,8 +1774,7 @@ fn emit<F: Fn(&str) -> Option<InstInfo>>(
                     return None;
                 }
                 // The longest prefix naming instances; the rest names devices inside
-                // the placed PDK subcircuit, as written. Without such a rest the
-                // `.retarget` class's `op` path (`M0.main`) supplies it.
+                // the placed PDK subcircuit, as written.
                 let (info, rest) = (1..=segs.len())
                     .rev()
                     .find_map(|n| (s.inst)(&segs[..n].join("/")).map(|i| (i, &segs[n..])))
@@ -1751,11 +1786,7 @@ fn emit<F: Fn(&str) -> Option<InstInfo>>(
                         (i, &segs[segs.len()..])
                     });
                 let mut path: Vec<&str> = info.path.split('/').collect();
-                if rest.is_empty() {
-                    path.extend(info.op_inner.iter().map(String::as_str));
-                } else {
-                    path.extend(rest.iter().copied());
-                }
+                path.extend(rest.iter().copied());
                 out.push_str(&format!("OP(\"/{}\" \"{param}\")", path.join("/")));
             }
             ("cross", [y, level, more @ ..]) if more.len() <= 2 => {
@@ -2778,17 +2809,16 @@ mod tests {
     fn calculator_outputs_map_to_ade_functions() {
         let vars: Vec<String> = ["VDD", "W", "VDS"].map(String::from).to_vec();
         let info = |p: &str| -> Option<InstInfo> {
-            let (path, terminal, inner) = match p {
-                "VMDN" => ("VMDN", "p", vec![]),
-                "XDUT" | "DUT" => ("DUT", "", vec![]),
-                "XDUT/M1" | "DUT/M1" => ("DUT/M1", "D", vec!["main".to_owned()]),
-                "M7" => ("M7", "D", vec![]),
+            let (path, terminal) = match p {
+                "VMDN" => ("VMDN", "p"),
+                "XDUT" | "DUT" => ("DUT", ""),
+                "XDUT/M1" | "DUT/M1" => ("DUT/M1", "D"),
+                "M7" => ("M7", "D"),
                 _ => return None,
             };
             Some(InstInfo {
                 path: path.into(),
                 terminal: terminal.into(),
-                op_inner: inner,
             })
         };
         let tr = |e: &str, letter: &str| {
@@ -2846,9 +2876,9 @@ mod tests {
                 r#"((((VT("/a"))+(VT("/b"))-abs((VT("/a"))-(VT("/b"))))/2)+(1)-abs((((VT("/a"))+(VT("/b"))-abs((VT("/a"))-(VT("/b"))))/2)-(1)))/2"#,
             ),
             ("pow(v(a), 2)", "T", r#"(VT("/a"))**(2)"#),
-            // op(): the bench path, the class's inner device, or an explicit inner device.
+            // op(): the bench path, or an explicit device inside a subcircuit.
             (r#"op("M7","gm")"#, "F", r#"OP("/M7" "gm")"#),
-            (r#"op("/XDUT/M1","id")"#, "F", r#"OP("/DUT/M1/main" "id")"#),
+            (r#"op("/XDUT/M1","id")"#, "F", r#"OP("/DUT/M1" "id")"#),
             (
                 r#"op("XDUT/M1/mx","gds")"#,
                 "F",

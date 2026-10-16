@@ -1,5 +1,5 @@
 //! `interop.map`: cell, pin and parameter translation between Schemify libraries and
-//! Virtuoso libraries, and gm/Id retarget classes (spec `interop.md` §8.2); plus
+//! Virtuoso libraries (spec `interop.md` §8.2); plus
 //! [`resolve`], the export-side lookup that turns a Design and a mapping into a [`Plan`].
 //!
 //! The file is line records without a header (format.md §2). It is read with the format
@@ -14,7 +14,7 @@ use schemify_format::{Document, FileKind, parse};
 use crate::design::Design;
 use crate::virtuoso::devices;
 
-/// Rows a mapping file may hold (maps plus classes), a bound on the reader's work.
+/// Rows a mapping file may hold, a bound on the reader's work.
 pub const ROWS_MAX: usize = 1 << 16;
 
 /// One `map` row: a Schemify cell and the Virtuoso cell it is exchanged with.
@@ -44,26 +44,11 @@ pub struct MapRow {
     pub line: u32,
 }
 
-/// One `class` row (gm/Id retarget, §10).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ClassRow {
-    /// Class name.
-    pub name: String,
-    /// `virtuoso_target` hint.
-    pub hint: String,
-    /// `n` or `p`, when given.
-    pub role: Option<char>,
-    /// 1-based line.
-    pub line: u32,
-}
-
 /// A parsed mapping file. Empty = identity everywhere (mirrors, `schemify_core`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Mapping {
     /// `map` rows, in file order.
     pub maps: Vec<MapRow>,
-    /// `class` rows, in file order.
-    pub classes: Vec<ClassRow>,
 }
 
 impl Mapping {
@@ -71,10 +56,10 @@ impl Mapping {
     ///
     /// # Errors
     ///
-    /// Every malformed row, one per line (`line N: …`): a record other than `map`/`class`,
+    /// Every malformed row, one per line (`line N: …`): a record other than `map`,
     /// wrong arity, an attribute the record does not take, a `scale` that is not an
     /// expression, `same` beside other attributes, a duplicate cell, Virtuoso target,
-    /// class, pin or param, a param both mapped and dropped, more than [`ROWS_MAX`] rows.
+    /// pin or param, a param both mapped and dropped, more than [`ROWS_MAX`] rows.
     pub fn parse(text: &str) -> Result<Mapping, Vec<String>> {
         let src = format!("schemify 1 journal\n{text}");
         let doc = parse(src.as_bytes()).map_err(|e| {
@@ -107,11 +92,7 @@ impl Mapping {
                     Ok(row) => m.maps.push(row),
                     Err(e) => errs.extend(e),
                 },
-                "class" => match class_row(&doc, r, &fields, line) {
-                    Ok(row) => m.classes.push(row),
-                    Err(e) => errs.extend(e),
-                },
-                w => errs.push(format!("line {line}: unknown record `{w}` (map or class)")),
+                w => errs.push(format!("line {line}: unknown record `{w}` (map)")),
             }
         }
         // Uniqueness across rows.
@@ -131,17 +112,8 @@ impl Mapping {
                 ));
             }
         }
-        let mut classes: BTreeMap<&str, u32> = BTreeMap::new();
-        for c in &m.classes {
-            if let Some(l) = classes.insert(&c.name, c.line) {
-                errs.push(format!(
-                    "line {}: class {} is already defined on line {l}",
-                    c.line, c.name
-                ));
-            }
-        }
         if errs.is_empty() {
-            assert!(m.maps.len() + m.classes.len() < doc.record_count() as usize);
+            assert!(m.maps.len() < doc.record_count() as usize);
             Ok(m)
         } else {
             Err(errs)
@@ -252,30 +224,6 @@ fn map_row(doc: &Document<'_>, r: u32, f: &[&str], line: u32) -> Result<MapRow, 
     }
     if let Some(d) = row.drops.iter().find(|d| names.contains(&d.as_str())) {
         errs.push(format!("line {line}: param {d} is both mapped and dropped"));
-    }
-    if errs.is_empty() { Ok(row) } else { Err(errs) }
-}
-
-fn class_row(doc: &Document<'_>, r: u32, f: &[&str], line: u32) -> Result<ClassRow, Vec<String>> {
-    if f.len() != 3 || f[1] != "virtuoso_target" {
-        return Err(vec![format!(
-            "line {line}: `class <name> virtuoso_target <hint>`"
-        )]);
-    }
-    let mut row = ClassRow {
-        name: f[0].into(),
-        hint: f[2].into(),
-        role: None,
-        line,
-    };
-    let mut errs = Vec::new();
-    for a in doc.attrs(r) {
-        let at = doc.attr_line(a).saturating_sub(1);
-        match (doc.attr_key(a), attr_values(doc, a).as_slice()) {
-            ("role", ["n"]) => row.role = Some('n'),
-            ("role", ["p"]) => row.role = Some('p'),
-            (k, _) => errs.push(format!("line {at}: `{k}`: a class takes only `role n|p`")),
-        }
     }
     if errs.is_empty() { Ok(row) } else { Err(errs) }
 }
@@ -483,7 +431,7 @@ pub fn resolve(
 mod tests {
     use super::*;
 
-    const EXAMPLE: &str = "map sky130:nfet_01v8 virtuoso sky130_fd_pr nfet_01v8\n  pin d D\n  pin g G\n  pin s S\n  pin b B\n  param W w scale 1e-6\n  param L l scale 1e-6\n  param nf nf\n  param mult m\n  drop ad\n  spice \"X{name} {D} {G} {S} {B} sky130_fd_pr__nfet_01v8 w={w} l={l} nf={nf} m={m}\"\n\nclass nmos virtuoso_target nch\n  role n\n";
+    const EXAMPLE: &str = "map sky130:nfet_01v8 virtuoso sky130_fd_pr nfet_01v8\n  pin d D\n  pin g G\n  pin s S\n  pin b B\n  param W w scale 1e-6\n  param L l scale 1e-6\n  param nf nf\n  param mult m\n  drop ad\n  spice \"X{name} {D} {G} {S} {B} sky130_fd_pr__nfet_01v8 w={w} l={l} nf={nf} m={m}\"\n";
 
     #[test]
     fn parses_the_spec_example() {
@@ -498,9 +446,7 @@ mod tests {
         assert_eq!(r.params[0], ("W".into(), "w".into(), Some("1e-6".into())));
         assert_eq!(r.drops, ["ad"]);
         assert!(r.spice.as_deref().unwrap().starts_with("X{name}"));
-        assert_eq!(m.classes[0].role, Some('n'));
         assert_eq!(r.line, 1);
-        assert_eq!(m.classes[0].line, 13);
         assert!(m.by_virtuoso("sky130_fd_pr", "nfet_01v8").is_some());
         assert!(Mapping::parse("").unwrap().maps.is_empty());
     }
@@ -533,11 +479,7 @@ mod tests {
                 "map a:b virtuoso L C\n  param x X\n  drop x\n",
                 "both mapped and dropped",
             ),
-            ("class c virtuoso_target h\n  role q\n", "only `role"),
-            (
-                "class c virtuoso_target h\nclass c virtuoso_target h\n",
-                "already defined",
-            ),
+            ("class c virtuoso_target h\n", "unknown record `class`"),
             ("map \"a\n", "E028"),
         ] {
             let e = Mapping::parse(bad).expect_err(bad);

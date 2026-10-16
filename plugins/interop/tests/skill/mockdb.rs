@@ -5,7 +5,7 @@
 //! `virtuoso-cdf-pdk.md`) and fails as documented: a bad argument signals (`Err`), a refused
 //! operation returns `nil`. Behaviour the manuals leave open is marked `GUESS(Gn)`, matching
 //! the spec's §13 table; the probe (`skill/sfy_probe.il`) settles each one on a real
-//! Virtuoso. The maestro and OCEAN parts live in `mock_mae.rs` and `mock_ocean.rs`.
+//! Virtuoso. The maestro part lives in `mock_mae.rs`.
 //!
 //! Model: one arena of objects ([`Obj`], an attribute bag with `objType`), addressed by
 //! `V::Obj(id)`. Libraries are the cds.lib list ([`MockDb::add_lib`]); cells, views and files
@@ -23,8 +23,6 @@ use std::collections::BTreeMap;
 
 #[path = "mock_mae.rs"]
 pub mod mae;
-#[path = "mock_ocean.rs"]
-pub mod ocean;
 
 /// Signatures of every Cadence function the mock implements: `(name, args)`. `args` is a
 /// space-separated list of argument kinds, `[` starting the optional ones, `?key` naming an
@@ -87,17 +85,6 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("cdfFindParamByName", "d t"),
     ("cdfGetCellCDF", "d"),
     ("cdfUpdateInstParam", "d"),
-    // OCEAN (OCEAN Reference 5.1.41, "Simulation Commands", "Data Access Commands");
-    // `...` repeats the last argument kind.
-    ("simulator", "S"),
-    ("design", "[t t t] ?lib ?cell ?view"),
-    ("resultsDir", "t"),
-    ("save", "S [t] ... ?categ"),
-    ("analysis", "S ?param ?start ?stop ?step ?saveOppoint ?dev"),
-    ("desVar", "t g [t g] ..."),
-    ("run", "[g] ?jobName ?host"),
-    ("getData", "t ?result ?resultsDir"),
-    ("value", "g g [g]"),
     // Maestro (IC23.1 ADE SKILL Reference syntax lines, via virtuoso-bridge-lite's function
     // database, MIT; research virtuoso-netlist-ade.md §5.3). Bodies in mock_mae.rs.
     ("maeOpenSetup", "t t t ?application ?histName ?mode"),
@@ -148,17 +135,8 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("axlGetSpecData", "x t t [t]"),
 ];
 
-/// Functions with a [`SIGNATURES`] row whose body is in `mock_ocean.rs` or `mock_mae.rs`.
+/// Functions with a [`SIGNATURES`] row whose body is in `mock_mae.rs`.
 pub const DELEGATED: &[&str] = &[
-    "simulator",
-    "design",
-    "resultsDir",
-    "save",
-    "analysis",
-    "desVar",
-    "run",
-    "getData",
-    "value",
     "maeOpenSetup",
     "maeCloseSession",
     "maeSaveSetup",
@@ -236,8 +214,6 @@ pub struct Obj {
 pub struct MockDb {
     /// Maestro state.
     pub mae: mae::Mae,
-    /// OCEAN / simulation state.
-    pub ocean: ocean::Ocean,
     objs: Vec<Obj>,
     libs: Vec<u32>,
     cvs: BTreeMap<(String, String, String), u32>,
@@ -249,7 +225,6 @@ impl Default for MockDb {
     fn default() -> Self {
         MockDb {
             mae: mae::Mae::default(),
-            ocean: ocean::Ocean::default(),
             objs: vec![Obj::default()],
             libs: Vec::new(),
             cvs: BTreeMap::new(),
@@ -1231,7 +1206,7 @@ impl MockDb {
     fn call_db(&mut self, name: &str, args: &[V]) -> Option<Result<V, String>> {
         let sig = SIGNATURES.iter().find(|(n, _)| *n == name)?.1;
         if DELEGATED.contains(&name) {
-            // Signature checked here; the body lives in mock_ocean.rs / mock_mae.rs.
+            // Signature checked here; the body lives in mock_mae.rs.
             return check(name, sig, args).err().map(Err);
         }
         Some(check(name, sig, args).and_then(|(a, kw)| self.dispatch(name, &a, &kw)))
@@ -1927,7 +1902,7 @@ impl MockDb {
                 }
                 self.update_inst_params(i)?
             }
-            // Instances only (what SfyRtPlace deletes): unlinked from their cellview.
+            // Instances only: unlinked from their cellview.
             "dbDeleteObject" => {
                 let x = o(0);
                 if self.ty(x) != "inst" {
@@ -2224,10 +2199,7 @@ impl Host for MockDb {
         if let Some(r) = self.call_db(name, args) {
             return Some(r);
         }
-        if let Some(r) = mae::call(self, name, args) {
-            return Some(r);
-        }
-        ocean::call(self, name, args)
+        mae::call(self, name, args)
     }
 
     fn get(&mut self, obj: u32, attr: &str) -> Result<V, String> {

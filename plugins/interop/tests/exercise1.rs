@@ -1,7 +1,7 @@
 //! The user's Exercise 1 benches (`tests/fixtures/exercise1`, copied from the course
-//! project): `virtuoso-export --retarget` must give maestro setups and OCEAN scripts that
-//! run on a Cadence server with no hand edits (spec `interop.md` §6.6, §9, §10). Each test
-//! pins one gap of the first export's report with literal expected text.
+//! project): `virtuoso-export` must give maestro setups and OCEAN scripts that run on a
+//! Cadence server with no hand edits (spec `interop.md` §6.6, §9). Each test pins one gap of
+//! the first export's report with literal expected text.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -23,11 +23,9 @@ const BENCHES: [&str; 4] = [
 
 /// Runs the export job over the fixture project (the CLI's driver, reading the disk) and
 /// returns every written file by path.
-fn export(target: Option<&str>) -> BTreeMap<String, String> {
+fn export() -> BTreeMap<String, String> {
     let opts = ExportOptions {
         producer: "test".into(),
-        retarget: true,
-        target: target.map(str::to_owned),
         ..ExportOptions::default()
     };
     let mut job = Job::new(Command::VirtuosoExport {
@@ -92,7 +90,7 @@ fn report(files: &BTreeMap<String, String>) -> String {
 
 #[test]
 fn sources_with_design_variables_map_to_cdf_params() {
-    let f = export(None);
+    let f = export();
     let recs = records(&f);
     assert_eq!(
         inst_props(&recs, "ac_vgs", "VGNA"),
@@ -132,12 +130,12 @@ fn maestro_of(recs: &[Record], test: &str) -> Vec<String> {
 }
 
 #[test]
-fn outputs_specs_and_server_models_map() {
-    let f = export(Some("server.retarget"));
+fn outputs_specs_and_models_map() {
+    let f = export();
     let recs = records(&f);
     let dc = maestro_of(&recs, "dc_vgs");
     for want in [
-        r#"("model" "tt" "/pdk/models/spectre/toplevel.scs" "tt_lib")"#,
+        r#"("model" "tt" "$PDK_MODELS" "tt")"#,
         r#"("output" "ION_n" "point" "abs(value(IS(\"/VMDN/p\") VAR(\"VDD\")))/VAR(\"W\")*1u")"#,
         r#"("output" "rg_n" "point" "1/abs(value(deriv(IS(\"/VMGN/p\")) VAR(\"VDD\")))")"#,
         r#"("spec" "SSW_n" "gt" "59.5")"#,
@@ -164,16 +162,9 @@ fn outputs_specs_and_server_models_map() {
     assert!(!vgs.contains("0000"), "{vgs}");
     // Every output and spec of the four benches maps: only cosmetic rows remain.
     let rep = report(&f);
-    for class in ["output", "spec", "source", "sweep", "retarget"] {
+    for class in ["output", "spec", "source", "sweep"] {
         assert!(!rep.contains(&format!("needs_review:{class}")), "{rep}");
     }
-    // Without --target the bench's own model file stays (`${PDK_MODELS}` → `$PDK_MODELS`).
-    let own = maestro_of(&records(&export(None)), "dc_vgs");
-    assert!(
-        own.iter()
-            .any(|l| l == r#"("model" "tt" "$PDK_MODELS" "tt")"#),
-        "{own:#?}"
-    );
 }
 
 /// The OCEAN scripts (§9.6) equal their goldens (`SCHEMIFY_BLESS=1` rewrites them), and
@@ -181,7 +172,7 @@ fn outputs_specs_and_server_models_map() {
 /// parentheses and quotes.
 #[test]
 fn ocean_scripts_match_their_goldens() {
-    let f = export(Some("server.retarget"));
+    let f = export();
     let gold = root().join("ocean");
     let bless = std::env::var_os("SCHEMIFY_BLESS").is_some();
     const CALLS: [&str; 14] = [

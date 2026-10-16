@@ -82,15 +82,13 @@ pub fn export(
         if !matches!(plan.how[ci], How::Design | How::Core) {
             continue;
         }
-        let c = cell_out(d, ci, &plan, m, opts.retarget, &mut notes);
+        let c = cell_out(d, ci, &plan, m, &mut notes);
         if d.cells[ci].kind() == FileKind::Shbench {
-            let target = opts.target_map.as_ref();
             let mut b = ade::export(
                 d,
                 ci,
                 &plan.lib[ci],
-                target,
-                |p| inst_info(d, &plan, m, opts, ci, p),
+                |p| inst_info(d, &plan, m, ci, p),
                 &mut notes,
             );
             if !b.records.is_empty() {
@@ -188,22 +186,13 @@ pub fn export(
 
 /// What the output translator needs about instance path `path` (Schemify instance names
 /// joined by `/`, a subcircuit's SPICE name `X<name>` accepted for `<name>`) of bench `ci`
-/// (§9.1): its Virtuoso path, the terminal `i()` reads (the exported master's first pin:
-/// analogLib's, a map row's, a retarget class pin through the `--target` map, else the
-/// pin's own name) and, for a placeholder whose `--target` class has `op <dev>.<inner>`,
-/// the segments inside it holding the operating point. `None` when a segment names no
+/// (§9.1): its Virtuoso path and the terminal `i()` reads (the exported master's first pin:
+/// analogLib's, a map row's, else the pin's own name). `None` when a segment names no
 /// instance.
-fn inst_info(
-    d: &Design,
-    plan: &Plan,
-    m: &Mapping,
-    opts: &ExportOptions,
-    ci: usize,
-    path: &str,
-) -> Option<ade::InstInfo> {
+fn inst_info(d: &Design, plan: &Plan, m: &Mapping, ci: usize, path: &str) -> Option<ade::InstInfo> {
     let mut cur = ci;
     let mut vpath: Vec<String> = Vec::new();
-    let mut last: Option<(usize, &str)> = None;
+    let mut last: Option<usize> = None;
     for seg in path.split('/') {
         let c = &d.cells[cur];
         let by_name = |n: &str| {
@@ -218,48 +207,31 @@ fn inst_info(
         })?;
         let name = c.attr(r, "name").expect("found by name");
         vpath.push(profile::inst_to_virtuoso(name).unwrap_or_else(|| name.to_owned()));
-        let cref = c.field(r, 1);
-        let mi = d.resolve(cur, cref)?;
-        last = Some((mi, cref));
+        let mi = d.resolve(cur, c.field(r, 1))?;
+        last = Some(mi);
         cur = mi;
     }
-    let (mi, cref) = last?;
+    let mi = last?;
     let first_pin = sym_pins(&d.cells[mi])
         .name
         .first()
         .cloned()
         .unwrap_or_default();
-    let class = tech_class(cref).filter(|_| opts.retarget).and_then(|cl| {
-        opts.target_map
-            .as_ref()?
-            .classes
-            .iter()
-            .find(|x| x.name == cl)
-    });
-    let terminal = match (class, plan.how[mi]) {
-        (Some(cl), _) => cl
-            .pins
-            .iter()
-            .find(|p| p.0 == first_pin)
-            .map_or(first_pin.clone(), |p| p.1.clone()),
-        (None, How::AnalogLib(row)) => devices::DEVICES[row as usize]
+    let terminal = match plan.how[mi] {
+        How::AnalogLib(row) => devices::DEVICES[row as usize]
             .alib_pins
             .first()
             .map_or(first_pin.clone(), |p| (*p).to_owned()),
-        (None, How::Map(row)) => m.maps[row as usize]
+        How::Map(row) => m.maps[row as usize]
             .pins
             .iter()
             .find(|p| p.0 == first_pin)
             .map_or_else(|| vname(&first_pin), |p| p.1.clone()),
         _ => vname(&first_pin),
     };
-    let op_inner = class
-        .map(|cl| cl.op.split('.').skip(1).map(str::to_owned).collect())
-        .unwrap_or_default();
     Some(ade::InstInfo {
         path: vpath.join("/"),
         terminal,
-        op_inner,
     })
 }
 
@@ -566,13 +538,6 @@ fn cv_records(cv: &Cv, out: &mut Vec<Record>) {
             vec![i(r as i32), s(&c.term), s(&c.net)],
         ));
     }
-    for rec in &cv.intents {
-        let mut rec = rec.clone();
-        if let Some(Value::Int(old)) = rec.fields.first().cloned() {
-            rec.fields[0] = i(rr(old as u32) as i32);
-        }
-        out.push(rec);
-    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -580,14 +545,7 @@ fn cv_records(cv: &Cv, out: &mut Vec<Record>) {
 // ---------------------------------------------------------------------------------------
 
 /// Builds the dump tables of Design cell `ci`.
-fn cell_out(
-    d: &Design,
-    ci: usize,
-    plan: &Plan,
-    m: &Mapping,
-    retarget: bool,
-    notes: &mut Notes,
-) -> DCell {
+fn cell_out(d: &Design, ci: usize, plan: &Plan, m: &Mapping, notes: &mut Notes) -> DCell {
     let c = &d.cells[ci];
     let mut out = DCell {
         lib: plan.lib[ci].clone(),
@@ -627,13 +585,13 @@ fn cell_out(
             out.cvs
                 .push(keep(c, super::Part::Symbol, symbol_out(c, &mut ids, notes)));
             if c.kind() == FileKind::Shcomp {
-                let sch = schematic_out(d, ci, plan, m, retarget, &mut ids, notes);
+                let sch = schematic_out(d, ci, plan, m, &mut ids, notes);
                 out.cvs.push(keep(c, super::Part::Schematic, sch));
             }
             out.textviews = textviews_out(c, notes);
         }
         FileKind::Shbench => {
-            let sch = schematic_out(d, ci, plan, m, retarget, &mut ids, notes);
+            let sch = schematic_out(d, ci, plan, m, &mut ids, notes);
             out.cvs.push(keep(c, super::Part::Schematic, sch));
         }
         k => unreachable!("design cells are cell files, got {k:?}"),
@@ -1819,138 +1777,17 @@ fn source_props(
     })
 }
 
-/// A class placeholder of a schematic (§10): a gm/Id intent, or a fixed-size instance of a
-/// technology class (`tech:nmos` with explicit `w l nf m`, §10.5).
-enum Holder {
-    Intent(crate::retarget::Intent),
-    Fixed {
-        inst_id: String,
-        class: String,
-        /// `(w|l|nf|m, AEL value)`, in that order.
-        fields: Vec<(&'static str, String)>,
-    },
-}
-
-impl Holder {
-    fn inst_id(&self) -> &str {
-        match self {
-            Holder::Intent(t) => &t.inst_id,
-            Holder::Fixed { inst_id, .. } => inst_id,
-        }
-    }
-
-    fn class(&self) -> &str {
-        match self {
-            Holder::Intent(t) => &t.class,
-            Holder::Fixed { class, .. } => class,
-        }
-    }
-
-    /// The `intent` record (§4.2): a gm/Id intent's numbers, or a fixed size's AEL values
-    /// (`(("w" "W") ("l" "L") ("nf" "1") ("m" "1"))`, no `gmid`).
-    fn to_record(&self, r: i32) -> Record {
-        match self {
-            Holder::Intent(t) => t.to_record(r),
-            Holder::Fixed { class, fields, .. } => {
-                assert!(r > 0 && fields.len() == 4);
-                Record::new(
-                    "intent",
-                    vec![
-                        i(r),
-                        s(class),
-                        pairs(fields.iter().map(|(k, v)| (*k, v.as_str()))),
-                    ],
-                )
-            }
-        }
-    }
-}
-
-/// The class of a `tech:<class>` instance cellref (`tech:nmos` → `nmos`), else `None`.
-pub fn tech_class(cellref: &str) -> Option<&str> {
-    cellref.strip_prefix("tech:").filter(|c| !c.is_empty())
-}
-
-/// §10.5: every instance of cell `ci` whose cellref is a technology class (`tech:nmos`) and
-/// that is not sized by intent (`taken`) becomes a fixed-size placeholder carrying its `w l
-/// nf m` (the override, any case, else the master's default) as AEL values in the parent's
-/// scope (bench vars bare, so a swept `W` stays a design variable). An instance with a
-/// value that has no AEL form stays the generic device (`needs_review: retarget`).
-fn fixed_holders(d: &Design, ci: usize, taken: &[Holder], notes: &mut Notes) -> Vec<Holder> {
-    let c = &d.cells[ci];
-    let mut out = Vec::new();
-    for r in c.records(RecordKind::Inst) {
-        let id = c.field(r, 0);
-        let Some(class) = tech_class(c.field(r, 1)) else {
-            continue;
-        };
-        if taken.iter().any(|h| h.inst_id() == id) {
-            continue;
-        }
-        let master = d.resolve(ci, c.field(r, 1)).map(|mi| &d.cells[mi]);
-        let mut fields = Vec::with_capacity(4);
-        let mut bad = None;
-        for key in ["w", "l", "nf", "m"] {
-            let over = c
-                .doc
-                .attrs(r)
-                .find(|&a| c.doc.attr_key(a).eq_ignore_ascii_case(key))
-                .and_then(|a| c.doc.attr_value(a, 0));
-            let default = master.and_then(|mc| {
-                mc.records(RecordKind::Param)
-                    .find(|p| mc.field(*p, 0).eq_ignore_ascii_case(key))
-                    .map(|p| mc.field(p, 1))
-            });
-            let text = over.or(default).unwrap_or("1");
-            match ael::to_ael(text, parent_scope(c)) {
-                Ok(t) if t.review.is_none() => fields.push((key, t.text)),
-                _ => bad = Some(format!("{key} `{text}` has no AEL form")),
-            }
-        }
-        match bad {
-            None => out.push(Holder::Fixed {
-                inst_id: id.to_owned(),
-                class: class.to_owned(),
-                fields,
-            }),
-            Some(why) => notes.review(
-                "retarget",
-                &c.path,
-                format!("inst {id}: {why}; exported as the generic device"),
-            ),
-        }
-    }
-    debug_assert!(
-        out.iter()
-            .all(|h| matches!(h, Holder::Fixed { fields, .. } if fields.len() == 4))
-    );
-    out
-}
-
 fn schematic_out(
     d: &Design,
     ci: usize,
     plan: &Plan,
     m: &Mapping,
-    retarget: bool,
     ids: &mut Ids,
     notes: &mut Notes,
 ) -> Cv {
     let c = &d.cells[ci];
     let g = geom(d, ci);
     let n = nets::extract(d, ci, &g);
-    // §10.1: instances sized by gm/Id intent, and (§10.5) every other instance of a
-    // technology class, become class placeholders the target machine binds.
-    let holders: Vec<Holder> = if retarget {
-        let (v, rn) = crate::retarget::intents(d, ci, |e| crate::retarget::cell_value(d, ci, e));
-        notes.rows.extend(rn.rows);
-        let mut h: Vec<Holder> = v.into_iter().map(Holder::Intent).collect();
-        h.extend(fixed_holders(d, ci, &h, notes));
-        h
-    } else {
-        Vec::new()
-    };
-    let intent_of = |k: usize| holders.iter().find(|t| t.inst_id() == g.inst_id[k]);
     let mut cv = Cv {
         view: "schematic".into(),
         vtype: "schematic".into(),
@@ -1963,21 +1800,6 @@ fn schematic_out(
     let mut aligned: BTreeMap<usize, [i32; 2]> = BTreeMap::new();
     for k in 0..g.inst_id.len() {
         let mi = g.inst_master[k] as usize;
-        if intent_of(k).is_some() {
-            // The target master is chosen on the target machine: every drawn pin goes
-            // through a `conn` record under its own name (the class pin, §10.2 `pin`).
-            let pins = sym_pins(&d.cells[mi]);
-            todo.push(Remaster {
-                inst: k,
-                pins: (0..pins.name.len())
-                    .filter(|&p| pins.inherit[p].is_none() && pins.alias[p].is_none())
-                    .map(|p| (p, pins.name[p].clone()))
-                    .collect(),
-                new_pins: None,
-                at: None,
-            });
-            continue;
-        }
         if !plan.remastered(mi, m) {
             continue;
         }
@@ -2105,27 +1927,6 @@ fn schematic_out(
             g.inst_name[k].clone()
         });
         names.push(name.clone());
-        if let Some(t) = intent_of(k) {
-            // A class placeholder: library "", the class as the cell, no parameters (§10.1).
-            id_prop(&mut cv, r, &g.inst_id[k]);
-            let class = t.class().to_owned();
-            cv.intents.push(t.to_record(r as i32));
-            cv.insts.push(Inst {
-                r,
-                name,
-                lib: String::new(),
-                cell: class,
-                view: String::new(),
-                xy: conv(
-                    g.inst_at[k],
-                    &format!("instance {}", g.inst_name[k]),
-                    c,
-                    notes,
-                ),
-                orient: profile::orient_to_virtuoso(g.inst_orient[k]).into(),
-            });
-            continue;
-        }
         let mut cell = plan.cell[mi].clone();
         let master = &d.cells[mi];
         let src = match plan.how[mi] {
@@ -2530,30 +2331,6 @@ fn schematic_out(
             term: term.clone(),
             net: net_to_virtuoso(&l.net, l.global).0,
         });
-    }
-    // A retarget placeholder's inherited pins (a bulk on `VSS`) have no drawn node: their
-    // net is the instance's `inherit` override, else the pin's default global (netlist §5).
-    for (k, &ir) in inst_ref.iter().enumerate() {
-        if intent_of(k).is_none() {
-            continue;
-        }
-        let pins = sym_pins(&d.cells[g.inst_master[k] as usize]);
-        for (p, default) in pins.inherit.iter().enumerate() {
-            let Some(default) = default else { continue };
-            let over = c.doc.attrs(g.inst_rec[k]).find(|a| {
-                c.doc.attr_key(*a) == "inherit"
-                    && c.doc.attr_value(*a, 0) == Some(pins.name[p].as_str())
-            });
-            let (net, global) = match over.and_then(|a| c.doc.attr_value(a, 1)) {
-                Some(n) => (n.to_owned(), false),
-                None => (default.clone(), true),
-            };
-            cv.conns.push(Conn {
-                r: ir,
-                term: pins.name[p].clone(),
-                net: net_to_virtuoso(&net, global).0,
-            });
-        }
     }
     assert_eq!(inst_ref.len(), g.inst_id.len());
     cv

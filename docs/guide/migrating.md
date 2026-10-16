@@ -228,7 +228,7 @@ Paths after `<project>` are relative to it. The command-line options:
 
 ```text
 schemify-interop virtuoso-export <project-dir> <cell-file>... -o <file.sfyx>
-    [--core-cells] [--retarget] [--target <map.retarget>] [--lib L=V]...
+    [--core-cells] [--lib L=V]...
 schemify-interop virtuoso-import <project-dir> <file.sfyx> [--analoglib] [--lib L=V]...
 schemify-interop xschem-export   <project-dir> <cell-file>... -o <out-dir>
 schemify-interop install-skill   <dir>
@@ -237,7 +237,6 @@ schemify-interop install-skill   <dir>
 - `--lib L=V` renames Schemify library `L` to Virtuoso library `V` (on import, the reverse).
 - Export places Schemify's core sources and passives as analogLib cells; `--core-cells` keeps them as `schemify_core` cells instead.
 - `virtuoso-import --analoglib` moves analogLib instances onto Schemify's core devices instead of an analogLib mirror library.
-- `--retarget` and `--target` carry gm/Id sizing intent for a PDK that exists only on the Virtuoso side (see the plugin README).
 
 `SfyImport` adds `?callbacks t` to run the PDK's CDF callbacks as the Edit Properties form does, and logs every value the PDK clamped. Each schematic is checked with `schCheck` and saved only when the check is clean. A testbench (`.shbench`) also exports as a maestro view and an OCEAN script, `ocean/<cell>.ocn`, beside the `.sfyx`.
 

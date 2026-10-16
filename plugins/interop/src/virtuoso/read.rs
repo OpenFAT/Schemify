@@ -224,8 +224,6 @@ pub struct Cv {
     pub refs: BTreeSet<u32>,
     /// Connection requests.
     pub conns: Vec<Conn>,
-    /// `intent` records (§10), kept whole.
-    pub intents: Vec<Record>,
     /// Records with a tag this reader does not know, kept for the report.
     pub unknown: Vec<Record>,
 }
@@ -242,7 +240,6 @@ impl Cv {
             + self.shapes.len()
             + self.props.len()
             + self.conns.len()
-            + self.intents.len()
             + self.unknown.len()
     }
 
@@ -655,16 +652,7 @@ pub fn dump(records: &[Record]) -> Result<Dump, Error> {
 fn is_object(tag: &str) -> bool {
     matches!(
         tag,
-        "term"
-            | "pinfig"
-            | "inst"
-            | "spin"
-            | "wire"
-            | "label"
-            | "shape"
-            | "prop"
-            | "conn"
-            | "intent"
+        "term" | "pinfig" | "inst" | "spin" | "wire" | "label" | "shape" | "prop" | "conn"
     )
 }
 
@@ -679,7 +667,7 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
     // Objects belong to one kind of cellview (§4.2, §6.2): terminals and pin figures to a
     // symbol (a schematic's terminals travel as `spin`s), wires, schematic pins and loader
     // records to a schematic.
-    let schematic_only = matches!(r.tag.as_str(), "conn" | "intent")
+    let schematic_only = r.tag == "conn"
         || (matches!(r.tag.as_str(), "spin" | "wire") && cv.vtype != "schematicSymbol");
     let symbol_only = r.tag == "term";
     // A pin figure in a schematic (Cadence's sample library has them) from a dumper that
@@ -844,11 +832,6 @@ fn object(cv: &mut Cv, r: &Record) -> Result<(), Error> {
                 term: r.str(1)?.to_owned(),
                 net: r.str(2)?.to_owned(),
             });
-        }
-        "intent" => {
-            r.arity(3)?;
-            pos(r, 0)?;
-            cv.intents.push(r.clone());
         }
         _ => cv.unknown.push(r.clone()),
     }
@@ -2473,7 +2456,7 @@ fn stash_of(sv: &Cv) -> Option<String> {
     (!chunks.is_empty()).then(|| chunks.iter().map(|c| c.1).collect())
 }
 
-/// Reports conns, intents and unknown records; counts properties of objects (consumed by
+/// Reports conns and unknown records; counts properties of objects (consumed by
 /// their owners' builders) as out.
 fn report_rest(sv: &Cv, cell: &str, notes: &mut Notes, tally: &mut Tally) {
     for c in &sv.conns {
@@ -2483,13 +2466,6 @@ fn report_rest(sv: &Cv, cell: &str, notes: &mut Notes, tally: &mut Tally) {
             format!("conn {} {} (loader-only)", c.term, c.net),
         );
     }
-    for r in &sv.intents {
-        notes.dropped(
-            "unknown-record",
-            cell,
-            format!("intent on line {} (§10, not imported)", r.line),
-        );
-    }
     for r in &sv.unknown {
         notes.dropped(
             "unknown-record",
@@ -2497,7 +2473,7 @@ fn report_rest(sv: &Cv, cell: &str, notes: &mut Notes, tally: &mut Tally) {
             format!("`{}` on line {}", r.tag, r.line),
         );
     }
-    tally.reported += sv.conns.len() + sv.intents.len() + sv.unknown.len();
+    tally.reported += sv.conns.len() + sv.unknown.len();
     tally.out += sv.props.iter().filter(|p| p.r != 0).count();
 }
 

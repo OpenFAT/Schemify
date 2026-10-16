@@ -1,5 +1,5 @@
 ; ac_vgs.ocn: OCEAN script of bench exercise1/ac_vgs.shbench, written by schemify-interop (interop.md §9.6).
-; Run after SfyImport (and SfyRetarget) of the same .sfyx, in a directory whose cds.lib
+; Run after SfyImport of the same .sfyx, in a directory whose cds.lib
 ; defines library schemify (OCEAN finds libraries through ./cds.lib) and where ac_vgs/ may
 ; be created; if SfyImport had ?lib, put that library in design() below:
 ;   ocean -nograph < ac_vgs.ocn
@@ -8,7 +8,7 @@ createDir("ac_vgs")
 simulator('spectre)
 design("schemify" "ac_vgs" "schematic")
 resultsDir("ac_vgs/psf")
-modelFile('("/pdk/models/spectre/toplevel.scs" "tt_lib"))
+modelFile('("$PDK_MODELS" "tt"))
 desVar("L" "Lmin*pow(2,p)")
 desVar("Lmin" 20n)
 desVar("VDD" 0.8)

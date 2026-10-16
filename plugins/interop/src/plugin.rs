@@ -80,7 +80,7 @@ fn contribute(out: &mut Out, panel: Option<&str>) {
 fn prompt(cmd: &str) -> &'static str {
     match cmd {
         "interop.virtuoso_export" => {
-            "Cell file(s) to export, then the .sfyx path (e.g. lib/amp.shcomp out/amp.sfyx); flags --core-cells --retarget. Enter to run:"
+            "Cell file(s) to export, then the .sfyx path (e.g. lib/amp.shcomp out/amp.sfyx); flag --core-cells. Enter to run:"
         }
         "interop.virtuoso_import" => "The .sfyx dump to import (project-relative). Enter to run:",
         "interop.xschem_export" => {
@@ -183,7 +183,6 @@ fn command(name: &str, w: &[String]) -> Option<Command> {
             let opts = ExportOptions {
                 // analogLib masters unless `--core-cells` (§6.5), as the command line.
                 analoglib: !flags.contains(&"--core-cells"),
-                retarget: flags.contains(&"--retarget"),
                 producer: "schemify interop plugin".into(),
                 ..ExportOptions::default()
             };

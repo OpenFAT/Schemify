@@ -116,8 +116,6 @@ struct Opts {
     projects: Vec<PathBuf>,
     /// `--pdk lib[/cell]`: a PDK library to mirror, and a transistor for the probe.
     pdk: Option<(String, Option<String>)>,
-    /// `--retarget map`: a target map for the gm/Id retarget of the Exercise 1 benches.
-    target: Option<PathBuf>,
     /// `--callbacks`: load the user's cells again with CDF callbacks on.
     callbacks: bool,
 }
@@ -141,7 +139,6 @@ impl Opts {
                 .split_whitespace()
                 .map(PathBuf::from)
                 .collect(),
-            target: var("SCHEMIFY_LIVE_TARGET").map(PathBuf::from),
             callbacks: var("SCHEMIFY_LIVE_CALLBACKS").is_some_and(|v| v == "1"),
         }
     }
@@ -161,9 +158,6 @@ impl Opts {
         }
         for d in &self.projects {
             writeln!(s, "project {}", path_str(d)).unwrap();
-        }
-        if let Some(t) = &self.target {
-            writeln!(s, "target {}", path_str(t)).unwrap();
         }
         if self.callbacks {
             s.push_str("callbacks\n");
@@ -187,7 +181,6 @@ impl Opts {
                     });
                 }
                 ("project", v) => o.projects.push(PathBuf::from(v)),
-                ("target", v) => o.target = Some(PathBuf::from(v)),
                 ("callbacks", _) => o.callbacks = true,
                 _ => {}
             }
@@ -307,7 +300,6 @@ fn export_project(
         producer: "sfylive".into(),
         analoglib: mode == Mode::Alib,
         lib_map: libs.clone(),
-        ..ExportOptions::default()
     };
     let writes = job(
         project,
@@ -660,56 +652,6 @@ fn prepare(work: &Path, o: &Opts) {
             libs.insert(ulib('b', l, c));
         }
     }
-    // Retarget: the Exercise 1 benches against the user's target map.
-    let mut retarget = None;
-    if let Some(t) = &o.target {
-        let ex = work.join("projects/exercise1");
-        for (p, b) in read_tree(&fixtures().join("exercise1")) {
-            write(&ex.join(p), b);
-        }
-        match std::fs::read(t) {
-            Ok(b) => write(&ex.join("target.retarget"), b),
-            Err(e) => plan_fail.push(format!(
-                "FAIL retarget.map cannot read {}: {e}",
-                t.display()
-            )),
-        }
-        let opts = ExportOptions {
-            producer: "sfylive".into(),
-            analoglib: true,
-            retarget: true,
-            target: Some("target.retarget".into()),
-            lib_map: [(String::new(), "sfyr_ex1".to_owned())].into(),
-            ..ExportOptions::default()
-        };
-        let tops: Vec<String> = cell_files(&ex)
-            .into_iter()
-            .filter(|p| p.ends_with(".shbench"))
-            .collect();
-        match job(
-            &ex,
-            Command::VirtuosoExport {
-                tops,
-                out: "out.sfyx".into(),
-                opts,
-            },
-        ) {
-            Ok(writes) => {
-                for (p, b) in writes {
-                    if p == "out.sfyx" {
-                        write(&inp.join("ex1.sfyx"), b);
-                    } else if let Some(rest) = p.strip_prefix("ocean/") {
-                        write(&inp.join(format!("ocean/ex1/{rest}")), b);
-                    }
-                }
-                libs.insert("sfyr_ex1".into());
-                retarget = Some(path_str(&inp.join("ex1.sfyx")));
-                oceans.push("ex1".into());
-            }
-            Err(e) => plan_fail.push(format!("FAIL retarget.export {}", e.join("; "))),
-        }
-    }
-
     for l in &libs {
         s.call(format!("(SfyLiveLib {} {})", q(l), q(&lib_path(work, l))));
     }
@@ -861,17 +803,6 @@ fn prepare(work: &Path, o: &Opts) {
             "(SfyLiveExportLib \"pdk.dump\" {} {})",
             q(&path_str(&out.join("pdk.sfyx"))),
             q(l)
-        ));
-    }
-    if let Some(file) = retarget {
-        s.call(format!(
-            "(SfyLiveImport \"retarget.load\" {} t nil t nil nil)",
-            q(&file)
-        ));
-        s.call(format!(
-            "(SfyLiveRetarget \"retarget.place\" {} {} nil)",
-            q(&file),
-            q(&path_str(&work.join("projects/exercise1/target.retarget")))
         ));
     }
     s.finish(&work.join("session1.il"));
@@ -1856,17 +1787,6 @@ fn verify(work: &Path, o: &Opts) -> Report {
             }
         }
     }
-    if let Some(log) = read(&work.join("in/ex1.sfyx.retarget.log")) {
-        r.check(
-            "retarget.log",
-            log.trim_end().ends_with("PASS"),
-            log.lines()
-                .filter(|l| l.starts_with("inst "))
-                .collect::<Vec<_>>()
-                .join("; "),
-        );
-    }
-
     // Netlists Virtuoso wrote (run.sh, si).
     let nl = out.join("netlist");
     if read(&nl.join("SKIPPED")).is_some() || !nl.exists() {
@@ -1995,13 +1915,6 @@ fn verify(work: &Path, o: &Opts) -> Report {
             "pdk",
             Grade::Skip,
             "no --pdk given: the PDK mirror and a PDK device in the probe were not tested",
-        );
-    }
-    if o.target.is_none() {
-        r.add(
-            "retarget",
-            Grade::Skip,
-            "no --retarget given: gm/Id retarget was not tested",
         );
     }
     if o.cells.is_empty() || !o.callbacks {
@@ -2189,7 +2102,7 @@ fn kit_passes_on_the_mock() {
         .collect();
     assert_eq!(
         skipped,
-        ["callbacks", "netlist", "ocean", "pdk", "retarget", "user"].into()
+        ["callbacks", "netlist", "ocean", "pdk", "user"].into()
     );
 }
 

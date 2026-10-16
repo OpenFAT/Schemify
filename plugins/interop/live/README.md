@@ -41,15 +41,13 @@ writes what to send back into `sfylive/summary.txt`:
 /path/to/Schemify/plugins/interop/live/run.sh
 ```
 
-That runs the fixtures only, with no PDK. To cover everything, add your own cells, a PDK and a
-retarget map:
+That runs the fixtures only, with no PDK. To cover everything, add your own cells and a PDK:
 
 ```sh
 /path/to/Schemify/plugins/interop/live/run.sh \
     --lib myLib --project ~/designs/my_schemify_project \
     --cell myLib/amp --cell myLib/amp_tb \
-    --pdk tsmcN28/nch_mac --callbacks \
-    --retarget ~/maps/tsmc28.retarget
+    --pdk myPdk/nfet --callbacks
 ```
 
 | Flag | Adds |
@@ -59,7 +57,6 @@ retarget map:
 | `--cell LIB/CELL` | Your own cell, repeatable. It gets the self-test and the full round trip (Virtuoso to Schemify to Virtuoso). Use one cell with PDK transistors and one testbench with a maestro view. |
 | `--pdk LIB[/CELL]` | The PDK mirror: every device of `LIB` dumped and imported as Schemify cells. With `/CELL`, the probe also records that transistor's CDF and callbacks. |
 | `--callbacks` | Loads your `--cell` cells again with the PDK's CDF callbacks running, as the Edit Properties form runs them. |
-| `--retarget MAP` | The gm/Id retarget of the Exercise 1 benches onto your PDK, with your target map (spec `interop.md` §10.2). Needs `ocean` and `spectre`. |
 | `--env FILE` | A csh file that sets up Cadence (your site's `cadence.csh`): the kit sources it through csh and runs with that environment, so `test.sh --env cadence.csh …` works from bash or over `ssh host '…'` without sourcing anything first. |
 | `--cdslib FILE` | Another `cds.lib` (default `./cds.lib`). |
 | `--work DIR` | Where everything goes (default `./sfylive`). The Virtuoso libraries live in `DIR/libs`. |
@@ -78,7 +75,7 @@ your cells' dumps can contain PDK parameter names; remove what you cannot share.
 | Step | Runs | Does |
 |---|---|---|
 | `prepare` | Rust | Exports five Schemify fixture projects to `.sfyx` twice: with core devices as `schemify_core` cells, and on analogLib masters (the default). Writes the OCEAN scripts, damaged copies for the refusal checks, and `session1.il`. |
-| `session1` | Virtuoso | Checks that every entry point and Cadence function the bridge calls exists, runs the probe, loads every export, dumps each library back, runs `SfySelfTest`, loads dumps that the SKILL dumper wrote and dumps them again, tries the refusals, and runs your cells, the PDK and the retarget. |
+| `session1` | Virtuoso | Checks that every entry point and Cadence function the bridge calls exists, runs the probe, loads every export, dumps each library back, runs `SfySelfTest`, loads dumps that the SKILL dumper wrote and dumps them again, tries the refusals, and runs your cells and the PDK. |
 | `tools` | si, OCEAN | Netlists the RC fixture and your cells with Virtuoso's own netlisters (Spectre and auCdl), and runs the exported OCEAN scripts of the RC bench in Spectre. |
 | `mid` | Rust | Imports the dumps, edits one instance in Schemify, exports again, and writes `session2.il`. |
 | `session2` | Virtuoso | Loads that export over the first load, edits one instance parameter in Virtuoso, dumps it, and sends your cells back through a scratch library. |
@@ -100,7 +97,7 @@ work directory at the same absolute path on both, for example on a shared disk.
 | `roundtrip.<project>.core` | The dumps import to the original Schemify files byte for byte. This is the exact round trip of spec §7.4. |
 | `roundtrip.<project>.alib` | On analogLib masters, every bench netlists the same before and after Virtuoso. |
 | `dumpfix.*` | Dumps that the SKILL dumper wrote load and dump back to the same records, covering every shape kind, label kind, bus, net expression and text view. |
-| `selftest.*` | `SfySelfTest` (dump, load, dump) agrees on a loaded cell, and the retarget math passes. |
+| `selftest.*` | `SfySelfTest` (dump, load, dump) agrees on a loaded cell. |
 | `refuse.*` | A truncated or malformed file is refused and creates nothing, an existing view needs `?overwrite`, and a cellview open for editing is never rewritten. |
 | `team.kept-unchanged` | Cellviews nobody edited in Schemify stay exactly as Virtuoso drew them (spec §7.5). |
 | `team.edits-arrive` | A Schemify edit reaches Virtuoso, a Virtuoso edit comes back to Schemify, and nothing else changes. |
@@ -113,7 +110,6 @@ work directory at the same absolute path on both, for example on a shared disk.
 | `user.*` | Your cell (or with `--lib`, your whole library, as `user.*.<lib>.ALL`) passes the self-test, imports into Schemify with every file loading, and goes back to Virtuoso and dumps to the same records. |
 | `user.callbacks-run.*` | No CDF callback failed. INFO rows list the values the PDK clamped or derived. |
 | `pdk.import` | The PDK mirror imports and every device cell loads. |
-| `retarget.*` | `SfyRetarget` placed every class placeholder, and its log ends in PASS. |
 
 ## Known differences
 
@@ -122,7 +118,7 @@ work directory at the same absolute path on both, for example on a shared disk.
   untouched in Virtuoso gets them back exactly from the stash.
 - A docs-page variable computed by a plugin (the OTA's `W W_in` with `gmid.w(...)`) has no
   Virtuoso form, so Virtuoso gets the device's default width. The width comes back from the
-  stash; `--retarget` is the flow that sizes such devices on the target PDK.
+  stash.
 
 - With `--lib`, a cell's CDF comes back exactly as it was while nobody changed the cell's
   pins, params or impls in Schemify (the `vcdf` reverse stash). After such an edit, export

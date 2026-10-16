@@ -156,33 +156,11 @@ impl Job {
                     ),
                 }
             }
-            Command::VirtuosoExport {
-                tops,
-                out,
-                mut opts,
-            } => {
+            Command::VirtuosoExport { tops, out, opts } => {
                 let map = match self.mapping() {
                     Ok(m) => m,
                     Err(s) => return s,
                 };
-                if let Some(p) = opts.target.clone().filter(|_| opts.target_map.is_none()) {
-                    if !self.known(&p) {
-                        return self.ask(vec![p]);
-                    }
-                    let parsed = match self.files.get(&p).map(|b| std::str::from_utf8(b)) {
-                        None => return Step::Failed(vec![format!("{p}: cannot read")]),
-                        Some(Err(_)) => return Step::Failed(vec![format!("{p}: not UTF-8")]),
-                        Some(Ok(t)) => crate::retarget::parse_target(t),
-                    };
-                    match parsed {
-                        Ok(t) => opts.target_map = Some(t),
-                        Err(e) => {
-                            return Step::Failed(
-                                e.into_iter().map(|x| format!("{p}: {x}")).collect(),
-                            );
-                        }
-                    }
-                }
                 let refs: Vec<&str> = tops.iter().map(String::as_str).collect();
                 let d = match load(&self.files, &self.absent, &refs) {
                     Ok(d) => d,

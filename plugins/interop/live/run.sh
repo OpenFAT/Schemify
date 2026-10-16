@@ -3,7 +3,7 @@
 # Virtuoso and this repository's Rust toolchain. See README.md next to this file.
 #
 #   plugins/interop/live/run.sh [--env FILE] [--cdslib FILE] [--work DIR] [--cell LIB/CELL]...
-#       [--lib LIB]... [--project DIR]... [--pdk LIB[/CELL]] [--callbacks] [--retarget MAP]
+#       [--lib LIB]... [--project DIR]... [--pdk LIB[/CELL]] [--callbacks]
 #       [--step STEP]
 #
 # --env FILE sources a csh environment file (a site's cadence.csh) through csh first and
@@ -28,7 +28,6 @@ step=all
 cells=()
 projects=()
 pdk=""
-target=""
 callbacks=0
 virtuoso="${SFYLIVE_VIRTUOSO:-virtuoso -nograph -restore}"
 timeout_s="${SFYLIVE_TIMEOUT:-3600}"
@@ -59,7 +58,6 @@ while (($#)); do
     --project) [[ -d "$2" ]] || die "no project directory $2"; projects+=("$(cd "$2" && pwd)"); shift 2 ;;
     --pdk) pdk="$2"; shift 2 ;;
     --callbacks) callbacks=1; shift ;;
-    --retarget) target="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"; shift 2 ;;
     --step) step="$2"; shift 2 ;;
     -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument $1 (see --help)" ;;
@@ -78,7 +76,7 @@ host() {
   command -v cargo >/dev/null || die "cargo not found: the $1 step needs the Rust toolchain (README.md: Requirements)"
   SCHEMIFY_LIVE_DIR="$work" SCHEMIFY_LIVE_STEP="$1" \
   SCHEMIFY_LIVE_CELLS="${cells[*]-}" SCHEMIFY_LIVE_PROJECTS="${projects[*]-}" SCHEMIFY_LIVE_PDK="$pdk" \
-  SCHEMIFY_LIVE_TARGET="$target" SCHEMIFY_LIVE_CALLBACKS="$callbacks" \
+  SCHEMIFY_LIVE_CALLBACKS="$callbacks" \
     cargo test --quiet --manifest-path "$repo/plugins/Cargo.toml" -p interop \
       --test virtuoso_live live_step -- --ignored --exact --nocapture
 }

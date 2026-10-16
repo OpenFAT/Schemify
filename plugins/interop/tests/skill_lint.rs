@@ -16,9 +16,6 @@ use skill::{V, defined_by_interp, read_all};
 /// (builtin, min args, max args or None for any), per the SKILL Language Reference.
 const BUILTIN_ARITY: &[(&str, usize, Option<usize>)] = &[
     ("list", 0, None),
-    ("log", 1, Some(1)),
-    ("expt", 2, Some(2)),
-    ("createDir", 1, Some(1)),
     ("cons", 2, Some(2)),
     ("car", 1, Some(1)),
     ("cdr", 1, Some(1)),
@@ -478,7 +475,7 @@ fn the_lint_catches_what_it_should() {
 }
 
 /// Procedures active on the stack while a PDK CDF callback runs (`evalstring` under
-/// `SfyCallbacks`): from `SfyImport` and from `SfyRetarget` (spec §5.3), and the probe's.
+/// `SfyCallbacks`): from `SfyImport` (spec §5.3), and the probe's.
 const CALLBACK_STACK: &[&str] = &[
     "SfyImport",
     "SfyLoadCv",
@@ -488,8 +485,6 @@ const CALLBACK_STACK: &[&str] = &[
     "SfyCallbacks",
     "SfyEvalCallback",
     "SfySetParams",
-    "SfyRtRun",
-    "SfyRtPlace",
     "SfyProbe",
 ];
 

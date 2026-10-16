@@ -61,7 +61,6 @@ pub mod notes;
 pub mod profile;
 pub mod remap;
 pub mod report;
-pub mod retarget;
 pub mod sfyx;
 pub mod skill;
 pub mod spice;

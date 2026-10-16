@@ -34,12 +34,11 @@
 
 ;; Prints PASS or the first differing records and writes the same to
 ;; /tmp/sfy_selftest.txt; returns t on PASS. Files go to /tmp (sfy_selftest_a.sfyx,
-;; sfy_selftest_b.sfyx and their .log). Also runs the retarget math on its built-in vectors
-;; when sfy_retarget.il defines SfyRetargetSelfTest. Refuses a scratchLib that is lib (the
+;; sfy_selftest_b.sfyx and their .log). Refuses a scratchLib that is lib (the
 ;; load overwrites) or is not in cds.lib, before touching anything.
 (procedure (SfySelfTest lib cell scratchLib)
   (let ((a "/tmp/sfy_selftest_a.sfyx") (b "/tmp/sfy_selftest_b.sfyx") (ok t) (msg nil)
-        (out nil) (r nil))
+        (out nil))
     (setq out (outfile "/tmp/sfy_selftest.txt" "w"))
     (setq msg
       (cond
@@ -72,11 +71,6 @@
       (when msg
         (setq ok nil)
         (SfySelfNote out (sprintf nil "  the dumps differ:\n  %s" msg))))
-    (when (fboundp 'SfyRetargetSelfTest)
-      (setq r (errset (SfyRetargetSelfTest) t))
-      (unless (and r (car r))
-        (setq ok nil)
-        (SfySelfNote out "  retarget math FAILED")))
     (SfySelfNote out (sprintf nil "SfySelfTest: %s" (if ok "PASS" "FAIL")))
     (when out (close out))
     ok))

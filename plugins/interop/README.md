@@ -40,7 +40,7 @@ the editor, the same conversions run from the command line:
 ```
 cargo run --manifest-path plugins/Cargo.toml -p interop --features cli --bin schemify-interop -- <command>
 
-schemify-interop virtuoso-export <project> <cell-file>... -o <file.sfyx> [--lib L=V]... [--core-cells] [--retarget] [--target <map.retarget>]
+schemify-interop virtuoso-export <project> <cell-file>... -o <file.sfyx> [--lib L=V]... [--core-cells]
 schemify-interop virtuoso-import <project> <file.sfyx> [--lib L=V]... [--analoglib]
 schemify-interop xschem-export   <project> <cell-file>... -o <dir>
 schemify-interop xschem-import   <lib-dir>... -o <out-dir> [...]        (spec import.md)
@@ -72,7 +72,6 @@ the files are what to send back.
 - Open one schematic for editing and one maestro view by hand, then close them. That clears
   any "use next license level?" or PDK first-use dialog now, not halfway through a step. Answer
   "Always" if asked.
-- Indent `.retarget` maps with spaces.
 
 **Steps**
 
@@ -100,7 +99,7 @@ CIW shows a `schemify: loading …` line before each cellview, so `CDS.log` show
 stopped.
 
 **Send back:** `/tmp/sfy_probe.txt`, `/tmp/sfy_selftest.txt`, `/tmp/sfy_selftest_*.sfyx` and
-their `.log` files, every other `.sfyx.log` and `.retarget.log` you produced, and `~/CDS.log`
+their `.log` files, every other `.sfyx.log` you produced, and `~/CDS.log`
 (or the newest `CDS.log.N`).
 
 ## Workflows
@@ -172,48 +171,13 @@ setup headless and prints every output to `<cell>/<output>.txt` (sweeps as `para
 output with `vs <other output>` is also printed as a `waveVsWave` plot):
 
 ```
-SfyImport("/abs/ex.sfyx")                      ; in the CIW (and SfyRetarget, below)
+SfyImport("/abs/ex.sfyx")                      ; in the CIW
 cd ocean && ocean -nograph < dc_vgs.ocn         ; in a shell
 ```
 
 Importing goes the other way. A comma list comes back as a `lin`/`log`/`values` sweep, and the
 analyses come back as one code block named after the test. Monte Carlo and optimizer records,
 configs, and anything without a maestro form stay on the Schemify side; the report lists them.
-
-### PDK-agnostic sizing (gm/Id retarget)
-
-Size transistors in Schemify on a sample PDK with the `gmid` plugin. Write widths as
-`gmid.w("nfet", gm_id, L, Id)`, directly or through a docs variable. Export with
-`--retarget`: those transistors travel as *intent* (gm/Id, L, Id, VDS, fingers) instead of a
-width, as placeholders with their connections.
-
-On the machine with the real PDK, write a target map `tsmc.retarget` that binds each class to
-a PDK cell and gives its Spectre model line, supply and grids (spec §10.2). Then run:
-
-```
-SfyImport("/abs/amp.sfyx" ?lib "myLib")
-SfyRetarget("/abs/amp.sfyx" "/abs/tsmc.retarget" ?lib "myLib")
-```
-
-Give both the same `?lib` (leave it out of both to keep the dump's library names). The map
-must say what the kit's width parameter means (`width total` for TSMC's `w`, `width finger`
-where `w` is one finger) and name the parameter the Edit Properties form edits (`param nf
-fingers` on kits that lock `nf`). PDK CDF callbacks run by default, as the form runs them;
-`?callbacks nil` skips them. Each placed device's schematic is checked, saved and closed; a
-placement that fails is removed and its reason logged.
-
-`SfyRetarget` characterizes each class with Spectre (through OCEAN) at the lengths the design
-uses, then solves each width by the same gm/Id lookup the `gmid` plugin uses. It places the
-real devices with those widths and draws their connections. `<file>.retarget.log` records the
-solved W, fingers, L, VGS and the gm/Id residual for each device. The target PDK never leaves
-that machine.
-
-Every other `tech:nmos`/`tech:pmos` instance travels as a fixed-size placeholder (its `w l nf
-m`, as design-variable expressions) that `SfyRetarget` places on the same PDK cell. The map's
-`fingerw_max`, `fingerw_min` and `split_above` set the finger rule (`fingerw_max 10u fingerw_min
-5u split_above 10u`: W > 10 µm splits into equal fingers of at least 5 µm). A `corner tt` record
-in the map (`lib /pdk/models.scs tt_lib`) gives the server's model files; pass the map to the
-export with `--target` so maestro and the OCEAN scripts use them.
 
 ### Different libraries for the same devices (`interop.map`)
 
@@ -271,8 +235,7 @@ No Cadence tool runs here, so:
 | `src/sfyx.rs` | the exchange-file codec |
 | `src/virtuoso/` | `write` (export), `read` (import), `ael` (values), `devices` (analogLib table), `ade` (maestro) |
 | `src/merge.rs`, `src/remap.rs`, `src/map.rs` | keeping Schemify-only data, re-mastering, `interop.map` |
-| `src/retarget.rs` | gm/Id intent and the reference solver |
 | `src/xschem_out.rs`, `src/translate.rs` … | xschem export and import |
 | `src/job.rs` | one conversion as pure steps, driven by `src/plugin.rs` (editor) and `src/cli.rs` |
 | `skill/*.il` | the parts of `schemify.il` |
-| `tests/` | `virtuoso_rust`, `virtuoso_skill`, `skill_lint`, `virtuoso_e2e`, `retarget`, `ade`, `exercise1` (a course's benches: maestro + OCEAN goldens), `xschem_export`, and the xschem import suites |
+| `tests/` | `virtuoso_rust`, `virtuoso_skill`, `skill_lint`, `virtuoso_e2e`, `ade`, `exercise1` (a course's benches: maestro + OCEAN goldens), `xschem_export`, and the xschem import suites |
