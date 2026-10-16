@@ -15,6 +15,9 @@
 ;; ar    the trap: zq (number) and nn (count) are its declared sizing params; zq_area is
 ;;       editable with a callback (it sets zq back from the area) but zq moves it: derived,
 ;;       like qa = zq_area*nn.
+;; wide  declared w and l (ad = w times a table of l) and twelve boolean layout options
+;;       that each move lx (how many are on): 14 inputs, a rule's search reads only the
+;;       inputs whose probe moved its param.
 ;; zeta and sel declare their inputs in paramLabelSet; tab and chaos declare none (the
 ;; influence graph's sources are their inputs).
 ;; sel   inputs gx (number), mode (a choice of a b c) and dbl (a boolean); pz is 3gx, 5gx or
@@ -78,6 +81,13 @@
   (zpdkSet "zq" (sprintf nil "%g" (quotient (atof (zpdkGet "zq_area")) 2e-07)))
   (arCB))
 
+(procedure (wideCB)
+  (let ((w (atof (zpdkGet "w"))) (l (atof (zpdkGet "l"))) (n 0))
+    (zpdkSet "ad" (sprintf nil "%g" (times w (if (lessp l 3e-08) 5e-08 6e-08))))
+    (foreach o (list "o1" "o2" "o3" "o4" "o5" "o6" "o7" "o8" "o9" "o10" "o11" "o12") (when (zpdkGet o) (setq n (add1 n))))
+    (zpdkSet "lx" (sprintf nil "%d" n))
+    t))
+
 (procedure (SfyFixCharPdk)
   (let ((cdf nil))
     (SfyFixSymbol "zpdk" "zeta" (list (list "A" "inputOutput" 0 40) (list "B" "inputOutput" 0 -40)))
@@ -124,5 +134,16 @@
     (cdfCreateParam cdf ?name "qa" ?type "string" ?defValue "2e-13" ?prompt "qa" ?parseAsNumber "yes")
     (setSGq cdf (list nil 'spectre (list nil 'termOrder '(A B) 'instParameters '(zq nn zq_area qa))) simInfo)
     (setSGq cdf "-model zq nn" paramLabelSet)
+    (cdfSaveCDF cdf)
+    (SfyFixSymbol "zpdk" "wide" (list (list "A" "inputOutput" 0 40) (list "B" "inputOutput" 0 -40)))
+    (setq cdf (SfyFixCdf "zpdk" "wide"))
+    (cdfCreateParam cdf ?name "w" ?type "string" ?defValue "1e-06" ?prompt "w" ?parseAsNumber "yes" ?callback "(wideCB)")
+    (cdfCreateParam cdf ?name "l" ?type "string" ?defValue "2e-08" ?prompt "l" ?parseAsNumber "yes" ?callback "(wideCB)")
+    (foreach o (list "o1" "o2" "o3" "o4" "o5" "o6" "o7" "o8" "o9" "o10" "o11" "o12")
+      (cdfCreateParam cdf ?name o ?type "boolean" ?defValue nil ?prompt o ?callback "(wideCB)"))
+    (cdfCreateParam cdf ?name "ad" ?type "string" ?defValue "5e-14" ?prompt "ad" ?parseAsNumber "yes")
+    (cdfCreateParam cdf ?name "lx" ?type "string" ?defValue "0" ?prompt "lx")
+    (setSGq cdf (list nil 'spectre (list nil 'termOrder '(A B) 'instParameters '(w l ad lx))) simInfo)
+    (setSGq cdf "-model w l" paramLabelSet)
     (cdfSaveCDF cdf)
     t))

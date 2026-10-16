@@ -585,12 +585,19 @@ impl<'a> Grid<'a> {
     }
 
     /// The simplest body that fits `y` over `idx`, trying in order: one value, a step
-    /// table, a table times a monomial, an affine form; `skip` is an input left out.
-    fn simplest(&self, idx: &[usize], y: &[(f64, f64)], skip: Option<usize>) -> Option<Body> {
+    /// table, a table times a monomial, an affine form, over the inputs `rel` allows;
+    /// `skip` is an input left out.
+    fn simplest(
+        &self,
+        idx: &[usize],
+        y: &[(f64, f64)],
+        skip: Option<usize>,
+        rel: &[bool],
+    ) -> Option<Body> {
         let nums: Vec<usize> = self
             .numeric()
             .into_iter()
-            .filter(|&k| Some(k) != skip)
+            .filter(|&k| Some(k) != skip && rel[k])
             .collect();
         let xs: Vec<Option<usize>> = std::iter::once(None)
             .chain(nums.iter().map(|&k| Some(k)))
@@ -877,7 +884,8 @@ impl Device {
                 g.ok.iter()
                     .map(|&i| printed_tol(&self.points[i].values[k]))
                     .collect();
-            let rule = y.and_then(|y| self.infer(&g, &all, &y));
+            let rel = self.movers(d);
+            let rule = y.and_then(|y| self.infer(&g, &all, &y, &rel));
             let src = rule.map(|r| r.expr(self)).filter(|src| {
                 g.ok.iter().all(|&i| {
                     let p = &self.points[i];
@@ -903,13 +911,30 @@ impl Device {
         rules
     }
 
-    fn infer(&self, g: &Grid<'_>, idx: &[usize], y: &[(f64, f64)]) -> Option<Rule> {
-        if let Some(b) = g.simplest(idx, y, None) {
+    /// The inputs a rule for netlisted `name` (or the legality of input `name`) may read:
+    /// those whose discovery probe moved it. Every input when there are at most 8 or no
+    /// probes: then the search is small, and a probe whose nudge happened to leave a value
+    /// alone (inside one step of a table) loses nothing.
+    fn movers(&self, name: &str) -> Vec<bool> {
+        let few = self.inputs.len() <= 8 || self.probes.is_empty();
+        self.inputs
+            .iter()
+            .map(|i| {
+                few || self
+                    .probes
+                    .iter()
+                    .any(|p| &p.name == i && p.changed.iter().any(|c| c == name))
+            })
+            .collect()
+    }
+
+    fn infer(&self, g: &Grid<'_>, idx: &[usize], y: &[(f64, f64)], rel: &[bool]) -> Option<Rule> {
+        if let Some(b) = g.simplest(idx, y, None, rel) {
             return Some(Rule::One(b));
         }
         // A multiplexer: one body per value of a boolean or choice input.
         for (s, kind) in self.kinds.iter().enumerate() {
-            if !matches!(kind, Kind::Bool | Kind::Choice) {
+            if !rel[s] || !matches!(kind, Kind::Bool | Kind::Choice) {
                 continue;
             }
             let mut vals: Vec<&str> = idx
@@ -929,7 +954,7 @@ impl Device {
                         .copied()
                         .filter(|&i| self.points[g.ok[i]].back[s] == *v)
                         .collect();
-                    Some(((*v).to_owned(), g.simplest(&part, y, Some(s))?))
+                    Some(((*v).to_owned(), g.simplest(&part, y, Some(s), rel)?))
                 })
                 .collect();
             if let Some(mut arms) = arms {
@@ -975,11 +1000,12 @@ impl Device {
     /// differ by it; `None` when no pattern explains every point.
     fn legality(&self, g: &Grid<'_>, k: usize) -> Option<String> {
         let all: Vec<usize> = (0..g.ok.len()).collect();
-        if let Some(src) = self.legal_over(g, k, &all) {
+        let rel = self.movers(&self.inputs[k]);
+        if let Some(src) = self.legal_over(g, k, &all, &rel) {
             return Some(src);
         }
         for (s, kind) in self.kinds.iter().enumerate() {
-            if s == k || !matches!(kind, Kind::Bool | Kind::Choice) {
+            if s == k || !rel[s] || !matches!(kind, Kind::Bool | Kind::Choice) {
                 continue;
             }
             let key = |i: usize| -> String {
@@ -1004,7 +1030,7 @@ impl Device {
                     if part.iter().all(|&i| kept(self, &self.points[g.ok[i]], k)) {
                         Some("true".into())
                     } else {
-                        self.legal_over(g, k, &part)
+                        self.legal_over(g, k, &part, &rel)
                     }
                 })
                 .collect();
@@ -1036,10 +1062,10 @@ impl Device {
 
     /// The legality rule over the points `idx` with the fewest terms, input `k` taken as
     /// it is and over each count input (a floor per finger).
-    fn legal_over(&self, g: &Grid<'_>, k: usize, idx: &[usize]) -> Option<String> {
+    fn legal_over(&self, g: &Grid<'_>, k: usize, idx: &[usize], rel: &[bool]) -> Option<String> {
         let per = std::iter::once(None).chain(
             (0..self.inputs.len())
-                .filter(|&n| n != k && self.kinds[n] == Kind::Count)
+                .filter(|&n| n != k && rel[n] && self.kinds[n] == Kind::Count)
                 .map(Some),
         );
         let mut best: Option<(usize, String)> = None;
@@ -1186,11 +1212,23 @@ impl Device {
 /// SKILL value lists in input order for `SfyCharacterize ?points` (`nil`: the default):
 /// three points, each number input at an odd multiple of its default inside the range read
 /// back (×2.9, ×0.62, ×6.7), each count at 5 6 7 (at most the largest measured), each
-/// boolean or choice cycling through the values measured.
-pub fn holdout_points(d: &Device) -> Vec<String> {
+/// boolean or choice cycling through the values measured. Only the inputs some rule reads
+/// move; the others stay at their defaults.
+pub fn holdout_points(d: &Device, rules: &Rules) -> Vec<String> {
     let ok: Vec<&Point> = d.points.iter().filter(|p| p.status.is_ok()).collect();
+    let read: Vec<String> = rules
+        .computed
+        .iter()
+        .chain(&rules.legal)
+        .filter_map(|(_, s)| schemify_expr::Program::compile(s, schemify_expr::Mode::Scalar).ok())
+        .flat_map(|p| p.idents().map(str::to_owned).collect::<Vec<_>>())
+        .collect();
     let mut cols: Vec<[String; 3]> = Vec::new();
     for (k, kind) in d.kinds.iter().enumerate() {
+        if !read.contains(&d.inputs[k]) {
+            cols.push(["nil", "nil", "nil"].map(str::to_owned));
+            continue;
+        }
         let backs: Vec<f64> = ok.iter().filter_map(|p| ael_num(&p.back[k])).collect();
         let (lo, hi) = backs
             .iter()

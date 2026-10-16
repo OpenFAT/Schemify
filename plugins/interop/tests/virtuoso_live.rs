@@ -1212,7 +1212,7 @@ fn mid(work: &Path, o: &Opts) {
                         if r.computed.is_empty() {
                             continue;
                         }
-                        let pts = interop::virtuoso::characterize::holdout_points(&d);
+                        let pts = interop::virtuoso::characterize::holdout_points(&d, &r);
                         s.call(format!(
                             "(SfyLiveCharacterizeCheck {} {} {} {} (list {}))",
                             q(&d.lib),

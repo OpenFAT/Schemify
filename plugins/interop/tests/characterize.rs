@@ -199,7 +199,7 @@ fn rules_are_found_by_role_and_reproduce_every_point() {
     }
     // The holdout: points no sweep measured, through the same callbacks.
     for (d, r) in devs.iter().zip(&rules).take(2) {
-        let pts = characterize::holdout_points(d);
+        let pts = characterize::holdout_points(d, r);
         let mut i = skill::virtuoso(&["zpdk", "scratch"]);
         i.load(BUILD).unwrap();
         i.load(CHARPDK).unwrap();
@@ -625,4 +625,33 @@ fn a_param_a_sizing_input_moves_is_derived_even_when_editable() {
         "{log}"
     );
     assert!(!log.contains("info zpdk/zeta"), "{log}");
+}
+
+/// Many inputs (a live transistor declares dozens of layout options): the declared sizing
+/// params are swept first, a rule reads only the inputs whose probe moved its param, and
+/// the holdout moves only the inputs a rule reads.
+#[test]
+fn a_rule_reads_only_the_inputs_that_move_its_param() {
+    let d = characterize(&["wide"], "").remove(0);
+    assert_eq!(d.inputs.len(), 14);
+    assert_eq!(names(&d.inputs[..2]), ["w", "l"]);
+    assert!(d.points.len() <= 4000);
+    let r = d.rules();
+    let ad = &r
+        .computed
+        .iter()
+        .find(|c| c.0 == "ad")
+        .expect("a rule for ad")
+        .1;
+    assert_eq!(ad, "w*steps(l, 5e-9, 5e-8, 3e-8, 6e-8, 2e-6)");
+    let pts = characterize::holdout_points(&d, &r);
+    for p in &pts {
+        let vals: Vec<&str> = p
+            .trim_start_matches("(list ")
+            .trim_end_matches(')')
+            .split(' ')
+            .collect();
+        assert!(vals[2..].iter().all(|v| *v == "nil"), "{p}");
+        assert!(vals[..2].iter().all(|v| *v != "nil"), "{p}");
+    }
 }

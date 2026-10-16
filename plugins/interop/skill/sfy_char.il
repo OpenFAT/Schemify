@@ -122,7 +122,8 @@
       (setq probes (cons (list (car c) (cadr c) (car (car r)) (cadr r) changed) probes)))
     (setq probes (reverse probes))
     (if names
-      (list (setof c cands (member (car c) names)) probes "named")
+      (let ((ins (setof c cands (member (car c) names))))
+        (list ins probes "named" (length ins)))
       (SfyCharPick cands probes (SfyCharLabels cdf)))))
 
 ;; The CDF's paramLabelSet names (a leading "-" stripped): the PDK's own declared sizing
@@ -151,7 +152,8 @@
 ;; an edge; then every other candidate with an edge that no seed moves (a param a seed
 ;; moves is derived, even when it is editable). Without a useful label set: the sources of
 ;; the graph (no edge into the strongly connected component from outside), at most 6.
-;; Returns (inputs probes how), how "labels" or "sources".
+;; Returns (inputs probes how seeds): the seeds first, then the others (CDF order each);
+;; how "labels" or "sources"; seeds the count of seeds (every input for sources).
 (procedure (SfyCharPick cands probes labels)
   (let ((edges nil) (seeds nil) (moved nil) (ins nil) (rx nil) (n 0))
     (foreach pr probes
@@ -163,9 +165,10 @@
         (foreach s seeds
           (foreach y (cadr (assoc (car s) edges))
             (unless (member y moved) (setq moved (cons y moved)))))
-        (list (setof c cands (or (member c seeds)
-                                 (and (assoc (car c) edges) (not (member (car c) moved)))))
-              probes "labels"))
+        (list (append seeds
+                      (setof c cands (and (not (member c seeds)) (assoc (car c) edges)
+                                          (not (member (car c) moved)))))
+              probes "labels" (length seeds)))
       (t
         (foreach c cands
           (when (and (assoc (car c) edges) (lessp n 6))
@@ -176,7 +179,7 @@
                                         (not (member (car e) rx))))
               (setq ins (cons c ins))
               (setq n (add1 n)))))
-        (list (reverse ins) probes "sources")))))
+        (list (reverse ins) probes "sources" n)))))
 
 ;; Per-cell sweep state: the port, cellview, master, inputs, netlisted names, and the
 ;; points left in the budget (spec 8.3: at most 4000 a device).
@@ -310,18 +313,24 @@
       ("bool" (if (lessp (SfyCharRand) 0.5) "t" "nil"))
       (t (nth (fix (times (SfyCharRand) (length (cadddr i)))) (cadddr i))))))
 
-;; The cross points: every pair of inputs at their off values (the others at defaults),
-;; then ten random points. A rule fitted from the axes must reproduce them all.
-(procedure (SfyCharCross span)
-  (let ((n (length sfyCharIns)))
-    (for a 0 (sub1 n)
-      (for b (add1 a) (sub1 n)
-        (foreach va (SfyCharOff (nth a sfyCharIns))
-          (foreach vb (SfyCharOff (nth b sfyCharIns))
-            (SfyCharTake (SfyCharTake1 (SfyCharAt a va) b vb))))))
+;; The cross points of inputs lo..hi-1: each paired with every earlier input at their off
+;; values (the others at defaults), so the pairs among the seeds come first.
+(procedure (SfyCharCross lo hi)
+  (for b lo (sub1 hi)
+    (for a 0 (sub1 b)
+      (foreach va (SfyCharOff (nth a sfyCharIns))
+        (foreach vb (SfyCharOff (nth b sfyCharIns))
+          (SfyCharTake (SfyCharTake1 (SfyCharAt a va) b vb)))))))
+
+;; Ten random points over the first s inputs (the seeds; the others at defaults). A rule
+;; fitted from the axes must reproduce them all.
+(procedure (SfyCharRandom span s)
+  (let ((k 0))
     (setq sfyCharSeed 1015)
     (for r 1 10
-      (SfyCharTake (mapcar (lambda (i) (SfyCharAny i span)) sfyCharIns)))))
+      (setq k 0)
+      (SfyCharTake (mapcar (lambda (i) (setq k (add1 k)) (and (leqp k s) (SfyCharAny i span)))
+                           sfyCharIns)))))
 
 ;; vals with input k set to v.
 (procedure (SfyCharTake1 vals k v)
@@ -362,12 +371,16 @@
               (SfyCharPoint port cv m ins outs pt)))
           (t
             (let ((sfyCharPort port) (sfyCharCv cv) (sfyCharM m) (sfyCharIns ins)
-                  (sfyCharOuts outs) (sfyCharLeft 4000) (sfyCharSeed 1015) (k 0))
+                  (sfyCharOuts outs) (sfyCharLeft 4000) (sfyCharSeed 1015) (k 0)
+                  (s (cadddr found)) (n (length ins)))
+              ;; The seeds' axes and pairs first: the budget goes to them before the rest.
               (SfyCharTake (mapcar (lambda (i) nil) ins))
               (foreach i ins
+                (when (equal k s) (SfyCharCross 1 s))
                 (SfyCharAxis i k span)
                 (setq k (add1 k)))
-              (SfyCharCross span)
+              (if (lessp s n) (SfyCharCross s n) (SfyCharCross 1 n))
+              (SfyCharRandom span s)
               (unless (SfyCharBudget)
                 (SfyLog (sprintf nil "info %s/%s: the 4000-point budget ran out" lib cell))))))
         (SfyCount "characterized")
