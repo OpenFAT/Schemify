@@ -9,6 +9,7 @@ mod ngspice;
 mod perf;
 mod reference;
 mod semantics;
+mod steps;
 mod template;
 mod text;
 

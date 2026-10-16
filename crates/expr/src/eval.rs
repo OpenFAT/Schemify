@@ -642,6 +642,61 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut Vec<u8>) -> Result<V, Erro
                 Ok(V::Num(m))
             }
         }
+        // A measured step table (PDK geometry rules, D12 as amended 2026-10-15): `steps(x,
+        // b0, y0, b1, y1, …, bn)` is yi for bi ≤ x < bi+1 and bn itself, an error anywhere
+        // else, so a point outside what was measured is never extrapolated. Breakpoints
+        // compare with a relative tolerance of 1e-9 (a length computed from other params).
+        Builtin::Steps => {
+            if !args.len().is_multiple_of(2) {
+                return Err(Error::new(
+                    Code::X008,
+                    Span::default(),
+                    "`steps` takes x, then breakpoint/value pairs, then the last breakpoint",
+                ));
+            }
+            let x = num(a0)?;
+            let bounds: Vec<f64> = args[1..]
+                .iter()
+                .step_by(2)
+                .map(|v| num(*v))
+                .collect::<Result<_, _>>()?;
+            if bounds.windows(2).any(|w| w[0] >= w[1]) {
+                return Err(Error::new(
+                    Code::X003,
+                    Span::default(),
+                    "`steps` breakpoints must increase",
+                ));
+            }
+            let near = |a: f64, b: f64| (a - b).abs() <= 1e-9 * a.abs().max(b.abs());
+            let last = *bounds.last().expect("at least two breakpoints");
+            let k = if near(x, last) {
+                Some(bounds.len() - 2)
+            } else {
+                (0..bounds.len() - 1).find(|&k| {
+                    (x > bounds[k] || near(x, bounds[k]))
+                        && x < bounds[k + 1]
+                        && !near(x, bounds[k + 1])
+                })
+            };
+            match k {
+                Some(k) => {
+                    let y = args[2 + 2 * k];
+                    debug_assert!(2 + 2 * k < args.len() - 1);
+                    match y {
+                        V::Int(_) | V::Num(_) => Ok(y),
+                        v => Err(bad(v)),
+                    }
+                }
+                None => Err(Error::new(
+                    Code::X010,
+                    Span::default(),
+                    format!(
+                        "`steps`: {x} is outside the measured range {}..{last}",
+                        bounds[0]
+                    ),
+                )),
+            }
+        }
         Builtin::Clamp => match (a0, args[1], args[2]) {
             (V::Int(x), V::Int(lo), V::Int(hi)) => Ok(V::Int(x.max(lo).min(hi))),
             (x, lo, hi) => Ok(V::Num(num(x)?.max(num(lo)?).min(num(hi)?))),

@@ -107,7 +107,7 @@ pub(crate) struct Name {
 }
 
 /// Builtin functions (spec §5). Discriminants index [`BUILTINS`]; everything
-/// from `V` on is calculator-only.
+/// from `V` up to `Op` is calculator-only (`Steps`, appended later, is scalar).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Builtin {
     Abs,
@@ -166,12 +166,13 @@ pub(crate) enum Builtin {
     GainMargin,
     PhaseMargin,
     Op,
+    Steps,
 }
 
 const VARIADIC: u32 = u32::MAX;
 
 /// `(name, builtin, min args, max args)`, in discriminant order.
-pub(crate) const BUILTINS: [(&str, Builtin, u32, u32); 56] = [
+pub(crate) const BUILTINS: [(&str, Builtin, u32, u32); 57] = [
     ("abs", Builtin::Abs, 1, 1),
     ("sqrt", Builtin::Sqrt, 1, 1),
     ("exp", Builtin::Exp, 1, 1),
@@ -228,6 +229,7 @@ pub(crate) const BUILTINS: [(&str, Builtin, u32, u32); 56] = [
     ("gain_margin", Builtin::GainMargin, 1, 1),
     ("phase_margin", Builtin::PhaseMargin, 1, 1),
     ("op", Builtin::Op, 2, 2),
+    ("steps", Builtin::Steps, 4, VARIADIC),
 ];
 
 impl Builtin {
@@ -255,7 +257,8 @@ impl Builtin {
     }
 
     pub(crate) fn calc_only(self) -> bool {
-        self as u8 >= Builtin::V as u8
+        // `steps` was appended after the calculator block (discriminants are stable).
+        self as u8 >= Builtin::V as u8 && self != Builtin::Steps
     }
 }
 
