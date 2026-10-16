@@ -13,6 +13,7 @@ use crate::notes::Notes;
 
 pub mod ade;
 pub mod ael;
+pub mod characterize;
 pub mod devices;
 pub mod read;
 pub mod write;

@@ -6,6 +6,7 @@ pub const PARTS: &[(&str, &str)] = &[
     ("sfy_io.il", include_str!("../skill/sfy_io.il")),
     ("sfy_cells.il", include_str!("../skill/sfy_cells.il")),
     ("sfy_ade.il", include_str!("../skill/sfy_ade.il")),
+    ("sfy_char.il", include_str!("../skill/sfy_char.il")),
     ("sfy_selftest.il", include_str!("../skill/sfy_selftest.il")),
 ];
 
@@ -15,7 +16,7 @@ pub const PROBE: &str = include_str!("../skill/sfy_probe.il");
 /// `schemify.il`: every part, each preceded by a comment naming it.
 pub fn schemify_il() -> String {
     let mut out = String::from(
-        ";; schemify.il: Schemify <-> Virtuoso bridge (interop plugin). Load with\n;; (load \"/absolute/path/schemify.il\"); entry points: SfyExport SfyExportLib SfyImport SfySelfTest.\n",
+        ";; schemify.il: Schemify <-> Virtuoso bridge (interop plugin). Load with\n;; (load \"/absolute/path/schemify.il\"); entry points: SfyExport SfyExportLib SfyImport SfyCharacterize SfySelfTest.\n",
     );
     for (name, text) in PARTS {
         out.push_str(&format!("\n;; ---- {name}\n"));

@@ -449,49 +449,38 @@ fn cell_roles(text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// INFO lines from the PDK sweep table (`SfyLivePdkSweep`): of the netlisted parameters,
-/// which equal an input (w, l, fingers), which change with the inputs (derived by the PDK's
-/// callbacks, the ones Schemify cannot compute itself), and which stay constant. Names only:
-/// the values stay in the table, on the user's machine.
-fn sweep_summary(tsv: &str) -> Vec<String> {
-    let mut rows = tsv.lines().map(|l| l.split('\t').collect::<Vec<&str>>());
-    let Some(head) = rows.next() else {
-        return vec!["INFO pdk.derived empty table".into()];
-    };
-    const FIXED: usize = 5; // point w l fingers status
-    let ok: Vec<Vec<&str>> = rows
-        .filter(|r| r.len() == head.len() && r[4] == "ok")
-        .collect();
-    if ok.len() < 2 || head.len() <= FIXED {
-        return vec![format!(
-            "INFO pdk.derived {} usable point(s): nothing to compare",
-            ok.len()
-        )];
+/// INFO lines from a characterization file (`SfyCharacterize`, spec §8.3): per device, of
+/// the netlisted parameters, which change with the inputs (derived by the PDK's callbacks),
+/// which are inputs, which stay constant. Names and counts only: the values stay in the
+/// file, on the user's machine.
+fn characterization_summary(text: &str) -> Vec<String> {
+    match interop::virtuoso::characterize::read(text) {
+        Err(e) => vec![format!("FAIL pdk.derived the characterization does not read: {e}")],
+        Ok(devs) => devs
+            .iter()
+            .flat_map(|d| {
+                let s = d.summary();
+                [
+                    format!(
+                        "INFO pdk.derived {}/{}: {} points ({} with a failed callback); {} netlisted parameter(s) change with the inputs beyond the inputs themselves: {}",
+                        d.lib,
+                        d.cell,
+                        s.ok,
+                        s.failed,
+                        s.derived.len(),
+                        s.derived.join(" ")
+                    ),
+                    format!(
+                        "INFO pdk.constant {}/{}: {} netlisted parameter(s) keep one value; inputs: {}",
+                        d.lib,
+                        d.cell,
+                        s.constant.len(),
+                        s.inputs.join(" ")
+                    ),
+                ]
+            })
+            .collect(),
     }
-    let (mut inputs, mut derived, mut constant) = (Vec::new(), Vec::new(), Vec::new());
-    for (k, name) in head.iter().enumerate().skip(FIXED) {
-        let col: Vec<&str> = ok.iter().map(|r| r[k]).collect();
-        if col.iter().all(|v| *v == col[0]) {
-            constant.push(*name);
-        } else if (1..4).any(|i| head[i] == *name) {
-            inputs.push(*name);
-        } else {
-            derived.push(*name);
-        }
-    }
-    vec![
-        format!(
-            "INFO pdk.derived {} points; {} netlisted parameter(s) change with w/l/fingers beyond the inputs themselves: {}",
-            ok.len(),
-            derived.len(),
-            derived.join(" ")
-        ),
-        format!(
-            "INFO pdk.constant {} netlisted parameter(s) stay at one value over the sweep; inputs: {}",
-            constant.len(),
-            inputs.join(" ")
-        ),
-    ]
 }
 
 /// CDL text without its `$[model]` tokens.
@@ -670,14 +659,14 @@ fn prepare(work: &Path, o: &Opts) {
         q_opt(pdk_cell),
         q(&path_str(&out.join("sfy_probe.txt")))
     ));
-    // The PDK sweep (spec §8.2): what the PDK's callbacks derive from w, l and fingers.
+    // The device's characterization (spec §8.3): what the PDK's callbacks derive.
     if let (Some(l), Some(c)) = (pdk_lib, pdk_cell) {
         s.call(format!(
-            "(SfyLivePdkSweep {} {} {} {})",
+            "(SfyLiveCharacterize {} {} {} {})",
             q(l),
             q(c),
             q(SCRATCH),
-            q(&path_str(&out.join("pdk_derived.tsv")))
+            q(&path_str(&out.join("pdk_char.sfyx")))
         ));
     }
     for (name, mode, file, dl) in &loads {
@@ -1033,9 +1022,9 @@ fn mid(work: &Path, o: &Opts) {
         }
     }
 
-    // The PDK sweep's table: which netlisted parameters the callbacks derive (§8.2).
-    if let Some(tsv) = read(&out.join("pdk_derived.tsv")) {
-        lines.extend(sweep_summary(&tsv));
+    // The characterization: which netlisted parameters the callbacks derive (§8.3).
+    if let Some(text) = read(&out.join("pdk_char.sfyx")) {
+        lines.extend(characterization_summary(&text));
     }
 
     // The PDK mirror (§8.1).
@@ -2152,7 +2141,7 @@ fn kit_lib_round_trip_on_the_mock() {
 }
 
 /// The PDK sweep on the mock: the fixture PDK's `nch` swept over w and fingers with its
-/// callback running, and the table summarized by name.
+/// callback running (SfyCharacterize, §8.3), and the file summarized by name.
 #[test]
 fn kit_pdk_sweep_on_the_mock() {
     let work = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("virtuoso-live-mock-pdk");
@@ -2172,34 +2161,26 @@ fn kit_pdk_sweep_on_the_mock() {
     )
     .unwrap();
     run_on_mock(&mut i, &work, "session1.il");
-    let tsv = read(&work.join("out/pdk_derived.tsv")).expect("the sweep table");
-    let rows: Vec<&str> = tsv.lines().collect();
-    assert_eq!(rows.len(), 1 + 3 * 3, "w x3, nf x3 (nch has no l):\n{tsv}");
-    assert!(rows[0].ends_with("\tw\tnf"), "{}", rows[0]);
-    assert!(
-        rows[1..].iter().all(|r| r.split('\t').nth(4) == Some("ok")),
-        "{tsv}"
-    );
-    let summary = sweep_summary(&tsv);
+    let text = read(&work.join("out/pdk_char.sfyx")).expect("the characterization");
+    let devs = interop::virtuoso::characterize::read(&text).unwrap();
+    assert_eq!(devs.len(), 1);
+    let d = &devs[0];
+    assert_eq!(d.inputs, ["w", "nf"], "nch has no l: no length table");
+    assert_eq!(d.points.len(), 3 * 4, "w x3, fingers 1 2 3 4:\n{text}");
+    assert!(d.points.iter().all(|p| p.status.is_ok()), "{text}");
+    let summary = characterization_summary(&text);
     assert!(
         summary[0].contains("0 netlisted parameter(s) change"),
         "{summary:?}"
     );
     assert!(summary[1].contains("inputs: w nf"), "{summary:?}");
     // Negative space: a parameter that changes with the inputs is reported as derived.
-    let derived = tsv.replace("\tw\tnf", "\tw\tnf\tad");
-    let derived: String = derived
-        .lines()
-        .enumerate()
-        .map(|(k, l)| {
-            if k == 0 {
-                format!("{l}\n")
-            } else {
-                format!("{l}\t{k}e-15\n")
-            }
-        })
-        .collect();
-    assert!(sweep_summary(&derived)[0].contains(
-        "1 netlisted parameter(s) change with w/l/fingers beyond the inputs themselves: ad"
-    ));
+    let mut derived = d.clone();
+    derived.outputs.push("ad".into());
+    for (k, p) in derived.points.iter_mut().enumerate() {
+        p.values.push(format!("{k}f"));
+    }
+    assert_eq!(derived.summary().derived, ["ad"]);
+    let log = read(&work.join("out/pdk_char.sfyx.log")).unwrap_or_default();
+    assert!(log.contains("PASS"), "{log}");
 }
