@@ -11,6 +11,8 @@
 ;; tab   input mu (number, floored at 0.5u); nu is a table of mu (3 7 2 5, breakpoints at
 ;;       2u 5u 9u).
 ;; chaos inputs pp (number) and qq (count); zz is a hash of both: no rule explains it.
+;; sel   inputs gx (number), mode (a choice of a b c) and dbl (a boolean); pz is 3gx, 5gx or
+;;       0.7u by mode, qz is gx or 2gx by dbl: one rule per value of the selector.
 
 (procedure (zpdkGet n) (getSGq (cdfFindParamByName cdfgData n) value))
 (procedure (zpdkSet n v) (setSGq (cdfFindParamByName cdfgData n) v value))
@@ -46,6 +48,12 @@
     (zpdkSet "zz" (sprintf nil "%d" (mod (plus (times 7 (fix (times 1000 pp))) (times 13 qq)) 11)))
     t))
 
+(procedure (selCB)
+  (let ((gx (atof (zpdkGet "gx"))) (mode (zpdkGet "mode")) (dbl (zpdkGet "dbl")))
+    (zpdkSet "pz" (sprintf nil "%g" (cond ((equal mode "a") (times 3 gx)) ((equal mode "b") (times 5 gx)) (t 7e-07))))
+    (zpdkSet "qz" (sprintf nil "%g" (if dbl (times 2 gx) gx)))
+    t))
+
 (procedure (SfyFixCharPdk)
   (let ((cdf nil))
     (SfyFixSymbol "zpdk" "zeta" (list (list "A" "inputOutput" 0 40) (list "B" "inputOutput" 0 -40)))
@@ -72,5 +80,14 @@
     (cdfCreateParam cdf ?name "qq" ?type "int" ?defValue 1 ?prompt "qq" ?callback "(chaosCB)")
     (cdfCreateParam cdf ?name "zz" ?type "string" ?defValue "8" ?prompt "zz")
     (setSGq cdf (list nil 'spectre (list nil 'termOrder '(A B) 'instParameters '(pp qq zz))) simInfo)
+    (cdfSaveCDF cdf)
+    (SfyFixSymbol "zpdk" "sel" (list (list "A" "inputOutput" 0 40) (list "B" "inputOutput" 0 -40)))
+    (setq cdf (SfyFixCdf "zpdk" "sel"))
+    (cdfCreateParam cdf ?name "gx" ?type "string" ?defValue "2e-06" ?prompt "gx" ?parseAsNumber "yes" ?callback "(selCB)")
+    (cdfCreateParam cdf ?name "mode" ?type "cyclic" ?choices (list "a" "b" "c") ?defValue "a" ?prompt "mode" ?callback "(selCB)")
+    (cdfCreateParam cdf ?name "dbl" ?type "boolean" ?defValue nil ?prompt "dbl" ?callback "(selCB)")
+    (cdfCreateParam cdf ?name "pz" ?type "string" ?defValue "6e-06" ?prompt "pz" ?parseAsNumber "yes")
+    (cdfCreateParam cdf ?name "qz" ?type "string" ?defValue "2e-06" ?prompt "qz" ?parseAsNumber "yes")
+    (setSGq cdf (list nil 'spectre (list nil 'termOrder '(A B) 'instParameters '(gx mode dbl pz qz))) simInfo)
     (cdfSaveCDF cdf)
     t))

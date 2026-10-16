@@ -510,11 +510,10 @@ fn apply_pdk_rules(proj: &Path, text: &str) -> Vec<String> {
                     let names: Vec<&str> = rules.computed.iter().map(|c| c.0.as_str()).collect();
                     if rules.unexplained.is_empty() {
                         format!(
-                            "PASS {id} {} computed ({}) reproduce all {} points; {} legal length run(s)",
+                            "PASS {id} {} computed ({}) reproduce all {} points",
                             names.len(),
                             names.join(" "),
                             rules.points,
-                            rules.legal_l.len()
                         )
                     } else {
                         format!(
@@ -1150,18 +1149,7 @@ fn mid(work: &Path, o: &Opts) {
                         if r.computed.is_empty() {
                             continue;
                         }
-                        let pts: Vec<String> =
-                            interop::virtuoso::characterize::holdout_points(&d, &r)
-                                .iter()
-                                .map(|p| {
-                                    let f = |x: Option<f64>| {
-                                        x.map_or("nil".into(), |v| format!("{v:e}"))
-                                    };
-                                    let n = p[2]
-                                        .map_or("nil".into(), |v| format!("{}", v.round() as i64));
-                                    format!("(list {} {} {n})", f(p[0]), f(p[1]))
-                                })
-                                .collect();
+                        let pts = interop::virtuoso::characterize::holdout_points(&d);
                         s.call(format!(
                             "(SfyLiveCharacterizeCheck {} {} {} {} (list {}))",
                             q(&d.lib),
@@ -2394,7 +2382,7 @@ fn kit_pdk_rules_on_the_mock() {
     // The mirror carries the rules.
     let mirror = std::fs::read_to_string(work.join("projects/pdk/pdk/mos.shprim")).unwrap();
     assert!(
-        mirror.contains("computed \"(floor(nf/2)+1)*(w/nf)*steps(l, "),
+        mirror.contains("computed \"w*(floor(nf/2)+1)/nf*steps(l, 5e-9, 5e-8, 3e-8, 6e-8, "),
         "{mirror}"
     );
 }
