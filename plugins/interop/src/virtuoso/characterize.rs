@@ -197,6 +197,10 @@ pub struct Rules {
     pub legal_l: Vec<(f64, f64)>,
     /// The length table's step.
     pub l_step: Option<f64>,
+    /// The width per finger the callbacks raise `w` to (`w/n` below it was rewritten to
+    /// `n·wf_min` at every such point), for the legality check; `None` when they never
+    /// rewrote `w`.
+    pub wf_min: Option<f64>,
     /// Points every rule was checked at.
     pub points: usize,
 }
@@ -380,6 +384,22 @@ impl Device {
                 }
             }
         }
+        // Width per finger: the floor the callbacks raise w to, when every rewrite agrees.
+        if let Some(iw_in) = self.inputs.iter().position(|i| i == "w") {
+            let rewrites: Vec<f64> = ok
+                .iter()
+                .filter_map(|p| {
+                    let want = ael_num(&p.set[iw_in])?;
+                    let (got, _, n) = geo(p)?;
+                    (!close(want, got)).then_some(got / n)
+                })
+                .collect();
+            if let Some(&wf) = rewrites.first()
+                && rewrites.iter().all(|x| close(*x, wf))
+            {
+                rules.wf_min = Some(wf);
+            }
+        }
         // Candidate tables: every derived param under every shape, solved on the length
         // points (keyed by the requested length, so a snapped l keeps its own entry).
         let mut best: Option<(Vec<(String, Shape)>, Table)> = None;
@@ -480,6 +500,116 @@ pub fn legal_expr(rules: &Rules, l: &str) -> Option<String> {
     (!terms.is_empty()).then(|| format!("({}) && {on_grid}", terms.join(" || ")))
 }
 
+/// `w`'s legality as an expression: at least `wf_min` per finger. `None` without one.
+pub fn legal_w_expr(rules: &Rules, w: &str, n: &str) -> Option<String> {
+    let wf = rules.wf_min?;
+    let mut s = String::new();
+    schemify_expr::write_num(&mut s, wf * (1.0 - REL_TOL));
+    Some(format!("{w}/{n} >= {s}"))
+}
+
+/// Sizes to check `rules` against that the characterization never measured (spec §8.3):
+/// widths ×3 ×7 ×11 of the default, finger counts 5 6 8, and legal lengths between the
+/// table's samples, combined in rotation. Each is `[w, l, fingers]` (`None` for an input
+/// the device lacks).
+pub fn holdout_points(d: &Device, rules: &Rules) -> Vec<[Option<f64>; 3]> {
+    let input = |n: &str| d.inputs.iter().position(|i| i == n);
+    let first = d.points.iter().find(|p| p.status.is_ok());
+    let base = |n: &str| first.and_then(|p| ael_num(&p.set[input(n)?]));
+    let w0 = base("w");
+    let has_f = ["nf", "nfin", "fingers"].iter().any(|f| input(f).is_some());
+    let step = rules.l_step.unwrap_or(0.0);
+    // Legal lengths away from the geometry grid's l and 2l: run middles, on the grid.
+    let mut ls: Vec<f64> = rules
+        .legal_l
+        .iter()
+        .map(|&(a, b)| {
+            let mid = (a + b) / 2.0;
+            if step > 0.0 {
+                a + ((mid - a) / step).round() * step
+            } else {
+                mid
+            }
+        })
+        .collect();
+    ls.truncate(3);
+    if ls.is_empty() {
+        ls.push(base("l").unwrap_or(f64::NAN));
+    }
+    let ws = [3.0, 7.0, 11.0];
+    let fs = [5.0, 6.0, 8.0];
+    let out: Vec<[Option<f64>; 3]> = (0..3)
+        .map(|k| {
+            [
+                w0.map(|w| w * ws[k]),
+                Some(ls[k % ls.len()]).filter(|l| l.is_finite()),
+                has_f.then_some(fs[k]),
+            ]
+        })
+        .collect();
+    debug_assert!(out.len() == 3);
+    out
+}
+
+/// How the rules fared at a holdout: per computed param, the worst relative error over the
+/// check's successful points (the rule evaluated by schemify-expr at each point's netlisted
+/// w, requested l and finger count) and whether it stayed within [`REL_TOL`].
+pub fn check(rules: &Rules, holdout: &Device) -> Vec<(String, f64, bool)> {
+    let idx = |n: &str| holdout.outputs.iter().position(|o| o == n);
+    let fing = ["nf", "nfin", "fingers"]
+        .into_iter()
+        .find(|f| holdout.inputs.iter().any(|i| i == f));
+    let il = holdout.inputs.iter().position(|i| i == "l");
+    let mut out = Vec::new();
+    for (name, src) in &rules.computed {
+        let Ok(prog) = schemify_expr::Program::compile(src, schemify_expr::Mode::Scalar) else {
+            out.push((name.clone(), f64::INFINITY, false));
+            continue;
+        };
+        let mut worst: f64 = 0.0;
+        let mut all = true;
+        for p in holdout.points.iter().filter(|p| p.status.is_ok()) {
+            let num = |k: Option<usize>, from: &[String]| k.and_then(|k| ael_num(&from[k]));
+            let w = num(idx("w"), &p.values);
+            let n = fing.and_then(|f| num(idx(f), &p.values));
+            let l = num(il, &p.set);
+            let want = num(idx(name), &p.values);
+            let mut inputs = Vec::new();
+            let bound = prog.bind(&mut inputs, |v| {
+                let x = match v {
+                    "w" => w,
+                    "l" => l,
+                    v if Some(v) == fing => n,
+                    _ => None,
+                }?;
+                Some(schemify_expr::Value::Num(x))
+            });
+            let mut scratch = schemify_expr::Scratch::default();
+            let got = bound
+                .ok()
+                .and_then(|()| prog.eval(&inputs, &mut scratch).ok())
+                .and_then(|v| match v {
+                    schemify_expr::Value::Num(x) => Some(x),
+                    schemify_expr::Value::Int(x) => Some(x as f64),
+                    _ => None,
+                });
+            match (got, want) {
+                (Some(g), Some(v)) => {
+                    let e = (g - v).abs() / v.abs().max(1e-300);
+                    worst = worst.max(e);
+                    all &= close(g, v);
+                }
+                _ => {
+                    worst = f64::INFINITY;
+                    all = false;
+                }
+            }
+        }
+        out.push((name.clone(), worst, all));
+    }
+    out
+}
+
 /// Appends record `r` of `src` to `out` without the attributes `skip` names.
 fn copy_without(out: &mut Document<'static>, src: &Document<'_>, r: u32, skip: &[&str]) {
     out.begin_record(src.record_kind(r));
@@ -508,6 +638,11 @@ pub fn apply_rules(text: &[u8], rules: &Rules) -> Result<String, String> {
     let mut out = Document::new(src.kind());
     copy_header(&mut out, &src, &[]);
     let legal = legal_expr(rules, "l");
+    let fing = ["nf", "nfin", "fingers"].into_iter().find(|f| {
+        (1..src.record_count())
+            .any(|r| src.record_kind(r) == RecordKind::Param && src.field(r, 0) == Some(f))
+    });
+    let legal_w = fing.and_then(|n| legal_w_expr(rules, "w", n));
     for r in 1..src.record_count() {
         let name = src.field(r, 0).unwrap_or("");
         if src.record_kind(r) != RecordKind::Param {
@@ -519,6 +654,9 @@ pub fn apply_rules(text: &[u8], rules: &Rules) -> Result<String, String> {
             copy_without(&mut out, &src, r, &["vderived"]);
             push_attr(&mut out, "vderived", &["true"]);
         } else if let (Some(v), "l") = (&legal, name) {
+            copy_without(&mut out, &src, r, &["valid"]);
+            push_attr(&mut out, "valid", &[v]);
+        } else if let (Some(v), "w") = (&legal_w, name) {
             copy_without(&mut out, &src, r, &["valid"]);
             push_attr(&mut out, "valid", &[v]);
         } else {
@@ -676,6 +814,53 @@ mod tests {
             .map(|(a, b)| ((a * 1e9).round() as i64, (b * 1e9).round() as i64))
             .collect();
         assert_eq!(runs, [(10, 10), (12, 12), (14, 14), (16, 16), (18, 40)]);
+    }
+
+    #[test]
+    fn rules_pass_a_holdout_measured_by_the_same_device() {
+        let d = synthetic();
+        let r = d.rules();
+        let pts = holdout_points(&d, &r);
+        assert_eq!(pts.len(), 3);
+        assert!(
+            pts.iter().all(|p| p[2].is_some_and(|f| f >= 5.0)),
+            "{pts:?}"
+        );
+        // The same device measured at the holdout sizes.
+        let mut h = synthetic();
+        h.points.clear();
+        for pt in &pts {
+            let (w, l, n) = (pt[0].unwrap(), pt[1].unwrap(), pt[2].unwrap());
+            let ext = |l: f64| match l {
+                l if l < 14e-9 => 50e-9,
+                l if l < 16e-9 => 44e-9,
+                l if l < 20e-9 => 48e-9,
+                _ => 60e-9,
+            };
+            let (e, s, dr, wf) = (ext(l), (n / 2.0).floor() + 1.0, (n / 2.0).ceil(), w / n);
+            let f = |x: f64| format!("{x:e}");
+            h.points.push(Point {
+                set: vec![f(w), f(l), format!("{n}")],
+                status: Ok(()),
+                values: vec![
+                    f(w),
+                    f(l),
+                    format!("{n}"),
+                    f(s * wf * e),
+                    f(dr * wf * e),
+                    f(s * 2.0 * (wf + e)),
+                    f(dr * 2.0 * (wf + e)),
+                    f(e),
+                    "1".into(),
+                ],
+            });
+        }
+        let res = check(&r, &h);
+        assert_eq!(res.len(), 5);
+        assert!(res.iter().all(|x| x.2), "{res:?}");
+        // Negative space: a holdout the rules do not predict fails.
+        h.points[0].values[3] = "1e-12".into();
+        assert!(check(&r, &h).iter().any(|x| x.0 == "as" && !x.2));
     }
 
     #[test]

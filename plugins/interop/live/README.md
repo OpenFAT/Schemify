@@ -112,6 +112,7 @@ work directory at the same absolute path on both, for example on a shared disk.
 | `pdk.import` | The PDK mirror imports and every device cell loads. |
 | `pdk.characterize`, `pdk.derived` | With `--pdk LIB/CELL`: `SfyCharacterize` measures what the device's CDF callbacks derive (spec §8.3) into `out/pdk_char.sfyx`, which stays on your machine; `pdk.derived` names the netlisted parameters that change with w, l and the finger count. |
 | `pdk.rules.<lib>.<cell>` | The characterization's rules (spec §8.3) applied to the imported mirror in `projects/pdk`: PASS when every derived parameter has a rule that reproduces every measured point; WARN names the parameters left to Virtuoso's values. |
+| `pdk.holdout.<lib>.<cell>`, `pdk.rules.check.<lib>.<cell>` | Session 2 measures the device at three sizes the characterization never covered (more fingers, other widths and lengths) and every rule must predict the callbacks' values there within 0.2 %; the detail gives the worst error per parameter, no values. |
 
 ## Known differences
 

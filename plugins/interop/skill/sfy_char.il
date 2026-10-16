@@ -43,7 +43,7 @@
 ;; 4, l x1 x2; each input only when the CDF has it editable with a numeric default) and the
 ;; length table (w and fingers at their defaults, l from its default by lstep up to lmax;
 ;; at most 4000 points). t when the cell had something to sweep.
-(procedure (SfyCharCell port cv lib cell lstep lmax)
+(procedure (SfyCharCell port cv lib cell lstep lmax points)
   (let ((m nil) (cdf nil) (outs nil) (ins nil) (p nil) (fing nil) (base nil) (ws nil)
         (ls nil) (nfs nil) (step nil) (top nil) (k 0) (w0 nil) (f0 nil))
     (setq m (car (errset (dbOpenCellViewByType lib cell "symbol" nil "r") t)))
@@ -68,11 +68,16 @@
         (setq base (cadr (assoc "l" ins)))
         (setq ls (if base (list base (times 2 base)) '(nil)))
         (setq nfs (if fing '(1 2 3 4) '(nil)))
-        (foreach w ws
-          (foreach l ls
-            (foreach f nfs
-              (SfyCharPoint port cv m ins fing outs w l f))))
-        (when base
+        ;; Given points (w l fingers numbers, nil for an input the cell lacks) replace the
+        ;; grid and the length table: the holdout check of a cell's rules (spec 8.3).
+        (if points
+          (foreach pt points
+            (SfyCharPoint port cv m ins fing outs (car pt) (cadr pt) (caddr pt)))
+          (foreach w ws
+            (foreach l ls
+              (foreach f nfs
+                (SfyCharPoint port cv m ins fing outs w l f)))))
+        (when (and base (null points))
           (setq step (if lstep (SfyCharNum lstep) (quotient base 20.0)))
           (setq top (if lmax (SfyCharNum lmax) (times 100 base)))
           (while (and (lessp k 4000) (leqp (plus base (times k step)) (plus top (times 0.5 step))))
@@ -84,8 +89,10 @@
 ;; SfyCharacterize: characterizes cells (a list of names) of PDK library lib into path (an
 ;; .sfyx file; it names the PDK's parameters and values, so it stays on the machine it was
 ;; made on). scratch is a writable library for the throwaway schematic. ?lstep and ?lmax
-;; (CDF number strings) set the length table. Writes <path>.log; t on PASS.
-(procedure (SfyCharacterize path lib cells scratch @key (lstep nil) (lmax nil))
+;; (CDF number strings) set the length table. ?points, a list of (w l fingers) numbers,
+;; measures just those points (the holdout check of a cell's rules). Writes <path>.log;
+;; t on PASS.
+(procedure (SfyCharacterize path lib cells scratch @key (lstep nil) (lmax nil) (points nil))
   (let ((sfyLogPort (SfyLogOpen path)) (sfyCountTab (makeTable "sfyCounts" nil))
         (sfyCountKeys nil) (sfyFails 0) (port nil) (cv nil))
     (SfyLog (sprintf nil "SfyCharacterize %s library %s cells %L" path lib cells))
@@ -100,7 +107,7 @@
           (progn
             (SfyPut port "sfyx" (list 1 (SfyProducer)))
             (foreach c cells
-              (unless (errset (SfyCharCell port cv lib c lstep lmax) t)
+              (unless (errset (SfyCharCell port cv lib c lstep lmax points) t)
                 (SfyRefuse 0 (sprintf nil "%s/%s: SKILL error %s" lib c (SfyErrMsg)))))
             (SfyPut port "end" nil))
           (progn

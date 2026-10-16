@@ -530,6 +530,45 @@ fn apply_pdk_rules(proj: &Path, text: &str) -> Vec<String> {
         .collect()
 }
 
+/// PASS/FAIL lines for the holdout check of every characterized device with rules: each
+/// computed param's worst relative error at the holdout points (errors only, no values).
+fn holdout_rows(out: &Path, char_text: &str) -> Vec<String> {
+    use interop::virtuoso::characterize;
+    let mut rows = Vec::new();
+    for d in characterize::read(char_text).unwrap_or_default() {
+        let rules = d.rules();
+        if rules.computed.is_empty() {
+            continue;
+        }
+        let id = format!("pdk.rules.check.{}.{}", d.lib, d.cell);
+        let file = out.join(format!("pdk_check.{}.{}.sfyx", d.lib, d.cell));
+        let Some(h) = read(&file)
+            .and_then(|t| characterize::read(&t).ok())
+            .and_then(|v| v.into_iter().next())
+        else {
+            rows.push(format!(
+                "FAIL {id} no holdout measured ({})",
+                path_str(&file)
+            ));
+            continue;
+        };
+        let res = characterize::check(&rules, &h);
+        let ok_points = h.points.iter().filter(|p| p.status.is_ok()).count();
+        let worst: Vec<String> = res
+            .iter()
+            .map(|(n, e, _)| format!("{n} {:.3}%", e * 100.0))
+            .collect();
+        let pass = ok_points > 0 && res.iter().all(|x| x.2);
+        rows.push(format!(
+            "{} {id} {} rule(s) at {ok_points} holdout point(s), worst error: {}",
+            if pass { "PASS" } else { "FAIL" },
+            res.len(),
+            worst.join(", ")
+        ));
+    }
+    rows
+}
+
 /// CDL text without its `$[model]` tokens.
 fn without_cdl_models(cdl: &str) -> String {
     let mut out = String::with_capacity(cdl.len());
@@ -1104,6 +1143,36 @@ fn mid(work: &Path, o: &Opts) {
                 // the mirror is then ready to use, its derived params computed.
                 if let Some(text) = &characterization {
                     lines.extend(apply_pdk_rules(&proj, text));
+                    // The holdout (§8.3): sizes the characterization never measured, run
+                    // through the PDK's callbacks in session 2 and checked in verify.
+                    for d in interop::virtuoso::characterize::read(text).unwrap_or_default() {
+                        let r = d.rules();
+                        if r.computed.is_empty() {
+                            continue;
+                        }
+                        let pts: Vec<String> =
+                            interop::virtuoso::characterize::holdout_points(&d, &r)
+                                .iter()
+                                .map(|p| {
+                                    let f = |x: Option<f64>| {
+                                        x.map_or("nil".into(), |v| format!("{v:e}"))
+                                    };
+                                    let n = p[2]
+                                        .map_or("nil".into(), |v| format!("{}", v.round() as i64));
+                                    format!("(list {} {} {n})", f(p[0]), f(p[1]))
+                                })
+                                .collect();
+                        s.call(format!(
+                            "(SfyLiveCharacterizeCheck {} {} {} {} (list {}))",
+                            q(&d.lib),
+                            q(&d.cell),
+                            q(SCRATCH),
+                            q(&path_str(
+                                &out.join(format!("pdk_check.{}.{}.sfyx", d.lib, d.cell))
+                            )),
+                            pts.join(" ")
+                        ));
+                    }
                 }
             }
         }
@@ -1592,6 +1661,13 @@ fn verify(work: &Path, o: &Opts) -> Report {
         }
         if n == 1 {
             r.take(&read(&out.join("mid.txt")).unwrap_or_default());
+            // The holdout of the PDK rules (§8.3): each rule against the callbacks at sizes
+            // the characterization never measured.
+            if let Some(text) = read(&out.join("pdk_char.sfyx")) {
+                for row in holdout_rows(&out, &text) {
+                    r.take(&row);
+                }
+            }
         }
     }
 
@@ -2246,5 +2322,70 @@ fn kit_pdk_sweep_on_the_mock() {
             .lines()
             .any(|l| l.starts_with("PASS pdk.rules.pdk.nch 0 computed")),
         "{mid_out}"
+    );
+}
+
+/// The PDK rules end to end on the mock: a device whose callback derives `as`/`ad` from w,
+/// the finger count and a two-step extension over l is characterized (session 1), its
+/// rules applied to the imported mirror (mid), measured again at holdout sizes (session 2)
+/// and checked (verify).
+#[test]
+fn kit_pdk_rules_on_the_mock() {
+    let work = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("virtuoso-live-mock-rules");
+    let _ = std::fs::remove_dir_all(&work);
+    let o = Opts {
+        pdk: Some(("pdk".into(), Some("mos".into()))),
+        ..Opts::default()
+    };
+    prepare(&work, &o);
+    let mut i = mock(&work);
+    i.host.add_lib("pdk");
+    let cb = r#"(let ((ww (atof (getSGq (getSGq cdfgData w) value))) (nn (getSGq (getSGq cdfgData nf) value)) (ll (atof (getSGq (getSGq cdfgData l) value))) (ee 0.0)) (setq ee (if (lessp ll 3e-08) 5e-08 6e-08)) (setSGq (getSGq cdfgData as) (sprintf nil \"%g\" (times (plus (quotient nn 2) 1) (quotient ww nn) ee)) value) (setSGq (getSGq cdfgData ad) (sprintf nil \"%g\" (times (quotient (plus nn 1) 2) (quotient ww nn) ee)) value))"#;
+    i.load(&format!(
+        r#"(SfyFixPdk)
+(SfyFixSymbol "pdk" "mos" (list (list "D" "inputOutput" 0 40) (list "G" "input" -40 0) (list "S" "inputOutput" 0 -40) (list "B" "inputOutput" 40 0)))
+(let ((cdf (SfyFixCdf "pdk" "mos")))
+  (cdfCreateParam cdf ?name "w" ?type "string" ?defValue "1e-07" ?prompt "W" ?parseAsNumber "yes" ?callback "{cb}")
+  (cdfCreateParam cdf ?name "l" ?type "string" ?defValue "2e-08" ?prompt "L" ?parseAsNumber "yes" ?callback "{cb}")
+  (cdfCreateParam cdf ?name "nf" ?type "int" ?defValue 1 ?prompt "Fingers" ?callback "{cb}")
+  (cdfCreateParam cdf ?name "as" ?type "string" ?defValue "5e-15" ?prompt "AS" ?parseAsNumber "yes")
+  (cdfCreateParam cdf ?name "ad" ?type "string" ?defValue "5e-15" ?prompt "AD" ?parseAsNumber "yes")
+  (setSGq cdf (list nil 'spectre (list nil 'termOrder '(D G S B) 'instParameters '(w l nf as ad))) simInfo)
+  (cdfSaveCDF cdf))"#
+    ))
+    .unwrap();
+    run_on_mock(&mut i, &work, "session1.il");
+    mid(&work, &o);
+    run_on_mock(&mut i, &work, "session2.il");
+    let r = verify(&work, &o);
+    let row = |id: &str| {
+        r.rows
+            .iter()
+            .find(|x| x.0 == id)
+            .map(|x| format!("{:?} {}", x.1, x.2))
+            .unwrap_or_else(|| {
+                format!(
+                    "no row {id}: {:#?}",
+                    r.rows
+                        .iter()
+                        .filter(|x| x.0.starts_with("pdk"))
+                        .collect::<Vec<_>>()
+                )
+            })
+    };
+    let rules = row("pdk.rules.pdk.mos");
+    assert!(rules.starts_with("Pass 2 computed (as ad)"), "{rules}");
+    let holdout = row("pdk.holdout.pdk.mos");
+    assert!(holdout.starts_with("Pass 3 point(s)"), "{holdout}");
+    let check = row("pdk.rules.check.pdk.mos");
+    assert!(
+        check.starts_with("Pass 2 rule(s) at 3 holdout point(s)"),
+        "{check}"
+    );
+    // The mirror carries the rules.
+    let mirror = std::fs::read_to_string(work.join("projects/pdk/pdk/mos.shprim")).unwrap();
+    assert!(
+        mirror.contains("computed \"(floor(nf/2)+1)*(w/nf)*steps(l, "),
+        "{mirror}"
     );
 }

@@ -192,3 +192,12 @@
       (cond ((null r) (SfyLiveErr))
             ((car r) (sprintf nil "written to %s (it names the PDK's parameters: it stays on this machine)" out))
             (t (sprintf nil "see %s.log" out))))))
+
+;; SfyCharacterize of lib/cell at the given points only (the holdout of its rules, spec
+;; interop.md 8.3) into out, as one check.
+(procedure (SfyLiveCharacterizeCheck lib cell scratch out points)
+  (let ((r (errset (SfyCharacterize out lib (list cell) scratch ?points points) t)))
+    (SfyLiveCheck (sprintf nil "pdk.holdout.%s.%s" lib cell) (and r (car r))
+      (cond ((null r) (SfyLiveErr))
+            ((car r) (sprintf nil "%d point(s) measured into %s" (length points) out))
+            (t (sprintf nil "see %s.log" out))))))
