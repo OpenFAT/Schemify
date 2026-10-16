@@ -142,6 +142,7 @@ fn slash(p: &Path) -> String {
 pub fn run(args: &[String]) -> u8 {
     match args.split_first() {
         Some((cmd, rest)) if cmd == "xschem-import" => xschem_import(rest),
+        Some((cmd, rest)) if cmd == "pdk-rules" => pdk_rules(rest),
         Some((cmd, rest))
             if cmd == "virtuoso-export"
                 || cmd == "virtuoso-import"
@@ -168,6 +169,7 @@ usage: schemify-interop virtuoso-export <project-dir> <cell-file>... -o <file.sf
        schemify-interop virtuoso-import <project-dir> <file.sfyx> [--analoglib] [--lib L=V]...
        schemify-interop xschem-export <project-dir> <cell-file>... -o <out-dir>
        schemify-interop install-skill <dir>
+       schemify-interop pdk-rules <project-dir> <char.sfyx>
 (cell files, .sfyx paths and output paths are relative to <project-dir>)";
 
 /// Parses the arguments of a job subcommand into (project directory, command).
@@ -266,6 +268,116 @@ fn drive(project: &Path, command: crate::job::Command) -> u8 {
                 }
                 return 1;
             }
+        }
+    }
+}
+
+/// `pdk-rules <project-dir> <char.sfyx>` (spec `interop.md` §8.3): applies the rules a
+/// characterization explains to the project's mirror cells (`computed`, `vderived`,
+/// `valid`) and drops the overrides of the now-computed params from every design instance
+/// of those cells. Prints what it did; 0 done, 1 nothing applied, 2 usage or I/O error.
+fn pdk_rules(args: &[String]) -> u8 {
+    use crate::virtuoso::characterize;
+    let [project, char_file] = args else {
+        eprintln!("usage: schemify-interop pdk-rules <project-dir> <char.sfyx>");
+        return 2;
+    };
+    let project = Path::new(project);
+    let io = |p: &Path, e: std::io::Error| {
+        eprintln!("schemify-interop: {}: {e}", p.display());
+        2
+    };
+    let text = match std::fs::read_to_string(char_file) {
+        Ok(t) => t,
+        Err(e) => return io(Path::new(char_file), e),
+    };
+    let devs = match characterize::read(&text) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("schemify-interop: {char_file}: {e}");
+            return 2;
+        }
+    };
+    let manifest = project.join("schemify.project");
+    let libs = match std::fs::read(&manifest) {
+        Ok(b) => crate::design::manifest_libs(&b).unwrap_or_default(),
+        Err(e) => return io(&manifest, e),
+    };
+    let mut designs = Vec::new();
+    walk_designs(project, &mut designs);
+    let mut applied = 0;
+    for d in &devs {
+        let rules = d.rules();
+        let dir = libs.get(&d.lib).map_or(d.lib.as_str(), String::as_str);
+        let cell = project.join(dir).join(format!("{}.shprim", d.cell));
+        let Ok(bytes) = std::fs::read(&cell) else {
+            println!(
+                "{}/{}: no mirror cell at {}: import the PDK first",
+                d.lib,
+                d.cell,
+                cell.display()
+            );
+            continue;
+        };
+        let out = match characterize::apply_rules(&bytes, &rules) {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("schemify-interop: {}: {e}", cell.display());
+                return 2;
+            }
+        };
+        if let Err(e) = std::fs::write(&cell, out) {
+            return io(&cell, e);
+        }
+        applied += 1;
+        let names: Vec<&str> = rules.computed.iter().map(|c| c.0.as_str()).collect();
+        let cellref = format!("{}:{}", d.lib, d.cell);
+        let mut dropped = 0;
+        for f in &designs {
+            let Ok(b) = std::fs::read(f) else { continue };
+            if let Some((t, n)) = characterize::strip_overrides(&b, &cellref, &names) {
+                if let Err(e) = std::fs::write(f, t) {
+                    return io(f, e);
+                }
+                dropped += n;
+            }
+        }
+        println!(
+            "{}/{}: computed {} ({}), unexplained {}, {} legal length run(s), checked at {} points; {} instance override(s) dropped",
+            d.lib,
+            d.cell,
+            names.len(),
+            names.join(" "),
+            if rules.unexplained.is_empty() {
+                "none".into()
+            } else {
+                rules.unexplained.join(" ")
+            },
+            rules.legal_l.len(),
+            rules.points,
+            dropped
+        );
+    }
+    if applied == 0 { 1 } else { 0 }
+}
+
+/// Every `.shcomp`/`.shbench` under `dir`, recursively, sorted (`.schemify/` skipped).
+fn walk_designs(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut v: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    v.sort();
+    for p in v {
+        if p.is_dir() {
+            if p.file_name().is_some_and(|n| n != ".schemify") {
+                walk_designs(&p, out);
+            }
+        } else if p
+            .extension()
+            .is_some_and(|x| x == "shcomp" || x == "shbench")
+        {
+            out.push(p);
         }
     }
 }
