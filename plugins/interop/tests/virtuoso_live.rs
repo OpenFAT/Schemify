@@ -2295,20 +2295,29 @@ fn kit_pdk_sweep_on_the_mock() {
     let devs = interop::virtuoso::characterize::read(&text).unwrap();
     assert_eq!(devs.len(), 1);
     let d = &devs[0];
-    assert_eq!(d.inputs, ["w", "nf"], "nch has no l: no length table");
-    assert_eq!(d.points.len(), 3 * 4, "w x3, fingers 1 2 3 4:\n{text}");
-    assert!(d.points.iter().all(|p| p.status.is_ok()), "{text}");
+    // nch's callbacks change nothing: every candidate was probed, none is an input, and
+    // there is nothing to sweep (discovery by experiment, spec §8.3).
+    assert!(d.inputs.is_empty(), "{:?}", d.inputs);
+    assert!(d.probes.iter().any(|p| p.name == "w"), "{:?}", d.probes);
+    assert!(d.points.is_empty());
     let summary = characterization_summary(&text);
     assert!(
         summary[0].contains("0 netlisted parameter(s) change"),
         "{summary:?}"
     );
-    assert!(summary[1].contains("inputs: w nf"), "{summary:?}");
     // Negative space: a parameter that changes with the inputs is reported as derived.
     let mut derived = d.clone();
+    derived.inputs = vec!["w".into()];
+    derived.kinds = vec![interop::virtuoso::characterize::Kind::Num];
+    derived.defaults = vec!["1u".into()];
     derived.outputs.push("ad".into());
-    for (k, p) in derived.points.iter_mut().enumerate() {
-        p.values.push(format!("{k}f"));
+    for (k, w) in ["1u", "2u"].iter().enumerate() {
+        derived.points.push(interop::virtuoso::characterize::Point {
+            set: vec![(*w).into()],
+            status: Ok(()),
+            values: vec![(*w).into(), "1".into(), format!("{k}f")],
+            back: vec![(*w).into()],
+        });
     }
     assert_eq!(derived.summary().derived, ["ad"]);
     let log = read(&work.join("out/pdk_char.sfyx.log")).unwrap_or_default();

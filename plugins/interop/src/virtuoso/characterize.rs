@@ -12,6 +12,32 @@ use crate::sfyx::{self, Record, Value};
 /// Most points one device may have (`SfyCharacterize` writes at most 4024).
 pub const POINTS_MAX: usize = 10_000;
 
+/// What an input is, as measured (its CDF type and default), never its name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Kind {
+    /// A continuous number.
+    #[default]
+    Num,
+    /// A whole number (a finger or segment count).
+    Count,
+    /// A boolean (`"t"` or `"nil"`).
+    Bool,
+    /// One of the CDF's choices.
+    Choice,
+}
+
+impl Kind {
+    fn parse(s: &str) -> Option<Kind> {
+        Some(match s {
+            "num" => Kind::Num,
+            "count" => Kind::Count,
+            "bool" => Kind::Bool,
+            "choice" => Kind::Choice,
+            _ => return None,
+        })
+    }
+}
+
 /// One characterized device.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Device {
@@ -19,12 +45,34 @@ pub struct Device {
     pub lib: String,
     /// See [`Device::lib`].
     pub cell: String,
-    /// The inputs the sweep set, in the order it set them (`w`, `l`, then the finger count).
+    /// The inputs the sweep set, in the order it set them: the candidates whose nudge
+    /// changed another netlisted param, or those `?inputs` named.
     pub inputs: Vec<String>,
+    /// Kind per input, parallel to [`Device::inputs`].
+    pub kinds: Vec<Kind>,
+    /// Default value text per input, parallel to [`Device::inputs`].
+    pub defaults: Vec<String>,
     /// The netlisted parameters (spectre `instParameters`), in CDF order.
     pub outputs: Vec<String>,
+    /// The discovery probes, one per candidate, in CDF order.
+    pub probes: Vec<Probe>,
     /// The points, in file order.
     pub points: Vec<Point>,
+}
+
+/// One discovery probe: a candidate nudged from the defaults.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Probe {
+    /// The candidate.
+    pub name: String,
+    /// Its kind.
+    pub kind: Kind,
+    /// The value it was set to.
+    pub set: String,
+    /// Whether every callback ran.
+    pub status: Result<(), String>,
+    /// The netlisted params (other than itself) the nudge changed.
+    pub changed: Vec<String>,
 }
 
 /// One measured point.
@@ -36,6 +84,16 @@ pub struct Point {
     pub status: Result<(), String>,
     /// The value read back per netlisted parameter, parallel to [`Device::outputs`].
     pub values: Vec<String>,
+    /// The value read back per input, parallel to [`Device::inputs`] (a callback may
+    /// rewrite what was set).
+    pub back: Vec<String>,
+}
+
+fn status_of(s: &str) -> Result<(), String> {
+    match s {
+        "ok" => Ok(()),
+        why => Err(why.to_owned()),
+    }
 }
 
 /// How each netlisted parameter behaved over a device's successful points.
@@ -66,9 +124,9 @@ fn strs(r: &Record, v: &[Value], what: &str) -> Result<Vec<String>, String> {
 ///
 /// # Errors
 ///
-/// A record that is not `char`/`pt` between the `sfyx` header and `end`, a `pt` before any
-/// `char`, a `pt` whose lists do not match its `char`'s, or more than [`POINTS_MAX`]
-/// points for one device.
+/// A record that is not `char`/`probe`/`pt` between the `sfyx` header and `end`, a `probe`
+/// or `pt` before any `char`, lists that do not match the `char`'s, an unknown kind, or
+/// more than [`POINTS_MAX`] points for one device.
 pub fn read(text: &str) -> Result<Vec<Device>, String> {
     let recs = sfyx::read(text).map_err(|e| format!("line {}: {}", e.line, e.msg))?;
     let mut out: Vec<Device> = Vec::new();
@@ -76,23 +134,54 @@ pub fn read(text: &str) -> Result<Vec<Device>, String> {
         match r.tag.as_str() {
             "sfyx" | "end" => {}
             "char" => {
-                r.arity(4).map_err(|e| e.msg)?;
+                r.arity(6).map_err(|e| e.msg)?;
+                let inputs = strs(r, r.list(2).map_err(|e| e.msg)?, "inputs")?;
+                let kinds = strs(r, r.list(4).map_err(|e| e.msg)?, "kinds")?
+                    .iter()
+                    .map(|k| Kind::parse(k).ok_or_else(|| format!("line {}: kind `{k}`", r.line)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let defaults = strs(r, r.list(5).map_err(|e| e.msg)?, "defaults")?;
+                if kinds.len() != inputs.len() || defaults.len() != inputs.len() {
+                    return Err(format!("line {}: kinds and defaults per input", r.line));
+                }
                 out.push(Device {
                     lib: r.str(0).map_err(|e| e.msg)?.to_owned(),
                     cell: r.str(1).map_err(|e| e.msg)?.to_owned(),
-                    inputs: strs(r, r.list(2).map_err(|e| e.msg)?, "inputs")?,
+                    inputs,
+                    kinds,
+                    defaults,
                     outputs: strs(r, r.list(3).map_err(|e| e.msg)?, "netlisted")?,
+                    probes: Vec::new(),
                     points: Vec::new(),
                 });
             }
+            "probe" => {
+                r.arity(5).map_err(|e| e.msg)?;
+                let d = out
+                    .last_mut()
+                    .ok_or_else(|| format!("line {}: a probe before any `char`", r.line))?;
+                let kind = r.str(1).map_err(|e| e.msg)?;
+                d.probes.push(Probe {
+                    name: r.str(0).map_err(|e| e.msg)?.to_owned(),
+                    kind: Kind::parse(kind)
+                        .ok_or_else(|| format!("line {}: kind `{kind}`", r.line))?,
+                    set: r.str(2).map_err(|e| e.msg)?.to_owned(),
+                    status: status_of(r.str(3).map_err(|e| e.msg)?),
+                    changed: strs(r, r.list(4).map_err(|e| e.msg)?, "changed")?,
+                });
+            }
             "pt" => {
-                r.arity(3).map_err(|e| e.msg)?;
+                r.arity(4).map_err(|e| e.msg)?;
                 let d = out
                     .last_mut()
                     .ok_or_else(|| format!("line {}: a point before any `char`", r.line))?;
                 let set = strs(r, r.list(0).map_err(|e| e.msg)?, "set")?;
                 let values = strs(r, r.list(2).map_err(|e| e.msg)?, "values")?;
-                if set.len() != d.inputs.len() || values.len() != d.outputs.len() {
+                let back = strs(r, r.list(3).map_err(|e| e.msg)?, "read back")?;
+                if set.len() != d.inputs.len()
+                    || back.len() != d.inputs.len()
+                    || values.len() != d.outputs.len()
+                {
                     return Err(format!(
                         "line {}: {} set and {} values for {} inputs and {} parameters",
                         r.line,
@@ -105,14 +194,12 @@ pub fn read(text: &str) -> Result<Vec<Device>, String> {
                 if d.points.len() == POINTS_MAX {
                     return Err(format!("line {}: more than {POINTS_MAX} points", r.line));
                 }
-                let status = match r.str(1).map_err(|e| e.msg)? {
-                    "ok" => Ok(()),
-                    why => Err(why.to_owned()),
-                };
+                let status = status_of(r.str(1).map_err(|e| e.msg)?);
                 d.points.push(Point {
                     set,
                     status,
                     values,
+                    back,
                 });
             }
             t => return Err(format!("line {}: unknown record `{t}`", r.line)),
@@ -123,6 +210,15 @@ pub fn read(text: &str) -> Result<Vec<Device>, String> {
 }
 
 impl Device {
+    /// The value input `k` was set to at `p`: its default where the point left it.
+    pub fn set_value<'a>(&'a self, p: &'a Point, k: usize) -> &'a str {
+        if p.set[k].is_empty() {
+            self.defaults.get(k).map_or("", String::as_str)
+        } else {
+            &p.set[k]
+        }
+    }
+
     /// Each netlisted parameter classified over the points whose callbacks ran.
     pub fn summary(&self) -> Summary {
         let ok: Vec<&Point> = self.points.iter().filter(|p| p.status.is_ok()).collect();
@@ -354,7 +450,7 @@ impl Device {
                 self.inputs
                     .iter()
                     .enumerate()
-                    .all(|(k, n)| n == "l" || p.set[k] == ok[0].set[k])
+                    .all(|(k, n)| n == "l" || self.set_value(p, k) == self.set_value(ok[0], k))
             })
             .collect();
         let mut rules = Rules {
@@ -366,7 +462,7 @@ impl Device {
             let mut req: Vec<(f64, bool)> = lpts
                 .iter()
                 .filter_map(|p| {
-                    let want = ael_num(&p.set[inl])?;
+                    let want = ael_num(self.set_value(p, inl))?;
                     let got = ael_num(&p.values[il])?;
                     Some((want, close(want, got)))
                 })
@@ -389,7 +485,7 @@ impl Device {
             let rewrites: Vec<f64> = ok
                 .iter()
                 .filter_map(|p| {
-                    let want = ael_num(&p.set[iw_in])?;
+                    let want = ael_num(self.set_value(p, iw_in))?;
                     let (got, _, n) = geo(p)?;
                     (!close(want, got)).then_some(got / n)
                 })
@@ -410,7 +506,7 @@ impl Device {
                     .iter()
                     .filter_map(|p| {
                         let (w, _, n) = geo(p)?;
-                        let l = inl.and_then(|i| ael_num(&p.set[i]))?;
+                        let l = inl.and_then(|i| ael_num(self.set_value(p, i)))?;
                         Some((l, shape.solve(ael_num(&p.values[k])?, w, n)))
                     })
                     .collect();
@@ -461,7 +557,7 @@ impl Device {
                         return false;
                     };
                     // The table is keyed by the requested length.
-                    let Some(l) = inl.and_then(|i| ael_num(&p.set[i])) else {
+                    let Some(l) = inl.and_then(|i| ael_num(self.set_value(p, i))) else {
                         return false;
                     };
                     table.at(l).is_some_and(|e| close(shape.eval(w, n, e), v))
@@ -515,7 +611,7 @@ pub fn legal_w_expr(rules: &Rules, w: &str, n: &str) -> Option<String> {
 pub fn holdout_points(d: &Device, rules: &Rules) -> Vec<[Option<f64>; 3]> {
     let input = |n: &str| d.inputs.iter().position(|i| i == n);
     let first = d.points.iter().find(|p| p.status.is_ok());
-    let base = |n: &str| first.and_then(|p| ael_num(&p.set[input(n)?]));
+    let base = |n: &str| first.and_then(|p| ael_num(d.set_value(p, input(n)?)));
     let w0 = base("w");
     let has_f = ["nf", "nfin", "fingers"].iter().any(|f| input(f).is_some());
     let step = rules.l_step.unwrap_or(0.0);
@@ -694,10 +790,12 @@ mod tests {
     use super::*;
 
     const FILE: &str = r#"("sfyx" 1 "schemify.il 1")
-("char" "pdk" "nch" ("w" "nf") ("w" "nf" "ad" "m"))
-("pt" ("1e-06" "1") "ok" ("1u" "1" "1f" "1"))
-("pt" ("1e-06" "2") "ok" ("1u" "2" "0.5f" "1"))
-("pt" ("4e-06" "1") "\"callback: w failed\"" ("4u" "1" "?" "1"))
+("char" "pdk" "nch" ("w" "nf") ("w" "nf" "ad" "m") ("num" "count") ("1e-06" "1"))
+("probe" "w" "num" "2e-06" "ok" ("ad"))
+("probe" "flip" "bool" "t" "ok" ())
+("pt" ("1e-06" "1") "ok" ("1u" "1" "1f" "1") ("1u" "1"))
+("pt" ("1e-06" "2") "ok" ("1u" "2" "0.5f" "1") ("1u" "2"))
+("pt" ("4e-06" "1") "\"callback: w failed\"" ("4u" "1" "?" "1") ("4u" "1"))
 ("end")
 "#;
 
@@ -706,6 +804,10 @@ mod tests {
         let d = &read(FILE).unwrap()[0];
         assert_eq!((d.lib.as_str(), d.cell.as_str()), ("pdk", "nch"));
         assert_eq!(d.points.len(), 3);
+        assert_eq!(d.kinds, [Kind::Num, Kind::Count]);
+        assert_eq!(d.probes.len(), 2);
+        assert_eq!(d.probes[0].changed, ["ad"]);
+        assert!(d.probes[1].changed.is_empty() && d.probes[1].kind == Kind::Bool);
         assert!(d.points[2].status.is_err());
         let s = d.summary();
         assert_eq!((s.ok, s.failed), (2, 1));
@@ -736,6 +838,9 @@ mod tests {
             lib: "pdk".into(),
             cell: "mos".into(),
             inputs: vec!["w".into(), "l".into(), "nf".into()],
+            kinds: vec![Kind::Num, Kind::Num, Kind::Count],
+            defaults: vec!["100n".into(), "10n".into(), "1".into()],
+            probes: Vec::new(),
             outputs: ["w", "l", "nf", "as", "ad", "ps", "pd", "lx", "m"]
                 .map(String::from)
                 .to_vec(),
@@ -759,6 +864,7 @@ mod tests {
                     f(e),
                     "1".into(),
                 ],
+                back: vec![f(w), f(ls), format!("{n}")],
             });
         };
         for w in [100e-9, 400e-9, 1.6e-6] {
@@ -853,6 +959,7 @@ mod tests {
                     f(e),
                     "1".into(),
                 ],
+                back: vec![f(w), f(l), format!("{n}")],
             });
         }
         let res = check(&r, &h);
@@ -924,7 +1031,7 @@ mod tests {
     fn malformed_files_are_refused() {
         let bad = [
             FILE.replace(
-                "(\"char\" \"pdk\" \"nch\" (\"w\" \"nf\") (\"w\" \"nf\" \"ad\" \"m\"))\n",
+                "(\"char\" \"pdk\" \"nch\" (\"w\" \"nf\") (\"w\" \"nf\" \"ad\" \"m\") (\"num\" \"count\") (\"1e-06\" \"1\"))\n",
                 "",
             ),
             FILE.replace(
@@ -932,6 +1039,7 @@ mod tests {
                 "(\"1e-06\") \"ok\" (\"1u\" \"1\" \"1f\" \"1\")",
             ),
             FILE.replace("(\"end\")", "(\"what\")\n(\"end\")"),
+            FILE.replace("(\"num\" \"count\")", "(\"num\" \"wat\")"),
         ];
         for b in &bad {
             assert!(read(b).is_err(), "{b}");

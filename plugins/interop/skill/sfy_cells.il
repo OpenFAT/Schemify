@@ -1212,6 +1212,9 @@
               ((and (equal sfyTy "int") (stringp sfyV)) (atoi sfyV))
               ((equal sfyTy "int") (if (fixp sfyV) sfyV (round sfyV)))
               ((and (equal sfyTy "float") (stringp sfyV)) (atof sfyV))
+              ;; A boolean given as text (t/nil, TRUE/FALSE) is set as the boolean.
+              ((and (equal sfyTy "boolean") (stringp sfyV))
+                (and (member sfyV (list "t" "TRUE" "true")) t))
               ((equal sfyTy "float") (float sfyV))
               ((stringp sfyV) sfyV)
               ((fixp sfyV) (sprintf nil "%d" sfyV))

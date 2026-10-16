@@ -59,6 +59,7 @@ const BUILTIN_ARITY: &[(&str, usize, Option<usize>)] = &[
     ("leqp", 2, Some(2)),
     ("geqp", 2, Some(2)),
     ("zerop", 1, Some(1)),
+    ("digitp", 1, Some(1)),
     ("abs", 1, Some(1)),
     ("sin", 1, Some(1)),
     ("cos", 1, Some(1)),

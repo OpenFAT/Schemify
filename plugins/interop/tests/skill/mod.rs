@@ -553,6 +553,7 @@ const BUILTINS: &[&str] = &[
     "leqp",
     "geqp",
     "zerop",
+    "digitp",
     "abs",
     "sin",
     "cos",
@@ -1528,6 +1529,20 @@ impl<H: Host> Interp<H> {
                 "greaterp" => cmp(|x, y| x > y)?,
                 "leqp" => cmp(|x, y| x <= y)?,
                 "geqp" => cmp(|x, y| x >= y)?,
+                // A one-character string (or symbol) that is a decimal digit.
+                "digitp" => {
+                    need(1)?;
+                    let s = match &a[0] {
+                        V::Str(s) => s.to_string(),
+                        V::Sym(s) => s.to_string(),
+                        _ => String::new(),
+                    };
+                    if s.len() == 1 && s.as_bytes()[0].is_ascii_digit() {
+                        V::T
+                    } else {
+                        V::Nil
+                    }
+                }
                 "zerop" => {
                     need(1)?;
                     if num(&a[0])? == 0.0 { V::T } else { V::Nil }
