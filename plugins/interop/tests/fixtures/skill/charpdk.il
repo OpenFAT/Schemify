@@ -10,9 +10,11 @@
 ;;       that change nothing: not inputs. memo has no callback and is not netlisted.
 ;; tab   input mu (number, floored at 0.5u); nu is a table of mu (3 7 2 5, breakpoints at
 ;;       2u 5u 9u).
-;; chaos inputs pp (number) and qq (count); zz is a hash of both: no rule explains it.
+;; chaos inputs pp (number) and qq (count); zz is a hash of both: no rule explains it. pp
+;;       set to an odd number of thousandths gains 0.1: no legality pattern explains it.
 ;; sel   inputs gx (number), mode (a choice of a b c) and dbl (a boolean); pz is 3gx, 5gx or
-;;       0.7u by mode, qz is gx or 2gx by dbl: one rule per value of the selector.
+;;       0.7u by mode, qz is gx or 2gx by dbl: one rule per value of the selector. gx is
+;;       floored at 1u, at 3u in mode c: its legality depends on the choice.
 
 (procedure (zpdkGet n) (getSGq (cdfFindParamByName cdfgData n) value))
 (procedure (zpdkSet n v) (setSGq (cdfFindParamByName cdfgData n) v value))
@@ -45,11 +47,18 @@
 
 (procedure (chaosCB)
   (let ((pp (atof (zpdkGet "pp"))) (qq (zpdkGet "qq")))
+    (when (equal (mod (fix (times 1000 pp)) 2) 1)
+      (setq pp (plus pp 0.1))
+      (zpdkSet "pp" (sprintf nil "%g" pp)))
     (zpdkSet "zz" (sprintf nil "%d" (mod (plus (times 7 (fix (times 1000 pp))) (times 13 qq)) 11)))
     t))
 
 (procedure (selCB)
-  (let ((gx (atof (zpdkGet "gx"))) (mode (zpdkGet "mode")) (dbl (zpdkGet "dbl")))
+  (let ((gx (atof (zpdkGet "gx"))) (mode (zpdkGet "mode")) (dbl (zpdkGet "dbl")) (f 1e-06))
+    (when (equal mode "c") (setq f 3e-06))
+    (when (lessp gx f)
+      (setq gx f)
+      (zpdkSet "gx" (sprintf nil "%g" gx)))
     (zpdkSet "pz" (sprintf nil "%g" (cond ((equal mode "a") (times 3 gx)) ((equal mode "b") (times 5 gx)) (t 7e-07))))
     (zpdkSet "qz" (sprintf nil "%g" (if dbl (times 2 gx) gx)))
     t))

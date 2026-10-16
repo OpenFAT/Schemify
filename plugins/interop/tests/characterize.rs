@@ -268,3 +268,76 @@ fn a_selector_input_multiplexes_rules() {
         }
     }
 }
+
+/// `src`, a legality rule, at `p`: its inputs as set.
+fn legal(d: &Device, src: &str, p: &characterize::Point) -> bool {
+    use schemify_expr::{Mode, Program, Scratch, Value};
+    let prog = Program::compile(src, Mode::Scalar).unwrap_or_else(|e| panic!("{src}: {e:?}"));
+    let mut inputs = Vec::new();
+    prog.bind(&mut inputs, |n| {
+        let k = d.inputs.iter().position(|i| i == n)?;
+        let t = d.set_value(p, k);
+        Some(match d.kinds[k] {
+            Kind::Num | Kind::Count => Value::Num(characterize::ael_num(t)?),
+            Kind::Bool => Value::Bool(t == "t"),
+            Kind::Choice => Value::Str(t),
+        })
+    })
+    .unwrap();
+    match prog.eval(&inputs, &mut Scratch::default()) {
+        Ok(Value::Bool(b)) => b,
+        other => panic!("{src} at {:?}: {other:?}", p.set),
+    }
+}
+
+/// Legality from the rewrites alone: a floor, a floor per count, a grid below a kept
+/// stretch, a floor that depends on a choice; a rewrite with no pattern is reported.
+/// Oracle: each rule, evaluated by schemify-expr at the values set, is true exactly at
+/// the points whose value the callbacks kept.
+#[test]
+fn legality_accepts_exactly_the_values_the_callbacks_keep() {
+    let devs = characterize(&["zeta", "tab", "chaos", "sel"], "");
+    let rules: Vec<characterize::Rules> = devs.iter().map(Device::rules).collect();
+    let valid = |d: usize, n: &str| {
+        rules[d]
+            .legal
+            .iter()
+            .find(|c| c.0 == n)
+            .unwrap_or_else(|| panic!("no legality for {n}: {:?}", rules[d]))
+            .1
+            .clone()
+    };
+    assert_eq!(valid(1, "mu"), "mu >= 5e-7");
+    assert_eq!(valid(0, "zq"), "zq/ct >= 4e-8");
+    assert_eq!(
+        valid(0, "kappa"),
+        "(kappa < 1.8e-8 && abs(kappa/2e-9 - round(kappa/2e-9)) <= 1e-6) || kappa >= 1.8e-8"
+    );
+    assert_eq!(
+        valid(3, "gx"),
+        // Mode b was never measured below its floor: nothing there is illegal.
+        "if(mode == \"a\", gx >= 1e-6, if(mode == \"b\", true, gx >= 3e-6))"
+    );
+    assert_eq!(rules[2].unruled, ["pp"]);
+    // Inputs never rewritten get no rule.
+    assert!(rules[0].legal.iter().all(|c| c.0 != "ct"), "{:?}", rules[0]);
+    for (d, r) in devs.iter().zip(&rules) {
+        for (name, src) in &r.legal {
+            let k = d.inputs.iter().position(|i| i == name).unwrap();
+            for p in d.points.iter().filter(|p| p.status.is_ok()) {
+                let (s, b) = (
+                    characterize::ael_num(d.set_value(p, k)).unwrap(),
+                    characterize::ael_num(&p.back[k]).unwrap(),
+                );
+                let kept = (s - b).abs() <= 1e-6 * s.abs();
+                assert_eq!(
+                    legal(d, src, p),
+                    kept,
+                    "{name}: {src} at {:?} -> {:?}",
+                    p.set,
+                    p.back
+                );
+            }
+        }
+    }
+}

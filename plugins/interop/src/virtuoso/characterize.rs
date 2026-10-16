@@ -741,10 +741,19 @@ fn is_true(t: &str) -> bool {
     matches!(t, "t" | "TRUE" | "true")
 }
 
-/// The value of input `k` read back at `p`, as schemify-expr sees the param: a number, a
-/// boolean (`"t"`: true) or a choice's text.
-fn input_value<'p>(dev: &Device, p: &'p Point, k: usize) -> Option<schemify_expr::Value<'p>> {
-    let t = p.back[k].as_str();
+/// The value of input `k` at `p` as schemify-expr sees the param, read back or as set
+/// (`from_set`): a number, a boolean (`"t"`: true) or a choice's text.
+fn input_value<'p>(
+    dev: &'p Device,
+    p: &'p Point,
+    k: usize,
+    from_set: bool,
+) -> Option<schemify_expr::Value<'p>> {
+    let t = if from_set {
+        dev.set_value(p, k)
+    } else {
+        p.back[k].as_str()
+    };
     Some(match dev.kinds[k] {
         Kind::Num | Kind::Count => schemify_expr::Value::Num(ael_num(t)?),
         Kind::Bool => schemify_expr::Value::Bool(is_true(t)),
@@ -752,21 +761,66 @@ fn input_value<'p>(dev: &Device, p: &'p Point, k: usize) -> Option<schemify_expr
     })
 }
 
-/// `src` evaluated by schemify-expr at point `p` (its inputs as read back).
-fn eval_at(dev: &Device, src: &str, p: &Point) -> Option<f64> {
+/// `src` evaluated by schemify-expr at point `p`, its inputs read back or as set
+/// (`from_set`: what a legality rule sees on an instance), the result through `out`.
+fn eval_raw<R>(
+    dev: &Device,
+    src: &str,
+    p: &Point,
+    from_set: bool,
+    out: impl FnOnce(schemify_expr::Value<'_>) -> Option<R>,
+) -> Option<R> {
     let prog = schemify_expr::Program::compile(src, schemify_expr::Mode::Scalar).ok()?;
     let mut inputs = Vec::new();
     prog.bind(&mut inputs, |n| {
         let k = dev.inputs.iter().position(|i| i == n)?;
-        input_value(dev, p, k)
+        input_value(dev, p, k, from_set)
     })
     .ok()?;
     let mut scratch = schemify_expr::Scratch::default();
-    match prog.eval(&inputs, &mut scratch).ok()? {
+    out(prog.eval(&inputs, &mut scratch).ok()?)
+}
+
+/// `src`'s number at point `p` (its inputs as read back).
+fn eval_at(dev: &Device, src: &str, p: &Point) -> Option<f64> {
+    eval_raw(dev, src, p, false, |v| match v {
         schemify_expr::Value::Num(x) => Some(x),
         schemify_expr::Value::Int(x) => Some(x as f64),
         _ => None,
+    })
+}
+
+/// Legality rule `src` at point `p` (its inputs as set).
+fn legal_at(dev: &Device, src: &str, p: &Point) -> Option<bool> {
+    eval_raw(dev, src, p, true, |v| match v {
+        schemify_expr::Value::Bool(b) => Some(b),
+        _ => None,
+    })
+}
+
+/// Whether the callbacks kept the value set for input `k` at `p`: read back equal within
+/// 1e-6 relative, or reprinted to six significant digits or more (`%g`) within half a unit
+/// of the last. A value read back with fewer digits (`1e-06`) was rewritten.
+fn kept(dev: &Device, p: &Point, k: usize) -> bool {
+    let (s, b) = (dev.set_value(p, k), p.back[k].as_str());
+    match (dev.kinds[k], ael_num(s), printed_tol(b)) {
+        (Kind::Num | Kind::Count, Some(s), Some((b, tol))) => {
+            let d = (s - b).abs();
+            d <= 1e-6 * s.abs() || (digits(p.back[k].as_str()) >= 6 && d <= tol)
+        }
+        (Kind::Bool, ..) => is_true(s) == is_true(b),
+        _ => s == b,
     }
+}
+
+/// The significant digits a number was printed with (`1.23457e-06`: 6, `1e-06`: 1).
+fn digits(text: &str) -> usize {
+    let t = text.trim().trim_start_matches(['-', '+']);
+    let mant = t
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(t.len());
+    let ds: String = t[..mant].chars().filter(char::is_ascii_digit).collect();
+    ds.trim_start_matches('0').len()
 }
 
 /// The rules measured for one device: Schemify expressions over its own inputs that
@@ -777,6 +831,11 @@ pub struct Rules {
     pub computed: Vec<(String, String)>,
     /// Derived params no rule explains: they keep Virtuoso's values (or go stale, §8.3).
     pub unexplained: Vec<String>,
+    /// (input, expression) for each input the callbacks rewrite: its `valid` rule, true
+    /// exactly on the values they keep.
+    pub legal: Vec<(String, String)>,
+    /// Inputs the callbacks rewrite in a way no legality pattern explains.
+    pub unruled: Vec<String>,
     /// Points every rule was checked at.
     pub points: usize,
 }
@@ -824,6 +883,15 @@ impl Device {
             }
         }
         debug_assert!(rules.computed.len() + rules.unexplained.len() == s.derived.len());
+        for (k, name) in self.inputs.iter().enumerate() {
+            if g.ok.iter().all(|&i| kept(self, &self.points[i], k)) {
+                continue;
+            }
+            match self.legality(&g, k) {
+                Some(src) => rules.legal.push((name.clone(), src)),
+                None => rules.unruled.push(name.clone()),
+            }
+        }
         rules
     }
 
@@ -863,6 +931,242 @@ impl Device {
             }
         }
         None
+    }
+}
+
+/// What the callbacks do over one stretch of an input's values (by value set).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Fate {
+    /// Kept as set.
+    Kept,
+    /// Rewritten to one value (a floor or a ceiling).
+    Clamp(f64),
+    /// Rewritten to the nearest multiple of a grid.
+    Snap(f64),
+}
+
+/// Consecutive points (by value set) the callbacks treat alike.
+#[derive(Clone, Debug)]
+struct Run {
+    fate: Fate,
+    /// Smallest and largest value set.
+    lo: f64,
+    hi: f64,
+    /// Every value set, for a kept run.
+    kept: Vec<f64>,
+}
+
+fn on_grid(x: f64, g: f64) -> bool {
+    (x / g - (x / g).round()).abs() <= 1e-6
+}
+
+impl Device {
+    /// Input `k`'s legality rule (spec §8.3): true exactly on the values the callbacks
+    /// keep, from the patterns of their rewrites (a floor or ceiling, a floor per count, a
+    /// grid, kept stretches between), and per value of a boolean or choice input when they
+    /// differ by it; `None` when no pattern explains every point.
+    fn legality(&self, g: &Grid<'_>, k: usize) -> Option<String> {
+        let all: Vec<usize> = (0..g.ok.len()).collect();
+        if let Some(src) = self.legal_over(g, k, &all) {
+            return Some(src);
+        }
+        for (s, kind) in self.kinds.iter().enumerate() {
+            if s == k || !matches!(kind, Kind::Bool | Kind::Choice) {
+                continue;
+            }
+            let key = |i: usize| -> String {
+                let v = self.set_value(&self.points[g.ok[i]], s);
+                match kind {
+                    Kind::Bool if is_true(v) => "t".into(),
+                    Kind::Bool => "nil".into(),
+                    _ => v.to_owned(),
+                }
+            };
+            let mut vals: Vec<String> = all.iter().map(|&i| key(i)).collect();
+            vals.sort_unstable();
+            vals.dedup();
+            vals.sort_by_key(|v| v == "nil"); // a boolean's true arm first
+            if vals.len() < 2 {
+                continue;
+            }
+            let arms: Option<Vec<String>> = vals
+                .iter()
+                .map(|v| {
+                    let part: Vec<usize> = all.iter().copied().filter(|&i| key(i) == *v).collect();
+                    if part.iter().all(|&i| kept(self, &self.points[g.ok[i]], k)) {
+                        Some("true".into())
+                    } else {
+                        self.legal_over(g, k, &part)
+                    }
+                })
+                .collect();
+            let Some(arms) = arms else { continue };
+            let sel = &self.inputs[s];
+            let mut src = arms.last().expect("two arms at least").clone();
+            for (v, a) in vals.iter().zip(&arms).rev().skip(1) {
+                let cond = if *kind == Kind::Bool {
+                    sel.clone()
+                } else {
+                    format!("{sel} == \"{v}\"")
+                };
+                src = format!("if({cond}, {a}, {src})");
+            }
+            if self.legal_fits(g, k, &all, &src) {
+                return Some(src);
+            }
+        }
+        None
+    }
+
+    /// Whether legality rule `src` holds exactly at the kept points of `idx`.
+    fn legal_fits(&self, g: &Grid<'_>, k: usize, idx: &[usize], src: &str) -> bool {
+        idx.iter().all(|&i| {
+            let p = &self.points[g.ok[i]];
+            legal_at(self, src, p) == Some(kept(self, p, k))
+        })
+    }
+
+    /// The legality rule over the points `idx` with the fewest terms, input `k` taken as
+    /// it is and over each count input (a floor per finger).
+    fn legal_over(&self, g: &Grid<'_>, k: usize, idx: &[usize]) -> Option<String> {
+        let per = std::iter::once(None).chain(
+            (0..self.inputs.len())
+                .filter(|&n| n != k && self.kinds[n] == Kind::Count)
+                .map(Some),
+        );
+        let mut best: Option<(usize, String)> = None;
+        for n in per {
+            if let Some((terms, src)) = self.legal_runs(g, k, n, idx)
+                && best.as_ref().is_none_or(|b| terms < b.0)
+                && self.legal_fits(g, k, idx, &src)
+            {
+                best = Some((terms, src));
+            }
+        }
+        best.map(|b| b.1)
+    }
+
+    /// Input `k` (over count input `per`'s value when given) split into runs by value set,
+    /// each kept, clamped or snapped, and the rule that keeps the kept and snapped ones
+    /// with its term count; `None` when a run's rewrites follow no pattern.
+    fn legal_runs(
+        &self,
+        g: &Grid<'_>,
+        k: usize,
+        per: Option<usize>,
+        idx: &[usize],
+    ) -> Option<(usize, String)> {
+        if self.kinds[k] != Kind::Num && self.kinds[k] != Kind::Count {
+            return None;
+        }
+        let (xs, bs): (Vec<f64>, Vec<f64>) = idx
+            .iter()
+            .map(|&i| {
+                let n = per.map_or((1.0, 1.0), |n| (g.set[n][i], g.back[n][i]));
+                (g.set[k][i] / n.0, g.back[k][i] / n.1)
+            })
+            .unzip();
+        let keep: Vec<bool> = idx
+            .iter()
+            .map(|&i| kept(self, &self.points[g.ok[i]], k))
+            .collect();
+        let mut order: Vec<usize> = (0..idx.len()).collect();
+        order.sort_by(|&a, &b| xs[a].total_cmp(&xs[b]));
+        // Runs of like points; one value set both kept and rewritten has no rule.
+        let mut runs: Vec<(bool, Vec<usize>)> = Vec::new();
+        for &j in &order {
+            match runs.last_mut() {
+                Some((kp, js)) if *kp == keep[j] => js.push(j),
+                Some((_, js)) if xs[*js.last().expect("a run has points")] == xs[j] => return None,
+                _ => runs.push((keep[j], vec![j])),
+            }
+        }
+        let mut out: Vec<Run> = Vec::new();
+        for (kp, js) in &runs {
+            let (lo, hi) = (xs[js[0]], xs[*js.last().expect("a run has points")]);
+            let fate = if *kp {
+                Fate::Kept
+            } else {
+                let mut b: Vec<f64> = js.iter().map(|&j| bs[j]).collect();
+                b.sort_by(f64::total_cmp);
+                b.dedup_by(|x, y| (*x - *y).abs() <= 1e-6 * x.abs().max(y.abs()));
+                if b.len() == 1 {
+                    // A floor per count divides: the shortest decimal through the noise.
+                    let e = 1e-9 * b[0].abs();
+                    Fate::Clamp(nicest(b[0] - e, b[0] + e, b[0]))
+                } else {
+                    let step = b
+                        .windows(2)
+                        .map(|w| w[1] - w[0])
+                        .fold(f64::INFINITY, f64::min);
+                    let step = nicest(step * (1.0 - 1e-6), step * (1.0 + 1e-6), step);
+                    let snaps = js.iter().all(|&j| {
+                        on_grid(bs[j], step) && (xs[j] - bs[j]).abs() <= step / 2.0 * (1.0 + 1e-3)
+                    });
+                    if !snaps {
+                        return None;
+                    }
+                    Fate::Snap(step)
+                }
+            };
+            // A kept stretch on the grid between two stretches snapped to it is the grid.
+            if let (Fate::Snap(s), [.., before, prev]) = (fate, out.as_slice())
+                && before.fate == Fate::Snap(s)
+                && prev.fate == Fate::Kept
+                && prev.kept.iter().all(|&x| on_grid(x, s))
+            {
+                out.pop();
+                out.last_mut().expect("the snapped run before").hi = hi;
+                continue;
+            }
+            let kept = if *kp {
+                js.iter().map(|&j| xs[j]).collect()
+            } else {
+                Vec::new()
+            };
+            out.push(Run { fate, lo, hi, kept });
+        }
+        // The boundary between runs r and r+1, and whether the lower run includes it.
+        let bound = |r: usize| -> (f64, bool) {
+            let (a, b) = (&out[r], &out[r + 1]);
+            match (a.fate, b.fate) {
+                (Fate::Clamp(f), _) if f > a.hi && f <= b.lo => (f, false),
+                (_, Fate::Clamp(c)) if c >= a.hi && c < b.lo => (c, true),
+                _ => (nicest(a.hi + (b.lo - a.hi) * 1e-6, b.lo, b.lo), false),
+            }
+        };
+        let var = match per {
+            None => self.inputs[k].clone(),
+            Some(n) => format!("{}/{}", self.inputs[k], self.inputs[n]),
+        };
+        let mut terms: Vec<String> = Vec::new();
+        for (r, run) in out.iter().enumerate() {
+            let mut conds = Vec::new();
+            if matches!(run.fate, Fate::Clamp(_)) {
+                continue;
+            }
+            if r > 0 {
+                conds.push(format!("{var} >= {}", num_text(bound(r - 1).0)));
+            }
+            if r + 1 < out.len() {
+                let (c, incl) = bound(r);
+                let op = if incl { "<=" } else { "<" };
+                conds.push(format!("{var} {op} {}", num_text(c)));
+            }
+            if let Fate::Snap(s) = run.fate {
+                let s = num_text(s);
+                conds.push(format!("abs({var}/{s} - round({var}/{s})) <= 1e-6"));
+            }
+            match conds.len() {
+                0 => return None, // every value kept: nothing to rule
+                1 => terms.push(conds.remove(0)),
+                _ => terms.push(format!("({})", conds.join(" && "))),
+            }
+        }
+        if terms.is_empty() {
+            return None;
+        }
+        Some((terms.len(), terms.join(" || ")))
     }
 }
 
@@ -918,7 +1222,8 @@ pub fn holdout_points(d: &Device) -> Vec<String> {
 /// How the rules fared at a holdout: per computed param, the worst error over the check's
 /// successful points (the rule evaluated by schemify-expr at each point's inputs as read
 /// back), relative to the value, and whether every point stayed within the digits the
-/// callbacks printed ([`printed_tol`]).
+/// callbacks printed ([`printed_tol`]); then per legality rule (`valid <input>`), the
+/// share of points where it disagrees with what the callbacks kept.
 pub fn check(rules: &Rules, holdout: &Device) -> Vec<(String, f64, bool)> {
     let mut out = Vec::new();
     for (name, src) in &rules.computed {
@@ -939,6 +1244,21 @@ pub fn check(rules: &Rules, holdout: &Device) -> Vec<(String, f64, bool)> {
             }
         }
         out.push((name.clone(), worst, all));
+    }
+    // Each legality rule: true exactly where the callbacks kept the value set (the error
+    // is the share of points where it is not).
+    for (name, src) in &rules.legal {
+        let Some(k) = holdout.inputs.iter().position(|i| i == name) else {
+            out.push((format!("valid {name}"), 1.0, false));
+            continue;
+        };
+        let pts: Vec<&Point> = holdout.points.iter().filter(|p| p.status.is_ok()).collect();
+        let wrong = pts
+            .iter()
+            .filter(|p| legal_at(holdout, src, p) != Some(kept(holdout, p, k)))
+            .count();
+        let share = wrong as f64 / pts.len().max(1) as f64;
+        out.push((format!("valid {name}"), share, wrong == 0));
     }
     out
 }
@@ -961,7 +1281,8 @@ fn copy_without(out: &mut Document<'static>, src: &Document<'_>, r: u32, skip: &
 
 /// A mirror cell file with `rules` applied (spec §8.3): each explained param `computed
 /// <expr>`, each unexplained derived param `vderived true` (its value is Virtuoso's and goes
-/// stale when the inputs change).
+/// stale when the inputs change), each input the callbacks rewrite `valid <expr>` (the
+/// values they keep; another is `E038`, D13 as amended 2026-10-15).
 ///
 /// # Errors
 ///
@@ -980,6 +1301,9 @@ pub fn apply_rules(text: &[u8], rules: &Rules) -> Result<String, String> {
         } else if rules.unexplained.iter().any(|u| u == name) {
             copy_without(&mut out, &src, r, &["vderived"]);
             push_attr(&mut out, "vderived", &["true"]);
+        } else if let Some((_, e)) = rules.legal.iter().find(|c| c.0 == name) {
+            copy_without(&mut out, &src, r, &["valid"]);
+            push_attr(&mut out, "valid", &[e]);
         } else {
             out.copy_record(&src, r);
         }
@@ -1055,6 +1379,10 @@ mod tests {
         let (v, t) = tol("1.234567891e-06");
         assert!(near(t, v * TOL_FLOOR));
         assert!(printed_tol("iPar(\"m\")").is_none() && printed_tol("").is_none());
+        assert_eq!(digits("1.23457e-06"), 6);
+        assert_eq!(digits("1e-06"), 1);
+        assert_eq!(digits("0.00012"), 2);
+        assert_eq!(digits("-40"), 2);
     }
 
     #[test]
@@ -1082,6 +1410,8 @@ mod tests {
                 "(floor(nf/2)+1)/nf*w*steps(l, 1e-08, 5e-08, 2e-08, 6e-08, 4e-08)".into(),
             )],
             unexplained: vec!["m".into()],
+            legal: vec![("l".into(), "l >= 1e-8".into())],
+            unruled: Vec::new(),
             points: 1,
         };
         let cell = b"schemify 1 shprim\n\npin d inout 0 0\n\nparam w 100n\nparam l 10n\nparam nf 1\nparam as 5f\n  unit m\nparam m 1\n\nimpl spice spice\n  format spice \"M{name} {d} x w={w} as={as}\"\n";
@@ -1091,6 +1421,10 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("param m 1\n  vderived true\n"), "{out}");
+        assert!(
+            out.contains("param l 10n\n  valid \"l >= 1e-8\"\n"),
+            "{out}"
+        );
         let design = b"schemify 1 shcomp\n\nimpl schematic schematic\n\ninst a00001 pdk:mos\n  at 0 0 R0\n  name M1\n  w 1u\n  as 3f\n  ad 2f\n\ninst a00002 pdk:other\n  at 10 0 R0\n  name M2\n  as 3f\n";
         let (text, n) = strip_overrides(design, "pdk:mos", &["as", "ad"]).unwrap();
         assert_eq!(n, 2);

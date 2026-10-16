@@ -508,12 +508,21 @@ fn apply_pdk_rules(proj: &Path, text: &str) -> Vec<String> {
                 Ok(out) => {
                     write(&cell, out.as_bytes());
                     let names: Vec<&str> = rules.computed.iter().map(|c| c.0.as_str()).collect();
-                    if rules.unexplained.is_empty() {
+                    let legal: Vec<&str> = rules.legal.iter().map(|c| c.0.as_str()).collect();
+                    if rules.unexplained.is_empty() && rules.unruled.is_empty() {
                         format!(
-                            "PASS {id} {} computed ({}) reproduce all {} points",
+                            "PASS {id} {} computed ({}) reproduce all {} points; valid on ({})",
                             names.len(),
                             names.join(" "),
                             rules.points,
+                            legal.join(" ")
+                        )
+                    } else if rules.unexplained.is_empty() {
+                        format!(
+                            "WARN {id} {} computed ({}); the rewrites of {} follow no legality rule",
+                            names.len(),
+                            names.join(" "),
+                            rules.unruled.join(" ")
                         )
                     } else {
                         format!(

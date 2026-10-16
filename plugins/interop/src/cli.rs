@@ -343,7 +343,7 @@ fn pdk_rules(args: &[String]) -> u8 {
             }
         }
         println!(
-            "{}/{}: computed {} ({}), unexplained {}, checked at {} points; {} instance override(s) dropped",
+            "{}/{}: computed {} ({}), unexplained {}, valid on ({}), unruled ({}), checked at {} points; {} instance override(s) dropped",
             d.lib,
             d.cell,
             names.len(),
@@ -353,6 +353,13 @@ fn pdk_rules(args: &[String]) -> u8 {
             } else {
                 rules.unexplained.join(" ")
             },
+            rules
+                .legal
+                .iter()
+                .map(|l| l.0.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+            rules.unruled.join(" "),
             rules.points,
             dropped
         );
