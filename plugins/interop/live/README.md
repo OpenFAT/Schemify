@@ -55,7 +55,7 @@ That runs the fixtures only, with no PDK. To cover everything, add your own cell
 | `--lib LIB` | A whole Virtuoso library, repeatable: every cell is dumped, imported into Schemify, exported again, loaded into a scratch library and dumped there, and the two dumps must agree. This is the "move my project to Schemify and back" check. |
 | `--project DIR` | A whole Schemify project, repeatable: it gets everything the fixture projects get (both export modes, the load, the dump back, the exact round trip). This is the "move my Schemify project to Virtuoso and back" check. |
 | `--cell LIB/CELL` | Your own cell, repeatable. It gets the self-test and the full round trip (Virtuoso to Schemify to Virtuoso). Use one cell with PDK transistors and one testbench with a maestro view. |
-| `--pdk LIB[/CELL]` | The PDK mirror: every device of `LIB` dumped and imported as Schemify cells. With `/CELL`, the probe also records that transistor's CDF and callbacks. |
+| `--pdk LIB[/CELL[,CELL…]]` | The PDK mirror: every device of `LIB` dumped and imported as Schemify cells. The cells named, and every cell of `LIB` that your `--cell`/`--lib` schematics or `--project` designs instantiate, are characterized. The first cell named is also the probe's transistor (its CDF and callbacks are recorded). |
 | `--callbacks` | Loads your `--cell` cells again with the PDK's CDF callbacks running, as the Edit Properties form runs them. |
 | `--env FILE` | A csh file that sets up Cadence (your site's `cadence.csh`): the kit sources it through csh and runs with that environment, so `test.sh --env cadence.csh …` works from bash or over `ssh host '…'` without sourcing anything first. |
 | `--cdslib FILE` | Another `cds.lib` (default `./cds.lib`). |
@@ -110,9 +110,9 @@ work directory at the same absolute path on both, for example on a shared disk.
 | `user.*` | Your cell (or with `--lib`, your whole library, as `user.*.<lib>.ALL`) passes the self-test, imports into Schemify with every file loading, and goes back to Virtuoso and dumps to the same records. |
 | `user.callbacks-run.*` | No CDF callback failed. INFO rows list the values the PDK clamped or derived. |
 | `pdk.import` | The PDK mirror imports and every device cell loads. |
-| `pdk.characterize`, `pdk.derived` | With `--pdk LIB/CELL`: `SfyCharacterize` measures what the device's CDF callbacks derive (spec §8.3) into `out/pdk_char.sfyx`, which stays on your machine; `pdk.derived` names the netlisted parameters that change with w, l and the finger count. |
-| `pdk.rules.<lib>.<cell>` | The characterization's rules (spec §8.3) applied to the imported mirror in `projects/pdk`: PASS when every derived parameter has a rule that reproduces every measured point; WARN names the parameters left to Virtuoso's values. |
-| `pdk.holdout.<lib>.<cell>`, `pdk.rules.check.<lib>.<cell>` | Session 2 measures the device at three sizes the characterization never covered (more fingers, other widths and lengths) and every rule must predict the callbacks' values there within 0.2 %; the detail gives the worst error per parameter, no values. |
+| `pdk.characterize`, `pdk.derived` | With `--pdk`: `SfyCharacterize` finds each covered device's inputs by experiment and measures what its CDF callbacks derive (spec §8.3) into `out/pdk_char.sfyx`, which stays on your machine; `pdk.derived` (one row per device) names the netlisted parameters that change with the inputs. |
+| `pdk.rules.<lib>.<cell>` | The characterization's rules (spec §8.3) applied to the imported mirror in `projects/pdk`: PASS when every derived parameter has a rule that reproduces every measured point and every rewritten input has a legality rule (`valid on (…)`); WARN names the parameters left to Virtuoso's values (`vderived`, cached per instance) or the inputs whose rewrites follow no rule. |
+| `pdk.holdout.<lib>.<cell>`, `pdk.rules.check.<lib>.<cell>` | Session 2 measures the device at three points the characterization never covered (other multiples of each number input's default, counts 5 6 7, other boolean and choice values) and every rule must predict the callbacks' values there within the digits they printed, and every legality rule must hold exactly where they kept the value; the detail gives the worst error per rule, no values. |
 
 ## Known differences
 

@@ -3,7 +3,7 @@
 # Virtuoso and this repository's Rust toolchain. See README.md next to this file.
 #
 #   plugins/interop/live/run.sh [--env FILE] [--cdslib FILE] [--work DIR] [--cell LIB/CELL]...
-#       [--lib LIB]... [--project DIR]... [--pdk LIB[/CELL]] [--callbacks]
+#       [--lib LIB]... [--project DIR]... [--pdk LIB[/CELL[,CELL...]]] [--callbacks]
 #       [--step STEP]
 #
 # --env FILE sources a csh environment file (a site's cadence.csh) through csh first and

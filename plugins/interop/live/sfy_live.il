@@ -186,12 +186,35 @@
             (t (SfyLiveErr))))))
 
 ;; SfyCharacterize of lib/cell into out (spec interop.md 8.3), as one check.
-(procedure (SfyLiveCharacterize lib cell scratch out)
-  (let ((r (errset (SfyCharacterize out lib (list cell) scratch) t)))
-    (SfyLiveCheck "pdk.characterize" (and r (car r))
-      (cond ((null r) (SfyLiveErr))
-            ((car r) (sprintf nil "written to %s (it names the PDK's parameters: it stays on this machine)" out))
-            (t (sprintf nil "see %s.log" out))))))
+(procedure (SfyLiveCharacterize lib named scratch out users)
+  (let ((cells named) (r nil))
+    (foreach c (SfyLiveUsedCells lib users)
+      (unless (member c cells) (setq cells (append cells (list c)))))
+    (if (null cells)
+      (SfyLiveCheck "pdk.characterize" t "no PDK cell named or used: nothing characterized")
+      (progn
+        (setq r (errset (SfyCharacterize out lib cells scratch) t))
+        (SfyLiveCheck "pdk.characterize" (and r (car r))
+          (cond ((null r) (SfyLiveErr))
+                ((car r) (sprintf nil "%d cell(s) written to %s (it names the PDK's parameters: it stays on this machine)" (length cells) out))
+                (t (sprintf nil "see %s.log" out))))))))
+
+;; The cells of PDK library lib the user's cells instantiate in their schematics, in
+;; first-use order; users is a list of (lib cell), cell "*" for every cell of lib.
+(procedure (SfyLiveUsedCells lib users)
+  (let ((out nil) (cv nil) (names nil) (o nil))
+    (foreach u users
+      (setq names (list (cadr u)))
+      (when (equal (cadr u) "*")
+        (setq o (ddGetObj (car u)))
+        (setq names (and o (mapcar (lambda (c) (getSGq c name)) (getSGq o cells)))))
+      (foreach n names
+        (setq cv (car (errset (dbOpenCellViewByType (car u) n "schematic" nil "r") nil)))
+        (when cv
+          (foreach i (getSGq cv instances)
+            (when (and (equal (getSGq i libName) lib) (not (member (getSGq i cellName) out)))
+              (setq out (cons (getSGq i cellName) out)))))))
+    (reverse out)))
 
 ;; SfyCharacterize of lib/cell at the given points only (the holdout of its rules, spec
 ;; interop.md 8.3) into out, as one check.

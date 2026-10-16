@@ -114,10 +114,50 @@ struct Opts {
     cells: Vec<(String, String)>,
     /// `--project dir`: the user's own Schemify projects, round-tripped like the fixtures.
     projects: Vec<PathBuf>,
-    /// `--pdk lib[/cell]`: a PDK library to mirror, and a transistor for the probe.
-    pdk: Option<(String, Option<String>)>,
+    /// `--pdk lib[/cell[,cell…]]`: a PDK library to mirror, and cells to characterize
+    /// besides the ones the user's cells and projects instantiate (spec interop.md §8.3);
+    /// the first named is the transistor for the probe.
+    pdk: Option<(String, Vec<String>)>,
     /// `--callbacks`: load the user's cells again with CDF callbacks on.
     callbacks: bool,
+}
+
+/// `lib[/cell[,cell…]]`.
+fn pdk_opt(v: &str) -> (String, Vec<String>) {
+    match v.split_once('/') {
+        Some((l, c)) => (
+            l.to_owned(),
+            c.split(',')
+                .filter(|c| !c.is_empty())
+                .map(str::to_owned)
+                .collect(),
+        ),
+        None => (v.to_owned(), Vec::new()),
+    }
+}
+
+/// The cells of library `lib` that the Schemify projects `dirs` instantiate (`inst <id>
+/// lib:cell`), in first-use order.
+fn used_in_projects(lib: &str, dirs: &[PathBuf]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for d in dirs {
+        for (p, b) in read_tree(d) {
+            if !is_cell(&p) {
+                continue;
+            }
+            for l in String::from_utf8_lossy(&b).lines() {
+                let mut w = l.split_whitespace();
+                if let (Some("inst"), Some(_), Some(cr)) = (w.next(), w.next(), w.next())
+                    && let Some((cl, c)) = cr.split_once(':')
+                    && cl == lib
+                    && !out.iter().any(|x| x == c)
+                {
+                    out.push(c.to_owned());
+                }
+            }
+        }
+    }
+    out
 }
 
 impl Opts {
@@ -130,10 +170,7 @@ impl Opts {
                 .filter_map(|c| c.split_once('/'))
                 .map(|(l, c)| (l.to_owned(), c.to_owned()))
                 .collect(),
-            pdk: var("SCHEMIFY_LIVE_PDK").map(|p| match p.split_once('/') {
-                Some((l, c)) => (l.to_owned(), Some(c.to_owned())),
-                None => (p, None),
-            }),
+            pdk: var("SCHEMIFY_LIVE_PDK").map(|p| pdk_opt(&p)),
             projects: var("SCHEMIFY_LIVE_PROJECTS")
                 .unwrap_or_default()
                 .split_whitespace()
@@ -149,12 +186,12 @@ impl Opts {
             writeln!(s, "cell {l}/{c}").unwrap();
         }
         if let Some((l, c)) = &self.pdk {
-            writeln!(
-                s,
-                "pdk {l}{}",
-                c.as_ref().map(|c| format!("/{c}")).unwrap_or_default()
-            )
-            .unwrap();
+            let cells = if c.is_empty() {
+                String::new()
+            } else {
+                format!("/{}", c.join(","))
+            };
+            writeln!(s, "pdk {l}{cells}").unwrap();
         }
         for d in &self.projects {
             writeln!(s, "project {}", path_str(d)).unwrap();
@@ -174,12 +211,7 @@ impl Opts {
                         o.cells.push((l.into(), c.into()));
                     }
                 }
-                ("pdk", v) => {
-                    o.pdk = Some(match v.split_once('/') {
-                        Some((l, c)) => (l.into(), Some(c.into())),
-                        None => (v.into(), None),
-                    });
-                }
+                ("pdk", v) => o.pdk = Some(pdk_opt(v)),
                 ("project", v) => o.projects.push(PathBuf::from(v)),
                 ("callbacks", _) => o.callbacks = true,
                 _ => {}
@@ -743,7 +775,7 @@ fn prepare(work: &Path, o: &Opts) {
         q(&path_str(&out.join("analogLib.sfyx")))
     ));
     let (pdk_lib, pdk_cell) = match &o.pdk {
-        Some((l, c)) => (Some(l.as_str()), c.as_deref()),
+        Some((l, c)) => (Some(l.as_str()), c.first().map(String::as_str)),
         None => (None, None),
     };
     s.call(format!(
@@ -753,14 +785,28 @@ fn prepare(work: &Path, o: &Opts) {
         q_opt(pdk_cell),
         q(&path_str(&out.join("sfy_probe.txt")))
     ));
-    // The device's characterization (spec §8.3): what the PDK's callbacks derive.
-    if let (Some(l), Some(c)) = (pdk_lib, pdk_cell) {
+    // The characterization (spec §8.3): what the PDK's callbacks derive, for the cells
+    // named and the ones the user's cells (found in Virtuoso) and projects instantiate.
+    if let Some((l, named)) = &o.pdk {
+        let mut cells = named.clone();
+        for c in used_in_projects(l, &o.projects) {
+            if !cells.contains(&c) {
+                cells.push(c);
+            }
+        }
+        let list = |v: &[String]| v.iter().map(|c| q(c)).collect::<Vec<_>>().join(" ");
+        let users: Vec<String> = o
+            .cells
+            .iter()
+            .map(|(ul, uc)| format!("(list {} {})", q(ul), q(uc)))
+            .collect();
         s.call(format!(
-            "(SfyLiveCharacterize {} {} {} {})",
+            "(SfyLiveCharacterize {} (list {}) {} {} (list {}))",
             q(l),
-            q(c),
+            list(&cells),
             q(SCRATCH),
-            q(&path_str(&out.join("pdk_char.sfyx")))
+            q(&path_str(&out.join("pdk_char.sfyx"))),
+            users.join(" ")
         ));
     }
     for (name, mode, file, dl) in &loads {
@@ -2274,7 +2320,7 @@ fn kit_pdk_sweep_on_the_mock() {
     let work = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("virtuoso-live-mock-pdk");
     let _ = std::fs::remove_dir_all(&work);
     let o = Opts {
-        pdk: Some(("pdk".into(), Some("nch".into()))),
+        pdk: Some(("pdk".into(), vec!["nch".into()])),
         ..Opts::default()
     };
     prepare(&work, &o);
@@ -2332,20 +2378,22 @@ fn kit_pdk_sweep_on_the_mock() {
 }
 
 /// The PDK rules end to end on the mock: a device whose callback derives `as`/`ad` from w,
-/// the finger count and a two-step extension over l is characterized (session 1), its
-/// rules applied to the imported mirror (mid), measured again at holdout sizes (session 2)
-/// and checked (verify).
+/// the finger count and a two-step extension over l, named by no option but instantiated
+/// by the user's cell, is characterized (session 1), its rules applied to the imported
+/// mirror (mid), measured again at holdout sizes (session 2) and checked (verify).
 #[test]
 fn kit_pdk_rules_on_the_mock() {
     let work = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("virtuoso-live-mock-rules");
     let _ = std::fs::remove_dir_all(&work);
     let o = Opts {
-        pdk: Some(("pdk".into(), Some("mos".into()))),
+        pdk: Some(("pdk".into(), Vec::new())),
+        cells: vec![("work".into(), "top".into())],
         ..Opts::default()
     };
     prepare(&work, &o);
     let mut i = mock(&work);
     i.host.add_lib("pdk");
+    i.host.add_lib("work");
     let cb = r#"(let ((ww (atof (getSGq (getSGq cdfgData w) value))) (nn (getSGq (getSGq cdfgData nf) value)) (ll (atof (getSGq (getSGq cdfgData l) value))) (ee 0.0)) (setq ee (if (lessp ll 3e-08) 5e-08 6e-08)) (setSGq (getSGq cdfgData as) (sprintf nil \"%g\" (times (plus (quotient nn 2) 1) (quotient ww nn) ee)) value) (setSGq (getSGq cdfgData ad) (sprintf nil \"%g\" (times (quotient (plus nn 1) 2) (quotient ww nn) ee)) value))"#;
     i.load(&format!(
         r#"(SfyFixPdk)
@@ -2357,7 +2405,10 @@ fn kit_pdk_rules_on_the_mock() {
   (cdfCreateParam cdf ?name "as" ?type "string" ?defValue "5e-15" ?prompt "AS" ?parseAsNumber "yes")
   (cdfCreateParam cdf ?name "ad" ?type "string" ?defValue "5e-15" ?prompt "AD" ?parseAsNumber "yes")
   (setSGq cdf (list nil 'spectre (list nil 'termOrder '(D G S B) 'instParameters '(w l nf as ad))) simInfo)
-  (cdfSaveCDF cdf))"#
+  (cdfSaveCDF cdf))
+(let ((cv (SfyFixOpen "work" "top" "schematic" "schematic")))
+  (schCreateInst cv (dbOpenCellViewByType "pdk" "mos" "symbol" nil "r") "M0" (SfyFixP 0 0) "R0")
+  (SfyFixSave cv))"#
     ))
     .unwrap();
     run_on_mock(&mut i, &work, "session1.il");
