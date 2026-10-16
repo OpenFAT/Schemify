@@ -483,6 +483,53 @@ fn characterization_summary(text: &str) -> Vec<String> {
     }
 }
 
+/// Applies the characterization's rules to the mirror project at `proj` and grades them:
+/// PASS when every derived param has a rule that reproduces every point, WARN naming the
+/// params left to Virtuoso's values otherwise.
+fn apply_pdk_rules(proj: &Path, text: &str) -> Vec<String> {
+    use interop::virtuoso::characterize;
+    let Ok(devs) = characterize::read(text) else {
+        return Vec::new();
+    };
+    let libs = read(&proj.join("schemify.project"))
+        .and_then(|m| interop::design::manifest_libs(m.as_bytes()).ok())
+        .unwrap_or_default();
+    devs.iter()
+        .map(|d| {
+            let rules = d.rules();
+            let id = format!("pdk.rules.{}.{}", d.lib, d.cell);
+            let dir = libs.get(&d.lib).map_or(d.lib.as_str(), String::as_str);
+            let cell = proj.join(dir).join(format!("{}.shprim", d.cell));
+            let Some(bytes) = std::fs::read(&cell).ok() else {
+                return format!("FAIL {id} no mirror cell {}", path_str(&cell));
+            };
+            match characterize::apply_rules(&bytes, &rules) {
+                Err(e) => format!("FAIL {id} {e}"),
+                Ok(out) => {
+                    write(&cell, out.as_bytes());
+                    let names: Vec<&str> = rules.computed.iter().map(|c| c.0.as_str()).collect();
+                    if rules.unexplained.is_empty() {
+                        format!(
+                            "PASS {id} {} computed ({}) reproduce all {} points; {} legal length run(s)",
+                            names.len(),
+                            names.join(" "),
+                            rules.points,
+                            rules.legal_l.len()
+                        )
+                    } else {
+                        format!(
+                            "WARN {id} {} computed ({}); no rule for {}: they keep Virtuoso's values",
+                            names.len(),
+                            names.join(" "),
+                            rules.unexplained.join(" ")
+                        )
+                    }
+                }
+            }
+        })
+        .collect()
+}
+
 /// CDL text without its `$[model]` tokens.
 fn without_cdl_models(cdl: &str) -> String {
     let mut out = String::with_capacity(cdl.len());
@@ -1023,8 +1070,9 @@ fn mid(work: &Path, o: &Opts) {
     }
 
     // The characterization: which netlisted parameters the callbacks derive (§8.3).
-    if let Some(text) = read(&out.join("pdk_char.sfyx")) {
-        lines.extend(characterization_summary(&text));
+    let characterization = read(&out.join("pdk_char.sfyx"));
+    if let Some(text) = &characterization {
+        lines.extend(characterization_summary(text));
     }
 
     // The PDK mirror (§8.1).
@@ -1051,6 +1099,11 @@ fn mid(work: &Path, o: &Opts) {
                 });
                 for (p, b) in &files {
                     write(&proj.join(p), b);
+                }
+                // The rules the characterization explains, applied to the mirror (§8.3):
+                // the mirror is then ready to use, its derived params computed.
+                if let Some(text) = &characterization {
+                    lines.extend(apply_pdk_rules(&proj, text));
                 }
             }
         }
@@ -1115,6 +1168,7 @@ impl Report {
                 "PASS" => Grade::Pass,
                 "FAIL" => Grade::Fail,
                 "INFO" => Grade::Info,
+                "WARN" => Grade::Warn,
                 _ => continue,
             };
             self.add(id, g, d);
@@ -2183,4 +2237,14 @@ fn kit_pdk_sweep_on_the_mock() {
     assert_eq!(derived.summary().derived, ["ad"]);
     let log = read(&work.join("out/pdk_char.sfyx.log")).unwrap_or_default();
     assert!(log.contains("PASS"), "{log}");
+    // The mid step imports the mirror and applies the rules: nch derives nothing, so it
+    // passes with none computed.
+    mid(&work, &o);
+    let mid_out = read(&work.join("out/mid.txt")).unwrap_or_default();
+    assert!(
+        mid_out
+            .lines()
+            .any(|l| l.starts_with("PASS pdk.rules.pdk.nch 0 computed")),
+        "{mid_out}"
+    );
 }

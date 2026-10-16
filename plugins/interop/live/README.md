@@ -111,6 +111,7 @@ work directory at the same absolute path on both, for example on a shared disk.
 | `user.callbacks-run.*` | No CDF callback failed. INFO rows list the values the PDK clamped or derived. |
 | `pdk.import` | The PDK mirror imports and every device cell loads. |
 | `pdk.characterize`, `pdk.derived` | With `--pdk LIB/CELL`: `SfyCharacterize` measures what the device's CDF callbacks derive (spec §8.3) into `out/pdk_char.sfyx`, which stays on your machine; `pdk.derived` names the netlisted parameters that change with w, l and the finger count. |
+| `pdk.rules.<lib>.<cell>` | The characterization's rules (spec §8.3) applied to the imported mirror in `projects/pdk`: PASS when every derived parameter has a rule that reproduces every measured point; WARN names the parameters left to Virtuoso's values. |
 
 ## Known differences
 
