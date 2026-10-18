@@ -289,6 +289,63 @@ fn tokenize(body: &str, out: &mut Vec<String>) -> Result<(), RejectReason> {
     Ok(())
 }
 
+/// Longest length a style value holds, in px ([`StyleProp::parse_value`]).
+pub const LENGTH_MAX: u32 = 1 << 14;
+
+/// Rows `[start, end)` a virtualized list lays out (only those rows become nodes, D39's node
+/// budget): `rows` rows `pitch` px apart, its scroll pane `offset` px past the first row. The
+/// window is `len` rows starting `len / 8` rows above the first visible one, the start rounded
+/// down to a multiple of 16 so a small scroll leaves the window, and so the contribution text,
+/// unchanged. The rows outside it are [`spacer`]s.
+///
+/// # Panics
+///
+/// Panics if `pitch` is not positive or `len` is 0.
+pub fn window(offset: f32, pitch: f32, rows: u32, len: u32) -> (u32, u32) {
+    assert!(pitch > 0.0, "rows have a pitch");
+    assert!(len > 0, "a window shows rows");
+    let first = ((offset.max(0.0) / pitch) as u32).min(rows);
+    let start = (first.saturating_sub(len / 8) / 16) * 16;
+    let end = (start + len).min(rows);
+    assert!(start <= end);
+    assert!(end - start <= len);
+    (start, end)
+}
+
+/// Appends `px` of empty column to contribution text `t`: `panel` nodes `{id}.{k}` under
+/// `parent`, each with its own `style` record (the id with `.` as `-`, then `-full` for the
+/// full-height ones), at most [`LENGTH_MAX`] tall. With the parent's child `gap` after each,
+/// they span exactly `px`, the space of the rows they stand for when every row's pitch counts
+/// its gap. Writes nothing for 0.
+///
+/// # Panics
+///
+/// Panics if `gap` is not below [`LENGTH_MAX`], or if the last piece (`px % LENGTH_MAX`) is
+/// shorter than `gap`.
+pub fn spacer(t: &mut String, parent: &str, id: &str, px: u32, gap: u32) {
+    use std::fmt::Write as _;
+    assert!(gap < LENGTH_MAX, "a gap shorter than a spacer piece");
+    let style = id.replace('.', "-");
+    let (full, rest) = (px / LENGTH_MAX, px % LENGTH_MAX);
+    assert!(rest == 0 || rest >= gap, "the last piece holds its gap");
+    if full > 0 {
+        let _ = writeln!(t, "style {style}-full\n  height {}", LENGTH_MAX - gap);
+    }
+    for k in 0..full {
+        let _ = writeln!(
+            t,
+            "node {id}.{k} panel\n  parent {parent}\n  style {style}-full"
+        );
+    }
+    if rest > 0 {
+        let _ = writeln!(
+            t,
+            "style {style}\n  height {}\nnode {id}.{full} panel\n  parent {parent}\n  style {style}",
+            rest - gap
+        );
+    }
+}
+
 fn unicode_escape(
     chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
 ) -> Result<char, RejectReason> {
@@ -308,6 +365,44 @@ fn unicode_escape(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_and_spacer_cover_the_rows() {
+        assert_eq!(window(0.0, 19.0, 0, 64), (0, 0));
+        assert_eq!(window(0.0, 19.0, 10, 64), (0, 10));
+        assert_eq!(window(-5.0, 19.0, 1000, 64), (0, 64));
+        // First visible row 152: 8 above, rounded down to 16.
+        assert_eq!(window(152.0 * 19.0, 19.0, 1000, 64), (144, 208));
+        assert_eq!(window(1e9, 19.0, 1000, 64), (992, 1000));
+        let mut s = Strings::new();
+        for (px, gap) in [
+            (0, 0),
+            (19, 1),
+            (12 * 16_383, 0),
+            (19 * 2000, 1),
+            (1 << 15, 0),
+        ] {
+            let mut t = String::new();
+            spacer(&mut t, "list", "list.gap", px, gap);
+            let (c, rej) = parse(&t, &mut s);
+            assert_eq!(rej, vec![]);
+            let nodes = t.matches("\nnode ").count() + usize::from(t.starts_with("node"));
+            let heights: u32 = t
+                .lines()
+                .filter_map(|l| l.trim().strip_prefix("height "))
+                .map(|h| h.parse::<u32>().unwrap())
+                .sum();
+            let full = px / LENGTH_MAX;
+            // Each `-full` style is written once and used by every full piece.
+            let spanned = if full > 0 {
+                heights + (full - 1) * (LENGTH_MAX - gap)
+            } else {
+                heights
+            };
+            assert_eq!(spanned + gap * nodes as u32, px, "{px} {gap}");
+            assert_eq!(c.edits.is_empty(), px == 0);
+        }
+    }
 
     #[test]
     fn parses_nodes_attrs_styles_keys() {

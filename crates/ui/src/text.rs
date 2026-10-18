@@ -84,6 +84,9 @@ pub struct TextSystem {
     icons: Vec<Icon>,
     /// Icon source → id, or `u32::MAX` for data that does not parse (parsed once either way).
     icon_cache: HashMap<Sym, u32>,
+    /// Code-block metrics per prose font in [`crate::prose::CODE_PX`] (measured once, kept
+    /// through evictions).
+    pub(crate) code_metrics: Vec<Option<crate::prose::CodeMetrics>>,
 }
 
 impl Default for TextSystem {
@@ -127,7 +130,7 @@ impl TextSystem {
         // A CSS family list: every builder parses it (`FontFamily::from(&str)`).
         let family = format!("\"{noto}\", \"{symbols}\"");
         assert!(noto != mono && symbols != mono);
-        TextSystem {
+        let mut ts = TextSystem {
             font_cx,
             layout_cx: LayoutContext::new(),
             family,
@@ -142,7 +145,16 @@ impl TextSystem {
             images: Vec::new(),
             icons: Vec::new(),
             icon_cache: HashMap::new(),
-        }
+            code_metrics: Vec::new(),
+        };
+        let code = crate::prose::CODE_PX
+            .map(|px| crate::prose::measure_code(&mut ts, px))
+            .collect();
+        // The probe layouts are not cache entries: drop them so ids start at 0 as before.
+        ts.layouts.clear();
+        ts.code_metrics = code;
+        assert_eq!(ts.code_metrics.len(), crate::prose::CODE_PX.len());
+        ts
     }
 
     /// Marks a layout pass boundary: if the cache is over capacity it is emptied, which

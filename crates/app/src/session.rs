@@ -109,6 +109,11 @@ pub struct TextView {
     pub found: Option<(u32, String)>,
 }
 
+/// Lines of a text tab's [`TextView`] laid out at once, at least (two screens' worth when
+/// that is more): a window around the tab's scroll offset (`ui::records::window`); spacers
+/// stand in for the rest.
+pub const TEXT_WINDOW: u32 = 256;
+
 /// Open documents and where they live on disk (SoA, one row per open document).
 #[derive(Clone, Debug, Default)]
 struct Docs {
