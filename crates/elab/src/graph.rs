@@ -445,8 +445,10 @@ impl Graph {
         }
     }
 
-    /// Re-evaluates the `dirty` nodes and everything depending on them, in order.
-    /// Returns the number of nodes evaluated. Valid while edges are unchanged.
+    /// Re-evaluates the `dirty` nodes and everything depending on them, in order, and
+    /// appends to `changed` each evaluated node whose value or `unverified` flag differs
+    /// from before (in evaluation order). Returns the number of nodes evaluated. Valid
+    /// while edges are unchanged.
     ///
     /// Cost: O(affected + their edges) plus an O(nodes) scratch clear.
     pub(crate) fn recompute<F: Funcs>(
@@ -455,6 +457,7 @@ impl Graph {
         ifaces: &[Iface],
         funcs: &mut F,
         ws: &mut Work,
+        changed: &mut Vec<u32>,
     ) -> usize {
         let rdeps = Deps {
             offsets: &self.rdep_start,
@@ -466,12 +469,24 @@ impl Graph {
             std::mem::take(&mut self.vals),
             std::mem::take(&mut self.unverified),
         );
+        let before = changed.len();
         for &node in &todo {
+            // A node never reads itself (cycle nodes lost their edges): its old value can
+            // step aside while it is evaluated.
+            let was = std::mem::replace(&mut vals[node as usize], Val::Upstream);
+            let was_unv = unv[node as usize];
             self.eval_node(node, &mut vals, &mut unv, ifaces, funcs, ws);
+            if vals[node as usize] != was || unv[node as usize] != was_unv {
+                changed.push(node);
+            }
         }
         self.vals = vals;
         self.unverified = unv;
         let count = todo.len();
+        assert!(
+            changed.len() - before <= count,
+            "only evaluated nodes change"
+        );
         ws.affected = todo;
         count
     }

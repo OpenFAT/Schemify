@@ -123,6 +123,28 @@ fn snapshot(st: &CellState) -> (Vec<String>, Vec<bool>, Vec<String>, Vec<String>
     (vals, st.graph.unverified.clone(), nets, viol)
 }
 
+/// Every node's value and `unverified` flag, as text.
+fn node_vals(st: &CellState) -> Vec<String> {
+    let g = &st.graph;
+    (0..g.len())
+        .map(|n| format!("{:?} {}", g.vals[n], g.unverified[n]))
+        .collect()
+}
+
+/// The instance rows owning a node whose text differs from `before` (same graph).
+fn revalued(st: &CellState, before: &[String]) -> Vec<u32> {
+    let now = node_vals(st);
+    assert_eq!(now.len(), before.len(), "same nodes");
+    let mut rows: Vec<u32> = (0..now.len())
+        .filter(|&n| now[n] != before[n])
+        .map(|n| st.graph.owner[n])
+        .filter(|&o| o != u32::MAX)
+        .collect();
+    rows.sort_unstable();
+    rows.dedup();
+    rows
+}
+
 fn random_op(rng: &mut Mix, n: usize) -> Op {
     let exprs = [
         "1", "2", "a", "b*2", "c+p", "0.25", "a+b", "p/2", "9", "b", "nope", "c",
@@ -225,9 +247,20 @@ fn incremental_recompute_equals_full_rebuild_after_random_edits() {
                 done.ops
             };
             let (before, pass) = (st.violations.rows.clone(), st.pass);
+            let vals0 = node_vals(&st);
             let done = st.recompute(&p, h, &ops, &mut no_funcs);
             if done.evaluated > 0 {
                 incremental += 1;
+            }
+            if !done.graph {
+                // The value delta names exactly the instances whose values changed.
+                assert_eq!(
+                    st.revalued,
+                    revalued(&st, &vals0),
+                    "seed {seed} step {step} ops {ops:?}"
+                );
+            } else {
+                assert!(st.revalued.is_empty(), "a rebuild reports no delta");
             }
             let fresh = CellState::build(&p, h, &mut no_funcs).unwrap();
             assert_eq!(

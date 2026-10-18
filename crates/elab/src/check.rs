@@ -168,41 +168,6 @@ impl Violations {
         Violations { rows }
     }
 
-    /// Replaces the value-dependent rows (`E008`, `E005`, `E006`, `E032`, `I005`) with
-    /// `fresh` (sorted, value codes only), keeping order, and returns the replaced rows
-    /// (sorted). Cost: O(rows), no re-sort.
-    pub(crate) fn replace_values(&mut self, fresh: Violations, names: &Names) -> Violations {
-        assert!(
-            fresh.rows.iter().all(|v| value_code(v.code)),
-            "only value rows are replaced"
-        );
-        let (replaced, old): (Vec<Violation>, Vec<Violation>) = std::mem::take(&mut self.rows)
-            .into_iter()
-            .partition(|v| value_code(v.code));
-        let mut out = Vec::with_capacity(old.len() + fresh.rows.len());
-        let (mut a, mut b) = (
-            old.into_iter().peekable(),
-            fresh.rows.into_iter().peekable(),
-        );
-        while let (Some(x), Some(y)) = (a.peek(), b.peek()) {
-            let next = if cmp_key(x, y, names) == Ordering::Greater {
-                b.next()
-            } else {
-                a.next()
-            };
-            out.extend(next);
-        }
-        out.extend(a);
-        out.extend(b);
-        out.truncate(VIOLATIONS_MAX);
-        debug_assert!(
-            out.windows(2)
-                .all(|w| cmp_key(&w[0], &w[1], names) == Ordering::Less)
-        );
-        self.rows = out;
-        Violations { rows: replaced }
-    }
-
     /// What changed from `old` to `self` (both from the same names arena): `(gone, new)`,
     /// the rows only `old` has and the rows only `self` has, each in key order. A row whose
     /// key stayed but whose detail changed is in both.
@@ -255,14 +220,6 @@ impl Violations {
     pub fn with(&self, code: Code) -> impl Iterator<Item = &Violation> + '_ {
         self.rows.iter().filter(move |v| v.code == code)
     }
-}
-
-/// Whether rows of `code` depend on evaluated values (what a value-only recheck replaces).
-pub(crate) fn value_code(code: Code) -> bool {
-    matches!(
-        code,
-        Code::E008 | Code::E005 | Code::E006 | Code::E032 | Code::E038 | Code::E039 | Code::I005
-    )
 }
 
 /// Orders violations by their key (code text, cell, object, path, param).
@@ -444,55 +401,69 @@ pub(crate) fn check_overrides(
     names: &mut Names,
     out: &mut Vec<Violation>,
 ) {
+    assert_eq!(unresolved.len(), cx.doc.instances().id.len());
+    for (i, why) in unresolved.iter().enumerate() {
+        inst_overrides(cx, i, why.as_deref(), names, out);
+    }
+}
+
+/// [`check_overrides`] of instance row `i` alone (`unresolved`: why its cell did not
+/// resolve). Its rows carry the instance's id, so this is what a patch of one instance's
+/// findings recomputes.
+pub(crate) fn inst_overrides(
+    cx: &CellCtx<'_>,
+    i: usize,
+    unresolved: Option<&str>,
+    names: &mut Names,
+    out: &mut Vec<Violation>,
+) {
     let doc = cx.doc;
     let s = doc.strings();
     let inst = doc.instances();
     let cell = cx.ifaces[cx.own as usize].cell;
-    assert_eq!(unresolved.len(), inst.id.len());
-    for i in 0..inst.id.len() {
-        if let Some(why) = &unresolved[i] {
-            out.push(Violation {
-                code: Code::E001,
-                cell,
-                object: inst.id[i],
-                path: Name::NONE,
-                param: Name::NONE,
-                detail: why.clone(),
-            });
+    assert!(i < inst.id.len(), "instance row {i} in range");
+    if let Some(why) = unresolved {
+        out.push(Violation {
+            code: Code::E001,
+            cell,
+            object: inst.id[i],
+            path: Name::NONE,
+            param: Name::NONE,
+            detail: why.to_owned(),
+        });
+        return;
+    }
+    let Some(c) = cx.ifaces.get(cx.inst_iface[i] as usize) else {
+        return;
+    };
+    for (k, _) in doc.pool().attrs(inst.attrs[i]) {
+        let key = s.get(k);
+        if !Instances::is_override(key) {
             continue;
         }
-        let Some(c) = cx.ifaces.get(cx.inst_iface[i] as usize) else {
-            continue;
+        let name = names.intern(key);
+        let (code, detail) = match c.param(name) {
+            None => (
+                Code::W007,
+                format!("{} has no param `{key}`", names.get(c.cell)),
+            ),
+            Some(p) if c.param_computed[p] => (Code::E030, format!("`{key}` is computed")),
+            Some(_) => continue,
         };
-        for (k, _) in doc.pool().attrs(inst.attrs[i]) {
-            let key = s.get(k);
-            if !Instances::is_override(key) {
-                continue;
-            }
-            let name = names.intern(key);
-            let (code, detail) = match c.param(name) {
-                None => (
-                    Code::W007,
-                    format!("{} has no param `{key}`", names.get(c.cell)),
-                ),
-                Some(p) if c.param_computed[p] => (Code::E030, format!("`{key}` is computed")),
-                Some(_) => continue,
-            };
-            out.push(Violation {
-                code,
-                cell,
-                object: inst.id[i],
-                path: Name::NONE,
-                param: name,
-                detail,
-            });
-        }
+        out.push(Violation {
+            code,
+            cell,
+            object: inst.id[i],
+            path: Name::NONE,
+            param: name,
+            detail,
+        });
     }
 }
 
-/// Value checks of one evaluation (`vals`): `E008` for every node whose own
-/// expression failed (child-scope compile errors are the child cell's, reported
-/// there), and D13 gating per instance param, downgraded to `I005` when waived.
+/// Value-dependent checks of every node: `E008` (evaluation errors) and gating (`E005`
+/// min/max, `E006` choices, `E032` step/grid, D13), from the evaluated `vals` (indexed
+/// like `cx.graph`). Waived gating findings become `I005`.
 pub(crate) fn check_values<F: Funcs>(
     cx: &CellCtx<'_>,
     vals: &[Val],
@@ -502,10 +473,27 @@ pub(crate) fn check_values<F: Funcs>(
     out: &mut Vec<Violation>,
 ) {
     let g = cx.graph;
+    assert_eq!(vals.len(), g.len());
+    value_errors(cx, vals, 0..g.len() as u32, out);
+    let mut found = Vec::new();
+    for i in 0..cx.doc.instances().id.len() {
+        inst_rules(cx, i, vals, names, funcs, ws, &mut found, out);
+    }
+}
+
+/// The `E008` rows of `nodes` (of `cx.graph`, ascending: rows of one key keep the full
+/// pass's order).
+pub(crate) fn value_errors(
+    cx: &CellCtx<'_>,
+    vals: &[Val],
+    nodes: impl Iterator<Item = u32>,
+    out: &mut Vec<Violation>,
+) {
+    let g = cx.graph;
     let me = &cx.ifaces[cx.own as usize];
     let inst = cx.doc.instances();
     assert_eq!(vals.len(), g.len());
-    for n in 0..g.len() as u32 {
+    for n in nodes {
         let Val::Err(e) = &vals[n as usize] else {
             continue;
         };
@@ -542,70 +530,103 @@ pub(crate) fn check_values<F: Funcs>(
             detail: format!("{}: {}", e.code.as_str(), e.msg),
         });
     }
-    let mut found = Vec::new();
-    for i in 0..inst.id.len() {
-        let Some(c) = cx.ifaces.get(cx.inst_iface[i] as usize) else {
+}
+
+/// Gating (`E005`, `E006`, `E032`, `E038`, waived `I005`) and stale derived values (`E039`)
+/// of instance row `i`: a function of that instance's nodes, its attributes and the
+/// waivers only. `found` is scratch.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn inst_rules<F: Funcs>(
+    cx: &CellCtx<'_>,
+    i: usize,
+    vals: &[Val],
+    names: &Names,
+    funcs: &mut F,
+    ws: &mut Work,
+    found: &mut Vec<(Code, String)>,
+    out: &mut Vec<Violation>,
+) {
+    let g = cx.graph;
+    let me = &cx.ifaces[cx.own as usize];
+    let inst = cx.doc.instances();
+    assert!(i < inst.id.len(), "instance row {i} in range");
+    let Some(c) = cx.ifaces.get(cx.inst_iface[i] as usize) else {
+        return;
+    };
+    let first = g.inst_first[i];
+    assert!(first != NONE, "a resolved instance has a node block");
+    if !c.vinputs.is_empty() && c.param_vderived.iter().any(|d| *d) {
+        stale_derived(cx, c, i, &vals[first as usize..], names, out);
+    }
+    for k in 0..c.param_name.len() {
+        let has_rules = c.param_bound[k].iter().any(|b| *b != NONE)
+            || c.choice_start[k] != c.choice_start[k + 1];
+        if !has_rules {
             continue;
-        };
-        let first = g.inst_first[i];
-        if !c.vinputs.is_empty() && c.param_vderived.iter().any(|d| *d) {
-            stale_derived(cx, c, i, &vals[first as usize..], names, out);
         }
-        for k in 0..c.param_name.len() {
-            let has_rules = c.param_bound[k].iter().any(|b| *b != NONE)
-                || c.choice_start[k] != c.choice_start[k + 1];
-            if !has_rules {
+        let v = &vals[(first + k as u32) as usize];
+        if v.is_err() {
+            continue;
+        }
+        // Fast path: constant bounds and no choices (PDK `min`/`max`/`grid`), a value
+        // that passes them has nothing to report.
+        let konst = &c.bound_const[k];
+        let fast = c.choice_start[k] == c.choice_start[k + 1]
+            && (0..crate::iface::BOUNDS).all(|w| c.param_bound[k][w] == NONE || konst[w].is_some())
+            && konst[crate::iface::VALID]
+                .as_ref()
+                .is_none_or(|v| matches!(v, Val::Bool(true)));
+        if fast {
+            let b = |w: usize| konst[w].as_ref().and_then(Val::as_f64);
+            if v.as_f64()
+                .is_none_or(|x| passes(x, [b(0), b(1), b(2), b(3)]))
+            {
                 continue;
             }
-            let v = &vals[(first + k as u32) as usize];
-            if v.is_err() {
-                continue;
-            }
-            // Fast path: constant bounds and no choices (PDK `min`/`max`/`grid`), a value
-            // that passes them has nothing to report.
-            let konst = &c.bound_const[k];
-            let fast = c.choice_start[k] == c.choice_start[k + 1]
-                && (0..crate::iface::BOUNDS)
-                    .all(|w| c.param_bound[k][w] == NONE || konst[w].is_some())
-                && konst[crate::iface::VALID]
-                    .as_ref()
-                    .is_none_or(|v| matches!(v, Val::Bool(true)));
-            if fast {
-                let b = |w: usize| konst[w].as_ref().and_then(Val::as_f64);
-                if v.as_f64()
-                    .is_none_or(|x| passes(x, [b(0), b(1), b(2), b(3)]))
-                {
-                    continue;
-                }
-            }
-            let mut bounds: [Option<Val>; crate::iface::BOUNDS] = Default::default();
-            for (which, b) in bounds.iter_mut().enumerate() {
-                *b = g.bound(i, k, which, vals, cx.ifaces, funcs, ws);
-            }
-            found.clear();
-            gate(v, &bounds, c.choices_of(k), names, &mut found);
-            for (code, detail) in found.drain(..) {
-                let waived = cx
-                    .waivers
-                    .binary_search(&(inst.id[i], c.param_name[k]))
-                    .is_ok();
-                let (code, detail) = if waived && code.waivable() {
-                    (Code::I005, format!("waived {}: {detail}", code.as_str()))
-                } else {
-                    (code, detail)
-                };
-                out.push(Violation {
-                    code,
-                    cell: me.cell,
-                    object: inst.id[i],
-                    path: Name::NONE,
-                    param: c.param_name[k],
-                    detail,
-                });
-            }
+        }
+        let mut bounds: [Option<Val>; crate::iface::BOUNDS] = Default::default();
+        for (which, b) in bounds.iter_mut().enumerate() {
+            *b = g.bound(i, k, which, vals, cx.ifaces, funcs, ws);
+        }
+        found.clear();
+        gate(v, &bounds, c.choices_of(k), names, found);
+        for (code, detail) in found.drain(..) {
+            let waived = cx
+                .waivers
+                .binary_search(&(inst.id[i], c.param_name[k]))
+                .is_ok();
+            let (code, detail) = if waived && code.waivable() {
+                (Code::I005, format!("waived {}: {detail}", code.as_str()))
+            } else {
+                (code, detail)
+            };
+            out.push(Violation {
+                code,
+                cell: me.cell,
+                object: inst.id[i],
+                path: Name::NONE,
+                param: c.param_name[k],
+                detail,
+            });
         }
     }
 }
+
+/// The codes a cell state's per-instance checks write ([`inst_overrides`],
+/// [`value_errors`], [`inst_rules`]), each once: in a cell state's table every row of these
+/// codes comes from them, keyed by its instance (own-scope `E008` rows by no object).
+pub(crate) const INST_CODES: [Code; 10] = [
+    Code::E001,
+    Code::W007,
+    Code::E030,
+    Code::E008,
+    Code::E005,
+    Code::E006,
+    Code::E032,
+    Code::E038,
+    Code::E039,
+    Code::I005,
+];
 
 /// The digest of an instance's `vinputs` values (D20 as amended 2026-10-15): FNV-1a 64 of
 /// one `<name>=<cached text>` line per input, in `vinputs` order, as 16 lowercase hex

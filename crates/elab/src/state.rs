@@ -7,7 +7,8 @@
 
 use crate::cells::{display, readable, row_of};
 use crate::check::{
-    CellCtx, Violation, Violations, check_overrides, check_values, cmp_key, waivers,
+    CellCtx, INST_CODES, Violation, Violations, check_overrides, check_values, cmp_key,
+    inst_overrides, inst_rules, value_errors, waivers,
 };
 use crate::connect::{CellNets, Seed, connect_seeded};
 use crate::graph::{Graph, OWN, Work, override_of};
@@ -59,6 +60,10 @@ pub struct CellState {
     pub pass: u64,
     /// The pass `changes` starts from; 0 after [`CellState::build`] (no delta: take all).
     pub prev_pass: u64,
+    /// The value delta of the last [`CellState::recompute`]: instance rows whose evaluated
+    /// params (a value or its `unverified` flag) it changed, sorted. Empty after a build
+    /// or a graph rebuild ([`Recomputed::graph`]), where every value may have changed.
+    pub revalued: Vec<u32>,
     unresolved: Vec<Option<String>>,
     /// Connectivity findings by key, duplicate keys kept in key-run order (the table keeps
     /// the first row of each key): what a patch updates the table's connectivity rows from.
@@ -131,9 +136,10 @@ impl CellState {
     /// Brings the state up to date after `ops` were applied to document `h` (the frame
     /// spine's `elab::recompute`): the ops `Project::applied` lends for a commit, an undo
     /// (its inverse ops) or a redo. Value edits (an existing override's or var's
-    /// expression) re-evaluate only their dependents; geometry edits patch the touched
-    /// nets; structural edits (instances, params, vars added or removed, overrides added
-    /// or removed, changed dependencies) rebuild. Ops of other documents are not seen:
+    /// expression) re-evaluate only their dependents, report the instances whose values
+    /// changed ([`CellState::revalued`]) and recheck only those and the edited ones;
+    /// geometry edits patch the touched nets; structural edits (instances, params, vars
+    /// added or removed, overrides added or removed, changed dependencies) rebuild. Ops of other documents are not seen:
     /// rebuild with [`CellState::build`] when an instantiated cell's interface changes.
     /// The result always equals a fresh [`CellState::build`] (the incremental oracle).
     ///
@@ -225,23 +231,65 @@ impl CellState {
         if !rebuild {
             rebuild = !self.refresh_cached(doc, &cached_vars, &cached_params, &mut dirty);
         }
+        let mut changed: Vec<u32> = Vec::new();
         if rebuild {
             self.rebuild_graph(doc, funcs);
             done.graph = true;
         } else if !dirty.is_empty() {
-            done.evaluated = self
-                .graph
-                .recompute(&dirty, &self.ifaces, funcs, &mut self.ws);
+            done.evaluated =
+                self.graph
+                    .recompute(&dirty, &self.ifaces, funcs, &mut self.ws, &mut changed);
         }
-        // A patch posts its findings unless values changed too (then one full pass).
-        let values = done.graph || waived || !touched_insts.is_empty() || !dirty.is_empty();
-        match delta {
-            Some(d) if !values => self.apply_net_delta(d),
-            _ if done.nets || values => self.check(doc, funcs),
-            _ => self.check_values_only(doc, funcs),
+        // The value delta: instance rows owning a node whose value changed.
+        let g = &self.graph;
+        let own = changed.iter().any(|&n| g.owner[n as usize] == NONE);
+        self.revalued.clear();
+        self.revalued.extend(
+            changed
+                .iter()
+                .map(|&n| g.owner[n as usize])
+                .filter(|&o| o != NONE),
+        );
+        self.revalued.sort_unstable();
+        self.revalued.dedup();
+        // Rows whose findings may change: the revalued ones and those whose attributes an
+        // op touched (an override added, removed or changed).
+        let mut rows: Vec<u32> = touched_insts
+            .iter()
+            .filter_map(|&id| doc.find_id(id))
+            .map(|loc| loc.row)
+            .chain(self.revalued.iter().copied())
+            .collect();
+        rows.sort_unstable();
+        rows.dedup();
+        // A patch posts its findings, a value edit its instances' findings; a rebuilt
+        // connectivity or graph, or a waiver edit, reruns the whole pass.
+        let changes = if nets || done.graph || waived {
+            None
+        } else {
+            let net = delta.map(|d| self.apply_net_delta(d));
+            let vals = self.recheck(doc, &rows, own, funcs);
+            vals.map(|(mut gone, mut new)| {
+                if let Some((g, n)) = net {
+                    gone.extend(g);
+                    new.extend(n);
+                }
+                let names = &self.names;
+                gone.sort_by(|a, b| cmp_key(a, b, names));
+                new.sort_by(|a, b| cmp_key(a, b, names));
+                (gone, new)
+            })
+        };
+        match changes {
+            Some(c) => self.next_pass(c),
+            None => self.check(doc, funcs),
+        }
+        if done.graph {
+            self.revalued.clear(); // every instance: consumers take a rebuild
         }
         assert!(!(done.graph && done.evaluated > 0));
         assert!(!(done.patched && nets), "patched or rebuilt, not both");
+        assert!(self.revalued.len() <= self.inst_iface.len());
         done
     }
 
@@ -422,11 +470,12 @@ impl CellState {
     }
 
     /// Posts a connectivity patch's findings: `gone` leave the table and `new` enter it
-    /// (rows on both sides cancel), as the delta of a new pass. The table keeps one row per
-    /// key, so a key leaves only with its last connectivity row.
+    /// (rows on both sides cancel). Returns what the table lost and gained, each in key
+    /// order (the caller's pass delta). The table keeps one row per key, so a key leaves
+    /// only with its last connectivity row.
     ///
     /// Cost: O((gone + new) · log rows) compares plus a memmove per changed row.
-    fn apply_net_delta(&mut self, (mut gone, mut new): Delta) {
+    fn apply_net_delta(&mut self, (mut gone, mut new): Delta) -> (Vec<Violation>, Vec<Violation>) {
         let names = &self.names;
         let order = |a: &Violation, b: &Violation| {
             cmp_key(a, b, names).then_with(|| a.detail.cmp(&b.detail))
@@ -491,7 +540,162 @@ impl CellState {
             rows.windows(2)
                 .all(|w| cmp_key(&w[0], &w[1], names).is_lt())
         );
-        self.next_pass(changes);
+        changes
+    }
+
+    /// Reruns the per-instance checks of instance rows `rows` (sorted, unique) and, with
+    /// `own`, the own scope's `E008` rows, and replaces those rows of the table. Returns what
+    /// the table lost and gained (key order; a row whose key stayed but whose detail changed
+    /// is in both), or `None` near [`crate::VIOLATIONS_MAX`] (the caller runs the full pass,
+    /// which truncates).
+    ///
+    /// Equals the full pass's rows because every row of a per-instance code
+    /// (`check::INST_CODES`) is a function of its instance's nodes, attributes and the
+    /// waivers, and rows of one key are emitted in the full pass's order.
+    ///
+    /// Cost: O(rows' nodes) to check, O(codes · rows · log table) to find the old rows, and a
+    /// memmove per changed row (one merge pass past 32 changes).
+    fn recheck<F: Funcs>(
+        &mut self,
+        doc: &Document,
+        rows: &[u32],
+        own: bool,
+        funcs: &mut F,
+    ) -> Option<(Vec<Violation>, Vec<Violation>)> {
+        assert!(
+            rows.windows(2).all(|w| w[0] < w[1]),
+            "rows sorted and unique"
+        );
+        if self.violations.rows.len() >= crate::VIOLATIONS_MAX / 2 {
+            return None;
+        }
+        if rows.is_empty() && !own {
+            return Some((Vec::new(), Vec::new()));
+        }
+        let inst = doc.instances();
+        let g = &self.graph;
+        let mut nodes: Vec<u32> = if own {
+            (0..g.params + g.vars).collect()
+        } else {
+            Vec::new()
+        };
+        for &i in rows {
+            let i = i as usize;
+            let Some(c) = self.ifaces.get(self.inst_iface[i] as usize) else {
+                continue;
+            };
+            let first = g.inst_first[i];
+            nodes.extend(first..first + c.param_name.len() as u32);
+            let at = g.child_vars.partition_point(|e| e.0 < i as u32);
+            nodes.extend(
+                g.child_vars[at..]
+                    .iter()
+                    .take_while(|e| e.0 == i as u32)
+                    .map(|e| e.2),
+            );
+        }
+        nodes.sort_unstable();
+        let cx = CellCtx {
+            doc,
+            ifaces: &self.ifaces,
+            own: 0,
+            inst_iface: &self.inst_iface,
+            graph: &self.graph,
+            waivers: &self.waivers,
+            path: Name::NONE,
+        };
+        let mut fresh = Vec::new();
+        for &i in rows {
+            let why = self.unresolved[i as usize].as_deref();
+            inst_overrides(&cx, i as usize, why, &mut self.names, &mut fresh);
+        }
+        value_errors(&cx, &self.graph.vals, nodes.into_iter(), &mut fresh);
+        let mut found = Vec::new();
+        for &i in rows {
+            let vals = &self.graph.vals;
+            let (names, ws) = (&self.names, &mut self.ws);
+            inst_rules(
+                &cx, i as usize, vals, names, funcs, ws, &mut found, &mut fresh,
+            );
+        }
+        let names = &self.names;
+        let order = |a: &Violation, b: &Violation| cmp_key(a, b, names);
+        fresh.sort_by(order);
+        fresh.dedup_by(|b, a| order(a, b).is_eq());
+        // The rows these checks wrote last time: per code, a run sorted by object (one cell).
+        let mut objs: Vec<ObjId> = rows.iter().map(|&r| inst.id[r as usize]).collect();
+        if own {
+            objs.push(ObjId::NONE);
+        }
+        objs.sort_unstable();
+        let table = &self.violations.rows;
+        let cell = self.ifaces[0].cell;
+        let mut old: Vec<usize> = Vec::new();
+        for code in INST_CODES {
+            let lo = table.partition_point(|v| v.code.as_str() < code.as_str());
+            let hi = lo + table[lo..].partition_point(|v| v.code == code);
+            let run = &table[lo..hi];
+            debug_assert!(run.iter().all(|v| v.cell == cell), "one cell's rows");
+            for &o in &objs {
+                let a = run.partition_point(|v| v.object < o);
+                let b = a + run[a..].partition_point(|v| v.object == o);
+                old.extend(lo + a..lo + b);
+            }
+        }
+        old.sort_unstable();
+        // Rows on both sides cancel.
+        let (mut gone, mut new): (Vec<usize>, Vec<Violation>) = (Vec::new(), Vec::new());
+        let (mut a, mut b) = (0, 0);
+        while a < old.len() || b < fresh.len() {
+            match (old.get(a), fresh.get(b)) {
+                (Some(&o), Some(f)) if table[o] == *f => (a, b) = (a + 1, b + 1),
+                (Some(&o), Some(f)) if order(&table[o], f).is_le() => {
+                    gone.push(o);
+                    a += 1;
+                }
+                (Some(_), Some(f)) | (None, Some(f)) => {
+                    new.push(f.clone());
+                    b += 1;
+                }
+                (Some(&o), None) => {
+                    gone.push(o);
+                    a += 1;
+                }
+                (None, None) => unreachable!("loop condition"),
+            }
+        }
+        let rows = &mut self.violations.rows;
+        let lost: Vec<Violation> = gone.iter().map(|&o| rows[o].clone()).collect();
+        if gone.len() + new.len() > 32 {
+            // One merge pass instead of a memmove per row.
+            let mut out = Vec::with_capacity(rows.capacity());
+            let (mut k, mut n) = (0, new.iter().peekable());
+            for (t, r) in std::mem::take(rows).into_iter().enumerate() {
+                if gone.get(k) == Some(&t) {
+                    k += 1;
+                    continue;
+                }
+                while let Some(x) = n.next_if(|x| order(x, &r).is_lt()) {
+                    out.push(x.clone());
+                }
+                out.push(r);
+            }
+            out.extend(n.cloned());
+            *rows = out;
+        } else {
+            for &o in gone.iter().rev() {
+                rows.remove(o);
+            }
+            for r in &new {
+                let t = rows
+                    .binary_search_by(|x| order(x, r))
+                    .expect_err("a fresh key is not in the table");
+                rows.insert(t, r.clone());
+            }
+        }
+        debug_assert!(rows.windows(2).all(|w| order(&w[0], &w[1]).is_lt()));
+        assert!(lost.len() == gone.len());
+        Some((lost, new))
     }
 
     fn rebuild_graph<F: Funcs>(&mut self, doc: &Document, funcs: &mut F) {
@@ -568,48 +772,6 @@ impl CellState {
         self.pass = PASSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.changes = changes;
         assert!(self.pass > self.prev_pass);
-    }
-
-    /// Replaces only the findings that depend on values (`E008`, gating): after a value
-    /// edit nothing else can change, and the other rows (often thousands of `W004`)
-    /// keep their sorted place.
-    fn check_values_only<F: Funcs>(&mut self, doc: &Document, funcs: &mut F) {
-        let mut rows = Vec::new();
-        let cx = CellCtx {
-            doc,
-            ifaces: &self.ifaces,
-            own: 0,
-            inst_iface: &self.inst_iface,
-            graph: &self.graph,
-            waivers: &self.waivers,
-            path: Name::NONE,
-        };
-        check_values(
-            &cx,
-            &self.graph.vals,
-            &self.names,
-            funcs,
-            &mut self.ws,
-            &mut rows,
-        );
-        let fresh = Violations::from_rows(rows, &self.names);
-        let old = self.violations.replace_values(fresh, &self.names);
-        // The delta: old value rows against the fresh ones (both sorted, value codes only).
-        let fresh = Violations {
-            rows: self
-                .violations
-                .rows
-                .iter()
-                .filter(|v| crate::check::value_code(v.code))
-                .cloned()
-                .collect(),
-        };
-        let (gone, new) = fresh.diff(&old, &self.names);
-        let changes = (
-            gone.into_iter().cloned().collect(),
-            new.into_iter().cloned().collect(),
-        );
-        self.next_pass(changes);
     }
 }
 
