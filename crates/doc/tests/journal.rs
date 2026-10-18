@@ -454,17 +454,26 @@ fn a_long_journal_is_compacted_on_save() {
 #[test]
 fn edit_garbage_is_compacted_without_changing_the_document() {
     let (mut p, h) = open(OTA, "ota5t.shcomp");
-    for i in 0..6000 {
+    let mut compactions = 0;
+    const COMMITS: usize = 12_000;
+    for i in 0..COMMITS {
         let op = Op::SetAttr {
             target: Target::new(RecordKind::Inst, "0gsrp0"),
             key: "W".into(),
             values: vec![format!("{}", i % 7)],
         };
+        let (cursor, dead) = (p.doc(h).unwrap().cursor(), p.doc(h).unwrap().pool().dead);
         assert!(matches!(
             run(&mut p, h, tx(vec![op])),
             Outcome::Committed { .. }
         ));
+        // A compaction renumbers the tables: the change log no longer reads through it.
+        let d = p.doc(h).unwrap();
+        let compacted = d.pool().dead < dead;
+        compactions += u32::from(compacted);
+        assert_eq!(d.changes_since(cursor).is_none(), compacted, "commit {i}");
     }
+    assert!(compactions > 0, "the walk compacted");
     let d = p.doc(h).unwrap();
     assert!(
         d.pool().dead < 1 << 17,
@@ -473,7 +482,7 @@ fn edit_garbage_is_compacted_without_changing_the_document() {
     );
     let expected = OTA.replacen(
         "  name M1\n  W Wp\n",
-        &format!("  name M1\n  W {}\n", 5999 % 7),
+        &format!("  name M1\n  W {}\n", (COMMITS - 1) % 7),
         1,
     );
     assert_eq!(canon(&p, h), expected);

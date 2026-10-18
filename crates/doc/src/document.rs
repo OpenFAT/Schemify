@@ -7,6 +7,7 @@
 //! Save spine: header → every table in rank order → end-of-file comments; the format
 //! writer then sorts ranks 3 and 6.
 
+use crate::changes::{Change, ChangeLog, Cursor, Write};
 use crate::record::{Attr, RecordBuf, check_record};
 use crate::strings::{FastMap, ObjId, Strings, Sym};
 use crate::tables::{
@@ -399,6 +400,8 @@ pub struct Document {
     pub(crate) eof_comments: Vec<Sym>,
     /// Every id-bearing row, for `O(1)` lookup by id. Never iterated for output.
     by_id: FastMap<ObjId, Loc>,
+    /// Every row write since the load, for consumers that follow edits (see [`Cursor`]).
+    log: ChangeLog,
     /// Records of a newer format version this reader does not know (spec §5). Their
     /// presence makes the document read-only.
     unknown_records: u32,
@@ -451,8 +454,26 @@ impl Document {
             codes: Records::default(),
             eof_comments: Vec::new(),
             by_id: FastMap::default(),
+            log: ChangeLog::default(),
             unknown_records: 0,
         }
+    }
+
+    /// Where the change log ends now: [`Document::changes_since`] of it lists the row
+    /// writes made after this call.
+    pub fn cursor(&self) -> Cursor {
+        self.log.cursor()
+    }
+
+    /// The row writes made since `c` was taken, oldest first (a row can appear more than
+    /// once), or `None` when the log no longer reaches `c`: it was taken on another
+    /// document (a reload, a merge and a copy are other documents), more than
+    /// [`LOG_MAX`](crate::LOG_MAX) changes ago, or before a compaction renumbered the
+    /// tables. A consumer then rebuilds from the tables.
+    pub fn changes_since(&self, c: Cursor) -> Option<&[Change]> {
+        let rows = self.log.since(c);
+        debug_assert!(rows.is_none_or(|r| r.iter().all(|x| x.table.capacity() > x.row)));
+        rows
     }
 
     // -------------------------------------------------------------- read API
@@ -676,6 +697,7 @@ impl Document {
         }
         let mut diags = doc.reid_dups(src, &locs);
         diags.extend(doc.load_diags());
+        doc.log = ChangeLog::default(); // a loaded document starts its log empty
         assert!(doc.unknown_records == 0 || doc.read_only());
         Loaded { doc, diags }
     }
@@ -884,6 +906,8 @@ impl Document {
             self.move_rows(t, len, pos);
             loc.row = pos as u32;
         }
+        let id = with_table!(self, t, |tab| tab.id_at(loc.row as usize, &self.strings));
+        self.log.push(t, Write::Content, loc.row, id);
         assert_eq!(self.kind_at(loc), rec.kind);
         Ok(loc)
     }
@@ -914,12 +938,13 @@ impl Document {
             tab.comments_col()[row].len + tab.verbatim_col().get(row).map_or(0, |s| s.len)
         ));
         self.pool.orphan(attrs, lines);
+        self.log.push(t, Write::Deleted, row as u32, id);
         if t.ordered() {
             with_table_mut!(self, t, |tab, _s, _p| tab.remove_row(row));
-            self.reindex(t, row..len - 1);
+            self.reindex(t, row..len - 1, Write::Moved);
         } else {
             with_table_mut!(self, t, |tab, _s, _p| tab.swap_remove_row(row));
-            self.reindex(t, row..(row + 1).min(len - 1));
+            self.reindex(t, row..(row + 1).min(len - 1), Write::Moved);
         }
         assert_eq!(self.table_len(t), len - 1);
     }
@@ -963,7 +988,11 @@ impl Document {
             tab.len()
         });
         assert_eq!(tmp, len);
-        self.reindex(t, row..row + 1);
+        self.reindex(t, row..row + 1, Write::Content);
+        let new_id = with_table!(self, t, |tab| tab.id_at(row, &self.strings));
+        if old_id != new_id && old_id != ObjId::NONE {
+            self.log.push(t, Write::Deleted, row as u32, old_id);
+        }
     }
 
     /// Moves the row at `loc` to row `to` of its (ordered) table.
@@ -995,16 +1024,18 @@ impl Document {
             return;
         }
         with_table_mut!(self, t, |tab, _s, _p| tab.move_row(from, to));
-        self.reindex(t, from.min(to)..from.max(to) + 1);
+        self.reindex(t, from.min(to)..from.max(to) + 1, Write::Moved);
         assert_eq!(self.table_len(t), len);
     }
 
-    /// Re-points `by_id` at the rows in `rows` after they moved.
-    fn reindex(&mut self, t: TableId, rows: std::ops::Range<usize>) {
+    /// Re-points `by_id` at the rows in `rows` after they were written (`what`), and logs
+    /// each write.
+    fn reindex(&mut self, t: TableId, rows: std::ops::Range<usize>, what: Write) {
         let len = self.table_len(t);
         assert!(rows.start <= rows.end && rows.start <= len);
         for row in rows.start..rows.end.min(len) {
             let id = with_table!(self, t, |tab| tab.id_at(row, &self.strings));
+            self.log.push(t, what, row as u32, id);
             if id != ObjId::NONE {
                 self.by_id.insert(
                     id,
@@ -1168,7 +1199,11 @@ impl Document {
             rebuilt.table_len(TableId::Instances),
             self.table_len(TableId::Instances)
         );
+        // Strings and rows are renumbered: the log goes on, but no earlier cursor reads on.
+        let mut log = std::mem::take(&mut self.log);
+        log.break_here();
         *self = rebuilt;
+        self.log = log;
         assert_eq!(self.pool.dead, 0);
     }
 }

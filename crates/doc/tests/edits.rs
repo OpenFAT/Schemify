@@ -214,6 +214,121 @@ fn reported_ops_replay_to_the_same_document() {
     }
 }
 
+/// Change log oracle (`Document::changes_since`): a mirror of every table's rows that
+/// re-reads only the rows the log names (and drops rows past each table's length) equals a
+/// fresh read of every row after every request (commits, undo, redo, stage, accept,
+/// reject, rejections); the ids it marks deleted are exactly the ids gone from the
+/// document, and a cursor of another document, or of a copy, reads nothing.
+#[test]
+fn the_change_log_names_every_row_write() {
+    use schemify_doc::{Document, Loc, ObjId, TableId, Write};
+    use std::collections::BTreeSet;
+    let rows_of = |d: &Document, t: TableId| -> Vec<String> {
+        (0..d.table_len(t) as u32)
+            .map(|row| format!("{:?}", d.record(Loc { table: t, row })))
+            .collect()
+    };
+    let ids_of = |d: &Document| -> BTreeSet<u32> {
+        TableId::ALL
+            .iter()
+            .flat_map(|&t| (0..d.table_len(t) as u32).map(move |row| (t, row)))
+            .filter_map(|(t, row)| {
+                let r = d.record(Loc { table: t, row });
+                let f = r.fields.first()?;
+                ObjId::find(f, d.strings()).filter(|_| r.kind.key() == schemify_format::KeyRule::Id)
+            })
+            .map(|id| id.0)
+            .collect()
+    };
+    let (mut followed, mut deleted) = (0u32, 0u32);
+    for seed in 0..16 {
+        let mut rng = Mix::new(seed);
+        let (mut p, h) = open(SEED_DOC, "cell.shcomp");
+        let doc = p.doc(h).unwrap();
+        let mut mirror: Vec<Vec<String>> = TableId::ALL.iter().map(|&t| rows_of(doc, t)).collect();
+        let mut cursor = doc.cursor();
+        let mut stages: Vec<u16> = Vec::new();
+        for step in 0..120 {
+            let ctx = format!("seed {seed} step {step}");
+            let edit = match rng.below(10) {
+                0..=4 => tx((0..1 + rng.below(3))
+                    .map(|_| gen_op(&mut rng, p.doc(h).unwrap()))
+                    .collect()),
+                5 => Edit::Undo,
+                6 => Edit::Redo,
+                7 => stage_tx(vec![gen_op(&mut rng, p.doc(h).unwrap())]),
+                8 if !stages.is_empty() => Edit::Accept(stages.remove(0)),
+                _ => Edit::Reject(stages.pop().unwrap_or(u16::MAX)),
+            };
+            let ids_before = ids_of(p.doc(h).unwrap());
+            if let Outcome::Staged { stage } = apply_edits(&mut p, &[req(h, edit)]).remove(0) {
+                stages.push(stage);
+            }
+            let d = p.doc(h).unwrap();
+            let changes = d
+                .changes_since(cursor)
+                .expect("the log reaches the last frame");
+            let mut gone = BTreeSet::new();
+            for c in changes {
+                let ti = TableId::ALL.iter().position(|&t| t == c.table).unwrap();
+                let len = d.table_len(c.table);
+                let m = &mut mirror[ti];
+                m.resize(m.len().max(len), String::new());
+                if (c.row as usize) < len {
+                    m[c.row as usize] = format!(
+                        "{:?}",
+                        d.record(Loc {
+                            table: c.table,
+                            row: c.row
+                        })
+                    );
+                }
+                match c.what {
+                    Write::Deleted => {
+                        gone.insert(c.id.0);
+                    }
+                    Write::Content => {
+                        gone.remove(&c.id.0);
+                    }
+                    Write::Moved => {}
+                }
+            }
+            for (ti, &t) in TableId::ALL.iter().enumerate() {
+                mirror[ti].truncate(d.table_len(t));
+                assert_eq!(mirror[ti], rows_of(d, t), "{ctx}: {t:?} rows");
+            }
+            let ids_after = ids_of(d);
+            let left: BTreeSet<u32> = ids_before.difference(&ids_after).copied().collect();
+            assert!(left.is_subset(&gone), "{ctx}: every deleted id is logged");
+            assert!(
+                gone.is_disjoint(&ids_after),
+                "{ctx}: a logged deletion is gone"
+            );
+            followed += u32::from(!changes.is_empty());
+            deleted += left.len() as u32;
+            cursor = d.cursor();
+            assert_eq!(d.changes_since(cursor).map(<[_]>::len), Some(0));
+        }
+        // Negative space: another document's cursor, and a copy's, read nothing.
+        let (q, g) = open(SEED_DOC, "cell.shcomp");
+        assert!(
+            p.doc(h)
+                .unwrap()
+                .changes_since(q.doc(g).unwrap().cursor())
+                .is_none()
+        );
+        let copy = p.doc(h).unwrap().clone();
+        assert!(
+            copy.changes_since(cursor).is_none(),
+            "a copy is another log"
+        );
+    }
+    assert!(
+        followed > 400 && deleted > 50,
+        "{followed} followed, {deleted} deleted"
+    );
+}
+
 /// `Project::applied` negative space: an undone entry's ops are gone once a later commit
 /// clears redo, and a stale handle reports nothing.
 #[test]

@@ -46,6 +46,7 @@
 
 #![forbid(unsafe_code)]
 
+mod changes;
 mod core_lib;
 mod document;
 mod edit;
@@ -58,6 +59,7 @@ mod strings;
 mod tables;
 mod techmap;
 
+pub use changes::{Change, Cursor, LOG_MAX, Write};
 pub use core_lib::{core_file, core_library};
 pub use document::{Document, Loc, TableId};
 pub use edit::{Mode, NEW_ID, OPS_MAX, Op, OpError, Target, Transaction};
