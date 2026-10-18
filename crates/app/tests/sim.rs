@@ -111,7 +111,7 @@ fn node_kind(s: &Session, id: &str) -> Option<Kind> {
 
 fn marker_rects(s: &Session) -> usize {
     let layers = [LAYER_ERROR, LAYER_WARN, LAYER_INFO];
-    s.ed.decor()
+    s.ed.markers()
         .rects
         .layer
         .iter()
@@ -128,7 +128,7 @@ fn violation_overlay_follows_edits() {
     let check = |s: &Session| {
         let cell = s.ed.cell().expect("every shown cell is elaborated");
         let ann = s.ed.annotations();
-        let marks = ann.source.iter().filter(|x| *x == SOURCE_CHECKS).count();
+        let marks = ann.count_of(SOURCE_CHECKS);
         assert_eq!(marks, cell.violations.rows.len());
         let drawn = cell
             .violations
@@ -395,9 +395,7 @@ fn simulate_polls_a_fake_simulator_to_results_waves_and_op() {
     assert!(s.ed.sim().plots[0].waves.is_ok());
     let op: Vec<(&str, &str)> =
         s.ed.annotations()
-            .source
             .iter()
-            .zip(&s.ed.annotations().marks)
             .filter(|(src, _)| *src == SOURCE_OP)
             .map(|(_, m)| (m.target.as_str(), m.text.as_str()))
             .collect();
@@ -408,9 +406,9 @@ fn simulate_polls_a_fake_simulator_to_results_waves_and_op() {
         "drawn on the net"
     );
     activate(&mut s, "waves.op_annotate");
-    assert!(!s.ed.annotations().source.iter().any(|x| x == SOURCE_OP));
+    assert!(!s.ed.annotations().has_source(SOURCE_OP));
     activate(&mut s, "waves.op_annotate");
-    assert!(s.ed.annotations().source.iter().any(|x| x == SOURCE_OP));
+    assert!(s.ed.annotations().has_source(SOURCE_OP));
     let px = s.render();
     assert_eq!(px.width(), common::VIEW.0 as u16);
     // Waves on the job, then cross-probe a click on the `out` wire.
@@ -669,8 +667,8 @@ fn real_ngspice_simulates_the_rc_bench() {
     assert!((tau - 3.3e-3).abs() < 3.3e-3 * 5e-3, "{tau}");
     let op: Vec<&str> =
         s.ed.annotations()
-            .marks
             .iter()
+            .map(|(_, m)| m)
             .filter(|m| m.target == "out")
             .map(|m| m.text.as_str())
             .collect();
@@ -824,9 +822,7 @@ fn op_annotation_reads_xyce_naming() {
     run_to_idle(&mut s);
     let op: Vec<(&str, &str)> =
         s.ed.annotations()
-            .source
             .iter()
-            .zip(&s.ed.annotations().marks)
             .filter(|(src, _)| *src == SOURCE_OP)
             .map(|(_, m)| (m.target.as_str(), m.text.as_str()))
             .collect();
@@ -871,8 +867,8 @@ fn real_ngspice_saves_mos_op_quantities_and_terminal_currents() {
     assert_eq!(jobs.state(0), State::Done, "{errs:?}");
     let marks: Vec<&str> =
         s.ed.annotations()
-            .marks
             .iter()
+            .map(|(_, m)| m)
             .filter(|m| m.target == "/1")
             .map(|m| m.text.as_str())
             .collect();

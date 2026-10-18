@@ -723,7 +723,7 @@ impl Editor {
                     source: SOURCE_CHECKS.to_owned(),
                     marks: Vec::new(),
                 });
-                self.decor_dirty = true;
+                self.marker_targets = None;
             }
             return;
         };
@@ -739,12 +739,20 @@ impl Editor {
             })
             .flatten();
         self.checks_key = Some((active, c.pass));
+        // The markers follow: the targets of the marks that changed, or everything.
         match delta {
-            Some((gone, new)) if gone.is_empty() && new.is_empty() => return,
-            Some((gone, new)) => self.annotations.patch(SOURCE_CHECKS, gone, new),
-            None => self.annotations.replace(checks::violation_request(c, d)),
+            Some((gone, new)) if gone.is_empty() && new.is_empty() => {}
+            Some((gone, new)) => {
+                if let Some(t) = self.marker_targets.as_mut() {
+                    t.extend(gone.iter().chain(&new).map(|m| m.target.clone()));
+                }
+                self.annotations.patch(SOURCE_CHECKS, gone, new);
+            }
+            None => {
+                self.annotations.replace(checks::violation_request(c, d));
+                self.marker_targets = None;
+            }
         }
-        self.decor_dirty = true;
     }
 
     /// The run step of the frame spine: loads a bench's saved results when it is first
@@ -849,7 +857,7 @@ impl Editor {
                 self.op_job = Some(key);
             }
         }
-        debug_assert!(self.op_shown || !self.annotations.source.iter().any(|s| s == SOURCE_OP));
+        debug_assert!(self.op_shown || !self.annotations.has_source(SOURCE_OP));
         changed
     }
 
@@ -1016,10 +1024,51 @@ impl Editor {
         }
     }
 
-    /// Rebuilds the decor primitives when the scene, the overlay, the highlight, the name
-    /// map or the staged diff changed. Returns whether it rebuilt.
+    /// Places the violation markers where the scene or the `checks` marks changed since
+    /// they were last placed (`checks::place_markers`: the objects the scene's last update
+    /// touched and the targets of the patched marks, or everything after a scene build, a
+    /// missed scene generation or a replaced overlay). Returns whether they changed.
+    pub(super) fn build_markers(&mut self) -> bool {
+        let Some(doc) = self.active().and_then(|(h, _)| self.session.project.doc(h)) else {
+            return false;
+        };
+        let g = self.scene.generation;
+        let targets = self.marker_targets.replace(Vec::new());
+        let seen = self.markers.generation();
+        let ids: Option<Vec<u32>> = match (targets, self.scene.touched()) {
+            (Some(t), _) if seen == Some(g) && t.is_empty() => return false,
+            (Some(t), _) if seen == Some(g) => Some(ids_of(&t, doc)),
+            (Some(t), Some(keys)) if seen == Some(g.wrapping_sub(1)) => {
+                let mut ids = ids_of(&t, doc);
+                ids.extend(keys.iter().map(|k| k.key));
+                ids.sort_unstable();
+                ids.dedup();
+                Some(ids)
+            }
+            _ => None,
+        };
+        checks::place_markers(
+            &mut self.markers,
+            &self.scene,
+            doc,
+            &self.annotations,
+            ids.as_deref(),
+        );
+        self.canvas_gen[4] += 1;
+        assert_eq!(self.markers.generation(), Some(g));
+        true
+    }
+
+    /// Rebuilds the decor primitives (highlight, OP annotations, staged diff) when the
+    /// overlay, the highlight, the name map or the staged diff changed, or the scene did and
+    /// the decor draws something on it. Returns whether it rebuilt.
     pub(super) fn build_decor(&mut self, scene_stale: bool) -> bool {
-        if !scene_stale && !self.decor_dirty {
+        // What the decor draws follows the scene only while it has something to draw.
+        let draws = !self.decor.is_empty()
+            || !self.highlight.is_empty()
+            || self.annotations.len() > self.annotations.count_of(SOURCE_CHECKS)
+            || self.diff != checks::Diff::default();
+        if !(self.decor_dirty || scene_stale && draws) {
             return false;
         }
         self.decor_dirty = false;
@@ -1047,7 +1096,7 @@ impl Editor {
             _ => Vec::new(),
         };
         let prefix = self.level_prefix();
-        let has_op = self.annotations.source.iter().any(|s| s == SOURCE_OP);
+        let has_op = self.annotations.has_source(SOURCE_OP);
         // Net keys for annotation lookup: computed before borrowing the scene and the doc.
         let net_keys: Vec<(String, String)> = match (has_op, self.cell.as_ref()) {
             (true, Some(cell)) => {
@@ -1252,4 +1301,18 @@ impl Editor {
         );
         let _ = writeln!(t, "set waves.op_annotate checked {}", u8::from(self.op_on));
     }
+}
+
+/// The object ids of mark targets `targets` (sorted, unique; a path or name target has none).
+fn ids_of(targets: &[String], doc: &schemify_doc::Document) -> Vec<u32> {
+    let s = doc.strings();
+    let mut ids: Vec<u32> = targets
+        .iter()
+        .filter_map(|t| ObjId::find(t, s))
+        .map(|id| id.0)
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert!(ids.len() <= targets.len());
+    ids
 }

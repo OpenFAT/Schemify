@@ -9,6 +9,8 @@
 mod common;
 
 use common::{Session, U, VIEW};
+use schemify_app::checks;
+use schemify_render::canvas::{CanvasPrims, LAYER_DEAD};
 use schemify_render::vello::peniko::Color;
 use schemify_render::{CpuPainter, Pixmap};
 
@@ -32,7 +34,7 @@ fn act(s: &mut Session, rng: &mut Rng) -> String {
             (rng.below(12) as i32 - 4) * 20 * U,
         )
     };
-    match rng.below(14) {
+    match rng.below(16) {
         0..=2 => {
             // Click an object (or empty canvas): the selection marks change.
             let n = s.ed.scene().objs.len();
@@ -101,6 +103,19 @@ fn act(s: &mut Session, rng: &mut Rng) -> String {
             s.frame(Default::default());
             "symbol texts".into()
         }
+        14 | 15 => {
+            // Drag an object (a move: geometry and violations change).
+            let n = s.ed.scene().objs.len();
+            if n == 0 {
+                return "nothing to drag".into();
+            }
+            let g = s.ed.scene().objs.geom[rng.below(n as u64) as usize];
+            let a = ((g[0] + g[2]) / 2, (g[1] + g[3]) / 2);
+            let b = (a.0 + (rng.below(5) as i32 - 2) * 20 * U, a.1 + 40 * U);
+            s.click(a);
+            s.drag(a, b, 0);
+            format!("drag {a:?} -> {b:?}")
+        }
         12 => {
             s.ed.command("highlight.enable_highlight_connected_instances", "");
             s.frame(Default::default());
@@ -143,6 +158,54 @@ fn compare(a: &Pixmap, b: &Pixmap) -> (u8, usize) {
     (worst, off)
 }
 
+/// The live rows of a primitive table, as a sorted set of their text.
+fn live_rows(p: &CanvasPrims) -> Vec<String> {
+    let r = &p.rects;
+    let t = &p.texts;
+    let mut rows: Vec<String> = (0..r.x0.len())
+        .filter(|&i| r.layer[i] != LAYER_DEAD)
+        .map(|i| {
+            format!(
+                "rect {} {} {} {} {}",
+                r.x0[i], r.y0[i], r.x1[i], r.y1[i], r.layer[i]
+            )
+        })
+        .collect();
+    let mut start = 0;
+    for i in 0..t.x.len() {
+        let end = t.end[i] as usize;
+        if t.layer[i] != LAYER_DEAD {
+            let text = &t.text[start..end];
+            rows.push(format!(
+                "text {} {} {} {} {text}",
+                t.x[i], t.y[i], t.size[i], t.layer[i]
+            ));
+        }
+        start = end;
+    }
+    assert!(
+        p.lines.x0.is_empty() && p.arcs.cx.is_empty(),
+        "markers are rects and texts"
+    );
+    rows.sort();
+    rows
+}
+
+/// Oracle for the incremental violation markers: what the editor keeps equals a full
+/// placement over the same scene and overlay, as a set of live rows, and covers every
+/// `checks` mark on a drawn object.
+fn markers_match(s: &Session, ctx: &str) {
+    let (h, _) = s.ed.active().expect("a level");
+    let doc = s.ed.session().project.doc(h).expect("open");
+    let mut full = checks::Markers::default();
+    checks::place_markers(&mut full, s.ed.scene(), doc, s.ed.annotations(), None);
+    assert_eq!(
+        live_rows(s.ed.markers()),
+        live_rows(&full.prims),
+        "{ctx}: markers"
+    );
+}
+
 fn walk(seed: u64, steps: usize) {
     let mut kept = Session::open("inv", "top.shcomp", &format!("canvas-kept-{seed}"), true);
     let mut fresh = Session::open("inv", "top.shcomp", &format!("canvas-fresh-{seed}"), true);
@@ -158,6 +221,7 @@ fn walk(seed: u64, steps: usize) {
             fresh.text(),
             "step {step} ({what}): same document"
         );
+        markers_match(&kept, &format!("step {step} ({what})"));
         let got = paint(&mut kept, &mut layers);
         let want = paint(&mut fresh, &mut CpuPainter::new(w, h, 1.0));
         let (worst, off) = compare(&got, &want);
@@ -173,6 +237,7 @@ fn walk(seed: u64, steps: usize) {
 fn a_kept_canvas_equals_a_fresh_recording() {
     walk(1, 40);
     walk(2, 40);
+    walk(3, 60);
 }
 
 /// Paint feeds the frame scheduler only through its return value: painting changes nothing

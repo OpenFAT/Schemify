@@ -10,11 +10,16 @@
 //! 2. How many: ≤ 2^22 objects per cell; violations ≤ 2^20 (a 100k-object cell with floating
 //!    pins has tens of thousands of `W004`); the panel lists at most [`PANEL_ROWS`].
 //! 3. Widths: components and rows `u32`, coordinates `i32` milli-units, layers `u8`.
-//! 4. Access: one linear pass over wires, labels, ports and instance pins per rebuild; marks
-//!    are found by binary search on the overlay's sorted targets.
-//! 5. Lifetime: rebuilt when the scene, the overlay, the highlight or the staged edit change
-//!    (never per pan/zoom frame).
+//! 4. Access: one linear pass over wires, labels, ports and instance pins per decor rebuild;
+//!    marks are found by range lookups in the ordered overlay. The violation markers are kept
+//!    per marked object ([`Markers`]): an edit re-places only the objects it touched or whose
+//!    marks it changed (O(change), D39 edit frames).
+//! 5. Lifetime: the decor is rebuilt when the overlay, the highlight or the staged edit
+//!    change, or the scene does while it draws something; the markers follow every scene
+//!    change (never per pan/zoom frame).
 //! 6. Parallel: no; the rebuild is one pass and runs only after edits.
+
+use std::collections::HashMap;
 
 use schemify_doc::{Document, ObjId, TableId};
 use schemify_elab::{
@@ -239,12 +244,14 @@ pub fn violation_marks_of(
     Some(req.marks)
 }
 
-/// The marks on `target` (binary search: the overlay is sorted by target).
-pub fn marks_on<'a>(ann: &'a Annotations, target: &str) -> &'a [Mark] {
-    let m = &ann.marks;
-    let lo = m.partition_point(|x| x.target.as_str() < target);
-    let hi = lo + m[lo..].partition_point(|x| x.target == target);
-    &m[lo..hi]
+/// The marks on `target`, every source's (a range of the ordered overlay).
+pub fn marks_on<'a>(ann: &'a Annotations, target: &str) -> Vec<&'a Mark> {
+    ann.on(target).collect()
+}
+
+/// How many marks the `checks` source has (O(log sources)).
+fn marks_of_checks(ann: &Annotations) -> usize {
+    ann.count_of(SOURCE_CHECKS)
 }
 
 /// One violation as a panel line (`spines::violation_line` over a cell state's names).
@@ -310,38 +317,10 @@ pub fn decor(
     for &(_, _, p) in &hl.pins {
         out.rect(p.0 - r, p.1 - r, p.0 + r, p.1 + r, LAYER_HILITE);
     }
-    // Violation markers on their objects.
+    // (The violation markers of the `checks` source are their own table: [`Markers`].)
     let s = doc.strings();
-    let mut i = 0;
-    while i < ann.marks.len() {
-        let m = &ann.marks[i];
-        let src = &ann.source[i];
-        i += 1;
-        if src != SOURCE_CHECKS {
-            continue;
-        }
-        let Some(id) = ObjId::find(&m.target, s) else {
-            continue;
-        };
-        let Some(loc) = doc.find_id(id) else { continue };
-        let key = ObjKey {
-            table: loc.table,
-            key: id.0,
-        };
-        let Some(o) = scene.find(key) else { continue };
-        let b = scene.objs.bbox(o as usize);
-        let layer = match m.severity {
-            Severity::Error => LAYER_ERROR,
-            Severity::Warning => LAYER_WARN,
-            Severity::Info => LAYER_INFO,
-        };
-        let pad = 2 * UNIT;
-        out.rect(b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad, layer);
-        let code = m.text.split(' ').next().unwrap_or("");
-        out.text(b[0] - pad, b[1] - pad - 7 * UNIT, 6 * UNIT, layer, code);
-    }
     // Annotation texts (every source but the checks) on nets and instances.
-    let others = ann.source.iter().any(|x| x != SOURCE_CHECKS);
+    let others = ann.len() > marks_of_checks(ann);
     if let (Some(cell), true) = (cell, others) {
         let at = anchors(doc, cell);
         for (c, p) in at.iter().enumerate() {
@@ -399,6 +378,160 @@ pub fn decor(
     let identity = crate::geometry::Xform::translate(0, 0);
     crate::scene::preview_records_on(&diff.inserted, identity, LAYER_DIFF, out);
     assert_eq!(out.texts.x.len(), out.texts.end.len());
+}
+
+/// The violation markers of the `checks` source on the canvas (D13): per marked object a box
+/// around it and its code, per mark, on the severity's layer. Kept per object, so an edit
+/// redraws only the objects whose marks or geometry changed ([`place_markers`]); a removed
+/// object's rows die in place (`LAYER_DEAD`) like the scene's, and new rows append.
+///
+/// Data design: 1. in: the overlay's `checks` marks and the scene's object boxes; out: rect
+/// and text rows; 2. ≤ 2^20 marks (tens of thousands on a large cell with floating pins);
+/// 3. object ids `u32`, stamps `u32`; 4. a full placement walks the marks once, an update
+/// only the marks of the objects it is given; 5. lives with the active level, rebuilt when
+/// it changes; 6. not parallel.
+#[derive(Clone, Debug, Default)]
+pub struct Markers {
+    /// The rows (rects and texts; dead rows after an update).
+    pub prims: CanvasPrims,
+    /// Stamp of each rect row and each text row (non-decreasing).
+    stamps: [Vec<u32>; 2],
+    /// Object id → the stamp its rows carry.
+    by_id: HashMap<u32, u32>,
+    next: u32,
+    /// Rows killed since [`Markers::clear_edits`] (in `CanvasPrims::kill` kind order), or
+    /// `None` after a full placement.
+    killed: Option<[Vec<u32>; 6]>,
+    dead: usize,
+    /// The scene generation the markers were placed against.
+    generation: Option<u64>,
+}
+
+impl Markers {
+    /// The rows killed since the last [`Markers::clear_edits`] (with the rows appended
+    /// since, every change in that time), or `None` when a full placement made the table
+    /// anew in that time.
+    pub fn edits(&self) -> Option<&[Vec<u32>; 6]> {
+        self.killed.as_ref()
+    }
+
+    /// Starts the next [`Markers::edits`] window.
+    pub fn clear_edits(&mut self) {
+        let k = self.killed.get_or_insert_with(Default::default);
+        k.iter_mut().for_each(Vec::clear);
+        assert!(self.edits().is_some());
+    }
+
+    /// The scene generation the markers were last placed against (`None`: never).
+    pub fn generation(&self) -> Option<u64> {
+        self.generation
+    }
+
+    /// Draws the `checks` marks on object `id` (none when it is not drawn).
+    fn place(&mut self, id: ObjId, scene: &Scene, doc: &Document, ann: &Annotations) {
+        let Some(loc) = doc.find_id(id) else { return };
+        let key = ObjKey {
+            table: loc.table,
+            key: id.0,
+        };
+        let Some(o) = scene.find(key) else { return };
+        let b = scene.objs.bbox(o as usize);
+        let target = id.text(doc.strings());
+        let (stamp, rects, texts) = (
+            self.next,
+            self.prims.rects.x0.len(),
+            self.prims.texts.x.len(),
+        );
+        for m in ann.on_by(&target, SOURCE_CHECKS) {
+            let layer = match m.severity {
+                Severity::Error => LAYER_ERROR,
+                Severity::Warning => LAYER_WARN,
+                Severity::Info => LAYER_INFO,
+            };
+            let pad = 2 * UNIT;
+            self.prims
+                .rect(b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad, layer);
+            let code = m.text.split(' ').next().unwrap_or("");
+            if !code.is_empty() {
+                self.prims
+                    .text(b[0] - pad, b[1] - pad - 7 * UNIT, 6 * UNIT, layer, code);
+            }
+        }
+        let (r, t) = (
+            self.prims.rects.x0.len() - rects,
+            self.prims.texts.x.len() - texts,
+        );
+        if r + t == 0 {
+            return;
+        }
+        self.stamps[0].extend(std::iter::repeat_n(stamp, r));
+        self.stamps[1].extend(std::iter::repeat_n(stamp, t));
+        self.by_id.insert(id.0, stamp);
+        self.next += 1;
+    }
+
+    /// Kills the rows of object `id`.
+    fn unplace(&mut self, id: u32) {
+        let Some(stamp) = self.by_id.remove(&id) else {
+            return;
+        };
+        for (col, kind) in [(0usize, 1u8), (1, 5)] {
+            let s = &self.stamps[col];
+            let lo = s.partition_point(|&x| x < stamp);
+            let hi = lo + s[lo..].partition_point(|&x| x == stamp);
+            for r in lo..hi {
+                self.prims.kill(kind, r);
+            }
+            if let Some(k) = self.killed.as_mut() {
+                k[usize::from(kind)].extend((lo..hi).map(|r| r as u32));
+            }
+            self.dead += hi - lo;
+        }
+        assert!(self.dead <= self.prims.len());
+    }
+}
+
+/// Places the violation markers of the overlay's `checks` source on `scene` (generation
+/// `scene.generation`): all of them anew when `ids` is `None`, a quarter of the rows are
+/// dead, or there were none, else only those of objects `ids` (object id values: every
+/// object whose marks or geometry changed since the last placement, sorted, unique). The
+/// result equals a full placement as a set of live rows.
+///
+/// Cost: O(marks · log) for a full placement; O(ids · (log rows + their marks)) otherwise.
+pub fn place_markers(
+    m: &mut Markers,
+    scene: &Scene,
+    doc: &Document,
+    ann: &Annotations,
+    ids: Option<&[u32]>,
+) {
+    debug_assert!(ids.is_none_or(|i| i.windows(2).all(|w| w[0] < w[1])));
+    let compact = m.dead * 4 > m.prims.len() + (1 << 12);
+    match ids {
+        Some(ids) if !compact && m.generation.is_some() => {
+            for &id in ids {
+                m.unplace(id);
+                m.place(ObjId(id), scene, doc, ann);
+            }
+        }
+        _ => {
+            *m = Markers::default();
+            let s = doc.strings();
+            let mut last: Option<&str> = None;
+            for (src, mark) in ann.iter() {
+                if src != SOURCE_CHECKS || last == Some(mark.target.as_str()) {
+                    continue;
+                }
+                last = Some(mark.target.as_str());
+                if let Some(id) = ObjId::find(&mark.target, s) {
+                    m.place(id, scene, doc, ann);
+                }
+            }
+        }
+    }
+    m.generation = Some(scene.generation);
+    assert_eq!(m.stamps[0].len(), m.prims.rects.x0.len());
+    assert_eq!(m.stamps[1].len(), m.prims.texts.x.len());
 }
 
 /// Appends the checks panel to the state contribution `t`: a header with the counts and a

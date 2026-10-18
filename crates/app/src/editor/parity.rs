@@ -1995,7 +1995,8 @@ impl Editor {
 
     /// Rebuilds the parity decor (`extra`): the comparison (objects added or changed here
     /// outlined, objects only in the other cell drawn), per-net highlight colors and
-    /// connected-instance outlines. Called after `build_decor`; returns whether it rebuilt.
+    /// connected-instance outlines. Called after `build_decor` with whether the decor or the
+    /// scene changed; returns whether it rebuilt.
     pub(super) fn build_extra(&mut self, decor_rebuilt: bool) -> bool {
         let Some((h, view)) = self.active() else {
             return false;
@@ -2042,6 +2043,9 @@ impl Editor {
             if let Some(cm) = self.compare.as_mut() {
                 cm.key = Some((h, epoch, 0));
             }
+        }
+        if out.is_empty() && self.extra.is_empty() {
+            return false; // nothing drawn before or now
         }
         self.extra = out;
         self.canvas_gen[2] += 1;

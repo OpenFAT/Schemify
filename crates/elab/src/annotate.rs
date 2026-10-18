@@ -6,6 +6,12 @@
 //! set, which replaces everything that source contributed before; an empty set
 //! removes the source. A source that knows exactly what changed (the editor's live
 //! checks, from `CellState::changes`) patches its marks instead ([`Annotations::patch`]).
+//!
+//! The table is an ordered map (target, source, severity, text) → count, so a patch of a few
+//! marks costs O(changes · log rows) on an overlay of 10^5 marks (a 100k-object cell with
+//! floating pins), and every reader sees the same deterministic order.
+
+use std::collections::BTreeMap;
 
 use crate::check::{Severity, Violations};
 use crate::names::Names;
@@ -33,166 +39,186 @@ pub struct AnnotationRequest {
     pub marks: Vec<Mark>,
 }
 
-/// The overlay, sorted by (target, source, severity, text) so render and plugins see a
-/// deterministic order.
-#[derive(Clone, Debug, Default)]
+/// One row of the overlay, ordered by (target, source, severity, text).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Row {
+    mark: Mark,
+    source: String,
+}
+
+impl Ord for Row {
+    fn cmp(&self, o: &Row) -> std::cmp::Ordering {
+        let (a, b) = (&self.mark, &o.mark);
+        (&a.target, &self.source, a.severity, &a.text)
+            .cmp(&(&b.target, &o.source, b.severity, &b.text))
+    }
+}
+
+impl PartialOrd for Row {
+    fn partial_cmp(&self, o: &Row) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(o))
+    }
+}
+
+/// The overlay: every mark with its source, sorted by (target, source, severity, text) so
+/// render and plugins see a deterministic order. Equal marks of one source are kept as a
+/// count.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Annotations {
-    /// Source of each row.
-    pub source: Vec<String>,
-    /// The marks, parallel to `source`.
-    pub marks: Vec<Mark>,
+    rows: BTreeMap<Row, u32>,
+    /// Marks per source.
+    sources: BTreeMap<String, usize>,
+    /// Marks in all (counts included).
+    len: usize,
 }
 
 impl Annotations {
     /// Applies requests in order (the frame spine's `elab::apply_annotations`): each
     /// replaces its source's marks. Marks past [`ANNOTATIONS_MAX`] are dropped.
     ///
-    /// Cost: O(rows + new marks) per request plus one sort; every mark is cloned (see
+    /// Cost: O(rows + new marks · log rows) per request; every mark is cloned (see
     /// [`Annotations::replace`] for a request the caller gives up).
     pub fn apply(&mut self, requests: &[AnnotationRequest]) {
         for req in requests {
-            self.remove_source(&req.source);
-            for m in &req.marks {
-                if self.marks.len() >= ANNOTATIONS_MAX {
-                    break;
-                }
-                self.source.push(req.source.clone());
-                self.marks.push(m.clone());
-            }
+            self.replace(req.clone());
         }
-        self.sort();
     }
 
     /// [`Annotations::apply`] of one request, moving its marks in instead of cloning them
     /// (the editor posts tens of thousands of check marks on a large cell).
     ///
-    /// Cost: O(rows + new marks) plus one sort.
+    /// Cost: O(rows) to drop the source's old marks when it has some, plus O(new marks ·
+    /// log rows).
     pub fn replace(&mut self, req: AnnotationRequest) {
         self.remove_source(&req.source);
-        let room = ANNOTATIONS_MAX.saturating_sub(self.marks.len());
-        let n = req.marks.len().min(room);
-        self.source.extend(std::iter::repeat_n(req.source, n));
-        self.marks.extend(req.marks.into_iter().take(n));
-        self.sort();
+        for m in req.marks {
+            self.add(&req.source, m);
+        }
     }
 
-    /// Removes the marks `gone` of `source` and adds `new` ones, keeping the overlay sorted:
-    /// the incremental form of [`Annotations::replace`] when a source changed a few marks
-    /// (`gone` must be marks the source has; a missing one is ignored). Marks past
-    /// [`ANNOTATIONS_MAX`] are dropped.
+    /// Removes the marks `gone` of `source` and adds `new` ones: the incremental form of
+    /// [`Annotations::replace`] when a source changed a few marks (`gone` must be marks the
+    /// source has; a missing one is ignored). Marks past [`ANNOTATIONS_MAX`] are dropped.
     ///
-    /// Cost: O(changes · log rows) comparisons to place the changes, then one pass moving
-    /// the existing rows (no clone, no compare, no sort of them).
-    pub fn patch(&mut self, source: &str, gone: Vec<Mark>, mut new: Vec<Mark>) {
-        let order = |a: &Mark, b: &Mark| {
-            (&a.target, a.severity, &a.text).cmp(&(&b.target, b.severity, &b.text))
-        };
-        new.sort_by(order);
-        let (before, added) = (self.marks.len(), new.len());
-        // Row `i` sorts before change `x` (of `source`).
-        let below = |this: &Annotations, i: usize, x: &Mark| {
-            let m = &this.marks[i];
-            (&m.target, this.source[i].as_str(), m.severity, &m.text)
-                < (&x.target, source, x.severity, &x.text)
-        };
-        let first = |this: &Annotations, x: &Mark| {
-            let (mut lo, mut hi) = (0, this.marks.len());
-            while lo < hi {
-                let mid = (lo + hi) / 2;
-                if below(this, mid, x) {
-                    lo = mid + 1;
-                } else {
-                    hi = mid;
-                }
-            }
-            lo
-        };
-        // Rows to drop: the first equal, not yet dropped row of each gone mark.
-        let mut drop: Vec<usize> = Vec::with_capacity(gone.len());
-        for x in &gone {
-            let mut i = first(self, x);
-            while i < self.marks.len()
-                && (self.source[i] != source || self.marks[i] != *x || drop.contains(&i))
-                && self.marks[i].target == x.target
-            {
-                i += 1;
-            }
-            if i < self.marks.len() && self.source[i] == source && self.marks[i] == *x {
-                drop.push(i);
-            }
-        }
-        drop.sort_unstable();
-        // Where each new mark goes: before the first row it does not follow.
-        let at: Vec<usize> = new.iter().map(|x| first(self, x)).collect();
-        debug_assert!(at.windows(2).all(|w| w[0] <= w[1]));
-        let removed = drop.len();
-        let size = before - removed + added;
-        let rows = std::mem::replace(&mut self.source, Vec::with_capacity(size))
-            .into_iter()
-            .zip(std::mem::replace(&mut self.marks, Vec::with_capacity(size)));
-        let (mut d, mut n) = (
-            drop.into_iter().peekable(),
-            at.into_iter().zip(new).peekable(),
-        );
-        for (i, (s, m)) in rows.enumerate() {
-            while let Some((_, x)) = n.next_if(|(a, _)| *a <= i) {
-                self.source.push(source.to_owned());
-                self.marks.push(x);
-            }
-            if d.next_if_eq(&i).is_some() {
+    /// Cost: O(changes · log rows); the other rows are not touched.
+    pub fn patch(&mut self, source: &str, gone: Vec<Mark>, new: Vec<Mark>) {
+        let before = self.len;
+        let (g, n) = (gone.len(), new.len());
+        for mark in gone {
+            let row = Row {
+                mark,
+                source: source.to_owned(),
+            };
+            let Some(c) = self.rows.get_mut(&row) else {
                 continue;
+            };
+            *c -= 1;
+            if *c == 0 {
+                self.rows.remove(&row);
             }
-            self.source.push(s);
-            self.marks.push(m);
+            self.len -= 1;
+            let left = self
+                .sources
+                .get_mut(source)
+                .expect("a row's source is counted");
+            *left -= 1;
+            if *left == 0 {
+                self.sources.remove(source);
+            }
         }
-        for (_, x) in n {
-            self.source.push(source.to_owned());
-            self.marks.push(x);
+        for m in new {
+            self.add(source, m);
         }
-        self.source.truncate(ANNOTATIONS_MAX);
-        self.marks.truncate(ANNOTATIONS_MAX);
-        assert_eq!(self.source.len(), self.marks.len());
-        assert_eq!(
-            self.marks.len(),
-            (before - removed + added).min(ANNOTATIONS_MAX)
-        );
-        debug_assert!(
-            self.marks
-                .windows(2)
-                .zip(self.source.windows(2))
-                .all(|(m, s)| {
-                    (&m[0].target, &s[0], m[0].severity, &m[0].text)
-                        <= (&m[1].target, &s[1], m[1].severity, &m[1].text)
-                })
-        );
+        assert!(self.len + g >= before && self.len <= before + n);
+        assert!(self.len <= ANNOTATIONS_MAX);
+    }
+
+    fn add(&mut self, source: &str, mark: Mark) {
+        if self.len >= ANNOTATIONS_MAX {
+            return;
+        }
+        let row = Row {
+            mark,
+            source: source.to_owned(),
+        };
+        *self.rows.entry(row).or_insert(0) += 1;
+        *self.sources.entry(source.to_owned()).or_insert(0) += 1;
+        self.len += 1;
     }
 
     fn remove_source(&mut self, source: &str) {
-        let mut keep = self.source.iter().map(|s| s != source);
-        self.marks
-            .retain(|_| keep.next().expect("parallel columns"));
-        self.source.retain(|s| s != source);
-        assert_eq!(self.source.len(), self.marks.len());
+        let Some(n) = self.sources.remove(source) else {
+            return;
+        };
+        self.rows.retain(|r, _| r.source != source);
+        self.len -= n;
+        debug_assert_eq!(
+            self.len,
+            self.rows.values().map(|&c| c as usize).sum::<usize>()
+        );
     }
 
-    fn sort(&mut self) {
-        let mut rows: Vec<(String, Mark)> =
-            self.source.drain(..).zip(self.marks.drain(..)).collect();
-        rows.sort_by(|a, b| {
-            (&a.1.target, &a.0, a.1.severity, &a.1.text).cmp(&(
-                &b.1.target,
-                &b.0,
-                b.1.severity,
-                &b.1.text,
-            ))
-        });
-        (self.source, self.marks) = rows.into_iter().unzip();
-        assert_eq!(self.source.len(), self.marks.len());
+    /// Every mark with its source, in (target, source, severity, text) order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Mark)> + '_ {
+        self.rows
+            .iter()
+            .flat_map(|(r, &c)| std::iter::repeat_n((r.source.as_str(), &r.mark), c as usize))
     }
 
-    /// Returns the marks on `target`.
-    pub fn on<'a>(&'a self, target: &'a str) -> impl Iterator<Item = &'a Mark> + 'a {
-        self.marks.iter().filter(move |m| m.target == target)
+    /// The marks on `target`, every source's, in order.
+    ///
+    /// Cost: O(log rows + marks on it).
+    pub fn on<'a>(&'a self, target: &str) -> impl Iterator<Item = &'a Mark> + 'a {
+        self.range_of(target, "", false)
+    }
+
+    /// The marks `source` has on `target`, in order.
+    ///
+    /// Cost: O(log rows + marks on the target).
+    pub fn on_by<'a>(&'a self, target: &str, source: &str) -> impl Iterator<Item = &'a Mark> + 'a {
+        self.range_of(target, source, true)
+    }
+
+    /// The marks on `target` from the first row of `source` on (only `source`'s when `only`).
+    fn range_of<'a>(
+        &'a self,
+        target: &str,
+        source: &str,
+        only: bool,
+    ) -> impl Iterator<Item = &'a Mark> + 'a {
+        let from = Row {
+            mark: Mark {
+                target: target.to_owned(),
+                severity: Severity::Error, // the least severity: the range starts at the first
+                text: String::new(),
+            },
+            source: source.to_owned(),
+        };
+        let (t, src) = (target.to_owned(), source.to_owned());
+        self.rows
+            .range(from..)
+            .take_while(move |(r, _)| r.mark.target == t && (!only || r.source == src))
+            .flat_map(|(r, &c)| std::iter::repeat_n(&r.mark, c as usize))
+    }
+
+    /// Whether `source` has a mark.
+    pub fn has_source(&self, source: &str) -> bool {
+        self.sources.contains_key(source)
+    }
+
+    /// How many marks `source` has.
+    pub fn count_of(&self, source: &str) -> usize {
+        self.sources.get(source).copied().unwrap_or(0)
+    }
+
+    /// Number of marks.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether there is no mark.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 }
 
@@ -251,23 +277,23 @@ mod tests {
             req("checks", vec![mark("/X1", "a"), mark("0abcde", "b")]),
             req("op", vec![mark("/X1", "1.2V")]),
         ]);
-        assert_eq!(a.marks.len(), 3);
+        assert_eq!(a.len(), 3);
         assert_eq!(a.on("/X1").count(), 2);
         a.apply(&[req("checks", vec![mark("/X2", "c")])]);
-        assert_eq!(a.marks.len(), 2);
+        assert_eq!(a.len(), 2);
         assert_eq!(
             a.on("/X1").map(|m| m.text.as_str()).collect::<Vec<_>>(),
             ["1.2V"]
         );
         a.apply(&[req("op", vec![])]);
-        assert_eq!(a.source, ["checks"]);
+        assert!(a.has_source("checks") && !a.has_source("op"));
         // `replace` moves the request in and agrees with `apply`.
         let mut r = a.clone();
         a.apply(&[req("op", vec![mark("/X1", "1.2V"), mark("/X0", "0V")])]);
         r.replace(req("op", vec![mark("/X1", "1.2V"), mark("/X0", "0V")]));
-        assert_eq!((&a.source, &a.marks), (&r.source, &r.marks));
+        assert_eq!(a, r);
         r.replace(req("checks", vec![]));
-        assert_eq!(r.source, ["op", "op"]);
+        assert_eq!(r.iter().map(|m| m.0).collect::<Vec<_>>(), ["op", "op"]);
         // Order does not depend on request order.
         let mut b = Annotations::default();
         b.apply(&[
@@ -279,7 +305,7 @@ mod tests {
             req("a", vec![mark("/A", "1")]),
             req("z", vec![mark("/A", "1")]),
         ]);
-        assert_eq!((b.source, b.marks), (c.source, c.marks));
+        assert_eq!(b, c);
     }
 
     /// `patch` with a source's removed and added marks equals `replace` with its full new set,
@@ -331,7 +357,23 @@ mod tests {
                 source: "checks".into(),
                 marks: kept,
             });
-            assert_eq!((a.source, a.marks), (b.source, b.marks));
+            assert_eq!(a, b);
+            // The range lookups equal filters of the whole overlay.
+            for t in (0..6).map(|k| format!("t{k}")) {
+                for src in ["checks", "op"] {
+                    let by: Vec<&Mark> = a.on_by(&t, src).collect();
+                    let scan: Vec<&Mark> = a
+                        .iter()
+                        .filter(|(s, m)| *s == src && m.target == t)
+                        .map(|x| x.1)
+                        .collect();
+                    assert_eq!(by, scan);
+                }
+                assert_eq!(a.on(&t).count(), a.iter().filter(|x| x.1.target == t).count());
+            }
+            let checks = a.iter().filter(|x| x.0 == "checks").count();
+            assert_eq!(a.count_of("checks"), checks);
+            assert_eq!(a.has_source("checks"), checks > 0);
         }
     }
 }

@@ -79,6 +79,9 @@ const HIT_PX: f64 = 5.0;
 const DOUBLE_CLICK_MS: u64 = 400;
 /// Zoom factor per wheel notch and per zoom key (xschem: 1.2).
 const ZOOM_STEP: f64 = 1.2;
+/// The `canvas_gen` entry of each canvas table in drawing order (scene, decor, markers,
+/// extra); entry 3 is the selection marks, which recolor scene rows.
+const CANVAS_GEN: [usize; 4] = [0, 1, 4, 2];
 /// A zoom counts as finished this long after the camera scale last changed; until then the
 /// canvas shows its recorded layer stretched (D39: a zoom frame re-encodes nothing).
 const ZOOM_SETTLE_MS: u32 = 120;
@@ -554,18 +557,19 @@ pub struct Editor {
     /// The canvas's raster layer (D39: pan/zoom frames reuse it instead of re-encoding).
     canvas_cache: CanvasCache,
     /// Advance whenever a table the canvas layer draws changes: the scene as shown, decor,
-    /// parity decor (`extra`), marks.
-    canvas_gen: [u64; 4],
+    /// parity decor (`extra`), marks, violation markers.
+    canvas_gen: [u64; 5],
     /// What changed in those tables since the last painted frame (an edit patches only
     /// there): the diff's snapshot, the `canvas_gen` and style key it was taken at, and the
     /// changed boxes (`None` = unknown).
-    canvas_diff: (CanvasDiff, [u64; 4], u64, Option<Vec<[i32; 4]>>),
+    canvas_diff: (CanvasDiff, [u64; 5], u64, Option<Vec<[i32; 4]>>),
     /// Whether that diff last read the scene's own table (not `shown`): only then do the
     /// scene's reported edits ([`Scene::edits`]) describe what changed since.
     canvas_scene: bool,
-    /// Spatial indexes of the shown scene, decor and extra (with the generation each was built
-    /// for), so recording one canvas tile looks only at the rows near it; and the rows buffer.
-    canvas_index: [(u64, PrimIndex); 3],
+    /// Spatial indexes of the canvas tables in drawing order (the shown scene, decor,
+    /// violation markers, extra; with the generation each was built for), so recording one
+    /// canvas tile looks only at the rows near it; and the rows buffer.
+    canvas_index: [(u64, PrimIndex); 4],
     canvas_rows: Rows,
     /// Clock (ms) until which the zoom counts as changing: frames before it stretch the
     /// recorded canvas layer instead of re-recording it.
@@ -626,9 +630,14 @@ pub struct Editor {
     hl: Members,
     /// (document, fingerprint) of the violations last posted to the overlay.
     checks_key: Option<(Option<DocHandle>, u64)>,
-    /// Decor primitives: highlight, violation markers, annotation texts, staged diff.
+    /// Decor primitives: highlight, annotation texts, staged diff.
     decor: CanvasPrims,
     decor_dirty: bool,
+    /// The violation markers of the `checks` source, kept per marked object.
+    markers: crate::checks::Markers,
+    /// Targets of the `checks` marks patched since the markers were placed (`None`: the
+    /// overlay was replaced, so every marker is placed anew).
+    marker_targets: Option<Vec<String>>,
     /// Name map of the active tab's top cell (ngspice, default request), for hierarchy-wide
     /// net keys, cross-probe names and OP targets: (top document, edit generation, map).
     hier: Option<(DocHandle, u32, schemify_netlist::NameMap)>,
@@ -816,8 +825,8 @@ impl Editor {
             viewport: (0.0, 0.0),
             canvas_scratch: CanvasScratch::default(),
             canvas_cache: CanvasCache::default(),
-            canvas_gen: [0; 4],
-            canvas_diff: (CanvasDiff::default(), [0; 4], 0, None),
+            canvas_gen: [0; 5],
+            canvas_diff: (CanvasDiff::default(), [0; 5], 0, None),
             canvas_scene: false,
             canvas_index: Default::default(),
             canvas_rows: Rows::default(),
@@ -849,6 +858,8 @@ impl Editor {
             checks_key: None,
             decor: CanvasPrims::default(),
             decor_dirty: true,
+            markers: crate::checks::Markers::default(),
+            marker_targets: None,
             hier: None,
             panel: Panel::None,
             blocked: Vec::new(),
@@ -1153,6 +1164,12 @@ impl Editor {
         &self.decor
     }
 
+    /// The violation markers drawn on the canvas (rects and codes; dead rows are an update's
+    /// removals, on `LAYER_DEAD`).
+    pub fn markers(&self) -> &CanvasPrims {
+        &self.markers.prims
+    }
+
     /// The panel under the work area.
     pub fn panel(&self) -> Panel {
         self.panel
@@ -1331,10 +1348,11 @@ impl Editor {
             // so the status line reads the fitted camera this frame, not at the next input.
             self.compose_ui(false);
         }
+        changed |= self.build_markers();
         let decor = self.build_decor(stale);
         changed |= decor;
         self.build_shown();
-        changed |= self.build_extra(decor);
+        changed |= self.build_extra(decor || stale);
         self.build_overlay();
         // 10. zoom settle: while the scale keeps changing the canvas layer is stretched; the
         //     first frame ZOOM_SETTLE_MS after the last change records it crisp.
@@ -1567,21 +1585,31 @@ impl Editor {
                 (true, Some(killed)) => TableChange::Rows(killed),
                 _ => any(0),
             };
-            let tables = [(shown, scene), (&self.decor, any(1)), (&self.extra, any(2))];
+            let markers = match (changed(4), self.markers.edits()) {
+                (true, Some(killed)) => TableChange::Rows(killed),
+                _ => any(4),
+            };
+            let tables = [
+                (shown, scene),
+                (&self.decor, any(1)),
+                (&self.markers.prims, markers),
+                (&self.extra, any(2)),
+            ];
             let marks = (&self.scene.prims, &self.marks, changed(0) || changed(3));
             let known = diff.update(&tables, marks, &mut out);
             // An index current before the change follows it (a patch then reads the rows near
             // it, not every row); else it waits for the next tile to rebuild it.
             for (k, ix) in self.canvas_index.iter_mut().enumerate() {
-                if !(known && changed(k) && ix.0 == diff_gen[k] + 1) {
+                let g = CANVAS_GEN[k];
+                if !(known && changed(g) && ix.0 == diff_gen[g] + 1) {
                     continue;
                 }
-                let follows = match (k, scene) {
-                    (0, TableChange::Rows(_)) => ix.1.follow(shown),
+                let follows = match tables[k].1 {
+                    TableChange::Rows(_) => ix.1.follow(tables[k].0),
                     _ => ix.1.apply(diff.edits_of(k)),
                 };
                 if follows {
-                    ix.0 = self.canvas_gen[k] + 1;
+                    ix.0 = self.canvas_gen[g] + 1;
                 }
             }
             *boxes = (known && *diff_style == style).then_some(out);
@@ -1590,15 +1618,17 @@ impl Editor {
             b.clear(); // the same key: nothing changed since the last frame
         }
         if diffed {
-            // The diff has taken the scene's edits so far.
+            // The diff has taken the scene's and the markers' edits so far.
             self.canvas_scene = self.shown.is_none();
             self.scene.clear_edits();
+            self.markers.clear_edits();
         }
         let shown = self.shown.as_ref().unwrap_or(&self.scene.prims);
         let damage = boxes.as_deref();
         let crisp = self.now >= self.zoom_until;
         let (prims, decor, extra, marks) =
             (&self.scene.prims, &self.decor, &self.extra, &self.marks);
+        let markers = &self.markers.prims;
         let (text, scratch) = (&mut self.shell.text, &mut self.canvas_scratch);
         let (index, rows, gens) = (
             &mut self.canvas_index,
@@ -1625,8 +1655,8 @@ impl Editor {
                 let tile = v.area() * p.device_scale().powi(2) >= part_area;
                 let near = world_box(v, c);
                 let mut cost = 0;
-                for (k, t) in [shown, decor, extra].into_iter().enumerate() {
-                    let listed = rows_near(&mut index[k], t, gens[k], tile, near, rows);
+                for (k, t) in [shown, decor, markers, extra].into_iter().enumerate() {
+                    let listed = rows_near(&mut index[k], t, gens[CANVAS_GEN[k]], tile, near, rows);
                     let listed = listed.then_some(&*rows);
                     cost += canvas::draw_prims_in(p, v, c, t, listed, palette, text, scratch);
                 }
