@@ -16,8 +16,8 @@
 
 use std::path::Path;
 
-use schemify_doc::{DocHandle, ObjId, Project, Sym};
-use schemify_elab::{CellState, Funcs, Val};
+use schemify_doc::{Cursor, DocHandle, Project};
+use schemify_elab::{CellState, Funcs, Name, Val};
 use schemify_expr::{Code as XCode, Error as XError, Mode, Program, Scratch, Span, Value};
 use schemify_plugin::abi::{Code, Event, FUEL_DEFAULT, Kind, Table, col};
 use schemify_plugin::{
@@ -156,7 +156,365 @@ fn fill_groups(
         let pass: Vec<u8> = results.iter().map(|r| r.3).collect();
         s.fill::<u8>(Table::Results, col::results::PASS, &pass);
     }
-    debug_assert_eq!(s.check(), Ok(()));
+    // The caller completes the tables (a document group refilled without its net column
+    // waits for `sync_cell_groups`) and checks them.
+    debug_assert!(stale.iter().any(|&g| g));
+}
+
+/// What the snapshot's document and cell groups were filled from (see [`Host::snapshot`]), so
+/// the next fill writes only what changed: the document groups follow the document's change
+/// log, the cell groups are compared with what they hold.
+#[derive(Debug, Default)]
+struct Filled {
+    /// The document (snapshot id) and the change-log position its groups reflect.
+    doc: Option<(u32, Cursor)>,
+    /// The document and check pass the Nets and Violations tables reflect (pass 0: no cell
+    /// state); `None` before the first fill.
+    pass: Option<(u32, u64)>,
+    /// What the Wires and Labels net columns hold (`None`: unknown, refill them).
+    wire_net: Option<Vec<u32>>,
+    label_net: Option<Vec<u32>>,
+    /// The Nets columns as filled: name, width, global, pin count.
+    nets: (Vec<Name>, Vec<u16>, Vec<bool>, Vec<u32>),
+    /// What the Results table was filled from.
+    results: Option<u64>,
+}
+
+/// Rows of a table changed by more than this share are refilled instead of patched.
+const PATCH_SHARE: usize = 8;
+
+/// The rows `0..n` for which `differs` holds, or `None` once they pass `n / PATCH_SHARE`
+/// (the caller refills instead): the scan stops there, so a refill costs no index list.
+fn differing(n: usize, differs: impl Fn(usize) -> bool) -> Option<Vec<usize>> {
+    let limit = n.max(64) / PATCH_SHARE;
+    let mut out = Vec::new();
+    for i in 0..n {
+        if differs(i) {
+            if out.len() == limit {
+                return None;
+            }
+            out.push(i);
+        }
+    }
+    assert!(out.len() <= limit);
+    Some(out)
+}
+
+/// Brings the Instances, Wires and Labels tables (net columns in step, as `u32::MAX` for new
+/// rows until [`sync_cell_groups`]) up to date with the document rows written since the
+/// last fill (`changes`, the document's change log since then).
+///
+/// Cost: O(changed rows · columns) plus the moves of the string columns' tails.
+fn patch_doc_groups(
+    s: &mut Snapshots,
+    doc: &schemify_doc::Document,
+    id: u32,
+    changes: &[schemify_doc::Change],
+    f: &mut Filled,
+) {
+    use schemify_doc::TableId as T;
+    for table in [T::Instances, T::Wires, T::Labels] {
+        let mut rows: Vec<u32> = changes
+            .iter()
+            .filter(|c| c.table == table)
+            .map(|c| c.row)
+            .collect();
+        rows.sort_unstable();
+        rows.dedup();
+        let snap = match table {
+            T::Instances => Table::Instances,
+            T::Wires => Table::Wires,
+            _ => Table::Labels,
+        };
+        let (old, new) = (s.rows(snap) as usize, doc.table_len(table));
+        if rows.is_empty() && old == new {
+            continue;
+        }
+        let kept = old.min(new);
+        if rows.len() * PATCH_SHARE > kept.max(64) {
+            fill_doc_table(s, doc, id, snap, 0..old, 0..new);
+        } else {
+            for &r in rows.iter().filter(|&&r| (r as usize) < kept) {
+                let r = r as usize;
+                fill_doc_table(s, doc, id, snap, r..r + 1, r..r + 1);
+            }
+            fill_doc_table(s, doc, id, snap, kept..old, kept..new);
+        }
+        // The net column keeps the table's row count; its values come from the cell.
+        let (net, shadow) = match snap {
+            Table::Wires => (col::wires::NET, &mut f.wire_net),
+            Table::Labels => (col::labels::NET, &mut f.label_net),
+            _ => continue,
+        };
+        let pad = vec![u32::MAX; new - kept];
+        s.splice::<u32>(snap, net, kept..old, &pad);
+        if let Some(v) = shadow.as_mut() {
+            v.truncate(kept);
+            v.extend_from_slice(&pad);
+        }
+        debug_assert_eq!(s.rows(snap) as usize, new);
+    }
+}
+
+/// Writes document rows `rows` of table `snap` (all but the net column) over snapshot rows
+/// `at`.
+fn fill_doc_table(
+    s: &mut Snapshots,
+    doc: &schemify_doc::Document,
+    id: u32,
+    snap: Table,
+    at: std::ops::Range<usize>,
+    rows: std::ops::Range<usize>,
+) {
+    if at.is_empty() && rows.is_empty() {
+        return;
+    }
+    let st = doc.strings();
+    let n = rows.len();
+    match snap {
+        Table::Instances => {
+            let t = doc.instances();
+            s.splice::<u32>(snap, col::instances::DOC, at.clone(), &vec![id; n]);
+            let raw: Vec<u32> = t.id[rows.clone()].iter().map(|i| i.0).collect();
+            s.splice::<u32>(snap, col::instances::ID, at.clone(), &raw);
+            s.splice::<i32>(snap, col::instances::X, at.clone(), &t.x[rows.clone()]);
+            s.splice::<i32>(snap, col::instances::Y, at.clone(), &t.y[rows.clone()]);
+            let o: Vec<u8> = t.orient[rows.clone()].iter().map(|&o| o as u8).collect();
+            s.splice::<u8>(snap, col::instances::ORIENT, at.clone(), &o);
+            let cells: Vec<&str> = t.cell[rows.clone()].iter().map(|&c| st.get(c)).collect();
+            s.splice_strings(snap, col::instances::CELL, at.clone(), &cells);
+            let names: Vec<&str> = t.name[rows].iter().map(|&c| st.get(c)).collect();
+            s.splice_strings(snap, col::instances::NAME, at, &names);
+        }
+        Table::Wires => {
+            let t = doc.wires();
+            s.splice::<u32>(snap, col::wires::DOC, at.clone(), &vec![id; n]);
+            let raw: Vec<u32> = t.id[rows.clone()].iter().map(|i| i.0).collect();
+            s.splice::<u32>(snap, col::wires::ID, at.clone(), &raw);
+            s.splice::<i32>(snap, col::wires::X1, at.clone(), &t.x1[rows.clone()]);
+            s.splice::<i32>(snap, col::wires::Y1, at.clone(), &t.y1[rows.clone()]);
+            s.splice::<i32>(snap, col::wires::X2, at.clone(), &t.x2[rows.clone()]);
+            s.splice::<i32>(snap, col::wires::Y2, at, &t.y2[rows]);
+        }
+        _ => {
+            let t = doc.labels();
+            s.splice::<u32>(snap, col::labels::DOC, at.clone(), &vec![id; n]);
+            let raw: Vec<u32> = t.id[rows.clone()].iter().map(|i| i.0).collect();
+            s.splice::<u32>(snap, col::labels::ID, at.clone(), &raw);
+            s.splice::<i32>(snap, col::labels::X, at.clone(), &t.x[rows.clone()]);
+            s.splice::<i32>(snap, col::labels::Y, at.clone(), &t.y[rows.clone()]);
+            let texts: Vec<&str> = t.text[rows].iter().map(|&x| st.get(x)).collect();
+            s.splice_strings(snap, col::labels::TEXT, at, &texts);
+        }
+    }
+}
+
+/// Makes net column `column` of `table` hold `want`, writing only the rows that differ from
+/// what it holds (`shadow`; unknown or of another length: refilled).
+///
+/// Cost: one compare pass over the column, plus the rows written.
+fn sync_net_column(
+    s: &mut Snapshots,
+    table: Table,
+    column: u32,
+    shadow: &mut Option<Vec<u32>>,
+    want: &[u32],
+) {
+    assert_eq!(s.rows(table) as usize, want.len(), "the column is in step");
+    match shadow.as_mut().filter(|v| v.len() == want.len()) {
+        Some(old) if old[..] == *want => {}
+        Some(old) => {
+            match differing(want.len(), |i| old[i] != want[i]) {
+                Some(differ) => {
+                    for &i in &differ {
+                        s.splice::<u32>(table, column, i..i + 1, &want[i..=i]);
+                    }
+                }
+                None => s.fill::<u32>(table, column, want),
+            }
+            old.copy_from_slice(want);
+        }
+        None => {
+            s.fill::<u32>(table, column, want);
+            match shadow.as_mut() {
+                Some(v) => {
+                    v.clear();
+                    v.extend_from_slice(want);
+                }
+                None => *shadow = Some(want.to_vec()),
+            }
+        }
+    }
+}
+
+/// Brings the net columns, the Nets and the Violations tables up to date with `cell` (the
+/// document's state, `None`: none, so `u32::MAX` nets and empty tables): the net columns by
+/// comparison, the Nets and Violations rows, when the check pass moved, by comparison with
+/// the previous pass's when `cell` continues it (its names are then the same arena), else
+/// refilled.
+///
+/// Cost: one compare pass over the net columns, the nets and the violations, plus the rows
+/// written.
+fn sync_cell_groups(s: &mut Snapshots, id: u32, cell: Option<&CellState>, f: &mut Filled) {
+    let (nw, nl) = (
+        s.rows(Table::Wires) as usize,
+        s.rows(Table::Labels) as usize,
+    );
+    // The cell's net ids of the rows, or `u32::MAX` (not elaborated) while it does not
+    // describe them (the frame of an edit, before its check pass).
+    fn nets_of<'a>(cell: Option<&CellState>, col: &'a [u32], n: usize) -> Cow<'a, [u32]> {
+        match cell {
+            Some(_) if col.len() == n => Cow::Borrowed(col),
+            _ => Cow::Owned(vec![u32::MAX; n]),
+        }
+    }
+    use std::borrow::Cow;
+    let want = nets_of(cell, cell.map_or(&[][..], |c| &c.nets.wire_net), nw);
+    sync_net_column(s, Table::Wires, col::wires::NET, &mut f.wire_net, &want);
+    let want = nets_of(cell, cell.map_or(&[][..], |c| &c.nets.label_net), nl);
+    sync_net_column(s, Table::Labels, col::labels::NET, &mut f.label_net, &want);
+    let key = (id, cell.map_or(0, |c| c.pass));
+    if f.pass == Some(key) {
+        return;
+    }
+    let empty = CellState::default();
+    let c = cell.unwrap_or(&empty);
+    let continues = cell.is_some_and(|c| c.prev_pass != 0 && f.pass == Some((id, c.prev_pass)));
+    f.pass = Some(key);
+    let n = &c.nets;
+    let (name, width, global, pins) = &f.nets;
+    let same = continues
+        && *name == n.net_name
+        && *width == n.net_width
+        && *global == n.net_global
+        && *pins == n.net_pins;
+    // Nets: rows are component handles (stable across a patch): write the rows that differ.
+    match continues {
+        _ if same => {}
+        true => {
+            let kept = name.len().min(n.net_name.len());
+            let differ = differing(kept, |i| {
+                name[i] != n.net_name[i]
+                    || width[i] != n.net_width[i]
+                    || global[i] != n.net_global[i]
+                    || pins[i] != n.net_pins[i]
+            });
+            match differ {
+                Some(differ) => {
+                    for &i in &differ {
+                        fill_nets(s, c, i..i + 1, i..i + 1);
+                    }
+                    fill_nets(s, c, kept..name.len(), kept..n.net_name.len());
+                }
+                None => fill_nets(s, c, 0..name.len(), 0..n.net_name.len()),
+            }
+        }
+        false => {
+            let rows = s.rows(Table::Nets) as usize;
+            fill_nets(s, c, 0..rows, 0..n.net_name.len());
+        }
+    }
+    if !same {
+        // In place: the shadow keeps its allocation from pass to pass.
+        f.nets.0.clone_from(&n.net_name);
+        f.nets.1.clone_from(&n.net_width);
+        f.nets.2.clone_from(&n.net_global);
+        f.nets.3.clone_from(&n.net_pins);
+    }
+    // Violations: the pass's own delta from the previous pass (`changes`), placed by key.
+    let nv = s.rows(Table::Violations) as usize;
+    let (gone, added) = &c.changes;
+    if !continues || gone.len() + added.len() > 64 {
+        fill_violations(s, c, 0..nv, 0..c.violations.rows.len());
+    } else {
+        let rows = &c.violations.rows;
+        let rank = |list: &[schemify_elab::Violation], v: &schemify_elab::Violation| {
+            list.partition_point(|x| x.key_cmp(v, &c.names).is_lt())
+        };
+        // Where each gone row was: the rows before it in the old order are the kept rows
+        // before it (the new rows before it, less the added) and the gone rows before it.
+        let mut at: Vec<usize> = gone
+            .iter()
+            .map(|g| rank(rows, g) - rank(added, g) + rank(gone, g))
+            .collect();
+        at.sort_unstable_by(|a, b| b.cmp(a));
+        for &i in &at {
+            fill_violations(s, c, i..i + 1, 0..0);
+        }
+        let mut to: Vec<usize> = added.iter().map(|a| rank(rows, a)).collect();
+        to.sort_unstable();
+        for &j in &to {
+            fill_violations(s, c, j..j, j..j + 1);
+        }
+    }
+    debug_assert_eq!(s.rows(Table::Nets) as usize, c.nets.net_name.len());
+    debug_assert_eq!(s.rows(Table::Violations) as usize, c.violations.rows.len());
+}
+
+/// Writes nets `rows` of `c` over Nets rows `at`.
+fn fill_nets(
+    s: &mut Snapshots,
+    c: &CellState,
+    at: std::ops::Range<usize>,
+    rows: std::ops::Range<usize>,
+) {
+    if at.is_empty() && rows.is_empty() {
+        return;
+    }
+    let n = &c.nets;
+    let names: Vec<&str> = n.net_name[rows.clone()]
+        .iter()
+        .map(|&x| c.names.get(x))
+        .collect();
+    s.splice_strings(Table::Nets, col::nets::NAME, at.clone(), &names);
+    s.splice::<u16>(
+        Table::Nets,
+        col::nets::WIDTH,
+        at.clone(),
+        &n.net_width[rows.clone()],
+    );
+    let global: Vec<u8> = n.net_global[rows.clone()]
+        .iter()
+        .map(|&g| u8::from(g))
+        .collect();
+    s.splice::<u8>(Table::Nets, col::nets::GLOBAL, at.clone(), &global);
+    s.splice::<u32>(Table::Nets, col::nets::PIN_COUNT, at, &n.net_pins[rows]);
+}
+
+/// Writes violations `rows` of `c` over Violations rows `at`.
+fn fill_violations(
+    s: &mut Snapshots,
+    c: &CellState,
+    at: std::ops::Range<usize>,
+    rows: std::ops::Range<usize>,
+) {
+    if at.is_empty() && rows.is_empty() {
+        return;
+    }
+    let v = &c.violations.rows[rows];
+    let codes: Vec<&str> = v.iter().map(|r| r.code.as_str()).collect();
+    s.splice_strings(Table::Violations, col::violations::CODE, at.clone(), &codes);
+    let sev: Vec<u8> = v.iter().map(|r| r.code.severity() as u8).collect();
+    s.splice::<u8>(
+        Table::Violations,
+        col::violations::SEVERITY,
+        at.clone(),
+        &sev,
+    );
+    let obj: Vec<u32> = v.iter().map(|r| r.object.0).collect();
+    s.splice::<u32>(Table::Violations, col::violations::OBJECT, at.clone(), &obj);
+    let none = Name::NONE;
+    let param: Vec<&str> = v
+        .iter()
+        .map(|r| {
+            if r.param == none {
+                ""
+            } else {
+                c.names.get(r.param)
+            }
+        })
+        .collect();
+    s.splice_strings(Table::Violations, col::violations::PARAM, at, &param);
 }
 
 /// A snapshot's debug text without its table epochs (they count fills, not content).
@@ -170,30 +528,6 @@ fn without_epochs(text: &str) -> String {
     }
     out.push_str(rest);
     out
-}
-
-/// Folds `values` into fingerprint `h` (a multiply-xorshift per value: ~0.3 ns each, no
-/// allocation; a fingerprint, not a cryptographic hash).
-fn fold(mut h: u64, values: impl Iterator<Item = u32>) -> u64 {
-    let mut n = 0u64;
-    for v in values {
-        h = (h ^ u64::from(v)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-        h ^= h >> 29;
-        n += 1;
-    }
-    (h ^ n).wrapping_mul(0xbf58_476d_1ce4_e5b9)
-}
-
-fn obj_ids(v: &[ObjId]) -> impl Iterator<Item = u32> + '_ {
-    v.iter().map(|i| i.0)
-}
-
-fn sym_ids(v: &[Sym]) -> impl Iterator<Item = u32> + '_ {
-    v.iter().map(|i| i.0)
-}
-
-fn as_u32(v: &[i32]) -> impl Iterator<Item = u32> + '_ {
-    v.iter().map(|&x| x as u32)
 }
 
 /// The std hash of `v`.
@@ -217,12 +551,8 @@ pub struct Host {
     snapshots: Snapshots,
     /// What the document tables in `snapshots` were filled from (see [`Host::snapshot`]).
     snapshot_key: Option<u64>,
-    /// Fingerprints of what each group of tables was filled from ([`GROUPS`], see
-    /// [`Host::snapshot`]).
-    group_keys: [Option<u64>; GROUPS],
-    /// The document fingerprints (Instances, Wires, Labels) and what they were taken at: the
-    /// snapshot id, edit epoch, string count and row counts of the document.
-    doc_keys: Option<([u64; 5], [u64; 3])>,
+    /// What each group of tables was filled from, so a fill writes only what changed.
+    filled: Filled,
     queues: RequestQueues,
     /// Epoch of the last composition the app consumed.
     pub seen_epoch: Option<u32>,
@@ -369,8 +699,7 @@ impl Host {
             events: PluginEvents::new(),
             snapshots: Snapshots::new(),
             snapshot_key: None,
-            group_keys: [None; GROUPS],
-            doc_keys: None,
+            filled: Filled::default(),
             queues: RequestQueues::default(),
             seen_epoch: None,
             hashes,
@@ -699,20 +1028,18 @@ impl Host {
     /// labels, Nets, Violations; `u32::MAX` nets and empty tables without it) and the last
     /// run's `results` rows. `key` names everything but `selection` (document epochs, the
     /// check pass, the results): with the previous call's key only the Selection table is
-    /// refilled. Otherwise each group of tables (Instances; Wires and Labels without their net
-    /// columns; Nets with Violations; Results; the two net columns) is refilled only when its
-    /// source changed: a fingerprint of the document's columns, the check pass, the rows.
-    /// `epoch` is the document's edit epoch (`Session::epoch`, moved by every change of its
-    /// tables): while it stands, the document fingerprints are reused, so a pass change (the
-    /// frame after an edit) refills the net columns and the Nets group only. Cost: a hash pass
-    /// over the instance, wire and label columns when `epoch` moved, plus one copy of the
-    /// groups that changed (or of the selection).
+    /// refilled. Otherwise the Instances, Wires and Labels rows follow the document's change
+    /// log from the last fill (refilled when it no longer reaches it: another document, a
+    /// reload, a compaction), the net columns are compared with what they hold and the
+    /// differing rows written, and the Nets and Violations tables, when the check pass moved,
+    /// are compared with the previous pass's rows (refilled when `cell` does not continue
+    /// it). Cost: O(changed rows) for the document tables, one compare pass over the net
+    /// columns, nets and violations, plus the rows written (or the selection).
     #[allow(clippy::too_many_arguments)]
     pub fn snapshot(
         &mut self,
         project: &Project,
         h: Option<DocHandle>,
-        epoch: u32,
         selection: &[u32],
         cell: Option<&CellState>,
         results: &ResultRows,
@@ -750,65 +1077,32 @@ impl Host {
             return;
         };
         let id = doc_id(h.expect("doc implies handle"));
-        let st = doc.strings();
-        let inst = doc.instances();
-        let (w, l) = (doc.wires(), doc.labels());
-        let pass = cell.map(|c| c.pass);
-        // A group is refilled when its fingerprint moved (always on the first call).
-        // ponytail: names are fingerprinted by symbol, with the string count: a reload whose
-        // interner gave the same symbols to other strings at the same count would keep stale
-        // names. Key on a per-document reload counter if that ever shows.
-        // ponytail: the epoch stands for the document's columns (with its string and row counts
-        // as a guard); a document that changed without moving its epoch would keep stale rows.
-        let at = [
-            u64::from(id),
-            u64::from(epoch),
-            st.len() as u64,
-            inst.id.len() as u64,
-            (w.id.len() as u64) << 32 | l.id.len() as u64,
-        ];
-        let doc_keys = match self.doc_keys {
-            Some((was, keys)) if was == at => keys,
-            _ => {
-                let seed = hash_of((id, st.len()));
-                let inst_key = {
-                    let f = fold(
-                        fold(fold(seed, obj_ids(&inst.id)), as_u32(&inst.x)),
-                        as_u32(&inst.y),
-                    );
-                    let f = fold(fold(f, sym_ids(&inst.cell)), sym_ids(&inst.name));
-                    fold(f, inst.orient.iter().map(|&o| o as u32))
-                };
-                let wire_key = {
-                    let f = fold(fold(seed, obj_ids(&w.id)), as_u32(&w.x1));
-                    fold(fold(fold(f, as_u32(&w.y1)), as_u32(&w.x2)), as_u32(&w.y2))
-                };
-                let label_key = {
-                    let f = fold(fold(seed, obj_ids(&l.id)), as_u32(&l.x));
-                    fold(fold(f, as_u32(&l.y)), sym_ids(&l.text))
-                };
-                [inst_key, wire_key, label_key]
+        // The document groups follow the document's change log from the last fill; the
+        // elab groups follow the check pass, compared with what was filled.
+        let changes = self
+            .filled
+            .doc
+            .filter(|d| d.0 == id)
+            .and_then(|d| doc.changes_since(d.1));
+        match changes {
+            Some(changes) => patch_doc_groups(s, doc, id, changes, &mut self.filled),
+            None => {
+                let groups = [true, true, true, false, false, false, false];
+                fill_groups(s, doc, id, cell, results, groups);
+                (self.filled.wire_net, self.filled.label_net) = (None, None);
             }
-        };
-        self.doc_keys = Some((at, doc_keys));
-        let [inst_key, wire_key, label_key] = doc_keys;
-        let keys = [
-            inst_key,
-            wire_key,
-            label_key,
-            hash_of((id, pass)),
-            hash_of(results),
-            hash_of((wire_key, pass)),
-            hash_of((label_key, pass)),
-        ];
-        let mut stale = [false; GROUPS];
-        for (g, k) in keys.into_iter().enumerate() {
-            stale[g] = self.group_keys[g].replace(k) != Some(k);
         }
-        fill_groups(&mut self.snapshots, doc, id, cell, results, stale);
+        self.filled.doc = Some((id, doc.cursor()));
+        sync_cell_groups(s, id, cell, &mut self.filled);
+        let rk = hash_of(results);
+        if self.filled.results.replace(rk) != Some(rk) {
+            let mut stale = [false; GROUPS];
+            stale[4] = true;
+            fill_groups(s, doc, id, cell, results, stale);
+        }
         // Oracle (debug builds, small documents): the refilled groups equal a full refill.
         #[cfg(debug_assertions)]
-        if inst.id.len() + w.id.len() + l.id.len() < 20_000 {
+        if doc.instances().id.len() + doc.wires().id.len() + doc.labels().id.len() < 20_000 {
             let mut full = self.snapshots.clone();
             fill_groups(&mut full, doc, id, cell, results, [true; GROUPS]);
             debug_assert_eq!(

@@ -369,7 +369,10 @@ mod tests {
                         .collect();
                     assert_eq!(by, scan);
                 }
-                assert_eq!(a.on(&t).count(), a.iter().filter(|x| x.1.target == t).count());
+                assert_eq!(
+                    a.on(&t).count(),
+                    a.iter().filter(|x| x.1.target == t).count()
+                );
             }
             let checks = a.iter().filter(|x| x.0 == "checks").count();
             assert_eq!(a.count_of("checks"), checks);

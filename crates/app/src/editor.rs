@@ -3921,9 +3921,8 @@ impl Editor {
             (active, cell.map(|c| c.pass), &rows).hash(&mut h);
             h.finish()
         };
-        let epoch = active.map_or(0, |h| self.session.epoch(h));
         self.host
-            .snapshot(&self.session.project, active, epoch, &sel, cell, &rows, key);
+            .snapshot(&self.session.project, active, &sel, cell, &rows, key);
         self.snapshot_fresh = true;
     }
 

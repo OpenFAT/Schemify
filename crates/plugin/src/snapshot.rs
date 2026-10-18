@@ -147,6 +147,100 @@ impl Snapshots {
         debug_assert_eq!(c.ends.len(), values.len());
     }
 
+    /// Replaces rows `at` of a fixed-width column with `values` (the rows after it shift) and
+    /// advances the table's epoch: [`Snapshots::fill`] of the spliced sequence, in O(changed
+    /// rows) plus one move of the column's tail. Other columns are not touched: the caller
+    /// keeps the table's columns in step ([`Snapshots::check`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the column is not of type `T`, `at` is past the column's rows, or the result
+    /// would exceed [`ROWS_MAX`].
+    pub fn splice<T: Scalar>(
+        &mut self,
+        table: Table,
+        column: u32,
+        at: std::ops::Range<usize>,
+        values: &[T],
+    ) {
+        let def = table.columns()[column as usize];
+        assert_eq!(
+            def.ty,
+            T::TY,
+            "{}.{} is {}",
+            table.name(),
+            def.name,
+            def.ty.name()
+        );
+        let t = &mut self.tables[table as usize];
+        let c = &mut t.columns[column as usize];
+        let w = usize::from(T::TY.width());
+        let rows = c.bytes.len() / w;
+        assert!(
+            at.start <= at.end && at.end <= rows,
+            "rows {at:?} of {rows}"
+        );
+        assert!(rows - at.len() + values.len() <= ROWS_MAX as usize);
+        let mut enc = Vec::with_capacity(values.len() * w);
+        for &v in values {
+            v.put_le(&mut enc);
+        }
+        c.bytes.splice(at.start * w..at.end * w, enc);
+        t.epoch = t.epoch.wrapping_add(1);
+        debug_assert_eq!(c.bytes.len(), (rows - at.len() + values.len()) * w);
+    }
+
+    /// [`Snapshots::splice`] for a string column.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the column is not a string column, `at` is past its rows, or the strings
+    /// would total 4 GiB or more.
+    pub fn splice_strings<S: AsRef<str>>(
+        &mut self,
+        table: Table,
+        column: u32,
+        at: std::ops::Range<usize>,
+        values: &[S],
+    ) {
+        let def = table.columns()[column as usize];
+        assert_eq!(
+            def.ty,
+            ColType::Str,
+            "{}.{} is {}",
+            table.name(),
+            def.name,
+            def.ty.name()
+        );
+        let t = &mut self.tables[table as usize];
+        let c = &mut t.columns[column as usize];
+        let rows = c.ends.len();
+        assert!(
+            at.start <= at.end && at.end <= rows,
+            "rows {at:?} of {rows}"
+        );
+        let end_of = |i: usize| if i == 0 { 0 } else { c.ends[i - 1] as usize };
+        let (b0, b1) = (end_of(at.start), end_of(at.end));
+        let mut bytes = Vec::new();
+        let mut ends = Vec::with_capacity(values.len());
+        for v in values {
+            bytes.extend_from_slice(v.as_ref().as_bytes());
+            ends.push(b0 + bytes.len());
+        }
+        let grown = bytes.len() as i64 - (b1 - b0) as i64;
+        c.bytes.splice(b0..b1, bytes);
+        let total = u32::try_from(c.bytes.len()).expect("string column under 4 GiB");
+        let ends: Vec<u32> = ends.into_iter().map(|e| e as u32).collect();
+        let n = ends.len();
+        c.ends.splice(at.clone(), ends);
+        for e in &mut c.ends[at.start + n..] {
+            *e = (i64::from(*e) + grown) as u32;
+        }
+        t.epoch = t.epoch.wrapping_add(1);
+        debug_assert!(c.ends.last().is_none_or(|&e| e == total));
+        debug_assert!(c.ends.windows(2).all(|p| p[0] <= p[1]));
+    }
+
     /// Returns the row count (that of column 0; [`Snapshots::check`] verifies the rest).
     pub fn rows(&self, table: Table) -> u32 {
         let t = &self.tables[table as usize];
@@ -375,6 +469,51 @@ mod tests {
         assert_eq!(buf, [1, 0, 0, 0, b'a', 0, 0, 0, 0]);
         assert_eq!(s.strings_len(0, col::docs::CELL, 2, 0), Ok(0));
         assert_eq!(s.strings_len(0, col::docs::HANDLE, 0, 1), Err(Code::Column));
+    }
+
+    /// Oracle: random splices of a fixed-width and a string column equal fills of the same
+    /// spliced sequences, and each advances the epoch.
+    #[test]
+    fn splices_equal_fills_of_the_spliced_rows() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = |m: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % m
+        };
+        let (mut ids, mut names): (Vec<u32>, Vec<String>) = (Vec::new(), Vec::new());
+        let mut s = Snapshots::new();
+        for step in 0..400 {
+            let n = ids.len() as u64;
+            let a = next(n + 1) as usize;
+            let b = a + next(n - a as u64 + 1).min(3) as usize;
+            let k = next(4) as usize;
+            let new_ids: Vec<u32> = (0..k).map(|_| next(1000) as u32).collect();
+            let new_names: Vec<String> = (0..k).map(|_| "x".repeat(next(5) as usize)).collect();
+            ids.splice(a..b, new_ids.iter().copied());
+            names.splice(a..b, new_names.iter().cloned());
+            let epoch = s.epoch(Table::Wires);
+            s.splice::<u32>(Table::Wires, col::wires::ID, a..b, &new_ids);
+            s.splice_strings(Table::Labels, col::labels::TEXT, a..b, &new_names);
+            assert_eq!(s.epoch(Table::Wires), epoch.wrapping_add(1), "step {step}");
+            let mut f = Snapshots::new();
+            f.fill::<u32>(Table::Wires, col::wires::ID, &ids);
+            f.fill_strings(Table::Labels, col::labels::TEXT, &names);
+            let col =
+                |x: &Snapshots, t: Table, c: u32| x.tables[t as usize].columns[c as usize].clone();
+            for (t, c) in [
+                (Table::Wires, col::wires::ID),
+                (Table::Labels, col::labels::TEXT),
+            ] {
+                let (got, want) = (col(&s, t, c), col(&f, t, c));
+                assert_eq!(
+                    (got.bytes, got.ends),
+                    (want.bytes, want.ends),
+                    "step {step}"
+                );
+            }
+        }
     }
 
     #[test]
