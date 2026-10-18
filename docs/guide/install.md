@@ -69,7 +69,7 @@ cargo run --release -p schemify-cli -- run crates/app/tests/fixtures/rc/tb.shben
 
 `cargo run -p schemify-cli -- edit ...` only works after `schemify-gui` has been built into the same `target/` directory (or is on your `PATH`); otherwise it stops with `cannot run schemify-gui`.
 
-The interop command line builds from its submodule (`git submodule update --init examples/plugins/interop`):
+The interop command line builds from its submodule (`git submodule update --init --checkout examples/plugins/interop`):
 
 ```sh
 cargo run --release --manifest-path examples/plugins/interop/Cargo.toml --features cli -- \

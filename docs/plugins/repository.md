@@ -78,7 +78,7 @@ debug = false
 
 Schemify's crates are not published to crates.io, and their APIs change between commits. Every Schemify crate a plugin uses comes from the same `rev`, so the plugin always builds against one consistent core and its build never changes under it. Moving to a newer Schemify is a deliberate one-line change ([publishing.md](publishing.md)). Use only `schemify-abi` in the guest when you can: it is the versioned plugin ABI and changes least. Depending on `schemify-format`, `-doc`, `-elab` or `-netlist` is allowed (the interop plugin links several), but those crates are internals, so expect to fix the plugin when you bump the revision.
 
-Cargo checks out a git dependency's submodules too. Schemify's submodules are the four example plugins under `examples/plugins/`, so the first build after a revision bump clones them into `~/.cargo/git/checkouts`. They are not built, only cloned.
+Cargo checks out a git dependency's submodules too, unless `.gitmodules` sets `update = none` for one. Schemify's submodules (the example plugins under `examples/plugins/`) all set it, so a git dependency on a Schemify crate clones Schemify alone (cargo prints `Skipping git submodule … due to update strategy`).
 
 ## rust-toolchain.toml
 

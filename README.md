@@ -53,7 +53,7 @@ From source, with Rust 1.95 or newer. On Linux the editor needs the Wayland or X
 libraries at runtime; `nix develop` provides them along with ngspice and xschem.
 
 ```sh
-git clone --recurse-submodules https://github.com/OmarSiwy/Schemify && cd Schemify
+git clone https://github.com/OmarSiwy/Schemify && cd Schemify
 cargo run --release -p schemify-app -- crates/app/tests/fixtures/ota/ota.shcomp      # the editor
 cargo run --release -p schemify-cli -- netlist crates/app/tests/fixtures/rc/tb.shbench
 cargo run --release -p schemify-cli -- run crates/app/tests/fixtures/rc/tb.shbench   # needs ngspice
@@ -134,7 +134,8 @@ schemify.pack.add {
 git repository, or a URL with a sha256. See [docs/guide/config.md](docs/guide/config.md).
 
 Plugins are wasm modules ([plugin ABI](docs/spec/plugin-abi.md)). Each lives in its own
-repository; these four are checked out under [examples/plugins](examples/plugins) as submodules,
+repository; these four are checked out under [examples/plugins](examples/plugins) as submodules
+(`git submodule update --init --checkout`),
 and [docs/plugins](docs/plugins/README.md) shows how to write, test and publish your own:
 
 | Plugin | What it adds |

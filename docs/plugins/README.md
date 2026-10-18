@@ -10,7 +10,7 @@ A Schemify plugin is a wasm module ([plugin ABI](../spec/plugin-abi.md)) that li
 
 ## Examples
 
-Four plugins are checked out under [examples/plugins/](../../examples/plugins) as git submodules (`git submodule update --init`). Each is a complete repository that follows these pages:
+Four plugins are checked out under [examples/plugins/](../../examples/plugins) as git submodules. They set `update = none` (so cargo git dependencies on Schemify skip them), which plain `git submodule update --init` and `git clone --recurse-submodules` also honour: fetch them with `git submodule update --init --checkout`. Each is a complete repository that follows these pages:
 
 | Plugin | Repository | Shows |
 |---|---|---|
