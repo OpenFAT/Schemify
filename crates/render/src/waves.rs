@@ -11,9 +11,12 @@
 use vello::kurbo::{BezPath, Rect};
 use vello::peniko::Color;
 
-use schemify_ui::graph::{log_ticks, ticks};
+use schemify_ui::graph::{log_ticks, tick_digits, ticks};
 use schemify_ui::parley::Layout;
-use schemify_ui::waves::{Drag, Geometry, WaveUi, plot_area};
+use schemify_ui::waves::{
+    Drag, Geometry, READOUT_HEADINGS, ReadoutRow, WaveUi, lane_name, legend_label, measure_label,
+    plot_area, readout_head, readout_rows,
+};
 use schemify_ui::{Rect as UiRect, TextSystem};
 use schemify_wave::{Axis, Cursor, PaneMode, Run, Scale, Waves, decimate, format_si, logic_runs};
 
@@ -59,6 +62,7 @@ pub struct WaveScratch {
     path: BezPath,
     runs: Vec<Run>,
     bins: Vec<u32>,
+    rows: Vec<ReadoutRow>,
     ui: UiScratch,
 }
 
@@ -131,7 +135,7 @@ pub fn draw_pane<P: Painter>(
     let nx = (pr.w / 90.0).clamp(2.0, 12.0) as u8;
     axis_ticks(xa, nx, &mut s.ticks);
     let ts = std::mem::take(&mut s.ticks);
-    let digits = label_digits(&ts, xa.log);
+    let digits = tick_digits(&ts, xa.log);
     for &t in &ts {
         let x = f64::from(sx.px(t)).floor() + 0.5;
         if x < plot.x0 - 0.5 || x > plot.x1 + 0.5 {
@@ -154,7 +158,7 @@ pub fn draw_pane<P: Painter>(
         let ny = (pr.h / 26.0).clamp(2.0, 10.0) as u8;
         axis_ticks(ya, ny, &mut s.ticks);
         let ts = std::mem::take(&mut s.ticks);
-        let digits = label_digits(&ts, ya.log);
+        let digits = tick_digits(&ts, ya.log);
         for &t in &ts {
             let y = f64::from(sy.px(t)).floor() + 0.5;
             if y < plot.y0 - 0.5 || y > plot.y1 + 0.5 {
@@ -244,40 +248,19 @@ pub fn draw_pane<P: Painter>(
         // Lane names in the y-label strip, in their trace's colour.
         let lh = plot.height() / traces_of(waves, k).count().max(1) as f64;
         for (j, i) in traces_of(waves, k).enumerate() {
-            let name: String = waves.src(i).chars().take(9).collect();
             let y = plot.y0 + (j as f64 + 0.5) * lh - 7.0;
             let color = rgba(waves.color(i));
-            label_at(p, text, s, &name, plot.x0 - 4.0, y, Align::Right, color);
+            let name = lane_name(waves.src(i));
+            label_at(p, text, s, name, plot.x0 - 4.0, y, Align::Right, color);
         }
     } else {
-        // Legend: trace names in their colors, with the value at cursor A (as xschem's labels
-        // do) where the pane shows the shared x.
+        // Legend: trace names in their colours, left to right until the plot's right edge.
         let mut lx = plot.x0 + 2.0;
         for i in traces_of(waves, k) {
-            s.text.clear();
-            if waves.is_magnitude(i) {
-                s.text.push('|');
-                s.text.push_str(waves.src(i));
-                s.text.push('|');
-            } else {
-                s.text.push_str(waves.src(i));
-            }
-            let a = waves.cursors()[0].filter(|_| !props.own_x());
-            if let Some(v) = a.and_then(|a| waves.value_at(i, a)) {
-                s.text.push_str(" = ");
-                s.text.push_str(&format_si(v, 4));
-            }
-            let t = std::mem::take(&mut s.text);
-            let w = label_at(
-                p,
-                text,
-                s,
-                &t,
-                lx,
-                pane.y0 + 2.0,
-                Align::Left,
-                rgba(waves.color(i)),
-            );
+            let mut t = std::mem::take(&mut s.text);
+            legend_label(waves, i, &mut t);
+            let color = rgba(waves.color(i));
+            let w = label_at(p, text, s, &t, lx, pane.y0 + 2.0, Align::Left, color);
             s.text = t;
             lx += w + 14.0;
             if lx > plot.x1 {
@@ -453,10 +436,8 @@ fn draw_histogram<P: Painter>(
     }
 }
 
-/// Draws the cursor readout: a, b, Δx and 1/Δx, the active pane's horizontal cursors and Δy
-/// when it has any, then each trace's value at a and b and their difference in the trace's
-/// color (one row per shown sweep step when there are several; `-` for a trace whose pane has
-/// its own x axis). Rows that do not fit are left out.
+/// Draws the cursor readout: the head lines of [`readout_head`], the column headings, then
+/// the [`readout_rows`] that fit in `area`, each in its trace's colour.
 pub fn draw_readout<P: Painter>(
     p: &mut P,
     area: UiRect,
@@ -471,123 +452,46 @@ pub fn draw_readout<P: Painter>(
     let fg = rgba(0xd0d0_d0ff);
     let row = 15.0;
     let mut y = r.y0 + 4.0;
-    let [a, b] = waves.cursors();
+    let head = readout_head(waves, active);
     // Columns: name 40%, then A, B and B−A at 20% each.
     let col = |k: usize| r.x0 + 6.0 + [0.0, 0.4, 0.6, 0.8][k] * (r.width() - 12.0);
-    let si = |v: Option<f64>| v.map_or_else(|| "-".to_owned(), |v| format_si(v, 4));
-    for (k, name, v) in [(0, "A", a), (1, "B", b)] {
-        if v.is_some() {
-            label_at(
-                p,
-                text,
-                s,
-                name,
-                col(0),
-                y,
-                Align::Left,
-                rgba(look.cursor[k]),
-            );
+    for (k, name) in ["A", "B"].into_iter().enumerate() {
+        if head.shown[k] {
+            let c = rgba(look.cursor[k]);
+            label_at(p, text, s, name, col(0), y, Align::Left, c);
         }
-        label_at(
-            p,
-            text,
-            s,
-            &format!("x = {}", si(v)),
-            col(0) + 16.0,
-            y,
-            Align::Left,
-            fg,
-        );
+        label_at(p, text, s, &head.x[k], col(0) + 16.0, y, Align::Left, fg);
         y += row;
     }
-    if let (Some(a), Some(b)) = (a, b) {
-        let dx = b - a;
-        let inv = if dx != 0.0 {
-            si(Some(1.0 / dx))
-        } else {
-            "-".into()
-        };
-        let t = format!("Δx = {}   1/Δx = {inv}", si(Some(dx)));
-        label_at(p, text, s, &t, col(0), y, Align::Left, fg);
+    if let Some(t) = &head.dx {
+        label_at(p, text, s, t, col(0), y, Align::Left, fg);
     }
-    let hc = waves
-        .hcursors(usize::from(active).min(waves.panes().len() - 1))
-        .map(|c| c.filter(|v| v.is_finite()));
-    if hc.iter().any(Option::is_some) {
+    if let Some(t) = &head.dy {
         y += row;
-        let dy = hc[0].zip(hc[1]).map(|(a, b)| b - a);
-        let t = format!(
-            "pane {}: A y = {}  B y = {}  Δy = {}",
-            active + 1,
-            si(hc[0]),
-            si(hc[1]),
-            si(dy)
-        );
-        label_at(p, text, s, &t, col(0), y, Align::Left, fg);
+        label_at(p, text, s, t, col(0), y, Align::Left, fg);
     }
     y += row + 4.0;
-    for (k, h) in ["trace", "@A", "@B", "B−A"].iter().enumerate() {
+    for (k, h) in READOUT_HEADINGS.iter().enumerate() {
         label_at(p, text, s, h, col(k), y, Align::Left, rgba(look.label));
     }
     y += row;
-    'traces: for i in 0..waves.trace_count() {
-        let props = waves.props(usize::from(waves.pane_of(i)));
-        let (a, b) = if props.own_x() { (None, None) } else { (a, b) };
-        let color = rgba(waves.color(i));
-        let name: String = waves.src(i).chars().take(14).collect();
-        if props.mode == PaneMode::Digital {
-            if y + row > r.y1 {
-                break;
-            }
-            let fmt = |v: Option<u32>| match v {
-                Some(v) if waves.bus_bits(i) > 0 => props.radix.format(v),
-                Some(v) => v.to_string(),
-                None => "-".to_owned(),
-            };
-            label_at(p, text, s, &name, col(0), y, Align::Left, color);
-            let va = a.and_then(|x| waves.logic_at(i, x));
-            let vb = b.and_then(|x| waves.logic_at(i, x));
-            for (k, t) in [fmt(va), fmt(vb), "-".to_owned()].iter().enumerate() {
-                label_at(p, text, s, t, col(k + 1), y, Align::Left, color);
-            }
-            y += row;
-            continue;
+    // A row whose bottom would pass the panel's is left out.
+    let fit = ((r.y1 - y) / row).floor().max(0.0) as usize;
+    let mut rows = std::mem::take(&mut s.rows);
+    readout_rows(waves, fit, &mut rows);
+    for rr in &rows {
+        let color = rgba(rr.color);
+        for (k, t) in rr.cells.iter().enumerate() {
+            label_at(p, text, s, t, col(k), y, Align::Left, color);
         }
-        let steps = waves.shown_steps(i);
-        let several = steps.len() > 1;
-        for st in steps {
-            if y + row > r.y1 {
-                break 'traces;
-            }
-            let (va, vb) = if several {
-                (
-                    a.and_then(|x| waves.value_at_step(i, st, x)),
-                    b.and_then(|x| waves.value_at_step(i, st, x)),
-                )
-            } else {
-                (
-                    a.and_then(|x| waves.value_at(i, x)),
-                    b.and_then(|x| waves.value_at(i, x)),
-                )
-            };
-            let label = if several {
-                format!("{name} [{st}]")
-            } else {
-                name.clone()
-            };
-            label_at(p, text, s, &label, col(0), y, Align::Left, color);
-            let d = va.zip(vb).map(|(a, b)| b - a);
-            for (k, v) in [va, vb, d].into_iter().enumerate() {
-                label_at(p, text, s, &si(v), col(k + 1), y, Align::Left, color);
-            }
-            y += row;
-        }
+        y += row;
     }
+    debug_assert!(rows.is_empty() || y <= r.y1, "a readout row overflows");
+    s.rows = rows;
     p.pop_clip();
 }
 
-/// The measurement tooltip (xschem `m`): `y=` and `x=` of the pointer over a plot, in
-/// engineering units, on a black box beside the pointer.
+/// The measurement tooltip ([`measure_label`]) on a black box beside the pointer.
 fn draw_measure<P: Painter>(
     p: &mut P,
     geo: &Geometry,
@@ -597,16 +501,9 @@ fn draw_measure<P: Painter>(
     text: &mut TextSystem,
     s: &mut WaveScratch,
 ) {
-    let Some(k) = geo.panes.iter().position(|r| r.contains(x, y)) else {
+    let Some(t) = measure_label(geo, waves, x, y) else {
         return;
     };
-    let pr = plot_area(geo.panes[k]);
-    if !pr.contains(x, y) {
-        return;
-    }
-    let vx = waves.x_of(k).scale(pr.x, pr.x + pr.w).value(x);
-    let vy = waves.panes()[k].scale(pr.y + pr.h, pr.y).value(y);
-    let t = format!("y={}  x={}", format_si(vy, 4), format_si(vx, 4));
     text.shape_into(&t, TICK_PX, &mut s.label);
     let w = f64::from(s.label.width());
     let (bx, by) = (f64::from(x) + 12.0, f64::from(y) - 20.0);
@@ -654,32 +551,6 @@ fn label_at<P: Painter>(
     };
     draw_text(p, &s.label, x, y, color, &mut s.ui);
     w
-}
-
-/// Significant digits that tell neighbouring ticks apart: at least 3, more when the view is
-/// narrow next to its distance from zero (a 50 ps window at 4.2 ms needs 9).
-fn label_digits(ts: &[f64], log: bool) -> usize {
-    let (Some(&a), Some(&b)) = (ts.first(), ts.get(1)) else {
-        return 3;
-    };
-    let big = ts.iter().fold(0.0f64, |m, t| m.max(t.abs()));
-    if log || b <= a || big == 0.0 {
-        return 3;
-    }
-    ((big / (b - a)).log10().ceil() as i64 + 1).clamp(3, 15) as usize
-}
-
-#[cfg(test)]
-#[test]
-fn tick_labels_get_enough_digits_to_differ() {
-    assert_eq!(label_digits(&[0.0, 5e-6, 10e-6], false), 3);
-    assert_eq!(label_digits(&[-100.0, -80.0, -60.0], false), 3);
-    let narrow = [4.2e-3, 4.2e-3 + 1e-11, 4.2e-3 + 2e-11];
-    let d = label_digits(&narrow, false);
-    let s: Vec<String> = narrow.iter().map(|&t| format_si(t, d)).collect();
-    assert!(s[0] != s[1] && s[1] != s[2], "{s:?}");
-    assert_eq!(label_digits(&[1e3, 1e4], true), 3);
-    assert_eq!(label_digits(&[1.0], false), 3);
 }
 
 /// Tick positions for one axis: decades on a log axis, nice 1-2-5 steps otherwise.

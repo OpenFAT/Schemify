@@ -5,13 +5,13 @@ use vello::Glyph;
 use vello::kurbo::{Affine, BezPath, Rect};
 use vello::peniko::Color;
 
-use schemify_ui::graph::{decimate, ticks};
+use schemify_ui::graph::{decimate, tick_label, ticks};
 use schemify_ui::icon::{ICON_BOX, ICON_STROKE, Icon};
 use schemify_ui::math::{MathFonts, MathList, MathPaths, Verb};
 use schemify_ui::parley::{Layout, PositionedLayoutItem};
 use schemify_ui::{
-    Kind, Layer, NO_TEXT, Prop, Shown, Strings, StyleProp, Sym, TextSystem, UiLayout, UiState,
-    UiTables, row_style,
+    Kind, Layer, NO_TEXT, Prop, RowPaint, Shown, Strings, StyleProp, Sym, TextSystem, UiLayout,
+    UiState, UiTables, row_paint, row_style,
 };
 
 use crate::painter::{Painter, outline, rgba};
@@ -52,16 +52,6 @@ pub(crate) fn rect(r: schemify_ui::Rect) -> Rect {
         f64::from(r.x + r.w),
         f64::from(r.y + r.h),
     )
-}
-
-/// Alpha of a disabled row's text and icon, as a fraction (numerator over 256) of its style's.
-pub const DISABLED_ALPHA: u32 = 102;
-
-/// `rrggbbaa` with its alpha scaled by [`DISABLED_ALPHA`].
-fn dim_alpha(c: u32) -> u32 {
-    let a = (c & 0xff) * DISABLED_ALPHA / 256;
-    debug_assert!(a <= 0xff);
-    (c & !0xff) | a
 }
 
 /// Paints the rows of one layer. Call with [`Layer::Main`], draw the canvas into the canvas
@@ -105,31 +95,8 @@ pub fn draw_ui<P: Painter>(
         let id = n.id()[i];
         let style = |prop| row_style(tables, layout.title_style(), node, shown, prop);
         let area = rect(layout.rect()[r]);
-        // A disabled row neither lights under the pointer nor reads as available: its text and
-        // icon are drawn at [`DISABLED_ALPHA`] of the style's alpha.
-        let disabled = n.is_disabled(strings, node);
-        let hovered = state.hover() == id && shown != Shown::Popup && !disabled;
-        let active = match shown {
-            Shown::Title | Shown::Cascade => state.open().contains(&id),
-            Shown::Normal => {
-                (kind == Kind::Tab && n.is_checked(strings, node))
-                    || (kind == Kind::Dropdown && state.open().contains(&id))
-            }
-            Shown::Popup => false,
-        };
-        let pick = |base: StyleProp, hover: StyleProp, act: StyleProp| {
-            let v = if active {
-                style(act)
-            } else if hovered {
-                style(hover)
-            } else {
-                0
-            };
-            if v & 0xff != 0 { v } else { style(base) }
-        };
-        let bg = pick(StyleProp::Bg, StyleProp::HoverBg, StyleProp::ActiveBg);
-        let fg = pick(StyleProp::Fg, StyleProp::HoverFg, StyleProp::ActiveFg);
-        let fg = rgba(if disabled { dim_alpha(fg) } else { fg });
+        let RowPaint { bg, fg } = row_paint(tables, layout, strings, state, r);
+        let fg = rgba(fg);
         if bg & 0xff != 0 && kind != Kind::Canvas {
             p.fill_rect(area, rgba(bg));
         }
@@ -516,7 +483,7 @@ pub fn draw_graph<P: Painter>(
                  right: bool,
                  text: &mut TextSystem,
                  scratch: &mut UiScratch| {
-        let s = format!("{}", (v * 1e6).round() / 1e6);
+        let s = tick_label(v);
         let mut l = std::mem::take(&mut scratch.label);
         text.shape_into(&s, 10.0, &mut l);
         let w = f64::from(l.width());

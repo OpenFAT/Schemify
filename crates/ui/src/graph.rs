@@ -132,9 +132,71 @@ pub fn log_ticks(lo: f64, hi: f64, max_ticks: u8, out: &mut Vec<f64>) {
     );
 }
 
+/// Significant digits that tell neighbouring ticks `ts` apart: at least 3, more when the view
+/// is narrow next to its distance from zero (a 50 ps window at 4.2 ms needs 9), at most 15. A
+/// log axis, fewer than two ticks, or ticks not ascending get 3.
+pub fn tick_digits(ts: &[f64], log: bool) -> usize {
+    let (Some(&a), Some(&b)) = (ts.first(), ts.get(1)) else {
+        return 3;
+    };
+    let big = ts.iter().fold(0.0f64, |m, t| m.max(t.abs()));
+    if log || b <= a || big == 0.0 {
+        return 3;
+    }
+    let d = ((big / (b - a)).log10().ceil() as i64 + 1).clamp(3, 15) as usize;
+    debug_assert!((3..=15).contains(&d));
+    d
+}
+
+/// The `graph` widget's tick label: `v` rounded to 6 decimal places in Rust's shortest
+/// round-trip form (`0.1 + 0.2` reads `0.3`, `1.0` reads `1`), so float noise from the tick
+/// step never shows.
+pub fn tick_label(v: f64) -> String {
+    format!("{}", (v * 1e6).round() / 1e6)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tick_digits_tell_ticks_apart() {
+        // (ticks, log, digits)
+        let cases: [(&[f64], bool, usize); 6] = [
+            (&[0.0, 5e-6, 10e-6], false, 3),
+            (&[-100.0, -80.0, -60.0], false, 3),
+            (&[1e3, 1e4], true, 3),
+            (&[1.0], false, 3),
+            (&[], false, 3),
+            (&[2.0, 1.0], false, 3), // descending
+        ];
+        for (ts, log, d) in cases {
+            assert_eq!(tick_digits(ts, log), d, "{ts:?}");
+        }
+        let narrow = [4.2e-3, 4.2e-3 + 1e-11, 4.2e-3 + 2e-11];
+        let d = tick_digits(&narrow, false);
+        let s: Vec<String> = narrow
+            .iter()
+            .map(|&t| schemify_wave::format_si(t, d))
+            .collect();
+        assert!(s[0] != s[1] && s[1] != s[2], "{s:?}");
+        assert_eq!(tick_digits(&[1e15, 1e15 + 1.0], false), 15, "capped");
+    }
+
+    #[test]
+    fn tick_labels_hide_float_noise() {
+        let cases = [
+            (0.1 + 0.2, "0.3"),
+            (1.0, "1"),
+            (-2.5, "-2.5"),
+            (1e-7, "0"),
+            (1.234_567_89, "1.234568"),
+            (0.0, "0"),
+        ];
+        for (v, s) in cases {
+            assert_eq!(tick_label(v), s, "{v}");
+        }
+    }
 
     fn lcg(seed: &mut u64) -> f64 {
         *seed = seed
