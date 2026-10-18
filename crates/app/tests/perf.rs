@@ -360,7 +360,8 @@ impl Bench {
             base,
             layers: Some(&mut self.layers),
         };
-        self.ed.paint(&mut p);
+        let drawn = self.ed.paint(&mut p);
+        self.ed.painted(drawn);
         let cpu = t.elapsed().as_secs_f64() * 1e3;
         let rendered = self
             .gpu

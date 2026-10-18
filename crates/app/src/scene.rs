@@ -1780,11 +1780,87 @@ pub fn box_select(objs: &Objects, r: [f64; 4], touch: bool) -> Vec<u32> {
     out
 }
 
-/// Recolors every primitive of a selected object (`selected[obj]`) in `color`.
-pub fn marks(sc: &Scene, selected: &[bool], color: u32, out: &mut Marks) {
-    assert_eq!(selected.len(), sc.objs.len());
+/// The selected objects of a scene: a bitset over object indices beside the sorted list of
+/// the set ones.
+///
+/// Why a bitset: every reader asks about one object per primitive or connection point (the
+/// marks, the move preview on every frame of a drag, the export subset, the wire-start hit),
+/// so a lookup must be O(1); a sorted index list alone would make those O(log selection)
+/// each. Why the list: a change clears only the bits set before, so it costs O(old + new
+/// selection) plus the growth of the bitset, not O(objects) as a `vec![false; objects]` did.
+/// Capacity: [`CanvasPrims::CAPACITY`] objects, so `objects / 64` words.
+#[derive(Clone, Debug, Default)]
+pub struct Selected {
+    words: Vec<u64>,
+    objs: Vec<u32>,
+    universe: u32,
+}
+
+impl Selected {
+    /// Selects exactly `objs` (any order, duplicates allowed) out of a scene of `universe`
+    /// objects. Cost: O(previous + new selection), plus zeroing the words a larger scene adds.
+    ///
+    /// # Panics
+    ///
+    /// If `universe` exceeds the scene object capacity or an index is `>= universe`.
+    pub fn set(&mut self, universe: usize, objs: impl IntoIterator<Item = u32>) {
+        assert!(universe <= CanvasPrims::CAPACITY, "scene object capacity");
+        for &o in &self.objs {
+            self.words[o as usize / 64] &= !(1u64 << (o % 64));
+        }
+        self.objs.clear();
+        self.objs.extend(objs);
+        self.objs.sort_unstable();
+        self.objs.dedup();
+        self.words.resize(universe.div_ceil(64), 0);
+        for &o in &self.objs {
+            assert!((o as usize) < universe, "selected object out of the scene");
+            self.words[o as usize / 64] |= 1u64 << (o % 64);
+        }
+        self.universe = universe as u32;
+        debug_assert_eq!(
+            self.words
+                .iter()
+                .map(|w| w.count_ones() as usize)
+                .sum::<usize>(),
+            self.objs.len(),
+            "one bit per selected object"
+        );
+    }
+
+    /// Whether object `o` is selected; false for any index outside the scene (`u32::MAX`, the
+    /// owner of an unowned primitive, included).
+    pub fn contains(&self, o: u32) -> bool {
+        self.words
+            .get(o as usize / 64)
+            .is_some_and(|w| w >> (o % 64) & 1 != 0)
+    }
+
+    /// Number of scene objects the set was made for (the scene's `objs.len()` when current).
+    pub fn universe(&self) -> usize {
+        self.universe as usize
+    }
+
+    /// Number of selected objects.
+    pub fn len(&self) -> usize {
+        self.objs.len()
+    }
+
+    /// True when nothing is selected.
+    pub fn is_empty(&self) -> bool {
+        self.objs.is_empty()
+    }
+}
+
+/// Recolors every primitive of a selected object in `color`.
+///
+/// # Panics
+///
+/// If `selected` was made for a scene of another size.
+pub fn marks(sc: &Scene, selected: &Selected, color: u32, out: &mut Marks) {
+    assert_eq!(selected.universe(), sc.objs.len());
     *out = Marks::default();
-    let on = |o: u32| o != u32::MAX && selected[o as usize];
+    let on = |o: u32| o != u32::MAX && selected.contains(o);
     let tables = [
         (PrimKind::Line, &sc.owner.lines),
         (PrimKind::Rect, &sc.owner.rects),
@@ -1803,9 +1879,9 @@ pub fn marks(sc: &Scene, selected: &[bool], color: u32, out: &mut Marks) {
 
 /// Copies the primitives of selected objects through `x` into `out` on [`LAYER_SEL`]
 /// (move and copy previews; texts included, so a moving label shows its name).
-pub fn push_moved(sc: &Scene, selected: &[bool], x: Xform, out: &mut CanvasPrims) {
-    assert_eq!(selected.len(), sc.objs.len());
-    let on = |o: u32| o != u32::MAX && selected[o as usize];
+pub fn push_moved(sc: &Scene, selected: &Selected, x: Xform, out: &mut CanvasPrims) {
+    assert_eq!(selected.universe(), sc.objs.len());
+    let on = |o: u32| o != u32::MAX && selected.contains(o);
     let p = &sc.prims;
     for i in 0..p.lines.x0.len() {
         if on(sc.owner.lines[i]) {

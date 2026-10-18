@@ -1012,7 +1012,9 @@ impl Editor {
         let pad = 10 * UNIT;
         let whole = export::bounds(&self.scene.prims).map(|b| export::padded(b, pad));
         let selected = (!self.selection().is_empty()).then(|| {
-            let keep = self.selected.clone();
+            // ponytail: one flag per object, O(objects) once per export; fine for a command.
+            let n = self.scene.objs.len() as u32;
+            let keep: Vec<bool> = (0..n).map(|o| self.selected.contains(o)).collect();
             export::subset(&self.scene, &keep)
         });
         let (ext, bytes): (&str, Result<Vec<u8>, String>) = match cmd {

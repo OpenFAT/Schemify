@@ -414,3 +414,39 @@ fn incremental_scene_equals_full_build() {
         walk(seed, 300);
     }
 }
+
+/// The selection set (`scene::Selected`): a reselect clears every bit the last one set, a
+/// scene that shrinks or grows keeps no stale bit, an index outside the scene (`u32::MAX`, the
+/// owner of an unowned primitive) is never selected, and a small selection of a large scene
+/// touches only its own bits.
+#[test]
+fn selection_set_follows_reselects_and_scene_size() {
+    let mut s = scene::Selected::default();
+    assert!(s.is_empty() && !s.contains(0) && !s.contains(u32::MAX));
+    s.set(200, [5, 64, 5, 199]);
+    assert_eq!((s.len(), s.universe()), (3, 200), "duplicates collapse");
+    for o in 0..200 {
+        assert_eq!(s.contains(o), [5, 64, 199].contains(&o), "object {o}");
+    }
+    assert!(
+        !s.contains(200) && !s.contains(u32::MAX),
+        "outside the scene"
+    );
+    s.set(70, [65]);
+    assert!(
+        !s.contains(5) && !s.contains(64) && !s.contains(199),
+        "old bits cleared"
+    );
+    assert!(s.contains(65) && s.len() == 1);
+    s.set(1 << 22, [3, (1 << 22) - 1]);
+    assert!(!s.contains(65) && s.contains(3) && s.contains((1 << 22) - 1));
+    s.set(1 << 22, std::iter::empty());
+    assert!(s.is_empty() && !s.contains(3) && !s.contains((1 << 22) - 1));
+}
+
+/// Selecting an index outside the scene is a programmer error.
+#[test]
+#[should_panic(expected = "selected object out of the scene")]
+fn selection_set_rejects_an_object_outside_the_scene() {
+    scene::Selected::default().set(10, [10]);
+}

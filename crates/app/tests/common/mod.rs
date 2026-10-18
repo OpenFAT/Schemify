@@ -198,7 +198,8 @@ impl Session {
     /// Renders the window on the CPU.
     pub fn render(&mut self) -> schemify_render::Pixmap {
         let mut p = CpuPainter::new(VIEW.0 as u16, VIEW.1 as u16, 1.0);
-        self.ed.paint(&mut p);
+        let drawn = self.ed.paint(&mut p);
+        self.ed.painted(drawn);
         p.finish(Color::BLACK)
     }
 }
