@@ -437,6 +437,54 @@ What bounds the rest:
 - **The violation table** stays a sorted `Vec<Violation>`: a patch moves its tail (≈ 0.1 ms
   at 70k rows), the largest remaining O(n) step of an edit frame on this fixture.
 
+## Rename and param edits 2026-10
+
+Goal: the last two edit kinds, an instance rename and an instance parameter change through
+the properties dialog, under 1 ms of CPU at 100k objects like the others. Measured on `main`
+`1bb4b6a4` (load < 1) with `edit_frames_100k` and temporary `Instant` laps around each spine
+step and inside `CellState::recompute`.
+
+### Before (100k, ms per frame, 12 frames each)
+
+| Step | rename | param |
+|---|---|---|
+| elab connectivity (`rebuild_nets`) | 34–46 | 0 |
+| elab graph | 0 | 1.3 (an override added: `rebuild_graph`) or 0.02 (an existing one changed) |
+| elab check pass (`check`, all rows) | 19.5–21.6 | 19.4–21.5 |
+| `scene::build` (values changed: every instance re-stamped) | 0.03 (update) | 28.7–29.0 |
+| violation markers (re-placed after a full scene build) | 0.01 | 6.1–7.3 |
+| UI compose + layout | 0.28 | 0.27 |
+| everything else | 0.15 | 0.15 |
+| **frame p50** | **55.5** | **58.3** |
+
+The tick after either is 0.3 ms. The fixture has 10k instances (no overrides), 60k wires,
+20k labels; the dialog's parameter field adds an override the first time (`W` on a bare
+`dev:nmos`), then changes it.
+
+### Plan (from the table)
+
+1. **Value checks per instance** (elab): a value edit reruns the check pass only on the
+   instance rows whose values it changed (E008, gating, E039, W007, E030) and on the own
+   scope's E008 rows, and patches those rows of the table in place; the pass delta is the
+   replaced rows. Removes the 20 ms of `check` from param edits.
+2. **Value delta** (elab → app): `graph.recompute` notes the nodes whose value or
+   `unverified` flag actually changed; `CellState` reports their instance rows, and
+   `scene::update` re-stamps those instances with the edit's own objects instead of a
+   `scene::build`. Removes the 29 ms build and the 6 ms marker re-placement.
+3. **Overrides added or removed without a graph rebuild** (elab): the node keeps its slot; its
+   new program's dependencies replace the old ones when each has a lower topological rank
+   (the order stays valid), else the graph rebuilds as today. Dependency lists move to the
+   end of the edge arrays (start/end per node instead of CSR); the reverse edges of a new
+   dependency move the same way. The affected-set walk uses epoch marks (no O(nodes) clear).
+4. **Instance renames patch connectivity** (elab): a name only gives the instance its
+   element names and the duplicate-name findings (E009) unless its element count changes
+   (a bus `X[3:0]`); with the same count the element names are rewritten in place and only
+   the E009 rows of the old and new names are recomputed (one scan of the element names),
+   posted through the connectivity delta. A count change rebuilds as today. Label and port
+   renames already patch (`live`): names join by name, merges and splits are local.
+5. **Param on a shared var** is O(dependents): evaluation, checks and re-stamps of every
+   dependent instance; measured separately, above 1/8 of the objects the scene rebuilds.
+
 ## Binary size
 
 D39 (amended 2026-10-11): the headless core `schemify` ≤ 2 MB, the editor `schemify-gui` ≤
