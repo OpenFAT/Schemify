@@ -559,9 +559,11 @@ pub struct Editor {
     /// Clock (ms) until which the zoom counts as changing: frames before it stretch the
     /// recorded canvas layer instead of re-recording it.
     zoom_until: u64,
-    /// The last frame showed a stretched layer: a crisp frame is due at `zoom_until`.
+    /// The last painted frame showed a stretched layer (handed in by [`Editor::painted`]): a
+    /// crisp frame is due at `zoom_until`.
     stretched: bool,
-    /// The last frame left canvas tiles unrecorded (a per-frame budget): the next is due now.
+    /// The last painted frame left canvas tiles unrecorded (a per-frame budget; handed in by
+    /// [`Editor::painted`]): the next is due now.
     partial: bool,
     ui_scratch: UiScratch,
     waves: Option<WavesView>,
@@ -1087,7 +1089,8 @@ impl Editor {
     }
 
     /// Milliseconds until the editor needs [`Editor::update`] without input: a run in flight
-    /// or a plugin's child process or timer pending. `None` when nothing is pending, so the
+    /// or a plugin's child process or timer pending, or a canvas outcome handed to
+    /// [`Editor::painted`] that needs another frame. `None` when nothing is pending, so the
     /// window sleeps until input (D39 idle CPU 0%).
     pub fn wake_ms(&self) -> Option<u32> {
         #[cfg(not(target_arch = "wasm32"))]
@@ -1352,7 +1355,13 @@ impl Editor {
     /// Paints one frame: UI main layer, canvas (grid, scene, decor, overlay, marks) or the
     /// text tab, the docs page's graphs, the UI overlay (menus, dialogs), then the waves dock
     /// below.
-    pub fn paint<P: Painter>(&mut self, p: &mut P) {
+    ///
+    /// Writes only paint caches (the canvas raster layer, its diff and indexes, glyphs),
+    /// never a table `update` or [`Editor::wake_ms`] reads. Returns how the canvas was drawn
+    /// (`None` while a text tab replaces it); the caller hands that to [`Editor::painted`] so
+    /// the next frame is scheduled from it (a partly recorded or stretched canvas asks for one).
+    pub fn paint<P: Painter>(&mut self, p: &mut P) -> Option<canvas::Drawn> {
+        let (stretched, partial) = (self.stretched, self.partial);
         draw_ui(
             p,
             &self.shell.tables,
@@ -1364,9 +1373,11 @@ impl Editor {
             &[],
             &mut self.ui_scratch,
         );
-        if self.session.text_view().is_none() {
-            self.paint_canvas(p);
-        }
+        let drawn = self
+            .session
+            .text_view()
+            .is_none()
+            .then(|| self.paint_canvas(p));
         self.paint_graphs(p);
         draw_ui(
             p,
@@ -1383,9 +1394,25 @@ impl Editor {
         if let Some(w) = self.waves.as_mut() {
             w.paint(&mut Shifted { p, dy });
         }
+        assert_eq!(self.stretched, stretched, "paint feeds no model state");
+        assert_eq!(self.partial, partial, "paint feeds no model state");
+        drawn
     }
 
-    fn paint_canvas<P: Painter>(&mut self, p: &mut P) {
+    /// Takes the canvas outcome [`Editor::paint`] returned: a stretched layer (mid-zoom) asks
+    /// [`Editor::wake_ms`] for a crisp frame once the zoom settles, a partly recorded one for
+    /// the next frame at once; any other outcome asks for nothing. `None` (no canvas was
+    /// drawn) keeps what the last canvas frame asked for.
+    pub fn painted(&mut self, drawn: Option<canvas::Drawn>) {
+        let Some(d) = drawn else {
+            return;
+        };
+        self.stretched = d == canvas::Drawn::Stretched;
+        self.partial = d == canvas::Drawn::Partial;
+        assert!(!(self.stretched && self.partial), "one outcome per frame");
+    }
+
+    fn paint_canvas<P: Painter>(&mut self, p: &mut P) -> canvas::Drawn {
         let view = self.canvas_rect();
         let cam = self.camera();
         let grid = if self.opts.show_grid {
@@ -1484,13 +1511,12 @@ impl Editor {
                 cost
             },
         );
-        self.stretched = drawn == canvas::Drawn::Stretched;
-        self.partial = drawn == canvas::Drawn::Partial;
         if !self.overlay.is_empty() {
             p.push_clip(view);
             canvas::draw_prims(p, view, &cam, &self.overlay, palette, text, scratch);
             p.pop_clip();
         }
+        drawn
     }
 
     /// Draws each filled plot slot of the docs page (`graph` nodes) as an embedded waves
@@ -4607,7 +4633,8 @@ impl App for Window {
     }
 
     fn paint<P: Painter>(&mut self, p: &mut P, _viewport: (f32, f32)) {
-        self.ed.paint(p);
+        let drawn = self.ed.paint(p);
+        self.ed.painted(drawn);
     }
 
     fn wake_ms(&self) -> Option<u32> {
