@@ -6,29 +6,32 @@
 //! notification to every client.
 //!
 //! Spine position: [`Pump::take`] before `Editor::update` (beside input), [`Pump::answer`]
-//! after it. The window polls every [`POLL_MS`] while the server runs, so a request reaches
-//! an idle editor within that time (idle CPU stays near 0%, D39: the server exists only when
-//! asked for).
+//! after it. A reader thread that hands over a message wakes the window ([`Waker`]), so an
+//! idle editor answers at once and sleeps otherwise (idle CPU 0%, D39).
 
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use schemify_cli::rpc::{
     self, Frame, INVALID_PARAMS, Json, Listener, METHOD_NOT_FOUND, Request, Stream,
 };
 use schemify_plugin::abi::text;
-use schemify_render::{App, Painter};
+use schemify_render::{App, Painter, Waker};
 use schemify_ui::InputEvents;
 
 use crate::commands::{CORE, Target};
 use crate::editor::{Editor, Options, QUEUED_MAX, Window};
 
-/// Tick period while the server runs.
-pub const POLL_MS: u32 = 50;
+/// Tick period while an answer waits for its queued command to run.
+const ANSWER_TICK_MS: u32 = 20;
 /// Clients connected at once; more are refused (their connection is closed).
 pub const CLIENTS_MAX: usize = 16;
 /// How long a write may block on a client that stopped reading; it is dropped then.
 const WRITE_TIMEOUT_MS: u64 = 200;
+
+/// The window's waker, set once the window runs; empty before (and in headless tests), when
+/// the first update drains whatever arrived.
+type Wake = Arc<OnceLock<Waker>>;
 
 /// One client's write side: only the frame loop writes; the reader thread holds a clone
 /// while the client is connected (the frame loop drops clients whose count falls to one).
@@ -62,6 +65,7 @@ pub enum Dispatched {
 /// answers in arrival order and the last editor event sent.
 pub struct Pump {
     rx: Receiver<Msg>,
+    wake: Wake,
     clients: Vec<Conn>,
     due: Vec<Due>,
     /// Tickets of commands sent as notifications (no `id`): taken and dropped once they ran.
@@ -74,9 +78,12 @@ impl Pump {
     /// reads). Notifications start with the editor events after this call.
     pub fn start(listener: Listener, ed: &Editor) -> Pump {
         let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || accept(listener, tx));
+        let wake = Wake::default();
+        let w = wake.clone();
+        std::thread::spawn(move || accept(listener, tx, w));
         Pump {
             rx,
+            wake,
             clients: Vec::new(),
             due: Vec::new(),
             unanswered: Vec::new(),
@@ -117,6 +124,13 @@ impl Pump {
             }
         }
         assert!(self.due.len() + self.unanswered.len() <= QUEUED_MAX);
+    }
+
+    /// Whether an answer waits for its queued command to run: the window ticks while true.
+    /// False once every answer is sent, so a served editor with no client traffic sleeps.
+    pub fn waiting(&self) -> bool {
+        assert!(self.due.len() + self.unanswered.len() <= QUEUED_MAX);
+        !(self.due.is_empty() && self.unanswered.is_empty())
     }
 
     /// Sends the answers that are ready, in arrival order per client (a queued command's is
@@ -252,7 +266,17 @@ impl App for Served {
     }
 
     fn wake_ms(&self) -> Option<u32> {
-        Some(self.win.wake_ms().map_or(POLL_MS, |w| w.min(POLL_MS)))
+        // Answers waiting on a queued command tick until it ran; nothing else polls.
+        let answer = self.pump.waiting().then_some(ANSWER_TICK_MS);
+        match (self.win.wake_ms(), answer) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    fn set_waker(&mut self, waker: Waker) {
+        let set = self.pump.wake.set(waker).is_ok();
+        assert!(set, "the window sets its waker once");
     }
 
     fn exit_requested(&self) -> bool {
@@ -297,7 +321,7 @@ fn send(conn: &Conn, line: &str) -> bool {
 }
 
 /// The accept loop: one reader thread per client, at most [`CLIENTS_MAX`] at once.
-fn accept(listener: Listener, tx: Sender<Msg>) {
+fn accept(listener: Listener, tx: Sender<Msg>, wake: Wake) {
     let live = Arc::new(());
     // A server thread: runs until the listener fails or the editor is gone.
     loop {
@@ -318,15 +342,15 @@ fn accept(listener: Listener, tx: Sender<Msg>) {
         if tx.send(Msg::Joined(conn.clone())).is_err() {
             return;
         }
-        let (tx, token) = (tx.clone(), live.clone());
-        std::thread::spawn(move || read_client(reader, conn, tx, token));
+        let (tx, token, wake) = (tx.clone(), live.clone(), wake.clone());
+        std::thread::spawn(move || read_client(reader, conn, tx, wake, token));
     }
 }
 
 /// One client's reader: decodes each line and hands the request (or a malformed line's
 /// error response) to the frame loop, which answers in arrival order; ends at end of input
 /// or when the editor is gone. `_token` counts it as connected.
-fn read_client(stream: Stream, conn: Conn, tx: Sender<Msg>, _token: Arc<()>) {
+fn read_client(stream: Stream, conn: Conn, tx: Sender<Msg>, wake: Wake, _token: Arc<()>) {
     let mut input = std::io::BufReader::new(stream);
     let mut buf = Vec::new();
     // Bounded by the client's input: every pass consumes a line.
@@ -345,6 +369,9 @@ fn read_client(stream: Stream, conn: Conn, tx: Sender<Msg>, _token: Arc<()>) {
         };
         if tx.send(msg).is_err() {
             return;
+        }
+        if let Some(w) = wake.get() {
+            w.wake();
         }
     }
 }

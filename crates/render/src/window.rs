@@ -53,6 +53,23 @@ pub trait App {
     fn ime_area(&self) -> Option<(f32, f32, f32, f32)> {
         None
     }
+    /// Takes the [`Waker`] that background threads use to ask for a frame. Called once by
+    /// [`run`] before the first update; an app with no threads ignores it.
+    fn set_waker(&mut self, _waker: Waker) {}
+}
+
+/// Asks the window for one [`App::update`] with no input, from any thread: a worker that
+/// posts work wakes the loop instead of the loop polling for it (idle CPU 0%, D39).
+/// Cheap to clone; waking a closed window does nothing.
+#[derive(Clone)]
+pub struct Waker(EventLoopProxy<UserEvent>);
+
+impl Waker {
+    /// Schedules a tick. Wakes coalesce: several before the next frame give one update.
+    pub fn wake(&self) {
+        // Err only once the event loop is gone, when no frame is wanted anyway.
+        let _ = self.0.send_event(UserEvent::Wake);
+    }
 }
 
 /// Why [`run`] failed.
@@ -74,6 +91,8 @@ impl std::error::Error for RunError {}
 
 enum UserEvent {
     Access(accesskit_winit::Event),
+    /// [`Waker::wake`]: update with no input.
+    Wake,
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     GpuReady,
     /// Web: WebGPU is unusable (no adapter or device, the device lost, or presented frames
@@ -154,11 +173,12 @@ struct Shell<A: App> {
 /// Vulkan/Metal/DX12 support is reported on stderr and leaves the window blank. Web: when
 /// WebGPU is unusable (no adapter, the device lost, or frames that never reach the page) the
 /// editor draws on the CPU instead, logged once as `gpu: …; drawing on the CPU` (web spec §7).
-pub fn run<A: App + 'static>(title: &str, app: A) -> Result<(), RunError> {
+pub fn run<A: App + 'static>(title: &str, mut app: A) -> Result<(), RunError> {
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .map_err(|e| RunError::EventLoop(e.to_string()))?;
     event_loop.set_control_flow(ControlFlow::Wait);
+    app.set_waker(Waker(event_loop.create_proxy()));
     let shell = Shell {
         app,
         title: title.to_owned(),
@@ -473,6 +493,7 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
                 }
                 _ => {}
             },
+            UserEvent::Wake => self.tick = true,
             UserEvent::GpuReady => {
                 #[cfg(target_arch = "wasm32")]
                 {

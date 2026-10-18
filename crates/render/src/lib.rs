@@ -54,7 +54,7 @@ pub use layers::{LAYER_SLOTS, Layers};
 pub use painter::{Chains, CpuPainter, Painter, ScenePainter, rgba};
 /// CPU raster target returned by [`CpuPainter::finish`] (PNG encode/decode included).
 pub use vello_cpu::Pixmap;
-pub use window::{App, RunError, run};
+pub use window::{App, RunError, Waker, run};
 
 /// Re-exported so callers name the same scene, geometry and color types.
 pub use vello;

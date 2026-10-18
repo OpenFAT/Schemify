@@ -118,6 +118,12 @@ fn a_socket_client_drives_the_editor() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     assert!(done(&got), "{got:?}");
+    assert!(
+        !pump.waiting(),
+        "every answer sent: the served window sleeps (D39)"
+    );
+    pump.take(&mut s.ed);
+    assert!(!pump.waiting(), "no traffic, nothing queued");
     let answers: Vec<&Json> = got.iter().filter(|j| j.get("id").is_some()).collect();
     let ids: Vec<Option<&Json>> = answers.iter().map(|j| j.get("id")).collect();
     assert!(

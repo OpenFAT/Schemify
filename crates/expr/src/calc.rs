@@ -617,12 +617,12 @@ fn col_binary(op: OpKind, a: CV, b: CV, axes: &[Axis], strs: &mut Vec<u8>) -> Re
     if matches!(op, OpKind::Add | OpKind::Sub | OpKind::Mul | OpKind::Div) {
         let fast = match (real(&a), real(&b)) {
             (Some(R::C(x, ax)), Some(R::C(y, ay))) if ax == ay => Some((zip(op, x, y), ax)),
-            (Some(R::C(x, ax)), Some(R::S(y))) => Some((map(op, x, |l, f| f(l, y)), ax)),
-            (Some(R::S(x)), Some(R::C(y, ay))) => Some((map(op, y, |r, f| f(x, r)), ay)),
+            (Some(R::C(x, ax)), Some(R::S(y))) => Some((map_cs(op, x, y), ax)),
+            (Some(R::S(x)), Some(R::C(y, ay))) => Some((map_sc(op, x, y), ay)),
             _ => None,
         };
         if let Some((re, axis)) = fast {
-            if let Some(i) = re.iter().position(|v| !v.is_finite()) {
+            if let Some(i) = first_nonfinite(&re) {
                 fin(re[i], op_str(op)).map_err(|e| Error {
                     msg: format!("{} (at point {i})", e.msg),
                     ..e
@@ -639,15 +639,6 @@ fn col_binary(op: OpKind, a: CV, b: CV, axes: &[Axis], strs: &mut Vec<u8>) -> Re
     elementwise(&[a, b], axes, strs, |v, strs| binary(op, v[0], v[1], strs))
 }
 
-fn arith(op: OpKind) -> fn(f64, f64) -> f64 {
-    match op {
-        OpKind::Add => |a, b| a + b,
-        OpKind::Sub => |a, b| a - b,
-        OpKind::Mul => |a, b| a * b,
-        _ => |a, b| a / b,
-    }
-}
-
 fn zip(op: OpKind, x: &[f64], y: &[f64]) -> Vec<f64> {
     debug_assert_eq!(x.len(), y.len(), "same axis, same length");
     // One monomorphic loop per operator so each vectorizes.
@@ -659,9 +650,65 @@ fn zip(op: OpKind, x: &[f64], y: &[f64]) -> Vec<f64> {
     }
 }
 
-fn map(op: OpKind, x: &[f64], g: impl Fn(f64, fn(f64, f64) -> f64) -> f64) -> Vec<f64> {
-    let f = arith(op);
-    x.iter().map(|&v| g(v, f)).collect()
+/// Column `op` scalar. One monomorphic loop per operator (a `fn` pointer per element blocks
+/// vectorization); the arithmetic per element is unchanged, so results are bit-identical.
+fn map_cs(op: OpKind, x: &[f64], y: f64) -> Vec<f64> {
+    debug_assert!(matches!(
+        op,
+        OpKind::Add | OpKind::Sub | OpKind::Mul | OpKind::Div
+    ));
+    match op {
+        OpKind::Add => x.iter().map(|a| a + y).collect(),
+        OpKind::Sub => x.iter().map(|a| a - y).collect(),
+        OpKind::Mul => x.iter().map(|a| a * y).collect(),
+        _ => x.iter().map(|a| a / y).collect(),
+    }
+}
+
+/// Scalar `op` column; see [`map_cs`].
+fn map_sc(op: OpKind, x: f64, y: &[f64]) -> Vec<f64> {
+    debug_assert!(matches!(
+        op,
+        OpKind::Add | OpKind::Sub | OpKind::Mul | OpKind::Div
+    ));
+    match op {
+        OpKind::Add => y.iter().map(|b| x + b).collect(),
+        OpKind::Sub => y.iter().map(|b| x - b).collect(),
+        OpKind::Mul => y.iter().map(|b| x * b).collect(),
+        _ => y.iter().map(|b| x / b).collect(),
+    }
+}
+
+const LANES: usize = 8;
+
+/// Index of the first non-finite value. The common case (all finite) runs a branch-free 8-lane
+/// OR over exponent bits, which vectorizes; only a hit falls back to [`first_nonfinite_scalar`].
+fn first_nonfinite(v: &[f64]) -> Option<usize> {
+    const EXP: u64 = 0x7ff0_0000_0000_0000;
+    let chunks = v.chunks_exact(LANES);
+    let tail = v.len() - chunks.remainder().len();
+    let bad = chunks.fold([false; LANES], |mut acc, c| {
+        for k in 0..LANES {
+            acc[k] |= c[k].to_bits() & EXP == EXP;
+        }
+        acc
+    });
+    let r = if bad.iter().any(|&b| b) {
+        first_nonfinite_scalar(&v[..tail])
+    } else {
+        first_nonfinite_scalar(&v[tail..]).map(|i| i + tail)
+    };
+    debug_assert_eq!(
+        r,
+        first_nonfinite_scalar(v),
+        "vector scan agrees with the oracle"
+    );
+    r
+}
+
+/// The scalar oracle for [`first_nonfinite`], and its tail.
+fn first_nonfinite_scalar(v: &[f64]) -> Option<usize> {
+    v.iter().position(|x| !x.is_finite())
 }
 
 fn want_col(v: CV, name: &str) -> Result<Col, Error> {
@@ -912,7 +959,7 @@ fn call_cv(
 }
 
 fn check_finite(v: &[f64], name: &str) -> Result<(), Error> {
-    match v.iter().position(|x| !x.is_finite()) {
+    match first_nonfinite(v) {
         None => Ok(()),
         Some(i) => Err(Error::new(
             Code::X010,
@@ -954,7 +1001,7 @@ fn per_step(
         let r = s.start as usize..s.end as usize;
         re.push(f(&ax.x[r.clone()], &y.re[r])?);
     }
-    if let Some(i) = re.iter().position(|x| !x.is_finite()) {
+    if let Some(i) = first_nonfinite(&re) {
         return Err(Error::new(
             Code::X010,
             Span::default(),
@@ -1193,4 +1240,31 @@ fn fft(axes: &mut Vec<Axis>, y: &Col) -> Result<Col, Error> {
         im,
         axis,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The vector scan agrees with the scalar oracle for every length around the lane width and
+    /// every position and kind of non-finite value, including none.
+    #[test]
+    fn first_nonfinite_matches_oracle() {
+        for n in 0..3 * LANES + 3 {
+            let clean: Vec<f64> = (0..n).map(|i| i as f64 - 4.0).collect();
+            assert_eq!(first_nonfinite(&clean), None);
+            for at in 0..n {
+                for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                    let mut v = clean.clone();
+                    v[at] = bad;
+                    if at + 1 < n {
+                        v[n - 1] = f64::NAN;
+                    }
+                    assert_eq!(first_nonfinite(&v), Some(at), "n={n} at={at}");
+                    assert_eq!(first_nonfinite(&v), first_nonfinite_scalar(&v));
+                }
+            }
+        }
+        assert_eq!(first_nonfinite(&[f64::MAX, f64::MIN_POSITIVE, -0.0]), None);
+    }
 }
