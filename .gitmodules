@@ -1,14 +1,18 @@
 [submodule "examples/plugins/interop"]
 	path = examples/plugins/interop
 	url = https://github.com/OmarSiwy/Schemify-Interop
+	update = none
 [submodule "examples/plugins/pdk-manager"]
 	path = examples/plugins/pdk-manager
 	url = https://github.com/OmarSiwy/Schemify-PDK-Manager
+	update = none
 [submodule "examples/plugins/cktImg"]
 	path = examples/plugins/cktImg
 	url = https://github.com/OmarSiwy/cktImg
 	branch = schemify-plugin
+	update = none
 [submodule "examples/plugins/GmIDVisualizer"]
 	path = examples/plugins/GmIDVisualizer
 	url = https://github.com/OmarSiwy/GmIDVisualizer
 	branch = schemify-plugin
+	update = none
