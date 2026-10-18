@@ -521,6 +521,8 @@ pub struct Editor {
     commands: Commands,
     symbols: Symbols,
     scene: Scene,
+    /// The selection's primitive rows (`scene::selected_prims`), with the marks.
+    sel_prims: Vec<(u8, u32)>,
     overlay: CanvasPrims,
     marks: Marks,
     /// The active level's selection as scene object indices (rebuilt with the marks).
@@ -755,6 +757,7 @@ impl Editor {
             overlay: CanvasPrims::default(),
             marks: Marks::default(),
             selected: scene::Selected::default(),
+            sel_prims: Vec::new(),
             palette: Palette::xschem_dark(),
             sel_color: 0xe0e0_e0ff,
             tool: Tool::Idle,
@@ -4238,7 +4241,13 @@ impl Editor {
             let objs = sel.iter().filter_map(|&k| self.scene.find(k));
             self.selected.set(self.scene.objs.len(), objs);
             assert!(self.selected.len() <= sel.len());
-            scene::marks(&self.scene, &self.selected, self.sel_color, &mut self.marks);
+            scene::selected_prims(&self.scene, &self.selected, &mut self.sel_prims);
+            scene::marks(
+                &self.scene,
+                &self.sel_prims,
+                self.sel_color,
+                &mut self.marks,
+            );
             self.canvas_gen[3] += 1;
             self.sel_changed = false;
             let _ = self.host.push(None, &Event::SelectionChanged);
@@ -4261,7 +4270,7 @@ impl Editor {
             }
             Tool::Move { from, to, lin, .. } => {
                 let x = lin.then(Xform::translate(to.0 - from.0, to.1 - from.1));
-                scene::push_moved(&self.scene, &self.selected, x, &mut o);
+                scene::push_moved(&self.scene, &self.sel_prims, x, &mut o);
             }
             Tool::Wire { from, to, .. } => {
                 let pts = self.manhattan_points(*from, *to);

@@ -11,6 +11,7 @@ use schemify_doc::{
     DocHandle, Edit, EditRequest, Mode, Project, Transaction, apply_edits, ops_from_text,
 };
 use schemify_format::FileKind;
+use schemify_render::canvas::{CanvasPrims, PrimKind};
 
 const RES: &str = "schemify 1 shprim\n\npin A inout 0 -30\npin B inout 0 30\n\nparam R 1k\n\nimpl spice spice\n  format spice \"R{name} {A} {B} {R}\"\n\nline 0 -30 0 -15\nline 0 15 0 30\nrect -5 -15 5 15\n  width 2\narc 0 0 8 0 90\ncircle 10 0 2\n  dash 2\npoly -5 -15 5 -15 0 -20 -5 -15\n  closed true\n\nstext 8 -10 R0 {name}\n  size 0.2\nstext 8 2 R0 R={R}\n  size 0.15\n";
 
@@ -280,6 +281,90 @@ fn random_ops(rng: &mut Rng, p: &Project, h: DocHandle, next: &mut u64) -> Strin
     }
 }
 
+/// What `scene::push_moved` drew before the index (every primitive scanned for a selected
+/// owner): the oracle of the indexed version.
+fn moved_by_scan(sc: &Scene, sel: &scene::Selected) -> CanvasPrims {
+    let on = |o: u32| sel.contains(o);
+    let (p, l) = (&sc.prims, scene::LAYER_SEL);
+    let mut out = CanvasPrims::default();
+    for i in 0..p.lines.x0.len() {
+        if on(sc.owner.lines[i]) {
+            let q = &p.lines;
+            out.line(q.x0[i], q.y0[i], q.x1[i], q.y1[i], l);
+        }
+    }
+    for i in 0..p.rects.x0.len() {
+        if on(sc.owner.rects[i]) {
+            let q = &p.rects;
+            out.rect(q.x0[i], q.y0[i], q.x1[i], q.y1[i], l);
+        }
+    }
+    for i in 0..p.arcs.cx.len() {
+        if on(sc.owner.arcs[i]) {
+            let a = &p.arcs;
+            out.arc(a.cx[i], a.cy[i], a.r[i], a.start[i], a.sweep[i], l);
+        }
+    }
+    for (polys, owners, closed) in [
+        (&p.polylines, &sc.owner.polylines, false),
+        (&p.polygons, &sc.owner.polygons, true),
+    ] {
+        let mut start = 0usize;
+        for (k, &end) in polys.end.iter().enumerate() {
+            let end = end as usize;
+            if on(owners[k]) {
+                let pts: Vec<(i32, i32)> = (start..end).map(|j| (polys.x[j], polys.y[j])).collect();
+                out.poly(&pts, closed, l);
+            }
+            start = end;
+        }
+    }
+    let t = &p.texts;
+    let mut start = 0usize;
+    for i in 0..t.x.len() {
+        let end = t.end[i] as usize;
+        if on(sc.owner.texts[i]) {
+            out.text(t.x[i], t.y[i], t.size[i], l, &t.text[start..end]);
+        }
+        start = end;
+    }
+    out
+}
+
+/// Oracle for the selection's rows (`scene::selected_prims`) and what reads them: the marks and
+/// the move preview equal a scan of every primitive for a selected owner.
+fn selection_rows_match_scans(sc: &Scene, rng: &mut Rng) {
+    use schemify_app::geometry::Xform;
+    let n = sc.objs.len();
+    let mut sel = scene::Selected::default();
+    let picks: Vec<u32> = (0..n as u32).filter(|_| rng.below(4) == 0).collect();
+    sel.set(n, picks);
+    let mut rows = Vec::new();
+    scene::selected_prims(sc, &sel, &mut rows);
+    let mut marks = schemify_render::canvas::Marks::default();
+    scene::marks(sc, &rows, 7, &mut marks);
+    let tables = [
+        (PrimKind::Line, &sc.owner.lines),
+        (PrimKind::Rect, &sc.owner.rects),
+        (PrimKind::Arc, &sc.owner.arcs),
+        (PrimKind::Polyline, &sc.owner.polylines),
+        (PrimKind::Polygon, &sc.owner.polygons),
+    ];
+    let mut want = schemify_render::canvas::Marks::default();
+    for (kind, owners) in tables {
+        for (i, &o) in owners.iter().enumerate() {
+            if sel.contains(o) {
+                want.push(kind, i as u32, 7);
+            }
+        }
+    }
+    assert!(marks == want, "selection marks");
+    let mut got = CanvasPrims::default();
+    scene::push_moved(sc, &rows, Xform::IDENTITY, &mut got);
+    assert!(got == moved_by_scan(sc, &sel), "move preview");
+    assert!(!sel.is_empty() || got.is_empty());
+}
+
 fn walk(seed: u64, steps: usize) {
     let mut top = String::from("schemify 1 shcomp\n\nimpl sch schematic\n\n");
     let mut rng = Rng(seed);
@@ -333,6 +418,9 @@ fn walk(seed: u64, steps: usize) {
         updated += usize::from(scene::update(&mut inc, &p, h, &symbols, epoch, None));
         let mut full = Scene::default();
         scene::build(&mut full, &p, h, View::Schematic, &symbols, epoch, None);
+        if step % 25 == 0 {
+            selection_rows_match_scans(&inc, &mut rng);
+        }
         let (a, b) = (canonical(&inc), canonical(&full));
         if a != b {
             let only_inc: Vec<_> = a.0.iter().filter(|r| !b.0.contains(r)).collect();

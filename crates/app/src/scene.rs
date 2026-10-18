@@ -1708,33 +1708,94 @@ fn symbol(b: &mut Build<'_>, doc: &Document) {
 /// object within `tol`, else the smallest box containing `p` (inflated by `tol`), so wires
 /// win over the instance they cross and small symbols over big ones.
 ///
-/// Cost: O(objects).
+/// Cost: one integer pass over `objs.geom` (the box each object's hit area fits in, inflated
+/// by `tol`), then the exact distance or box test on the few objects that pass it; candidates
+/// are tested in ascending order, so ties resolve as a full scan resolves them.
 pub fn hit(objs: &Objects, p: (f64, f64), tol: f64) -> Option<u32> {
     assert!(tol >= 0.0 && tol.is_finite());
+    assert_eq!(objs.geom.len(), objs.seg.len());
+    // Whole milli-units around `p`: an object whose box misses this box is farther than `tol`
+    // (its coordinates are integers, so rounding outwards keeps every hit).
+    // Clamped to i32, the comparisons below equal the i64 ones (every coordinate is an i32).
+    let lim = |v: f64| v.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+    let (x0, x1) = (lim((p.0 - tol).floor()), lim((p.0 + tol).ceil()));
+    let (y0, y1) = (lim((p.1 - tol).floor()), lim((p.1 + tol).ceil()));
     let mut best_seg: Option<(f64, u32)> = None;
     let mut best_box: Option<(f64, u32)> = None;
-    for i in 0..objs.len() {
-        let g = objs.geom[i];
-        if objs.seg[i] {
-            let d = seg_dist(p, g);
-            if d <= tol && best_seg.is_none_or(|b| d < b.0) {
-                best_seg = Some((d, i as u32));
-            }
-        } else {
-            let b = objs.bbox(i);
-            let inside = p.0 >= f64::from(b[0]) - tol
-                && p.0 <= f64::from(b[2]) + tol
-                && p.1 >= f64::from(b[1]) - tol
-                && p.1 <= f64::from(b[3]) + tol;
-            let area = (f64::from(b[2]) - f64::from(b[0])) * (f64::from(b[3]) - f64::from(b[1]));
-            if inside && best_box.is_none_or(|bb| area < bb.0) {
-                best_box = Some((area, i as u32));
-            }
+    // ponytail: a predicted branch per object (≈ 1.6 ns at 10^5–10^6; a 64-bit mask per 64
+    // objects measured slower without SSE4.1 min/max); a grid over the objects answers in
+    // O(cell) but costs ~40 ns per object to build after every scene change.
+    for (i, g) in objs.geom.iter().enumerate() {
+        let near = g[0].min(g[2]) <= x1
+            && g[0].max(g[2]) >= x0
+            && g[1].min(g[3]) <= y1
+            && g[1].max(g[3]) >= y0;
+        if near {
+            hit_one(objs, i, p, tol, &mut best_seg, &mut best_box);
         }
     }
     let r = best_seg.or(best_box).map(|b| b.1);
     assert!(r.is_none_or(|i| (i as usize) < objs.len()));
     r
+}
+
+/// The exact test of object `i` against `p` within `tol`, folded into the best segment (by
+/// distance) and the best box (by area) so far; the first of equals wins.
+fn hit_one(
+    objs: &Objects,
+    i: usize,
+    p: (f64, f64),
+    tol: f64,
+    best_seg: &mut Option<(f64, u32)>,
+    best_box: &mut Option<(f64, u32)>,
+) {
+    let g = objs.geom[i];
+    if objs.seg[i] {
+        let d = seg_dist(p, g);
+        if d <= tol && best_seg.is_none_or(|b| d < b.0) {
+            *best_seg = Some((d, i as u32));
+        }
+    } else {
+        let b = objs.bbox(i);
+        let inside = p.0 >= f64::from(b[0]) - tol
+            && p.0 <= f64::from(b[2]) + tol
+            && p.1 >= f64::from(b[1]) - tol
+            && p.1 <= f64::from(b[3]) + tol;
+        let area = (f64::from(b[2]) - f64::from(b[0])) * (f64::from(b[3]) - f64::from(b[1]));
+        if inside && best_box.is_none_or(|bb| area < bb.0) {
+            *best_box = Some((area, i as u32));
+        }
+    }
+}
+
+/// The primitive rows `(kind, row)` of the selected objects, by table (lines, rects, arcs,
+/// polylines, polygons, texts: kinds 0–5) then row: what [`marks`] and [`push_moved`] read.
+/// Computed once per selection or scene change, so a move preview frame costs O(selection).
+///
+/// Cost: one pass over the owner columns.
+pub fn selected_prims(sc: &Scene, selected: &Selected, out: &mut Vec<(u8, u32)>) {
+    assert_eq!(selected.universe(), sc.objs.len());
+    out.clear();
+    if selected.is_empty() {
+        return;
+    }
+    let o = &sc.owner;
+    let owners = [
+        &o.lines,
+        &o.rects,
+        &o.arcs,
+        &o.polylines,
+        &o.polygons,
+        &o.texts,
+    ];
+    for (kind, col) in owners.into_iter().enumerate() {
+        for (row, &w) in col.iter().enumerate() {
+            if selected.contains(w) {
+                out.push((kind as u8, row as u32));
+            }
+        }
+    }
+    assert!(out.len() <= sc.prims.len());
 }
 
 fn seg_dist(p: (f64, f64), g: [i32; 4]) -> f64 {
@@ -1852,98 +1913,89 @@ impl Selected {
     }
 }
 
-/// Recolors every primitive of a selected object in `color`.
-///
-/// # Panics
-///
-/// If `selected` was made for a scene of another size.
-pub fn marks(sc: &Scene, selected: &Selected, color: u32, out: &mut Marks) {
-    assert_eq!(selected.universe(), sc.objs.len());
+/// Recolors every primitive of a selected object in `color`, in table then row order, from
+/// the selection's rows ([`selected_prims`] of `sc`). Cost: O(selected primitives).
+pub fn marks(sc: &Scene, rows: &[(u8, u32)], color: u32, out: &mut Marks) {
     *out = Marks::default();
-    let on = |o: u32| o != u32::MAX && selected.contains(o);
-    let tables = [
-        (PrimKind::Line, &sc.owner.lines),
-        (PrimKind::Rect, &sc.owner.rects),
-        (PrimKind::Arc, &sc.owner.arcs),
-        (PrimKind::Polyline, &sc.owner.polylines),
-        (PrimKind::Polygon, &sc.owner.polygons),
+    const KINDS: [PrimKind; 5] = [
+        PrimKind::Line,
+        PrimKind::Rect,
+        PrimKind::Arc,
+        PrimKind::Polyline,
+        PrimKind::Polygon,
     ];
-    for (kind, owners) in tables {
-        for (i, &o) in owners.iter().enumerate() {
-            if on(o) {
-                out.push(kind, i as u32, color);
-            }
+    for &(kind, row) in rows {
+        if let Some(&k) = KINDS.get(usize::from(kind)) {
+            out.push(k, row, color);
         }
     }
+    assert!(out.kind.len() <= sc.prims.len());
 }
 
 /// Copies the primitives of selected objects through `x` into `out` on [`LAYER_SEL`]
-/// (move and copy previews; texts included, so a moving label shows its name).
-pub fn push_moved(sc: &Scene, selected: &Selected, x: Xform, out: &mut CanvasPrims) {
-    assert_eq!(selected.universe(), sc.objs.len());
-    let on = |o: u32| o != u32::MAX && selected.contains(o);
+/// (move and copy previews; texts included, so a moving label shows its name), in table then
+/// row order, from the selection's rows ([`selected_prims`] of `sc`). Cost: O(selected
+/// primitives).
+pub fn push_moved(sc: &Scene, rows: &[(u8, u32)], x: Xform, out: &mut CanvasPrims) {
     let p = &sc.prims;
-    for i in 0..p.lines.x0.len() {
-        if on(sc.owner.lines[i]) {
-            let (a, c) = (
-                x.point((p.lines.x0[i], p.lines.y0[i])),
-                x.point((p.lines.x1[i], p.lines.y1[i])),
-            );
-            out.line(a.0, a.1, c.0, c.1, LAYER_SEL);
-        }
-    }
-    for i in 0..p.rects.x0.len() {
-        if on(sc.owner.rects[i]) {
-            let (a, c) = (
-                x.point((p.rects.x0[i], p.rects.y0[i])),
-                x.point((p.rects.x1[i], p.rects.y1[i])),
-            );
-            out.rect(a.0, a.1, c.0, c.1, LAYER_SEL);
-        }
-    }
-    for i in 0..p.arcs.cx.len() {
-        if on(sc.owner.arcs[i]) {
-            let c = x.point((p.arcs.cx[i], p.arcs.cy[i]));
-            let (s, w) = x.arc(
-                f64::from(p.arcs.start[i]) / 1000.0,
-                f64::from(p.arcs.sweep[i]) / 1000.0,
-            );
-            out.arc(
-                c.0,
-                c.1,
-                p.arcs.r[i],
-                (s * 1000.0) as i32,
-                (w * 1000.0) as i32,
-                LAYER_SEL,
-            );
-        }
-    }
-    for (polys, owners, closed) in [
-        (&p.polylines, &sc.owner.polylines, false),
-        (&p.polygons, &sc.owner.polygons, true),
-    ] {
-        let mut start = 0usize;
-        for (k, &end) in polys.end.iter().enumerate() {
-            let end = end as usize;
-            if on(owners[k]) {
-                let pts: Vec<Pt> = (start..end)
-                    .map(|j| x.point((polys.x[j], polys.y[j])))
-                    .collect();
-                out.poly(&pts, closed, LAYER_SEL);
+    let before = out.len();
+    let mut pts: Vec<Pt> = Vec::new();
+    for &(kind, i) in rows {
+        let i = i as usize;
+        match kind {
+            0 => {
+                let (a, c) = (
+                    x.point((p.lines.x0[i], p.lines.y0[i])),
+                    x.point((p.lines.x1[i], p.lines.y1[i])),
+                );
+                out.line(a.0, a.1, c.0, c.1, LAYER_SEL);
             }
-            start = end;
+            1 => {
+                let (a, c) = (
+                    x.point((p.rects.x0[i], p.rects.y0[i])),
+                    x.point((p.rects.x1[i], p.rects.y1[i])),
+                );
+                out.rect(a.0, a.1, c.0, c.1, LAYER_SEL);
+            }
+            2 => {
+                let c = x.point((p.arcs.cx[i], p.arcs.cy[i]));
+                let (s, w) = x.arc(
+                    f64::from(p.arcs.start[i]) / 1000.0,
+                    f64::from(p.arcs.sweep[i]) / 1000.0,
+                );
+                out.arc(
+                    c.0,
+                    c.1,
+                    p.arcs.r[i],
+                    (s * 1000.0) as i32,
+                    (w * 1000.0) as i32,
+                    LAYER_SEL,
+                );
+            }
+            3 | 4 => {
+                let polys = if kind == 3 { &p.polylines } else { &p.polygons };
+                let start = if i == 0 { 0 } else { polys.end[i - 1] as usize };
+                pts.clear();
+                pts.extend(
+                    (start..polys.end[i] as usize).map(|j| x.point((polys.x[j], polys.y[j]))),
+                );
+                out.poly(&pts, kind == 4, LAYER_SEL);
+            }
+            _ => {
+                let t = &p.texts;
+                let start = if i == 0 { 0 } else { t.end[i - 1] as usize };
+                let a = x.point((t.x[i], t.y[i]));
+                out.text(
+                    a.0,
+                    a.1,
+                    t.size[i],
+                    LAYER_SEL,
+                    &t.text[start..t.end[i] as usize],
+                );
+            }
         }
     }
-    let t = &p.texts;
-    let mut start = 0usize;
-    for i in 0..t.x.len() {
-        let end = t.end[i] as usize;
-        if on(sc.owner.texts[i]) {
-            let a = x.point((t.x[i], t.y[i]));
-            out.text(a.0, a.1, t.size[i], LAYER_SEL, &t.text[start..end]);
-        }
-        start = end;
-    }
+    assert!(out.len() >= before);
 }
 
 /// Stamps cell `row`'s symbol at `at` with orientation `o` into `out` on [`LAYER_SEL`]
@@ -2029,5 +2081,63 @@ pub fn preview_records_on(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Oracle: the prefiltered hit test answers what testing every object answers, ties and
+    /// misses included, over random segments and boxes (some degenerate, some huge).
+    #[test]
+    fn hit_equals_a_full_scan() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = |m: i64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % (m as u64)) as i64 - m / 2
+        };
+        let mut objs = Objects::default();
+        for k in 0..4000u32 {
+            let (x, y) = (next(2_000_000) as i32, next(2_000_000) as i32);
+            let (w, h) = match k % 401 {
+                0 => (next(400_000) as i32, next(400_000) as i32),
+                k if k % 7 == 0 => (0, 0),
+                _ => (next(20_000) as i32, next(20_000) as i32),
+            };
+            let key = ObjKey {
+                table: TableId::Wires,
+                key: k,
+            };
+            objs.push(key, [x, y, x + w, y + h], k % 3 == 0);
+        }
+        let full = |p: (f64, f64), tol: f64| {
+            let (mut s, mut b) = (None, None);
+            for i in 0..objs.len() {
+                hit_one(&objs, i, p, tol, &mut s, &mut b);
+            }
+            s.or(b).map(|b: (f64, u32)| b.1)
+        };
+        let mut hits = 0;
+        for k in 0..3000 {
+            let tol = [0.0, 0.5, 250.0, 3000.0][k % 4];
+            // Half the probes land near an object's corner or edge (just in, on, just out).
+            let p = if k % 2 == 0 {
+                let g = objs.geom[(next(8000) + 4000) as usize % objs.len()];
+                let d = [0.0, tol, tol + 0.5, -tol][k / 2 % 4] + next(3) as f64;
+                (f64::from(g[0]) + d, f64::from(g[1] + g[3]) / 2.0)
+            } else {
+                (next(2_000_000) as f64 + 0.37, next(2_000_000) as f64 - 0.61)
+            };
+            let got = hit(&objs, p, tol);
+            assert_eq!(got, full(p, tol), "at {p:?} within {tol}");
+            hits += usize::from(got.is_some());
+        }
+        assert!(
+            hits > 300 && hits < 2900,
+            "both hits and misses tested: {hits}"
+        );
     }
 }
