@@ -38,19 +38,8 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-            plugins -> target
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      # The interop plugin (D24 as amended: the xschem importer, never linked into the core)
-      # is native-testable and its output must match on every platform, so it is linted and
-      # tested here with its native CLI, not only in the Linux `plugins` job.
-      - run: cargo fmt --manifest-path plugins/Cargo.toml -p interop --check
-      - run: >-
-          cargo clippy --manifest-path plugins/Cargo.toml -p interop --all-targets --features cli
-          -- -D warnings
       # Second oracle for the Verilog dialect (xschem has no Verilog golden):
       # Icarus Verilog parses and elaborates our netlists (crates/netlist/tests/iverilog.rs).
       - if: runner.os == 'Linux'
@@ -58,7 +47,6 @@ jobs:
           sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends iverilog
           echo "SCHEMIFY_IVERILOG=iverilog" >> "$GITHUB_ENV"
       - run: cargo test --workspace --no-fail-fast
-      - run: cargo test --manifest-path plugins/Cargo.toml -p interop --features cli --no-fail-fast
       # Golden images and snapshots a test rejected (`<name>.actual.*` in CARGO_TARGET_TMPDIR):
       # a PR that changes a picture on purpose re-blesses from them without a local build.
       - if: failure()
@@ -68,17 +56,12 @@ jobs:
           path: target/tmp/*.actual.*
           if-no-files-found: ignore
       # Determinism (D32): the CLI outputs every platform must write byte for byte; the
-      # `determinism` job below compares them. The test runs above already built the binaries
-      # (`schemify`, and the interop plugin's native CLI for the import step).
-      # Runs even when a test failed, so the comparison still sees every platform.
+      # `determinism` job below compares them. Runs even when a test failed, so the comparison
+      # still sees every platform.
       - if: ${{ !cancelled() }}
-        run: |
-          cargo build -p schemify-cli --bin schemify
-          cargo build --manifest-path plugins/Cargo.toml -p interop --features cli --bin schemify-interop
+        run: cargo build -p schemify-cli --bin schemify
       - if: ${{ !cancelled() }}
-        run: >-
-          bash tests/determinism/run.sh "$PWD/target/debug/schemify"
-          "$PWD/plugins/target/debug/schemify-interop" determinism-out
+        run: bash tests/determinism/run.sh "$PWD/target/debug/schemify" determinism-out
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
@@ -149,19 +132,13 @@ jobs:
         env:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime run --dir=/tmp::/tmp
         run: cargo test --target wasm32-wasip1 -p schemify-config --test config
-      # The interop plugin's CLI builds for WASI too (its guest glue is
-      # wasm32-unknown-unknown only), so the import step joins the comparison.
-      - name: CLIs for WASI (determinism under wasmtime)
+      - name: CLI for WASI (determinism under wasmtime)
         if: ${{ !cancelled() }}
-        run: |
-          cargo build --target wasm32-wasip1 -p schemify-cli --bin schemify
-          cargo build --manifest-path plugins/Cargo.toml --target wasm32-wasip1 -p interop \
-            --features cli --bin schemify-interop
+        run: cargo build --target wasm32-wasip1 -p schemify-cli --bin schemify
       - if: ${{ !cancelled() }}
         run: >-
           bash tests/determinism/run.sh
           "wasmtime run --dir=.::/ target/wasm32-wasip1/debug/schemify.wasm"
-          "wasmtime run --dir=.::/ plugins/target/wasm32-wasip1/debug/schemify-interop.wasm"
           determinism-out
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
@@ -170,8 +147,7 @@ jobs:
           path: determinism-out
           if-no-files-found: error
 
-  # Byte-identical CLI outputs on every platform (D32, docs/dev/contributing.md rule 4), import reports
-  # included (their paths are relative to the import roots, import spec §7).
+  # Byte-identical CLI outputs on every platform (D32, docs/dev/contributing.md rule 4).
   determinism:
     needs: [test, wasm]
     if: ${{ !cancelled() }}
@@ -193,68 +169,31 @@ jobs:
             echo "::error::missing platform outputs"; status=1; }
           exit $status
 
-  # Guest plugins (Linux, Nix: Zig 0.17 for plugins/cktimg/vendor, wasm-ld). build.sh fails when a module
-  # reaches its size limit (200 KB; cktimg 550 KB; interop 1500 KB). build.sh is byte-reproducible, so the last
-  # step fails when a committed module differs from its rebuild (a plugin source changed
-  # without its module, or a module built elsewhere): commit the `plugin-guests` artifact.
-  plugins:
+  # The core's guest modules (Linux, Nix: the pinned rustc and wasm-ld): the default UI and the
+  # host's test guests. ui/build.sh fails when a module reaches its size limit (200 KB) and is
+  # byte-reproducible, so the last step fails when a committed module differs from its rebuild
+  # (a guest source changed without its module, or a module built elsewhere): commit the
+  # `guests` artifact. The optional plugins are tested in their own repositories (docs/plugins/).
+  guests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-        with:
-          submodules: recursive
       - uses: cachix/install-nix-action@v31
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             . -> target
-            plugins -> target
-      - run: nix develop -c plugins/build.sh
-      # The rebuilt guests: a PR that edits a plugin downloads this artifact
-      # (`gh run download <run> -n plugin-assets`) and commits the .wasm it changed.
+            ui -> target
+      - run: nix develop -c ui/build.sh
+      # Every rebuilt module at its repository path: `gh run download <run> -n guests -D <tmp>`,
+      # then `cp -r <tmp>/. .` from the repository root (gh does not overwrite files).
       - uses: actions/upload-artifact@v4
         with:
-          name: plugin-assets
-          path: crates/app/assets/*.wasm
-          if-no-files-found: error
-      # The gm/Id guest of the OTA fixture project (loaded through its manifest, not embedded):
-      # a PR that edits `plugins/gmid-lut` commits it from this artifact the same way.
-      - uses: actions/upload-artifact@v4
-        with:
-          name: plugin-fixtures
-          path: crates/app/tests/fixtures/ota/plugins/*.wasm
-          if-no-files-found: error
-      # Every rebuilt module at its repository path: `gh run download <run> -n plugin-guests -D
-      # <tmp>`, then `cp -r <tmp>/. .` from the repository root (gh does not overwrite files).
-      - uses: actions/upload-artifact@v4
-        with:
-          name: plugin-guests
+          name: guests
           path: |
             crates/plugin/tests/fixtures/*.wasm
             crates/app/assets/*.wasm
-            crates/app/tests/fixtures/ota/plugins/*.wasm
-            plugins/cktimg/cktimg.wasm
-            plugins/pdk-manager/pdk_manager.wasm
-            plugins/interop/interop.wasm
           if-no-files-found: error
-      # The crates with native tests (rlib + the built guest driven through wasmi); the others
-      # are cdylib guests whose `guest` module exists only on wasm32.
-      - name: plugins workspace tests (native + built guests)
-        run: >-
-          nix develop -c cargo test --manifest-path plugins/Cargo.toml
-          -p gmid-lut -p cktimg -p pdk-manager --no-fail-fast
-      # cktimg's fixtures over the default fuel, at the manifest's fuel ceiling (10^11 per
-      # event): needs an optimized wasmi, so its own profile.
-      - name: cktimg over-budget fixtures at the fuel ceiling
-        run: >-
-          nix develop -c cargo test --profile fuel --manifest-path plugins/Cargo.toml
-          -p cktimg --test guest -- --ignored over_budget --nocapture
-      # The interop guest through the real host (byte-identical to the native job), and the
-      # xschem export netlisted by a real xschem (the Nix shell has it: a missing one fails).
-      - name: interop guest and real-xschem export
-        run: >-
-          nix develop -c env SCHEMIFY_REQUIRE_XSCHEM=1 cargo test --manifest-path plugins/Cargo.toml
-          -p interop --features cli --test guest --test xschem_export --no-fail-fast
       - name: host tests against the rebuilt guests
         run: nix develop -c cargo test -p schemify-plugin -p schemify-app --no-fail-fast
       # The Nix shell has ngspice, Xyce, Icarus and OpenVAF: the run crate's real-tool
@@ -271,7 +210,7 @@ jobs:
           changed="$(git status --porcelain -- '*.wasm')"
           [ -z "$changed" ] && exit 0
           echo "$changed"
-          echo "::error::the committed plugin modules differ from plugins/build.sh output: commit the plugin-guests artifact of this run"
+          echo "::error::the committed guest modules differ from ui/build.sh output: commit the guests artifact of this run"
           exit 1
 
   flake:
