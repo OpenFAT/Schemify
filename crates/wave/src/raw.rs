@@ -286,12 +286,8 @@ fn parse_binary(
         let data = rd.take_bytes(cells.checked_mul(16).ok_or_else(overflow)?)?;
         let mut re = vec![0.0f64; cells];
         let mut im = vec![0.0f64; cells];
-        for (p, row) in data.chunks_exact(nv * 16).enumerate() {
-            for (v, pair) in row.chunks_exact(16).enumerate() {
-                re[v * n + p] = f64_le(&pair[..8]);
-                im[v * n + p] = f64_le(&pair[8..]);
-            }
-        }
+        transpose(data, 16, 0, n, nv, &mut re);
+        transpose(data, 16, 8, n, nv, &mut im);
         return Ok((re, im));
     }
 
@@ -325,12 +321,49 @@ fn parse_binary(
     }
     let data = rd.take_bytes(all_f64)?;
     let mut re = vec![0.0f64; cells];
-    for (p, row) in data.chunks_exact(nv * 8).enumerate() {
-        for (v, b) in row.chunks_exact(8).enumerate() {
-            re[v * n + p] = f64_le(b);
+    transpose(data, 8, 0, n, nv, &mut re);
+    Ok((re, Vec::new()))
+}
+
+/// Points per block of [`transpose`]: one block writes 16 consecutive `f64` (two cache lines)
+/// of each column, where a point at a time would touch a line of every column per point.
+const BLOCK: usize = 16;
+/// Widest row [`transpose`] copies a point at a time: up to here the per-point column writes
+/// stay in cache and that loop is the faster one; above it, blocked (measured by `bench_parse`:
+/// 40k × 256 1.8× faster blocked, 10k × 1024 3.4×; 1M × 4 a little slower blocked).
+const POINTWISE_NV_MAX: usize = 128;
+
+/// Transposes `n` row-major rows of `nv` cells of `cell` bytes into columns: `out[v * n + p]`
+/// is the little-endian `f64` at byte `off` of cell `(p, v)`. Rows wider than
+/// [`POINTWISE_NV_MAX`] go [`BLOCK`] points at a time, so a block's reads stay in cache and
+/// each column write fills whole lines.
+fn transpose(data: &[u8], cell: usize, off: usize, n: usize, nv: usize, out: &mut [f64]) {
+    assert_eq!(data.len(), n * nv * cell, "whole rows");
+    assert_eq!(out.len(), n * nv, "one value per cell");
+    assert!(off + 8 <= cell, "the value is inside its cell");
+    if n == 0 {
+        return;
+    }
+    let row = nv * cell;
+    if nv <= POINTWISE_NV_MAX {
+        for (p, r) in data.chunks_exact(row).enumerate() {
+            for (v, c) in r.chunks_exact(cell).enumerate() {
+                out[v * n + p] = f64_le(&c[off..off + 8]);
+            }
+        }
+        return;
+    }
+    for p0 in (0..n).step_by(BLOCK) {
+        let rows = &data[p0 * row..(p0 + BLOCK).min(n) * row];
+        let b = rows.len() / row;
+        debug_assert!((1..=BLOCK).contains(&b));
+        for (v, col) in out.chunks_exact_mut(n).enumerate() {
+            let at = v * cell + off;
+            for (x, r) in col[p0..p0 + b].iter_mut().zip(rows.chunks_exact(row)) {
+                *x = f64_le(&r[at..at + 8]);
+            }
         }
     }
-    Ok((re, Vec::new()))
 }
 
 /// Token separator of the `Values:` section: ASCII whitespace or `,`.
@@ -602,6 +635,57 @@ Values:
         assert_eq!(plots[1].col(1), &[0.0, 0.5, 0.8, 0.95]);
     }
 
+    /// The point-at-a-time transpose [`transpose`] replaced: the oracle.
+    fn transpose_simple(data: &[u8], cell: usize, off: usize, n: usize, out: &mut [f64]) {
+        let nv = out.len() / n.max(1);
+        for (p, row) in data.chunks_exact((nv * cell).max(1)).enumerate() {
+            for (v, c) in row.chunks_exact(cell).enumerate() {
+                out[v * n + p] = f64_le(&c[off..]);
+            }
+        }
+    }
+
+    /// [`transpose`] (both paths) and the simple one agree bit for bit around the block and the
+    /// path switch: no points, one vector, `n` not a multiple of [`BLOCK`], real and complex.
+    #[test]
+    fn blocked_transpose_matches_simple() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let sizes = [
+            (0, 1),
+            (1, 1),
+            (17, 1),
+            (33, 3),
+            (0, 129),
+            (1, 129),
+            (15, 129),
+            (16, 200),
+            (17, 300),
+            (100, 129),
+        ];
+        for (n, nv) in sizes {
+            for (cell, off) in [(8, 0), (16, 0), (16, 8)] {
+                let data: Vec<u8> = (0..n * nv * cell)
+                    .map(|_| {
+                        seed ^= seed << 13;
+                        seed ^= seed >> 7;
+                        seed ^= seed << 17;
+                        seed as u8
+                    })
+                    .collect();
+                let mut out = vec![0.0; n * nv];
+                transpose(&data, cell, off, n, nv, &mut out);
+                let mut want = vec![0.0; n * nv];
+                transpose_simple(&data, cell, off, n, &mut want);
+                let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                assert_eq!(
+                    bits(&out),
+                    bits(&want),
+                    "n {n} nv {nv} cell {cell} off {off}"
+                );
+            }
+        }
+    }
+
     /// `cargo test --release -p schemify-wave -- --ignored --nocapture bench_parse`
     #[test]
     #[ignore = "release-mode benchmark; run explicitly"]
@@ -652,6 +736,58 @@ Values:
             bin.len() >> 20,
             ascii.len() >> 20
         );
+        drop((bin, ascii));
+        // Wide: hundreds of vectors (a large circuit's node voltages and device currents).
+        let (n, nv) = (40_000usize, 256usize);
+        let mut wide = format!(
+            "Title: t\nPlotname: Transient Analysis\nFlags: real\nNo. Variables: {nv}\n\
+             No. Points: {n}\nVariables:\n 0 time time\n"
+        );
+        for v in 1..nv {
+            wide.push_str(&format!(" {v} v(n{v}) voltage\n"));
+        }
+        wide.push_str("Binary:\n");
+        let mut wide = wide.into_bytes();
+        for p in 0..n {
+            wide.extend_from_slice(&(p as f64 * 1e-9).to_le_bytes());
+            for v in 1..nv {
+                wide.extend_from_slice(&((p * nv + v) as f64).to_le_bytes());
+            }
+        }
+        let tw = time(&wide, 10);
+        println!(
+            "parse_raw: binary {n} x {nv} ({} MB) {tw:.1} ms",
+            wide.len() >> 20
+        );
+        drop(wide);
+        // The transpose alone, blocked against point at a time.
+        let best = |f: &mut dyn FnMut()| {
+            (0..10)
+                .map(|_| {
+                    let t = Instant::now();
+                    f();
+                    t.elapsed().as_secs_f64() * 1e3
+                })
+                .fold(f64::INFINITY, f64::min)
+        };
+        for (n, nv) in [
+            (1_000_000usize, 4usize),
+            (500_000, 8),
+            (250_000, 16),
+            (125_000, 32),
+            (62_500, 64),
+            (31_250, 128),
+            (40_000, 256),
+            (10_000, 1024),
+        ] {
+            let payload: Vec<u8> = (0..n * nv).flat_map(|k| (k as f64).to_le_bytes()).collect();
+            let mut out = vec![0.0; n * nv];
+            let blocked = best(&mut || transpose(black_box(&payload), 8, 0, n, nv, &mut out));
+            black_box(&out);
+            let simple = best(&mut || transpose_simple(black_box(&payload), 8, 0, n, &mut out));
+            black_box(&out);
+            println!("transpose {n} x {nv}: blocked {blocked:.1} ms, simple {simple:.1} ms");
+        }
     }
 
     #[test]
