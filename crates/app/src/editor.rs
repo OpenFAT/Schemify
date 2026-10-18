@@ -79,6 +79,9 @@ const HIT_PX: f64 = 5.0;
 const DOUBLE_CLICK_MS: u64 = 400;
 /// Zoom factor per wheel notch and per zoom key (xschem: 1.2).
 const ZOOM_STEP: f64 = 1.2;
+/// Bytes of the active document's disk state a tick hashes (`Project::hash_step`): about
+/// 0.3 ms at 400 MB/s, so the 4 MB of a 100k-object cell take a few dozen ticks after it opens.
+const HASH_STEP_BYTES: usize = 128 << 10;
 /// The `canvas_gen` entry of each canvas table in drawing order (scene, decor, markers,
 /// extra); entry 3 is the selection marks, which recolor scene rows.
 const CANVAS_GEN: [usize; 4] = [0, 1, 4, 2];
@@ -1194,8 +1197,9 @@ impl Editor {
     }
 
     /// Milliseconds until the editor needs [`Editor::update`] without input: a run in flight
-    /// or a plugin's child process or timer pending, or a canvas outcome handed to
-    /// [`Editor::painted`] that needs another frame. `None` when nothing is pending, so the
+    /// or a plugin's child process or timer pending, a canvas outcome handed to
+    /// [`Editor::painted`] that needs another frame, or the active document's disk hash still
+    /// being taken (a step per tick after it opens). `None` when nothing is pending, so the
     /// window sleeps until input (D39 idle CPU 0%).
     pub fn wake_ms(&self) -> Option<u32> {
         #[cfg(not(target_arch = "wasm32"))]
@@ -1214,6 +1218,11 @@ impl Editor {
         let tiles = self.partial.then_some(0);
         // The plugin snapshot behind a new check pass is refilled on the next tick.
         let snapshot = self.snapshot_due.then_some(0);
+        // The active document's disk hash (its journal's first record) is taken in steps.
+        let hash = self
+            .active()
+            .is_some_and(|(h, _)| self.session.project.hash_pending(h))
+            .then_some(0);
         // The browser owes an answer (web: a clipboard read).
         let platform = platform::wake_ms();
         [
@@ -1223,6 +1232,7 @@ impl Editor {
             crisp,
             tiles,
             snapshot,
+            hash,
             platform,
         ]
         .into_iter()
@@ -1370,6 +1380,14 @@ impl Editor {
         }
         self.snapshot_due = !self.host.plugins.ids().is_empty()
             && (pass_moved || snapshot_due && !self.snapshot_fresh);
+        // A tick hashes a step of the active document's disk state, so its first commit
+        // appends its journal records without hashing the file in its frame.
+        if events.events.is_empty()
+            && events.text.is_empty()
+            && let Some((h, _)) = self.active()
+        {
+            self.session.project.hash_step(h, HASH_STEP_BYTES);
+        }
         self.routed = routed;
         changed
     }

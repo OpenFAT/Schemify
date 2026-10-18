@@ -18,7 +18,7 @@ use crate::library::{
     self, CellRef, Cells, LibSource, Libs, LockStatus, Locked, ManifestRest, TECH_LIB,
 };
 use crate::record::RecordBuf;
-use crate::sha256::{hex, sha256};
+use crate::sha256::{Sha256, hex, sha256};
 use crate::strings::{ObjId, Strings, Sym};
 use crate::tables::Instances;
 use crate::techmap::{self, TechMap};
@@ -277,8 +277,11 @@ struct Open {
     journal: JournalOut,
     disk: Vec<u8>,
     /// sha256 hex of `disk`, computed on first need (journaling only): hashing a 6 MB
-    /// file costs more than loading it.
+    /// file costs more than loading it, so the editor spreads it over idle frames
+    /// ([`Project::hash_step`]) before the first commit needs it.
     disk_hash: Option<String>,
+    /// The part of `disk` hashed so far, while `disk_hash` is unknown.
+    hashing: Option<(Sha256, usize)>,
     pending_save: Option<PendingSave>,
     conflict: Option<Conflict>,
     /// Journal records after the checkpoint, awaiting `recover`/`discard_recovery`.
@@ -306,6 +309,7 @@ impl Open {
             journal: JournalOut::default(),
             disk: Vec::new(),
             disk_hash: None,
+            hashing: None,
             pending_save: None,
             conflict: None,
             tail: None,
@@ -319,13 +323,23 @@ fn dirty(open: &Open) -> bool {
     open.fixups || open.saved_depth != Some(open.undo.len())
 }
 
-/// Returns the sha256 hex of the disk bytes, hashing them on first use.
+/// Returns the sha256 hex of the disk bytes, hashing them (the rest of them, after
+/// [`Project::hash_step`]) on first use.
 fn disk_hash(open: &mut Open) -> String {
-    let hash = open
-        .disk_hash
-        .get_or_insert_with(|| hex(&sha256(&open.disk)));
+    if open.disk_hash.is_none() {
+        let (mut h, at) = open.hashing.take().unwrap_or_default();
+        h.update(&open.disk[at..]);
+        open.disk_hash = Some(hex(&h.finish()));
+    }
+    let hash = open.disk_hash.as_ref().expect("hashed above");
     assert_eq!(hash.len(), 64);
     hash.clone()
+}
+
+/// Forgets the disk hash (the disk bytes changed).
+fn rehash(open: &mut Open) {
+    open.disk_hash = None;
+    open.hashing = None;
 }
 
 #[derive(Debug, Default)]
@@ -870,6 +884,36 @@ impl Project {
             })
     }
 
+    /// Hashes up to `budget` more bytes of document `h`'s disk state, which its journal's
+    /// first record names (edits spec §3), so the first commit appends its records without
+    /// hashing the whole file in its frame. Returns whether bytes remain (false for a stale
+    /// handle, a read-only document or one without disk bytes, and once hashed).
+    ///
+    /// Cost: O(`budget`).
+    pub fn hash_step(&mut self, h: DocHandle, budget: usize) -> bool {
+        assert!(budget > 0, "a step hashes something");
+        if !self.hash_pending(h) {
+            return false;
+        }
+        let open = self.open_mut(h).expect("pending implies open");
+        let (mut hasher, at) = open.hashing.take().unwrap_or_default();
+        let end = (at + budget).min(open.disk.len());
+        hasher.update(&open.disk[at..end]);
+        if end == open.disk.len() {
+            open.disk_hash = Some(hex(&hasher.finish()));
+            return false;
+        }
+        open.hashing = Some((hasher, end));
+        assert!(end < open.disk.len());
+        true
+    }
+
+    /// Returns whether [`Project::hash_step`] has bytes of document `h` left to hash.
+    pub fn hash_pending(&self, h: DocHandle) -> bool {
+        self.open_ref(h)
+            .is_some_and(|o| o.disk_hash.is_none() && !o.disk.is_empty() && !o.doc.read_only())
+    }
+
     /// Returns whether the document differs from its last loaded/saved bytes.
     pub fn is_dirty(&self, h: DocHandle) -> bool {
         self.open_ref(h).is_some_and(dirty)
@@ -1129,7 +1173,7 @@ impl Project {
             return Ok(());
         }
         open.disk = written.into_bytes();
-        open.disk_hash = None;
+        rehash(open);
         open.saved_depth = Some(p.depth);
         let at_save = p.depth == open.undo.len();
         if at_save && (open.journal.txs > COMPACT_TXS || open.journal.bytes > COMPACT_BYTES) {
@@ -1179,7 +1223,7 @@ impl Project {
             open.stages.clear();
             open.saved_depth = Some(0);
             open.disk = bytes.to_vec();
-            open.disk_hash = None;
+            rehash(open);
             if open.journal.started {
                 rewrite_journal(open);
             }
@@ -1762,7 +1806,7 @@ fn rebase(open: &mut Open, merged: &str, theirs: &[u8]) -> u32 {
     open.stages.clear();
     open.saved_depth = Some(0);
     open.disk = theirs.to_vec();
-    open.disk_hash = None;
+    rehash(open);
     rewrite_journal(open);
     assert!(
         open.undo

@@ -60,6 +60,10 @@ fn session(seed: u64, steps: usize, saves: bool) -> Vec<Snap> {
     };
     let mut snaps = vec![snap(&p, h, &disk)];
     for step in 0..steps {
+        // The editor's idle frames hash the disk state ahead of the commits (in part).
+        if rng.below(3) == 0 {
+            p.hash_step(h, 1 + rng.below(64) as usize);
+        }
         match rng.below(10) {
             0..=5 => {
                 let ops: Vec<Op> = (0..1 + rng.below(2))
@@ -550,4 +554,42 @@ fn extend_joins_the_last_commit_and_its_journal_record() {
     let other = Edit::Extend(seq + 1, vec![var("d", "4")]);
     assert_eq!(run(&mut p, h, other), refused);
     assert!(!canon(&p, h).contains("var d"));
+}
+
+/// The disk hash the first commit's `base` record names can be spread over idle frames
+/// (`Project::hash_step`): the journal is then byte-identical to one whose commit hashed the
+/// file itself, names the file's sha256, and the steps stop once the hash is known (and for a
+/// document with nothing to hash).
+#[test]
+fn a_disk_hash_spread_over_steps_journals_the_same() {
+    let op = || Op::Insert {
+        rec: RecordBuf::new(RecordKind::Var).field("q").field("1"),
+        at: None,
+    };
+    let (mut a, ha) = open(SEED_DOC, "cell.shcomp");
+    let (mut b, hb) = open(SEED_DOC, "cell.shcomp");
+    let mut steps = 0;
+    while b.hash_step(hb, 7) {
+        steps += 1;
+        assert!(steps < 1 << 20, "steps end");
+    }
+    assert!(steps > 3, "{steps} steps");
+    assert!(!b.hash_step(hb, 7), "hashed: nothing left");
+    let committed = |o: Outcome| matches!(o, Outcome::Committed { .. });
+    assert!(committed(run(&mut a, ha, tx(vec![op()]))));
+    assert!(committed(run(&mut b, hb, tx(vec![op()]))));
+    let (ja, jb) = (a.take_journal(ha).unwrap(), b.take_journal(hb).unwrap());
+    assert_eq!(ja.text, jb.text, "the same journal");
+    let sha = schemify_doc::hex(&schemify_doc::sha256(SEED_DOC.as_bytes()));
+    assert!(ja.text.contains(&format!("base {sha}")), "{}", ja.text);
+    // A half-hashed document finishes the hash in its first commit, to the same text.
+    let (mut c, hc) = open(SEED_DOC, "cell.shcomp");
+    assert!(c.hash_step(hc, 7), "partly hashed");
+    assert!(committed(run(&mut c, hc, tx(vec![op()]))));
+    assert_eq!(c.take_journal(hc).unwrap().text, ja.text);
+    let mut p = Project::new(None, None, 7).unwrap();
+    let new = p
+        .create("", "fresh.shcomp", schemify_format::FileKind::Shcomp)
+        .unwrap();
+    assert!(!p.hash_step(new, 7), "a new document has no disk bytes");
 }

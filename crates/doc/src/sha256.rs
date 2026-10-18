@@ -25,7 +25,7 @@ const H0: [u32; 8] = [
 pub type Digest = [u8; 32];
 
 /// Incremental SHA-256, for hashing a sequence of parts without concatenating them.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Sha256 {
     state: [u32; 8],
     block: [u8; 64],
@@ -50,6 +50,14 @@ impl Sha256 {
         let before = self.total;
         self.total += bytes.len() as u64;
         while !bytes.is_empty() {
+            // Whole blocks straight from the input, no copy through `block`.
+            if self.fill == 0
+                && let Some((b, rest)) = bytes.split_first_chunk::<64>()
+            {
+                compress(&mut self.state, b);
+                bytes = rest;
+                continue;
+            }
             let take = (64 - self.fill).min(bytes.len());
             self.block[self.fill..self.fill + take].copy_from_slice(&bytes[..take]);
             self.fill += take;
