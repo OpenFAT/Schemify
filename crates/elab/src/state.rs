@@ -15,6 +15,8 @@ use crate::iface::{Iface, own_ref};
 use crate::live::{Ctx, Delta, Live};
 use crate::names::{Name, Names};
 use crate::values::{Funcs, NONE, Syntax, VAR};
+use std::collections::BTreeMap;
+
 use schemify_doc::{DocHandle, Document, ObjId, Op, Project, Sym};
 use schemify_format::RecordKind;
 use std::collections::HashMap;
@@ -58,12 +60,21 @@ pub struct CellState {
     /// The pass `changes` starts from; 0 after [`CellState::build`] (no delta: take all).
     pub prev_pass: u64,
     unresolved: Vec<Option<String>>,
-    /// Connectivity findings sorted by key, duplicate keys kept (the table keeps one row
-    /// per key): what a patch updates the table's connectivity rows from.
-    net_rows: Vec<Violation>,
+    /// Connectivity findings by key, duplicate keys kept in key-run order (the table keeps
+    /// the first row of each key): what a patch updates the table's connectivity rows from.
+    /// Keyed by the raw handles, which are equal exactly when the keys are (one arena interns
+    /// each text once), so a patch moves no other row.
+    net_rows: BTreeMap<RowKey, Vec<Violation>>,
     live: Live,
     waivers: Vec<(ObjId, Name)>,
     ws: Work,
+}
+
+/// A finding's key as raw handles: (code, cell, object, path, param).
+type RowKey = (crate::check::Code, u32, u32, u32, u32);
+
+fn row_key(v: &Violation) -> RowKey {
+    (v.code, v.cell.0, v.object.0, v.path.0, v.param.0)
 }
 
 impl CellState {
@@ -442,28 +453,33 @@ impl CellState {
         let (rows, net) = (&mut self.violations.rows, &mut self.net_rows);
         let mut changes: (Vec<Violation>, Vec<Violation>) = (Vec::new(), Vec::new());
         for r in g {
-            let lo = net.partition_point(|x| cmp_key(x, &r, names).is_lt());
-            let at = (lo..net.len())
-                .take_while(|&k| cmp_key(&net[k], &r, names).is_eq())
-                .find(|&k| net[k] == r)
+            let key = row_key(&r);
+            let run = net
+                .get_mut(&key)
                 .expect("a gone finding is a connectivity row");
-            net.remove(at);
+            let at = run
+                .iter()
+                .position(|x| *x == r)
+                .expect("a gone finding is a connectivity row");
+            run.remove(at);
+            let kept = run.first().cloned();
+            if run.is_empty() {
+                net.remove(&key);
+            }
             let t = rows
                 .binary_search_by(|x| cmp_key(x, &r, names))
                 .expect("its key is in the table");
-            let kept = net.get(lo).filter(|x| cmp_key(x, &r, names).is_eq());
             match kept {
                 None => changes.0.push(rows.remove(t)),
                 Some(k) if rows[t] == r => {
                     changes.0.push(std::mem::replace(&mut rows[t], k.clone()));
-                    changes.1.push(k.clone());
+                    changes.1.push(k);
                 }
                 Some(_) => {}
             }
         }
         for r in n {
-            let at = net.partition_point(|x| cmp_key(x, &r, names).is_le());
-            net.insert(at, r.clone());
+            net.entry(row_key(&r)).or_default().push(r.clone());
             if let Err(t) = rows.binary_search_by(|x| cmp_key(x, &r, names)) {
                 rows.insert(t, r.clone());
                 changes.1.push(r);
@@ -498,8 +514,11 @@ impl CellState {
         self.waivers = waivers(doc, &self.names);
         let mut net = self.live.rows(&self.nets, &self.ifaces[0], &self.names);
         net.sort_by(|a, b| cmp_key(a, b, &self.names));
-        self.net_rows = net;
-        let mut rows = self.net_rows.clone();
+        self.net_rows.clear();
+        for v in &net {
+            self.net_rows.entry(row_key(v)).or_default().push(v.clone());
+        }
+        let mut rows = net;
         let cx = CellCtx {
             doc,
             ifaces: &self.ifaces,

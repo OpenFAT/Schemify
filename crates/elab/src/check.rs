@@ -133,6 +133,14 @@ pub struct Violation {
     pub detail: String,
 }
 
+impl Violation {
+    /// The order [`Violations::rows`] are sorted in (unique per table): code text, cell,
+    /// object, path, param (texts through `names`, the arena both rows' names are from).
+    pub fn key_cmp(&self, other: &Violation, names: &Names) -> Ordering {
+        cmp_key(self, other, names)
+    }
+}
+
 /// Most violations one table holds (ARCHITECTURE capacity).
 pub const VIOLATIONS_MAX: usize = 1 << 20;
 
