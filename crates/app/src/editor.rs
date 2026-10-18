@@ -523,6 +523,11 @@ pub struct Editor {
     scene: Scene,
     /// The selection's primitive rows (`scene::selected_prims`), with the marks.
     sel_prims: Vec<(u8, u32)>,
+    /// The plugin snapshot lags a check pass that came after this frame's delivery: the next
+    /// tick refills it (`Editor::wake_ms`), so the next input frame does not.
+    snapshot_due: bool,
+    /// The snapshot was refilled this frame.
+    snapshot_fresh: bool,
     overlay: CanvasPrims,
     marks: Marks,
     /// The active level's selection as scene object indices (rebuilt with the marks).
@@ -758,6 +763,8 @@ impl Editor {
             marks: Marks::default(),
             selected: scene::Selected::default(),
             sel_prims: Vec::new(),
+            snapshot_due: false,
+            snapshot_fresh: false,
             palette: Palette::xschem_dark(),
             sel_color: 0xe0e0_e0ff,
             tool: Tool::Idle,
@@ -1111,6 +1118,8 @@ impl Editor {
                 .min(u64::from(ZOOM_SETTLE_MS)) as u32
         });
         let tiles = self.partial.then_some(0);
+        // The plugin snapshot behind a new check pass is refilled on the next tick.
+        let snapshot = self.snapshot_due.then_some(0);
         // The browser owes an answer (web: a clipboard read).
         let platform = platform::wake_ms();
         [
@@ -1119,6 +1128,7 @@ impl Editor {
             queued,
             crisp,
             tiles,
+            snapshot,
             platform,
         ]
         .into_iter()
@@ -1153,6 +1163,8 @@ impl Editor {
         };
         let events: &InputEvents = &events;
         let zoom0 = self.camera().scale;
+        let snapshot_due = std::mem::take(&mut self.snapshot_due);
+        self.snapshot_fresh = false;
         let resized = viewport != self.viewport;
         self.viewport = viewport;
         // UI inputs (plugin sets, docs page, images) → compose + layout, so input routes over
@@ -1205,7 +1217,8 @@ impl Editor {
         // 6. elab::recompute → values and violations (D13, D19), then the D20 cache
         //    write-back folded into the edit's own undo entry, then the `checks` source of
         //    the annotation overlay; before compose so page, panel and canvas agree.
-        if self.recompute_elab() {
+        let pass_moved = self.recompute_elab();
+        if pass_moved {
             changed = true;
             changed |= self.sync_cache(&mut reqs);
             self.post_checks();
@@ -1254,6 +1267,13 @@ impl Editor {
             changed = true;
         }
         changed |= std::mem::take(&mut self.partial);
+        // The plugin snapshot: a pass that moved after this frame's delivery is refilled on
+        // the next tick (a frame nobody waits on), unless that tick's pass moves again.
+        if snapshot_due && !self.snapshot_fresh && !pass_moved {
+            self.snapshot_now();
+        }
+        self.snapshot_due = !self.host.plugins.ids().is_empty()
+            && (pass_moved || snapshot_due && !self.snapshot_fresh);
         self.routed = routed;
         changed
     }
@@ -3700,35 +3720,9 @@ impl Editor {
         if !self.host.has_work() {
             return false;
         }
-        let active = self.active().map(|a| a.0);
-        let sel: Vec<u32> = self
-            .selection()
-            .iter()
-            .filter(|k| !matches!(k.table, TableId::Pins | TableId::Graphics))
-            .map(|k| k.key)
-            .collect();
-        #[cfg(not(target_arch = "wasm32"))]
-        let rows = self.sim.result_rows();
-        #[cfg(target_arch = "wasm32")]
-        let rows = Vec::new();
-        let cell = self
-            .cell
-            .as_ref()
-            .filter(|_| self.cell_key.is_some_and(|k| Some(k.0) == active));
-        // What the document tables are filled from: unchanged on a click, so a selection
-        // change does not copy every row again.
-        let key = {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            let project = &self.session.project;
-            for d in project.handles() {
-                (d, project.is_dirty(d), self.session.epoch(d)).hash(&mut h);
-            }
-            (active, cell.map(|c| c.pass), &rows).hash(&mut h);
-            h.finish()
-        };
-        self.host
-            .snapshot(&self.session.project, active, &sel, cell, &rows, key);
+        if !self.host.plugins.ids().is_empty() {
+            self.snapshot_now(); // the tables are for plugins; the user config reads none
+        }
         let root = self.session.root.clone();
         let d = self.host.deliver(&self.session.project, &root, self.now);
         if !d.commands.is_empty() {
@@ -3766,6 +3760,42 @@ impl Editor {
             self.invalidate_cells(); // plugin functions may answer differently now (D20)
         }
         true
+    }
+
+    /// Fills the plugin snapshot tables from the active document, its cell state, the
+    /// selection and the run's rows (`Host::snapshot`, which refills only what moved).
+    fn snapshot_now(&mut self) {
+        let active = self.active().map(|a| a.0);
+        let sel: Vec<u32> = self
+            .selection()
+            .iter()
+            .filter(|k| !matches!(k.table, TableId::Pins | TableId::Graphics))
+            .map(|k| k.key)
+            .collect();
+        #[cfg(not(target_arch = "wasm32"))]
+        let rows = self.sim.result_rows();
+        #[cfg(target_arch = "wasm32")]
+        let rows = Vec::new();
+        let cell = self
+            .cell
+            .as_ref()
+            .filter(|_| self.cell_key.is_some_and(|k| Some(k.0) == active));
+        // What the document tables are filled from: unchanged on a click, so a selection
+        // change does not copy every row again.
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            let project = &self.session.project;
+            for d in project.handles() {
+                (d, project.is_dirty(d), self.session.epoch(d)).hash(&mut h);
+            }
+            (active, cell.map(|c| c.pass), &rows).hash(&mut h);
+            h.finish()
+        };
+        let epoch = active.map_or(0, |h| self.session.epoch(h));
+        self.host
+            .snapshot(&self.session.project, active, epoch, &sel, cell, &rows, key);
+        self.snapshot_fresh = true;
     }
 
     /// `doc::apply_edits`, then per-document bookkeeping: edit epochs, journals, plugin

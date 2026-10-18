@@ -202,3 +202,35 @@ fn the_paint_outcome_schedules_the_next_frame_through_painted() {
     assert_eq!(s.ed.wake_ms(), None, "a whole canvas asks for nothing");
     assert!(!s.frame(Default::default()), "and nothing redraws");
 }
+
+/// An edit's check pass comes after the frame delivered `DocChanged` to the plugins, so their
+/// snapshot lags it: the editor asks for one tick at once, which refills it, and is idle
+/// after it (D39). Without plugins there is no snapshot to refill.
+#[test]
+fn an_edit_refills_the_plugin_snapshot_on_the_next_tick() {
+    for plugins in [true, false] {
+        let mut s = Session::open("inv", "top.shcomp", &format!("snap-{plugins}"), plugins);
+        s.frame(Default::default());
+        assert_eq!(s.ed.wake_ms(), None, "idle after opening");
+        let before = s.text();
+        s.click((10 * U, 0));
+        assert_eq!(s.ed.selection().len(), 1, "instance x1");
+        s.ed.command("edit.delete", "");
+        s.frame(Default::default());
+        assert_ne!(s.text(), before, "deleted");
+        if plugins {
+            assert_eq!(s.ed.wake_ms(), Some(0), "the snapshot is due");
+        }
+        // The due tick, and the user config's copy of `DocChanged` (delivered on the next).
+        for _ in 0..2 {
+            if s.ed.wake_ms().is_some() {
+                s.frame(Default::default());
+            }
+        }
+        assert_eq!(
+            s.ed.wake_ms(),
+            None,
+            "idle after the edit (plugins: {plugins})"
+        );
+    }
+}

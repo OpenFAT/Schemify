@@ -44,16 +44,20 @@ pub const WAITING_MAX: usize = 256;
 /// Tick period while a child process runs (its completion is polled, not signalled).
 const IO_POLL_MS: u32 = 20;
 
-/// Fills the snapshot groups flagged `stale` (Instances; Wires; Labels; Nets with
-/// Violations; Results) from document `doc` (snapshot id `id`), its state `cell` and the run's
-/// `results`; see [`Host::snapshot`].
+/// Snapshot groups [`Host::snapshot`] refills independently: Instances; Wires and Labels
+/// without their net column; Nets with Violations; Results; the Wires and the Labels net
+/// columns (a check pass renumbers nets without moving a wire).
+const GROUPS: usize = 7;
+
+/// Fills the snapshot groups flagged `stale` ([`GROUPS`]) from document `doc` (snapshot id
+/// `id`), its state `cell` and the run's `results`; see [`Host::snapshot`].
 fn fill_groups(
     s: &mut Snapshots,
     doc: &schemify_doc::Document,
     id: u32,
     cell: Option<&CellState>,
     results: &ResultRows,
-    stale: [bool; 5],
+    stale: [bool; GROUPS],
 ) {
     let st = doc.strings();
     let (inst, w, l) = (doc.instances(), doc.wires(), doc.labels());
@@ -85,6 +89,9 @@ fn fill_groups(
         s.fill::<i32>(Table::Wires, col::wires::Y1, &w.y1);
         s.fill::<i32>(Table::Wires, col::wires::X2, &w.x2);
         s.fill::<i32>(Table::Wires, col::wires::Y2, &w.y2);
+    }
+    if stale[5] {
+        let n = w.id.len();
         s.fill::<u32>(
             Table::Wires,
             col::wires::NET,
@@ -98,13 +105,16 @@ fn fill_groups(
         s.fill::<u32>(Table::Labels, col::labels::ID, &raw);
         s.fill::<i32>(Table::Labels, col::labels::X, &l.x);
         s.fill::<i32>(Table::Labels, col::labels::Y, &l.y);
+        let texts: Vec<&str> = l.text.iter().map(|&t| st.get(t)).collect();
+        s.fill_strings(Table::Labels, col::labels::TEXT, &texts);
+    }
+    if stale[6] {
+        let n = l.id.len();
         s.fill::<u32>(
             Table::Labels,
             col::labels::NET,
             &nets_of(cell.map_or(&[][..], |c| &c.nets.label_net), n),
         );
-        let texts: Vec<&str> = l.text.iter().map(|&t| st.get(t)).collect();
-        s.fill_strings(Table::Labels, col::labels::TEXT, &texts);
     }
     if stale[3] {
         let empty = CellState::default();
@@ -207,9 +217,12 @@ pub struct Host {
     snapshots: Snapshots,
     /// What the document tables in `snapshots` were filled from (see [`Host::snapshot`]).
     snapshot_key: Option<u64>,
-    /// Fingerprints of what each group of tables was filled from: Instances, Wires, Labels,
-    /// Nets with Violations, Results (see [`Host::snapshot`]).
-    group_keys: [Option<u64>; 5],
+    /// Fingerprints of what each group of tables was filled from ([`GROUPS`], see
+    /// [`Host::snapshot`]).
+    group_keys: [Option<u64>; GROUPS],
+    /// The document fingerprints (Instances, Wires, Labels) and what they were taken at: the
+    /// snapshot id, edit epoch, string count and row counts of the document.
+    doc_keys: Option<([u64; 5], [u64; 3])>,
     queues: RequestQueues,
     /// Epoch of the last composition the app consumed.
     pub seen_epoch: Option<u32>,
@@ -356,7 +369,8 @@ impl Host {
             events: PluginEvents::new(),
             snapshots: Snapshots::new(),
             snapshot_key: None,
-            group_keys: [None; 5],
+            group_keys: [None; GROUPS],
+            doc_keys: None,
             queues: RequestQueues::default(),
             seen_epoch: None,
             hashes,
@@ -685,14 +699,19 @@ impl Host {
     /// labels, Nets, Violations; `u32::MAX` nets and empty tables without it) and the last
     /// run's `results` rows. `key` names everything but `selection` (document epochs, the
     /// check pass, the results): with the previous call's key only the Selection table is
-    /// refilled. Otherwise each group of tables (Instances; Wires; Labels; Nets with
-    /// Violations; Results) is refilled only when its source changed: a fingerprint of the
-    /// document's columns, the check pass, the rows. Cost: a hash pass over the instance, wire
-    /// and label columns, plus one copy of the groups that changed (or of the selection).
+    /// refilled. Otherwise each group of tables ([`GROUPS`]) is refilled only when its source
+    /// changed: a fingerprint of the document's columns, the check pass, the rows. `epoch` is
+    /// the document's edit epoch (`Session::epoch`, moved by every change of its tables): while
+    /// it stands, the document fingerprints are reused, so a pass change (the frame after an
+    /// edit) refills the net columns and the Nets group only. Cost: a hash pass over the
+    /// instance, wire and label columns when `epoch` moved, plus one copy of the groups that
+    /// changed (or of the selection).
+    #[allow(clippy::too_many_arguments)]
     pub fn snapshot(
         &mut self,
         project: &Project,
         h: Option<DocHandle>,
+        epoch: u32,
         selection: &[u32],
         cell: Option<&CellState>,
         results: &ResultRows,
@@ -738,28 +757,50 @@ impl Host {
         // ponytail: names are fingerprinted by symbol, with the string count: a reload whose
         // interner gave the same symbols to other strings at the same count would keep stale
         // names. Key on a per-document reload counter if that ever shows.
-        let seed = hash_of((id, st.len()));
+        // ponytail: the epoch stands for the document's columns (with its string and row counts
+        // as a guard); a document that changed without moving its epoch would keep stale rows.
+        let at = [
+            u64::from(id),
+            u64::from(epoch),
+            st.len() as u64,
+            inst.id.len() as u64,
+            (w.id.len() as u64) << 32 | l.id.len() as u64,
+        ];
+        let doc_keys = match self.doc_keys {
+            Some((was, keys)) if was == at => keys,
+            _ => {
+                let seed = hash_of((id, st.len()));
+                let inst_key = {
+                    let f = fold(
+                        fold(fold(seed, obj_ids(&inst.id)), as_u32(&inst.x)),
+                        as_u32(&inst.y),
+                    );
+                    let f = fold(fold(f, sym_ids(&inst.cell)), sym_ids(&inst.name));
+                    fold(f, inst.orient.iter().map(|&o| o as u32))
+                };
+                let wire_key = {
+                    let f = fold(fold(seed, obj_ids(&w.id)), as_u32(&w.x1));
+                    fold(fold(fold(f, as_u32(&w.y1)), as_u32(&w.x2)), as_u32(&w.y2))
+                };
+                let label_key = {
+                    let f = fold(fold(seed, obj_ids(&l.id)), as_u32(&l.x));
+                    fold(fold(f, as_u32(&l.y)), sym_ids(&l.text))
+                };
+                [inst_key, wire_key, label_key]
+            }
+        };
+        self.doc_keys = Some((at, doc_keys));
+        let [inst_key, wire_key, label_key] = doc_keys;
         let keys = [
-            {
-                let f = fold(
-                    fold(fold(seed, obj_ids(&inst.id)), as_u32(&inst.x)),
-                    as_u32(&inst.y),
-                );
-                let f = fold(fold(f, sym_ids(&inst.cell)), sym_ids(&inst.name));
-                fold(f, inst.orient.iter().map(|&o| o as u32))
-            },
-            {
-                let f = fold(fold(seed ^ hash_of(pass), obj_ids(&w.id)), as_u32(&w.x1));
-                fold(fold(fold(f, as_u32(&w.y1)), as_u32(&w.x2)), as_u32(&w.y2))
-            },
-            {
-                let f = fold(fold(seed ^ hash_of(pass), obj_ids(&l.id)), as_u32(&l.x));
-                fold(fold(f, as_u32(&l.y)), sym_ids(&l.text))
-            },
+            inst_key,
+            wire_key,
+            label_key,
             hash_of((id, pass)),
             hash_of(results),
+            hash_of((wire_key, pass)),
+            hash_of((label_key, pass)),
         ];
-        let mut stale = [false; 5];
+        let mut stale = [false; GROUPS];
         for (g, k) in keys.into_iter().enumerate() {
             stale[g] = self.group_keys[g].replace(k) != Some(k);
         }
@@ -768,7 +809,7 @@ impl Host {
         #[cfg(debug_assertions)]
         if inst.id.len() + w.id.len() + l.id.len() < 20_000 {
             let mut full = self.snapshots.clone();
-            fill_groups(&mut full, doc, id, cell, results, [true; 5]);
+            fill_groups(&mut full, doc, id, cell, results, [true; GROUPS]);
             debug_assert_eq!(
                 without_epochs(&format!("{:?}", self.snapshots)),
                 without_epochs(&format!("{full:?}")),
