@@ -109,7 +109,7 @@ fn walk(scale: f64, seed: u32) {
         };
         let (mut frames, mut drawn) = (0, Drawn::Partial);
         let mut got = None;
-        while drawn == Drawn::Partial && frames < 64 {
+        while drawn == Drawn::Partial && frames < 128 {
             cached.reset();
             drawn = canvas::draw_cached(
                 &mut cached,
@@ -162,6 +162,69 @@ fn cached_frames_equal_direct_renders() {
 #[test]
 fn cached_frames_equal_direct_renders_at_scale_two() {
     walk(2.0, 0x1234_5678);
+}
+
+/// The ring ahead of the view is recorded on frames something else asked for (an input frame
+/// that only hovers), so it takes a quarter of the frame's budget at most: once the view is
+/// whole, each further frame records within that share, and the ring is whole after a bounded
+/// number of them (after which a frame records nothing).
+#[test]
+fn the_ring_takes_a_share_of_the_budget() {
+    let prims = common::thousand_prims();
+    let view = Rect::new(0.0, 0.0, 400.0, 300.0);
+    let cam = Camera {
+        cx: 300_000.0,
+        cy: 190_000.0,
+        scale: 0.004,
+    };
+    let (mut text, mut scratch) = (TextSystem::new(), CanvasScratch::default());
+    // The frame's recording cost, with `cost_per_frame` = `budget`.
+    let mut run = |budget: usize, frames: usize| -> Vec<usize> {
+        let mut p = CpuPainter::new(400, 300, 1.0);
+        let mut cache = CanvasCache::default();
+        (cache.tiles_per_frame, cache.cost_per_frame) = (usize::MAX, budget);
+        let mut costs = Vec::new();
+        for _ in 0..frames {
+            p.reset();
+            let mut cost = 0;
+            canvas::draw_cached(
+                &mut p,
+                &mut cache,
+                view,
+                &cam,
+                7,
+                Some(&[]),
+                true,
+                bg(),
+                |p, v, c| {
+                    let k = content(p, v, c, &prims, &mut text, &mut scratch);
+                    cost += k;
+                    k
+                },
+            );
+            costs.push(cost);
+        }
+        costs
+    };
+    // An unbounded budget: the view on the first frame (a fresh atlas), the whole ring on the
+    // second.
+    let free = run(usize::MAX, 3);
+    let ring = free[1];
+    assert!(ring > 0 && free[2] == 0, "the ring, then nothing: {free:?}");
+    // A budget near the whole ring: without the share, the next frame records most of it.
+    let budget = ring - ring / 8;
+    let costs = run(budget, 64);
+    let after: Vec<usize> = costs[1..].to_vec();
+    assert!(
+        after.iter().all(|&c| c <= budget / 4),
+        "every ring frame stays within the ring's share (a quarter) of {budget}: {after:?}"
+    );
+    let busy = after.iter().take_while(|&&c| c > 0).count();
+    assert!(busy >= 2, "the ring is spread over frames: {after:?}");
+    assert!(
+        after[busy..].iter().all(|&c| c == 0),
+        "then it is whole: {after:?}"
+    );
 }
 
 /// A zoom while not crisp stretches the recorded tiles (stand-ins) and never records, even once
@@ -221,7 +284,7 @@ fn zoom_stretches_until_crisp() {
         Drawn::Partial,
         "crisp records, a few tiles per frame"
     );
-    for _ in 0..8 {
+    for _ in 0..16 {
         if drawn != Drawn::Partial {
             break;
         }

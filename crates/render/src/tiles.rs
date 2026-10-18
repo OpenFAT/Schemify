@@ -35,10 +35,18 @@ pub const TILE_PX: u32 = 256;
 /// blank for ~4 frames (#45).
 pub const TILES_PER_FRAME: usize = 64;
 /// Cost (what `draw` reports, see [`draw_cached`]) one frame spends on recording by default
-/// (see [`CanvasCache::cost_per_frame`]): ~1–1.5 ms in [`draw_prims_in`]'s units.
+/// (see [`CanvasCache::cost_per_frame`]): ≈ 0.4 ms in [`draw_prims_in`]'s units at 100k
+/// objects (≈ 8 ns a unit), so a frame that records stays under 0.6 ms of CPU; what does not
+/// fit is recorded by the next frames ([`Drawn::Partial`]). At 80 000 a settle frame took
+/// 0.8 ms and the view was whole in ~7 frames; at 48 000, ~15 (2026-10, `docs/dev/perf.md`).
 ///
 /// [`draw_prims_in`]: crate::canvas::draw_prims_in
-pub const COST_PER_FRAME: usize = 80_000;
+pub const COST_PER_FRAME: usize = 48_000;
+/// The share of [`CanvasCache::cost_per_frame`] the ring ahead of the view may take (one
+/// part in this many): ring tiles are recorded only on frames something else asked for (an
+/// input frame), so a ring part is recorded only while it fits what is left of the frame's
+/// budget, at most this share; a ring tile too costly for it waits until a pan shows it.
+const RING_SHARE: usize = 4;
 /// Cost a tile part counts on top of its rows (its own render pass and atlas copy).
 const TILE_COST: usize = 2_000;
 /// How much more a tile's world may cost at a finer zoom than a coarser cell over it says:
@@ -429,6 +437,13 @@ pub fn draw_cached<P: Painter>(
     for pass in [false, true] {
         if pass && !held {
             break; // a fresh atlas records what the view shows, nothing ahead of it
+        }
+        // The ring gets what is left of the budget, at most its share, and no part of it is
+        // recorded past that (the first-part-always rule is for the view's own tiles).
+        let share = (cache.cost_per_frame / RING_SHARE).max(1);
+        if pass {
+            left = left.min(share);
+            any = true;
         }
         for j in j0 - 1..=j1 + 1 {
             for i in i0 - 1..=i1 + 1 {
