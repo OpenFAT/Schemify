@@ -9,10 +9,8 @@
 [submodule "examples/plugins/cktImg"]
 	path = examples/plugins/cktImg
 	url = https://github.com/OmarSiwy/cktImg
-	branch = schemify-plugin
 	update = none
 [submodule "examples/plugins/GmIDVisualizer"]
 	path = examples/plugins/GmIDVisualizer
 	url = https://github.com/OmarSiwy/GmIDVisualizer
-	branch = schemify-plugin
 	update = none
