@@ -135,12 +135,13 @@ impl CellState {
 
     /// Brings the state up to date after `ops` were applied to document `h` (the frame
     /// spine's `elab::recompute`): the ops `Project::applied` lends for a commit, an undo
-    /// (its inverse ops) or a redo. Value edits (an existing override's or var's
-    /// expression) re-evaluate only their dependents, report the instances whose values
-    /// changed ([`CellState::revalued`]) and recheck only those and the edited ones;
+    /// (its inverse ops) or a redo. Value edits (an override set, changed or removed, a
+    /// var's expression) re-evaluate only their dependents, report the instances whose
+    /// values changed ([`CellState::revalued`]) and recheck only those and the edited ones;
     /// geometry edits patch the touched nets; structural edits (instances, params, vars
-    /// added or removed, overrides added or removed, changed dependencies) rebuild. Ops of other documents are not seen:
-    /// rebuild with [`CellState::build`] when an instantiated cell's interface changes.
+    /// added or removed, a dependency on a later node) rebuild. Ops of other documents are
+    /// not seen: rebuild with [`CellState::build`] when an instantiated cell's interface
+    /// changes.
     /// The result always equals a fresh [`CellState::build`] (the incremental oracle).
     ///
     /// # Panics
@@ -304,8 +305,11 @@ impl CellState {
         }
     }
 
-    /// Recompiles the expressions whose text changed. Returns `false` when the change
-    /// is structural (an override added or removed, a dependency changed).
+    /// Recompiles the expressions whose text changed, and points a node whose override was
+    /// added or removed at its new program (own scope, or the cell's default in the child
+    /// scope). Returns `false` when the change is structural: a new dependency that does not
+    /// precede the node in the topological order (`Graph::set_deps`), a child var the
+    /// graph has no node for, a cycle, or a var added or removed.
     fn diff_values(
         &mut self,
         doc: &Document,
@@ -319,7 +323,10 @@ impl CellState {
             // Cycle nodes had their edges cut; any edit may break or move the cycle.
             return false;
         }
-        let mut nodes: Vec<(u32, Sym, Syntax)> = Vec::new();
+        // (node, new own-scope text and syntax, or `None`: back to the cell's default, with
+        // the instance row and param index).
+        type Text = Option<(Sym, Syntax)>;
+        let mut nodes: Vec<(u32, Text, usize, usize)> = Vec::new();
         for id in insts {
             let Some(loc) = doc.find_id(*id) else {
                 return false;
@@ -340,8 +347,8 @@ impl CellState {
                 match (was, now) {
                     (None, None) => {}
                     (Some(a), Some(b)) if a == b => {}
-                    (Some(_), Some(b)) => nodes.push((n, b, c.param_kind[k].syntax())),
-                    _ => return false,
+                    (_, Some(b)) => nodes.push((n, Some((b, c.param_kind[k].syntax())), i, k)),
+                    (Some(_), None) => nodes.push((n, None, i, k)),
                 }
             }
             // Override keys the cell lacks change nothing but W007 (re-checked below).
@@ -358,35 +365,71 @@ impl CellState {
             for (v, r) in rows.into_iter().enumerate() {
                 let n = g.params + v as u32;
                 if g.src[n as usize] != blocks.fields[r][1] {
-                    nodes.push((n, blocks.fields[r][1], Syntax::Expr));
+                    nodes.push((n, Some((blocks.fields[r][1], Syntax::Expr)), 0, 0));
                 }
             }
         }
         let me = &self.ifaces[0];
-        for (n, sym, syntax) in nodes {
-            let names = &self.names;
-            let lookup = |name: &str| own_ref(names, &me.param_name, &g.var_name, name);
-            let prog = g.progs.push(s.get(sym), syntax, None, lookup);
-            let new_deps: Vec<u32> = g
-                .progs
-                .refs(prog)
-                .iter()
-                .map(|&r| {
-                    if r & VAR == 0 {
-                        r
-                    } else {
-                        g.params + (r & !VAR)
+        let mut new_deps: Vec<u32> = Vec::new();
+        for (n, text, i, k) in nodes {
+            new_deps.clear();
+            let (table, prog, src) = match text {
+                Some((sym, syntax)) => {
+                    let names = &self.names;
+                    let lookup = |name: &str| own_ref(names, &me.param_name, &g.var_name, name);
+                    let prog = g.progs.push(s.get(sym), syntax, None, lookup);
+                    let own = |r: u32| {
+                        if r & VAR == 0 {
+                            r
+                        } else {
+                            g.params + (r & !VAR)
+                        }
+                    };
+                    new_deps.extend(g.progs.refs(prog).iter().map(|&r| own(r)));
+                    (OWN, prog, sym)
+                }
+                None => {
+                    // The cell's default reads the instance's own params and child vars.
+                    let t = self.inst_iface[i];
+                    let c = &self.ifaces[t as usize];
+                    let prog = c.param_prog[k];
+                    // A build gives the child vars its bounds read nodes (for gating).
+                    let has = |v: u32| {
+                        g.child_vars
+                            .binary_search_by_key(&(i as u32, v), |e| (e.0, e.1))
+                            .is_ok()
+                    };
+                    let bounds = c.param_bound[k].iter().filter(|&&b| b != NONE);
+                    if bounds
+                        .flat_map(|&b| c.progs.refs(b))
+                        .any(|&r| r & VAR != 0 && !has(r & !VAR))
+                    {
+                        return false;
                     }
-                })
-                .collect();
-            if new_deps != g.node_deps(n) {
+                    for &r in c.progs.refs(prog) {
+                        let d = if r & VAR == 0 {
+                            g.inst_first[i] + r
+                        } else {
+                            let key = (i as u32, r & !VAR);
+                            match g.child_vars.binary_search_by_key(&key, |e| (e.0, e.1)) {
+                                Ok(at) => g.child_vars[at].2,
+                                Err(_) => return false, // a node the graph lacks
+                            }
+                        };
+                        new_deps.push(d);
+                    }
+                    (t, prog, Sym::NONE)
+                }
+            };
+            if new_deps != g.node_deps(n) && !g.set_deps(n, &new_deps) {
                 return false;
             }
-            g.table[n as usize] = OWN;
+            g.table[n as usize] = table;
             g.prog[n as usize] = prog;
-            g.src[n as usize] = sym;
+            g.src[n as usize] = src;
             dirty.push(n);
         }
+        assert!(dirty.iter().all(|&d| (d as usize) < g.len()));
         true
     }
 

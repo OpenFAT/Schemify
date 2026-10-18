@@ -16,16 +16,16 @@
 //!
 //! Six questions: in, a document + interfaces; out, `vals`/`unverified` columns. Nodes
 //! ≤ instances × 2^8 params (2^30 bound, `u32`). Eval walks `order` reading each
-//! node's deps (CSR). Lifetime: until a structural edit (the editor) or one
-//! elaboration. Parallel: one graph per cell, independent.
+//! node's deps (a `[start, end)` range per node: built as CSR, an edit that changes a
+//! node's dependencies writes them in place or appends them, [`Graph::set_deps`]).
+//! Lifetime: until a structural edit (the editor) or one elaboration. Parallel: one graph
+//! per cell, independent.
 
 use crate::iface::{GRID, Iface, MAX, MIN, STEP, VALID};
 use crate::names::{Name, Names};
 use crate::values::{Code as PCode, Funcs, NONE, Progs, Ref, Syntax, VAR, Val};
 use schemify_doc::{Document, Instances, Sym};
-use schemify_expr::{
-    Deps, Error as XError, Scratch, Value, affected, reverse, topo_order, topo_order_all,
-};
+use schemify_expr::{Deps, Error as XError, Scratch, Value, reverse, topo_order, topo_order_all};
 use std::collections::HashMap;
 
 /// Program table of a node: the graph's own table (overrides, substituted vars), or the
@@ -44,10 +44,18 @@ pub struct Graph {
     /// Doc symbol of the node's expression text in the cell's own document (overrides,
     /// own params and vars), for change detection; [`Sym::NONE`] otherwise.
     pub(crate) src: Vec<Sym>,
+    /// Each node's dependencies are `deps[dep_start[n]..dep_end[n]]`.
     pub(crate) dep_start: Vec<u32>,
+    pub(crate) dep_end: Vec<u32>,
     pub(crate) deps: Vec<u32>,
+    /// Each node's dependents are `rdeps[rdep_start[n]..rdep_end[n]]`: a superset after
+    /// [`Graph::set_deps`] dropped an edge (a stale dependent is only re-evaluated).
     pub(crate) rdep_start: Vec<u32>,
+    pub(crate) rdep_end: Vec<u32>,
     pub(crate) rdeps: Vec<u32>,
+    /// Edges at the last build: [`Graph::set_deps`] gives up (the caller rebuilds, which
+    /// compacts) once appended lists pass twice this.
+    pub(crate) edges: usize,
     pub(crate) rank: Vec<u32>,
     pub(crate) order: Vec<u32>,
     /// Nodes on a dependency cycle (`X005`), with the error.
@@ -288,6 +296,7 @@ impl Graph {
     fn finish(&mut self, ifaces: &[Iface], names: &Names) {
         let n = self.owner.len();
         assert_eq!(self.dep_start.len(), n + 1);
+        self.dep_end = self.dep_start[1..].to_vec();
         let deps = Deps {
             offsets: &self.dep_start,
             targets: &self.deps,
@@ -312,6 +321,8 @@ impl Graph {
             targets: &self.deps,
         };
         reverse(deps, &mut self.rdep_start, &mut self.rdeps);
+        self.rdep_end = self.rdep_start[1..].to_vec();
+        self.edges = self.deps.len();
         self.rank = vec![0; n];
         for (r, &node) in self.order.iter().enumerate() {
             self.rank[node as usize] = r as u32;
@@ -353,11 +364,55 @@ impl Graph {
         }
         self.dep_start = start;
         self.deps = deps;
+        self.dep_end = self.dep_start[1..].to_vec();
+        assert_eq!(self.dep_end.len(), self.owner.len());
     }
 
     /// Returns the nodes node `n` depends on, in its program's identifier order.
     pub(crate) fn node_deps(&self, n: u32) -> &[u32] {
-        &self.deps[self.dep_start[n as usize] as usize..self.dep_start[n as usize + 1] as usize]
+        &self.deps[self.dep_start[n as usize] as usize..self.dep_end[n as usize] as usize]
+    }
+
+    /// Replaces node `n`'s dependencies by `new` (in its program's identifier order) when
+    /// every one precedes `n` in the topological order, which then stays valid; returns
+    /// `false`, changing nothing, when one does not, when `n` is on a cycle, or when the
+    /// appended lists outgrew the build (the caller rebuilds the graph, which compacts).
+    /// Values are not touched: the caller marks `n` dirty.
+    ///
+    /// Cost: O(new) to write them, plus a copy of each new dependency's dependent list (it
+    /// moves to the end with `n` added).
+    pub(crate) fn set_deps(&mut self, n: u32, new: &[u32]) -> bool {
+        let at = n as usize;
+        assert!(at < self.len(), "node {n} in range");
+        let r = self.rank[at];
+        if new.iter().any(|&d| self.rank[d as usize] >= r)
+            || self.cyclic.binary_search_by_key(&n, |e| e.0).is_ok()
+            || self.deps.len() + self.rdeps.len() > 4 * self.edges + (1 << 16)
+        {
+            return false;
+        }
+        let (start, end) = (self.dep_start[at] as usize, self.dep_end[at] as usize);
+        let old: Vec<u32> = self.deps[start..end].to_vec();
+        if new.len() <= old.len() {
+            self.deps[start..start + new.len()].copy_from_slice(new);
+            self.dep_end[at] = (start + new.len()) as u32;
+        } else {
+            self.dep_start[at] = self.deps.len() as u32;
+            self.deps.extend_from_slice(new);
+            self.dep_end[at] = self.deps.len() as u32;
+        }
+        for &d in new.iter().filter(|d| !old.contains(d)) {
+            let d = d as usize;
+            let (a, b) = (self.rdep_start[d] as usize, self.rdep_end[d] as usize);
+            if b != self.rdeps.len() {
+                self.rdep_start[d] = self.rdeps.len() as u32;
+                self.rdeps.extend_from_within(a..b);
+            }
+            self.rdeps.push(n);
+            self.rdep_end[d] = self.rdeps.len() as u32;
+        }
+        assert_eq!(self.node_deps(n), new);
+        true
     }
 
     /// Returns the node count.
@@ -450,7 +505,7 @@ impl Graph {
     /// from before (in evaluation order). Returns the number of nodes evaluated. Valid
     /// while edges are unchanged.
     ///
-    /// Cost: O(affected + their edges) plus an O(nodes) scratch clear.
+    /// Cost: O(affected + their edges), plus O(nodes) once to size the marks.
     pub(crate) fn recompute<F: Funcs>(
         &mut self,
         dirty: &[u32],
@@ -459,11 +514,7 @@ impl Graph {
         ws: &mut Work,
         changed: &mut Vec<u32>,
     ) -> usize {
-        let rdeps = Deps {
-            offsets: &self.rdep_start,
-            targets: &self.rdeps,
-        };
-        affected(rdeps, &self.rank, dirty, &mut ws.affected);
+        self.affected(dirty, ws);
         let todo = std::mem::take(&mut ws.affected);
         let (mut vals, mut unv) = (
             std::mem::take(&mut self.vals),
@@ -489,6 +540,43 @@ impl Graph {
         );
         ws.affected = todo;
         count
+    }
+
+    /// The `dirty` nodes and every node depending on them, in topological order, into
+    /// `ws.affected`. Marks are epoch stamps, so a walk clears nothing.
+    fn affected(&self, dirty: &[u32], ws: &mut Work) {
+        let n = self.len();
+        if ws.seen.len() != n {
+            ws.seen = vec![0; n];
+            ws.epoch = 0;
+        }
+        ws.epoch = ws.epoch.wrapping_add(1);
+        if ws.epoch == 0 {
+            ws.seen.fill(0);
+            ws.epoch = 1;
+        }
+        let (out, seen, epoch) = (&mut ws.affected, &mut ws.seen, ws.epoch);
+        out.clear();
+        for &d in dirty {
+            assert!((d as usize) < n, "dirty node {d} out of range");
+            if seen[d as usize] != epoch {
+                seen[d as usize] = epoch;
+                out.push(d);
+            }
+        }
+        let mut i = 0;
+        while i < out.len() {
+            let v = out[i] as usize;
+            for &w in &self.rdeps[self.rdep_start[v] as usize..self.rdep_end[v] as usize] {
+                if seen[w as usize] != epoch {
+                    seen[w as usize] = epoch;
+                    out.push(w);
+                }
+            }
+            i += 1;
+        }
+        out.sort_unstable_by_key(|&v| self.rank[v as usize]);
+        assert!(out.len() <= n, "each node once");
     }
 
     fn eval_node<F: Funcs>(
@@ -586,6 +674,9 @@ pub(crate) struct Work {
     pub(crate) text: String,
     inputs: Vec<Value<'static>>,
     affected: Vec<u32>,
+    /// Epoch marks of the affected walk, one per node.
+    seen: Vec<u32>,
+    epoch: u32,
 }
 
 /// Reuses a value buffer's allocation across lifetimes (clears it).

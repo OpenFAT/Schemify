@@ -302,6 +302,56 @@ fn incremental_recompute_equals_full_rebuild_after_random_edits() {
     assert!(reverted > 40, "{reverted} undos and redos");
 }
 
+/// An override added or removed (the properties dialog's first edit of a param) keeps the
+/// graph: the node takes its new program and dependencies, only its dependents are
+/// evaluated, and the state equals a fresh build. Negative space: a var that would read a
+/// later node (here a cycle) rebuilds.
+#[test]
+fn adding_or_removing_an_override_keeps_the_graph() {
+    let (mut p, hs) = project(&[("dev.shprim", DEV), ("cell.shcomp", &cell(40))]);
+    let h = hs[1];
+    let mut st = CellState::build(&p, h, &mut no_funcs).unwrap();
+    let m3 = Target::new(RecordKind::Inst, &id(4));
+    let edits = [
+        // M3 has `w 2`: a new `l` override reading vars, then `w` dropped (back to the
+        // cell's default `1`), then `w` again with a var.
+        Op::SetAttr {
+            target: m3.clone(),
+            key: "l".into(),
+            values: vec!["a+k1".into()],
+        },
+        Op::RemoveAttr {
+            target: m3.clone(),
+            key: "w".into(),
+            first: None,
+        },
+        Op::SetAttr {
+            target: m3,
+            key: "w".into(),
+            values: vec!["b".into()],
+        },
+    ];
+    for op in edits {
+        assert!(commit(&mut p, h, vec![op.clone()]));
+        let done = st.recompute(&p, h, std::slice::from_ref(&op), &mut no_funcs);
+        assert!(!done.graph, "{op:?} keeps the graph");
+        assert!(done.evaluated > 0 && done.evaluated < 8, "{op:?}: {done:?}");
+        assert_eq!(st.revalued, [3], "{op:?}: only M3's values changed");
+        let fresh = CellState::build(&p, h, &mut no_funcs).unwrap();
+        assert_eq!(snapshot(&st), snapshot(&fresh), "{op:?}");
+    }
+    let op = Op::SetField {
+        target: Target::new(RecordKind::Var, "a"),
+        index: 1,
+        value: "c".into(),
+    };
+    assert!(commit(&mut p, h, vec![op.clone()]));
+    let done = st.recompute(&p, h, &[op], &mut no_funcs);
+    assert!(done.graph, "a cycle rebuilds");
+    let fresh = CellState::build(&p, h, &mut no_funcs).unwrap();
+    assert_eq!(snapshot(&st), snapshot(&fresh));
+}
+
 #[test]
 fn a_value_edit_reevaluates_only_its_dependents() {
     let (mut p, hs) = project(&[("dev.shprim", DEV), ("cell.shcomp", &cell(40))]);
