@@ -28,14 +28,14 @@ UI and visual work has its own guides in this repository, under [skills/](skills
 | [analog-eda-ux](skills/analog-eda-ux/SKILL.md) | Designer-taste rules and the review checklist for any UI surface. |
 | [schemify-theme](skills/schemify-theme/SKILL.md) | Colour and chrome tokens; `python3 docs/dev/skills/schemify-theme/check_theme.py` gates them. |
 | [schemify-ui-loop](skills/schemify-ui-loop/SKILL.md) | The edit, render, critique, bless loop for the default UI's look. |
-| [schemify-symbols](skills/schemify-symbols/SKILL.md) | Drawing rules for the device symbols in `devices/`. |
+| [schemify-symbols](skills/schemify-symbols/SKILL.md) | Drawing rules for the device symbols in `crates/doc/devices/`. |
 
 ## Repository layout
 
 | Path | What |
 |---|---|
 | `crates/` | The Rust workspace: the headless core (`cli`), the editor (`app`) and the libraries they share. [architecture.md](architecture.md) has the map. |
-| `devices/` | The bundled `core:` device library (`.shprim`), compiled into the binary. |
+| `crates/doc/devices/` | The bundled `core:` device library (`.shprim`), compiled into the binary. |
 | `ui/` | The default UI (`ui/default-plugin/`): a wasm plugin (menus, toolbar, keys, palette) embedded in the editor as `crates/app/assets/default_ui.wasm`. `ui/Cargo.toml` is the wasm guest workspace for it and the host's test guests in `crates/plugin/tests/guests/`. |
 | `examples/plugins/` | Example plugins as git submodules, each a standalone repository: `interop` ([Schemify-Interop](https://github.com/OmarSiwy/Schemify-Interop)), `pdk-manager` ([Schemify-PDK-Manager](https://github.com/OmarSiwy/Schemify-PDK-Manager)), `cktImg` ([cktImg](https://github.com/OmarSiwy/cktImg)), `GmIDVisualizer` (the `gmid-lut` plugin, [GmIDVisualizer](https://github.com/OmarSiwy/GmIDVisualizer)). Nothing here builds them; change them in their own repositories ([../plugins/](../plugins/README.md)). |
 | `tests/` | Cross-crate checks: determinism, fuzz replay, perf, the web smoke test. |

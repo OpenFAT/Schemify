@@ -15,7 +15,7 @@ Where the project stands. Update this file whenever a workstream lands or stops.
 | Specs | `docs/spec/`: format, expr, netlist, edits, import, run, plugin-abi, docs-page |
 | `format` | line-record codec, canonical writer, `merge3`, `diff` |
 | `expr` | the expression language, scalar + calculator, templates, deterministic `libm` math |
-| `doc` | design tables, edits/undo/redo, journal + crash recovery, external merge, project/libraries/lockfile, the bundled `devices/` devices |
+| `doc` | design tables, edits/undo/redo, journal + crash recovery, external merge, project/libraries/lockfile, the bundled `crates/doc/devices/` devices |
 | `elab` | connectivity, hierarchy elaboration + impl selection + subckt specialization, params + gating, checks, annotations |
 | `netlist` | ngspice, xyce, cdl, spectre, verilog emitters + name map |
 | `run` | job expansion, ngspice runner, results, sweep/corners/MC/optimizer |
