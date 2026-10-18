@@ -203,6 +203,52 @@ fn the_paint_outcome_schedules_the_next_frame_through_painted() {
     assert!(!s.frame(Default::default()), "and nothing redraws");
 }
 
+/// A frame with no input and nothing due does no work (D39 idle 0%): once the editor is idle
+/// (no wake-up asked for), an empty update reports nothing changed, schedules nothing,
+/// rebuilds no scene, and its paint copies the canvas tiles it has. The window does not even
+/// run such a frame (it sleeps until input while `wake_ms` is `None`).
+#[test]
+fn an_idle_frame_does_no_work() {
+    use schemify_render::canvas::Drawn;
+    let mut s = Session::open("inv", "top.shcomp", "idle", true);
+    let mut p = CpuPainter::new(VIEW.0 as u16, VIEW.1 as u16, 1.0);
+    for _ in 0..8 {
+        let drawn = s.ed.paint(&mut p);
+        s.ed.painted(drawn);
+        if s.ed.wake_ms().is_none() {
+            break;
+        }
+        s.frame(Default::default());
+    }
+    assert_eq!(s.ed.wake_ms(), None, "idle");
+    let built = s.ed.scene().built;
+    for k in 0..4 {
+        assert!(!s.frame(Default::default()), "frame {k}: nothing changed");
+        assert_eq!(s.ed.wake_ms(), None, "frame {k}: nothing scheduled");
+        assert_eq!(s.ed.scene().built, built, "frame {k}: no scene build");
+        p.reset();
+        assert_eq!(
+            s.ed.paint(&mut p),
+            Some(Drawn::Copied),
+            "frame {k}: tiles copied"
+        );
+    }
+    // Negative space: input does work (a wheel notch zooms and asks for the crisp frame).
+    let mut ev = schemify_ui::InputEvents::default();
+    ev.push(schemify_ui::InputEvent::Wheel {
+        x: 300.0,
+        y: 300.0,
+        dx: 0.0,
+        dy: 1.0,
+    });
+    assert!(s.frame(ev), "a zoom changes the picture");
+    p.reset();
+    let drawn = s.ed.paint(&mut p);
+    assert_eq!(drawn, Some(Drawn::Stretched), "the old tiles stand in");
+    s.ed.painted(drawn);
+    assert!(s.ed.wake_ms().is_some(), "and the crisp frame is due");
+}
+
 /// An edit's check pass comes after the frame delivered `DocChanged` to the plugins, so their
 /// snapshot lags it: the editor asks for one tick at once, which refills it, and is idle
 /// after it (D39). Without plugins there is no snapshot to refill.

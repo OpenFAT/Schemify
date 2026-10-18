@@ -584,6 +584,13 @@ pub struct Editor {
     symbols_key: Option<(DocHandle, u32)>,
     /// Text field to focus once the dialog that holds it is laid out.
     focus_next: Option<String>,
+    /// What the UI projects changed outside a frame (a queued command or edit, a text tab, a
+    /// scroll offset): the next frame composes before it routes its input. Otherwise the
+    /// last frame's composition is what is shown, and routing reads it as it is.
+    ui_stale: bool,
+    /// The state contribution's block of commands refused by the active file kind, and the
+    /// key it was made for (see `state_contribution`); a projection cache.
+    kind_block: std::cell::RefCell<(Option<u64>, String)>,
     /// Derived values of the active level's document (owner: `elab`; D19, D20).
     cell: Option<CellState>,
     /// What `cell` is current for: (document, its edit epoch, plugin composition epoch).
@@ -822,6 +829,8 @@ impl Editor {
             generation: 0,
             symbols_key: None,
             focus_next: None,
+            ui_stale: true,
+            kind_block: Default::default(),
             cell: None,
             cell_key: None,
             cell_ops: Vec::new(),
@@ -1007,6 +1016,7 @@ impl Editor {
             return;
         }
         self.queued.push((name.to_owned(), arg.to_owned(), None));
+        self.ui_stale = true;
     }
 
     /// Queues edit requests for the next frame, where `doc::apply_edits` runs them with the
@@ -1021,6 +1031,7 @@ impl Editor {
             }
             self.queued_edits.push(r);
         }
+        self.ui_stale = true;
         assert!(self.queued_edits.len() <= QUEUED_MAX);
     }
 
@@ -1029,6 +1040,7 @@ impl Editor {
     pub fn open_text_tab(&mut self, view: crate::session::TextView) {
         let tabs = self.session.tabs.len();
         self.session.open_text_tab(view);
+        self.ui_stale = true;
         assert!(self.session.tabs.len() <= tabs + 1, "one tab at most");
     }
 
@@ -1040,6 +1052,7 @@ impl Editor {
             "scroll offsets are numbers"
         );
         self.shell.ui.set_scroll(id, offset, max);
+        self.ui_stale = true;
         debug_assert!(self.shell.ui.scroll_of(id) <= max.max(0.0));
     }
 
@@ -1070,6 +1083,7 @@ impl Editor {
         }
         self.queued
             .push((name.to_owned(), arg.to_owned(), Some(ticket)));
+        self.ui_stale = true;
         assert!(self.queued.len() <= QUEUED_MAX);
         ticket
     }
@@ -1226,9 +1240,10 @@ impl Editor {
         self.snapshot_fresh = false;
         let resized = viewport != self.viewport;
         self.viewport = viewport;
-        // UI inputs (plugin sets, docs page, images) → compose + layout, so input routes over
-        // what is shown now.
-        self.ui_step(false);
+        // UI inputs (plugin sets, docs page, images) → compose + layout when something changed
+        // since the last frame's step 8 (or the window's size), so input routes over what is
+        // shown now.
+        self.ui_step(false, resized);
         let mut routed = std::mem::take(&mut self.routed);
         // 1. input → command_requests + canvas events
         route_input(
@@ -1294,7 +1309,7 @@ impl Editor {
         self.track_stage();
         // 8. ui inputs (plugin sets, docs page, prose images: I/O) → ui compose + layout
         //    (a projection) → palette
-        changed |= self.ui_step(routed.relayout);
+        changed |= self.ui_step(routed.relayout, true);
         if let Some(id) = self.focus_next.take() {
             let s = &mut self.shell;
             let sym = s.strings.intern(&id);
@@ -4197,9 +4212,15 @@ impl Editor {
 
     /// The UI step of the frame spine: [`Editor::ui_inputs`], the pure [`Editor::compose_ui`],
     /// then the palette when the plugin composition changed (it reads the composed styles).
-    /// Returns whether the layout changed.
-    fn ui_step(&mut self, relayout: bool) -> bool {
+    /// Without `always`, composes only when an input loaded, the plugin composition changed,
+    /// a relayout is asked for or the state changed outside a frame (`ui_stale`): the top of
+    /// the frame, where the last frame's composition is otherwise current. Returns whether the
+    /// layout changed.
+    fn ui_step(&mut self, relayout: bool, always: bool) -> bool {
         let (loaded, restyle) = self.ui_inputs();
+        if !(always || relayout || loaded || restyle || self.ui_stale) {
+            return false;
+        }
         let changed = self.compose_ui(relayout || loaded);
         if restyle {
             self.refresh_palette();
@@ -4257,6 +4278,7 @@ impl Editor {
         self.graphs = graphs;
         self.shell.set_state(&text);
         let changed = self.shell.refresh(self.viewport, relayout);
+        self.ui_stale = false;
         assert_eq!(
             self.session.status.len(),
             status,
@@ -4581,6 +4603,8 @@ impl Editor {
         }
         // Commands that act on other file kinds (`Cmd::file_kinds`): every node bound to one is
         // disabled, so menus, toolbar buttons and panels grey it out.
+        // The block reads only the file kind, the composed nodes' ids and commands, and how
+        // the registry resolves them: kept by a key of those (no allocation while it stands).
         if let Some(kind) = self
             .active()
             .and_then(|(h, _)| s.project.doc(h))
@@ -4588,19 +4612,34 @@ impl Editor {
         {
             let nodes = &self.shell.tables.nodes;
             let commands = nodes.prop(schemify_ui::Prop::Command);
-            for (i, &c) in commands.iter().enumerate() {
-                if c.is_none() {
-                    continue;
+            let key = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                (kind, self.host.plugins.composed_epoch()).hash(&mut h);
+                commands.hash(&mut h);
+                nodes.id().hash(&mut h);
+                h.finish()
+            };
+            let mut block = self.kind_block.borrow_mut();
+            if block.0 != Some(key) {
+                block.1.clear();
+                for (i, &c) in commands.iter().enumerate() {
+                    if c.is_none() {
+                        continue;
+                    }
+                    let Target::Core(cmd) = self.commands.resolve(self.shell.strings.get(c)) else {
+                        continue;
+                    };
+                    if !cmd.accepts(kind) {
+                        let id = self.shell.strings.get(nodes.id()[i]);
+                        let b = &mut block.1;
+                        let _ = writeln!(b, "set {id} disabled 1");
+                        let _ = writeln!(b, "set {id} tooltip {}", q(&kind_refusal(cmd, kind)));
+                    }
                 }
-                let Target::Core(cmd) = self.commands.resolve(self.shell.strings.get(c)) else {
-                    continue;
-                };
-                if !cmd.accepts(kind) {
-                    let id = self.shell.strings.get(nodes.id()[i]);
-                    let _ = writeln!(t, "set {id} disabled 1");
-                    let _ = writeln!(t, "set {id} tooltip {}", q(&kind_refusal(cmd, kind)));
-                }
+                block.0 = Some(key);
             }
+            t.push_str(&block.1);
         }
         // The cell settings panel: the active cell's header, pins, params and impls.
         let shown = s.text_view().is_none() && s.tabs.get(s.active).is_some_and(|tab| tab.cell);
