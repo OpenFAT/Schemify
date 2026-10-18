@@ -40,7 +40,7 @@ use schemify_format::{FileKind, IdRng, Orient, RecordKind};
 use schemify_plugin::abi::Event;
 use schemify_render::canvas::{
     self, Camera, CanvasCache, CanvasDiff, CanvasPrims, CanvasScratch, Marks, Palette, PrimIndex,
-    Rows,
+    Rows, TableChange,
 };
 use schemify_render::vello::kurbo::Rect as KRect;
 use schemify_render::widgets::{UiScratch, draw_ui};
@@ -1551,11 +1551,11 @@ impl Editor {
             let mut out = boxes.take().unwrap_or_default();
             out.clear();
             let changed = |k: usize| diff_gen[k] != self.canvas_gen[k];
-            let tables = [
-                (shown, changed(0)),
-                (&self.decor, changed(1)),
-                (&self.extra, changed(2)),
-            ];
+            let any = |k: usize| match changed(k) {
+                true => TableChange::Any,
+                false => TableChange::Same,
+            };
+            let tables = [(shown, any(0)), (&self.decor, any(1)), (&self.extra, any(2))];
             let marks = (&self.scene.prims, &self.marks, changed(0) || changed(3));
             let known = diff.update(&tables, marks, &mut out);
             // An index current before the change follows its edits (a patch then reads the

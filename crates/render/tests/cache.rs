@@ -429,7 +429,12 @@ fn patch_walk(scale: f64, seed: u32) {
         }
         boxes.clear();
         // Unchanged prims are not rehashed: only the marks then (a selection).
-        let known = diff.update(&[(&prims, changed)], (&prims, &marks, true), &mut boxes);
+        let change = if changed {
+            canvas::TableChange::Any
+        } else {
+            canvas::TableChange::Same
+        };
+        let known = diff.update(&[(&prims, change)], (&prims, &marks, true), &mut boxes);
         let damage = known.then_some(&boxes[..]);
         let (drawn, got) = draws(&mut p, &mut cache, &cam, key, damage, &prims, &marks);
         patched += usize::from(drawn == Drawn::Patched);
@@ -478,6 +483,188 @@ fn patched_layers_equal_recordings() {
 #[test]
 fn patched_layers_equal_recordings_at_scale_two() {
     patch_walk(2.0, 0x1234_5678);
+}
+
+/// `prims` without its dead rows (what a producer that rebuilt its table would hold).
+fn compacted(prims: &CanvasPrims) -> CanvasPrims {
+    use schemify_render::canvas::LAYER_DEAD;
+    let mut out = CanvasPrims::default();
+    let l = &prims.lines;
+    for i in (0..l.x0.len()).filter(|&i| l.layer[i] != LAYER_DEAD) {
+        out.line_styled(l.x0[i], l.y0[i], l.x1[i], l.y1[i], l.layer[i], l.style[i]);
+    }
+    let r = &prims.rects;
+    for i in (0..r.x0.len()).filter(|&i| r.layer[i] != LAYER_DEAD) {
+        out.rect_styled(r.x0[i], r.y0[i], r.x1[i], r.y1[i], r.layer[i], r.style[i]);
+    }
+    let a = &prims.arcs;
+    for i in (0..a.cx.len()).filter(|&i| a.layer[i] != LAYER_DEAD) {
+        let (s, w) = (a.start[i], a.sweep[i]);
+        out.arc_styled(a.cx[i], a.cy[i], a.r[i], s, w, a.layer[i], a.style[i]);
+    }
+    for (polys, closed) in [(&prims.polylines, false), (&prims.polygons, true)] {
+        for k in (0..polys.end.len()).filter(|&k| polys.layer[k] != LAYER_DEAD) {
+            let start = if k == 0 { 0 } else { polys.end[k - 1] as usize };
+            let pts: Vec<(i32, i32)> = (start..polys.end[k] as usize)
+                .map(|j| (polys.x[j], polys.y[j]))
+                .collect();
+            out.poly_styled(&pts, closed, polys.layer[k], polys.style[k]);
+        }
+    }
+    let t = &prims.texts;
+    for i in (0..t.x.len()).filter(|&i| t.layer[i] != LAYER_DEAD) {
+        let start = if i == 0 { 0 } else { t.end[i - 1] as usize };
+        let s = &t.text[start..t.end[i] as usize];
+        out.text_rot(t.x[i], t.y[i], t.size[i], t.layer[i], s, t.rot[i]);
+    }
+    out
+}
+
+/// D39 oracle for producer-reported edits (`TableChange::Rows`, the editor's scene and
+/// violation markers): rows killed and rows appended, damage from the report alone, tiles
+/// drawn from a `PrimIndex` that follows the edits; every frame equals a fresh recording of
+/// the table without its dead rows, so a dead row draws nothing and no change is missed.
+fn reported_walk(seed: u32) {
+    use schemify_render::canvas::{CanvasDiff, LAYER_DEAD, Marks, PrimIndex, Rows, TableChange};
+    let mut prims = common::thousand_prims();
+    let (w, h) = (480u16, 320u16);
+    let view = Rect::new(13.0, 21.0, 460.0, 300.0);
+    let mut cam = Camera {
+        cx: 0.0,
+        cy: 0.0,
+        scale: 1.0,
+    };
+    cam.fit(view, [0, 0, 600_000, 380_000]);
+    let (mut text, mut scratch) = (TextSystem::new(), CanvasScratch::default());
+    let mut p = CpuPainter::new(w, h, 1.0);
+    let (mut cache, mut diff, mut boxes) = (CanvasCache::default(), CanvasDiff::default(), vec![]);
+    let (mut rng, mut key) = (Rng(seed), 1u64);
+    let mut ix = PrimIndex::build(&prims);
+    let mut rows = Rows::default();
+    let marks = Marks::default();
+    assert!(!diff.update(
+        &[(&prims, TableChange::Any)],
+        (&prims, &marks, true),
+        &mut boxes
+    ));
+    let (mut patched, mut killed_total) = (0, 0);
+    for step in 0..40 {
+        // An edit: a few rows killed (any kind), a few appended.
+        let mut killed: [Vec<u32>; 6] = Default::default();
+        for _ in 0..1 + rng.below(3) {
+            let kind = [0u8, 1, 2, 5][rng.below(4) as usize];
+            let layers = match kind {
+                0 => &prims.lines.layer,
+                1 => &prims.rects.layer,
+                2 => &prims.arcs.layer,
+                _ => &prims.texts.layer,
+            };
+            let i = rng.below(layers.len() as u32) as usize;
+            if layers[i] != LAYER_DEAD {
+                prims.kill(kind, i);
+                killed[usize::from(kind)].push(i as u32);
+                killed_total += 1;
+            }
+        }
+        for _ in 0..rng.below(3) {
+            let (x, y) = (rng.below(600) as i32 * 1000, rng.below(380) as i32 * 1000);
+            match rng.below(3) {
+                0 => prims.line(x, y, x + 30_000, y + 7_000, 1),
+                1 => prims.rect(x, y, x + 20_000, y + 9_000, 4),
+                _ => prims.text(x, y, 9_000, 3, "new"),
+            }
+        }
+        key += 1;
+        boxes.clear();
+        let known = diff.update(
+            &[(&prims, TableChange::Rows(&killed))],
+            (&prims, &marks, false),
+            &mut boxes,
+        );
+        assert!(known, "step {step}: reported edits are known");
+        assert!(ix.follow(&prims), "step {step}: the index follows");
+        let mut damage = Some(&boxes[..]);
+        let got = loop {
+            p.reset();
+            let drawn = canvas::draw_cached(
+                &mut p,
+                &mut cache,
+                view,
+                &cam,
+                key,
+                damage,
+                true,
+                bg(),
+                |p, v, c| {
+                    let palette = Palette::xschem_dark();
+                    p.fill_rect(v, rgba(palette.background));
+                    canvas::draw_grid(p, v, c, 10_000, &palette, &mut scratch);
+                    let (a, b) = (c.to_world(v, v.x0, v.y0), c.to_world(v, v.x1, v.y1));
+                    let pad = 4_000;
+                    let near = [
+                        a.0.min(b.0) as i32 - pad,
+                        a.1.min(b.1) as i32 - pad,
+                        a.0.max(b.0) as i32 + pad,
+                        a.1.max(b.1) as i32 + pad,
+                    ];
+                    ix.query(&prims, near, &mut rows);
+                    let listed = Some(&rows);
+                    canvas::draw_prims_in(
+                        p,
+                        v,
+                        c,
+                        &prims,
+                        listed,
+                        &palette,
+                        &mut text,
+                        &mut scratch,
+                    )
+                },
+            );
+            damage = Some(&[]);
+            patched += usize::from(drawn == Drawn::Patched);
+            if drawn != Drawn::Partial {
+                break p.finish(Color::BLACK);
+            }
+        };
+        let live = compacted(&prims);
+        let mut fresh = CpuPainter::new(w, h, 1.0);
+        let want = loop {
+            fresh.reset();
+            let drawn = canvas::draw_cached(
+                &mut fresh,
+                &mut CanvasCache::default(),
+                view,
+                &cam,
+                key,
+                None,
+                true,
+                bg(),
+                |p, v, c| content(p, v, c, &live, &mut text, &mut scratch),
+            );
+            if drawn != Drawn::Partial {
+                break fresh.finish(Color::BLACK);
+            }
+        };
+        let bad = differing(&got, &want);
+        assert_eq!(
+            bad, 0,
+            "step {step}: {bad} pixels differ from a fresh recording"
+        );
+        if step % 10 == 9 {
+            cam.pan(3.0, -2.0);
+        }
+    }
+    assert!(
+        patched >= 20 && killed_total >= 40,
+        "{patched} patched, {killed_total} killed"
+    );
+}
+
+#[test]
+fn reported_edits_patch_what_a_recording_draws() {
+    reported_walk(0x9e37_79b9);
+    reported_walk(0x5eed_1234);
 }
 
 /// Negative space for the oracle above: damage that misses the change leaves the old pixels

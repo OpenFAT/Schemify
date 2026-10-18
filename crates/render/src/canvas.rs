@@ -29,7 +29,7 @@ use vello::peniko::FontData;
 use schemify_ui::TextSystem;
 use schemify_ui::parley::PositionedLayoutItem;
 
-pub use crate::damage::{CanvasDiff, DIFF_EDITS_MAX};
+pub use crate::damage::{CanvasDiff, DIFF_EDITS_MAX, TableChange};
 pub use crate::index::{PrimIndex, Rows};
 use crate::painter::{Chains, Painter, push_rect, rgba};
 pub use crate::tiles::{CanvasCache, Drawn, PATCH_PAD_PX, TILE_PX, TILES_PER_FRAME, draw_cached};
@@ -37,6 +37,13 @@ pub use crate::tiles::{CanvasCache, Drawn, PATCH_PAD_PX, TILE_PX, TILES_PER_FRAM
 /// Palette layers: every layer index is below it, and [`Palette::fill`] keeps one bit per layer
 /// in a `u32`.
 pub const LAYERS: usize = 32;
+
+/// The layer of a dead row ([`CanvasPrims::kill`]): not a palette layer, so nothing draws,
+/// lists or exports it. A producer that edits its table in place (the editor's scene) kills a
+/// removed row instead of shifting or swapping rows, so every other row keeps its index and
+/// [`CanvasDiff`] and [`PrimIndex`] follow the edit in O(change).
+pub const LAYER_DEAD: u8 = u8::MAX;
+const _: () = assert!(LAYER_DEAD as usize >= LAYERS, "dead is no palette layer");
 
 /// Pan/zoom: the world point at the view center and the zoom in pixels per milli-unit.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -369,7 +376,29 @@ impl CanvasPrims {
         t.end.push(t.text.len() as u32);
     }
 
-    /// Total primitive count over all kinds.
+    /// Marks row `row` of kind `kind` (0 lines, 1 rects, 2 arcs, 3 polylines, 4 polygons, 5
+    /// texts: [`CanvasPrims`] field order) dead: its columns stay (a damage box still reads its
+    /// old extent), its layer becomes [`LAYER_DEAD`]. Rows are never revived; the producer
+    /// compacts by rebuilding its table.
+    ///
+    /// # Panics
+    ///
+    /// If `kind` > 5 or `row` is past the table.
+    pub fn kill(&mut self, kind: u8, row: usize) {
+        let layer = match kind {
+            0 => &mut self.lines.layer,
+            1 => &mut self.rects.layer,
+            2 => &mut self.arcs.layer,
+            3 => &mut self.polylines.layer,
+            4 => &mut self.polygons.layer,
+            5 => &mut self.texts.layer,
+            _ => panic!("kind {kind} is not a primitive table"),
+        };
+        assert!(row < layer.len(), "row {row} of kind {kind} past the table");
+        layer[row] = LAYER_DEAD;
+    }
+
+    /// Total primitive count over all kinds (dead rows included).
     pub fn len(&self) -> usize {
         self.lines.x0.len()
             + self.rects.x0.len()
@@ -852,6 +881,9 @@ pub fn draw_prims_in<P: Painter>(
         let (ax, ay) = (f64::from(l.x0[i]) * s + ox, f64::from(l.y0[i]) * s + oy);
         let (bx, by) = (f64::from(l.x1[i]) * s + ox, f64::from(l.y1[i]) * s + oy);
         let layer = usize::from(l.layer[i]);
+        if layer >= LAYERS {
+            continue; // dead
+        }
         if outside(ax, ay, bx, by)
             || sc
                 .lod
@@ -875,6 +907,9 @@ pub fn draw_prims_in<P: Painter>(
         let (ax, ay) = (f64::from(r.x0[i]) * s + ox, f64::from(r.y0[i]) * s + oy);
         let (bx, by) = (f64::from(r.x1[i]) * s + ox, f64::from(r.y1[i]) * s + oy);
         let layer = usize::from(r.layer[i]);
+        if layer >= LAYERS {
+            continue; // dead
+        }
         let (x0, y0, x1, y1) = (ax.min(bx), ay.min(by), ax.max(bx), ay.max(by));
         if outside(ax, ay, bx, by) || sc.lod.mark(layer, x0, y0, x1, y1) {
             continue;
@@ -901,6 +936,9 @@ pub fn draw_prims_in<P: Painter>(
             f64::from(a.r[i]) * s,
         );
         let layer = usize::from(a.layer[i]);
+        if layer >= LAYERS {
+            continue; // dead
+        }
         if outside(cx - rad, cy - rad, cx + rad, cy + rad)
             || sc.lod.mark(layer, cx - rad, cy - rad, cx + rad, cy + rad)
         {
@@ -931,6 +969,9 @@ pub fn draw_prims_in<P: Painter>(
                 "malformed poly table"
             );
             let layer = usize::from(polys.layer[k]);
+            if layer >= LAYERS {
+                continue; // dead
+            }
             let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
             for j in start..end {
                 let (x, y) = (
@@ -1091,6 +1132,9 @@ fn draw_texts<P: Painter>(
     let (ox, oy) = cam.origin(view);
     let mut drawn = 0;
     for i in each(t.x.len(), rows) {
+        if usize::from(t.layer[i]) >= LAYERS {
+            continue; // dead
+        }
         let bytes = chain(&t.end, i);
         let px = f64::from(t.size[i]) * cam.scale;
         let (x, y) = (
@@ -1175,6 +1219,17 @@ pub fn draw_marks<P: Painter>(
         path.truncate(0);
         while i < marks.kind.len() && marks.color[i] == color {
             let k = marks.index[i] as usize;
+            let dead = match marks.kind[i] {
+                PrimKind::Line => prims.lines.layer[k],
+                PrimKind::Rect => prims.rects.layer[k],
+                PrimKind::Arc => prims.arcs.layer[k],
+                PrimKind::Polyline => prims.polylines.layer[k],
+                PrimKind::Polygon => prims.polygons.layer[k],
+            } == LAYER_DEAD;
+            if dead {
+                i += 1;
+                continue;
+            }
             match marks.kind[i] {
                 PrimKind::Line => {
                     let l = &prims.lines;
