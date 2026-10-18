@@ -16,7 +16,7 @@
 use schemify_render::canvas::{LAYERS, Palette};
 use schemify_ui::{
     Contribution, Edit, Kind, Strings, StyleProp, Sym, TextSystem, UiLayout, UiState, UiTables,
-    compose, layout, records,
+    compose, layout, patch_last, records,
 };
 
 use crate::checks::{LAYER_ANNOT, LAYER_DIFF, LAYER_ERROR, LAYER_HILITE, LAYER_INFO, LAYER_WARN};
@@ -157,7 +157,9 @@ impl Shell {
 
     /// Replaces the state contribution when its text changed. Its free text (labels, values)
     /// is one live generation of the string table (`records::parse_live`), so a status line
-    /// that changes every frame does not grow it; the next [`Shell::refresh`] recomposes.
+    /// that changes every frame does not grow it. When only `set` values changed (the pointer
+    /// coordinates, a title) the composed tables are patched in place (`ui::patch_last`: the
+    /// state goes last) and the next [`Shell::refresh`] only lays out; otherwise it recomposes.
     pub fn set_state(&mut self, text: &str) {
         if text == self.state_text {
             return;
@@ -167,10 +169,18 @@ impl Shell {
             rejects.is_empty(),
             "state contribution rejects: {rejects:?}\n{text}"
         );
+        if self.composed && patch_last(&mut self.tables, &self.state, &c) {
+            self.laid_out = None;
+        } else {
+            self.composed = false;
+        }
         self.state = c;
         self.state_text.clear();
         self.state_text.push_str(text);
-        self.composed = false;
+        assert!(
+            !self.composed || self.laid_out.is_none(),
+            "a new state composes or lays out"
+        );
     }
 
     /// Composes (if any contribution changed) and lays out (if anything changed) for

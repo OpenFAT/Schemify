@@ -857,6 +857,63 @@ pub fn compose(
     }
 }
 
+/// Brings tables that [`compose`] built with `old` as the **last** contribution up to `new`
+/// without composing again, when the two differ only in the values of `Set` edits (the same
+/// edits in the same order otherwise, `style` excepted: a node's class is derived from it).
+/// Returns false, changing nothing, when they differ in any other way; the caller composes.
+///
+/// The result equals `compose` with `new` last: a prop's value is the last `Set` of it, and the
+/// health rows are those of the same edits (oracle: `ui` tests, `patch_last_equals_compose`).
+/// Cost: O(edits × changed props); no allocation when nothing changed.
+pub fn patch_last(tables: &mut UiTables, old: &Contribution, new: &Contribution) -> bool {
+    if old.edits.len() != new.edits.len() {
+        return false;
+    }
+    let mut changed: Vec<(Sym, Prop)> = Vec::new();
+    for (a, b) in old.edits.iter().zip(&new.edits) {
+        if a == b {
+            continue;
+        }
+        match (*a, *b) {
+            (
+                Edit::Set {
+                    id: ia, prop: pa, ..
+                },
+                Edit::Set {
+                    id: ib, prop: pb, ..
+                },
+            ) if ia == ib && pa == pb && pa != Prop::Style => changed.push((ia, pa)),
+            _ => return false,
+        }
+    }
+    // Each changed prop's new value: the last edit of `new` that decides it. A node declared
+    // or removed after that edit would reset it: compose instead.
+    let mut values: Vec<(NodeIx, Prop, Sym)> = Vec::with_capacity(changed.len());
+    for &(id, prop) in &changed {
+        let mut value = None;
+        for e in new.edits.iter().rev() {
+            match *e {
+                Edit::Set { id: i, prop: p, value: v } if i == id && p == prop => {
+                    value = Some(v);
+                    break;
+                }
+                Edit::Node { id: i, .. } | Edit::Remove { id: i } if i == id => return false,
+                _ => {}
+            }
+        }
+        let value = value.expect("a changed set is in `new`");
+        // A target that did not compose (unknown, removed or orphaned) shows nothing either way.
+        if let Some(ix) = tables.nodes.find(id) {
+            values.push((ix, prop, value));
+        }
+    }
+    for (ix, prop, value) in values {
+        tables.nodes.props[prop as usize][ix as usize] = value;
+    }
+    assert_eq!(tables.nodes.props[0].len(), tables.nodes.len());
+    true
+}
+
 fn build_styles(
     strings: &Strings,
     sel: Vec<(Sym, [u32; StyleProp::COUNT], u32, [u8; StyleProp::COUNT])>,

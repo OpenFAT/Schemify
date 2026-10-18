@@ -1095,3 +1095,91 @@ fn a_dialog_drags_by_its_surface_and_stays_modal() {
     f.relayout();
     assert_eq!(at(&f), d0);
 }
+
+/// Every column a frame reads of two composed tables, compared (the node index is a hash map;
+/// `find` of every id stands for it).
+fn same_tables(a: &UiTables, b: &UiTables) -> bool {
+    let (n, m) = (&a.nodes, &b.nodes);
+    n.id() == m.id()
+        && n.kind() == m.kind()
+        && n.parent() == m.parent()
+        && n.end() == m.end()
+        && n.owner() == m.owner()
+        && Prop::ALL.iter().all(|&p| n.prop(p) == m.prop(p))
+        && n.id().iter().all(|&id| n.find(id) == m.find(id))
+        && a.health == b.health
+        && a.keymap.chords() == b.keymap.chords()
+        && a.keymap.commands() == b.keymap.commands()
+        && a.owners == b.owners
+}
+
+/// `patch_last`: a state contribution that differs from the last one only in `set` values
+/// (the pointer coordinates, a tab title, a dynamic row's label, a duplicate set, a set of an
+/// unknown node) patches the composed tables to exactly what `compose` builds; any other
+/// difference (a new node, a changed target, a `style` set, a re-declaration after the set)
+/// is refused and leaves the tables untouched.
+#[test]
+fn patch_last_equals_compose() {
+    let mut f = fixture(&[]);
+    let (base, _) = records::parse(schemify_ui::DEFAULT_UI, &mut f.strings);
+    let name = f.strings.intern("app.state");
+    let state = |i: u32, title: &str| {
+        format!(
+            "set tab.0 label {title}\nnode row.x label\n  parent status\n  label \"r{}\"\n\
+             set status.msg label \"mouse = {i} {}\"\nset nosuch.node label v{i}\n\
+             set status.msg label \"last {}\"\n",
+            i % 3,
+            i * 7,
+            i % 5
+        )
+    };
+    let mut old = records::parse_live(&state(0, "a"), &mut f.strings).0;
+    let mut tables = compose(&f.strings, &base, &[(name, &old)]);
+    let mut patched = 0;
+    for i in 1..300u32 {
+        let title = ["a", "b.shcomp", "c*"][(i % 3) as usize];
+        let (new, rej) = records::parse_live(&state(i, title), &mut f.strings);
+        assert!(rej.is_empty());
+        assert!(
+            schemify_ui::patch_last(&mut tables, &old, &new),
+            "frame {i}: values only"
+        );
+        let full = compose(&f.strings, &base, &[(name, &new)]);
+        assert!(
+            same_tables(&tables, &full),
+            "frame {i}: patched == composed"
+        );
+        patched += usize::from(old != new);
+        old = new;
+    }
+    assert!(patched > 250, "most frames changed a value: {patched}");
+    // Negative space: each of these is refused and changes nothing.
+    let redeclared = |v: u32| format!("set row.y label v{v}\nnode row.y label\n  parent status\n");
+    let refused = [
+        (
+            state(1, "a"),
+            format!("{}node extra label\n  parent status\n", state(1, "a")),
+        ),
+        (
+            state(1, "a"),
+            state(1, "a").replace("set nosuch.node", "set status.grid"),
+        ),
+        (
+            state(1, "a"),
+            state(1, "a").replace("set tab.0 label a", "set tab.0 style a"),
+        ),
+        (
+            state(1, "a"),
+            state(1, "a").replace("set status.msg label \"last 1\"", "node status.msg label"),
+        ),
+        (redeclared(1), redeclared(2)),
+    ];
+    for (was, text) in refused {
+        let (old, _) = records::parse_live(&was, &mut f.strings);
+        let before = compose(&f.strings, &base, &[(name, &old)]);
+        let (new, _) = records::parse_live(&text, &mut f.strings);
+        let mut t = before.clone();
+        assert!(!schemify_ui::patch_last(&mut t, &old, &new), "{text}");
+        assert!(same_tables(&t, &before), "a refusal changes nothing");
+    }
+}

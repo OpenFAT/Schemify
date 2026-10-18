@@ -48,7 +48,7 @@ pub use layout::{
 pub use strings::{Strings, Sym};
 pub use tables::{
     Chord, Contribution, Edit, Health, HealthKind, Key, Keymap, Kind, Mods, NO_NODE, NO_STYLE,
-    NodeIx, Prop, StyleProp, UiNodes, UiStyles, UiTables, compose,
+    NodeIx, Prop, StyleProp, UiNodes, UiStyles, UiTables, compose, patch_last,
 };
 pub use text::{
     FontGlyph, FontInfo, Image, NO_TEXT, TextId, TextSystem, ui_font_glyphs, ui_font_info, ui_fonts,
