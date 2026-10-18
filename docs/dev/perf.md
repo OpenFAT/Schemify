@@ -172,6 +172,108 @@ What is left: ~4.5 ms rebuilding decor, ~3.4 ms diffing the canvas tables (the d
 every row of a changed table), ~1.5 ms in the scene update, and the fingerprint pass. See
 `docs/dev/backlog.md` (Performance) for the next steps.
 
+## Frame budget pass 2026-10
+
+Goal: every interactive frame (pan, zoom, hover, select, drag, typing in a field, opening a
+menu) well under 1 ms of CPU at 100k objects, with no hitch. Measured on `gui-arch-audit`
+(`af27b3f6`), RTX 4060, load average 4–7 (other agents building), by
+`crates/app/tests/perf.rs` `frame_times_100k` (pan, zoom, select, edit) and the new
+`interactions_100k` (hover, select, drag, drop, menu, type). Per-step times came from
+temporary `Instant` laps around each spine step; the edit loop was also profiled with
+`perf record`.
+
+### Before: per interaction (CPU update+paint, p50 / p95 / p99 ms; "render calls" is the CPU
+side of the GPU submission, which the window spends on the same thread)
+
+| Frame | 100k CPU | 100k render calls | 1M CPU |
+|---|---|---|---|
+| pan | 0.154 / 0.274 / 0.423 | 0.170 / 0.425 / 1.279 | — |
+| zoom (+ settle frames) | 0.317 / 0.776 / 0.833 | 0.420 / 0.748 / 0.851 | — |
+| hover | 0.382 / 0.586 / 1.460 | 0.300 / 0.622 / 1.472 | 0.377 / 1.233 / 1.352 |
+| select (click) | 0.780 / 0.909 / 1.135 | 0.614 / 0.682 / 0.775 | 7.0 / 11.8 / 12.1 |
+| drag (move preview) | 0.601 / 0.619 / 0.622 | 0.303 / 0.323 / 0.334 | — |
+| type (props dialog) | 0.427 / 0.451 / 0.481 | 0.317 / 0.366 / 0.377 | 0.424 / 0.445 / 0.446 |
+| menu (open) | 0.430 / 5.7 / 5.7 | 0.747 / 0.763 / 0.763 | 0.279 / 52 / 52 |
+| edit (Del, undo) | 16.0 / 20.1 / 33.7 | 0.715 / 0.769 / 0.787 | — |
+| drop (end of drag) | 27–29 | 0.72 | 311 |
+
+`render.scene_100k_ms` (the uncached 100k-primitive scene encode, `render` crate) measured
+4.54–4.56 ms in three runs at load ≈ 6: over its 4 ms budget, confirmed. The editor never
+encodes that scene per frame (tiles); the benchmark guards the fallback path.
+
+### Where each frame goes (100k, mean ms per step)
+
+- **Every frame whose status line changes** (hover, drag, type, select, menu): the app's state
+  contribution is regenerated as text twice per frame (top of the frame and step 10, 0.04–0.08
+  ms together), and because `status.msg` shows the pointer's coordinates its text differs, so
+  `Shell::refresh` recomposes every contribution (`ui::compose`, 0.12–0.15 ms) and lays the
+  whole UI out again (`ui::layout`, 0.07–0.10 ms). That is 0.25–0.3 ms of a 0.38 ms hover frame.
+- **select**: `scene::hit` tests every object (0.42–0.55 ms at 100k, 6–9 ms at 1M), then
+  `scene::marks` scans every primitive's owner for the selection bitmap (0.15 ms; 1.75 ms at 1M).
+- **drag**: `scene::push_moved` scans every primitive for the selected ones each frame (0.2 ms;
+  O(primitives)).
+- **hover hitch** (p99 1.4 ms): the first ~6 input frames after a zoom settles record the 1-tile
+  ring around the view (0.47–0.75 ms each). Ring tiles are recorded only on frames something
+  else asked for, so they ride on the next input frames.
+- **zoom**: the settle frames record tiles within `COST_PER_FRAME` (≈ 0.8 ms).
+- **menu hitch** (5.7 ms; 52 ms at 1M): the first plugin event after an edit refills the plugin
+  snapshot (`Host::snapshot`: wires, labels and nets groups), because the edit frame delivered
+  `DocChanged` before `elab` produced the new check pass and the snapshot key holds the pass.
+  Every edit therefore pays the snapshot twice: once in its frame, once at the next plugin event.
+- **edit** (16 ms, 100k): plugin delivery + snapshot 3.0, `checks::decor` 4.3 (it re-places all
+  70k violation marks of the fixture, parsing each mark's id and looking it up), canvas diff
+  3.1 (hashes every row of the scene, decor and marks tables), tile patches 1.0–2.6, elab +
+  annotation patch 1.7, scene update 1.2, UI 0.3. `perf`: `draw_prims_in` 17 %, `checks::decor`
+  11 %, snapshot (`Host::snapshot`, `put_le`, `fill*`) 15 %, `CanvasDiff::update` + `damage::row`
+  15 %, `Annotations::patch` 5 %, `scene::update` 3–8 %, `Document::find_id` 3–7 %.
+- **first edit of a document** (13 ms extra): its journal is created with an atomic rewrite of
+  the whole document text (`Session::flush_journal`, file I/O in the frame).
+- **accesskit**: `access_tree` costs 0.01–0.02 ms and runs only when an assistive client is
+  active (`update_if_active`). Not a cost.
+
+### Window path (`crates/render/src/window.rs`)
+
+`PresentMode::AutoVsync`. Input is batched: `about_to_wait` runs one `update` per event batch
+and requests a redraw only when it returns true; ticks come only from `wake_ms`, so an idle
+editor runs no frame (asserted by the zoom benchmark). A pointer move over the canvas always
+returns true (the status line shows the pointer), and every such frame changes the frame hash
+outside the layers, so it goes through vello (0.3 ms CPU in render calls) instead of composing
+the layers: only 15 of 240 hover frames composed. Allocation per steady frame: the state
+contribution's text, the `format!`s of the status line, a fresh overlay table, the request
+vectors (a few dozen small allocations; never per object).
+
+### Plan, ranked by what a user feels
+
+1. **Plugin snapshot paid twice per edit** (hitch 5.7 ms / 52 ms at 1M on the first plugin event
+   after an edit). The snapshot's per-group key moves when the check pass moves, so the group
+   fingerprint stays, but the refill is keyed by (doc epoch, pass): key the wires/labels group
+   by its own columns only and the nets group by the pass, so the pass change refills just the
+   nets group. Spine step 4 unchanged.
+2. **Hit test** (select 0.45 ms → ≈ 0.05; 1M 6–9 → ≈ 0.6): an integer box prefilter over
+   `Objects::geom` (branchless, vectorizes) collects candidates in ascending order; the exact
+   distance test runs on them only, so the answer equals the full scan's (oracle test).
+3. **UI state as a set patch** (≈ 0.12–0.15 ms off every hover, drag, type and menu frame):
+   when the state contribution differs from the last one only in `set` values, `ui` patches
+   those props in the composed tables instead of recomposing (`ui::patch_sets`, oracle: equal
+   to `compose`); layout stays (a label's width can change). Step 10 then composes only on a
+   structural change (tabs, dialogs, docs page).
+4. **The selection's primitive rows** (drag 0.2 ms → O(selection); select's marks scan): kept
+   per selection change, keyed by the scene generation and the selection; the move preview
+   transforms only them.
+5. **Tile recording per frame**: the ring ahead of the view is recorded only while the frame's
+   own recording left budget, and the per-frame cost budget drops so a settle or ring frame
+   stays under ≈ 0.5 ms; the rest goes to the next frames through `wake_ms` (amortized, no
+   frame hitches).
+6. **Edit frames** (16 ms): decor's violation marks resolved once per annotation change (mark →
+   object), so a scene change re-places them without parsing ids; the canvas diff of the decor
+   then sees only the moved marks. Remaining after this pass: the scene diff, elab, the canvas
+   diff's hashing of the scene table and the snapshot copy of the changed group, each an O(n)
+   pass over 100k rows (≈ 1–3 ms each). The upgrade is builders that report their changed
+   rows (scene → canvas diff → tiles), so an edit is O(change); it is a larger change than
+   this pass.
+7. **First-edit journal** (13 ms once per document) and **UI frames through vello** (0.3 ms of
+   render calls per hover frame): left as they are and named here.
+
 ## Binary size
 
 D39 (amended 2026-10-11): the headless core `schemify` ≤ 2 MB, the editor `schemify-gui` ≤
