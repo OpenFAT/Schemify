@@ -1151,3 +1151,113 @@ fn the_espice_dialect_simulates_an_espice_deck() {
     assert_eq!(jobs.state(0), State::Failed, "an ngspice deck this time");
     assert!(res.errors().any(|e| e.2.contains("not espice")));
 }
+
+/// Children of `textview` and the source lines of its prose body.
+fn text_tab_nodes(s: &Session) -> (usize, Vec<String>) {
+    let sh = &s.ed.shell;
+    let tv = sh.tables.nodes.find(sh.strings.find("textview").unwrap());
+    let kids = sh.tables.nodes.children(tv.unwrap()).count();
+    let body = sh.strings.find("textview.body").unwrap();
+    let body = sh.tables.nodes.find(body).unwrap();
+    let src = sh
+        .strings
+        .get(sh.tables.nodes.prop(Prop::Value)[body as usize]);
+    (kids, src.lines().map(str::to_owned).collect())
+}
+
+fn open_text(s: &mut Session, body: String) {
+    let path = s.dir.join("big.txt");
+    s.ed.session.open_text_tab(schemify_app::session::TextView {
+        title: "big".into(),
+        path,
+        body,
+        find: String::new(),
+        found: None,
+    });
+}
+
+/// A 16k-line text tab is windowed: the body node holds at most `TEXT_WINDOW` lines and the
+/// tab a bounded number of nodes; its pixels equal those of a short (unwindowed) tab holding
+/// the same lines from a little above the screen; a line that wraps stops the window from
+/// starting below it; scrolled to the end it shows the last line.
+#[test]
+fn a_long_text_tab_lays_out_a_window_of_lines() {
+    use schemify_app::session::TEXT_WINDOW;
+    let mut s = Session::open("inv", "top.shcomp", "textwin", true);
+    let mut body: Vec<String> = (0..16_384)
+        .map(|i| format!("R{i} n{i} n{} {}k", i + 1, i % 97))
+        .collect();
+    body.push("… (truncated; the whole netlist is in big.txt)".into());
+    let n = body.len();
+    let first = |lines: &[String]| body.iter().position(|l| *l == lines[1]).unwrap();
+    open_text(&mut s, body.join("\n"));
+    let tv = s.ed.shell.strings.intern("textview");
+    let at = 10_000.0 * 12.0;
+    s.ed.shell.ui.set_scroll(tv, at, 1e9);
+    s.frame(InputEvents::default());
+    s.frame(InputEvents::default());
+    let (kids, lines) = text_tab_nodes(&s);
+    let bound = TEXT_WINDOW as usize + 2;
+    assert!(lines.len() <= bound, "{} lines in the body", lines.len());
+    assert!(
+        (9_900..10_000).contains(&first(&lines)),
+        "{}",
+        first(&lines)
+    );
+    // find + body + spacers of at most 2^14 px each over 16k rows of 12 px.
+    assert!(kids <= 2 + 2 * (n * 12 / (1 << 14) + 1), "{kids} nodes");
+    let windowed = s.render();
+    // Oracle: the lines from 9960 on as a short tab, scrolled by as much less.
+    open_text(&mut s, body[9_960..10_200].join("\n"));
+    s.ed.shell.ui.set_scroll(tv, at - 9_960.0 * 12.0, 1e9);
+    s.frame(InputEvents::default());
+    s.frame(InputEvents::default());
+    let (kids, lines) = text_tab_nodes(&s);
+    assert_eq!(
+        (kids, lines.len()),
+        (2, 242),
+        "the oracle is one unwindowed node"
+    );
+    let oracle = s.render();
+    assert!(
+        oracle.data() == windowed.data(),
+        "the window paints what the whole text does"
+    );
+    // Negative space: a line that wraps (here at 5000) is never above the window.
+    let mut wraps = body.clone();
+    wraps[5_000] = "word ".repeat(400);
+    open_text(&mut s, wraps.join("\n"));
+    s.ed.shell.ui.set_scroll(tv, at, 1e9);
+    s.frame(InputEvents::default());
+    s.frame(InputEvents::default());
+    let (_, lines) = text_tab_nodes(&s);
+    assert_eq!(
+        lines[1], wraps[5_000],
+        "the window starts at the wrapping line"
+    );
+    assert!(lines.len() > 5_000, "and reaches the screen");
+    open_text(&mut s, body.join("\n"));
+    // The end: the last line is in the window.
+    s.ed.shell.ui.set_scroll(tv, 1e9, 1e9);
+    s.frame(InputEvents::default());
+    s.frame(InputEvents::default());
+    let (_, lines) = text_tab_nodes(&s);
+    assert!(lines.len() <= bound);
+    assert_eq!(lines[lines.len() - 2], body[n - 1]);
+    assert_eq!(node_kind(&s, "textview.gap-bottom.0"), None);
+    assert_eq!(node_kind(&s, "textview.gap-top.0"), Some(Kind::Panel));
+}
+
+/// A short text tab is one body node with the whole text and no spacers, as before windowing.
+#[test]
+fn a_short_text_tab_is_one_node() {
+    let mut s = Session::open("inv", "top.shcomp", "textshort", true);
+    let body = "* netlist\nR1 a b 1k\n.end".to_owned();
+    open_text(&mut s, body.clone());
+    s.frame(InputEvents::default());
+    s.frame(InputEvents::default());
+    let (kids, lines) = text_tab_nodes(&s);
+    assert_eq!(lines.join("\n"), format!("```\n{body}\n```"));
+    assert_eq!(kids, 2, "find and body");
+    assert_eq!(node_kind(&s, "textview.gap-top.0"), None);
+}

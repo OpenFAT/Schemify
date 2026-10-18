@@ -31,6 +31,59 @@ pub const LINES_MAX: usize = 1 << 14;
 /// Table columns laid out; extra cells are dropped.
 pub const COLUMNS_MAX: usize = 16;
 
+/// Size of a fenced code block's monospace text relative to the prose font.
+const CODE_SCALE: f32 = 0.92;
+/// Prose fonts (px) whose code metrics [`TextSystem::new`] measures ([`code_metrics`]).
+pub const CODE_PX: std::ops::RangeInclusive<u16> = 8..=32;
+
+/// Padding around a fenced code block's text (each side) at prose font `px`.
+fn code_pad(px: f32) -> f32 {
+    (px * 0.5).round()
+}
+
+/// How a fenced code block lays out at one prose font size, for callers that place its lines
+/// themselves (a windowed text view): a line of `cols` printable ASCII characters (no tab) is
+/// `advance * cols` wide, and when that fits the wrap width (the prose width less `2 * pad`)
+/// it is exactly one row of `line` px, an empty line included. Pinned by the tests below.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CodeMetrics {
+    /// Padding above, below and beside the text, in px.
+    pub pad: f32,
+    /// Height of one row in px; always a whole number (parley rounds line boxes).
+    pub line: f32,
+    /// Advance of every printable ASCII character in px (the face is monospace).
+    pub advance: f32,
+}
+
+/// Code metrics at prose font `px`, from the table [`TextSystem::new`] measured; `None`
+/// outside [`CODE_PX`] or when the measured row height is not a whole number (then rows can
+/// not be stacked with integer spacers).
+pub fn code_metrics(ts: &TextSystem, px: u16) -> Option<CodeMetrics> {
+    let m = ts
+        .code_metrics
+        .get(usize::from(px.checked_sub(*CODE_PX.start())?))?;
+    debug_assert!(CODE_PX.contains(&px));
+    m.filter(|m| m.line.fract() == 0.0 && m.line > 0.0)
+}
+
+/// Measures [`CodeMetrics`] at prose font `px` by shaping two one-character rows around an
+/// empty one, unwrapped.
+pub(crate) fn measure_code(ts: &mut TextSystem, px: u16) -> Option<CodeMetrics> {
+    assert!(px > 0, "a font size");
+    let px = f32::from(px);
+    let id = shape(ts, "0\n\n0", px * CODE_SCALE, 1.0e6);
+    let l = ts.layout(id);
+    let rows: Vec<f32> = l.lines().map(|r| r.metrics().line_height).collect();
+    let advance = l.lines().next()?.metrics().advance;
+    let m = (rows.len() == 3 && rows.iter().all(|&h| h == rows[0])).then(|| CodeMetrics {
+        pad: code_pad(px),
+        line: rows[0],
+        advance,
+    });
+    debug_assert!(m.is_none_or(|m| m.advance > 0.0));
+    m
+}
+
 /// Inline style bits of a span.
 const BOLD: u8 = 1;
 const ITALIC: u8 = 2;
@@ -621,8 +674,8 @@ pub(crate) fn layout_prose(ts: &mut TextSystem, src: &str, px: f32, width: f32) 
                 y += rich(ts, &mut p, text, px, 0, (body, y), w, notes);
             }
             Block::Code(_, text) => {
-                let pad = (px * 0.5).round();
-                let id = shape(ts, text, px * 0.92, (width - 2.0 * pad).max(px));
+                let pad = code_pad(px);
+                let id = shape(ts, text, px * CODE_SCALE, (width - 2.0 * pad).max(px));
                 let h = ts.layout(id).height();
                 p.shades.push([0.0, y, width, h + 2.0 * pad]);
                 push_text(&mut p, ts, id, pad, y + pad);
@@ -952,6 +1005,39 @@ fn column_widths(natural: &[f32], width: f32, min: f32) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The [`CodeMetrics`] contract at every measured size: printable ASCII rows that fit lay
+    /// out one `line` each (empty rows too) at `pad`, `advance` per character; a row of words
+    /// too wide wraps.
+    #[test]
+    fn code_metrics_place_every_fitting_row() {
+        let mut ts = TextSystem::new();
+        let ascii: String = (b' '..=b'~').map(char::from).collect();
+        let rows = ["", ascii.as_str(), "x", "", "R1 a b 1k", "~~ `` ~~"];
+        let cols = rows.iter().map(|r| r.len()).max().unwrap();
+        for px in CODE_PX {
+            let m = code_metrics(&ts, px).expect("whole rows at every measured size");
+            let width = 2.0 * m.pad + m.advance * cols as f32 + 0.5;
+            let src = format!("```\n{}\n```", rows.join("\n"));
+            let p = layout_prose(&mut ts, &src, f32::from(px), width);
+            assert_eq!(p.text_y, [m.pad], "px {px}");
+            let l = ts.layout(p.text_id[0]);
+            assert_eq!(l.len(), rows.len(), "px {px}: no row wrapped");
+            for (row, line) in rows.iter().zip(l.lines()) {
+                assert_eq!(line.metrics().line_height, m.line, "px {px}");
+                let w = m.advance * row.len() as f32;
+                assert!((line.metrics().advance - w).abs() < 0.01, "px {px} {row:?}");
+            }
+            let full = 2.0 * m.pad + m.line * rows.len() as f32;
+            assert_eq!(p.height, full, "px {px}");
+            // Negative space: a row of words wider than the wrap width wraps.
+            let wide = "a ".repeat(cols / 2 + 1);
+            let p = layout_prose(&mut ts, &format!("```\n{wide}x\n```"), f32::from(px), width);
+            assert!(ts.layout(p.text_id[0]).len() > 1, "px {px}");
+        }
+        assert_eq!(code_metrics(&ts, CODE_PX.end() + 1), None);
+        assert_eq!(code_metrics(&ts, CODE_PX.start() - 1), None);
+    }
 
     #[test]
     fn blocks_cover_the_subset() {

@@ -7,7 +7,8 @@
 //! Data design:
 //! 1. In: one document's `doc_blocks` rows and its [`CellState`] values. Out: state
 //!    contribution records (UI nodes) and `doc` ops.
-//! 2. How many: ≤ 2^12 blocks per cell (doc capacity); a page shows them all.
+//! 2. How many: ≤ 2^12 blocks per cell (doc capacity); a page shows them all (not windowed;
+//!    the note at [`contribute`] says why).
 //! 3. Widths: block rows `u32` (< 2^12); var values are elab's [`Val`]s.
 //! 4. Access: every block once per frame while the page is shown — the contribution text is
 //!    compared and reparsed only when it changed (`Shell::set_state`).
@@ -238,8 +239,14 @@ pub struct Extras<'a> {
 /// visual diff).
 ///
 /// Cost: O(blocks) text per call; the shell reparses only when the text changed.
-// ponytail: rebuilt on every input frame like the rest of the state contribution; cache the
-// text by (document epoch, values, page state) if pages grow to thousands of blocks.
+// ponytail: every block is a node (≤ 2^12, the doc capacity), rebuilt on every input frame
+// and laid out and painted whenever the page shows. Not windowed like the text tab, because a
+// block's height (wrapped prose, math, images, tables, graphs) is known only once `ui` has
+// shaped it at the page's width, so spacers for blocks off screen can't be sized without
+// paying for exactly the shaping a window would skip. Upgrade path: `ui` keeps the measured
+// height of each prose source per width (its prose cache already holds the layout), the page
+// windows by those heights and estimates unmeasured blocks, re-anchoring on the first block
+// on screen.
 pub fn contribute(
     t: &mut String,
     doc: &Document,

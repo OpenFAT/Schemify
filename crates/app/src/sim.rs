@@ -42,6 +42,7 @@ use schemify_run::{
     JOB_LEVEL, Jobs, NO_SAMPLE, OptRun, Pass, Plan, Results, RunnerConfig, Select, State, Tools,
     read_results, yield_summary,
 };
+use schemify_ui::records::{spacer, window};
 use schemify_wave::calc::op_dataset;
 use schemify_wave::{RawPlot, Request as WaveRequest, Waves, format_si, group_datasets, parse_raw};
 
@@ -1410,35 +1411,13 @@ impl Sim {
         }
         // Job rows near the scroll offset; spacers keep the list's full height.
         let shown = self.table.rows.len() as u32;
-        let data_px = (scroll_px - ROW_PX * (1 + extra_rows) as f32).max(0.0);
-        let first = ((data_px / ROW_PX) as u32).min(shown);
-        let start = (first.saturating_sub(TABLE_WINDOW / 8) / 16) * 16;
-        let end = (start + TABLE_WINDOW).min(shown);
-        // The UI caps a length at 2^14 px: a spacer is panels of GAP_ROWS rows each, then
-        // the rest.
-        const GAP_ROWS: u32 = 862;
-        let spacer = |t: &mut String, id: &str, rows: u32| {
-            let full = rows / GAP_ROWS;
-            if full > 0 {
-                let px = GAP_ROWS * ROW_PX as u32 - 1;
-                let _ = writeln!(t, "style results-gap-full\n  height {px}");
-            }
-            for k in 0..full {
-                let _ = writeln!(
-                    t,
-                    "node results.{id}.{k} panel\n  parent results.list\n  style results-gap-full"
-                );
-            }
-            let rest = rows % GAP_ROWS;
-            if rest > 0 {
-                let px = rest * ROW_PX as u32 - 1;
-                let _ = writeln!(
-                    t,
-                    "style results-{id}\n  height {px}\nnode results.{id}.{full} panel\n  parent results.list\n  style results-{id}"
-                );
-            }
+        let data_px = scroll_px - ROW_PX * (1 + extra_rows) as f32;
+        let (start, end) = window(data_px, ROW_PX, shown, TABLE_WINDOW);
+        // The list's gap (1) follows every row, so a row's pitch is ROW_PX.
+        let gap = |t: &mut String, id: &str, rows: u32| {
+            spacer(t, "results.list", id, rows * ROW_PX as u32, 1);
         };
-        spacer(t, "gap-top", start);
+        gap(t, "results.gap-top", start);
         let mut key = String::new();
         for &j in &self.table.rows[start as usize..end as usize] {
             let rid = format!("results.r.{j}");
@@ -1457,7 +1436,7 @@ impl Sim {
             cell(t, &format!("{rid}.key"), &rid, &key, "results-wide");
             self.job_cells(t, &rid, jobs, res, j);
         }
-        spacer(t, "gap-bottom", shown - end);
+        gap(t, "results.gap-bottom", shown - end);
         if shown < jobs.len() {
             let more = format!("{} of {} job(s) match the filter", shown, jobs.len());
             cell(t, "results.filtered", "results.list", &more, "results-dim");

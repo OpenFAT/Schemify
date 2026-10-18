@@ -16,6 +16,8 @@ use schemify_format::FileKind;
 #[cfg(not(target_arch = "wasm32"))]
 use schemify_format::RecordKind;
 use schemify_netlist::NameMap;
+use schemify_ui::records;
+use schemify_ui::{Kind, StyleProp};
 
 #[cfg(not(target_arch = "wasm32"))]
 use super::push_req;
@@ -26,7 +28,7 @@ use crate::docs;
 use crate::geometry::Pt;
 use crate::platform;
 use crate::scene::{ObjKey, UNIT};
-use crate::session::{TextView, View};
+use crate::session::{TEXT_WINDOW, TextView, View};
 use crate::spines;
 
 /// Bytes of a netlist a text tab shows (the file has all of it).
@@ -1087,6 +1089,90 @@ impl Editor {
         true
     }
 
+    /// Appends the text tab's `shown` text to `t` as one fenced-code `textview.body` prose
+    /// node under `textview`. A long text is windowed by the tab's scroll offset: only
+    /// [`TEXT_WINDOW`] lines (or two screens, if more) are in the node, with spacers above and
+    /// below sized in whole code rows ([`schemify_ui::prose::code_metrics`]), so the frame
+    /// lays out and paints a screenful, not 16k lines.
+    ///
+    /// The visible rows are the ones the unwindowed node would show only if every line above
+    /// the window is exactly one row: printable ASCII, no fence, and narrower than the wrap
+    /// width the last layout had (less any shrink of the window since). The window therefore
+    /// never starts past the first line that is not, nor before the tab has been laid out once.
+    /// Lines below the window are counted as one row each; the scroll extent is exact once
+    /// the window reaches the end.
+    fn contribute_text_body(&self, t: &mut String, shown: &str) {
+        use std::fmt::Write as _;
+        let sh = &self.shell;
+        let node = |t: &mut String, body: &str| {
+            let fenced = format!("```\n{body}\n```");
+            let _ = writeln!(
+                t,
+                "node textview.body prose\n  parent textview\n  value {}\n  style text-view-body",
+                docs::quote(&fenced)
+            );
+        };
+        let style = sh
+            .strings
+            .find("text-view-body")
+            .map_or(schemify_ui::NO_STYLE, |s| sh.tables.styles.row(s));
+        let font = sh
+            .tables
+            .styles
+            .get(style, Kind::Prose, StyleProp::Font)
+            .max(8);
+        let Some(m) = u16::try_from(font)
+            .ok()
+            .and_then(|px| schemify_ui::prose::code_metrics(&sh.text, px))
+        else {
+            return node(t, shown);
+        };
+        // The lines the prose parser sees between the fences.
+        let lines: Vec<&str> = shown
+            .split('\n')
+            .map(|l| l.strip_suffix('\r').unwrap_or(l))
+            .collect();
+        let n = lines.len() as u32;
+        assert!(n >= 1);
+        let row = |id: &str| {
+            let i = sh.tables.nodes.find(sh.strings.find(id)?)?;
+            sh.layout.row_of(i).map(|r| sh.layout.rect()[r])
+        };
+        let scroll = sh
+            .strings
+            .find("textview")
+            .map_or(0.0, |s| sh.ui.scroll_of(s));
+        let len = TEXT_WINDOW.max(2 * (self.viewport.1 / m.line).ceil() as u32);
+        let (mut start, end) = records::window(scroll, m.line, n, len);
+        // Wrap width: last frame's, less the window's shrink since (the tab never shrinks more).
+        let shrink = sh
+            .layout
+            .rect()
+            .first()
+            .map_or(0.0, |r| r.w - self.viewport.0)
+            .max(0.0);
+        let wrap = row("textview.body").map_or(0.0, |r| r.w - 2.0 * m.pad - shrink);
+        let cols = (wrap / m.advance - 0.01).floor().max(0.0) as usize;
+        let one_row = |l: &str| {
+            l.len() <= cols
+                && l.bytes().all(|b| (b' '..=b'~').contains(&b))
+                && !l.trim_start().starts_with("```")
+        };
+        let clean = lines[..start as usize]
+            .iter()
+            .take_while(|l| one_row(l))
+            .count() as u32;
+        start = start.min(clean);
+        if start == 0 && end == n {
+            return node(t, shown);
+        }
+        let px = m.line as u32;
+        records::spacer(t, "textview", "textview.gap-top", start * px, 0);
+        node(t, &lines[start as usize..end as usize].join("\n"));
+        records::spacer(t, "textview", "textview.gap-bottom", (n - end) * px, 0);
+        debug_assert!(start < end);
+    }
+
     /// Projects the bottom panel, the text tab and the integration state (menu checks) into
     /// the state contribution `t`.
     pub(super) fn contribute_integration(&self, t: &mut String) {
@@ -1127,7 +1213,12 @@ impl Editor {
         }
         if let Some(v) = self.session.text_view() {
             let _ = writeln!(t, "remove canvas");
-            let _ = writeln!(t, "node textview scroll\n  parent work\n  style text-view");
+            // The pane is a column, so the scroll's content height never reaches the `work`
+            // row and the tab scrolls instead of growing to its text (as `docs.pane` does).
+            let _ = writeln!(
+                t,
+                "style text-pane\n  grow 1\n  dir column\nnode textview.pane panel\n  parent work\n  style text-pane\nnode textview scroll\n  parent textview.pane\n  style text-view"
+            );
             let _ = writeln!(
                 t,
                 "node textview.find text_input\n  parent textview\n  value {}\n  command text.find\n  tooltip {}",
@@ -1145,12 +1236,7 @@ impl Editor {
                 }
                 None => &v.body,
             };
-            let fenced = format!("```\n{shown}\n```");
-            let _ = writeln!(
-                t,
-                "node textview.body prose\n  parent textview\n  value {}\n  style text-view-body",
-                docs::quote(&fenced)
-            );
+            self.contribute_text_body(t, shown);
         }
         for (word, d, _) in spines::DIALECTS {
             let _ = writeln!(
