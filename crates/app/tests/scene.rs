@@ -11,7 +11,7 @@ use schemify_doc::{
     DocHandle, Edit, EditRequest, Mode, Project, Transaction, apply_edits, ops_from_text,
 };
 use schemify_format::FileKind;
-use schemify_render::canvas::{CanvasPrims, PrimKind};
+use schemify_render::canvas::{CanvasPrims, LAYER_DEAD, PrimKind};
 
 const RES: &str = "schemify 1 shprim\n\npin A inout 0 -30\npin B inout 0 30\n\nparam R 1k\n\nimpl spice spice\n  format spice \"R{name} {A} {B} {R}\"\n\nline 0 -30 0 -15\nline 0 15 0 30\nrect -5 -15 5 15\n  width 2\narc 0 0 8 0 90\ncircle 10 0 2\n  dash 2\npoly -5 -15 5 -15 0 -20 -5 -15\n  closed true\n\nstext 8 -10 R0 {name}\n  size 0.2\nstext 8 2 R0 R={R}\n  size 0.15\n";
 
@@ -46,7 +46,9 @@ fn canonical(sc: &Scene) -> (Vec<String>, Vec<(i32, i32)>) {
     let p = &sc.prims;
     let mut rows: Vec<String> = Vec::new();
     let key = |o: u32| -> Option<ObjKey> { (o != u32::MAX).then(|| sc.objs.key[o as usize]) };
-    for i in 0..p.lines.x0.len() {
+    // Dead rows (an update's removals, kept in place) draw nothing: not part of the picture.
+    let live = |layer: &[u8], i: usize| layer[i] != LAYER_DEAD;
+    for i in (0..p.lines.x0.len()).filter(|&i| live(&p.lines.layer, i)) {
         let l = &p.lines;
         let k = key(sc.owner.lines[i]);
         rows.push(format!(
@@ -54,7 +56,7 @@ fn canonical(sc: &Scene) -> (Vec<String>, Vec<(i32, i32)>) {
             l.x0[i], l.y0[i], l.x1[i], l.y1[i], l.layer[i], l.style[i]
         ));
     }
-    for i in 0..p.rects.x0.len() {
+    for i in (0..p.rects.x0.len()).filter(|&i| live(&p.rects.layer, i)) {
         let r = &p.rects;
         let k = key(sc.owner.rects[i]);
         rows.push(format!(
@@ -63,7 +65,7 @@ fn canonical(sc: &Scene) -> (Vec<String>, Vec<(i32, i32)>) {
         ));
     }
     let mut dots = Vec::new();
-    for i in 0..p.arcs.cx.len() {
+    for i in (0..p.arcs.cx.len()).filter(|&i| live(&p.arcs.layer, i)) {
         let a = &p.arcs;
         match key(sc.owner.arcs[i]) {
             None => dots.push((a.cx[i], a.cy[i])),
@@ -82,19 +84,26 @@ fn canonical(sc: &Scene) -> (Vec<String>, Vec<(i32, i32)>) {
             let pts: Vec<(i32, i32)> = (start..end as usize)
                 .map(|j| (polys.x[j], polys.y[j]))
                 .collect();
+            start = end as usize;
+            if !live(&polys.layer, k) {
+                continue;
+            }
             rows.push(format!(
                 "{:?} {name} {pts:?} {} {:?}",
                 key(owners[k]),
                 polys.layer[k],
                 polys.style[k]
             ));
-            start = end as usize;
         }
     }
     let t = &p.texts;
     let mut start = 0;
     for i in 0..t.x.len() {
         let end = t.end[i] as usize;
+        if !live(&t.layer, i) {
+            start = end;
+            continue;
+        }
         rows.push(format!(
             "{:?} text {} {} {} {} {} {:?}",
             key(sc.owner.texts[i]),
@@ -113,9 +122,18 @@ fn canonical(sc: &Scene) -> (Vec<String>, Vec<(i32, i32)>) {
             sc.objs.key[o], sc.objs.geom[o], sc.objs.seg[o]
         ));
     }
-    for &(pt, o) in &sc.conn {
+    for (pt, o) in sc.conn_points() {
         rows.push(format!("{:?} conn {pt:?}", key(o)));
     }
+    // Negative space: a dead row and a dropped point belong to no object.
+    let dead_owned = sc
+        .owner
+        .lines
+        .iter()
+        .zip(&p.lines.layer)
+        .chain(sc.owner.texts.iter().zip(&p.texts.layer))
+        .any(|(&o, &l)| l == LAYER_DEAD && o != u32::MAX);
+    assert!(!dead_owned, "dead rows are unowned");
     rows.sort();
     dots.sort();
     // The index finds every object.
@@ -365,7 +383,9 @@ fn selection_rows_match_scans(sc: &Scene, rng: &mut Rng) {
     assert!(!sel.is_empty() || got.is_empty());
 }
 
-fn walk(seed: u64, steps: usize) {
+/// The oracle walk: `steps` random edits of a schematic of 40 random wires plus `base`
+/// wires on a grid beside them (the large-scale case), each followed by the comparison.
+fn walk(seed: u64, steps: usize, base: usize) {
     let mut top = String::from("schemify 1 shcomp\n\nimpl sch schematic\n\n");
     let mut rng = Rng(seed);
     let mut next = 0u64;
@@ -373,6 +393,13 @@ fn walk(seed: u64, steps: usize) {
         next += 1;
         let (x, y) = (rng.at(), rng.at());
         top.push_str(&format!("wire {} {x} {y} {} {y}\n", id(next), x + 40));
+    }
+    let side = (base as f64).sqrt().ceil() as usize;
+    for k in 0..base {
+        next += 1;
+        let (x, y) = (400 + (k % side) as i64 * 30, (k / side) as i64 * 30);
+        let y2 = y + 20 * (k % 3 == 0) as i64;
+        top.push_str(&format!("wire {} {x} {y} {} {y2}\n", id(next), x + 20));
     }
     let mut p = Project::new(None, None, seed).unwrap();
     let files: [(&str, &[u8]); 2] = [
@@ -435,6 +462,9 @@ fn walk(seed: u64, steps: usize) {
         updated * 2 > steps,
         "most edits were incremental ({updated} of {steps})"
     );
+    if base > 0 {
+        return; // a short walk at scale: the coverage checks below are the small walks'
+    }
     let doc = p.doc(h).expect("open");
     assert!(!doc.shapes().id.is_empty(), "the walk drew shapes");
     use schemify_render::canvas::LineStyle;
@@ -499,8 +529,15 @@ fn symbol_stroke_attributes_reach_the_scene() {
 #[test]
 fn incremental_scene_equals_full_build() {
     for seed in 1..=6 {
-        walk(seed, 300);
+        walk(seed, 300, 0);
     }
+}
+
+/// The same oracle at the D39 scale: random edits of a 100k-wire schematic.
+#[test]
+#[ignore = "100k objects, a full build per step: run in release"]
+fn incremental_scene_equals_full_build_at_100k() {
+    walk(7, 12, 100_000);
 }
 
 /// The selection set (`scene::Selected`): a reselect clears every bit the last one set, a

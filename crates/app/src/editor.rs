@@ -560,6 +560,9 @@ pub struct Editor {
     /// there): the diff's snapshot, the `canvas_gen` and style key it was taken at, and the
     /// changed boxes (`None` = unknown).
     canvas_diff: (CanvasDiff, [u64; 4], u64, Option<Vec<[i32; 4]>>),
+    /// Whether that diff last read the scene's own table (not `shown`): only then do the
+    /// scene's reported edits ([`Scene::edits`]) describe what changed since.
+    canvas_scene: bool,
     /// Spatial indexes of the shown scene, decor and extra (with the generation each was built
     /// for), so recording one canvas tile looks only at the rows near it; and the rows buffer.
     canvas_index: [(u64, PrimIndex); 3],
@@ -815,6 +818,7 @@ impl Editor {
             canvas_cache: CanvasCache::default(),
             canvas_gen: [0; 4],
             canvas_diff: (CanvasDiff::default(), [0; 4], 0, None),
+            canvas_scene: false,
             canvas_index: Default::default(),
             canvas_rows: Rows::default(),
             zoom_until: 0,
@@ -1545,9 +1549,10 @@ impl Editor {
         };
         let shown = self.shown.as_ref().unwrap_or(&self.scene.prims);
         let (diff, diff_gen, diff_style, boxes) = &mut self.canvas_diff;
-        if *diff_gen != self.canvas_gen || *diff_style != style {
-            // ponytail: hashes every row of a changed table (~2 ms per 10^5 rows); the scene
-            // and decor builders reporting their own changed rows would make it O(change).
+        let diffed = *diff_gen != self.canvas_gen || *diff_style != style;
+        if diffed {
+            // The scene reports its own edits (O(change)); the decor and parity tables are
+            // hashed when they changed.
             let mut out = boxes.take().unwrap_or_default();
             out.clear();
             let changed = |k: usize| diff_gen[k] != self.canvas_gen[k];
@@ -1555,13 +1560,27 @@ impl Editor {
                 true => TableChange::Any,
                 false => TableChange::Same,
             };
-            let tables = [(shown, any(0)), (&self.decor, any(1)), (&self.extra, any(2))];
+            let reported = (self.shown.is_none() && self.canvas_scene)
+                .then(|| self.scene.edits())
+                .flatten();
+            let scene = match (changed(0), reported) {
+                (true, Some(killed)) => TableChange::Rows(killed),
+                _ => any(0),
+            };
+            let tables = [(shown, scene), (&self.decor, any(1)), (&self.extra, any(2))];
             let marks = (&self.scene.prims, &self.marks, changed(0) || changed(3));
             let known = diff.update(&tables, marks, &mut out);
-            // An index current before the change follows its edits (a patch then reads the
-            // rows near it, not every row); else it waits for the next tile to rebuild it.
+            // An index current before the change follows it (a patch then reads the rows near
+            // it, not every row); else it waits for the next tile to rebuild it.
             for (k, ix) in self.canvas_index.iter_mut().enumerate() {
-                if known && changed(k) && ix.0 == diff_gen[k] + 1 && ix.1.apply(diff.edits_of(k)) {
+                if !(known && changed(k) && ix.0 == diff_gen[k] + 1) {
+                    continue;
+                }
+                let follows = match (k, scene) {
+                    (0, TableChange::Rows(_)) => ix.1.follow(shown),
+                    _ => ix.1.apply(diff.edits_of(k)),
+                };
+                if follows {
                     ix.0 = self.canvas_gen[k] + 1;
                 }
             }
@@ -1570,6 +1589,12 @@ impl Editor {
         } else if let Some(b) = boxes.as_mut() {
             b.clear(); // the same key: nothing changed since the last frame
         }
+        if diffed {
+            // The diff has taken the scene's edits so far.
+            self.canvas_scene = self.shown.is_none();
+            self.scene.clear_edits();
+        }
+        let shown = self.shown.as_ref().unwrap_or(&self.scene.prims);
         let damage = boxes.as_deref();
         let crisp = self.now >= self.zoom_until;
         let (prims, decor, extra, marks) =
@@ -2658,7 +2683,7 @@ impl Editor {
         let d = |q: Pt| {
             (i64::from(q.0) - i64::from(p.0)).pow(2) + (i64::from(q.1) - i64::from(p.1)).pow(2)
         };
-        self.scene.conn.iter().map(|c| c.0).min_by_key(|&q| d(q))
+        self.scene.conn_points().map(|c| c.0).min_by_key(|&q| d(q))
     }
 
     fn fit(&mut self, b: [i32; 4]) {
@@ -3458,13 +3483,13 @@ impl Editor {
                         if !shift && !alt && !ctrl && view == View::Schematic {
                             let tol = HIT_PX / self.camera().scale;
                             let raw = self.world_at((x, y));
-                            let on_conn = self.scene.conn.iter().find(|(p, o)| {
+                            let on_conn = self.scene.conn_points().find(|(p, o)| {
                                 *p == w
                                     && (f64::from(p.0) - raw.0).abs() <= tol
                                     && (f64::from(p.1) - raw.1).abs() <= tol
                                     && !self.selected.contains(*o)
                             });
-                            if let Some(&(p, _)) = on_conn {
+                            if let Some((p, _)) = on_conn {
                                 self.tool = Tool::Wire {
                                     from: p,
                                     to: p,

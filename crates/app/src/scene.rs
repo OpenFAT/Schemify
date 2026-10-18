@@ -18,10 +18,10 @@
 //! Layers follow xschem (0 background, 1 wire, 2 grid/selection, 3 text, 4 symbol, 5 pin);
 //! the app adds [`LAYER_JUNCTION`], [`LAYER_BUS`], [`LAYER_MISSING`], [`LAYER_SEL`].
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use schemify_doc::{
-    DocHandle, Document, ObjId, Project, Span, Strings as DocStrings, Sym, TableId,
+    Cursor, DocHandle, Document, ObjId, Project, Strings as DocStrings, Sym, TableId, Write,
 };
 use schemify_elab::CellState;
 use schemify_expr::{Scratch, Template, Value};
@@ -61,6 +61,8 @@ pub struct ObjKey {
 }
 
 /// Selectable objects of the scene (SoA): hit and box-select read these, never the doc.
+/// Every object has a stamp, unique for the scene's life (its primitive rows carry it), so an
+/// update finds an object's rows by binary search however objects were renumbered.
 #[derive(Clone, Debug, Default)]
 pub struct Objects {
     /// Selection key.
@@ -69,6 +71,10 @@ pub struct Objects {
     pub geom: Vec<[i32; 4]>,
     /// True for wires and symbol lines (hit by distance to the segment).
     pub seg: Vec<bool>,
+    /// The stamp of each object (ascending in creation order, not in object order).
+    stamp: Vec<u32>,
+    /// The next stamp to give.
+    next_stamp: u32,
 }
 
 impl Objects {
@@ -80,7 +86,27 @@ impl Objects {
         self.key.push(key);
         self.geom.push(geom);
         self.seg.push(seg);
+        let s = self.fresh_stamp();
+        self.stamp.push(s);
         (self.key.len() - 1) as u32
+    }
+
+    /// A stamp no row of the scene carries yet (each object's, and each junction dot's).
+    fn fresh_stamp(&mut self) -> u32 {
+        let s = self.next_stamp;
+        self.next_stamp = s.checked_add(1).expect("stamps outlast 2^32 stampings");
+        s
+    }
+
+    /// Removes object `o`; the last object takes its index (returned when there was one).
+    fn swap_remove(&mut self, o: usize) -> Option<usize> {
+        let last = self.key.len() - 1;
+        self.key.swap_remove(o);
+        self.geom.swap_remove(o);
+        self.seg.swap_remove(o);
+        self.stamp.swap_remove(o);
+        assert_eq!(self.key.len(), self.stamp.len());
+        (o != last).then_some(o)
     }
 
     /// Number of objects.
@@ -105,7 +131,8 @@ impl Objects {
     }
 }
 
-/// Object index of every primitive, parallel to the `CanvasPrims` tables.
+/// Object index of every primitive, parallel to the `CanvasPrims` tables (`u32::MAX`: a
+/// junction dot, which belongs to no object, or a dead row).
 #[derive(Clone, Debug, Default)]
 pub struct Owners {
     /// Per line.
@@ -122,232 +149,119 @@ pub struct Owners {
     pub texts: Vec<u32>,
 }
 
+impl Owners {
+    /// The six columns in [`CanvasPrims::kill`]'s kind order.
+    fn cols(&self) -> [&Vec<u32>; 6] {
+        [
+            &self.lines,
+            &self.rects,
+            &self.arcs,
+            &self.polylines,
+            &self.polygons,
+            &self.texts,
+        ]
+    }
+
+    fn cols_mut(&mut self) -> [&mut Vec<u32>; 6] {
+        [
+            &mut self.lines,
+            &mut self.rects,
+            &mut self.arcs,
+            &mut self.polylines,
+            &mut self.polygons,
+            &mut self.texts,
+        ]
+    }
+}
+
 /// The drawn document and its derived lookup tables.
+///
+/// An update ([`update`]) edits the tables in place: a removed object's primitive rows stay
+/// as dead rows ([`schemify_render::canvas::LAYER_DEAD`], owner `u32::MAX`) so every other row
+/// keeps its index, its connection points stay with owner `u32::MAX`, and new rows append;
+/// readers skip both. A [`build`] compacts.
 #[derive(Clone, Debug, Default)]
 pub struct Scene {
-    /// Primitives for `render::canvas`.
+    /// Primitives for `render::canvas` (dead rows included, see above).
     pub prims: CanvasPrims,
     /// Owner object of each primitive.
     pub owner: Owners,
     /// Selectable objects.
     pub objs: Objects,
-    /// `(key, object index)` sorted by key, for selection lookups.
-    pub index: Vec<(ObjKey, u32)>,
-    /// Connection points (instance pins, wire ends) and their owner object.
+    /// Connection points (instance pins, wire ends) and their owner object (`u32::MAX`: a
+    /// removed object's, to skip).
     pub conn: Vec<(Pt, u32)>,
     /// World bounds of everything drawn (`[0; 4]` when empty). [`update`] only grows it: after
     /// deletions it may cover more than is drawn until the next [`build`].
     pub extent: [i32; 4],
     /// What was built: (document, view, document epoch, symbol cache epoch).
     pub built: Option<(DocHandle, View, u32, u32)>,
-    /// The document rows the schematic was drawn from (what [`update`] diffs against).
-    source: Source,
+    /// Changes of every [`build`] and [`update`] since the counter was read.
+    pub generation: u64,
+    /// `(key, object index)`, for selection lookups. Never iterated.
+    index: HashMap<ObjKey, u32>,
+    /// The stamp of each primitive row (non-decreasing per kind), parallel to `owner`.
+    stamps: Owners,
+    /// The stamp of each connection point, parallel to `conn`.
+    conn_stamp: Vec<u32>,
+    /// Where the document's change log stood when the scene was last brought up to date.
+    cursor: Option<Cursor>,
+    /// Rows killed since [`Scene::clear_edits`] (per kind), or `None` after a build.
+    killed: Option<[Vec<u32>; 6]>,
+    /// The objects the last [`update`] removed or stamped; `None` after a build.
+    touched: Option<Vec<ObjKey>>,
+    /// Dead primitive rows (for compaction).
+    dead: usize,
     /// Wire ends and runs, for junction dots.
     wiring: Wiring,
-}
-
-/// One instance row as drawn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct InstRow {
-    id: ObjId,
-    cell: Sym,
-    at: Pt,
-    orient: Orient,
-    name: Sym,
-    attrs: Span,
-}
-
-/// One wire row as drawn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct WireRow {
-    id: ObjId,
-    p: [i32; 4],
-    attrs: Span,
-}
-
-/// One label, port, text or noconn row as drawn (noconns have no orientation or text).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct PlacedRow {
-    id: ObjId,
-    at: Pt,
-    orient: Orient,
-    text: Sym,
-    attrs: Span,
-}
-
-/// The object rows a schematic scene was drawn from, per table, in document row order.
-#[derive(Clone, Debug, Default)]
-struct Source {
-    inst: Vec<InstRow>,
-    wires: Vec<WireRow>,
-    labels: Vec<PlacedRow>,
-    ports: Vec<PlacedRow>,
-    noconns: Vec<PlacedRow>,
-    texts: Vec<PlacedRow>,
-    shapes: Vec<ShapeRow>,
-}
-
-/// One shape row as drawn: its coordinates by value (a hash), not only by pool span.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ShapeRow {
-    id: ObjId,
-    form: RecordKind,
-    coords: u64,
-    attrs: Span,
-}
-
-fn shape_row(doc: &Document, i: usize) -> ShapeRow {
-    let t = doc.shapes();
-    let c = &doc.pool().coords[t.coords[i].range()];
-    let coords = c.iter().fold(c.len() as u64, |h, &v| {
-        (h.rotate_left(5) ^ u64::from(v as u32)).wrapping_mul(0x517c_c1b7_2722_0a95)
-    });
-    ShapeRow {
-        id: t.id[i],
-        form: t.form[i],
-        coords,
-        attrs: t.attrs[i],
-    }
-}
-
-fn inst_row(doc: &Document, i: usize) -> InstRow {
-    let t = doc.instances();
-    InstRow {
-        id: t.id[i],
-        cell: t.cell[i],
-        at: (t.x[i], t.y[i]),
-        orient: t.orient[i],
-        name: t.name[i],
-        attrs: t.attrs[i],
-    }
-}
-
-fn wire_row(doc: &Document, i: usize) -> WireRow {
-    let t = doc.wires();
-    WireRow {
-        id: t.id[i],
-        p: [t.x1[i], t.y1[i], t.x2[i], t.y2[i]],
-        attrs: t.attrs[i],
-    }
-}
-
-fn placed_row(t: &schemify_doc::Placed, i: usize) -> PlacedRow {
-    PlacedRow {
-        id: t.id[i],
-        at: (t.x[i], t.y[i]),
-        orient: t.orient[i],
-        text: t.text[i],
-        attrs: t.attrs[i],
-    }
-}
-
-fn noconn_row(doc: &Document, i: usize) -> PlacedRow {
-    let t = doc.noconns();
-    PlacedRow {
-        id: t.id[i],
-        at: (t.x[i], t.y[i]),
-        orient: Orient::R0,
-        text: Sym(0),
-        attrs: t.attrs[i],
-    }
-}
-
-impl Source {
-    /// Every object row of `doc`.
-    fn of(doc: &Document) -> Source {
-        Source {
-            inst: (0..doc.instances().id.len())
-                .map(|i| inst_row(doc, i))
-                .collect(),
-            wires: (0..doc.wires().id.len())
-                .map(|i| wire_row(doc, i))
-                .collect(),
-            labels: (0..doc.labels().id.len())
-                .map(|i| placed_row(doc.labels(), i))
-                .collect(),
-            ports: (0..doc.ports().id.len())
-                .map(|i| placed_row(doc.ports(), i))
-                .collect(),
-            noconns: (0..doc.noconns().id.len())
-                .map(|i| noconn_row(doc, i))
-                .collect(),
-            texts: (0..doc.texts().id.len())
-                .map(|i| placed_row(doc.texts(), i))
-                .collect(),
-            shapes: (0..doc.shapes().id.len())
-                .map(|i| shape_row(doc, i))
-                .collect(),
-        }
-    }
-}
-
-/// Rows of one table that differ between `old` and the document's `len` rows (`row(k)`):
-/// pushes the replaced or dropped old rows to `gone` and the new or replaced row indices to
-/// `fresh`, and makes `old` the document's rows. Doc tables of objects delete by swap-remove
-/// and insert by push, so an edit changes O(1) positions.
-///
-/// Cost: one row compare per row (O(rows)), work only for the differing ones.
-// ponytail: a positional scan per edit (0.1–0.3 ms at 10^5 rows); a `doc` change log
-// (BACKLOG: apply_edits reporting changed records) would make it O(changes).
-fn diff<R: Copy + PartialEq>(
-    old: &mut Vec<R>,
-    len: usize,
-    row: impl Fn(usize) -> R,
-    gone: &mut Vec<R>,
-    fresh: &mut Vec<usize>,
-) {
-    let n = old.len().max(len);
-    for k in 0..n {
-        let new = (k < len).then(|| row(k));
-        let was = old.get(k).copied();
-        if was == new {
-            continue;
-        }
-        gone.extend(was);
-        if let Some(r) = new {
-            fresh.push(k);
-            if k < old.len() {
-                old[k] = r;
-            } else {
-                old.push(r);
-            }
-        }
-    }
-    old.truncate(len);
-    assert_eq!(old.len(), len);
 }
 
 /// Wire ends and runs (xschem's connection cues): what decides where junction dots go, kept
 /// up to date per changed wire.
 #[derive(Clone, Debug, Default)]
 struct Wiring {
-    /// Wire ends sorted by (x, y).
-    xy: Vec<Pt>,
-    /// Wire ends as (y, x), sorted.
-    yx: Vec<Pt>,
+    /// Wire ends by (x, y), with how many ends are there.
+    xy: BTreeMap<Pt, u32>,
+    /// The same ends as (y, x).
+    yx: BTreeMap<Pt, u32>,
     /// Horizontal runs: y → (x min, x max) of each wire on it.
     horiz: HashMap<i32, Vec<(i32, i32)>>,
     /// Vertical runs: x → (y min, y max).
     vert: HashMap<i32, Vec<(i32, i32)>>,
     /// Diagonal wires `[x1, y1, x2, y2]`.
     diag: Vec<[i32; 4]>,
-    /// Centers of the dots drawn, sorted.
-    dots: Vec<Pt>,
+    /// Center of each dot drawn → its arc row.
+    dots: BTreeMap<Pt, u32>,
 }
 
 impl Wiring {
-    /// The wiring of every wire row of `w` (bulk: one sort, not an insert per end).
+    /// The wiring of every wire row of `w`.
     fn of(w: &schemify_doc::Wires) -> Wiring {
         let mut out = Wiring::default();
         for i in 0..w.id.len() {
             let p = [w.x1[i], w.y1[i], w.x2[i], w.y2[i]];
-            out.xy.extend([(p[0], p[1]), (p[2], p[3])]);
+            out.ends(p, true);
             out.runs(p, true);
         }
-        out.xy.sort_unstable();
-        out.yx = out.xy.iter().map(|p| (p.1, p.0)).collect();
-        out.yx.sort_unstable();
         out
+    }
+
+    /// Adds (`add`) or removes the two ends of wire `w`.
+    fn ends(&mut self, w: [i32; 4], add: bool) {
+        for p in [(w[0], w[1]), (w[2], w[3])] {
+            for (map, k) in [(&mut self.xy, p), (&mut self.yx, (p.1, p.0))] {
+                if add {
+                    *map.entry(k).or_insert(0) += 1;
+                    continue;
+                }
+                let n = map.get_mut(&k).expect("a drawn wire end");
+                *n -= 1;
+                if *n == 0 {
+                    map.remove(&k);
+                }
+            }
+        }
+        debug_assert_eq!(self.xy.len(), self.yx.len());
     }
 
     /// Adds (`add`) or removes the run of wire `w` from the per-row/column maps.
@@ -379,32 +293,18 @@ impl Wiring {
     }
 
     fn add(&mut self, w: [i32; 4]) {
-        for p in [(w[0], w[1]), (w[2], w[3])] {
-            let i = self.xy.partition_point(|q| *q < p);
-            self.xy.insert(i, p);
-            let i = self.yx.partition_point(|q| *q < (p.1, p.0));
-            self.yx.insert(i, (p.1, p.0));
-        }
+        self.ends(w, true);
         self.runs(w, true);
     }
 
     fn remove(&mut self, w: [i32; 4]) {
-        for p in [(w[0], w[1]), (w[2], w[3])] {
-            let i = self.xy.binary_search(&p).expect("a drawn wire end");
-            self.xy.remove(i);
-            let i = self
-                .yx
-                .binary_search(&(p.1, p.0))
-                .expect("a drawn wire end");
-            self.yx.remove(i);
-        }
+        self.ends(w, false);
         self.runs(w, false);
     }
 
     /// Wire ends at `p`.
     fn ends_at(&self, p: Pt) -> usize {
-        let i = self.xy.partition_point(|q| *q < p);
-        self.xy[i..].iter().take_while(|q| **q == p).count()
+        self.xy.get(&p).map_or(0, |&n| n as usize)
     }
 
     /// Whether `p` lies strictly inside some wire.
@@ -443,22 +343,22 @@ impl Wiring {
     /// Wire ends lying strictly inside wire `w` (where `w` decides their dots), plus `w`'s
     /// own ends: every point whose dot `w` can change.
     fn touched(&self, w: [i32; 4], out: &mut Vec<Pt>) {
+        use std::ops::Bound::Excluded;
         out.extend([(w[0], w[1]), (w[2], w[3])]);
         if w[1] == w[3] {
             let (a, c) = (w[0].min(w[2]), w[0].max(w[2]));
-            let i = self.yx.partition_point(|q| *q <= (w[1], a));
-            let run = self.yx[i..].iter().take_while(|q| **q < (w[1], c));
-            out.extend(run.map(|q| (q.1, q.0)));
+            let run = self.yx.range((Excluded((w[1], a)), Excluded((w[1], c))));
+            out.extend(run.map(|(q, _)| (q.1, q.0)));
         } else if w[0] == w[2] {
             let (a, c) = (w[1].min(w[3]), w[1].max(w[3]));
-            let i = self.xy.partition_point(|q| *q <= (w[0], a));
-            out.extend(self.xy[i..].iter().take_while(|q| **q < (w[0], c)));
+            let run = self.xy.range((Excluded((w[0], a)), Excluded((w[0], c))));
+            out.extend(run.map(|(q, _)| *q));
         } else {
             // ponytail: a diagonal wire checks every end, O(ends); a 2-D index if
             // diagonal-heavy schematics show up in profiles.
             let mut probe = Wiring::default();
             probe.diag.push(w);
-            out.extend(self.xy.iter().filter(|q| probe.interior(**q)));
+            out.extend(self.xy.keys().filter(|q| probe.interior(**q)));
         }
     }
 }
@@ -466,10 +366,36 @@ impl Wiring {
 impl Scene {
     /// Object index of `key`, if drawn.
     pub fn find(&self, key: ObjKey) -> Option<u32> {
-        self.index
-            .binary_search_by(|e| e.0.cmp(&key))
-            .ok()
-            .map(|i| self.index[i].1)
+        let o = self.index.get(&key).copied();
+        debug_assert!(o.is_none_or(|o| self.objs.key[o as usize] == key));
+        o
+    }
+
+    /// The rows [`update`]s killed since the last [`Scene::clear_edits`], per kind in
+    /// [`CanvasPrims::kill`] order: with the rows appended since, every change of `prims` in
+    /// that time (a canvas diffs them as `TableChange::Rows`). `None` when a [`build`] made
+    /// the tables anew in that time.
+    pub fn edits(&self) -> Option<&[Vec<u32>; 6]> {
+        self.killed.as_ref()
+    }
+
+    /// Starts the next [`Scene::edits`] window (the canvas has taken the edits so far).
+    pub fn clear_edits(&mut self) {
+        let k = self.killed.get_or_insert_with(Default::default);
+        k.iter_mut().for_each(Vec::clear);
+        assert!(self.edits().is_some_and(|k| k.iter().all(Vec::is_empty)));
+    }
+
+    /// The objects the last [`update`] removed or stamped (sorted, a key may no longer be
+    /// drawn), or `None` when the last change was a [`build`]: what a derived table keyed by
+    /// object follows when [`Scene::generation`] moved by exactly one.
+    pub fn touched(&self) -> Option<&[ObjKey]> {
+        self.touched.as_deref()
+    }
+
+    /// The connection points of drawn objects.
+    pub fn conn_points(&self) -> impl Iterator<Item = (Pt, u32)> + '_ {
+        self.conn.iter().copied().filter(|c| c.1 != u32::MAX)
     }
 }
 
@@ -702,15 +628,32 @@ impl Build<'_> {
         self.ext[2] = self.ext[2].max(x);
         self.ext[3] = self.ext[3].max(y);
     }
+    /// Records the owner and stamp of a row just pushed to kind `kind` (`o == u32::MAX`: a
+    /// junction dot, which takes a stamp of its own).
+    fn owned(&mut self, kind: usize, o: u32) {
+        let s = match o {
+            u32::MAX => self.sc.objs.fresh_stamp(),
+            o => self.sc.objs.stamp[o as usize],
+        };
+        let stamps = self.sc.stamps.cols_mut();
+        debug_assert!(stamps[kind].last().is_none_or(|&l| l <= s), "stamps ascend");
+        stamps[kind].push(s);
+        self.sc.owner.cols_mut()[kind].push(o);
+    }
+    /// A connection point of object `o`.
+    fn conn_at(&mut self, p: Pt, o: u32) {
+        self.sc.conn.push((p, o));
+        self.sc.conn_stamp.push(self.sc.objs.stamp[o as usize]);
+    }
     fn line(&mut self, a: Pt, b: Pt, layer: u8, style: LineStyle, o: u32) {
         self.sc.prims.line_styled(a.0, a.1, b.0, b.1, layer, style);
-        self.sc.owner.lines.push(o);
+        self.owned(0, o);
         self.grow(a.0, a.1);
         self.grow(b.0, b.1);
     }
     fn rect(&mut self, a: Pt, b: Pt, layer: u8, style: LineStyle, o: u32) {
         self.sc.prims.rect_styled(a.0, a.1, b.0, b.1, layer, style);
-        self.sc.owner.rects.push(o);
+        self.owned(1, o);
         self.grow(a.0, a.1);
         self.grow(b.0, b.1);
     }
@@ -719,17 +662,13 @@ impl Build<'_> {
         self.sc
             .prims
             .arc_styled(c.0, c.1, r, start, sweep, layer, style);
-        self.sc.owner.arcs.push(o);
+        self.owned(2, o);
         self.grow(c.0 - r, c.1 - r);
         self.grow(c.0 + r, c.1 + r);
     }
     fn poly(&mut self, pts: &[Pt], closed: bool, layer: u8, style: LineStyle, o: u32) {
         self.sc.prims.poly_styled(pts, closed, layer, style);
-        if closed {
-            self.sc.owner.polygons.push(o);
-        } else {
-            self.sc.owner.polylines.push(o);
-        }
+        self.owned(if closed { 4 } else { 3 }, o);
         for p in pts {
             self.grow(p.0, p.1);
         }
@@ -744,7 +683,7 @@ impl Build<'_> {
             return [at.0, at.1, at.0, at.1];
         }
         self.sc.prims.text_rot(at.0, at.1, size, layer, s, rot);
-        self.sc.owner.texts.push(o);
+        self.owned(5, o);
         let (dx, dy) = rotated_extent(text_size(size, s), rot);
         let (q0, q1) = ((at.0, at.1), (at.0 + dx, at.1 + dy));
         self.grow(q0.0, q0.1);
@@ -762,7 +701,9 @@ impl Build<'_> {
 /// document instantiates that resolves (see `Editor::load_symbols`); unresolved cells draw
 /// as a red placeholder with the cell reference. `values`, when given, must be the elab
 /// state of `h` at this epoch: symbol texts (`{W}`) then show evaluated param values (an
-/// override `W = W_in` reads the var's value, D19) instead of the override text.
+/// override `W = W_in` reads the var's value, D19) instead of the override text. The result
+/// has no dead rows; [`Scene::edits`] and [`Scene::touched`] are `None` until the next
+/// [`update`].
 ///
 /// Cost: O(objects + stamped symbol primitives); reuses `sc`'s allocations.
 pub fn build(
@@ -774,17 +715,22 @@ pub fn build(
     epoch: u32,
     values: Option<&CellState>,
 ) {
+    let generation = sc.generation.wrapping_add(1);
     let Some(doc) = project.doc(h) else {
         *sc = Scene::default();
+        sc.generation = generation;
         return;
     };
     sc.prims = CanvasPrims::default();
     sc.owner = Owners::default();
+    sc.stamps = Owners::default();
     sc.objs = Objects::default();
     sc.index.clear();
     sc.conn.clear();
-    sc.source = Source::default();
+    sc.conn_stamp.clear();
     sc.wiring = Wiring::default();
+    (sc.killed, sc.touched, sc.dead) = (None, None, 0);
+    sc.cursor = (view == View::Schematic).then(|| doc.cursor());
     let mut b = Build {
         sc,
         ext: [i32::MAX, i32::MAX, i32::MIN, i32::MIN],
@@ -800,11 +746,9 @@ pub fn build(
                 wire(&mut b, doc, i);
             }
             b.sc.wiring = Wiring::of(doc.wires());
-            let mut ends = b.sc.wiring.xy.clone();
-            ends.dedup();
+            let ends: Vec<Pt> = b.sc.wiring.xy.keys().copied().collect();
             redot(&mut b, &ends);
             other_objects(&mut b, doc, 0..usize::MAX);
-            b.sc.source = Source::of(doc);
         }
         View::Symbol => symbol(&mut b, doc),
     }
@@ -818,21 +762,36 @@ pub fn build(
         .enumerate()
         .map(|(i, &k)| (k, i as u32))
         .collect();
-    sc.index.sort_unstable();
     sc.built = Some((h, view, epoch, symbols.epoch));
+    sc.generation = generation;
     check_tables(sc);
 }
 
+/// Tables a schematic scene draws objects of.
+fn drawn(t: TableId) -> bool {
+    matches!(
+        t,
+        TableId::Instances
+            | TableId::Wires
+            | TableId::Labels
+            | TableId::Ports
+            | TableId::Noconns
+            | TableId::Texts
+            | TableId::Shapes
+    )
+}
+
 /// Brings a schematic scene built for document `h` up to date with the document's current
-/// rows (`epoch`): objects whose rows changed are removed and re-stamped, junction dots are
-/// recomputed only where a changed wire can move them. Same contract as [`build`] (whose
-/// result it equals as a set of primitives per object, up to row order); falls back to it,
-/// returning false, when the scene was built for another document, view or symbol cache,
-/// or when most of the document changed. Values (`{W}` texts) are taken as unchanged: when
-/// they changed, call [`build`].
+/// rows (`epoch`), from the document's change log: every object a logged write touched is
+/// removed and, while the document holds it, stamped again; junction dots are recomputed only
+/// where a changed wire can move them. Same contract as [`build`] (whose result it equals as a
+/// set of live primitives per object, up to row order); falls back to it, returning false,
+/// when the scene was built for another document, view or symbol cache, when the log no longer
+/// reaches the scene's last update, when most of the document changed, or when dead rows
+/// pass a quarter of the tables (the build compacts them). Values (`{W}` texts) are taken as
+/// unchanged except on the objects touched: when they changed elsewhere, call [`build`].
 ///
-/// Cost: O(rows) compares to find the changes (see `diff`), then O(primitives) scans per
-/// changed object (prim and owner removal), O(objects) for index inserts.
+/// Cost: O(touched objects · (log rows + their primitives)), plus the index inserts.
 pub fn update(
     sc: &mut Scene,
     project: &Project,
@@ -844,94 +803,48 @@ pub fn update(
     let Some(doc) = project.doc(h) else {
         return false;
     };
-    if !matches!(sc.built, Some((d, View::Schematic, _, s)) if d == h && s == symbols.epoch) {
+    let current =
+        matches!(sc.built, Some((d, View::Schematic, _, s)) if d == h && s == symbols.epoch);
+    let changes = sc
+        .cursor
+        .filter(|_| current)
+        .and_then(|c| doc.changes_since(c));
+    let Some(changes) = changes else {
         build(sc, project, h, View::Schematic, symbols, epoch, values);
         return false;
-    }
+    };
     let values = values.filter(|v| v.inst_iface.len() == doc.instances().id.len());
-    // Which rows changed, per table (the old rows go, the new rows come).
-    let (mut gone_i, mut fresh_i) = (Vec::new(), Vec::new());
-    let (mut gone_w, mut fresh_w) = (Vec::new(), Vec::new());
-    let (mut gone_p, mut fresh_p) = (Vec::new(), Vec::new());
-    let s = &mut sc.source;
-    let n_inst = doc.instances().id.len();
-    diff(
-        &mut s.inst,
-        n_inst,
-        |i| inst_row(doc, i),
-        &mut gone_i,
-        &mut fresh_i,
-    );
-    let n_wires = doc.wires().id.len();
-    diff(
-        &mut s.wires,
-        n_wires,
-        |i| wire_row(doc, i),
-        &mut gone_w,
-        &mut fresh_w,
-    );
-    let mut fresh_other: Vec<(TableId, usize)> = Vec::new();
-    for (table, rows, t) in [
-        (TableId::Labels, &mut s.labels, Some(doc.labels())),
-        (TableId::Ports, &mut s.ports, Some(doc.ports())),
-        (TableId::Texts, &mut s.texts, Some(doc.texts())),
-        (TableId::Noconns, &mut s.noconns, None),
-    ] {
-        let (len, before) = (
-            t.map_or(doc.noconns().id.len(), |t| t.id.len()),
-            fresh_p.len(),
-        );
-        let row = |i| t.map_or_else(|| noconn_row(doc, i), |t| placed_row(t, i));
-        let mut gone = Vec::new();
-        diff(rows, len, row, &mut gone, &mut fresh_p);
-        gone_p.extend(gone.into_iter().map(|r| ObjKey { table, key: r.id.0 }));
-        fresh_other.extend(fresh_p.drain(before..).map(|i| (table, i)));
-    }
-    let mut gone_s = Vec::new();
-    diff(
-        &mut s.shapes,
-        doc.shapes().id.len(),
-        |i| shape_row(doc, i),
-        &mut gone_s,
-        &mut fresh_p,
-    );
-    gone_p.extend(gone_s.iter().map(|r| ObjKey {
-        table: TableId::Shapes,
-        key: r.id.0,
-    }));
-    fresh_other.extend(fresh_p.drain(..).map(|i| (TableId::Shapes, i)));
-    let changed = gone_i.len() + fresh_i.len() + gone_w.len() + fresh_w.len() + gone_p.len();
+    // The objects the writes touched (a moved row's record did not change).
+    let mut keys: Vec<ObjKey> = changes
+        .iter()
+        .filter(|c| c.what != Write::Moved && drawn(c.table) && c.id != ObjId::NONE)
+        .map(|c| ObjKey {
+            table: c.table,
+            key: c.id.0,
+        })
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
     let total = sc.objs.len().max(1);
-    if changed > total / 8 + 64 {
-        // ponytail: most of the document changed (a paste, an import): one full build is
-        // cheaper than this many removals.
+    if keys.len() > total / 8 + 64 || sc.dead * 4 > sc.prims.len() + (1 << 14) {
+        // ponytail: most of the document changed (a paste, an import), or a quarter of the
+        // rows are dead: one full build is cheaper than this many removals, and compacts.
         build(sc, project, h, View::Schematic, symbols, epoch, values);
         return false;
     }
-    // Junction points the changed wires can affect, while the old wires are still indexed.
+    // Junction points the changed wires can affect, while the old wires are still indexed;
+    // then the old objects go.
     let mut points: Vec<Pt> = Vec::new();
-    for w in &gone_w {
-        sc.wiring.touched(w.p, &mut points);
-    }
-    // Remove what changed.
-    let keys = gone_i
-        .iter()
-        .map(|r| ObjKey {
-            table: TableId::Instances,
-            key: r.id.0,
-        })
-        .chain(gone_w.iter().map(|r| ObjKey {
-            table: TableId::Wires,
-            key: r.id.0,
-        }))
-        .chain(gone_p);
-    for key in keys {
+    for &key in &keys {
+        let Some(o) = sc.find(key) else { continue };
+        if key.table == TableId::Wires {
+            let w = sc.objs.geom[o as usize];
+            sc.wiring.touched(w, &mut points);
+            sc.wiring.remove(w);
+        }
         remove_object(sc, key);
     }
-    for w in &gone_w {
-        sc.wiring.remove(w.p);
-    }
-    // Stamp what is new, then index it.
+    // Stamp what the document holds now, then index it.
     let (objs0, prims0) = (sc.objs.len(), Counts::of(sc));
     let ext = match sc.extent {
         [0, 0, 0, 0] => [i32::MAX, i32::MAX, i32::MIN, i32::MIN],
@@ -939,21 +852,26 @@ pub fn update(
     };
     let mut b = Build { ext, sc };
     let mut st = Stamp::default();
-    for &i in &fresh_i {
-        instance(&mut b, project, h, doc, symbols, values, i, &mut st);
+    let mut wires: Vec<[i32; 4]> = Vec::new();
+    for &key in &keys {
+        let Some(loc) = doc.find_id(ObjId(key.key)).filter(|l| l.table == key.table) else {
+            continue; // deleted
+        };
+        let i = loc.row as usize;
+        match key.table {
+            TableId::Instances => instance(&mut b, project, h, doc, symbols, values, i, &mut st),
+            TableId::Wires => {
+                wire(&mut b, doc, i);
+                let w = doc.wires();
+                let p = [w.x1[i], w.y1[i], w.x2[i], w.y2[i]];
+                b.sc.wiring.add(p);
+                wires.push(p);
+            }
+            t => one_other(&mut b, doc, t, i),
+        }
     }
-    for &i in &fresh_w {
-        wire(&mut b, doc, i);
-        let w = doc.wires();
-        b.sc.wiring.add([w.x1[i], w.y1[i], w.x2[i], w.y2[i]]);
-    }
-    for &i in &fresh_w {
-        let w = doc.wires();
-        b.sc.wiring
-            .touched([w.x1[i], w.y1[i], w.x2[i], w.y2[i]], &mut points);
-    }
-    for &(table, i) in &fresh_other {
-        one_other(&mut b, doc, table, i);
+    for &w in &wires {
+        b.sc.wiring.touched(w, &mut points);
     }
     points.sort_unstable();
     points.dedup();
@@ -962,13 +880,14 @@ pub fn update(
     sc.extent = if ext[0] > ext[2] { [0; 4] } else { ext };
     fit_boxes(sc, prims0);
     for o in objs0..sc.objs.len() {
-        let key = sc.objs.key[o];
-        let at = sc.index.partition_point(|e| e.0 < key);
-        sc.index.insert(at, (key, o as u32));
+        let prev = sc.index.insert(sc.objs.key[o], o as u32);
+        assert!(prev.is_none(), "one object per key");
     }
     sc.built = Some((h, View::Schematic, epoch, symbols.epoch));
+    sc.cursor = Some(doc.cursor());
+    sc.touched = Some(keys);
+    sc.generation = sc.generation.wrapping_add(1);
     check_tables(sc);
-    debug_assert!(sc.index.windows(2).all(|w| w[0].0 < w[1].0));
     true
 }
 
@@ -986,7 +905,16 @@ fn check_tables(sc: &Scene) {
         p.texts.x.len(),
         "rotation column in step"
     );
+    for (s, w) in sc.stamps.cols().into_iter().zip(o.cols()) {
+        assert_eq!(s.len(), w.len(), "a stamp per row");
+    }
+    assert_eq!(
+        sc.conn.len(),
+        sc.conn_stamp.len(),
+        "a stamp per connection point"
+    );
     assert_eq!(sc.index.len(), sc.objs.len(), "one index entry per object");
+    assert!(sc.dead <= p.len());
 }
 
 /// Primitive counts per table (where an update's new primitives start).
@@ -1014,120 +942,57 @@ impl Counts {
     }
 }
 
-/// Removes object `key` (when drawn): its primitives, connection points and index entry;
-/// the last object takes its index (swap-remove), so its references are renumbered.
-///
-/// Cost: two scans of every owner column and of `conn`, O(objects) for the index.
-fn remove_object(sc: &mut Scene, key: ObjKey) {
-    let Some(o) = sc.find(key) else {
-        return;
-    };
-    let last = (sc.objs.len() - 1) as u32;
-    let (p, own) = (&mut sc.prims, &mut sc.owner);
-    // Primitives of `o`: backwards, so a swapped-in row was already visited.
-    for i in rows_of(&own.lines, o) {
-        let l = &mut p.lines;
-        for col in [&mut l.x0, &mut l.y0, &mut l.x1, &mut l.y1] {
-            col.swap_remove(i);
-        }
-        l.layer.swap_remove(i);
-        l.style.swap_remove(i);
-        own.lines.swap_remove(i);
-    }
-    for i in rows_of(&own.rects, o) {
-        let r = &mut p.rects;
-        for col in [&mut r.x0, &mut r.y0, &mut r.x1, &mut r.y1] {
-            col.swap_remove(i);
-        }
-        r.layer.swap_remove(i);
-        r.style.swap_remove(i);
-        own.rects.swap_remove(i);
-    }
-    for i in rows_of(&own.arcs, o) {
-        let a = &mut p.arcs;
-        for col in [&mut a.cx, &mut a.cy, &mut a.r, &mut a.start, &mut a.sweep] {
-            col.swap_remove(i);
-        }
-        a.layer.swap_remove(i);
-        a.style.swap_remove(i);
-        own.arcs.swap_remove(i);
-    }
-    for (polys, owners) in [
-        (&mut p.polylines, &mut own.polylines),
-        (&mut p.polygons, &mut own.polygons),
-    ] {
-        for k in rows_of(owners, o) {
-            // Point chains are CSR: drop the points and shift the later ends.
-            let start = if k == 0 { 0 } else { polys.end[k - 1] as usize };
-            let end = polys.end[k] as usize;
-            polys.x.drain(start..end);
-            polys.y.drain(start..end);
-            for e in &mut polys.end[k + 1..] {
-                *e -= (end - start) as u32;
-            }
-            polys.end.remove(k);
-            polys.layer.remove(k);
-            polys.style.remove(k);
-            owners.remove(k);
-        }
-    }
-    for k in rows_of(&own.texts, o) {
-        let t = &mut p.texts;
-        let start = if k == 0 { 0 } else { t.end[k - 1] as usize };
-        let end = t.end[k] as usize;
-        t.text.replace_range(start..end, "");
-        for e in &mut t.end[k + 1..] {
-            *e -= (end - start) as u32;
-        }
-        t.end.remove(k);
-        for col in [&mut t.x, &mut t.y, &mut t.size] {
-            col.remove(k);
-        }
-        t.layer.remove(k);
-        t.rot.remove(k);
-        own.texts.remove(k);
-    }
-    sc.conn.retain(|c| c.1 != o);
-    // The last object moves into `o`'s slot.
-    let objs = &mut sc.objs;
-    objs.key.swap_remove(o as usize);
-    objs.geom.swap_remove(o as usize);
-    objs.seg.swap_remove(o as usize);
-    let at = sc.index.binary_search_by(|e| e.0.cmp(&key)).expect("drawn");
-    sc.index.remove(at);
-    if o != last {
-        let own = &mut sc.owner;
-        for col in [
-            &mut own.lines,
-            &mut own.rects,
-            &mut own.arcs,
-            &mut own.polylines,
-            &mut own.polygons,
-            &mut own.texts,
-        ] {
-            col.iter_mut().filter(|x| **x == last).for_each(|x| *x = o);
-        }
-        sc.conn
-            .iter_mut()
-            .filter(|c| c.1 == last)
-            .for_each(|c| c.1 = o);
-        let moved = sc.objs.key[o as usize];
-        let at = sc
-            .index
-            .binary_search_by(|e| e.0.cmp(&moved))
-            .expect("drawn");
-        sc.index[at].1 = o;
-    }
-    assert_eq!(sc.index.len(), sc.objs.len());
+/// The rows (or connection points) carrying stamp `s` in a non-decreasing stamp column.
+fn stamped(col: &[u32], s: u32) -> std::ops::Range<usize> {
+    let lo = col.partition_point(|&x| x < s);
+    let hi = lo + col[lo..].partition_point(|&x| x == s);
+    assert!(hi <= col.len());
+    lo..hi
 }
 
-/// Rows of an owner column belonging to object `o`, last first (so swap-removing them in
-/// order never moves a row still to be removed).
-fn rows_of(owners: &[u32], o: u32) -> Vec<usize> {
-    (0..owners.len())
-        .rev()
-        .filter(|&i| owners[i] == o)
-        .collect()
+/// Removes object `key` (when drawn): its primitive rows die in place (reported through
+/// [`Scene::edits`]), its connection points lose their owner, its index entry goes; the last
+/// object takes its index (swap-remove), so that object's rows and points are renumbered.
+///
+/// Cost: O(log rows) per kind plus the rows of the two objects involved.
+fn remove_object(sc: &mut Scene, key: ObjKey) {
+    let Some(o) = sc.index.remove(&key) else {
+        return;
+    };
+    let s = sc.objs.stamp[o as usize];
+    for kind in 0..6 {
+        let rows = stamped(sc.stamps.cols()[kind], s);
+        for r in rows.clone() {
+            assert_eq!(sc.owner.cols()[kind][r], o, "the object's own rows");
+            sc.prims.kill(kind as u8, r);
+            sc.owner.cols_mut()[kind][r] = u32::MAX;
+        }
+        // After a build nobody has taken yet (`None`), the edits are unknown anyway.
+        if let Some(k) = sc.killed.as_mut() {
+            k[kind].extend(rows.clone().map(|r| r as u32));
+        }
+        sc.dead += rows.len();
+    }
+    for c in stamped(&sc.conn_stamp, s) {
+        sc.conn[c].1 = u32::MAX;
+    }
+    // The last object moves into `o`'s slot.
+    if let Some(slot) = sc.objs.swap_remove(o as usize) {
+        let (moved, ms) = (sc.objs.key[slot], sc.objs.stamp[slot]);
+        sc.index.insert(moved, o);
+        let last = sc.objs.len() as u32;
+        for kind in 0..6 {
+            for r in stamped(sc.stamps.cols()[kind], ms) {
+                let w = &mut sc.owner.cols_mut()[kind][r];
+                assert_eq!(*w, last, "the moved object's rows");
+                *w = o;
+            }
+        }
+        for c in stamped(&sc.conn_stamp, ms) {
+            sc.conn[c].1 = o;
+        }
+    }
+    assert_eq!(sc.index.len(), sc.objs.len());
 }
 
 /// Grows every box object's geometry to cover all of its primitives from `from` on, so
@@ -1267,7 +1132,7 @@ fn instance<'d>(
             LineStyle::PLAIN,
             obj,
         );
-        b.sc.conn.push((q, obj));
+        b.conn_at(q, obj);
     }
     let iface = row.and_then(|r| project.interface(r));
     for t in &p.texts {
@@ -1309,8 +1174,8 @@ fn wire(b: &mut Build<'_>, doc: &Document, i: usize) {
     let bus = attr(doc, w.attrs[i], "bus").is_some_and(|v| v == "true");
     let obj = b.sc.objs.push(key, [a.0, a.1, c.0, c.1], true);
     b.line(a, c, if bus { LAYER_BUS } else { 1 }, LineStyle::PLAIN, obj);
-    b.sc.conn.push((a, obj));
-    b.sc.conn.push((c, obj));
+    b.conn_at(a, obj);
+    b.conn_at(c, obj);
 }
 
 /// Labels, ports, noconns, texts and shapes of rows `rows` (clamped to each table) in that
@@ -1373,7 +1238,7 @@ fn one_other(b: &mut Build<'_>, doc: &Document, table: TableId, i: usize) {
             let obj = b.sc.objs.push(key, [x - r, y - r, x + r, y + r], false);
             b.line((x - r, y - r), (x + r, y + r), 4, LineStyle::PLAIN, obj);
             b.line((x - r, y + r), (x + r, y - r), 4, LineStyle::PLAIN, obj);
-            b.sc.conn.push(((x, y), obj));
+            b.conn_at((x, y), obj);
         }
         TableId::Texts => {
             let t = doc.texts();
@@ -1562,35 +1427,36 @@ fn placed(b: &mut Build<'_>, key: ObjKey, at: Pt, o: Orient, name: &str, port: b
         bx[3].max(tb[3]),
     ];
     b.sc.objs.geom[obj as usize] = bx;
-    b.sc.conn.push((at, obj));
+    b.conn_at(at, obj);
 }
 
 /// Makes the junction dots at `points` (sorted, unique) match xschem's rule for the current
-/// wiring ([`Wiring::dot_at`]): adds missing dots, removes stale ones. Dots belong to no
+/// wiring ([`Wiring::dot_at`]): adds missing dots, kills stale ones. Dots belong to no
 /// object (owner `u32::MAX`): they are cues, not selectable records.
 fn redot(b: &mut Build<'_>, points: &[Pt]) {
     debug_assert!(points.windows(2).all(|w| w[0] < w[1]));
     for &p in points {
         let now = b.sc.wiring.dot_at(p);
-        let had = b.sc.wiring.dots.binary_search(&p);
-        match (had, now) {
-            (Err(at), true) => {
-                b.sc.wiring.dots.insert(at, p);
+        match (b.sc.wiring.dots.get(&p).copied(), now) {
+            (None, true) => {
+                let row = b.sc.prims.arcs.cx.len() as u32;
+                b.sc.wiring.dots.insert(p, row);
                 b.sc.prims.arc(p.0, p.1, DOT_R, 0, 360_000, LAYER_JUNCTION);
-                b.sc.owner.arcs.push(u32::MAX);
+                b.owned(2, u32::MAX);
             }
-            (Ok(at), false) => {
-                b.sc.wiring.dots.remove(at);
-                let (a, own) = (&mut b.sc.prims.arcs, &mut b.sc.owner.arcs);
-                let i = (0..own.len())
-                    .find(|&i| own[i] == u32::MAX && (a.cx[i], a.cy[i]) == p)
-                    .expect("a recorded dot is drawn");
-                for col in [&mut a.cx, &mut a.cy, &mut a.r, &mut a.start, &mut a.sweep] {
-                    col.swap_remove(i);
+            (Some(row), false) => {
+                b.sc.wiring.dots.remove(&p);
+                let r = row as usize;
+                assert_eq!(
+                    (b.sc.prims.arcs.cx[r], b.sc.prims.arcs.cy[r]),
+                    p,
+                    "the dot's row"
+                );
+                b.sc.prims.kill(2, r);
+                if let Some(k) = b.sc.killed.as_mut() {
+                    k[2].push(row);
                 }
-                a.layer.swap_remove(i);
-                a.style.swap_remove(i);
-                own.swap_remove(i);
+                b.sc.dead += 1;
             }
             _ => {}
         }
@@ -1700,7 +1566,7 @@ fn symbol(b: &mut Build<'_>, doc: &Document) {
             g[2].max(tb[2]),
             g[3].max(tb[3]),
         ];
-        b.sc.conn.push((q, obj));
+        b.conn_at(q, obj);
     }
 }
 
@@ -1772,28 +1638,20 @@ fn hit_one(
 /// polylines, polygons, texts: kinds 0–5) then row: what [`marks`] and [`push_moved`] read.
 /// Computed once per selection or scene change, so a move preview frame costs O(selection).
 ///
-/// Cost: one pass over the owner columns.
+/// Cost: O(selection · log rows) to find each object's rows by its stamp, plus a sort of the
+/// rows found.
 pub fn selected_prims(sc: &Scene, selected: &Selected, out: &mut Vec<(u8, u32)>) {
     assert_eq!(selected.universe(), sc.objs.len());
     out.clear();
-    if selected.is_empty() {
-        return;
-    }
-    let o = &sc.owner;
-    let owners = [
-        &o.lines,
-        &o.rects,
-        &o.arcs,
-        &o.polylines,
-        &o.polygons,
-        &o.texts,
-    ];
-    for (kind, col) in owners.into_iter().enumerate() {
-        for (row, &w) in col.iter().enumerate() {
-            if selected.contains(w) {
-                out.push((kind as u8, row as u32));
-            }
+    for kind in 0..6 {
+        let at = out.len();
+        let stamps = sc.stamps.cols()[kind];
+        for &o in &selected.objs {
+            let rows = stamped(stamps, sc.objs.stamp[o as usize]);
+            debug_assert!(rows.clone().all(|r| sc.owner.cols()[kind][r] == o));
+            out.extend(rows.map(|r| (kind as u8, r as u32)));
         }
+        out[at..].sort_unstable();
     }
     assert!(out.len() <= sc.prims.len());
 }

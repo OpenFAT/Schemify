@@ -1125,9 +1125,8 @@ fn edit_frames(n: u32) -> Vec<(&'static str, [f64; 3], f64)> {
     done(&mut b, "move", &mut ticks);
     // A wire drawn with the wire tool: `w` at a free point, then a click.
     for k in 0..12 {
-        let from = b
-            .ed
-            .to_screen((tx - 90 * U + 200 * U * (k % 4 - 2), ty + 90 * U));
+        let from =
+            b.ed.to_screen((tx - 90 * U + 200 * U * (k % 4 - 2), ty + 90 * U));
         b.frame(
             &event(InputEvent::PointerMove {
                 x: from.0,
@@ -1161,12 +1160,11 @@ fn edit_frames(n: u32) -> Vec<(&'static str, [f64; 3], f64)> {
             b.frame(&key_event("q"), 300, false);
             b.click_node(&format!("dialog.props.val.{field}"), 300, false);
             b.frame(&key_event("Ctrl+A"), 30, false);
+            // A new value each time (an unchanged field commits nothing), unique names.
             let mut ev = InputEvents::default();
-            ev.push_text(match (field, k % 2) {
-                (0, 0) => "MA",
-                (0, _) => "MB",
-                (_, 0) => "2",
-                _ => "3",
+            ev.push_text(&match field {
+                0 => format!("MX{k}"),
+                _ => format!("{}", 2 + k),
             });
             b.frame(&ev, 30, false);
             b.click_node("dialog.props.ok", 300, true);

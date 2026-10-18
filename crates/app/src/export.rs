@@ -22,7 +22,7 @@
 //! differences do not reach the bytes; font tables are written from ordered maps.
 
 use schemify_format::format_coord;
-use schemify_render::canvas::{CanvasPrims, LAYERS, LineStyle, Palette};
+use schemify_render::canvas::{CanvasPrims, LAYER_DEAD, LAYERS, LineStyle, Palette};
 
 use crate::scene::Scene;
 
@@ -39,8 +39,12 @@ pub struct Look {
 }
 
 impl Look {
-    /// `0xRRGGBB` of layer `l` as exported, or `None` when the layer is hidden (alpha 0).
+    /// `0xRRGGBB` of layer `l` as exported, or `None` when the layer is hidden (alpha 0) or
+    /// the row dead (`LAYER_DEAD`, a scene's removed row).
     fn rgb(&self, l: u8) -> Option<u32> {
+        if l == LAYER_DEAD {
+            return None;
+        }
         let c = self.palette.color[usize::from(l) % LAYERS];
         if c & 0xff == 0 {
             return None;
@@ -127,36 +131,44 @@ pub fn subset(sc: &Scene, keep: &[bool]) -> CanvasPrims {
     out
 }
 
-/// World bounds `[x0, y0, x1, y1]` of everything in `prims` (`None` when empty).
+/// World bounds `[x0, y0, x1, y1]` of every live row of `prims` (`None` when there is none).
 pub fn bounds(prims: &CanvasPrims) -> Option<[i32; 4]> {
     let mut b = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
     let mut grow = |x: i32, y: i32| {
         b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
     };
+    let live = |layer: &[u8], i: usize| layer[i] != LAYER_DEAD;
     let l = &prims.lines;
-    for i in 0..l.x0.len() {
+    for i in (0..l.x0.len()).filter(|&i| live(&l.layer, i)) {
         grow(l.x0[i], l.y0[i]);
         grow(l.x1[i], l.y1[i]);
     }
     let r = &prims.rects;
-    for i in 0..r.x0.len() {
+    for i in (0..r.x0.len()).filter(|&i| live(&r.layer, i)) {
         grow(r.x0[i], r.y0[i]);
         grow(r.x1[i], r.y1[i]);
     }
     let a = &prims.arcs;
-    for i in 0..a.cx.len() {
+    for i in (0..a.cx.len()).filter(|&i| live(&a.layer, i)) {
         grow(a.cx[i] - a.r[i], a.cy[i] - a.r[i]);
         grow(a.cx[i] + a.r[i], a.cy[i] + a.r[i]);
     }
     for polys in [&prims.polylines, &prims.polygons] {
-        for j in 0..polys.x.len() {
-            grow(polys.x[j], polys.y[j]);
+        for k in (0..polys.end.len()).filter(|&k| live(&polys.layer, k)) {
+            let start = if k == 0 { 0 } else { polys.end[k - 1] as usize };
+            for j in start..polys.end[k] as usize {
+                grow(polys.x[j], polys.y[j]);
+            }
         }
     }
     let t = &prims.texts;
     let mut start = 0usize;
     for i in 0..t.x.len() {
         let end = t.end[i] as usize;
+        if !live(&t.layer, i) {
+            start = end;
+            continue;
+        }
         let n = t.text[start..end].chars().count().max(1) as i64;
         let w = (i64::from(t.size[i]) * 6 * n / 10).min(i64::from(i32::MAX / 4)) as i32;
         grow(t.x[i], t.y[i]);

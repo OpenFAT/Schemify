@@ -1821,7 +1821,7 @@ impl Editor {
         let Some(doc) = p.doc(h) else {
             return Vec::new();
         };
-        let mut occupied: Vec<Pt> = self.scene.conn.iter().map(|c| c.0).collect();
+        let mut occupied: Vec<Pt> = self.scene.conn_points().map(|c| c.0).collect();
         occupied.sort_unstable();
         let count = |q: Pt| {
             let lo = occupied.partition_point(|&x| x < q);
@@ -2465,7 +2465,8 @@ impl Editor {
                 .texts
                 .iter()
                 .copied()
-                .filter(|&o| keep.get(o as usize).copied().unwrap_or(true))
+                // As `subset` keeps them: a dead row (owner `u32::MAX`) is not in `out`.
+                .filter(|&o| keep.get(o as usize).copied().unwrap_or(false))
                 .collect();
             for i in 0..pt.x.len() {
                 let end = pt.end[i] as usize;

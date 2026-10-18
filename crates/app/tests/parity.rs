@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use schemify_app::commands::Target;
 use schemify_app::editor::{Editor, Options, Tool};
 use schemify_doc::TableId;
+use schemify_render::canvas::LAYER_DEAD;
 use schemify_ui::{Button, InputEvent, InputEvents};
 
 const UI: &str = include_str!("../../../ui/default-plugin/ui.records");
@@ -899,7 +900,7 @@ fn rotated_texts_draw_turned() {
     );
     let p = &s.ed.scene().prims.texts;
     let i = (0..p.x.len())
-        .find(|&i| p.x[i] == -80 * U && p.y[i] == -130 * U)
+        .find(|&i| p.x[i] == -80 * U && p.y[i] == -130 * U && p.layer[i] != LAYER_DEAD)
         .expect("the text is drawn at its anchor");
     assert_eq!(p.rot[i], 1, "a quarter turn");
     // Its box turned with it: taller than wide now.
