@@ -523,7 +523,8 @@ pub struct Editor {
     scene: Scene,
     overlay: CanvasPrims,
     marks: Marks,
-    selected: Vec<bool>,
+    /// The active level's selection as scene object indices (rebuilt with the marks).
+    selected: scene::Selected,
     palette: Palette,
     sel_color: u32,
     /// The gesture in progress.
@@ -753,7 +754,7 @@ impl Editor {
             scene: Scene::default(),
             overlay: CanvasPrims::default(),
             marks: Marks::default(),
-            selected: Vec::new(),
+            selected: scene::Selected::default(),
             palette: Palette::xschem_dark(),
             sel_color: 0xe0e0_e0ff,
             tool: Tool::Idle,
@@ -3364,7 +3365,7 @@ impl Editor {
                                 *p == w
                                     && (f64::from(p.0) - raw.0).abs() <= tol
                                     && (f64::from(p.1) - raw.1).abs() <= tol
-                                    && self.selected.get(*o as usize) != Some(&true)
+                                    && !self.selected.contains(*o)
                             });
                             if let Some(&(p, _)) = on_conn {
                                 self.tool = Tool::Wire {
@@ -4233,12 +4234,10 @@ impl Editor {
             });
         }
         if self.sel_changed {
-            self.selected = vec![false; self.scene.objs.len()];
-            for &k in self.session.level().map_or(&[][..], |l| &l.sel) {
-                if let Some(i) = self.scene.find(k) {
-                    self.selected[i as usize] = true;
-                }
-            }
+            let sel = self.session.level().map_or(&[][..], |l| &l.sel);
+            let objs = sel.iter().filter_map(|&k| self.scene.find(k));
+            self.selected.set(self.scene.objs.len(), objs);
+            assert!(self.selected.len() <= sel.len());
             scene::marks(&self.scene, &self.selected, self.sel_color, &mut self.marks);
             self.canvas_gen[3] += 1;
             self.sel_changed = false;
