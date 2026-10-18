@@ -128,7 +128,7 @@ Coordinates are in xschem units with y pointing down; the bundled symbols put pi
 
 ### `.shprim`: a primitive
 
-The bundled resistor, `devices/res.shprim`:
+The bundled resistor, `crates/doc/devices/res.shprim`:
 
 ```
 schemify 1 shprim
@@ -346,7 +346,7 @@ open read-only in the editor.
 | `gnd`, `vdd` | Ground and supply symbols | p |
 
 `gnd` and `vdd` emit nothing into the netlist. To name a ground net, place a label `0` (as the
-RC bench above does). The sources live in [`devices/`](../../devices/) if you want to read a
+RC bench above does). The sources live in [`crates/doc/devices/`](../../crates/doc/devices/) if you want to read a
 cell's parameters and templates.
 
 ## The `.schemify/` directory

@@ -14,11 +14,8 @@ fn session(tag: &str) -> Session {
         std::env::temp_dir().join(format!("schemify-editor-pdk-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let cli = Path::new(env!("CARGO_MANIFEST_DIR")).join("../cli/tests/fixtures/tech");
+    // The fixture carries the PDK manager's maps in `maps/`.
     copy_dir(&cli, &dir);
-    copy_dir(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/pdk-manager/maps"),
-        &dir.join("maps"),
-    );
     std::fs::write(
         dir.join("schemify.project"),
         "schemify 1 project\nlib sky130_fd_pr path pdk/sky130/sky130_fd_pr\n",

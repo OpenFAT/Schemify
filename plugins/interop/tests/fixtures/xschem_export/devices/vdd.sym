@@ -1,6 +1,0 @@
-v {xschem version=3.4.7 file_version=1.2}
-K {type=label
-format="*.alias @lab"
-template="name=l1 lab=VDD"
-global=true}
-B 5 -1.25 -1.25 1.25 1.25 {name=p dir=inout}

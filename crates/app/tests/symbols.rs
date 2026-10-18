@@ -1,4 +1,4 @@
-//! The `devices/` contact sheet (`schemify-symbols` skill): every core cell placed with pin
+//! The `crates/doc/devices/` contact sheet (`schemify-symbols` skill): every core cell placed with pin
 //! stubs plus a 5-transistor OTA, rendered under the Modern preset in the dark and light
 //! canvas, at fit zoom and at a 4× crop. Re-bless with `SCHEMIFY_BLESS=1`; look at every
 //! image before committing it.

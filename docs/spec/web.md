@@ -94,7 +94,7 @@ Design (each job of a run, exactly where the native runner would start ngspice, 
 - **Result** (plugin-abi §7 amendment). The plugin writes the raw file to `<dir>/out.raw` (`fs_write`, grant `write_project`) and returns `job <job> done`, or `job <job> failed <message>`. The host takes `job` records after the delivery's file writes; `done` sends the raw file through `Results::record`, as a native job's, and `failed` (or the plugin trapping or unloading) fails the job with the message.
 - **Limits.** At most `workers` jobs handed off at once (default 4 on the web) and the run's timeout (1 h) per job. Cancel fails every handed-off job (`cancelled`); a later `job` record for it is ignored.
 - **Runner in the spine.** On the web `Run` holds a plugin runner with the native `Runner`'s five calls (`submit`, `poll`, `busy`, `cancel_all`, `save`), selected by `cfg` (ARCHITECTURE "Platform split"), so `sim` keeps one spine for both targets.
-- **Reference plugin** `plugins/remote-runner`: the endpoint URL comes from its manifest record (`plugin remote-runner … endpoint <url>`). It POSTs the netlist to the endpoint and expects `200` with the ngspice raw file as the body. The smoke test serves a fake endpoint that returns a canned raw file.
+- **Reference plugin** `remote-runner` (its own repository, docs/plugins/): the endpoint URL comes from its manifest record (`plugin remote-runner … endpoint <url>`). It POSTs the netlist to the endpoint and expects `200` with the ngspice raw file as the body. The smoke test serves a fake endpoint that returns a canned raw file.
 
 ## 7. Rendering
 

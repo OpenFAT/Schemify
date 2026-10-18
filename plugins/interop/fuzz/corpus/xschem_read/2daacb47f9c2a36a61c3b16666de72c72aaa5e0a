@@ -1,6 +1,0 @@
-v {xschem versios1 ameï¿file_version=1. 0 {name=p1 lab=A}
-C {opin.sym} 0 -50 0 0 {name=p2 lab=Z}
-C {devices/nmosn=1.2}
-N 0 -30 0 -50 {lab=Z}
-C {ipin.sym} -40 0 0 0 {name=A}
-C {opin.sym} 0 -50 0 0 {name=p2 lab={name=l2 lab=0}

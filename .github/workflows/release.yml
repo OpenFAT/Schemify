@@ -1,5 +1,5 @@
-# Release tier (docs/dev/testing.md § Tiers): on a `v*` tag, build `schemify`, `schemify-gui` and `schemify-interop`
-# (the interop plugin's native CLI, from the plugins workspace) for Linux, macOS (Apple silicon and Intel) and Windows plus the web bundle, and attach them to a *draft*
+# Release tier (docs/dev/testing.md § Tiers): on a `v*` tag, build `schemify` and `schemify-gui` for Linux,
+# macOS (Apple silicon and Intel) and Windows plus the web bundle, and attach them to a *draft*
 # GitHub release whose notes are the release checklist (.github/release-notes.md): a maintainer ticks
 # it, then publishes. A push to `ci/release*` runs the same builds as a dry run and publishes nothing.
 name: release
@@ -48,8 +48,6 @@ jobs:
         run: |
           target="${{ matrix.target && format('--target {0}', matrix.target) || '' }}"
           cargo build --release --locked $target -p schemify-cli -p schemify-app
-          cargo build --release --locked $target --manifest-path plugins/Cargo.toml -p interop \
-            --features cli --bin schemify-interop
       - name: package
         run: |
           bin="target/${{ matrix.target }}/release"
@@ -59,7 +57,6 @@ jobs:
           dir="schemify-${GITHUB_REF_NAME//\//-}-${{ matrix.name }}"
           mkdir "$dir"
           cp "$bin/schemify${{ matrix.exe }}" "$bin/schemify-gui${{ matrix.exe }}" \
-            "plugins/$bin/schemify-interop${{ matrix.exe }}" \
             README.md LICENSE "$dir"/
           if [ "${{ runner.os }}" = Windows ]; then
             7z a -bd "$dir.zip" "$dir" >/dev/null
@@ -89,15 +86,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - run: |
-          cargo build --release --locked -p schemify-cli -p schemify-app
-          cargo build --release --locked --manifest-path plugins/Cargo.toml -p interop \
-            --features cli --bin schemify-interop
-          cp plugins/target/release/schemify-interop target/release/
+      - run: cargo build --release --locked -p schemify-cli -p schemify-app
       - name: glibc floor (no symbol newer than GLIBC_${{ env.GLIBC_MAX }})
         run: |
           command -v objdump >/dev/null || dnf install -y -q binutils
-          for b in schemify schemify-gui schemify-interop; do
+          for b in schemify schemify-gui; do
             newest="$(objdump -T "target/release/$b" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -n 1)"
             echo "$b needs glibc $newest"
             [ "$(printf '%s\n%s\n' "$newest" "$GLIBC_MAX" | sort -V | tail -n 1)" = "$GLIBC_MAX" ] \
@@ -107,7 +100,7 @@ jobs:
         run: |
           dir="schemify-${GITHUB_REF_NAME//\//-}-linux-x86_64"
           mkdir "$dir"
-          cp target/release/schemify target/release/schemify-gui target/release/schemify-interop \
+          cp target/release/schemify target/release/schemify-gui \
             README.md LICENSE "$dir"/
           tar czf "$dir.tar.gz" "$dir"
       - uses: actions/upload-artifact@v4
