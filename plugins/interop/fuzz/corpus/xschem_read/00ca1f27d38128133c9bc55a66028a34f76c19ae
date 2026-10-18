@@ -1,6 +1,0 @@
-v {xschem version=3.4.7 file_version=1me=g dir=in}
-B 5 17.5 27.5 22.5 32.5 {name=s dir=inou 5Br=l=0.18u m=1"}
-B 5 17.5 -32.5 22.5 -27.5 {name=d dir=in=g dir=iô}
-B 5 1.75 27.5 22.5 32.5 {name=s dir=inout}
-B 5 17.5 25 -17.5 2.5 {name=g dir=in}
-B 5 17.5 27.5 22.5 32.5 {name=s dir=inou{name=b dir=in}

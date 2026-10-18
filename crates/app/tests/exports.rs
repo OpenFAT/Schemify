@@ -64,7 +64,7 @@ fn png_exports_scale_and_cover_the_whole_drawing() {
     );
     // Scale 2 (192 dpi): the same view, twice the pixels a side.
     run(&mut s, "options.png_export_scale", "2");
-    assert_eq!(s.ed.opts.png_scale, 200);
+    assert_eq!(s.ed.opts().png_scale, 200);
     let two = s.dir.join("two.png");
     run(
         &mut s,
@@ -89,7 +89,7 @@ fn png_exports_scale_and_cover_the_whole_drawing() {
     // Negative space: an out-of-range scale is refused and changes nothing; an image over
     // 16384 px a side is refused and writes no file.
     run(&mut s, "options.png_export_scale", "100");
-    assert_eq!(s.ed.opts.png_scale, 200);
+    assert_eq!(s.ed.opts().png_scale, 200);
     run(&mut s, "options.png_export_scale", "16");
     assert!(r.width() * 16.0 > 16384.0, "the canvas overflows at 16×");
     let huge = s.dir.join("huge.png");
@@ -100,9 +100,9 @@ fn png_exports_scale_and_cover_the_whole_drawing() {
     );
     assert!(!huge.exists());
     assert!(
-        s.ed.session.status.contains("lower the PNG scale"),
+        s.ed.session().status.contains("lower the PNG scale"),
         "{}",
-        s.ed.session.status
+        s.ed.session().status
     );
 }
 
@@ -124,7 +124,7 @@ fn pdf_and_eps_fit_the_export_page_and_embed_the_ui_font() {
     assert!(t.contains("/FontFile2 ") && t.contains("/ToUnicode "));
     assert!(!t.contains("Helvetica"));
     run(&mut s, "options.export_page_size", "letter portrait");
-    assert_eq!(s.ed.opts.export_page.name(), "letter portrait");
+    assert_eq!(s.ed.opts().export_page.name(), "letter portrait");
     run(
         &mut s,
         "file.image_export.pdf_ps_export_full",
@@ -143,8 +143,8 @@ fn pdf_and_eps_fit_the_export_page_and_embed_the_ui_font() {
     assert!(e.contains("/FontType 42 def") && e.contains("glyphshow"));
     // Negative space: an unknown page is refused and the page stays.
     run(&mut s, "options.export_page_size", "a9");
-    assert!(s.ed.session.status.contains("not a page"));
-    assert_eq!(s.ed.opts.export_page.name(), "letter portrait");
+    assert!(s.ed.session().status.contains("not a page"));
+    assert_eq!(s.ed.opts().export_page.name(), "letter portrait");
 }
 
 /// Tools → Package status shows what `schemify pack status` prints for the same config.
@@ -162,7 +162,7 @@ fn packages_view_shows_pack_status() {
     );
     let mut s = open_with_config(&dir, "top.shcomp", &init);
     run(&mut s, "tools.package_status", "");
-    let v = s.ed.session.text_view().expect("a packages tab");
+    let v = s.ed.session().text_view().expect("a packages tab");
     assert_eq!(v.title, "packages");
     let body = v.body.clone();
     // Oracle: the core's `schemify pack status` report for the same config.
@@ -178,7 +178,7 @@ fn packages_view_shows_pack_status() {
     // Negative space: without a user config there is nothing to list.
     let mut clean = Session::open("inv", "top.shcomp", "packages-clean", true);
     run(&mut clean, "tools.package_status", "");
-    let v = clean.ed.session.text_view().expect("a packages tab");
+    let v = clean.ed.session().text_view().expect("a packages tab");
     assert!(v.body.contains("no user config"), "{}", v.body);
 }
 
@@ -270,5 +270,8 @@ fn fixture_copies_leave_editor_state_behind() {
     };
     s.frame(InputEvents::default());
     s.frame(InputEvents::default());
-    assert!(s.ed.shell.ui.dialog().is_none(), "no crash-recovery prompt");
+    assert!(
+        s.ed.shell().ui().dialog().is_none(),
+        "no crash-recovery prompt"
+    );
 }

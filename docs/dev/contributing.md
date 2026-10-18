@@ -17,9 +17,14 @@ Load these before writing or reviewing code. In Claude Code they are user skills
 | Skill | Use it for |
 |---|---|
 | `data-oriented-design` | Every struct or table layout. Answer its six questions in writing first: narrowest types, SoA by default, existence-based tables, handles instead of pointers. |
-| `simd-loops` | Every hot loop over large data (parsers, connectivity, netlist emission, waveform columns). Triage first; the scalar loop stays as the tail and the oracle. |
+| `codebase-clean-code` | Program shape: owners (crates), one spine per pipeline, request tables, variation by data. Every new seam names its ladder rung and the change drill it passes (architecture.md). |
+| `rust` | Edition 2024 on 1.95: types (newtypes, typed handles, niches, no `_` arm on boundary enums), memory (arenas, `Vec` + indices), and `zero-cost.md`: an abstraction at ladder rung 5 or above enters a hot path only with an `asm_probe` verdict. Explicit SIMD is `fearless_simd` (`simd-first.md`). |
+| `gui-architecture` | The editor's UI: the model is owned tables, updates are requests to the owner, the view is a pure function of the tables, the canvas renders straight from tables, the app idles at 0% CPU, frames are tested headless (D4/D6/D39). |
+| `simd-loops` | Every hot loop over large data (parsers, connectivity, netlist emission, waveform columns). Triage first; the scalar loop stays as the tail and the oracle. A data-dependent branch goes to `branchless` first. |
+| `assertions` | Rule 5: at least two asserts per function on average, stated capacities, bounded loops; asserts for programmer errors, `Result` for expected failures. |
 | `doc-comments` | Every `pub` item. Each `///` states something the signature can't: a precondition, invalidation, ownership, failure, cost or reason. |
-| `codebase-clean-code` | Program shape: tables, transforms, one spine per pipeline, one owner per table, variation by data. State the change radius before coding a feature. |
+
+Conflict rule: data layout beats code brevity; `ponytail` decides how little code to write, never what shape the data takes. The remaining rulings are in `codebase-rules`.
 
 UI and visual work has its own guides in this repository, under [skills/](skills/). Read them as documents (they are no longer auto-loaded):
 
@@ -28,17 +33,17 @@ UI and visual work has its own guides in this repository, under [skills/](skills
 | [analog-eda-ux](skills/analog-eda-ux/SKILL.md) | Designer-taste rules and the review checklist for any UI surface. |
 | [schemify-theme](skills/schemify-theme/SKILL.md) | Colour and chrome tokens; `python3 docs/dev/skills/schemify-theme/check_theme.py` gates them. |
 | [schemify-ui-loop](skills/schemify-ui-loop/SKILL.md) | The edit, render, critique, bless loop for the default UI's look. |
-| [schemify-symbols](skills/schemify-symbols/SKILL.md) | Drawing rules for the device symbols in `devices/`. |
+| [schemify-symbols](skills/schemify-symbols/SKILL.md) | Drawing rules for the device symbols in `crates/doc/devices/`. |
 
 ## Repository layout
 
 | Path | What |
 |---|---|
 | `crates/` | The Rust workspace: the headless core (`cli`), the editor (`app`) and the libraries they share. [architecture.md](architecture.md) has the map. |
-| `devices/` | The bundled `core:` device library (`.shprim`), compiled into the binary. |
-| `ui/default-plugin/` | The default UI: a wasm plugin (menus, toolbar, keys, palette) embedded in the editor as `crates/app/assets/default_ui.wasm`. |
-| `plugins/` | The optional plugins: `interop`, `pdk-manager`, `gmid-lut`, `cktimg` (with cktImg as the submodule `plugins/cktimg/vendor`). `plugins/Cargo.toml` is the wasm guest workspace for these, the default UI and the host's test guests in `crates/plugin/tests/guests/`. |
-| `tests/` | Cross-crate checks: the xschem corpus differential, determinism, fuzz replay, perf, the web smoke test. |
+| `crates/doc/devices/` | The bundled `core:` device library (`.shprim`), compiled into the binary. |
+| `ui/` | The default UI (`ui/default-plugin/`): a wasm plugin (menus, toolbar, keys, palette) embedded in the editor as `crates/app/assets/default_ui.wasm`. `ui/Cargo.toml` is the wasm guest workspace for it and the host's test guests in `crates/plugin/tests/guests/`. |
+| `examples/plugins/` | Example plugins as git submodules, each a standalone repository: `interop` ([Schemify-Interop](https://github.com/OmarSiwy/Schemify-Interop)), `pdk-manager` ([Schemify-PDK-Manager](https://github.com/OmarSiwy/Schemify-PDK-Manager)), `cktImg` ([cktImg](https://github.com/OmarSiwy/cktImg)), `GmIDVisualizer` (the `gmid-lut` plugin, [GmIDVisualizer](https://github.com/OmarSiwy/GmIDVisualizer)). Nothing here builds them; change them in their own repositories ([../plugins/](../plugins/README.md)). |
+| `tests/` | Cross-crate checks: determinism, fuzz replay, perf, the web smoke test. |
 | `tools/` | `spicecmp` (semantic netlist comparison) and benchmarking helpers. |
 | `docs/` | The user guide, the specs and these contributor notes. |
 
@@ -58,7 +63,7 @@ UI and visual work has its own guides in this repository, under [skills/](skills
 
 - `main` is the integration branch (remote `origin` = github.com/OmarSiwy/Schemify, public). Work on a branch and open a PR; CI work may push `ci/*` branches. Don't keep extra git worktrees around.
 - Build and test the crate you changed: `cargo test -p schemify-<crate>`. Edition 2024, stable toolchain pinned to the `rust-version` in `Cargo.toml`. `cargo clippy -p <crate> -- -D warnings` must be clean, and run `cargo fmt`.
-- `nix develop` gives the pinned toolchain, Zig 0.17 (for cktImg), the simulators, xschem and the GUI libraries.
+- `nix develop` gives the pinned toolchain (Rust 1.95.0 through rust-overlay, rust-lld included for the wasm guests), the simulators and the GUI libraries.
 - Changes to the root `Cargo.toml` dependency list or `Cargo.lock` go through the maintainer. If you need a dependency or an API change in another crate, say so in the PR.
 
 ### Memory limits on the shared build machine
@@ -71,17 +76,17 @@ systemd-run --user --scope -q -p MemoryMax=6G -p MemorySwapMax=0 <command>
 
 Use 7G when at most three jobs share the machine and 6G with four. Exit code 137 means the cap killed the process: find the cause instead of raising the cap. Also cap parallelism with `export CARGO_BUILD_JOBS=3` (4 with three jobs or fewer), `zig build -j4` and `cargo test -- --test-threads=4`.
 
-Check `free -g` before a release or LTO build and wait if less than 12 GB is available. Run one heavy job at a time (a release or LTO build, the wasm guest build, a Zig build, the full corpus differential). Prefer debug builds for tests and use `--release` only for the perf checks that need it. Native code reached through FFI (cktImg) has no wasm memory cap, so bound its inputs. Disk is tight too: run `cargo clean` when you finish a large build you won't reuse.
+Check `free -g` before a release or LTO build and wait if less than 12 GB is available. Run one heavy job at a time (a release or LTO build, the wasm guest build). Prefer debug builds for tests and use `--release` only for the perf checks that need it. Disk is tight too: run `cargo clean` when you finish a large build you won't reuse.
 
 ### Wasm guests
 
-The plugins, the default UI and the host's test guests are wasm modules committed next to their users. `plugins/build.sh` rebuilds all of them byte-reproducibly (host paths are remapped), and CI's `plugins` job fails when a committed module differs from its rebuild. After editing any guest or `crates/abi`, run:
+The default UI and the host's test guests are wasm modules committed next to their users. `ui/build.sh` rebuilds them byte-reproducibly (host paths are remapped), and CI's `guests` job fails when a committed module differs from its rebuild. After editing any guest or `crates/abi`, run:
 
 ```sh
-nix develop -c plugins/build.sh
+nix develop -c ui/build.sh
 ```
 
-and commit every `.wasm` it changes. Without Nix, download the `plugin-guests` artifact of your PR's CI run instead (`gh run download <run> -n plugin-guests -D <tmp>`, then `cp -r <tmp>/. .`).
+and commit every `.wasm` it changes. Without Nix, download the `guests` artifact of your PR's CI run instead (`gh run download <run> -n guests -D <tmp>`, then `cp -r <tmp>/. .`). A change to `crates/abi` or another crate the plugins use breaks them only when they bump their pinned Schemify revision; their nightly job against `main` reports it ([../plugins/testing.md](../plugins/testing.md)).
 
 ## Running the editor
 

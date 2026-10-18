@@ -24,7 +24,7 @@ fn draws_a_wire_and_an_l_wire_one_undo_per_gesture() {
     let before = s.text();
     s.move_to((300 * U, 100 * U));
     s.key("w");
-    assert!(matches!(s.ed.tool, Tool::Wire { .. }));
+    assert!(matches!(s.ed.tool(), Tool::Wire { .. }));
     s.move_to((400 * U, 120 * U));
     s.click((400 * U, 120 * U));
     assert!(
@@ -64,7 +64,11 @@ fn places_moves_rotates_and_flips_an_instance() {
     s.click_node("dialog.choose.filter");
     s.type_text("nmos");
     s.click_node("dialog.choose.row.0");
-    assert!(matches!(s.ed.tool, Tool::Place { .. }), "{:?}", s.ed.tool);
+    assert!(
+        matches!(s.ed.tool(), Tool::Place { .. }),
+        "{:?}",
+        s.ed.tool()
+    );
     s.move_to((300 * U, -100 * U));
     s.click((300 * U, -100 * U));
     let t = s.text();
@@ -167,8 +171,8 @@ fn descend_edit_return_keeps_per_document_undo() {
     s.click((10 * U, 0)); // x1
     s.key("e");
     let (child, _) = s.ed.active().unwrap();
-    assert!(s.ed.session.name(child).starts_with("inv"));
-    assert_eq!(s.ed.session.hier_path(), ".x1.");
+    assert!(s.ed.session().name(child).starts_with("inv"));
+    assert_eq!(s.ed.session().hier_path(), ".x1.");
     let inv = s.text();
     assert!(inv.contains("dev:pmos"));
     // Delete the "CMOS inverter" text in the child.
@@ -176,7 +180,7 @@ fn descend_edit_return_keeps_per_document_undo() {
     s.key("Del");
     assert!(lines(&s.text(), "text ").is_empty(), "{}", s.text());
     s.key("Ctrl+E");
-    assert_eq!(s.ed.session.hier_path(), ".");
+    assert_eq!(s.ed.session().hier_path(), ".");
     assert_eq!(s.text(), top, "the parent is untouched");
     // Back down: the child's undo stack survived the navigation (D28).
     s.click((10 * U, 0));
@@ -246,12 +250,12 @@ fn escape_cancels_dialogs_and_ok_keeps_unsubmitted_typing() {
     s.type_text("zzz");
     s.key("Esc"); // blurs the focused field
     s.key("Esc"); // closes the dialog: cancel
-    assert!(s.ed.shell.ui.dialog().is_none());
+    assert!(s.ed.shell().ui().dialog().is_none());
     assert_eq!(s.text(), before, "cancel writes nothing");
     s.move_to((300 * U, 100 * U));
     s.key("w");
     assert!(
-        matches!(s.ed.tool, Tool::Wire { .. }),
+        matches!(s.ed.tool(), Tool::Wire { .. }),
         "editing keys work again"
     );
     s.key("Esc");
@@ -298,9 +302,9 @@ fn save_writes_the_canonical_file_and_clears_dirty() {
     s.click((150 * U, 0));
     s.key("Del");
     let (h, _) = s.ed.active().unwrap();
-    assert!(s.ed.session.project.is_dirty(h));
+    assert!(s.ed.session().project.is_dirty(h));
     s.key("Ctrl+S");
-    assert!(!s.ed.session.project.is_dirty(h));
+    assert!(!s.ed.session().project.is_dirty(h));
     let on_disk = std::fs::read_to_string(s.dir.join("top.shcomp")).unwrap();
     assert_eq!(on_disk, s.text());
     assert!(!on_disk.contains("name x2"));
@@ -359,32 +363,32 @@ fn zoom_pan_and_snap_keys() {
     );
     s.key("Left");
     assert!(s.ed.camera().cx < c0.cx);
-    assert_eq!(s.ed.opts.snap, 10 * U);
+    assert_eq!(s.ed.opts().snap, 10 * U);
     s.key("g");
-    assert_eq!(s.ed.opts.snap, 5 * U);
+    assert_eq!(s.ed.opts().snap, 5 * U);
     s.key("Shift+G");
     s.key("Shift+G");
-    assert_eq!(s.ed.opts.snap, 20 * U);
+    assert_eq!(s.ed.opts().snap, 20 * U);
     s.key("%");
-    assert!(!s.ed.opts.show_grid);
+    assert!(!s.ed.opts().show_grid);
 }
 
 #[test]
 fn tabs_open_new_and_switch() {
     let mut s = Session::open("inv", "top.shcomp", "tabs", true);
     s.key("Ctrl+N");
-    assert_eq!(s.ed.session.tabs.len(), 2);
-    assert_eq!(s.ed.session.active, 1);
+    assert_eq!(s.ed.session().tabs.len(), 2);
+    assert_eq!(s.ed.session().active, 1);
     s.key("Ctrl+Left");
-    assert_eq!(s.ed.session.active, 0);
+    assert_eq!(s.ed.session().active, 0);
     s.click_node("tab.1");
-    assert_eq!(s.ed.session.active, 1);
+    assert_eq!(s.ed.session().active, 1);
     // Ctrl+O lists cells; opening one adds a tab.
     s.key("Ctrl+O");
     s.click_node("dialog.choose.filter");
     s.type_text("pmos");
     s.click_node("dialog.choose.row.0");
-    assert_eq!(s.ed.session.tabs.len(), 3);
+    assert_eq!(s.ed.session().tabs.len(), 3);
     let (_, view) = s.ed.active().unwrap();
     assert_eq!(
         view,
@@ -397,7 +401,7 @@ fn tabs_open_new_and_switch() {
 fn draws_instances_from_the_library_index_without_opening_their_cells() {
     let s = Session::open("inv", "top.shcomp", "index-symbols", false);
     assert_eq!(
-        s.ed.session.project.handles().count(),
+        s.ed.session().project.handles().count(),
         1,
         "only the edited cell is open"
     );

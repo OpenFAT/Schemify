@@ -1,0 +1,35 @@
+# Guest modules of the core, built for wasm32-unknown-unknown only: the bundled default UI
+# (`default-plugin`) and the plugin host's test guests (`../crates/plugin/tests/guests`, which
+# point back here with `package.workspace`). The optional plugins live in their own
+# repositories (docs/plugins/; examples in `examples/plugins/`).
+#
+# A workspace of its own, not a member of the root one: the root globs only `crates/*`
+# and `tools/*`, so `cargo test --workspace` never builds these cdylibs (their `schemify`
+# imports would not link natively on macOS/Windows). Build and refresh the committed modules
+# with `ui/build.sh`.
+[workspace]
+resolver = "3"
+members = [
+  "default-plugin",
+  "../crates/plugin/tests/guests/hello",
+  "../crates/plugin/tests/guests/bad-actor",
+  "../crates/plugin/tests/guests/gmid-stub",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.95"
+
+[workspace.dependencies]
+schemify-abi = { path = "../crates/abi", features = ["guest"] }
+
+# Small fixtures: size over speed, no unwinding (a panic is a trap the host reports).
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = false

@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
 # Seeds a fuzz corpus directory (nightly `fuzz` and `fuzz-corpus` jobs), from the repository root:
 #
-#   tests/fuzz/seeds.sh <target> <corpus dir> [--fetched]
+#   tests/fuzz/seeds.sh <target> <corpus dir>
 #
-# Seeds are this repository's own files. `--fetched` adds the corpus sources `fetch.sh`
-# downloads (xschem_read: real PDK and xschem library files, docs/dev/testing.md); those include GPL
-# xschem data, so a corpus seeded with them is never committed (the `fuzz-corpus` job omits it).
-set -eu # no pipefail: `head` closes the find pipe early on purpose
+# Seeds are this repository's own files. The interop plugin's harnesses (xschem_read,
+# sfyx_import) and their seeds live in its repository (github.com/OmarSiwy/Schemify-Interop).
+set -eu
 
 target="$1"
 dir="$2"
-fetched="${3:-}"
 mkdir -p "$dir"
 case "$target" in
   parse)
@@ -23,16 +21,6 @@ case "$target" in
         { cat "$f"; printf '\0'; cat "$g"; printf '\0'; cat "$f"; } >"$dir/$(basename "$f")-$(basename "$g")"
       done
     done
-    ;;
-  xschem_read)
-    roots="tests/determinism/xschem"
-    if [ "$fetched" = --fetched ]; then
-      tests/corpus/fetch.sh >/dev/null
-      roots="$roots tests/corpus/.cache/src"
-    fi
-    # shellcheck disable=SC2086 # roots is a list of paths without spaces
-    find $roots \( -name '*.sch' -o -name '*.sym' \) -type f -size -64k | head -n 4000 |
-      while read -r f; do cp "$f" "$dir/$(echo "$f" | sha1sum | cut -c1-16)"; done
     ;;
   compile | rpc_decode) ;; # libFuzzer starts from the checked-in corpus (or empty)
   *)

@@ -3,16 +3,19 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    # plugins/cktimg/vendor needs Zig 0.17 (build.zig.zon), which nixpkgs doesn't ship yet.
-    zig-overlay.url = "github:mitchellh/zig-overlay";
-    zig-overlay.inputs.nixpkgs.follows = "nixpkgs";
+    # The pinned Rust toolchain (`rust-version` in Cargo.toml, CI's RUST_TOOLCHAIN): nixpkgs
+    # ships only its current rustc, and the guest modules' bytes depend on the compiler.
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
     {
       self,
       nixpkgs,
-      zig-overlay,
+      rust-overlay,
     }:
     let
       systems = [
@@ -21,7 +24,37 @@
         "x86_64-darwin"
         "aarch64-darwin"
       ];
-      forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+      forAll =
+        f:
+        nixpkgs.lib.genAttrs systems (
+          system:
+          f (
+            import nixpkgs {
+              inherit system;
+              overlays = [ rust-overlay.overlays.default ];
+            }
+          )
+        );
+
+      # Rust 1.95.0 with the guest targets; it ships rust-lld, which links the wasm guests.
+      toolchain =
+        pkgs:
+        pkgs.rust-bin.stable."1.95.0".default.override {
+          extensions = [
+            "rust-src"
+            "rust-analyzer"
+          ];
+          targets = [
+            "wasm32-unknown-unknown"
+            "wasm32-wasip1"
+          ];
+        };
+      rustPlatform =
+        pkgs:
+        pkgs.makeRustPlatform {
+          cargo = toolchain pkgs;
+          rustc = toolchain pkgs;
+        };
 
       # winit and wgpu `dlopen` these at runtime (Linux): Wayland first, X11 fallback;
       # fontconfig for the system-font fallback of glyphs outside the embedded UI font.
@@ -70,15 +103,14 @@
 
       schemify =
         pkgs:
-        pkgs.rustPlatform.buildRustPackage {
+        (rustPlatform pkgs).buildRustPackage {
           pname = "schemify";
           version = "0.1.0";
-          # Tracked files only (git), so the gitignored corpus cache never enters the store.
+          # Tracked files only (git).
           src = self;
           cargoLock.lockFile = ./Cargo.lock;
           # D39: the headless core `schemify` (CLI, config, package manager) and the editor
-          # `schemify-gui` (`schemify edit` runs it); plugins are prebuilt wasm assets (the
-          # interop plugin's native CLI is the `interop` package below).
+          # `schemify-gui` (`schemify edit` runs it); the default UI is a prebuilt wasm asset.
           cargoBuildFlags = [
             "-p"
             "schemify-cli"
@@ -101,7 +133,7 @@
             # (-0.8 MB). buildRustPackage passes --target, so build scripts keep their defaults.
             RUSTFLAGS = pkgs.lib.optionalString pkgs.stdenv.isLinux "-C force-unwind-tables=no -C link-arg=-Wl,-z,pack-relative-relocs";
           };
-          # The suite needs a GPU, the fetched xschem corpus and simulators; run
+          # The suite needs a GPU and simulators; run
           # `cargo test --workspace` in the dev shell (CI does).
           doCheck = false;
           nativeBuildInputs = [ pkgs.makeWrapper ];
@@ -121,39 +153,11 @@
             platforms = systems;
           };
         };
-
-      # The interop plugin's native CLI (`schemify-interop xschem-import …`), from the plugins
-      # workspace (D24 as amended 2026-10-12: interop is a plugin, never part of the core).
-      interop =
-        pkgs:
-        pkgs.rustPlatform.buildRustPackage {
-          pname = "schemify-interop";
-          version = "0.1.0";
-          src = self;
-          cargoLock.lockFile = ./plugins/Cargo.lock;
-          buildAndTestSubdir = "plugins";
-          cargoBuildFlags = [
-            "-p"
-            "interop"
-            "--features"
-            "cli"
-            "--bin"
-            "schemify-interop"
-          ];
-          doCheck = false;
-          meta = {
-            description = "Schemify interop plugin, native CLI (xschem import)";
-            license = pkgs.lib.licenses.mit;
-            mainProgram = "schemify-interop";
-            platforms = systems;
-          };
-        };
     in
     {
       packages = forAll (pkgs: {
         default = schemify pkgs;
         schemify = schemify pkgs;
-        interop = interop pkgs;
         wasm-bindgen-cli = wasmBindgenCli pkgs;
       });
 
@@ -167,30 +171,16 @@
           type = "app";
           program = "${schemify pkgs}/bin/schemify";
         };
-        interop = {
-          type = "app";
-          program = "${interop pkgs}/bin/schemify-interop";
-        };
       });
 
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
           packages =
             (with pkgs; [
-              # Rust (nixpkgs' rustc ships the wasm32-unknown-unknown std).
-              rustc
-              cargo
-              clippy
-              rustfmt
-              rust-analyzer
-              # Plugins: wasm-ld (the nix rustc has no rust-lld); web glue.
-              lld
-              # plugins/cktimg/vendor (the cktimg plugin's layout engine, a Zig library with a C ABI).
-              zig-overlay.packages.${pkgs.stdenv.hostPlatform.system}."0.17.0"
+              # Rust 1.95.0: cargo, rustc, clippy, rustfmt, rust-analyzer, rust-lld (guests).
+              (toolchain pkgs)
+              # Web glue.
               (wasmBindgenCli pkgs)
-              # Golden corpus (tests/corpus): xschem to make goldens, tclsh for PDK generators.
-              xschem
-              tcl
               # Headless GUI runs and screenshots (docs/dev/contributing.md).
               cage
               grim

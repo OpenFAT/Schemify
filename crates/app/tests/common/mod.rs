@@ -158,21 +158,21 @@ impl Session {
 
     /// Clicks the UI node `id` (menus, dialog buttons, list rows).
     pub fn click_node(&mut self, id: &str) {
-        let s = &self.ed.shell;
+        let s = &self.ed.shell();
         let sym = s
-            .strings
+            .strings()
             .find(id)
             .unwrap_or_else(|| panic!("{id} interned"));
         let n = s
-            .tables
+            .tables()
             .nodes
             .find(sym)
             .unwrap_or_else(|| panic!("{id} composed"));
         let r = s
-            .layout
+            .layout()
             .row_of(n)
             .unwrap_or_else(|| panic!("{id} laid out"));
-        let rect = s.layout.rect()[r];
+        let rect = s.layout().rect()[r];
         let (x, y) = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
         let mut ev = InputEvents::default();
         ev.push(InputEvent::PointerMove { x, y });
@@ -192,7 +192,7 @@ impl Session {
     /// Canonical text of the active document.
     pub fn text(&self) -> String {
         let (h, _) = self.ed.active().expect("a tab");
-        self.ed.session.project.doc(h).expect("open").canonical()
+        self.ed.session().project.doc(h).expect("open").canonical()
     }
 
     /// Renders the window on the CPU.

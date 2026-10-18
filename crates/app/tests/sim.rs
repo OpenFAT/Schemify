@@ -78,8 +78,8 @@ fn open_with(
 /// Runs the command bound to UI node `id` (AccessKit activation: no menu needs to be open).
 fn activate(s: &mut Session, id: &str) {
     let sym =
-        s.ed.shell
-            .strings
+        s.ed.shell()
+            .strings()
             .find(id)
             .unwrap_or_else(|| panic!("{id} interned"));
     let mut ev = InputEvents::default();
@@ -103,10 +103,10 @@ fn run_to_idle(s: &mut Session) -> u32 {
 }
 
 fn node_kind(s: &Session, id: &str) -> Option<Kind> {
-    let sh = &s.ed.shell;
-    let sym = sh.strings.find(id)?;
-    let n = sh.tables.nodes.find(sym)?;
-    Some(sh.tables.nodes.kind()[n as usize])
+    let sh = &s.ed.shell();
+    let sym = sh.strings().find(id)?;
+    let n = sh.tables().nodes.find(sym)?;
+    Some(sh.tables().nodes.kind()[n as usize])
 }
 
 fn marker_rects(s: &Session) -> usize {
@@ -179,7 +179,7 @@ fn net_highlight_covers_exactly_the_net_across_the_hierarchy() {
     let oracle = |s: &Session, comp_of: &dyn Fn(&schemify_elab::CellState) -> u32| {
         let cell = s.ed.cell().unwrap();
         let (h, _) = s.ed.active().unwrap();
-        let doc = s.ed.session.project.doc(h).unwrap();
+        let doc = s.ed.session().project.doc(h).unwrap();
         // Elab's net: every component carrying the clicked component's bit (components
         // with the same name are one net, merged by name).
         let n = &cell.nets;
@@ -210,14 +210,14 @@ fn net_highlight_covers_exactly_the_net_across_the_hierarchy() {
     let (keys, pins) = oracle(&s, &top_comp);
     let hl = s.ed.highlighted();
     assert!(!keys.is_empty());
-    assert_eq!(hl.keys, keys, "{}", s.ed.session.status);
+    assert_eq!(hl.keys, keys, "{}", s.ed.session().status);
     assert_eq!(hl.pins.len(), pins);
     assert_eq!(pins, 2, "x1.VDD and x2.VDD");
     assert_eq!(s.ed.highlight_keys(), ["vdd"]);
     // Descend into x1: the child's VDD (port + label + wires) is the same net.
     s.click((-10 * U, 0));
     s.key("e");
-    assert_eq!(s.ed.session.hier_path(), ".x1.");
+    assert_eq!(s.ed.session().hier_path(), ".x1.");
     let child_comp = |cell: &schemify_elab::CellState| {
         let row = 0; // label n00001 VDD
         cell.nets.label_net[row]
@@ -240,7 +240,7 @@ fn netlist_command_writes_the_cli_bytes() {
     let mut s = open("inv", "top.shcomp", "netlist", None);
     s.key("n");
     let file = s.dir.join(".schemify/netlist/top.spice");
-    let bytes = std::fs::read(&file).unwrap_or_else(|e| panic!("{e}: {}", s.ed.session.status));
+    let bytes = std::fs::read(&file).unwrap_or_else(|e| panic!("{e}: {}", s.ed.session().status));
     // The CLI's own load + netlist spine (`schemify netlist top.shcomp`; the binary lives in
     // schemify-cli since the D39 split, so its spine is called directly).
     let (mut o, _) = schemify_cli::spines::open_file(&s.dir.join("top.shcomp"), 1).unwrap();
@@ -259,7 +259,7 @@ fn netlist_command_writes_the_cli_bytes() {
     let cli = schemify_netlist::emit(&e, schemify_elab::Dialect::Ngspice).text;
     assert_eq!(bytes, cli.as_bytes(), "editor and CLI netlists differ");
     let view =
-        s.ed.session
+        s.ed.session()
             .text_view()
             .expect("a text tab shows the netlist");
     assert_eq!(view.body, String::from_utf8(bytes).unwrap().trim_end());
@@ -296,9 +296,9 @@ fn netlist_command_writes_the_cli_bytes() {
     s.frame(InputEvents::default());
     s.key("n");
     assert!(
-        s.ed.session.status.contains("blocked"),
+        s.ed.session().status.contains("blocked"),
         "{}",
-        s.ed.session.status
+        s.ed.session().status
     );
     assert!(!s.dir.join(".schemify/netlist/top.spice").exists());
     assert_eq!(s.ed.panel(), Panel::Checks);
@@ -312,9 +312,9 @@ fn simulate_needs_a_bench_and_new_bench_makes_one() {
     let mut s = open("inv", "inv.shcomp", "newbench", None);
     s.key("s");
     assert!(
-        s.ed.session.status.contains(".shbench"),
+        s.ed.session().status.contains(".shbench"),
         "{}",
-        s.ed.session.status
+        s.ed.session().status
     );
     activate(&mut s, "sim.new_bench");
     let text = std::fs::read_to_string(s.dir.join("inv_tb.shbench")).unwrap();
@@ -324,7 +324,7 @@ fn simulate_needs_a_bench_and_new_bench_makes_one() {
         assert!(text.contains(&format!(" R0 {pin}\n")), "{pin}: {text}");
     }
     let (h, _) = s.ed.active().unwrap();
-    let doc = s.ed.session.project.doc(h).unwrap();
+    let doc = s.ed.session().project.doc(h).unwrap();
     assert_eq!(doc.kind(), schemify_doc::FileKind::Shbench);
     let cell = s.ed.cell().unwrap();
     assert!(
@@ -351,7 +351,7 @@ fn simulate_polls_a_fake_simulator_to_results_waves_and_op() {
         started < Duration::from_millis(250),
         "starting a run must not wait for the simulator: {started:?}"
     );
-    assert!(s.ed.sim().busy(), "{}", s.ed.session.status);
+    assert!(s.ed.sim().busy(), "{}", s.ed.session().status);
     assert_eq!(s.ed.panel(), Panel::Results);
     let ticks = run_to_idle(&mut s);
     assert!(
@@ -382,12 +382,12 @@ fn simulate_polls_a_fake_simulator_to_results_waves_and_op() {
     // Results table, plot slot, OP marks.
     assert_eq!(node_kind(&s, "results.r.0"), Some(Kind::Panel));
     assert_eq!(node_kind(&s, "results.r.0.s0"), Some(Kind::Label));
-    let graphs: Vec<String> = (0..s.ed.shell.tables.nodes.len())
-        .filter(|&i| s.ed.shell.tables.nodes.kind()[i] == Kind::Graph)
+    let graphs: Vec<String> = (0..s.ed.shell().tables().nodes.len())
+        .filter(|&i| s.ed.shell().tables().nodes.kind()[i] == Kind::Graph)
         .map(|i| {
-            s.ed.shell
-                .strings
-                .get(s.ed.shell.tables.nodes.id()[i])
+            s.ed.shell()
+                .strings()
+                .get(s.ed.shell().tables().nodes.id()[i])
                 .to_owned()
         })
         .collect();
@@ -415,11 +415,11 @@ fn simulate_polls_a_fake_simulator_to_results_waves_and_op() {
     assert_eq!(px.width(), common::VIEW.0 as u16);
     // Waves on the job, then cross-probe a click on the `out` wire.
     activate(&mut s, "results.waves");
-    assert!(s.ed.waves_open(), "{}", s.ed.session.status);
+    assert!(s.ed.waves_open(), "{}", s.ed.session().status);
     s.move_screen(640.0, 60.0);
     s.key("f");
     s.click((0, 45 * U));
-    assert_eq!(s.ed.waves_traces(), ["v(out)"], "{}", s.ed.session.status);
+    assert_eq!(s.ed.waves_traces(), ["v(out)"], "{}", s.ed.session().status);
     let px = s.render();
     assert_eq!(px.height(), common::VIEW.1 as u16);
     // Saved per D18 and reloaded by a fresh editor on the same project.
@@ -454,7 +454,7 @@ fn simulate_polls_a_fake_simulator_to_results_waves_and_op() {
     s2.key("Ctrl+A");
     s2.type_text("4.7k");
     s2.key("Enter");
-    assert!(s2.ed.sim().stale(), "{}", s2.ed.session.status);
+    assert!(s2.ed.sim().stale(), "{}", s2.ed.session().status);
 }
 
 /// A swept bench overlays its plot slot: one trace per finished job (each sweep point), the
@@ -481,7 +481,7 @@ fn plot_slots_overlay_every_sweep_point() {
     s.key("s");
     run_to_idle(&mut s);
     let (_, jobs, _) = s.ed.sim().tables().unwrap();
-    assert_eq!(jobs.len(), 3, "{}", s.ed.session.status);
+    assert_eq!(jobs.len(), 3, "{}", s.ed.session().status);
     assert!((0..3).all(|j| jobs.state(j) == State::Done));
     let w = s.ed.sim().plots[0].waves.as_ref().expect("a graph");
     assert_eq!(w.trace_count(), 3, "one trace per sweep point");
@@ -514,12 +514,15 @@ fn plot_slots_reach_cells_below_the_bench() {
     s.key("s");
     run_to_idle(&mut s);
     let (_, jobs, _) = s.ed.sim().tables().expect("a run");
-    assert_eq!(jobs.state(0), State::Done, "{}", s.ed.session.status);
+    assert_eq!(jobs.state(0), State::Done, "{}", s.ed.session().status);
     let show = |s: &mut Session, file: &str| {
-        let d = s.ed.session.open_path(&s.dir.join(file)).unwrap();
-        s.ed.session
-            .open_tab(d, schemify_app::session::View::Schematic);
+        s.ed.command("file.open", file);
         s.frame(InputEvents::default());
+        assert!(
+            s.ed.session().status.contains("opened"),
+            "{}",
+            s.ed.session().status
+        );
     };
     show(&mut s, "leaf.shcomp");
     let plot = s.ed.sim().plots.first().expect("the leaf's slot is filled");
@@ -557,11 +560,11 @@ fn optimizer_stages_the_best_point_accept_and_reject() {
         );
         let before = s.text();
         activate(&mut s, "sim.optimize");
-        assert!(s.ed.sim().busy(), "{}", s.ed.session.status);
+        assert!(s.ed.sim().busy(), "{}", s.ed.session().status);
         run_to_idle(&mut s);
         let (h, _) = s.ed.active().unwrap();
-        let stages = s.ed.session.project.stages(h);
-        assert_eq!(stages.len(), 1, "{}", s.ed.session.status);
+        let stages = s.ed.session().project.stages(h);
+        assert_eq!(stages.len(), 1, "{}", s.ed.session().status);
         assert_eq!(s.text(), before, "staged, not applied");
         assert_eq!(node_kind(&s, "docs.staged"), Some(Kind::Panel));
         // The best candidate: the jobs' R with the lowest |tau - 1m|.
@@ -580,11 +583,11 @@ fn optimizer_stages_the_best_point_accept_and_reject() {
                 text.contains(&format!("var R {best_r}\n")),
                 "{best_r}\n{text}"
             );
-            assert!(s.ed.session.project.stages(h).is_empty());
+            assert!(s.ed.session().project.stages(h).is_empty());
         } else {
             activate(&mut s, "edit.reject_staged");
             assert_eq!(s.text(), before);
-            assert!(s.ed.session.project.stages(h).is_empty());
+            assert!(s.ed.session().project.stages(h).is_empty());
             assert_eq!(node_kind(&s, "docs.staged"), None);
         }
     }
@@ -765,8 +768,8 @@ fn results_table_sorts_filters_and_scrolls_any_number_of_jobs() {
     assert_eq!(node_kind(&s, "results.gap-bottom.0"), Some(Kind::Panel));
     assert_eq!(node_kind(&s, "results.yield"), Some(Kind::Panel));
     assert_eq!(node_kind(&s, "results.yield.s0"), Some(Kind::Label));
-    let list = s.ed.shell.strings.find("results.list").unwrap();
-    s.ed.shell.ui.set_scroll(list, 152.0 * 19.0, 1e9);
+    let list = s.ed.shell().strings().find("results.list").unwrap();
+    s.ed.set_scroll(list, 152.0 * 19.0, 1e9);
     s.frame(InputEvents::default());
     s.frame(InputEvents::default());
     assert_eq!(
@@ -777,7 +780,7 @@ fn results_table_sorts_filters_and_scrolls_any_number_of_jobs() {
     assert_eq!(node_kind(&s, "results.r.0"), None);
     assert_eq!(node_kind(&s, "results.gap-top.0"), Some(Kind::Panel));
     // Sort by tau (output 0: names sort `tau` < `v1m`), then reversed.
-    s.ed.shell.ui.set_scroll(list, 0.0, 1e9);
+    s.ed.set_scroll(list, 0.0, 1e9);
     activate(&mut s, "results.head.o0");
     let rows = s.ed.sim().table.rows.clone();
     assert_eq!(rows.len(), 200);
@@ -908,7 +911,7 @@ fn bus_components_highlight_by_every_bit() {
     );
     let keys = |s: &Session, rows: &[usize]| {
         let (h, _) = s.ed.active().unwrap();
-        let doc = s.ed.session.project.doc(h).unwrap();
+        let doc = s.ed.session().project.doc(h).unwrap();
         let mut k: Vec<ObjKey> = rows
             .iter()
             .flat_map(|&r| {
@@ -935,7 +938,7 @@ fn bus_components_highlight_by_every_bit() {
         s.ed.highlighted().keys,
         keys(&s, &[0, 1]),
         "{}",
-        s.ed.session.status
+        s.ed.session().status
     );
     s.key("Shift+K");
     assert!(s.ed.highlighted().keys.is_empty());
@@ -951,9 +954,7 @@ fn bus_components_highlight_by_every_bit() {
 #[test]
 fn staged_edits_draw_inserts_and_deletes_and_review_one_stage_at_a_time() {
     use schemify_app::checks::LAYER_DIFF;
-    use schemify_doc::{
-        Edit, EditRequest, FileKind, Mode, Transaction, apply_edits, ops_from_text,
-    };
+    use schemify_doc::{Edit, EditRequest, FileKind, Mode, Transaction, ops_from_text};
     let mut s = open("rc", "tb.shbench", "stages", None);
     let before = s.text();
     let (h, _) = s.ed.active().unwrap();
@@ -972,17 +973,22 @@ fn staged_edits_draw_inserts_and_deletes_and_review_one_stage_at_a_time() {
             edit: Edit::Tx(tx),
             unix_ms: 0,
         };
-        let out = apply_edits(&mut s.ed.session.project, &[req]);
-        assert!(
-            matches!(out[0], schemify_doc::Outcome::Staged { .. }),
-            "{out:?}"
+        s.ed.request_edits([req]);
+        s.frame(InputEvents::default());
+        assert_eq!(
+            s.ed.session()
+                .project
+                .stages(h)
+                .last()
+                .map(|st| st.label.as_str()),
+            Some(label)
         );
     }
     if !s.ed.docs_shown() {
         activate(&mut s, "view.docs");
     }
     s.frame(InputEvents::default());
-    assert_eq!(s.ed.session.project.stages(h).len(), 2);
+    assert_eq!(s.ed.session().project.stages(h).len(), 2);
     let lines_on = |s: &Session, layer: u8| -> Vec<[i32; 4]> {
         let l = &s.ed.decor().lines;
         (0..l.layer.len())
@@ -1018,7 +1024,7 @@ fn staged_edits_draw_inserts_and_deletes_and_review_one_stage_at_a_time() {
         "{}",
         s.text()
     );
-    assert_eq!(s.ed.session.project.stages(h).len(), 1);
+    assert_eq!(s.ed.session().project.stages(h).len(), 1);
     assert_eq!(
         lines_on(&s, LAYER_ERROR).len(),
         2,
@@ -1030,7 +1036,7 @@ fn staged_edits_draw_inserts_and_deletes_and_review_one_stage_at_a_time() {
         "one stage: no stepping"
     );
     activate(&mut s, "edit.reject_staged");
-    assert!(s.ed.session.project.stages(h).is_empty());
+    assert!(s.ed.session().project.stages(h).is_empty());
     assert_eq!(
         s.text(),
         before.replace("label 0bbbba 0 -30 R0 in\n", "label 0bbbba 0 -30 R0 vin\n"),
@@ -1046,9 +1052,9 @@ fn netlist_tab_finds_lines_of_the_whole_file() {
     s.key("n");
     let text = std::fs::read_to_string(s.dir.join(".schemify/netlist/top.spice")).unwrap();
     assert!(
-        s.ed.session.text_view().is_some(),
+        s.ed.session().text_view().is_some(),
         "{}",
-        s.ed.session.status
+        s.ed.session().status
     );
     let find = |s: &mut Session, q: &str| {
         s.click_node("textview.find");
@@ -1067,15 +1073,15 @@ fn netlist_tab_finds_lines_of_the_whole_file() {
         .map(|(i, l)| format!("{:>6}: {l}", i + 1))
         .collect();
     assert!(!want.is_empty(), "{text}");
-    let (count, lines) = s.ed.session.text_view().unwrap().found.clone().unwrap();
+    let (count, lines) = s.ed.session().text_view().unwrap().found.clone().unwrap();
     assert_eq!(count as usize, want.len());
     assert_eq!(lines.lines().collect::<Vec<_>>(), want);
     assert_eq!(node_kind(&s, "textview.found"), Some(Kind::Label));
     find(&mut s, "no such text anywhere");
-    let (count, lines) = s.ed.session.text_view().unwrap().found.clone().unwrap();
+    let (count, lines) = s.ed.session().text_view().unwrap().found.clone().unwrap();
     assert_eq!((count, lines.as_str()), (0, ""));
     find(&mut s, "");
-    assert!(s.ed.session.text_view().unwrap().found.is_none());
+    assert!(s.ed.session().text_view().unwrap().found.is_none());
     assert_eq!(node_kind(&s, "textview.found"), None);
 }
 
@@ -1110,14 +1116,14 @@ fn results_pane_shows_the_run_log() {
 
 /// The label of composed UI node `id`.
 fn label(s: &Session, id: &str) -> String {
-    let sh = &s.ed.shell;
+    let sh = &s.ed.shell();
     let n = sh
-        .strings
+        .strings()
         .find(id)
-        .and_then(|i| sh.tables.nodes.find(i))
+        .and_then(|i| sh.tables().nodes.find(i))
         .unwrap_or_else(|| panic!("{id} composed"));
-    sh.strings
-        .get(sh.tables.nodes.prop(Prop::Label)[n as usize])
+    sh.strings()
+        .get(sh.tables().nodes.prop(Prop::Label)[n as usize])
         .to_owned()
 }
 
@@ -1154,26 +1160,30 @@ fn the_espice_dialect_simulates_an_espice_deck() {
 
 /// Children of `textview` and the source lines of its prose body.
 fn text_tab_nodes(s: &Session) -> (usize, Vec<String>) {
-    let sh = &s.ed.shell;
-    let tv = sh.tables.nodes.find(sh.strings.find("textview").unwrap());
-    let kids = sh.tables.nodes.children(tv.unwrap()).count();
-    let body = sh.strings.find("textview.body").unwrap();
-    let body = sh.tables.nodes.find(body).unwrap();
+    let sh = &s.ed.shell();
+    let tv = sh
+        .tables()
+        .nodes
+        .find(sh.strings().find("textview").unwrap());
+    let kids = sh.tables().nodes.children(tv.unwrap()).count();
+    let body = sh.strings().find("textview.body").unwrap();
+    let body = sh.tables().nodes.find(body).unwrap();
     let src = sh
-        .strings
-        .get(sh.tables.nodes.prop(Prop::Value)[body as usize]);
+        .strings()
+        .get(sh.tables().nodes.prop(Prop::Value)[body as usize]);
     (kids, src.lines().map(str::to_owned).collect())
 }
 
 fn open_text(s: &mut Session, body: String) {
     let path = s.dir.join("big.txt");
-    s.ed.session.open_text_tab(schemify_app::session::TextView {
+    s.ed.open_text_tab(schemify_app::session::TextView {
         title: "big".into(),
         path,
         body,
         find: String::new(),
         found: None,
     });
+    s.frame(InputEvents::default());
 }
 
 /// A 16k-line text tab is windowed: the body node holds at most `TEXT_WINDOW` lines and the
@@ -1191,9 +1201,13 @@ fn a_long_text_tab_lays_out_a_window_of_lines() {
     let n = body.len();
     let first = |lines: &[String]| body.iter().position(|l| *l == lines[1]).unwrap();
     open_text(&mut s, body.join("\n"));
-    let tv = s.ed.shell.strings.intern("textview");
+    let tv =
+        s.ed.shell()
+            .strings()
+            .find("textview")
+            .expect("the text tab composed");
     let at = 10_000.0 * 12.0;
-    s.ed.shell.ui.set_scroll(tv, at, 1e9);
+    s.ed.set_scroll(tv, at, 1e9);
     s.frame(InputEvents::default());
     s.frame(InputEvents::default());
     let (kids, lines) = text_tab_nodes(&s);
@@ -1209,7 +1223,7 @@ fn a_long_text_tab_lays_out_a_window_of_lines() {
     let windowed = s.render();
     // Oracle: the lines from 9960 on as a short tab, scrolled by as much less.
     open_text(&mut s, body[9_960..10_200].join("\n"));
-    s.ed.shell.ui.set_scroll(tv, at - 9_960.0 * 12.0, 1e9);
+    s.ed.set_scroll(tv, at - 9_960.0 * 12.0, 1e9);
     s.frame(InputEvents::default());
     s.frame(InputEvents::default());
     let (kids, lines) = text_tab_nodes(&s);
@@ -1227,7 +1241,7 @@ fn a_long_text_tab_lays_out_a_window_of_lines() {
     let mut wraps = body.clone();
     wraps[5_000] = "word ".repeat(400);
     open_text(&mut s, wraps.join("\n"));
-    s.ed.shell.ui.set_scroll(tv, at, 1e9);
+    s.ed.set_scroll(tv, at, 1e9);
     s.frame(InputEvents::default());
     s.frame(InputEvents::default());
     let (_, lines) = text_tab_nodes(&s);
@@ -1238,7 +1252,7 @@ fn a_long_text_tab_lays_out_a_window_of_lines() {
     assert!(lines.len() > 5_000, "and reaches the screen");
     open_text(&mut s, body.join("\n"));
     // The end: the last line is in the window.
-    s.ed.shell.ui.set_scroll(tv, 1e9, 1e9);
+    s.ed.set_scroll(tv, 1e9, 1e9);
     s.frame(InputEvents::default());
     s.frame(InputEvents::default());
     let (_, lines) = text_tab_nodes(&s);

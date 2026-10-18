@@ -12,7 +12,7 @@ use schemify_ui::{Button, Chord, InputEvent, InputEvents, Kind};
 #[test]
 fn boots_without_the_default_ui_plugin() {
     let mut s = Session::open("inv", "top.shcomp", "bare", false);
-    let n = &s.ed.shell.tables.nodes;
+    let n = &s.ed.shell().tables().nodes;
     let kinds: Vec<Kind> = (0..n.len()).map(|i| n.kind()[i]).collect();
     // The core base also holds the docs pane (D21: docs render without plugins); a cell
     // without doc blocks starts with it removed.
@@ -22,7 +22,7 @@ fn boots_without_the_default_ui_plugin() {
         "blank UI: window + work split + canvas only"
     );
     assert!(
-        s.ed.shell.tables.keymap.chords().is_empty(),
+        s.ed.shell().tables().keymap.chords().is_empty(),
         "no plugin, no keymap"
     );
     let r = s.ed.canvas_rect();
@@ -49,10 +49,7 @@ fn boots_without_the_default_ui_plugin() {
 /// Expected chords from xschem's canvas key table (`fixtures/xschem_keys.md`, captured by
 /// running xschem 3.4.7): every row except graph-only, cadence-only, placeholder and Tk-dialog rows.
 fn inventory_chords() -> Vec<(String, String)> {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/xschem_keys.md"
-    );
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/xschem_keys.md");
     let text = std::fs::read_to_string(path).expect("inventory");
     let start = text.find("### 2.1").expect("§2.1");
     let end = text[start..].find("### 2.2").expect("§2.2") + start;
@@ -103,7 +100,7 @@ fn inventory_chords() -> Vec<(String, String)> {
 #[test]
 fn keymap_covers_the_xschem_inventory() {
     let s = Session::open("inv", "top.shcomp", "keys", true);
-    let keymap = &s.ed.shell.tables.keymap;
+    let keymap = &s.ed.shell().tables().keymap;
     let expected = inventory_chords();
     assert!(
         expected.len() >= 150,
@@ -130,7 +127,7 @@ fn keymap_covers_the_xschem_inventory() {
     );
     // How many bindings reach an implementation (core command or plugin command).
     let commands = Commands::default();
-    let strings = &s.ed.shell.strings;
+    let strings = &s.ed.shell().strings();
     let bound = keymap.commands();
     let implemented = bound
         .iter()
@@ -433,8 +430,9 @@ fn golden_editor_dark() {
 fn default_ui_plugin_owns_its_commands() {
     let mut s = Session::open("inv", "top.shcomp", "helpkeys", true);
     let panel = |s: &Session| {
-        let id = s.ed.shell.strings.find("keys.panel");
-        id.and_then(|id| s.ed.shell.tables.nodes.find(id)).is_some()
+        let id = s.ed.shell().strings().find("keys.panel");
+        id.and_then(|id| s.ed.shell().tables().nodes.find(id))
+            .is_some()
     };
     assert!(!panel(&s));
     s.key("/");
@@ -473,16 +471,16 @@ fn manifest_plugins_load_in_order_and_receive_commands() {
     s.frame(Default::default());
     s.frame(Default::default());
     assert_eq!(
-        s.ed.shell.tables.owners.len(),
+        s.ed.shell().tables().owners.len(),
         4,
         "base, default-ui, hello, state"
     );
     s.click_node("menu.tools");
     s.click_node("tools.count_nets");
     assert!(
-        s.ed.session.status.contains("single-connection nets"),
+        s.ed.session().status.contains("single-connection nets"),
         "{}",
-        s.ed.session.status
+        s.ed.session().status
     );
 }
 
@@ -498,7 +496,7 @@ fn waves_window_opens_a_raw_file_and_closes() {
     std::fs::copy(raw, s.dir.join("rc_tran.raw")).unwrap();
     s.click_node("tb.waves");
     s.click_node("dialog.choose.row.0");
-    assert!(s.ed.waves_open(), "{}", s.ed.session.status);
+    assert!(s.ed.waves_open(), "{}", s.ed.session().status);
     let px = s.render();
     assert_eq!(px.width(), VIEW.0 as u16);
     s.key("Ctrl+W");
@@ -511,7 +509,7 @@ fn golden_editor_light_selection() {
     let mut s = Session::open("inv", "top.shcomp", "golden-light", true);
     s.click((10 * U, 0));
     s.key("Shift+O");
-    assert!(s.ed.opts.light);
+    assert!(s.ed.opts().light);
     let px = s.render();
     check_golden("editor_light_selection", px);
 }
@@ -546,7 +544,7 @@ fn golden_editor_modern() {
     check_golden("editor_modern_dark", px);
     s.click((10 * U, 0));
     s.key("Shift+O");
-    assert!(s.ed.opts.light);
+    assert!(s.ed.opts().light);
     check_golden("editor_modern_light_selection", s.render());
     s.key("Shift+O");
     s.key("Esc");
@@ -567,23 +565,26 @@ fn golden_editor_modern() {
 fn pointer_moves_do_not_grow_the_ui_string_table() {
     let mut s = Session::open("inv", "top.shcomp", "strings", true);
     s.move_to((0, 0));
-    let len = s.ed.shell.strings.len();
+    let len = s.ed.shell().strings().len();
     for i in 0..300 {
         s.move_to((i * 10 * U, (i % 7) * 10 * U));
     }
     assert_eq!(
-        s.ed.shell.strings.len(),
+        s.ed.shell().strings().len(),
         len,
         "the permanent table did not grow"
     );
-    assert!(s.ed.shell.strings.live_len() < 4096, "one live generation");
-    let status = s.ed.shell.strings.find("status.msg").unwrap();
-    let n = s.ed.shell.tables.nodes.find(status).unwrap();
-    let label = s.ed.shell.tables.nodes.prop(schemify_ui::Prop::Label)[n as usize];
     assert!(
-        s.ed.shell.strings.get(label).contains("mouse = 2990 "),
+        s.ed.shell().strings().live_len() < 4096,
+        "one live generation"
+    );
+    let status = s.ed.shell().strings().find("status.msg").unwrap();
+    let n = s.ed.shell().tables().nodes.find(status).unwrap();
+    let label = s.ed.shell().tables().nodes.prop(schemify_ui::Prop::Label)[n as usize];
+    assert!(
+        s.ed.shell().strings().get(label).contains("mouse = 2990 "),
         "the status line shows the last move: {}",
-        s.ed.shell.strings.get(label)
+        s.ed.shell().strings().get(label)
     );
 }
 
@@ -599,7 +600,7 @@ fn waves_dock_divider_drags() {
     std::fs::copy(raw, s.dir.join("rc_tran.raw")).unwrap();
     s.click_node("tb.waves");
     s.click_node("dialog.choose.row.0");
-    assert!(s.ed.waves_open(), "{}", s.ed.session.status);
+    assert!(s.ed.waves_open(), "{}", s.ed.session().status);
     // The dock takes its share of the window from the next frame on.
     s.frame(InputEvents::default());
     let split = (VIEW.1 * 0.6).floor();
@@ -649,14 +650,14 @@ fn golden_primitive_modern() {
 
 /// Prop `p` of UI node `id` as text ("" when absent).
 fn node_prop(s: &Session, id: &str, p: schemify_ui::Prop) -> String {
-    let sh = &s.ed.shell;
+    let sh = &s.ed.shell();
     let n = sh
-        .strings
+        .strings()
         .find(id)
-        .and_then(|i| sh.tables.nodes.find(i))
+        .and_then(|i| sh.tables().nodes.find(i))
         .unwrap_or_else(|| panic!("{id} composed"));
-    sh.strings
-        .get(sh.tables.nodes.prop(p)[n as usize])
+    sh.strings()
+        .get(sh.tables().nodes.prop(p)[n as usize])
         .to_owned()
 }
 
@@ -712,9 +713,9 @@ fn view_switcher_follows_the_file_kind() {
     p.frame(InputEvents::default());
     assert_eq!(p.ed.active().map(|a| a.1), Some(View::Symbol));
     assert!(
-        p.ed.session.status.contains("no schematic"),
+        p.ed.session().status.contains("no schematic"),
         "{}",
-        p.ed.session.status
+        p.ed.session().status
     );
 
     // .shbench: no symbol.
@@ -726,9 +727,9 @@ fn view_switcher_follows_the_file_kind() {
     b.frame(InputEvents::default());
     assert_eq!(b.ed.active().map(|a| a.1), Some(View::Schematic));
     assert!(
-        b.ed.session.status.contains("no symbol"),
+        b.ed.session().status.contains("no symbol"),
         "{}",
-        b.ed.session.status
+        b.ed.session().status
     );
 }
 
@@ -739,17 +740,21 @@ fn view_switcher_floats_over_the_canvas() {
     use schemify_app::session::View;
     use schemify_ui::{FLOAT_INSET, Layer};
     let mut s = Session::open("rc", "res.shprim", "switch-float", true);
-    let sh = &s.ed.shell;
+    let sh = &s.ed.shell();
     let row = |id: &str| {
-        let n = sh.tables.nodes.find(sh.strings.find(id).unwrap()).unwrap();
-        sh.layout.row_of(n).unwrap()
+        let n = sh
+            .tables()
+            .nodes
+            .find(sh.strings().find(id).unwrap())
+            .unwrap();
+        sh.layout().row_of(n).unwrap()
     };
     let r = row("view.switch");
     assert!(
-        sh.layout.rows(Layer::Overlay).contains(&r),
+        sh.layout().rows(Layer::Overlay).contains(&r),
         "painted above the canvas"
     );
-    let sw = sh.layout.rect()[r];
+    let sw = sh.layout().rect()[r];
     let c = s.ed.canvas_rect();
     assert!((f64::from(sw.y) - (c.y0 + f64::from(FLOAT_INSET))).abs() < 0.5);
     let mid = f64::from(sw.x + sw.w / 2.0);
@@ -758,8 +763,8 @@ fn view_switcher_floats_over_the_canvas() {
         "centred: {mid} vs {c:?}"
     );
     let (on, off) = (
-        sh.layout.rect()[row("switch.docs")],
-        sh.layout.rect()[row("switch.schematic")],
+        sh.layout().rect()[row("switch.docs")],
+        sh.layout().rect()[row("switch.schematic")],
     );
     // Hover: the enabled button lights, the disabled one keeps its colour. Probe the left
     // padding, clear of the label.
@@ -777,7 +782,7 @@ fn view_switcher_floats_over_the_canvas() {
     // Modal: with the insert-symbol chooser open, clicking the switcher does nothing.
     let mut m = Session::open("inv", "top.shcomp", "switch-modal", true);
     m.key("Ins");
-    assert!(!m.ed.shell.ui.dialog().is_none(), "a dialog is open");
+    assert!(!m.ed.shell().ui().dialog().is_none(), "a dialog is open");
     m.click_node("switch.symbol");
     assert_eq!(m.ed.active().map(|a| a.1), Some(View::Schematic));
 }
@@ -807,9 +812,9 @@ fn commands_grey_out_on_the_wrong_file_kind() {
     c.ed.command("sim.simulate", "");
     c.frame(InputEvents::default());
     assert!(
-        c.ed.session.status.contains("needs a .shbench"),
+        c.ed.session().status.contains("needs a .shbench"),
         "{}",
-        c.ed.session.status
+        c.ed.session().status
     );
     // A bench: simulation on, symbol generation and new-bench off.
     let b = Session::open("rc", "tb.shbench", "grey-bench", true);
@@ -830,20 +835,20 @@ fn commands_grey_out_on_the_wrong_file_kind() {
 fn help_menu_is_schemify_branded_without_duplicates() {
     use schemify_ui::Prop;
     let s = Session::open("inv", "top.shcomp", "help-menu", true);
-    let sh = &s.ed.shell;
+    let sh = &s.ed.shell();
     assert!(
-        sh.strings
+        sh.strings()
             .find("help.show_keybindings")
-            .and_then(|i| sh.tables.nodes.find(i))
+            .and_then(|i| sh.tables().nodes.find(i))
             .is_none()
     );
     assert_eq!(node_prop(&s, "help.keys", Prop::Accel), "/");
     assert_eq!(node_prop(&s, "help.about", Prop::Label), "About Schemify");
-    let labels = sh.tables.nodes.prop(Prop::Label);
+    let labels = sh.tables().nodes.prop(Prop::Label);
     assert!(
         labels
             .iter()
-            .all(|&l| !sh.strings.get(l).to_lowercase().contains("xschem")),
+            .all(|&l| !sh.strings().get(l).to_lowercase().contains("xschem")),
         "no menu label names xschem"
     );
 }

@@ -32,7 +32,7 @@ use schemify_config::{Config, Request, Startup};
 /// first 8 bytes of the module's sha256 (change detection, not authentication).
 pub const HASH_HEX: usize = 16;
 
-/// The bundled default UI plugin, built by `plugins/build.sh`.
+/// The bundled default UI plugin, built by `ui/build.sh`.
 pub const DEFAULT_UI_WASM: &[u8] = include_bytes!("../assets/default_ui.wasm");
 
 /// Delivery rounds per frame: a plugin's I/O completion is answered in the same frame, up to

@@ -1,17 +1,15 @@
 //! Technology classes end to end (pdk spec §5, §6, §10): one `tech:` inverter netlisted
-//! under the shipped sky130 and gf180mcu maps (`plugins/pdk-manager/maps/`) against tiny
-//! stand-in PDK libraries yields each PDK's device lines with the mapped params (golden
-//! netlists, re-blessed with `SCHEMIFY_BLESS=1`); without `lib tech`, with an unknown class
-//! or an unknown flavor it is refused with the reason.
+//! under the sky130 and gf180mcu maps (`tests/fixtures/tech/maps/`, copied from the PDK
+//! manager plugin, github.com/OmarSiwy/Schemify-PDK-Manager) against tiny stand-in PDK
+//! libraries yields each PDK's device lines with the mapped params (golden netlists,
+//! re-blessed with `SCHEMIFY_BLESS=1`); without `lib tech`, with an unknown class or an
+//! unknown flavor it is refused with the reason.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tech");
-const MAPS: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../plugins/pdk-manager/maps"
-);
+const MAPS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tech/maps");
 
 fn schemify(dir: &Path, args: &[&str]) -> (i32, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_schemify"))

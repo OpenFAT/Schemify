@@ -1,3 +1,0 @@
-needs_review:callback	gpdk/nmos1v	param w: callback not carried
-needs_review:cdl-approximate	gpdk/nmos1v	auCdl format from simInfo (research §3.4)
-needs_review:cdl-approximate	gpdk/rpoly	auCdl format from simInfo (research §3.4)

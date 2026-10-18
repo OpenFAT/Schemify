@@ -18,7 +18,7 @@ One **pass** = one visual change seen in a render, judged against `analog-eda-ux
 1. **State the pass.** One sentence: what changes, which selectors, and which `analog-eda-ux` rule it serves. Done when the sentence names the selectors.
 2. **Edit the records.** Change only the selectors you named. Done when `git diff --stat` shows only those files.
 3. **Rebuild the guest** (the records are `include_str!`'d into the wasm):
-   `systemd-run --user --scope -q -p MemoryMax=6G -p MemorySwapMax=0 nix develop -c plugins/build.sh`
+   `systemd-run --user --scope -q -p MemoryMax=6G -p MemorySwapMax=0 nix develop -c ui/build.sh`
    Done when `crates/app/assets/default_ui.wasm` has changed and the script exits 0. Run one heavy job at a time (docs/dev/contributing.md).
 4. **Render.** `SCHEMIFY_BLESS=1 cargo test -p schemify-app --test shell golden_ -- --test-threads=4` (run it under the same memory cap). It writes `crates/app/tests/golden/*.png`. Add `--test docs golden_` when docs-pane styles changed. Done when the PNGs are rewritten.
 5. **Look.** Read each changed golden with the Read tool, and the previous one with `git show HEAD:<path> > <scratchpad>/old.png`. Critique the pair against every rule in `analog-eda-ux` § Checklist and write the verdict as one line per rule: pass, fail, or n/a. Done when every checklist rule has a verdict. A fail sends you back to step 2.

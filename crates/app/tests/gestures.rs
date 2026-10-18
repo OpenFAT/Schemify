@@ -24,7 +24,7 @@ fn run(s: &mut Session, name: &str, arg: &str) {
 }
 
 fn status(s: &Session) -> String {
-    s.ed.session.status.clone()
+    s.ed.session().status.clone()
 }
 
 /// Replaces the active document's text through Properties → Edit file (one undo).
@@ -52,7 +52,7 @@ impl Lcg {
 /// label (`l<id>`) and port (`p<id>`) with its component and that component's net name.
 fn nets(s: &Session) -> BTreeMap<String, (u32, String)> {
     let (h, _) = s.ed.active().unwrap();
-    let doc = s.ed.session.project.doc(h).unwrap();
+    let doc = s.ed.session().project.doc(h).unwrap();
     let cell = s.ed.cell().expect("elaborated");
     let name = |c: u32| schemify_app::checks::net_name(cell, c).to_owned();
     let mut out = BTreeMap::new();
@@ -284,14 +284,14 @@ fn a_recent_file_of_another_project_switches_project() {
     s.key("Del");
     run(&mut s, "file.open_recent.1", "");
     assert!(status(&s).contains("save or undo"), "{}", status(&s));
-    assert_eq!(s.ed.session.root, a);
+    assert_eq!(s.ed.session().root, a);
     // Saved: the switch opens the file in project b.
     s.key("Ctrl+S");
     run(&mut s, "file.open_recent.1", "");
-    assert_eq!(s.ed.session.root, b, "{}", status(&s));
+    assert_eq!(s.ed.session().root, b, "{}", status(&s));
     let (h, _) = s.ed.active().unwrap();
-    assert_eq!(s.ed.session.path(h), Some(b.join("inv.shcomp").as_path()));
-    assert_eq!(s.ed.session.tabs.len(), 1);
+    assert_eq!(s.ed.session().path(h), Some(b.join("inv.shcomp").as_path()));
+    assert_eq!(s.ed.session().tabs.len(), 1);
     assert_eq!(s.ed.recent()[0], b.join("inv.shcomp"));
     // Editing carries on in the new project: a delete and its undo.
     let t0 = s.text();
@@ -325,7 +325,7 @@ fn canvas_options_from_init_lua_reach_the_palette() {
     .unwrap();
     let mut s = Session { ed, now: 1, dir };
     s.frame(InputEvents::default());
-    assert_eq!((s.ed.opts.dim, s.ed.opts.width_tenths), (25, 15));
+    assert_eq!((s.ed.opts().dim, s.ed.opts().width_tenths), (25, 15));
     // Dimmed by 25% toward the background: the set color, not the theme's, is the source.
     let p = s.ed.view_palette();
     let bg = p.background >> 8;
@@ -338,7 +338,7 @@ fn canvas_options_from_init_lua_reach_the_palette() {
     assert_eq!(p.color[4], want, "{:08x}", p.color[4]);
     // Reset colors (the session's own command) drops them for the session.
     run(&mut s, "view.reset_all_colors_to_default", "");
-    assert_eq!((s.ed.opts.dim, s.ed.opts.width_tenths), (0, 10));
+    assert_eq!((s.ed.opts().dim, s.ed.opts().width_tenths), (0, 10));
     assert_ne!(s.ed.view_palette().color[4], 0xff80_00ff);
 }
 
@@ -386,7 +386,7 @@ fn make_subcircuit_rewires_and_keeps_connectivity() {
             .collect();
         assert_eq!(lines(&sub, "port ").len(), pins.len(), "case {case}: {sub}");
         let (h, _) = s.ed.active().unwrap();
-        let doc = s.ed.session.project.doc(h).unwrap();
+        let doc = s.ed.session().project.doc(h).unwrap();
         let st = doc.strings();
         let row = (0..doc.instances().id.len())
             .find(|&i| st.get(doc.instances().cell[i]) == "./top_sub1")
@@ -471,7 +471,7 @@ fn join_trim_keeps_connectivity_over_diagonal_and_attributed_wires() {
         set_text(&mut s, &canonical);
         let probes = |s: &Session| -> Vec<Vec<(i32, i32)>> {
             let (h, _) = s.ed.active().unwrap();
-            let doc = s.ed.session.project.doc(h).unwrap();
+            let doc = s.ed.session().project.doc(h).unwrap();
             let cell = s.ed.cell().unwrap();
             let w = doc.wires();
             let mut by_net: BTreeMap<u32, Vec<(i32, i32)>> = BTreeMap::new();

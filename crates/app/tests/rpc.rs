@@ -81,7 +81,7 @@ fn a_socket_client_drives_the_editor() {
         .unwrap();
     let instances = |s: &Session| {
         let h = s.ed.active().unwrap().0;
-        s.ed.session.project.doc(h).unwrap().instances().id.len()
+        s.ed.session().project.doc(h).unwrap().instances().id.len()
     };
     assert!(instances(&s) > 0);
     for line in [
@@ -204,7 +204,7 @@ impl Client {
                 if j.get("id") == Some(&Json::Num(id)) {
                     let r = j.get("result").and_then(|r| r.get("status"));
                     let Some(status) = r.and_then(Json::as_str) else {
-                        panic!("{method}: {j:?} (status line: {})", s.ed.session.status)
+                        panic!("{method}: {j:?} (status line: {})", s.ed.session().status)
                     };
                     return status.to_owned();
                 }
@@ -213,7 +213,7 @@ impl Client {
         }
         panic!(
             "no answer to {method} (status line: {})",
-            s.ed.session.status
+            s.ed.session().status
         );
     }
 }
@@ -235,7 +235,7 @@ fn each_answer_carries_its_own_status() {
         "",
         "lags one command"
     );
-    assert_eq!(s.ed.session.status, "already at the top level");
+    assert_eq!(s.ed.session().status, "already at the top level");
     assert_eq!(
         c.status(&mut s, "edit.pop", &[]),
         "already at the top level"
@@ -283,7 +283,7 @@ fn out_of_fuel_is_reported_not_silent() {
         );
         let want = format!("bad: command bad.spin: out of fuel (budget {fuel}), outputs discarded");
         assert_eq!(c.status(&mut s, "bad.spin", &[]), want, "{tag}");
-        assert_eq!(s.ed.session.status, want, "{tag}: the status line");
+        assert_eq!(s.ed.session().status, want, "{tag}: the status line");
         let faults = s.ed.host().plugins.health().faults();
         assert_eq!(
             faults.back().map(|f| f.detail.as_str()),
@@ -305,7 +305,7 @@ fn out_of_fuel_is_reported_not_silent() {
 fn file_open_with_an_argument_opens_that_cell() {
     let mut s = Session::open("inv", "top.shcomp", "rpc-open", true);
     let mut c = Client::connect(&s);
-    let active = |s: &Session| s.ed.session.name(s.ed.active().unwrap().0);
+    let active = |s: &Session| s.ed.session().name(s.ed.active().unwrap().0);
     assert_eq!(active(&s), "top.shcomp");
     for (arg, want) in [
         ("inv", "inv.shcomp"),
@@ -316,7 +316,7 @@ fn file_open_with_an_argument_opens_that_cell() {
         let said = c.status(&mut s, "file.open", &[arg]);
         assert_eq!(active(&s), want, "{arg}: {said}");
         assert_eq!(said, format!("opened {want}"), "{arg}");
-        assert!(s.ed.shell.ui.dialog().is_none(), "{arg}: no chooser");
+        assert!(s.ed.shell().ui().dialog().is_none(), "{arg}: no chooser");
     }
     for bad in ["nope", "dev:nope", "../outside.shcomp"] {
         let said = c.status(&mut s, "file.open", &[bad]);
@@ -325,11 +325,11 @@ fn file_open_with_an_argument_opens_that_cell() {
             "{bad}: {said}"
         );
         assert_eq!(active(&s), "pmos.shprim", "{bad}: nothing opened");
-        assert!(s.ed.shell.ui.dialog().is_none(), "{bad}: no chooser");
+        assert!(s.ed.shell().ui().dialog().is_none(), "{bad}: no chooser");
     }
     c.status(&mut s, "file.open", &[]);
     assert!(
-        !s.ed.shell.ui.dialog().is_none(),
+        !s.ed.shell().ui().dialog().is_none(),
         "no argument: the chooser"
     );
 }

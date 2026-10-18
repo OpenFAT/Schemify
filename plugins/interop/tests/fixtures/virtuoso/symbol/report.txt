@@ -1,6 +1,0 @@
-dropped:pin-label	demo/shapes	1 object(s)
-dropped:selection-box	demo/shapes	1 object(s)
-needs_review:format	demo/shapes	ellipse with an elliptic box drawn as a polygon
-needs_review:template	demo/shapes	symbol label `[@refDes]` dropped
-needs_review:template	demo/shapes	symbol label `[@userPartName:%:[@phyPartName]]` dropped
-needs_review:template	demo/shapes	symbol label `cdsTerm("A")` dropped

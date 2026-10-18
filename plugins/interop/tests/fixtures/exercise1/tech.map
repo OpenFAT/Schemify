@@ -1,8 +1,0 @@
-schemify 1 techmap
-  pdk sample
-  vdd 0.8
-
-class nmos core
-  cell sample:nmos
-class pmos core
-  cell sample:pmos

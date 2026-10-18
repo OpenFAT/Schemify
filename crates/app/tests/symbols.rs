@@ -1,4 +1,4 @@
-//! The `devices/` contact sheet (`schemify-symbols` skill): every core cell placed with pin
+//! The `crates/doc/devices/` contact sheet (`schemify-symbols` skill): every core cell placed with pin
 //! stubs plus a 5-transistor OTA, rendered under the Modern preset in the dark and light
 //! canvas, at fit zoom and at a 4× crop. Re-bless with `SCHEMIFY_BLESS=1`; look at every
 //! image before committing it.
@@ -85,12 +85,12 @@ fn golden_core_symbols() {
     let mut s = sheet("core-symbols");
     check_golden("core_symbols_dark", s.render());
     s.key("Shift+O");
-    assert!(s.ed.opts.light);
+    assert!(s.ed.opts().light);
     check_golden("core_symbols_light", s.render());
     zoom_centred(&mut s, (150, 55), 4.0);
     check_golden("core_symbols_light_4x", s.render());
     s.key("Shift+O");
-    assert!(!s.ed.opts.light);
+    assert!(!s.ed.opts().light);
     check_golden("core_symbols_dark_4x", s.render());
 }
 

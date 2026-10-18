@@ -7,7 +7,7 @@ decisions: PDKs installed **per project**; designs can switch **across technolog
 versions. Parts still draft are marked **draft**; open questions **Q**.
 
 Two parts:
-1. the `pdk-manager` **plugin** (`plugins/pdk-manager`), which installs, switches and removes
+1. the `pdk-manager` **plugin** (`examples/plugins/pdk-manager`), which installs, switches and removes
    PDKs (§1–§4);
 2. **technology classes** in the core, which let one schematic retarget between PDKs (§5–§8).
 
@@ -50,7 +50,7 @@ Every installed PDK lives under the project's git-ignored `.schemify/` directory
 
 ## 2. Recipes (data, in the plugin)
 
-A recipe is one row of `RECIPES` in `plugins/pdk-manager/src/lib.rs`; adding a PDK is adding a
+A recipe is one row of `RECIPES` in `examples/plugins/pdk-manager/src/lib.rs`; adding a PDK is adding a
 row (no code):
 
 | Field | sky130 | gf180mcu | ihp-sg13g2 | freepdk45 | asap7 |
@@ -285,7 +285,7 @@ class nmos core                            # in asap7's map: FinFET
   class params (D40: overrides only).
 - A class/flavor a PDK lacks is an error at check time ("sky130 has no lvt pmos"), not a silent
   substitution.
-- The shipped maps (`plugins/pdk-manager/maps/`): sky130 `W = w/1u`, `L = l/1u`, `mult = m`
+- The shipped maps (`examples/plugins/pdk-manager/maps/`): sky130 `W = w/1u`, `L = l/1u`, `mult = m`
   (its symbols take microns); gf180mcu `W = w`, `L = l` (metres); ihp-sg13g2 `ng = nf` (`w`,
   `l`, `m` are the class params themselves); freepdk45 nothing (`w l nf m` are its cells'
   params): core = VTL (the kit's default device), hvt = VTH, io = THKOX, no lvt (VTG is placed
@@ -351,7 +351,7 @@ are listed, not changed. One transaction (one undo), shown in the visual diff be
   asap7 (`git`), `local` kits, §2.2 device generation, §7 corners as files, §9.5. Other classes,
   limits, `vdd_nom`, corner-name mapping for sectioned kits and §8 retargeting follow.
 - **Oracles:**
-  - `plugins/pdk-manager/tests/guest.rs`: the built guest through the real plugin host with a
+  - `examples/plugins/pdk-manager/tests/guest.rs`: the built guest through the real plugin host with a
     fake `ciel` and `schemify-interop` on `PATH` (shell scripts writing a tiny tree and logging argv):
     exact argv of every step, store layout, `STATE`, `tech.map`, `INSTALLS`, the manifest after
     `pdk.use` (canonical text), a failed fetch or import (and a failed re-install of a complete
@@ -368,7 +368,7 @@ are listed, not changed. One transaction (one undo), shown in the visual diff be
     each and runs the `tech:` inverter's DC sweep with `schemify run`: output above 0.9 vdd at
     vin = 0, below 0.1 vdd at vin ≈ vdd, `vout = vin` between 0.3 and 0.7 vdd (2026-10-12:
     freepdk45 1.0997 / 7.5e-5 / 0.543 V of 1.1 V; asap7 0.7000 / 2.2e-7 / 0.365 V of 0.7 V).
-  - `plugins/pdk-manager/src/lib.rs`: argv, version and path checks, the manifest rewrite
+  - `examples/plugins/pdk-manager/src/lib.rs`: argv, version and path checks, the manifest rewrite
     (reproduced byte for byte by the format writer, idempotent), references, prune plan,
     recipe coherence, `local` path refusals. `src/install.rs`: the step list of every source
     kind, the corner library, the generated cells (canonical, the core pins and drawing, the

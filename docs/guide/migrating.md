@@ -16,12 +16,13 @@ All of the conversions live in plugins, not in the `schemify` binary. Some run o
 
 ## Getting `schemify-interop`
 
-`schemify-interop` is the interop plugin's command-line tool. It ships in the release archives next to `schemify` and `schemify-gui`. From a checkout:
+`schemify-interop` is the interop plugin's command-line tool, from its own repository, [Schemify-Interop](https://github.com/OmarSiwy/Schemify-Interop):
 
 ```sh
-nix run .#interop -- xschem-import --help        # prints the usage line
-# or, without Nix:
-cargo run --manifest-path plugins/Cargo.toml -p interop --features cli \
+cargo install --git https://github.com/OmarSiwy/Schemify-Interop --features cli --bin schemify-interop
+schemify-interop xschem-import --help            # prints the usage line
+# or, from Schemify's submodule checkout:
+cargo run --manifest-path examples/plugins/interop/Cargo.toml --features cli \
   --bin schemify-interop -- xschem-import ...
 ```
 
@@ -86,7 +87,7 @@ schemify netlist ~/chips/amp-schemify/amp/tb_ota.shbench
 
 ### How close the netlists are
 
-The nightly tests import 301 benches (xschem's own examples, sky130, GF180 and IHP designs), netlist them and compare with the netlists xschem itself writes. On the current run, 255 of 301 SPICE netlists are equivalent to xschem's. For CDL, 235 of 301 are equivalent once the inline code blocks are left out of the comparison, since Schemify's CDL carries none. Another 24 SPICE benches differ only because xschem leaves a parameter unevaluated where Schemify evaluates its default. Each remaining difference is listed with its cause in [tests/corpus/RATCHET.md](../../tests/corpus/RATCHET.md).
+The nightly tests import 301 benches (xschem's own examples, sky130, GF180 and IHP designs), netlist them and compare with the netlists xschem itself writes. On the current run, 255 of 301 SPICE netlists are equivalent to xschem's. For CDL, 235 of 301 are equivalent once the inline code blocks are left out of the comparison, since Schemify's CDL carries none. Another 24 SPICE benches differ only because xschem leaves a parameter unevaluated where Schemify evaluates its default. Each remaining difference is listed with its cause in [examples/plugins/interop/tests/corpus/RATCHET.md](../../tests/corpus/RATCHET.md).
 
 ### What does not come across
 
@@ -103,7 +104,7 @@ There are two routes. The `pdk-manager` plugin installs a PDK per project and ke
 
 ### With the PDK manager
 
-The plugin installs sky130, gf180mcu and ihp-sg13g2 through [ciel](https://github.com/fossi-foundation/ciel), and the academic kits freepdk45 and asap7 from pinned downloads. You need `ciel` and `schemify-interop` on your `PATH`. Add the plugin to your project's `schemify.project`, pointing `path` at your copy of `pdk_manager.wasm` (it is in `plugins/pdk-manager/` of a checkout):
+The plugin installs sky130, gf180mcu and ihp-sg13g2 through [ciel](https://github.com/fossi-foundation/ciel), and the academic kits freepdk45 and asap7 from pinned downloads. You need `ciel` and `schemify-interop` on your `PATH`. Add the plugin to your project's `schemify.project`, pointing `path` at your copy of `pdk_manager.wasm` (it is in `examples/plugins/pdk-manager/` of a checkout):
 
 ```text
 plugin pdk-manager path plugins/pdk-manager/pdk_manager.wasm
@@ -183,11 +184,11 @@ Schemify links nothing from Cadence. Virtuoso loads one SKILL file, `schemify.il
 
 No Virtuoso runs in Schemify's CI. The SKILL side is tested against a mock built from the manuals, and the `cdfDump` reader has only been checked against the documented format. Run the self-test below before you trust a round trip on your release and PDK.
 
-To check everything at once, run the live test kit on the Virtuoso machine: `plugins/interop/live/run.sh` from your Virtuoso project directory. It loads, dumps and round-trips a set of fixture designs and your own cells, netlists and simulates them, and writes a report with a verdict. See [plugins/interop/live/README.md](../../plugins/interop/live/README.md).
+To check everything at once, run the live test kit on the Virtuoso machine: `examples/plugins/interop/live/run.sh` from your Virtuoso project directory. It loads, dumps and round-trips a set of fixture designs and your own cells, netlists and simulates them, and writes a report with a verdict. See [examples/plugins/interop/live/README.md](../../examples/plugins/interop/live/README.md).
 
 ### Load the plugin in the editor
 
-The editor's File menu items appear once the interop plugin is in your manifest. Copy `interop.wasm` (from `plugins/interop/` of a checkout) into your project:
+The editor's File menu items appear once the interop plugin is in your manifest. Copy `interop.wasm` (from `examples/plugins/interop/` of a checkout) into your project:
 
 ```text
 plugin interop path plugins/interop.wasm
@@ -214,7 +215,7 @@ SfyProbe("scratchLib" ?pdkLib "yourPdk" ?pdkCell "nch")
 SfySelfTest("myLib" "someCell" "scratchLib")
 ```
 
-`SfySelfTest` dumps a cell, loads it into the scratch library, dumps it again and compares. It prints `PASS` or the first differing lines and writes `/tmp/sfy_selftest.txt`. The probe writes `/tmp/sfy_probe.txt`, which records how your release behaves. The plugin's [README](../../plugins/interop/README.md) has the full first-run checklist and what to send back if something fails.
+`SfySelfTest` dumps a cell, loads it into the scratch library, dumps it again and compares. It prints `PASS` or the first differing lines and writes `/tmp/sfy_selftest.txt`. The probe writes `/tmp/sfy_probe.txt`, which records how your release behaves. The plugin's [README](../../examples/plugins/interop/README.md) has the full first-run checklist and what to send back if something fails.
 
 ### Moving cells each way
 
@@ -248,7 +249,7 @@ Mirrors of a commercial PDK contain its symbols and parameter names. Keep those 
 
 ## Turning a SPICE netlist into a schematic
 
-The `cktimg` plugin reads a SPICE deck and draws it: supplies at the top, grounds at the bottom, signal flowing left to right. Add it to the manifest (the wasm is `plugins/cktimg/cktimg.wasm` in a checkout):
+The `cktimg` plugin reads a SPICE deck and draws it: supplies at the top, grounds at the bottom, signal flowing left to right. Add it to the manifest (the wasm is `examples/plugins/cktImg/cktimg.wasm` in a checkout):
 
 ```text
 plugin cktimg path plugins/cktimg.wasm

@@ -1,9 +1,0 @@
-v {xschem sion=3.4.7 file_version=1.2}
-K {type=nmos
-format="@spicepl=nmos w5version=5.4.7 fpe=nmos
-
-temK {t‹versextra m=@x@spicep@name @pinlist @expr("@spiceprefix@spic'p@name @pinlist @model w=@w l=@l @e$xtra m=@x@spicep@name @pinlist @model w=@w l=@l @ex=@x@spicep@name @pinlist @mo
-t="@6piceprefix@spic'p@name @pinlist @modw=le @w l=@l @extra m=@x@spicep@name @pinlist @model w=@w l=@l @extra@extra m=@m"
-odelD=omos w=version=5.4.7 f
-t="Aspiceprefix@spic'p@name @p@extra m=:@delD=omos w=v@spic'p@name @pinlispic'p@nameμμμμμμμμμμμμμμμμμμμμμm=12}
- v- ,54{.
