@@ -333,6 +333,78 @@ What bounds the rest:
   path encoding of 100k visible paths; the editor never encodes them per frame (tiles), so it
   guards the uncached fallback only.
 
+## Edit frames pass 2026-10
+
+Goal: every edit frame (delete, undo, redo, the drop of a move, a property change, a wire drawn)
+under 1 ms of CPU at 100k objects, the ticks after it too, and no hitch on the first edit of a
+document. Measured on `main` `c61f0e85` (RTX 4060 host, no GPU columns: CPU only, load 6–8) by
+the new `edit_frames_100k` (`crates/app/tests/perf.rs`: a dozen frames of each kind on the
+`interactions` fixture, zoomed in, each followed by the ticks the editor asks for). Per-step
+times came from temporary `Instant` laps around each spine step.
+
+### Before (CPU update+paint, p50 / p95 ms; tick = the frame `wake_ms` asks for right after)
+
+| Edit | 100k frame | tick |
+|---|---|---|
+| first edit of the document (a delete) | 28.4 | 3.4 |
+| delete | 13.9 / 14.1 | 2.3 |
+| undo | 12.1 / 12.3 | 2.3 |
+| redo | 12.4 / 12.6 | 2.3 |
+| move (drop) | 12.5 / 19.2 | 2.3 |
+| wire (wire tool click) | 10.7 / 10.9 | 2.3 |
+| rename (instance name, props dialog) | 13.0–14.0 (60–71 on a duplicate name) | 2.4 |
+| param (instance `W`, props dialog) | 52–60 | 2.4 |
+
+### Where an edit frame goes (100k, ms)
+
+- `checks::decor` **4.3–4.6**: rebuilds every decor row; the fixture has 70k violation marks
+  (every wire floats), each parsed from its target id, looked up (`find_id`, `scene.find`) and
+  drawn as a rect and a text.
+- canvas diff **3.0–3.1**: `CanvasDiff::update` hashes every row of the scene (≈ 200k rows) and
+  of the decor (≈ 140k), then diffs the hash sequences.
+- plugin snapshot **1.2** in the frame (`DocChanged` refills the wires group and fingerprints
+  every instance, wire and label column) plus **2.1** in the tick after (the new check pass:
+  net columns, the Nets and Violations groups).
+- `Annotations::patch` **1.0**: moves all 70k marks (80 bytes each) to place two.
+- `scene::update` **0.5–1.3**: the positional row diff of every table (0.43), then per removed
+  object two scans of every owner column and of `conn`, a renumbering scan, the sorted index.
+- tile patches **0.05–1.6**: after 16 edit scripts (or 4096 added rows) the `PrimIndex` asks to
+  be rebuilt and every patch culls every row (0.8 ms per patch) until a tile records, which then
+  rebuilds the index: **7 ms** for the scene, 1.3 for the decor (the first click after open, 30 ms,
+  is this plus the first diff fill and snapshot).
+- elab **0.4** (connectivity patch and the violation delta), UI **0.1**.
+- first edit: **+12.6** in `apply`: the journal's first `base` record hashes the whole file
+  (SHA-256 of the 100k-object text) in the frame.
+- param edit: elab **13** (values changed: the whole check pass reruns) and `scene::build`
+  **29** (values changed: every instance re-stamped), the decor and diff as above.
+
+### Plan, biggest first (each step's result must equal its full rebuild; property tests at
+small and 100k scale)
+
+1. **A change log from `doc`** (owner: `doc`): every row write of an id table (insert, delete
+   with its swap, put) appends `(table, row, id)` to a bounded per-document log with a
+   sequence number; a compaction or reorder marks the log as broken. Consumers keep a cursor
+   and fall back to their full rebuild when the log no longer reaches it.
+2. **Scene from the log, rows that do not move**: `scene::update` re-stamps the touched
+   objects only; a removed object's primitive rows become dead (`LAYER_DEAD`, skipped by every
+   reader) instead of shifting or swapping, new rows append, objects keep a stamp so their rows
+   are found by binary search. It reports its row edits (dead rows, appended rows). A full
+   build compacts when dead rows pass a quarter of the table.
+3. **Decor in two tables**: the violation marks become their own table kept per marked object
+   (only the objects whose marks or geometry changed are redrawn, same dead-row scheme); the
+   rest (highlight, OP annotations, staged diff) stays a rebuild-on-change table. The
+   annotation overlay becomes an ordered map so a patch is O(changes · log n).
+4. **Canvas diff from the producers' edits**: a table whose producer reports its edits is not
+   hashed; its damage is the boxes of its dead and appended rows. `PrimIndex` follows those
+   edits in place (stable row indices), so it never asks for a rebuild between compactions.
+5. **Plugin snapshot patched from the log**: changed rows of the instance, wire and label
+   columns, the violation delta and the net columns of the touched rows; the fingerprint pass
+   goes.
+6. **First-edit journal**: the file hash is computed when the document is opened (it is read
+   then anyway), so the first commit appends its records like any other.
+7. Elab, the param path (re-stamp only the instances whose values changed) and the rest as
+   measured after 1–6.
+
 ## Binary size
 
 D39 (amended 2026-10-11): the headless core `schemify` ≤ 2 MB, the editor `schemify-gui` ≤

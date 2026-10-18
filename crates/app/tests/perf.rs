@@ -965,3 +965,226 @@ fn interactions_100k() {
 fn interactions_1m() {
     interactions(1_000_000);
 }
+
+/// A key press as the window delivers it (modifiers down, the key, modifiers up).
+fn key_event(c: &str) -> InputEvents {
+    let chord = Chord::parse(c).expect("chord");
+    let mut ev = event(InputEvent::Mods { mods: chord.mods() });
+    ev.push(InputEvent::Key { chord });
+    ev.push(InputEvent::Mods {
+        mods: schemify_ui::Mods::default(),
+    });
+    ev
+}
+
+/// Every edit frame on an `n`-object schematic, zoomed in as [`interactions`] is: the first
+/// edit of the document (it creates the journal), then a dozen each of delete, undo, redo,
+/// move (the drop of a drag), a wire drawn with the wire tool, a rename (an instance's name
+/// through its properties dialog) and a parameter change (its first parameter). Each kind's
+/// frames are reported apart, with the ticks the editor asks for after them (the window runs
+/// those before the next input). Returns (kind, CPU p50/p95/p99, largest tick) per kind.
+fn edit_frames(n: u32) -> Vec<(&'static str, [f64; 3], f64)> {
+    let dir = fixture("inv", &format!("perf-edit-{n}"));
+    std::fs::write(dir.join("big.shcomp"), schematic(n)).unwrap();
+    let mut ed = Editor::new(Options {
+        no_default_ui: false,
+        path: Some(dir.join("big.shcomp")),
+        seed: 1,
+        ..Default::default()
+    })
+    .unwrap();
+    ed.update(&InputEvents::default(), VIEW, 0);
+    let mut b = Bench {
+        ed,
+        scale: 1.0,
+        scene: Scene::new(),
+        layers: Layers::default(),
+        now: 0,
+        gpu: Gpu::new(1.0),
+        cpu: Vec::new(),
+        vello: Vec::new(),
+        gpu_ms: Vec::new(),
+    };
+    let settle = |b: &mut Bench| {
+        for _ in 0..256 {
+            if b.ed.wake_ms().is_none() {
+                break;
+            }
+            b.frame(&InputEvents::default(), 200, false);
+        }
+        assert_eq!(b.ed.wake_ms(), None, "settled");
+    };
+    b.frame(&InputEvents::default(), 1000, false);
+    settle(&mut b);
+    let (cx, cy) = (640.0f32, 400.0f32);
+    b.frame(&event(InputEvent::PointerMove { x: cx, y: cy }), 8, false);
+    for _ in 0..8 {
+        let wheel = InputEvent::Wheel {
+            x: cx,
+            y: cy,
+            dx: 0.0,
+            dy: 1.0,
+        };
+        b.frame(&event(wheel), 16, false);
+    }
+    settle(&mut b);
+    let cam = b.ed.camera();
+    let tile = f64::from(200 * U);
+    let (tx, ty) = (
+        (cam.cx / tile).round() as i32 * 200 * U,
+        (cam.cy / tile).round() as i32 * 200 * U,
+    );
+    let wire = |b: &Bench, k: i32| {
+        b.ed.to_screen((tx + 70 * U + 200 * U * (k % 4 - 2), ty - 30 * U))
+    };
+    let press = |at: (f32, f32)| InputEvent::PointerDown {
+        x: at.0,
+        y: at.1,
+        button: Button::Left,
+    };
+    let release = |at: (f32, f32)| InputEvent::PointerUp {
+        x: at.0,
+        y: at.1,
+        button: Button::Left,
+    };
+    let click = |b: &mut Bench, at: (f32, f32)| {
+        b.frame(
+            &event(InputEvent::PointerMove { x: at.0, y: at.1 }),
+            50,
+            false,
+        );
+        let mut c = event(press(at));
+        c.push(release(at));
+        b.frame(&c, 500, false);
+        b.ticks();
+    };
+    let mut out = Vec::new();
+    let mut ticks: Vec<f64> = Vec::new();
+    let mut done = |b: &mut Bench, what: &'static str, ticks: &mut Vec<f64>| {
+        let pct = b.report(what);
+        let worst = ticks.iter().copied().fold(0.0, f64::max);
+        eprintln!("  after {what}: {}", tick_stats(std::mem::take(ticks)));
+        out.push((what, pct, worst));
+    };
+    // The first edit of the document: its journal starts.
+    let at = wire(&b, 0);
+    click(&mut b, at);
+    assert_eq!(b.ed.selection().len(), 1, "a wire under the pointer");
+    b.frame(&key_event("Del"), 500, true);
+    ticks.extend(b.ticks());
+    done(&mut b, "first", &mut ticks);
+    b.frame(&key_event("U"), 500, false);
+    b.ticks();
+    // Delete, undo, redo (then undo again, so the document stays as it was).
+    let objs = b.ed.scene().objs.len();
+    let (mut del, mut undo, mut redo) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut tdel, mut tundo, mut tredo) = (Vec::new(), Vec::new(), Vec::new());
+    for k in 0..12 {
+        let at = wire(&b, k);
+        click(&mut b, at);
+        assert_eq!(b.ed.selection().len(), 1, "a wire under the pointer");
+        for (key, times, t, len) in [
+            ("Del", &mut del, &mut tdel, objs - 1),
+            ("U", &mut undo, &mut tundo, objs),
+            ("Shift+U", &mut redo, &mut tredo, objs - 1),
+        ] {
+            b.frame(&key_event(key), 500, true);
+            times.push(b.cpu.pop().expect("measured"));
+            assert_eq!(b.ed.scene().objs.len(), len, "{key}");
+            t.extend(b.ticks());
+        }
+        b.frame(&key_event("U"), 500, false);
+        b.ticks();
+    }
+    for (what, times, t) in [
+        ("delete", del, tdel),
+        ("undo", undo, tundo),
+        ("redo", redo, tredo),
+    ] {
+        b.cpu = times;
+        ticks = t;
+        done(&mut b, what, &mut ticks);
+    }
+    // Move: press on a wire, drag it, drop it (the drop commits).
+    for k in 0..12 {
+        let at = wire(&b, k);
+        click(&mut b, at);
+        b.frame(&event(press(at)), 1000, false);
+        for i in 1..=8 {
+            let to = InputEvent::PointerMove {
+                x: at.0 + i as f32 * 2.0,
+                y: at.1 + i as f32,
+            };
+            b.frame(&event(to), 8, false);
+        }
+        b.frame(&event(release((at.0 + 16.0, at.1 + 8.0))), 8, true);
+        ticks.extend(b.ticks());
+        b.frame(&key_event("U"), 500, false);
+        b.ticks();
+    }
+    done(&mut b, "move", &mut ticks);
+    // A wire drawn with the wire tool: `w` at a free point, then a click.
+    for k in 0..12 {
+        let from = b
+            .ed
+            .to_screen((tx - 90 * U + 200 * U * (k % 4 - 2), ty + 90 * U));
+        b.frame(
+            &event(InputEvent::PointerMove {
+                x: from.0,
+                y: from.1,
+            }),
+            50,
+            false,
+        );
+        b.frame(&key_event("w"), 300, false);
+        let to = (from.0 + 30.0, from.1);
+        b.frame(
+            &event(InputEvent::PointerMove { x: to.0, y: to.1 }),
+            50,
+            false,
+        );
+        let mut c = event(press(to));
+        c.push(release(to));
+        b.frame(&c, 500, true);
+        ticks.extend(b.ticks());
+        b.frame(&key_event("Escape"), 300, false);
+        b.frame(&key_event("U"), 500, false);
+        b.ticks();
+    }
+    done(&mut b, "wire", &mut ticks);
+    // Property changes through an instance's properties dialog: field 0 is its name, field
+    // 1 its first parameter.
+    for (what, field) in [("rename", 0), ("param", 1)] {
+        for k in 0..12 {
+            let inst = b.ed.to_screen((tx + 200 * U * (k % 4 - 2), ty));
+            click(&mut b, inst);
+            b.frame(&key_event("q"), 300, false);
+            b.click_node(&format!("dialog.props.val.{field}"), 300, false);
+            b.frame(&key_event("Ctrl+A"), 30, false);
+            let mut ev = InputEvents::default();
+            ev.push_text(match (field, k % 2) {
+                (0, 0) => "MA",
+                (0, _) => "MB",
+                (_, 0) => "2",
+                _ => "3",
+            });
+            b.frame(&ev, 30, false);
+            b.click_node("dialog.props.ok", 300, true);
+            ticks.extend(b.ticks());
+        }
+        done(&mut b, what, &mut ticks);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    out
+}
+
+#[test]
+#[ignore = "release-mode benchmark; run explicitly"]
+fn edit_frames_100k() {
+    let r = edit_frames(100_000);
+    for (what, [p50, p95, p99], tick) in &r {
+        eprintln!(
+            "PERF app.edit_{what}_100k_ms {p50:.3} (p95 {p95:.3}, p99 {p99:.3}, tick max {tick:.3})"
+        );
+    }
+}
