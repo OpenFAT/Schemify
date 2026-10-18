@@ -17,9 +17,14 @@ Load these before writing or reviewing code. In Claude Code they are user skills
 | Skill | Use it for |
 |---|---|
 | `data-oriented-design` | Every struct or table layout. Answer its six questions in writing first: narrowest types, SoA by default, existence-based tables, handles instead of pointers. |
-| `simd-loops` | Every hot loop over large data (parsers, connectivity, netlist emission, waveform columns). Triage first; the scalar loop stays as the tail and the oracle. |
+| `codebase-clean-code` | Program shape: owners (crates), one spine per pipeline, request tables, variation by data. Every new seam names its ladder rung and the change drill it passes (architecture.md). |
+| `rust` | Edition 2024 on 1.95: types (newtypes, typed handles, niches, no `_` arm on boundary enums), memory (arenas, `Vec` + indices), and `zero-cost.md`: an abstraction at ladder rung 5 or above enters a hot path only with an `asm_probe` verdict. Explicit SIMD is `fearless_simd` (`simd-first.md`). |
+| `gui-architecture` | The editor's UI: the model is owned tables, updates are requests to the owner, the view is a pure function of the tables, the canvas renders straight from tables, the app idles at 0% CPU, frames are tested headless (D4/D6/D39). |
+| `simd-loops` | Every hot loop over large data (parsers, connectivity, netlist emission, waveform columns). Triage first; the scalar loop stays as the tail and the oracle. A data-dependent branch goes to `branchless` first. |
+| `assertions` | Rule 5: at least two asserts per function on average, stated capacities, bounded loops; asserts for programmer errors, `Result` for expected failures. |
 | `doc-comments` | Every `pub` item. Each `///` states something the signature can't: a precondition, invalidation, ownership, failure, cost or reason. |
-| `codebase-clean-code` | Program shape: tables, transforms, one spine per pipeline, one owner per table, variation by data. State the change radius before coding a feature. |
+
+Conflict rule: data layout beats code brevity; `ponytail` decides how little code to write, never what shape the data takes. The remaining rulings are in `codebase-rules`.
 
 UI and visual work has its own guides in this repository, under [skills/](skills/). Read them as documents (they are no longer auto-loaded):
 
