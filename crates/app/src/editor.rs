@@ -12,6 +12,7 @@
 //! docs::cache_ops(values) → doc::apply_edits           → D20 `cached` write-back, same undo
 //! elab::apply_annotations(checks, op)                  → annotations (replace per source)
 //! run::poll(jobs) → results; optimizer ask/tell        → results table, plots, staged edit
+//! app::ui_inputs(plugin sets, docs page, images: I/O)  → shell inputs, status
 //! ui::compose(base, plugin sets, state + docs page)    → ui_nodes; ui::layout → ui_layout
 //! scene::build(doc, symbols)                           → canvas prims, objects (on change)
 //! checks::decor(scene, violations, highlight, annots)  → decor prims (on change)
@@ -1147,7 +1148,9 @@ impl Editor {
         let zoom0 = self.camera().scale;
         let resized = viewport != self.viewport;
         self.viewport = viewport;
-        self.compose_ui(false);
+        // UI inputs (plugin sets, docs page, images) → compose + layout, so input routes over
+        // what is shown now.
+        self.ui_step(false);
         let mut routed = std::mem::take(&mut self.routed);
         // 1. input → command_requests + canvas events
         route_input(
@@ -1210,8 +1213,9 @@ impl Editor {
             changed |= self.step_sim(&mut reqs);
         }
         self.track_stage();
-        // 8. ui compose + layout
-        changed |= self.compose_ui(routed.relayout);
+        // 8. ui inputs (plugin sets, docs page, prose images: I/O) → ui compose + layout
+        //    (a projection) → palette
+        changed |= self.ui_step(routed.relayout);
         if let Some(id) = self.focus_next.take() {
             let s = &mut self.shell;
             let sym = s.strings.intern(&id);
@@ -4072,39 +4076,78 @@ impl Editor {
         }
     }
 
-    /// `ui::compose` + `ui::layout`: plugin sets (when their composition changed), the
-    /// state contribution, then layout. Returns whether the layout changed.
-    fn compose_ui(&mut self, relayout: bool) -> bool {
-        let mut restyle = false;
-        if let Some(sets) = self.host.ui_sets() {
-            self.shell.set_plugins(&sets);
-            self.commands.set_plugin_rows(self.host.plugins.composed());
-            restyle = true;
+    /// The UI step of the frame spine: [`Editor::ui_inputs`], the pure [`Editor::compose_ui`],
+    /// then the palette when the plugin composition changed (it reads the composed styles).
+    /// Returns whether the layout changed.
+    fn ui_step(&mut self, relayout: bool) -> bool {
+        let (loaded, restyle) = self.ui_inputs();
+        let changed = self.compose_ui(relayout || loaded);
+        if restyle {
+            self.refresh_palette();
         }
-        let mut relayout = relayout;
+        changed
+    }
+
+    /// Makes current what `ui::compose` reads: the plugin ui and keymap sets (when their
+    /// composition changed; the command rows follow), the docs page following the active
+    /// document, and the page's prose images (file I/O, once per path; a failure goes to the
+    /// status line here, where it is decided). Returns (an image loaded, so the page needs a
+    /// new layout; the plugin composition changed, so the palette needs a refresh).
+    fn ui_inputs(&mut self) -> (bool, bool) {
+        let restyle = match self.host.ui_sets() {
+            Some(sets) => {
+                self.shell.set_plugins(&sets);
+                self.commands.set_plugin_rows(self.host.plugins.composed());
+                true
+            }
+            None => false,
+        };
+        let mut loaded = false;
         if let Some((h, _)) = self.active() {
             self.page.follow(h);
-            // Prose images of the page, read once per path; one that loads lays it out again.
+            assert_eq!(
+                self.page.doc,
+                Some(h),
+                "the page follows the active document"
+            );
             // ponytail: an image file changed on disk is not reloaded; watch it with the documents.
             if self.docs_shown()
                 && let Some(doc) = self.session.project.doc(h)
             {
                 let failed = &mut self.page.images_failed;
-                let (loaded, err) =
+                let err;
+                (loaded, err) =
                     docs::load_images(doc, &self.session.root, &mut self.shell.text, failed);
-                relayout |= loaded;
                 if let Some(e) = err {
                     self.session.status = e;
                 }
             }
         }
+        assert!(self.page.images_failed.len() <= docs::IMAGES_FAILED_MAX);
+        (loaded, restyle)
+    }
+
+    /// `ui::compose` + `ui::layout` as a projection: the state contribution of the tables
+    /// (tabs, status line, dialogs, docs page) replaces the shell's, then the shell recomposes
+    /// and lays out what changed. It writes only the shell's composed tables and layout and the
+    /// plot slots it found (`graphs`, which `paint` reads); no I/O and no model table, so it may
+    /// run more than once a frame. Returns whether the layout changed.
+    fn compose_ui(&mut self, relayout: bool) -> bool {
+        let (status, failed) = (self.session.status.len(), self.page.images_failed.len());
         let (text, graphs) = self.state_contribution();
         self.graphs = graphs;
         self.shell.set_state(&text);
         let changed = self.shell.refresh(self.viewport, relayout);
-        if restyle {
-            self.refresh_palette();
-        }
+        assert_eq!(
+            self.session.status.len(),
+            status,
+            "compose writes no status"
+        );
+        assert_eq!(
+            self.page.images_failed.len(),
+            failed,
+            "compose reads no file"
+        );
         changed
     }
 
@@ -4726,4 +4769,73 @@ fn world_box(view: KRect, cam: &Camera) -> [i32; 4] {
         c((a0.max(a1) + pad).ceil()),
         c((b0.max(b1) + pad).ceil()),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Copies the fixture tree `src` to `dst`, leaving out derived `.schemify/` state.
+    fn copy_dir(src: &Path, dst: &Path) {
+        std::fs::create_dir_all(dst).unwrap();
+        for e in std::fs::read_dir(src).unwrap() {
+            let p = e.unwrap().path();
+            if p.file_name().is_some_and(|n| n == ".schemify") {
+                continue;
+            }
+            let to = dst.join(p.file_name().unwrap());
+            if p.is_dir() {
+                copy_dir(&p, &to);
+            } else {
+                std::fs::copy(&p, &to).unwrap();
+            }
+        }
+    }
+
+    /// `compose_ui` is a projection: run twice over the same tables it gives the same layout,
+    /// reads no image file and leaves the status line alone; the frame's `ui_inputs` step is
+    /// where a missing prose image is tried once and reported.
+    #[test]
+    fn compose_is_a_projection_and_the_ui_inputs_step_does_the_io() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ota");
+        let dir =
+            std::env::temp_dir().join(format!("schemify-compose-pure-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        copy_dir(&src, &dir);
+        let file = dir.join("ota.shcomp");
+        let head = "  | # Five-transistor OTA, sized by gm/Id\n";
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains(head));
+        let with = format!("{head}  |\n  | ![gone](img/missing.png)\n");
+        std::fs::write(&file, text.replace(head, &with)).unwrap();
+        let mut ed = Editor::new(Options {
+            path: Some(file),
+            seed: 7,
+            ..Default::default()
+        })
+        .expect("fixture opens");
+        assert!(ed.docs_shown(), "the OTA opens beside its docs page");
+        ed.viewport = (1280.0, 800.0);
+        ed.session.status = "before".into();
+        // The first layout gives the canvas its rect, which the status line then reads.
+        ed.compose_ui(false);
+        ed.compose_ui(false);
+        let first = ed.shell.layout.rect().to_vec();
+        assert!(!ed.compose_ui(false), "the same tables lay out nothing new");
+        assert_eq!(ed.shell.layout.rect(), &first[..]);
+        assert_eq!(ed.session.status, "before", "compose writes no status");
+        assert!(ed.page.images_failed.is_empty(), "compose reads no file");
+        assert_eq!(
+            ed.ui_inputs(),
+            (false, true),
+            "nothing loaded; the plugins composed"
+        );
+        assert_eq!(ed.page.images_failed, ["img/missing.png"]);
+        assert!(
+            ed.session.status.contains("missing.png"),
+            "{}",
+            ed.session.status
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
