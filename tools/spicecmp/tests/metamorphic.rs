@@ -619,7 +619,7 @@ fn save_sets_expression_params_and_free_bindings() {
 /// that the interop plugin's corpus scripts write (github.com/OmarSiwy/Schemify-Interop,
 /// `tests/corpus/golden.sh`: `tests/corpus/.cache/golden`).
 #[test]
-#[ignore = "needs SCHEMIFY_GOLDEN (Schemify-Interop: tests/corpus/fetch.sh && tests/corpus/golden.sh)"]
+#[ignore = "needs SCHEMIFY_GOLDEN (Schemify-Interop: corpus/fetch.sh && corpus/golden.sh)"]
 fn goldens_survive_shuffling() {
     let dir =
         std::path::PathBuf::from(std::env::var_os("SCHEMIFY_GOLDEN").expect("SCHEMIFY_GOLDEN set"));
