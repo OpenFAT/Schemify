@@ -49,10 +49,7 @@ fn boots_without_the_default_ui_plugin() {
 /// Expected chords from xschem's canvas key table (`fixtures/xschem_keys.md`, captured by
 /// running xschem 3.4.7): every row except graph-only, cadence-only, placeholder and Tk-dialog rows.
 fn inventory_chords() -> Vec<(String, String)> {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/xschem_keys.md"
-    );
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/xschem_keys.md");
     let text = std::fs::read_to_string(path).expect("inventory");
     let start = text.find("### 2.1").expect("§2.1");
     let end = text[start..].find("### 2.2").expect("§2.2") + start;

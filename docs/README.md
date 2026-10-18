@@ -18,6 +18,10 @@ Start with [Install](guide/install.md), then work through [A first session](guid
 | [Command line](guide/cli.md) | look up a `schemify` or `schemify-interop` command and its flags |
 | [In the browser](guide/web.md) | build and use the web version |
 
+## Writing plugins
+
+[plugins/](plugins/README.md) is for plugin authors: the [repository layout](plugins/repository.md) every plugin repository follows, [testing](plugins/testing.md) locally and in CI (against a pinned Schemify and nightly against `main`), and [publishing](plugins/publishing.md). Four example plugins are submodules under `examples/plugins/`.
+
 ## Reference
 
 The specs in [spec/](spec/) are the exact rules the code follows. They are written for implementers, so the guide links to the relevant section instead of repeating it.
@@ -32,7 +36,7 @@ The specs in [spec/](spec/) are the exact rules the code follows. They are writt
 | [docs-page.md](spec/docs-page.md) | docs pages |
 | [edits.md](spec/edits.md) | edits, undo, staged edits and crash recovery |
 | [config.md](spec/config.md) | the Lua user config and the package manager |
-| [plugin-abi.md](spec/plugin-abi.md) | writing a plugin: the wasm ABI, capabilities and contributions |
+| [plugin-abi.md](spec/plugin-abi.md) | the plugin wasm ABI, capabilities and contributions |
 | [rpc.md](spec/rpc.md) | the JSON-RPC interface |
 | [import.md](spec/import.md), [interop.md](spec/interop.md), [pdk.md](spec/pdk.md) | xschem import, Virtuoso interop and PDK installation |
 | [web.md](spec/web.md) | the browser build |

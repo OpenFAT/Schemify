@@ -4,7 +4,7 @@ Implements D19 (docs `var` blocks are the cell's variables table), D20 (plugin f
 values), D21 (LaTeX math as a core widget) and the docs half of D23 (graphs embeddable in docs).
 Every `.shcomp` and `.shbench` has a docs page shown beside its schematic. Implementation:
 `crates/app/src/docs.rs` (projection, edits, cache write-back), `crates/ui/src/prose.rs` (the
-`prose` widget), `crates/elab` (`CellState`), `plugins/gmid-lut` (the reference D20 plugin).
+`prose` widget), `crates/elab` (`CellState`), `examples/plugins/GmIDVisualizer` (the reference D20 plugin).
 Blocks are the rank-4 records of [format.md](format.md) §4; nothing here adds a record kind.
 
 ## 1. Placement

@@ -52,7 +52,7 @@ Every core device has a Spectre line except `bsource`, `switch` and `vswitch`, w
 
 ## Where device lines come from
 
-A device (`.shprim`) carries one `format` line per dialect in its `impl`. This is the bundled resistor, `devices/res.shprim`:
+A device (`.shprim`) carries one `format` line per dialect in its `impl`. This is the bundled resistor, `crates/doc/devices/res.shprim`:
 
 ```
 param value 1k

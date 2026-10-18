@@ -206,8 +206,9 @@ Vars call them and instances use the vars, so the schematic is sized from invers
 
 ### Set up a project
 
-1. Put the plugin module in the project, for example `plugins/gmid_lut.wasm`. `plugins/build.sh`
-   in the Schemify repository builds it (it writes one into the OTA fixture).
+1. Put the plugin module in the project, for example `plugins/gmid_lut.wasm`. The
+   [GmIDVisualizer](https://github.com/OmarSiwy/GmIDVisualizer) repository commits a built
+   `gmid_lut.wasm` at its root, and its `build.sh` rebuilds it.
 2. Declare it in `schemify.project`:
 
    ```
@@ -251,7 +252,7 @@ length, and saves the table to the `lut` path (default `.schemify/gmid/<device>.
 edit `gmid.chars`, run **Tools → gm/Id: reload lookup tables**. Simulator errors go to the log;
 the table already loaded stays in use.
 
-The full attribute list and the sweep details are in `plugins/gmid-lut/README.md`.
+The full attribute list and the sweep details are in `examples/plugins/GmIDVisualizer/README.md`.
 
 ### Functions
 

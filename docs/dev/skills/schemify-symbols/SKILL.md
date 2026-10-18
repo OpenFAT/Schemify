@@ -1,6 +1,6 @@
 ---
 name: schemify-symbols
-description: Drawing rules and redesign loop for Schemify device symbols (`devices/*.shprim` and any `.shprim`/`.shcomp` symbol view). Use when drawing, redrawing or reviewing a device symbol, its labels or op-point slots, or when asked to make the device library look better than xschem's.
+description: Drawing rules and redesign loop for Schemify device symbols (`crates/doc/devices/*.shprim` and any `.shprim`/`.shcomp` symbol view). Use when drawing, redrawing or reviewing a device symbol, its labels or op-point slots, or when asked to make the device library look better than xschem's.
 ---
 
 The target is **textbook quality**: a symbol should read like a figure in Razavi or Sedra-Smith, built from one small kit (stroke weights, one arrowhead, one label column), and use nothing a reader of those books wouldn't recognise. CircuitLab abandoned its invented MOSFET because nobody could read it.
@@ -41,7 +41,7 @@ Every rank-2 graphic takes `width <1-4>` (multiples of the wire stroke), `dash <
 
 ## Loop
 
-The same loop as `schemify-ui-loop`, rendered on a **contact sheet**: one schematic placing every `devices/` cell, each wired to short stubs, plus one small reference circuit (a 5-transistor OTA with sources). Rendered as golden `core_symbols` in both themes and at two zooms (fit and 4×).
+The same loop as `schemify-ui-loop`, rendered on a **contact sheet**: one schematic placing every `crates/doc/devices/` cell, each wired to short stubs, plus one small reference circuit (a 5-transistor OTA with sources). Rendered as golden `core_symbols` in both themes and at two zooms (fit and 4×).
 
 1. **State the pass:** which cells, and which kit rules they serve. Done when the cells are named.
 2. **Redraw** only the rank-2 records and `stext` of those cells. Done when `git diff` shows no `pin` line changed (`git diff devices | grep '^[-+]pin'` is empty).

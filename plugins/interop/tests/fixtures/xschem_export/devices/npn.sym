@@ -1,7 +1,0 @@
-v {xschem version=3.4.7 file_version=1.2}
-K {type=npn
-format="@name @pinlist @model area=@area m=@m"
-template="name=Q1 model=npn area=1 m=1"}
-B 5 17.5 -32.5 22.5 -27.5 {name=C dir=inout}
-B 5 -22.5 -2.5 -17.5 2.5 {name=B dir=in}
-B 5 17.5 27.5 22.5 32.5 {name=E dir=inout}

@@ -1,5 +1,5 @@
-//! End-to-end through real wasmi: the example guests in `plugins/` (rebuilt by
-//! `plugins/build.sh`) and hand-written WAT modules for load-time failures.
+//! End-to-end through real wasmi: the example guests in `tests/guests/` (rebuilt by
+//! `ui/build.sh`) and hand-written WAT modules for load-time failures.
 
 use schemify_plugin::abi::{Code, Event, FUEL_DEFAULT, Kind, Level, Table, col};
 use schemify_plugin::{

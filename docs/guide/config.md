@@ -162,7 +162,7 @@ Each call (the init file with everything it requires, or one hook or keymap func
 
 ## Packages
 
-A user package is a prebuilt wasm plugin you install for yourself, in every project. Packages never run native code and have no build step. Declare them with `schemify.pack.add`, then install them with `schemify pack sync`:
+A user package is a prebuilt wasm plugin you install for yourself, in every project. Packages never run native code and have no build step. To write one, see [Writing a plugin](../plugins/README.md). Declare them with `schemify.pack.add`, then install them with `schemify pack sync`:
 
 ```lua
 schemify.pack.add {

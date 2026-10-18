@@ -231,11 +231,11 @@ A Model Context Protocol server on stdio for AI agents. Its tools are the headle
 
 ## schemify-interop
 
-`schemify-interop` is the interop plugin's command line. It is a separate program, built from `plugins/interop`:
+`schemify-interop` is the interop plugin's command line. It is a separate program from the plugin's repository, [Schemify-Interop](https://github.com/OmarSiwy/Schemify-Interop) (the submodule `examples/plugins/interop` here):
 
 ```sh
-nix run .#interop -- xschem-import …
-cargo run --manifest-path plugins/Cargo.toml -p interop --features cli --bin schemify-interop -- <command>
+cargo install --git https://github.com/OmarSiwy/Schemify-Interop --features cli --bin schemify-interop
+cargo run --manifest-path examples/plugins/interop/Cargo.toml --features cli --bin schemify-interop -- <command>
 ```
 
 Exit codes follow the core: 0 ok, 1 an output failed its check or the conversion was refused (problems printed), 2 usage or I/O errors.
@@ -287,6 +287,6 @@ Cell files, `.sfyx` paths and output paths are relative to `<project-dir>`. Each
 | `xschem-export` | Write `.sch`/`.sym` files, core devices onto xschem's `devices/` symbols. |
 | `install-skill` | Write `schemify.il` and `sfy_probe.il`, the SKILL files Virtuoso loads, into `<dir>`. |
 
-The Virtuoso workflow, including the first-session probe, is in `plugins/interop/README.md` and [interop.md](../spec/interop.md).
+The Virtuoso workflow, including the first-session probe, is in `examples/plugins/interop/README.md` and [interop.md](../spec/interop.md).
 
 See also: [netlisting.md](netlisting.md), [config.md](config.md), [simulation.md](simulation.md).

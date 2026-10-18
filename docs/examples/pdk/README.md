@@ -2,8 +2,8 @@
 
 The end-to-end flow of [docs/spec/pdk.md](../../spec/pdk.md). You need `ciel` on `PATH`
 (`pip install ciel`, or a venv) and the interop plugin's CLI `schemify-interop` on `PATH`
-(`nix run .#interop`, or the release archive; D24: the xschem importer is a plugin, not part
-of `schemify`).
+(`cargo install --git https://github.com/OmarSiwy/Schemify-Interop --features cli --bin
+schemify-interop`; D24: the xschem importer is a plugin, not part of `schemify`).
 
 ## 1. Load the PDK manager
 
@@ -19,8 +19,9 @@ plugin pdk-manager path plugins/pdk-manager/pdk_manager.wasm
   grant spawn:schemify-interop
 ```
 
-(`plugins/pdk-manager` holds `pdk_manager.wasm`; copy it into your project or point the path at
-a checkout.)
+([Schemify-PDK-Manager](https://github.com/OmarSiwy/Schemify-PDK-Manager), the submodule
+`examples/plugins/pdk-manager` here, holds `pdk_manager.wasm`; copy it into your project or point
+the path at a checkout.)
 
 ## 2. Install sky130
 
