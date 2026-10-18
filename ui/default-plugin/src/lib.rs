@@ -1,6 +1,6 @@
 //! The bundled default UI (D6): the xschem-parity shell built on the same ABI as any
 //! third-party plugin. The app embeds this module (`crates/app/assets/default_ui.wasm`, rebuilt
-//! by `plugins/build.sh`) and loads it first, so every later plugin overrides it (D8). Without
+//! by `ui/build.sh`) and loads it first, so every later plugin overrides it (D8). Without
 //! it the core still runs: a blank window with the canvas.
 //!
 //! On `Load` it contributes three immediate-mode sets:

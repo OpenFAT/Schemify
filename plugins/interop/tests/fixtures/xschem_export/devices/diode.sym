@@ -1,6 +1,0 @@
-v {xschem version=3.4.7 file_version=1.2}
-K {type=diode
-format="@name @pinlist @model area=@area"
-template="name=D1 model=D1N914 area=1"}
-B 5 -2.5 -32.5 2.5 -27.5 {name=p dir=inout}
-B 5 -2.5 27.5 2.5 32.5 {name=m dir=inout}

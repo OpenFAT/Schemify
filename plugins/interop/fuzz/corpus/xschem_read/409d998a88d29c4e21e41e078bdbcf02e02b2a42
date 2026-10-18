@@ -1,5 +1,0 @@
-v {xschem ven=1.2}
-K {type=resisat="Dname @pinlie m=@m"
-template="na dir=inout}
-B 0 -2.5 27.5 2.5 32.5 {name=M ir=inout}
-L 4 0 -30 0 30 {}

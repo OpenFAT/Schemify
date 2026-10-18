@@ -1,9 +1,0 @@
-v {xschem version=1.4on=1.2}
-K v {xschem version=3.4.7 file_version=1.2}
-N 100 -30 100 -60 {lab=OUT}
-N 100 30 100 60 {}
-C {inv.s¸ÿÿÿ60 0 1m {n1a e=X1 WN=3u}C
- {res.sy {name=Z1 value='VCC/2' footprint=0805}
-C {res.sym} 200 0 2 0 {name=R2 value=1k spice_ignore=short}
-C {gnd.sym} 100 60 0 0 {name=l1 lab=GND}
-C {lab_pin.sym{type=i5 -1.25 1.25 1.25 {name=} 100 -60 0 0 {name=lp 

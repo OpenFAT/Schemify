@@ -1,3 +1,0 @@
-[submodule "cktimg"]
-	path = plugins/cktimg/vendor
-	url = https://github.com/OmarSiwy/cktImg
