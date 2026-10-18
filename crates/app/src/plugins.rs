@@ -699,13 +699,14 @@ impl Host {
     /// labels, Nets, Violations; `u32::MAX` nets and empty tables without it) and the last
     /// run's `results` rows. `key` names everything but `selection` (document epochs, the
     /// check pass, the results): with the previous call's key only the Selection table is
-    /// refilled. Otherwise each group of tables ([`GROUPS`]) is refilled only when its source
-    /// changed: a fingerprint of the document's columns, the check pass, the rows. `epoch` is
-    /// the document's edit epoch (`Session::epoch`, moved by every change of its tables): while
-    /// it stands, the document fingerprints are reused, so a pass change (the frame after an
-    /// edit) refills the net columns and the Nets group only. Cost: a hash pass over the
-    /// instance, wire and label columns when `epoch` moved, plus one copy of the groups that
-    /// changed (or of the selection).
+    /// refilled. Otherwise each group of tables (Instances; Wires and Labels without their net
+    /// columns; Nets with Violations; Results; the two net columns) is refilled only when its
+    /// source changed: a fingerprint of the document's columns, the check pass, the rows.
+    /// `epoch` is the document's edit epoch (`Session::epoch`, moved by every change of its
+    /// tables): while it stands, the document fingerprints are reused, so a pass change (the
+    /// frame after an edit) refills the net columns and the Nets group only. Cost: a hash pass
+    /// over the instance, wire and label columns when `epoch` moved, plus one copy of the
+    /// groups that changed (or of the selection).
     #[allow(clippy::too_many_arguments)]
     pub fn snapshot(
         &mut self,
