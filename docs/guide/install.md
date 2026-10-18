@@ -9,7 +9,11 @@ Schemify ships as two programs:
 
 `schemify edit` looks for `schemify-gui` in the same directory as the `schemify` binary first, then on your `PATH`. Keep the two side by side and both ways of starting the editor work. You can also run `schemify-gui` directly: it takes the same arguments (`schemify-gui path/to/cell.shcomp`).
 
-A third program, `schemify-interop`, imports xschem libraries and PDKs. It belongs to the `interop` plugin, not the core, and is built separately (see [migrating.md](migrating.md)).
+A third program, `schemify-interop`, imports xschem libraries and PDKs. It belongs to the `interop` plugin, not the core, and lives in its own repository, [Schemify-Interop](https://github.com/OmarSiwy/Schemify-Interop):
+
+```sh
+cargo install --git https://github.com/OmarSiwy/Schemify-Interop --features cli --bin schemify-interop
+```
 
 ## With Nix
 
@@ -18,10 +22,9 @@ The repository is a Nix flake. You need Nix with flakes enabled; no checkout is 
 ```sh
 nix run github:OmarSiwy/Schemify -- path/to/cell.shcomp                      # the editor
 nix run github:OmarSiwy/Schemify#schemify -- netlist path/to/tb.shbench      # the core
-nix run github:OmarSiwy/Schemify#interop -- xschem-import ~/xschem/my_lib -o my_lib
 ```
 
-Plain `nix run` starts `schemify-gui`; `#schemify` runs the core; `#interop` runs `schemify-interop`. Inside a checkout the same apps are `nix run .`, `nix run .#schemify` and `nix run .#interop`.
+Plain `nix run` starts `schemify-gui`; `#schemify` runs the core. Inside a checkout the same apps are `nix run .` and `nix run .#schemify`.
 
 The Nix package wraps both programs so they work without further setup:
 
@@ -66,10 +69,10 @@ cargo run --release -p schemify-cli -- run crates/app/tests/fixtures/rc/tb.shben
 
 `cargo run -p schemify-cli -- edit ...` only works after `schemify-gui` has been built into the same `target/` directory (or is on your `PATH`); otherwise it stops with `cannot run schemify-gui`.
 
-The interop command line lives in the plugins workspace:
+The interop command line builds from its submodule (`git submodule update --init examples/plugins/interop`):
 
 ```sh
-cargo run --release --manifest-path plugins/Cargo.toml -p interop --features cli -- \
+cargo run --release --manifest-path examples/plugins/interop/Cargo.toml --features cli -- \
     xschem-import ~/xschem/my_lib -o my_lib
 ```
 
@@ -77,7 +80,7 @@ cargo run --release --manifest-path plugins/Cargo.toml -p interop --features cli
 
 Tagging a version (`v*`) builds archives for Linux x86_64, macOS (Apple silicon and Intel) and Windows x86_64, plus a web bundle, and attaches them to a GitHub release. No release has been published yet, so for now use Nix or build from source.
 
-Each native archive (`schemify-<version>-<platform>.tar.gz`, `.zip` on Windows) holds `schemify`, `schemify-gui` and `schemify-interop` in one directory. Unpack it and put that directory on your `PATH`. The Linux binaries need glibc 2.28 or newer (RHEL/Alma/Rocky 8, Debian 10, Ubuntu 18.10 and later); musl-based distributions are not supported.
+Each native archive (`schemify-<version>-<platform>.tar.gz`, `.zip` on Windows) holds `schemify` and `schemify-gui` in one directory. Unpack it and put that directory on your `PATH`. The Linux binaries need glibc 2.28 or newer (RHEL/Alma/Rocky 8, Debian 10, Ubuntu 18.10 and later); musl-based distributions are not supported.
 
 ## Runtime libraries on Linux
 

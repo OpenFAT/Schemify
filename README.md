@@ -60,7 +60,7 @@ cargo run --release -p schemify-cli -- run crates/app/tests/fixtures/rc/tb.shben
 ```
 
 To bring an xschem library across, use the `interop` plugin's command line (`schemify-interop`,
-or `nix run .#interop --`):
+from [Schemify-Interop](https://github.com/OmarSiwy/Schemify-Interop)):
 
 ```sh
 schemify-interop xschem-import ~/xschem/my_lib -o my_lib
@@ -133,14 +133,16 @@ schemify.pack.add {
 `init.lua`, so the setup can live in your dotfiles. There is no central registry: a plugin is a
 git repository, or a URL with a sha256. See [docs/guide/config.md](docs/guide/config.md).
 
-Plugins are wasm modules ([plugin ABI](docs/spec/plugin-abi.md)). The ones in this repository:
+Plugins are wasm modules ([plugin ABI](docs/spec/plugin-abi.md)). Each lives in its own
+repository; these four are checked out under [examples/plugins](examples/plugins) as submodules,
+and [docs/plugins](docs/plugins/README.md) shows how to write, test and publish your own:
 
 | Plugin | What it adds |
 |---|---|
-| [`interop`](plugins/interop) | xschem libraries and PDK device libraries into Schemify, and Virtuoso import and export (native CLI `schemify-interop`) |
-| [`pdk-manager`](plugins/pdk-manager) | installs an open PDK (sky130, GF180, IHP and others) into a project |
-| [`gmid-lut`](plugins/gmid-lut) | gm/Id sizing functions for docs pages, from ngspice-characterized lookup tables |
-| [`cktimg`](plugins/cktimg) | SPICE netlist to placed and routed schematic, via [cktImg](https://github.com/OmarSiwy/cktImg) |
+| [`interop`](https://github.com/OmarSiwy/Schemify-Interop) | xschem libraries and PDK device libraries into Schemify, and Virtuoso import and export (native CLI `schemify-interop`) |
+| [`pdk-manager`](https://github.com/OmarSiwy/Schemify-PDK-Manager) | installs an open PDK (sky130, GF180, IHP and others) into a project |
+| [`gmid-lut`](https://github.com/OmarSiwy/GmIDVisualizer) | gm/Id sizing functions for docs pages, from ngspice-characterized lookup tables |
+| [`cktimg`](https://github.com/OmarSiwy/cktImg) | SPICE netlist to placed and routed schematic (cktImg's layout engine) |
 
 The default UI (menus, toolbar, dialogs and keys) is a plugin too, in
 [ui/default-plugin](ui/default-plugin), and is built into the editor.
@@ -161,8 +163,9 @@ and projects move in and out as zip files ([docs/guide/web.md](docs/guide/web.md
 
 Against xschem, the netlists of 255 of 301 corpus benches (sky130, GF180, IHP and xschem's
 examples) are equivalent to xschem's SPICE output, and 235 of 301 for CDL. Every remaining
-difference is triaged in [tests/corpus/RATCHET.md](tests/corpus/RATCHET.md), and the nightly run
-fails if the count drops.
+difference is triaged in the interop plugin's
+[RATCHET.md](https://github.com/OmarSiwy/Schemify-Interop/blob/main/tests/corpus/RATCHET.md), and
+its nightly run fails if the count drops.
 
 ## Documentation
 

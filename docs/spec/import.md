@@ -1,8 +1,8 @@
 # xschem import v1 (normative)
 
-Implements D1, D14, D24, D33, D40. Readers: `plugins/interop` (the interop plugin, outside the core; `xschem`, `attr`, `symbol`, `spice`, `tech`, `cdf`). Translation: `interop::translate_library` (pure: `(path, bytes)` in, `(path, bytes)` + report out), oracle `interop::check_output`, CLI `schemify-interop xschem-import`. Clean-room: behaviour comes from this spec and from comparing against goldens produced by running xschem (`tests/corpus/`); never from xschem source.
+Implements D1, D14, D24, D33, D40. Readers: `examples/plugins/interop` (the interop plugin, outside the core; `xschem`, `attr`, `symbol`, `spice`, `tech`, `cdf`). Translation: `interop::translate_library` (pure: `(path, bytes)` in, `(path, bytes)` + report out), oracle `interop::check_output`, CLI `schemify-interop xschem-import`. Clean-room: behaviour comes from this spec and from comparing against goldens produced by running xschem (`examples/plugins/interop/tests/corpus/`); never from xschem source.
 
-**End-to-end oracle:** for every corpus bench, `import → schemify netlist` must equal xschem's golden under `tools/spicecmp` (SPICE and CDL). Differences are bugs or annotated XFAILs. `tests/corpus/import_all.sh` imports every corpus group and writes `benches.map` (bench → cell file) for that comparison.
+**End-to-end oracle:** for every corpus bench, `import → schemify netlist` must equal xschem's golden under `tools/spicecmp` (SPICE and CDL). Differences are bugs or annotated XFAILs. `examples/plugins/interop/tests/corpus/import_all.sh` imports every corpus group and writes `benches.map` (bench → cell file) for that comparison.
 
 ## 1. What becomes what
 
@@ -76,7 +76,7 @@ Limits go on parameters named `L`/`W` (any case) as `min`/`max`/`grid` expressio
 
 `(rot, flip)` → `[R0, MR0], [R90, MR90], [R180, MR180], [R270, MR270]` (indexed `[rot mod 4][flip ≠ 0]`): xschem flips x, then rotates clockwise on screen in quarter turns, which is format spec §3's `M` then `R`.
 
-Evidence (`plugins/interop/tests/translate_corpus.rs`, derived independently of the table): for 1,289 device instances of the 301 golden benches whose golden line lists ≥ 2 label-named nets, every candidate orientation places the pins and votes when all checked pins land on the named nets.
+Evidence (`examples/plugins/interop/tests/translate_corpus.rs`, derived independently of the table): for 1,289 device instances of the 301 golden benches whose golden line lists ≥ 2 label-named nets, every candidate orientation places the pins and votes when all checked pins land on the named nets.
 
 | rot flip | R0 | R90 | R180 | R270 | MR0 | MR90 | MR180 | MR270 | winner |
 |---|---|---|---|---|---|---|---|---|---|
@@ -151,7 +151,7 @@ Against the first version of this spec: integer defaults are `number`, not `int`
 
 ## 10. Amendments (2026-10-10, xschem-differential ratchet)
 
-From goldens (tests/corpus/RATCHET.md): symbol-less schematics with port instances, and schematics placed as symbols, get a derived interface (§1); same-named pins are `alias` pins (§2, format spec rank 1, netlist §3); pinless symbols whose format uses `extra` nets are cells (§1); `@p` in instance values, bracket-less buses `A[3..0]`, `only_toplevel` devices in the bench copy, bench variables only for referenced parameters and replaced by bench `.param`s, no template `device_model` for mapped devices (§3); `spice_ignore=true` netlist text dropped (§3, report class `spice-ignore`); `@@P` naming no pin, `#pfx#@name`, escaped newlines (§4); `$USER_CONF_DIR`, Tcl in SPICE comment lines (§5).
+From goldens (https://github.com/OmarSiwy/Schemify-Interop/blob/main/tests/corpus/RATCHET.md): symbol-less schematics with port instances, and schematics placed as symbols, get a derived interface (§1); same-named pins are `alias` pins (§2, format spec rank 1, netlist §3); pinless symbols whose format uses `extra` nets are cells (§1); `@p` in instance values, bracket-less buses `A[3..0]`, `only_toplevel` devices in the bench copy, bench variables only for referenced parameters and replaced by bench `.param`s, no template `device_model` for mapped devices (§3); `spice_ignore=true` netlist text dropped (§3, report class `spice-ignore`); `@@P` naming no pin, `#pfx#@name`, escaped newlines (§4); `$USER_CONF_DIR`, Tcl in SPICE comment lines (§5).
 
 ## 11. Amendments (2026-10-11, D17 amendment)
 
