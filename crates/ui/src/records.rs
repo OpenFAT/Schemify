@@ -101,13 +101,19 @@ fn parse_into(text: &str, strings: &mut Strings, live: bool) -> (Contribution, V
             continue;
         }
         let indented = body.len() != raw.len();
-        let result = tokenize(body, &mut toks).and_then(|()| {
-            let t: Vec<&str> = toks.iter().map(String::as_str).collect();
+        let result = tokenize(body, &mut toks).and_then(|n| {
+            // A record has at most four values and an attribute two: one more is enough to be
+            // refused by arity exactly as the whole line would be.
+            let mut t = [""; TOKENS_SEEN];
+            for (v, tok) in t.iter_mut().zip(&toks[..n]) {
+                *v = tok.as_str();
+            }
+            let t = &t[..n.min(TOKENS_SEEN)];
             if indented {
-                attr(&t, &ctx, strings, live, &mut out)
+                attr(t, &ctx, strings, live, &mut out)
             } else {
                 ctx = Ctx::None;
-                record(&t, strings, live, &mut out).map(|c| ctx = c)
+                record(t, strings, live, &mut out).map(|c| ctx = c)
             }
         });
         if let Err(reason) = result {
@@ -240,8 +246,8 @@ fn node_attr(
 }
 
 /// Splits one record or attribute line into values (bare or quoted, escapes resolved).
-fn tokenize(body: &str, out: &mut Vec<String>) -> Result<(), RejectReason> {
-    out.clear();
+fn tokenize(body: &str, out: &mut Vec<String>) -> Result<usize, RejectReason> {
+    let mut n = 0;
     let mut chars = body.chars().peekable();
     // Bounded by the line length: every iteration consumes at least one char.
     while let Some(&c) = chars.peek() {
@@ -249,7 +255,13 @@ fn tokenize(body: &str, out: &mut Vec<String>) -> Result<(), RejectReason> {
             chars.next();
             continue;
         }
-        let mut tok = String::new();
+        // The token buffers are reused from line to line (a state contribution is parsed
+        // every frame its text changes).
+        if n == out.len() {
+            out.push(String::new());
+        }
+        let tok = &mut out[n];
+        tok.clear();
         if c == '"' {
             chars.next();
             loop {
@@ -281,13 +293,18 @@ fn tokenize(body: &str, out: &mut Vec<String>) -> Result<(), RejectReason> {
                 chars.next();
             }
         }
-        out.push(tok);
+        n += 1;
     }
-    if out.is_empty() {
+    if n == 0 {
         return Err(RejectReason::Syntax);
     }
-    Ok(())
+    assert!(n <= out.len());
+    Ok(n)
 }
+
+/// Values of a line passed on to the record and attribute parsers (one past the largest
+/// arity, four).
+const TOKENS_SEEN: usize = 5;
 
 /// Longest length a style value holds, in px ([`StyleProp::parse_value`]).
 pub const LENGTH_MAX: u32 = 1 << 14;
