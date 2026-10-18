@@ -1,5 +1,7 @@
 //! D39 budgets through the real frame spine: open, frame times while panning and zooming, a
-//! local edit round trip (10k / 100k / 1M objects), and a var edit with 1k dependents.
+//! local edit round trip (10k / 100k / 1M objects), every other interactive frame (hover,
+//! select, drag, typing in a field, opening a menu; `interactions_100k`, D39 amended
+//! 2026-10-18: under 1 ms of CPU each), and a var edit with 1k dependents.
 //!
 //! A frame is `Editor::update` + `Editor::paint` into a vello scene with raster layers, as the
 //! window does; its CPU time is reported as p50/p95/p99. With a GPU adapter that supports
@@ -377,8 +379,8 @@ impl Bench {
     }
 
     /// Prints p50/p95/p99 of the samples since the last report, clears them, and returns the
-    /// CPU p50.
-    fn report(&mut self, what: &str) -> f64 {
+    /// CPU p50, p95 and p99.
+    fn report(&mut self, what: &str) -> [f64; 3] {
         let pct = |v: &mut Vec<f64>| {
             if v.is_empty() {
                 return "-".to_owned();
@@ -390,9 +392,13 @@ impl Bench {
             s
         };
         let n = self.cpu.len();
-        let mut cpu50 = self.cpu.clone();
-        cpu50.sort_by(f64::total_cmp);
-        let cpu50 = cpu50.get(n / 2).copied().unwrap_or(0.0);
+        let mut sorted = self.cpu.clone();
+        sorted.sort_by(f64::total_cmp);
+        let q = |q: f64| {
+            let i = ((n.max(1) - 1) as f64 * q).round() as usize;
+            sorted.get(i).copied().unwrap_or(0.0)
+        };
+        let cpu_pct = [q(0.5), q(0.95), q(0.99)];
         let reused = self
             .gpu
             .as_mut()
@@ -406,8 +412,78 @@ impl Bench {
             "  {what:<8} {n:>3} frames ({reused} without vello)  CPU update+paint p50/p95/p99 \
              {cpu} ms  render calls {vello} ms  GPU {gpu} ms"
         );
-        cpu50
+        cpu_pct
     }
+
+    /// Runs the ticks the editor asks for at once (`wake_ms() == Some(0)`: the plugin snapshot
+    /// after an edit, the rest of a partly recorded canvas), as the window does after an input
+    /// frame; returns their CPU times (not counted with the input frames).
+    fn ticks(&mut self) -> Vec<f64> {
+        let mut out = Vec::new();
+        for _ in 0..64 {
+            if self.ed.wake_ms() != Some(0) {
+                break;
+            }
+            let (c, v, g) = (self.cpu.len(), self.vello.len(), self.gpu_ms.len());
+            self.frame(&InputEvents::default(), 1, true);
+            out.push(self.cpu[c]);
+            self.cpu.truncate(c);
+            self.vello.truncate(v);
+            self.gpu_ms.truncate(g);
+        }
+        assert!(out.len() < 64, "ticks end");
+        out
+    }
+
+    /// A click on UI node `id` (its center) as one frame.
+    fn click_node(&mut self, id: &str, dt_ms: u64, measure: bool) {
+        let s = self.ed.shell();
+        let sym = s
+            .strings()
+            .find(id)
+            .unwrap_or_else(|| panic!("{id} interned"));
+        let n = s
+            .tables()
+            .nodes
+            .find(sym)
+            .unwrap_or_else(|| panic!("{id} composed"));
+        let r = s.layout().rect()[s.layout().row_of(n).expect("laid out")];
+        let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        let mut ev = event(InputEvent::PointerMove { x, y });
+        ev.push(InputEvent::PointerDown {
+            x,
+            y,
+            button: Button::Left,
+        });
+        ev.push(InputEvent::PointerUp {
+            x,
+            y,
+            button: Button::Left,
+        });
+        self.frame(&ev, dt_ms, measure);
+    }
+}
+
+/// The ticks' median and largest CPU ms, for the report line.
+fn tick_stats(mut t: Vec<f64>) -> String {
+    if t.is_empty() {
+        return "none".to_owned();
+    }
+    t.sort_by(f64::total_cmp);
+    format!(
+        "{} ticks, median {:.3} ms, max {:.3} ms",
+        t.len(),
+        t[t.len() / 2],
+        t[t.len() - 1]
+    )
+}
+
+/// Asserts a D39 frame budget (release builds only; a debug run only reports).
+fn budget(what: &str, got: f64, ms: f64) {
+    if cfg!(debug_assertions) {
+        return;
+    }
+    assert!(got <= ms, "D39: {what} {got:.3} ms > {ms} ms budget");
 }
 
 fn event(e: InputEvent) -> InputEvents {
@@ -486,7 +562,7 @@ fn frame_times(n: u32) {
         8,
         false,
     );
-    let pan = b.report("pan");
+    let [pan, _, pan99] = b.report("pan");
 
     // Zoom: bursts of 6 wheel notches at the pointer, 16 ms apart, alternately in and out,
     // each followed by the frame that redraws crisp once the zoom has settled (counted too).
@@ -512,7 +588,7 @@ fn frame_times(n: u32) {
         }
         assert_eq!(b.ed.wake_ms(), None, "idle once crisp (D39 idle 0%)");
     }
-    b.report("zoom");
+    let [_, zoom95, zoom99] = b.report("zoom");
 
     // A selection (click a wire), then a local edit: select a wire, delete it, undo; the
     // click frames, then the delete and undo frames, are measured.
@@ -545,22 +621,40 @@ fn frame_times(n: u32) {
     };
     for k in 0..12 {
         select(&mut b, k, true);
+        b.ticks();
     }
-    b.report("select");
+    let [select50, ..] = b.report("select");
+    // The edit's tick (the plugin snapshot behind its check pass) runs as the window runs it:
+    // after the frame, before the next input.
+    let mut ticks = Vec::new();
     for k in 0..12 {
         select(&mut b, k, false);
+        ticks.extend(b.ticks());
         let before = b.ed.scene().objs.len();
         b.frame(&key("Del"), 500, true);
         assert_eq!(b.ed.scene().objs.len(), before - 1, "deleted");
+        ticks.extend(b.ticks());
         b.frame(&key("U"), 500, true);
         assert_eq!(b.ed.scene().objs.len(), before, "undone");
+        ticks.extend(b.ticks());
     }
-    let edit = b.report("edit");
+    let [edit, ..] = b.report("edit");
+    eprintln!("  after the edits: {}", tick_stats(ticks));
     if n == 100_000 {
-        // The nightly regression gate's metrics (tests/perf/baseline.txt): CPU p50 per frame.
+        // The nightly regression gate's metrics (tests/perf/baseline.txt): CPU p50 per frame,
+        // p95 of the zoom (its settle frames record).
         eprintln!("PERF app.open_100k_ms {open:.3}");
         eprintln!("PERF app.pan_frame_100k_ms {pan:.3}");
+        eprintln!("PERF app.zoom_frame_p95_100k_ms {zoom95:.3}");
+        eprintln!("PERF app.select_frame_100k_ms {select50:.3}");
         eprintln!("PERF app.edit_100k_ms {edit:.3}");
+        // D39 (amended 2026-10-18): interactive frames under 1 ms of CPU at 100k objects; the
+        // tail of a continuous gesture, the median of a dozen clicks (one descheduled frame
+        // is a dozen clicks' p95). Measured 2026-10-18 (load ~20): pan p99 0.31, zoom p99
+        // 0.54, select p50 0.49.
+        budget("pan p99", pan99, 1.0);
+        budget("zoom p99", zoom99, 1.0);
+        budget("select p50", select50, 1.0);
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -702,4 +796,172 @@ fn grid_keeps_up_with_pan_and_zoom() {
             }
         }
     }
+}
+
+/// Every other interactive frame on an `n`-object schematic, zoomed in so objects are big
+/// enough to hit: hover (the pointer crossing the canvas, the status line following it),
+/// select (a click on a wire), drag (a press on the selected wire and 60 moves: the move
+/// preview), the drop that commits it (an edit) and the tick after it, opening a menu, and
+/// typing into a properties dialog field. Pan and zoom are [`frame_times`].
+fn interactions(n: u32) {
+    let dir = fixture("inv", &format!("perf-int-{n}"));
+    std::fs::write(dir.join("big.shcomp"), schematic(n)).unwrap();
+    let mut ed = Editor::new(Options {
+        no_default_ui: false,
+        path: Some(dir.join("big.shcomp")),
+        seed: 1,
+        ..Default::default()
+    })
+    .unwrap();
+    ed.update(&InputEvents::default(), VIEW, 0);
+    let mut b = Bench {
+        ed,
+        scale: 1.0,
+        scene: Scene::new(),
+        layers: Layers::default(),
+        now: 0,
+        gpu: Gpu::new(1.0),
+        cpu: Vec::new(),
+        vello: Vec::new(),
+        gpu_ms: Vec::new(),
+    };
+    let settle = |b: &mut Bench| {
+        for _ in 0..256 {
+            if b.ed.wake_ms().is_none() {
+                break;
+            }
+            b.frame(&InputEvents::default(), 200, false);
+        }
+        assert_eq!(b.ed.wake_ms(), None, "settled");
+    };
+    b.frame(&InputEvents::default(), 1000, false);
+    settle(&mut b);
+    let (cx, cy) = (640.0f32, 400.0f32);
+    b.frame(&event(InputEvent::PointerMove { x: cx, y: cy }), 8, false);
+    for _ in 0..8 {
+        let wheel = InputEvent::Wheel {
+            x: cx,
+            y: cy,
+            dx: 0.0,
+            dy: 1.0,
+        };
+        b.frame(&event(wheel), 16, false);
+    }
+    settle(&mut b);
+    // Hover: 4 px per frame across the canvas; the first frames after a zoom also fill the
+    // ring of tiles ahead of the view (within its share of the budget).
+    for i in 0..240 {
+        let x = 200.0 + (i % 120) as f32 * 4.0;
+        let y = cy + (i / 120) as f32 * 3.0;
+        b.frame(&event(InputEvent::PointerMove { x, y }), 8, true);
+    }
+    let [hover, hover95, _] = b.report("hover");
+    // Select: wires of the tiles around the view's center.
+    let cam = b.ed.camera();
+    let tile = f64::from(200 * U);
+    let (tx, ty) = (
+        (cam.cx / tile).round() as i32 * 200 * U,
+        (cam.cy / tile).round() as i32 * 200 * U,
+    );
+    let wire = |b: &Bench, k: i32| {
+        b.ed.to_screen((tx + 70 * U + 200 * U * (k % 4 - 2), ty - 30 * U))
+    };
+    let press = |at: (f32, f32)| InputEvent::PointerDown {
+        x: at.0,
+        y: at.1,
+        button: Button::Left,
+    };
+    let release = |at: (f32, f32)| InputEvent::PointerUp {
+        x: at.0,
+        y: at.1,
+        button: Button::Left,
+    };
+    for k in 0..12 {
+        let at = wire(&b, k);
+        b.frame(
+            &event(InputEvent::PointerMove { x: at.0, y: at.1 }),
+            50,
+            false,
+        );
+        let mut click = event(press(at));
+        click.push(release(at));
+        b.frame(&click, 500, true);
+        assert_eq!(b.ed.selection().len(), 1, "a wire under the pointer");
+        b.ticks();
+    }
+    let [select, ..] = b.report("select");
+    // Drag the selected wire (past the double-click time), then drop it.
+    let at = wire(&b, 11);
+    b.frame(&event(press(at)), 1000, false);
+    for i in 1..=60 {
+        let to = InputEvent::PointerMove {
+            x: at.0 + i as f32 * 2.0,
+            y: at.1 + i as f32,
+        };
+        b.frame(&event(to), 8, true);
+    }
+    assert!(!b.ed.overlay().is_empty(), "the move preview");
+    let [drag, drag95, _] = b.report("drag");
+    let to = (at.0 + 120.0, at.1 + 60.0);
+    b.frame(&event(release(to)), 8, true);
+    b.report("drop");
+    eprintln!("  after the drop: {}", tick_stats(b.ticks()));
+    // Open the Tools menu (a click on its title), close it.
+    let escape = event(InputEvent::Key {
+        chord: Chord::parse("Escape").expect("chord"),
+    });
+    for _ in 0..8 {
+        b.click_node("menu.tools", 300, true);
+        b.frame(&escape, 300, false);
+    }
+    let [menu, ..] = b.report("menu");
+    // Type into the first field of an instance's properties dialog, one character a frame.
+    let inst = b.ed.to_screen((tx, ty));
+    let mut click = event(InputEvent::PointerMove {
+        x: inst.0,
+        y: inst.1,
+    });
+    click.push(press(inst));
+    click.push(release(inst));
+    b.frame(&click, 500, false);
+    let q = event(InputEvent::Key {
+        chord: Chord::parse("q").expect("chord"),
+    });
+    b.frame(&q, 300, false);
+    b.click_node("dialog.props.val.0", 300, false);
+    for i in 0..60 {
+        let mut ev = InputEvents::default();
+        ev.push_text(if i % 2 == 0 { "a" } else { "b" });
+        b.frame(&ev, 30, true);
+    }
+    let [typing, typing95, _] = b.report("type");
+    if n == 100_000 {
+        eprintln!("PERF app.hover_frame_100k_ms {hover:.3}");
+        eprintln!("PERF app.click_select_100k_ms {select:.3}");
+        eprintln!("PERF app.drag_frame_100k_ms {drag:.3}");
+        eprintln!("PERF app.menu_open_100k_ms {menu:.3}");
+        eprintln!("PERF app.type_frame_100k_ms {typing:.3}");
+        // D39 (amended 2026-10-18): under 1 ms of CPU per interactive frame at 100k objects:
+        // the p95 of the continuous ones, the median of the clicks (see `frame_times`).
+        // Measured 2026-10-18 (load ~20): hover p95 0.21, drag p95 0.21, type p95 0.25,
+        // select p50 0.50, menu p50 0.20 (its first open, which shapes the rows: 0.50).
+        budget("hover p95", hover95, 1.0);
+        budget("drag p95", drag95, 1.0);
+        budget("type p95", typing95, 1.0);
+        budget("select p50", select, 1.0);
+        budget("menu p50", menu, 1.0);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[ignore = "release-mode benchmark; run explicitly"]
+fn interactions_100k() {
+    interactions(100_000);
+}
+
+#[test]
+#[ignore = "release-mode benchmark; run explicitly"]
+fn interactions_1m() {
+    interactions(1_000_000);
 }

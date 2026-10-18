@@ -21,6 +21,7 @@ On NixOS the tests need the Vulkan loader on `LD_LIBRARY_PATH`, e.g.
 | What | Command |
 |---|---|
 | Frame times (pan, zoom, select, edit) at 10k / 100k / 1M objects | `cargo test --release -p schemify-app --test perf -- --ignored --nocapture --test-threads=1 frame_times` |
+| Hover, select, drag, drop, menu, typing at 100k / 1M objects (asserts the 1 ms budgets at 100k) | `… --test perf -- --ignored --nocapture --test-threads=1 interactions` |
 | …on a given GPU | prefix `SCHEMIFY_GPU=<adapter name substring>` (default: the first non-CPU adapter) |
 | Param edit with 1k dependents | `… --test perf -- --ignored --nocapture var_edit` |
 | Flat 1M-instance netlist (elaborate + emit) | `cargo test --release -p schemify-netlist --test perf -- --ignored --nocapture --test-threads=1` |
@@ -254,8 +255,8 @@ vectors (a few dozen small allocations; never per object).
    distance test runs on them only, so the answer equals the full scan's (oracle test).
 3. **UI state as a set patch** (≈ 0.12–0.15 ms off every hover, drag, type and menu frame):
    when the state contribution differs from the last one only in `set` values, `ui` patches
-   those props in the composed tables instead of recomposing (`ui::patch_sets`, oracle: equal
-   to `compose`); layout stays (a label's width can change). Step 10 then composes only on a
+   those props in the composed tables instead of recomposing (oracle: equal to `compose`);
+   layout stays (a label's width can change). Step 10 then composes only on a
    structural change (tabs, dialogs, docs page).
 4. **The selection's primitive rows** (drag 0.2 ms → O(selection); select's marks scan): kept
    per selection change, keyed by the scene generation and the selection; the move preview
@@ -273,6 +274,64 @@ vectors (a few dozen small allocations; never per object).
    this pass.
 7. **First-edit journal** (13 ms once per document) and **UI frames through vello** (0.3 ms of
    render calls per hover frame): left as they are and named here.
+
+### What was done (in plan order, as measured)
+
+1. Snapshot: the frame whose check pass moved after its delivery asks for one tick
+   (`wake_ms` 0) that refills the snapshot, keyed so that only the net columns and the Nets
+   group refill while the document's epoch stands (its fingerprints are reused). Menu after an
+   edit 5.7 → 0.5 ms (1M: 52 → 0.5); the tick costs 2.2–3.8 ms at 100k (26–38 ms at 1M) on a
+   frame no input waits for.
+2. Hit test: the integer prefilter, measured branchy (a 64-object mask word was slower without
+   SSE4.1 min/max). 0.45 → 0.16 ms per click at 100k, 6–9 → 1.6 ms at 1M. A grid over the
+   objects (prototyped) answers in O(cell) but cost ~40 ns per object to build after every
+   scene change (4 ms at 100k), so it was dropped.
+3. UI state: `ui::patch_last` (not `patch_sets`), plus the top-of-frame compose only when the
+   state changed outside a frame (`ui_stale`), the refused-commands block kept by a key, and the
+   tokenizer reusing its buffers.
+4. The selection's rows: `scene::selected_prims` once per selection or scene change.
+5. Tiles: `COST_PER_FRAME` 80 000 → 48 000, the ring at most a quarter of it. 40 000 gave zoom
+   p99 0.52 ms but ~23 frames to a whole view; 48 000 gives 0.54 ms and ~15 frames (80 000: 0.83
+   ms, ~7).
+6. Edit frames: only the snapshot part (above). The rest is the O(n) list in item 6 (scene diff
+   1.2 ms, canvas diff 3.1, decor 4.3 on this fixture's 70k violation marks, elab 1.8, patches
+   1–2.6). The fixture marks every wire with a violation; a design with few violations spends
+   ~4 ms less here.
+
+### After (2026-10-18, same machine at load average ~20, CPU update+paint p50 / p95 / p99 ms)
+
+| Frame | 100k before | 100k after | 1M after |
+|---|---|---|---|
+| pan | 0.154 / 0.274 / 0.423 | 0.089 / 0.098 / 0.309 | 0.089 / 0.180 / 0.356 |
+| zoom (+ settle frames) | 0.317 / 0.776 / 0.833 | 0.251 / 0.480 / 0.518 | 0.433 / 0.909 / 1.113 |
+| hover | 0.382 / 0.586 / 1.460 | 0.193 / 0.210 / 0.238 | 0.194 / 0.207 / 0.223 |
+| select, fit to window | 0.901 / 1.641 / 2.023 | 0.485 / 0.630 / 0.687 | 3.754 / 4.033 / 4.153 |
+| select, zoomed in | 0.780 / 0.909 / 1.135 | 0.496 / 0.581 / 0.698 | 4.496 / 4.609 / 4.614 |
+| drag (move preview) | 0.601 / 0.619 / 0.622 | 0.198 / 0.206 / 0.209 | 0.200 / 0.224 / 0.234 |
+| type (props dialog) | 0.427 / 0.451 / 0.481 | 0.241 / 0.247 / 0.262 | 0.235 / 0.248 / 0.269 |
+| menu open | 0.430 / 5.7 / 5.7 | 0.199 / 0.505 / 0.505 | 0.201 / 0.514 / 0.514 |
+| edit (Del, undo) | 16.0 / 20.1 / 33.7 | 13.7 / 16.9 / 28.5 | 151 / 541 / 552 |
+| drop (end of drag) | 27–29 | 27.4 | 307 |
+
+The render calls (the CPU side of the GPU submission, on the same thread) add 0.16–0.45 ms at
+p50 (hover 0.29: its frames still go through vello, item 7). Allocations, counted with
+valgrind on the `inv` fixture: an update with no input and nothing due 19 (11 KB; was 133), a
+hover frame 43 (43 KB; was 208). The window runs no frame while `wake_ms` is `None`
+(`an_idle_frame_does_no_work`, and the zoom benchmark's idle assertion).
+
+What bounds the rest:
+
+- **1M select** (≈ 4.5 ms): three O(objects) scans per click (hit 1.6, connection points 1.4,
+  selection rows 1.6 ms). A spatial index answers in O(cell), but it must follow
+  `scene::update` (its build is 40 ms at 1M), so it belongs with the edit work below.
+- **Edits** (13–14 ms at 100k): every step is an O(n) pass (scene diff, canvas diff hashing,
+  decor, elab, snapshot copy). Making an edit O(change) means builders that report their
+  changed rows down the chain (scene → canvas diff → patches; annotations → decor); each step
+  is 1–4 ms today, so no single fix gets an edit under a frame.
+- **First edit of a document**: + 13 ms (`doc` writes the journal with the whole document).
+- **`render.scene_100k_ms`**: 4.49–4.59 ms, over its 4 ms budget, confirmed. 45 % of it is vello's
+  path encoding of 100k visible paths; the editor never encodes them per frame (tiles), so it
+  guards the uncached fallback only.
 
 ## Binary size
 

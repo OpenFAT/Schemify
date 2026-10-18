@@ -5,6 +5,11 @@
 # Re-bless after an intended change: take the median column `tests/perf/gate.sh` prints for the
 # nightly `perf-results` artifact (median over its rounds per metric) and note the run here.
 # Calibration runs: 38151805246 (2026-10-11).
+# Not yet blessed (2026-10-18, reported as new until the next nightly run is taken in): the
+# interactive-frame metrics app.zoom_frame_p95_100k_ms, app.select_frame_100k_ms,
+# app.hover_frame_100k_ms, app.click_select_100k_ms, app.drag_frame_100k_ms,
+# app.menu_open_100k_ms, app.type_frame_100k_ms (crates/app/tests/perf.rs; their D39 budget is
+# asserted by the tests themselves). Developer-machine values: docs/dev/perf.md.
 app.edit_100k_ms 148.338
 app.open_100k_ms 235.188
 app.pan_frame_100k_ms 13.858

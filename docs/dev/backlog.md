@@ -89,8 +89,9 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 Numbers and how to reproduce them: `docs/dev/perf.md`. D39 status: pan/zoom at 100k objects
 0.13 ms CPU, 0.08 ms GPU (RTX; 0.4–1.1 ms on the Intel iGPU); flat 1M netlist 0.85–0.93 s;
-param edit 1.8 ms; idle 0%. Not met: a local edit at 100k objects (~50 ms, D39 has no row
-for it; the goal set for this work was ≤ 1 ms).
+param edit 1.8 ms; idle 0%; every interactive frame (hover, select, drag, typing, menu) at
+100k under 1 ms CPU (D39 amended 2026-10-18; 0.2–0.5 ms). Not met: a local edit at 100k
+objects (13–14 ms, outside that budget; the goal set for this work was ≤ 1 ms).
 
 - **elab**: a local edit is patched (0.08 ms p50 at 100k); still rebuilt: instance
   insert/delete (the graph and instance rows), name/ignore/inherit edits, cells with `E003`
@@ -99,12 +100,19 @@ for it; the goal set for this work was ≤ 1 ms).
   generated-name interning, the rows loop and page faults on fresh buffers are what remain.
 - **elab**: edits that change an expression's dependencies rebuild the whole graph (17 ms at 30k nodes).
 - **app**: per edit, decor is rebuilt (~4.5 ms at 100k): an incremental decor (changed
-  marks and objects only). Plugin snapshots still hash the document's columns per edit to
-  find the changed groups; the edit's own ops could name them.
+  marks and objects only). Plugin snapshots still hash the document's columns once per edit
+  epoch to find the changed groups (the pass-only refill runs on the next tick); the edit's
+  own ops could name them.
 - **render/app**: `CanvasDiff` hashes every row of a changed table (~3.4 ms for the 320k
   rows of a 100k-object scene and its decor): `scene::update` and the decor builder
-  reporting their changed rows would make it O(change). A click at 1M objects costs 17 ms
-  (`scene::marks` scans every primitive's owner).
+  reporting their changed rows would make it O(change). A click at 1M objects costs 4.5 ms:
+  three O(objects) scans (hit 1.6, connection points 1.4, the selection's rows 1.6). A
+  spatial index answers in O(cell) but must follow `scene::update` (its build is ~40 ns an
+  object, 40 ms at 1M).
+- **app**: the first edit of a document writes its whole journal (+13 ms at 100k, `doc`).
+- **render**: a frame whose UI changed (the status line on every pointer move) goes through
+  vello (0.3 ms of render calls a hover frame); the chrome in layers of its own would let it
+  compose.
 - **render**: tile frames on the Intel iGPU are not measured since the tiles landed (the
   retained layer had 47 ms p99 there).
 - **format**: 100k-object parse ~52–60 ms; doc open 89 ms (budget 200 ms, OK); the 100k parse test sits near 100 ms under load.
