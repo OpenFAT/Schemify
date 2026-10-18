@@ -1181,8 +1181,18 @@ fn edit_frames(n: u32) -> Vec<(&'static str, [f64; 3], f64)> {
 fn edit_frames_100k() {
     let r = edit_frames(100_000);
     for (what, [p50, p95, p99], tick) in &r {
-        eprintln!(
-            "PERF app.edit_{what}_100k_ms {p50:.3} (p95 {p95:.3}, p99 {p99:.3}, tick max {tick:.3})"
-        );
+        eprintln!("PERF app.edit_{what}_100k_ms {p50:.3}");
+        eprintln!("  {what}: p95 {p95:.3}, p99 {p99:.3}, tick max {tick:.3}");
+        // D39 (amended 2026-10-18, edit frames): a delete, an undo, a redo, the drop of a move
+        // and a wire drawn cost under 1 ms of CPU at 100k objects, and so do the ticks after
+        // them. Measured 2026-10-18 (load ~5): p95 0.53-0.69 ms, ticks 0.56-0.72 ms.
+        if ["delete", "undo", "redo", "move", "wire"].contains(what) {
+            budget(&format!("{what} p95"), *p95, 1.0);
+            budget(&format!("{what} tick"), *tick, 1.0);
+        }
     }
+    // The first edit of a document (its journal starts) has no hash or rewrite of the file
+    // left in it; it still pays first-use growth of the tables it patches (2.7 ms measured).
+    let (_, [first, ..], _) = r[0];
+    budget("first edit", first, 4.0);
 }

@@ -506,6 +506,8 @@ pub fn place_markers(
     ids: Option<&[u32]>,
 ) {
     debug_assert!(ids.is_none_or(|i| i.windows(2).all(|w| w[0] < w[1])));
+    // ponytail: once a quarter of the rows are dead the markers are placed anew (O(marks),
+    // ~4 ms at 70k marks, once per thousands of edits); compacting in place would amortize it.
     let compact = m.dead * 4 > m.prims.len() + (1 << 12);
     match ids {
         Some(ids) if !compact && m.generation.is_some() => {

@@ -30,6 +30,8 @@ const ADDED_MAX: usize = 4096;
 /// Cell entries per kind an index that follows appended rows ([`PrimIndex::follow`]) keeps
 /// beside its build before it asks to be rebuilt (each costs a query nothing unless its cell
 /// is queried; the bound keeps a follow's merge pass small).
+// ponytail: past 2^16 appended cell entries (thousands of edits) the index is rebuilt, ~7 ms
+// per 10^5 rows, on the next recorded tile; a per-cell growable list would remove the cap.
 const EXTRA_MAX: usize = 1 << 16;
 
 /// Row indices per primitive kind, ascending.

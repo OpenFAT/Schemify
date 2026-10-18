@@ -22,6 +22,7 @@ On NixOS the tests need the Vulkan loader on `LD_LIBRARY_PATH`, e.g.
 |---|---|
 | Frame times (pan, zoom, select, edit) at 10k / 100k / 1M objects | `cargo test --release -p schemify-app --test perf -- --ignored --nocapture --test-threads=1 frame_times` |
 | Hover, select, drag, drop, menu, typing at 100k / 1M objects (asserts the 1 ms budgets at 100k) | `… --test perf -- --ignored --nocapture --test-threads=1 interactions` |
+| Every edit kind at 100k objects (delete, undo, redo, move, wire, rename, param, the first edit; asserts the 1 ms budgets) | `… --test perf -- --ignored --nocapture --test-threads=1 edit_frames` |
 | …on a given GPU | prefix `SCHEMIFY_GPU=<adapter name substring>` (default: the first non-CPU adapter) |
 | Param edit with 1k dependents | `… --test perf -- --ignored --nocapture var_edit` |
 | Flat 1M-instance netlist (elaborate + emit) | `cargo test --release -p schemify-netlist --test perf -- --ignored --nocapture --test-threads=1` |
@@ -378,32 +379,63 @@ times came from temporary `Instant` laps around each spine step.
 - param edit: elab **13** (values changed: the whole check pass reruns) and `scene::build`
   **29** (values changed: every instance re-stamped), the decor and diff as above.
 
-### Plan, biggest first (each step's result must equal its full rebuild; property tests at
-small and 100k scale)
+### What was done (each result equals its full rebuild; oracle tests named in the commits)
 
-1. **A change log from `doc`** (owner: `doc`): every row write of an id table (insert, delete
-   with its swap, put) appends `(table, row, id)` to a bounded per-document log with a
-   sequence number; a compaction or reorder marks the log as broken. Consumers keep a cursor
-   and fall back to their full rebuild when the log no longer reaches it.
-2. **Scene from the log, rows that do not move**: `scene::update` re-stamps the touched
-   objects only; a removed object's primitive rows become dead (`LAYER_DEAD`, skipped by every
-   reader) instead of shifting or swapping, new rows append, objects keep a stamp so their rows
-   are found by binary search. It reports its row edits (dead rows, appended rows). A full
-   build compacts when dead rows pass a quarter of the table.
-3. **Decor in two tables**: the violation marks become their own table kept per marked object
-   (only the objects whose marks or geometry changed are redrawn, same dead-row scheme); the
-   rest (highlight, OP annotations, staged diff) stays a rebuild-on-change table. The
-   annotation overlay becomes an ordered map so a patch is O(changes · log n).
-4. **Canvas diff from the producers' edits**: a table whose producer reports its edits is not
-   hashed; its damage is the boxes of its dead and appended rows. `PrimIndex` follows those
-   edits in place (stable row indices), so it never asks for a rebuild between compactions.
-5. **Plugin snapshot patched from the log**: changed rows of the instance, wire and label
-   columns, the violation delta and the net columns of the touched rows; the fingerprint pass
-   goes.
-6. **First-edit journal**: the file hash is computed when the document is opened (it is read
-   then anyway), so the first commit appends its records like any other.
-7. Elab, the param path (re-stamp only the instances whose values changed) and the rest as
-   measured after 1–6.
+1. **`doc` change log** (`Document::cursor`, `changes_since`): every row write (insert,
+   delete and the row its swap moves, put, reorder) is logged as `(table, what, row, id)`,
+   bounded at `LOG_MAX`; a compaction, a reload or a copy breaks every earlier cursor.
+2. **Scene from the log, rows that stay put**: `scene::update` re-stamps only the touched
+   objects; a removed object's rows are killed in place (`LAYER_DEAD`), objects carry a stamp
+   so their rows are found by binary search; the scene reports its killed rows
+   (`Scene::edits`), the canvas diffs the scene table from them (`TableChange::Rows`) and the
+   `PrimIndex` follows them (`PrimIndex::follow`) instead of a rebuild every 16 edits.
+   `selected_prims` finds the selection's rows by stamp (select 0.49 → 0.27 ms).
+3. **Violation markers per object** (`checks::Markers`, the fifth canvas table): an edit
+   re-places only the touched objects and the patched marks' targets. `elab::Annotations` is
+   an ordered map (a patch is O(changes · log n)).
+4. **Plugin snapshot patched**: document groups from the change log, net columns and Nets by
+   comparison with what they hold, Violations from the pass's own delta
+   (`CellState::changes`, placed with `Violation::key_cmp`).
+5. **elab**: connectivity findings in a map keyed by raw handles (no whole-table moves).
+6. **First edit**: the disk hash the journal's `base` record names is taken 128 KB a tick
+   after the document opens (`Project::hash_step`), so the first commit appends its records.
+
+### After (2026-10-18, same machine, load ~5, best of 3 runs; CPU p50 / p95 ms)
+
+| Edit | before frame | after frame | after tick |
+|---|---|---|---|
+| first edit of the document | 28.4 | 2.71 | 1.88 |
+| delete | 13.9 / 14.1 | 0.568 / 0.592 | 0.67 |
+| undo | 12.1 / 12.3 | 0.506 / 0.531 | 0.64 |
+| redo | 12.4 / 12.6 | 0.519 / 0.528 | 0.66 |
+| move (drop) | 12.5 / 19.2 | 0.611 / 0.627 | 0.66 |
+| wire | 10.7 / 10.9 | 0.402 / 0.429 (p99 0.87) | 0.56 |
+| rename | 13.0–71 | 55.0 | 0.68 |
+| param | 52–60 | 58.2 | 0.29 |
+
+(The rename and param rows are not like for like: the old benchmark's property edits often
+typed the value the field already held, which commits nothing; they now type a new value each
+time.) `frame_times_100k`'s edit frames went 13.7 → 0.73 ms p50 and `interactions_100k`'s drop
+27.4 → 1.6 ms (its single drop is the document's first edit). The other interactive frames are
+unchanged or faster. `edit_frames_100k` asserts p95 and the ticks under 1 ms for delete, undo,
+redo, move and wire, and the first edit under 4 ms.
+
+What bounds the rest:
+
+- **Rename and param edits** (55–58 ms): a rename rebuilds the connectivity (elab's
+  `rebuild_nets`, ~40 ms; names can merge nets) and a value change re-stamps every instance
+  (`scene::build`, ~30 ms, symbol texts show values) and reruns the whole check pass. The
+  upgrade is elab reporting which instances' values changed (the scene re-stamps those) and
+  a rename patching the components it names.
+- **First edit** (2.7 ms, tick 1.9 ms): first-use growth of the tables an edit patches (the
+  plugin snapshot's columns, elab's tables) and the first incremental passes; it is once
+  per document.
+- **Amortized ceilings** (`ponytail:` in the code): the scene compacts with a full build
+  once dead rows pass a quarter of its tables (~30 ms at 10^5, every tens of thousands of
+  removed rows), the markers re-place everything at the same share, and a `PrimIndex` that
+  followed 2^16 appended cell entries is rebuilt on the next tile (~7 ms per 10^5 rows).
+- **The violation table** stays a sorted `Vec<Violation>`: a patch moves its tail (≈ 0.1 ms
+  at 70k rows), the largest remaining O(n) step of an edit frame on this fixture.
 
 ## Binary size
 
