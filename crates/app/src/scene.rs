@@ -199,7 +199,7 @@ pub struct Scene {
     /// Changes of every [`build`] and [`update`] since the counter was read.
     pub generation: u64,
     /// `(key, object index)`, for selection lookups. Never iterated.
-    index: HashMap<ObjKey, u32>,
+    index: KeyMap,
     /// The stamp of each primitive row (non-decreasing per kind), parallel to `owner`.
     stamps: Owners,
     /// The stamp of each connection point, parallel to `conn`.
@@ -216,14 +216,42 @@ pub struct Scene {
     wiring: Wiring,
 }
 
+/// Object key → object index ([`Scene::find`]); keys packed into a `u64`, hashed with one
+/// multiply (never iterated, so the order is never seen).
+type KeyMap = HashMap<u64, u32, std::hash::BuildHasherDefault<KeyHasher>>;
+
+fn pack(k: ObjKey) -> u64 {
+    (k.table as u64) << 32 | u64::from(k.key)
+}
+
+/// One multiply per key: object ids are random 30-bit values, so their bits spread already.
+#[derive(Default)]
+struct KeyHasher(u64);
+
+impl std::hash::Hasher for KeyHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (n ^ (n >> 32)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
+
 /// Wire ends and runs (xschem's connection cues): what decides where junction dots go, kept
 /// up to date per changed wire.
 #[derive(Clone, Debug, Default)]
 struct Wiring {
-    /// Wire ends by (x, y), with how many ends are there.
-    xy: BTreeMap<Pt, u32>,
-    /// The same ends as (y, x).
-    yx: BTreeMap<Pt, u32>,
+    /// Wire ends sorted by (x, y), one entry per end.
+    // ponytail: sorted vectors (a bulk build is one sort; an edit moves up to 1 MB per end at
+    // 10^5 wires, ~0.02 ms); ordered maps cost the full build ~8 ms more at 10^5 wires.
+    xy: Vec<Pt>,
+    /// The same ends as (y, x), sorted.
+    yx: Vec<Pt>,
     /// Horizontal runs: y → (x min, x max) of each wire on it.
     horiz: HashMap<i32, Vec<(i32, i32)>>,
     /// Vertical runs: x → (y min, y max).
@@ -235,29 +263,30 @@ struct Wiring {
 }
 
 impl Wiring {
-    /// The wiring of every wire row of `w`.
+    /// The wiring of every wire row of `w` (bulk: one sort, not an insert per end).
     fn of(w: &schemify_doc::Wires) -> Wiring {
         let mut out = Wiring::default();
         for i in 0..w.id.len() {
             let p = [w.x1[i], w.y1[i], w.x2[i], w.y2[i]];
-            out.ends(p, true);
+            out.xy.extend([(p[0], p[1]), (p[2], p[3])]);
             out.runs(p, true);
         }
+        out.xy.sort_unstable();
+        out.yx = out.xy.iter().map(|p| (p.1, p.0)).collect();
+        out.yx.sort_unstable();
         out
     }
 
     /// Adds (`add`) or removes the two ends of wire `w`.
     fn ends(&mut self, w: [i32; 4], add: bool) {
         for p in [(w[0], w[1]), (w[2], w[3])] {
-            for (map, k) in [(&mut self.xy, p), (&mut self.yx, (p.1, p.0))] {
+            for (v, k) in [(&mut self.xy, p), (&mut self.yx, (p.1, p.0))] {
+                let i = v.partition_point(|q| *q < k);
                 if add {
-                    *map.entry(k).or_insert(0) += 1;
-                    continue;
-                }
-                let n = map.get_mut(&k).expect("a drawn wire end");
-                *n -= 1;
-                if *n == 0 {
-                    map.remove(&k);
+                    v.insert(i, k);
+                } else {
+                    assert_eq!(v.get(i), Some(&k), "a drawn wire end");
+                    v.remove(i);
                 }
             }
         }
@@ -304,7 +333,8 @@ impl Wiring {
 
     /// Wire ends at `p`.
     fn ends_at(&self, p: Pt) -> usize {
-        self.xy.get(&p).map_or(0, |&n| n as usize)
+        let i = self.xy.partition_point(|q| *q < p);
+        self.xy[i..].iter().take_while(|q| **q == p).count()
     }
 
     /// Whether `p` lies strictly inside some wire.
@@ -343,22 +373,22 @@ impl Wiring {
     /// Wire ends lying strictly inside wire `w` (where `w` decides their dots), plus `w`'s
     /// own ends: every point whose dot `w` can change.
     fn touched(&self, w: [i32; 4], out: &mut Vec<Pt>) {
-        use std::ops::Bound::Excluded;
         out.extend([(w[0], w[1]), (w[2], w[3])]);
         if w[1] == w[3] {
             let (a, c) = (w[0].min(w[2]), w[0].max(w[2]));
-            let run = self.yx.range((Excluded((w[1], a)), Excluded((w[1], c))));
-            out.extend(run.map(|(q, _)| (q.1, q.0)));
+            let i = self.yx.partition_point(|q| *q <= (w[1], a));
+            let run = self.yx[i..].iter().take_while(|q| **q < (w[1], c));
+            out.extend(run.map(|q| (q.1, q.0)));
         } else if w[0] == w[2] {
             let (a, c) = (w[1].min(w[3]), w[1].max(w[3]));
-            let run = self.xy.range((Excluded((w[0], a)), Excluded((w[0], c))));
-            out.extend(run.map(|(q, _)| *q));
+            let i = self.xy.partition_point(|q| *q <= (w[0], a));
+            out.extend(self.xy[i..].iter().take_while(|q| **q < (w[0], c)));
         } else {
             // ponytail: a diagonal wire checks every end, O(ends); a 2-D index if
             // diagonal-heavy schematics show up in profiles.
             let mut probe = Wiring::default();
             probe.diag.push(w);
-            out.extend(self.xy.keys().filter(|q| probe.interior(**q)));
+            out.extend(self.xy.iter().filter(|q| probe.interior(**q)));
         }
     }
 }
@@ -366,7 +396,7 @@ impl Wiring {
 impl Scene {
     /// Object index of `key`, if drawn.
     pub fn find(&self, key: ObjKey) -> Option<u32> {
-        let o = self.index.get(&key).copied();
+        let o = self.index.get(&pack(key)).copied();
         debug_assert!(o.is_none_or(|o| self.objs.key[o as usize] == key));
         o
     }
@@ -746,7 +776,8 @@ pub fn build(
                 wire(&mut b, doc, i);
             }
             b.sc.wiring = Wiring::of(doc.wires());
-            let ends: Vec<Pt> = b.sc.wiring.xy.keys().copied().collect();
+            let mut ends = b.sc.wiring.xy.clone();
+            ends.dedup();
             redot(&mut b, &ends);
             other_objects(&mut b, doc, 0..usize::MAX);
         }
@@ -755,13 +786,14 @@ pub fn build(
     let ext = if b.ext[0] > b.ext[2] { [0; 4] } else { b.ext };
     sc.extent = ext;
     fit_boxes(sc, Counts::default());
-    sc.index = sc
-        .objs
-        .key
-        .iter()
-        .enumerate()
-        .map(|(i, &k)| (k, i as u32))
-        .collect();
+    sc.index.reserve(sc.objs.len());
+    sc.index.extend(
+        sc.objs
+            .key
+            .iter()
+            .enumerate()
+            .map(|(i, &k)| (pack(k), i as u32)),
+    );
     sc.built = Some((h, view, epoch, symbols.epoch));
     sc.generation = generation;
     check_tables(sc);
@@ -828,7 +860,9 @@ pub fn update(
     let total = sc.objs.len().max(1);
     if keys.len() > total / 8 + 64 || sc.dead * 4 > sc.prims.len() + (1 << 14) {
         // ponytail: most of the document changed (a paste, an import), or a quarter of the
-        // rows are dead: one full build is cheaper than this many removals, and compacts.
+        // rows are dead: one full build is cheaper than this many removals, and compacts
+        // (~30 ms at 10^5 objects, once per tens of thousands of removed rows; compacting on
+        // an idle tick would take it off the edit frame).
         build(sc, project, h, View::Schematic, symbols, epoch, values);
         return false;
     }
@@ -880,7 +914,7 @@ pub fn update(
     sc.extent = if ext[0] > ext[2] { [0; 4] } else { ext };
     fit_boxes(sc, prims0);
     for o in objs0..sc.objs.len() {
-        let prev = sc.index.insert(sc.objs.key[o], o as u32);
+        let prev = sc.index.insert(pack(sc.objs.key[o]), o as u32);
         assert!(prev.is_none(), "one object per key");
     }
     sc.built = Some((h, View::Schematic, epoch, symbols.epoch));
@@ -956,7 +990,7 @@ fn stamped(col: &[u32], s: u32) -> std::ops::Range<usize> {
 ///
 /// Cost: O(log rows) per kind plus the rows of the two objects involved.
 fn remove_object(sc: &mut Scene, key: ObjKey) {
-    let Some(o) = sc.index.remove(&key) else {
+    let Some(o) = sc.index.remove(&pack(key)) else {
         return;
     };
     let s = sc.objs.stamp[o as usize];
@@ -979,7 +1013,7 @@ fn remove_object(sc: &mut Scene, key: ObjKey) {
     // The last object moves into `o`'s slot.
     if let Some(slot) = sc.objs.swap_remove(o as usize) {
         let (moved, ms) = (sc.objs.key[slot], sc.objs.stamp[slot]);
-        sc.index.insert(moved, o);
+        sc.index.insert(pack(moved), o);
         let last = sc.objs.len() as u32;
         for kind in 0..6 {
             for r in stamped(sc.stamps.cols()[kind], ms) {

@@ -158,6 +158,9 @@ impl Violations {
         rows.sort_by(|a, b| cmp_key(a, b, names));
         rows.dedup_by(|b, a| cmp_key(a, b, names) == Ordering::Equal);
         rows.truncate(VIOLATIONS_MAX);
+        // Room for a patch's insertions: the first one after a build would otherwise
+        // reallocate the whole table in an edit frame.
+        rows.reserve(rows.len() / 8 + 64);
         debug_assert!(
             rows.windows(2)
                 .all(|w| cmp_key(&w[0], &w[1], names) == Ordering::Less)

@@ -514,10 +514,19 @@ impl CellState {
         self.waivers = waivers(doc, &self.names);
         let mut net = self.live.rows(&self.nets, &self.ifaces[0], &self.names);
         net.sort_by(|a, b| cmp_key(a, b, &self.names));
-        self.net_rows.clear();
-        for v in &net {
-            self.net_rows.entry(row_key(v)).or_default().push(v.clone());
+        // Bulk: one stable sort by raw key (runs keep their key order), then the map built
+        // from the sorted runs.
+        let mut keyed: Vec<(RowKey, Violation)> =
+            net.iter().map(|v| (row_key(v), v.clone())).collect();
+        keyed.sort_by_key(|e| e.0);
+        let mut runs: Vec<(RowKey, Vec<Violation>)> = Vec::new();
+        for (k, v) in keyed {
+            match runs.last_mut() {
+                Some(r) if r.0 == k => r.1.push(v),
+                _ => runs.push((k, vec![v])),
+            }
         }
+        self.net_rows = runs.into_iter().collect();
         let mut rows = net;
         let cx = CellCtx {
             doc,

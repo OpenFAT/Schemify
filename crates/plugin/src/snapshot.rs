@@ -109,7 +109,9 @@ impl Snapshots {
         let t = &mut self.tables[table as usize];
         let c = &mut t.columns[column as usize];
         c.bytes.clear();
-        c.bytes.reserve(values.len() * usize::from(T::TY.width()));
+        // Room for later splices to grow into without reallocating the column.
+        let rows = values.len() + values.len() / 8;
+        c.bytes.reserve(rows * usize::from(T::TY.width()));
         for &v in values {
             v.put_le(&mut c.bytes);
         }
@@ -138,6 +140,7 @@ impl Snapshots {
         let c = &mut t.columns[column as usize];
         c.bytes.clear();
         c.ends.clear();
+        c.ends.reserve(values.len() + values.len() / 8);
         for v in values {
             c.bytes.extend_from_slice(v.as_ref().as_bytes());
             c.ends
