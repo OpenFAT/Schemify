@@ -893,7 +893,11 @@ pub fn patch_last(tables: &mut UiTables, old: &Contribution, new: &Contribution)
         let mut value = None;
         for e in new.edits.iter().rev() {
             match *e {
-                Edit::Set { id: i, prop: p, value: v } if i == id && p == prop => {
+                Edit::Set {
+                    id: i,
+                    prop: p,
+                    value: v,
+                } if i == id && p == prop => {
                     value = Some(v);
                     break;
                 }
