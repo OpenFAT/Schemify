@@ -36,9 +36,14 @@ fn session(tag: &str) -> Session {
 #[test]
 fn reload_picks_up_a_manifest_change() {
     let mut s = session("change");
-    let h = s.ed.session.project.handles().next().expect("inv is open");
+    let h =
+        s.ed.session()
+            .project
+            .handles()
+            .next()
+            .expect("inv is open");
     assert!(
-        s.ed.session.project.resolve(h, "tech:nmos").is_err(),
+        s.ed.session().project.resolve(h, "tech:nmos").is_err(),
         "no technology yet"
     );
     std::fs::create_dir_all(s.dir.join("extra")).unwrap();
@@ -54,7 +59,7 @@ fn reload_picks_up_a_manifest_change() {
     .unwrap();
     s.ed.command("project.reload", "");
     s.frame(Default::default());
-    let p = &s.ed.session.project;
+    let p = &s.ed.session().project;
     assert!(p.doc(h).is_some(), "the open document stays open");
     assert!(
         p.resolve(h, "extra:buf").is_ok(),
@@ -70,9 +75,9 @@ fn reload_picks_up_a_manifest_change() {
             .contains("sky130_fd_pr__{model}")
     );
     assert!(
-        s.ed.session.status.contains("reloaded"),
+        s.ed.session().status.contains("reloaded"),
         "{}",
-        s.ed.session.status
+        s.ed.session().status
     );
     // Switching technology is one manifest line.
     std::fs::write(
@@ -82,7 +87,7 @@ fn reload_picks_up_a_manifest_change() {
     .unwrap();
     s.ed.command("project.reload", "");
     s.frame(Default::default());
-    let p = &s.ed.session.project;
+    let p = &s.ed.session().project;
     let row = p.resolve(h, "tech:pmos").expect("gf180 pmos");
     assert!(p.interface(row).unwrap().canonical().contains("pfet_03v3"));
     assert!(
@@ -94,19 +99,25 @@ fn reload_picks_up_a_manifest_change() {
 #[test]
 fn reload_refuses_to_orphan_an_open_document() {
     let mut s = session("orphan");
-    let lib = s.dir.join("pdk/sky130/sky130_fd_pr/nfet_01v8.shprim");
-    let h = s.ed.session.open_path(&lib).expect("opens the PDK cell");
+    s.ed.command("file.open", "pdk/sky130/sky130_fd_pr/nfet_01v8.shprim");
+    s.frame(Default::default());
+    assert!(
+        s.ed.session().status.contains("opened nfet_01v8.shprim"),
+        "{}",
+        s.ed.session().status
+    );
+    let h = s.ed.active().expect("the PDK cell's tab").0;
     std::fs::write(s.dir.join("schemify.project"), "schemify 1 project\n").unwrap();
     s.ed.command("project.reload", "");
     s.frame(Default::default());
     assert!(
-        s.ed.session
+        s.ed.session()
             .status
             .contains("close the documents of library `sky130_fd_pr`"),
         "{}",
-        s.ed.session.status
+        s.ed.session().status
     );
-    let p = &s.ed.session.project;
+    let p = &s.ed.session().project;
     assert!(p.doc(h).is_some());
     assert!(
         p.resolve(h, "./nfet_01v8").is_ok(),

@@ -52,26 +52,26 @@ schemify.on("load", function() schemify.notify("hello from init.lua") end)
 "#,
     );
     let mut s = open_with(&dir, &init);
-    assert_eq!(s.ed.opts.snap, 5 * U);
-    assert!(s.ed.opts.light);
-    assert!(s.ed.opts.show_grid);
+    assert_eq!(s.ed.opts().snap, 5 * U);
+    assert!(s.ed.opts().light);
+    assert!(s.ed.opts().show_grid);
     assert!(
-        s.ed.session.status.contains("hello from init.lua"),
+        s.ed.session().status.contains("hello from init.lua"),
         "{}",
-        s.ed.session.status
+        s.ed.session().status
     );
     s.key("%");
     assert!(
-        s.ed.opts.show_grid,
+        s.ed.opts().show_grid,
         "the user's `%` replaced the default UI's grid toggle"
     );
     // The Lua function queues `options.draw_grid`; it runs at the next delivery.
     s.key("F7");
     s.frame(InputEvents::default());
-    assert!(!s.ed.opts.show_grid, "F7 ran the Lua keymap");
+    assert!(!s.ed.opts().show_grid, "F7 ran the Lua keymap");
     s.key("F7");
     s.frame(InputEvents::default());
-    assert!(s.ed.opts.show_grid);
+    assert!(s.ed.opts().show_grid);
 }
 
 #[test]
@@ -79,17 +79,17 @@ fn clean_startup_and_config_errors() {
     let dir = fixture("inv", "userconfig-err");
     let init = write_init(&dir, "schemify.opt.snap = 5\nschemify.opt.nope = 1\n");
     let s = open_with(&dir, &init);
-    assert_eq!(s.ed.opts.snap, 5 * U, "set before the error");
+    assert_eq!(s.ed.opts().snap, 5 * U, "set before the error");
     assert!(
-        s.ed.session
+        s.ed.session()
             .status
             .contains("init.lua:2: unknown option `nope`"),
         "{}",
-        s.ed.session.status
+        s.ed.session().status
     );
     // The default (tests, `--clean`) never runs a user config.
     let clean = Session::open("inv", "top.shcomp", "userconfig-clean", true);
-    assert_eq!(clean.ed.opts.snap, 10 * U);
+    assert_eq!(clean.ed.opts().snap, 10 * U);
 }
 
 /// A lazy user package (config spec §5): absent from the plugin table until its command runs,

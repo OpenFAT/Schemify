@@ -514,9 +514,9 @@ enum Dialog {
 /// An interactive editing session: project, UI, plugins, scene, tool and dialogs.
 pub struct Editor {
     /// Project, open documents, tabs, status line.
-    pub session: Session,
+    pub(crate) session: Session,
     /// Composed UI and its layout.
-    pub shell: Shell,
+    pub(crate) shell: Shell,
     host: Host,
     commands: Commands,
     symbols: Symbols,
@@ -528,9 +528,9 @@ pub struct Editor {
     palette: Palette,
     sel_color: u32,
     /// The gesture in progress.
-    pub tool: Tool,
+    pub(crate) tool: Tool,
     /// Interaction options.
-    pub opts: EditOpts,
+    pub(crate) opts: EditOpts,
     pointer: (f32, f32),
     mods: u8,
     pan: Option<(f32, f32)>,
@@ -681,6 +681,9 @@ pub struct Editor {
     shown_key: Option<ShownKey>,
     /// Commands queued by [`Editor::command`]: (name, argument, ticket of an answered one).
     queued: Vec<(String, String, Option<u32>)>,
+    /// Edit requests from outside the frame ([`Editor::request_edits`]), joined to the next
+    /// frame's `edit_requests` before dispatch (at most [`QUEUED_MAX`]).
+    queued_edits: Vec<EditRequest>,
     /// What each answered command ([`Editor::command_answered`]) said, at most
     /// [`QUEUED_MAX`] waiting to be taken.
     said: Vec<Said>,
@@ -703,6 +706,27 @@ impl std::fmt::Debug for Editor {
 }
 
 impl Editor {
+    /// Project, open documents, tabs, status line. Read-only outside the crate: changes go
+    /// through [`Editor::command`] or a frame, so the spine shows every write.
+    pub fn session(&self) -> &Session {
+        &self.session
+    }
+
+    /// Composed UI tables and their layout, as of the last frame.
+    pub fn shell(&self) -> &Shell {
+        &self.shell
+    }
+
+    /// The gesture in progress.
+    pub fn tool(&self) -> &Tool {
+        &self.tool
+    }
+
+    /// Interaction options (layers, colours, widths); changed by commands.
+    pub fn opts(&self) -> &EditOpts {
+        &self.opts
+    }
+
     /// Starts a session: loads the project (the directory given, the directory holding the
     /// file given, or the working directory), loads plugins (D6, D8), and opens the file
     /// given or a new empty schematic.
@@ -840,6 +864,7 @@ impl Editor {
             shown_key: None,
             trim_after: None,
             queued: Vec::new(),
+            queued_edits: Vec::new(),
             said: Vec::new(),
             next_ticket: 0,
             startup: opts,
@@ -972,6 +997,40 @@ impl Editor {
             return;
         }
         self.queued.push((name.to_owned(), arg.to_owned(), None));
+    }
+
+    /// Queues edit requests for the next frame, where `doc::apply_edits` runs them with the
+    /// frame's own (the path plugins and the optimizer take). Requests past [`QUEUED_MAX`]
+    /// are refused on the status line, as a full command queue is.
+    pub fn request_edits(&mut self, reqs: impl IntoIterator<Item = EditRequest>) {
+        assert!(self.queued_edits.len() <= QUEUED_MAX);
+        for r in reqs {
+            if self.queued_edits.len() >= QUEUED_MAX {
+                self.session.status = "edit queue full".to_owned();
+                return;
+            }
+            self.queued_edits.push(r);
+        }
+        assert!(self.queued_edits.len() <= QUEUED_MAX);
+    }
+
+    /// Shows `view` in a read-only text tab (the request a netlist or report command makes;
+    /// a tab already showing the same file is replaced). Drawn from the next frame.
+    pub fn open_text_tab(&mut self, view: crate::session::TextView) {
+        let tabs = self.session.tabs.len();
+        self.session.open_text_tab(view);
+        assert!(self.session.tabs.len() <= tabs + 1, "one tab at most");
+    }
+
+    /// Sets the scroll offset of the UI node named `id` (as a wheel or scrollbar drag
+    /// would), clamped to `[0, max]`; layout reads it on the next frame.
+    pub fn set_scroll(&mut self, id: schemify_ui::Sym, offset: f32, max: f32) {
+        assert!(
+            !offset.is_nan() && !max.is_nan(),
+            "scroll offsets are numbers"
+        );
+        self.shell.ui.set_scroll(id, offset, max);
+        debug_assert!(self.shell.ui.scroll_of(id) <= max.max(0.0));
     }
 
     /// [`Editor::command`] for a caller that wants the command's own status message (the
@@ -1171,7 +1230,7 @@ impl Editor {
             self.dialog = Dialog::None; // Escape closed it inside `ui` (cancel)
         }
         changed |= resized || routed.redraw || routed.relayout;
-        let mut reqs: Vec<EditRequest> = Vec::new();
+        let mut reqs: Vec<EditRequest> = std::mem::take(&mut self.queued_edits);
         self.undid = false;
         changed |= self.sync_page(events, &routed.commands, &mut reqs);
         // 2. dispatch → edit_requests, plugin_events, ui state

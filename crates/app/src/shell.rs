@@ -67,7 +67,7 @@ node bottom panel
 /// Composed UI tables, interaction state and the current layout.
 pub struct Shell {
     /// String arena of every UI table.
-    pub strings: Strings,
+    pub(crate) strings: Strings,
     base: Contribution,
     plugins: Vec<(Sym, Contribution)>,
     plugin_window: bool,
@@ -75,15 +75,15 @@ pub struct Shell {
     state_text: String,
     state_name: Sym,
     /// `ui_nodes`, `ui_styles`, `keymap` (owner: `ui::compose`).
-    pub tables: UiTables,
+    pub(crate) tables: UiTables,
     /// Menus, dialog, hover and focus (owner: `ui`).
-    pub ui: UiState,
+    pub(crate) ui: UiState,
     /// This frame's layout.
-    pub layout: UiLayout,
+    pub(crate) layout: UiLayout,
     /// Shaped text cache.
-    pub text: TextSystem,
+    pub(crate) text: TextSystem,
     /// Lines of plugin contributions the UI parser rejected (shown in the status line).
-    pub rejects: usize,
+    pub(crate) rejects: usize,
     composed: bool,
     laid_out: Option<(f32, f32)>,
 }
@@ -104,6 +104,36 @@ impl Default for Shell {
 }
 
 impl Shell {
+    /// String arena of every UI table; valid for the tables' current generation.
+    pub fn strings(&self) -> &Strings {
+        &self.strings
+    }
+
+    /// `ui_nodes`, `ui_styles`, `keymap`; written only by `ui::compose` inside the frame.
+    pub fn tables(&self) -> &UiTables {
+        &self.tables
+    }
+
+    /// Menus, dialog, hover and focus (owner: `ui`).
+    pub fn ui(&self) -> &UiState {
+        &self.ui
+    }
+
+    /// The last frame's layout.
+    pub fn layout(&self) -> &UiLayout {
+        &self.layout
+    }
+
+    /// Shaped text cache.
+    pub fn text(&self) -> &TextSystem {
+        &self.text
+    }
+
+    /// Lines of plugin contributions the UI parser rejected.
+    pub fn rejects(&self) -> usize {
+        self.rejects
+    }
+
     /// A shell with the core base only.
     pub fn new() -> Shell {
         let mut strings = Strings::new();

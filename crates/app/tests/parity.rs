@@ -82,12 +82,12 @@ fn owned(s: &Session, prefix: &str) -> Vec<String> {
 }
 
 fn status(s: &Session) -> String {
-    s.ed.session.status.clone()
+    s.ed.session().status.clone()
 }
 
 fn active_path(s: &Session) -> PathBuf {
     let (h, _) = s.ed.active().unwrap();
-    s.ed.session.path(h).unwrap().to_path_buf()
+    s.ed.session().path(h).unwrap().to_path_buf()
 }
 
 /// Right click (press + release) at world point `p` with modifiers `mods`.
@@ -123,19 +123,19 @@ fn right_click(s: &mut Session, p: (i32, i32), mods: u8) {
 
 /// Whether UI node `id` is composed (exists in the UI table this frame).
 fn composed(s: &Session, id: &str) -> bool {
-    let sh = &s.ed.shell;
-    sh.strings
+    let sh = &s.ed.shell();
+    sh.strings()
         .find(id)
-        .is_some_and(|sym| sh.tables.nodes.find(sym).is_some())
+        .is_some_and(|sym| sh.tables().nodes.find(sym).is_some())
 }
 
 /// The open dialog's node id ("" when none).
 fn dialog(s: &Session) -> String {
-    let d = s.ed.shell.ui.dialog();
+    let d = s.ed.shell().ui().dialog();
     if d.is_none() {
         String::new()
     } else {
-        s.ed.shell.strings.get(d).to_owned()
+        s.ed.shell().strings().get(d).to_owned()
     }
 }
 
@@ -143,7 +143,7 @@ fn dialog(s: &Session) -> String {
 /// (instance id, pin index), ports by id.
 fn pin_nets(s: &Session) -> Vec<(String, u32)> {
     let (h, _) = s.ed.active().unwrap();
-    let doc = s.ed.session.project.doc(h).unwrap();
+    let doc = s.ed.session().project.doc(h).unwrap();
     let cell = s.ed.cell().expect("elaborated");
     let mut out = Vec::new();
     let inst = doc.instances();
@@ -230,7 +230,7 @@ fn save_as_moves_editing_to_the_new_file() {
     assert_eq!(std::fs::read_to_string(&new).unwrap(), edited);
     assert_eq!(s.text(), edited);
     let (h, _) = s.ed.active().unwrap();
-    assert!(!s.ed.session.project.is_dirty(h), "the new file is saved");
+    assert!(!s.ed.session().project.is_dirty(h), "the new file is saved");
     assert_eq!(
         std::fs::read_to_string(s.dir.join("top.shcomp")).unwrap(),
         original,
@@ -296,20 +296,20 @@ fn recent_files_persist_and_reopen() {
     // The File menu lists them; entry 1 opens top.shcomp in a tab.
     ed.update(&InputEvents::default(), common::VIEW, 3);
     assert!(
-        ed.shell
-            .strings
+        ed.shell()
+            .strings()
             .find("file.open_recent.1")
-            .is_some_and(|s| ed.shell.tables.nodes.find(s).is_some())
+            .is_some_and(|s| ed.shell().tables().nodes.find(s).is_some())
     );
     ed.command("file.open_recent.1", "");
     ed.update(&InputEvents::default(), common::VIEW, 4);
     let (h, _) = ed.active().unwrap();
-    assert!(ed.session.path(h).unwrap().ends_with("top.shcomp"));
-    assert_eq!(ed.session.tabs.len(), 2);
+    assert!(ed.session().path(h).unwrap().ends_with("top.shcomp"));
+    assert_eq!(ed.session().tabs.len(), 2);
     // Negative space: an index past the list is a status message, not a crash.
     ed.command("file.open_recent.9", "");
     ed.update(&InputEvents::default(), common::VIEW, 5);
-    assert!(ed.session.status.contains("no recent file"));
+    assert!(ed.session().status.contains("no recent file"));
     let _ = std::fs::remove_dir_all(&state);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -325,7 +325,11 @@ fn merge_inserts_a_cell_schematic_at_the_pointer() {
     s.type_text("inv.sh");
     assert!(!composed(&s, "dialog.choose.row.1"), "one cell matches");
     s.click_node("dialog.choose.row.0");
-    assert!(matches!(s.ed.tool, Tool::Place { .. }), "{:?}", s.ed.tool);
+    assert!(
+        matches!(s.ed.tool(), Tool::Place { .. }),
+        "{:?}",
+        s.ed.tool()
+    );
     s.click((400 * U, 0));
     let t = s.text();
     // inv's two transistors, eight wires, two labels, four ports and a text arrive.
@@ -544,7 +548,7 @@ fn stretch_moves_wire_ends_and_plain_moves_do_not() {
     s.key("u");
     // Plain move: wires stay; Options → enable stretch (`y`) makes `m` stretch.
     s.key("y");
-    assert!(s.ed.opts.stretch);
+    assert!(s.ed.opts().stretch);
     s.click((150 * U, 0));
     s.move_to((150 * U, 0));
     s.key("m");
@@ -582,7 +586,7 @@ fn clipboard_copy_paste_equals_duplicate() {
     // The fragment text round-trips the clipboard records.
     let recs: Vec<schemify_doc::RecordBuf> = {
         let (h, _) = a.ed.active().unwrap();
-        let doc = a.ed.session.project.doc(h).unwrap();
+        let doc = a.ed.session().project.doc(h).unwrap();
         schemify_app::edit::selected_records(doc, a.ed.selection())
             .into_iter()
             .map(|r| r.2)
@@ -615,7 +619,7 @@ fn search_replace_all_leaves_nothing_to_find() {
             value: value.into(),
             exact,
         };
-        let found = schemify_app::search::find(s.ed.session.project.doc(h).unwrap(), &q);
+        let found = schemify_app::search::find(s.ed.session().project.doc(h).unwrap(), &q);
         assert!(!found.is_empty(), "{field} {value}");
         // Through the dialog: field, value, replacement, exact.
         s.key("Ctrl+F");
@@ -631,7 +635,7 @@ fn search_replace_all_leaves_nothing_to_find() {
             s.type_text(v);
         }
         s.click_node("dialog.props.ok");
-        let left = schemify_app::search::find(s.ed.session.project.doc(h).unwrap(), &q);
+        let left = schemify_app::search::find(s.ed.session().project.doc(h).unwrap(), &q);
         assert!(left.is_empty(), "{field} {value}: {left:?}\n{}", s.text());
         s.key("u");
         assert_eq!(s.text(), original, "{field} {value}: one undo");
@@ -730,7 +734,11 @@ fn context_menu_variants_run_their_rows() {
     assert!(composed(&s, "dialog.ctx.row.13") && !composed(&s, "dialog.ctx.row.14"));
     s.click_node("dialog.ctx.row.6"); // Insert wire
     assert_eq!(dialog(&s), "");
-    assert!(matches!(s.ed.tool, Tool::Wire { .. }), "{:?}", s.ed.tool);
+    assert!(
+        matches!(s.ed.tool(), Tool::Wire { .. }),
+        "{:?}",
+        s.ed.tool()
+    );
     s.key("Esc");
     // With a selection: the selection variant; Delete selection deletes.
     s.click((150 * U, 0));
@@ -765,7 +773,7 @@ fn persistent_wire_mode_chains_segments() {
     s.key("w");
     s.click((340 * U, 0));
     s.click((340 * U, 40 * U));
-    assert!(matches!(s.ed.tool, Tool::Wire { .. }), "still drawing");
+    assert!(matches!(s.ed.tool(), Tool::Wire { .. }), "still drawing");
     s.key("Esc");
     let w = lines(&s.text(), "wire ").len();
     assert_eq!(w, 9 + 2);
@@ -773,7 +781,7 @@ fn persistent_wire_mode_chains_segments() {
     run(&mut s, "options.persistent_wire_line_place_command", "");
     s.key("w");
     s.click((400 * U, 0));
-    assert!(matches!(s.ed.tool, Tool::Idle));
+    assert!(matches!(s.ed.tool(), Tool::Idle));
 }
 
 #[test]
@@ -810,10 +818,10 @@ fn chooser_lists_scroll_past_24_rows() {
         "more than 24 rows listed"
     );
     // The wheel over the list scrolls it.
-    let sh = &s.ed.shell;
-    let list = sh.strings.find("dialog.choose.list").unwrap();
-    let n = sh.tables.nodes.find(list).unwrap();
-    let r = sh.layout.rect()[sh.layout.row_of(n).unwrap()];
+    let sh = &s.ed.shell();
+    let list = sh.strings().find("dialog.choose.list").unwrap();
+    let n = sh.tables().nodes.find(list).unwrap();
+    let r = sh.layout().rect()[sh.layout().row_of(n).unwrap()];
     let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
     let mut ev = InputEvents::default();
     ev.push(InputEvent::PointerMove { x, y });
@@ -824,7 +832,7 @@ fn chooser_lists_scroll_past_24_rows() {
         dy: -3.0,
     });
     s.frame(ev);
-    assert!(s.ed.shell.ui.scroll_of(list) > 0.0, "scrolled");
+    assert!(s.ed.shell().ui().scroll_of(list) > 0.0, "scrolled");
 }
 
 /// D28 crash recovery asks first: a journal with unsaved edits opens the recover/discard
@@ -874,7 +882,7 @@ fn crash_recovery_asks_to_recover_or_discard() {
     s.click_node("dialog.recover.ok");
     assert_eq!(s.text(), edited, "the unsaved edit is back");
     let (h, _) = s.ed.active().unwrap();
-    assert!(s.ed.session.project.is_dirty(h), "recovered, not saved");
+    assert!(s.ed.session().project.is_dirty(h), "recovered, not saved");
     drop(s); // removes the directory
 }
 
@@ -1032,7 +1040,7 @@ fn highlight_menu_duplicates_overlaps_and_selection() {
     s.frame(InputEvents::default());
     // Only probes dims everything but the highlight (palette, no edit).
     run(&mut s, "highlight.view_only_probes", "");
-    assert!(s.ed.opts.only_probes);
+    assert!(s.ed.opts().only_probes);
 }
 
 #[test]
@@ -1077,7 +1085,7 @@ fn compare_schematics_outlines_the_differences() {
         status(&s)
     );
     run(&mut s, "highlight.compare_schematics", "");
-    assert!(!s.ed.opts.only_probes);
+    assert!(!s.ed.opts().only_probes);
 }
 
 #[test]
@@ -1137,10 +1145,10 @@ fn symbol_menu_makes_symbols_schematics_labels_and_pins() {
     s.click((70 * U, 0));
     s.key("k");
     s.key("J");
-    let v = s.ed.session.text_view().expect("a text tab");
+    let v = s.ed.session().text_view().expect("a text tab");
     assert!(v.body.contains("mid"), "{}", v.body);
     s.key("Ctrl+Left");
-    while s.ed.session.text_view().is_some() {
+    while s.ed.session().text_view().is_some() {
         s.key("Ctrl+Left");
     }
     s.move_to((400 * U, 0));
@@ -1167,46 +1175,50 @@ fn view_options_shape_the_palette_and_the_ui() {
     assert!(composed(&s, "menubar") && !composed(&s, "toolbar"));
     // Layers: hide layer 1 (wires), only the current layer, all again.
     run(&mut s, "layers.toggle.1", "");
-    assert_eq!(s.ed.opts.hidden, 1 << 1);
+    assert_eq!(s.ed.opts().hidden, 1 << 1);
     s.key("Ctrl+5");
-    assert_eq!(s.ed.opts.layer, 5);
+    assert_eq!(s.ed.opts().layer, 5);
     s.key(">");
-    assert_eq!(s.ed.opts.hidden & (1 << 5), 0);
-    assert_ne!(s.ed.opts.hidden & (1 << 4), 0);
+    assert_eq!(s.ed.opts().hidden & (1 << 5), 0);
+    assert_ne!(s.ed.opts().hidden & (1 << 4), 0);
     s.key("<");
-    assert_eq!(s.ed.opts.hidden, 0);
+    assert_eq!(s.ed.opts().hidden, 0);
     // The visible-layers dialog: one checkable row per layer; a click toggles it.
     run(&mut s, "view.show_hide.visible_layers", "");
     assert_eq!(dialog(&s), "dialog.layers");
     assert!(composed(&s, "dialog.layers.row.21"));
     s.click_node("dialog.layers.row.3");
-    assert_eq!(s.ed.opts.hidden, 1 << 3);
+    assert_eq!(s.ed.opts().hidden, 1 << 3);
     s.click_node("dialog.layers.close");
     // Widths, dim, colors, reset.
     s.key("Ctrl++");
-    assert_eq!(s.ed.opts.width_tenths, 15);
+    assert_eq!(s.ed.opts().width_tenths, 15);
     run(&mut s, "view.set_line_width", "2");
-    assert_eq!(s.ed.opts.width_tenths, 20);
+    assert_eq!(s.ed.opts().width_tenths, 20);
     run(&mut s, "view.dim_colors", "0.5");
-    assert_eq!(s.ed.opts.dim, 50);
+    assert_eq!(s.ed.opts().dim, 50);
     run(&mut s, "view.change_current_layer_color", "ff0000");
     run(&mut s, "view.change_current_layer_color", "zz");
     assert!(status(&s).contains("not an rrggbb"));
     run(&mut s, "view.reset_all_colors_to_default", "");
     assert_eq!(
-        (s.ed.opts.dim, s.ed.opts.hidden, s.ed.opts.width_tenths),
+        (
+            s.ed.opts().dim,
+            s.ed.opts().hidden,
+            s.ed.opts().width_tenths
+        ),
         (0, 0, 10)
     );
     // Symbols as boxes, symbol texts off: the displayed scene differs, the doc does not.
     let t = s.text();
     s.key("Alt+B");
-    assert_eq!(s.ed.opts.show_symbols, 1);
+    assert_eq!(s.ed.opts().show_symbols, 1);
     run(&mut s, "view.show_hide.symbol_text", "");
-    assert!(!s.ed.opts.symbol_text);
+    assert!(!s.ed.opts().symbol_text);
     assert_eq!(s.text(), t);
     // Snap / grid / crosshair size dialogs and their arguments.
     run(&mut s, "view.set_grid_spacing", "5");
-    assert_eq!(s.ed.opts.grid, 5 * U);
+    assert_eq!(s.ed.opts().grid, 5 * U);
     s.key("Ctrl+G");
     assert_eq!(dialog(&s), "dialog.enter_text");
     for _ in 0..4 {
@@ -1214,9 +1226,9 @@ fn view_options_shape_the_palette_and_the_ui() {
     }
     s.type_text("2.5");
     s.key("Enter");
-    assert_eq!(s.ed.opts.snap, 2500);
+    assert_eq!(s.ed.opts().snap, 2500);
     run(&mut s, "options.crosshair.crosshair_size", "12");
-    assert_eq!(s.ed.opts.crosshair_px, 12);
+    assert_eq!(s.ed.opts().crosshair_px, 12);
     run(&mut s, "options.crosshair.crosshair_size", "-3");
     assert!(status(&s).contains("out of range"));
 }
@@ -1267,7 +1279,7 @@ fn properties_menu_ignore_header_and_edit_file() {
 fn simulation_help_and_waves_commands() {
     let mut s = Session::open("inv", "top.shcomp", "simhelp", true);
     run(&mut s, "simulation.edit_netlist", "");
-    let title = s.ed.session.text_view().map(|v| v.title.clone());
+    let title = s.ed.session().text_view().map(|v| v.title.clone());
     assert_eq!(
         title.as_deref(),
         Some("top.spice (netlist)"),
@@ -1275,19 +1287,25 @@ fn simulation_help_and_waves_commands() {
         status(&s)
     );
     run(&mut s, "simulation.changelog_from_current_hierarchy", "");
-    let v = s.ed.session.text_view().unwrap();
+    let v = s.ed.session().text_view().unwrap();
     assert!(
         v.body.contains("top.shcomp") && v.body.contains("inv.shcomp"),
         "{}",
         v.body
     );
     run(&mut s, "simulation.list_running_sub_processes", "");
-    assert!(s.ed.session.text_view().unwrap().body.contains("no run"));
+    assert!(s.ed.session().text_view().unwrap().body.contains("no run"));
     run(&mut s, "help.about", "");
-    assert!(s.ed.session.text_view().unwrap().body.contains("Schemify"));
+    assert!(
+        s.ed.session()
+            .text_view()
+            .unwrap()
+            .body
+            .contains("Schemify")
+    );
     run(&mut s, "help.help", "");
     assert!(
-        s.ed.session
+        s.ed.session()
             .text_view()
             .unwrap()
             .body
@@ -1308,18 +1326,15 @@ fn simulation_help_and_waves_commands() {
         "options.netlist_format_symbol_mode.flat_netlist",
         "",
     );
-    assert!(s.ed.opts.flat);
+    assert!(s.ed.opts().flat);
 }
 
 /// The default-UI menus reach the new commands: File → Image export → SVG, by clicks.
 #[test]
 fn menus_reach_parity_commands() {
     let mut s = Session::open("inv", "top.shcomp", "menus", true);
-    let sym = |s: &Session, id: &str| s.ed.shell.strings.find(id).unwrap();
-    let chain = [sym(&s, "menu.file"), sym(&s, "menu.file.image_export")];
-    s.ed.shell.ui.open_menus(&chain);
-    s.ed.shell.invalidate();
-    s.frame(InputEvents::default());
+    s.click_node("menu.file");
+    s.click_node("menu.file.image_export");
     s.click_node("file.image_export.svg_export");
     assert!(
         Path::new(&s.dir.join(".schemify/export/top.svg")).exists(),
@@ -1415,7 +1430,7 @@ fn join_trim_keeps_connectivity_over_random_wires() {
         set_text(&mut s, &canonical);
         let probes = |s: &Session| -> Vec<Vec<(i32, i32)>> {
             let (h, _) = s.ed.active().unwrap();
-            let doc = s.ed.session.project.doc(h).unwrap();
+            let doc = s.ed.session().project.doc(h).unwrap();
             let cell = s.ed.cell().unwrap();
             let w = doc.wires();
             let mut by_net: std::collections::BTreeMap<u32, Vec<(i32, i32)>> = Default::default();
@@ -1523,7 +1538,7 @@ fn pins_ports_and_labels_from_highlighted_nets() {
     );
     // With buses expanded: a bus net lists one line per bit.
     s.key("Ctrl+Alt+J");
-    assert!(s.ed.session.text_view().unwrap().body.contains("mid"));
+    assert!(s.ed.session().text_view().unwrap().body.contains("mid"));
 }
 
 #[test]
@@ -1571,7 +1586,7 @@ fn unselect_area_removes_boxed_objects() {
             == 1,
         "x2 stays selected"
     );
-    assert!(matches!(s.ed.tool, Tool::Idle));
+    assert!(matches!(s.ed.tool(), Tool::Idle));
 }
 
 #[test]
@@ -1677,7 +1692,7 @@ fn view_palette_follows_fill_colors_widths_and_symbol_modes() {
 fn small_commands_tabs_panels_graphs_and_recent() {
     let mut s = Session::open("inv", "top.shcomp", "small", true);
     run(&mut s, "file.create_new_window_tab", "");
-    assert_eq!(s.ed.session.tabs.len(), 2);
+    assert_eq!(s.ed.session().tabs.len(), 2);
     run(&mut s, "view.show_hide.show_erc_info_window", "");
     assert_eq!(s.ed.panel(), schemify_app::editor::Panel::Checks);
     run(&mut s, "view.show_hide.show_erc_info_window", "");
@@ -1689,7 +1704,7 @@ fn small_commands_tabs_panels_graphs_and_recent() {
     run(&mut s, "simulation.view_last_job_data", "");
     assert!(status(&s).contains("no run"));
     run(&mut s, "symbol.set_symbol_width", "200");
-    assert_eq!(s.ed.opts.symbol_width, 200 * U);
+    assert_eq!(s.ed.opts().symbol_width, 200 * U);
     // The unsnapped wire cut lands between grid points.
     right_click(&mut s, (73 * U, 70 * U), SHIFT | schemify_ui::Mods::ALT);
     let w = owned(&s, "wire ");

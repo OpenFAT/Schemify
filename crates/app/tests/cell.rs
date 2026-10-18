@@ -20,22 +20,22 @@ fn set(s: &mut Session, field: &str, value: &str) {
 }
 
 fn has_node(s: &Session, id: &str) -> bool {
-    let sh = &s.ed.shell;
-    sh.strings
+    let sh = &s.ed.shell();
+    sh.strings()
         .find(id)
-        .and_then(|i| sh.tables.nodes.find(i))
+        .and_then(|i| sh.tables().nodes.find(i))
         .is_some()
 }
 
 fn value(s: &Session, id: &str) -> String {
-    let sh = &s.ed.shell;
+    let sh = &s.ed.shell();
     let n = sh
-        .strings
+        .strings()
         .find(id)
-        .and_then(|i| sh.tables.nodes.find(i))
+        .and_then(|i| sh.tables().nodes.find(i))
         .unwrap_or_else(|| panic!("{id} composed"));
-    sh.strings
-        .get(sh.tables.nodes.prop(Prop::Value)[n as usize])
+    sh.strings()
+        .get(sh.tables().nodes.prop(Prop::Value)[n as usize])
         .to_owned()
 }
 
@@ -180,14 +180,14 @@ fn rejected_values_leave_the_document_untouched() {
     for (arg, why) in cases {
         run(&mut s, "cell.set", arg);
         assert!(
-            s.ed.session.status.contains(why),
+            s.ed.session().status.contains(why),
             "{arg}: {}",
-            s.ed.session.status
+            s.ed.session().status
         );
         assert_eq!(s.text(), before, "{arg} changed the document");
     }
     run(&mut s, "cell.add_impl", "schematic");
-    assert!(s.ed.session.status.contains("no schematic"));
+    assert!(s.ed.session().status.contains("no schematic"));
     assert_eq!(s.text(), before);
 }
 
@@ -207,13 +207,13 @@ fn panel_edits_by_mouse_and_keyboard() {
     assert!(s.text().contains("  max 10k"), "{}", s.text());
     // The add buttons end the page: scroll the panel to its bottom first, as a user would.
     let page = {
-        let sh = &s.ed.shell;
+        let sh = &s.ed.shell();
         let n = sh
-            .tables
+            .tables()
             .nodes
-            .find(sh.strings.find("cell.page").unwrap())
+            .find(sh.strings().find("cell.page").unwrap())
             .unwrap();
-        sh.layout.rect()[sh.layout.row_of(n).unwrap()]
+        sh.layout().rect()[sh.layout().row_of(n).unwrap()]
     };
     for _ in 0..40 {
         let mut ev = InputEvents::default();
@@ -237,17 +237,17 @@ fn a_new_component_becomes_saveable() {
     run(&mut s, "file.clear_schematic", "");
     run(&mut s, "file.save", "");
     assert!(
-        !s.ed.session.status.starts_with("saved"),
+        !s.ed.session().status.starts_with("saved"),
         "{}",
-        s.ed.session.status
+        s.ed.session().status
     );
     run(&mut s, "cell.add_impl", "schematic");
     assert!(s.text().contains("impl sch schematic"), "{}", s.text());
     run(&mut s, "file.save", "");
     assert!(
-        s.ed.session.status.starts_with("saved"),
+        s.ed.session().status.starts_with("saved"),
         "{}",
-        s.ed.session.status
+        s.ed.session().status
     );
 }
 
@@ -277,14 +277,14 @@ fn golden_cell_panel_modern() {
 }
 
 fn label(s: &Session, id: &str) -> String {
-    let sh = &s.ed.shell;
+    let sh = &s.ed.shell();
     let n = sh
-        .strings
+        .strings()
         .find(id)
-        .and_then(|i| sh.tables.nodes.find(i))
+        .and_then(|i| sh.tables().nodes.find(i))
         .unwrap_or_else(|| panic!("{id} composed"));
-    sh.strings
-        .get(sh.tables.nodes.prop(Prop::Label)[n as usize])
+    sh.strings()
+        .get(sh.tables().nodes.prop(Prop::Label)[n as usize])
         .to_owned()
 }
 
@@ -360,7 +360,7 @@ fn cancel_errors_and_stale_syncs_leave_the_document_untouched() {
     assert!(!has_node(&s, "cell.sync.cancel"));
     run(&mut s, "cell.sync_apply", "");
     assert_eq!(s.text(), before, "cancelled: Apply has nothing to apply");
-    assert!(s.ed.session.status.contains("nothing pending"));
+    assert!(s.ed.session().status.contains("nothing pending"));
 
     // Any edit after the sync was read makes it stale: it is neither shown nor applied.
     run(&mut s, "cell.sync_ports", "cell.impl.1.sync");
@@ -375,19 +375,19 @@ fn cancel_errors_and_stale_syncs_leave_the_document_untouched() {
     let broken = s.text();
     run(&mut s, "cell.sync_ports", "cell.impl.1.sync");
     assert!(
-        s.ed.session
+        s.ed.session()
             .status
             .contains("line 2: unterminated port list"),
         "{}",
-        s.ed.session.status
+        s.ed.session().status
     );
     assert!(!has_node(&s, "cell.sync.0"));
     run(&mut s, "cell.symbol_from_ports", "cell.impl.1.symbol");
-    assert!(s.ed.session.status.contains("line 2"));
+    assert!(s.ed.session().status.contains("line 2"));
     assert_eq!(s.text(), broken);
     // An impl without a body has no ports to read.
     run(&mut s, "cell.sync_ports", "cell.impl.0.sync");
-    assert!(s.ed.session.status.contains("has no body"));
+    assert!(s.ed.session().status.contains("has no body"));
     assert_eq!(s.text(), broken);
 }
 
@@ -452,9 +452,9 @@ fn bench_outputs_specs_and_optimizers_edit_through_the_panel() {
     assert!(has(&s, "  min 0.9"), "{}", s.text());
     run(&mut s, "cell.add_bench", "spec");
     assert!(
-        s.ed.session.status.contains("already has a spec"),
+        s.ed.session().status.contains("already has a spec"),
         "{}",
-        s.ed.session.status
+        s.ed.session().status
     );
 
     // A second optimizer (row 1) with every field.
@@ -484,9 +484,9 @@ fn bench_outputs_specs_and_optimizers_edit_through_the_panel() {
     ] {
         run(&mut s, "cell.set", arg);
         assert!(
-            s.ed.session.status.contains(why),
+            s.ed.session().status.contains(why),
             "{arg}: {}",
-            s.ed.session.status
+            s.ed.session().status
         );
         assert_eq!(s.text(), before);
     }

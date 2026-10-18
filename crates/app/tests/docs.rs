@@ -45,7 +45,7 @@ fn num(s: &Session, name: &str) -> f64 {
 /// Evaluated value of param `param` of the instance named `inst`.
 fn inst_param(s: &Session, inst: &str, param: &str) -> (Val, bool) {
     let (h, _) = s.ed.active().unwrap();
-    let doc = s.ed.session.project.doc(h).unwrap();
+    let doc = s.ed.session().project.doc(h).unwrap();
     let st = doc.strings();
     let i = (0..doc.instances().id.len())
         .find(|&i| st.get(doc.instances().name[i]) == inst)
@@ -64,7 +64,7 @@ fn inst_param(s: &Session, inst: &str, param: &str) -> (Val, bool) {
 /// Doc block row of var `name`.
 fn row(s: &Session, name: &str) -> u32 {
     let (h, _) = s.ed.active().unwrap();
-    let doc = s.ed.session.project.doc(h).unwrap();
+    let doc = s.ed.session().project.doc(h).unwrap();
     let b = doc.doc_blocks();
     (0..b.kind.len())
         .find(|&r| doc.strings().get(b.fields[r][0]) == name)
@@ -120,21 +120,21 @@ fn eng(x: f64) -> String {
 
 /// Node ids under the docs page, in composition order.
 fn page_nodes(s: &Session) -> Vec<String> {
-    let sh = &s.ed.shell;
-    let n = &sh.tables.nodes;
+    let sh = &s.ed.shell();
+    let n = &sh.tables().nodes;
     (0..n.len())
-        .map(|i| sh.strings.get(n.id()[i]).to_owned())
+        .map(|i| sh.strings().get(n.id()[i]).to_owned())
         .filter(|id| id.starts_with("docs.b.") || id == "docs.empty")
         .collect()
 }
 
 fn label_of(s: &Session, id: &str) -> String {
-    let sh = &s.ed.shell;
-    let n = &sh.tables.nodes;
+    let sh = &s.ed.shell();
+    let n = &sh.tables().nodes;
     let i = n
-        .find(sh.strings.find(id).unwrap_or_else(|| panic!("{id}")))
+        .find(sh.strings().find(id).unwrap_or_else(|| panic!("{id}")))
         .unwrap_or_else(|| panic!("{id} composed"));
-    sh.strings
+    sh.strings()
         .get(n.prop(schemify_ui::Prop::Label)[i as usize])
         .to_owned()
 }
@@ -197,18 +197,18 @@ fn ota_page_shows_blocks_with_gmid_values_beside_the_schematic() {
     .unwrap();
     let fresh = cached(&fixture, "W_in").is_some_and(|c| c.1 == plugin_hash());
     assert_eq!(
-        s.ed.session.project.is_dirty(h),
+        s.ed.session().project.is_dirty(h),
         !fresh,
         "clean iff the caches matched"
     );
 }
 
 fn label_of_opt(s: &Session, id: &str) -> Option<String> {
-    let sh = &s.ed.shell;
-    let n = &sh.tables.nodes;
-    let i = n.find(sh.strings.find(id)?)?;
+    let sh = &s.ed.shell();
+    let n = &sh.tables().nodes;
+    let i = n.find(sh.strings().find(id)?)?;
     let l = n.prop(schemify_ui::Prop::Label)[i as usize];
-    (!l.is_none()).then(|| sh.strings.get(l).to_owned())
+    (!l.is_none()).then(|| sh.strings().get(l).to_owned())
 }
 
 #[test]
@@ -216,7 +216,7 @@ fn a_var_edit_recomputes_page_and_instances_in_one_undo() {
     let mut s = open("edit");
     let (h, _) = s.ed.active().unwrap();
     let before = s.text();
-    let undo_before = s.ed.session.project.history_len(h).0;
+    let undo_before = s.ed.session().project.history_len(h).0;
     let w_before = num(&s, "W_in");
     let journal = s
         .dir
@@ -251,7 +251,7 @@ fn a_var_edit_recomputes_page_and_instances_in_one_undo() {
     assert_eq!(cached(&text, "W_in"), Some((w, plugin_hash())));
     assert!(text.contains("var gm_id_in 10\n"), "{text}");
     assert_eq!(
-        s.ed.session.project.history_len(h).0,
+        s.ed.session().project.history_len(h).0,
         undo_before + 1,
         "one edit, one undo entry"
     );
@@ -262,7 +262,7 @@ fn a_var_edit_recomputes_page_and_instances_in_one_undo() {
     let jtext = std::fs::read_to_string(&journal).unwrap();
     assert!(jtext.contains("set_attr var W_in cached"), "{jtext}");
     assert_eq!(
-        s.ed.session.project.undo_labels(h).last().copied(),
+        s.ed.session().project.undo_labels(h).last().copied(),
         Some("edit variable")
     );
     s.key("u");
@@ -277,7 +277,7 @@ fn a_var_edit_recomputes_page_and_instances_in_one_undo() {
     assert_eq!(s.text(), text, "redo replays both");
     // Oracle: the state recomputed over undo's and redo's applied ops equals a fresh
     // elaboration (plugin-less: it reads the D20 caches, so compare values only).
-    let fresh = CellState::build(&s.ed.session.project, h, &mut no_funcs).unwrap();
+    let fresh = CellState::build(&s.ed.session().project, h, &mut no_funcs).unwrap();
     for name in ["gm_id_in", "W_in", "W_tail"] {
         assert_eq!(var_in(&fresh, name).0, var(&s, name).0, "{name}");
     }
@@ -311,13 +311,13 @@ fn bounds_colour_the_value_red() {
     let r = row(&s, "gm_id_in");
     let label = label_of(&s, &format!("docs.b.{r}.val"));
     assert!(label.contains("above max 25"), "{label}");
-    let sh = &s.ed.shell;
-    let n = &sh.tables.nodes;
+    let sh = &s.ed.shell();
+    let n = &sh.tables().nodes;
     let i = n
-        .find(sh.strings.find(&format!("docs.b.{r}.val")).unwrap())
+        .find(sh.strings().find(&format!("docs.b.{r}.val")).unwrap())
         .unwrap() as usize;
     assert_eq!(
-        sh.strings.get(n.prop(schemify_ui::Prop::Style)[i]),
+        sh.strings().get(n.prop(schemify_ui::Prop::Style)[i]),
         "docs-value-bad"
     );
 }
@@ -360,11 +360,11 @@ fn d20_without_the_plugin_files_open_on_cached_values_marked_unverified() {
     let r = row(&s, "W_in");
     assert!(label_of(&s, &format!("docs.b.{r}.unverified")).starts_with("unverified"));
     assert!(
-        !s.ed.session.project.is_dirty(h),
+        !s.ed.session().project.is_dirty(h),
         "no plugin, nothing written"
     );
     // The oracle: the same values as a plugin-less elaboration of the file.
-    let fresh = CellState::build(&s.ed.session.project, h, &mut no_funcs).unwrap();
+    let fresh = CellState::build(&s.ed.session().project, h, &mut no_funcs).unwrap();
     assert_eq!(var_in(&fresh, "W_tail"), var(&s, "W_tail"));
     // A new expression has no cache: X006 until the plugin is back, and the stale cache goes.
     edit_var(&mut s, "W_in", "gmid.w(\"nfet_01v8\", 12, L_in, id_in)");
@@ -386,9 +386,9 @@ fn d20_a_changed_plugin_hash_recomputes_and_rewrites_the_cache() {
         (cached(&text, "Av_in").unwrap().0 - 112.2).abs() < 0.1,
         "recomputed value"
     );
-    assert!(s.ed.session.project.is_dirty(h));
+    assert!(s.ed.session().project.is_dirty(h));
     assert_eq!(
-        s.ed.session.project.undo_labels(h).last().copied(),
+        s.ed.session().project.undo_labels(h).last().copied(),
         Some("update plugin cache")
     );
     assert!(!var(&s, "Av_in").1);
@@ -512,8 +512,8 @@ fn prose_blocks_edit_in_a_text_area_and_blocks_add_move_delete() {
     // Move it down one block and delete it: one undo each.
     s.click_node(&format!("docs.b.{r}.name"));
     s.click_node("docs.down");
-    let b = s.ed.session.project.doc(h).unwrap().doc_blocks();
-    let st = s.ed.session.project.doc(h).unwrap().strings();
+    let b = s.ed.session().project.doc(h).unwrap().doc_blocks();
+    let st = s.ed.session().project.doc(h).unwrap().strings();
     assert_eq!(st.get(b.fields[2][0]), "v1");
     s.click_node("docs.delete");
     assert!(lines(&s.text(), "var v1").is_empty());
@@ -532,24 +532,24 @@ fn prose_blocks_edit_in_a_text_area_and_blocks_add_move_delete() {
 #[test]
 fn the_page_scrolls_and_hides_scrolled_out_rows_from_clicks() {
     let mut s = open("scroll");
-    let sh = &s.ed.shell;
+    let sh = &s.ed.shell();
     let page = sh
-        .tables
+        .tables()
         .nodes
-        .find(sh.strings.find("docs.page").unwrap())
+        .find(sh.strings().find("docs.page").unwrap())
         .unwrap();
-    let max = sh.layout.scroll_max(page).expect("laid out");
+    let max = sh.layout().scroll_max(page).expect("laid out");
     assert!(max > 100.0, "the OTA page is taller than the window: {max}");
-    let r = sh.layout.row_of(page).unwrap();
-    let area = sh.layout.rect()[r];
+    let r = sh.layout().row_of(page).unwrap();
+    let area = sh.layout().rect()[r];
     let top = |s: &Session| {
-        let sh = &s.ed.shell;
+        let sh = &s.ed.shell();
         let n = sh
-            .tables
+            .tables()
             .nodes
-            .find(sh.strings.find("docs.b.0").unwrap())
+            .find(sh.strings().find("docs.b.0").unwrap())
             .unwrap();
-        sh.layout.rect()[sh.layout.row_of(n).unwrap()].y
+        sh.layout().rect()[sh.layout().row_of(n).unwrap()].y
     };
     let y0 = top(&s);
     let mut ev = schemify_ui::InputEvents::default();
@@ -576,21 +576,21 @@ fn the_page_scrolls_and_hides_scrolled_out_rows_from_clicks() {
         });
         s.frame(ev);
     }
-    let sh = &s.ed.shell;
+    let sh = &s.ed.shell();
     let off = y0 - top(&s);
     assert!((off - max).abs() < 0.5, "offset {off} max {max}");
     // A row scrolled above the pane is not clickable through the toolbar.
     let n = sh
-        .tables
+        .tables()
         .nodes
-        .find(sh.strings.find("docs.b.0").unwrap())
+        .find(sh.strings().find("docs.b.0").unwrap())
         .unwrap();
-    let rr = sh.layout.rect()[sh.layout.row_of(n).unwrap()];
+    let rr = sh.layout().rect()[sh.layout().row_of(n).unwrap()];
     assert!(rr.y + rr.h < area.y);
     assert!(
-        sh.layout
+        sh.layout()
             .hit(rr.x + 5.0, rr.y + rr.h - 1.0, false)
-            .is_none_or(|h| sh.layout.node()[h] != n)
+            .is_none_or(|h| sh.layout().node()[h] != n)
     );
 }
 
@@ -678,8 +678,8 @@ fn prose_images_load_from_inside_the_project_only() {
         s.frame(Default::default());
     }
     let _ = std::fs::remove_file(&outside_file);
-    let sh = &s.ed.shell;
-    let t = &sh.text;
+    let sh = &s.ed.shell();
+    let t = &sh.text();
     let id = t
         .image_id("img/dot.png")
         .expect("a PNG inside the project loads");
@@ -691,42 +691,48 @@ fn prose_images_load_from_inside_the_project_only() {
         "outside the project: never read"
     );
     assert_eq!(t.image_id("img/fake.png"), None, "not a PNG");
-    let n = sh.tables.nodes.find(sh.strings.find("docs.b.0.0").unwrap());
+    let n = sh
+        .tables()
+        .nodes
+        .find(sh.strings().find("docs.b.0.0").unwrap());
     let r = sh
-        .layout
+        .layout()
         .row_of(n.unwrap())
         .expect("the first prose block is laid out");
-    let list = t.prose_list(sh.layout.prose()[r]);
+    let list = t.prose_list(sh.layout().prose()[r]);
     assert_eq!(list.image_rect.len(), 1, "one image drawn, two alt texts");
     assert_eq!(list.image_rect[0][2..], [40.0, 20.0]);
 }
 
 /// Prop `p` of UI node `id`, `None` when the node is not composed.
 fn prop_of(s: &Session, id: &str, p: schemify_ui::Prop) -> Option<String> {
-    let sh = &s.ed.shell;
-    let n = sh.strings.find(id).and_then(|i| sh.tables.nodes.find(i))?;
+    let sh = &s.ed.shell();
+    let n = sh
+        .strings()
+        .find(id)
+        .and_then(|i| sh.tables().nodes.find(i))?;
     Some(
-        sh.strings
-            .get(sh.tables.nodes.prop(p)[n as usize])
+        sh.strings()
+            .get(sh.tables().nodes.prop(p)[n as usize])
             .to_owned(),
     )
 }
 
 /// `(text runs, formulas)` of prose node `id` as laid out this frame.
 fn laid_out(s: &Session, id: &str) -> (usize, usize) {
-    let sh = &s.ed.shell;
+    let sh = &s.ed.shell();
     let n = sh
-        .tables
+        .tables()
         .nodes
-        .find(sh.strings.find(id).unwrap())
+        .find(sh.strings().find(id).unwrap())
         .unwrap_or_else(|| panic!("{id} composed"));
     let r = sh
-        .layout
+        .layout()
         .row_of(n)
         .unwrap_or_else(|| panic!("{id} laid out"));
-    let p = sh.layout.prose()[r];
+    let p = sh.layout().prose()[r];
     assert_ne!(p, u32::MAX, "{id} is prose");
-    let list = sh.text.prose_list(p);
+    let list = sh.text().prose_list(p);
     (list.text_id.len(), list.math_id.len())
 }
 
@@ -741,7 +747,7 @@ fn the_prose_editor_previews_what_is_typed_until_applied_or_cancelled() {
     s.click_node("docs.b.0.0");
     // Opening previews the block's own source, its formulas rendered.
     let (h, _) = s.ed.active().unwrap();
-    let src = schemify_app::docs::prose_text(s.ed.session.project.doc(h).unwrap(), 0);
+    let src = schemify_app::docs::prose_text(s.ed.session().project.doc(h).unwrap(), 0);
     assert_eq!(prop_of(&s, PREVIEW, Value).as_deref(), Some(src.trim_end()));
     assert!(
         laid_out(&s, PREVIEW).1 >= 3,
