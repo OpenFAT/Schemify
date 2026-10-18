@@ -107,7 +107,7 @@ size=$(wc -c <"$wasm")
 cp "$wasm" "$here/my_plugin.wasm"
 ```
 
-The rustc that nixpkgs ships has no `rust-lld`. Under Nix, set `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER=wasm-ld` with `lld` in the shell. Schemify's own `ui/build.sh` does this automatically and is a fuller template.
+The bytes depend on the compiler, so pin it the way Schemify's `flake.nix` does: the `oxalica/rust-overlay` input (following your `nixpkgs`) and `rust-bin.stable."1.95.0".default` with the `wasm32-unknown-unknown` target. That toolchain ships `rust-lld`, which links the guest. nixpkgs' own rustc is whatever the locked nixpkgs carries and has no `rust-lld`: with it, set `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER=wasm-ld` and put `lld` in the shell. Schemify's own `ui/build.sh` is a fuller template.
 
 ## Rules that still apply
 

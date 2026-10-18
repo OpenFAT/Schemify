@@ -5,7 +5,7 @@
 # plugins build in their own repositories (docs/plugins/).
 #
 # Needs the wasm32-unknown-unknown std (rustup: `rustup target add wasm32-unknown-unknown`;
-# the NixOS rustc ships it). The nix-built rustc has no rust-lld, so without one on the
+# `nix develop` has it, rust-lld included). Without a rust-lld on the
 # toolchain the script re-runs itself under `nix shell nixpkgs#lld` and links with wasm-ld.
 #
 # Reproducible: the CI `guests` job rebuilds every module and fails when a committed one

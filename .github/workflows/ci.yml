@@ -169,7 +169,7 @@ jobs:
             echo "::error::missing platform outputs"; status=1; }
           exit $status
 
-  # The core's guest modules (Linux, Nix: the pinned rustc and wasm-ld): the default UI and the
+  # The core's guest modules (Linux, Nix: Rust 1.95.0 from rust-overlay, with rust-lld): the default UI and the
   # host's test guests. ui/build.sh fails when a module reaches its size limit (200 KB) and is
   # byte-reproducible, so the last step fails when a committed module differs from its rebuild
   # (a guest source changed without its module, or a module built elsewhere): commit the

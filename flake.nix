@@ -3,12 +3,19 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # The pinned Rust toolchain (`rust-version` in Cargo.toml, CI's RUST_TOOLCHAIN): nixpkgs
+    # ships only its current rustc, and the guest modules' bytes depend on the compiler.
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
     {
       self,
       nixpkgs,
+      rust-overlay,
     }:
     let
       systems = [
@@ -17,7 +24,37 @@
         "x86_64-darwin"
         "aarch64-darwin"
       ];
-      forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+      forAll =
+        f:
+        nixpkgs.lib.genAttrs systems (
+          system:
+          f (
+            import nixpkgs {
+              inherit system;
+              overlays = [ rust-overlay.overlays.default ];
+            }
+          )
+        );
+
+      # Rust 1.95.0 with the guest targets; it ships rust-lld, which links the wasm guests.
+      toolchain =
+        pkgs:
+        pkgs.rust-bin.stable."1.95.0".default.override {
+          extensions = [
+            "rust-src"
+            "rust-analyzer"
+          ];
+          targets = [
+            "wasm32-unknown-unknown"
+            "wasm32-wasip1"
+          ];
+        };
+      rustPlatform =
+        pkgs:
+        pkgs.makeRustPlatform {
+          cargo = toolchain pkgs;
+          rustc = toolchain pkgs;
+        };
 
       # winit and wgpu `dlopen` these at runtime (Linux): Wayland first, X11 fallback;
       # fontconfig for the system-font fallback of glyphs outside the embedded UI font.
@@ -66,7 +103,7 @@
 
       schemify =
         pkgs:
-        pkgs.rustPlatform.buildRustPackage {
+        (rustPlatform pkgs).buildRustPackage {
           pname = "schemify";
           version = "0.1.0";
           # Tracked files only (git).
@@ -140,14 +177,9 @@
         default = pkgs.mkShell {
           packages =
             (with pkgs; [
-              # Rust (nixpkgs' rustc ships the wasm32-unknown-unknown std).
-              rustc
-              cargo
-              clippy
-              rustfmt
-              rust-analyzer
-              # Guest modules (ui/build.sh): wasm-ld (the nix rustc has no rust-lld); web glue.
-              lld
+              # Rust 1.95.0: cargo, rustc, clippy, rustfmt, rust-analyzer, rust-lld (guests).
+              (toolchain pkgs)
+              # Web glue.
               (wasmBindgenCli pkgs)
               # Headless GUI runs and screenshots (docs/dev/contributing.md).
               cage

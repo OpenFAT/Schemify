@@ -58,7 +58,7 @@ UI and visual work has its own guides in this repository, under [skills/](skills
 
 - `main` is the integration branch (remote `origin` = github.com/OmarSiwy/Schemify, public). Work on a branch and open a PR; CI work may push `ci/*` branches. Don't keep extra git worktrees around.
 - Build and test the crate you changed: `cargo test -p schemify-<crate>`. Edition 2024, stable toolchain pinned to the `rust-version` in `Cargo.toml`. `cargo clippy -p <crate> -- -D warnings` must be clean, and run `cargo fmt`.
-- `nix develop` gives the pinned toolchain, the simulators and the GUI libraries.
+- `nix develop` gives the pinned toolchain (Rust 1.95.0 through rust-overlay, rust-lld included for the wasm guests), the simulators and the GUI libraries.
 - Changes to the root `Cargo.toml` dependency list or `Cargo.lock` go through the maintainer. If you need a dependency or an API change in another crate, say so in the PR.
 
 ### Memory limits on the shared build machine
