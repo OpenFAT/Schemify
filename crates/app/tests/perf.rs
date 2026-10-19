@@ -1187,8 +1187,8 @@ fn edit_frames_100k() {
         eprintln!("  {what}: p95 {p95:.3}, p99 {p99:.3}, tick max {tick:.3}");
         // D39 (amended 2026-10-18, edit frames): a delete, an undo, a redo, the drop of a move,
         // a wire drawn, an instance rename and a param change cost under 1 ms of CPU at 100k
-        // objects, and so do the ticks after them. Measured 2026-10-18 (load ~5): p95
-        // 0.43-0.69 ms, ticks 0.19-0.72 ms.
+        // objects, and so do the ticks after them. Measured 2026-10-18 (load < 1): p95
+        // 0.43-0.61 ms, ticks 0.18-0.64 ms.
         if ["delete", "undo", "redo", "move", "wire", "rename", "param"].contains(what) {
             budget(&format!("{what} p95"), *p95, 1.0);
             budget(&format!("{what} tick"), *tick, 1.0);

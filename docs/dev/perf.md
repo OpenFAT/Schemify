@@ -485,6 +485,65 @@ The tick after either is 0.3 ms. The fixture has 10k instances (no overrides), 6
 5. **Param on a shared var** is O(dependents): evaluation, checks and re-stamps of every
    dependent instance; measured separately, above 1/8 of the objects the scene rebuilds.
 
+### What was done (each result equals its full rebuild; oracles named in the commits)
+
+1. **Per-instance checks** (`CellState::recheck`): E001, W007, E030, E008, gating and E039
+   rows are functions of one instance (`check::INST_CODES`); a value edit reruns them on the
+   instances it touched or revalued and replaces their rows in place.
+2. **Value delta** (`Graph::recompute` reports the nodes whose value or `unverified` flag
+   changed; `CellState::revalued` their instance rows): `scene::update` re-stamps those
+   instances with the edit's objects; only a graph rebuild builds the scene again.
+3. **Overrides added or removed keep the graph** (`Graph::set_deps`): dependency lists are
+   start/end ranges, a node's new list is written in place or appended when every new
+   dependency has a lower topological rank, and each new dependency's dependent list moves to
+   the end with the node; the affected-set walk uses epoch marks.
+4. **Renames patch element names** (`Live::rename`): same element count → the names are
+   rewritten and the E009 rows of the old and new names recomputed (one scan of the element
+   names), posted through the connectivity delta. The patch also runs when a rejected
+   transaction permuted geometry rows (`Live::rows_moved`), which a value-only or rename-only
+   edit used to leave stale.
+
+### After (2026-10-18, same machine, load < 1; CPU update+paint p50 / p95 ms)
+
+| Edit | before | after | after tick (max) | 10k objects after |
+|---|---|---|---|---|
+| rename (half to a duplicate name) | 55.5 / 58.2 | 0.49 / 0.61 | 0.53 | 0.41 |
+| param (an override added, then changed) | 58.3 / 61.2 | 0.43 / 0.44 | 0.18 | 0.39 |
+| delete | 0.58 / 0.59 | 0.56 / 0.60 | 0.63 | 0.28 |
+| undo | 0.52 / 0.54 | 0.50 / 0.51 | 0.59 | 0.23 |
+| redo | 0.53 / 0.55 | 0.50 / 0.54 | 0.64 | 0.23 |
+| move (drop) | 0.58 / 0.59 | 0.59 / 0.61 | 0.62 | 0.27 |
+| wire | 0.41 / 0.45 | 0.39 / 0.43 | 0.52 | 0.22 |
+| first edit of the document | 2.35 | 2.42 | 1.97 | 0.80 |
+
+The rename and param frames are now: elab 0.05–0.1 ms, UI compose 0.2–0.3 ms, scene and markers
+for one instance 0.05 ms, paint the rest. `frame_times_100k`, `interactions_100k` and the docs-page
+var benchmark are unchanged (edit 0.68, hover 0.11, click 0.24, var with 1k dependents 2.0 ms).
+
+A var that many instances read (`shared_var_edit_frames_100k`, 12 edits each, p50 / p95 ms):
+
+| Dependents (of 10k instances) | zoomed in | fitted to the window |
+|---|---|---|
+| 1k (every tenth instance) | 7.3 / 20.6 | 19.7 / 32.5 |
+| 10k (every instance) | 48.6 / 51.4 | 58.3 / 59.0 |
+
+At 1k dependents the update is 2.2–3.0 ms (elab 0.2, scene re-stamps 1.1–1.7, markers 0.7–1.0)
+and paint 4–5 ms zoomed in (the canvas diff and index following ~30k killed and appended rows),
+16–17 ms fitted (every patched tile on screen re-records); the p95 is the scene's and the
+markers' compaction (a full build, ~30 ms, once a quarter of the rows are dead: every few such
+edits). At 10k dependents every edit re-stamps 10k instances (13–15 ms) or compacts (30 ms).
+
+What bounds the rest:
+
+- **Shared vars** are O(dependents) by nature; the constant is the whole-instance re-stamp. The
+  upgrade is re-stamping only the value texts of a revalued instance (its lines and pins do not
+  move), and compacting the scene on an idle tick instead of in the edit frame.
+- **Bus renames** (a new element count) and `inherit`/`ignore` edits rebuild connectivity
+  (~40 ms at 100k): connections move per element.
+- **A dependency on a later node** (an override reading a var that sorts after the instance in the
+  topological order) rebuilds the graph (~1.3 ms at 100k), as do cycles; appended dependency lists
+  past 4× the built edges rebuild once to compact.
+
 ## Binary size
 
 D39 (amended 2026-10-11): the headless core `schemify` ≤ 2 MB, the editor `schemify-gui` ≤
