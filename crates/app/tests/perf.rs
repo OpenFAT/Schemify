@@ -826,7 +826,8 @@ fn interactions(n: u32) {
         gpu_ms: Vec::new(),
     };
     let settle = |b: &mut Bench| {
-        for _ in 0..256 {
+        // Bounded by the background work a file opens: the disk hash takes ~282 ticks at 1M.
+        for _ in 0..1024 {
             if b.ed.wake_ms().is_none() {
                 break;
             }
@@ -1006,7 +1007,8 @@ fn edit_frames(n: u32) -> Vec<(&'static str, [f64; 3], f64)> {
         gpu_ms: Vec::new(),
     };
     let settle = |b: &mut Bench| {
-        for _ in 0..256 {
+        // Bounded by the background work a file opens: the disk hash takes ~282 ticks at 1M.
+        for _ in 0..1024 {
             if b.ed.wake_ms().is_none() {
                 break;
             }
