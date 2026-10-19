@@ -8,8 +8,9 @@
 use schemify_app::scene::{self, ObjKey, Scene, Symbols};
 use schemify_app::session::View;
 use schemify_doc::{
-    DocHandle, Edit, EditRequest, Mode, Project, Transaction, apply_edits, ops_from_text,
+    DocHandle, Edit, EditRequest, Mode, Project, TableId, Transaction, apply_edits, ops_from_text,
 };
+use schemify_elab::{CellState, no_funcs};
 use schemify_format::FileKind;
 use schemify_render::canvas::{CanvasPrims, LAYER_DEAD, PrimKind};
 
@@ -283,14 +284,33 @@ fn random_ops(rng: &mut Rng, p: &Project, h: DocHandle, next: &mut u64) -> Strin
             }
         }
         11 => {
-            // Rename a label (its text is drawn) or override a param shown on the symbol.
+            // Override a param shown on the symbol (a constant, or an expression of the
+            // cell's vars), drop the override, or change a var many overrides read: the
+            // texts of every instance whose value changed are drawn again.
             let t = doc.instances();
+            let n = rng.below(9) + 1;
             match pick(rng, t.id.len()) {
-                Some(i) => format!(
-                    "set_attr inst {} R {}k\n",
-                    t.id[i].text(s),
-                    rng.below(9) + 1
-                ),
+                Some(_) if rng.below(3) == 0 => {
+                    let var = ["rv", "rw"][rng.below(2) as usize];
+                    let value = ["", "rv*"][rng.below(2) as usize];
+                    let value = if var == "rv" {
+                        format!("{n}")
+                    } else {
+                        format!("{value}{n}")
+                    };
+                    format!("set_field var {var} 1 {value}\n")
+                }
+                Some(i) if rng.below(4) == 0 => format!("remove_attr inst {} R\n", t.id[i].text(s)),
+                Some(i) => {
+                    let value = [
+                        format!("{n}k"),
+                        format!("rv*{n}"),
+                        format!("rw+{n}"),
+                        "rv".into(),
+                    ][rng.below(4) as usize]
+                        .clone();
+                    format!("set_attr inst {} R {value}\n", t.id[i].text(s))
+                }
                 None => String::new(),
             }
         }
@@ -401,6 +421,7 @@ fn walk(seed: u64, steps: usize, base: usize) {
         let y2 = y + 20 * (k % 3 == 0) as i64;
         top.push_str(&format!("wire {} {x} {y} {} {y2}\n", id(next), x + 20));
     }
+    top.push_str("\nvar rv 2\nvar rw rv*3\n");
     let mut p = Project::new(None, None, seed).unwrap();
     let files: [(&str, &[u8]); 2] = [
         ("res.shprim", RES.as_bytes()),
@@ -418,9 +439,13 @@ fn walk(seed: u64, steps: usize, base: usize) {
     let mut symbols = Symbols::default();
     let row = p.resolve(h, "./res").expect("resolves");
     symbols.refresh(row, Some(res), 0, p.doc(res).unwrap());
+    // The elab state rides along (D19: symbol texts show evaluated values), as the editor
+    // drives it: a rebuilt graph builds the scene again, a value edit re-stamps the
+    // instances elab names (`revalued`).
+    let mut st = CellState::build(&p, h, &mut no_funcs).expect("elab state");
     let mut inc = Scene::default();
-    scene::build(&mut inc, &p, h, View::Schematic, &symbols, 0, None);
-    let (mut updated, mut epoch) = (0, 0u32);
+    scene::build(&mut inc, &p, h, View::Schematic, &symbols, 0, Some(&st));
+    let (mut updated, mut epoch, mut revalued) = (0, 0u32, 0);
     for step in 0..steps {
         let text = random_ops(&mut rng, &p, h, &mut next);
         let edit = match text.as_str() {
@@ -433,7 +458,7 @@ fn walk(seed: u64, steps: usize, base: usize) {
                 ops: ops_from_text(t, FileKind::Shcomp).unwrap_or_else(|e| panic!("{t}: {e:?}")),
             }),
         };
-        let _ = apply_edits(
+        let outcome = apply_edits(
             &mut p,
             &[EditRequest {
                 doc: h,
@@ -441,10 +466,45 @@ fn walk(seed: u64, steps: usize, base: usize) {
                 unix_ms: 0,
             }],
         );
+        let ops = p
+            .applied(h, &outcome[0])
+            .map_or_else(Vec::new, <[_]>::to_vec);
         epoch += 1;
-        updated += usize::from(scene::update(&mut inc, &p, h, &symbols, epoch, None));
+        let done = st.recompute(&p, h, &ops, &mut no_funcs);
+        let ids = &p.doc(h).unwrap().instances().id;
+        let keys: Vec<ObjKey> = st
+            .revalued
+            .iter()
+            .map(|&r| ObjKey {
+                table: TableId::Instances,
+                key: ids[r as usize].0,
+            })
+            .collect();
+        revalued += keys.len();
+        if done.graph {
+            scene::build(&mut inc, &p, h, View::Schematic, &symbols, epoch, Some(&st));
+        } else {
+            updated += usize::from(scene::update(
+                &mut inc,
+                &p,
+                h,
+                &symbols,
+                epoch,
+                Some(&st),
+                &keys,
+            ));
+        }
+        let fresh = CellState::build(&p, h, &mut no_funcs).expect("elab state");
         let mut full = Scene::default();
-        scene::build(&mut full, &p, h, View::Schematic, &symbols, epoch, None);
+        scene::build(
+            &mut full,
+            &p,
+            h,
+            View::Schematic,
+            &symbols,
+            epoch,
+            Some(&fresh),
+        );
         if step % 25 == 0 {
             selection_rows_match_scans(&inc, &mut rng);
         }
@@ -461,6 +521,10 @@ fn walk(seed: u64, steps: usize, base: usize) {
     assert!(
         updated * 2 > steps,
         "most edits were incremental ({updated} of {steps})"
+    );
+    assert!(
+        revalued > 0,
+        "value edits re-stamped instances (seed {seed}, updated {updated})"
     );
     if base > 0 {
         return; // a short walk at scale: the coverage checks below are the small walks'

@@ -339,6 +339,7 @@ fn the_plugin_snapshot_follows_random_edits() {
         }
         top.push_str(&format!("label n{i:05} {} {} R0 n{i}\n", x + 120, y - 30));
     }
+    top.push_str("\nvar wv 3\n");
     let dir = common::fixture("inv", "snapshot-walk");
     std::fs::write(dir.join("walk.shcomp"), top).unwrap();
     let ed = schemify_app::editor::Editor::new(schemify_app::editor::Options {
@@ -357,7 +358,27 @@ fn the_plugin_snapshot_follows_random_edits() {
         let doc = s.ed.session().project.doc(h).unwrap();
         let (w, inst) = (doc.wires(), doc.instances());
         let pick = |rng: &mut Rng, n: usize| rng.below(n.max(1) as u64) as usize;
-        let text = match rng.below(7) {
+        let text = match rng.below(10) {
+            7 if !inst.id.is_empty() => {
+                // A rename: unique, a duplicate (E009), a bus (more elements), back.
+                let r = pick(&mut rng, inst.id.len());
+                let name = ["MX", "M3", "MB[1:0]", "M7"][pick(&mut rng, 4)];
+                format!(
+                    "set_attr inst {} name {name}\n",
+                    inst.id[r].text(doc.strings())
+                )
+            }
+            8 if !inst.id.is_empty() => {
+                // A param shown on the symbol: a value, a var, dropped.
+                let r = pick(&mut rng, inst.id.len());
+                let id = inst.id[r].text(doc.strings());
+                match pick(&mut rng, 4) {
+                    0 => format!("remove_attr inst {id} W\n"),
+                    1 => format!("set_attr inst {id} W wv*2\n"),
+                    _ => format!("set_attr inst {id} W {}\n", 1 + pick(&mut rng, 9)),
+                }
+            }
+            9 => format!("set_field var wv 1 {}\n", 1 + pick(&mut rng, 9)),
             0 | 1 if !w.id.is_empty() => {
                 // Two wires far apart in the violation order.
                 let (a, b) = (pick(&mut rng, w.id.len()), pick(&mut rng, w.id.len()));
@@ -410,7 +431,70 @@ fn the_plugin_snapshot_follows_random_edits() {
             }
         }
         markers_match(&s, &format!("step {step} ({text:?})"));
+        if step % 10 == 9 {
+            same_as_reopened(&mut s, &format!("step {step} ({text:?})"));
+        }
     }
+}
+
+/// The scene's texts (symbol texts show evaluated params) and the violations of an editor
+/// that followed edits equal those of an editor that opens the same text afresh.
+fn same_as_reopened(s: &mut Session, ctx: &str) {
+    let dir = common::fixture("inv", "snapshot-walk-reopened");
+    let path = dir.join("walk.shcomp");
+    std::fs::write(&path, s.text()).unwrap();
+    let ed = schemify_app::editor::Editor::new(schemify_app::editor::Options {
+        no_default_ui: false,
+        path: Some(path),
+        seed: 3,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut fresh = Session { ed, now: 1, dir };
+    for _ in 0..8 {
+        fresh.frame(Default::default());
+    }
+    let texts = |s: &Session| {
+        let t = &s.ed.scene().prims.texts;
+        let mut rows: Vec<String> = Vec::new();
+        let mut start = 0;
+        for i in 0..t.x.len() {
+            let end = t.end[i] as usize;
+            if t.layer[i] != LAYER_DEAD {
+                rows.push(format!("{} {} {}", t.x[i], t.y[i], &t.text[start..end]));
+            }
+            start = end;
+        }
+        rows.sort();
+        rows
+    };
+    let violations = |s: &Session| {
+        let st = s.ed.cell().expect("elaborated");
+        let n = |x: schemify_elab::Name| {
+            if x == schemify_elab::Name::NONE {
+                String::new()
+            } else {
+                st.names.get(x).to_owned()
+            }
+        };
+        let rows: Vec<String> = st
+            .violations
+            .rows
+            .iter()
+            .map(|v| {
+                format!(
+                    "{} {} {} {}",
+                    v.code.as_str(),
+                    v.object.0,
+                    n(v.param),
+                    v.detail
+                )
+            })
+            .collect();
+        rows
+    };
+    assert_eq!(texts(s), texts(&fresh), "{ctx}: scene texts");
+    assert_eq!(violations(s), violations(&fresh), "{ctx}: violations");
 }
 
 /// An edit's check pass comes after the frame delivered `DocChanged` to the plugins, so their

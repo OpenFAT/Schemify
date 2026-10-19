@@ -588,6 +588,10 @@ pub struct Editor {
     confirm: Option<Cmd>,
     quit: bool,
     scene_dirty: bool,
+    /// Instances whose evaluated params changed since the scene was last updated (elab's
+    /// value delta, `CellState::revalued`): the scene re-stamps them with the edit's own
+    /// objects. Bounded by the active document's instances (cleared by every scene pass).
+    revalued: Vec<ObjKey>,
     sel_changed: bool,
     /// Advances on every applied edit of any document (symbol cache freshness).
     generation: u32,
@@ -841,6 +845,7 @@ impl Editor {
             confirm: None,
             quit: false,
             scene_dirty: true,
+            revalued: Vec::new(),
             sel_changed: false,
             generation: 0,
             symbols_key: None,
@@ -4108,18 +4113,24 @@ impl Editor {
         let ops = std::mem::take(&mut self.cell_ops);
         let (project, host) = (&self.session.project, &mut self.host);
         let mut funcs = |name: &str, args: &[Value<'_>]| host.call_fn(name, args);
-        let values = if current {
+        let rebuilt = if current {
             let cell = self.cell.as_mut().expect("current state");
             let done = cell.recompute(project, h, &ops, &mut funcs);
-            done.graph || done.evaluated > 0
+            // Symbol texts show values: the instances whose values changed are re-stamped
+            // with the edit's objects (`scene::update`).
+            let ids = &project.doc(h).expect("active").instances().id;
+            self.revalued.extend(cell.revalued.iter().map(|&r| ObjKey {
+                table: TableId::Instances,
+                key: ids[r as usize].0,
+            }));
+            done.graph
         } else {
             self.cell = CellState::build(project, h, &mut funcs);
             true
         };
         self.cell_key = self.cell.as_ref().map(|_| (h, epoch, fe));
-        // Symbol texts show values: a value change re-stamps the scene; a geometry edit is
-        // drawn incrementally (`scene::update`).
-        self.scene_dirty |= values;
+        // A rebuilt graph may have changed every value: the scene is built again.
+        self.scene_dirty |= rebuilt;
         assert!(self.cell_ops.is_empty());
         true
     }
@@ -4372,8 +4383,9 @@ impl Editor {
             return false;
         };
         let epoch = self.session.epoch(h);
-        let stale =
-            self.scene_dirty || self.scene.built != Some((h, view, epoch, self.symbols.epoch));
+        let stale = self.scene_dirty
+            || !self.revalued.is_empty()
+            || self.scene.built != Some((h, view, epoch, self.symbols.epoch));
         if stale {
             let fe = self.host.plugins.composed_epoch();
             let values = self
@@ -4393,10 +4405,20 @@ impl Editor {
                 );
             } else {
                 // An edit: only the objects whose rows changed are re-stamped.
-                scene::update(&mut self.scene, project, h, &self.symbols, epoch, values);
+                let revalued = &self.revalued;
+                scene::update(
+                    &mut self.scene,
+                    project,
+                    h,
+                    &self.symbols,
+                    epoch,
+                    values,
+                    revalued,
+                );
             }
             self.canvas_gen[0] += 1;
             self.scene_dirty = false;
+            self.revalued.clear();
             let sel: Vec<ObjKey> = self
                 .selection()
                 .iter()

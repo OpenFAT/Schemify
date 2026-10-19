@@ -821,9 +821,12 @@ fn drawn(t: TableId) -> bool {
 /// when the scene was built for another document, view or symbol cache, when the log no longer
 /// reaches the scene's last update, when most of the document changed, or when dead rows
 /// pass a quarter of the tables (the build compacts them). Values (`{W}` texts) are taken as
-/// unchanged except on the objects touched: when they changed elsewhere, call [`build`].
+/// unchanged except on the objects touched and on `revalued` (the instances whose values
+/// changed, elab's value delta, re-stamped like touched objects; keys the document no longer
+/// holds are skipped): when values changed elsewhere, call [`build`].
 ///
-/// Cost: O(touched objects · (log rows + their primitives)), plus the index inserts.
+/// Cost: O((touched + revalued objects) · (log rows + their primitives)), plus the index
+/// inserts.
 pub fn update(
     sc: &mut Scene,
     project: &Project,
@@ -831,6 +834,7 @@ pub fn update(
     symbols: &Symbols,
     epoch: u32,
     values: Option<&CellState>,
+    revalued: &[ObjKey],
 ) -> bool {
     let Some(doc) = project.doc(h) else {
         return false;
@@ -854,7 +858,12 @@ pub fn update(
             table: c.table,
             key: c.id.0,
         })
+        .chain(revalued.iter().copied())
         .collect();
+    assert!(
+        revalued.iter().all(|k| k.table == TableId::Instances),
+        "values change on instances only"
+    );
     keys.sort_unstable();
     keys.dedup();
     let total = sc.objs.len().max(1);
