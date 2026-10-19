@@ -85,6 +85,10 @@ fn revert(p: &mut Project, h: DocHandle, rng: &mut Mix) -> Option<Vec<Op>> {
 /// Everything comparable between two states, as text.
 fn snapshot(st: &CellState) -> (Vec<String>, Vec<bool>, Vec<String>, Vec<String>) {
     let vals = st.graph.vals.iter().map(|v| format!("{v:?}")).collect();
+    let elems = (0..st.nets.elem_start.len() - 1).map(|i| {
+        let names: Vec<&str> = st.nets.elems(i).iter().map(|&e| st.names.get(e)).collect();
+        format!("elems {i} {names:?}")
+    });
     let nets = st
         .nets
         .conns
@@ -96,6 +100,7 @@ fn snapshot(st: &CellState) -> (Vec<String>, Vec<bool>, Vec<String>, Vec<String>
                 st.names.get(st.nets.bit_name[b as usize]).to_owned()
             }
         })
+        .chain(elems)
         .collect();
     let n = |x: schemify_elab::Name| {
         if x == schemify_elab::Name::NONE {
@@ -168,6 +173,21 @@ fn random_op(rng: &mut Mix, n: usize) -> Op {
             target: Target::new(RecordKind::Inst, &id(i + 1)),
             key: "w".into(),
             values: vec![value],
+        };
+    }
+    if rng.chance(15) {
+        // A rename: unique, a duplicate (E009), a bus (more elements), back to its own.
+        let i = rng.below(n as u64);
+        let name = match rng.below(4) {
+            0 => format!("MX{}", rng.below(3)),
+            1 => "M3".to_owned(),
+            2 => "MB[1:0]".to_owned(),
+            _ => format!("M{i}"),
+        };
+        return Op::SetAttr {
+            target: Target::new(RecordKind::Inst, &id(i + 1)),
+            key: "name".into(),
+            values: vec![name],
         };
     }
     match rng.below(10) {
@@ -350,6 +370,36 @@ fn adding_or_removing_an_override_keeps_the_graph() {
     assert!(done.graph, "a cycle rebuilds");
     let fresh = CellState::build(&p, h, &mut no_funcs).unwrap();
     assert_eq!(snapshot(&st), snapshot(&fresh));
+}
+
+/// An instance rename that keeps its element count patches: element names and the
+/// duplicate-name rows (`E009`) of the names it left and took change, every net keeps its
+/// handle, and the state equals a fresh build. Negative space: a rename to a bus (more
+/// elements) rebuilds the connectivity.
+#[test]
+fn a_rename_patches_element_names_and_duplicates() {
+    let (mut p, hs) = project(&[("dev.shprim", DEV), ("cell.shcomp", &cell(12))]);
+    let h = hs[1];
+    let mut st = CellState::build(&p, h, &mut no_funcs).unwrap();
+    let e009 = |st: &CellState| st.violations.with(schemify_elab::Code::E009).count();
+    for (name, patched, dups) in [("M3", true, 1), ("MX", true, 0), ("MB[1:0]", false, 0)] {
+        let op = Op::SetAttr {
+            target: Target::new(RecordKind::Inst, &id(6)),
+            key: "name".into(),
+            values: vec![name.into()],
+        };
+        let nets = st.nets.net_name.clone();
+        assert!(commit(&mut p, h, vec![op.clone()]));
+        let done = st.recompute(&p, h, std::slice::from_ref(&op), &mut no_funcs);
+        assert_eq!(done.patched, patched, "{name}");
+        assert!(done.nets && !done.graph, "{name}: {done:?}");
+        if patched {
+            assert_eq!(st.nets.net_name, nets, "{name}: every net kept");
+        }
+        assert_eq!(e009(&st), dups, "{name}");
+        let fresh = CellState::build(&p, h, &mut no_funcs).unwrap();
+        assert_eq!(snapshot(&st), snapshot(&fresh), "{name}");
+    }
 }
 
 #[test]
@@ -662,6 +712,11 @@ fn geo_ops(rng: &mut Mix, doc: &schemify_doc::Document) -> Vec<Op> {
                     None => None,
                 }
             }
+            13 if rng.chance(50) => pick(rng, doc, RecordKind::Inst).map(|k| Op::SetAttr {
+                target: Target::new(RecordKind::Inst, &k),
+                key: "name".into(),
+                values: vec![["X0", "X9", "Y[1:0]", "X1"][rng.below(4) as usize].into()],
+            }),
             13 | 14 => pick(rng, doc, RecordKind::Inst).map(|k| {
                 let o = ["R0", "R90", "R180", "MR270"][rng.below(4) as usize];
                 Op::SetAttr {

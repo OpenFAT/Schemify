@@ -30,7 +30,8 @@
 //! handle; an unnamed bit belongs to one component slot. Cells where names merge more
 //! than that are rebuilt per edit (`merged`), as are label edits in a cell with
 //! `global true` labels; the caller rebuilds anything that moves instance rows or
-//! changes element names.
+//! changes an instance's element count. A rename that keeps the count only rewrites
+//! element names and their duplicate findings ([`Live::rename`]).
 //!
 //! SIMD triage: the id-column diff is the one loop over whole tables; it is an
 //! accumulator (xor-or per chunk) and vectorizes as written. Everything else walks the
@@ -339,6 +340,100 @@ impl Live {
         let mut rows = Vec::new();
         changed_rows(&self.ids[INSTS], &doc.instances().id, &mut rows);
         !rows.is_empty()
+    }
+
+    /// Whether `doc`'s wire, label, port or noconn rows differ from the ones this state
+    /// mirrors (a rejected transaction permutes them without ops): [`Live::update`] must
+    /// then run, even for an edit that names no geometry, to move the row outputs.
+    ///
+    /// Cost: one compare per row of those tables (vectorized).
+    pub(crate) fn rows_moved(&self, doc: &Document) -> bool {
+        let mut rows = Vec::new();
+        for t in 0..INSTS {
+            changed_rows(&self.ids[t], table_ids(doc, t), &mut rows);
+            if !rows.is_empty() {
+                return true;
+            }
+        }
+        assert!(rows.is_empty());
+        false
+    }
+
+    /// Patches the element names of the instances `ids` (their `name` attribute changed,
+    /// already applied to `cx.doc`) into `cn`, and the duplicate-name findings (`E009`) of
+    /// every name they left or took. Returns the findings removed and added, or `None` when
+    /// a rename changes an instance's element count (a bus), its name is too wide, or the
+    /// instance is gone: then the caller rebuilds. A name joins no net: components, bits and
+    /// every other finding stay.
+    ///
+    /// Cost: O(new elements) to intern, plus one scan of every element name per call.
+    pub(crate) fn rename(
+        &mut self,
+        ids: &[ObjId],
+        cx: &Ctx<'_>,
+        cn: &mut CellNets,
+        names: &mut Names,
+    ) -> Option<Delta> {
+        let doc = cx.doc;
+        let (s, inst) = (doc.strings(), doc.instances());
+        assert_eq!(cn.elem_start.len(), inst.id.len() + 1, "element rows fixed");
+        let mut touched: Vec<Name> = Vec::new();
+        let (mut now, mut buf) = (Vec::new(), String::new());
+        for &id in ids {
+            let i = doc.find_id(id)?.row as usize;
+            if self
+                .fixed
+                .iter()
+                .any(|v| v.code == Code::E011 && v.object == id)
+            {
+                return None; // its old name was too wide
+            }
+            now.clear();
+            netexpr::expand(s.get(inst.name[i]), names, &mut now, &mut buf).ok()?;
+            let (a, b) = (cn.elem_start[i] as usize, cn.elem_start[i + 1] as usize);
+            if now.len() != b - a {
+                return None; // the element count changed: connections move
+            }
+            touched.extend_from_slice(&cn.elem_name[a..b]);
+            touched.extend_from_slice(&now);
+            cn.elem_name[a..b].copy_from_slice(&now);
+        }
+        touched.sort_unstable();
+        touched.dedup();
+        // `connect`'s E009 rule over the touched names: every element after the first of
+        // its name (in id order) is a duplicate.
+        let (gone, kept): (Vec<Violation>, Vec<Violation>) = std::mem::take(&mut self.fixed)
+            .into_iter()
+            .partition(|v| v.code == Code::E009 && touched.binary_search(&v.param).is_ok());
+        self.fixed = kept;
+        // ponytail: one scan of every element per rename (~10 µs per 10^4 instances); an
+        // index of elements by name if renames in huge cells show up in profiles.
+        let mut elems: Vec<(Name, ObjId)> = Vec::new();
+        for i in 0..inst.id.len() {
+            let (a, b) = (cn.elem_start[i] as usize, cn.elem_start[i + 1] as usize);
+            for &e in &cn.elem_name[a..b] {
+                if touched.binary_search(&e).is_ok() {
+                    elems.push((e, inst.id[i]));
+                }
+            }
+        }
+        elems.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(id_cmp(a.1, b.1, s)));
+        let mut new = Vec::new();
+        for w in elems.windows(2) {
+            if w[0].0 == w[1].0 {
+                new.push(Violation {
+                    code: Code::E009,
+                    cell: cx.own.cell,
+                    object: w[1].1,
+                    path: Name::NONE,
+                    param: w[1].0,
+                    detail: format!("instance name `{}` is used twice", names.get(w[1].0)),
+                });
+            }
+        }
+        self.fixed.extend(new.iter().cloned());
+        assert!(new.len() < elems.len().max(1), "a duplicate has a first");
+        Some((gone, new))
     }
 
     /// Every connectivity finding, owner by owner (what a full check pass starts from).

@@ -138,11 +138,12 @@ impl CellState {
     /// (its inverse ops) or a redo. Value edits (an override set, changed or removed, a
     /// var's expression) re-evaluate only their dependents, report the instances whose
     /// values changed ([`CellState::revalued`]) and recheck only those and the edited ones;
-    /// geometry edits patch the touched nets; structural edits (instances, params, vars
-    /// added or removed, a dependency on a later node) rebuild. Ops of other documents are
-    /// not seen: rebuild with [`CellState::build`] when an instantiated cell's interface
-    /// changes.
-    /// The result always equals a fresh [`CellState::build`] (the incremental oracle).
+    /// geometry edits patch the touched nets; an instance rename that keeps its element
+    /// count patches its element names and duplicate-name rows; structural edits
+    /// (instances, params, vars added or removed, a dependency on a later node, a bus
+    /// rename) rebuild. Ops of other documents are not seen: rebuild with
+    /// [`CellState::build`] when an instantiated cell's interface changes. The result
+    /// always equals a fresh [`CellState::build`] (the incremental oracle).
     ///
     /// # Panics
     ///
@@ -169,6 +170,8 @@ impl CellState {
         let mut cached_vars: Vec<&str> = Vec::new();
         let mut cached_params: Vec<&str> = Vec::new();
         let mut waived = false;
+        // Instances whose `name` changed: their element names and E009 rows are patched.
+        let mut renamed: Vec<ObjId> = Vec::new();
         for op in ops {
             let (kind, key, attr) = subject(op);
             match kind {
@@ -178,7 +181,8 @@ impl CellState {
                 RecordKind::Inst => match op {
                     Op::SetAttr { .. } | Op::RemoveAttr { .. } => match attr {
                         Some("at") => geom = true,
-                        Some("name" | "inherit" | "ignore") => nets = true,
+                        Some("name") => renamed.extend(ObjId::find(key, doc.strings())),
+                        Some("inherit" | "ignore") => nets = true,
                         // A Virtuoso-derived value and its digest (E039): rare, from an
                         // import; the values and their checks are rebuilt.
                         Some("cached") => rebuild = true,
@@ -209,6 +213,9 @@ impl CellState {
                 _ => {}
             }
         }
+        // A rejected transaction may have permuted the geometry tables' rows without ops:
+        // the patch moves the row outputs.
+        geom = geom || self.live.rows_moved(doc);
         let mut delta: Option<Delta> = None;
         if !nets && geom {
             let cx = Ctx {
@@ -221,10 +228,32 @@ impl CellState {
             nets = delta.is_none(); // the patch gave up: rebuild
             done.patched = delta.is_some();
         }
+        if !nets && !renamed.is_empty() {
+            let cx = Ctx {
+                doc,
+                own: &self.ifaces[0],
+                ifaces: &self.ifaces,
+                inst_iface: &self.inst_iface,
+            };
+            match self
+                .live
+                .rename(&renamed, &cx, &mut self.nets, &mut self.names)
+            {
+                Some((gone, new)) => {
+                    let d = delta.get_or_insert_default();
+                    d.0.extend(gone);
+                    d.1.extend(new);
+                    done.patched = true;
+                }
+                None => nets = true, // an element count changed
+            }
+        }
         if nets {
+            delta = None;
+            done.patched = false;
             self.rebuild_nets(doc);
         }
-        done.nets = nets || geom;
+        done.nets = nets || geom || !renamed.is_empty();
         let mut dirty: Vec<u32> = Vec::new();
         if !rebuild {
             rebuild = !self.diff_values(doc, &touched_insts, touched_vars, &mut dirty);
