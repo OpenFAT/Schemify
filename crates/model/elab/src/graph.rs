@@ -306,7 +306,7 @@ impl Graph {
             let mut cycles = Vec::new();
             topo_order_all(deps, &mut self.order, &mut cycles);
             for c in &cycles {
-                let err = c.error(|n| self.node_name(n, ifaces, names));
+                let err = c.error(|n| names.get(self.node_param(n, ifaces)));
                 self.cyclic
                     .extend(c.nodes.iter().map(|&node| (node, err.clone())));
             }
@@ -332,8 +332,9 @@ impl Graph {
         assert_eq!(self.order.len(), n);
     }
 
-    /// Names node `n` for messages: `param`, `var`, or `<inst row>.<param>`.
-    fn node_name<'a>(&self, n: u32, ifaces: &'a [Iface], names: &'a Names) -> &'a str {
+    /// The param or var node `n` is the value of: an own param or var, or a param or
+    /// var of its instance's cell.
+    pub(crate) fn node_param(&self, n: u32, ifaces: &[Iface]) -> Name {
         let (owner, slot) = (self.owner[n as usize], self.slot[n as usize]);
         let f = if owner == NONE {
             &ifaces[self.own as usize]
@@ -341,10 +342,19 @@ impl Graph {
             &ifaces[self.inst_iface[owner as usize] as usize]
         };
         match (slot & VAR == 0, owner == NONE) {
-            (true, _) => names.get(f.param_name[slot as usize]),
-            (false, true) => names.get(self.var_name[(slot & !VAR) as usize]),
-            (false, false) => names.get(f.var_name[(slot & !VAR) as usize]),
+            (true, _) => f.param_name[slot as usize],
+            (false, true) => self.var_name[(slot & !VAR) as usize],
+            (false, false) => f.var_name[(slot & !VAR) as usize],
         }
+    }
+
+    /// The node of child var `v` of instance row `i`, if the graph made one.
+    pub(crate) fn child_var(&self, i: u32, v: u32) -> Option<u32> {
+        let at = self
+            .child_vars
+            .binary_search_by_key(&(i, v), |e| (e.0, e.1))
+            .ok()?;
+        Some(self.child_vars[at].2)
     }
 
     /// Drops the edges of the `cyclic` nodes (rebuilds the CSR).
@@ -647,12 +657,7 @@ impl Graph {
             let d = if r & VAR == 0 {
                 first + r
             } else {
-                let key = (i as u32, r & !VAR);
-                let at = self
-                    .child_vars
-                    .binary_search_by_key(&key, |e| (e.0, e.1))
-                    .ok()?;
-                self.child_vars[at].2
+                self.child_var(i as u32, r & !VAR)?
             };
             inputs.push(vals[d as usize].value()?);
         }
@@ -684,7 +689,8 @@ fn recycle<'b>(mut v: Vec<Value<'_>>) -> Vec<Value<'b>> {
         .collect()
 }
 
-fn own_node(params: u32, r: Ref) -> u32 {
+/// The own-scope node of ref `r` (params first, then vars).
+pub(crate) fn own_node(params: u32, r: Ref) -> u32 {
     if r & VAR == 0 { r } else { params + (r & !VAR) }
 }
 

@@ -510,21 +510,7 @@ pub(crate) fn value_errors(
         if child_scope && matches!(g.code(n, cx.ifaces), PCode::Bad(_)) {
             continue;
         }
-        let slot = g.slot[n as usize];
-        let param = if owner == NONE {
-            if slot & crate::values::VAR == 0 {
-                me.param_name[slot as usize]
-            } else {
-                g.var_name[(slot & !crate::values::VAR) as usize]
-            }
-        } else {
-            let c = &cx.ifaces[g.inst_iface[owner as usize] as usize];
-            if slot & crate::values::VAR == 0 {
-                c.param_name[slot as usize]
-            } else {
-                c.var_name[(slot & !crate::values::VAR) as usize]
-            }
-        };
+        let param = g.node_param(n, cx.ifaces);
         let object = if owner == NONE {
             ObjId::NONE
         } else {
