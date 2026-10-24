@@ -158,99 +158,33 @@ pub struct Loc {
 /// shared reference to it. Static dispatch: one monomorphized arm per table.
 macro_rules! with_table {
     ($doc:expr, $t:expr, |$tab:ident| $body:expr) => {
+        with_table!(@ $doc, $t, $tab, $body, )
+    };
+    (@ $doc:expr, $t:expr, $tab:ident, $body:expr, $($m:tt)?) => {
         match $t {
-            TableId::Pins => {
-                let $tab = &$doc.pins;
-                $body
-            }
-            TableId::Params => {
-                let $tab = &$doc.params;
-                $body
-            }
-            TableId::Impls => {
-                let $tab = &$doc.impls;
-                $body
-            }
-            TableId::Graphics => {
-                let $tab = &$doc.graphics;
-                $body
-            }
-            TableId::Instances => {
-                let $tab = &$doc.instances;
-                $body
-            }
-            TableId::Wires => {
-                let $tab = &$doc.wires;
-                $body
-            }
-            TableId::Labels => {
-                let $tab = &$doc.labels;
-                $body
-            }
-            TableId::Ports => {
-                let $tab = &$doc.ports;
-                $body
-            }
-            TableId::Noconns => {
-                let $tab = &$doc.noconns;
-                $body
-            }
-            TableId::Texts => {
-                let $tab = &$doc.texts;
-                $body
-            }
-            TableId::Shapes => {
-                let $tab = &$doc.shapes;
-                $body
-            }
-            TableId::Constraints => {
-                let $tab = &$doc.constraints;
-                $body
-            }
-            TableId::Waivers => {
-                let $tab = &$doc.waivers;
-                $body
-            }
-            TableId::DocBlocks => {
-                let $tab = &$doc.doc_blocks;
-                $body
-            }
-            TableId::Bodies => {
-                let $tab = &$doc.bodies;
-                $body
-            }
-            TableId::Corners => {
-                let $tab = &$doc.corners;
-                $body
-            }
-            TableId::Configs => {
-                let $tab = &$doc.configs;
-                $body
-            }
-            TableId::Sweeps => {
-                let $tab = &$doc.sweeps;
-                $body
-            }
-            TableId::Montecarlos => {
-                let $tab = &$doc.montecarlos;
-                $body
-            }
-            TableId::Optimizes => {
-                let $tab = &$doc.optimizes;
-                $body
-            }
-            TableId::Outputs => {
-                let $tab = &$doc.outputs;
-                $body
-            }
-            TableId::Specs => {
-                let $tab = &$doc.specs;
-                $body
-            }
-            TableId::Codes => {
-                let $tab = &$doc.codes;
-                $body
-            }
+            TableId::Pins => { let $tab = &$($m)? $doc.pins; $body }
+            TableId::Params => { let $tab = &$($m)? $doc.params; $body }
+            TableId::Impls => { let $tab = &$($m)? $doc.impls; $body }
+            TableId::Graphics => { let $tab = &$($m)? $doc.graphics; $body }
+            TableId::Instances => { let $tab = &$($m)? $doc.instances; $body }
+            TableId::Wires => { let $tab = &$($m)? $doc.wires; $body }
+            TableId::Labels => { let $tab = &$($m)? $doc.labels; $body }
+            TableId::Ports => { let $tab = &$($m)? $doc.ports; $body }
+            TableId::Noconns => { let $tab = &$($m)? $doc.noconns; $body }
+            TableId::Texts => { let $tab = &$($m)? $doc.texts; $body }
+            TableId::Shapes => { let $tab = &$($m)? $doc.shapes; $body }
+            TableId::Constraints => { let $tab = &$($m)? $doc.constraints; $body }
+            TableId::Waivers => { let $tab = &$($m)? $doc.waivers; $body }
+            TableId::DocBlocks => { let $tab = &$($m)? $doc.doc_blocks; $body }
+            TableId::Bodies => { let $tab = &$($m)? $doc.bodies; $body }
+            TableId::Corners => { let $tab = &$($m)? $doc.corners; $body }
+            TableId::Configs => { let $tab = &$($m)? $doc.configs; $body }
+            TableId::Sweeps => { let $tab = &$($m)? $doc.sweeps; $body }
+            TableId::Montecarlos => { let $tab = &$($m)? $doc.montecarlos; $body }
+            TableId::Optimizes => { let $tab = &$($m)? $doc.optimizes; $body }
+            TableId::Outputs => { let $tab = &$($m)? $doc.outputs; $body }
+            TableId::Specs => { let $tab = &$($m)? $doc.specs; $body }
+            TableId::Codes => { let $tab = &$($m)? $doc.codes; $body }
         }
     };
 }
@@ -264,100 +198,7 @@ macro_rules! with_table_mut {
             ..
         } = $doc;
         let _ = (&$strings, &$pool);
-        match $t {
-            TableId::Pins => {
-                let $tab = &mut $doc.pins;
-                $body
-            }
-            TableId::Params => {
-                let $tab = &mut $doc.params;
-                $body
-            }
-            TableId::Impls => {
-                let $tab = &mut $doc.impls;
-                $body
-            }
-            TableId::Graphics => {
-                let $tab = &mut $doc.graphics;
-                $body
-            }
-            TableId::Instances => {
-                let $tab = &mut $doc.instances;
-                $body
-            }
-            TableId::Wires => {
-                let $tab = &mut $doc.wires;
-                $body
-            }
-            TableId::Labels => {
-                let $tab = &mut $doc.labels;
-                $body
-            }
-            TableId::Ports => {
-                let $tab = &mut $doc.ports;
-                $body
-            }
-            TableId::Noconns => {
-                let $tab = &mut $doc.noconns;
-                $body
-            }
-            TableId::Texts => {
-                let $tab = &mut $doc.texts;
-                $body
-            }
-            TableId::Shapes => {
-                let $tab = &mut $doc.shapes;
-                $body
-            }
-            TableId::Constraints => {
-                let $tab = &mut $doc.constraints;
-                $body
-            }
-            TableId::Waivers => {
-                let $tab = &mut $doc.waivers;
-                $body
-            }
-            TableId::DocBlocks => {
-                let $tab = &mut $doc.doc_blocks;
-                $body
-            }
-            TableId::Bodies => {
-                let $tab = &mut $doc.bodies;
-                $body
-            }
-            TableId::Corners => {
-                let $tab = &mut $doc.corners;
-                $body
-            }
-            TableId::Configs => {
-                let $tab = &mut $doc.configs;
-                $body
-            }
-            TableId::Sweeps => {
-                let $tab = &mut $doc.sweeps;
-                $body
-            }
-            TableId::Montecarlos => {
-                let $tab = &mut $doc.montecarlos;
-                $body
-            }
-            TableId::Optimizes => {
-                let $tab = &mut $doc.optimizes;
-                $body
-            }
-            TableId::Outputs => {
-                let $tab = &mut $doc.outputs;
-                $body
-            }
-            TableId::Specs => {
-                let $tab = &mut $doc.specs;
-                $body
-            }
-            TableId::Codes => {
-                let $tab = &mut $doc.codes;
-                $body
-            }
-        }
+        with_table!(@ $doc, $t, $tab, $body, mut)
     }};
 }
 
