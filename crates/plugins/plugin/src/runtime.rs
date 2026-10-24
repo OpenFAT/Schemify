@@ -177,28 +177,24 @@ pub(crate) fn instantiate(
                 e.to_string(),
             )
         })?;
-    let missing =
-        |name: &str, e: &dyn std::fmt::Display| (Code::Module, format!("export {name}: {e}"));
     let memory = instance
         .get_memory(&store, exports::MEMORY)
-        .ok_or_else(|| missing(exports::MEMORY, &"absent"))?;
+        .ok_or_else(|| missing(exports::MEMORY, "absent"))?;
     let abi = instance
         .get_typed_func::<(), u32>(&store, exports::ABI)
-        .map_err(|e| missing(exports::ABI, &e))?;
+        .map_err(|e| missing(exports::ABI, e))?;
     let alloc = instance
         .get_typed_func(&store, exports::ALLOC)
-        .map_err(|e| missing(exports::ALLOC, &e))?;
+        .map_err(|e| missing(exports::ALLOC, e))?;
     let on_event = instance
         .get_typed_func(&store, exports::ON_EVENT)
-        .map_err(|e| missing(exports::ON_EVENT, &e))?;
-    let call = match instance.get_export(&store, exports::CALL) {
-        None => None,
-        Some(_) => Some(
-            instance
-                .get_typed_func(&store, exports::CALL)
-                .map_err(|e| missing(exports::CALL, &e))?,
-        ),
-    };
+        .map_err(|e| missing(exports::ON_EVENT, e))?;
+    // `schemify_call` is optional; present, it must have its type.
+    let call = instance
+        .get_export(&store, exports::CALL)
+        .map(|_| instance.get_typed_func(&store, exports::CALL))
+        .transpose()
+        .map_err(|e| missing(exports::CALL, e))?;
     store.data_mut().memory = Some(memory);
     let version = abi
         .call(&mut store, ())
@@ -218,6 +214,11 @@ pub(crate) fn instantiate(
             call,
         },
     ))
+}
+
+/// The load error for export `name` (absent or mistyped).
+fn missing(name: &str, e: impl std::fmt::Display) -> (Code, String) {
+    (Code::Module, format!("export {name}: {e}"))
 }
 
 /// Runs one event: allocate, write, call, copy the output into `out`.
