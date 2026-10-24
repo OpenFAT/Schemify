@@ -634,16 +634,10 @@ impl<'s> Document<'s> {
 
     pub(crate) fn intern(&mut self, text: &str) -> Str {
         let off = self.arena.len();
-        assert!(
-            off + text.len() < ARENA as usize,
-            "document text arena exceeds 2 GiB"
-        );
         self.arena.push_str(text);
-        assert_eq!(self.arena.len(), off + text.len());
-        Str {
-            off: off as u32 | ARENA,
-            len: text.len() as u32,
-        }
+        let s = Str::arena_tail(&self.arena, off); // asserts the arena is under 2 GiB
+        assert_eq!(s.len as usize, text.len());
+        s
     }
 
     pub(crate) fn push_field_str(&mut self, s: Str) {
