@@ -497,7 +497,6 @@ impl Editor {
         match self.session.open_path(&file) {
             Ok(b) => {
                 self.session.open_tab(b, View::Schematic);
-                self.scene_dirty = true;
                 self.session.say(format!(
                     "new bench {}: add sources and analyses, then s",
                     file.display()

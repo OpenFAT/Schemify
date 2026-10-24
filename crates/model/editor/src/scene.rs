@@ -464,6 +464,15 @@ pub struct Symbols {
 }
 
 impl Symbols {
+    /// Drops every entry (the library rows shifted: a re-index, a project reload); the
+    /// epoch keeps advancing, so no scene built from the old entries matches it again.
+    pub fn clear(&mut self) {
+        let before = self.epoch;
+        self.rows.clear();
+        self.epoch = self.epoch.wrapping_add(1);
+        assert_ne!(self.epoch, before);
+    }
+
     // ponytail: libraries are indexed once per session; when re-indexing lands (file
     // watching), clear this cache with it, since `index_library` invalidates cell rows.
 

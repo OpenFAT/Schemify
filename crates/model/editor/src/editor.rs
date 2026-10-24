@@ -568,7 +568,12 @@ pub struct Editor {
     raster: Option<Raster>,
     confirm: Option<Cmd>,
     quit: bool,
-    scene_dirty: bool,
+    /// Advances whenever the value graph is built afresh (every evaluated param may have
+    /// changed), and the scene's values key: the generation it was last built or updated
+    /// for. A scene behind `values_gen` is built in full; everything else the scene draws
+    /// is in its own built key (document, view, edit epoch, symbol epoch).
+    values_gen: u32,
+    scene_values: u32,
     /// Instances whose evaluated params changed since the scene was last updated (elab's
     /// value delta, `CellState::revalued`): the scene re-stamps them with the edit's own
     /// objects. Bounded by the active document's instances (cleared by every scene pass).
@@ -823,7 +828,8 @@ impl Editor {
             raster: None,
             confirm: None,
             quit: false,
-            scene_dirty: true,
+            values_gen: 0,
+            scene_values: 0,
             revalued: Vec::new(),
             sel_changed: false,
             sel_moved: false,
@@ -1816,7 +1822,6 @@ impl Editor {
                 if !self.session.pop_level() {
                     self.session.say("already at the top level");
                 }
-                self.scene_dirty = true;
             }
             Cmd::NewSchematic | Cmd::TabNew | Cmd::NewWindowTab | Cmd::NewSymbol => {
                 let (kind, v) = if cmd == Cmd::NewSymbol {
@@ -1828,7 +1833,6 @@ impl Editor {
                     Ok(d) => self.session.open_tab(d, v),
                     Err(e) => self.session.say(e),
                 }
-                self.scene_dirty = true;
             }
             // With an argument (a script, a JSON-RPC caller): that cell, no dialog.
             Cmd::Open if !arg.trim().is_empty() => self.open_named(arg),
@@ -2127,7 +2131,6 @@ impl Editor {
                     let doc = self.session.level().expect("an active level").doc;
                     self.sel_moved |= self.session.show(doc, want, true);
                     self.tool = Tool::Idle;
-                    self.scene_dirty = true;
                 }
                 debug_assert_eq!(self.active().map(|(_, v)| v), Some(want));
             }
@@ -2599,7 +2602,6 @@ impl Editor {
         assert!(i < self.session.tabs().len());
         self.tool = Tool::Idle;
         self.session.switch_tab(i);
-        self.scene_dirty = true;
     }
 
     fn refresh_palette(&mut self) {
@@ -2675,7 +2677,6 @@ impl Editor {
         } else if let Err(e) = self.session.push_level(child, view, &name) {
             self.session.say(e);
         }
-        self.scene_dirty = true;
     }
 
     fn close_tab(&mut self) {
@@ -2697,7 +2698,6 @@ impl Editor {
             self.session.say(e);
         }
         self.tool = Tool::Idle;
-        self.scene_dirty = true;
     }
 
     fn reload(&mut self, h: DocHandle) {
@@ -2814,7 +2814,6 @@ impl Editor {
                 doc: plugins::doc_id(d),
             },
         );
-        self.scene_dirty = true;
         debug_assert!(self.session.project.doc(d).is_some());
     }
 
@@ -3982,7 +3981,9 @@ impl Editor {
         };
         self.cell_key = self.cell.as_ref().map(|_| (h, epoch, fe));
         // A rebuilt graph may have changed every value: the scene is built again.
-        self.scene_dirty |= rebuilt;
+        if rebuilt {
+            self.values_gen = self.values_gen.wrapping_add(1);
+        }
         assert!(self.cell_ops.is_empty());
         true
     }
@@ -4012,14 +4013,13 @@ impl Editor {
             }
             Err(e) => self.session.say(e),
         }
-        self.symbols = scene::Symbols::default();
+        self.symbols.clear();
         self.symbols_key = None;
         self.invalidate_cells();
         let docs: Vec<DocHandle> = self.session.project.handles().collect();
         for d in docs {
             self.session.bump(d);
         }
-        self.scene_dirty = true;
         assert!(self.cell_key.is_none() && self.symbols_key.is_none());
     }
 
@@ -4235,7 +4235,8 @@ impl Editor {
             return false;
         };
         let epoch = self.session.epoch(h);
-        let stale = self.scene_dirty
+        let full = self.scene_values != self.values_gen || view != View::Schematic;
+        let stale = full
             || !self.revalued.is_empty()
             || self.scene.built != Some((h, view, epoch, self.symbols.epoch));
         if stale {
@@ -4245,7 +4246,7 @@ impl Editor {
                 .as_ref()
                 .filter(|_| self.cell_key == Some((h, epoch, fe)));
             let project = &self.session.project;
-            if self.scene_dirty || view != View::Schematic {
+            if full {
                 scene::build(
                     &mut self.scene,
                     project,
@@ -4269,7 +4270,7 @@ impl Editor {
                 );
             }
             self.canvas_gen[0] += 1;
-            self.scene_dirty = false;
+            self.scene_values = self.values_gen;
             self.revalued.clear();
             let sel: Vec<ObjKey> = self
                 .selection()

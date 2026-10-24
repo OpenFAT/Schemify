@@ -25,7 +25,7 @@ use crate::checks;
 use crate::edit::{self, Ids};
 use crate::geometry::Pt;
 use crate::platform;
-use crate::scene::{self, ObjKey};
+use crate::scene::ObjKey;
 use crate::wiring::{on_interior, route};
 
 /// Net of a connection point that belongs to no net (a noconn): foreign to every crossing.
@@ -341,10 +341,9 @@ impl Editor {
             return;
         }
         self.session.reindex(&file);
-        self.symbols = scene::Symbols::default();
+        self.symbols.clear();
         self.symbols_key = None;
         self.invalidate_cells();
-        self.scene_dirty = true; // cell rows shifted with the re-index: re-stamp every instance
         self.commit(reqs, h, "make subcircuit", ops);
         self.set_selection(Vec::new());
         self.set_partial(Vec::new());

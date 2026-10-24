@@ -687,7 +687,6 @@ impl Editor {
                 };
                 self.close_dialog();
                 self.session.decide_recovery(d, cmd == Cmd::Recover);
-                self.scene_dirty = true;
                 self.invalidate_cells();
             }
             // Dispatched by `Editor::run` before it hands a command here.
@@ -865,7 +864,6 @@ impl Editor {
                 self.session.open_tab(d, view);
                 self.remember(d);
                 self.tool = Tool::Idle;
-                self.scene_dirty = true;
             }
             Err(_) if super::project_root(&path) != crate::libs::absolute(&self.session.root) => {
                 self.switch_project(path, reqs);
@@ -977,7 +975,7 @@ impl Editor {
             return;
         }
         self.session.reindex(&path);
-        self.symbols = scene::Symbols::default();
+        self.symbols.clear();
         self.symbols_key = None;
         self.invalidate_cells();
         let new = match self.session.open_path(&path) {
@@ -1025,7 +1023,6 @@ impl Editor {
             },
         );
         self.tool = Tool::Idle;
-        self.scene_dirty = true;
         self.session.say(format!("saved as {}", path.display()));
     }
 
@@ -1104,7 +1101,7 @@ impl Editor {
             Ok(()) => {
                 self.session.drop_journal(&path);
                 self.session.reindex(&path);
-                self.symbols = scene::Symbols::default();
+                self.symbols.clear();
                 self.symbols_key = None;
                 self.recent.retain(|r| *r != crate::libs::absolute(&path));
                 self.session.say(format!("deleted {}", path.display()));
@@ -2113,7 +2110,6 @@ impl Editor {
                     on: true,
                     key: None,
                 });
-                self.scene_dirty = true;
                 self.decor_dirty = true;
             }
             Err(e) => self.session.say(e),
@@ -2310,7 +2306,6 @@ impl Editor {
             find: String::new(),
             found: None,
         });
-        self.scene_dirty = true;
     }
 
     fn changelog(&mut self, h: DocHandle) {
