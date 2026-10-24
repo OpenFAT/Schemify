@@ -169,13 +169,9 @@ impl Pump {
 ///
 /// The socket cannot be listened on, the project or file cannot be opened, or no window can
 /// be created.
-pub fn run(mut opts: Options, socket: &str) -> Result<(), String> {
+pub fn run(opts: Options, socket: &str) -> Result<(), String> {
     let listener = rpc::listen(socket).map_err(|e| format!("--rpc {socket}: {e}"))?;
-    if opts.state_dir.is_none() {
-        opts.state_dir = schemify_editor::platform::state_dir();
-    }
-    opts.system_clipboard = true;
-    let ed = Editor::new(opts)?;
+    let ed = crate::window::open(opts)?;
     let pump = Pump::start(listener, &ed);
     let served = Served {
         win: Window::new(ed),
@@ -209,10 +205,7 @@ impl App for Served {
     fn wake_ms(&self) -> Option<u32> {
         // Answers waiting on a queued command tick until it ran; nothing else polls.
         let answer = self.pump.waiting().then_some(ANSWER_TICK_MS);
-        match (self.win.wake_ms(), answer) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        self.win.wake_ms().into_iter().chain(answer).min()
     }
 
     fn set_waker(&mut self, waker: Waker) {

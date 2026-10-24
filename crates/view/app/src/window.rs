@@ -85,11 +85,21 @@ impl App for Window {
 /// # Errors
 ///
 /// The project or file cannot be opened, or no window can be created.
-pub fn run(mut opts: Options) -> Result<(), String> {
+pub fn run(opts: Options) -> Result<(), String> {
+    let ed = open(opts)?;
+    schemify_render::run("Schemify", Window::new(ed)).map_err(|e| e.to_string())
+}
+
+/// Opens the editor a window shows: the platform's state directory unless `opts` names
+/// one, and the system clipboard.
+///
+/// # Errors
+///
+/// The project or file cannot be opened.
+pub fn open(mut opts: Options) -> Result<Editor, String> {
     if opts.state_dir.is_none() {
         opts.state_dir = platform::state_dir();
     }
     opts.system_clipboard = true;
-    let ed = Editor::new(opts)?;
-    schemify_render::run("Schemify", Window::new(ed)).map_err(|e| e.to_string())
+    Editor::new(opts)
 }
