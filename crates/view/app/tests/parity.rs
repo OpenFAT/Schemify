@@ -91,31 +91,29 @@ fn active_path(s: &Session) -> PathBuf {
 fn right_click(s: &mut Session, p: (i32, i32), mods: u8) {
     let (x, y) = s.ed.to_screen(p);
     for down in [true, false] {
-        let mut ev = InputEvents::default();
-        ev.push(InputEvent::Mods {
-            mods: schemify_ui::Mods(mods),
-        });
-        ev.push(InputEvent::PointerMove { x, y });
-        ev.push(if down {
-            InputEvent::PointerDown {
-                x,
-                y,
-                button: Button::Right,
-            }
-        } else {
-            InputEvent::PointerUp {
-                x,
-                y,
-                button: Button::Right,
-            }
-        });
-        s.frame(ev);
+        s.send([
+            InputEvent::Mods {
+                mods: schemify_ui::Mods(mods),
+            },
+            InputEvent::PointerMove { x, y },
+            if down {
+                InputEvent::PointerDown {
+                    x,
+                    y,
+                    button: Button::Right,
+                }
+            } else {
+                InputEvent::PointerUp {
+                    x,
+                    y,
+                    button: Button::Right,
+                }
+            },
+        ]);
     }
-    let mut ev = InputEvents::default();
-    ev.push(InputEvent::Mods {
+    s.send([InputEvent::Mods {
         mods: schemify_ui::Mods::default(),
-    });
-    s.frame(ev);
+    }]);
 }
 
 /// Whether UI node `id` is composed (exists in the UI table this frame).
@@ -776,15 +774,15 @@ fn chooser_lists_scroll_past_24_rows() {
     let n = sh.tables().nodes.find(list).unwrap();
     let r = sh.layout().rect()[sh.layout().row_of(n).unwrap()];
     let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
-    let mut ev = InputEvents::default();
-    ev.push(InputEvent::PointerMove { x, y });
-    ev.push(InputEvent::Wheel {
-        x,
-        y,
-        dx: 0.0,
-        dy: -3.0,
-    });
-    s.frame(ev);
+    s.send([
+        InputEvent::PointerMove { x, y },
+        InputEvent::Wheel {
+            x,
+            y,
+            dx: 0.0,
+            dy: -3.0,
+        },
+    ]);
     assert!(s.ed.shell().ui().scroll_of(list) > 0.0, "scrolled");
 }
 

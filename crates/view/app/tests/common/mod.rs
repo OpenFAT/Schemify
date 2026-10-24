@@ -91,17 +91,26 @@ impl Session {
         changed
     }
 
+    /// Runs one frame with `events`, in order.
+    pub fn send(&mut self, events: impl IntoIterator<Item = InputEvent>) -> bool {
+        let mut ev = InputEvents::default();
+        for e in events {
+            ev.push(e);
+        }
+        self.frame(ev)
+    }
+
     /// Presses a chord (`"w"`, `"Shift+R"`, `"Ctrl+Z"`).
     pub fn key(&mut self, chord: &str) {
         let chord = Chord::parse(chord).expect("chord parses");
         let mods = chord.mods();
-        let mut ev = InputEvents::default();
-        ev.push(InputEvent::Mods { mods });
-        ev.push(InputEvent::Key { chord });
-        ev.push(InputEvent::Mods {
-            mods: Mods::default(),
-        });
-        self.frame(ev);
+        self.send([
+            InputEvent::Mods { mods },
+            InputEvent::Key { chord },
+            InputEvent::Mods {
+                mods: Mods::default(),
+            },
+        ]);
     }
 
     /// Types text into the focused field.
@@ -114,40 +123,34 @@ impl Session {
     /// Moves the pointer to world point `p`.
     pub fn move_to(&mut self, p: Pt) {
         let (x, y) = self.ed.to_screen(p);
-        let mut ev = InputEvents::default();
-        ev.push(InputEvent::PointerMove { x, y });
-        self.frame(ev);
+        self.send([InputEvent::PointerMove { x, y }]);
     }
 
     /// Moves the pointer to screen point `(x, y)`.
     pub fn move_screen(&mut self, x: f32, y: f32) {
-        let mut ev = InputEvents::default();
-        ev.push(InputEvent::PointerMove { x, y });
-        self.frame(ev);
+        self.send([InputEvent::PointerMove { x, y }]);
     }
 
     fn button(&mut self, p: Pt, down: bool, button: Button, mods: u8) {
         let (x, y) = self.ed.to_screen(p);
-        let mut ev = InputEvents::default();
-        ev.push(InputEvent::Mods { mods: Mods(mods) });
-        ev.push(InputEvent::PointerMove { x, y });
-        ev.push(if down {
-            InputEvent::PointerDown { x, y, button }
-        } else {
-            InputEvent::PointerUp { x, y, button }
-        });
-        self.frame(ev);
+        self.send([
+            InputEvent::Mods { mods: Mods(mods) },
+            InputEvent::PointerMove { x, y },
+            if down {
+                InputEvent::PointerDown { x, y, button }
+            } else {
+                InputEvent::PointerUp { x, y, button }
+            },
+        ]);
     }
 
     /// Left click (press + release) at world point `p` with modifier bits `mods`.
     pub fn click_mods(&mut self, p: Pt, mods: u8) {
         self.button(p, true, Button::Left, mods);
         self.button(p, false, Button::Left, mods);
-        let mut ev = InputEvents::default();
-        ev.push(InputEvent::Mods {
+        self.send([InputEvent::Mods {
             mods: Mods::default(),
-        });
-        self.frame(ev);
+        }]);
     }
 
     /// Left click at world point `p`.
@@ -183,19 +186,19 @@ impl Session {
             .unwrap_or_else(|| panic!("{id} laid out"));
         let rect = s.layout().rect()[r];
         let (x, y) = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
-        let mut ev = InputEvents::default();
-        ev.push(InputEvent::PointerMove { x, y });
-        ev.push(InputEvent::PointerDown {
-            x,
-            y,
-            button: Button::Left,
-        });
-        ev.push(InputEvent::PointerUp {
-            x,
-            y,
-            button: Button::Left,
-        });
-        self.frame(ev);
+        self.send([
+            InputEvent::PointerMove { x, y },
+            InputEvent::PointerDown {
+                x,
+                y,
+                button: Button::Left,
+            },
+            InputEvent::PointerUp {
+                x,
+                y,
+                button: Button::Left,
+            },
+        ]);
     }
 
     /// Runs command `name` with `arg`, then one frame.

@@ -6,7 +6,7 @@
 mod common;
 use common::Session;
 
-use schemify_ui::{InputEvents, Prop};
+use schemify_ui::Prop;
 
 /// `cell.set` from a script: `<field id> <value>`.
 fn set(s: &mut Session, field: &str, value: &str) {
@@ -206,14 +206,12 @@ fn panel_edits_by_mouse_and_keyboard() {
         sh.layout().rect()[sh.layout().row_of(n).unwrap()]
     };
     for _ in 0..40 {
-        let mut ev = InputEvents::default();
-        ev.push(schemify_ui::InputEvent::Wheel {
+        s.send([schemify_ui::InputEvent::Wheel {
             x: page.x + 20.0,
             y: page.y + 40.0,
             dx: 0.0,
             dy: -5.0,
-        });
-        s.frame(ev);
+        }]);
     }
     s.click_node("cell.add_impl.verilog");
     assert!(s.text().contains("impl verilog verilog"), "{}", s.text());

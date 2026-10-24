@@ -87,9 +87,7 @@ fn activate(s: &mut Session, id: &str) {
             .strings()
             .find(id)
             .unwrap_or_else(|| panic!("{id} interned"));
-    let mut ev = InputEvents::default();
-    ev.push(InputEvent::Activate { node: sym });
-    s.frame(ev);
+    s.send([InputEvent::Activate { node: sym }]);
 }
 
 /// Ticks with no input until the run is idle (the window's timer path), bounded.

@@ -580,20 +580,20 @@ fn waves_dock_divider_drags() {
         "{before:?}"
     );
     let drag = |s: &mut Session, from: f32, to: f32| {
-        let mut ev = InputEvents::default();
-        ev.push(InputEvent::PointerMove { x: 600.0, y: from });
-        ev.push(InputEvent::PointerDown {
-            x: 600.0,
-            y: from,
-            button: Button::Left,
-        });
-        ev.push(InputEvent::PointerMove { x: 600.0, y: to });
-        ev.push(InputEvent::PointerUp {
-            x: 600.0,
-            y: to,
-            button: Button::Left,
-        });
-        s.frame(ev);
+        s.send([
+            InputEvent::PointerMove { x: 600.0, y: from },
+            InputEvent::PointerDown {
+                x: 600.0,
+                y: from,
+                button: Button::Left,
+            },
+            InputEvent::PointerMove { x: 600.0, y: to },
+            InputEvent::PointerUp {
+                x: 600.0,
+                y: to,
+                button: Button::Left,
+            },
+        ]);
     };
     drag(&mut s, split, 300.0);
     let after = s.ed.canvas_rect();
