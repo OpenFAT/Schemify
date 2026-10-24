@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 schemify-elab.workspace = true
 schemify-expr.workspace = true
+spicerack.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

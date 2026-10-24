@@ -38,6 +38,11 @@ schemify-render = { path = "crates/view/render" }
 # Dev-only: the differential oracle of expr's own FFT (D39 size cut).
 rustfft = "6"
 libm = "0.2"
+# The netlist deck writer (user decision 2026-10-24): SpiceRack's IR and its xschem-layout
+# codegen; only `netlist` may depend on it. No default features: no Python, no simulator
+# backends (processes, temp files, dlopen), so it builds for the web.
+# ponytail: a local path until the SpiceRack branch is pushed; then a git rev.
+spicerack = { path = "/tmp/claude-1000/-home-omare-Documents-Projects-Rust-Schemify/f859e9b9-ce3e-4a38-a8ba-c379adca8ecc/scratchpad/spicerack-wt", default-features = false }
 # User config (D9 amended): Lua 5.4 in pure Rust (no C, builds for every target incl. the
 # web; user decision 2026-10-12, web spec §5); only `config` may use it. No `io`, `os`,
 # `package` libraries are compiled in; `debug` serves the API prelude and is stripped after.
