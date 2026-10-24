@@ -443,3 +443,70 @@ fn run_and_netlist_select_espice() {
     assert_eq!(code, 0, "{text}");
     assert!(text.starts_with("* tb (schemify espice)\n"), "{text}");
 }
+
+/// A PDK's pinned simulator (tech map `simulator`, run spec §5) outranks the user config and
+/// yields to `--dialect`; a pin Schemify cannot start, or whose program is missing, refuses
+/// the run naming the PDK instead of falling back; a pin naming no simulator is an error.
+#[test]
+fn a_pdk_pins_its_simulator() {
+    let dir = run_project("run-pin");
+    std::fs::write(
+        dir.join("schemify.project"),
+        "schemify 1 project\n\nlib tech map tech.map\n",
+    )
+    .unwrap();
+    let pin = |word: &str| {
+        let map = format!("schemify 1 techmap\n  pdk kit\n  simulator {word}\n");
+        std::fs::write(dir.join("tech.map"), map).unwrap();
+    };
+    let init = fake_sim("espice", ", env = { ZIG = '/z/zig' }") + &fake_sim("ngspice", "");
+    std::fs::write(
+        dir.join("init.lua"),
+        init.clone() + "schemify.opt.simulator = 'ngspice'\n",
+    )
+    .unwrap();
+    let cli = |args: &[&str]| {
+        let mut all = vec!["-u", "init.lua"];
+        all.extend_from_slice(args);
+        schemify(&dir, &all)
+    };
+    pin("espice");
+    let (code, text) = cli(&["netlist", "tb.shbench"]);
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.starts_with("* tb (schemify espice)\n"),
+        "the pin outranks the config: {text}"
+    );
+    let (code, text) = cli(&["netlist", "tb.shbench", "--dialect", "ngspice"]);
+    assert!(
+        code == 0 && text.starts_with("* tb (schemify ngspice)\n"),
+        "{text}"
+    );
+    let (code, text) = cli(&["run", "tb.shbench"]);
+    assert_eq!((code, text.matches(" done\n").count()), (0, 1), "{text}");
+
+    pin("xyce");
+    let (code, text) = cli(&["netlist", "tb.shbench"]);
+    assert!(
+        code == 0 && text.starts_with("* tb (schemify xyce)\n"),
+        "{text}"
+    );
+    let (code, text) = cli(&["run", "tb.shbench"]);
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("kit pins simulator xyce"), "{text}");
+
+    pin("espice");
+    let missing = init.replace("path = 'sh'", "path = '/nonexistent/espice'");
+    std::fs::write(dir.join("init.lua"), missing).unwrap();
+    let (code, text) = cli(&["run", "tb.shbench"]);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains("kit pins simulator espice, which is not installed"),
+        "{text}"
+    );
+
+    pin("hspice");
+    let (code, text) = cli(&["netlist", "tb.shbench"]);
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("kit pins simulator `hspice`"), "{text}");
+}

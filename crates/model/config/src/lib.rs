@@ -196,9 +196,10 @@ pub struct Opts {
     pub dim: u8,
     /// Canvas line width in tenths of a pixel `[1, 100]` (`line_width`, pixels in Lua).
     pub line_width_tenths: u8,
-    /// The simulator Simulate and `schemify run` start by default (`simulator`):
-    /// [`SimKind::Ngspice`] or [`SimKind::Espice`], never a compiler.
-    pub simulator: SimKind,
+    /// The simulator Simulate and `schemify run` start when neither the request nor the
+    /// PDK names one (`simulator`, run spec §5): [`SimKind::Ngspice`] or
+    /// [`SimKind::Espice`], never a compiler. `None` (unset) lets detection choose.
+    pub simulator: Option<SimKind>,
 }
 
 impl Default for Opts {
@@ -211,7 +212,7 @@ impl Default for Opts {
             layer_colors: [None; USER_LAYERS],
             dim: 0,
             line_width_tenths: 10,
-            simulator: SimKind::Ngspice,
+            simulator: None,
         }
     }
 }

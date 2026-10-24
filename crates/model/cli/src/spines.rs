@@ -235,13 +235,133 @@ pub fn open_file(file: &Path, seed: u64) -> Result<(Opened, Vec<String>), OpenEr
     Ok((opened, loaded.notes))
 }
 
-/// The simulator dialect the user config selects (`schemify.opt.simulator`, config spec
-/// §3): what Simulate and `schemify run` netlist for unless told otherwise.
-pub fn sim_dialect(user: &schemify_config::Table) -> Dialect {
-    match user.opts.simulator {
-        schemify_config::SimKind::Espice => Dialect::Espice,
-        _ => Dialect::Ngspice,
+/// The simulators Schemify starts (run spec §5), in detection order.
+pub const SIMULATORS: [Dialect; 2] = [Dialect::Ngspice, Dialect::Espice];
+
+/// The dialect a request netlists and simulates for (run spec §5): `explicit`
+/// (`--dialect`, the Netlist dialect menu), else the simulator the PDK pins (its tech
+/// map's `simulator`, pdk spec §6), else the user config's `schemify.opt.simulator`, else
+/// the first of [`SIMULATORS`] installed, else ngspice.
+///
+/// # Errors
+///
+/// The tech map pins a word that names no simulator.
+pub fn sim_dialect(
+    explicit: Option<Dialect>,
+    project: &Project,
+    user: &schemify_config::Table,
+) -> Result<Dialect, String> {
+    if let Some(d) = explicit {
+        return Ok(d);
     }
+    if let Some((_, d)) = pin(project)? {
+        return Ok(d);
+    }
+    Ok(match user.opts.simulator {
+        Some(schemify_config::SimKind::Espice) => Dialect::Espice,
+        Some(_) => Dialect::Ngspice,
+        None => detect(user).unwrap_or(Dialect::Ngspice),
+    })
+}
+
+/// The simulator the project's PDK pins: (PDK name, dialect); `None` without a tech map
+/// or without its `simulator`.
+///
+/// # Errors
+///
+/// The pinned word is not one of `ngspice espice xyce spectre`.
+pub fn pin(project: &Project) -> Result<Option<(&str, Dialect)>, String> {
+    let Some(map) = project.techmap() else {
+        return Ok(None);
+    };
+    let Some(word) = map.simulator.as_deref() else {
+        return Ok(None);
+    };
+    match dialect_of(word) {
+        Some(d @ (Dialect::Ngspice | Dialect::Espice | Dialect::Xyce | Dialect::Spectre)) => {
+            Ok(Some((map.pdk.as_str(), d)))
+        }
+        _ => Err(format!(
+            "{} pins simulator `{word}`, which is not a simulator (ngspice espice xyce spectre)",
+            map.pdk
+        )),
+    }
+}
+
+/// The simulator a run netlisted for `chosen` starts (run spec §5): ngspice or espice as
+/// chosen; any other dialect runs ngspice unless the PDK pins a simulator, which never
+/// falls back.
+///
+/// # Errors
+///
+/// The PDK pins a simulator Schemify cannot start, or (native) one whose configured or
+/// default program is not found.
+pub fn run_dialect(
+    chosen: Dialect,
+    project: &Project,
+    user: &schemify_config::Table,
+) -> Result<Dialect, String> {
+    let pin = pin(project)?;
+    let run = match (chosen, pin) {
+        (d @ (Dialect::Ngspice | Dialect::Espice), _) => d,
+        (_, None) => Dialect::Ngspice,
+        (d, Some((pdk, _))) => {
+            return Err(format!(
+                "{pdk} pins simulator {}, which Schemify cannot start (ngspice espice)",
+                d.as_str()
+            ));
+        }
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some((pdk, p)) = pin
+        && p == run
+        && !installed(run, user)
+    {
+        return Err(format!(
+            "{pdk} pins simulator {}, which is not installed (name its program with schemify.sim)",
+            run.as_str()
+        ));
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = user;
+    assert!(SIMULATORS.contains(&run));
+    Ok(run)
+}
+
+/// The first of [`SIMULATORS`] whose program (the config row's `path`, else the default)
+/// is found; `None` on the web, which starts no simulator.
+pub fn detect(user: &schemify_config::Table) -> Option<Dialect> {
+    #[cfg(not(target_arch = "wasm32"))]
+    return SIMULATORS.into_iter().find(|d| installed(*d, user));
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = user;
+        None
+    }
+}
+
+/// Whether simulator `d`'s program exists: a path with a directory part as a file, a bare
+/// name in a `PATH` directory (with `.exe` on Windows). Runs no program.
+#[cfg(not(target_arch = "wasm32"))]
+fn installed(d: Dialect, user: &schemify_config::Table) -> bool {
+    assert!(SIMULATORS.contains(&d));
+    let t = tools(user);
+    let prog = if d == Dialect::Espice {
+        t.espice.path
+    } else {
+        t.sim.path
+    };
+    let p = Path::new(&prog);
+    if p.components().count() > 1 {
+        return p.is_file();
+    }
+    let exe = if cfg!(windows) {
+        format!("{prog}.exe")
+    } else {
+        prog
+    };
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(&exe).is_file()))
 }
 
 /// The external programs of run spec §5 from the user config's `schemify.sim` rows; the

@@ -35,6 +35,10 @@ pub struct TechMap {
     pub pdk: String,
     /// Header `vdd <volts>`: nominal core supply, as written.
     pub vdd: Option<String>,
+    /// Header `simulator <dialect word>`: the simulator the kit's models are written for
+    /// (pdk spec §6), as written; it outranks the user config's simulator (run spec §5).
+    /// A word, never a command (D7).
+    pub simulator: Option<String>,
     /// Class of each row (`nmos`).
     pub class: Vec<String>,
     /// Flavor of each row (`core`).
@@ -68,6 +72,7 @@ impl TechMap {
         let header_attr = |key: &str| d.find_attr(0, key).and_then(|a| d.attr_value(a, 0));
         m.pdk = header_attr("pdk").unwrap_or("this technology").to_owned();
         m.vdd = header_attr("vdd").map(str::to_owned);
+        m.simulator = header_attr("simulator").map(str::to_owned);
         for r in 1..d.record_count() {
             let f: Vec<&str> = d.fields(r).collect();
             assert_eq!(f.len(), 2, "the reader checked the class shape");
@@ -270,6 +275,7 @@ mod tests {
         )
         .expect("parses");
         assert_eq!((m.pdk.as_str(), m.vdd.as_deref()), ("sky130", Some("1.8")));
+        assert_eq!(m.simulator, None);
         assert_eq!(m.find("pmos", "core"), Some(1));
         assert_eq!(m.find("pmos", "lvt"), None);
         assert_eq!(
@@ -286,5 +292,7 @@ mod tests {
         );
         assert_eq!(core_symbol("pmos"), Some("pmos4"));
         assert_eq!(core_symbol("res"), None);
+        let pinned = TechMap::parse(b"schemify 1 techmap\n  pdk x\n  simulator spectre\n").unwrap();
+        assert_eq!(pinned.simulator.as_deref(), Some("spectre"));
     }
 }

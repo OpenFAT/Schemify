@@ -487,17 +487,29 @@ fn pairs(owned: &[(String, String)]) -> Vec<(&str, &str)> {
         .collect()
 }
 
-/// The `--dialect` of `a`, else the user config's simulator; `None` (reported) for an
-/// unknown word.
-fn dialect(config: &Config, a: &DesignArgs) -> Option<schemify_elab::Dialect> {
+/// The `--dialect` of `a` (`Ok(None)` without one); `Err` (reported) for an unknown word.
+fn explicit_dialect(a: &DesignArgs) -> Result<Option<schemify_elab::Dialect>, ()> {
     let Some(word) = a.dialect.as_deref() else {
-        return Some(schemify_cli::spines::sim_dialect(config.table()));
+        return Ok(None);
     };
     let d = schemify_cli::spines::dialect_of(word);
     if d.is_none() {
         eprintln!("unknown dialect `{word}` (ngspice espice xyce cdl spectre verilog)");
     }
-    d
+    d.map(Some).ok_or(())
+}
+
+/// The dialect of the request (`spines::sim_dialect`: `--dialect`, the PDK's pin, the
+/// user config, detection); `Err` with the exit code, reported.
+fn dialect(
+    config: &Config,
+    explicit: Option<schemify_elab::Dialect>,
+    o: &schemify_cli::spines::Opened,
+) -> Result<schemify_elab::Dialect, u8> {
+    schemify_cli::spines::sim_dialect(explicit, &o.project, config.table()).map_err(|e| {
+        eprintln!("{e}");
+        DESIGN_ERROR
+    })
 }
 
 /// `netlist`: load → elaborate → check → gate → emit (netlist spine).
@@ -506,11 +518,15 @@ fn netlist(config: &Config, args: &[String]) -> u8 {
         eprint!("{USAGE}");
         return USAGE_ERROR;
     };
-    let Some(dialect) = dialect(config, &a) else {
+    let Ok(explicit) = explicit_dialect(&a) else {
         return USAGE_ERROR;
     };
     let mut o = match open_design(a.cell.as_deref().expect("parsed")) {
         Ok(o) => o,
+        Err(c) => return c,
+    };
+    let dialect = match dialect(config, explicit, &o) {
+        Ok(d) => d,
         Err(c) => return c,
     };
     let env = env_pairs();
@@ -579,17 +595,30 @@ fn run(config: &Config, args: &[String]) -> u8 {
         eprint!("{USAGE}");
         return USAGE_ERROR;
     };
-    let dialect = match dialect(config, &a) {
-        Some(d @ (schemify_elab::Dialect::Ngspice | schemify_elab::Dialect::Espice)) => d,
-        Some(d) => {
+    let explicit = match explicit_dialect(&a) {
+        Ok(d @ (None | Some(schemify_elab::Dialect::Ngspice | schemify_elab::Dialect::Espice))) => {
+            d
+        }
+        Ok(Some(d)) => {
             eprintln!("run: no simulator for `{}` (ngspice or espice)", d.as_str());
             return USAGE_ERROR;
         }
-        None => return USAGE_ERROR,
+        Err(()) => return USAGE_ERROR,
     };
     let mut o = match open_design(a.cell.as_deref().expect("parsed")) {
         Ok(o) => o,
         Err(c) => return c,
+    };
+    let chosen = match dialect(config, explicit, &o) {
+        Ok(d) => d,
+        Err(c) => return c,
+    };
+    let dialect = match schemify_cli::spines::run_dialect(chosen, &o.project, config.table()) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("run: {e}");
+            return DESIGN_ERROR;
+        }
     };
     let env = env_pairs();
     let env = pairs(&env);

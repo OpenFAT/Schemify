@@ -404,11 +404,15 @@ impl Editor {
                 None
             };
             let probe = probe.unwrap_or_default();
-            // The netlist dialect picks the simulator: espice runs ESPice, any other ngspice.
-            self.sim.dialect = match self.dialect {
-                schemify_elab::Dialect::Espice => schemify_elab::Dialect::Espice,
-                _ => schemify_elab::Dialect::Ngspice,
-            };
+            // The netlist dialect picks the simulator: espice runs ESPice, any other ngspice,
+            // unless the PDK pins one (run spec §5).
+            match spines::run_dialect(self.dialect, &self.session.project, self.host.user()) {
+                Ok(d) => self.sim.dialect = d,
+                Err(e) => {
+                    self.session.say(format!("simulate: {e}"));
+                    return;
+                }
+            }
             let env = env_refs(&self.env);
             let host = &mut self.host;
             let mut funcs = |name: &str, args: &[Value<'_>]| host.call_fn(name, args);

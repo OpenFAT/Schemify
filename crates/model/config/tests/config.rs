@@ -93,7 +93,7 @@ schemify.pack.add {{
             grid: 25_500,
             show_grid: false,
             light: true,
-            simulator: schemify_config::SimKind::Espice,
+            simulator: Some(schemify_config::SimKind::Espice),
             ..Opts::default()
         },
         keymaps: Keymaps {
@@ -174,7 +174,7 @@ fn canvas_options_set_read_back_and_reject_bad_values() {
         "local c = schemify.opt.layer_colors\n",
         "assert(c[4] == 'ff8000' and c[1] == '00ccff' and c[21] == '000001' and c[0] == nil)\n",
         "assert(schemify.opt.dim == 0.25 and schemify.opt.line_width == 1.5)\n",
-        "assert(schemify.opt.simulator == 'ngspice')\n",
+        "assert(schemify.opt.simulator == nil)\n",
         "c[5] = '123456' -- a copy: sets nothing\n",
     ));
     assert!(out.is_empty(), "{out:?}");

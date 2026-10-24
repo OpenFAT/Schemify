@@ -786,7 +786,11 @@ impl Editor {
             ..EditOpts::default()
         };
         let layer_colors = parity::user_layer_colors(&user.opts);
-        let dialect = spines::sim_dialect(user);
+        // The PDK's pin, else the config's simulator, else detection (run spec §5).
+        let (dialect, pin_err) = match spines::sim_dialect(None, &session.project, user) {
+            Ok(d) => (d, None),
+            Err(e) => (schemify_elab::Dialect::Ngspice, Some(e)),
+        };
         // The user config's simulator and compilers (`sim` rows), the simulator overridable.
         #[cfg(not(target_arch = "wasm32"))]
         let tools = {
@@ -798,8 +802,8 @@ impl Editor {
             t
         };
         let mut status = session.take_status();
-        for n in notes {
-            push_note(&mut status, &n);
+        for n in notes.iter().chain(&pin_err) {
+            push_note(&mut status, n);
         }
         let mut ed = Editor {
             session,
@@ -4366,6 +4370,10 @@ impl Editor {
                 }
             }
             Err(e) => self.session.say(e),
+        }
+        // `pdk.use` reloads the project: the netlist dialect follows the new PDK's pin.
+        if let Ok(Some((_, d))) = spines::pin(&self.session.project) {
+            self.dialect = d;
         }
         self.symbols.clear();
         self.symbols_key = None;

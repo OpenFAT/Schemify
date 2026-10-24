@@ -431,7 +431,10 @@ fn get_opt(lua: &Lua, st: &Shared, key: Value) -> omnilua::Result<(Value, Option
         "light" => (Value::Boolean(o.light), None),
         "dim" => (Value::Number(f64::from(o.dim) / 100.0), None),
         "line_width" => (Value::Number(f64::from(o.line_width_tenths) / 10.0), None),
-        "simulator" => (Value::String(lua.create_string(o.simulator.word())?), None),
+        "simulator" => match o.simulator {
+            Some(k) => (Value::String(lua.create_string(k.word())?), None),
+            None => (Value::Nil, None),
+        },
         // A copy: assigning to one of its entries changes nothing (spec §3).
         "layer_colors" => {
             let t = lua.create_table()?;
@@ -521,7 +524,7 @@ fn set_opt(_: &Lua, st: &Shared, (key, v): (Value, Value)) -> omnilua::Result<Op
             Value::String(_) => [SimKind::Ngspice, SimKind::Espice]
                 .into_iter()
                 .find(|k| string(&v).as_deref() == Some(k.word()))
-                .map(|k| o.simulator = k),
+                .map(|k| o.simulator = Some(k)),
             _ => None,
         },
         _ => return Ok(Some(format!("unknown option `{key}`"))),
