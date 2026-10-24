@@ -5,6 +5,10 @@
 //! variant, one `RECORDS` row and one entry in each file kind's list; no function body
 //! changes.
 
+use crate::diag::Code;
+use crate::id::is_id;
+use crate::scalar::{CoordError, Orient, is_number, parse_coord};
+
 /// The file kinds of spec §1, named by the third word of the header line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FileKind {
@@ -235,7 +239,77 @@ pub struct Shape {
     pub rest: Rest,
 }
 
+impl Ty {
+    /// Checks value `v` against this slot type (spec §3); returns a coordinate's
+    /// milli-units (`None` for the other types). The reader and the `doc` crate's record
+    /// checks share it, so both report the same code and detail.
+    ///
+    /// # Errors
+    ///
+    /// `E029` with the expected form; `E022` for a coordinate with more than 3
+    /// fractional digits or outside i32 milli-units.
+    pub fn check(self, v: &str) -> Result<Option<i32>, (Code, &'static str)> {
+        let ok = match self {
+            Ty::Any => true,
+            Ty::Id | Ty::IdRef => is_id(v),
+            Ty::Coord => {
+                return parse_coord(v).map(Some).map_err(|e| match e {
+                    CoordError::NotNumber => (Code::E029, "expected a coordinate number"),
+                    CoordError::NotRepresentable => (
+                        Code::E022,
+                        "needs more than 3 fractional digits or overflows i32 milli-units",
+                    ),
+                });
+            }
+            Ty::Number => is_number(v),
+            Ty::Orient => Orient::parse(v).is_some(),
+            Ty::Bool => v == "true" || v == "false",
+            Ty::Choice(words) => words.contains(&v),
+        };
+        if ok {
+            return Ok(None);
+        }
+        Err((
+            Code::E029,
+            match self {
+                Ty::Id | Ty::IdRef => "expected an id (1-13 lowercase Crockford base32 chars)",
+                Ty::Number => "expected a number `-?digits(.digits)?`",
+                Ty::Orient => "expected R0 R90 R180 R270 MR0 MR90 MR180 MR270",
+                Ty::Bool => "expected true or false",
+                // `Any` always passes and `Coord` returned above.
+                Ty::Choice(_) | Ty::Any | Ty::Coord => "value not in the allowed set",
+            },
+        ))
+    }
+}
+
 impl Shape {
+    /// Checks that `n` values fit this shape's arity (spec §4); the error is the `E029`
+    /// detail.
+    ///
+    /// # Errors
+    ///
+    /// Fewer values than fixed slots, or a count `rest` does not allow.
+    pub fn check_arity(&self, n: usize) -> Result<(), &'static str> {
+        let fixed = self.fixed.len();
+        assert!(fixed <= 8, "schema shapes are short");
+        if n < fixed {
+            return Err("too few values");
+        }
+        let extra = n - fixed;
+        let ok = match self.rest {
+            Rest::None => extra == 0,
+            Rest::Optional(_) => extra <= 1,
+            Rest::Many(_) => true,
+            Rest::Pairs(_) => extra.is_multiple_of(2),
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err("wrong number of values")
+        }
+    }
+
     /// Returns the type of slot `i`, or `None` past the end of an arity-bounded shape.
     pub fn ty(&self, i: usize) -> Option<Ty> {
         match (self.fixed.get(i), self.rest) {

@@ -12,9 +12,10 @@
 
 use crate::Code;
 use crate::document::{Document, Loc, TableId};
-use crate::record::{Attr, RecordBuf, is_word};
+use crate::record::{Attr, RecordBuf};
 use crate::strings::ObjId;
 use crate::tables::Instances;
+use schemify_format::is_word;
 use schemify_format::{IdRng, KeyRule, RecordKind, fresh_id, is_number};
 use std::collections::BTreeMap;
 

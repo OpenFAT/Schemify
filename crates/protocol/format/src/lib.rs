@@ -55,13 +55,13 @@ mod schema;
 mod writer;
 
 pub use diag::{Code, Diagnostic, NO_RECORD, ParseError};
-pub use document::{Document, NONE, Texts, VERSION};
+pub use document::{Document, NONE, Texts, VERSION, is_word};
 pub use id::{ID_ALPHABET, ID_LEN_NEW, IdRng, NewId, fresh_id, is_id};
 pub use merge::{Change, ChangeKind, Diff, Merged, Parts, diff, merge3};
 pub use reader::{parse, parse_prefix};
 pub use scalar::{CoordError, Orient, format_coord, is_number, parse_coord};
 pub use schema::{
-    AttrSchema, FileKind, KeyRule, RANK_INHERIT, RANK_POSITIONAL, RecordKind,
-    RecordSchema, Rest, SHAPE_FORMS, Shape, Ty, shape_arity,
+    AttrSchema, FileKind, KeyRule, RANK_INHERIT, RANK_POSITIONAL, RecordKind, RecordSchema, Rest,
+    SHAPE_FORMS, Shape, Ty, shape_arity,
 };
 pub use writer::{write, write_into};

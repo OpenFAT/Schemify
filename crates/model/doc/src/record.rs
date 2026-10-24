@@ -4,8 +4,7 @@
 //! (one allocation per string), never used on the load/save path.
 
 use crate::Code;
-use schemify_format::{CoordError, Orient, is_id, is_number, parse_coord};
-use schemify_format::{Document as FormatDoc, FileKind, RecordKind, Rest, Shape, Ty};
+use schemify_format::{Document as FormatDoc, FileKind, RecordKind, Shape, is_word};
 
 /// One attribute line: key plus values.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -178,54 +177,17 @@ pub(crate) fn check_record(rec: &RecordBuf, file: FileKind) -> Result<(), (Code,
     Ok(())
 }
 
-/// Checks `values` against a schema shape (arity and per-slot value form).
-pub(crate) fn check_shape(shape: &Shape, values: &[String]) -> Result<(), (Code, &'static str)> {
-    let (n, fixed) = (values.len(), shape.fixed.len());
-    assert!(fixed <= 8, "schema shapes are short");
-    let arity_ok = n >= fixed
-        && match shape.rest {
-            Rest::None => n == fixed,
-            Rest::Optional(_) => n <= fixed + 1,
-            Rest::Many(_) => true,
-            Rest::Pairs(_) => (n - fixed) % 2 == 0,
-        };
-    if !arity_ok {
-        return Err((Code::E029, "wrong number of values"));
-    }
+/// Checks `values` against a schema shape: arity, then each value's form (format's own
+/// checks, so an edit is refused with the code and detail a file would get).
+fn check_shape(shape: &Shape, values: &[String]) -> Result<(), (Code, &'static str)> {
+    shape
+        .check_arity(values.len())
+        .map_err(|d| (Code::E029, d))?;
     for (i, v) in values.iter().enumerate() {
         let ty = shape.ty(i).expect("arity checked above");
-        let ok = match ty {
-            Ty::Any => true,
-            Ty::Id | Ty::IdRef => is_id(v),
-            Ty::Coord => match parse_coord(v) {
-                Ok(_) => true,
-                Err(CoordError::NotRepresentable) => {
-                    return Err((
-                        Code::E022,
-                        "coordinate needs more than 3 fractional digits or overflows",
-                    ));
-                }
-                Err(CoordError::NotNumber) => false,
-            },
-            Ty::Number => is_number(v),
-            Ty::Orient => Orient::parse(v).is_some(),
-            Ty::Bool => v == "true" || v == "false",
-            Ty::Choice(words) => words.contains(&v.as_str()),
-        };
-        if !ok {
-            return Err((Code::E029, "value has the wrong form for its slot"));
-        }
+        ty.check(v).map_err(|(c, d)| (Code::from_format(c), d))?;
     }
     Ok(())
-}
-
-/// Returns whether `s` matches the format's `word` production.
-pub(crate) fn is_word(s: &str) -> bool {
-    let b = s.as_bytes();
-    b.first().is_some_and(u8::is_ascii_alphabetic)
-        && b[1..]
-            .iter()
-            .all(|&c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.' | b':'))
 }
 
 #[cfg(test)]
@@ -296,5 +258,30 @@ mod tests {
             .field("0abc")
             .verbatim("a\nb");
         assert_eq!(code(&r, FileKind::Shcomp), Code::E028);
+    }
+
+    /// Oracle: the format reader. An edit and a file with the same bad value are refused
+    /// with the same code and detail, because both run format's `Ty::check`.
+    #[test]
+    fn edits_and_files_report_the_same_value_error() {
+        for (at, field) in [
+            (["0", "0.0005", "R0"], "0gsrp0"),
+            (["0", "x", "R0"], "0gsrp0"),
+            (["0", "0", "R45"], "0gsrp0"),
+            (["0", "0", "R0"], "BAD"),
+        ] {
+            let mut r = inst();
+            r.fields[0] = field.into();
+            r.attrs[0].values = at.iter().map(|v| (*v).to_owned()).collect();
+            let text = format!(
+                "schemify 1 shbench\n\ninst {field} sky130:nfet_01v8\n  at {}\n  name M1\n",
+                at.join(" ")
+            );
+            let d = schemify_format::parse(text.as_bytes())
+                .unwrap_err()
+                .diagnostics[0];
+            let edit = check_record(&r, FileKind::Shbench).unwrap_err();
+            assert_eq!(edit, (Code::from_format(d.code), d.detail), "{text}");
+        }
     }
 }

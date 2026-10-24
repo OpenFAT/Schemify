@@ -147,8 +147,9 @@ fn csr(starts: &[u32], i: u32, total: usize) -> Range<usize> {
     start..end
 }
 
-/// Returns whether `s` matches the spec `word` production.
-pub(crate) fn is_word(s: &str) -> bool {
+/// Returns whether `s` matches the spec `word` production: an ASCII letter, then ASCII
+/// letters, digits and `_ - . :` (record words and attribute keys).
+pub fn is_word(s: &str) -> bool {
     let b = s.as_bytes();
     b.first().is_some_and(u8::is_ascii_alphabetic) && b[1..].iter().all(|&c| is_word_byte(c))
 }

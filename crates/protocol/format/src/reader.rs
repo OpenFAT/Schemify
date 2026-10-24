@@ -10,9 +10,8 @@
 
 use crate::diag::{Code, Diagnostic, NO_RECORD, ParseError};
 use crate::document::{Document, NONE, Str, VERSION, is_word_byte, push_coord, resolve};
-use crate::id::{id_sort_key, is_id};
-use crate::scalar::{CoordError, Orient, is_number, parse_coord};
-use crate::schema::{FileKind, KeyRule, RANK_MAX, RecordKind, Rest, Shape, Ty};
+use crate::id::id_sort_key;
+use crate::schema::{FileKind, KeyRule, RANK_MAX, RecordKind, Shape};
 
 /// Largest file the reader accepts (spec §2, `E021`).
 pub(crate) const MAX_FILE_BYTES: usize = 1 << 30;
@@ -554,40 +553,6 @@ fn column(doc: &Document<'_>, s: Str) -> u32 {
     (off - line_start + 1) as u32
 }
 
-/// Checks one value against a slot type; returns a coordinate's milli-units.
-fn check_ty(ty: Ty, v: &str) -> Result<Option<i32>, (Code, &'static str)> {
-    let ok = match ty {
-        Ty::Any => true,
-        Ty::Id | Ty::IdRef => is_id(v),
-        Ty::Coord => {
-            return parse_coord(v).map(Some).map_err(|e| match e {
-                CoordError::NotNumber => (Code::E029, "expected a coordinate number"),
-                CoordError::NotRepresentable => (
-                    Code::E022,
-                    "needs more than 3 fractional digits or overflows i32 milli-units",
-                ),
-            });
-        }
-        Ty::Number => is_number(v),
-        Ty::Orient => Orient::parse(v).is_some(),
-        Ty::Bool => v == "true" || v == "false",
-        Ty::Choice(words) => words.contains(&v),
-    };
-    if ok {
-        return Ok(None);
-    }
-    Err((
-        Code::E029,
-        match ty {
-            Ty::Id | Ty::IdRef => "expected an id (1-13 lowercase Crockford base32 chars)",
-            Ty::Number => "expected a number `-?digits(.digits)?`",
-            Ty::Orient => "expected R0 R90 R180 R270 MR0 MR90 MR180 MR270",
-            Ty::Bool => "expected true or false",
-            _ => "value not in the allowed set",
-        },
-    ))
-}
-
 /// Checks a value list against a shape and makes its coordinates canonical: a value
 /// that is not its shortest decimal is re-formatted into `arena` and its span replaced.
 /// Fills `coords` with each slot's milli-units (`None` for other and bad values); every
@@ -602,26 +567,14 @@ fn check_shape(
     coords: &mut Vec<Option<i32>>,
 ) -> Result<(), (u32, Code, &'static str)> {
     coords.clear();
-    let (n, fixed) = (values.len(), shape.fixed.len());
-    assert!(fixed <= 8, "schema shapes are short");
-    if n < fixed {
-        return Err((NONE, Code::E029, "too few values"));
-    }
-    let extra = n - fixed;
-    let arity_ok = match shape.rest {
-        Rest::None => extra == 0,
-        Rest::Optional(_) => extra <= 1,
-        Rest::Many(_) => true,
-        Rest::Pairs(_) => extra % 2 == 0,
-    };
-    if !arity_ok {
-        return Err((NONE, Code::E029, "wrong number of values"));
-    }
+    shape
+        .check_arity(values.len())
+        .map_err(|detail| (NONE, Code::E029, detail))?;
     let mut first = Ok(());
     for (i, s) in values.iter_mut().enumerate() {
         let ty = shape.ty(i).expect("arity checked above");
         let text = resolve(src, arena, *s);
-        let coord = match check_ty(ty, text) {
+        let coord = match ty.check(text) {
             Ok(Some(milli)) if !is_shortest_coord(text) => {
                 *s = push_coord(arena, milli);
                 Some(milli)
@@ -870,7 +823,7 @@ fn is_shortest_coord(t: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scalar::format_coord;
+    use crate::scalar::{format_coord, parse_coord};
 
     #[test]
     fn shortest_coord_predicate_matches_the_formatter() {
