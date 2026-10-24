@@ -152,8 +152,8 @@ pub struct Defs {
     /// its instance lines (spec §7.6.15). Empty for a bench top (its code is
     /// [`Bench`]'s) and for CDL.
     pub code: Vec<Name>,
+    /// The tuple text of each row (spec §6), read by the definition naming.
     key: Vec<String>,
-    sig: Vec<String>,
 }
 
 /// Instance rows of all definitions, grouped by definition (`Defs::inst_start`), each
@@ -1570,7 +1570,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             crate::connect::push_decimal(n, &mut sig);
             sig.push(',');
         }
-        let full = (ci, key.clone(), sig.clone());
+        let full = (ci, key.clone(), sig);
         if let Some(&d) = self.by_key.get(&full) {
             if !sensitive {
                 self.memo.insert((ci, key), d);
@@ -1643,7 +1643,6 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         self.push_def_code(ci);
         self.defs.name.push(Name::NONE);
         self.defs.key.push(key.clone());
-        self.defs.sig.push(sig);
         self.defs
             .param_start
             .push(self.defs.param_name.len() as u32);
