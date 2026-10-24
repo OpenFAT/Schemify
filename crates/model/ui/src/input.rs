@@ -122,22 +122,21 @@ impl InputEvents {
 
     /// Appends a committed-text event.
     pub fn push_text(&mut self, s: &str) -> bool {
-        let start = self.text.len() as u32;
-        self.text.push_str(s);
-        self.push(InputEvent::Text {
-            start,
-            end: self.text.len() as u32,
-        })
+        let (start, end) = self.payload(s);
+        self.push(InputEvent::Text { start, end })
     }
 
     /// Appends an IME preedit event.
     pub fn push_preedit(&mut self, s: &str) -> bool {
+        let (start, end) = self.payload(s);
+        self.push(InputEvent::Preedit { start, end })
+    }
+
+    /// Appends `s` to the text payloads; returns its byte range.
+    fn payload(&mut self, s: &str) -> (u32, u32) {
         let start = self.text.len() as u32;
         self.text.push_str(s);
-        self.push(InputEvent::Preedit {
-            start,
-            end: self.text.len() as u32,
-        })
+        (start, self.text.len() as u32)
     }
 
     /// Empties the table, keeping its allocation.
@@ -272,16 +271,7 @@ impl UiState {
     /// Sets the scroll offset of node `id`, clamped to `[0, max]`.
     pub fn set_scroll(&mut self, id: Sym, offset: f32, max: f32) {
         let v = offset.clamp(0.0, max.max(0.0));
-        match self.scroll.iter_mut().find(|(s, _)| *s == id) {
-            Some(e) => e.1 = v,
-            None => {
-                if self.scroll.len() >= Self::MAX_SCROLL {
-                    self.scroll.remove(0);
-                }
-                self.scroll.push((id, v));
-            }
-        }
-        debug_assert!(self.scroll.len() <= Self::MAX_SCROLL);
+        remember(&mut self.scroll, Self::MAX_SCROLL, id, v);
     }
 
     /// Size in pixels of `split` node `id`'s second pane along the split's axis, once its
@@ -298,16 +288,7 @@ impl UiState {
     /// Panics if `px` is negative or not finite.
     pub fn set_split(&mut self, id: Sym, px: f32) {
         assert!(px.is_finite() && px >= 0.0, "split size must be finite");
-        match self.split.iter_mut().find(|(s, _)| *s == id) {
-            Some(e) => e.1 = px,
-            None => {
-                if self.split.len() >= Self::MAX_SPLIT {
-                    self.split.remove(0);
-                }
-                self.split.push((id, px));
-            }
-        }
-        debug_assert!(self.split.len() <= Self::MAX_SPLIT);
+        remember(&mut self.split, Self::MAX_SPLIT, id, px);
     }
 
     /// Opens a chain of menus (menubar menu first); used by tests and by keyboard menu access.
@@ -373,8 +354,7 @@ impl UiState {
         let r = layout.row_of(n)?;
         let l = ed.try_layout()?;
         let area = layout.rect[r];
-        let style =
-            |p| crate::layout::row_style(tables, layout.title_style, n, Shown::Normal, p) as f32;
+        let style = |p| layout.style(tables, n, p);
         // Where the painter puts the text: top-left inside the padding (text areas) or
         // vertically centered (single-line fields).
         let top = if tables.nodes.kind[n as usize] == Kind::TextArea {
@@ -430,6 +410,21 @@ impl UiState {
         assert_eq!(self.focus, node);
         true
     }
+}
+
+/// Sets `id`'s value in a per-node table of at most `cap` rows, forgetting the oldest row to
+/// make room.
+fn remember(rows: &mut Vec<(Sym, f32)>, cap: usize, id: Sym, v: f32) {
+    match rows.iter_mut().find(|(s, _)| *s == id) {
+        Some(e) => e.1 = v,
+        None => {
+            if rows.len() >= cap {
+                rows.remove(0);
+            }
+            rows.push((id, v));
+        }
+    }
+    debug_assert!(rows.len() <= cap);
 }
 
 fn interactive(kind: Kind, shown: Shown) -> bool {
@@ -843,8 +838,7 @@ fn drag_split(tables: &UiTables, layout: &UiLayout, state: &mut UiState, x: f32,
         return;
     };
     let n = layout.node[r];
-    let style =
-        |p| crate::layout::row_style(tables, layout.title_style, n, Shown::Normal, p) as f32;
+    let style = |p| layout.style(tables, n, p);
     let gap = style(StyleProp::Gap).max(crate::layout::SPLIT_GAP);
     let rect = layout.rect[r];
     let horiz = style(StyleProp::Dir) != 0.0;
@@ -1077,8 +1071,7 @@ fn focus_field(
     let n = layout.node[r];
     let i = n as usize;
     let rect = layout.rect[r];
-    let style =
-        |p| crate::layout::row_style(tables, layout.title_style, n, Shown::Normal, p) as f32;
+    let style = |p| layout.style(tables, n, p);
     let (pad, font) = (style(StyleProp::Pad), style(StyleProp::Font).max(8.0));
     let area = tables.nodes.kind[i] == Kind::TextArea;
     let top = if area { style(StyleProp::PadY) } else { 0.0 };
@@ -1116,13 +1109,7 @@ fn follow_caret(tables: &UiTables, layout: &UiLayout, text: &TextSystem, state: 
     ) else {
         return;
     };
-    let pad_y = crate::layout::row_style(
-        tables,
-        layout.title_style,
-        n,
-        Shown::Normal,
-        StyleProp::PadY,
-    ) as f32;
+    let pad_y = layout.style(tables, n, StyleProp::PadY);
     let view = layout.rect[r].h - 2.0 * pad_y;
     let max = area_scroll_max(tables, layout, text, state, r);
     let now = state.scroll_of(state.focus);

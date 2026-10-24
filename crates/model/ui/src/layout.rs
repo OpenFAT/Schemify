@@ -213,6 +213,11 @@ impl UiLayout {
         self.title_style
     }
 
+    /// [`row_style`] of `node` shown normally, as a float (what input and painting measure with).
+    pub(crate) fn style(&self, tables: &UiTables, node: NodeIx, prop: StyleProp) -> f32 {
+        row_style(tables, self.title_style, node, Shown::Normal, prop) as f32
+    }
+
     /// First row showing `node` normally, as a title or as a cascade row (not as a popup).
     pub fn row_of(&self, node: NodeIx) -> Option<usize> {
         (0..self.len()).find(|&r| self.node[r] == node && self.shown[r] != Shown::Popup)
@@ -238,13 +243,7 @@ pub fn area_scroll_max(
 ) -> f32 {
     let n = layout.node[r];
     debug_assert_eq!(tables.nodes.kind[n as usize], Kind::TextArea);
-    let pad_y = row_style(
-        tables,
-        layout.title_style,
-        n,
-        Shown::Normal,
-        StyleProp::PadY,
-    ) as f32;
+    let pad_y = layout.style(tables, n, StyleProp::PadY);
     let content = if state.focus == tables.nodes.id[n as usize] {
         let ed = state.editor.as_ref().and_then(|e| e.try_layout());
         ed.map_or(0.0, |l| l.height())
@@ -495,12 +494,7 @@ impl Builder<'_> {
                 width: length(gap),
                 height: length(gap),
             };
-            style.padding = taffy::Rect {
-                left: length(pad),
-                right: length(pad),
-                top: length(pad_y),
-                bottom: length(pad_y),
-            };
+            style.padding = padding(pad, pad_y);
             style.size = Size {
                 width: if fixed_w > 0.0 {
                     length(fixed_w)
@@ -556,12 +550,7 @@ impl Builder<'_> {
             let font = st(self, StyleProp::Font).max(8.0);
             if kind == Kind::Prose {
                 // Width comes from the parent (stretch); the height is measured at that width.
-                style.padding = taffy::Rect {
-                    left: length(pad),
-                    right: length(pad),
-                    top: length(pad_y),
-                    bottom: length(pad_y),
-                };
+                style.padding = padding(pad, pad_y);
                 style.min_size.width = length(min_w);
                 let ctx = ProseCtx {
                     src: self.tables.nodes.prop(Prop::Value)[i],
@@ -681,6 +670,20 @@ impl Builder<'_> {
         }
         self.tree.set_style(first, a).expect("pane style");
         self.tree.set_style(second, b).expect("pane style");
+    }
+
+    /// Builds and places `node` as its own root at its content size, at the origin (the
+    /// caller shifts it into place). Returns its first row and its size.
+    fn float(&mut self, node: NodeIx, shown: Shown, out: &mut Frame) -> (usize, f32, f32) {
+        let start = self.rows.len();
+        let root = self.build(node, shown, NO_ROW, 0.0);
+        let max_content = Size {
+            width: AvailableSpace::MaxContent,
+            height: AvailableSpace::MaxContent,
+        };
+        self.place(start, root, max_content, (0.0, 0.0), out);
+        let r = out.rect[start];
+        (start, r.w, r.h)
     }
 
     /// Indicator inset for a popup: reserved for every row when any row is checkable, so labels
@@ -805,6 +808,16 @@ impl Builder<'_> {
     }
 }
 
+/// Taffy padding of `pad` left and right, `pad_y` above and below.
+fn padding(pad: f32, pad_y: f32) -> taffy::Rect<LengthPercentage> {
+    taffy::Rect {
+        left: length(pad),
+        right: length(pad),
+        top: length(pad_y),
+        bottom: length(pad_y),
+    }
+}
+
 /// Rectangles, clips and scroll extents accumulated across [`Builder::place`] calls.
 #[derive(Default)]
 struct Frame {
@@ -864,10 +877,6 @@ pub fn layout(
         b.place(0, root, avail, (0.0, 0.0), &mut f);
     }
     let overlay_start = b.rows.len() as u32;
-    let max_content = Size {
-        width: AvailableSpace::MaxContent,
-        height: AvailableSpace::MaxContent,
-    };
     // Floats: each child of the canvas, laid out at its content size and centred along the
     // canvas's top edge, so it paints above the schematic but under any dialog or popup.
     // ponytail: every float takes the same spot; add an anchor style prop for a second one.
@@ -877,10 +886,7 @@ pub fn layout(
         let c = f.rect[cr];
         let kids: Vec<NodeIx> = nodes.children(b.rows[cr].node).collect();
         for k in kids {
-            let start = b.rows.len();
-            let root = b.build(k, Shown::Normal, NO_ROW, 0.0);
-            b.place(start, root, max_content, (0.0, 0.0), &mut f);
-            let w = f.rect[start].w;
+            let (start, w, _) = b.float(k, Shown::Normal, &mut f);
             f.shift(start, c.x + ((c.w - w) / 2.0).max(0.0), c.y + FLOAT_INSET);
         }
     }
@@ -892,10 +898,7 @@ pub fn layout(
         .find(state.dialog)
         .filter(|&d| nodes.kind[d as usize] == Kind::Dialog)
     {
-        let start = b.rows.len();
-        let root = b.build(d, Shown::Normal, NO_ROW, 0.0);
-        b.place(start, root, max_content, (0.0, 0.0), &mut f);
-        let (w, h) = (f.rect[start].w, f.rect[start].h);
+        let (start, w, h) = b.float(d, Shown::Normal, &mut f);
         // At a point (a context menu) or where the user dragged it: kept inside the viewport.
         let (dx, dy) = match state.dialog_at.or(state.dialog_pos) {
             Some((x, y)) => (
@@ -920,10 +923,7 @@ pub fn layout(
         // Menubar titles and dropdowns drop down; cascades open to the right.
         let below = b.rows[a].shown == Shown::Title
             || (b.rows[a].shown == Shown::Normal && nodes.kind[m as usize] == Kind::Dropdown);
-        let start = b.rows.len();
-        let root = b.build(m, Shown::Popup, NO_ROW, 0.0);
-        b.place(start, root, max_content, (0.0, 0.0), &mut f);
-        let (pw, ph) = (f.rect[start].w, f.rect[start].h);
+        let (start, pw, ph) = b.float(m, Shown::Popup, &mut f);
         let mut x = if below { ar.x } else { ar.x + ar.w };
         let mut y = if below { ar.y + ar.h } else { ar.y };
         x = x.min(viewport.0 - pw).max(0.0);
