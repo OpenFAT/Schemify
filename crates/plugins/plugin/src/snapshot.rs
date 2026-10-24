@@ -96,18 +96,8 @@ impl Snapshots {
     ///
     /// Panics if the column is not of type `T` or `values.len() > ROWS_MAX`.
     pub fn fill<T: Scalar>(&mut self, table: Table, column: u32, values: &[T]) {
-        let def = table.columns()[column as usize];
-        assert_eq!(
-            def.ty,
-            T::TY,
-            "{}.{} is {}",
-            table.name(),
-            def.name,
-            def.ty.name()
-        );
         assert!(values.len() <= ROWS_MAX as usize);
-        let t = &mut self.tables[table as usize];
-        let c = &mut t.columns[column as usize];
+        let c = self.column_mut(table, column, T::TY);
         c.bytes.clear();
         // Room for later splices to grow into without reallocating the column.
         let rows = values.len() + values.len() / 8;
@@ -115,7 +105,6 @@ impl Snapshots {
         for &v in values {
             v.put_le(&mut c.bytes);
         }
-        t.epoch = t.epoch.wrapping_add(1);
         debug_assert_eq!(c.bytes.len(), values.len() * usize::from(T::TY.width()));
     }
 
@@ -126,18 +115,8 @@ impl Snapshots {
     /// Panics if the column is not a string column, `values.len() > ROWS_MAX`, or the
     /// strings total 4 GiB or more.
     pub fn fill_strings<S: AsRef<str>>(&mut self, table: Table, column: u32, values: &[S]) {
-        let def = table.columns()[column as usize];
-        assert_eq!(
-            def.ty,
-            ColType::Str,
-            "{}.{} is {}",
-            table.name(),
-            def.name,
-            def.ty.name()
-        );
         assert!(values.len() <= ROWS_MAX as usize);
-        let t = &mut self.tables[table as usize];
-        let c = &mut t.columns[column as usize];
+        let c = self.column_mut(table, column, ColType::Str);
         c.bytes.clear();
         c.ends.clear();
         c.ends.reserve(values.len() + values.len() / 8);
@@ -146,7 +125,6 @@ impl Snapshots {
             c.ends
                 .push(u32::try_from(c.bytes.len()).expect("string column under 4 GiB"));
         }
-        t.epoch = t.epoch.wrapping_add(1);
         debug_assert_eq!(c.ends.len(), values.len());
     }
 
@@ -166,17 +144,7 @@ impl Snapshots {
         at: std::ops::Range<usize>,
         values: &[T],
     ) {
-        let def = table.columns()[column as usize];
-        assert_eq!(
-            def.ty,
-            T::TY,
-            "{}.{} is {}",
-            table.name(),
-            def.name,
-            def.ty.name()
-        );
-        let t = &mut self.tables[table as usize];
-        let c = &mut t.columns[column as usize];
+        let c = self.column_mut(table, column, T::TY);
         let w = usize::from(T::TY.width());
         let rows = c.bytes.len() / w;
         assert!(
@@ -189,7 +157,6 @@ impl Snapshots {
             v.put_le(&mut enc);
         }
         c.bytes.splice(at.start * w..at.end * w, enc);
-        t.epoch = t.epoch.wrapping_add(1);
         debug_assert_eq!(c.bytes.len(), (rows - at.len() + values.len()) * w);
     }
 
@@ -206,24 +173,13 @@ impl Snapshots {
         at: std::ops::Range<usize>,
         values: &[S],
     ) {
-        let def = table.columns()[column as usize];
-        assert_eq!(
-            def.ty,
-            ColType::Str,
-            "{}.{} is {}",
-            table.name(),
-            def.name,
-            def.ty.name()
-        );
-        let t = &mut self.tables[table as usize];
-        let c = &mut t.columns[column as usize];
+        let c = self.column_mut(table, column, ColType::Str);
         let rows = c.ends.len();
         assert!(
             at.start <= at.end && at.end <= rows,
             "rows {at:?} of {rows}"
         );
-        let end_of = |i: usize| if i == 0 { 0 } else { c.ends[i - 1] as usize };
-        let (b0, b1) = (end_of(at.start), end_of(at.end));
+        let (b0, b1) = (row_start(&c.ends, at.start), row_start(&c.ends, at.end));
         let mut bytes = Vec::new();
         let mut ends = Vec::with_capacity(values.len());
         for v in values {
@@ -239,7 +195,6 @@ impl Snapshots {
         for e in &mut c.ends[at.start + n..] {
             *e = (i64::from(*e) + grown) as u32;
         }
-        t.epoch = t.epoch.wrapping_add(1);
         debug_assert!(c.ends.last().is_none_or(|&e| e == total));
         debug_assert!(c.ends.windows(2).all(|p| p[0] <= p[1]));
     }
@@ -309,8 +264,7 @@ impl Snapshots {
             .key
             .binary_search(&((u64::from(doc) << 32) | u64::from(id)))
             .ok()?;
-        let start = if i == 0 { 0 } else { r.ends[i - 1] as usize };
-        Some(&r.text[start..r.ends[i] as usize])
+        Some(&r.text[row_start(&r.ends, i)..r.ends[i] as usize])
     }
 
     /// Returns whether `doc` is a live handle in the `Docs` table.
@@ -354,16 +308,7 @@ impl Snapshots {
         count: u32,
     ) -> Result<usize, Code> {
         let (rows, c) = self.string_rows(table, column, start, count)?;
-        let first = if rows.start == 0 {
-            0
-        } else {
-            c.ends[rows.start - 1] as usize
-        };
-        let last = if rows.end == 0 {
-            0
-        } else {
-            c.ends[rows.end - 1] as usize
-        };
+        let (first, last) = (row_start(&c.ends, rows.start), row_start(&c.ends, rows.end));
         debug_assert!(first <= last, "string ends are non-decreasing");
         Ok(4 * rows.len() + (last - first))
     }
@@ -383,8 +328,7 @@ impl Snapshots {
             .expect("validated by strings_len");
         let mut at = 0;
         for i in rows {
-            let begin = if i == 0 { 0 } else { c.ends[i - 1] as usize };
-            let s = &c.bytes[begin..c.ends[i] as usize];
+            let s = &c.bytes[row_start(&c.ends, i)..c.ends[i] as usize];
             dst[at..at + 4]
                 .copy_from_slice(&u32::try_from(s.len()).expect("< 4 GiB").to_le_bytes());
             dst[at + 4..at + 4 + s.len()].copy_from_slice(s);
@@ -410,6 +354,23 @@ impl Snapshots {
         ))
     }
 
+    /// Column `column` of `table` for writing, after checking it holds `ty`; advances the
+    /// table's epoch.
+    fn column_mut(&mut self, table: Table, column: u32, ty: ColType) -> &mut Column {
+        let def = table.columns()[column as usize];
+        assert_eq!(
+            def.ty,
+            ty,
+            "{}.{} is {}",
+            table.name(),
+            def.name,
+            def.ty.name()
+        );
+        let t = &mut self.tables[table as usize];
+        t.epoch = t.epoch.wrapping_add(1);
+        &mut t.columns[column as usize]
+    }
+
     fn column(&self, table: u32, column: u32) -> Result<(Table, &Column), Code> {
         let table = Table::from_raw(table).ok_or(Code::Table)?;
         let c = self.tables[table as usize]
@@ -418,6 +379,11 @@ impl Snapshots {
             .ok_or(Code::Column)?;
         Ok((table, c))
     }
+}
+
+/// Start of row `i` in a byte run whose rows end at `ends` (row `i` is `start..ends[i]`).
+pub(crate) fn row_start(ends: &[u32], i: usize) -> usize {
+    i.checked_sub(1).map_or(0, |p| ends[p] as usize)
 }
 
 fn rows_of(table: Table, column: usize, c: &Column) -> u32 {
