@@ -228,6 +228,18 @@ pub(crate) fn len(t: &CanvasPrims, table: Table) -> usize {
     }
 }
 
+/// The layer column of `table`.
+pub(crate) fn layers(t: &CanvasPrims, table: Table) -> &[u8] {
+    match table {
+        Table::Lines => &t.lines.layer,
+        Table::Rects => &t.rects.layer,
+        Table::Arcs => &t.arcs.layer,
+        Table::Polylines => &t.polylines.layer,
+        Table::Polygons => &t.polygons.layer,
+        Table::Texts => &t.texts.layer,
+    }
+}
+
 /// Folds one field into a row hash (deterministic on every target).
 fn mix(h: u64, v: i64) -> u64 {
     (h.rotate_left(5) ^ v as u64).wrapping_mul(0x517c_c1b7_2722_0a95)

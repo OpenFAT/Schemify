@@ -14,8 +14,8 @@
 //!    appended; the owner rebuilds it then.
 //! 6. Kinds are independent (parallelizable; not needed at ~10 ms per 10^6 rows).
 
-use crate::CanvasPrims;
-use crate::damage::{TABLES, len, row};
+use crate::damage::{TABLES, layers, len, row};
+use crate::{CanvasPrims, LAYER_DEAD};
 
 /// Rows a row may touch before it is kept in the cell-free list (drawn whenever queried).
 const SPAN_CELLS: u64 = 16;
@@ -135,12 +135,20 @@ impl PrimIndex {
     ///
     /// Cost: O(rows) time, two passes; O(rows) memory.
     pub fn build(t: &CanvasPrims) -> PrimIndex {
-        let n = t.len();
+        // Dead rows are neither gridded nor widen the extent: their columns hold the deleted
+        // objects' coordinates.
+        let dead: [&[u8]; 6] = TABLES.map(|tb| layers(t, tb));
         let mut ext = [i64::MAX, i64::MAX, i64::MIN, i64::MIN];
+        let mut n = 0;
         let mut boxes: [Vec<[i32; 4]>; 6] = Default::default();
         for (k, table) in TABLES.into_iter().enumerate() {
             boxes[k] = (0..len(t, table)).map(|i| row(t, table, i).1).collect();
-            for b in &boxes[k] {
+            for (b, _) in boxes[k]
+                .iter()
+                .zip(dead[k])
+                .filter(|(_, l)| **l != LAYER_DEAD)
+            {
+                n += 1;
                 ext = [
                     ext[0].min(i64::from(b[0])),
                     ext[1].min(i64::from(b[1])),
@@ -186,7 +194,7 @@ impl PrimIndex {
         };
         for (k, boxes) in boxes.iter().enumerate() {
             let mut count = vec![0u32; cols * rows + 1];
-            let dead = |i: usize| is_dead(t, TABLES[k], i);
+            let dead = |i: usize| dead[k][i] == LAYER_DEAD;
             for (i, b) in boxes.iter().enumerate() {
                 if dead(i) {
                     continue;
@@ -417,23 +425,9 @@ fn ascending(rows: &mut Vec<u32>, seen: &mut Vec<u64>) {
     assert!(rows.len() <= k && rows.windows(2).all(|w| w[0] < w[1]));
 }
 
-/// Row `i`'s world box, or `None` when the row is dead.
+/// Row `i`'s world box, or `None` when the row was killed ([`CanvasPrims::kill`]).
 fn live(t: &CanvasPrims, table: crate::damage::Table, i: usize) -> Option<[i32; 4]> {
-    (!is_dead(t, table, i)).then(|| row(t, table, i).1)
-}
-
-/// Whether row `i` was killed ([`CanvasPrims::kill`]).
-fn is_dead(t: &CanvasPrims, table: crate::damage::Table, i: usize) -> bool {
-    use crate::damage::Table;
-    let layer = match table {
-        Table::Lines => t.lines.layer[i],
-        Table::Rects => t.rects.layer[i],
-        Table::Arcs => t.arcs.layer[i],
-        Table::Polylines => t.polylines.layer[i],
-        Table::Polygons => t.polygons.layer[i],
-        Table::Texts => t.texts.layer[i],
-    };
-    layer == crate::LAYER_DEAD
+    (layers(t, table)[i] != LAYER_DEAD).then(|| row(t, table, i).1)
 }
 
 /// Merges the sorted `new` into the sorted `into` in one backwards pass (no reallocation past
@@ -705,6 +699,35 @@ mod tests {
             !ix.follow(&shrunk),
             "a shrunk table is not a kill-and-append edit"
         );
+    }
+
+    /// Regression (HANDOFF latent bug 4): a killed far-away row neither widens the grid nor
+    /// is listed; the grid equals the one built without it.
+    #[test]
+    fn dead_rows_do_not_widen_the_grid() {
+        let mut t = CanvasPrims::default();
+        for i in 0..100 {
+            t.line(i * 1_000, 0, i * 1_000 + 500, 500, 1);
+        }
+        let want = PrimIndex::build(&t);
+        t.line(
+            -2_000_000_000,
+            -2_000_000_000,
+            2_000_000_000,
+            2_000_000_000,
+            1,
+        );
+        t.kill(0, 100);
+        let ix = PrimIndex::build(&t);
+        assert_eq!(
+            (ix.x0, ix.y0, ix.cell, ix.cols, ix.rows),
+            (want.x0, want.y0, want.cell, want.cols, want.rows)
+        );
+        assert!(ix.wide[0].is_empty() && !ix.items[0].contains(&100));
+        let mut all_dead = CanvasPrims::default();
+        all_dead.line(0, 0, 10, 10, 1);
+        all_dead.kill(0, 0);
+        assert_eq!(PrimIndex::build(&all_dead).cols, 1, "no live row: one cell");
     }
 
     /// Oracle: both routes of `ascending` (bitmap for many rows, sort for few) equal a sort
