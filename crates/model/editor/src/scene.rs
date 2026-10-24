@@ -1741,24 +1741,33 @@ fn seg_dist(p: (f64, f64), g: [i32; 4]) -> f64 {
 /// Objects selected by a box `[x0, y0, x1, y1]` (any corner order): fully inside it, or,
 /// with `touch` (xschem's right-to-left drag), any object whose box meets it.
 pub fn box_select(objs: &Objects, r: [f64; 4], touch: bool) -> Vec<u32> {
-    let (x0, y0, x1, y1) = (
-        r[0].min(r[2]),
-        r[1].min(r[3]),
-        r[0].max(r[2]),
-        r[1].max(r[3]),
-    );
-    let mut out = Vec::new();
-    for i in 0..objs.len() {
-        let b = objs.bbox(i).map(f64::from);
-        let ok = if touch {
-            b[0] <= x1 && b[2] >= x0 && b[1] <= y1 && b[3] >= y0
-        } else {
-            b[0] >= x0 && b[2] <= x1 && b[1] >= y0 && b[3] <= y1
-        };
-        if ok {
-            out.push(i as u32);
+    assert!(r.iter().all(|v| v.is_finite()), "a finite box");
+    assert!(objs.len() <= CanvasPrims::CAPACITY);
+    // Object boxes are integers, so the f64 box rounds to the i32 one that keeps exactly the
+    // same objects: `b <= x1` ⇔ `b <= floor(x1)`, `b >= x0` ⇔ `b >= ceil(x0)`.
+    let lim = |v: f64| v.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+    let (x0, y0) = (lim(r[0].min(r[2]).ceil()), lim(r[1].min(r[3]).ceil()));
+    let (x1, y1) = (lim(r[0].max(r[2]).floor()), lim(r[1].max(r[3]).floor()));
+    // Branchless compaction: selectivity runs 0–100 % as the box grows, so a branch per
+    // object would mispredict; every index is stored, the count advances by the test.
+    let mut out = vec![0u32; objs.len()];
+    let mut n = 0;
+    if touch {
+        for (i, g) in objs.geom.iter().enumerate() {
+            let (b0, b2) = (g[0].min(g[2]), g[0].max(g[2]));
+            let (b1, b3) = (g[1].min(g[3]), g[1].max(g[3]));
+            out[n] = i as u32;
+            n += usize::from((b0 <= x1) & (b2 >= x0) & (b1 <= y1) & (b3 >= y0));
+        }
+    } else {
+        for (i, g) in objs.geom.iter().enumerate() {
+            let (b0, b2) = (g[0].min(g[2]), g[0].max(g[2]));
+            let (b1, b3) = (g[1].min(g[3]), g[1].max(g[3]));
+            out[n] = i as u32;
+            n += usize::from((b0 >= x0) & (b2 <= x1) & (b1 >= y0) & (b3 <= y1));
         }
     }
+    out.truncate(n);
     assert!(out.windows(2).all(|w| w[0] < w[1]));
     out
 }
@@ -2009,6 +2018,101 @@ pub fn preview_records_on(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The f64 box test object by object: the oracle of [`box_select`].
+    fn box_select_scalar(objs: &Objects, r: [f64; 4], touch: bool) -> Vec<u32> {
+        let (x0, y0, x1, y1) = (
+            r[0].min(r[2]),
+            r[1].min(r[3]),
+            r[0].max(r[2]),
+            r[1].max(r[3]),
+        );
+        let mut out = Vec::new();
+        for i in 0..objs.len() {
+            let b = objs.bbox(i).map(f64::from);
+            let ok = if touch {
+                b[0] <= x1 && b[2] >= x0 && b[1] <= y1 && b[3] >= y0
+            } else {
+                b[0] >= x0 && b[2] <= x1 && b[1] >= y0 && b[3] <= y1
+            };
+            if ok {
+                out.push(i as u32);
+            }
+        }
+        out
+    }
+
+    /// `n` objects with random boxes and segments in a ±`span` square (an xorshift stream).
+    fn random_objects(n: usize, span: i32, seed: u64) -> Objects {
+        let mut x = seed | 1;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x % (2 * span as u64 + 1)) as i32 - span
+        };
+        let mut objs = Objects::default();
+        for i in 0..n {
+            let g = [next(), next(), next(), next()];
+            let key = ObjKey {
+                table: TableId::Wires,
+                key: i as u32,
+            };
+            objs.push(key, g, i % 3 == 0);
+        }
+        objs
+    }
+
+    /// Oracle: the i32 branchless box select keeps exactly what the f64 test keeps, for
+    /// boxes on, between and outside integer coordinates, both drag directions, empty and
+    /// inverted boxes, and sizes around every lane boundary.
+    #[test]
+    fn box_select_equals_the_scalar_box_test() {
+        for n in [0, 1, 2, 7, 8, 9, 63, 64, 65, 1000] {
+            let objs = random_objects(n, 50, n as u64 + 3);
+            for r in [
+                [-10.0, -10.0, 10.0, 10.0],
+                [10.5, 10.5, -10.5, -10.5],
+                [-0.5, -60.0, 0.5, 60.0],
+                [-60.0, -60.0, 60.0, 60.0],
+                [3.0, 3.0, 3.0, 3.0],
+                [1e12, 1e12, 2e12, 2e12],
+                [-1e12, -1e12, 1e12, 1e12],
+            ] {
+                for touch in [false, true] {
+                    assert_eq!(
+                        box_select(&objs, r, touch),
+                        box_select_scalar(&objs, r, touch),
+                        "n {n} box {r:?} touch {touch}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Selectivity sweep at 10^6 objects, scalar against branchless (`cargo test --release
+    /// -p schemify-editor box_select_sweep -- --ignored --nocapture`).
+    #[test]
+    #[ignore = "benchmark"]
+    fn box_select_sweep() {
+        let objs = random_objects(1_000_000, 1_000_000, 7);
+        for pct in [0, 10, 25, 50, 75, 90, 100] {
+            let h = -1e6 + 2e6 * f64::from(pct) / 100.0;
+            let r = [-1e6 - 1.0, -1e6 - 1.0, 1e6 + 1.0, h];
+            let time = |f: &dyn Fn() -> Vec<u32>| {
+                let t = std::time::Instant::now();
+                let mut n = 0;
+                for _ in 0..10 {
+                    n += std::hint::black_box(f()).len();
+                }
+                (t.elapsed().as_secs_f64() * 100.0, n / 10)
+            };
+            let (a, na) = time(&|| box_select_scalar(&objs, r, true));
+            let (b, nb) = time(&|| box_select(&objs, r, true));
+            assert_eq!(na, nb);
+            eprintln!("touch {pct:3}%: scalar {a:6.2} ms, branchless {b:6.2} ms ({na} hits)");
+        }
+    }
 
     /// Oracle: the prefiltered hit test answers what testing every object answers, ties and
     /// misses included, over random segments and boxes (some degenerate, some huge).
