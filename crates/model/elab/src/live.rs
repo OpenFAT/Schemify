@@ -412,14 +412,13 @@ impl Live {
         let mut new = Vec::new();
         for w in elems.windows(2) {
             if w[0].0 == w[1].0 {
-                new.push(Violation {
-                    code: Code::E009,
-                    cell: cx.own.cell,
-                    object: w[1].1,
-                    path: Name::NONE,
-                    param: w[1].0,
-                    detail: format!("instance name `{}` is used twice", names.get(w[1].0)),
-                });
+                new.push(Violation::new(
+                    Code::E009,
+                    cx.own.cell,
+                    w[1].1,
+                    w[1].0,
+                    format!("instance name `{}` is used twice", names.get(w[1].0)),
+                ));
             }
         }
         self.fixed.extend(new.iter().cloned());
@@ -1031,14 +1030,13 @@ impl Live {
                         cn.conns[base + e * stride..base + e * stride + w].fill(NO_NET);
                     }
                 }
-                return Some(Violation {
-                    code: Code::E011,
-                    cell: cx.own.cell,
-                    object: cx.doc.instances().id[i],
-                    path: Name::NONE,
-                    param: f.pin_name[p],
+                return Some(Violation::new(
+                    Code::E011,
+                    cx.own.cell,
+                    cx.doc.instances().id[i],
+                    f.pin_name[p],
                     detail,
-                });
+                ));
             }
         };
         let start = cn.net_bit_start[c as usize] as usize;
@@ -1173,14 +1171,8 @@ impl Live {
             self.comp[v as usize] = c;
         }
         self.head[ci] = members[0];
-        let finding = |code, object, param, detail| Violation {
-            code,
-            cell: cx.own.cell,
-            object,
-            path: Name::NONE,
-            param,
-            detail,
-        };
+        let finding =
+            |code, object, param, detail| Violation::new(code, cx.own.cell, object, param, detail);
         let mut found: Vec<Violation> = Vec::new();
 
         // ---- counts, naming key, sources (class, text, object, bits range)

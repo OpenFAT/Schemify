@@ -134,6 +134,24 @@ pub struct Violation {
 }
 
 impl Violation {
+    /// A finding on every path through `object` ([`Violation::path`] is [`Name::NONE`]).
+    pub(crate) fn new(
+        code: Code,
+        cell: Name,
+        object: ObjId,
+        param: Name,
+        detail: String,
+    ) -> Violation {
+        Violation {
+            code,
+            cell,
+            object,
+            path: Name::NONE,
+            param,
+            detail,
+        }
+    }
+
     /// The order [`Violations::rows`] are sorted in (unique per table): code text, cell,
     /// object, path, param (texts through `names`, the arena both rows' names are from).
     pub fn key_cmp(&self, other: &Violation, names: &Names) -> Ordering {
@@ -388,8 +406,6 @@ pub(crate) struct CellCtx<'a> {
     pub(crate) inst_iface: &'a [u32],
     pub(crate) graph: &'a Graph,
     pub(crate) waivers: &'a [(ObjId, Name)],
-    /// Instance path prefix for context-specific findings, or `NONE`.
-    pub(crate) path: Name,
 }
 
 /// Instance-level checks that do not depend on values: `E001` (unresolved cell, given
@@ -423,14 +439,13 @@ pub(crate) fn inst_overrides(
     let cell = cx.ifaces[cx.own as usize].cell;
     assert!(i < inst.id.len(), "instance row {i} in range");
     if let Some(why) = unresolved {
-        out.push(Violation {
-            code: Code::E001,
+        out.push(Violation::new(
+            Code::E001,
             cell,
-            object: inst.id[i],
-            path: Name::NONE,
-            param: Name::NONE,
-            detail: why.to_owned(),
-        });
+            inst.id[i],
+            Name::NONE,
+            why.to_owned(),
+        ));
         return;
     }
     let Some(c) = cx.ifaces.get(cx.inst_iface[i] as usize) else {
@@ -450,14 +465,7 @@ pub(crate) fn inst_overrides(
             Some(p) if c.param_computed[p] => (Code::E030, format!("`{key}` is computed")),
             Some(_) => continue,
         };
-        out.push(Violation {
-            code,
-            cell,
-            object: inst.id[i],
-            path: Name::NONE,
-            param: name,
-            detail,
-        });
+        out.push(Violation::new(code, cell, inst.id[i], name, detail));
     }
 }
 
@@ -517,18 +525,13 @@ pub(crate) fn value_errors(
                 c.var_name[(slot & !crate::values::VAR) as usize]
             }
         };
-        out.push(Violation {
-            code: Code::E008,
-            cell: me.cell,
-            object: if owner == NONE {
-                ObjId::NONE
-            } else {
-                inst.id[owner as usize]
-            },
-            path: cx.path,
-            param,
-            detail: format!("{}: {}", e.code.as_str(), e.msg),
-        });
+        let object = if owner == NONE {
+            ObjId::NONE
+        } else {
+            inst.id[owner as usize]
+        };
+        let detail = format!("{}: {}", e.code.as_str(), e.msg);
+        out.push(Violation::new(Code::E008, me.cell, object, param, detail));
     }
 }
 
@@ -598,14 +601,13 @@ pub(crate) fn inst_rules<F: Funcs>(
             } else {
                 (code, detail)
             };
-            out.push(Violation {
+            out.push(Violation::new(
                 code,
-                cell: me.cell,
-                object: inst.id[i],
-                path: Name::NONE,
-                param: c.param_name[k],
+                me.cell,
+                inst.id[i],
+                c.param_name[k],
                 detail,
-            });
+            ));
         }
     }
 }
@@ -680,14 +682,13 @@ fn stale_derived(
         } else {
             (Code::E039, detail.to_owned())
         };
-        out.push(Violation {
+        out.push(Violation::new(
             code,
-            cell: cx.ifaces[cx.own as usize].cell,
-            object: id,
-            path: Name::NONE,
-            param: c.param_name[k],
+            cx.ifaces[cx.own as usize].cell,
+            id,
+            c.param_name[k],
             detail,
-        });
+        ));
     }
 }
 

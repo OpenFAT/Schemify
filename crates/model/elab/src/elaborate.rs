@@ -590,14 +590,13 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             Ok(out) => self.names.intern(&out),
             Err(name) => {
                 let param = self.names.intern(&name);
-                self.viol.push(Violation {
-                    code: Code::E034,
+                self.viol.push(Violation::new(
+                    Code::E034,
                     cell,
-                    object: ObjId::NONE,
-                    path: Name::NONE,
+                    ObjId::NONE,
                     param,
-                    detail: format!("`${{{name}}}` is not defined or expands cyclically"),
-                });
+                    format!("`${{{name}}}` is not defined or expands cyclically"),
+                ));
                 self.names.intern(text)
             }
         }
@@ -619,25 +618,20 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             );
             let (path, param) = (self.names.intern(path), self.names.intern(imp));
             self.viol.push(Violation {
-                code: Code::W037,
-                cell: top_cell,
-                object: ObjId::NONE,
                 path,
-                param,
-                detail,
+                ..Violation::new(Code::W037, top_cell, ObjId::NONE, param, detail)
             });
         }
     }
 
     fn request_finding(&mut self, cell: Name, detail: &str) {
-        self.viol.push(Violation {
-            code: Code::E035,
+        self.viol.push(Violation::new(
+            Code::E035,
             cell,
-            object: ObjId::NONE,
-            path: Name::NONE,
-            param: Name::NONE,
-            detail: detail.to_owned(),
-        });
+            ObjId::NONE,
+            Name::NONE,
+            detail.to_owned(),
+        ));
     }
 
     fn read_config(&mut self, doc: &Document, name: &str, top_cell: Name) {
@@ -661,14 +655,13 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 }
                 ("cell", [cellref, imp]) => match self.project.resolve(self.top, cellref) {
                     Ok(row) => self.config.cell.push((row, (*imp).to_owned())),
-                    Err(_) => self.viol.push(Violation {
-                        code: Code::E001,
-                        cell: top_cell,
-                        object: ObjId::NONE,
-                        path: Name::NONE,
-                        param: self.names.intern(cellref),
-                        detail: format!("config `{name}` names unknown cell `{cellref}`"),
-                    }),
+                    Err(_) => self.viol.push(Violation::new(
+                        Code::E001,
+                        top_cell,
+                        ObjId::NONE,
+                        self.names.intern(cellref),
+                        format!("config `{name}` names unknown cell `{cellref}`"),
+                    )),
                 },
                 _ => {}
             }
@@ -826,7 +819,6 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 inst_iface: &cell.inst_iface,
                 graph: &cell.graph,
                 waivers: &cell.waivers,
-                path: Name::NONE,
             };
             check_values(
                 &cx,
@@ -868,7 +860,6 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 inst_iface: &inst_iface,
                 graph: &graph,
                 waivers: &waiv,
-                path: Name::NONE,
             };
             check_values(&cx, &vals, names, *funcs, ws, &mut gated);
             graph
@@ -900,19 +891,17 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 inst_iface: &inst_iface,
                 graph: &graph,
                 waivers: &waiv,
-                path: Name::NONE,
             };
             check_overrides(&cx, &unresolved, &mut self.names, &mut found);
         }
         for p in &self.ifaces[ci as usize].too_wide {
-            found.push(Violation {
-                code: Code::E011,
-                cell: self.ifaces[ci as usize].cell,
-                object: ObjId::NONE,
-                path: Name::NONE,
-                param: *p,
-                detail: "pin name wider than 65535 bits".to_owned(),
-            });
+            found.push(Violation::new(
+                Code::E011,
+                self.ifaces[ci as usize].cell,
+                ObjId::NONE,
+                *p,
+                "pin name wider than 65535 bits".to_owned(),
+            ));
         }
         // The serial order of findings: connectivity, overrides, wide pins, then gating.
         self.viol.append(&mut found);
@@ -994,23 +983,24 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 Name::NONE
             };
             self.viol.push(Violation {
-                code: Code::E031,
-                cell,
-                object: ObjId::NONE,
                 path,
-                param,
-                detail: format!("config `{rule}` rule names impl `{imp}`, which the cell lacks"),
+                ..Violation::new(
+                    Code::E031,
+                    cell,
+                    ObjId::NONE,
+                    param,
+                    format!("config `{rule}` rule names impl `{imp}`, which the cell lacks"),
+                )
             });
         }
         if chosen.is_none() {
-            self.viol.push(Violation {
-                code: Code::E013,
+            self.viol.push(Violation::new(
+                Code::E013,
                 cell,
-                object: ObjId::NONE,
-                path: Name::NONE,
-                param: Name::NONE,
-                detail: "the cell has no selectable impl".to_owned(),
-            });
+                ObjId::NONE,
+                Name::NONE,
+                "the cell has no selectable impl".to_owned(),
+            ));
         }
         chosen.map(|k| k as u32)
     }
@@ -1045,14 +1035,8 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 self.names.get(imp),
                 d.as_str()
             );
-            self.viol.push(Violation {
-                code: Code::E013,
-                cell,
-                object: ObjId::NONE,
-                path: Name::NONE,
-                param: imp,
-                detail,
-            });
+            self.viol
+                .push(Violation::new(Code::E013, cell, ObjId::NONE, imp, detail));
             self.impl_ids.insert((c, k), NONE);
             return None;
         }
@@ -1061,14 +1045,8 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         {
             // The netlister would write `* error in …` for every row: gate it here.
             let (cell, imp) = (f.cell, f.impl_name[k as usize]);
-            self.viol.push(Violation {
-                code: Code::E008,
-                cell,
-                object: ObjId::NONE,
-                path: Name::NONE,
-                param: imp,
-                detail,
-            });
+            self.viol
+                .push(Violation::new(Code::E008, cell, ObjId::NONE, imp, detail));
         }
         let id = self.impls.cell.len() as u32;
         self.impls.cell.push(c);
@@ -1194,14 +1172,13 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 continue;
             }
             let name = self.names.intern(s.get(codes.fields[r][0]));
-            self.viol.push(Violation {
-                code: Code::E033,
+            self.viol.push(Violation::new(
+                Code::E033,
                 cell,
-                object: ObjId::NONE,
-                path: Name::NONE,
-                param: name,
-                detail: "xyce has no .control blocks".to_owned(),
-            });
+                ObjId::NONE,
+                name,
+                "xyce has no .control blocks".to_owned(),
+            ));
         }
         assert!(out.len() <= codes.kind.len());
         out
@@ -1225,12 +1202,14 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         if depth >= DEPTH_MAX {
             let p = self.names.intern(&path);
             self.viol.push(Violation {
-                code: Code::E014,
-                cell: self.ifaces[ci as usize].cell,
-                object: ObjId::NONE,
                 path: p,
-                param: Name::NONE,
-                detail: format!("hierarchy deeper than {DEPTH_MAX}"),
+                ..Violation::new(
+                    Code::E014,
+                    self.ifaces[ci as usize].cell,
+                    ObjId::NONE,
+                    Name::NONE,
+                    format!("hierarchy deeper than {DEPTH_MAX}"),
+                )
             });
             return None;
         }
@@ -1356,12 +1335,14 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                             self.names.get(self.ifaces[c as usize].cell)
                         );
                         self.viol.push(Violation {
-                            code: Code::E014,
-                            cell: self.ifaces[ci as usize].cell,
-                            object: doc.instances().id[i],
                             path: p,
-                            param: Name::NONE,
-                            detail,
+                            ..Violation::new(
+                                Code::E014,
+                                self.ifaces[ci as usize].cell,
+                                doc.instances().id[i],
+                                Name::NONE,
+                                detail,
+                            )
                         });
                         continue;
                     }
@@ -1496,14 +1477,8 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                         tmp.len(),
                         bits.len()
                     );
-                    self.viol.push(Violation {
-                        code: Code::E011,
-                        cell,
-                        object: id,
-                        path: Name::NONE,
-                        param: pin,
-                        detail,
-                    });
+                    self.viol
+                        .push(Violation::new(Code::E011, cell, id, pin, detail));
                 }
                 conn.extend(bits);
                 continue;
@@ -1521,12 +1496,8 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                             self.names.get(default)
                         );
                         self.viol.push(Violation {
-                            code: Code::E036,
-                            cell,
-                            object: ObjId::NONE,
                             path: p,
-                            param: pin,
-                            detail,
+                            ..Violation::new(Code::E036, cell, ObjId::NONE, pin, detail)
                         });
                     }
                     Some(_) => {}
@@ -1850,14 +1821,13 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                     match value {
                         Ok(t) => b.corner_args.push(self.names.intern(&t)),
                         Err(e) => {
-                            self.viol.push(Violation {
-                                code: Code::E008,
-                                cell: self.ifaces[0].cell,
-                                object: ObjId::NONE,
-                                path: Name::NONE,
-                                param: self.names.intern("temp"),
-                                detail: format!("{}: {}", e.code.as_str(), e.msg),
-                            });
+                            self.viol.push(Violation::new(
+                                Code::E008,
+                                self.ifaces[0].cell,
+                                ObjId::NONE,
+                                self.names.intern("temp"),
+                                format!("{}: {}", e.code.as_str(), e.msg),
+                            ));
                             continue;
                         }
                     }

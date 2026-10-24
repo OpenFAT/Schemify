@@ -674,7 +674,6 @@ impl CellState {
             inst_iface: &self.inst_iface,
             graph: &self.graph,
             waivers: &self.waivers,
-            path: Name::NONE,
         };
         let mut fresh = Vec::new();
         for &i in rows {
@@ -811,7 +810,6 @@ impl CellState {
             inst_iface: &self.inst_iface,
             graph: &self.graph,
             waivers: &self.waivers,
-            path: Name::NONE,
         };
         check_overrides(&cx, &self.unresolved, &mut self.names, &mut rows);
         check_values(

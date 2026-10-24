@@ -437,14 +437,13 @@ fn element_names(
         } else {
             flush(names, &mut plain, &mut plain_at, &mut elems);
             if netexpr::expand(text, names, &mut elems, &mut buf).is_err() {
-                found.push(Violation {
-                    code: Code::E011,
+                found.push(Violation::new(
+                    Code::E011,
                     cell,
-                    object: inst.id[i],
-                    path: Name::NONE,
-                    param: Name::NONE,
-                    detail: format!("instance name `{text}` is wider than 65535"),
-                });
+                    inst.id[i],
+                    Name::NONE,
+                    format!("instance name `{text}` is wider than 65535"),
+                ));
                 elems.push(names.intern(text));
             }
         }
@@ -479,14 +478,7 @@ pub(crate) fn bit_findings(
     names: &Names,
     out: &mut Vec<Violation>,
 ) {
-    let row = |code, detail| Violation {
-        code,
-        cell,
-        object: ObjId::NONE,
-        path: Name::NONE,
-        param: name,
-        detail,
-    };
+    let row = |code, detail| Violation::new(code, cell, ObjId::NONE, name, detail);
     if conns == 1 && !global {
         let detail = format!("net `{}` has a single connection", names.get(name));
         out.push(row(Code::W016, detail));
@@ -506,14 +498,7 @@ pub(crate) fn port_findings(doc: &Document, own: &Iface, names: &Names, out: &mu
     if own.impl_name.is_empty() && ports.id.is_empty() {
         return;
     }
-    let row = |code, object, param, detail| Violation {
-        code,
-        cell: own.cell,
-        object,
-        path: Name::NONE,
-        param,
-        detail,
-    };
+    let row = |code, object, param, detail| Violation::new(code, own.cell, object, param, detail);
     let before = out.len();
     for p in 0..ports.id.len() {
         let text = names.find(s.get(ports.text[p]));
@@ -601,14 +586,8 @@ pub(crate) fn connect_seeded(
     );
     let ni = inst.id.len();
     assert_eq!(inst_iface.len(), ni, "one interface slot per instance");
-    let finding = |code, object, param, detail: String| Violation {
-        code,
-        cell: own.cell,
-        object,
-        path: Name::NONE,
-        param,
-        detail,
-    };
+    let finding =
+        |code, object, param, detail: String| Violation::new(code, own.cell, object, param, detail);
     let mut cn = CellNets::default();
     let mut merged = false;
     let mut buf = String::new();
