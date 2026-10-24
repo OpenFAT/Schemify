@@ -41,8 +41,10 @@ libm = "0.2"
 # The netlist deck writer (user decision 2026-10-24): SpiceRack's IR and its xschem-layout
 # codegen; only `netlist` may depend on it. No default features: no Python, no simulator
 # backends (processes, temp files, dlopen), so it builds for the web.
-# ponytail: a local path until the SpiceRack branch is pushed; then a git rev.
-spicerack = { path = "/tmp/claude-1000/-home-omare-Documents-Projects-Rust-Schemify/f859e9b9-ce3e-4a38-a8ba-c379adca8ecc/scratchpad/spicerack-wt", default-features = false }
+# Pinned to a rev, so the plugin repositories (git dependencies on the model's crates)
+# resolve it too. ponytail: the local repository until branch `schemify-xschem` is pushed;
+# then `git = "https://github.com/OmarSiwy/SpiceRack"` at the same rev.
+spicerack = { git = "file:///home/omare/Documents/Projects/Rust/SpiceRack", rev = "819bbdbbee353ebe88c6d22b3dd6ea3c5ef881bb", default-features = false }
 # User config (D9 amended): Lua 5.4 in pure Rust (no C, builds for every target incl. the
 # web; user decision 2026-10-12, web spec §5); only `config` may use it. No `io`, `os`,
 # `package` libraries are compiled in; `debug` serves the API prelude and is stripped after.
