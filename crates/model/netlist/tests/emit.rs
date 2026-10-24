@@ -65,6 +65,36 @@ fn tb_snapshots_per_dialect() {
     }
 }
 
+/// HSPICE and LTspice decks are the ngspice deck but for their spellings (netlist spec
+/// §7.2b): HSPICE quotes corner paths, LTspice keeps every waveform point.
+#[test]
+fn tb_hspice_and_ltspice_are_the_ngspice_text_respelled() {
+    let files = fixtures();
+    let (p, top) = fixture(&files, "tb.shbench");
+    let ng = emit(&elab(&p, top, Dialect::Ngspice), Dialect::Ngspice).text;
+    let header = "* tb (schemify ngspice)\n";
+    assert!(
+        ng.starts_with(header) && ng.contains(".lib models.lib tt\n"),
+        "{ng}"
+    );
+    // The bench's `code … ngspice` block (its `.control`) is ngspice's alone.
+    let ng = ng.replacen(".control\nrun\n.endc\n", "", 1);
+    let hspice = ng
+        .replacen("(schemify ngspice)", "(schemify hspice)", 1)
+        .replacen(".lib models.lib tt\n", ".lib 'models.lib' tt\n", 1)
+        .replacen(".include extra.inc\n", ".include 'extra.inc'\n", 1);
+    let ltspice = ng.replacen(
+        header,
+        "* tb (schemify ltspice)\n.options plotwinsize=0 numdgt=15\n",
+        1,
+    );
+    for (d, want) in [(Dialect::Hspice, hspice), (Dialect::Ltspice, ltspice)] {
+        let e = elab(&p, top, d);
+        assert!(blocking(&e).is_empty(), "{d:?}: {:?}", blocking(&e));
+        assert_eq!(emit(&e, d).text, want, "{d:?}");
+    }
+}
+
 #[test]
 fn tb_ngspice_matches_the_expected_netlist() {
     let files = fixtures();

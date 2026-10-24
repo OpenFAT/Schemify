@@ -41,22 +41,30 @@ pub enum Dialect {
     /// ESPice: ngspice text, except that Verilog-A sources load with `.hdl` (netlist
     /// spec §7.2a) instead of OSDI, and `verilog` leaves have no default template.
     Espice,
+    /// HSPICE (netlist only, §7.2b): SPICE text with quoted corner paths.
+    Hspice,
+    /// LTspice (§7.2b): SPICE text, no `.control` blocks, no Verilog-A.
+    Ltspice,
 }
 
 impl Dialect {
     /// Returns the dialect word (`ngspice`, …).
     pub fn as_str(self) -> &'static str {
-        ["ngspice", "xyce", "cdl", "spectre", "verilog", "espice"][self as usize]
+        [
+            "ngspice", "xyce", "cdl", "spectre", "verilog", "espice", "hspice", "ltspice",
+        ][self as usize]
     }
 
     /// `format <dialect>` words an impl may use for this dialect, most specific first
-    /// (format spec §4: `spice` serves ngspice, espice, xyce and cdl; netlist spec §7.2a:
+    /// (format spec §4: `spice` serves every SPICE dialect; netlist spec §7.2a:
     /// `format espice` overrides it where ESPice needs another line, e.g. `mfactor=`).
     pub fn format_words(self) -> &'static [&'static str] {
         match self {
             Dialect::Ngspice => &["spice"],
             Dialect::Espice => &["espice", "spice"],
             Dialect::Xyce => &["xyce", "spice"],
+            Dialect::Hspice => &["hspice", "spice"],
+            Dialect::Ltspice => &["ltspice", "spice"],
             Dialect::Cdl => &["cdl", "spice"],
             Dialect::Spectre => &["spectre"],
             Dialect::Verilog => &["verilog"],
@@ -71,7 +79,9 @@ impl Dialect {
             Dialect::Ngspice => matches!(lang, "spice" | "ngspice"),
             // ESPice reads ngspice decks: their code too.
             Dialect::Espice => matches!(lang, "spice" | "ngspice" | "espice"),
-            Dialect::Xyce => matches!(lang, "spice" | "xyce"),
+            Dialect::Xyce | Dialect::Hspice | Dialect::Ltspice => {
+                lang == "spice" || lang == self.as_str()
+            }
             Dialect::Spectre | Dialect::Verilog => lang == self.as_str(),
         }
     }
@@ -1024,7 +1034,12 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             (lang, d),
             (
                 "spice",
-                Dialect::Ngspice | Dialect::Xyce | Dialect::Cdl | Dialect::Espice
+                Dialect::Ngspice
+                    | Dialect::Xyce
+                    | Dialect::Cdl
+                    | Dialect::Espice
+                    | Dialect::Hspice
+                    | Dialect::Ltspice
             ) | ("veriloga", Dialect::Ngspice | Dialect::Espice)
                 | ("verilog", Dialect::Ngspice | Dialect::Verilog)
         );
@@ -1151,7 +1166,8 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
     }
 
     /// Rows of `doc`'s `code` table the dialect takes (spec §9.13), sorted by name. A
-    /// block holding `.control` is left out for xyce and reported as `E033` on `cell`.
+    /// block holding `.control` is left out for xyce, hspice and ltspice and reported as
+    /// `E033` on `cell`.
     fn code_rows(&mut self, doc: &Document, cell: Name) -> Vec<usize> {
         let (s, codes) = (doc.strings(), doc.codes());
         let mut rows: Vec<usize> = (0..codes.kind.len())
@@ -1160,13 +1176,16 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         rows.sort_by(|a, c| s.get(codes.fields[*a][0]).cmp(s.get(codes.fields[*c][0])));
         let mut out = Vec::with_capacity(rows.len());
         for r in rows {
-            let control = self.req.dialect == Dialect::Xyce
-                && doc.pool().lines[codes.verbatim[r].range()].iter().any(|l| {
-                    s.get(*l)
-                        .trim_start()
-                        .to_ascii_lowercase()
-                        .starts_with(".control")
-                });
+            // Only ngspice and ESPice run `.control` blocks.
+            let control = matches!(
+                self.req.dialect,
+                Dialect::Xyce | Dialect::Hspice | Dialect::Ltspice
+            ) && doc.pool().lines[codes.verbatim[r].range()].iter().any(|l| {
+                s.get(*l)
+                    .trim_start()
+                    .to_ascii_lowercase()
+                    .starts_with(".control")
+            });
             if !control {
                 out.push(r);
                 continue;
@@ -1177,7 +1196,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 cell,
                 ObjId::NONE,
                 name,
-                "xyce has no .control blocks".to_owned(),
+                format!("{} has no .control blocks", self.req.dialect.as_str()),
             ));
         }
         assert!(out.len() <= codes.kind.len());
@@ -1858,7 +1877,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 b.corner_start.push(b.corner_args.len() as u32);
             }
         }
-        // Code blocks for the dialect, sorted by name; E033 for `.control` on xyce.
+        // Code blocks for the dialect, sorted by name; E033 for `.control` where nothing runs it.
         let (codes, top) = (doc.codes(), self.ifaces[0].cell);
         b.code_start.push(0);
         for r in self.code_rows(doc, top) {

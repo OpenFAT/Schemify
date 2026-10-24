@@ -23,7 +23,7 @@
 //!    [`Table`] (options, keymaps, sims, package specs, hooks) and, per Lua call, a list of
 //!    [`Request`]s (queued commands, notifications, errors).
 //! 2. One config per process. Keymaps ≤ [`KEYMAPS_MAX`], packages ≤ [`PACKS_MAX`], hooks ≤
-//!    [`HOOKS_MAX`], four sims, eight options; ≤ [`REQUESTS_MAX`] requests per call.
+//!    [`HOOKS_MAX`], seven programs, eight options; ≤ [`REQUESTS_MAX`] requests per call.
 //! 3. Steps are i32 milli-units (D33) in `[1, 10^9]`; a Lua function is a [`FnId`] (u16:
 //!    keymaps + hooks < 2^13); `fuel` u64 in `[10^6, 10^11]` (plugin ABI §2).
 //! 4. The binaries read the table at startup (the editor re-reads keymaps when they change);
@@ -197,8 +197,8 @@ pub struct Opts {
     /// Canvas line width in tenths of a pixel `[1, 100]` (`line_width`, pixels in Lua).
     pub line_width_tenths: u8,
     /// The simulator Simulate and `schemify run` start when neither the request nor the
-    /// PDK names one (`simulator`, run spec §5): [`SimKind::Ngspice`] or
-    /// [`SimKind::Espice`], never a compiler. `None` (unset) lets detection choose.
+    /// PDK names one (`simulator`, run spec §5): one of [`SimKind::SIMULATORS`], never a
+    /// compiler. `None` (unset) lets detection choose.
     pub simulator: Option<SimKind>,
 }
 
@@ -283,15 +283,33 @@ pub enum SimKind {
     Iverilog,
     /// The ESPice command line (it compiles Verilog-A itself, run spec §5).
     Espice,
+    /// The Xyce command line.
+    Xyce,
+    /// The LTspice command line (natively or a Wine wrapper).
+    Ltspice,
+    /// The Spectre command line.
+    Spectre,
 }
 
 impl SimKind {
     /// Every kind, in table order.
-    pub const ALL: [SimKind; 4] = [
+    pub const ALL: [SimKind; 7] = [
         SimKind::Ngspice,
         SimKind::Openvaf,
         SimKind::Iverilog,
         SimKind::Espice,
+        SimKind::Xyce,
+        SimKind::Ltspice,
+        SimKind::Spectre,
+    ];
+
+    /// The simulators (every kind but the compilers).
+    pub const SIMULATORS: [SimKind; 5] = [
+        SimKind::Ngspice,
+        SimKind::Espice,
+        SimKind::Xyce,
+        SimKind::Ltspice,
+        SimKind::Spectre,
     ];
 
     /// The `schemify.sim` name.
@@ -301,6 +319,9 @@ impl SimKind {
             SimKind::Openvaf => "openvaf",
             SimKind::Iverilog => "iverilog",
             SimKind::Espice => "espice",
+            SimKind::Xyce => "xyce",
+            SimKind::Ltspice => "ltspice",
+            SimKind::Spectre => "spectre",
         }
     }
 }
@@ -434,7 +455,7 @@ pub struct Table {
     /// Keymaps.
     pub keymaps: Keymaps,
     /// Program per [`SimKind`] (index = position in [`SimKind::ALL`]); `None` = the default.
-    pub sims: [Option<Sim>; 4],
+    pub sims: [Option<Sim>; SimKind::ALL.len()],
     /// Package specs, in declaration order; names unique.
     pub packs: Vec<PackSpec>,
     /// Event hooks in registration order.

@@ -250,6 +250,8 @@ pub(crate) fn deck(d: Dialect) -> SrDialect {
         Dialect::Cdl => SrDialect::Cdl,
         Dialect::Spectre => SrDialect::Spectre,
         Dialect::Verilog => SrDialect::Verilog,
+        Dialect::Hspice => SrDialect::Hspice,
+        Dialect::Ltspice => SrDialect::Ltspice,
     }
 }
 

@@ -70,16 +70,18 @@ pub fn violation_line(names: &Names, v: &Violation) -> String {
 }
 
 /// The core dialects (D22): CLI word, dialect, netlist file extension.
-pub const DIALECTS: [(&str, Dialect, &str); 6] = [
+pub const DIALECTS: [(&str, Dialect, &str); 8] = [
     ("ngspice", Dialect::Ngspice, "spice"),
     ("espice", Dialect::Espice, "sp"),
     ("xyce", Dialect::Xyce, "cir"),
+    ("ltspice", Dialect::Ltspice, "net"),
+    ("hspice", Dialect::Hspice, "hsp"),
     ("cdl", Dialect::Cdl, "cdl"),
     ("spectre", Dialect::Spectre, "scs"),
     ("verilog", Dialect::Verilog, "v"),
 ];
 
-/// The dialect a CLI word names (`ngspice espice xyce cdl spectre verilog`).
+/// The dialect a CLI word names (`ngspice espice xyce ltspice hspice cdl spectre verilog`).
 pub fn dialect_of(word: &str) -> Option<Dialect> {
     DIALECTS.iter().find(|d| d.0 == word).map(|d| d.1)
 }
@@ -236,7 +238,19 @@ pub fn open_file(file: &Path, seed: u64) -> Result<(Opened, Vec<String>), OpenEr
 }
 
 /// The simulators Schemify starts (run spec §5), in detection order.
-pub const SIMULATORS: [Dialect; 2] = [Dialect::Ngspice, Dialect::Espice];
+pub use schemify_run::SIMULATORS;
+
+/// The user config's program row of simulator `d` (one of [`SIMULATORS`]).
+#[cfg(not(target_arch = "wasm32"))]
+fn kind(d: Dialect) -> schemify_config::SimKind {
+    use schemify_config::SimKind;
+    let k = SimKind::SIMULATORS[SIMULATORS
+        .iter()
+        .position(|s| *s == d)
+        .unwrap_or_else(|| panic!("{} is not a simulator", d.as_str()))];
+    assert_eq!(k.word(), d.as_str());
+    k
+}
 
 /// The dialect a request netlists and simulates for (run spec §5): `explicit`
 /// (`--dialect`, the Netlist dialect menu), else the simulator the PDK pins (its tech
@@ -258,8 +272,10 @@ pub fn sim_dialect(
         return Ok(d);
     }
     Ok(match user.opts.simulator {
-        Some(schemify_config::SimKind::Espice) => Dialect::Espice,
-        Some(_) => Dialect::Ngspice,
+        Some(k) => SIMULATORS
+            .into_iter()
+            .find(|d| d.as_str() == k.word())
+            .unwrap_or(Dialect::Ngspice),
         None => detect(user).unwrap_or(Dialect::Ngspice),
     })
 }
@@ -269,7 +285,7 @@ pub fn sim_dialect(
 ///
 /// # Errors
 ///
-/// The pinned word is not one of `ngspice espice xyce spectre`.
+/// The pinned word names neither one of [`SIMULATORS`] nor `hspice`.
 pub fn pin(project: &Project) -> Result<Option<(&str, Dialect)>, String> {
     let Some(map) = project.techmap() else {
         return Ok(None);
@@ -278,24 +294,25 @@ pub fn pin(project: &Project) -> Result<Option<(&str, Dialect)>, String> {
         return Ok(None);
     };
     match dialect_of(word) {
-        Some(d @ (Dialect::Ngspice | Dialect::Espice | Dialect::Xyce | Dialect::Spectre)) => {
+        Some(d) if SIMULATORS.contains(&d) || d == Dialect::Hspice => {
             Ok(Some((map.pdk.as_str(), d)))
         }
         _ => Err(format!(
-            "{} pins simulator `{word}`, which is not a simulator (ngspice espice xyce spectre)",
+            "{} pins simulator `{word}`, which is not a simulator \
+             (ngspice espice xyce ltspice spectre hspice)",
             map.pdk
         )),
     }
 }
 
-/// The simulator a run netlisted for `chosen` starts (run spec §5): ngspice or espice as
-/// chosen; any other dialect runs ngspice unless the PDK pins a simulator, which never
-/// falls back.
+/// The simulator a run netlisted for `chosen` starts (run spec §5): `chosen` when it is
+/// one of [`SIMULATORS`]; any other dialect runs ngspice unless the PDK pins a
+/// simulator, which never falls back.
 ///
 /// # Errors
 ///
-/// The PDK pins a simulator Schemify cannot start, or (native) one whose configured or
-/// default program is not found.
+/// The PDK pins a simulator Schemify cannot start (HSPICE), or (native) one whose
+/// configured or default program is not found.
 pub fn run_dialect(
     chosen: Dialect,
     project: &Project,
@@ -303,11 +320,12 @@ pub fn run_dialect(
 ) -> Result<Dialect, String> {
     let pin = pin(project)?;
     let run = match (chosen, pin) {
-        (d @ (Dialect::Ngspice | Dialect::Espice), _) => d,
+        (d, _) if SIMULATORS.contains(&d) => d,
         (_, None) => Dialect::Ngspice,
         (d, Some((pdk, _))) => {
             return Err(format!(
-                "{pdk} pins simulator {}, which Schemify cannot start (ngspice espice)",
+                "{pdk} pins simulator {}, which Schemify cannot start \
+                 (ngspice espice xyce ltspice spectre)",
                 d.as_str()
             ));
         }
@@ -344,13 +362,7 @@ pub fn detect(user: &schemify_config::Table) -> Option<Dialect> {
 /// name in a `PATH` directory (with `.exe` on Windows). Runs no program.
 #[cfg(not(target_arch = "wasm32"))]
 fn installed(d: Dialect, user: &schemify_config::Table) -> bool {
-    assert!(SIMULATORS.contains(&d));
-    let t = tools(user);
-    let prog = if d == Dialect::Espice {
-        t.espice.path
-    } else {
-        t.sim.path
-    };
+    let prog = tools(user).sim(d).path.clone();
     let p = Path::new(&prog);
     if p.components().count() > 1 {
         return p.is_file();
@@ -371,21 +383,20 @@ fn installed(d: Dialect, user: &schemify_config::Table) -> bool {
 pub fn tools(user: &schemify_config::Table) -> schemify_run::Tools {
     use schemify_config::SimKind;
     let mut t = schemify_run::Tools::default();
-    let command =
-        |s: &schemify_config::Sim, default: schemify_run::SimCommand| schemify_run::SimCommand {
-            path: s.path.clone(),
-            args: if s.args.is_empty() {
-                default.args
-            } else {
-                s.args.clone()
-            },
-            env: s.env.clone(),
-        };
-    if let Some(s) = user.sim(SimKind::Ngspice) {
-        t.sim = command(s, schemify_run::SimCommand::ngspice());
-    }
-    if let Some(s) = user.sim(SimKind::Espice) {
-        t.espice = command(s, schemify_run::SimCommand::espice());
+    for (k, d) in SIMULATORS.into_iter().enumerate() {
+        if let Some(s) = user.sim(kind(d)) {
+            let default =
+                std::mem::replace(&mut t.sims[k], schemify_run::SimCommand::default_for(d));
+            t.sims[k] = schemify_run::SimCommand {
+                path: s.path.clone(),
+                args: if s.args.is_empty() {
+                    default.args
+                } else {
+                    s.args.clone()
+                },
+                env: s.env.clone(),
+            };
+        }
     }
     if let Some(s) = user.sim(SimKind::Openvaf) {
         t.openvaf.clone_from(&s.path);
@@ -393,7 +404,7 @@ pub fn tools(user: &schemify_config::Table) -> schemify_run::Tools {
     if let Some(s) = user.sim(SimKind::Iverilog) {
         t.iverilog.clone_from(&s.path);
     }
-    assert!(!t.sim.path.is_empty() && !t.espice.path.is_empty());
+    assert!(t.sims.iter().all(|s| !s.path.is_empty()));
     t
 }
 
@@ -456,7 +467,7 @@ mod native {
     ///
     /// # Panics
     ///
-    /// Panics if `dialect` is neither ngspice nor espice (the simulators the runner starts).
+    /// Panics if `dialect` is not one of [`SIMULATORS`] (the simulators the runner starts).
     pub fn start_run<C: Cells, F: Funcs>(
         c: &mut C,
         top: DocHandle,
@@ -466,7 +477,7 @@ mod native {
         funcs: &mut F,
         cfg: impl FnOnce(&Digest) -> RunnerConfig,
     ) -> Result<Run, String> {
-        assert!(matches!(dialect, Dialect::Ngspice | Dialect::Espice));
+        assert!(SIMULATORS.contains(&dialect));
         // Open every cell each selected config reaches (configs select different impls,
         // so different cells); no selection or no config: the bench default. Bounded by
         // the selection, which names each bench config at most once per entry.
@@ -499,9 +510,7 @@ mod native {
         )?;
         let results = Results::new(&plan, digest);
         let mut config = cfg(&digest);
-        if dialect == Dialect::Espice {
-            config.tools.sim = config.tools.espice.clone();
-        }
+        config.dialect = dialect;
         let runner = Runner::new(config);
         let run = Run {
             plan,
@@ -551,7 +560,9 @@ mod native {
                 );
                 match prepared {
                     Some(mut p) => {
-                        if !self.extra.is_empty() && p.netlist.ends_with(".end\n") {
+                        // Probe lines are ngspice's (`.save @m.x1.mm2[id]`).
+                        let ngspice = matches!(self.dialect, Dialect::Ngspice | Dialect::Espice);
+                        if !self.extra.is_empty() && ngspice && p.netlist.ends_with(".end\n") {
                             let at = p.netlist.len() - ".end\n".len();
                             p.netlist.insert_str(at, &self.extra);
                         }
@@ -635,7 +646,15 @@ mod tests {
                 Path::new("/p/.schemify/netlist").join(format!("top.{ext}"))
             );
         }
-        assert_eq!(dialect_of("hspice"), None);
+        assert_eq!(dialect_of("vacask"), None);
         assert_eq!(dialect_of(""), None);
+        // The simulators are netlist dialects; each dialect has its own netlist file.
+        assert!(
+            SIMULATORS
+                .iter()
+                .all(|s| DIALECTS.iter().any(|d| d.1 == *s))
+        );
+        let exts: std::collections::BTreeSet<&str> = DIALECTS.iter().map(|d| d.2).collect();
+        assert_eq!(exts.len(), DIALECTS.len(), "one netlist file per dialect");
     }
 }

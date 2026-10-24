@@ -70,7 +70,7 @@ For an inherited pin `P` with default net `D` on cell `c`, at instance path `p`:
 
 ### 7.1 Common rules
 
-- Dialect ∈ `ngspice espice xyce cdl spectre verilog`. `spice` templates serve `ngspice`, `espice`, `xyce` and `cdl` unless a dialect-specific `format` exists (`format espice`, `format xyce`, `format cdl`).
+- Dialect ∈ `ngspice espice xyce hspice ltspice cdl spectre verilog`. `spice` templates serve the SPICE dialects (`ngspice`, `espice`, `xyce`, `hspice`, `ltspice`, `cdl`) unless a dialect-specific `format` exists (`format espice`, `format xyce`, `format hspice`, `format ltspice`, `format cdl`).
 - Instances (or impls) with `ignore true` are not emitted; `ignore open` is not emitted and its pins are left unconnected; `ignore short` is not emitted and all its pin nets are merged into one net (named by §3 rules). Ignored instances still elaborate for checks.
 - Instance lines come from the selected impl's template ([expr.md §6](expr.md)). Default templates when an impl has none:
 
@@ -106,6 +106,13 @@ ESPice reads ngspice decks (`--tokenizer=ngspice`) and compiles Verilog-A itself
 - A `verilog` leaf has no default template (ESPice has no XSPICE `d_cosim`): `E013`, unless it has a `format spice`. ESPice's `.hdl` also loads Verilog (`.v`) modules, but how a deck instantiates one is not documented yet; open issue.
 
 Code blocks of lang `spice`, `ngspice` or `espice` are emitted. A precompiled `veriloga` body (no `endmodule` line, SPICE text with its own OSDI load) is emitted as is, so ESPice refuses it: give such cells their Verilog-A source.
+
+### 7.2b hspice, ltspice
+
+The ngspice text with these differences (2026-10-24): `.control` blocks are never emitted (a `spice` code block holding `.control` is `E033`), code blocks of lang `spice` or the dialect's own word are taken, there are no OSDI loads or `.model` lines for Verilog-A or Verilog leaves (their default templates are `E013`: give such cells a `format hspice`/`format ltspice`), and
+
+- **hspice** (netlist only, run spec §5): corner paths are quoted, `.lib '<path>' <section>` and `.include '<path>'`;
+- **ltspice**: `.options plotwinsize=0 numdgt=15` follows the header, so LTspice keeps every waveform point in double precision (it compresses otherwise) and the recorded outputs (run spec §4) see the simulated values.
 
 ### 7.3 xyce
 
@@ -177,7 +184,7 @@ Severity `E` blocks Run and makes `schemify netlist` exit 1 (unless `--allow-err
 | E030 | E | override of computed param |
 | E031 | E | config names an impl the cell lacks |
 | E032 | E | param off grid/step (waivable) |
-| E033 | E | `.control` in a code block for xyce |
+| E033 | E | `.control` in a code block for xyce, hspice or ltspice |
 | E034 | E | undefined `${NAME}` in code, body or corner path |
 | E035 | E | unknown corner or config named by the request |
 | E036 | E | inherited pins of one name with different default nets in one definition |
@@ -204,7 +211,7 @@ Where §1–§8 left a choice open, `crates/model/elab` decided as follows; thes
 10. **`ignore`:** the instance attr wins over the selected impl's. An impl-level `short` merges the instance's nets within the definition (renamed to the best name: global, then a definition port, then bytewise smallest).
 11. **Request:** corner `set` lines apply first, then the request's overrides in order (later wins); an override of an unknown var adds it. The default corner/config is the bench's header attr; an unknown name is `E035`. Corner `lib` sections are literal; `temp` is evaluated in the bench scope.
 12. **`${NAME}`** is expanded by elab from project `set` entries, then an environment table the caller passes in the request (elab reads no environment), so the netlister receives final text.
-13. **Code blocks per dialect:** `spice` → ngspice and xyce, a dialect word → that dialect, CDL → none.
+13. **Code blocks per dialect:** `spice` → ngspice, espice, xyce, hspice and ltspice, a dialect word → that dialect (espice also takes `ngspice`), CDL → none.
 14. **Loaded documents:** cells whose schematic or body elaboration needs but which are only indexed (ranks 0–2: interface and symbol graphics) are listed for the app to open, then elaboration runs again; meanwhile an unopened schematic child is skipped and a leaf keeps its template.
 15. **D20:** a param's or var's `cached` value stands in for the whole expression when a plugin function is missing; the value and everything computed from it are flagged unverified.
 16. **Scopes:** child vars read by a child-scope expression are evaluated per instance, in that instance's scope.

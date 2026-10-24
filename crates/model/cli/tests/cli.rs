@@ -437,7 +437,7 @@ fn run_and_netlist_select_espice() {
     assert_eq!(code, 0, "the configured simulator: {text}");
     let (code, text) = run(&["--dialect", "ngspice"]);
     assert_eq!(code, 0, "--dialect wins: {text}");
-    assert_eq!(run(&["--dialect", "xyce"]).0, 2);
+    assert_eq!(run(&["--dialect", "cdl"]).0, 2);
     assert_eq!(run(&["--dialect", "bogus"]).0, 2);
     let (code, text) = schemify(&dir, &["netlist", "tb.shbench", "--dialect", "espice"]);
     assert_eq!(code, 0, "{text}");
@@ -505,8 +505,63 @@ fn a_pdk_pins_its_simulator() {
         "{text}"
     );
 
+    // HSPICE: netlists, never runs (no fallback to another simulator).
     pin("hspice");
     let (code, text) = cli(&["netlist", "tb.shbench"]);
+    assert!(
+        code == 0 && text.starts_with("* tb (schemify hspice)\n"),
+        "{text}"
+    );
+    let (code, text) = cli(&["run", "tb.shbench"]);
     assert_eq!(code, 1, "{text}");
-    assert!(text.contains("kit pins simulator `hspice`"), "{text}");
+    assert!(
+        text.contains("kit pins simulator hspice, which Schemify cannot start"),
+        "{text}"
+    );
+
+    pin("vacask");
+    let (code, text) = cli(&["netlist", "tb.shbench"]);
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("kit pins simulator `vacask`"), "{text}");
+}
+
+/// Xyce, LTspice and Spectre run through their `schemify.sim` rows like ngspice (run spec
+/// §5): each job is netlisted in the simulator's dialect and started with its command
+/// line; LTspice, which names its raw file after the deck (`netlist.raw`, no `{raw}`),
+/// is read through the `*.raw` fallback. HSPICE is netlist-only.
+#[test]
+fn run_starts_every_simulator() {
+    let dir = run_project("run-sims");
+    // A resistor Spectre can spell too.
+    let res = RES.to_owned() + "  format spectre \"{name} ({A} {B}) resistor r=1k\"\n";
+    std::fs::write(dir.join("res.shprim"), res).unwrap();
+    let ltspice = format!(
+        "schemify.sim('ltspice', {{ path = 'sh', args = {{ '-c', [==[{FAKE}]==], 'fake', \
+         '{{netlist}}', 'netlist.raw' }}, env = {{ WANT = 'ltspice' }} }})\n"
+    );
+    let init = fake_sim("xyce", ", env = { WANT = 'xyce' }")
+        + &fake_sim("spectre", ", env = { WANT = 'spectre' }")
+        + &ltspice;
+    std::fs::write(dir.join("init.lua"), &init).unwrap();
+    for sim in ["xyce", "ltspice", "spectre"] {
+        let (code, text) = schemify(
+            &dir,
+            &["-u", "init.lua", "run", "tb.shbench", "--dialect", sim],
+        );
+        assert_eq!(
+            (code, text.matches(" done\n").count()),
+            (0, 1),
+            "{sim}: {text}"
+        );
+    }
+    let (code, text) = schemify(&dir, &["netlist", "tb.shbench", "--dialect", "hspice"]);
+    assert!(
+        code == 0 && text.starts_with("* tb (schemify hspice)\n"),
+        "{text}"
+    );
+    let (code, text) = schemify(
+        &dir,
+        &["-u", "init.lua", "run", "tb.shbench", "--dialect", "hspice"],
+    );
+    assert_eq!(code, 2, "hspice is netlist-only: {text}");
 }

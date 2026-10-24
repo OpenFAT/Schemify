@@ -67,6 +67,16 @@ mod runner;
 mod sweep;
 
 pub use jobs::{DEFAULT, JOBS_MAX, Jobs, NO_SAMPLE, Select, State, expand};
+
+/// The simulators a native run starts (run spec §5), in detection order; the other
+/// dialects (HSPICE, CDL, Verilog) are netlist-only.
+pub const SIMULATORS: [schemify_elab::Dialect; 5] = [
+    schemify_elab::Dialect::Ngspice,
+    schemify_elab::Dialect::Espice,
+    schemify_elab::Dialect::Xyce,
+    schemify_elab::Dialect::Ltspice,
+    schemify_elab::Dialect::Spectre,
+];
 #[cfg(feature = "mc")]
 pub use mc::{Yield, sim_seed, yield_summary};
 #[cfg(feature = "optimize")]

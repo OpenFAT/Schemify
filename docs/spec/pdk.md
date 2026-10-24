@@ -284,8 +284,8 @@ class nmos core                            # in asap7's map: FinFET
   expression for number params, no braces. It is evaluated in the derived cell's scope, so it
   reads the instance's class params (their overrides, else the defaults). Files store only the
   class params (D40: overrides only).
-- **`simulator`** pins the PDK to a simulator: `ngspice`, `espice`, `xyce` or `spectre`, a
-  dialect word and never a command (D7: the command line stays the user config's `sim` row).
+- **`simulator`** pins the PDK to a simulator: `ngspice`, `espice`, `xyce`, `ltspice`,
+  `spectre` or `hspice` (netlist-only: a run is refused), a dialect word and never a command (D7: the command line stays the user config's `sim` row).
   A recipe writes it only when the kit's models work with that simulator alone (a
   Spectre-only foundry kit, a kit whose cards only ESPice reads); sky130, gf180mcu,
   ihp-sg13g2, freepdk45 and asap7 leave it out. It ranks below `--dialect` and the Netlist

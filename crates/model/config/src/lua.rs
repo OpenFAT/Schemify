@@ -521,7 +521,7 @@ fn set_opt(_: &Lua, st: &Shared, (key, v): (Value, Value)) -> omnilua::Result<Op
         "layer_colors" => layer_colors(&v).map(|c| o.layer_colors = c),
         "simulator" => match &v {
             // A Lua string only: `string` would also take a number.
-            Value::String(_) => [SimKind::Ngspice, SimKind::Espice]
+            Value::String(_) => SimKind::SIMULATORS
                 .into_iter()
                 .find(|k| string(&v).as_deref() == Some(k.word()))
                 .map(|k| o.simulator = Some(k)),
@@ -630,7 +630,7 @@ fn sim(_: &Lua, st: &Shared, (name, spec): (Value, Value)) -> omnilua::Result<Op
     };
     let Some(kind) = SimKind::ALL.into_iter().find(|k| k.word() == name) else {
         return Ok(Some(format!(
-            "unknown program `{name}` (ngspice, espice, openvaf, iverilog)"
+            "unknown program `{name}` (ngspice, espice, xyce, ltspice, spectre, openvaf, iverilog)"
         )));
     };
     let Value::Table(spec) = spec else {

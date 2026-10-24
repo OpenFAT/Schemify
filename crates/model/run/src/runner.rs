@@ -11,11 +11,13 @@
 //! directory. ESPice's Verilog-A sources ([`Tool::Copy`]) skip the compiler: the source
 //! itself is cached and copied, with the files it `` `include``s copied beside it.
 
+use crate::SIMULATORS;
 use crate::jobs::{Jobs, State};
 use crate::plan::Plan;
 use crate::prepare::{Origin, Prepared, Source, Tool};
 use crate::results::Results;
 use schemify_doc::Digest;
+use schemify_elab::Dialect;
 use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom};
@@ -65,26 +67,38 @@ pub struct SimCommand {
 }
 
 impl SimCommand {
-    /// `ngspice -b -r {raw} {netlist}` (D15: batch mode, raw file out).
-    pub fn ngspice() -> SimCommand {
+    /// The default command line of simulator `d` (run spec §5): batch mode, the job's
+    /// netlist in, a raw file out the reader loads.
+    ///
+    /// - ngspice `ngspice -b -r {raw} {netlist}` (D15);
+    /// - ESPice `espice -b --tokenizer=ngspice -r {raw} {netlist}` (the ngspice deck
+    ///   syntax the espice dialect writes; ESPice's default `--format` is ngspice binary);
+    /// - Xyce `Xyce -r {raw} {netlist}` (a binary raw file);
+    /// - LTspice `ltspice -b {netlist}` (it writes `netlist.raw` beside the deck);
+    /// - Spectre `spectre -format nutbin -raw {raw} {netlist}` (Nutmeg binary, not PSF).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `d` is not one of [`SIMULATORS`].
+    pub fn default_for(d: Dialect) -> SimCommand {
+        let (path, args): (&str, &[&str]) = match d {
+            Dialect::Ngspice => ("ngspice", &["-b", "-r", "{raw}", "{netlist}"]),
+            Dialect::Espice => (
+                "espice",
+                &["-b", "--tokenizer=ngspice", "-r", "{raw}", "{netlist}"],
+            ),
+            Dialect::Xyce => ("Xyce", &["-r", "{raw}", "{netlist}"]),
+            Dialect::Ltspice => ("ltspice", &["-b", "{netlist}"]),
+            Dialect::Spectre => (
+                "spectre",
+                &["-format", "nutbin", "-raw", "{raw}", "{netlist}"],
+            ),
+            _ => panic!("{} is not a simulator", d.as_str()),
+        };
+        assert!(SIMULATORS.contains(&d));
         SimCommand {
-            path: "ngspice".into(),
-            args: ["-b", "-r", "{raw}", "{netlist}"]
-                .map(String::from)
-                .to_vec(),
-            env: Vec::new(),
-        }
-    }
-
-    /// `espice -b --tokenizer=ngspice -r {raw} {netlist}`: batch mode, the ngspice deck
-    /// syntax the espice dialect writes, an ngspice binary raw file (ESPice's default
-    /// `--format`, which the raw reader loads).
-    pub fn espice() -> SimCommand {
-        SimCommand {
-            path: "espice".into(),
-            args: ["-b", "--tokenizer=ngspice", "-r", "{raw}", "{netlist}"]
-                .map(String::from)
-                .to_vec(),
+            path: path.into(),
+            args: args.iter().map(|a| (*a).to_owned()).collect(),
             env: Vec::new(),
         }
     }
@@ -93,22 +107,37 @@ impl SimCommand {
 /// External programs a runner may start, all from the user config.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tools {
-    /// The simulator the runner starts for every job. The app's run spine puts
-    /// [`Tools::espice`] here for an espice run.
-    pub sim: SimCommand,
-    /// The ESPice command line, for runs of the espice dialect.
-    pub espice: SimCommand,
+    /// Each simulator's command line, in [`SIMULATORS`] order; a runner starts the one
+    /// of its [`RunnerConfig::dialect`].
+    pub sims: [SimCommand; SIMULATORS.len()],
     /// OpenVAF (`<src> -o <out>`).
     pub openvaf: String,
     /// Icarus Verilog (`-o <out> <src>`).
     pub iverilog: String,
 }
 
+impl Tools {
+    /// Gives every simulator the command line `cmd` (a test harness's fake simulator, the
+    /// editor's `--sim`).
+    pub fn set_sims(&mut self, cmd: &SimCommand) {
+        self.sims.iter_mut().for_each(|s| s.clone_from(cmd));
+    }
+
+    /// The command line of simulator `d`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `d` is not one of [`SIMULATORS`].
+    pub fn sim(&self, d: Dialect) -> &SimCommand {
+        let k = SIMULATORS.iter().position(|s| *s == d);
+        &self.sims[k.unwrap_or_else(|| panic!("{} is not a simulator", d.as_str()))]
+    }
+}
+
 impl Default for Tools {
     fn default() -> Tools {
         Tools {
-            sim: SimCommand::ngspice(),
-            espice: SimCommand::espice(),
+            sims: SIMULATORS.map(SimCommand::default_for),
             openvaf: "openvaf".into(),
             iverilog: "iverilog".into(),
         }
@@ -120,6 +149,9 @@ impl Default for Tools {
 pub struct RunnerConfig {
     /// Programs.
     pub tools: Tools,
+    /// The simulator every job runs in (one of [`SIMULATORS`]; its netlists are in this
+    /// dialect).
+    pub dialect: Dialect,
     /// Run directory: job `j` runs in `<dir>/<j>`.
     pub dir: PathBuf,
     /// Compiled-source cache shared by runs.
@@ -142,6 +174,7 @@ impl RunnerConfig {
         let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
         let c = RunnerConfig {
             tools: Tools::default(),
+            dialect: Dialect::Ngspice,
             dir: root.join(".schemify/runs").join(&hex[..16]),
             cache: root.join(".schemify/build"),
             lib_dirs: vec![root.to_path_buf()],
@@ -538,7 +571,7 @@ impl Runner {
             File::create(dir.join(name)).map_err(|e| format!("cannot create {name}: {e}"))
         };
         let (out, err) = (log(STDOUT)?, log(STDERR)?);
-        let sim = &self.cfg.tools.sim;
+        let sim = self.cfg.tools.sim(self.cfg.dialect);
         let args: Vec<String> = sim
             .args
             .iter()
@@ -583,7 +616,7 @@ impl Runner {
         };
         if !status.success() {
             let why = last_line(&dir.join(STDERR)).unwrap_or_default();
-            let sim = &self.cfg.tools.sim.path;
+            let sim = &self.cfg.tools.sim(self.cfg.dialect).path;
             return results.fail(
                 jobs,
                 j,
@@ -593,15 +626,24 @@ impl Runner {
                 ),
             );
         }
-        // Benches whose `.control` block `write`s its own raw file (xschem style) leave
-        // the `-r` file unwritten: fall back to the raw files the job wrote, by name.
+        // Without the `{raw}` file (a bench whose `.control` block `write`s its own, as
+        // xschem's do; LTspice's `netlist.raw`; VACASK's one file per analysis) the job's
+        // raw data is every `.raw` file it wrote, by name, one after the other: the reader
+        // takes a file of several plots.
         let raw = fs::read(dir.join(RAW)).or_else(|e| {
             let mut own: Vec<_> = fs::read_dir(&dir)
                 .map(|d| d.flatten().map(|f| f.path()).collect())
                 .unwrap_or_default();
             own.retain(|p: &PathBuf| p.extension().is_some_and(|x| x == "raw"));
             own.sort();
-            own.first().map_or(Err(e), fs::read)
+            if own.is_empty() {
+                return Err(e);
+            }
+            let mut all = Vec::new();
+            for p in &own {
+                all.extend(fs::read(p)?);
+            }
+            Ok(all)
         });
         match raw {
             Ok(raw) => results.record(plan, jobs, j, &raw),

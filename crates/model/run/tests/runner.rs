@@ -36,7 +36,7 @@ fn sh(script: &str) -> SimCommand {
 
 fn cfg(dir: &Path, d: &schemify_doc::Digest, sim: SimCommand, workers: u16) -> RunnerConfig {
     let mut c = RunnerConfig::new(dir, d);
-    c.tools.sim = sim;
+    c.tools.set_sims(&sim);
     c.workers = workers;
     c
 }
@@ -704,10 +704,10 @@ fn espice_copies_verilog_a_sources_without_compiling() {
     let espice = |c: &mut RunnerConfig| {
         c.cache = dir.join("cache");
         c.tools.openvaf = "openvaf-not-installed".into();
-        c.tools.sim = SimCommand {
+        c.tools.set_sims(&SimCommand {
             env: vec![("ZIG".into(), "/fake/zig".into())],
             ..sh(FAKE_ESPICE)
-        };
+        });
     };
     let (jobs, results, runner) = run_dialect(&p, top, &plan, one(), &[], Dialect::Espice, |d| {
         let mut c = cfg(&dir, d, sh(FAKE), 1);

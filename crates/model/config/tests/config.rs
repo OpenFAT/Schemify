@@ -60,7 +60,7 @@ schemify.pack.add {{
     );
     let (cfg, out) = run(&src);
     assert!(out.is_empty(), "{out:?}");
-    let mut sims: [Option<Sim>; 4] = [None, None, None, None];
+    let mut sims: [Option<Sim>; 7] = Default::default();
     sims[0] = Some(Sim {
         path: "/opt/ng/bin/ngspice".into(),
         args: ["-b", "-r", "{raw}", "{netlist}"]
@@ -206,7 +206,7 @@ fn canvas_options_set_read_back_and_reject_bad_values() {
         "schemify.opt.line_width = 0",
         "schemify.opt.line_width = 11",
         "schemify.opt.simulator = 'openvaf'",
-        "schemify.opt.simulator = 'xyce'",
+        "schemify.opt.simulator = 'hspice'",
         "schemify.opt.simulator = true",
     ] {
         let (cfg, out) = run(bad);
@@ -373,7 +373,7 @@ fn errors_are_located_and_earlier_settings_stay() {
     assert!(errors(&out)[0].starts_with("init.lua:1:"), "{out:?}");
     let (_, out) = run("schemify.on('bogus_event', function() end)");
     assert!(errors(&out)[0].contains("unknown event"), "{out:?}");
-    let (_, out) = run("schemify.sim('spectre', { path = 'x' })");
+    let (_, out) = run("schemify.sim('hspice', { path = 'x' })");
     assert!(errors(&out)[0].contains("unknown program"), "{out:?}");
     let (_, out) = run("schemify.keymap.set('Ctrl+X', 42)");
     assert!(errors(&out)[0].starts_with("init.lua:1:"), "{out:?}");

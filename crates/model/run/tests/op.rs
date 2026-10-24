@@ -112,7 +112,7 @@ fn run(name: &str, dialect: Dialect, sim: SimCommand) -> (Plan, Jobs, Results, S
     let dir = tmp(name);
     let (jobs, results, runner) = run_dialect(&p, top, &plan, one(), &[], dialect, |d| {
         let mut c = RunnerConfig::new(&dir, d);
-        c.tools.sim = sim;
+        c.tools.set_sims(&sim);
         c.workers = 1;
         c
     });
@@ -206,7 +206,7 @@ fn ngspice_op_values_match_the_square_law() {
     }
     let ngspice = SimCommand {
         env: Vec::new(),
-        ..SimCommand::ngspice()
+        ..SimCommand::default_for(Dialect::Ngspice)
     };
     let (plan, jobs, r, netlist) = run("op-ngspice", Dialect::Ngspice, ngspice);
     let errs: Vec<_> = r.errors().collect();

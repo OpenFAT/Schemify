@@ -68,7 +68,7 @@ fn espice_simulates_verilog_a_bodies_and_files() {
     let (jobs, results, runner) = run_dialect(&p, top, &plan, jobs, &[], Dialect::Espice, |d| {
         let mut c = RunnerConfig::new(&dir, d);
         c.cache = dir.join("cache");
-        c.tools.sim = SimCommand::espice();
+        c.tools.set_sims(&SimCommand::default_for(Dialect::Espice));
         c.tools.openvaf = "openvaf-not-used".into();
         c
     });
@@ -159,7 +159,7 @@ fn espice_runs_an_asap7_inverter() {
     let (jobs, results, runner) = run_dialect(&p, top, &plan, jobs, &[], Dialect::Espice, |d| {
         let mut c = RunnerConfig::new(&dir, d);
         c.cache = dir.join("cache");
-        c.tools.sim = SimCommand::espice();
+        c.tools.set_sims(&SimCommand::default_for(Dialect::Espice));
         c
     });
     let errs: Vec<_> = results.errors().collect();

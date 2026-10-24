@@ -795,9 +795,8 @@ impl Editor {
         #[cfg(not(target_arch = "wasm32"))]
         let tools = {
             let mut t = spines::tools(user);
-            if let Some(s) = opts.sim.clone() {
-                t.espice.clone_from(&s);
-                t.sim = s;
+            if let Some(s) = &opts.sim {
+                t.set_sims(s);
             }
             t
         };

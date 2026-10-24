@@ -445,6 +445,12 @@ fn params_evaluate_in_parent_then_child_scope_with_corner_and_overrides() {
     let blocks: Vec<&str> = e.bench.code_name.iter().map(|n| e.names.get(*n)).collect();
     assert_eq!(blocks, ["z9"]);
     assert!(codes(&e).contains(&"E033".to_owned()));
+    // So for HSPICE and LTspice; ESPice runs ngspice's control blocks.
+    for d in [Dialect::Hspice, Dialect::Ltspice] {
+        let e = run(None, &[], d);
+        assert!(codes(&e).contains(&"E033".to_owned()), "{d:?}");
+    }
+    assert!(!codes(&run(None, &[], Dialect::Espice)).contains(&"E033".to_owned()));
     assert!(codes(&run(Some("nope"), &[], Dialect::Ngspice)).contains(&"E035".to_owned()));
     // CDL takes no code blocks.
     assert!(run(None, &[], Dialect::Cdl).bench.code_name.is_empty());

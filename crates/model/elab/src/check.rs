@@ -103,7 +103,7 @@ impl Code {
             Code::E030 => "override of computed param",
             Code::E031 => "config names an impl the cell lacks",
             Code::E032 => "param off grid/step",
-            Code::E033 => ".control in a code block for xyce",
+            Code::E033 => ".control in a code block for xyce, hspice or ltspice",
             Code::E034 => "undefined ${NAME} in code, body or corner path",
             Code::E035 => "unknown corner or config",
             Code::E036 => "inherited pins of one name with different default nets",

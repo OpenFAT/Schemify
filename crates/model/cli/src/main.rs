@@ -23,13 +23,14 @@ commands:
   diff <A> <B>                         record-level semantic diff of two files
   git-setup                            register the merge driver in this clone
   netlist <cell> [--dialect D] [--config C] [--corner K] [--set VAR=EXPR]...
-          [-o FILE] [--allow-errors]   write the netlist (dialects: ngspice espice xyce cdl spectre
-                                       verilog; default: schemify.opt.simulator)
+          [-o FILE] [--allow-errors]   write the netlist (dialects: ngspice espice xyce ltspice
+                                       hspice cdl spectre verilog; default: as for run)
   check <cell> [--config C] [--corner K]
                                        report violations (exit 1 on errors)
   run <bench> [--config C]... [--corner K]... [--sweep S]... [--mc M] [--set VAR=EXPR]...
           [--jobs N] [--dialect D]     simulate a .shbench and print outputs and specs
-                                       (D: ngspice or espice; default: schemify.opt.simulator)
+                                       (D: ngspice espice xyce ltspice spectre; default: the
+                                       PDK's simulator, schemify.opt.simulator, an installed one)
   cmd <project-dir>|<cell-file> <command> [<arg>...]
                                        run one editor command (a plugin's too) without a
                                        window: exit 1 when a plugin logs an error
@@ -494,7 +495,9 @@ fn explicit_dialect(a: &DesignArgs) -> Result<Option<schemify_elab::Dialect>, ()
     };
     let d = schemify_cli::spines::dialect_of(word);
     if d.is_none() {
-        eprintln!("unknown dialect `{word}` (ngspice espice xyce cdl spectre verilog)");
+        eprintln!(
+            "unknown dialect `{word}` (ngspice espice xyce ltspice hspice cdl spectre verilog)"
+        );
     }
     d.map(Some).ok_or(())
 }
@@ -596,11 +599,13 @@ fn run(config: &Config, args: &[String]) -> u8 {
         return USAGE_ERROR;
     };
     let explicit = match explicit_dialect(&a) {
-        Ok(d @ (None | Some(schemify_elab::Dialect::Ngspice | schemify_elab::Dialect::Espice))) => {
-            d
-        }
-        Ok(Some(d)) => {
-            eprintln!("run: no simulator for `{}` (ngspice or espice)", d.as_str());
+        Ok(d) if d.is_none_or(|d| schemify_cli::spines::SIMULATORS.contains(&d)) => d,
+        Ok(d) => {
+            let d = d.expect("None passed the guard");
+            eprintln!(
+                "run: no simulator for `{}` (ngspice espice xyce ltspice spectre)",
+                d.as_str()
+            );
             return USAGE_ERROR;
         }
         Err(()) => return USAGE_ERROR,

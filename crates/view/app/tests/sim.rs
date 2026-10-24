@@ -39,10 +39,9 @@ fn sh(script: &str) -> SimCommand {
 
 /// The fake simulator `script` with the default compilers.
 fn tools(script: &str) -> Tools {
-    Tools {
-        sim: sh(script),
-        ..Tools::default()
-    }
+    let mut t = Tools::default();
+    t.set_sims(&sh(script));
+    t
 }
 
 /// Opens `file` of fixture `name` with the default UI and the simulator `sim`.

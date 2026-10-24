@@ -93,7 +93,9 @@ impl Prepared {
             let dir = if from_project { project_dir } else { base_dir };
             let abs = dir.join(&self.netlist[start..end]);
             let abs = abs.to_string_lossy();
-            if abs.contains(char::is_whitespace) {
+            // A Spectre path is quoted already (`include "<path>"`).
+            let quoted = self.netlist.as_bytes()[start - 1] == b'"';
+            if abs.contains(char::is_whitespace) && !quoted {
                 out.push('"');
                 out.push_str(&abs);
                 out.push('"');
@@ -314,17 +316,21 @@ pub fn prepare<F: Funcs>(
 }
 
 /// Byte ranges of the relative corner `lib`/`include` paths in `text`, the netlist `e`
-/// emitted for `dialect` (SPICE dialects only: `.lib <path> <section>`, `.include
-/// <path>`). Corner lines follow the header, globals and `.param` lines in file order, so
+/// emitted for `dialect` (the simulators: SPICE `.lib <path> <section>`, `.include
+/// <path>`; Spectre `include "<path>" section=<section>`, `include "<path>"`). Corner lines follow the header, globals and `.param` lines in file order, so
 /// each one's first match after the previous one is the line itself.
 fn relative_paths(e: &Elab, dialect: Dialect, text: &str) -> Vec<(Range<u32>, bool)> {
     let mut out = Vec::new();
     let b = &e.bench;
-    if !matches!(dialect, Dialect::Ngspice | Dialect::Espice | Dialect::Xyce)
-        || b.corner_kind.is_empty()
-    {
+    if !crate::SIMULATORS.contains(&dialect) || b.corner_kind.is_empty() {
         return out;
     }
+    let spectre = dialect == Dialect::Spectre;
+    let (lib, include, section) = if spectre {
+        ("\ninclude \"", "\ninclude \"", "\" section=")
+    } else {
+        ("\n.lib ", "\n.include ", " ")
+    };
     let mut from = 0;
     let mut line = String::new();
     for k in 0..b.corner_kind.len() {
@@ -333,15 +339,17 @@ fn relative_paths(e: &Elab, dialect: Dialect, text: &str) -> Vec<(Range<u32>, bo
         let path = arg(0);
         line.clear();
         match b.corner_kind[k] {
-            CornerLine::Lib => line.push_str("\n.lib "),
-            CornerLine::Include => line.push_str("\n.include "),
+            CornerLine::Lib => line.push_str(lib),
+            CornerLine::Include => line.push_str(include),
             CornerLine::Temp => continue,
         }
         let prefix = line.len();
         line.push_str(path);
         if b.corner_kind[k] == CornerLine::Lib {
-            line.push(' ');
+            line.push_str(section);
             line.push_str(arg(1));
+        } else if spectre {
+            line.push('"');
         }
         line.push('\n');
         let Some(at) = text[from..].find(line.as_str()).map(|i| from + i) else {
