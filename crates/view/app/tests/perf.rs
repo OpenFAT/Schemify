@@ -1318,3 +1318,188 @@ fn shared_var_edit_frames_100k() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Reports p50/p95/p99 of `(update + paint, raster)` samples as one line and clears them.
+fn report_cpu(what: &str, t: &mut Vec<(f64, f64)>) {
+    let pct = |v: &mut Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        let at = |q: f64| v[((v.len().max(1) - 1) as f64 * q).round() as usize];
+        format!("{:.3} / {:.3} / {:.3}", at(0.5), at(0.95), at(0.99))
+    };
+    let n = t.len();
+    let (mut paint, mut raster, mut total): (Vec<f64>, Vec<f64>, Vec<f64>) = (
+        t.iter().map(|s| s.0).collect(),
+        t.iter().map(|s| s.1).collect(),
+        t.iter().map(|s| s.0 + s.1).collect(),
+    );
+    eprintln!(
+        "  {what:<8} {n:>3} frames  update+paint {} ms  raster {} ms  total {} ms",
+        pct(&mut paint),
+        pct(&mut raster),
+        pct(&mut total)
+    );
+    t.clear();
+}
+
+/// What a frame costs when the CPU rasterizes it whole (`CpuPainter`: vello_cpu, one thread,
+/// a fresh 1280×800 pixmap per frame), for the same gestures as `frame_times` and
+/// `interactions` at 100k objects: decides whether the window needs vello on the GPU at all.
+/// `cargo test --release -p schemify-app --test perf -- --ignored --nocapture cpu_frames`
+#[test]
+#[ignore = "release-mode benchmark"]
+fn cpu_frames_100k() {
+    use schemify_render::CpuPainter;
+
+    struct Cpu {
+        ed: Editor,
+        caches: schemify_app::paint::Caches,
+        p: CpuPainter,
+        now: u64,
+        times: Vec<(f64, f64)>,
+    }
+    impl Cpu {
+        fn frame(&mut self, ev: &InputEvents, dt: u64, measure: bool) {
+            self.now += dt;
+            let t = Instant::now();
+            self.ed.update(ev, VIEW, self.now);
+            self.p.reset();
+            schemify_app::paint::frame(&mut self.ed, &mut self.caches, &mut self.p);
+            let painted = t.elapsed().as_secs_f64() * 1e3;
+            let t = Instant::now();
+            std::hint::black_box(self.p.finish(Color::BLACK));
+            let raster = t.elapsed().as_secs_f64() * 1e3;
+            if measure {
+                self.times.push((painted, raster));
+            }
+        }
+        fn settle(&mut self) {
+            for _ in 0..1024 {
+                if self.ed.wake_ms().is_none() {
+                    break;
+                }
+                self.frame(&InputEvents::default(), 200, false);
+            }
+        }
+        /// A click on a wire of tile `k`, as `frame_times` selects.
+        fn select(&mut self, k: i32, measure: bool) {
+            let at = self.ed.to_screen((70 * U + 200 * U * (k % 4), -30 * U));
+            self.frame(
+                &event(InputEvent::PointerMove { x: at.0, y: at.1 }),
+                50,
+                false,
+            );
+            let mut click = event(InputEvent::PointerDown {
+                x: at.0,
+                y: at.1,
+                button: Button::Left,
+            });
+            click.push(InputEvent::PointerUp {
+                x: at.0,
+                y: at.1,
+                button: Button::Left,
+            });
+            self.frame(&click, 500, measure);
+            assert_eq!(self.ed.selection().len(), 1, "a wire under the pointer");
+        }
+    }
+
+    let n = 100_000u32;
+    let dir = fixture("inv", &format!("perf-cpu-{n}"));
+    std::fs::write(dir.join("big.shcomp"), schematic(n)).unwrap();
+    let ed = Editor::new(Options {
+        no_default_ui: false,
+        path: Some(dir.join("big.shcomp")),
+        seed: 1,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut c = Cpu {
+        ed,
+        caches: Default::default(),
+        p: CpuPainter::new(VIEW.0 as u16, VIEW.1 as u16, 1.0),
+        now: 0,
+        times: Vec::new(),
+    };
+    c.frame(&InputEvents::default(), 1000, false);
+    c.settle();
+    let (cx, cy) = (640.0f32, 400.0f32);
+    // Pan: as `frame_times`.
+    let mid = Button::Middle;
+    c.frame(
+        &event(InputEvent::PointerMove { x: 300.0, y: cy }),
+        8,
+        false,
+    );
+    c.frame(
+        &event(InputEvent::PointerDown {
+            x: 300.0,
+            y: cy,
+            button: mid,
+        }),
+        8,
+        false,
+    );
+    let mut x = 300.0f32;
+    for i in 0..240 {
+        x += if (i / 120) % 2 == 0 { 6.0 } else { -6.0 };
+        c.frame(&event(InputEvent::PointerMove { x, y: cy }), 8, true);
+    }
+    c.frame(
+        &event(InputEvent::PointerUp {
+            x,
+            y: cy,
+            button: mid,
+        }),
+        8,
+        false,
+    );
+    report_cpu("pan", &mut c.times);
+    // Zoom bursts with their settle frames: as `frame_times`.
+    c.frame(&event(InputEvent::PointerMove { x: cx, y: cy }), 8, false);
+    for burst in 0..10 {
+        let dy = if burst % 2 == 0 { 1.0 } else { -1.0 };
+        for _ in 0..6 {
+            let wheel = InputEvent::Wheel {
+                x: cx,
+                y: cy,
+                dx: 0.0,
+                dy,
+            };
+            c.frame(&event(wheel), 16, true);
+        }
+        for _ in 0..256 {
+            let Some(wake) = c.ed.wake_ms() else { break };
+            c.frame(&InputEvents::default(), u64::from(wake) + 1, true);
+        }
+    }
+    report_cpu("zoom", &mut c.times);
+    // Select a wire (click), then delete and undo: as `frame_times`.
+    for k in 0..12 {
+        c.select(k, true);
+    }
+    report_cpu("select", &mut c.times);
+    for k in 0..12 {
+        c.select(k, false);
+        c.frame(&key_event("Del"), 500, true);
+        c.frame(&key_event("U"), 500, true);
+    }
+    report_cpu("edit", &mut c.times);
+    // Hover zoomed in: as `interactions`.
+    for _ in 0..8 {
+        let wheel = InputEvent::Wheel {
+            x: cx,
+            y: cy,
+            dx: 0.0,
+            dy: 1.0,
+        };
+        c.frame(&event(wheel), 16, false);
+    }
+    c.settle();
+    for i in 0..240 {
+        let x = 200.0 + (i % 120) as f32 * 4.0;
+        let y = cy + (i / 120) as f32 * 3.0;
+        c.frame(&event(InputEvent::PointerMove { x, y }), 8, true);
+    }
+    report_cpu("hover", &mut c.times);
+    let _ = std::fs::remove_dir_all(&dir);
+}

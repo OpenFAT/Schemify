@@ -715,17 +715,27 @@ fn live_layers_compose_without_vello() {
         );
         if bad != 0 {
             let (mut bb, mut n) = ([u32::MAX, u32::MAX, 0, 0], 0);
-            for (i, (p, q)) in composed.chunks_exact(4).zip(full.chunks_exact(4)).enumerate() {
+            for (i, (p, q)) in composed
+                .chunks_exact(4)
+                .zip(full.chunks_exact(4))
+                .enumerate()
+            {
                 if p.iter().zip(q).any(|(a, b)| a.abs_diff(*b) > 2) {
                     let (x, y) = (i as u32 % size.0, i as u32 / size.0);
                     bb = [bb[0].min(x), bb[1].min(y), bb[2].max(x), bb[3].max(y)];
                     n += 1;
                 }
             }
-            let at = |px: &[u8], x: usize, y: usize| px[4 * (y * size.0 as usize + x)..][..4].to_vec();
+            let at =
+                |px: &[u8], x: usize, y: usize| px[4 * (y * size.0 as usize + x)..][..4].to_vec();
             println!(
                 "diff bbox {bb:?} ({n} px); (100,100) composed {:?} full {:?}; (20,187) composed {:?} full {:?}; (5,5) composed {:?} full {:?}",
-                at(&composed, 100, 100), at(&full, 100, 100), at(&composed, 20, 187), at(&full, 20, 187), at(&composed, 5, 5), at(&full, 5, 5)
+                at(&composed, 100, 100),
+                at(&full, 100, 100),
+                at(&composed, 20, 187),
+                at(&full, 20, 187),
+                at(&composed, 5, 5),
+                at(&full, 5, 5)
             );
         }
         assert_eq!(bad, 0, "the composed frame differs from vello's");

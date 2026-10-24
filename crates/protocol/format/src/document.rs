@@ -632,6 +632,28 @@ impl<'s> Document<'s> {
         assert_eq!(self.comments.len() - before, from.comments(r).len());
     }
 
+    /// Reserves the columns for a file of `bytes` bytes, from the measured shape of cell
+    /// files (a record per ~40 bytes, a value per ~10), so lexing a large file grows nothing.
+    pub(crate) fn reserve_for(&mut self, bytes: usize) {
+        let (records, fields, attrs, values) = (bytes / 40, bytes / 10, bytes / 24, bytes / 16);
+        for c in [
+            &mut self.rec_line,
+            &mut self.rec_field_start,
+            &mut self.rec_attr_start,
+            &mut self.rec_verbatim_start,
+            &mut self.rec_comment_start,
+        ] {
+            c.reserve(records);
+        }
+        for c in [&mut self.attr_line, &mut self.attr_value_start] {
+            c.reserve(attrs);
+        }
+        self.rec_kind.reserve(records);
+        self.fields.reserve(fields);
+        self.attr_key.reserve(attrs);
+        self.attr_values.reserve(values);
+    }
+
     pub(crate) fn intern(&mut self, text: &str) -> Str {
         let off = self.arena.len();
         self.arena.push_str(text);

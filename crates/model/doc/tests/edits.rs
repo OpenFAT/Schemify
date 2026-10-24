@@ -474,3 +474,32 @@ fn the_undo_cap_drops_the_oldest_entry_and_keeps_the_saved_depth() {
     assert!(matches!(run(&mut p, h, Edit::Undo), Outcome::Undone { .. }));
     assert!(p.is_dirty(h));
 }
+
+/// Latent bug 1: a replaced or removed graphic row leaves its coordinates in the pool, and
+/// they count as garbage like its attribute lines, so compaction is due when it should be.
+#[test]
+fn replaced_shape_coordinates_count_as_garbage() {
+    let text = format!("{}shape 0abcde line 0 0 10 10\n", common::SEED_DOC);
+    let (mut p, h) = common::open(&text, "a.shcomp");
+    assert_eq!(p.doc(h).unwrap().pool().dead, 0);
+    for k in 1..=20u32 {
+        let op = Op::SetField {
+            target: Target::new(RecordKind::Shape, "0abcde"),
+            index: 4,
+            value: format!("{}", 10 + k),
+        };
+        assert!(matches!(
+            common::run(&mut p, h, common::tx(vec![op])),
+            Outcome::Committed { .. }
+        ));
+        // Four coordinates per replaced row (no attribute lines or comments on it).
+        assert_eq!(p.doc(h).unwrap().pool().dead, 4 * k, "edit {k}");
+    }
+    let del = Op::Delete(Target::new(RecordKind::Shape, "0abcde"));
+    assert!(matches!(
+        common::run(&mut p, h, common::tx(vec![del])),
+        Outcome::Committed { .. }
+    ));
+    assert_eq!(p.doc(h).unwrap().pool().dead, 4 * 21);
+    assert_eq!(p.doc(h).unwrap().shapes().id.len(), 0);
+}

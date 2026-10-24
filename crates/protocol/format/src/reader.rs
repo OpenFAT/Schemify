@@ -207,6 +207,7 @@ fn lex_header(src: &str) -> Result<(Document<'_>, usize), Diagnostic> {
         return Err(bad(col(kind), "unknown file kind"));
     };
     let mut doc = Document::bare(src, number, file_kind);
+    doc.reserve_for(src.len());
     doc.begin(RecordKind::Header, 1);
     // Stored canonical (`01` → `1`) so the writer needs no special case for the header.
     let v = doc.intern(&number.to_string());
