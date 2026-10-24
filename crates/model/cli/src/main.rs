@@ -148,11 +148,7 @@ fn edit(start: &Startup, args: &[String]) -> u8 {
 /// fails. Exit 0 at the end of stdin, 2 for usage or I/O errors.
 fn rpc(start: &Startup, args: &[String]) -> u8 {
     use schemify_cli::rpc;
-    let h = rpc::Headless {
-        exe: std::env::current_exe().ok(),
-        flags: start.flags(),
-        seed: schemify_cli::platform::seed(),
-    };
+    let h = headless(start);
     let served = match args {
         [] => rpc::serve(
             &mut std::io::stdin().lock(),
@@ -183,17 +179,22 @@ fn rpc(start: &Startup, args: &[String]) -> u8 {
     }
 }
 
+/// The headless methods of this process: this binary runs the CLI ones, with `start`'s flags.
+fn headless(start: &Startup) -> schemify_cli::rpc::Headless {
+    schemify_cli::rpc::Headless {
+        exe: std::env::current_exe().ok(),
+        flags: start.flags(),
+        seed: schemify_cli::platform::seed(),
+    }
+}
+
 /// `mcp`: the MCP bridge (D27) on stdio until it ends; exit 0 then, 2 for usage or I/O errors.
 fn mcp(start: &Startup, args: &[String]) -> u8 {
     if !args.is_empty() {
         eprint!("{USAGE}");
         return USAGE_ERROR;
     }
-    let h = schemify_cli::rpc::Headless {
-        exe: std::env::current_exe().ok(),
-        flags: start.flags(),
-        seed: schemify_cli::platform::seed(),
-    };
+    let h = headless(start);
     let (stdin, stdout) = (std::io::stdin(), std::io::stdout());
     match schemify_cli::mcp::serve(&mut stdin.lock(), &mut stdout.lock(), &h) {
         Ok(()) => OK,
