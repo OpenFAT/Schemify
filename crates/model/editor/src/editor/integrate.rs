@@ -38,7 +38,8 @@ const PIN_PX: f64 = 8.0;
 /// Benches "New bench from this component" tries before giving up on a free file name.
 const BENCH_NAMES_MAX: u32 = 100;
 
-/// Whether `cmd` makes sense on a read-only text tab (navigation, panels, the run).
+/// Whether `cmd` makes sense on a read-only text tab: navigation, panels, the run, another
+/// text or dialog, a view option (nothing that edits the level behind the tab).
 pub(super) fn text_tab_cmd(cmd: Cmd) -> bool {
     matches!(
         cmd,
@@ -71,6 +72,27 @@ pub(super) fn text_tab_cmd(cmd: Cmd) -> bool {
             | Cmd::ChooseFilter
             | Cmd::ChoosePick
             | Cmd::TextFind
+            | Cmd::About
+            | Cmd::Help
+            | Cmd::Changelog
+            | Cmd::ListProcesses
+            | Cmd::PackageStatus
+            | Cmd::JobData
+            | Cmd::JobErrors
+            | Cmd::ListNets
+            | Cmd::ListNetsBuses
+            | Cmd::EditNetlist
+            | Cmd::WavesClear
+            | Cmd::WavesLoad
+            | Cmd::CycleDialect
+            | Cmd::FlatNetlist
+            | Cmd::Fullscreen
+            | Cmd::ToolbarToggle
+            | Cmd::OpenRecent
+            | Cmd::OpenMostRecent
+            | Cmd::NewWindowTab
+            | Cmd::Recover
+            | Cmd::DiscardRecovery
     )
 }
 
@@ -1070,10 +1092,10 @@ impl Editor {
         let current = self.decor_key.as_ref().is_some_and(|k| {
             k.highlight == self.highlight
                 && (k.insts, k.incr) == (self.opts.highlight_insts, self.opts.incr_color)
-                && k.compare == self.compare.as_ref().map(super::parity::Compare::shown)
+                && k.compare == self.compare.as_ref().map(|c| (c.row, c.on))
                 && k.hier == self.hier.as_ref().map(|h| (h.0, h.1))
                 && k.op == self.op_gen
-                && k.diff == self.diff
+                && k.diff == self.diff_key
         });
         if current && !(scene_stale && draws) {
             return false;
@@ -1082,10 +1104,10 @@ impl Editor {
             highlight: self.highlight.clone(),
             insts: self.opts.highlight_insts,
             incr: self.opts.incr_color,
-            compare: self.compare.as_ref().map(super::parity::Compare::shown),
+            compare: self.compare.as_ref().map(|c| (c.row, c.on)),
             hier: self.hier.as_ref().map(|h| (h.0, h.1)),
             op: self.op_gen,
-            diff: self.diff.clone(),
+            diff: self.diff_key,
         });
         let Some((h, _)) = self.active() else {
             return false;
@@ -1334,7 +1356,7 @@ fn ids_of(targets: &[String], doc: &schemify_doc::Document) -> Vec<u32> {
 
 /// Everything the decor draws besides the scene, as it was last built from: the decor is
 /// rebuilt when any of it differs, or when the scene changed while the decor draws on it.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug)]
 pub(super) struct DecorKey {
     highlight: Vec<String>,
     insts: bool,
@@ -1342,5 +1364,6 @@ pub(super) struct DecorKey {
     compare: Option<(usize, bool)>,
     hier: Option<(DocHandle, u32)>,
     op: u32,
-    diff: checks::Diff,
+    /// The staged edit under review (`track_stage`'s key: the diff is a function of it).
+    diff: Option<(DocHandle, u32)>,
 }

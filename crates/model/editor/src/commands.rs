@@ -538,10 +538,10 @@ commands! {
 impl Cmd {
     /// Returns the command's public name.
     pub fn name(self) -> &'static str {
-        CORE.iter()
-            .find(|(_, c)| *c == self)
-            .map(|(n, _)| *n)
-            .expect("every variant has a row")
+        // Variants are declared in name order, so a variant's row is its discriminant.
+        let (name, cmd) = CORE[self as usize];
+        assert_eq!(cmd, self, "CORE lists the variants in declaration order");
+        name
     }
 
     /// The file kinds this command acts on, `None` when it acts on any. The one table both

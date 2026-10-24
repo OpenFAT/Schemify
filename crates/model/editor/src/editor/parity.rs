@@ -30,35 +30,28 @@ use crate::spines;
 use crate::wiring;
 
 /// Layers the rotating highlight colors use (palette layers with distinct hues).
-const HILITE_LAYERS: [u8; 8] = [8, 9, 10, 12, 13, 15, 17, 21];
+pub(super) const HILITE_LAYERS: [u8; 8] = [8, 9, 10, 12, 13, 15, 17, 21];
 /// Canvas layers a user can draw on and hide (xschem's 22).
-const USER_LAYERS: u8 = 22;
+pub(super) const USER_LAYERS: u8 = 22;
 /// Names of the special layers (xschem Layers menu).
-const LAYER_NAMES: [&str; 6] = ["BG", "WIRE", "GRID", "TEXT", "", "PIN"];
+pub(super) const LAYER_NAMES: [&str; 6] = ["BG", "WIRE", "GRID", "TEXT", "", "PIN"];
 /// Pin pitch of generated symbols and port columns (xschem units).
 pub(super) const PITCH: i32 = 20 * UNIT;
 /// Rows of hierarchy the changelog lists at most.
-const CHANGELOG_ROWS: usize = 1 << 12;
+pub(super) const CHANGELOG_ROWS: usize = 1 << 12;
 /// Largest PNG export side in pixels (the CPU raster's target is `u16`; 16k keeps one
 /// image under 1 GiB of RGBA).
-const PNG_MAX_PX: u16 = 16_384;
+pub(super) const PNG_MAX_PX: u16 = 16_384;
 
 /// The comparison of the active document with another cell (Highlight → compare).
 #[derive(Clone, Debug)]
 pub(crate) struct Compare {
     /// The other cell's index row.
-    row: usize,
+    pub(super) row: usize,
     /// Shown.
-    on: bool,
+    pub(super) on: bool,
     /// (document, edit epoch, other's epoch) the drawn diff is current for.
-    key: Option<(DocHandle, u32, u32)>,
-}
-
-impl Compare {
-    /// What the decor draws of it: the other cell's row and whether it is shown.
-    pub(super) fn shown(&self) -> (usize, bool) {
-        (self.row, self.on)
-    }
+    pub(super) key: Option<(DocHandle, u32, u32)>,
 }
 
 /// One shape's points as a record: rank-2 symbol graphics (`schematic == false`) or a rank-3
@@ -128,7 +121,7 @@ pub(super) fn shape_record(
     Some(rec)
 }
 
-fn dist(a: Pt, b: Pt) -> i32 {
+pub(super) fn dist(a: Pt, b: Pt) -> i32 {
     let (dx, dy) = (
         f64::from(b.0) - f64::from(a.0),
         f64::from(b.1) - f64::from(a.1),
@@ -174,35 +167,6 @@ pub(super) fn arc_3(a: Pt, b: Pt, c: Pt) -> Option<(i32, i32, i32, i32, i32)> {
     ))
 }
 
-/// Whether a parity command makes sense on a read-only text tab: it shows another text, a
-/// dialog, or changes a view option (it does not edit the level behind the tab).
-pub(super) fn text_tab_ok(cmd: Cmd) -> bool {
-    matches!(
-        cmd,
-        Cmd::About
-            | Cmd::Help
-            | Cmd::Changelog
-            | Cmd::ListProcesses
-            | Cmd::PackageStatus
-            | Cmd::JobData
-            | Cmd::JobErrors
-            | Cmd::ListNets
-            | Cmd::ListNetsBuses
-            | Cmd::EditNetlist
-            | Cmd::WavesClear
-            | Cmd::WavesLoad
-            | Cmd::CycleDialect
-            | Cmd::FlatNetlist
-            | Cmd::Fullscreen
-            | Cmd::ToolbarToggle
-            | Cmd::OpenRecent
-            | Cmd::OpenMostRecent
-            | Cmd::NewWindowTab
-            | Cmd::Recover
-            | Cmd::DiscardRecovery
-    )
-}
-
 /// The user config's layer colors (`schemify.opt.layer_colors`, config spec §3) as the
 /// editor's `(layer, 0xRRGGBB)` overrides, by layer.
 pub(super) fn user_layer_colors(o: &schemify_config::Opts) -> Vec<(u8, u32)> {
@@ -217,7 +181,7 @@ pub(super) fn user_layer_colors(o: &schemify_config::Opts) -> Vec<(u8, u32)> {
 }
 
 /// A parsed number argument in `[lo, hi]`.
-fn number(arg: &str, lo: f64, hi: f64) -> Option<f64> {
+pub(super) fn number(arg: &str, lo: f64, hi: f64) -> Option<f64> {
     arg.trim()
         .parse::<f64>()
         .ok()
@@ -225,612 +189,6 @@ fn number(arg: &str, lo: f64, hi: f64) -> Option<f64> {
 }
 
 impl Editor {
-    /// Runs a command added for xschem parity (the rest are in `Editor::run`). Returns whether
-    /// anything visible changed.
-    #[allow(clippy::too_many_lines)]
-    pub(super) fn parity(
-        &mut self,
-        cmd: Cmd,
-        arg: &str,
-        node: &str,
-        reqs: &mut Vec<EditRequest>,
-    ) -> bool {
-        let Some((h, view)) = self.active() else {
-            return false;
-        };
-        let ptr = self.pointer_world_snapped();
-        let _ = node;
-        let toggle = |b: &mut bool| *b = !*b;
-        match cmd {
-            // ---------------------------------------------------------------- File
-            Cmd::SaveAs | Cmd::SaveAsSymbol => {
-                let symbol = cmd == Cmd::SaveAsSymbol;
-                if arg.trim().is_empty() {
-                    let current = self
-                        .session
-                        .path(h)
-                        .and_then(|p| crate::libs::rel_path(&self.session.root, p))
-                        .unwrap_or_default();
-                    let title = if symbol { "Save symbol as" } else { "Save as" };
-                    self.open_text(TextFor::SaveAs(symbol), title);
-                    if let Dialog::Text(_, _, typed) = &mut self.dialog {
-                        *typed = current;
-                    }
-                } else {
-                    self.save_as(h, arg.trim(), symbol);
-                }
-            }
-            Cmd::Merge => self.open_chooser(ChooseFor::Merge),
-            Cmd::OpenMostRecent => self.open_recent(0, reqs),
-            Cmd::OpenRecent => match arg.trim().parse::<usize>() {
-                Ok(i) => self.open_recent(i, reqs),
-                Err(_) => self
-                    .session
-                    .say(format!("{arg:?}: not a recent-file index")),
-            },
-            Cmd::DeleteFiles => {
-                self.pending_delete = None;
-                self.open_chooser(ChooseFor::Delete);
-            }
-            Cmd::ExportPng
-            | Cmd::ExportPngFull
-            | Cmd::ExportSvg
-            | Cmd::ExportPdf
-            | Cmd::ExportPdfFull
-            | Cmd::ExportPdfHier
-            | Cmd::ExportEps => self.export(h, cmd, arg),
-            Cmd::ExportProject => {
-                self.session
-                    .say(match platform::export_project(&self.session.root) {
-                        Ok(p) => format!("exported project {}", p.display()),
-                        Err(e) => format!("export project: {e}"),
-                    });
-            }
-            Cmd::ImportProject => {
-                self.session
-                    .say(match platform::import_project(arg.trim() == "folder") {
-                        Ok(()) => "import project: pick a zip or folder".into(),
-                        Err(e) => format!("import project: {e}"),
-                    });
-            }
-            // ---------------------------------------------------------------- Edit / tools
-            Cmd::UnselectArea => self.tool = Tool::UnselectArmed,
-            Cmd::InsertPolygon | Cmd::InsertArc | Cmd::InsertCircle => {
-                let form = match cmd {
-                    Cmd::InsertPolygon => Form::Poly,
-                    Cmd::InsertArc => Form::Arc,
-                    _ => Form::Circle,
-                };
-                self.tool = Tool::Shape {
-                    form,
-                    pts: vec![ptr],
-                    to: ptr,
-                };
-            }
-            Cmd::ClosePolygon => {
-                if let Tool::Shape {
-                    form: Form::Poly,
-                    pts,
-                    ..
-                } = std::mem::take(&mut self.tool)
-                {
-                    self.finish_shape(reqs, h, view, Form::Poly, &pts, true);
-                }
-            }
-            Cmd::AlignGrid => {
-                let snap_m = self.opts.snap;
-                let ops = self.with_doc(h, |d, sel| wiring::align(d, sel, snap_m));
-                self.commit(reqs, h, "align to grid", ops);
-            }
-            Cmd::BreakAtMouse | Cmd::BreakAtMouseAlign => self.cut_wire(reqs, h, cmd),
-            Cmd::BreakAtPins | Cmd::RemoveThrough => {
-                let sel = self.selection().to_vec();
-                let ops = {
-                    let p = &self.session.project;
-                    let mut ids = Ids::new(&mut self.rng);
-                    if cmd == Cmd::RemoveThrough {
-                        wiring::remove_through(p, h, &sel, &mut ids)
-                    } else {
-                        let pts: Vec<Pt> = p.doc(h).map_or_else(Vec::new, |d| {
-                            sel.iter()
-                                .filter(|k| k.table == TableId::Instances)
-                                .filter_map(|&k| edit::loc_of(d, k))
-                                .flat_map(|l| wiring::inst_pins(p, h, d, l.row as usize))
-                                .collect()
-                        });
-                        p.doc(h)
-                            .map_or_else(Vec::new, |d| wiring::break_at(d, &pts, &mut ids).0)
-                    }
-                };
-                self.commit(reqs, h, cmd.name(), ops);
-            }
-            Cmd::JoinTrim => {
-                let ops = {
-                    let mut ids = Ids::new(&mut self.rng);
-                    wiring::join_trim(&self.session.project, h, &mut ids)
-                };
-                if ops.is_empty() {
-                    self.session.say("wires already joined and trimmed");
-                }
-                self.commit(reqs, h, "join/trim wires", ops);
-            }
-            Cmd::Search => self.open_search(),
-            Cmd::SelectConnected | Cmd::SelectConnectedStop => {
-                let mut seeds = self.selection().to_vec();
-                if seeds.is_empty()
-                    && let Some(o) = self.hit_at(self.pointer)
-                {
-                    seeds.push(self.scene.objs.key[o as usize]);
-                }
-                let stop = cmd == Cmd::SelectConnectedStop;
-                let keys = wiring::connected(&self.session.project, h, &seeds, stop);
-                self.session
-                    .say(format!("{} connected object(s)", keys.len()));
-                self.set_selection(keys);
-            }
-            // ---------------------------------------------------------------- Options / view
-            Cmd::AutoTrim => toggle(&mut self.opts.auto_trim),
-            Cmd::ExportColor => toggle(&mut self.opts.export_color),
-            Cmd::ExportTransparent => toggle(&mut self.opts.export_transparent),
-            Cmd::Crosshair => toggle(&mut self.opts.crosshair),
-            Cmd::SnapCursor => toggle(&mut self.opts.snap_cursor),
-            Cmd::EnableStretch => toggle(&mut self.opts.stretch),
-            Cmd::FlatNetlist => toggle(&mut self.opts.flat),
-            Cmd::PersistentWire => toggle(&mut self.opts.persistent),
-            Cmd::GridAxes => toggle(&mut self.opts.grid_axes),
-            Cmd::ToolbarToggle => toggle(&mut self.opts.toolbar),
-            Cmd::Fullscreen => toggle(&mut self.opts.fullscreen),
-            Cmd::SymbolText => toggle(&mut self.opts.symbol_text),
-            Cmd::FillToggle => toggle(&mut self.opts.fill),
-            Cmd::VariableWidth => toggle(&mut self.opts.variable_width),
-            Cmd::AutoHighlight => toggle(&mut self.opts.auto_highlight),
-            Cmd::HighlightInstances => {
-                toggle(&mut self.opts.highlight_insts);
-            }
-            Cmd::IncrementColor => {
-                toggle(&mut self.opts.incr_color);
-            }
-            Cmd::OnlyProbes => toggle(&mut self.opts.only_probes),
-            Cmd::AutoHighlightPlotted => {
-                toggle(&mut self.opts.highlight_plotted);
-                if self.opts.highlight_plotted {
-                    self.highlight_plotted();
-                }
-            }
-            Cmd::CrosshairSize
-            | Cmd::LineWidth
-            | Cmd::DimColors
-            | Cmd::SymbolWidth
-            | Cmd::GridDialog
-            | Cmd::SnapDialog
-            | Cmd::ExportPage
-            | Cmd::PngScale => self.setting(cmd, arg),
-            Cmd::CycleDialect => {
-                let i = spines::DIALECTS
-                    .iter()
-                    .position(|d| d.1 == self.dialect)
-                    .unwrap_or(0);
-                let next = spines::DIALECTS[(i + 1) % spines::DIALECTS.len()];
-                self.dialect = next.1;
-                self.session.say(format!("netlist dialect: {}", next.0));
-            }
-            Cmd::LineWidthDown | Cmd::LineWidthUp => {
-                let w = i16::from(self.opts.width_tenths);
-                let w = if cmd == Cmd::LineWidthUp {
-                    w + 5
-                } else {
-                    w - 5
-                };
-                self.opts.width_tenths = w.clamp(1, 100) as u8;
-            }
-            Cmd::LayerColor => {
-                let v = arg.trim().trim_start_matches('#');
-                if v.is_empty() {
-                    self.open_text(TextFor::LayerColor, "Color of the current layer (rrggbb)");
-                } else if let Some(rgb) = u32::from_str_radix(v, 16).ok().filter(|_| v.len() == 6) {
-                    let l = self.opts.layer;
-                    self.layer_colors.retain(|c| c.0 != l);
-                    self.layer_colors.push((l, rgb));
-                } else {
-                    self.session.say(format!("{arg:?}: not an rrggbb color"));
-                }
-            }
-            Cmd::ResetColors => {
-                self.layer_colors.clear();
-                self.opts.dim = 0;
-                self.opts.hidden = 0;
-                self.opts.width_tenths = 10;
-            }
-            Cmd::LayersDialog => {
-                self.tool = Tool::Idle;
-                self.dialog = Dialog::Layers;
-                self.show_dialog("dialog.layers");
-            }
-            Cmd::ToggleLayer => match arg.trim().parse::<u8>() {
-                Ok(l) if (1..USER_LAYERS).contains(&l) => self.opts.hidden ^= 1 << l,
-                _ => self.session.say(format!("{arg:?}: not a layer 1..21")),
-            },
-            Cmd::SetLayer => {
-                // `layers.set_current.<n>` or a Layers-menu node `layers.<n>_<name>`.
-                let digits: String = arg.chars().take_while(char::is_ascii_digit).collect();
-                match digits.parse::<u8>() {
-                    Ok(l) if l < USER_LAYERS => {
-                        self.opts.layer = l;
-                        self.session.say(format!("current layer {l}"));
-                    }
-                    _ => self.session.say(format!("{arg:?}: not a layer 0..21")),
-                }
-            }
-            Cmd::AllLayers => self.opts.hidden = 0,
-            Cmd::CurrentLayerOnly => {
-                let all = (1u32 << USER_LAYERS) - 2; // every user layer but the background
-                self.opts.hidden = all & !(1 << self.opts.layer);
-            }
-            Cmd::ErcWindow => {
-                self.panel = if self.panel == super::Panel::Checks {
-                    super::Panel::None
-                } else {
-                    super::Panel::Checks
-                };
-            }
-            // ---------------------------------------------------------------- Properties
-            Cmd::EditFile => {
-                let text = self
-                    .session
-                    .project
-                    .doc(h)
-                    .map(schemify_doc::Document::canonical)
-                    .unwrap_or_default();
-                self.tool = Tool::Idle;
-                self.dialog = Dialog::File(text);
-                self.show_dialog("dialog.edit_file");
-                self.focus_next = Some("dialog.edit_file.text".into());
-            }
-            Cmd::EditFileOk => {
-                let Dialog::File(typed) = std::mem::take(&mut self.dialog) else {
-                    return false;
-                };
-                self.close_dialog();
-                let text = if arg.is_empty() {
-                    typed
-                } else {
-                    arg.to_owned()
-                };
-                self.apply_file_text(reqs, h, &text);
-            }
-            Cmd::EditHeader => self.open_header(h),
-            Cmd::ToggleIgnore => {
-                let ops = self.with_doc(h, |d, sel| {
-                    edit::selected_records(d, sel)
-                        .into_iter()
-                        .filter(|(_, _, r)| r.kind == RecordKind::Inst)
-                        .map(|(_, target, r)| match r.find_attr("ignore") {
-                            Some(_) => Op::RemoveAttr {
-                                target,
-                                key: "ignore".into(),
-                                first: None,
-                            },
-                            None => Op::SetAttr {
-                                target,
-                                key: "ignore".into(),
-                                values: vec!["true".into()],
-                            },
-                        })
-                        .collect::<Vec<_>>()
-                });
-                if ops.is_empty() {
-                    self.session.say("select instances to toggle `ignore`");
-                }
-                self.commit(reqs, h, "toggle ignore", ops);
-            }
-            // ---------------------------------------------------------------- Symbol
-            Cmd::SymbolsDetails => self.opts.show_symbols = 0,
-            Cmd::SymbolsBoxesSub => self.opts.show_symbols = 1,
-            Cmd::SymbolsBoxesAll => self.opts.show_symbols = 2,
-            Cmd::SymbolsCycle => self.opts.show_symbols = (self.opts.show_symbols + 1) % 3,
-            Cmd::MakeSymbol => {
-                let ops = self.make_symbol_ops(h);
-                self.commit(reqs, h, "make symbol", ops);
-            }
-            Cmd::MakeSchematic => {
-                let ops = self.make_schematic_ops(h, ptr);
-                if ops.is_empty() {
-                    self.session.say("every pin already has a port");
-                }
-                self.commit(reqs, h, "make schematic", ops);
-            }
-            Cmd::MakeSubcircuit => self.make_subcircuit(reqs, h),
-            Cmd::AttachLabels => {
-                let ops = self.attach_labels_ops(h);
-                self.commit(reqs, h, "attach labels", ops);
-            }
-            Cmd::PinsFromPorts => {
-                let ops = self.with_doc(h, pins_from_ports);
-                if ops.is_empty() {
-                    self.session.say("select schematic ports without a pin");
-                }
-                self.commit(reqs, h, "pins from ports", ops);
-            }
-            Cmd::ListNets | Cmd::ListNetsBuses => {
-                let mut body = String::from("Highlighted nets\n\n");
-                for k in &self.highlight {
-                    if cmd == Cmd::ListNetsBuses {
-                        for bit in expand_bus(k) {
-                            body.push_str(&bit);
-                            body.push('\n');
-                        }
-                    } else {
-                        body.push_str(k);
-                        body.push('\n');
-                    }
-                }
-                self.text_tab("highlighted nets", "nets", body);
-            }
-            Cmd::LabelsFromNets | Cmd::LabelsFromNetsI | Cmd::PortsFromNets => {
-                let names = self.highlighted_local_names();
-                if names.is_empty() {
-                    self.session.say("no highlighted nets at this level (k)");
-                    return true;
-                }
-                let kind = if cmd == Cmd::PortsFromNets {
-                    RecordKind::Port
-                } else {
-                    RecordKind::Label
-                };
-                let prefix = if cmd == Cmd::LabelsFromNetsI { "i" } else { "" };
-                let recs: Vec<RecordBuf> = names
-                    .iter()
-                    .enumerate()
-                    .map(|(i, n)| {
-                        edit::placed(
-                            kind,
-                            (0, i as i32 * PITCH),
-                            Orient::R0,
-                            &format!("{prefix}{n}"),
-                            edit::AUTO_ID,
-                        )
-                    })
-                    .collect();
-                self.tool = Tool::Place {
-                    what: Placement::Paste(recs),
-                    at: ptr,
-                    lin: Xform::IDENTITY,
-                };
-            }
-            // ---------------------------------------------------------------- Highlight
-            Cmd::CompareWith => self.open_chooser(ChooseFor::Compare),
-            Cmd::CompareToggle => match self.compare.as_mut() {
-                Some(c) => {
-                    c.on = !c.on;
-                    c.key = None;
-                }
-                None => self.open_chooser(ChooseFor::Compare),
-            },
-            Cmd::CompareSwap => self.compare_swap(h),
-            Cmd::DupNames => {
-                let keys = self.with_doc(h, |d, _| duplicate_names(d).0);
-                self.session
-                    .say(format!("{} instance(s) with a duplicate name", keys.len()));
-                self.set_selection(keys);
-            }
-            Cmd::RenameDups => {
-                let ops = self.with_doc(h, |d, _| duplicate_names(d).1);
-                if ops.is_empty() {
-                    self.session.say("no duplicate instance names");
-                }
-                self.commit(reqs, h, "rename duplicates", ops);
-            }
-            Cmd::PinMismatch => self.pin_mismatch(h),
-            Cmd::SelectHighlighted => {
-                let keys = self.hl.keys.clone();
-                self.set_selection(keys);
-            }
-            Cmd::SelectOverlapped => {
-                let keys = self.with_doc(h, |d, _| overlapped(d));
-                self.session
-                    .say(format!("{} overlapped instance(s)", keys.len()));
-                self.set_selection(keys);
-            }
-            // ---------------------------------------------------------------- Simulation
-            Cmd::Changelog => self.changelog(h),
-            Cmd::EditNetlist => {
-                let show = self.show_netlist;
-                self.show_netlist = true;
-                self.netlist(true);
-                self.show_netlist = show;
-            }
-            Cmd::AddGraph => {
-                let Some(doc) = self.session.project.doc(h) else {
-                    return false;
-                };
-                let row = crate::docs::insert_row(doc, self.page.sel);
-                let rec = RecordBuf::new(RecordKind::Prose)
-                    .field(schemify_doc::NEW_ID)
-                    .verbatim("```plot")
-                    .verbatim("v(out)")
-                    .verbatim("```");
-                self.commit_docs(
-                    reqs,
-                    h,
-                    "add graph",
-                    vec![Op::Insert { rec, at: Some(row) }],
-                );
-                if let Some(t) = self.session.tab_view_mut() {
-                    *t.docs = true;
-                }
-            }
-            Cmd::ListProcesses => self.list_processes(),
-            Cmd::PackageStatus => self.package_status(),
-            Cmd::JobData | Cmd::JobErrors => self.job_log(cmd == Cmd::JobErrors),
-            Cmd::WavesClear => {
-                self.waves = None;
-                self.shell.invalidate();
-            }
-            Cmd::WavesLoad => {
-                self.open_chooser(ChooseFor::Waves);
-                if let Dialog::Choose(c) = &mut self.dialog {
-                    c.note = arg.trim().to_owned();
-                }
-            }
-            // ---------------------------------------------------------------- Help
-            Cmd::About => self.text_tab(
-                "About Schemify",
-                "about",
-                format!(
-                    "Schemify {}\n\nA schematic editor: xschem's keys and menus (D25), \
-                     line-record design files that diff and merge (D9, D34), one expression \
-                     language (D12), plugins in WASM (D3).\n\nLicensed MIT OR Apache-2.0.\n",
-                    env!("CARGO_PKG_VERSION")
-                ),
-            ),
-            Cmd::Help => self.text_tab("Help", "help", help_text()),
-            Cmd::ContextMenu => self.context_menu(self.pointer),
-            Cmd::Recover | Cmd::DiscardRecovery => {
-                let Dialog::Recover(d, _) = std::mem::take(&mut self.dialog) else {
-                    return false;
-                };
-                self.close_dialog();
-                self.session.decide_recovery(d, cmd == Cmd::Recover);
-                self.invalidate_cells();
-            }
-            // Dispatched by `Editor::run` before it hands a command here.
-            Cmd::CellAddBench
-            | Cmd::CellAddImpl
-            | Cmd::CellAddParam
-            | Cmd::CellDelete
-            | Cmd::CellPinDown
-            | Cmd::CellPinUp
-            | Cmd::CellSet
-            | Cmd::CellSymbolFromPorts
-            | Cmd::CellSyncApply
-            | Cmd::CellSyncCancel
-            | Cmd::CellSyncPorts
-            | Cmd::ChecksPick
-            | Cmd::ChooseFilter
-            | Cmd::ChoosePick
-            | Cmd::DialogClose
-            | Cmd::EnterTextOk
-            | Cmd::DocsAddProse
-            | Cmd::DocsAddVar
-            | Cmd::DocsDelete
-            | Cmd::DocsEdit
-            | Cmd::DocsDown
-            | Cmd::DocsUp
-            | Cmd::DocsProseOk
-            | Cmd::DocsSelect
-            | Cmd::DocsSource
-            | Cmd::DocsVarOk
-            | Cmd::AcceptStaged
-            | Cmd::ConstrainH
-            | Cmd::ConstrainV
-            | Cmd::Copy
-            | Cmd::Cut
-            | Cmd::Delete
-            | Cmd::Duplicate
-            | Cmd::FlipInPlace
-            | Cmd::Flip
-            | Cmd::Move
-            | Cmd::MoveKiss
-            | Cmd::MoveStretch
-            | Cmd::OpenSubTab
-            | Cmd::OpenSymbolTab
-            | Cmd::Paste
-            | Cmd::Ascend
-            | Cmd::Descend
-            | Cmd::DescendSymbol
-            | Cmd::Redo
-            | Cmd::RejectStaged
-            | Cmd::RotateInPlace
-            | Cmd::Rotate
-            | Cmd::SelectAll
-            | Cmd::ShowStaged
-            | Cmd::Unconstrained
-            | Cmd::Undo
-            | Cmd::UnselectUnderMouse
-            | Cmd::VFlipInPlace
-            | Cmd::VFlip
-            | Cmd::FieldTyped
-            | Cmd::NewSchematic
-            | Cmd::NewSymbol
-            | Cmd::Close
-            | Cmd::ComponentBrowser
-            | Cmd::NewWindowTab
-            | Cmd::Open
-            | Cmd::Quit
-            | Cmd::Reload
-            | Cmd::Save
-            | Cmd::Highlight
-            | Cmd::SendToViewer
-            | Cmd::Unhighlight
-            | Cmd::UnhighlightSelected
-            | Cmd::DoubleSnap
-            | Cmd::DrawGrid
-            | Cmd::Orthogonal
-            | Cmd::HalfSnap
-            | Cmd::ProjectReload
-            | Cmd::Props
-            | Cmd::PropsEditor
-            | Cmd::PropsView
-            | Cmd::PropsField
-            | Cmd::PropsOk
-            | Cmd::ResultsFilter
-            | Cmd::ResultsHistory
-            | Cmd::ResultsPick
-            | Cmd::ResultsSort
-            | Cmd::ResultsWaves
-            | Cmd::SimCancel
-            | Cmd::SetDialect
-            | Cmd::Netlist
-            | Cmd::NetlistTop
-            | Cmd::NewBench
-            | Cmd::Optimize
-            | Cmd::Simulate
-            | Cmd::OpAnnotateGraphs
-            | Cmd::SendHighlighted
-            | Cmd::ShowNetlist
-            | Cmd::PlaceLabel
-            | Cmd::PlaceWireLabel
-            | Cmd::PlaceInPort
-            | Cmd::PlaceOutPort
-            | Cmd::PlaceSymPin
-            | Cmd::TabNew
-            | Cmd::TabNext
-            | Cmd::TabPrev
-            | Cmd::TabSelect
-            | Cmd::TextFind
-            | Cmd::CycleManhattan
-            | Cmd::InsertLine
-            | Cmd::InsertRect
-            | Cmd::InsertSnapWire
-            | Cmd::InsertSymbol
-            | Cmd::InsertText
-            | Cmd::InsertWire
-            | Cmd::CellToggle
-            | Cmd::ChecksToggle
-            | Cmd::DocsToggle
-            | Cmd::PanCenter
-            | Cmd::PanDown
-            | Cmd::PanLeft
-            | Cmd::PanRight
-            | Cmd::PanUp
-            | Cmd::Redraw
-            | Cmd::ResultsToggle
-            | Cmd::ViewSchematic
-            | Cmd::SetGrid
-            | Cmd::SetSnap
-            | Cmd::ViewSymbol
-            | Cmd::ToggleTheme
-            | Cmd::ZoomBox
-            | Cmd::ZoomFull
-            | Cmd::ZoomIn
-            | Cmd::ZoomOut
-            | Cmd::ZoomSelection
-            | Cmd::Waves
-            | Cmd::OpAnnotate => unreachable!("{cmd:?}: Editor::run dispatches it"),
-        }
-        true
-    }
-
     // ------------------------------------------------------------------ files
 
     /// Remembers `h`'s file in the recent-files list (and persists it).
@@ -851,7 +209,7 @@ impl Editor {
 
     /// Opens recent file `i`: in a tab when it belongs to this project (or one of its local
     /// libraries), else by switching to its project (`switch_project`).
-    fn open_recent(&mut self, i: usize, reqs: &mut Vec<EditRequest>) {
+    pub(super) fn open_recent(&mut self, i: usize, reqs: &mut Vec<EditRequest>) {
         let Some(path) = self.recent.get(i).cloned() else {
             self.session.say("no recent file");
             return;
@@ -882,7 +240,7 @@ impl Editor {
     /// colors, clipboard, netlist dialect, recent files, the UI and its state. Refused while a
     /// document of this project has unsaved edits or a simulation runs (both would be lost).
     /// Edit requests already queued this frame name this project's documents and are dropped.
-    fn switch_project(&mut self, file: PathBuf, reqs: &mut Vec<EditRequest>) {
+    pub(super) fn switch_project(&mut self, file: PathBuf, reqs: &mut Vec<EditRequest>) {
         let p = &self.session.project;
         if p.handles().any(|d| p.is_dirty(d)) {
             self.session.say(format!(
@@ -1118,7 +476,7 @@ impl Editor {
 
     /// The palette exports draw with: the view palette without dimming or hidden layers
     /// beyond the user's.
-    fn export_look(&self) -> export::Look {
+    pub(super) fn export_look(&self) -> export::Look {
         export::Look {
             palette: self.view_palette(),
             color: self.opts.export_color,
@@ -1127,7 +485,7 @@ impl Editor {
     }
 
     /// Where an export goes: `arg` when given, else `.schemify/export/<cell>.<ext>`.
-    fn export_path(&self, h: DocHandle, arg: &str, ext: &str) -> PathBuf {
+    pub(super) fn export_path(&self, h: DocHandle, arg: &str, ext: &str) -> PathBuf {
         if !arg.trim().is_empty() {
             let p = PathBuf::from(arg.trim());
             return if p.is_absolute() {
@@ -1150,7 +508,7 @@ impl Editor {
     /// File → Image export (PNG of the visible canvas or of the whole drawing, at the PNG
     /// scale; SVG, PDF and EPS of the drawing, the selection or the visible area, PDF and EPS
     /// fitted to the export page; a PDF page per schematic of the hierarchy).
-    fn export(&mut self, h: DocHandle, cmd: Cmd, arg: &str) {
+    pub(super) fn export(&mut self, h: DocHandle, cmd: Cmd, arg: &str) {
         let look = self.export_look();
         let page = self.opts.export_page;
         let pad = 10 * UNIT;
@@ -1218,7 +576,7 @@ impl Editor {
     }
 
     /// The visible canvas area in world milli-units.
-    fn view_world_rect(&self) -> [i32; 4] {
+    pub(super) fn view_world_rect(&self) -> [i32; 4] {
         let v = self.canvas_rect();
         let cam = self.camera();
         let (x0, y0) = cam.to_world(v, v.x0, v.y0);
@@ -1266,7 +624,7 @@ impl Editor {
     }
 
     /// Queues a `w × h` logical-pixel raster through `cam` at the PNG scale.
-    fn ask_raster(
+    pub(super) fn ask_raster(
         &mut self,
         path: PathBuf,
         w: f64,
@@ -1298,7 +656,11 @@ impl Editor {
 
     /// One PDF page per schematic from the active cell down (breadth first, each cell once):
     /// every page is that cell's scene built offscreen with the same symbol cache.
-    fn export_hierarchy(&mut self, h: DocHandle, look: &export::Look) -> Result<Vec<u8>, String> {
+    pub(super) fn export_hierarchy(
+        &mut self,
+        h: DocHandle,
+        look: &export::Look,
+    ) -> Result<Vec<u8>, String> {
         let docs = self.hierarchy_docs(h);
         let mut scenes: Vec<scene::Scene> = Vec::with_capacity(docs.len());
         for &d in &docs {
@@ -1330,7 +692,7 @@ impl Editor {
 
     /// The schematic documents of the hierarchy below `h` (`h` first), each once, opening
     /// the cells it instantiates (bounded by `CHANGELOG_ROWS`).
-    fn hierarchy_docs(&mut self, h: DocHandle) -> Vec<DocHandle> {
+    pub(super) fn hierarchy_docs(&mut self, h: DocHandle) -> Vec<DocHandle> {
         let mut out = vec![h];
         let mut i = 0;
         while i < out.len() && out.len() < CHANGELOG_ROWS {
@@ -1529,7 +891,7 @@ impl Editor {
 
     /// Tools → Break wires at mouse position: cuts the wire under the pointer there (snapped
     /// with the align variant, else the pointer projected onto an axis-aligned wire).
-    fn cut_wire(&mut self, reqs: &mut Vec<EditRequest>, h: DocHandle, cmd: Cmd) {
+    pub(super) fn cut_wire(&mut self, reqs: &mut Vec<EditRequest>, h: DocHandle, cmd: Cmd) {
         let Some(o) = self.hit_at(self.pointer) else {
             self.session.say("no wire under the pointer");
             return;
@@ -1570,7 +932,7 @@ impl Editor {
     // ------------------------------------------------------------------ dialogs
 
     /// A one-number setting: from `arg`, else a dialog prefilled with the current value.
-    fn setting(&mut self, cmd: Cmd, arg: &str) {
+    pub(super) fn setting(&mut self, cmd: Cmd, arg: &str) {
         let units = |m: i32| {
             let mut s = String::new();
             schemify_format::format_coord(m, &mut s);
@@ -1666,7 +1028,7 @@ impl Editor {
             }
             TextFor::Setting(cmd) => self.setting(cmd, text),
             TextFor::LayerColor => {
-                self.parity(Cmd::LayerColor, text, "", reqs);
+                self.run_cmd(Cmd::LayerColor, text, "", reqs);
             }
             TextFor::Label | TextFor::Port(_) | TextFor::Text | TextFor::SymPin => {
                 unreachable!("placements are handled by enter_text_ok")
@@ -1674,7 +1036,7 @@ impl Editor {
         }
     }
 
-    fn open_search(&mut self) {
+    pub(super) fn open_search(&mut self) {
         self.tool = Tool::Idle;
         let f = |key: &str, label: &str, value: &str| Field {
             key: key.to_owned(),
@@ -1745,7 +1107,7 @@ impl Editor {
         }
     }
 
-    fn open_header(&mut self, h: DocHandle) {
+    pub(super) fn open_header(&mut self, h: DocHandle) {
         let Some(doc) = self.session.project.doc(h) else {
             return;
         };
@@ -1802,7 +1164,12 @@ impl Editor {
     /// Properties → Edit file OK: the typed text replaces the document in one transaction —
     /// changed records `put`, removed ones deleted, new ones inserted (format `diff` by
     /// identity); symbol graphics, which have no identity, are replaced as a block.
-    fn apply_file_text(&mut self, reqs: &mut Vec<EditRequest>, h: DocHandle, text: &str) {
+    pub(super) fn apply_file_text(
+        &mut self,
+        reqs: &mut Vec<EditRequest>,
+        h: DocHandle,
+        text: &str,
+    ) {
         let Some(doc) = self.session.project.doc(h) else {
             return;
         };
@@ -1884,7 +1251,7 @@ impl Editor {
     /// Symbol → Make symbol from schematic: pins from the ports (inputs left, outputs and
     /// inouts right, in id order), a box, the cell name and pin names; replaces the cell's
     /// pins and symbol graphics (one undo).
-    fn make_symbol_ops(&mut self, h: DocHandle) -> Vec<Op> {
+    pub(super) fn make_symbol_ops(&mut self, h: DocHandle) -> Vec<Op> {
         let Some(doc) = self.session.project.doc(h) else {
             return Vec::new();
         };
@@ -1908,7 +1275,7 @@ impl Editor {
 
     /// Symbol → Make schematic from symbol: a port for every pin without one, in a column
     /// at the pointer (inputs R0, outputs R180).
-    fn make_schematic_ops(&mut self, h: DocHandle, at: Pt) -> Vec<Op> {
+    pub(super) fn make_schematic_ops(&mut self, h: DocHandle, at: Pt) -> Vec<Op> {
         let Some(doc) = self.session.project.doc(h) else {
             return Vec::new();
         };
@@ -1946,7 +1313,7 @@ impl Editor {
 
     /// Symbol → Attach net labels: a label named after the pin on every pin of the selected
     /// instances that touches nothing else.
-    fn attach_labels_ops(&mut self, h: DocHandle) -> Vec<Op> {
+    pub(super) fn attach_labels_ops(&mut self, h: DocHandle) -> Vec<Op> {
         let sel = self.selection().to_vec();
         let p = &self.session.project;
         let Some(doc) = p.doc(h) else {
@@ -1988,7 +1355,7 @@ impl Editor {
     }
 
     /// Local names of the highlighted nets at the active level.
-    fn highlighted_local_names(&mut self) -> Vec<String> {
+    pub(super) fn highlighted_local_names(&mut self) -> Vec<String> {
         let names: Vec<String> = match self.cell.as_ref() {
             Some(cell) => (0..cell.nets.net_name.len() as u32)
                 .map(|c| checks::net_name(cell, c).to_owned())
@@ -2009,7 +1376,7 @@ impl Editor {
 
     /// Highlight → net/pin mismatches: highlights the nets of the selected instances' pins
     /// whose net is named differently from the pin.
-    fn pin_mismatch(&mut self, h: DocHandle) {
+    pub(super) fn pin_mismatch(&mut self, h: DocHandle) {
         let mut nets: Vec<String> = Vec::new();
         {
             let (Some(cell), Some(doc)) = (self.cell.as_ref(), self.session.project.doc(h)) else {
@@ -2065,7 +1432,7 @@ impl Editor {
     }
 
     /// Adds the nets the waves dock plots (`v(<net>)`) to the highlight.
-    fn highlight_plotted(&mut self) {
+    pub(super) fn highlight_plotted(&mut self) {
         let traces = self.waves_traces();
         for t in traces {
             let Some(net) = t.strip_prefix("v(").and_then(|r| r.strip_suffix(')')) else {
@@ -2095,7 +1462,7 @@ impl Editor {
 
     /// Highlight → Swap compare schematics: the compared cell becomes the active level and
     /// the previous document the reference.
-    fn compare_swap(&mut self, h: DocHandle) {
+    pub(super) fn compare_swap(&mut self, h: DocHandle) {
         let Some(c) = self.compare.clone() else {
             self.session.say("choose a cell to compare with first");
             return;
@@ -2177,7 +1544,7 @@ impl Editor {
 
     /// One color per highlighted net (Highlight → increment highlight color): each key gets a
     /// palette layer from `HILITE_LAYERS` by its position in the sorted highlight list.
-    fn colored_highlight(&mut self, out: &mut CanvasPrims) {
+    pub(super) fn colored_highlight(&mut self, out: &mut CanvasPrims) {
         let Some((h, _)) = self.active() else { return };
         let names: Vec<String> = match self.cell.as_ref() {
             Some(cell) => (0..cell.nets.net_name.len() as u32)
@@ -2226,7 +1593,7 @@ impl Editor {
     /// The comparison drawn into `out`: objects of the active document added or changed
     /// against cell `row` outlined (diff layer), objects only in `row` drawn in the error
     /// layer at their place.
-    fn draw_compare(&mut self, h: DocHandle, row: usize, out: &mut CanvasPrims) {
+    pub(super) fn draw_compare(&mut self, h: DocHandle, row: usize, out: &mut CanvasPrims) {
         let Ok(other) = self.session.open_cell(row) else {
             return;
         };
@@ -2298,7 +1665,7 @@ impl Editor {
 
     /// Shows `body` in a read-only text tab titled `title` (`key` identifies it, so asking
     /// again refreshes the same tab).
-    fn text_tab(&mut self, title: &str, key: &str, body: String) {
+    pub(super) fn text_tab(&mut self, title: &str, key: &str, body: String) {
         self.session.open_text_tab(TextView {
             title: title.to_owned(),
             path: self.session.root.join(".schemify").join("text").join(key),
@@ -2308,7 +1675,7 @@ impl Editor {
         });
     }
 
-    fn changelog(&mut self, h: DocHandle) {
+    pub(super) fn changelog(&mut self, h: DocHandle) {
         let docs = self.hierarchy_docs(h);
         let mut body = String::from("Files of the hierarchy (modified, seconds since 1970)\n\n");
         for d in docs.into_iter().take(CHANGELOG_ROWS) {
@@ -2328,7 +1695,7 @@ impl Editor {
 
     /// Tools → Package status: what `schemify pack status` prints for the user config
     /// (config spec §5), in a text tab.
-    fn package_status(&mut self) {
+    pub(super) fn package_status(&mut self) {
         use schemify_cli::pack;
         let config = self.host.config();
         let specs = &config.table().packs;
@@ -2354,7 +1721,7 @@ impl Editor {
         self.text_tab("packages", "packages", body);
     }
 
-    fn list_processes(&mut self) {
+    pub(super) fn list_processes(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let mut body = String::from("Simulation jobs\n\n");
@@ -2375,7 +1742,7 @@ impl Editor {
 
     /// Simulation → View last job data / errors: the selected job's `stdout.log` /
     /// `stderr.log`.
-    fn job_log(&mut self, errors: bool) {
+    pub(super) fn job_log(&mut self, errors: bool) {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let Some(dir) = self.sim.dir() else {
@@ -2446,7 +1813,7 @@ impl Editor {
         };
         match cmd {
             Some(c) => {
-                self.parity(c, "", "", reqs);
+                self.run_cmd(c, "", "", reqs);
             }
             None => self.context_menu(at),
         }
@@ -2887,7 +2254,7 @@ impl Editor {
 }
 
 /// Quotes a multi-line value: like `q` but keeps line breaks as `\n` escapes.
-fn q_multiline(s: &str) -> String {
+pub(super) fn q_multiline(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -2905,7 +2272,7 @@ fn q_multiline(s: &str) -> String {
 }
 
 /// Every bit of a bus net key `a[3:0]` (`a[3] … a[0]`); other keys as they are.
-fn expand_bus(key: &str) -> Vec<String> {
+pub(super) fn expand_bus(key: &str) -> Vec<String> {
     let parsed = key.strip_suffix(']').and_then(|k| {
         let (base, range) = k.rsplit_once('[')?;
         let (hi, lo) = range.split_once(':')?;
@@ -2931,7 +2298,7 @@ fn expand_bus(key: &str) -> Vec<String> {
 
 /// Instances whose name is used more than once (every holder), and the ops renaming all
 /// but the first holder of each name to the next free `<prefix><n>`.
-fn duplicate_names(doc: &schemify_doc::Document) -> (Vec<ObjKey>, Vec<Op>) {
+pub(super) fn duplicate_names(doc: &schemify_doc::Document) -> (Vec<ObjKey>, Vec<Op>) {
     let s = doc.strings();
     let inst = doc.instances();
     let mut by_name: std::collections::BTreeMap<&str, Vec<usize>> =
@@ -2969,7 +2336,7 @@ fn duplicate_names(doc: &schemify_doc::Document) -> (Vec<ObjKey>, Vec<Op>) {
 
 /// Instances placed exactly like an earlier instance of the same cell (all but the first of
 /// each group).
-fn overlapped(doc: &schemify_doc::Document) -> Vec<ObjKey> {
+pub(super) fn overlapped(doc: &schemify_doc::Document) -> Vec<ObjKey> {
     let inst = doc.instances();
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
@@ -3069,7 +2436,7 @@ pub(super) fn symbol_records(ports: &[(String, Orient, Pt)], width: i32) -> Vec<
 
 /// Ops replacing every pin and symbol graphic of `doc` with `recs` (pins and graphics, as
 /// [`symbol_records`] makes them).
-fn replace_symbol_ops(doc: &schemify_doc::Document, recs: Vec<RecordBuf>) -> Vec<Op> {
+pub(super) fn replace_symbol_ops(doc: &schemify_doc::Document, recs: Vec<RecordBuf>) -> Vec<Op> {
     assert!(!recs.is_empty());
     let (s, pins) = (doc.strings(), doc.pins());
     let mut ops: Vec<Op> = pins
@@ -3121,7 +2488,7 @@ pub(super) fn symbol_from_ports_ops(
 
 /// Symbol → Create symbol pins from selected schematic ports: one pin per selected port
 /// whose name has no pin yet, at the port's position (R180/MR0 ports are outputs).
-fn pins_from_ports(doc: &schemify_doc::Document, sel: &[ObjKey]) -> Vec<Op> {
+pub(super) fn pins_from_ports(doc: &schemify_doc::Document, sel: &[ObjKey]) -> Vec<Op> {
     if doc.kind() != FileKind::Shcomp {
         return Vec::new();
     }
@@ -3154,7 +2521,7 @@ fn pins_from_ports(doc: &schemify_doc::Document, sel: &[ObjKey]) -> Vec<Op> {
 }
 
 /// The Help text tab: the key summary and where the manuals are.
-fn help_text() -> String {
+pub(super) fn help_text() -> String {
     "Schemify help\n\n\
      Keys are xschem's (D25); `/` toggles a key summary over the canvas.\n\n\
      Editing: w wire, l line, r rect, p polygon, Shift+C arc, Ctrl+Shift+C circle, t text,\n\

@@ -57,6 +57,7 @@ use crate::shell::Shell;
 use crate::sim::Sim;
 use crate::spines;
 use crate::waves::WavesView;
+use crate::wiring;
 
 mod gestures;
 mod integrate;
@@ -65,6 +66,9 @@ mod picture;
 mod subckt;
 
 use integrate::text_tab_cmd;
+use parity::{
+    PITCH, USER_LAYERS, duplicate_names, expand_bus, help_text, overlapped, pins_from_ports,
+};
 pub use picture::{CanvasPicture, DockPicture, GraphPicture, Picture, Raster, UiView};
 
 /// Pointer travel (logical px) before a press becomes a drag (xschem: 8 px).
@@ -1530,32 +1534,44 @@ impl Editor {
             } else {
                 self.shell.strings.get(cmds.node[i]).to_owned()
             };
-            let (target, suffix) = self.commands.resolve_arg(&name);
-            let arg = match cmds.arg(i) {
-                "" => suffix.to_owned(),
-                a => a.to_owned(),
-            };
-            changed |= match target {
-                Target::Core(cmd) => self.run(cmd, &arg, &node, reqs),
-                Target::Plugin(id) => {
-                    let ev = Event::Command {
-                        name: &name,
-                        args: &arg,
-                    };
-                    if let Err(e) = self.host.push(Some(id), &ev) {
-                        self.session.say(e);
-                    }
-                    true
-                }
-                // A Lua keymap function or a lazy package's first command (config spec §3, §5).
-                Target::Unknown if self.host.user_command(&name, &arg) => true,
-                Target::Unknown => {
-                    self.session.say(format!("{name}: not available yet"));
-                    true
-                }
-            };
+            changed |= self.dispatch(&name, cmds.arg(i), &node, true, reqs).0;
         }
         changed
+    }
+
+    /// Runs command `name` with `arg` (else its `<name>.<word>` suffix): a core command, or
+    /// an `Event::Command` to the plugin that owns it (returned once queued). An unknown name
+    /// goes to the user config (a Lua keymap function, a lazy package) when `user`. Returns
+    /// whether anything changed.
+    fn dispatch(
+        &mut self,
+        name: &str,
+        arg: &str,
+        node: &str,
+        user: bool,
+        reqs: &mut Vec<EditRequest>,
+    ) -> (bool, Option<schemify_plugin::PluginId>) {
+        let (target, suffix) = self.commands.resolve_arg(name);
+        let arg = if arg.is_empty() { suffix } else { arg };
+        match target {
+            Target::Core(cmd) => (self.run(cmd, arg, node, reqs), None),
+            Target::Plugin(id) => match self
+                .host
+                .push(Some(id), &Event::Command { name, args: arg })
+            {
+                Ok(()) => (true, Some(id)),
+                Err(e) => {
+                    self.session.say(e);
+                    (true, None)
+                }
+            },
+            // A Lua keymap function or a lazy package's first command (config spec §3, §5).
+            Target::Unknown if user && self.host.user_command(name, arg) => (true, None),
+            Target::Unknown => {
+                self.session.say(format!("{name}: not available yet"));
+                (true, None)
+            }
+        }
     }
 
     /// Runs the commands [`Editor::command`] queued, in order, recording what each
@@ -1564,34 +1580,11 @@ impl Editor {
     fn dispatch_queued(&mut self, reqs: &mut Vec<EditRequest>) -> bool {
         let mut changed = false;
         for (name, arg, ticket) in std::mem::take(&mut self.queued) {
-            let (target, suffix) = self.commands.resolve_arg(&name);
-            let arg = if arg.is_empty() {
-                suffix.to_owned()
-            } else {
-                arg
-            };
             // Each command's own message: the status line starts empty for it and gets the
             // previous message back when the command says nothing.
             let before = self.session.take_status();
-            let mut plugin = None;
-            changed |= match target {
-                Target::Core(cmd) => self.run(cmd, &arg, "", reqs),
-                Target::Plugin(id) => {
-                    let ev = Event::Command {
-                        name: &name,
-                        args: &arg,
-                    };
-                    match self.host.push(Some(id), &ev) {
-                        Ok(()) => plugin = Some(id),
-                        Err(e) => self.session.say(e),
-                    }
-                    true
-                }
-                Target::Unknown => {
-                    self.session.say(format!("{name}: not available yet"));
-                    true
-                }
-            };
+            let (c, plugin) = self.dispatch(&name, &arg, "", false, reqs);
+            changed |= c;
             if let Some(ticket) = ticket {
                 let status = plugin.is_none().then(|| self.session.status().to_owned());
                 self.said.push(Said {
@@ -1680,7 +1673,7 @@ impl Editor {
             self.reload_project();
             return true;
         }
-        let Some((h, view)) = self.active() else {
+        let Some((h, _)) = self.active() else {
             return false;
         };
         // A command that acts on other file kinds (its UI nodes are greyed out, but a key or a
@@ -1691,12 +1684,23 @@ impl Editor {
             self.session.say(kind_refusal(cmd, kind));
             return true;
         }
-        if self.session.text_view().is_some() && !text_tab_cmd(cmd) && !parity::text_tab_ok(cmd) {
+        if self.session.text_view().is_some() && !text_tab_cmd(cmd) {
             self.session
                 .say("read-only text view: switch to a schematic tab");
             return true;
         }
+        self.run_cmd(cmd, arg, node, reqs)
+    }
+
+    /// The arm of core command `cmd`, past [`Editor::run`]'s guards (a dialog, the file kind,
+    /// a text tab). Returns whether anything visible changed.
+    #[allow(clippy::too_many_lines)]
+    fn run_cmd(&mut self, cmd: Cmd, arg: &str, node: &str, reqs: &mut Vec<EditRequest>) -> bool {
+        let Some((h, view)) = self.active() else {
+            return false;
+        };
         let ptr = self.pointer_world_snapped();
+        let toggle = |b: &mut bool| *b = !*b;
         match cmd {
             // Taken by the guards above (they need no active document).
             Cmd::FieldTyped | Cmd::ProjectReload => unreachable!("{cmd:?}: handled above"),
@@ -2353,115 +2357,457 @@ impl Editor {
                     self.set_selection(sel);
                 }
             }
-            // Every command added for xschem parity (`parity.rs`), listed so a new command
-            // is a compile error here and in `parity` until it has one dispatch arm.
-            Cmd::ContextMenu
-            | Cmd::EditFileOk
-            | Cmd::DiscardRecovery
-            | Cmd::Recover
-            | Cmd::UnselectArea
-            | Cmd::DeleteFiles
-            | Cmd::ExportProject
-            | Cmd::ExportEps
-            | Cmd::ExportPdfHier
-            | Cmd::ExportPdf
-            | Cmd::ExportPdfFull
-            | Cmd::ExportPng
+            // ---------------------------------------------------------------- File
+            Cmd::SaveAs | Cmd::SaveAsSymbol => {
+                let symbol = cmd == Cmd::SaveAsSymbol;
+                if arg.trim().is_empty() {
+                    let current = self
+                        .session
+                        .path(h)
+                        .and_then(|p| crate::libs::rel_path(&self.session.root, p))
+                        .unwrap_or_default();
+                    let title = if symbol { "Save symbol as" } else { "Save as" };
+                    self.open_text(TextFor::SaveAs(symbol), title);
+                    if let Dialog::Text(_, _, typed) = &mut self.dialog {
+                        *typed = current;
+                    }
+                } else {
+                    self.save_as(h, arg.trim(), symbol);
+                }
+            }
+            Cmd::Merge => self.open_chooser(ChooseFor::Merge),
+            Cmd::OpenMostRecent => self.open_recent(0, reqs),
+            Cmd::OpenRecent => match arg.trim().parse::<usize>() {
+                Ok(i) => self.open_recent(i, reqs),
+                Err(_) => self
+                    .session
+                    .say(format!("{arg:?}: not a recent-file index")),
+            },
+            Cmd::DeleteFiles => {
+                self.pending_delete = None;
+                self.open_chooser(ChooseFor::Delete);
+            }
+            Cmd::ExportPng
             | Cmd::ExportPngFull
             | Cmd::ExportSvg
-            | Cmd::ImportProject
-            | Cmd::Merge
-            | Cmd::OpenMostRecent
-            | Cmd::OpenRecent
-            | Cmd::SaveAs
-            | Cmd::SaveAsSymbol
-            | Cmd::About
-            | Cmd::Help
-            | Cmd::AutoHighlight
-            | Cmd::CompareToggle
-            | Cmd::HighlightInstances
-            | Cmd::DupNames
-            | Cmd::PinMismatch
-            | Cmd::IncrementColor
-            | Cmd::RenameDups
-            | Cmd::SelectHighlighted
-            | Cmd::SelectOverlapped
-            | Cmd::CompareWith
-            | Cmd::CompareSwap
-            | Cmd::OnlyProbes
-            | Cmd::AllLayers
-            | Cmd::CurrentLayerOnly
-            | Cmd::SetLayer
-            | Cmd::ToggleLayer
-            | Cmd::AutoTrim
-            | Cmd::ExportColor
-            | Cmd::CrosshairSize
-            | Cmd::Crosshair
-            | Cmd::SnapCursor
-            | Cmd::CycleDialect
-            | Cmd::EnableStretch
-            | Cmd::ExportPage
-            | Cmd::FlatNetlist
-            | Cmd::PersistentWire
-            | Cmd::PngScale
-            | Cmd::ExportTransparent
-            | Cmd::EditFile
-            | Cmd::EditHeader
-            | Cmd::ToggleIgnore
-            | Cmd::Changelog
-            | Cmd::EditNetlist
-            | Cmd::AddGraph
-            | Cmd::AutoHighlightPlotted
-            | Cmd::ListProcesses
-            | Cmd::JobData
-            | Cmd::JobErrors
-            | Cmd::AttachLabels
-            | Cmd::PinsFromPorts
-            | Cmd::LabelsFromNets
-            | Cmd::LabelsFromNetsI
-            | Cmd::PortsFromNets
-            | Cmd::ListNets
-            | Cmd::ListNetsBuses
-            | Cmd::MakeSubcircuit
-            | Cmd::MakeSchematic
-            | Cmd::MakeSymbol
-            | Cmd::SymbolWidth
-            | Cmd::SymbolsCycle
-            | Cmd::SymbolsBoxesAll
-            | Cmd::SymbolsBoxesSub
-            | Cmd::SymbolsDetails
-            | Cmd::AlignGrid
-            | Cmd::BreakAtMouse
-            | Cmd::BreakAtMouseAlign
-            | Cmd::BreakAtPins
-            | Cmd::ClosePolygon
-            | Cmd::InsertArc
-            | Cmd::InsertCircle
-            | Cmd::InsertPolygon
-            | Cmd::JoinTrim
-            | Cmd::PackageStatus
-            | Cmd::RemoveThrough
-            | Cmd::Search
-            | Cmd::SelectConnected
-            | Cmd::SelectConnectedStop
-            | Cmd::LayerColor
-            | Cmd::DimColors
-            | Cmd::Fullscreen
-            | Cmd::LineWidthDown
-            | Cmd::LineWidthUp
-            | Cmd::ResetColors
-            | Cmd::GridDialog
+            | Cmd::ExportPdf
+            | Cmd::ExportPdfFull
+            | Cmd::ExportPdfHier
+            | Cmd::ExportEps => self.export(h, cmd, arg),
+            Cmd::ExportProject => {
+                self.session
+                    .say(match platform::export_project(&self.session.root) {
+                        Ok(p) => format!("exported project {}", p.display()),
+                        Err(e) => format!("export project: {e}"),
+                    });
+            }
+            Cmd::ImportProject => {
+                self.session
+                    .say(match platform::import_project(arg.trim() == "folder") {
+                        Ok(()) => "import project: pick a zip or folder".into(),
+                        Err(e) => format!("import project: {e}"),
+                    });
+            }
+            // ---------------------------------------------------------------- Edit / tools
+            Cmd::UnselectArea => self.tool = Tool::UnselectArmed,
+            Cmd::InsertPolygon | Cmd::InsertArc | Cmd::InsertCircle => {
+                let form = match cmd {
+                    Cmd::InsertPolygon => Form::Poly,
+                    Cmd::InsertArc => Form::Arc,
+                    _ => Form::Circle,
+                };
+                self.tool = Tool::Shape {
+                    form,
+                    pts: vec![ptr],
+                    to: ptr,
+                };
+            }
+            Cmd::ClosePolygon => {
+                if let Tool::Shape {
+                    form: Form::Poly,
+                    pts,
+                    ..
+                } = std::mem::take(&mut self.tool)
+                {
+                    self.finish_shape(reqs, h, view, Form::Poly, &pts, true);
+                }
+            }
+            Cmd::AlignGrid => {
+                let snap_m = self.opts.snap;
+                let ops = self.with_doc(h, |d, sel| wiring::align(d, sel, snap_m));
+                self.commit(reqs, h, "align to grid", ops);
+            }
+            Cmd::BreakAtMouse | Cmd::BreakAtMouseAlign => self.cut_wire(reqs, h, cmd),
+            Cmd::BreakAtPins | Cmd::RemoveThrough => {
+                let sel = self.selection().to_vec();
+                let ops = {
+                    let p = &self.session.project;
+                    let mut ids = Ids::new(&mut self.rng);
+                    if cmd == Cmd::RemoveThrough {
+                        wiring::remove_through(p, h, &sel, &mut ids)
+                    } else {
+                        let pts: Vec<Pt> = p.doc(h).map_or_else(Vec::new, |d| {
+                            sel.iter()
+                                .filter(|k| k.table == TableId::Instances)
+                                .filter_map(|&k| edit::loc_of(d, k))
+                                .flat_map(|l| wiring::inst_pins(p, h, d, l.row as usize))
+                                .collect()
+                        });
+                        p.doc(h)
+                            .map_or_else(Vec::new, |d| wiring::break_at(d, &pts, &mut ids).0)
+                    }
+                };
+                self.commit(reqs, h, cmd.name(), ops);
+            }
+            Cmd::JoinTrim => {
+                let ops = {
+                    let mut ids = Ids::new(&mut self.rng);
+                    wiring::join_trim(&self.session.project, h, &mut ids)
+                };
+                if ops.is_empty() {
+                    self.session.say("wires already joined and trimmed");
+                }
+                self.commit(reqs, h, "join/trim wires", ops);
+            }
+            Cmd::Search => self.open_search(),
+            Cmd::SelectConnected | Cmd::SelectConnectedStop => {
+                let mut seeds = self.selection().to_vec();
+                if seeds.is_empty()
+                    && let Some(o) = self.hit_at(self.pointer)
+                {
+                    seeds.push(self.scene.objs.key[o as usize]);
+                }
+                let stop = cmd == Cmd::SelectConnectedStop;
+                let keys = wiring::connected(&self.session.project, h, &seeds, stop);
+                self.session
+                    .say(format!("{} connected object(s)", keys.len()));
+                self.set_selection(keys);
+            }
+            // ---------------------------------------------------------------- Options / view
+            Cmd::AutoTrim => toggle(&mut self.opts.auto_trim),
+            Cmd::ExportColor => toggle(&mut self.opts.export_color),
+            Cmd::ExportTransparent => toggle(&mut self.opts.export_transparent),
+            Cmd::Crosshair => toggle(&mut self.opts.crosshair),
+            Cmd::SnapCursor => toggle(&mut self.opts.snap_cursor),
+            Cmd::EnableStretch => toggle(&mut self.opts.stretch),
+            Cmd::FlatNetlist => toggle(&mut self.opts.flat),
+            Cmd::PersistentWire => toggle(&mut self.opts.persistent),
+            Cmd::GridAxes => toggle(&mut self.opts.grid_axes),
+            Cmd::ToolbarToggle => toggle(&mut self.opts.toolbar),
+            Cmd::Fullscreen => toggle(&mut self.opts.fullscreen),
+            Cmd::SymbolText => toggle(&mut self.opts.symbol_text),
+            Cmd::FillToggle => toggle(&mut self.opts.fill),
+            Cmd::VariableWidth => toggle(&mut self.opts.variable_width),
+            Cmd::AutoHighlight => toggle(&mut self.opts.auto_highlight),
+            Cmd::HighlightInstances => {
+                toggle(&mut self.opts.highlight_insts);
+            }
+            Cmd::IncrementColor => {
+                toggle(&mut self.opts.incr_color);
+            }
+            Cmd::OnlyProbes => toggle(&mut self.opts.only_probes),
+            Cmd::AutoHighlightPlotted => {
+                toggle(&mut self.opts.highlight_plotted);
+                if self.opts.highlight_plotted {
+                    self.highlight_plotted();
+                }
+            }
+            Cmd::CrosshairSize
             | Cmd::LineWidth
+            | Cmd::DimColors
+            | Cmd::SymbolWidth
+            | Cmd::GridDialog
             | Cmd::SnapDialog
-            | Cmd::GridAxes
-            | Cmd::ErcWindow
-            | Cmd::ToolbarToggle
-            | Cmd::SymbolText
-            | Cmd::LayersDialog
-            | Cmd::FillToggle
-            | Cmd::VariableWidth
-            | Cmd::WavesClear
-            | Cmd::WavesLoad => return self.parity(cmd, arg, node, reqs),
+            | Cmd::ExportPage
+            | Cmd::PngScale => self.setting(cmd, arg),
+            Cmd::CycleDialect => {
+                let i = spines::DIALECTS
+                    .iter()
+                    .position(|d| d.1 == self.dialect)
+                    .unwrap_or(0);
+                let next = spines::DIALECTS[(i + 1) % spines::DIALECTS.len()];
+                self.dialect = next.1;
+                self.session.say(format!("netlist dialect: {}", next.0));
+            }
+            Cmd::LineWidthDown | Cmd::LineWidthUp => {
+                let w = i16::from(self.opts.width_tenths);
+                let w = if cmd == Cmd::LineWidthUp {
+                    w + 5
+                } else {
+                    w - 5
+                };
+                self.opts.width_tenths = w.clamp(1, 100) as u8;
+            }
+            Cmd::LayerColor => {
+                let v = arg.trim().trim_start_matches('#');
+                if v.is_empty() {
+                    self.open_text(TextFor::LayerColor, "Color of the current layer (rrggbb)");
+                } else if let Some(rgb) = u32::from_str_radix(v, 16).ok().filter(|_| v.len() == 6) {
+                    let l = self.opts.layer;
+                    self.layer_colors.retain(|c| c.0 != l);
+                    self.layer_colors.push((l, rgb));
+                } else {
+                    self.session.say(format!("{arg:?}: not an rrggbb color"));
+                }
+            }
+            Cmd::ResetColors => {
+                self.layer_colors.clear();
+                self.opts.dim = 0;
+                self.opts.hidden = 0;
+                self.opts.width_tenths = 10;
+            }
+            Cmd::LayersDialog => {
+                self.tool = Tool::Idle;
+                self.dialog = Dialog::Layers;
+                self.show_dialog("dialog.layers");
+            }
+            Cmd::ToggleLayer => match arg.trim().parse::<u8>() {
+                Ok(l) if (1..USER_LAYERS).contains(&l) => self.opts.hidden ^= 1 << l,
+                _ => self.session.say(format!("{arg:?}: not a layer 1..21")),
+            },
+            Cmd::SetLayer => {
+                // `layers.set_current.<n>` or a Layers-menu node `layers.<n>_<name>`.
+                let digits: String = arg.chars().take_while(char::is_ascii_digit).collect();
+                match digits.parse::<u8>() {
+                    Ok(l) if l < USER_LAYERS => {
+                        self.opts.layer = l;
+                        self.session.say(format!("current layer {l}"));
+                    }
+                    _ => self.session.say(format!("{arg:?}: not a layer 0..21")),
+                }
+            }
+            Cmd::AllLayers => self.opts.hidden = 0,
+            Cmd::CurrentLayerOnly => {
+                let all = (1u32 << USER_LAYERS) - 2; // every user layer but the background
+                self.opts.hidden = all & !(1 << self.opts.layer);
+            }
+            Cmd::ErcWindow => {
+                self.panel = if self.panel == Panel::Checks {
+                    Panel::None
+                } else {
+                    Panel::Checks
+                };
+            }
+            // ---------------------------------------------------------------- Properties
+            Cmd::EditFile => {
+                let text = self
+                    .session
+                    .project
+                    .doc(h)
+                    .map(schemify_doc::Document::canonical)
+                    .unwrap_or_default();
+                self.tool = Tool::Idle;
+                self.dialog = Dialog::File(text);
+                self.show_dialog("dialog.edit_file");
+                self.focus_next = Some("dialog.edit_file.text".into());
+            }
+            Cmd::EditFileOk => {
+                let Dialog::File(typed) = std::mem::take(&mut self.dialog) else {
+                    return false;
+                };
+                self.close_dialog();
+                let text = if arg.is_empty() {
+                    typed
+                } else {
+                    arg.to_owned()
+                };
+                self.apply_file_text(reqs, h, &text);
+            }
+            Cmd::EditHeader => self.open_header(h),
+            Cmd::ToggleIgnore => {
+                let ops = self.with_doc(h, |d, sel| {
+                    edit::selected_records(d, sel)
+                        .into_iter()
+                        .filter(|(_, _, r)| r.kind == RecordKind::Inst)
+                        .map(|(_, target, r)| match r.find_attr("ignore") {
+                            Some(_) => Op::RemoveAttr {
+                                target,
+                                key: "ignore".into(),
+                                first: None,
+                            },
+                            None => Op::SetAttr {
+                                target,
+                                key: "ignore".into(),
+                                values: vec!["true".into()],
+                            },
+                        })
+                        .collect::<Vec<_>>()
+                });
+                if ops.is_empty() {
+                    self.session.say("select instances to toggle `ignore`");
+                }
+                self.commit(reqs, h, "toggle ignore", ops);
+            }
+            // ---------------------------------------------------------------- Symbol
+            Cmd::SymbolsDetails => self.opts.show_symbols = 0,
+            Cmd::SymbolsBoxesSub => self.opts.show_symbols = 1,
+            Cmd::SymbolsBoxesAll => self.opts.show_symbols = 2,
+            Cmd::SymbolsCycle => self.opts.show_symbols = (self.opts.show_symbols + 1) % 3,
+            Cmd::MakeSymbol => {
+                let ops = self.make_symbol_ops(h);
+                self.commit(reqs, h, "make symbol", ops);
+            }
+            Cmd::MakeSchematic => {
+                let ops = self.make_schematic_ops(h, ptr);
+                if ops.is_empty() {
+                    self.session.say("every pin already has a port");
+                }
+                self.commit(reqs, h, "make schematic", ops);
+            }
+            Cmd::MakeSubcircuit => self.make_subcircuit(reqs, h),
+            Cmd::AttachLabels => {
+                let ops = self.attach_labels_ops(h);
+                self.commit(reqs, h, "attach labels", ops);
+            }
+            Cmd::PinsFromPorts => {
+                let ops = self.with_doc(h, pins_from_ports);
+                if ops.is_empty() {
+                    self.session.say("select schematic ports without a pin");
+                }
+                self.commit(reqs, h, "pins from ports", ops);
+            }
+            Cmd::ListNets | Cmd::ListNetsBuses => {
+                let mut body = String::from("Highlighted nets\n\n");
+                for k in &self.highlight {
+                    if cmd == Cmd::ListNetsBuses {
+                        for bit in expand_bus(k) {
+                            body.push_str(&bit);
+                            body.push('\n');
+                        }
+                    } else {
+                        body.push_str(k);
+                        body.push('\n');
+                    }
+                }
+                self.text_tab("highlighted nets", "nets", body);
+            }
+            Cmd::LabelsFromNets | Cmd::LabelsFromNetsI | Cmd::PortsFromNets => {
+                let names = self.highlighted_local_names();
+                if names.is_empty() {
+                    self.session.say("no highlighted nets at this level (k)");
+                    return true;
+                }
+                let kind = if cmd == Cmd::PortsFromNets {
+                    RecordKind::Port
+                } else {
+                    RecordKind::Label
+                };
+                let prefix = if cmd == Cmd::LabelsFromNetsI { "i" } else { "" };
+                let recs: Vec<RecordBuf> = names
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| {
+                        edit::placed(
+                            kind,
+                            (0, i as i32 * PITCH),
+                            Orient::R0,
+                            &format!("{prefix}{n}"),
+                            edit::AUTO_ID,
+                        )
+                    })
+                    .collect();
+                self.tool = Tool::Place {
+                    what: Placement::Paste(recs),
+                    at: ptr,
+                    lin: Xform::IDENTITY,
+                };
+            }
+            // ---------------------------------------------------------------- Highlight
+            Cmd::CompareWith => self.open_chooser(ChooseFor::Compare),
+            Cmd::CompareToggle => match self.compare.as_mut() {
+                Some(c) => {
+                    c.on = !c.on;
+                    c.key = None;
+                }
+                None => self.open_chooser(ChooseFor::Compare),
+            },
+            Cmd::CompareSwap => self.compare_swap(h),
+            Cmd::DupNames => {
+                let keys = self.with_doc(h, |d, _| duplicate_names(d).0);
+                self.session
+                    .say(format!("{} instance(s) with a duplicate name", keys.len()));
+                self.set_selection(keys);
+            }
+            Cmd::RenameDups => {
+                let ops = self.with_doc(h, |d, _| duplicate_names(d).1);
+                if ops.is_empty() {
+                    self.session.say("no duplicate instance names");
+                }
+                self.commit(reqs, h, "rename duplicates", ops);
+            }
+            Cmd::PinMismatch => self.pin_mismatch(h),
+            Cmd::SelectHighlighted => {
+                let keys = self.hl.keys.clone();
+                self.set_selection(keys);
+            }
+            Cmd::SelectOverlapped => {
+                let keys = self.with_doc(h, |d, _| overlapped(d));
+                self.session
+                    .say(format!("{} overlapped instance(s)", keys.len()));
+                self.set_selection(keys);
+            }
+            // ---------------------------------------------------------------- Simulation
+            Cmd::Changelog => self.changelog(h),
+            Cmd::EditNetlist => {
+                let show = self.show_netlist;
+                self.show_netlist = true;
+                self.netlist(true);
+                self.show_netlist = show;
+            }
+            Cmd::AddGraph => {
+                let Some(doc) = self.session.project.doc(h) else {
+                    return false;
+                };
+                let row = crate::docs::insert_row(doc, self.page.sel);
+                let rec = RecordBuf::new(RecordKind::Prose)
+                    .field(schemify_doc::NEW_ID)
+                    .verbatim("```plot")
+                    .verbatim("v(out)")
+                    .verbatim("```");
+                self.commit_docs(
+                    reqs,
+                    h,
+                    "add graph",
+                    vec![Op::Insert { rec, at: Some(row) }],
+                );
+                if let Some(t) = self.session.tab_view_mut() {
+                    *t.docs = true;
+                }
+            }
+            Cmd::ListProcesses => self.list_processes(),
+            Cmd::PackageStatus => self.package_status(),
+            Cmd::JobData | Cmd::JobErrors => self.job_log(cmd == Cmd::JobErrors),
+            Cmd::WavesClear => {
+                self.waves = None;
+                self.shell.invalidate();
+            }
+            Cmd::WavesLoad => {
+                self.open_chooser(ChooseFor::Waves);
+                if let Dialog::Choose(c) = &mut self.dialog {
+                    c.note = arg.trim().to_owned();
+                }
+            }
+            // ---------------------------------------------------------------- Help
+            Cmd::About => self.text_tab(
+                "About Schemify",
+                "about",
+                format!(
+                    "Schemify {}\n\nA schematic editor: xschem's keys and menus (D25), \
+                     line-record design files that diff and merge (D9, D34), one expression \
+                     language (D12), plugins in WASM (D3).\n\nLicensed MIT OR Apache-2.0.\n",
+                    env!("CARGO_PKG_VERSION")
+                ),
+            ),
+            Cmd::Help => self.text_tab("Help", "help", help_text()),
+            Cmd::ContextMenu => self.context_menu(self.pointer),
+            Cmd::Recover | Cmd::DiscardRecovery => {
+                let Dialog::Recover(d, _) = std::mem::take(&mut self.dialog) else {
+                    return false;
+                };
+                self.close_dialog();
+                self.session.decide_recovery(d, cmd == Cmd::Recover);
+                self.invalidate_cells();
+            }
         }
         true
     }
@@ -3495,7 +3841,9 @@ impl Editor {
                             Vec::new()
                         };
                         if unselect {
-                            sel.retain(|k| !keys.contains(k));
+                            let mut keys = keys;
+                            keys.sort_unstable();
+                            sel.retain(|k| keys.binary_search(k).is_err());
                         } else {
                             sel.extend(keys);
                         }
