@@ -579,7 +579,7 @@ fn body_row(doc: &Document, name: &str) -> Option<u32> {
 }
 
 /// The `body` text of impl `name` (empty when it has none).
-pub fn body_text(doc: &Document, name: &str) -> String {
+fn body_text(doc: &Document, name: &str) -> String {
     body_row(doc, name).map_or_else(String::new, |row| {
         doc.record(Loc {
             table: TableId::Bodies,
@@ -877,11 +877,7 @@ pub fn sync_ops(doc: &Document, ports: &[(String, PinDir)]) -> (SyncPlan, Vec<Op
         }
         _ => (-2 * grid, 2 * grid, 0),
     };
-    let c = |v: i32| {
-        let mut t = String::new();
-        schemify_format::format_coord(v, &mut t);
-        t
-    };
+    let c = crate::geometry::coord;
     for (k, (name, dir)) in plan.add.iter().enumerate() {
         let x = if *dir == PinDir::In { left } else { right };
         let y = bottom + (k as i32 + 1) * grid;

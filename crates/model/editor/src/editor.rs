@@ -4787,11 +4787,7 @@ impl Editor {
                 let _ = writeln!(t, "  order -1");
             }
         }
-        let units = |m: i32| {
-            let mut v = String::new();
-            schemify_format::format_coord(m, &mut v);
-            v
-        };
+        let units = crate::geometry::coord;
         let _ = writeln!(t, "set status.snap value {}", q(&units(self.opts.snap)));
         let _ = writeln!(t, "set status.grid value {}", q(&units(self.opts.grid)));
         let banner = match &self.tool {

@@ -19,10 +19,10 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use schemify_doc::{DocHandle, Document, Op, Project, RecordBuf, TableId, Target};
-use schemify_format::{RecordKind, format_coord, parse_coord};
+use schemify_format::{RecordKind, parse_coord};
 
 use crate::edit::{self, Ids};
-use crate::geometry::{Pt, Xform, place, snap};
+use crate::geometry::{Pt, Xform, coord, place, snap};
 use crate::scene::ObjKey;
 
 /// Wires one stretch may add (kissing wires and L corners) per selected object.
@@ -66,19 +66,13 @@ pub fn on_interior(p: Pt, a: Pt, b: Pt) -> bool {
     cross == 0 && px >= ax.min(bx) && px <= ax.max(bx) && py >= ay.min(by) && py <= ay.max(by)
 }
 
-fn coord_text(v: i32) -> String {
-    let mut s = String::new();
-    format_coord(v, &mut s);
-    s
-}
-
 fn wire_rec(id: &str, a: Pt, b: Pt, attrs: &[schemify_doc::Attr]) -> RecordBuf {
     let mut r = RecordBuf::new(RecordKind::Wire)
         .field(id)
-        .field(&coord_text(a.0))
-        .field(&coord_text(a.1))
-        .field(&coord_text(b.0))
-        .field(&coord_text(b.1));
+        .field(&coord(a.0))
+        .field(&coord(a.1))
+        .field(&coord(b.0))
+        .field(&coord(b.1));
     r.attrs = attrs.to_vec();
     r
 }
@@ -788,7 +782,7 @@ pub fn align(doc: &Document, sel: &[ObjKey], snap_m: i32) -> Vec<Op> {
     };
     let snapped = |t: &str| -> Option<String> {
         let v = parse_coord(t).ok()?;
-        Some(coord_text(snap(f64::from(v), snap_m)))
+        Some(coord(snap(f64::from(v), snap_m)))
     };
     let mut ops = Vec::new();
     for (_, target, mut rec) in edit::selected_records(doc, &keys) {

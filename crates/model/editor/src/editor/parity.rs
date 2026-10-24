@@ -64,11 +64,7 @@ pub(super) fn shape_record(
     layer: u8,
     id: Option<&str>,
 ) -> Option<RecordBuf> {
-    let c = |v: i32| {
-        let mut s = String::new();
-        schemify_format::format_coord(v, &mut s);
-        s
-    };
+    let c = crate::geometry::coord;
     let (word, values): (&str, Vec<i32>) = match form {
         Form::Line | Form::Rect => {
             let (a, b) = (*pts.first()?, *pts.get(1)?);
@@ -441,7 +437,7 @@ impl Editor {
             return;
         };
         let path = dir.join(crate::session::cell_relpath(p, row));
-        let open = self.session.handle_of_path(&path).is_some();
+        let open = self.session.handle_of(&path).is_some();
         if open {
             self.session.say(format!(
                 "{}: open in the editor, close it first",
@@ -606,7 +602,7 @@ impl Editor {
     /// # Errors
     ///
     /// Nothing is drawn, or the image is over 16384 px a side (lower the scale).
-    pub fn export_png_full(&mut self, path: PathBuf) -> Result<(), String> {
+    fn export_png_full(&mut self, path: PathBuf) -> Result<(), String> {
         let b = export::bounds(&self.scene.prims)
             .map(|b| export::padded(b, 10 * UNIT))
             .ok_or("nothing to export")?;
@@ -933,11 +929,7 @@ impl Editor {
 
     /// A one-number setting: from `arg`, else a dialog prefilled with the current value.
     pub(super) fn setting(&mut self, cmd: Cmd, arg: &str) {
-        let units = |m: i32| {
-            let mut s = String::new();
-            schemify_format::format_coord(m, &mut s);
-            s
-        };
+        let units = crate::geometry::coord;
         if arg.trim().is_empty() {
             let (title, value) = match cmd {
                 Cmd::CrosshairSize => (
@@ -2377,11 +2369,7 @@ pub(super) fn symbol_records(ports: &[(String, Orient, Pt)], width: i32) -> Vec<
     if left.is_empty() && right.is_empty() {
         return Vec::new();
     }
-    let c = |v: i32| {
-        let mut t = String::new();
-        schemify_format::format_coord(v, &mut t);
-        t
-    };
+    let c = crate::geometry::coord;
     let n = left.len().max(right.len()) as i32;
     let half_w = (width / 2).max(2 * PITCH);
     let lead = PITCH;

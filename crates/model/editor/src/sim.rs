@@ -993,7 +993,7 @@ impl Sim {
     }
 
     /// Re-reads the selected job's run log ([`JobLog`]): bounded tails of three small files.
-    pub fn refresh_log(&mut self) {
+    fn refresh_log(&mut self) {
         let Some(dir) = self.dir().map(|d| d.join(self.selected.to_string())) else {
             self.log = JobLog::default();
             return;

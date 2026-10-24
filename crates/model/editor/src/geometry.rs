@@ -182,7 +182,7 @@ impl Xform {
     }
 }
 
-fn coord(s: &str) -> Option<i32> {
+fn read_coord(s: &str) -> Option<i32> {
     parse_coord(s).ok()
 }
 
@@ -193,7 +193,7 @@ fn set_coord(slot: &mut String, v: i32) {
 
 /// Maps the coordinate pair at fields `i, i + 1`.
 fn map_pair(fields: &mut [String], i: usize, x: Xform) -> Option<()> {
-    let p = (coord(&fields[i])?, coord(&fields[i + 1])?);
+    let p = (read_coord(&fields[i])?, read_coord(&fields[i + 1])?);
     let q = x.point(p);
     set_coord(&mut fields[i], q.0);
     set_coord(&mut fields[i + 1], q.1);
@@ -206,12 +206,17 @@ fn map_orient(slot: &mut String, x: Xform) -> Option<()> {
     Some(())
 }
 
+/// The shortest decimal text of coordinate `v` (milli-units), as the format writes it.
+pub(crate) fn coord(v: i32) -> String {
+    let mut s = String::new();
+    format_coord(v, &mut s);
+    s
+}
+
 /// Shortest decimal text of an angle in `[0, 360)` with at most 3 fractional digits.
 fn degrees(v: f64) -> String {
     let milli = ((v * 1000.0).round() as i64).rem_euclid(360_000);
-    let mut s = String::new();
-    format_coord(milli as i32, &mut s);
-    s
+    coord(milli as i32)
 }
 
 /// Applies `x` to every coordinate, orientation and arc angle of `rec` (any record kind;
@@ -264,7 +269,7 @@ pub fn transform_record(rec: &mut RecordBuf, x: Xform) -> Option<()> {
         RecordKind::Shape => match f.get(1).map(String::as_str) {
             Some("arc") if f.len() == 7 => {
                 map_pair(f, 2, x)?;
-                let (a, s) = (coord(&f[5])?, coord(&f[6])?);
+                let (a, s) = (read_coord(&f[5])?, read_coord(&f[6])?);
                 let (a, _) = x.arc(f64::from(a) / 1000.0, f64::from(s) / 1000.0);
                 f[5] = degrees(a);
             }
@@ -287,11 +292,14 @@ pub fn transform_record(rec: &mut RecordBuf, x: Xform) -> Option<()> {
 /// (instance origin, label anchor, wire first endpoint, first graphic point).
 pub fn anchor(rec: &RecordBuf) -> Option<Pt> {
     let f = &rec.fields;
-    let pair = |i: usize| Some((coord(f.get(i)?)?, coord(f.get(i + 1)?)?));
+    let pair = |i: usize| Some((read_coord(f.get(i)?)?, read_coord(f.get(i + 1)?)?));
     match rec.kind {
         RecordKind::Inst => {
             let at = rec.find_attr("at")?;
-            Some((coord(at.values.first()?)?, coord(at.values.get(1)?)?))
+            Some((
+                read_coord(at.values.first()?)?,
+                read_coord(at.values.get(1)?)?,
+            ))
         }
         RecordKind::Wire | RecordKind::Label | RecordKind::Port | RecordKind::Text => pair(1),
         RecordKind::Noconn => pair(1),

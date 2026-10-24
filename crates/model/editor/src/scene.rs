@@ -537,7 +537,7 @@ fn degrees_milli(s: &DocStrings, sym: Sym) -> i32 {
 }
 
 /// Builds the symbol primitives of a cell document (its pins and rank-2 graphics).
-pub fn sym_prims(doc: &Document) -> SymPrims {
+fn sym_prims(doc: &Document) -> SymPrims {
     let g = doc.graphics();
     let s = doc.strings();
     let coords = &doc.pool().coords;

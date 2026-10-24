@@ -8,9 +8,9 @@
 use std::collections::HashSet;
 
 use schemify_doc::{Document, Loc, NEW_ID, ObjId, Op, RecordBuf, TableId, Target};
-use schemify_format::{IdRng, KeyRule, Orient, RecordKind, format_coord, fresh_id};
+use schemify_format::{IdRng, KeyRule, Orient, RecordKind, fresh_id};
 
-use crate::geometry::{Pt, Xform, anchor, transform_record};
+use crate::geometry::{Pt, Xform, anchor, coord, transform_record};
 use crate::scene::ObjKey;
 
 /// Where a selected object lives in the document, if it still exists.
@@ -233,12 +233,6 @@ pub fn insert_copies(
         ops.push(Op::Insert { rec, at: None });
     }
     (ops, keys)
-}
-
-fn coord(v: i32) -> String {
-    let mut s = String::new();
-    format_coord(v, &mut s);
-    s
 }
 
 /// Wire segments along `pts` (zero-length segments skipped), each with a fresh id.
