@@ -119,7 +119,6 @@ pub(crate) fn linker(engine: &Engine) -> Linker<Ctx> {
     l.func_wrap(m, "table_epoch", table_epoch).expect(err);
     l.func_wrap(m, "read_column", read_column).expect(err);
     l.func_wrap(m, "read_strings", read_strings).expect(err);
-    l.func_wrap(m, "read_record", read_record).expect(err);
     l.func_wrap(m, "eval", eval).expect(err);
     l.func_wrap(m, "log", log).expect(err);
     l.func_wrap(m, "fs_read", |c: Caller<'_, Ctx>, p: u32, pl: u32| {
@@ -444,18 +443,6 @@ fn read_strings(
                     i32::try_from(need).expect("string slices stay under 2 GiB")
                 }
             },
-        },
-    };
-    charge(&mut caller, r.max(0) as usize);
-    r
-}
-
-fn read_record(mut caller: Caller<'_, Ctx>, doc: u32, id: u32, dst: u32, dst_len: u32) -> i32 {
-    let r = match live(&mut caller) {
-        None => Code::Denied.neg(),
-        Some((mem, ctx)) => match ctx.snapshots.record(doc, id) {
-            None => Code::Gone.neg(),
-            Some(text) => copy_out(mem, dst, dst_len, text),
         },
     };
     charge(&mut caller, r.max(0) as usize);

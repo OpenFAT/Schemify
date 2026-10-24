@@ -22,15 +22,7 @@ struct TableData {
     columns: Vec<Column>,
 }
 
-/// Document records for `read_record`, sorted by `(doc, id)`.
-#[derive(Clone, Debug, Default)]
-struct Records {
-    key: Vec<u64>,
-    ends: Vec<u32>,
-    text: Vec<u8>,
-}
-
-/// Every §4 table plus the `read_record` source, filled by the caller.
+/// Every §4 table, filled by the caller.
 ///
 /// Mutate between deliveries only; [`crate::deliver`] lends the value to each plugin call
 /// and hands it back unchanged.
@@ -52,7 +44,6 @@ struct Records {
 #[derive(Clone, Debug)]
 pub struct Snapshots {
     tables: Vec<TableData>,
-    records: Records,
 }
 
 impl Default for Snapshots {
@@ -71,18 +62,12 @@ impl Snapshots {
                 columns: vec![Column::default(); t.columns().len()],
             })
             .collect();
-        Snapshots {
-            tables,
-            records: Records::default(),
-        }
+        Snapshots { tables }
     }
 
     /// Allocation-free stand-in kept in a plugin's store while the real value is not lent.
     pub(crate) fn placeholder() -> Snapshots {
-        Snapshots {
-            tables: Vec::new(),
-            records: Records::default(),
-        }
+        Snapshots { tables: Vec::new() }
     }
 
     /// Returns whether this is the full table set (not a placeholder).
@@ -230,41 +215,6 @@ impl Snapshots {
             }
         }
         Ok(())
-    }
-
-    /// Adds one document record (line-record text) for `read_record`.
-    ///
-    /// # Panics
-    ///
-    /// Panics unless `(doc, id)` is greater than every key pushed since the last
-    /// [`Snapshots::clear_records`] (callers push in sorted order; lookups binary-search).
-    pub fn push_record(&mut self, doc: u32, id: u32, text: &str) {
-        let key = (u64::from(doc) << 32) | u64::from(id);
-        let r = &mut self.records;
-        assert!(
-            r.key.last().is_none_or(|&last| last < key),
-            "records must be pushed sorted"
-        );
-        r.text.extend_from_slice(text.as_bytes());
-        r.key.push(key);
-        r.ends
-            .push(u32::try_from(r.text.len()).expect("records under 4 GiB"));
-        debug_assert_eq!(r.key.len(), r.ends.len());
-    }
-
-    /// Drops every record.
-    pub fn clear_records(&mut self) {
-        self.records = Records::default();
-    }
-
-    /// Returns the text of record `(doc, id)`, or `None`.
-    pub(crate) fn record(&self, doc: u32, id: u32) -> Option<&[u8]> {
-        let r = &self.records;
-        let i = r
-            .key
-            .binary_search(&((u64::from(doc) << 32) | u64::from(id)))
-            .ok()?;
-        Some(&r.text[row_start(&r.ends, i)..r.ends[i] as usize])
     }
 
     /// Returns whether `doc` is a live handle in the `Docs` table.
@@ -483,25 +433,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn records_binary_search() {
-        let mut s = Snapshots::new();
-        s.push_record(1, 5, "instance R1");
-        s.push_record(2, 1, "wire w");
-        assert_eq!(s.record(2, 1), Some(&b"wire w"[..]));
-        assert_eq!(s.record(1, 5), Some(&b"instance R1"[..]));
-        assert_eq!(s.record(1, 6), None);
-        s.clear_records();
-        assert_eq!(s.record(2, 1), None);
-    }
-
-    #[test]
-    #[should_panic(expected = "sorted")]
-    fn records_must_be_sorted() {
-        let mut s = Snapshots::new();
-        s.push_record(2, 1, "a");
-        s.push_record(1, 1, "b");
     }
 }

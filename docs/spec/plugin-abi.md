@@ -79,16 +79,15 @@ All return immediately. Errors are negative `i32` codes from §8. Every import r
 | `table_epoch` | `(table: u32) -> i32` | Changes whenever the table changes (31-bit, wraps); cheap staleness check. |
 | `read_column` | `(table: u32, column: u32, start: u32, count: u32, dst: u32, dst_len: u32) -> i32` | Copies a fixed-width column slice (little-endian) into guest memory; returns bytes written. `E_COLUMN` for a string column. |
 | `read_strings` | `(table: u32, column: u32, start: u32, count: u32, dst: u32, dst_len: u32) -> i32` | Copies `count` strings as `u32 len` (LE) + UTF-8 bytes each; returns bytes written. |
-| `read_record` | `(doc: u32, id: u32, dst: u32, dst_len: u32) -> i32` | One document record as line-record text; `E_GONE` if absent. |
 | `eval` | `(doc: u32, ptr: u32, len: u32) -> i32` | **Inverted** (amended): returns a handle; the value arrives as `Event::IoDone { handle, status, bytes }` within the same delivery: `status` 0 and the value as one line-record value (`int`/`num` canonical, expr §7; `true`/`false`; `str` quoted; `cnum` as `re+imi`), or `-E_PARSE` and `<X0xx>: <message>` for an expression error, or `-E_GONE` once the document closed. The expression is a scalar expression (expr spec) in the document's cell scope: its own params, then its vars, at their default-context values; plugin functions resolve through the composition. A name whose own value failed is `X004`. `E_GONE` (from the import) for a closed document. No capability needed. |
 | `log` | `(level: u32, ptr: u32, len: u32)` | Level 0 error, 1 warn, 2 info, 3 debug; text truncated to 4 KiB. Queued only if the call completes. |
 | capability imports | §5 | Present for every plugin; return `-E_DENIED` without a grant. |
 
-All three `read_*` imports, on `-E_SPACE` with `dst_len >= 4`, write the needed size (`u32` LE) into the first 4 bytes of `dst`. A `dst` range outside guest memory is `E_RANGE`; rows past the table are `E_RANGE`.
+Both `read_*` imports, on `-E_SPACE` with `dst_len >= 4`, write the needed size (`u32` LE) into the first 4 bytes of `dst`. A `dst` range outside guest memory is `E_RANGE`; rows past the table are `E_RANGE`.
 
 Host work is metered: every import that moves bytes (reads, `eval`, `log`, capability imports) costs 1 fuel per 8 bytes on top of the instruction cost, so a loop of large reads exhausts the budget instead of keeping the host copying.
 
-Granularity tiers: `read_column` (finest) ← SDK typed column readers (`Host::column::<T>`, `Host::strings`) ← row iterators (not yet in the SDK); `read_record` is the diagonal route for "just give me this object".
+Granularity tiers: `read_column` (finest) ← SDK typed column readers (`Host::column::<T>`, `Host::strings`) ← row iterators (not yet in the SDK). `read_record` (one document record as text) was removed 2026-10-24: no host ever filled its table and no guest used it; a module that imports it fails to load with `E_MODULE`.
 
 ## 4. Snapshot tables
 
@@ -111,7 +110,7 @@ Tables are exposed **as the owner stores them** (data that has no reason to be o
 | `Selection` | | doc u32, id u32 |
 | `UiNodes` | composed UI | id str, kind u8, parent str, owner u16 |
 
-At most 2^24 rows per table. `read_record` is served from a separate record table the app fills (sorted by `(doc, id)`). Object ids are the file's stable ids (30-bit), not memory handles, so they never go stale across edits; a deleted id simply fails validation (`-E_GONE`) in a later request. The host itself checks only that an `edit`'s document is in `Docs`.
+At most 2^24 rows per table. Object ids are the file's stable ids (30-bit), not memory handles, so they never go stale across edits; a deleted id simply fails validation (`-E_GONE`) in a later request. The host itself checks only that an `edit`'s document is in `Docs`.
 
 ## 5. Capabilities (D7)
 
@@ -179,8 +178,8 @@ Rejected outputs (parse errors, validation failures, full queues) never abort th
 
 | Axis | Choice |
 |---|---|
-| Granularity | column slice → typed column → (row iterator) → `read_record`; outputs per record. Host: `deliver` = run guest + `intake`; both public, so outputs can be fed without wasm. |
-| Redundancy | diagonal: `read_record` beside raw columns, `DocVars.value` beside `eval`; UI as records or SDK builders (`contribute_ui`). |
+| Granularity | column slice → typed column → (row iterator); outputs per record. Host: `deliver` = run guest + `intake`; both public, so outputs can be fed without wasm. |
+| Redundancy | diagonal: `DocVars.value` beside `eval`; UI as records or SDK builders (`contribute_ui`). |
 | Coupling | no hidden state: every read names its table; contributions are per-kind; capabilities are independent. |
 | Retention | contributions are immediate-mode (re-declare the full set; the host diffs and ignores identical re-declarations). Documents are the only retained state, and that's the user's data. |
 | Flow control | host → plugin only via events; plugin → host only via returning imports; all I/O and `eval` inverted to handles + events. No callbacks into the plugin except pure `schemify_call`. |

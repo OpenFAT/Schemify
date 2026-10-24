@@ -11,12 +11,10 @@ const HELLO: &[u8] = include_bytes!("fixtures/hello.wasm");
 const BAD: &[u8] = include_bytes!("fixtures/bad_actor.wasm");
 const GMID: &[u8] = include_bytes!("fixtures/gmid_stub.wasm");
 
-/// A record longer than the SDK's first `read_record` guess, to force the `E_SPACE` retry.
-fn long_record() -> String {
-    format!(
-        "instance R1 lib:res\n  at 0 0\n  note \"{}\"",
-        "x".repeat(300)
-    )
+/// Net 0's name, long enough that `Host::strings` overflows its first buffer guess and
+/// takes the `E_SPACE` retry.
+fn long_name() -> String {
+    format!("n0{}", "x".repeat(100))
 }
 
 fn snapshots(pin_counts: &[u32]) -> Snapshots {
@@ -26,12 +24,12 @@ fn snapshots(pin_counts: &[u32]) -> Snapshots {
     s.fill::<u8>(Table::Docs, col::docs::DIRTY, &[0]);
     s.fill_strings(Table::Docs, col::docs::PATH, &["lib/top.shcomp"]);
     s.fill_strings(Table::Docs, col::docs::CELL, &["top"]);
-    let names: Vec<String> = (0..pin_counts.len()).map(|i| format!("n{i}")).collect();
+    let mut names: Vec<String> = (0..pin_counts.len()).map(|i| format!("n{i}")).collect();
+    names[0] = long_name();
     s.fill_strings(Table::Nets, col::nets::NAME, &names);
     s.fill::<u16>(Table::Nets, col::nets::WIDTH, &vec![1; pin_counts.len()]);
     s.fill::<u8>(Table::Nets, col::nets::GLOBAL, &vec![0; pin_counts.len()]);
     s.fill::<u32>(Table::Nets, col::nets::PIN_COUNT, pin_counts);
-    s.push_record(1, 42, &long_record());
     s
 }
 
@@ -164,22 +162,12 @@ fn hello_inspect_exercises_every_read_import() {
         },
     );
 
-    let names = Ok::<_, Code>(
-        vec!["n0", "n1", "n2", "n3"]
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>(),
-    );
+    let names = Ok::<_, Code>(vec![long_name(), "n1".into(), "n2".into(), "n3".into()]);
     let expected = [
         format!(
             "names={names:?} wrong_type={:?} past_end={:?}",
             Err::<(), _>(Code::Column),
             Err::<(), _>(Code::Range)
-        ),
-        format!(
-            "record={:?} missing={:?}",
-            Ok::<_, Code>(long_record()),
-            Err::<(), _>(Code::Gone)
         ),
         format!(
             "eval={:?} eval_gone={:?}",

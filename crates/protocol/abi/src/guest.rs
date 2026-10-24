@@ -34,7 +34,6 @@ mod sys {
         pub safe fn table_epoch(table: u32) -> i32;
         pub fn read_column(t: u32, c: u32, start: u32, count: u32, dst: u32, dst_len: u32) -> i32;
         pub fn read_strings(t: u32, c: u32, start: u32, count: u32, dst: u32, dst_len: u32) -> i32;
-        pub fn read_record(doc: u32, id: u32, dst: u32, dst_len: u32) -> i32;
         pub fn eval(doc: u32, ptr: u32, len: u32) -> i32;
         pub fn log(level: u32, ptr: u32, len: u32);
         pub fn fs_read(path: u32, path_len: u32) -> i32;
@@ -175,23 +174,6 @@ impl Host {
             return Err(Code::Parse);
         }
         Ok(out)
-    }
-
-    /// Returns document record `id` of `doc` as line-record text (the diagonal route for
-    /// "just give me this object").
-    ///
-    /// # Errors
-    ///
-    /// `E_GONE` if the record or document does not exist.
-    pub fn record(&self, doc: u32, id: u32) -> Result<String, Code> {
-        let bytes = fill_retrying(256, |dst| {
-            // SAFETY: as in `strings`: an initialized, exclusive buffer of `dst.len()` bytes.
-            unsafe {
-                let dst_len = len32(dst);
-                sys::read_record(doc, id, addr_mut(dst), dst_len)
-            }
-        })?;
-        String::from_utf8(bytes).map_err(|_| Code::Parse)
     }
 
     /// Requests evaluation of `expr` in `doc`'s cell scope. Returns a handle at once; the

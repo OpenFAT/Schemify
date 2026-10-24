@@ -1,7 +1,7 @@
 //! Example plugin (plugin-abi spec §0): contributes a Tools menu item and its command, and
 //! logs how many nets have a single connection when the command runs.
 //!
-//! `hello.inspect` exercises the rest of the read path (string columns, `read_record`,
+//! `hello.inspect` exercises the rest of the read path (string columns,
 //! inverted `eval` and `fs_read`) for the host's end-to-end test.
 
 #![deny(unsafe_code)] // not `forbid`: the SDK's `export!` allows `unsafe(no_mangle)`
@@ -44,11 +44,6 @@ fn on_event(ev: Event<'_>, host: &Host, out: &mut Out) {
             let past_end = host.column::<u32>(Table::Nets, col::nets::PIN_COUNT, 0..nets + 1);
             out.log(&format!(
                 "names={names:?} wrong_type={wrong_type:?} past_end={past_end:?}"
-            ));
-            out.log(&format!(
-                "record={:?} missing={:?}",
-                host.record(1, 42),
-                host.record(1, 43)
             ));
             out.log(&format!(
                 "eval={:?} eval_gone={:?}",
