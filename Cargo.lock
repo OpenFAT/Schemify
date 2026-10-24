@@ -3106,7 +3106,7 @@ dependencies = [
 [[package]]
 name = "spicerack"
 version = "0.1.0"
-source = "git+file:///home/omare/Documents/Projects/Rust/SpiceRack?rev=819bbdbbee353ebe88c6d22b3dd6ea3c5ef881bb#819bbdbbee353ebe88c6d22b3dd6ea3c5ef881bb"
+source = "git+https://github.com/OmarSiwy/SpiceRack?rev=819bbdbbee353ebe88c6d22b3dd6ea3c5ef881bb#819bbdbbee353ebe88c6d22b3dd6ea3c5ef881bb"
 dependencies = [
  "num-complex",
  "serde",

@@ -42,9 +42,8 @@ libm = "0.2"
 # codegen; only `netlist` may depend on it. No default features: no Python, no simulator
 # backends (processes, temp files, dlopen), so it builds for the web.
 # Pinned to a rev, so the plugin repositories (git dependencies on the model's crates)
-# resolve it too. ponytail: the local repository until branch `schemify-xschem` is pushed;
-# then `git = "https://github.com/OmarSiwy/SpiceRack"` at the same rev.
-spicerack = { git = "file:///home/omare/Documents/Projects/Rust/SpiceRack", rev = "819bbdbbee353ebe88c6d22b3dd6ea3c5ef881bb", default-features = false }
+# resolve it too.
+spicerack = { git = "https://github.com/OmarSiwy/SpiceRack", rev = "819bbdbbee353ebe88c6d22b3dd6ea3c5ef881bb", default-features = false }
 # User config (D9 amended): Lua 5.4 in pure Rust (no C, builds for every target incl. the
 # web; user decision 2026-10-12, web spec §5); only `config` may use it. No `io`, `os`,
 # `package` libraries are compiled in; `debug` serves the API prelude and is stripped after.
