@@ -1184,8 +1184,8 @@ impl Project {
             open.saved_depth = Some(open.undo.len());
             rewrite_journal(open);
         } else if open.journal.started && at_save {
-            let rec = JRec::Save(p.top_seq, disk_hash(open));
-            append_journal(open, &[rec]);
+            let rec = JRec::<Entry>::Save(p.top_seq, disk_hash(open));
+            append_journal(&mut open.journal, &[rec]);
         } else if open.journal.started {
             // Edits landed between `save` and `saved`: the journal's position no longer
             // matches the saved state, so restate the lineage from the new bytes.
@@ -1444,14 +1444,14 @@ impl Project {
         // Undo reverts the extension first: it was applied last.
         inverse.append(&mut entry.inverse);
         entry.inverse = inverse;
-        let entry = entry.clone();
         match open.journal.last_tx {
             Some((s, at)) if s == seq => {
                 let j = &mut open.journal;
                 j.bytes -= (j.text.len() - at) as u64;
                 j.txs -= 1;
                 j.text.truncate(at);
-                append_journal(open, &[JRec::Tx(entry)]);
+                let entry = open.undo.back().expect("checked above");
+                append_journal(&mut open.journal, &[JRec::Tx(entry)]);
                 open.journal.last_tx = Some((seq, at));
             }
             _ if open.journal.started => rewrite_journal(open),
@@ -1512,7 +1512,7 @@ pub fn apply_edits(project: &mut Project, requests: &[EditRequest]) -> Vec<Outco
                 Some(open) if refused(open) => Outcome::Refused(Code::E044),
                 Some(open) if req.edit == Edit::Undo => match undo_top(open) {
                     Ok(Some(seq)) => {
-                        append_journal(open, &[JRec::Undo(seq)]);
+                        append_journal::<Entry>(&mut open.journal, &[JRec::Undo(seq)]);
                         Outcome::Undone { seq }
                     }
                     Ok(None) => Outcome::Nothing,
@@ -1520,7 +1520,7 @@ pub fn apply_edits(project: &mut Project, requests: &[EditRequest]) -> Vec<Outco
                 },
                 Some(open) => match redo_top(open) {
                     Ok(Some(seq)) => {
-                        append_journal(open, &[JRec::Redo(seq)]);
+                        append_journal::<Entry>(&mut open.journal, &[JRec::Redo(seq)]);
                         Outcome::Redone { seq }
                     }
                     Ok(None) => Outcome::Nothing,
@@ -1611,7 +1611,7 @@ fn commit(open: &mut Open, label: &str, unix_ms: u64, forward: Vec<Op>, inverse:
         rewrite_journal(open);
     }
     let at = open.journal.text.len();
-    append_journal(open, &[JRec::Tx(entry.clone())]);
+    append_journal(&mut open.journal, &[JRec::Tx(&entry)]);
     open.journal.last_tx = open.journal.started.then_some((seq, at));
     push_commit(open, entry);
     open.doc.compact_if_needed();
@@ -1684,16 +1684,15 @@ fn redo_top(open: &mut Open) -> Result<Option<u64>, Vec<OpError>> {
     }
 }
 
-fn append_journal(open: &mut Open, recs: &[JRec]) {
-    if !open.journal.started {
+fn append_journal<E: std::borrow::Borrow<Entry>>(journal: &mut JournalOut, recs: &[JRec<E>]) {
+    if !journal.started {
         return; // nothing committed yet: the journal starts with the first commit
     }
-    let text = encode_records(recs);
-    assert!(recs.is_empty() || text.ends_with('\n'));
-    open.journal.txs += recs.iter().filter(|r| matches!(r, JRec::Tx(_))).count() as u64;
-    open.journal.bytes += text.len() as u64;
-    open.journal.text.push_str(&text);
-    assert!(open.journal.text.len() >= text.len());
+    let start = journal.text.len();
+    encode_records(&mut journal.text, recs);
+    assert!(recs.is_empty() || journal.text.ends_with('\n'));
+    journal.txs += recs.iter().filter(|r| matches!(r, JRec::Tx(_))).count() as u64;
+    journal.bytes += (journal.text.len() - start) as u64;
 }
 
 /// Replaces the journal with one describing the current lineage: `base` (the disk
@@ -1707,10 +1706,10 @@ fn rewrite_journal(open: &mut Open) {
         .expect("rewrites happen at a reachable disk state");
     assert!(depth <= open.undo.len());
     let mut recs = vec![JRec::Base(disk_hash(open))];
-    recs.extend(open.undo.iter().take(depth).cloned().map(JRec::Hist));
-    recs.extend(open.undo.iter().skip(depth).cloned().map(JRec::Tx));
+    recs.extend(open.undo.iter().take(depth).map(JRec::Hist));
+    recs.extend(open.undo.iter().skip(depth).map(JRec::Tx));
     let mut text = JOURNAL_HEADER.to_owned();
-    text.push_str(&encode_records(&recs));
+    encode_records(&mut text, &recs);
     open.journal = JournalOut {
         started: true,
         rewrite: true,
