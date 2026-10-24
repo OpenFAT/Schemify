@@ -88,7 +88,7 @@ impl Editor {
     /// The hierarchy prefix of the active level: `/x1/x2` (empty at the top), the instance
     /// path elab and the name map use.
     pub(super) fn level_prefix(&self) -> String {
-        let Some(tab) = self.session.tabs.get(self.session.active) else {
+        let Some(tab) = self.session.tabs().get(self.session.active()) else {
             return String::new();
         };
         let mut p = String::new();
@@ -102,7 +102,7 @@ impl Editor {
     /// The name map of the active tab's top cell (ngspice, default config and corner),
     /// elaborated again only after an edit (`generation`). `None` when elaboration fails.
     pub(super) fn hier_map(&mut self) -> Option<&NameMap> {
-        let tab = self.session.tabs.get(self.session.active)?;
+        let tab = self.session.tabs().get(self.session.active())?;
         let top = tab.stack.first()?.doc;
         let fresh = self
             .hier
@@ -222,13 +222,7 @@ impl Editor {
     pub(super) fn find_in_text(&mut self, query: &str) {
         use std::fmt::Write as _;
         let q = query.trim().to_owned();
-        let active = self.session.active;
-        let Some(v) = self
-            .session
-            .tabs
-            .get_mut(active)
-            .and_then(|t| t.text.as_mut())
-        else {
+        let Some(v) = self.session.text_view_mut() else {
             self.session.say("find: no text tab");
             return;
         };
@@ -260,7 +254,7 @@ impl Editor {
     /// dialect, write `.schemify/netlist/<cell>.<ext>`, and show it in a text tab when "show
     /// netlist" is on.
     pub(super) fn netlist(&mut self, whole: bool) {
-        let Some(tab) = self.session.tabs.get(self.session.active) else {
+        let Some(tab) = self.session.tabs().get(self.session.active()) else {
             return;
         };
         let h = if whole {
@@ -828,8 +822,8 @@ impl Editor {
         // OP back-annotation of the selected job (when the tab shows the bench's hierarchy).
         let top = self
             .session
-            .tabs
-            .get(self.session.active)
+            .tabs()
+            .get(self.session.active())
             .map(|t| t.stack[0].doc);
         let key = (self.sim.selected, self.generation);
         let wanted = self.op_on && top.is_some() && top == self.sim.bench();
@@ -964,8 +958,8 @@ impl Editor {
         }
         msg.push_str(" — review on the docs page, then Accept or Reject");
         self.session.say(msg);
-        if let Some(t) = self.session.tabs.get_mut(self.session.active) {
-            t.docs = true;
+        if let Some(t) = self.session.tab_view_mut() {
+            *t.docs = true;
         }
     }
 

@@ -377,18 +377,18 @@ fn zoom_pan_and_snap_keys() {
 fn tabs_open_new_and_switch() {
     let mut s = Session::open("inv", "top.shcomp", "tabs", true);
     s.key("Ctrl+N");
-    assert_eq!(s.ed.session().tabs.len(), 2);
-    assert_eq!(s.ed.session().active, 1);
+    assert_eq!(s.ed.session().tabs().len(), 2);
+    assert_eq!(s.ed.session().active(), 1);
     s.key("Ctrl+Left");
-    assert_eq!(s.ed.session().active, 0);
+    assert_eq!(s.ed.session().active(), 0);
     s.click_node("tab.1");
-    assert_eq!(s.ed.session().active, 1);
+    assert_eq!(s.ed.session().active(), 1);
     // Ctrl+O lists cells; opening one adds a tab.
     s.key("Ctrl+O");
     s.click_node("dialog.choose.filter");
     s.type_text("pmos");
     s.click_node("dialog.choose.row.0");
-    assert_eq!(s.ed.session().tabs.len(), 3);
+    assert_eq!(s.ed.session().tabs().len(), 3);
     let (_, view) = s.ed.active().unwrap();
     assert_eq!(
         view,

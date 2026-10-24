@@ -292,7 +292,7 @@ fn a_recent_file_of_another_project_switches_project() {
     assert_eq!(s.ed.session().root, b, "{}", status(&s));
     let (h, _) = s.ed.active().unwrap();
     assert_eq!(s.ed.session().path(h), Some(b.join("inv.shcomp").as_path()));
-    assert_eq!(s.ed.session().tabs.len(), 1);
+    assert_eq!(s.ed.session().tabs().len(), 1);
     assert_eq!(s.ed.recent()[0], b.join("inv.shcomp"));
     // Editing carries on in the new project: a delete and its undo.
     let t0 = s.text();

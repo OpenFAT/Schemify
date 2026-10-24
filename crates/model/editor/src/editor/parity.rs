@@ -651,9 +651,8 @@ impl Editor {
                     "add graph",
                     vec![Op::Insert { rec, at: Some(row) }],
                 );
-                let tab = self.session.active;
-                if let Some(t) = self.session.tabs.get_mut(tab) {
-                    t.docs = true;
+                if let Some(t) = self.session.tab_view_mut() {
+                    *t.docs = true;
                 }
             }
             Cmd::ListProcesses => self.list_processes(),
@@ -995,7 +994,7 @@ impl Editor {
         };
         let shared = self
             .session
-            .tabs
+            .tabs()
             .iter()
             .enumerate()
             .flat_map(|(t, tab)| {
@@ -1005,18 +1004,13 @@ impl Editor {
                     .map(move |(l, lv)| (t, l, lv.doc))
             })
             .filter(|&(t, l, d)| {
-                d == h && !(t == self.session.active && l + 1 == self.session.tabs[t].stack.len())
+                d == h
+                    && !(t == self.session.active() && l + 1 == self.session.tabs()[t].stack.len())
             })
             .count();
-        let at_top = self.session.tabs[self.session.active].stack.len() == 1;
+        let at_top = self.session.tabs()[self.session.active()].stack.len() == 1;
         if at_top {
-            if let Some(l) = self.session.level_mut() {
-                l.doc = new;
-                l.view = view;
-                let had = !l.sel.is_empty();
-                l.sel.clear();
-                self.sel_moved |= had;
-            }
+            self.sel_moved |= self.session.show(new, view, false);
         } else {
             self.session.open_tab(new, view);
         }
@@ -2113,14 +2107,7 @@ impl Editor {
         };
         match self.session.open_cell(c.row) {
             Ok(d) => {
-                if let Some(l) = self.session.level_mut() {
-                    l.doc = d;
-                    l.view = View::Schematic;
-                    let had = !l.sel.is_empty();
-                    l.sel.clear();
-                    l.cam = None;
-                    self.sel_moved |= had;
-                }
+                self.sel_moved |= self.session.show(d, View::Schematic, true);
                 self.compare = Some(Compare {
                     row: prev_row,
                     on: true,

@@ -312,7 +312,7 @@ fn recent_files_persist_and_reopen() {
     ed.update(&InputEvents::default(), common::VIEW, 4);
     let (h, _) = ed.active().unwrap();
     assert!(ed.session().path(h).unwrap().ends_with("top.shcomp"));
-    assert_eq!(ed.session().tabs.len(), 2);
+    assert_eq!(ed.session().tabs().len(), 2);
     // Negative space: an index past the list is a status message, not a crash.
     ed.command("file.open_recent.9", "");
     ed.update(&InputEvents::default(), common::VIEW, 5);
@@ -1700,7 +1700,7 @@ fn view_palette_follows_fill_colors_widths_and_symbol_modes() {
 fn small_commands_tabs_panels_graphs_and_recent() {
     let mut s = Session::open("inv", "top.shcomp", "small", true);
     run(&mut s, "file.create_new_window_tab", "");
-    assert_eq!(s.ed.session().tabs.len(), 2);
+    assert_eq!(s.ed.session().tabs().len(), 2);
     run(&mut s, "view.show_hide.show_erc_info_window", "");
     assert_eq!(s.ed.panel(), schemify_editor::editor::Panel::Checks);
     run(&mut s, "view.show_hide.show_erc_info_window", "");

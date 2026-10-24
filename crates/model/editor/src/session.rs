@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 
 use schemify_canvas::Camera;
-use schemify_doc::{DocHandle, OpenError, Project, Recovery};
+use schemify_doc::{DocHandle, OpenError, Project, Recovery, TableId};
 use schemify_format::FileKind;
 
 use crate::geometry::Pt;
@@ -132,10 +132,10 @@ pub struct Session {
     pub project: Project,
     lib_dir: Vec<Option<PathBuf>>,
     docs: Docs,
-    /// Tabs; never empty after [`Session::open_tab`].
-    pub tabs: Vec<Tab>,
-    /// Active tab index.
-    pub active: usize,
+    /// Tabs; never empty after [`Session::open_tab`]. Written only by `Session` methods.
+    tabs: Vec<Tab>,
+    /// Active tab index (`< tabs.len()` once a tab is open).
+    active: usize,
     /// Status line message (last command result or error); written only through
     /// [`Session::say`], [`Session::note`] and [`Session::take_status`].
     status: String,
@@ -604,13 +604,116 @@ impl Session {
         self.tabs.get(self.active).and_then(|t| t.text.as_ref())
     }
 
+    /// The open tabs, in tab-bar order.
+    pub fn tabs(&self) -> &[Tab] {
+        &self.tabs
+    }
+
+    /// The active tab's index (`< tabs().len()` once a tab is open).
+    pub fn active(&self) -> usize {
+        assert!(self.tabs.is_empty() || self.active < self.tabs.len());
+        self.active
+    }
+
+    /// Makes tab `i` the active one.
+    pub fn switch_tab(&mut self, i: usize) {
+        assert!(i < self.tabs.len(), "tab {i} of {}", self.tabs.len());
+        self.active = i;
+    }
+
+    /// Closes the active tab, opening a new schematic when it was the last; the next tab
+    /// to the left becomes active.
+    ///
+    /// # Errors
+    ///
+    /// The new schematic cannot be created (the tab is closed regardless).
+    pub fn close_active_tab(&mut self) -> Result<(), String> {
+        assert!(self.active < self.tabs.len(), "an active tab to close");
+        self.tabs.remove(self.active);
+        let made = match self.tabs.is_empty() {
+            true => self
+                .create(FileKind::Shcomp)
+                .map(|d| self.open_tab(d, View::Schematic)),
+            false => Ok(()),
+        };
+        self.active = self.active.min(self.tabs.len().saturating_sub(1));
+        made
+    }
+
+    /// The active tab, mutably, for its view toggles (docs page, its source, the cell panel).
+    pub fn tab_view_mut(&mut self) -> Option<TabView<'_>> {
+        self.tabs.get_mut(self.active).map(|t| TabView {
+            docs: &mut t.docs,
+            docs_source: &mut t.docs_source,
+            cell: &mut t.cell,
+        })
+    }
+
+    /// The active tab's text view, mutably (its find highlight), if it is one.
+    pub fn text_view_mut(&mut self) -> Option<&mut TextView> {
+        self.tabs.get_mut(self.active).and_then(|t| t.text.as_mut())
+    }
+
+    /// Sets the active level's camera.
+    pub fn set_camera(&mut self, cam: Camera) {
+        assert!(cam.scale > 0.0, "a positive zoom");
+        if let Some(l) = self.level_mut() {
+            l.cam = Some(cam);
+        }
+    }
+
+    /// Replaces the active level's selection with `sel` (sorted, distinct); returns whether
+    /// it changed.
+    pub fn select(&mut self, mut sel: Vec<ObjKey>) -> bool {
+        sel.sort_unstable();
+        sel.dedup();
+        let Some(l) = self.level_mut() else {
+            return false;
+        };
+        let changed = l.sel != sel;
+        if changed {
+            l.sel = sel;
+        }
+        changed
+    }
+
+    /// Replaces the active level's partial wire ends (sorted, distinct; only wire rows).
+    pub fn set_ends(&mut self, mut ends: Vec<(ObjKey, Pt)>) {
+        ends.retain(|e| e.0.table == TableId::Wires);
+        ends.sort_unstable();
+        ends.dedup();
+        if let Some(l) = self.level_mut() {
+            l.ends = ends;
+        }
+    }
+
+    /// Shows `doc` in `view` at the active level: the selection and the partial ends are
+    /// dropped (they name another document's rows), and with `refit` the camera too (the
+    /// first build fits it). Returns whether a selection was dropped.
+    pub fn show(&mut self, doc: DocHandle, view: View, refit: bool) -> bool {
+        let Some(l) = self.level_mut() else {
+            return false;
+        };
+        l.doc = doc;
+        l.view = view;
+        if refit {
+            l.cam = None;
+        }
+        let had = !l.sel.is_empty();
+        l.sel.clear();
+        l.ends.clear();
+        assert!(l.sel.is_empty() && l.ends.is_empty());
+        had
+    }
+
     /// The level shown in the active tab.
     pub fn level(&self) -> Option<&Level> {
         self.tabs.get(self.active).and_then(|t| t.stack.last())
     }
 
-    /// The level shown in the active tab, mutably.
-    pub fn level_mut(&mut self) -> Option<&mut Level> {
+    /// The level shown in the active tab, mutably: only `Session`'s own transforms write a
+    /// level (selection, camera, partial ends, the shown document).
+    fn level_mut(&mut self) -> Option<&mut Level> {
         self.tabs
             .get_mut(self.active)
             .and_then(|t| t.stack.last_mut())
@@ -683,4 +786,14 @@ fn cut(s: &mut String) {
         }
         s.truncate(at);
     }
+}
+
+/// The active tab's view toggles, lent by [`Session::tab_view_mut`].
+pub struct TabView<'a> {
+    /// The docs page is shown beside (or instead of) the canvas.
+    pub docs: &'a mut bool,
+    /// The docs page shows its source text.
+    pub docs_source: &'a mut bool,
+    /// The cell settings panel is shown.
+    pub cell: &'a mut bool,
 }

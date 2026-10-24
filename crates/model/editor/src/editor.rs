@@ -717,7 +717,7 @@ pub struct Editor {
 impl std::fmt::Debug for Editor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Editor")
-            .field("tabs", &self.session.tabs.len())
+            .field("tabs", &self.session.tabs().len())
             .field("tool", &self.tool)
             .finish()
     }
@@ -953,9 +953,7 @@ impl Editor {
     }
 
     fn set_camera(&mut self, cam: Camera) {
-        if let Some(l) = self.session.level_mut() {
-            l.cam = Some(cam);
-        }
+        self.session.set_camera(cam);
     }
 
     /// Screen position (logical px) of a world point, for scripted input.
@@ -983,16 +981,16 @@ impl Editor {
     /// Whether the active tab shows its docs page beside the canvas.
     pub fn docs_shown(&self) -> bool {
         self.session
-            .tabs
-            .get(self.session.active)
+            .tabs()
+            .get(self.session.active())
             .is_some_and(|t| t.docs)
     }
 
     /// Whether the active tab's docs page shows prose blocks as source (`docs.source`).
     pub fn docs_source(&self) -> bool {
         self.session
-            .tabs
-            .get(self.session.active)
+            .tabs()
+            .get(self.session.active())
             .is_some_and(|t| t.docs_source)
     }
 
@@ -1040,10 +1038,10 @@ impl Editor {
     /// Shows `view` in a read-only text tab (the request a netlist or report command makes;
     /// a tab already showing the same file is replaced). Drawn from the next frame.
     pub fn open_text_tab(&mut self, view: crate::session::TextView) {
-        let tabs = self.session.tabs.len();
+        let tabs = self.session.tabs().len();
         self.session.open_text_tab(view);
         self.ui_stale = true;
-        assert!(self.session.tabs.len() <= tabs + 1, "one tab at most");
+        assert!(self.session.tabs().len() <= tabs + 1, "one tab at most");
     }
 
     /// Sets the scroll offset of the UI node named `id` (as a wheel or scrollbar drag
@@ -1838,7 +1836,7 @@ impl Editor {
             Cmd::ComponentBrowser | Cmd::InsertSymbol => self.open_chooser(ChooseFor::Insert),
             Cmd::Waves => self.open_chooser(ChooseFor::Waves),
             Cmd::Save => {
-                let top = self.session.tabs[self.session.active].stack[0].doc;
+                let top = self.session.tabs()[self.session.active()].stack[0].doc;
                 for d in [h, top] {
                     match self.session.save(d) {
                         Ok(true) => {
@@ -2087,29 +2085,27 @@ impl Editor {
                     .rsplit('.')
                     .next()
                     .and_then(|n| n.parse::<usize>().ok());
-                if let Some(i) = i.filter(|&i| i < self.session.tabs.len()) {
+                if let Some(i) = i.filter(|&i| i < self.session.tabs().len()) {
                     self.switch_tab(i);
                 }
             }
             Cmd::TabNext | Cmd::TabPrev => {
-                let n = self.session.tabs.len();
+                let n = self.session.tabs().len();
                 let i = if cmd == Cmd::TabNext {
-                    (self.session.active + 1) % n
+                    (self.session.active() + 1) % n
                 } else {
-                    (self.session.active + n - 1) % n
+                    (self.session.active() + n - 1) % n
                 };
                 self.switch_tab(i);
             }
             Cmd::DocsToggle => {
-                let a = self.session.active;
-                if let Some(t) = self.session.tabs.get_mut(a) {
-                    t.docs = !t.docs;
+                if let Some(t) = self.session.tab_view_mut() {
+                    *t.docs = !*t.docs;
                 }
             }
             Cmd::DocsSource => {
-                let a = self.session.active;
-                if let Some(t) = self.session.tabs.get_mut(a) {
-                    t.docs_source = !t.docs_source;
+                if let Some(t) = self.session.tab_view_mut() {
+                    *t.docs_source = !*t.docs_source;
                 }
             }
             Cmd::ViewSchematic | Cmd::ViewSymbol => {
@@ -2127,23 +2123,17 @@ impl Editor {
                     return true;
                 }
                 if view != want {
-                    let l = self.session.level_mut().expect("an active level");
-                    l.view = want;
                     // Schematic and symbol coordinates are unrelated: refit, drop the selection.
-                    l.cam = None;
-                    let had = !l.sel.is_empty();
-                    l.sel.clear();
-                    l.ends.clear();
-                    self.sel_moved |= had;
+                    let doc = self.session.level().expect("an active level").doc;
+                    self.sel_moved |= self.session.show(doc, want, true);
                     self.tool = Tool::Idle;
                     self.scene_dirty = true;
                 }
                 debug_assert_eq!(self.active().map(|(_, v)| v), Some(want));
             }
             Cmd::CellToggle => {
-                let a = self.session.active;
-                if let Some(t) = self.session.tabs.get_mut(a) {
-                    t.cell = !t.cell;
+                if let Some(t) = self.session.tab_view_mut() {
+                    *t.cell = !*t.cell;
                 }
             }
             Cmd::CellSet => {
@@ -2315,9 +2305,8 @@ impl Editor {
                 };
                 self.commit_docs(reqs, h, label, ops);
                 self.page.sel = Some(row);
-                let tab = self.session.active;
-                if let Some(t) = self.session.tabs.get_mut(tab) {
-                    t.docs = true;
+                if let Some(t) = self.session.tab_view_mut() {
+                    *t.docs = true;
                 }
                 if cmd == Cmd::DocsAddVar {
                     self.focus_next = Some(format!("docs.b.{row}.expr"));
@@ -2511,13 +2500,8 @@ impl Editor {
         self.commit(reqs, h, label, ops);
     }
 
-    fn set_selection(&mut self, mut sel: Vec<ObjKey>) {
-        sel.sort_unstable();
-        sel.dedup();
-        if let Some(l) = self.session.level_mut()
-            && l.sel != sel
-        {
-            l.sel = sel;
+    fn set_selection(&mut self, sel: Vec<ObjKey>) {
+        if self.session.select(sel) {
             self.sel_changed = true;
             self.sel_moved = true;
         }
@@ -2612,9 +2596,9 @@ impl Editor {
     }
 
     fn switch_tab(&mut self, i: usize) {
-        assert!(i < self.session.tabs.len());
+        assert!(i < self.session.tabs().len());
         self.tool = Tool::Idle;
-        self.session.active = i;
+        self.session.switch_tab(i);
         self.scene_dirty = true;
     }
 
@@ -2695,7 +2679,7 @@ impl Editor {
     }
 
     fn close_tab(&mut self) {
-        let Some(tab) = self.session.tabs.get(self.session.active) else {
+        let Some(tab) = self.session.tabs().get(self.session.active()) else {
             return;
         };
         let dirty = tab
@@ -2709,14 +2693,9 @@ impl Editor {
             return;
         }
         self.confirm = None;
-        self.session.tabs.remove(self.session.active);
-        if self.session.tabs.is_empty() {
-            match self.session.create(FileKind::Shcomp) {
-                Ok(d) => self.session.open_tab(d, View::Schematic),
-                Err(e) => self.session.say(e),
-            }
+        if let Err(e) = self.session.close_active_tab() {
+            self.session.say(e);
         }
-        self.session.active = self.session.active.min(self.session.tabs.len() - 1);
         self.tool = Tool::Idle;
         self.scene_dirty = true;
     }
@@ -4426,7 +4405,7 @@ impl Editor {
         let mut t = String::with_capacity(1024);
         let mut graphs = Vec::new();
         let s = &self.session;
-        for (i, tab) in s.tabs.iter().enumerate() {
+        for (i, tab) in s.tabs().iter().enumerate() {
             let l = tab.stack.last().expect("tabs are never empty");
             let mut name = match &tab.text {
                 Some(v) => v.title.clone(),
@@ -4440,7 +4419,7 @@ impl Editor {
             if tab.text.is_none() && s.project.is_dirty(l.doc) {
                 name.push('*');
             }
-            let checked = u8::from(i == s.active);
+            let checked = u8::from(i == s.active());
             if i == 0 {
                 let _ = writeln!(t, "set tab.0 label {}", q(&name));
                 let _ = writeln!(t, "set tab.0 checked {checked}");
@@ -4559,7 +4538,7 @@ impl Editor {
                     let _ = writeln!(t, "set {id} style {style}");
                     let _ = writeln!(t, "set {id} disabled {}", u8::from(!has));
                 }
-                let tab = s.tabs.get(s.active);
+                let tab = s.tabs().get(s.active());
                 for (id, on) in [
                     ("switch.docs", tab.is_some_and(|tab| tab.docs)),
                     ("switch.cell", tab.is_some_and(|tab| tab.cell)),
@@ -4611,7 +4590,7 @@ impl Editor {
             t.push_str(&block.1);
         }
         // The cell settings panel: the active cell's header, pins, params and impls.
-        let shown = s.text_view().is_none() && s.tabs.get(s.active).is_some_and(|tab| tab.cell);
+        let shown = s.text_view().is_none() && s.tabs().get(s.active()).is_some_and(|tab| tab.cell);
         match self
             .active()
             .filter(|_| shown)

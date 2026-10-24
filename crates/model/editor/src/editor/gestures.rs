@@ -108,13 +108,8 @@ impl Editor {
 
     /// Replaces the active level's partial wire selection with `ends` (rows of other tables
     /// dropped, sorted, distinct).
-    pub(super) fn set_partial(&mut self, mut ends: Vec<(ObjKey, Pt)>) {
-        ends.retain(|e| e.0.table == TableId::Wires);
-        ends.sort_unstable();
-        ends.dedup();
-        if let Some(l) = self.session.level_mut() {
-            l.ends = ends;
-        }
+    pub(super) fn set_partial(&mut self, ends: Vec<(ObjKey, Pt)>) {
+        self.session.set_ends(ends);
         debug_assert!(self.partial_ends().windows(2).all(|w| w[0] < w[1]));
     }
 

@@ -137,6 +137,7 @@ Handles are `u32` index + `u32` generation; files store ids, never handles (D9).
 - Same inputs → byte-identical saves and netlists on all four platforms (D32, D37).
 - Plugins never hold a handle across deliveries without a generation check; a stale handle is a declared error, never a crash.
 - Only `render` talks to the GPU and the window; only `cli` (`platform`, `pack`), `editor` (through `platform`) and `app` talk to the OS; only `config` touches the Lua state.
+- Tabs and hierarchy levels (selection, partial wire ends, camera, the shown document) have one writer, `Session`: `level_mut`, `tabs` and `active` are private, and the editor goes through `select`, `set_ends`, `set_camera`, `show`, `switch_tab`, `close_active_tab`, `tab_view_mut`, `text_view_mut`.
 - The status line has one writer, `Session` (`say`, `note`, `take_status`; capped at `STATUS_MAX`); everything else reads `Session::status`.
 - Every core command has exactly one dispatch arm: `Editor::run` and `Editor::parity` each list the other's commands explicitly (no `_` arm), so a new `Cmd` is a compile error in both until it is placed.
 - The editor never paints: `app` reads it through `Editor::picture` and informs it only through `Editor::painted` and `Editor::rastered`.
