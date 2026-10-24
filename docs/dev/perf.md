@@ -544,6 +544,81 @@ What bounds the rest:
   topological order) rebuilds the graph (~1.3 ms at 100k), as do cycles; appended dependency lists
   past 4× the built edges rebuild once to compact.
 
+## Frame pacing 2026-10
+
+Step 0 of [research/render-backend.md](research/render-backend.md) § 5 (migration plan) and
+recommendation 1 of [research/xschem-responsiveness.md](research/xschem-responsiveness.md):
+draw from the newest input. Two commits in `crates/view/render/src/window.rs`: the frame log
+(`render: frame log stamps the newest input and counts updates per frame`) and the loop
+(`render: draw from the newest input: update runs at the granted redraw`).
+
+### The loop's order
+
+Before: `about_to_wait` answered every event batch at once, `Editor::update` then
+`request_redraw`; winit held the `RedrawRequested` until the compositor's frame callback for
+the previous present arrived; `render` then painted whatever the editor held. After: an input
+event only asks for a redraw (`window::pace`: input → `Redraw`); `Editor::update` runs at the
+top of `render`, when the redraw is granted, once over every event queued until then; a tick (a
+`wake_ms` deadline, a `Waker` post) still updates at once in `about_to_wait` (`Update`), since a
+hidden window is granted no redraw and the run it polls must go on; nothing pending sleeps
+(`Sleep`, idle CPU 0% unchanged; `pacing_rule` in `window.rs` is the headless oracle).
+`desired_maximum_frame_latency` stays 1 (measured below).
+
+What the measurement found the old order doing, and the new one fixes:
+
+- An input that arrived in the same dispatch as the frame callback was painted one frame late:
+  the present ran before its update (110 of 946 frames, 12%, at ~6 ms keys; 13 of 817 at ~16 ms
+  keys). The late frame costs one callback period: 23–32 ms on the research's 59.95 Hz output
+  with callbacks at 31–44 Hz, 4.2 ms at 240 Hz. The first frame log charged such an input to
+  the frame it missed, which is why the log now stamps consumed input only.
+- One update ran per event. Real pointer motion over the window gave 3 updates per frame
+  (p50) and 8 at most on the old build at 240 Hz; the new order runs one (its p95 of 2 is a
+  tick's update with queued input riding along).
+
+What it does not change: a frame already showed the newest input whose update had run before
+the grant. The research's 20–25 ms p50 was the *oldest* input's wait, the coalescing span at
+8 ms inputs, not the shown input's lag.
+
+### Method
+
+`SCHEMIFY_FRAME_LOG=1 WAYLAND_DEBUG=1 WGPU_ADAPTER_NAME=NVIDIA nice -n 19 schemify-gui --clean
+edit big10k.shcomp` (the perf schematic at 10k objects, `perf.rs` `schematic(10_000)`),
+1280×800, RTX 4060, Vulkan, mailbox, release build. 1600 arrow keys in blocks of 20 Left and 20
+Right (`view.pan_left`/`right`) typed through the compositor by `wtype -k Left -s 1 …` (the
+virtual-keyboard protocol; ~6 ms apart, wtype's floor), about 10 s a run. Each `frame:` line
+gives oldest- and newest-input-to-present, the updates that consumed input since the last
+present and the frame period; `WAYLAND_DEBUG` names the `wl_output` the surface entered and
+its mode. Scripts: the session scratchpad's `pace-run.sh` and `pace-stats.py`. The machine was
+in use (load 2–5) and the monitors changed during the session: DP-4 from 59.95 Hz to 165 Hz,
+eDP-1 at 240 Hz; every run with a named output landed on eDP-1 at 240 Hz. The research's
+20–53 ms figures were taken at 59.95 Hz with callbacks at 31–44 Hz, synthetic 8 ms events
+and 100k objects, so they are not directly comparable with the rows below.
+
+### Numbers (ms, p50 / p95 / p99 / max; updates = updates with input per presented frame)
+
+| Run | Output | Frames | Oldest → present | Newest → present | Updates p50 / p95 / max | Period p50 |
+|---|---|---|---|---|---|---|
+| before, keys at ~16 ms | not logged (43.6 frames/s for 64 keys/s: the 59.95 Hz output) | 817 | 7.12 / 17.46 / 19.91 / 24.20 | 5.22 / 15.79 / 18.69 / 23.47 | 1 / 2 / 2 | — |
+| before | not logged | 994 | 4.46 / 9.36 / 13.41 / 21.48 | 4.30 / 7.82 / 11.75 / 21.48 | 1 / 2 / 3 | 4.64 |
+| before, 2nd | eDP-1 240 Hz | 980 | 6.34 / 11.10 / 13.88 / 33.43 | 5.39 / 9.87 / 12.27 / 33.43 | 1 / 2 / 7 | 8.33 |
+| after, latency 1 | not logged | 983 | 5.55 / 11.31 / 14.33 / 27.10 | 4.82 / 9.85 / 11.84 / 27.10 | 1 / 2 / 2 | 6.81 |
+| after, latency 1, 2nd | eDP-1 240 Hz | 459 (one 0.5 s stall) | 7.47 / 10.48 / 13.24 / 30.01 | 4.45 / 8.44 / 9.89 / 30.01 | 1 / 2 / 2 | 8.37 |
+| after, latency 2 | eDP-1 240 Hz | 1241 | 6.18 / 11.74 / 15.59 / 54.34 | 5.00 / 9.65 / 12.28 / 44.41 | 1 / 2 / 2 | 7.65 |
+
+Reading:
+
+- At 240 Hz, before and after are within run-to-run noise: the newest input's p50 is 4.3–5.4 ms
+  before and 4.5–5.0 after, its p95 7.8–9.9 against 8.4–9.9. The callback period is 4.2 ms, so
+  the frame-late input costs about 0.5 ms on average here; the gain is in the 60 Hz case the
+  research measured (one 23–32 ms period for 12% of frames) and in CPU (one update per frame).
+- Frame latency 1 against 2: latency 2 raised the p50 (4.45 → 5.00) and the p95 (8.44 → 9.65),
+  within noise, and lowered nothing. In the new order the acquire follows the callback, when
+  the compositor has released an image, so a spare image buys nothing. 1 stays.
+- The refresh rate alone: the research's oldest-input p50 20–25 / p95 46–53 ms at 59.95 Hz
+  against 4.5–6.3 / 9.4–11.1 at 240 Hz here (different input and scene, same build order): the
+  callback period went from 23–32 ms to 4.2 ms. The first row, typed before the monitors
+  changed, shows the 59.95 Hz output at 16 ms keys: oldest 7.1 / 17.5, newest 5.2 / 15.8.
+
 ## Binary size
 
 D39 (amended 2026-10-11): the headless core `schemify` ≤ 2 MB, the editor `schemify-gui` ≤

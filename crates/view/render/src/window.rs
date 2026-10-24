@@ -1,7 +1,12 @@
 //! Window, event loop and GPU surface (winit + wgpu via vello), native and web from one code
-//! path. Redraw is event-driven: nothing runs while idle (D39). An app with background work
-//! (a simulation, a child process, a plugin timer) asks for a tick through [`App::wake_ms`];
-//! the loop then sleeps until that deadline or the next input, never busy-polls.
+//! path. Redraw is event-driven: nothing runs while idle (D39). Input is paced by the
+//! compositor ([`pace`]): an event asks for a redraw, and [`App::update`] runs when the
+//! `RedrawRequested` is granted (on Wayland, after the previous frame's callback), once over
+//! every event queued until then, so a frame shows the newest input and one update serves
+//! one frame. An app with background work (a simulation, a child process, a plugin timer)
+//! asks for a tick through [`App::wake_ms`]; a tick updates at once, since a hidden window
+//! is granted no redraw and the run it polls must go on. The loop then sleeps until that
+//! deadline or the next input, never busy-polls.
 
 use std::sync::Arc;
 
@@ -23,8 +28,9 @@ use crate::painter::{Painter, ScenePainter};
 
 /// What the application provides to [`run`]. Static dispatch: `run` is generic over it.
 pub trait App {
-    /// Consumes one batch of input (possibly empty, e.g. after a resize) for a viewport in
-    /// logical pixels; returns true when the picture changed and a frame must be drawn.
+    /// Consumes one batch of input (possibly empty: a tick, a resize) for a viewport in
+    /// logical pixels; returns true when the picture changed and a frame must be drawn. Called
+    /// once per granted redraw with every event queued until then, and once per tick.
     fn update(&mut self, events: &InputEvents, viewport: (f32, f32)) -> bool;
     /// Encodes one frame.
     fn paint<P: Painter>(&mut self, p: &mut P, viewport: (f32, f32));
@@ -348,7 +354,42 @@ impl<A: App> Shell<A> {
         logical(size.width, size.height, self.scale)
     }
 
+    /// One [`App::update`] over the queued input (a tick when there is none); keeps the IME
+    /// area in step and marks the accessibility tree stale when the picture changed. Returns
+    /// whether the picture changed.
+    fn update(&mut self) -> bool {
+        let viewport = self.viewport();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some((oldest, newest)) = self.queued.take() {
+            self.shown = Some((self.shown.map_or(oldest, |s| s.0), newest));
+            self.updates += 1;
+        }
+        let changed = self.app.update(&self.events, viewport);
+        self.events.clear();
+        if changed {
+            self.access_dirty = true;
+            let ime = self.app.ime_area();
+            if let (Some(a), Some(w)) = (ime, &self.window)
+                && self.ime != ime
+            {
+                w.set_ime_cursor_area(LogicalPosition::new(a.0, a.1), LogicalSize::new(a.2, a.3));
+            }
+            self.ime = ime;
+        }
+        changed
+    }
+
     fn render(&mut self) {
+        // The granted redraw answers every input queued until now (`pace`). The frame is
+        // presented even when that input changed nothing (a modifier press): winit's own
+        // redraws (an expose, a resize) cannot be told from the ones asked for input.
+        if !self.events.is_empty() {
+            self.update();
+        }
+        debug_assert!(
+            self.events.is_empty(),
+            "the frame answers every queued event"
+        );
         #[cfg(target_arch = "wasm32")]
         if self.gpu.is_none() {
             if let (Some(w), Some(cpu)) = (&self.window, &mut self.cpu) {
@@ -530,6 +571,29 @@ fn named_key(n: NamedKey) -> Option<Key> {
     })
 }
 
+/// What the loop does with what arrived since it last slept (D39 pacing).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pace {
+    /// Nothing pending: sleep until input or the next deadline.
+    Sleep,
+    /// Input only: ask for a redraw and update when it is granted, so one update answers
+    /// every event queued until the compositor lets the frame be drawn.
+    Redraw,
+    /// A tick is due: update now (queued input rides along); a changed picture then asks for
+    /// a redraw.
+    Update,
+}
+
+/// The pacing rule: a due tick updates at once, input alone waits for the granted redraw,
+/// nothing pending sleeps.
+fn pace(tick: bool, input: bool) -> Pace {
+    match (tick, input) {
+        (true, _) => Pace::Update,
+        (false, true) => Pace::Redraw,
+        (false, false) => Pace::Sleep,
+    }
+}
+
 fn mods_of(m: ModifiersState) -> u8 {
     let mut out = 0;
     if m.control_key() {
@@ -613,8 +677,7 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
             });
         }
         self.window = Some(window);
-        let viewport = self.viewport();
-        self.app.update(&InputEvents::default(), viewport);
+        self.update();
         if let Some(w) = &self.window {
             w.request_redraw();
         }
@@ -672,8 +735,7 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(_) => {
-                let viewport = self.viewport();
-                self.app.update(&InputEvents::default(), viewport);
+                self.update();
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }
@@ -751,35 +813,25 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if !self.events.is_empty() || std::mem::take(&mut self.tick) {
-            let viewport = self.viewport();
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some((oldest, newest)) = self.queued.take() {
-                self.shown = Some((self.shown.map_or(oldest, |s| s.0), newest));
-                self.updates += 1;
+        match pace(std::mem::take(&mut self.tick), !self.events.is_empty()) {
+            Pace::Update => {
+                if self.update() {
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                } else {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        self.shown = None; // no frame answers this batch
+                    }
+                }
             }
-            if self.app.update(&self.events, viewport) {
+            Pace::Redraw => {
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }
-                self.access_dirty = true;
-                let ime = self.app.ime_area();
-                if let (Some(a), Some(w)) = (ime, &self.window)
-                    && self.ime != ime
-                {
-                    w.set_ime_cursor_area(
-                        LogicalPosition::new(a.0, a.1),
-                        LogicalSize::new(a.2, a.3),
-                    );
-                }
-                self.ime = ime;
-            } else {
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    self.shown = None; // no frame answers this batch
-                }
             }
-            self.events.clear();
+            Pace::Sleep => {}
         }
         if self.app.exit_requested() {
             event_loop.exit();
@@ -797,5 +849,22 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
             None => ControlFlow::Wait,
         };
         event_loop.set_control_flow(flow);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Pace, pace};
+
+    /// D39: nothing pending sleeps; input alone never updates before the granted redraw, so
+    /// events during a frame in flight get one update at the next grant, not one each; a
+    /// deadline alone updates once, input or not.
+    #[test]
+    fn pacing_rule() {
+        assert_eq!(pace(false, false), Pace::Sleep);
+        assert_eq!(pace(false, true), Pace::Redraw);
+        assert_ne!(pace(false, true), Pace::Update);
+        assert_eq!(pace(true, false), Pace::Update);
+        assert_eq!(pace(true, true), Pace::Update);
     }
 }
