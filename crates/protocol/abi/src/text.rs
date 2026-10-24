@@ -249,7 +249,7 @@ pub fn push_value(out: &mut String, v: &str) {
 ///
 /// If `x` is NaN or infinite (never an expression value).
 pub fn push_num(out: &mut String, x: f64) {
-    // ponytail: a copy of expr's `fmt_num` so guests need not link expr; the abi test
+    // ponytail: a copy of expr's `write_num` so guests need not link expr; the abi test
     // `push_num_matches_expr` is the differential that keeps the two identical.
     assert!(x.is_finite(), "canonical text of a non-finite number");
     let a = x.abs();
