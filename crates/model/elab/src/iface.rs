@@ -73,7 +73,7 @@ pub struct Iface {
     pub row: u32,
     /// Whether the full document was available (schematic, vars, bodies), not only the
     /// indexed interface.
-    pub open: bool,
+    pub(crate) open: bool,
 
     /// Pin name (may be a bus).
     pub pin_name: Vec<Name>,
@@ -84,13 +84,13 @@ pub struct Iface {
     /// Direction.
     pub pin_dir: Vec<PinDir>,
     /// Signal domain.
-    pub pin_domain: Vec<Domain>,
+    pub(crate) pin_domain: Vec<Domain>,
     /// Default net of an inherited pin (D29), or [`Name::NONE`] for ordinary pins.
     pub pin_inherit: Vec<Name>,
     /// CSR offsets (`pins + 1`) into [`Iface::pin_bits`].
-    pub pin_bit_start: Vec<u32>,
+    pub(crate) pin_bit_start: Vec<u32>,
     /// Bit names of each pin name, in written order.
-    pub pin_bits: Vec<Name>,
+    pub(crate) pin_bits: Vec<Name>,
     /// Offset of each ordinary pin's first bit among the ordinary pin bits; `u32::MAX`
     /// for inherited pins. An alias pin shares its target's offset.
     pub pin_off: Vec<u32>,
@@ -105,24 +105,24 @@ pub struct Iface {
     /// Param name.
     pub param_name: Vec<Name>,
     /// Param kind.
-    pub param_kind: Vec<ParamKind>,
+    pub(crate) param_kind: Vec<ParamKind>,
     /// Whether the param is `computed` (then `param_prog` is the computed expression).
-    pub param_computed: Vec<bool>,
+    pub(crate) param_computed: Vec<bool>,
     /// `choices` as a CSR (offsets `params + 1`) into [`Iface::choices`].
-    pub choice_start: Vec<u32>,
+    pub(crate) choice_start: Vec<u32>,
     /// Choice texts.
-    pub choices: Vec<Name>,
+    pub(crate) choices: Vec<Name>,
     pub(crate) param_prog: Vec<u32>,
     pub(crate) param_bound: Vec<[u32; BOUNDS]>,
     /// Whether the param is `vderived true`: a value only Virtuoso's callbacks compute
     /// (no rule explains it), carried by an instance's `cached` attribute (D20 as amended
     /// 2026-10-15) and stale once the inputs in [`Iface::vinputs`] change.
-    pub param_vderived: Vec<bool>,
+    pub(crate) param_vderived: Vec<bool>,
     /// The params a `vderived` value depends on (header `vinputs`), in digest order.
-    pub vinputs: Vec<Name>,
+    pub(crate) vinputs: Vec<Name>,
 
     /// Var names (rank 4; present only when the document is open).
-    pub var_name: Vec<Name>,
+    pub(crate) var_name: Vec<Name>,
     pub(crate) var_prog: Vec<u32>,
 
     /// Impl name.
@@ -140,12 +140,12 @@ pub struct Iface {
     /// `format` template text.
     pub fmt_template: Vec<Name>,
     /// `ignore` attr of each impl (format spec §4: same meaning as the instance attr).
-    pub impl_ignore: Vec<Ignore>,
+    pub(crate) impl_ignore: Vec<Ignore>,
     /// Index of the default impl (`default` header attr, else the only impl), or
     /// `u32::MAX` when the cell has none.
-    pub default_impl: u32,
+    pub(crate) default_impl: u32,
     /// Bus pin names that expand to more than [`netexpr::WIDTH_MAX`] bits.
-    pub too_wide: Vec<Name>,
+    pub(crate) too_wide: Vec<Name>,
 
     pub(crate) progs: Progs,
 }

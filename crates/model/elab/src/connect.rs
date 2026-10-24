@@ -77,10 +77,10 @@ pub struct CellNets {
     pub net_pins: Vec<u32>,
     /// Offset of each component's bits in [`CellNets::net_bits`]; it has
     /// [`CellNets::net_width`] of them.
-    pub net_bit_start: Vec<u32>,
+    pub(crate) net_bit_start: Vec<u32>,
     /// Bit net of each component bit (patched components append theirs: unreferenced
     /// entries are garbage until the next full build).
-    pub net_bits: Vec<u32>,
+    pub(crate) net_bits: Vec<u32>,
     /// Component of each wire row.
     pub wire_net: Vec<u32>,
     /// Component of each label row.
@@ -88,10 +88,10 @@ pub struct CellNets {
     /// Component of each port row.
     pub port_net: Vec<u32>,
     /// CSR offsets (`instances + 1`) into [`CellNets::pin_net`].
-    pub pin_start: Vec<u32>,
+    pub(crate) pin_start: Vec<u32>,
     /// Component of each ordinary pin of each instance (interface pin order, inherited
     /// pins skipped); unresolved instances have none.
-    pub pin_net: Vec<u32>,
+    pub(crate) pin_net: Vec<u32>,
 
     /// Emitted bit name (`d[3]`, `vdd!`, `net_0abcde`).
     pub bit_name: Vec<Name>,
@@ -103,9 +103,9 @@ pub struct CellNets {
     pub by_name: Vec<(Name, u32)>,
 
     /// CSR offsets (`instances + 1`) into [`CellNets::elem_name`].
-    pub elem_start: Vec<u32>,
+    pub(crate) elem_start: Vec<u32>,
     /// Element names of each instance (`X1[3]` … for `X1[3:0]`, else the name).
-    pub elem_name: Vec<Name>,
+    pub(crate) elem_name: Vec<Name>,
     /// Offset of each instance's connections in [`CellNets::conns`]; element `k`, pin
     /// bit `b` (ordinary pins, `Iface::pin_off`) is at `start + k * bits_total + b`.
     pub conn_start: Vec<u32>,
@@ -115,17 +115,17 @@ pub struct CellNets {
     pub ignore: Vec<Ignore>,
 
     /// `inherit <pin> <net>` overrides: owning instance row.
-    pub inh_inst: Vec<u32>,
+    pub(crate) inh_inst: Vec<u32>,
     /// Overridden pin name.
-    pub inh_pin: Vec<Name>,
+    pub(crate) inh_pin: Vec<Name>,
     /// CSR offsets (`overrides + 1`) into [`CellNets::inh_bits`].
-    pub inh_bit_start: Vec<u32>,
+    pub(crate) inh_bit_start: Vec<u32>,
     /// Bit nets of the override net, in written order.
     pub inh_bits: Vec<u32>,
 
     /// CSR offsets (`own pins + 1`) into [`CellNets::port_bits`]: the bit nets each pin
     /// of the cell's own interface binds to (ordinary and inherited pins).
-    pub port_bit_start: Vec<u32>,
+    pub(crate) port_bit_start: Vec<u32>,
     /// Bit nets of the own pins, in pin bit order.
     pub port_bits: Vec<u32>,
 }

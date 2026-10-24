@@ -85,7 +85,7 @@ fn revert(p: &mut Project, h: DocHandle, rng: &mut Mix) -> Option<Vec<Op>> {
 /// Everything comparable between two states, as text.
 fn snapshot(st: &CellState) -> (Vec<String>, Vec<bool>, Vec<String>, Vec<String>) {
     let vals = st.graph.vals.iter().map(|v| format!("{v:?}")).collect();
-    let elems = (0..st.nets.elem_start.len() - 1).map(|i| {
+    let elems = (0..st.inst_iface.len()).map(|i| {
         let names: Vec<&str> = st.nets.elems(i).iter().map(|&e| st.names.get(e)).collect();
         format!("elems {i} {names:?}")
     });
