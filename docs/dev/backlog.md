@@ -45,7 +45,7 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - Waves dock: keyboard focus follows the pointer; the divider position is not kept across sessions.
 - Netlist text tab: a prose code block capped at 2^14 lines / 256 KiB (the file has everything); find lists matching lines, it does not scroll to them in the full text.
 - Highlight keys of nets the name map lacks fall back to the level path (no cross-hierarchy match then). OP voltage marks of a bus net use its first bit.
-- The OTA fixture has no bench; the GUI run tests and `docs/screenshots/simulate.png` use `crates/app/tests/fixtures/rc`.
+- The OTA fixture has no bench; the GUI run tests and `docs/screenshots/simulate.png` use `crates/view/app/tests/fixtures/rc`.
 
 ## Decisions pending (user)
 
@@ -130,7 +130,7 @@ objects (13–14 ms, outside that budget; the goal set for this work was ≤ 1 m
 
 ## Parity: intentionally dropped
 
-xschem menu items and keys with no meaning in Schemify, removed from the default UI (`ui/default-plugin`) rather than left unresolved. The parity ratchet (`crates/app/tests/parity.rs`) holds every remaining name to an implementation; `tests/shell.rs` lists the dropped inventory chords.
+xschem menu items and keys with no meaning in Schemify, removed from the default UI (`ui/default-plugin`) rather than left unresolved. The parity ratchet (`crates/view/app/tests/parity.rs`) holds every remaining name to an implementation; `tests/shell.rs` lists the dropped inventory chords.
 
 - File → Start new Xschem process (`x`), Alt+Shift+E / Alt+Shift+I "in a new process": one process with tabs; `x` and the Alt+Shift keys open a new tab instead.
 - Options → Debug mode: logs go to the status line and stderr; there is no Tcl debug level.

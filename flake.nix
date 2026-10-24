@@ -173,7 +173,7 @@
           installPhase = ''
             runHook preInstall
             mkdir -p $out
-            cp crates/app/web/index.html $out/
+            cp crates/view/app/web/index.html $out/
             wasm-bindgen --target web --no-typescript --out-name schemify --out-dir $out/pkg \
               target/wasm32-unknown-unknown/release/schemify-gui.wasm
             runHook postInstall

@@ -5,7 +5,7 @@ Implements D27's "one JSON-RPC command stream (stdio/socket) over the same comma
 - **`schemify rpc [--listen <socket>]`**, the headless core: no editor, no window. Its methods are the CLI's commands and a stateless document edit (§3.1).
 - **`schemify-gui --rpc <socket>`** (also through `schemify edit … --rpc <socket>`): the running editor. Its methods are the editor's command table: every core command and every plugin command, exactly what menus, keys, Lua keymaps and plugins name (§3.2).
 
-Implementation: `crates/cli/src/rpc.rs` (codec, framing, sockets, the headless server), `crates/editor/src/rpc.rs` (the editor's methods) and `crates/app/src/serve.rs` (its socket server). No JSON dependency: the codec is a few hundred lines with its own oracles (§8).
+Implementation: `crates/model/cli/src/rpc.rs` (codec, framing, sockets, the headless server), `crates/model/editor/src/rpc.rs` (the editor's methods) and `crates/view/app/src/serve.rs` (its socket server). No JSON dependency: the codec is a few hundred lines with its own oracles (§8).
 
 ## 1. Transport and framing
 
@@ -92,5 +92,5 @@ D27's "MCP = thin plugin": a Model Context Protocol server on stdio, so an agent
 
 - The codec: `parse(write(v)) == v` for generated values (property); RFC 8259 acceptance and rejection cases; any bytes decode to a request or a declared `-32700`/`-32600` response, never a panic (property, and the `cli/fuzz` `rpc_decode` target, nightly).
 - Headless: every method of `rpc.methods` is reachable; CLI methods return the CLI's own exit code and output for the same arguments; `edit` changes exactly the edited attribute (`schemify diff` as oracle) and refuses invalid ops without touching the file; garbage lines do not stop the stream; the Unix-socket listener answers like stdio.
-- Editor: every command `rpc.methods` lists (core and plugin, suffix arguments) is queued, unknown names and bad params are declared errors; a client on a socket drives the frame spine (select all, delete) and gets its answers and the `doc_changed` notification; each answer carries its own command's message (the one the status line shows after it, `""` for a silent command, never the previous command's), including a plugin command that runs out of fuel, on the frame thread and on a worker (`crates/app/tests/rpc.rs`).
+- Editor: every command `rpc.methods` lists (core and plugin, suffix arguments) is queued, unknown names and bad params are declared errors; a client on a socket drives the frame spine (select all, delete) and gets its answers and the `doc_changed` notification; each answer carries its own command's message (the one the status line shows after it, `""` for a silent command, never the previous command's), including a plugin command that runs out of fuel, on the frame thread and on a worker (`crates/view/app/tests/rpc.rs`).
 - MCP: the lifecycle (version negotiation, the initialized notification unanswered), `tools/list` equals the headless methods minus `rpc.methods`, a failing tool is a result with `isError`, unknown tools and methods are errors.

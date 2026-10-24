@@ -124,10 +124,10 @@ jobs:
           tool: wasm-bindgen@${{ steps.wb.outputs.version }}
       - name: package
         run: |
-          wasm-bindgen --target web --no-typescript --out-name schemify --out-dir crates/app/web/pkg \
+          wasm-bindgen --target web --no-typescript --out-name schemify --out-dir crates/view/app/web/pkg \
             target/wasm32-unknown-unknown/release/schemify-gui.wasm
           dir="schemify-${GITHUB_REF_NAME//\//-}-web"
-          cp -R crates/app/web "$dir"
+          cp -R crates/view/app/web "$dir"
           rm -f "$dir/.gitignore"
           tar czf "$dir.tar.gz" "$dir"
       - uses: actions/upload-artifact@v4

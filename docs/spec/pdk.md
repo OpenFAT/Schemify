@@ -373,14 +373,14 @@ are listed, not changed. One transaction (one undo), shown in the visual diff be
     recipe coherence, `local` path refusals. `src/install.rs`: the step list of every source
     kind, the corner library, the generated cells (canonical, the core pins and drawing, the
     CLI fixtures), the OSDI card rewrite and its refusals, sha256 against the FIPS vectors.
-  - `crates/cli/tests/tech.rs`: the same `tech:` inverter netlisted under the shipped sky130,
+  - `crates/model/cli/tests/tech.rs`: the same `tech:` inverter netlisted under the shipped sky130,
     gf180mcu, freepdk45 and asap7 maps produces each PDK's device lines with the mapped params
     (golden netlists; asap7 `nfin` from `w`, and its `pre_osdi`);
     negative: no `lib tech`, unknown class, unknown flavor.
-  - `crates/run/tests/runner.rs` `tech_cells_compile_their_pdk_cells_sources`: §9.5.
-  - `crates/doc/tests/tech.rs`: derived cells (pins, params, impls, drawing, `tech_source`), every E001 reason,
+  - `crates/model/run/tests/runner.rs` `tech_cells_compile_their_pdk_cells_sources`: §9.5.
+  - `crates/model/doc/tests/tech.rs`: derived cells (pins, params, impls, drawing, `tech_source`), every E001 reason,
     `reload_manifest` keeps open documents and refuses to orphan one.
-  - `crates/app/tests/pdk.rs`: `project.reload` resolves a new `lib` and a new `lib tech map`
+  - `crates/view/app/tests/pdk.rs`: `project.reload` resolves a new `lib` and a new `lib tech map`
     without a restart, switches technology, refuses to orphan an open document.
-  - `crates/plugin` (`fs_remove_is_scoped_to_the_tool_directory`, the capability proptest) and
-    `crates/app` (`fs_remove_removes_trees_and_files`): `fs_remove` refusals and execution.
+  - `crates/plugins/plugin` (`fs_remove_is_scoped_to_the_tool_directory`, the capability proptest) and
+    `crates/view/app` (`fs_remove_removes_trees_and_files`): `fs_remove` refusals and execution.

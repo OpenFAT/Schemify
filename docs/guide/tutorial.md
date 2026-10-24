@@ -10,7 +10,7 @@ The examples live in the repository's test fixtures. Copy them so your edits do 
 
 ```sh
 mkdir -p ~/schemify-tour
-cp -r crates/app/tests/fixtures/inv crates/app/tests/fixtures/rc ~/schemify-tour/
+cp -r crates/view/app/tests/fixtures/inv crates/view/app/tests/fixtures/rc ~/schemify-tour/
 ```
 
 `~/schemify-tour/inv` is a project: a directory with a `schemify.project` file. It holds two cells and a small device library:

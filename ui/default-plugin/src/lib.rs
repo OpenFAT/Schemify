@@ -1,5 +1,5 @@
 //! The bundled default UI (D6): the xschem-parity shell built on the same ABI as any
-//! third-party plugin. The app embeds this module (`crates/editor/assets/default_ui.wasm`, rebuilt
+//! third-party plugin. The app embeds this module (`crates/model/editor/assets/default_ui.wasm`, rebuilt
 //! by `ui/build.sh`) and loads it first, so every later plugin overrides it (D8). Without
 //! it the core still runs: a blank window with the canvas.
 //!
@@ -30,7 +30,7 @@
 //!   removes `view.switch` in a text tab;
 //! - `cell.pane` with the `cell.bar` toolbar and the `cell.page` scroll node (the cell settings
 //!   panel, `view.cell`): the app removes `cell.pane` while hidden and adds its rows under
-//!   `cell.page` (`crates/editor/src/cell.rs`);
+//!   `cell.page` (`crates/model/editor/src/cell.rs`);
 //! - `dialog.enter_text` with `dialog.enter_text.title` / `.input` (command
 //!   `dialog.enter_text.ok`);
 //! - `dialog.choose` with `dialog.choose.title`, `.filter` (command `choose.filter`) and

@@ -4,7 +4,7 @@ Python stdlib only) and checks what the web spec promises end to end:
 
 0. pixels (web spec §7): when WebGPU is unusable (no adapter, or frames that never reach
    the page, as on CI's SwiftShader) the editor draws on the CPU, and the frame of the `inv`
-   project matches the native CPU golden `crates/app/tests/golden/editor_dark.png` (≤ 0.1%
+   project matches the native CPU golden `crates/view/app/tests/golden/editor_dark.png` (≤ 0.1%
    of pixels off by more than 2 levels); whichever painter draws, the page screenshot is
    within 5% of that golden (never blank);
 1. storage (web spec §2): the `inv` fixture, written into OPFS by the browser's own API,
@@ -33,8 +33,8 @@ import time
 import zlib
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-FIXTURE = os.path.join(REPO, "crates/app/tests/fixtures/inv")
-GOLDEN = os.path.join(REPO, "crates/app/tests/golden/editor_dark.png")
+FIXTURE = os.path.join(REPO, "crates/view/app/tests/fixtures/inv")
+GOLDEN = os.path.join(REPO, "crates/view/app/tests/golden/editor_dark.png")
 CPU_CANVAS = "schemify-cpu"  # render::cpu_view::ID
 
 

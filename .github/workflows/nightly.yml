@@ -35,10 +35,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { dir: crates/format, target: parse }
-          - { dir: crates/format, target: merge3 }
-          - { dir: crates/expr, target: compile }
-          - { dir: crates/cli, target: rpc_decode }
+          - { dir: crates/protocol/format, target: parse }
+          - { dir: crates/protocol/format, target: merge3 }
+          - { dir: crates/model/expr, target: compile }
+          - { dir: crates/model/cli, target: rpc_decode }
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -82,9 +82,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { dir: crates/format, target: parse }
-          - { dir: crates/format, target: merge3 }
-          - { dir: crates/expr, target: compile }
+          - { dir: crates/protocol/format, target: parse }
+          - { dir: crates/protocol/format, target: merge3 }
+          - { dir: crates/model/expr, target: compile }
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:

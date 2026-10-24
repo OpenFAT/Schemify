@@ -179,7 +179,7 @@ every row of a changed table), ~1.5 ms in the scene update, and the fingerprint 
 Goal: every interactive frame (pan, zoom, hover, select, drag, typing in a field, opening a
 menu) well under 1 ms of CPU at 100k objects, with no hitch. Measured on `gui-arch-audit`
 (`af27b3f6`), RTX 4060, load average 4–7 (other agents building), by
-`crates/app/tests/perf.rs` `frame_times_100k` (pan, zoom, select, edit) and the new
+`crates/view/app/tests/perf.rs` `frame_times_100k` (pan, zoom, select, edit) and the new
 `interactions_100k` (hover, select, drag, drop, menu, type). Per-step times came from
 temporary `Instant` laps around each spine step; the edit loop was also profiled with
 `perf record`.
@@ -233,7 +233,7 @@ encodes that scene per frame (tiles); the benchmark guards the fallback path.
 - **accesskit**: `access_tree` costs 0.01–0.02 ms and runs only when an assistive client is
   active (`update_if_active`). Not a cost.
 
-### Window path (`crates/render/src/window.rs`)
+### Window path (`crates/view/render/src/window.rs`)
 
 `PresentMode::AutoVsync`. Input is batched: `about_to_wait` runs one `update` per event batch
 and requests a redraw only when it returns true; ticks come only from `wake_ms`, so an idle
@@ -339,7 +339,7 @@ What bounds the rest:
 Goal: every edit frame (delete, undo, redo, the drop of a move, a property change, a wire drawn)
 under 1 ms of CPU at 100k objects, the ticks after it too, and no hitch on the first edit of a
 document. Measured on `main` `c61f0e85` (RTX 4060 host, no GPU columns: CPU only, load 6–8) by
-the new `edit_frames_100k` (`crates/app/tests/perf.rs`: a dozen frames of each kind on the
+the new `edit_frames_100k` (`crates/view/app/tests/perf.rs`: a dozen frames of each kind on the
 `interactions` fixture, zoomed in, each followed by the ticks the editor asks for). Per-step
 times came from temporary `Instant` laps around each spine step.
 
@@ -573,7 +573,7 @@ exactly to the totals.
 
 | Cut | Core | Editor | How |
 |---|---:|---:|---|
-| Split (D39): the core links no GPU, window, text-shaping, accessibility, LaTeX or plugin-host crate | (the editor half is gone) | — | `crates/cli/tests/deps.rs` checks the resolved graph for every target |
+| Split (D39): the core links no GPU, window, text-shaping, accessibility, LaTeX or plugin-host crate | (the editor half is gone) | — | `crates/model/cli/tests/deps.rs` checks the resolved graph for every target |
 | `rustfft` → own radix-2 + Bluestein FFT (`expr/src/fft.rs`, libm twiddles) | ≈ −661 K | ≈ −661 K | rustfft, transpose, strength_reduce, primal_check symbols |
 | Full Noto Sans → `NotoSans-UI.ttf` subset; KaTeX Main (already embedded) draws → ≤ ≥ | 0 | −1,428 K | file sizes 1,581,884 → 153,536 |
 | System-font fallback for glyphs outside the subset (fontique `system`, dlopen'ed fontconfig) | 0 | ≈ +65 K | fontique, fontconfig-sys symbols |

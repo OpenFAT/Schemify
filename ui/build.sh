@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the core's guest modules for wasm32-unknown-unknown: the host's test fixtures in
-# crates/plugin/tests/fixtures/ and the bundled default UI in crates/editor/assets/ (embedded by the
+# crates/plugins/plugin/tests/fixtures/ and the bundled default UI in crates/model/editor/assets/ (embedded by the
 # app with include_bytes!). Fails if a module reaches its size limit (200 KB). The optional
 # plugins build in their own repositories (docs/plugins/).
 #
@@ -17,8 +17,8 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/.." && pwd)"
-fixtures="$here/../crates/plugin/tests/fixtures"
-assets="$here/../crates/editor/assets"
+fixtures="$here/../crates/plugins/plugin/tests/fixtures"
+assets="$here/../crates/model/editor/assets"
 host="$(rustc -vV | sed -n 's/^host: //p')"
 pinned="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' "$here/Cargo.toml")"
 if ! rustc -V | grep -q "^rustc $pinned\(\.0\)\? "; then

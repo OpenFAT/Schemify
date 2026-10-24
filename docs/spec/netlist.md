@@ -134,7 +134,7 @@ Spectre: `subckt <name> (<ports>)` … `ends <name>`, instances `<name> (<nets>)
 
 ### 7.6 Emission decisions (amendments, WS3 `netlist`)
 
-Where §7.1–§7.5 left a choice open, `crates/netlist` decided as follows; these are normative.
+Where §7.1–§7.5 left a choice open, `crates/model/netlist` decided as follows; these are normative.
 
 1. **API.** `emit(&Elab, Dialect) -> Netlist { text, name_map }`. It never fails: the caller gates on violations (§8). A template that fails to render (`X0xx`, a param without a value `E008`, a lang without a default `E013`) becomes the comment line `* error in <name>: <message>` (`//` for spectre/verilog) and gets no name-map row; an unconnected pin bit (`E011`, `ignore open`) is written `?`. A template that renders nothing emits no line.
 2. **Header:** one comment line `* <top cell> (schemify <dialect>)` (`//` for spectre and verilog; spectre adds `simulator lang=spectre`). No dates, paths or versions, so output is byte-identical across runs and machines.
@@ -189,7 +189,7 @@ Violations are keyed by (code, cell, object id, instance path, param) and sorted
 
 ## 9. Elaboration decisions (amendments, WS2 `elab`)
 
-Where §1–§8 left a choice open, `crates/elab` decided as follows; these are normative.
+Where §1–§8 left a choice open, `crates/model/elab` decided as follows; these are normative.
 
 1. **Names connect.** Components carrying the same bit name are one net, in the cell and (for globals) everywhere. A component with names whose bit lists differ is `E003` (one row per extra name); names of different width on one component are `E011` and the narrower-ranked name is ignored.
 2. **Emitted bit name**, per merged net: global names first (`0`, `…!`, `global true`), then port names (and interface pins bound by name), then label and `inherit` names; bytewise smallest within the class. Unnamed: the §3 rule (`net_<id>` from an owned wire/label/port/noconn id, else `net_<inst>_<pin>`), with `[k]` (component bit `k`, from 0) appended for wider components. The component (render/plugin `Nets` row) is named by its best name expression (`d[3:0]`).

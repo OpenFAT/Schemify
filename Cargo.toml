@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "tools/*"]
+members = ["crates/*/*", "tools/*"]
 exclude = ["tools/fmtbench"]
 
 [workspace.package]
@@ -18,19 +18,22 @@ dbg_macro = "warn"
 todo = "warn"
 
 [workspace.dependencies]
-schemify-format = { path = "crates/format" }
-schemify-expr = { path = "crates/expr" }
-schemify-doc = { path = "crates/doc" }
-schemify-elab = { path = "crates/elab" }
-schemify-netlist = { path = "crates/netlist" }
-schemify-wave = { path = "crates/wave" }
-schemify-run = { path = "crates/run" }
-schemify-abi = { path = "crates/abi" }
-schemify-plugin = { path = "crates/plugin" }
+schemify-format = { path = "crates/protocol/format" }
+schemify-expr = { path = "crates/model/expr" }
+schemify-doc = { path = "crates/model/doc" }
+schemify-elab = { path = "crates/model/elab" }
+schemify-netlist = { path = "crates/model/netlist" }
+schemify-wave = { path = "crates/model/wave" }
+schemify-run = { path = "crates/model/run" }
+schemify-abi = { path = "crates/protocol/abi" }
+schemify-plugin = { path = "crates/plugins/plugin" }
 schemify-spicecmp = { path = "tools/spicecmp" }
-schemify-config = { path = "crates/config" }
-schemify-cli = { path = "crates/cli" }
-schemify-canvas = { path = "crates/canvas" }
+schemify-config = { path = "crates/model/config" }
+schemify-cli = { path = "crates/model/cli" }
+schemify-canvas = { path = "crates/model/canvas" }
+schemify-ui = { path = "crates/model/ui" }
+schemify-editor = { path = "crates/model/editor" }
+schemify-render = { path = "crates/view/render" }
 # third-party (justify additions in the PR, docs/dev/contributing.md rule 7)
 # Dev-only: the differential oracle of expr's own FFT (D39 size cut).
 rustfft = "6"
@@ -47,7 +50,7 @@ proptest = { version = "1", default-features = false, features = ["std"] }
 # since plugins are untrusted input; `portable-dispatch` instead of `auto-dispatch` saves
 # nothing (+4 KB) and runs a guest loop 3x slower.
 wasmi = { version = "2", default-features = false, features = ["std", "validate", "auto-dispatch", "deterministic"] }
-# GUI (WS5): only crates/ui and crates/render may use these (docs/dev/contributing.md rule 7)
+# GUI (WS5): only crates/model/ui and crates/view/render may use these (docs/dev/contributing.md rule 7)
 taffy = { version = "0.14", default-features = false, features = ["std", "taffy_tree", "flexbox"] }
 parley = { version = "0.12", default-features = false, features = ["std", "system"] }
 # Only to pick fontique's features: system fonts (fallback for glyphs outside the embedded

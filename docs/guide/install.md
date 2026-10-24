@@ -62,9 +62,9 @@ For a quick try without installing, `cargo run` builds and starts one program at
 For example, from the checkout:
 
 ```sh
-cargo run --release -p schemify-app -- crates/app/tests/fixtures/ota/ota.shcomp
-cargo run --release -p schemify-cli -- netlist crates/app/tests/fixtures/rc/tb.shbench
-cargo run --release -p schemify-cli -- run crates/app/tests/fixtures/rc/tb.shbench    # needs ngspice
+cargo run --release -p schemify-app -- crates/view/app/tests/fixtures/ota/ota.shcomp
+cargo run --release -p schemify-cli -- netlist crates/view/app/tests/fixtures/rc/tb.shbench
+cargo run --release -p schemify-cli -- run crates/view/app/tests/fixtures/rc/tb.shbench    # needs ngspice
 ```
 
 `cargo run -p schemify-cli -- edit ...` only works after `schemify-gui` has been built into the same `target/` directory (or is on your `PATH`); otherwise it stops with `cannot run schemify-gui`.
@@ -105,7 +105,7 @@ A binary you built with `cargo` outside `nix develop` cannot find the libraries 
 libs=$(nix build --no-link --print-out-paths nixpkgs#wayland nixpkgs#libxkbcommon nixpkgs#vulkan-loader \
        | sed 's|$|/lib|' | paste -sd:)
 export LD_LIBRARY_PATH="$libs:/run/opengl-driver/lib"
-target/release/schemify-gui crates/app/tests/fixtures/inv/top.shcomp
+target/release/schemify-gui crates/view/app/tests/fixtures/inv/top.shcomp
 ```
 
 The Nix package (`nix run`, `nix profile install`) does this for you.

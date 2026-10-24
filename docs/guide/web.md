@@ -14,18 +14,18 @@ grep -A1 '^name = "wasm-bindgen"$' Cargo.lock      # the version your CLI must h
 cargo install wasm-bindgen-cli --version <that version>
 
 cargo build --release --target wasm32-unknown-unknown -p schemify-app --bin schemify-gui
-wasm-bindgen --target web --no-typescript --out-name schemify --out-dir crates/app/web/pkg \
+wasm-bindgen --target web --no-typescript --out-name schemify --out-dir crates/view/app/web/pkg \
   target/wasm32-unknown-unknown/release/schemify-gui.wasm
 ```
 
-The bundle is now `crates/app/web/` (`index.html` plus `pkg/`).
+The bundle is now `crates/view/app/web/` (`index.html` plus `pkg/`).
 
 ## Serving it
 
 Any static file server works. The page needs no special headers:
 
 ```sh
-python3 -m http.server 8000 --bind 127.0.0.1 --directory crates/app/web
+python3 -m http.server 8000 --bind 127.0.0.1 --directory crates/view/app/web
 ```
 
 Open `http://127.0.0.1:8000/`. On another machine, serve it over HTTPS: browsers give file storage and the clipboard only to secure contexts (HTTPS, or `localhost` and `127.0.0.1`).
@@ -111,7 +111,7 @@ Until then, netlist in the browser (`n` works, and the checks panel works) and s
 ```sh
 schemify run my-project/tb.shbench          # results land in my-project/.schemify/runs/
 schemify publish my-project -o site         # site/projects/my-project/ and site/projects/index.html
-cp -r crates/app/web/. site                 # the editor: site/index.html and site/pkg/
+cp -r crates/view/app/web/. site                 # the editor: site/index.html and site/pkg/
 ```
 
 Open `site/projects/` for the list, or link straight to `site/#/projects/my-project/tb.shbench`. On first visit the page copies the project into browser storage. Later visits reuse that copy, edits included, until the site publishes a changed project, which replaces it. The [web spec](../spec/web.md) §3.1 has the details. With Nix, `nix build github:OmarSiwy/Schemify#web` gives the editor bundle (`result/index.html`, `result/pkg/`) and `nix shell github:OmarSiwy/Schemify#schemify` the command line, the same in CI as on your machine.

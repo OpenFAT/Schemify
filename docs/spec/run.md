@@ -1,6 +1,6 @@
 # Runs v1 (normative)
 
-Implements D7, D13, D15–D18, D38. Inputs: a bench (`.shbench`, [format.md](format.md) ranks 4 and 6), a selection of dimensions, the project, an environment table. Output: the `jobs` and `results` tables and one results file per run. Implementation: `crates/run`. Everything except the native runner (§5) is pure and builds for `wasm32`.
+Implements D7, D13, D15–D18, D38. Inputs: a bench (`.shbench`, [format.md](format.md) ranks 4 and 6), a selection of dimensions, the project, an environment table. Output: the `jobs` and `results` tables and one results file per run. Implementation: `crates/model/run`. Everything except the native runner (§5) is pure and builds for `wasm32`.
 
 ## 1. Plan
 
@@ -58,7 +58,7 @@ PDK statistical models are selected with a corner whose `lib` section is the PDK
 
 Job states: `pending`, `queued`, `running`, `done` (simulator exited 0 and its raw file parsed), `failed` (gate, netlist, compile, simulator, raw file), `cancelled`.
 
-**Results file** (`<run dir>/results`): line records in the format.md §2 lexical layer (not a format.md file kind: `crates/run` reads and writes it), header `schemify 1 results` with attribute `design <64 hex>`; then `output <name>` records (plan order), `spec <output>` records, `var <name>` records; then one `job <index> <state>` record per job in index order, with attributes `config`, `corner`, `sample`, `seed` (each only when set), `set <var> <value>` per assignment, `var <name> <number>` and `value <output> <number>` per present value (canonical number text), `pass <output> pass|fail` per decided spec, `error <output|-> <message>` per error row sorted by output. Written canonically, so `jobs=1` and `jobs=N` give identical bytes.
+**Results file** (`<run dir>/results`): line records in the format.md §2 lexical layer (not a format.md file kind: `crates/model/run` reads and writes it), header `schemify 1 results` with attribute `design <64 hex>`; then `output <name>` records (plan order), `spec <output>` records, `var <name>` records; then one `job <index> <state>` record per job in index order, with attributes `config`, `corner`, `sample`, `seed` (each only when set), `set <var> <value>` per assignment, `var <name> <number>` and `value <output> <number>` per present value (canonical number text), `pass <output> pass|fail` per decided spec, `error <output|-> <message>` per error row sorted by output. Written canonically, so `jobs=1` and `jobs=N` give identical bytes.
 
 ## 5. Native runner (not on the web)
 
@@ -116,7 +116,7 @@ The selected job (job 0 after a run; a results row picks another) feeds the wave
 1. format.md rank 4 `var` gains `dist gauss|uniform <spread> [rel]` (§3); rank 6 `optimize` gains `seed <n>`, `config <name>`, `corner <name>` and goal weights; all are known attributes (shape errors are `E029`); `montecarlo` and `optimize` defaults and `output` evaluation as stated here.
 2. format.md user config `sim <name>`: `{netlist}`/`{raw}` placeholders; names `ngspice`, `openvaf`, `iverilog`.
 3. Results live in `.schemify/runs/<design>/results` next to the job directories (D18 said `.schemify/results/`): one directory per design keeps a run's netlists, raw files and results together.
-4. (M2 editor) The app writes a `bench` sidecar beside `results` (§7a) and runs the spine without blocking; `crates/run` gained `Jobs::cancel_pending` for jobs never handed to a runner.
+4. (M2 editor) The app writes a `bench` sidecar beside `results` (§7a) and runs the spine without blocking; `crates/model/run` gained `Jobs::cancel_pending` for jobs never handed to a runner.
 5. (2026-10-11) Monte Carlo samples fix the simulator seed (§3); inline `body` sources compile and compilers never block a poll (§5); relative corner paths resolve against the bench (§5); the optimizer runs over configs and corners with goal weights (§6).
 7. (2026-10-12) ESPice: the `espice` dialect and simulator (§5, netlist.md §7.2a), the user config's `sim espice`, `env` and `opt.simulator`; the design hash covers a non-ngspice dialect; `schemify run` opens the cells of every selected config (§4; it used to open only the first's, so a second config's job failed `cells not open`).
 8. (2026-10-12) `op(inst, param)` outputs read the job's operating point through saved device vectors (§4).

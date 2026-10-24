@@ -1,6 +1,6 @@
 # User config and packages v1 (normative)
 
-Implements D9 and D35 as amended 2026-10-11 (Lua user config, user packages, `stdpath` directories), with D7 (capability grants) and D8 (last wins). Implementation: `crates/config` (directories, the sandboxed Lua runtime and the user-config table it fills), `crates/cli` (`schemify pack`, the package manager), `crates/app` (the editor applies the table and loads user packages through the plugin host). Example: [`docs/examples/init.lua`](../examples/init.lua).
+Implements D9 and D35 as amended 2026-10-11 (Lua user config, user packages, `stdpath` directories), with D7 (capability grants) and D8 (last wins). Implementation: `crates/model/config` (directories, the sandboxed Lua runtime and the user-config table it fills), `crates/model/cli` (`schemify pack`, the package manager), `crates/view/app` (the editor applies the table and loads user packages through the plugin host). Example: [`docs/examples/init.lua`](../examples/init.lua).
 
 Design files, the project manifest and lockfiles stay line records ([format.md](format.md)); only the user's own config is a program. Nothing in this spec is reachable from a design file (D7).
 
@@ -96,7 +96,7 @@ Functions (keymap targets, hooks) run under the same sandbox and limits as the i
 
 ## 4. Sandbox
 
-One interpreter on every target: omnilua, a pure-Rust Lua 5.4 (`crates/config/src/lua.rs`; the user's decision of 2026-10-12, [web.md](web.md) §5), built without its `io`, `os` and `package` libraries.
+One interpreter on every target: omnilua, a pure-Rust Lua 5.4 (`crates/model/config/src/lua.rs`; the user's decision of 2026-10-12, [web.md](web.md) §5), built without its `io`, `os` and `package` libraries.
 
 - **Present:** the base library without `dofile`, `loadfile`, `load`, `collectgarbage` and `require` (replaced by §2's); `string`, `table`, `math`, `utf8`. `print(...)` is an info notification (`schemify.notify`). `pcall` and `xpcall` return the error as its message string and never catch budget exhaustion (otherwise `while true do pcall(f) end` would outlive any budget).
 - **Absent:** `io`, `os`, `debug`, `package` (so no `package.loadlib`), `coroutine`, binary chunks. Nothing in the config can open a file other than its own modules, start a process or reach the network (D7); packages are wasm and get capabilities only through grants (§5).
@@ -169,7 +169,7 @@ Plugin composition order (D8, last wins): **bundled default UI < user packages (
 
 Why: D8 makes the more specific contribution win. User packages are the user's general preferences, so they override the bundled defaults; a project's packages are what that design needs (its netlister, its PDK helpers), so they override the user's general set, the way a project's `.editorconfig` overrides an editor's defaults. Keymaps typed in `init.lua` are the user's explicit muscle memory and are applied after every plugin, as Neovim users expect from mappings made after plugins load.
 
-The user-config table (owner: `crates/config`; readers: both binaries):
+The user-config table (owner: `crates/model/config`; readers: both binaries):
 
 | Table | Rows | Capacity |
 |---|---|---|
@@ -182,4 +182,4 @@ The user-config table (owner: `crates/config`; readers: both binaries):
 
 ## 7. Binaries
 
-`schemify` is the headless core: CLI, config, package manager. It links no GPU, window, text-shaping, accessibility or LaTeX code (D39, checked by `crates/cli/tests/deps.rs`). `schemify edit …` runs `schemify-gui` from the directory of the running `schemify`, else from `PATH`, passing the remaining arguments; when neither exists it exits 2 saying so.
+`schemify` is the headless core: CLI, config, package manager. It links no GPU, window, text-shaping, accessibility or LaTeX code (D39, checked by `crates/model/cli/tests/deps.rs`). `schemify edit …` runs `schemify-gui` from the directory of the running `schemify`, else from `PATH`, passing the remaining arguments; when neither exists it exits 2 saying so.

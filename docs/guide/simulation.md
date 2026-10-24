@@ -18,7 +18,7 @@ schematic, then the records below.
 ## What a bench holds
 
 A bench is a schematic plus records. This is the RC fixture
-(`crates/app/tests/fixtures/rc/tb.shbench`), trimmed to the simulation part:
+(`crates/view/app/tests/fixtures/rc/tb.shbench`), trimmed to the simulation part:
 
 ```
 schemify 1 shbench
@@ -285,7 +285,7 @@ see the text again. Very large netlists show the first 2^14 lines; the file has 
 ## Run from the command line
 
 ```sh
-schemify run crates/app/tests/fixtures/rc/tb.shbench
+schemify run crates/view/app/tests/fixtures/rc/tb.shbench
 ```
 
 | Flag | Effect |

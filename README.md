@@ -54,9 +54,9 @@ libraries at runtime; `nix develop` provides them along with ngspice and xschem.
 
 ```sh
 git clone https://github.com/OmarSiwy/Schemify && cd Schemify
-cargo run --release -p schemify-app -- crates/app/tests/fixtures/ota/ota.shcomp      # the editor
-cargo run --release -p schemify-cli -- netlist crates/app/tests/fixtures/rc/tb.shbench
-cargo run --release -p schemify-cli -- run crates/app/tests/fixtures/rc/tb.shbench   # needs ngspice
+cargo run --release -p schemify-app -- crates/view/app/tests/fixtures/ota/ota.shcomp      # the editor
+cargo run --release -p schemify-cli -- netlist crates/view/app/tests/fixtures/rc/tb.shbench
+cargo run --release -p schemify-cli -- run crates/view/app/tests/fixtures/rc/tb.shbench   # needs ngspice
 ```
 
 To bring an xschem library across, use the `interop` plugin's command line (`schemify-interop`,

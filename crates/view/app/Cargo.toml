@@ -1,0 +1,38 @@
+[package]
+name = "schemify-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# The editor binary (D39: a separate binary from the headless core `schemify`, which runs this
+# one for `schemify edit`): `schemify-editor`'s frame spine in a window, painted by
+# `schemify-render`.
+[lib]
+name = "schemify_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "schemify-gui"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+schemify-editor.workspace = true
+schemify-cli.workspace = true
+schemify-config.workspace = true
+schemify-canvas.workspace = true
+schemify-wave.workspace = true
+schemify-plugin.workspace = true
+schemify-ui.workspace = true
+schemify-render.workspace = true
+
+[dev-dependencies]
+schemify-format.workspace = true
+schemify-expr.workspace = true
+schemify-doc.workspace = true
+schemify-elab.workspace = true
+schemify-netlist.workspace = true
+schemify-run.workspace = true
