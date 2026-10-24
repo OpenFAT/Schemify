@@ -56,11 +56,7 @@ schemify.on("load", function() schemify.notify("hello from init.lua") end)
     assert_eq!(s.ed.opts().snap, 5 * U);
     assert!(s.ed.opts().light);
     assert!(s.ed.opts().show_grid);
-    assert!(
-        s.ed.session().status().contains("hello from init.lua"),
-        "{}",
-        s.ed.session().status()
-    );
+    assert!(s.status().contains("hello from init.lua"), "{}", s.status());
     s.key("%");
     assert!(
         s.ed.opts().show_grid,
@@ -86,7 +82,7 @@ fn clean_startup_and_config_errors() {
             .status()
             .contains("init.lua:2: unknown option `nope`"),
         "{}",
-        s.ed.session().status()
+        s.status()
     );
     // The default (tests, `--clean`) never runs a user config.
     let clean = Session::open("inv", "top.shcomp", "userconfig-clean", true);

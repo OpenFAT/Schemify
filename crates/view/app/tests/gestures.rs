@@ -17,24 +17,6 @@ use schemify_ui::InputEvents;
 const SHIFT: u8 = schemify_ui::Mods::SHIFT;
 const CTRL: u8 = schemify_ui::Mods::CTRL;
 
-/// Queues command `name` (argument `arg`) and runs one frame.
-fn run(s: &mut Session, name: &str, arg: &str) {
-    s.ed.command(name, arg);
-    s.frame(InputEvents::default());
-}
-
-fn status(s: &Session) -> String {
-    s.ed.session().status().to_owned()
-}
-
-/// Replaces the active document's text through Properties → Edit file (one undo).
-fn set_text(s: &mut Session, text: &str) {
-    s.key("Alt+Q");
-    s.ed.command("dialog.edit_file.ok", text);
-    s.frame(InputEvents::default());
-    assert_eq!(s.text(), text, "{}", status(s));
-}
-
 /// A tiny deterministic generator for the seeded property tests (no dependency).
 struct Lcg(u64);
 
@@ -191,8 +173,8 @@ fn dragging_a_vertex_moves_only_that_point() {
     // Negative space: dragging an end onto the other end is refused.
     s.click((30 * U, -70 * U));
     s.drag((140 * U, -70 * U), (0, -70 * U), 0);
-    assert_eq!(s.text(), original, "{}", status(&s));
-    assert!(status(&s).contains("extent"), "{}", status(&s));
+    assert_eq!(s.text(), original, "{}", s.status());
+    assert!(s.status().contains("extent"), "{}", s.status());
     // A schematic rect: the dragged corner moves, the opposite one stays.
     s.key("Esc");
     s.move_to((300 * U, 50 * U));
@@ -239,10 +221,7 @@ fn symbol_texts_turn_with_instances_and_their_orientation() {
     // The symbol's own text at R90: upright instances show it turned once, x1 twice.
     s.key("i");
     let sym = s.text();
-    set_text(
-        &mut s,
-        &sym.replacen("stext -17 -5 R0 inv", "stext -17 -5 R90 inv", 1),
-    );
+    s.set_text(&sym.replacen("stext -17 -5 R0 inv", "stext -17 -5 R90 inv", 1));
     assert_eq!(text_rots(&s, "inv"), [1], "symbol view");
     s.key("Ctrl+E");
     let mut r = text_rots(&s, "inv");
@@ -283,13 +262,13 @@ fn a_recent_file_of_another_project_switches_project() {
     // Negative space: an unsaved edit here refuses the switch.
     s.click((150 * U, 0));
     s.key("Del");
-    run(&mut s, "file.open_recent.1", "");
-    assert!(status(&s).contains("save or undo"), "{}", status(&s));
+    s.run("file.open_recent.1", "");
+    assert!(s.status().contains("save or undo"), "{}", s.status());
     assert_eq!(s.ed.session().root, a);
     // Saved: the switch opens the file in project b.
     s.key("Ctrl+S");
-    run(&mut s, "file.open_recent.1", "");
-    assert_eq!(s.ed.session().root, b, "{}", status(&s));
+    s.run("file.open_recent.1", "");
+    assert_eq!(s.ed.session().root, b, "{}", s.status());
     let (h, _) = s.ed.active().unwrap();
     assert_eq!(s.ed.session().path(h), Some(b.join("inv.shcomp").as_path()));
     assert_eq!(s.ed.session().tabs().len(), 1);
@@ -298,7 +277,7 @@ fn a_recent_file_of_another_project_switches_project() {
     let t0 = s.text();
     s.click((50 * U, 0)); // wire w00002 of inv
     s.key("Del");
-    assert_ne!(s.text(), t0, "{}", status(&s));
+    assert_ne!(s.text(), t0, "{}", s.status());
     s.key("u");
     assert_eq!(s.text(), t0);
     let _ = std::fs::remove_dir_all(&b);
@@ -343,7 +322,7 @@ fn canvas_options_from_init_lua_reach_the_palette() {
         | 0xff;
     assert_eq!(p.color[4], want, "{:08x}", p.color[4]);
     // Reset colors (the session's own command) drops them for the session.
-    run(&mut s, "view.reset_all_colors_to_default", "");
+    s.run("view.reset_all_colors_to_default", "");
     assert_eq!((s.ed.opts().dim, s.ed.opts().width_tenths), (0, 10));
     assert_ne!(s.ed.view_palette().color[4], 0xff80_00ff);
 }
@@ -379,7 +358,7 @@ fn make_subcircuit_rewires_and_keeps_connectivity() {
         s.frame(InputEvents::default());
         let file = s.dir.join("top_sub1.shcomp");
         let sub = std::fs::read_to_string(&file)
-            .unwrap_or_else(|_| panic!("case {case}: {}", status(&s)));
+            .unwrap_or_else(|_| panic!("case {case}: {}", s.status()));
         let after = nets(&s);
         same_partition(&before, &after);
         // The new instance's pins, in the new cell's pin order, are on their nets.
@@ -474,7 +453,7 @@ fn join_trim_keeps_connectivity_over_diagonal_and_attributed_wires() {
             let d = schemify_format::parse(t.as_bytes()).unwrap();
             schemify_format::write(&d)
         };
-        set_text(&mut s, &canonical);
+        s.set_text(&canonical);
         let probes = |s: &Session| -> Vec<Vec<(i32, i32)>> {
             let (h, _) = s.ed.active().unwrap();
             let doc = s.ed.session().project.doc(h).unwrap();
@@ -527,7 +506,7 @@ fn join_trim_merges_diagonals_and_equal_attributes_only() {
         .text()
         .replacen("\nlabel ", &format!("\n{wires}label "), 1);
     let canonical = schemify_format::write(&schemify_format::parse(t.as_bytes()).unwrap());
-    set_text(&mut s, &canonical);
+    s.set_text(&canonical);
     s.key("&");
     let w = lines(&s.text(), "wire ")
         .iter()

@@ -608,40 +608,7 @@ fn the_page_scrolls_and_hides_scrolled_out_rows_from_clicks() {
 fn golden_docs_page() {
     let mut s = open("golden");
     let px = s.render();
-    check_golden("docs_page", px);
-}
-
-fn check_golden(name: &str, pixmap: schemify_render::Pixmap) {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden");
-    let path = format!("{dir}/{name}.png");
-    let png = pixmap.clone().into_png().expect("encode png");
-    if std::env::var_os("SCHEMIFY_BLESS").is_some() {
-        std::fs::create_dir_all(dir).unwrap();
-        std::fs::write(&path, &png).unwrap();
-    }
-    let want = std::fs::read(&path)
-        .unwrap_or_else(|_| panic!("{path} missing; run with SCHEMIFY_BLESS=1"));
-    let want =
-        schemify_render::Pixmap::from_png(std::io::Cursor::new(want)).expect("decode golden");
-    assert_eq!(
-        (want.width(), want.height()),
-        (pixmap.width(), pixmap.height())
-    );
-    let bad = want
-        .data()
-        .iter()
-        .zip(pixmap.data())
-        .filter(|(a, b)| {
-            let (a, b) = ([a.r, a.g, a.b, a.a], [b.r, b.g, b.b, b.a]);
-            a.iter().zip(b).any(|(x, y)| x.abs_diff(y) > 2)
-        })
-        .count();
-    let limit = want.data().len() / 1000;
-    if bad > limit {
-        let out = format!("{}/{name}.actual.png", env!("CARGO_TARGET_TMPDIR"));
-        std::fs::write(&out, &png).unwrap();
-        panic!("{name}: {bad} pixels differ (limit {limit}); actual written to {out}");
-    }
+    common::check_golden("docs_page", px);
 }
 
 #[test]
@@ -876,5 +843,5 @@ fn golden_docs_preview_modern() {
     s.key("Enter");
     s.type_text("The DC gain is $A_0 = g_m r_o$, about **40 dB**.");
     let px = s.render();
-    check_golden("docs_preview_modern", px);
+    common::check_golden("docs_preview_modern", px);
 }

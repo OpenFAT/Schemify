@@ -205,17 +205,14 @@ impl Client {
                 if j.get("id") == Some(&Json::Num(id)) {
                     let r = j.get("result").and_then(|r| r.get("status"));
                     let Some(status) = r.and_then(Json::as_str) else {
-                        panic!("{method}: {j:?} (status line: {})", s.ed.session().status())
+                        panic!("{method}: {j:?} (status line: {})", s.status())
                     };
                     return status.to_owned();
                 }
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        panic!(
-            "no answer to {method} (status line: {})",
-            s.ed.session().status()
-        );
+        panic!("no answer to {method} (status line: {})", s.status());
     }
 }
 
@@ -236,7 +233,7 @@ fn each_answer_carries_its_own_status() {
         "",
         "lags one command"
     );
-    assert_eq!(s.ed.session().status(), "already at the top level");
+    assert_eq!(s.status(), "already at the top level");
     assert_eq!(
         c.status(&mut s, "edit.pop", &[]),
         "already at the top level"
@@ -291,7 +288,7 @@ fn out_of_fuel_is_reported_not_silent() {
         );
         let want = format!("bad: command bad.spin: out of fuel (budget {fuel}), outputs discarded");
         assert_eq!(c.status(&mut s, "bad.spin", &[]), want, "{tag}");
-        assert_eq!(s.ed.session().status(), want, "{tag}: the status line");
+        assert_eq!(s.status(), want, "{tag}: the status line");
         let faults = s.ed.host().plugins.health().faults();
         assert_eq!(
             faults.back().map(|f| f.detail.as_str()),

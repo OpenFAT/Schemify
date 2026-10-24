@@ -15,12 +15,6 @@ use schemify_config::Startup;
 use schemify_editor::editor::{Editor, Options};
 use schemify_ui::InputEvents;
 
-/// Queues command `name` (argument `arg`) and runs one frame.
-fn run(s: &mut Session, name: &str, arg: &str) {
-    s.ed.command(name, arg);
-    s.frame(InputEvents::default());
-}
-
 fn png_size(path: &Path) -> (u16, u16) {
     let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let px = schemify_render::Pixmap::from_png(std::io::Cursor::new(bytes)).expect("a PNG");
@@ -52,11 +46,7 @@ fn open_with_config(dir: &Path, file: &str, init: &str) -> Session {
 fn png_exports_scale_and_cover_the_whole_drawing() {
     let mut s = Session::open("inv", "top.shcomp", "png-scale", true);
     let one = s.dir.join("one.png");
-    run(
-        &mut s,
-        "file.image_export.png_export",
-        one.to_str().unwrap(),
-    );
+    s.run("file.image_export.png_export", one.to_str().unwrap());
     let (w, h) = png_size(&one);
     let r = s.ed.canvas_rect();
     assert_eq!(
@@ -64,55 +54,38 @@ fn png_exports_scale_and_cover_the_whole_drawing() {
         (r.width().round() as u16, r.height().round() as u16)
     );
     // Scale 2 (192 dpi): the same view, twice the pixels a side.
-    run(&mut s, "options.png_export_scale", "2");
+    s.run("options.png_export_scale", "2");
     assert_eq!(s.ed.opts().png_scale, 200);
     let two = s.dir.join("two.png");
-    run(
-        &mut s,
-        "file.image_export.png_export",
-        two.to_str().unwrap(),
-    );
+    s.run("file.image_export.png_export", two.to_str().unwrap());
     assert_eq!(png_size(&two), (2 * w, 2 * h));
     // The whole drawing, zoomed in or not: its bounds plus 10 units, 1 px per unit × 2.
     for _ in 0..4 {
-        run(&mut s, "view.zoom_in", "");
+        s.run("view.zoom_in", "");
     }
     let b = schemify_editor::export::bounds(&s.ed.scene().prims).expect("a drawing");
     let b = schemify_editor::export::padded(b, 10 * U);
     let side = |a: i32, z: i32| ((f64::from(z - a) / f64::from(U)).ceil() * 2.0).round() as u16;
     let full = s.dir.join("full.png");
-    run(
-        &mut s,
-        "file.image_export.png_export_full",
-        full.to_str().unwrap(),
-    );
+    s.run("file.image_export.png_export_full", full.to_str().unwrap());
     assert_eq!(png_size(&full), (side(b[0], b[2]), side(b[1], b[3])));
     // Negative space: an out-of-range scale is refused and changes nothing; an image over
     // 16384 px a side is refused and writes no file.
-    run(&mut s, "options.png_export_scale", "100");
+    s.run("options.png_export_scale", "100");
     assert_eq!(s.ed.opts().png_scale, 200);
-    run(&mut s, "options.png_export_scale", "16");
+    s.run("options.png_export_scale", "16");
     assert!(r.width() * 16.0 > 16384.0, "the canvas overflows at 16×");
     let huge = s.dir.join("huge.png");
-    run(
-        &mut s,
-        "file.image_export.png_export",
-        huge.to_str().unwrap(),
-    );
+    s.run("file.image_export.png_export", huge.to_str().unwrap());
     assert!(!huge.exists());
-    assert!(
-        s.ed.session().status().contains("lower the PNG scale"),
-        "{}",
-        s.ed.session().status()
-    );
+    assert!(s.status().contains("lower the PNG scale"), "{}", s.status());
 }
 
 #[test]
 fn pdf_and_eps_fit_the_export_page_and_embed_the_ui_font() {
     let mut s = Session::open("inv", "top.shcomp", "export-page", true);
     let pdf = s.dir.join("a.pdf");
-    run(
-        &mut s,
+    s.run(
         "file.image_export.pdf_ps_export_full",
         pdf.to_str().unwrap(),
     );
@@ -124,18 +97,16 @@ fn pdf_and_eps_fit_the_export_page_and_embed_the_ui_font() {
     // The drawing's texts print in the embedded UI font, not base-14 Helvetica.
     assert!(t.contains("/FontFile2 ") && t.contains("/ToUnicode "));
     assert!(!t.contains("Helvetica"));
-    run(&mut s, "options.export_page_size", "letter portrait");
+    s.run("options.export_page_size", "letter portrait");
     assert_eq!(s.ed.opts().export_page.name(), "letter portrait");
-    run(
-        &mut s,
+    s.run(
         "file.image_export.pdf_ps_export_full",
         pdf.to_str().unwrap(),
     );
     let t = std::fs::read_to_string(&pdf).unwrap();
     assert!(t.contains("/MediaBox [0 0 612 792]"), "letter portrait");
     let eps = s.dir.join("a.eps");
-    run(
-        &mut s,
+    s.run(
         "file.image_export.eps_selection_export",
         eps.to_str().unwrap(),
     );
@@ -143,8 +114,8 @@ fn pdf_and_eps_fit_the_export_page_and_embed_the_ui_font() {
     assert!(e.contains("%%BoundingBox: 0 0 612 792\n"));
     assert!(e.contains("/FontType 42 def") && e.contains("glyphshow"));
     // Negative space: an unknown page is refused and the page stays.
-    run(&mut s, "options.export_page_size", "a9");
-    assert!(s.ed.session().status().contains("not a page"));
+    s.run("options.export_page_size", "a9");
+    assert!(s.status().contains("not a page"));
     assert_eq!(s.ed.opts().export_page.name(), "letter portrait");
 }
 
@@ -165,7 +136,7 @@ fn packages_view_shows_pack_status() {
         dir.join("nope").display()
     );
     let mut s = open_with_config(&dir, "top.shcomp", &init);
-    run(&mut s, "tools.package_status", "");
+    s.run("tools.package_status", "");
     let v = s.ed.session().text_view().expect("a packages tab");
     assert_eq!(v.title, "packages");
     let body = v.body.clone();
@@ -181,7 +152,7 @@ fn packages_view_shows_pack_status() {
     assert!(body.contains("run `schemify pack sync`"), "{body}");
     // Negative space: without a user config there is nothing to list.
     let mut clean = Session::open("inv", "top.shcomp", "packages-clean", true);
-    run(&mut clean, "tools.package_status", "");
+    clean.run("tools.package_status", "");
     let v = clean.ed.session().text_view().expect("a packages tab");
     assert!(v.body.contains("no user config"), "{}", v.body);
 }
@@ -192,7 +163,7 @@ label 0bbbba 0 0 R0 out\nlabel 0bbbbb 0 20 R0 0\n\nvar R 1\n";
 
 /// Simulates the active bench to idle and returns the runner's error messages.
 fn simulate_errors(s: &mut Session) -> Vec<String> {
-    run(s, "sim.simulate", "");
+    s.run("sim.simulate", "");
     let t = Instant::now();
     while s.ed.sim().busy() {
         assert!(t.elapsed() < Duration::from_secs(60), "run did not finish");

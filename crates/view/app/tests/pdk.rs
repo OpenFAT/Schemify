@@ -82,11 +82,7 @@ fn reload_picks_up_a_manifest_change() {
             .canonical()
             .contains("sky130_fd_pr__{model}")
     );
-    assert!(
-        s.ed.session().status().contains("reloaded"),
-        "{}",
-        s.ed.session().status()
-    );
+    assert!(s.status().contains("reloaded"), "{}", s.status());
     // Switching technology is one manifest line.
     std::fs::write(
         s.dir.join("schemify.project"),
@@ -110,9 +106,9 @@ fn reload_refuses_to_orphan_an_open_document() {
     s.ed.command("file.open", "pdk/sky130/sky130_fd_pr/nfet_01v8.shprim");
     s.frame(Default::default());
     assert!(
-        s.ed.session().status().contains("opened nfet_01v8.shprim"),
+        s.status().contains("opened nfet_01v8.shprim"),
         "{}",
-        s.ed.session().status()
+        s.status()
     );
     let h = s.ed.active().expect("the PDK cell's tab").0;
     std::fs::write(s.dir.join("schemify.project"), "schemify 1 project\n").unwrap();
@@ -123,7 +119,7 @@ fn reload_refuses_to_orphan_an_open_document() {
             .status()
             .contains("close the documents of library `sky130_fd_pr`"),
         "{}",
-        s.ed.session().status()
+        s.status()
     );
     let p = &s.ed.session().project;
     assert!(p.doc(h).is_some());

@@ -383,46 +383,13 @@ fn box_select_is_consistent_with_point_hits() {
     }
 }
 
-fn check_golden(name: &str, pixmap: schemify_render::Pixmap) {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden");
-    let path = format!("{dir}/{name}.png");
-    let png = pixmap.clone().into_png().expect("encode png");
-    if std::env::var_os("SCHEMIFY_BLESS").is_some() {
-        std::fs::create_dir_all(dir).unwrap();
-        std::fs::write(&path, &png).unwrap();
-    }
-    let want = std::fs::read(&path)
-        .unwrap_or_else(|_| panic!("{path} missing; run with SCHEMIFY_BLESS=1"));
-    let want =
-        schemify_render::Pixmap::from_png(std::io::Cursor::new(want)).expect("decode golden");
-    assert_eq!(
-        (want.width(), want.height()),
-        (pixmap.width(), pixmap.height())
-    );
-    let bad = want
-        .data()
-        .iter()
-        .zip(pixmap.data())
-        .filter(|(a, b)| {
-            let (a, b) = ([a.r, a.g, a.b, a.a], [b.r, b.g, b.b, b.a]);
-            a.iter().zip(b).any(|(x, y)| x.abs_diff(y) > 2)
-        })
-        .count();
-    let limit = want.data().len() / 1000;
-    if bad > limit {
-        let out = format!("{}/{name}.actual.png", env!("CARGO_TARGET_TMPDIR"));
-        std::fs::write(&out, &png).unwrap();
-        panic!("{name}: {bad} pixels differ (limit {limit}); actual written to {out}");
-    }
-}
-
 /// The editor on the inverter fixture (top cell with two `inv` sub-cell instances), dark
 /// theme, default UI. Re-bless with `SCHEMIFY_BLESS=1`.
 #[test]
 fn golden_editor_dark() {
     let mut s = Session::open("inv", "top.shcomp", "golden", true);
     let px = s.render();
-    check_golden("editor_dark", px);
+    common::check_golden("editor_dark", px);
 }
 
 /// A plugin-owned command (the default UI's `help.keys`, bound to `/`) re-contributes UI.
@@ -483,9 +450,9 @@ fn manifest_plugins_load_in_order_and_receive_commands() {
     s.click_node("menu.tools");
     s.click_node("tools.count_nets");
     assert!(
-        s.ed.session().status().contains("single-connection nets"),
+        s.status().contains("single-connection nets"),
         "{}",
-        s.ed.session().status()
+        s.status()
     );
 }
 
@@ -501,7 +468,7 @@ fn waves_window_opens_a_raw_file_and_closes() {
     std::fs::copy(raw, s.dir.join("rc_tran.raw")).unwrap();
     s.click_node("tb.waves");
     s.click_node("dialog.choose.row.0");
-    assert!(s.ed.waves_open(), "{}", s.ed.session().status());
+    assert!(s.ed.waves_open(), "{}", s.status());
     let px = s.render();
     assert_eq!(px.width(), VIEW.0 as u16);
     s.key("Ctrl+W");
@@ -516,7 +483,7 @@ fn golden_editor_light_selection() {
     s.key("Shift+O");
     assert!(s.ed.opts().light);
     let px = s.render();
-    check_golden("editor_light_selection", px);
+    common::check_golden("editor_light_selection", px);
 }
 
 /// The default UI's "Modern" preset (View → Modern theme, `ui/default-plugin/modern.records`)
@@ -532,8 +499,7 @@ fn golden_editor_modern() {
     let parity = s.render();
     assert_eq!(rgb(&parity, 1100, 200), (0, 0, 0));
     assert_eq!(rgb(&parity, 1100, 5), (0xd9, 0xd9, 0xd9));
-    s.ed.command("view.theme_modern", "");
-    s.frame(InputEvents::default());
+    s.run("view.theme_modern", "");
     let px = s.render();
     // The canvas background is the preset's (15171b), not xschem's black.
     assert_eq!(
@@ -546,15 +512,14 @@ fn golden_editor_modern() {
         (0x1e, 0x21, 0x27),
         "the preset's menubar"
     );
-    check_golden("editor_modern_dark", px);
+    common::check_golden("editor_modern_dark", px);
     s.click((10 * U, 0));
     s.key("Shift+O");
     assert!(s.ed.opts().light);
-    check_golden("editor_modern_light_selection", s.render());
+    common::check_golden("editor_modern_light_selection", s.render());
     s.key("Shift+O");
     s.key("Esc");
-    s.ed.command("view.theme_modern", "");
-    s.frame(InputEvents::default());
+    s.run("view.theme_modern", "");
     let back = s.render();
     assert_eq!(
         rgb(&back, 1100, 200),
@@ -605,7 +570,7 @@ fn waves_dock_divider_drags() {
     std::fs::copy(raw, s.dir.join("rc_tran.raw")).unwrap();
     s.click_node("tb.waves");
     s.click_node("dialog.choose.row.0");
-    assert!(s.ed.waves_open(), "{}", s.ed.session().status());
+    assert!(s.ed.waves_open(), "{}", s.status());
     // The dock takes its share of the window from the next frame on.
     s.frame(InputEvents::default());
     let split = (VIEW.1 * 0.6).floor();
@@ -648,9 +613,8 @@ fn waves_dock_divider_drags() {
 #[test]
 fn golden_primitive_modern() {
     let mut s = Session::open("rc", "res.shprim", "golden-prim", true);
-    s.ed.command("view.theme_modern", "");
-    s.frame(InputEvents::default());
-    check_golden("primitive_modern", s.render());
+    s.run("view.theme_modern", "");
+    common::check_golden("primitive_modern", s.render());
 }
 
 /// Prop `p` of UI node `id` as text ("" when absent).
@@ -714,28 +678,18 @@ fn view_switcher_follows_the_file_kind() {
         Some(View::Symbol),
         "disabled: no-op"
     );
-    p.ed.command("view.schematic", "");
-    p.frame(InputEvents::default());
+    p.run("view.schematic", "");
     assert_eq!(p.ed.active().map(|a| a.1), Some(View::Symbol));
-    assert!(
-        p.ed.session().status().contains("no schematic"),
-        "{}",
-        p.ed.session().status()
-    );
+    assert!(p.status().contains("no schematic"), "{}", p.status());
 
     // .shbench: no symbol.
     let mut b = Session::open("rc", "tb.shbench", "switch-bench", true);
     assert_eq!(b.ed.active().map(|a| a.1), Some(View::Schematic));
     let [sch, sym, _] = switch_state(&b);
     assert_eq!((sch, sym), (st("viewsw-on", "0"), st("viewsw-off", "1")));
-    b.ed.command("view.symbol", "");
-    b.frame(InputEvents::default());
+    b.run("view.symbol", "");
     assert_eq!(b.ed.active().map(|a| a.1), Some(View::Schematic));
-    assert!(
-        b.ed.session().status().contains("no symbol"),
-        "{}",
-        b.ed.session().status()
-    );
+    assert!(b.status().contains("no symbol"), "{}", b.status());
 }
 
 /// The switcher floats: centred along the canvas's top edge, painted after the canvas
@@ -814,13 +768,8 @@ fn commands_grey_out_on_the_wrong_file_kind() {
     assert!(!disabled(&c, "sim.new_bench"));
     c.click_node("tb.simulate");
     assert!(!c.ed.sim().busy());
-    c.ed.command("sim.simulate", "");
-    c.frame(InputEvents::default());
-    assert!(
-        c.ed.session().status().contains("needs a .shbench"),
-        "{}",
-        c.ed.session().status()
-    );
+    c.run("sim.simulate", "");
+    assert!(c.status().contains("needs a .shbench"), "{}", c.status());
     // A bench: simulation on, symbol generation and new-bench off.
     let b = Session::open("rc", "tb.shbench", "grey-bench", true);
     for id in ["sim.simulate", "sim.optimize", "tb.simulate"] {

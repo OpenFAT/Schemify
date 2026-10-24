@@ -74,22 +74,12 @@ fn every_default_ui_command_resolves() {
 
 // ---------------------------------------------------------------------------- helpers
 
-/// Queues command `name` (argument `arg`) and runs one frame.
-fn run(s: &mut Session, name: &str, arg: &str) {
-    s.ed.command(name, arg);
-    s.frame(InputEvents::default());
-}
-
 /// Lines of the active document starting with `prefix`, owned.
 fn owned(s: &Session, prefix: &str) -> Vec<String> {
     lines(&s.text(), prefix)
         .into_iter()
         .map(str::to_owned)
         .collect()
-}
-
-fn status(s: &Session) -> String {
-    s.ed.session().status().to_owned()
 }
 
 fn active_path(s: &Session) -> PathBuf {
@@ -169,39 +159,6 @@ fn pin_nets(s: &Session) -> Vec<(String, u32)> {
     out
 }
 
-fn check_golden(name: &str, pixmap: schemify_render::Pixmap) {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden");
-    let path = format!("{dir}/{name}.png");
-    let png = pixmap.clone().into_png().expect("encode png");
-    if std::env::var_os("SCHEMIFY_BLESS").is_some() {
-        std::fs::create_dir_all(dir).unwrap();
-        std::fs::write(&path, &png).unwrap();
-    }
-    let want = std::fs::read(&path)
-        .unwrap_or_else(|_| panic!("{path} missing; run with SCHEMIFY_BLESS=1"));
-    let want =
-        schemify_render::Pixmap::from_png(std::io::Cursor::new(want)).expect("decode golden");
-    assert_eq!(
-        (want.width(), want.height()),
-        (pixmap.width(), pixmap.height())
-    );
-    let bad = want
-        .data()
-        .iter()
-        .zip(pixmap.data())
-        .filter(|(a, b)| {
-            let (a, b) = ([a.r, a.g, a.b, a.a], [b.r, b.g, b.b, b.a]);
-            a.iter().zip(b).any(|(x, y)| x.abs_diff(y) > 2)
-        })
-        .count();
-    let limit = want.data().len() / 1000;
-    if bad > limit {
-        let out = format!("{}/{name}.actual.png", env!("CARGO_TARGET_TMPDIR"));
-        std::fs::write(&out, &png).unwrap();
-        panic!("{name}: {bad} pixels differ (limit {limit}); actual written to {out}");
-    }
-}
-
 /// A tiny deterministic generator for the seeded property tests (no dependency).
 struct Lcg(u64);
 
@@ -233,7 +190,7 @@ fn save_as_moves_editing_to_the_new_file() {
     s.type_text("top2");
     s.key("Enter");
     let new = s.dir.join("top2.shcomp");
-    assert_eq!(active_path(&s), new, "{}", status(&s));
+    assert_eq!(active_path(&s), new, "{}", s.status());
     assert_eq!(std::fs::read_to_string(&new).unwrap(), edited);
     assert_eq!(s.text(), edited);
     let (h, _) = s.ed.active().unwrap();
@@ -248,12 +205,12 @@ fn save_as_moves_editing_to_the_new_file() {
         "the old file's unsaved edits are not offered for recovery"
     );
     // Negative space: an existing name is refused, a wrong extension too.
-    run(&mut s, "file.save_as", "top2");
-    assert!(status(&s).contains("same file") || status(&s).contains("exists"));
-    run(&mut s, "file.save_as", "inv.shcomp");
-    assert!(status(&s).contains("exists"), "{}", status(&s));
-    run(&mut s, "file.save_as", "x.shprim");
-    assert!(status(&s).contains("keeps its extension"), "{}", status(&s));
+    s.run("file.save_as", "top2");
+    assert!(s.status().contains("same file") || s.status().contains("exists"));
+    s.run("file.save_as", "inv.shcomp");
+    assert!(s.status().contains("exists"), "{}", s.status());
+    s.run("file.save_as", "x.shprim");
+    assert!(s.status().contains("keeps its extension"), "{}", s.status());
     // The new cell is indexed: the open chooser lists it.
     s.key("Ctrl+O");
     s.click_node("dialog.choose.filter");
@@ -262,7 +219,7 @@ fn save_as_moves_editing_to_the_new_file() {
     s.key("Esc");
     s.key("Esc");
     // Save as symbol shows the symbol side of the new file.
-    run(&mut s, "file.save_as_symbol", "top3");
+    s.run("file.save_as_symbol", "top3");
     let (_, view) = s.ed.active().unwrap();
     assert_eq!(view, schemify_editor::session::View::Symbol);
     assert!(s.dir.join("top3.shcomp").exists());
@@ -350,18 +307,18 @@ fn merge_inserts_a_cell_schematic_at_the_pointer() {
 #[test]
 fn delete_files_needs_a_second_pick() {
     let mut s = Session::open("inv", "top.shcomp", "delete", true);
-    run(&mut s, "file.save_as", "spare");
+    s.run("file.save_as", "spare");
     let spare = s.dir.join("spare.shcomp");
     assert!(spare.exists());
     // Back to top so spare is not open... it is open (save-as switched to it): refused.
     s.key("Ctrl+Shift+O");
-    run(&mut s, "file.delete_files", "");
+    s.run("file.delete_files", "");
     s.click_node("dialog.choose.filter");
     s.type_text("spare");
     if dialog(&s) == "dialog.choose" {
         s.click_node("dialog.choose.row.0");
     }
-    assert!(status(&s).contains("open in the editor"), "{}", status(&s));
+    assert!(s.status().contains("open in the editor"), "{}", s.status());
     assert!(spare.exists());
     // Write another cell by hand (not open): the first pick only asks.
     std::fs::write(
@@ -369,8 +326,8 @@ fn delete_files_needs_a_second_pick() {
         "schemify 1 shcomp\n\nimpl sch schematic\n",
     )
     .unwrap();
-    run(&mut s, "file.save_as", "spare2"); // re-index picks gone.shcomp up
-    run(&mut s, "file.delete_files", "");
+    s.run("file.save_as", "spare2"); // re-index picks gone.shcomp up
+    s.run("file.delete_files", "");
     s.click_node("dialog.choose.filter");
     s.type_text("gone");
     if dialog(&s) == "dialog.choose" {
@@ -380,34 +337,26 @@ fn delete_files_needs_a_second_pick() {
         s.dir.join("gone.shcomp").exists(),
         "one pick does not delete"
     );
-    assert!(status(&s).contains("again"), "{}", status(&s));
+    assert!(s.status().contains("again"), "{}", s.status());
     s.click_node("dialog.choose.filter");
     s.type_text("gone");
     if dialog(&s) == "dialog.choose" {
         s.click_node("dialog.choose.row.0");
     }
-    assert!(!s.dir.join("gone.shcomp").exists(), "{}", status(&s));
+    assert!(!s.dir.join("gone.shcomp").exists(), "{}", s.status());
 }
 
 #[test]
 fn image_exports_png_svg_pdf_eps() {
     let mut s = Session::open("inv", "top.shcomp", "export", true);
     let png = s.dir.join("out.png");
-    run(
-        &mut s,
-        "file.image_export.png_export",
-        png.to_str().unwrap(),
-    );
-    let bytes = std::fs::read(&png).unwrap_or_else(|_| panic!("{}", status(&s)));
+    s.run("file.image_export.png_export", png.to_str().unwrap());
+    let bytes = std::fs::read(&png).unwrap_or_else(|_| panic!("{}", s.status()));
     let px = schemify_render::Pixmap::from_png(std::io::Cursor::new(bytes)).expect("a PNG");
-    check_golden("export_png", px);
+    common::check_golden("export_png", px);
     // SVG: one element per scene primitive (parsed back by element kind).
     let svg = s.dir.join("out.svg");
-    run(
-        &mut s,
-        "file.image_export.svg_export",
-        svg.to_str().unwrap(),
-    );
+    s.run("file.image_export.svg_export", svg.to_str().unwrap());
     let text = std::fs::read_to_string(&svg).unwrap();
     let p = &s.ed.scene().prims;
     let counts = schemify_editor::export::svg_counts(&text);
@@ -418,16 +367,14 @@ fn image_exports_png_svg_pdf_eps() {
     assert_eq!(counts[4], p.texts.x.len());
     // PDF: the drawing on one page; the hierarchy: top and inv (two instances of one cell).
     let pdf = s.dir.join("out.pdf");
-    run(
-        &mut s,
+    s.run(
         "file.image_export.pdf_ps_export_full",
         pdf.to_str().unwrap(),
     );
     let t = String::from_utf8(std::fs::read(&pdf).unwrap()).unwrap();
     assert!(t.starts_with("%PDF-1.4") && t.ends_with("%%EOF\n"));
     assert_eq!(t.matches("/Type /Page ").count(), 1);
-    run(
-        &mut s,
+    s.run(
         "file.image_export.hierarchical_pdf_ps_export",
         pdf.to_str().unwrap(),
     );
@@ -436,16 +383,15 @@ fn image_exports_png_svg_pdf_eps() {
     // EPS of the selection.
     s.click((150 * U, 0));
     let eps = s.dir.join("sel.eps");
-    run(
-        &mut s,
+    s.run(
         "file.image_export.eps_selection_export",
         eps.to_str().unwrap(),
     );
     let t = std::fs::read_to_string(&eps).unwrap();
     assert!(t.starts_with("%!PS-Adobe-3.0 EPSF-3.0\n"));
     // Default location: .schemify/export/<cell>.<ext>; black on white without color.
-    run(&mut s, "options.color_postscript_svg", "");
-    run(&mut s, "file.image_export.svg_export", "");
+    s.run("options.color_postscript_svg", "");
+    s.run("file.image_export.svg_export", "");
     let t = std::fs::read_to_string(s.dir.join(".schemify/export/top.svg")).unwrap();
     assert!(
         t.contains("fill=\"#ffffff\"") && !t.contains("#00ccff"),
@@ -461,11 +407,11 @@ fn image_exports_png_svg_pdf_eps() {
 #[test]
 fn export_project_zips_the_listed_files() {
     let mut s = Session::open("inv", "top.shcomp", "export_project", true);
-    run(&mut s, "file.export_project", "");
+    s.run("file.export_project", "");
     let name = s.dir.file_name().unwrap().to_str().unwrap().to_owned();
     let zip = s.dir.join(".schemify/export").join(format!("{name}.zip"));
     let bytes = std::fs::read(&zip)
-        .unwrap_or_else(|e| panic!("{}: {e} (status: {})", zip.display(), status(&s)));
+        .unwrap_or_else(|e| panic!("{}: {e} (status: {})", zip.display(), s.status()));
     let files = schemify_cli::zip::read(&bytes, usize::MAX).expect("the archive reads");
     let want = schemify_editor::platform::list_files(&s.dir, &[]);
     assert!(!want.is_empty());
@@ -479,14 +425,14 @@ fn export_project_zips_the_listed_files() {
         files.iter().all(|(n, _)| !n.contains("/.")),
         "hidden left out"
     );
-    run(&mut s, "file.export_project", "");
+    s.run("file.export_project", "");
     assert_eq!(
         std::fs::read(&zip).unwrap(),
         bytes,
         "same project, same bytes"
     );
-    run(&mut s, "file.import_project", "");
-    assert!(status(&s).contains("directory"), "{}", status(&s));
+    s.run("file.import_project", "");
+    assert!(s.status().contains("directory"), "{}", s.status());
 }
 
 // ---------------------------------------------------------------------------- Edit
@@ -652,7 +598,7 @@ fn search_replace_all_leaves_nothing_to_find() {
     s.click_node("dialog.props.val.1");
     s.type_text("VDD");
     s.click_node("dialog.props.ok");
-    assert_eq!(s.ed.selection().len(), 1, "{}", status(&s));
+    assert_eq!(s.ed.selection().len(), 1, "{}", s.status());
     assert_eq!(s.ed.selection()[0].table, TableId::Labels);
 }
 
@@ -775,7 +721,7 @@ fn context_menu_variants_run_their_rows() {
 #[test]
 fn persistent_wire_mode_chains_segments() {
     let mut s = Session::open("inv", "top.shcomp", "persist", true);
-    run(&mut s, "options.persistent_wire_line_place_command", "");
+    s.run("options.persistent_wire_line_place_command", "");
     s.move_to((300 * U, 0));
     s.key("w");
     s.click((340 * U, 0));
@@ -785,7 +731,7 @@ fn persistent_wire_mode_chains_segments() {
     let w = lines(&s.text(), "wire ").len();
     assert_eq!(w, 9 + 2);
     // Off again: one segment per `w`.
-    run(&mut s, "options.persistent_wire_line_place_command", "");
+    s.run("options.persistent_wire_line_place_command", "");
     s.key("w");
     s.click((400 * U, 0));
     assert!(matches!(s.ed.tool(), Tool::Idle));
@@ -804,14 +750,14 @@ fn crosshair_snap_cursor_and_axes_draw_in_the_overlay() {
         o.lines.x0.contains(&(30 * U)),
         "vertical line at the snapped x"
     );
-    run(&mut s, "view.show_hide.draw_grid_axes", "");
+    s.run("view.show_hide.draw_grid_axes", "");
     assert_eq!(s.ed.overlay().lines.x0.len(), base + 4);
     s.key("Alt+Z");
     s.move_to((41 * U, U)); // near x1's OUT pin (40, 0)
     assert_eq!(s.ed.overlay().polygons.end.len(), 1, "the snap diamond");
     s.key("Alt+X");
     s.key("Alt+Z");
-    run(&mut s, "view.show_hide.draw_grid_axes", "");
+    s.run("view.show_hide.draw_grid_axes", "");
     s.move_to((30 * U, 10 * U));
     assert_eq!(s.ed.overlay().lines.x0.len(), base);
 }
@@ -876,7 +822,7 @@ fn crash_recovery_asks_to_recover_or_discard() {
     let edited = crash(&dir);
     assert_ne!(edited, original);
     let mut s = open(&dir);
-    assert_eq!(dialog(&s), "dialog.recover", "{}", status(&s));
+    assert_eq!(dialog(&s), "dialog.recover", "{}", s.status());
     assert_eq!(s.text(), original, "nothing applied before the decision");
     s.click_node("dialog.recover.discard");
     assert_eq!((dialog(&s), s.text()), (String::new(), original.clone()));
@@ -941,7 +887,7 @@ fn join_trim_merges_cuts_and_is_idempotent() {
     let t = s.text();
     s.key("&");
     assert_eq!(s.text(), t);
-    assert!(status(&s).contains("already"));
+    assert!(s.status().contains("already"));
     // A wire end on another wire's middle cuts it (T junction).
     s.move_to((340 * U, 0));
     s.key("w");
@@ -986,7 +932,7 @@ fn break_wires_at_pins_and_at_the_pointer() {
 #[test]
 fn align_to_grid_snaps_coordinates() {
     let mut s = Session::open("inv", "top.shcomp", "align", true);
-    run(&mut s, "view.set_snap_value", "1");
+    s.run("view.set_snap_value", "1");
     s.click((150 * U, 0));
     s.move_to((150 * U, 0));
     s.key("m");
@@ -996,7 +942,7 @@ fn align_to_grid_snaps_coordinates() {
         "{}",
         s.text()
     );
-    run(&mut s, "view.set_snap_value", "10");
+    s.run("view.set_snap_value", "10");
     s.key("Alt+U");
     assert!(
         s.text().contains("  at 140 0 R0\n  name x2"),
@@ -1011,7 +957,7 @@ fn align_to_grid_snaps_coordinates() {
 fn highlight_menu_duplicates_overlaps_and_selection() {
     let mut s = Session::open("inv", "top.shcomp", "hilite", true);
     // Rename x2 to x1: a duplicate.
-    run(&mut s, "file.save", "");
+    s.run("file.save", "");
     s.click((150 * U, 0));
     s.key("q");
     s.click_node("dialog.props.val.0");
@@ -1021,12 +967,12 @@ fn highlight_menu_duplicates_overlaps_and_selection() {
     s.click_node("dialog.props.ok");
     s.key("Esc");
     s.key("#");
-    assert_eq!(s.ed.selection().len(), 2, "{}", status(&s));
+    assert_eq!(s.ed.selection().len(), 2, "{}", s.status());
     s.key("Ctrl+#");
     let t = s.text();
     assert!(t.contains("name x1\n") && t.contains("name x2\n"), "{t}");
     s.key("Ctrl+#");
-    assert!(status(&s).contains("no duplicate"));
+    assert!(s.status().contains("no duplicate"));
     // An exact copy on top of x1: select overlapped finds the copy only.
     s.key("Esc");
     s.click((10 * U, 0));
@@ -1034,7 +980,7 @@ fn highlight_menu_duplicates_overlaps_and_selection() {
     s.key("c");
     s.click((0, 0));
     s.key("Esc");
-    run(&mut s, "highlight.select_overlapped_instances", "");
+    s.run("highlight.select_overlapped_instances", "");
     assert_eq!(s.ed.selection().len(), 1);
     s.key("Del");
     // Highlight the VDD net, then select what is highlighted.
@@ -1044,17 +990,17 @@ fn highlight_menu_duplicates_overlaps_and_selection() {
     s.key("Alt+K");
     assert!(s.ed.selection().len() >= 3, "{:?}", s.ed.selection());
     // Increment highlight color draws the net in its own layer.
-    run(&mut s, "highlight.increment_hilight_color", "");
+    s.run("highlight.increment_hilight_color", "");
     s.frame(InputEvents::default());
     // Only probes dims everything but the highlight (palette, no edit).
-    run(&mut s, "highlight.view_only_probes", "");
+    s.run("highlight.view_only_probes", "");
     assert!(s.ed.opts().only_probes);
 }
 
 #[test]
 fn compare_schematics_outlines_the_differences() {
     let mut s = Session::open("inv", "top.shcomp", "compare", true);
-    run(&mut s, "file.save_as", "top_b");
+    s.run("file.save_as", "top_b");
     // Change the copy: delete the VDD rail wire, move the VSS rail wire (clicks off the
     // labels' anchors: a press on a connection point starts a wire).
     s.click((30 * U, -70 * U));
@@ -1069,30 +1015,26 @@ fn compare_schematics_outlines_the_differences() {
         s.text()
     );
     assert!(!s.text().contains("w00006"));
-    run(
-        &mut s,
-        "highlight.set_schematic_to_compare_and_compare_wit",
-        "",
-    );
+    s.run("highlight.set_schematic_to_compare_and_compare_wit", "");
     s.click_node("dialog.choose.filter");
     s.type_text("top.sh"); // top.shcomp only (not top_b.shcomp)
     assert!(!composed(&s, "dialog.choose.row.1"));
     s.click_node("dialog.choose.row.0");
     s.frame(InputEvents::default());
-    assert!(status(&s).contains("compare:"), "{}", status(&s));
+    assert!(s.status().contains("compare:"), "{}", s.status());
     assert!(
-        status(&s).contains("1 added/changed here"),
+        s.status().contains("1 added/changed here"),
         "{}\n{}\n{:?}",
-        status(&s),
+        s.status(),
         s.text(),
         active_path(&s)
     );
     assert!(
-        status(&s).contains("1 only in the other cell"),
+        s.status().contains("1 only in the other cell"),
         "{}",
-        status(&s)
+        s.status()
     );
-    run(&mut s, "highlight.compare_schematics", "");
+    s.run("highlight.compare_schematics", "");
     assert!(!s.ed.opts().only_probes);
 }
 
@@ -1123,7 +1065,7 @@ fn symbol_menu_makes_symbols_schematics_labels_and_pins() {
     // Create symbol pins from selected ports: none missing → status.
     s.click((300 * U, 0));
     s.key("Alt+H");
-    assert!(status(&s).contains("without a pin"), "{}", status(&s));
+    assert!(s.status().contains("without a pin"), "{}", s.status());
     // Attach net labels: x2's unconnected pins after a plain move away.
     s.key("Esc");
     s.click((150 * U, 0));
@@ -1179,10 +1121,10 @@ fn view_options_shape_the_palette_and_the_ui() {
         "canvas only"
     );
     s.key("\\");
-    run(&mut s, "view.show_hide.show_toolbar", "");
+    s.run("view.show_hide.show_toolbar", "");
     assert!(composed(&s, "menubar") && !composed(&s, "toolbar"));
     // Layers: hide layer 1 (wires), only the current layer, all again.
-    run(&mut s, "layers.toggle.1", "");
+    s.run("layers.toggle.1", "");
     assert_eq!(s.ed.opts().hidden, 1 << 1);
     s.key("Ctrl+5");
     assert_eq!(s.ed.opts().layer, 5);
@@ -1192,7 +1134,7 @@ fn view_options_shape_the_palette_and_the_ui() {
     s.key("<");
     assert_eq!(s.ed.opts().hidden, 0);
     // The visible-layers dialog: one checkable row per layer; a click toggles it.
-    run(&mut s, "view.show_hide.visible_layers", "");
+    s.run("view.show_hide.visible_layers", "");
     assert_eq!(dialog(&s), "dialog.layers");
     assert!(composed(&s, "dialog.layers.row.21"));
     s.click_node("dialog.layers.row.3");
@@ -1201,14 +1143,14 @@ fn view_options_shape_the_palette_and_the_ui() {
     // Widths, dim, colors, reset.
     s.key("Ctrl++");
     assert_eq!(s.ed.opts().width_tenths, 15);
-    run(&mut s, "view.set_line_width", "2");
+    s.run("view.set_line_width", "2");
     assert_eq!(s.ed.opts().width_tenths, 20);
-    run(&mut s, "view.dim_colors", "0.5");
+    s.run("view.dim_colors", "0.5");
     assert_eq!(s.ed.opts().dim, 50);
-    run(&mut s, "view.change_current_layer_color", "ff0000");
-    run(&mut s, "view.change_current_layer_color", "zz");
-    assert!(status(&s).contains("not an rrggbb"));
-    run(&mut s, "view.reset_all_colors_to_default", "");
+    s.run("view.change_current_layer_color", "ff0000");
+    s.run("view.change_current_layer_color", "zz");
+    assert!(s.status().contains("not an rrggbb"));
+    s.run("view.reset_all_colors_to_default", "");
     assert_eq!(
         (
             s.ed.opts().dim,
@@ -1221,11 +1163,11 @@ fn view_options_shape_the_palette_and_the_ui() {
     let t = s.text();
     s.key("Alt+B");
     assert_eq!(s.ed.opts().show_symbols, 1);
-    run(&mut s, "view.show_hide.symbol_text", "");
+    s.run("view.show_hide.symbol_text", "");
     assert!(!s.ed.opts().symbol_text);
     assert_eq!(s.text(), t);
     // Snap / grid / crosshair size dialogs and their arguments.
-    run(&mut s, "view.set_grid_spacing", "5");
+    s.run("view.set_grid_spacing", "5");
     assert_eq!(s.ed.opts().grid, 5 * U);
     s.key("Ctrl+G");
     assert_eq!(dialog(&s), "dialog.enter_text");
@@ -1235,10 +1177,10 @@ fn view_options_shape_the_palette_and_the_ui() {
     s.type_text("2.5");
     s.key("Enter");
     assert_eq!(s.ed.opts().snap, 2500);
-    run(&mut s, "options.crosshair.crosshair_size", "12");
+    s.run("options.crosshair.crosshair_size", "12");
     assert_eq!(s.ed.opts().crosshair_px, 12);
-    run(&mut s, "options.crosshair.crosshair_size", "-3");
-    assert!(status(&s).contains("out of range"));
+    s.run("options.crosshair.crosshair_size", "-3");
+    assert!(s.status().contains("out of range"));
 }
 
 #[test]
@@ -1269,41 +1211,39 @@ fn properties_menu_ignore_header_and_edit_file() {
     assert_eq!(dialog(&s), "dialog.edit_file");
     let typed = original.replace("label n00001 70 0 R0 mid", "label n00001 70 0 R0 middle");
     s.key("Ctrl+A");
-    s.ed.command("dialog.edit_file.ok", &typed);
-    s.frame(InputEvents::default());
+    s.run("dialog.edit_file.ok", &typed);
     assert!(s.text().contains("R0 middle\n"), "{}", s.text());
     assert_eq!(s.text(), typed);
     s.key("u");
     assert_eq!(s.text(), original, "one undo");
     // A text that does not parse is refused with its line.
     s.key("Alt+Q");
-    s.ed.command("dialog.edit_file.ok", "schemify 1 shcomp\nwire x 0 0\n");
-    s.frame(InputEvents::default());
-    assert!(status(&s).starts_with("edit file: line"), "{}", status(&s));
+    s.run("dialog.edit_file.ok", "schemify 1 shcomp\nwire x 0 0\n");
+    assert!(s.status().starts_with("edit file: line"), "{}", s.status());
     assert_eq!(s.text(), original);
 }
 
 #[test]
 fn simulation_help_and_waves_commands() {
     let mut s = Session::open("inv", "top.shcomp", "simhelp", true);
-    run(&mut s, "simulation.edit_netlist", "");
+    s.run("simulation.edit_netlist", "");
     let title = s.ed.session().text_view().map(|v| v.title.clone());
     assert_eq!(
         title.as_deref(),
         Some("top.spice (netlist)"),
         "{}",
-        status(&s)
+        s.status()
     );
-    run(&mut s, "simulation.changelog_from_current_hierarchy", "");
+    s.run("simulation.changelog_from_current_hierarchy", "");
     let v = s.ed.session().text_view().unwrap();
     assert!(
         v.body.contains("top.shcomp") && v.body.contains("inv.shcomp"),
         "{}",
         v.body
     );
-    run(&mut s, "simulation.list_running_sub_processes", "");
+    s.run("simulation.list_running_sub_processes", "");
     assert!(s.ed.session().text_view().unwrap().body.contains("no run"));
-    run(&mut s, "help.about", "");
+    s.run("help.about", "");
     assert!(
         s.ed.session()
             .text_view()
@@ -1311,7 +1251,7 @@ fn simulation_help_and_waves_commands() {
             .body
             .contains("Schemify")
     );
-    run(&mut s, "help.help", "");
+    s.run("help.help", "");
     assert!(
         s.ed.session()
             .text_view()
@@ -1319,21 +1259,17 @@ fn simulation_help_and_waves_commands() {
             .body
             .contains("Keys are xschem's")
     );
-    run(&mut s, "waves.load.tran", "");
+    s.run("waves.load.tran", "");
     assert_eq!(dialog(&s), "dialog.choose");
     s.key("Esc");
     s.key("Esc");
-    run(&mut s, "waves.clear", "");
+    s.run("waves.clear", "");
     assert!(!s.ed.waves_open());
-    run(&mut s, "options.cycle_netlist_format", "");
+    s.run("options.cycle_netlist_format", "");
     assert_eq!(s.ed.dialect(), schemify_elab::Dialect::Espice);
-    run(&mut s, "options.cycle_netlist_format", "");
+    s.run("options.cycle_netlist_format", "");
     assert_eq!(s.ed.dialect(), schemify_elab::Dialect::Xyce);
-    run(
-        &mut s,
-        "options.netlist_format_symbol_mode.flat_netlist",
-        "",
-    );
+    s.run("options.netlist_format_symbol_mode.flat_netlist", "");
     assert!(s.ed.opts().flat);
 }
 
@@ -1347,20 +1283,11 @@ fn menus_reach_parity_commands() {
     assert!(
         Path::new(&s.dir.join(".schemify/export/top.svg")).exists(),
         "{}",
-        status(&s)
+        s.status()
     );
 }
 
 // ---------------------------------------------------------------------------- more oracles
-
-/// Replaces the active document's text through Properties → Edit file (one undoable edit):
-/// the quickest way to set up a schematic for a test.
-fn set_text(s: &mut Session, text: &str) {
-    s.key("Alt+Q");
-    s.ed.command("dialog.edit_file.ok", text);
-    s.frame(InputEvents::default());
-    assert_eq!(s.text(), text, "{}", status(s));
-}
 
 /// Ctrl+drag stretches; a stretch breaks a direct pin-to-pin contact, a kissing move keeps it
 /// with a new wire.
@@ -1435,7 +1362,7 @@ fn join_trim_keeps_connectivity_over_random_wires() {
             let d = schemify_format::parse(text.as_bytes()).unwrap();
             schemify_format::write(&d)
         };
-        set_text(&mut s, &canonical);
+        s.set_text(&canonical);
         let probes = |s: &Session| -> Vec<Vec<(i32, i32)>> {
             let (h, _) = s.ed.active().unwrap();
             let doc = s.ed.session().project.doc(h).unwrap();
@@ -1473,7 +1400,7 @@ fn join_trim_keeps_connectivity_over_random_wires() {
 #[test]
 fn auto_trim_joins_after_each_wire() {
     let mut s = Session::open("inv", "top.shcomp", "autotrim", true);
-    run(&mut s, "options.auto_join_trim_wires", "");
+    s.run("options.auto_join_trim_wires", "");
     s.move_to((300 * U, 0));
     s.key("w");
     s.click((340 * U, 0));
@@ -1495,7 +1422,7 @@ fn make_subcircuit_moves_the_selection_into_a_new_cell() {
     s.click((150 * U, 0)); // x2
     s.key("Ctrl+Shift+H");
     let file = s.dir.join("top_sub1.shcomp");
-    let sub = std::fs::read_to_string(&file).unwrap_or_else(|_| panic!("{}", status(&s)));
+    let sub = std::fs::read_to_string(&file).unwrap_or_else(|_| panic!("{}", s.status()));
     // x2's four pins sit on four nets that cross the boundary: four ports, four pins.
     assert_eq!(lines(&sub, "port ").len(), 4, "{sub}");
     assert_eq!(lines(&sub, "pin ").len(), 4, "{sub}");
@@ -1508,7 +1435,7 @@ fn make_subcircuit_moves_the_selection_into_a_new_cell() {
     // Negative space: nothing selected → a status line, no file.
     s.key("Esc");
     s.key("Ctrl+Shift+H");
-    assert!(status(&s).contains("select"), "{}", status(&s));
+    assert!(s.status().contains("select"), "{}", s.status());
     assert!(!s.dir.join("top_sub2.shcomp").exists());
 }
 
@@ -1600,49 +1527,45 @@ fn unselect_area_removes_boxed_objects() {
 #[test]
 fn compare_swap_and_toggle() {
     let mut s = Session::open("inv", "top.shcomp", "swap", true);
-    run(&mut s, "file.save_as", "top_b");
+    s.run("file.save_as", "top_b");
     s.click((30 * U, -70 * U));
     s.key("Del");
-    run(
-        &mut s,
-        "highlight.set_schematic_to_compare_and_compare_wit",
-        "",
-    );
+    s.run("highlight.set_schematic_to_compare_and_compare_wit", "");
     s.click_node("dialog.choose.filter");
     s.type_text("top.sh");
     s.click_node("dialog.choose.row.0");
     s.frame(InputEvents::default());
     assert!(!s.ed.parity_decor().is_empty(), "the diff is drawn");
-    run(&mut s, "highlight.compare_schematics", "");
+    s.run("highlight.compare_schematics", "");
     assert!(s.ed.parity_decor().is_empty(), "toggled off");
-    run(&mut s, "highlight.compare_schematics", "");
+    s.run("highlight.compare_schematics", "");
     assert!(!s.ed.parity_decor().is_empty());
-    run(&mut s, "highlight.swap_compare_schematics", "");
+    s.run("highlight.swap_compare_schematics", "");
     assert!(
         active_path(&s).ends_with("top.shcomp"),
         "{:?}",
         active_path(&s)
     );
     assert!(
-        status(&s).contains("1 added/changed here"),
+        s.status().contains("1 added/changed here"),
         "{}",
-        status(&s)
+        s.status()
     );
 }
 
 #[test]
 fn highlight_decor_options_and_auto_highlight() {
     let mut s = Session::open("inv", "top.shcomp", "hdecor", true);
-    run(&mut s, "highlight.auto_highlight_net_pins", "");
+    s.run("highlight.auto_highlight_net_pins", "");
     s.click((60 * U, 0)); // a wire of `mid`
-    assert_eq!(s.ed.highlight_keys().len(), 1, "{}", status(&s));
+    assert_eq!(s.ed.highlight_keys().len(), 1, "{}", s.status());
     s.click((200 * U, 40 * U)); // empty space clears it
     assert!(s.ed.highlight_keys().is_empty());
     s.click((60 * U, 0));
-    run(&mut s, "highlight.enable_highlight_connected_instances", "");
+    s.run("highlight.enable_highlight_connected_instances", "");
     let outlined = s.ed.parity_decor().rects.x0.len();
     assert_eq!(outlined, 2, "x1 and x2 touch `mid`");
-    run(&mut s, "highlight.increment_hilight_color", "");
+    s.run("highlight.increment_hilight_color", "");
     let d = s.ed.parity_decor();
     assert!(!d.lines.x0.is_empty(), "mid's wire in its own color");
     assert!(
@@ -1652,7 +1575,7 @@ fn highlight_decor_options_and_auto_highlight() {
             .all(|&l| l != schemify_editor::checks::LAYER_HILITE),
         "a per-net layer, not the shared highlight layer"
     );
-    run(&mut s, "highlight.view_only_probes", "");
+    s.run("highlight.view_only_probes", "");
     let p = s.ed.view_palette();
     assert_ne!(
         p.color[1],
@@ -1665,14 +1588,14 @@ fn highlight_decor_options_and_auto_highlight() {
 fn view_palette_follows_fill_colors_widths_and_symbol_modes() {
     let mut s = Session::open("inv", "top.shcomp", "palette", true);
     let base = s.ed.view_palette();
-    run(&mut s, "view.toggle_fill_pattern", "");
+    s.run("view.toggle_fill_pattern", "");
     assert_eq!(s.ed.view_palette().fill, 0);
-    run(&mut s, "layers.set_current.4", "");
-    run(&mut s, "view.change_current_layer_color", "ff0000");
+    s.run("layers.set_current.4", "");
+    s.run("view.change_current_layer_color", "ff0000");
     assert_eq!(s.ed.view_palette().color[4], 0xff00_00ff);
-    run(&mut s, "view.toggle_variable_line_width", "");
+    s.run("view.toggle_variable_line_width", "");
     assert_ne!(s.ed.view_palette().width[1], base.width[1] * 0.0 + 999.0);
-    run(&mut s, "layers.toggle.1", "");
+    s.run("layers.toggle.1", "");
     assert_eq!(
         s.ed.view_palette().color[1] & 0xff,
         0,
@@ -1680,18 +1603,17 @@ fn view_palette_follows_fill_colors_widths_and_symbol_modes() {
     );
     // Boxes for every instance: the shown scene has the instances' rects only.
     let full = s.ed.shown().lines.x0.len();
-    run(
-        &mut s,
+    s.run(
         "symbol.show_symbols.show_instance_bounding_boxes_for_all_sym",
         "",
     );
     assert!(s.ed.shown().lines.x0.len() < full);
     assert!(s.ed.shown().rects.x0.len() >= 2);
-    run(&mut s, "symbol.show_symbols.show_symbol_details", "");
+    s.run("symbol.show_symbols.show_symbol_details", "");
     assert_eq!(s.ed.shown().lines.x0.len(), full);
     // Transparent SVG: no background rectangle.
-    run(&mut s, "options.transparent_svg_background", "");
-    run(&mut s, "file.image_export.svg_export", "");
+    s.run("options.transparent_svg_background", "");
+    s.run("file.image_export.svg_export", "");
     let t = std::fs::read_to_string(s.dir.join(".schemify/export/top.svg")).unwrap();
     assert!(!t.contains("id=\"background\""));
 }
@@ -1699,19 +1621,19 @@ fn view_palette_follows_fill_colors_widths_and_symbol_modes() {
 #[test]
 fn small_commands_tabs_panels_graphs_and_recent() {
     let mut s = Session::open("inv", "top.shcomp", "small", true);
-    run(&mut s, "file.create_new_window_tab", "");
+    s.run("file.create_new_window_tab", "");
     assert_eq!(s.ed.session().tabs().len(), 2);
-    run(&mut s, "view.show_hide.show_erc_info_window", "");
+    s.run("view.show_hide.show_erc_info_window", "");
     assert_eq!(s.ed.panel(), schemify_editor::editor::Panel::Checks);
-    run(&mut s, "view.show_hide.show_erc_info_window", "");
+    s.run("view.show_hide.show_erc_info_window", "");
     assert_eq!(s.ed.panel(), schemify_editor::editor::Panel::None);
     s.key("Ctrl+Left");
-    run(&mut s, "simulation.graphs.add_waveform_graph", "");
+    s.run("simulation.graphs.add_waveform_graph", "");
     assert!(s.text().contains("  | ```plot\n"), "{}", s.text());
     assert!(s.ed.docs_shown());
-    run(&mut s, "simulation.view_last_job_data", "");
-    assert!(status(&s).contains("no run"));
-    run(&mut s, "symbol.set_symbol_width", "200");
+    s.run("simulation.view_last_job_data", "");
+    assert!(s.status().contains("no run"));
+    s.run("symbol.set_symbol_width", "200");
     assert_eq!(s.ed.opts().symbol_width, 200 * U);
     // The unsnapped wire cut lands between grid points.
     right_click(&mut s, (73 * U, 70 * U), SHIFT | schemify_ui::Mods::ALT);

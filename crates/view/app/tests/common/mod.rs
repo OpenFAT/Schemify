@@ -198,6 +198,37 @@ impl Session {
         self.frame(ev);
     }
 
+    /// Runs command `name` with `arg`, then one frame.
+    pub fn run(&mut self, name: &str, arg: &str) {
+        self.ed.command(name, arg);
+        self.frame(InputEvents::default());
+    }
+
+    /// The status line.
+    pub fn status(&self) -> &str {
+        self.ed.session().status()
+    }
+
+    /// Replaces the active document's text through Properties → Edit file (one undo).
+    pub fn set_text(&mut self, text: &str) {
+        self.key("Alt+Q");
+        self.run("dialog.edit_file.ok", text);
+        assert_eq!(self.text(), text, "{}", self.status());
+    }
+
+    /// The label of composed UI node `id`.
+    pub fn label(&self, id: &str) -> String {
+        let sh = &self.ed.shell();
+        let n = sh
+            .strings()
+            .find(id)
+            .and_then(|i| sh.tables().nodes.find(i))
+            .unwrap_or_else(|| panic!("{id} composed"));
+        sh.strings()
+            .get(sh.tables().nodes.prop(schemify_ui::Prop::Label)[n as usize])
+            .to_owned()
+    }
+
     /// Canonical text of the active document.
     pub fn text(&self) -> String {
         let (h, _) = self.ed.active().expect("a tab");
@@ -225,6 +256,42 @@ pub fn save_png(px: &schemify_render::Pixmap, path: &Path) {
         std::fs::create_dir_all(dir).unwrap();
     }
     std::fs::write(path, png).unwrap();
+}
+
+/// Compares `pixmap` with `tests/golden/<name>.png`: equal size, and at most 0.1% of pixels
+/// off by more than 2 in a channel. `SCHEMIFY_BLESS=1` writes the golden first; a failure
+/// writes the actual image beside the test binary's temp dir.
+pub fn check_golden(name: &str, pixmap: schemify_render::Pixmap) {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden");
+    let path = format!("{dir}/{name}.png");
+    let png = pixmap.clone().into_png().expect("encode png");
+    if std::env::var_os("SCHEMIFY_BLESS").is_some() {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(&path, &png).unwrap();
+    }
+    let want = std::fs::read(&path)
+        .unwrap_or_else(|_| panic!("{path} missing; run with SCHEMIFY_BLESS=1"));
+    let want =
+        schemify_render::Pixmap::from_png(std::io::Cursor::new(want)).expect("decode golden");
+    assert_eq!(
+        (want.width(), want.height()),
+        (pixmap.width(), pixmap.height())
+    );
+    let bad = want
+        .data()
+        .iter()
+        .zip(pixmap.data())
+        .filter(|(a, b)| {
+            let (a, b) = ([a.r, a.g, a.b, a.a], [b.r, b.g, b.b, b.a]);
+            a.iter().zip(b).any(|(x, y)| x.abs_diff(y) > 2)
+        })
+        .count();
+    let limit = want.data().len() / 1000;
+    if bad > limit {
+        let out = format!("{}/{name}.actual.png", env!("CARGO_TARGET_TMPDIR"));
+        std::fs::write(&out, &png).unwrap();
+        panic!("{name}: {bad} pixels differ (limit {limit}); actual written to {out}");
+    }
 }
 
 /// Lines of `text` starting with `prefix`.

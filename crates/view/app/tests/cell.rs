@@ -8,15 +8,9 @@ use common::Session;
 
 use schemify_ui::{InputEvents, Prop};
 
-/// Runs a command as a script would (RPC, init.lua): no clicked node.
-fn run(s: &mut Session, name: &str, arg: &str) {
-    s.ed.command(name, arg);
-    s.frame(InputEvents::default());
-}
-
 /// `cell.set` from a script: `<field id> <value>`.
 fn set(s: &mut Session, field: &str, value: &str) {
-    run(s, "cell.set", &format!("{field} {value}"));
+    s.run("cell.set", &format!("{field} {value}"));
 }
 
 fn has_node(s: &Session, id: &str) -> bool {
@@ -43,7 +37,7 @@ fn value(s: &Session, id: &str) -> String {
 fn panel_projects_the_interface_by_file_kind() {
     let mut s = Session::open("rc", "res.shprim", "cell-show", true);
     assert!(!has_node(&s, "cell.pane"), "hidden until asked");
-    run(&mut s, "view.cell", "");
+    s.run("view.cell", "");
     assert!(has_node(&s, "cell.pane"));
     assert_eq!(value(&s, "cell.hdr.prefix"), "R");
     assert_eq!(value(&s, "cell.hdr.doc"), "Resistor (run fixture)");
@@ -58,12 +52,12 @@ fn panel_projects_the_interface_by_file_kind() {
     assert!(has_node(&s, "cell.add_impl.veriloga") && has_node(&s, "cell.add_impl.spice"));
     assert!(!has_node(&s, "cell.add_impl.schematic"));
     assert!(!has_node(&s, "cell.hdr.corner"), "a bench-only attribute");
-    run(&mut s, "view.cell", "");
+    s.run("view.cell", "");
     assert!(!has_node(&s, "cell.pane"));
 
     // A testbench: header only (no interface), with its bench attributes.
     let mut b = Session::open("rc", "tb.shbench", "cell-bench", true);
-    run(&mut b, "view.cell", "");
+    b.run("view.cell", "");
     assert_eq!(value(&b, "cell.hdr.corner"), "tt");
     assert!(has_node(&b, "cell.hdr.config"));
     assert!(!has_node(&b, "cell.s.pins") && !has_node(&b, "cell.add_param"));
@@ -87,21 +81,21 @@ fn every_netlist_field_edits_through_the_panel() {
     );
 
     // Pins: dir and domain from dropdown choices, rename, port order.
-    run(&mut s, "cell.set", "cell.pin.0.dir=in");
+    s.run("cell.set", "cell.pin.0.dir=in");
     assert!(has(&s, "pin A in 0 -30"), "{}", s.text());
-    run(&mut s, "cell.set", "cell.pin.1.domain=digital");
+    s.run("cell.set", "cell.pin.1.domain=digital");
     assert!(has(&s, "  domain digital"));
-    run(&mut s, "cell.set", "cell.pin.1.domain=analog");
+    s.run("cell.set", "cell.pin.1.domain=analog");
     assert!(
         !s.text().contains("domain"),
         "analog is the default: no attribute"
     );
     set(&mut s, "cell.pin.1.name", "N");
     assert!(has(&s, "pin N inout 0 30"));
-    run(&mut s, "cell.pin_down", "cell.pin.0.down");
+    s.run("cell.pin_down", "cell.pin.0.down");
     let t = s.text();
     assert!(t.find("pin N").unwrap() < t.find("pin A").unwrap(), "{t}");
-    run(&mut s, "cell.pin_down", "cell.pin.1.down");
+    s.run("cell.pin_down", "cell.pin.1.down");
     assert_eq!(s.text(), t, "the last pin cannot move later");
 
     // Params: fields, attributes, kind, add and delete.
@@ -109,21 +103,21 @@ fn every_netlist_field_edits_through_the_panel() {
     assert!(has(&s, "param R 2k"));
     set(&mut s, "cell.param.0.min", "1");
     assert!(has(&s, "  min 1"));
-    run(&mut s, "cell.set", "cell.param.0.kind=choice");
+    s.run("cell.set", "cell.param.0.kind=choice");
     set(&mut s, "cell.param.0.choices", "1k 2k 10k");
     assert!(
         has(&s, "  kind choice") && has(&s, "  choices 1k 2k 10k"),
         "{}",
         s.text()
     );
-    run(&mut s, "cell.set", "cell.param.0.kind=number");
+    s.run("cell.set", "cell.param.0.kind=number");
     assert!(
         !s.text().contains("kind"),
         "number is the default: no attribute"
     );
-    run(&mut s, "cell.add_param", "");
+    s.run("cell.add_param", "");
     assert!(has(&s, "param p1 0"));
-    run(&mut s, "cell.delete", "cell.param.1.del");
+    s.run("cell.delete", "cell.param.1.del");
     assert!(!s.text().contains("param p1"));
 
     // Impls: model, per-dialect formats, a Verilog-A impl with its body, delete.
@@ -142,7 +136,7 @@ fn every_netlist_field_edits_through_the_panel() {
     );
     set(&mut s, "cell.impl.0.format.spice", "");
     assert!(!s.text().contains("format spice"));
-    run(&mut s, "cell.add_impl", "veriloga");
+    s.run("cell.add_impl", "veriloga");
     assert!(
         has(&s, "impl va veriloga") && has(&s, "  default spice"),
         "{}",
@@ -151,7 +145,7 @@ fn every_netlist_field_edits_through_the_panel() {
     set(&mut s, "cell.impl.1.body", "module r(A, N);\nendmodule");
     assert!(s.text().contains("body va"), "{}", s.text());
     assert!(s.text().contains("module r(A, N);") && s.text().contains("endmodule"));
-    run(&mut s, "cell.delete", "cell.impl.1.del");
+    s.run("cell.delete", "cell.impl.1.del");
     assert!(!s.text().contains("impl va") && !s.text().contains("body va"));
     assert!(!s.text().contains("default"), "one impl left: no default");
 
@@ -178,16 +172,12 @@ fn rejected_values_leave_the_document_untouched() {
         ("cell.pin.9.name Z", "no such pin"),
     ];
     for (arg, why) in cases {
-        run(&mut s, "cell.set", arg);
-        assert!(
-            s.ed.session().status().contains(why),
-            "{arg}: {}",
-            s.ed.session().status()
-        );
+        s.run("cell.set", arg);
+        assert!(s.status().contains(why), "{arg}: {}", s.status());
         assert_eq!(s.text(), before, "{arg} changed the document");
     }
-    run(&mut s, "cell.add_impl", "schematic");
-    assert!(s.ed.session().status().contains("no schematic"));
+    s.run("cell.add_impl", "schematic");
+    assert!(s.status().contains("no schematic"));
     assert_eq!(s.text(), before);
 }
 
@@ -234,58 +224,22 @@ fn panel_edits_by_mouse_and_keyboard() {
 #[test]
 fn a_new_component_becomes_saveable() {
     let mut s = Session::open("inv", "top.shcomp", "cell-new", true);
-    run(&mut s, "file.clear_schematic", "");
-    run(&mut s, "file.save", "");
-    assert!(
-        !s.ed.session().status().starts_with("saved"),
-        "{}",
-        s.ed.session().status()
-    );
-    run(&mut s, "cell.add_impl", "schematic");
+    s.run("file.clear_schematic", "");
+    s.run("file.save", "");
+    assert!(!s.status().starts_with("saved"), "{}", s.status());
+    s.run("cell.add_impl", "schematic");
     assert!(s.text().contains("impl sch schematic"), "{}", s.text());
-    run(&mut s, "file.save", "");
-    assert!(
-        s.ed.session().status().starts_with("saved"),
-        "{}",
-        s.ed.session().status()
-    );
+    s.run("file.save", "");
+    assert!(s.status().starts_with("saved"), "{}", s.status());
 }
 
 /// The panel's look: a primitive under the Modern preset with the panel open.
 #[test]
 fn golden_cell_panel_modern() {
     let mut s = Session::open("rc", "res.shprim", "cell-golden", true);
-    run(&mut s, "view.theme_modern", "");
-    run(&mut s, "view.cell", "");
-    let px = s.render();
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/golden/cell_panel_modern.png"
-    );
-    if std::env::var_os("SCHEMIFY_BLESS").is_some() {
-        common::save_png(&px, std::path::Path::new(path));
-    }
-    let want = std::fs::read(path).expect("golden missing; run with SCHEMIFY_BLESS=1");
-    let want = schemify_render::Pixmap::from_png(std::io::Cursor::new(want)).expect("png");
-    let bad = want
-        .data()
-        .iter()
-        .zip(px.data())
-        .filter(|(a, b)| a.r.abs_diff(b.r) > 2 || a.g.abs_diff(b.g) > 2 || a.b.abs_diff(b.b) > 2)
-        .count();
-    assert!(bad <= want.data().len() / 1000, "{bad} pixels differ");
-}
-
-fn label(s: &Session, id: &str) -> String {
-    let sh = &s.ed.shell();
-    let n = sh
-        .strings()
-        .find(id)
-        .and_then(|i| sh.tables().nodes.find(i))
-        .unwrap_or_else(|| panic!("{id} composed"));
-    sh.strings()
-        .get(sh.tables().nodes.prop(Prop::Label)[n as usize])
-        .to_owned()
+    s.run("view.theme_modern", "");
+    s.run("view.cell", "");
+    common::check_golden("cell_panel_modern", s.render());
 }
 
 /// The resistor with a Verilog-A impl (row 1) whose module declares `C` (out), `B` (in),
@@ -293,8 +247,8 @@ fn label(s: &Session, id: &str) -> String {
 /// B into an input, adds C and D, and reorders to C B D.
 fn with_va_body(tag: &str) -> Session {
     let mut s = Session::open("rc", "res.shprim", tag, true);
-    run(&mut s, "view.cell", "");
-    run(&mut s, "cell.add_impl", "veriloga");
+    s.run("view.cell", "");
+    s.run("cell.add_impl", "veriloga");
     let body = "`include \"disciplines.vams\"\n// r with three ports\nmodule r(C, B, D);\n  \
                 output C; input B;\n  electrical B, C, D;\n  analog V(C) <+ V(B);\nendmodule";
     set(&mut s, "cell.impl.1.body", body);
@@ -313,11 +267,9 @@ fn sync_pins_shows_the_diff_then_applies_it_as_one_edit() {
     );
 
     // Pending: the diff is shown, the document is untouched.
-    run(&mut s, "cell.sync_ports", "cell.impl.1.sync");
+    s.run("cell.sync_ports", "cell.impl.1.sync");
     assert_eq!(s.text(), before, "a pending sync edits nothing");
-    let rows: Vec<String> = (0..5)
-        .map(|k| label(&s, &format!("cell.sync.{k}")))
-        .collect();
+    let rows: Vec<String> = (0..5).map(|k| s.label(&format!("cell.sync.{k}"))).collect();
     assert_eq!(
         rows,
         [
@@ -332,7 +284,7 @@ fn sync_pins_shows_the_diff_then_applies_it_as_one_edit() {
     assert!(has_node(&s, "cell.sync.apply") && has_node(&s, "cell.sync.cancel"));
 
     // Apply: one transaction. Kept pins keep their place; new ones stack below them.
-    run(&mut s, "cell.sync_apply", "");
+    s.run("cell.sync_apply", "");
     assert_eq!(
         common::lines(&s.text(), "pin "),
         ["pin C out 40 40", "pin B in 0 30", "pin D inout 40 50"],
@@ -341,10 +293,10 @@ fn sync_pins_shows_the_diff_then_applies_it_as_one_edit() {
     );
     assert!(!has_node(&s, "cell.sync.apply"), "applied: nothing pending");
     // Synced pins match: a second sync shows no change and offers no Apply.
-    run(&mut s, "cell.sync_ports", "cell.impl.1.sync");
-    assert_eq!(label(&s, "cell.sync.0"), "Pins already match the ports.");
+    s.run("cell.sync_ports", "cell.impl.1.sync");
+    assert_eq!(s.label("cell.sync.0"), "Pins already match the ports.");
     assert!(!has_node(&s, "cell.sync.apply"));
-    run(&mut s, "cell.sync_cancel", "");
+    s.run("cell.sync_cancel", "");
 
     // One undo reverts the whole sync.
     s.key("u");
@@ -355,39 +307,39 @@ fn sync_pins_shows_the_diff_then_applies_it_as_one_edit() {
 fn cancel_errors_and_stale_syncs_leave_the_document_untouched() {
     let mut s = with_va_body("cell-sync-cancel");
     let before = s.text();
-    run(&mut s, "cell.sync_ports", "cell.impl.1.sync");
-    run(&mut s, "cell.sync_cancel", "");
+    s.run("cell.sync_ports", "cell.impl.1.sync");
+    s.run("cell.sync_cancel", "");
     assert!(!has_node(&s, "cell.sync.cancel"));
-    run(&mut s, "cell.sync_apply", "");
+    s.run("cell.sync_apply", "");
     assert_eq!(s.text(), before, "cancelled: Apply has nothing to apply");
-    assert!(s.ed.session().status().contains("nothing pending"));
+    assert!(s.status().contains("nothing pending"));
 
     // Any edit after the sync was read makes it stale: it is neither shown nor applied.
-    run(&mut s, "cell.sync_ports", "cell.impl.1.sync");
+    s.run("cell.sync_ports", "cell.impl.1.sync");
     set(&mut s, "cell.param.0.default", "2k");
     let edited = s.text();
     assert!(!has_node(&s, "cell.sync.0"), "a stale sync is not shown");
-    run(&mut s, "cell.sync_apply", "");
+    s.run("cell.sync_apply", "");
     assert_eq!(s.text(), edited);
 
     // A body that does not parse: its line in the status, nothing changes or is pending.
     set(&mut s, "cell.impl.1.body", "// a\nmodule r(A,\n  B");
     let broken = s.text();
-    run(&mut s, "cell.sync_ports", "cell.impl.1.sync");
+    s.run("cell.sync_ports", "cell.impl.1.sync");
     assert!(
         s.ed.session()
             .status()
             .contains("line 2: unterminated port list"),
         "{}",
-        s.ed.session().status()
+        s.status()
     );
     assert!(!has_node(&s, "cell.sync.0"));
-    run(&mut s, "cell.symbol_from_ports", "cell.impl.1.symbol");
-    assert!(s.ed.session().status().contains("line 2"));
+    s.run("cell.symbol_from_ports", "cell.impl.1.symbol");
+    assert!(s.status().contains("line 2"));
     assert_eq!(s.text(), broken);
     // An impl without a body has no ports to read.
-    run(&mut s, "cell.sync_ports", "cell.impl.0.sync");
-    assert!(s.ed.session().status().contains("has no body"));
+    s.run("cell.sync_ports", "cell.impl.0.sync");
+    assert!(s.status().contains("has no body"));
     assert_eq!(s.text(), broken);
 }
 
@@ -395,7 +347,7 @@ fn cancel_errors_and_stale_syncs_leave_the_document_untouched() {
 fn symbol_from_ports_redraws_a_primitive_in_port_order() {
     let mut s = with_va_body("cell-symbol");
     let before = s.text();
-    run(&mut s, "cell.symbol_from_ports", "cell.impl.1.symbol");
+    s.run("cell.symbol_from_ports", "cell.impl.1.symbol");
     let t = s.text();
     let pins: Vec<(&str, &str)> = common::lines(&t, "pin ")
         .iter()
@@ -428,12 +380,12 @@ fn symbol_from_ports_redraws_a_primitive_in_port_order() {
 fn bench_outputs_specs_and_optimizers_edit_through_the_panel() {
     let mut s = Session::open("rc", "tb.shbench", "cell-bench-edit", true);
     let has = |s: &Session, line: &str| s.text().lines().any(|l| l == line);
-    run(&mut s, "view.cell", "");
+    s.run("view.cell", "");
     assert!(has_node(&s, "cell.add.output") && has_node(&s, "cell.add.opt"));
     assert_eq!(value(&s, "cell.output.1.name"), "v1m");
 
     // A new output is appended (row 2) and edited.
-    run(&mut s, "cell.add_bench", "output");
+    s.run("cell.add_bench", "output");
     set(&mut s, "cell.output.2.name", "vout_final");
     set(&mut s, "cell.output.2.expr", "v(out)");
     set(&mut s, "cell.output.2.unit", "V");
@@ -444,23 +396,19 @@ fn bench_outputs_specs_and_optimizers_edit_through_the_panel() {
     );
 
     // Specs go to outputs without one, in order: tau, then vout_final; then none is left.
-    run(&mut s, "cell.add_bench", "spec");
+    s.run("cell.add_bench", "spec");
     assert!(has(&s, "spec tau"), "{}", s.text());
-    run(&mut s, "cell.add_bench", "spec");
+    s.run("cell.add_bench", "spec");
     assert!(has(&s, "spec vout_final"), "{}", s.text());
     set(&mut s, "cell.spec.2.min", "0.9");
     assert!(has(&s, "  min 0.9"), "{}", s.text());
-    run(&mut s, "cell.add_bench", "spec");
-    assert!(
-        s.ed.session().status().contains("already has a spec"),
-        "{}",
-        s.ed.session().status()
-    );
+    s.run("cell.add_bench", "spec");
+    assert!(s.status().contains("already has a spec"), "{}", s.status());
 
     // A second optimizer (row 1) with every field.
-    run(&mut s, "cell.add_bench", "opt");
+    s.run("cell.add_bench", "opt");
     assert!(has(&s, "optimize opt1"), "{}", s.text());
-    run(&mut s, "cell.set", "cell.opt.1.algo=random");
+    s.run("cell.set", "cell.opt.1.algo=random");
     set(&mut s, "cell.opt.1.goals", "vout_final target 1 weight 2");
     set(&mut s, "cell.opt.1.vary", "R C");
     set(&mut s, "cell.opt.1.budget", "40");
@@ -482,12 +430,8 @@ fn bench_outputs_specs_and_optimizers_edit_through_the_panel() {
         ("cell.opt.1.budget lots", "whole number"),
         ("cell.output.2.expr ", "needs an expression"),
     ] {
-        run(&mut s, "cell.set", arg);
-        assert!(
-            s.ed.session().status().contains(why),
-            "{arg}: {}",
-            s.ed.session().status()
-        );
+        s.run("cell.set", arg);
+        assert!(s.status().contains(why), "{arg}: {}", s.status());
         assert_eq!(s.text(), before);
     }
     // Replacing a repeatable list is one undo.
@@ -495,7 +439,7 @@ fn bench_outputs_specs_and_optimizers_edit_through_the_panel() {
     assert!(!s.text().contains("  vary C"));
     s.key("u");
     assert_eq!(s.text(), before);
-    run(&mut s, "cell.delete", "cell.opt.1.del");
+    s.run("cell.delete", "cell.opt.1.del");
     assert!(!s.text().contains("optimize opt1"));
     assert!(has(&s, "optimize fit"), "the fixture's optimizer stays");
 }
