@@ -1126,7 +1126,7 @@ impl Project {
     /// when the kind rules fail (the file would not parse).
     pub fn save(&mut self, h: DocHandle) -> Result<Option<SaveRequest>, Code> {
         let open = self.open_mut(h).ok_or(Code::E040)?;
-        if open.doc.read_only() || open.conflict.is_some() || open.tail.is_some() {
+        if refused(open) {
             return Err(Code::E044);
         }
         if !dirty(open) {
@@ -1385,15 +1385,8 @@ impl Project {
         if refused(open) {
             return Outcome::Refused(Code::E044);
         }
-        let params = self.param_map(open, &tx.ops);
-        let mut ops = tx.ops.clone();
-        let Project { slots, rng, .. } = self;
-        let open = slots[h.index as usize]
-            .open
-            .as_deref_mut()
-            .expect("checked live");
-        let inverse = match edit::apply(&mut open.doc, &mut ops, &params, rng) {
-            Ok(inv) => inv,
+        let (open, ops, inverse) = match self.apply_ops(h, &tx.ops) {
+            Ok(applied) => applied,
             Err(errors) => return Outcome::Rejected(errors),
         };
         match tx.mode {
@@ -1408,9 +1401,24 @@ impl Project {
             },
         }
     }
-}
 
-impl Project {
+    /// Applies `ops` to live, unrefused document `h` with the parameter facts of the cells
+    /// they instantiate. Returns the document, the ops as applied and their inverse.
+    fn apply_ops(&mut self, h: DocHandle, ops: &[Op]) -> Result<Applied<'_>, Vec<OpError>> {
+        let open = self.open_ref(h).expect("checked live");
+        assert!(!refused(open), "checked by the caller");
+        let params = self.param_map(open, ops);
+        let mut ops = ops.to_vec();
+        let Project { slots, rng, .. } = self;
+        let open = slots[h.index as usize]
+            .open
+            .as_deref_mut()
+            .expect("checked live");
+        let inverse = edit::apply(&mut open.doc, &mut ops, &params, rng)?;
+        assert_eq!(inverse.len(), ops.len());
+        Ok((open, ops, inverse))
+    }
+
     /// [`Edit::Extend`]: applies `ops` inside entry `seq`. Refused (`E040`) unless `seq` is
     /// the top of the undo stack with redo empty, and (`E044`) when the document is
     /// refused, the entry is part of the saved state, or its journal record was written
@@ -1428,15 +1436,8 @@ impl Project {
         if refused(open) || saved || !rewritable {
             return Outcome::Refused(Code::E044);
         }
-        let params = self.param_map(open, ops);
-        let mut ops = ops.to_vec();
-        let Project { slots, rng, .. } = self;
-        let open = slots[h.index as usize]
-            .open
-            .as_deref_mut()
-            .expect("checked live");
-        let mut inverse = match edit::apply(&mut open.doc, &mut ops, &params, rng) {
-            Ok(inv) => inv,
+        let (open, ops, mut inverse) = match self.apply_ops(h, ops) {
+            Ok(applied) => applied,
             Err(errors) => return Outcome::Rejected(errors),
         };
         let entry = open.undo.back_mut().expect("checked above");
@@ -1535,6 +1536,9 @@ pub fn apply_edits(project: &mut Project, requests: &[EditRequest]) -> Vec<Outco
 }
 
 // ---------------------------------------------------------------------- per-document
+
+/// A document after [`Project::apply_ops`], with the ops as applied and their inverse.
+type Applied<'a> = (&'a mut Open, Vec<Op>, Vec<Op>);
 
 fn refused(open: &Open) -> bool {
     open.doc.read_only() || open.conflict.is_some() || open.tail.is_some()
