@@ -948,7 +948,7 @@ fn interactions(n: u32) {
         b.frame(&ev, 30, true);
     }
     let [typing, typing95, _] = b.report("type");
-    // At 100k only: 1M would pass the memory cap (the leak below).
+    // At 100k only (the select-all rounds are the slow part at 1M).
     if n == 100_000 {
         // Unselect (HANDOFF bug 3): select everything, then an Alt-drag box around the whole
         // schematic drops it all; the release frame is measured (O(selected × hits) before the
@@ -975,12 +975,19 @@ fn interactions(n: u32) {
         let alt = |m: u8| InputEvent::Mods {
             mods: schemify_ui::Mods(m),
         };
-        // ponytail: 6 rounds, not 12: each select-all frame at this zoom grows the paint side's
-        // memory by ~0.7 GB (a leak in paint/render, reported), so 12 rounds pass a 6 GB cap.
-        for _ in 0..6 {
+        // Resident MiB (Linux; `None` elsewhere): each select-all frame once grew it by
+        // ~0.7 GB, every tile recording every selection mark.
+        let rss = || {
+            let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+            let pages: u64 = statm.split(' ').nth(1)?.parse().ok()?;
+            Some((pages * 4096) >> 20)
+        };
+        let mut resident = Vec::new();
+        for _ in 0..12 {
             b.ed.command("edit.select_all", "");
             b.frame(&InputEvents::default(), 300, false);
             b.ticks();
+            resident.extend(rss());
             let all = b.ed.selection().len();
             assert!(all >= n as usize, "everything selected: {all}");
             let mut down = event(alt(schemify_ui::Mods::ALT));
@@ -996,6 +1003,16 @@ fn interactions(n: u32) {
             assert!(b.ed.selection().is_empty(), "the box unselected everything");
             b.frame(&event(alt(0)), 8, false);
             b.ticks();
+        }
+        if let (Some(first), Some(last)) = (resident.get(1), resident.last()) {
+            eprintln!("  select-all rounds: resident {resident:?} MiB");
+            // Without a GPU nothing rasterizes the layers, so their patches stay queued
+            // (~19 MiB a round here); with one, the rounds measured flat (±30 MiB).
+            let cap = if b.gpu.is_some() { 96 } else { 384 };
+            assert!(
+                last.saturating_sub(*first) < cap,
+                "select-all frames retain memory: {resident:?} MiB"
+            );
         }
         let [unselect, unselect95, _] = b.report("unselect");
         eprintln!("PERF app.unselect_frame_100k_ms {unselect:.3}");

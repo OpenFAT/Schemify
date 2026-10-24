@@ -729,6 +729,14 @@ pub fn draw_marks<P: Painter>(
     let (ox, oy) = cam.origin(view);
     let s = cam.scale;
     let pt = |x: i32, y: i32| (snap(f64::from(x) * s + ox), snap(f64::from(y) * s + oy));
+    // Only the marks reaching into `view`: a tile records its own (each tile of a select-all
+    // frame recorded every mark, O(tiles × marks) of path data).
+    let cull = view.inflate(2.0, 2.0);
+    let (a, b) = (
+        cam.to_world(view, cull.x0, cull.y0),
+        cam.to_world(view, cull.x1, cull.y1),
+    );
+    let near = [a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)];
     let mut i = 0;
     // One path per run of equal colors.
     while i < marks.kind.len() {
@@ -744,7 +752,9 @@ pub fn draw_marks<P: Painter>(
                 PrimKind::Polyline => prims.polylines.layer[k],
                 PrimKind::Polygon => prims.polygons.layer[k],
             } == LAYER_DEAD;
-            if dead {
+            let [x0, y0, x1, y1] = prim_box(prims, marks.kind[i], k).map(f64::from);
+            let away = x1 < near[0] || x0 > near[2] || y1 < near[1] || y0 > near[3];
+            if dead || away {
                 i += 1;
                 continue;
             }
@@ -790,6 +800,47 @@ pub fn draw_marks<P: Painter>(
         }
         p.stroke_path(path, 2.0, rgba(color));
     }
+}
+
+/// The world box `[x0, y0, x1, y1]` of row `k` of the `kind` table of `prims` (an arc's whole
+/// circle).
+fn prim_box(prims: &CanvasPrims, kind: PrimKind, k: usize) -> [i32; 4] {
+    let ordered =
+        |x0: i32, y0: i32, x1: i32, y1: i32| [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)];
+    let b = match kind {
+        PrimKind::Line => {
+            let l = &prims.lines;
+            ordered(l.x0[k], l.y0[k], l.x1[k], l.y1[k])
+        }
+        PrimKind::Rect => {
+            let r = &prims.rects;
+            ordered(r.x0[k], r.y0[k], r.x1[k], r.y1[k])
+        }
+        PrimKind::Arc => {
+            let a = &prims.arcs;
+            let r = a.r[k].abs();
+            [
+                a.cx[k].saturating_sub(r),
+                a.cy[k].saturating_sub(r),
+                a.cx[k].saturating_add(r),
+                a.cy[k].saturating_add(r),
+            ]
+        }
+        PrimKind::Polyline | PrimKind::Polygon => {
+            let polys = if kind == PrimKind::Polygon {
+                &prims.polygons
+            } else {
+                &prims.polylines
+            };
+            let init = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+            chain(&polys.end, k).fold(init, |b, j| {
+                let (x, y) = (polys.x[j], polys.y[j]);
+                [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)]
+            })
+        }
+    };
+    assert!(b[0] <= b[2] && b[1] <= b[3], "a row's box is ordered");
+    b
 }
 
 #[cfg(test)]
@@ -838,6 +889,64 @@ mod tests {
         let out: Vec<u8> = px.data().iter().map(|c| c.g).collect();
         assert_eq!(out.len(), 100 * 100);
         out
+    }
+
+    /// Path elements a painter was asked to stroke.
+    #[derive(Default)]
+    struct Strokes(usize);
+
+    impl Painter for Strokes {
+        fn fill_rect(&mut self, _: Rect, _: vello::peniko::Color) {}
+        fn fill_path(&mut self, _: &BezPath, _: vello::peniko::Color) {}
+        fn stroke_path(&mut self, path: &BezPath, _: f64, _: vello::peniko::Color) {
+            self.0 += path.elements().len();
+        }
+        fn stroke_styled(&mut self, _: &BezPath, _: &Stroke, _: vello::peniko::Color) {}
+        fn glyphs(
+            &mut self,
+            _: &FontData,
+            _: f32,
+            _: &[i16],
+            _: vello::peniko::Color,
+            _: Affine,
+            _: &[Glyph],
+        ) {
+        }
+        fn push_clip(&mut self, _: Rect) {}
+        fn pop_clip(&mut self) {}
+    }
+
+    /// A tile records only the marks that reach into it: marked rows far outside the view add
+    /// nothing (each tile of a select-all frame once stroked every mark).
+    #[test]
+    fn marks_outside_the_view_are_not_drawn() {
+        let view = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let cam = Camera {
+            cx: 0.0,
+            cy: 0.0,
+            scale: 1e-3,
+        };
+        let stroked = |far: i32| {
+            let (mut prims, mut marks) = (CanvasPrims::default(), Marks::default());
+            prims.line(-10_000, 0, 10_000, 0, 4);
+            marks.push(PrimKind::Line, 0, 0xffff_00ff);
+            for k in 0..far {
+                prims.line(1_000_000 + k, 0, 1_000_000 + k, 1_000, 4);
+                marks.push(PrimKind::Line, k as u32 + 1, 0xffff_00ff);
+            }
+            let mut p = Strokes::default();
+            draw_marks(
+                &mut p,
+                view,
+                &cam,
+                &prims,
+                &marks,
+                &mut CanvasScratch::default(),
+            );
+            p.0
+        };
+        assert_eq!(stroked(0), 2, "the mark in view: one move and one line");
+        assert_eq!(stroked(1_000), stroked(0), "marks far away draw nothing");
     }
 
     fn ink(px: &[u8]) -> u32 {
