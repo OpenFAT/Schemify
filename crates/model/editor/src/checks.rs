@@ -245,7 +245,7 @@ pub fn violation_marks_of(
 }
 
 /// The marks on `target`, every source's (a range of the ordered overlay).
-pub fn marks_on<'a>(ann: &'a Annotations, target: &str) -> Vec<&'a Mark> {
+fn marks_on<'a>(ann: &'a Annotations, target: &str) -> Vec<&'a Mark> {
     ann.on(target).collect()
 }
 

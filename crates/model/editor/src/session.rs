@@ -278,22 +278,28 @@ impl Session {
     ///
     /// The file is outside every local library, unreadable, or does not parse.
     pub fn open_path(&mut self, path: &Path) -> Result<DocHandle, String> {
+        let (lib, rel) = self
+            .lib_of(path)
+            .ok_or_else(|| format!("{}: outside the project", path.display()))?;
+        self.open_file(lib as u8, &rel)
+    }
+
+    /// The local library holding `path` and the path relative to it: the longest matching
+    /// directory wins (libraries may live under the root).
+    fn lib_of(&self, path: &Path) -> Option<(usize, String)> {
         let abs = absolute(path);
-        // Longest matching library directory wins (libraries may live under the root).
-        let mut best: Option<(u8, String, usize)> = None;
+        let mut best: Option<(usize, String, usize)> = None;
         for (row, dir) in self.lib_dir.iter().enumerate() {
             let Some(dir) = dir else { continue };
             let dir = absolute(dir);
             if let Some(rel) = rel_path(&dir, &abs) {
                 let depth = dir.components().count();
                 if best.as_ref().is_none_or(|b| depth > b.2) {
-                    best = Some((row as u8, rel, depth));
+                    best = Some((row, rel, depth));
                 }
             }
         }
-        let (lib, rel, _) =
-            best.ok_or_else(|| format!("{}: outside the project", path.display()))?;
-        self.open_file(lib, &rel)
+        best.map(|(row, rel, _)| (row, rel))
     }
 
     /// The next document waiting for a crash-recovery decision: (document, journal records
@@ -330,11 +336,6 @@ impl Session {
         assert!(!self.recovery.iter().any(|r| r.0 == h));
     }
 
-    /// The open document read from `path`, if any.
-    pub fn handle_of_path(&self, path: &Path) -> Option<DocHandle> {
-        self.handle_of(path)
-    }
-
     /// Closes `h` dropping its unsaved edits and its journal (Save As moved them to another
     /// file). Tabs must no longer show it.
     pub fn close_discarding(&mut self, h: DocHandle) {
@@ -357,18 +358,9 @@ impl Session {
     /// deleted there), so choosers and `lib:cell` references see it. Cell rows shift: callers
     /// drop anything keyed by row (the symbol cache).
     pub fn reindex(&mut self, path: &Path) {
-        let abs = absolute(path);
-        let mut best: Option<(usize, usize)> = None;
-        for (row, dir) in self.lib_dir.iter().enumerate() {
-            let Some(dir) = dir else { continue };
-            if rel_path(&absolute(dir), &abs).is_some() {
-                let depth = absolute(dir).components().count();
-                if best.is_none_or(|b| depth > b.1) {
-                    best = Some((row, depth));
-                }
-            }
-        }
-        let Some((row, _)) = best else { return };
+        let Some((row, _)) = self.lib_of(path) else {
+            return;
+        };
         let dir = self.lib_dir[row].clone().expect("matched a local library");
         let others: Vec<PathBuf> = self
             .lib_dir
@@ -413,7 +405,8 @@ impl Session {
         self.docs.handle.iter().position(|&d| d == h)
     }
 
-    fn handle_of(&self, path: &Path) -> Option<DocHandle> {
+    /// The open document read from `path`, if any.
+    pub fn handle_of(&self, path: &Path) -> Option<DocHandle> {
         let i = self.docs.path.iter().position(|p| p == path)?;
         let h = self.docs.handle[i];
         self.project.doc(h).map(|_| h)
@@ -577,16 +570,6 @@ impl Session {
     /// cut at a character boundary (a plugin's error text is untrusted in length).
     pub fn say(&mut self, msg: impl Into<String>) {
         self.status = msg.into();
-        cut(&mut self.status);
-        assert!(self.status.len() <= STATUS_MAX);
-    }
-
-    /// Appends `note` to the status line, `; `-separated.
-    pub fn note(&mut self, note: &str) {
-        if !self.status.is_empty() {
-            self.status.push_str("; ");
-        }
-        self.status.push_str(note);
         cut(&mut self.status);
         assert!(self.status.len() <= STATUS_MAX);
     }

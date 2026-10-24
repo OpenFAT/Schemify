@@ -479,11 +479,7 @@ impl Editor {
         let prefix = doc.header_value("prefix").unwrap_or("X");
         let scratch = schemify_doc::Document::new(FileKind::Shbench);
         let mut ids = crate::edit::Ids::new(&mut self.rng);
-        let coord = |m: i32| {
-            let mut v = String::new();
-            schemify_format::format_coord(m, &mut v);
-            v
-        };
+        let coord = crate::geometry::coord;
         let (id, _) = ids.draw(&scratch);
         let mut text = format!(
             "schemify 1 shbench\n\ninst {id} ./{stem}\n  at 0 0 R0\n  name {}\n\n",
