@@ -42,6 +42,7 @@
 pub mod canvas;
 #[cfg(target_arch = "wasm32")]
 mod cpu_view;
+pub mod gpu;
 mod layers;
 mod painter;
 mod tiles;

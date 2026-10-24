@@ -113,6 +113,7 @@ Each spine lives in `editor` (the CLI's in `cli`) as one function, one line per 
 | traces, panes, x view, cursors (viewer) | wave | `Waves::apply`, `Waves::reload` | ui (rows, input), render (panes) | 64 traces, 16 panes, 256 datasets | session |
 | ui_nodes, ui_styles, keymap | ui | apply_ui_edits | ui::layout, ui::route_input, plugin | 2^16 nodes | session |
 | scene, ui_layout | render, ui | per frame | — | per frame | frame |
+| canvas instance rows (`gpu::InstanceRows`: rows by palette layer with free slots, slot per table row, dirty ranges) | render (`gpu`) | `InstanceRows::pack`, `pack_marks` | the GPU canvas pass (next change) | 2^22 rows per table kind; 5 sources × 5 kinds × 32 layers | window (repacked on a palette change or an unfollowed table change) |
 | paint caches (raster layer, canvas diff, prim indexes, glyphs) | app | `paint` | `paint` | 1024 tiles; 4 indexes | window |
 | commands | editor | registration (core enum + plugin rows) | dispatch, JSON-RPC, keymap | 2^12 | session |
 | tabs (level stacks: doc, view, camera, selection) | editor | dispatch (open, descend, return) | frame spine | 64 tabs × 40 levels | session |
