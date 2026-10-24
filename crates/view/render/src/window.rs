@@ -18,7 +18,7 @@ use winit::window::{Window, WindowId};
 
 use schemify_ui::{Button, Chord, InputEvent, InputEvents, Key, Mods};
 
-use crate::layers::Layers;
+use crate::layers::{Layers, keep_atlas};
 use crate::painter::{Painter, ScenePainter};
 
 /// What the application provides to [`run`]. Static dispatch: `run` is generic over it.
@@ -387,6 +387,7 @@ impl<A: App> Shell<A> {
                 height: size.height,
                 antialiasing_method: AaConfig::Area,
             };
+            keep_atlas(&mut self.scene);
             if let Err(e) = gpu.renderer.render_to_texture(
                 &gpu.device,
                 &gpu.queue,

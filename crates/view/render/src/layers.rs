@@ -224,6 +224,7 @@ impl Layers {
                 antialiasing_method: AaConfig::Area,
             };
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            keep_atlas(&mut l.scene);
             renderer.render_to_texture(device, queue, &l.scene, &view, &params)?;
             renderer.mark_override_image_dirty(image);
             l.dirty = false;
@@ -279,6 +280,7 @@ impl Layers {
                 antialiasing_method: AaConfig::Area,
             };
             let view = scratch.create_view(&wgpu::TextureViewDescriptor::default());
+            keep_atlas(&mut scene);
             renderer.render_to_texture(device, queue, &scene, &view, &params)?;
             let mut encoder = device.create_command_encoder(&Default::default());
             for ((k, _, [x, y, w, h]), &(px, py)) in batch.iter().zip(&at) {
@@ -341,6 +343,7 @@ impl Layers {
             };
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             self.top_shown = None; // until it is rendered
+            keep_atlas(&mut self.top);
             renderer.render_to_texture(device, queue, &self.top, &view, &params)?;
             self.top_shown = due;
         }
@@ -495,6 +498,29 @@ impl Layers {
             pass.draw(0..4, 0..1);
         }
     }
+}
+
+/// Gives `scene` a late-bound resource (a transparent gradient pixel off every target) when it
+/// has none. Call before each render on the shared renderer: vello 0.11 resolves a scene with
+/// no image, glyph or gradient to an empty atlas (`Resolver::resolve` returns
+/// `Images::default()`), so the render swaps its atlas texture for a blank 1 × 1 one while its
+/// cache still marks every image resident, and later frames draw those images from the blank
+/// texture (a canvas layer vanished from vello frames once a solid-only live layer was
+/// rasterized again).
+pub(crate) fn keep_atlas(scene: &mut Scene) {
+    if scene.encoding().resources.patches.is_empty() {
+        let clear = vello::peniko::Gradient::new_linear((0.0, 0.0), (1.0, 0.0))
+            .with_stops([Color::TRANSPARENT, Color::TRANSPARENT]);
+        let off = Rect::new(-2.0, -2.0, -1.0, -1.0);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            Affine::IDENTITY,
+            &clear,
+            None,
+            &off,
+        );
+    }
+    assert!(!scene.encoding().resources.patches.is_empty());
 }
 
 /// A 2D `Rgba8Unorm` texture of `w × h` px.
