@@ -262,11 +262,6 @@ pub(crate) struct SetRecord<'a> {
     pub text: &'a str,
 }
 
-/// Record words keyed by two values instead of one (`set <node> <prop> <value>`).
-const KEYED_BY_TWO: [&str; 1] = ["set"];
-/// Record words that share another word's keys: `remove X` overrides `node X` (D8).
-const KEY_ALIAS: [(&str, &str); 1] = [("remove", "node")];
-
 /// Splits a contribution body into keyed records, validating it against the kind: legal
 /// record words only, well-formed values and attribute lines, and for
 /// [`Kind::Functions`] the exact form `function <name: word> <fn_id: u32> <arity: u8>`.
@@ -308,13 +303,12 @@ fn record_key(kind: Kind, d: &FormatDoc<'_>, r: u32) -> Result<String, Code> {
     if !kind.words().contains(&word) {
         return Err(Code::Parse);
     }
-    let base = KEY_ALIAS
-        .iter()
-        .find(|(w, _)| *w == word)
-        .map_or(word, |(_, alias)| alias);
+    // `remove X` shares `node X`'s key (D8).
+    let base = if word == "remove" { "node" } else { word };
     let first = d.field(r, 0).ok_or(Code::Parse)?;
     let mut key = format!("{base} {first}");
-    if KEYED_BY_TWO.contains(&word) {
+    // `set <node> <prop> <value>` is keyed by two values.
+    if word == "set" {
         key.push(' ');
         key.push_str(d.field(r, 1).ok_or(Code::Parse)?);
     }

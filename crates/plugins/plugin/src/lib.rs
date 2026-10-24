@@ -176,7 +176,7 @@ impl PluginEvents {
     }
 
     fn get(&self, i: usize) -> (Option<PluginId>, &[u8]) {
-        let start = if i == 0 { 0 } else { self.ends[i - 1] as usize };
+        let start = snapshot::row_start(&self.ends, i);
         let target = (self.target[i] != BROADCAST).then_some(PluginId(self.target[i]));
         (target, &self.bytes[start..self.ends[i] as usize])
     }

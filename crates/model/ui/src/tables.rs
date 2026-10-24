@@ -226,7 +226,9 @@ impl StyleProp {
                 _ => None,
             };
         }
-        s.parse::<u32>().ok().filter(|&v| v <= 1 << 14)
+        s.parse::<u32>()
+            .ok()
+            .filter(|&v| v <= crate::records::LENGTH_MAX)
     }
 }
 

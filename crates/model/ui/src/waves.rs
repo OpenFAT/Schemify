@@ -74,9 +74,10 @@ pub fn plot_area(pane: Rect) -> Rect {
 }
 
 /// A pointer gesture in progress.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Drag {
     /// Nothing held.
+    #[default]
     None,
     /// Left drag in a plot: pan this pane's x (the shared one when locked) and y. Holds the last
     /// pointer position.
@@ -218,7 +219,7 @@ struct Dialog {
 }
 
 /// Transient state of one waveform window (or embedded graph).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct WaveUi {
     dataset: u8,
     filter: String,
@@ -238,31 +239,6 @@ pub struct WaveUi {
     cursors_on: [bool; 2],
     measure: bool,
     dialog: Option<Dialog>,
-}
-
-impl Default for WaveUi {
-    fn default() -> Self {
-        WaveUi {
-            dataset: 0,
-            filter: String::new(),
-            expr: String::new(),
-            scroll: 0,
-            signal_rows: 0,
-            trace_rows: 0,
-            selected_signal: None,
-            selected_trace: None,
-            active_pane: 0,
-            status: String::new(),
-            drag: Drag::None,
-            mods: Mods::default(),
-            pointer: None,
-            last_click: None,
-            last_down: None,
-            cursors_on: [false; 2],
-            measure: false,
-            dialog: None,
-        }
-    }
 }
 
 impl WaveUi {
@@ -1029,14 +1005,7 @@ impl WaveUi {
                         // At the pointer when it is over a pane showing the shared x.
                         let f = at_pointer
                             .filter(|&(k, ..)| !waves.props(usize::from(k)).own_x())
-                            .map_or(
-                                if which == Cursor::A {
-                                    1.0 / 3.0
-                                } else {
-                                    2.0 / 3.0
-                                },
-                                |(_, f, _)| f,
-                            );
+                            .map_or(cursor_home(which), |(_, f, _)| f);
                         Some(waves.x().at(f))
                     }
                 };
@@ -1056,14 +1025,7 @@ impl WaveUi {
                 if p < waves.panes().len() {
                     let at = match waves.hcursors(p)[which as usize] {
                         Some(_) => None,
-                        None => {
-                            let dflt = if which == Cursor::A {
-                                1.0 / 3.0
-                            } else {
-                                2.0 / 3.0
-                            };
-                            Some(waves.panes()[p].at(fy.unwrap_or(dflt)))
-                        }
+                        None => Some(waves.panes()[p].at(fy.unwrap_or(cursor_home(which)))),
                     };
                     out.push(Request::HCursor { pane, which, at });
                 }
@@ -1305,6 +1267,15 @@ fn grab(waves: &Waves, k: u8, sx: &Scale, sy: &Scale, x: f32, y: f32) -> Option<
         .into_iter()
         .find(|&c| near(hc[c as usize], y, sy))
         .map(|which| Drag::HCursor { pane: k, which })
+}
+
+/// Where a cursor turned on away from the pointer goes, as a fraction of its axis: a at a third,
+/// b at two thirds.
+fn cursor_home(which: Cursor) -> f64 {
+    match which {
+        Cursor::A => 1.0 / 3.0,
+        Cursor::B => 2.0 / 3.0,
+    }
 }
 
 /// The dialog field `node` names (`waves.props.f.<k>`), if any.

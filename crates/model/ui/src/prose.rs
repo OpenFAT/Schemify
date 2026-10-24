@@ -788,7 +788,7 @@ fn shape_rich(
     let (family, mono) = (ts.family().to_owned(), ts.mono().to_owned());
     let mut layout: Layout<()> = Layout::new();
     {
-        let (fcx, lcx) = ts.contexts();
+        let (fcx, lcx) = (&mut ts.font_cx, &mut ts.layout_cx);
         let mut b = lcx.ranged_builder(fcx, &inl.text, 1.0, true);
         b.push_default(StyleProperty::FontFamily(FontFamily::from(family.as_str())));
         b.push_default(StyleProperty::FontSize(px));
@@ -863,7 +863,7 @@ fn shape(ts: &mut TextSystem, text: &str, px: f32, width: f32) -> TextId {
     let mono = ts.mono().to_owned();
     let mut layout: Layout<()> = Layout::new();
     {
-        let (fcx, lcx) = ts.contexts();
+        let (fcx, lcx) = (&mut ts.font_cx, &mut ts.layout_cx);
         let mut b = lcx.ranged_builder(fcx, text, 1.0, true);
         b.push_default(StyleProperty::FontFamily(FontFamily::from(mono.as_str())));
         b.push_default(StyleProperty::FontSize(px));
