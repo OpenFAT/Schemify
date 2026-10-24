@@ -248,7 +248,7 @@ fn plan(e: &Elab, c: u32, k: u32, template: Name) -> Plan {
 }
 
 /// What once-only text the emitted rows need.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Uses {
     /// Per leaf impl row: some emitted row instantiates it (its body is emitted).
     pub(crate) impl_used: Vec<bool>,
@@ -260,12 +260,13 @@ impl Uses {
     /// Adds what a later run of rows used (`models` keep row order; their lines are sorted
     /// and deduplicated when written).
     pub(crate) fn merge(&mut self, other: Uses) {
-        if other.impl_used.len() == self.impl_used.len() {
-            for (a, b) in self.impl_used.iter_mut().zip(other.impl_used) {
-                *a |= b;
-            }
-        } else {
-            assert!(other.impl_used.is_empty(), "uses of one elaboration");
+        assert_eq!(
+            other.impl_used.len(),
+            self.impl_used.len(),
+            "uses of one elaboration"
+        );
+        for (a, b) in self.impl_used.iter_mut().zip(other.impl_used) {
+            *a |= b;
         }
         self.models.extend(other.models);
     }
