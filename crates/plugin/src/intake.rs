@@ -2,7 +2,7 @@
 //! and rejections. Pure over its parameters, so it is fuzzed without any wasm.
 
 use schemify_abi::text;
-use schemify_abi::{Code, Kind, Output};
+use schemify_abi::{Cap, Code, Kind, Output};
 use schemify_format::Document as FormatDoc;
 
 use crate::{
@@ -400,16 +400,28 @@ pub(crate) fn line_values(line: &str) -> Result<Vec<String>, Code> {
 /// arguments.
 pub fn authorize(grants: &Grants, op: IoOp, args: &[String]) -> Result<(), Code> {
     let arity_ok = match op {
-        IoOp::FsRead | IoOp::FsWrite | IoOp::FsRemove | IoOp::Fetch => args.len() == 1,
+        IoOp::FsRead | IoOp::FsList | IoOp::FsWrite | IoOp::FsRemove | IoOp::Fetch => {
+            args.len() == 1
+        }
         IoOp::Spawn => !args.is_empty(),
         IoOp::ClipboardGet | IoOp::ClipboardSet => args.is_empty(),
     };
     if !arity_ok {
         return Err(Code::Parse);
     }
+    if matches!(op, IoOp::FsRead | IoOp::FsList) {
+        // A `${NAME}/…` path reads under a granted variable's directory; anything else is
+        // project-relative under `read_project` (§5).
+        let allowed = match env_path(&args[0]) {
+            Some((name, _)) => grants.may_read_env(name),
+            None => grants.has(Cap::ReadProject) && project_relative(&args[0]),
+        };
+        return if allowed { Ok(()) } else { Err(Code::Denied) };
+    }
     let allowed = grants.has(op.cap())
         && match op {
-            IoOp::FsRead | IoOp::FsWrite => project_relative(&args[0]),
+            IoOp::FsRead | IoOp::FsList => unreachable!("authorized above"),
+            IoOp::FsWrite => project_relative(&args[0]),
             IoOp::FsRemove => removable(&args[0]),
             IoOp::Spawn => grants.may_spawn(&args[0]),
             IoOp::Fetch => !args[0].is_empty(),
@@ -432,12 +444,31 @@ fn removable(path: &str) -> bool {
     ok
 }
 
+/// Splits a `${NAME}` or `${NAME}/<rel>` read path (§5, capability `read:<NAME>`) into the
+/// variable and the path below its directory (`""` for the directory itself). `None` when
+/// `path` does not start with `${`, names no valid variable ([`Cap::env_name`]) or continues
+/// with anything but a project-relative path.
+pub fn env_path(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix("${")?;
+    let (name, rest) = rest.split_once('}')?;
+    if !Cap::env_name(name) {
+        return None;
+    }
+    let rel = match rest {
+        "" => "",
+        r => r.strip_prefix('/').filter(|r| project_relative(r))?,
+    };
+    Some((name, rel))
+}
+
+/// A project-relative path (§5). A segment starting with `${` is refused, so it can never be
+/// mistaken for (or shadow) a `read:<NAME>` path ([`env_path`]).
 fn project_relative(path: &str) -> bool {
     path.len() <= 4096
         && !path.contains(['\\', ':', '\0'])
         && path
             .split('/')
-            .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+            .all(|seg| !seg.is_empty() && seg != "." && seg != ".." && !seg.starts_with("${"))
 }
 
 #[cfg(test)]
@@ -566,6 +597,45 @@ mod tests {
             );
         }
         assert_eq!(authorize(&w, IoOp::FsRemove, &[]), Err(Code::Parse));
+    }
+
+    /// `read:<NAME>` grants reads (and listings) under `${NAME}/` only, for exactly the
+    /// granted names; writes never take an env path; `read_project` does not cover one.
+    #[test]
+    fn env_reads_follow_their_grants() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let g = Grants::parse(&["read:PDK_ROOT", "write_project"]).unwrap();
+        for ok in ["${PDK_ROOT}", "${PDK_ROOT}/sky130A/libs.tech/xschem/x.sym"] {
+            assert_eq!(authorize(&g, IoOp::FsRead, &a(&[ok])), Ok(()), "{ok}");
+            assert_eq!(authorize(&g, IoOp::FsList, &a(&[ok])), Ok(()), "{ok}");
+        }
+        for bad in [
+            "${HOME}/.ssh/id_rsa",
+            "${PDK_ROOT}/../etc",
+            "${PDK_ROOT}//x",
+            "${PDK_ROOT}x",
+            "${pdk_root}/x",
+            "${PDK_ROOT",
+            "lib/a.shcomp",
+        ] {
+            assert_eq!(
+                authorize(&g, IoOp::FsRead, &a(&[bad])),
+                Err(Code::Denied),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            authorize(&g, IoOp::FsWrite, &a(&["${PDK_ROOT}/x"])),
+            Err(Code::Denied)
+        );
+        let project = Grants::parse(&["read_project"]).unwrap();
+        assert_eq!(
+            authorize(&project, IoOp::FsList, &a(&["${PDK_ROOT}/x"])),
+            Err(Code::Denied)
+        );
+        assert_eq!(authorize(&project, IoOp::FsList, &a(&["lib"])), Ok(()));
+        assert_eq!(env_path("${A}/b/c"), Some(("A", "b/c")));
+        assert_eq!(env_path("${A}"), Some(("A", "")));
     }
 
     #[test]

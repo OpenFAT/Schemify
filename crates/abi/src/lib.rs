@@ -205,7 +205,7 @@ named_enum! {
     /// Capabilities a user grants at install (§5, D7). Without the grant the import returns
     /// `-E_DENIED`.
     pub enum Cap {
-        /// `fs_read` of project-relative paths.
+        /// `fs_read` / `fs_list` of project-relative paths.
         ReadProject = "read_project",
         /// `fs_write` of project-relative paths, and `fs_remove` under `.schemify/`.
         WriteProject = "write_project",
@@ -215,6 +215,9 @@ named_enum! {
         Network = "network",
         /// `clipboard_get` / `clipboard_set`.
         Clipboard = "clipboard",
+        /// `fs_read` / `fs_list` under the directory an environment variable names, as
+        /// `${NAME}/…` paths; the grant is written `read:<NAME>` (a PDK, a tool's library).
+        ReadEnv = "read",
     }
 }
 
@@ -223,16 +226,28 @@ impl Cap {
     /// and its argument (the binary name for `spawn`, empty otherwise).
     ///
     /// Returns `None` for an unknown capability, a `spawn` without a binary, a binary name
-    /// containing a path separator (grants name a binary, never a path), or an argument on a
+    /// containing a path separator (grants name a binary, never a path), a `read` whose
+    /// argument is not an environment variable name ([`Cap::env_name`]), or an argument on a
     /// capability that takes none.
     pub fn parse_grant(grant: &str) -> Option<(Cap, &str)> {
         let (name, arg) = grant.split_once(':').unwrap_or((grant, ""));
         let cap = Cap::parse(name)?;
         let ok = match cap {
             Cap::Spawn => !arg.is_empty() && !arg.contains(['/', '\\']) && text::is_bare(arg),
+            Cap::ReadEnv => Cap::env_name(arg),
             _ => arg.is_empty() && !grant.contains(':'),
         };
         ok.then_some((cap, arg))
+    }
+
+    /// Whether `name` can follow `read:`: an environment variable name, `[A-Z_][A-Z0-9_]*`,
+    /// at most 64 bytes.
+    pub fn env_name(name: &str) -> bool {
+        let mut b = name.bytes();
+        name.len() <= 64
+            && b.next()
+                .is_some_and(|c| c.is_ascii_uppercase() || c == b'_')
+            && b.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_')
     }
 }
 
@@ -349,9 +364,22 @@ mod tests {
             "network:x",
             "net",
             "",
+            "read",
+            "read:",
+            "read:pdk_root",
+            "read:1PDK",
+            "read:PDK/ROOT",
+            "read:PDK-ROOT",
+            "read_project:X",
         ] {
             assert_eq!(Cap::parse_grant(bad), None, "{bad}");
         }
+        assert_eq!(
+            Cap::parse_grant("read:PDK_ROOT"),
+            Some((Cap::ReadEnv, "PDK_ROOT"))
+        );
+        assert_eq!(Cap::parse_grant("read:_X9"), Some((Cap::ReadEnv, "_X9")));
+        assert!(!Cap::env_name(&"A".repeat(65)));
     }
 
     #[test]

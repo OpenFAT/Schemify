@@ -156,6 +156,33 @@ pub enum OpenError {
     Design(String),
 }
 
+/// The name a run's `bench` sidecar records for the bench at `path`: `lib:dir/stem` for the
+/// library cell whose file is `path` (`stem` alone in the unnamed library), `None` when no
+/// cell row's file is `path` (relative paths are taken from the working directory).
+/// `lib_dir` gives a library row's directory. One function for
+/// the editor and `schemify run`, so a run either one saved shows in the other's history.
+pub fn bench_name<'a>(
+    project: &Project,
+    lib_dir: impl Fn(u8) -> Option<&'a Path>,
+    path: &Path,
+) -> Option<String> {
+    // Library directories hang off the absolute project root (`libs::project_root`).
+    let path = crate::libs::absolute(path);
+    let cells = project.cells();
+    let row = (0..cells.lib.len()).find(|&r| {
+        lib_dir(cells.lib[r]).is_some_and(|d| d.join(crate::libs::cell_relpath(project, r)) == path)
+    })?;
+    let lib = &project.libs().name[usize::from(cells.lib[row])];
+    let rel = crate::libs::cell_relpath(project, row);
+    let stem = rel.rsplit_once('.').map_or(rel.as_str(), |(s, _)| s);
+    debug_assert!(!stem.is_empty());
+    Some(if lib.is_empty() {
+        stem.to_owned()
+    } else {
+        format!("{lib}:{stem}")
+    })
+}
+
 /// Loads the project around `file` (nearest `schemify.project`) and opens `file` in the
 /// library whose directory holds it (deepest wins). Returns the load notes (unfetched
 /// libraries, index findings) beside the result.

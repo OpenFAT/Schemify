@@ -517,6 +517,9 @@ enum Dialog {
     Recover(DocHandle, u32),
 }
 
+/// Plugin log lines [`Editor::keep_plugin_log`] holds between two takes.
+const KEPT_LOG_MAX: usize = 4096;
+
 /// An interactive editing session: project, UI, plugins, scene, tool and dialogs.
 pub struct Editor {
     /// Project, open documents, tabs, status line.
@@ -592,7 +595,13 @@ pub struct Editor {
     /// value delta, `CellState::revalued`): the scene re-stamps them with the edit's own
     /// objects. Bounded by the active document's instances (cleared by every scene pass).
     revalued: Vec<ObjKey>,
+    /// The selection marks need rebuilding (a new selection, scene or palette).
     sel_changed: bool,
+    /// The selection itself changed since plugins were last told (`SelectionChanged`). Kept
+    /// apart from `sel_changed`: a palette refresh after a worker plugin's outputs arrive must
+    /// not tell that plugin about a selection change, which would send it an event, whose
+    /// outputs refresh the palette again, every frame.
+    sel_moved: bool,
     /// Advances on every applied edit of any document (symbol cache freshness).
     generation: u32,
     symbols_key: Option<(DocHandle, u32)>,
@@ -720,6 +729,9 @@ pub struct Editor {
     /// What each answered command ([`Editor::command_answered`]) said, at most
     /// [`QUEUED_MAX`] waiting to be taken.
     said: Vec<Said>,
+    /// Every plugin log line and whether one failed, kept for a headless caller
+    /// ([`Editor::keep_plugin_log`]); `None` in the window, which shows only the last line.
+    kept_log: Option<(Vec<String>, bool)>,
     /// The next answered command's ticket.
     next_ticket: u32,
     /// A wire edit to follow with join/trim once applied (Options → auto join/trim).
@@ -847,6 +859,7 @@ impl Editor {
             scene_dirty: true,
             revalued: Vec::new(),
             sel_changed: false,
+            sel_moved: false,
             generation: 0,
             symbols_key: None,
             focus_next: None,
@@ -908,6 +921,7 @@ impl Editor {
             queued: Vec::new(),
             queued_edits: Vec::new(),
             said: Vec::new(),
+            kept_log: None,
             next_ticket: 0,
             startup: opts,
         };
@@ -1109,6 +1123,21 @@ impl Editor {
         self.ui_stale = true;
         assert!(self.queued.len() <= QUEUED_MAX);
         ticket
+    }
+
+    /// Starts keeping every plugin log line (the window keeps only the status line's last
+    /// one), for [`Editor::take_plugin_log`]: a headless caller reports them all.
+    pub fn keep_plugin_log(&mut self) {
+        self.kept_log.get_or_insert_with(|| (Vec::new(), false));
+    }
+
+    /// The plugin log lines kept since the last call, and whether any delivery since
+    /// [`Editor::keep_plugin_log`] failed (an error-level log or an aborted call; sticky).
+    pub fn take_plugin_log(&mut self) -> (Vec<String>, bool) {
+        match &mut self.kept_log {
+            Some((lines, failed)) => (std::mem::take(lines), *failed),
+            None => (Vec::new(), false),
+        }
     }
 
     /// Takes the message answered command `ticket` left (see [`Editor::command_answered`]):
@@ -2382,8 +2411,10 @@ impl Editor {
                     l.view = want;
                     // Schematic and symbol coordinates are unrelated: refit, drop the selection.
                     l.cam = None;
+                    let had = !l.sel.is_empty();
                     l.sel.clear();
                     l.ends.clear();
+                    self.sel_moved |= had;
                     self.tool = Tool::Idle;
                     self.scene_dirty = true;
                 }
@@ -2659,6 +2690,7 @@ impl Editor {
         {
             l.sel = sel;
             self.sel_changed = true;
+            self.sel_moved = true;
         }
     }
 
@@ -3907,6 +3939,13 @@ impl Editor {
         if let Some(l) = d.logs.last() {
             self.session.status.clone_from(l);
         }
+        if let Some((lines, failed)) = &mut self.kept_log {
+            // Bounded by the caller draining it each frame; a stuck caller keeps the newest.
+            lines.extend(d.logs.iter().cloned());
+            let over = lines.len().saturating_sub(KEPT_LOG_MAX);
+            lines.drain(..over);
+            *failed |= d.failed;
+        }
         self.resolve_said(&d.logs);
         if d.state_changed {
             self.invalidate_cells(); // plugin functions may answer differently now (D20)
@@ -4455,6 +4494,8 @@ impl Editor {
             );
             self.canvas_gen[3] += 1;
             self.sel_changed = false;
+        }
+        if std::mem::take(&mut self.sel_moved) {
             let _ = self.host.push(None, &Event::SelectionChanged);
         }
         stale || fitted

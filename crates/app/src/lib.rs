@@ -47,6 +47,8 @@ pub mod edit;
 pub mod editor;
 pub mod export;
 pub mod geometry;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod headless;
 pub mod plugins;
 pub mod recent;
 #[cfg(not(target_arch = "wasm32"))]

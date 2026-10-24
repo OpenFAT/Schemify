@@ -153,11 +153,38 @@
             platforms = systems;
           };
         };
+      # The web editor (docs/guide/web.md): `index.html` + the wasm-bindgen bundle in `pkg/`,
+      # ready to serve, or to sit beside `schemify publish`'s `projects/` on a static site.
+      web =
+        pkgs:
+        (rustPlatform pkgs).buildRustPackage {
+          pname = "schemify-web";
+          version = "0.1.0";
+          src = self;
+          cargoLock.lockFile = ./Cargo.lock;
+          nativeBuildInputs = [ (wasmBindgenCli pkgs) ];
+          auditable = false;
+          doCheck = false;
+          buildPhase = ''
+            runHook preBuild
+            cargo build --release --frozen --target wasm32-unknown-unknown -p schemify-app --bin schemify-gui
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            mkdir -p $out
+            cp crates/app/web/index.html $out/
+            wasm-bindgen --target web --no-typescript --out-name schemify --out-dir $out/pkg \
+              target/wasm32-unknown-unknown/release/schemify-gui.wasm
+            runHook postInstall
+          '';
+        };
     in
     {
       packages = forAll (pkgs: {
         default = schemify pkgs;
         schemify = schemify pkgs;
+        web = web pkgs;
         wasm-bindgen-cli = wasmBindgenCli pkgs;
       });
 

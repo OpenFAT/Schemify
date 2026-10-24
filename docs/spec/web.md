@@ -59,6 +59,22 @@ Rules:
 
 **Image exports** (PNG/SVG/PDF/EPS) and the project zip go through `platform::export`: natively a file write, on the web a download named after the file (`Blob` + object URL + `<a download>`; the previous download's URL is released by the next) and nothing is written to OPFS.
 
+### 3.1 Hosted projects
+
+A project published on a static site beside the page (`schemify publish`, `cli::hosted`), so a link opens it with nothing to import by hand:
+
+```
+<site>/index.html, pkg/                 the web editor
+<site>/projects/<name>/…                the project's files and its saved runs (.schemify/runs/)
+<site>/projects/<name>/schemify.files   manifest: `<sha256 hex>  <path>` per file, sorted by path
+<site>/projects/index.html              each project and bench, with how its newest run went
+```
+
+- **When.** After the mount (§2), before the editor starts, when the URL argument names `/projects/<name>[/…]` with a plain name (`A–Z a–z 0–9 . _ -`, not starting with `.`, ≤ 64 characters).
+- **Fetch.** `projects/<name>/schemify.files` relative to the page: same origin only. Any status but 200 means the site hosts no such project and the page opens storage as usual (a local project); a request that fails outright is reported on the console and the page still opens.
+- **Refresh.** The manifest text is compared with the copy stored at `/projects/<name>/.schemify/hosted`. Equal: nothing is fetched, so local edits survive while the site publishes nothing new. Different: every listed file is fetched and checked against its digest, then the whole tree `/projects/<name>/` (hidden entries included) is replaced by the listed files and the stamp is written last, so a refresh cut short is retried on the next load. A manifest line that is not `<64 lowercase hex>  <path>`, an unsafe path (§3's rule), a repeated path, more than 65 536 files, more than 512 MiB, a missing file or a digest mismatch refuses the refresh and nothing is written.
+- Ceiling (`ponytail`): files are fetched one at a time. Upgrade: a bounded set of concurrent fetches.
+
 ## 4. Clipboard
 
 The Clipboard API, secure contexts only (HTTPS or localhost):
@@ -78,6 +94,8 @@ Why omnilua (evaluation of 2026-10-11):
 - *omnilua* 0.7.1 passes the PUC-Rio 5.4 suite, has no C and no third-party dependency (eight `lua-*` crates of its own), and builds for every target. Its sandbox covers the config spec's contract: an instruction budget, a memory ceiling, stripped globals. Risk accepted with it: a young crate (four months, one maintainer); the config API sits behind `crates/config/src/lua.rs` and the prelude, so another runtime replaces one file.
 
 ## 6. Simulation
+
+Saved runs load on the web as natively (run spec §7a): a project that brings its `.schemify/runs/` along, such as a hosted project (§3.1) that CI simulated with `schemify run`, opens each bench on its newest results, waves and run log included (`app::sim` reads them through `platform`).
 
 D16: runner plugins. **Designed here, not implemented yet**: the editor's run spine (`app::sim`, `cli::spines::Run`) is native-only, and the steps below fall in the run, plugin and app crates that open PRs (#5, #6, #7) are changing; BACKLOG "web" lists them by owner, in order.
 

@@ -708,14 +708,24 @@ impl Build<'_> {
         self.text_rot(at, size, layer, s, 0, o)
     }
     /// Text turned `rot` quarter turns clockwise about `at`; returns its box.
+    /// Draws `s` turned `rot` clockwise quarter turns about `at`; returns its box. Text is
+    /// never drawn upside down (format spec §3): a half turn draws the glyphs upright and a
+    /// three-quarter turn as a quarter turn, from the far corner of the turned box, so the
+    /// text reads normally and covers the box the turn gives it (right- and bottom-aligned at
+    /// the anchor). xschem's `rot=2` labels land where xschem shows them.
     fn text_rot(&mut self, at: Pt, size: i32, layer: u8, s: &str, rot: u8, o: u32) -> [i32; 4] {
         if s.is_empty() || size <= 0 {
             return [at.0, at.1, at.0, at.1];
         }
-        self.sc.prims.text_rot(at.0, at.1, size, layer, s, rot);
-        self.owned(5, o);
+        let rot = rot % 4;
         let (dx, dy) = rotated_extent(text_size(size, s), rot);
         let (q0, q1) = ((at.0, at.1), (at.0 + dx, at.1 + dy));
+        // The upright turn's box from the far corner is the same box (rotated_extent(r + 2)
+        // is -rotated_extent(r)).
+        let (from, drawn) = if rot >= 2 { (q1, rot - 2) } else { (q0, rot) };
+        debug_assert!(drawn < 2);
+        self.sc.prims.text_rot(from.0, from.1, size, layer, s, drawn);
+        self.owned(5, o);
         self.grow(q0.0, q0.1);
         self.grow(q1.0, q1.1);
         [

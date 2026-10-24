@@ -44,6 +44,18 @@ mod imp {
         std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
     }
 
+    pub fn read_tail(path: &Path, max: u64) -> Result<(Vec<u8>, bool), String> {
+        use std::io::{Read, Seek, SeekFrom};
+        let err = |e: std::io::Error| format!("{}: {e}", path.display());
+        let mut f = std::fs::File::open(path).map_err(err)?;
+        let len = f.metadata().map_err(err)?.len();
+        let from = len.saturating_sub(max);
+        f.seek(SeekFrom::Start(from)).map_err(err)?;
+        let mut buf = Vec::new();
+        f.take(max).read_to_end(&mut buf).map_err(err)?;
+        Ok((buf, from > 0))
+    }
+
     pub fn exists(path: &Path) -> bool {
         path.exists()
     }
@@ -376,6 +388,19 @@ pub fn read(path: &Path) -> Result<Vec<u8>, String> {
     imp::read(path)
 }
 
+/// The last `max` bytes of a file (the whole file when shorter), and whether bytes before
+/// them were left out. Natively a seek, so a growing simulator log costs `max`, not its
+/// length.
+///
+/// # Errors
+///
+/// The OS error, prefixed with the path.
+pub fn read_tail(path: &Path, max: u64) -> Result<(Vec<u8>, bool), String> {
+    let (bytes, cut) = imp::read_tail(path, max)?;
+    assert!(bytes.len() as u64 <= max);
+    Ok((bytes, cut))
+}
+
 /// The program's arguments after its name. On the web, where there is no command line, the
 /// URL fragment is the one argument: `index.html#/projects/inv/top.shcomp` opens that cell,
 /// `#/projects/inv` that project (percent-decoded; empty without a fragment, web spec §1).
@@ -507,6 +532,18 @@ pub fn remove(path: &Path) -> Result<(), String> {
 /// The OS error, prefixed with the path; a missing `path` is an error.
 pub fn remove_tree(path: &Path) -> Result<(), String> {
     imp::remove_tree(path)
+}
+
+/// The value of environment variable `name`, `None` when unset or not UTF-8; always `None`
+/// on the web (a page has no environment).
+pub fn env_var(name: &str) -> Option<String> {
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    return std::env::var(name).ok();
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        let _ = name;
+        None
+    }
 }
 
 /// Modification time in seconds since the Unix epoch; `None` when unknown.

@@ -873,7 +873,9 @@ impl Editor {
             if let Some(l) = self.session.level_mut() {
                 l.doc = new;
                 l.view = view;
+                let had = !l.sel.is_empty();
                 l.sel.clear();
+                self.sel_moved |= had;
             }
         } else {
             self.session.open_tab(new, view);
@@ -1978,8 +1980,10 @@ impl Editor {
                 if let Some(l) = self.session.level_mut() {
                     l.doc = d;
                     l.view = View::Schematic;
+                    let had = !l.sel.is_empty();
                     l.sel.clear();
                     l.cam = None;
+                    self.sel_moved |= had;
                 }
                 self.compare = Some(Compare {
                     row: prev_row,

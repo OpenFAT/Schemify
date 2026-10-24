@@ -41,7 +41,15 @@ schemify-interop xschem-import \
   -o ~/chips/amp-schemify
 ```
 
-Every `.sym` and `.sch` under each directory you name is converted. `--root` adds a search path element whose files are only referenced, not converted. Here it makes a reference such as `devices/res.sym` resolve, while `"$XS/devices"` is what actually gets converted.
+Every `.sym` and `.sch` under each directory you name is converted. `--root` adds a search path element that is not converted wholesale: only the files your design references from it are, transitively (each symbol, its schematic and the `.cir` files beside it). Here it makes a reference such as `devices/res.sym` resolve and converts just the devices you placed, while `"$XS/devices"` converts the whole directory.
+
+For a design that keeps symbols and schematics in separate directories, pass both in search path order (`schematics symbols`): a symbol pairs with the same-named schematic anywhere on the search path, as in xschem. A PDK's xschem library goes in as a `--root` too, so a project needs nothing PDK-specific:
+
+```sh
+schemify-interop xschem-import schematics symbols \
+  --root "$XS" --root "$PDK_ROOT/$PDK/libs.tech/xschem" \
+  --xschemrc "$PDK_ROOT/$PDK/libs.tech/xschem/xschemrc" -o out
+```
 
 | Flag | What it does |
 |---|---|

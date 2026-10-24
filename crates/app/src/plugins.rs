@@ -14,12 +14,12 @@
 //! (`Plugins::set_worker`), so a long import never freezes the editor; its outputs land in a
 //! later frame. `eval` requests are answered within the delivery by [`eval_in`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use schemify_doc::{Cursor, DocHandle, Project};
 use schemify_elab::{CellState, Funcs, Name, Val};
 use schemify_expr::{Code as XCode, Error as XError, Mode, Program, Scratch, Span, Value};
-use schemify_plugin::abi::{Code, Event, FUEL_DEFAULT, Kind, Table, col};
+use schemify_plugin::abi::{Code, Event, FUEL_DEFAULT, Kind, Level, Table, col};
 use schemify_plugin::{
     IoOp, PluginEvents, PluginId, Plugins, RequestQueues, RunRequest, Snapshots, deliver,
 };
@@ -611,6 +611,9 @@ pub struct Delivered {
     pub runs: Vec<RunRequest>,
     /// Commands the user config queued (`schemify.cmd`): (name, args), to dispatch in order.
     pub commands: Vec<(String, String)>,
+    /// A plugin logged at `error` level or a call aborted (out of fuel, a trap, a
+    /// quarantine): what `schemify cmd` turns into exit status 1.
+    pub failed: bool,
 }
 
 impl Host {
@@ -1163,6 +1166,7 @@ impl Host {
                 out.edits.push((h, e.label, e.ops, stage));
             }
             for l in self.queues.logs.drain(..) {
+                out.failed |= l.level == Level::Error;
                 let name = self.plugins.name(l.plugin).unwrap_or("plugin").to_owned();
                 out.logs.push(format!("{name}: {}", l.text));
             }
@@ -1230,6 +1234,7 @@ impl Host {
         for f in health.faults().iter().skip(skip) {
             let quarantined = f.code == Code::Gone && f.detail.contains(" quarantined: ");
             if matches!(f.code, Code::Fuel | Code::Trap) || quarantined {
+                out.failed = true;
                 out.logs.push(f.detail.clone());
             }
         }
@@ -1400,10 +1405,42 @@ pub fn eval_in<F: Funcs>(st: &CellState, expr: &str, funcs: &mut F) -> Result<St
 /// host). Returns the `IoDone` status and bytes.
 fn run_io(root: &Path, op: IoOp, args: &[String], data: &[u8]) -> (i32, Vec<u8>) {
     let denied = -(schemify_plugin::abi::Code::Denied as i32);
+    let gone = -(schemify_plugin::abi::Code::Gone as i32);
+    // A read path: project-relative, or `${NAME}/…` under the variable's directory (the
+    // host authorized the `read:<NAME>` grant, plugin-abi §5).
+    let read_path = |p: &str| -> Result<PathBuf, String> {
+        match schemify_plugin::env_path(p) {
+            None => Ok(root.join(p)),
+            Some((name, rel)) => {
+                let dir = platform::env_var(name).filter(|d| !d.is_empty());
+                let dir = dir.ok_or_else(|| format!("${{{name}}}: not set"))?;
+                Ok(if rel.is_empty() {
+                    PathBuf::from(dir)
+                } else {
+                    Path::new(&dir).join(rel)
+                })
+            }
+        }
+    };
     match op {
-        IoOp::FsRead => match platform::read(&root.join(&args[0])) {
+        IoOp::FsRead => match read_path(&args[0]).and_then(|p| platform::read(&p)) {
             Ok(b) => (0, b),
-            Err(e) => (-(schemify_plugin::abi::Code::Gone as i32), e.into_bytes()),
+            Err(e) => (gone, e.into_bytes()),
+        },
+        IoOp::FsList => match read_path(&args[0]) {
+            Err(e) => (gone, e.into_bytes()),
+            Ok(dir) if !platform::is_dir(&dir) => {
+                (gone, format!("{}: not a directory", args[0]).into_bytes())
+            }
+            Ok(dir) => {
+                let mut text = String::new();
+                for f in platform::list_files(&dir, &[]) {
+                    let rel = f.strip_prefix(&dir).expect("listed under dir");
+                    text.push_str(&rel.to_string_lossy().replace('\\', "/"));
+                    text.push('\n');
+                }
+                (0, text.into_bytes())
+            }
         },
         IoOp::FsWrite => match platform::write_atomic(&root.join(&args[0]), data) {
             Ok(()) => (0, Vec::new()),
@@ -1592,5 +1629,46 @@ mod io_tests {
             "nothing to remove"
         );
         assert!(root.join("schemify.project").exists(), "never touched");
+    }
+
+    /// `fs_read` and `fs_list` of `${NAME}/…` paths resolve under the variable's directory
+    /// (plugin-abi §5, `read:<NAME>`); an unset variable or a missing directory is `E_GONE`;
+    /// project paths still resolve under the root.
+    #[test]
+    fn env_paths_read_and_list_under_the_variable() {
+        let gone = -(Code::Gone as i32);
+        let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let (status, bytes) = run_io(
+            Path::new("/nowhere"),
+            IoOp::FsRead,
+            &["${CARGO_MANIFEST_DIR}/Cargo.toml".to_owned()],
+            &[],
+        );
+        assert_eq!(status, 0);
+        assert_eq!(bytes, std::fs::read(crate_dir.join("Cargo.toml")).unwrap());
+        let (status, bytes) = run_io(
+            Path::new("/nowhere"),
+            IoOp::FsList,
+            &["${CARGO_MANIFEST_DIR}/src".to_owned()],
+            &[],
+        );
+        assert_eq!(status, 0);
+        let list = String::from_utf8(bytes).unwrap();
+        assert!(list.lines().any(|l| l == "plugins.rs"), "{list}");
+        assert!(list.lines().any(|l| l == "editor/integrate.rs"), "{list}");
+        // Path order: each directory's entries by name, depth first (`editor/…` before
+        // `editor.rs`), as `platform::list_files` walks.
+        let mut sorted: Vec<&Path> = list.lines().map(Path::new).collect();
+        sorted.sort_unstable();
+        assert_eq!(sorted, list.lines().map(Path::new).collect::<Vec<_>>());
+        for missing in [
+            "${SCHEMIFY_TEST_UNSET_VAR}/x",
+            "${CARGO_MANIFEST_DIR}/no_such_dir",
+        ] {
+            let (status, _) = run_io(crate_dir, IoOp::FsList, &[missing.to_owned()], &[]);
+            assert_eq!(status, gone, "{missing}");
+        }
+        let (status, _) = run_io(crate_dir, IoOp::FsRead, &["Cargo.toml".to_owned()], &[]);
+        assert_eq!(status, 0, "project-relative reads are unchanged");
     }
 }

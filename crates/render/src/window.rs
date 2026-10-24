@@ -417,8 +417,12 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
         }
         let attrs = Window::default_attributes()
             .with_title(self.title.clone())
-            .with_inner_size(LogicalSize::new(1280.0, 800.0))
             .with_visible(false);
+        // Natively a 1280×800 window; on the web the page's CSS sizes the canvas to the whole
+        // viewport (web/index.html) and winit reports it, and every browser resize, as
+        // `Resized` (a fixed size left the editor in a corner of a larger window).
+        #[cfg(not(target_arch = "wasm32"))]
+        let attrs = attrs.with_inner_size(LogicalSize::new(1280.0, 800.0));
         #[cfg(target_arch = "wasm32")]
         let attrs = {
             use winit::platform::web::WindowAttributesExtWebSys;

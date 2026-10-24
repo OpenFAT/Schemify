@@ -13,12 +13,18 @@ use schemify_config::Startup;
 const USAGE: &str = "\
 usage: schemify-gui [--clean | -u <init.lua>] [<project-dir>|<cell-file>] [--no-default-ui]
                     [--rpc <socket>]
+       schemify-gui [--clean | -u <init.lua>] cmd <project-dir>|<cell-file> <command> [<arg>...]
   --rpc  serve the JSON-RPC command stream on a socket path or 127.0.0.1:<port>
+  cmd    run one command (core or plugin) without a window and exit (schemify cmd)
 ";
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn main() -> std::process::ExitCode {
-    match start(platform::args()) {
+    let args = platform::args();
+    if let Some(code) = headless(&args) {
+        return std::process::ExitCode::from(code);
+    }
+    match start(args) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
             eprint!("schemify-gui: {e}");
@@ -31,6 +37,29 @@ fn main() -> std::process::ExitCode {
 fn main() {
     // Errors go to the browser console; the page stays (there is no process to exit).
     platform::mount_then(|| start(platform::args()));
+}
+
+/// `cmd <path> <command> [<arg>...]` (`schemify cmd`): runs the command headless and
+/// returns its exit status; `None` when the arguments are not a `cmd` invocation.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+fn headless(args: &[String]) -> Option<u8> {
+    let (config, first) = Startup::parse(args).ok()?;
+    let [word, path, name, rest @ ..] = &args[first..] else {
+        return (args.get(first).map(String::as_str) == Some("cmd")).then(|| {
+            eprint!("{USAGE}");
+            2
+        });
+    };
+    if word != "cmd" {
+        return None;
+    }
+    let opts = schemify_app::editor::Options {
+        path: Some(std::path::PathBuf::from(path)),
+        seed: platform::seed(),
+        config,
+        ..schemify_app::editor::Options::default()
+    };
+    Some(schemify_app::headless::command(opts, name, rest))
 }
 
 /// Parses the arguments and runs the editor (native: until its window closes; web: returns

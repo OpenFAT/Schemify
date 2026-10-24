@@ -64,6 +64,19 @@ pub fn read(path: &Path) -> Result<Vec<u8>, String> {
         .ok_or_else(|| format!("{}: no such file", path.display()))
 }
 
+pub fn read_tail(path: &Path, max: u64) -> Result<(Vec<u8>, bool), String> {
+    let k = vfs::key(path);
+    FS.with_borrow(|fs| {
+        fs.read(&k).map(|b| {
+            let from = b
+                .len()
+                .saturating_sub(usize::try_from(max).unwrap_or(usize::MAX));
+            (b[from..].to_vec(), from > 0)
+        })
+    })
+    .ok_or_else(|| format!("{}: no such file", path.display()))
+}
+
 pub fn exists(path: &Path) -> bool {
     FS.with_borrow(|fs| fs.exists(&vfs::key(path)))
 }
@@ -346,6 +359,9 @@ pub fn mount_then(run: impl FnOnce() -> Result<(), String> + 'static) {
         if let Err(e) = FS.with_borrow_mut(|fs| fs.mkdirs(WEB_ROOT)) {
             error(&format!("web storage: {e}"));
         }
+        if let Err(e) = hosted().await {
+            error(&format!("hosted project: {e}"));
+        }
         if let Some(w) = web_sys::window() {
             guard_unload(&w);
         }
@@ -353,6 +369,76 @@ pub fn mount_then(run: impl FnOnce() -> Result<(), String> + 'static) {
             error(&format!("schemify: {e}"));
         }
     });
+}
+
+/// Copies the hosted project the URL names into storage (web spec §3.1), when the page's
+/// own site serves one and its manifest differs from the copy stored last time. A site
+/// without the manifest (any non-200 answer) is not an error: the project is a local one.
+///
+/// ponytail: fetches one file at a time (a few hundred small files take a second or two);
+/// a bounded set of concurrent fetches if hosted projects grow large.
+async fn hosted() -> Result<(), String> {
+    use crate::hosted;
+    let Some(arg) = args().into_iter().next() else {
+        return Ok(());
+    };
+    let Some(name) = hosted::project_name(&arg) else {
+        return Ok(());
+    };
+    let base = format!("projects/{name}");
+    let Some(text) = fetch(&format!("{base}/{}", hosted::MANIFEST)).await? else {
+        return Ok(());
+    };
+    let text = String::from_utf8(text).map_err(|e| format!("{}: {e}", hosted::MANIFEST))?;
+    let dir = format!("{}/{name}", vfs::PROJECTS);
+    let stamp = format!("{dir}/{}", hosted::STAMP);
+    if FS.with_borrow(|fs| fs.read(&stamp) == Some(text.as_bytes())) {
+        return Ok(()); // the same build: keep local edits
+    }
+    let rows = hosted::parse(&text)?;
+    let mut files = Vec::with_capacity(rows.len() + 1);
+    let mut total = 0usize;
+    for (rel, digest) in rows {
+        let bytes = fetch(&format!("{base}/{rel}"))
+            .await?
+            .ok_or_else(|| format!("{base}/{rel}: not on the site"))?;
+        if !hosted::matches(&digest, &bytes) {
+            return Err(format!("{base}/{rel}: does not match {}", hosted::MANIFEST));
+        }
+        total += bytes.len();
+        if total > IMPORT_BYTES_MAX {
+            return Err(format!("more than {} MiB", IMPORT_BYTES_MAX >> 20));
+        }
+        files.push((rel, bytes));
+    }
+    // The stamp last: a refresh cut short is retried on the next load.
+    files.push((hosted::STAMP.to_owned(), text.into_bytes()));
+    let n = files.len() - 1;
+    FS.with_borrow_mut(|fs| fs.replace_tree(&dir, files, now_s()))?;
+    flush();
+    log(&format!("hosted project {name}: {n} files from the site"));
+    Ok(())
+}
+
+/// The body of `url` (relative to the page) when the server answers 200; `None` for any
+/// other status.
+///
+/// # Errors
+///
+/// No window, or the request failed without an answer (network, CORS).
+async fn fetch(url: &str) -> Result<Option<Vec<u8>>, String> {
+    let w = web_sys::window().ok_or(NO_WINDOW)?;
+    let resp: web_sys::Response = JsFuture::from(w.fetch_with_str(url))
+        .await
+        .map_err(|e| format!("{url}: {}", js_err(e)))?
+        .unchecked_into();
+    if resp.status() != 200 {
+        return Ok(None);
+    }
+    let buf = JsFuture::from(resp.array_buffer().map_err(js_err)?)
+        .await
+        .map_err(js_err)?;
+    Ok(Some(Uint8Array::new(&buf).to_vec()))
 }
 
 /// Loads every OPFS file into the table; returns how many.

@@ -211,22 +211,13 @@ pub struct JobLog {
 /// The last [`LOG_LINES`] lines of `path` (at most [`LOG_TAIL_BYTES`] read); empty when
 /// the file is missing.
 fn tail(path: &Path) -> Vec<String> {
-    use std::io::{Read, Seek, SeekFrom};
-    let Ok(mut f) = std::fs::File::open(path) else {
+    let Ok((buf, cut)) = platform::read_tail(path, LOG_TAIL_BYTES) else {
         return Vec::new();
     };
-    let len = f.metadata().map_or(0, |m| m.len());
-    let from = len.saturating_sub(LOG_TAIL_BYTES);
-    let mut buf = Vec::new();
-    if f.seek(SeekFrom::Start(from)).is_err()
-        || f.take(LOG_TAIL_BYTES).read_to_end(&mut buf).is_err()
-    {
-        return Vec::new();
-    }
     let text = String::from_utf8_lossy(&buf);
     let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
     // A cut first line (read from mid-file) is dropped.
-    let skip = usize::from(from > 0 && !lines.is_empty());
+    let skip = usize::from(cut && !lines.is_empty());
     let keep = &lines[skip..];
     let out: Vec<String> = keep[keep.len().saturating_sub(LOG_LINES)..]
         .iter()
@@ -1573,50 +1564,41 @@ pub fn probe_lines(map: &NameMap) -> String {
 /// The display name a run directory's `bench` sidecar records (`lib:dir/stem`, the project
 /// library without the `lib:`).
 fn session_name(session: &Session, h: DocHandle) -> String {
-    let p = &session.project;
-    if let Some(row) = (0..p.cells().lib.len()).find(|&r| {
-        session.path(h).is_some_and(|path| {
-            let lib = p.cells().lib[r];
-            session
-                .lib_dir(lib)
-                .is_some_and(|d| d.join(crate::libs::cell_relpath(p, r)) == path)
-        })
-    }) {
-        let lib = &p.libs().name[usize::from(p.cells().lib[row])];
-        let rel = crate::libs::cell_relpath(p, row);
-        let stem = rel.rsplit_once('.').map_or(rel.as_str(), |(s, _)| s);
-        return if lib.is_empty() {
-            stem.to_owned()
-        } else {
-            format!("{lib}:{stem}")
-        };
-    }
-    session.name(h)
+    session
+        .path(h)
+        .and_then(|path| spines::bench_name(&session.project, |lib| session.lib_dir(lib), path))
+        .unwrap_or_else(|| session.name(h))
 }
 
 /// Run directories under `<root>/.schemify/runs/` whose `bench` sidecar names `bench`,
-/// newest first (by the results file's modification time, then name).
+/// newest first (by the results file's modification time in seconds, then name).
+///
+/// Goes through [`platform`], so the web build finds the runs in browser storage too (web
+/// spec §6: runs a project brought along, such as CI's, load like local ones).
+/// ponytail: lists every file under `runs/` to find the sidecars (bounded by
+/// `platform::LIST_FILES_MAX`, so runs past it are not offered); a directory-only listing
+/// in `platform` if run trees ever get that large.
 fn history(root: &Path, bench: &str) -> Vec<PathBuf> {
     let runs = root.join(".schemify").join("runs");
-    let Ok(entries) = std::fs::read_dir(&runs) else {
-        return Vec::new();
-    };
-    let mut dirs: Vec<(std::time::SystemTime, PathBuf)> = entries
-        .flatten()
-        .map(|e| e.path())
+    let mut dirs: Vec<(u64, PathBuf)> = platform::list_files(&runs, &[])
+        .into_iter()
+        .filter(|p| p.file_name().is_some_and(|n| n == BENCH))
+        .filter_map(|p| p.parent().map(Path::to_path_buf))
+        .filter(|d| d.parent() == Some(runs.as_path()))
         .filter(|d| {
-            std::fs::read_to_string(d.join(BENCH)).is_ok_and(|s| s.trim() == bench)
-                && d.join(schemify_run::RESULTS).exists()
+            platform::read(&d.join(BENCH))
+                .is_ok_and(|s| String::from_utf8_lossy(&s).trim() == bench)
+                && platform::exists(&d.join(schemify_run::RESULTS))
         })
         .map(|d| {
-            let t = std::fs::metadata(d.join(schemify_run::RESULTS))
-                .and_then(|m| m.modified())
-                .unwrap_or(std::time::UNIX_EPOCH);
+            let t = platform::mtime_unix_s(&d.join(schemify_run::RESULTS)).unwrap_or(0);
             (t, d)
         })
         .collect();
     dirs.sort_by(|a, b| b.cmp(a));
-    dirs.into_iter().take(HISTORY_MAX).map(|(_, d)| d).collect()
+    dirs.truncate(HISTORY_MAX);
+    debug_assert!(dirs.iter().all(|(_, d)| d.starts_with(&runs)));
+    dirs.into_iter().map(|(_, d)| d).collect()
 }
 
 /// A one-pane viewer over the datasets of `jobs` (each a raw file's grouped datasets, the

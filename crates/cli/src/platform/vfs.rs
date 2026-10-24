@@ -180,6 +180,38 @@ impl Vfs {
         Ok(())
     }
 
+    /// Replaces every file under directory `dir`, hidden ones included, with `files`
+    /// (`(path relative to dir, bytes)`); queues the changes for OPFS. A hosted project's
+    /// refresh (web spec §3.1): what the old copy held and the new one lacks is removed.
+    ///
+    /// # Errors
+    ///
+    /// As [`Vfs::write`]; files written before the failure stay (the next refresh retries,
+    /// since the stamp is written last).
+    pub(crate) fn replace_tree(
+        &mut self,
+        dir: &str,
+        files: Files,
+        now_s: u64,
+    ) -> Result<(), String> {
+        assert!(dir.starts_with('/') && dir != "/", "replace_tree: {dir}");
+        let prefix = format!("{dir}/");
+        let old: Vec<String> = self
+            .files
+            .range::<str, _>((Bound::Included(prefix.as_str()), Bound::Unbounded))
+            .map(|(k, _)| k)
+            .take_while(|k| k.starts_with(prefix.as_str()))
+            .cloned()
+            .collect();
+        for k in old {
+            self.remove(&k)?;
+        }
+        for (rel, bytes) in files {
+            self.write(&format!("{prefix}{rel}"), bytes, now_s)?;
+        }
+        Ok(())
+    }
+
     /// Adds a file read from OPFS at mount: not queued (OPFS already has it).
     ///
     /// # Errors
@@ -348,6 +380,37 @@ impl Vfs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hosted project's refresh replaces its whole tree, hidden runs included, and
+    /// leaves sibling projects alone.
+    #[test]
+    fn replace_tree_swaps_every_file_under_the_directory() {
+        let mut v = Vfs::new();
+        v.write("/projects/a/x.shcomp", b"old".to_vec(), 1).unwrap();
+        v.write("/projects/a/.schemify/runs/r/results", b"r".to_vec(), 1)
+            .unwrap();
+        v.write("/projects/ab/keep", b"k".to_vec(), 1).unwrap();
+        while v.next_stale().is_some() {}
+        let new = vec![
+            ("x.shcomp".to_owned(), b"new".to_vec()),
+            ("lib/y".to_owned(), b"y".to_vec()),
+        ];
+        v.replace_tree("/projects/a", new, 2).unwrap();
+        assert_eq!(v.read("/projects/a/x.shcomp"), Some(&b"new"[..]));
+        assert_eq!(v.read("/projects/a/lib/y"), Some(&b"y"[..]));
+        assert!(!v.exists("/projects/a/.schemify/runs/r/results"));
+        assert_eq!(
+            v.read("/projects/ab/keep"),
+            Some(&b"k"[..]),
+            "a sibling with a shared prefix"
+        );
+        let mut stale = Vec::new();
+        while let Some(k) = v.next_stale() {
+            stale.push(k);
+        }
+        assert!(stale.contains(&"/projects/a/.schemify/runs/r/results".to_owned()));
+        assert!(!stale.iter().any(|k| k.starts_with("/projects/ab/")));
+    }
 
     /// xorshift64*: seed-replayable inputs without a dependency.
     struct Rng(u64);

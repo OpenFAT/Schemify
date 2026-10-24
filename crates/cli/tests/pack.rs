@@ -309,6 +309,35 @@ fn grants_are_the_intersection_of_request_and_grant() {
         "the spec's fuel wins"
     );
 
+    // A `read:*` request takes every `read:<NAME>` the user grants (each name is the
+    // user's), and nothing else; with none granted it is not "denied" (it is optional).
+    let reader = dir.join("r");
+    std::fs::create_dir_all(&reader).unwrap();
+    std::fs::write(reader.join("r.wasm"), b"z").unwrap();
+    std::fs::write(
+        reader.join(pack::MANIFEST),
+        "schemify 1 project\n\nplugin r path r.wasm\n  grant read_project\n  grant read:*\n",
+    )
+    .unwrap();
+    let mut r = spec("r", Source::Path(reader));
+    r.grant = vec![
+        "read:PDK_ROOT".into(),
+        "read_project".into(),
+        "read:XSCHEM_LIBRARY".into(),
+        "network".into(),
+    ];
+    let got = pack::locate(&r, &p).unwrap();
+    assert_eq!(
+        got.grants,
+        ["read_project", "read:PDK_ROOT", "read:XSCHEM_LIBRARY"]
+    );
+    assert!(got.denied.is_empty(), "{:?}", got.denied);
+    assert_eq!(got.unused, ["network"]);
+    r.grant = vec!["read_project".into()];
+    let got = pack::locate(&r, &p).unwrap();
+    assert_eq!(got.grants, ["read_project"]);
+    assert!(got.denied.is_empty() && got.unused.is_empty());
+
     // No manifest: the module is <name>.wasm and it requests exactly what is granted.
     let bare = dir.join("bare");
     std::fs::create_dir_all(&bare).unwrap();

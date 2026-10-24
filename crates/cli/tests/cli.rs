@@ -305,6 +305,105 @@ fn run_opens_the_cells_of_every_selected_config() {
     assert_ne!(code, 0, "{text}");
 }
 
+/// The run directory `run` saves names its bench in a `bench` sidecar, as the editor's
+/// runs do (`spines::bench_name`), so the editor's history offers it: `lib:stem` in a named
+/// library, the bare stem in the project's unnamed one, whichever way the path was given.
+#[test]
+fn run_records_the_bench_name_the_editor_looks_for() {
+    let sidecars = |dir: &Path| -> Vec<String> {
+        let runs = dir.join(".schemify/runs");
+        let mut v: Vec<String> = std::fs::read_dir(&runs)
+            .unwrap()
+            .map(|e| std::fs::read_to_string(e.unwrap().path().join("bench")).unwrap())
+            .collect();
+        v.sort();
+        v
+    };
+    let dir = run_project("run-sidecar");
+    std::fs::write(dir.join("init.lua"), fake_sim("ngspice", "")).unwrap();
+    let (code, text) = schemify(&dir, &["-u", "init.lua", "run", "tb.shbench"]);
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(sidecars(&dir), ["tb\n"]);
+
+    // Each path form in its own project: one design shares one run directory, so a second
+    // run in the same project would rewrite the first one's sidecar.
+    for (name, abs) in [("run-sidecar-rel", false), ("run-sidecar-abs", true)] {
+        let dir = scratch(name);
+        let lib = dir.join("benches");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(
+            dir.join("schemify.project"),
+            "schemify 1 project\n\nlib benches path benches\n",
+        )
+        .unwrap();
+        for (f, text) in [
+            ("amp.shcomp", AMP),
+            ("res.shprim", RES),
+            ("tb.shbench", BENCH),
+        ] {
+            std::fs::write(lib.join(f), text).unwrap();
+        }
+        std::fs::write(dir.join("init.lua"), fake_sim("ngspice", "")).unwrap();
+        let path = if abs {
+            lib.join("tb.shbench").to_string_lossy().into_owned()
+        } else {
+            "benches/tb.shbench".to_owned()
+        };
+        let (code, text) = schemify(&dir, &["-u", "init.lua", "run", &path]);
+        assert_eq!(code, 0, "{path}: {text}");
+        assert_eq!(sidecars(&dir), ["benches:tb\n"], "{path}");
+    }
+}
+
+/// `publish` lays a project out for the web editor (web spec §3.1): every listed file plus
+/// the saved runs under `projects/<name>/`, a manifest whose hashes match the bytes, an
+/// index linking each bench with its newest run; publishing again replaces the project
+/// whole. Negative space: a directory without `schemify.project` is a usage error.
+#[test]
+fn publish_writes_a_hosted_project_with_its_runs() {
+    let dir = run_project("publish-src");
+    std::fs::write(dir.join("init.lua"), fake_sim("ngspice", "")).unwrap();
+    let (code, text) = schemify(&dir, &["-u", "init.lua", "run", "tb.shbench"]);
+    assert_eq!(code, 0, "{text}");
+    let site = scratch("publish-site");
+    let src = dir.to_string_lossy().into_owned();
+    let out = site.to_string_lossy().into_owned();
+    let (code, text) = schemify(&site, &["publish", &src, "-o", &out]);
+    assert_eq!(code, 0, "{text}");
+    let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+    let proj = site.join("projects").join(&name);
+    let manifest = std::fs::read_to_string(proj.join("schemify.files")).unwrap();
+    let rows = schemify_cli::hosted::parse(&manifest).unwrap();
+    for (rel, digest) in &rows {
+        let bytes = std::fs::read(proj.join(rel)).unwrap();
+        assert!(schemify_cli::hosted::matches(digest, &bytes), "{rel}");
+    }
+    let paths: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+    assert!(paths.contains(&"tb.shbench") && paths.contains(&"schemify.project"));
+    assert!(
+        paths
+            .iter()
+            .any(|p| p.starts_with(".schemify/runs/") && p.ends_with("/results"))
+    );
+    assert!(paths.iter().any(|p| p.ends_with("/bench")), "{paths:?}");
+    let index = std::fs::read_to_string(site.join("projects/index.html")).unwrap();
+    assert!(
+        index.contains(&format!("../#/projects/{name}/tb.shbench")),
+        "{index}"
+    );
+    assert!(index.contains("1 job done"), "{index}");
+
+    // Republish after a file went away: the site loses it too.
+    std::fs::remove_file(dir.join("res.shprim")).unwrap();
+    std::fs::write(proj.join("stale.txt"), "x").unwrap();
+    assert_eq!(schemify(&site, &["publish", &src, "-o", &out]).0, 0);
+    assert!(!proj.join("res.shprim").exists() && !proj.join("stale.txt").exists());
+
+    let empty = scratch("publish-empty");
+    let (code, _) = schemify(&site, &["publish", &empty.to_string_lossy(), "-o", &out]);
+    assert_eq!(code, 2);
+}
+
 /// `run --dialect espice` and `schemify.opt.simulator = "espice"` netlist for espice and start
 /// the `espice` sim row with its `env`; `netlist --dialect espice` writes the espice text;
 /// a dialect no simulator reads is a usage error for `run`.

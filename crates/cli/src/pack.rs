@@ -373,6 +373,9 @@ pub fn status(specs: &[PackSpec], paths: &Paths) -> Report {
     report
 }
 
+/// The package request that takes every `read:<NAME>` grant the user gives (config spec §5).
+pub const READ_ANY: &str = "read:*";
+
 /// An installed package, ready for the plugin host.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Installed {
@@ -430,20 +433,26 @@ pub fn locate(spec: &PackSpec, paths: &Paths) -> Result<Installed, String> {
         ));
     }
     let requested = m.requested.unwrap_or_else(|| spec.grant.clone());
-    let grants: Vec<String> = requested
-        .iter()
-        .filter(|g| spec.grant.contains(g))
-        .cloned()
-        .collect();
+    // A request `read:*` takes every `read:<NAME>` the user grants (plugin-abi §5): an
+    // importer cannot know which variables a user will point it at, the user names each one.
+    let covers = |req: &str, g: &str| req == g || (req == READ_ANY && g.starts_with("read:"));
+    let mut grants: Vec<String> = Vec::with_capacity(spec.grant.len());
+    for req in &requested {
+        for g in spec.grant.iter().filter(|g| covers(req, g)) {
+            if !grants.contains(g) {
+                grants.push(g.clone());
+            }
+        }
+    }
     let denied = requested
         .iter()
-        .filter(|g| !spec.grant.contains(g))
+        .filter(|r| *r != READ_ANY && !spec.grant.contains(r))
         .cloned()
         .collect();
     let unused = spec
         .grant
         .iter()
-        .filter(|g| !requested.contains(g))
+        .filter(|g| !requested.iter().any(|r| covers(r, g)))
         .cloned()
         .collect();
     assert!(grants.len() <= spec.grant.len());

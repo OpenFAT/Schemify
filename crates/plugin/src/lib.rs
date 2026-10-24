@@ -53,7 +53,7 @@ use schemify_abi::{Cap, Code, EditMode, Event, Level};
 use wasmi::{Engine, Linker, Store};
 
 pub use compose::{Composed, ComposedRecord, Functions, Override, compose};
-pub use intake::{Contributions, Rejection, authorize, intake};
+pub use intake::{Contributions, Rejection, authorize, env_path, intake};
 pub use schemify_abi as abi;
 pub use snapshot::{ROWS_MAX, Snapshots};
 
@@ -238,7 +238,8 @@ pub struct LogEntry {
 /// Inverted I/O operations (§5); each maps to one capability.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum IoOp {
-    /// Read a project-relative file (`read_project`). `args = [path]`.
+    /// Read a file (`read_project`, or `read:<NAME>` for a `${NAME}/…` path, [`env_path`]).
+    /// `args = [path]`.
     FsRead,
     /// Write a project-relative file (`write_project`). `args = [path]`, `data` = bytes.
     FsWrite,
@@ -252,13 +253,16 @@ pub enum IoOp {
     ClipboardGet,
     /// Write the clipboard (`clipboard`). `data` = text.
     ClipboardSet,
+    /// List the files under a directory, as [`FsRead`](IoOp::FsRead) authorizes paths.
+    /// `args = [dir]`; the answer is one path relative to `dir` per line, in path order.
+    FsList,
 }
 
 impl IoOp {
     /// Returns the capability the operation needs.
     pub const fn cap(self) -> Cap {
         match self {
-            IoOp::FsRead => Cap::ReadProject,
+            IoOp::FsRead | IoOp::FsList => Cap::ReadProject,
             IoOp::FsWrite | IoOp::FsRemove => Cap::WriteProject,
             IoOp::Spawn => Cap::Spawn,
             IoOp::Fetch => Cap::Network,
@@ -380,6 +384,8 @@ impl Health {
 pub struct Grants {
     caps: u8,
     spawn: Vec<Box<str>>,
+    /// Environment variables granted `read:<NAME>`.
+    read_env: Vec<Box<str>>,
 }
 
 impl Grants {
@@ -396,6 +402,9 @@ impl Grants {
             if cap == Cap::Spawn && !g.spawn.iter().any(|b| &**b == arg) {
                 g.spawn.push(arg.into());
             }
+            if cap == Cap::ReadEnv && !g.read_env.iter().any(|v| &**v == arg) {
+                g.read_env.push(arg.into());
+            }
         }
         debug_assert_eq!(g.has(Cap::Spawn), !g.spawn.is_empty());
         Ok(g)
@@ -409,6 +418,11 @@ impl Grants {
     /// Returns whether spawning exactly `binary` is granted.
     pub fn may_spawn(&self, binary: &str) -> bool {
         self.spawn.iter().any(|b| &**b == binary)
+    }
+
+    /// Returns whether reading under environment variable `name` is granted (`read:<name>`).
+    pub fn may_read_env(&self, name: &str) -> bool {
+        self.read_env.iter().any(|v| &**v == name)
     }
 }
 

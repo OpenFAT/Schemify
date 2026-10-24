@@ -196,12 +196,13 @@ A package can use a capability only when it requests it and you grant it. It get
 | Capability | Lets the package |
 |---|---|
 | `read_project` | Read files of the open project. |
+| `read:<NAME>` | Read and list files under the directory environment variable `NAME` names, as `${NAME}/…` (for example `read:PDK_ROOT`). Nothing above that directory. Native builds only. |
 | `write_project` | Write files of the open project; delete only inside `.schemify/`. |
 | `spawn:<binary>` | Run that program, found on `PATH` (for example `spawn:ngspice`). Native builds only. |
 | `network` | Fetch URLs. |
 | `clipboard` | Read and write the clipboard. |
 
-A package declares what it requests in an optional `schemify.project` in its directory, with one `plugin <name> path <file>.wasm` record and its `grant` lines. Without that file the module is `<name>.wasm` and it requests exactly what you grant. `schemify pack status` shows requested but not granted capabilities as `denied` and granted but not requested ones as `unused`.
+A package declares what it requests in an optional `schemify.project` in its directory, with one `plugin <name> path <file>.wasm` record and its `grant` lines. A package that requests `read:*` gets every `read:<NAME>` you grant it, since a tool such as an importer reads wherever you point it; you still name each variable. Without that file the module is `<name>.wasm` and it requests exactly what you grant. `schemify pack status` shows requested but not granted capabilities as `denied` and granted but not requested ones as `unused`.
 
 ### Managing packages
 

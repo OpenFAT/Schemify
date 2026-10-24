@@ -119,7 +119,8 @@ Declared in the plugin manifest (`plugin … grant <capability>`) and granted by
 
 | Capability | Import |
 |---|---|
-| `read_project` | `fs_read(path: u32, path_len: u32) -> i32` |
+| `read_project` | `fs_read(path: u32, path_len: u32) -> i32`; `fs_list(path: u32, path_len: u32) -> i32` — the files under a directory: `IoDone.bytes` is one path relative to it per line, recursive in path order (each directory's entries by name), hidden entries and `target` left out, at most 65 536; `-E_GONE` for a missing directory |
+| `read:<NAME>` | `fs_read` and `fs_list` of `${NAME}` and `${NAME}/<path>`: under the directory environment variable `NAME` (`[A-Z_][A-Z0-9_]*`, ≤ 64 bytes) names when the app executes the request; `<path>` follows the project-relative rules below. An unset or empty variable answers `-E_GONE` (always, on the web). Added 2026-10-22 (D7 amendment); a guest that imports `fs_list` needs a host from that date |
 | `write_project` | `fs_write(path: u32, path_len: u32, data: u32, data_len: u32) -> i32` |
 | `write_project` | `fs_remove(path: u32, path_len: u32) -> i32` — removes a file or a whole directory tree; only strictly inside `.schemify/` (never `.schemify` itself), never a path whose last segment is `schemify.project` or `schemify.lock`; anything else is `E_DENIED`. `IoDone.status` 0, or `-E_GONE` when nothing was there |
 | `spawn:<binary>` | `spawn(argv: u32, argv_len: u32, stdin: u32, stdin_len: u32) -> i32` — `argv` is one line of line-record values; `argv[0]` must equal a granted binary name exactly (grants never contain `/` or `\`); resolved on PATH by the app; native only |
@@ -128,7 +129,7 @@ Declared in the plugin manifest (`plugin … grant <capability>`) and granted by
 
 A successful `fs_write` of `schemify.project` or `schemify.lock` makes the app run `project.reload` (re-read the manifest and lockfile, re-index, refresh open documents) before the write's `IoDone` is delivered ([pdk.md](pdk.md) §3.1).
 
-Paths are project-relative: no leading `/`, no `\` or `:`, no empty, `.` or `..` segment; anything else is `E_DENIED`. Path/URL/argv at most 8 KiB, data at most 64 MiB (`E_SPACE`).
+Paths are project-relative: no leading `/`, no `\` or `:`, no empty, `.` or `..` segment, no segment starting with `${` (that prefix is `read:<NAME>`'s); anything else is `E_DENIED`. Path/URL/argv at most 8 KiB, data at most 64 MiB (`E_SPACE`).
 
 I/O is **inverted**: each import returns a positive handle (unique per plugin, never reused) immediately and appends a row to the host's `io` request table, which the app executes; completion arrives later as `Event::IoDone { handle, status, bytes }` (`status >= 0` success — the exit status for `spawn` — or a negated §8 code). Requests staged by an event that aborts are discarded and never complete. The host crate itself performs no I/O and builds for `wasm32-unknown-unknown`.
 

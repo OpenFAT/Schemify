@@ -11,9 +11,12 @@
 //!   sockets and the headless server of `schemify rpc`;
 //! - [`mcp`] — `schemify mcp`, D27's MCP bridge: MCP tools over the same headless methods.
 //! - [`zip`] — project archives in and out (web spec §3).
+//! - [`hosted`] — projects published on a static site beside the web editor (`schemify
+//!   publish`, web spec §3.1).
 
 #![forbid(unsafe_code)]
 
+pub mod hosted;
 pub mod libs;
 pub mod mcp;
 pub mod pack;

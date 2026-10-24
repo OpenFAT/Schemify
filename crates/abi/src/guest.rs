@@ -38,6 +38,7 @@ mod sys {
         pub fn eval(doc: u32, ptr: u32, len: u32) -> i32;
         pub fn log(level: u32, ptr: u32, len: u32);
         pub fn fs_read(path: u32, path_len: u32) -> i32;
+        pub fn fs_list(path: u32, path_len: u32) -> i32;
         pub fn fs_write(path: u32, path_len: u32, data: u32, data_len: u32) -> i32;
         pub fn fs_remove(path: u32, path_len: u32) -> i32;
         pub fn spawn(argv: u32, argv_len: u32, stdin: u32, stdin_len: u32) -> i32;
@@ -210,16 +211,30 @@ impl Host {
         unsafe { sys::log(level as u32, addr(text.as_bytes()), len32(text.as_bytes())) }
     }
 
-    /// Requests the bytes of a project-relative file (capability `read_project`). Completion
-    /// arrives as `Event::IoDone`.
+    /// Requests the bytes of a file: project-relative (capability `read_project`), or
+    /// `${NAME}/…` under the directory environment variable `NAME` names (capability
+    /// `read:<NAME>`, plugin ABI §5). Completion arrives as `Event::IoDone`.
     ///
     /// # Errors
     ///
-    /// `E_DENIED` without the grant or for a path that leaves the project; `E_SPACE` when the
-    /// host queue is full.
+    /// `E_DENIED` without the grant or for a path that leaves the project (or the variable's
+    /// directory); `E_SPACE` when the host queue is full.
     pub fn fs_read(&self, path: &str) -> Result<u32, Code> {
         // SAFETY: the host only reads the given byte range.
         Code::check(unsafe { sys::fs_read(addr(path.as_bytes()), len32(path.as_bytes())) })
+    }
+
+    /// Requests the files under a directory, paths as [`Host::fs_read`] takes them. The
+    /// `Event::IoDone` bytes are one path relative to the directory per line, recursive in
+    /// path order (each directory's entries by name), hidden entries and `target` left out (at most 65 536; `-E_GONE` for a
+    /// missing directory or an unset variable).
+    ///
+    /// # Errors
+    ///
+    /// As [`Host::fs_read`].
+    pub fn fs_list(&self, dir: &str) -> Result<u32, Code> {
+        // SAFETY: the host only reads the given byte range.
+        Code::check(unsafe { sys::fs_list(addr(dir.as_bytes()), len32(dir.as_bytes())) })
     }
 
     /// Requests writing `data` to a project-relative file (capability `write_project`).
