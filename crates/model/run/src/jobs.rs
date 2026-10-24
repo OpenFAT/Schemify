@@ -100,11 +100,11 @@ pub struct Jobs {
     /// Simulator random seed (run spec §3), 0 for none.
     seed: Vec<u32>,
     state: Vec<State>,
-    /// CSR offsets (`jobs + 1`) into `assign_var` / `assign_end`.
+    /// CSR offsets (`jobs + 1`) into `assign_var`.
     assign_start: Vec<u32>,
     assign_var: Vec<u16>,
-    /// End of each value in `vals` (the start is the previous end).
-    assign_end: Vec<u32>,
+    /// CSR offsets (`assignments + 1`) of each value in `vals`.
+    val_start: Vec<u32>,
     vals: String,
 }
 
@@ -113,6 +113,7 @@ impl Jobs {
     pub fn new() -> Jobs {
         Jobs {
             assign_start: vec![0],
+            val_start: vec![0],
             ..Jobs::default()
         }
     }
@@ -162,7 +163,7 @@ impl Jobs {
             let v = intern(&mut self.var_names, var);
             self.assign_var.push(v);
             self.vals.push_str(val);
-            self.assign_end.push(self.vals.len() as u32);
+            self.val_start.push(self.vals.len() as u32);
         }
         assert!(
             self.vals.len() < u32::MAX as usize,
@@ -241,13 +242,11 @@ impl Jobs {
     pub fn assignments(&self, j: u32) -> impl Iterator<Item = (&str, &str)> + '_ {
         let r = self.assign_start[j as usize] as usize..self.assign_start[j as usize + 1] as usize;
         r.map(move |a| {
-            let start = if a == 0 {
-                0
-            } else {
-                self.assign_end[a - 1] as usize
-            };
             let var = self.var_names[self.assign_var[a] as usize].as_str();
-            (var, &self.vals[start..self.assign_end[a] as usize])
+            (
+                var,
+                &self.vals[self.val_start[a] as usize..self.val_start[a + 1] as usize],
+            )
         })
     }
 

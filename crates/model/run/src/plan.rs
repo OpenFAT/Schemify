@@ -208,8 +208,6 @@ pub struct Plan {
     pub outputs: Vec<Output>,
     /// Specs, sorted by output name.
     pub specs: Vec<Spec>,
-    /// The bench's `config` header attribute.
-    pub default_config: Option<String>,
     /// The bench's `corner` header attribute.
     pub default_corner: Option<String>,
 }
@@ -230,7 +228,6 @@ impl Plan {
                 .map(|v| v.iter().map(|x| s.get(*x)).collect())
         };
         let mut plan = Plan {
-            default_config: doc.header_value("config").map(str::to_owned),
             default_corner: doc.header_value("corner").map(str::to_owned),
             ..Plan::default()
         };

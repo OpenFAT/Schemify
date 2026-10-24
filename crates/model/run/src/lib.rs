@@ -68,7 +68,7 @@ mod sweep;
 
 pub use jobs::{DEFAULT, JOBS_MAX, Jobs, NO_SAMPLE, Select, State, expand};
 #[cfg(feature = "mc")]
-pub use mc::{Yield, draw, sim_seed, wilson, yield_summary};
+pub use mc::{Yield, sim_seed, yield_summary};
 #[cfg(feature = "optimize")]
 pub use optimize::{Algorithm, Evaluation, Objective, OptError, OptRun, Optimizer, Param};
 pub use plan::{
