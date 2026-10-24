@@ -447,7 +447,7 @@ is the count of existing function bodies edited.
 | Step | What | Oracle | Change radius |
 |---|---|---|---|
 | 0 | **Pacing.** `update` in `RedrawRequested`; render without waiting when the last callback has arrived or one period has passed since the last present; log both the newest and the oldest input; then try `desired_maximum_frame_latency: 2`. Also ask the user to run the monitor at 165 Hz. | the frame log on the RTX 4060 and the iGPU at 8 ms synthetic inputs (this note's method); idle CPU still 0% | 3 (`Shell::render`, `about_to_wait`, `window_event`) |
-| 1 | **`render::gpu` rows and pipelines for canvas primitives**, drawn straight into the surface texture under the vello UI frame. The vello target becomes premultiplied and blended over the canvas pass instead of blitted opaque. `paint.rs` calls `canvas::draw` instead of `draw_cached` on the GPU painter. | per-kind GPU vs `CpuPainter` tolerance test; row-patch oracle (patched rows = rebuilt rows after random kill/append sequences); `frame_times_100k` GPU column | 6 (`Shell::render`, `Gpu::new`, `paint::frame`'s canvas call, `ScenePainter` canvas hook, `perf.rs` `Gpu::render`, `gpu.rs` render helper) |
+| 1 (done) | **`render::gpu` rows and pipelines for canvas primitives**, drawn straight into the surface texture under the vello UI frame. The vello target becomes premultiplied and blended over the canvas pass instead of blitted opaque. `paint.rs` calls `canvas::draw` instead of `draw_cached` on the GPU painter. | per-kind GPU vs `CpuPainter` tolerance test; row-patch oracle (patched rows = rebuilt rows after random kill/append sequences); `frame_times_100k` GPU column | 6 (`Shell::render`, `Gpu::new`, `paint::frame`'s canvas call, `ScenePainter` canvas hook, `perf.rs` `Gpu::render`, `gpu.rs` render helper) |
 | 2 | **Delete the tile cache**: `tiles.rs`, the canvas use of `layers.rs`, `CanvasCache` in `paint::Caches`, LOD masks, and the cache tests and perf.md rows | goldens unchanged; `frame_times_100k`, `interactions_100k` | 4 (`paint::Caches`, `paint::frame`, `Editor::painted`'s partial-record wake, `wake_ms`'s "partly recorded" arm) |
 | 3 | **Glyph atlas and UI batch.** `GpuPainter` implements every `Painter` method; canvas text moves to atlas quads | glyph mask vs `CpuPainter` glyph raster per size bucket; app goldens unchanged (CPU); hover and type frames' GPU time on the iGPU | 3 (`Painter` impl split, `draw_texts`, `widgets::draw_text`) |
 | 4 | **Remove vello (GPU)**: `layers.rs`, the window's vello target and blit; the `vello` dependency goes, `vello_cpu` stays. Amend D5. | `tools/size-check.sh` before and after; all tests | 2 (`Gpu::new`, `Shell::render`) |
@@ -456,6 +456,44 @@ is the count of existing function bodies edited.
 
 Steps 0 and 1 are independent and can land in either order. Step 2 needs step 1, and step 4
 needs step 3.
+
+### Step 1: done (2026-10-24)
+
+`render::gpu` (`gpu.rs`, `gpu.wgsl`), drawn by the window and the perf harness; numbers in
+[perf.md](../perf.md) § GPU canvas pipelines. What differed from the plan:
+
+- **Five kinds, not four**: fill triangles (28 B), rects (24 B), arcs (28 B), lines (24 B, one
+  per table row), polyline and polygon edges (24 B, repacked whole when a chain table
+  changes). A row is coordinates, an RGBA colour (0 = empty slot) and one style word: width
+  in 1/16 px, dash, fill and parity flags. Colour and width are resolved at pack time, not
+  indexed in the uniform, so a palette change repacks (it was already a full re-record).
+- **Rows are grouped by palette layer, with free slots.** The CPU painter draws source by
+  source and layer by layer, and that order decides how antialiased edges of different
+  layers blend. A depth key could not keep it: about half of a 1 px diagonal line's pixels
+  are partial. So each kind's array holds per-layer ranges with an eighth plus 16 free slots;
+  a kill empties a slot, an append takes a free one, and a full layer or an edit script
+  repacks the table. Draws are one per non-empty (source, layer, kind), using base-instance
+  ranges (WebGL2 emulates `first_instance`).
+- **Strokes are round-capped and round-joined everywhere**, matching kurbo's `Stroke::new`,
+  which the CPU painter uses. Coverage is the exact pixel-area of the stroke's band along it,
+  plus 16 subsamples at caps and dash ends; the plain distance ramp `clamp(0.5 − d)` was 2–3×
+  further from vello_cpu.
+- **Canvas text stays with vello**, over the canvas pass. A table whose largest label is
+  under 3 px is skipped whole; otherwise the rows near the view come through `PrimIndex`.
+- **The vello frame gets a hole** over the canvas (a "destination out" layer; a `Clear` layer
+  clears whole 16 px tiles), and the window blends it over the canvas pass.
+- **Not done here**: bucket ranges per `PrimIndex` cell and the overview texture (step 6). The
+  far-zoom cut (≤ 2 px rows as their pixel box) is in the vertex shader. The text cut is the
+  one above.
+- **Equivalence oracles**: one per kind, marks, the far-zoom threshold, a mixed scene under a
+  UI frame, and the 100k fit (with its own documented bound), plus a moved rect as the
+  negative space. The pack is checked headless: patched rows equal a fresh pack after random
+  kill and append edits.
+
+Step 2 deletes `tiles.rs`, the canvas use of `layers.rs` (`Layers` stays for the status bar's
+live layer until step 4), `CanvasCache` and the tile half of `paint_canvas`, `Drawn`'s tile
+outcomes and the editor's partial/stretched wake-ups, `canvas::draw_cached` and its LOD masks.
+It also moves `CpuPainter` onto `InstanceRows`.
 
 ## 6. Risks
 

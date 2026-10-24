@@ -3,11 +3,12 @@
 //! select, drag, typing in a field, opening a menu; `interactions_100k`, D39 amended
 //! 2026-10-18: under 1 ms of CPU each), and a var edit with 1k dependents.
 //!
-//! A frame is `Editor::update` + `Editor::paint` into a vello scene with raster layers, as the
-//! window does; its CPU time is reported as p50/p95/p99. With a GPU adapter that supports
-//! timestamps inside encoders, each frame is also rendered (layer raster + frame scene) and
-//! its GPU time reported; without one the GPU columns are skipped. Pick the adapter with
-//! `SCHEMIFY_GPU=<name substring>` (default: the first non-CPU adapter).
+//! A frame is `Editor::update` + `Editor::paint` into a vello scene with raster layers and the
+//! canvas's GPU instance rows, as the window does; its CPU time is reported as p50/p95/p99.
+//! With a GPU adapter that supports timestamps inside encoders, each frame is also rendered
+//! (layer raster, the canvas pass, the vello frame or its reuse, the blend) and its GPU time
+//! reported, with the row bytes uploaded per frame; without one the GPU columns are skipped.
+//! Pick the adapter with `SCHEMIFY_GPU=<name substring>` (default: the first non-CPU adapter).
 //!
 //! `cargo test --release -p schemify-app --test perf -- --ignored --nocapture --test-threads=1`
 //! (NixOS: put the 64-bit vulkan-loader `lib` and `/run/opengl-driver/lib` on `LD_LIBRARY_PATH`.)
@@ -19,6 +20,7 @@ use std::fmt::Write;
 use std::time::Instant;
 
 use schemify_editor::editor::{Editor, Options};
+use schemify_render::gpu::{InstanceRows, Pipelines};
 use schemify_render::vello::kurbo::Affine;
 use schemify_render::vello::peniko::Color;
 use schemify_render::vello::{
@@ -149,11 +151,14 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
 /// A headless GPU with timestamp queries: renders each benchmark frame as the window does.
 struct Gpu {
     name: String,
-    /// Target size in device px.
+    /// Target size in device px, and device px per logical px.
     size: (u32, u32),
+    scale: f64,
     device: wgpu::Device,
     queue: wgpu::Queue,
     renderer: Renderer,
+    /// The canvas pipelines and row buffers.
+    pipes: Pipelines,
     /// vello's target and the stand-in for the window surface it is blitted to.
     view: wgpu::TextureView,
     surface: wgpu::TextureView,
@@ -217,7 +222,12 @@ impl Gpu {
         let surface_tex =
             texture_of(wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
         let surface = surface_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        let blitter = wgpu::util::TextureBlitter::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        // The UI frame (straight alpha, a hole over the canvas) blends over the canvas pass.
+        let blitter =
+            wgpu::util::TextureBlitterBuilder::new(&device, wgpu::TextureFormat::Rgba8Unorm)
+                .blend_state(wgpu::BlendState::ALPHA_BLENDING)
+                .build();
+        let pipes = Pipelines::new(&device, wgpu::TextureFormat::Rgba8Unorm);
         let queries = device.create_query_set(&wgpu::QuerySetDescriptor {
             label: None,
             ty: wgpu::QueryType::Timestamp,
@@ -249,9 +259,11 @@ impl Gpu {
                 (f64::from(VIEW.0) * scale) as u32,
                 (f64::from(VIEW.1) * scale) as u32,
             ),
+            scale,
             device,
             queue,
             renderer,
+            pipes,
             view,
             surface,
             surface_tex,
@@ -264,10 +276,16 @@ impl Gpu {
         })
     }
 
-    /// Renders one painted frame exactly as the window does (layer raster; vello, or quads
-    /// over the last frame when `Layers::reusable`; blit to the surface), returning (CPU ms of
-    /// the render calls, GPU ms between timestamps around them).
-    fn render(&mut self, scene: &Scene, layers: &mut Layers) -> (f64, f64) {
+    /// Renders one painted frame exactly as the window does (layer raster; vello into the UI
+    /// target unless `Layers::reusable`; the canvas pass into the surface from the uploaded
+    /// rows; the UI blended over it; the layer quads when reused), returning (CPU ms of the
+    /// render calls, GPU ms between timestamps around them).
+    fn render(
+        &mut self,
+        scene: &Scene,
+        layers: &mut Layers,
+        rows: &mut InstanceRows,
+    ) -> (f64, f64) {
         self.timed(|g| {
             layers
                 .raster(&g.device, &g.queue, &mut g.renderer)
@@ -276,7 +294,7 @@ impl Gpu {
             let reuse = layers.reusable(w, h);
             if !reuse {
                 let params = RenderParams {
-                    base_color: Color::BLACK,
+                    base_color: Color::TRANSPARENT,
                     width: w,
                     height: h,
                     antialiasing_method: AaConfig::Area,
@@ -287,6 +305,20 @@ impl Gpu {
                 layers.rendered(w, h);
             }
             let mut e = g.device.create_command_encoder(&Default::default());
+            g.pipes.upload(&g.device, &g.queue, rows);
+            let canvas = rows.frame.take();
+            let (queue, surface) = (&g.queue, &g.surface);
+            let black = wgpu::Color::BLACK;
+            g.pipes.draw(
+                &mut e,
+                queue,
+                surface,
+                black,
+                rows,
+                canvas.as_ref(),
+                g.scale,
+                (w, h),
+            );
             g.blitter.copy(&g.device, &mut e, &g.view, &g.surface);
             if reuse {
                 let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -351,6 +383,8 @@ struct Bench {
     scale: f64,
     scene: Scene,
     layers: Layers,
+    /// The canvas's GPU instance rows (the window's).
+    rows: InstanceRows,
     now: u64,
     gpu: Option<Gpu>,
     cpu: Vec<f64>,
@@ -371,13 +405,14 @@ impl Bench {
             scene: &mut self.scene,
             base,
             layers: Some(&mut self.layers),
+            rows: Some(&mut self.rows),
         };
         schemify_app::paint::frame(&mut self.ed, &mut self.caches, &mut p);
         let cpu = t.elapsed().as_secs_f64() * 1e3;
         let rendered = self
             .gpu
             .as_mut()
-            .map(|g| g.render(&self.scene, &mut self.layers));
+            .map(|g| g.render(&self.scene, &mut self.layers, &mut self.rows));
         if measure {
             self.cpu.push(cpu);
             if let Some((v, g)) = rendered {
@@ -412,6 +447,8 @@ impl Bench {
             .gpu
             .as_mut()
             .map_or(0, |g| std::mem::take(&mut g.reused));
+        // Row bytes the frames since the last report uploaded (an edit's cost on the GPU side).
+        let uploaded = self.gpu.as_mut().map_or(0, |g| g.pipes.take_uploaded());
         let (cpu, vello, gpu) = (
             pct(&mut self.cpu),
             pct(&mut self.vello),
@@ -419,7 +456,8 @@ impl Bench {
         );
         eprintln!(
             "  {what:<8} {n:>3} frames ({reused} without vello)  CPU update+paint p50/p95/p99 \
-             {cpu} ms  render calls {vello} ms  GPU {gpu} ms"
+             {cpu} ms  render calls {vello} ms  GPU {gpu} ms  rows uploaded {} KiB",
+            uploaded / 1024
         );
         cpu_pct
     }
@@ -531,6 +569,7 @@ fn frame_times(n: u32) {
         scale: 1.0,
         scene: Scene::new(),
         layers: Layers::default(),
+        rows: InstanceRows::default(),
         now: 0,
         gpu,
         cpu: Vec::new(),
@@ -726,6 +765,7 @@ fn grid_lag(scale: f64, step: f32, grid: bool) -> (usize, usize) {
         scale,
         scene: Scene::new(),
         layers: Layers::default(),
+        rows: InstanceRows::default(),
         now: 0,
         gpu: Gpu::new(scale),
         cpu: Vec::new(),
@@ -831,6 +871,7 @@ fn interactions(n: u32) {
         scale: 1.0,
         scene: Scene::new(),
         layers: Layers::default(),
+        rows: InstanceRows::default(),
         now: 0,
         gpu: Gpu::new(1.0),
         cpu: Vec::new(),
@@ -1085,6 +1126,7 @@ fn edit_frames(n: u32) -> Vec<(&'static str, [f64; 3], f64)> {
         scale: 1.0,
         scene: Scene::new(),
         layers: Layers::default(),
+        rows: InstanceRows::default(),
         now: 0,
         gpu: Gpu::new(1.0),
         cpu: Vec::new(),
@@ -1323,6 +1365,7 @@ fn shared_var_edit_frames_100k() {
         scale: 1.0,
         scene: Scene::new(),
         layers: Layers::default(),
+        rows: InstanceRows::default(),
         now: 0,
         gpu: Gpu::new(1.0),
         cpu: Vec::new(),
@@ -1405,10 +1448,11 @@ impl Bench {
             scene: &mut self.scene,
             base,
             layers: Some(&mut self.layers),
+            rows: Some(&mut self.rows),
         };
         schemify_app::paint::frame(&mut self.ed, &mut self.caches, &mut p);
         if let Some(g) = self.gpu.as_mut() {
-            g.render(&self.scene, &mut self.layers);
+            g.render(&self.scene, &mut self.layers, &mut self.rows);
         }
     }
 
@@ -1483,9 +1527,10 @@ impl Bench {
         let shown = self.pixels();
         let caches = std::mem::take(&mut self.caches);
         let layers = std::mem::take(&mut self.layers);
+        let rows = std::mem::take(&mut self.rows);
         self.paint();
         let fresh = self.pixels();
-        (self.caches, self.layers) = (caches, layers);
+        (self.caches, self.layers, self.rows) = (caches, layers, rows);
         let bad = shown
             .chunks_exact(4)
             .zip(fresh.chunks_exact(4))
@@ -1509,6 +1554,7 @@ impl Bench {
             scale: 1.0,
             scene: Scene::new(),
             layers: Layers::default(),
+            rows: InstanceRows::default(),
             now: 0,
             gpu: Some(Gpu::new(1.0)?),
             cpu: Vec::new(),

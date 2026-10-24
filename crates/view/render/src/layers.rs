@@ -352,7 +352,8 @@ impl Layers {
     }
 
     /// Whether this frame may skip vello: it painted exactly what the frame vello last rendered
-    /// into a `w × h` target painted, apart from where its layers are drawn. Then
+    /// into a `w × h` target painted, apart from where its layers are drawn (a frame drawing
+    /// no layer, whose canvas is the GPU pass under the target, reuses it as it is). Then
     /// [`Layers::compose`] over a copy of that target is the whole frame: the layer quads, then
     /// what was painted over them (canvas floats, popups) from its own texture, which
     /// [`Layers::raster`] renders once per change of it. Not when that part was painted inside
@@ -361,7 +362,6 @@ impl Layers {
         let hash = self.log.hash.finish();
         !self.log.tangled
             && (!self.log.after || self.top_shown == Some((hash, w, h)))
-            && !self.log.draws.is_empty()
             && self.log.draws.len() <= DRAWS_MAX
             && self.shown == Some((hash, w, h))
             && self
@@ -470,6 +470,9 @@ impl Layers {
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             let full = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
             groups.push((bind(&view, &quad.nearest, offset), full, &quad.over));
+        }
+        if groups.is_empty() {
+            return; // nothing drawn over the reused target
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("layer quads"),
@@ -711,6 +714,7 @@ mod tests {
             scene: &mut scene,
             base: Affine::IDENTITY,
             layers: Some(layers),
+            rows: None,
         };
         if !p.holds_layer(0, 1) {
             assert!(p.layer(0, 1, 64, 64, |p| p.fill_rect(CANVAS, Color::BLACK)));

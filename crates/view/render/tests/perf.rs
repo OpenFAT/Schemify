@@ -48,6 +48,7 @@ fn scene_build_100k_primitives() {
             scene: &mut scene,
             base: Affine::IDENTITY,
             layers: None,
+            rows: None,
         };
         draw_ui(
             &mut p,
@@ -181,6 +182,7 @@ fn waves_pane_three_1m_point_traces() {
             scene: &mut scene,
             base: Affine::IDENTITY,
             layers: None,
+            rows: None,
         };
         draw_pane(
             &mut p,

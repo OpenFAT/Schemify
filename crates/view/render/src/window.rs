@@ -23,6 +23,7 @@ use winit::window::{Window, WindowId};
 
 use schemify_ui::{Button, Chord, InputEvent, InputEvents, Key, Mods};
 
+use crate::gpu::{InstanceRows, Pipelines};
 use crate::layers::{Layers, keep_atlas};
 use crate::painter::{Painter, ScenePainter};
 
@@ -113,17 +114,21 @@ impl From<accesskit_winit::Event> for UserEvent {
     }
 }
 
-/// The window's GPU: its surface, the device that presents to it, vello's target and renderer.
+/// The window's GPU: its surface, the device that presents to it, the canvas pipelines,
+/// vello's target and renderer.
 struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
-    /// vello renders here (a compute shader cannot write most surface textures); each frame is
-    /// blitted from it, and a composed frame reuses it as the last vello frame (D39).
+    /// vello renders the UI frame here (a compute shader cannot write most surface textures),
+    /// with a hole where the canvas is; each frame blends it over the canvas pass, and a
+    /// composed frame reuses it as the last vello frame (D39).
     target: wgpu::TextureView,
     blitter: wgpu::util::TextureBlitter,
     renderer: Renderer,
+    /// The canvas pipelines and row buffers (`render::gpu`).
+    pipes: Pipelines,
 }
 
 impl Gpu {
@@ -199,7 +204,11 @@ impl Gpu {
         let renderer = Renderer::new(&device, options).map_err(|e| e.to_string())?;
         Ok(Gpu {
             target: target(&device, w, h),
-            blitter: wgpu::util::TextureBlitter::new(&device, format),
+            // vello's target holds straight alpha: blended over the canvas pass.
+            blitter: wgpu::util::TextureBlitterBuilder::new(&device, format)
+                .blend_state(wgpu::BlendState::ALPHA_BLENDING)
+                .build(),
+            pipes: Pipelines::new(&device, format),
             device,
             queue,
             surface,
@@ -257,8 +266,10 @@ struct Shell<A: App> {
     pointer: (f32, f32),
     scale: f64,
     scene: Scene,
-    /// Raster layers the app's cached canvases record into (kept across frames).
+    /// Raster layers the app's live chrome records into (kept across frames).
     layers: Layers,
+    /// The canvas's instance rows (kept across frames; `Painter::canvas` patches them).
+    rows: InstanceRows,
     access_dirty: bool,
     /// The deadline [`App::wake_ms`] asked for has passed: update with no input.
     tick: bool,
@@ -316,6 +327,7 @@ pub fn run<A: App + 'static>(title: &str, mut app: A) -> Result<(), RunError> {
         scale: 1.0,
         scene: Scene::new(),
         layers: Layers::default(),
+        rows: InstanceRows::default(),
         access_dirty: true,
         tick: false,
         ime: None,
@@ -416,6 +428,7 @@ impl<A: App> Shell<A> {
             scene: &mut self.scene,
             base,
             layers: Some(&mut self.layers),
+            rows: Some(&mut self.rows),
         };
         self.app.paint(&mut painter, viewport);
         if let Err(e) = self
@@ -434,12 +447,12 @@ impl<A: App> Shell<A> {
             }
             _ => return,
         };
-        // D39: a frame that only moved its cached layers (a pan, a zoom stand-in) skips vello:
-        // the target still holds the last vello frame, and the layers are quads over it.
+        // D39: a frame whose vello scene is the last one rendered (a pan or zoom moves the
+        // canvas camera only) skips vello: the target still holds the last UI frame.
         let reuse = self.layers.reusable(size.width, size.height);
         if !reuse {
             let params = RenderParams {
-                base_color: self.app.background(),
+                base_color: Color::TRANSPARENT,
                 width: size.width,
                 height: size.height,
                 antialiasing_method: AaConfig::Area,
@@ -460,11 +473,32 @@ impl<A: App> Shell<A> {
         let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("blit"),
+                label: Some("frame"),
             });
         let target = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        // The canvas: its own pass straight into the surface, under the UI frame (which has a
+        // hole over the canvas, `Painter::canvas`), after the rows it changed are uploaded.
+        gpu.pipes.upload(&gpu.device, &gpu.queue, &mut self.rows);
+        let bg = self.app.background().components.map(f64::from);
+        let clear = wgpu::Color {
+            r: bg[0],
+            g: bg[1],
+            b: bg[2],
+            a: bg[3],
+        };
+        let canvas = self.rows.frame.take();
+        gpu.pipes.draw(
+            &mut encoder,
+            &gpu.queue,
+            &target,
+            clear,
+            &self.rows,
+            canvas.as_ref(),
+            self.scale,
+            (size.width, size.height),
+        );
         gpu.blitter
             .copy(&gpu.device, &mut encoder, &gpu.target, &target);
         if reuse {

@@ -619,6 +619,87 @@ Reading:
   callback period went from 23–32 ms to 4.2 ms. The first row, typed before the monitors
   changed, shows the 59.95 Hz output at 16 ms keys: oldest 7.1 / 17.5, newest 5.2 / 15.8.
 
+## GPU canvas pipelines 2026-10
+
+Step 1 of [research/render-backend.md](research/render-backend.md) § 5: on the GPU the canvas is
+drawn by Schemify's own instanced wgpu pipelines (`render::gpu`) instead of vello tiles. Each
+primitive is one retained instance row, grouped by palette layer, patched from the tables'
+reported changes and drawn under a camera uniform: a pan or zoom writes 96 bytes. Canvas text
+is still drawn by vello over the canvas pass (the glyph atlas is step 3). Measured with
+`frame_times_100k` and `interactions_100k`, one run each, `nice -n 19`,
+`SCHEMIFY_GPU=NVIDIA` (**NVIDIA GeForce RTX 4060 Laptop GPU**, Vulkan, timestamp floor
+0.013 ms). Before: `refactor/gui-crates` at `4a61dc49` (load ≈ 8). After: load ≈ 46 (other
+agents building), so the tails (p99) are noisy.
+
+### 100k objects (260k primitives), p50 / p95 / p99 ms
+
+| Frame | CPU update+paint before | after | GPU before (tiles) | GPU after (pipelines) |
+|---|---|---|---|---|
+| pan | 0.190 / 0.287 / 0.469 | 0.092 / 0.159 / 0.218 | 0.089 / 0.111 / 0.409 | 0.625 / 0.916 / 0.918 |
+| zoom (+ settle) | 0.458 / 0.885 / 1.051 (210 frames) | 0.116 / 0.144 / 0.150 (60 frames: no settle frames) | 0.451 / 0.643 / 0.665 | 0.543 / 0.657 / 0.658 |
+| select | 1.179 / 1.606 / 1.758 | 0.391 / 0.575 / 0.796 | 0.515 / 0.596 / 0.620 | 0.659 / 0.660 / 0.814 |
+| edit (Del, undo) | 2.684 / 4.841 / 5.099 | 0.957 / 3.882 / 64.5 (one frame under load) | 2.259 / 3.916 / 4.116 | 1.132 / 1.135 / 1.137 |
+| hover | 0.697 / 1.006 / 1.429 | 0.225 / 0.377 / 0.413 | 0.252 / 0.548 / 1.116 | 0.480 / 0.487 / 0.492 |
+| click select | 1.268 / 1.414 / 1.692 | 0.397 / 0.537 / 0.542 | 0.367 / 0.516 / 5.687 | 0.325 / 0.328 / 0.478 |
+| drag | 0.440 / 0.612 / 0.766 | 0.213 / 0.277 / 0.295 | 0.583 / 0.685 / 0.691 | 0.799 / 0.802 / 0.802 |
+| type | 1.057 / 1.252 / 1.412 | 0.250 / 0.371 / 0.374 | 0.373 / 0.515 / 0.819 | 0.647 / 0.651 / 0.652 |
+| menu | 0.952 / 1.596 | 0.230 / 0.502 | 0.461 / 1.504 | 0.659 / 0.821 |
+| unselect (select-all box) | 26.4 / 34.4 / 36.0 | 6.2 / 8.9 / 9.2 | 10.0 / 15.2 / 15.3 | 1.09 / 1.10 / 1.10 |
+
+The "render calls" column (CPU side of the submission) went from 0.43 / 1.0 / 1.8 ms p50 (pan,
+zoom, hover) to 0.13 / 0.15 / 0.35 ms. Before, `frame_times_100k` failed its zoom p99 budget
+(1.05 ms) and `interactions_100k` its hover p95 (1.006 ms) on this run; after, both pass.
+
+- **GPU time per frame is now flat**: 0.54–0.66 ms p50 for every camera frame, the whole canvas
+  drawn every frame (no tile to copy, no stand-in, no partial frame). The research spike's
+  target was 0.30–0.40 ms at 100k on this GPU; this misses it by about 0.25 ms. The difference:
+  the spike drew no grid and no UI blend, and its strokes had no exact-area coverage; here each
+  frame also blends the 1280×800 UI texture over the canvas and runs subsampled coverage at
+  stroke caps (`gpu.wgsl`). A tile-copy pan was cheaper on the GPU (0.09 ms) but left blank
+  tiles and in-frame raster spikes (p99 0.41, 5.7 ms on a click).
+- **Bytes written per edit**: 4 KiB over 24 edit frames, about 170 B a frame (the killed and
+  appended rows' slots). The first frame uploads the whole canvas: 7.0 MiB at 100k. A
+  select-all repacks the marks source (24 B per marked row: 6 MB at 100k): 135 MB over the 12
+  select-all rounds.
+- **Canvas text** (labels, pin names, values) still goes through vello: a table whose largest
+  label is under 3 px at the current zoom is skipped whole, otherwise the rows near the view
+  are listed through `PrimIndex`. Scanning every label row instead cost 0.35–0.8 ms of CPU per
+  frame at 100k (80k label rows, all under 3 px at the fit view), measured with temporary laps;
+  with the skip and the index the pan frame is the 0.09 ms above.
+- `gpu.rs` `gpu_100k_canvas_matches_cpu_and_reports_frame_time` (render crate, 1600×900, the
+  `hundred_k` fixture at fit, submit to completion): 1.42 ms on the RTX 4060 and 11.1 ms on the
+  Intel iGPU for the canvas pass, against vello's 4.10 and 26.2 ms for the same scene encoded
+  per frame; the 100k pack takes 4.8–6.7 ms (2.9 MB of rows).
+
+### GPU against CPU (equivalence, `crates/view/render/tests/gpu.rs`)
+
+Mean |Δ| per channel / pixels off by more than 96 levels, identical on the RTX 4060 and the
+Intel iGPU (tolerance: mean ≤ 1.0, at most 0.1% of pixels off):
+
+| Scene | mean | far |
+|---|---|---|
+| lines (plain, weighted, dashed) | 0.037 | 0 |
+| rects (outlined, filled, styled, dashed) | 0.024 | 0 |
+| arcs (circles, arcs both ways, filled, dashed) | 0.321 | 0 |
+| polylines and polygons (filled, concave) | 0.059 | 0 |
+| marks over the thousand | 0.663 | 37 |
+| far-zoom cut at the 2 px threshold | 0.003 | 0 |
+| the thousand under a UI frame (texts, popup) | 0.974 | 128 |
+| 100k at fit (own bound: mean ≤ 4.0) | 3.24 | 254 |
+| negative space: one rect moved 60 px | 0.579 | 1898: fails |
+
+What the remaining differences are:
+- Coverage: exact band area along a stroke and 16 subsamples at its caps (`gpu.wgsl`), against
+  vello_cpu's exact area of the flattened outline.
+- The CPU strokes a layer as one path, so overlapping strokes cover a pixel once; the GPU
+  blends instance by instance. At the 100k fit, where nearly every pixel is an overlapping
+  1 px edge, that alone is a mean of 1.17 (the CPU against itself drawing instance by
+  instance).
+- Text goes through vello on the GPU against vello_cpu on the CPU.
+- One CPU artifact: it fills a layer's closed shapes as one non-zero path, so a filled rect
+  and polygon of opposite winding that overlap cancel (14 px in the thousand). The GPU fills
+  both.
+
 ## Binary size
 
 D39 (amended 2026-10-11): the headless core `schemify` ≤ 2 MB, the editor `schemify-gui` ≤

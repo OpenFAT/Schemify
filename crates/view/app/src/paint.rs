@@ -1,17 +1,20 @@
 //! `paint`: [`Picture`] → pixels, the humble view of one frame. Draws the editor's tables
 //! through a [`Painter`] in a fixed order: UI main layer, canvas (grid, scene, decor,
-//! markers, extra, marks as a cached raster layer, then the gesture overlay live) or the
+//! markers, extra and marks through the painter's GPU rows (`Painter::canvas`, its texts
+//! over them) or as a cached raster layer on the CPU, then the gesture overlay live) or the
 //! text tab, the docs page's graphs, the UI overlay (menus, dialogs), then the waves dock
 //! below.
 //!
 //! Owner: `schemify-app`. Writes only [`Caches`] (the canvas raster layer, its diff and
-//! indexes, glyph and path buffers); reports the canvas outcome, which [`frame`] hands to
-//! `Editor::painted`, the one way paint informs the model.
+//! indexes, glyph and path buffers; the GPU rows live with the window's painter) and
+//! reports the canvas outcome, which [`frame`] hands to `Editor::painted`, the one way paint
+//! informs the model.
 
 use schemify_canvas::kurbo::{Affine, BezPath, Rect as KRect, Stroke};
 use schemify_canvas::{Camera, CanvasDiff, CanvasPrims, Drawn, PrimIndex, Rows, TableChange};
 use schemify_editor::editor::{CanvasPicture, DockPicture, Editor, GraphPicture, Picture, UiView};
 use schemify_render::canvas::{self, CanvasCache, CanvasScratch};
+use schemify_render::gpu::{Change, Frame};
 use schemify_render::vello::Glyph;
 use schemify_render::vello::peniko::{Color, FontData};
 use schemify_render::waves::{WaveLook, WaveScratch, draw_window};
@@ -45,6 +48,10 @@ pub struct Caches {
     /// canvas tile looks only at the rows near it; and the rows buffer.
     canvas_index: [(u64, PrimIndex); 4],
     canvas_rows: Rows,
+    /// Per canvas table the largest label size (milli-units) and the generation it was
+    /// taken at plus 1: the GPU path skips a table's labels when even that one is under the
+    /// text cut.
+    text_max: [(u64, i32); 4],
     ui_scratch: UiScratch,
     /// Embedded graph chrome and buffers (docs plot slots).
     plot_look: WaveLook,
@@ -131,6 +138,9 @@ fn paint_canvas<P: Painter>(
     let shown = cp.shown.unwrap_or(cp.scene);
     let (diff, diff_gen, diff_style, boxes) = &mut c.canvas_diff;
     let diffed = *diff_gen != cp.gens || *diff_style != style;
+    // What the GPU rows rewrite (`Painter::canvas`): nothing while the key stands.
+    let mut changes = [Change::Same; 4];
+    let mut marks_changed = false;
     if diffed {
         // The scene reports its own edits (O(change)); the decor and parity tables are
         // hashed when they changed.
@@ -160,6 +170,20 @@ fn paint_canvas<P: Painter>(
         ];
         let marks = (cp.scene, cp.marks, changed(0) || changed(3));
         let known = diff.update(&tables, marks, &mut out);
+        // The GPU rows bake the palette, so a style change repacks everything. Otherwise each
+        // table's own change: its producer's report is exact whatever the diff made of the
+        // other tables; a hashed table's edit script only when the diff could follow.
+        let restyled = *diff_style != style;
+        for (k, &(_, change)) in tables.iter().enumerate() {
+            changes[k] = match change {
+                _ if restyled => Change::All,
+                TableChange::Same => Change::Same,
+                TableChange::Rows(killed) => Change::Killed(killed),
+                TableChange::Any if known => Change::Edits(diff.edits_of(k)),
+                TableChange::Any => Change::All,
+            };
+        }
+        marks_changed = restyled || marks.2;
         // An index current before the change follows it (a patch then reads the rows near
         // it, not every row); else it waits for the next tile to rebuild it.
         for (k, ix) in c.canvas_index.iter_mut().enumerate() {
@@ -185,7 +209,47 @@ fn paint_canvas<P: Painter>(
     let damage = boxes.as_deref();
     let (decor, extra, marks, markers) = (cp.decor, cp.extra, cp.marks, cp.markers);
     let scratch = &mut c.canvas_scratch;
+    // A painter with GPU rows draws every table but its texts in its own pass under this
+    // frame; the texts (culled, under 3 px skipped) and the gesture overlay go over it as
+    // before. The CPU painter, the goldens' oracle, falls through to the tile cache.
+    let frame = Frame {
+        view,
+        cam,
+        grid,
+        background: palette.background,
+        grid_color: palette.grid,
+    };
+    let tables = [
+        (shown, changes[0]),
+        (decor, changes[1]),
+        (markers, changes[2]),
+        (extra, changes[3]),
+    ];
     let (index, rows, gens) = (&mut c.canvas_index, &mut c.canvas_rows, cp.gens);
+    if p.canvas(&frame, tables, (cp.scene, marks, marks_changed), palette) {
+        p.push_clip(view);
+        let near = world_box(view, &cam);
+        for (k, t) in [shown, decor, markers, extra].into_iter().enumerate() {
+            // A table whose largest label is under the text cut at this zoom draws none (the
+            // far zoom's frames look at no label); else only the rows near the view.
+            let g = gens[CANVAS_GEN[k]];
+            let largest = &mut c.text_max[k];
+            if largest.0 != g + 1 {
+                *largest = (g + 1, t.texts.size.iter().copied().max().unwrap_or(0));
+            }
+            if f64::from(largest.1) * cam.scale < canvas::TEXT_MIN_PX {
+                continue;
+            }
+            let listed = rows_near(&mut index[k], t, g, true, near, rows);
+            let listed = listed.then_some(&rows.texts[..]);
+            canvas::draw_texts(p, view, &cam, &t.texts, listed, palette, text, scratch);
+        }
+        if !cp.overlay.is_empty() {
+            canvas::draw_prims(p, view, &cam, cp.overlay, palette, text, scratch);
+        }
+        p.pop_clip();
+        return (Drawn::Direct, diffed);
+    }
     // A sixteenth of a tile: the smallest part a costly tile is recorded in.
     let part_area = (f64::from(canvas::TILE_PX) / 4.0).powi(2) * 0.99;
     let drawn = canvas::draw_cached(

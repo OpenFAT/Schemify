@@ -1,7 +1,7 @@
 //! The GPU canvas (D39; `docs/dev/research/render-backend.md` § 5, step 1): the canvas tables
 //! packed into retained instance rows ([`InstanceRows`]), patched where the tables' reported
-//! changes say, for instanced pipelines to draw under one camera uniform (the next
-//! change). A pan or zoom writes the uniform only; an edit rewrites the rows it changed.
+//! changes say, and drawn by instanced pipelines ([`Pipelines`]) under one camera uniform
+//! (`gpu.wgsl`). A pan or zoom writes the uniform only; an edit rewrites the rows it changed.
 //! Every frame is complete: this path has no tile cache.
 //!
 //! One producer, two consumers: the pack here is the one place a per-row decision is made
@@ -41,6 +41,7 @@
 use std::ops::Range;
 
 use vello::kurbo::Rect;
+use vello::wgpu;
 
 use schemify_canvas::{
     Arcs, Camera, CanvasPrims, LAYER_DEAD, LAYERS, LineStyle, Lines, Marks, Palette, PrimKind,
@@ -69,10 +70,12 @@ pub const MARKS: usize = 4;
 const BYTES_MAX: usize = 1 << 28;
 /// Dirty ranges kept per row array before they merge into one.
 const DIRTY_MAX: usize = 8;
+/// Camera uniform size (`Cam` in `gpu.wgsl`).
+const UNIFORM_BYTES: usize = 96;
 /// A table row with no slot (dead, hidden, or nothing to draw).
 const NO_SLOT: u32 = u32::MAX;
 
-/// Style flags, bits 20–23 of a row's style word (the shader): a closed shape also filled.
+/// Style flags, bits 20–23 of a row's style word (`gpu.wgsl`): a closed shape also filled.
 /// Every stroke has round caps and joins, as kurbo's `Stroke::new` and `canvas::stroke_of`
 /// draw them on the CPU.
 const FILL: u32 = 1;
@@ -82,6 +85,10 @@ const PARITY: u32 = 2;
 /// A mark's stroke: 2 logical px (`canvas::draw_marks`), in 1/16 px.
 const MARK_WIDTH_Q16: u32 = 32;
 
+const _: () = assert!(
+    UNIFORM_BYTES.is_multiple_of(16),
+    "the uniform is vec4-aligned"
+);
 const _: () = assert!(LineStyle::DASH_MAX < 16, "the dash is a nibble");
 
 /// A row's style word: stroke width in 1/16 px, dash, flags.
@@ -173,7 +180,7 @@ impl Table {
 
 /// The instance rows of one canvas: per source and kind the rows grouped by layer, the slot
 /// of each table row, and the byte ranges written since the GPU last read them
-/// (the pipelines' upload). Headless: plain byte tables, so the pack is tested without a GPU.
+/// ([`Pipelines::upload`]). Headless: plain byte tables, so the pack is tested without a GPU.
 #[derive(Default)]
 pub struct InstanceRows {
     tables: [[Table; KINDS]; SOURCES],
@@ -686,6 +693,316 @@ fn ear_clip(xs: &[i32], ys: &[i32], out: &mut Vec<[u32; 3]>) {
     assert_eq!(out.len(), n - 2, "a simple polygon has n − 2 triangles");
 }
 
+/// The camera uniform (`Cam` in `gpu.wgsl`) for `frame` at `dev` device px per logical px
+/// into a `target`-sized texture.
+fn uniform(frame: &Frame, dev: f64, (w, h): (u32, u32)) -> [u8; UNIFORM_BYTES] {
+    let (cam, v) = (&frame.cam, frame.view);
+    assert!(dev > 0.0 && cam.scale > 0.0, "a drawable camera");
+    let (fx, fy) = (cam.cx.floor(), cam.cy.floor());
+    let clamp = |c: f64| c.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+    let (ox, oy) = cam.origin(v);
+    let grid = match crate::canvas::grid_dots(v, cam, frame.grid) {
+        Some((s, ..)) => {
+            let p = s * cam.scale;
+            [
+                p as f32,
+                ox.rem_euclid(p) as f32,
+                oy.rem_euclid(p) as f32,
+                0.0,
+            ]
+        }
+        None => [0.0; 4],
+    };
+    let color = |rgba: u32| rgba.to_be_bytes().map(|b| f32::from(b) / 255.0);
+    let (gc, bg) = (color(frame.grid_color), color(frame.background));
+    let words: [u32; UNIFORM_BYTES / 4] = [
+        clamp(fx) as u32,
+        clamp(fy) as u32,
+        ((cam.cx - fx) as f32).to_bits(),
+        ((cam.cy - fy) as f32).to_bits(),
+        ((v.x0 * dev) as f32).to_bits(),
+        ((v.y0 * dev) as f32).to_bits(),
+        ((v.x1 * dev) as f32).to_bits(),
+        ((v.y1 * dev) as f32).to_bits(),
+        ((cam.scale * dev) as f32).to_bits(),
+        (dev as f32).to_bits(),
+        (w as f32).to_bits(),
+        (h as f32).to_bits(),
+        grid[0].to_bits(),
+        grid[1].to_bits(),
+        grid[2].to_bits(),
+        grid[3].to_bits(),
+        gc[0].to_bits(),
+        gc[1].to_bits(),
+        gc[2].to_bits(),
+        gc[3].to_bits(),
+        bg[0].to_bits(),
+        bg[1].to_bits(),
+        bg[2].to_bits(),
+        bg[3].to_bits(),
+    ];
+    let mut out = [0u8; UNIFORM_BYTES];
+    for (i, wd) in words.iter().enumerate() {
+        out[4 * i..4 * i + 4].copy_from_slice(&wd.to_ne_bytes());
+    }
+    out
+}
+
+/// The canvas pipelines and the GPU side of one canvas's rows: one vertex buffer per
+/// `(source, kind)`, grown by doubling, and the camera uniform. Owner: the window (or a
+/// benchmark driving the GPU itself).
+pub struct Pipelines {
+    uniform: wgpu::Buffer,
+    bind: wgpu::BindGroup,
+    background: wgpu::RenderPipeline,
+    kinds: [wgpu::RenderPipeline; KINDS],
+    buffers: [[Option<wgpu::Buffer>; KINDS]; SOURCES],
+    uploaded: u64,
+}
+
+impl std::fmt::Debug for Pipelines {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pipelines")
+            .field("uploaded", &self.uploaded)
+            .finish()
+    }
+}
+
+const SEG_ATTRS: [wgpu::VertexAttribute; 4] =
+    wgpu::vertex_attr_array![0 => Sint32x2, 1 => Sint32x2, 2 => Uint32, 3 => Uint32];
+const ARC_ATTRS: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
+    0 => Sint32x2, 1 => Sint32, 2 => Sint32, 3 => Sint32, 4 => Uint32, 5 => Uint32
+];
+const TRI_ATTRS: [wgpu::VertexAttribute; 4] =
+    wgpu::vertex_attr_array![0 => Sint32x2, 1 => Sint32x2, 2 => Sint32x2, 3 => Uint32];
+
+impl Pipelines {
+    /// Builds the pipelines for a `format` render target (the surface's, or an offscreen
+    /// `Rgba8Unorm`). Blending is straight alpha, so the canvas pass composes under a
+    /// straight-alpha UI frame.
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipelines {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("canvas"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("gpu.wgsl").into()),
+        });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("canvas camera"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(UNIFORM_BYTES as u64),
+                },
+                count: None,
+            }],
+        });
+        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("canvas camera"),
+            size: UNIFORM_BYTES as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("canvas camera"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform.as_entire_binding(),
+            }],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("canvas"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let pipeline = |vs: &str, fs: &str, rows: Option<(usize, &[wgpu::VertexAttribute])>| {
+            let buffers: Vec<Option<wgpu::VertexBufferLayout>> = rows
+                .map(|(stride, attributes)| {
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: stride as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes,
+                    })
+                })
+                .into_iter()
+                .collect();
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(vs),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some(vs),
+                    compilation_options: Default::default(),
+                    buffers: &buffers,
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some(fs),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        Pipelines {
+            background: pipeline("vs_bg", "fs_bg", None),
+            kinds: [
+                pipeline("vs_tri", "fs_tri", Some((STRIDE[TRI], &TRI_ATTRS))),
+                pipeline("vs_rect", "fs_rect", Some((STRIDE[RECT], &SEG_ATTRS))),
+                pipeline("vs_arc", "fs_arc", Some((STRIDE[ARC], &ARC_ATTRS))),
+                pipeline("vs_seg", "fs_seg", Some((STRIDE[LINE], &SEG_ATTRS))),
+                pipeline("vs_seg", "fs_seg", Some((STRIDE[EDGE], &SEG_ATTRS))),
+            ],
+            uniform,
+            bind,
+            buffers: Default::default(),
+            uploaded: 0,
+        }
+    }
+
+    /// Writes the rows' dirty ranges to their buffers (a buffer too small is replaced by one
+    /// twice the size and written whole) and clears them. Call before [`Pipelines::draw`].
+    ///
+    /// Cost: one `write_buffer` per dirty range.
+    pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, rows: &mut InstanceRows) {
+        for (src, tables) in rows.tables.iter_mut().enumerate() {
+            for (kind, t) in tables.iter_mut().enumerate() {
+                let dirty = std::mem::take(&mut t.dirty);
+                if dirty.is_empty() {
+                    continue;
+                }
+                let bytes = &t.bytes;
+                assert!(bytes.len() <= BYTES_MAX, "rows fit wgpu's buffer limit");
+                let slot = &mut self.buffers[src][kind];
+                let fits = slot
+                    .as_ref()
+                    .is_some_and(|b| b.size() >= bytes.len() as u64);
+                if !fits {
+                    let size = bytes.len().next_power_of_two().max(4096);
+                    let b = device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("canvas rows"),
+                        size: size as u64,
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                    if !bytes.is_empty() {
+                        queue.write_buffer(&b, 0, bytes);
+                        self.uploaded += bytes.len() as u64;
+                    }
+                    *slot = Some(b);
+                    continue;
+                }
+                let b = slot.as_ref().expect("fits");
+                for r in dirty {
+                    let r = r.start.min(bytes.len())..r.end.min(bytes.len());
+                    if !r.is_empty() {
+                        queue.write_buffer(b, r.start as u64, &bytes[r.clone()]);
+                        self.uploaded += r.len() as u64;
+                    }
+                }
+            }
+        }
+        assert_eq!(rows.dirty_bytes(), 0, "every dirty range uploaded");
+    }
+
+    /// Bytes written to the GPU by [`Pipelines::upload`] since the last call (a report's
+    /// "bytes per edit").
+    pub fn take_uploaded(&mut self) -> u64 {
+        std::mem::take(&mut self.uploaded)
+    }
+
+    /// Draws one frame's canvas into `target` (a `size`-px texture of these pipelines' format)
+    /// as its own render pass cleared to `clear`: nothing more for a frame without a canvas
+    /// (`frame` is `None`); else, scissored to the view at `dev` device px per logical px, the
+    /// background and grid, then the rows (uploaded) as the CPU painter draws them: source by
+    /// source, layer by layer, fills before strokes. Call after [`Pipelines::upload`].
+    ///
+    /// Cost: one pass, one uniform write, one draw per non-empty (source, layer, kind).
+    ///
+    /// # Panics
+    ///
+    /// Panics when rows were packed since the last [`Pipelines::upload`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        queue: &wgpu::Queue,
+        target: &wgpu::TextureView,
+        clear: wgpu::Color,
+        rows: &InstanceRows,
+        frame: Option<&Frame>,
+        dev: f64,
+        size: (u32, u32),
+    ) {
+        let (w, h) = size;
+        assert!(w > 0 && h > 0, "a target has a size");
+        assert_eq!(rows.dirty_bytes(), 0, "rows uploaded before they are drawn");
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("canvas"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(clear),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        let Some(frame) = frame else {
+            return;
+        };
+        let v = frame.view;
+        let at = |c: f64, max: u32| c.clamp(0.0, f64::from(max)) as u32;
+        let (x0, y0) = (at((v.x0 * dev).floor(), w), at((v.y0 * dev).floor(), h));
+        let (x1, y1) = (at((v.x1 * dev).ceil(), w), at((v.y1 * dev).ceil(), h));
+        if x1 <= x0 || y1 <= y0 {
+            return;
+        }
+        queue.write_buffer(&self.uniform, 0, &uniform(frame, dev, size));
+        pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
+        pass.set_bind_group(0, &self.bind, &[]);
+        pass.set_pipeline(&self.background);
+        pass.draw(0..6, 0..1);
+        for (src, tables) in rows.tables.iter().enumerate() {
+            for layer in 0..LAYERS {
+                for (kind, t) in tables.iter().enumerate() {
+                    let used = t.used[layer];
+                    if used == 0 {
+                        continue;
+                    }
+                    let buf = self.buffers[src][kind]
+                        .as_ref()
+                        .expect("rows uploaded before they are drawn");
+                    assert!(
+                        buf.size() >= t.bytes.len() as u64,
+                        "the buffer holds every row"
+                    );
+                    pass.set_pipeline(&self.kinds[kind]);
+                    pass.set_vertex_buffer(0, buf.slice(..));
+                    let verts = if kind == TRI { 3 } else { 6 };
+                    let first = t.start[layer];
+                    pass.draw(0..verts, first..first + used);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1037,5 +1354,46 @@ mod tests {
                 assert_eq!(out.len(), n - 2);
             }
         }
+    }
+
+    /// The uniform carries the camera split into an integer centre and a fraction, the view in
+    /// device px, and the grid's pitch and phase (none when the grid is off).
+    #[test]
+    fn uniform_splits_the_camera() {
+        let frame = Frame {
+            view: Rect::new(10.0, 20.0, 650.0, 420.0),
+            cam: Camera {
+                cx: 12_345.75,
+                cy: -6_789.5,
+                scale: 0.02,
+            },
+            grid: 20_000,
+            background: 0x0000_00ff,
+            grid_color: 0x7070_70ff,
+        };
+        let u = words(&uniform(&frame, 2.0, (1300, 840)));
+        assert_eq!((u[0] as i32, u[1] as i32), (12_345, -6_790));
+        assert_eq!((f32::from_bits(u[2]), f32::from_bits(u[3])), (0.75, 0.5));
+        assert_eq!(f32::from_bits(u[4]), 20.0);
+        assert_eq!(f32::from_bits(u[7]), 840.0);
+        assert_eq!((f32::from_bits(u[8]), f32::from_bits(u[9])), (0.04, 2.0));
+        // 20 000 mu × 0.02 = 400 px per dot: no doubling; the phase is the origin mod pitch.
+        let (ox, _) = frame.cam.origin(frame.view);
+        assert_eq!(f32::from_bits(u[12]), 400.0);
+        assert_eq!(f32::from_bits(u[13]), ox.rem_euclid(400.0) as f32);
+        // "No grid" is a pitch past any view (`Editor::picture`); a view holding the world
+        // origin would still show that one dot, as the CPU painter does.
+        let off = Frame {
+            grid: i32::MAX / 4,
+            cam: Camera {
+                cx: 12_345_675.75,
+                ..frame.cam
+            },
+            ..frame
+        };
+        assert_eq!(
+            f32::from_bits(words(&uniform(&off, 1.0, (1300, 840)))[12]),
+            0.0
+        );
     }
 }

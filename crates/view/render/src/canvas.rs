@@ -191,7 +191,7 @@ impl Lod {
 /// Labels are shaped once at this size and scaled by the camera.
 const TEXT_REF_PX: f32 = 64.0;
 /// Labels smaller than this on screen are skipped (unreadable, and the cheapest cull).
-const TEXT_MIN_PX: f64 = 3.0;
+pub const TEXT_MIN_PX: f64 = 3.0;
 /// Distinct strings the label cache keeps before it starts over (a phase boundary, like the UI
 /// text cache).
 const TEXT_RUNS_MAX: usize = 1 << 16;
@@ -229,6 +229,31 @@ pub fn draw_grid<P: Painter>(
     palette: &Palette,
     scratch: &mut CanvasScratch,
 ) {
+    let Some((s, i0, i1, j0, j1)) = grid_dots(view, cam, step) else {
+        return;
+    };
+    let (ox, oy) = cam.origin(view);
+    let dots = &mut scratch.dots;
+    dots.clear();
+    for j in j0..=j1 {
+        let y = pixel(j as f64 * s * cam.scale + oy) as f32;
+        for i in i0..=i1 {
+            let x = pixel(i as f64 * s * cam.scale + ox) as f32;
+            dots.push(&[[x, y], [x + 1.0, y], [x + 1.0, y + 1.0], [x, y + 1.0]]);
+        }
+    }
+    p.fill_chains(dots, rgba(palette.grid));
+}
+
+/// The grid `step` milli-units apart as `view` shows it through `cam`: the dot pitch in
+/// milli-units (doubled until the dots are ≥ 10 px apart, xschem's rule) and the dot indices
+/// `[i0, i1] × [j0, j1]` in view, dot `i` at world `i · pitch`. `None` when there is no
+/// readable grid: a degenerate zoom, or more than 200 000 dots.
+///
+/// # Panics
+///
+/// Panics on `step ≤ 0`.
+pub fn grid_dots(view: Rect, cam: &Camera, step: i32) -> Option<(f64, i64, i64, i64, i64)> {
     assert!(step > 0, "grid step must be positive");
     let mut s = f64::from(step);
     // Bounded: 40 doublings exceed any i32 range.
@@ -243,19 +268,10 @@ pub fn draw_grid<P: Painter>(
     let (i0, i1) = ((wx0 / s).ceil() as i64, (wx1 / s).floor() as i64);
     let (j0, j1) = ((wy0 / s).ceil() as i64, (wy1 / s).floor() as i64);
     if (i1 - i0 + 1).saturating_mul(j1 - j0 + 1) > 200_000 || i1 < i0 || j1 < j0 {
-        return; // degenerate zoom: no readable grid
+        return None; // degenerate zoom: no readable grid
     }
-    let (ox, oy) = cam.origin(view);
-    let dots = &mut scratch.dots;
-    dots.clear();
-    for j in j0..=j1 {
-        let y = pixel(j as f64 * s * cam.scale + oy) as f32;
-        for i in i0..=i1 {
-            let x = pixel(i as f64 * s * cam.scale + ox) as f32;
-            dots.push(&[[x, y], [x + 1.0, y], [x + 1.0, y + 1.0], [x, y + 1.0]]);
-        }
-    }
-    p.fill_chains(dots, rgba(palette.grid));
+    assert!(s >= f64::from(step));
+    Some((s, i0, i1, j0, j1))
 }
 
 /// Start and sweep of arc `i` in radians.
@@ -635,8 +651,14 @@ fn each(n: usize, rows: Option<&[u32]>) -> impl Iterator<Item = usize> + '_ {
     all.chain(rows.into_iter().flatten().map(|&i| i as usize))
 }
 
+/// Draws the labels of `t` (the rows `rows` lists, or all), culled to `view` and skipping any
+/// under [`TEXT_MIN_PX`] on screen; returns the labels drawn. What [`draw_prims`] does for
+/// texts, on its own: the GPU canvas draws the other kinds itself and leaves text to the
+/// painter until the glyph atlas lands.
+///
+/// Cost: O(listed rows + glyphs of visible labels).
 #[allow(clippy::too_many_arguments)]
-fn draw_texts<P: Painter>(
+pub fn draw_texts<P: Painter>(
     p: &mut P,
     view: Rect,
     cam: &Camera,

@@ -11,9 +11,15 @@ use std::sync::Arc;
 
 use vello::kurbo::{Affine, BezPath, PathEl, Rect, Shape, Stroke};
 use vello::low_level::vello_encoding::Transform;
-use vello::peniko::{Color, Fill, FontData, ImageBrush, ImageData, ImageQuality, ImageSampler};
+use vello::peniko::{
+    BlendMode, Color, Compose, Fill, FontData, ImageBrush, ImageData, ImageQuality, ImageSampler,
+    Mix,
+};
 use vello::{Glyph, Scene};
 
+use schemify_canvas::{CanvasPrims, Marks, Palette};
+
+use crate::gpu::{Change, Frame, InstanceRows};
 use crate::layers::{LAYER_SLOTS, Layers};
 
 /// The drawing calls every frame builder uses. Coordinates are logical pixels; each painter
@@ -158,6 +164,24 @@ pub trait Painter {
         debug_assert!(image.width > 0 && image.height > 0);
         self.fill_rect(r, Color::from_rgba8(128, 128, 128, 48));
     }
+
+    /// Draws the canvas from retained GPU instance rows ([`crate::gpu`]): `frame`'s
+    /// background and grid, `tables` in drawing order (each with how it changed since this
+    /// painter last drew it), then the `marks` over `marks.0` (repacked when `marks.2`), all
+    /// as a pass under this frame, which gets a hole over `frame.view` where it was painted
+    /// so far. Texts are not drawn: the caller paints them over. Returns false, drawing
+    /// nothing, when this painter keeps no rows (the CPU painter): the caller then draws the
+    /// tables itself.
+    fn canvas(
+        &mut self,
+        frame: &Frame,
+        tables: [(&CanvasPrims, Change<'_>); 4],
+        marks: (&CanvasPrims, &Marks, bool),
+        palette: &Palette,
+    ) -> bool {
+        let _ = (frame, tables, marks, palette);
+        false
+    }
 }
 
 fn sampler(stretch: Option<Color>) -> ImageSampler {
@@ -283,6 +307,9 @@ pub struct ScenePainter<'a> {
     /// [`Layers::begin_frame`] before painting and [`Layers::raster`] after, before rendering
     /// `scene` (or composing over the last frame when [`Layers::reusable`]).
     pub layers: Option<&'a mut Layers>,
+    /// The canvas's instance rows ([`Painter::canvas`] packs into them and leaves the frame
+    /// to draw in [`InstanceRows::frame`]); `None` draws no canvas (the caller falls back).
+    pub rows: Option<&'a mut InstanceRows>,
 }
 
 /// Bit patterns of a rectangle, for the frame log.
@@ -479,6 +506,37 @@ impl Painter for ScenePainter<'_> {
         self.log((9u8, image.data.id(), rect_bits(r)));
         let at = self.base * image_to(image, r);
         self.paint(|s| s.draw_image(image, at));
+    }
+
+    fn canvas(
+        &mut self,
+        frame: &Frame,
+        tables: [(&CanvasPrims, Change<'_>); 4],
+        marks: (&CanvasPrims, &Marks, bool),
+        palette: &Palette,
+    ) -> bool {
+        let Some(rows) = self.rows.as_deref_mut() else {
+            return false;
+        };
+        assert!(rows.frame.is_none(), "one canvas per frame");
+        for (src, (t, change)) in tables.into_iter().enumerate() {
+            rows.pack(src, t, palette, change);
+        }
+        rows.pack_marks(marks.0, marks.1, marks.2);
+        rows.frame = Some(*frame);
+        // The hole: the canvas pass runs under this frame, so what was painted inside the view
+        // so far is cut out; what comes after (texts, the gesture overlay, popups) lands over
+        // it. "Destination out" of an opaque rect cuts exactly the rect (a `Clear` layer would
+        // clear whole 16 px tiles of vello's around it).
+        let (base, view) = (self.base, frame.view);
+        self.log((12u8, rect_bits(view)));
+        self.paint(|s| {
+            let cut = BlendMode::new(Mix::Normal, Compose::DestOut);
+            s.push_layer(Fill::NonZero, cut, 1.0, base, &view);
+            s.fill(Fill::NonZero, base, Color::BLACK, None, &view);
+            s.pop_layer();
+        });
+        true
     }
 
     fn stroke_chains(&mut self, chains: &Chains, closed: bool, width: f64, color: Color) {

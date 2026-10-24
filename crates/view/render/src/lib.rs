@@ -14,10 +14,13 @@
 //! images, and the web's frames when the browser has no WebGPU adapter). No `dyn`: the trait
 //! is a compile-time bound only.
 //!
-//! The canvas is cached as raster tiles (D39): [`canvas::draw_cached`] keeps world-anchored
-//! tiles in one painter layer ([`Layers`] on the GPU), patches the rows [`schemify_canvas::CanvasDiff`]
-//! finds changed, and reads rows near a tile through [`schemify_canvas::PrimIndex`]. A frame that only
-//! moved its layers is composed without vello ([`Layers::reusable`]).
+//! On the GPU the canvas is drawn by Schemify's own instanced pipelines ([`gpu`]): one retained
+//! instance row per primitive ([`gpu::InstanceRows`], patched from the rows
+//! [`schemify_canvas::CanvasDiff`] reports changed) drawn into the surface under the vello UI
+//! frame, which [`Painter::canvas`] leaves a hole in; a pan or zoom writes one camera uniform.
+//! Canvas text stays with vello until the glyph atlas. A frame whose vello scene did not change
+//! is composed without vello ([`Layers::reusable`]). The CPU painter draws the canvas as raster
+//! tiles ([`canvas::draw_cached`], [`schemify_canvas::PrimIndex`]), the goldens' oracle.
 //!
 //! ```
 //! use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
