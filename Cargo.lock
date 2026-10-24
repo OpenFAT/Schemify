@@ -2882,6 +2882,7 @@ name = "schemify-run"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "schemify-abi",
  "schemify-doc",
  "schemify-elab",
  "schemify-expr",

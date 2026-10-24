@@ -12,6 +12,7 @@
 
 use crate::jobs::{Jobs, NO_SAMPLE, State};
 use crate::plan::Plan;
+use schemify_abi::text::{push_value, values};
 use schemify_doc::Digest;
 use schemify_elab::Dialect;
 use schemify_elab::Elab;
@@ -507,67 +508,11 @@ pub fn write_results(jobs: &Jobs, r: &Results) -> String {
     out
 }
 
-/// Appends `v` bare when it is a legal bare value (format spec §2), else quoted.
-fn push_value(out: &mut String, v: &str) {
-    let bare = !v.is_empty()
-        && !v.starts_with(['#', '|'])
-        && v.chars()
-            .all(|c| !c.is_whitespace() && !c.is_control() && c != '"' && c != '\\');
-    if bare {
-        out.push_str(v);
-        return;
-    }
-    out.push('"');
-    for c in v.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            c if c.is_control() => write!(out, "\\u{{{:x}}}", c as u32).expect("String write"),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-}
-
-/// Splits one line into values (bare or quoted, format spec §2 lexical layer).
-fn split_values(line: &str) -> Result<Vec<String>, String> {
-    let mut out = Vec::new();
-    let mut it = line.chars().peekable();
-    loop {
-        while it.next_if(|c| *c == ' ' || *c == '\t').is_some() {}
-        let Some(&c) = it.peek() else { break };
-        let mut v = String::new();
-        if c == '"' {
-            it.next();
-            loop {
-                match it.next().ok_or("unclosed quote")? {
-                    '"' => break,
-                    '\\' => match it.next().ok_or("dangling escape")? {
-                        '"' => v.push('"'),
-                        '\\' => v.push('\\'),
-                        'n' => v.push('\n'),
-                        't' => v.push('\t'),
-                        'u' => {
-                            let hex: String =
-                                it.by_ref().skip(1).take_while(|c| *c != '}').collect();
-                            let ch = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32);
-                            v.push(ch.ok_or("bad \\u escape")?);
-                        }
-                        e => return Err(format!("bad escape \\{e}")),
-                    },
-                    c => v.push(c),
-                }
-            }
-        } else {
-            while let Some(c) = it.next_if(|c| *c != ' ' && *c != '\t') {
-                v.push(c);
-            }
-        }
-        out.push(v);
-    }
-    Ok(out)
+/// The values of one line, owned (format spec §2 lexical layer); `None` for a malformed one.
+fn split_values(line: &str) -> Option<Vec<String>> {
+    values(line)
+        .map(|v| v.ok().map(|v| v.into_owned()))
+        .collect()
 }
 
 /// Reads a file written by [`write_results`] back into its jobs and results. Results
@@ -662,7 +607,7 @@ pub fn read_results(text: &str) -> Result<(Jobs, Results), String> {
             continue;
         }
         let indented = line.starts_with(' ');
-        let f = split_values(line).map_err(|e| bad(n, &e))?;
+        let f = split_values(line).ok_or_else(|| bad(n, "malformed value"))?;
         if !indented {
             header = false;
             match (f[0].as_str(), f.len()) {
@@ -750,8 +695,24 @@ mod tests {
         }
         let back = split_values(&line).unwrap();
         assert_eq!(back, vals);
-        assert!(split_values("\"open").is_err());
-        assert!(split_values("\"bad \\q\"").is_err());
+        assert!(split_values("\"open").is_none());
+        assert!(split_values("\"bad \\q\"").is_none());
+        // Unquoted, a leading `#` or `|` would read as a comment or verbatim line: refused.
+        assert!(split_values("#x").is_none() && split_values("a |x").is_none());
+    }
+
+    /// Names and values starting with `#` or `|` survive a results file.
+    #[test]
+    fn hash_and_bar_values_round_trip() {
+        let hdr = format!("schemify 1 results\n  design {}\n", "0".repeat(64));
+        let text = format!(
+            "{hdr}\noutput \"#x\"\noutput \"|x\"\n\njob 0 done\n  set R \"#x\"\n  set C \"|x\"\n  value \"#x\" 1\n  value \"|x\" 2\n"
+        );
+        let (j, r) = read_results(&text).unwrap();
+        assert_eq!(j.assigned(0, "R"), Some("#x"));
+        assert_eq!(j.assigned(0, "C"), Some("|x"));
+        assert_eq!((r.value(0, 0), r.value(0, 1)), (Some(1.0), Some(2.0)));
+        assert_eq!(write_results(&j, &r), text);
     }
 
     #[test]

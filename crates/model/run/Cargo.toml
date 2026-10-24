@@ -21,6 +21,8 @@ schemify-elab.workspace = true
 schemify-doc.workspace = true
 schemify-expr.workspace = true
 schemify-wave.workspace = true
+# Value quoting and lexing for the results file (format spec §2).
+schemify-abi.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
