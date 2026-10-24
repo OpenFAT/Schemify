@@ -183,23 +183,9 @@ impl Layers {
         for l in self.slots.iter_mut().filter(|l| l.dirty) {
             let image = l.image.as_ref().expect("a recorded layer has an image");
             let texture = l.texture.get_or_insert_with(|| {
-                let t = device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("layer"),
-                    size: wgpu::Extent3d {
-                        width: image.width,
-                        height: image.height,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    usage: wgpu::TextureUsages::STORAGE_BINDING
-                        | wgpu::TextureUsages::COPY_SRC
-                        | wgpu::TextureUsages::COPY_DST
-                        | wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                });
+                use wgpu::TextureUsages as U;
+                let usage = U::STORAGE_BINDING | U::COPY_SRC | U::COPY_DST | U::TEXTURE_BINDING;
+                let t = texture(device, "layer", (image.width, image.height), usage);
                 renderer.override_image(
                     image,
                     Some(wgpu::TexelCopyTextureInfoBase {
@@ -261,20 +247,9 @@ impl Layers {
             }
             let small = self.scratch.as_ref().is_none_or(|t| t.height() < height);
             if small {
-                self.scratch = Some(device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("layer patches"),
-                    size: wgpu::Extent3d {
-                        width: BATCH_PX,
-                        height: height.next_power_of_two().min(BATCH_PX),
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
-                    view_formats: &[],
-                }));
+                let size = (BATCH_PX, height.next_power_of_two().min(BATCH_PX));
+                let usage = wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC;
+                self.scratch = Some(texture(device, "layer patches", size, usage));
             }
             let scratch = self.scratch.as_ref().expect("made above");
             let params = RenderParams {
@@ -333,21 +308,9 @@ impl Layers {
                 .as_ref()
                 .is_none_or(|t| t.size().width != w || t.size().height != h);
             if stale {
-                self.top_texture = Some(device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("layers top"),
-                    size: wgpu::Extent3d {
-                        width: w,
-                        height: h,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    usage: wgpu::TextureUsages::STORAGE_BINDING
-                        | wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                }));
+                let usage =
+                    wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING;
+                self.top_texture = Some(texture(device, "layers top", (w, h), usage));
             }
             let texture = self.top_texture.as_ref().expect("made above");
             let params = RenderParams {
@@ -458,12 +421,8 @@ impl Layers {
             // Uniform: uv rect, then the fill (alpha 0: a copy, every pixel sampled).
             let fill = stretch.map_or([0.0; 4], |c| c.components);
             let uv = [p.x / tw, p.y / th, q.x / tw, q.y / th].map(|v| v as f32);
-            let mut bytes = [0u8; 32];
-            for (i, v) in uv.into_iter().chain(fill).enumerate() {
-                bytes[4 * i..4 * i + 4].copy_from_slice(&v.to_ne_bytes());
-            }
             let offset = (k * Quad::STRIDE) as u64;
-            queue.write_buffer(&quad.uniforms, offset, &bytes);
+            queue.write_buffer(&quad.uniforms, offset, &uniform(uv.into_iter().chain(fill)));
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             let sampler = match stretch {
                 Some(_) => &quad.linear,
@@ -484,11 +443,7 @@ impl Layers {
                 "the top part fits"
             );
             let offset = (DRAWS_MAX * Quad::STRIDE) as u64;
-            let mut bytes = [0u8; 32];
-            for (i, v) in [0.0f32, 0.0, 1.0, 1.0].into_iter().enumerate() {
-                bytes[4 * i..4 * i + 4].copy_from_slice(&v.to_ne_bytes());
-            }
-            queue.write_buffer(&quad.uniforms, offset, &bytes);
+            queue.write_buffer(&quad.uniforms, offset, &uniform([0.0, 0.0, 1.0, 1.0]));
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             let full = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
             groups.push((bind(&view, &quad.nearest, offset), full, &quad.over));
@@ -520,6 +475,39 @@ impl Layers {
             pass.draw(0..4, 0..1);
         }
     }
+}
+
+/// A 2D `Rgba8Unorm` texture of `w × h` px.
+fn texture(
+    device: &wgpu::Device,
+    label: &str,
+    (w, h): (u32, u32),
+    usage: wgpu::TextureUsages,
+) -> wgpu::Texture {
+    assert!(w > 0 && h > 0, "an empty texture");
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage,
+        view_formats: &[],
+    })
+}
+
+/// A quad's uniform (uv rect, then fill; unset fields 0) as bytes.
+fn uniform(vals: impl IntoIterator<Item = f32>) -> [u8; 32] {
+    let mut bytes = [0u8; 32];
+    for (i, v) in vals.into_iter().enumerate() {
+        bytes[4 * i..4 * i + 4].copy_from_slice(&v.to_ne_bytes());
+    }
+    bytes
 }
 
 /// The quad pipeline: one textured quad per layer draw, its viewport the draw's clip.
