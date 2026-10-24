@@ -412,3 +412,26 @@ fn draws_instances_from_the_library_index_without_opening_their_cells() {
     );
     assert!(rects.contains(&5), "pin squares drawn");
 }
+
+/// The file given at startup is read and hashed once: its bytes come from the load's index
+/// (`libs::Loaded::kept`, `doc::Project::open_indexed`), so its disk digest is known before
+/// any tick hashes it. Oracle: `hash_pending`, true for every file opened by a second read.
+#[test]
+fn the_startup_file_reuses_the_index_digest() {
+    use schemify_editor::editor::{Editor, Options};
+    let dir = common::fixture("inv", "kept");
+    let ed = Editor::new(Options {
+        no_default_ui: true,
+        path: Some(dir.join("top.shcomp")),
+        seed: 7,
+        ..Default::default()
+    })
+    .unwrap();
+    let (h, _) = ed.active().unwrap();
+    assert!(!ed.session().project.hash_pending(h));
+    // Negative space: a load told nothing reads the file again when it opens it.
+    let file = dir.join("top.shcomp");
+    let mut s = schemify_editor::session::Session::load(&dir, 7, None).unwrap();
+    let h = s.open_path(&file).unwrap();
+    assert!(s.project.hash_pending(h));
+}

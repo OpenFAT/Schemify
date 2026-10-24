@@ -791,6 +791,9 @@ impl Project {
     /// history; edits after it are offered as [`Recovery`] and must be recovered or
     /// discarded before the document accepts edits.
     ///
+    /// The bytes are copied as the document's disk state ([`Project::open_indexed`] moves
+    /// them).
+    ///
     /// # Errors
     ///
     /// See [`OpenError`].
@@ -801,10 +804,41 @@ impl Project {
         bytes: &[u8],
         journal: Option<&[u8]>,
     ) -> Result<Opened, OpenError> {
+        self.open_with(lib, relpath, bytes.to_vec(), journal, false)
+    }
+
+    /// [`Project::open`] for bytes the current index of `lib` was built from (the very
+    /// buffer the caller listed to [`Project::index_library`], not a later read of the
+    /// file, which may differ): the bytes move in, and the document's disk digest is the
+    /// index's, so neither the journal check nor [`Project::hash_step`] hashes the file
+    /// again. A file the index does not list is hashed as by `open`. Debug builds check
+    /// the digest.
+    ///
+    /// # Errors
+    ///
+    /// See [`OpenError`].
+    pub fn open_indexed(
+        &mut self,
+        lib: &str,
+        relpath: &str,
+        bytes: Vec<u8>,
+        journal: Option<&[u8]>,
+    ) -> Result<Opened, OpenError> {
+        self.open_with(lib, relpath, bytes, journal, true)
+    }
+
+    fn open_with(
+        &mut self,
+        lib: &str,
+        relpath: &str,
+        bytes: Vec<u8>,
+        journal: Option<&[u8]>,
+        indexed: bool,
+    ) -> Result<Opened, OpenError> {
         let lib = self.libs.find(lib).ok_or(OpenError::Code(Code::E001))? as u8;
         let (dir, stem) = split_path(relpath);
         let (dir, stem) = (self.strings.intern(dir), self.strings.intern(stem));
-        let model = parse(bytes).map_err(OpenError::Parse)?;
+        let model = parse(&bytes).map_err(OpenError::Parse)?;
         if !matches!(
             model.kind(),
             FileKind::Shprim | FileKind::Shcomp | FileKind::Shbench
@@ -814,11 +848,24 @@ impl Project {
         if let Some(h) = self.find_open(lib, dir, stem, model.kind()) {
             return Err(OpenError::AlreadyOpen(h));
         }
+        let kind = model.kind();
         let loaded = Document::from_format(&model);
+        drop(model);
         let reids = loaded.diags.iter().any(|d| d.code == Code::W001);
+        let c = &self.cells;
+        let row = (0..c.lib.len())
+            .find(|&i| (c.lib[i], c.dir[i], c.stem[i], c.kind[i]) == (lib, dir, stem, kind));
+        let digest = match row.filter(|_| indexed) {
+            Some(row) => {
+                debug_assert_eq!(c.hash[row], sha256(&bytes), "bytes are the indexed bytes");
+                DiskHash::Done(hex(&c.hash[row]))
+            }
+            None => DiskHash::unhashed(),
+        };
         let mut open = Open {
             saved_depth: Some(0),
-            disk: bytes.to_vec(),
+            disk: bytes,
+            disk_hash: digest,
             fixups: reids,
             ..Open::new(lib, dir, stem, loaded.doc)
         };

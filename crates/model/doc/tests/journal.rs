@@ -593,3 +593,38 @@ fn a_disk_hash_spread_over_steps_journals_the_same() {
         .unwrap();
     assert!(!p.hash_step(new, 7), "a new document has no disk bytes");
 }
+
+/// Oracle: [`Project::open`], which hashes the bytes itself. `open_indexed` reuses the
+/// index's digest instead, so it must match the same journal checkpoint (a wrong digest
+/// turns an offer into `Diverged`) and leave nothing for `hash_step`.
+#[test]
+fn open_indexed_matches_the_journal_with_the_index_digest() {
+    let mut offers = 0;
+    for seed in 0..6 {
+        for s in session(seed, 40, true).iter().step_by(5) {
+            let journal = (!s.disk.journal.is_empty()).then_some(s.disk.journal.as_slice());
+            let mut p = Project::new(None, None, 99).unwrap();
+            p.index_library("", ".", &[("cell.shcomp", &s.disk.file)])
+                .unwrap();
+            let opened = p
+                .open_indexed("", "cell.shcomp", s.disk.file.clone(), journal)
+                .unwrap();
+            let h = opened.handle;
+            assert!(
+                !p.hash_pending(h),
+                "seed {seed}: the index digest is reused"
+            );
+            let (_, _, want) = reopen(&s.disk);
+            assert_eq!(opened.recovery, want, "seed {seed}");
+            offers += u32::from(matches!(want, Recovery::Offer { .. }));
+        }
+    }
+    assert!(offers > 0, "the sweep reaches journals with unsaved edits");
+    // A file the index does not list is hashed as `open` hashes it.
+    let mut p = Project::new(None, None, 99).unwrap();
+    let h = p
+        .open_indexed("", "cell.shcomp", SEED_DOC.as_bytes().to_vec(), None)
+        .unwrap()
+        .handle;
+    assert!(p.hash_pending(h));
+}

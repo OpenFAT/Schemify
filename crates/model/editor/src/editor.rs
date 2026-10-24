@@ -772,7 +772,8 @@ impl Editor {
             Some(p) => project_root(p),
             None => std::env::current_dir().map_err(|e| e.to_string())?,
         };
-        let mut session = Session::load(&root, opts.seed)?;
+        let first = path.as_deref().filter(|p| !platform::is_dir(p));
+        let mut session = Session::load(&root, opts.seed, first)?;
         let (host, notes) = Host::new(&session.project, &root, opts.no_default_ui, &opts.config);
         let user = host.user();
         let edit_opts = EditOpts {

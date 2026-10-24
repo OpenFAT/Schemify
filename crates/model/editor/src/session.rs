@@ -143,18 +143,24 @@ pub struct Session {
     /// Documents whose journal offers unsaved edits from a crash, waiting for the user's
     /// decision (`decide_recovery`): (document, journal records offered).
     recovery: Vec<(DocHandle, u32)>,
+    /// The file to open first as the load's index read it (`libs::Loaded::kept`), until
+    /// [`Session::open_file`] takes it or an index makes it stale.
+    kept: Option<(PathBuf, Vec<u8>)>,
 }
 
 impl Session {
     /// Loads the project rooted at `root` (load spine): manifest + lockfile → library
     /// directories → `index_library` per local library (the project's own files, then
-    /// `path` libraries). `git`/`url` libraries are reported, not fetched (M2).
+    /// `path` libraries). `git`/`url` libraries are reported, not fetched (M2). The bytes of
+    /// cell file `open` (the file about to be opened) are kept from the index, so opening it
+    /// reads and hashes it no second time.
     ///
     /// # Errors
     ///
     /// The manifest or lockfile does not parse.
-    pub fn load(root: &Path, seed: u64) -> Result<Session, String> {
-        let loaded = libs::load(root, seed)?;
+    pub fn load(root: &Path, seed: u64, open: Option<&Path>) -> Result<Session, String> {
+        let open = open.map(absolute);
+        let loaded = libs::load(root, seed, open.as_deref())?;
         Ok(Session {
             root: root.to_path_buf(),
             project: loaded.project,
@@ -165,6 +171,7 @@ impl Session {
             status: loaded.notes.join("; "),
             untitled: 0,
             recovery: Vec::new(),
+            kept: loaded.kept,
         })
     }
 
@@ -177,6 +184,7 @@ impl Session {
     /// A file does not parse or an open document's library is gone; nothing changed then.
     pub fn reload(&mut self) -> Result<(), String> {
         let (lib_dir, notes) = libs::reload(&mut self.project, &self.root)?;
+        self.kept = None; // the new index may have read other bytes
         self.lib_dir = lib_dir;
         self.status = notes.join("; ");
         assert_eq!(self.lib_dir.len(), self.project.libs().name.len());
@@ -209,7 +217,18 @@ impl Session {
     ///
     /// The file cannot be read or does not parse.
     pub fn open_file(&mut self, lib: u8, relpath: &str) -> Result<DocHandle, String> {
-        let (path, bytes, builtin) = libs::cell_bytes(&self.lib_dir, &self.project, lib, relpath)?;
+        let dir = self
+            .lib_dir
+            .get(usize::from(lib))
+            .and_then(Option::as_deref);
+        let kept = self
+            .kept
+            .take_if(|(p, _)| dir.is_some_and(|d| absolute(&d.join(relpath)) == *p));
+        let indexed = kept.is_some();
+        let (path, bytes, builtin) = match kept {
+            Some((path, bytes)) => (path, bytes, false),
+            None => libs::cell_bytes(&self.lib_dir, &self.project, lib, relpath)?,
+        };
         if let Some(h) = self.handle_of(&path) {
             return Ok(h);
         }
@@ -225,10 +244,14 @@ impl Session {
             platform::read(&journal_path).ok()
         };
         let name = self.project.libs().name[usize::from(lib)].clone();
-        let opened = match self
-            .project
-            .open(&name, relpath, &bytes, journal.as_deref())
-        {
+        let opened = if indexed {
+            self.project
+                .open_indexed(&name, relpath, bytes, journal.as_deref())
+        } else {
+            self.project
+                .open(&name, relpath, &bytes, journal.as_deref())
+        };
+        let opened = match opened {
             Ok(o) => o,
             Err(OpenError::AlreadyOpen(h)) => return Ok(h),
             Err(OpenError::Parse(e)) => {
@@ -370,7 +393,8 @@ impl Session {
             .enumerate()
             .filter_map(|(r, d)| d.as_deref().filter(|d| r != row && d.starts_with(dir)))
             .collect();
-        if let Err(e) = libs::index(&mut self.project, row, dir, &others) {
+        self.kept = None; // the new index may have read other bytes
+        if let Err(e) = libs::index(&mut self.project, row, dir, &others, None) {
             self.status = e;
         }
     }

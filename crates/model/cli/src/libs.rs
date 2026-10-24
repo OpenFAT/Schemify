@@ -21,24 +21,31 @@ pub struct Loaded {
     pub lib_dir: Vec<Option<PathBuf>>,
     /// Non-fatal findings (unfetched `git`/`url` libraries, index diagnostics).
     pub notes: Vec<String>,
+    /// The bytes of the `keep` file as the index read them, when a library listed it: the
+    /// file about to be opened, so it is read and hashed once
+    /// (`doc::Project::open_indexed`).
+    pub kept: Option<(PathBuf, Vec<u8>)>,
 }
 
-/// Loads the project rooted at `root`. `git`/`url` libraries are reported in
+/// Loads the project rooted at `root`, keeping the bytes of cell file `keep` (an absolute
+/// path) if a library lists it. `git`/`url` libraries are reported in
 /// [`Loaded::notes`], not fetched.
 ///
 /// # Errors
 ///
 /// The manifest or lockfile does not parse, or the bundled core library is refused.
-pub fn load(root: &Path, seed: u64) -> Result<Loaded, String> {
+pub fn load(root: &Path, seed: u64, keep: Option<&Path>) -> Result<Loaded, String> {
     let manifest = platform::read(&root.join("schemify.project")).ok();
     let lock = platform::read(&root.join("schemify.lock")).ok();
     let mut project = Project::new(manifest.as_deref(), lock.as_deref(), seed)
         .map_err(|e| format!("schemify.project: {:?}", e.diagnostics.first()))?;
-    let (lib_dir, notes) = index_all(&mut project, root)?;
+    let (lib_dir, notes, kept) = index_all(&mut project, root, keep)?;
+    assert!(kept.as_ref().is_none_or(|k| Some(k.0.as_path()) == keep));
     Ok(Loaded {
         project,
         lib_dir,
         notes,
+        kept,
     })
 }
 
@@ -66,18 +73,24 @@ pub fn reload(
                 format!("project.reload: close the documents of library `{l}` first")
             }
         })?;
-    index_all(project, root)
+    let (lib_dir, notes, _) = index_all(project, root, None)?;
+    Ok((lib_dir, notes))
 }
+
+/// What [`index_all`] returns: the directory per library row, the notes, the kept file.
+type Indexed = (
+    Vec<Option<PathBuf>>,
+    Vec<String>,
+    Option<(PathBuf, Vec<u8>)>,
+);
 
 /// The load spine after the manifest: library directories → `index_library` per local
 /// library and the technology map → the bundled `core` library.
-fn index_all(
-    project: &mut Project,
-    root: &Path,
-) -> Result<(Vec<Option<PathBuf>>, Vec<String>), String> {
+fn index_all(project: &mut Project, root: &Path, keep: Option<&Path>) -> Result<Indexed, String> {
     let libs = project.libs();
     let mut lib_dir = Vec::with_capacity(libs.name.len());
     let mut notes = Vec::new();
+    let mut kept = None;
     for row in 0..libs.name.len() {
         let dir = match &libs.source[row] {
             LibSource::Project => Some(root.to_path_buf()),
@@ -116,8 +129,9 @@ fn index_all(
             .copied()
             .filter(|d| *d != dir.as_path())
             .collect();
-        if let Err(e) = index(project, row, dir, &others) {
-            notes.push(e);
+        match index(project, row, dir, &others, keep) {
+            Ok(k) => kept = kept.or(k.zip(keep).map(|(b, p)| (p.to_path_buf(), b))),
+            Err(e) => notes.push(e),
         }
     }
     // pdk spec §5: `lib tech map <file>` is indexed as a one-file listing.
@@ -160,23 +174,34 @@ fn index_all(
         );
     }
     assert_eq!(lib_dir.len(), project.libs().name.len());
-    Ok((lib_dir, notes))
+    Ok((lib_dir, notes, kept))
 }
 
 /// Indexes library `row` from the cell files under `dir`, skipping `skip` subtrees (also
-/// after the editor writes or deletes a cell file: `Session::reindex`).
+/// after the editor writes or deletes a cell file: `Session::reindex`). Returns the bytes
+/// of file `keep` when it is one of them, so its opener need not read them again.
 ///
 /// # Errors
 ///
 /// A file cannot be read, or indexing reports a diagnostic (the first).
-pub fn index(project: &mut Project, row: usize, dir: &Path, skip: &[&Path]) -> Result<(), String> {
+pub fn index(
+    project: &mut Project,
+    row: usize,
+    dir: &Path,
+    skip: &[&Path],
+    keep: Option<&Path>,
+) -> Result<Option<Vec<u8>>, String> {
     let name = project.libs().name[row].clone();
     let mut rel = Vec::new();
     let mut bytes = Vec::new();
+    let mut kept = None;
     for p in platform::list_files(dir, skip) {
         let Some(r) = rel_path(dir, &p) else { continue };
         if !is_cell_file(&r) {
             continue;
+        }
+        if Some(p.as_path()) == keep {
+            kept = Some(bytes.len());
         }
         bytes.push(platform::read(&p)?);
         rel.push(r);
@@ -193,7 +218,8 @@ pub fn index(project: &mut Project, row: usize, dir: &Path, skip: &[&Path]) -> R
     if let Some((path, d)) = diags.first() {
         return Err(format!("{name}/{path}: {} {}", d.code, d.detail));
     }
-    Ok(())
+    drop(files);
+    Ok(kept.map(|i| bytes.swap_remove(i)))
 }
 
 /// The bytes of cell file `relpath` in library row `lib`, its path (under

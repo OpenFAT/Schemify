@@ -605,7 +605,7 @@ fn plugin_run_requests_join_the_queue_and_report_done() {
     use schemify_editor::sim::Sim;
     use schemify_plugin::{PluginId, RunRequest};
     let dir = fixture("rc", "plugin-run");
-    let mut session = Project::load(&dir, 1).unwrap();
+    let mut session = Project::load(&dir, 1, None).unwrap();
     let mut sim = Sim::new(tools(&FAKE.replace("sleep 0.3", "")));
     sim.enqueue(vec![RunRequest {
         plugin: PluginId(7),
@@ -698,7 +698,7 @@ fn two_benches_run_at_once_and_each_bench_queues_its_own() {
     let dir = fixture("rc", "two-runs");
     let tb = std::fs::read_to_string(dir.join("tb.shbench")).unwrap();
     std::fs::write(dir.join("tb2.shbench"), &tb).unwrap();
-    let mut session = Project::load(&dir, 1).unwrap();
+    let mut session = Project::load(&dir, 1, None).unwrap();
     let a = session.open_path(&dir.join("tb.shbench")).unwrap();
     let b = session.open_path(&dir.join("tb2.shbench")).unwrap();
     let mut sim = Sim::new(tools(&FAKE.replace("sleep 0.3", "sleep 0.5")));

@@ -194,9 +194,9 @@ pub fn bench_name<'a>(
 pub fn open_file(file: &Path, seed: u64) -> Result<(Opened, Vec<String>), OpenError> {
     use crate::libs;
     let root = libs::project_root(file);
-    let loaded = libs::load(&root, seed).map_err(OpenError::Io)?;
-    let mut project = loaded.project;
     let abs = libs::absolute(file);
+    let loaded = libs::load(&root, seed, Some(&abs)).map_err(OpenError::Io)?;
+    let mut project = loaded.project;
     let mut best: Option<(usize, String, usize)> = None;
     for (row, dir) in loaded.lib_dir.iter().enumerate() {
         let Some(dir) = dir else { continue };
@@ -214,10 +214,16 @@ pub fn open_file(file: &Path, seed: u64) -> Result<(Opened, Vec<String>), OpenEr
             root.display()
         )));
     };
-    let bytes = crate::platform::read(file).map_err(OpenError::Io)?;
+    // The index read the file already (a cell file of the library); else read it now.
     let name = project.libs().name[row].clone();
-    let top = project
-        .open(&name, &rel, &bytes, None)
+    let opened = match loaded.kept {
+        Some((_, bytes)) => project.open_indexed(&name, &rel, bytes, None),
+        None => {
+            let bytes = crate::platform::read(file).map_err(OpenError::Io)?;
+            project.open(&name, &rel, &bytes, None)
+        }
+    };
+    let top = opened
         .map_err(|e| OpenError::Design(format!("cannot open: {e:?}")))?
         .handle;
     assert!(project.doc(top).is_some());
