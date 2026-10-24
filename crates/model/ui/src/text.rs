@@ -212,10 +212,6 @@ impl TextSystem {
         &self.mono
     }
 
-    pub(crate) fn contexts(&mut self) -> (&mut FontContext, &mut LayoutContext<()>) {
-        (&mut self.font_cx, &mut self.layout_cx)
-    }
-
     /// Stores a layout built outside [`TextSystem::shape`] (prose runs) and returns its id.
     pub(crate) fn push_layout(&mut self, layout: Layout<()>) -> TextId {
         self.layouts.push(layout);

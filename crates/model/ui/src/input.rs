@@ -486,6 +486,11 @@ pub fn route_input(
     let ids = nodes.id();
     // The focused field's text changed since its last `input` command.
     let mut typed = false;
+    let focused_area = |state: &UiState| {
+        nodes
+            .find(state.focus)
+            .is_some_and(|n| nodes.kind[n as usize] == Kind::TextArea)
+    };
     for &ev in &events.events {
         let modal = nodes.find(state.dialog).is_some();
         let hit = |x: f32, y: f32| {
@@ -712,9 +717,7 @@ pub fn route_input(
             }
             InputEvent::Key { chord } => {
                 if state.editor.is_some() {
-                    let area = nodes
-                        .find(state.focus)
-                        .is_some_and(|n| nodes.kind[n as usize] == Kind::TextArea);
+                    let area = focused_area(state);
                     edit_key(tables, text, state, chord, area, &mut typed, out);
                     out.redraw = true;
                     out.relayout |= area; // the field grows and shrinks with its lines
@@ -750,9 +753,7 @@ pub fn route_input(
                     d.refresh_layout();
                     typed = true;
                     out.redraw = true;
-                    let area = nodes
-                        .find(state.focus)
-                        .is_some_and(|n| nodes.kind[n as usize] == Kind::TextArea);
+                    let area = focused_area(state);
                     out.relayout |= area;
                     if area {
                         follow_caret(tables, layout, text, state);
