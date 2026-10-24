@@ -266,7 +266,7 @@ mod imp {
         unix_ms() ^ (pid << 32) ^ 0x9e37_79b9_7f4a_7c15
     }
 
-    pub fn list(dir: &Path, depth: u32, skip: &[PathBuf], out: &mut Vec<PathBuf>) {
+    pub fn list(dir: &Path, depth: u32, skip: &[&Path], out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
@@ -280,7 +280,7 @@ mod imp {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .is_none_or(|n| n.starts_with('.') || n == "target");
-            if hidden || skip.contains(&p) {
+            if hidden || skip.contains(&p.as_path()) {
                 continue;
             }
             if p.is_dir() {
@@ -596,7 +596,7 @@ pub fn state_dir() -> Option<PathBuf> {
 /// Lists regular files under `dir` recursively in sorted order, skipping hidden entries,
 /// `target`, and the directories in `skip`. Bounded by [`LIST_FILES_MAX`] files and
 /// [`LIST_DEPTH_MAX`] levels.
-pub fn list_files(dir: &Path, skip: &[PathBuf]) -> Vec<PathBuf> {
+pub fn list_files(dir: &Path, skip: &[&Path]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     imp::list(dir, 0, skip, &mut out);
     assert!(out.len() <= LIST_FILES_MAX);

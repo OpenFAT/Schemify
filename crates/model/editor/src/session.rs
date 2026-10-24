@@ -361,15 +361,16 @@ impl Session {
         let Some((row, _)) = self.lib_of(path) else {
             return;
         };
-        let dir = self.lib_dir[row].clone().expect("matched a local library");
-        let others: Vec<PathBuf> = self
+        let dir = self.lib_dir[row]
+            .as_deref()
+            .expect("matched a local library");
+        let others: Vec<&Path> = self
             .lib_dir
             .iter()
             .enumerate()
-            .filter(|(r, d)| *r != row && d.as_ref().is_some_and(|d| d.starts_with(&dir)))
-            .filter_map(|(_, d)| d.clone())
+            .filter_map(|(r, d)| d.as_deref().filter(|d| r != row && d.starts_with(dir)))
             .collect();
-        if let Err(e) = libs::index(&mut self.project, row, &dir, &others) {
+        if let Err(e) = libs::index(&mut self.project, row, dir, &others) {
             self.status = e;
         }
     }

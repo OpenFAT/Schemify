@@ -128,7 +128,7 @@ pub fn mtime_unix_s(path: &Path) -> Option<u64> {
     FS.with_borrow(|fs| fs.mtime(&vfs::key(path)))
 }
 
-pub fn list(dir: &Path, depth: u32, skip: &[PathBuf], out: &mut Vec<PathBuf>) {
+pub fn list(dir: &Path, depth: u32, skip: &[&Path], out: &mut Vec<PathBuf>) {
     let skip: Vec<String> = skip.iter().map(|p| vfs::key(p)).collect();
     FS.with_borrow(|fs| fs.list(&vfs::key(dir), depth, &skip, out));
 }

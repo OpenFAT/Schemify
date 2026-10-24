@@ -103,10 +103,19 @@ fn index_all(
         lib_dir.push(dir);
     }
     // Libraries nested under the project root are indexed only by their own row.
-    let nested: Vec<PathBuf> = lib_dir.iter().skip(1).flatten().cloned().collect();
+    let nested: Vec<&Path> = lib_dir
+        .iter()
+        .skip(1)
+        .flatten()
+        .map(PathBuf::as_path)
+        .collect();
     for (row, dir) in lib_dir.iter().enumerate() {
         let Some(dir) = dir else { continue };
-        let others: Vec<PathBuf> = nested.iter().filter(|d| *d != dir).cloned().collect();
+        let others: Vec<&Path> = nested
+            .iter()
+            .copied()
+            .filter(|d| *d != dir.as_path())
+            .collect();
         if let Err(e) = index(project, row, dir, &others) {
             notes.push(e);
         }
@@ -160,12 +169,7 @@ fn index_all(
 /// # Errors
 ///
 /// A file cannot be read, or indexing reports a diagnostic (the first).
-pub fn index(
-    project: &mut Project,
-    row: usize,
-    dir: &Path,
-    skip: &[PathBuf],
-) -> Result<(), String> {
+pub fn index(project: &mut Project, row: usize, dir: &Path, skip: &[&Path]) -> Result<(), String> {
     let name = project.libs().name[row].clone();
     let mut rel = Vec::new();
     let mut bytes = Vec::new();

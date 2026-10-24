@@ -495,6 +495,7 @@ mod tests {
                     v.list(dir, 0, &skip, &mut got);
                     let mut want = Vec::new();
                     let skip_n: Vec<PathBuf> = skip.iter().map(|s| native(s)).collect();
+                    let skip_n: Vec<&Path> = skip_n.iter().map(PathBuf::as_path).collect();
                     super::super::imp::list(&native(dir), 0, &skip_n, &mut want);
                     // A rename onto a directory leaves the writer's temp file behind natively.
                     let want: Vec<String> = want
