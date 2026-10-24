@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 
-use schemify_render::canvas::CanvasPrims;
+use schemify_canvas::CanvasPrims;
 
 /// Deterministic 1k-primitive canvas covering every primitive kind, a selection mark and labels.
 pub fn thousand_prims() -> CanvasPrims {

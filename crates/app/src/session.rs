@@ -14,9 +14,9 @@
 
 use std::path::{Path, PathBuf};
 
+use schemify_canvas::Camera;
 use schemify_doc::{DocHandle, OpenError, Project, Recovery};
 use schemify_format::FileKind;
-use schemify_render::canvas::Camera;
 
 use crate::geometry::Pt;
 pub use crate::libs::cell_relpath;

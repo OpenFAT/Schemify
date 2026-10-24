@@ -6,7 +6,8 @@
 
 use std::time::Instant;
 
-use schemify_render::canvas::{self, Camera, CanvasPrims, CanvasScratch, Marks, Palette};
+use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
+use schemify_render::canvas::{self, CanvasScratch};
 use schemify_render::vello::kurbo::{Affine, Rect};
 use schemify_render::vello::peniko::Color;
 use schemify_render::vello::util::RenderContext;
@@ -502,8 +503,9 @@ fn composed_frames_equal_vello_frames() {
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn patched_layers_equal_recorded_layers() {
+    use schemify_canvas::CanvasDiff;
     use schemify_render::Layers;
-    use schemify_render::canvas::{CanvasCache, CanvasDiff, Drawn};
+    use schemify_render::canvas::{CanvasCache, Drawn};
 
     let mut g = gpu();
     let (w, h) = (640u32, 400u32);
@@ -564,7 +566,7 @@ fn patched_layers_equal_recorded_layers() {
     let mut boxes = Vec::new();
     let marks = Marks::default();
     assert!(!diff.update(
-        &[(&prims, schemify_render::canvas::TableChange::Any)],
+        &[(&prims, schemify_canvas::TableChange::Any)],
         (&prims, &marks, true),
         &mut boxes
     ));
@@ -582,7 +584,7 @@ fn patched_layers_equal_recorded_layers() {
         l.style.swap_remove(key as usize * 37);
         boxes.clear();
         assert!(diff.update(
-            &[(&prims, schemify_render::canvas::TableChange::Any)],
+            &[(&prims, schemify_canvas::TableChange::Any)],
             (&prims, &marks, true),
             &mut boxes
         ));

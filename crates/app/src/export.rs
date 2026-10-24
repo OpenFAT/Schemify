@@ -1,4 +1,4 @@
-//! `export`: the drawn canvas tables (`render::canvas::CanvasPrims`) written as vector image
+//! `export`: the drawn canvas tables (`render::schemify_canvas::CanvasPrims`) written as vector image
 //! files — SVG, PDF (one page per drawing) and EPS, fitted to a [`Page`]. The PNG export is
 //! the CPU raster of the same tables through `render::Painter` (`Editor::export_png`); these
 //! writers walk the very tables that raster draws, so every format shows the same
@@ -21,8 +21,8 @@
 //! points are rounded to milli-units before printing, so platform `sin`/`cos` last-bit
 //! differences do not reach the bytes; font tables are written from ordered maps.
 
+use schemify_canvas::{CanvasPrims, LAYER_DEAD, LAYERS, LineStyle, Palette};
 use schemify_format::format_coord;
-use schemify_render::canvas::{CanvasPrims, LAYER_DEAD, LAYERS, LineStyle, Palette};
 
 use crate::scene::Scene;
 

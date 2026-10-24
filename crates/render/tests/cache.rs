@@ -3,9 +3,8 @@
 //! tolerance), for a seeded random walk of pans and zooms; and the cache serves exactly the
 //! frames it may (whole-pixel pans inside the margin) and re-records the rest.
 
-use schemify_render::canvas::{
-    self, Camera, CanvasCache, CanvasPrims, CanvasScratch, Drawn, Palette,
-};
+use schemify_canvas::{Camera, CanvasPrims, Palette};
+use schemify_render::canvas::{self, CanvasCache, CanvasScratch, Drawn};
 use schemify_render::vello::kurbo::Rect;
 use schemify_render::vello::peniko::Color;
 use schemify_render::{CpuPainter, Painter, Pixmap, rgba};
@@ -372,7 +371,7 @@ fn edit(prims: &mut CanvasPrims, sel: &mut Vec<u32>, rng: &mut Rng) -> bool {
 /// same frame recorded afresh within one level per channel, pans included (tiles are anchored
 /// to the world, so a pan by whole pixels keeps their pixel grid).
 fn patch_walk(scale: f64, seed: u32) {
-    use schemify_render::canvas::{CanvasDiff, Marks, PrimKind};
+    use schemify_canvas::{CanvasDiff, Marks, PrimKind};
     let mut prims = common::thousand_prims();
     let (w, h) = (480u16, 320u16);
     let view = Rect::new(13.0, 21.0, 460.0, 300.0);
@@ -430,9 +429,9 @@ fn patch_walk(scale: f64, seed: u32) {
         boxes.clear();
         // Unchanged prims are not rehashed: only the marks then (a selection).
         let change = if changed {
-            canvas::TableChange::Any
+            schemify_canvas::TableChange::Any
         } else {
-            canvas::TableChange::Same
+            schemify_canvas::TableChange::Same
         };
         let known = diff.update(&[(&prims, change)], (&prims, &marks, true), &mut boxes);
         let damage = known.then_some(&boxes[..]);
@@ -487,7 +486,7 @@ fn patched_layers_equal_recordings_at_scale_two() {
 
 /// `prims` without its dead rows (what a producer that rebuilt its table would hold).
 fn compacted(prims: &CanvasPrims) -> CanvasPrims {
-    use schemify_render::canvas::LAYER_DEAD;
+    use schemify_canvas::LAYER_DEAD;
     let mut out = CanvasPrims::default();
     let l = &prims.lines;
     for i in (0..l.x0.len()).filter(|&i| l.layer[i] != LAYER_DEAD) {
@@ -525,7 +524,7 @@ fn compacted(prims: &CanvasPrims) -> CanvasPrims {
 /// drawn from a `PrimIndex` that follows the edits; every frame equals a fresh recording of
 /// the table without its dead rows, so a dead row draws nothing and no change is missed.
 fn reported_walk(seed: u32) {
-    use schemify_render::canvas::{CanvasDiff, LAYER_DEAD, Marks, PrimIndex, Rows, TableChange};
+    use schemify_canvas::{CanvasDiff, LAYER_DEAD, Marks, PrimIndex, Rows, TableChange};
     let mut prims = common::thousand_prims();
     let (w, h) = (480u16, 320u16);
     let view = Rect::new(13.0, 21.0, 460.0, 300.0);

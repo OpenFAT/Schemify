@@ -5,8 +5,9 @@
 
 use std::time::Instant;
 
+use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
 use schemify_render::ScenePainter;
-use schemify_render::canvas::{self, Camera, CanvasPrims, CanvasScratch, Marks, Palette};
+use schemify_render::canvas::{self, CanvasScratch};
 use schemify_render::vello::Scene;
 use schemify_render::vello::kurbo::{Affine, Rect};
 use schemify_render::widgets::{UiScratch, draw_ui};

@@ -33,3 +33,4 @@ schemify-plugin.workspace = true
 # Path deps (no root `[workspace.dependencies]` row yet), the same way `render` names `ui`.
 schemify-ui = { path = "../ui" }
 schemify-render = { path = "../render" }
+schemify-canvas.workspace = true

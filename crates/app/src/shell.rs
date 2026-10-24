@@ -13,7 +13,7 @@
 //! Also derives the canvas [`Palette`] from the `canvas.<theme>.<layer>` style selectors, so
 //! a plugin themes the schematic the same way it themes widgets.
 
-use schemify_render::canvas::{LAYERS, Palette};
+use schemify_canvas::{LAYERS, Palette};
 use schemify_ui::{
     Contribution, Edit, Kind, Strings, StyleProp, Sym, TextSystem, UiLayout, UiState, UiTables,
     compose, layout, patch_last, records,

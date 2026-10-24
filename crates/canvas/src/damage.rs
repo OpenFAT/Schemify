@@ -1,5 +1,5 @@
 //! What changed between two versions of a canvas's tables, as world boxes (D39): an edit
-//! re-rasters only those regions of the canvas layer ([`crate::canvas::draw_cached`]).
+//! re-rasters only those regions of the canvas layer ([`crate::draw_cached`]).
 //!
 //! Six questions:
 //! 1. In: the primitive tables a canvas layer draws, and its marks, once per content change.
@@ -18,7 +18,7 @@
 //! SIMD triage: hashing is per row over a few SoA columns (variable width for polys and
 //! texts); the diff is a chain. Scalar.
 
-use crate::canvas::{CanvasPrims, Marks, PrimKind, chain};
+use crate::{CanvasPrims, Marks, PrimKind, chain};
 
 /// Edits (rows removed plus rows added) one table may differ by before the diff gives up and
 /// the whole layer is recorded instead.
@@ -56,7 +56,7 @@ pub enum TableChange<'a> {
     /// In any way: every row is hashed and the two versions diffed.
     Any,
     /// Only by its producer killing rows (`killed[kind]`: rows of the previous version, in
-    /// [`CanvasPrims::kill`]'s kind order, now on [`LAYER_DEAD`](crate::canvas::LAYER_DEAD))
+    /// [`CanvasPrims::kill`]'s kind order, now on [`LAYER_DEAD`](crate::LAYER_DEAD))
     /// and appending rows past the previous version's end; every other row is as it was.
     Rows(&'a [Vec<u32>; 6]),
 }
@@ -179,7 +179,7 @@ impl CanvasDiff {
 impl CanvasDiff {
     /// The rows of input table `table` (an index into the last [`CanvasDiff::update`]'s
     /// `tables`) that call found removed (old indices) and added (new indices), per kind in
-    /// [`CanvasPrims`] order: what [`PrimIndex::apply`](crate::canvas::PrimIndex::apply)
+    /// [`CanvasPrims`] order: what [`PrimIndex::apply`](crate::PrimIndex::apply)
     /// follows. Empty for a table flagged unchanged; meaningless when that call returned
     /// false.
     pub fn edits_of(&self, table: usize) -> [(&[u32], &[u32]); 6] {
@@ -241,7 +241,7 @@ fn fold(seed: i64, fields: &[i32]) -> u64 {
 
 /// A row's layer and stroke style as one hashed field.
 #[inline]
-fn pen(layer: u8, style: crate::canvas::LineStyle) -> i32 {
+fn pen(layer: u8, style: crate::LineStyle) -> i32 {
     i32::from(layer) | (i32::from(style.0) << 8)
 }
 
@@ -504,7 +504,7 @@ mod tests {
     /// one (its hashes are stale), are unknown.
     #[test]
     fn reported_rows_give_their_boxes() {
-        use crate::canvas::{Marks, TableChange};
+        use crate::{Marks, TableChange};
         let mut t = CanvasPrims::default();
         for i in 0..10 {
             t.line(i * 100, 0, i * 100 + 50, 10, 1);

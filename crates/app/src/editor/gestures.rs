@@ -11,9 +11,9 @@
 //! Tables: the partial selection is the level's `ends` (`session::Level::ends`, written only
 //! here); a vertex drag is `Tool::Vertex`. Both run as steps of `Editor::gesture`.
 
+use schemify_canvas::CanvasPrims;
 use schemify_doc::{DocHandle, EditRequest, Op, RecordBuf, TableId};
 use schemify_format::{RecordKind, format_coord, parse_coord};
-use schemify_render::canvas::CanvasPrims;
 
 use super::{Editor, HIT_PX, Tool};
 use crate::edit;

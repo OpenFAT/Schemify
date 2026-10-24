@@ -7,12 +7,12 @@
 
 use schemify_app::scene::{self, ObjKey, Scene, Symbols};
 use schemify_app::session::View;
+use schemify_canvas::{CanvasPrims, LAYER_DEAD, PrimKind};
 use schemify_doc::{
     DocHandle, Edit, EditRequest, Mode, Project, TableId, Transaction, apply_edits, ops_from_text,
 };
 use schemify_elab::{CellState, no_funcs};
 use schemify_format::FileKind;
-use schemify_render::canvas::{CanvasPrims, LAYER_DEAD, PrimKind};
 
 const RES: &str = "schemify 1 shprim\n\npin A inout 0 -30\npin B inout 0 30\n\nparam R 1k\n\nimpl spice spice\n  format spice \"R{name} {A} {B} {R}\"\n\nline 0 -30 0 -15\nline 0 15 0 30\nrect -5 -15 5 15\n  width 2\narc 0 0 8 0 90\ncircle 10 0 2\n  dash 2\npoly -5 -15 5 -15 0 -20 -5 -15\n  closed true\n\nstext 8 -10 R0 {name}\n  size 0.2\nstext 8 2 R0 R={R}\n  size 0.15\n";
 
@@ -379,7 +379,7 @@ fn selection_rows_match_scans(sc: &Scene, rng: &mut Rng) {
     sel.set(n, picks);
     let mut rows = Vec::new();
     scene::selected_prims(sc, &sel, &mut rows);
-    let mut marks = schemify_render::canvas::Marks::default();
+    let mut marks = schemify_canvas::Marks::default();
     scene::marks(sc, &rows, 7, &mut marks);
     let tables = [
         (PrimKind::Line, &sc.owner.lines),
@@ -388,7 +388,7 @@ fn selection_rows_match_scans(sc: &Scene, rng: &mut Rng) {
         (PrimKind::Polyline, &sc.owner.polylines),
         (PrimKind::Polygon, &sc.owner.polygons),
     ];
-    let mut want = schemify_render::canvas::Marks::default();
+    let mut want = schemify_canvas::Marks::default();
     for (kind, owners) in tables {
         for (i, &o) in owners.iter().enumerate() {
             if sel.contains(o) {
@@ -531,7 +531,7 @@ fn walk(seed: u64, steps: usize, base: usize) {
     }
     let doc = p.doc(h).expect("open");
     assert!(!doc.shapes().id.is_empty(), "the walk drew shapes");
-    use schemify_render::canvas::LineStyle;
+    use schemify_canvas::LineStyle;
     let p = &inc.prims;
     let styles = p
         .lines
@@ -554,7 +554,7 @@ fn walk(seed: u64, steps: usize, base: usize) {
 /// graphics without them stay plain (format spec §4, stroke attributes).
 #[test]
 fn symbol_stroke_attributes_reach_the_scene() {
-    use schemify_render::canvas::LineStyle;
+    use schemify_canvas::LineStyle;
     let top =
         "schemify 1 shcomp\n\nimpl sch schematic\n\ninst aaaaaa ./res\n  at 0 0 R90\n  name R1\n";
     let mut p = Project::new(None, None, 1).unwrap();

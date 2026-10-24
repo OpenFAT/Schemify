@@ -20,13 +20,13 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use schemify_canvas::{CanvasPrims, LineStyle, Marks, PrimKind};
 use schemify_doc::{
     Cursor, DocHandle, Document, ObjId, Project, Strings as DocStrings, Sym, TableId, Write,
 };
 use schemify_elab::CellState;
 use schemify_expr::{Scratch, Template, Value};
 use schemify_format::{Orient, RecordKind};
-use schemify_render::canvas::{CanvasPrims, LineStyle, Marks, PrimKind};
 
 use crate::geometry::{Pt, Xform, place};
 use crate::session::View;
@@ -177,7 +177,7 @@ impl Owners {
 /// The drawn document and its derived lookup tables.
 ///
 /// An update ([`update`]) edits the tables in place: a removed object's primitive rows stay
-/// as dead rows ([`schemify_render::canvas::LAYER_DEAD`], owner `u32::MAX`) so every other row
+/// as dead rows ([`schemify_canvas::LAYER_DEAD`], owner `u32::MAX`) so every other row
 /// keeps its index, its connection points stay with owner `u32::MAX`, and new rows append;
 /// readers skip both. A [`build`] compacts.
 #[derive(Clone, Debug, Default)]
@@ -724,7 +724,9 @@ impl Build<'_> {
         // is -rotated_extent(r)).
         let (from, drawn) = if rot >= 2 { (q1, rot - 2) } else { (q0, rot) };
         debug_assert!(drawn < 2);
-        self.sc.prims.text_rot(from.0, from.1, size, layer, s, drawn);
+        self.sc
+            .prims
+            .text_rot(from.0, from.1, size, layer, s, drawn);
         self.owned(5, o);
         self.grow(q0.0, q0.1);
         self.grow(q1.0, q1.1);

@@ -30,6 +30,7 @@ schemify-plugin = { path = "crates/plugin" }
 schemify-spicecmp = { path = "tools/spicecmp" }
 schemify-config = { path = "crates/config" }
 schemify-cli = { path = "crates/cli" }
+schemify-canvas = { path = "crates/canvas" }
 # third-party (justify additions in the PR, docs/dev/contributing.md rule 7)
 # Dev-only: the differential oracle of expr's own FFT (D39 size cut).
 rustfft = "6"
@@ -67,6 +68,8 @@ skrifa = { version = "0.44", default-features = false, features = ["std"] }
 winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
 # No `wgpu_default`: render picks wgpu's backends per target (the wgpu entry below).
 vello = { version = "0.11", default-features = false, features = ["wgpu"] }
+# The canvas tables' geometry (`canvas`): the kurbo vello 0.11 uses, so both name one `Rect`.
+kurbo = { version = "0.13", default-features = false, features = ["std"] }
 # Only to pick the backends vello's wgpu builds; render alone names it.
 wgpu = { version = "30", default-features = false }
 vello_cpu = "0.3"

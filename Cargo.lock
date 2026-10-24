@@ -2738,6 +2738,7 @@ dependencies = [
 name = "schemify-app"
 version = "0.1.0"
 dependencies = [
+ "schemify-canvas",
  "schemify-cli",
  "schemify-config",
  "schemify-doc",
@@ -2750,6 +2751,13 @@ dependencies = [
  "schemify-run",
  "schemify-ui",
  "schemify-wave",
+]
+
+[[package]]
+name = "schemify-canvas"
+version = "0.1.0"
+dependencies = [
+ "kurbo",
 ]
 
 [[package]]
@@ -2837,6 +2845,7 @@ dependencies = [
  "accesskit",
  "accesskit_winit",
  "pollster",
+ "schemify-canvas",
  "schemify-ui",
  "schemify-wave",
  "vello",

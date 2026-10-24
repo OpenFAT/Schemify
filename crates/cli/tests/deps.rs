@@ -42,13 +42,13 @@ const EDITOR_ONLY: &[&str] = &[
     "rustfft",
 ];
 
-#[test]
-fn the_core_links_no_editor_crate() {
+/// The package names `pkg` links on any target (normal and build edges).
+fn linked(pkg: &str) -> Vec<String> {
     let out = Command::new(env!("CARGO"))
         .args([
             "tree",
             "-p",
-            "schemify-cli",
+            pkg,
             "-e",
             "normal,build",
             "--target",
@@ -61,20 +61,45 @@ fn the_core_links_no_editor_crate() {
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("cargo runs");
-    let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let names: Vec<&str> = text
+    let names: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .lines()
-        .filter_map(|l| l.split_whitespace().next())
+        .filter_map(|l| l.split_whitespace().next().map(str::to_owned))
         .collect();
     assert!(
-        names.contains(&"schemify-cli") && names.contains(&"omnilua"),
-        "{names:?}"
+        names.iter().any(|n| n == pkg),
+        "{pkg} missing from its own tree: {names:?}"
     );
-    let bad: Vec<&&str> = names.iter().filter(|n| EDITOR_ONLY.contains(n)).collect();
+    names
+}
+
+#[test]
+fn the_core_links_no_editor_crate() {
+    let names = linked("schemify-cli");
+    assert!(names.iter().any(|n| n == "omnilua"), "{names:?}");
+    let bad: Vec<&String> = names
+        .iter()
+        .filter(|n| EDITOR_ONLY.contains(&n.as_str()))
+        .collect();
     assert!(bad.is_empty(), "the core depends on editor crates: {bad:?}");
+}
+
+/// The canvas tables are filled headless by the editor and drawn by `render`: they link
+/// geometry (kurbo) and nothing of the GPU, window, text or UI stack.
+#[test]
+fn the_canvas_tables_link_no_editor_crate() {
+    let names = linked("schemify-canvas");
+    assert!(names.iter().any(|n| n == "kurbo"), "{names:?}");
+    let bad: Vec<&String> = names
+        .iter()
+        .filter(|n| EDITOR_ONLY.contains(&n.as_str()))
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "the canvas tables depend on editor crates: {bad:?}"
+    );
 }

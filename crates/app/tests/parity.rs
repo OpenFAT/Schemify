@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 
 use schemify_app::commands::Target;
 use schemify_app::editor::{Editor, Options, Tool};
+use schemify_canvas::LAYER_DEAD;
 use schemify_doc::TableId;
-use schemify_render::canvas::LAYER_DEAD;
 use schemify_ui::{Button, InputEvent, InputEvents};
 
 const UI: &str = include_str!("../../../ui/default-plugin/ui.records");

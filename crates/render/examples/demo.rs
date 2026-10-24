@@ -7,7 +7,8 @@
 //! (set `SCHEMIFY_FPS=1` to print scene-build times; `WGPU_POWER_PREF=high` picks a discrete
 //! GPU). Web: see `crates/render/web/README.md`.
 
-use schemify_render::canvas::{self, Camera, CanvasPrims, CanvasScratch, Marks, Palette, PrimKind};
+use schemify_canvas::{Camera, CanvasPrims, Marks, Palette, PrimKind};
+use schemify_render::canvas::{self, CanvasScratch};
 use schemify_render::vello::kurbo::Rect;
 use schemify_render::widgets::{UiScratch, draw_ui};
 use schemify_render::{App, Painter, run};

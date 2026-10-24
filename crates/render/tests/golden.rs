@@ -5,7 +5,8 @@
 //! differ (SIMD paths may round differently across CPUs). The GPU-vs-CPU comparison docs/dev/testing.md
 //! asks for needs an adapter in CI and is not here yet.
 
-use schemify_render::canvas::{self, Camera, CanvasPrims, CanvasScratch, Marks, Palette, PrimKind};
+use schemify_canvas::{Camera, CanvasPrims, Marks, Palette, PrimKind};
+use schemify_render::canvas::{self, CanvasScratch};
 use schemify_render::vello::kurbo::{Affine, Rect};
 use schemify_render::vello::peniko::Color;
 use schemify_render::widgets::{UiScratch, draw_math, draw_ui};

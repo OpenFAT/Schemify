@@ -21,12 +21,12 @@
 
 use std::collections::HashMap;
 
+use schemify_canvas::CanvasPrims;
 use schemify_doc::{Document, ObjId, TableId};
 use schemify_elab::{
     AnnotationRequest, Annotations, CellState, Mark, Name, Names, Severity, Violation,
     violation_marks,
 };
-use schemify_render::canvas::CanvasPrims;
 
 use crate::geometry::Pt;
 use crate::scene::{ObjKey, Scene, UNIT};

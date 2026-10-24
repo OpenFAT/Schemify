@@ -1,0 +1,14 @@
+[package]
+name = "schemify-canvas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Geometry only (`Rect` for the camera's view); the same kurbo vello re-exports, so the
+# renderer and the editor name one type. No GPU, window or text crate here (tests/deps.rs).
+kurbo.workspace = true

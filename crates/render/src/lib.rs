@@ -15,11 +15,12 @@
 //! is a compile-time bound only.
 //!
 //! The canvas is cached as raster tiles (D39): [`canvas::draw_cached`] keeps world-anchored
-//! tiles in one painter layer ([`Layers`] on the GPU), patches the rows [`canvas::CanvasDiff`]
-//! finds changed, and reads rows near a tile through [`canvas::PrimIndex`]. A frame that only
+//! tiles in one painter layer ([`Layers`] on the GPU), patches the rows [`schemify_canvas::CanvasDiff`]
+//! finds changed, and reads rows near a tile through [`schemify_canvas::PrimIndex`]. A frame that only
 //! moved its layers is composed without vello ([`Layers::reusable`]).
 //!
 //! ```
+//! use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
 //! use schemify_render::{CpuPainter, Painter, canvas::*};
 //! use vello::kurbo::Rect;
 //!
@@ -41,8 +42,6 @@
 pub mod canvas;
 #[cfg(target_arch = "wasm32")]
 mod cpu_view;
-mod damage;
-mod index;
 mod layers;
 mod painter;
 mod tiles;

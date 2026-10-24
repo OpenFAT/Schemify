@@ -30,6 +30,9 @@
 
 use std::path::{Path, PathBuf};
 
+use schemify_canvas::{
+    Camera, CanvasDiff, CanvasPrims, Marks, Palette, PrimIndex, Rows, TableChange,
+};
 use schemify_doc::{
     DocHandle, Document, Edit, EditRequest, External, Mode, Op, Outcome, RecordBuf, TableId,
     Transaction, apply_edits, ops_from_text,
@@ -38,10 +41,7 @@ use schemify_elab::{Annotations, CellState, Dialect};
 use schemify_expr::Value;
 use schemify_format::{FileKind, IdRng, Orient, RecordKind};
 use schemify_plugin::abi::Event;
-use schemify_render::canvas::{
-    self, Camera, CanvasCache, CanvasDiff, CanvasPrims, CanvasScratch, Marks, Palette, PrimIndex,
-    Rows, TableChange,
-};
+use schemify_render::canvas::{self, CanvasCache, CanvasScratch};
 use schemify_render::vello::kurbo::Rect as KRect;
 use schemify_render::widgets::{UiScratch, draw_ui};
 use schemify_render::{App, Painter};

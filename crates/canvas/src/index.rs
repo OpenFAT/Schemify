@@ -14,7 +14,7 @@
 //!    appended; the owner rebuilds it then.
 //! 6. Kinds are independent (parallelizable; not needed at ~10 ms per 10^6 rows).
 
-use crate::canvas::CanvasPrims;
+use crate::CanvasPrims;
 use crate::damage::{TABLES, len, row};
 
 /// Rows a row may touch before it is kept in the cell-free list (drawn whenever queried).
@@ -245,7 +245,7 @@ impl PrimIndex {
 
     /// Follows one edit of the table: `edits[k]` lists, for kind `k` (in [`CanvasPrims`]
     /// order), the rows removed (indices in the old version) and added (in the new version
-    /// `t`), as [`CanvasDiff`](crate::canvas::CanvasDiff) finds them; every other row kept
+    /// `t`), as [`CanvasDiff`](crate::CanvasDiff) finds them; every other row kept
     /// its content and order. Returns false, changing nothing, once the index has followed
     /// enough edits that a rebuild is due (the caller then rebuilds or stops using it).
     ///
@@ -433,7 +433,7 @@ fn is_dead(t: &CanvasPrims, table: crate::damage::Table, i: usize) -> bool {
         Table::Polygons => t.polygons.layer[i],
         Table::Texts => t.texts.layer[i],
     };
-    layer == crate::canvas::LAYER_DEAD
+    layer == crate::LAYER_DEAD
 }
 
 /// Merges the sorted `new` into the sorted `into` in one backwards pass (no reallocation past
@@ -541,11 +541,11 @@ mod tests {
             }
         }
         let mut ix = PrimIndex::build(&t);
-        let mut diff = crate::canvas::CanvasDiff::default();
+        let mut diff = crate::CanvasDiff::default();
         let mut boxes = Vec::new();
         assert!(!diff.update(
-            &[(&t, crate::canvas::TableChange::Any)],
-            (&t, &crate::canvas::Marks::default(), true),
+            &[(&t, crate::TableChange::Any)],
+            (&t, &crate::Marks::default(), true),
             &mut boxes
         ));
         let mut got = Rows::default();
@@ -575,10 +575,10 @@ mod tests {
                 }
             }
             boxes.clear();
-            let marks = crate::canvas::Marks::default();
+            let marks = crate::Marks::default();
             assert!(
                 diff.update(
-                    &[(&t, crate::canvas::TableChange::Any)],
+                    &[(&t, crate::TableChange::Any)],
                     (&t, &marks, false),
                     &mut boxes
                 ),

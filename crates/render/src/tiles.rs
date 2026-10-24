@@ -22,14 +22,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
 
-use crate::canvas::Camera;
 use crate::painter::Painter;
+use schemify_canvas::Camera;
 
 /// Tile edge in device px (at an integral device scale `s`, the largest multiple of `s` up to
 /// it, so tile corners sit on whole logical px and pixel snapping agrees across tiles).
 pub const TILE_PX: u32 = 256;
 /// Tiles (or tile parts) one frame records at most by default (see
-/// [`CanvasCache::tiles_per_frame`]). The frame-time guard is [`COST_PER_FRAME`] (each tile
+/// [`CanvasCache::tiles_per_frame`]). The frame-time guard is `COST_PER_FRAME` (each tile
 /// also costs `TILE_COST`, so cheap content stops near 40 tiles); this cap only bounds the
 /// tile count. At 16, a zoom-out at 2× device scale left the uncovered bottom of the canvas
 /// blank for ~4 frames (#45).
@@ -266,7 +266,7 @@ struct Grid {
 /// Cost: one layer draw per visible tile; `draw` per recorded tile (within the budget, the
 /// view's tiles first, then the 1-tile ring around it) and per changed part of a visible tile.
 ///
-/// [`CanvasDiff::update`]: crate::canvas::CanvasDiff::update
+/// [`CanvasDiff::update`]: schemify_canvas::CanvasDiff::update
 /// [`draw_prims_in`]: crate::canvas::draw_prims_in
 #[allow(clippy::too_many_arguments)]
 pub fn draw_cached<P: Painter>(

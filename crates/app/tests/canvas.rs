@@ -10,7 +10,7 @@ mod common;
 
 use common::{Session, U, VIEW};
 use schemify_app::checks;
-use schemify_render::canvas::{CanvasPrims, LAYER_DEAD};
+use schemify_canvas::{CanvasPrims, LAYER_DEAD};
 use schemify_render::vello::peniko::Color;
 use schemify_render::{CpuPainter, Pixmap};
 

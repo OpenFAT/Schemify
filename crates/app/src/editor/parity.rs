@@ -12,9 +12,10 @@
 
 use std::path::{Path, PathBuf};
 
+use schemify_canvas::{CanvasPrims, Palette};
 use schemify_doc::{DocHandle, EditRequest, Op, RecordBuf, TableId, Target};
 use schemify_format::{FileKind, Orient, RecordKind};
-use schemify_render::canvas::{self, CanvasPrims, Palette};
+use schemify_render::canvas::{self};
 use schemify_render::vello::kurbo::Rect as KRect;
 
 use super::{ChooseFor, Dialog, Editor, Field, Form, Placement, Props, PropsFor, TextFor, Tool, q};
@@ -1108,7 +1109,7 @@ impl Editor {
             (f64::from(b[2]) - f64::from(b[0])) / u,
             (f64::from(b[3]) - f64::from(b[1])) / u,
         );
-        let cam = canvas::Camera {
+        let cam = schemify_canvas::Camera {
             cx: (f64::from(b[0]) + f64::from(b[2])) / 2.0,
             cy: (f64::from(b[1]) + f64::from(b[3])) / 2.0,
             scale: 1.0 / u,
@@ -1117,7 +1118,12 @@ impl Editor {
     }
 
     /// Rasterizes a `w × h` logical-pixel view through `cam` at the PNG scale and encodes it.
-    fn raster_png(&mut self, w: f64, h: f64, cam: canvas::Camera) -> Result<Vec<u8>, String> {
+    fn raster_png(
+        &mut self,
+        w: f64,
+        h: f64,
+        cam: schemify_canvas::Camera,
+    ) -> Result<Vec<u8>, String> {
         let k = f64::from(self.opts.png_scale) / 100.0;
         assert!(k > 0.0 && cam.scale > 0.0, "a positive scale");
         let (pw, ph) = ((w * k).round(), (h * k).round());
