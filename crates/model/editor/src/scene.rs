@@ -806,7 +806,7 @@ pub fn build(
     }
     let ext = if b.ext[0] > b.ext[2] { [0; 4] } else { b.ext };
     sc.extent = ext;
-    fit_boxes(sc, Counts::default());
+    fit_boxes(sc, [0; 6]);
     sc.index.reserve(sc.objs.len());
     sc.index.extend(
         sc.objs
@@ -909,7 +909,7 @@ pub fn update(
         remove_object(sc, key);
     }
     // Stamp what the document holds now, then index it.
-    let (objs0, prims0) = (sc.objs.len(), Counts::of(sc));
+    let (objs0, prims0) = (sc.objs.len(), counts(sc));
     let ext = match sc.extent {
         [0, 0, 0, 0] => [i32::MAX, i32::MAX, i32::MIN, i32::MIN],
         e => e,
@@ -981,29 +981,9 @@ fn check_tables(sc: &Scene) {
     assert!(sc.dead <= p.len());
 }
 
-/// Primitive counts per table (where an update's new primitives start).
-#[derive(Clone, Copy, Debug, Default)]
-struct Counts {
-    lines: usize,
-    rects: usize,
-    arcs: usize,
-    polylines: usize,
-    polygons: usize,
-    texts: usize,
-}
-
-impl Counts {
-    fn of(sc: &Scene) -> Counts {
-        let o = &sc.owner;
-        Counts {
-            lines: o.lines.len(),
-            rects: o.rects.len(),
-            arcs: o.arcs.len(),
-            polylines: o.polylines.len(),
-            polygons: o.polygons.len(),
-            texts: o.texts.len(),
-        }
-    }
+/// Primitive rows per kind ([`CanvasPrims::kill`] order): where an update's new rows start.
+fn counts(sc: &Scene) -> [usize; 6] {
+    sc.owner.cols().map(Vec::len)
 }
 
 /// The rows (or connection points) carrying stamp `s` in a non-decreasing stamp column.
@@ -1061,7 +1041,7 @@ fn remove_object(sc: &mut Scene, key: ObjKey) {
 
 /// Grows every box object's geometry to cover all of its primitives from `from` on, so
 /// whatever is drawn for an object hits and box-selects as that object.
-fn fit_boxes(sc: &mut Scene, from: Counts) {
+fn fit_boxes(sc: &mut Scene, from: [usize; 6]) {
     let p = &sc.prims;
     let o = &sc.owner;
     let objs = &mut sc.objs;
@@ -1077,15 +1057,15 @@ fn fit_boxes(sc: &mut Scene, from: Counts) {
             g[3].max(y0.max(y1)),
         ];
     };
-    for i in from.lines..p.lines.x0.len() {
+    for i in from[0]..p.lines.x0.len() {
         let l = &p.lines;
         grow(o.lines[i], l.x0[i], l.y0[i], l.x1[i], l.y1[i]);
     }
-    for i in from.rects..p.rects.x0.len() {
+    for i in from[1]..p.rects.x0.len() {
         let r = &p.rects;
         grow(o.rects[i], r.x0[i], r.y0[i], r.x1[i], r.y1[i]);
     }
-    for i in from.arcs..p.arcs.cx.len() {
+    for i in from[2]..p.arcs.cx.len() {
         let a = &p.arcs;
         grow(
             o.arcs[i],
@@ -1096,8 +1076,8 @@ fn fit_boxes(sc: &mut Scene, from: Counts) {
         );
     }
     for (polys, owners, k0) in [
-        (&p.polylines, &o.polylines, from.polylines),
-        (&p.polygons, &o.polygons, from.polygons),
+        (&p.polylines, &o.polylines, from[3]),
+        (&p.polygons, &o.polygons, from[4]),
     ] {
         for (k, (&end, &owner)) in polys.end.iter().zip(owners).enumerate().skip(k0) {
             let start = if k == 0 { 0 } else { polys.end[k - 1] as usize };
@@ -1107,7 +1087,7 @@ fn fit_boxes(sc: &mut Scene, from: Counts) {
         }
     }
     let t = &p.texts;
-    for i in from.texts..t.x.len() {
+    for i in from[5]..t.x.len() {
         let start = if i == 0 { 0 } else { t.end[i - 1] as usize };
         let rot = t.rot.get(i).copied().unwrap_or(0);
         let (w, h) = rotated_extent(text_size(t.size[i], &t.text[start..t.end[i] as usize]), rot);
