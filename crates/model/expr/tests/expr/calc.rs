@@ -128,6 +128,11 @@ fn at_cross_delay_settle() {
     let ramp: Vec<f64> = x.iter().map(|t| 2.0 * t - 5.0).collect();
     let one = |src: &str, sigs: &[(&[f64], &[f64])]| col(calc(src, &x, &[], sigs)).re[0];
     assert!((one("at(v(a), 3.33)", &[(&ramp, &[])]) - (2.0 * 3.33 - 5.0)).abs() < 1e-12);
+    // A complex column interpolates both parts, and stays complex.
+    let neg: Vec<f64> = ramp.iter().map(|y| -y).collect();
+    let z = col(calc("at(v(a), 3.33)", &x, &[], &[(&ramp, &neg)]));
+    assert_eq!(z.kind, ColKind::Complex);
+    assert!((z.re[0] - (2.0 * 3.33 - 5.0)).abs() < 1e-12 && (z.im[0] + z.re[0]).abs() < 1e-12);
     assert!((one("cross(v(a), 0)", &[(&ramp, &[])]) - 2.5).abs() < 1e-12);
     assert_eq!(
         calc("cross(v(a), 0, -1)", &x, &[], &[(&ramp, &[])]).unwrap_err(),

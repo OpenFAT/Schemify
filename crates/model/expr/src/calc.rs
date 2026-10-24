@@ -435,11 +435,7 @@ where
                 let base = stack.len() - op.sub as usize;
                 let args: Vec<CV> = stack.drain(base..).collect();
                 let slot = op.arg;
-                let r = if args.iter().all(|a| matches!(a, CV::S(_))) {
-                    let vs: Vec<V> = args
-                        .iter()
-                        .map(|a| if let CV::S(v) = a { *v } else { unreachable!() })
-                        .collect();
+                let r = if let Some(vs) = scalars(&args) {
                     let r = call_plugin(plugin, slot, &vs, strs);
                     CV::S(r.and_then(|r| load_value(&r.value(), strs)).map_err(at)?)
                 } else {
@@ -457,6 +453,16 @@ where
     assert_eq!(cs.stack.len(), 1, "program must leave exactly one value");
     assert!(cs.frames.is_empty(), "condition frames unbalanced");
     Ok(cs.stack.pop().expect("one value"))
+}
+
+/// The arguments as scalars, or `None` when any is a column.
+fn scalars(args: &[CV]) -> Option<Vec<V>> {
+    args.iter()
+        .map(|a| match a {
+            CV::S(v) => Some(*v),
+            CV::C(_) => None,
+        })
+        .collect()
 }
 
 fn pop(stack: &mut Vec<CV>) -> CV {
@@ -768,11 +774,7 @@ fn call_cv(
     strs: &mut String,
 ) -> Result<CV, Error> {
     let name = b.name();
-    if args.iter().all(|a| matches!(a, CV::S(_))) {
-        let vs: Vec<V> = args
-            .iter()
-            .map(|a| if let CV::S(v) = a { *v } else { unreachable!() })
-            .collect();
+    if let Some(vs) = scalars(&args) {
         return Ok(CV::S(call(b, &vs, strs)?));
     }
     if !b.calc_only() {
@@ -838,31 +840,24 @@ fn call_cv(
             let steps = axes[y.axis as usize].steps.len();
             assert!(xs.len() == 1 || xs.len() == steps, "one x per sweep step");
             let x_of = |k: usize| if xs.len() == 1 { xs[0] } else { xs[k] };
-            let complex = y.kind == ColKind::Complex;
-            let (re_col, im_col) = (
-                Col {
-                    im: Vec::new(),
+            // Step k of a real part is read at its own x.
+            let (axis, complex) = (y.axis, y.kind == ColKind::Complex);
+            let at = |axes: &mut Vec<Axis>, re: Vec<f64>| {
+                let part = Col {
                     kind: ColKind::Real,
-                    ..y.clone()
-                },
-                Col {
-                    re: y.im,
+                    re,
                     im: Vec::new(),
-                    kind: ColKind::Real,
-                    ..y
-                },
-            );
-            let mut k = 0;
-            let re = per_step(axes, &re_col, name, |x, v| {
-                k += 1;
-                Ok(interp(x, v, x_of(k - 1)))
-            })?;
-            if complex {
+                    axis,
+                };
                 let mut k = 0;
-                let im = per_step(axes, &im_col, name, |x, v| {
+                per_step(axes, &part, name, |x, v| {
                     k += 1;
                     Ok(interp(x, v, x_of(k - 1)))
-                })?;
+                })
+            };
+            let re = at(axes, y.re)?;
+            if complex {
+                let im = at(axes, y.im)?;
                 Col {
                     kind: ColKind::Complex,
                     im: im.re,
