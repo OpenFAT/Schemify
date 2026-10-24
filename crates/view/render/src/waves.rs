@@ -438,7 +438,7 @@ fn draw_histogram<P: Painter>(
 
 /// Draws the cursor readout: the head lines of [`readout_head`], the column headings, then
 /// the [`readout_rows`] that fit in `area`, each in its trace's colour.
-pub fn draw_readout<P: Painter>(
+fn draw_readout<P: Painter>(
     p: &mut P,
     area: UiRect,
     waves: &Waves,

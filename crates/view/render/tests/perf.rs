@@ -57,7 +57,6 @@ fn scene_build_100k_primitives() {
             &mut text,
             &state,
             Layer::Main,
-            &[],
             &mut ui,
         );
         // Jitter one pixel per frame, as a drag does, keeping all 100k primitives in view.
@@ -82,7 +81,6 @@ fn scene_build_100k_primitives() {
             &mut text,
             &state,
             Layer::Overlay,
-            &[],
             &mut ui,
         );
         let dt = t0.elapsed().as_secs_f64() * 1e3;

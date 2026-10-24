@@ -30,7 +30,7 @@ use schemify_ui::TextSystem;
 use schemify_ui::parley::PositionedLayoutItem;
 
 use crate::painter::{Chains, Painter, push_rect, rgba};
-pub use crate::tiles::{CanvasCache, PATCH_PAD_PX, TILE_PX, TILES_PER_FRAME, draw_cached};
+pub use crate::tiles::{CanvasCache, PATCH_PAD_PX, TILE_PX, draw_cached};
 use schemify_canvas::*;
 
 /// Reused per-frame buffers and the shaped-label cache (glyphs per distinct string, shared by
@@ -66,7 +66,7 @@ impl std::fmt::Debug for CanvasScratch {
 /// pixels that box touches (level of detail, D39): at a far zoom a row costs a few bit sets
 /// instead of path segments, and below two pixels a stroke and a block look alike. A function
 /// of the zoom and the row only, so a tile, a patch and the whole view draw a row alike.
-pub const LOD_PX: f64 = 2.0;
+const LOD_PX: f64 = 2.0;
 /// Cost units a row drawn as a path or label adds over one culled or drawn as pixels (it is
 /// about that many times slower: path encoding against a few bit sets).
 pub const PATH_COST: usize = 6;
@@ -580,7 +580,7 @@ pub fn draw_prims_in<P: Painter>(
 
 /// The stroke of `style` over a layer `width` logical px wide: `weight × width`, round caps
 /// and joins (a thick zigzag mitres into spikes), dashes and gaps of `2 · dash` px.
-pub fn stroke_of(style: LineStyle, width: f64) -> Stroke {
+fn stroke_of(style: LineStyle, width: f64) -> Stroke {
     assert!(width > 0.0, "zero-width layer");
     let w = width * f64::from(style.weight());
     let stroke = Stroke::new(w).with_caps(Cap::Round).with_join(Join::Round);

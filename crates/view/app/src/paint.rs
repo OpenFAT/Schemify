@@ -92,15 +92,7 @@ pub fn paint<P: Painter>(pic: Picture<'_>, c: &mut Caches, p: &mut P) -> (Option
 /// One layer of a UI's tables.
 fn draw_layer<P: Painter>(p: &mut P, ui: &mut UiView<'_>, layer: Layer, scratch: &mut UiScratch) {
     draw_ui(
-        p,
-        ui.tables,
-        ui.layout,
-        ui.strings,
-        ui.text,
-        ui.state,
-        layer,
-        &[],
-        scratch,
+        p, ui.tables, ui.layout, ui.strings, ui.text, ui.state, layer, scratch,
     );
 }
 

@@ -5,31 +5,15 @@ use vello::Glyph;
 use vello::kurbo::{Affine, BezPath, Rect};
 use vello::peniko::Color;
 
-use schemify_ui::graph::{decimate, tick_label, ticks};
 use schemify_ui::icon::{ICON_BOX, ICON_STROKE, Icon};
 use schemify_ui::math::{MathFonts, MathList, MathPaths, Verb};
 use schemify_ui::parley::{Layout, PositionedLayoutItem};
 use schemify_ui::{
-    Kind, Layer, NO_TEXT, Prop, RowPaint, Shown, Strings, StyleProp, Sym, TextSystem, UiLayout,
-    UiState, UiTables, row_paint, row_style,
+    Kind, Layer, NO_TEXT, Prop, RowPaint, Shown, Strings, StyleProp, TextSystem, UiLayout, UiState,
+    UiTables, row_paint, row_style,
 };
 
 use crate::painter::{Painter, outline, rgba};
-
-/// Columns bound to a `graph` node for one frame (the waveform viewer's hook, D23).
-#[derive(Clone, Copy, Debug)]
-pub struct GraphData<'a> {
-    /// `graph` node id.
-    pub node: Sym,
-    /// Shared x column (ascending).
-    pub x: &'a [f64],
-    /// `(y column, 0xRRGGBBAA)` per trace; each y column is as long as `x`.
-    pub traces: &'a [(&'a [f64], u32)],
-    /// Visible x range.
-    pub x_range: (f64, f64),
-    /// Visible y range.
-    pub y_range: (f64, f64),
-}
 
 /// Reused buffers for UI painting.
 #[derive(Debug, Default)]
@@ -37,10 +21,6 @@ pub struct UiScratch {
     glyphs: Vec<Glyph>,
     coords: Vec<i16>,
     path: BezPath,
-    min: Vec<f32>,
-    max: Vec<f32>,
-    ticks: Vec<f64>,
-    label: Layout<()>,
     images: Vec<vello::peniko::ImageData>,
 }
 
@@ -65,7 +45,6 @@ pub fn draw_ui<P: Painter>(
     text: &mut TextSystem,
     state: &UiState,
     layer: Layer,
-    graphs: &[GraphData<'_>],
     scratch: &mut UiScratch,
 ) {
     let n = &tables.nodes;
@@ -230,11 +209,6 @@ pub fn draw_ui<P: Painter>(
                 scratch,
             );
         }
-        if kind == Kind::Graph
-            && let Some(g) = graphs.iter().find(|g| g.node == id)
-        {
-            draw_graph(p, area, g, fg, text, scratch);
-        }
     }
     if clipped.is_some() {
         p.pop_clip();
@@ -243,7 +217,7 @@ pub fn draw_ui<P: Painter>(
 
 /// Draws an [`Icon`] scaled from its 16-unit box to the largest square inside `area`'s
 /// padding `(x, y)`, centered; strokes are [`ICON_STROKE`] units wide.
-pub fn draw_icon<P: Painter>(
+fn draw_icon<P: Painter>(
     p: &mut P,
     icon: &Icon,
     area: Rect,
@@ -271,7 +245,7 @@ pub fn draw_icon<P: Painter>(
 
 /// Draws prose layout `id` ([`TextSystem::prose`]) with its top-left at `at`: code shades,
 /// rules, images, text runs, then formulas.
-pub fn draw_prose<P: Painter>(
+fn draw_prose<P: Painter>(
     p: &mut P,
     id: u32,
     text: &TextSystem,
@@ -315,7 +289,7 @@ pub fn draw_prose<P: Painter>(
 }
 
 /// Draws every glyph run of a parley layout with its top-left at `(x, y)`.
-pub fn draw_text<P: Painter>(
+pub(crate) fn draw_text<P: Painter>(
     p: &mut P,
     layout: &Layout<()>,
     x: f64,
@@ -454,81 +428,4 @@ fn draw_paths<P: Painter>(
         }
         debug_assert_eq!(pt, paths.pt.len(), "every point drawn");
     }
-}
-
-/// Draws a graph: frame, ticks with labels, and each trace decimated to min/max per pixel
-/// column (so a 10^6-sample trace costs one segment per column).
-pub fn draw_graph<P: Painter>(
-    p: &mut P,
-    area: Rect,
-    g: &GraphData<'_>,
-    fg: Color,
-    text: &mut TextSystem,
-    scratch: &mut UiScratch,
-) {
-    let (x0, x1) = g.x_range;
-    let (y0, y1) = g.y_range;
-    assert!(x0 < x1 && y0 < y1, "empty graph range");
-    let plot = Rect::new(area.x0 + 44.0, area.y0 + 6.0, area.x1 - 8.0, area.y1 - 20.0);
-    if plot.width() < 4.0 || plot.height() < 4.0 {
-        return;
-    }
-    let grid = fg.with_alpha(0.25);
-    let sx = |x: f64| plot.x0 + (x - x0) / (x1 - x0) * plot.width();
-    let sy = |y: f64| plot.y1 - (y - y0) / (y1 - y0) * plot.height();
-    let label = |p: &mut P,
-                 v: f64,
-                 x: f64,
-                 y: f64,
-                 right: bool,
-                 text: &mut TextSystem,
-                 scratch: &mut UiScratch| {
-        let s = tick_label(v);
-        let mut l = std::mem::take(&mut scratch.label);
-        text.shape_into(&s, 10.0, &mut l);
-        let w = f64::from(l.width());
-        let at_x = if right { x - w - 4.0 } else { x - w / 2.0 };
-        draw_text(p, &l, at_x, y, fg, scratch);
-        scratch.label = l;
-    };
-    ticks(x0, x1, 6, &mut scratch.ticks);
-    let xt = std::mem::take(&mut scratch.ticks);
-    for &t in &xt {
-        let x = sx(t).floor() + 0.5;
-        p.fill_rect(Rect::new(x - 0.5, plot.y0, x + 0.5, plot.y1), grid);
-        label(p, t, x, plot.y1 + 3.0, false, text, scratch);
-    }
-    ticks(y0, y1, 5, &mut scratch.ticks);
-    let yt = std::mem::replace(&mut scratch.ticks, xt);
-    for &t in &yt {
-        let y = sy(t).floor() + 0.5;
-        p.fill_rect(Rect::new(plot.x0, y - 0.5, plot.x1, y + 0.5), grid);
-        label(p, t, plot.x0, y - 7.0, true, text, scratch);
-    }
-    let cols = plot.width().floor().clamp(1.0, f64::from(u16::MAX)) as u16;
-    p.push_clip(plot);
-    for &(ys, color) in g.traces {
-        decimate(g.x, ys, x0, x1, cols, &mut scratch.min, &mut scratch.max);
-        let path = &mut scratch.path;
-        path.truncate(0);
-        let mut pen = false;
-        for c in 0..usize::from(cols) {
-            let (lo, hi) = (scratch.min[c], scratch.max[c]);
-            if lo.is_nan() {
-                pen = false;
-                continue;
-            }
-            let x = plot.x0 + c as f64 + 0.5;
-            let (a, b) = (sy(f64::from(lo)), sy(f64::from(hi)));
-            if pen {
-                path.line_to((x, b));
-            } else {
-                path.move_to((x, b));
-                pen = true;
-            }
-            path.line_to((x, a));
-        }
-        p.stroke_path(path, 1.0, rgba(color));
-    }
-    p.pop_clip();
 }

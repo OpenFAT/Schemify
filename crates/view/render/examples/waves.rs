@@ -226,7 +226,6 @@ impl App for Viewer {
                 &mut self.text,
                 &self.state,
                 Layer::Main,
-                &[],
                 &mut self.ui_scratch,
             );
             draw_window(
@@ -246,7 +245,6 @@ impl App for Viewer {
                 &mut self.text,
                 &self.state,
                 Layer::Overlay,
-                &[],
                 &mut self.ui_scratch,
             );
         }
