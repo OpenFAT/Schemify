@@ -5,7 +5,7 @@
 /// bytewise and numerically alike.
 pub const ID_ALPHABET: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
 /// Longest id the reader accepts.
-pub const ID_LEN_MAX: usize = 13;
+pub(crate) const ID_LEN_MAX: usize = 13;
 /// Length of every id this crate generates (30 random bits).
 pub const ID_LEN_NEW: usize = 6;
 /// Draws [`fresh_id`] makes before concluding the caller's id set is full.

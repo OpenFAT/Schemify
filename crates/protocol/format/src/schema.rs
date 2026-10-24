@@ -171,7 +171,7 @@ impl RecordKind {
 /// record before it.
 pub const RANK_INHERIT: u8 = u8::MAX;
 /// Highest rank any record kind has.
-pub const RANK_MAX: u8 = 6;
+pub(crate) const RANK_MAX: u8 = 6;
 /// The one rank whose records have no identity (symbol graphics). Merge treats it as a
 /// single block.
 pub const RANK_POSITIONAL: u8 = 2;
@@ -295,7 +295,7 @@ impl RecordSchema {
     }
 
     /// Returns whether the writer treats attribute `key` as known (written first).
-    pub fn knows_attr(&self, key: &str) -> bool {
+    pub(crate) fn knows_attr(&self, key: &str) -> bool {
         self.open || self.attr(key).is_some()
     }
 }

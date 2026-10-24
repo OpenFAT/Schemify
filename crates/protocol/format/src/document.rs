@@ -243,7 +243,7 @@ impl<'s> Document<'s> {
     }
 
     /// Returns the 1-based source line of record `r`; 0 for records built in memory.
-    pub fn record_line(&self, r: u32) -> u32 {
+    pub(crate) fn record_line(&self, r: u32) -> u32 {
         self.rec_line[r as usize]
     }
 
@@ -299,7 +299,7 @@ impl<'s> Document<'s> {
     }
 
     /// Returns the 1-based source line of attribute `a`; 0 when built in memory.
-    pub fn attr_line(&self, a: u32) -> u32 {
+    pub(crate) fn attr_line(&self, a: u32) -> u32 {
         self.attr_line[a as usize]
     }
 

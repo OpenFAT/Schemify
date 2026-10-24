@@ -15,7 +15,7 @@ use crate::scalar::{CoordError, Orient, is_number, parse_coord};
 use crate::schema::{FileKind, KeyRule, RANK_MAX, RecordKind, Rest, Shape, Ty};
 
 /// Largest file the reader accepts (spec §2, `E021`).
-pub const MAX_FILE_BYTES: usize = 1 << 30;
+pub(crate) const MAX_FILE_BYTES: usize = 1 << 30;
 /// Errors collected before the reader stops looking for more.
 const DIAGNOSTICS_MAX: usize = 64;
 /// UTF-8 byte order mark, rejected (`E028`).

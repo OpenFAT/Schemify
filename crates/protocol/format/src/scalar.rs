@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 
 /// Milli-units per xschem unit: a coordinate `12.5` is stored as `12500` (D33).
-pub const MILLI_PER_UNIT: i32 = 1000;
+pub(crate) const MILLI_PER_UNIT: i32 = 1000;
 
 /// Largest integer part a representable coordinate can have: `2^31 / 1000`, rounded up.
 /// Accumulation stops past it, so the i64 accumulator never overflows.
