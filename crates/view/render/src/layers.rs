@@ -80,6 +80,9 @@ pub(crate) struct FrameLog {
     pub(crate) after: bool,
     /// Inside [`crate::Painter::layer`]: calls belong to the layer, not to the frame.
     pub(crate) recording: bool,
+    /// Inside [`crate::Painter::live_layer`]: the calls are hashed (they name the layer's
+    /// picture), still not the frame's.
+    pub(crate) live: bool,
     /// Frame clips open (outside layer recordings), and how many of them are the top part's
     /// (opened after the first layer draw; the innermost ones, as clips nest).
     pub(crate) depth: u32,
@@ -90,19 +93,20 @@ pub(crate) struct FrameLog {
 }
 
 impl FrameLog {
-    /// Folds one painter call into the frame hash (unless a layer is being recorded).
+    /// Folds one painter call into the frame hash (or a live layer's; a stamped layer's
+    /// recording is not hashed).
     pub(crate) fn call(&mut self, data: impl Hash) {
-        if self.recording {
+        if self.recording && !self.live {
             return;
         }
-        self.after |= !self.draws.is_empty();
+        self.after |= !self.recording && !self.draws.is_empty();
         data.hash(&mut self.hash);
     }
 
-    /// Like [`FrameLog::call`] for a call that paints nothing over a layer (a layer draw, the
-    /// end of a clip): hashed, but it does not count as painting after the layers.
+    /// Like [`FrameLog::call`] for a call that paints nothing over a layer (a layer draw, a
+    /// clip): hashed, but it does not count as painting after the layers.
     pub(crate) fn mark(&mut self, data: impl Hash) {
-        if !self.recording {
+        if !self.recording || self.live {
             data.hash(&mut self.hash);
         }
     }
@@ -155,6 +159,22 @@ impl Layers {
             self.retired.extend(old);
         }
         &mut self.slots[slot]
+    }
+
+    /// Keeps `scene`, a live layer's recording whose calls hash to `hash`, in `slot` (sized by
+    /// the caller this frame): rasterized again only when the picture or its texture changed.
+    /// Returns the stamp that names the picture.
+    pub(crate) fn live(&mut self, slot: usize, scene: Scene, hash: u64) -> u64 {
+        let stamp = hash.max(1); // 0 is the "no layer" tag
+        let l = &mut self.slots[slot];
+        assert!(l.image.is_some(), "sized before it is recorded");
+        if l.stamp != stamp || l.texture.is_none() {
+            l.dirty = true;
+            l.stamp = stamp;
+            l.patches.clear();
+        }
+        l.scene = scene;
+        stamp
     }
 
     /// Rasterizes every layer recorded since the last call into its texture (vello renders it

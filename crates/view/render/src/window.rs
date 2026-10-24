@@ -8,7 +8,6 @@ use std::sync::Arc;
 use accesskit::{Action, TreeUpdate};
 use vello::kurbo::Affine;
 use vello::peniko::Color;
-use vello::util::{RenderContext, RenderSurface};
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, wgpu};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize};
@@ -108,31 +107,128 @@ impl From<accesskit_winit::Event> for UserEvent {
     }
 }
 
+/// The window's GPU: its surface, the device that presents to it, vello's target and renderer.
 struct Gpu {
-    cx: RenderContext,
-    surface: RenderSurface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    /// vello renders here (a compute shader cannot write most surface textures); each frame is
+    /// blitted from it, and a composed frame reuses it as the last vello frame (D39).
+    target: wgpu::TextureView,
+    blitter: wgpu::util::TextureBlitter,
     renderer: Renderer,
 }
 
 impl Gpu {
+    /// Opens the window's surface on the fastest adapter that presents to it: a discrete GPU
+    /// before an integrated one (`WGPU_ADAPTER_NAME` and `WGPU_POWER_PREF` override, as in
+    /// wgpu), with one frame in flight and mailbox presentation where the surface offers it
+    /// (an input shows at the next vertical blank instead of two frames later; D39). Logs the
+    /// adapter once, so a report names the GPU that ran.
     async fn new(window: Arc<Window>, w: u32, h: u32) -> Result<Gpu, String> {
-        let mut cx = RenderContext::new();
-        let surface = cx
-            .create_surface(window, w, h, wgpu::PresentMode::AutoVsync)
+        assert!(w > 0 && h > 0, "a surface has a size");
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let surface = instance.create_surface(window).map_err(|e| e.to_string())?;
+        let named = wgpu::util::initialize_adapter_from_env(&instance, Some(&surface)).await;
+        let adapter = match named {
+            Ok(a) => a,
+            Err(_) => instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::from_env()
+                        .unwrap_or(wgpu::PowerPreference::HighPerformance),
+                    compatible_surface: Some(&surface),
+                    ..Default::default()
+                })
+                .await
+                .map_err(|e| e.to_string())?,
+        };
+        let info = adapter.get_info();
+        eprintln!(
+            "gpu: {} ({:?}, {:?})",
+            info.name, info.device_type, info.backend
+        );
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                required_features: adapter.features()
+                    & (wgpu::Features::CLEAR_TEXTURE | wgpu::Features::PIPELINE_CACHE),
+                ..Default::default()
+            })
             .await
             .map_err(|e| e.to_string())?;
-        let device = &cx.devices[surface.dev_id].device;
+        let caps = surface.get_capabilities(&adapter);
+        let format = caps
+            .formats
+            .iter()
+            .copied()
+            .find(|f| {
+                matches!(
+                    f,
+                    wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
+                )
+            })
+            .ok_or("no 8-bit surface format")?;
+        let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+            wgpu::PresentMode::Mailbox
+        } else {
+            wgpu::PresentMode::Fifo
+        };
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: w,
+            height: h,
+            present_mode,
+            color_space: wgpu::SurfaceColorSpace::Auto,
+            desired_maximum_frame_latency: 1,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            view_formats: vec![],
+        };
+        surface.configure(&device, &config);
         let options = RendererOptions {
             antialiasing_support: AaSupport::area_only(),
             ..RendererOptions::default()
         };
-        let renderer = Renderer::new(device, options).map_err(|e| e.to_string())?;
+        let renderer = Renderer::new(&device, options).map_err(|e| e.to_string())?;
         Ok(Gpu {
-            cx,
+            target: target(&device, w, h),
+            blitter: wgpu::util::TextureBlitter::new(&device, format),
+            device,
+            queue,
             surface,
+            config,
             renderer,
         })
     }
+
+    /// Sizes the surface and vello's target to `w × h` device px (both non-zero).
+    fn resize(&mut self, w: u32, h: u32) {
+        assert!(w > 0 && h > 0, "a surface has a size");
+        (self.config.width, self.config.height) = (w, h);
+        self.surface.configure(&self.device, &self.config);
+        self.target = target(&self.device, w, h);
+    }
+}
+
+/// A `w × h` `Rgba8Unorm` texture vello renders into and the blitter samples.
+fn target(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("vello target"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 struct Shell<A: App> {
@@ -162,6 +258,12 @@ struct Shell<A: App> {
     tick: bool,
     /// The IME area last given to the window ([`App::ime_area`]).
     ime: Option<(f32, f32, f32, f32)>,
+    /// `SCHEMIFY_FRAME_LOG=1`: log each frame's input-to-present time on stderr.
+    #[cfg(not(target_arch = "wasm32"))]
+    frame_log: bool,
+    /// When the oldest input of the batch a frame answers arrived.
+    #[cfg(not(target_arch = "wasm32"))]
+    input_at: Option<std::time::Instant>,
 }
 
 /// Opens a window and runs `app` until it closes. Native: blocks. Web (wasm32): attaches a
@@ -201,6 +303,10 @@ pub fn run<A: App + 'static>(title: &str, mut app: A) -> Result<(), RunError> {
         access_dirty: true,
         tick: false,
         ime: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        frame_log: std::env::var_os("SCHEMIFY_FRAME_LOG").is_some_and(|v| v != "0"),
+        #[cfg(not(target_arch = "wasm32"))]
+        input_at: None,
     };
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -242,9 +348,8 @@ impl<A: App> Shell<A> {
         if size.width == 0 || size.height == 0 {
             return;
         }
-        if gpu.surface.config.width != size.width || gpu.surface.config.height != size.height {
-            gpu.cx
-                .resize_surface(&mut gpu.surface, size.width, size.height);
+        if (gpu.config.width, gpu.config.height) != (size.width, size.height) {
+            gpu.resize(size.width, size.height);
         }
         let viewport = logical(size.width, size.height, self.scale);
         self.scene.reset();
@@ -256,24 +361,22 @@ impl<A: App> Shell<A> {
             layers: Some(&mut self.layers),
         };
         self.app.paint(&mut painter, viewport);
-        let dev = &gpu.cx.devices[gpu.surface.dev_id];
         if let Err(e) = self
             .layers
-            .raster(&dev.device, &dev.queue, &mut gpu.renderer)
+            .raster(&gpu.device, &gpu.queue, &mut gpu.renderer)
         {
             eprintln!("render layer: {e}");
         }
-        let frame = match gpu.surface.surface.get_current_texture() {
+        let frame = match gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                gpu.cx.configure_surface(&gpu.surface);
+                gpu.surface.configure(&gpu.device, &gpu.config);
                 window.request_redraw();
                 return;
             }
             _ => return,
         };
-        let dev = &gpu.cx.devices[gpu.surface.dev_id];
         // D39: a frame that only moved its cached layers (a pan, a zoom stand-in) skips vello:
         // the target still holds the last vello frame, and the layers are quads over it.
         let reuse = self.layers.reusable(size.width, size.height);
@@ -285,10 +388,10 @@ impl<A: App> Shell<A> {
                 antialiasing_method: AaConfig::Area,
             };
             if let Err(e) = gpu.renderer.render_to_texture(
-                &dev.device,
-                &dev.queue,
+                &gpu.device,
+                &gpu.queue,
                 &self.scene,
-                &gpu.surface.target_view,
+                &gpu.target,
                 &params,
             ) {
                 eprintln!("render: {e}");
@@ -296,7 +399,7 @@ impl<A: App> Shell<A> {
             }
             self.layers.rendered(size.width, size.height);
         }
-        let mut encoder = dev
+        let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("blit"),
@@ -304,22 +407,26 @@ impl<A: App> Shell<A> {
         let target = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        gpu.surface
-            .blitter
-            .copy(&dev.device, &mut encoder, &gpu.surface.target_view, &target);
+        gpu.blitter
+            .copy(&gpu.device, &mut encoder, &gpu.target, &target);
         if reuse {
             self.layers.compose(
-                &dev.device,
-                &dev.queue,
+                &gpu.device,
+                &gpu.queue,
                 &mut encoder,
                 &target,
-                gpu.surface.format,
+                gpu.config.format,
                 (size.width, size.height),
             );
         }
-        dev.queue.submit([encoder.finish()]);
+        gpu.queue.submit([encoder.finish()]);
         window.pre_present_notify();
-        dev.queue.present(frame);
+        gpu.queue.present(frame);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (true, Some(t)) = (self.frame_log, self.input_at.take()) {
+            let ms = t.elapsed().as_secs_f64() * 1e3;
+            eprintln!("frame: input to present {ms:.2} ms, vello {}", !reuse);
+        }
         // Web: a browser can take every WebGPU call and still show nothing (web spec §7).
         #[cfg(target_arch = "wasm32")]
         if !std::mem::replace(&mut self.probed, true) {
@@ -459,9 +566,8 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
                 match Gpu::new(win, w, h).await {
                     Ok(g) => {
                         let lost = proxy.clone();
-                        let device = &g.cx.devices[g.surface.dev_id].device;
                         // `Destroyed` is our own drop of the device after a fallback.
-                        device.set_device_lost_callback(move |reason, msg| {
+                        g.device.set_device_lost_callback(move |reason, msg| {
                             if reason != wgpu::DeviceLostReason::Destroyed {
                                 let why = format!("device lost ({msg})");
                                 let _ = lost.send_event(UserEvent::NoGpu(why));
@@ -531,6 +637,8 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
         }
         let s = self.scale;
         let at = self.pointer;
+        #[cfg(not(target_arch = "wasm32"))]
+        let had_none = self.events.is_empty();
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(_) => {
@@ -600,6 +708,11 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
             }
             _ => {}
         }
+        // The batch's oldest input stamps the frame that answers it (`SCHEMIFY_FRAME_LOG`).
+        #[cfg(not(target_arch = "wasm32"))]
+        if had_none && !self.events.is_empty() {
+            self.input_at = Some(std::time::Instant::now());
+        }
     }
 
     fn new_events(&mut self, _: &ActiveEventLoop, cause: StartCause) {
@@ -624,6 +737,11 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
                     );
                 }
                 self.ime = ime;
+            } else {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.input_at = None; // no frame answers this batch
+                }
             }
             self.events.clear();
         }

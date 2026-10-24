@@ -6,6 +6,7 @@
 //! canvas that only moved costs one image draw instead of re-encoding every primitive
 //! (`canvas::draw_cached`, D39).
 
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use vello::kurbo::{Affine, BezPath, PathEl, Rect, Shape, Stroke};
@@ -130,6 +131,25 @@ pub trait Painter {
     ) -> bool {
         let _ = (slot, stamp, at, clip, stretch);
         false
+    }
+
+    /// Paints `draw` (logical px, as usual) through raster layer `slot`, which follows its own
+    /// picture: recorded every frame, rasterized again only when its calls changed, and drawn
+    /// as an image over `r`, which `draw` must cover opaquely (a composed frame keeps the
+    /// previous frame around it). Chrome that changes on every pointer move (the status bar)
+    /// goes through this, so such a frame composes without vello (D39). A painter without
+    /// layers paints `draw` directly.
+    ///
+    /// # Panics
+    ///
+    /// Panics on `slot ≥ LAYER_SLOTS`.
+    fn live_layer(&mut self, slot: usize, r: Rect, draw: impl FnOnce(&mut Self))
+    where
+        Self: Sized,
+    {
+        assert!(slot < LAYER_SLOTS, "bad layer slot");
+        let _ = r;
+        draw(self);
     }
 
     /// Draws `image` (premultiplied RGBA8, as prose images are) scaled into `r`. A backend
@@ -421,7 +441,11 @@ impl Painter for ScenePainter<'_> {
     }
 
     fn push_clip(&mut self, r: Rect) {
-        self.log((5u8, rect_bits(r)));
+        // A clip paints nothing: hashed, but not something painted over a layer (the canvas
+        // opens one around its tile draws; a live layer drawn before them must stay composable).
+        if let Some(l) = self.layers.as_deref_mut() {
+            l.log.mark((5u8, rect_bits(r)));
+        }
         self.scene.push_clip_layer(Fill::NonZero, self.base, &r);
         if let Some(l) = self.layers.as_deref_mut().filter(|l| !l.log.recording) {
             // A clip opened over the layers is the top part's too.
@@ -503,7 +527,7 @@ impl Painter for ScenePainter<'_> {
         };
         let mut scene = std::mem::take(&mut layers.sized(slot, w, h).scene);
         scene.reset();
-        let scene = self.record(scene, draw);
+        let (scene, _) = self.record(scene, false, draw);
         let l = &mut self.layers.as_deref_mut().expect("checked above").slots[slot];
         l.scene = scene;
         l.stamp = stamp;
@@ -529,10 +553,37 @@ impl Painter for ScenePainter<'_> {
             w > 0 && h > 0 && x + w <= image.width && y + h <= image.height,
             "patch outside its layer"
         );
-        let scene = self.record(Scene::new(), draw);
+        let (scene, _) = self.record(Scene::new(), false, draw);
         let layers = self.layers.as_deref_mut().expect("checked above");
         layers.slots[slot].patches.push((scene, [x, y, w, h]));
         true
+    }
+
+    fn live_layer(&mut self, slot: usize, r: Rect, draw: impl FnOnce(&mut Self)) {
+        assert!(slot < LAYER_SLOTS, "bad layer slot");
+        let Some(layers) = self.layers.as_deref_mut() else {
+            return draw(self);
+        };
+        // The layer holds r's device pixels, whole ones; the recording puts r's top-left at
+        // the layer's origin and hashes its calls, which name the picture.
+        let dev = self.base.transform_rect_bbox(r);
+        let (x0, y0) = (dev.x0.floor(), dev.y0.floor());
+        let (w, h) = ((dev.x1.ceil() - x0) as u32, (dev.y1.ceil() - y0) as u32);
+        if w == 0 || h == 0 {
+            return;
+        }
+        let mut scene = std::mem::take(&mut layers.sized(slot, w, h).scene);
+        scene.reset();
+        let base = self.base;
+        self.base = Affine::translate((-x0, -y0)) * base;
+        let (scene, hash) = self.record(scene, true, draw);
+        self.base = base;
+        let layers = self.layers.as_deref_mut().expect("checked above");
+        let stamp = layers.live(slot, scene, hash);
+        let s = self.device_scale();
+        let at = Affine::translate((x0 / s, y0 / s));
+        let drawn = self.draw_layer(slot, stamp, at, r, None);
+        assert!(drawn, "a live layer is drawn the frame it is recorded");
     }
 
     fn draw_layer(
@@ -577,20 +628,34 @@ impl Painter for ScenePainter<'_> {
 }
 
 impl ScenePainter<'_> {
-    /// Paints `draw` into `scene` (swapped in for the frame scene) and returns it. The calls
-    /// belong to a layer (its stamp names them), not to the frame log.
-    fn record(&mut self, mut scene: Scene, draw: impl FnOnce(&mut Self)) -> Scene {
+    /// Paints `draw` into `scene` (swapped in for the frame scene) and returns it with the hash
+    /// of its calls. The calls belong to a layer, not to the frame log: a stamped layer's are
+    /// not hashed at all (its stamp names them), a `live` layer's are hashed with the base
+    /// transform, so the same picture at the same place hashes the same from frame to frame.
+    fn record(
+        &mut self,
+        mut scene: Scene,
+        live: bool,
+        draw: impl FnOnce(&mut Self),
+    ) -> (Scene, u64) {
         let layers = self
             .layers
             .as_deref_mut()
             .expect("only a painter with layers records");
-        layers.log.recording = true;
+        assert!(!layers.log.recording, "recordings do not nest");
+        let frame = std::mem::take(&mut layers.log.hash);
+        (layers.log.recording, layers.log.live) = (true, live);
+        self.base
+            .as_coeffs()
+            .map(f64::to_bits)
+            .hash(&mut layers.log.hash);
         std::mem::swap(self.scene, &mut scene);
         draw(self);
         std::mem::swap(self.scene, &mut scene);
         let layers = self.layers.as_deref_mut().expect("checked above");
-        layers.log.recording = false;
-        scene
+        (layers.log.recording, layers.log.live) = (false, false);
+        let hash = std::mem::replace(&mut layers.log.hash, frame).finish();
+        (scene, hash)
     }
 }
 

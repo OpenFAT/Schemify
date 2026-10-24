@@ -611,3 +611,134 @@ fn patched_layers_equal_recorded_layers() {
         );
     }
 }
+
+/// A live layer (`Painter::live_layer`: the status bar, whose text changes on every pointer
+/// move) lets a frame that changed nothing else compose without vello, equal to vello's frame
+/// of the new picture; a change outside it still goes through vello.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn live_layers_compose_without_vello() {
+    use schemify_render::Layers;
+
+    let mut g = gpu();
+    let size = (320u32, 200u32);
+    let target = texture(
+        &g,
+        size,
+        wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+    );
+    let surface = texture(
+        &g,
+        size,
+        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+    );
+    let (target_view, surface_view) = (
+        target.create_view(&Default::default()),
+        surface.create_view(&Default::default()),
+    );
+    let blitter = wgpu::util::TextureBlitter::new(&g.device, wgpu::TextureFormat::Rgba8Unorm);
+    let (mut layers, mut scene) = (Layers::default(), Scene::new());
+    let canvas = Rect::new(10.0, 10.0, 310.0, 170.0);
+    let strip = Rect::new(0.0, 174.0, 320.0, 200.0);
+    // One window frame: the chrome, a canvas stand-in (slot 0, recorded once), then the status
+    // strip as a live layer whose mark sits `k` steps to the right; vello or composed, as the
+    // window does.
+    let mut frame = |k: u32, chrome: Color, full: bool| -> (bool, Vec<u8>) {
+        scene.reset();
+        layers.begin_frame(Affine::IDENTITY);
+        let mut p = ScenePainter {
+            scene: &mut scene,
+            base: Affine::IDENTITY,
+            layers: Some(&mut layers),
+        };
+        p.fill_rect(Rect::new(0.0, 0.0, 320.0, 200.0), chrome);
+        if !p.holds_layer(0, 7) {
+            p.layer(0, 7, 300, 160, |p| {
+                p.fill_rect(
+                    Rect::new(0.0, 0.0, 300.0, 160.0),
+                    Color::from_rgba8(30, 30, 60, 255),
+                );
+                p.fill_rect(
+                    Rect::new(40.0, 40.0, 120.0, 90.0),
+                    Color::from_rgba8(200, 80, 80, 255),
+                );
+            });
+        }
+        p.push_clip(canvas);
+        p.draw_layer(0, 7, Affine::translate((10.0, 10.0)), canvas, None);
+        p.pop_clip();
+        p.live_layer(7, strip, |p| {
+            p.fill_rect(strip, Color::from_rgba8(217, 217, 217, 255));
+            let x = 8.0 + 9.0 * f64::from(k);
+            p.fill_rect(Rect::new(x, 180.0, x + 6.0, 194.0), Color::BLACK);
+        });
+        layers
+            .raster(&g.device, &g.queue, &mut g.renderer)
+            .expect("raster");
+        let reuse = layers.reusable(size.0, size.1) && !full;
+        if !reuse {
+            let params = RenderParams {
+                base_color: Color::BLACK,
+                width: size.0,
+                height: size.1,
+                antialiasing_method: AaConfig::Area,
+            };
+            g.renderer
+                .render_to_texture(&g.device, &g.queue, &scene, &target_view, &params)
+                .expect("render");
+            layers.rendered(size.0, size.1);
+        }
+        let mut enc = g.device.create_command_encoder(&Default::default());
+        blitter.copy(&g.device, &mut enc, &target_view, &surface_view);
+        if reuse {
+            let format = wgpu::TextureFormat::Rgba8Unorm;
+            layers.compose(&g.device, &g.queue, &mut enc, &surface_view, format, size);
+        }
+        g.queue.submit([enc.finish()]);
+        (reuse, read(&g, &surface))
+    };
+    let gray = Color::from_rgba8(60, 60, 60, 255);
+    let (reused, _) = frame(0, gray, false);
+    assert!(!reused, "the first frame goes through vello");
+    for k in 1..4 {
+        let (reused, composed) = frame(k, gray, false);
+        assert!(
+            reused,
+            "a frame that changed only its live layer composes (step {k})"
+        );
+        let (_, full) = frame(k, gray, true);
+        let (mean, bad) = diff_px(&composed, &full);
+        println!(
+            "live layer step {k}: composed vs vello mean |Δ| {mean:.4}, {bad} pixels off by > 2"
+        );
+        if bad != 0 {
+            let (mut bb, mut n) = ([u32::MAX, u32::MAX, 0, 0], 0);
+            for (i, (p, q)) in composed.chunks_exact(4).zip(full.chunks_exact(4)).enumerate() {
+                if p.iter().zip(q).any(|(a, b)| a.abs_diff(*b) > 2) {
+                    let (x, y) = (i as u32 % size.0, i as u32 / size.0);
+                    bb = [bb[0].min(x), bb[1].min(y), bb[2].max(x), bb[3].max(y)];
+                    n += 1;
+                }
+            }
+            let at = |px: &[u8], x: usize, y: usize| px[4 * (y * size.0 as usize + x)..][..4].to_vec();
+            println!(
+                "diff bbox {bb:?} ({n} px); (100,100) composed {:?} full {:?}; (20,187) composed {:?} full {:?}; (5,5) composed {:?} full {:?}",
+                at(&composed, 100, 100), at(&full, 100, 100), at(&composed, 20, 187), at(&full, 20, 187), at(&composed, 5, 5), at(&full, 5, 5)
+            );
+        }
+        assert_eq!(bad, 0, "the composed frame differs from vello's");
+        // Negative space: the composed frame shows the new mark, not the last vello frame's.
+        let (_, stale) = frame(k - 1, gray, true);
+        let (_, moved) = diff_px(&composed, &stale);
+        assert!(
+            moved > 50,
+            "the mark moved in the composed frame ({moved} px differ)"
+        );
+        frame(k, gray, true); // vello's frame of this step again: the next step may compose
+    }
+    // Negative space: a change outside the live layer is rendered by vello.
+    let (reused, _) = frame(3, Color::from_rgba8(61, 60, 60, 255), false);
+    assert!(!reused, "changed chrome is rendered by vello");
+}

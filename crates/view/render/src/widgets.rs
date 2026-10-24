@@ -1,5 +1,5 @@
-//! Paints `ui_layout` rows: backgrounds, borders, text, indicators, and the `math` and `graph`
-//! widgets. Reads the UI tables; writes only painter calls.
+//! Paints `ui_layout` rows: backgrounds, borders, text, indicators, and the `math`
+//! widget. Reads the UI tables; writes only painter calls.
 
 use vello::Glyph;
 use vello::kurbo::{Affine, BezPath, Rect};
@@ -13,6 +13,7 @@ use schemify_ui::{
     UiTables, row_paint, row_style,
 };
 
+use crate::layers::LAYER_SLOTS;
 use crate::painter::{Painter, outline, rgba};
 
 /// Reused buffers for UI painting.
@@ -34,6 +35,10 @@ pub(crate) fn rect(r: schemify_ui::Rect) -> Rect {
     )
 }
 
+/// Raster layer slot of the status bar ([`Kind::Status`], a [`Painter::live_layer`]); the
+/// canvas atlas is slot 0.
+pub const STATUS_SLOT: usize = LAYER_SLOTS - 1;
+
 /// Paints the rows of one layer. Call with [`Layer::Main`], draw the canvas into the canvas
 /// row's rect, then call with [`Layer::Overlay`] so popups cover the schematic.
 #[allow(clippy::too_many_arguments)]
@@ -52,7 +57,9 @@ pub fn draw_ui<P: Painter>(
     assert_eq!(layout.clip().len(), layout.len());
     // Rows inside a scroll pane are clipped to it; consecutive rows share one clip layer.
     let mut clipped: Option<schemify_ui::Rect> = None;
-    for r in layout.rows(layer) {
+    let rows = layout.rows(layer);
+    let mut r = rows.start;
+    while r < rows.end {
         let clip = layout.clip()[r];
         if clipped != Some(clip).filter(|c| *c != schemify_ui::NO_CLIP) {
             if clipped.take().is_some() {
@@ -65,153 +72,188 @@ pub fn draw_ui<P: Painter>(
         }
         let vis = layout.rect()[r].intersect(&clip);
         if vis.w <= 0.0 || vis.h <= 0.0 {
+            r += 1;
             continue; // scrolled out of view
         }
         let node = layout.node()[r];
-        let i = node as usize;
-        let shown = layout.shown()[r];
-        let kind = n.kind()[i];
-        let id = n.id()[i];
-        let style = |prop| row_style(tables, layout.title_style(), node, shown, prop);
-        let area = rect(layout.rect()[r]);
-        let RowPaint { bg, fg } = row_paint(tables, layout, strings, state, r);
-        let fg = rgba(fg);
-        if bg & 0xff != 0 && kind != Kind::Canvas {
-            p.fill_rect(area, rgba(bg));
-        }
-        let border = style(StyleProp::Border);
-        if border > 0 {
-            let w = f64::from(border);
-            let color = rgba(style(StyleProp::BorderColor));
-            outline(p, &mut scratch.path, area.inset(-w / 2.0), w, color);
-        }
-        let pad = f64::from(style(StyleProp::Pad));
-        let indent = f64::from(layout.indent()[r]);
-        if kind == Kind::Separator {
-            let y = (area.y0 + area.y1) / 2.0;
-            p.fill_rect(
-                Rect::new(area.x0 + 2.0, y.floor(), area.x1 - 2.0, y.floor() + 1.0),
-                rgba(style(StyleProp::Fg)),
-            );
+        if n.kind()[node as usize] == Kind::Status {
+            // The status bar shows the pointer's coordinates, so it changes on every pointer
+            // move: through a live layer such a frame composes without vello (D39). Its rows
+            // follow it (pre-order) and open no scroll clip.
+            let end = n.end()[node as usize];
+            let last = (r + 1..rows.end)
+                .find(|&k| !(node + 1..end).contains(&layout.node()[k]))
+                .unwrap_or(rows.end);
+            let area = rect(layout.rect()[r]);
+            p.live_layer(STATUS_SLOT, area, |p| {
+                for k in r..last {
+                    draw_row(p, tables, layout, strings, text, state, scratch, k);
+                }
+            });
+            r = last;
             continue;
         }
-        let area_kind = kind == Kind::TextArea;
-        let editing = matches!(kind, Kind::TextInput | Kind::TextArea) && state.focus() == id;
-        let label = layout.label()[r];
-        let pad_y = f64::from(style(StyleProp::PadY));
-        // A text area taller than its box scrolls inside itself, clipped to the box.
-        let scrolled = if area_kind {
-            let max = schemify_ui::area_scroll_max(tables, layout, text, state, r);
-            p.push_clip(area);
-            f64::from(state.scroll_of(id).min(max))
-        } else {
-            0.0
-        };
-        if editing && let Some(ed) = state.editor().and_then(|e| e.try_layout()) {
-            let y = if area_kind {
-                area.y0 + pad_y - scrolled
-            } else {
-                area.y0 + (area.height() - f64::from(ed.height())) / 2.0
-            };
-            let (x, w) = (area.x0 + pad, f64::from(ed.width()));
-            draw_text(p, ed, x, y, fg, scratch);
-            if let Some(c) = state.editor().and_then(|e| e.cursor_geometry(1.0)) {
-                p.fill_rect(Rect::new(x + c.x0, y + c.y0, x + c.x0 + 1.0, y + c.y1), fg);
-            }
-            debug_assert!(w >= 0.0);
-        } else if label != NO_TEXT {
-            let l = text.layout(label);
-            let y = if area_kind {
-                area.y0 + pad_y - scrolled
-            } else {
-                area.y0 + (area.height() - f64::from(l.height())) / 2.0
-            };
-            let x = match kind {
-                Kind::Checkbox => {
-                    area.x0 + pad + f64::from(l.height()) + f64::from(style(StyleProp::Gap))
-                }
-                _ => area.x0 + pad + indent,
-            };
-            draw_text(p, l, x, y, fg, scratch);
-        }
-        if area_kind {
-            p.pop_clip();
-        }
-        let accel = layout.accel()[r];
-        if accel != NO_TEXT {
-            let l = text.layout(accel);
-            let y = area.y0 + (area.height() - f64::from(l.height())) / 2.0;
-            let color = rgba(style(StyleProp::AccelFg));
-            draw_text(
-                p,
-                l,
-                area.x1 - pad - f64::from(l.width()),
-                y,
-                color,
-                scratch,
-            );
-        }
-        let icon = layout.icon()[r];
-        if icon != u32::MAX {
-            draw_icon(p, text.icon_paths(icon), area, (pad, pad_y), fg, scratch);
-        }
-        if shown == Shown::Cascade || (kind == Kind::Dropdown && shown == Shown::Normal) {
-            let (cx, cy) = (area.x1 - pad - 4.0, (area.y0 + area.y1) / 2.0);
-            let path = &mut scratch.path;
-            path.truncate(0);
-            if kind == Kind::Dropdown {
-                path.move_to((cx - 4.0, cy - 2.0));
-                path.line_to((cx + 4.0, cy - 2.0));
-                path.line_to((cx, cy + 3.0));
-            } else {
-                path.move_to((cx - 3.0, cy - 4.0));
-                path.line_to((cx + 2.0, cy));
-                path.line_to((cx - 3.0, cy + 4.0));
-            }
-            path.close_path();
-            p.fill_path(path, fg);
-        }
-        let checkable =
-            !n.prop(Prop::Checked)[i].is_none() && matches!(kind, Kind::Item | Kind::Checkbox);
-        if checkable {
-            let size = 9.0;
-            let x = area.x0 + pad;
-            let y = ((area.y0 + area.y1) / 2.0 - size / 2.0).floor();
-            let b = Rect::new(x, y, x + size, y + size);
-            let path = &mut scratch.path;
-            path.truncate(0);
-            if style(StyleProp::Radius) > 0 {
-                path.extend(vello::kurbo::Shape::path_elements(
-                    &vello::kurbo::Circle::new(b.center(), size / 2.0),
-                    0.1,
-                ));
-            } else {
-                path.extend(vello::kurbo::Shape::path_elements(&b.inset(-0.5), 0.1));
-            }
-            p.stroke_path(path, 1.0, fg);
-            if n.is_checked(strings, node) {
-                p.fill_rect(b.inset(-2.0), fg);
-            }
-        }
-        if kind == Kind::Math && layout.math()[r] != u32::MAX {
-            let list = text.math_list(layout.math()[r]);
-            let at =
-                Affine::translate((area.x0 + pad, area.y0 + f64::from(style(StyleProp::PadY))));
-            draw_math(p, list, text.math_fonts(), at, fg, scratch);
-        }
-        if kind == Kind::Prose && layout.prose()[r] != u32::MAX {
-            draw_prose(
-                p,
-                layout.prose()[r],
-                text,
-                (area.x0 + pad, area.y0 + pad_y),
-                fg,
-                scratch,
-            );
-        }
+        draw_row(p, tables, layout, strings, text, state, scratch, r);
+        r += 1;
     }
     if clipped.is_some() {
         p.pop_clip();
+    }
+}
+
+/// Paints row `r` of the layout: background, border, text, indicators and its widget.
+#[allow(clippy::too_many_arguments)]
+fn draw_row<P: Painter>(
+    p: &mut P,
+    tables: &UiTables,
+    layout: &UiLayout,
+    strings: &Strings,
+    text: &mut TextSystem,
+    state: &UiState,
+    scratch: &mut UiScratch,
+    r: usize,
+) {
+    let n = &tables.nodes;
+    let node = layout.node()[r];
+    let i = node as usize;
+    let shown = layout.shown()[r];
+    let kind = n.kind()[i];
+    let id = n.id()[i];
+    let style = |prop| row_style(tables, layout.title_style(), node, shown, prop);
+    let area = rect(layout.rect()[r]);
+    let RowPaint { bg, fg } = row_paint(tables, layout, strings, state, r);
+    let fg = rgba(fg);
+    if bg & 0xff != 0 && kind != Kind::Canvas {
+        p.fill_rect(area, rgba(bg));
+    }
+    let border = style(StyleProp::Border);
+    if border > 0 {
+        let w = f64::from(border);
+        let color = rgba(style(StyleProp::BorderColor));
+        outline(p, &mut scratch.path, area.inset(-w / 2.0), w, color);
+    }
+    let pad = f64::from(style(StyleProp::Pad));
+    let indent = f64::from(layout.indent()[r]);
+    if kind == Kind::Separator {
+        let y = (area.y0 + area.y1) / 2.0;
+        p.fill_rect(
+            Rect::new(area.x0 + 2.0, y.floor(), area.x1 - 2.0, y.floor() + 1.0),
+            rgba(style(StyleProp::Fg)),
+        );
+        return;
+    }
+    let area_kind = kind == Kind::TextArea;
+    let editing = matches!(kind, Kind::TextInput | Kind::TextArea) && state.focus() == id;
+    let label = layout.label()[r];
+    let pad_y = f64::from(style(StyleProp::PadY));
+    // A text area taller than its box scrolls inside itself, clipped to the box.
+    let scrolled = if area_kind {
+        let max = schemify_ui::area_scroll_max(tables, layout, text, state, r);
+        p.push_clip(area);
+        f64::from(state.scroll_of(id).min(max))
+    } else {
+        0.0
+    };
+    if editing && let Some(ed) = state.editor().and_then(|e| e.try_layout()) {
+        let y = if area_kind {
+            area.y0 + pad_y - scrolled
+        } else {
+            area.y0 + (area.height() - f64::from(ed.height())) / 2.0
+        };
+        let (x, w) = (area.x0 + pad, f64::from(ed.width()));
+        draw_text(p, ed, x, y, fg, scratch);
+        if let Some(c) = state.editor().and_then(|e| e.cursor_geometry(1.0)) {
+            p.fill_rect(Rect::new(x + c.x0, y + c.y0, x + c.x0 + 1.0, y + c.y1), fg);
+        }
+        debug_assert!(w >= 0.0);
+    } else if label != NO_TEXT {
+        let l = text.layout(label);
+        let y = if area_kind {
+            area.y0 + pad_y - scrolled
+        } else {
+            area.y0 + (area.height() - f64::from(l.height())) / 2.0
+        };
+        let x = match kind {
+            Kind::Checkbox => {
+                area.x0 + pad + f64::from(l.height()) + f64::from(style(StyleProp::Gap))
+            }
+            _ => area.x0 + pad + indent,
+        };
+        draw_text(p, l, x, y, fg, scratch);
+    }
+    if area_kind {
+        p.pop_clip();
+    }
+    let accel = layout.accel()[r];
+    if accel != NO_TEXT {
+        let l = text.layout(accel);
+        let y = area.y0 + (area.height() - f64::from(l.height())) / 2.0;
+        let color = rgba(style(StyleProp::AccelFg));
+        draw_text(
+            p,
+            l,
+            area.x1 - pad - f64::from(l.width()),
+            y,
+            color,
+            scratch,
+        );
+    }
+    let icon = layout.icon()[r];
+    if icon != u32::MAX {
+        draw_icon(p, text.icon_paths(icon), area, (pad, pad_y), fg, scratch);
+    }
+    if shown == Shown::Cascade || (kind == Kind::Dropdown && shown == Shown::Normal) {
+        let (cx, cy) = (area.x1 - pad - 4.0, (area.y0 + area.y1) / 2.0);
+        let path = &mut scratch.path;
+        path.truncate(0);
+        if kind == Kind::Dropdown {
+            path.move_to((cx - 4.0, cy - 2.0));
+            path.line_to((cx + 4.0, cy - 2.0));
+            path.line_to((cx, cy + 3.0));
+        } else {
+            path.move_to((cx - 3.0, cy - 4.0));
+            path.line_to((cx + 2.0, cy));
+            path.line_to((cx - 3.0, cy + 4.0));
+        }
+        path.close_path();
+        p.fill_path(path, fg);
+    }
+    let checkable =
+        !n.prop(Prop::Checked)[i].is_none() && matches!(kind, Kind::Item | Kind::Checkbox);
+    if checkable {
+        let size = 9.0;
+        let x = area.x0 + pad;
+        let y = ((area.y0 + area.y1) / 2.0 - size / 2.0).floor();
+        let b = Rect::new(x, y, x + size, y + size);
+        let path = &mut scratch.path;
+        path.truncate(0);
+        if style(StyleProp::Radius) > 0 {
+            path.extend(vello::kurbo::Shape::path_elements(
+                &vello::kurbo::Circle::new(b.center(), size / 2.0),
+                0.1,
+            ));
+        } else {
+            path.extend(vello::kurbo::Shape::path_elements(&b.inset(-0.5), 0.1));
+        }
+        p.stroke_path(path, 1.0, fg);
+        if n.is_checked(strings, node) {
+            p.fill_rect(b.inset(-2.0), fg);
+        }
+    }
+    if kind == Kind::Math && layout.math()[r] != u32::MAX {
+        let list = text.math_list(layout.math()[r]);
+        let at = Affine::translate((area.x0 + pad, area.y0 + f64::from(style(StyleProp::PadY))));
+        draw_math(p, list, text.math_fonts(), at, fg, scratch);
+    }
+    if kind == Kind::Prose && layout.prose()[r] != u32::MAX {
+        draw_prose(
+            p,
+            layout.prose()[r],
+            text,
+            (area.x0 + pad, area.y0 + pad_y),
+            fg,
+            scratch,
+        );
     }
 }
 
