@@ -243,7 +243,7 @@ impl Builtin {
         BUILTINS[self as usize].0
     }
 
-    fn lookup(name: &str) -> Option<(Builtin, u32, u32)> {
+    pub(crate) fn lookup(name: &str) -> Option<(Builtin, u32, u32)> {
         // `V(out)` / `I(v1)`: SPICE habit, the only case-insensitive names.
         let name = match name {
             "V" => "v",

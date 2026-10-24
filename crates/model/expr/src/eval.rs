@@ -497,7 +497,7 @@ fn num_binary(op: OpKind, x: f64, y: f64) -> Result<V, Error> {
         OpKind::Mul => x * y,
         OpKind::Div => x / y,
         OpKind::Rem => x % y,
-        OpKind::Pow => dmath::pow(x, y),
+        OpKind::Pow => libm::pow(x, y),
         _ => {
             let ord = x.partial_cmp(&y).expect("values are never NaN");
             return Ok(V::Bool(cmp(op, ord)));
@@ -580,7 +580,7 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut String) -> Result<V, Error
     let r = match b {
         Builtin::Abs => match a0 {
             V::Int(x) => Ok(x.checked_abs().map_or(V::Num((x as f64).abs()), V::Int)),
-            V::Cnum(re, im) => fin(dmath::hypot(re, im), name),
+            V::Cnum(re, im) => fin(libm::hypot(re, im), name),
             v => Ok(V::Num(num(v)?.abs())),
         },
         Builtin::Sqrt
@@ -599,7 +599,7 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut String) -> Result<V, Error
             V::Cnum(re, im) => cfin(dmath::complex(b, Complex::new(re, im)), name),
             v => fin(dmath::real(b, num(v)?), name),
         },
-        Builtin::Atan2 => fin(dmath::atan2(num(a0)?, num(args[1])?), name),
+        Builtin::Atan2 => fin(libm::atan2(num(a0)?, num(args[1])?), name),
         Builtin::Floor | Builtin::Ceil | Builtin::Round => match a0 {
             V::Int(x) => Ok(V::Int(x)),
             v => {
@@ -767,8 +767,8 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut String) -> Result<V, Error
                 // Zero has no phase; define it as 0 so the sign of a zero
                 // (`-0.0`) cannot flip the answer to 180.
                 Builtin::Ph if z.re == 0.0 && z.im == 0.0 => Ok(V::Num(0.0)),
-                Builtin::Ph => Ok(V::Num(dmath::atan2(z.im, z.re).to_degrees())),
-                Builtin::Db => fin(20.0 * dmath::log10(dmath::norm(z)), name),
+                Builtin::Ph => Ok(V::Num(libm::atan2(z.im, z.re).to_degrees())),
+                Builtin::Db => fin(20.0 * libm::log10(dmath::norm(z)), name),
                 _ if matches!(a0, V::Cnum(..)) => Ok(V::Cnum(z.re, -z.im)),
                 _ => Ok(a0),
             }

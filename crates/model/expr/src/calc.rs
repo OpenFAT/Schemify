@@ -1131,11 +1131,11 @@ fn settle(x: &[f64], y: &[f64], tol: f64) -> f64 {
 fn margin(gain: bool, re: &[f64], im: &[f64]) -> f64 {
     let n = re.len();
     let z = |i: usize| Complex::new(re[i], if im.is_empty() { 0.0 } else { im[i] });
-    let db = |i: usize| 20.0 * dmath::log10(dmath::norm(z(i)));
+    let db = |i: usize| 20.0 * libm::log10(dmath::norm(z(i)));
     let mut prev_ph = 0.0;
     let mut phase = Vec::with_capacity(n);
     for i in 0..n {
-        let mut p = dmath::atan2(z(i).im, z(i).re).to_degrees();
+        let mut p = libm::atan2(z(i).im, z(i).re).to_degrees();
         if i > 0 {
             p -= 360.0 * ((p - prev_ph) / 360.0).round();
         }

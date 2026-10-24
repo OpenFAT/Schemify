@@ -347,7 +347,7 @@ fn binop(op: Op, x: &RV, y: &RV) -> R {
                 Op::Mul => a * b,
                 Op::Div => a / b,
                 Op::Rem => a % b,
-                Op::Pow => schemify_expr::dmath::pow(a, b),
+                Op::Pow => libm::pow(a, b),
                 _ => unreachable!(),
             })
         }
@@ -396,7 +396,7 @@ fn builtin(f: &str, v: &[RV]) -> R {
     match f {
         "abs" => match &v[0] {
             RV::Int(x) => Ok(x.checked_abs().map_or(RV::Num((*x as f64).abs()), RV::Int)),
-            RV::C(a, b) => fin(schemify_expr::dmath::hypot(*a, *b)),
+            RV::C(a, b) => fin(libm::hypot(*a, *b)),
             o => Ok(RV::Num(num(o)?.abs())),
         },
         "sqrt" | "exp" | "ln" | "log10" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan"
@@ -408,7 +408,7 @@ fn builtin(f: &str, v: &[RV]) -> R {
             let x = n0()?;
             fin(schemify_expr::dmath::real_named(f, x).expect("elementary"))
         }
-        "atan2" => fin(schemify_expr::dmath::atan2(n0()?, num(&v[1])?)),
+        "atan2" => fin(libm::atan2(n0()?, num(&v[1])?)),
         "floor" | "ceil" | "round" => match &v[0] {
             RV::Int(x) => Ok(RV::Int(*x)),
             o => {
@@ -495,10 +495,8 @@ fn builtin(f: &str, v: &[RV]) -> R {
                 "im" => Ok(RV::Num(z.im)),
                 "mag" => fin(schemify_expr::dmath::norm(z)),
                 "ph" if z.re == 0.0 && z.im == 0.0 => Ok(RV::Num(0.0)),
-                "ph" => Ok(RV::Num(
-                    schemify_expr::dmath::atan2(z.im, z.re).to_degrees(),
-                )),
-                "db" => fin(20.0 * schemify_expr::dmath::log10(schemify_expr::dmath::norm(z))),
+                "ph" => Ok(RV::Num(libm::atan2(z.im, z.re).to_degrees())),
+                "db" => fin(20.0 * libm::log10(schemify_expr::dmath::norm(z))),
                 _ => match &v[0] {
                     RV::C(a, b) => Ok(RV::C(*a, -*b)),
                     o => Ok(o.clone()),
