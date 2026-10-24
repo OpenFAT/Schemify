@@ -372,7 +372,7 @@ fn eval_output<'v>(
         .rev()
         .find(|p| has_all(p))
         .unwrap_or(&plots[plots.len() - 1]);
-    let r = schemify_wave::calc::eval_ops(prog, plot, ops, lookup, scratch)
+    let r = schemify_wave::calc::eval(prog, plot, Some(ops), lookup, scratch)
         .map_err(|e| e.to_string())?;
     let x = match r {
         CalcResult::Scalar(Value::Num(x)) => x,

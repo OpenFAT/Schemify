@@ -1342,7 +1342,7 @@ fn evaluate(d: &RawPlot, src: &str, threshold: f64) -> Result<Evaluated, ViewErr
     }
     let prog = Program::compile(src, Mode::Calc).map_err(ViewError::Expr)?;
     let mut cols = Vec::new();
-    calc::bind(&prog, d, &mut cols).map_err(ViewError::Expr)?;
+    calc::bind(&prog, d, None, &mut cols).map_err(ViewError::Expr)?;
     if bare_signal(src) && cols.len() == 1 && !d.is_complex() {
         let (k, n) = prog.signals().next().expect("one signal");
         let v = d.find_signal(k, n).expect("bound above");
@@ -1354,7 +1354,7 @@ fn evaluate(d: &RawPlot, src: &str, threshold: f64) -> Result<Evaluated, ViewErr
         }));
     }
     let mut scratch = Scratch::default();
-    let r = calc::eval(&prog, d, |_| None, &mut scratch).map_err(ViewError::Expr)?;
+    let r = calc::eval(&prog, d, None, |_| None, &mut scratch).map_err(ViewError::Expr)?;
     let c = match r {
         CalcResult::Scalar(v) => {
             let text = match v {
@@ -1415,7 +1415,7 @@ fn eval_bus(d: &RawPlot, body: &str, threshold: f64) -> Result<(Vec<f64>, u8), V
     for part in &parts {
         let e = part.trim();
         let prog = Program::compile(e, Mode::Calc).map_err(ViewError::Expr)?;
-        let r = calc::eval(&prog, d, |_| None, &mut scratch).map_err(ViewError::Expr)?;
+        let r = calc::eval(&prog, d, None, |_| None, &mut scratch).map_err(ViewError::Expr)?;
         let CalcResult::Column(c) = r else {
             return Err(ViewError::Bus(format!("`{e}` is a value, not a signal")));
         };

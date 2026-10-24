@@ -59,7 +59,7 @@ mod name_map;
 
 pub use name_map::NameMap;
 
-use inst::{Plans, Tmp, Uses};
+use inst::{Plans, Tmp};
 use schemify_elab::PinDir;
 use schemify_elab::{CornerLine, Dialect, Elab, Ignore, Name, Target};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
@@ -668,8 +668,6 @@ struct Writer<'e> {
     map: name_map::Builder,
     /// Verilog: the definition's nets, sorted, for `wire` declarations.
     wires: Vec<Name>,
-    /// Net respellings ([`xspice_spellings`]), sorted by [`Name`].
-    respell: Vec<(Name, String)>,
 }
 
 impl<'e> Writer<'e> {
@@ -685,9 +683,8 @@ impl<'e> Writer<'e> {
             rows += e.insts_of(d).len();
         }
         let body_lines = e.impls.body.len() + e.bench.code_lines.len() + e.defs.code.len();
-        let respell = xspice_spellings(e, plans, d);
         let mut map = name_map::Builder::new(e, d, order.len() + usize::from(e.top != NONE), rows);
-        map.respell = respell.clone();
+        map.respell = xspice_spellings(e, plans, d);
         Writer {
             e,
             d,
@@ -698,7 +695,6 @@ impl<'e> Writer<'e> {
             def_map,
             map,
             wires: Vec::new(),
-            respell,
         }
     }
 
@@ -757,7 +753,7 @@ impl<'e> Writer<'e> {
             if i > 0 || close.is_empty() {
                 out.push_str(sep);
             }
-            push_name(out, spelled(e, &self.respell, *p), dialect);
+            push_name(out, spelled(e, &self.map.respell, *p), dialect);
         }
         if dialect == Dialect::Cdl {
             cdl_params(out, e, d);
@@ -829,42 +825,42 @@ impl<'e> Writer<'e> {
         } else {
             1
         };
-        let step = rows.len().div_ceil(chunks.max(1)).max(1);
-        let parts: Vec<std::ops::Range<usize>> = (rows.start..rows.end)
+        let step = rows.len().div_ceil(chunks).max(1);
+        // At least one part, so an empty block renders one empty chunk.
+        let parts: Vec<std::ops::Range<usize>> = (rows.start..rows.end.max(rows.start + 1))
             .step_by(step)
             .map(|a| a..(a + step).min(rows.end))
             .collect();
-        let (dl, plans, respell) = (self.d, self.plans, &self.respell);
-        let rendered: Vec<Chunk> = if parts.len() > 1 {
-            std::thread::scope(|sc| {
-                let workers: Vec<_> = parts
-                    .iter()
-                    .skip(1)
-                    .map(|p| {
-                        sc.spawn(|| {
-                            let mut tmp = Tmp::new(e);
-                            let mut c = render(e, dl, plans, respell, p.clone(), &mut tmp);
-                            c.uses = tmp.uses;
-                            c
-                        })
-                    })
-                    .collect();
-                let first = render(e, dl, plans, respell, parts[0].clone(), &mut self.tmp);
-                let mut all = vec![first];
-                all.extend(workers.into_iter().map(|w| w.join().expect("rows render")));
-                all
-            })
-        } else {
-            parts
+        let (dl, plans, respell) = (self.d, self.plans, &self.map.respell);
+        // The first part renders here into `self.tmp`; every other part on its own thread
+        // with its own scratch, whose uses are merged after.
+        let rendered: Vec<Chunk> = std::thread::scope(|sc| {
+            let workers: Vec<_> = parts[1..]
                 .iter()
-                .map(|p| render(e, dl, plans, respell, p.clone(), &mut self.tmp))
-                .collect()
-        };
-        let mut sorted = true;
-        for (k, c) in rendered.into_iter().enumerate() {
-            if k > 0 {
-                self.tmp.uses.merge(c.uses);
+                .map(|p| {
+                    sc.spawn(|| {
+                        let mut tmp = Tmp::new(e);
+                        (render(e, dl, plans, respell, p.clone(), &mut tmp), tmp.uses)
+                    })
+                })
+                .collect();
+            let mut all = vec![render(
+                e,
+                dl,
+                plans,
+                respell,
+                parts[0].clone(),
+                &mut self.tmp,
+            )];
+            for w in workers {
+                let (c, uses) = w.join().expect("rows render");
+                self.tmp.uses.merge(uses);
+                all.push(c);
             }
+            all
+        });
+        let mut sorted = true;
+        for c in rendered {
             let base = self.out.len();
             self.out.push_str(&c.text);
             for (r, a, b, ok) in c.lines {
@@ -904,17 +900,14 @@ pub fn set_serial(serial: bool) {
 }
 
 /// Instance lines of a run of rows, rendered on their own: the text, then per kept line
-/// `(row, start, end, rendered without error)` with offsets into the text, and the impls
-/// and models the lines use.
+/// `(row, start, end, rendered without error)` with offsets into the text.
 struct Chunk {
     text: String,
     lines: Vec<(usize, usize, usize, bool)>,
-    uses: Uses,
 }
 
 /// Renders rows `rows` of one block (spec §7.6.1: a failed template becomes an error
-/// comment, an empty rendering no line). The impls and models used accumulate in `tmp`;
-/// the chunk's `uses` is left empty for the caller to fill.
+/// comment, an empty rendering no line). The impls and models used accumulate in `tmp`.
 fn render(
     e: &Elab,
     d: Dialect,
@@ -962,11 +955,7 @@ fn render(
         lines.push((r, start, out.len(), rendered.is_ok()));
     }
     assert!(lines.last().is_none_or(|l| l.2 == out.len()));
-    Chunk {
-        text: out,
-        lines,
-        uses: Uses::default(),
-    }
+    Chunk { text: out, lines }
 }
 
 /// The byte range of the emitted instance name of the line starting at `start`: its

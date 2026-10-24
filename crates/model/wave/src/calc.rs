@@ -9,23 +9,19 @@ use schemify_expr::{CalcResult, Code, Column, Error, Plot, Program, Scratch, Sig
 use crate::data::{RawPlot, VarKind};
 
 /// Fills `cols` (cleared first) with one borrowed column per [`Program::signals`] entry, in that
-/// order, resolving names with [`RawPlot::find_signal`].
+/// order, resolving names with [`RawPlot::find_signal`]. `ops[k]` is the value of the `k`-th
+/// [`SignalKind::Op`] signal (in signal order): a run's job reads them from its operating point
+/// (run spec §4); `None` where there is none.
 ///
 /// # Errors
 ///
-/// `X004` naming the first signal the plot does not hold; `X006` for an `op(…)` signal, which
-/// only a run's job binds ([`eval_ops`]).
+/// `X004` naming the first signal the plot does not hold; `X006` for an `op(…)` signal when
+/// `ops` is `None`.
+///
+/// # Panics
+///
+/// Panics if `ops` does not hold one value per `op(…)` signal.
 pub fn bind<'a>(
-    prog: &Program,
-    plot: &'a RawPlot,
-    cols: &mut Vec<Column<'a>>,
-) -> Result<(), Error> {
-    bind_ops(prog, plot, None, cols)
-}
-
-/// [`bind`], with `ops[k]` the value of the `k`-th [`SignalKind::Op`] signal of `prog` (in
-/// signal order), or `None` when there are no operating-point values here.
-fn bind_ops<'a>(
     prog: &Program,
     plot: &'a RawPlot,
     ops: Option<&'a [f64]>,
@@ -72,49 +68,18 @@ fn bind_ops<'a>(
     Ok(())
 }
 
-/// Evaluates `prog` over `plot`. Identifiers (bench vars) resolve through `lookup`; the result's
-/// strings borrow `scratch`.
+/// Evaluates `prog` over `plot`, with `ops` as in [`bind`]. Identifiers (bench vars) resolve
+/// through `lookup`; the result's strings borrow `scratch`.
 ///
 /// # Errors
 ///
-/// `X004` for an unknown signal or identifier, `X006` for `op(…)` (see [`eval_ops`]), then
-/// every error of [`Program::eval_calc_plain`] (`X003`, `X010`, `X011`, …).
+/// Those of [`bind`], `X004` for an unknown identifier, then every error of
+/// [`Program::eval_calc_plain`] (`X003`, `X010`, `X011`, …).
 ///
 /// # Panics
 ///
-/// Panics if `prog` was not compiled in calculator mode.
+/// Panics if `prog` was not compiled in calculator mode, or as [`bind`].
 pub fn eval<'s, 'v>(
-    prog: &Program,
-    plot: &RawPlot,
-    lookup: impl FnMut(&str) -> Option<Value<'v>>,
-    scratch: &'s mut Scratch,
-) -> Result<CalcResult<'s>, Error> {
-    eval_with(prog, plot, None, lookup, scratch)
-}
-
-/// [`eval`] for a run's job: `ops[k]` is the operating-point value of the `k`-th `op(…)` signal
-/// of `prog` in [`Program::signals`] order (the caller reads them from the job's operating
-/// point, run spec §4); each is one number wherever it is used.
-///
-/// # Errors
-///
-/// As [`eval`], without the `X006` of `op(…)`.
-///
-/// # Panics
-///
-/// Panics if `prog` was not compiled in calculator mode or `ops` does not hold one value per
-/// `op(…)` signal.
-pub fn eval_ops<'s, 'v>(
-    prog: &Program,
-    plot: &RawPlot,
-    ops: &[f64],
-    lookup: impl FnMut(&str) -> Option<Value<'v>>,
-    scratch: &'s mut Scratch,
-) -> Result<CalcResult<'s>, Error> {
-    eval_with(prog, plot, Some(ops), lookup, scratch)
-}
-
-fn eval_with<'s, 'v>(
     prog: &Program,
     plot: &RawPlot,
     ops: Option<&[f64]>,
@@ -122,7 +87,7 @@ fn eval_with<'s, 'v>(
     scratch: &'s mut Scratch,
 ) -> Result<CalcResult<'s>, Error> {
     let mut cols = Vec::with_capacity(prog.signals().len());
-    bind_ops(prog, plot, ops, &mut cols)?;
+    bind(prog, plot, ops, &mut cols)?;
     let mut inputs = Vec::with_capacity(prog.idents().len());
     prog.bind(&mut inputs, lookup)?;
     let p = Plot {
@@ -264,7 +229,7 @@ mod tests {
             let src = signal_expr(&p, v);
             assert_eq!(&src, w);
             let prog = Program::compile(&src, Mode::Calc).unwrap();
-            bind(&prog, &p, &mut cols).unwrap();
+            bind(&prog, &p, None, &mut cols).unwrap();
             assert_eq!(cols[0].re, p.col(v), "{src}");
         }
     }
@@ -274,7 +239,7 @@ mod tests {
         let p = plot();
         let prog = Program::compile("v(out) * 2 + i(v1)", Mode::Calc).unwrap();
         let mut s = Scratch::default();
-        let CalcResult::Column(c) = eval(&prog, &p, |_| None, &mut s).unwrap() else {
+        let CalcResult::Column(c) = eval(&prog, &p, None, |_| None, &mut s).unwrap() else {
             panic!("column expected")
         };
         assert_eq!(c.kind, ColKind::Real);
@@ -282,17 +247,18 @@ mod tests {
         assert_eq!(c.re, want);
         let bad = Program::compile("v(nope)", Mode::Calc).unwrap();
         assert_eq!(
-            eval(&bad, &p, |_| None, &mut s).unwrap_err().code,
+            eval(&bad, &p, None, |_| None, &mut s).unwrap_err().code,
             Code::X004
         );
         let ident = Program::compile("v(out) * k", Mode::Calc).unwrap();
         assert_eq!(
-            eval(&ident, &p, |_| None, &mut s).unwrap_err().code,
+            eval(&ident, &p, None, |_| None, &mut s).unwrap_err().code,
             Code::X004
         );
         let k = eval(
             &ident,
             &p,
+            None,
             |n| (n == "k").then_some(Value::Num(3.0)),
             &mut s,
         )

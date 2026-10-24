@@ -128,7 +128,6 @@ enum Search {
 /// Ask-tell optimizer over bounded params and weighted objectives.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Optimizer {
-    algorithm: Algorithm,
     rng_state: u64,
     budget: u32,
     params: Vec<Param>,
@@ -168,7 +167,6 @@ impl Optimizer {
             Algorithm::NelderMead => Search::NelderMead(NelderMead::new(&params)),
         };
         let o = Optimizer {
-            algorithm,
             rng_state: if seed == 0 { DEFAULT_SEED } else { seed },
             budget,
             params,
@@ -180,11 +178,6 @@ impl Optimizer {
         };
         assert!(o.rng_state != 0 && o.ask().is_none_or(|x| x.len() == o.params.len()));
         Ok(o)
-    }
-
-    /// Returns the algorithm.
-    pub fn algorithm(&self) -> Algorithm {
-        self.algorithm
     }
 
     /// Returns the params.

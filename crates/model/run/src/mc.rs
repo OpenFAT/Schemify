@@ -67,7 +67,7 @@ fn vary_text(base: &str, spread: &str, rel: bool, z: f64) -> String {
 
 /// One draw: standard normal for [`DistKind::Gauss`], uniform on `[-1, 1)` for
 /// [`DistKind::Uniform`]. Pure in `(seed, sample, var)`.
-pub fn draw(kind: DistKind, seed: u64, sample: u32, var: &str) -> f64 {
+fn draw(kind: DistKind, seed: u64, sample: u32, var: &str) -> f64 {
     let mut st = stream(seed, sample, var);
     // u1 in (0, 1] (ln is finite), u2 in [0, 1).
     let u1 = ((splitmix64(&mut st) >> 11) + 1) as f64 / (1u64 << 53) as f64;
@@ -165,7 +165,7 @@ pub fn yield_summary(plan: &Plan, jobs: &Jobs, results: &Results) -> Vec<Yield> 
 }
 
 /// 95% Wilson score interval of `pass / total` (`[0, 1]` when `total` is 0).
-pub fn wilson(pass: u32, total: u32) -> (f64, f64) {
+fn wilson(pass: u32, total: u32) -> (f64, f64) {
     assert!(pass <= total);
     if total == 0 {
         return (0.0, 1.0);
