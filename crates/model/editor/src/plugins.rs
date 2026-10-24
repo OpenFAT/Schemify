@@ -579,9 +579,9 @@ pub struct Host {
     user_logs: Vec<String>,
     /// The user's `load` hooks ran.
     user_ready: bool,
-    /// Recent editor events as their plugin-abi §6 wire text (`event doc_changed 3 7`),
-    /// oldest first, at most [`NOTES_MAX`]: the command stream's notifications (D27).
-    notes: std::collections::VecDeque<String>,
+    /// Recent editor events, oldest first, at most [`NOTES_MAX`]: the command stream's
+    /// notifications (D27).
+    notes: std::collections::VecDeque<Note>,
     /// Editor events recorded so far (the sequence number of the newest note).
     notes_seq: u64,
     /// Health faults already surfaced ([`schemify_plugin::Health::recorded`]).
@@ -591,6 +591,23 @@ pub struct Host {
 /// Editor events kept for the command stream ([`Host::notes_since`]); a client that falls
 /// further behind misses the oldest.
 pub const NOTES_MAX: usize = 256;
+
+/// One editor event kept for the command stream: its kind and its numbers in plugin-abi §6
+/// wire order (`doc_changed` → doc, epoch; `selection_changed` → none).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Note {
+    /// The event.
+    pub event: schemify_config::Event,
+    values: [u32; 2],
+    len: u8,
+}
+
+impl Note {
+    /// The event's numbers (document handles, epochs, job ids), at most two.
+    pub fn values(&self) -> &[u32] {
+        &self.values[..usize::from(self.len)]
+    }
+}
 
 impl std::fmt::Debug for Host {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -796,15 +813,12 @@ impl Host {
     /// The editor events recorded after sequence number `seq` (a value [`Host::notes_seq`]
     /// returned), oldest first, as plugin-abi §6 wire text without the line end; only the
     /// last [`NOTES_MAX`] are kept.
-    pub fn notes_since(&self, seq: u64) -> impl Iterator<Item = &str> {
+    pub fn notes_since(&self, seq: u64) -> impl Iterator<Item = &Note> {
         let new = self
             .notes_seq
             .saturating_sub(seq)
             .min(self.notes.len() as u64) as usize;
-        self.notes
-            .iter()
-            .skip(self.notes.len() - new)
-            .map(String::as_str)
+        self.notes.iter().skip(self.notes.len() - new)
     }
 
     /// The sequence number of the newest recorded editor event (0 before the first).
@@ -831,15 +845,20 @@ impl Host {
             Event::RunDone { job } => (schemify_config::Event::RunDone, vec![("job", job.into())]),
             _ => return,
         };
-        let mut wire = Vec::new();
-        if ev.encode(&mut wire).is_ok() {
-            if self.notes.len() == NOTES_MAX {
-                self.notes.pop_front();
-            }
-            let line = String::from_utf8_lossy(&wire);
-            self.notes.push_back(line.trim_end().to_owned());
-            self.notes_seq += 1;
+        assert!(fields.len() <= 2);
+        let mut note = Note {
+            event,
+            values: [0; 2],
+            len: fields.len() as u8,
+        };
+        for (slot, &(_, v)) in note.values.iter_mut().zip(&fields) {
+            *slot = u32::try_from(v).expect("event fields are u32");
         }
+        if self.notes.len() == NOTES_MAX {
+            self.notes.pop_front();
+        }
+        self.notes.push_back(note);
+        self.notes_seq += 1;
         debug_assert!(self.notes.len() <= NOTES_MAX);
         self.wake_lazy(event);
         if self.user.table().hooks.iter().any(|h| h.0 == event) {

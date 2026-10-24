@@ -94,6 +94,7 @@ fn a_socket_client_drives_the_editor() {
     }
     let mut reader = BufReader::new(client.try_clone().unwrap());
     let mut got: Vec<Json> = Vec::new();
+    let mut raw: Vec<String> = Vec::new();
     let done = |got: &[Json]| {
         got.iter().filter(|j| j.get("id").is_some()).count() == 3
             && got.iter().any(|j| {
@@ -110,7 +111,7 @@ fn a_socket_client_drives_the_editor() {
         while reader.read_line(&mut line).is_ok_and(|n| n > 0) {
             if line.ends_with('\n') {
                 got.push(schemify_cli::rpc::parse(line.trim_end()).unwrap());
-                line.clear();
+                raw.push(std::mem::take(&mut line));
             }
         }
         if done(&got) {
@@ -145,6 +146,19 @@ fn a_socket_client_drives_the_editor() {
         );
     }
     assert_eq!(instances(&s), 0, "select all, then delete");
+    // The wire bytes of the events (rpc spec §3.2): kind, then the numbers as strings.
+    let events: Vec<&str> = raw
+        .iter()
+        .filter(|l| l.contains("\"event\""))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        events,
+        [
+            "{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{\"kind\":\"doc_changed\",\"values\":[\"0\",\"1\"]}}\n",
+            "{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{\"kind\":\"selection_changed\",\"values\":[]}}\n",
+        ]
+    );
 }
 
 /// A loopback client of `s`'s editor, one request at a time: each call pumps frames until

@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use schemify_cli::rpc::{self, Frame, Json, Listener, Request, Stream};
 use schemify_editor::editor::{Editor, Options, QUEUED_MAX};
+use schemify_editor::plugins::Note;
 use schemify_editor::rpc::{Dispatched, dispatch};
-use schemify_plugin::abi::text;
 use schemify_render::{App, Painter, Waker};
 use schemify_ui::InputEvents;
 
@@ -226,18 +226,13 @@ fn reply(id: &Json, out: Result<Json, (i32, String)>) -> String {
     }
 }
 
-/// An `event` notification from one recorded editor event (`event doc_changed 3 7` →
+/// An `event` notification from one recorded editor event (`doc_changed` 3 7 →
 /// `{"kind": "doc_changed", "values": ["3", "7"]}`).
-fn event(line: &str) -> String {
-    let rest = line.strip_prefix("event ").unwrap_or(line);
-    let (kind, values) = text::split_word(rest).unwrap_or((rest, ""));
-    let values: Vec<Json> = text::values(values)
-        .filter_map(Result::ok)
-        .map(|v| Json::Str(v.into_owned()))
-        .collect();
+fn event(note: &Note) -> String {
+    let values = note.values().iter().map(|v| Json::Str(v.to_string()));
     let params = Json::obj(vec![
-        ("kind", Json::Str(kind.to_owned())),
-        ("values", Json::Arr(values)),
+        ("kind", Json::Str(note.event.word().to_owned())),
+        ("values", Json::Arr(values.collect())),
     ]);
     rpc::notification("event", &params)
 }
