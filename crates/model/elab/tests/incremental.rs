@@ -10,7 +10,7 @@ use schemify_doc::{
     DocHandle, Edit, EditRequest, Mode, Op, Outcome, Project, RecordBuf, Target, Transaction,
     apply_edits,
 };
-use schemify_elab::{CellState, no_funcs};
+use schemify_elab::{CellState, NetChange, no_funcs};
 use schemify_format::RecordKind;
 
 const DEV: &str = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 20 0\n\nparam w 1\n  min 0.5\n  max 8\nparam l w*2\n  grid 0.5\nparam ad 0\n  computed w*l\n\nimpl spice spice\n";
@@ -382,7 +382,12 @@ fn a_rename_patches_element_names_and_duplicates() {
     let h = hs[1];
     let mut st = CellState::build(&p, h, &mut no_funcs).unwrap();
     let e009 = |st: &CellState| st.violations.with(schemify_elab::Code::E009).count();
-    for (name, patched, dups) in [("M3", true, 1), ("MX", true, 0), ("MB[1:0]", false, 0)] {
+    use NetChange::{Patched, Rebuilt};
+    for (name, want, dups) in [
+        ("M3", Patched, 1),
+        ("MX", Patched, 0),
+        ("MB[1:0]", Rebuilt, 0),
+    ] {
         let op = Op::SetAttr {
             target: Target::new(RecordKind::Inst, &id(6)),
             key: "name".into(),
@@ -391,9 +396,9 @@ fn a_rename_patches_element_names_and_duplicates() {
         let nets = st.nets.net_name.clone();
         assert!(commit(&mut p, h, vec![op.clone()]));
         let done = st.recompute(&p, h, std::slice::from_ref(&op), &mut no_funcs);
-        assert_eq!(done.patched, patched, "{name}");
-        assert!(done.nets && !done.graph, "{name}: {done:?}");
-        if patched {
+        assert_eq!(done.nets, want, "{name}");
+        assert!(!done.graph, "{name}: {done:?}");
+        if want == Patched {
             assert_eq!(st.nets.net_name, nets, "{name}: every net kept");
         }
         assert_eq!(e009(&st), dups, "{name}");
@@ -415,7 +420,7 @@ fn a_value_edit_reevaluates_only_its_dependents() {
     };
     assert!(commit(&mut p, h, vec![op.clone()]));
     let done = st.recompute(&p, h, &[op], &mut no_funcs);
-    assert!(!done.graph && !done.nets);
+    assert!(!done.graph && done.nets == NetChange::Unchanged);
     // `c` feeds `l` of M1, M5, …: c itself + 10 overrides + their computed `ad`.
     assert_eq!(done.evaluated, 1 + 10 + 10, "of {total} nodes");
 }
@@ -466,7 +471,7 @@ fn cached_attribute_edits_refresh_without_a_rebuild() {
     for (op, want) in [(set, Some(Val::Num(3.5))), (remove, None)] {
         assert!(commit(&mut p, h, vec![op.clone()]));
         let done = st.recompute(&p, h, std::slice::from_ref(&op), &mut no_funcs);
-        assert!(!done.graph && !done.nets, "{done:?}");
+        assert!(!done.graph && done.nets == NetChange::Unchanged, "{done:?}");
         let fresh = CellState::build(&p, h, &mut no_funcs).unwrap();
         assert_eq!(snapshot(&st), snapshot(&fresh), "{op:?}");
         match want {
@@ -547,7 +552,7 @@ fn cached_param_edits_refresh_without_a_rebuild() {
     for (op, want) in [(set, Some(Val::Num(2.5))), (remove, None)] {
         assert!(commit(&mut p, h, vec![op.clone()]));
         let done = st.recompute(&p, h, std::slice::from_ref(&op), &mut no_funcs);
-        assert!(!done.graph && !done.nets, "{done:?}");
+        assert!(!done.graph && done.nets == NetChange::Unchanged, "{done:?}");
         let fresh = CellState::build(&p, h, &mut no_funcs).unwrap();
         assert_eq!(snapshot(&st), snapshot(&fresh), "{op:?}");
         match want {
@@ -867,7 +872,7 @@ fn geometry_run(seed: u64, steps: usize) -> usize {
         };
         let (before, pass) = (st.violations.rows.clone(), st.pass);
         let done = st.recompute(&p, h, &ops, &mut no_funcs);
-        patched += usize::from(done.patched);
+        patched += usize::from(done.nets == NetChange::Patched);
         let fresh = CellState::build(&p, h, &mut no_funcs).unwrap();
         let doc = p.doc(h).unwrap();
         assert_eq!(
@@ -987,7 +992,7 @@ fn an_edit_far_away_keeps_every_other_net() {
     for ops in edits {
         assert!(commit(&mut p, h, ops.clone()), "{ops:?}");
         let done = st.recompute(&p, h, &ops, &mut no_funcs);
-        assert!(done.patched, "{ops:?}");
+        assert_eq!(done.nets, NetChange::Patched, "{ops:?}");
         let doc = p.doc(h).unwrap();
         assert_eq!(
             left(&st, doc),

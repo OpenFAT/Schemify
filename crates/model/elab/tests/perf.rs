@@ -395,7 +395,7 @@ fn edit_costs(objects: u64) -> (f64, f64, f64) {
         let t = Instant::now();
         let done = st.recompute(p, h, ops, &mut no_funcs);
         samples.push(t.elapsed());
-        patched += usize::from(done.patched);
+        patched += usize::from(done.nets == schemify_elab::NetChange::Patched);
     };
     for _ in 0..100 {
         let t = rng.below(n);

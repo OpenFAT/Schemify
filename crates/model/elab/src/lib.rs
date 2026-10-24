@@ -85,7 +85,7 @@ pub use netexpr::{WIDTH_MAX, is_global};
 pub use ports::{PORTS_MAX, PortError, impl_ports};
 // `Iface::pin_dir`'s element type, so readers of elab need not depend on doc.
 pub use schemify_doc::PinDir;
-pub use state::{CellState, Recomputed};
+pub use state::{CellState, NetChange, Recomputed};
 pub use values::{Funcs, Val, cached_text, no_funcs};
 
 /// Cells with at least this many instances elaborate on two threads: connectivity beside

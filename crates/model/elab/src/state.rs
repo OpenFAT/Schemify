@@ -22,15 +22,26 @@ use schemify_doc::{DocHandle, Document, ObjId, Op, Project, Sym};
 use schemify_format::RecordKind;
 use std::collections::HashMap;
 
+/// What [`CellState::recompute`] did to the connectivity.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NetChange {
+    /// No op touched it.
+    #[default]
+    Unchanged,
+    /// Patched per touched net: untouched nets kept their handles, and the check pass
+    /// posted only the findings that changed.
+    Patched,
+    /// Rebuilt: every net handle may have changed.
+    Rebuilt,
+}
+
 /// What [`CellState::recompute`] did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Recomputed {
-    /// Connectivity changed (rebuilt, or patched).
-    pub nets: bool,
-    /// Connectivity was patched per touched net instead of rebuilt: untouched nets kept
-    /// their handles, and the check pass posted only the findings that changed.
-    pub patched: bool,
-    /// The graph was rebuilt and fully evaluated.
+    /// The connectivity's fate.
+    pub nets: NetChange,
+    /// The graph was rebuilt and fully evaluated (independent of `nets`: a var edit can
+    /// rebuild the graph beside a net patch).
     pub graph: bool,
     /// Nodes re-evaluated incrementally (0 when the graph was rebuilt).
     pub evaluated: usize,
@@ -226,7 +237,6 @@ impl CellState {
             };
             delta = self.live.update(ops, &cx, &mut self.nets, &mut self.names);
             nets = delta.is_none(); // the patch gave up: rebuild
-            done.patched = delta.is_some();
         }
         if !nets && !renamed.is_empty() {
             let cx = Ctx {
@@ -243,17 +253,23 @@ impl CellState {
                     let d = delta.get_or_insert_default();
                     d.0.extend(gone);
                     d.1.extend(new);
-                    done.patched = true;
                 }
                 None => nets = true, // an element count changed
             }
         }
         if nets {
             delta = None;
-            done.patched = false;
             self.rebuild_nets(doc);
         }
-        done.nets = nets || geom || !renamed.is_empty();
+        done.nets = match (nets, delta.is_some()) {
+            (true, _) => NetChange::Rebuilt,
+            (false, true) => NetChange::Patched,
+            (false, false) => NetChange::Unchanged,
+        };
+        assert!(
+            nets || delta.is_some() || !geom,
+            "geometry is patched or rebuilt"
+        );
         let mut dirty: Vec<u32> = Vec::new();
         if !rebuild {
             rebuild = !self.diff_values(doc, &touched_insts, touched_vars, &mut dirty);
@@ -318,7 +334,6 @@ impl CellState {
             self.revalued.clear(); // every instance: consumers take a rebuild
         }
         assert!(!(done.graph && done.evaluated > 0));
-        assert!(!(done.patched && nets), "patched or rebuilt, not both");
         assert!(self.revalued.len() <= self.inst_iface.len());
         done
     }
@@ -327,8 +342,7 @@ impl CellState {
     fn rebuild<F: Funcs>(&mut self, project: &Project, h: DocHandle, funcs: &mut F) -> Recomputed {
         *self = CellState::build(project, h, funcs).expect("live handle");
         Recomputed {
-            nets: true,
-            patched: false,
+            nets: NetChange::Rebuilt,
             graph: true,
             evaluated: 0,
         }
