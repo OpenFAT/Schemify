@@ -348,11 +348,6 @@ impl Iface {
         self.param_name.iter().position(|n| *n == name)
     }
 
-    /// Returns the index of impl `name`.
-    pub fn impl_index(&self, name: Name) -> Option<usize> {
-        self.impl_name.iter().position(|n| *n == name)
-    }
-
     /// Returns the index of the schematic impl, if the cell has one.
     pub fn schematic_impl(&self, names: &Names) -> Option<usize> {
         self.impl_lang

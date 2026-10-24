@@ -81,9 +81,9 @@ pub use elaborate::{
 pub use graph::Graph;
 pub use iface::{Domain, Iface, ParamKind};
 pub use names::{NAMES_MAX, Name, Names};
-// `Iface::pin_dir`'s element type, so readers of elab need not depend on doc.
 pub use netexpr::{WIDTH_MAX, is_global};
 pub use ports::{PORTS_MAX, PortError, impl_ports};
+// `Iface::pin_dir`'s element type, so readers of elab need not depend on doc.
 pub use schemify_doc::PinDir;
 pub use state::{CellState, Recomputed};
 pub use values::{Funcs, Val, cached_text, no_funcs};
@@ -112,18 +112,12 @@ pub mod test_support {
     pub fn set_serial(serial: bool) {
         crate::SERIAL.store(serial, std::sync::atomic::Ordering::Relaxed);
     }
-    pub use crate::iface::Iface;
-    pub use crate::names::Names;
-
     /// Builds the interface digest of `doc` (for tests that call [`crate::connect`]).
-    pub fn iface(doc: &schemify_doc::Document, cell: &str, names: &mut Names) -> Iface {
-        Iface::from_doc(doc, cell, cell, u32::MAX, true, names)
-    }
-
-    /// Expands a net expression into bit names.
-    pub fn expand(text: &str, names: &mut Names) -> Option<Vec<String>> {
-        let (mut out, mut buf) = (Vec::new(), String::new());
-        crate::netexpr::expand(text, names, &mut out, &mut buf).ok()?;
-        Some(out.iter().map(|n| names.get(*n).to_owned()).collect())
+    pub fn iface(
+        doc: &schemify_doc::Document,
+        cell: &str,
+        names: &mut crate::Names,
+    ) -> crate::Iface {
+        crate::Iface::from_doc(doc, cell, cell, u32::MAX, true, names)
     }
 }
