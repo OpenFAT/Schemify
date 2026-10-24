@@ -226,7 +226,8 @@ impl Editor {
             return; // dropped where it was: a click
         }
         let Some(moved) = with_vertex(&rec, i, to) else {
-            self.session.status = "that vertex move leaves the shape without extent".into();
+            self.session
+                .say("that vertex move leaves the shape without extent");
             return;
         };
         let wire = rec.kind == RecordKind::Wire;

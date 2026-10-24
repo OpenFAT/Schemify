@@ -214,10 +214,12 @@ impl Editor {
     pub fn rastered(&mut self, r: &Raster, bytes: Result<Vec<u8>, String>) {
         assert!(r.w >= 1.0 && r.h >= 1.0, "a drawable raster");
         // Web: a download (web spec §3).
-        self.session.status = match bytes.and_then(|b| crate::platform::export(&r.path, &b)) {
-            Ok(()) => format!("exported {}", r.path.display()),
-            Err(e) => format!("export: {e}"),
-        };
+        self.session.say(
+            match bytes.and_then(|b| crate::platform::export(&r.path, &b)) {
+                Ok(()) => format!("exported {}", r.path.display()),
+                Err(e) => format!("export: {e}"),
+            },
+        );
     }
 }
 

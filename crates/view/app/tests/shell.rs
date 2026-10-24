@@ -483,9 +483,9 @@ fn manifest_plugins_load_in_order_and_receive_commands() {
     s.click_node("menu.tools");
     s.click_node("tools.count_nets");
     assert!(
-        s.ed.session().status.contains("single-connection nets"),
+        s.ed.session().status().contains("single-connection nets"),
         "{}",
-        s.ed.session().status
+        s.ed.session().status()
     );
 }
 
@@ -501,7 +501,7 @@ fn waves_window_opens_a_raw_file_and_closes() {
     std::fs::copy(raw, s.dir.join("rc_tran.raw")).unwrap();
     s.click_node("tb.waves");
     s.click_node("dialog.choose.row.0");
-    assert!(s.ed.waves_open(), "{}", s.ed.session().status);
+    assert!(s.ed.waves_open(), "{}", s.ed.session().status());
     let px = s.render();
     assert_eq!(px.width(), VIEW.0 as u16);
     s.key("Ctrl+W");
@@ -605,7 +605,7 @@ fn waves_dock_divider_drags() {
     std::fs::copy(raw, s.dir.join("rc_tran.raw")).unwrap();
     s.click_node("tb.waves");
     s.click_node("dialog.choose.row.0");
-    assert!(s.ed.waves_open(), "{}", s.ed.session().status);
+    assert!(s.ed.waves_open(), "{}", s.ed.session().status());
     // The dock takes its share of the window from the next frame on.
     s.frame(InputEvents::default());
     let split = (VIEW.1 * 0.6).floor();
@@ -718,9 +718,9 @@ fn view_switcher_follows_the_file_kind() {
     p.frame(InputEvents::default());
     assert_eq!(p.ed.active().map(|a| a.1), Some(View::Symbol));
     assert!(
-        p.ed.session().status.contains("no schematic"),
+        p.ed.session().status().contains("no schematic"),
         "{}",
-        p.ed.session().status
+        p.ed.session().status()
     );
 
     // .shbench: no symbol.
@@ -732,9 +732,9 @@ fn view_switcher_follows_the_file_kind() {
     b.frame(InputEvents::default());
     assert_eq!(b.ed.active().map(|a| a.1), Some(View::Schematic));
     assert!(
-        b.ed.session().status.contains("no symbol"),
+        b.ed.session().status().contains("no symbol"),
         "{}",
-        b.ed.session().status
+        b.ed.session().status()
     );
 }
 
@@ -817,9 +817,9 @@ fn commands_grey_out_on_the_wrong_file_kind() {
     c.ed.command("sim.simulate", "");
     c.frame(InputEvents::default());
     assert!(
-        c.ed.session().status.contains("needs a .shbench"),
+        c.ed.session().status().contains("needs a .shbench"),
         "{}",
-        c.ed.session().status
+        c.ed.session().status()
     );
     // A bench: simulation on, symbol generation and new-bench off.
     let b = Session::open("rc", "tb.shbench", "grey-bench", true);

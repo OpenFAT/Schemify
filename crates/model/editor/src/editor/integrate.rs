@@ -146,7 +146,7 @@ impl Editor {
         if cmd == Cmd::Unhighlight {
             self.highlight.clear();
             self.decor_dirty = true;
-            self.session.status = "highlights cleared".into();
+            self.session.say("highlights cleared");
             return;
         }
         let near = self.pointer_world_snapped();
@@ -159,7 +159,7 @@ impl Editor {
         }
         let comps: Vec<u32> = {
             let (Some(cell), Some(doc)) = (self.cell.as_ref(), self.session.project.doc(h)) else {
-                self.session.status = "highlight: the cell is not elaborated".into();
+                self.session.say("highlight: the cell is not elaborated");
                 return;
             };
             let mut c: Vec<u32> = keys
@@ -171,7 +171,8 @@ impl Editor {
             c
         };
         if comps.is_empty() {
-            self.session.status = "highlight: no net under the pointer or in the selection".into();
+            self.session
+                .say("highlight: no net under the pointer or in the selection");
             return;
         }
         // Every bit of each component: a bus highlights all its bits, so a single-bit net
@@ -210,7 +211,7 @@ impl Editor {
         } else {
             "unhighlighted"
         };
-        self.session.status = format!("{verb}: {}", shown.join(" "));
+        self.session.say(format!("{verb}: {}", shown.join(" ")));
         debug_assert!(self.highlight.windows(2).all(|w| w[0] < w[1]));
     }
 
@@ -228,7 +229,7 @@ impl Editor {
             .get_mut(active)
             .and_then(|t| t.text.as_mut())
         else {
-            self.session.status = "find: no text tab".into();
+            self.session.say("find: no text tab");
             return;
         };
         v.find.clone_from(&q);
@@ -251,7 +252,7 @@ impl Editor {
             }
         }
         v.found = Some((count, lines));
-        self.session.status = format!("find {q:?}: {count} line(s)");
+        self.session.say(format!("find {q:?}: {count} line(s)"));
     }
 
     /// `n` (`whole`: the tab's top cell) / `Shift+N` (the cell at this level): elaborate,
@@ -289,7 +290,7 @@ impl Editor {
         let e = match spines::elaborate_all(&mut self.session, h, &req, &mut funcs) {
             Ok(e) => e,
             Err(err) => {
-                self.session.status = format!("netlist: {err}");
+                self.session.say(format!("netlist: {err}"));
                 return;
             }
         };
@@ -302,10 +303,10 @@ impl Editor {
                 .map(|v| spines::violation_line(&e.names, v))
                 .collect();
             self.panel = Panel::Checks;
-            self.session.status = format!(
+            self.session.say(format!(
                 "netlist blocked: {} error(s) (see the checks panel)",
                 self.blocked.len()
-            );
+            ));
             return;
         }
         self.blocked.clear();
@@ -323,15 +324,15 @@ impl Editor {
         };
         let path = spines::netlist_file(&self.session.root, &stem, dialect);
         if let Err(err) = platform::write_atomic(&path, text.as_bytes()) {
-            self.session.status = format!("netlist: {err}");
+            self.session.say(format!("netlist: {err}"));
             return;
         }
         let lines = text.lines().count();
-        self.session.status = format!(
+        self.session.say(format!(
             "netlist ({}) written: {} ({lines} lines)",
             spines::dialect_word(dialect),
             path.display()
-        );
+        ));
         if self.show_netlist {
             let mut body: String = text
                 .lines()
@@ -375,9 +376,10 @@ impl Editor {
             .doc(h)
             .map(schemify_doc::Document::kind);
         if kind != Some(FileKind::Shbench) {
-            self.session.status = "simulate: only a .shbench runs (D11b); use Simulation → New \
-                                   bench from this component"
-                .into();
+            self.session.say(
+                "simulate: only a .shbench runs (D11b); use Simulation → New \
+                                   bench from this component",
+            );
             return;
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -404,7 +406,7 @@ impl Editor {
             {
                 Ok(msg) => {
                     self.blocked.clear();
-                    self.session.status = msg;
+                    self.session.say(msg);
                     self.panel = Panel::Results;
                     self.results_for = Some(h);
                     self.op_job = None;
@@ -414,14 +416,15 @@ impl Editor {
                         self.blocked = rest.split("; ").map(str::to_owned).collect();
                         self.panel = Panel::Checks;
                     }
-                    self.session.status = e;
+                    self.session.say(e);
                 }
             }
         }
         #[cfg(target_arch = "wasm32")]
         {
             let _ = (optimize, arg);
-            self.session.status = "simulate: no simulator on the web (D16: runner plugins)".into();
+            self.session
+                .say("simulate: no simulator on the web (D16: runner plugins)");
         }
     }
 
@@ -433,7 +436,7 @@ impl Editor {
             return;
         };
         if doc.kind() == FileKind::Shbench {
-            self.session.status = "this is already a bench".into();
+            self.session.say("this is already a bench");
             return;
         }
         let Some(path) = self.session.path(h).map(std::path::Path::to_path_buf) else {
@@ -456,7 +459,8 @@ impl Editor {
             })
             .find(|p| !platform::exists(p))
         else {
-            self.session.status = format!("{stem}_tb*.shbench: no free name");
+            self.session
+                .say(format!("{stem}_tb*.shbench: no free name"));
             return;
         };
         let prefix = doc.header_value("prefix").unwrap_or("X");
@@ -487,24 +491,25 @@ impl Editor {
         let bytes = match schemify_format::parse(text.as_bytes()) {
             Ok(d) => schemify_format::write(&d),
             Err(e) => {
-                self.session.status = format!("new bench: {:?}", e.diagnostics.first());
+                self.session
+                    .say(format!("new bench: {:?}", e.diagnostics.first()));
                 return;
             }
         };
         if let Err(e) = platform::write_atomic(&file, bytes.as_bytes()) {
-            self.session.status = format!("new bench: {e}");
+            self.session.say(format!("new bench: {e}"));
             return;
         }
         match self.session.open_path(&file) {
             Ok(b) => {
                 self.session.open_tab(b, View::Schematic);
                 self.scene_dirty = true;
-                self.session.status = format!(
+                self.session.say(format!(
                     "new bench {}: add sources and analyses, then s",
                     file.display()
-                );
+                ));
             }
-            Err(e) => self.session.status = e,
+            Err(e) => self.session.say(e),
         }
     }
 
@@ -517,22 +522,23 @@ impl Editor {
         else {
             return;
         };
-        let key = {
+        let (line, key) = {
             let (Some(cell), Some(doc)) = (self.cell.as_ref(), self.session.project.doc(h)) else {
                 return;
             };
             let Some(v) = cell.violations.rows.get(i) else {
                 return;
             };
-            self.session.status = checks::line(&cell.names, v);
-            if v.object == ObjId::NONE {
-                return;
-            }
-            doc.find_id(v.object).map(|loc| ObjKey {
-                table: loc.table,
-                key: v.object.0,
-            })
+            let key = (v.object != ObjId::NONE)
+                .then(|| doc.find_id(v.object))
+                .flatten()
+                .map(|loc| ObjKey {
+                    table: loc.table,
+                    key: v.object.0,
+                });
+            (checks::line(&cell.names, v), key)
         };
+        self.session.say(line);
         let Some(key) = key.filter(|k| self.scene.find(*k).is_some()) else {
             return;
         };
@@ -578,7 +584,7 @@ impl Editor {
                         if self.waves.is_some() {
                             self.open_job_waves();
                         }
-                        self.session.status = format!("job {j} selected");
+                        self.session.say(format!("job {j} selected"));
                     }
                 }
                 Cmd::ResultsWaves => self.open_job_waves(),
@@ -588,8 +594,8 @@ impl Editor {
                     };
                     if let Some(dir) = self.sim.history.get(i as usize).cloned() {
                         match self.sim.load_dir(&self.session, b, &dir) {
-                            Ok(()) => self.session.status = self.sim.status.clone(),
-                            Err(e) => self.session.status = e,
+                            Ok(()) => self.session.say(self.sim.status.clone()),
+                            Err(e) => self.session.say(e),
                         }
                         self.op_job = None;
                     }
@@ -606,7 +612,9 @@ impl Editor {
         let j = self.sim.selected;
         match self.sim.job_raw(j) {
             Some(p) => self.open_waves(p),
-            None => self.session.status = format!("job {j} has no raw file (not finished?)"),
+            None => self
+                .session
+                .say(format!("job {j} has no raw file (not finished?)")),
         }
     }
 
@@ -620,7 +628,7 @@ impl Editor {
         };
         let title = path.display().to_string();
         match platform::read(&path).and_then(|b| w.reload(&title, &b)) {
-            Ok(s) | Err(s) => self.session.status = s,
+            Ok(s) | Err(s) => self.session.say(s),
         }
     }
 
@@ -628,7 +636,7 @@ impl Editor {
     /// resolved; level paths are skipped), opening the dock on the selected job when closed.
     pub(super) fn send_to_viewer(&mut self) {
         if self.highlight.is_empty() {
-            self.session.status = "no highlighted nets (k highlights)".into();
+            self.session.say("no highlighted nets (k highlights)");
             return;
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -636,7 +644,8 @@ impl Editor {
             self.open_job_waves();
         }
         let Some(w) = self.waves.as_mut() else {
-            self.session.status = "send to viewer: no waves open (simulate first)".into();
+            self.session
+                .say("send to viewer: no waves open (simulate first)");
             return;
         };
         let mut sent = Vec::new();
@@ -648,10 +657,10 @@ impl Editor {
                 Err(_) => failed += 1, // ground and nets the simulator did not save
             }
         }
-        self.session.status = format!(
+        self.session.say(format!(
             "sent to viewer: {} ({failed} not in the data)",
             sent.join(" ")
-        );
+        ));
         assert!(sent.len() + failed <= self.highlight.len());
     }
 
@@ -688,7 +697,7 @@ impl Editor {
             Some((name, pin)) => {
                 let path = format!("{}/{name}", self.level_prefix());
                 let Some(emitted) = self.hier_map().and_then(|m| m.inst_name(&path)) else {
-                    self.session.status = format!("{path}: not in the netlist");
+                    self.session.say(format!("{path}: not in the netlist"));
                     return;
                 };
                 crate::waves::current_probe(&emitted, &pin)
@@ -704,10 +713,10 @@ impl Editor {
             Err(e) if !same => w.add_trace(&volts).map(|()| volts).map_err(|_| e),
             Err(e) => Err(e),
         };
-        self.session.status = match added {
+        self.session.say(match added {
             Ok(src) => format!("cross-probe: {src}"),
             Err(e) => format!("cross-probe: {e}"),
-        };
+        });
     }
 
     /// The `checks` source of the annotation overlay from the active level's violations: when
@@ -792,7 +801,7 @@ impl Editor {
         }
         if polled.changed {
             changed = true;
-            self.session.status = self.sim.status.clone();
+            self.session.say(self.sim.status.clone());
             self.op_job = None;
             self.sim.plots.clear();
         }
@@ -938,7 +947,8 @@ impl Editor {
                 .collect()
         };
         if ops.is_empty() {
-            self.session.status = format!("{}: nothing to stage", best.label);
+            self.session
+                .say(format!("{}: nothing to stage", best.label));
             return;
         }
         let tx = Transaction {
@@ -953,7 +963,7 @@ impl Editor {
             msg.push_str(&format!(" {n}={v}"));
         }
         msg.push_str(" — review on the docs page, then Accept or Reject");
-        self.session.status = msg;
+        self.session.say(msg);
         if let Some(t) = self.session.tabs.get_mut(self.session.active) {
             t.docs = true;
         }

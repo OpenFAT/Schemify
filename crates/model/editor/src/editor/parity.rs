@@ -257,7 +257,9 @@ impl Editor {
             Cmd::OpenMostRecent => self.open_recent(0, reqs),
             Cmd::OpenRecent => match arg.trim().parse::<usize>() {
                 Ok(i) => self.open_recent(i, reqs),
-                Err(_) => self.session.status = format!("{arg:?}: not a recent-file index"),
+                Err(_) => self
+                    .session
+                    .say(format!("{arg:?}: not a recent-file index")),
             },
             Cmd::DeleteFiles => {
                 self.pending_delete = None;
@@ -271,16 +273,18 @@ impl Editor {
             | Cmd::ExportPdfHier
             | Cmd::ExportEps => self.export(h, cmd, arg),
             Cmd::ExportProject => {
-                self.session.status = match platform::export_project(&self.session.root) {
-                    Ok(p) => format!("exported project {}", p.display()),
-                    Err(e) => format!("export project: {e}"),
-                };
+                self.session
+                    .say(match platform::export_project(&self.session.root) {
+                        Ok(p) => format!("exported project {}", p.display()),
+                        Err(e) => format!("export project: {e}"),
+                    });
             }
             Cmd::ImportProject => {
-                self.session.status = match platform::import_project(arg.trim() == "folder") {
-                    Ok(()) => "import project: pick a zip or folder".into(),
-                    Err(e) => format!("import project: {e}"),
-                };
+                self.session
+                    .say(match platform::import_project(arg.trim() == "folder") {
+                        Ok(()) => "import project: pick a zip or folder".into(),
+                        Err(e) => format!("import project: {e}"),
+                    });
             }
             // ---------------------------------------------------------------- Edit / tools
             Cmd::UnselectArea => self.tool = Tool::UnselectArmed,
@@ -339,7 +343,7 @@ impl Editor {
                     wiring::join_trim(&self.session.project, h, &mut ids)
                 };
                 if ops.is_empty() {
-                    self.session.status = "wires already joined and trimmed".into();
+                    self.session.say("wires already joined and trimmed");
                 }
                 self.commit(reqs, h, "join/trim wires", ops);
             }
@@ -353,7 +357,8 @@ impl Editor {
                 }
                 let stop = cmd == Cmd::SelectConnectedStop;
                 let keys = wiring::connected(&self.session.project, h, &seeds, stop);
-                self.session.status = format!("{} connected object(s)", keys.len());
+                self.session
+                    .say(format!("{} connected object(s)", keys.len()));
                 self.set_selection(keys);
             }
             // ---------------------------------------------------------------- Options / view
@@ -402,7 +407,7 @@ impl Editor {
                     .unwrap_or(0);
                 let next = spines::DIALECTS[(i + 1) % spines::DIALECTS.len()];
                 self.dialect = next.1;
-                self.session.status = format!("netlist dialect: {}", next.0);
+                self.session.say(format!("netlist dialect: {}", next.0));
             }
             Cmd::LineWidthDown | Cmd::LineWidthUp => {
                 let w = i16::from(self.opts.width_tenths);
@@ -422,7 +427,7 @@ impl Editor {
                     self.layer_colors.retain(|c| c.0 != l);
                     self.layer_colors.push((l, rgb));
                 } else {
-                    self.session.status = format!("{arg:?}: not an rrggbb color");
+                    self.session.say(format!("{arg:?}: not an rrggbb color"));
                 }
             }
             Cmd::ResetColors => {
@@ -438,7 +443,7 @@ impl Editor {
             }
             Cmd::ToggleLayer => match arg.trim().parse::<u8>() {
                 Ok(l) if (1..USER_LAYERS).contains(&l) => self.opts.hidden ^= 1 << l,
-                _ => self.session.status = format!("{arg:?}: not a layer 1..21"),
+                _ => self.session.say(format!("{arg:?}: not a layer 1..21")),
             },
             Cmd::SetLayer => {
                 // `layers.set_current.<n>` or a Layers-menu node `layers.<n>_<name>`.
@@ -446,9 +451,9 @@ impl Editor {
                 match digits.parse::<u8>() {
                     Ok(l) if l < USER_LAYERS => {
                         self.opts.layer = l;
-                        self.session.status = format!("current layer {l}");
+                        self.session.say(format!("current layer {l}"));
                     }
-                    _ => self.session.status = format!("{arg:?}: not a layer 0..21"),
+                    _ => self.session.say(format!("{arg:?}: not a layer 0..21")),
                 }
             }
             Cmd::AllLayers => self.opts.hidden = 0,
@@ -509,7 +514,7 @@ impl Editor {
                         .collect::<Vec<_>>()
                 });
                 if ops.is_empty() {
-                    self.session.status = "select instances to toggle `ignore`".into();
+                    self.session.say("select instances to toggle `ignore`");
                 }
                 self.commit(reqs, h, "toggle ignore", ops);
             }
@@ -525,7 +530,7 @@ impl Editor {
             Cmd::MakeSchematic => {
                 let ops = self.make_schematic_ops(h, ptr);
                 if ops.is_empty() {
-                    self.session.status = "every pin already has a port".into();
+                    self.session.say("every pin already has a port");
                 }
                 self.commit(reqs, h, "make schematic", ops);
             }
@@ -537,7 +542,7 @@ impl Editor {
             Cmd::PinsFromPorts => {
                 let ops = self.with_doc(h, pins_from_ports);
                 if ops.is_empty() {
-                    self.session.status = "select schematic ports without a pin".into();
+                    self.session.say("select schematic ports without a pin");
                 }
                 self.commit(reqs, h, "pins from ports", ops);
             }
@@ -559,7 +564,7 @@ impl Editor {
             Cmd::LabelsFromNets | Cmd::LabelsFromNetsI | Cmd::PortsFromNets => {
                 let names = self.highlighted_local_names();
                 if names.is_empty() {
-                    self.session.status = "no highlighted nets at this level (k)".into();
+                    self.session.say("no highlighted nets at this level (k)");
                     return true;
                 }
                 let kind = if cmd == Cmd::PortsFromNets {
@@ -600,13 +605,14 @@ impl Editor {
             Cmd::CompareSwap => self.compare_swap(h),
             Cmd::DupNames => {
                 let keys = self.with_doc(h, |d, _| duplicate_names(d).0);
-                self.session.status = format!("{} instance(s) with a duplicate name", keys.len());
+                self.session
+                    .say(format!("{} instance(s) with a duplicate name", keys.len()));
                 self.set_selection(keys);
             }
             Cmd::RenameDups => {
                 let ops = self.with_doc(h, |d, _| duplicate_names(d).1);
                 if ops.is_empty() {
-                    self.session.status = "no duplicate instance names".into();
+                    self.session.say("no duplicate instance names");
                 }
                 self.commit(reqs, h, "rename duplicates", ops);
             }
@@ -617,7 +623,8 @@ impl Editor {
             }
             Cmd::SelectOverlapped => {
                 let keys = self.with_doc(h, |d, _| overlapped(d));
-                self.session.status = format!("{} overlapped instance(s)", keys.len());
+                self.session
+                    .say(format!("{} overlapped instance(s)", keys.len()));
                 self.set_selection(keys);
             }
             // ---------------------------------------------------------------- Simulation
@@ -684,9 +691,140 @@ impl Editor {
                 self.scene_dirty = true;
                 self.invalidate_cells();
             }
-            _ => {
-                self.session.status = format!("{}: not available yet", cmd.name());
-            }
+            // Dispatched by `Editor::run` before it hands a command here.
+            Cmd::CellAddBench
+            | Cmd::CellAddImpl
+            | Cmd::CellAddParam
+            | Cmd::CellDelete
+            | Cmd::CellPinDown
+            | Cmd::CellPinUp
+            | Cmd::CellSet
+            | Cmd::CellSymbolFromPorts
+            | Cmd::CellSyncApply
+            | Cmd::CellSyncCancel
+            | Cmd::CellSyncPorts
+            | Cmd::ChecksPick
+            | Cmd::ChooseFilter
+            | Cmd::ChoosePick
+            | Cmd::DialogClose
+            | Cmd::EnterTextOk
+            | Cmd::DocsAddProse
+            | Cmd::DocsAddVar
+            | Cmd::DocsDelete
+            | Cmd::DocsEdit
+            | Cmd::DocsDown
+            | Cmd::DocsUp
+            | Cmd::DocsProseOk
+            | Cmd::DocsSelect
+            | Cmd::DocsSource
+            | Cmd::DocsVarOk
+            | Cmd::AcceptStaged
+            | Cmd::ConstrainH
+            | Cmd::ConstrainV
+            | Cmd::Copy
+            | Cmd::Cut
+            | Cmd::Delete
+            | Cmd::Duplicate
+            | Cmd::FlipInPlace
+            | Cmd::Flip
+            | Cmd::Move
+            | Cmd::MoveKiss
+            | Cmd::MoveStretch
+            | Cmd::OpenSubTab
+            | Cmd::OpenSymbolTab
+            | Cmd::Paste
+            | Cmd::Ascend
+            | Cmd::Descend
+            | Cmd::DescendSymbol
+            | Cmd::Redo
+            | Cmd::RejectStaged
+            | Cmd::RotateInPlace
+            | Cmd::Rotate
+            | Cmd::SelectAll
+            | Cmd::ShowStaged
+            | Cmd::Unconstrained
+            | Cmd::Undo
+            | Cmd::UnselectUnderMouse
+            | Cmd::VFlipInPlace
+            | Cmd::VFlip
+            | Cmd::FieldTyped
+            | Cmd::NewSchematic
+            | Cmd::NewSymbol
+            | Cmd::Close
+            | Cmd::ComponentBrowser
+            | Cmd::NewWindowTab
+            | Cmd::Open
+            | Cmd::Quit
+            | Cmd::Reload
+            | Cmd::Save
+            | Cmd::Highlight
+            | Cmd::SendToViewer
+            | Cmd::Unhighlight
+            | Cmd::UnhighlightSelected
+            | Cmd::DoubleSnap
+            | Cmd::DrawGrid
+            | Cmd::Orthogonal
+            | Cmd::HalfSnap
+            | Cmd::ProjectReload
+            | Cmd::Props
+            | Cmd::PropsEditor
+            | Cmd::PropsView
+            | Cmd::PropsField
+            | Cmd::PropsOk
+            | Cmd::ResultsFilter
+            | Cmd::ResultsHistory
+            | Cmd::ResultsPick
+            | Cmd::ResultsSort
+            | Cmd::ResultsWaves
+            | Cmd::SimCancel
+            | Cmd::SetDialect
+            | Cmd::Netlist
+            | Cmd::NetlistTop
+            | Cmd::NewBench
+            | Cmd::Optimize
+            | Cmd::Simulate
+            | Cmd::OpAnnotateGraphs
+            | Cmd::SendHighlighted
+            | Cmd::ShowNetlist
+            | Cmd::PlaceLabel
+            | Cmd::PlaceWireLabel
+            | Cmd::PlaceInPort
+            | Cmd::PlaceOutPort
+            | Cmd::PlaceSymPin
+            | Cmd::TabNew
+            | Cmd::TabNext
+            | Cmd::TabPrev
+            | Cmd::TabSelect
+            | Cmd::TextFind
+            | Cmd::CycleManhattan
+            | Cmd::InsertLine
+            | Cmd::InsertRect
+            | Cmd::InsertSnapWire
+            | Cmd::InsertSymbol
+            | Cmd::InsertText
+            | Cmd::InsertWire
+            | Cmd::CellToggle
+            | Cmd::ChecksToggle
+            | Cmd::DocsToggle
+            | Cmd::PanCenter
+            | Cmd::PanDown
+            | Cmd::PanLeft
+            | Cmd::PanRight
+            | Cmd::PanUp
+            | Cmd::Redraw
+            | Cmd::ResultsToggle
+            | Cmd::ViewSchematic
+            | Cmd::SetGrid
+            | Cmd::SetSnap
+            | Cmd::ViewSymbol
+            | Cmd::ToggleTheme
+            | Cmd::ZoomBox
+            | Cmd::ZoomFull
+            | Cmd::ZoomIn
+            | Cmd::ZoomOut
+            | Cmd::ZoomSelection
+            | Cmd::Waves
+            | Cmd::OpAnnotate => unreachable!("{cmd:?}: Editor::run dispatches it"),
         }
         true
     }
@@ -705,7 +843,7 @@ impl Editor {
         if let Some(dir) = &self.state_dir
             && let Err(e) = crate::recent::save(dir, &self.recent)
         {
-            self.session.status = format!("recent files: {e}");
+            self.session.say(format!("recent files: {e}"));
         }
     }
 
@@ -713,12 +851,13 @@ impl Editor {
     /// libraries), else by switching to its project (`switch_project`).
     fn open_recent(&mut self, i: usize, reqs: &mut Vec<EditRequest>) {
         let Some(path) = self.recent.get(i).cloned() else {
-            self.session.status = "no recent file".into();
+            self.session.say("no recent file");
             return;
         };
         if !platform::exists(&path) {
             self.recent.remove(i);
-            self.session.status = format!("{}: no longer exists", path.display());
+            self.session
+                .say(format!("{}: no longer exists", path.display()));
             return;
         }
         match self.session.open_path(&path) {
@@ -732,7 +871,7 @@ impl Editor {
             Err(_) if super::project_root(&path) != crate::libs::absolute(&self.session.root) => {
                 self.switch_project(path, reqs);
             }
-            Err(e) => self.session.status = e,
+            Err(e) => self.session.say(e),
         }
     }
 
@@ -745,17 +884,17 @@ impl Editor {
     fn switch_project(&mut self, file: PathBuf, reqs: &mut Vec<EditRequest>) {
         let p = &self.session.project;
         if p.handles().any(|d| p.is_dirty(d)) {
-            self.session.status = format!(
+            self.session.say(format!(
                 "{}: another project; save or undo this project's edits first",
                 file.display()
-            );
+            ));
             return;
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
             if self.sim.wake_ms().is_some() {
-                self.session.status =
-                    "a simulation is running: cancel it before switching project".into();
+                self.session
+                    .say("a simulation is running: cancel it before switching project");
                 return;
             }
         }
@@ -764,7 +903,7 @@ impl Editor {
         let mut next = match Editor::new(opts) {
             Ok(e) => e,
             Err(e) => {
-                self.session.status = e;
+                self.session.say(e);
                 return;
             }
         };
@@ -788,7 +927,7 @@ impl Editor {
         let root = next.session.root.clone();
         *self = next;
         self.refresh_palette();
-        self.session.status = format!("project {}", root.display());
+        self.session.say(format!("project {}", root.display()));
         assert!(reqs.is_empty() && self.active().is_some());
     }
 
@@ -806,7 +945,8 @@ impl Editor {
             path.set_extension(ext);
         }
         if path.extension().and_then(|e| e.to_str()) != Some(ext) {
-            self.session.status = format!("{}: a {ext} keeps its extension", path.display());
+            self.session
+                .say(format!("{}: a {ext} keeps its extension", path.display()));
             return;
         }
         let path = if path.is_absolute() {
@@ -815,25 +955,26 @@ impl Editor {
             self.session.root.join(path)
         };
         if self.session.path(h) == Some(path.as_path()) {
-            self.session.status = "same file: use Save".into();
+            self.session.say("same file: use Save");
             return;
         }
         if platform::exists(&path) {
-            self.session.status = format!("{}: exists, choose another name", path.display());
+            self.session
+                .say(format!("{}: exists, choose another name", path.display()));
             return;
         }
         let text = doc.canonical();
         if let Err(e) = schemify_format::parse(text.as_bytes()) {
             let d = e.diagnostics.first();
-            self.session.status = format!(
+            self.session.say(format!(
                 "save as refused: {}",
                 d.map_or_else(String::new, |d| format!("{:?} {}", d.code, d.detail))
-            );
+            ));
             return;
         }
         let dirty = self.session.project.is_dirty(h);
         if let Err(e) = platform::write_atomic(&path, text.as_bytes()) {
-            self.session.status = e;
+            self.session.say(e);
             return;
         }
         self.session.reindex(&path);
@@ -843,7 +984,7 @@ impl Editor {
         let new = match self.session.open_path(&path) {
             Ok(d) => d,
             Err(e) => {
-                self.session.status = e;
+                self.session.say(e);
                 return;
             }
         };
@@ -891,7 +1032,7 @@ impl Editor {
         );
         self.tool = Tool::Idle;
         self.scene_dirty = true;
-        self.session.status = format!("saved as {}", path.display());
+        self.session.say(format!("saved as {}", path.display()));
     }
 
     /// Inserts the schematic of indexed cell `row` attached to the pointer (File → Merge):
@@ -900,7 +1041,7 @@ impl Editor {
         let d = match self.session.open_cell(row) {
             Ok(d) => d,
             Err(e) => {
-                self.session.status = e;
+                self.session.say(e);
                 return;
             }
         };
@@ -913,7 +1054,7 @@ impl Editor {
             .map(|(_, _, r)| r)
             .collect();
         if recs.is_empty() {
-            self.session.status = "that cell has no schematic objects".into();
+            self.session.say("that cell has no schematic objects");
             return;
         }
         let anchors: Vec<Pt> = recs.iter().filter_map(crate::geometry::anchor).collect();
@@ -927,7 +1068,8 @@ impl Editor {
             .into_iter()
             .filter_map(|mut r| crate::geometry::transform_record(&mut r, back).map(|()| r))
             .collect();
-        self.session.status = format!("merge: {} object(s), click to place", recs.len());
+        self.session
+            .say(format!("merge: {} object(s), click to place", recs.len()));
         self.tool = Tool::Place {
             what: Placement::Paste(recs),
             at: self.pointer_world_snapped(),
@@ -942,17 +1084,23 @@ impl Editor {
         let cells = p.cells();
         let lib = cells.lib[row];
         let Some(dir) = self.session.lib_dir(lib) else {
-            self.session.status = "the bundled core library is read-only".into();
+            self.session.say("the bundled core library is read-only");
             return;
         };
         let path = dir.join(crate::session::cell_relpath(p, row));
         let open = self.session.handle_of_path(&path).is_some();
         if open {
-            self.session.status = format!("{}: open in the editor, close it first", path.display());
+            self.session.say(format!(
+                "{}: open in the editor, close it first",
+                path.display()
+            ));
             return;
         }
         if self.pending_delete.as_ref() != Some(&path) {
-            self.session.status = format!("delete {}? pick it again to confirm", path.display());
+            self.session.say(format!(
+                "delete {}? pick it again to confirm",
+                path.display()
+            ));
             self.pending_delete = Some(path);
             self.open_chooser(ChooseFor::Delete);
             return;
@@ -965,9 +1113,9 @@ impl Editor {
                 self.symbols = scene::Symbols::default();
                 self.symbols_key = None;
                 self.recent.retain(|r| *r != crate::libs::absolute(&path));
-                self.session.status = format!("deleted {}", path.display());
+                self.session.say(format!("deleted {}", path.display()));
             }
-            Err(e) => self.session.status = e,
+            Err(e) => self.session.say(e),
         }
     }
 
@@ -1025,7 +1173,7 @@ impl Editor {
                 _ => self.export_png_full(path),
             };
             if let Err(e) = asked {
-                self.session.status = format!("export: {e}");
+                self.session.say(format!("export: {e}"));
             }
             return;
         }
@@ -1069,8 +1217,8 @@ impl Editor {
         let path = self.export_path(h, arg, ext);
         // Web: a download (web spec §3).
         match bytes.and_then(|b| platform::export(&path, &b)) {
-            Ok(()) => self.session.status = format!("exported {}", path.display()),
-            Err(e) => self.session.status = format!("export: {e}"),
+            Ok(()) => self.session.say(format!("exported {}", path.display())),
+            Err(e) => self.session.say(format!("export: {e}")),
         }
     }
 
@@ -1282,7 +1430,8 @@ impl Editor {
             return;
         };
         if schematic && doc.kind() == FileKind::Shprim {
-            self.session.status = "a primitive has no schematic: draw in its symbol".into();
+            self.session
+                .say("a primitive has no schematic: draw in its symbol");
             return;
         }
         let mut ids = Ids::new(&mut self.rng);
@@ -1293,7 +1442,7 @@ impl Editor {
             (None, None)
         };
         let Some(rec) = shape_record(form, pts, closed, self.opts.layer, id.as_deref()) else {
-            self.session.status = "that shape has no extent".into();
+            self.session.say("that shape has no extent");
             return;
         };
         let label = match form {
@@ -1361,7 +1510,8 @@ impl Editor {
         self.commit(reqs, h, label, out.ops);
         let moved: Vec<(ObjKey, Pt)> = ends.iter().map(|&(k, p)| (k, x.point(p))).collect();
         self.set_partial(moved);
-        self.session.status = format!("{label}: {} wire(s) followed", out.wires.len());
+        self.session
+            .say(format!("{label}: {} wire(s) followed", out.wires.len()));
     }
 
     /// Spine step after `doc::apply_edits`: when a wire edit asked for it (Options → auto
@@ -1386,12 +1536,12 @@ impl Editor {
     /// with the align variant, else the pointer projected onto an axis-aligned wire).
     fn cut_wire(&mut self, reqs: &mut Vec<EditRequest>, h: DocHandle, cmd: Cmd) {
         let Some(o) = self.hit_at(self.pointer) else {
-            self.session.status = "no wire under the pointer".into();
+            self.session.say("no wire under the pointer");
             return;
         };
         let key = self.scene.objs.key[o as usize];
         if key.table != TableId::Wires {
-            self.session.status = "no wire under the pointer".into();
+            self.session.say("no wire under the pointer");
             return;
         }
         let g = self.scene.objs.geom[o as usize];
@@ -1417,7 +1567,7 @@ impl Editor {
             wiring::break_at(doc, &[p], &mut ids).0
         };
         if ops.is_empty() {
-            self.session.status = "the cut point is not inside the wire".into();
+            self.session.say("the cut point is not inside the wire");
         }
         self.commit(reqs, h, "cut wire", ops);
     }
@@ -1467,19 +1617,19 @@ impl Editor {
         match cmd {
             Cmd::CrosshairSize => match number(arg, 0.0, 10_000.0) {
                 Some(v) => self.opts.crosshair_px = v as u16,
-                None => self.session.status = bad(),
+                None => self.session.say(bad()),
             },
             Cmd::LineWidth => match number(arg, 0.1, 10.0) {
                 Some(v) => self.opts.width_tenths = (v * 10.0).round().clamp(1.0, 100.0) as u8,
-                None => self.session.status = bad(),
+                None => self.session.say(bad()),
             },
             Cmd::DimColors => match number(arg, 0.0, 1.0) {
                 Some(v) => self.opts.dim = (v * 100.0).round() as u8,
-                None => self.session.status = bad(),
+                None => self.session.say(bad()),
             },
             Cmd::SymbolWidth => match number(arg, 10.0, 10_000.0) {
                 Some(v) => self.opts.symbol_width = (v * f64::from(UNIT)).round() as i32,
-                None => self.session.status = bad(),
+                None => self.session.say(bad()),
             },
             Cmd::GridDialog | Cmd::SnapDialog => match number(arg, 0.001, 1000.0) {
                 Some(v) => {
@@ -1490,22 +1640,22 @@ impl Editor {
                         self.opts.snap = m;
                     }
                 }
-                None => self.session.status = bad(),
+                None => self.session.say(bad()),
             },
             Cmd::ExportPage => match export::Page::parse(arg) {
                 Some(p) => {
                     self.opts.export_page = p;
-                    self.session.status = format!("export page: {}", p.name());
+                    self.session.say(format!("export page: {}", p.name()));
                 }
                 None => {
-                    self.session.status = format!(
+                    self.session.say(format!(
                         "{arg:?}: not a page (a4, a3, a5, letter, legal, tabloid; portrait)"
-                    );
+                    ));
                 }
             },
             Cmd::PngScale => match number(arg, 0.1, 16.0) {
                 Some(v) => self.opts.png_scale = (v * 100.0).round().clamp(10.0, 1600.0) as u16,
-                None => self.session.status = bad(),
+                None => self.session.say(bad()),
             },
             _ => {}
         }
@@ -1578,24 +1728,24 @@ impl Editor {
             exact: get("exact") == "true",
         };
         if q.value.is_empty() {
-            self.session.status = "search: no value".into();
+            self.session.say("search: no value");
             return;
         }
         let with = get("replace").to_owned();
         if with.is_empty() {
             let keys = self.with_doc(h, |d, _| search::find(d, &q));
-            self.session.status = if keys.is_empty() {
+            self.session.say(if keys.is_empty() {
                 "not found".into()
             } else {
                 format!("{} object(s) found", keys.len())
-            };
+            });
             self.set_selection(keys);
             if let Some(b) = self.selection_bbox() {
                 self.fit(b);
             }
         } else {
             let ops = self.with_doc(h, |d, _| search::replace(d, &q, &with));
-            self.session.status = format!("{} replacement(s)", ops.len());
+            self.session.say(format!("{} replacement(s)", ops.len()));
             self.commit(reqs, h, "replace", ops);
         }
     }
@@ -1665,18 +1815,18 @@ impl Editor {
             Ok(d) => d,
             Err(e) => {
                 let d = e.diagnostics.first();
-                self.session.status = format!(
+                self.session.say(format!(
                     "edit file: {}",
                     d.map_or_else(String::new, |d| format!(
                         "line {}: {:?} {}",
                         d.line, d.code, d.detail
                     ))
-                );
+                ));
                 return;
             }
         };
         if new.kind() != doc.kind() {
-            self.session.status = "edit file: the file kind cannot change".into();
+            self.session.say("edit file: the file kind cannot change");
             return;
         }
         let current = doc.canonical();
@@ -1729,7 +1879,7 @@ impl Editor {
             }
         }
         if ops.is_empty() {
-            self.session.status = "edit file: no change".into();
+            self.session.say("edit file: no change");
         }
         self.commit(reqs, h, "edit file", ops);
     }
@@ -1744,7 +1894,8 @@ impl Editor {
             return Vec::new();
         };
         if doc.kind() != FileKind::Shcomp {
-            self.session.status = "make symbol: only a .shcomp has a symbol and a schematic".into();
+            self.session
+                .say("make symbol: only a .shcomp has a symbol and a schematic");
             return Vec::new();
         }
         let s = doc.strings();
@@ -1754,7 +1905,7 @@ impl Editor {
             .collect();
         let recs = symbol_records(&ports, self.opts.symbol_width);
         if recs.is_empty() {
-            self.session.status = "make symbol: the schematic has no ports".into();
+            self.session.say("make symbol: the schematic has no ports");
             return Vec::new();
         }
         replace_symbol_ops(doc, recs)
@@ -1767,7 +1918,8 @@ impl Editor {
             return Vec::new();
         };
         if doc.kind() != FileKind::Shcomp {
-            self.session.status = "make schematic: the active cell is not a .shcomp".into();
+            self.session
+                .say("make schematic: the active cell is not a .shcomp");
             return Vec::new();
         }
         let s = doc.strings();
@@ -1834,7 +1986,8 @@ impl Editor {
             }
         }
         if ops.is_empty() {
-            self.session.status = "no unconnected pins on the selected instances".into();
+            self.session
+                .say("no unconnected pins on the selected instances");
         }
         ops
     }
@@ -1865,7 +2018,7 @@ impl Editor {
         let mut nets: Vec<String> = Vec::new();
         {
             let (Some(cell), Some(doc)) = (self.cell.as_ref(), self.session.project.doc(h)) else {
-                self.session.status = "the cell is not elaborated".into();
+                self.session.say("the cell is not elaborated");
                 return;
             };
             let p = &self.session.project;
@@ -1913,7 +2066,8 @@ impl Editor {
             }
         }
         self.decor_dirty = true;
-        self.session.status = format!("{} net/pin mismatch(es)", nets.len());
+        self.session
+            .say(format!("{} net/pin mismatch(es)", nets.len()));
     }
 
     /// Adds the nets the waves dock plots (`v(<net>)`) to the highlight.
@@ -1944,14 +2098,14 @@ impl Editor {
         });
         self.decor_dirty = true;
         let name = crate::session::cell_relpath(&self.session.project, row);
-        self.session.status = format!("comparing with {name}");
+        self.session.say(format!("comparing with {name}"));
     }
 
     /// Highlight → Swap compare schematics: the compared cell becomes the active level and
     /// the previous document the reference.
     fn compare_swap(&mut self, h: DocHandle) {
         let Some(c) = self.compare.clone() else {
-            self.session.status = "choose a cell to compare with first".into();
+            self.session.say("choose a cell to compare with first");
             return;
         };
         let Some(prev_row) = super::row_of_doc(&self.session.project, h).map(|r| r as usize) else {
@@ -1975,7 +2129,7 @@ impl Editor {
                 self.scene_dirty = true;
                 self.decor_dirty = true;
             }
-            Err(e) => self.session.status = e,
+            Err(e) => self.session.say(e),
         }
     }
 
@@ -2151,10 +2305,10 @@ impl Editor {
                 *l = checks::LAYER_ERROR;
             }
         }
-        self.session.status = format!(
+        self.session.say(format!(
             "compare: {changed} added/changed here, {} only in the other cell",
             removed.len()
-        );
+        ));
     }
 
     // ------------------------------------------------------------------ text tabs
@@ -2243,7 +2397,7 @@ impl Editor {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let Some(dir) = self.sim.dir() else {
-                self.session.status = "no run in this session".into();
+                self.session.say("no run in this session");
                 return;
             };
             let name = if errors {

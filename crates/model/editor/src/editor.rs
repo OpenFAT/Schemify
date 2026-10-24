@@ -783,7 +783,7 @@ impl Editor {
             }
             t
         };
-        let mut status = std::mem::take(&mut session.status);
+        let mut status = session.take_status();
         for n in notes {
             push_note(&mut status, &n);
         }
@@ -912,7 +912,7 @@ impl Editor {
             }
         }
         if !status.is_empty() {
-            ed.session.status = status;
+            ed.session.say(status);
         }
         Ok(ed)
     }
@@ -1014,7 +1014,7 @@ impl Editor {
     /// status message.
     pub fn command(&mut self, name: &str, arg: &str) {
         if self.queued.len() >= QUEUED_MAX {
-            self.session.status = format!("{name}: command queue full");
+            self.session.say(format!("{name}: command queue full"));
             return;
         }
         self.queued.push((name.to_owned(), arg.to_owned(), None));
@@ -1028,7 +1028,7 @@ impl Editor {
         assert!(self.queued_edits.len() <= QUEUED_MAX);
         for r in reqs {
             if self.queued_edits.len() >= QUEUED_MAX {
-                self.session.status = "edit queue full".to_owned();
+                self.session.say("edit queue full");
                 return;
             }
             self.queued_edits.push(r);
@@ -1079,7 +1079,7 @@ impl Editor {
                     last: None,
                 });
             }
-            self.session.status = full;
+            self.session.say(full);
             assert!(self.said.len() <= QUEUED_MAX);
             return ticket;
         }
@@ -1534,14 +1534,14 @@ impl Editor {
                         args: &arg,
                     };
                     if let Err(e) = self.host.push(Some(id), &ev) {
-                        self.session.status = e;
+                        self.session.say(e);
                     }
                     true
                 }
                 // A Lua keymap function or a lazy package's first command (config spec §3, §5).
                 Target::Unknown if self.host.user_command(&name, &arg) => true,
                 Target::Unknown => {
-                    self.session.status = format!("{name}: not available yet");
+                    self.session.say(format!("{name}: not available yet"));
                     true
                 }
             };
@@ -1563,7 +1563,7 @@ impl Editor {
             };
             // Each command's own message: the status line starts empty for it and gets the
             // previous message back when the command says nothing.
-            let before = std::mem::take(&mut self.session.status);
+            let before = self.session.take_status();
             let mut plugin = None;
             changed |= match target {
                 Target::Core(cmd) => self.run(cmd, &arg, "", reqs),
@@ -1574,17 +1574,17 @@ impl Editor {
                     };
                     match self.host.push(Some(id), &ev) {
                         Ok(()) => plugin = Some(id),
-                        Err(e) => self.session.status = e,
+                        Err(e) => self.session.say(e),
                     }
                     true
                 }
                 Target::Unknown => {
-                    self.session.status = format!("{name}: not available yet");
+                    self.session.say(format!("{name}: not available yet"));
                     true
                 }
             };
             if let Some(ticket) = ticket {
-                let status = plugin.is_none().then(|| self.session.status.clone());
+                let status = plugin.is_none().then(|| self.session.status().to_owned());
                 self.said.push(Said {
                     ticket,
                     plugin,
@@ -1593,8 +1593,8 @@ impl Editor {
                     last: None,
                 });
             }
-            if self.session.status.is_empty() {
-                self.session.status = before;
+            if self.session.status().is_empty() {
+                self.session.say(before);
             }
         }
         assert!(self.queued.is_empty());
@@ -1679,15 +1679,18 @@ impl Editor {
         if let Some(kind) = self.session.project.doc(h).map(Document::kind)
             && !cmd.accepts(kind)
         {
-            self.session.status = kind_refusal(cmd, kind);
+            self.session.say(kind_refusal(cmd, kind));
             return true;
         }
         if self.session.text_view().is_some() && !text_tab_cmd(cmd) && !parity::text_tab_ok(cmd) {
-            self.session.status = "read-only text view: switch to a schematic tab".into();
+            self.session
+                .say("read-only text view: switch to a schematic tab");
             return true;
         }
         let ptr = self.pointer_world_snapped();
         match cmd {
+            // Taken by the guards above (they need no active document).
+            Cmd::FieldTyped | Cmd::ProjectReload => unreachable!("{cmd:?}: handled above"),
             Cmd::Undo | Cmd::Redo => {
                 self.tool = Tool::Idle;
                 let edit = if cmd == Cmd::Undo {
@@ -1719,12 +1722,14 @@ impl Editor {
                     .into_iter()
                     .filter_map(|mut r| crate::geometry::transform_record(&mut r, back).map(|()| r))
                     .collect();
-                self.session.status = format!("{} object(s) copied", self.clipboard.len());
+                self.session
+                    .say(format!("{} object(s) copied", self.clipboard.len()));
                 if self.system_clipboard
                     && !self.clipboard.is_empty()
                     && let Err(e) = platform::clipboard_set(&crate::clip::encode(&self.clipboard))
                 {
-                    self.session.status = format!("system clipboard: {e} (copied here only)");
+                    self.session
+                        .say(format!("system clipboard: {e} (copied here only)"));
                 }
                 if cmd == Cmd::Cut {
                     let ops = self.with_doc(h, edit::delete);
@@ -1811,7 +1816,7 @@ impl Editor {
             Cmd::Ascend => {
                 self.tool = Tool::Idle;
                 if !self.session.pop_level() {
-                    self.session.status = "already at the top level".into();
+                    self.session.say("already at the top level");
                 }
                 self.scene_dirty = true;
             }
@@ -1823,7 +1828,7 @@ impl Editor {
                 };
                 match self.session.create(kind) {
                     Ok(d) => self.session.open_tab(d, v),
-                    Err(e) => self.session.status = e,
+                    Err(e) => self.session.say(e),
                 }
                 self.scene_dirty = true;
             }
@@ -1837,7 +1842,7 @@ impl Editor {
                 for d in [h, top] {
                     match self.session.save(d) {
                         Ok(true) => {
-                            self.session.status = format!("saved {}", self.session.name(d));
+                            self.session.say(format!("saved {}", self.session.name(d)));
                             let _ = self.host.push(
                                 None,
                                 &Event::Saved {
@@ -1846,7 +1851,7 @@ impl Editor {
                             );
                         }
                         Ok(false) => {}
-                        Err(e) => self.session.status = e,
+                        Err(e) => self.session.say(e),
                     }
                 }
             }
@@ -1860,8 +1865,8 @@ impl Editor {
                     .any(|d| self.session.project.is_dirty(d));
                 if dirty && self.confirm != Some(Cmd::Quit) {
                     self.confirm = Some(Cmd::Quit);
-                    self.session.status =
-                        "unsaved changes: Ctrl+Q again to quit without saving".into();
+                    self.session
+                        .say("unsaved changes: Ctrl+Q again to quit without saving");
                 } else {
                     self.quit = true;
                 }
@@ -1879,9 +1884,9 @@ impl Editor {
                 match spines::dialect_of(word) {
                     Some(d) => {
                         self.dialect = d;
-                        self.session.status = format!("netlist dialect: {word}");
+                        self.session.say(format!("netlist dialect: {word}"));
                     }
-                    None => self.session.status = format!("{word:?}: not a netlist dialect"),
+                    None => self.session.say(format!("{word:?}: not a netlist dialect")),
                 }
             }
             Cmd::ShowNetlist => self.show_netlist = !self.show_netlist,
@@ -1889,11 +1894,11 @@ impl Editor {
             Cmd::SimCancel => {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
-                    self.session.status = if self.sim.cancel() {
-                        "simulation cancelled".into()
+                    self.session.say(if self.sim.cancel() {
+                        "simulation cancelled"
                     } else {
-                        "nothing is running".into()
-                    };
+                        "nothing is running"
+                    });
                 }
             }
             Cmd::NewBench => self.new_bench(h),
@@ -1921,8 +1926,10 @@ impl Editor {
             Cmd::OpAnnotate | Cmd::OpAnnotateGraphs => {
                 self.op_on = !self.op_on;
                 self.op_job = None;
-                self.session.status =
-                    format!("OP annotation {}", if self.op_on { "on" } else { "off" });
+                self.session.say(format!(
+                    "OP annotation {}",
+                    if self.op_on { "on" } else { "off" }
+                ));
             }
             Cmd::AcceptStaged | Cmd::RejectStaged => {
                 // The stage under review, or the one the suffix names (0-based).
@@ -1931,7 +1938,7 @@ impl Editor {
                     .parse::<usize>()
                     .unwrap_or(self.stage_pick.min(n.saturating_sub(1)));
                 let Some(id) = self.session.project.stages(h).get(pick).map(|st| st.id) else {
-                    self.session.status = "no staged edit on this document".into();
+                    self.session.say("no staged edit on this document");
                     return true;
                 };
                 let edit = if cmd == Cmd::AcceptStaged {
@@ -1967,7 +1974,9 @@ impl Editor {
                         self.opts.grid = m.max(1);
                     }
                 }
-                _ => self.session.status = format!("{arg:?}: not a positive number of units"),
+                _ => self
+                    .session
+                    .say(format!("{arg:?}: not a positive number of units")),
             },
             Cmd::Props | Cmd::PropsEditor | Cmd::PropsView => self.open_props(h),
             Cmd::PropsField => self.props_field(node, arg),
@@ -1984,12 +1993,12 @@ impl Editor {
                 if view == View::Symbol {
                     self.open_text(TextFor::SymPin, "Symbol pin name");
                 } else {
-                    self.session.status = "symbol pins go in the symbol view (i)".into();
+                    self.session.say("symbol pins go in the symbol view (i)");
                 }
             }
             Cmd::InsertWire | Cmd::InsertSnapWire => {
                 if view != View::Schematic {
-                    self.session.status = "wires go in a schematic".into();
+                    self.session.say("wires go in a schematic");
                 } else {
                     let from = if cmd == Cmd::InsertSnapWire {
                         self.nearest_conn(ptr).unwrap_or(ptr)
@@ -2111,10 +2120,10 @@ impl Editor {
                 };
                 let kind = self.session.project.doc(h).map(Document::kind);
                 if !kind.is_some_and(|k| has_view(k, want)) {
-                    self.session.status = match want {
+                    self.session.say(match want {
                         View::Schematic => "a primitive has no schematic".to_owned(),
                         View::Symbol => "a testbench has no symbol".to_owned(),
-                    };
+                    });
                     return true;
                 }
                 if view != want {
@@ -2151,19 +2160,20 @@ impl Editor {
                 let value = choice.unwrap_or(arg);
                 match self.with_doc(h, |d, _| Some(cell::set_ops(d, field, value))) {
                     Some(Ok(ops)) => self.commit(reqs, h, "edit cell", ops),
-                    Some(Err(why)) => self.session.status = why,
+                    Some(Err(why)) => self.session.say(why),
                     None => return false,
                 }
             }
             Cmd::CellAddBench => {
                 let word = node.strip_prefix("cell.add.").unwrap_or(arg);
                 let Some(b) = cell::Bench::ALL.iter().copied().find(|b| b.word() == word) else {
-                    self.session.status = format!("cell.add_bench: unknown table {word}");
+                    self.session
+                        .say(format!("cell.add_bench: unknown table {word}"));
                     return true;
                 };
                 match self.with_doc(h, |d, _| Some(cell::add_bench_ops(d, b))) {
                     Some(Ok(ops)) => self.commit(reqs, h, "add bench record", ops),
-                    Some(Err(why)) => self.session.status = why,
+                    Some(Err(why)) => self.session.say(why),
                     None => return false,
                 }
             }
@@ -2175,7 +2185,7 @@ impl Editor {
                 let lang = node.strip_prefix("cell.add_impl.").unwrap_or(arg);
                 match self.with_doc(h, |d, _| Some(cell::add_impl_ops(d, lang))) {
                     Some(Ok(ops)) => self.commit(reqs, h, "add implementation", ops),
-                    Some(Err(why)) => self.session.status = why,
+                    Some(Err(why)) => self.session.say(why),
                     None => return false,
                 }
             }
@@ -2218,7 +2228,7 @@ impl Editor {
                 let ports = match self.with_doc(h, |d, _| Some(cell::impl_ports(d, r))) {
                     Some(Ok(p)) => p,
                     Some(Err(why)) => {
-                        self.session.status = why;
+                        self.session.say(why);
                         return true;
                     }
                     None => return false,
@@ -2227,13 +2237,14 @@ impl Editor {
                     let epoch = self.session.epoch(h);
                     let p = cell::PortSync { impl_row: r, ports };
                     self.port_sync = Some((h, epoch, p));
-                    self.session.status = "sync pins: review the changes, then Apply".into();
+                    self.session
+                        .say("sync pins: review the changes, then Apply");
                 } else {
                     let w = self.opts.symbol_width;
                     let ops = self.with_doc(h, |d, _| parity::symbol_from_ports_ops(d, &ports, w));
                     if ops.is_empty() {
-                        self.session.status =
-                            "symbol from ports: the body declares no ports".into();
+                        self.session
+                            .say("symbol from ports: the body declares no ports");
                     }
                     self.commit(reqs, h, "symbol from ports", ops);
                 }
@@ -2245,12 +2256,12 @@ impl Editor {
                     .take()
                     .filter(|(d, e, _)| *d == h && *e == epoch)
                 else {
-                    self.session.status = "sync pins: nothing pending".into();
+                    self.session.say("sync pins: nothing pending");
                     return true;
                 };
                 let ops = self.with_doc(h, |d, _| cell::sync_ops(d, &p.ports).1);
                 if ops.is_empty() {
-                    self.session.status = "pins already match the ports".into();
+                    self.session.say("pins already match the ports");
                 }
                 self.commit(reqs, h, "sync pins from ports", ops);
             }
@@ -2314,7 +2325,7 @@ impl Editor {
             }
             Cmd::DocsUp | Cmd::DocsDown => {
                 let Some(row) = self.page.sel else {
-                    self.session.status = "select a docs block first".into();
+                    self.session.say("select a docs block first");
                     return true;
                 };
                 let up = cmd == Cmd::DocsUp;
@@ -2326,7 +2337,7 @@ impl Editor {
             }
             Cmd::DocsDelete => {
                 let Some(row) = self.page.sel.take() else {
-                    self.session.status = "select a docs block first".into();
+                    self.session.say("select a docs block first");
                     return true;
                 };
                 self.page.editing = None;
@@ -2345,8 +2356,115 @@ impl Editor {
                     self.set_selection(sel);
                 }
             }
-            // Every command added for xschem parity (`parity.rs`).
-            other => return self.parity(other, arg, node, reqs),
+            // Every command added for xschem parity (`parity.rs`), listed so a new command
+            // is a compile error here and in `parity` until it has one dispatch arm.
+            Cmd::ContextMenu
+            | Cmd::EditFileOk
+            | Cmd::DiscardRecovery
+            | Cmd::Recover
+            | Cmd::UnselectArea
+            | Cmd::DeleteFiles
+            | Cmd::ExportProject
+            | Cmd::ExportEps
+            | Cmd::ExportPdfHier
+            | Cmd::ExportPdf
+            | Cmd::ExportPdfFull
+            | Cmd::ExportPng
+            | Cmd::ExportPngFull
+            | Cmd::ExportSvg
+            | Cmd::ImportProject
+            | Cmd::Merge
+            | Cmd::OpenMostRecent
+            | Cmd::OpenRecent
+            | Cmd::SaveAs
+            | Cmd::SaveAsSymbol
+            | Cmd::About
+            | Cmd::Help
+            | Cmd::AutoHighlight
+            | Cmd::CompareToggle
+            | Cmd::HighlightInstances
+            | Cmd::DupNames
+            | Cmd::PinMismatch
+            | Cmd::IncrementColor
+            | Cmd::RenameDups
+            | Cmd::SelectHighlighted
+            | Cmd::SelectOverlapped
+            | Cmd::CompareWith
+            | Cmd::CompareSwap
+            | Cmd::OnlyProbes
+            | Cmd::AllLayers
+            | Cmd::CurrentLayerOnly
+            | Cmd::SetLayer
+            | Cmd::ToggleLayer
+            | Cmd::AutoTrim
+            | Cmd::ExportColor
+            | Cmd::CrosshairSize
+            | Cmd::Crosshair
+            | Cmd::SnapCursor
+            | Cmd::CycleDialect
+            | Cmd::EnableStretch
+            | Cmd::ExportPage
+            | Cmd::FlatNetlist
+            | Cmd::PersistentWire
+            | Cmd::PngScale
+            | Cmd::ExportTransparent
+            | Cmd::EditFile
+            | Cmd::EditHeader
+            | Cmd::ToggleIgnore
+            | Cmd::Changelog
+            | Cmd::EditNetlist
+            | Cmd::AddGraph
+            | Cmd::AutoHighlightPlotted
+            | Cmd::ListProcesses
+            | Cmd::JobData
+            | Cmd::JobErrors
+            | Cmd::AttachLabels
+            | Cmd::PinsFromPorts
+            | Cmd::LabelsFromNets
+            | Cmd::LabelsFromNetsI
+            | Cmd::PortsFromNets
+            | Cmd::ListNets
+            | Cmd::ListNetsBuses
+            | Cmd::MakeSubcircuit
+            | Cmd::MakeSchematic
+            | Cmd::MakeSymbol
+            | Cmd::SymbolWidth
+            | Cmd::SymbolsCycle
+            | Cmd::SymbolsBoxesAll
+            | Cmd::SymbolsBoxesSub
+            | Cmd::SymbolsDetails
+            | Cmd::AlignGrid
+            | Cmd::BreakAtMouse
+            | Cmd::BreakAtMouseAlign
+            | Cmd::BreakAtPins
+            | Cmd::ClosePolygon
+            | Cmd::InsertArc
+            | Cmd::InsertCircle
+            | Cmd::InsertPolygon
+            | Cmd::JoinTrim
+            | Cmd::PackageStatus
+            | Cmd::RemoveThrough
+            | Cmd::Search
+            | Cmd::SelectConnected
+            | Cmd::SelectConnectedStop
+            | Cmd::LayerColor
+            | Cmd::DimColors
+            | Cmd::Fullscreen
+            | Cmd::LineWidthDown
+            | Cmd::LineWidthUp
+            | Cmd::ResetColors
+            | Cmd::GridDialog
+            | Cmd::LineWidth
+            | Cmd::SnapDialog
+            | Cmd::GridAxes
+            | Cmd::ErcWindow
+            | Cmd::ToolbarToggle
+            | Cmd::SymbolText
+            | Cmd::LayersDialog
+            | Cmd::FillToggle
+            | Cmd::VariableWidth
+            | Cmd::WavesClear
+            | Cmd::WavesLoad => return self.parity(cmd, arg, node, reqs),
         }
         true
     }
@@ -2527,7 +2645,7 @@ impl Editor {
 
     fn descend(&mut self, h: DocHandle, cmd: Cmd) {
         let Some(key) = self.one_instance() else {
-            self.session.status = "select exactly one instance".into();
+            self.session.say("select exactly one instance");
             return;
         };
         let Some(doc) = self.session.project.doc(h) else {
@@ -2543,21 +2661,22 @@ impl Editor {
         let cell = match self.session.project.resolve(h, &cellref) {
             Ok(r) => r,
             Err(c) => {
-                self.session.status = format!("{cellref}: {c} {}", c.meaning());
+                self.session.say(format!("{cellref}: {c} {}", c.meaning()));
                 return;
             }
         };
         let kind = self.session.project.cells().kind[cell];
         let symbol = matches!(cmd, Cmd::DescendSymbol | Cmd::OpenSymbolTab);
         if !symbol && kind != FileKind::Shcomp {
-            self.session.status =
-                format!("{cellref} is a primitive: no schematic (use i for its symbol)");
+            self.session.say(format!(
+                "{cellref} is a primitive: no schematic (use i for its symbol)"
+            ));
             return;
         }
         let child = match self.session.open_cell(cell) {
             Ok(c) => c,
             Err(e) => {
-                self.session.status = e;
+                self.session.say(e);
                 return;
             }
         };
@@ -2570,7 +2689,7 @@ impl Editor {
         if matches!(cmd, Cmd::OpenSubTab | Cmd::OpenSymbolTab) {
             self.session.open_tab(child, view);
         } else if let Err(e) = self.session.push_level(child, view, &name) {
-            self.session.status = e;
+            self.session.say(e);
         }
         self.scene_dirty = true;
     }
@@ -2585,8 +2704,8 @@ impl Editor {
             .any(|l| self.session.project.is_dirty(l.doc));
         if dirty && self.confirm != Some(Cmd::Close) {
             self.confirm = Some(Cmd::Close);
-            self.session.status =
-                "unsaved changes: Ctrl+S to save, or close again to discard".into();
+            self.session
+                .say("unsaved changes: Ctrl+S to save, or close again to discard");
             return;
         }
         self.confirm = None;
@@ -2594,7 +2713,7 @@ impl Editor {
         if self.session.tabs.is_empty() {
             match self.session.create(FileKind::Shcomp) {
                 Ok(d) => self.session.open_tab(d, View::Schematic),
-                Err(e) => self.session.status = e,
+                Err(e) => self.session.say(e),
             }
         }
         self.session.active = self.session.active.min(self.session.tabs.len() - 1);
@@ -2607,20 +2726,21 @@ impl Editor {
             return;
         };
         if self.session.project.is_dirty(h) {
-            self.session.status = "unsaved changes: save or undo them before reloading".into();
+            self.session
+                .say("unsaved changes: save or undo them before reloading");
             return;
         }
         match platform::read(&path) {
             Ok(bytes) => match self.session.project.external_change(h, &bytes) {
-                Ok(External::Unchanged) => self.session.status = "file unchanged".into(),
+                Ok(External::Unchanged) => self.session.say("file unchanged"),
                 Ok(e) => {
-                    self.session.status = format!("reloaded ({e:?})");
+                    self.session.say(format!("reloaded ({e:?})"));
                     self.session.bump(h);
                     self.session.flush_journal(h);
                 }
-                Err(c) => self.session.status = format!("reload: {c}"),
+                Err(c) => self.session.say(format!("reload: {c}")),
             },
-            Err(e) => self.session.status = e,
+            Err(e) => self.session.say(e),
         }
     }
 
@@ -2697,9 +2817,9 @@ impl Editor {
         match opened {
             Ok(d) => {
                 self.show_opened(d);
-                self.session.status = format!("opened {}", self.session.name(d));
+                self.session.say(format!("opened {}", self.session.name(d)));
             }
-            Err(e) => self.session.status = format!("file.open {name}: {e}"),
+            Err(e) => self.session.say(format!("file.open {name}: {e}")),
         }
     }
 
@@ -2829,8 +2949,8 @@ impl Editor {
         match (purpose, pick) {
             (ChooseFor::Insert, Pick::Cell(row)) => {
                 let Some(cellref) = self.cellref_for(h, row) else {
-                    self.session.status =
-                        "that cell is not referenceable from here (lib:cell or ./cell)".into();
+                    self.session
+                        .say("that cell is not referenceable from here (lib:cell or ./cell)");
                     return;
                 };
                 let at = self.pointer_world_snapped();
@@ -2842,7 +2962,7 @@ impl Editor {
             }
             (ChooseFor::Open, Pick::Cell(row)) => match self.session.open_cell(row) {
                 Ok(d) => self.show_opened(d),
-                Err(e) => self.session.status = e,
+                Err(e) => self.session.say(e),
             },
             (ChooseFor::Waves, Pick::File(f)) => self.open_waves(f),
             (ChooseFor::Merge, Pick::Cell(row)) => self.merge_cell(row),
@@ -2874,17 +2994,17 @@ impl Editor {
         let bytes = match platform::read(&path) {
             Ok(b) => b,
             Err(e) => {
-                self.session.status = e;
+                self.session.say(e);
                 return;
             }
         };
         match self.waves.as_mut() {
             Some(w) => match w.reload(&title, &bytes) {
-                Ok(s) | Err(s) => self.session.status = s,
+                Ok(s) | Err(s) => self.session.say(s),
             },
             None => match WavesView::open(&title, &bytes) {
                 Ok(w) => self.waves = Some(w),
-                Err(e) => self.session.status = e,
+                Err(e) => self.session.say(e),
             },
         }
     }
@@ -2898,7 +3018,7 @@ impl Editor {
             _ => None,
         };
         let Some(key) = key else {
-            self.session.status = "select one object to edit its properties".into();
+            self.session.say("select one object to edit its properties");
             return;
         };
         let Some(doc) = self.session.project.doc(h) else {
@@ -2992,7 +3112,8 @@ impl Editor {
                 fields.push(field("dir", "dir (in/out/inout)", &rec.fields[1], true));
             }
             _ => {
-                self.session.status = format!("{}: no editable properties yet", rec.kind.word());
+                self.session
+                    .say(format!("{}: no editable properties yet", rec.kind.word()));
                 return;
             }
         }
@@ -3599,7 +3720,7 @@ impl Editor {
             }
         };
         if let Some(e) = err {
-            self.session.status = e.into();
+            self.session.say(e);
             return;
         }
         self.commit(reqs, h, label, ops);
@@ -3643,12 +3764,13 @@ impl Editor {
                     push_req(reqs, doc, Edit::Tx(Transaction { label, mode, ops }));
                 }
                 Err(e) => {
-                    self.session.status = format!("plugin edit rejected: {:?}", e.first());
+                    self.session
+                        .say(format!("plugin edit rejected: {:?}", e.first()));
                 }
             }
         }
         if let Some(l) = d.logs.last() {
-            self.session.status.clone_from(l);
+            self.session.say(l.clone());
         }
         if let Some((lines, failed)) = &mut self.kept_log {
             // Bounded by the caller draining it each frame; a stuck caller keeps the newest.
@@ -3735,15 +3857,16 @@ impl Editor {
                     let _ = self.host.push(None, &ev);
                     changed = true;
                 }
-                Outcome::Nothing => self.session.status = "nothing to undo/redo".into(),
+                Outcome::Nothing => self.session.say("nothing to undo/redo"),
                 Outcome::Rejected(errs) => {
                     let e = errs.first().map_or(String::new(), |e| {
                         format!("{} {}", e.code, e.code.meaning())
                     });
-                    self.session.status = format!("edit rejected: {e}");
+                    self.session.say(format!("edit rejected: {e}"));
                 }
                 Outcome::Refused(c) => {
-                    self.session.status = format!("edit refused: {c} {}", c.meaning());
+                    self.session
+                        .say(format!("edit refused: {c} {}", c.meaning()));
                 }
             }
         }
@@ -3904,11 +4027,11 @@ impl Editor {
         match self.session.reload() {
             Ok(()) => {
                 let n = self.session.project.libs().name.len() - 1;
-                if self.session.status.is_empty() {
-                    self.session.status = format!("project reloaded: {n} libraries");
+                if self.session.status().is_empty() {
+                    self.session.say(format!("project reloaded: {n} libraries"));
                 }
             }
-            Err(e) => self.session.status = e,
+            Err(e) => self.session.say(e),
         }
         self.symbols = scene::Symbols::default();
         self.symbols_key = None;
@@ -4092,7 +4215,7 @@ impl Editor {
                 (loaded, err) =
                     docs::load_images(doc, &self.session.root, &mut self.shell.text, failed);
                 if let Some(e) = err {
-                    self.session.status = e;
+                    self.session.say(e);
                 }
             }
         }
@@ -4106,14 +4229,14 @@ impl Editor {
     /// plot slots it found (`graphs`, which `paint` reads); no I/O and no model table, so it may
     /// run more than once a frame. Returns whether the layout changed.
     fn compose_ui(&mut self, relayout: bool) -> bool {
-        let (status, failed) = (self.session.status.len(), self.page.images_failed.len());
+        let (status, failed) = (self.session.status().len(), self.page.images_failed.len());
         let (text, graphs) = self.state_contribution();
         self.graphs = graphs;
         self.shell.set_state(&text);
         let changed = self.shell.refresh(self.viewport, relayout);
         self.ui_stale = false;
         assert_eq!(
-            self.session.status.len(),
+            self.session.status().len(),
             status,
             "compose writes no status"
         );
@@ -4369,7 +4492,7 @@ impl Editor {
             units(my),
             self.selection().len(),
             s.hier_path(),
-            s.status
+            s.status()
         );
         let _ = writeln!(t, "set status.msg label {}", q(&msg));
         let flags = [
@@ -4701,14 +4824,14 @@ mod tests {
         .expect("fixture opens");
         assert!(ed.docs_shown(), "the OTA opens beside its docs page");
         ed.viewport = (1280.0, 800.0);
-        ed.session.status = "before".into();
+        ed.session.say("before");
         // The first layout gives the canvas its rect, which the status line then reads.
         ed.compose_ui(false);
         ed.compose_ui(false);
         let first = ed.shell.layout.rect().to_vec();
         assert!(!ed.compose_ui(false), "the same tables lay out nothing new");
         assert_eq!(ed.shell.layout.rect(), &first[..]);
-        assert_eq!(ed.session.status, "before", "compose writes no status");
+        assert_eq!(ed.session.status(), "before", "compose writes no status");
         assert!(ed.page.images_failed.is_empty(), "compose reads no file");
         assert_eq!(
             ed.ui_inputs(),
@@ -4717,9 +4840,9 @@ mod tests {
         );
         assert_eq!(ed.page.images_failed, ["img/missing.png"]);
         assert!(
-            ed.session.status.contains("missing.png"),
+            ed.session.status().contains("missing.png"),
             "{}",
-            ed.session.status
+            ed.session.status()
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

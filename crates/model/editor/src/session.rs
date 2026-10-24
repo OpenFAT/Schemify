@@ -136,8 +136,9 @@ pub struct Session {
     pub tabs: Vec<Tab>,
     /// Active tab index.
     pub active: usize,
-    /// Status line message (last command result or error).
-    pub status: String,
+    /// Status line message (last command result or error); written only through
+    /// [`Session::say`], [`Session::note`] and [`Session::take_status`].
+    status: String,
     untitled: u32,
     /// Documents whose journal offers unsaved edits from a crash, waiting for the user's
     /// decision (`decide_recovery`): (document, journal records offered).
@@ -567,6 +568,37 @@ impl Session {
         assert!(self.tabs[self.active].text.is_some());
     }
 
+    /// The status line: the message the last step left (last wins).
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+
+    /// Sets the status line; the newest message wins. A message past [`STATUS_MAX`] bytes is
+    /// cut at a character boundary (a plugin's error text is untrusted in length).
+    pub fn say(&mut self, msg: impl Into<String>) {
+        self.status = msg.into();
+        cut(&mut self.status);
+        assert!(self.status.len() <= STATUS_MAX);
+    }
+
+    /// Appends `note` to the status line, `; `-separated.
+    pub fn note(&mut self, note: &str) {
+        if !self.status.is_empty() {
+            self.status.push_str("; ");
+        }
+        self.status.push_str(note);
+        cut(&mut self.status);
+        assert!(self.status.len() <= STATUS_MAX);
+    }
+
+    /// Takes the status line and leaves it empty: a step that runs a command on a clean
+    /// line and puts the old message back when the command says nothing.
+    pub fn take_status(&mut self) -> String {
+        let s = std::mem::take(&mut self.status);
+        assert!(self.status.is_empty());
+        s
+    }
+
     /// The text view of the active tab, if it is one.
     pub fn text_view(&self) -> Option<&TextView> {
         self.tabs.get(self.active).and_then(|t| t.text.as_ref())
@@ -636,5 +668,19 @@ impl crate::spines::Cells for Session {
 
     fn open_row(&mut self, row: u32) -> Result<(), String> {
         self.open_cell(row as usize).map(|_| ())
+    }
+}
+
+/// The longest status line in bytes; longer messages are cut.
+pub const STATUS_MAX: usize = 1 << 14;
+
+/// Cuts `s` to at most [`STATUS_MAX`] bytes at a character boundary.
+fn cut(s: &mut String) {
+    if s.len() > STATUS_MAX {
+        let mut at = STATUS_MAX;
+        while !s.is_char_boundary(at) {
+            at -= 1;
+        }
+        s.truncate(at);
     }
 }

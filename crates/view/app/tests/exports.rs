@@ -101,9 +101,9 @@ fn png_exports_scale_and_cover_the_whole_drawing() {
     );
     assert!(!huge.exists());
     assert!(
-        s.ed.session().status.contains("lower the PNG scale"),
+        s.ed.session().status().contains("lower the PNG scale"),
         "{}",
-        s.ed.session().status
+        s.ed.session().status()
     );
 }
 
@@ -144,7 +144,7 @@ fn pdf_and_eps_fit_the_export_page_and_embed_the_ui_font() {
     assert!(e.contains("/FontType 42 def") && e.contains("glyphshow"));
     // Negative space: an unknown page is refused and the page stays.
     run(&mut s, "options.export_page_size", "a9");
-    assert!(s.ed.session().status.contains("not a page"));
+    assert!(s.ed.session().status().contains("not a page"));
     assert_eq!(s.ed.opts().export_page.name(), "letter portrait");
 }
 

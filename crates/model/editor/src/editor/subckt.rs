@@ -303,7 +303,8 @@ impl Editor {
             })
             .collect();
         if sel.is_empty() {
-            self.session.status = "select the components to move into a new cell".into();
+            self.session
+                .say("select the components to move into a new cell");
             return;
         }
         let Some(path) = self.session.path(h).map(Path::to_path_buf) else {
@@ -313,7 +314,7 @@ impl Editor {
         let width = self.opts.symbol_width;
         let made = {
             let (Some(cell), Some(doc)) = (self.cell.as_ref(), self.session.project.doc(h)) else {
-                self.session.status = "the cell is not elaborated".into();
+                self.session.say("the cell is not elaborated");
                 return;
             };
             let n = &cell.nets;
@@ -322,7 +323,7 @@ impl Editor {
                 || n.label_net.len() != doc.labels().id.len()
                 || n.port_net.len() != doc.ports().id.len();
             if stale {
-                self.session.status = "the cell is not elaborated".into();
+                self.session.say("the cell is not elaborated");
                 return;
             }
             let mut ids = Ids::new(&mut self.rng);
@@ -331,12 +332,12 @@ impl Editor {
         let (file, text, ops, ports) = match made {
             Ok(m) => m,
             Err(e) => {
-                self.session.status = format!("make subcircuit: {e}");
+                self.session.say(format!("make subcircuit: {e}"));
                 return;
             }
         };
         if let Err(e) = platform::write_atomic(&file, text.as_bytes()) {
-            self.session.status = e;
+            self.session.say(e);
             return;
         }
         self.session.reindex(&file);
@@ -347,7 +348,8 @@ impl Editor {
         self.commit(reqs, h, "make subcircuit", ops);
         self.set_selection(Vec::new());
         self.set_partial(Vec::new());
-        self.session.status = format!("new cell {} with {ports} port(s)", file.display());
+        self.session
+            .say(format!("new cell {} with {ports} port(s)", file.display()));
     }
 }
 

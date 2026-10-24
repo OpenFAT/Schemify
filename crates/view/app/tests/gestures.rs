@@ -24,7 +24,7 @@ fn run(s: &mut Session, name: &str, arg: &str) {
 }
 
 fn status(s: &Session) -> String {
-    s.ed.session().status.clone()
+    s.ed.session().status().to_owned()
 }
 
 /// Replaces the active document's text through Properties → Edit file (one undo).

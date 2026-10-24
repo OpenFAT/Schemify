@@ -89,7 +89,7 @@ fn owned(s: &Session, prefix: &str) -> Vec<String> {
 }
 
 fn status(s: &Session) -> String {
-    s.ed.session().status.clone()
+    s.ed.session().status().to_owned()
 }
 
 fn active_path(s: &Session) -> PathBuf {
@@ -316,7 +316,7 @@ fn recent_files_persist_and_reopen() {
     // Negative space: an index past the list is a status message, not a crash.
     ed.command("file.open_recent.9", "");
     ed.update(&InputEvents::default(), common::VIEW, 5);
-    assert!(ed.session().status.contains("no recent file"));
+    assert!(ed.session().status().contains("no recent file"));
     let _ = std::fs::remove_dir_all(&state);
     let _ = std::fs::remove_dir_all(&dir);
 }
