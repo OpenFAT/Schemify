@@ -2,7 +2,7 @@
 //! the run spine, the waves dock's cross-probe, OP back-annotation and staged edits. Kept
 //! beside the frame spine in [`super`] as more `impl Editor` steps: each is called once per
 //! frame from `update` (or from a command), reads the tables it names and writes only the
-//! editor's own state (`annotations` through `elab::Annotations::apply`, `doc` only through
+//! editor's own state (`annotations` through `elab::Annotations::replace` and `patch`, `doc` only through
 //! edit requests).
 
 use std::path::PathBuf;

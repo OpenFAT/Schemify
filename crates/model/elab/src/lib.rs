@@ -11,7 +11,7 @@
 //!
 //! - frame (editor): [`CellState::build`] once per open document, then
 //!   [`CellState::recompute`]`(project, doc, ops)` after `doc::apply_edits` →
-//!   [`Annotations::apply`]`(annotation_requests)`.
+//!   [`Annotations::replace`]`(annotation_request)` per source (or [`Annotations::patch`]).
 //! - netlist: [`elaborate`]`(project, top, request)` → gate on
 //!   [`Elab::violations`] (`blocking`) → `netlist::emit(&elab, dialect)`.
 //!

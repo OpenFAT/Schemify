@@ -614,7 +614,7 @@ mod tests {
             severity: Severity::Info,
             text: x.to_owned(),
         };
-        a.apply(&[AnnotationRequest {
+        a.replace(AnnotationRequest {
             source: SOURCE_OP.to_owned(),
             marks: vec![
                 mark("/b", "2"),
@@ -622,7 +622,7 @@ mod tests {
                 mark("/b", "3"),
                 mark("/c", "4"),
             ],
-        }]);
+        });
         let texts =
             |t: &str| -> Vec<&str> { marks_on(&a, t).iter().map(|m| m.text.as_str()).collect() };
         assert_eq!(texts("/b"), ["2", "3"]);

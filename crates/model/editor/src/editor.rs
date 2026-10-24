@@ -10,7 +10,7 @@
 //! app::load_symbols(active doc)                        → symbol cache from the library index
 //! elab::CellState::recompute(doc, ops, plugin fns)     → values (D19; incremental per edit)
 //! docs::cache_ops(values) → doc::apply_edits           → D20 `cached` write-back, same undo
-//! elab::apply_annotations(checks, op)                  → annotations (replace per source)
+//! elab::Annotations::{replace, patch}(checks, op)      → annotations (per source)
 //! run::poll(jobs) → results; optimizer ask/tell        → results table, plots, staged edit
 //! app::ui_inputs(plugin sets, docs page, images: I/O)  → shell inputs, status
 //! ui::compose(base, plugin sets, state + docs page)    → ui_nodes; ui::layout → ui_layout
@@ -623,7 +623,7 @@ pub struct Editor {
     parked: Vec<Parked>,
     /// An undo or redo ran this frame: cache writes wait (a commit would clear redo).
     undid: bool,
-    /// The annotation overlay (owner: `elab`, written through `Annotations::apply`): sources
+    /// The annotation overlay (owner: `elab`, written through `Annotations::replace` and `patch`): sources
     /// `checks` (live violations) and `op` (OP back-annotation).
     annotations: Annotations,
     /// Highlighted nets, keyed across the hierarchy (emitted names, else level paths);

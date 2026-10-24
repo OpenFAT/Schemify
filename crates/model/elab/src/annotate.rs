@@ -73,19 +73,9 @@ pub struct Annotations {
 }
 
 impl Annotations {
-    /// Applies requests in order (the frame spine's `elab::apply_annotations`): each
-    /// replaces its source's marks. Marks past [`ANNOTATIONS_MAX`] are dropped.
-    ///
-    /// Cost: O(rows + new marks · log rows) per request; every mark is cloned (see
-    /// [`Annotations::replace`] for a request the caller gives up).
-    pub fn apply(&mut self, requests: &[AnnotationRequest]) {
-        for req in requests {
-            self.replace(req.clone());
-        }
-    }
-
-    /// [`Annotations::apply`] of one request, moving its marks in instead of cloning them
-    /// (the editor posts tens of thousands of check marks on a large cell).
+    /// Replaces the marks of `req.source` by `req.marks`, moved in (the editor posts tens
+    /// of thousands of check marks on a large cell). Marks past [`ANNOTATIONS_MAX`] are
+    /// dropped.
     ///
     /// Cost: O(rows) to drop the source's old marks when it has some, plus O(new marks ·
     /// log rows).
@@ -273,38 +263,29 @@ mod tests {
             source: s.to_owned(),
             marks: m,
         };
-        a.apply(&[
-            req("checks", vec![mark("/X1", "a"), mark("0abcde", "b")]),
-            req("op", vec![mark("/X1", "1.2V")]),
-        ]);
+        a.replace(req("checks", vec![mark("/X1", "a"), mark("0abcde", "b")]));
+        a.replace(req("op", vec![mark("/X1", "1.2V")]));
         assert_eq!(a.len(), 3);
         assert_eq!(a.on("/X1").count(), 2);
-        a.apply(&[req("checks", vec![mark("/X2", "c")])]);
+        a.replace(req("checks", vec![mark("/X2", "c")]));
         assert_eq!(a.len(), 2);
         assert_eq!(
             a.on("/X1").map(|m| m.text.as_str()).collect::<Vec<_>>(),
             ["1.2V"]
         );
-        a.apply(&[req("op", vec![])]);
+        a.replace(req("op", vec![]));
         assert!(a.has_source("checks") && !a.has_source("op"));
-        // `replace` moves the request in and agrees with `apply`.
         let mut r = a.clone();
-        a.apply(&[req("op", vec![mark("/X1", "1.2V"), mark("/X0", "0V")])]);
         r.replace(req("op", vec![mark("/X1", "1.2V"), mark("/X0", "0V")]));
-        assert_eq!(a, r);
         r.replace(req("checks", vec![]));
         assert_eq!(r.iter().map(|m| m.0).collect::<Vec<_>>(), ["op", "op"]);
         // Order does not depend on request order.
         let mut b = Annotations::default();
-        b.apply(&[
-            req("z", vec![mark("/A", "1")]),
-            req("a", vec![mark("/A", "1")]),
-        ]);
+        b.replace(req("z", vec![mark("/A", "1")]));
+        b.replace(req("a", vec![mark("/A", "1")]));
         let mut c = Annotations::default();
-        c.apply(&[
-            req("a", vec![mark("/A", "1")]),
-            req("z", vec![mark("/A", "1")]),
-        ]);
+        c.replace(req("a", vec![mark("/A", "1")]));
+        c.replace(req("z", vec![mark("/A", "1")]));
         assert_eq!(b, c);
     }
 
@@ -331,16 +312,14 @@ mod tests {
             let checks: Vec<Mark> = (0..rnd(12)).map(|_| m(&mut rnd)).collect();
             let op: Vec<Mark> = (0..rnd(6)).map(|_| m(&mut rnd)).collect();
             let mut a = Annotations::default();
-            a.apply(&[
-                AnnotationRequest {
-                    source: "checks".into(),
-                    marks: checks.clone(),
-                },
-                AnnotationRequest {
-                    source: "op".into(),
-                    marks: op,
-                },
-            ]);
+            a.replace(AnnotationRequest {
+                source: "checks".into(),
+                marks: checks.clone(),
+            });
+            a.replace(AnnotationRequest {
+                source: "op".into(),
+                marks: op,
+            });
             // Drop some marks, add some new ones.
             let mut kept = checks.clone();
             let mut gone = Vec::new();
