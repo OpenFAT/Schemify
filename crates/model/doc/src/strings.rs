@@ -133,7 +133,9 @@ impl Strings {
         let len = (self.table.len() * 2).max(64);
         self.table = vec![0; len];
         for i in 0..self.len() {
-            let slot = self.probe(self.get(Sym(i))).expect_err("strings are distinct");
+            let slot = self
+                .probe(self.get(Sym(i)))
+                .expect_err("strings are distinct");
             self.table[slot] = i + 1;
         }
         assert!(self.ends.len() * 2 < self.table.len());

@@ -197,9 +197,11 @@ fn payload(d: &FormatDoc<'_>, r: u32, kind: RecordKind, fields: &[&str]) -> Reco
     rec
 }
 
-fn number(text: &str) -> Result<u32, Code> {
-    let ok = !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
-    ok.then(|| text.parse().ok()).flatten().ok_or(Code::E029)
+/// Parses a decimal of digits only (no sign, no `+`), as op text and journal records
+/// write row indices and sequence numbers.
+fn number<T: std::str::FromStr>(text: &str) -> Option<T> {
+    let digits = text.bytes().all(|b| b.is_ascii_digit());
+    digits.then(|| text.parse().ok()).flatten()
 }
 
 fn decode_op(d: &FormatDoc<'_>, r: u32, file: FileKind) -> Result<Op, Code> {
@@ -225,7 +227,7 @@ fn decode_op(d: &FormatDoc<'_>, r: u32, file: FileKind) -> Result<Op, Code> {
             };
             Op::Insert {
                 rec: payload(d, r, kind_of(w, file)?, rest),
-                at: Some(number(row)?),
+                at: Some(number(row).ok_or(Code::E029)?),
             }
         }
         "delete" if f.len() == 2 => Op::Delete(target(&f)?),
@@ -236,7 +238,7 @@ fn decode_op(d: &FormatDoc<'_>, r: u32, file: FileKind) -> Result<Op, Code> {
         }
         "set_field" if f.len() == 4 => Op::SetField {
             target: target(&f)?,
-            index: number(f[2])?,
+            index: number(f[2]).ok_or(Code::E029)?,
             value: f[3].to_owned(),
         },
         "set_attr" if f.len() >= 3 => Op::SetAttr {
@@ -251,7 +253,7 @@ fn decode_op(d: &FormatDoc<'_>, r: u32, file: FileKind) -> Result<Op, Code> {
         },
         "reorder" if f.len() == 3 => Op::Reorder {
             target: target(&f)?,
-            to: number(f[2])?,
+            to: number(f[2]).ok_or(Code::E029)?,
         },
         "delete" | "set_field" | "set_attr" | "remove_attr" | "reorder" => return Err(Code::E029),
         _ => return Err(Code::E027),
@@ -404,13 +406,6 @@ pub(crate) fn encode_records<E: Borrow<Entry>>(out: &mut String, recs: &[JRec<E>
     });
 }
 
-fn seq(text: &str) -> Option<u64> {
-    text.bytes()
-        .all(|b| b.is_ascii_digit())
-        .then(|| text.parse().ok())
-        .flatten()
-}
-
 /// Decodes journal records from `d`, stopping at the first record that is incomplete
 /// or malformed (a torn tail: everything after it is dropped).
 fn decode_records(d: &FormatDoc<'_>, file: FileKind) -> Vec<JRec> {
@@ -420,9 +415,9 @@ fn decode_records(d: &FormatDoc<'_>, file: FileKind) -> Vec<JRec> {
         let f: Vec<&str> = d.fields(r).collect();
         let rec = match (d.record_word(r), f.as_slice()) {
             ("base", [h]) => Some(JRec::Base((*h).to_owned())),
-            ("undo", [s]) => seq(s).map(JRec::Undo),
-            ("redo", [s]) => seq(s).map(JRec::Redo),
-            ("save", [s, h]) => seq(s).map(|s| JRec::Save(s, (*h).to_owned())),
+            ("undo", [s]) => number(s).map(JRec::Undo),
+            ("redo", [s]) => number(s).map(JRec::Redo),
+            ("save", [s, h]) => number(s).map(|s| JRec::Save(s, (*h).to_owned())),
             (w @ ("tx" | "hist"), [s, ms, label]) => {
                 let entry = decode_entry(d, r, file, s, ms, label);
                 r += 1; // the `inverse` record
@@ -461,8 +456,8 @@ fn decode_entry(
         ops_from_text(&text, file).ok()
     };
     let entry = Entry {
-        seq: seq(s)?,
-        unix_ms: seq(ms)?,
+        seq: number(s)?,
+        unix_ms: number(ms)?,
         label: label.to_owned(),
         forward: ops(r)?,
         inverse: ops(inv)?,

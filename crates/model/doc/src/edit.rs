@@ -453,16 +453,14 @@ fn apply_one(
             }
             let (loc, prior) = read(doc, target)?;
             let mut rec = prior.clone();
-            set_attr(&mut rec, key, values);
+            let line = set_attr(&mut rec, key, values);
             let Some(loc) = loc else {
                 return put_header(doc, &mut rec);
             };
             doc.check(&rec)?;
             inst_params(&mut rec, params, Scope::Key(key))?;
             // Journal the snapped value: it is what was stored (edits spec §1).
-            if let Some(a) = find_set_line(&rec, key, values) {
-                values.clone_from(&a.values);
-            }
+            values.clone_from(&rec.attrs[line].values);
             modify(doc, loc, prior, rec)
         }
         Op::RemoveAttr { target, key, first } => {
@@ -618,28 +616,28 @@ fn inst_params(rec: &mut RecordBuf, params: &ParamMap, scope: Scope<'_>) -> Resu
     Ok(())
 }
 
-/// Sets an attribute line on an owned record (see [`Op::SetAttr`]).
-fn set_attr(rec: &mut RecordBuf, key: &str, values: &[String]) {
+/// Sets an attribute line on an owned record (see [`Op::SetAttr`]); returns its index.
+fn set_attr(rec: &mut RecordBuf, key: &str, values: &[String]) -> usize {
     let repeat = rec.kind.schema().attr(key).is_some_and(|(_, a)| a.repeat);
     let pos = rec
         .attrs
         .iter()
         .position(|a| a.key == key && (!repeat || a.values.first() == values.first()));
-    match pos {
-        Some(i) => rec.attrs[i].values = values.to_vec(),
-        None => rec.attrs.push(Attr {
-            key: key.to_owned(),
-            values: values.to_vec(),
-        }),
-    }
-    assert!(rec.attrs.iter().any(|a| a.key == key));
-}
-
-fn find_set_line<'r>(rec: &'r RecordBuf, key: &str, values: &[String]) -> Option<&'r Attr> {
-    let repeat = rec.kind.schema().attr(key).is_some_and(|(_, a)| a.repeat);
-    rec.attrs
-        .iter()
-        .find(|a| a.key == key && (!repeat || a.values.first() == values.first()))
+    let i = match pos {
+        Some(i) => {
+            rec.attrs[i].values = values.to_vec();
+            i
+        }
+        None => {
+            rec.attrs.push(Attr {
+                key: key.to_owned(),
+                values: values.to_vec(),
+            });
+            rec.attrs.len() - 1
+        }
+    };
+    assert!(rec.attrs[i].key == key);
+    i
 }
 
 // ------------------------------------------------------------------ snapping
