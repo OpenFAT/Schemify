@@ -114,6 +114,69 @@ impl Startup {
     }
 }
 
+/// `schemify-gui`'s usage text (spec §7): the whole error for a bad editor command line.
+pub const GUI_USAGE: &str = "\
+usage: schemify-gui [--clean | -u <init.lua>] [<project-dir>|<cell-file>] [--no-default-ui]
+                    [--rpc <socket>]
+       schemify-gui [--clean | -u <init.lua>] cmd <project-dir>|<cell-file> <command> [<arg>...]
+  --rpc  serve the JSON-RPC command stream on a socket path or 127.0.0.1:<port>
+  cmd    run one command (core or plugin) without a window and exit (schemify cmd)
+";
+
+/// The editor's command line (spec §7): `[flags] [edit] [<path>] [--no-default-ui]
+/// [--rpc <socket>]`, the words after the flags in any order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Launch {
+    /// The global flags ([`Startup::parse`]).
+    pub startup: Startup,
+    /// The project directory or cell file; `None` when not given.
+    pub path: Option<PathBuf>,
+    /// `--no-default-ui`: the bare core without the default UI plugin (D6).
+    pub no_default_ui: bool,
+    /// `--rpc <socket>`: a socket path or `127.0.0.1:<port>` (rpc spec §3.2).
+    pub rpc: Option<String>,
+}
+
+impl Launch {
+    /// Parses the editor's command line (not `cmd`, which `schemify-gui` checks first).
+    /// The word `edit` right after the flags is optional, so
+    /// `cargo run -p schemify-app -- edit <path>` works.
+    ///
+    /// # Errors
+    ///
+    /// A bad global flag: its message, a newline, then [`GUI_USAGE`]. `--rpc` without a
+    /// socket, a second `--rpc`, an unknown `-` word or a second path: [`GUI_USAGE`] alone.
+    pub fn parse(args: &[String]) -> Result<Launch, String> {
+        let (startup, first) = Startup::parse(args).map_err(|e| format!("{e}\n{GUI_USAGE}"))?;
+        let mut rest = &args[first..];
+        if rest.first().is_some_and(|a| a == "edit") {
+            rest = &rest[1..];
+        }
+        let mut launch = Launch {
+            startup,
+            ..Launch::default()
+        };
+        let mut i = 0;
+        while i < rest.len() {
+            match rest[i].as_str() {
+                "--rpc" if launch.rpc.is_none() => {
+                    // The next word is the socket whatever it looks like.
+                    launch.rpc = Some(rest.get(i + 1).ok_or(GUI_USAGE)?.clone());
+                    i += 1;
+                }
+                "--no-default-ui" => launch.no_default_ui = true,
+                a if a.starts_with('-') => return Err(GUI_USAGE.into()),
+                a if launch.path.is_none() => launch.path = Some(PathBuf::from(a)),
+                _ => return Err(GUI_USAGE.into()),
+            }
+            i += 1;
+        }
+        assert!(i == rest.len());
+        assert!(first <= args.len());
+        Ok(launch)
+    }
+}
+
 /// Options (`schemify.opt.<key>`, spec §3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Opts {

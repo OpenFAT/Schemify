@@ -183,3 +183,5 @@ The user-config table (owner: `crates/model/config`; readers: both binaries):
 ## 7. Binaries
 
 `schemify` is the headless core: CLI, config, package manager. It links no GPU, window, text-shaping, accessibility or LaTeX code (D39, checked by `crates/model/cli/tests/deps.rs`). `schemify edit …` runs `schemify-gui` from the directory of the running `schemify`, else from `PATH`, passing the remaining arguments; when neither exists it exits 2 saying so.
+
+`schemify-gui [flags] [edit] [<project-dir>|<cell-file>] [--no-default-ui] [--rpc <socket>]`: after the flags (§2) an optional word `edit`, then at most one path, `--no-default-ui` and `--rpc <socket>` in any order (the word after `--rpc` is the socket, whatever it looks like). `--rpc` without a socket, a second `--rpc`, any other word starting with `-` or a second path prints the usage text and exits 2; a bad flag prints its message first. The config crate parses the line (`Launch::parse`) and holds the usage text (`GUI_USAGE`).
