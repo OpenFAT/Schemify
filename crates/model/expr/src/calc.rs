@@ -279,7 +279,7 @@ fn run<P, R>(
     inputs: &[Value<'_>],
     plot: &Plot<'_>,
     plugin: &mut P,
-    strs: &mut Vec<u8>,
+    strs: &mut String,
     cs: &mut CalcScratch,
 ) -> Result<CV, Error>
 where
@@ -513,8 +513,8 @@ fn common_axis(args: &[CV], axes: &[Axis]) -> Result<u32, Error> {
 fn elementwise(
     args: &[CV],
     axes: &[Axis],
-    strs: &mut Vec<u8>,
-    mut f: impl FnMut(&[V], &mut Vec<u8>) -> Result<V, Error>,
+    strs: &mut String,
+    mut f: impl FnMut(&[V], &mut String) -> Result<V, Error>,
 ) -> Result<Col, Error> {
     let axis = common_axis(args, axes)?;
     let ax = &axes[axis as usize];
@@ -601,7 +601,7 @@ impl ColBuilder {
 }
 
 /// Column binary operator; real `+ - * /` on one axis skip the per-element kernel.
-fn col_binary(op: OpKind, a: CV, b: CV, axes: &[Axis], strs: &mut Vec<u8>) -> Result<Col, Error> {
+fn col_binary(op: OpKind, a: CV, b: CV, axes: &[Axis], strs: &mut String) -> Result<Col, Error> {
     enum R<'a> {
         S(f64),
         C(&'a [f64], u32),
@@ -765,7 +765,7 @@ fn call_cv(
     b: Builtin,
     mut args: Vec<CV>,
     axes: &mut Vec<Axis>,
-    strs: &mut Vec<u8>,
+    strs: &mut String,
 ) -> Result<CV, Error> {
     let name = b.name();
     if args.iter().all(|a| matches!(a, CV::S(_))) {

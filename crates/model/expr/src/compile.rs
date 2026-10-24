@@ -794,10 +794,7 @@ impl Compiler {
                 self.prog.spans.truncate(f.start as usize);
                 let v = match v {
                     V::Str(s, len) => {
-                        let text = core::str::from_utf8(
-                            &self.scratch.strs[s as usize..(s + len) as usize],
-                        )
-                        .expect("scratch strings are UTF-8");
+                        let text = eval::str_at(&self.scratch.strs, s, len);
                         let name = intern(&mut self.prog.pool, text);
                         V::Str(name.start, name.len)
                     }

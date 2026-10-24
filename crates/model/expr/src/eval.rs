@@ -3,11 +3,10 @@
 //! element. Semantics: spec §4 (promotion, short-circuit, X003/X010).
 
 use core::cmp::Ordering;
-use core::fmt::Write;
 
 use crate::compile::{Builtin, Mode, OpKind, Program};
 use crate::dmath::{self, Complex};
-use crate::text::{Bytes, fmt_eng, fmt_num};
+use crate::text::{write_eng, write_int, write_num};
 use crate::{Code, Error, MAX_PLUGIN_ARGS, MAX_STR_BYTES, Span, Value};
 
 /// Total bytes of strings one evaluation may create before `X002`.
@@ -33,7 +32,7 @@ pub(crate) enum V {
 #[derive(Debug, Default)]
 pub struct Scratch {
     pub(crate) stack: Vec<V>,
-    pub(crate) strs: Vec<u8>,
+    pub(crate) strs: String,
     pub(crate) calc: crate::calc::CalcScratch,
 }
 
@@ -271,7 +270,7 @@ pub(crate) fn call_plugin<P, R>(
     plugin: &mut P,
     slot: u32,
     args: &[V],
-    strs: &[u8],
+    strs: &str,
 ) -> Result<R, Error>
 where
     P: FnMut(u32, &[Value<'_>]) -> Result<R, Error>,
@@ -288,46 +287,48 @@ where
     plugin(slot, &vals[..args.len()])
 }
 
-pub(crate) fn load_const(prog: &Program, k: u32, strs: &mut Vec<u8>) -> Result<V, Error> {
+pub(crate) fn load_const(prog: &Program, k: u32, strs: &mut String) -> Result<V, Error> {
     match prog.consts[k as usize] {
-        V::Str(s, len) => push_str(strs, &prog.pool.as_bytes()[s as usize..(s + len) as usize]),
+        V::Str(s, len) => push_str(strs, str_at(&prog.pool, s, len)),
         v => Ok(v),
     }
 }
 
 /// Converts a caller value (input or plugin result) into the evaluator's
 /// representation, rejecting NaN/inf (`X010`).
-pub(crate) fn load_value(v: &Value<'_>, strs: &mut Vec<u8>) -> Result<V, Error> {
+pub(crate) fn load_value(v: &Value<'_>, strs: &mut String) -> Result<V, Error> {
     match *v {
         Value::Int(x) => Ok(V::Int(x)),
         Value::Num(x) => fin(x, "input"),
         Value::Bool(b) => Ok(V::Bool(b)),
         Value::Cnum { re, im } => cfin(Complex::new(re, im), "input"),
-        Value::Str(s) => push_str(strs, s.as_bytes()),
+        Value::Str(s) => push_str(strs, s),
     }
 }
 
-pub(crate) fn to_value(v: V, strs: &[u8]) -> Value<'_> {
+pub(crate) fn to_value(v: V, strs: &str) -> Value<'_> {
     match v {
         V::Int(x) => Value::Int(x),
         V::Num(x) => Value::Num(x),
         V::Bool(b) => Value::Bool(b),
         V::Cnum(re, im) => Value::Cnum { re, im },
-        V::Str(s, len) => Value::Str(
-            core::str::from_utf8(&strs[s as usize..(s + len) as usize])
-                .expect("scratch strings are UTF-8"),
-        ),
+        V::Str(s, len) => Value::Str(str_at(strs, s, len)),
     }
 }
 
-fn push_str(strs: &mut Vec<u8>, bytes: &[u8]) -> Result<V, Error> {
-    check_str_len(strs, bytes.len())?;
-    let start = strs.len();
-    strs.extend_from_slice(bytes);
-    Ok(V::Str(start as u32, bytes.len() as u32))
+/// The string at byte range `(start, len)` of a pool or scratch buffer (a `V::Str`).
+pub(crate) fn str_at(strs: &str, start: u32, len: u32) -> &str {
+    &strs[start as usize..(start + len) as usize]
 }
 
-fn check_str_len(strs: &[u8], len: usize) -> Result<(), Error> {
+fn push_str(strs: &mut String, s: &str) -> Result<V, Error> {
+    check_str_len(strs, s.len())?;
+    let start = strs.len();
+    strs.push_str(s);
+    Ok(V::Str(start as u32, s.len() as u32))
+}
+
+fn check_str_len(strs: &str, len: usize) -> Result<(), Error> {
     if len > MAX_STR_BYTES {
         return Err(Error::new(
             Code::X002,
@@ -439,7 +440,7 @@ pub(crate) fn unary(op: OpKind, a: V) -> Result<V, Error> {
 /// Binary operators (spec §4): int stays int for `+ - * %` unless it
 /// overflows; `/` and `^` are num; cnum absorbs int/num; `str + str`
 /// concatenates; comparisons of int/num compare as num.
-pub(crate) fn binary(op: OpKind, a: V, b: V, strs: &mut Vec<u8>) -> Result<V, Error> {
+pub(crate) fn binary(op: OpKind, a: V, b: V, strs: &mut String) -> Result<V, Error> {
     debug_assert!(!matches!(
         op,
         OpKind::Neg | OpKind::Not | OpKind::Const | OpKind::Call
@@ -518,7 +519,7 @@ fn cnum_binary(op: OpKind, a: Complex, b: Complex) -> Result<Result<V, Error>, (
     Ok(cfin(r, op_str(op)))
 }
 
-fn str_binary(op: OpKind, a: V, b: V, strs: &mut Vec<u8>) -> Result<V, Error> {
+fn str_binary(op: OpKind, a: V, b: V, strs: &mut String) -> Result<V, Error> {
     let (V::Str(sa, la), V::Str(sb, lb)) = (a, b) else {
         unreachable!("str_binary of non-strings")
     };
@@ -556,7 +557,7 @@ fn cmp(op: OpKind, ord: Ordering) -> bool {
 
 /// Scalar builtins (spec §5). Calculator-only builtins reached with scalar
 /// arguments are `X003` (they need a column).
-pub(crate) fn call(b: Builtin, args: &[V], strs: &mut Vec<u8>) -> Result<V, Error> {
+pub(crate) fn call(b: Builtin, args: &[V], strs: &mut String) -> Result<V, Error> {
     assert!(!args.is_empty(), "every scalar builtin takes arguments");
     let name = b.name();
     let num = |v: V| match v {
@@ -732,13 +733,13 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut Vec<u8>) -> Result<V, Erro
                     ));
                 }
             };
-            write_str(strs, |w| fmt_eng(w, x, digits))
+            write_str(strs, |w| write_eng(w, x, digits))
         }
         Builtin::Str => match a0 {
             V::Str(..) => Ok(a0),
-            V::Int(x) => write_str(strs, |w| write!(w, "{x}")),
-            V::Num(x) => write_str(strs, |w| fmt_num(w, x)),
-            V::Bool(v) => write_str(strs, |w| w.write_str(if v { "true" } else { "false" })),
+            V::Int(x) => write_str(strs, |w| write_int(w, x)),
+            V::Num(x) => write_str(strs, |w| write_num(w, x)),
+            V::Bool(v) => write_str(strs, |w| w.push_str(if v { "true" } else { "false" })),
             V::Cnum(..) => Err(Error::new(
                 Code::X003,
                 Span::default(),
@@ -746,21 +747,12 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut Vec<u8>) -> Result<V, Erro
             )),
         },
         Builtin::Num => match a0 {
-            V::Str(s, len) => {
-                let text = core::str::from_utf8(&strs[s as usize..(s + len) as usize])
-                    .expect("scratch strings are UTF-8");
-                Ok(V::Num(crate::text::parse_num(text)?))
-            }
+            V::Str(s, len) => Ok(V::Num(crate::text::parse_num(str_at(strs, s, len))?)),
             v => Ok(V::Num(num(v)?)),
         },
         Builtin::Len => match a0 {
-            // Unicode scalar values: count bytes that do not continue a sequence.
-            V::Str(s, len) => Ok(V::Int(
-                strs[s as usize..(s + len) as usize]
-                    .iter()
-                    .filter(|&&c| (c as i8) >= -64)
-                    .count() as i64,
-            )),
+            // Unicode scalar values.
+            V::Str(s, len) => Ok(V::Int(str_at(strs, s, len).chars().count() as i64)),
             v => Err(bad(v)),
         },
         Builtin::Re | Builtin::Im | Builtin::Mag | Builtin::Ph | Builtin::Db | Builtin::Conj => {
@@ -784,12 +776,10 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut Vec<u8>) -> Result<V, Erro
         Builtin::Cplx => Ok(V::Cnum(num(a0)?, num(args[1])?)),
         Builtin::SpectreSource => match a0 {
             V::Str(s, len) => {
-                let spec = core::str::from_utf8(&strs[s as usize..(s + len) as usize])
-                    .expect("scratch strings are UTF-8")
-                    .to_owned();
+                let spec = str_at(strs, s, len).to_owned();
                 let mut out = String::with_capacity(spec.len() + 16);
                 crate::spectre::source(&spec, &mut out)?;
-                write_str(strs, |w| w.write_str(&out))
+                write_str(strs, |w| w.push_str(&out))
             }
             v => Err(bad(v)),
         },
@@ -812,12 +802,9 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut Vec<u8>) -> Result<V, Erro
     r
 }
 
-fn write_str(
-    strs: &mut Vec<u8>,
-    f: impl FnOnce(&mut Bytes<'_>) -> core::fmt::Result,
-) -> Result<V, Error> {
+fn write_str(strs: &mut String, f: impl FnOnce(&mut String)) -> Result<V, Error> {
     let start = strs.len();
-    f(&mut Bytes(strs)).expect("writing to a Vec cannot fail");
+    f(strs);
     let len = strs.len() - start;
     check_str_len(&strs[..start], len)?;
     Ok(V::Str(start as u32, len as u32))

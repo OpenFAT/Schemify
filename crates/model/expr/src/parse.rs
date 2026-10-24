@@ -7,7 +7,7 @@
 //! chains (`a+b+c+…`) loop instead of recursing, so they are bounded only by
 //! [`MAX_NODES`].
 
-use crate::lex::{Lit, Tok, Token, next_token};
+use crate::lex::{Tok, Token, next_token};
 use crate::{Code, Error, MAX_DEPTH, MAX_NODES, Span};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -301,20 +301,20 @@ impl Parser<'_> {
     // an optional call suffix on identifiers.
     fn primary(&mut self) -> Result<u32, Error> {
         let t = self.tok;
-        let leaf = match (t.kind, t.lit) {
-            (Tok::Int, Lit::Int(v)) => {
+        let leaf = match t.kind {
+            Tok::Int(v) => {
                 self.ast.ints.push(v);
                 (Node::Int, self.ast.ints.len() as u32 - 1, 0)
             }
-            (Tok::Num, Lit::Num(v)) => {
+            Tok::Num(v) => {
                 self.ast.nums.push(v);
                 (Node::Num, self.ast.nums.len() as u32 - 1, 0)
             }
-            (Tok::Str, Lit::Str { start, len }) => (Node::Str, start, len),
-            (Tok::True, _) => (Node::True, 0, 0),
-            (Tok::False, _) => (Node::False, 0, 0),
-            (Tok::Pi, _) => (Node::Pi, 0, 0),
-            (Tok::Ident | Tok::NsIdent, _) => {
+            Tok::Str { start, len } => (Node::Str, start, len),
+            Tok::True => (Node::True, 0, 0),
+            Tok::False => (Node::False, 0, 0),
+            Tok::Pi => (Node::Pi, 0, 0),
+            Tok::Ident | Tok::NsIdent => {
                 self.advance()?;
                 if self.tok.kind == Tok::LParen {
                     return self.call(t);
@@ -326,7 +326,7 @@ impl Parser<'_> {
                 };
                 return self.node(kind, 0, 0, t.span);
             }
-            (Tok::LParen, _) => {
+            Tok::LParen => {
                 self.advance()?;
                 let e = self.expr()?;
                 self.expect(Tok::RParen, "`)`")?;

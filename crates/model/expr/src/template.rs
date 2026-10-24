@@ -2,11 +2,9 @@
 //! braces. All holes compile into one [`Program`] with one root per hole, so
 //! a template binds its identifiers once, like a single expression.
 
-use core::fmt::Write;
-
 use crate::compile::{Compiler, Mode, Program};
-use crate::eval::{self, PluginValue, Scratch, V};
-use crate::text::fmt_num;
+use crate::eval::{self, PluginValue, Scratch, V, str_at};
+use crate::text::{write_int, write_num};
 use crate::{Code, Error, Span, Value};
 
 /// A parsed template, rendered per instance.
@@ -202,13 +200,10 @@ impl Template {
                 Seg::Hole(root, span, _) => {
                     let (start, end) = self.program.roots[root as usize];
                     match eval::run(&self.program, start, end, inputs, plugins, scratch)? {
-                        V::Int(x) => write!(out, "{x}").expect("String write"),
-                        V::Num(x) => fmt_num(out, x).expect("String write"),
+                        V::Int(x) => write_int(out, x),
+                        V::Num(x) => write_num(out, x),
                         V::Bool(b) => out.push_str(if b { "true" } else { "false" }),
-                        V::Str(s, len) => out.push_str(
-                            core::str::from_utf8(&scratch.strs[s as usize..(s + len) as usize])
-                                .expect("UTF-8"),
-                        ),
+                        V::Str(s, len) => out.push_str(str_at(&scratch.strs, s, len)),
                         V::Cnum(..) => {
                             return Err(Error::new(
                                 Code::X003,
