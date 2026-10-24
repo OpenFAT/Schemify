@@ -8,11 +8,11 @@
 //! writer then sorts ranks 3 and 6.
 
 use crate::changes::{Change, ChangeLog, Cursor, Write};
-use crate::record::{Attr, RecordBuf, check_record};
+use crate::record::{RecordBuf, check_record};
 use crate::strings::{FastMap, ObjId, Strings, Sym};
 use crate::tables::{
     FormatSink, Graphics, Instances, Noconns, Pins, Placed, Pool, Records, Scratch, Shapes, Span,
-    Table,
+    Table, emit_attrs,
 };
 use crate::{Code, Diag};
 use schemify_format::{
@@ -483,15 +483,7 @@ impl Document {
     /// Returns the header as a record (fields empty, attributes in order).
     pub fn header_record(&self) -> RecordBuf {
         let mut rec = RecordBuf::new(RecordKind::Header);
-        for (k, vals) in self.pool.attrs(self.header) {
-            rec.attrs.push(Attr {
-                key: self.strings.get(k).to_owned(),
-                values: vals
-                    .iter()
-                    .map(|v| self.strings.get(*v).to_owned())
-                    .collect(),
-            });
-        }
+        emit_attrs(self.header, &self.strings, &self.pool, &mut rec);
         assert_eq!(rec.attrs.len(), self.header.len as usize);
         rec
     }
@@ -641,14 +633,8 @@ impl Document {
     /// Panics on a read-only document (it lost the records it cannot model).
     pub(crate) fn to_format(&self) -> FormatDoc<'static> {
         assert!(!self.read_only(), "a read-only document is never written");
-        let mut out = FormatDoc::new(self.kind);
-        for (k, vals) in self.pool.attrs(self.header) {
-            out.push_attr(self.strings.get(k));
-            for v in vals {
-                out.push_value(self.strings.get(*v));
-            }
-        }
-        let mut sink = FormatSink::new(out);
+        let mut sink = FormatSink::new(FormatDoc::new(self.kind));
+        emit_attrs(self.header, &self.strings, &self.pool, &mut sink);
         for t in TableId::ALL {
             with_table!(self, t, |tab| {
                 for row in 0..tab.len() {

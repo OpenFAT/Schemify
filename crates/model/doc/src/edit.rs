@@ -762,27 +762,22 @@ pub(crate) fn diff_ops(from: &Document, to: &Document) -> Vec<Op> {
             }
             continue;
         }
-        let key = |(r, tg): &(RecordBuf, Target)| ((r.kind, tg.key.clone()), r.clone());
-        let a: BTreeMap<_, _> = a.iter().map(key).collect();
-        let b: BTreeMap<_, _> = b.iter().map(key).collect();
-        for ((kind, k), rec) in &a {
-            match b.get(&(*kind, k.clone())) {
-                None => deletes.push(Op::Delete(Target::new(*kind, k))),
-                Some(new) if new != rec => puts.push(Op::Put {
-                    target: Target::new(*kind, k),
-                    rec: new.clone(),
-                }),
+        let key = |(r, tg): (RecordBuf, Target)| ((r.kind, tg.key), r);
+        let a: BTreeMap<_, _> = a.into_iter().map(key).collect();
+        let mut b: BTreeMap<_, _> = b.into_iter().map(key).collect();
+        for (k, rec) in a {
+            let new = b.remove(&k);
+            let target = Target {
+                kind: k.0,
+                key: k.1,
+            };
+            match new {
+                None => deletes.push(Op::Delete(target)),
+                Some(new) if new != rec => puts.push(Op::Put { target, rec: new }),
                 Some(_) => {}
             }
         }
-        for ((kind, k), rec) in &b {
-            if !a.contains_key(&(*kind, k.clone())) {
-                inserts.push(Op::Insert {
-                    rec: rec.clone(),
-                    at: None,
-                });
-            }
-        }
+        inserts.extend(b.into_values().map(|rec| Op::Insert { rec, at: None }));
     }
     let rows: usize = TableId::ALL
         .iter()

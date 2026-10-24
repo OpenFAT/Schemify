@@ -369,7 +369,7 @@ impl Sink for RecordBuf {
     }
 }
 
-fn emit_attrs<S: Sink>(span: Span, strings: &Strings, pool: &Pool, sink: &mut S) {
+pub(crate) fn emit_attrs<S: Sink>(span: Span, strings: &Strings, pool: &Pool, sink: &mut S) {
     for (key, vals) in pool.attrs(span) {
         sink.attr(strings.get(key));
         for v in vals {
