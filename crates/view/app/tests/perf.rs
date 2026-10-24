@@ -948,7 +948,62 @@ fn interactions(n: u32) {
         b.frame(&ev, 30, true);
     }
     let [typing, typing95, _] = b.report("type");
+    // At 100k only: 1M would pass the memory cap (the leak below).
     if n == 100_000 {
+        // Unselect (HANDOFF bug 3): select everything, then an Alt-drag box around the whole
+        // schematic drops it all; the release frame is measured (O(selected × hits) before the
+        // sort and binary search: ~10^10 comparisons at 100k).
+        b.frame(&escape, 300, false);
+        b.frame(&escape, 300, false);
+        b.ed.command("view.zoom_full", "");
+        b.frame(&InputEvents::default(), 300, false);
+        for _ in 0..2 {
+            let wheel = InputEvent::Wheel {
+                x: cx,
+                y: cy,
+                dx: 0.0,
+                dy: -1.0,
+            };
+            b.frame(&event(wheel), 16, false);
+        }
+        settle(&mut b);
+        let side = (f64::from(n / 10).sqrt().ceil() as i32).max(1);
+        let (lo, hi) = (
+            b.ed.to_screen((-200 * U, -200 * U)),
+            b.ed.to_screen((side * 200 * U, side * 200 * U)),
+        );
+        let alt = |m: u8| InputEvent::Mods {
+            mods: schemify_ui::Mods(m),
+        };
+        // ponytail: 6 rounds, not 12: each select-all frame at this zoom grows the paint side's
+        // memory by ~0.7 GB (a leak in paint/render, reported), so 12 rounds pass a 6 GB cap.
+        for _ in 0..6 {
+            b.ed.command("edit.select_all", "");
+            b.frame(&InputEvents::default(), 300, false);
+            b.ticks();
+            let all = b.ed.selection().len();
+            assert!(all >= n as usize, "everything selected: {all}");
+            let mut down = event(alt(schemify_ui::Mods::ALT));
+            down.push(InputEvent::PointerMove { x: lo.0, y: lo.1 });
+            down.push(press(lo));
+            b.frame(&down, 1000, false);
+            b.frame(
+                &event(InputEvent::PointerMove { x: hi.0, y: hi.1 }),
+                8,
+                false,
+            );
+            b.frame(&event(release(hi)), 8, true);
+            assert!(b.ed.selection().is_empty(), "the box unselected everything");
+            b.frame(&event(alt(0)), 8, false);
+            b.ticks();
+        }
+        let [unselect, unselect95, _] = b.report("unselect");
+        eprintln!("PERF app.unselect_frame_100k_ms {unselect:.3}");
+        // ponytail: no D39 assert yet. Measured 2026-10-24 (release, no GPU, shared host):
+        // p50 ~21-30 ms, p95 ~35-45 ms; Editor::update is 6-13 ms of it (box_select and the
+        // selection change over 100k rows), paint the rest. Add `budget("unselect p50", ..)`
+        // once both sides are O(change).
+        eprintln!("  unselect p95 {unselect95:.3} ms (budget 1.0, not yet asserted)");
         eprintln!("PERF app.hover_frame_100k_ms {hover:.3}");
         eprintln!("PERF app.click_select_100k_ms {select:.3}");
         eprintln!("PERF app.drag_frame_100k_ms {drag:.3}");
