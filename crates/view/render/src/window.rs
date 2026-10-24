@@ -258,12 +258,22 @@ struct Shell<A: App> {
     tick: bool,
     /// The IME area last given to the window ([`App::ime_area`]).
     ime: Option<(f32, f32, f32, f32)>,
-    /// `SCHEMIFY_FRAME_LOG=1`: log each frame's input-to-present time on stderr.
+    /// `SCHEMIFY_FRAME_LOG=1`: log each frame's input-to-present times on stderr.
     #[cfg(not(target_arch = "wasm32"))]
     frame_log: bool,
-    /// When the oldest input of the batch a frame answers arrived.
+    /// When the oldest and the newest input no update has consumed yet arrived.
     #[cfg(not(target_arch = "wasm32"))]
-    input_at: Option<std::time::Instant>,
+    queued: Option<(std::time::Instant, std::time::Instant)>,
+    /// The same for the input the updates since the last present consumed: what the next
+    /// present shows. The oldest is the lag a log reader sees, the newest what the hand feels.
+    #[cfg(not(target_arch = "wasm32"))]
+    shown: Option<(std::time::Instant, std::time::Instant)>,
+    /// Updates that consumed input since the last present (the frame's coalescing).
+    #[cfg(not(target_arch = "wasm32"))]
+    updates: u32,
+    /// When the last frame was presented (the log's frame period).
+    #[cfg(not(target_arch = "wasm32"))]
+    presented: Option<std::time::Instant>,
 }
 
 /// Opens a window and runs `app` until it closes. Native: blocks. Web (wasm32): attaches a
@@ -306,7 +316,13 @@ pub fn run<A: App + 'static>(title: &str, mut app: A) -> Result<(), RunError> {
         #[cfg(not(target_arch = "wasm32"))]
         frame_log: std::env::var_os("SCHEMIFY_FRAME_LOG").is_some_and(|v| v != "0"),
         #[cfg(not(target_arch = "wasm32"))]
-        input_at: None,
+        queued: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        shown: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        updates: 0,
+        #[cfg(not(target_arch = "wasm32"))]
+        presented: None,
     };
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -424,9 +440,22 @@ impl<A: App> Shell<A> {
         window.pre_present_notify();
         gpu.queue.present(frame);
         #[cfg(not(target_arch = "wasm32"))]
-        if let (true, Some(t)) = (self.frame_log, self.input_at.take()) {
-            let ms = t.elapsed().as_secs_f64() * 1e3;
-            eprintln!("frame: input to present {ms:.2} ms, vello {}", !reuse);
+        {
+            let now = std::time::Instant::now();
+            if self.frame_log
+                && let Some((oldest, newest)) = self.shown
+            {
+                let ms = |t: std::time::Instant| (now - t).as_secs_f64() * 1e3;
+                eprintln!(
+                    "frame: input to present {:.2} ms oldest, {:.2} ms newest, {} updates, period {:.2} ms, vello {}",
+                    ms(oldest),
+                    ms(newest),
+                    self.updates,
+                    self.presented.map_or(0.0, ms),
+                    !reuse
+                );
+            }
+            (self.shown, self.updates, self.presented) = (None, 0, Some(now));
         }
         // Web: a browser can take every WebGPU call and still show nothing (web spec §7).
         #[cfg(target_arch = "wasm32")]
@@ -639,7 +668,7 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
         let s = self.scale;
         let at = self.pointer;
         #[cfg(not(target_arch = "wasm32"))]
-        let had_none = self.events.is_empty();
+        let queued = self.events.events.len();
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(_) => {
@@ -709,10 +738,11 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
             }
             _ => {}
         }
-        // The batch's oldest input stamps the frame that answers it (`SCHEMIFY_FRAME_LOG`).
+        // Each input stamps the frame that answers it (`SCHEMIFY_FRAME_LOG`).
         #[cfg(not(target_arch = "wasm32"))]
-        if had_none && !self.events.is_empty() {
-            self.input_at = Some(std::time::Instant::now());
+        if self.events.events.len() > queued {
+            let now = std::time::Instant::now();
+            self.queued = Some((self.queued.map_or(now, |q| q.0), now));
         }
     }
 
@@ -723,6 +753,11 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if !self.events.is_empty() || std::mem::take(&mut self.tick) {
             let viewport = self.viewport();
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some((oldest, newest)) = self.queued.take() {
+                self.shown = Some((self.shown.map_or(oldest, |s| s.0), newest));
+                self.updates += 1;
+            }
             if self.app.update(&self.events, viewport) {
                 if let Some(w) = &self.window {
                     w.request_redraw();
@@ -741,7 +776,7 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
             } else {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
-                    self.input_at = None; // no frame answers this batch
+                    self.shown = None; // no frame answers this batch
                 }
             }
             self.events.clear();
