@@ -1,17 +1,17 @@
 //! Reader: bytes → [`Document`] (spec §2–§5).
 //!
 //! Spine: size/BOM/UTF-8 gate → header → `lex_lines` (lexical layer, `E027`/`E028`) →
-//! `check_records` (ranks, shapes, attributes) → `check_keys` (ids, names) →
-//! `check_kind_rules` → `normalize` (shortest coordinates, wire endpoint order).
-//! Every check is a pass over whole tables.
+//! `check_records` (ranks, shapes, attributes; rewrites coordinates to their shortest
+//! decimal and wire endpoints into order, parsing each coordinate once) → `check_keys`
+//! (ids, names) → `check_kind_rules`. Every check is a pass over whole tables.
 //!
 //! `simd-loops` triage: lines average under 60 bytes and the lexer is a state chain,
 //! so the only wide scan is the LF search, which `str::find` already does with memchr.
 
 use crate::diag::{Code, Diagnostic, NO_RECORD, ParseError};
-use crate::document::{Document, NONE, Str, VERSION, is_word_byte};
+use crate::document::{Document, NONE, Str, VERSION, is_word_byte, push_coord, resolve};
 use crate::id::{id_sort_key, is_id};
-use crate::scalar::{CoordError, Orient, format_coord, is_number, parse_coord};
+use crate::scalar::{CoordError, Orient, is_number, parse_coord};
 use crate::schema::{FileKind, KeyRule, RANK_MAX, RecordKind, Rest, Shape, Ty};
 
 /// Largest file the reader accepts (spec §2, `E021`).
@@ -142,21 +142,19 @@ pub(crate) fn parse_with(
         doc,
         diags: Vec::new(),
         pending: Vec::new(),
-        vals: Vec::new(),
         skipping: false,
     };
     lexer.lex_lines(body);
     doc = lexer.doc;
     let mut diags = lexer.diags;
     if diags.len() < DIAGNOSTICS_MAX {
-        check_records(&doc, &mut diags);
+        check_records(&mut doc, &mut diags);
         check_keys(&mut doc, &mut diags);
         if max_rank >= 1 {
             check_kind_rules(&doc, &mut diags);
         }
     }
     if diags.is_empty() {
-        normalize(&mut doc);
         assert!(doc.warnings.iter().all(|d| d.code.is_warning()));
         return Ok(doc);
     }
@@ -228,8 +226,6 @@ struct Lexer<'s> {
     diags: Vec<Diagnostic>,
     /// Comments waiting for the next record.
     pending: Vec<Str>,
-    /// Scratch for one line's values, committed only when the whole line lexes.
-    vals: Vec<Str>,
     /// Inside a rejected record: its indented lines are dropped, not misattributed.
     skipping: bool,
 }
@@ -252,9 +248,7 @@ impl<'s> Lexer<'s> {
             assert!(end + 1 > pos, "line loop must advance");
             pos = end + 1;
         }
-        for c in std::mem::take(&mut self.pending) {
-            self.doc.eof_comments.push(c);
-        }
+        self.doc.eof_comments.append(&mut self.pending);
         assert!(self.pending.is_empty());
         assert!(
             self.diags.len() <= DIAGNOSTICS_MAX,
@@ -295,8 +289,7 @@ impl<'s> Lexer<'s> {
                 return self.error(Code::E028, line_no, indent + 1 + i, "bare CR in a comment");
             }
             let off = start + indent + 1;
-            let span = self.doc.src_span(off, off + text.len());
-            self.pending.push(span);
+            self.pending.push(Str::src(off, off + text.len()));
         } else if indent == 0 {
             self.lex_record(start, line, line_no);
         } else if self.skipping {
@@ -315,40 +308,36 @@ impl<'s> Lexer<'s> {
             Ok(e) => e,
             Err((col, detail)) => return self.error(Code::E028, line_no, col, detail),
         };
-        if let Err((col, detail)) = self.lex_values(start, line, word_end) {
-            return self.error(Code::E028, line_no, col, detail);
-        }
+        // Values lex straight into the field pool; a rejected line truncates them away.
+        let first = self.doc.fields.len();
+        let doc = &mut self.doc;
+        let lexed = lex_values(start, line, word_end, &mut doc.arena, &mut doc.fields);
         let word = &line[..word_end];
-        let kind = match self.doc.kind.lookup(word) {
-            Some(k) => k,
+        let kind = match (lexed, doc.kind.lookup(word)) {
+            (Err((col, detail)), _) => Err((Code::E028, col, detail)),
+            (Ok(()), Some(k)) => Ok(k),
             // A newer version (spec §5) or a journal (no known words): kept as written.
-            None if self.doc.version > VERSION || self.doc.kind == FileKind::Journal => {
-                RecordKind::Unknown
+            (Ok(()), None) if doc.version > VERSION || doc.kind == FileKind::Journal => {
+                Ok(RecordKind::Unknown)
             }
-            None if word == "schemify" => {
-                return self.error(Code::E028, line_no, 0, "second header line");
-            }
-            None => {
-                return self.error(
-                    Code::E027,
-                    line_no,
-                    0,
-                    "record word not known for this file kind",
-                );
+            (Ok(()), None) if word == "schemify" => Err((Code::E028, 0, "second header line")),
+            (Ok(()), None) => Err((Code::E027, 0, "record word not known for this file kind")),
+        };
+        let kind = match kind {
+            Ok(k) => k,
+            Err((code, col, detail)) => {
+                self.doc.fields.truncate(first);
+                return self.error(code, line_no, col, detail);
             }
         };
         let r = self.doc.begin(kind, line_no);
+        self.doc.rec_field_start[r as usize] = first as u32;
         if kind == RecordKind::Unknown {
-            let w = self.doc.src_span(start, start + word_end);
+            let w = Str::src(start, start + word_end);
             self.doc.unknown_words.push((r, w));
         }
-        for c in self.pending.drain(..) {
-            self.doc.comments.push(c);
-        }
-        for i in 0..self.vals.len() {
-            self.doc.push_field_str(self.vals[i]);
-        }
-        assert_eq!(self.doc.field_spans(r).len(), self.vals.len());
+        self.doc.comments.append(&mut self.pending);
+        assert!(self.doc.field_spans(r).len() <= line.len());
         self.skipping = false;
     }
 
@@ -358,15 +347,18 @@ impl<'s> Lexer<'s> {
             Ok(e) => e,
             Err((col, detail)) => return self.error(Code::E028, line_no, col, detail),
         };
-        if let Err((col, detail)) = self.lex_values(start, line, key_end) {
+        let first = self.doc.attr_values.len();
+        let doc = &mut self.doc;
+        if let Err((col, detail)) =
+            lex_values(start, line, key_end, &mut doc.arena, &mut doc.attr_values)
+        {
+            self.doc.attr_values.truncate(first);
             return self.error(Code::E028, line_no, col, detail);
         }
-        let key = self.doc.src_span(start + indent, start + key_end);
+        let key = Str::src(start + indent, start + key_end);
         let a = self.doc.push_attr_str(key, line_no);
-        for i in 0..self.vals.len() {
-            self.doc.push_value_str(self.vals[i]);
-        }
-        assert_eq!(self.doc.value_spans(a).len(), self.vals.len());
+        self.doc.attr_value_start[a as usize] = first as u32;
+        assert!(self.doc.value_spans(a).len() <= line.len());
     }
 
     fn lex_verbatim(&mut self, start: usize, line: &str, indent: usize, line_no: u32) {
@@ -388,113 +380,121 @@ impl<'s> Lexer<'s> {
         if let Some(i) = text.find('\r') {
             return self.error(Code::E028, line_no, off + i, "bare CR in a verbatim line");
         }
-        let span = self.doc.src_span(start + off, start + off + text.len());
+        let span = Str::src(start + off, start + off + text.len());
         self.doc.push_verbatim_str(span);
         assert_eq!(span.len as usize, text.len());
     }
+}
 
-    /// Lexes `*(WS value) *WSP` from byte `i` of `line` into `self.vals`.
-    fn lex_values(&mut self, start: usize, line: &str, mut i: usize) -> Result<(), LexError> {
-        assert!(i <= line.len() && start + line.len() <= self.doc.src.len());
-        self.vals.clear();
-        let b = line.as_bytes();
-        loop {
-            let ws = i;
-            while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
-                i += 1;
-            }
-            if i == b.len() {
-                assert!(self.vals.len() <= b.len(), "every value consumes input");
-                return Ok(());
-            }
-            if i == ws {
-                return Err((i, "values must be separated by whitespace"));
-            }
-            if b[i] == b'"' {
-                i = self.lex_quoted(start, line, i)?;
-                continue;
-            }
-            if b[i] == b'#' || b[i] == b'|' {
-                return Err((i, "a bare value cannot start with `#` or `|`; quote it"));
-            }
-            let value_start = i;
-            while i < b.len() && b[i] != b' ' && b[i] != b'\t' {
-                if !is_bare_byte(b[i]) {
-                    return Err((i, "character not allowed in a bare value; quote it"));
-                }
-                i += 1;
-            }
-            let span = self.doc.src_span(start + value_start, start + i);
-            self.vals.push(span);
-        }
-    }
-
-    /// Lexes the quoted value starting at the `"` at byte `q`; returns the index after
-    /// the closing quote. Values without escapes borrow the source.
-    fn lex_quoted(&mut self, start: usize, line: &str, q: usize) -> Result<usize, LexError> {
-        let b = line.as_bytes();
-        assert_eq!(b[q], b'"');
-        let mut i = q + 1;
-        while i < b.len() && b[i] != b'"' && b[i] != b'\\' && b[i] != b'\r' {
+/// Lexes `*(WS value) *WSP` from byte `i` of `line` (source byte `start`) onto `out`;
+/// unescaped values go to `arena`. On error `out` may hold part of the line, which the
+/// caller truncates.
+fn lex_values(
+    start: usize,
+    line: &str,
+    mut i: usize,
+    arena: &mut String,
+    out: &mut Vec<Str>,
+) -> Result<(), LexError> {
+    assert!(i <= line.len());
+    let before = out.len();
+    let b = line.as_bytes();
+    loop {
+        let ws = i;
+        while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
             i += 1;
         }
-        if i < b.len() && b[i] == b'"' {
-            let span = self.doc.src_span(start + q + 1, start + i);
-            self.vals.push(span);
-            return Ok(i + 1);
+        if i == b.len() {
+            assert!(out.len() - before <= b.len(), "every value consumes input");
+            return Ok(());
         }
-        let arena_start = self.doc.arena_len();
-        self.doc.arena.push_str(&line[q + 1..i]);
-        let result = self.unescape(line, i, q);
-        match result {
-            Ok(close) => {
-                assert!(close > q && b[close] == b'"');
-                let span = self.doc.arena_span(arena_start);
-                self.vals.push(span);
-                Ok(close + 1)
-            }
-            Err(e) => {
-                self.doc.arena.truncate(arena_start);
-                Err(e)
-            }
+        if i == ws {
+            return Err((i, "values must be separated by whitespace"));
         }
+        if b[i] == b'"' {
+            i = lex_quoted(start, line, i, arena, out)?;
+            continue;
+        }
+        if b[i] == b'#' || b[i] == b'|' {
+            return Err((i, "a bare value cannot start with `#` or `|`; quote it"));
+        }
+        let value_start = i;
+        while i < b.len() && b[i] != b' ' && b[i] != b'\t' {
+            if !is_bare_byte(b[i]) {
+                return Err((i, "character not allowed in a bare value; quote it"));
+            }
+            i += 1;
+        }
+        out.push(Str::src(start + value_start, start + i));
     }
+}
 
-    /// Appends the rest of a quoted value from byte `i` to the arena, resolving escapes;
-    /// returns the index of the closing quote.
-    fn unescape(&mut self, line: &str, mut i: usize, q: usize) -> Result<usize, LexError> {
-        let b = line.as_bytes();
-        assert!(i > q && i <= b.len());
-        while i < b.len() {
-            match b[i] {
-                b'"' => return Ok(i),
-                b'\r' => return Err((i, "bare CR in a quoted value")),
-                b'\\' => {
-                    let (c, len) = match b.get(i + 1) {
-                        Some(b'"') => ('"', 2),
-                        Some(b'\\') => ('\\', 2),
-                        Some(b'n') => ('\n', 2),
-                        Some(b't') => ('\t', 2),
-                        Some(b'u') => unicode_escape(&b[i..]).ok_or((
-                            i,
-                            "`\\u{...}` needs 1-6 hex digits naming a Unicode scalar",
-                        ))?,
-                        _ => return Err((i, "unknown escape; use \\\" \\\\ \\n \\t or \\u{...}")),
-                    };
-                    self.doc.arena.push(c);
-                    i += len;
+/// Lexes the quoted value starting at the `"` at byte `q`; returns the index after
+/// the closing quote. Values without escapes borrow the source.
+fn lex_quoted(
+    start: usize,
+    line: &str,
+    q: usize,
+    arena: &mut String,
+    out: &mut Vec<Str>,
+) -> Result<usize, LexError> {
+    let b = line.as_bytes();
+    assert_eq!(b[q], b'"');
+    let mut i = q + 1;
+    while i < b.len() && b[i] != b'"' && b[i] != b'\\' && b[i] != b'\r' {
+        i += 1;
+    }
+    if i < b.len() && b[i] == b'"' {
+        out.push(Str::src(start + q + 1, start + i));
+        return Ok(i + 1);
+    }
+    let arena_start = arena.len();
+    arena.push_str(&line[q + 1..i]);
+    match unescape(line, i, q, arena) {
+        Ok(close) => {
+            assert!(close > q && b[close] == b'"');
+            out.push(Str::arena_tail(arena, arena_start));
+            Ok(close + 1)
+        }
+        Err(e) => {
+            arena.truncate(arena_start);
+            Err(e)
+        }
+    }
+}
+
+/// Appends the rest of a quoted value from byte `i` to `arena`, resolving escapes;
+/// returns the index of the closing quote.
+fn unescape(line: &str, mut i: usize, q: usize, arena: &mut String) -> Result<usize, LexError> {
+    let b = line.as_bytes();
+    assert!(i > q && i <= b.len());
+    while i < b.len() {
+        match b[i] {
+            b'"' => return Ok(i),
+            b'\r' => return Err((i, "bare CR in a quoted value")),
+            b'\\' => {
+                let (c, len) = match b.get(i + 1) {
+                    Some(b'"') => ('"', 2),
+                    Some(b'\\') => ('\\', 2),
+                    Some(b'n') => ('\n', 2),
+                    Some(b't') => ('\t', 2),
+                    Some(b'u') => unicode_escape(&b[i..])
+                        .ok_or((i, "`\\u{...}` needs 1-6 hex digits naming a Unicode scalar"))?,
+                    _ => return Err((i, "unknown escape; use \\\" \\\\ \\n \\t or \\u{...}")),
+                };
+                arena.push(c);
+                i += len;
+            }
+            _ => {
+                let run = i;
+                while i < b.len() && !matches!(b[i], b'"' | b'\\' | b'\r') {
+                    i += 1;
                 }
-                _ => {
-                    let run = i;
-                    while i < b.len() && !matches!(b[i], b'"' | b'\\' | b'\r') {
-                        i += 1;
-                    }
-                    self.doc.arena.push_str(&line[run..i]);
-                }
+                arena.push_str(&line[run..i]);
             }
         }
-        Err((q, "unterminated quoted value"))
     }
+    Err((q, "unterminated quoted value"))
 }
 
 /// Decodes `\u{h...}` at the start of `b`; returns the char and the escape's byte length.
@@ -553,13 +553,13 @@ fn column(doc: &Document<'_>, s: Str) -> u32 {
     (off - line_start + 1) as u32
 }
 
-/// Checks one value against a slot type.
-fn check_ty(ty: Ty, v: &str) -> Result<(), (Code, &'static str)> {
+/// Checks one value against a slot type; returns a coordinate's milli-units.
+fn check_ty(ty: Ty, v: &str) -> Result<Option<i32>, (Code, &'static str)> {
     let ok = match ty {
         Ty::Any => true,
         Ty::Id | Ty::IdRef => is_id(v),
         Ty::Coord => {
-            return parse_coord(v).map(|_| ()).map_err(|e| match e {
+            return parse_coord(v).map(Some).map_err(|e| match e {
                 CoordError::NotNumber => (Code::E029, "expected a coordinate number"),
                 CoordError::NotRepresentable => (
                     Code::E022,
@@ -573,7 +573,7 @@ fn check_ty(ty: Ty, v: &str) -> Result<(), (Code, &'static str)> {
         Ty::Choice(words) => words.contains(&v),
     };
     if ok {
-        return Ok(());
+        return Ok(None);
     }
     Err((
         Code::E029,
@@ -587,13 +587,20 @@ fn check_ty(ty: Ty, v: &str) -> Result<(), (Code, &'static str)> {
     ))
 }
 
-/// Checks a value list against a shape; returns the offending value index
-/// ([`NONE`] for an arity error) with its code.
+/// Checks a value list against a shape and makes its coordinates canonical: a value
+/// that is not its shortest decimal is re-formatted into `arena` and its span replaced.
+/// Fills `coords` with each slot's milli-units (`None` for other and bad values); every
+/// value is visited even after an error, so a wire's endpoints are known whenever its
+/// arity is right. Returns the first offending value index ([`NONE`] for an arity
+/// error) with its code.
 fn check_shape(
     shape: &Shape,
-    doc: &Document<'_>,
-    values: &[Str],
+    src: &str,
+    arena: &mut String,
+    values: &mut [Str],
+    coords: &mut Vec<Option<i32>>,
 ) -> Result<(), (u32, Code, &'static str)> {
+    coords.clear();
     let (n, fixed) = (values.len(), shape.fixed.len());
     assert!(fixed <= 8, "schema shapes are short");
     if n < fixed {
@@ -609,17 +616,32 @@ fn check_shape(
     if !arity_ok {
         return Err((NONE, Code::E029, "wrong number of values"));
     }
-    for (i, s) in values.iter().enumerate() {
+    let mut first = Ok(());
+    for (i, s) in values.iter_mut().enumerate() {
         let ty = shape.ty(i).expect("arity checked above");
-        check_ty(ty, doc.text(*s)).map_err(|(code, detail)| (i as u32, code, detail))?;
+        let text = resolve(src, arena, *s);
+        let coord = match check_ty(ty, text) {
+            Ok(Some(milli)) if !is_shortest_coord(text) => {
+                *s = push_coord(arena, milli);
+                Some(milli)
+            }
+            Ok(coord) => coord,
+            Err((code, detail)) => {
+                first = first.and(Err((i as u32, code, detail)));
+                None
+            }
+        };
+        coords.push(coord);
     }
-    Ok(())
+    assert_eq!(coords.len(), values.len());
+    first
 }
 
-fn check_records(doc: &Document<'_>, diags: &mut Vec<Diagnostic>) {
+fn check_records(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
     assert_eq!(doc.record_kind(0), RecordKind::Header);
     let diags_before = diags.len();
     let mut rank_max = 0u8;
+    let mut coords: Vec<Option<i32>> = Vec::new();
     for r in 0..doc.record_count() {
         let kind = doc.record_kind(r);
         if kind == RecordKind::Unknown {
@@ -627,43 +649,53 @@ fn check_records(doc: &Document<'_>, diags: &mut Vec<Diagnostic>) {
         }
         let schema = kind.schema();
         let line = doc.record_line(r);
-        let mut report = |code, col, detail| {
-            diags.push(Diagnostic {
-                code,
-                line,
-                col,
-                record: r,
-                detail,
-            })
+        let diag = |code, col, detail| Diagnostic {
+            code,
+            line,
+            col,
+            record: r,
+            detail,
         };
         if kind != RecordKind::Header {
             if schema.rank < rank_max {
-                report(
+                diags.push(diag(
                     Code::E023,
                     1,
                     "record of a lower rank after a higher-rank record",
-                );
+                ));
             }
             rank_max = rank_max.max(schema.rank);
-            let fields = doc.field_spans(r);
-            if let Err((i, code, detail)) = check_shape(&schema.fields, doc, fields) {
-                report(
-                    code,
-                    if i == NONE {
-                        1
-                    } else {
-                        column(doc, fields[i as usize])
-                    },
-                    detail,
-                );
+            let f = doc.field_range(r);
+            let fields = &mut doc.fields[f.clone()];
+            if let Err((i, code, detail)) =
+                check_shape(&schema.fields, doc.src, &mut doc.arena, fields, &mut coords)
+            {
+                let col = if i == NONE {
+                    1
+                } else {
+                    column(doc, doc.fields[f.start + i as usize])
+                };
+                diags.push(diag(code, col, detail));
+            }
+            // Spec §4: a wire has length, and is written `(x1, y1) < (x2, y2)`.
+            if kind == RecordKind::Wire
+                && let [_, Some(x1), Some(y1), Some(x2), Some(y2)] = coords[..]
+            {
+                if (x1, y1) == (x2, y2) {
+                    diags.push(diag(Code::E026, 1, "wire endpoints are equal"));
+                } else if (x2, y2) < (x1, y1) {
+                    doc.fields.swap(f.start + 1, f.start + 3);
+                    doc.fields.swap(f.start + 2, f.start + 4);
+                    assert!(!doc.wire_reversed(r));
+                }
             }
         }
         if doc.verbatim(r).len() > 0 && !schema.verbatim {
-            report(
+            diags.push(diag(
                 Code::E029,
                 1,
                 "this record kind takes no `|` verbatim lines",
-            );
+            ));
         }
         let mut seen: u32 = 0; // bit i: schema.attrs[i] already present
         for a in doc.attrs(r) {
@@ -671,37 +703,30 @@ fn check_records(doc: &Document<'_>, diags: &mut Vec<Diagnostic>) {
                 continue;
             };
             let (aline, key) = (doc.attr_line(a), doc.attr_key[a as usize]);
+            let at = |code, col, detail| Diagnostic {
+                line: aline,
+                ..diag(code, col, detail)
+            };
             if seen & (1 << i) != 0 && !attr.repeat {
-                diags.push(Diagnostic {
-                    code: Code::E024,
-                    line: aline,
-                    col: column(doc, key),
-                    record: r,
-                    detail: "attribute given twice",
-                });
+                diags.push(at(Code::E024, column(doc, key), "attribute given twice"));
             }
             seen |= 1 << i;
-            let values = doc.value_spans(a);
-            if let Err((vi, code, detail)) = check_shape(&attr.shape, doc, values) {
-                let col = column(doc, if vi == NONE { key } else { values[vi as usize] });
-                diags.push(Diagnostic {
-                    code,
-                    line: aline,
-                    col,
-                    record: r,
-                    detail,
-                });
+            let v = doc.value_range(a);
+            let values = &mut doc.attr_values[v.clone()];
+            if let Err((vi, code, detail)) =
+                check_shape(&attr.shape, doc.src, &mut doc.arena, values, &mut coords)
+            {
+                let span = if vi == NONE {
+                    key
+                } else {
+                    doc.attr_values[v.start + vi as usize]
+                };
+                diags.push(at(code, column(doc, span), detail));
             }
         }
         for (i, attr) in schema.attrs.iter().enumerate() {
             if attr.required && seen & (1 << i) == 0 {
-                diags.push(Diagnostic {
-                    code: Code::E029,
-                    line,
-                    col: 1,
-                    record: r,
-                    detail: "missing required attribute",
-                });
+                diags.push(diag(Code::E029, 1, "missing required attribute"));
             }
         }
         if kind == RecordKind::Shape
@@ -709,29 +734,11 @@ fn check_records(doc: &Document<'_>, diags: &mut Vec<Diagnostic>) {
             && crate::schema::shape_arity(form, doc.fields(r).len().saturating_sub(2))
                 == Some(false)
         {
-            diags.push(Diagnostic {
-                code: Code::E029,
-                line,
-                col: 1,
-                record: r,
-                detail: "wrong number of values for this shape form",
-            });
-        }
-        if kind == RecordKind::Wire && doc.fields(r).len() == 5 {
-            let c = |i| doc.field(r, i).map(parse_coord);
-            if c(1).is_some_and(|x| x.is_ok())
-                && c(2).is_some_and(|y| y.is_ok())
-                && c(1) == c(3)
-                && c(2) == c(4)
-            {
-                diags.push(Diagnostic {
-                    code: Code::E026,
-                    line,
-                    col: 1,
-                    record: r,
-                    detail: "wire endpoints are equal",
-                });
-            }
+            diags.push(diag(
+                Code::E029,
+                1,
+                "wrong number of values for this shape form",
+            ));
         }
     }
     assert!(
@@ -752,7 +759,7 @@ fn sort_diags(diags: &mut [Diagnostic]) {
 }
 
 /// Reports duplicate ids (`W001`, into the document's warnings) and duplicate names
-/// within a kind (`E024`). Cost: two sorts, O(n log n) in records.
+/// within a kind (`E024`). Cost: two sorts, O(n log n) in records, near O(n) on canonical files.
 fn check_keys(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
     assert!(doc.warnings.is_empty(), "keys are checked once per parse");
     let mut ids: Vec<(u128, u32)> = Vec::new();
@@ -772,8 +779,10 @@ fn check_keys(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
             _ => {}
         }
     }
-    ids.sort_unstable();
-    names.sort_unstable();
+    // Stable sorts merge the sorted runs a canonical file has (one per kind) in O(n log k);
+    // keys are distinct (record index last), so the order is the same as unstable.
+    ids.sort();
+    names.sort();
     let mut warnings = Vec::new();
     for w in ids.windows(2) {
         if w[0].0 == w[1].0 {
@@ -857,56 +866,10 @@ fn is_shortest_coord(t: &str) -> bool {
     whole_ok && frac_ok && t != "-0"
 }
 
-/// Makes the parsed model canonical: coordinates become their shortest decimal
-/// (`-80.000` → `-80`, so a merge sees no change) and wire endpoints are swapped so
-/// `(x1, y1) < (x2, y2)`. Runs only on error-free documents, so every coordinate parses.
-fn normalize(doc: &mut Document<'_>) {
-    assert_eq!(doc.record_kind(0), RecordKind::Header);
-    let mut buf = String::new();
-    for r in 0..doc.record_count() {
-        let schema = doc.record_kind(r).schema();
-        let fields = doc.field_range(r);
-        for f in fields.clone() {
-            if schema.fields.ty(f - fields.start) == Some(Ty::Coord) {
-                doc.fields[f] = canonical_coord(doc, doc.fields[f], &mut buf);
-            }
-        }
-        for a in doc.attrs(r) {
-            let Some((_, attr)) = schema.attr(doc.attr_key(a)) else {
-                continue;
-            };
-            let values = doc.value_range(a);
-            for v in values.clone() {
-                if attr.shape.ty(v - values.start) == Some(Ty::Coord) {
-                    doc.attr_values[v] = canonical_coord(doc, doc.attr_values[v], &mut buf);
-                }
-            }
-        }
-        let start = fields.start;
-        if doc.wire_reversed(r) {
-            doc.fields.swap(start + 1, start + 3);
-            doc.fields.swap(start + 2, start + 4);
-            assert!(!doc.wire_reversed(r));
-        }
-    }
-}
-
-fn canonical_coord(doc: &mut Document<'_>, s: Str, buf: &mut String) -> Str {
-    if is_shortest_coord(doc.text(s)) {
-        return s; // the common case: no formatting, no allocation
-    }
-    buf.clear();
-    format_coord(
-        parse_coord(doc.text(s)).expect("coordinates are checked before normalizing"),
-        buf,
-    );
-    assert!(is_shortest_coord(buf) && buf != doc.text(s));
-    doc.intern(buf)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scalar::format_coord;
 
     #[test]
     fn shortest_coord_predicate_matches_the_formatter() {

@@ -41,6 +41,36 @@ impl Str {
     pub(crate) fn src_offset(self) -> Option<usize> {
         (self.off & ARENA == 0).then_some(self.off as usize)
     }
+
+    /// Returns the span of source bytes `start..end`.
+    pub(crate) fn src(start: usize, end: usize) -> Str {
+        assert!(start <= end && end < ARENA as usize);
+        Str {
+            off: start as u32,
+            len: (end - start) as u32,
+        }
+    }
+
+    /// Returns the span of `arena[start..]`, the text appended since `start`.
+    pub(crate) fn arena_tail(arena: &str, start: usize) -> Str {
+        assert!(start <= arena.len() && arena.len() < ARENA as usize);
+        Str {
+            off: start as u32 | ARENA,
+            len: (arena.len() - start) as u32,
+        }
+    }
+}
+
+/// Appends the shortest decimal for `milli` to `arena`; returns its span.
+pub(crate) fn push_coord(arena: &mut String, milli: i32) -> Str {
+    let off = arena.len();
+    assert!(
+        off + 16 < ARENA as usize,
+        "document text arena exceeds 2 GiB"
+    );
+    format_coord(milli, arena);
+    assert!(arena.len() > off, "a coordinate has at least one digit");
+    Str::arena_tail(arena, off)
 }
 
 /// One file as flat tables of records, attribute lines, values, verbatim lines and comments.
@@ -96,7 +126,7 @@ impl<'d> Iterator for Texts<'d> {
 
 impl ExactSizeIterator for Texts<'_> {}
 
-fn resolve<'d>(src: &'d str, arena: &'d str, s: Str) -> &'d str {
+pub(crate) fn resolve<'d>(src: &'d str, arena: &'d str, s: Str) -> &'d str {
     let (base, off) = if s.off & ARENA != 0 {
         (arena, s.off & !ARENA)
     } else {
@@ -442,7 +472,7 @@ impl<'s> Document<'s> {
 
     /// Appends a coordinate in milli-units, formatted as the shortest decimal.
     pub fn push_field_coord(&mut self, milli: i32) {
-        let s = self.intern_coord(milli);
+        let s = push_coord(&mut self.arena, milli);
         self.push_field_str(s);
     }
 
@@ -470,7 +500,7 @@ impl<'s> Document<'s> {
 
     /// Appends a coordinate value (milli-units) to the last attribute.
     pub fn push_value_coord(&mut self, milli: i32) {
-        let s = self.intern_coord(milli);
+        let s = push_coord(&mut self.arena, milli);
         self.push_value_str(s);
     }
 
@@ -613,44 +643,6 @@ impl<'s> Document<'s> {
         Str {
             off: off as u32 | ARENA,
             len: text.len() as u32,
-        }
-    }
-
-    fn intern_coord(&mut self, milli: i32) -> Str {
-        let off = self.arena.len();
-        assert!(
-            off + 16 < ARENA as usize,
-            "document text arena exceeds 2 GiB"
-        );
-        format_coord(milli, &mut self.arena);
-        assert!(
-            self.arena.len() > off,
-            "a coordinate has at least one digit"
-        );
-        Str {
-            off: off as u32 | ARENA,
-            len: (self.arena.len() - off) as u32,
-        }
-    }
-
-    /// Starts an unescaped value in the arena; finish with [`Document::arena_span`].
-    pub(crate) fn arena_len(&self) -> usize {
-        self.arena.len()
-    }
-
-    pub(crate) fn arena_span(&self, start: usize) -> Str {
-        assert!(start <= self.arena.len() && self.arena.len() < ARENA as usize);
-        Str {
-            off: start as u32 | ARENA,
-            len: (self.arena.len() - start) as u32,
-        }
-    }
-
-    pub(crate) fn src_span(&self, start: usize, end: usize) -> Str {
-        assert!(start <= end && end <= self.src.len());
-        Str {
-            off: start as u32,
-            len: (end - start) as u32,
         }
     }
 
