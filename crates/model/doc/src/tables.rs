@@ -121,10 +121,15 @@ impl Pool {
         span(start, self.coords.len())
     }
 
-    /// Counts the entries a removed row leaves behind.
-    pub(crate) fn orphan(&mut self, attrs: Span, lines: u32) {
+    /// Counts the entries a removed row leaves behind: its attribute lines with their
+    /// values, plus `others` (comments, verbatim lines, coordinates).
+    pub(crate) fn orphan(&mut self, attrs: Span, others: u32) {
         let vals: u32 = attrs.range().map(|a| self.attr_vals[a].len).sum();
-        self.dead = self.dead.saturating_add(attrs.len + vals + lines);
+        self.dead = self.dead.saturating_add(attrs.len + vals + others);
+        assert!(
+            self.dead as usize <= self.size(),
+            "garbage is part of the pool"
+        );
     }
 
     /// Returns the number of live-or-dead entries, the denominator for compaction.
@@ -364,7 +369,7 @@ impl Sink for RecordBuf {
     }
 }
 
-fn emit_attrs<S: Sink>(span: Span, strings: &Strings, pool: &Pool, sink: &mut S) {
+pub(crate) fn emit_attrs<S: Sink>(span: Span, strings: &Strings, pool: &Pool, sink: &mut S) {
     for (key, vals) in pool.attrs(span) {
         sink.attr(strings.get(key));
         for v in vals {
@@ -398,11 +403,9 @@ pub(crate) trait Table {
     fn swap_remove_row(&mut self, row: usize);
     fn remove_row(&mut self, row: usize);
     fn move_row(&mut self, from: usize, to: usize);
-    fn attrs_col(&self) -> &[Span];
-    fn comments_col(&self) -> &[Span];
-    fn verbatim_col(&self) -> &[Span] {
-        &[]
-    }
+    /// The row's attribute span and the count of its other pool entries (comments,
+    /// verbatim lines, coordinates): what replacing or removing it leaves as garbage.
+    fn owned(&self, row: usize) -> (Span, u32);
     /// The row's id, or `ObjId::NONE` for kinds without one.
     fn id_at(&self, row: usize, strings: &Strings) -> ObjId;
     /// The row's name, or `Sym::NONE` for kinds without one.
@@ -421,7 +424,7 @@ fn move_elem<T>(v: &mut [T], from: usize, to: usize) {
 }
 
 macro_rules! row_ops {
-    ($($col:ident),+) => {
+    ($($col:ident),+ $(; $($span:ident),+)?) => {
         fn len(&self) -> usize {
             self.attrs.len()
         }
@@ -437,11 +440,8 @@ macro_rules! row_ops {
             $( move_elem(&mut self.$col, from, to); )+
             assert!(self.columns_ok());
         }
-        fn attrs_col(&self) -> &[Span] {
-            &self.attrs
-        }
-        fn comments_col(&self) -> &[Span] {
-            &self.comments
+        fn owned(&self, row: usize) -> (Span, u32) {
+            (self.attrs[row], self.comments[row].len $($( + self.$span[row].len )+)?)
         }
         fn columns_ok(&self) -> bool {
             let n = self.attrs.len();
@@ -555,7 +555,7 @@ pub struct Graphics {
 }
 
 impl Table for Graphics {
-    row_ops!(shape, coords, text, orient, angles, attrs, comments);
+    row_ops!(shape, coords, text, orient, angles, attrs, comments; coords);
     fn kind_at(&self, row: usize) -> RecordKind {
         self.shape[row]
     }
@@ -912,7 +912,7 @@ pub(crate) fn shape_form(word: &str) -> RecordKind {
 }
 
 impl Table for Shapes {
-    row_ops!(id, form, coords, attrs, comments);
+    row_ops!(id, form, coords, attrs, comments; coords);
     fn kind_at(&self, _row: usize) -> RecordKind {
         RecordKind::Shape
     }
@@ -971,7 +971,7 @@ pub struct Records {
 }
 
 impl Table for Records {
-    row_ops!(kind, fields, verbatim, attrs, comments);
+    row_ops!(kind, fields, verbatim, attrs, comments; verbatim);
     fn kind_at(&self, row: usize) -> RecordKind {
         self.kind[row]
     }
@@ -1001,9 +1001,6 @@ impl Table for Records {
         emit_attrs(self.attrs[row], strings, pool, sink);
         emit_lines(self.verbatim[row], strings, pool, sink, true);
         emit_lines(self.comments[row], strings, pool, sink, false);
-    }
-    fn verbatim_col(&self) -> &[Span] {
-        &self.verbatim
     }
     fn id_at(&self, row: usize, strings: &Strings) -> ObjId {
         if self.kind[row].key() != KeyRule::Id {

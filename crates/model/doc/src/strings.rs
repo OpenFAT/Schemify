@@ -7,7 +7,8 @@
 //! 3. `Sym` is `u32` (capacity 2^24 strings, 2^31 bytes). `ObjId` is `u32`: 30 bits for
 //!    the 6-char ids the writer generates, bit 31 for any other id length.
 //! 4. Interning is a hash probe on load and edit; reads are `ends[sym]` slices.
-//! 5. Lifetime: the document. Strings are never freed; `Document::compact` rebuilds.
+//! 5. Lifetime: the document. Strings are never freed; what edits intern is counted
+//!    (garbage once its row is replaced) and `Document::compact_if_needed` rebuilds.
 //! 6. Not parallel: one writer (`doc`), many readers through `&Strings`.
 
 use schemify_format::{ID_ALPHABET, ID_LEN_NEW, is_id};
@@ -35,6 +36,8 @@ pub struct Strings {
     ends: Vec<u32>,
     /// Open addressing, linear probing: 0 is empty, else `sym + 1`. Power-of-two length.
     table: Vec<u32>,
+    /// `(strings, bytes)` at the last load or rebuild: everything after is edit output.
+    settled: (u32, u32),
 }
 
 impl Strings {
@@ -66,66 +69,76 @@ impl Strings {
         if self.table.is_empty() {
             return None;
         }
-        let mask = self.table.len() - 1;
-        let mut slot = hash(text) as usize & mask;
-        for _ in 0..self.table.len() {
-            let entry = self.table[slot];
-            if entry == 0 {
-                return None;
-            }
-            if self.get(Sym(entry - 1)) == text {
-                return Some(Sym(entry - 1));
-            }
-            slot = (slot + 1) & mask;
-        }
-        unreachable!("the table is never full: load factor stays below 1/2");
+        self.probe(text).ok()
     }
 
-    /// Interns `text`, returning the existing symbol when already present.
+    /// Finds `text`'s symbol, or the empty slot where it belongs. Bounded: the load
+    /// factor stays below 1/2, so an empty slot exists.
+    fn probe(&self, text: &str) -> Result<Sym, usize> {
+        assert!(self.table.len().is_power_of_two());
+        let mask = self.table.len() - 1;
+        let mut slot = hash(text) as usize & mask;
+        loop {
+            match self.table[slot] {
+                0 => return Err(slot),
+                e if self.get(Sym(e - 1)) == text => return Ok(Sym(e - 1)),
+                _ => slot = (slot + 1) & mask,
+            }
+        }
+    }
+
+    /// Interns `text`, returning the existing symbol when already present. Cost: one
+    /// hash and a short probe.
     ///
     /// # Panics
     ///
     /// Panics past [`SYMS_MAX`] strings or 2 GiB of text.
     pub(crate) fn intern(&mut self, text: &str) -> Sym {
-        if let Some(s) = self.find(text) {
-            return s;
+        if (self.ends.len() + 1) * 2 > self.table.len() {
+            self.grow();
         }
+        let slot = match self.probe(text) {
+            Ok(s) => return s,
+            Err(slot) => slot,
+        };
         assert!(self.len() < SYMS_MAX, "string arena holds 2^24 strings");
         assert!(
             self.bytes.len() + text.len() < BYTES_MAX,
             "string arena exceeds 2 GiB"
         );
-        if (self.ends.len() + 1) * 2 > self.table.len() {
-            self.grow();
-        }
         let sym = Sym(self.len());
         self.bytes.push_str(text);
         self.ends.push(self.bytes.len() as u32);
-        self.insert_slot(sym);
+        self.table[slot] = sym.0 + 1;
         assert_eq!(self.get(sym), text);
         sym
     }
 
-    fn insert_slot(&mut self, sym: Sym) {
-        assert!(self.table.len().is_power_of_two() && (sym.0 as usize) < self.table.len() / 2);
-        let mask = self.table.len() - 1;
-        let mut slot = hash(self.get(sym)) as usize & mask;
-        // Bounded: the load factor stays below 1/2, so an empty slot exists.
-        while self.table[slot] != 0 {
-            slot = (slot + 1) & mask;
-        }
-        self.table[slot] = sym.0 + 1;
-        assert!(self.table[slot] != 0);
+    /// Marks what is interned now as loaded (not edit output).
+    pub(crate) fn settle(&mut self) {
+        self.settled = (self.len(), self.bytes.len() as u32);
+        assert!(!self.outgrown());
+    }
+
+    /// Returns whether edits interned as many strings or bytes as were loaded (and at
+    /// least 2^16 strings or 1 MiB): each may be garbage of a replaced row, and nothing
+    /// tells which, so the document is rebuilt then (amortized O(1) per interned byte).
+    pub(crate) fn outgrown(&self) -> bool {
+        let (n, b) = self.settled;
+        let (dn, db) = (self.len() - n, self.bytes.len() as u32 - b);
+        (dn >= 1 << 16 && dn >= n) || (db >= 1 << 20 && db >= b)
     }
 
     fn grow(&mut self) {
         let len = (self.table.len() * 2).max(64);
-        assert!(len.is_power_of_two());
         self.table = vec![0; len];
         for i in 0..self.len() {
-            self.insert_slot(Sym(i));
+            let slot = self
+                .probe(self.get(Sym(i)))
+                .expect_err("strings are distinct");
+            self.table[slot] = i + 1;
         }
-        assert!(self.ends.len() * 2 <= self.table.len());
+        assert!(self.ends.len() * 2 < self.table.len());
     }
 }
 

@@ -497,16 +497,7 @@ pub(crate) fn index_cells(
                 }
             },
         };
-        assert!(
-            cells.lib.len() < CELLS_MAX,
-            "a project indexes at most 2^16 cells"
-        );
-        cells.lib.push(lib);
-        cells.dir.push(dir);
-        cells.stem.push(stem);
-        cells.kind.push(kind);
-        cells.hash.push(*digest);
-        cells.iface.push(iface);
+        cells.push_row(lib, dir, stem, kind, *digest, iface);
     }
     assert!(cells.columns_ok());
     diags

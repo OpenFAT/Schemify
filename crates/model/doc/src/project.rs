@@ -276,12 +276,10 @@ struct Open {
     next_stage: u16,
     journal: JournalOut,
     disk: Vec<u8>,
-    /// sha256 hex of `disk`, computed on first need (journaling only): hashing a 6 MB
-    /// file costs more than loading it, so the editor spreads it over idle frames
+    /// sha256 of `disk`, computed on first need (journaling only): hashing a 6 MB file
+    /// costs more than loading it, so the editor spreads it over idle frames
     /// ([`Project::hash_step`]) before the first commit needs it.
-    disk_hash: Option<String>,
-    /// The part of `disk` hashed so far, while `disk_hash` is unknown.
-    hashing: Option<(Sha256, usize)>,
+    disk_hash: DiskHash,
     pending_save: Option<PendingSave>,
     conflict: Option<Conflict>,
     /// Journal records after the checkpoint, awaiting `recover`/`discard_recovery`.
@@ -308,8 +306,7 @@ impl Open {
             next_stage: 0,
             journal: JournalOut::default(),
             disk: Vec::new(),
-            disk_hash: None,
-            hashing: None,
+            disk_hash: DiskHash::unhashed(),
             pending_save: None,
             conflict: None,
             tail: None,
@@ -323,23 +320,39 @@ fn dirty(open: &Open) -> bool {
     open.fixups || open.saved_depth != Some(open.undo.len())
 }
 
+/// How far the sha256 of an open document's disk bytes is.
+#[derive(Debug)]
+enum DiskHash {
+    /// The first `.1` bytes are absorbed.
+    Partial(Sha256, usize),
+    /// The hex digest.
+    Done(String),
+}
+
+impl DiskHash {
+    fn unhashed() -> DiskHash {
+        DiskHash::Partial(Sha256::default(), 0)
+    }
+}
+
 /// Returns the sha256 hex of the disk bytes, hashing them (the rest of them, after
 /// [`Project::hash_step`]) on first use.
 fn disk_hash(open: &mut Open) -> String {
-    if open.disk_hash.is_none() {
-        let (mut h, at) = open.hashing.take().unwrap_or_default();
-        h.update(&open.disk[at..]);
-        open.disk_hash = Some(hex(&h.finish()));
+    if let DiskHash::Partial(h, at) = &mut open.disk_hash {
+        h.update(&open.disk[*at..]);
+        let done = hex(&std::mem::take(h).finish());
+        open.disk_hash = DiskHash::Done(done);
     }
-    let hash = open.disk_hash.as_ref().expect("hashed above");
+    let DiskHash::Done(hash) = &open.disk_hash else {
+        unreachable!("hashed above")
+    };
     assert_eq!(hash.len(), 64);
     hash.clone()
 }
 
 /// Forgets the disk hash (the disk bytes changed).
 fn rehash(open: &mut Open) {
-    open.disk_hash = None;
-    open.hashing = None;
+    open.disk_hash = DiskHash::unhashed();
 }
 
 #[derive(Debug, Default)]
@@ -748,12 +761,14 @@ impl Project {
     pub fn open_handle(&self, row: usize) -> Option<DocHandle> {
         assert!(row < self.cells.lib.len(), "cell row from a previous index");
         let c = &self.cells;
+        self.find_open(c.lib[row], c.dir[row], c.stem[row], c.kind[row])
+    }
+
+    /// Returns the open document of file (`lib`, `dir`, `stem`, `kind`).
+    fn find_open(&self, lib: u8, dir: Sym, stem: Sym, kind: FileKind) -> Option<DocHandle> {
         let found = self.handles().find(|&h| {
             let o = self.open_ref(h).expect("live handle");
-            o.lib == c.lib[row]
-                && o.dir == c.dir[row]
-                && o.stem == c.stem[row]
-                && o.doc.kind() == c.kind[row]
+            o.lib == lib && o.dir == dir && o.stem == stem && o.doc.kind() == kind
         });
         assert!(found.is_none_or(|h| self.open_ref(h).is_some()));
         found
@@ -796,11 +811,7 @@ impl Project {
         ) {
             return Err(OpenError::Code(Code::E027));
         }
-        let twin = self.handles().find(|&h| {
-            let o = self.open_ref(h).expect("live handle");
-            o.lib == lib && o.dir == dir && o.stem == stem && o.doc.kind() == model.kind()
-        });
-        if let Some(h) = twin {
+        if let Some(h) = self.find_open(lib, dir, stem, model.kind()) {
             return Err(OpenError::AlreadyOpen(h));
         }
         let loaded = Document::from_format(&model);
@@ -896,22 +907,24 @@ impl Project {
             return false;
         }
         let open = self.open_mut(h).expect("pending implies open");
-        let (mut hasher, at) = open.hashing.take().unwrap_or_default();
-        let end = (at + budget).min(open.disk.len());
-        hasher.update(&open.disk[at..end]);
-        if end == open.disk.len() {
-            open.disk_hash = Some(hex(&hasher.finish()));
-            return false;
+        let DiskHash::Partial(hasher, at) = &mut open.disk_hash else {
+            unreachable!("pending")
+        };
+        let end = (*at + budget).min(open.disk.len());
+        hasher.update(&open.disk[*at..end]);
+        *at = end;
+        let more = end < open.disk.len();
+        if !more {
+            disk_hash(open);
         }
-        open.hashing = Some((hasher, end));
-        assert!(end < open.disk.len());
-        true
+        more
     }
 
     /// Returns whether [`Project::hash_step`] has bytes of document `h` left to hash.
     pub fn hash_pending(&self, h: DocHandle) -> bool {
-        self.open_ref(h)
-            .is_some_and(|o| o.disk_hash.is_none() && !o.disk.is_empty() && !o.doc.read_only())
+        self.open_ref(h).is_some_and(|o| {
+            matches!(o.disk_hash, DiskHash::Partial(..)) && !o.disk.is_empty() && !o.doc.read_only()
+        })
     }
 
     /// Returns whether the document differs from its last loaded/saved bytes.
@@ -1126,7 +1139,7 @@ impl Project {
     /// when the kind rules fail (the file would not parse).
     pub fn save(&mut self, h: DocHandle) -> Result<Option<SaveRequest>, Code> {
         let open = self.open_mut(h).ok_or(Code::E040)?;
-        if open.doc.read_only() || open.conflict.is_some() || open.tail.is_some() {
+        if refused(open) {
             return Err(Code::E044);
         }
         if !dirty(open) {
@@ -1184,8 +1197,8 @@ impl Project {
             open.saved_depth = Some(open.undo.len());
             rewrite_journal(open);
         } else if open.journal.started && at_save {
-            let rec = JRec::Save(p.top_seq, disk_hash(open));
-            append_journal(open, &[rec]);
+            let rec = JRec::<Entry>::Save(p.top_seq, disk_hash(open));
+            append_journal(&mut open.journal, &[rec]);
         } else if open.journal.started {
             // Edits landed between `save` and `saved`: the journal's position no longer
             // matches the saved state, so restate the lineage from the new bytes.
@@ -1385,15 +1398,8 @@ impl Project {
         if refused(open) {
             return Outcome::Refused(Code::E044);
         }
-        let params = self.param_map(open, &tx.ops);
-        let mut ops = tx.ops.clone();
-        let Project { slots, rng, .. } = self;
-        let open = slots[h.index as usize]
-            .open
-            .as_deref_mut()
-            .expect("checked live");
-        let inverse = match edit::apply(&mut open.doc, &mut ops, &params, rng) {
-            Ok(inv) => inv,
+        let (open, ops, inverse) = match self.apply_ops(h, &tx.ops) {
+            Ok(applied) => applied,
             Err(errors) => return Outcome::Rejected(errors),
         };
         match tx.mode {
@@ -1408,9 +1414,24 @@ impl Project {
             },
         }
     }
-}
 
-impl Project {
+    /// Applies `ops` to live, unrefused document `h` with the parameter facts of the cells
+    /// they instantiate. Returns the document, the ops as applied and their inverse.
+    fn apply_ops(&mut self, h: DocHandle, ops: &[Op]) -> Result<Applied<'_>, Vec<OpError>> {
+        let open = self.open_ref(h).expect("checked live");
+        assert!(!refused(open), "checked by the caller");
+        let params = self.param_map(open, ops);
+        let mut ops = ops.to_vec();
+        let Project { slots, rng, .. } = self;
+        let open = slots[h.index as usize]
+            .open
+            .as_deref_mut()
+            .expect("checked live");
+        let inverse = edit::apply(&mut open.doc, &mut ops, &params, rng)?;
+        assert_eq!(inverse.len(), ops.len());
+        Ok((open, ops, inverse))
+    }
+
     /// [`Edit::Extend`]: applies `ops` inside entry `seq`. Refused (`E040`) unless `seq` is
     /// the top of the undo stack with redo empty, and (`E044`) when the document is
     /// refused, the entry is part of the saved state, or its journal record was written
@@ -1428,15 +1449,8 @@ impl Project {
         if refused(open) || saved || !rewritable {
             return Outcome::Refused(Code::E044);
         }
-        let params = self.param_map(open, ops);
-        let mut ops = ops.to_vec();
-        let Project { slots, rng, .. } = self;
-        let open = slots[h.index as usize]
-            .open
-            .as_deref_mut()
-            .expect("checked live");
-        let mut inverse = match edit::apply(&mut open.doc, &mut ops, &params, rng) {
-            Ok(inv) => inv,
+        let (open, ops, mut inverse) = match self.apply_ops(h, ops) {
+            Ok(applied) => applied,
             Err(errors) => return Outcome::Rejected(errors),
         };
         let entry = open.undo.back_mut().expect("checked above");
@@ -1444,14 +1458,14 @@ impl Project {
         // Undo reverts the extension first: it was applied last.
         inverse.append(&mut entry.inverse);
         entry.inverse = inverse;
-        let entry = entry.clone();
         match open.journal.last_tx {
             Some((s, at)) if s == seq => {
                 let j = &mut open.journal;
                 j.bytes -= (j.text.len() - at) as u64;
                 j.txs -= 1;
                 j.text.truncate(at);
-                append_journal(open, &[JRec::Tx(entry)]);
+                let entry = open.undo.back().expect("checked above");
+                append_journal(&mut open.journal, &[JRec::Tx(entry)]);
                 open.journal.last_tx = Some((seq, at));
             }
             _ if open.journal.started => rewrite_journal(open),
@@ -1512,7 +1526,7 @@ pub fn apply_edits(project: &mut Project, requests: &[EditRequest]) -> Vec<Outco
                 Some(open) if refused(open) => Outcome::Refused(Code::E044),
                 Some(open) if req.edit == Edit::Undo => match undo_top(open) {
                     Ok(Some(seq)) => {
-                        append_journal(open, &[JRec::Undo(seq)]);
+                        append_journal::<Entry>(&mut open.journal, &[JRec::Undo(seq)]);
                         Outcome::Undone { seq }
                     }
                     Ok(None) => Outcome::Nothing,
@@ -1520,7 +1534,7 @@ pub fn apply_edits(project: &mut Project, requests: &[EditRequest]) -> Vec<Outco
                 },
                 Some(open) => match redo_top(open) {
                     Ok(Some(seq)) => {
-                        append_journal(open, &[JRec::Redo(seq)]);
+                        append_journal::<Entry>(&mut open.journal, &[JRec::Redo(seq)]);
                         Outcome::Redone { seq }
                     }
                     Ok(None) => Outcome::Nothing,
@@ -1535,6 +1549,9 @@ pub fn apply_edits(project: &mut Project, requests: &[EditRequest]) -> Vec<Outco
 }
 
 // ---------------------------------------------------------------------- per-document
+
+/// A document after [`Project::apply_ops`], with the ops as applied and their inverse.
+type Applied<'a> = (&'a mut Open, Vec<Op>, Vec<Op>);
 
 fn refused(open: &Open) -> bool {
     open.doc.read_only() || open.conflict.is_some() || open.tail.is_some()
@@ -1611,7 +1628,7 @@ fn commit(open: &mut Open, label: &str, unix_ms: u64, forward: Vec<Op>, inverse:
         rewrite_journal(open);
     }
     let at = open.journal.text.len();
-    append_journal(open, &[JRec::Tx(entry.clone())]);
+    append_journal(&mut open.journal, &[JRec::Tx(&entry)]);
     open.journal.last_tx = open.journal.started.then_some((seq, at));
     push_commit(open, entry);
     open.doc.compact_if_needed();
@@ -1684,16 +1701,15 @@ fn redo_top(open: &mut Open) -> Result<Option<u64>, Vec<OpError>> {
     }
 }
 
-fn append_journal(open: &mut Open, recs: &[JRec]) {
-    if !open.journal.started {
+fn append_journal<E: std::borrow::Borrow<Entry>>(journal: &mut JournalOut, recs: &[JRec<E>]) {
+    if !journal.started {
         return; // nothing committed yet: the journal starts with the first commit
     }
-    let text = encode_records(recs);
-    assert!(recs.is_empty() || text.ends_with('\n'));
-    open.journal.txs += recs.iter().filter(|r| matches!(r, JRec::Tx(_))).count() as u64;
-    open.journal.bytes += text.len() as u64;
-    open.journal.text.push_str(&text);
-    assert!(open.journal.text.len() >= text.len());
+    let start = journal.text.len();
+    encode_records(&mut journal.text, recs);
+    assert!(recs.is_empty() || journal.text.ends_with('\n'));
+    journal.txs += recs.iter().filter(|r| matches!(r, JRec::Tx(_))).count() as u64;
+    journal.bytes += (journal.text.len() - start) as u64;
 }
 
 /// Replaces the journal with one describing the current lineage: `base` (the disk
@@ -1707,10 +1723,10 @@ fn rewrite_journal(open: &mut Open) {
         .expect("rewrites happen at a reachable disk state");
     assert!(depth <= open.undo.len());
     let mut recs = vec![JRec::Base(disk_hash(open))];
-    recs.extend(open.undo.iter().take(depth).cloned().map(JRec::Hist));
-    recs.extend(open.undo.iter().skip(depth).cloned().map(JRec::Tx));
+    recs.extend(open.undo.iter().take(depth).map(JRec::Hist));
+    recs.extend(open.undo.iter().skip(depth).map(JRec::Tx));
     let mut text = JOURNAL_HEADER.to_owned();
-    text.push_str(&encode_records(&recs));
+    encode_records(&mut text, &recs);
     open.journal = JournalOut {
         started: true,
         rewrite: true,

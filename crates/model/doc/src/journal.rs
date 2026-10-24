@@ -25,7 +25,8 @@
 use crate::Code;
 use crate::edit::{Op, OpError, Target};
 use crate::record::{Attr, RecordBuf};
-use schemify_format::{Document as FormatDoc, FileKind, RecordKind, parse, write};
+use schemify_format::{Document as FormatDoc, FileKind, RecordKind, parse, write_into};
+use std::borrow::Borrow;
 
 /// Header the journal file starts with; op text is lexed and built under it too.
 pub(crate) const JOURNAL_HEADER: &str = "schemify 1 journal\n";
@@ -34,16 +35,17 @@ const TORN_RETRIES_MAX: u32 = 4;
 
 // ------------------------------------------------------------------ encoding
 
-fn encode(build: impl FnOnce(&mut FormatDoc<'static>)) -> String {
+/// Appends the record lines `build` adds to `out`: the format writer's text without the
+/// journal header it starts with, written in place (no intermediate copy).
+fn encode_into(out: &mut String, build: impl FnOnce(&mut FormatDoc<'static>)) {
     let mut d = FormatDoc::new(FileKind::Journal);
     build(&mut d);
-    let text = write(&d);
-    let body = text
-        .strip_prefix(JOURNAL_HEADER)
-        .expect("the builder writes its header first");
-    let body = body.strip_prefix('\n').unwrap_or(body);
-    assert!(body.is_empty() || body.ends_with('\n'));
-    body.to_owned()
+    let start = out.len();
+    write_into(&d, out);
+    assert!(out[start..].starts_with(JOURNAL_HEADER));
+    let blank = out[start + JOURNAL_HEADER.len()..].starts_with('\n');
+    out.replace_range(start..start + JOURNAL_HEADER.len() + usize::from(blank), "");
+    assert!(out.len() == start || out.ends_with('\n'));
 }
 
 fn push_payload(d: &mut FormatDoc<'static>, rec: &RecordBuf) {
@@ -138,7 +140,8 @@ fn push_op(d: &mut FormatDoc<'static>, op: &Op) {
 /// or verbatim line with a line break, an attribute key that is not a word). Ops that
 /// a transaction accepted never do.
 pub fn ops_to_text(ops: &[Op]) -> String {
-    let text = encode(|d| {
+    let mut text = String::new();
+    encode_into(&mut text, |d| {
         for op in ops {
             push_op(d, op);
         }
@@ -194,9 +197,11 @@ fn payload(d: &FormatDoc<'_>, r: u32, kind: RecordKind, fields: &[&str]) -> Reco
     rec
 }
 
-fn number(text: &str) -> Result<u32, Code> {
-    let ok = !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
-    ok.then(|| text.parse().ok()).flatten().ok_or(Code::E029)
+/// Parses a decimal of digits only (no sign, no `+`), as op text and journal records
+/// write row indices and sequence numbers.
+fn number<T: std::str::FromStr>(text: &str) -> Option<T> {
+    let digits = text.bytes().all(|b| b.is_ascii_digit());
+    digits.then(|| text.parse().ok()).flatten()
 }
 
 fn decode_op(d: &FormatDoc<'_>, r: u32, file: FileKind) -> Result<Op, Code> {
@@ -222,7 +227,7 @@ fn decode_op(d: &FormatDoc<'_>, r: u32, file: FileKind) -> Result<Op, Code> {
             };
             Op::Insert {
                 rec: payload(d, r, kind_of(w, file)?, rest),
-                at: Some(number(row)?),
+                at: Some(number(row).ok_or(Code::E029)?),
             }
         }
         "delete" if f.len() == 2 => Op::Delete(target(&f)?),
@@ -233,7 +238,7 @@ fn decode_op(d: &FormatDoc<'_>, r: u32, file: FileKind) -> Result<Op, Code> {
         }
         "set_field" if f.len() == 4 => Op::SetField {
             target: target(&f)?,
-            index: number(f[2])?,
+            index: number(f[2]).ok_or(Code::E029)?,
             value: f[3].to_owned(),
         },
         "set_attr" if f.len() >= 3 => Op::SetAttr {
@@ -248,7 +253,7 @@ fn decode_op(d: &FormatDoc<'_>, r: u32, file: FileKind) -> Result<Op, Code> {
         },
         "reorder" if f.len() == 3 => Op::Reorder {
             target: target(&f)?,
-            to: number(f[2])?,
+            to: number(f[2]).ok_or(Code::E029)?,
         },
         "delete" | "set_field" | "set_attr" | "remove_attr" | "reorder" => return Err(Code::E029),
         _ => return Err(Code::E027),
@@ -331,15 +336,16 @@ pub(crate) struct Entry {
     pub(crate) inverse: Vec<Op>,
 }
 
-/// One journal record, decoded.
+/// One journal record: decoded (`E = Entry`), or to encode, borrowing its entry
+/// (`E = &Entry`) so writing history copies no ops.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum JRec {
+pub(crate) enum JRec<E = Entry> {
     /// The file hash the following records apply to.
     Base(String),
     /// A transaction that is undo history at `base` (not replayed).
-    Hist(Entry),
+    Hist(E),
     /// A committed transaction.
-    Tx(Entry),
+    Tx(E),
     /// The undo stack's top (seq) was undone.
     Undo(u64),
     /// The redo stack's top (seq) was redone.
@@ -348,36 +354,40 @@ pub(crate) enum JRec {
     Save(u64, String),
 }
 
-fn push_lines(d: &mut FormatDoc<'static>, text: &str) {
-    for line in text.lines() {
+/// Pushes `ops` as op text, one verbatim line per text line; `buf` is scratch.
+fn push_ops(d: &mut FormatDoc<'static>, ops: &[Op], buf: &mut String) {
+    buf.clear();
+    encode_into(buf, |o| ops.iter().for_each(|op| push_op(o, op)));
+    for line in buf.lines() {
         d.push_verbatim(line);
     }
 }
 
-fn push_entry(d: &mut FormatDoc<'static>, word: &str, e: &Entry) {
+fn push_entry(d: &mut FormatDoc<'static>, word: &str, e: &Entry, buf: &mut String) {
     assert_eq!(e.forward.len(), e.inverse.len(), "one inverse per op");
     assert!(word == "tx" || word == "hist");
     d.begin_unknown_record(word);
     d.push_field(&e.seq.to_string());
     d.push_field(&e.unix_ms.to_string());
     d.push_field(&e.label);
-    push_lines(d, &ops_to_text(&e.forward));
+    push_ops(d, &e.forward, buf);
     d.begin_unknown_record("inverse");
     d.push_field(&e.seq.to_string());
-    push_lines(d, &ops_to_text(&e.inverse));
+    push_ops(d, &e.inverse, buf);
 }
 
-/// Encodes journal records (no header).
-pub(crate) fn encode_records(recs: &[JRec]) -> String {
-    encode(|d| {
+/// Appends journal records (no header) to `out`.
+pub(crate) fn encode_records<E: Borrow<Entry>>(out: &mut String, recs: &[JRec<E>]) {
+    let mut buf = String::new();
+    encode_into(out, |d| {
         for r in recs {
             match r {
                 JRec::Base(h) => {
                     d.begin_unknown_record("base");
                     d.push_field(h);
                 }
-                JRec::Hist(e) => push_entry(d, "hist", e),
-                JRec::Tx(e) => push_entry(d, "tx", e),
+                JRec::Hist(e) => push_entry(d, "hist", e.borrow(), &mut buf),
+                JRec::Tx(e) => push_entry(d, "tx", e.borrow(), &mut buf),
                 JRec::Undo(s) | JRec::Redo(s) => {
                     d.begin_unknown_record(if matches!(r, JRec::Undo(_)) {
                         "undo"
@@ -393,14 +403,7 @@ pub(crate) fn encode_records(recs: &[JRec]) -> String {
                 }
             }
         }
-    })
-}
-
-fn seq(text: &str) -> Option<u64> {
-    text.bytes()
-        .all(|b| b.is_ascii_digit())
-        .then(|| text.parse().ok())
-        .flatten()
+    });
 }
 
 /// Decodes journal records from `d`, stopping at the first record that is incomplete
@@ -412,9 +415,9 @@ fn decode_records(d: &FormatDoc<'_>, file: FileKind) -> Vec<JRec> {
         let f: Vec<&str> = d.fields(r).collect();
         let rec = match (d.record_word(r), f.as_slice()) {
             ("base", [h]) => Some(JRec::Base((*h).to_owned())),
-            ("undo", [s]) => seq(s).map(JRec::Undo),
-            ("redo", [s]) => seq(s).map(JRec::Redo),
-            ("save", [s, h]) => seq(s).map(|s| JRec::Save(s, (*h).to_owned())),
+            ("undo", [s]) => number(s).map(JRec::Undo),
+            ("redo", [s]) => number(s).map(JRec::Redo),
+            ("save", [s, h]) => number(s).map(|s| JRec::Save(s, (*h).to_owned())),
             (w @ ("tx" | "hist"), [s, ms, label]) => {
                 let entry = decode_entry(d, r, file, s, ms, label);
                 r += 1; // the `inverse` record
@@ -453,8 +456,8 @@ fn decode_entry(
         ops_from_text(&text, file).ok()
     };
     let entry = Entry {
-        seq: seq(s)?,
-        unix_ms: seq(ms)?,
+        seq: number(s)?,
+        unix_ms: number(ms)?,
         label: label.to_owned(),
         forward: ops(r)?,
         inverse: ops(inv)?,
@@ -703,7 +706,8 @@ mod tests {
             JRec::Redo(7),
             JRec::Save(7, "cd".into()),
         ];
-        let text = format!("{JOURNAL_HEADER}{}", encode_records(&recs));
+        let mut text = JOURNAL_HEADER.to_owned();
+        encode_records(&mut text, &recs);
         assert_eq!(
             parse_journal(text.as_bytes(), FileKind::Shcomp),
             Ok(recs.clone())
@@ -715,7 +719,8 @@ mod tests {
             recs[..5]
         );
         // Torn between a tx and its inverse.
-        let tx_only = format!("{JOURNAL_HEADER}{}", encode_records(&recs[..3]));
+        let mut tx_only = JOURNAL_HEADER.to_owned();
+        encode_records(&mut tx_only, &recs[..3]);
         let cut = tx_only.rfind("\ninverse").unwrap() + 1;
         assert_eq!(
             parse_journal(&tx_only.as_bytes()[..cut], FileKind::Shcomp).unwrap(),

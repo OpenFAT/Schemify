@@ -8,11 +8,11 @@
 //! writer then sorts ranks 3 and 6.
 
 use crate::changes::{Change, ChangeLog, Cursor, Write};
-use crate::record::{Attr, RecordBuf, check_record};
+use crate::record::{RecordBuf, check_record};
 use crate::strings::{FastMap, ObjId, Strings, Sym};
 use crate::tables::{
     FormatSink, Graphics, Instances, Noconns, Pins, Placed, Pool, Records, Scratch, Shapes, Span,
-    Table,
+    Table, emit_attrs,
 };
 use crate::{Code, Diag};
 use schemify_format::{
@@ -158,99 +158,33 @@ pub struct Loc {
 /// shared reference to it. Static dispatch: one monomorphized arm per table.
 macro_rules! with_table {
     ($doc:expr, $t:expr, |$tab:ident| $body:expr) => {
+        with_table!(@ $doc, $t, $tab, $body, )
+    };
+    (@ $doc:expr, $t:expr, $tab:ident, $body:expr, $($m:tt)?) => {
         match $t {
-            TableId::Pins => {
-                let $tab = &$doc.pins;
-                $body
-            }
-            TableId::Params => {
-                let $tab = &$doc.params;
-                $body
-            }
-            TableId::Impls => {
-                let $tab = &$doc.impls;
-                $body
-            }
-            TableId::Graphics => {
-                let $tab = &$doc.graphics;
-                $body
-            }
-            TableId::Instances => {
-                let $tab = &$doc.instances;
-                $body
-            }
-            TableId::Wires => {
-                let $tab = &$doc.wires;
-                $body
-            }
-            TableId::Labels => {
-                let $tab = &$doc.labels;
-                $body
-            }
-            TableId::Ports => {
-                let $tab = &$doc.ports;
-                $body
-            }
-            TableId::Noconns => {
-                let $tab = &$doc.noconns;
-                $body
-            }
-            TableId::Texts => {
-                let $tab = &$doc.texts;
-                $body
-            }
-            TableId::Shapes => {
-                let $tab = &$doc.shapes;
-                $body
-            }
-            TableId::Constraints => {
-                let $tab = &$doc.constraints;
-                $body
-            }
-            TableId::Waivers => {
-                let $tab = &$doc.waivers;
-                $body
-            }
-            TableId::DocBlocks => {
-                let $tab = &$doc.doc_blocks;
-                $body
-            }
-            TableId::Bodies => {
-                let $tab = &$doc.bodies;
-                $body
-            }
-            TableId::Corners => {
-                let $tab = &$doc.corners;
-                $body
-            }
-            TableId::Configs => {
-                let $tab = &$doc.configs;
-                $body
-            }
-            TableId::Sweeps => {
-                let $tab = &$doc.sweeps;
-                $body
-            }
-            TableId::Montecarlos => {
-                let $tab = &$doc.montecarlos;
-                $body
-            }
-            TableId::Optimizes => {
-                let $tab = &$doc.optimizes;
-                $body
-            }
-            TableId::Outputs => {
-                let $tab = &$doc.outputs;
-                $body
-            }
-            TableId::Specs => {
-                let $tab = &$doc.specs;
-                $body
-            }
-            TableId::Codes => {
-                let $tab = &$doc.codes;
-                $body
-            }
+            TableId::Pins => { let $tab = &$($m)? $doc.pins; $body }
+            TableId::Params => { let $tab = &$($m)? $doc.params; $body }
+            TableId::Impls => { let $tab = &$($m)? $doc.impls; $body }
+            TableId::Graphics => { let $tab = &$($m)? $doc.graphics; $body }
+            TableId::Instances => { let $tab = &$($m)? $doc.instances; $body }
+            TableId::Wires => { let $tab = &$($m)? $doc.wires; $body }
+            TableId::Labels => { let $tab = &$($m)? $doc.labels; $body }
+            TableId::Ports => { let $tab = &$($m)? $doc.ports; $body }
+            TableId::Noconns => { let $tab = &$($m)? $doc.noconns; $body }
+            TableId::Texts => { let $tab = &$($m)? $doc.texts; $body }
+            TableId::Shapes => { let $tab = &$($m)? $doc.shapes; $body }
+            TableId::Constraints => { let $tab = &$($m)? $doc.constraints; $body }
+            TableId::Waivers => { let $tab = &$($m)? $doc.waivers; $body }
+            TableId::DocBlocks => { let $tab = &$($m)? $doc.doc_blocks; $body }
+            TableId::Bodies => { let $tab = &$($m)? $doc.bodies; $body }
+            TableId::Corners => { let $tab = &$($m)? $doc.corners; $body }
+            TableId::Configs => { let $tab = &$($m)? $doc.configs; $body }
+            TableId::Sweeps => { let $tab = &$($m)? $doc.sweeps; $body }
+            TableId::Montecarlos => { let $tab = &$($m)? $doc.montecarlos; $body }
+            TableId::Optimizes => { let $tab = &$($m)? $doc.optimizes; $body }
+            TableId::Outputs => { let $tab = &$($m)? $doc.outputs; $body }
+            TableId::Specs => { let $tab = &$($m)? $doc.specs; $body }
+            TableId::Codes => { let $tab = &$($m)? $doc.codes; $body }
         }
     };
 }
@@ -264,100 +198,7 @@ macro_rules! with_table_mut {
             ..
         } = $doc;
         let _ = (&$strings, &$pool);
-        match $t {
-            TableId::Pins => {
-                let $tab = &mut $doc.pins;
-                $body
-            }
-            TableId::Params => {
-                let $tab = &mut $doc.params;
-                $body
-            }
-            TableId::Impls => {
-                let $tab = &mut $doc.impls;
-                $body
-            }
-            TableId::Graphics => {
-                let $tab = &mut $doc.graphics;
-                $body
-            }
-            TableId::Instances => {
-                let $tab = &mut $doc.instances;
-                $body
-            }
-            TableId::Wires => {
-                let $tab = &mut $doc.wires;
-                $body
-            }
-            TableId::Labels => {
-                let $tab = &mut $doc.labels;
-                $body
-            }
-            TableId::Ports => {
-                let $tab = &mut $doc.ports;
-                $body
-            }
-            TableId::Noconns => {
-                let $tab = &mut $doc.noconns;
-                $body
-            }
-            TableId::Texts => {
-                let $tab = &mut $doc.texts;
-                $body
-            }
-            TableId::Shapes => {
-                let $tab = &mut $doc.shapes;
-                $body
-            }
-            TableId::Constraints => {
-                let $tab = &mut $doc.constraints;
-                $body
-            }
-            TableId::Waivers => {
-                let $tab = &mut $doc.waivers;
-                $body
-            }
-            TableId::DocBlocks => {
-                let $tab = &mut $doc.doc_blocks;
-                $body
-            }
-            TableId::Bodies => {
-                let $tab = &mut $doc.bodies;
-                $body
-            }
-            TableId::Corners => {
-                let $tab = &mut $doc.corners;
-                $body
-            }
-            TableId::Configs => {
-                let $tab = &mut $doc.configs;
-                $body
-            }
-            TableId::Sweeps => {
-                let $tab = &mut $doc.sweeps;
-                $body
-            }
-            TableId::Montecarlos => {
-                let $tab = &mut $doc.montecarlos;
-                $body
-            }
-            TableId::Optimizes => {
-                let $tab = &mut $doc.optimizes;
-                $body
-            }
-            TableId::Outputs => {
-                let $tab = &mut $doc.outputs;
-                $body
-            }
-            TableId::Specs => {
-                let $tab = &mut $doc.specs;
-                $body
-            }
-            TableId::Codes => {
-                let $tab = &mut $doc.codes;
-                $body
-            }
-        }
+        with_table!(@ $doc, $t, $tab, $body, mut)
     }};
 }
 
@@ -642,15 +483,7 @@ impl Document {
     /// Returns the header as a record (fields empty, attributes in order).
     pub fn header_record(&self) -> RecordBuf {
         let mut rec = RecordBuf::new(RecordKind::Header);
-        for (k, vals) in self.pool.attrs(self.header) {
-            rec.attrs.push(Attr {
-                key: self.strings.get(k).to_owned(),
-                values: vals
-                    .iter()
-                    .map(|v| self.strings.get(*v).to_owned())
-                    .collect(),
-            });
-        }
+        emit_attrs(self.header, &self.strings, &self.pool, &mut rec);
         assert_eq!(rec.attrs.len(), self.header.len as usize);
         rec
     }
@@ -698,6 +531,7 @@ impl Document {
         let mut diags = doc.reid_dups(src, &locs);
         diags.extend(doc.load_diags());
         doc.log = ChangeLog::default(); // a loaded document starts its log empty
+        doc.strings.settle();
         assert!(doc.unknown_records == 0 || doc.read_only());
         Loaded { doc, diags }
     }
@@ -799,14 +633,8 @@ impl Document {
     /// Panics on a read-only document (it lost the records it cannot model).
     pub(crate) fn to_format(&self) -> FormatDoc<'static> {
         assert!(!self.read_only(), "a read-only document is never written");
-        let mut out = FormatDoc::new(self.kind);
-        for (k, vals) in self.pool.attrs(self.header) {
-            out.push_attr(self.strings.get(k));
-            for v in vals {
-                out.push_value(self.strings.get(*v));
-            }
-        }
-        let mut sink = FormatSink::new(out);
+        let mut sink = FormatSink::new(FormatDoc::new(self.kind));
+        emit_attrs(self.header, &self.strings, &self.pool, &mut sink);
         for t in TableId::ALL {
             with_table!(self, t, |tab| {
                 for row in 0..tab.len() {
@@ -933,11 +761,8 @@ impl Document {
         if id != ObjId::NONE && self.by_id.get(&id) == Some(&loc) {
             self.by_id.remove(&id);
         }
-        let (attrs, lines) = with_table!(self, t, |tab| (
-            tab.attrs_col()[row],
-            tab.comments_col()[row].len + tab.verbatim_col().get(row).map_or(0, |s| s.len)
-        ));
-        self.pool.orphan(attrs, lines);
+        let (attrs, others) = with_table!(self, t, |tab| tab.owned(row));
+        self.pool.orphan(attrs, others);
         self.log.push(t, Write::Deleted, row as u32, id);
         if t.ordered() {
             with_table_mut!(self, t, |tab, _s, _p| tab.remove_row(row));
@@ -974,11 +799,8 @@ impl Document {
         if old_id != ObjId::NONE && self.by_id.get(&old_id) == Some(&loc) {
             self.by_id.remove(&old_id);
         }
-        let (attrs, lines) = with_table!(self, t, |tab| (
-            tab.attrs_col()[row],
-            tab.comments_col()[row].len + tab.verbatim_col().get(row).map_or(0, |s| s.len)
-        ));
-        self.pool.orphan(attrs, lines);
+        let (attrs, others) = with_table!(self, t, |tab| tab.owned(row));
+        self.pool.orphan(attrs, others);
         let mut scratch = Scratch::default();
         scratch.fill_buf(rec);
         let len = self.table_len(t);
@@ -1185,12 +1007,14 @@ impl Document {
         w.x1[r] == w.x2[r] && w.y1[r] == w.y2[r]
     }
 
-    /// Rebuilds the arena and pool from the live rows when garbage outweighs live data,
-    /// so a long session of edits stays bounded. Row order and ids are kept; `Sym` and
-    /// `Span` values change (they are never held across edits).
+    /// Rebuilds the arena and pool from the live rows when garbage outweighs live data
+    /// (pool entries of replaced rows, strings edits interned), so a long session of
+    /// edits stays bounded. Row order and ids are kept; `Sym` and `Span` values change
+    /// (they are never held across edits).
     pub(crate) fn compact_if_needed(&mut self) {
-        let size = self.pool.size();
-        if (self.pool.dead as usize) < (1 << 16) || (self.pool.dead as usize) * 2 < size {
+        let dead = self.pool.dead as usize;
+        let pool = dead >= 1 << 16 && dead * 2 >= self.pool.size();
+        if !pool && !self.strings.outgrown() {
             return;
         }
         let model = self.to_format();
@@ -1204,7 +1028,7 @@ impl Document {
         log.break_here();
         *self = rebuilt;
         self.log = log;
-        assert_eq!(self.pool.dead, 0);
+        assert!(self.pool.dead == 0 && !self.strings.outgrown());
     }
 }
 
@@ -1213,4 +1037,59 @@ fn push_header(pool: &mut Pool, strings: &mut Strings, rec: &crate::tables::RecV
     let span = pool.push_attrs(rec, &[], strings);
     assert_eq!(span.len as usize, rec.attrs.len());
     span
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn poly(dx: i32) -> RecordBuf {
+        let mut r = RecordBuf::new(RecordKind::Shape)
+            .field("0abcde")
+            .field("poly");
+        for i in 0..256 {
+            r = r.field(&(i + dx).to_string());
+        }
+        r
+    }
+
+    #[test]
+    fn replaced_coordinates_are_garbage_and_compact_away() {
+        let mut doc = Document::new(FileKind::Shcomp);
+        let loc = doc.insert(&poly(0), None).unwrap();
+        let dead = doc.pool.dead;
+        doc.put(loc, &poly(1)).unwrap();
+        assert_eq!(doc.pool.dead - dead, 256, "the replaced row's coordinates");
+        for k in 2..1000 {
+            doc.put(loc, &poly(k)).unwrap();
+            doc.compact_if_needed();
+        }
+        assert!(
+            doc.pool.coords.len() <= 2 * (1 << 16) + 512,
+            "{} coordinates for 256 live ones",
+            doc.pool.coords.len()
+        );
+        assert_eq!(doc.record(loc), poly(999));
+    }
+
+    #[test]
+    fn replaced_strings_are_garbage_and_compact_away() {
+        let mut doc = Document::new(FileKind::Shcomp);
+        let prose = |k: usize| {
+            RecordBuf::new(RecordKind::Prose)
+                .field("0abcde")
+                .verbatim(&format!("{k} {}", "x".repeat(1 << 16)))
+        };
+        let loc = doc.insert(&prose(0), None).unwrap();
+        for k in 1..200 {
+            doc.put(loc, &prose(k)).unwrap();
+            doc.compact_if_needed();
+        }
+        assert!(
+            doc.strings().len() <= 32,
+            "{} strings for 2 live ones",
+            doc.strings().len()
+        );
+        assert_eq!(doc.record(loc), prose(199));
+    }
 }
