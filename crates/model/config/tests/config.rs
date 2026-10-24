@@ -545,4 +545,14 @@ fn sim_env_must_map_names_to_strings() {
         assert!(e[0].contains("`env` must map"), "{bad}: {}", e[0]);
         assert!(cfg.table().sim(schemify_config::SimKind::Espice).is_none());
     }
+    for bad in [
+        "schemify.sim('espice', { path = 'espice', args = '-b' })",
+        "schemify.sim('espice', { path = 'espice', args = { true } })",
+    ] {
+        let (cfg, out) = run(bad);
+        let e = errors(&out);
+        assert_eq!(e.len(), 1, "{bad}: {out:?}");
+        assert!(e[0].contains("`args` must be a list"), "{bad}: {}", e[0]);
+        assert!(cfg.table().sim(schemify_config::SimKind::Espice).is_none());
+    }
 }

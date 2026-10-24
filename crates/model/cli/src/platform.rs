@@ -223,10 +223,6 @@ mod imp {
         Err(last)
     }
 
-    pub fn state_dir() -> Option<PathBuf> {
-        schemify_config::dirs::here(schemify_config::dirs::Dir::State).ok()
-    }
-
     // The clipboard tools answer synchronously: nothing is ever pending.
     pub fn clipboard_ready() -> bool {
         false
@@ -594,7 +590,7 @@ pub fn wake_ms() -> Option<u32> {
 /// `SCHEMIFY_APPNAME`): the recent-files list lives here; `/state` on the web. `None` when
 /// the environment names none.
 pub fn state_dir() -> Option<PathBuf> {
-    imp::state_dir()
+    schemify_config::dirs::here(schemify_config::dirs::Dir::State).ok()
 }
 
 /// Lists regular files under `dir` recursively in sorted order, skipping hidden entries,

@@ -320,10 +320,10 @@ pub fn clean(specs: &[PackSpec], paths: &Paths) -> Report {
     }
     match read_lock(&paths.lock) {
         Ok(mut lock) => {
-            let keep: Vec<bool> = (0..lock.name.len())
-                .map(|r| lock.ty[r] != "plugin" || specs.iter().any(|s| s.name == lock.name[r]))
+            let keep: Vec<usize> = (0..lock.name.len())
+                .filter(|&r| lock.ty[r] != "plugin" || specs.iter().any(|s| s.name == lock.name[r]))
                 .collect();
-            retain(&mut lock, &keep);
+            select(&mut lock, &keep);
             if let Err(e) = write_lock(&paths.lock, &mut lock) {
                 report.fail(LOCKFILE, e);
             }
@@ -564,18 +564,17 @@ fn set_row(lock: &mut Locked, name: &str, kind: &str, resolved: &str, hash: &str
     assert_eq!(lock.ty.len(), lock.hash.len());
 }
 
-fn retain(lock: &mut Locked, keep: &[bool]) {
-    assert_eq!(keep.len(), lock.name.len());
-    let mut it = keep.iter();
-    lock.ty.retain(|_| *it.next().expect("one flag per row"));
+/// Keeps rows `rows` of `lock` (each at most once), in that order.
+fn select(lock: &mut Locked, rows: &[usize]) {
+    assert!(rows.len() <= lock.name.len());
     for col in [
+        &mut lock.ty,
         &mut lock.name,
         &mut lock.kind,
         &mut lock.resolved,
         &mut lock.hash,
     ] {
-        let mut it = keep.iter();
-        col.retain(|_| *it.next().expect("one flag per row"));
+        *col = rows.iter().map(|&r| std::mem::take(&mut col[r])).collect();
     }
     assert_eq!(lock.ty.len(), lock.hash.len());
 }
@@ -584,14 +583,7 @@ fn retain(lock: &mut Locked, keep: &[bool]) {
 fn write_lock(path: &Path, lock: &mut Locked) -> Result<(), String> {
     let mut order: Vec<usize> = (0..lock.name.len()).collect();
     order.sort_by(|&a, &b| (&lock.ty[a], &lock.name[a]).cmp(&(&lock.ty[b], &lock.name[b])));
-    let sorted = Locked {
-        ty: order.iter().map(|&i| lock.ty[i].clone()).collect(),
-        name: order.iter().map(|&i| lock.name[i].clone()).collect(),
-        kind: order.iter().map(|&i| lock.kind[i].clone()).collect(),
-        resolved: order.iter().map(|&i| lock.resolved[i].clone()).collect(),
-        hash: order.iter().map(|&i| lock.hash[i].clone()).collect(),
-    };
-    *lock = sorted;
+    select(lock, &order);
     if lock.name.is_empty() {
         return match std::fs::remove_file(path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),

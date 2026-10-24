@@ -446,11 +446,7 @@ pub fn decode(line: &[u8]) -> Result<Request, String> {
 
 /// The response line (with its `\n`) for a successful call.
 pub fn result(id: &Json, result: &Json) -> String {
-    frame(Json::obj(vec![
-        ("jsonrpc", Json::Str("2.0".into())),
-        ("id", id.clone()),
-        ("result", result.clone()),
-    ]))
+    frame(&[("id", id), ("result", result)])
 }
 
 /// The response line (with its `\n`) for a failed call.
@@ -459,26 +455,27 @@ pub fn error(id: &Json, code: i32, message: &str) -> String {
         ("code", Json::Num(f64::from(code))),
         ("message", Json::Str(message.to_owned())),
     ]);
-    frame(Json::obj(vec![
-        ("jsonrpc", Json::Str("2.0".into())),
-        ("id", id.clone()),
-        ("error", err),
-    ]))
+    frame(&[("id", id), ("error", &err)])
 }
 
 /// A notification line (with its `\n`) from the server: `method` with `params`, no id.
 pub fn notification(method: &str, params: &Json) -> String {
-    frame(Json::obj(vec![
-        ("jsonrpc", Json::Str("2.0".into())),
-        ("method", Json::Str(method.to_owned())),
-        ("params", params.clone()),
-    ]))
+    frame(&[
+        ("method", &Json::Str(method.to_owned())),
+        ("params", params),
+    ])
 }
 
-fn frame(v: Json) -> String {
-    let mut out = String::new();
-    write(&v, &mut out);
-    out.push('\n');
+/// `{"jsonrpc":"2.0",<members>}\n`, written in place: no copy of the member values.
+fn frame(members: &[(&str, &Json)]) -> String {
+    let mut out = String::from("{\"jsonrpc\":\"2.0\"");
+    for (k, v) in members {
+        out.push(',');
+        write_str(k, &mut out);
+        out.push(':');
+        write(v, &mut out);
+    }
+    out.push_str("}\n");
     out
 }
 
@@ -890,6 +887,18 @@ mod tests {
             let s = text(&v);
             prop_assert!(!s.contains('\n'));
             prop_assert_eq!(parse(&s), Ok(v));
+        }
+
+        /// Oracle: a response frame is the encoding of the whole response object.
+        #[test]
+        fn frames_encode_the_response_object(id in json(), v in json()) {
+            let tree = |k: &str, v: &Json| {
+                let o = Json::obj(vec![("jsonrpc", Json::Str("2.0".into())), ("id", id.clone()), (k, v.clone())]);
+                format!("{}\n", text(&o))
+            };
+            prop_assert_eq!(result(&id, &v), tree("result", &v));
+            let err = Json::obj(vec![("code", Json::Num(-1.0)), ("message", Json::Str("m".into()))]);
+            prop_assert_eq!(error(&id, -1, "m"), tree("error", &err));
         }
 
         /// Any bytes: a request or a declared error response, never a panic.

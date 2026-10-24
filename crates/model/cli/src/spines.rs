@@ -169,11 +169,12 @@ pub fn bench_name<'a>(
     // Library directories hang off the absolute project root (`libs::project_root`).
     let path = crate::libs::absolute(path);
     let cells = project.cells();
-    let row = (0..cells.lib.len()).find(|&r| {
-        lib_dir(cells.lib[r]).is_some_and(|d| d.join(crate::libs::cell_relpath(project, r)) == path)
+    let (row, rel) = (0..cells.lib.len()).find_map(|r| {
+        let dir = lib_dir(cells.lib[r])?;
+        let rel = crate::libs::cell_relpath(project, r);
+        (dir.join(&rel) == path).then_some((r, rel))
     })?;
     let lib = &project.libs().name[usize::from(cells.lib[row])];
-    let rel = crate::libs::cell_relpath(project, row);
     let stem = rel.rsplit_once('.').map_or(rel.as_str(), |(s, _)| s);
     debug_assert!(!stem.is_empty());
     Some(if lib.is_empty() {

@@ -637,36 +637,24 @@ fn sim(_: &Lua, st: &Shared, (name, spec): (Value, Value)) -> omnilua::Result<Op
         return Ok(Some(format!("sim `{name}`: `path` is required")));
     };
     let args = match field(&spec, "args") {
-        Value::Nil => Vec::new(),
-        Value::Table(t) => match strings(&t) {
-            Some(a) => a,
-            None => {
-                return Ok(Some(format!(
-                    "sim `{name}`: `args` must be a list of strings"
-                )));
-            }
-        },
-        _ => {
-            return Ok(Some(format!(
-                "sim `{name}`: `args` must be a list of strings"
-            )));
-        }
+        Value::Nil => Some(Vec::new()),
+        Value::Table(t) => strings(&t),
+        _ => None,
+    };
+    let Some(args) = args else {
+        return Ok(Some(format!(
+            "sim `{name}`: `args` must be a list of strings"
+        )));
     };
     let env = match field(&spec, "env") {
-        Value::Nil => Vec::new(),
-        Value::Table(t) => match env_pairs(&t) {
-            Some(e) => e,
-            None => {
-                return Ok(Some(format!(
-                    "sim `{name}`: `env` must map at most {SIM_ENV_MAX} names to strings"
-                )));
-            }
-        },
-        _ => {
-            return Ok(Some(format!(
-                "sim `{name}`: `env` must map at most {SIM_ENV_MAX} names to strings"
-            )));
-        }
+        Value::Nil => Some(Vec::new()),
+        Value::Table(t) => env_pairs(&t),
+        _ => None,
+    };
+    let Some(env) = env else {
+        return Ok(Some(format!(
+            "sim `{name}`: `env` must map at most {SIM_ENV_MAX} names to strings"
+        )));
     };
     st.borrow_mut().table.sims[kind as usize] = Some(crate::Sim { path, args, env });
     Ok(None)

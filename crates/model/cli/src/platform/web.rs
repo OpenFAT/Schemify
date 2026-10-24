@@ -133,10 +133,6 @@ pub fn list(dir: &Path, depth: u32, skip: &[PathBuf], out: &mut Vec<PathBuf>) {
     FS.with_borrow(|fs| fs.list(&vfs::key(dir), depth, &skip, out));
 }
 
-pub fn state_dir() -> Option<PathBuf> {
-    schemify_config::dirs::here(schemify_config::dirs::Dir::State).ok()
-}
-
 pub fn spawn(_: &Path, _: &[String], _: &[u8]) -> (i32, Vec<u8>) {
     // D16: no processes in a browser; simulation goes through runner plugins.
     (-1, b"no processes on the web".to_vec())

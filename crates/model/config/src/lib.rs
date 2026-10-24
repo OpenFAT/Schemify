@@ -182,13 +182,14 @@ impl Keymaps {
     /// The `keymap` contribution text (plugin ABI §7): one `key <chord> <command>` record per
     /// row; a function row names the command [`fn_command`] of its id.
     pub fn records(&self) -> String {
+        use std::fmt::Write as _;
         let mut out = String::new();
         for (chord, target) in self.chord.iter().zip(&self.target) {
-            let cmd = match target {
-                Target::Command(c) => c.clone(),
-                Target::Function(f) => fn_command(*f),
+            let w = match target {
+                Target::Command(c) => writeln!(out, "key {chord} {c}"),
+                Target::Function(f) => writeln!(out, "key {chord} {FN_COMMAND}{}", f.0),
             };
-            out.push_str(&format!("key {chord} {cmd}\n"));
+            w.expect("writing to a String");
         }
         out
     }
