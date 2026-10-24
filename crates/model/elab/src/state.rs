@@ -11,7 +11,7 @@ use crate::check::{
     inst_overrides, inst_rules, value_errors, waivers,
 };
 use crate::connect::{CellNets, Seed, connect_seeded};
-use crate::graph::{Graph, OWN, Work, override_of};
+use crate::graph::{Graph, OWN, Work, override_of, own_node};
 use crate::iface::{Iface, own_ref};
 use crate::live::{Ctx, Delta, Live};
 use crate::names::{Name, Names};
@@ -407,14 +407,8 @@ impl CellState {
                     let names = &self.names;
                     let lookup = |name: &str| own_ref(names, &me.param_name, &g.var_name, name);
                     let prog = g.progs.push(s.get(sym), syntax, None, lookup);
-                    let own = |r: u32| {
-                        if r & VAR == 0 {
-                            r
-                        } else {
-                            g.params + (r & !VAR)
-                        }
-                    };
-                    new_deps.extend(g.progs.refs(prog).iter().map(|&r| own(r)));
+                    let refs = g.progs.refs(prog).iter();
+                    new_deps.extend(refs.map(|&r| own_node(g.params, r)));
                     (OWN, prog, sym)
                 }
                 None => {
@@ -423,15 +417,10 @@ impl CellState {
                     let c = &self.ifaces[t as usize];
                     let prog = c.param_prog[k];
                     // A build gives the child vars its bounds read nodes (for gating).
-                    let has = |v: u32| {
-                        g.child_vars
-                            .binary_search_by_key(&(i as u32, v), |e| (e.0, e.1))
-                            .is_ok()
-                    };
                     let bounds = c.param_bound[k].iter().filter(|&&b| b != NONE);
                     if bounds
                         .flat_map(|&b| c.progs.refs(b))
-                        .any(|&r| r & VAR != 0 && !has(r & !VAR))
+                        .any(|&r| r & VAR != 0 && g.child_var(i as u32, r & !VAR).is_none())
                     {
                         return false;
                     }
@@ -439,10 +428,9 @@ impl CellState {
                         let d = if r & VAR == 0 {
                             g.inst_first[i] + r
                         } else {
-                            let key = (i as u32, r & !VAR);
-                            match g.child_vars.binary_search_by_key(&key, |e| (e.0, e.1)) {
-                                Ok(at) => g.child_vars[at].2,
-                                Err(_) => return false, // a node the graph lacks
+                            match g.child_var(i as u32, r & !VAR) {
+                                Some(d) => d,
+                                None => return false, // a node the graph lacks
                             }
                         };
                         new_deps.push(d);
@@ -674,7 +662,6 @@ impl CellState {
             inst_iface: &self.inst_iface,
             graph: &self.graph,
             waivers: &self.waivers,
-            path: Name::NONE,
         };
         let mut fresh = Vec::new();
         for &i in rows {
@@ -811,7 +798,6 @@ impl CellState {
             inst_iface: &self.inst_iface,
             graph: &self.graph,
             waivers: &self.waivers,
-            path: Name::NONE,
         };
         check_overrides(&cx, &self.unresolved, &mut self.names, &mut rows);
         check_values(

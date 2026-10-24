@@ -40,8 +40,8 @@
 use crate::check::{Code, Violation};
 use crate::connect::{
     CellNets, GLOBAL, Ignore, LABEL, NO_NET, NONE_PIN, OWN_BITS, OWN_PORTS, OWN_STATIC, PORT, Seed,
-    bit_findings, find, glob, id_cmp, on_segment, place, port_findings, push_decimal, slicing,
-    union, unkey, write_key,
+    bit_findings, find, glob, id_cmp, label_is_global, on_segment, place, port_findings,
+    push_decimal, slicing, union, unkey, write_key,
 };
 use crate::iface::{Domain, Iface};
 use crate::names::{Name, Names};
@@ -180,15 +180,6 @@ fn changed_rows(old: &[u32], ids: &[ObjId], out: &mut Vec<usize>) {
         i = end;
     }
     out.extend(n..old.len().max(ids.len()));
-}
-
-/// Whether label row `l` carries `global true`.
-fn label_is_global(doc: &Document, l: usize) -> bool {
-    let s = doc.strings();
-    doc.pool()
-        .find_attr(s, doc.labels().attrs[l], "global")
-        .and_then(|v| v.first())
-        .is_some_and(|v| s.get(*v) == "true")
 }
 
 /// Geometric (non-inherited) pins of `f`, in order: an instance's node `k` is the `k`-th.
@@ -421,14 +412,13 @@ impl Live {
         let mut new = Vec::new();
         for w in elems.windows(2) {
             if w[0].0 == w[1].0 {
-                new.push(Violation {
-                    code: Code::E009,
-                    cell: cx.own.cell,
-                    object: w[1].1,
-                    path: Name::NONE,
-                    param: w[1].0,
-                    detail: format!("instance name `{}` is used twice", names.get(w[1].0)),
-                });
+                new.push(Violation::new(
+                    Code::E009,
+                    cx.own.cell,
+                    w[1].1,
+                    w[1].0,
+                    format!("instance name `{}` is used twice", names.get(w[1].0)),
+                ));
             }
         }
         self.fixed.extend(new.iter().cloned());
@@ -1040,14 +1030,13 @@ impl Live {
                         cn.conns[base + e * stride..base + e * stride + w].fill(NO_NET);
                     }
                 }
-                return Some(Violation {
-                    code: Code::E011,
-                    cell: cx.own.cell,
-                    object: cx.doc.instances().id[i],
-                    path: Name::NONE,
-                    param: f.pin_name[p],
+                return Some(Violation::new(
+                    Code::E011,
+                    cx.own.cell,
+                    cx.doc.instances().id[i],
+                    f.pin_name[p],
                     detail,
-                });
+                ));
             }
         };
         let start = cn.net_bit_start[c as usize] as usize;
@@ -1182,14 +1171,8 @@ impl Live {
             self.comp[v as usize] = c;
         }
         self.head[ci] = members[0];
-        let finding = |code, object, param, detail| Violation {
-            code,
-            cell: cx.own.cell,
-            object,
-            path: Name::NONE,
-            param,
-            detail,
-        };
+        let finding =
+            |code, object, param, detail| Violation::new(code, cx.own.cell, object, param, detail);
         let mut found: Vec<Violation> = Vec::new();
 
         // ---- counts, naming key, sources (class, text, object, bits range)

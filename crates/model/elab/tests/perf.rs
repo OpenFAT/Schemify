@@ -11,7 +11,8 @@ mod common;
 
 use common::*;
 use schemify_doc::{Edit, EditRequest, Mode, Op, Outcome, Target, Transaction, apply_edits};
-use schemify_elab::test_support::{Names, iface};
+use schemify_elab::Names;
+use schemify_elab::test_support::iface;
 use schemify_elab::{CellState, connect, elaborate, no_funcs};
 use schemify_format::RecordKind;
 use std::time::{Duration, Instant};

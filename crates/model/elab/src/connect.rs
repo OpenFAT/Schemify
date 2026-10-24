@@ -45,6 +45,18 @@ pub enum Ignore {
     Short,
 }
 
+impl Ignore {
+    /// Reads an `ignore` attribute value (absent or unknown: [`Ignore::No`]).
+    pub(crate) fn parse(v: Option<&str>) -> Ignore {
+        match v {
+            Some("true") => Ignore::True,
+            Some("open") => Ignore::Open,
+            Some("short") => Ignore::Short,
+            _ => Ignore::No,
+        }
+    }
+}
+
 /// The connectivity of one cell. Component rows ("nets") are geometric; bit rows are
 /// what a netlist connects. All names live in the arena passed to [`connect`].
 ///
@@ -307,20 +319,19 @@ pub(crate) fn id_cmp(a: ObjId, b: ObjId, s: &Strings) -> Ordering {
 pub fn global_labels(doc: &Document, names: &mut Names, out: &mut Vec<Name>) {
     let (s, labels) = (doc.strings(), doc.labels());
     let mut buf = String::new();
-    let global_key = s.find("global");
-    for l in 0..labels.id.len() {
-        let flag = global_key.and_then(|key| {
-            let mut attrs = doc.pool().attrs(labels.attrs[l]);
-            attrs.find(|(k, _)| *k == key).map(|(_, v)| v)
-        });
-        if flag
-            .and_then(|v| v.first())
-            .is_some_and(|v| s.get(*v) == "true")
-        {
-            // An over-wide expression is reported by `connect` as E011.
-            let _ = netexpr::expand(s.get(labels.text[l]), names, out, &mut buf);
-        }
+    for l in (0..labels.id.len()).filter(|&l| label_is_global(doc, l)) {
+        // An over-wide expression is reported by `connect` as E011.
+        let _ = netexpr::expand(s.get(labels.text[l]), names, out, &mut buf);
     }
+}
+
+/// Whether label row `l` carries `global true`.
+pub(crate) fn label_is_global(doc: &Document, l: usize) -> bool {
+    let s = doc.strings();
+    doc.pool()
+        .find_attr(s, doc.labels().attrs[l], "global")
+        .and_then(|v| v.first())
+        .is_some_and(|v| s.get(*v) == "true")
 }
 
 /// Owner of a finding that no component or bit owns: instance names (`E011`, `E009`) and
@@ -390,22 +401,6 @@ pub(crate) fn write_key(k: (ObjId, u32), s: &Strings, buf: &mut String) {
     }
 }
 
-/// The geometric half of `connect`: nodes, their two sorts and their components.
-struct Geometry {
-    px: Vec<i32>,
-    py: Vec<i32>,
-    pin_inst: Vec<u32>,
-    pin_pin: Vec<u16>,
-    pins0: usize,
-    labels0: usize,
-    ports0: usize,
-    noconns0: usize,
-    xy: Vec<(u64, u32)>,
-    yx: Vec<(u64, u32)>,
-    comp: Vec<u32>,
-    nc: usize,
-}
-
 /// Element names of every instance of `doc` (`X1[3]` … for `X1[3:0]`, else the name):
 /// `(CSR starts, names, E011 findings of cell `cell`)`. Plain names (nearly all) are
 /// interned in batches (`Names::intern_batch`: 10^6 new names in a flat design); a bus
@@ -442,14 +437,13 @@ fn element_names(
         } else {
             flush(names, &mut plain, &mut plain_at, &mut elems);
             if netexpr::expand(text, names, &mut elems, &mut buf).is_err() {
-                found.push(Violation {
-                    code: Code::E011,
+                found.push(Violation::new(
+                    Code::E011,
                     cell,
-                    object: inst.id[i],
-                    path: Name::NONE,
-                    param: Name::NONE,
-                    detail: format!("instance name `{text}` is wider than 65535"),
-                });
+                    inst.id[i],
+                    Name::NONE,
+                    format!("instance name `{text}` is wider than 65535"),
+                ));
                 elems.push(names.intern(text));
             }
         }
@@ -484,14 +478,7 @@ pub(crate) fn bit_findings(
     names: &Names,
     out: &mut Vec<Violation>,
 ) {
-    let row = |code, detail| Violation {
-        code,
-        cell,
-        object: ObjId::NONE,
-        path: Name::NONE,
-        param: name,
-        detail,
-    };
+    let row = |code, detail| Violation::new(code, cell, ObjId::NONE, name, detail);
     if conns == 1 && !global {
         let detail = format!("net `{}` has a single connection", names.get(name));
         out.push(row(Code::W016, detail));
@@ -511,14 +498,7 @@ pub(crate) fn port_findings(doc: &Document, own: &Iface, names: &Names, out: &mu
     if own.impl_name.is_empty() && ports.id.is_empty() {
         return;
     }
-    let row = |code, object, param, detail| Violation {
-        code,
-        cell: own.cell,
-        object,
-        path: Name::NONE,
-        param,
-        detail,
-    };
+    let row = |code, object, param, detail| Violation::new(code, own.cell, object, param, detail);
     let before = out.len();
     for p in 0..ports.id.len() {
         let text = names.find(s.get(ports.text[p]));
@@ -606,14 +586,8 @@ pub(crate) fn connect_seeded(
     );
     let ni = inst.id.len();
     assert_eq!(inst_iface.len(), ni, "one interface slot per instance");
-    let finding = |code, object, param, detail: String| Violation {
-        code,
-        cell: own.cell,
-        object,
-        path: Name::NONE,
-        param,
-        detail,
-    };
+    let finding =
+        |code, object, param, detail: String| Violation::new(code, own.cell, object, param, detail);
     let mut cn = CellNets::default();
     let mut merged = false;
     let mut buf = String::new();
@@ -746,22 +720,23 @@ pub(crate) fn connect_seeded(
                 comp[r]
             };
         }
-        Geometry {
+        let geo = Seed {
             px,
             py,
-            pin_inst,
-            pin_pin,
+            comp,
             pins0,
             labels0,
             ports0,
             noconns0,
+            pin_inst,
+            pin_pin,
             xy,
             yx,
-            comp,
-            nc: ncomp as usize,
-        }
+            ..Seed::default()
+        };
+        (geo, ncomp as usize)
     };
-    let (elems, geo) = if crate::parallel_ok(ni) {
+    let (elems, (mut geo, nc)) = if crate::parallel_ok(ni) {
         std::thread::scope(|sc| {
             let worker = sc.spawn(|| element_names(doc, names, own.cell));
             let geo = geometry();
@@ -774,32 +749,23 @@ pub(crate) fn connect_seeded(
     for v in elems.2 {
         out.push(OWN_STATIC, v);
     }
-    let Geometry {
-        px,
-        py,
-        pin_inst,
-        pin_pin,
+    let Seed {
+        ref comp,
+        ref pin_inst,
+        ref pin_pin,
         pins0,
         labels0,
         ports0,
         noconns0,
-        xy,
-        yx,
-        comp,
-        nc,
+        ..
     } = geo;
-    let n = px.len();
+    let n = comp.len();
     for i in 0..ni {
         let mode = ignore_key.and_then(|key| {
             let mut attrs = doc.pool().attrs(inst.attrs[i]);
             attrs.find(|(k, _)| *k == key).and_then(|(_, v)| v.first())
         });
-        cn.ignore.push(match mode.map(|v| s.get(*v)) {
-            Some("true") => Ignore::True,
-            Some("open") => Ignore::Open,
-            Some("short") => Ignore::Short,
-            _ => Ignore::No,
-        });
+        cn.ignore.push(Ignore::parse(mode.map(|v| s.get(*v))));
     }
 
     let mut comp_nodes = vec![0u32; nc];
@@ -1373,25 +1339,11 @@ pub(crate) fn connect_seeded(
         out.push(OWN_PORTS, v);
     }
     if let Some(sd) = seed {
-        merged |= cn.ignore.contains(&Ignore::Short);
-        *sd = Seed {
-            px,
-            py,
-            comp,
-            pins0,
-            labels0,
-            ports0,
-            noconns0,
-            pin_inst,
-            pin_pin,
-            xy,
-            yx,
-            named: comp_best.iter().map(|&b| b != NONE).collect(),
-            owner: std::mem::take(&mut out.owner),
-            real,
-            other,
-            merged,
-        };
+        geo.named = comp_best.iter().map(|&b| b != NONE).collect();
+        geo.owner = std::mem::take(&mut out.owner);
+        (geo.real, geo.other) = (real, other);
+        geo.merged = merged || cn.ignore.contains(&Ignore::Short);
+        *sd = geo;
     }
     assert_eq!(cn.net_name.len(), nc);
     assert_eq!(cn.bit_name.len(), nb);
