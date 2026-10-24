@@ -1,6 +1,6 @@
 //! Schemify's UI toolkit as data (D4, D6): composed UI tables, layout, text, input routing,
-//! accessibility, and the `math` and `graph` widget models. No GPU and no windowing here; the
-//! `render` crate draws what this crate lays out.
+//! accessibility, the `math` widget model and the `graph` axis ticks. No GPU and no
+//! windowing here; the `render` crate draws what this crate lays out.
 //!
 //! The frame spine (docs/dev/architecture.md) touches this crate in order:
 //!
