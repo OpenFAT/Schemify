@@ -276,12 +276,10 @@ struct Open {
     next_stage: u16,
     journal: JournalOut,
     disk: Vec<u8>,
-    /// sha256 hex of `disk`, computed on first need (journaling only): hashing a 6 MB
-    /// file costs more than loading it, so the editor spreads it over idle frames
+    /// sha256 of `disk`, computed on first need (journaling only): hashing a 6 MB file
+    /// costs more than loading it, so the editor spreads it over idle frames
     /// ([`Project::hash_step`]) before the first commit needs it.
-    disk_hash: Option<String>,
-    /// The part of `disk` hashed so far, while `disk_hash` is unknown.
-    hashing: Option<(Sha256, usize)>,
+    disk_hash: DiskHash,
     pending_save: Option<PendingSave>,
     conflict: Option<Conflict>,
     /// Journal records after the checkpoint, awaiting `recover`/`discard_recovery`.
@@ -308,8 +306,7 @@ impl Open {
             next_stage: 0,
             journal: JournalOut::default(),
             disk: Vec::new(),
-            disk_hash: None,
-            hashing: None,
+            disk_hash: DiskHash::unhashed(),
             pending_save: None,
             conflict: None,
             tail: None,
@@ -323,23 +320,39 @@ fn dirty(open: &Open) -> bool {
     open.fixups || open.saved_depth != Some(open.undo.len())
 }
 
+/// How far the sha256 of an open document's disk bytes is.
+#[derive(Debug)]
+enum DiskHash {
+    /// The first `.1` bytes are absorbed.
+    Partial(Sha256, usize),
+    /// The hex digest.
+    Done(String),
+}
+
+impl DiskHash {
+    fn unhashed() -> DiskHash {
+        DiskHash::Partial(Sha256::default(), 0)
+    }
+}
+
 /// Returns the sha256 hex of the disk bytes, hashing them (the rest of them, after
 /// [`Project::hash_step`]) on first use.
 fn disk_hash(open: &mut Open) -> String {
-    if open.disk_hash.is_none() {
-        let (mut h, at) = open.hashing.take().unwrap_or_default();
-        h.update(&open.disk[at..]);
-        open.disk_hash = Some(hex(&h.finish()));
+    if let DiskHash::Partial(h, at) = &mut open.disk_hash {
+        h.update(&open.disk[*at..]);
+        let done = hex(&std::mem::take(h).finish());
+        open.disk_hash = DiskHash::Done(done);
     }
-    let hash = open.disk_hash.as_ref().expect("hashed above");
+    let DiskHash::Done(hash) = &open.disk_hash else {
+        unreachable!("hashed above")
+    };
     assert_eq!(hash.len(), 64);
     hash.clone()
 }
 
 /// Forgets the disk hash (the disk bytes changed).
 fn rehash(open: &mut Open) {
-    open.disk_hash = None;
-    open.hashing = None;
+    open.disk_hash = DiskHash::unhashed();
 }
 
 #[derive(Debug, Default)]
@@ -748,12 +761,14 @@ impl Project {
     pub fn open_handle(&self, row: usize) -> Option<DocHandle> {
         assert!(row < self.cells.lib.len(), "cell row from a previous index");
         let c = &self.cells;
+        self.find_open(c.lib[row], c.dir[row], c.stem[row], c.kind[row])
+    }
+
+    /// Returns the open document of file (`lib`, `dir`, `stem`, `kind`).
+    fn find_open(&self, lib: u8, dir: Sym, stem: Sym, kind: FileKind) -> Option<DocHandle> {
         let found = self.handles().find(|&h| {
             let o = self.open_ref(h).expect("live handle");
-            o.lib == c.lib[row]
-                && o.dir == c.dir[row]
-                && o.stem == c.stem[row]
-                && o.doc.kind() == c.kind[row]
+            o.lib == lib && o.dir == dir && o.stem == stem && o.doc.kind() == kind
         });
         assert!(found.is_none_or(|h| self.open_ref(h).is_some()));
         found
@@ -796,11 +811,7 @@ impl Project {
         ) {
             return Err(OpenError::Code(Code::E027));
         }
-        let twin = self.handles().find(|&h| {
-            let o = self.open_ref(h).expect("live handle");
-            o.lib == lib && o.dir == dir && o.stem == stem && o.doc.kind() == model.kind()
-        });
-        if let Some(h) = twin {
+        if let Some(h) = self.find_open(lib, dir, stem, model.kind()) {
             return Err(OpenError::AlreadyOpen(h));
         }
         let loaded = Document::from_format(&model);
@@ -896,22 +907,24 @@ impl Project {
             return false;
         }
         let open = self.open_mut(h).expect("pending implies open");
-        let (mut hasher, at) = open.hashing.take().unwrap_or_default();
-        let end = (at + budget).min(open.disk.len());
-        hasher.update(&open.disk[at..end]);
-        if end == open.disk.len() {
-            open.disk_hash = Some(hex(&hasher.finish()));
-            return false;
+        let DiskHash::Partial(hasher, at) = &mut open.disk_hash else {
+            unreachable!("pending")
+        };
+        let end = (*at + budget).min(open.disk.len());
+        hasher.update(&open.disk[*at..end]);
+        *at = end;
+        let more = end < open.disk.len();
+        if !more {
+            disk_hash(open);
         }
-        open.hashing = Some((hasher, end));
-        assert!(end < open.disk.len());
-        true
+        more
     }
 
     /// Returns whether [`Project::hash_step`] has bytes of document `h` left to hash.
     pub fn hash_pending(&self, h: DocHandle) -> bool {
-        self.open_ref(h)
-            .is_some_and(|o| o.disk_hash.is_none() && !o.disk.is_empty() && !o.doc.read_only())
+        self.open_ref(h).is_some_and(|o| {
+            matches!(o.disk_hash, DiskHash::Partial(..)) && !o.disk.is_empty() && !o.doc.read_only()
+        })
     }
 
     /// Returns whether the document differs from its last loaded/saved bytes.
