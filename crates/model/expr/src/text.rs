@@ -4,9 +4,9 @@
 //! with a precision), which is platform independent, so the bytes are the
 //! same on every target.
 
-use core::fmt::{self, Write};
+use core::fmt::Write;
 
-use crate::lex::{self, Lit};
+use crate::lex::{self, Tok};
 use crate::{Code, Error, Span};
 
 /// Appends the canonical text of `x` (spec §7): an integer when `x` is
@@ -17,7 +17,16 @@ use crate::{Code, Error, Span};
 /// # Panics
 /// If `x` is NaN or infinite; those are never values (`X010`).
 pub fn write_num(out: &mut String, x: f64) {
-    fmt_num(out, x).expect("writing to a String cannot fail");
+    assert!(x.is_finite(), "canonical text of a non-finite number");
+    let a = x.abs();
+    let r = if x.fract() == 0.0 && a < 1e15 {
+        write!(out, "{}", x as i64)
+    } else if (1e-4..1e15).contains(&a) {
+        write!(out, "{x}")
+    } else {
+        write!(out, "{x:e}")
+    };
+    r.expect("writing to a String cannot fail");
 }
 
 /// Appends an `int` as plain decimal (spec §7).
@@ -43,43 +52,31 @@ pub fn parse_num(s: &str) -> Result<f64, Error> {
     if body.is_empty() {
         return Err(bad("empty"));
     }
-    let (lit, end) = lex::number(body, 0).map_err(|(_, why)| bad(why))?;
+    let (tok, end) = lex::number(body, 0).map_err(|(_, why)| bad(why))?;
     if end != body.len() {
         return Err(bad("trailing text"));
     }
-    let v = match lit {
-        Lit::Int(i) => i as f64,
-        Lit::Num(v) => v,
-        Lit::None | Lit::Str { .. } => unreachable!("number() returns numeric literals"),
+    let v = match tok {
+        Tok::Int(i) => i as f64,
+        Tok::Num(v) => v,
+        _ => unreachable!("number() returns numeric literals"),
     };
     debug_assert!(v.is_finite());
     Ok(if s.starts_with('-') { -v } else { v })
 }
 
-pub(crate) fn fmt_num<W: Write>(w: &mut W, x: f64) -> fmt::Result {
-    assert!(x.is_finite(), "canonical text of a non-finite number");
-    let a = x.abs();
-    if x.fract() == 0.0 && a < 1e15 {
-        return write!(w, "{}", x as i64);
-    }
-    if (1e-4..1e15).contains(&a) {
-        write!(w, "{x}")
-    } else {
-        write!(w, "{x:e}")
-    }
-}
-
 /// Engineering notation with a spec §2 suffix, rounded to `digits`
 /// significant digits: `4.7k`, `1.5meg`, `220n`. Beyond the suffix range the
 /// mantissa grows (`0.001f`, `1000t`), so `num()` always reads it back.
-pub(crate) fn fmt_eng<W: Write>(w: &mut W, x: f64, digits: u32) -> fmt::Result {
+pub(crate) fn write_eng(out: &mut String, x: f64, digits: u32) {
     assert!(x.is_finite(), "eng of a non-finite number");
     assert!(
         (1..=17).contains(&digits),
         "eng digits {digits} outside 1..=17"
     );
     if x == 0.0 {
-        return w.write_str("0");
+        out.push('0');
+        return;
     }
     let sci = format!("{:.*e}", digits as usize - 1, x.abs());
     let (mant, exp) = sci
@@ -117,16 +114,9 @@ pub(crate) fn fmt_eng<W: Write>(w: &mut W, x: f64, digits: u32) -> fmt::Result {
         9 => "g",
         _ => "t",
     };
-    let sign = if x < 0.0 { "-" } else { "" };
-    write!(w, "{sign}{num}{suffix}")
-}
-
-/// `fmt::Write` over the evaluator's byte buffer (always valid UTF-8).
-pub(crate) struct Bytes<'a>(pub &'a mut Vec<u8>);
-
-impl Write for Bytes<'_> {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.0.extend_from_slice(s.as_bytes());
-        Ok(())
+    if x < 0.0 {
+        out.push('-');
     }
+    out.push_str(&num);
+    out.push_str(suffix);
 }

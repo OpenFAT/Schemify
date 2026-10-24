@@ -279,7 +279,7 @@ fn run<P, R>(
     inputs: &[Value<'_>],
     plot: &Plot<'_>,
     plugin: &mut P,
-    strs: &mut Vec<u8>,
+    strs: &mut String,
     cs: &mut CalcScratch,
 ) -> Result<CV, Error>
 where
@@ -435,11 +435,7 @@ where
                 let base = stack.len() - op.sub as usize;
                 let args: Vec<CV> = stack.drain(base..).collect();
                 let slot = op.arg;
-                let r = if args.iter().all(|a| matches!(a, CV::S(_))) {
-                    let vs: Vec<V> = args
-                        .iter()
-                        .map(|a| if let CV::S(v) = a { *v } else { unreachable!() })
-                        .collect();
+                let r = if let Some(vs) = scalars(&args) {
                     let r = call_plugin(plugin, slot, &vs, strs);
                     CV::S(r.and_then(|r| load_value(&r.value(), strs)).map_err(at)?)
                 } else {
@@ -457,6 +453,16 @@ where
     assert_eq!(cs.stack.len(), 1, "program must leave exactly one value");
     assert!(cs.frames.is_empty(), "condition frames unbalanced");
     Ok(cs.stack.pop().expect("one value"))
+}
+
+/// The arguments as scalars, or `None` when any is a column.
+fn scalars(args: &[CV]) -> Option<Vec<V>> {
+    args.iter()
+        .map(|a| match a {
+            CV::S(v) => Some(*v),
+            CV::C(_) => None,
+        })
+        .collect()
 }
 
 fn pop(stack: &mut Vec<CV>) -> CV {
@@ -513,8 +519,8 @@ fn common_axis(args: &[CV], axes: &[Axis]) -> Result<u32, Error> {
 fn elementwise(
     args: &[CV],
     axes: &[Axis],
-    strs: &mut Vec<u8>,
-    mut f: impl FnMut(&[V], &mut Vec<u8>) -> Result<V, Error>,
+    strs: &mut String,
+    mut f: impl FnMut(&[V], &mut String) -> Result<V, Error>,
 ) -> Result<Col, Error> {
     let axis = common_axis(args, axes)?;
     let ax = &axes[axis as usize];
@@ -601,7 +607,7 @@ impl ColBuilder {
 }
 
 /// Column binary operator; real `+ - * /` on one axis skip the per-element kernel.
-fn col_binary(op: OpKind, a: CV, b: CV, axes: &[Axis], strs: &mut Vec<u8>) -> Result<Col, Error> {
+fn col_binary(op: OpKind, a: CV, b: CV, axes: &[Axis], strs: &mut String) -> Result<Col, Error> {
     enum R<'a> {
         S(f64),
         C(&'a [f64], u32),
@@ -765,14 +771,10 @@ fn call_cv(
     b: Builtin,
     mut args: Vec<CV>,
     axes: &mut Vec<Axis>,
-    strs: &mut Vec<u8>,
+    strs: &mut String,
 ) -> Result<CV, Error> {
     let name = b.name();
-    if args.iter().all(|a| matches!(a, CV::S(_))) {
-        let vs: Vec<V> = args
-            .iter()
-            .map(|a| if let CV::S(v) = a { *v } else { unreachable!() })
-            .collect();
+    if let Some(vs) = scalars(&args) {
         return Ok(CV::S(call(b, &vs, strs)?));
     }
     if !b.calc_only() {
@@ -838,31 +840,24 @@ fn call_cv(
             let steps = axes[y.axis as usize].steps.len();
             assert!(xs.len() == 1 || xs.len() == steps, "one x per sweep step");
             let x_of = |k: usize| if xs.len() == 1 { xs[0] } else { xs[k] };
-            let complex = y.kind == ColKind::Complex;
-            let (re_col, im_col) = (
-                Col {
-                    im: Vec::new(),
+            // Step k of a real part is read at its own x.
+            let (axis, complex) = (y.axis, y.kind == ColKind::Complex);
+            let at = |axes: &mut Vec<Axis>, re: Vec<f64>| {
+                let part = Col {
                     kind: ColKind::Real,
-                    ..y.clone()
-                },
-                Col {
-                    re: y.im,
+                    re,
                     im: Vec::new(),
-                    kind: ColKind::Real,
-                    ..y
-                },
-            );
-            let mut k = 0;
-            let re = per_step(axes, &re_col, name, |x, v| {
-                k += 1;
-                Ok(interp(x, v, x_of(k - 1)))
-            })?;
-            if complex {
+                    axis,
+                };
                 let mut k = 0;
-                let im = per_step(axes, &im_col, name, |x, v| {
+                per_step(axes, &part, name, |x, v| {
                     k += 1;
                     Ok(interp(x, v, x_of(k - 1)))
-                })?;
+                })
+            };
+            let re = at(axes, y.re)?;
+            if complex {
+                let im = at(axes, y.im)?;
                 Col {
                     kind: ColKind::Complex,
                     im: im.re,
@@ -1131,11 +1126,11 @@ fn settle(x: &[f64], y: &[f64], tol: f64) -> f64 {
 fn margin(gain: bool, re: &[f64], im: &[f64]) -> f64 {
     let n = re.len();
     let z = |i: usize| Complex::new(re[i], if im.is_empty() { 0.0 } else { im[i] });
-    let db = |i: usize| 20.0 * dmath::log10(dmath::norm(z(i)));
+    let db = |i: usize| 20.0 * libm::log10(dmath::norm(z(i)));
     let mut prev_ph = 0.0;
     let mut phase = Vec::with_capacity(n);
     for i in 0..n {
-        let mut p = dmath::atan2(z(i).im, z(i).re).to_degrees();
+        let mut p = libm::atan2(z(i).im, z(i).re).to_degrees();
         if i > 0 {
             p -= 360.0 * ((p - prev_ph) / 360.0).round();
         }

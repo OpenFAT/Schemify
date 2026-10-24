@@ -8,7 +8,7 @@
 
 use core::fmt::Write;
 
-use crate::text::{fmt_num, parse_num};
+use crate::text::{parse_num, write_num};
 use crate::{Code, Error, Span};
 
 /// Transient functions: SPICE name, Spectre `type`, Spectre names of the
@@ -47,7 +47,8 @@ fn bad(spec: &str, why: impl core::fmt::Display) -> Error {
 /// parameter) verbatim.
 fn value(spec: &str, tok: &str, out: &mut String) -> Result<(), Error> {
     if let Ok(x) = parse_num(tok) {
-        return fmt_num(out, x).map_err(|_| bad(spec, "write"));
+        write_num(out, x);
+        return Ok(());
     }
     let ident = tok
         .bytes()

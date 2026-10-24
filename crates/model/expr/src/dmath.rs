@@ -103,25 +103,9 @@ impl Neg for Complex {
     }
 }
 
-pub fn pow(x: f64, y: f64) -> f64 {
-    libm::pow(x, y)
-}
-
-pub fn hypot(x: f64, y: f64) -> f64 {
-    libm::hypot(x, y)
-}
-
-pub fn atan2(y: f64, x: f64) -> f64 {
-    libm::atan2(y, x)
-}
-
-pub fn log10(x: f64) -> f64 {
-    libm::log10(x)
-}
-
 /// `|z|`.
 pub fn norm(z: C) -> f64 {
-    hypot(z.re, z.im)
+    libm::hypot(z.re, z.im)
 }
 
 /// Real elementary function `b` at `x`.
@@ -190,22 +174,14 @@ pub(crate) fn complex(b: Builtin, z: C) -> C {
     }
 }
 
+/// The elementary function spelled `name`, if it is one.
 fn by_name(name: &str) -> Option<Builtin> {
-    Some(match name {
-        "sqrt" => Builtin::Sqrt,
-        "exp" => Builtin::Exp,
-        "ln" => Builtin::Ln,
-        "log10" => Builtin::Log10,
-        "sin" => Builtin::Sin,
-        "cos" => Builtin::Cos,
-        "tan" => Builtin::Tan,
-        "asin" => Builtin::Asin,
-        "acos" => Builtin::Acos,
-        "atan" => Builtin::Atan,
-        "sinh" => Builtin::Sinh,
-        "cosh" => Builtin::Cosh,
-        "tanh" => Builtin::Tanh,
-        _ => return None,
+    use Builtin::*;
+    Builtin::lookup(name).map(|(b, _, _)| b).filter(|b| {
+        matches!(
+            b,
+            Sqrt | Exp | Ln | Log10 | Sin | Cos | Tan | Asin | Acos | Atan | Sinh | Cosh | Tanh
+        )
     })
 }
 
@@ -238,7 +214,7 @@ fn cexp(z: C) -> C {
 }
 
 fn cln(z: C) -> C {
-    C::new(libm::log(norm(z)), atan2(z.im, z.re))
+    C::new(libm::log(norm(z)), libm::atan2(z.im, z.re))
 }
 
 /// Principal square root without cancellation (Kahan's formulation).

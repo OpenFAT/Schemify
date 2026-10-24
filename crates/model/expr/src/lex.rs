@@ -4,11 +4,15 @@
 
 use crate::{Code, Error, MAX_STR_BYTES, Span};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Token kind; literals carry their value (`Str` is a byte range in the caller's pool).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Tok {
-    Int,
-    Num,
-    Str,
+    Int(i64),
+    Num(f64),
+    Str {
+        start: u32,
+        len: u32,
+    },
     Ident,
     /// `ns.name`; the span covers both parts.
     NsIdent,
@@ -38,20 +42,10 @@ pub(crate) enum Tok {
     Eof,
 }
 
-/// Literal payload of a token. `Str` is a byte range in the caller's pool.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Lit {
-    None,
-    Int(i64),
-    Num(f64),
-    Str { start: u32, len: u32 },
-}
-
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Token {
     pub kind: Tok,
     pub span: Span,
-    pub lit: Lit,
 }
 
 /// SI suffix scale: a power of ten, or `mil` (25.4e-6, not a power of ten).
@@ -95,7 +89,6 @@ pub(crate) fn next_token(src: &str, pos: usize, pool: &mut String) -> Result<Tok
         Ok(Token {
             kind,
             span: Span::new(i, i + len),
-            lit: Lit::None,
         })
     };
     let Some(&c) = b.get(i) else {
@@ -166,7 +159,6 @@ fn ident(src: &str, start: usize) -> Token {
         return Token {
             kind: Tok::NsIdent,
             span: Span::new(start, end2),
-            lit: Lit::None,
         };
     }
     let kind = match &src[start..end] {
@@ -178,12 +170,11 @@ fn ident(src: &str, start: usize) -> Token {
     Token {
         kind,
         span: Span::new(start, end),
-        lit: Lit::None,
     }
 }
 
 fn number_token(src: &str, start: usize) -> Result<Token, Error> {
-    let (lit, end) = number(src, start).map_err(|(end, why)| {
+    let (kind, end) = number(src, start).map_err(|(end, why)| {
         let end = end.max(start + 1);
         Error::new(
             Code::X001,
@@ -191,15 +182,9 @@ fn number_token(src: &str, start: usize) -> Result<Token, Error> {
             format!("{why}: `{}`", &src[start..end]),
         )
     })?;
-    let kind = if matches!(lit, Lit::Int(_)) {
-        Tok::Int
-    } else {
-        Tok::Num
-    };
     Ok(Token {
         kind,
         span: Span::new(start, end),
-        lit,
     })
 }
 
@@ -208,9 +193,9 @@ fn number_token(src: &str, start: usize) -> Result<Token, Error> {
 /// i64 range, is an `Int`; everything else is a `Num`. Any identifier
 /// character after the literal (after the suffix, if any) is an error.
 ///
-/// Returns the literal and the end offset, or the end of the offending text
-/// and the reason.
-pub(crate) fn number(src: &str, start: usize) -> Result<(Lit, usize), (usize, &'static str)> {
+/// Returns the literal (`Tok::Int` or `Tok::Num`) and the end offset, or the
+/// end of the offending text and the reason.
+pub(crate) fn number(src: &str, start: usize) -> Result<(Tok, usize), (usize, &'static str)> {
     let b = src.as_bytes();
     assert!(start < b.len(), "number lexing starts past the end");
     let digits = |mut i: usize| {
@@ -276,7 +261,7 @@ pub(crate) fn number(src: &str, start: usize) -> Result<(Lit, usize), (usize, &'
         && tail.is_empty()
         && let Ok(v) = mant.parse::<i64>()
     {
-        return Ok((Lit::Int(v), i));
+        return Ok((Tok::Int(v), i));
     }
     let v = match scale {
         Scale::Pow10(p) => decimal(mant, exp + i64::from(p)),
@@ -286,7 +271,7 @@ pub(crate) fn number(src: &str, start: usize) -> Result<(Lit, usize), (usize, &'
         return Err((i, "number out of range"));
     }
     debug_assert!(v >= 0.0, "literals are unsigned");
-    Ok((Lit::Num(v), i))
+    Ok((Tok::Num(v), i))
 }
 
 /// Correctly rounded `mant × 10^exp` (a power-of-ten suffix is folded into
@@ -333,14 +318,12 @@ fn string(src: &str, start: usize, pool: &mut String) -> Result<Token, Error> {
             ));
         }
     };
-    let lit = Lit::Str {
-        start: pool_start as u32,
-        len: (pool.len() - pool_start) as u32,
-    };
     Ok(Token {
-        kind: Tok::Str,
+        kind: Tok::Str {
+            start: pool_start as u32,
+            len: (pool.len() - pool_start) as u32,
+        },
         span: Span::new(start, end),
-        lit,
     })
 }
 
