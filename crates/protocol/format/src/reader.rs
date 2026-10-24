@@ -555,17 +555,20 @@ fn column(doc: &Document<'_>, s: Str) -> u32 {
 
 /// Checks a value list against a shape and makes its coordinates canonical: a value
 /// that is not its shortest decimal is re-formatted into `arena` and its span replaced.
-/// Fills `coords` with each slot's milli-units (`None` for other and bad values); every
-/// value is visited even after an error, so a wire's endpoints are known whenever its
-/// arity is right. Returns the first offending value index ([`NONE`] for an arity
-/// error) with its code.
+/// Fills `coords` with each slot's milli-units (`None` for other and bad values) and
+/// `milli`, the values' slice of the document's coordinate column, with the same (0 for
+/// `None`); every value is visited even after an error, so a wire's endpoints are known
+/// whenever its arity is right. Returns the first offending value index ([`NONE`] for an
+/// arity error) with its code.
 fn check_shape(
     shape: &Shape,
     src: &str,
     arena: &mut String,
     values: &mut [Str],
+    milli: &mut [i32],
     coords: &mut Vec<Option<i32>>,
 ) -> Result<(), (u32, Code, &'static str)> {
+    assert_eq!(milli.len(), values.len());
     coords.clear();
     shape
         .check_arity(values.len())
@@ -575,9 +578,9 @@ fn check_shape(
         let ty = shape.ty(i).expect("arity checked above");
         let text = resolve(src, arena, *s);
         let coord = match ty.check(text) {
-            Ok(Some(milli)) if !is_shortest_coord(text) => {
-                *s = push_coord(arena, milli);
-                Some(milli)
+            Ok(Some(m)) if !is_shortest_coord(text) => {
+                *s = push_coord(arena, m);
+                Some(m)
             }
             Ok(coord) => coord,
             Err((code, detail)) => {
@@ -585,6 +588,7 @@ fn check_shape(
                 None
             }
         };
+        milli[i] = coord.unwrap_or(0);
         coords.push(coord);
     }
     assert_eq!(coords.len(), values.len());
@@ -596,6 +600,8 @@ fn check_records(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
     let diags_before = diags.len();
     let mut rank_max = 0u8;
     let mut coords: Vec<Option<i32>> = Vec::new();
+    doc.field_milli = vec![0; doc.fields.len()];
+    doc.value_milli = vec![0; doc.attr_values.len()];
     for r in 0..doc.record_count() {
         let kind = doc.record_kind(r);
         if kind == RecordKind::Unknown {
@@ -621,9 +627,15 @@ fn check_records(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
             rank_max = rank_max.max(schema.rank);
             let f = doc.field_range(r);
             let fields = &mut doc.fields[f.clone()];
-            if let Err((i, code, detail)) =
-                check_shape(&schema.fields, doc.src, &mut doc.arena, fields, &mut coords)
-            {
+            let milli = &mut doc.field_milli[f.clone()];
+            if let Err((i, code, detail)) = check_shape(
+                &schema.fields,
+                doc.src,
+                &mut doc.arena,
+                fields,
+                milli,
+                &mut coords,
+            ) {
                 let col = if i == NONE {
                     1
                 } else {
@@ -638,8 +650,10 @@ fn check_records(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
                 if (x1, y1) == (x2, y2) {
                     diags.push(diag(Code::E026, 1, "wire endpoints are equal"));
                 } else if (x2, y2) < (x1, y1) {
-                    doc.fields.swap(f.start + 1, f.start + 3);
-                    doc.fields.swap(f.start + 2, f.start + 4);
+                    for (a, b) in [(1, 3), (2, 4)] {
+                        doc.fields.swap(f.start + a, f.start + b);
+                        doc.field_milli.swap(f.start + a, f.start + b);
+                    }
                     assert!(!doc.wire_reversed(r));
                 }
             }
@@ -667,9 +681,15 @@ fn check_records(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
             seen |= 1 << i;
             let v = doc.value_range(a);
             let values = &mut doc.attr_values[v.clone()];
-            if let Err((vi, code, detail)) =
-                check_shape(&attr.shape, doc.src, &mut doc.arena, values, &mut coords)
-            {
+            let milli = &mut doc.value_milli[v.clone()];
+            if let Err((vi, code, detail)) = check_shape(
+                &attr.shape,
+                doc.src,
+                &mut doc.arena,
+                values,
+                milli,
+                &mut coords,
+            ) {
                 let span = if vi == NONE {
                     key
                 } else {
@@ -700,6 +720,8 @@ fn check_records(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
             .iter()
             .all(|d| d.record != NO_RECORD && !d.code.is_warning())
     );
+    assert_eq!(doc.field_milli.len(), doc.fields.len());
+    assert_eq!(doc.value_milli.len(), doc.attr_values.len());
 }
 
 /// Sorts diagnostics by (line, column, code), stably: the crate's one diagnostic sort.

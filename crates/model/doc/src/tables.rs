@@ -20,8 +20,10 @@
 //! writer sorts them. Row indices are valid until the next edit of that table.
 
 use crate::record::{INST_RESERVED, RecordBuf};
-use crate::strings::{ObjId, Strings, Sym, push_coord};
-use schemify_format::{Document as FormatDoc, KeyRule, Orient, RecordKind, parse_coord};
+use crate::strings::{ObjId, Strings, Sym};
+use schemify_format::{
+    Document as FormatDoc, KeyRule, Orient, RecordKind, format_coord, parse_coord,
+};
 use std::ops::Range;
 
 /// A run of pool entries owned by one row.
@@ -112,11 +114,9 @@ impl Pool {
         span(start, self.lines.len())
     }
 
-    fn push_coords(&mut self, texts: &[&str]) -> Span {
+    fn push_coords(&mut self, milli: &[i32]) -> Span {
         let start = self.coords.len();
-        for t in texts {
-            self.coords.push(coord(t));
-        }
+        self.coords.extend_from_slice(milli);
         assert!(self.coords.len() < POOL_MAX, "pool full");
         span(start, self.coords.len())
     }
@@ -146,37 +146,6 @@ fn span(start: usize, end: usize) -> Span {
     }
 }
 
-/// Parses a coordinate the caller already validated (format reader or `check_record`):
-/// `-?digits(.digits)?` with at most 3 significant fractional digits, in i32 range. The
-/// load path parses ~3 per object, so this skips `parse_coord`'s re-validation; tested
-/// equal to it over a sweep.
-pub(crate) fn coord(text: &str) -> i32 {
-    let b = text.as_bytes();
-    let (neg, digits) = match b.first() {
-        Some(b'-') => (true, &b[1..]),
-        _ => (false, b),
-    };
-    let mut milli: i64 = 0;
-    let mut frac: i32 = -1; // fractional digits seen, -1 before the point
-    for &c in digits {
-        if c == b'.' {
-            frac = 0;
-            continue;
-        }
-        if frac < 3 {
-            milli = milli * 10 + i64::from(c - b'0');
-            frac += i32::from(frac >= 0);
-        }
-    }
-    for _ in frac.max(0)..3 {
-        milli *= 10;
-    }
-    let v = if neg { -milli } else { milli };
-    let v = i32::try_from(v).expect("coordinates are validated before they reach a table");
-    debug_assert_eq!(Ok(v), parse_coord(text));
-    v
-}
-
 fn orient(text: &str) -> Orient {
     Orient::parse(text).expect("orientations are validated before they reach a table")
 }
@@ -188,19 +157,25 @@ fn orient(text: &str) -> Orient {
 pub(crate) struct RecView<'a> {
     pub(crate) kind: RecordKind,
     pub(crate) fields: &'a [&'a str],
+    /// Milli-units of each field: a `Coord` slot's value (D33: i32), unspecified at other
+    /// slots, which no table reads. From format's coordinate column on load, so a loaded
+    /// coordinate is parsed once.
+    pub(crate) field_milli: &'a [i32],
     /// `(key, value range into vals)`.
     pub(crate) attrs: &'a [(&'a str, Range<u32>)],
     pub(crate) vals: &'a [&'a str],
+    /// As `field_milli`, one per value.
+    pub(crate) val_milli: &'a [i32],
     pub(crate) verbatim: &'a [&'a str],
     pub(crate) comments: &'a [&'a str],
 }
 
 impl RecView<'_> {
-    fn attr(&self, key: &str) -> Option<&[&str]> {
-        self.attrs
-            .iter()
-            .find(|(k, _)| *k == key)
-            .map(|(_, r)| &self.vals[r.start as usize..r.end as usize])
+    /// The values of attribute `key` and their milli-units.
+    fn attr(&self, key: &str) -> Option<(&[&str], &[i32])> {
+        let (_, r) = self.attrs.iter().find(|(k, _)| *k == key)?;
+        let r = r.start as usize..r.end as usize;
+        Some((&self.vals[r.clone()], &self.val_milli[r]))
     }
 }
 
@@ -208,8 +183,10 @@ impl RecView<'_> {
 #[derive(Default)]
 pub(crate) struct Scratch<'a> {
     fields: Vec<&'a str>,
+    field_milli: Vec<i32>,
     attrs: Vec<(&'a str, Range<u32>)>,
     vals: Vec<&'a str>,
+    val_milli: Vec<i32>,
     verbatim: Vec<&'a str>,
     comments: Vec<&'a str>,
 }
@@ -218,9 +195,11 @@ impl<'a> Scratch<'a> {
     pub(crate) fn fill_format(&mut self, doc: &'a FormatDoc<'_>, r: u32) {
         self.clear();
         self.fields.extend(doc.fields(r));
+        self.field_milli.extend_from_slice(doc.field_coords(r));
         for a in doc.attrs(r) {
             let start = self.vals.len() as u32;
             self.vals.extend(doc.attr_values(a));
+            self.val_milli.extend_from_slice(doc.value_coords(a));
             self.attrs
                 .push((doc.attr_key(a), start..self.vals.len() as u32));
         }
@@ -230,11 +209,15 @@ impl<'a> Scratch<'a> {
     }
 
     pub(crate) fn fill_buf(&mut self, rec: &'a RecordBuf) {
+        // The edit path: values were checked (`check_record`), but not into a column.
+        let milli = |t: &String| parse_coord(t).unwrap_or(0);
         self.clear();
         self.fields.extend(rec.fields.iter().map(String::as_str));
+        self.field_milli.extend(rec.fields.iter().map(milli));
         for a in &rec.attrs {
             let start = self.vals.len() as u32;
             self.vals.extend(a.values.iter().map(String::as_str));
+            self.val_milli.extend(a.values.iter().map(milli));
             self.attrs
                 .push((a.key.as_str(), start..self.vals.len() as u32));
         }
@@ -247,8 +230,10 @@ impl<'a> Scratch<'a> {
 
     fn clear(&mut self) {
         self.fields.clear();
+        self.field_milli.clear();
         self.attrs.clear();
         self.vals.clear();
+        self.val_milli.clear();
         self.verbatim.clear();
         self.comments.clear();
     }
@@ -257,8 +242,10 @@ impl<'a> Scratch<'a> {
         RecView {
             kind,
             fields: &self.fields,
+            field_milli: &self.field_milli,
             attrs: &self.attrs,
             vals: &self.vals,
+            val_milli: &self.val_milli,
             verbatim: &self.verbatim,
             comments: &self.comments,
         }
@@ -315,14 +302,10 @@ impl Sink for FormatSink {
         self.doc.push_comment(line);
     }
     fn coord(&mut self, milli: i32) {
-        self.buf.clear();
-        push_coord(milli, &mut self.buf);
-        self.doc.push_field(&self.buf);
+        self.doc.push_field_coord(milli);
     }
     fn coord_value(&mut self, milli: i32) {
-        self.buf.clear();
-        push_coord(milli, &mut self.buf);
-        self.doc.push_value(&self.buf);
+        self.doc.push_value_coord(milli);
     }
     fn id(&mut self, id: ObjId, strings: &Strings) {
         self.buf.clear();
@@ -356,12 +339,12 @@ impl Sink for RecordBuf {
     }
     fn coord(&mut self, milli: i32) {
         let mut s = String::new();
-        push_coord(milli, &mut s);
+        format_coord(milli, &mut s);
         self.fields.push(s);
     }
     fn coord_value(&mut self, milli: i32) {
         let mut s = String::new();
-        push_coord(milli, &mut s);
+        format_coord(milli, &mut s);
         self.value(&s);
     }
     fn id(&mut self, id: ObjId, strings: &Strings) {
@@ -507,8 +490,8 @@ impl Table for Pins {
         assert_eq!(rec.fields.len(), 4);
         self.name.push(strings.intern(rec.fields[0]));
         self.dir.push(PinDir::parse(rec.fields[1]));
-        self.x.push(coord(rec.fields[2]));
-        self.y.push(coord(rec.fields[3]));
+        self.x.push(rec.field_milli[2]);
+        self.y.push(rec.field_milli[3]);
         self.attrs.push(pool.push_attrs(rec, &[], strings));
         self.comments.push(pool.push_lines(rec.comments, strings));
         assert!(self.columns_ok());
@@ -560,25 +543,25 @@ impl Table for Graphics {
         self.shape[row]
     }
     fn push(&mut self, rec: &RecView<'_>, strings: &mut Strings, pool: &mut Pool) {
-        let f = rec.fields;
+        let (f, m) = (rec.fields, rec.field_milli);
         let (coords, text, orient, angles) = match rec.kind {
             RecordKind::Arc => {
                 assert_eq!(f.len(), 5);
                 let a = [strings.intern(f[3]), strings.intern(f[4])];
-                (pool.push_coords(&f[..3]), Sym::NONE, Orient::R0, a)
+                (pool.push_coords(&m[..3]), Sym::NONE, Orient::R0, a)
             }
             RecordKind::Stext => {
                 assert_eq!(f.len(), 4);
                 let t = strings.intern(f[3]);
                 (
-                    pool.push_coords(&f[..2]),
+                    pool.push_coords(&m[..2]),
                     t,
                     self::orient(f[2]),
                     [Sym::NONE; 2],
                 )
             }
             RecordKind::Line | RecordKind::Rect | RecordKind::Circle | RecordKind::Poly => {
-                (pool.push_coords(f), Sym::NONE, Orient::R0, [Sym::NONE; 2])
+                (pool.push_coords(m), Sym::NONE, Orient::R0, [Sym::NONE; 2])
             }
             k => panic!("{k:?} is not a graphic"),
         };
@@ -658,13 +641,13 @@ impl Table for Instances {
     }
     fn push(&mut self, rec: &RecView<'_>, strings: &mut Strings, pool: &mut Pool) {
         assert_eq!(rec.fields.len(), 2);
-        let at = rec.attr("at").expect("`at` is required");
-        let name = rec.attr("name").expect("`name` is required");
+        let (at, at_milli) = rec.attr("at").expect("`at` is required");
+        let (name, _) = rec.attr("name").expect("`name` is required");
         assert!(at.len() == 3 && name.len() == 1);
         self.id.push(ObjId::intern(rec.fields[0], strings));
         self.cell.push(strings.intern(rec.fields[1]));
-        self.x.push(coord(at[0]));
-        self.y.push(coord(at[1]));
+        self.x.push(at_milli[0]);
+        self.y.push(at_milli[1]);
         self.orient.push(orient(at[2]));
         self.name.push(strings.intern(name[0]));
         self.attrs
@@ -723,8 +706,8 @@ impl Table for Wires {
     fn push(&mut self, rec: &RecView<'_>, strings: &mut Strings, pool: &mut Pool) {
         assert_eq!(rec.fields.len(), 5);
         let (mut a, mut b) = (
-            (coord(rec.fields[1]), coord(rec.fields[2])),
-            (coord(rec.fields[3]), coord(rec.fields[4])),
+            (rec.field_milli[1], rec.field_milli[2]),
+            (rec.field_milli[3], rec.field_milli[4]),
         );
         if b < a {
             std::mem::swap(&mut a, &mut b);
@@ -805,8 +788,8 @@ impl Table for Placed {
     fn push(&mut self, rec: &RecView<'_>, strings: &mut Strings, pool: &mut Pool) {
         assert!(rec.kind == self.kind && rec.fields.len() == 5);
         self.id.push(ObjId::intern(rec.fields[0], strings));
-        self.x.push(coord(rec.fields[1]));
-        self.y.push(coord(rec.fields[2]));
+        self.x.push(rec.field_milli[1]);
+        self.y.push(rec.field_milli[2]);
         self.orient.push(orient(rec.fields[3]));
         self.text.push(strings.intern(rec.fields[4]));
         self.attrs.push(pool.push_attrs(rec, &[], strings));
@@ -854,8 +837,8 @@ impl Table for Noconns {
     fn push(&mut self, rec: &RecView<'_>, strings: &mut Strings, pool: &mut Pool) {
         assert_eq!(rec.fields.len(), 3);
         self.id.push(ObjId::intern(rec.fields[0], strings));
-        self.x.push(coord(rec.fields[1]));
-        self.y.push(coord(rec.fields[2]));
+        self.x.push(rec.field_milli[1]);
+        self.y.push(rec.field_milli[2]);
         self.attrs.push(pool.push_attrs(rec, &[], strings));
         self.comments.push(pool.push_lines(rec.comments, strings));
         assert!(self.columns_ok());
@@ -923,7 +906,7 @@ impl Table for Shapes {
         );
         self.id.push(ObjId::intern(rec.fields[0], strings));
         self.form.push(shape_form(rec.fields[1]));
-        self.coords.push(pool.push_coords(&rec.fields[2..]));
+        self.coords.push(pool.push_coords(&rec.field_milli[2..]));
         self.attrs.push(pool.push_attrs(rec, &[], strings));
         self.comments.push(pool.push_lines(rec.comments, strings));
         assert!(self.columns_ok());
@@ -1013,38 +996,6 @@ impl Table for Records {
         match self.kind[row].key() {
             KeyRule::Name => self.fields[row][0],
             _ => Sym::NONE,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fast_coordinate_parse_equals_the_format_reader() {
-        let mut texts: Vec<String> = [
-            "0",
-            "-0",
-            "1.5000",
-            "007.010",
-            "-12.5",
-            "0.156",
-            "2147483.647",
-            "-2147483.648",
-            "1.0",
-        ]
-        .map(String::from)
-        .to_vec();
-        let mut m: i64 = i64::from(i32::MIN);
-        while m <= i64::from(i32::MAX) {
-            let mut s = String::new();
-            schemify_format::format_coord(m as i32, &mut s);
-            texts.push(s);
-            m += 7_919_993;
-        }
-        for t in &texts {
-            assert_eq!(Ok(coord(t)), parse_coord(t), "{t}");
         }
     }
 }

@@ -93,10 +93,17 @@ pub struct Document<'s> {
     /// (record, word) for every `Unknown` record, in record order.
     pub(crate) unknown_words: Vec<(u32, Str)>,
     pub(crate) fields: Vec<Str>,
+    /// Milli-units of each field (D33: i32, the whole range): a `Coord` slot's value as the
+    /// reader's check pass parsed it (each coordinate once) or as `push_field_coord` pushed
+    /// it; 0 for every other value. The lexer pushes fields without it; the check pass
+    /// then rebuilds it whole.
+    pub(crate) field_milli: Vec<i32>,
     pub(crate) attr_key: Vec<Str>,
     pub(crate) attr_line: Vec<u32>,
     pub(crate) attr_value_start: Vec<u32>,
     pub(crate) attr_values: Vec<Str>,
+    /// As `field_milli`, one per attribute value.
+    pub(crate) value_milli: Vec<i32>,
     pub(crate) verbatim: Vec<Str>,
     pub(crate) comments: Vec<Str>,
     pub(crate) eof_comments: Vec<Str>,
@@ -176,10 +183,12 @@ impl<'s> Document<'s> {
             rec_comment_start: Vec::new(),
             unknown_words: Vec::new(),
             fields: Vec::new(),
+            field_milli: Vec::new(),
             attr_key: Vec::new(),
             attr_line: Vec::new(),
             attr_value_start: Vec::new(),
             attr_values: Vec::new(),
+            value_milli: Vec::new(),
             verbatim: Vec::new(),
             comments: Vec::new(),
             eof_comments: Vec::new(),
@@ -302,6 +311,30 @@ impl<'s> Document<'s> {
     /// Returns the 1-based source line of attribute `a`; 0 when built in memory.
     pub(crate) fn attr_line(&self, a: u32) -> u32 {
         self.attr_line[a as usize]
+    }
+
+    /// Returns record `r`'s fields in milli-units (D33: i32), one per field: each
+    /// coordinate's value, parsed once by the reader's check pass or as pushed with
+    /// [`Document::push_field_coord`]; 0 for every other value (a coordinate pushed as
+    /// text included), so a consumer reads only its kind's `Coord` slots.
+    pub fn field_coords(&self, r: u32) -> &[i32] {
+        assert_eq!(
+            self.field_milli.len(),
+            self.fields.len(),
+            "coordinate column of a parsed document"
+        );
+        &self.field_milli[self.field_range(r)]
+    }
+
+    /// Returns attribute `a`'s values in milli-units, as [`Document::field_coords`]
+    /// ([`Document::push_value_coord`] for a built document).
+    pub fn value_coords(&self, a: u32) -> &[i32] {
+        assert_eq!(
+            self.value_milli.len(),
+            self.attr_values.len(),
+            "coordinate column of a parsed document"
+        );
+        &self.value_milli[self.value_range(a)]
     }
 
     /// Returns the first attribute of record `r` with word `key`. Cost: linear in the
@@ -465,7 +498,7 @@ impl<'s> Document<'s> {
     ///
     /// Coordinates belong in [`Document::push_field_coord`]: text is written as given,
     /// and the reader rewrites coordinates to their shortest form, so `1.50` pushed as
-    /// text would not round-trip.
+    /// text would not round-trip (and [`Document::field_coords`] reads 0 for it).
     pub fn push_field(&mut self, text: &str) {
         let s = self.intern(text);
         self.push_field_str(s);
@@ -475,6 +508,7 @@ impl<'s> Document<'s> {
     pub fn push_field_coord(&mut self, milli: i32) {
         let s = push_coord(&mut self.arena, milli);
         self.push_field_str(s);
+        *self.field_milli.last_mut().expect("pushed above") = milli;
     }
 
     /// Appends an attribute line to the current record; returns its index. Push its
@@ -503,6 +537,7 @@ impl<'s> Document<'s> {
     pub fn push_value_coord(&mut self, milli: i32) {
         let s = push_coord(&mut self.arena, milli);
         self.push_value_str(s);
+        *self.value_milli.last_mut().expect("pushed above") = milli;
     }
 
     /// Appends a verbatim line (written as `  | text`) to the current record.
@@ -667,6 +702,7 @@ impl<'s> Document<'s> {
         assert!(!self.rec_kind.is_empty(), "push_field before any record");
         assert!(self.fields.len() < NONE as usize - 1, "field table full");
         self.fields.push(s);
+        self.field_milli.push(0);
     }
 
     pub(crate) fn push_attr_str(&mut self, key: Str, line: u32) -> u32 {
@@ -690,6 +726,7 @@ impl<'s> Document<'s> {
             "push_value: the current record has no attribute"
         );
         self.attr_values.push(s);
+        self.value_milli.push(0);
     }
 
     pub(crate) fn push_verbatim_str(&mut self, s: Str) {

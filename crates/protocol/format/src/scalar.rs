@@ -1,7 +1,5 @@
 //! File-level numbers, coordinates and orientation (spec §3).
 
-use std::fmt::Write as _;
-
 /// Milli-units per xschem unit: a coordinate `12.5` is stored as `12500` (D33).
 pub(crate) const MILLI_PER_UNIT: i32 = 1000;
 
@@ -81,25 +79,38 @@ pub fn parse_coord(s: &str) -> Result<i32, CoordError> {
 
 /// Appends the shortest decimal for `milli` milli-units: `-60`, `12.5`, `0.156`.
 ///
-/// The output always parses back to `milli` with [`parse_coord`].
+/// The output always parses back to `milli` with [`parse_coord`]. Digit by digit, without
+/// the `fmt` machinery: a save formats ~3 coordinates per object.
 pub fn format_coord(milli: i32, out: &mut String) {
-    let len_before = out.len();
-    let value = i64::from(milli);
-    if value < 0 {
+    let before = out.len();
+    if milli < 0 {
         out.push('-');
     }
-    let magnitude = value.unsigned_abs();
-    let (whole, frac) = (magnitude / 1000, magnitude % 1000);
-    write!(out, "{whole}").expect("writing to a String cannot fail");
-    if frac != 0 {
-        let digits = [frac / 100, frac / 10 % 10, frac % 10];
-        let len = 3 - digits.iter().rev().take_while(|&&d| d == 0).count();
-        out.push('.');
-        for d in &digits[..len] {
-            out.push(char::from(b'0' + *d as u8));
+    let mag = i64::from(milli).unsigned_abs();
+    let (whole, mut frac) = (mag / 1000, (mag % 1000) as u32);
+    let mut digits = [0u8; 10];
+    let (mut n, mut w) = (0, whole);
+    loop {
+        digits[n] = (w % 10) as u8;
+        n += 1;
+        w /= 10;
+        if w == 0 {
+            break;
         }
     }
-    assert!(out.len() > len_before && !out.ends_with('.'));
+    for &d in digits[..n].iter().rev() {
+        out.push(char::from(b'0' + d));
+    }
+    if frac != 0 {
+        out.push('.');
+        let mut scale = 100;
+        while frac != 0 {
+            out.push(char::from(b'0' + (frac / scale) as u8));
+            frac %= scale;
+            scale /= 10;
+        }
+    }
+    assert!(out.len() > before && !out.ends_with('.'));
 }
 
 /// Symbol placement: an optional mirror followed by a clockwise quarter-turn rotation
@@ -255,13 +266,33 @@ mod tests {
         assert_eq!(checked, (0..=6).map(|l| 7u32.pow(l)).sum::<u32>());
     }
 
+    /// Oracles: `parse_coord`, and `f64`'s `Display` (the shortest decimal that reads back,
+    /// exact for ten significant digits) for the shortest form.
     #[test]
     fn coordinate_format_round_trips_on_a_sweep() {
         let mut m: i64 = i64::from(i32::MIN);
-        while m <= i64::from(i32::MAX) {
-            let v = m as i32;
-            assert_eq!(parse_coord(&fmt(v)), Ok(v));
+        let edges = [
+            0,
+            1,
+            -1,
+            5,
+            50,
+            999,
+            1000,
+            -1000,
+            1001,
+            1010,
+            i32::MAX,
+            i32::MIN,
+        ];
+        let sweep = std::iter::from_fn(|| {
+            let v = (m <= i64::from(i32::MAX)).then_some(m as i32);
             m += 7_919_993; // prime stride hits every digit pattern of the fraction
+            v
+        });
+        for v in sweep.chain(edges) {
+            assert_eq!(parse_coord(&fmt(v)), Ok(v));
+            assert_eq!(fmt(v), format!("{}", f64::from(v) / 1000.0), "{v}");
         }
     }
 

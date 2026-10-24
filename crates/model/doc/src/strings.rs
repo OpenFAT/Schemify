@@ -282,41 +282,6 @@ impl ObjId {
     }
 }
 
-/// Appends milli-units as the shortest decimal (format spec §3) without the `fmt`
-/// machinery or UTF-8 re-validation: the save path formats ~3 coordinates per object.
-/// Equal to `schemify_format::format_coord` (tested over a sweep).
-pub(crate) fn push_coord(milli: i32, out: &mut String) {
-    let before = out.len();
-    if milli < 0 {
-        out.push('-');
-    }
-    let mag = i64::from(milli).unsigned_abs();
-    let (whole, mut frac) = (mag / 1000, (mag % 1000) as u32);
-    let mut digits = [0u8; 10];
-    let (mut n, mut w) = (0, whole);
-    loop {
-        digits[n] = (w % 10) as u8;
-        n += 1;
-        w /= 10;
-        if w == 0 {
-            break;
-        }
-    }
-    for &d in digits[..n].iter().rev() {
-        out.push(char::from(b'0' + d));
-    }
-    if frac != 0 {
-        out.push('.');
-        let mut scale = 100;
-        while frac != 0 {
-            out.push(char::from(b'0' + (frac / scale) as u8));
-            frac %= scale;
-            scale /= 10;
-        }
-    }
-    assert!(out.len() > before && !out.ends_with('.'));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,42 +299,6 @@ mod tests {
         assert_eq!(s.len(), 1000);
         let e = s.intern("");
         assert_eq!(s.get(e), "");
-    }
-
-    #[test]
-    fn fast_coordinates_equal_the_format_writer() {
-        let mut m: i64 = i64::from(i32::MIN);
-        let check = |v: i32| {
-            let (mut want, mut got) = (String::new(), String::from("x"));
-            schemify_format::format_coord(v, &mut want);
-            push_coord(v, &mut got);
-            assert_eq!(&got[1..], want, "{v}");
-        };
-        while m <= i64::from(i32::MAX) {
-            check(m as i32);
-            m += 7_919_993;
-        }
-        for v in [
-            0,
-            1,
-            -1,
-            10,
-            100,
-            999,
-            1000,
-            -1000,
-            1001,
-            1010,
-            12_500,
-            -60_000,
-            156,
-            50,
-            5,
-            i32::MAX,
-            i32::MIN,
-        ] {
-            check(v);
-        }
     }
 
     #[test]

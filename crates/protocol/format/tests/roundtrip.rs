@@ -5,7 +5,7 @@ mod common;
 
 use common::{Rng, chunk_word, chunks, gen_doc, messy};
 use proptest::prelude::*;
-use schemify_format::{FileKind, parse, write};
+use schemify_format::{Document, FileKind, RecordKind, Shape, Ty, parse, parse_coord, write};
 
 const RANK3: &[&str] = &[
     "inst",
@@ -65,6 +65,19 @@ proptest! {
         prop_assert_eq!(write(&doc), text);
     }
 
+    /// Oracle: `parse_coord` of the slot's text. The reader's coordinate column holds every
+    /// `Coord` slot's milli-units and 0 elsewhere, on canonical and on messy input.
+    #[test]
+    fn coordinate_column_equals_the_parsed_text(seed in any::<u64>()) {
+        let mut rng = Rng::new(seed);
+        let text = write(&gen_doc(&mut rng, kind_of(seed)));
+        let noisy = messy(&mut rng, &text);
+        for t in [&text, &noisy] {
+            let doc = parse(t.as_bytes()).unwrap_or_else(|e| panic!("{e}\n---\n{t:?}"));
+            coords_match(&doc);
+        }
+    }
+
     /// The reader never panics and only reports declared codes, on arbitrary bytes and
     /// on mutated canonical files (the fuzz target's oracle, run on every test pass).
     #[test]
@@ -119,4 +132,35 @@ fn values_borrow_unless_escaped() {
     assert_eq!(doc.field(1, 1), Some("x y"));
     assert_eq!(doc.field(2, 1), Some("q\"q"));
     assert_eq!(write(&doc), text);
+}
+
+/// Asserts the coordinate column of every known record against its texts.
+fn coords_match(doc: &Document<'_>) {
+    let check = |shape: &Shape, texts: Vec<&str>, milli: &[i32]| {
+        assert_eq!(texts.len(), milli.len());
+        for (i, (t, m)) in texts.iter().zip(milli).enumerate() {
+            let want = match shape.ty(i) {
+                Some(Ty::Coord) => parse_coord(t).unwrap(),
+                _ => 0,
+            };
+            assert_eq!(*m, want, "slot {i} {t:?}");
+        }
+    };
+    for r in 1..doc.record_count() {
+        let kind = doc.record_kind(r);
+        if kind == RecordKind::Unknown {
+            continue;
+        }
+        let schema = kind.schema();
+        check(&schema.fields, doc.fields(r).collect(), doc.field_coords(r));
+        for a in doc.attrs(r) {
+            if let Some((_, attr)) = schema.attr(doc.attr_key(a)) {
+                check(
+                    &attr.shape,
+                    doc.attr_values(a).collect(),
+                    doc.value_coords(a),
+                );
+            }
+        }
+    }
 }
