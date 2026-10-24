@@ -89,8 +89,9 @@ struct Cell {
     /// `y · split + x`): the picture is whole once every part is.
     split: u8,
     done: u16,
-    /// Cost estimate when given out, then the cost of the parts recorded (see
-    /// [`CanvasCache::estimate`]).
+    /// Content cost estimate when given out, then the content cost of the parts recorded
+    /// (`draw`'s, without the fixed [`TILE_COST`] per part, which does not grow with the
+    /// world a tile covers; see [`CanvasCache::estimate`]).
     est: u32,
     cost: u32,
 }
@@ -136,7 +137,7 @@ pub struct CanvasCache {
     /// estimate of the next part would pass it (the first part always records). A tile whose
     /// estimate passes it is recorded in parts, up to 16 of them.
     pub cost_per_frame: usize,
-    /// The last tile part's cost times the parts, at zoom `last_scale`: the estimate of a
+    /// The last tile part's content cost times the parts, at zoom `last_scale`: the estimate of a
     /// tile no recorded cell overlaps (see [`CanvasCache::estimate`]).
     last_cost: usize,
     last_scale: f64,
@@ -179,10 +180,11 @@ impl Default for CanvasCache {
 }
 
 impl CanvasCache {
-    /// The cost of recording tile `tile` of grid `g`: the densest whole cell over the same
-    /// world (any zoom) scaled to the tile's world area, times [`ZOOM_IN_COST`] when that cell
-    /// is coarser (rows it drew as pixels become paths); else the last tile's cost times the
-    /// zoom-out factor squared (clamped to 64×, as content is not uniform).
+    /// The content cost (without [`TILE_COST`]) of recording tile `tile` of grid `g`: the
+    /// costliest whole cell over the same world (any zoom) scaled to the tile's world area,
+    /// times [`ZOOM_IN_COST`] when that cell is coarser (rows it drew as pixels become paths);
+    /// else the last tile's cost times the zoom-out factor squared. Both area factors are
+    /// clamped to 64×, as content is not uniform.
     ///
     /// Cost: O(cells).
     fn estimate(&self, tile: (i32, i32), g: &Grid) -> usize {
@@ -202,15 +204,17 @@ impl CanvasCache {
         for c in self.cells.iter().filter(|c| c.scale > 0.0 && c.whole()) {
             let b = span(c.scale, c.phase, c.tile);
             if b.intersect(want).area() > 0.0 {
-                let mut d = f64::from(c.cost) / b.area();
+                // Its cost scaled to the tile's world, at most 64× (content is not uniform:
+                // a far zoom-out's tile covers mostly empty world).
+                let mut e = f64::from(c.cost) * (want.area() / b.area()).min(64.0);
                 if c.scale < g.scale {
-                    d *= ZOOM_IN_COST;
+                    e *= ZOOM_IN_COST;
                 }
-                best = Some(best.map_or(d, |m: f64| m.max(d)));
+                best = Some(best.map_or(e, |m: f64| m.max(e)));
             }
         }
-        if let Some(d) = best {
-            return (d * want.area()) as usize;
+        if let Some(e) = best {
+            return e as usize;
         }
         if self.last_scale <= 0.0 {
             return self.last_cost;
@@ -440,7 +444,7 @@ pub fn draw_cached<P: Painter>(
                 });
                 cache.cells[k].used = cache.frame;
                 let c = cache.cells[k];
-                let part = c.est as usize / usize::from(c.split).pow(2);
+                let part = c.est as usize / usize::from(c.split).pow(2) + TILE_COST;
                 while budget > 0 && !cache.cells[k].whole() {
                     if any && left < part {
                         budget = 0; // the next part would pass the budget: next frame
@@ -581,12 +585,12 @@ fn record_part<P: Painter>(
     let n = u32::from(c.split);
     let q = (!c.done).trailing_zeros();
     let w = cache.edge / n;
-    let cost = draw_part(p, cache, k, g, ((q % n) * w, (q / n) * w, w, w), draw) + TILE_COST;
+    let cost = draw_part(p, cache, k, g, ((q % n) * w, (q / n) * w, w, w), draw);
     let cell = &mut cache.cells[k];
     cell.done |= 1 << q;
     cell.cost = cell.cost.saturating_add(cost.min(u32::MAX as usize) as u32);
     (cache.last_cost, cache.last_scale) = (cost * (n * n) as usize, c.scale);
-    cost
+    cost + TILE_COST
 }
 
 /// Draws the part `(x, y, w, h)` (device px from the tile's corner) of cell `k`'s tile, as

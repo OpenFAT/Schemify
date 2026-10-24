@@ -157,6 +157,8 @@ struct Gpu {
     /// vello's target and the stand-in for the window surface it is blitted to.
     view: wgpu::TextureView,
     surface: wgpu::TextureView,
+    /// The texture behind `surface` (read back by the oracle tests).
+    surface_tex: wgpu::Texture,
     blitter: wgpu::util::TextureBlitter,
     /// Frames composed without vello (`Layers::reusable`).
     reused: usize,
@@ -193,27 +195,28 @@ impl Gpu {
             ..Default::default()
         };
         let renderer = Renderer::new(&device, options).ok()?;
-        let texture = |usage| {
-            device
-                .create_texture(&wgpu::TextureDescriptor {
-                    label: None,
-                    size: wgpu::Extent3d {
-                        width: (f64::from(VIEW.0) * scale) as u32,
-                        height: (f64::from(VIEW.1) * scale) as u32,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    usage,
-                    view_formats: &[],
-                })
-                .create_view(&wgpu::TextureViewDescriptor::default())
+        let texture_of = |usage| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width: (f64::from(VIEW.0) * scale) as u32,
+                    height: (f64::from(VIEW.1) * scale) as u32,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage,
+                view_formats: &[],
+            })
         };
         let view =
-            texture(wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING);
-        let surface = texture(wgpu::TextureUsages::RENDER_ATTACHMENT);
+            texture_of(wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING)
+                .create_view(&wgpu::TextureViewDescriptor::default());
+        let surface_tex =
+            texture_of(wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
+        let surface = surface_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let blitter = wgpu::util::TextureBlitter::new(&device, wgpu::TextureFormat::Rgba8Unorm);
         let queries = device.create_query_set(&wgpu::QuerySetDescriptor {
             label: None,
@@ -251,6 +254,7 @@ impl Gpu {
             renderer,
             view,
             surface,
+            surface_tex,
             blitter,
             reused: 0,
             queries,
@@ -1315,6 +1319,255 @@ fn shared_var_edit_frames_100k() {
         let tick = ticks.iter().copied().fold(0.0, f64::max);
         eprintln!("PERF app.edit_var_{dependents}_dependents_{view}_100k_ms {p50:.3}");
         eprintln!("  {var} {view}: p95 {p95:.3}, tick max {tick:.3}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+impl Bench {
+    /// Paints and renders one frame (no update), as the window's `RedrawRequested` does.
+    fn paint(&mut self) {
+        self.scene.reset();
+        let base = Affine::scale(self.scale);
+        self.layers.begin_frame(base);
+        let mut p = ScenePainter {
+            scene: &mut self.scene,
+            base,
+            layers: Some(&mut self.layers),
+        };
+        schemify_app::paint::frame(&mut self.ed, &mut self.caches, &mut p);
+        if let Some(g) = self.gpu.as_mut() {
+            g.render(&self.scene, &mut self.layers);
+        }
+    }
+
+    /// One input batch as the window loop runs it: `update`, a frame only when it reports a
+    /// change, then the ticks `wake_ms` asks for (each painted only when its update changed
+    /// something) until the editor sleeps. Returns the frames painted.
+    fn window(&mut self, ev: &InputEvents, dt_ms: u64) -> usize {
+        let mut frames = 0;
+        self.now += dt_ms;
+        if self.ed.update(ev, VIEW, self.now) {
+            self.paint();
+            frames += 1;
+        }
+        for _ in 0..4096 {
+            let Some(ms) = self.ed.wake_ms() else {
+                return frames;
+            };
+            self.now += u64::from(ms).max(1);
+            if self.ed.update(&InputEvents::default(), VIEW, self.now) {
+                self.paint();
+                frames += 1;
+            }
+        }
+        panic!("the window never sleeps");
+    }
+
+    /// The surface's pixels (RGBA8, row-major).
+    fn pixels(&self) -> Vec<u8> {
+        let g = self.gpu.as_ref().expect("a GPU");
+        let t = &g.surface_tex;
+        let (w, h) = (t.width(), t.height());
+        let row = (w * 4).div_ceil(256) * 256;
+        let buffer = g.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(row * h),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = g.device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            t.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(h),
+                },
+            },
+            t.size(),
+        );
+        g.queue.submit([enc.finish()]);
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |r| r.expect("map"));
+        g.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+        let data = buffer.slice(..).get_mapped_range().expect("mapped range");
+        (0..h)
+            .flat_map(|y| data[(y * row) as usize..(y * row + w * 4) as usize].to_vec())
+            .collect()
+    }
+
+    /// The oracle: the share of pixels (a channel off by more than 2) that differ between the
+    /// frame the window shows and the same editor state painted uncached (a fresh canvas cache
+    /// and layers: every tile recorded in that frame, vello renders all of it).
+    fn stale_share(&mut self) -> f64 {
+        let shown = self.pixels();
+        let caches = std::mem::take(&mut self.caches);
+        let layers = std::mem::take(&mut self.layers);
+        self.paint();
+        let fresh = self.pixels();
+        (self.caches, self.layers) = (caches, layers);
+        let bad = shown
+            .chunks_exact(4)
+            .zip(fresh.chunks_exact(4))
+            .filter(|(p, q)| p.iter().zip(*q).any(|(x, y)| x.abs_diff(*y) > 2))
+            .count();
+        bad as f64 / (shown.len() / 4) as f64
+    }
+
+    /// A GPU bench on `path` at device scale 1, or `None` without a timestamp-capable GPU.
+    fn on_gpu(path: &std::path::Path) -> Option<Bench> {
+        let ed = Editor::new(Options {
+            no_default_ui: false,
+            path: Some(path.to_owned()),
+            seed: 1,
+            ..Default::default()
+        })
+        .unwrap();
+        Some(Bench {
+            caches: Default::default(),
+            ed,
+            scale: 1.0,
+            scene: Scene::new(),
+            layers: Layers::default(),
+            now: 0,
+            gpu: Some(Gpu::new(1.0)?),
+            cpu: Vec::new(),
+            vello: Vec::new(),
+            gpu_ms: Vec::new(),
+        })
+    }
+}
+
+/// Share of pixels a settled frame may differ from the uncached one: antialiasing and glyph
+/// snapping at tile seams (~0.1%); one stale or blank 256-px tile is ~6% of the 1280 × 800 view.
+const SEAM_SHARE: f64 = 0.005;
+
+/// After pans, zooms, arrow keys and opening another cell, the frame the window settles on
+/// (the loop asleep) equals the uncached render of the same state: no stale tile from another
+/// zoom or cell is left on screen.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn settled_frame_equals_uncached_frame() {
+    let dir = fixture("inv", "perf-settled");
+    std::fs::write(dir.join("a.shcomp"), schematic(10_000)).unwrap();
+    std::fs::write(dir.join("b.shcomp"), schematic(1_000)).unwrap();
+    let Some(mut b) = Bench::on_gpu(&dir.join("a.shcomp")) else {
+        eprintln!("no GPU adapter with timestamps: skipped");
+        return;
+    };
+    let check = |b: &mut Bench, what: &str, frames: usize| {
+        let stale = b.stale_share();
+        eprintln!("{what}: {frames} frames, {:.3}% px off", stale * 100.0);
+        assert!(
+            stale <= SEAM_SHARE,
+            "{what}: {:.2}% px stale",
+            stale * 100.0
+        );
+    };
+    let f = b.window(&InputEvents::default(), 1000);
+    check(&mut b, "open", f);
+    let (cx, cy) = (640.0f32, 400.0f32);
+    let f = b.window(&event(InputEvent::PointerMove { x: cx, y: cy }), 16);
+    check(&mut b, "move", f);
+    for (what, dy, n) in [("zoom in", 1.0, 4), ("zoom out far", -1.0, 12)] {
+        let mut f = 0;
+        for _ in 0..n {
+            let wheel = InputEvent::Wheel {
+                x: cx,
+                y: cy,
+                dx: 0.0,
+                dy,
+            };
+            f += b.window(&event(wheel), 16);
+        }
+        check(&mut b, what, f);
+    }
+    for key in ["Left", "Up", "Right", "Down"] {
+        let f = b.window(&key_event(key), 16);
+        check(&mut b, &format!("arrow {key}"), f);
+    }
+    let path = dir.join("b.shcomp");
+    b.ed.command("file.open", path.to_str().expect("utf-8 path"));
+    let f = b.window(&InputEvents::default(), 16);
+    check(&mut b, "open cell b", f);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// User report: zooming far out of `inv/top.shcomp` (a light cell) showed old-zoom stand-ins
+/// over a black canvas for up to a second. A tile's fixed cost (`TILE_COST`) was counted as
+/// content density, so after a ×18 zoom-out each new tile's estimate grew ×324 and was
+/// recorded a sixteenth per frame: 50 frames to fill the view after a fast wheel, 65 after a
+/// touchpad flick. Oracle: light content fits one frame's budget, so the view is whole a few
+/// frames after any zoom gesture, and the settled frame equals the uncached one.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn zoom_on_a_light_cell_fills_the_view_in_a_few_frames() {
+    const FRAMES_MAX: usize = 4;
+    let dir = fixture("inv", "perf-settled-inv");
+    let Some(mut b) = Bench::on_gpu(&dir.join("top.shcomp")) else {
+        eprintln!("no GPU adapter with timestamps: skipped");
+        return;
+    };
+    let check = |b: &mut Bench, what: &str, frames: usize| {
+        let (stale, scale) = (b.stale_share(), b.ed.camera().scale);
+        eprintln!(
+            "{what}: scale {scale:.5}, {frames} frames, {:.3}% px off",
+            stale * 100.0
+        );
+        assert!(
+            stale <= SEAM_SHARE,
+            "{what}: {:.2}% px stale",
+            stale * 100.0
+        );
+        assert!(frames <= FRAMES_MAX, "{what}: {frames} frames to settle");
+    };
+    b.window(&InputEvents::default(), 1000);
+    let (cx, cy) = (500.0f32, 350.0f32);
+    b.window(&event(InputEvent::PointerMove { x: cx, y: cy }), 16);
+    // A notch at a time, settling after each, until the cell is a few dozen px wide.
+    for notch in 0..16 {
+        let wheel = InputEvent::Wheel {
+            x: cx,
+            y: cy,
+            dx: 0.0,
+            dy: -1.0,
+        };
+        let f = b.window(&event(wheel), 16);
+        check(&mut b, &format!("notch {notch}"), f);
+    }
+    // A fast wheel (a notch per 8 ms frame, no settle between), then a touchpad (fractional
+    // deltas, the pointer drifting); the frames counted are those after the gesture.
+    for (what, dy, n) in [
+        ("fast in", 1.0, 16),
+        ("fast out", -1.0, 16),
+        ("pad in", 0.15, 120),
+        ("pad out", -0.15, 160),
+        ("pad in again", 0.2, 60),
+    ] {
+        for k in 0..n {
+            let x = cx + (k % 7) as f32 * 3.0;
+            let mut ev = event(InputEvent::PointerMove { x, y: cy });
+            ev.push(InputEvent::Wheel {
+                x,
+                y: cy,
+                dx: 0.0,
+                dy,
+            });
+            b.now += 8;
+            if b.ed.update(&ev, VIEW, b.now) {
+                b.paint();
+            }
+        }
+        let f = b.window(&InputEvents::default(), 16);
+        check(&mut b, what, f);
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
