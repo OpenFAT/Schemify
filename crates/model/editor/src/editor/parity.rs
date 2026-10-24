@@ -54,6 +54,13 @@ pub(crate) struct Compare {
     key: Option<(DocHandle, u32, u32)>,
 }
 
+impl Compare {
+    /// What the decor draws of it: the other cell's row and whether it is shown.
+    pub(super) fn shown(&self) -> (usize, bool) {
+        (self.row, self.on)
+    }
+}
+
 /// One shape's points as a record: rank-2 symbol graphics (`schematic == false`) or a rank-3
 /// `shape` with id `id`. `None` when the points do not make the shape (a degenerate rect, a
 /// polygon under two points, an arc through collinear points).
@@ -379,11 +386,9 @@ impl Editor {
             Cmd::AutoHighlight => toggle(&mut self.opts.auto_highlight),
             Cmd::HighlightInstances => {
                 toggle(&mut self.opts.highlight_insts);
-                self.decor_dirty = true;
             }
             Cmd::IncrementColor => {
                 toggle(&mut self.opts.incr_color);
-                self.decor_dirty = true;
             }
             Cmd::OnlyProbes => toggle(&mut self.opts.only_probes),
             Cmd::AutoHighlightPlotted => {
@@ -598,7 +603,6 @@ impl Editor {
                 Some(c) => {
                     c.on = !c.on;
                     c.key = None;
-                    self.decor_dirty = true;
                 }
                 None => self.open_chooser(ChooseFor::Compare),
             },
@@ -2056,7 +2060,6 @@ impl Editor {
                 self.highlight.insert(i, key);
             }
         }
-        self.decor_dirty = true;
         self.session
             .say(format!("{} net/pin mismatch(es)", nets.len()));
     }
@@ -2075,7 +2078,6 @@ impl Editor {
                 self.highlight.insert(i, key);
             }
         }
-        self.decor_dirty = true;
     }
 
     // ------------------------------------------------------------------ compare
@@ -2087,7 +2089,6 @@ impl Editor {
             on: true,
             key: None,
         });
-        self.decor_dirty = true;
         let name = crate::session::cell_relpath(&self.session.project, row);
         self.session.say(format!("comparing with {name}"));
     }
@@ -2110,7 +2111,6 @@ impl Editor {
                     on: true,
                     key: None,
                 });
-                self.decor_dirty = true;
             }
             Err(e) => self.session.say(e),
         }
@@ -2462,7 +2462,6 @@ impl Editor {
         if !self.selection().is_empty() {
             self.highlight_cmd(h, Cmd::Highlight);
         }
-        self.decor_dirty = true;
     }
 
     /// Shows the crash-recovery prompt for the next document the journal offers edits for,

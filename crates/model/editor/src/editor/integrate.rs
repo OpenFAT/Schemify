@@ -123,7 +123,6 @@ impl Editor {
                 .map(|e| schemify_netlist::emit(&e, schemify_elab::Dialect::Ngspice).name_map)
                 .ok()?;
             self.hier = Some((top, self.generation, map));
-            self.decor_dirty = true;
         }
         self.hier.as_ref().map(|h| &h.2)
     }
@@ -145,7 +144,6 @@ impl Editor {
     pub(super) fn highlight_cmd(&mut self, h: DocHandle, cmd: Cmd) {
         if cmd == Cmd::Unhighlight {
             self.highlight.clear();
-            self.decor_dirty = true;
             self.session.say("highlights cleared");
             return;
         }
@@ -205,7 +203,6 @@ impl Editor {
             }
             shown.push(key);
         }
-        self.decor_dirty = true;
         let verb = if cmd == Cmd::Highlight {
             "highlighted"
         } else {
@@ -852,7 +849,7 @@ impl Editor {
             if had || !req.marks.is_empty() {
                 self.op_shown = !req.marks.is_empty();
                 self.annotations.replace(req);
-                self.decor_dirty = true;
+                self.op_gen = self.op_gen.wrapping_add(1);
                 changed = true;
             }
             if wanted {
@@ -977,7 +974,6 @@ impl Editor {
         self.diff_key = key;
         self.diff = checks::Diff::default();
         self.staged = None;
-        self.decor_dirty = true;
         let Some(st) = stages.get(pick) else { return };
         let Some(doc) = self.session.project.doc(h) else {
             return;
@@ -1071,10 +1067,26 @@ impl Editor {
             || !self.highlight.is_empty()
             || self.annotations.len() > self.annotations.count_of(SOURCE_CHECKS)
             || self.diff != checks::Diff::default();
-        if !(self.decor_dirty || scene_stale && draws) {
+        let current = self.decor_key.as_ref().is_some_and(|k| {
+            k.highlight == self.highlight
+                && (k.insts, k.incr) == (self.opts.highlight_insts, self.opts.incr_color)
+                && k.compare == self.compare.as_ref().map(super::parity::Compare::shown)
+                && k.hier == self.hier.as_ref().map(|h| (h.0, h.1))
+                && k.op == self.op_gen
+                && k.diff == self.diff
+        });
+        if current && !(scene_stale && draws) {
             return false;
         }
-        self.decor_dirty = false;
+        self.decor_key = Some(DecorKey {
+            highlight: self.highlight.clone(),
+            insts: self.opts.highlight_insts,
+            incr: self.opts.incr_color,
+            compare: self.compare.as_ref().map(super::parity::Compare::shown),
+            hier: self.hier.as_ref().map(|h| (h.0, h.1)),
+            op: self.op_gen,
+            diff: self.diff.clone(),
+        });
         let Some((h, _)) = self.active() else {
             return false;
         };
@@ -1318,4 +1330,17 @@ fn ids_of(targets: &[String], doc: &schemify_doc::Document) -> Vec<u32> {
     ids.dedup();
     assert!(ids.len() <= targets.len());
     ids
+}
+
+/// Everything the decor draws besides the scene, as it was last built from: the decor is
+/// rebuilt when any of it differs, or when the scene changed while the decor draws on it.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct DecorKey {
+    highlight: Vec<String>,
+    insts: bool,
+    incr: bool,
+    compare: Option<(usize, bool)>,
+    hier: Option<(DocHandle, u32)>,
+    op: u32,
+    diff: checks::Diff,
 }

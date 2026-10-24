@@ -631,7 +631,11 @@ pub struct Editor {
     checks_key: Option<(Option<DocHandle>, u64)>,
     /// Decor primitives: highlight, annotation texts, staged diff.
     decor: CanvasPrims,
-    decor_dirty: bool,
+    /// The decor's inputs besides the scene as it was last built from them (`None`: never).
+    decor_key: Option<integrate::DecorKey>,
+    /// Advances whenever the operating-point overlay is written (the one annotation source
+    /// the decor draws).
+    op_gen: u32,
     /// The violation markers of the `checks` source, kept per marked object.
     markers: crate::checks::Markers,
     /// Targets of the `checks` marks patched since the markers were placed (`None`: the
@@ -851,7 +855,8 @@ impl Editor {
             hl: Members::default(),
             checks_key: None,
             decor: CanvasPrims::default(),
-            decor_dirty: true,
+            decor_key: None,
+            op_gen: 0,
             markers: crate::checks::Markers::default(),
             marker_targets: None,
             hier: None,
