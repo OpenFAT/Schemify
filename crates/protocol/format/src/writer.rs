@@ -45,17 +45,9 @@ pub(crate) struct ConflictSpan {
 /// ```
 pub fn write(doc: &Document<'_>) -> String {
     let mut out = String::with_capacity(doc.arena.len() + doc.src.len() + 64);
-    write_into(doc, &mut out);
+    write_spans(doc, &[], None, &mut out);
     assert!(out.starts_with("schemify ") && out.ends_with('\n'));
     out
-}
-
-/// Appends the canonical form of `doc` to `out` (see [`write()`]), so a caller saving
-/// many files can reuse one buffer.
-pub fn write_into(doc: &Document<'_>, out: &mut String) {
-    let before = out.len();
-    write_spans(doc, &[], None, out);
-    assert!(out.len() > before);
 }
 
 /// Writes `doc` with conflict markers around `spans` and, when `eof_split` is set,

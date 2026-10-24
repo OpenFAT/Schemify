@@ -64,4 +64,4 @@ pub use schema::{
     AttrSchema, FileKind, KeyRule, RANK_INHERIT, RANK_MAX, RANK_POSITIONAL, RecordKind,
     RecordSchema, Rest, SHAPE_FORMS, Shape, Ty, shape_arity,
 };
-pub use writer::{write, write_into};
+pub use writer::write;
