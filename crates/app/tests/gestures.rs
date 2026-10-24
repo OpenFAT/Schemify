@@ -11,7 +11,7 @@ use common::{Session, U, lines};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use schemify_app::editor::{Editor, Options};
+use schemify_editor::editor::{Editor, Options};
 use schemify_ui::InputEvents;
 
 const SHIFT: u8 = schemify_ui::Mods::SHIFT;
@@ -54,11 +54,11 @@ fn nets(s: &Session) -> BTreeMap<String, (u32, String)> {
     let (h, _) = s.ed.active().unwrap();
     let doc = s.ed.session().project.doc(h).unwrap();
     let cell = s.ed.cell().expect("elaborated");
-    let name = |c: u32| schemify_app::checks::net_name(cell, c).to_owned();
+    let name = |c: u32| schemify_editor::checks::net_name(cell, c).to_owned();
     let mut out = BTreeMap::new();
     let inst = doc.instances();
     for i in 0..inst.id.len() {
-        for (k, (c, _)) in schemify_app::checks::pins_of(doc, cell, i)
+        for (k, (c, _)) in schemify_editor::checks::pins_of(doc, cell, i)
             .into_iter()
             .enumerate()
         {
@@ -272,6 +272,7 @@ fn a_recent_file_of_another_project_switches_project() {
     }
     let ed = Editor::new(opts(a.join("top.shcomp"))).unwrap();
     let mut s = Session {
+        caches: Default::default(),
         ed,
         now: 1,
         dir: a.clone(),
@@ -323,7 +324,12 @@ fn canvas_options_from_init_lua_reach_the_palette() {
         ..Default::default()
     })
     .unwrap();
-    let mut s = Session { ed, now: 1, dir };
+    let mut s = Session {
+        ed,
+        now: 1,
+        dir,
+        caches: Default::default(),
+    };
     s.frame(InputEvents::default());
     assert_eq!((s.ed.opts().dim, s.ed.opts().width_tenths), (25, 15));
     // Dimmed by 25% toward the background: the set color, not the theme's, is the source.
@@ -480,7 +486,7 @@ fn join_trim_keeps_connectivity_over_diagonal_and_attributed_wires() {
                     let p = (x * U, y * U);
                     for r in 0..w.id.len() {
                         let (a, b) = ((w.x1[r], w.y1[r]), (w.x2[r], w.y2[r]));
-                        if p == a || p == b || schemify_app::wiring::on_interior(p, a, b) {
+                        if p == a || p == b || schemify_editor::wiring::on_interior(p, a, b) {
                             by_net
                                 .entry(cell.nets.wire_net[r])
                                 .or_default()

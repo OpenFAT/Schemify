@@ -8,9 +8,10 @@ mod common;
 use std::io::{BufRead, BufReader, Write};
 
 use common::Session;
-use schemify_app::commands::CORE;
-use schemify_app::rpc::{self, Dispatched, Pump};
+use schemify_app::serve::Pump;
 use schemify_cli::rpc::{INVALID_PARAMS, Json, Listener, METHOD_NOT_FOUND};
+use schemify_editor::commands::CORE;
+use schemify_editor::rpc::{self, Dispatched};
 use schemify_ui::InputEvents;
 
 /// Oracle: the command table itself. Every core and plugin command `rpc.methods` lists is
@@ -253,16 +254,21 @@ fn with_bad_actor(tag: &str, fuel: u64) -> Session {
     text.push_str(&format!(
         "\nplugin bad path {}\n  grant read_project\n  fuel {fuel}\n",
         // Quoted with the format's escapes: a Windows path holds `\`.
-        schemify_app::docs::quote(&wasm.display().to_string())
+        schemify_editor::docs::quote(&wasm.display().to_string())
     ));
     std::fs::write(&manifest, text).unwrap();
-    let ed = schemify_app::editor::Editor::new(schemify_app::editor::Options {
+    let ed = schemify_editor::editor::Editor::new(schemify_editor::editor::Options {
         path: Some(dir.join("top.shcomp")),
         seed: 7,
         ..Default::default()
     })
     .expect("fixture opens");
-    let mut s = Session { ed, now: 1, dir };
+    let mut s = Session {
+        ed,
+        now: 1,
+        dir,
+        caches: Default::default(),
+    };
     s.frame(InputEvents::default());
     s.frame(InputEvents::default());
     s

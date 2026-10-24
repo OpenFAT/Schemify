@@ -23,7 +23,7 @@ use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
 
 use crate::painter::Painter;
-use schemify_canvas::Camera;
+use schemify_canvas::{Camera, Drawn};
 
 /// Tile edge in device px (at an integral device scale `s`, the largest multiple of `s` up to
 /// it, so tile corners sit on whole logical px and pixel snapping agrees across tiles).
@@ -218,24 +218,6 @@ impl CanvasCache {
         let area = (self.last_scale / g.scale).powi(2).clamp(1.0 / 64.0, 64.0);
         (self.last_cost as f64 * area) as usize
     }
-}
-
-/// How [`draw_cached`] drew a frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Drawn {
-    /// Every visible tile copied pixel for pixel from the atlas (a pan, or nothing moved).
-    Copied,
-    /// The old zoom's tiles stretched to a new zoom (a stand-in until the next crisp frame).
-    Stretched,
-    /// The changed parts of visible tiles redrawn (see `damage` of [`draw_cached`]), every
-    /// tile shown.
-    Patched,
-    /// Tiles recorded this frame; every visible tile shown.
-    Recorded,
-    /// Some visible tiles not recorded yet (stand-ins shown in their place): draw again.
-    Partial,
-    /// Content drawn straight into the frame (the painter keeps no layers).
-    Direct,
 }
 
 /// Device placement of the current zoom's tile grid: world (0, 0) at `int + phase` device px.

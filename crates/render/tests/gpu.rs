@@ -295,8 +295,9 @@ fn diff_px(a: &[u8], b: &[u8]) -> (f64, usize) {
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn composed_frames_equal_vello_frames() {
+    use schemify_canvas::Drawn;
     use schemify_render::Layers;
-    use schemify_render::canvas::{CanvasCache, Drawn};
+    use schemify_render::canvas::CanvasCache;
 
     let mut g = gpu();
     let size = (640u32, 400u32);
@@ -504,8 +505,9 @@ fn composed_frames_equal_vello_frames() {
 #[ignore = "needs a GPU adapter"]
 fn patched_layers_equal_recorded_layers() {
     use schemify_canvas::CanvasDiff;
+    use schemify_canvas::Drawn;
     use schemify_render::Layers;
-    use schemify_render::canvas::{CanvasCache, Drawn};
+    use schemify_render::canvas::CanvasCache;
 
     let mut g = gpu();
     let (w, h) = (640u32, 400u32);

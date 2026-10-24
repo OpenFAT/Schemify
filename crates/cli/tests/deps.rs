@@ -103,3 +103,40 @@ fn the_canvas_tables_link_no_editor_crate() {
         "the canvas tables depend on editor crates: {bad:?}"
     );
 }
+
+/// The editor's model and frame spine run headless (`schemify-gui cmd`, the JSON-RPC
+/// server's tables, frame tests): the GPU, window and accessibility-backend crates belong
+/// to `schemify-app` and `schemify-render` only. Text shaping, layout and LaTeX are the UI
+/// tables' (`schemify-ui`), so they stay.
+#[test]
+fn the_editor_links_no_gpu_or_window_crate() {
+    const GPU_OR_WINDOW: &[&str] = &[
+        "schemify-app",
+        "schemify-render",
+        "wgpu",
+        "wgpu-core",
+        "wgpu-hal",
+        "naga",
+        "ash",
+        "glow",
+        "vello",
+        "vello_cpu",
+        "vello_encoding",
+        "winit",
+        "smithay-client-toolkit",
+        "x11rb",
+        "accesskit_winit",
+        "accesskit_unix",
+        "zbus",
+    ];
+    let names = linked("schemify-editor");
+    assert!(names.iter().any(|n| n == "schemify-ui"), "{names:?}");
+    let bad: Vec<&String> = names
+        .iter()
+        .filter(|n| GPU_OR_WINDOW.contains(&n.as_str()))
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "the editor depends on GPU or window crates: {bad:?}"
+    );
+}

@@ -8,9 +8,9 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use common::*;
-use schemify_app::editor::{Editor, Options};
-use schemify_app::plugins::Host;
 use schemify_config::Startup;
+use schemify_editor::editor::{Editor, Options};
+use schemify_editor::plugins::Host;
 use schemify_ui::InputEvents;
 
 fn write_init(dir: &Path, src: &str) -> PathBuf {
@@ -28,6 +28,7 @@ fn open_with(dir: &Path, init: &Path) -> Session {
     })
     .expect("fixture opens");
     let mut s = Session {
+        caches: Default::default(),
         ed,
         now: 1,
         dir: dir.to_path_buf(),

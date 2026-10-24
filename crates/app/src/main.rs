@@ -7,8 +7,8 @@
 //! On the web the URL fragment is the argument (`index.html#/projects/inv/top.shcomp`) and
 //! the browser storage is mounted before the editor starts (web spec §1–§2).
 
-use schemify_app::platform;
 use schemify_config::Startup;
+use schemify_editor::platform;
 
 const USAGE: &str = "\
 usage: schemify-gui [--clean | -u <init.lua>] [<project-dir>|<cell-file>] [--no-default-ui]
@@ -53,11 +53,11 @@ fn headless(args: &[String]) -> Option<u8> {
     if word != "cmd" {
         return None;
     }
-    let opts = schemify_app::editor::Options {
+    let opts = schemify_editor::editor::Options {
         path: Some(std::path::PathBuf::from(path)),
         seed: platform::seed(),
         config,
-        ..schemify_app::editor::Options::default()
+        ..schemify_editor::editor::Options::default()
     };
     Some(schemify_app::headless::command(opts, name, rest))
 }
@@ -93,7 +93,7 @@ fn start(args: Vec<String>) -> Result<(), String> {
     }
     // The web build has no `sim` field (D16: no processes), so the update is empty there.
     #[cfg_attr(target_arch = "wasm32", allow(clippy::needless_update))]
-    let opts = schemify_app::editor::Options {
+    let opts = schemify_editor::editor::Options {
         no_default_ui,
         // A URL without a fragment opens the default web project (web spec §1).
         path: paths
@@ -105,17 +105,17 @@ fn start(args: Vec<String>) -> Result<(), String> {
             }),
         seed: platform::seed(),
         config,
-        ..schemify_app::editor::Options::default()
+        ..schemify_editor::editor::Options::default()
     };
     #[cfg(not(target_arch = "wasm32"))]
     let ran = match &rpc {
-        Some(socket) => schemify_app::rpc::run(opts, socket),
-        None => schemify_app::editor::run(opts),
+        Some(socket) => schemify_app::serve::run(opts, socket),
+        None => schemify_app::window::run(opts),
     };
     #[cfg(target_arch = "wasm32")]
     let ran = match rpc {
         Some(_) => Err("--rpc needs a native build (no sockets in a browser)".to_owned()),
-        None => schemify_app::editor::run(opts),
+        None => schemify_app::window::run(opts),
     };
     ran.map_err(|e| {
         format!(

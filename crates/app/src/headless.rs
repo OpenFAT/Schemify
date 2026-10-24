@@ -16,9 +16,9 @@
 use schemify_cli::rpc::Json;
 use schemify_ui::InputEvents;
 
-use crate::editor::{Editor, Options};
-use crate::platform;
-use crate::rpc::{self, Dispatched};
+use schemify_editor::editor::{Editor, Options};
+use schemify_editor::platform;
+use schemify_editor::rpc::{self, Dispatched};
 
 /// How long one command may keep the editor busy (a run's timeout, run spec §5).
 pub const TIMEOUT_MS: u64 = 3_600_000;
@@ -42,6 +42,7 @@ pub fn command(opts: Options, name: &str, args: &[String]) -> u8 {
     let mut last = String::new();
     let mut frame = |ed: &mut Editor| {
         ed.update(&InputEvents::default(), VIEW, platform::unix_ms());
+        crate::paint::serve_raster(ed);
         for line in ed.take_plugin_log().0 {
             println!("{line}");
             last = line;

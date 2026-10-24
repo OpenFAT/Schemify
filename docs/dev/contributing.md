@@ -41,7 +41,7 @@ UI and visual work has its own guides in this repository, under [skills/](skills
 |---|---|
 | `crates/` | The Rust workspace: the headless core (`cli`), the editor (`app`) and the libraries they share. [architecture.md](architecture.md) has the map. |
 | `crates/doc/devices/` | The bundled `core:` device library (`.shprim`), compiled into the binary. |
-| `ui/` | The default UI (`ui/default-plugin/`): a wasm plugin (menus, toolbar, keys, palette) embedded in the editor as `crates/app/assets/default_ui.wasm`. `ui/Cargo.toml` is the wasm guest workspace for it and the host's test guests in `crates/plugin/tests/guests/`. |
+| `ui/` | The default UI (`ui/default-plugin/`): a wasm plugin (menus, toolbar, keys, palette) embedded in the editor as `crates/editor/assets/default_ui.wasm`. `ui/Cargo.toml` is the wasm guest workspace for it and the host's test guests in `crates/plugin/tests/guests/`. |
 | `examples/plugins/` | Example plugins as git submodules, each a standalone repository: `interop` ([Schemify-Interop](https://github.com/OmarSiwy/Schemify-Interop)), `pdk-manager` ([Schemify-PDK-Manager](https://github.com/OmarSiwy/Schemify-PDK-Manager)), `cktImg` ([cktImg](https://github.com/OmarSiwy/cktImg)), `GmIDVisualizer` (the `gmid-lut` plugin, [GmIDVisualizer](https://github.com/OmarSiwy/GmIDVisualizer)). Nothing here builds them; change them in their own repositories ([../plugins/](../plugins/README.md)). |
 | `tests/` | Cross-crate checks: determinism, fuzz replay, perf, the web smoke test. |
 | `tools/` | `spicecmp` (semantic netlist comparison) and benchmarking helpers. |

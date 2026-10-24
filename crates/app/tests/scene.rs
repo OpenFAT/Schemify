@@ -5,12 +5,12 @@
 //! draws — per object the same primitives, geometry and connection points, and the same
 //! junction dots — compared as sets (the incremental path appends, so row order differs).
 
-use schemify_app::scene::{self, ObjKey, Scene, Symbols};
-use schemify_app::session::View;
 use schemify_canvas::{CanvasPrims, LAYER_DEAD, PrimKind};
 use schemify_doc::{
     DocHandle, Edit, EditRequest, Mode, Project, TableId, Transaction, apply_edits, ops_from_text,
 };
+use schemify_editor::scene::{self, ObjKey, Scene, Symbols};
+use schemify_editor::session::View;
 use schemify_elab::{CellState, no_funcs};
 use schemify_format::FileKind;
 
@@ -372,7 +372,7 @@ fn moved_by_scan(sc: &Scene, sel: &scene::Selected) -> CanvasPrims {
 /// Oracle for the selection's rows (`scene::selected_prims`) and what reads them: the marks and
 /// the move preview equal a scan of every primitive for a selected owner.
 fn selection_rows_match_scans(sc: &Scene, rng: &mut Rng) {
-    use schemify_app::geometry::Xform;
+    use schemify_editor::geometry::Xform;
     let n = sc.objs.len();
     let mut sel = scene::Selected::default();
     let picks: Vec<u32> = (0..n as u32).filter(|_| rng.below(4) == 0).collect();

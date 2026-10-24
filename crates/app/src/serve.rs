@@ -12,15 +12,14 @@
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use schemify_cli::rpc::{
-    self, Frame, INVALID_PARAMS, Json, Listener, METHOD_NOT_FOUND, Request, Stream,
-};
+use schemify_cli::rpc::{self, Frame, Json, Listener, Request, Stream};
+use schemify_editor::editor::{Editor, Options, QUEUED_MAX};
+use schemify_editor::rpc::{Dispatched, dispatch};
 use schemify_plugin::abi::text;
 use schemify_render::{App, Painter, Waker};
 use schemify_ui::InputEvents;
 
-use crate::commands::{CORE, Target};
-use crate::editor::{Editor, Options, QUEUED_MAX, Window};
+use crate::window::Window;
 
 /// Tick period while an answer waits for its queued command to run.
 const ANSWER_TICK_MS: u32 = 20;
@@ -50,16 +49,6 @@ enum Msg {
 /// One answer due: a ready response line, or the ticket of a queued command whose status
 /// result is sent once the editor has it ([`Editor::take_said`]).
 type Due = (Conn, Json, Result<String, u32>);
-
-/// What [`dispatch`] did with a request.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Dispatched {
-    /// Queued as a command: its answer is the status it leaves (ticket for
-    /// [`Editor::take_said`]).
-    Queued(u32),
-    /// Answered now: the result, or a JSON-RPC error (code, message).
-    Ready(Result<Json, (i32, String)>),
-}
 
 /// The server's side of the frame loop: the request channel, the clients, this frame's
 /// answers in arrival order and the last editor event sent.
@@ -174,54 +163,6 @@ impl Pump {
     }
 }
 
-/// Runs one method against the editor: queued as a command (answered with the status it
-/// leaves, [`Editor::command_answered`]), or answered now. Methods are the command table's
-/// names (core and plugin rows, `<name>.<word>` suffix arguments included) plus
-/// `rpc.methods`; params are an array of strings, passed as line-record values (the `args`
-/// a menu row or key carries).
-pub fn dispatch(ed: &mut Editor, method: &str, params: &Json) -> Dispatched {
-    if method == "rpc.methods" {
-        return Dispatched::Ready(Ok(methods(ed)));
-    }
-    if ed.commands().resolve_arg(method).0 == Target::Unknown {
-        return Dispatched::Ready(Err((METHOD_NOT_FOUND, format!("no command `{method}`"))));
-    }
-    let args: Option<Vec<&str>> = match params {
-        Json::Arr(items) => items.iter().map(Json::as_str).collect(),
-        _ => None,
-    };
-    let Some(args) = args else {
-        return Dispatched::Ready(Err((INVALID_PARAMS, "params: an array of strings".into())));
-    };
-    let mut arg = String::new();
-    for (i, a) in args.iter().enumerate() {
-        if i > 0 {
-            arg.push(' ');
-        }
-        text::push_value(&mut arg, a);
-    }
-    Dispatched::Queued(ed.command_answered(method, &arg))
-}
-
-/// Every method name: `rpc.methods`, the core commands, then the plugin commands, sorted
-/// within each group.
-pub fn methods(ed: &Editor) -> Json {
-    let mut names = vec![Json::Str("rpc.methods".into())];
-    names.extend(CORE.iter().map(|(n, _)| Json::Str((*n).to_owned())));
-    let mut plugin: Vec<&str> = ed
-        .host()
-        .plugins
-        .composed()
-        .of(schemify_plugin::abi::Kind::Commands)
-        .iter()
-        .filter_map(|r| r.key.strip_prefix("command "))
-        .collect();
-    plugin.sort_unstable();
-    plugin.dedup();
-    names.extend(plugin.into_iter().map(|n| Json::Str(n.to_owned())));
-    Json::Arr(names)
-}
-
 /// Opens the editor with the command stream on `socket` and runs until the window closes.
 ///
 /// # Errors
@@ -231,7 +172,7 @@ pub fn methods(ed: &Editor) -> Json {
 pub fn run(mut opts: Options, socket: &str) -> Result<(), String> {
     let listener = rpc::listen(socket).map_err(|e| format!("--rpc {socket}: {e}"))?;
     if opts.state_dir.is_none() {
-        opts.state_dir = crate::platform::state_dir();
+        opts.state_dir = schemify_editor::platform::state_dir();
     }
     opts.system_clipboard = true;
     let ed = Editor::new(opts)?;

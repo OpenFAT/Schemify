@@ -1,4 +1,4 @@
-//! The cell settings panel (`view.cell`, `crates/app/src/cell.rs`): every header, pin,
+//! The cell settings panel (`view.cell`, `crates/editor/src/cell.rs`): every header, pin,
 //! param and impl field the netlister reads is editable without the raw Edit-file dialog.
 //! Oracle: the document's canonical text after each edit (format spec ranks 0, 1, 5), one
 //! undo step per submitted field, and the document left untouched by a rejected value.

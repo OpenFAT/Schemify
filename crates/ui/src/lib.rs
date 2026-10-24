@@ -54,6 +54,8 @@ pub use text::{
     FontGlyph, FontInfo, Image, NO_TEXT, TextId, TextSystem, ui_font_glyphs, ui_font_info, ui_fonts,
 };
 
+/// Re-exported for [`access::access_tree`]'s return type.
+pub use accesskit;
 /// Re-exported so renderers name the same layout and font types as this crate.
 pub use parley;
 

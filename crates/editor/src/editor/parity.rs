@@ -15,8 +15,6 @@ use std::path::{Path, PathBuf};
 use schemify_canvas::{CanvasPrims, Palette};
 use schemify_doc::{DocHandle, EditRequest, Op, RecordBuf, TableId, Target};
 use schemify_format::{FileKind, Orient, RecordKind};
-use schemify_render::canvas::{self};
-use schemify_render::vello::kurbo::Rect as KRect;
 
 use super::{ChooseFor, Dialog, Editor, Field, Form, Placement, Props, PropsFor, TextFor, Tool, q};
 use crate::checks;
@@ -1020,9 +1018,18 @@ impl Editor {
             let keep: Vec<bool> = (0..n).map(|o| self.selected.contains(o)).collect();
             export::subset(&self.scene, &keep)
         });
+        if matches!(cmd, Cmd::ExportPng | Cmd::ExportPngFull) {
+            let path = self.export_path(h, arg, "png");
+            let asked = match cmd {
+                Cmd::ExportPng => self.export_png(path),
+                _ => self.export_png_full(path),
+            };
+            if let Err(e) = asked {
+                self.session.status = format!("export: {e}");
+            }
+            return;
+        }
         let (ext, bytes): (&str, Result<Vec<u8>, String>) = match cmd {
-            Cmd::ExportPng => ("png", self.export_png()),
-            Cmd::ExportPngFull => ("png", self.export_png_full()),
             Cmd::ExportSvg => (
                 "svg",
                 whole
@@ -1077,30 +1084,28 @@ impl Editor {
         [r(x0.min(x1)), r(y0.min(y1)), r(x0.max(x1)), r(y0.max(y1))]
     }
 
-    /// The visible canvas rasterized on the CPU (`render::CpuPainter`) as PNG bytes at the
-    /// PNG scale (`EditOpts::png_scale`): the same grid, primitives and palette the window
-    /// draws, without selection marks or overlay. At scale 1 the image has the canvas's size
-    /// in logical pixels.
+    /// Asks for the visible canvas as a PNG at `path` at the PNG scale
+    /// (`EditOpts::png_scale`): the same grid, primitives and palette the window draws,
+    /// without selection marks or overlay. At scale 1 the image has the canvas's size in
+    /// logical pixels. `schemify-app` rasterizes it after the frame ([`Editor::take_raster`]).
     ///
     /// # Errors
     ///
-    /// The canvas has no area, the scaled image is over 16384 px a side, or PNG
-    /// encoding fails.
-    pub fn export_png(&mut self) -> Result<Vec<u8>, String> {
+    /// The canvas has no area, or the scaled image is over 16384 px a side.
+    pub fn export_png(&mut self, path: PathBuf) -> Result<(), String> {
         let v = self.canvas_rect();
         // The camera is relative to the view's center: the image shows what the canvas shows.
         let cam = self.camera();
-        self.raster_png(v.width().round(), v.height().round(), cam)
+        self.ask_raster(path, v.width().round(), v.height().round(), cam)
     }
 
-    /// The whole drawing (its bounds plus a 10-unit margin) rasterized as PNG bytes at one
-    /// logical pixel per schematic unit times the PNG scale, whatever the canvas shows.
+    /// Asks for the whole drawing (its bounds plus a 10-unit margin) as a PNG at `path`, at
+    /// one logical pixel per schematic unit times the PNG scale, whatever the canvas shows.
     ///
     /// # Errors
     ///
-    /// Nothing is drawn, the image is over 16384 px a side (lower the scale), or PNG
-    /// encoding fails.
-    pub fn export_png_full(&mut self) -> Result<Vec<u8>, String> {
+    /// Nothing is drawn, or the image is over 16384 px a side (lower the scale).
+    pub fn export_png_full(&mut self, path: PathBuf) -> Result<(), String> {
         let b = export::bounds(&self.scene.prims)
             .map(|b| export::padded(b, 10 * UNIT))
             .ok_or("nothing to export")?;
@@ -1114,16 +1119,17 @@ impl Editor {
             cy: (f64::from(b[1]) + f64::from(b[3])) / 2.0,
             scale: 1.0 / u,
         };
-        self.raster_png(w.ceil(), h.ceil(), cam)
+        self.ask_raster(path, w.ceil(), h.ceil(), cam)
     }
 
-    /// Rasterizes a `w × h` logical-pixel view through `cam` at the PNG scale and encodes it.
-    fn raster_png(
+    /// Queues a `w × h` logical-pixel raster through `cam` at the PNG scale.
+    fn ask_raster(
         &mut self,
+        path: PathBuf,
         w: f64,
         h: f64,
         cam: schemify_canvas::Camera,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<(), String> {
         let k = f64::from(self.opts.png_scale) / 100.0;
         assert!(k > 0.0 && cam.scale > 0.0, "a positive scale");
         let (pw, ph) = ((w * k).round(), (h * k).round());
@@ -1137,44 +1143,14 @@ impl Editor {
                  (options.png_export_scale)"
             ));
         }
-        let mut p = schemify_render::CpuPainter::new(pw as u16, ph as u16, k);
-        let view = KRect::new(0.0, 0.0, w, h);
-        let palette = self.view_palette();
-        let grid = if self.opts.show_grid {
-            self.opts.grid
-        } else {
-            i32::MAX / 4
-        };
-        let mut scratch = canvas::CanvasScratch::default();
-        schemify_render::Painter::fill_rect(
-            &mut p,
-            view,
-            schemify_render::rgba(palette.background),
-        );
-        canvas::draw_grid(&mut p, view, &cam, grid, &palette, &mut scratch);
-        let prims = self.shown.as_ref().unwrap_or(&self.scene.prims);
-        canvas::draw_prims(
-            &mut p,
-            view,
-            &cam,
-            prims,
-            &palette,
-            &mut self.shell.text,
-            &mut scratch,
-        );
-        let mut scratch2 = canvas::CanvasScratch::default();
-        canvas::draw_prims(
-            &mut p,
-            view,
-            &cam,
-            &self.decor,
-            &palette,
-            &mut self.shell.text,
-            &mut scratch2,
-        );
-        let px = p.finish(schemify_render::vello::peniko::Color::BLACK);
-        assert_eq!((px.width(), px.height()), (pw as u16, ph as u16));
-        px.into_png().map_err(|e| format!("png: {e:?}"))
+        self.raster = Some(super::Raster {
+            path,
+            w,
+            h,
+            cam,
+            scale: k,
+        });
+        Ok(())
     }
 
     /// One PDF page per schematic from the active cell down (breadth first, each cell once):

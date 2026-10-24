@@ -84,7 +84,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: clippy (web cfg paths)
         run: >-
-          cargo clippy --target wasm32-unknown-unknown -p schemify-app -p schemify-render
+          cargo clippy --target wasm32-unknown-unknown -p schemify-editor -p schemify-app -p schemify-render
           -- -D warnings
       # The browser side of the OS boundary (`platform/web.rs`, web spec) lives in the core.
       - name: clippy (web cfg paths of the core)
@@ -96,7 +96,8 @@ jobs:
           cargo build --release --target wasm32-unknown-unknown
           -p schemify-format -p schemify-expr -p schemify-doc -p schemify-elab
           -p schemify-netlist -p schemify-wave -p schemify-abi
-          -p schemify-plugin -p schemify-ui -p schemify-render -p schemify-app
+          -p schemify-plugin -p schemify-ui -p schemify-canvas -p schemify-render -p schemify-editor
+          -p schemify-app
       - name: wasm-bindgen CLI (the version Cargo.lock pins)
         id: wb
         run: echo "version=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p')" >> "$GITHUB_OUTPUT"
@@ -192,10 +193,10 @@ jobs:
           name: guests
           path: |
             crates/plugin/tests/fixtures/*.wasm
-            crates/app/assets/*.wasm
+            crates/editor/assets/*.wasm
           if-no-files-found: error
       - name: host tests against the rebuilt guests
-        run: nix develop -c cargo test -p schemify-plugin -p schemify-app --no-fail-fast
+        run: nix develop -c cargo test -p schemify-plugin -p schemify-editor -p schemify-app --no-fail-fast
       # The Nix shell has ngspice, Xyce, Icarus and OpenVAF: the run crate's real-tool
       # differentials (Monte Carlo seeds, corner paths, OSDI and VVP compiles) must run here,
       # so a missing tool fails instead of skipping (docs/dev/testing.md `run`).

@@ -10,10 +10,10 @@ use common::{Session, U, lines};
 
 use std::path::{Path, PathBuf};
 
-use schemify_app::commands::Target;
-use schemify_app::editor::{Editor, Options, Tool};
 use schemify_canvas::LAYER_DEAD;
 use schemify_doc::TableId;
+use schemify_editor::commands::Target;
+use schemify_editor::editor::{Editor, Options, Tool};
 use schemify_ui::{Button, InputEvent, InputEvents};
 
 const UI: &str = include_str!("../../../ui/default-plugin/ui.records");
@@ -149,7 +149,7 @@ fn pin_nets(s: &Session) -> Vec<(String, u32)> {
     let mut out = Vec::new();
     let inst = doc.instances();
     for i in 0..inst.id.len() {
-        for (k, (c, _)) in schemify_app::checks::pins_of(doc, cell, i)
+        for (k, (c, _)) in schemify_editor::checks::pins_of(doc, cell, i)
             .iter()
             .enumerate()
         {
@@ -258,7 +258,7 @@ fn save_as_moves_editing_to_the_new_file() {
     // Save as symbol shows the symbol side of the new file.
     run(&mut s, "file.save_as_symbol", "top3");
     let (_, view) = s.ed.active().unwrap();
-    assert_eq!(view, schemify_app::session::View::Symbol);
+    assert_eq!(view, schemify_editor::session::View::Symbol);
     assert!(s.dir.join("top3.shcomp").exists());
 }
 
@@ -404,7 +404,7 @@ fn image_exports_png_svg_pdf_eps() {
     );
     let text = std::fs::read_to_string(&svg).unwrap();
     let p = &s.ed.scene().prims;
-    let counts = schemify_app::export::svg_counts(&text);
+    let counts = schemify_editor::export::svg_counts(&text);
     assert_eq!(counts[0], p.lines.x0.len());
     assert_eq!(counts[1], p.rects.x0.len());
     assert_eq!(counts[2], p.arcs.cx.len());
@@ -461,11 +461,11 @@ fn export_project_zips_the_listed_files() {
     let bytes = std::fs::read(&zip)
         .unwrap_or_else(|e| panic!("{}: {e} (status: {})", zip.display(), status(&s)));
     let files = schemify_cli::zip::read(&bytes, usize::MAX).expect("the archive reads");
-    let want = schemify_app::platform::list_files(&s.dir, &[]);
+    let want = schemify_editor::platform::list_files(&s.dir, &[]);
     assert!(!want.is_empty());
     assert_eq!(files.len(), want.len());
     for ((n, b), p) in files.iter().zip(&want) {
-        let rel = schemify_app::libs::rel_path(&s.dir, p).unwrap();
+        let rel = schemify_editor::libs::rel_path(&s.dir, p).unwrap();
         assert_eq!(n, &format!("{name}/{rel}"));
         assert_eq!(b, &std::fs::read(p).unwrap(), "{n}");
     }
@@ -588,13 +588,13 @@ fn clipboard_copy_paste_equals_duplicate() {
     let recs: Vec<schemify_doc::RecordBuf> = {
         let (h, _) = a.ed.active().unwrap();
         let doc = a.ed.session().project.doc(h).unwrap();
-        schemify_app::edit::selected_records(doc, a.ed.selection())
+        schemify_editor::edit::selected_records(doc, a.ed.selection())
             .into_iter()
             .map(|r| r.2)
             .collect()
     };
-    let text = schemify_app::clip::encode(&recs);
-    let mut back = schemify_app::clip::decode(&text).unwrap();
+    let text = schemify_editor::clip::encode(&recs);
+    let mut back = schemify_editor::clip::decode(&text).unwrap();
     let mut want = recs.clone();
     back.sort_by(|x, y| x.fields.cmp(&y.fields));
     want.sort_by(|x, y| x.fields.cmp(&y.fields));
@@ -615,12 +615,12 @@ fn search_replace_all_leaves_nothing_to_find() {
         ("cell", "./inv", true),
     ];
     for (field, value, exact) in queries {
-        let q = schemify_app::search::Query {
+        let q = schemify_editor::search::Query {
             field: field.into(),
             value: value.into(),
             exact,
         };
-        let found = schemify_app::search::find(s.ed.session().project.doc(h).unwrap(), &q);
+        let found = schemify_editor::search::find(s.ed.session().project.doc(h).unwrap(), &q);
         assert!(!found.is_empty(), "{field} {value}");
         // Through the dialog: field, value, replacement, exact.
         s.key("Ctrl+F");
@@ -636,7 +636,7 @@ fn search_replace_all_leaves_nothing_to_find() {
             s.type_text(v);
         }
         s.click_node("dialog.props.ok");
-        let left = schemify_app::search::find(s.ed.session().project.doc(h).unwrap(), &q);
+        let left = schemify_editor::search::find(s.ed.session().project.doc(h).unwrap(), &q);
         assert!(left.is_empty(), "{field} {value}: {left:?}\n{}", s.text());
         s.key("u");
         assert_eq!(s.text(), original, "{field} {value}: one undo");
@@ -844,6 +844,7 @@ fn crash_recovery_asks_to_recover_or_discard() {
     // An editor on the fixture copy that does not delete the directory when it goes.
     let open = |dir: &Path| {
         let mut s = Session {
+            caches: Default::default(),
             ed: Editor::new(Options {
                 path: Some(dir.join("top.shcomp")),
                 seed: 7,
@@ -1440,7 +1441,7 @@ fn join_trim_keeps_connectivity_over_random_wires() {
                     let p = (x * U, y * U);
                     let on = (0..w.id.len()).find(|&r| {
                         let (a, b) = ((w.x1[r], w.y1[r]), (w.x2[r], w.y2[r]));
-                        p == a || p == b || schemify_app::wiring::on_interior(p, a, b)
+                        p == a || p == b || schemify_editor::wiring::on_interior(p, a, b)
                     });
                     if let Some(r) = on {
                         by_net
@@ -1642,7 +1643,7 @@ fn highlight_decor_options_and_auto_highlight() {
         d.lines
             .layer
             .iter()
-            .all(|&l| l != schemify_app::checks::LAYER_HILITE),
+            .all(|&l| l != schemify_editor::checks::LAYER_HILITE),
         "a per-net layer, not the shared highlight layer"
     );
     run(&mut s, "highlight.view_only_probes", "");
@@ -1695,9 +1696,9 @@ fn small_commands_tabs_panels_graphs_and_recent() {
     run(&mut s, "file.create_new_window_tab", "");
     assert_eq!(s.ed.session().tabs.len(), 2);
     run(&mut s, "view.show_hide.show_erc_info_window", "");
-    assert_eq!(s.ed.panel(), schemify_app::editor::Panel::Checks);
+    assert_eq!(s.ed.panel(), schemify_editor::editor::Panel::Checks);
     run(&mut s, "view.show_hide.show_erc_info_window", "");
-    assert_eq!(s.ed.panel(), schemify_app::editor::Panel::None);
+    assert_eq!(s.ed.panel(), schemify_editor::editor::Panel::None);
     s.key("Ctrl+Left");
     run(&mut s, "simulation.graphs.add_waveform_graph", "");
     assert!(s.text().contains("  | ```plot\n"), "{}", s.text());

@@ -3,8 +3,8 @@
 //! tolerance), for a seeded random walk of pans and zooms; and the cache serves exactly the
 //! frames it may (whole-pixel pans inside the margin) and re-records the rest.
 
-use schemify_canvas::{Camera, CanvasPrims, Palette};
-use schemify_render::canvas::{self, CanvasCache, CanvasScratch, Drawn};
+use schemify_canvas::{Camera, CanvasPrims, Drawn, Palette};
+use schemify_render::canvas::{self, CanvasCache, CanvasScratch};
 use schemify_render::vello::kurbo::Rect;
 use schemify_render::vello::peniko::Color;
 use schemify_render::{CpuPainter, Painter, Pixmap, rgba};

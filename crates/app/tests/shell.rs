@@ -5,8 +5,8 @@
 mod common;
 use common::{Session, U, VIEW};
 
-use schemify_app::commands::{CORE, Commands, Target};
-use schemify_app::scene::{self, Objects, Scene};
+use schemify_editor::commands::{CORE, Commands, Target};
+use schemify_editor::scene::{self, Objects, Scene};
 use schemify_ui::{Button, Chord, InputEvent, InputEvents, Kind};
 
 #[test]
@@ -460,14 +460,19 @@ fn manifest_plugins_load_in_order_and_receive_commands() {
         format!("{manifest}\nplugin hello path hello.wasm\n"),
     )
     .unwrap();
-    let ed = schemify_app::editor::Editor::new(schemify_app::editor::Options {
+    let ed = schemify_editor::editor::Editor::new(schemify_editor::editor::Options {
         no_default_ui: false,
         path: Some(dir.join("top.shcomp")),
         seed: 3,
         ..Default::default()
     })
     .unwrap();
-    let mut s = Session { ed, now: 1, dir };
+    let mut s = Session {
+        ed,
+        now: 1,
+        dir,
+        caches: Default::default(),
+    };
     s.frame(Default::default());
     s.frame(Default::default());
     assert_eq!(
@@ -681,7 +686,7 @@ fn st(style: &str, disabled: &str) -> (String, String) {
 /// disabled (clicks do nothing; the command itself is refused with a status message).
 #[test]
 fn view_switcher_follows_the_file_kind() {
-    use schemify_app::session::View;
+    use schemify_editor::session::View;
     // .shcomp: both sides; clicking switches and the `on` style follows.
     let mut s = Session::open("inv", "top.shcomp", "switch-comp", true);
     assert_eq!(s.ed.active().map(|a| a.1), Some(View::Schematic));
@@ -737,7 +742,7 @@ fn view_switcher_follows_the_file_kind() {
 /// (overlay layer), lit under the pointer only when enabled, and dead under a modal dialog.
 #[test]
 fn view_switcher_floats_over_the_canvas() {
-    use schemify_app::session::View;
+    use schemify_editor::session::View;
     use schemify_ui::{FLOAT_INSET, Layer};
     let mut s = Session::open("rc", "res.shprim", "switch-float", true);
     let sh = &s.ed.shell();

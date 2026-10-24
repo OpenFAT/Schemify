@@ -70,6 +70,8 @@ winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11
 vello = { version = "0.11", default-features = false, features = ["wgpu"] }
 # The canvas tables' geometry (`canvas`): the kurbo vello 0.11 uses, so both name one `Rect`.
 kurbo = { version = "0.13", default-features = false, features = ["std"] }
+# Docs-page PNG decoding in the headless editor: the decoder vello_cpu already links.
+png = { version = "0.18", default-features = false }
 # Only to pick the backends vello's wgpu builds; render alone names it.
 wgpu = { version = "30", default-features = false }
 vello_cpu = "0.3"

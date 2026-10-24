@@ -12,10 +12,10 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use common::{Session, U, fixture};
-use schemify_app::checks::{LAYER_ERROR, LAYER_INFO, LAYER_WARN, SOURCE_CHECKS, SOURCE_OP};
-use schemify_app::editor::{Editor, Options, Panel};
-use schemify_app::scene::ObjKey;
 use schemify_doc::{ObjId, TableId};
+use schemify_editor::checks::{LAYER_ERROR, LAYER_INFO, LAYER_WARN, SOURCE_CHECKS, SOURCE_OP};
+use schemify_editor::editor::{Editor, Options, Panel};
+use schemify_editor::scene::ObjKey;
 use schemify_run::{SimCommand, State, Tools};
 use schemify_ui::{InputEvent, InputEvents, Kind, Prop};
 
@@ -69,7 +69,12 @@ fn open_with(
         ..Options::default()
     })
     .expect("fixture opens");
-    let mut s = Session { ed, now: 1, dir };
+    let mut s = Session {
+        ed,
+        now: 1,
+        dir,
+        caches: Default::default(),
+    };
     s.frame(InputEvents::default());
     s.frame(InputEvents::default());
     s
@@ -292,7 +297,12 @@ fn netlist_command_writes_the_cli_bytes() {
         ..Options::default()
     })
     .unwrap();
-    let mut s = Session { ed, now: 1, dir };
+    let mut s = Session {
+        ed,
+        now: 1,
+        dir,
+        caches: Default::default(),
+    };
     s.frame(InputEvents::default());
     s.key("n");
     assert!(
@@ -437,6 +447,7 @@ fn simulate_polls_a_fake_simulator_to_results_waves_and_op() {
     .unwrap();
     // Both sessions remove the directory when dropped; the second removal finds nothing.
     let mut s2 = Session {
+        caches: Default::default(),
         ed,
         now: 1,
         dir: s.dir.clone(),
@@ -474,7 +485,12 @@ fn plot_slots_overlay_every_sweep_point() {
         ..Options::default()
     })
     .expect("fixture opens");
-    let mut s = Session { ed, now: 1, dir };
+    let mut s = Session {
+        ed,
+        now: 1,
+        dir,
+        caches: Default::default(),
+    };
     s.frame(InputEvents::default());
     s.key("s");
     run_to_idle(&mut s);
@@ -507,7 +523,12 @@ fn plot_slots_reach_cells_below_the_bench() {
         ..Options::default()
     })
     .expect("fixture opens");
-    let mut s = Session { ed, now: 1, dir };
+    let mut s = Session {
+        ed,
+        now: 1,
+        dir,
+        caches: Default::default(),
+    };
     s.frame(InputEvents::default());
     s.key("s");
     run_to_idle(&mut s);
@@ -595,8 +616,8 @@ fn optimizer_stages_the_best_point_accept_and_reject() {
 /// requesting plugin.
 #[test]
 fn plugin_run_requests_join_the_queue_and_report_done() {
-    use schemify_app::session::Session as Project;
-    use schemify_app::sim::Sim;
+    use schemify_editor::session::Session as Project;
+    use schemify_editor::sim::Sim;
     use schemify_plugin::{PluginId, RunRequest};
     let dir = fixture("rc", "plugin-run");
     let mut session = Project::load(&dir, 1).unwrap();
@@ -687,8 +708,8 @@ fn real_ngspice_simulates_the_rc_bench() {
 /// (a queue per bench) and starts when it is idle.
 #[test]
 fn two_benches_run_at_once_and_each_bench_queues_its_own() {
-    use schemify_app::session::Session as Project;
-    use schemify_app::sim::Sim;
+    use schemify_editor::session::Session as Project;
+    use schemify_editor::sim::Sim;
     let dir = fixture("rc", "two-runs");
     let tb = std::fs::read_to_string(dir.join("tb.shbench")).unwrap();
     std::fs::write(dir.join("tb2.shbench"), &tb).unwrap();
@@ -877,7 +898,7 @@ fn real_ngspice_saves_mos_op_quantities_and_terminal_currents() {
     assert!(marks.contains(&gm.as_str()), "{marks:?}");
     assert!(marks.contains(&id.as_str()), "{marks:?}");
     // The vector cross-probe asks for on the drain pin is the one ngspice wrote.
-    let probe = schemify_app::waves::current_probe("M1", "d");
+    let probe = schemify_editor::waves::current_probe("M1", "d");
     assert_eq!(probe, "i(\"@m1[id]\")");
     // ngspice writes saved device vectors wrapped by kind; `i("@m1[id]")` binds `i(@m1[id])`.
     let raw = std::fs::read(s.ed.sim().job_raw(0).unwrap()).unwrap();
@@ -949,8 +970,8 @@ fn bus_components_highlight_by_every_bit() {
 /// Accept / Reject act on the one under review.
 #[test]
 fn staged_edits_draw_inserts_and_deletes_and_review_one_stage_at_a_time() {
-    use schemify_app::checks::LAYER_DIFF;
     use schemify_doc::{Edit, EditRequest, FileKind, Mode, Transaction, ops_from_text};
+    use schemify_editor::checks::LAYER_DIFF;
     let mut s = open("rc", "tb.shbench", "stages", None);
     let before = s.text();
     let (h, _) = s.ed.active().unwrap();
@@ -1107,7 +1128,7 @@ fn results_pane_shows_the_run_log() {
     );
     assert!(log.out.iter().any(|l| l == "starting"), "{log:?}");
     assert!(node_kind(&f, "results.log.err.0").is_some());
-    assert!(log.out.len() <= schemify_app::sim::LOG_LINES);
+    assert!(log.out.len() <= schemify_editor::sim::LOG_LINES);
 }
 
 /// The label of composed UI node `id`.
@@ -1172,7 +1193,7 @@ fn text_tab_nodes(s: &Session) -> (usize, Vec<String>) {
 
 fn open_text(s: &mut Session, body: String) {
     let path = s.dir.join("big.txt");
-    s.ed.open_text_tab(schemify_app::session::TextView {
+    s.ed.open_text_tab(schemify_editor::session::TextView {
         title: "big".into(),
         path,
         body,
@@ -1188,7 +1209,7 @@ fn open_text(s: &mut Session, body: String) {
 /// starting below it; scrolled to the end it shows the last line.
 #[test]
 fn a_long_text_tab_lays_out_a_window_of_lines() {
-    use schemify_app::session::TEXT_WINDOW;
+    use schemify_editor::session::TEXT_WINDOW;
     let mut s = Session::open("inv", "top.shcomp", "textwin", true);
     let mut body: Vec<String> = (0..16_384)
         .map(|i| format!("R{i} n{i} n{} {}k", i + 1, i % 97))

@@ -5,8 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
-use schemify_app::editor::{Editor, Options};
-use schemify_app::geometry::Pt;
+use schemify_editor::editor::{Editor, Options};
+use schemify_editor::geometry::Pt;
 use schemify_render::CpuPainter;
 use schemify_render::vello::peniko::Color;
 use schemify_ui::{Button, Chord, InputEvent, InputEvents, Mods};
@@ -56,6 +56,8 @@ pub struct Session {
     pub ed: Editor,
     pub now: u64,
     pub dir: PathBuf,
+    /// The window's paint caches (canvas raster layer, diff, indexes) across renders.
+    pub caches: schemify_app::paint::Caches,
 }
 
 impl Session {
@@ -69,7 +71,12 @@ impl Session {
             ..Default::default()
         })
         .expect("fixture opens");
-        let mut s = Session { ed, now: 1, dir };
+        let mut s = Session {
+            ed,
+            now: 1,
+            dir,
+            caches: Default::default(),
+        };
         s.frame(InputEvents::default());
         s.frame(InputEvents::default());
         s
@@ -79,7 +86,9 @@ impl Session {
     /// unless a test sets `now`).
     pub fn frame(&mut self, events: InputEvents) -> bool {
         self.now += 1000;
-        self.ed.update(&events, VIEW, self.now)
+        let changed = self.ed.update(&events, VIEW, self.now);
+        schemify_app::paint::serve_raster(&mut self.ed);
+        changed
     }
 
     /// Presses a chord (`"w"`, `"Shift+R"`, `"Ctrl+Z"`).
@@ -198,8 +207,7 @@ impl Session {
     /// Renders the window on the CPU.
     pub fn render(&mut self) -> schemify_render::Pixmap {
         let mut p = CpuPainter::new(VIEW.0 as u16, VIEW.1 as u16, 1.0);
-        let drawn = self.ed.paint(&mut p);
-        self.ed.painted(drawn);
+        schemify_app::paint::frame(&mut self.ed, &mut self.caches, &mut p);
         p.finish(Color::BLACK)
     }
 }

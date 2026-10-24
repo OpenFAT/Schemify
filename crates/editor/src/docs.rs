@@ -198,11 +198,54 @@ pub fn load_image(root: &Path, path: &str) -> Result<Image, String> {
             "{path}: {w}×{h} px (at most {IMAGE_SIDE_MAX} a side)"
         ));
     }
-    let px = schemify_render::Pixmap::from_png(std::io::Cursor::new(&bytes))
-        .map_err(|e| format!("{path}: {e}"))?;
-    let (pw, ph) = (u32::from(px.width()), u32::from(px.height()));
-    assert_eq!((pw, ph), (w, h), "the decoder read the header's size");
-    Ok(Image::new(path, w, h, px.data_as_u8_slice().to_vec()))
+    let rgba = decode_png(&bytes, w, h).map_err(|e| format!("{path}: {e}"))?;
+    Ok(Image::new(path, w, h, rgba))
+}
+
+/// A `w × h` PNG as premultiplied RGBA8, the layout `ui::Image` holds: every color type and
+/// bit depth normalized to 8-bit RGBA (palette expanded, transparency chunks applied, gray
+/// widened), then each channel multiplied by alpha, truncated (as the renderer's own PNG decoder does,
+/// so a page image draws the same pixels it did when render decoded it).
+fn decode_png(bytes: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(
+        png::Transformations::normalize_to_color8() | png::Transformations::ALPHA,
+    );
+    let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
+    let mut buf = vec![0; reader.output_buffer_size().ok_or("image too large")?];
+    let info = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
+    if (info.width, info.height) != (w, h) {
+        return Err(format!(
+            "{}×{} px frame in a {w}×{h} px image",
+            info.width, info.height
+        ));
+    }
+    let px = (w * h) as usize;
+    let mut rgba = Vec::with_capacity(px * 4);
+    match info.color_type {
+        png::ColorType::Rgba => rgba.extend_from_slice(&buf[..px * 4]),
+        png::ColorType::GrayscaleAlpha => {
+            for ga in buf[..px * 2].chunks_exact(2) {
+                rgba.extend_from_slice(&[ga[0], ga[0], ga[0], ga[1]]);
+            }
+        }
+        // `ALPHA` adds an alpha channel to every color type, and `normalize_to_color8`
+        // expands palettes: these cannot come out of the decoder.
+        png::ColorType::Rgb | png::ColorType::Grayscale | png::ColorType::Indexed => {
+            return Err(format!(
+                "unexpected decoded color type {:?}",
+                info.color_type
+            ));
+        }
+    }
+    for p in rgba.chunks_exact_mut(4) {
+        let a = u16::from(p[3]);
+        for c in &mut p[..3] {
+            *c = (u16::from(*c) * a / 255) as u8;
+        }
+    }
+    assert_eq!(rgba.len(), px * 4, "one RGBA pixel per image pixel");
+    Ok(rgba)
 }
 
 /// Width and height from a PNG's signature and IHDR chunk; `None` when it is not one.

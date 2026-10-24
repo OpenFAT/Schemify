@@ -2742,6 +2742,7 @@ dependencies = [
  "schemify-cli",
  "schemify-config",
  "schemify-doc",
+ "schemify-editor",
  "schemify-elab",
  "schemify-expr",
  "schemify-format",
@@ -2788,6 +2789,25 @@ name = "schemify-doc"
 version = "0.1.0"
 dependencies = [
  "schemify-format",
+]
+
+[[package]]
+name = "schemify-editor"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "schemify-canvas",
+ "schemify-cli",
+ "schemify-config",
+ "schemify-doc",
+ "schemify-elab",
+ "schemify-expr",
+ "schemify-format",
+ "schemify-netlist",
+ "schemify-plugin",
+ "schemify-run",
+ "schemify-ui",
+ "schemify-wave",
 ]
 
 [[package]]

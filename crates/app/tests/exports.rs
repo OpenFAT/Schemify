@@ -11,8 +11,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use common::{Session, U, copy_dir, fixture};
-use schemify_app::editor::{Editor, Options};
 use schemify_config::Startup;
+use schemify_editor::editor::{Editor, Options};
 use schemify_ui::InputEvents;
 
 /// Queues command `name` (argument `arg`) and runs one frame.
@@ -38,6 +38,7 @@ fn open_with_config(dir: &Path, file: &str, init: &str) -> Session {
     })
     .expect("opens");
     let mut s = Session {
+        caches: Default::default(),
         ed,
         now: 1,
         dir: dir.to_path_buf(),
@@ -76,8 +77,8 @@ fn png_exports_scale_and_cover_the_whole_drawing() {
     for _ in 0..4 {
         run(&mut s, "view.zoom_in", "");
     }
-    let b = schemify_app::export::bounds(&s.ed.scene().prims).expect("a drawing");
-    let b = schemify_app::export::padded(b, 10 * U);
+    let b = schemify_editor::export::bounds(&s.ed.scene().prims).expect("a drawing");
+    let b = schemify_editor::export::padded(b, 10 * U);
     let side = |a: i32, z: i32| ((f64::from(z - a) / f64::from(U)).ceil() * 2.0).round() as u16;
     let full = s.dir.join("full.png");
     run(
@@ -264,6 +265,7 @@ fn fixture_copies_leave_editor_state_behind() {
     })
     .expect("opens");
     let mut s = Session {
+        caches: Default::default(),
         ed,
         now: 1,
         dir: dst,

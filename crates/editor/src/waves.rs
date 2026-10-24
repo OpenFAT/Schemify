@@ -1,4 +1,4 @@
-//! The waveform dock (D23): `render::waves` over one `.raw` file, docked under the schematic
+//! The waveform dock (D23): the viewer over one `.raw` file, docked under the schematic
 //! until closed (`Ctrl+W`, or Escape over the dock with nothing open). Same wiring as the
 //! `waves` example in `crates/render`: the viewer tables are `wave::Waves`, its UI is
 //! `ui::waves`, and every viewer change is a `wave::Request`.
@@ -7,18 +7,12 @@
 //! raw file. Docked rather than full-window so the canvas stays clickable: a click on a net
 //! cross-probes it into the open viewer ([`WavesView::add_trace`]). The dock lays out and
 //! routes input in its own coordinates; the editor shifts pointer events into them and
-//! paints it through [`Shifted`].
+//! `schemify-app` paints it below the editor (`Editor::picture` lends its tables).
 
-use schemify_render::Painter;
-use schemify_render::vello::Glyph;
-use schemify_render::vello::kurbo::{Affine, BezPath, Rect as KRect, Stroke};
-use schemify_render::vello::peniko::{Color, FontData};
-use schemify_render::waves::{WaveLook, WaveScratch, draw_window};
-use schemify_render::widgets::{UiScratch, draw_ui};
 use schemify_ui::waves::{DialogFx, Effect, Geometry, PROPS_DIALOG, WAVES_UI, WaveUi};
 use schemify_ui::{
-    Chord, Contribution, InputEvent, InputEvents, Key, Layer, Mods, Routed, Strings, Sym,
-    TextSystem, UiLayout, UiState, UiTables, compose, layout, records, route_input,
+    Chord, Contribution, InputEvent, InputEvents, Key, Mods, Routed, Strings, Sym, TextSystem,
+    UiLayout, UiState, UiTables, compose, layout, records, route_input,
 };
 use schemify_wave::{MAX_DATASETS, Request, Waves, group_datasets, parse_raw};
 
@@ -38,9 +32,6 @@ pub struct WavesView {
     waves: Waves,
     ui: WaveUi,
     requests: Vec<Request>,
-    look: WaveLook,
-    scratch: WaveScratch,
-    ui_scratch: UiScratch,
     /// File name shown in the title.
     pub title: String,
 }
@@ -80,9 +71,6 @@ impl WavesView {
             waves,
             ui: WaveUi::default(),
             requests: Vec::new(),
-            look: WaveLook::default(),
-            scratch: WaveScratch::default(),
-            ui_scratch: UiScratch::default(),
             title: title.to_owned(),
         })
     }
@@ -258,39 +246,23 @@ impl WavesView {
             .collect()
     }
 
-    /// Paints the viewer.
-    pub fn paint<P: Painter>(&mut self, p: &mut P) {
-        draw_ui(
-            p,
-            &self.tables,
-            &self.frame,
-            &self.strings,
-            &mut self.text,
-            &self.state,
-            Layer::Main,
-            &[],
-            &mut self.ui_scratch,
-        );
-        draw_window(
-            p,
-            &self.geo,
-            &self.waves,
-            &self.ui,
-            &self.look,
-            &mut self.text,
-            &mut self.scratch,
-        );
-        draw_ui(
-            p,
-            &self.tables,
-            &self.frame,
-            &self.strings,
-            &mut self.text,
-            &self.state,
-            Layer::Overlay,
-            &[],
-            &mut self.ui_scratch,
-        );
+    /// The dock's tables as [`crate::editor::Editor::picture`] lends them, painted `dy`
+    /// logical px below the window's top.
+    pub(crate) fn picture(&mut self, dy: f64) -> crate::editor::DockPicture<'_> {
+        assert!(dy >= 0.0, "a dock below the window's top");
+        crate::editor::DockPicture {
+            ui: crate::editor::UiView {
+                tables: &self.tables,
+                layout: &self.frame,
+                strings: &self.strings,
+                state: &self.state,
+                text: &mut self.text,
+            },
+            geo: &self.geo,
+            waves: &self.waves,
+            wave_ui: &self.ui,
+            dy,
+        }
     }
 }
 
@@ -306,72 +278,6 @@ fn datasets(title: &str, bytes: &[u8]) -> Result<Vec<schemify_wave::RawPlot>, St
         ));
     }
     Ok(d)
-}
-
-/// A painter that draws `dy` logical pixels lower: the waves dock lays out at its own origin
-/// and is painted below the editor through this. Paths are copied per call (the dock draws
-/// hundreds, not the canvas's hundreds of thousands).
-pub struct Shifted<'a, P: Painter> {
-    /// The window's painter.
-    pub p: &'a mut P,
-    /// Vertical offset in logical pixels.
-    pub dy: f64,
-}
-
-impl<P: Painter> Shifted<'_, P> {
-    fn rect(&self, r: KRect) -> KRect {
-        KRect::new(r.x0, r.y0 + self.dy, r.x1, r.y1 + self.dy)
-    }
-
-    fn path(&self, path: &BezPath) -> BezPath {
-        let mut out = path.clone();
-        out.apply_affine(Affine::translate((0.0, self.dy)));
-        out
-    }
-}
-
-impl<P: Painter> Painter for Shifted<'_, P> {
-    fn fill_rect(&mut self, r: KRect, color: Color) {
-        let r = self.rect(r);
-        self.p.fill_rect(r, color);
-    }
-
-    fn fill_path(&mut self, path: &BezPath, color: Color) {
-        let path = self.path(path);
-        self.p.fill_path(&path, color);
-    }
-
-    fn stroke_path(&mut self, path: &BezPath, width: f64, color: Color) {
-        let path = self.path(path);
-        self.p.stroke_path(&path, width, color);
-    }
-
-    fn stroke_styled(&mut self, path: &BezPath, stroke: &Stroke, color: Color) {
-        let path = self.path(path);
-        self.p.stroke_styled(&path, stroke, color);
-    }
-
-    fn glyphs(
-        &mut self,
-        font: &FontData,
-        px: f32,
-        coords: &[i16],
-        color: Color,
-        at: Affine,
-        glyphs: &[Glyph],
-    ) {
-        let at = Affine::translate((0.0, self.dy)) * at;
-        self.p.glyphs(font, px, coords, color, at, glyphs);
-    }
-
-    fn push_clip(&mut self, r: KRect) {
-        let r = self.rect(r);
-        self.p.push_clip(r);
-    }
-
-    fn pop_clip(&mut self) {
-        self.p.pop_clip();
-    }
 }
 
 /// ngspice's name of the device emitted as `emitted`: lowercase, and inside a subcircuit

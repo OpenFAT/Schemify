@@ -5,12 +5,13 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+# The editor binary (D39: a separate binary from the headless core `schemify`, which runs this
+# one for `schemify edit`): `schemify-editor`'s frame spine in a window, painted by
+# `schemify-render`.
 [lib]
 name = "schemify_app"
 path = "src/lib.rs"
 
-# The editor (D39: a separate binary from the headless core `schemify`, which runs this one
-# for `schemify edit`).
 [[bin]]
 name = "schemify-gui"
 path = "src/main.rs"
@@ -19,18 +20,19 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-# The core's spines, project loading, OS boundary and package manager.
+schemify-editor = { path = "../editor" }
 schemify-cli.workspace = true
 schemify-config.workspace = true
+schemify-canvas.workspace = true
+schemify-wave.workspace = true
+schemify-plugin.workspace = true
+schemify-ui = { path = "../ui" }
+schemify-render = { path = "../render" }
+
+[dev-dependencies]
 schemify-format.workspace = true
 schemify-expr.workspace = true
 schemify-doc.workspace = true
 schemify-elab.workspace = true
 schemify-netlist.workspace = true
-schemify-wave.workspace = true
 schemify-run.workspace = true
-schemify-plugin.workspace = true
-# Path deps (no root `[workspace.dependencies]` row yet), the same way `render` names `ui`.
-schemify-ui = { path = "../ui" }
-schemify-render = { path = "../render" }
-schemify-canvas.workspace = true

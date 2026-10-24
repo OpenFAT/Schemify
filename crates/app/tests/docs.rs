@@ -328,14 +328,19 @@ fn open_edited(tag: &str, file: &str, edit: impl Fn(String) -> String) -> Sessio
     let p = dir.join(file);
     let text = std::fs::read_to_string(&p).unwrap();
     std::fs::write(&p, edit(text)).unwrap();
-    let ed = schemify_app::editor::Editor::new(schemify_app::editor::Options {
+    let ed = schemify_editor::editor::Editor::new(schemify_editor::editor::Options {
         no_default_ui: false,
         path: Some(dir.join("ota.shcomp")),
         seed: 7,
         ..Default::default()
     })
     .expect("opens");
-    let mut s = Session { ed, now: 1, dir };
+    let mut s = Session {
+        ed,
+        now: 1,
+        dir,
+        caches: Default::default(),
+    };
     for _ in 0..3 {
         s.frame(Default::default());
     }
@@ -443,13 +448,18 @@ fn d20_param_cache_without_the_plugin_goes_with_its_default() {
     let text = std::fs::read_to_string(&p).unwrap();
     let cache = format!("4.93e-6 {}", fixture_hash(&text));
     std::fs::write(&p, with_wref(&text, Some(&cache))).unwrap();
-    let ed = schemify_app::editor::Editor::new(schemify_app::editor::Options {
+    let ed = schemify_editor::editor::Editor::new(schemify_editor::editor::Options {
         path: Some(p),
         seed: 7,
         ..Default::default()
     })
     .expect("opens");
-    let mut s = Session { ed, now: 1, dir };
+    let mut s = Session {
+        ed,
+        now: 1,
+        dir,
+        caches: Default::default(),
+    };
     for _ in 0..3 {
         s.frame(Default::default());
     }
@@ -666,14 +676,19 @@ fn prose_images_load_from_inside_the_project_only() {
     );
     let text = std::fs::read_to_string(&p).unwrap().replace(head, &with);
     std::fs::write(&p, text).unwrap();
-    let ed = schemify_app::editor::Editor::new(schemify_app::editor::Options {
+    let ed = schemify_editor::editor::Editor::new(schemify_editor::editor::Options {
         no_default_ui: false,
         path: Some(p),
         seed: 7,
         ..Default::default()
     })
     .expect("opens");
-    let mut s = Session { ed, now: 1, dir };
+    let mut s = Session {
+        ed,
+        now: 1,
+        dir,
+        caches: Default::default(),
+    };
     for _ in 0..3 {
         s.frame(Default::default());
     }
@@ -747,7 +762,7 @@ fn the_prose_editor_previews_what_is_typed_until_applied_or_cancelled() {
     s.click_node("docs.b.0.0");
     // Opening previews the block's own source, its formulas rendered.
     let (h, _) = s.ed.active().unwrap();
-    let src = schemify_app::docs::prose_text(s.ed.session().project.doc(h).unwrap(), 0);
+    let src = schemify_editor::docs::prose_text(s.ed.session().project.doc(h).unwrap(), 0);
     assert_eq!(prop_of(&s, PREVIEW, Value).as_deref(), Some(src.trim_end()));
     assert!(
         laid_out(&s, PREVIEW).1 >= 3,

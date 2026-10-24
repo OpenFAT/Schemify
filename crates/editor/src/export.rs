@@ -1,6 +1,6 @@
-//! `export`: the drawn canvas tables (`render::schemify_canvas::CanvasPrims`) written as vector image
+//! `export`: the drawn canvas tables (`schemify_canvas::CanvasPrims`) written as vector image
 //! files — SVG, PDF (one page per drawing) and EPS, fitted to a [`Page`]. The PNG export is
-//! the CPU raster of the same tables through `render::Painter` (`Editor::export_png`); these
+//! the CPU raster of the same tables in `schemify-app` (`Editor::export_png`); these
 //! writers walk the very tables that raster draws, so every format shows the same
 //! primitives. Arcs are true arcs (SVG `A`, PostScript `arc`/`arcn`, PDF Béziers); PDF and
 //! EPS texts print in the embedded UI faces (`schemify_ui::ui_fonts`), so non-ASCII text

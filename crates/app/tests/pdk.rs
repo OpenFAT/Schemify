@@ -7,7 +7,7 @@ mod common;
 use std::path::Path;
 
 use common::{Session, copy_dir};
-use schemify_app::editor::{Editor, Options};
+use schemify_editor::editor::{Editor, Options};
 
 fn session(tag: &str) -> Session {
     let dir =
@@ -28,7 +28,12 @@ fn session(tag: &str) -> Session {
         ..Default::default()
     })
     .expect("opens");
-    let mut s = Session { ed, now: 1, dir };
+    let mut s = Session {
+        ed,
+        now: 1,
+        dir,
+        caches: Default::default(),
+    };
     s.frame(Default::default());
     s
 }

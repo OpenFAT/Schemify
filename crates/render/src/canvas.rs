@@ -30,7 +30,7 @@ use schemify_ui::TextSystem;
 use schemify_ui::parley::PositionedLayoutItem;
 
 use crate::painter::{Chains, Painter, push_rect, rgba};
-pub use crate::tiles::{CanvasCache, Drawn, PATCH_PAD_PX, TILE_PX, TILES_PER_FRAME, draw_cached};
+pub use crate::tiles::{CanvasCache, PATCH_PAD_PX, TILE_PX, TILES_PER_FRAME, draw_cached};
 use schemify_canvas::*;
 
 /// Reused per-frame buffers and the shaped-label cache (glyphs per distinct string, shared by

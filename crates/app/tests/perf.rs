@@ -18,7 +18,7 @@ use common::{U, VIEW, fixture};
 use std::fmt::Write;
 use std::time::Instant;
 
-use schemify_app::editor::{Editor, Options};
+use schemify_editor::editor::{Editor, Options};
 use schemify_render::vello::kurbo::Affine;
 use schemify_render::vello::peniko::Color;
 use schemify_render::vello::{
@@ -98,7 +98,12 @@ fn var_edit_with_1k_dependents_through_the_docs_page() {
         ..Default::default()
     })
     .unwrap();
-    let mut s = common::Session { ed, now: 1, dir };
+    let mut s = common::Session {
+        ed,
+        now: 1,
+        dir,
+        caches: Default::default(),
+    };
     for _ in 0..3 {
         s.frame(InputEvents::default());
     }
@@ -337,6 +342,7 @@ impl Gpu {
 /// One benchmark run: the editor, its frame scene and layers, the clock, and the samples.
 struct Bench {
     ed: Editor,
+    caches: schemify_app::paint::Caches,
     /// Device px per logical px (the window's scale factor).
     scale: f64,
     scene: Scene,
@@ -362,8 +368,7 @@ impl Bench {
             base,
             layers: Some(&mut self.layers),
         };
-        let drawn = self.ed.paint(&mut p);
-        self.ed.painted(drawn);
+        schemify_app::paint::frame(&mut self.ed, &mut self.caches, &mut p);
         let cpu = t.elapsed().as_secs_f64() * 1e3;
         let rendered = self
             .gpu
@@ -517,6 +522,7 @@ fn frame_times(n: u32) {
         gpu.as_ref().map_or("none (skipped)", |g| g.name.as_str())
     );
     let mut b = Bench {
+        caches: Default::default(),
         ed,
         scale: 1.0,
         scene: Scene::new(),
@@ -711,6 +717,7 @@ fn grid_lag(scale: f64, step: f32, grid: bool) -> (usize, usize) {
     })
     .unwrap();
     let mut b = Bench {
+        caches: Default::default(),
         ed,
         scale,
         scene: Scene::new(),
@@ -815,6 +822,7 @@ fn interactions(n: u32) {
     .unwrap();
     ed.update(&InputEvents::default(), VIEW, 0);
     let mut b = Bench {
+        caches: Default::default(),
         ed,
         scale: 1.0,
         scene: Scene::new(),
@@ -996,6 +1004,7 @@ fn edit_frames(n: u32) -> Vec<(&'static str, [f64; 3], f64)> {
     .unwrap();
     ed.update(&InputEvents::default(), VIEW, 0);
     let mut b = Bench {
+        caches: Default::default(),
         ed,
         scale: 1.0,
         scene: Scene::new(),
@@ -1233,6 +1242,7 @@ fn shared_var_edit_frames_100k() {
     })
     .unwrap();
     let mut b = Bench {
+        caches: Default::default(),
         ed,
         scale: 1.0,
         scene: Scene::new(),

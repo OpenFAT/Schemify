@@ -21,7 +21,7 @@ Later files override earlier ones, the same D8 last-wins rule. Exit 0 is require
 | Chrome text vs its background | ≥ 4.5 | — |
 | Decorative saturated chrome colours (Lab chroma > 30, status selectors exempt) | ≤ 2 | chrome must not compete with the circuit |
 
-The xschem-parity default **fails** this gate on purpose: it reproduces xschem's colours (D6). Leave it alone and put a new look in a preset. The highlight layer list is a copy of `HILITE_LAYERS` in `crates/app/src/editor/parity.rs`; when that constant changes, update `HILITE` in the script.
+The xschem-parity default **fails** this gate on purpose: it reproduces xschem's colours (D6). Leave it alone and put a new look in a preset. The highlight layer list is a copy of `HILITE_LAYERS` in `crates/editor/src/editor/parity.rs`; when that constant changes, update `HILITE` in the script.
 
 ## Layer roles (canvas)
 

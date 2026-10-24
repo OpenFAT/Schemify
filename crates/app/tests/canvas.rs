@@ -9,8 +9,8 @@
 mod common;
 
 use common::{Session, U, VIEW};
-use schemify_app::checks;
 use schemify_canvas::{CanvasPrims, LAYER_DEAD};
+use schemify_editor::checks;
 use schemify_render::vello::peniko::Color;
 use schemify_render::{CpuPainter, Pixmap};
 
@@ -135,8 +135,7 @@ fn act(s: &mut Session, rng: &mut Rng) -> String {
 
 fn paint(s: &mut Session, p: &mut CpuPainter) -> Pixmap {
     p.reset();
-    let drawn = s.ed.paint(p);
-    s.ed.painted(drawn);
+    schemify_app::paint::frame(&mut s.ed, &mut s.caches, p);
     p.finish(Color::BLACK)
 }
 
@@ -247,23 +246,23 @@ fn a_kept_canvas_equals_a_fresh_recording() {
 /// nothing new.
 #[test]
 fn the_paint_outcome_schedules_the_next_frame_through_painted() {
-    use schemify_render::canvas::Drawn;
+    use schemify_canvas::Drawn;
     let mut s = Session::open("inv", "top.shcomp", "painted", true);
     assert_eq!(s.ed.wake_ms(), None, "idle after opening");
     let mut p = CpuPainter::new(VIEW.0 as u16, VIEW.1 as u16, 1.0);
-    let drawn = s.ed.paint(&mut p);
+    let (drawn, _) = schemify_app::paint::paint(s.ed.picture(), &mut s.caches, &mut p);
     assert!(drawn.is_some(), "a schematic tab draws its canvas");
     assert_eq!(s.ed.wake_ms(), None, "paint alone schedules nothing");
     for outcome in [Drawn::Partial, Drawn::Stretched] {
-        s.ed.painted(Some(outcome));
+        s.ed.painted(Some(outcome), false);
         assert_eq!(s.ed.wake_ms(), Some(0), "{outcome:?} asks for a frame");
-        s.ed.painted(None);
+        s.ed.painted(None, false);
         assert_eq!(s.ed.wake_ms(), Some(0), "no canvas keeps the request");
         assert!(s.frame(Default::default()), "the due frame redraws");
         assert_eq!(s.ed.wake_ms(), None, "{outcome:?}: idle once taken");
     }
-    s.ed.painted(Some(Drawn::Partial));
-    s.ed.painted(Some(Drawn::Recorded));
+    s.ed.painted(Some(Drawn::Partial), false);
+    s.ed.painted(Some(Drawn::Recorded), false);
     assert_eq!(s.ed.wake_ms(), None, "a whole canvas asks for nothing");
     assert!(!s.frame(Default::default()), "and nothing redraws");
 }
@@ -274,12 +273,11 @@ fn the_paint_outcome_schedules_the_next_frame_through_painted() {
 /// run such a frame (it sleeps until input while `wake_ms` is `None`).
 #[test]
 fn an_idle_frame_does_no_work() {
-    use schemify_render::canvas::Drawn;
+    use schemify_canvas::Drawn;
     let mut s = Session::open("inv", "top.shcomp", "idle", true);
     let mut p = CpuPainter::new(VIEW.0 as u16, VIEW.1 as u16, 1.0);
     for _ in 0..8 {
-        let drawn = s.ed.paint(&mut p);
-        s.ed.painted(drawn);
+        schemify_app::paint::frame(&mut s.ed, &mut s.caches, &mut p);
         if s.ed.wake_ms().is_none() {
             break;
         }
@@ -293,7 +291,7 @@ fn an_idle_frame_does_no_work() {
         assert_eq!(s.ed.scene().built, built, "frame {k}: no scene build");
         p.reset();
         assert_eq!(
-            s.ed.paint(&mut p),
+            schemify_app::paint::frame(&mut s.ed, &mut s.caches, &mut p),
             Some(Drawn::Copied),
             "frame {k}: tiles copied"
         );
@@ -308,9 +306,8 @@ fn an_idle_frame_does_no_work() {
     });
     assert!(s.frame(ev), "a zoom changes the picture");
     p.reset();
-    let drawn = s.ed.paint(&mut p);
+    let drawn = schemify_app::paint::frame(&mut s.ed, &mut s.caches, &mut p);
     assert_eq!(drawn, Some(Drawn::Stretched), "the old tiles stand in");
-    s.ed.painted(drawn);
     assert!(s.ed.wake_ms().is_some(), "and the crisp frame is due");
 }
 
@@ -342,14 +339,19 @@ fn the_plugin_snapshot_follows_random_edits() {
     top.push_str("\nvar wv 3\n");
     let dir = common::fixture("inv", "snapshot-walk");
     std::fs::write(dir.join("walk.shcomp"), top).unwrap();
-    let ed = schemify_app::editor::Editor::new(schemify_app::editor::Options {
+    let ed = schemify_editor::editor::Editor::new(schemify_editor::editor::Options {
         no_default_ui: false,
         path: Some(dir.join("walk.shcomp")),
         seed: 3,
         ..Default::default()
     })
     .unwrap();
-    let mut s = Session { ed, now: 1, dir };
+    let mut s = Session {
+        ed,
+        now: 1,
+        dir,
+        caches: Default::default(),
+    };
     s.frame(Default::default());
     let mut rng = Rng(11);
     let (h, _) = s.ed.active().unwrap();
@@ -443,14 +445,19 @@ fn same_as_reopened(s: &mut Session, ctx: &str) {
     let dir = common::fixture("inv", "snapshot-walk-reopened");
     let path = dir.join("walk.shcomp");
     std::fs::write(&path, s.text()).unwrap();
-    let ed = schemify_app::editor::Editor::new(schemify_app::editor::Options {
+    let ed = schemify_editor::editor::Editor::new(schemify_editor::editor::Options {
         no_default_ui: false,
         path: Some(path),
         seed: 3,
         ..Default::default()
     })
     .unwrap();
-    let mut fresh = Session { ed, now: 1, dir };
+    let mut fresh = Session {
+        ed,
+        now: 1,
+        dir,
+        caches: Default::default(),
+    };
     for _ in 0..8 {
         fresh.frame(Default::default());
     }

@@ -6,7 +6,7 @@
 mod common;
 
 use common::{Session, U};
-use schemify_app::scene::LAYER_MISSING;
+use schemify_editor::scene::LAYER_MISSING;
 use schemify_ui::{InputEvent, InputEvents};
 
 fn check_golden(name: &str, pixmap: schemify_render::Pixmap) {

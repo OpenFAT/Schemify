@@ -16,7 +16,7 @@
 //! ui::compose(base, plugin sets, state + docs page)    → ui_nodes; ui::layout → ui_layout
 //! scene::build(doc, symbols)                           → canvas prims, objects (on change)
 //! checks::decor(scene, violations, highlight, annots)  → decor prims (on change)
-//! render::draw_ui / draw_canvas / waves::draw_pane     → scene (in `paint`)
+//! (schemify-app) paint(Editor::picture)               → pixels; Editor::painted(outcome)
 //! ```
 //!
 //! Event-driven: `update` runs when the window delivers input, or on a tick the editor asked
@@ -30,9 +30,8 @@
 
 use std::path::{Path, PathBuf};
 
-use schemify_canvas::{
-    Camera, CanvasDiff, CanvasPrims, Marks, Palette, PrimIndex, Rows, TableChange,
-};
+use schemify_canvas::kurbo::Rect as KRect;
+use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
 use schemify_doc::{
     DocHandle, Document, Edit, EditRequest, External, Mode, Op, Outcome, RecordBuf, TableId,
     Transaction, apply_edits, ops_from_text,
@@ -41,13 +40,7 @@ use schemify_elab::{Annotations, CellState, Dialect};
 use schemify_expr::Value;
 use schemify_format::{FileKind, IdRng, Orient, RecordKind};
 use schemify_plugin::abi::Event;
-use schemify_render::canvas::{self, CanvasCache, CanvasScratch};
-use schemify_render::vello::kurbo::Rect as KRect;
-use schemify_render::widgets::{UiScratch, draw_ui};
-use schemify_render::{App, Painter};
-use schemify_ui::{
-    Button, CommandRequests, InputEvent, InputEvents, Layer, Mods, Routed, route_input,
-};
+use schemify_ui::{Button, CommandRequests, InputEvent, InputEvents, Mods, Routed, route_input};
 
 use crate::cell;
 use crate::checks::Members;
@@ -63,13 +56,16 @@ use crate::shell::Shell;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::sim::Sim;
 use crate::spines;
-use crate::waves::{Shifted, WavesView};
+use crate::waves::WavesView;
 
 mod gestures;
 mod integrate;
 mod parity;
+mod picture;
 mod subckt;
+
 use integrate::text_tab_cmd;
+pub use picture::{CanvasPicture, DockPicture, GraphPicture, Picture, Raster, UiView};
 
 /// Pointer travel (logical px) before a press becomes a drag (xschem: 8 px).
 const DRAG_PX: f32 = 8.0;
@@ -82,9 +78,6 @@ const ZOOM_STEP: f64 = 1.2;
 /// Bytes of the active document's disk state a tick hashes (`Project::hash_step`): about
 /// 0.3 ms at 400 MB/s, so the 4 MB of a 100k-object cell take a few dozen ticks after it opens.
 const HASH_STEP_BYTES: usize = 128 << 10;
-/// The `canvas_gen` entry of each canvas table in drawing order (scene, decor, markers,
-/// extra); entry 3 is the selection marks, which recolor scene rows.
-const CANVAS_GEN: [usize; 4] = [0, 1, 4, 2];
 /// A zoom counts as finished this long after the camera scale last changed; until then the
 /// canvas shows its recorded layer stretched (D39: a zoom frame re-encodes nothing).
 const ZOOM_SETTLE_MS: u32 = 120;
@@ -160,10 +153,10 @@ pub struct Options {
     #[cfg(not(target_arch = "wasm32"))]
     pub sim: Option<schemify_run::SimCommand>,
     /// Directory of user state (the recent-files list); `None` keeps it in memory only.
-    /// [`run`] uses `platform::state_dir()`; tests leave it `None` or pass a temp dir.
+    /// `schemify_app::window::run` uses `platform::state_dir()`; tests leave it `None` or pass a temp dir.
     pub state_dir: Option<PathBuf>,
     /// Copy/cut/paste also go through the system clipboard (`platform::clipboard_*`).
-    /// [`run`] turns it on; headless tests keep the editor's own clipboard only.
+    /// `schemify_app::window::run` turns it on; headless tests keep the editor's own clipboard only.
     pub system_clipboard: bool,
     /// Which user config runs (config spec §2). The default is `--clean`, so tests never read
     /// the developer's own `init.lua`; the binary passes its flags.
@@ -558,25 +551,9 @@ pub struct Editor {
     rng: IdRng,
     routed: Routed,
     viewport: (f32, f32),
-    /// Label glyphs and path buffers of every canvas table (scene, decor, overlay).
-    canvas_scratch: CanvasScratch,
-    /// The canvas's raster layer (D39: pan/zoom frames reuse it instead of re-encoding).
-    canvas_cache: CanvasCache,
     /// Advance whenever a table the canvas layer draws changes: the scene as shown, decor,
     /// parity decor (`extra`), marks, violation markers.
     canvas_gen: [u64; 5],
-    /// What changed in those tables since the last painted frame (an edit patches only
-    /// there): the diff's snapshot, the `canvas_gen` and style key it was taken at, and the
-    /// changed boxes (`None` = unknown).
-    canvas_diff: (CanvasDiff, [u64; 5], u64, Option<Vec<[i32; 4]>>),
-    /// Whether that diff last read the scene's own table (not `shown`): only then do the
-    /// scene's reported edits ([`Scene::edits`]) describe what changed since.
-    canvas_scene: bool,
-    /// Spatial indexes of the canvas tables in drawing order (the shown scene, decor,
-    /// violation markers, extra; with the generation each was built for), so recording one
-    /// canvas tile looks only at the rows near it; and the rows buffer.
-    canvas_index: [(u64, PrimIndex); 4],
-    canvas_rows: Rows,
     /// Clock (ms) until which the zoom counts as changing: frames before it stretch the
     /// recorded canvas layer instead of re-recording it.
     zoom_until: u64,
@@ -586,8 +563,9 @@ pub struct Editor {
     /// The last painted frame left canvas tiles unrecorded (a per-frame budget; handed in by
     /// [`Editor::painted`]): the next is due now.
     partial: bool,
-    ui_scratch: UiScratch,
     waves: Option<WavesView>,
+    /// The PNG export the last command asked for (`schemify-app` rasterizes it).
+    raster: Option<Raster>,
     confirm: Option<Cmd>,
     quit: bool,
     scene_dirty: bool,
@@ -694,11 +672,6 @@ pub struct Editor {
     dock_drag: bool,
     /// The staged edit under review: its label and the document with it applied.
     staged: Option<(String, Document)>,
-    /// Embedded graph chrome and buffers (docs plot slots).
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    plot_look: schemify_render::waves::WaveLook,
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    plot_scratch: schemify_render::waves::WaveScratch,
     /// The bench whose saved results were looked up (once per activation).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     results_for: Option<DocHandle>,
@@ -842,18 +815,12 @@ impl Editor {
             rng: IdRng::new(opts.seed ^ 0x5eed),
             routed: Routed::default(),
             viewport: (0.0, 0.0),
-            canvas_scratch: CanvasScratch::default(),
-            canvas_cache: CanvasCache::default(),
             canvas_gen: [0; 5],
-            canvas_diff: (CanvasDiff::default(), [0; 5], 0, None),
-            canvas_scene: false,
-            canvas_index: Default::default(),
-            canvas_rows: Rows::default(),
             zoom_until: 0,
             stretched: false,
             partial: false,
-            ui_scratch: UiScratch::default(),
             waves: None,
+            raster: None,
             confirm: None,
             quit: false,
             scene_dirty: true,
@@ -902,8 +869,6 @@ impl Editor {
             dock_split: DOCK_SPLIT,
             dock_drag: false,
             staged: None,
-            plot_look: schemify_render::waves::WaveLook::default(),
-            plot_scratch: schemify_render::waves::WaveScratch::default(),
             results_for: None,
             recent: opts
                 .state_dir
@@ -1522,260 +1487,6 @@ impl Editor {
             (viewport.0, split),
             (viewport.0, viewport.1 - split),
         )
-    }
-
-    /// Paints one frame: UI main layer, canvas (grid, scene, decor, overlay, marks) or the
-    /// text tab, the docs page's graphs, the UI overlay (menus, dialogs), then the waves dock
-    /// below.
-    ///
-    /// Writes only paint caches (the canvas raster layer, its diff and indexes, glyphs),
-    /// never a table `update` or [`Editor::wake_ms`] reads. Returns how the canvas was drawn
-    /// (`None` while a text tab replaces it); the caller hands that to [`Editor::painted`] so
-    /// the next frame is scheduled from it (a partly recorded or stretched canvas asks for one).
-    pub fn paint<P: Painter>(&mut self, p: &mut P) -> Option<canvas::Drawn> {
-        let (stretched, partial) = (self.stretched, self.partial);
-        draw_ui(
-            p,
-            &self.shell.tables,
-            &self.shell.layout,
-            &self.shell.strings,
-            &mut self.shell.text,
-            &self.shell.ui,
-            Layer::Main,
-            &[],
-            &mut self.ui_scratch,
-        );
-        let drawn = self
-            .session
-            .text_view()
-            .is_none()
-            .then(|| self.paint_canvas(p));
-        self.paint_graphs(p);
-        draw_ui(
-            p,
-            &self.shell.tables,
-            &self.shell.layout,
-            &self.shell.strings,
-            &mut self.shell.text,
-            &self.shell.ui,
-            Layer::Overlay,
-            &[],
-            &mut self.ui_scratch,
-        );
-        let dy = f64::from(self.viewport.1);
-        if let Some(w) = self.waves.as_mut() {
-            w.paint(&mut Shifted { p, dy });
-        }
-        assert_eq!(self.stretched, stretched, "paint feeds no model state");
-        assert_eq!(self.partial, partial, "paint feeds no model state");
-        drawn
-    }
-
-    /// Takes the canvas outcome [`Editor::paint`] returned: a stretched layer (mid-zoom) asks
-    /// [`Editor::wake_ms`] for a crisp frame once the zoom settles, a partly recorded one for
-    /// the next frame at once; any other outcome asks for nothing. `None` (no canvas was
-    /// drawn) keeps what the last canvas frame asked for.
-    pub fn painted(&mut self, drawn: Option<canvas::Drawn>) {
-        let Some(d) = drawn else {
-            return;
-        };
-        self.stretched = d == canvas::Drawn::Stretched;
-        self.partial = d == canvas::Drawn::Partial;
-        assert!(!(self.stretched && self.partial), "one outcome per frame");
-    }
-
-    fn paint_canvas<P: Painter>(&mut self, p: &mut P) -> canvas::Drawn {
-        let view = self.canvas_rect();
-        let cam = self.camera();
-        let grid = if self.opts.show_grid {
-            self.opts.grid
-        } else {
-            i32::MAX / 4
-        };
-        // Everything but the gesture preview goes through the raster layer: a pan or zoom
-        // frame re-encodes nothing and an edit redraws only where its tables changed (D39).
-        // The palette as the View/Layers options shape it (hidden layers, dimming, colors,
-        // widths) and the grid are the `style`: no damage box describes a change of either,
-        // so it records afresh. The scene as displayed (instances as boxes, symbol texts off).
-        let palette = &self.view_palette();
-        use std::hash::{Hash, Hasher};
-        let style = {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            (
-                grid,
-                palette.color,
-                palette.fill,
-                palette.background,
-                palette.grid,
-            )
-                .hash(&mut h);
-            palette.width.map(f32::to_bits).hash(&mut h);
-            h.finish()
-        };
-        let key = {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            (self.canvas_gen, style).hash(&mut h);
-            h.finish()
-        };
-        let shown = self.shown.as_ref().unwrap_or(&self.scene.prims);
-        let (diff, diff_gen, diff_style, boxes) = &mut self.canvas_diff;
-        let diffed = *diff_gen != self.canvas_gen || *diff_style != style;
-        if diffed {
-            // The scene reports its own edits (O(change)); the decor and parity tables are
-            // hashed when they changed.
-            let mut out = boxes.take().unwrap_or_default();
-            out.clear();
-            let changed = |k: usize| diff_gen[k] != self.canvas_gen[k];
-            let any = |k: usize| match changed(k) {
-                true => TableChange::Any,
-                false => TableChange::Same,
-            };
-            let reported = (self.shown.is_none() && self.canvas_scene)
-                .then(|| self.scene.edits())
-                .flatten();
-            let scene = match (changed(0), reported) {
-                (true, Some(killed)) => TableChange::Rows(killed),
-                _ => any(0),
-            };
-            let markers = match (changed(4), self.markers.edits()) {
-                (true, Some(killed)) => TableChange::Rows(killed),
-                _ => any(4),
-            };
-            let tables = [
-                (shown, scene),
-                (&self.decor, any(1)),
-                (&self.markers.prims, markers),
-                (&self.extra, any(2)),
-            ];
-            let marks = (&self.scene.prims, &self.marks, changed(0) || changed(3));
-            let known = diff.update(&tables, marks, &mut out);
-            // An index current before the change follows it (a patch then reads the rows near
-            // it, not every row); else it waits for the next tile to rebuild it.
-            for (k, ix) in self.canvas_index.iter_mut().enumerate() {
-                let g = CANVAS_GEN[k];
-                if !(known && changed(g) && ix.0 == diff_gen[g] + 1) {
-                    continue;
-                }
-                let follows = match tables[k].1 {
-                    TableChange::Rows(_) => ix.1.follow(tables[k].0),
-                    _ => ix.1.apply(diff.edits_of(k)),
-                };
-                if follows {
-                    ix.0 = self.canvas_gen[g] + 1;
-                }
-            }
-            *boxes = (known && *diff_style == style).then_some(out);
-            (*diff_gen, *diff_style) = (self.canvas_gen, style);
-        } else if let Some(b) = boxes.as_mut() {
-            b.clear(); // the same key: nothing changed since the last frame
-        }
-        if diffed {
-            // The diff has taken the scene's and the markers' edits so far.
-            self.canvas_scene = self.shown.is_none();
-            self.scene.clear_edits();
-            self.markers.clear_edits();
-        }
-        let shown = self.shown.as_ref().unwrap_or(&self.scene.prims);
-        let damage = boxes.as_deref();
-        let crisp = self.now >= self.zoom_until;
-        let (prims, decor, extra, marks) =
-            (&self.scene.prims, &self.decor, &self.extra, &self.marks);
-        let markers = &self.markers.prims;
-        let (text, scratch) = (&mut self.shell.text, &mut self.canvas_scratch);
-        let (index, rows, gens) = (
-            &mut self.canvas_index,
-            &mut self.canvas_rows,
-            self.canvas_gen,
-        );
-        // A sixteenth of a tile: the smallest part a costly tile is recorded in.
-        let part_area = (f64::from(canvas::TILE_PX) / 4.0).powi(2) * 0.99;
-        let drawn = canvas::draw_cached(
-            p,
-            &mut self.canvas_cache,
-            view,
-            &cam,
-            key,
-            damage,
-            crisp,
-            schemify_render::rgba(palette.background),
-            |p, v, c| {
-                p.fill_rect(v, schemify_render::rgba(palette.background));
-                canvas::draw_grid(p, v, c, grid, palette, scratch);
-                // A tile or a part of one looks at the rows near it (the index, rebuilt after a
-                // change); a smaller patch (an edit's, right after the change) culls every row
-                // while the index is stale.
-                let tile = v.area() * p.device_scale().powi(2) >= part_area;
-                let near = world_box(v, c);
-                let mut cost = 0;
-                for (k, t) in [shown, decor, markers, extra].into_iter().enumerate() {
-                    let listed = rows_near(&mut index[k], t, gens[CANVAS_GEN[k]], tile, near, rows);
-                    let listed = listed.then_some(&*rows);
-                    cost += canvas::draw_prims_in(p, v, c, t, listed, palette, text, scratch);
-                }
-                canvas::draw_marks(p, v, c, prims, marks, scratch);
-                cost
-            },
-        );
-        if !self.overlay.is_empty() {
-            p.push_clip(view);
-            canvas::draw_prims(p, view, &cam, &self.overlay, palette, text, scratch);
-            p.pop_clip();
-        }
-        drawn
-    }
-
-    /// Draws each filled plot slot of the docs page (`graph` nodes) as an embedded waves
-    /// pane over the selected job's results, clipped to the page.
-    fn paint_graphs<P: Painter>(&mut self, p: &mut P) {
-        #[cfg(not(target_arch = "wasm32"))]
-        for (id, expr) in &self.graphs {
-            let s = &self.shell;
-            let Some(sym) = s.strings.find(id) else {
-                continue;
-            };
-            let Some(row) = s.tables.nodes.find(sym).and_then(|n| s.layout.row_of(n)) else {
-                continue;
-            };
-            let Some(Ok(w)) = self
-                .sim
-                .plots
-                .iter()
-                .find(|x| x.expr == *expr)
-                .map(|x| &x.waves)
-            else {
-                continue;
-            };
-            let r = s.layout.rect()[row];
-            let clip = s.layout.clip()[row];
-            if r.w < 16.0 || r.h < 16.0 {
-                continue;
-            }
-            let clipped = clip != schemify_ui::NO_CLIP;
-            if clipped {
-                p.push_clip(KRect::new(
-                    f64::from(clip.x),
-                    f64::from(clip.y),
-                    f64::from(clip.x + clip.w),
-                    f64::from(clip.y + clip.h),
-                ));
-            }
-            schemify_render::waves::draw_pane(
-                p,
-                r,
-                w,
-                0,
-                false,
-                schemify_ui::waves::Drag::None,
-                &self.plot_look,
-                &mut self.shell.text,
-                &mut self.plot_scratch,
-            );
-            if clipped {
-                p.pop_clip();
-            }
-        }
-        #[cfg(target_arch = "wasm32")]
-        let _ = p;
     }
 
     /// Tracks modifiers and, for keys that use the pointer as first point (xschem infix
@@ -4855,89 +4566,6 @@ impl Editor {
     }
 }
 
-/// The window shell's view of an [`Editor`] (`render::run` drives it).
-pub struct Window {
-    ed: Editor,
-    #[cfg(not(target_arch = "wasm32"))]
-    start: std::time::Instant,
-}
-
-impl Window {
-    /// Wraps an editor; the frame clock (`Editor::update`'s `now_ms`) starts at this call.
-    pub fn new(ed: Editor) -> Window {
-        Window {
-            ed,
-            #[cfg(not(target_arch = "wasm32"))]
-            start: std::time::Instant::now(),
-        }
-    }
-
-    /// The wrapped editor: the `--rpc` server (`crate::rpc`) queues commands into it
-    /// between frames.
-    pub fn editor(&mut self) -> &mut Editor {
-        &mut self.ed
-    }
-
-    fn now_ms(&self) -> u64 {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.start.elapsed().as_millis() as u64
-        }
-        // Web: `Instant` panics in a browser; the page's clock (web spec §1). A frozen clock
-        // made every second click a double click and kept plugin timers from firing.
-        #[cfg(target_arch = "wasm32")]
-        {
-            platform::unix_ms()
-        }
-    }
-}
-
-impl App for Window {
-    fn update(&mut self, events: &InputEvents, viewport: (f32, f32)) -> bool {
-        let now = self.now_ms();
-        self.ed.update(events, viewport, now)
-    }
-
-    fn exit_requested(&self) -> bool {
-        // Journals are flushed after every edit, so nothing is lost by leaving now.
-        self.ed.wants_quit()
-    }
-
-    fn paint<P: Painter>(&mut self, p: &mut P, _viewport: (f32, f32)) {
-        let drawn = self.ed.paint(p);
-        self.ed.painted(drawn);
-    }
-
-    fn wake_ms(&self) -> Option<u32> {
-        self.ed.wake_ms()
-    }
-
-    fn ime_area(&self) -> Option<(f32, f32, f32, f32)> {
-        let s = &self.ed.shell;
-        s.ui.ime_area(&s.tables, &s.layout)
-            .map(|r| (r.x, r.y, r.w, r.h))
-    }
-
-    fn access(&mut self) -> schemify_render::accesskit::TreeUpdate {
-        let s = &self.ed.shell;
-        schemify_ui::access::access_tree(&s.tables, &s.layout, &s.strings, &s.ui)
-    }
-}
-
-/// Opens the editor window and runs until it closes (native: blocks).
-///
-/// # Errors
-///
-/// The project or file cannot be opened, or no window can be created.
-pub fn run(mut opts: Options) -> Result<(), String> {
-    if opts.state_dir.is_none() {
-        opts.state_dir = platform::state_dir();
-    }
-    opts.system_clipboard = true;
-    let ed = Editor::new(opts)?;
-    schemify_render::run("Schemify", Window::new(ed)).map_err(|e| e.to_string())
-}
-
 /// Snaps `to` onto the constraint axis through `from`.
 fn constrain(from: Pt, to: Pt, c: u8) -> Pt {
     match c {
@@ -5025,50 +4653,6 @@ fn project_root(file: &Path) -> PathBuf {
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
 }
 
-/// Tables smaller than this are drawn whole: culling them costs less than an index.
-const INDEX_ROWS_MIN: usize = 4096;
-
-/// Lists in `rows` the rows of `t` near world box `near`, from its index `ix` (rebuilt for
-/// generation `version` when stale, but only for a tile or a part of one: a small patch right
-/// after an edit culls every row instead of paying for a rebuild). Returns false (draw every row) for a small
-/// table or a stale index.
-fn rows_near(
-    ix: &mut (u64, PrimIndex),
-    t: &CanvasPrims,
-    version: u64,
-    tile: bool,
-    near: [i32; 4],
-    rows: &mut Rows,
-) -> bool {
-    if t.len() < INDEX_ROWS_MIN {
-        return false;
-    }
-    // Generation 0 is the never-built state of a fresh index, so the stored one is plus 1.
-    if ix.0 != version + 1 {
-        if !tile {
-            return false;
-        }
-        *ix = (version + 1, PrimIndex::build(t));
-    }
-    ix.1.query(t, near, rows);
-    true
-}
-
-/// The world box `view` shows through `cam`, widened by the patch pad (strokes and labels
-/// reach that far beyond their rows' boxes).
-fn world_box(view: KRect, cam: &Camera) -> [i32; 4] {
-    let (a0, b0) = cam.to_world(view, view.x0, view.y0);
-    let (a1, b1) = cam.to_world(view, view.x1, view.y1);
-    let pad = canvas::PATCH_PAD_PX / cam.scale;
-    let c = |v: f64| v.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
-    [
-        c((a0.min(a1) - pad).floor()),
-        c((b0.min(b1) - pad).floor()),
-        c((a0.max(a1) + pad).ceil()),
-        c((b0.max(b1) + pad).ceil()),
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5095,7 +4679,7 @@ mod tests {
     /// where a missing prose image is tried once and reported.
     #[test]
     fn compose_is_a_projection_and_the_ui_inputs_step_does_the_io() {
-        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ota");
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../app/tests/fixtures/ota");
         let dir =
             std::env::temp_dir().join(format!("schemify-compose-pure-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

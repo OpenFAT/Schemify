@@ -6,8 +6,8 @@
 mod common;
 use common::{Session, U, lines};
 
-use schemify_app::editor::Tool;
 use schemify_doc::TableId;
+use schemify_editor::editor::Tool;
 
 const SHIFT: u8 = schemify_ui::Mods::SHIFT;
 
@@ -192,7 +192,7 @@ fn descend_edit_return_keeps_per_document_undo() {
     s.click((10 * U, 0));
     s.key("i");
     let (_, view) = s.ed.active().unwrap();
-    assert_eq!(view, schemify_app::session::View::Symbol);
+    assert_eq!(view, schemify_editor::session::View::Symbol);
     assert!(
         s.ed.scene()
             .objs
@@ -320,7 +320,7 @@ fn fits_when_the_first_viewport_is_empty() {
     let want = Session::open("inv", "top.shcomp", "fit-ref", true)
         .ed
         .camera();
-    let mut ed = schemify_app::editor::Editor::new(schemify_app::editor::Options {
+    let mut ed = schemify_editor::editor::Editor::new(schemify_editor::editor::Options {
         path: Some(common::fixture("inv", "fit-late").join("top.shcomp")),
         seed: 7,
         ..Default::default()
@@ -392,7 +392,7 @@ fn tabs_open_new_and_switch() {
     let (_, view) = s.ed.active().unwrap();
     assert_eq!(
         view,
-        schemify_app::session::View::Symbol,
+        schemify_editor::session::View::Symbol,
         "a .shprim opens on its symbol"
     );
 }
@@ -407,7 +407,7 @@ fn draws_instances_from_the_library_index_without_opening_their_cells() {
     );
     let rects = &s.ed.scene().prims.rects.layer;
     assert!(
-        !rects.contains(&schemify_app::scene::LAYER_MISSING),
+        !rects.contains(&schemify_editor::scene::LAYER_MISSING),
         "every instance resolves to a drawn symbol"
     );
     assert!(rects.contains(&5), "pin squares drawn");
