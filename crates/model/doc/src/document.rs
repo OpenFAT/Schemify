@@ -698,6 +698,7 @@ impl Document {
         let mut diags = doc.reid_dups(src, &locs);
         diags.extend(doc.load_diags());
         doc.log = ChangeLog::default(); // a loaded document starts its log empty
+        doc.strings.settle();
         assert!(doc.unknown_records == 0 || doc.read_only());
         Loaded { doc, diags }
     }
@@ -933,11 +934,8 @@ impl Document {
         if id != ObjId::NONE && self.by_id.get(&id) == Some(&loc) {
             self.by_id.remove(&id);
         }
-        let (attrs, lines) = with_table!(self, t, |tab| (
-            tab.attrs_col()[row],
-            tab.comments_col()[row].len + tab.verbatim_col().get(row).map_or(0, |s| s.len)
-        ));
-        self.pool.orphan(attrs, lines);
+        let (attrs, others) = with_table!(self, t, |tab| tab.owned(row));
+        self.pool.orphan(attrs, others);
         self.log.push(t, Write::Deleted, row as u32, id);
         if t.ordered() {
             with_table_mut!(self, t, |tab, _s, _p| tab.remove_row(row));
@@ -974,11 +972,8 @@ impl Document {
         if old_id != ObjId::NONE && self.by_id.get(&old_id) == Some(&loc) {
             self.by_id.remove(&old_id);
         }
-        let (attrs, lines) = with_table!(self, t, |tab| (
-            tab.attrs_col()[row],
-            tab.comments_col()[row].len + tab.verbatim_col().get(row).map_or(0, |s| s.len)
-        ));
-        self.pool.orphan(attrs, lines);
+        let (attrs, others) = with_table!(self, t, |tab| tab.owned(row));
+        self.pool.orphan(attrs, others);
         let mut scratch = Scratch::default();
         scratch.fill_buf(rec);
         let len = self.table_len(t);
@@ -1185,12 +1180,14 @@ impl Document {
         w.x1[r] == w.x2[r] && w.y1[r] == w.y2[r]
     }
 
-    /// Rebuilds the arena and pool from the live rows when garbage outweighs live data,
-    /// so a long session of edits stays bounded. Row order and ids are kept; `Sym` and
-    /// `Span` values change (they are never held across edits).
+    /// Rebuilds the arena and pool from the live rows when garbage outweighs live data
+    /// (pool entries of replaced rows, strings edits interned), so a long session of
+    /// edits stays bounded. Row order and ids are kept; `Sym` and `Span` values change
+    /// (they are never held across edits).
     pub(crate) fn compact_if_needed(&mut self) {
-        let size = self.pool.size();
-        if (self.pool.dead as usize) < (1 << 16) || (self.pool.dead as usize) * 2 < size {
+        let dead = self.pool.dead as usize;
+        let pool = dead >= 1 << 16 && dead * 2 >= self.pool.size();
+        if !pool && !self.strings.outgrown() {
             return;
         }
         let model = self.to_format();
@@ -1204,7 +1201,7 @@ impl Document {
         log.break_here();
         *self = rebuilt;
         self.log = log;
-        assert_eq!(self.pool.dead, 0);
+        assert!(self.pool.dead == 0 && !self.strings.outgrown());
     }
 }
 
@@ -1213,4 +1210,59 @@ fn push_header(pool: &mut Pool, strings: &mut Strings, rec: &crate::tables::RecV
     let span = pool.push_attrs(rec, &[], strings);
     assert_eq!(span.len as usize, rec.attrs.len());
     span
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn poly(dx: i32) -> RecordBuf {
+        let mut r = RecordBuf::new(RecordKind::Shape)
+            .field("0abcde")
+            .field("poly");
+        for i in 0..256 {
+            r = r.field(&(i + dx).to_string());
+        }
+        r
+    }
+
+    #[test]
+    fn replaced_coordinates_are_garbage_and_compact_away() {
+        let mut doc = Document::new(FileKind::Shcomp);
+        let loc = doc.insert(&poly(0), None).unwrap();
+        let dead = doc.pool.dead;
+        doc.put(loc, &poly(1)).unwrap();
+        assert_eq!(doc.pool.dead - dead, 256, "the replaced row's coordinates");
+        for k in 2..1000 {
+            doc.put(loc, &poly(k)).unwrap();
+            doc.compact_if_needed();
+        }
+        assert!(
+            doc.pool.coords.len() <= 2 * (1 << 16) + 512,
+            "{} coordinates for 256 live ones",
+            doc.pool.coords.len()
+        );
+        assert_eq!(doc.record(loc), poly(999));
+    }
+
+    #[test]
+    fn replaced_strings_are_garbage_and_compact_away() {
+        let mut doc = Document::new(FileKind::Shcomp);
+        let prose = |k: usize| {
+            RecordBuf::new(RecordKind::Prose)
+                .field("0abcde")
+                .verbatim(&format!("{k} {}", "x".repeat(1 << 16)))
+        };
+        let loc = doc.insert(&prose(0), None).unwrap();
+        for k in 1..200 {
+            doc.put(loc, &prose(k)).unwrap();
+            doc.compact_if_needed();
+        }
+        assert!(
+            doc.strings().len() <= 32,
+            "{} strings for 2 live ones",
+            doc.strings().len()
+        );
+        assert_eq!(doc.record(loc), prose(199));
+    }
 }
