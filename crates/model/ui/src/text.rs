@@ -30,11 +30,6 @@ static NOTO_SANS: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/fonts/NotoSans-UI.ttf"
 ));
-/// Monospace face for code (prose code spans and blocks); KaTeX's, already embedded for math.
-static MONO: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/fonts/KaTeX_Typewriter-Regular.ttf"
-));
 
 /// A decoded image the app registered for prose (`![alt](path)`, [`TextSystem::set_image`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -132,7 +127,8 @@ impl TextSystem {
         };
         let noto = register(NOTO_SANS);
         let symbols = register(crate::math::face_bytes("Main-Regular"));
-        let mono = register(MONO);
+        // Monospace for code (prose code spans and blocks): KaTeX's, already embedded for math.
+        let mono = register(crate::math::face_bytes("Typewriter-Regular"));
         // A CSS family list: every builder parses it (`FontFamily::from(&str)`).
         let family = format!("\"{noto}\", \"{symbols}\"");
         assert!(noto != mono && symbols != mono);
