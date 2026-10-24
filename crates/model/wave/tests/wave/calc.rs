@@ -9,7 +9,7 @@ use crate::{close, fixture};
 fn col(src: &str, p: &RawPlot) -> ColOut {
     let prog = Program::compile(src, Mode::Calc).unwrap_or_else(|e| panic!("{src}: {e}"));
     let mut s = Scratch::default();
-    match calc::eval(&prog, p, |_| None, &mut s).unwrap_or_else(|e| panic!("{src}: {e}")) {
+    match calc::eval(&prog, p, None, |_| None, &mut s).unwrap_or_else(|e| panic!("{src}: {e}")) {
         CalcResult::Column(c) => c,
         other => panic!("{src}: expected a column, got {other:?}"),
     }
