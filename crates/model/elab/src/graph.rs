@@ -642,9 +642,6 @@ impl Graph {
         if b == NONE {
             return None;
         }
-        if let Some(v) = &c.bound_const[k][which] {
-            return Some(v.clone());
-        }
         let mut inputs: Vec<Value<'_>> = recycle(std::mem::take(&mut ws.inputs));
         for &r in c.progs.refs(b) {
             let d = if r & VAR == 0 {

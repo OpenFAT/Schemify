@@ -570,14 +570,12 @@ pub(crate) fn inst_rules<F: Funcs>(
         }
         // Fast path: constant bounds and no choices (PDK `min`/`max`/`grid`), a value
         // that passes them has nothing to report.
-        let konst = &c.bound_const[k];
+        let konst = |w| c.bound_konst(k, w);
         let fast = c.choice_start[k] == c.choice_start[k + 1]
-            && (0..crate::iface::BOUNDS).all(|w| c.param_bound[k][w] == NONE || konst[w].is_some())
-            && konst[crate::iface::VALID]
-                .as_ref()
-                .is_none_or(|v| matches!(v, Val::Bool(true)));
+            && (0..crate::iface::BOUNDS).all(|w| c.param_bound[k][w] == NONE || konst(w).is_some())
+            && konst(crate::iface::VALID).is_none_or(|v| matches!(v, Val::Bool(true)));
         if fast {
-            let b = |w: usize| konst[w].as_ref().and_then(Val::as_f64);
+            let b = |w: usize| konst(w).and_then(Val::as_f64);
             if v.as_f64()
                 .is_none_or(|x| passes(x, [b(0), b(1), b(2), b(3)]))
             {

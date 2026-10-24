@@ -11,7 +11,7 @@
 use crate::connect::Ignore;
 use crate::names::{Name, Names};
 use crate::netexpr;
-use crate::values::{Code, NONE, Progs, Ref, Syntax, VAR, Val};
+use crate::values::{NONE, Progs, Ref, Syntax, VAR, Val};
 use schemify_doc::{Document, PinDir, Records, Strings, Sym};
 use schemify_format::RecordKind;
 
@@ -148,8 +148,6 @@ pub struct Iface {
     pub too_wide: Vec<Name>,
 
     pub(crate) progs: Progs,
-    /// Values of bounds that are constants, per param (`None`: absent or not constant).
-    pub(crate) bound_const: Vec<[Option<Val>; BOUNDS]>,
 }
 
 impl Iface {
@@ -286,29 +284,6 @@ impl Iface {
             f.var_prog
                 .push(progs.push(s.get(blocks.fields[r][1]), Syntax::Expr, c, scope));
         }
-        // Bounds that read nothing (the usual `min 0.15`) are evaluated once here, not
-        // once per instance during gating.
-        let mut scratch = schemify_expr::Scratch::default();
-        let mut text = String::new();
-        for bound in &f.param_bound {
-            let mut row: [Option<Val>; BOUNDS] = Default::default();
-            for (slot, &b) in bound.iter().enumerate() {
-                let constant = b != NONE
-                    && progs.refs(b).is_empty()
-                    && matches!(&progs.code[b as usize], Code::Expr(p) if p.plugin_fns().len() == 0);
-                if constant {
-                    let (v, _) = progs.eval(
-                        b,
-                        &[],
-                        &mut crate::values::no_funcs,
-                        &mut scratch,
-                        &mut text,
-                    );
-                    row[slot] = (!v.is_err()).then_some(v);
-                }
-            }
-            f.bound_const.push(row);
-        }
         f.progs = progs;
         // Choices were looked up before interning (the closure borrows `names`); intern
         // the ones that were new.
@@ -334,12 +309,8 @@ impl Iface {
                 .push(one("model").map_or(Name::NONE, |v| names.intern(s.get(v))));
             f.impl_file
                 .push(one("file").map_or(Name::NONE, |v| names.intern(s.get(v))));
-            f.impl_ignore.push(match one("ignore").map(|v| s.get(v)) {
-                Some("true") => Ignore::True,
-                Some("open") => Ignore::Open,
-                Some("short") => Ignore::Short,
-                _ => Ignore::No,
-            });
+            f.impl_ignore
+                .push(Ignore::parse(one("ignore").map(|v| s.get(v))));
             for (key, vals) in pool.attrs(impls.attrs[r]) {
                 if s.get(key) == "format" && vals.len() == 2 {
                     f.fmt_dialect.push(names.intern(s.get(vals[0])));
@@ -387,6 +358,13 @@ impl Iface {
         self.impl_lang
             .iter()
             .position(|l| names.get(*l) == "schematic")
+    }
+
+    /// The value of bound `w` of param `k` when it reads nothing (the usual `min 0.15`:
+    /// evaluated once when compiled, `Progs::konst`); `None` when absent or not constant.
+    pub(crate) fn bound_konst(&self, k: usize, w: usize) -> Option<&Val> {
+        let b = self.param_bound[k][w];
+        (b != NONE).then(|| self.progs.konst[b as usize].as_ref())?
     }
 
     /// Returns the choices of param `k`.

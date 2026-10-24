@@ -40,8 +40,8 @@
 use crate::check::{Code, Violation};
 use crate::connect::{
     CellNets, GLOBAL, Ignore, LABEL, NO_NET, NONE_PIN, OWN_BITS, OWN_PORTS, OWN_STATIC, PORT, Seed,
-    bit_findings, find, glob, id_cmp, on_segment, place, port_findings, push_decimal, slicing,
-    union, unkey, write_key,
+    bit_findings, find, glob, id_cmp, label_is_global, on_segment, place, port_findings,
+    push_decimal, slicing, union, unkey, write_key,
 };
 use crate::iface::{Domain, Iface};
 use crate::names::{Name, Names};
@@ -180,15 +180,6 @@ fn changed_rows(old: &[u32], ids: &[ObjId], out: &mut Vec<usize>) {
         i = end;
     }
     out.extend(n..old.len().max(ids.len()));
-}
-
-/// Whether label row `l` carries `global true`.
-fn label_is_global(doc: &Document, l: usize) -> bool {
-    let s = doc.strings();
-    doc.pool()
-        .find_attr(s, doc.labels().attrs[l], "global")
-        .and_then(|v| v.first())
-        .is_some_and(|v| s.get(*v) == "true")
 }
 
 /// Geometric (non-inherited) pins of `f`, in order: an instance's node `k` is the `k`-th.

@@ -60,12 +60,12 @@ pub(crate) fn expand(
                 None => out.push(names.intern(t.ident)),
                 Some((a, b)) => {
                     let step: i64 = if a <= b { 1 } else { -1 };
-                    let mut i = i64::from(a);
+                    let mut i = i64::from(a); // within [a, b]: a u32
                     loop {
                         buf.clear();
                         buf.push_str(t.ident);
                         buf.push('[');
-                        buf.push_str(&i.to_string());
+                        crate::connect::push_decimal(i as u32, buf);
                         buf.push(']');
                         out.push(names.intern(buf));
                         if i == i64::from(b) {

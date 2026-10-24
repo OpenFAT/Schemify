@@ -319,6 +319,7 @@ impl Elab {
 /// Deepest hierarchy elaborated before `E014` is reported.
 pub const DEPTH_MAX: u32 = 1024;
 
+#[derive(Default)]
 struct Config {
     inst: Vec<(String, String)>,
     /// Parallel to `inst`: some instance path matched the rule (`W037` otherwise).
@@ -426,12 +427,7 @@ pub fn elaborate<F: Funcs>(
         cells: Vec::new(),
         nets: Vec::new(),
         row_cell: HashMap::new(),
-        config: Config {
-            inst: Vec::new(),
-            inst_hit: Vec::new(),
-            cell: Vec::new(),
-            order: Vec::new(),
-        },
+        config: Config::default(),
         subst: Vec::new(),
         viol: Vec::new(),
         memo: HashMap::new(),
@@ -860,34 +856,9 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             ws,
             ..
         } = self;
-        let (nets, graph) = if parallel {
-            let snapshot = names.clone();
-            std::thread::scope(|sc| {
-                let worker = sc.spawn(|| {
-                    let mut found = Vec::new();
-                    let own = &ifaces[ci as usize];
-                    let nets = connect(doc, own, ifaces, &inst_iface, globals, names, &mut found);
-                    (nets, found)
-                });
-                let graph = Graph::build(doc, ci, ifaces, &inst_iface, &subst, &snapshot);
-                graph.eval_all(Some(own_vals), &mut vals, &mut unv, ifaces, *funcs, ws);
-                let cx = CellCtx {
-                    doc,
-                    ifaces,
-                    own: ci,
-                    inst_iface: &inst_iface,
-                    graph: &graph,
-                    waivers: &waiv,
-                    path: Name::NONE,
-                };
-                check_values(&cx, &vals, &snapshot, *funcs, ws, &mut gated);
-                let (nets, f) = worker.join().expect("connect does not panic");
-                found = f;
-                (nets, graph)
-            })
-        } else {
-            let own = &ifaces[ci as usize];
-            let nets = connect(doc, own, ifaces, &inst_iface, globals, names, &mut found);
+        let ifaces: &[Iface] = ifaces;
+        // The graph side reads names only (a snapshot beside a parallel `connect`).
+        let mut graph_side = |names: &Names| {
             let graph = Graph::build(doc, ci, ifaces, &inst_iface, &subst, names);
             graph.eval_all(Some(own_vals), &mut vals, &mut unv, ifaces, *funcs, ws);
             let cx = CellCtx {
@@ -900,7 +871,25 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 path: Name::NONE,
             };
             check_values(&cx, &vals, names, *funcs, ws, &mut gated);
-            (nets, graph)
+            graph
+        };
+        let own = &ifaces[ci as usize];
+        let (nets, graph) = if parallel {
+            let snapshot = names.clone();
+            std::thread::scope(|sc| {
+                let worker = sc.spawn(|| {
+                    let mut found = Vec::new();
+                    let nets = connect(doc, own, ifaces, &inst_iface, globals, names, &mut found);
+                    (nets, found)
+                });
+                let graph = graph_side(&snapshot);
+                let (nets, f) = worker.join().expect("connect does not panic");
+                found = f;
+                (nets, graph)
+            })
+        } else {
+            let nets = connect(doc, own, ifaces, &inst_iface, globals, names, &mut found);
+            (nets, graph_side(names))
         };
         {
             // Override keys are interned here, after connect, in both orders.
@@ -2063,18 +2052,8 @@ pub(crate) fn tuple(f: &Iface, vals: &[Val], names: &mut Names) -> (String, Vec<
             v if v.is_err() => plain.push('?'),
             v => v.write_text(&mut plain),
         }
-        if let Val::Str(s) = &vals[k] {
-            quoted.push('"');
-            for ch in s.chars() {
-                match ch {
-                    '"' => quoted.push_str("\\\""),
-                    '\\' => quoted.push_str("\\\\"),
-                    '\n' => quoted.push_str("\\n"),
-                    '\t' => quoted.push_str("\\t"),
-                    c => quoted.push(c),
-                }
-            }
-            quoted.push('"');
+        if let Val::Str(_) = &vals[k] {
+            crate::values::cached_text(&vals[k], &mut quoted); // expression string escapes
         } else {
             quoted.clone_from(&plain);
         }
