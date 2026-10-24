@@ -117,10 +117,5 @@ fn start(args: Vec<String>) -> Result<(), String> {
         Some(_) => Err("--rpc needs a native build (no sockets in a browser)".to_owned()),
         None => schemify_app::window::run(opts),
     };
-    ran.map_err(|e| {
-        format!(
-            "{e}
-"
-        )
-    })
+    ran.map_err(|e| format!("{e}\n"))
 }

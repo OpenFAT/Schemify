@@ -9,44 +9,10 @@ use common::{Session, U};
 use schemify_editor::scene::LAYER_MISSING;
 use schemify_ui::{InputEvent, InputEvents};
 
-fn check_golden(name: &str, pixmap: schemify_render::Pixmap) {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden");
-    let path = format!("{dir}/{name}.png");
-    let png = pixmap.clone().into_png().expect("encode png");
-    if std::env::var_os("SCHEMIFY_BLESS").is_some() {
-        std::fs::create_dir_all(dir).unwrap();
-        std::fs::write(&path, &png).unwrap();
-    }
-    let want = std::fs::read(&path)
-        .unwrap_or_else(|_| panic!("{path} missing; run with SCHEMIFY_BLESS=1"));
-    let want =
-        schemify_render::Pixmap::from_png(std::io::Cursor::new(want)).expect("decode golden");
-    assert_eq!(
-        (want.width(), want.height()),
-        (pixmap.width(), pixmap.height())
-    );
-    let bad = want
-        .data()
-        .iter()
-        .zip(pixmap.data())
-        .filter(|(a, b)| {
-            let (a, b) = ([a.r, a.g, a.b, a.a], [b.r, b.g, b.b, b.a]);
-            a.iter().zip(b).any(|(x, y)| x.abs_diff(y) > 2)
-        })
-        .count();
-    let limit = want.data().len() / 1000;
-    if bad > limit {
-        let out = format!("{}/{name}.actual.png", env!("CARGO_TARGET_TMPDIR"));
-        std::fs::write(&out, &png).unwrap();
-        panic!("{name}: {bad} pixels differ (limit {limit}); actual written to {out}");
-    }
-}
-
 /// The sheet open under the Modern preset; every placed cell resolves.
 fn sheet(tag: &str) -> Session {
     let mut s = Session::open("symbols", "sheet.shcomp", tag, true);
-    s.ed.command("view.theme_modern", "");
-    s.frame(InputEvents::default());
+    s.run("view.theme_modern", "");
     let missing = s.ed.scene().prims.rects.layer.iter();
     assert!(
         !missing.clone().any(|&l| l == LAYER_MISSING),
@@ -83,15 +49,15 @@ fn zoom_centred(s: &mut Session, c: (i32, i32), k: f64) {
 #[test]
 fn golden_core_symbols() {
     let mut s = sheet("core-symbols");
-    check_golden("core_symbols_dark", s.render());
+    common::check_golden("core_symbols_dark", s.render());
     s.key("Shift+O");
     assert!(s.ed.opts().light);
-    check_golden("core_symbols_light", s.render());
+    common::check_golden("core_symbols_light", s.render());
     zoom_centred(&mut s, (150, 55), 4.0);
-    check_golden("core_symbols_light_4x", s.render());
+    common::check_golden("core_symbols_light_4x", s.render());
     s.key("Shift+O");
     assert!(!s.ed.opts().light);
-    check_golden("core_symbols_dark_4x", s.render());
+    common::check_golden("core_symbols_dark_4x", s.render());
 }
 
 /// Review aid for the symbol loop (not a check): with `SCHEMIFY_SHOTS=<dir>`, writes an 8×

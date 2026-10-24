@@ -267,7 +267,6 @@ impl App for Demo {
             &mut self.text,
             state,
             Layer::Main,
-            &[],
             &mut self.ui_scratch,
         );
         let view = self.canvas_rect();
@@ -292,7 +291,6 @@ impl App for Demo {
             &mut self.text,
             &self.state,
             Layer::Overlay,
-            &[],
             &mut self.ui_scratch,
         );
         #[cfg(not(target_arch = "wasm32"))]

@@ -89,7 +89,6 @@ fn paint_shell(s: &mut Shell, w: u16, h: u16) -> schemify_render::Pixmap {
         &mut s.text,
         &s.state,
         Layer::Main,
-        &[],
         &mut ui,
     );
     let canvas_node = s
@@ -132,7 +131,6 @@ fn paint_shell(s: &mut Shell, w: u16, h: u16) -> schemify_render::Pixmap {
         &mut s.text,
         &s.state,
         Layer::Overlay,
-        &[],
         &mut ui,
     );
     p.finish(Color::BLACK)
@@ -278,7 +276,6 @@ fn paint_waves(waves: &Waves, ui: &mut WaveUi, w: u16, h: u16) -> schemify_rende
         &mut text,
         &state,
         Layer::Main,
-        &[],
         &mut us,
     );
     let look = WaveLook::default();
@@ -299,7 +296,6 @@ fn paint_waves(waves: &Waves, ui: &mut WaveUi, w: u16, h: u16) -> schemify_rende
         &mut text,
         &state,
         Layer::Overlay,
-        &[],
         &mut us,
     );
     p.finish(Color::from_rgba8(0xd9, 0xd9, 0xd9, 0xff))

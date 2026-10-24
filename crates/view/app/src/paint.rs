@@ -92,15 +92,7 @@ pub fn paint<P: Painter>(pic: Picture<'_>, c: &mut Caches, p: &mut P) -> (Option
 /// One layer of a UI's tables.
 fn draw_layer<P: Painter>(p: &mut P, ui: &mut UiView<'_>, layer: Layer, scratch: &mut UiScratch) {
     draw_ui(
-        p,
-        ui.tables,
-        ui.layout,
-        ui.strings,
-        ui.text,
-        ui.state,
-        layer,
-        &[],
-        scratch,
+        p, ui.tables, ui.layout, ui.strings, ui.text, ui.state, layer, scratch,
     );
 }
 
@@ -305,18 +297,9 @@ pub fn raster_png(ed: &mut Editor, r: &schemify_editor::editor::Raster) -> Resul
     let mut scratch = CanvasScratch::default();
     p.fill_rect(view, rgba(cp.palette.background));
     canvas::draw_grid(&mut p, view, &r.cam, cp.grid, &cp.palette, &mut scratch);
-    let prims = cp.shown.unwrap_or(cp.scene);
-    canvas::draw_prims(&mut p, view, &r.cam, prims, &cp.palette, text, &mut scratch);
-    let mut scratch2 = CanvasScratch::default();
-    canvas::draw_prims(
-        &mut p,
-        view,
-        &r.cam,
-        cp.decor,
-        &cp.palette,
-        text,
-        &mut scratch2,
-    );
+    for prims in [cp.shown.unwrap_or(cp.scene), cp.decor] {
+        canvas::draw_prims(&mut p, view, &r.cam, prims, &cp.palette, text, &mut scratch);
+    }
     let px = p.finish(Color::BLACK);
     assert_eq!((px.width(), px.height()), (pw as u16, ph as u16));
     px.into_png().map_err(|e| format!("png: {e:?}"))

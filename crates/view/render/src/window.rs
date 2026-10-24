@@ -8,7 +8,6 @@ use std::sync::Arc;
 use accesskit::{Action, TreeUpdate};
 use vello::kurbo::Affine;
 use vello::peniko::Color;
-use vello::util::{RenderContext, RenderSurface};
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, wgpu};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize};
@@ -108,31 +107,122 @@ impl From<accesskit_winit::Event> for UserEvent {
     }
 }
 
+/// The window's GPU: vello renders each frame into `target` (a storage texture: vello draws
+/// with compute shaders), which is blitted onto the surface's texture.
 struct Gpu {
-    cx: RenderContext,
-    surface: RenderSurface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    target: wgpu::TextureView,
+    blitter: wgpu::util::TextureBlitter,
     renderer: Renderer,
 }
 
 impl Gpu {
+    /// Picks the adapter: `WGPU_ADAPTER_NAME` when set, else the high-performance one among
+    /// those that can present to the window (the discrete GPU of a hybrid laptop: the iGPU
+    /// cost 6-21 ms a frame there), any compatible one otherwise; `WGPU_POWER_PREF` overrides
+    /// the preference. Logs the choice once.
     async fn new(window: Arc<Window>, w: u32, h: u32) -> Result<Gpu, String> {
-        let mut cx = RenderContext::new();
-        let surface = cx
-            .create_surface(window, w, h, wgpu::PresentMode::AutoVsync)
+        assert!(w > 0 && h > 0, "a sized window");
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let surface = instance.create_surface(window).map_err(|e| e.to_string())?;
+        let adapter = match wgpu::util::initialize_adapter_from_env(&instance, Some(&surface)).await
+        {
+            Ok(a) => a,
+            Err(_) => instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::from_env()
+                        .unwrap_or(wgpu::PowerPreference::HighPerformance),
+                    compatible_surface: Some(&surface),
+                    ..Default::default()
+                })
+                .await
+                .map_err(|e| e.to_string())?,
+        };
+        let info = adapter.get_info();
+        eprintln!(
+            "gpu: {} ({:?}, {:?})",
+            info.name, info.device_type, info.backend
+        );
+        // What vello's own context asks for.
+        let wanted = wgpu::Features::CLEAR_TEXTURE | wgpu::Features::PIPELINE_CACHE;
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                required_features: adapter.features() & wanted,
+                ..Default::default()
+            })
             .await
             .map_err(|e| e.to_string())?;
-        let device = &cx.devices[surface.dev_id].device;
+        let format = surface
+            .get_capabilities(&adapter)
+            .formats
+            .into_iter()
+            .find(|f| {
+                matches!(
+                    f,
+                    wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
+                )
+            })
+            .ok_or("no Rgba8Unorm or Bgra8Unorm surface format")?;
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: w,
+            height: h,
+            present_mode: wgpu::PresentMode::AutoVsync,
+            color_space: wgpu::SurfaceColorSpace::Auto,
+            // One frame in flight, not two: an input shows a frame sooner (vsync stays).
+            desired_maximum_frame_latency: 1,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            view_formats: vec![],
+        };
+        surface.configure(&device, &config);
         let options = RendererOptions {
             antialiasing_support: AaSupport::area_only(),
             ..RendererOptions::default()
         };
-        let renderer = Renderer::new(device, options).map_err(|e| e.to_string())?;
+        let renderer = Renderer::new(&device, options).map_err(|e| e.to_string())?;
         Ok(Gpu {
-            cx,
+            target: target(&device, w, h),
+            blitter: wgpu::util::TextureBlitter::new(&device, format),
+            device,
+            queue,
             surface,
+            config,
             renderer,
         })
     }
+
+    /// Resizes the surface and vello's target to `w x h` physical px.
+    fn resize(&mut self, w: u32, h: u32) {
+        assert!(w > 0 && h > 0, "a sized window");
+        (self.config.width, self.config.height) = (w, h);
+        self.surface.configure(&self.device, &self.config);
+        self.target = target(&self.device, w, h);
+    }
+}
+
+/// The `w x h` texture vello renders a frame into (a view keeps its texture alive).
+fn target(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("frame"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 struct Shell<A: App> {
@@ -242,9 +332,8 @@ impl<A: App> Shell<A> {
         if size.width == 0 || size.height == 0 {
             return;
         }
-        if gpu.surface.config.width != size.width || gpu.surface.config.height != size.height {
-            gpu.cx
-                .resize_surface(&mut gpu.surface, size.width, size.height);
+        if (gpu.config.width, gpu.config.height) != (size.width, size.height) {
+            gpu.resize(size.width, size.height);
         }
         let viewport = logical(size.width, size.height, self.scale);
         self.scene.reset();
@@ -256,24 +345,22 @@ impl<A: App> Shell<A> {
             layers: Some(&mut self.layers),
         };
         self.app.paint(&mut painter, viewport);
-        let dev = &gpu.cx.devices[gpu.surface.dev_id];
         if let Err(e) = self
             .layers
-            .raster(&dev.device, &dev.queue, &mut gpu.renderer)
+            .raster(&gpu.device, &gpu.queue, &mut gpu.renderer)
         {
             eprintln!("render layer: {e}");
         }
-        let frame = match gpu.surface.surface.get_current_texture() {
+        let frame = match gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                gpu.cx.configure_surface(&gpu.surface);
+                gpu.surface.configure(&gpu.device, &gpu.config);
                 window.request_redraw();
                 return;
             }
             _ => return,
         };
-        let dev = &gpu.cx.devices[gpu.surface.dev_id];
         // D39: a frame that only moved its cached layers (a pan, a zoom stand-in) skips vello:
         // the target still holds the last vello frame, and the layers are quads over it.
         let reuse = self.layers.reusable(size.width, size.height);
@@ -285,10 +372,10 @@ impl<A: App> Shell<A> {
                 antialiasing_method: AaConfig::Area,
             };
             if let Err(e) = gpu.renderer.render_to_texture(
-                &dev.device,
-                &dev.queue,
+                &gpu.device,
+                &gpu.queue,
                 &self.scene,
-                &gpu.surface.target_view,
+                &gpu.target,
                 &params,
             ) {
                 eprintln!("render: {e}");
@@ -296,7 +383,7 @@ impl<A: App> Shell<A> {
             }
             self.layers.rendered(size.width, size.height);
         }
-        let mut encoder = dev
+        let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("blit"),
@@ -304,22 +391,21 @@ impl<A: App> Shell<A> {
         let target = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        gpu.surface
-            .blitter
-            .copy(&dev.device, &mut encoder, &gpu.surface.target_view, &target);
+        gpu.blitter
+            .copy(&gpu.device, &mut encoder, &gpu.target, &target);
         if reuse {
             self.layers.compose(
-                &dev.device,
-                &dev.queue,
+                &gpu.device,
+                &gpu.queue,
                 &mut encoder,
                 &target,
-                gpu.surface.format,
+                gpu.config.format,
                 (size.width, size.height),
             );
         }
-        dev.queue.submit([encoder.finish()]);
+        gpu.queue.submit([encoder.finish()]);
         window.pre_present_notify();
-        dev.queue.present(frame);
+        gpu.queue.present(frame);
         // Web: a browser can take every WebGPU call and still show nothing (web spec §7).
         #[cfg(target_arch = "wasm32")]
         if !std::mem::replace(&mut self.probed, true) {
@@ -459,7 +545,7 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
                 match Gpu::new(win, w, h).await {
                     Ok(g) => {
                         let lost = proxy.clone();
-                        let device = &g.cx.devices[g.surface.dev_id].device;
+                        let device = &g.device;
                         // `Destroyed` is our own drop of the device after a fallback.
                         device.set_device_lost_callback(move |reason, msg| {
                             if reason != wgpu::DeviceLostReason::Destroyed {

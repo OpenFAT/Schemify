@@ -87,9 +87,7 @@ fn activate(s: &mut Session, id: &str) {
             .strings()
             .find(id)
             .unwrap_or_else(|| panic!("{id} interned"));
-    let mut ev = InputEvents::default();
-    ev.push(InputEvent::Activate { node: sym });
-    s.frame(ev);
+    s.send([InputEvent::Activate { node: sym }]);
 }
 
 /// Ticks with no input until the run is idle (the window's timer path), bounded.
@@ -215,7 +213,7 @@ fn net_highlight_covers_exactly_the_net_across_the_hierarchy() {
     let (keys, pins) = oracle(&s, &top_comp);
     let hl = s.ed.highlighted();
     assert!(!keys.is_empty());
-    assert_eq!(hl.keys, keys, "{}", s.ed.session().status());
+    assert_eq!(hl.keys, keys, "{}", s.status());
     assert_eq!(hl.pins.len(), pins);
     assert_eq!(pins, 2, "x1.VDD and x2.VDD");
     assert_eq!(s.ed.highlight_keys(), ["vdd"]);
@@ -245,7 +243,7 @@ fn netlist_command_writes_the_cli_bytes() {
     let mut s = open("inv", "top.shcomp", "netlist", None);
     s.key("n");
     let file = s.dir.join(".schemify/netlist/top.spice");
-    let bytes = std::fs::read(&file).unwrap_or_else(|e| panic!("{e}: {}", s.ed.session().status()));
+    let bytes = std::fs::read(&file).unwrap_or_else(|e| panic!("{e}: {}", s.status()));
     // The CLI's own load + netlist spine (`schemify netlist top.shcomp`; the binary lives in
     // schemify-cli since the D39 split, so its spine is called directly).
     let (mut o, _) = schemify_cli::spines::open_file(&s.dir.join("top.shcomp"), 1).unwrap();
@@ -305,11 +303,7 @@ fn netlist_command_writes_the_cli_bytes() {
     };
     s.frame(InputEvents::default());
     s.key("n");
-    assert!(
-        s.ed.session().status().contains("blocked"),
-        "{}",
-        s.ed.session().status()
-    );
+    assert!(s.status().contains("blocked"), "{}", s.status());
     assert!(!s.dir.join(".schemify/netlist/top.spice").exists());
     assert_eq!(s.ed.panel(), Panel::Checks);
     assert_eq!(node_kind(&s, "checks.blocked.0"), Some(Kind::Label));
@@ -321,11 +315,7 @@ fn netlist_command_writes_the_cli_bytes() {
 fn simulate_needs_a_bench_and_new_bench_makes_one() {
     let mut s = open("inv", "inv.shcomp", "newbench", None);
     s.key("s");
-    assert!(
-        s.ed.session().status().contains(".shbench"),
-        "{}",
-        s.ed.session().status()
-    );
+    assert!(s.status().contains(".shbench"), "{}", s.status());
     activate(&mut s, "sim.new_bench");
     let text = std::fs::read_to_string(s.dir.join("inv_tb.shbench")).unwrap();
     assert!(text.starts_with("schemify 1 shbench\n"), "{text}");
@@ -361,7 +351,7 @@ fn simulate_polls_a_fake_simulator_to_results_waves_and_op() {
         started < Duration::from_millis(250),
         "starting a run must not wait for the simulator: {started:?}"
     );
-    assert!(s.ed.sim().busy(), "{}", s.ed.session().status());
+    assert!(s.ed.sim().busy(), "{}", s.status());
     assert_eq!(s.ed.panel(), Panel::Results);
     let ticks = run_to_idle(&mut s);
     assert!(
@@ -423,16 +413,11 @@ fn simulate_polls_a_fake_simulator_to_results_waves_and_op() {
     assert_eq!(px.width(), common::VIEW.0 as u16);
     // Waves on the job, then cross-probe a click on the `out` wire.
     activate(&mut s, "results.waves");
-    assert!(s.ed.waves_open(), "{}", s.ed.session().status());
+    assert!(s.ed.waves_open(), "{}", s.status());
     s.move_screen(640.0, 60.0);
     s.key("f");
     s.click((0, 45 * U));
-    assert_eq!(
-        s.ed.waves_traces(),
-        ["v(out)"],
-        "{}",
-        s.ed.session().status()
-    );
+    assert_eq!(s.ed.waves_traces(), ["v(out)"], "{}", s.status());
     let px = s.render();
     assert_eq!(px.height(), common::VIEW.1 as u16);
     // Saved per D18 and reloaded by a fresh editor on the same project.
@@ -468,7 +453,7 @@ fn simulate_polls_a_fake_simulator_to_results_waves_and_op() {
     s2.key("Ctrl+A");
     s2.type_text("4.7k");
     s2.key("Enter");
-    assert!(s2.ed.sim().stale(), "{}", s2.ed.session().status());
+    assert!(s2.ed.sim().stale(), "{}", s2.status());
 }
 
 /// A swept bench overlays its plot slot: one trace per finished job (each sweep point), the
@@ -500,7 +485,7 @@ fn plot_slots_overlay_every_sweep_point() {
     s.key("s");
     run_to_idle(&mut s);
     let (_, jobs, _) = s.ed.sim().tables().unwrap();
-    assert_eq!(jobs.len(), 3, "{}", s.ed.session().status());
+    assert_eq!(jobs.len(), 3, "{}", s.status());
     assert!((0..3).all(|j| jobs.state(j) == State::Done));
     let w = s.ed.sim().plots[0].waves.as_ref().expect("a graph");
     assert_eq!(w.trace_count(), 3, "one trace per sweep point");
@@ -538,15 +523,10 @@ fn plot_slots_reach_cells_below_the_bench() {
     s.key("s");
     run_to_idle(&mut s);
     let (_, jobs, _) = s.ed.sim().tables().expect("a run");
-    assert_eq!(jobs.state(0), State::Done, "{}", s.ed.session().status());
+    assert_eq!(jobs.state(0), State::Done, "{}", s.status());
     let show = |s: &mut Session, file: &str| {
-        s.ed.command("file.open", file);
-        s.frame(InputEvents::default());
-        assert!(
-            s.ed.session().status().contains("opened"),
-            "{}",
-            s.ed.session().status()
-        );
+        s.run("file.open", file);
+        assert!(s.status().contains("opened"), "{}", s.status());
     };
     show(&mut s, "leaf.shcomp");
     let plot = s.ed.sim().plots.first().expect("the leaf's slot is filled");
@@ -584,11 +564,11 @@ fn optimizer_stages_the_best_point_accept_and_reject() {
         );
         let before = s.text();
         activate(&mut s, "sim.optimize");
-        assert!(s.ed.sim().busy(), "{}", s.ed.session().status());
+        assert!(s.ed.sim().busy(), "{}", s.status());
         run_to_idle(&mut s);
         let (h, _) = s.ed.active().unwrap();
         let stages = s.ed.session().project.stages(h);
-        assert_eq!(stages.len(), 1, "{}", s.ed.session().status());
+        assert_eq!(stages.len(), 1, "{}", s.status());
         assert_eq!(s.text(), before, "staged, not applied");
         assert_eq!(node_kind(&s, "docs.staged"), Some(Kind::Panel));
         // The best candidate: the jobs' R with the lowest |tau - 1m|.
@@ -956,12 +936,7 @@ fn bus_components_highlight_by_every_bit() {
     s.click((50 * U, 100 * U));
     assert_eq!(s.ed.selection().len(), 1);
     s.key("k");
-    assert_eq!(
-        s.ed.highlighted().keys,
-        keys(&s, &[0, 1]),
-        "{}",
-        s.ed.session().status()
-    );
+    assert_eq!(s.ed.highlighted().keys, keys(&s, &[0, 1]), "{}", s.status());
     s.key("Shift+K");
     assert!(s.ed.highlighted().keys.is_empty());
     s.click((50 * U, 0));
@@ -1073,11 +1048,7 @@ fn netlist_tab_finds_lines_of_the_whole_file() {
     let mut s = open("inv", "top.shcomp", "find", None);
     s.key("n");
     let text = std::fs::read_to_string(s.dir.join(".schemify/netlist/top.spice")).unwrap();
-    assert!(
-        s.ed.session().text_view().is_some(),
-        "{}",
-        s.ed.session().status()
-    );
+    assert!(s.ed.session().text_view().is_some(), "{}", s.status());
     let find = |s: &mut Session, q: &str| {
         s.click_node("textview.find");
         s.key("Ctrl+A");
@@ -1136,19 +1107,6 @@ fn results_pane_shows_the_run_log() {
     assert!(log.out.len() <= schemify_editor::sim::LOG_LINES);
 }
 
-/// The label of composed UI node `id`.
-fn label(s: &Session, id: &str) -> String {
-    let sh = &s.ed.shell();
-    let n = sh
-        .strings()
-        .find(id)
-        .and_then(|i| sh.tables().nodes.find(i))
-        .unwrap_or_else(|| panic!("{id} composed"));
-    sh.strings()
-        .get(sh.tables().nodes.prop(Prop::Label)[n as usize])
-        .to_owned()
-}
-
 /// Simulation → Netlist dialect → ESPice: the status shows it, and Simulate netlists the
 /// bench for espice (the fake simulator refuses any other deck) and records its results.
 /// Back on ngspice the next run is ngspice again (negative space).
@@ -1160,9 +1118,9 @@ fn the_espice_dialect_simulates_an_espice_deck() {
         )
     };
     let mut s = open("rc", "tb.shbench", "espice", Some(sh(&only("espice"))));
-    assert_eq!(label(&s, "status.mode"), "ngspice");
+    assert_eq!(s.label("status.mode"), "ngspice");
     activate(&mut s, "sim.dialect.espice");
-    assert_eq!(label(&s, "status.mode"), "espice");
+    assert_eq!(s.label("status.mode"), "espice");
     s.key("s");
     run_to_idle(&mut s);
     let (_, jobs, res) = s.ed.sim().tables().unwrap();

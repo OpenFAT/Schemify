@@ -91,17 +91,26 @@ impl Session {
         changed
     }
 
+    /// Runs one frame with `events`, in order.
+    pub fn send(&mut self, events: impl IntoIterator<Item = InputEvent>) -> bool {
+        let mut ev = InputEvents::default();
+        for e in events {
+            ev.push(e);
+        }
+        self.frame(ev)
+    }
+
     /// Presses a chord (`"w"`, `"Shift+R"`, `"Ctrl+Z"`).
     pub fn key(&mut self, chord: &str) {
         let chord = Chord::parse(chord).expect("chord parses");
         let mods = chord.mods();
-        let mut ev = InputEvents::default();
-        ev.push(InputEvent::Mods { mods });
-        ev.push(InputEvent::Key { chord });
-        ev.push(InputEvent::Mods {
-            mods: Mods::default(),
-        });
-        self.frame(ev);
+        self.send([
+            InputEvent::Mods { mods },
+            InputEvent::Key { chord },
+            InputEvent::Mods {
+                mods: Mods::default(),
+            },
+        ]);
     }
 
     /// Types text into the focused field.
@@ -114,40 +123,34 @@ impl Session {
     /// Moves the pointer to world point `p`.
     pub fn move_to(&mut self, p: Pt) {
         let (x, y) = self.ed.to_screen(p);
-        let mut ev = InputEvents::default();
-        ev.push(InputEvent::PointerMove { x, y });
-        self.frame(ev);
+        self.send([InputEvent::PointerMove { x, y }]);
     }
 
     /// Moves the pointer to screen point `(x, y)`.
     pub fn move_screen(&mut self, x: f32, y: f32) {
-        let mut ev = InputEvents::default();
-        ev.push(InputEvent::PointerMove { x, y });
-        self.frame(ev);
+        self.send([InputEvent::PointerMove { x, y }]);
     }
 
     fn button(&mut self, p: Pt, down: bool, button: Button, mods: u8) {
         let (x, y) = self.ed.to_screen(p);
-        let mut ev = InputEvents::default();
-        ev.push(InputEvent::Mods { mods: Mods(mods) });
-        ev.push(InputEvent::PointerMove { x, y });
-        ev.push(if down {
-            InputEvent::PointerDown { x, y, button }
-        } else {
-            InputEvent::PointerUp { x, y, button }
-        });
-        self.frame(ev);
+        self.send([
+            InputEvent::Mods { mods: Mods(mods) },
+            InputEvent::PointerMove { x, y },
+            if down {
+                InputEvent::PointerDown { x, y, button }
+            } else {
+                InputEvent::PointerUp { x, y, button }
+            },
+        ]);
     }
 
     /// Left click (press + release) at world point `p` with modifier bits `mods`.
     pub fn click_mods(&mut self, p: Pt, mods: u8) {
         self.button(p, true, Button::Left, mods);
         self.button(p, false, Button::Left, mods);
-        let mut ev = InputEvents::default();
-        ev.push(InputEvent::Mods {
+        self.send([InputEvent::Mods {
             mods: Mods::default(),
-        });
-        self.frame(ev);
+        }]);
     }
 
     /// Left click at world point `p`.
@@ -183,19 +186,50 @@ impl Session {
             .unwrap_or_else(|| panic!("{id} laid out"));
         let rect = s.layout().rect()[r];
         let (x, y) = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
-        let mut ev = InputEvents::default();
-        ev.push(InputEvent::PointerMove { x, y });
-        ev.push(InputEvent::PointerDown {
-            x,
-            y,
-            button: Button::Left,
-        });
-        ev.push(InputEvent::PointerUp {
-            x,
-            y,
-            button: Button::Left,
-        });
-        self.frame(ev);
+        self.send([
+            InputEvent::PointerMove { x, y },
+            InputEvent::PointerDown {
+                x,
+                y,
+                button: Button::Left,
+            },
+            InputEvent::PointerUp {
+                x,
+                y,
+                button: Button::Left,
+            },
+        ]);
+    }
+
+    /// Runs command `name` with `arg`, then one frame.
+    pub fn run(&mut self, name: &str, arg: &str) {
+        self.ed.command(name, arg);
+        self.frame(InputEvents::default());
+    }
+
+    /// The status line.
+    pub fn status(&self) -> &str {
+        self.ed.session().status()
+    }
+
+    /// Replaces the active document's text through Properties → Edit file (one undo).
+    pub fn set_text(&mut self, text: &str) {
+        self.key("Alt+Q");
+        self.run("dialog.edit_file.ok", text);
+        assert_eq!(self.text(), text, "{}", self.status());
+    }
+
+    /// The label of composed UI node `id`.
+    pub fn label(&self, id: &str) -> String {
+        let sh = &self.ed.shell();
+        let n = sh
+            .strings()
+            .find(id)
+            .and_then(|i| sh.tables().nodes.find(i))
+            .unwrap_or_else(|| panic!("{id} composed"));
+        sh.strings()
+            .get(sh.tables().nodes.prop(schemify_ui::Prop::Label)[n as usize])
+            .to_owned()
     }
 
     /// Canonical text of the active document.
@@ -225,6 +259,42 @@ pub fn save_png(px: &schemify_render::Pixmap, path: &Path) {
         std::fs::create_dir_all(dir).unwrap();
     }
     std::fs::write(path, png).unwrap();
+}
+
+/// Compares `pixmap` with `tests/golden/<name>.png`: equal size, and at most 0.1% of pixels
+/// off by more than 2 in a channel. `SCHEMIFY_BLESS=1` writes the golden first; a failure
+/// writes the actual image beside the test binary's temp dir.
+pub fn check_golden(name: &str, pixmap: schemify_render::Pixmap) {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden");
+    let path = format!("{dir}/{name}.png");
+    let png = pixmap.clone().into_png().expect("encode png");
+    if std::env::var_os("SCHEMIFY_BLESS").is_some() {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(&path, &png).unwrap();
+    }
+    let want = std::fs::read(&path)
+        .unwrap_or_else(|_| panic!("{path} missing; run with SCHEMIFY_BLESS=1"));
+    let want =
+        schemify_render::Pixmap::from_png(std::io::Cursor::new(want)).expect("decode golden");
+    assert_eq!(
+        (want.width(), want.height()),
+        (pixmap.width(), pixmap.height())
+    );
+    let bad = want
+        .data()
+        .iter()
+        .zip(pixmap.data())
+        .filter(|(a, b)| {
+            let (a, b) = ([a.r, a.g, a.b, a.a], [b.r, b.g, b.b, b.a]);
+            a.iter().zip(b).any(|(x, y)| x.abs_diff(y) > 2)
+        })
+        .count();
+    let limit = want.data().len() / 1000;
+    if bad > limit {
+        let out = format!("{}/{name}.actual.png", env!("CARGO_TARGET_TMPDIR"));
+        std::fs::write(&out, &png).unwrap();
+        panic!("{name}: {bad} pixels differ (limit {limit}); actual written to {out}");
+    }
 }
 
 /// Lines of `text` starting with `prefix`.

@@ -33,7 +33,7 @@ pub const TILE_PX: u32 = 256;
 /// also costs `TILE_COST`, so cheap content stops near 40 tiles); this cap only bounds the
 /// tile count. At 16, a zoom-out at 2× device scale left the uncovered bottom of the canvas
 /// blank for ~4 frames (#45).
-pub const TILES_PER_FRAME: usize = 64;
+const TILES_PER_FRAME: usize = 64;
 /// Cost (what `draw` reports, see [`draw_cached`]) one frame spends on recording by default
 /// (see [`CanvasCache::cost_per_frame`]): ≈ 0.4 ms in [`draw_prims_in`]'s units at 100k
 /// objects (≈ 8 ns a unit), so a frame that records stays under 0.6 ms of CPU; what does not
@@ -41,7 +41,7 @@ pub const TILES_PER_FRAME: usize = 64;
 /// 0.8 ms and the view was whole in ~7 frames; at 48 000, ~15 (2026-10, `docs/dev/perf.md`).
 ///
 /// [`draw_prims_in`]: crate::canvas::draw_prims_in
-pub const COST_PER_FRAME: usize = 48_000;
+const COST_PER_FRAME: usize = 48_000;
 /// The share of [`CanvasCache::cost_per_frame`] the ring ahead of the view may take (one
 /// part in this many): ring tiles are recorded only on frames something else asked for (an
 /// input frame), so a ring part is recorded only while it fits what is left of the frame's
@@ -55,7 +55,7 @@ const ZOOM_IN_COST: f64 = 4.0;
 /// Most parts across a tile a costly tile is recorded in, one budget step each (16 parts).
 const SPLIT_MAX: u32 = 4;
 /// Most atlas cells (a 32 × 32 grid of tiles: 8192 px square).
-pub const CELLS_MAX: usize = 1024;
+const CELLS_MAX: usize = 1024;
 /// Logical px a damage box is widened by: half the widest stroke, mark strokes, antialiasing
 /// and pixel snapping. Content must not draw farther than this outside its rows' boxes.
 pub const PATCH_PAD_PX: f64 = 8.0;
