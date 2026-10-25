@@ -53,7 +53,13 @@ Linux packages (x86_64, glibc 2.28 or newer):
 ```sh
 sudo apt install ./schemify_1.0.0-1_amd64.deb                 # Debian, Ubuntu, Mint
 sudo dnf install ./schemify-1.0.0-1.x86_64.rpm                # Fedora; zypper on openSUSE
-sudo pacman -U ./schemify-1.0.0-1-x86_64.pkg.tar.zst          # Arch (a PKGBUILD for the AUR ships too)
+sudo pacman -U ./schemify-1.0.0-1-x86_64.pkg.tar.zst          # Arch; or the AUR: yay -S schemify-bin
+```
+
+Homebrew (macOS, and Linux x86_64):
+
+```sh
+brew install OmarSiwy/schemify/schemify
 ```
 
 Nix, prebuilt and cached, no compiling:

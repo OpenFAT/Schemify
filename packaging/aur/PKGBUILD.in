@@ -2,7 +2,8 @@
 #
 # The AUR package `schemify-bin`: the release's Linux binaries, as built by publish.yaml
 # (manylinux_2_28, glibc >= 2.28). publish.yaml fills @VERSION@ and @SHA256@ and attaches
-# the result to each release; copy it into the AUR repository to update the package.
+# the result to each release; once the release is published, its `aur` job builds and installs
+# it with makepkg and, given AUR_SSH_PRIVATE_KEY, pushes it and its .SRCINFO to schemify-bin.
 pkgname=schemify-bin
 pkgver=@VERSION@
 pkgrel=1

@@ -29,7 +29,17 @@ Each release attaches packages built from its Linux binaries (x86_64, glibc 2.28
 
 Each package installs `schemify` and `schemify-gui` into `/usr/bin`. The editor's [runtime libraries](#runtime-libraries-on-linux) are recommended (Debian/Fedora) or optional (Arch) dependencies, because the core needs none of them.
 
-On Arch the release also carries a `PKGBUILD` for the AUR package `schemify-bin`; `makepkg -si` beside it builds and installs the same binaries.
+On Arch the same binaries are also the AUR package `schemify-bin` (`yay -S schemify-bin`, or `makepkg -si` beside the `PKGBUILD` the release carries).
+
+## With Homebrew
+
+On macOS (Apple silicon and Intel) and on Linux x86_64:
+
+```sh
+brew install OmarSiwy/schemify/schemify
+```
+
+The formula installs the release's `schemify` and `schemify-gui`; `schemify --version` checks it.
 
 The packages do not include a simulator: install ESPice from [its repository](https://github.com/OmarSiwy/ESPice), or your distribution's ngspice (suggested by the packages).
 
