@@ -1,13 +1,13 @@
 //! One drawing interface over two backends: vello's GPU [`Scene`] and the `vello_cpu` rasterizer
 //! (golden images, GPU-less fallback, D5). Monomorphized, so it costs nothing at runtime.
 //!
-//! Both backends also keep *raster layers* across frames ([`Painter::layer`],
-//! [`Painter::draw_layer`]): a picture recorded once and composed as an image afterwards, so a
-//! canvas that only moved costs one image draw instead of re-encoding every primitive
-//! (`canvas::draw_cached`, D39).
+//! Both draw the canvas from the instance rows [`crate::gpu`] packs ([`Painter::canvas`]): the
+//! GPU painter leaves them to the window's instanced pass, the CPU painter rasterizes them.
+//! The GPU painter also keeps *live layers* ([`Painter::live_layer`]): chrome recorded every
+//! frame but rasterized only when it changed, so a frame that only moved the camera composes
+//! without vello (D39).
 
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
 
 use vello::kurbo::{Affine, BezPath, PathEl, Rect, Shape, Stroke};
 use vello::low_level::vello_encoding::Transform;
@@ -19,7 +19,8 @@ use vello::{Glyph, Scene};
 
 use schemify_canvas::{CanvasPrims, Marks, Palette};
 
-use crate::gpu::{Change, Frame, InstanceRows};
+use crate::canvas::{self, Paths};
+use crate::gpu::{Change, Frame, InstanceRows, MARKS};
 use crate::layers::{LAYER_SLOTS, Layers};
 
 /// The drawing calls every frame builder uses. Coordinates are logical pixels; each painter
@@ -65,80 +66,6 @@ pub trait Painter {
         1.0
     }
 
-    /// Records `draw` into raster layer `slot` (a `w × h` device-pixel picture whose origin is
-    /// its top-left; `draw` paints in logical pixels as usual) and tags it `stamp`. The layer is
-    /// rasterized before the frame is composed and stays until `slot` is recorded again.
-    /// Returns false without calling `draw` when this painter keeps no layers; the caller then
-    /// paints directly.
-    ///
-    /// # Panics
-    ///
-    /// Panics on `slot ≥ LAYER_SLOTS`, an empty size, or `stamp == 0` (the "no layer" tag).
-    fn layer(
-        &mut self,
-        slot: usize,
-        stamp: u64,
-        w: u32,
-        h: u32,
-        draw: impl FnOnce(&mut Self),
-    ) -> bool
-    where
-        Self: Sized,
-    {
-        let _ = (slot, stamp, w, h, draw);
-        false
-    }
-
-    /// Redraws the part `[x, x + w) × [y, y + h)` (device px) of layer `slot` with `draw`,
-    /// which paints that part as [`Painter::layer`]'s `draw` paints a whole layer (its origin
-    /// is the part's top-left); the rest of the layer keeps its pixels. Returns false without
-    /// calling `draw` unless this painter holds layer `slot` tagged `stamp`.
-    ///
-    /// # Panics
-    ///
-    /// Panics on an empty part or one reaching outside the layer.
-    #[allow(clippy::too_many_arguments)]
-    fn patch_layer(
-        &mut self,
-        slot: usize,
-        stamp: u64,
-        x: u32,
-        y: u32,
-        w: u32,
-        h: u32,
-        draw: impl FnOnce(&mut Self),
-    ) -> bool
-    where
-        Self: Sized,
-    {
-        let _ = (slot, stamp, x, y, w, h, draw);
-        false
-    }
-
-    /// Whether this painter holds layer `slot` tagged `stamp` (recorded by it and not
-    /// replaced since).
-    fn holds_layer(&self, slot: usize, stamp: u64) -> bool {
-        let _ = (slot, stamp);
-        false
-    }
-
-    /// Draws layer `slot` through `at` (layer logical px → logical px), clipped to `clip`.
-    /// `stretch: None` copies pixels (`at` must cover `clip`); `Some(bg)` samples bilinearly (a
-    /// scaled stand-in) and paints the part of `clip` the layer misses with `bg`. Returns
-    /// false, drawing nothing, unless this painter holds layer `slot` tagged `stamp` (a fresh
-    /// painter, or one that never recorded it, holds none).
-    fn draw_layer(
-        &mut self,
-        slot: usize,
-        stamp: u64,
-        at: Affine,
-        clip: Rect,
-        stretch: Option<Color>,
-    ) -> bool {
-        let _ = (slot, stamp, at, clip, stretch);
-        false
-    }
-
     /// Paints `draw` (logical px, as usual) through raster layer `slot`, which follows its own
     /// picture: recorded every frame, rasterized again only when its calls changed, and drawn
     /// as an image over `r`, which `draw` must cover opaquely (a composed frame keeps the
@@ -165,30 +92,27 @@ pub trait Painter {
         self.fill_rect(r, Color::from_rgba8(128, 128, 128, 48));
     }
 
-    /// Draws the canvas from retained GPU instance rows ([`crate::gpu`]): `frame`'s
-    /// background and grid, `tables` in drawing order (each with how it changed since this
-    /// painter last drew it), then the `marks` over `marks.0` (repacked when `marks.2`), all
-    /// as a pass under this frame, which gets a hole over `frame.view` where it was painted
-    /// so far. Texts are not drawn: the caller paints them over. Returns false, drawing
-    /// nothing, when this painter keeps no rows (the CPU painter): the caller then draws the
-    /// tables itself.
+    /// Draws the canvas from the instance rows this painter keeps ([`crate::gpu`]):
+    /// `frame`'s background and grid, `tables` in drawing order (each packed after how it
+    /// changed since this painter last drew it), each table's texts through `texts(self, k)`
+    /// right after its rows, then the `marks` over `marks.0` (repacked when `marks.2`), all
+    /// clipped to `frame.view`. The GPU painter leaves the rows to the window's canvas pass
+    /// under this frame and cuts a hole in the frame over `frame.view` (so its texts land
+    /// over the rows, the marks under them); the CPU painter rasterizes them in place
+    /// ([`crate::canvas::draw_rows`]). The default draws nothing: a painter that never
+    /// shows a canvas (a test probe, the dock's shifted painter).
     fn canvas(
         &mut self,
         frame: &Frame,
         tables: [(&CanvasPrims, Change<'_>); 4],
         marks: (&CanvasPrims, &Marks, bool),
         palette: &Palette,
-    ) -> bool {
-        let _ = (frame, tables, marks, palette);
-        false
+        texts: impl FnMut(&mut Self, usize),
+    ) where
+        Self: Sized,
+    {
+        let _ = (frame, tables, marks, palette, texts);
     }
-}
-
-fn sampler(stretch: Option<Color>) -> ImageSampler {
-    ImageSampler::default().with_quality(match stretch {
-        Some(_) => ImageQuality::Medium,
-        None => ImageQuality::Low,
-    })
 }
 
 /// Maps image pixels onto `r`: the paint transform of [`Painter::image`].
@@ -308,7 +232,8 @@ pub struct ScenePainter<'a> {
     /// `scene` (or composing over the last frame when [`Layers::reusable`]).
     pub layers: Option<&'a mut Layers>,
     /// The canvas's instance rows ([`Painter::canvas`] packs into them and leaves the frame
-    /// to draw in [`InstanceRows::frame`]); `None` draws no canvas (the caller falls back).
+    /// to draw in [`InstanceRows::frame`]); `None` draws no canvas (a benchmark of the UI
+    /// alone).
     pub rows: Option<&'a mut InstanceRows>,
 }
 
@@ -468,8 +393,8 @@ impl Painter for ScenePainter<'_> {
     }
 
     fn push_clip(&mut self, r: Rect) {
-        // A clip paints nothing: hashed, but not something painted over a layer (the canvas
-        // opens one around its tile draws; a live layer drawn before them must stay composable).
+        // A clip paints nothing: hashed, but not something painted over a layer (a live layer
+        // drawn before it must stay composable).
         if let Some(l) = self.layers.as_deref_mut() {
             l.log.mark((5u8, rect_bits(r)));
         }
@@ -514,9 +439,10 @@ impl Painter for ScenePainter<'_> {
         tables: [(&CanvasPrims, Change<'_>); 4],
         marks: (&CanvasPrims, &Marks, bool),
         palette: &Palette,
-    ) -> bool {
+        mut texts: impl FnMut(&mut Self, usize),
+    ) {
         let Some(rows) = self.rows.as_deref_mut() else {
-            return false;
+            return; // a scene that draws no canvas (a benchmark of the UI alone)
         };
         assert!(rows.frame.is_none(), "one canvas per frame");
         for (src, (t, change)) in tables.into_iter().enumerate() {
@@ -536,7 +462,11 @@ impl Painter for ScenePainter<'_> {
             s.fill(Fill::NonZero, base, Color::BLACK, None, &view);
             s.pop_layer();
         });
-        true
+        self.push_clip(view);
+        for k in 0..4 {
+            texts(self, k);
+        }
+        self.pop_clip();
     }
 
     fn stroke_chains(&mut self, chains: &Chains, closed: bool, width: f64, color: Color) {
@@ -562,61 +492,6 @@ impl Painter for ScenePainter<'_> {
         self.base.as_coeffs()[0]
     }
 
-    fn holds_layer(&self, slot: usize, stamp: u64) -> bool {
-        self.layers
-            .as_deref()
-            .is_some_and(|l| l.held(slot, stamp).is_some())
-    }
-
-    fn layer(
-        &mut self,
-        slot: usize,
-        stamp: u64,
-        w: u32,
-        h: u32,
-        draw: impl FnOnce(&mut Self),
-    ) -> bool {
-        assert!(
-            slot < LAYER_SLOTS && w > 0 && h > 0 && stamp != 0,
-            "bad layer"
-        );
-        let Some(layers) = self.layers.as_deref_mut() else {
-            return false;
-        };
-        let mut scene = std::mem::take(&mut layers.sized(slot, w, h).scene);
-        scene.reset();
-        let (scene, _) = self.record(scene, false, draw);
-        let l = &mut self.layers.as_deref_mut().expect("checked above").slots[slot];
-        l.scene = scene;
-        l.stamp = stamp;
-        l.dirty = true;
-        l.patches.clear(); // the fresh picture covers them
-        true
-    }
-
-    fn patch_layer(
-        &mut self,
-        slot: usize,
-        stamp: u64,
-        x: u32,
-        y: u32,
-        w: u32,
-        h: u32,
-        draw: impl FnOnce(&mut Self),
-    ) -> bool {
-        let Some(image) = self.layers.as_deref().and_then(|l| l.held(slot, stamp)) else {
-            return false;
-        };
-        assert!(
-            w > 0 && h > 0 && x + w <= image.width && y + h <= image.height,
-            "patch outside its layer"
-        );
-        let (scene, _) = self.record(Scene::new(), false, draw);
-        let layers = self.layers.as_deref_mut().expect("checked above");
-        layers.slots[slot].patches.push((scene, [x, y, w, h]));
-        true
-    }
-
     fn live_layer(&mut self, slot: usize, r: Rect, draw: impl FnOnce(&mut Self)) {
         assert!(slot < LAYER_SLOTS, "bad layer slot");
         let Some(layers) = self.layers.as_deref_mut() else {
@@ -634,24 +509,22 @@ impl Painter for ScenePainter<'_> {
         scene.reset();
         let base = self.base;
         self.base = Affine::translate((-x0, -y0)) * base;
-        let (scene, hash) = self.record(scene, true, draw);
+        let (scene, hash) = self.record(scene, draw);
         self.base = base;
         let layers = self.layers.as_deref_mut().expect("checked above");
         let stamp = layers.live(slot, scene, hash);
         let s = self.device_scale();
         let at = Affine::translate((x0 / s, y0 / s));
-        let drawn = self.draw_layer(slot, stamp, at, r, None);
+        let drawn = self.draw_layer(slot, stamp, at, r);
         assert!(drawn, "a live layer is drawn the frame it is recorded");
     }
+}
 
-    fn draw_layer(
-        &mut self,
-        slot: usize,
-        stamp: u64,
-        at: Affine,
-        clip: Rect,
-        stretch: Option<Color>,
-    ) -> bool {
+impl ScenePainter<'_> {
+    /// Draws live layer `slot`, tagged `stamp`, through `at` (layer logical px → logical px),
+    /// clipped to `clip`, pixel for pixel (`at` covers `clip`). Returns false, drawing nothing,
+    /// unless this painter holds the layer so tagged.
+    fn draw_layer(&mut self, slot: usize, stamp: u64, at: Affine, clip: Rect) -> bool {
         let base = self.base;
         let s = self.device_scale();
         let Some(layers) = self.layers.as_deref_mut() else {
@@ -660,49 +533,38 @@ impl Painter for ScenePainter<'_> {
         let Some(image) = layers.held(slot, stamp).cloned() else {
             return false;
         };
-        // Neither where it lands nor how many tiles there are is part of the frame hash: a
-        // frame that only moved its layers can be composed without vello (`Layers::reusable`);
-        // the caller's clip around them names the covered area.
+        // Where it lands is not part of the frame hash: a frame that only moved its layers
+        // can be composed without vello (`Layers::reusable`).
         let to_device = base * at * Affine::scale(1.0 / s);
-        let draw = (slot, to_device, base.transform_rect_bbox(clip), stretch);
+        let draw = (slot, to_device, base.transform_rect_bbox(clip));
         if layers.log.draws.is_empty() {
             layers.log.mark(11u8); // where the layers start: what comes after is the top part
         }
         // A layer over the top part would be composed under it.
         layers.log.tangled |= layers.log.after;
         layers.log.draws.push(draw);
-        if let Some(bg) = stretch {
-            self.scene.fill(Fill::NonZero, base, bg, None, &clip);
-        }
         let brush = ImageBrush {
             image,
-            sampler: sampler(stretch),
+            sampler: ImageSampler::default().with_quality(ImageQuality::Low),
         };
         self.scene.push_clip_layer(Fill::NonZero, base, &clip);
         self.scene.draw_image(&brush, to_device);
         self.scene.pop_layer();
         true
     }
-}
 
-impl ScenePainter<'_> {
     /// Paints `draw` into `scene` (swapped in for the frame scene) and returns it with the hash
-    /// of its calls. The calls belong to a layer, not to the frame log: a stamped layer's are
-    /// not hashed at all (its stamp names them), a `live` layer's are hashed with the base
-    /// transform, so the same picture at the same place hashes the same from frame to frame.
-    fn record(
-        &mut self,
-        mut scene: Scene,
-        live: bool,
-        draw: impl FnOnce(&mut Self),
-    ) -> (Scene, u64) {
+    /// of its calls. The calls belong to a live layer, not to the frame log; they are hashed
+    /// with the base transform, so the same picture at the same place hashes the same from
+    /// frame to frame.
+    fn record(&mut self, mut scene: Scene, draw: impl FnOnce(&mut Self)) -> (Scene, u64) {
         let layers = self
             .layers
             .as_deref_mut()
             .expect("only a painter with layers records");
         assert!(!layers.log.recording, "recordings do not nest");
         let frame = std::mem::take(&mut layers.log.hash);
-        (layers.log.recording, layers.log.live) = (true, live);
+        layers.log.recording = true;
         self.base
             .as_coeffs()
             .map(f64::to_bits)
@@ -711,7 +573,7 @@ impl ScenePainter<'_> {
         draw(self);
         std::mem::swap(self.scene, &mut scene);
         let layers = self.layers.as_deref_mut().expect("checked above");
-        (layers.log.recording, layers.log.live) = (false, false);
+        layers.log.recording = false;
         let hash = std::mem::replace(&mut layers.log.hash, frame).finish();
         (scene, hash)
     }
@@ -756,14 +618,16 @@ fn encode_chains(
     }
 }
 
-/// Paints with `vello_cpu` into a pixmap: golden images and the no-GPU fallback. Raster layers
-/// are rasterized when recorded and kept across [`CpuPainter::reset`].
+/// Paints with `vello_cpu` into a pixmap: golden images and the no-GPU fallback. The canvas's
+/// instance rows are kept across [`CpuPainter::reset`] and patched as the GPU's are.
 pub struct CpuPainter {
     ctx: vello_cpu::RenderContext,
     resources: vello_cpu::Resources,
     base: Affine,
-    /// `(stamp, pixels)` per slot; stamp 0 = empty.
-    layers: Vec<(u64, Arc<vello_cpu::Pixmap>)>,
+    /// The canvas's instance rows (kept across frames, patched as the GPU's are) and the
+    /// paths they are batched into.
+    rows: InstanceRows,
+    paths: Paths,
 }
 
 impl std::fmt::Debug for CpuPainter {
@@ -788,32 +652,12 @@ impl CpuPainter {
             ctx: vello_cpu::RenderContext::new(w, h),
             resources: vello_cpu::Resources::new(),
             base: Affine::scale(scale),
-            layers: Vec::new(),
+            rows: InstanceRows::default(),
+            paths: Paths::default(),
         }
     }
 
-    /// Pixels of layer `slot` when it is tagged `stamp`.
-    fn held(&self, slot: usize, stamp: u64) -> Option<&Arc<vello_cpu::Pixmap>> {
-        self.layers
-            .get(slot)
-            .filter(|l| stamp != 0 && l.0 == stamp)
-            .map(|l| &l.1)
-    }
-
-    /// Rasterizes `draw` into a fresh `w × h` pixmap (a context of that size swapped in for
-    /// the frame's).
-    fn record(&mut self, w: u16, h: u16, draw: impl FnOnce(&mut Self)) -> vello_cpu::Pixmap {
-        let mut other = vello_cpu::RenderContext::new(w, h);
-        std::mem::swap(&mut self.ctx, &mut other);
-        draw(self);
-        std::mem::swap(&mut self.ctx, &mut other);
-        let mut pixmap = vello_cpu::Pixmap::new(w, h);
-        other.flush();
-        other.render(&mut pixmap, &mut self.resources);
-        pixmap
-    }
-
-    /// Starts a new frame on the same target, keeping the raster layers.
+    /// Starts a new frame on the same target, keeping the canvas rows.
     pub fn reset(&mut self) {
         self.ctx.reset();
     }
@@ -895,99 +739,30 @@ impl Painter for CpuPainter {
         self.base.as_coeffs()[0]
     }
 
-    fn holds_layer(&self, slot: usize, stamp: u64) -> bool {
-        self.held(slot, stamp).is_some()
-    }
-
-    fn layer(
+    fn canvas(
         &mut self,
-        slot: usize,
-        stamp: u64,
-        w: u32,
-        h: u32,
-        draw: impl FnOnce(&mut Self),
-    ) -> bool {
-        assert!(
-            slot < LAYER_SLOTS && w > 0 && h > 0 && stamp != 0,
-            "bad layer"
-        );
-        let (w, h) = (
-            u16::try_from(w).expect("layer width fits u16"),
-            u16::try_from(h).expect("layer height fits u16"),
-        );
-        let pixmap = self.record(w, h, draw);
-        if self.layers.len() <= slot {
-            self.layers
-                .resize_with(slot + 1, || (0, Arc::new(vello_cpu::Pixmap::new(1, 1))));
+        frame: &Frame,
+        tables: [(&CanvasPrims, Change<'_>); 4],
+        marks: (&CanvasPrims, &Marks, bool),
+        palette: &Palette,
+        mut texts: impl FnMut(&mut Self, usize),
+    ) {
+        let mut rows = std::mem::take(&mut self.rows);
+        let mut paths = std::mem::take(&mut self.paths);
+        let (view, cam) = (frame.view, &frame.cam);
+        self.push_clip(view);
+        self.fill_rect(view, rgba(frame.background));
+        canvas::draw_grid(self, view, cam, frame.grid, frame.grid_color, &mut paths);
+        for (src, (t, change)) in tables.into_iter().enumerate() {
+            rows.pack(src, t, palette, change);
+            canvas::draw_rows(self, view, cam, &rows, src, &mut paths);
+            texts(self, src);
         }
-        self.layers[slot] = (stamp, Arc::new(pixmap));
-        true
-    }
-
-    fn patch_layer(
-        &mut self,
-        slot: usize,
-        stamp: u64,
-        x: u32,
-        y: u32,
-        w: u32,
-        h: u32,
-        draw: impl FnOnce(&mut Self),
-    ) -> bool {
-        let Some(layer) = self.held(slot, stamp) else {
-            return false;
-        };
-        let (lw, lh) = (u32::from(layer.width()), u32::from(layer.height()));
-        assert!(
-            w > 0 && h > 0 && x + w <= lw && y + h <= lh,
-            "patch outside its layer"
-        );
-        let part = self.record(w as u16, h as u16, draw);
-        // Copy-on-write: a frame still sampling the old picture keeps it.
-        let dst = Arc::make_mut(&mut self.layers[slot].1).data_mut();
-        let (lw, w, x, y) = (lw as usize, w as usize, x as usize, y as usize);
-        for (r, src) in part.data().chunks_exact(w).enumerate() {
-            let at = (y + r) * lw + x;
-            dst[at..at + w].copy_from_slice(src);
-        }
-        true
-    }
-
-    fn draw_layer(
-        &mut self,
-        slot: usize,
-        stamp: u64,
-        at: Affine,
-        clip: Rect,
-        stretch: Option<Color>,
-    ) -> bool {
-        let Some(pixmap) = self.held(slot, stamp) else {
-            return false;
-        };
-        let s = self.device_scale();
-        let to_logical = at * Affine::scale(1.0 / s);
-        let size = Rect::new(
-            0.0,
-            0.0,
-            f64::from(pixmap.width()),
-            f64::from(pixmap.height()),
-        );
-        let image = vello_cpu::Image {
-            image: vello_cpu::ImageSource::Pixmap(pixmap.clone()),
-            sampler: sampler(stretch),
-        };
-        self.ctx.set_transform(self.base);
-        if let Some(bg) = stretch {
-            self.ctx.set_paint(bg);
-            self.ctx.fill_rect(&clip);
-        }
-        // Only where the image lies: outside it the sampler would smear its edge pixels.
-        let area = clip.intersect(to_logical.transform_rect_bbox(size));
-        self.ctx.set_paint_transform(to_logical);
-        self.ctx.set_paint(image);
-        self.ctx.fill_rect(&area);
-        self.ctx.reset_paint_transform();
-        true
+        rows.pack_marks(marks.0, marks.1, marks.2);
+        canvas::draw_rows(self, view, cam, &rows, MARKS, &mut paths);
+        self.pop_clip();
+        rows.clear_dirty(); // read in place: nothing to upload
+        (self.rows, self.paths) = (rows, paths);
     }
 
     fn image(&mut self, image: &ImageData, r: Rect) {

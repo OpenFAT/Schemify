@@ -1,24 +1,24 @@
-//! The canvas layer: batched schematic primitives in `i32` world milli-units (D33) drawn through
-//! a pan/zoom [`Camera`].
+//! The canvas layer: schematic primitives in `i32` world milli-units (D33) drawn through a
+//! pan/zoom [`Camera`] on the CPU, from the same instance rows the GPU pipelines draw
+//! ([`crate::gpu::InstanceRows`]).
 //!
 //! # Data design
 //!
-//! 1. **In → out.** [`CanvasPrims`] (filled by `elab`/`doc` later, synthetic in the demo) +
-//!    [`Camera`] + [`Palette`] → one stroke path and one fill path per layer → painter calls.
+//! 1. **In → out.** [`InstanceRows`] (packed from [`CanvasPrims`] by `gpu`: colour, width,
+//!    fill and drawing order already decided) + [`Camera`] → per layer a few batched paths →
+//!    painter calls.
 //! 2. **How many.** 10^2–10^5 visible primitives per frame (D39 budgets 120 fps at 10^5).
-//! 3. **How wide.** Coordinates `i32` milli-units (±2.1 M covers the corpus, D33); layer `u8`
-//!    (xschem has 22); arc angles `i32` millidegrees; text size `i32` milli-units; screen math
-//!    in `f64` (the camera) and `f32` only at the GPU boundary (vello's encoding).
-//! 4. **Access.** Every frame reads all coordinates of one primitive kind in one linear pass;
-//!    layer decides the batch. So each kind is SoA (`x0`, `y0`, … columns) and batching is by
-//!    layer into reused paths: one draw call per (layer, stroke|fill), not per primitive.
-//! 5. **Lifetime.** Prims: document lifetime (rebuilt by their owner on edit). Paths and glyph
-//!    caches in [`CanvasScratch`]: reused across frames, never freed while the canvas lives.
-//!    The picture itself: one raster layer per canvas ([`draw_cached`]), re-recorded only when
-//!    the content key or the zoom changes or a pan leaves its margin, so a steady pan or zoom
-//!    frame encodes nothing (D39).
-//! 6. **Parallel.** The per-kind passes are independent (they could fill per-layer paths on
-//!    separate threads), but they run only when the layer is re-recorded, so they stay serial.
+//! 3. **How wide.** Rows in `i32` milli-units (±2.1 M covers the corpus, D33), arc angles `i32`
+//!    millidegrees, text size `i32` milli-units; screen math in `f64` (the camera), path points
+//!    `f32` where the painter takes them.
+//! 4. **Access.** Rows come grouped by palette layer, so one pass per layer reads that layer's
+//!    slot range of each kind and batches it into reused paths: one draw call per (layer,
+//!    path kind), not per primitive.
+//! 5. **Lifetime.** Rows: the CPU painter's canvas keeps them across frames (patched like the
+//!    GPU's); [`draw_prims`] packs into [`CanvasScratch`] per call. Paths and glyph caches:
+//!    reused across frames, never freed while the canvas lives.
+//! 6. **Parallel.** Layers are drawn in order (antialiased edges blend over the layers below),
+//!    so serial.
 
 use std::collections::HashMap;
 
@@ -29,23 +29,18 @@ use vello::peniko::FontData;
 use schemify_ui::TextSystem;
 use schemify_ui::parley::PositionedLayoutItem;
 
+use crate::gpu::{self, ARC, CLOSED, Change, EDGE, FILL, FIRST, InstanceRows, LINE, PARITY, RECT};
 use crate::painter::{Chains, Painter, push_rect, rgba};
-pub use crate::tiles::{CanvasCache, PATCH_PAD_PX, TILE_PX, draw_cached};
 use schemify_canvas::*;
 
-/// Reused per-frame buffers and the shaped-label cache (glyphs per distinct string, shared by
-/// every primitive table drawn through it). Keep one per canvas.
+/// Reused per-frame buffers, the rows of the tables drawn through it, and the shaped-label
+/// cache (glyphs per distinct string, shared by every primitive table drawn through it). Keep
+/// one per canvas.
 #[derive(Default)]
 pub struct CanvasScratch {
-    open: Vec<Chains>,
-    closed: Vec<Chains>,
-    curves: Vec<BezPath>,
-    fill: Vec<BezPath>,
-    /// Strokes of rows not in [`LineStyle::PLAIN`], one path per (layer, style) seen so far.
-    styled: Vec<(u8, LineStyle, BezPath)>,
-    dots: Chains,
-    path: BezPath,
-    lod: Lod,
+    /// The paths [`draw_rows`] batches into.
+    pub paths: Paths,
+    rows: InstanceRows,
     text_face: Option<FontData>,
     /// Glyph range in `text_glyphs` of each string shaped so far.
     text_runs: HashMap<Box<str>, (u32, u32)>,
@@ -62,131 +57,86 @@ impl std::fmt::Debug for CanvasScratch {
     }
 }
 
-/// Primitives whose screen box is at most this many logical px each way are drawn as the whole
-/// pixels that box touches (level of detail, D39): at a far zoom a row costs a few bit sets
-/// instead of path segments, and below two pixels a stroke and a block look alike. A function
-/// of the zoom and the row only, so a tile, a patch and the whole view draw a row alike.
-const LOD_PX: f64 = 2.0;
-/// Cost units a row drawn as a path or label adds over one culled or drawn as pixels (it is
-/// about that many times slower: path encoding against a few bit sets).
-pub const PATH_COST: usize = 6;
-/// Most pixels a level-of-detail mask covers (2 MiB per layer); larger views draw every row
-/// as a path.
-const LOD_AREA_MAX: i64 = 1 << 24;
-
-/// Per-layer pixel masks of the [`LOD_PX`]-small rows of one view, drawn as horizontal runs.
-#[derive(Default)]
-struct Lod {
-    /// The mask's pixel (0, 0) in view px, its size in px (0 = off) and words per mask row.
-    x0: i64,
-    y0: i64,
-    w: i64,
-    h: i64,
-    wpr: usize,
-    /// Per layer, `wpr · h` words once used; all zero between draws.
-    bits: Vec<Vec<u64>>,
-    /// Layers with a set bit.
-    used: u32,
-    runs: Chains,
+/// The paths [`draw_rows`] batches one layer into (reused, so a frame allocates nothing once
+/// they have grown), and the grid's dots.
+#[derive(Debug, Default)]
+pub struct Paths {
+    /// Plain closed strokes (rects, polygons), plain open ones (lines, polylines), plain arcs.
+    closed: Chains,
+    open: Chains,
+    curves: BezPath,
+    /// Fills: rects, circles, polygons.
+    fill: BezPath,
+    /// Styled strokes, one path per (width in 1/16 px, dash) seen so far.
+    styled: Vec<(u32, u32, BezPath)>,
+    /// Far-zoom rows as the whole pixels their box touches.
+    lod: Chains,
+    /// The marks of one colour run.
+    marks: BezPath,
+    dots: Chains,
 }
 
-impl Lod {
-    /// Starts the masks of `view` (empty: the previous draw flushed every layer).
-    fn begin(&mut self, view: Rect) {
-        assert_eq!(self.used, 0, "every layer flushed");
-        let (x0, y0) = (view.x0.floor() as i64, view.y0.floor() as i64);
-        let (w, h) = (view.x1.ceil() as i64 - x0, view.y1.ceil() as i64 - y0);
-        let on = w > 0 && h > 0 && w.saturating_mul(h) <= LOD_AREA_MAX;
-        (self.x0, self.y0) = (x0, y0);
-        (self.w, self.h) = if on { (w, h) } else { (0, 0) };
-        self.wpr = (self.w as usize).div_ceil(64);
-        self.bits.resize_with(LAYERS, Vec::new);
+impl Paths {
+    /// Empties the per-layer paths, keeping their capacity (and the styles seen).
+    fn clear(&mut self) {
+        self.closed.clear();
+        self.open.clear();
+        self.lod.clear();
+        for path in [&mut self.curves, &mut self.fill, &mut self.marks] {
+            path.truncate(0);
+        }
+        for b in &mut self.styled {
+            b.2.truncate(0);
+        }
     }
 
-    /// Marks the pixels of screen box `[x0, x1] × [y0, y1]` in `layer` when it is
-    /// [`LOD_PX`]-small; false (nothing marked) when it is larger or the masks are off.
-    #[inline(always)]
-    fn mark(&mut self, layer: usize, x0: f64, y0: f64, x1: f64, y1: f64) -> bool {
-        debug_assert!(x0 <= x1 && y0 <= y1);
-        if self.w == 0 || x1 - x0 > LOD_PX || y1 - y0 > LOD_PX {
+    /// The path that collects the rows of style word `style` (its width and dash; made on
+    /// first use), and the pixel offset its points snap to: a pixel centre for an odd rounded
+    /// width, the pixel edge for an even one, so both stay crisp.
+    fn styled(&mut self, style: u32) -> (&mut BezPath, f64) {
+        let (q16, dash) = (style & 0xffff, (style >> 16) & 0xf);
+        let w = f64::from(q16) / 16.0;
+        let o = if (w.round() as i64) % 2 == 0 {
+            0.0
+        } else {
+            0.5
+        };
+        let at = match self.styled.iter().position(|b| (b.0, b.1) == (q16, dash)) {
+            Some(at) => at,
+            None => {
+                assert!(
+                    self.styled.len() < LAYERS * 64,
+                    "styles are a byte per layer"
+                );
+                self.styled.push((q16, dash, BezPath::new()));
+                self.styled.len() - 1
+            }
+        };
+        (&mut self.styled[at].2, o)
+    }
+
+    /// Notes a row whose screen box `b` is [`LOD_PX`]-small as the whole pixels it touches;
+    /// false (nothing noted) when it is larger.
+    #[inline]
+    fn lod(&mut self, b: [f64; 4]) -> bool {
+        debug_assert!(b[0] <= b[2] && b[1] <= b[3]);
+        if b[2] - b[0] > LOD_PX || b[3] - b[1] > LOD_PX {
             return false;
         }
-        let (a, b) = (pixel_i(x0) - self.x0, pixel_i(x1) - self.x0);
-        let (c, d) = (pixel_i(y0) - self.y0, pixel_i(y1) - self.y0);
-        if b < 0 || d < 0 || a >= self.w || c >= self.h {
-            return true; // wholly outside: nothing to show
-        }
-        let (a, b) = (a.max(0) as usize, b.min(self.w - 1) as usize);
-        let (c, d) = (c.max(0) as usize, d.min(self.h - 1) as usize);
-        if self.used & (1 << layer) == 0 {
-            self.used |= 1 << layer;
-            self.bits[layer].resize(self.wpr * self.h as usize, 0);
-        }
-        // At most 3 px across: the bits of a row sit in one word or two.
-        let (wa, wb) = (a / 64, b / 64);
-        let (ma, mb) = (!0u64 << (a % 64), !0u64 >> (63 - b % 64));
-        let bits = &mut self.bits[layer];
-        for y in c..=d {
-            let row = y * self.wpr;
-            if wa == wb {
-                bits[row + wa] |= ma & mb;
-            } else {
-                bits[row + wa] |= ma;
-                bits[row + wb] |= mb;
-            }
-        }
+        let (x0, y0) = (pixel(b[0]) as f32, pixel(b[1]) as f32);
+        let (x1, y1) = (pixel(b[2]) as f32 + 1.0, pixel(b[3]) as f32 + 1.0);
+        // ponytail: one rect per far-zoom row (overlaps fill once: whole pixels, non-zero);
+        // a per-layer pixel mask drawn as runs if the GPU-less far-zoom frame measures slow.
+        self.lod.push(&[[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
         true
     }
-
-    /// Fills `layer`'s marked pixels in `color` (one rect per horizontal run) and clears them.
-    ///
-    /// Cost: O(mask words + runs).
-    fn flush<P: Painter>(&mut self, p: &mut P, layer: usize, color: vello::peniko::Color) {
-        if self.used & (1 << layer) == 0 {
-            return;
-        }
-        self.used &= !(1 << layer);
-        self.runs.clear();
-        let wpr = self.wpr;
-        let bits = &mut self.bits[layer];
-        for y in 0..self.h as usize {
-            let row = &mut bits[y * wpr..(y + 1) * wpr];
-            let (fy, ly) = ((self.y0 + y as i64) as f32, (self.y0 + y as i64 + 1) as f32);
-            let run = |runs: &mut Chains, a: usize, b: usize| {
-                let (fa, fb) = ((self.x0 + a as i64) as f32, (self.x0 + b as i64) as f32);
-                runs.push(&[[fa, fy], [fb, fy], [fb, ly], [fa, ly]]);
-            };
-            let mut start: Option<usize> = None;
-            for (i, word) in row.iter_mut().enumerate() {
-                let (m, base) = (std::mem::take(word), i * 64);
-                let mut at = 0u32;
-                // Bits below `at` are done; a run open at a word's end continues into the next.
-                while at < 64 {
-                    let rest = m >> at;
-                    match start {
-                        None if rest == 0 => break,
-                        None => {
-                            at += rest.trailing_zeros();
-                            start = Some(base + at as usize);
-                        }
-                        Some(a) => {
-                            at += (!rest).trailing_zeros();
-                            if at < 64 {
-                                run(&mut self.runs, a, base + at as usize);
-                                start = None;
-                            }
-                        }
-                    }
-                }
-            }
-            if let Some(a) = start {
-                run(&mut self.runs, a, self.w as usize);
-            }
-        }
-        assert!(self.runs.end.len() <= (self.w * self.h) as usize);
-        p.fill_chains(&self.runs, color);
-    }
 }
+
+/// Primitives whose screen box is at most this many logical px each way are drawn as the whole
+/// pixels that box touches (level of detail, D39): below two pixels a stroke and a block look
+/// alike, and a block is cheap. A function of the camera and the row only (a chain on the CPU,
+/// as one path), as `gpu.wgsl` cuts it.
+pub const LOD_PX: f64 = 2.0;
 
 /// Labels are shaped once at this size and scaled by the camera.
 const TEXT_REF_PX: f32 = 64.0;
@@ -213,27 +163,28 @@ pub fn draw_canvas<P: Painter>(
 ) {
     p.push_clip(view);
     p.fill_rect(view, rgba(palette.background));
-    draw_grid(p, view, cam, grid_step, palette, scratch);
+    draw_grid(p, view, cam, grid_step, palette.grid, &mut scratch.paths);
     draw_prims(p, view, cam, prims, palette, text, scratch);
     draw_prims(p, view, cam, overlay, palette, text, scratch);
     draw_marks(p, view, cam, prims, marks, scratch);
     p.pop_clip();
 }
 
-/// Grid dots every `step` milli-units, doubled until they are ≥ 10 px apart (xschem's rule).
+/// Grid dots every `step` milli-units in `color` (`0xRRGGBBAA`), doubled until they are ≥ 10
+/// px apart (xschem's rule).
 pub fn draw_grid<P: Painter>(
     p: &mut P,
     view: Rect,
     cam: &Camera,
     step: i32,
-    palette: &Palette,
-    scratch: &mut CanvasScratch,
+    color: u32,
+    paths: &mut Paths,
 ) {
     let Some((s, i0, i1, j0, j1)) = grid_dots(view, cam, step) else {
         return;
     };
     let (ox, oy) = cam.origin(view);
-    let dots = &mut scratch.dots;
+    let dots = &mut paths.dots;
     dots.clear();
     for j in j0..=j1 {
         let y = pixel(j as f64 * s * cam.scale + oy) as f32;
@@ -242,7 +193,7 @@ pub fn draw_grid<P: Painter>(
             dots.push(&[[x, y], [x + 1.0, y], [x + 1.0, y + 1.0], [x, y + 1.0]]);
         }
     }
-    p.fill_chains(dots, rgba(palette.grid));
+    p.fill_chains(dots, rgba(color));
 }
 
 /// The grid `step` milli-units apart as `view` shows it through `cam`: the dot pitch in
@@ -274,11 +225,10 @@ pub fn grid_dots(view: Rect, cam: &Camera, step: i32) -> Option<(f64, i64, i64, 
     Some((s, i0, i1, j0, j1))
 }
 
-/// Start and sweep of arc `i` in radians.
+/// Millidegrees in radians.
 #[inline]
-fn arc_angles(a: &Arcs, i: usize) -> (f64, f64) {
-    let rad = |m: i32| f64::from(m).to_radians() / 1000.0;
-    (rad(a.start[i]), rad(a.sweep[i]))
+fn radians(m: u32) -> f64 {
+    f64::from(m as i32).to_radians() / 1000.0
 }
 
 /// Appends a circular arc as ≤ 4 cubics (one per started quarter turn); a sweep of a full turn
@@ -311,8 +261,8 @@ fn push_arc(path: &mut BezPath, cx: f64, cy: f64, r: f64, start: f64, sweep: f64
 }
 
 /// Snaps a coordinate to the pixel center so 1 px strokes stay crisp. The 1e-6 px bias keeps a
-/// coordinate that lands on a pixel edge on the same side whether its camera origin was
-/// computed directly or rebuilt for a cached layer (they differ by rounding, ~1e-9 px).
+/// coordinate that lands on a pixel edge on the same side however its camera origin was
+/// rounded (two derivations differ by ~1e-9 px).
 #[inline]
 fn snap(v: f64) -> f64 {
     pixel(v) + 0.5
@@ -325,7 +275,7 @@ fn pixel(v: f64) -> f64 {
 }
 
 /// [`pixel`] as an integer. A truncating cast and a compare: `f64::floor` is a libm call on
-/// baseline x86-64 (no SSE4.1), which cost ~10% of a far-zoom tile. Exact for |v| < 2^63
+/// baseline x86-64 (no SSE4.1), which cost ~10% of a far-zoom frame. Exact for |v| < 2^63
 /// (screen coordinates are far inside).
 #[inline]
 fn pixel_i(v: f64) -> i64 {
@@ -334,8 +284,41 @@ fn pixel_i(v: f64) -> i64 {
     t - i64::from((t as f64) > v)
 }
 
-/// Builds one stroke path and one fill path per layer from all primitive tables, then issues
-/// at most two draw calls per used layer. Off-screen primitives are culled.
+/// A screen point snapped to a pixel centre, as path points.
+#[inline]
+fn pt((x, y): (f64, f64)) -> [f32; 2] {
+    [snap(x) as f32, snap(y) as f32]
+}
+
+/// A screen point snapped to whole pixels plus `o` (see [`Paths::styled`]).
+#[inline]
+fn pt_at((x, y): (f64, f64), o: f64) -> (f64, f64) {
+    (pixel(x) + o, pixel(y) + o)
+}
+
+/// The ordered box `[x0, y0, x1, y1]` of two screen points.
+#[inline]
+fn boxed(a: (f64, f64), b: (f64, f64)) -> [f64; 4] {
+    [a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)]
+}
+
+/// The stroke of a styled row's style word: its width (1/16 px), round caps and joins (a thick
+/// zigzag mitres into spikes), dashes and gaps of `2 · dash` px.
+fn stroke_of(q16: u32, dash: u32) -> Stroke {
+    assert!(q16 > 0, "zero-width stroke");
+    let w = f64::from(q16) / 16.0;
+    let stroke = Stroke::new(w).with_caps(Cap::Round).with_join(Join::Round);
+    let d = 2.0 * f64::from(dash);
+    if d > 0.0 {
+        stroke.with_dashes(0.0, [d, d])
+    } else {
+        stroke
+    }
+}
+
+/// Draws the primitives of `prims` (packed into `scratch`'s rows, then [`draw_rows`]) and their
+/// labels ([`draw_texts`]), culled to `view`: the immediate route (the gesture overlay, PNG
+/// export, goldens) for a table no painter keeps rows of.
 ///
 /// # Time complexity
 ///
@@ -348,198 +331,206 @@ pub fn draw_prims<P: Painter>(
     palette: &Palette,
     text: &mut TextSystem,
     scratch: &mut CanvasScratch,
-) -> usize {
-    draw_prims_in(p, view, cam, prims, None, palette, text, scratch)
+) {
+    scratch.rows.pack(0, prims, palette, Change::All);
+    draw_rows(p, view, cam, &scratch.rows, 0, &mut scratch.paths);
+    draw_texts(p, view, cam, &prims.texts, None, palette, text, scratch);
 }
 
-/// [`draw_prims`] over the rows `rows` lists (ascending per kind, e.g. a
-/// [`PrimIndex::query`] of the view's world box), or every row for `None`: what it draws
-/// inside `view` is the same when `rows` holds every row that reaches into it.
+/// Draws source `src` of `rows` (a canvas table, or [`gpu::MARKS`]) into `view` through `cam`
+/// as the CPU paints the canvas: layer by layer, each layer batched into a few paths drawn in
+/// turn (fills; plain closed, open and curved strokes; each stroke style; the far-zoom pixel
+/// boxes), the marks as one stroke per colour run. Rows off the view (2 px of slack) are
+/// culled; a row, or a whole polyline or polygon, whose screen box is at most [`LOD_PX`] each
+/// way is the whole pixels it touches (marks excepted). Texts are not rows ([`draw_texts`]).
 ///
-/// # Time complexity
+/// Cost: O(rows of `src`); allocation-free once `paths` has grown.
 ///
-/// O(listed rows + glyphs of visible labels). Returns the cost (for [`draw_cached`]'s
-/// per-frame budget): 1 per row looked at, [`PATH_COST`] more per row drawn as a path or
-/// label (~15 ns per unit on a 2024 laptop).
-#[allow(clippy::too_many_arguments)]
-pub fn draw_prims_in<P: Painter>(
+/// # Panics
+///
+/// Panics on `src ≥ gpu::SOURCES`.
+pub fn draw_rows<P: Painter>(
     p: &mut P,
     view: Rect,
     cam: &Camera,
-    prims: &CanvasPrims,
-    rows: Option<&Rows>,
-    palette: &Palette,
-    text: &mut TextSystem,
-    scratch: &mut CanvasScratch,
-) -> usize {
-    let l = &prims.lines;
-    assert!(
-        l.x0.len() == l.y0.len()
-            && l.x0.len() == l.x1.len()
-            && l.x0.len() == l.y1.len()
-            && l.x0.len() == l.layer.len()
-    );
-    let sc = &mut *scratch;
-    sc.open.resize_with(LAYERS, Chains::default);
-    sc.closed.resize_with(LAYERS, Chains::default);
-    sc.curves.resize_with(LAYERS, BezPath::new);
-    sc.fill.resize_with(LAYERS, BezPath::new);
-    for c in sc.open.iter_mut().chain(sc.closed.iter_mut()) {
-        c.clear();
-    }
-    for path in sc.curves.iter_mut().chain(sc.fill.iter_mut()) {
-        path.truncate(0);
-    }
-    for b in &mut sc.styled {
-        b.2.truncate(0);
-    }
-    assert!(
-        l.style.len() == l.x0.len()
-            && prims.rects.style.len() == prims.rects.x0.len()
-            && prims.arcs.style.len() == prims.arcs.cx.len()
-            && prims.polylines.style.len() == prims.polylines.end.len()
-            && prims.polygons.style.len() == prims.polygons.end.len(),
-        "style columns in step"
-    );
-    sc.lod.begin(view);
-    let mut paths = 0; // rows drawn as paths or glyph runs (the costly ones)
+    rows: &InstanceRows,
+    src: usize,
+    paths: &mut Paths,
+) {
+    assert!(src < gpu::SOURCES, "a row source");
     let (ox, oy) = cam.origin(view);
     let s = cam.scale;
     let cull = view.inflate(2.0, 2.0);
-    let outside = |ax: f64, ay: f64, bx: f64, by: f64| {
-        ax.max(bx) < cull.x0 || ax.min(bx) > cull.x1 || ay.max(by) < cull.y0 || ay.min(by) > cull.y1
-    };
-    let pt = |x: f64, y: f64| [snap(x) as f32, snap(y) as f32];
-
-    for i in each(l.x0.len(), rows.map(|r| &r.lines[..])) {
-        let (ax, ay) = (f64::from(l.x0[i]) * s + ox, f64::from(l.y0[i]) * s + oy);
-        let (bx, by) = (f64::from(l.x1[i]) * s + ox, f64::from(l.y1[i]) * s + oy);
-        let layer = usize::from(l.layer[i]);
-        if layer >= LAYERS {
-            continue; // dead
-        }
-        if outside(ax, ay, bx, by)
-            || sc
-                .lod
-                .mark(layer, ax.min(bx), ay.min(by), ax.max(bx), ay.max(by))
-        {
-            continue;
-        }
-        paths += 1;
-        let st = l.style[i];
-        if st != LineStyle::PLAIN {
-            let (path, o) = styled(&mut sc.styled, layer, st, palette);
-            path.move_to(pt_at(ax, ay, o));
-            path.line_to(pt_at(bx, by, o));
-            continue;
-        }
-        sc.open[layer].push(&[pt(ax, ay), pt(bx, by)]);
-    }
-
-    let r = &prims.rects;
-    for i in each(r.x0.len(), rows.map(|r| &r.rects[..])) {
-        let (ax, ay) = (f64::from(r.x0[i]) * s + ox, f64::from(r.y0[i]) * s + oy);
-        let (bx, by) = (f64::from(r.x1[i]) * s + ox, f64::from(r.y1[i]) * s + oy);
-        let layer = usize::from(r.layer[i]);
-        if layer >= LAYERS {
-            continue; // dead
-        }
-        let (x0, y0, x1, y1) = (ax.min(bx), ay.min(by), ax.max(bx), ay.max(by));
-        if outside(ax, ay, bx, by) || sc.lod.mark(layer, x0, y0, x1, y1) {
-            continue;
-        }
-        paths += 1;
-        if palette.fill & (1 << layer) != 0 || r.style[i].fills() {
-            push_rect(&mut sc.fill[layer], Rect::new(x0, y0, x1, y1));
-        }
-        let st = r.style[i];
-        if st != LineStyle::PLAIN {
-            let (path, o) = styled(&mut sc.styled, layer, st, palette);
-            let (a, b) = (pt_at(x0, y0, o), pt_at(x1, y1, o));
-            push_rect(path, Rect::new(a.0, a.1, b.0, b.1));
-            continue;
-        }
-        sc.closed[layer].push(&[pt(x0, y0), pt(x1, y0), pt(x1, y1), pt(x0, y1)]);
-    }
-
-    let a = &prims.arcs;
-    for i in each(a.cx.len(), rows.map(|r| &r.arcs[..])) {
-        let (cx, cy, rad) = (
-            f64::from(a.cx[i]) * s + ox,
-            f64::from(a.cy[i]) * s + oy,
-            f64::from(a.r[i]) * s,
-        );
-        let layer = usize::from(a.layer[i]);
-        if layer >= LAYERS {
-            continue; // dead
-        }
-        if outside(cx - rad, cy - rad, cx + rad, cy + rad)
-            || sc.lod.mark(layer, cx - rad, cy - rad, cx + rad, cy + rad)
-        {
-            continue;
-        }
-        let (start, sweep) = arc_angles(a, i);
-        let st = a.style[i];
-        let curves = if st == LineStyle::PLAIN {
-            &mut sc.curves[layer]
-        } else {
-            styled(&mut sc.styled, layer, st, palette).0
-        };
-        push_arc(curves, cx, cy, rad, start, sweep);
-        paths += 1;
-        if a.sweep[i].abs() >= 360_000 && (palette.fill & (1 << layer) != 0 || st.fills()) {
-            push_arc(&mut sc.fill[layer], cx, cy, rad, start, sweep);
-        }
-    }
-
-    for (polys, closed, listed) in [
-        (&prims.polylines, false, rows.map(|r| &r.polylines[..])),
-        (&prims.polygons, true, rows.map(|r| &r.polygons[..])),
-    ] {
-        for k in each(polys.end.len(), listed) {
-            let std::ops::Range { start, end } = chain(&polys.end, k);
-            assert!(
-                end >= start + 2 && end <= polys.x.len(),
-                "malformed poly table"
-            );
-            let layer = usize::from(polys.layer[k]);
-            if layer >= LAYERS {
-                continue; // dead
+    let outside =
+        |b: [f64; 4]| b[2] < cull.x0 || b[0] > cull.x1 || b[3] < cull.y0 || b[1] > cull.y1;
+    let at = |x: u32, y: u32| (f64::from(x as i32) * s + ox, f64::from(y as i32) * s + oy);
+    let flags = |style: u32| (style >> 20) & 0xf;
+    let marks = src == gpu::MARKS;
+    for layer in 0..LAYERS {
+        paths.clear();
+        // The layer's colour and plain stroke width, from its rows (one of each per layer, the
+        // pack's decision); marks: the run's colour and its 2 px.
+        let (mut color, mut width) = (0u32, 0u32);
+        for slot in rows.layer_slots(src, LINE, layer) {
+            let w = rows.row(src, LINE, slot);
+            if w[4] == 0 {
+                continue; // an emptied slot
             }
-            let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-            for j in start..end {
-                let (x, y) = (
-                    f64::from(polys.x[j]) * s + ox,
-                    f64::from(polys.y[j]) * s + oy,
-                );
-                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
-            }
-            if outside(x0, y0, x1, y1) || sc.lod.mark(layer, x0, y0, x1, y1) {
+            let (a, b) = (at(w[0], w[1]), at(w[2], w[3]));
+            let bx = boxed(a, b);
+            if outside(bx) {
                 continue;
             }
-            let st = polys.style[k];
-            if st == LineStyle::PLAIN {
-                let chains = if closed {
-                    &mut sc.closed[layer]
-                } else {
-                    &mut sc.open[layer]
-                };
-                for j in start..end {
-                    chains.pts.push(pt(
-                        f64::from(polys.x[j]) * s + ox,
-                        f64::from(polys.y[j]) * s + oy,
-                    ));
-                }
-                chains.end.push(chains.pts.len() as u32);
+            color = w[4];
+            if marks {
+                width = w[5] & 0xffff;
+                paths.marks.move_to((snap(a.0), snap(a.1)));
+                paths.marks.line_to((snap(b.0), snap(b.1)));
+                continue;
+            }
+            if paths.lod(bx) {
+                continue;
+            }
+            if flags(w[5]) & PARITY != 0 {
+                let (path, o) = paths.styled(w[5]);
+                path.move_to(pt_at(a, o));
+                path.line_to(pt_at(b, o));
+                continue;
+            }
+            width = w[5] & 0xffff;
+            paths.open.push(&[pt(a), pt(b)]);
+        }
+        for slot in rows.layer_slots(src, RECT, layer) {
+            let w = rows.row(src, RECT, slot);
+            if w[4] == 0 {
+                continue;
+            }
+            let [x0, y0, x1, y1] = boxed(at(w[0], w[1]), at(w[2], w[3]));
+            if outside([x0, y0, x1, y1]) {
+                continue;
+            }
+            color = w[4];
+            if marks {
+                width = w[5] & 0xffff;
+                let r = Rect::new(snap(x0), snap(y0), snap(x1), snap(y1));
+                push_rect(&mut paths.marks, r);
+                continue;
+            }
+            if paths.lod([x0, y0, x1, y1]) {
+                continue;
+            }
+            if flags(w[5]) & FILL != 0 {
+                push_rect(&mut paths.fill, Rect::new(x0, y0, x1, y1));
+            }
+            if flags(w[5]) & PARITY != 0 {
+                let (path, o) = paths.styled(w[5]);
+                let (a, b) = (pt_at((x0, y0), o), pt_at((x1, y1), o));
+                push_rect(path, Rect::new(a.0, a.1, b.0, b.1));
+                continue;
+            }
+            width = w[5] & 0xffff;
+            let (a, b) = (pt((x0, y0)), pt((x1, y1)));
+            paths.closed.push(&[a, [b[0], a[1]], b, [a[0], b[1]]]);
+        }
+        for slot in rows.layer_slots(src, ARC, layer) {
+            let w = rows.row(src, ARC, slot);
+            if w[5] == 0 {
+                continue;
+            }
+            let ((cx, cy), r) = (at(w[0], w[1]), f64::from(w[2] as i32) * s);
+            let bx = boxed((cx - r, cy - r), (cx + r, cy + r));
+            if outside(bx) {
+                continue;
+            }
+            color = w[5];
+            let (start, sweep) = (radians(w[3]), radians(w[4]));
+            if marks {
+                width = w[6] & 0xffff;
+                push_arc(&mut paths.marks, cx, cy, r, start, sweep);
+                continue;
+            }
+            if paths.lod(bx) {
+                continue;
+            }
+            let curves = if flags(w[6]) & PARITY != 0 {
+                paths.styled(w[6]).0
             } else {
-                let (path, o) = styled(&mut sc.styled, layer, st, palette);
-                for j in start..end {
-                    let q = pt_at(
-                        f64::from(polys.x[j]) * s + ox,
-                        f64::from(polys.y[j]) * s + oy,
-                        o,
-                    );
-                    if j == start {
+                width = w[6] & 0xffff;
+                &mut paths.curves
+            };
+            push_arc(curves, cx, cy, r, start, sweep);
+            if flags(w[6]) & FILL != 0 {
+                push_arc(&mut paths.fill, cx, cy, r, start, sweep);
+            }
+        }
+        // Edges: each chain (a run of edges from one flagged FIRST) as the one path it is.
+        let edges = rows.layer_slots(src, EDGE, layer);
+        let mut k = edges.start;
+        while k < edges.end {
+            let first = rows.row(src, EDGE, k);
+            let mut end = k + 1;
+            while end < edges.end && flags(rows.row(src, EDGE, end)[5]) & FIRST == 0 {
+                end += 1;
+            }
+            let chain = k..end;
+            k = end;
+            let (style, closed) = (first[5], flags(first[5]) & CLOSED != 0);
+            if first[4] == 0 {
+                continue;
+            }
+            assert!(
+                flags(style) & FIRST != 0,
+                "a chain starts at its first edge"
+            );
+            // The chain's points: the first edge's start, then every edge's end (a polygon's
+            // last edge ends where it started: that point is the close).
+            let n = chain.len() + usize::from(!closed);
+            let point = |j: usize| {
+                let w = rows.row(src, EDGE, chain.start + j.saturating_sub(1) as u32);
+                if j == 0 {
+                    at(w[0], w[1])
+                } else {
+                    at(w[2], w[3])
+                }
+            };
+            let mut bx = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+            for j in 0..n {
+                let q = point(j);
+                bx = [
+                    bx[0].min(q.0),
+                    bx[1].min(q.1),
+                    bx[2].max(q.0),
+                    bx[3].max(q.1),
+                ];
+            }
+            if outside(bx) {
+                continue;
+            }
+            color = first[4];
+            if marks {
+                width = style & 0xffff;
+                for j in 0..n {
+                    let q = point(j);
+                    let q = (snap(q.0), snap(q.1));
+                    if j == 0 {
+                        paths.marks.move_to(q);
+                    } else {
+                        paths.marks.line_to(q);
+                    }
+                }
+                if closed {
+                    paths.marks.close_path();
+                }
+                continue;
+            }
+            if paths.lod(bx) {
+                continue;
+            }
+            if flags(style) & PARITY != 0 {
+                let (path, o) = paths.styled(style);
+                for j in 0..n {
+                    let q = pt_at(point(j), o);
+                    if j == 0 {
                         path.move_to(q);
                     } else {
                         path.line_to(q);
@@ -548,101 +539,56 @@ pub fn draw_prims_in<P: Painter>(
                 if closed {
                     path.close_path();
                 }
+            } else {
+                width = style & 0xffff;
+                let c = if closed {
+                    &mut paths.closed
+                } else {
+                    &mut paths.open
+                };
+                c.pts.extend((0..n).map(|j| pt(point(j))));
+                c.end.push(c.pts.len() as u32);
             }
-            paths += 1;
-            if closed && (palette.fill & (1 << layer) != 0 || st.fills()) {
-                let f = &mut sc.fill[layer];
-                f.move_to((
-                    f64::from(polys.x[start]) * s + ox,
-                    f64::from(polys.y[start]) * s + oy,
-                ));
-                for j in start + 1..end {
-                    f.line_to((
-                        f64::from(polys.x[j]) * s + ox,
-                        f64::from(polys.y[j]) * s + oy,
-                    ));
+            if closed && flags(style) & FILL != 0 {
+                let f = &mut paths.fill;
+                f.move_to(point(0));
+                for j in 1..n {
+                    f.line_to(point(j));
                 }
                 f.close_path();
             }
         }
-    }
-
-    for layer in 0..LAYERS {
-        let (color, width) = (rgba(palette.color[layer]), f64::from(palette.width[layer]));
-        if !sc.fill[layer].is_empty() {
-            p.fill_path(&sc.fill[layer], color);
+        if color == 0 {
+            continue; // nothing of this layer in view
         }
-        if !sc.closed[layer].is_empty() {
-            p.stroke_chains(&sc.closed[layer], true, width, color);
+        let (c, w) = (rgba(color.swap_bytes()), f64::from(width) / 16.0);
+        if marks {
+            if !paths.marks.is_empty() {
+                p.stroke_path(&paths.marks, w, c);
+            }
+            continue;
         }
-        if !sc.open[layer].is_empty() {
-            p.stroke_chains(&sc.open[layer], false, width, color);
+        if !paths.fill.is_empty() {
+            p.fill_path(&paths.fill, c);
         }
-        if !sc.curves[layer].is_empty() {
-            p.stroke_path(&sc.curves[layer], width, color);
+        if !paths.closed.is_empty() {
+            p.stroke_chains(&paths.closed, true, w, c);
         }
-        for (_, st, path) in sc.styled.iter().filter(|b| usize::from(b.0) == layer) {
+        if !paths.open.is_empty() {
+            p.stroke_chains(&paths.open, false, w, c);
+        }
+        if !paths.curves.is_empty() {
+            p.stroke_path(&paths.curves, w, c);
+        }
+        for (q16, dash, path) in &paths.styled {
             if !path.is_empty() {
-                p.stroke_styled(path, &stroke_of(*st, width), color);
+                p.stroke_styled(path, &stroke_of(*q16, *dash), c);
             }
         }
-        sc.lod.flush(p, layer, color);
-    }
-    assert_eq!(sc.lod.used, 0, "every mask drawn");
-    let listed = rows.map(|r| &r.texts[..]);
-    paths += draw_texts(p, view, cam, &prims.texts, listed, palette, text, scratch);
-    rows.map_or(prims.len(), Rows::len) + PATH_COST * paths
-}
-
-/// The stroke of `style` over a layer `width` logical px wide: `weight × width`, round caps
-/// and joins (a thick zigzag mitres into spikes), dashes and gaps of `2 · dash` px.
-fn stroke_of(style: LineStyle, width: f64) -> Stroke {
-    assert!(width > 0.0, "zero-width layer");
-    let w = width * f64::from(style.weight());
-    let stroke = Stroke::new(w).with_caps(Cap::Round).with_join(Join::Round);
-    let d = 2.0 * f64::from(style.dash());
-    let out = if d > 0.0 {
-        stroke.with_dashes(0.0, [d, d])
-    } else {
-        stroke
-    };
-    assert!(out.width >= width);
-    out
-}
-
-/// The path that collects `layer`'s rows in `style` (made on first use; at most one per pair,
-/// so the list stays as short as the distinct styles drawn) and the pixel offset its points
-/// snap to: a pixel center for an odd stroke width, the pixel edge for an even one, so both
-/// stay crisp.
-fn styled<'a>(
-    buckets: &'a mut Vec<(u8, LineStyle, BezPath)>,
-    layer: usize,
-    style: LineStyle,
-    palette: &Palette,
-) -> (&'a mut BezPath, f64) {
-    assert!(layer < LAYERS && style != LineStyle::PLAIN);
-    let w = f64::from(palette.width[layer]) * f64::from(style.weight());
-    let o = if (w.round() as i64) % 2 == 0 {
-        0.0
-    } else {
-        0.5
-    };
-    let l = layer as u8;
-    let at = match buckets.iter().position(|b| b.0 == l && b.1 == style) {
-        Some(at) => at,
-        None => {
-            assert!(buckets.len() < LAYERS * 64, "styles are a byte per layer");
-            buckets.push((l, style, BezPath::new()));
-            buckets.len() - 1
+        if !paths.lod.is_empty() {
+            p.fill_chains(&paths.lod, c);
         }
-    };
-    (&mut buckets[at].2, o)
-}
-
-/// A screen point snapped to whole pixels plus `o` (see [`styled`]).
-#[inline]
-fn pt_at(x: f64, y: f64, o: f64) -> (f64, f64) {
-    (pixel(x) + o, pixel(y) + o)
+    }
 }
 
 /// Every row `0..n`, or the listed ones.
@@ -652,9 +598,8 @@ fn each(n: usize, rows: Option<&[u32]>) -> impl Iterator<Item = usize> + '_ {
 }
 
 /// Draws the labels of `t` (the rows `rows` lists, or all), culled to `view` and skipping any
-/// under [`TEXT_MIN_PX`] on screen; returns the labels drawn. What [`draw_prims`] does for
-/// texts, on its own: the GPU canvas draws the other kinds itself and leaves text to the
-/// painter until the glyph atlas lands.
+/// under [`TEXT_MIN_PX`] on screen; returns the labels drawn. Text is not an instance row: the
+/// painter draws it after each table's rows until the glyph atlas lands.
 ///
 /// Cost: O(listed rows + glyphs of visible labels).
 #[allow(clippy::too_many_arguments)]
@@ -738,7 +683,8 @@ fn shaped(s: &str, text: &mut TextSystem, scratch: &mut CanvasScratch) -> (u32, 
     r
 }
 
-/// Redraws marked primitives in their mark color, 1 px wider than the base stroke.
+/// Redraws the marked rows of `prims` in their mark colour, 2 px wide, one stroke per run of
+/// one colour (packed into `scratch`'s rows, then [`draw_rows`]).
 pub fn draw_marks<P: Painter>(
     p: &mut P,
     view: Rect,
@@ -747,122 +693,8 @@ pub fn draw_marks<P: Painter>(
     marks: &Marks,
     scratch: &mut CanvasScratch,
 ) {
-    assert!(marks.kind.len() == marks.index.len() && marks.kind.len() == marks.color.len());
-    let (ox, oy) = cam.origin(view);
-    let s = cam.scale;
-    let pt = |x: i32, y: i32| (snap(f64::from(x) * s + ox), snap(f64::from(y) * s + oy));
-    // Only the marks reaching into `view`: a tile records its own (each tile of a select-all
-    // frame recorded every mark, O(tiles × marks) of path data).
-    let cull = view.inflate(2.0, 2.0);
-    let (a, b) = (
-        cam.to_world(view, cull.x0, cull.y0),
-        cam.to_world(view, cull.x1, cull.y1),
-    );
-    let near = [a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)];
-    let mut i = 0;
-    // One path per run of equal colors.
-    while i < marks.kind.len() {
-        let color = marks.color[i];
-        let path = &mut scratch.path;
-        path.truncate(0);
-        while i < marks.kind.len() && marks.color[i] == color {
-            let k = marks.index[i] as usize;
-            let dead = match marks.kind[i] {
-                PrimKind::Line => prims.lines.layer[k],
-                PrimKind::Rect => prims.rects.layer[k],
-                PrimKind::Arc => prims.arcs.layer[k],
-                PrimKind::Polyline => prims.polylines.layer[k],
-                PrimKind::Polygon => prims.polygons.layer[k],
-            } == LAYER_DEAD;
-            let [x0, y0, x1, y1] = prim_box(prims, marks.kind[i], k).map(f64::from);
-            let away = x1 < near[0] || x0 > near[2] || y1 < near[1] || y0 > near[3];
-            if dead || away {
-                i += 1;
-                continue;
-            }
-            match marks.kind[i] {
-                PrimKind::Line => {
-                    let l = &prims.lines;
-                    path.move_to(pt(l.x0[k], l.y0[k]));
-                    path.line_to(pt(l.x1[k], l.y1[k]));
-                }
-                PrimKind::Rect => {
-                    let r = &prims.rects;
-                    let (a, b) = (pt(r.x0[k], r.y0[k]), pt(r.x1[k], r.y1[k]));
-                    push_rect(path, Rect::new(a.0, a.1, b.0, b.1).abs());
-                }
-                PrimKind::Arc => {
-                    let a = &prims.arcs;
-                    let (cx, cy) = (f64::from(a.cx[k]) * s + ox, f64::from(a.cy[k]) * s + oy);
-                    let (start, sweep) = arc_angles(a, k);
-                    push_arc(path, cx, cy, f64::from(a.r[k]) * s, start, sweep);
-                }
-                PrimKind::Polyline | PrimKind::Polygon => {
-                    let polys = if marks.kind[i] == PrimKind::Polygon {
-                        &prims.polygons
-                    } else {
-                        &prims.polylines
-                    };
-                    let pts = chain(&polys.end, k);
-                    let start = pts.start;
-                    for j in pts {
-                        let q = pt(polys.x[j], polys.y[j]);
-                        if j == start {
-                            path.move_to(q)
-                        } else {
-                            path.line_to(q)
-                        }
-                    }
-                    if marks.kind[i] == PrimKind::Polygon {
-                        path.close_path();
-                    }
-                }
-            }
-            i += 1;
-        }
-        p.stroke_path(path, 2.0, rgba(color));
-    }
-}
-
-/// The world box `[x0, y0, x1, y1]` of row `k` of the `kind` table of `prims` (an arc's whole
-/// circle).
-fn prim_box(prims: &CanvasPrims, kind: PrimKind, k: usize) -> [i32; 4] {
-    let ordered =
-        |x0: i32, y0: i32, x1: i32, y1: i32| [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)];
-    let b = match kind {
-        PrimKind::Line => {
-            let l = &prims.lines;
-            ordered(l.x0[k], l.y0[k], l.x1[k], l.y1[k])
-        }
-        PrimKind::Rect => {
-            let r = &prims.rects;
-            ordered(r.x0[k], r.y0[k], r.x1[k], r.y1[k])
-        }
-        PrimKind::Arc => {
-            let a = &prims.arcs;
-            let r = a.r[k].abs();
-            [
-                a.cx[k].saturating_sub(r),
-                a.cy[k].saturating_sub(r),
-                a.cx[k].saturating_add(r),
-                a.cy[k].saturating_add(r),
-            ]
-        }
-        PrimKind::Polyline | PrimKind::Polygon => {
-            let polys = if kind == PrimKind::Polygon {
-                &prims.polygons
-            } else {
-                &prims.polylines
-            };
-            let init = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
-            chain(&polys.end, k).fold(init, |b, j| {
-                let (x, y) = (polys.x[j], polys.y[j]);
-                [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)]
-            })
-        }
-    };
-    assert!(b[0] <= b[2] && b[1] <= b[3], "a row's box is ordered");
-    b
+    scratch.rows.pack_marks(prims, marks, true);
+    draw_rows(p, view, cam, &scratch.rows, gpu::MARKS, &mut scratch.paths);
 }
 
 #[cfg(test)]
@@ -938,8 +770,8 @@ mod tests {
         fn pop_clip(&mut self) {}
     }
 
-    /// A tile records only the marks that reach into it: marked rows far outside the view add
-    /// nothing (each tile of a select-all frame once stroked every mark).
+    /// A frame strokes only the marks that reach into its view: marked rows far outside it
+    /// add nothing to the path (a select-all frame once stroked every mark per canvas tile).
     #[test]
     fn marks_outside_the_view_are_not_drawn() {
         let view = Rect::new(0.0, 0.0, 100.0, 100.0);

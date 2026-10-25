@@ -1,13 +1,16 @@
-//! GPU raster layers: pictures a [`ScenePainter`](crate::ScenePainter) records once and later
-//! frames compose as images (D39: a pan or zoom frame re-encodes no canvas primitive).
+//! GPU live layers: chrome a [`ScenePainter`](crate::ScenePainter) records every frame
+//! ([`crate::Painter::live_layer`], the status bar) but rasterizes only when its picture changed,
+//! and the frame log that lets a frame vello already rendered be composed without it (D39: a
+//! pan or zoom frame re-encodes no UI). The canvas is not a layer: it is the instanced pass
+//! under the frame (`crate::gpu`). Goes with vello's GPU renderer (render-backend step 4).
 //!
 //! Data design:
 //! 1. In: per slot a recorded vello scene; per frame a log of what was painted outside the
 //!    layers (a hash), where each layer was drawn, and what was painted over the layers (the
 //!    top part: canvas floats, popups). Out: layer textures; the frame either through vello
-//!    or, when only layer placements changed, as quads over the last frame with the top part's
-//!    texture blended over them.
-//! 2. How many: [`LAYER_SLOTS`] slots (one per cached canvas); a handful of draws per frame.
+//!    or, when only the canvas and the layers' pictures changed, as quads over the last frame
+//!    with the top part's texture blended over them.
+//! 2. How many: [`LAYER_SLOTS`] slots; a handful of draws per frame.
 //! 3. Widths: placements in device pixels (`f64` transforms); the hash is a `u64`.
 //! 4. Access: the log is appended by every painter call and read once by the window.
 //! 5. Lifetime: slots and textures live with the window; the log is per frame.
@@ -20,13 +23,13 @@ use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Blob, Color, ImageAlphaType, ImageData, ImageFormat};
 use vello::{AaConfig, RenderParams, Renderer, Scene, wgpu};
 
-/// Raster layer slots a painter keeps (one per cached canvas).
+/// Live layer slots a painter keeps.
 pub const LAYER_SLOTS: usize = 8;
-/// Layer draws one frame composes without vello at most (a canvas's tiles and stand-ins);
-/// a frame with more goes through vello.
-const DRAWS_MAX: usize = 1024;
+/// Layer draws one frame composes without vello at most; a frame with more goes through
+/// vello.
+const DRAWS_MAX: usize = 64;
 
-/// GPU raster layers kept across frames (owner: the window, or a benchmark driving vello
+/// GPU live layers kept across frames (owner: the window, or a benchmark driving vello
 /// itself): per slot the recorded scene, the texture it is rasterized into, and the image a
 /// frame scene samples; plus the log of the frame being painted. A texture lives as long as
 /// its slot keeps its size.
@@ -46,17 +49,7 @@ pub struct Layers {
     top_texture: Option<wgpu::Texture>,
     top_shown: Option<(u64, u32, u32)>,
     quad: Option<Quad>,
-    /// Where a frame's patches are rendered together before their copies: grown to the
-    /// largest batch, kept.
-    scratch: Option<wgpu::Texture>,
 }
-
-/// Width of the patch batch (patches are packed in rows across it); its height is at most
-/// the same, more patches go in another batch.
-const BATCH_PX: u32 = 2048;
-/// Patch placements in a batch are multiples of this (vello's tile edge), so a patch
-/// rasterizes exactly as it would alone.
-const BATCH_ALIGN: u32 = 16;
 
 #[derive(Default)]
 pub(crate) struct GpuLayer {
@@ -65,8 +58,6 @@ pub(crate) struct GpuLayer {
     pub(crate) image: Option<ImageData>,
     texture: Option<wgpu::Texture>,
     pub(crate) dirty: bool,
-    /// Parts recorded since the last raster: a scene of `w × h` device px for `[x, y, w, h]`.
-    pub(crate) patches: Vec<(Scene, [u32; 4])>,
 }
 
 /// What one frame painted outside its layers.
@@ -74,15 +65,13 @@ pub(crate) struct GpuLayer {
 pub(crate) struct FrameLog {
     /// Every painter call outside the layers, in order (layer draws by slot and clip only).
     pub(crate) hash: std::collections::hash_map::DefaultHasher,
-    /// Layer draws: (slot, layer px → device px, device clip, stretch fill).
-    pub(crate) draws: Vec<(usize, Affine, Rect, Option<Color>)>,
+    /// Layer draws: (slot, layer px → device px, device clip).
+    pub(crate) draws: Vec<(usize, Affine, Rect)>,
     /// Something was painted after the first layer draw (it could cover the layer).
     pub(crate) after: bool,
-    /// Inside [`crate::Painter::layer`]: calls belong to the layer, not to the frame.
+    /// Inside [`crate::Painter::live_layer`]: calls belong to the layer (hashed into its
+    /// picture's name), not to the frame.
     pub(crate) recording: bool,
-    /// Inside [`crate::Painter::live_layer`]: the calls are hashed (they name the layer's
-    /// picture), still not the frame's.
-    pub(crate) live: bool,
     /// Frame clips open (outside layer recordings), and how many of them are the top part's
     /// (opened after the first layer draw; the innermost ones, as clips nest).
     pub(crate) depth: u32,
@@ -93,12 +82,8 @@ pub(crate) struct FrameLog {
 }
 
 impl FrameLog {
-    /// Folds one painter call into the frame hash (or a live layer's; a stamped layer's
-    /// recording is not hashed).
+    /// Folds one painter call into the frame hash (or, while recording, the live layer's).
     pub(crate) fn call(&mut self, data: impl Hash) {
-        if self.recording && !self.live {
-            return;
-        }
         self.after |= !self.recording && !self.draws.is_empty();
         data.hash(&mut self.hash);
     }
@@ -106,9 +91,7 @@ impl FrameLog {
     /// Like [`FrameLog::call`] for a call that paints nothing over a layer (a layer draw, a
     /// clip): hashed, but it does not count as painting after the layers.
     pub(crate) fn mark(&mut self, data: impl Hash) {
-        if !self.recording || self.live {
-            data.hash(&mut self.hash);
-        }
+        data.hash(&mut self.hash);
     }
 }
 
@@ -171,22 +154,19 @@ impl Layers {
         if l.stamp != stamp || l.texture.is_none() {
             l.dirty = true;
             l.stamp = stamp;
-            l.patches.clear();
         }
         l.scene = scene;
         stamp
     }
 
-    /// Rasterizes every layer recorded since the last call into its texture (vello renders it
-    /// into an `Rgba8Unorm` texture registered as the layer's image), then every part patched
-    /// since (rendered side by side into a scratch texture, each copied over its place), then
+    /// Rasterizes every layer whose picture changed since the last call into its texture
+    /// (vello renders it into an `Rgba8Unorm` texture registered as the layer's image), then
     /// the part painted over the layers when the frame may be composed and that part's texture
     /// is out of date (see [`Layers::reusable`]). Call once per frame after painting and before
     /// rendering or composing the frame.
     ///
-    /// Cost: one vello render per recorded layer and per 2048-px-square batch of
-    /// patches (one, for a frame's few tiles), plus one target-sized render of the top part
-    /// on the first composed frame after it changed; nothing when none was recorded.
+    /// Cost: one vello render per changed layer, plus one target-sized render of the top part
+    /// on the first composed frame after it changed; nothing when none changed.
     ///
     /// # Errors
     ///
@@ -228,95 +208,6 @@ impl Layers {
             renderer.render_to_texture(device, queue, &l.scene, &view, &params)?;
             renderer.mark_override_image_dirty(image);
             l.dirty = false;
-        }
-        // Every slot's patches, packed in rows across one scratch texture (in batches).
-        let mut parts: Vec<(usize, Scene, [u32; 4])> = Vec::new();
-        for (k, l) in self.slots.iter_mut().enumerate() {
-            if l.image.is_none() || l.texture.is_none() {
-                l.patches.clear(); // no picture to patch (its first raster failed)
-            }
-            parts.extend(l.patches.drain(..).map(|(sc, r)| (k, sc, r)));
-        }
-        let mut next = 0;
-        while next < parts.len() {
-            // Shelf packing: (x, y) per part of this batch.
-            let (mut x, mut y, mut row, mut at) = (0u32, 0u32, 0u32, Vec::new());
-            for (_, _, [_, _, w, h]) in &parts[next..] {
-                let (w, h) = (
-                    w.next_multiple_of(BATCH_ALIGN),
-                    h.next_multiple_of(BATCH_ALIGN),
-                );
-                assert!(w <= BATCH_PX && h <= BATCH_PX, "a patch fits a batch");
-                if x + w > BATCH_PX {
-                    (x, y, row) = (0, y + row, 0);
-                }
-                if y + h > BATCH_PX {
-                    break;
-                }
-                at.push((x, y));
-                (x, row) = (x + w, row.max(h));
-            }
-            let batch = &parts[next..next + at.len()];
-            let height = y + row;
-            let mut scene = Scene::new();
-            for ((_, part, [_, _, w, h]), &(px, py)) in batch.iter().zip(&at) {
-                let place = Affine::translate((f64::from(px), f64::from(py)));
-                let clip = Rect::new(0.0, 0.0, f64::from(*w), f64::from(*h));
-                scene.push_clip_layer(vello::peniko::Fill::NonZero, place, &clip);
-                scene.append(part, Some(place));
-                scene.pop_layer();
-            }
-            let small = self.scratch.as_ref().is_none_or(|t| t.height() < height);
-            if small {
-                let size = (BATCH_PX, height.next_power_of_two().min(BATCH_PX));
-                let usage = wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC;
-                self.scratch = Some(texture(device, "layer patches", size, usage));
-            }
-            let scratch = self.scratch.as_ref().expect("made above");
-            let params = RenderParams {
-                base_color: Color::TRANSPARENT,
-                width: scratch.width(),
-                height: scratch.height(),
-                antialiasing_method: AaConfig::Area,
-            };
-            let view = scratch.create_view(&wgpu::TextureViewDescriptor::default());
-            keep_atlas(&mut scene);
-            renderer.render_to_texture(device, queue, &scene, &view, &params)?;
-            let mut encoder = device.create_command_encoder(&Default::default());
-            for ((k, _, [x, y, w, h]), &(px, py)) in batch.iter().zip(&at) {
-                let l = &self.slots[*k];
-                let (image, texture) = (
-                    l.image.as_ref().expect("checked above"),
-                    l.texture.as_ref().expect("checked above"),
-                );
-                assert!(x + w <= image.width && y + h <= image.height);
-                encoder.copy_texture_to_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: scratch,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d { x: px, y: py, z: 0 },
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    wgpu::TexelCopyTextureInfo {
-                        texture,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d { x: *x, y: *y, z: 0 },
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    wgpu::Extent3d {
-                        width: *w,
-                        height: *h,
-                        depth_or_array_layers: 1,
-                    },
-                );
-            }
-            queue.submit([encoder.finish()]);
-            for (k, _, _) in batch {
-                let image = self.slots[*k].image.as_ref().expect("checked above");
-                renderer.mark_override_image_dirty(image);
-            }
-            assert!(!at.is_empty(), "a batch holds a patch");
-            next += at.len();
         }
         // The top part, once per picture of it: when this frame paints what vello last
         // rendered (so it may be composed) and the texture holds an older top part.
@@ -377,9 +268,7 @@ impl Layers {
     }
 
     /// Draws this frame's layer placements as textured quads into `target` (a `format`
-    /// render attachment of `w × h` device px), over whatever it holds: nearest sampling for
-    /// a copy, bilinear for a stretched stand-in (whose uncovered clip pixels get its fill);
-    /// then, when the frame painted over its layers, that top part blended over them
+    /// render attachment of `w × h` device px), over whatever it holds, pixel for pixel; then, when the frame painted over its layers, that top part blended over them
     /// ("over", as vello composes it). Call only when [`Layers::reusable`].
     ///
     /// Cost: one render pass, one quad per layer draw plus one for the top part.
@@ -418,14 +307,14 @@ impl Layers {
                         resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                             buffer: &quad.uniforms,
                             offset,
-                            size: wgpu::BufferSize::new(32),
+                            size: wgpu::BufferSize::new(16),
                         }),
                     },
                 ],
             })
         };
         let mut groups = Vec::with_capacity(self.log.draws.len() + 1);
-        for (k, &(slot, at, clip, stretch)) in self.log.draws.iter().enumerate() {
+        for (k, &(slot, at, clip)) in self.log.draws.iter().enumerate() {
             let l = &self.slots[slot];
             let (Some(texture), Some(image)) = (&l.texture, &l.image) else {
                 continue;
@@ -441,17 +330,11 @@ impl Layers {
                 inv * vello::kurbo::Point::new(clip.x1, clip.y1),
             );
             let (tw, th) = (f64::from(image.width), f64::from(image.height));
-            // Uniform: uv rect, then the fill (alpha 0: a copy, every pixel sampled).
-            let fill = stretch.map_or([0.0; 4], |c| c.components);
             let uv = [p.x / tw, p.y / th, q.x / tw, q.y / th].map(|v| v as f32);
             let offset = (k * Quad::STRIDE) as u64;
-            queue.write_buffer(&quad.uniforms, offset, &uniform(uv.into_iter().chain(fill)));
+            queue.write_buffer(&quad.uniforms, offset, &uniform(uv));
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let sampler = match stretch {
-                Some(_) => &quad.linear,
-                None => &quad.nearest,
-            };
-            let group = bind(&view, sampler, offset);
+            let group = bind(&view, &quad.nearest, offset);
             groups.push((group, clip, &quad.pipeline));
         }
         // The top part over everything, from the slot after the draws' last.
@@ -550,9 +433,9 @@ fn texture(
     })
 }
 
-/// A quad's uniform (uv rect, then fill; unset fields 0) as bytes.
-fn uniform(vals: impl IntoIterator<Item = f32>) -> [u8; 32] {
-    let mut bytes = [0u8; 32];
+/// A quad's uniform (its uv rect) as bytes.
+fn uniform(vals: impl IntoIterator<Item = f32>) -> [u8; 16] {
+    let mut bytes = [0u8; 16];
     for (i, v) in vals.into_iter().enumerate() {
         bytes[4 * i..4 * i + 4].copy_from_slice(&v.to_ne_bytes());
     }
@@ -568,7 +451,6 @@ struct Quad {
     layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
     nearest: wgpu::Sampler,
-    linear: wgpu::Sampler,
 }
 
 impl Quad {
@@ -576,7 +458,7 @@ impl Quad {
     const STRIDE: usize = 256;
 
     const SHADER: &'static str = "
-struct Uv { rect: vec4<f32>, fill: vec4<f32> }
+struct Uv { rect: vec4<f32> }
 @group(0) @binding(0) var tex: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
 @group(0) @binding(2) var<uniform> uv: Uv;
@@ -589,9 +471,7 @@ struct Out { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
     return o;
 }
 @fragment fn fs(o: Out) -> @location(0) vec4<f32> {
-    let texel = textureSample(tex, samp, o.uv);
-    let outside = any(o.uv < vec2<f32>(0.0)) || any(o.uv > vec2<f32>(1.0));
-    return select(texel, uv.fill, outside && uv.fill.a > 0.0);
+    return textureSample(tex, samp, o.uv);
 }
 ";
 
@@ -626,7 +506,7 @@ struct Out { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
                     wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(32),
+                        min_binding_size: wgpu::BufferSize::new(16),
                     },
                 ),
             ],
@@ -666,14 +546,6 @@ struct Out { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
                 cache: None,
             })
         };
-        let sampler = |filter| {
-            device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("layer quad"),
-                mag_filter: filter,
-                min_filter: filter,
-                ..Default::default()
-            })
-        };
         Quad {
             format,
             pipeline: pipeline(None),
@@ -687,8 +559,10 @@ struct Out { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
-            nearest: sampler(wgpu::FilterMode::Nearest),
-            linear: sampler(wgpu::FilterMode::Linear),
+            nearest: device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("layer quad"),
+                ..Default::default()
+            }),
         }
     }
 }
@@ -701,8 +575,8 @@ mod tests {
     const CANVAS: Rect = Rect::new(0.0, 0.0, 64.0, 64.0);
     const FLOAT: Rect = Rect::new(8.0, 8.0, 40.0, 20.0);
 
-    /// Paints one frame: `before`, a draw of layer slot 0 (recorded on first use), then
-    /// `after`; returns (painted after the layers, tangled, paths in the top part).
+    /// Paints one frame: `before`, live layer slot 0, then `after`; returns (painted after the
+    /// layers, tangled, paths in the top part).
     fn frame(
         layers: &mut Layers,
         before: impl FnOnce(&mut ScenePainter),
@@ -716,11 +590,8 @@ mod tests {
             layers: Some(layers),
             rows: None,
         };
-        if !p.holds_layer(0, 1) {
-            assert!(p.layer(0, 1, 64, 64, |p| p.fill_rect(CANVAS, Color::BLACK)));
-        }
         before(&mut p);
-        assert!(p.draw_layer(0, 1, Affine::IDENTITY, CANVAS, None));
+        p.live_layer(0, CANVAS, |p| p.fill_rect(CANVAS, Color::BLACK));
         after(&mut p);
         let log = &layers.log;
         (log.after, log.tangled, layers.top.encoding().n_paths)
@@ -779,7 +650,7 @@ mod tests {
             |_| {},
             |p| {
                 float(p);
-                assert!(p.draw_layer(0, 1, Affine::IDENTITY, CANVAS, None));
+                p.live_layer(1, CANVAS, |p| p.fill_rect(CANVAS, Color::BLACK));
             },
         );
         assert!(tangled);

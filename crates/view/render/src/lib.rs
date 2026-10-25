@@ -14,13 +14,14 @@
 //! images, and the web's frames when the browser has no WebGPU adapter). No `dyn`: the trait
 //! is a compile-time bound only.
 //!
-//! On the GPU the canvas is drawn by Schemify's own instanced pipelines ([`gpu`]): one retained
-//! instance row per primitive ([`gpu::InstanceRows`], patched from the rows
-//! [`schemify_canvas::CanvasDiff`] reports changed) drawn into the surface under the vello UI
-//! frame, which [`Painter::canvas`] leaves a hole in; a pan or zoom writes one camera uniform.
-//! Canvas text stays with vello until the glyph atlas. A frame whose vello scene did not change
-//! is composed without vello ([`Layers::reusable`]). The CPU painter draws the canvas as raster
-//! tiles ([`canvas::draw_cached`], [`schemify_canvas::PrimIndex`]), the goldens' oracle.
+//! The canvas is one retained instance row per primitive ([`gpu::InstanceRows`], patched from
+//! the rows [`schemify_canvas::CanvasDiff`] reports changed), which both painters draw
+//! ([`Painter::canvas`]): on the GPU, Schemify's own instanced pipelines ([`gpu`]) draw them
+//! into the surface under the vello UI frame, which leaves a hole there, so a pan or zoom
+//! writes one camera uniform; on the CPU, [`canvas::draw_rows`] rasterizes them, the goldens'
+//! oracle. Every frame is complete: there is no tile cache. Canvas text stays with vello until
+//! the glyph atlas. A frame whose vello scene did not change is composed without vello
+//! ([`Layers::reusable`]).
 //!
 //! ```
 //! use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
@@ -48,7 +49,6 @@ mod cpu_view;
 pub mod gpu;
 mod layers;
 mod painter;
-mod tiles;
 pub mod waves;
 pub mod widgets;
 mod window;

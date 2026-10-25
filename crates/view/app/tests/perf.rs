@@ -463,7 +463,7 @@ impl Bench {
     }
 
     /// Runs the ticks the editor asks for at once (`wake_ms() == Some(0)`: the plugin snapshot
-    /// after an edit, the rest of a partly recorded canvas), as the window does after an input
+    /// after an edit), as the window does after an input
     /// frame; returns their CPU times (not counted with the input frames).
     fn ticks(&mut self) -> Vec<f64> {
         let mut out = Vec::new();
@@ -539,8 +539,8 @@ fn event(e: InputEvent) -> InputEvents {
     ev
 }
 
-/// Pan (middle drag), zoom (wheel notches, then the settle frame) and a local edit (delete a
-/// wire, undo) on an `n`-object schematic.
+/// Pan (middle drag), zoom (wheel notches) and a local edit (delete a wire, undo) on an
+/// `n`-object schematic.
 fn frame_times(n: u32) {
     let dir = fixture("inv", &format!("perf-{n}"));
     std::fs::write(dir.join("big.shcomp"), schematic(n)).unwrap();
@@ -576,11 +576,10 @@ fn frame_times(n: u32) {
         vello: Vec::new(),
         gpu_ms: Vec::new(),
     };
-    // The whole schematic in view (zoom full), first frame records the layer.
+    // The whole schematic in view (zoom full), first frame packs the rows.
     b.frame(&InputEvents::default(), 1000, false);
 
-    // Pan: a middle-button drag, 6 px per 8 ms frame, 720 px one way then back (it leaves the
-    // recorded margin a few times: those frames re-record and show in p95/p99).
+    // Pan: a middle-button drag, 6 px per 8 ms frame, 720 px one way then back.
     let (cx, cy) = (640.0f32, 400.0f32);
     b.frame(
         &event(InputEvent::PointerMove { x: 300.0, y: cy }),
@@ -613,8 +612,7 @@ fn frame_times(n: u32) {
     );
     let [pan, _, pan99] = b.report("pan");
 
-    // Zoom: bursts of 6 wheel notches at the pointer, 16 ms apart, alternately in and out,
-    // each followed by the frame that redraws crisp once the zoom has settled (counted too).
+    // Zoom: bursts of 6 wheel notches at the pointer, 16 ms apart, alternately in and out.
     // The wheel turns where the pointer is (as winit reports it).
     b.frame(&event(InputEvent::PointerMove { x: cx, y: cy }), 8, false);
     for burst in 0..10 {
@@ -628,14 +626,11 @@ fn frame_times(n: u32) {
             };
             b.frame(&event(wheel), 16, true);
         }
-        // A stretched last frame asks for its crisp frame, which records the new zoom's tiles a
-        // few per frame: frames follow until the view is whole (all counted).
-        for _ in 0..256 {
-            let Some(wake) = b.ed.wake_ms() else { break };
-            assert!(wake <= 120, "the crisp frame is due within the settle time");
-            b.frame(&InputEvents::default(), u64::from(wake) + 1, true);
-        }
-        assert_eq!(b.ed.wake_ms(), None, "idle once crisp (D39 idle 0%)");
+        assert_eq!(
+            b.ed.wake_ms(),
+            None,
+            "a zoom frame is whole: idle (D39 idle 0%)"
+        );
     }
     let [_, zoom95, zoom99] = b.report("zoom");
 
@@ -691,7 +686,7 @@ fn frame_times(n: u32) {
     eprintln!("  after the edits: {}", tick_stats(ticks));
     if n == 100_000 {
         // The nightly regression gate's metrics (tests/perf/baseline.txt): CPU p50 per frame,
-        // p95 of the zoom (its settle frames record).
+        // p95 of the zoom.
         eprintln!("PERF app.open_100k_ms {open:.3}");
         eprintln!("PERF app.pan_frame_100k_ms {pan:.3}");
         eprintln!("PERF app.zoom_frame_p95_100k_ms {zoom95:.3}");
@@ -741,16 +736,15 @@ fn composed_all(b: &Bench) {
 
 /// Issue #45: grid dots lag behind pan and zoom. Opens the symbol contact sheet (light content:
 /// the picture is mostly grid) at device scale `scale`, pans with a middle drag (`step` px per
-/// 8 ms frame) and zooms in bursts of wheel notches, and counts the frames that leave part of
-/// the canvas unrecorded (stand-ins or bare background where the grid belongs): `(pan frames
-/// left partial, most frames a settled zoom took to show whole)`. `grid` false turns the grid
-/// off (its share of the frame). With a GPU, panics unless every camera frame was composed
-/// without vello: before the fix the view switcher floating over the canvas sent every frame
-/// through vello (5.5 ms GPU per pan frame at 1×, 14 ms at 2×, on the Intel iGPU).
+/// 8 ms frame) and zooms in bursts of wheel notches; every frame is whole, so none asks for
+/// another. `grid` false turns the grid off (its share of the frame). With a GPU, panics unless
+/// every camera frame was composed without vello: before the fix the view switcher floating
+/// over the canvas sent every frame through vello (5.5 ms GPU per pan frame at 1×, 14 ms at
+/// 2×, on the Intel iGPU).
 ///
-/// Prints frame times (`report`) and the partial counts; `grid_keeps_up_with_pan_and_zoom` runs
-/// it at 1× and 2×, 6 and 40 px per frame, grid on and off.
-fn grid_lag(scale: f64, step: f32, grid: bool) -> (usize, usize) {
+/// Prints frame times (`report`); `grid_keeps_up_with_pan_and_zoom` runs it at 1× and 2×, 6
+/// and 40 px per frame, grid on and off.
+fn grid_lag(scale: f64, step: f32, grid: bool) {
     let dir = fixture("symbols", &format!("perf-grid-{scale}-{step}-{grid}"));
     let ed = Editor::new(Options {
         no_default_ui: false,
@@ -772,14 +766,11 @@ fn grid_lag(scale: f64, step: f32, grid: bool) -> (usize, usize) {
         vello: Vec::new(),
         gpu_ms: Vec::new(),
     };
-    let partial = |b: &Bench| b.ed.wake_ms() == Some(0);
+    let whole = |b: &Bench| assert_eq!(b.ed.wake_ms(), None, "a camera frame asks for no other");
     if !grid {
         b.ed.command("options.draw_grid", "");
     }
     b.frame(&InputEvents::default(), 1000, false);
-    while partial(&b) {
-        b.frame(&InputEvents::default(), 8, false);
-    }
     let (cx, cy) = (640.0f32, 400.0f32);
     b.frame(&event(InputEvent::PointerMove { x: cx, y: cy }), 8, false);
     let mid = Button::Middle;
@@ -789,11 +780,11 @@ fn grid_lag(scale: f64, step: f32, grid: bool) -> (usize, usize) {
         button: mid,
     };
     b.frame(&event(down), 8, false);
-    let (mut x, mut pan_partial) = (cx, 0);
+    let mut x = cx;
     for i in 0..240 {
         x += if (i / 60) % 2 == 0 { step } else { -step };
         b.frame(&event(InputEvent::PointerMove { x, y: cy }), 8, true);
-        pan_partial += usize::from(partial(&b));
+        whole(&b);
     }
     let up = InputEvent::PointerUp {
         x,
@@ -801,12 +792,8 @@ fn grid_lag(scale: f64, step: f32, grid: bool) -> (usize, usize) {
         button: mid,
     };
     b.frame(&event(up), 8, false);
-    while partial(&b) {
-        b.frame(&InputEvents::default(), 8, false);
-    }
     composed_all(&b);
     b.report("pan");
-    let mut zoom_catch_up = 0;
     for burst in 0..10 {
         let dy = if burst % 2 == 0 { 1.0 } else { -1.0 };
         for _ in 0..3 {
@@ -817,24 +804,13 @@ fn grid_lag(scale: f64, step: f32, grid: bool) -> (usize, usize) {
                 dy,
             };
             b.frame(&event(wheel), 16, true);
+            whole(&b);
         }
-        // Frames after the settle frame until the view is whole.
-        let mut extra = 0;
-        for _ in 0..256 {
-            let Some(wake) = b.ed.wake_ms() else { break };
-            extra += usize::from(wake == 0);
-            b.frame(&InputEvents::default(), u64::from(wake) + 1, true);
-        }
-        zoom_catch_up = zoom_catch_up.max(extra);
     }
     composed_all(&b);
     b.report("zoom");
-    eprintln!(
-        "grid {grid} @{scale}x, pan {step} px/frame: {pan_partial}/240 pan frames partial; a \
-         settled zoom takes {zoom_catch_up} extra frame(s) to show whole"
-    );
+    eprintln!("grid {grid} @{scale}x, pan {step} px/frame");
     let _ = std::fs::remove_dir_all(&dir);
-    (pan_partial, zoom_catch_up)
 }
 
 #[test]
@@ -902,8 +878,7 @@ fn interactions(n: u32) {
         b.frame(&event(wheel), 16, false);
     }
     settle(&mut b);
-    // Hover: 4 px per frame across the canvas; the first frames after a zoom also fill the
-    // ring of tiles ahead of the view (within its share of the budget).
+    // Hover: 4 px per frame across the canvas.
     for i in 0..240 {
         let x = 200.0 + (i % 120) as f32 * 4.0;
         let y = cy + (i / 120) as f32 * 3.0;
@@ -1017,7 +992,7 @@ fn interactions(n: u32) {
             mods: schemify_ui::Mods(m),
         };
         // Resident MiB (Linux; `None` elsewhere): each select-all frame once grew it by
-        // ~0.7 GB, every tile recording every selection mark.
+        // ~0.7 GB, every canvas tile recording every selection mark.
         let rss = || {
             let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
             let pages: u64 = statm.split(' ').nth(1)?.parse().ok()?;
@@ -1521,8 +1496,8 @@ impl Bench {
     }
 
     /// The oracle: the share of pixels (a channel off by more than 2) that differ between the
-    /// frame the window shows and the same editor state painted uncached (a fresh canvas cache
-    /// and layers: every tile recorded in that frame, vello renders all of it).
+    /// frame the window shows and the same editor state painted afresh (fresh caches, layers
+    /// and rows: every row packed in that frame, vello renders all of the UI).
     fn stale_share(&mut self) -> f64 {
         let shown = self.pixels();
         let caches = std::mem::take(&mut self.caches);
@@ -1564,12 +1539,13 @@ impl Bench {
     }
 }
 
-/// Share of pixels a settled frame may differ from the uncached one: antialiasing and glyph
-/// snapping at tile seams (~0.1%); one stale or blank 256-px tile is ~6% of the 1280 × 800 view.
+/// Share of pixels a settled frame may differ from the fresh one: patched rows drawn in
+/// another slot order blend their antialiased overlaps differently (well under 0.1%); one
+/// stale 256-px square is ~6% of the 1280 × 800 view.
 const SEAM_SHARE: f64 = 0.005;
 
 /// After pans, zooms, arrow keys and opening another cell, the frame the window settles on
-/// (the loop asleep) equals the uncached render of the same state: no stale tile from another
+/// (the loop asleep) equals the fresh render of the same state: no stale row from another
 /// zoom or cell is left on screen.
 #[test]
 #[ignore = "needs a GPU adapter"]
@@ -1616,77 +1592,6 @@ fn settled_frame_equals_uncached_frame() {
     b.ed.command("file.open", path.to_str().expect("utf-8 path"));
     let f = b.window(&InputEvents::default(), 16);
     check(&mut b, "open cell b", f);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// User report: zooming far out of `inv/top.shcomp` (a light cell) showed old-zoom stand-ins
-/// over a black canvas for up to a second. A tile's fixed cost (`TILE_COST`) was counted as
-/// content density, so after a ×18 zoom-out each new tile's estimate grew ×324 and was
-/// recorded a sixteenth per frame: 50 frames to fill the view after a fast wheel, 65 after a
-/// touchpad flick. Oracle: light content fits one frame's budget, so the view is whole a few
-/// frames after any zoom gesture, and the settled frame equals the uncached one.
-#[test]
-#[ignore = "needs a GPU adapter"]
-fn zoom_on_a_light_cell_fills_the_view_in_a_few_frames() {
-    const FRAMES_MAX: usize = 4;
-    let dir = fixture("inv", "perf-settled-inv");
-    let Some(mut b) = Bench::on_gpu(&dir.join("top.shcomp")) else {
-        eprintln!("no GPU adapter with timestamps: skipped");
-        return;
-    };
-    let check = |b: &mut Bench, what: &str, frames: usize| {
-        let (stale, scale) = (b.stale_share(), b.ed.camera().scale);
-        eprintln!(
-            "{what}: scale {scale:.5}, {frames} frames, {:.3}% px off",
-            stale * 100.0
-        );
-        assert!(
-            stale <= SEAM_SHARE,
-            "{what}: {:.2}% px stale",
-            stale * 100.0
-        );
-        assert!(frames <= FRAMES_MAX, "{what}: {frames} frames to settle");
-    };
-    b.window(&InputEvents::default(), 1000);
-    let (cx, cy) = (500.0f32, 350.0f32);
-    b.window(&event(InputEvent::PointerMove { x: cx, y: cy }), 16);
-    // A notch at a time, settling after each, until the cell is a few dozen px wide.
-    for notch in 0..16 {
-        let wheel = InputEvent::Wheel {
-            x: cx,
-            y: cy,
-            dx: 0.0,
-            dy: -1.0,
-        };
-        let f = b.window(&event(wheel), 16);
-        check(&mut b, &format!("notch {notch}"), f);
-    }
-    // A fast wheel (a notch per 8 ms frame, no settle between), then a touchpad (fractional
-    // deltas, the pointer drifting); the frames counted are those after the gesture.
-    for (what, dy, n) in [
-        ("fast in", 1.0, 16),
-        ("fast out", -1.0, 16),
-        ("pad in", 0.15, 120),
-        ("pad out", -0.15, 160),
-        ("pad in again", 0.2, 60),
-    ] {
-        for k in 0..n {
-            let x = cx + (k % 7) as f32 * 3.0;
-            let mut ev = event(InputEvent::PointerMove { x, y: cy });
-            ev.push(InputEvent::Wheel {
-                x,
-                y: cy,
-                dx: 0.0,
-                dy,
-            });
-            b.now += 8;
-            if b.ed.update(&ev, VIEW, b.now) {
-                b.paint();
-            }
-        }
-        let f = b.window(&InputEvents::default(), 16);
-        check(&mut b, what, f);
-    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1825,7 +1730,7 @@ fn cpu_frames_100k() {
         false,
     );
     report_cpu("pan", &mut c.times);
-    // Zoom bursts with their settle frames: as `frame_times`.
+    // Zoom bursts: as `frame_times`.
     c.frame(&event(InputEvent::PointerMove { x: cx, y: cy }), 8, false);
     for burst in 0..10 {
         let dy = if burst % 2 == 0 { 1.0 } else { -1.0 };
@@ -1837,10 +1742,6 @@ fn cpu_frames_100k() {
                 dy,
             };
             c.frame(&event(wheel), 16, true);
-        }
-        for _ in 0..256 {
-            let Some(wake) = c.ed.wake_ms() else { break };
-            c.frame(&InputEvents::default(), u64::from(wake) + 1, true);
         }
     }
     report_cpu("zoom", &mut c.times);

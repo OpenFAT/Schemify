@@ -1,10 +1,12 @@
-//! Oracle for the editor's retained canvas (D39): one session painted every step with a
-//! painter that keeps its raster layer (so frames copy or patch it), one painted with a fresh
-//! painter (so every frame records the whole canvas), both driven by the same seeded random
+//! Oracle for the editor's retained canvas rows (D39): one session painted every step with a
+//! painter that keeps its instance rows (so frames patch them where the tables changed), one
+//! painted with a fresh painter (so every frame packs every row afresh), both driven by the
+//! same seeded random
 //! actions — selections, deletes, undo/redo, shapes drawn with the shape tools, and the view
 //! options that change what the canvas draws (hidden layers, fill, line width, colors,
 //! symbol boxes and texts, connected-instance highlight). Their windows must agree within
-//! one level per channel (a patched part rounds unsnapped coordinates differently).
+//! one level per channel (patched rows sit in other slots, so a layer's paths list them in
+//! another order).
 
 mod common;
 
@@ -209,9 +211,9 @@ fn walk(seed: u64, steps: usize) {
     let mut kept = Session::open("inv", "top.shcomp", &format!("canvas-kept-{seed}"), true);
     let mut fresh = Session::open("inv", "top.shcomp", &format!("canvas-fresh-{seed}"), true);
     let (w, h) = (VIEW.0 as u16, VIEW.1 as u16);
-    let mut layers = CpuPainter::new(w, h, 1.0);
+    let mut rows = CpuPainter::new(w, h, 1.0);
     let (mut rng_a, mut rng_b) = (Rng(seed), Rng(seed));
-    paint(&mut kept, &mut layers);
+    paint(&mut kept, &mut rows);
     for step in 0..steps {
         let what = act(&mut kept, &mut rng_a);
         act(&mut fresh, &mut rng_b);
@@ -221,19 +223,19 @@ fn walk(seed: u64, steps: usize) {
             "step {step} ({what}): same document"
         );
         markers_match(&kept, &format!("step {step} ({what})"));
-        let got = paint(&mut kept, &mut layers);
+        let got = paint(&mut kept, &mut rows);
         let want = paint(&mut fresh, &mut CpuPainter::new(w, h, 1.0));
         let (worst, off) = compare(&got, &want);
         assert!(
             worst <= 1,
-            "step {step} ({what}): the kept canvas differs from a fresh recording by {worst} \
+            "step {step} ({what}): the kept rows draw differently from fresh ones by {worst} \
              ({off} pixels off by more than 1)"
         );
     }
 }
 
 #[test]
-fn a_kept_canvas_equals_a_fresh_recording() {
+fn a_kept_canvas_equals_a_fresh_pack() {
     walk(1, 40);
     walk(2, 40);
     walk(3, 60);
@@ -268,12 +270,11 @@ fn the_paint_outcome_schedules_the_next_frame_through_painted() {
 }
 
 /// A frame with no input and nothing due does no work (D39 idle 0%): once the editor is idle
-/// (no wake-up asked for), an empty update reports nothing changed, schedules nothing,
-/// rebuilds no scene, and its paint copies the canvas tiles it has. The window does not even
-/// run such a frame (it sleeps until input while `wake_ms` is `None`).
+/// (no wake-up asked for), an empty update reports nothing changed, schedules nothing and
+/// rebuilds no scene, and painting schedules nothing either. The window does not even run
+/// such a frame (it sleeps until input while `wake_ms` is `None`).
 #[test]
 fn an_idle_frame_does_no_work() {
-    use schemify_canvas::Drawn;
     let mut s = Session::open("inv", "top.shcomp", "idle", true);
     let mut p = CpuPainter::new(VIEW.0 as u16, VIEW.1 as u16, 1.0);
     for _ in 0..8 {
@@ -290,13 +291,11 @@ fn an_idle_frame_does_no_work() {
         assert_eq!(s.ed.wake_ms(), None, "frame {k}: nothing scheduled");
         assert_eq!(s.ed.scene().built, built, "frame {k}: no scene build");
         p.reset();
-        assert_eq!(
-            schemify_app::paint::frame(&mut s.ed, &mut s.caches, &mut p),
-            Some(Drawn::Copied),
-            "frame {k}: tiles copied"
-        );
+        schemify_app::paint::frame(&mut s.ed, &mut s.caches, &mut p);
+        assert_eq!(s.ed.wake_ms(), None, "frame {k}: paint schedules nothing");
     }
-    // Negative space: input does work (a wheel notch zooms and asks for the crisp frame).
+    // Negative space: input does work (a wheel notch zooms); its frame is complete, so no
+    // settle frame follows it.
     let mut ev = schemify_ui::InputEvents::default();
     ev.push(schemify_ui::InputEvent::Wheel {
         x: 300.0,
@@ -306,9 +305,12 @@ fn an_idle_frame_does_no_work() {
     });
     assert!(s.frame(ev), "a zoom changes the picture");
     p.reset();
-    let drawn = schemify_app::paint::frame(&mut s.ed, &mut s.caches, &mut p);
-    assert_eq!(drawn, Some(Drawn::Stretched), "the old tiles stand in");
-    assert!(s.ed.wake_ms().is_some(), "and the crisp frame is due");
+    schemify_app::paint::frame(&mut s.ed, &mut s.caches, &mut p);
+    assert_eq!(s.ed.wake_ms(), None, "a zoom frame asks for no other");
+    assert!(
+        !s.frame(Default::default()),
+        "and the next frame has nothing to do"
+    );
 }
 
 /// Oracle for the patched plugin snapshot (`Host::snapshot`, whose debug build compares every
@@ -534,4 +536,77 @@ fn an_edit_refills_the_plugin_snapshot_on_the_next_tick() {
             "idle after the edit (plugins: {plugins})"
         );
     }
+}
+
+/// A pan or zoom frame writes no instance row, only the camera (D39): after the first frame
+/// packs the canvas, the rows a middle drag's and a wheel notch's frames leave to upload are
+/// zero bytes while the frame's camera moves (the uniform `Pipelines::draw` writes). Negative
+/// space: a delete writes rows.
+#[test]
+fn a_pan_or_zoom_frame_writes_no_instance_bytes() {
+    use schemify_render::gpu::InstanceRows;
+    use schemify_render::vello::Scene;
+    use schemify_render::vello::kurbo::Affine;
+    use schemify_render::{Layers, ScenePainter};
+    use schemify_ui::{Button, InputEvent};
+    let mut s = Session::open("inv", "top.shcomp", "zero-bytes", true);
+    let (mut scene, mut layers, mut rows) =
+        (Scene::new(), Layers::default(), InstanceRows::default());
+    // One frame painted as the window paints it; returns the row bytes it left to upload and
+    // its camera, then takes the rows as the GPU does.
+    let mut paint = |s: &mut Session| {
+        scene.reset();
+        layers.begin_frame(Affine::IDENTITY);
+        let mut p = ScenePainter {
+            scene: &mut scene,
+            base: Affine::IDENTITY,
+            layers: Some(&mut layers),
+            rows: Some(&mut rows),
+        };
+        schemify_app::paint::frame(&mut s.ed, &mut s.caches, &mut p);
+        let bytes = rows.dirty_bytes();
+        let cam = rows.frame.take().expect("a canvas frame").cam;
+        rows.clear_dirty();
+        (bytes, (cam.cx, cam.cy, cam.scale))
+    };
+    let (first, mut cam) = paint(&mut s);
+    assert!(first > 0, "the first frame packs the canvas");
+    let (x, y) = (VIEW.0 / 2.0, VIEW.1 / 2.0);
+    let mid = Button::Middle;
+    s.send([
+        InputEvent::PointerMove { x, y },
+        InputEvent::PointerDown { x, y, button: mid },
+    ]);
+    paint(&mut s);
+    for k in 1..=4 {
+        let x = x + 15.0 * k as f32;
+        assert!(
+            s.send([InputEvent::PointerMove { x, y }]),
+            "pan {k} moves the view"
+        );
+        let (bytes, now) = paint(&mut s);
+        assert_eq!(bytes, 0, "pan frame {k} writes no row");
+        assert_ne!(now, cam, "pan frame {k} moves the camera");
+        cam = now;
+    }
+    s.send([InputEvent::PointerUp { x, y, button: mid }]);
+    paint(&mut s);
+    for (k, dy) in [1.0, 1.0, -1.0].into_iter().enumerate() {
+        assert!(
+            s.send([InputEvent::Wheel { x, y, dx: 0.0, dy }]),
+            "zoom {k} moves the view"
+        );
+        let (bytes, now) = paint(&mut s);
+        assert_eq!(bytes, 0, "zoom frame {k} writes no row");
+        assert_ne!(now.2, cam.2, "zoom frame {k} scales the camera");
+        cam = now;
+    }
+    let n = s.ed.scene().objs.len();
+    let g = s.ed.scene().objs.geom[0];
+    s.click(((g[0] + g[2]) / 2, (g[1] + g[3]) / 2));
+    paint(&mut s);
+    s.ed.command("edit.delete", "");
+    s.frame(Default::default());
+    assert_eq!(s.ed.scene().objs.len(), n - 1, "deleted");
+    assert!(paint(&mut s).0 > 0, "an edit writes its rows");
 }

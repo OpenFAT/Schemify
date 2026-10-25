@@ -2,15 +2,16 @@
 //! packed into retained instance rows ([`InstanceRows`]), patched where the tables' reported
 //! changes say, and drawn by instanced pipelines ([`Pipelines`]) under one camera uniform
 //! (`gpu.wgsl`). A pan or zoom writes the uniform only; an edit rewrites the rows it changed.
-//! Every frame is complete: this path has no tile cache.
+//! Every frame is complete: there is no tile cache.
 //!
 //! One producer, two consumers: the pack here is the one place a per-row decision is made
 //! (dead and hidden rows draw nothing, colour and stroke width from the palette, fills, the
-//! marks' recolouring, the drawing order); the pipelines consume the rows now, the CPU
-//! painter is to follow (step 2). Culling to the view is the GPU's clip, and the far-zoom cut
-//! (a row at most 2 px across is the whole pixels it touches, as `canvas::draw_prims` draws
-//! it) is a pure function of (row, zoom) evaluated in the vertex shader. Text stays with
-//! vello until the glyph atlas (step 3).
+//! marks' recolouring, the drawing order). The pipelines consume the rows on the GPU;
+//! `canvas::draw_rows` consumes the same rows on the CPU (`CpuPainter`, the goldens).
+//! Culling to the view and the far-zoom cut (a row at most 2 px across is the whole pixels it
+//! touches) are pure functions of (row, camera), evaluated by each consumer: the vertex shader
+//! per row, `draw_rows` per row and per chain. Text stays with vello until the glyph atlas
+//! (step 3).
 //!
 //! Six questions:
 //! 1. In: the four canvas tables of a frame ([`CanvasPrims`]: the scene as shown, decor,
@@ -25,7 +26,8 @@
 //! 3. Rows are AoS (the GPU fetches one row per instance): coordinates `i32` milli-units
 //!    (D33); colour `u32`, RGBA8 in memory order, all zero in an empty slot; a style word of
 //!    stroke width `u16` in 1/16 px (layer width × weight ≤ 4, under 4096 px), dash 4 bits
-//!    (0–15, `LineStyle`) and flags 4 bits. A segment or rect row is 24 B, an arc row or a
+//!    (0–15, `LineStyle`) and flags 4 bits (fill, parity snapping, and on an edge where its
+//!    chain starts and whether it closes). A segment or rect row is 24 B, an arc row or a
 //!    fill triangle 28 B ([`STRIDE`]).
 //! 4. The GPU reads every row each frame, layer by layer: the CPU painter's order (source by
 //!    source, layer by layer), which decides how antialiased edges of different layers blend.
@@ -78,10 +80,15 @@ const NO_SLOT: u32 = u32::MAX;
 /// Style flags, bits 20–23 of a row's style word (`gpu.wgsl`): a closed shape also filled.
 /// Every stroke has round caps and joins, as kurbo's `Stroke::new` and `canvas::stroke_of`
 /// draw them on the CPU.
-const FILL: u32 = 1;
+pub const FILL: u32 = 1;
 /// Snap to a pixel centre or edge by the rounded width's parity (`canvas::styled`); else to
 /// a centre.
-const PARITY: u32 = 2;
+pub const PARITY: u32 = 2;
+/// On an edge row: the first edge of its chain (a polyline or polygon), so the CPU painter
+/// strokes the chain as the one path it is (joins, a continuous dash). The shader ignores it.
+pub const FIRST: u32 = 4;
+/// On an edge row: its chain is a polygon (closed), so its last edge is the closing one.
+pub const CLOSED: u32 = 8;
 /// A mark's stroke: 2 logical px (`canvas::draw_marks`), in 1/16 px.
 const MARK_WIDTH_Q16: u32 = 32;
 
@@ -229,6 +236,33 @@ impl InstanceRows {
     pub fn layer_slots(&self, src: usize, kind: usize, layer: usize) -> Range<u32> {
         let t = &self.tables[src][kind];
         t.start[layer]..t.start[layer] + t.used[layer]
+    }
+
+    /// Slot `slot` of kind `kind` from source `src` as its `STRIDE[kind] / 4` words, the rest
+    /// zero (`gpu.wgsl`'s fields: coordinates, then colour and style word; a fill triangle's
+    /// colour last). An empty slot is all zero.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a slot past the rows.
+    #[inline]
+    pub fn row(&self, src: usize, kind: usize, slot: u32) -> [u32; 7] {
+        let b = &self.tables[src][kind].bytes[slot as usize * STRIDE[kind]..][..STRIDE[kind]];
+        let mut w = [0u32; 7];
+        for (k, c) in b.chunks_exact(4).enumerate() {
+            w[k] = u32::from_ne_bytes(c.try_into().expect("4 bytes"));
+        }
+        w
+    }
+
+    /// Forgets the dirty ranges, as an upload does: for a consumer that reads the rows in
+    /// place (the CPU painter), and for tests that count the bytes one frame writes.
+    pub fn clear_dirty(&mut self) {
+        self.tables
+            .iter_mut()
+            .flatten()
+            .for_each(|t| t.dirty.clear());
+        assert_eq!(self.dirty_bytes(), 0);
     }
 
     /// The byte ranges of `(src, kind)` written since the GPU last read the rows.
@@ -406,6 +440,7 @@ impl InstanceRows {
                 let (a, b) = (pts.start + j, pts.start + (j + 1) % m);
                 let f = [p.x[a], p.y[a], p.x[b], p.y[b]].map(|v| v as u32);
                 let at = edge.take(l).expect("laid out") as usize;
+                let s = s | chain_flags(j, closed);
                 row(
                     &mut edge.bytes,
                     STRIDE[EDGE],
@@ -520,7 +555,8 @@ impl InstanceRows {
                     for j in 0..if closed { m } else { m - 1 } {
                         let (a, b) = (pts.start + j, pts.start + (j + 1) % m);
                         let f = [p.x[a], p.y[a], p.x[b], p.y[b]].map(|v| v as u32);
-                        put(EDGE, range(i), &[f[0], f[1], f[2], f[3], color, style]);
+                        let s = style | chain_flags(j, closed);
+                        put(EDGE, range(i), &[f[0], f[1], f[2], f[3], color, s]);
                     }
                 }
             }
@@ -531,6 +567,13 @@ impl InstanceRows {
         );
         self.packed[MARKS] = true;
     }
+}
+
+/// The chain flags of edge `j` of a chain, in place in a style word.
+fn chain_flags(j: usize, closed: bool) -> u32 {
+    let first = if j == 0 { FIRST } else { 0 };
+    let closed = if closed { CLOSED } else { 0 };
+    (first | closed) << 20
 }
 
 /// Rows of 1:1 column `c` (0 lines, 1 rects, 2 arcs) of `t`.
@@ -1023,7 +1066,7 @@ mod tests {
 
     /// As the GPU takes it: every dirty range read.
     fn uploaded(r: &mut InstanceRows) {
-        r.tables.iter_mut().flatten().for_each(|t| t.dirty.clear());
+        r.clear_dirty();
     }
 
     /// What the GPU draws from `(src, kind)`: per layer the non-empty rows of its range, in
@@ -1111,6 +1154,10 @@ mod tests {
         let e = words(r.bytes(0, EDGE));
         assert_eq!(&e[..4], &[0, 0, 10, 0]);
         assert_eq!(&e[7 * 6..7 * 6 + 4], &[0, 10, 0, 0], "the polygon closes");
+        // Chain flags: where each chain starts, and which edges close a polygon.
+        assert_eq!((e[5], e[6 + 5]), (16 | (FIRST << 20), 16));
+        let poly = 16 | ((FILL | PARITY | CLOSED) << 20);
+        assert_eq!((e[3 * 6 + 5], e[4 * 6 + 5]), (poly | (FIRST << 20), poly));
         assert_eq!(
             r.dirty_bytes(),
             40 * 24 + (5 + 16 + 1 + 16) * 24 + (2 + 16) * 28 + 8 * 24 + 3 * 28
