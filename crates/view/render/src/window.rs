@@ -273,7 +273,7 @@ struct Shell<A: App> {
     scale: f64,
     /// The frame's batch and the coverage atlas behind it (kept across frames).
     batch: Batch,
-    /// The canvas's instance rows (kept across frames; `Painter::canvas` patches them).
+    /// The canvas's instance rows (kept across frames; `Painter::canvas_rows` patches them).
     rows: InstanceRows,
     access_dirty: bool,
     /// The deadline [`App::wake_ms`] asked for has passed: update with no input.

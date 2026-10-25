@@ -5,8 +5,11 @@
 //!
 //! ```text
 //! widgets::draw_ui(Layer::Main)        bars, tabs, status
-//! Painter::canvas(canvas rect)         grid, the tables' rows each with its labels, marks
-//! Painter::overlay                     the gesture overlay
+//! Painter::canvas_begin(frame)         background and grid, clipped to the canvas rect
+//! Painter::canvas_rows(table) × 4      each table's rows, its labels drawn right after
+//! Painter::canvas_marks                the selection marks
+//! Painter::canvas_rows(OVERLAY)        the gesture overlay and its labels
+//! Painter::canvas_end
 //! widgets::draw_ui(Layer::Overlay)     menu popups, dialogs
 //! ```
 //!

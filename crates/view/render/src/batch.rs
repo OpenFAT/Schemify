@@ -27,13 +27,11 @@ use kurbo::{Affine, BezPath, Cap, Join, PathEl, Point, Rect, Shape, Stroke};
 use peniko::{Color, FontData, ImageData};
 use vello_cpu::Glyph;
 
-use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
-use schemify_ui::TextSystem;
+use schemify_canvas::{CanvasPrims, Marks, Palette};
 use schemify_ui::skrifa::{self, MetadataProvider};
 
 use crate::atlas::{Atlas, Key, PATH, Placed};
-use crate::canvas::{self, CanvasScratch};
-use crate::gpu::{Change, Frame, InstanceRows, MARKS, OVERLAY};
+use crate::gpu::{Change, Frame, InstanceRows, MARKS};
 use crate::painter::{Chains, Painter};
 use crate::ui_rows::{self, UiRows};
 use crate::widgets::UiRow;
@@ -386,7 +384,7 @@ pub struct GpuPainter<'a> {
     pub batch: &'a mut Batch,
     /// Logical → device px (the window's scale factor).
     pub base: Affine,
-    /// The canvas's instance rows ([`Painter::canvas`] packs into them and leaves the frame
+    /// The canvas's instance rows ([`Painter::canvas_rows`] packs into them and leaves the frame
     /// to draw in [`InstanceRows::frame`]); `None` draws no canvas (a benchmark of the UI
     /// alone).
     pub rows: Option<&'a mut InstanceRows>,
@@ -1019,55 +1017,40 @@ impl Painter for GpuPainter<'_> {
         ui.end(src, atlas);
     }
 
-    fn canvas(
-        &mut self,
-        frame: &Frame,
-        tables: [(&CanvasPrims, Change<'_>); 4],
-        marks: (&CanvasPrims, &Marks, bool),
-        palette: &Palette,
-        mut texts: impl FnMut(&mut Self, usize),
-    ) {
+    fn canvas_begin(&mut self, frame: &Frame) -> bool {
         let Some(rows) = self.rows.as_deref_mut() else {
-            return; // a batch that draws no canvas (a benchmark of the UI alone)
+            return false; // a batch that draws no canvas (a benchmark of the UI alone)
         };
         assert!(rows.frame.is_none(), "one canvas per frame");
-        for (src, (t, change)) in tables.into_iter().enumerate() {
-            rows.pack(src, t, palette, change);
-        }
-        rows.pack_marks(marks.0, marks.1, marks.2);
         rows.frame = Some(*frame);
-        // The canvas pass's stages among the batch's instances: each table's texts over its
-        // rows and under the next table's, the marks over all, as the CPU painter draws them.
+        // The canvas pass's stages go among the batch's instances in call order: each source's
+        // labels over its rows and under the next source's, as the CPU painter draws them.
         self.batch.stage(Stage::Background);
-        for src in 0..4 {
-            self.batch.stage(Stage::Rows(src));
-            self.push_clip(frame.view);
-            texts(self, src);
-            self.pop_clip();
-        }
+        self.push_clip(frame.view);
+        true
+    }
+
+    fn canvas_rows(
+        &mut self,
+        src: usize,
+        table: &CanvasPrims,
+        palette: &Palette,
+        change: Change<'_>,
+    ) {
+        let rows = self.rows.as_deref_mut().expect("inside a canvas");
+        assert!(rows.frame.is_some(), "inside a canvas");
+        rows.pack(src, table, palette, change);
+        self.batch.stage(Stage::Rows(src));
+    }
+
+    fn canvas_marks(&mut self, scene: &CanvasPrims, marks: &Marks, changed: bool) {
+        let rows = self.rows.as_deref_mut().expect("inside a canvas");
+        assert!(rows.frame.is_some(), "inside a canvas");
+        rows.pack_marks(scene, marks, changed);
         self.batch.stage(Stage::Rows(MARKS));
     }
 
-    fn overlay(
-        &mut self,
-        view: Rect,
-        cam: &Camera,
-        prims: &CanvasPrims,
-        palette: &Palette,
-        text: &mut TextSystem,
-        scratch: &mut CanvasScratch,
-    ) {
-        let Some(rows) = self.rows.as_deref_mut() else {
-            return;
-        };
-        assert!(
-            rows.frame.is_some(),
-            "the overlay goes over this frame's canvas"
-        );
-        rows.pack(OVERLAY, prims, palette, Change::All);
-        self.batch.stage(Stage::Rows(OVERLAY));
-        self.push_clip(view);
-        canvas::draw_texts(self, view, cam, &prims.texts, None, palette, text, scratch);
+    fn canvas_end(&mut self) {
         self.pop_clip();
     }
 }
@@ -1075,6 +1058,7 @@ impl Painter for GpuPainter<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use schemify_ui::TextSystem;
 
     /// Phases are exact: a position rounds to the nearest eighth of a pixel, half a step up,
     /// and the last half step wraps to the next pixel's first; whole-pixel shifts keep the

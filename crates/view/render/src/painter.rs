@@ -2,7 +2,7 @@
 //! ([`crate::batch::GpuPainter`]) and the `vello_cpu` rasterizer (golden images, GPU-less
 //! fallback, D5). Monomorphized, so it costs nothing at runtime.
 //!
-//! Both draw the canvas from the instance rows [`crate::gpu`] packs ([`Painter::canvas`]): the
+//! Both draw the canvas from the instance rows [`crate::gpu`] packs ([`Painter::canvas_rows`]): the
 //! GPU painter leaves them to the window's instanced pass, the CPU painter rasterizes them.
 
 use kurbo::{Affine, BezPath, Rect, Shape, Stroke};
@@ -10,9 +10,8 @@ use peniko::{Color, Fill, FontData, ImageData, ImageSampler};
 use vello_cpu::Glyph;
 
 use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
-use schemify_ui::TextSystem;
 
-use crate::canvas::{self, CanvasScratch, Paths};
+use crate::canvas::{self, Paths};
 use crate::gpu::{Change, Frame, InstanceRows, MARKS};
 use crate::ui_rows;
 use crate::widgets::{RowKey, UiRow};
@@ -68,25 +67,53 @@ pub trait Painter {
         self.fill_rect(r, Color::from_rgba8(128, 128, 128, 48));
     }
 
-    /// Draws the canvas from the instance rows this painter keeps ([`crate::gpu`]):
-    /// `frame`'s background and grid, `tables` in drawing order (each packed after how it
-    /// changed since this painter last drew it), each table's texts through `texts(self, k)`
-    /// right after its rows, then the `marks` over `marks.0` (repacked when `marks.2`), all
-    /// clipped to `frame.view`. The GPU painter leaves the rows to the window's canvas pass,
-    /// drawn at their place among its batch's instances; the CPU painter rasterizes them in
-    /// place ([`crate::canvas::draw_rows`]). The default draws nothing: a painter that never
-    /// shows a canvas (a test probe, the dock's shifted painter).
-    fn canvas(
+    /// Starts this frame's canvas: `frame`'s background and grid, and every call after it
+    /// clipped to `frame.view` until [`Painter::canvas_end`]. Then, in drawing order, each row
+    /// source through [`Painter::canvas_rows`] with its labels drawn right after it, then
+    /// [`Painter::canvas_marks`]. False for a painter that shows no canvas (a test probe, the
+    /// dock's shifted painter, a GPU painter without rows): the caller skips the canvas.
+    ///
+    /// The GPU painter leaves the rows to the window's canvas pass, drawn at their place among
+    /// its batch's instances; the CPU painter rasterizes them in place
+    /// ([`crate::canvas::draw_rows`]). Both keep the rows across frames ([`crate::gpu`]).
+    fn canvas_begin(&mut self, frame: &Frame) -> bool {
+        let _ = frame;
+        false
+    }
+
+    /// Draws row source `src` of the canvas begun by [`Painter::canvas_begin`]: one of the
+    /// canvas tables (below [`MARKS`]) or the gesture overlay ([`crate::gpu::OVERLAY`]), `table` packed
+    /// into the rows this painter keeps after `change`, how it changed since this painter last
+    /// drew `src`.
+    ///
+    /// # Panics
+    ///
+    /// Panics outside a canvas, or on `src` = [`MARKS`] ([`Painter::canvas_marks`]).
+    fn canvas_rows(
         &mut self,
-        frame: &Frame,
-        tables: [(&CanvasPrims, Change<'_>); 4],
-        marks: (&CanvasPrims, &Marks, bool),
+        src: usize,
+        table: &CanvasPrims,
         palette: &Palette,
-        texts: impl FnMut(&mut Self, usize),
-    ) where
-        Self: Sized,
-    {
-        let _ = (frame, tables, marks, palette, texts);
+        change: Change<'_>,
+    ) {
+        let _ = (src, table, palette, change);
+        unreachable!("canvas_rows without a canvas_begin that returned true");
+    }
+
+    /// Draws the selection marks over `scene`'s rows (repacked when `changed`: the marks or
+    /// `scene` since the last call).
+    ///
+    /// # Panics
+    ///
+    /// Panics outside a canvas.
+    fn canvas_marks(&mut self, scene: &CanvasPrims, marks: &Marks, changed: bool) {
+        let _ = (scene, marks, changed);
+        unreachable!("canvas_marks without a canvas_begin that returned true");
+    }
+
+    /// Ends the canvas begun by [`Painter::canvas_begin`] (its clip).
+    fn canvas_end(&mut self) {
+        unreachable!("canvas_end without a canvas_begin that returned true");
     }
 
     /// Draws UI layout row `row` of UI source `src` (0: the main layer, 1: the overlay) with
@@ -107,26 +134,6 @@ pub trait Painter {
     /// frame did not draw.
     fn ui_end(&mut self, src: usize) {
         let _ = src;
-    }
-
-    /// Draws the gesture overlay `prims` (rows and labels, repacked whole) over this frame's
-    /// canvas, clipped to `view`. The GPU painter packs it into its instance rows' overlay
-    /// source, drawn by the canvas pass; the default draws it immediately
-    /// ([`crate::canvas::draw_prims`]), as the CPU painter does.
-    fn overlay(
-        &mut self,
-        view: Rect,
-        cam: &Camera,
-        prims: &CanvasPrims,
-        palette: &Palette,
-        text: &mut TextSystem,
-        scratch: &mut CanvasScratch,
-    ) where
-        Self: Sized,
-    {
-        self.push_clip(view);
-        canvas::draw_prims(self, view, cam, prims, palette, text, scratch);
-        self.pop_clip();
     }
 }
 
@@ -278,6 +285,8 @@ pub struct CpuPainter {
     /// paths they are batched into.
     rows: InstanceRows,
     paths: Paths,
+    /// The canvas being drawn (between `canvas_begin` and `canvas_end`): its view and camera.
+    canvas: Option<(Rect, Camera)>,
     /// The UI's rows per source, and the calls of the row being recorded.
     ui: [CpuRows; ui_rows::SOURCES],
     rec: Option<Vec<Call>>,
@@ -308,6 +317,7 @@ impl CpuPainter {
             resources: vello_cpu::Resources::new(),
             base: Affine::scale(scale),
             rows: InstanceRows::default(),
+            canvas: None,
             paths: Paths::default(),
             ui: Default::default(),
             rec: None,
@@ -520,30 +530,50 @@ impl Painter for CpuPainter {
         self.base.as_coeffs()[0]
     }
 
-    fn canvas(
-        &mut self,
-        frame: &Frame,
-        tables: [(&CanvasPrims, Change<'_>); 4],
-        marks: (&CanvasPrims, &Marks, bool),
-        palette: &Palette,
-        mut texts: impl FnMut(&mut Self, usize),
-    ) {
-        let mut rows = std::mem::take(&mut self.rows);
-        let mut paths = std::mem::take(&mut self.paths);
-        let (view, cam) = (frame.view, &frame.cam);
+    fn canvas_begin(&mut self, frame: &Frame) -> bool {
+        assert!(self.canvas.is_none(), "one canvas at a time");
+        let (view, cam) = (frame.view, frame.cam);
         self.push_clip(view);
         self.fill_rect(view, rgba(frame.background));
-        canvas::draw_grid(self, view, cam, frame.grid, frame.grid_color, &mut paths);
-        for (src, (t, change)) in tables.into_iter().enumerate() {
-            rows.pack(src, t, palette, change);
-            canvas::draw_rows(self, view, cam, &rows, src, &mut paths);
-            texts(self, src);
-        }
-        rows.pack_marks(marks.0, marks.1, marks.2);
-        canvas::draw_rows(self, view, cam, &rows, MARKS, &mut paths);
-        self.pop_clip();
-        rows.clear_dirty(); // read in place: nothing to upload
+        let mut paths = std::mem::take(&mut self.paths);
+        canvas::draw_grid(self, view, &cam, frame.grid, frame.grid_color, &mut paths);
+        self.paths = paths;
+        self.canvas = Some((view, cam));
+        true
+    }
+
+    fn canvas_rows(
+        &mut self,
+        src: usize,
+        table: &CanvasPrims,
+        palette: &Palette,
+        change: Change<'_>,
+    ) {
+        let (view, cam) = self.canvas.expect("inside a canvas");
+        let (mut rows, mut paths) = (
+            std::mem::take(&mut self.rows),
+            std::mem::take(&mut self.paths),
+        );
+        rows.pack(src, table, palette, change);
+        canvas::draw_rows(self, view, &cam, &rows, src, &mut paths);
         (self.rows, self.paths) = (rows, paths);
+    }
+
+    fn canvas_marks(&mut self, scene: &CanvasPrims, marks: &Marks, changed: bool) {
+        let (view, cam) = self.canvas.expect("inside a canvas");
+        let (mut rows, mut paths) = (
+            std::mem::take(&mut self.rows),
+            std::mem::take(&mut self.paths),
+        );
+        rows.pack_marks(scene, marks, changed);
+        canvas::draw_rows(self, view, &cam, &rows, MARKS, &mut paths);
+        (self.rows, self.paths) = (rows, paths);
+    }
+
+    fn canvas_end(&mut self) {
+        assert!(self.canvas.take().is_some(), "inside a canvas");
+        self.pop_clip();
+        self.rows.clear_dirty(); // read in place: nothing to upload
     }
 
     fn image(&mut self, image: &ImageData, r: Rect) {

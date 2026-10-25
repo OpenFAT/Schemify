@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use schemify_canvas::{Camera, CanvasPrims, LineStyle, Marks, Palette, PrimKind};
 use schemify_render::canvas::{self, CanvasScratch};
-use schemify_render::gpu::{Change, Frame, InstanceRows, Pipelines};
+use schemify_render::gpu::{Change, Frame, InstanceRows, OVERLAY, Pipelines};
 use schemify_render::kurbo::{Affine, Rect};
 use schemify_render::peniko::Color;
 use schemify_render::widgets::{UiScratch, draw_math, draw_prose, draw_text, draw_ui};
@@ -603,7 +603,7 @@ fn gpu_lod_cut_matches_cpu_at_the_threshold() {
 }
 
 /// `prims` (one table, with its labels, and `marks`) as a frame paints it: through
-/// `Painter::canvas` with the labels as the frame's texts (`draw_texts`), then the gesture
+/// `Painter::canvas_begin` … `canvas_end` with the labels as the frame's texts (`draw_texts`), then the gesture
 /// `overlay`, between UI chrome before (a grey fill) and after (a popup).
 #[allow(clippy::too_many_arguments)]
 fn canvas_scene<P: Painter>(
@@ -642,28 +642,31 @@ fn canvas_scene_in<P: Painter>(
     let mut scratch = CanvasScratch::default();
     let empty = CanvasPrims::default();
     p.fill_rect(whole, Color::from_rgba8(60, 60, 60, 255));
-    let tables = [
-        (prims, Change::All),
-        (&empty, Change::All),
-        (&empty, Change::All),
-        (&empty, Change::All),
-    ];
-    let texts = |p: &mut P, k: usize| {
-        if k == 0 {
-            let t = &prims.texts;
-            canvas::draw_texts(p, view, &cam, t, None, &palette, text, &mut scratch);
-        }
-    };
-    p.canvas(
-        &frame_of(view, cam),
-        tables,
-        (prims, marks, true),
-        &palette,
-        texts,
+    assert!(
+        p.canvas_begin(&frame_of(view, cam)),
+        "a painter with a canvas"
     );
-    if !overlay.is_empty() {
-        p.overlay(view, &cam, overlay, &palette, text, &mut scratch);
+    for (k, t) in [prims, &empty, &empty, &empty].into_iter().enumerate() {
+        p.canvas_rows(k, t, &palette, Change::All);
+        if k == 0 {
+            canvas::draw_texts(p, view, &cam, &t.texts, None, &palette, text, &mut scratch);
+        }
     }
+    p.canvas_marks(prims, marks, true);
+    if !overlay.is_empty() {
+        p.canvas_rows(OVERLAY, overlay, &palette, Change::All);
+        canvas::draw_texts(
+            p,
+            view,
+            &cam,
+            &overlay.texts,
+            None,
+            &palette,
+            text,
+            &mut scratch,
+        );
+    }
+    p.canvas_end();
     if let Some(r) = popup {
         p.fill_rect(r, Color::from_rgba8(200, 50, 50, 255));
     }

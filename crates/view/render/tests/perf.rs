@@ -70,19 +70,24 @@ fn scene_build_100k_primitives() {
             background: palette.background,
             grid_color: palette.grid,
         };
-        let ctables = [
-            (&prims, change),
-            (&none, change),
-            (&none, change),
-            (&none, change),
-        ];
-        let texts = |p: &mut GpuPainter<'_>, k: usize| {
+        assert!(p.canvas_begin(&cframe));
+        for (k, t) in [&prims, &none, &none, &none].into_iter().enumerate() {
+            p.canvas_rows(k, t, &palette, change);
             if k == 0 {
-                let t = &prims.texts;
-                canvas::draw_texts(p, view, &cam, t, None, &palette, &mut text, &mut scratch);
+                canvas::draw_texts(
+                    &mut p,
+                    view,
+                    &cam,
+                    &t.texts,
+                    None,
+                    &palette,
+                    &mut text,
+                    &mut scratch,
+                );
             }
-        };
-        p.canvas(&cframe, ctables, (&prims, &marks, i == 0), &palette, texts);
+        }
+        p.canvas_marks(&prims, &marks, i == 0);
+        p.canvas_end();
         draw_ui(
             &mut p,
             &tables,

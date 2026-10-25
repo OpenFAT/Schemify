@@ -1,7 +1,8 @@
 //! `paint`: [`Picture`] → pixels, the humble view of one frame. Draws the editor's tables
 //! through a [`Painter`] in a fixed order: UI main layer, canvas (grid, scene, decor,
-//! markers, extra and marks through the painter's instance rows, `Painter::canvas`, each
-//! table's texts with it; then the gesture overlay live) or the text tab, the docs page's
+//! markers, extra and marks through the painter's instance rows, `Painter::canvas_begin` to
+//! `canvas_end`, each table's texts right after its rows; then the gesture overlay's rows and
+//! texts) or the text tab, the docs page's
 //! graphs, the UI overlay (menus, dialogs), then the waves dock below. Every frame is
 //! complete: a pan or zoom writes no row, an edit only the rows it changed.
 //!
@@ -15,7 +16,7 @@ use schemify_canvas::{Camera, CanvasDiff, CanvasPrims, PrimIndex, Rows, TableCha
 use schemify_editor::editor::{CanvasPicture, DockPicture, Editor, GraphPicture, Picture, UiView};
 use schemify_render::Glyph;
 use schemify_render::canvas::{self, CanvasScratch};
-use schemify_render::gpu::{Change, Frame};
+use schemify_render::gpu::{Change, Frame, OVERLAY};
 use schemify_render::peniko::{Color, FontData};
 use schemify_render::waves::{WaveLook, WaveScratch, draw_window};
 use schemify_render::widgets::{UiScratch, draw_ui};
@@ -97,8 +98,9 @@ fn draw_layer<P: Painter>(p: &mut P, ui: &mut UiView<'_>, layer: Layer, scratch:
     );
 }
 
-/// The canvas tables through the painter's instance rows (`Painter::canvas`: patched where
-/// the tables changed, each table's texts over its rows), then the live gesture overlay.
+/// The canvas tables through the painter's instance rows (`Painter::canvas_rows`: patched
+/// where the tables changed, each table's texts over its rows), the marks, then the gesture
+/// overlay's rows (packed whole) and texts.
 /// Returns whether the diff took the scene's and the markers' reported edits.
 fn paint_canvas<P: Painter>(
     p: &mut P,
@@ -207,32 +209,40 @@ fn paint_canvas<P: Painter>(
     let gens = cp.gens;
     let (index, rows, text_max) = (&mut c.canvas_index, &mut c.canvas_rows, &mut c.text_max);
     let scratch = &mut c.canvas_scratch;
-    let texts = |p: &mut P, k: usize| {
+    if !p.canvas_begin(&frame) {
+        return diffed; // a painter that shows no canvas
+    }
+    for (k, (t, change)) in tables.into_iter().enumerate() {
+        p.canvas_rows(k, t, palette, change);
         // A table whose largest label is under the text cut at this zoom draws none (the far
         // zoom's frames look at no label); else only the rows near the view.
-        let t = [shown, decor, markers, extra][k];
         let g = gens[CANVAS_GEN[k]];
         let largest = &mut text_max[k];
         if largest.0 != g + 1 {
             *largest = (g + 1, t.texts.size.iter().copied().max().unwrap_or(0));
         }
         if f64::from(largest.1) * cam.scale < canvas::TEXT_MIN_PX {
-            return;
+            continue;
         }
         let listed = rows_near(&mut index[k], t, g, near, rows);
         let listed = listed.then_some(&rows.texts[..]);
         canvas::draw_texts(p, view, &cam, &t.texts, listed, palette, text, scratch);
-    };
-    p.canvas(
-        &frame,
-        tables,
-        (cp.scene, marks, marks_changed),
-        palette,
-        texts,
-    );
-    if !cp.overlay.is_empty() {
-        p.overlay(view, &cam, cp.overlay, palette, text, scratch);
     }
+    p.canvas_marks(cp.scene, marks, marks_changed);
+    if !cp.overlay.is_empty() {
+        p.canvas_rows(OVERLAY, cp.overlay, palette, Change::All);
+        canvas::draw_texts(
+            p,
+            view,
+            &cam,
+            &cp.overlay.texts,
+            None,
+            palette,
+            text,
+            scratch,
+        );
+    }
+    p.canvas_end();
     diffed
 }
 

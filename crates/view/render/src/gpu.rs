@@ -73,7 +73,8 @@ pub const STRIDE: [usize; KINDS] = [28, 24, 28, 24, 24];
 pub const SOURCES: usize = 6;
 /// The marks source ([`InstanceRows::pack_marks`]).
 pub const MARKS: usize = 4;
-/// The gesture overlay's source (`Painter::overlay`), packed whole each frame it shows.
+/// The gesture overlay's source (`Painter::canvas_rows` with [`Change::All`]), packed whole
+/// each frame it shows.
 pub const OVERLAY: usize = 5;
 /// Most bytes one row array holds: wgpu's default buffer limit (256 MiB).
 const BYTES_MAX: usize = 1 << 28;
