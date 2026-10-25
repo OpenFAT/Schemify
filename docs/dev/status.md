@@ -32,6 +32,28 @@ Where the project stands. Update this file whenever a workstream lands or stops.
 | Nix | `flake.nix`: `nix run` (wrapped editor, 23.0 MiB stripped/LTO/panic=abort, D39 ≤ 25 MB), `nix develop` (toolchain, simulators, GUI libs) |
 | CI (D32, D37) | `.github/workflows/`: `ci.yml` (merge tier: fmt/clippy/tests on Linux, macOS, Windows; wasm32 web build + bundle + headless-Chrome smoke test; WASI CLI; byte-identical CLI outputs across the four; Nix build of the core guests (ui/build.sh) with size limits; `nix flake check` + `nix build`), `nightly.yml` (cargo-fuzz on the core harnesses, perf tests + 10% regression gate on `tests/perf/baseline.txt`), `mutants.yml` (weekly), `release.yml` (tag `v*`: three native archives + web bundle on a draft release with the checklist). Toolchain pinned to 1.95.0 (= MSRV = flake.lock rustc). Details: docs/dev/testing.md § Tiers |
 
+## Done on `refactor/gui-crates` (local, not merged into `main`)
+
+| Area | State |
+|---|---|
+| Crate layers | `protocol/ plugins/ model/ view/` folders (`1d08b63c`); canvas tables, `PrimIndex` and `CanvasDiff` in the headless `canvas` crate (`4941a28f`); the model and frame spine in `editor` (`301cd172`) |
+| Window | the high-performance GPU, one frame in flight, mailbox where offered, the status bar as a live layer (`a000b745`); `update` runs at the granted redraw, from the newest input (`4a61dc49`, frame log `f58e755a`): [perf.md](perf.md) § Frame pacing |
+| GPU canvas | render-backend migration steps 1–2: instanced wgpu pipelines under the vello UI frame (`0cbc626a`, `1ed77d5e`), tile cache deleted and `CpuPainter` drawing the same rows (`cb609f4b`, `b02afcb1`): [perf.md](perf.md) § GPU canvas pipelines |
+| Load path | the startup file is read and hashed once (`d305f31f`); format checks and normalizes in one pass, values lex straight into the pools (`acb90a6e`); coordinates kept in an i32 column, parsed once (`77c70279`); column reserves from the file size (`3e757956`); one probe per string intern (`da8ebf40`). Parse of 100k objects 49 → 40 ms, `doc.open_100k` 65 ms |
+| Edit path | journal records written once, borrowing their entries (`00e1b290`) |
+| Latent bugs | replaced rows' coordinates and interned strings count as garbage (`11ac31c9`, `3e757956`); dead rows neither widen nor fill `PrimIndex`'s grid (`5e503b3f`); the Alt-drag unselect sorts and binary-searches (`d578eb03`) |
+| Editor | `box_select` on i32 boxes, branchless (`9f060e63`: 1M objects worst case 6.4 → 1.8 ms); the decor's `DecorKey` keys the staged diff by `diff_key`, no per-frame clone (`d578eb03`) |
+| Netlist | written through SpiceRack's IR and xschem layout (`3231378f`, D22), byte-identical on 126 fixture netlists; Xyce, LTspice and Spectre runners, hspice and ltspice dialects (`f08e60f7`) |
+
+## In flight (2026-10-24, other agents)
+
+- Symbol texts under nested rotations: `app/tests/gestures.rs` `symbol_texts_turn_with_instances_and_their_orientation` fails on `main` too (`x2: R0 ∘ R90, x1: R90 ∘ R90`).
+- Shared-variable edits: 8–20 ms per edit at 1k dependents, 51–60 ms at 10k (`shared_var_edit_frames_100k`; D39 budgets 8 ms).
+- Spikes inside a commit frame: `compact_if_needed` (~100 ms at 100k), the first commit before `hash_step` finished, `rewrite_journal`; each to move to idle ticks.
+- The Alt-drag unselect frame of 100k selected objects: 6.2 ms CPU after `d578eb03` (budget 1 ms).
+- The netlist emit regression from `3231378f`: flat 100k 7.7 → 8.7 ms, flat 1M 98 → 104 ms, hierarchy 16 → 39 µs.
+- Render migration steps 3–6 ([research/render-backend.md](research/render-backend.md) § Migration plan).
+
 ## In flight (2026-10-11): every gap in docs/dev/backlog.md has an owner; PR agents build only in CI
 
 | Workstream | Branch | Scope |

@@ -5,7 +5,6 @@ Open items collected from workstream reports. Each item names its owner crate. R
 ## Cross-crate API requests
 
 - **app**: feed `CellState::recompute` the ops `Project::applied(doc, outcome)` lends (resolved commit ops, undo inverses) and drop the `commits` deque in `editor.rs` (elab and its oracle take those ops since `pr/clean-elab`).
-- **ui**: switch the local line-record lexer to `schemify-format`. (**plugin** host done; `abi::text` stays the guests' encoder/decoder until `format` has a public value lexer, pinned to the format by `abi_and_format_lexers_agree`.)
 
 ## app / editor
 
@@ -48,6 +47,10 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - The OTA fixture has no bench; the GUI run tests and `docs/screenshots/simulate.png` use `crates/view/app/tests/fixtures/rc`.
 
 ## Decisions pending (user)
+
+- **RPC commands of lazy packages**: an editor RPC method must name a command the table already holds (rpc spec §3.2), so a command of a package that loads on that command (D35) answers `-32601`. Making it reachable takes five changes: rpc spec §3.2 and its method list; `rpc::dispatch` (`crates/model/editor/src/rpc.rs`) accepting the lazy names; `PluginHost::user_command` (`editor/src/plugins.rs`) returning the plugin id it loaded; `user = true` in `Editor::dispatch_queued` (`editor.rs`); a test in `crates/view/app/tests/rpc.rs`.
+- **ui lexer**: `ui` keeps a local line-record lexer (`crates/model/ui/src/records.rs`, its `ponytail:` note; `abi::text` stays the guests' codec, pinned by `abi_and_format_lexers_agree`). One lexer through `schemify-format` makes a 6.8 KB state parse 15% slower (32.6 → 37.4 µs) and adds 80 lines: keep two lexers, or take the cost.
+- **Render steps 4 and 5** ([research/render-backend.md](research/render-backend.md) § Migration plan): removing vello's GPU path needs the D5 amendment drafted in that note's § 7, and WebGL2 before `cpu_view` needs web spec §7's tiers amended.
 
 - **cktImg upstream PR** OmarSiwy/cktImg #5 (separations batched past 256 rounds only; fixes #4's slowdown on regular decks): merge, then bump the `examples/plugins/cktImg` submodule to the merged `main` commit.
 
@@ -110,12 +113,23 @@ objects (13–14 ms, outside that budget; the goal set for this work was ≤ 1 m
   spatial index answers in O(cell) but must follow `scene::update` (its build is ~40 ns an
   object, 40 ms at 1M).
 - **app**: the first edit of a document writes its whole journal (+13 ms at 100k, `doc`).
-- **render**: a frame whose UI changed (the status line on every pointer move) goes through
-  vello (0.3 ms of render calls a hover frame); the chrome in layers of its own would let it
-  compose.
-- **render**: tile frames on the Intel iGPU are not measured since the tiles landed (the
-  retained layer had 47 ms p99 there).
-- **format**: 100k-object parse ~52–60 ms; doc open 89 ms (budget 200 ms, OK); the 100k parse test sits near 100 ms under load.
+- **render**: the Intel iGPU columns of `frame_times_100k` and `interactions_100k` are not
+  measured since the GPU canvas pipelines landed (perf.md § GPU canvas pipelines has the RTX
+  4060 only). Before them, the same frames cost 6–21 ms of GPU there (timestamp floor 5.3 ms)
+  against 0.1–3.8 ms on the RTX 4060. Run with `SCHEMIFY_GPU=Intel`.
+- **app/doc/format**: opening a 100k-object file and its first build take 192–216 ms (target
+  under 100 ms; `doc.open_100k` is 65 ms and the 100k parse 40 ms since the load-path commits
+  in status.md). Profile with `perf record` before changing. Known left: a later open (not the
+  startup file) reads the file again and hashes it lazily (`Project::open`, `libs.rs`
+  `open_file`); the scanner is byte-at-a-time except the newline search (`format/src/reader.rs`),
+  for `simd-loops` triage once the rest is measured. Oracles: the `format` and `doc`
+  round-trip, fuzz-corpus and merge tests, and `tests/determinism/run.sh`.
+- **doc**: a one-attribute edit (`edit.rs` `apply_one`) allocates 30–60 times: it builds a
+  full `RecordBuf` (a `String` per field, `tables.rs`) and clones it, and `document.rs` makes
+  a fresh `Scratch` per replaced row (four `Scratch::default()` sites); reuse one per document.
+  Also O(n) per op: an ordered-table delete reindexes every later row (up to 65k log pushes
+  for graphics), and a named-record key check scans the table. Frames are under 1 ms already;
+  this is for scripted edits (plugins, the optimizer, JSON-RPC) and 1M objects.
 
 ## Correctness / semantics
 
