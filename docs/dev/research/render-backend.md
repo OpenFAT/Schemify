@@ -521,11 +521,9 @@ and `the_paint_outcome_schedules_the_next_frame_through_painted`. Numbers in
   against a fresh one over seeded random edits), `an_idle_frame_does_no_work` now also asserts a
   zoom frame asks for no other, and `a_pan_or_zoom_frame_writes_no_instance_bytes` (app: pan and
   zoom frames leave zero dirty row bytes while the camera moves; a delete writes rows).
-- **Not done here**: `CanvasDiff` still returns the world boxes of changed rows, which only
-  the tile cache read (`paint::Caches::canvas_boxes`, marked `ponytail:`); dropping them is a
-  `canvas` crate change of its own. The CPU still fills a layer's closed shapes as one
-  non-zero path (the cancelling-winding artifact in § GPU against CPU); filling per shape
-  changes golden pixels, so it waits for a decision.
+- **Not done here** (both done after step 3, § Follow-ups): `CanvasDiff` still returned the
+  world boxes of changed rows, which only the tile cache read; the CPU still filled a layer's
+  closed shapes as one non-zero path.
 
 ### Step 3: done (2026-10-24)
 
@@ -583,6 +581,37 @@ stays in `Cargo.toml` for its kurbo, peniko and wgpu re-exports (step 4). Number
 - **Not done here**: the hover, type and menu frames' GPU time on the iGPU (the plan's oracle;
   this run had only the RTX 4060: 0.33 ms, from 0.48–0.66 ms); batching several masks into one
   vello_cpu render (about 8–12 µs a mask now).
+
+### Follow-ups after step 3 (2026-10-24)
+
+- **Each closed shape is filled on its own** on the CPU (`canvas::draw_rows`), as the GPU fills
+  each instance: overlapping fills wound opposite ways no longer cancel. Golden `canvas_1k`
+  re-blessed (82 px: four holes in overlapping filled pins, now filled). GPU against CPU: the
+  mixed scene's pixels off by > 96 went from 29 to 0, the marks scene's from 37 to 18.
+- **`CanvasDiff` keeps no world boxes**, and `paint::Caches::canvas_boxes` is gone.
+- **The drag frame** (step 2: 0.19 → 0.25 ms CPU p50): the move preview is repacked whole
+  into the overlay row source every frame it changes, and every row of it moves (it is the
+  selection translated), so there is nothing smaller to patch. Measured once in
+  `interactions_100k` with temporary laps: the overlay's pack and labels take 3.4 µs p50 for
+  the benchmark's one-wire drag, `Editor::update` 0.40 ms of the 0.63 ms frame (load ≈ 37).
+  The regression is the editor's update or the machine, not the overlay. A large selection's
+  drag repacks O(selection) rows a frame; a per-source offset in the uniform would make it
+  O(1) (not done: no measured need).
+- **Resident memory** over `interactions_100k`'s select-all rounds, measured once each here:
+  1ed77d5e (step 2's "before") 470 MiB, b02afcb1 (step 2's "after") 381 MiB, step 3 355 MiB.
+  Step 2's report had 389 → 432 for the same two revisions, so the +43 MiB does not reproduce:
+  the figure moves by ±50 MiB between runs of one build (the NVIDIA driver's mappings count in
+  it). No duplicate was found: the window keeps one CPU copy of the rows (to patch them; 7 MiB
+  at 100k plus the marks after a select-all, 6 MiB), with an eighth plus 16 slots of slack per
+  layer, and the atlas is GPU memory only (4 MiB). Step 3 itself freed about 26 MiB (vello's
+  renderer, its target and the live layers).
+- **Stale goldens re-blessed**, each diff looked at first: `menu_file` (256 px: the Import
+  menu's item lost the word "Xschem"), `cell_panel_modern` (663 px) and `core_symbols_*` (359,
+  364, 359, 365 px: the Simulate tab, the run button and the Schematic tab now drawn in their
+  idle colours), and ±1-level drift on `editor_dark` (10), `editor_light_selection` (18),
+  `editor_modern_dark` (12), `editor_modern_light_selection` (18), `docs_page` (9),
+  `docs_preview_modern` (14), `primitive_modern` (6) from step 2's tile intermediate. Every
+  golden now renders byte-identical to its PNG.
 
 ## 6. Risks
 
