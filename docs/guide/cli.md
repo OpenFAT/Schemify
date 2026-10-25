@@ -82,7 +82,7 @@ Elaborates the cell, checks it, and writes its netlist to stdout or `FILE`.
 
 | Flag | Effect |
 |---|---|
-| `--dialect D` | `ngspice`, `espice`, `xyce`, `cdl`, `spectre` or `verilog`. Default: `schemify.opt.simulator`, else `ngspice`. |
+| `--dialect D` | `ngspice`, `espice`, `xyce`, `cdl`, `spectre` or `verilog`. Default: `schemify.opt.simulator`, else the first installed simulator (`espice` first), else `espice`. |
 | `--config C` | Bench config. Default: the bench's `config` header attribute. |
 | `--corner K` | Bench corner. Default: the bench's `corner` header attribute. |
 | `--set VAR=EXPR` | Override a bench variable. Repeatable, later wins. |

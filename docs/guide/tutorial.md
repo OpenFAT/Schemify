@@ -167,7 +167,7 @@ Press `Ctrl+S` to save.
 
 Press `n`. Schemify checks the design, writes the netlist to `.schemify/netlist/inv_tb.spice` in the project and shows it in a read-only tab, with the inverter as a subcircuit and your code block at the top level. `Ctrl+W` closes the tab; `Ctrl+Left` / `Ctrl+Right` switch tabs. If the check finds errors, nothing is written and the checks panel lists them; click a row to jump to the object.
 
-The default dialect is ngspice. `Ctrl+Shift+V` cycles the dialect, or pick one under **Simulation → Netlist dialect**. The same netlist from the command line:
+The default dialect is espice (ESPice ships with Schemify's packages; with only ngspice installed, ngspice). `Ctrl+Shift+V` cycles the dialect, or pick one under **Simulation → Netlist dialect**. The same netlist from the command line:
 
 ```sh
 cd ~/schemify-tour/inv

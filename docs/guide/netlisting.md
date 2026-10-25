@@ -20,7 +20,7 @@ The argument is a cell file. Its project is the nearest directory above it that 
 
 | Flag | Effect |
 |---|---|
-| `--dialect D` | `ngspice`, `espice`, `xyce`, `cdl`, `spectre` or `verilog`. Default: `schemify.opt.simulator` from your [user config](config.md), else `ngspice`. |
+| `--dialect D` | `ngspice`, `espice`, `xyce`, `cdl`, `spectre` or `verilog`. Default: `schemify.opt.simulator` from your [user config](config.md), else the first installed of `espice`, `ngspice`, …, else `espice`. |
 | `--config C` | The bench config that selects implementations. Default: the bench's `config` header attribute. |
 | `--corner K` | The bench corner. Default: the bench's `corner` header attribute. |
 | `--set VAR=EXPR` | Override a bench variable (repeatable; later wins). An unknown name adds the variable. |

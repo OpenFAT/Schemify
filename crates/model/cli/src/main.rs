@@ -30,7 +30,8 @@ commands:
   run <bench> [--config C]... [--corner K]... [--sweep S]... [--mc M] [--set VAR=EXPR]...
           [--jobs N] [--dialect D]     simulate a .shbench and print outputs and specs
                                        (D: ngspice espice xyce ltspice spectre; default: the
-                                       PDK's simulator, schemify.opt.simulator, an installed one)
+                                       PDK's simulator, schemify.opt.simulator, an installed one
+                                       (espice first), else espice)
   cmd <project-dir>|<cell-file> <command> [<arg>...]
                                        run one editor command (a plugin's too) without a
                                        window: exit 1 when a plugin logs an error

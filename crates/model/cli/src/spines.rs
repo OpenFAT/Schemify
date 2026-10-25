@@ -244,10 +244,13 @@ pub use schemify_run::SIMULATORS;
 #[cfg(not(target_arch = "wasm32"))]
 fn kind(d: Dialect) -> schemify_config::SimKind {
     use schemify_config::SimKind;
-    let k = SimKind::SIMULATORS[SIMULATORS
-        .iter()
-        .position(|s| *s == d)
-        .unwrap_or_else(|| panic!("{} is not a simulator", d.as_str()))];
+    // By word, not by position: `SIMULATORS` is in detection order, the config's rows in
+    // its own.
+    assert!(SIMULATORS.contains(&d), "{} is not a simulator", d.as_str());
+    let k = SimKind::SIMULATORS
+        .into_iter()
+        .find(|k| k.word() == d.as_str())
+        .unwrap_or_else(|| panic!("the config has no row for {}", d.as_str()));
     assert_eq!(k.word(), d.as_str());
     k
 }
@@ -255,7 +258,8 @@ fn kind(d: Dialect) -> schemify_config::SimKind {
 /// The dialect a request netlists and simulates for (run spec §5): `explicit`
 /// (`--dialect`, the Netlist dialect menu), else the simulator the PDK pins (its tech
 /// map's `simulator`, pdk spec §6), else the user config's `schemify.opt.simulator`, else
-/// the first of [`SIMULATORS`] installed, else ngspice.
+/// the first of [`SIMULATORS`] installed, else ESPice (the simulator the release packages
+/// ship).
 ///
 /// # Errors
 ///
@@ -275,8 +279,8 @@ pub fn sim_dialect(
         Some(k) => SIMULATORS
             .into_iter()
             .find(|d| d.as_str() == k.word())
-            .unwrap_or(Dialect::Ngspice),
-        None => detect(user).unwrap_or(Dialect::Ngspice),
+            .unwrap_or(Dialect::Espice),
+        None => detect(user).unwrap_or(Dialect::Espice),
     })
 }
 
@@ -656,5 +660,26 @@ mod tests {
         );
         let exts: std::collections::BTreeSet<&str> = DIALECTS.iter().map(|d| d.2).collect();
         assert_eq!(exts.len(), DIALECTS.len(), "one netlist file per dialect");
+    }
+
+    /// ESPice is detected first and is the last fallback (user decision 2026-10-25); every
+    /// simulator still finds its own config row, by word, whatever the detection order.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn espice_leads_and_every_simulator_has_its_config_row() {
+        assert_eq!(SIMULATORS[0], Dialect::Espice, "espice is detected first");
+        for d in SIMULATORS {
+            assert_eq!(
+                kind(d).word(),
+                d.as_str(),
+                "{} maps to its own row",
+                d.as_str()
+            );
+        }
+        let user = schemify_config::Table::default();
+        let t = tools(&user);
+        for d in SIMULATORS {
+            assert_eq!(t.sim(d).path, schemify_run::SimCommand::default_for(d).path);
+        }
     }
 }

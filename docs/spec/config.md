@@ -88,7 +88,7 @@ Options:
 | `layer_colors` | table `{ [layer] = "rrggbb" }` | `{}` | Canvas colour per layer `0`–`21` over the theme's (View → Change current layer color); `"#rrggbb"` is accepted. Assign the whole table: reading returns a copy, so changing one of its entries sets nothing. |
 | `dim` | number in [0, 1] | 0 | Dims the canvas toward its background (View → Dim colors), stored in percent. |
 | `line_width` | number in [0.1, 10] | 1 | Canvas line width in pixels (View → Set line width), stored in tenths of a pixel. |
-| `simulator` | `"ngspice"`, `"espice"`, `"xyce"`, `"ltspice"` or `"spectre"` | unset (`nil`) | The simulator Simulate and `schemify run` start, and the dialect `schemify netlist` and the editor's netlist dialect default to ([run.md](run.md) §5). `--dialect`, the Netlist dialect menu and a PDK's pinned simulator override it; unset, the first installed simulator is used, else ngspice. |
+| `simulator` | `"ngspice"`, `"espice"`, `"xyce"`, `"ltspice"` or `"spectre"` | unset (`nil`) | The simulator Simulate and `schemify run` start, and the dialect `schemify netlist` and the editor's netlist dialect default to ([run.md](run.md) §5). `--dialect`, the Netlist dialect menu and a PDK's pinned simulator override it; unset, the first installed simulator is used (espice first), else espice. |
 
 Steps are stored in milli-units (D33), rounded to the nearest; a step that rounds to 0 or exceeds 10^6 units is an error. A layer outside `0`–`21`, a colour that is not six hex digits, or a number out of its range is an error. The editor reads the options once, at startup; changing a colour, the dim factor or the line width in the editor lasts for the session (put it in `init.lua` to keep it).
 

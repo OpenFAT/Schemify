@@ -777,7 +777,7 @@ impl Editor {
         // The PDK's pin, else the config's simulator, else detection (run spec §5).
         let (dialect, pin_err) = match spines::sim_dialect(None, &session.project, user) {
             Ok(d) => (d, None),
-            Err(e) => (schemify_elab::Dialect::Ngspice, Some(e)),
+            Err(e) => (schemify_elab::Dialect::Espice, Some(e)),
         };
         // The user config's simulator and compilers (`sim` rows), the simulator overridable.
         #[cfg(not(target_arch = "wasm32"))]

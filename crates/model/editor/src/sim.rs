@@ -272,7 +272,7 @@ impl Sim {
     pub fn new(tools: Tools) -> Sim {
         Sim {
             tools,
-            dialect: Dialect::Ngspice,
+            dialect: Dialect::Espice,
             runs: Vec::new(),
             shown: None,
             queue: Vec::new(),
