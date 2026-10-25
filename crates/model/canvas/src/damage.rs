@@ -54,8 +54,10 @@ pub enum TableChange<'a> {
     /// In any way: every row is hashed and the two versions diffed.
     Any,
     /// Only by its producer killing rows (`killed[kind]`: rows of the previous version, in
-    /// [`CanvasPrims::kill`]'s kind order, now on [`LAYER_DEAD`](crate::LAYER_DEAD))
-    /// and appending rows past the previous version's end; every other row is as it was.
+    /// [`CanvasPrims::kill`]'s kind order, now on [`LAYER_DEAD`](crate::LAYER_DEAD); text
+    /// rows listed there may instead be rewritten in place with the same box, as texts are
+    /// drawn from the table every frame) and appending rows past the previous version's end;
+    /// every other row is as it was.
     Rows(&'a [Vec<u32>; 6]),
 }
 

@@ -532,14 +532,63 @@ edits). At 10k dependents every edit re-stamps 10k instances (13–15 ms) or com
 
 What bounds the rest:
 
-- **Shared vars** are O(dependents) by nature; the constant is the whole-instance re-stamp. The
-  upgrade is re-stamping only the value texts of a revalued instance (its lines and pins do not
-  move), and compacting the scene on an idle tick instead of in the edit frame.
+- **Shared vars** are O(dependents) by nature; the constant was the whole-instance re-stamp
+  (done 2026-10-24, next section).
 - **Bus renames** (a new element count) and `inherit`/`ignore` edits rebuild connectivity
   (~40 ms at 100k): connections move per element.
 - **A dependency on a later node** (an override reading a var that sorts after the instance in the
   topological order) rebuilds the graph (~1.3 ms at 100k), as do cycles; appended dependency lists
   past 4× the built edges rebuild once to compact.
+
+## Shared-variable edits 2026-10
+
+`shared_var_edit_frames_100k` (12 edits of a docs-page var, values 3…14), measured on
+`refactor/gui-crates` `b02afcb1` with temporary `Instant` laps around elab, the scene, the
+markers and the canvas diff and pack. This machine had no GPU adapter in the test's sandbox,
+so the numbers are CPU update+paint only; load average 10–35 (other agents' builds).
+
+### Before (ms per edit frame)
+
+| Step | 1k dependents | 10k dependents |
+|---|---|---|
+| elab (`recompute`) | 0.2 | 1.2 |
+| `scene::update` (remove + re-stamp every dependent: ~30 rows killed and appended each) | 1.3–1.8 | 13–16 |
+| `scene::build` (a quarter of the rows dead: every ~8th edit at 1k, every 2nd at 10k) | 31 | 30 |
+| markers (re-placed on every touched object; compacted with the scene) | 1.0 (6.5) | 6.2–6.8 |
+| canvas diff of the killed and appended rows | 0.4 | 4–10 |
+| canvas pack + texts (GPU row patch, index follow; a repack when free slots run out) | 0.8 or 7.5, alternating | 9 |
+| **frame p50 / p95** | **11.0 / 11.6** | **47.7 / 49.0** |
+
+### Fix
+
+A revalued instance no write touched keeps its rows: `scene::update` re-renders its symbol
+texts and writes each into its own text row in place when the row would keep its anchor, size,
+turn and length (`revalue_texts`); only an instance whose text changes length is re-stamped.
+The rewritten rows are reported through `Scene::edits` like killed rows (texts are drawn
+from the table every frame, so the GPU rows and the spatial index have nothing to follow), no
+row dies, so the scene never compacts in these frames, and `Scene::touched` lists only the
+re-stamped objects, so the markers stay put (a changed mark still reaches them through the
+patched marks' targets). Oracle: `incremental_scene_equals_full_build` (every step equals a
+full build; it now also asserts that some revalued instances were rewritten in place, and
+goes red when the rewrite is skipped).
+
+### After (same session, load ~9)
+
+| Step | 1k dependents | 10k dependents |
+|---|---|---|
+| elab | 0.2 | 1.1–1.2 |
+| scene (template render per dependent, in place) | 0.5–0.6 | 4.5–5.0 |
+| markers | 0.001 | 0.001 |
+| canvas diff + pack + texts | 0.02–0.04 | 0.14 |
+| **frame p50 / p95** | **0.94 / 1.12** (fitted), **0.89 / 0.94** (zoomed) | **6.5 / 46** (fitted), **6.7 / 47** (zoomed) |
+
+The fixture's `nmos` symbol shows `W` only, so a `wl` edit (an `L`) rewrites no text: its
+frame is the check and re-render of 1k dependents; a `wv` edit rewrites 10k `W=` texts. The
+1k p50 is asserted against D39's 8 ms param-edit budget. At 10k the p50 is under it too
+but not asserted (no margin under load); its p95 is the one edit whose value grows a digit
+(9 → 10): every dependent is re-stamped (20 ms) and the scene then compacts (30 ms). The
+upgrade for that frame is killing and appending only the text rows of an instance (its other
+rows keep their stamp), and compacting on an idle tick.
 
 ## Frame pacing 2026-10
 

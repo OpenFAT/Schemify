@@ -401,9 +401,10 @@ impl Scene {
         o
     }
 
-    /// The rows [`update`]s killed since the last [`Scene::clear_edits`], per kind in
-    /// [`CanvasPrims::kill`] order: with the rows appended since, every change of `prims` in
-    /// that time (a canvas diffs them as `TableChange::Rows`). `None` when a [`build`] made
+    /// The rows [`update`]s killed or rewrote in place (a revalued text, same box) since the
+    /// last [`Scene::clear_edits`], per kind in [`CanvasPrims::kill`] order: with the rows
+    /// appended since, every change of `prims` in that time (a canvas diffs them as
+    /// `TableChange::Rows`). `None` when a [`build`] made
     /// the tables anew in that time.
     pub fn edits(&self) -> Option<&[Vec<u32>; 6]> {
         self.killed.as_ref()
@@ -654,6 +655,25 @@ fn text_size(size: i32, text: &str) -> (i32, i32) {
     ((f64::from(size) * 0.6 * n) as i32, size)
 }
 
+/// Where text `s` turned `rot` quarter turns about `at` is drawn from, and its drawn turns
+/// (`< 2`: never upside down, format spec §3); `None` when it draws nothing.
+fn text_start(at: Pt, size: i32, s: &str, rot: u8) -> Option<(Pt, u8)> {
+    if s.is_empty() || size <= 0 {
+        return None;
+    }
+    let rot = rot % 4;
+    // The upright turn's box from the far corner is the same box (rotated_extent(r + 2) is
+    // -rotated_extent(r)).
+    let (dx, dy) = rotated_extent(text_size(size, s), rot);
+    let start = if rot >= 2 {
+        ((at.0 + dx, at.1 + dy), rot - 2)
+    } else {
+        (at, rot)
+    };
+    debug_assert!(start.1 < 2);
+    Some(start)
+}
+
 /// Scene builder state: the scene being filled plus the extent accumulator.
 struct Build<'a> {
     sc: &'a mut Scene,
@@ -726,13 +746,9 @@ impl Build<'_> {
         if s.is_empty() || size <= 0 {
             return [at.0, at.1, at.0, at.1];
         }
-        let rot = rot % 4;
-        let (dx, dy) = rotated_extent(text_size(size, s), rot);
+        let (from, drawn) = text_start(at, size, s, rot).expect("a drawn text");
+        let (dx, dy) = rotated_extent(text_size(size, s), rot % 4);
         let (q0, q1) = ((at.0, at.1), (at.0 + dx, at.1 + dy));
-        // The upright turn's box from the far corner is the same box (rotated_extent(r + 2)
-        // is -rotated_extent(r)).
-        let (from, drawn) = if rot >= 2 { (q1, rot - 2) } else { (q0, rot) };
-        debug_assert!(drawn < 2);
         self.sc
             .prims
             .text_rot(from.0, from.1, size, layer, s, drawn);
@@ -843,8 +859,10 @@ fn drawn(t: TableId) -> bool {
 /// reaches the scene's last update, when most of the document changed, or when dead rows
 /// pass a quarter of the tables (the build compacts them). Values (`{W}` texts) are taken as
 /// unchanged except on the objects touched and on `revalued` (the instances whose values
-/// changed, elab's value delta, re-stamped like touched objects; keys the document no longer
-/// holds are skipped): when values changed elsewhere, call [`build`].
+/// changed, elab's value delta; keys the document no longer holds are skipped): when values
+/// changed elsewhere, call [`build`]. A revalued instance no write touched keeps its rows and
+/// has its texts rewritten in place (reported through [`Scene::edits`] as killed rows that
+/// are live) when each text keeps its length and box; otherwise it is re-stamped.
 ///
 /// Cost: O((touched + revalued objects) · (log rows + their primitives)), plus the index
 /// inserts.
@@ -872,19 +890,21 @@ pub fn update(
     };
     let values = values.filter(|v| v.inst_iface.len() == doc.instances().id.len());
     // The objects the writes touched (a moved row's record did not change).
-    let mut keys: Vec<ObjKey> = changes
+    let mut edited: Vec<ObjKey> = changes
         .iter()
         .filter(|c| c.what != Write::Moved && drawn(c.table) && c.id != ObjId::NONE)
         .map(|c| ObjKey {
             table: c.table,
             key: c.id.0,
         })
-        .chain(revalued.iter().copied())
         .collect();
     assert!(
         revalued.iter().all(|k| k.table == TableId::Instances),
         "values change on instances only"
     );
+    edited.sort_unstable();
+    edited.dedup();
+    let mut keys: Vec<ObjKey> = edited.iter().chain(revalued).copied().collect();
     keys.sort_unstable();
     keys.dedup();
     let total = sc.objs.len().max(1);
@@ -896,10 +916,34 @@ pub fn update(
         build(sc, project, h, View::Schematic, symbols, epoch, values);
         return false;
     }
+    // An instance whose only change is its values keeps its rows: its texts are rewritten
+    // in place when each keeps its length (a revalued `{W}` text); the rest are re-stamped.
+    let mut st = Stamp::default();
+    let restamp: Vec<ObjKey> = keys
+        .iter()
+        .copied()
+        .filter(|&key| {
+            let row = doc.find_id(ObjId(key.key)).filter(|l| l.table == key.table);
+            let (Some(o), Some(loc)) = (sc.find(key), row) else {
+                return true;
+            };
+            edited.binary_search(&key).is_ok()
+                || !revalue_texts(
+                    sc,
+                    project,
+                    h,
+                    doc,
+                    symbols,
+                    values,
+                    (loc.row as usize, o),
+                    &mut st,
+                )
+        })
+        .collect();
     // Junction points the changed wires can affect, while the old wires are still indexed;
     // then the old objects go.
     let mut points: Vec<Pt> = Vec::new();
-    for &key in &keys {
+    for &key in &restamp {
         let Some(o) = sc.find(key) else { continue };
         if key.table == TableId::Wires {
             let w = sc.objs.geom[o as usize];
@@ -915,9 +959,8 @@ pub fn update(
         e => e,
     };
     let mut b = Build { ext, sc };
-    let mut st = Stamp::default();
     let mut wires: Vec<[i32; 4]> = Vec::new();
-    for &key in &keys {
+    for &key in &restamp {
         let Some(loc) = doc.find_id(ObjId(key.key)).filter(|l| l.table == key.table) else {
             continue; // deleted
         };
@@ -949,7 +992,7 @@ pub fn update(
     }
     sc.built = Some((h, View::Schematic, epoch, symbols.epoch));
     sc.cursor = Some(doc.cursor());
-    sc.touched = Some(keys);
+    sc.touched = Some(restamp);
     sc.generation = sc.generation.wrapping_add(1);
     check_tables(sc);
     true
@@ -1180,31 +1223,106 @@ fn instance<'d>(
     }
     let iface = row.and_then(|r| project.interface(r));
     for t in &p.texts {
-        let Stamp {
-            inputs,
-            scratch,
-            text,
-            ..
-        } = &mut *st;
-        text.clear();
-        let rendered = t.template.as_ref().is_some_and(|tpl| {
-            let ok = tpl
-                .program()
-                .bind(inputs, |name| {
-                    bind_ident(name, doc, i, iface, cellref, values)
-                })
-                .is_ok();
-            ok && tpl.render(inputs, scratch, text).is_ok()
-        });
-        if !rendered {
-            text.clear();
-            text.push_str(&t.raw);
-        }
-        let turned = crate::geometry::compose(o, t.orient);
-        let rot = turned.quarter_turns();
-        let at = sym_text_at(x(t.at), t, text, rot, turned.mirrored());
-        b.text_rot(at, t.size, t.layer, text, rot, obj);
+        let (q, rot) = inst_text(t, (o, at), (doc, i, iface, cellref), values, st);
+        b.text_rot(q, t.size, t.layer, &st.text, rot, obj);
     }
+}
+
+/// Renders symbol text `t` of instance row `i` (placed at `at` turned `o`) into `st.text`;
+/// returns its anchor and quarter turns, as [`Build::text_rot`] takes them.
+fn inst_text<'d>(
+    t: &SymText,
+    (o, at): (Orient, Pt),
+    (doc, i, iface, cellref): (&'d Document, usize, Option<&'d Document>, &'d str),
+    values: Option<&'d CellState>,
+    st: &mut Stamp<'d>,
+) -> (Pt, u8) {
+    let Stamp {
+        inputs,
+        scratch,
+        text,
+        ..
+    } = st;
+    text.clear();
+    let rendered = t.template.as_ref().is_some_and(|tpl| {
+        let ok = tpl
+            .program()
+            .bind(inputs, |name| {
+                bind_ident(name, doc, i, iface, cellref, values)
+            })
+            .is_ok();
+        ok && tpl.render(inputs, scratch, text).is_ok()
+    });
+    if !rendered {
+        text.clear();
+        text.push_str(&t.raw);
+    }
+    let turned = crate::geometry::compose(o, t.orient);
+    let rot = turned.quarter_turns();
+    (
+        sym_text_at(place(o, at, t.at), t, text, rot, turned.mirrored()),
+        rot,
+    )
+}
+
+/// Re-renders the texts of instance row `i`, drawn as object `o` whose only change is its
+/// values, into its own text rows in place, reporting the rewritten rows through
+/// [`Scene::edits`]. False (rows possibly half rewritten, to be removed by the caller) when
+/// a text's row would move, resize or appear or vanish (a value of another length): then the
+/// instance is re-stamped whole.
+///
+/// Cost: O(the instance's texts), no row added or killed.
+#[allow(clippy::too_many_arguments)]
+fn revalue_texts<'d>(
+    sc: &mut Scene,
+    project: &'d Project,
+    h: DocHandle,
+    doc: &'d Document,
+    sym: &Symbols,
+    values: Option<&'d CellState>,
+    (i, o): (usize, u32),
+    st: &mut Stamp<'d>,
+) -> bool {
+    let inst = doc.instances();
+    let (orient, at) = (inst.orient[i], (inst.x[i], inst.y[i]));
+    let cellref = doc.strings().get(inst.cell[i]);
+    let row = *st
+        .resolved
+        .entry(inst.cell[i])
+        .or_insert_with(|| project.resolve(h, cellref).ok());
+    let Some(p) = row.and_then(|r| sym.get(r)) else {
+        return false; // the placeholder has no value texts
+    };
+    let iface = row.and_then(|r| project.interface(r));
+    let rows = stamped(&sc.stamps.texts, sc.objs.stamp[o as usize]);
+    let mut next = rows.start;
+    for t in &p.texts {
+        let (q, rot) = inst_text(t, (orient, at), (doc, i, iface, cellref), values, st);
+        let Some((from, drawn)) = text_start(q, t.size, &st.text, rot) else {
+            continue; // drew no row before either, or the count check below fails
+        };
+        if next == rows.end {
+            return false;
+        }
+        let (r, tx) = (next, &mut sc.prims.texts);
+        next += 1;
+        assert_eq!(sc.owner.texts[r], o, "the object's own rows");
+        let start = if r == 0 { 0 } else { tx.end[r - 1] as usize };
+        let old = &tx.text[start..tx.end[r] as usize];
+        let same_row = (tx.x[r], tx.y[r], tx.size[r], tx.layer[r], tx.rot[r])
+            == (from.0, from.1, t.size, t.layer, drawn);
+        if !same_row || old.len() != st.text.len() || old.chars().count() != st.text.chars().count()
+        {
+            return false;
+        }
+        if old != st.text {
+            tx.text.replace_range(start..tx.end[r] as usize, &st.text);
+            if let Some(k) = sc.killed.as_mut() {
+                k[5].push(r as u32);
+            }
+        }
+    }
+    next == rows.end
 }
 
 /// Draws wire row `i` (its connection points included; dots are [`redot`]'s).

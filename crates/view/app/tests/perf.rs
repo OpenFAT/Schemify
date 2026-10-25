@@ -364,6 +364,7 @@ impl Bench {
             let times = g.render(&mut self.batch, &mut self.rows);
             (times, g.pipes.take_batch_uploaded())
         });
+        self.rows.frame = None; // the render took it; without a GPU nobody does
         if measure {
             self.cpu.push(cpu);
             if let Some(((v, g), (atlas, instances))) = rendered {
@@ -1247,9 +1248,9 @@ fn edit_frames_100k() {
 }
 
 /// A var many instances read, edited at 100k objects: O(dependents) by nature (each
-/// dependent is evaluated, rechecked and re-stamped). Every tenth instance reads `wl` (1k
-/// dependents: the scene re-stamps them) and every instance reads `wv` (10k dependents,
-/// past an eighth of the objects: the scene builds again).
+/// dependent is evaluated and rechecked, and its value texts rewritten in place while their
+/// length holds, else it is re-stamped). Every tenth instance reads `wl` (1k dependents) and
+/// every instance reads `wv` (10k dependents).
 #[test]
 #[ignore = "release-mode benchmark; run explicitly"]
 fn shared_var_edit_frames_100k() {
@@ -1352,6 +1353,11 @@ fn shared_var_edit_frames_100k() {
         let tick = ticks.iter().copied().fold(0.0, f64::max);
         eprintln!("PERF app.edit_var_{dependents}_dependents_{view}_100k_ms {p50:.3}");
         eprintln!("  {var} {view}: p95 {p95:.3}, tick max {tick:.3}");
+        // D39's param-edit budget holds at 1k dependents (texts rewritten in place); 10k
+        // dependents are O(dependents) over budget (docs/dev/perf.md, "Shared-variable edits").
+        if dependents == 1000 {
+            budget(&format!("var edit, 1k dependents, {view}, p50"), p50, 8.0);
+        }
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1369,6 +1375,7 @@ impl Bench {
         if let Some(g) = self.gpu.as_mut() {
             g.render(&mut self.batch, &mut self.rows);
         }
+        self.rows.frame = None; // the render took it; without a GPU nobody does
     }
 
     /// One input batch as the window loop runs it: `update`, a frame only when it reports a

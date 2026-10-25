@@ -405,7 +405,8 @@ fn selection_rows_match_scans(sc: &Scene, rng: &mut Rng) {
 
 /// The oracle walk: `steps` random edits of a schematic of 40 random wires plus `base`
 /// wires on a grid beside them (the large-scale case), each followed by the comparison.
-fn walk(seed: u64, steps: usize, base: usize) {
+/// Returns how many revalued instances had their texts rewritten in place.
+fn walk(seed: u64, steps: usize, base: usize) -> usize {
     let mut top = String::from("schemify 1 shcomp\n\nimpl sch schematic\n\n");
     let mut rng = Rng(seed);
     let mut next = 0u64;
@@ -446,6 +447,8 @@ fn walk(seed: u64, steps: usize, base: usize) {
     let mut inc = Scene::default();
     scene::build(&mut inc, &p, h, View::Schematic, &symbols, 0, Some(&st));
     let (mut updated, mut epoch, mut revalued) = (0, 0u32, 0);
+    // Revalued instances whose texts were rewritten in place (not re-stamped).
+    let mut in_place = 0;
     for step in 0..steps {
         let text = random_ops(&mut rng, &p, h, &mut next);
         let edit = match text.as_str() {
@@ -484,15 +487,16 @@ fn walk(seed: u64, steps: usize, base: usize) {
         if done.graph {
             scene::build(&mut inc, &p, h, View::Schematic, &symbols, epoch, Some(&st));
         } else {
-            updated += usize::from(scene::update(
-                &mut inc,
-                &p,
-                h,
-                &symbols,
-                epoch,
-                Some(&st),
-                &keys,
-            ));
+            let before: Vec<Option<u32>> = keys.iter().map(|&k| inc.find(k)).collect();
+            let done = scene::update(&mut inc, &p, h, &symbols, epoch, Some(&st), &keys);
+            updated += usize::from(done);
+            // A re-stamped object is pushed last; one rewritten in place keeps its index.
+            let last = inc.objs.len() as u32 - 1;
+            in_place += keys
+                .iter()
+                .zip(&before)
+                .filter(|&(&k, &o)| done && o.is_some_and(|o| o != last) && inc.find(k) == o)
+                .count();
         }
         let fresh = CellState::build(&p, h, &mut no_funcs).expect("elab state");
         let mut full = Scene::default();
@@ -527,7 +531,7 @@ fn walk(seed: u64, steps: usize, base: usize) {
         "value edits re-stamped instances (seed {seed}, updated {updated})"
     );
     if base > 0 {
-        return; // a short walk at scale: the coverage checks below are the small walks'
+        return in_place; // a short walk at scale: the checks below are the small walks'
     }
     let doc = p.doc(h).expect("open");
     assert!(!doc.shapes().id.is_empty(), "the walk drew shapes");
@@ -548,6 +552,7 @@ fn walk(seed: u64, steps: usize, base: usize) {
         inc.prims.texts.rot.iter().any(|&r| r != 0),
         "and turned texts"
     );
+    in_place
 }
 
 /// A symbol graphic's `width` and `dash` reach every placed instance's primitive row; the
@@ -592,9 +597,8 @@ fn symbol_stroke_attributes_reach_the_scene() {
 
 #[test]
 fn incremental_scene_equals_full_build() {
-    for seed in 1..=6 {
-        walk(seed, 300, 0);
-    }
+    let in_place: usize = (1..=6).map(|seed| walk(seed, 300, 0)).sum();
+    assert!(in_place > 0, "a value edit rewrote texts in place");
 }
 
 /// The same oracle at the D39 scale: random edits of a 100k-wire schematic.
