@@ -8,8 +8,9 @@
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.95%2B-orange)](Cargo.toml)
 
-Schemify draws schematics, writes netlists for ngspice, Xyce, CDL, Spectre and Verilog, runs
-simulations and shows the waveforms. It imports xschem libraries and PDKs, so you can switch
+Schemify draws schematics, writes netlists for ESPice, ngspice, Xyce, LTspice, HSPICE, CDL,
+Spectre and Verilog, runs simulations (with [ESPice](https://github.com/OmarSiwy/ESPice), which
+ships with it) and shows the waveforms. It imports xschem libraries and PDKs, so you can switch
 without redrawing anything. Every cell can carry a documentation page with LaTeX and live
 sizing math (gm/Id) that updates the schematic when a parameter changes. The same code runs on
 Linux, macOS, Windows and in a browser.
@@ -41,22 +42,52 @@ Linux, macOS, Windows and in a browser.
 | ![A two-stage op-amp drawn automatically from a SPICE netlist](docs/screenshots/cktimg/two_stage_opamp.png) | ![The same buffer in the Modern theme](docs/screenshots/modern.png) |
 | A SPICE netlist turned into a schematic (`cktimg` plugin) | The optional Modern theme (View menu) |
 
-## Quick start
+## Install
 
-With Nix (flakes), no checkout needed:
+Each [release](https://github.com/OmarSiwy/Schemify/releases) ships `schemify` (the headless
+core) and `schemify-gui` (the editor) for Linux, macOS and Windows, with `espice` (the simulator)
+beside them on Linux and macOS.
+
+Linux packages (x86_64, glibc 2.28 or newer):
 
 ```sh
-nix run github:OmarSiwy/Schemify -- path/to/cell.shcomp
+sudo apt install ./schemify_1.0.0-1_amd64.deb                 # Debian, Ubuntu, Mint
+sudo dnf install ./schemify-1.0.0-1.x86_64.rpm                # Fedora; zypper on openSUSE
+sudo pacman -U ./schemify-1.0.0-1-x86_64.pkg.tar.zst          # Arch (a PKGBUILD for the AUR ships too)
 ```
 
-From source, with Rust 1.95 or newer. On Linux the editor needs the Wayland or X11 and Vulkan
-libraries at runtime; `nix develop` provides them along with ngspice and xschem.
+Nix, prebuilt and cached, no compiling:
+
+```sh
+nix run 'github:OmarSiwy/Schemify#latest' -- path/to/cell.shcomp
+nix profile install 'github:OmarSiwy/Schemify#latest'
+```
+
+macOS (Apple silicon and Intel) and Windows: download `schemify-v1.0.0-<platform>.tar.gz` (`.zip`
+on Windows), unpack it, and put the directory on your `PATH`. ESPice has no Windows build, so on
+Windows install ngspice and set `schemify.opt.simulator = "ngspice"`.
+
+[docs/guide/install.md](docs/guide/install.md) covers every option, the runtime libraries the
+editor needs on Linux, and Zig for Verilog-A devices in ESPice.
+
+## Quick start
+
+Open a cell, write its netlist, simulate a bench:
+
+```sh
+schemify edit path/to/cell.shcomp
+schemify netlist path/to/tb.shbench
+schemify run path/to/tb.shbench
+```
+
+From a checkout, with Rust 1.95 or newer (`nix develop` provides the toolchain, the simulators and
+the Linux runtime libraries):
 
 ```sh
 git clone https://github.com/OmarSiwy/Schemify && cd Schemify
 cargo run --release -p schemify-app -- crates/view/app/tests/fixtures/ota/ota.shcomp      # the editor
 cargo run --release -p schemify-cli -- netlist crates/view/app/tests/fixtures/rc/tb.shbench
-cargo run --release -p schemify-cli -- run crates/view/app/tests/fixtures/rc/tb.shbench   # needs ngspice
+cargo run --release -p schemify-cli -- run crates/view/app/tests/fixtures/rc/tb.shbench   # needs a simulator
 ```
 
 To bring an xschem library across, use the `interop` plugin's command line (`schemify-interop`,
@@ -66,7 +97,6 @@ from [Schemify-Interop](https://github.com/OmarSiwy/Schemify-Interop)):
 schemify-interop xschem-import ~/xschem/my_lib -o my_lib
 ```
 
-[docs/guide/install.md](docs/guide/install.md) covers installation in detail, and
 [docs/guide/tutorial.md](docs/guide/tutorial.md) walks through a first session.
 
 ## A design file
@@ -103,13 +133,14 @@ I/O errors.
 | Command | What it does |
 |---|---|
 | `schemify edit [<dir>\|<cell>]` | open the editor (starts `schemify-gui`) |
-| `schemify netlist <cell> [--dialect D]` | write a netlist: `ngspice`, `xyce`, `cdl`, `spectre`, `verilog`, `espice` |
+| `schemify netlist <cell> [--dialect D]` | write a netlist: `espice` (default), `ngspice`, `xyce`, `ltspice`, `hspice`, `cdl`, `spectre`, `verilog` |
 | `schemify check <cell>` | report violations (dangling pins, shorted labels, parameter ranges, ...) |
 | `schemify run <bench> [--sweep S] [--mc M] [--corner K]` | simulate a `.shbench` and print its outputs and specs |
 | `schemify fmt [--check] <file>...` | rewrite files in canonical form |
 | `schemify diff <A> <B>` | object-level diff of two design files |
 | `schemify git-setup` | register the merge driver in this clone |
 | `schemify pack sync\|update\|restore\|clean\|status` | manage the plugins listed in your config |
+| `schemify --version` | print the version |
 
 The full reference is [docs/guide/cli.md](docs/guide/cli.md).
 
@@ -150,7 +181,7 @@ The default UI (menus, toolbar, dialogs and keys) is a plugin too, in
 
 ## Status
 
-Pre-release. The features above work end to end, but expect rough edges.
+Version 1.0.0.
 
 | Platform | Built and tested in CI | Netlists byte-identical |
 |---|---|---|
@@ -159,7 +190,7 @@ Pre-release. The features above work end to end, but expect rough edges.
 | Windows | yes | yes |
 | Browser (wasm) | builds and starts in headless Chrome | yes (WASI) |
 
-The browser build draws with WebGPU, with a CPU fallback. Files persist in the browser's storage
+The browser build draws with WebGPU, then WebGL2, with a CPU fallback. Files persist in the browser's storage
 and projects move in and out as zip files ([docs/guide/web.md](docs/guide/web.md)).
 
 Against xschem, the netlists of 255 of 301 corpus benches (sky130, GF180, IHP and xschem's
