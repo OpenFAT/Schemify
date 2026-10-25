@@ -62,6 +62,9 @@ pub trait App {
     /// Takes the [`Waker`] that background threads use to ask for a frame. Called once by
     /// [`run`] before the first update; an app with no threads ignores it.
     fn set_waker(&mut self, _waker: Waker) {}
+    /// The window's close button was pressed; the event loop exits right after. The app
+    /// finishes what its quit command would (a close leaves the same files a quit does).
+    fn close(&mut self) {}
 }
 
 /// Asks the window for one [`App::update`] with no input, from any thread: a worker that
@@ -692,7 +695,10 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
         #[cfg(not(target_arch = "wasm32"))]
         let queued = self.events.events.len();
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                self.app.close();
+                event_loop.exit();
+            }
             WindowEvent::Resized(_) => {
                 self.update();
                 if let Some(w) = &self.window {

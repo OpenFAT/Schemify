@@ -216,6 +216,10 @@ impl App for Served {
     fn exit_requested(&self) -> bool {
         self.win.exit_requested()
     }
+
+    fn close(&mut self) {
+        self.win.close();
+    }
 }
 
 /// The response line for an immediate result.

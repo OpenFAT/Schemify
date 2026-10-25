@@ -59,8 +59,12 @@ impl App for Window {
     }
 
     fn exit_requested(&self) -> bool {
-        // Journals are flushed after every edit, so nothing is lost by leaving now.
+        // The quit command settled every journal (`Editor::settle`) before setting this.
         self.ed.wants_quit()
+    }
+
+    fn close(&mut self) {
+        self.ed.settle();
     }
 
     fn paint<P: Painter>(&mut self, p: &mut P, _viewport: (f32, f32)) {

@@ -436,13 +436,9 @@ fn the_startup_file_reuses_the_index_digest() {
     assert!(s.project.hash_pending(h));
 }
 
-/// A cell opened after startup is hashed in idle ticks (`Project::idle_step`): an edit
-/// before they finish commits without hashing the file in its frame (HANDOFF latent bug 5),
-/// and a quit then writes the journal naming the file's sha256, so a restart offers the
-/// edit against the file. Oracle: the sha256 of the file's bytes.
-#[test]
-fn a_quit_names_the_disk_hash_an_early_edit_left_to_idle_ticks() {
-    let mut s = Session::open("inv", "top.shcomp", "quit-hash", true);
+/// Opens cell `inv` from `top` and deletes a text in it before idle ticks hashed the file.
+fn an_edit_before_the_idle_hash(tag: &str) -> Session {
+    let mut s = Session::open("inv", "top.shcomp", tag, true);
     s.click((10 * U, 0)); // x1
     s.key("e");
     let (child, _) = s.ed.active().unwrap();
@@ -453,17 +449,59 @@ fn a_quit_names_the_disk_hash_an_early_edit_left_to_idle_ticks() {
         s.ed.session().project.hash_pending(child),
         "the edit's frame did not hash the file"
     );
-    s.key("Ctrl+Q");
-    s.key("Ctrl+Q"); // again: quit without saving
-    assert!(s.ed.wants_quit());
-    let file = std::fs::read(s.dir.join("inv.shcomp")).unwrap();
+    s
+}
+
+/// The journal of `inv` names the sha256 of the file's bytes, so a reopen offers the edit.
+fn assert_the_journal_names_the_disk_hash(dir: &std::path::Path) {
+    let file = std::fs::read(dir.join("inv.shcomp")).unwrap();
     let sha = schemify_doc::hex(&schemify_doc::sha256(&file));
-    let journal = s.dir.join(".schemify/journal/inv.shcomp.journal");
-    let journal = std::fs::read_to_string(journal).unwrap();
+    let journal = dir.join(".schemify/journal/inv.shcomp.journal");
+    let journal = std::fs::read_to_string(journal).unwrap_or_default();
     assert!(journal.contains(&format!("base {sha}\n")), "{journal}");
     let mut p = schemify_doc::Project::new(None, None, 7).unwrap();
     let opened = p
         .open("", "inv.shcomp", &file, Some(journal.as_bytes()))
         .unwrap();
     assert_eq!(opened.recovery, schemify_doc::Recovery::Offer { txs: 1 });
+}
+
+/// A cell opened after startup is hashed in idle ticks (`Project::idle_step`): an edit
+/// before they finish commits without hashing the file in its frame (HANDOFF latent bug 5),
+/// and a quit then writes the journal naming the file's sha256, so a restart offers the
+/// edit against the file. Oracle: the sha256 of the file's bytes.
+#[test]
+fn a_quit_names_the_disk_hash_an_early_edit_left_to_idle_ticks() {
+    let mut s = an_edit_before_the_idle_hash("quit-hash");
+    s.key("Ctrl+Q");
+    s.key("Ctrl+Q"); // again: quit without saving
+    assert!(s.ed.wants_quit());
+    assert_the_journal_names_the_disk_hash(&s.dir);
+}
+
+/// The window's close button leaves the files Ctrl+Q leaves: the shell calls `App::close`
+/// before it exits, and the window settles every journal. Oracle: the sha256 of the file's
+/// bytes, as in the quit test.
+#[test]
+fn a_window_close_names_the_disk_hash_an_early_edit_left_to_idle_ticks() {
+    use schemify_render::App;
+    let mut s = an_edit_before_the_idle_hash("close-hash");
+    // The window takes the edited editor; the session keeps an untouched one in its place.
+    let spare = common::fixture("inv", "close-hash-spare");
+    let ed = schemify_editor::editor::Editor::new(schemify_editor::editor::Options {
+        no_default_ui: true,
+        path: Some(spare.join("top.shcomp")),
+        seed: 7,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut w = schemify_app::window::Window::new(ed);
+    std::mem::swap(w.editor(), &mut s.ed);
+    w.close();
+    assert!(
+        !w.editor().wants_quit(),
+        "a close asks nothing of the quit command"
+    );
+    assert_the_journal_names_the_disk_hash(&s.dir);
+    let _ = std::fs::remove_dir_all(spare);
 }

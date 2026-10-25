@@ -1148,6 +1148,17 @@ impl Editor {
         self.quit
     }
 
+    /// Finishes the idle work every journal waits for (disk hash, compaction, first
+    /// encoding) and writes it, before the process leaves: Ctrl+Q and the window's close
+    /// button. A journal then names its file's hash, so a restart offers its edits against
+    /// the file. Cost: O(open files' bytes).
+    pub fn settle(&mut self) {
+        for d in self.session.project.handles().collect::<Vec<_>>() {
+            self.session.project.settle_journal(d);
+            self.session.flush_journal(d);
+        }
+    }
+
     /// The annotation overlay (sources `checks` and `op`).
     pub fn annotations(&self) -> &Annotations {
         &self.annotations
@@ -1854,12 +1865,7 @@ impl Editor {
                     self.session
                         .say("unsaved changes: Ctrl+Q again to quit without saving");
                 } else {
-                    // A journal whose disk hash idle ticks had not taken names it now, so a
-                    // restart offers its edits against the file.
-                    for d in self.session.project.handles().collect::<Vec<_>>() {
-                        self.session.project.settle_journal(d);
-                        self.session.flush_journal(d);
-                    }
+                    self.settle();
                     self.quit = true;
                 }
             }
