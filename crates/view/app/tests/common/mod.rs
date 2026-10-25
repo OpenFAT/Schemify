@@ -61,13 +61,35 @@ pub struct Session {
 }
 
 impl Session {
-    /// Opens `file` of fixture `name` (a copy), with or without the default UI plugin.
+    /// Opens `file` of fixture `name` (a copy), with or without the default UI plugin. The
+    /// user config only pins the simulator (the default, espice), so no frame depends on
+    /// which simulators this machine has installed (detection, run spec §5): the status bar
+    /// names it in every golden.
     pub fn open(name: &str, file: &str, tag: &str, default_ui: bool) -> Session {
         let dir = fixture(name, tag);
+        let init = dir.join("init.lua");
+        std::fs::write(&init, "schemify.opt.simulator = \"espice\"\n").expect("init.lua");
+        Session::open_with(dir, file, default_ui, schemify_config::Startup::File(init))
+    }
+
+    /// As [`Session::open`] with no user config at all (`--clean`): the simulator is then
+    /// detected from this machine's `PATH`.
+    pub fn open_clean(name: &str, file: &str, tag: &str, default_ui: bool) -> Session {
+        let dir = fixture(name, tag);
+        Session::open_with(dir, file, default_ui, schemify_config::Startup::Clean)
+    }
+
+    fn open_with(
+        dir: PathBuf,
+        file: &str,
+        default_ui: bool,
+        config: schemify_config::Startup,
+    ) -> Session {
         let ed = Editor::new(Options {
             no_default_ui: !default_ui,
             path: Some(dir.join(file)),
             seed: 7,
+            config,
             ..Default::default()
         })
         .expect("fixture opens");

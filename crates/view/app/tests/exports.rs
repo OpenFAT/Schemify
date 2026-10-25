@@ -151,7 +151,7 @@ fn packages_view_shows_pack_status() {
     assert!(body.contains("ghost: path - missing"), "{body}");
     assert!(body.contains("run `schemify pack sync`"), "{body}");
     // Negative space: without a user config there is nothing to list.
-    let mut clean = Session::open("inv", "top.shcomp", "packages-clean", true);
+    let mut clean = Session::open_clean("inv", "top.shcomp", "packages-clean", true);
     clean.run("tools.package_status", "");
     let v = clean.ed.session().text_view().expect("a packages tab");
     assert!(v.body.contains("no user config"), "{}", v.body);

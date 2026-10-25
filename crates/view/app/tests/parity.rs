@@ -1228,7 +1228,7 @@ fn simulation_help_and_waves_commands() {
     let title = s.ed.session().text_view().map(|v| v.title.clone());
     assert_eq!(
         title.as_deref(),
-        Some("top.spice (netlist)"),
+        Some("top.sp (netlist)"),
         "{}",
         s.status()
     );
@@ -1263,10 +1263,12 @@ fn simulation_help_and_waves_commands() {
     s.key("Esc");
     s.run("waves.clear", "");
     assert!(!s.ed.waves_open());
-    s.run("options.cycle_netlist_format", "");
+    // From the default, espice, in the dialects' order.
     assert_eq!(s.ed.dialect(), schemify_elab::Dialect::Espice);
     s.run("options.cycle_netlist_format", "");
     assert_eq!(s.ed.dialect(), schemify_elab::Dialect::Xyce);
+    s.run("options.cycle_netlist_format", "");
+    assert_eq!(s.ed.dialect(), schemify_elab::Dialect::Ltspice);
     s.run("options.netlist_format_symbol_mode.flat_netlist", "");
     assert!(s.ed.opts().flat);
 }
