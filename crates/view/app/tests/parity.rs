@@ -1226,12 +1226,7 @@ fn simulation_help_and_waves_commands() {
     let mut s = Session::open("inv", "top.shcomp", "simhelp", true);
     s.run("simulation.edit_netlist", "");
     let title = s.ed.session().text_view().map(|v| v.title.clone());
-    assert_eq!(
-        title.as_deref(),
-        Some("top.sp (netlist)"),
-        "{}",
-        s.status()
-    );
+    assert_eq!(title.as_deref(), Some("top.sp (netlist)"), "{}", s.status());
     s.run("simulation.changelog_from_current_hierarchy", "");
     let v = s.ed.session().text_view().unwrap();
     assert!(
