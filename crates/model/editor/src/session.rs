@@ -1,0 +1,807 @@
+//! `session`: the project on disk and what the editor has open — library directories, open
+//! documents with their file and journal paths, tabs with their hierarchy stacks, and the
+//! status line. Owner of every file read and write the editor does (load spine, saves,
+//! journals), through [`crate::platform`].
+//!
+//! Data design:
+//! 1. In: a project directory or one cell file; edit outcomes. Out: `doc::Project` loaded and
+//!    indexed; journal and file writes.
+//! 2. How many: ≤ [`TABS_MAX`] tabs, each ≤ [`DEPTH_MAX`] hierarchy levels (xschem's
+//!    `CADMAXHIER`); open documents ≤ `doc::DOCS_MAX`.
+//! 3. Widths: doc handles are `doc::DocHandle`; per-document edit epochs `u32` (wrapping).
+//! 4. Access: per frame the active level only; per edit one row of `docs`.
+//! 5. Lifetime: session. 6. Parallel: no (one writer, I/O bound).
+
+use std::path::{Path, PathBuf};
+
+use schemify_canvas::Camera;
+use schemify_doc::{DocHandle, OpenError, Project, Recovery, TableId};
+use schemify_format::FileKind;
+
+use crate::geometry::Pt;
+pub use crate::libs::cell_relpath;
+
+/// The indexed cell row `name` names: `lib:cell` or, for the project library, `cell`, where
+/// `cell` is the cell's path in its library with or without its extension (`inv`,
+/// `inv.shcomp`, `sub/amp`). `None` when no indexed cell matches. Cost: one pass over the
+/// cell index.
+pub fn find_cell(p: &Project, name: &str) -> Option<usize> {
+    let (lib, rest) = name.split_once(':').unwrap_or(("", name));
+    let cells = p.cells();
+    let row = (0..cells.lib.len()).find(|&r| {
+        let rel = cell_relpath(p, r);
+        let stem = rel.rsplit_once('.').map_or(rel.as_str(), |(s, _)| s);
+        p.libs().name[usize::from(cells.lib[r])] == lib && (stem == rest || rel == rest)
+    });
+    debug_assert!(row.is_none_or(|r| r < cells.lib.len()));
+    row
+}
+use crate::libs::{self, BUILTIN_DIR, absolute, rel_path};
+use crate::platform;
+use crate::scene::ObjKey;
+
+/// Open tabs at once.
+pub const TABS_MAX: usize = 64;
+/// Hierarchy depth per tab (xschem `CADMAXHIER`).
+pub const DEPTH_MAX: usize = 40;
+
+/// Which side of a cell a level shows: its schematic (rank 3) or its symbol (ranks 1–2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum View {
+    /// Instances, wires, labels, ports, texts.
+    Schematic,
+    /// Pins and symbol graphics.
+    Symbol,
+}
+
+/// One hierarchy level of a tab.
+#[derive(Clone, Debug)]
+pub struct Level {
+    /// The document shown.
+    pub doc: DocHandle,
+    /// Schematic or symbol side.
+    pub view: View,
+    /// Instance name descended through (empty at the top).
+    pub inst: String,
+    /// Camera; `None` until first fitted.
+    pub cam: Option<Camera>,
+    /// Selection, kept per level so returning from a child restores it.
+    pub sel: Vec<ObjKey>,
+    /// Partially selected wires (xschem's Ctrl+drag box): one row per selected end, (wire
+    /// key, the end's position), sorted. A move moves just those ends and the rows follow
+    /// them; a row whose position is no longer an end of its wire (after an undo) selects
+    /// nothing. A wire also in `sel` moves whole.
+    pub ends: Vec<(ObjKey, Pt)>,
+}
+
+/// One tab: a stack of levels; the last is shown (D28: undo stacks live in `doc`, per
+/// document, so navigating never touches them).
+#[derive(Clone, Debug)]
+pub struct Tab {
+    /// Levels, top first; never empty.
+    pub stack: Vec<Level>,
+    /// The docs page is shown beside the canvas (`view.docs`); starts on when the opened
+    /// document has doc blocks.
+    pub docs: bool,
+    /// The docs page shows prose blocks as their Markdown / LaTeX source instead of rendered
+    /// (`docs.source`); kept per tab, so it survives switching tabs.
+    pub docs_source: bool,
+    /// The cell settings panel is shown beside the canvas (`view.cell`).
+    pub cell: bool,
+    /// A read-only text view (a netlist, xschem's "show netlist") shown instead of the
+    /// canvas; `stack` then holds the level it was made from, which editing commands skip.
+    pub text: Option<TextView>,
+}
+
+/// A read-only text shown in a tab.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextView {
+    /// Tab title.
+    pub title: String,
+    /// The file the text was written to (a second view of the same file replaces it).
+    pub path: PathBuf,
+    /// The text.
+    pub body: String,
+    /// The last find (`text.find`), empty for none.
+    pub find: String,
+    /// Its result: how many lines of the whole file contain it, and those lines (numbered,
+    /// at most as many as a text tab shows); `None` shows `body`.
+    pub found: Option<(u32, String)>,
+}
+
+/// Lines of a text tab's [`TextView`] laid out at once, at least (two screens' worth when
+/// that is more): a window around the tab's scroll offset (`ui::records::window`); spacers
+/// stand in for the rest.
+pub const TEXT_WINDOW: u32 = 256;
+
+/// Open documents and where they live on disk (SoA, one row per open document).
+#[derive(Clone, Debug, Default)]
+struct Docs {
+    handle: Vec<DocHandle>,
+    path: Vec<PathBuf>,
+    journal: Vec<PathBuf>,
+    epoch: Vec<u32>,
+}
+
+/// The project, its open documents and tabs.
+#[derive(Debug)]
+pub struct Session {
+    /// Project root directory (manifest location).
+    pub root: PathBuf,
+    /// Design data (`doc` is the only writer; requests go through `doc::apply_edits`).
+    pub project: Project,
+    lib_dir: Vec<Option<PathBuf>>,
+    docs: Docs,
+    /// Tabs; never empty after [`Session::open_tab`]. Written only by `Session` methods.
+    tabs: Vec<Tab>,
+    /// Active tab index (`< tabs.len()` once a tab is open).
+    active: usize,
+    /// Status line message (last command result or error); written only through
+    /// [`Session::say`], [`Session::note`] and [`Session::take_status`].
+    status: String,
+    untitled: u32,
+    /// Documents whose journal offers unsaved edits from a crash, waiting for the user's
+    /// decision (`decide_recovery`): (document, journal records offered).
+    recovery: Vec<(DocHandle, u32)>,
+    /// The file to open first as the load's index read it (`libs::Loaded::kept`), until
+    /// [`Session::open_file`] takes it or an index makes it stale.
+    kept: Option<(PathBuf, Vec<u8>)>,
+}
+
+impl Session {
+    /// Loads the project rooted at `root` (load spine): manifest + lockfile → library
+    /// directories → `index_library` per local library (the project's own files, then
+    /// `path` libraries). `git`/`url` libraries are reported, not fetched (M2). The bytes of
+    /// cell file `open` (the file about to be opened) are kept from the index, so opening it
+    /// reads and hashes it no second time.
+    ///
+    /// # Errors
+    ///
+    /// The manifest or lockfile does not parse.
+    pub fn load(root: &Path, seed: u64, open: Option<&Path>) -> Result<Session, String> {
+        let open = open.map(absolute);
+        let loaded = libs::load(root, seed, open.as_deref())?;
+        Ok(Session {
+            root: root.to_path_buf(),
+            project: loaded.project,
+            lib_dir: loaded.lib_dir,
+            docs: Docs::default(),
+            tabs: Vec::new(),
+            active: 0,
+            status: loaded.notes.join("; "),
+            untitled: 0,
+            recovery: Vec::new(),
+            kept: loaded.kept,
+        })
+    }
+
+    /// `project.reload` (pdk spec §9.2): re-reads `schemify.project` and `schemify.lock` and
+    /// re-indexes every library, keeping the open documents and tabs. Cell rows change:
+    /// callers drop anything keyed by row. The status line takes the load notes.
+    ///
+    /// # Errors
+    ///
+    /// A file does not parse or an open document's library is gone; nothing changed then.
+    pub fn reload(&mut self) -> Result<(), String> {
+        let (lib_dir, notes) = libs::reload(&mut self.project, &self.root)?;
+        self.kept = None; // the new index may have read other bytes
+        self.lib_dir = lib_dir;
+        self.status = notes.join("; ");
+        assert_eq!(self.lib_dir.len(), self.project.libs().name.len());
+        Ok(())
+    }
+
+    /// Returns the directory of library row `lib`, if it is local.
+    pub fn lib_dir(&self, lib: u8) -> Option<&Path> {
+        self.lib_dir.get(usize::from(lib))?.as_deref()
+    }
+
+    /// The directory of every library row, the project root standing in for libraries
+    /// that are not local (a runner's `lib_dirs`: sources are compiled from them).
+    pub fn lib_dirs(&self) -> Vec<PathBuf> {
+        let dirs: Vec<PathBuf> = self
+            .lib_dir
+            .iter()
+            .map(|d| d.clone().unwrap_or_else(|| self.root.clone()))
+            .collect();
+        assert_eq!(dirs.len(), self.lib_dir.len());
+        dirs
+    }
+
+    /// Opens (or returns the already open) cell file `relpath` of library row `lib`, with its
+    /// journal sidecar. A crash-recovery offer is queued for the user's decision
+    /// ([`Session::pending_recovery`], [`Session::decide_recovery`]); until then the document
+    /// refuses edits and saves (`doc` E044), so nothing is lost or overwritten.
+    ///
+    /// # Errors
+    ///
+    /// The file cannot be read or does not parse.
+    pub fn open_file(&mut self, lib: u8, relpath: &str) -> Result<DocHandle, String> {
+        let dir = self
+            .lib_dir
+            .get(usize::from(lib))
+            .and_then(Option::as_deref);
+        let kept = self
+            .kept
+            .take_if(|(p, _)| dir.is_some_and(|d| absolute(&d.join(relpath)) == *p));
+        let indexed = kept.is_some();
+        let (path, bytes, builtin) = match kept {
+            Some((path, bytes)) => (path, bytes, false),
+            None => libs::cell_bytes(&self.lib_dir, &self.project, lib, relpath)?,
+        };
+        if let Some(h) = self.handle_of(&path) {
+            return Ok(h);
+        }
+        // Builtin cells are read-only: no journal, and `save` refuses their paths.
+        let journal_path = if builtin {
+            PathBuf::new()
+        } else {
+            self.journal_path(&path)
+        };
+        let journal = if builtin {
+            None
+        } else {
+            platform::read(&journal_path).ok()
+        };
+        let name = self.project.libs().name[usize::from(lib)].clone();
+        let opened = if indexed {
+            self.project
+                .open_indexed(&name, relpath, bytes, journal.as_deref())
+        } else {
+            self.project
+                .open(&name, relpath, &bytes, journal.as_deref())
+        };
+        let opened = match opened {
+            Ok(o) => o,
+            Err(OpenError::AlreadyOpen(h)) => return Ok(h),
+            Err(OpenError::Parse(e)) => {
+                let d = e.diagnostics.first();
+                return Err(format!(
+                    "{relpath}:{}: {:?}",
+                    d.map_or(0, |d| d.line),
+                    d.map(|d| d.code)
+                ));
+            }
+            Err(OpenError::Code(c)) => return Err(format!("{relpath}: {c} {}", c.meaning())),
+        };
+        let h = opened.handle;
+        match opened.recovery {
+            Recovery::None => {}
+            Recovery::Offer { txs } | Recovery::Diverged { txs } => {
+                self.recovery.push((h, txs));
+                self.status = format!("{relpath}: {txs} unsaved edit(s) can be recovered");
+            }
+        }
+        self.docs.handle.push(h);
+        self.docs.path.push(path);
+        self.docs.journal.push(journal_path);
+        self.docs.epoch.push(0);
+        self.flush_journal(h);
+        assert!(self.project.doc(h).is_some());
+        Ok(h)
+    }
+
+    /// Opens indexed cell `row` (see [`Session::open_file`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Session::open_file`].
+    pub fn open_cell(&mut self, row: usize) -> Result<DocHandle, String> {
+        let cells = self.project.cells();
+        assert!(row < cells.lib.len(), "cell row from a previous index");
+        let lib = cells.lib[row];
+        let rel = cell_relpath(&self.project, row);
+        self.open_file(lib, &rel)
+    }
+
+    /// Opens a file given by path (absolute or relative to the working directory): the
+    /// library whose directory contains it, or the project.
+    ///
+    /// # Errors
+    ///
+    /// The file is outside every local library, unreadable, or does not parse.
+    pub fn open_path(&mut self, path: &Path) -> Result<DocHandle, String> {
+        let (lib, rel) = self
+            .lib_of(path)
+            .ok_or_else(|| format!("{}: outside the project", path.display()))?;
+        self.open_file(lib as u8, &rel)
+    }
+
+    /// The local library holding `path` and the path relative to it: the longest matching
+    /// directory wins (libraries may live under the root).
+    fn lib_of(&self, path: &Path) -> Option<(usize, String)> {
+        let abs = absolute(path);
+        let mut best: Option<(usize, String, usize)> = None;
+        for (row, dir) in self.lib_dir.iter().enumerate() {
+            let Some(dir) = dir else { continue };
+            let dir = absolute(dir);
+            if let Some(rel) = rel_path(&dir, &abs) {
+                let depth = dir.components().count();
+                if best.as_ref().is_none_or(|b| depth > b.2) {
+                    best = Some((row, rel, depth));
+                }
+            }
+        }
+        best.map(|(row, rel, _)| (row, rel))
+    }
+
+    /// The next document waiting for a crash-recovery decision: (document, journal records
+    /// offered). Documents closed meanwhile are skipped.
+    pub fn pending_recovery(&mut self) -> Option<(DocHandle, u32)> {
+        let project = &self.project;
+        self.recovery.retain(|(h, _)| project.doc(*h).is_some());
+        self.recovery.first().copied()
+    }
+
+    /// Recovers (`true`: replays the journal's unsaved edits) or discards the offer of `h`,
+    /// writes the journal, and reports the outcome in the status line.
+    pub fn decide_recovery(&mut self, h: DocHandle, recover: bool) {
+        let Some(i) = self.recovery.iter().position(|r| r.0 == h) else {
+            return;
+        };
+        self.recovery.remove(i);
+        let name = self.name(h);
+        self.status = if recover {
+            match self.project.recover(h) {
+                Ok((applied, dropped)) => format!(
+                    "{name}: recovered {applied} unsaved edit(s) from the journal ({dropped} dropped)"
+                ),
+                Err(c) => format!("{name}: recovery failed ({c})"),
+            }
+        } else {
+            match self.project.discard_recovery(h) {
+                Ok(()) => format!("{name}: unsaved edits from the journal discarded"),
+                Err(c) => format!("{name}: discard failed ({c})"),
+            }
+        };
+        self.bump(h);
+        self.flush_journal(h);
+        assert!(!self.recovery.iter().any(|r| r.0 == h));
+    }
+
+    /// Closes `h` dropping its unsaved edits and its journal (Save As moved them to another
+    /// file). Tabs must no longer show it.
+    pub fn close_discarding(&mut self, h: DocHandle) {
+        if let Some(path) = self.path(h).map(Path::to_path_buf) {
+            self.drop_journal(&path);
+        }
+        let _ = self.project.close(h);
+        assert!(self.project.doc(h).is_none());
+    }
+
+    /// Deletes the journal sidecar of cell file `path` (it was deleted, or its edits moved).
+    pub fn drop_journal(&mut self, path: &Path) {
+        let j = self.journal_path(path);
+        if platform::exists(&j) {
+            let _ = platform::remove(&j);
+        }
+    }
+
+    /// Re-indexes the local library whose directory holds `path` (a file was written or
+    /// deleted there), so choosers and `lib:cell` references see it. Cell rows shift: callers
+    /// drop anything keyed by row (the symbol cache).
+    pub fn reindex(&mut self, path: &Path) {
+        let Some((row, _)) = self.lib_of(path) else {
+            return;
+        };
+        let dir = self.lib_dir[row]
+            .as_deref()
+            .expect("matched a local library");
+        let others: Vec<&Path> = self
+            .lib_dir
+            .iter()
+            .enumerate()
+            .filter_map(|(r, d)| d.as_deref().filter(|d| r != row && d.starts_with(dir)))
+            .collect();
+        self.kept = None; // the new index may have read other bytes
+        if let Err(e) = libs::index(&mut self.project, row, dir, &others, None) {
+            self.status = e;
+        }
+    }
+
+    /// Creates a new, unsaved cell document in the project directory.
+    ///
+    /// # Errors
+    ///
+    /// `doc` refuses (too many documents).
+    pub fn create(&mut self, kind: FileKind) -> Result<DocHandle, String> {
+        assert!(matches!(kind, FileKind::Shcomp | FileKind::Shprim));
+        let ext = kind.word();
+        let rel = loop {
+            self.untitled += 1;
+            let rel = format!("untitled{}.{ext}", self.untitled);
+            if !platform::exists(&self.root.join(&rel)) {
+                break rel;
+            }
+        };
+        let h = self
+            .project
+            .create("", &rel, kind)
+            .map_err(|c| format!("{rel}: {c}"))?;
+        let path = self.root.join(&rel);
+        self.docs.handle.push(h);
+        self.docs.journal.push(self.journal_path(&path));
+        self.docs.path.push(path);
+        self.docs.epoch.push(0);
+        Ok(h)
+    }
+
+    fn row(&self, h: DocHandle) -> Option<usize> {
+        self.docs.handle.iter().position(|&d| d == h)
+    }
+
+    /// The open document read from `path`, if any.
+    pub fn handle_of(&self, path: &Path) -> Option<DocHandle> {
+        let i = self.docs.path.iter().position(|p| p == path)?;
+        let h = self.docs.handle[i];
+        self.project.doc(h).map(|_| h)
+    }
+
+    /// File path of an open document; `None` once `h` is closed.
+    pub fn path(&self, h: DocHandle) -> Option<&Path> {
+        self.row(h).map(|i| self.docs.path[i].as_path())
+    }
+
+    /// Display name of an open document (file name).
+    pub fn name(&self, h: DocHandle) -> String {
+        self.path(h)
+            .and_then(|p| p.file_name())
+            .map_or_else(|| "?".to_owned(), |n| n.to_string_lossy().into_owned())
+    }
+
+    /// Edit epoch of an open document: changes on every commit, undo, redo or reload, so
+    /// derived data (scene, symbol cache) knows when to rebuild.
+    pub fn epoch(&self, h: DocHandle) -> u32 {
+        self.row(h).map_or(0, |i| self.docs.epoch[i])
+    }
+
+    /// Advances the edit epoch of `h`, so the scene and the symbol cache rebuild from it on
+    /// the next frame. A closed `h` is ignored.
+    pub fn bump(&mut self, h: DocHandle) {
+        if let Some(i) = self.row(h) {
+            self.docs.epoch[i] = self.docs.epoch[i].wrapping_add(1);
+        }
+    }
+
+    /// `.schemify/journal/<project-relative cell path>.journal` (edits spec §3).
+    fn journal_path(&self, file: &Path) -> PathBuf {
+        let rel = rel_path(&absolute(&self.root), &absolute(file)).unwrap_or_else(|| {
+            file.file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+        });
+        self.root
+            .join(".schemify")
+            .join("journal")
+            .join(format!("{rel}.journal"))
+    }
+
+    /// Writes the journal bytes `doc` produced for `h` since the last call.
+    pub fn flush_journal(&mut self, h: DocHandle) {
+        let Some(w) = self.project.take_journal(h) else {
+            return;
+        };
+        let Some(i) = self.row(h) else { return };
+        let path = &self.docs.journal[i];
+        if path.as_os_str().is_empty() {
+            return; // builtin library cell: read-only, never journaled
+        }
+        let r = if w.rewrite {
+            platform::write_atomic(path, w.text.as_bytes())
+        } else {
+            platform::append(path, w.text.as_bytes())
+        };
+        if let Err(e) = r {
+            self.status = format!("journal: {e}");
+        }
+    }
+
+    /// Save spine: `doc::save` → atomic write → `doc::saved` → journal. Returns whether
+    /// anything was written (a clean document is not rewritten).
+    ///
+    /// # Errors
+    ///
+    /// `doc` refuses (read-only, conflict, kind rules) or the write fails.
+    pub fn save(&mut self, h: DocHandle) -> Result<bool, String> {
+        let req = self
+            .project
+            .save(h)
+            .map_err(|c| format!("save refused: {c} {}", c.meaning()))?;
+        let Some(req) = req else { return Ok(false) };
+        let path = self.path(h).ok_or("not a file document")?.to_path_buf();
+        if path.starts_with(BUILTIN_DIR) {
+            return Err("the bundled core library is read-only".into());
+        }
+        platform::write_atomic(&path, req.bytes.as_bytes())?;
+        self.project
+            .saved(h, req.bytes)
+            .map_err(|c| format!("save: {c}"))?;
+        self.flush_journal(h);
+        assert!(!self.project.is_dirty(h));
+        Ok(true)
+    }
+
+    /// Opens a new tab showing `doc` (or switches to the tab already showing it at top).
+    pub fn open_tab(&mut self, doc: DocHandle, view: View) {
+        if let Some(i) = self
+            .tabs
+            .iter()
+            .position(|t| t.stack[0].doc == doc && t.stack[0].view == view)
+        {
+            self.active = i;
+            return;
+        }
+        if self.tabs.len() >= TABS_MAX {
+            self.status = format!("at most {TABS_MAX} tabs");
+            return;
+        }
+        let docs = self
+            .project
+            .doc(doc)
+            .is_some_and(|d| !d.doc_blocks().kind.is_empty());
+        self.tabs.push(Tab {
+            stack: vec![Level {
+                doc,
+                view,
+                inst: String::new(),
+                cam: None,
+                sel: Vec::new(),
+                ends: Vec::new(),
+            }],
+            docs,
+            docs_source: false,
+            cell: false,
+            text: None,
+        });
+        self.active = self.tabs.len() - 1;
+        assert!(!self.tabs[self.active].stack.is_empty());
+    }
+
+    /// Shows `view` in a read-only text tab made from the active level (a tab already
+    /// showing the same file is replaced and activated).
+    pub fn open_text_tab(&mut self, view: TextView) {
+        let Some(level) = self.level().cloned() else {
+            return;
+        };
+        if let Some(i) = self
+            .tabs
+            .iter()
+            .position(|t| t.text.as_ref().is_some_and(|v| v.path == view.path))
+        {
+            self.tabs[i].text = Some(view);
+            self.active = i;
+            return;
+        }
+        if self.tabs.len() >= TABS_MAX {
+            self.status = format!("at most {TABS_MAX} tabs");
+            return;
+        }
+        self.tabs.push(Tab {
+            stack: vec![level],
+            docs: false,
+            docs_source: false,
+            cell: false,
+            text: Some(view),
+        });
+        self.active = self.tabs.len() - 1;
+        assert!(self.tabs[self.active].text.is_some());
+    }
+
+    /// The status line: the message the last step left (last wins).
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+
+    /// Sets the status line; the newest message wins. A message past [`STATUS_MAX`] bytes is
+    /// cut at a character boundary (a plugin's error text is untrusted in length).
+    pub fn say(&mut self, msg: impl Into<String>) {
+        self.status = msg.into();
+        cut(&mut self.status);
+        assert!(self.status.len() <= STATUS_MAX);
+    }
+
+    /// Takes the status line and leaves it empty: a step that runs a command on a clean
+    /// line and puts the old message back when the command says nothing.
+    pub fn take_status(&mut self) -> String {
+        let s = std::mem::take(&mut self.status);
+        assert!(self.status.is_empty());
+        s
+    }
+
+    /// The text view of the active tab, if it is one.
+    pub fn text_view(&self) -> Option<&TextView> {
+        self.tabs.get(self.active).and_then(|t| t.text.as_ref())
+    }
+
+    /// The open tabs, in tab-bar order.
+    pub fn tabs(&self) -> &[Tab] {
+        &self.tabs
+    }
+
+    /// The active tab's index (`< tabs().len()` once a tab is open).
+    pub fn active(&self) -> usize {
+        assert!(self.tabs.is_empty() || self.active < self.tabs.len());
+        self.active
+    }
+
+    /// Makes tab `i` the active one.
+    pub fn switch_tab(&mut self, i: usize) {
+        assert!(i < self.tabs.len(), "tab {i} of {}", self.tabs.len());
+        self.active = i;
+    }
+
+    /// Closes the active tab, opening a new schematic when it was the last; the next tab
+    /// to the left becomes active.
+    ///
+    /// # Errors
+    ///
+    /// The new schematic cannot be created (the tab is closed regardless).
+    pub fn close_active_tab(&mut self) -> Result<(), String> {
+        assert!(self.active < self.tabs.len(), "an active tab to close");
+        self.tabs.remove(self.active);
+        let made = match self.tabs.is_empty() {
+            true => self
+                .create(FileKind::Shcomp)
+                .map(|d| self.open_tab(d, View::Schematic)),
+            false => Ok(()),
+        };
+        self.active = self.active.min(self.tabs.len().saturating_sub(1));
+        made
+    }
+
+    /// The active tab, mutably, for its view toggles (docs page, its source, the cell panel).
+    pub fn tab_view_mut(&mut self) -> Option<TabView<'_>> {
+        self.tabs.get_mut(self.active).map(|t| TabView {
+            docs: &mut t.docs,
+            docs_source: &mut t.docs_source,
+            cell: &mut t.cell,
+        })
+    }
+
+    /// The active tab's text view, mutably (its find highlight), if it is one.
+    pub fn text_view_mut(&mut self) -> Option<&mut TextView> {
+        self.tabs.get_mut(self.active).and_then(|t| t.text.as_mut())
+    }
+
+    /// Sets the active level's camera.
+    pub fn set_camera(&mut self, cam: Camera) {
+        assert!(cam.scale > 0.0, "a positive zoom");
+        if let Some(l) = self.level_mut() {
+            l.cam = Some(cam);
+        }
+    }
+
+    /// Replaces the active level's selection with `sel` (sorted, distinct); returns whether
+    /// it changed.
+    pub fn select(&mut self, mut sel: Vec<ObjKey>) -> bool {
+        sel.sort_unstable();
+        sel.dedup();
+        let Some(l) = self.level_mut() else {
+            return false;
+        };
+        let changed = l.sel != sel;
+        if changed {
+            l.sel = sel;
+        }
+        changed
+    }
+
+    /// Replaces the active level's partial wire ends (sorted, distinct; only wire rows).
+    pub fn set_ends(&mut self, mut ends: Vec<(ObjKey, Pt)>) {
+        ends.retain(|e| e.0.table == TableId::Wires);
+        ends.sort_unstable();
+        ends.dedup();
+        if let Some(l) = self.level_mut() {
+            l.ends = ends;
+        }
+    }
+
+    /// Shows `doc` in `view` at the active level: the selection and the partial ends are
+    /// dropped (they name another document's rows), and with `refit` the camera too (the
+    /// first build fits it). Returns whether a selection was dropped.
+    pub fn show(&mut self, doc: DocHandle, view: View, refit: bool) -> bool {
+        let Some(l) = self.level_mut() else {
+            return false;
+        };
+        l.doc = doc;
+        l.view = view;
+        if refit {
+            l.cam = None;
+        }
+        let had = !l.sel.is_empty();
+        l.sel.clear();
+        l.ends.clear();
+        assert!(l.sel.is_empty() && l.ends.is_empty());
+        had
+    }
+
+    /// The level shown in the active tab.
+    pub fn level(&self) -> Option<&Level> {
+        self.tabs.get(self.active).and_then(|t| t.stack.last())
+    }
+
+    /// The level shown in the active tab, mutably: only `Session`'s own transforms write a
+    /// level (selection, camera, partial ends, the shown document).
+    fn level_mut(&mut self) -> Option<&mut Level> {
+        self.tabs
+            .get_mut(self.active)
+            .and_then(|t| t.stack.last_mut())
+    }
+
+    /// Hierarchy path of the active tab, xschem style (`.x1.x2.`).
+    pub fn hier_path(&self) -> String {
+        let mut s = String::from(".");
+        if let Some(t) = self.tabs.get(self.active) {
+            for l in &t.stack[1..] {
+                s.push_str(&l.inst);
+                s.push('.');
+            }
+        }
+        s
+    }
+
+    /// Pushes a level onto the active tab (descend).
+    ///
+    /// # Errors
+    ///
+    /// The tab is already [`DEPTH_MAX`] deep.
+    pub fn push_level(&mut self, doc: DocHandle, view: View, inst: &str) -> Result<(), String> {
+        let tab = self.tabs.get_mut(self.active).ok_or("no tab")?;
+        if tab.stack.len() >= DEPTH_MAX {
+            return Err(format!("hierarchy deeper than {DEPTH_MAX}"));
+        }
+        tab.stack.push(Level {
+            doc,
+            view,
+            inst: inst.to_owned(),
+            cam: None,
+            sel: Vec::new(),
+            ends: Vec::new(),
+        });
+        Ok(())
+    }
+
+    /// Pops the active tab's level (return to parent); false at the top.
+    pub fn pop_level(&mut self) -> bool {
+        match self.tabs.get_mut(self.active) {
+            Some(t) if t.stack.len() > 1 => {
+                t.stack.pop();
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+impl crate::spines::Cells for Session {
+    fn project(&self) -> &Project {
+        &self.project
+    }
+
+    fn open_row(&mut self, row: u32) -> Result<(), String> {
+        self.open_cell(row as usize).map(|_| ())
+    }
+}
+
+/// The longest status line in bytes; longer messages are cut.
+pub const STATUS_MAX: usize = 1 << 14;
+
+/// Cuts `s` to at most [`STATUS_MAX`] bytes at a character boundary.
+fn cut(s: &mut String) {
+    if s.len() > STATUS_MAX {
+        let mut at = STATUS_MAX;
+        while !s.is_char_boundary(at) {
+            at -= 1;
+        }
+        s.truncate(at);
+    }
+}
+
+/// The active tab's view toggles, lent by [`Session::tab_view_mut`].
+pub struct TabView<'a> {
+    /// The docs page is shown beside (or instead of) the canvas.
+    pub docs: &'a mut bool,
+    /// The docs page shows its source text.
+    pub docs_source: &'a mut bool,
+    /// The cell settings panel is shown.
+    pub cell: &'a mut bool,
+}

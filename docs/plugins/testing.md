@@ -49,9 +49,9 @@ To try a plugin against core changes you have not pushed, override the git sourc
 
 ```toml
 [patch."https://github.com/OmarSiwy/Schemify"]
-schemify-abi = { path = "../Schemify/crates/abi" }
-schemify-format = { path = "../Schemify/crates/format" }
-schemify-plugin = { path = "../Schemify/crates/plugin" }
+schemify-abi = { path = "../Schemify/crates/protocol/abi" }
+schemify-format = { path = "../Schemify/crates/protocol/format" }
+schemify-plugin = { path = "../Schemify/crates/plugins/plugin" }
 ```
 
 Patch every Schemify crate the plugin uses, so they all come from the same tree. `cargo test` and `./build.sh` then build against your checkout.

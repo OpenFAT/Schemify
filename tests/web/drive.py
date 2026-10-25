@@ -2,9 +2,9 @@
 """Drives the web editor in headless Chrome through the DevTools protocol (over a pipe,
 Python stdlib only) and checks what the web spec promises end to end:
 
-0. pixels (web spec §7): when WebGPU is unusable (no adapter, or frames that never reach
-   the page, as on CI's SwiftShader) the editor draws on the CPU, and the frame of the `inv`
-   project matches the native CPU golden `crates/app/tests/golden/editor_dark.png` (≤ 0.1%
+0. pixels (web spec §7): WebGPU, else WebGL2 (CI's SwiftShader WebGPU shows no frames, so CI
+   lands on WebGL2), else the CPU; on the CPU the frame of the `inv`
+   project matches the native CPU golden `crates/view/app/tests/golden/editor_dark.png` (≤ 0.1%
    of pixels off by more than 2 levels); whichever painter draws, the page screenshot is
    within 5% of that golden (never blank);
 1. storage (web spec §2): the `inv` fixture, written into OPFS by the browser's own API,
@@ -19,7 +19,7 @@ Python stdlib only) and checks what the web spec promises end to end:
 Test-only JavaScript below (OPFS reads, clipboard reads) runs through `Runtime.evaluate`;
 the product itself ships none (D2).
 
-    tests/web/drive.py <chrome> <url> <out-dir>
+    tests/web/drive.py <chrome> <url> <out-dir> [<extra chrome flag>...]
 """
 
 import base64
@@ -33,9 +33,10 @@ import time
 import zlib
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-FIXTURE = os.path.join(REPO, "crates/app/tests/fixtures/inv")
-GOLDEN = os.path.join(REPO, "crates/app/tests/golden/editor_dark.png")
+FIXTURE = os.path.join(REPO, "crates/view/app/tests/fixtures/inv")
+GOLDEN = os.path.join(REPO, "crates/view/app/tests/golden/editor_dark.png")
 CPU_CANVAS = "schemify-cpu"  # render::cpu_view::ID
+GL_CANVAS = "schemify-webgl"  # render::window::GL_ID
 
 
 class Browser:
@@ -202,6 +203,11 @@ class Page:
             " return c ? c.toDataURL('image/png') : null; })()"
         )
         return base64.b64decode(url.split(",", 1)[1]) if url else None
+
+    def gpu_tier(self):
+        """The GPU tier drawing the page when the CPU overlay is absent (web spec §7)."""
+        js = f"document.getElementById('{GL_CANVAS}') ? 'WebGL2' : 'WebGPU'"
+        return self.eval(js)
 
     def write_text(self, path, text):
         """Writes OPFS file `path` (test-only JS, as the browser's own API would)."""
@@ -395,9 +401,13 @@ def main():
     os.makedirs(out, exist_ok=True)
     origin = url.split("/", 3)[:3]
     origin = "/".join(origin)
+    # `--disable-3d-apis` (smoke.sh's second run) takes WebGL2 and WebGPU away: the editor
+    # must then draw on the CPU, so the CPU tier stays covered.
+    cpu_only = "--disable-3d-apis" in sys.argv[4:]
     flags = ["--headless=new", "--no-sandbox", "--no-first-run", "--window-size=1280,800",
              "--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-angle=swiftshader",
-             "--use-webgpu-adapter=swiftshader", "--enable-logging=stderr", "--v=0"]
+             "--use-webgpu-adapter=swiftshader", "--enable-unsafe-swiftshader",
+             "--enable-logging=stderr", "--v=0", *sys.argv[4:]]
     failures = []
     with open(os.path.join(out, "drive-chrome.log"), "wb") as log:
         b = Browser(chrome, flags, log)
@@ -421,15 +431,18 @@ def main():
             p.write_text("/config/init.lua", 'schemify.keymap.set("F9", "file.save")\n')
             top = "/projects/inv/top.shcomp"
             p.load(f"{url}#{top}")
-            # 0. Pixels (web spec §7): without a WebGPU adapter the editor draws on the CPU;
-            #    before any synthetic input moves the pointer (the status line shows it), the
-            #    frame must match the native CPU golden under the native test's tolerance.
+            # 0. Pixels (web spec §7): with neither WebGPU nor WebGL2 usable the editor draws
+            #    on the CPU; before any synthetic input moves the pointer (the status line
+            #    shows it), the frame must match the native CPU golden under the native
+            #    test's tolerance.
             png, deadline = None, time.time() + 15
             while time.time() < deadline and png is None:
                 png = p.cpu_png()
                 time.sleep(0.25)
-            if png is None:
-                print("::notice::the browser has a WebGPU adapter: no CPU frame to compare")
+            if png is None and cpu_only:
+                failures.append(f"with no 3D APIs the editor draws with {p.gpu_tier()}, not the CPU")
+            elif png is None:
+                print(f"::notice::the editor draws with {p.gpu_tier()}: no CPU frame to compare")
             else:
                 time.sleep(2.0)  # the editor settles (plugin load, compose, a tick)
                 png = p.cpu_png()

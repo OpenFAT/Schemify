@@ -10,7 +10,7 @@ from itertools import combinations
 
 # Canvas layer roles (xschem numbering).
 WIRE, TEXT, SYMBOL, PIN = 1, 3, 4, 5
-# Must match HILITE_LAYERS in crates/app/src/editor/parity.rs.
+# Must match HILITE_LAYERS in crates/model/editor/src/editor/parity.rs.
 HILITE = [8, 9, 10, 12, 13, 15, 17, 21]
 # Chrome selectors whose colour is meaning (severity, pass/fail, diff state), exempt from the accent budget.
 STATUS = re.compile(r"^(check-|results-(pass|fail|yield)|docs-(value|unverified|staged))")

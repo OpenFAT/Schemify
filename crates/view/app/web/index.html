@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Schemify</title>
+<style>
+html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+canvas { display: block; }
+/* The editor's canvas, and the WebGL2 tier's laid over it, fill the window; winit follows its
+   size (the CPU overlay sizes itself). */
+canvas:not(#schemify-cpu) { width: 100vw !important; height: 100vh !important; }
+</style>
+</head>
+<body>
+<script type="module">import init from "./pkg/schemify.js"; init();</script>
+</body>
+</html>

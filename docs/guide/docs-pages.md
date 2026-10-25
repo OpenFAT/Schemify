@@ -35,7 +35,7 @@ Each edit is one undo step.
 ## What a page looks like in the file
 
 Docs blocks are `prose` and `var` records, kept in file order. This is part of the OTA fixture
-(`crates/app/tests/fixtures/ota/ota.shcomp`):
+(`crates/view/app/tests/fixtures/ota/ota.shcomp`):
 
 ```
 inst m00001 dev:nfet_01v8
@@ -89,7 +89,7 @@ You rarely edit these records by hand: the page writes them for you. Open the fi
 rendered:
 
 ```sh
-schemify edit crates/app/tests/fixtures/ota/ota.shcomp
+schemify edit crates/view/app/tests/fixtures/ota/ota.shcomp
 ```
 
 ## Text blocks
@@ -186,7 +186,7 @@ first. After an optimizer run it shows the selected job only.
 Until a bench has run, the slot reads `no results yet: run the bench to fill this graph`. An
 expression that fails, or that reduces to a single number, shows the reason instead of a graph.
 
-The RC bench in `crates/app/tests/fixtures/rc/tb.shbench` has a `v(out)` plot on its page. The
+The RC bench in `crates/view/app/tests/fixtures/rc/tb.shbench` has a `v(out)` plot on its page. The
 OTA fixture has a `db(v(out))` plot but no bench yet, so it stays empty.
 
 The page shows no results or spec table of its own: that is the results panel under the

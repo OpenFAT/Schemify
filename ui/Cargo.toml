@@ -1,5 +1,5 @@
 # Guest modules of the core, built for wasm32-unknown-unknown only: the bundled default UI
-# (`default-plugin`) and the plugin host's test guests (`../crates/plugin/tests/guests`, which
+# (`default-plugin`) and the plugin host's test guests (`../crates/plugins/plugin/tests/guests`, which
 # point back here with `package.workspace`). The optional plugins live in their own
 # repositories (docs/plugins/; examples in `examples/plugins/`).
 #
@@ -11,9 +11,9 @@
 resolver = "3"
 members = [
   "default-plugin",
-  "../crates/plugin/tests/guests/hello",
-  "../crates/plugin/tests/guests/bad-actor",
-  "../crates/plugin/tests/guests/gmid-stub",
+  "../crates/plugins/plugin/tests/guests/hello",
+  "../crates/plugins/plugin/tests/guests/bad-actor",
+  "../crates/plugins/plugin/tests/guests/gmid-stub",
 ]
 
 [workspace.package]
@@ -23,7 +23,7 @@ license = "MIT"
 rust-version = "1.95"
 
 [workspace.dependencies]
-schemify-abi = { path = "../crates/abi", features = ["guest"] }
+schemify-abi = { path = "../crates/protocol/abi", features = ["guest"] }
 
 # Small fixtures: size over speed, no unwinding (a panic is a trap the host reports).
 [profile.release]

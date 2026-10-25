@@ -1,0 +1,40 @@
+# Maintainer: Omar El-Sawy <omarelsiwy at gmail dot com>
+#
+# The AUR package `schemify-bin`: the release's Linux binaries, as built by publish.yaml
+# (manylinux_2_28, glibc >= 2.28). publish.yaml fills @VERSION@ and @SHA256@ and attaches
+# the result to each release; once the release is published, its `aur` job builds and installs
+# it with makepkg and, given AUR_SSH_PRIVATE_KEY, pushes it and its .SRCINFO to schemify-bin.
+pkgname=schemify-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Schematic capture for analog/mixed-signal IC design (release binaries)'
+arch=('x86_64')
+url='https://github.com/OmarSiwy/Schemify'
+license=('MIT')
+depends=('glibc')
+optdepends=(
+  'wayland: the editor on Wayland'
+  'libxkbcommon: keyboard input in the editor'
+  'vulkan-icd-loader: the editor GPU drawing'
+  'libx11: the editor on X11'
+  'libxcursor: the editor on X11'
+  'libxi: the editor on X11'
+  'libxrandr: the editor on X11'
+  'fontconfig: system fonts for glyphs outside the built-in UI font'
+  'ngspice: simulation (ESPice, the default, is installed separately)'
+  'git: schemify pack'
+  'curl: schemify pack'
+)
+provides=('schemify')
+conflicts=('schemify')
+options=('!strip' '!debug')
+source=("https://github.com/OmarSiwy/Schemify/releases/download/v${pkgver}/schemify-v${pkgver}-linux-x86_64.tar.gz")
+sha256sums=('@SHA256@')
+
+package() {
+  cd "schemify-v${pkgver}-linux-x86_64"
+  install -Dm755 schemify "${pkgdir}/usr/bin/schemify"
+  install -Dm755 schemify-gui "${pkgdir}/usr/bin/schemify-gui"
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}

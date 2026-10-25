@@ -1,6 +1,6 @@
 # Expression language v1 (normative)
 
-Implements D12, D19, D20, D23. One language for parameter defaults and derived params, conditions, netlist templates, labels, docs variables, outputs/specs and the waveform calculator. Pure and total: no IO, no loops, no recursion, no user-defined functions, bounded size. Implementation: `crates/expr` (lexer → parser to a flat node table → compile to bytecode with constant folding → scalar or column evaluation), seeded from UW-ASIC `crates/wave/src/expr.rs`.
+Implements D12, D19, D20, D23. One language for parameter defaults and derived params, conditions, netlist templates, labels, docs variables, outputs/specs and the waveform calculator. Pure and total: no IO, no loops, no recursion, no user-defined functions, bounded size. Implementation: `crates/model/expr` (lexer → parser to a flat node table → compile to bytecode with constant folding → scalar or column evaluation), seeded from UW-ASIC `crates/model/wave/src/expr.rs`.
 
 ## 1. Values
 

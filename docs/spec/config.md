@@ -1,6 +1,6 @@
 # User config and packages v1 (normative)
 
-Implements D9 and D35 as amended 2026-10-11 (Lua user config, user packages, `stdpath` directories), with D7 (capability grants) and D8 (last wins). Implementation: `crates/config` (directories, the sandboxed Lua runtime and the user-config table it fills), `crates/cli` (`schemify pack`, the package manager), `crates/app` (the editor applies the table and loads user packages through the plugin host). Example: [`docs/examples/init.lua`](../examples/init.lua).
+Implements D9 and D35 as amended 2026-10-11 (Lua user config, user packages, `stdpath` directories), with D7 (capability grants) and D8 (last wins). Implementation: `crates/model/config` (directories, the sandboxed Lua runtime and the user-config table it fills), `crates/model/cli` (`schemify pack`, the package manager), `crates/view/app` (the editor applies the table and loads user packages through the plugin host). Example: [`docs/examples/init.lua`](../examples/init.lua).
 
 Design files, the project manifest and lockfiles stay line records ([format.md](format.md)); only the user's own config is a program. Nothing in this spec is reachable from a design file (D7).
 
@@ -73,7 +73,7 @@ The init file and every function it registers run in one Lua 5.4 state that only
 | `schemify.keymap.set(chord, target, opts?)` | Binds `chord` (the keymap record syntax, `Ctrl+Shift+N`, `F5`, `w`) to `target`: a command name ([plugin-abi.md](plugin-abi.md) §7, the D27 command table) or a Lua function. `opts.desc` is a description string. A later `set` of the same chord replaces the earlier one. |
 | `schemify.cmd(name, args?)` | Queues command `name` with the argument string `args` (default empty). The editor runs queued commands in order at its next delivery; the core has no command table yet and ignores them. |
 | `schemify.on(event, fn)` | Calls `fn(ev)` after each `event` the editor delivers to plugins. Events (plugin-abi §6 wire words): `load` (the editor is ready), `doc_opened`, `doc_closed`, `doc_changed`, `selection_changed`, `saved`, `run_done`. `ev` holds the event's fields (`ev.doc`, `ev.epoch`, `ev.job`). Hooks run in registration order. |
-| `schemify.sim(name, { path = , args = , env = })` | The external programs of [run.md](run.md) §5: `ngspice` and `espice` (simulator command lines; `{netlist}` and `{raw}` are replaced by the job's files; without `args` the defaults of run.md §5), `openvaf`, `iverilog` (compilers; `args` unused). `path` is required; `args` is a list of strings; `env` maps variable names (non-empty, no `=`) to strings, at most 64, set for the program on top of the inherited environment and stored sorted by name (ESPice's `ZIG`, the Zig 0.17 it compiles Verilog-A with). Another name, or a bad `args`/`env`, is an error that leaves the row unset. The core's runner and the editor's Simulate both use all four. |
+| `schemify.sim(name, { path = , args = , env = })` | The external programs of [run.md](run.md) §5: `ngspice`, `espice`, `xyce`, `ltspice` and `spectre` (simulator command lines; `{netlist}` and `{raw}` are replaced by the job's files; without `args` the defaults of run.md §5), `openvaf`, `iverilog` (compilers; `args` unused). `path` is required; `args` is a list of strings; `env` maps variable names (non-empty, no `=`) to strings, at most 64, set for the program on top of the inherited environment and stored sorted by name (ESPice's `ZIG`, the Zig 0.17 it compiles Verilog-A with). Another name, or a bad `args`/`env`, is an error that leaves the row unset. The core's runner and the editor's Simulate both use all seven; a PDK-pinned or detected simulator runs through the same row. |
 | `schemify.notify(msg, level?)` | Shows `msg`: `level` is `"error"`, `"warn"` or `"info"` (default). |
 | `schemify.pack.add { spec, … }` | Declares user packages (§5). Each call appends; a later spec with the same name replaces the earlier one. |
 
@@ -88,7 +88,7 @@ Options:
 | `layer_colors` | table `{ [layer] = "rrggbb" }` | `{}` | Canvas colour per layer `0`–`21` over the theme's (View → Change current layer color); `"#rrggbb"` is accepted. Assign the whole table: reading returns a copy, so changing one of its entries sets nothing. |
 | `dim` | number in [0, 1] | 0 | Dims the canvas toward its background (View → Dim colors), stored in percent. |
 | `line_width` | number in [0.1, 10] | 1 | Canvas line width in pixels (View → Set line width), stored in tenths of a pixel. |
-| `simulator` | `"ngspice"` or `"espice"` | `"ngspice"` | The simulator Simulate and `schemify run` start, and the dialect `schemify netlist` and the editor's netlist dialect default to ([run.md](run.md) §5). `--dialect` and the Netlist dialect menu override it. |
+| `simulator` | `"ngspice"`, `"espice"`, `"xyce"`, `"ltspice"` or `"spectre"` | unset (`nil`) | The simulator Simulate and `schemify run` start, and the dialect `schemify netlist` and the editor's netlist dialect default to ([run.md](run.md) §5). `--dialect`, the Netlist dialect menu and a PDK's pinned simulator override it; unset, the first installed simulator is used (espice first), else espice. |
 
 Steps are stored in milli-units (D33), rounded to the nearest; a step that rounds to 0 or exceeds 10^6 units is an error. A layer outside `0`–`21`, a colour that is not six hex digits, or a number out of its range is an error. The editor reads the options once, at startup; changing a colour, the dim factor or the line width in the editor lasts for the session (put it in `init.lua` to keep it).
 
@@ -96,7 +96,7 @@ Functions (keymap targets, hooks) run under the same sandbox and limits as the i
 
 ## 4. Sandbox
 
-One interpreter on every target: omnilua, a pure-Rust Lua 5.4 (`crates/config/src/lua.rs`; the user's decision of 2026-10-12, [web.md](web.md) §5), built without its `io`, `os` and `package` libraries.
+One interpreter on every target: omnilua, a pure-Rust Lua 5.4 (`crates/model/config/src/lua.rs`; the user's decision of 2026-10-12, [web.md](web.md) §5), built without its `io`, `os` and `package` libraries.
 
 - **Present:** the base library without `dofile`, `loadfile`, `load`, `collectgarbage` and `require` (replaced by §2's); `string`, `table`, `math`, `utf8`. `print(...)` is an info notification (`schemify.notify`). `pcall` and `xpcall` return the error as its message string and never catch budget exhaustion (otherwise `while true do pcall(f) end` would outlive any budget).
 - **Absent:** `io`, `os`, `debug`, `package` (so no `package.loadlib`), `coroutine`, binary chunks. Nothing in the config can open a file other than its own modules, start a process or reach the network (D7); packages are wasm and get capabilities only through grants (§5).
@@ -169,7 +169,7 @@ Plugin composition order (D8, last wins): **bundled default UI < user packages (
 
 Why: D8 makes the more specific contribution win. User packages are the user's general preferences, so they override the bundled defaults; a project's packages are what that design needs (its netlister, its PDK helpers), so they override the user's general set, the way a project's `.editorconfig` overrides an editor's defaults. Keymaps typed in `init.lua` are the user's explicit muscle memory and are applied after every plugin, as Neovim users expect from mappings made after plugins load.
 
-The user-config table (owner: `crates/config`; readers: both binaries):
+The user-config table (owner: `crates/model/config`; readers: both binaries):
 
 | Table | Rows | Capacity |
 |---|---|---|
@@ -182,4 +182,6 @@ The user-config table (owner: `crates/config`; readers: both binaries):
 
 ## 7. Binaries
 
-`schemify` is the headless core: CLI, config, package manager. It links no GPU, window, text-shaping, accessibility or LaTeX code (D39, checked by `crates/cli/tests/deps.rs`). `schemify edit …` runs `schemify-gui` from the directory of the running `schemify`, else from `PATH`, passing the remaining arguments; when neither exists it exits 2 saying so.
+`schemify` is the headless core: CLI, config, package manager. It links no GPU, window, text-shaping, accessibility or LaTeX code (D39, checked by `crates/model/cli/tests/deps.rs`). `schemify edit …` runs `schemify-gui` from the directory of the running `schemify`, else from `PATH`, passing the remaining arguments; when neither exists it exits 2 saying so.
+
+`schemify-gui [flags] [edit] [<project-dir>|<cell-file>] [--no-default-ui] [--rpc <socket>]`: after the flags (§2) an optional word `edit`, then at most one path, `--no-default-ui` and `--rpc <socket>` in any order (the word after `--rpc` is the socket, whatever it looks like). `--rpc` without a socket, a second `--rpc`, any other word starting with `-` or a second path prints the usage text and exits 2; a bad flag prints its message first. The config crate parses the line (`Launch::parse`) and holds the usage text (`GUI_USAGE`).

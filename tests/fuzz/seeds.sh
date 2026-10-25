@@ -16,8 +16,8 @@ case "$target" in
     ;;
   merge3)
     # O, A, B: every pair (f, g) of format fixtures as (f, g, f), NUL-separated.
-    for f in crates/format/tests/fixtures/*.sh*; do
-      for g in crates/format/tests/fixtures/*.sh*; do
+    for f in crates/protocol/format/tests/fixtures/*.sh*; do
+      for g in crates/protocol/format/tests/fixtures/*.sh*; do
         { cat "$f"; printf '\0'; cat "$g"; printf '\0'; cat "$f"; } >"$dir/$(basename "$f")-$(basename "$g")"
       done
     done

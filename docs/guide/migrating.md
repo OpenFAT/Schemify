@@ -41,7 +41,15 @@ schemify-interop xschem-import \
   -o ~/chips/amp-schemify
 ```
 
-Every `.sym` and `.sch` under each directory you name is converted. `--root` adds a search path element whose files are only referenced, not converted. Here it makes a reference such as `devices/res.sym` resolve, while `"$XS/devices"` is what actually gets converted.
+Every `.sym` and `.sch` under each directory you name is converted. `--root` adds a search path element that is not converted wholesale: only the files your design references from it are, transitively (each symbol, its schematic and the `.cir` files beside it). Here it makes a reference such as `devices/res.sym` resolve and converts just the devices you placed, while `"$XS/devices"` converts the whole directory.
+
+For a design that keeps symbols and schematics in separate directories, pass both in search path order (`schematics symbols`): a symbol pairs with the same-named schematic anywhere on the search path, as in xschem. A PDK's xschem library goes in as a `--root` too, so a project needs nothing PDK-specific:
+
+```sh
+schemify-interop xschem-import schematics symbols \
+  --root "$XS" --root "$PDK_ROOT/$PDK/libs.tech/xschem" \
+  --xschemrc "$PDK_ROOT/$PDK/libs.tech/xschem/xschemrc" -o out
+```
 
 | Flag | What it does |
 |---|---|
@@ -65,13 +73,13 @@ amp-schemify/
     ota.shcomp              ota.sym + ota.sch
     ota__top.shbench        a bench copy, when ota.sch carries netlist text
     tb_ota.shbench          a schematic without a symbol
-  import-report.md
-  import-report.txt
+  interop.report.md
+  interop.report.txt
 ```
 
 A symbol with a schematic becomes a `.shcomp` and a symbol without one a `.shprim`. A schematic without a symbol becomes a `.shbench`, or a `.shcomp` when it has `ipin`/`opin`/`iopin` instances. The full mapping is in [the import spec](../spec/import.md). File kinds are explained in [files.md](files.md).
 
-The tool prints a summary (inputs, outputs per kind, how many device instances landed on `core`, and the count of each report class), then checks every output file and prints `check: N problems`. Read `import-report.md` before anything else. Every item that did not cross one to one is there with its file and line:
+The tool prints a one-line summary, checks every output file and prints `check: N problems` (with each problem). Read `interop.report.md` before anything else: it opens with the count of each report class and lists how many device instances landed on `core`. Every item that did not cross one to one is there with its file and line:
 
 - `needs_review:<reason>`: something the importer would not guess, such as a Tcl expression or a missing symbol. The field is left at its default, never filled with a guess.
 - `dropped:<reason>`: something that has no meaning in Schemify (launchers, logos, display-only texts).
@@ -232,8 +240,10 @@ schemify-interop virtuoso-export <project-dir> <cell-file>... -o <file.sfyx>
     [--core-cells] [--lib L=V]...
 schemify-interop virtuoso-import <project-dir> <file.sfyx> [--analoglib] [--lib L=V]...
 schemify-interop xschem-export   <project-dir> <cell-file>... -o <out-dir>
-schemify-interop install-skill   <dir>
+schemify-interop install-skill   [<dir>]
 ```
+
+The editor's File menu items take the same arguments without `<project-dir>` (for example `lib/amp.shcomp -o out/amp.sfyx`).
 
 - `--lib L=V` renames Schemify library `L` to Virtuoso library `V` (on import, the reverse).
 - Export places Schemify's core sources and passives as analogLib cells; `--core-cells` keeps them as `schemify_core` cells instead.

@@ -16,12 +16,14 @@ No Virtuoso runs in CI. The SKILL side is therefore (a) written in a subset a te
  xschem files ──xschem import (import.md)──► Schemify files
 ```
 
-**Spine** (`interop::run`, one transform per line; the plugin command and the native CLI both call it):
+**Spines** (`job::Job::step`, one arm per command; the plugin command and the native CLI both run it; the code is laid out by the README's maps, one directory per tool and one file per map row, see the plugin's ARCHITECTURE.md):
 
-| Direction | Transforms |
+| Conversion | Transforms |
 |---|---|
-| export | `design::load(files, tops) → Design` · `nets::extract(Design) → Nets` · `map::resolve(Design, Mapping) → Plan` · `remap::apply(Design, Nets, Plan)` (labels + stubs for re-mastered instances, §6.4) · `virtuoso::write(Design, Plan, Options) → .sfyx` **or** `xschem::write(Design, Plan) → files` · report |
-| import | `sfyx::read(text) → Dump` · `virtuoso::read(Dump, Mapping, Options) → Design` · `nets::extract` · `remap::apply` · `design::store(Design, existing files) → files` · report |
+| Virtuoso export | `design::load(files, tops) → Design` · `virtuoso::plan::resolve(Design, Mapping) → Plan` · per cell `virtuoso::write::{interface, symbol, schematic}` (`nets::extract` + `remap::apply` for re-mastered instances, §6.4) · `ade::export` per bench · `read::image` → `merge::stash` (§7.3) · `dump::records` → `.sfyx` · report |
+| Virtuoso import | `sfyx::read(text)` · `dump::dump → Dump` · `virtuoso::read::{interface, cells, symbol, schematic}` → one fresh document per target · `ade::import` · `merge::merge(fresh, local, stash)` · fingerprints (§7.5) · files · report |
+| xschem export | `design::load(files, tops) → Design` · `xschem::write::export` (§11) · report |
+| xschem import | `xschem::gather` (listing and reading rounds) · `xschem::read::translate_library` (import.md) · `check::check_output` · report |
 
 **Tables** (`design.rs`; owner: the transform that builds them; read by every later one; arena = one run):
 
@@ -38,9 +40,9 @@ No Virtuoso runs in CI. The SKILL side is therefore (a) written in a subset a te
 
 Coordinates are Schemify milli-units, y down, orientations Schemify's, net expressions, templates and expressions in Schemify syntax: the Design is Schemify-shaped, and every tool-specific spelling is produced or consumed at the tool edge through the profile tables (§3). A tool difference is a row in a profile table, never a branch in a shared transform.
 
-**Native CLI** `schemify-interop` (feature `cli`): `xschem-import …` (import.md), `xschem-export <project> <cell>… -o <dir>`, `virtuoso-export <project> <cell>… -o <file.sfyx> [--map F] [--lib L=V]… [--core-cells]` (also writes the OCEAN scripts `ocean/<cell>.ocn` beside the `.sfyx`, §9.6; core devices go to their analogLib masters unless `--core-cells`, §6.5), `virtuoso-import <file.sfyx> <project> [--map F] [--into <lib>]`, `install-skill <dir>` (writes `schemify.il`). Exit codes as the core CLI (0 ok, 1 design problems reported, 2 usage/I/O).
+**Commands.** One grammar (`job::parse`, `job::USAGE`) for the native CLI `schemify-interop` (feature `cli`) and the editor: `virtuoso-export <cell>… -o <file.sfyx> [--core-cells] [--lib L=V]…` (also writes the OCEAN scripts `ocean/<cell>.ocn` beside the `.sfyx`, §9.6; core devices go to their analogLib masters unless `--core-cells`, §6.5), `virtuoso-import <file.sfyx> [--analoglib] [--lib L=V]…`, `xschem-export <cell>… -o <dir>`, `xschem-import <lib-dir>… [--root <dir>]… [--xschemrc <file>]… [--no-core] -o <dir>` (import.md), `install-skill [<dir>]` (writes `schemify.il` and `sfy_probe.il`; default `interop`). A command takes only its own flags. The CLI puts the project directory first (`virtuoso-export <project> <cell>… -o …`; paths are relative to it) and adds, for `xschem-import`, the host-only side inputs `--models --spiceinit --tech --cdf` (import.md §2.1), and `pdk-rules <project> <char.sfyx>` (§8.3). Exit codes as the core CLI (0 ok, 1 refused or an output failed its check, 2 usage/I/O).
 
-**Editor commands** (wasm guest, capabilities `read_project` + `write_project`): `interop.virtuoso_export <cell> [<out.sfyx>]`, `interop.virtuoso_import <file.sfyx>`, `interop.xschem_export <cell> [<dir>]`, `interop.xschem_import <file.sch|.sym>…`, `interop.install_skill`. File ▸ Interop submenu; each without arguments opens a path panel (cktimg's pattern). Reads follow references from the named cells (the guest has no directory listing): the closure of `cellref`s through the project manifest, plus `interop.map` and the existing target files for merging.
+**Editor commands** (wasm guest, capabilities `read_project` + `write_project`): `interop.virtuoso_export`, `interop.virtuoso_import`, `interop.xschem_export`, `interop.xschem_import`, `interop.install_skill`, each taking the arguments of the command of the same name above (project-relative paths, or `${VAR}/…` under a granted variable for `xschem_import`). File ▸ Interop submenu; each without arguments opens a path panel (cktimg's pattern). Reads follow references from the named cells (the guest has no directory listing): the closure of `cellref`s through the project manifest, plus `interop.map` and the existing target files for merging.
 
 ## 2. Design load and store
 
@@ -531,7 +533,7 @@ Removed 2026-10-15 (D41 amendment): PDKs cross by translation (§8.1), not by gm
 
 ## 11. xschem export
 
-Schemify → xschem `.sch`/`.sym` (file format from xschem-feature-inventory §5, checked by running xschem 3.4.7). `interop::xschem_out::export(design, tops) → files + notes` (pure, byte-deterministic); refused (one line each) for no tops, an unknown index, or a `core` cell as a top.
+Schemify → xschem `.sch`/`.sym` (file format from xschem-feature-inventory §5, checked by running xschem 3.4.7). `interop::xschem::write::export(design, tops) → files + notes` (pure, byte-deterministic); refused (one line each) for no tops, an unknown index, or a `core` cell as a top.
 
 **Layout.** Each written cell becomes `<lib>/<cell>.sym` and/or `<lib>/<cell>.sch` (project-root cells: `root/`, `root_2/`, … while a library has that name; `core` cells without an xschem device: `schemify_core/`). Own cells are referenced as `<lib>/<cell>.sym`, xschem devices by bare name (`res.sym`, on xschem's default path). `xschemrc` (a fragment for `--rcfile` or sourcing) appends the output directory to `XSCHEM_LIBRARY_PATH` and lists the libraries in comments. A non-top cell with header `provenance xschem <lib>/<file>` is not written: instances reference `<lib>/<file>` (`devices/<file>` → `<file>`).
 
@@ -565,7 +567,7 @@ Report reasons of this export: `needs_review:` `expression template format name 
 
 ## 12. Report
 
-`interop-report.md` + `.txt` beside the outputs, like import.md §7: classes `needs_review:<reason>` (`expression template name callback design-variable inlined-var computed format cdl-approximate source code output spec sweep plot corner config montecarlo optimize inherit`), `dropped:<reason>` (`display-only selection-box solder-dot stale-schemify-data pin-label unknown-record`), `rounding`, `off-grid` (export: one row per cell with the count and the first point), `remapped` (per instance re-mastered by a `map` row: old and new master), `clamped` (from the loader log), `updated` (cells changed by an import). Count conservation per cellview: objects in = records out + reported. Decided: every record of a cellview is consumed by exactly one builder or reported (dropped kinds as one row per cellview and reason with the count, unknown tags one row each with their line), and the import asserts the equality; records outside any cellview with an unknown tag are reported likewise; `conn` and `intent` records are reported on import (loader-only, §10).
+One report for every conversion: beside a file output `<stem>.report.md` + `.txt` (`amp.sfyx` → `amp.report.md`), inside a directory output `interop.report.md` + `.txt` (xschem import and export); the xschem import's accounting (import.md §7) becomes rows of it. Classes `needs_review:<reason>` (`expression template name callback design-variable inlined-var computed format cdl-approximate source code output spec sweep plot corner config montecarlo optimize inherit`), `dropped:<reason>` (`display-only selection-box solder-dot stale-schemify-data pin-label unknown-record`), `rounding`, `off-grid` (export: one row per cell with the count and the first point), `remapped` (per instance re-mastered by a `map` row: old and new master), `clamped` (from the loader log), `updated` (cells changed by an import). Count conservation per cellview: objects in = records out + reported. Decided: every record of a cellview is consumed by exactly one builder or reported (dropped kinds as one row per cellview and reason with the count, unknown tags one row each with their line), and the import asserts the equality; records outside any cellview with an unknown tag are reported likewise; `conn` and `intent` records are reported on import (loader-only, §10).
 
 ## 13. GUESSes and their probes
 

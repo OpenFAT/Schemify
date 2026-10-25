@@ -26,6 +26,7 @@ On NixOS the tests need the Vulkan loader on `LD_LIBRARY_PATH`, e.g.
 | …on a given GPU | prefix `SCHEMIFY_GPU=<adapter name substring>` (default: the first non-CPU adapter) |
 | Param edit with 1k dependents | `… --test perf -- --ignored --nocapture var_edit` |
 | Flat 1M-instance netlist (elaborate + emit) | `cargo test --release -p schemify-netlist --test perf -- --ignored --nocapture --test-threads=1` |
+| Commit frames vs the O(document) work they leave to idle steps (hash, compaction, first journal) at 100k | `cargo test --release -p schemify-doc --test perf -- --ignored --nocapture commit_frames` |
 | elab cost of a local edit (p50/p95/p99) at 10k / 100k / 1M objects | `cargo test --release -p schemify-elab --test perf -- --ignored --nocapture a_local_edit` |
 | Canvas cache and patch oracles (GPU) | `cargo test --release -p schemify-render --test gpu -- --ignored --nocapture --test-threads=1` |
 
@@ -121,6 +122,20 @@ use a second thread (connectivity beside the graph, element names beside the geo
 emission in row chunks); output is byte-identical to the serial run (oracle
 `netlist/tests/metamorphic.rs` `threads_change_nothing`).
 
+Emission through SpiceRack (2026-10-24, `tests/perf.rs`, the old emitter, the first
+SpiceRack lowering and the current one run interleaved, best of 4 at load average 13;
+callgrind instructions per emit beside, which the load does not move):
+
+| | old emitter | SpiceRack, first | now |
+|---|---|---|---|
+| flat 100k emit | 9.80 ms, 111.5 M | 11.26 ms, 129.9 M | 9.82 ms, 110.3 M |
+| 1M-leaf hierarchy emit | 20 µs, 252 K | 47 µs, 540 K | 23 µs, 278 K |
+
+The first lowering built an IR `Instance` per subcircuit row (a `String` per connection)
+and SpiceRack read every element name a second time; both are gone (decisions, D22
+amendment). The hierarchy's remaining 10% is the IR's own strings (ports, names, code
+lines) and the copy of each block into the deck.
+
 ### Local edit, elab cost (`CellState::recompute`), p50 / p95 / p99 ms
 
 200 random edits plus their undos (wire delete/insert/move, label renames that merge by
@@ -137,27 +152,24 @@ name, device moves) on a tiled schematic with shared `gnd`/`vdd!` nets.
 | Budget | Measured |
 |---|---|
 | param edit → recompute + redraw ≤ 8 ms, 1k dependents | 1.8 ms (plugin-backed functions 3.2 ms) |
-| idle CPU 0% | no wake-up once the zoom settles (asserted by the frame benchmark) |
+| idle CPU 0% | no wake-up after a pan or zoom frame (asserted by the frame benchmark and `an_idle_frame_does_no_work`) |
 
 ## What makes a frame cheap
 
-- **Tiles** (`canvas::draw_cached`, `tiles.rs`): the canvas (background, grid, primitives,
-  decor, selection marks) is recorded as world-anchored 256-px tiles in one atlas layer. A
-  whole-pixel pan copies the tiles it has and records the ones it uncovers (plus a 1-tile
-  ring ahead); a zoom stretches the old tiles until 120 ms after the last notch, then records
-  the new zoom's tiles within a per-frame cost budget (`COST_PER_FRAME`), the old ones
-  standing in meanwhile. A tile the cost estimate (the old cells over the same world) says is
-  too costly is recorded in up to 16 parts over several frames.
-- **Index and level of detail** (`PrimIndex`, `draw_prims_in`): a tile reads only the rows
-  its world box meets (a CSR grid, about 16 rows per cell); rows ≤ 2 px on screen are drawn
-  as the whole pixels they touch (per-layer bit masks, one rect per run) instead of paths.
-- **Vello-free frames** (`render::Layers`): when nothing outside the layers changed (the
-  frame log's hash), the window blits the last target and composes the layers as textured
-  quads instead of running vello.
-- **Patches** (`canvas::CanvasDiff`, `Painter::patch_layer`): after an edit or a selection,
-  the rows that changed (a Myers diff of per-row hashes) give world boxes; only those parts
-  of the visible tiles are redrawn, on vello's tile grid. A frame's patches and new tiles are
-  rendered in one vello pass into a scratch texture and copied into the atlas.
+- **Instance rows** (`render::gpu`, render-backend steps 1–2): every canvas primitive is one
+  retained row, grouped by palette layer, packed once and patched where the tables' reported
+  changes (or `CanvasDiff`'s edit script) say. A pan or zoom writes no row, only the camera
+  uniform (`a_pan_or_zoom_frame_writes_no_instance_bytes`); every frame draws the whole view,
+  so there is no tile cache, no stand-in and no settle frame. The CPU painter (goldens, the
+  GPU-less web) rasterizes the same rows (`canvas::draw_rows`), so every per-row decision is
+  made once, in the pack.
+- **Index and level of detail**: canvas texts are read only near the view (`PrimIndex`, a CSR
+  grid, about 16 rows per cell), and a table whose largest label is under 3 px is skipped
+  whole; rows ≤ 2 px on screen are drawn as the whole pixels their box touches (the vertex
+  shader on the GPU, `draw_rows` on the CPU).
+- **Vello-free frames** (`render::Layers`): when nothing in the UI changed but the camera and
+  the live layers (the status bar), the window blits the last UI target and composes the
+  live layers as textured quads instead of running vello.
 - **Incremental scene and checks**: `scene::update` re-stamps only changed objects; check
   passes post their delta (`Annotations::patch`); undo/redo recompute over the undone entry's
   ops instead of rebuilding.
@@ -179,7 +191,7 @@ every row of a changed table), ~1.5 ms in the scene update, and the fingerprint 
 Goal: every interactive frame (pan, zoom, hover, select, drag, typing in a field, opening a
 menu) well under 1 ms of CPU at 100k objects, with no hitch. Measured on `gui-arch-audit`
 (`af27b3f6`), RTX 4060, load average 4–7 (other agents building), by
-`crates/app/tests/perf.rs` `frame_times_100k` (pan, zoom, select, edit) and the new
+`crates/view/app/tests/perf.rs` `frame_times_100k` (pan, zoom, select, edit) and the new
 `interactions_100k` (hover, select, drag, drop, menu, type). Per-step times came from
 temporary `Instant` laps around each spine step; the edit loop was also profiled with
 `perf record`.
@@ -233,7 +245,7 @@ encodes that scene per frame (tiles); the benchmark guards the fallback path.
 - **accesskit**: `access_tree` costs 0.01–0.02 ms and runs only when an assistive client is
   active (`update_if_active`). Not a cost.
 
-### Window path (`crates/render/src/window.rs`)
+### Window path (`crates/view/render/src/window.rs`)
 
 `PresentMode::AutoVsync`. Input is batched: `about_to_wait` runs one `update` per event batch
 and requests a redraw only when it returns true; ticks come only from `wake_ms`, so an idle
@@ -339,7 +351,7 @@ What bounds the rest:
 Goal: every edit frame (delete, undo, redo, the drop of a move, a property change, a wire drawn)
 under 1 ms of CPU at 100k objects, the ticks after it too, and no hitch on the first edit of a
 document. Measured on `main` `c61f0e85` (RTX 4060 host, no GPU columns: CPU only, load 6–8) by
-the new `edit_frames_100k` (`crates/app/tests/perf.rs`: a dozen frames of each kind on the
+the new `edit_frames_100k` (`crates/view/app/tests/perf.rs`: a dozen frames of each kind on the
 `interactions` fixture, zoomed in, each followed by the ticks the editor asks for). Per-step
 times came from temporary `Instant` laps around each spine step.
 
@@ -398,7 +410,7 @@ times came from temporary `Instant` laps around each spine step.
    (`CellState::changes`, placed with `Violation::key_cmp`).
 5. **elab**: connectivity findings in a map keyed by raw handles (no whole-table moves).
 6. **First edit**: the disk hash the journal's `base` record names is taken 128 KB a tick
-   after the document opens (`Project::hash_step`), so the first commit appends its records.
+   after the document opens (`Project::idle_step`), so the first commit appends its records.
 
 ### After (2026-10-18, same machine, load ~5, best of 3 runs; CPU p50 / p95 ms)
 
@@ -535,14 +547,461 @@ edits). At 10k dependents every edit re-stamps 10k instances (13–15 ms) or com
 
 What bounds the rest:
 
-- **Shared vars** are O(dependents) by nature; the constant is the whole-instance re-stamp. The
-  upgrade is re-stamping only the value texts of a revalued instance (its lines and pins do not
-  move), and compacting the scene on an idle tick instead of in the edit frame.
+- **Shared vars** are O(dependents) by nature; the constant was the whole-instance re-stamp
+  (done 2026-10-24, next section).
 - **Bus renames** (a new element count) and `inherit`/`ignore` edits rebuild connectivity
   (~40 ms at 100k): connections move per element.
 - **A dependency on a later node** (an override reading a var that sorts after the instance in the
   topological order) rebuilds the graph (~1.3 ms at 100k), as do cycles; appended dependency lists
   past 4× the built edges rebuild once to compact.
+
+## Shared-variable edits 2026-10
+
+`shared_var_edit_frames_100k` (12 edits of a docs-page var, values 3…14), measured on
+`refactor/gui-crates` `b02afcb1` with temporary `Instant` laps around elab, the scene, the
+markers and the canvas diff and pack. This machine had no GPU adapter in the test's sandbox,
+so the numbers are CPU update+paint only; load average 10–35 (other agents' builds).
+
+### Before (ms per edit frame)
+
+| Step | 1k dependents | 10k dependents |
+|---|---|---|
+| elab (`recompute`) | 0.2 | 1.2 |
+| `scene::update` (remove + re-stamp every dependent: ~30 rows killed and appended each) | 1.3–1.8 | 13–16 |
+| `scene::build` (a quarter of the rows dead: every ~8th edit at 1k, every 2nd at 10k) | 31 | 30 |
+| markers (re-placed on every touched object; compacted with the scene) | 1.0 (6.5) | 6.2–6.8 |
+| canvas diff of the killed and appended rows | 0.4 | 4–10 |
+| canvas pack + texts (GPU row patch, index follow; a repack when free slots run out) | 0.8 or 7.5, alternating | 9 |
+| **frame p50 / p95** | **11.0 / 11.6** | **47.7 / 49.0** |
+
+### Fix
+
+A revalued instance no write touched keeps its rows: `scene::update` re-renders its symbol
+texts and writes each into its own text row in place when the row would keep its anchor, size,
+turn and length (`revalue_texts`); only an instance whose text changes length is re-stamped.
+The rewritten rows are reported through `Scene::edits` like killed rows (texts are drawn
+from the table every frame, so the GPU rows and the spatial index have nothing to follow), no
+row dies, so the scene never compacts in these frames, and `Scene::touched` lists only the
+re-stamped objects, so the markers stay put (a changed mark still reaches them through the
+patched marks' targets). Oracle: `incremental_scene_equals_full_build` (every step equals a
+full build; it now also asserts that some revalued instances were rewritten in place, and
+goes red when the rewrite is skipped).
+
+### After (same session, load ~9)
+
+| Step | 1k dependents | 10k dependents |
+|---|---|---|
+| elab | 0.2 | 1.1–1.2 |
+| scene (template render per dependent, in place) | 0.5–0.6 | 4.5–5.0 |
+| markers | 0.001 | 0.001 |
+| canvas diff + pack + texts | 0.02–0.04 | 0.14 |
+| **frame p50 / p95** | **0.94 / 1.12** (fitted), **0.89 / 0.94** (zoomed) | **6.5 / 46** (fitted), **6.7 / 47** (zoomed) |
+
+The fixture's `nmos` symbol shows `W` only, so a `wl` edit (an `L`) rewrites no text: its
+frame is the check and re-render of 1k dependents; a `wv` edit rewrites 10k `W=` texts. The
+1k p50 is asserted against D39's 8 ms param-edit budget. At 10k the p50 is under it too
+but not asserted (no margin under load); its p95 is the one edit whose value grows a digit
+(9 → 10): every dependent is re-stamped (20 ms) and the scene then compacts (30 ms). The
+upgrade for that frame is killing and appending only the text rows of an instance (its other
+rows keep their stamp), and compacting on an idle tick.
+
+## Commit frames hand O(document) work to idle steps (2026-10-24)
+
+Three things a commit did in its own frame at 100k objects (HANDOFF latent bug 5), now done
+in bounded `Project::idle_step` calls on ticks without input (`Editor::wake_ms` asks for them):
+
+| Work | In the commit frame before (ms) | Commit frame after (ms) |
+|---|---|---|
+| sha256 of the file for a first journal's `base`, commit before the hash steps ended | 62 | 0.09 (placeholder `base`, journal re-sent once hashed) |
+| Compaction once garbage ≥ live data (`to_format` + `from_format`) | 113 | worst commit of 1000 edits 17 (O(change)); the 113 ms run in one idle tick |
+| A new document's first journal: `hist` of its history (100k-wire paste) | 162 | 0.99 |
+
+`cargo test --release -p schemify-doc --test perf -- --ignored --nocapture commit_frames` (one
+run, shared host). A caller that never idles (the CLI) still compacts inside a commit, at
+garbage ≥ 3× live data. The compaction stays one O(document) idle tick, and its change-log break
+makes the next frame rebuild the scene: both off the interactive path.
+
+## Unselect box at 100k (2026-10-24)
+
+`interactions_100k`, the Alt-drag box that unselects 100k selected objects (release, no GPU,
+shared host, CPU update+paint): p50 7.6 / p95 11.3 ms before, 0.81 / 0.81 ms after (asserted at
+1 ms). `Instant` laps put 6.6 ms of the 7.2 ms `Editor::update` in the selection change: a sort
+of the 100k hit keys (3.4 ms under load) and a binary search of them per selected key. Now a
+bitset of the hit object indices and one pass over the scene's selected set
+(`Editor::unselected`, O(objects + hits)). Left: `box_select` 0.23, that pass 0.23, clearing the
+selected set 0.16, UI 0.13.
+
+## Frame pacing 2026-10
+
+Step 0 of [research/render-backend.md](research/render-backend.md) § 5 (migration plan) and
+recommendation 1 of [research/xschem-responsiveness.md](research/xschem-responsiveness.md):
+draw from the newest input. Two commits in `crates/view/render/src/window.rs`: the frame log
+(`render: frame log stamps the newest input and counts updates per frame`) and the loop
+(`render: draw from the newest input: update runs at the granted redraw`).
+
+### The loop's order
+
+Before: `about_to_wait` answered every event batch at once, `Editor::update` then
+`request_redraw`; winit held the `RedrawRequested` until the compositor's frame callback for
+the previous present arrived; `render` then painted whatever the editor held. After: an input
+event only asks for a redraw (`window::pace`: input → `Redraw`); `Editor::update` runs at the
+top of `render`, when the redraw is granted, once over every event queued until then; a tick (a
+`wake_ms` deadline, a `Waker` post) still updates at once in `about_to_wait` (`Update`), since a
+hidden window is granted no redraw and the run it polls must go on; nothing pending sleeps
+(`Sleep`, idle CPU 0% unchanged; `pacing_rule` in `window.rs` is the headless oracle).
+`desired_maximum_frame_latency` stays 1 (measured below).
+
+What the measurement found the old order doing, and the new one fixes:
+
+- An input that arrived in the same dispatch as the frame callback was painted one frame late:
+  the present ran before its update (110 of 946 frames, 12%, at ~6 ms keys; 13 of 817 at ~16 ms
+  keys). The late frame costs one callback period: 23–32 ms on the research's 59.95 Hz output
+  with callbacks at 31–44 Hz, 4.2 ms at 240 Hz. The first frame log charged such an input to
+  the frame it missed, which is why the log now stamps consumed input only.
+- One update ran per event. Real pointer motion over the window gave 3 updates per frame
+  (p50) and 8 at most on the old build at 240 Hz; the new order runs one (its p95 of 2 is a
+  tick's update with queued input riding along).
+
+What it does not change: a frame already showed the newest input whose update had run before
+the grant. The research's 20–25 ms p50 was the *oldest* input's wait, the coalescing span at
+8 ms inputs, not the shown input's lag.
+
+### Method
+
+`SCHEMIFY_FRAME_LOG=1 WAYLAND_DEBUG=1 WGPU_ADAPTER_NAME=NVIDIA nice -n 19 schemify-gui --clean
+edit big10k.shcomp` (the perf schematic at 10k objects, `perf.rs` `schematic(10_000)`),
+1280×800, RTX 4060, Vulkan, mailbox, release build. 1600 arrow keys in blocks of 20 Left and 20
+Right (`view.pan_left`/`right`) typed through the compositor by `wtype -k Left -s 1 …` (the
+virtual-keyboard protocol; ~6 ms apart, wtype's floor), about 10 s a run. Each `frame:` line
+gives oldest- and newest-input-to-present, the updates that consumed input since the last
+present and the frame period; `WAYLAND_DEBUG` names the `wl_output` the surface entered and
+its mode. Scripts: the session scratchpad's `pace-run.sh` and `pace-stats.py`. The machine was
+in use (load 2–5) and the monitors changed during the session: DP-4 from 59.95 Hz to 165 Hz,
+eDP-1 at 240 Hz; every run with a named output landed on eDP-1 at 240 Hz. The research's
+20–53 ms figures were taken at 59.95 Hz with callbacks at 31–44 Hz, synthetic 8 ms events
+and 100k objects, so they are not directly comparable with the rows below.
+
+### Numbers (ms, p50 / p95 / p99 / max; updates = updates with input per presented frame)
+
+| Run | Output | Frames | Oldest → present | Newest → present | Updates p50 / p95 / max | Period p50 |
+|---|---|---|---|---|---|---|
+| before, keys at ~16 ms | not logged (43.6 frames/s for 64 keys/s: the 59.95 Hz output) | 817 | 7.12 / 17.46 / 19.91 / 24.20 | 5.22 / 15.79 / 18.69 / 23.47 | 1 / 2 / 2 | — |
+| before | not logged | 994 | 4.46 / 9.36 / 13.41 / 21.48 | 4.30 / 7.82 / 11.75 / 21.48 | 1 / 2 / 3 | 4.64 |
+| before, 2nd | eDP-1 240 Hz | 980 | 6.34 / 11.10 / 13.88 / 33.43 | 5.39 / 9.87 / 12.27 / 33.43 | 1 / 2 / 7 | 8.33 |
+| after, latency 1 | not logged | 983 | 5.55 / 11.31 / 14.33 / 27.10 | 4.82 / 9.85 / 11.84 / 27.10 | 1 / 2 / 2 | 6.81 |
+| after, latency 1, 2nd | eDP-1 240 Hz | 459 (one 0.5 s stall) | 7.47 / 10.48 / 13.24 / 30.01 | 4.45 / 8.44 / 9.89 / 30.01 | 1 / 2 / 2 | 8.37 |
+| after, latency 2 | eDP-1 240 Hz | 1241 | 6.18 / 11.74 / 15.59 / 54.34 | 5.00 / 9.65 / 12.28 / 44.41 | 1 / 2 / 2 | 7.65 |
+
+Reading:
+
+- At 240 Hz, before and after are within run-to-run noise: the newest input's p50 is 4.3–5.4 ms
+  before and 4.5–5.0 after, its p95 7.8–9.9 against 8.4–9.9. The callback period is 4.2 ms, so
+  the frame-late input costs about 0.5 ms on average here; the gain is in the 60 Hz case the
+  research measured (one 23–32 ms period for 12% of frames) and in CPU (one update per frame).
+- Frame latency 1 against 2: latency 2 raised the p50 (4.45 → 5.00) and the p95 (8.44 → 9.65),
+  within noise, and lowered nothing. In the new order the acquire follows the callback, when
+  the compositor has released an image, so a spare image buys nothing. 1 stays.
+- The refresh rate alone: the research's oldest-input p50 20–25 / p95 46–53 ms at 59.95 Hz
+  against 4.5–6.3 / 9.4–11.1 at 240 Hz here (different input and scene, same build order): the
+  callback period went from 23–32 ms to 4.2 ms. The first row, typed before the monitors
+  changed, shows the 59.95 Hz output at 16 ms keys: oldest 7.1 / 17.5, newest 5.2 / 15.8.
+
+## GPU canvas pipelines 2026-10
+
+Step 1 of [research/render-backend.md](research/render-backend.md) § 5: on the GPU the canvas is
+drawn by Schemify's own instanced wgpu pipelines (`render::gpu`) instead of vello tiles. Each
+primitive is one retained instance row, grouped by palette layer, patched from the tables'
+reported changes and drawn under a camera uniform: a pan or zoom writes 96 bytes. Canvas text
+is still drawn by vello over the canvas pass (the glyph atlas is step 3). Measured with
+`frame_times_100k` and `interactions_100k`, one run each, `nice -n 19`,
+`SCHEMIFY_GPU=NVIDIA` (**NVIDIA GeForce RTX 4060 Laptop GPU**, Vulkan, timestamp floor
+0.013 ms). Before: `refactor/gui-crates` at `4a61dc49` (load ≈ 8). After: load ≈ 46 (other
+agents building), so the tails (p99) are noisy.
+
+### 100k objects (260k primitives), p50 / p95 / p99 ms
+
+| Frame | CPU update+paint before | after | GPU before (tiles) | GPU after (pipelines) |
+|---|---|---|---|---|
+| pan | 0.190 / 0.287 / 0.469 | 0.092 / 0.159 / 0.218 | 0.089 / 0.111 / 0.409 | 0.625 / 0.916 / 0.918 |
+| zoom (+ settle) | 0.458 / 0.885 / 1.051 (210 frames) | 0.116 / 0.144 / 0.150 (60 frames: no settle frames) | 0.451 / 0.643 / 0.665 | 0.543 / 0.657 / 0.658 |
+| select | 1.179 / 1.606 / 1.758 | 0.391 / 0.575 / 0.796 | 0.515 / 0.596 / 0.620 | 0.659 / 0.660 / 0.814 |
+| edit (Del, undo) | 2.684 / 4.841 / 5.099 | 0.957 / 3.882 / 64.5 (one frame under load) | 2.259 / 3.916 / 4.116 | 1.132 / 1.135 / 1.137 |
+| hover | 0.697 / 1.006 / 1.429 | 0.225 / 0.377 / 0.413 | 0.252 / 0.548 / 1.116 | 0.480 / 0.487 / 0.492 |
+| click select | 1.268 / 1.414 / 1.692 | 0.397 / 0.537 / 0.542 | 0.367 / 0.516 / 5.687 | 0.325 / 0.328 / 0.478 |
+| drag | 0.440 / 0.612 / 0.766 | 0.213 / 0.277 / 0.295 | 0.583 / 0.685 / 0.691 | 0.799 / 0.802 / 0.802 |
+| type | 1.057 / 1.252 / 1.412 | 0.250 / 0.371 / 0.374 | 0.373 / 0.515 / 0.819 | 0.647 / 0.651 / 0.652 |
+| menu | 0.952 / 1.596 | 0.230 / 0.502 | 0.461 / 1.504 | 0.659 / 0.821 |
+| unselect (select-all box) | 26.4 / 34.4 / 36.0 | 6.2 / 8.9 / 9.2 | 10.0 / 15.2 / 15.3 | 1.09 / 1.10 / 1.10 |
+
+The "render calls" column (CPU side of the submission) went from 0.43 / 1.0 / 1.8 ms p50 (pan,
+zoom, hover) to 0.13 / 0.15 / 0.35 ms. Before, `frame_times_100k` failed its zoom p99 budget
+(1.05 ms) and `interactions_100k` its hover p95 (1.006 ms) on this run; after, both pass.
+
+- **GPU time per frame is now flat**: 0.54–0.66 ms p50 for every camera frame, the whole canvas
+  drawn every frame (no tile to copy, no stand-in, no partial frame). The research spike's
+  target was 0.30–0.40 ms at 100k on this GPU; this misses it by about 0.25 ms. The difference:
+  the spike drew no grid and no UI blend, and its strokes had no exact-area coverage; here each
+  frame also blends the 1280×800 UI texture over the canvas and runs subsampled coverage at
+  stroke caps (`gpu.wgsl`). A tile-copy pan was cheaper on the GPU (0.09 ms) but left blank
+  tiles and in-frame raster spikes (p99 0.41, 5.7 ms on a click).
+- **Bytes written per edit**: 4 KiB over 24 edit frames, about 170 B a frame (the killed and
+  appended rows' slots). The first frame uploads the whole canvas: 7.0 MiB at 100k. A
+  select-all repacks the marks source (24 B per marked row: 6 MB at 100k): 135 MB over the 12
+  select-all rounds.
+- **Canvas text** (labels, pin names, values) still goes through vello: a table whose largest
+  label is under 3 px at the current zoom is skipped whole, otherwise the rows near the view
+  are listed through `PrimIndex`. Scanning every label row instead cost 0.35–0.8 ms of CPU per
+  frame at 100k (80k label rows, all under 3 px at the fit view), measured with temporary laps;
+  with the skip and the index the pan frame is the 0.09 ms above.
+- `gpu.rs` `gpu_100k_canvas_matches_cpu_and_reports_frame_time` (render crate, 1600×900, the
+  `hundred_k` fixture at fit, submit to completion): 1.42 ms on the RTX 4060 and 11.1 ms on the
+  Intel iGPU for the canvas pass, against vello's 4.10 and 26.2 ms for the same scene encoded
+  per frame; the 100k pack takes 4.8–6.7 ms (2.9 MB of rows).
+
+### GPU against CPU (equivalence, `crates/view/render/tests/gpu.rs`)
+
+Mean |Δ| per channel / pixels off by more than 96 levels, identical on the RTX 4060 and the
+Intel iGPU (tolerance: mean ≤ 1.0, at most 0.1% of pixels off):
+
+| Scene | mean | far |
+|---|---|---|
+| lines (plain, weighted, dashed) | 0.037 | 0 |
+| rects (outlined, filled, styled, dashed) | 0.024 | 0 |
+| arcs (circles, arcs both ways, filled, dashed) | 0.321 | 0 |
+| polylines and polygons (filled, concave) | 0.059 | 0 |
+| marks over the thousand | 0.663 | 37 |
+| far-zoom cut at the 2 px threshold | 0.003 | 0 |
+| the thousand under a UI frame (texts, popup) | 0.974 | 128 |
+| 100k at fit (own bound: mean ≤ 4.0) | 3.24 | 254 |
+| negative space: one rect moved 60 px | 0.579 | 1898: fails |
+
+What the remaining differences are:
+- Coverage: exact band area along a stroke and 16 subsamples at its caps (`gpu.wgsl`), against
+  vello_cpu's exact area of the flattened outline.
+- The CPU strokes a layer as one path, so overlapping strokes cover a pixel once; the GPU
+  blends instance by instance. At the 100k fit, where nearly every pixel is an overlapping
+  1 px edge, that alone is a mean of 1.17 (the CPU against itself drawing instance by
+  instance).
+- Text goes through vello on the GPU against vello_cpu on the CPU.
+- One CPU artifact, fixed since: it filled a layer's closed shapes as one non-zero path, so
+  a filled rect and polygon of opposite winding that overlap cancelled (14 px in the
+  thousand). Each closed shape is filled on its own now, as the GPU fills each instance.
+
+### Step 2: the tile cache deleted (2026-10-24)
+
+`tiles.rs`, `CanvasCache`, `draw_cached` and its LOD masks are gone; `CpuPainter` draws the
+canvas from the same `InstanceRows` the GPU does (`canvas::draw_rows`). The GPU path's frame
+work did not change, so the numbers hold. One run each of `frame_times_100k` and
+`interactions_100k`, release, `nice -n 19`, `SCHEMIFY_GPU=NVIDIA` (**NVIDIA GeForce RTX 4060
+Laptop GPU**, Vulkan, timestamp floor 0.013 ms), before (`1ed77d5e`) and after back to back at
+load ≈ 8–18. CPU update+paint, then GPU, p50 / p95 / p99 ms:
+
+| Frame | CPU before | CPU after | GPU before | GPU after |
+|---|---|---|---|---|
+| pan | 0.088 / 0.145 / 0.157 | 0.076 / 0.111 / 0.123 | 0.664 / 0.915 / 0.916 | 0.630 / 0.915 / 0.918 |
+| zoom | 0.086 / 0.114 / 0.119 | 0.074 / 0.100 / 0.101 | 0.547 / 0.660 / 0.662 | 0.552 / 0.660 / 0.674 |
+| select | 0.462 / 0.667 / 0.767 | 0.508 / 0.582 / 0.595 | 0.663 / 0.663 / 0.818 | 0.665 / 0.683 / 0.843 |
+| edit (Del, undo) | 0.924 / 2.000 / 4.291 | 0.903 / 2.144 / 2.653 | 1.138 / 2.652 / 2.813 | 1.139 / 1.142 / 2.653 |
+| hover | 0.189 / 0.250 / 0.292 | 0.222 / 0.248 / 0.295 | 0.481 / 0.486 / 0.488 | 0.481 / 0.486 / 0.489 |
+| click select | 0.391 / 0.429 / 0.775 | 0.366 / 0.491 / 0.734 | 0.326 / 0.328 / 0.486 | 0.326 / 0.327 / 0.485 |
+| drag | 0.191 / 0.219 / 0.229 | 0.245 / 0.314 / 0.340 | 0.804 / 0.809 / 0.816 | 0.809 / 0.813 / 0.814 |
+| drop | 3.02 | 3.69 | 0.80 | 0.80 |
+| menu | 0.190 / 0.505 | 0.250 / 0.730 | 0.666 / 0.830 | 0.665 / 0.823 |
+| type | 0.241 / 0.302 / 0.317 | 0.281 / 0.375 / 0.378 | 0.651 / 0.656 / 0.656 | 0.652 / 0.656 / 0.658 |
+| unselect (select-all box) | 6.23 / 6.31 / 6.39 | 6.26 / 9.22 / 9.44 | 1.10 / 1.22 / 2.77 | 1.10 / 1.10 / 1.22 |
+
+- Every interactive budget (D39, < 1 ms CPU) passes before and after; the differences are
+  within this machine's run-to-run spread at that load (one run each, as asked). The drag
+  frames draw the move preview through `draw_prims`, which now packs the overlay into scratch
+  rows before drawing them (a full pack of a small table per frame); that, or the noise, is
+  the 0.05 ms.
+- **Rows written by a pan or zoom: zero.** The zoom report uploads 0 KiB; the pan report's
+  7 003 KiB is the first frame's whole canvas, which falls in it. Headless oracle:
+  `a_pan_or_zoom_frame_writes_no_instance_bytes` (app `tests/canvas.rs`: the frames' dirty row
+  bytes are 0 while the camera moves; a delete writes rows).
+- Resident memory over the select-all rounds is flat in both (389 MiB before, 432 after, ±0
+  across rounds); the 43 MiB offset was not investigated beyond that (the GPU path allocates
+  no new per-frame table).
+- Equivalence means are unchanged on the RTX 4060 (both sides read the same rows now, and the
+  CPU's row path draws byte-identical pixels to the old direct path): lines 0.037, rects 0.024,
+  arcs 0.321, polys 0.059, marks 0.664, far-zoom 0.003, mixed scene under the UI 0.974, 100k
+  at fit 3.244, the moved-rect negative space 0.579 (fails, as it must).
+- **Goldens**: nine app goldens (`editor_*`, `docs_*`, `primitive_modern`,
+  `cell_panel_modern`, `core_symbols_*`) differ from before by ±1 level on 4–18 pixels each,
+  because the CPU tile intermediate is gone (each tile was its own pixmap, its paths placed
+  relative to the tile origin and clipped to it). They pass `check_golden` and are **not
+  re-blessed**, on purpose. Already stale at `1ed77d5e`, within tolerance and also not
+  re-blessed: `cell_panel_modern` (657 px), `core_symbols_*` (355 px), `menu_file` (256 px),
+  render `canvas_1k` (3 px).
+
+### Step 3: the glyph atlas and the UI on the GPU (2026-10-24)
+
+The UI frame, the texts and the canvas are one render pass straight into the surface: the
+`GpuPainter`'s batch (`render::batch`: rects, stroke segments, images and atlas masks, each
+with its clip) with the canvas stages among its instances. Glyphs, icons, check marks, arrows
+and math delimiters are coverage masks rasterized once by vello_cpu into a 2048² R8 atlas
+(`render::atlas`). vello's GPU renderer draws nothing; the status bar's live layer, the
+`Layers` compositor, the vello target and its blit are gone. One run each of
+`frame_times_100k` and `interactions_100k`, release, `nice -n 19`, `SCHEMIFY_GPU=4060`
+(**NVIDIA GeForce RTX 4060 Laptop GPU**, Vulkan, timestamp floor 0.013 ms). Before:
+`b02afcb1` at load ≈ 15–21; after: load ≈ 5–9. "render" is the CPU side of the render calls
+(before: the layer raster and vello's encode and submit, or the composition; after: the uploads
+and the one pass). p50 / p95 / p99 ms:
+
+| Frame | CPU before | CPU after | render before | render after | GPU before | GPU after |
+|---|---|---|---|---|---|---|
+| pan | 0.089 / 0.150 / 0.162 | 0.088 / 0.138 / 0.144 | 0.133 / 0.205 / 0.238 | 0.070 / 0.120 / 0.162 | 0.624 / 0.915 / 0.920 | 0.631 / 0.931 / 0.933 |
+| zoom | 0.091 / 0.150 / 0.157 | 0.096 / 0.159 / 0.165 | 0.135 / 0.201 / 0.206 | 0.077 / 0.130 / 0.131 | 0.548 / 0.660 / 0.662 | 0.548 / 0.668 / 0.669 |
+| select | 0.340 / 0.405 / 0.615 | 0.466 / 0.630 / 0.644 | 0.091 / 0.111 / 0.381 | 0.092 / 0.126 / 0.162 | 0.662 / 0.664 / 0.820 | 0.668 / 0.669 / 0.670 |
+| edit (Del, undo) | 0.909 / 2.818 / 3.693 | 0.836 / 2.249 / 4.265 | 0.508 / 1.014 / 1.053 | 0.068 / 0.107 / 0.111 | 1.136 / 1.147 / 2.658 | 0.668 / 0.669 / 0.670 |
+| hover | 0.259 / 0.319 / 0.368 | 0.216 / 0.264 / 0.287 | 0.533 / 0.655 / 1.496 | 0.070 / 0.085 / 0.117 | 0.480 / 0.643 / 0.645 | 0.329 / 0.332 / 0.334 |
+| click select | 0.487 / 0.646 / 0.759 | 0.368 / 0.493 / 0.515 | 0.164 / 0.175 / 0.634 | 0.082 / 0.090 / 0.104 | 0.325 / 0.327 / 0.482 | 0.330 / 0.331 / 0.332 |
+| drag | 0.297 / 0.321 / 0.325 | 0.237 / 0.326 / 0.346 | 0.977 / 1.074 / 1.438 | 0.077 / 0.115 / 0.118 | 0.803 / 0.809 / 0.811 | 0.330 / 0.333 / 0.333 |
+| drop | 12.3 | 4.00 | 1.20 | 0.15 | 0.81 | 0.33 |
+| menu | 0.240 / 0.821 | 0.197 / 0.737 | 0.470 / 1.287 | 0.066 / 0.136 | 0.663 / 0.828 | 0.336 / 0.370 |
+| type | 0.364 / 0.402 / 0.416 | 0.235 / 0.294 / 0.305 | 0.626 / 0.730 / 0.739 | 0.058 / 0.076 / 0.077 | 0.650 / 0.655 / 0.655 | 0.331 / 0.333 / 0.334 |
+| unselect (select-all box) | 6.18 / 6.35 / 6.63 | 6.29 / 8.98 / 9.47 | 0.565 / 0.608 / 0.613 | 0.067 / 0.094 / 0.102 | 1.100 / 1.104 / 1.219 | 0.629 / 0.629 / 0.629 |
+
+- **No frame calls vello.** Before, hover, select, pan and zoom were composed without a vello
+  render (the live layer), but the status bar's layer was still rasterized by vello on every
+  hover, and drag, menu, type and edit frames rendered the whole UI with vello (render 0.5–1.0
+  ms, GPU 0.65–0.80 ms). After, every frame is the one pass: render calls 0.06–0.09 ms p50,
+  GPU 0.33 ms for the zoomed-in interaction frames and 0.55–0.67 ms at the 100k fit (the
+  canvas pass dominates there, as in step 1).
+- **Bytes per frame**: the batch's instances, 56 B each, 13–14 KiB a frame (≈ 250 instances;
+  39 KiB with the Tools menu open). Atlas bytes are zero on almost every frame: p50 0, p95
+  0.1–0.2 KiB on hover, drag and type (a status-bar or field glyph seen the first time), 2.4
+  KiB on the edit and drop frames, 4.4 KiB on the first menu open (its glyphs). Rows as before:
+  0 on pan and zoom, 4 KiB over 24 edits.
+- **CPU per frame** is unchanged or lower; the select row's +0.13 ms is within this machine's
+  spread (its interactions twin, click select, went down 0.12 ms), as is unselect's tail
+  (`Editor::update`'s box select, 6–13 ms by the note at `interactions`).
+- **Zoom over labels**: every zoom frame gives every visible label a new size, so a new atlas
+  key per glyph. Rasterizing them all cost 1.0–1.6 ms a frame with 200 labels in view (100–180
+  masks, `render/tests/perf.rs` `canvas_label_zoom_frames`). A frame now rasterizes at most 32
+  exact masks (`EXACT_PER_FRAME`) and draws the rest from the same glyph's mask at its last
+  size, scaled; the window asks for frames without input until the picture is exact
+  (`Batch::settled`). Measured: 0.36–0.46 ms per zoom frame, then 3–4 frames of 0.07–0.37 ms
+  after the wheel stops, then 0.03 ms (no mask rasterized: idle stays at zero).
+- `render/tests/perf.rs` `scene_build_100k_primitives` (now the GPU painter's frame build:
+  UI shell, 100k rows unchanged, labels): 0.03 ms median, against vello's scene encode before.
+
+GPU against CPU for the batch (`render/tests/gpu.rs`, RTX 4060; tolerance mean ≤ 0.5/255 and
+no pixel off by more than 96 for text and UI; the canvas kinds keep their step-1 bounds):
+
+| Scene | mean | far |
+|---|---|---|
+| canvas labels at zoom 1 / 2.3 / 5.1 / 0.6 | 0.051 / 0.020 / 0.006 / 0.022 | 0 |
+| UI text, device scale 1 / 1.5 | 0.343 / 0.268 | 0 |
+| glyphs at whole and quarter pixels (bound: every pixel within 3 levels) | 0.021 | 0 |
+| prose (headings, code, rule, list, inline and display math, an image) and a formula | 0.120 | 0 |
+| default UI shell with a menu / with a dialog | 0.209 / 0.066 | 0 |
+| the thousand under a UI frame, labels over their table, overlay, popup (≤ 1.0) | 0.680 | 29 |
+| the whole editor frame, opened / hovered / Tools menu (app `perf.rs`) | 0.048 / 0.048 / 0.096 | 0 |
+| negative space: a wrong glyph | 0.664 | 20: fails |
+| negative space: a run shifted 1 px | — | > 0: fails |
+
+The remaining text difference is the subpixel phase: a mask is vello_cpu's own raster of the
+glyph with its origin moved to the nearest 1/8 px (hinted glyphs keep vello_cpu's whole-pixel
+baseline), so glyphs drawn at exact eighths match within blending's rounding. At 1/4 px dense UI
+text measured 0.72. Amplified (×8) diffs are written by the tests to
+`target/tmp/{ui_text,ui_shell,prose_math,canvas_labels,editor_frame}.diff.png`; they show
+faint glyph edges only.
+
+**Goldens**: unchanged. The CPU painter's code paths are untouched (its `overlay` is the old
+inline `draw_prims` under the clip, the status bar is drawn directly as a painter without
+layers always drew it); every render and app golden passes `check_golden` and none was
+re-blessed.
+
+### Step 4: vello's GPU renderer out of the graph (2026-10-25)
+
+`vello`, `vello_encoding` and `vello_shaders` are gone from `Cargo.lock` (`cargo tree -i vello`
+matches no package); `render` names `kurbo`, `peniko` and `wgpu` itself. Nothing called vello's
+`Renderer` since step 3, so LTO had already dropped its code and shaders: the bytes barely move.
+Built 2026-10-25 on x86_64-linux, before = 5635595b, after = this step:
+
+| | Before | After | Change |
+|---|---:|---:|---:|
+| `schemify-gui`, native (`tools/size-check.sh`: stripped, fat LTO) | 18,247,192 | 18,239,000 | −8 K |
+| `schemify_bg.wasm` (release, after `wasm-bindgen --target web`) | 14,572,633 | 14,569,867 | −3 K |
+| the same, `gzip -9` | 4,715,942 | 4,715,150 | −1 K |
+
+The win is the build: three crates and naga's WGSL-to-WGSL path for vello's shaders no longer
+compile. Step 5 (WebGL2) adds wgpu's GL backend to the wasm: next section.
+
+### Step 5: the WebGL2 tier on the web (2026-10-25)
+
+wgpu's `webgl` feature on wasm32: the GL backend (wgpu-core's GL path, wgpu-hal's GLES HAL,
+glow, naga's GLSL writer) joins the WebGPU one. Same build as step 4's table:
+
+| | Step 4 | Step 5 | Change |
+|---|---:|---:|---:|
+| `schemify_bg.wasm` (release, after `wasm-bindgen --target web`) | 14,569,867 | 17,546,743 | +2,977 K |
+| the same, `gzip -9` | 4,715,150 | 5,706,077 | +991 K |
+
+Inside D39's 8 MiB compressed budget (CI's `wasm` job checks it) with 2.56 MiB to spare. Native
+binaries keep their backends (the GLES one was already linked). Frame time on WebGL2 was not
+measured: the local smoke run is SwiftShader, a CPU rasterizer behind ANGLE.
+
+### Retained UI rows (2026-10-25)
+
+The UI's instances are kept across frames (`render::ui_rows`, `Batch::ui`): a layout row whose
+paint inputs (`widgets::RowKey`) did not change keeps its slots, is not painted, and uploads
+nothing. Before = dbcef78b, after = this change; release, RTX 4060 Laptop (`SCHEMIFY_GPU=nvidia`,
+Vulkan), `frame_times_100k` and `interactions_100k` run once each. "UI KiB" is the frame's batch
+upload: the per-frame instances (canvas labels, wave panes, image rows), the kept rows' dirty
+bytes and the pane entries that moved. p50 / p95 ms.
+
+| Frame | UI KiB before | UI KiB after | CPU before | CPU after | GPU before | GPU after |
+|---|---:|---:|---|---|---|---|
+| pan (the UI idle) | 13.4 | 0 | 0.087 / 0.136 | 0.034 / 0.054 | 0.632 / 0.931 | 0.633 / 0.671 |
+| zoom (the UI idle) | 13.4 | 0 | 0.092 / 0.158 | 0.034 / 0.042 | 0.551 / 0.669 | 0.549 / 0.668 |
+| hover (canvas) | 13.4 | 0.05 / 0.11 | 0.203 / 0.300 | 0.169 / 0.226 | 0.329 / 0.332 | 0.330 / 0.332 |
+| drag | 13.7 | 0.27 / 0.33 | 0.226 / 0.273 | 0.164 / 0.218 | 0.329 / 0.334 | 0.330 / 0.332 |
+| menu (open or close each frame) | 39.0 | 35.9 / 37.3 | 0.194 / 0.728 | 0.180 / 0.743 | 0.336 / 0.373 | 0.338 / 0.374 |
+| type | 17.4 / 18.9 | 0.11 / 3.5 | 0.225 / 0.248 | 0.194 / 0.297 | 0.331 / 0.334 | 0.331 / 0.334 |
+| edit | 13.3 | 0.93 | 1.165 / 3.321 | 0.770 / 1.891 | 0.669 / 0.670 | 0.669 / 0.670 |
+| unselect | 13.6 | 0.60 | 0.865 / 1.411 | 0.860 / 1.175 | 0.629 / 0.630 | 0.629 / 0.630 |
+
+- **Idle UI, 0 bytes.** Pan and zoom leave the UI as it was: no UI byte uploaded and the paint
+  step's CPU falls by 0.05 ms (the rows' keys are compared, nothing is painted). Headless:
+  `an_unchanged_ui_writes_nothing`, `idle_and_pan_frames_write_no_ui_bytes`.
+- **Hover**: a menu item's hover rewrites 24 of its 32 slots (its colours, and the background
+  it gains shifts its glyphs by one), 1.3 KiB (`a_menu_hover_rewrites_only_its_item`).
+- **Typing** rewrites two instances, the new glyph and the caret, 112 B
+  (`typing_rewrites_the_glyph_and_the_caret`); the p95 frames are the ones where the field
+  outgrows its free slots (a quarter of its instances plus 4) and the rest of the dialog is
+  laid out again, 3.5 KiB. The table's type p95 (0.248 → 0.297) is one run's noise: ten
+  interleaved runs of both builds on this machine (busy with other builds) put the median
+  type p95 at 0.278 ms before and 0.265 ms after (before 0.236–0.461, after 0.215–0.360), and
+  a headless timing of 1800 typed frames paints an overflow frame in the same time as any
+  other (median 14.6 µs against 14.9 µs): the relaid part of the dialog is copied, not
+  painted.
+- **Menu**: the benchmark opens or closes the menu every frame, so every frame writes a whole
+  popup (or frees it); no gain, and none expected. Draws stay at one per UI source plus one per
+  image row: 8 draws for the shell with a menu over canvas labels, 2 of them the kept rows.
+- **Scroll**: not in the benchmark. A 1000-row list scrolled by whole pixels writes no row and
+  one 32-byte pane entry (`scrolling_a_long_list_writes_no_row`); a fractional device-pixel
+  offset repaints the pane's rows.
+- **GPU**: unchanged (the kept rows draw what the per-frame batch drew, plus the free slots,
+  which are zero-area quads). The pan p95 0.93 → 0.67 is run-to-run noise in the timestamps.
+
+### The whole-table pack (2026-10-25)
+
+`render::gpu::InstanceRows::pack` with `Change::All` (a document opened, a palette changed, a
+diff that gave up): `render/tests/perf.rs` `pack_100k_whole`, the 100k fixture (70k lines,
+15k rects, 10k arcs, the polys; 2.9 MB of rows), median of 20 packs, release, load ≈ 10, the
+two builds back to back, three runs each:
+
+| | median | max (the first pack: cold pens, allocations) |
+|---|---|---|
+| before (two passes, each resolving the row's pen through the palette) | 2.81–2.82 ms | 4.7–5.6 ms |
+| after (pens cached per palette, a `u8` key column, fixed-size row writes) | 0.67–0.70 ms | 1.7–2.8 ms |
+
+Where the 0.7 ms goes (temporary laps, one run): keying 0.16 ms, layout (zeroing the rows)
+0.07 ms, writing 0.35 ms, polygons and polylines 0.12 ms. The rows are byte-identical to the
+old pack's (`the_pack_equals_the_per_row_reference`, which keeps the old per-row pack as its
+oracle).
 
 ## Binary size
 
@@ -573,7 +1032,7 @@ exactly to the totals.
 
 | Cut | Core | Editor | How |
 |---|---:|---:|---|
-| Split (D39): the core links no GPU, window, text-shaping, accessibility, LaTeX or plugin-host crate | (the editor half is gone) | — | `crates/cli/tests/deps.rs` checks the resolved graph for every target |
+| Split (D39): the core links no GPU, window, text-shaping, accessibility, LaTeX or plugin-host crate | (the editor half is gone) | — | `crates/model/cli/tests/deps.rs` checks the resolved graph for every target |
 | `rustfft` → own radix-2 + Bluestein FFT (`expr/src/fft.rs`, libm twiddles) | ≈ −661 K | ≈ −661 K | rustfft, transpose, strength_reduce, primal_check symbols |
 | Full Noto Sans → `NotoSans-UI.ttf` subset; KaTeX Main (already embedded) draws → ≤ ≥ | 0 | −1,428 K | file sizes 1,581,884 → 153,536 |
 | System-font fallback for glyphs outside the subset (fontique `system`, dlopen'ed fontconfig) | 0 | ≈ +65 K | fontique, fontconfig-sys symbols |
@@ -619,7 +1078,7 @@ No regression beyond noise: the table touches no crate on these paths.
 | Group | K |
 |---|---:|
 | Our crates (with the generics they instantiate) | 2,825 |
-| GPU: wgpu, naga, vello | 2,266 |
+| GPU: wgpu, naga, vello (vello left in step 4 of the GPU canvas pipelines; already dead code then) | 2,266 |
 | Text: parley, harfrust, skrifa, read-fonts, fontique, ICU | 1,618 |
 | Accessibility: accesskit, zbus/zvariant, async runtime | 1,141 |
 | LaTeX: ratex + regex, fancy-regex, regex-lite, aho-corasick | 927 |
@@ -644,7 +1103,6 @@ with owners:
 | Hot crates at `opt-level = "s"` (ours, text, vello, wasmi) | editor ≈ −2 M, core ≈ −0.4 M (all-`s` core measured 2,401,304 before the flags) | frame time to be measured; user decision |
 | One shared sort instantiation: `elab` alone instantiates 312 K of `slice::sort` code (113 instances), `format` 77 K, `netlist` 55 K, `run` 43 K, `doc` 25 K | both ≈ −0.4 M | elab, format, netlist, run, doc owners |
 | ratex: put mhchem (`\ce`, three regex engines + serde_json + 175 K of JSON) behind a feature | editor ≈ −0.8 M | upstream ratex-parser |
-| vello: ship minified WGSL | editor ≈ −0.2 M | upstream vello_shaders |
 | Drop the GLES backend | editor −0.18 M | loses non-Vulkan Linux GPUs |
 
 Even all of them leave the editor near 12 M: the 10 M budget needs a feature-level decision

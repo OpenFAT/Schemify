@@ -18,6 +18,14 @@
       rust-overlay,
     }:
     let
+      lib = nixpkgs.lib;
+      # One version for the packages, the workspace's (Cargo.toml).
+      version = (lib.importTOML ./Cargo.toml).workspace.package.version;
+      # Release binaries by version, written by tools/update-sources.py after each published
+      # release (publish.yaml): `nix run 'github:OmarSiwy/Schemify#latest'` installs the
+      # newest without compiling.
+      sources = lib.importJSON ./sources.json;
+      latest = if sources == { } then null else lib.last (lib.sort lib.versionOlder (lib.attrNames sources));
       systems = [
         "x86_64-linux"
         "aarch64-linux"
@@ -75,8 +83,7 @@
           ]
         );
 
-      # Simulators the runner spawns (D15). ngspice is the default; the others are
-      # picked up when present (Xyce dialect, Verilog cosim via d_cosim).
+      # Simulators of the development shell, which the tests run: ngspice, Xyce, Icarus.
       simulators =
         pkgs: with pkgs; [
           ngspice
@@ -105,10 +112,14 @@
         pkgs:
         (rustPlatform pkgs).buildRustPackage {
           pname = "schemify";
-          version = "0.1.0";
+          inherit version;
           # Tracked files only (git).
           src = self;
-          cargoLock.lockFile = ./Cargo.lock;
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            # Git dependencies need their hash (the netlist writer, D22).
+            outputHashes."spicerack-0.1.0" = "sha256-LB4MzDJzkEXUWjxRRiZg2awyvo4+a+0BSi1yOvFssDM=";
+          };
           # D39: the headless core `schemify` (CLI, config, package manager) and the editor
           # `schemify-gui` (`schemify edit` runs it); the default UI is a prebuilt wasm asset.
           cargoBuildFlags = [
@@ -137,14 +148,13 @@
           # `cargo test --workspace` in the dev shell (CI does).
           doCheck = false;
           nativeBuildInputs = [ pkgs.makeWrapper ];
-          # Only the editor gets the GUI libraries. Both find the simulators; the core also runs
-          # git and curl for `schemify pack` (config spec §5). The user's PATH comes first.
+          # Only the editor gets the GUI libraries; the core also gets git and curl for
+          # `schemify pack` (config spec §5). The simulator is external (ESPice by default):
+          # the user's own PATH finds it.
           postInstall = ''
             wrapProgram $out/bin/schemify \
-              --suffix PATH : ${pkgs.lib.makeBinPath ((simulators pkgs) ++ [ pkgs.git pkgs.curl ])}
-            wrapProgram $out/bin/schemify-gui \
-              ${pkgs.lib.optionalString pkgs.stdenv.isLinux "--prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (runtimeLibs pkgs)}"} \
-              --suffix PATH : ${pkgs.lib.makeBinPath (simulators pkgs)}
+              --suffix PATH : ${pkgs.lib.makeBinPath [ pkgs.git pkgs.curl ]}
+            ${pkgs.lib.optionalString pkgs.stdenv.isLinux "wrapProgram $out/bin/schemify-gui --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (runtimeLibs pkgs)}"}
           '';
           meta = {
             description = "Schematic capture with simulation, docs pages and WASM plugins";
@@ -153,13 +163,100 @@
             platforms = systems;
           };
         };
+      # The web editor (docs/guide/web.md): `index.html` + the wasm-bindgen bundle in `pkg/`,
+      # ready to serve, or to sit beside `schemify publish`'s `projects/` on a static site.
+      web =
+        pkgs:
+        (rustPlatform pkgs).buildRustPackage {
+          pname = "schemify-web";
+          inherit version;
+          src = self;
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            # Git dependencies need their hash (the netlist writer, D22).
+            outputHashes."spicerack-0.1.0" = "sha256-LB4MzDJzkEXUWjxRRiZg2awyvo4+a+0BSi1yOvFssDM=";
+          };
+          nativeBuildInputs = [ (wasmBindgenCli pkgs) ];
+          auditable = false;
+          doCheck = false;
+          buildPhase = ''
+            runHook preBuild
+            cargo build --release --frozen --target wasm32-unknown-unknown -p schemify-app --bin schemify-gui
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            mkdir -p $out
+            cp crates/view/app/web/index.html $out/
+            wasm-bindgen --target web --no-typescript --out-name schemify --out-dir $out/pkg \
+              target/wasm32-unknown-unknown/release/schemify-gui.wasm
+            runHook postInstall
+          '';
+        };
+
+      # A published release's archive (sources.json): the binaries publish.yaml built. On Linux they are glibc ≥ 2.28 programs, so autoPatchelf points them at
+      # nixpkgs' loader and libraries; the editor gets the libraries it dlopens, as above.
+      fromRelease =
+        pkgs: v: source:
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "schemify";
+          version = v;
+          src = pkgs.fetchurl { inherit (source) url sha256; };
+          sourceRoot = ".";
+          nativeBuildInputs = [
+            pkgs.makeWrapper
+          ]
+          ++ lib.optional pkgs.stdenv.isLinux pkgs.autoPatchelfHook;
+          buildInputs = lib.optionals pkgs.stdenv.isLinux [
+            pkgs.stdenv.cc.cc.lib
+            pkgs.glibc
+          ];
+          dontStrip = true;
+          installPhase = ''
+            runHook preInstall
+            cd schemify-v${v}-*
+            install -Dm755 schemify schemify-gui -t $out/bin
+            install -Dm644 LICENSE -t $out/share/licenses/schemify
+            runHook postInstall
+          '';
+          postFixup = ''
+            for p in schemify schemify-gui; do
+              wrapProgram $out/bin/$p \
+                ${lib.optionalString pkgs.stdenv.isLinux "--prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath (runtimeLibs pkgs)}"} \
+                --suffix PATH : ${lib.makeBinPath [ pkgs.git pkgs.curl ]}
+            done
+          '';
+          meta = {
+            description = "Schematic capture with simulation, docs pages and WASM plugins (release binaries)";
+            homepage = "https://github.com/OmarSiwy/Schemify";
+            license = lib.licenses.mit;
+            sourceProvenance = [ lib.sourceTypes.binaryNativeCode ];
+            mainProgram = "schemify-gui";
+          };
+        };
+
+      # Per system: one package per released version in sources.json, and `latest`.
+      releases =
+        pkgs:
+        let
+          system = pkgs.stdenv.hostPlatform.system;
+          built = lib.mapAttrs (v: s: fromRelease pkgs v s.${system}) (
+            lib.filterAttrs (_: s: s ? ${system}) sources
+          );
+        in
+        built // lib.optionalAttrs (latest != null && built ? ${latest}) { latest = built.${latest}; };
     in
     {
-      packages = forAll (pkgs: {
-        default = schemify pkgs;
-        schemify = schemify pkgs;
-        wasm-bindgen-cli = wasmBindgenCli pkgs;
-      });
+      packages = forAll (
+        pkgs:
+        releases pkgs
+        // {
+          default = schemify pkgs;
+          schemify = schemify pkgs;
+          web = web pkgs;
+          wasm-bindgen-cli = wasmBindgenCli pkgs;
+        }
+      );
 
       apps = forAll (pkgs: {
         # `nix run` starts the editor; `nix run .#schemify -- netlist …` the headless core.

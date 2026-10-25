@@ -1,10 +1,10 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "tools/*"]
+members = ["crates/*/*", "tools/*"]
 exclude = ["tools/fmtbench"]
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.95"
@@ -18,22 +18,32 @@ dbg_macro = "warn"
 todo = "warn"
 
 [workspace.dependencies]
-schemify-format = { path = "crates/format" }
-schemify-expr = { path = "crates/expr" }
-schemify-doc = { path = "crates/doc" }
-schemify-elab = { path = "crates/elab" }
-schemify-netlist = { path = "crates/netlist" }
-schemify-wave = { path = "crates/wave" }
-schemify-run = { path = "crates/run" }
-schemify-abi = { path = "crates/abi" }
-schemify-plugin = { path = "crates/plugin" }
+schemify-format = { path = "crates/protocol/format" }
+schemify-expr = { path = "crates/model/expr" }
+schemify-doc = { path = "crates/model/doc" }
+schemify-elab = { path = "crates/model/elab" }
+schemify-netlist = { path = "crates/model/netlist" }
+schemify-wave = { path = "crates/model/wave" }
+schemify-run = { path = "crates/model/run" }
+schemify-abi = { path = "crates/protocol/abi" }
+schemify-plugin = { path = "crates/plugins/plugin" }
 schemify-spicecmp = { path = "tools/spicecmp" }
-schemify-config = { path = "crates/config" }
-schemify-cli = { path = "crates/cli" }
+schemify-config = { path = "crates/model/config" }
+schemify-cli = { path = "crates/model/cli" }
+schemify-canvas = { path = "crates/model/canvas" }
+schemify-ui = { path = "crates/model/ui" }
+schemify-editor = { path = "crates/model/editor" }
+schemify-render = { path = "crates/view/render" }
 # third-party (justify additions in the PR, docs/dev/contributing.md rule 7)
 # Dev-only: the differential oracle of expr's own FFT (D39 size cut).
 rustfft = "6"
 libm = "0.2"
+# The netlist deck writer (user decision 2026-10-24): SpiceRack's IR and its xschem-layout
+# codegen; only `netlist` may depend on it. No default features: no Python, no simulator
+# backends (processes, temp files, dlopen), so it builds for the web.
+# Pinned to a rev, so the plugin repositories (git dependencies on the model's crates)
+# resolve it too.
+spicerack = { git = "https://github.com/OmarSiwy/SpiceRack", rev = "86ab039e30faa34dfef39782130d63c469de2f20", default-features = false }
 # User config (D9 amended): Lua 5.4 in pure Rust (no C, builds for every target incl. the
 # web; user decision 2026-10-12, web spec §5); only `config` may use it. No `io`, `os`,
 # `package` libraries are compiled in; `debug` serves the API prelude and is stripped after.
@@ -46,7 +56,7 @@ proptest = { version = "1", default-features = false, features = ["std"] }
 # since plugins are untrusted input; `portable-dispatch` instead of `auto-dispatch` saves
 # nothing (+4 KB) and runs a guest loop 3x slower.
 wasmi = { version = "2", default-features = false, features = ["std", "validate", "auto-dispatch", "deterministic"] }
-# GUI (WS5): only crates/ui and crates/render may use these (docs/dev/contributing.md rule 7)
+# GUI (WS5): only crates/model/ui and crates/view/render may use these (docs/dev/contributing.md rule 7)
 taffy = { version = "0.14", default-features = false, features = ["std", "taffy_tree", "flexbox"] }
 parley = { version = "0.12", default-features = false, features = ["std", "system"] }
 # Only to pick fontique's features: system fonts (fallback for glyphs outside the embedded
@@ -58,19 +68,25 @@ ratex-parser = "0.1.14"
 ratex-layout = "0.1.14"
 ratex-types = "0.1.14"
 ratex-font = "0.1.14"
-# Only metrics and advances of the embedded faces: no autohinter shaping (vello turns it on
-# for the renderer).
+# Only metrics and advances of the embedded faces: no autohinter shaping (the renderer's
+# glyph rasterizer turns it on).
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
 # No `wayland-csd-adwaita` (D39: tiny-skia + ab_glyph + ttf-parser for a title bar). Where the
 # compositor has no server-side decorations (GNOME) the window gets smithay's plain fallback
 # frame: move/resize/close/maximize/minimize, no title text, no Adwaita styling.
 winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
-# No `wgpu_default`: render picks wgpu's backends per target (the wgpu entry below).
-vello = { version = "0.11", default-features = false, features = ["wgpu"] }
-# Only to pick the backends vello's wgpu builds; render alone names it.
-wgpu = { version = "30", default-features = false }
+# The canvas tables' geometry (`canvas`, `render`): the kurbo vello_cpu uses, so all name one
+# `Rect`.
+kurbo = { version = "0.13", default-features = false, features = ["std"] }
+# Colours, brushes, fonts and images (`render`): the peniko vello_cpu uses.
+peniko = { version = "0.6", default-features = false, features = ["std"] }
+# Docs-page PNG decoding in the headless editor: the decoder vello_cpu already links.
+png = { version = "0.18", default-features = false }
+# Render's own instanced pipelines (WGSL); render picks the backends per target.
+wgpu = { version = "30", default-features = false, features = ["std", "wgsl"] }
+# render's test that its shaders compile for WebGL2: the naga wgpu links, its GLSL writer on.
+naga = { version = "30", default-features = false, features = ["wgsl-in", "glsl-out"] }
 vello_cpu = "0.3"
-pollster = "0.4"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = "0.3"
@@ -80,7 +96,7 @@ debug = 1
 
 # D39 binary size (docs/dev/perf.md "Binary size"): code that is cold at run time is optimized for
 # size; the hot paths (parse, load, elaborate, netlist, expressions, waveforms, wasmi, render,
-# vello, text shaping, layout) stay at opt-level 3. The binary crates themselves
+# vello_cpu, text shaping, layout) stay at opt-level 3. The binary crates themselves
 # (schemify-cli, schemify-app) take no override: cargo then drops `CARGO_PROFILE_RELEASE_STRIP`
 # for their link (cargo 1.95), and the release env would ship symbols.
 [profile.release.package]

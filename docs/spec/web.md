@@ -1,6 +1,6 @@
 # Web platform v1 (normative)
 
-Implements D2 (generated glue only), D31 (OPFS storage, projects in and out by zip or folder), D32 (web is tier 1) and D16 (simulation through runner plugins). The editor and the core are the same Rust code as natively; only the OS boundary differs: `crates/cli/src/platform.rs` (public API, both targets), `platform/web.rs` (browser glue: web-sys/js-sys, no hand-written JS), `platform/vfs.rs` (the in-memory file table, pure, tested natively), `crates/cli/src/zip.rs` (archives). The page is `crates/app/web/index.html`: a one-line loader of the wasm-bindgen bundle.
+Implements D2 (generated glue only), D31 (OPFS storage, projects in and out by zip or folder), D32 (web is tier 1) and D16 (simulation through runner plugins). The editor and the core are the same Rust code as natively; only the OS boundary differs: `crates/model/cli/src/platform.rs` (public API, both targets), `platform/web.rs` (browser glue: web-sys/js-sys, no hand-written JS), `platform/vfs.rs` (the in-memory file table, pure, tested natively), `crates/model/cli/src/zip.rs` (archives). The page is `crates/view/app/web/index.html`: a one-line loader of the wasm-bindgen bundle.
 
 ## 0. Usage first
 
@@ -59,6 +59,22 @@ Rules:
 
 **Image exports** (PNG/SVG/PDF/EPS) and the project zip go through `platform::export`: natively a file write, on the web a download named after the file (`Blob` + object URL + `<a download>`; the previous download's URL is released by the next) and nothing is written to OPFS.
 
+### 3.1 Hosted projects
+
+A project published on a static site beside the page (`schemify publish`, `cli::hosted`), so a link opens it with nothing to import by hand:
+
+```
+<site>/index.html, pkg/                 the web editor
+<site>/projects/<name>/…                the project's files and its saved runs (.schemify/runs/)
+<site>/projects/<name>/schemify.files   manifest: `<sha256 hex>  <path>` per file, sorted by path
+<site>/projects/index.html              each project and bench, with how its newest run went
+```
+
+- **When.** After the mount (§2), before the editor starts, when the URL argument names `/projects/<name>[/…]` with a plain name (`A–Z a–z 0–9 . _ -`, not starting with `.`, ≤ 64 characters).
+- **Fetch.** `projects/<name>/schemify.files` relative to the page: same origin only. Any status but 200 means the site hosts no such project and the page opens storage as usual (a local project); a request that fails outright is reported on the console and the page still opens.
+- **Refresh.** The manifest text is compared with the copy stored at `/projects/<name>/.schemify/hosted`. Equal: nothing is fetched, so local edits survive while the site publishes nothing new. Different: every listed file is fetched and checked against its digest, then the whole tree `/projects/<name>/` (hidden entries included) is replaced by the listed files and the stamp is written last, so a refresh cut short is retried on the next load. A manifest line that is not `<64 lowercase hex>  <path>`, an unsafe path (§3's rule), a repeated path, more than 65 536 files, more than 512 MiB, a missing file or a digest mismatch refuses the refresh and nothing is written.
+- Ceiling (`ponytail`): files are fetched one at a time. Upgrade: a bounded set of concurrent fetches.
+
 ## 4. Clipboard
 
 The Clipboard API, secure contexts only (HTTPS or localhost):
@@ -75,9 +91,11 @@ Why omnilua (evaluation of 2026-10-11):
 
 - *C Lua 5.4 for `wasm32-unknown-unknown`*: `lua-src` 551.0.2 (mlua's `vendored` build) refuses the target; a build would need a libc shim (the `printf` family, `strtod`, string and math functions) and `setjmp`/`longjmp` over the wasm exception-handling proposal with a runtime this target lacks: C outside the `forbid(unsafe_code)` rule and a patched `lua-src`.
 - *piccolo* 0.3.3 lacks most of the standard library real configs use (`tonumber`, most of `string` and `table`, `utf8`) and pulls `getrandom`, which needs a JS backend on this target.
-- *omnilua* 0.7.1 passes the PUC-Rio 5.4 suite, has no C and no third-party dependency (eight `lua-*` crates of its own), and builds for every target. Its sandbox covers the config spec's contract: an instruction budget, a memory ceiling, stripped globals. Risk accepted with it: a young crate (four months, one maintainer); the config API sits behind `crates/config/src/lua.rs` and the prelude, so another runtime replaces one file.
+- *omnilua* 0.7.1 passes the PUC-Rio 5.4 suite, has no C and no third-party dependency (eight `lua-*` crates of its own), and builds for every target. Its sandbox covers the config spec's contract: an instruction budget, a memory ceiling, stripped globals. Risk accepted with it: a young crate (four months, one maintainer); the config API sits behind `crates/model/config/src/lua.rs` and the prelude, so another runtime replaces one file.
 
 ## 6. Simulation
+
+Saved runs load on the web as natively (run spec §7a): a project that brings its `.schemify/runs/` along, such as a hosted project (§3.1) that CI simulated with `schemify run`, opens each bench on its newest results, waves and run log included (`app::sim` reads them through `platform`).
 
 D16: runner plugins. **Designed here, not implemented yet**: the editor's run spine (`app::sim`, `cli::spines::Run`) is native-only, and the steps below fall in the run, plugin and app crates that open PRs (#5, #6, #7) are changing; BACKLOG "web" lists them by owner, in order.
 
@@ -98,16 +116,21 @@ Design (each job of a run, exactly where the native runner would start ngspice, 
 
 ## 7. Rendering
 
-WebGPU through vello, as natively, unless WebGPU is unusable; then every frame is rasterized by `CpuPainter` (vello_cpu, the painter of the native goldens) and put with `putImageData` on a 2D canvas (`id="schemify-cpu"`, `pointer-events: none`) laid over winit's canvas, which keeps the input (`crates/render/src/cpu_view.rs`). A separate canvas because winit's already holds the `webgpu` context of the failed attempt. Cost: a full raster per frame; the editor redraws on input only (D39).
+Three tiers, tried in order; the first usable one draws every frame (`crates/view/render/src/window.rs`, `TIERS`):
 
-WebGPU is unusable when (a) the browser offers no adapter or device (browsers without WebGPU), (b) the device is lost for any reason but our own drop, or (c) the first presented frame does not reach the page: 250 ms after it, one pixel at the canvas centre read back through a 2D canvas (the WebGPU canvas readback returns the last presented frame) has alpha 0, though every frame starts from the opaque background. (c) is what headless Chrome does on SwiftShader (no error at all) and on Vulkan (the swap-chain image fails to allocate): every WebGPU call succeeds and the page stays blank. A readback that itself fails counts as shown (the probe switches only on evidence). The switch is one-way for the page and logged once on the console as `gpu: <reason>; drawing on the CPU`; the GPU objects are dropped. Input, storage and clipboard never depend on which painter draws.
+1. **WebGPU**, on winit's canvas, with the same instanced pipelines as natively (D5).
+2. **WebGL2**, through wgpu's GL backend with the same pipelines and shaders, on a canvas (`id="schemify-webgl"`, `pointer-events: none`) laid over winit's, which keeps the input: winit's canvas already holds the `webgpu` context of the first attempt, and a canvas has one context kind for life. The page's CSS sizes it as it sizes winit's. Its context is made first by us with `preserveDrawingBuffer: true` (and wgpu's `antialias: false`), so the probe below can read a composited frame back. The pipelines fit WebGL2: no compute, no storage buffers, instance strides ≤ 255 B, ≤ 16 vertex attributes and ≤ 15 inter-stage variables per pipeline, a 2048² atlas; the device is held to `Limits::downlevel_webgl2_defaults` on every backend, natively too.
+3. **The CPU**: every frame is rasterized by `CpuPainter` (vello_cpu, the painter of the native goldens) and put with `putImageData` on a 2D canvas (`id="schemify-cpu"`, `pointer-events: none`) laid over winit's (`crates/view/render/src/cpu_view.rs`). Cost: a full raster per frame; the editor redraws on input only (D39).
+
+A GPU tier is unusable when (a) the browser offers it no adapter, device or surface (browsers without WebGPU, a WebGL2 context refused), (b) its device is lost for any reason but our own drop, or (c) its first presented frame does not reach the page: 250 ms after it, one pixel at the centre of the tier's canvas read back through a 2D canvas (both APIs' canvas readback returns the last presented frame) has alpha 0, though every frame starts from the opaque background. (c) is what headless Chrome does with WebGPU on SwiftShader (no error at all) and on Vulkan (the swap-chain image fails to allocate): every WebGPU call succeeds and the page stays blank. A readback that itself fails counts as shown (the probe switches only on evidence). Each switch is one-way for the page and logged once on the console as `gpu: <tier> unusable (<reason>); drawing with WebGL2` or `…; drawing on the CPU`; the tier's GPU objects and canvas are dropped, and the next tier is sent every instance row and mask afresh. Input, storage and clipboard never depend on which tier draws.
 
 The editor fits a cell's camera to the first non-empty canvas: the web canvas has no size until winit's first `Resized`, so the first updates see an empty viewport.
 
 ## 8. Tests
 
-- `crates/cli/src/platform/vfs.rs`: the table against `std::fs` on random operation scripts (reads, existence, directories, listings with hidden and skipped subtrees), the flush order, the byte budget, import planning (top directory, names, collisions, unsafe paths).
-- `crates/cli/src/zip.rs`: an archive written by CPython's `zipfile` (deflated + stored + a directory entry), round trips and determinism, the CRC check value, truncation and byte flips (errors, never a panic), the output cap.
-- `crates/app/tests/parity.rs` `export_project_zips_the_listed_files`: the archive equals the listed files byte for byte, hidden entries out, same bytes twice.
-- `tests/web/smoke.sh` + `drive.py` (CI `wasm` job, headless Chrome over the DevTools protocol): the editor starts without a trap; the `inv` fixture written into OPFS by the browser's own API opens, and when the editor draws on the CPU its frame matches the native golden `editor_dark.png` under the native test's tolerance (≤ 0.1% of pixels off by more than 2 levels); whichever painter draws, the page screenshot is within 5% of pixels of that golden (a blank page, the CI failure before the §7 probe, is ~100% off); a wire drawn and saved reaches OPFS and survives a reload; Ctrl+C of it reaches the system clipboard and, after the reload, Ctrl+V pastes it from there, and the next save holds the reloaded file plus the pasted wire. The page viewport is pinned to 1280×800 (`Emulation.setDeviceMetricsOverride`): `--window-size` includes the headless browser's own UI. CI's SwiftShader adapter shows no frames, so CI exercises the (c) fallback of §7.
-- `crates/app/tests/editor.rs` `fits_when_the_first_viewport_is_empty`: updates at an empty viewport, then at 1280×800, give the camera of a session sized from the start.
+- `crates/model/cli/src/platform/vfs.rs`: the table against `std::fs` on random operation scripts (reads, existence, directories, listings with hidden and skipped subtrees), the flush order, the byte budget, import planning (top directory, names, collisions, unsafe paths).
+- `crates/model/cli/src/zip.rs`: an archive written by CPython's `zipfile` (deflated + stored + a directory entry), round trips and determinism, the CRC check value, truncation and byte flips (errors, never a panic), the output cap.
+- `crates/view/app/tests/parity.rs` `export_project_zips_the_listed_files`: the archive equals the listed files byte for byte, hidden entries out, same bytes twice.
+- `tests/web/smoke.sh` + `drive.py` (CI `wasm` job, headless Chrome over the DevTools protocol): the editor starts without a trap; the `inv` fixture written into OPFS by the browser's own API opens, and when the editor draws on the CPU its frame matches the native golden `editor_dark.png` under the native test's tolerance (≤ 0.1% of pixels off by more than 2 levels); whichever painter draws, the page screenshot is within 5% of pixels of that golden (a blank page, the CI failure before the §7 probe, is ~100% off); a wire drawn and saved reaches OPFS and survives a reload; Ctrl+C of it reaches the system clipboard and, after the reload, Ctrl+V pastes it from there, and the next save holds the reloaded file plus the pasted wire. The page viewport is pinned to 1280×800 (`Emulation.setDeviceMetricsOverride`): `--window-size` includes the headless browser's own UI. The script runs the drive twice. The first run requests WebGPU and WebGL2 through SwiftShader: CI's SwiftShader WebGPU shows no frames, so (c) moves it to WebGL2, which draws the page there (the screenshot check above, 5%). The second adds `--disable-3d-apis`, so both GPU tiers are unusable ((a) for WebGL2) and the editor must draw on the CPU (a GPU tier there fails the run) and match the golden exactly as above. Every tier and both switches run in CI.
+- `crates/view/render/src/gpu.rs` `shaders_compile_to_glsl_es_300_for_webgl2`: both WGSL modules pass naga's validator with no optional capability and are written as GLSL ES 3.00 for WebGL2, every entry point, within WebGL2's attribute and inter-stage limits; a compute entry point and a storage buffer fail the same checks. The native GPU tests (`crates/view/render/tests/gpu.rs`) hold their device to WebGL2's limits, as the window does.
+- `crates/view/app/tests/editor.rs` `fits_when_the_first_viewport_is_empty`: updates at an empty viewport, then at 1280×800, give the camera of a session sized from the start.

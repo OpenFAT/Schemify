@@ -37,7 +37,7 @@ run() { # run <log> <status-file> <command> args...
   set -e
 }
 
-fixtures=(crates/app/tests/fixtures crates/elab/tests/fixtures crates/netlist/tests/fixtures)
+fixtures=(crates/view/app/tests/fixtures crates/model/elab/tests/fixtures crates/model/netlist/tests/fixtures)
 for f in $(find "${fixtures[@]}" -type f \( -name '*.shcomp' -o -name '*.shbench' \) | sort); do
   name="${f//\//__}"
   for d in ngspice xyce cdl spectre verilog; do

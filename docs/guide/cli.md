@@ -46,6 +46,8 @@ Every command follows one rule:
 | [`diff`](#diff) | Record-level diff of two files. |
 | [`merge-driver`](#merge-driver) | Three-way merge for git. |
 | [`git-setup`](#git-setup) | Register the merge driver in this clone. |
+| [`cmd`](#cmd) | Run one editor command, a plugin's included, without a window. |
+| [`publish`](#publish) | Lay projects out for the web editor on a static site. |
 | [`pack`](#pack) | Manage user packages. |
 | [`rpc`](#rpc) | JSON-RPC command stream. |
 | [`mcp`](#mcp) | The same methods as MCP tools, for agents. |
@@ -80,7 +82,7 @@ Elaborates the cell, checks it, and writes its netlist to stdout or `FILE`.
 
 | Flag | Effect |
 |---|---|
-| `--dialect D` | `ngspice`, `espice`, `xyce`, `cdl`, `spectre` or `verilog`. Default: `schemify.opt.simulator`, else `ngspice`. |
+| `--dialect D` | `ngspice`, `espice`, `xyce`, `cdl`, `spectre` or `verilog`. Default: `schemify.opt.simulator`, else the first installed simulator (`espice` first), else `espice`. |
 | `--config C` | Bench config. Default: the bench's `config` header attribute. |
 | `--corner K` | Bench corner. Default: the bench's `corner` header attribute. |
 | `--set VAR=EXPR` | Override a bench variable. Repeatable, later wins. |
@@ -127,7 +129,28 @@ Simulates a `.shbench` and prints the results: one `job` record per job with its
 schemify run tb.shbench --corner tt --corner ff --sweep vdd_sweep --jobs 4
 ```
 
-The simulator command line comes from `schemify.sim` in your [user config](config.md), never from a design file. Each run lives in `<project>/.schemify/runs/<hash>/`, with a `results` file and one directory per job (`netlist.cir`, `out.raw`, `stdout.log`, `stderr.log`, `command.log`). Exit 1 when a job failed or a spec failed; failed jobs print `job <n>: <message>` on stderr. `run` is not available in the web build. See [simulation.md](simulation.md).
+The simulator command line comes from `schemify.sim` in your [user config](config.md), never from a design file. Each run lives in `<project>/.schemify/runs/<hash>/`, with a `results` file, a `bench` file naming the bench (so the editor lists the run in the bench's history) and one directory per job (`netlist.cir`, `out.raw`, `stdout.log`, `stderr.log`, `command.log`). Exit 1 when a job failed or a spec failed; failed jobs print `job <n>: <message>` on stderr. `run` is not available in the web build. See [simulation.md](simulation.md).
+
+### cmd
+
+```
+schemify cmd <project-dir>|<cell-file> <command> [<arg>...]
+```
+
+Runs one command of the editor's command table, core or plugin, with no window, then exits once nothing is pending (plugin I/O, workers, runs). Plugins load as in the editor, from your `init.lua` packages and the project's manifest, so a plugin's command works in a script or in CI. Every plugin log line is printed. Exit 1 when a plugin logs an error or a plugin call aborts, 2 for an unknown command or a project that does not open. It runs the `schemify-gui` binary, so install it beside `schemify`.
+
+```sh
+schemify pack sync
+schemify cmd . interop.xschem_import '${DESIGN}/schematics' --root '${PDK_ROOT}/sky130A/libs.tech/xschem' -o imported
+```
+
+### publish
+
+```
+schemify publish <project-dir>... -o <site-dir>
+```
+
+Writes each project to `<site-dir>/projects/<name>/` (its files and its saved runs) with a `schemify.files` manifest, and `<site-dir>/projects/index.html` listing every bench with how its newest run went. Copy the web editor bundle into `<site-dir>` and serve it: `#/projects/<name>/<bench>` opens the bench, results included. `<name>` is the project directory's name. A project already in the site is replaced whole. See [web.md](web.md#publishing-projects-on-a-site).
 
 ### fmt
 
@@ -247,11 +270,11 @@ schemify-interop xschem-import <lib-dir>... [--root <dir>]... [--models <file>[:
     [--spiceinit <file>] [--tech <file>] [--cdf <dump>] [--xschemrc <file>]... [--no-core] -o <out-dir>
 ```
 
-Converts every `.sym` and `.sch` under each `<lib-dir>` into Schemify cells. The `<lib-dir>`s are the xschem library search path, in order. It writes `<lib>/<cell>.<ext>`, a `schemify.project` and `import-report.md`/`import-report.txt` into `<out-dir>`, prints a summary, then checks every output.
+Converts every `.sym` and `.sch` under each `<lib-dir>` into Schemify cells. The `<lib-dir>`s are the xschem library search path, in order. It writes `<lib>/<cell>.<ext>`, a `schemify.project` and `interop.report.md`/`interop.report.txt` into `<out-dir>`, prints a summary, then checks every output.
 
 | Flag | Effect |
 |---|---|
-| `--root <dir>` | Add a search-path element whose files are only referenced, not converted (xschem's `xschem_library` parent, so `devices/res.sym` resolves). Repeatable. |
+| `--root <dir>` | Add a search-path element that contributes only what the converted files reference from it, transitively (xschem's `xschem_library` parent, so `devices/res.sym` resolves, or a PDK's xschem directory). Repeatable. |
 | `--models <file>[:<section>]` | Scan SPICE model cards (and their `.include`/`.lib` files) for device limits: model bins become `min`/`max` on `w` and `l`. Repeatable. |
 | `--spiceinit <file>` | Read an ngspice `.spiceinit`: its `sourcepath` is where model includes are looked up. |
 | `--tech <file>` | A Magic tech file (or a KLayout `.lyt`) for the manufacturing grid. |
@@ -261,7 +284,7 @@ Converts every `.sym` and `.sch` under each `<lib-dir>` into Schemify cells. The
 | `-o <out-dir>` | Output directory. Required. |
 
 ```sh
-schemify-interop xschem-import ~/xschem_library/devices ~/designs/amp --root ~/xschem_library -o amp-schemify
+schemify-interop xschem-import ~/designs/amp --root ~/xschem_library --root "$PDK_ROOT/$PDK/libs.tech/xschem" -o amp-schemify
 ```
 
 See [migrating.md](migrating.md) and [import.md](../spec/import.md).
@@ -272,10 +295,10 @@ See [migrating.md](migrating.md) and [import.md](../spec/import.md).
 schemify-interop virtuoso-export <project-dir> <cell-file>... -o <file.sfyx> [--core-cells] [--lib L=V]...
 schemify-interop virtuoso-import <project-dir> <file.sfyx> [--analoglib] [--lib L=V]...
 schemify-interop xschem-export <project-dir> <cell-file>... -o <out-dir>
-schemify-interop install-skill <dir>
+schemify-interop install-skill [<dir>]
 ```
 
-Cell files, `.sfyx` paths and output paths are relative to `<project-dir>`. Each conversion writes a report next to its output listing everything that did not translate one to one.
+Cell files, `.sfyx` paths and output paths are relative to `<project-dir>`. Each conversion writes a report listing everything that did not translate one to one: beside a file output (`amp.sfyx` → `amp.report.md`), inside a directory output (`interop.report.md`). The editor's File menu items take the same arguments without `<project-dir>`.
 
 | Command or flag | Effect |
 |---|---|
@@ -285,7 +308,7 @@ Cell files, `.sfyx` paths and output paths are relative to `<project-dir>`. Each
 | `virtuoso-import` | Read a `.sfyx` dump from Virtuoso into the project. |
 | `--analoglib` | On import, move analogLib instances onto Schemify's core devices. |
 | `xschem-export` | Write `.sch`/`.sym` files, core devices onto xschem's `devices/` symbols. |
-| `install-skill` | Write `schemify.il` and `sfy_probe.il`, the SKILL files Virtuoso loads, into `<dir>`. |
+| `install-skill` | Write `schemify.il` and `sfy_probe.il`, the SKILL files Virtuoso loads, into `<dir>` (default `interop`). |
 
 The Virtuoso workflow, including the first-session probe, is in `examples/plugins/interop/README.md` and [interop.md](../spec/interop.md).
 

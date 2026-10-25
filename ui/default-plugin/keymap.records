@@ -1,7 +1,7 @@
 # Schemify default keymap: xschem's canvas bindings (D25).
 #
 # Body of the bundled default-UI plugin's `contribute keymap` set (plugin-abi §7). One `key`
-# record per combo, in the order of xschem's key table (crates/app/tests/fixtures/xschem_keys.md); the comment
+# record per combo, in the order of xschem's key table (crates/view/app/tests/fixtures/xschem_keys.md); the comment
 # above each group quotes the inventory action. Rows that exist only in a graph (`G only`), only
 # with `cadence_compat=1`, the disabled `; ~ |` placeholders and the Tk-level Ctrl+Enter are not
 # canvas bindings and are left out. An upper-case key in the inventory is Shift+letter. A later

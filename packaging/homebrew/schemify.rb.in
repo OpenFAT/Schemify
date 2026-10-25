@@ -1,0 +1,42 @@
+# The release binaries as a Homebrew formula (macOS and Linux x86_64). publish.yaml fills the
+# @...@ fields from a release's archives and attaches the result; once the release is
+# published, its `homebrew` job tests it and, given HOMEBREW_TAP_TOKEN, pushes it to the
+# OmarSiwy/homebrew-schemify tap: `brew install OmarSiwy/schemify/schemify`.
+class Schemify < Formula
+  desc "Schematic capture for analog/mixed-signal IC design (xschem replacement)"
+  homepage "https://github.com/OmarSiwy/Schemify"
+  version "@VERSION@"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/OmarSiwy/Schemify/releases/download/v@VERSION@/schemify-v@VERSION@-macos-aarch64.tar.gz"
+      sha256 "@MACOS_AARCH64_SHA256@"
+    end
+    on_intel do
+      url "https://github.com/OmarSiwy/Schemify/releases/download/v@VERSION@/schemify-v@VERSION@-macos-x86_64.tar.gz"
+      sha256 "@MACOS_X86_64_SHA256@"
+    end
+  end
+  on_linux do
+    on_intel do
+      url "https://github.com/OmarSiwy/Schemify/releases/download/v@VERSION@/schemify-v@VERSION@-linux-x86_64.tar.gz"
+      sha256 "@LINUX_X86_64_SHA256@"
+    end
+  end
+
+  def install
+    bin.install "schemify", "schemify-gui"
+  end
+
+  def caveats
+    <<~EOS
+      Simulation runs an external simulator: ESPice (the default) from
+      https://github.com/OmarSiwy/ESPice, or ngspice (`brew install ngspice`).
+    EOS
+  end
+
+  test do
+    assert_match "schemify @VERSION@", shell_output("#{bin}/schemify --version")
+  end
+end

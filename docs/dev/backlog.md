@@ -5,7 +5,6 @@ Open items collected from workstream reports. Each item names its owner crate. R
 ## Cross-crate API requests
 
 - **app**: feed `CellState::recompute` the ops `Project::applied(doc, outcome)` lends (resolved commit ops, undo inverses) and drop the `commits` deque in `editor.rs` (elab and its oracle take those ops since `pr/clean-elab`).
-- **ui**: switch the local line-record lexer to `schemify-format`. (**plugin** host done; `abi::text` stays the guests' encoder/decoder until `format` has a public value lexer, pinned to the format by `abi_and_format_lexers_agree`.)
 
 ## app / editor
 
@@ -45,7 +44,7 @@ Open items collected from workstream reports. Each item names its owner crate. R
 - Waves dock: keyboard focus follows the pointer; the divider position is not kept across sessions.
 - Netlist text tab: a prose code block capped at 2^14 lines / 256 KiB (the file has everything); find lists matching lines, it does not scroll to them in the full text.
 - Highlight keys of nets the name map lacks fall back to the level path (no cross-hierarchy match then). OP voltage marks of a bus net use its first bit.
-- The OTA fixture has no bench; the GUI run tests and `docs/screenshots/simulate.png` use `crates/app/tests/fixtures/rc`.
+- The OTA fixture has no bench; the GUI run tests and `docs/screenshots/simulate.png` use `crates/view/app/tests/fixtures/rc`.
 
 ## Decisions pending (user)
 
@@ -87,11 +86,12 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## Performance
 
-Numbers and how to reproduce them: `docs/dev/perf.md`. D39 status: pan/zoom at 100k objects
-0.13 ms CPU, 0.08 ms GPU (RTX; 0.4–1.1 ms on the Intel iGPU); flat 1M netlist 0.85–0.93 s;
-param edit 1.8 ms; idle 0%; every interactive frame (hover, select, drag, typing, menu) at
-100k under 1 ms CPU (D39 amended 2026-10-18; 0.2–0.5 ms). Not met: a local edit at 100k
-objects (13–14 ms, outside that budget; the goal set for this work was ≤ 1 ms).
+Numbers and how to reproduce them: `docs/dev/perf.md`. D39 status (instanced GPU canvas,
+render steps 1–2): pan/zoom at 100k objects 0.08 ms CPU, 0.55–0.63 ms GPU (RTX; the Intel
+iGPU not re-measured since the pipelines landed); flat 1M netlist 0.85–0.93 s; param edit
+1.8 ms; idle 0%; every interactive frame (hover, select, drag, typing, menu) at 100k under
+1 ms CPU (D39 amended 2026-10-18; 0.07–0.5 ms). Not met: a local edit at 100k objects
+(Del/undo 0.9 ms CPU p50 but 2.1 ms p95, GPU 1.1 ms; the goal set for this work was ≤ 1 ms).
 
 - **elab**: a local edit is patched (0.08 ms p50 at 100k); still rebuilt: instance
   insert/delete (the graph and instance rows), name/ignore/inherit edits, cells with `E003`
@@ -110,12 +110,27 @@ objects (13–14 ms, outside that budget; the goal set for this work was ≤ 1 m
   spatial index answers in O(cell) but must follow `scene::update` (its build is ~40 ns an
   object, 40 ms at 1M).
 - **app**: the first edit of a document writes its whole journal (+13 ms at 100k, `doc`).
-- **render**: a frame whose UI changed (the status line on every pointer move) goes through
-  vello (0.3 ms of render calls a hover frame); the chrome in layers of its own would let it
-  compose.
-- **render**: tile frames on the Intel iGPU are not measured since the tiles landed (the
-  retained layer had 47 ms p99 there).
-- **format**: 100k-object parse ~52–60 ms; doc open 89 ms (budget 200 ms, OK); the 100k parse test sits near 100 ms under load.
+- **render**: the Intel iGPU columns of `frame_times_100k` and `interactions_100k` are not
+  measured since the GPU canvas pipelines landed (perf.md § GPU canvas pipelines has the RTX
+  4060 only). Before them, the same frames cost 6–21 ms of GPU there (timestamp floor 5.3 ms)
+  against 0.1–3.8 ms on the RTX 4060. Run with `SCHEMIFY_GPU=Intel`.
+- **render**: natively the window has no CPU painter: without a hardware adapter it takes
+  wgpu's software one (WARP, lavapipe, llvmpipe), and past that it closes with
+  `RunError::NoGpu`. The CPU rung (`CpuPainter` presented through `softbuffer`, a new
+  dependency) waits until a machine where both GPU rungs fail is known.
+- **app/doc/format**: opening a 100k-object file and its first build take 192–216 ms (target
+  under 100 ms; `doc.open_100k` is 65 ms and the 100k parse 40 ms since the load-path commits
+  in status.md). Profile with `perf record` before changing. Known left: a later open (not the
+  startup file) reads the file again and hashes it lazily (`Project::open`, `libs.rs`
+  `open_file`); the scanner is byte-at-a-time except the newline search (`format/src/reader.rs`),
+  for `simd-loops` triage once the rest is measured. Oracles: the `format` and `doc`
+  round-trip, fuzz-corpus and merge tests, and `tests/determinism/run.sh`.
+- **doc**: a one-attribute edit (`edit.rs` `apply_one`) allocates 30–60 times: it builds a
+  full `RecordBuf` (a `String` per field, `tables.rs`) and clones it, and `document.rs` makes
+  a fresh `Scratch` per replaced row (four `Scratch::default()` sites); reuse one per document.
+  Also O(n) per op: an ordered-table delete reindexes every later row (up to 65k log pushes
+  for graphics), and a named-record key check scans the table. Frames are under 1 ms already;
+  this is for scripted edits (plugins, the optimizer, JSON-RPC) and 1M objects.
 
 ## Correctness / semantics
 
@@ -130,7 +145,7 @@ objects (13–14 ms, outside that budget; the goal set for this work was ≤ 1 m
 
 ## Parity: intentionally dropped
 
-xschem menu items and keys with no meaning in Schemify, removed from the default UI (`ui/default-plugin`) rather than left unresolved. The parity ratchet (`crates/app/tests/parity.rs`) holds every remaining name to an implementation; `tests/shell.rs` lists the dropped inventory chords.
+xschem menu items and keys with no meaning in Schemify, removed from the default UI (`ui/default-plugin`) rather than left unresolved. The parity ratchet (`crates/view/app/tests/parity.rs`) holds every remaining name to an implementation; `tests/shell.rs` lists the dropped inventory chords.
 
 - File → Start new Xschem process (`x`), Alt+Shift+E / Alt+Shift+I "in a new process": one process with tabs; `x` and the Alt+Shift keys open a new tab instead.
 - Options → Debug mode: logs go to the status line and stderr; there is no Tcl debug level.

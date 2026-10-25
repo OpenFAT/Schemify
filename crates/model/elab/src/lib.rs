@@ -1,0 +1,123 @@
+//! Derived design data (D11a, D13, D19, D20, D29, D30): connectivity, the expression
+//! graph and its values, hierarchy elaboration with impl selection and subckt
+//! specialization, resolved params, violations and the annotation overlay.
+//!
+//! Reads `doc` tables; owns everything it derives; pure (no I/O, no clock) and builds for
+//! `wasm32-unknown-unknown`. A large cell elaborates on two scoped threads (native only),
+//! with the serial results. Normative spec: `docs/spec/netlist.md`
+//! §1–§6 and §8 (with the amendments listed in its §9).
+//!
+//! # Spines
+//!
+//! - frame (editor): [`CellState::build`] once per open document, then
+//!   [`CellState::recompute`]`(project, doc, ops)` after `doc::apply_edits` →
+//!   [`Annotations::replace`]`(annotation_request)` per source (or [`Annotations::patch`]).
+//! - netlist: [`elaborate`]`(project, top, request)` → gate on
+//!   [`Elab::violations`] (`blocking`) → `netlist::emit(&elab, dialect)`.
+//!
+//! Connectivity has two paths with one result: [`connect`] (a whole cell: two radix
+//! sorts and a union-find, what elaboration and every rebuild run) and the editor's
+//! per-net patch inside [`CellState::recompute`] (ordered sets over the touched nodes).
+//! They are not one spine because the patch's ordered sets cost several times the sorts
+//! on a whole cell; the incremental-equals-full oracle (`tests/incremental.rs`) holds
+//! them equal.
+//!
+//! # What the netlister reads
+//!
+//! [`Elab`] is self-contained: walk [`Elab::defs`] (each a subckt: name, port nets),
+//! their [`Elab::insts`] rows (local name, [`Target`], connection net names in pin
+//! order then inherited pins, params as canonical text), [`Elab::impls`] (leaf
+//! templates and once-only bodies), [`Elab::globals`] and [`Elab::bench`]. Names are
+//! [`Name`]s into [`Elab::names`]. The name map (path ↔ emitted name) is the
+//! netlister's: it is a fact about emitted text.
+//!
+//! ```
+//! use schemify_doc::Project;
+//! use schemify_elab::{Dialect, Request, Target, elaborate, no_funcs};
+//!
+//! let mut p = Project::new(None, None, 1).unwrap();
+//! let res = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\nparam R 1k\n\nimpl spice spice\n  format spice \"R{name} {A} {B} {R}\"\n";
+//! let bench = "schemify 1 shbench\n\ninst 0aaaaa ./res\n  at 0 0 R0\n  name 1\n  R 2k\n\nlabel 0bbbbb 0 0 R0 in\nlabel 0ccccc 0 20 R0 0\n";
+//! p.index_library("", "", &[("res.shprim", res.as_bytes()), ("tb.shbench", bench.as_bytes())]).unwrap();
+//! p.open("", "res.shprim", res.as_bytes(), None).unwrap();
+//! let top = p.open("", "tb.shbench", bench.as_bytes(), None).unwrap().handle;
+//! let req = Request { config: None, corner: None, overrides: &[], env: &[], dialect: Dialect::Ngspice };
+//! let e = elaborate(&p, top, &req, &mut no_funcs);
+//! assert!(!e.violations.blocking());
+//! let row = e.insts_of(e.top).start;
+//! let nets: Vec<&str> = e.conns(row).iter().map(|n| e.names.get(*n)).collect();
+//! assert_eq!(nets, ["in", "0"]);
+//! assert!(matches!(e.insts.target[row], Target::Leaf(_)));
+//! assert_eq!(e.names.get(e.insts.param_text[e.params_of(row).start]), "2000");
+//! ```
+
+#![forbid(unsafe_code)]
+#![deny(rustdoc::broken_intra_doc_links)]
+// Tables are SoA: loops index several parallel columns by one row, which is clearer
+// than zipping four iterators.
+#![allow(clippy::needless_range_loop)]
+
+mod annotate;
+mod cells;
+mod check;
+mod connect;
+mod elaborate;
+mod graph;
+mod iface;
+mod live;
+mod names;
+mod netexpr;
+mod ports;
+mod state;
+mod values;
+
+pub use annotate::{ANNOTATIONS_MAX, AnnotationRequest, Annotations, Mark, violation_marks};
+pub use check::{Code, Severity, VIOLATIONS_MAX, Violation, Violations};
+pub use connect::{CellNets, Ignore, NO_NET, connect, global_labels, place};
+pub use elaborate::{
+    Bench, COMPUTED, CornerLine, DEFAULT, DEPTH_MAX, Defs, Dialect, Elab, Impls, Insts, OVERRIDDEN,
+    Request, Target, elaborate,
+};
+pub use graph::Graph;
+pub use iface::{Domain, Iface, ParamKind};
+pub use names::{NAMES_MAX, Name, Names};
+pub use netexpr::{WIDTH_MAX, is_global};
+pub use ports::{PORTS_MAX, PortError, impl_ports};
+// `Iface::pin_dir`'s element type, so readers of elab need not depend on doc.
+pub use schemify_doc::PinDir;
+pub use state::{CellState, NetChange, Recomputed};
+pub use values::{Funcs, Val, cached_text, no_funcs};
+
+/// Cells with at least this many instances elaborate on two threads: connectivity beside
+/// the graph, element names beside the geometry.
+const PARALLEL_MIN: usize = 1 << 15;
+
+/// Forces the serial order everywhere (the D37 jobs = 1 vs N oracle).
+static SERIAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a cell of `instances` instances uses a second thread: large enough to pay for
+/// one, on a target that has them, unless forced serial. Results never depend on it.
+fn parallel_ok(instances: usize) -> bool {
+    cfg!(not(target_family = "wasm"))
+        && instances >= PARALLEL_MIN
+        && !SERIAL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[doc(hidden)]
+pub mod test_support {
+    //! Internals the integration tests drive directly.
+
+    /// Makes elaboration serial (`true`) or lets large cells use a second thread (`false`,
+    /// the default). Outputs are identical either way; tests compare the two.
+    pub fn set_serial(serial: bool) {
+        crate::SERIAL.store(serial, std::sync::atomic::Ordering::Relaxed);
+    }
+    /// Builds the interface digest of `doc` (for tests that call [`crate::connect`]).
+    pub fn iface(
+        doc: &schemify_doc::Document,
+        cell: &str,
+        names: &mut crate::Names,
+    ) -> crate::Iface {
+        crate::Iface::from_doc(doc, cell, cell, u32::MAX, true, names)
+    }
+}

@@ -263,6 +263,7 @@ devices (plus `core:` sources and passives) retargets between PDKs by changing t
 schemify 1 techmap
   pdk sky130
   vdd 1.8                                  # nominal supply of the core flavor, volts
+  simulator spectre                        # optional: the simulator the kit's models need
 
 class nmos core
   cell sky130_fd_pr:nfet_01v8              # the PDK cell it becomes
@@ -283,6 +284,15 @@ class nmos core                            # in asap7's map: FinFET
   expression for number params, no braces. It is evaluated in the derived cell's scope, so it
   reads the instance's class params (their overrides, else the defaults). Files store only the
   class params (D40: overrides only).
+- **`simulator`** pins the PDK to a simulator: `ngspice`, `espice`, `xyce`, `ltspice`,
+  `spectre` or `hspice` (netlist-only: a run is refused), a dialect word and never a command (D7: the command line stays the user config's `sim` row).
+  A recipe writes it only when the kit's models work with that simulator alone (a
+  Spectre-only foundry kit, a kit whose cards only ESPice reads); sky130, gf180mcu,
+  ihp-sg13g2, freepdk45 and asap7 leave it out. It ranks below `--dialect` and the Netlist
+  dialect menu and above the user config ([run.md](run.md) §5). A pinned simulator never
+  falls back to another one: a run in it that Schemify cannot start, or whose program is not
+  installed, is refused naming the PDK. Another word is an error naming the PDK when the
+  dialect is chosen.
 - A class/flavor a PDK lacks is an error at check time ("sky130 has no lvt pmos"), not a silent
   substitution.
 - The shipped maps (`examples/plugins/pdk-manager/maps/`): sky130 `W = w/1u`, `L = l/1u`, `mult = m`
@@ -373,14 +383,14 @@ are listed, not changed. One transaction (one undo), shown in the visual diff be
     recipe coherence, `local` path refusals. `src/install.rs`: the step list of every source
     kind, the corner library, the generated cells (canonical, the core pins and drawing, the
     CLI fixtures), the OSDI card rewrite and its refusals, sha256 against the FIPS vectors.
-  - `crates/cli/tests/tech.rs`: the same `tech:` inverter netlisted under the shipped sky130,
+  - `crates/model/cli/tests/tech.rs`: the same `tech:` inverter netlisted under the shipped sky130,
     gf180mcu, freepdk45 and asap7 maps produces each PDK's device lines with the mapped params
     (golden netlists; asap7 `nfin` from `w`, and its `pre_osdi`);
     negative: no `lib tech`, unknown class, unknown flavor.
-  - `crates/run/tests/runner.rs` `tech_cells_compile_their_pdk_cells_sources`: §9.5.
-  - `crates/doc/tests/tech.rs`: derived cells (pins, params, impls, drawing, `tech_source`), every E001 reason,
+  - `crates/model/run/tests/runner.rs` `tech_cells_compile_their_pdk_cells_sources`: §9.5.
+  - `crates/model/doc/tests/tech.rs`: derived cells (pins, params, impls, drawing, `tech_source`), every E001 reason,
     `reload_manifest` keeps open documents and refuses to orphan one.
-  - `crates/app/tests/pdk.rs`: `project.reload` resolves a new `lib` and a new `lib tech map`
+  - `crates/view/app/tests/pdk.rs`: `project.reload` resolves a new `lib` and a new `lib tech map`
     without a restart, switches technology, refuses to orphan an open document.
-  - `crates/plugin` (`fs_remove_is_scoped_to_the_tool_directory`, the capability proptest) and
-    `crates/app` (`fs_remove_removes_trees_and_files`): `fs_remove` refusals and execution.
+  - `crates/plugins/plugin` (`fs_remove_is_scoped_to_the_tool_directory`, the capability proptest) and
+    `crates/view/app` (`fs_remove_removes_trees_and_files`): `fs_remove` refusals and execution.

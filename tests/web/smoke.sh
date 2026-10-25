@@ -4,9 +4,9 @@
 # (`drive.py`, web spec §8): the editor opens its window (winit's canvas) without a trap or
 # panic, a wire drawn in a project and saved reaches OPFS and survives a reload, Ctrl+C reaches the
 # system clipboard and Ctrl+V pastes from it. Console output, the Chrome log and a screenshot
-# land in <out-dir>. WebGPU is requested through SwiftShader; without a usable one (`gpu: ...`:
-# no adapter, or frames that never reach the page, as on headless runners) the editor draws on
-# the CPU and its frame is compared with the native golden (web spec §7). The page mounts OPFS
+# land in <out-dir>. WebGPU and WebGL2 are requested through SwiftShader; the editor draws with
+# WebGPU, else WebGL2 (headless runners: SwiftShader's WebGPU frames never reach the page), else
+# on the CPU, whose frame is compared with the native golden (web spec §7). The page mounts OPFS
 # before the editor starts, so the checks wait in real time (Chrome's virtual-time budget skips
 # past storage I/O).
 #
@@ -29,7 +29,13 @@ done
 
 status=0
 python3 "$(dirname "$0")/drive.py" "$chrome" "http://127.0.0.1:$port/" "$out" || status=1
-if grep -aq 'gpu: ' "$out/drive-console.txt"; then
-  echo "::notice::no WebGPU device in this browser: the editor draws on the CPU"
+if grep -aq 'drawing on the CPU' "$out/drive-console.txt"; then
+  echo "::notice::neither WebGPU nor WebGL2 usable in this browser: the editor draws on the CPU"
+elif grep -aq 'drawing with WebGL2' "$out/drive-console.txt"; then
+  echo "::notice::WebGPU unusable in this browser: the editor draws with WebGL2"
 fi
+# The last tier on purpose: no 3D APIs, so the CPU frame meets the native golden.
+echo "--- again with --disable-3d-apis (the CPU tier)"
+python3 "$(dirname "$0")/drive.py" "$chrome" "http://127.0.0.1:$port/" "$out/cpu" \
+  --disable-3d-apis || status=1
 exit $status

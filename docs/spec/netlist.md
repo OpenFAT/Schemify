@@ -70,7 +70,7 @@ For an inherited pin `P` with default net `D` on cell `c`, at instance path `p`:
 
 ### 7.1 Common rules
 
-- Dialect ∈ `ngspice espice xyce cdl spectre verilog`. `spice` templates serve `ngspice`, `espice`, `xyce` and `cdl` unless a dialect-specific `format` exists (`format espice`, `format xyce`, `format cdl`).
+- Dialect ∈ `ngspice espice xyce hspice ltspice cdl spectre verilog`. `spice` templates serve the SPICE dialects (`ngspice`, `espice`, `xyce`, `hspice`, `ltspice`, `cdl`) unless a dialect-specific `format` exists (`format espice`, `format xyce`, `format hspice`, `format ltspice`, `format cdl`).
 - Instances (or impls) with `ignore true` are not emitted; `ignore open` is not emitted and its pins are left unconnected; `ignore short` is not emitted and all its pin nets are merged into one net (named by §3 rules). Ignored instances still elaborate for checks.
 - Instance lines come from the selected impl's template ([expr.md §6](expr.md)). Default templates when an impl has none:
 
@@ -107,6 +107,13 @@ ESPice reads ngspice decks (`--tokenizer=ngspice`) and compiles Verilog-A itself
 
 Code blocks of lang `spice`, `ngspice` or `espice` are emitted. A precompiled `veriloga` body (no `endmodule` line, SPICE text with its own OSDI load) is emitted as is, so ESPice refuses it: give such cells their Verilog-A source.
 
+### 7.2b hspice, ltspice
+
+The ngspice text with these differences (2026-10-24): `.control` blocks are never emitted (a `spice` code block holding `.control` is `E033`), code blocks of lang `spice` or the dialect's own word are taken, there are no OSDI loads or `.model` lines for Verilog-A or Verilog leaves (their default templates are `E013`: give such cells a `format hspice`/`format ltspice`), and
+
+- **hspice** (netlist only, run spec §5): corner paths are quoted, `.lib '<path>' <section>` and `.include '<path>'`;
+- **ltspice**: `.options plotwinsize=0 numdgt=15` follows the header, so LTspice keeps every waveform point in double precision (it compresses otherwise) and the recorded outputs (run spec §4) see the simulated values.
+
 ### 7.3 xyce
 
 As ngspice except: subckt params use `PARAMS:` when present; `.control` blocks are never emitted (a `spice` code block containing `.control` → `E033`); lang `xyce` blocks emitted.
@@ -134,8 +141,9 @@ Spectre: `subckt <name> (<ports>)` … `ends <name>`, instances `<name> (<nets>)
 
 ### 7.6 Emission decisions (amendments, WS3 `netlist`)
 
-Where §7.1–§7.5 left a choice open, `crates/netlist` decided as follows; these are normative.
+Where §7.1–§7.5 left a choice open, `crates/model/netlist` decided as follows; these are normative.
 
+0. **Writer** (2026-10-24, D22 as amended). `crates/model/netlist` lowers the elaboration to SpiceRack's circuit IR (`netlist::lower`: every row is a packed element line, a default-template subcircuit row spelled by SpiceRack's `push_instance` exactly as it writes an IR `Instance`, plus the deck's title, globals, setup lines, bodies and Verilog nets; the name-map pass, which reads every element name, marks a block already in name order with `Lines::sorted`, so SpiceRack copies it without reading the names again), and SpiceRack's xschem-layout codegen (`spicerack::codegen::xschem::write`) writes the text: the order, the sort by element name (§7.6.4), the `X` letter rule (§7.6.5), the identifier escapes and every dialect's wrapper lines below are SpiceRack's. The output is the one this section specifies, byte for byte (the goldens and fixture netlists did not change). The name map keys on the element names SpiceRack writes (`push_element_name`, `element_name`).
 1. **API.** `emit(&Elab, Dialect) -> Netlist { text, name_map }`. It never fails: the caller gates on violations (§8). A template that fails to render (`X0xx`, a param without a value `E008`, a lang without a default `E013`) becomes the comment line `* error in <name>: <message>` (`//` for spectre/verilog) and gets no name-map row; an unconnected pin bit (`E011`, `ignore open`) is written `?`. A template that renders nothing emits no line.
 2. **Header:** one comment line `* <top cell> (schemify <dialect>)` (`//` for spectre and verilog; spectre adds `simulator lang=spectre`). No dates, paths or versions, so output is byte-identical across runs and machines.
 3. **Order.** Header; `.global`; bench vars one `.param k=v` per line in name order; corner lines in file order; the top block; code blocks (elab's order); definitions by name (each block: instance lines, then the cell's own code, §7.6.15); once-only text: OSDI `.control`/`pre_osdi <stem>.osdi`/`.endc` blocks (espice: `.hdl "<stem>.va"` lines, §7.2a) by file stem, then generated `.model` lines sorted, then impl bodies by (cell display name, impl name); `.end`. Only definitions reachable through non-ignored rows are emitted, and only impls some emitted row uses contribute once-only text.
@@ -176,7 +184,7 @@ Severity `E` blocks Run and makes `schemify netlist` exit 1 (unless `--allow-err
 | E030 | E | override of computed param |
 | E031 | E | config names an impl the cell lacks |
 | E032 | E | param off grid/step (waivable) |
-| E033 | E | `.control` in a code block for xyce |
+| E033 | E | `.control` in a code block for xyce, hspice or ltspice |
 | E034 | E | undefined `${NAME}` in code, body or corner path |
 | E035 | E | unknown corner or config named by the request |
 | E036 | E | inherited pins of one name with different default nets in one definition |
@@ -189,7 +197,7 @@ Violations are keyed by (code, cell, object id, instance path, param) and sorted
 
 ## 9. Elaboration decisions (amendments, WS2 `elab`)
 
-Where §1–§8 left a choice open, `crates/elab` decided as follows; these are normative.
+Where §1–§8 left a choice open, `crates/model/elab` decided as follows; these are normative.
 
 1. **Names connect.** Components carrying the same bit name are one net, in the cell and (for globals) everywhere. A component with names whose bit lists differ is `E003` (one row per extra name); names of different width on one component are `E011` and the narrower-ranked name is ignored.
 2. **Emitted bit name**, per merged net: global names first (`0`, `…!`, `global true`), then port names (and interface pins bound by name), then label and `inherit` names; bytewise smallest within the class. Unnamed: the §3 rule (`net_<id>` from an owned wire/label/port/noconn id, else `net_<inst>_<pin>`), with `[k]` (component bit `k`, from 0) appended for wider components. The component (render/plugin `Nets` row) is named by its best name expression (`d[3:0]`).
@@ -203,7 +211,7 @@ Where §1–§8 left a choice open, `crates/elab` decided as follows; these are 
 10. **`ignore`:** the instance attr wins over the selected impl's. An impl-level `short` merges the instance's nets within the definition (renamed to the best name: global, then a definition port, then bytewise smallest).
 11. **Request:** corner `set` lines apply first, then the request's overrides in order (later wins); an override of an unknown var adds it. The default corner/config is the bench's header attr; an unknown name is `E035`. Corner `lib` sections are literal; `temp` is evaluated in the bench scope.
 12. **`${NAME}`** is expanded by elab from project `set` entries, then an environment table the caller passes in the request (elab reads no environment), so the netlister receives final text.
-13. **Code blocks per dialect:** `spice` → ngspice and xyce, a dialect word → that dialect, CDL → none.
+13. **Code blocks per dialect:** `spice` → ngspice, espice, xyce, hspice and ltspice, a dialect word → that dialect (espice also takes `ngspice`), CDL → none.
 14. **Loaded documents:** cells whose schematic or body elaboration needs but which are only indexed (ranks 0–2: interface and symbol graphics) are listed for the app to open, then elaboration runs again; meanwhile an unopened schematic child is skipped and a leaf keeps its template.
 15. **D20:** a param's or var's `cached` value stands in for the whole expression when a plugin function is missing; the value and everything computed from it are flagged unverified.
 16. **Scopes:** child vars read by a child-scope expression are evaluated per instance, in that instance's scope.
