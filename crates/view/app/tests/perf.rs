@@ -25,7 +25,7 @@ use schemify_render::gpu::{InstanceRows, Pipelines};
 use schemify_render::kurbo::Affine;
 use schemify_render::peniko::Color;
 use schemify_render::wgpu;
-use schemify_render::{Batch, GpuPainter};
+use schemify_render::{Batch, GpuPainter, block_on};
 use schemify_ui::{Button, Chord, InputEvent, InputEvents};
 
 fn id(prefix: char, n: u32) -> String {
@@ -133,18 +133,6 @@ fn var_edit_with_1k_dependents_through_the_docs_page() {
     );
     eprintln!("PERF app.var_edit_1k_dependents_ms {:.3}", plain[4]);
     eprintln!("PERF app.var_edit_1k_dependents_gmid_ms {:.3}", plugin[4]);
-}
-
-/// Polls a wgpu future to completion (native wgpu resolves them without a reactor).
-fn block_on<F: std::future::Future>(f: F) -> F::Output {
-    let mut f = std::pin::pin!(f);
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    loop {
-        if let std::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-            return v;
-        }
-        std::thread::yield_now();
-    }
 }
 
 /// A headless GPU with timestamp queries: renders each benchmark frame as the window does.

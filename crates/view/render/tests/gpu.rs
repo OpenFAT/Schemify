@@ -31,7 +31,7 @@ struct Gpu {
 
 fn gpu() -> Gpu {
     let inst = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let adapter = pollster::block_on(inst.request_adapter(&wgpu::RequestAdapterOptions {
+    let adapter = schemify_render::block_on(inst.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         ..Default::default()
     }))
@@ -42,11 +42,12 @@ fn gpu() -> Gpu {
     // could not build fails here too.
     let required_limits =
         wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        required_limits,
-        ..Default::default()
-    }))
-    .expect("a device");
+    let (device, queue) =
+        schemify_render::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_limits,
+            ..Default::default()
+        }))
+        .expect("a device");
     Gpu {
         pipes: Pipelines::new(&device, wgpu::TextureFormat::Rgba8Unorm),
         device,

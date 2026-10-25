@@ -319,6 +319,29 @@ struct Shell<A: App> {
     failed: Option<String>,
 }
 
+/// Runs `f` to completion on this thread, parking the thread while `f` is pending and waking it
+/// when `f`'s waker fires. Native wgpu's futures (adapter, device, buffer mapping) resolve
+/// without a reactor, so this stands in for an executor; on the web the browser's event loop
+/// runs them (`wasm_bindgen_futures`).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    struct Unpark(std::thread::Thread);
+    impl std::task::Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = std::task::Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut cx = std::task::Context::from_waker(&waker);
+    let mut f = std::pin::pin!(f);
+    loop {
+        if let std::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
+            return v;
+        }
+        std::thread::park(); // a wake before this park makes it return at once
+    }
+}
+
 /// The native GPU ladder: `open(false)` (the fastest hardware adapter), then `open(true)`
 /// (wgpu's software adapter: WARP, lavapipe or llvmpipe). The error names both failures.
 // ponytail: no CPU rung (`CpuPainter` through `softbuffer`): WARP and lavapipe cover the
@@ -413,7 +436,7 @@ impl<A: App> Shell<A> {
         let g = gpu_ladder(|fallback| {
             let desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
             let target = window.clone().into();
-            pollster::block_on(Gpu::new(wgpu::Instance::new(desc), target, w, h, fallback))
+            block_on(Gpu::new(wgpu::Instance::new(desc), target, w, h, fallback))
         })?;
         let lost = self.proxy.clone();
         // `Destroyed` is our own drop of the device (the window closing, a reopen).
@@ -1004,7 +1027,7 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Pace, gpu_ladder, pace};
+    use super::{Pace, block_on, gpu_ladder, pace};
 
     /// D39: nothing pending sleeps; input alone never updates before the granted redraw, so
     /// events during a frame in flight get one update at the next grant, not one each; a
@@ -1051,6 +1074,42 @@ mod tests {
             none,
             Err("hardware: false; software: true".to_owned()),
             "both named"
+        );
+    }
+
+    /// `block_on` returns a ready value, and one that becomes ready only after another
+    /// thread wakes it (a park that a wake must end).
+    #[test]
+    fn block_on_waits_for_the_wake() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+        use std::task::{Poll, Waker};
+        assert_eq!(block_on(async { 7 }), 7, "ready at once");
+        let done = Arc::new(AtomicBool::new(false));
+        let waker: Arc<Mutex<Option<Waker>>> = Arc::default();
+        let (d, w) = (done.clone(), waker.clone());
+        let polls = std::cell::Cell::new(0);
+        let pending = std::future::poll_fn(|cx| {
+            polls.set(polls.get() + 1);
+            if d.load(Ordering::SeqCst) {
+                return Poll::Ready(42);
+            }
+            *w.lock().expect("lock") = Some(cx.waker().clone());
+            Poll::Pending
+        });
+        let (d2, w2) = (done.clone(), waker.clone());
+        let t = std::thread::spawn(move || {
+            while w2.lock().expect("lock").is_none() {
+                std::thread::yield_now();
+            }
+            d2.store(true, Ordering::SeqCst);
+            w2.lock().expect("lock").take().expect("waker").wake();
+        });
+        assert_eq!(block_on(pending), 42, "ready after the wake");
+        t.join().expect("waker thread");
+        assert!(
+            polls.get() >= 2,
+            "polled again after the wake, not spun to completion"
         );
     }
 }

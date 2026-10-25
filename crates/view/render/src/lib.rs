@@ -63,6 +63,8 @@ pub use batch::{Batch, GpuPainter};
 pub use painter::{Chains, CpuPainter, Painter, rgba};
 /// CPU raster target returned by [`CpuPainter::finish`] (PNG encode/decode included).
 pub use vello_cpu::Pixmap;
+#[cfg(not(target_arch = "wasm32"))]
+pub use window::block_on;
 pub use window::{App, RunError, Waker, run};
 
 /// Re-exported so callers name the same geometry, colour, glyph and GPU types.
