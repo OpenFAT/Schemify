@@ -7,6 +7,8 @@ Schemify ships as two programs:
 | `schemify` | The headless core: `netlist`, `check`, `run`, `fmt`, `diff`, `pack` and the other commands of [cli.md](cli.md). No window, no GPU. |
 | `schemify-gui` | The editor. `schemify edit` starts it for you. |
 
+Releases also ship `espice`, [ESPice](https://github.com/OmarSiwy/ESPice), the simulator `schemify run` and Simulate start by default.
+
 `schemify edit` looks for `schemify-gui` in the same directory as the `schemify` binary first, then on your `PATH`. Keep the two side by side and both ways of starting the editor work. You can also run `schemify-gui` directly: it takes the same arguments (`schemify-gui path/to/cell.shcomp`).
 
 A third program, `schemify-interop`, imports xschem libraries and PDKs. It belongs to the `interop` plugin, not the core, and lives in its own repository, [Schemify-Interop](https://github.com/OmarSiwy/Schemify-Interop):
@@ -15,9 +17,37 @@ A third program, `schemify-interop`, imports xschem libraries and PDKs. It belon
 cargo install --git https://github.com/OmarSiwy/Schemify-Interop --features cli --bin schemify-interop
 ```
 
+## Linux packages
+
+Each release attaches packages built from its Linux binaries (x86_64, glibc 2.28 or newer). Download the one for your distribution from the [releases page](https://github.com/OmarSiwy/Schemify/releases) and install it:
+
+| Distribution | Package | Install |
+|---|---|---|
+| Debian, Ubuntu and derivatives | `schemify_<version>-1_amd64.deb` | `sudo apt install ./schemify_<version>-1_amd64.deb` |
+| Fedora, RHEL 8+, openSUSE | `schemify-<version>-1.x86_64.rpm` | `sudo dnf install ./schemify-<version>-1.x86_64.rpm` (`zypper install` on openSUSE) |
+| Arch and derivatives | `schemify-<version>-1-x86_64.pkg.tar.zst` | `sudo pacman -U schemify-<version>-1-x86_64.pkg.tar.zst` |
+
+Each package installs `schemify`, `schemify-gui` and `espice` into `/usr/bin`. The editor's [runtime libraries](#runtime-libraries-on-linux) are recommended (Debian/Fedora) or optional (Arch) dependencies, because the core needs none of them.
+
+On Arch the release also carries a `PKGBUILD` for the AUR package `schemify-bin`; `makepkg -si` beside it builds and installs the same binaries.
+
+ESPice compiles Verilog-A devices with Zig 0.17, found through the `ZIG` environment variable or `zig` on `PATH`; install Zig if your designs contain Verilog-A. ngspice remains available as an alternative (`--dialect ngspice`, or `schemify.opt.simulator = "ngspice"`).
+
 ## With Nix
 
 The repository is a Nix flake. You need Nix with flakes enabled; no checkout is required.
+
+The released binaries, without compiling anything:
+
+```sh
+nix run 'github:OmarSiwy/Schemify#latest' -- path/to/cell.shcomp         # the newest release
+nix run 'github:OmarSiwy/Schemify#"1.0.0"' -- path/to/cell.shcomp        # one version
+nix profile install 'github:OmarSiwy/Schemify#latest'
+```
+
+These come from `sources.json` in the repository, which lists every published release's archives with their checksums (updated automatically after a release is published), for x86_64 Linux and both macOS architectures.
+
+Built from source, at the commit you name:
 
 ```sh
 nix run github:OmarSiwy/Schemify -- path/to/cell.shcomp                      # the editor
@@ -26,15 +56,13 @@ nix run github:OmarSiwy/Schemify#schemify -- netlist path/to/tb.shbench      # t
 
 Plain `nix run` starts `schemify-gui`; `#schemify` runs the core. Inside a checkout the same apps are `nix run .` and `nix run .#schemify`.
 
-The Nix package wraps both programs so they work without further setup:
+The Nix packages wrap both programs so they work without further setup:
 
 - `schemify-gui` gets the Linux graphics, input and font libraries on `LD_LIBRARY_PATH`.
-- Both get ngspice, Xyce and Icarus Verilog (`iverilog`) on `PATH`, after your own `PATH`, so a simulator you installed yourself wins.
+- Both get ESPice on `PATH`, after your own `PATH`, so a simulator you installed yourself wins.
 - `schemify` also gets `git` and `curl`, which `schemify pack` uses to fetch plugins.
 
-To keep the programs installed, use `nix profile install github:OmarSiwy/Schemify`.
-
-OpenVAF is not part of the package (its toolchain is large). Install it yourself if your designs contain Verilog-A and you simulate with ngspice (see [External programs](#external-programs)).
+To keep the programs installed, use `nix profile install github:OmarSiwy/Schemify` (from source) or the `#latest` line above.
 
 ### Development shell
 
@@ -78,9 +106,9 @@ cargo run --release --manifest-path examples/plugins/interop/Cargo.toml --featur
 
 ## Release archives
 
-Tagging a version (`v*`) builds archives for Linux x86_64, macOS (Apple silicon and Intel) and Windows x86_64, plus a web bundle, and attaches them to a GitHub release. No release has been published yet, so for now use Nix or build from source.
+Every release (`publish.yaml`, on a `v*` tag) attaches archives for Linux x86_64, macOS (Apple silicon and Intel) and Windows x86_64, the Linux packages above, a web bundle and `SHA256SUMS`.
 
-Each native archive (`schemify-<version>-<platform>.tar.gz`, `.zip` on Windows) holds `schemify` and `schemify-gui` in one directory. Unpack it and put that directory on your `PATH`. The Linux binaries need glibc 2.28 or newer (RHEL/Alma/Rocky 8, Debian 10, Ubuntu 18.10 and later); musl-based distributions are not supported.
+Each native archive (`schemify-v<version>-<platform>.tar.gz`, `.zip` on Windows) holds `schemify`, `schemify-gui` and, except on Windows, `espice` in one directory. Unpack it and put that directory on your `PATH`. The Linux binaries need glibc 2.28 or newer (RHEL/Alma/Rocky 8, Debian 10, Ubuntu 18.10 and later); musl-based distributions are not supported. ESPice has no Windows build: on Windows, install ngspice and choose it (`schemify.opt.simulator = "ngspice"`).
 
 ## Runtime libraries on Linux
 
@@ -116,14 +144,14 @@ Schemify writes netlists by itself. It starts other programs only to simulate or
 
 | Program | Needed for | Default name |
 |---|---|---|
-| ngspice | Simulate (`s`) and `schemify run`; the default simulator | `ngspice` |
-| ESPice | Simulate and `schemify run` when you choose ESPice (`--dialect espice`, the *Netlist dialect* menu, or `schemify.opt.simulator = "espice"`). It compiles Verilog-A itself with Zig 0.17, found through the `ZIG` environment variable or `zig` on `PATH`. Not packaged with Schemify. | `espice` |
+| ESPice | Simulate (`s`) and `schemify run`; the default simulator, shipped with the release archives and packages. It compiles Verilog-A itself with Zig 0.17, found through the `ZIG` environment variable or `zig` on `PATH`. | `espice` |
+| ngspice | Simulate and `schemify run` when you choose ngspice (`--dialect ngspice`, the *Netlist dialect* menu, or `schemify.opt.simulator = "ngspice"`), or when it is installed and ESPice is not | `ngspice` |
 | OpenVAF | Verilog-A devices simulated with ngspice: each source is compiled to an OSDI file before the run. OpenVAF-Reloaded installs as `openvaf-r`; name it in your config. | `openvaf` |
 | Icarus Verilog | Verilog devices simulated with ngspice (co-simulation through ngspice's `d_cosim`) | `iverilog` |
 | Xyce | Nothing inside Schemify: `schemify run` and Simulate start only ngspice or ESPice. `schemify netlist --dialect xyce` writes a Xyce netlist you can run yourself. | |
 | git, curl | `schemify pack` fetching plugins | `git`, `curl` |
 
-A design that uses only SPICE models needs ngspice and nothing else. Netlisting, checking, formatting and diffing need no external program at all.
+A design that uses only SPICE models needs ESPice (or ngspice) and nothing else. Netlisting, checking, formatting and diffing need no external program at all.
 
 A minimal config that points at non-default locations:
 

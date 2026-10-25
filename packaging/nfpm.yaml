@@ -1,0 +1,112 @@
+# Distribution packages of the Linux release binaries (publish.yaml's `distro` job): one
+# config, three formats: `nfpm package --packager deb|rpm|archlinux`, after
+# `envsubst '$SCHEMIFY_DIR $SCHEMIFY_VERSION'` (nfpm expands no variables in `contents`). The binaries are the
+# same ones the Linux archive carries (built in manylinux_2_28: glibc 2.28 or newer).
+#
+# The editor opens the windowing, graphics and font libraries at run time (dlopen), so they
+# are recommendations, not hard dependencies: the headless core `schemify` needs none of
+# them. ESPice, the default simulator (user decision 2026-10-25), ships in the package:
+# `schemify run` and Simulate start it. ESPice compiles Verilog-A devices with Zig 0.17,
+# found through `ZIG` or `zig` on PATH, so Zig is a suggestion; ngspice is an alternative.
+name: schemify
+arch: amd64
+platform: linux
+version: ${SCHEMIFY_VERSION}
+version_schema: semver
+release: 1
+section: electronics
+priority: optional
+maintainer: Omar El-Sawy <omarelsiwy@gmail.com>
+description: |
+  Schematic capture for analog/mixed-signal IC design.
+  Schemify draws, checks and netlists schematics, runs SPICE simulations and shows their
+  waveforms. `schemify` is the headless core (netlist, check, run, fmt, diff, pack);
+  `schemify-gui` is the editor, which `schemify edit` starts; `espice` is ESPice, the
+  simulator they start.
+vendor: Schemify
+homepage: https://github.com/OmarSiwy/Schemify
+license: MIT and Apache-2.0
+
+contents:
+  - src: ${SCHEMIFY_DIR}/schemify
+    dst: /usr/bin/schemify
+    file_info:
+      mode: 0755
+  - src: ${SCHEMIFY_DIR}/schemify-gui
+    dst: /usr/bin/schemify-gui
+    file_info:
+      mode: 0755
+  - src: ${SCHEMIFY_DIR}/espice
+    dst: /usr/bin/espice
+    file_info:
+      mode: 0755
+  - src: ${SCHEMIFY_DIR}/LICENSE
+    dst: /usr/share/licenses/schemify/LICENSE
+  - src: ${SCHEMIFY_DIR}/ESPICE-LICENSE
+    dst: /usr/share/licenses/schemify/ESPICE-LICENSE
+  - src: ${SCHEMIFY_DIR}/README.md
+    dst: /usr/share/doc/schemify/README.md
+
+overrides:
+  deb:
+    depends:
+      - libc6 (>= 2.28)
+    recommends:
+      - libwayland-client0
+      - libxkbcommon0
+      - libvulkan1
+      - libx11-6
+      - libxcursor1
+      - libxi6
+      - libxrandr2
+      - libfontconfig1
+    suggests:
+      - git
+      - curl
+      - zig
+      - ngspice
+  rpm:
+    depends:
+      - glibc >= 2.28
+    recommends:
+      - libwayland-client
+      - libxkbcommon
+      - vulkan-loader
+      - libX11
+      - libXcursor
+      - libXi
+      - libXrandr
+      - fontconfig
+    suggests:
+      - git
+      - curl
+      - zig
+      - ngspice
+  archlinux:
+    depends:
+      - glibc
+    # nfpm writes these as optdepends (no description): the editor's libraries, Zig for
+    # Verilog-A in ESPice, ngspice as an alternative, git and curl for `schemify pack`. The
+    # PKGBUILD for the AUR (packaging/PKGBUILD.in) says what each is for.
+    suggests:
+      - wayland
+      - libxkbcommon
+      - vulkan-icd-loader
+      - libx11
+      - libxcursor
+      - libxi
+      - libxrandr
+      - fontconfig
+      - zig
+      - ngspice
+      - git
+      - curl
+
+deb:
+  fields:
+    Bugs: https://github.com/OmarSiwy/Schemify/issues
+rpm:
+  group: Applications/Engineering
+  summary: Schematic capture for analog/mixed-signal IC design
+archlinux:
+  packager: Omar El-Sawy <omarelsiwy@gmail.com>
