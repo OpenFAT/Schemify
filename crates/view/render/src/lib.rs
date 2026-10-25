@@ -43,6 +43,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod atlas;
 pub mod canvas;
 #[cfg(target_arch = "wasm32")]
 mod cpu_view;
