@@ -3,7 +3,8 @@
 // its clip rect. Coverage is exact pixel area where it can be (a rect, a clip, the band of a
 // stroke), so a frame matches the CPU painter (`vello_cpu`) within antialiasing. Output is
 // premultiplied. WebGL2-compatible: instance data as per-instance vertex attributes, no
-// storage buffers, no compute.
+// storage buffers, no compute. `corner`, `color_of` and `half_plane_area` come from
+// `instance.wgsl` and `area.wgsl`, shared with the canvas module.
 
 // Scroll pane slots (`ui_rows::PANES`): an instance's kind word carries its slot above the low
 // byte; slot 0 is no pane.
@@ -18,16 +19,24 @@ struct Ui {
 }
 
 @group(0) @binding(0) var<uniform> ui: Ui;
+
 @group(0) @binding(1) var atlas: texture_2d<f32>;
+
 @group(0) @binding(2) var image: texture_2d<f32>;
+
 @group(0) @binding(3) var smp: sampler;
 
 // Instance kinds (`batch.rs`).
 const RECT: u32 = 0u;
+
 const MASK: u32 = 1u;
+
 const SEG: u32 = 2u;
+
 const TRI: u32 = 3u;
+
 const IMAGE: u32 = 4u;
+
 const MASK_SCALED: u32 = 5u;
 
 struct In {
@@ -50,19 +59,9 @@ struct Out {
     @location(5) @interpolate(flat) kind: u32,
 }
 
-fn corner(i: u32) -> vec2<f32> {
-    let k = i % 6u;
-    return vec2<f32>(f32(k == 1u || k == 3u || k == 4u), f32(k == 2u || k == 4u || k == 5u));
-}
-
 fn to_clip(p: vec2<f32>) -> vec4<f32> {
     let n = p / ui.size * 2.0 - 1.0;
     return vec4<f32>(n.x, -n.y, 0.0, 1.0);
-}
-
-// RGBA8 bytes in memory order (R first) → straight-alpha colour.
-fn color_of(c: u32) -> vec4<f32> {
-    return vec4<f32>(f32(c & 0xffu), f32((c >> 8u) & 0xffu), f32((c >> 16u) & 0xffu), f32(c >> 24u)) / 255.0;
 }
 
 @vertex
@@ -117,25 +116,6 @@ fn box_cov(p: vec2<f32>, r: vec4<f32>) -> f32 {
     let hi = min(p + 0.5, r.zw);
     let d = clamp(hi - lo, vec2<f32>(0.0), vec2<f32>(1.0));
     return d.x * d.y;
-}
-
-// The area of the unit pixel square (centred on the fragment) on the side `n · (x - c) ≤ t`
-// of a line with unit normal `n` (as `gpu.wgsl`'s).
-fn half_plane_area(n: vec2<f32>, t: f32) -> f32 {
-    let a = min(abs(n.x), abs(n.y));
-    let b = max(abs(n.x), abs(n.y));
-    let w = a + b;
-    let u = clamp(t + 0.5 * w, 0.0, w);
-    if a < 1e-4 {
-        return u / w;
-    }
-    if u < a {
-        return u * u / (2.0 * a * b);
-    }
-    if u > b {
-        return 1.0 - (w - u) * (w - u) / (2.0 * a * b);
-    }
-    return (u - 0.5 * a) / b;
 }
 
 // A capsule's coverage: the exact band area along it, 4 × 4 subsamples near its round caps.

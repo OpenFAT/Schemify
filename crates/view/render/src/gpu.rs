@@ -1,7 +1,7 @@
 //! The GPU canvas (D39; `docs/dev/research/render-backend.md` § 5, step 1): the canvas tables
 //! packed into retained instance rows ([`InstanceRows`]), patched where the tables' reported
 //! changes say, and drawn by instanced pipelines ([`Pipelines`]) under one camera uniform
-//! (`gpu.wgsl`). A pan or zoom writes the uniform only; an edit rewrites the rows it changed.
+//! (`shaders/canvas/`). A pan or zoom writes the uniform only; an edit rewrites the rows it changed.
 //! Every frame is complete: there is no tile cache.
 //!
 //! One producer, two consumers: the pack here is the one place a per-row decision is made
@@ -79,18 +79,39 @@ pub const OVERLAY: usize = 5;
 const BYTES_MAX: usize = 1 << 28;
 /// Dirty ranges kept per row array before they merge into one.
 const DIRTY_MAX: usize = 8;
-/// The canvas pipelines' WGSL module, exactly as `Pipelines::new` hands it to wgpu (the
-/// WebGL2 test validates this string, whatever files it is assembled from).
-const CANVAS_WGSL: &str = include_str!("gpu.wgsl");
-/// The batch pipeline's WGSL module, as `Pipelines::new` hands it to wgpu.
-const UI_WGSL: &str = include_str!("ui.wgsl");
+/// The canvas pipelines' WGSL module, exactly as `Pipelines::new` hands it to wgpu: the shared
+/// helpers, then the camera, the row style and the distances, then one file per pipeline (the
+/// WebGL2 test validates this string). WGSL has no imports and its module-scope declarations
+/// are order-independent, so the files are concatenated; a name defined in two of them fails
+/// at module creation. WebGL2-compatible: no storage buffers, no compute, no texture; row data
+/// as per-instance vertex attributes. Draw order is the pack's: rows grouped by palette layer,
+/// each source's layers in turn, so antialiased edges blend as the CPU painter blends them.
+const CANVAS_WGSL: &str = concat!(
+    include_str!("shaders/instance.wgsl"),
+    include_str!("shaders/area.wgsl"),
+    include_str!("shaders/canvas/camera.wgsl"),
+    include_str!("shaders/canvas/style.wgsl"),
+    include_str!("shaders/canvas/distance.wgsl"),
+    include_str!("shaders/canvas/background.wgsl"),
+    include_str!("shaders/canvas/segment.wgsl"),
+    include_str!("shaders/canvas/rect.wgsl"),
+    include_str!("shaders/canvas/arc.wgsl"),
+    include_str!("shaders/canvas/fill.wgsl"),
+);
+/// The batch pipeline's WGSL module, as `Pipelines::new` hands it to wgpu: the shared helpers,
+/// then the batch's one pipeline.
+const UI_WGSL: &str = concat!(
+    include_str!("shaders/instance.wgsl"),
+    include_str!("shaders/area.wgsl"),
+    include_str!("shaders/batch.wgsl"),
+);
 
-/// Camera uniform size (`Cam` in `gpu.wgsl`).
+/// Camera uniform size (`Cam` in `shaders/canvas/camera.wgsl`).
 const UNIFORM_BYTES: usize = 96;
 /// A table row with no slot (dead, hidden, or nothing to draw).
 const NO_SLOT: u32 = u32::MAX;
 
-/// Style flags, bits 20–23 of a row's style word (`gpu.wgsl`): a closed shape also filled.
+/// Style flags, bits 20–23 of a row's style word (`shaders/canvas/style.wgsl`): a closed shape also filled.
 /// Every stroke has round caps and joins, as kurbo's `Stroke::new` and `canvas::stroke_of`
 /// draw them on the CPU.
 pub const FILL: u32 = 1;
@@ -252,8 +273,8 @@ impl InstanceRows {
     }
 
     /// Slot `slot` of kind `kind` from source `src` as its `STRIDE[kind] / 4` words, the rest
-    /// zero (`gpu.wgsl`'s fields: coordinates, then colour and style word; a fill triangle's
-    /// colour last). An empty slot is all zero.
+    /// zero (the canvas shaders' `In` fields: coordinates, then colour and style word; a fill
+    /// triangle's colour last). An empty slot is all zero.
     ///
     /// # Panics
     ///
@@ -753,7 +774,7 @@ fn ear_clip(xs: &[i32], ys: &[i32], out: &mut Vec<[u32; 3]>) {
     assert_eq!(out.len(), n - 2, "a simple polygon has n − 2 triangles");
 }
 
-/// The camera uniform (`Cam` in `gpu.wgsl`) for `frame` at `dev` device px per logical px
+/// The camera uniform (`Cam` in `shaders/canvas/camera.wgsl`) for `frame` at `dev` device px per logical px
 /// into a `target`-sized texture.
 fn uniform(frame: &Frame, dev: f64, (w, h): (u32, u32)) -> [u8; UNIFORM_BYTES] {
     let (cam, v) = (&frame.cam, frame.view);
@@ -810,7 +831,7 @@ fn uniform(frame: &Frame, dev: f64, (w, h): (u32, u32)) -> [u8; UNIFORM_BYTES] {
 
 /// The frame's pipelines and their GPU state: the canvas pipelines with one vertex buffer per
 /// `(source, kind)` of rows, grown by doubling, and the camera uniform; the batch pipeline
-/// (`ui.wgsl`) with the frame's instance buffer, the coverage atlas's texture and the images'.
+/// (`shaders/batch.wgsl`) with the frame's instance buffer, the coverage atlas's texture and the images'.
 /// Owner: the window (or a benchmark driving the GPU itself).
 pub struct Pipelines {
     uniform: wgpu::Buffer,
@@ -857,7 +878,7 @@ const TRI_ATTRS: [wgpu::VertexAttribute; 4] =
 const UI_ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
     0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Uint32, 4 => Uint32
 ];
-/// The batch uniform (`Ui` in `ui.wgsl`): the target's size, then per pane slot its offset and
+/// The batch uniform (`Ui` in `shaders/batch.wgsl`): the target's size, then per pane slot its offset and
 /// clip (two `vec4`s).
 const UI_UNIFORM_BYTES: usize = 16 + ui_rows::PANES * 32;
 
@@ -1502,8 +1523,8 @@ mod tests {
     }
 
     /// Counts and bytes of every kind match a hand computation; rows are grouped by layer
-    /// with an eighth plus 16 free slots after each; a row's fields sit where `gpu.wgsl`
-    /// reads them: coordinates, colour bytes R G B A, width in 1/16 px, dash, flags.
+    /// with an eighth plus 16 free slots after each; a row's fields sit where the canvas shaders
+    /// read them: coordinates, colour bytes R G B A, width in 1/16 px, dash, flags.
     #[test]
     fn rows_match_a_hand_computation() {
         let palette = Palette::xschem_dark();

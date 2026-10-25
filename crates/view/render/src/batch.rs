@@ -1,5 +1,5 @@
 //! The GPU painter (`docs/dev/research/render-backend.md` § 5, step 3): every [`Painter`] call
-//! of a frame becomes instances of one batch ([`Batch`]) that `ui.wgsl` draws in a single
+//! of a frame becomes instances of one batch ([`Batch`]) that `shaders/batch.wgsl` draws in a single
 //! pass with the canvas pipelines ([`crate::gpu::Pipelines::draw`]): rects, atlas masks,
 //! stroke segments, fill triangles and images, each with its clip. Glyphs and small paths are
 //! coverage masks rasterized once by `vello_cpu` (the golden painter's rasterizer, so a mask
@@ -40,7 +40,7 @@ use crate::widgets::UiRow;
 
 /// Bytes per instance: box (4 × f32), aux (4 × f32), clip (4 × f32), colour, kind.
 pub const STRIDE: usize = 56;
-/// Instance kinds (`ui.wgsl`): a filled rect.
+/// Instance kinds (`shaders/batch.wgsl`): a filled rect.
 pub const RECT: u32 = 0;
 /// An atlas mask drawn one texel per pixel.
 pub const MASK: u32 = 1;
@@ -328,7 +328,7 @@ impl Batch {
     }
 }
 
-/// RGBA8 bytes in memory order (R first), straight alpha, as `ui.wgsl` reads a colour.
+/// RGBA8 bytes in memory order (R first), straight alpha, as `color_of` in `shaders/instance.wgsl` reads it.
 fn color_word(c: Color) -> u32 {
     let c = c.to_rgba8();
     u32::from_ne_bytes([c.r, c.g, c.b, c.a])

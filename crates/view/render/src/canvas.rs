@@ -140,7 +140,7 @@ impl Paths {
 /// Primitives whose screen box is at most this many logical px each way are drawn as the whole
 /// pixels that box touches (level of detail, D39): below two pixels a stroke and a block look
 /// alike, and a block is cheap. A function of the camera and the row only (a chain on the CPU,
-/// as one path), as `gpu.wgsl` cuts it.
+/// as one path), as `shaders/canvas/camera.wgsl` cuts it.
 pub const LOD_PX: f64 = 2.0;
 
 /// Labels are shaped once at this size and scaled by the camera.
