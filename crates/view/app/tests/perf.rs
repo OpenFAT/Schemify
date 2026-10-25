@@ -974,11 +974,11 @@ fn interactions(n: u32) {
         }
         let [unselect, unselect95, _] = b.report("unselect");
         eprintln!("PERF app.unselect_frame_100k_ms {unselect:.3}");
-        // ponytail: no D39 assert yet. Measured 2026-10-24 (release, no GPU, shared host):
-        // p50 ~21-30 ms, p95 ~35-45 ms; Editor::update is 6-13 ms of it (box_select and the
-        // selection change over 100k rows), paint the rest. Add `budget("unselect p50", ..)`
-        // once both sides are O(change).
-        eprintln!("  unselect p95 {unselect95:.3} ms (budget 1.0, not yet asserted)");
+        // Measured 2026-10-24 (release, no GPU, shared host): p50 7.6 ms, p95 11.3 ms with a
+        // binary search of the sorted hits per selected key (6.6 ms of `Editor::update`'s 7.2);
+        // p50 0.81, p95 0.81 with the hit bitset (`Editor::unselected`). What is left at 100k:
+        // box_select 0.23, the bitset pass 0.23, clearing the selected set 0.16, UI 0.13.
+        eprintln!("  unselect p95 {unselect95:.3} ms");
         eprintln!("PERF app.hover_frame_100k_ms {hover:.3}");
         eprintln!("PERF app.click_select_100k_ms {select:.3}");
         eprintln!("PERF app.drag_frame_100k_ms {drag:.3}");
@@ -993,6 +993,7 @@ fn interactions(n: u32) {
         budget("type p95", typing95, 1.0);
         budget("select p50", select, 1.0);
         budget("menu p50", menu, 1.0);
+        budget("unselect p50", unselect, 1.0);
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

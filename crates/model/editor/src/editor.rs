@@ -2842,6 +2842,38 @@ impl Editor {
         }
     }
 
+    /// The selection without the scene objects `hits` (an unselect box). While the scene's
+    /// selected set is current and holds every selected key, a bitset of the hits and one
+    /// pass over the objects do it: O(objects + hits), ~0.2 ms at 100k, where a search of
+    /// the hits per selected key cost ~7 ms (HANDOFF item 3's sort and binary search).
+    /// Otherwise (keys the scene does not draw) each key is looked up in the scene.
+    fn unselected(&self, hits: &[u32]) -> Vec<ObjKey> {
+        let objs = &self.scene.objs;
+        let n = objs.len();
+        let mut hit = vec![0u64; n.div_ceil(64)];
+        for &o in hits {
+            assert!((o as usize) < n, "a hit is a scene object");
+            hit[o as usize / 64] |= 1 << (o % 64);
+        }
+        let is_hit = |o: u32| hit[o as usize / 64] >> (o % 64) & 1 != 0;
+        let sel = self.selection();
+        let current = !self.sel_changed && self.selected.universe() == n;
+        let out: Vec<ObjKey> = if current && self.selected.len() == sel.len() {
+            (0..n as u32)
+                .filter(|&o| self.selected.contains(o) && !is_hit(o))
+                .map(|o| objs.key[o as usize])
+                .collect()
+        } else {
+            let drawn = |k: ObjKey| self.scene.find(k);
+            sel.iter()
+                .copied()
+                .filter(|&k| drawn(k).is_none_or(|o| !is_hit(o)))
+                .collect()
+        };
+        assert!(out.len() <= sel.len());
+        out
+    }
+
     fn pointer_world(&self) -> (f64, f64) {
         let v = self.canvas_rect();
         self.camera()
@@ -3812,22 +3844,17 @@ impl Editor {
                             [from.0, from.1, to.0, to.1],
                             touch,
                         );
-                        let keys: Vec<ObjKey> = hits
-                            .iter()
-                            .map(|&o| self.scene.objs.key[o as usize])
-                            .collect();
-                        let mut sel: Vec<ObjKey> = if additive || unselect {
-                            self.selection().to_vec()
+                        let sel = if unselect {
+                            self.unselected(&hits)
                         } else {
-                            Vec::new()
-                        };
-                        if unselect {
-                            let mut keys = keys;
-                            keys.sort_unstable();
-                            sel.retain(|k| keys.binary_search(k).is_err());
-                        } else {
+                            let keys = hits.iter().map(|&o| self.scene.objs.key[o as usize]);
+                            let mut sel = match additive {
+                                true => self.selection().to_vec(),
+                                false => Vec::new(),
+                            };
                             sel.extend(keys);
-                        }
+                            sel
+                        };
                         self.set_selection(sel);
                         self.box_partial(from, to, partial, additive, unselect);
                     }
@@ -5109,6 +5136,68 @@ mod tests {
                 std::fs::copy(&p, &to).unwrap();
             }
         }
+    }
+
+    /// `Editor::unselected` (the Alt-box unselect): its bitset pass over the scene and its
+    /// per-key fallback (a selected key the scene does not draw) both give the set
+    /// difference of the selection and the boxed objects' keys. Oracle: `BTreeSet`
+    /// difference, over seeded random selections and hits.
+    #[test]
+    fn unselect_is_the_set_difference_on_both_paths() {
+        let src = Path::new(concat!(
+            env!("SCHEMIFY_ROOT"),
+            "/crates/view/app/tests/fixtures/ota"
+        ));
+        let dir = std::env::temp_dir().join(format!("schemify-unselect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        copy_dir(src, &dir);
+        let mut ed = Editor::new(Options {
+            path: Some(dir.join("ota.shcomp")),
+            no_default_ui: true,
+            seed: 3,
+            ..Default::default()
+        })
+        .unwrap();
+        ed.update(&InputEvents::default(), (1280.0, 800.0), 1);
+        let n = ed.scene.objs.len() as u32;
+        assert!(n > 20, "{n} objects");
+        let mut rng = 0x9e37_79b9_u64;
+        let mut next = |m: u32| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng % u64::from(m)) as u32
+        };
+        let ghost = ObjKey {
+            table: TableId::Wires,
+            key: u32::MAX,
+        };
+        for round in 0..64 {
+            let mut sel: Vec<ObjKey> = (0..next(n))
+                .map(|_| ed.scene.objs.key[next(n) as usize])
+                .collect();
+            if round % 2 == 1 {
+                sel.push(ghost); // not drawn: the fallback path
+            }
+            ed.set_selection(sel);
+            ed.update(&InputEvents::default(), (1280.0, 800.0), 2 + round);
+            let hits: Vec<u32> = (0..next(n)).map(|_| next(n)).collect();
+            let gone: std::collections::BTreeSet<ObjKey> = hits
+                .iter()
+                .map(|&o| ed.scene.objs.key[o as usize])
+                .collect();
+            let want: Vec<ObjKey> = ed
+                .selection()
+                .iter()
+                .copied()
+                .filter(|k| !gone.contains(k))
+                .collect();
+            let mut got = ed.unselected(&hits);
+            got.sort_unstable();
+            assert_eq!(got, want, "round {round}");
+            assert_eq!(got.contains(&ghost), round % 2 == 1);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `compose_ui` is a projection: run twice over the same tables it gives the same layout,

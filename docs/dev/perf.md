@@ -607,6 +607,16 @@ run, shared host). A caller that never idles (the CLI) still compacts inside a c
 garbage ≥ 3× live data. The compaction stays one O(document) idle tick, and its change-log break
 makes the next frame rebuild the scene: both off the interactive path.
 
+## Unselect box at 100k (2026-10-24)
+
+`interactions_100k`, the Alt-drag box that unselects 100k selected objects (release, no GPU,
+shared host, CPU update+paint): p50 7.6 / p95 11.3 ms before, 0.81 / 0.81 ms after (asserted at
+1 ms). `Instant` laps put 6.6 ms of the 7.2 ms `Editor::update` in the selection change: a sort
+of the 100k hit keys (3.4 ms under load) and a binary search of them per selected key. Now a
+bitset of the hit object indices and one pass over the scene's selected set
+(`Editor::unselected`, O(objects + hits)). Left: `box_select` 0.23, that pass 0.23, clearing the
+selected set 0.16, UI 0.13.
+
 ## Frame pacing 2026-10
 
 Step 0 of [research/render-backend.md](research/render-backend.md) § 5 (migration plan) and
