@@ -1,16 +1,17 @@
-//! D39 budget check: building the vello scene for 100k visible canvas primitives (plus the UI
-//! shell) must take ≤ 4 ms so an 8 ms (120 fps) frame leaves room for the GPU.
+//! D39 budget check: building the GPU painter's frame for 100k visible canvas primitives (their
+//! instance rows unchanged, as on a pan; the labels; the UI shell) must take ≤ 4 ms so an 8 ms
+//! (120 fps) frame leaves room for the GPU.
 //!
 //! `cargo test --release -p schemify-render --test perf -- --ignored --nocapture`
 
 use std::time::Instant;
 
 use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
-use schemify_render::ScenePainter;
 use schemify_render::canvas::{self, CanvasScratch};
-use schemify_render::vello::Scene;
+use schemify_render::gpu::{Change, Frame, InstanceRows};
 use schemify_render::vello::kurbo::{Affine, Rect};
 use schemify_render::widgets::{UiScratch, draw_ui};
+use schemify_render::{Batch, GpuPainter, Painter};
 use schemify_ui::{Layer, Strings, TextSystem, UiState, compose, layout, records};
 
 mod common;
@@ -39,16 +40,15 @@ fn scene_build_100k_primitives() {
         Marks::default(),
     );
     let (mut scratch, mut ui) = (CanvasScratch::default(), UiScratch::default());
-    let mut scene = Scene::new();
+    let (mut batch, mut rows) = (Batch::default(), InstanceRows::default());
     let mut times = Vec::with_capacity(200);
     for i in 0..210 {
         let t0 = Instant::now();
-        scene.reset();
-        let mut p = ScenePainter {
-            scene: &mut scene,
+        batch.begin_frame();
+        let mut p = GpuPainter {
+            batch: &mut batch,
             base: Affine::IDENTITY,
-            layers: None,
-            rows: None,
+            rows: Some(&mut rows),
         };
         draw_ui(
             &mut p,
@@ -62,18 +62,27 @@ fn scene_build_100k_primitives() {
         );
         // Jitter one pixel per frame, as a drag does, keeping all 100k primitives in view.
         cam.pan(if i % 2 == 0 { 1.0 } else { -1.0 }, 0.0);
-        canvas::draw_canvas(
-            &mut p,
+        let change = if i == 0 { Change::All } else { Change::Same };
+        let cframe = Frame {
             view,
-            &cam,
-            20_000,
-            &prims,
-            &palette,
-            &none,
-            &marks,
-            &mut text,
-            &mut scratch,
-        );
+            cam,
+            grid: 20_000,
+            background: palette.background,
+            grid_color: palette.grid,
+        };
+        let ctables = [
+            (&prims, change),
+            (&none, change),
+            (&none, change),
+            (&none, change),
+        ];
+        let texts = |p: &mut GpuPainter<'_>, k: usize| {
+            if k == 0 {
+                let t = &prims.texts;
+                canvas::draw_texts(p, view, &cam, t, None, &palette, &mut text, &mut scratch);
+            }
+        };
+        p.canvas(&cframe, ctables, (&prims, &marks, i == 0), &palette, texts);
         draw_ui(
             &mut p,
             &tables,
@@ -88,13 +97,14 @@ fn scene_build_100k_primitives() {
         if i >= 10 {
             times.push(dt); // first frames grow the scratch buffers
         }
+        rows.frame = None;
+        rows.clear_dirty();
     }
     times.sort_by(f64::total_cmp);
     let (median, p95) = (times[times.len() / 2], times[times.len() * 95 / 100]);
-    let bytes = scene.encoding().path_data.len() * 4;
     println!(
-        "scene build, 100k primitives + shell: median {median:.2} ms, p95 {p95:.2} ms (path data {} KiB)",
-        bytes / 1024
+        "frame build, 100k primitives + shell: median {median:.2} ms, p95 {p95:.2} ms ({} instances)",
+        batch.len()
     );
     println!("PERF render.scene_100k_ms {median:.3}");
     if cfg!(debug_assertions) {
@@ -166,7 +176,7 @@ fn waves_pane_three_1m_point_traces() {
     };
     let (look, mut text) = (WaveLook::default(), TextSystem::new());
     let mut s = WaveScratch::default();
-    let mut scene = Scene::new();
+    let mut batch = Batch::default();
     let mut times = Vec::with_capacity(200);
     for i in 0..210 {
         // A drag: pan one pixel per frame, alternating, so every frame decimates afresh.
@@ -177,11 +187,10 @@ fn waves_pane_three_1m_point_traces() {
         };
         w.apply(&Request::PanX { pane: 0, by }).unwrap();
         let t0 = Instant::now();
-        scene.reset();
-        let mut p = ScenePainter {
-            scene: &mut scene,
+        batch.begin_frame();
+        let mut p = GpuPainter {
+            batch: &mut batch,
             base: Affine::IDENTITY,
-            layers: None,
             rows: None,
         };
         draw_pane(
@@ -212,4 +221,85 @@ fn waves_pane_three_1m_point_traces() {
         median <= 4.0,
         "D39: waves scene build {median:.2} ms > 4 ms (half the 8 ms frame)"
     );
+}
+
+/// A wheel zoom over a labelled schematic (200 labels in view, 3–16 px): every frame the
+/// labels change size, so their glyphs are new atlas keys. Reports the CPU ms of each zoom
+/// frame's canvas texts through the GPU painter and the masks it rasterized, then the frames
+/// after the zoom stops.
+#[test]
+#[ignore = "release-mode benchmark; run explicitly"]
+fn canvas_label_zoom_frames() {
+    let mut p = CanvasPrims::default();
+    let words = [
+        "R1",
+        "10k",
+        "VDD",
+        "M1 nmos W=2u L=180n",
+        "out",
+        "Vin+",
+        "C3 4.7p",
+        "gnd",
+    ];
+    for i in 0..200 {
+        let (x, y) = ((i % 20) * 30_000, (i / 20) * 38_000);
+        p.text(
+            x,
+            y,
+            [3_000, 4_500, 6_000, 8_000][i as usize % 4],
+            3,
+            words[i as usize % 8],
+        );
+    }
+    let view = Rect::new(0.0, 0.0, 1280.0, 800.0);
+    let mut cam = Camera {
+        cx: 0.0,
+        cy: 0.0,
+        scale: 1.0,
+    };
+    cam.fit(view, [0, 0, 600_000, 380_000]);
+    let palette = Palette::xschem_dark();
+    let (mut text, mut scratch, mut batch) = (
+        TextSystem::new(),
+        CanvasScratch::default(),
+        Batch::default(),
+    );
+    let mut frame = |cam: &Camera, batch: &mut Batch| {
+        let r0 = batch.rastered;
+        let t0 = Instant::now();
+        batch.begin_frame();
+        let mut g = GpuPainter {
+            batch,
+            base: Affine::IDENTITY,
+            rows: None,
+        };
+        canvas::draw_texts(
+            &mut g,
+            view,
+            cam,
+            &p.texts,
+            None,
+            &palette,
+            &mut text,
+            &mut scratch,
+        );
+        let ms = t0.elapsed().as_secs_f64() * 1e3;
+        batch.atlas.clear_pending();
+        (ms, batch.rastered - r0)
+    };
+    frame(&cam, &mut batch);
+    let mut zoom = Vec::new();
+    for _ in 0..12 {
+        cam.zoom_at(view, 640.0, 400.0, 1.1);
+        zoom.push(frame(&cam, &mut batch));
+    }
+    let still: Vec<_> = (0..4).map(|_| frame(&cam, &mut batch)).collect();
+    let fmt = |v: &[(f64, u64)]| {
+        v.iter()
+            .map(|(ms, n)| format!("{ms:.2} ms/{n}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    println!("label zoom frames (ms / masks rasterized): {}", fmt(&zoom));
+    println!("still frames after it: {}", fmt(&still));
 }

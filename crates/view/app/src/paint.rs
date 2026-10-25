@@ -236,9 +236,7 @@ fn paint_canvas<P: Painter>(
         texts,
     );
     if !cp.overlay.is_empty() {
-        p.push_clip(view);
-        canvas::draw_prims(p, view, &cam, cp.overlay, palette, text, scratch);
-        p.pop_clip();
+        p.overlay(view, &cam, cp.overlay, palette, text, scratch);
     }
     diffed
 }

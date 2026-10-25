@@ -1,4 +1,4 @@
-//! Window, event loop and GPU surface (winit + wgpu via vello), native and web from one code
+//! Window, event loop and GPU surface (winit + wgpu), native and web from one code
 //! path. Redraw is event-driven: nothing runs while idle (D39). Input is paced by the
 //! compositor ([`pace`]): an event asks for a redraw, and [`App::update`] runs when the
 //! `RedrawRequested` is granted (on Wayland, after the previous frame's callback), once over
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use accesskit::{Action, TreeUpdate};
 use vello::kurbo::Affine;
 use vello::peniko::Color;
-use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, wgpu};
+use vello::wgpu;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, StartCause, WindowEvent};
@@ -23,9 +23,9 @@ use winit::window::{Window, WindowId};
 
 use schemify_ui::{Button, Chord, InputEvent, InputEvents, Key, Mods};
 
+use crate::batch::{Batch, GpuPainter};
 use crate::gpu::{InstanceRows, Pipelines};
-use crate::layers::{Layers, keep_atlas};
-use crate::painter::{Painter, ScenePainter};
+use crate::painter::Painter;
 
 /// What the application provides to [`run`]. Static dispatch: `run` is generic over it.
 pub trait App {
@@ -114,20 +114,13 @@ impl From<accesskit_winit::Event> for UserEvent {
     }
 }
 
-/// The window's GPU: its surface, the device that presents to it, the canvas pipelines,
-/// vello's target and renderer.
+/// The window's GPU: its surface, the device that presents to it, the frame's pipelines.
 struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
-    /// vello renders the UI frame here (a compute shader cannot write most surface textures),
-    /// with a hole where the canvas is; each frame blends it over the canvas pass, and a
-    /// composed frame reuses it as the last vello frame (D39).
-    target: wgpu::TextureView,
-    blitter: wgpu::util::TextureBlitter,
-    renderer: Renderer,
-    /// The canvas pipelines and row buffers (`render::gpu`).
+    /// The canvas and batch pipelines, row buffers and atlas texture (`render::gpu`).
     pipes: Pipelines,
 }
 
@@ -197,53 +190,21 @@ impl Gpu {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
-        let options = RendererOptions {
-            antialiasing_support: AaSupport::area_only(),
-            ..RendererOptions::default()
-        };
-        let renderer = Renderer::new(&device, options).map_err(|e| e.to_string())?;
         Ok(Gpu {
-            target: target(&device, w, h),
-            // vello's target holds straight alpha: blended over the canvas pass.
-            blitter: wgpu::util::TextureBlitterBuilder::new(&device, format)
-                .blend_state(wgpu::BlendState::ALPHA_BLENDING)
-                .build(),
             pipes: Pipelines::new(&device, format),
             device,
             queue,
             surface,
             config,
-            renderer,
         })
     }
 
-    /// Sizes the surface and vello's target to `w × h` device px (both non-zero).
+    /// Sizes the surface to `w × h` device px (both non-zero).
     fn resize(&mut self, w: u32, h: u32) {
         assert!(w > 0 && h > 0, "a surface has a size");
         (self.config.width, self.config.height) = (w, h);
         self.surface.configure(&self.device, &self.config);
-        self.target = target(&self.device, w, h);
     }
-}
-
-/// A `w × h` `Rgba8Unorm` texture vello renders into and the blitter samples.
-fn target(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
-    device
-        .create_texture(&wgpu::TextureDescriptor {
-            label: Some("vello target"),
-            size: wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        })
-        .create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 struct Shell<A: App> {
@@ -265,9 +226,8 @@ struct Shell<A: App> {
     mods: u8,
     pointer: (f32, f32),
     scale: f64,
-    scene: Scene,
-    /// Raster layers the app's live chrome records into (kept across frames).
-    layers: Layers,
+    /// The frame's batch and the coverage atlas behind it (kept across frames).
+    batch: Batch,
     /// The canvas's instance rows (kept across frames; `Painter::canvas` patches them).
     rows: InstanceRows,
     access_dirty: bool,
@@ -325,8 +285,7 @@ pub fn run<A: App + 'static>(title: &str, mut app: A) -> Result<(), RunError> {
         mods: 0,
         pointer: (0.0, 0.0),
         scale: 1.0,
-        scene: Scene::new(),
-        layers: Layers::default(),
+        batch: Batch::default(),
         rows: InstanceRows::default(),
         access_dirty: true,
         tick: false,
@@ -421,22 +380,13 @@ impl<A: App> Shell<A> {
             gpu.resize(size.width, size.height);
         }
         let viewport = logical(size.width, size.height, self.scale);
-        self.scene.reset();
-        let base = Affine::scale(self.scale);
-        self.layers.begin_frame(base);
-        let mut painter = ScenePainter {
-            scene: &mut self.scene,
-            base,
-            layers: Some(&mut self.layers),
+        self.batch.begin_frame();
+        let mut painter = GpuPainter {
+            batch: &mut self.batch,
+            base: Affine::scale(self.scale),
             rows: Some(&mut self.rows),
         };
         self.app.paint(&mut painter, viewport);
-        if let Err(e) = self
-            .layers
-            .raster(&gpu.device, &gpu.queue, &mut gpu.renderer)
-        {
-            eprintln!("render layer: {e}");
-        }
         let frame = match gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -447,29 +397,6 @@ impl<A: App> Shell<A> {
             }
             _ => return,
         };
-        // D39: a frame whose vello scene is the last one rendered (a pan or zoom moves the
-        // canvas camera only) skips vello: the target still holds the last UI frame.
-        let reuse = self.layers.reusable(size.width, size.height);
-        if !reuse {
-            let params = RenderParams {
-                base_color: Color::TRANSPARENT,
-                width: size.width,
-                height: size.height,
-                antialiasing_method: AaConfig::Area,
-            };
-            keep_atlas(&mut self.scene);
-            if let Err(e) = gpu.renderer.render_to_texture(
-                &gpu.device,
-                &gpu.queue,
-                &self.scene,
-                &gpu.target,
-                &params,
-            ) {
-                eprintln!("render: {e}");
-                return;
-            }
-            self.layers.rendered(size.width, size.height);
-        }
         let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -478,9 +405,11 @@ impl<A: App> Shell<A> {
         let target = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        // The canvas: its own pass straight into the surface, under the UI frame (which has a
-        // hole over the canvas, `Painter::canvas`), after the rows it changed are uploaded.
+        // One pass straight into the surface: the batch in painting order, the canvas rows at
+        // their stages in it, after the rows, instances and masks the frame wrote are uploaded.
         gpu.pipes.upload(&gpu.device, &gpu.queue, &mut self.rows);
+        gpu.pipes
+            .upload_batch(&gpu.device, &gpu.queue, &mut self.batch);
         let bg = self.app.background().components.map(f64::from);
         let clear = wgpu::Color {
             r: bg[0],
@@ -495,25 +424,19 @@ impl<A: App> Shell<A> {
             &target,
             clear,
             &self.rows,
+            &self.batch,
             canvas.as_ref(),
             self.scale,
             (size.width, size.height),
         );
-        gpu.blitter
-            .copy(&gpu.device, &mut encoder, &gpu.target, &target);
-        if reuse {
-            self.layers.compose(
-                &gpu.device,
-                &gpu.queue,
-                &mut encoder,
-                &target,
-                gpu.config.format,
-                (size.width, size.height),
-            );
-        }
         gpu.queue.submit([encoder.finish()]);
         window.pre_present_notify();
         gpu.queue.present(frame);
+        // Glyphs drawn from stand-ins (another size, scaled; a zoom): one more frame, with no
+        // input, rasterizes more of the exact masks, until the picture settles (D39 idle 0%).
+        if !self.batch.settled() {
+            window.request_redraw();
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             let now = std::time::Instant::now();
@@ -521,13 +444,15 @@ impl<A: App> Shell<A> {
                 && let Some((oldest, newest)) = self.shown
             {
                 let ms = |t: std::time::Instant| (now - t).as_secs_f64() * 1e3;
+                let (atlas, instances) = gpu.pipes.take_batch_uploaded();
                 eprintln!(
-                    "frame: input to present {:.2} ms oldest, {:.2} ms newest, {} updates, period {:.2} ms, vello {}",
+                    "frame: input to present {:.2} ms oldest, {:.2} ms newest, {} updates, period {:.2} ms, atlas {} B, instances {} B",
                     ms(oldest),
                     ms(newest),
                     self.updates,
                     self.presented.map_or(0.0, ms),
-                    !reuse
+                    atlas,
+                    instances
                 );
             }
             (self.shown, self.updates, self.presented) = (None, 0, Some(now));

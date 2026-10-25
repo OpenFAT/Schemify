@@ -58,6 +58,9 @@ pub use text::{
 pub use accesskit;
 /// Re-exported so renderers name the same layout and font types as this crate.
 pub use parley;
+/// Re-exported so a renderer reads glyph outlines' boxes from the faces this crate shapes with
+/// (the GPU painter sizes an atlas cell by them).
+pub use skrifa;
 
 /// The bundled default-UI plugin's two contribution sets (`ui/default-plugin`, D6): its
 /// `contribute ui` records (menus, toolbar, tabs, canvas, status bar, dialogs, theme) followed by

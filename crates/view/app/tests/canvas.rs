@@ -517,22 +517,18 @@ fn an_edit_refills_the_plugin_snapshot_on_the_next_tick() {
 #[test]
 fn a_pan_or_zoom_frame_writes_no_instance_bytes() {
     use schemify_render::gpu::InstanceRows;
-    use schemify_render::vello::Scene;
     use schemify_render::vello::kurbo::Affine;
-    use schemify_render::{Layers, ScenePainter};
+    use schemify_render::{Batch, GpuPainter};
     use schemify_ui::{Button, InputEvent};
     let mut s = Session::open("inv", "top.shcomp", "zero-bytes", true);
-    let (mut scene, mut layers, mut rows) =
-        (Scene::new(), Layers::default(), InstanceRows::default());
+    let (mut batch, mut rows) = (Batch::default(), InstanceRows::default());
     // One frame painted as the window paints it; returns the row bytes it left to upload and
     // its camera, then takes the rows as the GPU does.
     let mut paint = |s: &mut Session| {
-        scene.reset();
-        layers.begin_frame(Affine::IDENTITY);
-        let mut p = ScenePainter {
-            scene: &mut scene,
+        batch.begin_frame();
+        let mut p = GpuPainter {
+            batch: &mut batch,
             base: Affine::IDENTITY,
-            layers: Some(&mut layers),
             rows: Some(&mut rows),
         };
         schemify_app::paint::frame(&mut s.ed, &mut s.caches, &mut p);

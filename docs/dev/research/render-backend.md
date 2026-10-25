@@ -449,7 +449,7 @@ is the count of existing function bodies edited.
 | 0 | **Pacing.** `update` in `RedrawRequested`; render without waiting when the last callback has arrived or one period has passed since the last present; log both the newest and the oldest input; then try `desired_maximum_frame_latency: 2`. Also ask the user to run the monitor at 165 Hz. | the frame log on the RTX 4060 and the iGPU at 8 ms synthetic inputs (this note's method); idle CPU still 0% | 3 (`Shell::render`, `about_to_wait`, `window_event`) |
 | 1 (done) | **`render::gpu` rows and pipelines for canvas primitives**, drawn straight into the surface texture under the vello UI frame. The vello target becomes premultiplied and blended over the canvas pass instead of blitted opaque. `paint.rs` calls `canvas::draw` instead of `draw_cached` on the GPU painter. | per-kind GPU vs `CpuPainter` tolerance test; row-patch oracle (patched rows = rebuilt rows after random kill/append sequences); `frame_times_100k` GPU column | 6 (`Shell::render`, `Gpu::new`, `paint::frame`'s canvas call, `ScenePainter` canvas hook, `perf.rs` `Gpu::render`, `gpu.rs` render helper) |
 | 2 (done) | **Delete the tile cache**: `tiles.rs`, the canvas use of `layers.rs`, `CanvasCache` in `paint::Caches`, LOD masks, and the cache tests and perf.md rows | goldens unchanged; `frame_times_100k`, `interactions_100k` | 4 (`paint::Caches`, `paint::frame`, `Editor::painted`'s partial-record wake, `wake_ms`'s "partly recorded" arm) |
-| 3 | **Glyph atlas and UI batch.** `GpuPainter` implements every `Painter` method; canvas text moves to atlas quads | glyph mask vs `CpuPainter` glyph raster per size bucket; app goldens unchanged (CPU); hover and type frames' GPU time on the iGPU | 3 (`Painter` impl split, `draw_texts`, `widgets::draw_text`) |
+| 3 (done) | **Glyph atlas and UI batch.** `GpuPainter` implements every `Painter` method; canvas text moves to atlas quads | glyph mask vs `CpuPainter` glyph raster per size bucket; app goldens unchanged (CPU); hover and type frames' GPU time on the iGPU | 3 (`Painter` impl split, `draw_texts`, `widgets::draw_text`) |
 | 4 | **Remove vello (GPU)**: `layers.rs`, the window's vello target and blit; the `vello` dependency goes, `vello_cpu` stays. Amend D5. | `tools/size-check.sh` before and after; all tests | 2 (`Gpu::new`, `Shell::render`) |
 | 5 | **WebGL2.** Enable wgpu `webgl` on wasm32; the WebGPU-unusable path tries WebGL2 before `cpu_view` (web spec §7 amended) | the web smoke test on headless Chrome with WebGPU disabled shows GPU frames | 2 (`Gpu::new` on wasm, `UserEvent::NoGpu` arm) |
 | 6 | **Buckets and far-zoom LOD** for 1M: rows grouped by `PrimIndex` cell, visible bucket ranges per frame, glyph draw skipped below 3 px, overview texture below 2 px per line | `frame_times_1m` GPU column on the iGPU under 8.3 ms; overview vs full draw tolerance test | 2 (`GpuRows::apply`, `canvas::draw`) |
@@ -526,6 +526,63 @@ and `the_paint_outcome_schedules_the_next_frame_through_painted`. Numbers in
   `canvas` crate change of its own. The CPU still fills a layer's closed shapes as one
   non-zero path (the cancelling-winding artifact in § GPU against CPU); filling per shape
   changes golden pixels, so it waits for a decision.
+
+### Step 3: done (2026-10-24)
+
+`render::batch` (`Batch`, `GpuPainter`, `ui.wgsl`) and `render::atlas` (`Atlas`): the GPU painter
+implements every `Painter` method, so the UI, prose, math, icons, the status bar, wave panes and
+every text draw on the GPU, and a frame is one render pass straight into the surface. The
+canvas stages (background and grid, each table's rows, the marks, the overlay) are draws of
+that batch, so each table's labels land over its rows and under the next table's, as the CPU
+painter draws them (step 1 drew all texts over all rows). vello's GPU `Renderer` is no longer
+called: `ScenePainter`, `layers.rs` (`Layers`, the status bar's live layer, `keep_atlas`), the
+vello target, the `TextureBlitter` and the hole in the UI frame are deleted. The `vello` crate
+stays in `Cargo.toml` for its kurbo, peniko and wgpu re-exports (step 4). Numbers in
+[perf.md](../perf.md) § GPU canvas pipelines, step 3. What differed from the plan:
+
+- **One pipeline for the batch**, not the step-1 kinds in screen space: a 56 B instance (box,
+  aux, clip, colour, kind) whose kind is a rect (exact pixel-area coverage), an atlas mask
+  (`textureLoad`, one texel per pixel), a round-capped segment (the step-1 band-area coverage),
+  a triangle, an image, or a scaled mask (bilinear). Clips are per instance and exact for
+  fractional rects (vello_cpu's clip layers antialias them), so `push_clip` needs no scissor and
+  no draw split.
+- **Paths are masks, not tessellations.** Icons, check marks, dropdown arrows, math delimiters
+  and any small fill or stroke are rasterized by vello_cpu (the CPU painter's own rasterizer)
+  into the atlas once, keyed by the shape relative to its whole-pixel corner (1/64 px). That is
+  exact antialiasing where the plan's polygon-fill triangles have none, and less code than a
+  tessellator with a feather. Strokes larger than 96 px (borders, wave traces, `stroke_chains`)
+  are segments; fills larger than 512 px are masks in 512 px tiles.
+- **The key**: `[font blob, face and glyph id, hash of the em-to-device matrix (1/256 px of em),
+  variation coords and the subpixel phase]`. Sizes are exact, not 2^(1/4) buckets: a bucket
+  drawn scaled blurs hinted UI text. The phase is 1/8 px horizontally (vertically too when
+  vello_cpu does not hint: turned labels), not 1/4: dense UI text measured 0.72 mean |Δ| at 1/4
+  and 0.34 at 1/8. Hinted glyphs keep vello_cpu's whole-pixel baseline, so the masks are the CPU
+  painter's pixels (glyphs at exact eighths match it within 3 levels everywhere).
+- **Mid-zoom stand-ins instead of buckets.** A zoom gives every visible label a new size each
+  frame; rasterizing them all cost 1.0–1.6 ms a frame with 200 labels. A frame rasterizes at
+  most 32 exact masks; past that a glyph is drawn from its mask at its last size, scaled, and
+  the window asks for frames without input until it is exact (`Batch::settled`). A zoom frame
+  costs 0.4 ms of rasterizing and the picture settles exact a few frames after the wheel stops.
+  Glyphs over a 96 px em are rasterized at 96 px and drawn scaled.
+- **The atlas** is 2048² R8 (WebGL2's guaranteed size), shelf-packed by 4-texel height classes,
+  and evicts a whole shelf at a time: the least recently drawn one not drawn this frame. A mask
+  that fits nowhere else is skipped for the frame, never written over a mask in use. A shelf
+  reused for a lower class keeps its height (fragmentation measured nowhere yet).
+- **Math stays glyphs, rules and delimiter masks**, not images per formula: the formula's glyphs
+  share the atlas with the UI's, and its rules are rects.
+- **Images** (prose) are their own RGBA textures, drawn as their own draw call with their bind
+  group; the batch's draws carry the texture they sample.
+- **The gesture overlay** is a sixth row source (`Painter::overlay`), repacked each frame it
+  shows, so the move preview of a large selection is instanced too; the CPU painter's default
+  draws it as before.
+- **Equivalence oracles**: canvas labels at four zooms, UI text at device scale 1 and 1.5,
+  glyphs at exact phases, prose with math and an image, the UI shell with a menu and a dialog,
+  the mixed scene under the UI, and the whole editor frame (app `perf.rs`), with a wrong glyph
+  and a shifted run as negative space; the atlas's packing, eviction, overflow and key
+  bucketing, and the stand-ins' settling, headless.
+- **Not done here**: the hover, type and menu frames' GPU time on the iGPU (the plan's oracle;
+  this run had only the RTX 4060: 0.33 ms, from 0.48–0.66 ms); batching several masks into one
+  vello_cpu render (about 8–12 µs a mask now).
 
 ## 6. Risks
 

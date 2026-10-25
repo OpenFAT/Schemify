@@ -744,6 +744,85 @@ load ≈ 8–18. CPU update+paint, then GPU, p50 / p95 / p99 ms:
   re-blessed: `cell_panel_modern` (657 px), `core_symbols_*` (355 px), `menu_file` (256 px),
   render `canvas_1k` (3 px).
 
+### Step 3: the glyph atlas and the UI on the GPU (2026-10-24)
+
+The UI frame, the texts and the canvas are one render pass straight into the surface: the
+`GpuPainter`'s batch (`render::batch`: rects, stroke segments, images and atlas masks, each
+with its clip) with the canvas stages among its instances. Glyphs, icons, check marks, arrows
+and math delimiters are coverage masks rasterized once by vello_cpu into a 2048² R8 atlas
+(`render::atlas`). vello's GPU renderer draws nothing; the status bar's live layer, the
+`Layers` compositor, the vello target and its blit are gone. One run each of
+`frame_times_100k` and `interactions_100k`, release, `nice -n 19`, `SCHEMIFY_GPU=4060`
+(**NVIDIA GeForce RTX 4060 Laptop GPU**, Vulkan, timestamp floor 0.013 ms). Before:
+`b02afcb1` at load ≈ 15–21; after: load ≈ 5–9. "render" is the CPU side of the render calls
+(before: the layer raster and vello's encode and submit, or the composition; after: the uploads
+and the one pass). p50 / p95 / p99 ms:
+
+| Frame | CPU before | CPU after | render before | render after | GPU before | GPU after |
+|---|---|---|---|---|---|---|
+| pan | 0.089 / 0.150 / 0.162 | 0.088 / 0.138 / 0.144 | 0.133 / 0.205 / 0.238 | 0.070 / 0.120 / 0.162 | 0.624 / 0.915 / 0.920 | 0.631 / 0.931 / 0.933 |
+| zoom | 0.091 / 0.150 / 0.157 | 0.096 / 0.159 / 0.165 | 0.135 / 0.201 / 0.206 | 0.077 / 0.130 / 0.131 | 0.548 / 0.660 / 0.662 | 0.548 / 0.668 / 0.669 |
+| select | 0.340 / 0.405 / 0.615 | 0.466 / 0.630 / 0.644 | 0.091 / 0.111 / 0.381 | 0.092 / 0.126 / 0.162 | 0.662 / 0.664 / 0.820 | 0.668 / 0.669 / 0.670 |
+| edit (Del, undo) | 0.909 / 2.818 / 3.693 | 0.836 / 2.249 / 4.265 | 0.508 / 1.014 / 1.053 | 0.068 / 0.107 / 0.111 | 1.136 / 1.147 / 2.658 | 0.668 / 0.669 / 0.670 |
+| hover | 0.259 / 0.319 / 0.368 | 0.216 / 0.264 / 0.287 | 0.533 / 0.655 / 1.496 | 0.070 / 0.085 / 0.117 | 0.480 / 0.643 / 0.645 | 0.329 / 0.332 / 0.334 |
+| click select | 0.487 / 0.646 / 0.759 | 0.368 / 0.493 / 0.515 | 0.164 / 0.175 / 0.634 | 0.082 / 0.090 / 0.104 | 0.325 / 0.327 / 0.482 | 0.330 / 0.331 / 0.332 |
+| drag | 0.297 / 0.321 / 0.325 | 0.237 / 0.326 / 0.346 | 0.977 / 1.074 / 1.438 | 0.077 / 0.115 / 0.118 | 0.803 / 0.809 / 0.811 | 0.330 / 0.333 / 0.333 |
+| drop | 12.3 | 4.00 | 1.20 | 0.15 | 0.81 | 0.33 |
+| menu | 0.240 / 0.821 | 0.197 / 0.737 | 0.470 / 1.287 | 0.066 / 0.136 | 0.663 / 0.828 | 0.336 / 0.370 |
+| type | 0.364 / 0.402 / 0.416 | 0.235 / 0.294 / 0.305 | 0.626 / 0.730 / 0.739 | 0.058 / 0.076 / 0.077 | 0.650 / 0.655 / 0.655 | 0.331 / 0.333 / 0.334 |
+| unselect (select-all box) | 6.18 / 6.35 / 6.63 | 6.29 / 8.98 / 9.47 | 0.565 / 0.608 / 0.613 | 0.067 / 0.094 / 0.102 | 1.100 / 1.104 / 1.219 | 0.629 / 0.629 / 0.629 |
+
+- **No frame calls vello.** Before, hover, select, pan and zoom were composed without a vello
+  render (the live layer), but the status bar's layer was still rasterized by vello on every
+  hover, and drag, menu, type and edit frames rendered the whole UI with vello (render 0.5–1.0
+  ms, GPU 0.65–0.80 ms). After, every frame is the one pass: render calls 0.06–0.09 ms p50,
+  GPU 0.33 ms for the zoomed-in interaction frames and 0.55–0.67 ms at the 100k fit (the
+  canvas pass dominates there, as in step 1).
+- **Bytes per frame**: the batch's instances, 56 B each, 13–14 KiB a frame (≈ 250 instances;
+  39 KiB with the Tools menu open). Atlas bytes are zero on almost every frame: p50 0, p95
+  0.1–0.2 KiB on hover, drag and type (a status-bar or field glyph seen the first time), 2.4
+  KiB on the edit and drop frames, 4.4 KiB on the first menu open (its glyphs). Rows as before:
+  0 on pan and zoom, 4 KiB over 24 edits.
+- **CPU per frame** is unchanged or lower; the select row's +0.13 ms is within this machine's
+  spread (its interactions twin, click select, went down 0.12 ms), as is unselect's tail
+  (`Editor::update`'s box select, 6–13 ms by the note at `interactions`).
+- **Zoom over labels**: every zoom frame gives every visible label a new size, so a new atlas
+  key per glyph. Rasterizing them all cost 1.0–1.6 ms a frame with 200 labels in view (100–180
+  masks, `render/tests/perf.rs` `canvas_label_zoom_frames`). A frame now rasterizes at most 32
+  exact masks (`EXACT_PER_FRAME`) and draws the rest from the same glyph's mask at its last
+  size, scaled; the window asks for frames without input until the picture is exact
+  (`Batch::settled`). Measured: 0.36–0.46 ms per zoom frame, then 3–4 frames of 0.07–0.37 ms
+  after the wheel stops, then 0.03 ms (no mask rasterized: idle stays at zero).
+- `render/tests/perf.rs` `scene_build_100k_primitives` (now the GPU painter's frame build:
+  UI shell, 100k rows unchanged, labels): 0.03 ms median, against vello's scene encode before.
+
+GPU against CPU for the batch (`render/tests/gpu.rs`, RTX 4060; tolerance mean ≤ 0.5/255 and
+no pixel off by more than 96 for text and UI; the canvas kinds keep their step-1 bounds):
+
+| Scene | mean | far |
+|---|---|---|
+| canvas labels at zoom 1 / 2.3 / 5.1 / 0.6 | 0.051 / 0.020 / 0.006 / 0.022 | 0 |
+| UI text, device scale 1 / 1.5 | 0.343 / 0.268 | 0 |
+| glyphs at whole and quarter pixels (bound: every pixel within 3 levels) | 0.021 | 0 |
+| prose (headings, code, rule, list, inline and display math, an image) and a formula | 0.120 | 0 |
+| default UI shell with a menu / with a dialog | 0.209 / 0.066 | 0 |
+| the thousand under a UI frame, labels over their table, overlay, popup (≤ 1.0) | 0.680 | 29 |
+| the whole editor frame, opened / hovered / Tools menu (app `perf.rs`) | 0.048 / 0.048 / 0.096 | 0 |
+| negative space: a wrong glyph | 0.664 | 20: fails |
+| negative space: a run shifted 1 px | — | > 0: fails |
+
+The remaining text difference is the subpixel phase: a mask is vello_cpu's own raster of the
+glyph with its origin moved to the nearest 1/8 px (hinted glyphs keep vello_cpu's whole-pixel
+baseline), so glyphs drawn at exact eighths match within blending's rounding. At 1/4 px dense UI
+text measured 0.72. Amplified (×8) diffs are written by the tests to
+`target/tmp/{ui_text,ui_shell,prose_math,canvas_labels,editor_frame}.diff.png`; they show
+faint glyph edges only.
+
+**Goldens**: unchanged. The CPU painter's code paths are untouched (its `overlay` is the old
+inline `draw_prims` under the clip, the status bar is drawn directly as a painter without
+layers always drew it); every render and app golden passes `check_golden` and none was
+re-blessed.
+
 ## Binary size
 
 D39 (amended 2026-10-11): the headless core `schemify` ≤ 2 MB, the editor `schemify-gui` ≤

@@ -1,9 +1,10 @@
-//! GPU path, headless: the instanced canvas pipelines (`render::gpu`) must match the CPU
-//! painter (`vello_cpu`, the goldens' oracle) within an antialiasing tolerance, one test per
-//! primitive kind plus a mixed scene under a UI frame, with a deliberately wrong instance as
-//! the negative space; the 100k canvas pass's GPU time is reported. The vello-era tests of
-//! the raster-layer cache (composed frames, patched layers, live layers) stay until the tile
-//! cache goes. Needs a GPU adapter, so ignored by default:
+//! GPU path, headless: the GPU painter (the instanced canvas pipelines, `render::gpu`, and the
+//! frame batch with its glyph atlas, `render::batch`) must match the CPU painter (`vello_cpu`,
+//! the goldens' oracle) within an antialiasing tolerance: one test per primitive kind, the
+//! texts (canvas labels at several zooms, UI text, prose, math), the UI shell, and a mixed
+//! scene under the UI, with a wrong instance, a wrong glyph and a shifted run as the negative
+//! space; the 100k canvas pass's GPU time is reported. Needs a GPU adapter, so ignored by
+//! default:
 //!
 //! `cargo test --release -p schemify-render --test gpu -- --ignored --nocapture`
 
@@ -14,221 +15,36 @@ use schemify_render::canvas::{self, CanvasScratch};
 use schemify_render::gpu::{Change, Frame, InstanceRows, Pipelines};
 use schemify_render::vello::kurbo::{Affine, Rect};
 use schemify_render::vello::peniko::Color;
-use schemify_render::vello::util::RenderContext;
-use schemify_render::vello::{
-    AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, wgpu,
-};
-use schemify_render::{CpuPainter, Painter, ScenePainter};
-use schemify_ui::TextSystem;
+use schemify_render::vello::{Glyph, wgpu};
+use schemify_render::widgets::{UiScratch, draw_math, draw_prose, draw_text, draw_ui};
+use schemify_render::{Batch, CpuPainter, GpuPainter, Painter};
+use schemify_ui::{Kind, Layer, Strings, TextSystem, UiState, compose, layout, records};
 
 mod common;
 
 struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    renderer: Renderer,
-    /// The canvas pipelines for an `Rgba8Unorm` target.
+    /// The frame's pipelines for an `Rgba8Unorm` target.
     pipes: Pipelines,
 }
 
 fn gpu() -> Gpu {
-    let mut cx = RenderContext::new();
-    let id = pollster::block_on(cx.device(None)).expect("no GPU adapter");
-    let dev = &cx.devices[id];
-    let info = dev.adapter().get_info();
+    let inst = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = pollster::block_on(inst.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..Default::default()
+    }))
+    .expect("no GPU adapter");
+    let info = adapter.get_info();
     println!("adapter: {} ({:?})", info.name, info.backend);
-    let options = RendererOptions {
-        antialiasing_support: AaSupport::area_only(),
-        ..RendererOptions::default()
-    };
-    let renderer = Renderer::new(&dev.device, options).expect("vello renderer");
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&Default::default())).expect("a device");
     Gpu {
-        pipes: Pipelines::new(&dev.device, wgpu::TextureFormat::Rgba8Unorm),
-        device: dev.device.clone(),
-        queue: dev.queue.clone(),
-        renderer,
+        pipes: Pipelines::new(&device, wgpu::TextureFormat::Rgba8Unorm),
+        device,
+        queue,
     }
-}
-
-/// Renders `scene` to an RGBA8 buffer (row-major, `w*h*4` bytes); returns pixels and GPU ms.
-fn render(g: &mut Gpu, scene: &Scene, w: u32, h: u32) -> (Vec<u8>, f64) {
-    let texture = g.device.create_texture(&wgpu::TextureDescriptor {
-        label: None,
-        size: wgpu::Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let params = RenderParams {
-        base_color: Color::BLACK,
-        width: w,
-        height: h,
-        antialiasing_method: AaConfig::Area,
-    };
-    let t0 = Instant::now();
-    g.renderer
-        .render_to_texture(&g.device, &g.queue, scene, &view, &params)
-        .expect("render");
-    g.device
-        .poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        })
-        .expect("poll");
-    let ms = t0.elapsed().as_secs_f64() * 1e3;
-    let row = (w * 4).div_ceil(256) * 256;
-    let buffer = g.device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: u64::from(row * h),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut enc = g
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    enc.copy_texture_to_buffer(
-        texture.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(row),
-                rows_per_image: Some(h),
-            },
-        },
-        wgpu::Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-    );
-    g.queue.submit([enc.finish()]);
-    buffer
-        .slice(..)
-        .map_async(wgpu::MapMode::Read, |r| r.expect("map"));
-    g.device
-        .poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        })
-        .expect("poll");
-    let data = buffer.slice(..).get_mapped_range().expect("mapped range");
-    let mut out = Vec::with_capacity((w * h * 4) as usize);
-    for y in 0..h {
-        let start = (y * row) as usize;
-        out.extend_from_slice(&data[start..start + (w * 4) as usize]);
-    }
-    (out, ms)
-}
-
-fn paint<P: Painter>(p: &mut P, prims: &CanvasPrims, view: Rect) {
-    let mut cam = Camera {
-        cx: 0.0,
-        cy: 0.0,
-        scale: 1.0,
-    };
-    cam.fit(view, [0, 0, 600_000, 380_000]);
-    let mut text = TextSystem::new();
-    canvas::draw_canvas(
-        p,
-        view,
-        &cam,
-        20_000,
-        prims,
-        &Palette::xschem_dark(),
-        &CanvasPrims::default(),
-        &Marks::default(),
-        &mut text,
-        &mut CanvasScratch::default(),
-    );
-}
-
-#[test]
-#[ignore = "needs a GPU adapter"]
-fn gpu_matches_cpu_and_reports_frame_time() {
-    let mut g = gpu();
-    let (w, h) = (640u32, 400u32);
-    let view = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
-    let prims = common::thousand_prims();
-    let mut scene = Scene::new();
-    paint(
-        &mut ScenePainter {
-            scene: &mut scene,
-            base: Affine::IDENTITY,
-            layers: None,
-            rows: None,
-        },
-        &prims,
-        view,
-    );
-    let (gpu_px, _) = render(&mut g, &scene, w, h);
-    let mut cpu = CpuPainter::new(w as u16, h as u16, 1.0);
-    paint(&mut cpu, &prims, view);
-    let cpu_px = cpu.finish(Color::BLACK);
-    // Opaque output, so premultiplied CPU bytes equal straight GPU bytes where they agree.
-    let (mut sum, mut far) = (0u64, 0usize);
-    for (a, b) in cpu_px.data().iter().zip(gpu_px.chunks_exact(4)) {
-        let d = [a.r.abs_diff(b[0]), a.g.abs_diff(b[1]), a.b.abs_diff(b[2])];
-        sum += d.iter().map(|&x| u64::from(x)).sum::<u64>();
-        far += usize::from(d.iter().any(|&x| x > 64));
-    }
-    let n = (w * h) as usize;
-    let mean = sum as f64 / (n * 3) as f64;
-    println!("GPU vs CPU (canvas_1k): mean |Δ| {mean:.3}/255, {far} of {n} pixels differ by > 64");
-    assert!(
-        mean < 2.0 && far * 100 < n,
-        "GPU and CPU renderings diverge"
-    );
-
-    let big = common::hundred_k();
-    let view = Rect::new(0.0, 0.0, 1600.0, 900.0);
-    let mut cam = Camera {
-        cx: 0.0,
-        cy: 0.0,
-        scale: 1.0,
-    };
-    cam.fit(view, [0, 0, 1_600_000, 900_000]);
-    let (mut text, mut scratch) = (TextSystem::new(), CanvasScratch::default());
-    let mut times = Vec::new();
-    for i in 0..30 {
-        scene.reset();
-        cam.pan(if i % 2 == 0 { 1.0 } else { -1.0 }, 0.0);
-        let mut p = ScenePainter {
-            scene: &mut scene,
-            base: Affine::IDENTITY,
-            layers: None,
-            rows: None,
-        };
-        canvas::draw_canvas(
-            &mut p,
-            view,
-            &cam,
-            20_000,
-            &big,
-            &Palette::xschem_dark(),
-            &CanvasPrims::default(),
-            &Marks::default(),
-            &mut text,
-            &mut scratch,
-        );
-        let (_, ms) = render(&mut g, &scene, 1600, 900);
-        if i >= 5 {
-            times.push(ms);
-        }
-    }
-    times.sort_by(f64::total_cmp);
-    println!(
-        "GPU render (100k primitives, 1600x900, incl. submit+wait): median {:.2} ms",
-        times[times.len() / 2]
-    );
 }
 
 fn texture(g: &Gpu, (w, h): (u32, u32), usage: wgpu::TextureUsages) -> wgpu::Texture {
@@ -287,149 +103,78 @@ fn read(g: &Gpu, t: &wgpu::Texture) -> Vec<u8> {
         .collect()
 }
 
-/// (mean |Δ| per channel, pixels with a channel off by more than 2).
-fn diff_px(a: &[u8], b: &[u8]) -> (f64, usize) {
-    let (mut sum, mut bad) = (0u64, 0usize);
-    for (p, q) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
-        let d: Vec<u8> = p.iter().zip(q).map(|(x, y)| x.abs_diff(*y)).collect();
-        sum += d.iter().map(|&x| u64::from(x)).sum::<u64>();
-        bad += usize::from(d.iter().any(|&x| x > 2));
+fn wgpu_color(c: Color) -> wgpu::Color {
+    let c = c.components.map(f64::from);
+    wgpu::Color {
+        r: c[0],
+        g: c[1],
+        b: c[2],
+        a: c[3],
     }
-    (sum as f64 / a.len() as f64, bad)
 }
 
-/// A live layer (`Painter::live_layer`: the status bar, whose text changes on every pointer
-/// move) lets a frame that changed nothing else compose without vello, equal to vello's frame
-/// of the new picture; a change outside it still goes through vello.
-#[test]
-#[ignore = "needs a GPU adapter"]
-fn live_layers_compose_without_vello() {
-    use schemify_render::Layers;
-
-    let mut g = gpu();
-    let size = (320u32, 200u32);
-    let target = texture(
-        &g,
-        size,
-        wgpu::TextureUsages::STORAGE_BINDING
-            | wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::COPY_SRC,
-    );
-    let surface = texture(
-        &g,
+/// One GPU frame as the window settles on it: `paint` into a fresh batch and rows through a
+/// [`GpuPainter`] at `scale` device px per logical px, again while the batch drew glyph
+/// stand-ins (as the window redraws), uploaded, drawn in one pass into a `size` target
+/// cleared to `clear`. Returns the pixels and the batch (its atlas's counts).
+fn gpu_frame(
+    g: &mut Gpu,
+    size: (u32, u32),
+    scale: f64,
+    clear: Color,
+    mut paint: impl FnMut(&mut GpuPainter<'_>),
+) -> (Vec<u8>, Batch) {
+    let (mut batch, mut rows) = (Batch::default(), InstanceRows::default());
+    for _ in 0..64 {
+        rows.frame = None;
+        batch.begin_frame();
+        paint(&mut GpuPainter {
+            batch: &mut batch,
+            base: Affine::scale(scale),
+            rows: Some(&mut rows),
+        });
+        if batch.settled() {
+            break;
+        }
+    }
+    assert!(batch.settled(), "the frame settles");
+    let tex = texture(
+        g,
         size,
         wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
     );
-    let (target_view, surface_view) = (
-        target.create_view(&Default::default()),
-        surface.create_view(&Default::default()),
+    let view = tex.create_view(&Default::default());
+    g.pipes.upload(&g.device, &g.queue, &mut rows);
+    g.pipes.upload_batch(&g.device, &g.queue, &mut batch);
+    let frame = rows.frame.take();
+    let mut enc = g.device.create_command_encoder(&Default::default());
+    let clear = wgpu_color(clear);
+    g.pipes.draw(
+        &mut enc,
+        &g.queue,
+        &view,
+        clear,
+        &rows,
+        &batch,
+        frame.as_ref(),
+        scale,
+        size,
     );
-    let blitter = wgpu::util::TextureBlitter::new(&g.device, wgpu::TextureFormat::Rgba8Unorm);
-    let (mut layers, mut scene) = (Layers::default(), Scene::new());
-    let canvas = Rect::new(10.0, 10.0, 310.0, 170.0);
-    let strip = Rect::new(0.0, 174.0, 320.0, 200.0);
-    // One window frame: the chrome, a canvas stand-in, then the status strip as a live layer whose mark sits `k` steps to the right; vello or composed, as the
-    // window does.
-    let mut frame = |k: u32, chrome: Color, full: bool| -> (bool, Vec<u8>) {
-        scene.reset();
-        layers.begin_frame(Affine::IDENTITY);
-        let mut p = ScenePainter {
-            scene: &mut scene,
-            base: Affine::IDENTITY,
-            layers: Some(&mut layers),
-            rows: None,
-        };
-        p.fill_rect(Rect::new(0.0, 0.0, 320.0, 200.0), chrome);
-        p.fill_rect(canvas, Color::from_rgba8(30, 30, 60, 255));
-        p.fill_rect(
-            Rect::new(50.0, 50.0, 130.0, 100.0),
-            Color::from_rgba8(200, 80, 80, 255),
-        );
-        p.live_layer(7, strip, |p| {
-            p.fill_rect(strip, Color::from_rgba8(217, 217, 217, 255));
-            let x = 8.0 + 9.0 * f64::from(k);
-            p.fill_rect(Rect::new(x, 180.0, x + 6.0, 194.0), Color::BLACK);
-        });
-        layers
-            .raster(&g.device, &g.queue, &mut g.renderer)
-            .expect("raster");
-        let reuse = layers.reusable(size.0, size.1) && !full;
-        if !reuse {
-            let params = RenderParams {
-                base_color: Color::BLACK,
-                width: size.0,
-                height: size.1,
-                antialiasing_method: AaConfig::Area,
-            };
-            g.renderer
-                .render_to_texture(&g.device, &g.queue, &scene, &target_view, &params)
-                .expect("render");
-            layers.rendered(size.0, size.1);
-        }
-        let mut enc = g.device.create_command_encoder(&Default::default());
-        blitter.copy(&g.device, &mut enc, &target_view, &surface_view);
-        if reuse {
-            let format = wgpu::TextureFormat::Rgba8Unorm;
-            layers.compose(&g.device, &g.queue, &mut enc, &surface_view, format, size);
-        }
-        g.queue.submit([enc.finish()]);
-        (reuse, read(&g, &surface))
-    };
-    let gray = Color::from_rgba8(60, 60, 60, 255);
-    let (reused, _) = frame(0, gray, false);
-    assert!(!reused, "the first frame goes through vello");
-    for k in 1..4 {
-        let (reused, composed) = frame(k, gray, false);
-        assert!(
-            reused,
-            "a frame that changed only its live layer composes (step {k})"
-        );
-        let (_, full) = frame(k, gray, true);
-        let (mean, bad) = diff_px(&composed, &full);
-        println!(
-            "live layer step {k}: composed vs vello mean |Δ| {mean:.4}, {bad} pixels off by > 2"
-        );
-        if bad != 0 {
-            let (mut bb, mut n) = ([u32::MAX, u32::MAX, 0, 0], 0);
-            for (i, (p, q)) in composed
-                .chunks_exact(4)
-                .zip(full.chunks_exact(4))
-                .enumerate()
-            {
-                if p.iter().zip(q).any(|(a, b)| a.abs_diff(*b) > 2) {
-                    let (x, y) = (i as u32 % size.0, i as u32 / size.0);
-                    bb = [bb[0].min(x), bb[1].min(y), bb[2].max(x), bb[3].max(y)];
-                    n += 1;
-                }
-            }
-            let at =
-                |px: &[u8], x: usize, y: usize| px[4 * (y * size.0 as usize + x)..][..4].to_vec();
-            println!(
-                "diff bbox {bb:?} ({n} px); (100,100) composed {:?} full {:?}; (20,187) composed {:?} full {:?}; (5,5) composed {:?} full {:?}",
-                at(&composed, 100, 100),
-                at(&full, 100, 100),
-                at(&composed, 20, 187),
-                at(&full, 20, 187),
-                at(&composed, 5, 5),
-                at(&full, 5, 5)
-            );
-        }
-        assert_eq!(bad, 0, "the composed frame differs from vello's");
-        // Negative space: the composed frame shows the new mark, not the last vello frame's.
-        let (_, stale) = frame(k - 1, gray, true);
-        let (_, moved) = diff_px(&composed, &stale);
-        assert!(
-            moved > 50,
-            "the mark moved in the composed frame ({moved} px differ)"
-        );
-        frame(k, gray, true); // vello's frame of this step again: the next step may compose
-    }
-    // Negative space: a change outside the live layer is rendered by vello.
-    let (reused, _) = frame(3, Color::from_rgba8(61, 60, 60, 255), false);
-    assert!(!reused, "changed chrome is rendered by vello");
+    g.queue.submit([enc.finish()]);
+    (read(g, &tex), batch)
 }
 
-// The instanced canvas pipelines against the CPU painter.
+/// The same frame on the CPU painter over `clear`.
+fn cpu_frame(
+    size: (u32, u32),
+    scale: f64,
+    clear: Color,
+    paint: impl FnOnce(&mut CpuPainter),
+) -> Vec<u8> {
+    let mut p = CpuPainter::new(size.0 as u16, size.1 as u16, scale);
+    paint(&mut p);
+    rgba(&p.finish(clear))
+}
 
 /// Mean |Δ| per channel the GPU canvas may differ from the CPU painter by, in 1/255: the
 /// shader's coverage (exact band area along a stroke, 16 subsamples at its caps) against
@@ -451,15 +196,19 @@ const FAR_LEVELS: u8 = 96;
 /// non-zero path, so they cancel); the GPU fills both.
 const FAR_SHARE: f64 = 0.001;
 
-/// Whether `gpu` matches `cpu` within the tolerance, printing the stats under `name`.
-fn within(name: &str, gpu: &[u8], cpu: &[u8]) -> bool {
-    within_mean(name, gpu, cpu, MEAN_MAX)
-}
+/// Text's bound: a glyph mask is vello_cpu's own raster of the glyph with its origin moved to
+/// the nearest eighth of a pixel horizontally (and vertically when unhinted), so an edge
+/// pixel differs by up to a sixteenth of a pixel's coverage, and blending rounds differently.
+/// Measured on the RTX 4060 (mean |Δ|): dense UI text 0.34 at scale 1 and 0.27 at 1.5, the UI
+/// shell 0.21 and 0.07, prose and math 0.12, canvas labels 0.01–0.05.
+const TEXT_MEAN_MAX: f64 = 0.5;
+/// Text drawn at whole and quarter pixels (no phase error): only blending's rounding is left.
+const EXACT_LEVELS: u8 = 3;
 
-/// [`within`] with a mean bound of `mean_max`.
-fn within_mean(name: &str, gpu: &[u8], cpu: &[u8], mean_max: f64) -> bool {
+/// (mean |Δ| per channel, pixels with a channel more than `far` levels off).
+fn stats(gpu: &[u8], cpu: &[u8], far: u8) -> (f64, usize) {
     assert_eq!(gpu.len(), cpu.len());
-    let (mut sum, mut far) = (0u64, 0usize);
+    let (mut sum, mut n_far) = (0u64, 0usize);
     for (a, b) in gpu.chunks_exact(4).zip(cpu.chunks_exact(4)) {
         let d = [
             a[0].abs_diff(b[0]),
@@ -467,10 +216,20 @@ fn within_mean(name: &str, gpu: &[u8], cpu: &[u8], mean_max: f64) -> bool {
             a[2].abs_diff(b[2]),
         ];
         sum += d.iter().map(|&x| u64::from(x)).sum::<u64>();
-        far += usize::from(d.iter().any(|&x| x > FAR_LEVELS));
+        n_far += usize::from(d.iter().any(|&x| x > far));
     }
+    (sum as f64 / (gpu.len() / 4 * 3) as f64, n_far)
+}
+
+/// Whether `gpu` matches `cpu` within the tolerance, printing the stats under `name`.
+fn within(name: &str, gpu: &[u8], cpu: &[u8]) -> bool {
+    within_mean(name, gpu, cpu, MEAN_MAX)
+}
+
+/// [`within`] with a mean bound of `mean_max`.
+fn within_mean(name: &str, gpu: &[u8], cpu: &[u8], mean_max: f64) -> bool {
+    let (mean, far) = stats(gpu, cpu, FAR_LEVELS);
     let n = gpu.len() / 4;
-    let mean = sum as f64 / (n * 3) as f64;
     println!(
         "{name}: GPU vs CPU mean |Δ| {mean:.3}/255, {far} of {n} pixels off by > {FAR_LEVELS}"
     );
@@ -482,6 +241,28 @@ fn rgba(px: &schemify_render::Pixmap) -> Vec<u8> {
         .iter()
         .flat_map(|c| [c.r, c.g, c.b, c.a])
         .collect()
+}
+
+/// Writes `|gpu − cpu| × 8` (an amplified diff) as `<name>.diff.png` next to the test
+/// binary's scratch directory, for a person to look at.
+fn amplified_diff(name: &str, gpu: &[u8], cpu: &[u8], (w, h): (u32, u32)) {
+    let mut px = schemify_render::Pixmap::new(w as u16, h as u16);
+    for (o, (a, b)) in px
+        .data_mut()
+        .iter_mut()
+        .zip(gpu.chunks_exact(4).zip(cpu.chunks_exact(4)))
+    {
+        let d = |k: usize| a[k].abs_diff(b[k]).saturating_mul(8);
+        *o = schemify_render::vello::peniko::color::PremulRgba8 {
+            r: d(0),
+            g: d(1),
+            b: d(2),
+            a: 255,
+        };
+    }
+    let out = format!("{}/{name}.diff.png", env!("CARGO_TARGET_TMPDIR"));
+    std::fs::write(&out, px.into_png().expect("png")).expect("write");
+    println!("{name}: amplified diff (×8) in {out}");
 }
 
 fn fit(view: Rect) -> Camera {
@@ -523,16 +304,19 @@ fn canvas_pass(
     g.pipes.upload(&g.device, &g.queue, rows);
     let t0 = Instant::now();
     let mut enc = g.device.create_command_encoder(&Default::default());
-    let c = clear.components.map(f64::from);
-    let clear = wgpu::Color {
-        r: c[0],
-        g: c[1],
-        b: c[2],
-        a: c[3],
-    };
-    let queue = &g.queue;
-    g.pipes
-        .draw(&mut enc, queue, &view, clear, rows, Some(frame), 1.0, size);
+    let (queue, none) = (&g.queue, Batch::default());
+    let clear = wgpu_color(clear);
+    g.pipes.draw(
+        &mut enc,
+        queue,
+        &view,
+        clear,
+        rows,
+        &none,
+        Some(frame),
+        1.0,
+        size,
+    );
     g.queue.submit([enc.finish()]);
     g.device
         .poll(wgpu::PollType::Wait {
@@ -797,9 +581,76 @@ fn gpu_lod_cut_matches_cpu_at_the_threshold() {
     assert!(within("far-zoom cut", &got, &want));
 }
 
-/// The mixed thousand under a UI frame, composed as the window composes it: the UI painted
-/// before the canvas is cleared by the hole, the canvas pass shows through it, the texts and
-/// a popup painted after stay over it.
+/// `prims` (one table, with its labels, and `marks`) as a frame paints it: through
+/// `Painter::canvas` with the labels as the frame's texts (`draw_texts`), then the gesture
+/// `overlay`, between UI chrome before (a grey fill) and after (a popup).
+#[allow(clippy::too_many_arguments)]
+fn canvas_scene<P: Painter>(
+    p: &mut P,
+    whole: Rect,
+    view: Rect,
+    cam: Camera,
+    prims: &CanvasPrims,
+    marks: &Marks,
+    overlay: &CanvasPrims,
+    popup: Option<Rect>,
+) {
+    thread_local! {
+        /// One text system for every frame of a test, as the window keeps one: its faces are
+        /// the atlas keys' fonts, so a settle frame finds the masks the frame before drew.
+        static TEXT: std::cell::RefCell<TextSystem> = std::cell::RefCell::new(TextSystem::new());
+    }
+    TEXT.with_borrow_mut(|text| {
+        canvas_scene_in(p, whole, view, cam, prims, marks, overlay, popup, text)
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn canvas_scene_in<P: Painter>(
+    p: &mut P,
+    whole: Rect,
+    view: Rect,
+    cam: Camera,
+    prims: &CanvasPrims,
+    marks: &Marks,
+    overlay: &CanvasPrims,
+    popup: Option<Rect>,
+    text: &mut TextSystem,
+) {
+    let palette = Palette::xschem_dark();
+    let mut scratch = CanvasScratch::default();
+    let empty = CanvasPrims::default();
+    p.fill_rect(whole, Color::from_rgba8(60, 60, 60, 255));
+    let tables = [
+        (prims, Change::All),
+        (&empty, Change::All),
+        (&empty, Change::All),
+        (&empty, Change::All),
+    ];
+    let texts = |p: &mut P, k: usize| {
+        if k == 0 {
+            let t = &prims.texts;
+            canvas::draw_texts(p, view, &cam, t, None, &palette, text, &mut scratch);
+        }
+    };
+    p.canvas(
+        &frame_of(view, cam),
+        tables,
+        (prims, marks, true),
+        &palette,
+        texts,
+    );
+    if !overlay.is_empty() {
+        p.overlay(view, &cam, overlay, &palette, text, &mut scratch);
+    }
+    if let Some(r) = popup {
+        p.fill_rect(r, Color::from_rgba8(200, 50, 50, 255));
+    }
+}
+
+/// The mixed thousand under a UI frame, drawn as the window draws it (one pass: the chrome,
+/// the canvas stages with each table's labels over its rows, the marks, the gesture overlay,
+/// a popup over it all) against the CPU painter painting the same calls.
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn gpu_mixed_scene_matches_cpu_under_the_ui() {
@@ -808,110 +659,24 @@ fn gpu_mixed_scene_matches_cpu_under_the_ui() {
     let whole = Rect::new(0.0, 0.0, 640.0, 400.0);
     let view = Rect::new(40.0, 30.0, 600.0, 380.0);
     let cam = fit(view);
-    let palette = Palette::xschem_dark();
     let mut prims = common::thousand_prims();
     prims.text(5_000, 5_000, 1_500, 3, "tiny"); // under 3 px: skipped on both sides
     let mut marks = Marks::default();
     for i in 0..20 {
         marks.push(PrimKind::Line, i * 29, 0xffff_00ff);
     }
-    let gray = Color::from_rgba8(60, 60, 60, 255);
-    let popup = Rect::new(300.0, 10.0, 420.0, 70.0);
-    let red = Color::from_rgba8(200, 50, 50, 255);
-    let (mut text, mut scratch) = (TextSystem::new(), CanvasScratch::default());
-    let mut rows = InstanceRows::default();
-    let mut scene = Scene::new();
-    let empty = CanvasPrims::default();
-    {
-        let mut p = ScenePainter {
-            scene: &mut scene,
-            base: Affine::IDENTITY,
-            layers: None,
-            rows: Some(&mut rows),
-        };
-        p.fill_rect(whole, gray);
-        let tables = [
-            (&prims, Change::All),
-            (&empty, Change::All),
-            (&empty, Change::All),
-            (&empty, Change::All),
-        ];
-        let texts = |p: &mut ScenePainter, k: usize| {
-            if k == 0 {
-                let t = &prims.texts;
-                canvas::draw_texts(p, view, &cam, t, None, &palette, &mut text, &mut scratch);
-            }
-        };
-        p.canvas(
-            &frame_of(view, cam),
-            tables,
-            (&prims, &marks, true),
-            &palette,
-            texts,
-        );
-        p.fill_rect(popup, red);
-    }
-    let ui = texture(
-        &g,
-        size,
-        wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-    );
-    let ui_view = ui.create_view(&Default::default());
-    let params = RenderParams {
-        base_color: Color::TRANSPARENT,
-        width: size.0,
-        height: size.1,
-        antialiasing_method: AaConfig::Area,
-    };
-    g.renderer
-        .render_to_texture(&g.device, &g.queue, &scene, &ui_view, &params)
-        .expect("render");
-    let surface = texture(
-        &g,
-        size,
-        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-    );
-    let surface_view = surface.create_view(&Default::default());
-    let frame = rows.frame.take().expect("the canvas call left a frame");
-    g.pipes.upload(&g.device, &g.queue, &mut rows);
-    let mut enc = g.device.create_command_encoder(&Default::default());
-    let queue = &g.queue;
-    let black = wgpu::Color::BLACK;
-    g.pipes.draw(
-        &mut enc,
-        queue,
-        &surface_view,
-        black,
-        &rows,
-        Some(&frame),
-        1.0,
-        size,
-    );
-    let blitter =
-        wgpu::util::TextureBlitterBuilder::new(&g.device, wgpu::TextureFormat::Rgba8Unorm)
-            .blend_state(wgpu::BlendState::ALPHA_BLENDING)
-            .build();
-    blitter.copy(&g.device, &mut enc, &ui_view, &surface_view);
-    g.queue.submit([enc.finish()]);
-    let got = read(&g, &surface);
-    let mut cpu = CpuPainter::new(size.0 as u16, size.1 as u16, 1.0);
-    cpu.fill_rect(whole, gray);
-    canvas::draw_canvas(
-        &mut cpu,
-        view,
-        &cam,
-        20_000,
-        &prims,
-        &palette,
-        &empty,
-        &marks,
-        &mut TextSystem::new(),
-        &mut CanvasScratch::default(),
-    );
-    cpu.fill_rect(popup, red);
-    let want = rgba(&cpu.finish(Color::BLACK));
+    let mut overlay = CanvasPrims::default();
+    overlay.rect(100_000, 100_000, 300_000, 200_000, 1);
+    overlay.line_styled(100_000, 250_000, 400_000, 260_000, 4, LineStyle::new(2, 3));
+    overlay.text(120_000, 120_000, 12_000, 3, "moving");
+    let popup = Some(Rect::new(300.0, 10.0, 420.0, 70.0));
+    let (got, _) = gpu_frame(&mut g, size, 1.0, Color::BLACK, |p| {
+        canvas_scene(p, whole, view, cam, &prims, &marks, &overlay, popup)
+    });
+    let want = cpu_frame(size, 1.0, Color::BLACK, |p| {
+        canvas_scene(p, whole, view, cam, &prims, &marks, &overlay, popup)
+    });
     assert!(within("mixed scene under the UI", &got, &want));
-    // Negative space: without the hole the UI would cover the canvas.
     let at = |px: &[u8], x: usize, y: usize| px[4 * (y * size.0 as usize + x)..][..3].to_vec();
     assert_eq!(
         at(&got, 5, 5),
@@ -926,8 +691,327 @@ fn gpu_mixed_scene_matches_cpu_under_the_ui() {
     assert_ne!(
         at(&got, 45, 375),
         vec![60, 60, 60],
-        "the canvas, not the UI, inside the view"
+        "the canvas inside the view"
     );
+}
+
+/// Labels of every size the canvas shows (3 px up), turned and not, over a few symbols.
+fn labels_scene() -> CanvasPrims {
+    let mut p = CanvasPrims::default();
+    let words = [
+        "R1",
+        "10k",
+        "VDD",
+        "M1 nmos W=2u L=180n",
+        "out",
+        "Vin+",
+        "C3 4.7p",
+        "gnd",
+    ];
+    let mut rnd = seeded(0x5eed_1abe);
+    for i in 0..60 {
+        let (x, y) = (rnd(560) * 1000 + 10_000, rnd(350) * 1000 + 20_000);
+        let size = [3_000, 4_500, 6_000, 8_000, 11_000, 16_000][i % 6];
+        let rot = if i % 7 == 3 { 1 + (i % 3) as u8 } else { 0 };
+        p.text_rot(x, y, size, [3u8, 4, 5][i % 3], words[i % words.len()], rot);
+        p.rect(x - 2_000, y - 2_000, x + 2_000, y + 2_000, 4);
+    }
+    p
+}
+
+/// Canvas labels (symbol texts, pin names, values) at the fit and zoomed in 2.3× and 5.1× and
+/// out 0.6×: the GPU's atlas glyphs against the CPU's outlines, mean |Δ| ≤ [`TEXT_MEAN_MAX`]
+/// and no wrong pixel. Writes an amplified diff of the fit.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_canvas_labels_match_cpu_at_several_zooms() {
+    let mut g = gpu();
+    let size = (640u32, 400u32);
+    let whole = Rect::new(0.0, 0.0, 640.0, 400.0);
+    let view = Rect::new(20.0, 10.0, 620.0, 390.0);
+    let prims = labels_scene();
+    let none = (Marks::default(), CanvasPrims::default());
+    for (k, zoom) in [1.0, 2.3, 5.1, 0.6].into_iter().enumerate() {
+        let mut cam = fit(view);
+        cam.zoom_at(view, 333.3, 201.7, zoom);
+        let (got, batch) = gpu_frame(&mut g, size, 1.0, Color::BLACK, |p| {
+            canvas_scene(p, whole, view, cam, &prims, &none.0, &none.1, None)
+        });
+        let want = cpu_frame(size, 1.0, Color::BLACK, |p| {
+            canvas_scene(p, whole, view, cam, &prims, &none.0, &none.1, None)
+        });
+        if k == 0 {
+            amplified_diff("canvas_labels", &got, &want, size);
+        }
+        let name = format!("canvas labels at zoom {zoom}");
+        assert!(within_mean(&name, &got, &want, TEXT_MEAN_MAX), "{name}");
+        assert_eq!(batch.atlas.overflows, 0, "every glyph fits the atlas");
+        assert!(batch.rastered > 0, "{name}: glyphs drawn");
+    }
+}
+
+/// Shapes `s` at `px` into a fresh layout.
+fn shaped(text: &mut TextSystem, s: &str, px: f32) -> schemify_ui::parley::Layout<()> {
+    let mut l = schemify_ui::parley::Layout::new();
+    text.shape_into(s, px, &mut l);
+    l
+}
+
+/// UI text: runs at the UI's sizes at fractional positions, at device scale 1 and 1.5;
+/// mean |Δ| ≤ [`TEXT_MEAN_MAX`]. Then at quarter-pixel positions (no phase error) every pixel
+/// within [`EXACT_LEVELS`] — the masks are the CPU's own pixels.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_ui_text_matches_cpu() {
+    let mut g = gpu();
+    let mut text = TextSystem::new();
+    let lines = [
+        ("File  Edit  View  Tools  Help", 13.0),
+        ("Instance properties: value = 10k, W = 2u", 12.0),
+        ("Simulation finished in 1.23 ms — 0 errors", 11.0),
+        ("Schematic Editor", 16.0),
+        ("gm/ID = 15 S/A; VDS,sat ≈ 2/(gm/ID)", 14.0),
+    ];
+    let layouts: Vec<_> = lines
+        .iter()
+        .map(|&(s, px)| shaped(&mut text, s, px))
+        .collect();
+    let at = |i: usize| (7.3 + 1.37 * i as f64, 6.0 + 23.6 * i as f64);
+    let white = Color::from_rgba8(230, 230, 230, 255);
+    for scale in [1.0, 1.5] {
+        let size = ((420.0 * scale) as u32, (130.0 * scale) as u32);
+        let (got, _) = gpu_frame(&mut g, size, scale, Color::BLACK, |p| {
+            let mut s = UiScratch::default();
+            for (i, l) in layouts.iter().enumerate() {
+                draw_text(p, l, at(i).0, at(i).1, white, &mut s);
+            }
+        });
+        let want = cpu_frame(size, scale, Color::BLACK, |p| {
+            let mut s = UiScratch::default();
+            for (i, l) in layouts.iter().enumerate() {
+                draw_text(p, l, at(i).0, at(i).1, white, &mut s);
+            }
+        });
+        if scale == 1.0 {
+            amplified_diff("ui_text", &got, &want, size);
+        }
+        let name = format!("UI text at scale {scale}");
+        assert!(within_mean(&name, &got, &want, TEXT_MEAN_MAX), "{name}");
+    }
+    // Quarter-pixel origins: the glyph positions parley gives are whole at these sizes only
+    // where they are, so draw single glyphs at exact quarters.
+    let l = &layouts[0];
+    let (font, ids) = l
+        .lines()
+        .flat_map(|ln| ln.items())
+        .find_map(|i| match i {
+            schemify_ui::parley::PositionedLayoutItem::GlyphRun(r) => Some((
+                r.run().font().clone(),
+                r.positioned_glyphs().map(|g| g.id).collect::<Vec<_>>(),
+            )),
+            _ => None,
+        })
+        .expect("a run");
+    let glyphs: Vec<Glyph> = ids
+        .iter()
+        .enumerate()
+        .map(|(k, &id)| Glyph {
+            id,
+            x: 9.0 * k as f32 + 0.25 * (k % 4) as f32,
+            y: 14.0,
+        })
+        .collect();
+    let size = (300u32, 24u32);
+    let (got, _) = gpu_frame(&mut g, size, 1.0, Color::BLACK, |p| {
+        p.glyphs(
+            &font,
+            13.0,
+            &[],
+            white,
+            Affine::translate((4.0, 2.0)),
+            &glyphs,
+        )
+    });
+    let want = cpu_frame(size, 1.0, Color::BLACK, |p| {
+        p.glyphs(
+            &font,
+            13.0,
+            &[],
+            white,
+            Affine::translate((4.0, 2.0)),
+            &glyphs,
+        )
+    });
+    let (mean, off) = stats(&got, &want, EXACT_LEVELS);
+    println!("glyphs at quarter pixels: mean |Δ| {mean:.3}, {off} pixels off by > {EXACT_LEVELS}");
+    assert_eq!(off, 0, "a mask at its own phase is the CPU's pixels");
+    // Negative space: a wrong glyph, and the run shifted a pixel, fail the text oracle.
+    let mut wrong = glyphs.clone();
+    wrong[3].id = wrong[5].id;
+    let (bad, _) = gpu_frame(&mut g, size, 1.0, Color::BLACK, |p| {
+        p.glyphs(
+            &font,
+            13.0,
+            &[],
+            white,
+            Affine::translate((4.0, 2.0)),
+            &wrong,
+        )
+    });
+    assert!(
+        !within_mean("a wrong glyph", &bad, &want, TEXT_MEAN_MAX)
+            || stats(&bad, &want, FAR_LEVELS).1 > 0,
+        "a wrong glyph passes the oracle"
+    );
+    assert!(
+        stats(&bad, &want, FAR_LEVELS).1 > 0,
+        "a wrong glyph has wrong pixels"
+    );
+    let (shifted, _) = gpu_frame(&mut g, size, 1.0, Color::BLACK, |p| {
+        p.glyphs(
+            &font,
+            13.0,
+            &[],
+            white,
+            Affine::translate((5.0, 2.0)),
+            &glyphs,
+        )
+    });
+    assert!(
+        stats(&shifted, &want, FAR_LEVELS).1 > 0,
+        "a run shifted a pixel passes the oracle"
+    );
+}
+
+/// Prose (headings, emphasis, code shades, a rule, a list, inline and display math, an
+/// image) and a formula on its own: mean |Δ| ≤ [`TEXT_MEAN_MAX`].
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_prose_and_math_match_cpu() {
+    let mut g = gpu();
+    let mut strings = Strings::new();
+    let mut text = TextSystem::new();
+    let rgba: Vec<u8> = (0..32 * 16)
+        .flat_map(|i| [(i * 7 % 256) as u8, (i * 3 % 256) as u8, 128, 255])
+        .collect();
+    assert!(text.set_image(schemify_ui::Image::new("dots.png", 32, 16, rgba)));
+    let src = strings.intern(
+        "# Common source\n\nThe gain is $A_v = -g_m R_D$ for *small* signals, with `gm_id` \
+         from the **lookup**.\n\n- bias at $V_{ov} = 0.2$ V\n- check $\\frac{g_m}{I_D}$\n\n---\n\n\
+         $$f_T = \\frac{g_m}{2 \\pi C_{gg}}$$\n\n![dots](dots.png)\n\n```\n.op\n.tran 1n 1u\n```\n",
+    );
+    let prose = text.prose(&strings, src, 13, 380);
+    let formula = strings
+        .intern(r"g_m = \frac{2 I_D}{V_{GS} - V_{th}} \approx \sqrt{2 \mu C_{ox} \frac{W}{L} I_D}");
+    let math = text.math(&strings, formula, 22).expect("supported LaTeX");
+    let size = (420u32, 520u32);
+    let fg = Color::from_rgba8(30, 30, 30, 255);
+    let page = Rect::new(0.0, 0.0, 420.0, 520.0);
+    let t = &text;
+    macro_rules! page {
+        ($p:expr) => {{
+            let p = $p;
+            p.fill_rect(page, Color::WHITE);
+            let mut s = UiScratch::default();
+            draw_prose(p, prose, t, (12.0, 10.0), fg, &mut s);
+            let at = Affine::translate((14.0, 440.0));
+            draw_math(p, t.math_list(math), t.math_fonts(), at, fg, &mut s);
+        }};
+    }
+    let (gpu_px, _) = gpu_frame(&mut g, size, 1.0, Color::WHITE, |p| page!(p));
+    let cpu_px = cpu_frame(size, 1.0, Color::WHITE, |p| page!(p));
+    amplified_diff("prose_math", &gpu_px, &cpu_px, size);
+    assert!(within_mean(
+        "prose and math",
+        &gpu_px,
+        &cpu_px,
+        TEXT_MEAN_MAX
+    ));
+}
+
+/// The default UI shell (menu bar, tabs, panels, status bar) with an open menu, and with a
+/// dialog: every widget (rects, borders, separators, check marks, dropdown arrows, icons,
+/// labels) through the batch against the CPU painter.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_ui_shell_matches_cpu() {
+    let mut g = gpu();
+    let mut strings = Strings::new();
+    let (base, rejects) = records::parse(schemify_ui::DEFAULT_UI, &mut strings);
+    assert!(rejects.is_empty());
+    let tables = compose(&strings, &base, &[]);
+    let mut text = TextSystem::new();
+    for (k, open) in [true, false].into_iter().enumerate() {
+        let mut state = UiState::default();
+        if open {
+            let chain = [
+                strings.find("menu.file").expect("menu"),
+                strings.find("menu.file.image_export").expect("submenu"),
+            ];
+            state.open_menus(&chain);
+        } else {
+            state.set_dialog(strings.find("dialog.enter_text").expect("dialog"));
+        }
+        let size = (800u32, 520u32);
+        let frame = layout(&tables, &strings, &mut text, &state, (800.0, 520.0));
+        let canvas = tables
+            .nodes
+            .kind()
+            .iter()
+            .position(|&k| k == Kind::Canvas)
+            .expect("a canvas") as u16;
+        let r = frame.rect()[frame.row_of(canvas).expect("laid out")];
+        let view = Rect::new(
+            f64::from(r.x),
+            f64::from(r.y),
+            f64::from(r.x + r.w),
+            f64::from(r.y + r.h),
+        );
+        let cam = Camera {
+            cx: 0.0,
+            cy: 0.0,
+            scale: 0.002,
+        };
+        let none = CanvasPrims::default();
+        macro_rules! shell {
+            ($p:expr) => {{
+                let p = $p;
+                let mut ui = UiScratch::default();
+                draw_ui(
+                    p,
+                    &tables,
+                    &frame,
+                    &strings,
+                    &mut text,
+                    &state,
+                    Layer::Main,
+                    &mut ui,
+                );
+                canvas_scene(p, view, view, cam, &none, &Marks::default(), &none, None);
+                draw_ui(
+                    p,
+                    &tables,
+                    &frame,
+                    &strings,
+                    &mut text,
+                    &state,
+                    Layer::Overlay,
+                    &mut ui,
+                );
+            }};
+        }
+        let (got, _) = gpu_frame(&mut g, size, 1.0, Color::BLACK, |p| shell!(p));
+        let want = cpu_frame(size, 1.0, Color::BLACK, |p| shell!(p));
+        let name = if open {
+            "UI shell with a menu"
+        } else {
+            "UI shell with a dialog"
+        };
+        if k == 0 {
+            amplified_diff("ui_shell", &got, &want, size);
+        }
+        assert!(within_mean(name, &got, &want, TEXT_MEAN_MAX), "{name}");
+    }
 }
 
 /// The 100k canvas at zoom-fit (most rows under the far-zoom cut) agrees with the CPU painter,

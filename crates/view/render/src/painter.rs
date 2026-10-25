@@ -17,9 +17,10 @@ use vello::peniko::{
 };
 use vello::{Glyph, Scene};
 
-use schemify_canvas::{CanvasPrims, Marks, Palette};
+use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
+use schemify_ui::TextSystem;
 
-use crate::canvas::{self, Paths};
+use crate::canvas::{self, CanvasScratch, Paths};
 use crate::gpu::{Change, Frame, InstanceRows, MARKS};
 use crate::layers::{LAYER_SLOTS, Layers};
 
@@ -112,6 +113,26 @@ pub trait Painter {
         Self: Sized,
     {
         let _ = (frame, tables, marks, palette, texts);
+    }
+
+    /// Draws the gesture overlay `prims` (rows and labels, repacked whole) over this frame's
+    /// canvas, clipped to `view`. The GPU painter packs it into its instance rows' overlay
+    /// source, drawn by the canvas pass; the default draws it immediately
+    /// ([`crate::canvas::draw_prims`]), as the CPU painter does.
+    fn overlay(
+        &mut self,
+        view: Rect,
+        cam: &Camera,
+        prims: &CanvasPrims,
+        palette: &Palette,
+        text: &mut TextSystem,
+        scratch: &mut CanvasScratch,
+    ) where
+        Self: Sized,
+    {
+        self.push_clip(view);
+        canvas::draw_prims(self, view, cam, prims, palette, text, scratch);
+        self.pop_clip();
     }
 }
 

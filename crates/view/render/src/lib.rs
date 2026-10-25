@@ -44,6 +44,7 @@
 #![forbid(unsafe_code)]
 
 pub mod atlas;
+pub mod batch;
 pub mod canvas;
 #[cfg(target_arch = "wasm32")]
 mod cpu_view;
@@ -54,6 +55,7 @@ pub mod waves;
 pub mod widgets;
 mod window;
 
+pub use batch::{Batch, GpuPainter};
 pub use layers::{LAYER_SLOTS, Layers};
 pub use painter::{Chains, CpuPainter, Painter, ScenePainter, rgba};
 /// CPU raster target returned by [`CpuPainter::finish`] (PNG encode/decode included).

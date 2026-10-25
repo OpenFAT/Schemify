@@ -287,7 +287,7 @@ fn draw_icon<P: Painter>(
 
 /// Draws prose layout `id` ([`TextSystem::prose`]) with its top-left at `at`: code shades,
 /// rules, images, text runs, then formulas.
-fn draw_prose<P: Painter>(
+pub fn draw_prose<P: Painter>(
     p: &mut P,
     id: u32,
     text: &TextSystem,
@@ -331,7 +331,7 @@ fn draw_prose<P: Painter>(
 }
 
 /// Draws every glyph run of a parley layout with its top-left at `(x, y)`.
-pub(crate) fn draw_text<P: Painter>(
+pub fn draw_text<P: Painter>(
     p: &mut P,
     layout: &Layout<()>,
     x: f64,

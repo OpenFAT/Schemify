@@ -10,17 +10,18 @@
 //! `canvas::draw_rows` consumes the same rows on the CPU (`CpuPainter`, the goldens).
 //! Culling to the view and the far-zoom cut (a row at most 2 px across is the whole pixels it
 //! touches) are pure functions of (row, camera), evaluated by each consumer: the vertex shader
-//! per row, `draw_rows` per row and per chain. Text stays with vello until the glyph atlas
-//! (step 3).
+//! per row, `draw_rows` per row and per chain. Texts are not rows: they are the frame batch's
+//! atlas glyphs (`batch.rs`, step 3), which [`Pipelines`] draws in the same pass, each canvas
+//! stage at its place among the batch's instances.
 //!
 //! Six questions:
 //! 1. In: the four canvas tables of a frame ([`CanvasPrims`]: the scene as shown, decor,
 //!    violation markers, the parity extra) with how each changed since the last pack
-//!    ([`Change`]), the selection marks, the palette. Out: per source (the four tables, then
-//!    the marks) and kind ([`KINDS`]) a byte array of instance rows grouped by palette layer,
-//!    each layer's slot range, and the byte ranges written since the last upload; per frame
-//!    one camera ([`Frame`]).
-//! 2. ≤ 2^22 rows per table kind (`CanvasPrims::CAPACITY`), 5 sources × 5 kinds of row
+//!    ([`Change`]), the selection marks, the gesture overlay, the palette. Out: per source
+//!    (the four tables, the marks, the overlay) and kind ([`KINDS`]) a byte array of
+//!    instance rows grouped by palette layer, each layer's slot range, and the byte ranges
+//!    written since the last upload; per frame one camera ([`Frame`]).
+//! 2. ≤ 2^22 rows per table kind (`CanvasPrims::CAPACITY`), 6 sources × 5 kinds of row
 //!    arrays, each in ≤ 32 layer ranges; a frame is one draw per non-empty (source, layer,
 //!    kind) plus the background: about 40 for a schematic.
 //! 3. Rows are AoS (the GPU fetches one row per instance): coordinates `i32` milli-units
@@ -40,10 +41,14 @@
 //! 6. Sources and kinds are independent; serial (about 4 ms per 10^5 rows packed whole, an
 //!    edit's patch O(change)).
 
+use std::collections::HashMap;
 use std::ops::Range;
 
 use vello::kurbo::Rect;
 use vello::wgpu;
+
+use crate::atlas::ATLAS_SIDE;
+use crate::batch::{self, Batch, Stage, What};
 
 use schemify_canvas::{
     Arcs, Camera, CanvasPrims, LAYER_DEAD, LAYERS, LineStyle, Lines, Marks, Palette, PrimKind,
@@ -64,10 +69,12 @@ pub const LINE: usize = 3;
 pub const EDGE: usize = 4;
 /// Bytes per row of each kind.
 pub const STRIDE: [usize; KINDS] = [28, 24, 28, 24, 24];
-/// Row sources: the four canvas tables in drawing order, then the marks.
-pub const SOURCES: usize = 5;
+/// Row sources: the four canvas tables in drawing order, the marks, the gesture overlay.
+pub const SOURCES: usize = 6;
 /// The marks source ([`InstanceRows::pack_marks`]).
 pub const MARKS: usize = 4;
+/// The gesture overlay's source (`Painter::overlay`), packed whole each frame it shows.
+pub const OVERLAY: usize = 5;
 /// Most bytes one row array holds: wgpu's default buffer limit (256 MiB).
 const BYTES_MAX: usize = 1 << 28;
 /// Dirty ranges kept per row array before they merge into one.
@@ -284,7 +291,8 @@ impl InstanceRows {
         n
     }
 
-    /// Packs source table `src` (one of the four canvas tables, `< MARKS`) of `t` after
+    /// Packs source table `src` (one of the four canvas tables or the overlay, not
+    /// [`MARKS`]) of `t` after
     /// `change`, resolving each row's colour and width from `palette`. A [`Change::Killed`]
     /// empties the killed rows' slots and puts appended rows into their layer's free slots,
     /// writing only those; a layer out of free slots, a table that shrank, an edit script,
@@ -295,9 +303,12 @@ impl InstanceRows {
     ///
     /// # Panics
     ///
-    /// Panics on `src ≥ MARKS`.
+    /// Panics on `src` = [`MARKS`] or past [`SOURCES`].
     pub fn pack(&mut self, src: usize, t: &CanvasPrims, palette: &Palette, change: Change<'_>) {
-        assert!(src < MARKS, "the marks pack through `pack_marks`");
+        assert!(
+            src < SOURCES && src != MARKS,
+            "the marks pack through `pack_marks`"
+        );
         let n = [
             t.lines.x0.len(),
             t.rects.x0.len(),
@@ -791,9 +802,10 @@ fn uniform(frame: &Frame, dev: f64, (w, h): (u32, u32)) -> [u8; UNIFORM_BYTES] {
     out
 }
 
-/// The canvas pipelines and the GPU side of one canvas's rows: one vertex buffer per
-/// `(source, kind)`, grown by doubling, and the camera uniform. Owner: the window (or a
-/// benchmark driving the GPU itself).
+/// The frame's pipelines and their GPU state: the canvas pipelines with one vertex buffer per
+/// `(source, kind)` of rows, grown by doubling, and the camera uniform; the batch pipeline
+/// (`ui.wgsl`) with the frame's instance buffer, the coverage atlas's texture and the images'.
+/// Owner: the window (or a benchmark driving the GPU itself).
 pub struct Pipelines {
     uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
@@ -801,12 +813,26 @@ pub struct Pipelines {
     kinds: [wgpu::RenderPipeline; KINDS],
     buffers: [[Option<wgpu::Buffer>; KINDS]; SOURCES],
     uploaded: u64,
+    ui: wgpu::RenderPipeline,
+    ui_layout: wgpu::BindGroupLayout,
+    ui_uniform: wgpu::Buffer,
+    atlas: wgpu::Texture,
+    atlas_view: wgpu::TextureView,
+    sampler: wgpu::Sampler,
+    /// The atlas with a 1 × 1 stand-in image: every batch draw but an image's.
+    ui_bind: wgpu::BindGroup,
+    /// Image textures' bind groups by blob id (`Batch::images`).
+    images: HashMap<u64, wgpu::BindGroup>,
+    instances: Option<wgpu::Buffer>,
+    atlas_uploaded: u64,
+    instances_uploaded: u64,
 }
 
 impl std::fmt::Debug for Pipelines {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Pipelines")
             .field("uploaded", &self.uploaded)
+            .field("atlas_uploaded", &self.atlas_uploaded)
             .finish()
     }
 }
@@ -818,35 +844,169 @@ const ARC_ATTRS: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
 ];
 const TRI_ATTRS: [wgpu::VertexAttribute; 4] =
     wgpu::vertex_attr_array![0 => Sint32x2, 1 => Sint32x2, 2 => Sint32x2, 3 => Uint32];
+const UI_ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+    0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Uint32, 4 => Uint32
+];
+/// The batch uniform (`Ui` in `ui.wgsl`): the target's size.
+const UI_UNIFORM_BYTES: usize = 16;
+
+/// A render pipeline of `module`'s `vs`/`fs` into `format`, its rows `stride`-byte instances
+/// with `attributes` (none: a full-quad pipeline), blended by `blend`.
+fn pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+    (vs, fs): (&str, &str),
+    rows: Option<(usize, &[wgpu::VertexAttribute])>,
+    format: wgpu::TextureFormat,
+    blend: wgpu::BlendState,
+) -> wgpu::RenderPipeline {
+    let buffers: Vec<Option<wgpu::VertexBufferLayout>> = rows
+        .map(|(stride, attributes)| {
+            Some(wgpu::VertexBufferLayout {
+                array_stride: stride as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes,
+            })
+        })
+        .into_iter()
+        .collect();
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(vs),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module,
+            entry_point: Some(vs),
+            compilation_options: Default::default(),
+            buffers: &buffers,
+        },
+        fragment: Some(wgpu::FragmentState {
+            module,
+            entry_point: Some(fs),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(blend),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// A buffer of `size` bytes for `usage` (plus copies into it).
+fn buffer(
+    device: &wgpu::Device,
+    label: &str,
+    size: u64,
+    usage: wgpu::BufferUsages,
+) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size,
+        usage: usage | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+/// A `w × h` 2D texture of `format`, sampled and written by copies.
+fn texture(
+    device: &wgpu::Device,
+    label: &str,
+    (w, h): (u32, u32),
+    format: wgpu::TextureFormat,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    })
+}
+
+/// Writes `data` (`w × h` texels of `bpp` bytes, row-major) into `t` at `(x, y)`.
+fn write_texels(
+    queue: &wgpu::Queue,
+    t: &wgpu::Texture,
+    (x, y, w, h): (u32, u32, u32, u32),
+    bpp: u32,
+    data: &[u8],
+) {
+    assert_eq!(data.len(), (w * h * bpp) as usize, "whole texels");
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: t,
+            mip_level: 0,
+            origin: wgpu::Origin3d { x, y, z: 0 },
+            aspect: wgpu::TextureAspect::All,
+        },
+        data,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(w * bpp),
+            rows_per_image: Some(h),
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+}
 
 impl Pipelines {
     /// Builds the pipelines for a `format` render target (the surface's, or an offscreen
-    /// `Rgba8Unorm`). Blending is straight alpha, so the canvas pass composes under a
-    /// straight-alpha UI frame.
+    /// `Rgba8Unorm`). The canvas blends straight alpha, the batch premultiplied.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a device whose textures cannot be [`ATLAS_SIDE`] texels across.
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipelines {
+        let side = u32::from(ATLAS_SIDE);
+        assert!(
+            device.limits().max_texture_dimension_2d >= side,
+            "an atlas-sized texture"
+        );
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("canvas"),
             source: wgpu::ShaderSource::Wgsl(include_str!("gpu.wgsl").into()),
         });
+        let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ty,
+            count: None,
+        };
+        let uniform_entry = |bytes: usize| wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: wgpu::BufferSize::new(bytes as u64),
+        };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("canvas camera"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(UNIFORM_BYTES as u64),
-                },
-                count: None,
-            }],
+            entries: &[entry(0, uniform_entry(UNIFORM_BYTES))],
         });
-        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("canvas camera"),
-            size: UNIFORM_BYTES as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let uniform = buffer(
+            device,
+            "canvas camera",
+            UNIFORM_BYTES as u64,
+            wgpu::BufferUsages::UNIFORM,
+        );
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("canvas camera"),
             layout: &layout,
@@ -860,59 +1020,101 @@ impl Pipelines {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = |vs: &str, fs: &str, rows: Option<(usize, &[wgpu::VertexAttribute])>| {
-            let buffers: Vec<Option<wgpu::VertexBufferLayout>> = rows
-                .map(|(stride, attributes)| {
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: stride as u64,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes,
-                    })
-                })
-                .into_iter()
-                .collect();
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(vs),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &module,
-                    entry_point: Some(vs),
-                    compilation_options: Default::default(),
-                    buffers: &buffers,
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: Some(fs),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
+        let canvas = |vs_fs, rows| {
+            let blend = wgpu::BlendState::ALPHA_BLENDING;
+            pipeline(
+                device,
+                &pipeline_layout,
+                &module,
+                vs_fs,
+                rows,
+                format,
+                blend,
+            )
         };
+        // The batch: a uniform, the atlas, an image and a sampler.
+        let tex = wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        };
+        let ui_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("batch"),
+            entries: &[
+                entry(0, uniform_entry(UI_UNIFORM_BYTES)),
+                entry(1, tex),
+                entry(2, tex),
+                entry(
+                    3,
+                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                ),
+            ],
+        });
+        let ui_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("batch"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("ui.wgsl").into()),
+        });
+        let ui_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("batch"),
+            bind_group_layouts: &[Some(&ui_layout)],
+            immediate_size: 0,
+        });
+        let ui = pipeline(
+            device,
+            &ui_pipeline_layout,
+            &ui_module,
+            ("vs_ui", "fs_ui"),
+            Some((batch::STRIDE, &UI_ATTRS)),
+            format,
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        );
+        let ui_uniform = buffer(
+            device,
+            "batch",
+            UI_UNIFORM_BYTES as u64,
+            wgpu::BufferUsages::UNIFORM,
+        );
+        let atlas = texture(device, "atlas", (side, side), wgpu::TextureFormat::R8Unorm);
+        let atlas_view = atlas.create_view(&Default::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("batch"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let blank = texture(device, "no image", (1, 1), wgpu::TextureFormat::Rgba8Unorm);
+        let ui_bind = bind_batch(
+            device,
+            &ui_layout,
+            &ui_uniform,
+            &atlas_view,
+            &blank.create_view(&Default::default()),
+            &sampler,
+        );
         Pipelines {
-            background: pipeline("vs_bg", "fs_bg", None),
+            background: canvas(("vs_bg", "fs_bg"), None),
             kinds: [
-                pipeline("vs_tri", "fs_tri", Some((STRIDE[TRI], &TRI_ATTRS))),
-                pipeline("vs_rect", "fs_rect", Some((STRIDE[RECT], &SEG_ATTRS))),
-                pipeline("vs_arc", "fs_arc", Some((STRIDE[ARC], &ARC_ATTRS))),
-                pipeline("vs_seg", "fs_seg", Some((STRIDE[LINE], &SEG_ATTRS))),
-                pipeline("vs_seg", "fs_seg", Some((STRIDE[EDGE], &SEG_ATTRS))),
+                canvas(("vs_tri", "fs_tri"), Some((STRIDE[TRI], &TRI_ATTRS))),
+                canvas(("vs_rect", "fs_rect"), Some((STRIDE[RECT], &SEG_ATTRS))),
+                canvas(("vs_arc", "fs_arc"), Some((STRIDE[ARC], &ARC_ATTRS))),
+                canvas(("vs_seg", "fs_seg"), Some((STRIDE[LINE], &SEG_ATTRS))),
+                canvas(("vs_seg", "fs_seg"), Some((STRIDE[EDGE], &SEG_ATTRS))),
             ],
             uniform,
             bind,
             buffers: Default::default(),
             uploaded: 0,
+            ui,
+            ui_bind,
+            ui_layout,
+            ui_uniform,
+            atlas,
+            atlas_view,
+            sampler,
+            images: HashMap::new(),
+            instances: None,
+            atlas_uploaded: 0,
+            instances_uploaded: 0,
         }
     }
 
@@ -935,12 +1137,8 @@ impl Pipelines {
                     .is_some_and(|b| b.size() >= bytes.len() as u64);
                 if !fits {
                     let size = bytes.len().next_power_of_two().max(4096);
-                    let b = device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("canvas rows"),
-                        size: size as u64,
-                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                        mapped_at_creation: false,
-                    });
+                    let usage = wgpu::BufferUsages::VERTEX;
+                    let b = buffer(device, "canvas rows", size as u64, usage);
                     if !bytes.is_empty() {
                         queue.write_buffer(&b, 0, bytes);
                         self.uploaded += bytes.len() as u64;
@@ -961,19 +1159,95 @@ impl Pipelines {
         assert_eq!(rows.dirty_bytes(), 0, "every dirty range uploaded");
     }
 
+    /// Writes the batch's instances, its atlas's pending masks and the textures of images it
+    /// draws for the first time, and clears the pending masks. Call before
+    /// [`Pipelines::draw`].
+    ///
+    /// Cost: one `write_buffer`, one `write_texture` per new mask and per new image.
+    pub fn upload_batch(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, batch: &mut Batch) {
+        let bytes = batch.instances();
+        if !bytes.is_empty() {
+            let fits = self
+                .instances
+                .as_ref()
+                .is_some_and(|b| b.size() >= bytes.len() as u64);
+            if !fits {
+                let size = bytes.len().next_power_of_two().max(1 << 16);
+                let usage = wgpu::BufferUsages::VERTEX;
+                self.instances = Some(buffer(device, "batch", size as u64, usage));
+            }
+            queue.write_buffer(self.instances.as_ref().expect("made"), 0, bytes);
+            self.instances_uploaded += bytes.len() as u64;
+        }
+        let (slots, coverage) = batch.atlas.pending();
+        for &(s, at) in slots {
+            let n = usize::from(s.w) * usize::from(s.h);
+            let at = at as usize;
+            let rect = (
+                u32::from(s.x),
+                u32::from(s.y),
+                u32::from(s.w),
+                u32::from(s.h),
+            );
+            write_texels(queue, &self.atlas, rect, 1, &coverage[at..at + n]);
+        }
+        self.atlas_uploaded += batch.atlas.pending_bytes() as u64;
+        batch.atlas.clear_pending();
+        // ponytail: image textures are dropped wholesale past twice the prose image cap (as
+        // `painter::image_data` drops its blobs); an LRU when pages show more images.
+        if self.images.len() + batch.images().len() > 2 * schemify_ui::TextSystem::IMAGES_MAX {
+            self.images.clear();
+        }
+        for image in batch.images() {
+            let id = image.data.id();
+            if self.images.contains_key(&id) {
+                continue;
+            }
+            assert!(
+                image.format == vello::peniko::ImageFormat::Rgba8,
+                "prose images are RGBA8"
+            );
+            let size = (image.width, image.height);
+            let t = texture(device, "image", size, wgpu::TextureFormat::Rgba8Unorm);
+            write_texels(queue, &t, (0, 0, size.0, size.1), 4, image.data.data());
+            let view = t.create_view(&Default::default());
+            let bind = bind_batch(
+                device,
+                &self.ui_layout,
+                &self.ui_uniform,
+                &self.atlas_view,
+                &view,
+                &self.sampler,
+            );
+            self.images.insert(id, bind);
+        }
+        debug_assert!(self.atlas.width() == u32::from(ATLAS_SIDE));
+    }
+
     /// Bytes written to the GPU by [`Pipelines::upload`] since the last call (a report's
     /// "bytes per edit").
     pub fn take_uploaded(&mut self) -> u64 {
         std::mem::take(&mut self.uploaded)
     }
 
-    /// Draws one frame's canvas into `target` (a `size`-px texture of these pipelines' format)
-    /// as its own render pass cleared to `clear`: nothing more for a frame without a canvas
-    /// (`frame` is `None`); else, scissored to the view at `dev` device px per logical px, the
-    /// background and grid, then the rows (uploaded) as the CPU painter draws them: source by
-    /// source, layer by layer, fills before strokes. Call after [`Pipelines::upload`].
+    /// Atlas bytes and batch instance bytes written by [`Pipelines::upload_batch`] since the
+    /// last call.
+    pub fn take_batch_uploaded(&mut self) -> (u64, u64) {
+        (
+            std::mem::take(&mut self.atlas_uploaded),
+            std::mem::take(&mut self.instances_uploaded),
+        )
+    }
+
+    /// Draws one frame into `target` (a `size`-px texture of these pipelines' format) as one
+    /// render pass cleared to `clear`: the batch's draws in order, each canvas stage among
+    /// them (when `frame` has a canvas) scissored to its view at `dev` device px per logical
+    /// px, the rows as the CPU painter draws them: source by source, layer by layer, fills
+    /// before strokes. A batch with no canvas stage draws the whole canvas first. Call after
+    /// [`Pipelines::upload`] and [`Pipelines::upload_batch`].
     ///
-    /// Cost: one pass, one uniform write, one draw per non-empty (source, layer, kind).
+    /// Cost: one pass, two uniform writes, one draw per batch draw and per non-empty (source,
+    /// layer, kind).
     ///
     /// # Panics
     ///
@@ -986,6 +1260,7 @@ impl Pipelines {
         target: &wgpu::TextureView,
         clear: wgpu::Color,
         rows: &InstanceRows,
+        batch: &Batch,
         frame: Option<&Frame>,
         dev: f64,
         size: (u32, u32),
@@ -994,7 +1269,7 @@ impl Pipelines {
         assert!(w > 0 && h > 0, "a target has a size");
         assert_eq!(rows.dirty_bytes(), 0, "rows uploaded before they are drawn");
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("canvas"),
+            label: Some("frame"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 depth_slice: None,
@@ -1006,44 +1281,136 @@ impl Pipelines {
             })],
             ..Default::default()
         });
-        let Some(frame) = frame else {
-            return;
-        };
-        let v = frame.view;
-        let at = |c: f64, max: u32| c.clamp(0.0, f64::from(max)) as u32;
-        let (x0, y0) = (at((v.x0 * dev).floor(), w), at((v.y0 * dev).floor(), h));
-        let (x1, y1) = (at((v.x1 * dev).ceil(), w), at((v.y1 * dev).ceil(), h));
-        if x1 <= x0 || y1 <= y0 {
-            return;
-        }
-        queue.write_buffer(&self.uniform, 0, &uniform(frame, dev, size));
-        pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
-        pass.set_bind_group(0, &self.bind, &[]);
-        pass.set_pipeline(&self.background);
-        pass.draw(0..6, 0..1);
-        for (src, tables) in rows.tables.iter().enumerate() {
-            for layer in 0..LAYERS {
-                for (kind, t) in tables.iter().enumerate() {
-                    let used = t.used[layer];
-                    if used == 0 {
-                        continue;
-                    }
-                    let buf = self.buffers[src][kind]
-                        .as_ref()
-                        .expect("rows uploaded before they are drawn");
-                    assert!(
-                        buf.size() >= t.bytes.len() as u64,
-                        "the buffer holds every row"
-                    );
-                    pass.set_pipeline(&self.kinds[kind]);
-                    pass.set_vertex_buffer(0, buf.slice(..));
-                    let verts = if kind == TRI { 3 } else { 6 };
-                    let first = t.start[layer];
-                    pass.draw(0..verts, first..first + used);
+        let mut ui = [0u8; UI_UNIFORM_BYTES];
+        ui[..4].copy_from_slice(&(w as f32).to_ne_bytes());
+        ui[4..8].copy_from_slice(&(h as f32).to_ne_bytes());
+        queue.write_buffer(&self.ui_uniform, 0, &ui);
+        // The canvas's scissor, when there is a canvas in view.
+        let scissor = frame.and_then(|frame| {
+            let v = frame.view;
+            let at = |c: f64, max: u32| c.clamp(0.0, f64::from(max)) as u32;
+            let (x0, y0) = (at((v.x0 * dev).floor(), w), at((v.y0 * dev).floor(), h));
+            let (x1, y1) = (at((v.x1 * dev).ceil(), w), at((v.y1 * dev).ceil(), h));
+            if x1 <= x0 || y1 <= y0 {
+                return None;
+            }
+            queue.write_buffer(&self.uniform, 0, &uniform(frame, dev, size));
+            Some([x0, y0, x1 - x0, y1 - y0])
+        });
+        let stage = |pass: &mut wgpu::RenderPass<'_>, stage: Stage| {
+            let Some([x, y, sw, sh]) = scissor else {
+                return;
+            };
+            pass.set_scissor_rect(x, y, sw, sh);
+            pass.set_bind_group(0, &self.bind, &[]);
+            match stage {
+                Stage::Background => {
+                    pass.set_pipeline(&self.background);
+                    pass.draw(0..6, 0..1);
                 }
+                Stage::Rows(src) => self.draw_rows(pass, rows, src),
+            }
+        };
+        let staged = batch
+            .draws()
+            .iter()
+            .any(|d| matches!(d.what, What::Canvas(_)));
+        if !staged {
+            stage(&mut pass, Stage::Background);
+            for src in 0..SOURCES {
+                stage(&mut pass, Stage::Rows(src));
+            }
+        }
+        for d in batch.draws() {
+            let bind = match d.what {
+                What::Canvas(s) => {
+                    stage(&mut pass, s);
+                    continue;
+                }
+                What::Ui => &self.ui_bind,
+                What::Image(k) => {
+                    let id = batch.images()[k as usize].data.id();
+                    self.images
+                        .get(&id)
+                        .expect("images uploaded before they are drawn")
+                }
+            };
+            if d.range.is_empty() {
+                continue;
+            }
+            let buf = self
+                .instances
+                .as_ref()
+                .expect("instances uploaded before they are drawn");
+            assert!(
+                buf.size() >= u64::from(d.range.end) * batch::STRIDE as u64,
+                "the buffer holds every instance"
+            );
+            pass.set_scissor_rect(0, 0, w, h);
+            pass.set_pipeline(&self.ui);
+            pass.set_bind_group(0, bind, &[]);
+            pass.set_vertex_buffer(0, buf.slice(..));
+            pass.draw(0..6, d.range.clone());
+        }
+    }
+
+    /// The rows of source `src`, layer by layer, each layer's kinds in order.
+    fn draw_rows(&self, pass: &mut wgpu::RenderPass<'_>, rows: &InstanceRows, src: usize) {
+        let tables = &rows.tables[src];
+        for layer in 0..LAYERS {
+            for (kind, t) in tables.iter().enumerate() {
+                let used = t.used[layer];
+                if used == 0 {
+                    continue;
+                }
+                let buf = self.buffers[src][kind]
+                    .as_ref()
+                    .expect("rows uploaded before they are drawn");
+                assert!(
+                    buf.size() >= t.bytes.len() as u64,
+                    "the buffer holds every row"
+                );
+                pass.set_pipeline(&self.kinds[kind]);
+                pass.set_vertex_buffer(0, buf.slice(..));
+                let verts = if kind == TRI { 3 } else { 6 };
+                let first = t.start[layer];
+                pass.draw(0..verts, first..first + used);
             }
         }
     }
+}
+
+/// The batch's bind group: its uniform, the atlas, `image`, the sampler.
+fn bind_batch(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    uniform: &wgpu::Buffer,
+    atlas: &wgpu::TextureView,
+    image: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("batch"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(atlas),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(image),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    })
 }
 
 #[cfg(test)]
