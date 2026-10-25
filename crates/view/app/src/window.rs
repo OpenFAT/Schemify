@@ -64,7 +64,7 @@ impl App for Window {
     }
 
     fn paint<P: Painter>(&mut self, p: &mut P, _viewport: (f32, f32)) {
-        let _ = paint::frame(&mut self.ed, &mut self.caches, p);
+        paint::frame(&mut self.ed, &mut self.caches, p);
     }
 
     fn wake_ms(&self) -> Option<u32> {

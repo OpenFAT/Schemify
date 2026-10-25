@@ -241,34 +241,6 @@ fn a_kept_canvas_equals_a_fresh_pack() {
     walk(3, 60);
 }
 
-/// Paint feeds the frame scheduler only through its return value: painting changes nothing
-/// `wake_ms` reads; a partial outcome handed to `painted` asks for a frame at once, a
-/// stretched one for the crisp frame once the zoom has settled (already, here), and the due
-/// frame redraws and leaves the editor idle (D39). A finished outcome or no canvas asks for
-/// nothing new.
-#[test]
-fn the_paint_outcome_schedules_the_next_frame_through_painted() {
-    use schemify_canvas::Drawn;
-    let mut s = Session::open("inv", "top.shcomp", "painted", true);
-    assert_eq!(s.ed.wake_ms(), None, "idle after opening");
-    let mut p = CpuPainter::new(VIEW.0 as u16, VIEW.1 as u16, 1.0);
-    let (drawn, _) = schemify_app::paint::paint(s.ed.picture(), &mut s.caches, &mut p);
-    assert!(drawn.is_some(), "a schematic tab draws its canvas");
-    assert_eq!(s.ed.wake_ms(), None, "paint alone schedules nothing");
-    for outcome in [Drawn::Partial, Drawn::Stretched] {
-        s.ed.painted(Some(outcome), false);
-        assert_eq!(s.ed.wake_ms(), Some(0), "{outcome:?} asks for a frame");
-        s.ed.painted(None, false);
-        assert_eq!(s.ed.wake_ms(), Some(0), "no canvas keeps the request");
-        assert!(s.frame(Default::default()), "the due frame redraws");
-        assert_eq!(s.ed.wake_ms(), None, "{outcome:?}: idle once taken");
-    }
-    s.ed.painted(Some(Drawn::Partial), false);
-    s.ed.painted(Some(Drawn::Recorded), false);
-    assert_eq!(s.ed.wake_ms(), None, "a whole canvas asks for nothing");
-    assert!(!s.frame(Default::default()), "and nothing redraws");
-}
-
 /// A frame with no input and nothing due does no work (D39 idle 0%): once the editor is idle
 /// (no wake-up asked for), an empty update reports nothing changed, schedules nothing and
 /// rebuilds no scene, and painting schedules nothing either. The window does not even run

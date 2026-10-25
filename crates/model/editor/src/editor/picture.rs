@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 
 use schemify_canvas::kurbo::Rect as KRect;
-use schemify_canvas::{Camera, CanvasPrims, Drawn, Marks, Palette};
+use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
 use schemify_ui::waves::{Geometry, WaveUi};
 use schemify_ui::{Strings, TextSystem, UiLayout, UiState, UiTables};
 use schemify_wave::Waves;
@@ -61,10 +61,8 @@ pub struct CanvasPicture<'a> {
     pub extra: &'a CanvasPrims,
     /// Selection marks over `scene`.
     pub marks: &'a Marks,
-    /// The gesture preview, drawn live over the cached layer.
+    /// The gesture preview, drawn over the other tables.
     pub overlay: &'a CanvasPrims,
-    /// The zoom has settled: draw crisp (else a stretched stand-in is fine).
-    pub crisp: bool,
 }
 
 /// One filled docs-page plot slot: the pane rectangle, its clip and its traces.
@@ -133,7 +131,6 @@ impl Editor {
             i32::MAX / 4
         };
         assert!(grid > 0, "a positive grid pitch");
-        let crisp = self.now >= self.zoom_until;
         let dy = f64::from(self.viewport.1);
         assert!(dy >= 0.0, "a dock below the window's top");
         #[cfg(not(target_arch = "wasm32"))]
@@ -168,7 +165,6 @@ impl Editor {
             extra,
             marks,
             overlay,
-            crisp,
         });
         Picture {
             ui: UiView {
@@ -184,23 +180,15 @@ impl Editor {
         }
     }
 
-    /// Takes the canvas outcome of the frame painted from [`Editor::picture`]: a stretched
-    /// layer (mid-zoom) asks [`Editor::wake_ms`] for a crisp frame once the zoom settles, a
-    /// partly recorded one for the next frame at once; any other outcome asks for nothing.
-    /// `None` (no canvas was drawn) keeps what the last canvas frame asked for. `took_edits`:
-    /// the painter's diff consumed the scene's and the markers' reported edits, so they are
-    /// cleared (a painter that did not diff leaves them for the next frame).
-    pub fn painted(&mut self, drawn: Option<Drawn>, took_edits: bool) {
+    /// Takes what the frame painted from [`Editor::picture`] consumed. `took_edits`: the
+    /// painter's diff took the scene's and the markers' reported edits, so they are cleared
+    /// (a frame that did not diff, a text tab, leaves them for the next). Every painted frame
+    /// is complete, so painting never asks [`Editor::wake_ms`] for another.
+    pub fn painted(&mut self, took_edits: bool) {
         if took_edits {
             self.scene.clear_edits();
             self.markers.clear_edits();
         }
-        let Some(d) = drawn else {
-            return;
-        };
-        self.stretched = d == Drawn::Stretched;
-        self.partial = d == Drawn::Partial;
-        assert!(!(self.stretched && self.partial), "one outcome per frame");
     }
 
     /// The PNG export the last command asked for, if any (one at a time).

@@ -137,27 +137,24 @@ name, device moves) on a tiled schematic with shared `gnd`/`vdd!` nets.
 | Budget | Measured |
 |---|---|
 | param edit → recompute + redraw ≤ 8 ms, 1k dependents | 1.8 ms (plugin-backed functions 3.2 ms) |
-| idle CPU 0% | no wake-up once the zoom settles (asserted by the frame benchmark) |
+| idle CPU 0% | no wake-up after a pan or zoom frame (asserted by the frame benchmark and `an_idle_frame_does_no_work`) |
 
 ## What makes a frame cheap
 
-- **Tiles** (`canvas::draw_cached`, `tiles.rs`): the canvas (background, grid, primitives,
-  decor, selection marks) is recorded as world-anchored 256-px tiles in one atlas layer. A
-  whole-pixel pan copies the tiles it has and records the ones it uncovers (plus a 1-tile
-  ring ahead); a zoom stretches the old tiles until 120 ms after the last notch, then records
-  the new zoom's tiles within a per-frame cost budget (`COST_PER_FRAME`), the old ones
-  standing in meanwhile. A tile the cost estimate (the old cells over the same world) says is
-  too costly is recorded in up to 16 parts over several frames.
-- **Index and level of detail** (`PrimIndex`, `draw_prims_in`): a tile reads only the rows
-  its world box meets (a CSR grid, about 16 rows per cell); rows ≤ 2 px on screen are drawn
-  as the whole pixels they touch (per-layer bit masks, one rect per run) instead of paths.
-- **Vello-free frames** (`render::Layers`): when nothing outside the layers changed (the
-  frame log's hash), the window blits the last target and composes the layers as textured
-  quads instead of running vello.
-- **Patches** (`canvas::CanvasDiff`, `Painter::patch_layer`): after an edit or a selection,
-  the rows that changed (a Myers diff of per-row hashes) give world boxes; only those parts
-  of the visible tiles are redrawn, on vello's tile grid. A frame's patches and new tiles are
-  rendered in one vello pass into a scratch texture and copied into the atlas.
+- **Instance rows** (`render::gpu`, render-backend steps 1–2): every canvas primitive is one
+  retained row, grouped by palette layer, packed once and patched where the tables' reported
+  changes (or `CanvasDiff`'s edit script) say. A pan or zoom writes no row, only the camera
+  uniform (`a_pan_or_zoom_frame_writes_no_instance_bytes`); every frame draws the whole view,
+  so there is no tile cache, no stand-in and no settle frame. The CPU painter (goldens, the
+  GPU-less web) rasterizes the same rows (`canvas::draw_rows`), so every per-row decision is
+  made once, in the pack.
+- **Index and level of detail**: canvas texts are read only near the view (`PrimIndex`, a CSR
+  grid, about 16 rows per cell), and a table whose largest label is under 3 px is skipped
+  whole; rows ≤ 2 px on screen are drawn as the whole pixels their box touches (the vertex
+  shader on the GPU, `draw_rows` on the CPU).
+- **Vello-free frames** (`render::Layers`): when nothing in the UI changed but the camera and
+  the live layers (the status bar), the window blits the last UI target and composes the
+  live layers as textured quads instead of running vello.
 - **Incremental scene and checks**: `scene::update` re-stamps only changed objects; check
   passes post their delta (`Annotations::patch`); undo/redo recompute over the undone entry's
   ops instead of rebuilding.
@@ -699,6 +696,53 @@ What the remaining differences are:
 - One CPU artifact: it fills a layer's closed shapes as one non-zero path, so a filled rect
   and polygon of opposite winding that overlap cancel (14 px in the thousand). The GPU fills
   both.
+
+### Step 2: the tile cache deleted (2026-10-24)
+
+`tiles.rs`, `CanvasCache`, `draw_cached` and its LOD masks are gone; `CpuPainter` draws the
+canvas from the same `InstanceRows` the GPU does (`canvas::draw_rows`). The GPU path's frame
+work did not change, so the numbers hold. One run each of `frame_times_100k` and
+`interactions_100k`, release, `nice -n 19`, `SCHEMIFY_GPU=NVIDIA` (**NVIDIA GeForce RTX 4060
+Laptop GPU**, Vulkan, timestamp floor 0.013 ms), before (`1ed77d5e`) and after back to back at
+load ≈ 8–18. CPU update+paint, then GPU, p50 / p95 / p99 ms:
+
+| Frame | CPU before | CPU after | GPU before | GPU after |
+|---|---|---|---|---|
+| pan | 0.088 / 0.145 / 0.157 | 0.076 / 0.111 / 0.123 | 0.664 / 0.915 / 0.916 | 0.630 / 0.915 / 0.918 |
+| zoom | 0.086 / 0.114 / 0.119 | 0.074 / 0.100 / 0.101 | 0.547 / 0.660 / 0.662 | 0.552 / 0.660 / 0.674 |
+| select | 0.462 / 0.667 / 0.767 | 0.508 / 0.582 / 0.595 | 0.663 / 0.663 / 0.818 | 0.665 / 0.683 / 0.843 |
+| edit (Del, undo) | 0.924 / 2.000 / 4.291 | 0.903 / 2.144 / 2.653 | 1.138 / 2.652 / 2.813 | 1.139 / 1.142 / 2.653 |
+| hover | 0.189 / 0.250 / 0.292 | 0.222 / 0.248 / 0.295 | 0.481 / 0.486 / 0.488 | 0.481 / 0.486 / 0.489 |
+| click select | 0.391 / 0.429 / 0.775 | 0.366 / 0.491 / 0.734 | 0.326 / 0.328 / 0.486 | 0.326 / 0.327 / 0.485 |
+| drag | 0.191 / 0.219 / 0.229 | 0.245 / 0.314 / 0.340 | 0.804 / 0.809 / 0.816 | 0.809 / 0.813 / 0.814 |
+| drop | 3.02 | 3.69 | 0.80 | 0.80 |
+| menu | 0.190 / 0.505 | 0.250 / 0.730 | 0.666 / 0.830 | 0.665 / 0.823 |
+| type | 0.241 / 0.302 / 0.317 | 0.281 / 0.375 / 0.378 | 0.651 / 0.656 / 0.656 | 0.652 / 0.656 / 0.658 |
+| unselect (select-all box) | 6.23 / 6.31 / 6.39 | 6.26 / 9.22 / 9.44 | 1.10 / 1.22 / 2.77 | 1.10 / 1.10 / 1.22 |
+
+- Every interactive budget (D39, < 1 ms CPU) passes before and after; the differences are
+  within this machine's run-to-run spread at that load (one run each, as asked). The drag
+  frames draw the move preview through `draw_prims`, which now packs the overlay into scratch
+  rows before drawing them (a full pack of a small table per frame); that, or the noise, is
+  the 0.05 ms.
+- **Rows written by a pan or zoom: zero.** The zoom report uploads 0 KiB; the pan report's
+  7 003 KiB is the first frame's whole canvas, which falls in it. Headless oracle:
+  `a_pan_or_zoom_frame_writes_no_instance_bytes` (app `tests/canvas.rs`: the frames' dirty row
+  bytes are 0 while the camera moves; a delete writes rows).
+- Resident memory over the select-all rounds is flat in both (389 MiB before, 432 after, ±0
+  across rounds); the 43 MiB offset was not investigated beyond that (the GPU path allocates
+  no new per-frame table).
+- Equivalence means are unchanged on the RTX 4060 (both sides read the same rows now, and the
+  CPU's row path draws byte-identical pixels to the old direct path): lines 0.037, rects 0.024,
+  arcs 0.321, polys 0.059, marks 0.664, far-zoom 0.003, mixed scene under the UI 0.974, 100k
+  at fit 3.244, the moved-rect negative space 0.579 (fails, as it must).
+- **Goldens**: nine app goldens (`editor_*`, `docs_*`, `primitive_modern`,
+  `cell_panel_modern`, `core_symbols_*`) differ from before by ±1 level on 4–18 pixels each,
+  because the CPU tile intermediate is gone (each tile was its own pixmap, its paths placed
+  relative to the tile origin and clipped to it). They pass `check_golden` and are **not
+  re-blessed**, on purpose. Already stale at `1ed77d5e`, within tolerance and also not
+  re-blessed: `cell_panel_modern` (657 px), `core_symbols_*` (355 px), `menu_file` (256 px),
+  render `canvas_1k` (3 px).
 
 ## Binary size
 

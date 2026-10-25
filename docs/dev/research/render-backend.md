@@ -448,7 +448,7 @@ is the count of existing function bodies edited.
 |---|---|---|---|
 | 0 | **Pacing.** `update` in `RedrawRequested`; render without waiting when the last callback has arrived or one period has passed since the last present; log both the newest and the oldest input; then try `desired_maximum_frame_latency: 2`. Also ask the user to run the monitor at 165 Hz. | the frame log on the RTX 4060 and the iGPU at 8 ms synthetic inputs (this note's method); idle CPU still 0% | 3 (`Shell::render`, `about_to_wait`, `window_event`) |
 | 1 (done) | **`render::gpu` rows and pipelines for canvas primitives**, drawn straight into the surface texture under the vello UI frame. The vello target becomes premultiplied and blended over the canvas pass instead of blitted opaque. `paint.rs` calls `canvas::draw` instead of `draw_cached` on the GPU painter. | per-kind GPU vs `CpuPainter` tolerance test; row-patch oracle (patched rows = rebuilt rows after random kill/append sequences); `frame_times_100k` GPU column | 6 (`Shell::render`, `Gpu::new`, `paint::frame`'s canvas call, `ScenePainter` canvas hook, `perf.rs` `Gpu::render`, `gpu.rs` render helper) |
-| 2 | **Delete the tile cache**: `tiles.rs`, the canvas use of `layers.rs`, `CanvasCache` in `paint::Caches`, LOD masks, and the cache tests and perf.md rows | goldens unchanged; `frame_times_100k`, `interactions_100k` | 4 (`paint::Caches`, `paint::frame`, `Editor::painted`'s partial-record wake, `wake_ms`'s "partly recorded" arm) |
+| 2 (done) | **Delete the tile cache**: `tiles.rs`, the canvas use of `layers.rs`, `CanvasCache` in `paint::Caches`, LOD masks, and the cache tests and perf.md rows | goldens unchanged; `frame_times_100k`, `interactions_100k` | 4 (`paint::Caches`, `paint::frame`, `Editor::painted`'s partial-record wake, `wake_ms`'s "partly recorded" arm) |
 | 3 | **Glyph atlas and UI batch.** `GpuPainter` implements every `Painter` method; canvas text moves to atlas quads | glyph mask vs `CpuPainter` glyph raster per size bucket; app goldens unchanged (CPU); hover and type frames' GPU time on the iGPU | 3 (`Painter` impl split, `draw_texts`, `widgets::draw_text`) |
 | 4 | **Remove vello (GPU)**: `layers.rs`, the window's vello target and blit; the `vello` dependency goes, `vello_cpu` stays. Amend D5. | `tools/size-check.sh` before and after; all tests | 2 (`Gpu::new`, `Shell::render`) |
 | 5 | **WebGL2.** Enable wgpu `webgl` on wasm32; the WebGPU-unusable path tries WebGL2 before `cpu_view` (web spec §7 amended) | the web smoke test on headless Chrome with WebGPU disabled shows GPU frames | 2 (`Gpu::new` on wasm, `UserEvent::NoGpu` arm) |
@@ -490,10 +490,42 @@ needs step 3.
   negative space. The pack is checked headless: patched rows equal a fresh pack after random
   kill and append edits.
 
-Step 2 deletes `tiles.rs`, the canvas use of `layers.rs` (`Layers` stays for the status bar's
-live layer until step 4), `CanvasCache` and the tile half of `paint_canvas`, `Drawn`'s tile
-outcomes and the editor's partial/stretched wake-ups, `canvas::draw_cached` and its LOD masks.
-It also moves `CpuPainter` onto `InstanceRows`.
+### Step 2: done (2026-10-24)
+
+Deleted: `tiles.rs`, `CanvasCache` and the tile half of `paint_canvas`, `canvas::draw_cached`,
+`draw_prims_in` and its LOD bit masks, the whole `canvas::Drawn` enum (every outcome but
+`Direct` was a tile outcome, so `Editor::painted` takes only `took_edits`), the editor's
+`stretched`, `partial` and `zoom_until` state with `ZOOM_SETTLE_MS` and `CanvasPicture::crisp`,
+and the tests whose subject went: `tests/cache.rs`, the composed-vs-vello and
+patched-vs-recorded layer tests of `gpu.rs`, `zoom_on_a_light_cell_fills_the_view_in_a_few_frames`
+and `the_paint_outcome_schedules_the_next_frame_through_painted`. Numbers in
+[perf.md](../perf.md) § GPU canvas pipelines, step 2. What differed from the plan:
+
+- **`CpuPainter` reads `InstanceRows`**: it keeps its own rows across frames, packed by the same
+  `pack` the GPU's are, and `canvas::draw_rows` rasterizes them layer by layer with vello_cpu.
+  `draw_prims` and `draw_marks` (the overlay, PNG export, render tests) pack into a scratch
+  row set and draw the same way. An edge row now carries two more flags (`FIRST`, `CLOSED`) so
+  the CPU strokes a polyline or polygon as the one path it is (joins, a continuous dash); the
+  shader ignores them.
+- **`layers.rs` keeps only the live layer**: the stamped layer (`Painter::layer`,
+  `holds_layer`, `draw_layer`, `patch_layer`), the patch batches and the stretched stand-in
+  (bilinear sampler, fill) are gone, and so are `CpuPainter`'s raster layers. `Layers` still
+  logs the frame and composes the status bar's live layer without vello, until step 4.
+- **Goldens**: the row path draws the render goldens byte-identical (`canvas_1k` drew directly
+  before and after). Nine app goldens move by ±1 level on 4–18 pixels (mean |Δ| ≤ 0.00001),
+  because the tile intermediate is gone (each tile was its own pixmap, its paths placed
+  relative to the tile origin and clipped to it). They pass `check_golden` and are left
+  unblessed on purpose, as are the goldens that were already stale at `1ed77d5e`
+  (`cell_panel_modern`, `core_symbols_*`, `menu_file`, `canvas_1k`, 3–657 px within tolerance).
+- **Ported oracles**: `a_kept_canvas_equals_a_fresh_pack` (app: a painter that patches its rows
+  against a fresh one over seeded random edits), `an_idle_frame_does_no_work` now also asserts a
+  zoom frame asks for no other, and `a_pan_or_zoom_frame_writes_no_instance_bytes` (app: pan and
+  zoom frames leave zero dirty row bytes while the camera moves; a delete writes rows).
+- **Not done here**: `CanvasDiff` still returns the world boxes of changed rows, which only
+  the tile cache read (`paint::Caches::canvas_boxes`, marked `ponytail:`); dropping them is a
+  `canvas` crate change of its own. The CPU still fills a layer's closed shapes as one
+  non-zero path (the cancelling-winding artifact in § GPU against CPU); filling per shape
+  changes golden pixels, so it waits for a decision.
 
 ## 6. Risks
 

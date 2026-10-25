@@ -516,22 +516,3 @@ pub fn chain(end: &[u32], i: usize) -> std::ops::Range<usize> {
     let start = if i == 0 { 0 } else { end[i - 1] as usize };
     start..end[i] as usize
 }
-
-/// How a cached canvas frame was drawn (`schemify_render::canvas::draw_cached`): what the
-/// editor schedules its next frame from (`Editor::painted`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Drawn {
-    /// Every visible tile copied pixel for pixel from the atlas (a pan, or nothing moved).
-    Copied,
-    /// The old zoom's tiles stretched to a new zoom (a stand-in until the next crisp frame).
-    Stretched,
-    /// The changed parts of visible tiles redrawn (the damage boxes), every
-    /// tile shown.
-    Patched,
-    /// Tiles recorded this frame; every visible tile shown.
-    Recorded,
-    /// Some visible tiles not recorded yet (stand-ins shown in their place): draw again.
-    Partial,
-    /// Content drawn straight into the frame (the painter keeps no layers).
-    Direct,
-}

@@ -11,7 +11,7 @@
 //! to `Editor::painted`, the one way paint informs the model.
 
 use schemify_canvas::kurbo::{Affine, BezPath, Rect as KRect, Stroke};
-use schemify_canvas::{Camera, CanvasDiff, CanvasPrims, Drawn, PrimIndex, Rows, TableChange};
+use schemify_canvas::{Camera, CanvasDiff, CanvasPrims, PrimIndex, Rows, TableChange};
 use schemify_editor::editor::{CanvasPicture, DockPicture, Editor, GraphPicture, Picture, UiView};
 use schemify_render::canvas::{self, CanvasScratch};
 use schemify_render::gpu::{Change, Frame};
@@ -65,17 +65,16 @@ pub struct Caches {
     dock_ui: UiScratch,
 }
 
-/// Paints the editor's next frame and reports its canvas outcome back to it: the whole
-/// paint step of a window or a headless golden test. Returns the outcome it reported.
-pub fn frame<P: Painter>(ed: &mut Editor, caches: &mut Caches, p: &mut P) -> Option<Drawn> {
-    let (drawn, took_edits) = paint(ed.picture(), caches, p);
-    ed.painted(drawn, took_edits);
-    drawn
+/// Paints the editor's next frame and reports back what its canvas diff took: the whole
+/// paint step of a window or a headless golden test.
+pub fn frame<P: Painter>(ed: &mut Editor, caches: &mut Caches, p: &mut P) {
+    let took_edits = paint(ed.picture(), caches, p);
+    ed.painted(took_edits);
 }
 
-/// Paints `pic`. Returns how the canvas was drawn (`None` while a text tab replaces it) and
-/// whether the canvas diff took the scene's and the markers' reported edits.
-pub fn paint<P: Painter>(pic: Picture<'_>, c: &mut Caches, p: &mut P) -> (Option<Drawn>, bool) {
+/// Paints `pic`. Returns whether the canvas diff took the scene's and the markers' reported
+/// edits (false while a text tab replaces the canvas).
+pub fn paint<P: Painter>(pic: Picture<'_>, c: &mut Caches, p: &mut P) -> bool {
     let Picture {
         mut ui,
         canvas,
@@ -83,17 +82,14 @@ pub fn paint<P: Painter>(pic: Picture<'_>, c: &mut Caches, p: &mut P) -> (Option
         dock,
     } = pic;
     draw_layer(p, &mut ui, Layer::Main, &mut c.ui_scratch);
-    let (drawn, took) = match canvas {
-        Some(cp) => (Some(Drawn::Direct), paint_canvas(p, &cp, &mut *ui.text, c)),
-        None => (None, false),
-    };
+    let took = canvas.is_some_and(|cp| paint_canvas(p, &cp, &mut *ui.text, c));
     paint_graphs(p, &graphs, &mut *ui.text, c);
     draw_layer(p, &mut ui, Layer::Overlay, &mut c.ui_scratch);
     if let Some(d) = dock {
         let dy = d.dy;
         paint_dock(&mut Shifted { p, dy }, d, c);
     }
-    (drawn, took)
+    took
 }
 
 /// One layer of a UI's tables.

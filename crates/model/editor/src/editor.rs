@@ -16,7 +16,7 @@
 //! ui::compose(base, plugin sets, state + docs page)    → ui_nodes; ui::layout → ui_layout
 //! scene::build(doc, symbols)                           → canvas prims, objects (on change)
 //! checks::decor(scene, violations, highlight, annots)  → decor prims (on change)
-//! (schemify-app) paint(Editor::picture)               → pixels; Editor::painted(outcome)
+//! (schemify-app) paint(Editor::picture)               → pixels; Editor::painted(took_edits)
 //! ```
 //!
 //! Event-driven: `update` runs when the window delivers input, or on a tick the editor asked
@@ -82,9 +82,6 @@ const ZOOM_STEP: f64 = 1.2;
 /// Bytes of the active document's disk state a tick hashes (`Project::hash_step`): about
 /// 0.3 ms at 400 MB/s, so the 4 MB of a 100k-object cell take a few dozen ticks after it opens.
 const HASH_STEP_BYTES: usize = 128 << 10;
-/// A zoom counts as finished this long after the camera scale last changed; until then the
-/// canvas shows its recorded layer stretched (D39: a zoom frame re-encodes nothing).
-const ZOOM_SETTLE_MS: u32 = 120;
 /// Chooser rows listed (the list scrolls; typing filters). Every row is a composed node, so
 /// the cap bounds the per-frame compose cost while a chooser is open.
 // ponytail: a fixed cap; a virtualized list (rows composed for the visible window only) when
@@ -558,15 +555,6 @@ pub struct Editor {
     /// Advance whenever a table the canvas layer draws changes: the scene as shown, decor,
     /// parity decor (`extra`), marks, violation markers.
     canvas_gen: [u64; 5],
-    /// Clock (ms) until which the zoom counts as changing: frames before it stretch the
-    /// recorded canvas layer instead of re-recording it.
-    zoom_until: u64,
-    /// The last painted frame showed a stretched layer (handed in by [`Editor::painted`]): a
-    /// crisp frame is due at `zoom_until`.
-    stretched: bool,
-    /// The last painted frame left canvas tiles unrecorded (a per-frame budget; handed in by
-    /// [`Editor::painted`]): the next is due now.
-    partial: bool,
     waves: Option<WavesView>,
     /// The PNG export the last command asked for (`schemify-app` rasterizes it).
     raster: Option<Raster>,
@@ -833,9 +821,6 @@ impl Editor {
             routed: Routed::default(),
             viewport: (0.0, 0.0),
             canvas_gen: [0; 5],
-            zoom_until: 0,
-            stretched: false,
-            partial: false,
             waves: None,
             raster: None,
             confirm: None,
@@ -1213,8 +1198,7 @@ impl Editor {
     }
 
     /// Milliseconds until the editor needs [`Editor::update`] without input: a run in flight
-    /// or a plugin's child process or timer pending, a canvas outcome handed to
-    /// [`Editor::painted`] that needs another frame, or the active document's disk hash still
+    /// or a plugin's child process or timer pending, or the active document's disk hash still
     /// being taken (a step per tick after it opens). `None` when nothing is pending, so the
     /// window sleeps until input (D39 idle CPU 0%).
     pub fn wake_ms(&self) -> Option<u32> {
@@ -1224,14 +1208,6 @@ impl Editor {
         let sim: Option<u32> = None;
         // Events queued for plugins (a `RunDone`, a completion) are delivered on the next tick.
         let queued = self.host.has_work().then_some(1);
-        // A stretched canvas (mid-zoom) is redrawn crisp once the zoom has settled; a partly
-        // recorded one goes on at once.
-        let crisp = self.stretched.then(|| {
-            self.zoom_until
-                .saturating_sub(self.now)
-                .min(u64::from(ZOOM_SETTLE_MS)) as u32
-        });
-        let tiles = self.partial.then_some(0);
         // The plugin snapshot behind a new check pass is refilled on the next tick.
         let snapshot = self.snapshot_due.then_some(0);
         // The active document's disk hash (its journal's first record) is taken in steps.
@@ -1245,8 +1221,6 @@ impl Editor {
             sim,
             self.host.wake_ms(self.now),
             queued,
-            crisp,
-            tiles,
             snapshot,
             hash,
             platform,
@@ -1282,7 +1256,6 @@ impl Editor {
             false => (std::borrow::Cow::Borrowed(events), viewport),
         };
         let events: &InputEvents = &events;
-        let zoom0 = self.camera().scale;
         let snapshot_due = std::mem::take(&mut self.snapshot_due);
         self.snapshot_fresh = false;
         let resized = viewport != self.viewport;
@@ -1380,15 +1353,6 @@ impl Editor {
         self.build_shown();
         changed |= self.build_extra(decor || stale);
         self.build_overlay();
-        // 10. zoom settle: while the scale keeps changing the canvas layer is stretched; the
-        //     first frame ZOOM_SETTLE_MS after the last change records it crisp.
-        if self.camera().scale != zoom0 {
-            self.zoom_until = now_ms + u64::from(ZOOM_SETTLE_MS);
-        } else if self.stretched && now_ms >= self.zoom_until {
-            self.stretched = false;
-            changed = true;
-        }
-        changed |= std::mem::take(&mut self.partial);
         // The plugin snapshot: a pass that moved after this frame's delivery is refilled on
         // the next tick (a frame nobody waits on), unless that tick's pass moves again.
         if snapshot_due && !self.snapshot_fresh && !pass_moved {
