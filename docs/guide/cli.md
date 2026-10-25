@@ -270,11 +270,11 @@ schemify-interop xschem-import <lib-dir>... [--root <dir>]... [--models <file>[:
     [--spiceinit <file>] [--tech <file>] [--cdf <dump>] [--xschemrc <file>]... [--no-core] -o <out-dir>
 ```
 
-Converts every `.sym` and `.sch` under each `<lib-dir>` into Schemify cells. The `<lib-dir>`s are the xschem library search path, in order. It writes `<lib>/<cell>.<ext>`, a `schemify.project` and `import-report.md`/`import-report.txt` into `<out-dir>`, prints a summary, then checks every output.
+Converts every `.sym` and `.sch` under each `<lib-dir>` into Schemify cells. The `<lib-dir>`s are the xschem library search path, in order. It writes `<lib>/<cell>.<ext>`, a `schemify.project` and `interop.report.md`/`interop.report.txt` into `<out-dir>`, prints a summary, then checks every output.
 
 | Flag | Effect |
 |---|---|
-| `--root <dir>` | Add a search-path element that is not converted wholesale: only the cells your design references from it, transitively (xschem's `xschem_library`, a PDK's `libs.tech/xschem`). Repeatable. |
+| `--root <dir>` | Add a search-path element that contributes only what the converted files reference from it, transitively (xschem's `xschem_library` parent, so `devices/res.sym` resolves, or a PDK's xschem directory). Repeatable. |
 | `--models <file>[:<section>]` | Scan SPICE model cards (and their `.include`/`.lib` files) for device limits: model bins become `min`/`max` on `w` and `l`. Repeatable. |
 | `--spiceinit <file>` | Read an ngspice `.spiceinit`: its `sourcepath` is where model includes are looked up. |
 | `--tech <file>` | A Magic tech file (or a KLayout `.lyt`) for the manufacturing grid. |
@@ -295,10 +295,10 @@ See [migrating.md](migrating.md) and [import.md](../spec/import.md).
 schemify-interop virtuoso-export <project-dir> <cell-file>... -o <file.sfyx> [--core-cells] [--lib L=V]...
 schemify-interop virtuoso-import <project-dir> <file.sfyx> [--analoglib] [--lib L=V]...
 schemify-interop xschem-export <project-dir> <cell-file>... -o <out-dir>
-schemify-interop install-skill <dir>
+schemify-interop install-skill [<dir>]
 ```
 
-Cell files, `.sfyx` paths and output paths are relative to `<project-dir>`. Each conversion writes a report next to its output listing everything that did not translate one to one.
+Cell files, `.sfyx` paths and output paths are relative to `<project-dir>`. Each conversion writes a report listing everything that did not translate one to one: beside a file output (`amp.sfyx` → `amp.report.md`), inside a directory output (`interop.report.md`). The editor's File menu items take the same arguments without `<project-dir>`.
 
 | Command or flag | Effect |
 |---|---|
@@ -308,7 +308,7 @@ Cell files, `.sfyx` paths and output paths are relative to `<project-dir>`. Each
 | `virtuoso-import` | Read a `.sfyx` dump from Virtuoso into the project. |
 | `--analoglib` | On import, move analogLib instances onto Schemify's core devices. |
 | `xschem-export` | Write `.sch`/`.sym` files, core devices onto xschem's `devices/` symbols. |
-| `install-skill` | Write `schemify.il` and `sfy_probe.il`, the SKILL files Virtuoso loads, into `<dir>`. |
+| `install-skill` | Write `schemify.il` and `sfy_probe.il`, the SKILL files Virtuoso loads, into `<dir>` (default `interop`). |
 
 The Virtuoso workflow, including the first-session probe, is in `examples/plugins/interop/README.md` and [interop.md](../spec/interop.md).
 
