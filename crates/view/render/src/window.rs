@@ -85,12 +85,21 @@ impl Waker {
 pub enum RunError {
     /// The windowing system could not start an event loop.
     EventLoop(String),
+    /// Native: neither a hardware adapter nor wgpu's software one (WARP on Windows, Mesa's
+    /// lavapipe or llvmpipe on Linux) could draw the window, or a lost device could not be
+    /// replaced. The window closed after the app's `close`.
+    NoGpu(String),
 }
 
 impl std::fmt::Display for RunError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RunError::EventLoop(e) => write!(f, "event loop: {e}"),
+            RunError::NoGpu(e) => write!(
+                f,
+                "no GPU can draw the window: {e} (a software adapter needs Mesa's lavapipe \
+                 on Linux, WARP on Windows)"
+            ),
         }
     }
 }
@@ -161,21 +170,30 @@ impl Gpu {
     /// vertical blank instead of two frames later; D39). The device is held to WebGL2's
     /// guaranteed limits on every backend, so a pipeline the web's WebGL2 tier could not build
     /// fails validation natively too. Logs the adapter once, so a report names the GPU that ran.
+    /// `fallback` asks for wgpu's software adapter instead (WARP, lavapipe, llvmpipe), ignoring
+    /// `WGPU_ADAPTER_NAME`.
     async fn new(
         instance: wgpu::Instance,
         target: wgpu::SurfaceTarget<'static>,
         w: u32,
         h: u32,
+        fallback: bool,
     ) -> Result<Gpu, String> {
         assert!(w > 0 && h > 0, "a surface has a size");
         let surface = instance.create_surface(target).map_err(|e| e.to_string())?;
-        let named = wgpu::util::initialize_adapter_from_env(&instance, Some(&surface)).await;
+        let named = match fallback {
+            false => wgpu::util::initialize_adapter_from_env(&instance, Some(&surface))
+                .await
+                .ok(),
+            true => None,
+        };
         let adapter = match named {
-            Ok(a) => a,
-            Err(_) => instance
+            Some(a) => a,
+            None => instance
                 .request_adapter(&wgpu::RequestAdapterOptions {
                     power_preference: wgpu::PowerPreference::from_env()
                         .unwrap_or(wgpu::PowerPreference::HighPerformance),
+                    force_fallback_adapter: fallback,
                     compatible_surface: Some(&surface),
                     ..Default::default()
                 })
@@ -296,6 +314,23 @@ struct Shell<A: App> {
     /// When the last frame was presented (the log's frame period).
     #[cfg(not(target_arch = "wasm32"))]
     presented: Option<std::time::Instant>,
+    /// Native: why no GPU could draw the window ([`RunError::NoGpu`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    failed: Option<String>,
+}
+
+/// The native GPU ladder: `open(false)` (the fastest hardware adapter), then `open(true)`
+/// (wgpu's software adapter: WARP, lavapipe or llvmpipe). The error names both failures.
+// ponytail: no CPU rung (`CpuPainter` through `softbuffer`): WARP and lavapipe cover the
+// machines without a GPU we know of; a new dependency waits for one where both fail.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn gpu_ladder<T>(mut open: impl FnMut(bool) -> Result<T, String>) -> Result<T, String> {
+    let hardware = match open(false) {
+        Ok(g) => return Ok(g),
+        Err(e) => e,
+    };
+    eprintln!("gpu: no hardware adapter ({hardware}); trying the software one");
+    open(true).map_err(|software| format!("hardware: {hardware}; software: {software}"))
 }
 
 /// Opens a window and runs `app` until it closes. Native: blocks. Web (wasm32): attaches a
@@ -349,13 +384,16 @@ pub fn run<A: App + 'static>(title: &str, mut app: A) -> Result<(), RunError> {
         updates: 0,
         #[cfg(not(target_arch = "wasm32"))]
         presented: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        failed: None,
     };
     #[cfg(not(target_arch = "wasm32"))]
     {
         let mut shell = shell;
         event_loop
             .run_app(&mut shell)
-            .map_err(|e| RunError::EventLoop(e.to_string()))
+            .map_err(|e| RunError::EventLoop(e.to_string()))?;
+        shell.failed.map_or(Ok(()), |why| Err(RunError::NoGpu(why)))
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -366,6 +404,36 @@ pub fn run<A: App + 'static>(title: &str, mut app: A) -> Result<(), RunError> {
 }
 
 impl<A: App> Shell<A> {
+    /// Native: a GPU for `window` down the ladder ([`gpu_ladder`]), its device's loss reported
+    /// as `NoGpu`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_gpu(&self, window: &Arc<Window>) -> Result<Gpu, String> {
+        let size = window.inner_size();
+        let (w, h) = (size.width.max(1), size.height.max(1));
+        let g = gpu_ladder(|fallback| {
+            let desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+            let target = window.clone().into();
+            pollster::block_on(Gpu::new(wgpu::Instance::new(desc), target, w, h, fallback))
+        })?;
+        let lost = self.proxy.clone();
+        // `Destroyed` is our own drop of the device (the window closing, a reopen).
+        g.device.set_device_lost_callback(move |reason, msg| {
+            if reason != wgpu::DeviceLostReason::Destroyed {
+                let _ = lost.send_event(UserEvent::NoGpu(0, format!("device lost ({msg})")));
+            }
+        });
+        Ok(g)
+    }
+
+    /// Native: no GPU can draw the window. The app settles as on a close and [`run`] returns
+    /// the reason ([`RunError::NoGpu`]) instead of leaving a blank window.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn fail(&mut self, event_loop: &ActiveEventLoop, why: String) {
+        self.app.close();
+        self.failed = Some(why);
+        event_loop.exit();
+    }
+
     /// Web: makes tier `self.tier`'s GPU in the background: on winit's canvas for the first
     /// tier, on a canvas laid over it for a later one. Ends in `GpuReady` or `NoGpu`; a device
     /// lost later sends `NoGpu` too.
@@ -382,7 +450,7 @@ impl<A: App> Shell<A> {
                 desc.backends = TIERS[tier].0;
                 let instance = wgpu::Instance::new(desc);
                 if tier == 0 {
-                    return Gpu::new(instance, win.into(), w, h).await;
+                    return Gpu::new(instance, win.into(), w, h, false).await;
                 }
                 let canvas = crate::cpu_view::overlay(&win, GL_ID)?;
                 // The context made first wins, so wgpu's later request gets this one: wgpu's
@@ -397,7 +465,7 @@ impl<A: App> Shell<A> {
                 }
                 let _ = canvas.get_context_with_context_options("webgl2", &opts);
                 let target = wgpu::SurfaceTarget::Canvas(canvas.clone());
-                let made = Gpu::new(instance, target, w, h).await;
+                let made = Gpu::new(instance, target, w, h, false).await;
                 if made.is_err() {
                     canvas.remove();
                 }
@@ -716,16 +784,9 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
         window.set_ime_allowed(true);
         self.scale = window.scale_factor();
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            let size = window.inner_size();
-            let (w, h) = (size.width.max(1), size.height.max(1));
-            let instance = wgpu::Instance::new(
-                wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
-            );
-            match pollster::block_on(Gpu::new(instance, window.clone().into(), w, h)) {
-                Ok(g) => self.gpu = Some(g),
-                Err(e) => eprintln!("gpu: {e}"),
-            }
+        match self.open_gpu(&window) {
+            Ok(g) => self.gpu = Some(g),
+            Err(e) => return self.fail(event_loop, e),
         }
         #[cfg(target_arch = "wasm32")]
         self.start_gpu(&window);
@@ -736,7 +797,8 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
         }
     }
 
-    fn user_event(&mut self, _: &ActiveEventLoop, event: UserEvent) {
+    #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Access(e) => match e.window_event {
                 accesskit_winit::WindowEvent::InitialTreeRequested => self.access_dirty = true,
@@ -766,6 +828,19 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
             }
             #[cfg_attr(not(target_arch = "wasm32"), allow(unused_variables))]
             UserEvent::NoGpu(tier, why) => {
+                // Native: the device was lost. The same ladder opens another, sent every row
+                // and mask again; past it the window closes with the reason.
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(w) = self.window.clone() {
+                    eprintln!("gpu: {why}; opening another device");
+                    self.gpu = None;
+                    (self.rows, self.batch) = (InstanceRows::default(), Batch::default());
+                    match self.open_gpu(&w) {
+                        Ok(g) => self.gpu = Some(g),
+                        Err(e) => return self.fail(event_loop, format!("{why}; then {e}")),
+                    }
+                    w.request_redraw();
+                }
                 #[cfg(target_arch = "wasm32")]
                 if let Some(w) = self.window.clone()
                     && tier == self.tier
@@ -929,7 +1004,7 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Pace, pace};
+    use super::{Pace, gpu_ladder, pace};
 
     /// D39: nothing pending sleeps; input alone never updates before the granted redraw, so
     /// events during a frame in flight get one update at the next grant, not one each; a
@@ -941,5 +1016,41 @@ mod tests {
         assert_ne!(pace(false, true), Pace::Update);
         assert_eq!(pace(true, false), Pace::Update);
         assert_eq!(pace(true, true), Pace::Update);
+    }
+
+    /// The native ladder tries the hardware adapter first and the software one only after it
+    /// failed; a total failure names both reasons.
+    #[test]
+    fn gpu_ladder_order() {
+        let mut tried = Vec::new();
+        let first = gpu_ladder(|fallback| {
+            tried.push(fallback);
+            Ok::<_, String>(fallback)
+        });
+        assert_eq!(
+            (first, &tried[..]),
+            (Ok(false), &[false][..]),
+            "hardware first, alone"
+        );
+        tried.clear();
+        let second = gpu_ladder(|fallback| {
+            tried.push(fallback);
+            if fallback {
+                Ok(1)
+            } else {
+                Err("no Vulkan".to_owned())
+            }
+        });
+        assert_eq!(
+            (second, &tried[..]),
+            (Ok(1), &[false, true][..]),
+            "then software"
+        );
+        let none = gpu_ladder::<()>(|fallback| Err(format!("{fallback}")));
+        assert_eq!(
+            none,
+            Err("hardware: false; software: true".to_owned()),
+            "both named"
+        );
     }
 }

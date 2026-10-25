@@ -114,6 +114,10 @@ iGPU not re-measured since the pipelines landed); flat 1M netlist 0.85–0.93 s;
   measured since the GPU canvas pipelines landed (perf.md § GPU canvas pipelines has the RTX
   4060 only). Before them, the same frames cost 6–21 ms of GPU there (timestamp floor 5.3 ms)
   against 0.1–3.8 ms on the RTX 4060. Run with `SCHEMIFY_GPU=Intel`.
+- **render**: natively the window has no CPU painter: without a hardware adapter it takes
+  wgpu's software one (WARP, lavapipe, llvmpipe), and past that it closes with
+  `RunError::NoGpu`. The CPU rung (`CpuPainter` presented through `softbuffer`, a new
+  dependency) waits until a machine where both GPU rungs fail is known.
 - **app/doc/format**: opening a 100k-object file and its first build take 192–216 ms (target
   under 100 ms; `doc.open_100k` is 65 ms and the 100k parse 40 ms since the load-path commits
   in status.md). Profile with `perf record` before changing. Known left: a later open (not the
