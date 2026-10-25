@@ -13,8 +13,7 @@
 //! This is the body of a `contribute ui` / `contribute keymap` output, so the base UI and plugin
 //! UI share one syntax and can be hand-written in user config.
 
-// ponytail: a local lexer for the §2 subset (records, attrs, comments, quoted values). Switch to
-// `schemify-format` once it lands; the record vocabulary below stays here.
+// A local lexer for the §2 subset: decisions.md, amendment 2026-10-25 (D6, D9), says why.
 
 use crate::strings::{Strings, Sym};
 use crate::tables::{Chord, Contribution, Edit, Kind, Prop, StyleProp};

@@ -48,10 +48,6 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## Decisions pending (user)
 
-- **RPC commands of lazy packages**: an editor RPC method must name a command the table already holds (rpc spec §3.2), so a command of a package that loads on that command (D35) answers `-32601`. Making it reachable takes five changes: rpc spec §3.2 and its method list; `rpc::dispatch` (`crates/model/editor/src/rpc.rs`) accepting the lazy names; `PluginHost::user_command` (`editor/src/plugins.rs`) returning the plugin id it loaded; `user = true` in `Editor::dispatch_queued` (`editor.rs`); a test in `crates/view/app/tests/rpc.rs`.
-- **ui lexer**: `ui` keeps a local line-record lexer (`crates/model/ui/src/records.rs`, its `ponytail:` note; `abi::text` stays the guests' codec, pinned by `abi_and_format_lexers_agree`). One lexer through `schemify-format` makes a 6.8 KB state parse 15% slower (32.6 → 37.4 µs) and adds 80 lines: keep two lexers, or take the cost.
-- **Render steps 4 and 5** ([research/render-backend.md](research/render-backend.md) § Migration plan): removing vello's GPU path needs the D5 amendment drafted in that note's § 7, and WebGL2 before `cpu_view` needs web spec §7's tiers amended.
-
 - **cktImg upstream PR** OmarSiwy/cktImg #5 (separations batched past 256 rounds only; fixes #4's slowdown on regular decks): merge, then bump the `examples/plugins/cktImg` submodule to the merged `main` commit.
 
 
