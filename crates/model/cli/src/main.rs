@@ -14,6 +14,7 @@ use schemify_format as format;
 
 const USAGE: &str = "\
 usage: schemify [--clean | -u <init.lua>] <command> [args]
+       schemify --version
 
 commands:
   edit [<project-dir>|<cell-file>] [--no-default-ui]
@@ -92,6 +93,10 @@ fn main() -> ExitCode {
         "mcp" => mcp(&start, rest),
         "-h" | "--help" | "help" => {
             print!("{USAGE}");
+            OK
+        }
+        "-V" | "--version" | "version" => {
+            println!("schemify {}", env!("CARGO_PKG_VERSION"));
             OK
         }
         _ => {

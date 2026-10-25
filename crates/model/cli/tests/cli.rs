@@ -565,3 +565,19 @@ fn run_starts_every_simulator() {
     );
     assert_eq!(code, 2, "hspice is netlist-only: {text}");
 }
+
+/// `--version` (and `-V`, `version`) prints the package version and exits 0: what the distro
+/// packages' smoke tests and `nix run …#latest -- --version` check.
+#[test]
+fn version_prints_the_package_version() {
+    let dir = std::env::temp_dir();
+    for flag in ["--version", "-V", "version"] {
+        let (code, text) = schemify(&dir, &[flag]);
+        assert_eq!(code, 0, "{flag}: {text}");
+        assert_eq!(
+            text,
+            format!("schemify {}\n", env!("CARGO_PKG_VERSION")),
+            "{flag}"
+        );
+    }
+}
