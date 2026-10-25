@@ -79,6 +79,7 @@ UI and visual work has its own guides under [skills/](skills/), read as document
 | [schemify-theme](skills/schemify-theme/SKILL.md) | Colour and chrome tokens; `python3 docs/dev/skills/schemify-theme/check_theme.py` gates them. |
 | [schemify-ui-loop](skills/schemify-ui-loop/SKILL.md) | The edit, render, critique, bless loop for the default UI's look. |
 | [schemify-symbols](skills/schemify-symbols/SKILL.md) | Drawing rules for the device symbols in `crates/model/doc/devices/`. |
+| [schemify-plugin](skills/schemify-plugin/SKILL.md) | Starting a plugin in any language from a template in `examples/plugins_new/` (linked into `.claude/skills/`, so Claude Code loads it). |
 
 ## Hard rules
 

@@ -90,11 +90,12 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## Performance
 
-Numbers and how to reproduce them: `docs/dev/perf.md`. D39 status: pan/zoom at 100k objects
-0.13 ms CPU, 0.08 ms GPU (RTX; 0.4–1.1 ms on the Intel iGPU); flat 1M netlist 0.85–0.93 s;
-param edit 1.8 ms; idle 0%; every interactive frame (hover, select, drag, typing, menu) at
-100k under 1 ms CPU (D39 amended 2026-10-18; 0.2–0.5 ms). Not met: a local edit at 100k
-objects (13–14 ms, outside that budget; the goal set for this work was ≤ 1 ms).
+Numbers and how to reproduce them: `docs/dev/perf.md`. D39 status (instanced GPU canvas,
+render steps 1–2): pan/zoom at 100k objects 0.08 ms CPU, 0.55–0.63 ms GPU (RTX; the Intel
+iGPU not re-measured since the pipelines landed); flat 1M netlist 0.85–0.93 s; param edit
+1.8 ms; idle 0%; every interactive frame (hover, select, drag, typing, menu) at 100k under
+1 ms CPU (D39 amended 2026-10-18; 0.07–0.5 ms). Not met: a local edit at 100k objects
+(Del/undo 0.9 ms CPU p50 but 2.1 ms p95, GPU 1.1 ms; the goal set for this work was ≤ 1 ms).
 
 - **elab**: a local edit is patched (0.08 ms p50 at 100k); still rebuilt: instance
   insert/delete (the graph and instance rows), name/ignore/inherit edits, cells with `E003`

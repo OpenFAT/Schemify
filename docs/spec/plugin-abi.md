@@ -1,6 +1,6 @@
 # Plugin ABI v1 (normative draft — M2)
 
-Implements D3, D3a, D6, D7, D8, D20, D27. Host: `wasmi` (native and web). Guest: any language compiling to `wasm32-unknown-unknown` (core module, no WASI, no component model). Designed with `api-design` (Muratori's five characteristics); evaluation in §9. Implementation: `crates/protocol/abi` (shared types + Rust guest SDK), `crates/plugins/plugin` (host), `crates/plugins/plugin/tests/guests/` (test guests), `examples/plugins/` (example plugins, own repositories: [../plugins/](../plugins/README.md)). Amendments made while implementing are listed in §11.
+Implements D3, D3a, D6, D7, D8, D20, D27. Host: `wasmi` (native and web). Guest: any language compiling to `wasm32-unknown-unknown` (core module, no WASI, no component model). Designed with `api-design` (Muratori's five characteristics); evaluation in §9. Implementation: `crates/protocol/abi` (shared types + Rust guest SDK; `sdk/` holds the guest libraries for C/C++ (also used by Nim, D and Swift), Zig, Odin, Go and AssemblyScript, [../plugins/languages.md](../plugins/languages.md)), `crates/plugins/plugin` (host), `crates/plugins/plugin/tests/guests/` (test guests), `examples/plugins/` (example plugins, own repositories: [../plugins/](../plugins/README.md)). Amendments made while implementing are listed in §11.
 
 ## 0. Usage first
 
