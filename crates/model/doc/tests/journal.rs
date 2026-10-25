@@ -628,3 +628,64 @@ fn open_indexed_matches_the_journal_with_the_index_digest() {
         .handle;
     assert!(p.hash_pending(h));
 }
+
+/// A new document is edited, saved, undone below its save and edited again: the commit
+/// clears the redo entry the saved state sat on, so no lineage reaches the disk bytes and
+/// the journal waits for the next save (it once asserted `depth <= undo.len()` in
+/// `rewrite_journal` and stopped the editor). Oracle: the spec (edits §3, rewrites happen
+/// at a reachable disk state) and a reopen of the next save's journal.
+#[test]
+fn a_commit_below_the_first_save_starts_no_journal() {
+    let mut p = Project::new(None, None, 7).unwrap();
+    let h = p
+        .create("", "fresh.shcomp", schemify_format::FileKind::Shcomp)
+        .unwrap();
+    let op = |v: &str| Op::Insert {
+        rec: RecordBuf::new(RecordKind::Var).field(v).field("1"),
+        at: None,
+    };
+    let imp = Op::Insert {
+        rec: RecordBuf::new(RecordKind::Impl)
+            .field("sch")
+            .field("schematic"),
+        at: None,
+    };
+    assert!(matches!(
+        run(&mut p, h, tx(vec![imp])),
+        Outcome::Committed { .. }
+    ));
+    assert!(matches!(
+        run(&mut p, h, tx(vec![op("a")])),
+        Outcome::Committed { .. }
+    ));
+    let req = p.save(h).unwrap().unwrap();
+    p.saved(h, req.bytes).unwrap();
+    assert!(matches!(run(&mut p, h, Edit::Undo), Outcome::Undone { .. }));
+    let o = run(&mut p, h, tx(vec![op("b")]));
+    assert!(matches!(o, Outcome::Committed { .. }), "{o:?}");
+    assert!(p.take_journal(h).is_none(), "no reachable disk state");
+    assert!(p.is_dirty(h));
+    let req = p.save(h).unwrap().unwrap();
+    let file = req.bytes.clone();
+    p.saved(h, req.bytes).unwrap();
+    assert!(matches!(
+        run(&mut p, h, tx(vec![op("c")])),
+        Outcome::Committed { .. }
+    ));
+    let journal = p
+        .take_journal(h)
+        .expect("the journal starts at the saved state");
+    assert!(journal.rewrite);
+    let mut q = Project::new(None, None, 7).unwrap();
+    let opened = q
+        .open(
+            "",
+            "fresh.shcomp",
+            file.as_bytes(),
+            Some(journal.text.as_bytes()),
+        )
+        .unwrap();
+    assert_eq!(opened.recovery, Recovery::Offer { txs: 1 });
+    q.recover(opened.handle).unwrap();
+    assert_eq!(canon(&q, opened.handle), canon(&p, h));
+}

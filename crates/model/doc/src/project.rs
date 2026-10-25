@@ -1670,8 +1670,11 @@ fn commit(open: &mut Open, label: &str, unix_ms: u64, forward: Vec<Op>, inverse:
         inverse,
     };
     // The journal starts with the first commit of a document that exists on disk
-    // (`ponytail:` a never-saved document has no journal until its first save).
-    if !open.journal.started && !open.disk.is_empty() && open.saved_depth.is_some() {
+    // (`ponytail:` a never-saved document has no journal until its first save), at a
+    // reachable saved state: below it (undone past the save) this commit drops the redo
+    // entry the save sat on, and the journal waits for the next save.
+    let reachable = open.saved_depth.is_some_and(|d| d <= open.undo.len());
+    if !open.journal.started && !open.disk.is_empty() && reachable {
         rewrite_journal(open);
     }
     let at = open.journal.text.len();
