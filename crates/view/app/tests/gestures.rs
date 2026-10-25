@@ -79,7 +79,7 @@ fn same_partition(a: &BTreeMap<String, (u32, String)>, b: &BTreeMap<String, (u32
     }
 }
 
-/// Rotation (quarter turns) of every drawn text whose content is `text`.
+/// The drawn quarter turns of every scene text row reading `text`, ordered by anchor x.
 fn text_rots(s: &Session, text: &str) -> Vec<u8> {
     let t = &s.ed.scene().prims.texts;
     let mut start = 0usize;
@@ -87,11 +87,12 @@ fn text_rots(s: &Session, text: &str) -> Vec<u8> {
     for i in 0..t.x.len() {
         let end = t.end[i] as usize;
         if t.text[start..end] == *text {
-            out.push(t.rot[i]);
+            out.push((t.x[i], t.rot[i]));
         }
         start = end;
     }
-    out
+    out.sort_unstable();
+    out.into_iter().map(|(_, r)| r).collect()
 }
 
 // ---------------------------------------------------------------------------- partial wires
@@ -207,7 +208,8 @@ fn dragging_a_vertex_moves_only_that_point() {
 // ---------------------------------------------------------------------------- stext
 
 /// Symbol texts turn with the instance and with their own `stext` orientation (composed),
-/// in instances and in the symbol view.
+/// in instances and in the symbol view. Rows are drawn turns, and format.md §3 `stext`
+/// never draws a text upside down: a composed R180 is drawn upright (0).
 #[test]
 fn symbol_texts_turn_with_instances_and_their_orientation() {
     let mut s = Session::open("inv", "top.shcomp", "stext", true);
@@ -215,18 +217,24 @@ fn symbol_texts_turn_with_instances_and_their_orientation() {
     s.click((10 * U, 0)); // x1
     s.key("Shift+R");
     assert!(s.text().contains("  at 0 0 R90\n  name x1"), "{}", s.text());
-    let mut r = text_rots(&s, "inv");
-    r.sort_unstable();
-    assert_eq!(r, [0, 1], "x1's text turned a quarter, x2's did not");
-    // The symbol's own text at R90: upright instances show it turned once, x1 twice.
+    // Ordered by anchor x: x1 (at 0) then x2 (at 140).
+    assert_eq!(
+        text_rots(&s, "inv"),
+        [1, 0],
+        "x1's text turned a quarter, x2's did not"
+    );
+    // The symbol's own text at R90: upright instances show it turned once; x1 composes
+    // R90 ∘ R90 = R180, which is drawn upright.
     s.key("i");
     let sym = s.text();
     s.set_text(&sym.replacen("stext -17 -5 R0 inv", "stext -17 -5 R90 inv", 1));
     assert_eq!(text_rots(&s, "inv"), [1], "symbol view");
     s.key("Ctrl+E");
-    let mut r = text_rots(&s, "inv");
-    r.sort_unstable();
-    assert_eq!(r, [1, 2], "x2: R0 ∘ R90, x1: R90 ∘ R90");
+    assert_eq!(
+        text_rots(&s, "inv"),
+        [0, 1],
+        "x1: R90 ∘ R90 drawn upright, x2: R0 ∘ R90"
+    );
 }
 
 // ---------------------------------------------------------------------------- recent files
