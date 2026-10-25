@@ -186,7 +186,9 @@ fn simulate_uses_the_configured_compilers() {
     std::fs::write(dir.join("vres.shprim"), VRES).unwrap();
     std::fs::write(dir.join("tb.shbench"), VA_BENCH).unwrap();
     std::fs::write(dir.join("vres.va"), "module vres; endmodule\n").unwrap();
-    let init = "schemify.sim('openvaf', { path = 'openvaf-from-init' })\n\
+    // ngspice compiles Verilog-A through OpenVAF (espice compiles it itself): pinned.
+    let init = "schemify.opt.simulator = 'ngspice'\n\
+                schemify.sim('openvaf', { path = 'openvaf-from-init' })\n\
                 schemify.sim('iverilog', { path = 'iverilog-from-init' })\n";
     let mut s = open_with_config(&dir, "tb.shbench", init);
     let errors = simulate_errors(&mut s);

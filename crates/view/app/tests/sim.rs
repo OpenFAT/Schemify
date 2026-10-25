@@ -61,10 +61,15 @@ fn open_with(
     for (f, text) in files {
         std::fs::write(dir.join(f), text).unwrap();
     }
+    // These tests run ngspice decks (a fake ngspice), so ngspice is pinned: the default
+    // (espice, or whichever simulator this machine has) must not decide the dialect.
+    let init = dir.join("init.lua");
+    std::fs::write(&init, "schemify.opt.simulator = \"ngspice\"\n").unwrap();
     let ed = Editor::new(Options {
         path: Some(dir.join(file)),
         seed: 7,
         sim,
+        config: schemify_config::Startup::File(init),
         ..Options::default()
     })
     .expect("fixture opens");
@@ -428,9 +433,12 @@ fn simulate_polls_a_fake_simulator_to_results_waves_and_op() {
         .unwrap()
         .path();
     assert_eq!(std::fs::read_to_string(dir.join("bench")).unwrap(), "tb\n");
+    // Reopened with the same pinned simulator (the fixture's init.lua): a run is stale for
+    // another dialect.
     let ed = Editor::new(Options {
         path: Some(s.dir.join("tb.shbench")),
         seed: 7,
+        config: schemify_config::Startup::File(s.dir.join("init.lua")),
         ..Options::default()
     })
     .unwrap();

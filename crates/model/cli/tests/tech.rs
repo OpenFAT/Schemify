@@ -73,7 +73,8 @@ fn one_inverter_two_technologies() {
         ("asap7", "asap7"),
     ] {
         let dir = project(family, &manifest(family, lib));
-        let (code, text) = schemify(&dir, &["netlist", "inv.shcomp"]);
+        // The goldens are ngspice netlists: the dialect is named, not detected.
+        let (code, text) = schemify(&dir, &["netlist", "inv.shcomp", "--dialect", "ngspice"]);
         assert_eq!(code, 0, "{family}: {text}");
         golden(&format!("inv.{family}.spice"), &text);
     }
