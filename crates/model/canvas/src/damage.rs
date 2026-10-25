@@ -1,18 +1,17 @@
-//! What changed between two versions of a canvas's tables, as world boxes (D39): an edit
-//! re-rasters only those regions of the canvas layer ([`crate::draw_cached`]).
+//! What changed between two versions of a canvas's tables, as rows removed and added (D39):
+//! the instance rows and the label indexes follow an edit in O(change).
 //!
 //! Six questions:
-//! 1. In: the primitive tables a canvas layer draws, and its marks, once per content change.
-//!    Out: world boxes covering every row that was added or removed, where "kept" rows are a
-//!    longest common subsequence of the two versions (so kept rows also keep their order:
-//!    outside the boxes a fresh recording draws exactly what the layer holds).
+//! 1. In: the primitive tables a canvas draws, and its marks, once per content change. Out:
+//!    per table and kind the rows added and removed, where "kept" rows are a longest common
+//!    subsequence of the two versions (so kept rows also keep their order).
 //! 2. 10^5–10^6 rows per canvas; an edit changes a handful.
-//! 3. Boxes in i32 milli-units (D33); a `u64` hash per row stands for the row.
+//! 3. Row indices `u32`; a `u64` hash per row stands for the row.
 //! 4. One linear pass hashing every row of a table that changed, then a diff of its two hash
 //!    sequences; an unchanged table (a selection edits only the marks) costs nothing, and a
 //!    table whose producer reports its edits ([`TableChange::Rows`]: rows killed, rows
 //!    appended) costs O(change).
-//! 5. The snapshot (hashes, boxes) lives with the canvas until its next change.
+//! 5. The snapshot (hashes) lives with the canvas until its next change.
 //! 6. Tables are independent (parallelizable; ~1 ms per 10^5 rows, so not yet needed).
 //!
 //! SIMD triage: hashing is per row over a few SoA columns (variable width for polys and
@@ -24,8 +23,8 @@ use crate::{CanvasPrims, Marks, PrimKind, chain};
 /// the whole layer is recorded instead.
 pub const DIFF_EDITS_MAX: usize = 128;
 
-/// The rows a canvas layer was drawn from, as hashes and world boxes, to diff the next
-/// version against. One per cached canvas.
+/// The rows a canvas was drawn from, as hashes, to diff the next version against. One per
+/// canvas.
 #[derive(Clone, Debug, Default)]
 pub struct CanvasDiff {
     /// Per table: the six kinds of each input in order, then the marks.
@@ -40,10 +39,9 @@ pub struct CanvasDiff {
 #[derive(Clone, Debug, Default)]
 struct Seq {
     hash: Vec<u64>,
-    boxes: Vec<[i32; 4]>,
     /// Rows of the version the last call saw.
     rows: usize,
-    /// Whether `hash` and `boxes` describe that version (a [`TableChange::Rows`] call leaves
+    /// Whether `hash` describes that version (a [`TableChange::Rows`] call leaves
     /// them stale: the next hashed diff of the table then finds the change unknown).
     hashed: bool,
 }
@@ -84,12 +82,12 @@ pub(crate) const TABLES: [Table; 6] = [
 impl CanvasDiff {
     /// Diffs `tables` (drawn in this order, each with how it changed since the previous
     /// call) and `marks` (recoloring rows of `marks.0`; may have changed when they or
-    /// `marks.0` did) against the previous call's, and appends to `out` the world boxes of
-    /// every row added or removed since. A table reported [`TableChange::Same`] must be
-    /// unchanged, and one reported [`TableChange::Rows`] changed exactly as reported: neither
-    /// is hashed. Returns false when the change is not small (or there was no previous call,
-    /// a different number of tables, a reported table that shrank, or a hashed diff of a
-    /// table whose last change was reported): then `out` is meaningless.
+    /// `marks.0` did) against the previous call's: every row added or removed since, read
+    /// back per table by [`CanvasDiff::edits_of`]. A table reported [`TableChange::Same`]
+    /// must be unchanged, and one reported [`TableChange::Rows`] changed exactly as reported:
+    /// neither is hashed. Returns false when the change is not small (or there was no
+    /// previous call, a different number of tables, a reported table that shrank, or a hashed
+    /// diff of a table whose last change was reported): then the edits are meaningless.
     ///
     /// Cost: O(rows) of the [`TableChange::Any`] tables to hash, plus O(rows + edits²) each
     /// to diff; O(killed + appended rows) for a [`TableChange::Rows`] one.
@@ -97,7 +95,6 @@ impl CanvasDiff {
         &mut self,
         tables: &[(&CanvasPrims, TableChange<'_>)],
         marks: (&CanvasPrims, &Marks, bool),
-        out: &mut Vec<[i32; 4]>,
     ) -> bool {
         let n = tables.len() * TABLES.len() + 1;
         let first = self.seqs.len() != n;
@@ -130,8 +127,7 @@ impl CanvasDiff {
                 (Some(_), c) => c,
             };
             if let (Some((t, table, kind)), TableChange::Rows(killed)) = (job, change) {
-                // The producer's own edits: the killed rows' old boxes (their columns stay)
-                // and the appended rows'.
+                // The producer's own edits: the killed rows and the appended ones.
                 let (was, now) = (self.seqs[k].rows, len(t, table));
                 known = known && !first && now >= was;
                 if known {
@@ -139,14 +135,10 @@ impl CanvasDiff {
                     // A row appended and killed since the last call is among the appended.
                     for &r in killed[kind].iter().filter(|&&r| (r as usize) < was) {
                         assert!((r as usize) < now, "rows are killed, never removed");
-                        out.push(row(t, table, r as usize).1);
                         g.push(r);
                         a.push(r);
                     }
-                    for r in was..now {
-                        out.push(row(t, table, r).1);
-                        a.push(r as u32);
-                    }
+                    a.extend(was as u32..now as u32);
                     g.sort_unstable();
                     a.sort_unstable();
                 }
@@ -164,8 +156,6 @@ impl CanvasDiff {
             new.clear();
             known = known && a.hashed && edits(&a.hash, &b.hash, &mut gone, &mut new);
             if known {
-                out.extend(gone.iter().map(|&i| a.boxes[i as usize]));
-                out.extend(new.iter().map(|&i| b.boxes[i as usize]));
                 self.last[k].0.extend_from_slice(&gone);
                 self.last[k].1.extend_from_slice(&new);
             }
@@ -198,14 +188,9 @@ impl CanvasDiff {
 fn fill(s: &mut Seq, t: &CanvasPrims, table: Table) {
     let n = len(t, table);
     s.hash.clear();
-    s.boxes.clear();
     s.hash.reserve(n);
-    s.boxes.reserve(n);
     (s.rows, s.hashed) = (n, true);
-    let mut push = |(h, b): (u64, [i32; 4])| {
-        s.hash.push(h);
-        s.boxes.push(b);
-    };
+    let mut push = |(h, _): (u64, [i32; 4])| s.hash.push(h);
     match table {
         Table::Lines => (0..n).for_each(|i| push(row(t, Table::Lines, i))),
         Table::Rects => (0..n).for_each(|i| push(row(t, Table::Rects, i))),
@@ -359,7 +344,6 @@ pub(crate) fn row(t: &CanvasPrims, table: Table, i: usize) -> (u64, [i32; 4]) {
 fn fill_marks(s: &mut Seq, prims: &CanvasPrims, m: &Marks) {
     assert!(m.kind.len() == m.index.len() && m.kind.len() == m.color.len());
     s.hash.clear();
-    s.boxes.clear();
     (s.rows, s.hashed) = (m.kind.len(), true);
     for i in 0..m.kind.len() {
         let table = match m.kind[i] {
@@ -369,9 +353,8 @@ fn fill_marks(s: &mut Seq, prims: &CanvasPrims, m: &Marks) {
             PrimKind::Polyline => Table::Polylines,
             PrimKind::Polygon => Table::Polygons,
         };
-        let (h, b) = row(prims, table, m.index[i] as usize);
+        let (h, _) = row(prims, table, m.index[i] as usize);
         s.hash.push(mix(h, i64::from(m.color[i])));
-        s.boxes.push(b);
     }
     assert_eq!(s.hash.len(), m.kind.len());
 }
@@ -511,33 +494,26 @@ mod tests {
         }
     }
 
-    /// A reported edit gives exactly the killed rows' old boxes and the appended rows' boxes;
-    /// negative space: a reported table that shrank, and a hashed diff right after a reported
-    /// one (its hashes are stale), are unknown.
+    /// A reported edit gives exactly the killed rows and the appended ones; negative space: a
+    /// reported table that shrank, and a hashed diff right after a reported one (its hashes
+    /// are stale), are unknown.
     #[test]
-    fn reported_rows_give_their_boxes() {
+    fn reported_rows_give_their_edits() {
         use crate::{Marks, TableChange};
         let mut t = CanvasPrims::default();
         for i in 0..10 {
             t.line(i * 100, 0, i * 100 + 50, 10, 1);
         }
-        let (mut d, marks, mut out) = (CanvasDiff::default(), Marks::default(), Vec::new());
-        assert!(!d.update(&[(&t, TableChange::Any)], (&t, &marks, true), &mut out));
+        let (mut d, marks) = (CanvasDiff::default(), Marks::default());
+        assert!(!d.update(&[(&t, TableChange::Any)], (&t, &marks, true)));
         t.kill(0, 3);
         t.line(5_000, 5_000, 5_010, 5_020, 4);
         let mut killed: [Vec<u32>; 6] = Default::default();
         killed[0].push(3);
-        out.clear();
-        assert!(d.update(
-            &[(&t, TableChange::Rows(&killed))],
-            (&t, &marks, false),
-            &mut out
-        ));
-        assert_eq!(out, [[300, 0, 350, 10], [5_000, 5_000, 5_010, 5_020]]);
+        assert!(d.update(&[(&t, TableChange::Rows(&killed))], (&t, &marks, false)));
         assert_eq!(d.edits_of(0)[0], (&[3][..], &[3, 10][..]));
-        out.clear();
-        assert!(!d.update(&[(&t, TableChange::Any)], (&t, &marks, false), &mut out));
-        assert!(d.update(&[(&t, TableChange::Any)], (&t, &marks, false), &mut out));
+        assert!(!d.update(&[(&t, TableChange::Any)], (&t, &marks, false)));
+        assert!(d.update(&[(&t, TableChange::Any)], (&t, &marks, false)));
         let mut shrunk = t.clone();
         shrunk.lines.x0.pop();
         shrunk.lines.y0.pop();
@@ -547,7 +523,7 @@ mod tests {
         shrunk.lines.style.pop();
         let none: [Vec<u32>; 6] = Default::default();
         let shrank = (&shrunk, TableChange::Rows(&none));
-        assert!(!d.update(&[shrank], (&shrunk, &marks, false), &mut out));
+        assert!(!d.update(&[shrank], (&shrunk, &marks, false)));
     }
 
     #[test]

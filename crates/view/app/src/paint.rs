@@ -41,8 +41,6 @@ pub struct Caches {
     /// rewrite only that): the diff's snapshot, and the generations and style key it was
     /// taken at.
     canvas_diff: (CanvasDiff, [u64; 5], u64),
-    /// The diff's boxes of changed rows (read by nothing since the tile cache went).
-    canvas_boxes: Vec<[i32; 4]>,
     /// Whether that diff last read the scene's own table (not `shown`): only then do the
     /// scene's reported edits describe what changed since.
     canvas_scene: bool,
@@ -157,10 +155,7 @@ fn paint_canvas<P: Painter>(
             (cp.extra, any(2)),
         ];
         let marks = (cp.scene, cp.marks, changed(0) || changed(3));
-        // ponytail: the diff still reports the changed rows' world boxes, which only the tile
-        // cache read; drop them from `CanvasDiff` when it is next touched.
-        c.canvas_boxes.clear();
-        let known = diff.update(&tables, marks, &mut c.canvas_boxes);
+        let known = diff.update(&tables, marks);
         // The rows bake the palette, so a style change repacks everything. Otherwise each
         // table's own change: its producer's report is exact whatever the diff made of the
         // other tables; a hashed table's edit script only when the diff could follow.

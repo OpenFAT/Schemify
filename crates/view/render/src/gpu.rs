@@ -1615,8 +1615,8 @@ mod tests {
             t.line(i, 0, i + 5, 5, 1);
         }
         let mut r = rebuilt(&t, &palette);
-        let (mut diff, mut boxes, marks) = (CanvasDiff::default(), Vec::new(), Marks::default());
-        assert!(!diff.update(&[(&t, TableChange::Any)], (&t, &marks, true), &mut boxes));
+        let (mut diff, marks) = (CanvasDiff::default(), Marks::default());
+        assert!(!diff.update(&[(&t, TableChange::Any)], (&t, &marks, true)));
         let l = &mut t.lines;
         for c in [&mut l.x0, &mut l.y0, &mut l.x1, &mut l.y1] {
             c.swap_remove(3);
@@ -1624,7 +1624,7 @@ mod tests {
         l.layer.swap_remove(3);
         l.style.swap_remove(3);
         t.line(500, 500, 505, 505, 4);
-        assert!(diff.update(&[(&t, TableChange::Any)], (&t, &marks, false), &mut boxes));
+        assert!(diff.update(&[(&t, TableChange::Any)], (&t, &marks, false)));
         r.pack(0, &t, &palette, Change::Edits(diff.edits_of(0)));
         assert_eq!(r.count(0, LINE), 10);
         same_rows(&r, &rebuilt(&t, &palette), 0, "edited = rebuilt");

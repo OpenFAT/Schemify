@@ -536,11 +536,9 @@ mod tests {
         }
         let mut ix = PrimIndex::build(&t);
         let mut diff = crate::CanvasDiff::default();
-        let mut boxes = Vec::new();
         assert!(!diff.update(
             &[(&t, crate::TableChange::Any)],
             (&t, &crate::Marks::default(), true),
-            &mut boxes
         ));
         let mut got = Rows::default();
         let mut followed = 0;
@@ -568,14 +566,9 @@ mod tests {
                     t.rect(x, y, x + next(20_000), y + next(20_000), 4);
                 }
             }
-            boxes.clear();
             let marks = crate::Marks::default();
             assert!(
-                diff.update(
-                    &[(&t, crate::TableChange::Any)],
-                    (&t, &marks, false),
-                    &mut boxes
-                ),
+                diff.update(&[(&t, crate::TableChange::Any)], (&t, &marks, false),),
                 "step {step}"
             );
             let e = diff.edits_of(0);
