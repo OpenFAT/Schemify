@@ -2717,7 +2717,7 @@ dependencies = [
 
 [[package]]
 name = "schemify-abi"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "proptest",
  "schemify-expr",
@@ -2725,7 +2725,7 @@ dependencies = [
 
 [[package]]
 name = "schemify-app"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "schemify-canvas",
  "schemify-cli",
@@ -2745,14 +2745,14 @@ dependencies = [
 
 [[package]]
 name = "schemify-canvas"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "kurbo",
 ]
 
 [[package]]
 name = "schemify-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "miniz_oxide 0.8.9",
  "proptest",
@@ -2768,21 +2768,21 @@ dependencies = [
 
 [[package]]
 name = "schemify-config"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "omnilua",
 ]
 
 [[package]]
 name = "schemify-doc"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "schemify-format",
 ]
 
 [[package]]
 name = "schemify-editor"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "png",
  "schemify-canvas",
@@ -2801,7 +2801,7 @@ dependencies = [
 
 [[package]]
 name = "schemify-elab"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "proptest",
  "schemify-doc",
@@ -2811,7 +2811,7 @@ dependencies = [
 
 [[package]]
 name = "schemify-expr"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "libm",
  "proptest",
@@ -2820,14 +2820,14 @@ dependencies = [
 
 [[package]]
 name = "schemify-format"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "schemify-netlist"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "proptest",
  "schemify-doc",
@@ -2840,7 +2840,7 @@ dependencies = [
 
 [[package]]
 name = "schemify-plugin"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "proptest",
  "schemify-abi",
@@ -2850,7 +2850,7 @@ dependencies = [
 
 [[package]]
 name = "schemify-render"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -2870,7 +2870,7 @@ dependencies = [
 
 [[package]]
 name = "schemify-run"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "proptest",
  "schemify-abi",
@@ -2883,14 +2883,14 @@ dependencies = [
 
 [[package]]
 name = "schemify-spicecmp"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "schemify-ui"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "accesskit",
  "fontique",
@@ -2906,7 +2906,7 @@ dependencies = [
 
 [[package]]
 name = "schemify-wave"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "proptest",
  "schemify-expr",
