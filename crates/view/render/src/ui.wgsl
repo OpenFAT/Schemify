@@ -5,9 +5,16 @@
 // premultiplied. WebGL2-compatible: instance data as per-instance vertex attributes, no
 // storage buffers, no compute.
 
+// Scroll pane slots (`ui_rows::PANES`): an instance's kind word carries its slot above the low
+// byte; slot 0 is no pane.
+const PANES: u32 = 32u;
+
 struct Ui {
     size: vec2<f32>,  // the target, device px
     pad: vec2<f32>,
+    // Per pane slot: its offset (device px, subtracted from the instance's coordinates), then
+    // its clip (device px, x0 y0 x1 y1), intersected with the instance's.
+    panes: array<vec4<f32>, 64>,
 }
 
 @group(0) @binding(0) var<uniform> ui: Ui;
@@ -59,7 +66,19 @@ fn color_of(c: u32) -> vec4<f32> {
 }
 
 @vertex
-fn vs_ui(@builtin(vertex_index) i: u32, in: In) -> Out {
+fn vs_ui(@builtin(vertex_index) i: u32, raw: In) -> Out {
+    // A retained row in a scroll pane is in the pane's content coordinates: move it by the
+    // pane's offset and clip it to the pane.
+    let pane = min(raw.kind >> 8u, PANES - 1u);
+    let off = ui.panes[2u * pane].xy;
+    let pc = ui.panes[2u * pane + 1u];
+    var in = raw;
+    in.kind = raw.kind & 0xffu;
+    in.pos = raw.pos - vec4<f32>(off, off);
+    if in.kind == TRI {
+        in.aux = vec4<f32>(raw.aux.xy - off, raw.aux.zw);
+    }
+    in.clip = vec4<f32>(max(raw.clip.xy - off, pc.xy), min(raw.clip.zw - off, pc.zw));
     var o: Out;
     o.color = color_of(in.color);
     o.a = in.pos;

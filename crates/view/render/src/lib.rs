@@ -51,6 +51,7 @@ pub mod canvas;
 mod cpu_view;
 pub mod gpu;
 mod painter;
+pub mod ui_rows;
 pub mod waves;
 pub mod widgets;
 mod window;

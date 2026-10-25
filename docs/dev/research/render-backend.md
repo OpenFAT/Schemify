@@ -658,6 +658,69 @@ device or surface; device lost; first frame not on the page). Numbers in [perf.m
 - Change radius: 4 (`Gpu::new`, `resumed`, `user_event`'s `GpuReady` and `NoGpu` arms, the probe
   in `render`); `cpu_view::overlay` was split out of `CpuView::new`.
 
+### Retained UI rows (2026-10-25)
+
+After step 3 the UI was the one part of a frame rebuilt every frame: 13–14 KiB of instances
+uploaded per frame (39 KiB with a menu open), whatever changed. Asked for as a pre-emptive
+optimization, the UI now keeps its instances the way the canvas keeps its rows (`render::ui_rows`,
+owned by `Batch::ui`). Numbers in [perf.md](../perf.md) § Retained UI rows.
+
+- **Rows.** One row table per UI source: the main layer and the overlay (menus, dialogs, the
+  canvas's floats). A table holds every drawn layout row's batch instances (56 B, unchanged
+  layout) in layout order, each row a slot range with `n/4 + 4` free slots after it. The status
+  bar, tabs and panels are rows of the main layer, and text quads sit in their row's slots after
+  its background, so the painting order inside a source is the slot order and one draw covers
+  a source (two draws for the whole UI, plus one per row that draws an image).
+- **Keys.** A row is identified by (node id, how it is shown) and kept while its `RowKey` holds:
+  every input `draw_row` reads, by value (rect, clip, scroll offset, text/accel/icon/math/prose
+  ids with the text cache's epoch, `row_paint`'s colours, eight style values, check state, a
+  text area's scroll, the focused editor's text, caret and size). The `ui` crate keeps no
+  per-node change signal (input routing reports only "relayout" or "redraw" for the frame, and
+  parley's editor generation covers one field), so this is the fallback the plan named,
+  compared field by field instead of hashed: no collision, and cheaper than the paint it skips
+  (the UI-idle frame's CPU fell from 0.09 to 0.03 ms). Two additions to `ui` feed it:
+  `UiLayout::scrolled` (each row's total pane offset) and `TextSystem::epoch` (ids are reused
+  after a cache drop).
+- **Diff.** Rows are matched in order (a removed or inserted row is looked for up to 64 rows
+  ahead). An unchanged row in place costs a key compare. A changed row that fits its slots is
+  repainted into them, and only the instances that differ are marked for upload (a hover: the
+  item's colours; a typed character: the glyph and the caret). A row that outgrows its slots,
+  or an inserted, removed or reordered row, lays the rest of its source out again from that
+  point (copying kept rows, painting changed ones), uploaded as one range. A popup's rows are
+  taken when it opens and freed when it closes.
+- **Order.** Painting order is emission order, as before: within a source the slots, across
+  sources and the canvas the batch's draw list (`What::Retained` draws among the canvas stages
+  and the per-frame instances), so popups stay over canvas labels.
+- **Scroll.** A row inside a `scroll` pane is kept in the pane's content coordinates (whole
+  device px; the fraction is part of its key), painted unclipped and not culled, and its
+  instances name their pane slot in the kind word's second byte. The batch uniform holds per
+  pane slot (32) an offset and the pane's clip; the vertex shader subtracts the one and
+  intersects the other. A scroll by whole pixels writes one 32-byte pane entry and no row, in
+  nested panes too; the cost is that a pane's rows out of view are kept and drawn as zero-area
+  quads. Lists the app windows itself (the results table, text tabs) still change their nodes
+  as they scroll.
+- **The atlas pins what kept rows draw.** A kept row never calls `Atlas::get`, so the LRU would
+  pick its shelves first and every eviction would land on the UI. Instead each kept mask
+  instance pins its shelf (counted when its row is written, uncounted when overwritten or
+  dropped), and eviction skips pinned shelves. So no kept row ever names an evicted mask, and
+  none is repacked for an eviction: the plan's "repack the rows naming an evicted glyph" rule
+  became "never evict them" (`eviction_spares_the_masks_kept_rows_draw`). A row that drew a
+  stand-in or hit an atlas overflow is marked stale and painted again next frame.
+- **The CPU painter keeps the same rows.** It cannot replay GPU instances (a mask placed at
+  1/8 px is not vello_cpu's glyph), so it keeps each row's recorded painter calls under the same
+  keys and matching (`ui_rows::find`) and replays them; the goldens draw through the kept rows
+  and stayed byte-identical (all 20 checked pixel for pixel).
+- **Oracles.** A kept frame equals a fresh one: instance for instance headless after every
+  state change (`render/tests/ui_rows.rs`), pixel for pixel on the RTX 4060 through a menu over
+  canvas labels, a cascade, a 300-row list scrolled by whole and fractional offsets and a scale
+  change (`retained_ui_frames_equal_fresh_frames`), byte for byte on the CPU
+  (`the_cpu_painter_replays_kept_rows_byte_identically`). The step-3 GPU-against-CPU means are
+  unchanged. Through the frame spine, idle and pan frames write no UI byte
+  (`idle_and_pan_frames_write_no_ui_bytes`).
+- **WebGL2.** Vertex-buffer instances and a 1,040-byte uniform with a dynamically indexed array
+  (GLSL ES 3.00 allows it in the vertex stage); `shaders_compile_to_glsl_es_300_for_webgl2`
+  passes. Draw count: the two UI sources add two draws where the batch had its UI runs.
+
 ## 6. Risks
 
 | Risk | Mitigation |

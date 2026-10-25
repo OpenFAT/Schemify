@@ -48,6 +48,7 @@ use kurbo::Rect;
 
 use crate::atlas::ATLAS_SIDE;
 use crate::batch::{self, Batch, Stage, What};
+use crate::ui_rows;
 
 use schemify_canvas::{
     Arcs, Camera, CanvasPrims, LAYER_DEAD, LAYERS, LineStyle, Lines, Marks, Palette, PrimKind,
@@ -617,7 +618,7 @@ fn one_row(t: &CanvasPrims, c: usize, i: usize, palette: &Palette) -> Option<Pac
 }
 
 /// Notes `r` as written; past [`DIRTY_MAX`] ranges they merge into their span.
-fn push_dirty(d: &mut Vec<Range<usize>>, r: Range<usize>) {
+pub(crate) fn push_dirty(d: &mut Vec<Range<usize>>, r: Range<usize>) {
     if r.is_empty() {
         return;
     }
@@ -829,6 +830,10 @@ pub struct Pipelines {
     /// Image textures' bind groups by blob id (`Batch::images`).
     images: HashMap<u64, wgpu::BindGroup>,
     instances: Option<wgpu::Buffer>,
+    /// The UI's retained rows per source (`Batch::ui`), grown by doubling, and the pane
+    /// entries last written to the batch uniform.
+    ui_rows: [Option<wgpu::Buffer>; ui_rows::SOURCES],
+    panes: [[f32; 8]; ui_rows::PANES],
     atlas_uploaded: u64,
     instances_uploaded: u64,
 }
@@ -852,8 +857,9 @@ const TRI_ATTRS: [wgpu::VertexAttribute; 4] =
 const UI_ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
     0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Uint32, 4 => Uint32
 ];
-/// The batch uniform (`Ui` in `ui.wgsl`): the target's size.
-const UI_UNIFORM_BYTES: usize = 16;
+/// The batch uniform (`Ui` in `ui.wgsl`): the target's size, then per pane slot its offset and
+/// clip (two `vec4`s).
+const UI_UNIFORM_BYTES: usize = 16 + ui_rows::PANES * 32;
 
 /// A render pipeline of `module`'s `vs`/`fs` into `format`, its rows `stride`-byte instances
 /// with `attributes` (none: a full-quad pipeline), blended by `blend`.
@@ -1118,6 +1124,8 @@ impl Pipelines {
             sampler,
             images: HashMap::new(),
             instances: None,
+            ui_rows: Default::default(),
+            panes: [[0.0; 8]; ui_rows::PANES],
             atlas_uploaded: 0,
             instances_uploaded: 0,
         }
@@ -1183,6 +1191,36 @@ impl Pipelines {
             }
             queue.write_buffer(self.instances.as_ref().expect("made"), 0, bytes);
             self.instances_uploaded += bytes.len() as u64;
+        }
+        // The retained UI rows: only what changed since the last upload.
+        for (k, s) in batch.ui.src.iter_mut().enumerate() {
+            let dirty = std::mem::take(&mut s.dirty);
+            let bytes = &s.bytes;
+            let slot = &mut self.ui_rows[k];
+            if slot.as_ref().is_none_or(|b| b.size() < bytes.len() as u64) {
+                let size = bytes.len().next_power_of_two().max(1 << 16);
+                let b = buffer(device, "ui rows", size as u64, wgpu::BufferUsages::VERTEX);
+                queue.write_buffer(&b, 0, bytes);
+                self.instances_uploaded += bytes.len() as u64;
+                *slot = Some(b);
+                continue;
+            }
+            let b = slot.as_ref().expect("fits");
+            for r in dirty {
+                assert!(r.end <= bytes.len(), "a dirty range inside the rows");
+                queue.write_buffer(b, r.start as u64, &bytes[r.clone()]);
+                self.instances_uploaded += r.len() as u64;
+            }
+        }
+        assert_eq!(batch.ui.dirty_bytes(), 0, "every UI row uploaded");
+        // The panes' offsets and clips that moved (a scroll writes one entry, 32 bytes).
+        for (k, (have, want)) in self.panes.iter_mut().zip(&batch.ui.panes).enumerate() {
+            if have != want {
+                *have = *want;
+                let bytes: Vec<u8> = want.iter().flat_map(|v| v.to_ne_bytes()).collect();
+                queue.write_buffer(&self.ui_uniform, 16 + 32 * k as u64, &bytes);
+                self.instances_uploaded += bytes.len() as u64;
+            }
         }
         let (slots, coverage) = batch.atlas.pending();
         for &(s, at) in slots {
@@ -1286,7 +1324,7 @@ impl Pipelines {
             })],
             ..Default::default()
         });
-        let mut ui = [0u8; UI_UNIFORM_BYTES];
+        let mut ui = [0u8; 16];
         ui[..4].copy_from_slice(&(w as f32).to_ne_bytes());
         ui[4..8].copy_from_slice(&(h as f32).to_ne_bytes());
         queue.write_buffer(&self.ui_uniform, 0, &ui);
@@ -1332,7 +1370,7 @@ impl Pipelines {
                     stage(&mut pass, s);
                     continue;
                 }
-                What::Ui => &self.ui_bind,
+                What::Ui | What::Retained(_) => &self.ui_bind,
                 What::Image(k) => {
                     let id = batch.images()[k as usize].data.id();
                     self.images
@@ -1343,10 +1381,11 @@ impl Pipelines {
             if d.range.is_empty() {
                 continue;
             }
-            let buf = self
-                .instances
-                .as_ref()
-                .expect("instances uploaded before they are drawn");
+            let buf = match d.what {
+                What::Retained(k) => self.ui_rows[k].as_ref(),
+                _ => self.instances.as_ref(),
+            }
+            .expect("instances uploaded before they are drawn");
             assert!(
                 buf.size() >= u64::from(d.range.end) * batch::STRIDE as u64,
                 "the buffer holds every instance"

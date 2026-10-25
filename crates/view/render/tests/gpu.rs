@@ -129,16 +129,31 @@ fn gpu_frame(
     size: (u32, u32),
     scale: f64,
     clear: Color,
-    mut paint: impl FnMut(&mut GpuPainter<'_>),
+    paint: impl FnMut(&mut GpuPainter<'_>),
 ) -> (Vec<u8>, Batch) {
     let (mut batch, mut rows) = (Batch::default(), InstanceRows::default());
+    let px = gpu_frame_in(g, &mut batch, &mut rows, size, scale, clear, paint);
+    (px, batch)
+}
+
+/// As [`gpu_frame`] on a kept batch and rows (the window's, across frames): the pipelines
+/// must be the ones that drew this batch before, as the window's are.
+fn gpu_frame_in(
+    g: &mut Gpu,
+    batch: &mut Batch,
+    rows: &mut InstanceRows,
+    size: (u32, u32),
+    scale: f64,
+    clear: Color,
+    mut paint: impl FnMut(&mut GpuPainter<'_>),
+) -> Vec<u8> {
     for _ in 0..64 {
         rows.frame = None;
         batch.begin_frame();
         paint(&mut GpuPainter {
-            batch: &mut batch,
+            batch,
             base: Affine::scale(scale),
-            rows: Some(&mut rows),
+            rows: Some(rows),
         });
         if batch.settled() {
             break;
@@ -151,8 +166,8 @@ fn gpu_frame(
         wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
     );
     let view = tex.create_view(&Default::default());
-    g.pipes.upload(&g.device, &g.queue, &mut rows);
-    g.pipes.upload_batch(&g.device, &g.queue, &mut batch);
+    g.pipes.upload(&g.device, &g.queue, rows);
+    g.pipes.upload_batch(&g.device, &g.queue, batch);
     let frame = rows.frame.take();
     let mut enc = g.device.create_command_encoder(&Default::default());
     let clear = wgpu_color(clear);
@@ -161,14 +176,14 @@ fn gpu_frame(
         &g.queue,
         &view,
         clear,
-        &rows,
-        &batch,
+        rows,
+        batch,
         frame.as_ref(),
         scale,
         size,
     );
     g.queue.submit([enc.finish()]);
-    (read(g, &tex), batch)
+    read(g, &tex)
 }
 
 /// The same frame on the CPU painter over `clear`.
@@ -1059,4 +1074,133 @@ fn gpu_100k_canvas_matches_cpu_and_reports_frame_time() {
         "GPU canvas pass (100k primitives, 1600x900, submit to completion): median {:.2} ms",
         times[times.len() / 2]
     );
+}
+
+/// The UI's retained rows (`render::ui_rows`) draw what a frame from scratch draws: one kept
+/// batch (and its own pipelines, as the window keeps them) through a sequence of UI states (a
+/// menu over canvas labels, a hover, a chooser dialog with a 300-row list scrolled by whole
+/// and fractional offsets, the menu closed) is pixel-identical, frame by frame, to a fresh
+/// batch on fresh pipelines.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn retained_ui_frames_equal_fresh_frames() {
+    let (mut kept_gpu, mut fresh_gpu) = (gpu(), gpu());
+    let mut strings = Strings::new();
+    let (base, rejects) = records::parse(schemify_ui::DEFAULT_UI, &mut strings);
+    assert!(rejects.is_empty());
+    let rows: String = (0..300)
+        .map(|k| format!("node row.{k} item\n  parent dialog.choose.list\n  label \"Row {k}\"\n  style list-row\n"))
+        .collect();
+    let (extra, rejects) = records::parse(&rows, &mut strings);
+    assert!(rejects.is_empty());
+    let name = strings.intern("test");
+    let tables = compose(&strings, &base, &[(name, &extra)]);
+    let mut text = TextSystem::new();
+    let mut state = UiState::default();
+    let size = (800u32, 520u32);
+    let labels = labels_scene();
+    let (mut kept, mut kept_rows) = (Batch::default(), InstanceRows::default());
+    let list = strings.find("dialog.choose.list").expect("the list");
+    for (step, scale) in [
+        (0, 1.0),
+        (1, 1.0),
+        (2, 1.0),
+        (3, 1.0),
+        (4, 1.0),
+        (5, 1.0),
+        (6, 1.0),
+        (7, 1.5),
+        (8, 1.5),
+    ] {
+        match step {
+            1 => state.open_menus(&[strings.find("menu.file").expect("menu")]),
+            2 => state.open_menus(&[
+                strings.find("menu.file").expect("menu"),
+                strings.find("menu.file.image_export").expect("submenu"),
+            ]),
+            3 => state.set_dialog(strings.find("dialog.choose").expect("dialog")),
+            4 => state.set_scroll(list, 280.0, 1.0e6),
+            5 => state.set_scroll(list, 401.5, 1.0e6),
+            6 => state.set_scroll(list, 120.0, 1.0e6),
+            8 => state.set_dialog(schemify_ui::Sym::NONE),
+            _ => {}
+        }
+        let frame = layout(
+            &tables,
+            &strings,
+            &mut text,
+            &state,
+            (800.0 / scale as f32, 520.0 / scale as f32),
+        );
+        let canvas = tables
+            .nodes
+            .kind()
+            .iter()
+            .position(|&k| k == Kind::Canvas)
+            .expect("a canvas") as u16;
+        let r = frame.rect()[frame.row_of(canvas).expect("laid out")];
+        let view = Rect::new(
+            f64::from(r.x),
+            f64::from(r.y),
+            f64::from(r.x + r.w),
+            f64::from(r.y + r.h),
+        );
+        let cam = fit(view);
+        let mut ui = UiScratch::default();
+        let mut paint = |p: &mut GpuPainter<'_>| {
+            draw_ui(
+                p,
+                &tables,
+                &frame,
+                &strings,
+                &mut text,
+                &state,
+                Layer::Main,
+                &mut ui,
+            );
+            canvas_scene(
+                p,
+                view,
+                view,
+                cam,
+                &labels,
+                &Marks::default(),
+                &CanvasPrims::default(),
+                None,
+            );
+            draw_ui(
+                p,
+                &tables,
+                &frame,
+                &strings,
+                &mut text,
+                &state,
+                Layer::Overlay,
+                &mut ui,
+            );
+        };
+        let got = gpu_frame_in(
+            &mut kept_gpu,
+            &mut kept,
+            &mut kept_rows,
+            size,
+            scale,
+            Color::BLACK,
+            &mut paint,
+        );
+        let (want, _) = gpu_frame(&mut fresh_gpu, size, scale, Color::BLACK, &mut paint);
+        let off = got.iter().zip(&want).filter(|(a, b)| a != b).count();
+        if off > 0 {
+            amplified_diff(&format!("retained_{step}"), &got, &want, size);
+        }
+        assert_eq!(off, 0, "step {step}: the kept frame is the fresh frame");
+        let draws = kept.draws().len();
+        eprintln!(
+            "step {step}: {draws} draws, {} retained",
+            kept.draws()
+                .iter()
+                .filter(|d| matches!(d.what, schemify_render::batch::What::Retained(_)))
+                .count()
+        );
+    }
 }

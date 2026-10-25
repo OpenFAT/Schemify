@@ -1,0 +1,376 @@
+//! The UI's retained instance rows (`docs/dev/research/render-backend.md` § Retained UI rows):
+//! per UI source (the main layer, the overlay) the batch instances of every layout row the
+//! GPU painter drew, in layout order, each row a slot range with free slots after it, kept
+//! across frames. A row whose [`RowKey`] (its paint inputs) and place are unchanged keeps its
+//! slots and costs nothing; a changed row is repainted into its own slots, uploading only the
+//! instances that differ; a row that outgrows its slots, or a row inserted or dropped, lays the
+//! rest of its source out again. Rows inside a `scroll` pane are kept in the pane's content
+//! coordinates and moved by the pane's offset in the batch uniform ([`PANES`]), so a scroll
+//! writes no row.
+//!
+//! Six questions:
+//! 1. In: per frame each drawn row's key and, for a changed row, its painted instances. Out:
+//!    per source the instance bytes, the byte ranges written since the GPU last read them, the
+//!    slot range of each row (the frame's draws), the panes' offsets and clips.
+//! 2. One row per laid-out UI row (2^16 nodes at most), a few to a few hundred instances each;
+//!    [`INSTANCES_MAX`] per source.
+//! 3. Slots `u32` (under 2^18); instances [`crate::batch::STRIDE`] bytes; pane slots `u8`.
+//! 4. Each frame walks the rows in layout order once, comparing keys; bytes are written only
+//!    for changed rows.
+//! 5. Rows live while their node is drawn: a row not drawn in a frame is dropped at its
+//!    source's end ([`crate::Painter::ui_end`]). Pane slots live while a row of theirs is drawn.
+//! 6. Serial (layout order is drawing order).
+
+use std::ops::Range;
+
+use schemify_ui::Sym;
+
+use crate::atlas::Atlas;
+use crate::batch::{MASK, MASK_SCALED, STRIDE};
+use crate::gpu::push_dirty;
+use crate::widgets::RowKey;
+
+/// UI sources: the main layer and the overlay (menus, dialogs).
+pub const SOURCES: usize = 2;
+/// Scroll panes whose offsets the batch uniform holds; slot 0 is "no pane" (no offset, no
+/// clip). A row in a pane past these is kept in screen coordinates (repainted on a scroll).
+pub const PANES: usize = 32;
+/// Instances one source holds; a row past them is not drawn (counted in `Batch::dropped`).
+pub const INSTANCES_MAX: usize = 1 << 18;
+/// Rows ahead of the cursor a row's identity is looked for among last frame's: an insertion
+/// or a removal of up to this many rows keeps the rest.
+const SEARCH: usize = 64;
+/// A pane slot's uniform entry with no offset and no clip.
+const NO_PANE: [f32; 8] = [0.0, 0.0, 0.0, 0.0, -1.0e9, -1.0e9, 1.0e9, 1.0e9];
+
+/// Free slots kept after a row of `n` instances: room for a hover's background or a few typed
+/// characters without laying the source out again.
+fn slack(n: u32) -> u32 {
+    n / 4 + 4
+}
+
+/// Rows in layout order (SoA): key, first slot, instances, slots reserved.
+#[derive(Clone, Debug, Default)]
+struct Segs {
+    key: Vec<RowKey>,
+    start: Vec<u32>,
+    len: Vec<u32>,
+    cap: Vec<u32>,
+}
+
+impl Segs {
+    fn push(&mut self, key: RowKey, start: u32, len: u32, cap: u32) {
+        assert!(len <= cap, "a row fits its slots");
+        self.key.push(key);
+        self.start.push(start);
+        self.len.push(len);
+        self.cap.push(cap);
+    }
+
+    fn clear(&mut self) {
+        self.key.clear();
+        self.start.clear();
+        self.len.clear();
+        self.cap.clear();
+    }
+}
+
+/// The index of the row among `keys[cursor..]` (at most [`SEARCH`] ahead) that shows the same
+/// node the same way as `key`: the row `key` was last frame. Shared by both painters, so the
+/// CPU painter's goldens exercise the same matching as the GPU's rows.
+pub(crate) fn find(keys: &[RowKey], cursor: usize, key: &RowKey) -> Option<usize> {
+    let end = keys.len().min(cursor + SEARCH);
+    (cursor..end).find(|&o| keys[o].id == key.id && keys[o].shown == key.shown)
+}
+
+/// One source's rows.
+#[derive(Debug, Default)]
+pub(crate) struct Source {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) dirty: Vec<Range<usize>>,
+    /// Last frame's rows and this frame's so far.
+    old: Segs,
+    new: Segs,
+    /// Next of last frame's rows to match, the row matched for the row being drawn, and the
+    /// next free slot of this frame's layout.
+    cursor: usize,
+    matched: Option<usize>,
+    at: u32,
+    /// The slot where this frame's layout first left last frame's (rows from there on are
+    /// rewritten from `spare`, the bytes as they were).
+    moved: Option<u32>,
+    spare: Vec<u8>,
+}
+
+/// Pins (`delta` 1) or unpins (-1) the atlas shelves the masks among `bytes` sample: a shelf a
+/// retained row draws from is never evicted, so no retained row names an evicted mask.
+fn pin(atlas: &mut Atlas, bytes: &[u8], delta: i32) {
+    debug_assert_eq!(bytes.len() % STRIDE, 0);
+    for b in bytes.chunks_exact(STRIDE) {
+        let kind = u32::from_ne_bytes(b[52..56].try_into().expect("4 bytes")) & 0xff;
+        if kind == MASK || kind == MASK_SCALED {
+            let y = f32::from_ne_bytes(b[20..24].try_into().expect("4 bytes"));
+            atlas.pin(y as u16, delta);
+        }
+    }
+}
+
+impl Source {
+    /// This frame's layout leaves last frame's at slot `at`: every row from there on is
+    /// written again (from `spare` or freshly painted), and last frame's rows there let go of
+    /// their shelves.
+    fn begin_moved(&mut self, atlas: &mut Atlas) {
+        assert!(self.moved.is_none(), "moved once a frame");
+        let at = self.at as usize * STRIDE;
+        self.moved = Some(self.at);
+        self.spare.clear();
+        self.spare.extend_from_slice(&self.bytes);
+        pin(atlas, &self.bytes[at.min(self.bytes.len())..], -1);
+    }
+
+    /// Writes `inst` at slot `at` with `cap` slots reserved (the rest zero), growing the
+    /// bytes: the moved part of the layout, uploaded whole at the source's end.
+    fn write(&mut self, at: u32, inst: &[u8], cap: u32) {
+        let (lo, hi) = (at as usize * STRIDE, (at + cap) as usize * STRIDE);
+        assert!(inst.len() <= hi - lo, "a row fits its slots");
+        if self.bytes.len() < hi {
+            self.bytes.resize(hi, 0);
+        }
+        self.bytes[lo..lo + inst.len()].copy_from_slice(inst);
+        self.bytes[lo + inst.len()..hi].fill(0);
+    }
+}
+
+/// The UI's retained instance rows and the scroll panes they are drawn through. Owner: the
+/// batch ([`crate::Batch::ui`]); written only by the GPU painter's [`crate::Painter::ui_row`]
+/// and [`crate::Painter::ui_end`], read by the upload and the pass.
+#[derive(Debug)]
+pub struct UiRows {
+    pub(crate) src: [Source; SOURCES],
+    /// Per pane slot: the scroll node it is, the frame a row of it was last drawn in, and its
+    /// uniform entry (offset in device px, then the pane's clip, device px).
+    pane_id: [Sym; PANES],
+    pane_seen: [u32; PANES],
+    pub(crate) panes: [[f32; 8]; PANES],
+    frame: u32,
+    /// Device px per logical px the rows were painted at.
+    scale: f64,
+}
+
+impl Default for UiRows {
+    fn default() -> Self {
+        UiRows {
+            src: Default::default(),
+            pane_id: [Sym::NONE; PANES],
+            pane_seen: [0; PANES],
+            panes: [NO_PANE; PANES],
+            frame: 2,
+            scale: 0.0,
+        }
+    }
+}
+
+impl UiRows {
+    /// Starts a frame: panes not drawn last frame give up their slots.
+    pub(crate) fn begin_frame(&mut self) {
+        self.frame += 1;
+        assert!(self.frame > 2, "frame stamps do not wrap");
+        for k in 1..PANES {
+            if self.pane_seen[k] + 1 < self.frame {
+                self.pane_id[k] = Sym::NONE;
+                self.panes[k] = NO_PANE;
+            }
+        }
+    }
+
+    /// Bytes the GPU has to read to be current.
+    pub fn dirty_bytes(&self) -> usize {
+        let n = self
+            .src
+            .iter()
+            .flat_map(|s| s.dirty.iter())
+            .map(|r| r.len())
+            .sum();
+        debug_assert!(
+            self.src
+                .iter()
+                .all(|s| s.dirty.iter().all(|r| r.end <= s.bytes.len()))
+        );
+        n
+    }
+
+    /// Forgets the dirty ranges, as an upload does (headless tests).
+    pub fn clear_dirty(&mut self) {
+        self.src.iter_mut().for_each(|s| s.dirty.clear());
+        assert_eq!(self.dirty_bytes(), 0);
+    }
+
+    /// Source `src`'s instances, [`STRIDE`] bytes each (free slots zero).
+    pub fn bytes(&self, src: usize) -> &[u8] {
+        &self.src[src].bytes
+    }
+
+    /// Rows source `src` holds (drawn last frame).
+    pub fn rows(&self, src: usize) -> usize {
+        self.src[src].old.key.len()
+    }
+
+    /// The slots (reserved ones included) of the first row of source `src` drawn last frame
+    /// that shows node `id`.
+    pub fn slots_of(&self, src: usize, id: Sym) -> Option<Range<u32>> {
+        let o = &self.src[src].old;
+        let k = o.key.iter().position(|k| k.id == id)?;
+        Some(o.start[k]..o.start[k] + o.cap[k])
+    }
+
+    /// The byte ranges of source `src` written since the GPU last read them.
+    pub fn dirty(&self, src: usize) -> &[Range<usize>] {
+        &self.src[src].dirty
+    }
+
+    /// Per pane slot its uniform entry: offset (device px), then clip (device px).
+    pub fn panes(&self) -> [[f32; 8]; PANES] {
+        self.panes
+    }
+
+    /// Repaints every row from the next frame on when the rows were painted at another scale.
+    pub(crate) fn rescale(&mut self, scale: f64) {
+        assert!(scale > 0.0, "a scale");
+        if self.scale != scale {
+            self.scale = scale;
+            for s in &mut self.src {
+                s.old.key.iter_mut().for_each(|k| k.stale = true);
+            }
+        }
+    }
+
+    /// The pane slot of scroll node `id` this frame (taken on its first row), `None` when every
+    /// slot is held.
+    pub(crate) fn pane(&mut self, id: Sym) -> Option<usize> {
+        assert!(!id.is_none(), "a pane is a scroll node");
+        let k = (1..PANES)
+            .find(|&k| self.pane_id[k] == id)
+            .or_else(|| (1..PANES).find(|&k| self.pane_id[k].is_none()))?;
+        self.pane_id[k] = id;
+        self.pane_seen[k] = self.frame;
+        Some(k)
+    }
+
+    /// Row `key` of source `src` keeps last frame's slots when its key is unchanged: the slot
+    /// range to draw (rewritten at a new place when the layout moved before it). `None`: paint
+    /// it and [`UiRows::put`] it.
+    pub(crate) fn keep(
+        &mut self,
+        src: usize,
+        key: &RowKey,
+        atlas: &mut Atlas,
+    ) -> Option<Range<u32>> {
+        let s = &mut self.src[src];
+        s.matched = find(&s.old.key, s.cursor, key);
+        let o = s.matched?;
+        s.cursor = o + 1;
+        if s.old.key[o] != *key {
+            return None;
+        }
+        let (start, len, cap) = (s.old.start[o], s.old.len[o], s.old.cap[o]);
+        if s.moved.is_none() && start != s.at {
+            s.begin_moved(atlas);
+        }
+        let at = s.at;
+        if s.moved.is_none() {
+            s.new.push(*key, start, len, cap);
+            s.at += cap;
+            return Some(at..at + cap);
+        }
+        let cap = len + slack(len);
+        let (lo, hi) = (start as usize * STRIDE, (start + len) as usize * STRIDE);
+        let old = std::mem::take(&mut s.spare);
+        s.write(at, &old[lo..hi], cap);
+        s.spare = old;
+        s.new.push(*key, at, len, cap);
+        s.at += cap;
+        Some(at..at + cap)
+    }
+
+    /// Row `key` of source `src` painted as `inst` (after [`UiRows::keep`] returned `None` for
+    /// it): written over its own slots when it is where it was and fits them, writing only
+    /// the instances that differ; else from here on the source is laid out again. Returns the
+    /// slot range to draw, `None` past [`INSTANCES_MAX`].
+    pub(crate) fn put(
+        &mut self,
+        src: usize,
+        key: RowKey,
+        inst: &[u8],
+        atlas: &mut Atlas,
+    ) -> Option<Range<u32>> {
+        assert_eq!(inst.len() % STRIDE, 0, "whole instances");
+        let s = &mut self.src[src];
+        let n = (inst.len() / STRIDE) as u32;
+        let at = s.at;
+        if let Some(o) = s.matched.take()
+            && s.moved.is_none()
+            && s.old.start[o] == at
+            && n <= s.old.cap[o]
+        {
+            let (olen, cap) = (s.old.len[o], s.old.cap[o]);
+            let (lo, hi) = (at as usize * STRIDE, (at + olen) as usize * STRIDE);
+            pin(atlas, &s.bytes[lo..hi], -1);
+            pin(atlas, inst, 1);
+            // Only the instances that differ (a hover's colours, a typed glyph and the caret).
+            let end = (at + n.max(olen)) as usize * STRIDE;
+            let (mut first, mut last) = (usize::MAX, 0);
+            for (k, b) in s.bytes[lo..end].chunks_exact(STRIDE).enumerate() {
+                let new = inst
+                    .get(k * STRIDE..(k + 1) * STRIDE)
+                    .unwrap_or(&[0; STRIDE]);
+                if b != new {
+                    (first, last) = (first.min(k), k + 1);
+                }
+            }
+            s.write(at, inst, cap);
+            if first < last {
+                push_dirty(&mut s.dirty, lo + first * STRIDE..lo + last * STRIDE);
+            }
+            s.new.push(key, at, n, cap);
+            s.at += cap;
+            return Some(at..at + cap);
+        }
+        let cap = n + slack(n);
+        if (at + cap) as usize > INSTANCES_MAX {
+            return None;
+        }
+        if s.moved.is_none() {
+            s.begin_moved(atlas);
+        }
+        s.write(at, inst, cap);
+        s.new.push(key, at, n, cap);
+        s.at += cap;
+        Some(at..at + cap)
+    }
+
+    /// Ends source `src`'s frame: last frame's rows not drawn are dropped, the moved part of
+    /// the layout is noted for upload, and this frame's rows become the ones kept.
+    pub(crate) fn end(&mut self, src: usize, atlas: &mut Atlas) {
+        let s = &mut self.src[src];
+        let end = s.at as usize * STRIDE;
+        match s.moved.take() {
+            Some(m) => {
+                let m = m as usize * STRIDE;
+                s.bytes.truncate(end);
+                pin(atlas, &s.bytes[m..], 1);
+                push_dirty(&mut s.dirty, m..end);
+            }
+            None if s.bytes.len() > end => {
+                pin(atlas, &s.bytes[end..], -1);
+                s.bytes.truncate(end);
+            }
+            None => {}
+        }
+        s.dirty.iter_mut().for_each(|r| r.end = r.end.min(end));
+        s.dirty.retain(|r| !r.is_empty());
+        std::mem::swap(&mut s.old, &mut s.new);
+        s.new.clear();
+        (s.cursor, s.matched, s.at) = (0, None, 0);
+        assert_eq!(s.bytes.len(), end, "the bytes are this frame's rows");
+    }
+}

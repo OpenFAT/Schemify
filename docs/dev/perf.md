@@ -943,6 +943,49 @@ Inside D39's 8 MiB compressed budget (CI's `wasm` job checks it) with 2.56 MiB t
 binaries keep their backends (the GLES one was already linked). Frame time on WebGL2 was not
 measured: the local smoke run is SwiftShader, a CPU rasterizer behind ANGLE.
 
+### Retained UI rows (2026-10-25)
+
+The UI's instances are kept across frames (`render::ui_rows`, `Batch::ui`): a layout row whose
+paint inputs (`widgets::RowKey`) did not change keeps its slots, is not painted, and uploads
+nothing. Before = dbcef78b, after = this change; release, RTX 4060 Laptop (`SCHEMIFY_GPU=nvidia`,
+Vulkan), `frame_times_100k` and `interactions_100k` run once each. "UI KiB" is the frame's batch
+upload: the per-frame instances (canvas labels, wave panes, image rows), the kept rows' dirty
+bytes and the pane entries that moved. p50 / p95 ms.
+
+| Frame | UI KiB before | UI KiB after | CPU before | CPU after | GPU before | GPU after |
+|---|---:|---:|---|---|---|---|
+| pan (the UI idle) | 13.4 | 0 | 0.087 / 0.136 | 0.034 / 0.054 | 0.632 / 0.931 | 0.633 / 0.671 |
+| zoom (the UI idle) | 13.4 | 0 | 0.092 / 0.158 | 0.034 / 0.042 | 0.551 / 0.669 | 0.549 / 0.668 |
+| hover (canvas) | 13.4 | 0.05 / 0.11 | 0.203 / 0.300 | 0.169 / 0.226 | 0.329 / 0.332 | 0.330 / 0.332 |
+| drag | 13.7 | 0.27 / 0.33 | 0.226 / 0.273 | 0.164 / 0.218 | 0.329 / 0.334 | 0.330 / 0.332 |
+| menu (open or close each frame) | 39.0 | 35.9 / 37.3 | 0.194 / 0.728 | 0.180 / 0.743 | 0.336 / 0.373 | 0.338 / 0.374 |
+| type | 17.4 / 18.9 | 0.11 / 3.5 | 0.225 / 0.248 | 0.194 / 0.297 | 0.331 / 0.334 | 0.331 / 0.334 |
+| edit | 13.3 | 0.93 | 1.165 / 3.321 | 0.770 / 1.891 | 0.669 / 0.670 | 0.669 / 0.670 |
+| unselect | 13.6 | 0.60 | 0.865 / 1.411 | 0.860 / 1.175 | 0.629 / 0.630 | 0.629 / 0.630 |
+
+- **Idle UI, 0 bytes.** Pan and zoom leave the UI as it was: no UI byte uploaded and the paint
+  step's CPU falls by 0.05 ms (the rows' keys are compared, nothing is painted). Headless:
+  `an_unchanged_ui_writes_nothing`, `idle_and_pan_frames_write_no_ui_bytes`.
+- **Hover**: a menu item's hover rewrites 24 of its 32 slots (its colours, and the background
+  it gains shifts its glyphs by one), 1.3 KiB (`a_menu_hover_rewrites_only_its_item`).
+- **Typing** rewrites two instances, the new glyph and the caret, 112 B
+  (`typing_rewrites_the_glyph_and_the_caret`); the p95 frames are the ones where the field
+  outgrows its free slots (a quarter of its instances plus 4) and the rest of the dialog is
+  laid out again, 3.5 KiB. The table's type p95 (0.248 → 0.297) is one run's noise: ten
+  interleaved runs of both builds on this machine (busy with other builds) put the median
+  type p95 at 0.278 ms before and 0.265 ms after (before 0.236–0.461, after 0.215–0.360), and
+  a headless timing of 1800 typed frames paints an overflow frame in the same time as any
+  other (median 14.6 µs against 14.9 µs): the relaid part of the dialog is copied, not
+  painted.
+- **Menu**: the benchmark opens or closes the menu every frame, so every frame writes a whole
+  popup (or frees it); no gain, and none expected. Draws stay at one per UI source plus one per
+  image row: 8 draws for the shell with a menu over canvas labels, 2 of them the kept rows.
+- **Scroll**: not in the benchmark. A 1000-row list scrolled by whole pixels writes no row and
+  one 32-byte pane entry (`scrolling_a_long_list_writes_no_row`); a fractional device-pixel
+  offset repaints the pane's rows.
+- **GPU**: unchanged (the kept rows draw what the per-frame batch drew, plus the free slots,
+  which are zero-area quads). The pan p95 0.93 → 0.67 is run-to-run noise in the timestamps.
+
 ## Binary size
 
 D39 (amended 2026-10-11): the headless core `schemify` ≤ 2 MB, the editor `schemify-gui` ≤

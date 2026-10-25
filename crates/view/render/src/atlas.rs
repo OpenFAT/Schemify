@@ -104,6 +104,8 @@ struct Shelf {
     x: u16,
     /// The last frame a mask of this shelf was drawn in.
     used: u32,
+    /// Retained UI instances that sample this shelf ([`Atlas::pin`]): never evicted while any.
+    pins: u32,
 }
 
 /// The atlas: shelves of height classes, the entries placed in them, and the bytes written
@@ -242,6 +244,7 @@ impl Atlas {
                     h: class,
                     x: 0,
                     used: 0,
+                    pins: 0,
                 });
                 self.next_y += class;
                 self.shelves.len() - 1
@@ -252,7 +255,7 @@ impl Atlas {
                     .shelves
                     .iter()
                     .enumerate()
-                    .filter(|(_, s)| s.used < frame && s.h >= class)
+                    .filter(|(_, s)| s.used < frame && s.h >= class && s.pins == 0)
                     .min_by_key(|(_, s)| (s.used, s.h))?;
                 self.evict(at);
                 at
@@ -277,10 +280,38 @@ impl Atlas {
             self.shelves[at].used < self.frame,
             "a shelf drawn this frame is kept"
         );
+        assert_eq!(
+            self.shelves[at].pins, 0,
+            "a shelf retained rows draw from is kept"
+        );
         let shelf = at as u16;
         self.map.retain(|_, e| e.shelf != shelf);
         self.shelves[at].x = 0;
         self.evictions += 1;
+    }
+
+    /// Adds `delta` (1 or -1) to the retained instances that sample the shelf holding texel row
+    /// `y` (the UI's rows, `ui_rows`): a shelf with any is never evicted, so a row kept across
+    /// frames never names an evicted (and maybe overwritten) mask. A row that would need its
+    /// shelf back is never asked to repaint: its shelf stays.
+    ///
+    /// # Panics
+    ///
+    /// Panics when no shelf holds `y`, or on an unpin of a shelf no instance pins.
+    pub(crate) fn pin(&mut self, y: u16, delta: i32) {
+        assert!(delta == 1 || delta == -1, "one instance at a time");
+        assert!(y < self.next_y, "a texel row of a shelf");
+        // Shelves are pushed top to bottom and never move: sorted by `y`.
+        let k = self.shelves.partition_point(|s| s.y <= y) - 1;
+        let s = &mut self.shelves[k];
+        assert!(s.y <= y && y < s.y + s.h, "the shelf holds the row");
+        s.pins = s.pins.checked_add_signed(delta).expect("pins balance");
+    }
+
+    /// Retained instances pinning the shelf that holds texel row `y` (tests).
+    pub fn pins(&self, y: u16) -> u32 {
+        let k = self.shelves.partition_point(|s| s.y <= y);
+        k.checked_sub(1).map_or(0, |k| self.shelves[k].pins)
     }
 
     /// Slots written since the last [`Atlas::clear_pending`], each with the offset of its

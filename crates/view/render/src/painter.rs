@@ -14,6 +14,8 @@ use schemify_ui::TextSystem;
 
 use crate::canvas::{self, CanvasScratch, Paths};
 use crate::gpu::{Change, Frame, InstanceRows, MARKS};
+use crate::ui_rows;
+use crate::widgets::{RowKey, UiRow};
 
 /// The drawing calls every frame builder uses. Coordinates are logical pixels; each painter
 /// applies its own base transform (the window's scale factor).
@@ -85,6 +87,26 @@ pub trait Painter {
         Self: Sized,
     {
         let _ = (frame, tables, marks, palette, texts);
+    }
+
+    /// Draws UI layout row `row` of UI source `src` (0: the main layer, 1: the overlay) with
+    /// `paint`. A painter that keeps rows across frames ([`crate::ui_rows`]) calls `paint` only
+    /// when the row's key differs from the one it kept, and draws what it kept otherwise. The
+    /// default draws a visible row and skips a hidden one.
+    fn ui_row(&mut self, src: usize, row: &UiRow, mut paint: impl FnMut(&mut Self))
+    where
+        Self: Sized,
+    {
+        let _ = src;
+        if row.visible {
+            paint(self);
+        }
+    }
+
+    /// Ends UI source `src`'s rows for this frame: a painter that keeps rows drops those this
+    /// frame did not draw.
+    fn ui_end(&mut self, src: usize) {
+        let _ = src;
     }
 
     /// Draws the gesture overlay `prims` (rows and labels, repacked whole) over this frame's
@@ -213,8 +235,41 @@ pub fn rgba(v: u32) -> Color {
     Color::from_rgba8(r, g, b, a)
 }
 
+/// One painter call of a UI row, as the CPU painter keeps it: replayed while the row's key
+/// holds (the GPU painter keeps the row's instances instead; an instance is not the CPU's
+/// pixels, so the goldens replay the calls).
+#[derive(Clone, Debug)]
+enum Call {
+    Rect(Rect, Color),
+    Fill(BezPath, Color),
+    Stroke(BezPath, Stroke, Color),
+    Glyphs {
+        font: FontData,
+        px: f32,
+        coords: Vec<i16>,
+        color: Color,
+        at: Affine,
+        glyphs: Vec<Glyph>,
+    },
+    Clip(Rect),
+    Pop,
+    Image(ImageData, Rect),
+}
+
+/// One UI source's rows on the CPU: last frame's keys and calls, this frame's so far, and the
+/// next of last frame's rows to match.
+#[derive(Debug, Default)]
+struct CpuRows {
+    keys: Vec<RowKey>,
+    calls: Vec<Vec<Call>>,
+    new_keys: Vec<RowKey>,
+    new_calls: Vec<Vec<Call>>,
+    cursor: usize,
+}
+
 /// Paints with `vello_cpu` into a pixmap: golden images and the no-GPU fallback. The canvas's
-/// instance rows are kept across [`CpuPainter::reset`] and patched as the GPU's are.
+/// instance rows are kept across [`CpuPainter::reset`] and patched as the GPU's are; so are the
+/// UI's rows, as recorded calls matched by the same keys ([`Painter::ui_row`]).
 pub struct CpuPainter {
     ctx: vello_cpu::RenderContext,
     resources: vello_cpu::Resources,
@@ -223,6 +278,11 @@ pub struct CpuPainter {
     /// paths they are batched into.
     rows: InstanceRows,
     paths: Paths,
+    /// The UI's rows per source, and the calls of the row being recorded.
+    ui: [CpuRows; ui_rows::SOURCES],
+    rec: Option<Vec<Call>>,
+    /// Rows recorded so far (the rest were replayed): tests count them.
+    pub recorded: u64,
 }
 
 impl std::fmt::Debug for CpuPainter {
@@ -249,7 +309,89 @@ impl CpuPainter {
             base: Affine::scale(scale),
             rows: InstanceRows::default(),
             paths: Paths::default(),
+            ui: Default::default(),
+            rec: None,
+            recorded: 0,
         }
+    }
+
+    /// Replays one recorded call (the same `vello_cpu` calls the direct path makes).
+    fn exec(&mut self, c: &Call) {
+        match c {
+            Call::Rect(r, color) => self.draw_rect(*r, *color),
+            Call::Fill(path, color) => self.draw_fill(path, *color),
+            Call::Stroke(path, stroke, color) => self.draw_stroke(path, stroke.clone(), *color),
+            Call::Glyphs {
+                font,
+                px,
+                coords,
+                color,
+                at,
+                glyphs,
+            } => self.draw_glyphs(font, *px, coords, *color, *at, glyphs),
+            Call::Clip(r) => self.clip(*r),
+            Call::Pop => self.ctx.pop_layer(),
+            Call::Image(image, r) => self.draw_image(image, *r),
+        }
+    }
+
+    fn draw_rect(&mut self, r: Rect, color: Color) {
+        self.ctx.set_transform(self.base);
+        self.ctx.set_paint(color);
+        self.ctx.fill_rect(&r);
+    }
+
+    fn draw_fill(&mut self, path: &BezPath, color: Color) {
+        self.ctx.set_transform(self.base);
+        self.ctx.set_paint(color);
+        self.ctx.set_fill_rule(Fill::NonZero);
+        self.ctx.fill_path(path);
+    }
+
+    fn draw_stroke(&mut self, path: &BezPath, stroke: Stroke, color: Color) {
+        self.ctx.set_transform(self.base);
+        self.ctx.set_paint(color);
+        self.ctx.set_stroke(stroke);
+        self.ctx.stroke_path(path);
+    }
+
+    fn draw_glyphs(
+        &mut self,
+        font: &FontData,
+        px: f32,
+        coords: &[i16],
+        color: Color,
+        at: Affine,
+        glyphs: &[Glyph],
+    ) {
+        self.ctx.set_transform(self.base * at);
+        self.ctx.set_paint(color);
+        let run = self
+            .ctx
+            .glyph_run(&mut self.resources, font)
+            .font_size(px)
+            .normalized_coords(coords);
+        // A glyph the face cannot outline is skipped by vello_cpu; the rest of the run still draws.
+        let _ = run.fill_glyphs(glyphs.iter().copied());
+    }
+
+    fn clip(&mut self, r: Rect) {
+        self.ctx.set_transform(self.base);
+        self.ctx.push_clip_layer(&r.to_path(0.1));
+    }
+
+    fn draw_image(&mut self, image: &ImageData, r: Rect) {
+        // ponytail: converts (copies) the pixels on every draw; the CPU path draws goldens
+        // and the GPU-less fallback only. Cache the pixmap beside the blob if that changes.
+        let brush = vello_cpu::Image {
+            image: vello_cpu::ImageSource::from_peniko_image_data(image),
+            sampler: ImageSampler::default(),
+        };
+        self.ctx.set_transform(self.base);
+        self.ctx.set_paint_transform(image_to(image, r));
+        self.ctx.set_paint(brush);
+        self.ctx.fill_rect(&r);
+        self.ctx.reset_paint_transform();
     }
 
     /// Starts a new frame on the same target, keeping the canvas rows.
@@ -271,30 +413,28 @@ impl CpuPainter {
 
 impl Painter for CpuPainter {
     fn fill_rect(&mut self, r: Rect, color: Color) {
-        self.ctx.set_transform(self.base);
-        self.ctx.set_paint(color);
-        self.ctx.fill_rect(&r);
+        match &mut self.rec {
+            Some(rec) => rec.push(Call::Rect(r, color)),
+            None => self.draw_rect(r, color),
+        }
     }
 
     fn fill_path(&mut self, path: &BezPath, color: Color) {
-        self.ctx.set_transform(self.base);
-        self.ctx.set_paint(color);
-        self.ctx.set_fill_rule(Fill::NonZero);
-        self.ctx.fill_path(path);
+        match &mut self.rec {
+            Some(rec) => rec.push(Call::Fill(path.clone(), color)),
+            None => self.draw_fill(path, color),
+        }
     }
 
     fn stroke_path(&mut self, path: &BezPath, width: f64, color: Color) {
-        self.ctx.set_transform(self.base);
-        self.ctx.set_paint(color);
-        self.ctx.set_stroke(Stroke::new(width));
-        self.ctx.stroke_path(path);
+        self.stroke_styled(path, &Stroke::new(width), color);
     }
 
     fn stroke_styled(&mut self, path: &BezPath, stroke: &Stroke, color: Color) {
-        self.ctx.set_transform(self.base);
-        self.ctx.set_paint(color);
-        self.ctx.set_stroke(stroke.clone());
-        self.ctx.stroke_path(path);
+        match &mut self.rec {
+            Some(rec) => rec.push(Call::Stroke(path.clone(), stroke.clone(), color)),
+            None => self.draw_stroke(path, stroke.clone(), color),
+        }
     }
 
     fn glyphs(
@@ -306,24 +446,74 @@ impl Painter for CpuPainter {
         at: Affine,
         glyphs: &[Glyph],
     ) {
-        self.ctx.set_transform(self.base * at);
-        self.ctx.set_paint(color);
-        let run = self
-            .ctx
-            .glyph_run(&mut self.resources, font)
-            .font_size(px)
-            .normalized_coords(coords);
-        // A glyph the face cannot outline is skipped by vello_cpu; the rest of the run still draws.
-        let _ = run.fill_glyphs(glyphs.iter().copied());
+        match &mut self.rec {
+            Some(rec) => rec.push(Call::Glyphs {
+                font: font.clone(),
+                px,
+                coords: coords.to_vec(),
+                color,
+                at,
+                glyphs: glyphs.to_vec(),
+            }),
+            None => self.draw_glyphs(font, px, coords, color, at, glyphs),
+        }
     }
 
     fn push_clip(&mut self, r: Rect) {
-        self.ctx.set_transform(self.base);
-        self.ctx.push_clip_layer(&r.to_path(0.1));
+        match &mut self.rec {
+            Some(rec) => rec.push(Call::Clip(r)),
+            None => self.clip(r),
+        }
     }
 
     fn pop_clip(&mut self) {
-        self.ctx.pop_layer();
+        match &mut self.rec {
+            Some(rec) => rec.push(Call::Pop),
+            None => self.ctx.pop_layer(),
+        }
+    }
+
+    /// Replays the row's calls while its key is the one recorded (matched as the GPU painter
+    /// matches its rows), else records them anew and replays them: the goldens draw through
+    /// the kept rows, so a key that misses a paint input shows in them.
+    fn ui_row(&mut self, src: usize, row: &UiRow, mut paint: impl FnMut(&mut Self)) {
+        assert!(self.rec.is_none(), "rows do not nest");
+        if !row.visible {
+            return;
+        }
+        let s = &mut self.ui[src];
+        let m = ui_rows::find(&s.keys, s.cursor, &row.key);
+        if let Some(o) = m {
+            s.cursor = o + 1;
+        }
+        let kept = m
+            .filter(|&o| s.keys[o] == row.key)
+            .map(|o| std::mem::take(&mut s.calls[o]));
+        let calls = match kept {
+            Some(c) => c,
+            None => {
+                self.rec = Some(Vec::new());
+                paint(self);
+                self.recorded += 1;
+                self.rec.take().expect("recording")
+            }
+        };
+        for c in &calls {
+            self.exec(c);
+        }
+        let s = &mut self.ui[src];
+        s.new_keys.push(row.key);
+        s.new_calls.push(calls);
+    }
+
+    fn ui_end(&mut self, src: usize) {
+        let s = &mut self.ui[src];
+        std::mem::swap(&mut s.keys, &mut s.new_keys);
+        std::mem::swap(&mut s.calls, &mut s.new_calls);
+        s.new_keys.clear();
+        s.new_calls.clear();
+        s.cursor = 0;
+        assert_eq!(s.keys.len(), s.calls.len());
     }
 
     fn device_scale(&self) -> f64 {
@@ -357,16 +547,9 @@ impl Painter for CpuPainter {
     }
 
     fn image(&mut self, image: &ImageData, r: Rect) {
-        // ponytail: converts (copies) the pixels on every draw; the CPU path draws goldens
-        // and the GPU-less fallback only. Cache the pixmap beside the blob if that changes.
-        let brush = vello_cpu::Image {
-            image: vello_cpu::ImageSource::from_peniko_image_data(image),
-            sampler: ImageSampler::default(),
-        };
-        self.ctx.set_transform(self.base);
-        self.ctx.set_paint_transform(image_to(image, r));
-        self.ctx.set_paint(brush);
-        self.ctx.fill_rect(&r);
-        self.ctx.reset_paint_transform();
+        match &mut self.rec {
+            Some(rec) => rec.push(Call::Image(image.clone(), r)),
+            None => self.draw_image(image, r),
+        }
     }
 }

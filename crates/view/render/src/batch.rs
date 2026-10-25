@@ -15,7 +15,8 @@
 //! 3. Device px as `f32` (a frame is under 2^24 px across); colours RGBA8; a kind and a draw
 //!    index are small integers.
 //! 4. Appended in call order (the order is the picture), read once by the upload.
-//! 5. Instances, draws and images live one frame; the atlas and the rasterizer persist.
+//! 5. Instances, draws and images live one frame; the atlas, the rasterizer and the UI's rows
+//!    ([`Batch::ui`]: the layout rows' instances, kept while their paint inputs hold) persist.
 //! 6. Serial (call order is drawing order).
 
 use std::collections::HashMap;
@@ -34,6 +35,8 @@ use crate::atlas::{Atlas, Key, PATH, Placed};
 use crate::canvas::{self, CanvasScratch};
 use crate::gpu::{Change, Frame, InstanceRows, MARKS, OVERLAY};
 use crate::painter::{Chains, Painter};
+use crate::ui_rows::{self, UiRows};
+use crate::widgets::UiRow;
 
 /// Bytes per instance: box (4 × f32), aux (4 × f32), clip (4 × f32), colour, kind.
 pub const STRIDE: usize = 56;
@@ -81,6 +84,8 @@ pub enum What {
     Image(u32),
     /// A canvas stage, from the canvas pipelines and the instance rows.
     Canvas(Stage),
+    /// Slots of UI source `k`'s retained rows ([`UiRows`]), sampling the atlas.
+    Retained(usize),
 }
 
 /// A stage of the canvas pass, in drawing order.
@@ -170,6 +175,15 @@ pub struct Batch {
     exact_left: u32,
     /// A stand-in was drawn this frame: the next frame rasterizes more exact masks.
     unsettled: bool,
+    /// The UI's rows, kept across frames: the layout rows the GPU painter drew, each repainted
+    /// only when its paint inputs change.
+    pub ui: UiRows,
+    /// While a UI row is painted for [`UiRows`]: its pane slot, and the instances it pushed
+    /// (not this frame's) and whether one was an image (a frame's texture: drawn from the
+    /// frame's instances instead).
+    capture: Option<u32>,
+    captured: Vec<u8>,
+    captured_image: bool,
 }
 
 impl std::fmt::Debug for Batch {
@@ -193,6 +207,8 @@ impl Batch {
         self.atlas.begin_frame();
         self.exact_left = EXACT_PER_FRAME;
         self.unsettled = false;
+        self.ui.begin_frame();
+        assert!(self.capture.is_none(), "no row is being painted");
         // ponytail: the stand-in index starts over past the atlas's capacity in glyphs.
         if self.latest.len() > 1 << 16 {
             self.latest.clear();
@@ -238,6 +254,22 @@ impl Batch {
 
     /// Appends one instance drawn by `what`, under the current clip.
     fn push(&mut self, kind: u32, pos: [f32; 4], aux: [f32; 4], color: u32, what: What) {
+        debug_assert!(kind <= 0xff, "a kind is the word's low byte");
+        if let Some(pane) = self.capture {
+            if matches!(what, What::Image(_)) {
+                self.captured_image = true;
+                return;
+            }
+            let clip = self.clip();
+            for v in pos.iter().chain(&aux).chain(&clip) {
+                self.captured.extend_from_slice(&v.to_ne_bytes());
+            }
+            self.captured.extend_from_slice(&color.to_ne_bytes());
+            self.captured
+                .extend_from_slice(&(kind | pane << 8).to_ne_bytes());
+            debug_assert_eq!(self.captured.len() % STRIDE, 0);
+            return;
+        }
         let i = self.len() as u32;
         if self.len() >= INSTANCES_MAX {
             self.dropped += 1;
@@ -257,6 +289,20 @@ impl Batch {
             }),
         }
         debug_assert_eq!(self.bytes.len(), self.len() * STRIDE);
+    }
+
+    /// Draws slots `range` of UI source `src`'s retained rows here (extending the last draw when
+    /// it ends where `range` starts).
+    fn retained(&mut self, src: usize, range: Range<u32>) {
+        match self.draws.last_mut() {
+            Some(d) if d.what == What::Retained(src) && d.range.end == range.start => {
+                d.range.end = range.end;
+            }
+            _ => self.draws.push(Draw {
+                range,
+                what: What::Retained(src),
+            }),
+        }
     }
 
     /// Marks where canvas stage `stage` is drawn among the instances.
@@ -901,6 +947,76 @@ impl Painter for GpuPainter<'_> {
         let pos = [d.x0, d.y0, d.x1, d.y1].map(|v| v as f32);
         self.batch
             .push(IMAGE, pos, [0.0, 0.0, 1.0, 1.0], u32::MAX, What::Image(k));
+    }
+
+    /// Keeps the row's slots when its key is unchanged; else paints it into them (or, from
+    /// here on, lays its source out again). A row in a scroll pane is kept in the pane's
+    /// content coordinates (whole device px; the fraction is in its key), unclipped, and drawn
+    /// through its pane's offset and clip in the uniform, so it is kept while it scrolls, in or
+    /// out of view. A row that drew a stand-in or a mask the atlas could not place is painted
+    /// again next frame; one that draws an image is drawn from the frame's instances (its
+    /// texture is the frame's).
+    fn ui_row(&mut self, src: usize, row: &UiRow, mut paint: impl FnMut(&mut Self)) {
+        assert!(src < ui_rows::SOURCES, "a UI source");
+        let dev = self.device_scale();
+        self.batch.ui.rescale(dev);
+        let pane = if row.pane.is_none() {
+            None
+        } else {
+            self.batch.ui.pane(row.pane)
+        };
+        if !row.visible && pane.is_none() {
+            return; // scrolled out of view, kept in screen coordinates: nothing to draw
+        }
+        let mut key = row.key;
+        let mut shift = 0.0;
+        if let Some(k) = pane {
+            let off = f64::from(key.scroll) * dev;
+            shift = off.round();
+            let c = self.base.transform_rect_bbox(row.clip);
+            let entry = [0.0, shift, 0.0, 0.0, c.x0, c.y0, c.x1, c.y1].map(|v| v as f32);
+            self.batch.ui.panes[k] = entry;
+            key.rect[1] += key.scroll;
+            key.scroll = (off - shift) as f32;
+            key.clip = [0.0; 4];
+            key.pane = k as u8;
+        }
+        let Batch { ui, atlas, .. } = &mut *self.batch;
+        if let Some(range) = ui.keep(src, &key, atlas) {
+            self.batch.retained(src, range);
+            return;
+        }
+        let base = self.base;
+        let clips = pane.map(|_| std::mem::take(&mut self.batch.clips));
+        self.base = Affine::translate((0.0, shift)) * base;
+        self.batch.capture = Some(pane.unwrap_or(0) as u32);
+        let unsettled = std::mem::take(&mut self.batch.unsettled);
+        let overflows = self.batch.atlas.overflows;
+        paint(self);
+        self.batch.capture = None;
+        self.base = base;
+        if let Some(c) = clips {
+            self.batch.clips = c;
+        }
+        key.stale = self.batch.unsettled || self.batch.atlas.overflows != overflows;
+        self.batch.unsettled |= unsettled;
+        let mut bytes = std::mem::take(&mut self.batch.captured);
+        if std::mem::take(&mut self.batch.captured_image) {
+            paint(self); // from the frame's instances, in screen coordinates
+        } else {
+            let Batch { ui, atlas, .. } = &mut *self.batch;
+            match ui.put(src, key, &bytes, atlas) {
+                Some(range) => self.batch.retained(src, range),
+                None => self.batch.dropped += (bytes.len() / STRIDE) as u64,
+            }
+        }
+        bytes.clear();
+        self.batch.captured = bytes;
+    }
+
+    fn ui_end(&mut self, src: usize) {
+        let Batch { ui, atlas, .. } = &mut *self.batch;
+        ui.end(src, atlas);
     }
 
     fn canvas(
