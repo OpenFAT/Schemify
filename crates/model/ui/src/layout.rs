@@ -110,6 +110,7 @@ pub struct UiLayout {
     pub(crate) indent: Vec<f32>,
     pub(crate) clip: Vec<Rect>,
     pub(crate) scroller: Vec<NodeIx>,
+    pub(crate) scrolled: Vec<f32>,
     pub(crate) scroll_max: Vec<(NodeIx, f32)>,
     pub(crate) overlay_start: u32,
     /// First row a modal dialog leaves hittable: the dialog's own (floats sit below it).
@@ -178,6 +179,13 @@ impl UiLayout {
     /// rectangles, [`NO_CLIP`] outside any. Painters clip to it; hit testing ignores the rest.
     pub fn clip(&self) -> &[Rect] {
         &self.clip
+    }
+
+    /// How far each row is scrolled up: the sum of its `scroll` ancestors' offsets (logical px,
+    /// 0 outside any). The row's place in its panes' content is its rect moved down by it, so a
+    /// painter can keep a scrolled row and move it by its pane's offset alone.
+    pub fn scrolled(&self) -> &[f32] {
+        &self.scrolled
     }
 
     /// Largest scroll offset of a laid-out `scroll` node (content height minus view height).
@@ -757,7 +765,7 @@ impl Builder<'_> {
             let l = &rel[r - start];
             let p = self.rows[r].parent;
             let inside = p != NO_ROW && (p as usize) >= start;
-            let (ox, oy, clip, scroller) = if inside {
+            let (ox, oy, clip, scroller, scrolled) = if inside {
                 let p = p as usize;
                 let pr = out.rect[p];
                 if is_scroll(self, p) {
@@ -772,12 +780,13 @@ impl Builder<'_> {
                     if !out.scroll_max.iter().any(|(n, _)| *n == node) {
                         out.scroll_max.push((node, max));
                     }
-                    (pr.x, pr.y - off, out.clip[p].intersect(&pr), node)
+                    let clip = out.clip[p].intersect(&pr);
+                    (pr.x, pr.y - off, clip, node, out.scrolled[p] + off)
                 } else {
-                    (pr.x, pr.y, out.clip[p], out.scroller[p])
+                    (pr.x, pr.y, out.clip[p], out.scroller[p], out.scrolled[p])
                 }
             } else {
-                (at.0, at.1, NO_CLIP, NO_NODE)
+                (at.0, at.1, NO_CLIP, NO_NODE, 0.0)
             };
             out.rect.push(Rect {
                 x: ox + l.location.x,
@@ -787,6 +796,8 @@ impl Builder<'_> {
             });
             out.clip.push(clip);
             out.scroller.push(scroller);
+            out.scrolled.push(scrolled);
+            debug_assert!(scrolled >= 0.0, "offsets are clamped at 0");
         }
         // Prose rows: the layout at the final content width (cached from measuring).
         for r in start..self.rows.len() {
@@ -824,6 +835,7 @@ struct Frame {
     rect: Vec<Rect>,
     clip: Vec<Rect>,
     scroller: Vec<NodeIx>,
+    scrolled: Vec<f32>,
     scroll_max: Vec<(NodeIx, f32)>,
 }
 
@@ -942,6 +954,7 @@ pub fn layout(
         indent: b.rows.iter().map(|r| r.indent).collect(),
         clip: f.clip,
         scroller: f.scroller,
+        scrolled: f.scrolled,
         scroll_max: f.scroll_max,
         overlay_start,
         modal_start,
@@ -949,6 +962,7 @@ pub fn layout(
     };
     debug_assert_eq!(out.rect.len(), out.node.len());
     debug_assert_eq!(out.clip.len(), out.node.len());
+    debug_assert_eq!(out.scrolled.len(), out.node.len());
     out
 }
 

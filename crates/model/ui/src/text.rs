@@ -88,6 +88,8 @@ pub struct TextSystem {
     /// Code-block metrics per prose font in [`crate::prose::CODE_PX`] (measured once, kept
     /// through evictions).
     pub(crate) code_metrics: Vec<Option<crate::prose::CodeMetrics>>,
+    /// Cache drops so far ([`TextSystem::epoch`]).
+    epoch: u32,
 }
 
 impl Default for TextSystem {
@@ -148,6 +150,7 @@ impl TextSystem {
             icons: Vec::new(),
             icon_cache: HashMap::new(),
             code_metrics: Vec::new(),
+            epoch: 0,
         };
         let code = crate::prose::CODE_PX
             .map(|px| crate::prose::measure_code(&mut ts, px))
@@ -172,7 +175,15 @@ impl TextSystem {
             self.prose_cache.clear();
             self.icons.clear();
             self.icon_cache.clear();
+            self.epoch = self.epoch.wrapping_add(1);
         }
+    }
+
+    /// How many times the cache was dropped: a text, math, prose or icon id names the same
+    /// layout for as long as this stays the same (a painter that keeps what an id drew
+    /// compares it).
+    pub fn epoch(&self) -> u32 {
+        self.epoch
     }
 
     /// Shapes `text` at `px` pixels (single line, no wrapping), cached by (string, size).
