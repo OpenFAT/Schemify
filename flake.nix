@@ -9,12 +9,6 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # The simulator the packages ship (user decision 2026-10-25: ESPice, not ngspice), pinned
-    # to the tag publish.yaml builds into the release archives.
-    espice = {
-      url = "github:OmarSiwy/ESPice/v0.3.0";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   outputs =
@@ -22,7 +16,6 @@
       self,
       nixpkgs,
       rust-overlay,
-      espice,
     }:
     let
       lib = nixpkgs.lib;
@@ -90,9 +83,6 @@
           ]
         );
 
-      # The simulator the packages put on PATH (after the user's own): ESPice, the default.
-      shipped = pkgs: [ espice.packages.${pkgs.stdenv.hostPlatform.system}.espice ];
-
       # Simulators of the development shell, which the tests run: ngspice, Xyce, Icarus.
       simulators =
         pkgs: with pkgs; [
@@ -125,7 +115,11 @@
           inherit version;
           # Tracked files only (git).
           src = self;
-          cargoLock.lockFile = ./Cargo.lock;
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            # Git dependencies need their hash (the netlist writer, D22).
+            outputHashes."spicerack-0.1.0" = "sha256-LB4MzDJzkEXUWjxRRiZg2awyvo4+a+0BSi1yOvFssDM=";
+          };
           # D39: the headless core `schemify` (CLI, config, package manager) and the editor
           # `schemify-gui` (`schemify edit` runs it); the default UI is a prebuilt wasm asset.
           cargoBuildFlags = [
@@ -154,14 +148,13 @@
           # `cargo test --workspace` in the dev shell (CI does).
           doCheck = false;
           nativeBuildInputs = [ pkgs.makeWrapper ];
-          # Only the editor gets the GUI libraries. Both find ESPice; the core also runs git and
-          # curl for `schemify pack` (config spec §5). The user's PATH comes first.
+          # Only the editor gets the GUI libraries; the core also gets git and curl for
+          # `schemify pack` (config spec §5). The simulator is external (ESPice by default):
+          # the user's own PATH finds it.
           postInstall = ''
             wrapProgram $out/bin/schemify \
-              --suffix PATH : ${pkgs.lib.makeBinPath ((shipped pkgs) ++ [ pkgs.git pkgs.curl ])}
-            wrapProgram $out/bin/schemify-gui \
-              ${pkgs.lib.optionalString pkgs.stdenv.isLinux "--prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (runtimeLibs pkgs)}"} \
-              --suffix PATH : ${pkgs.lib.makeBinPath (shipped pkgs)}
+              --suffix PATH : ${pkgs.lib.makeBinPath [ pkgs.git pkgs.curl ]}
+            ${pkgs.lib.optionalString pkgs.stdenv.isLinux "wrapProgram $out/bin/schemify-gui --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (runtimeLibs pkgs)}"}
           '';
           meta = {
             description = "Schematic capture with simulation, docs pages and WASM plugins";
@@ -178,7 +171,11 @@
           pname = "schemify-web";
           inherit version;
           src = self;
-          cargoLock.lockFile = ./Cargo.lock;
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            # Git dependencies need their hash (the netlist writer, D22).
+            outputHashes."spicerack-0.1.0" = "sha256-LB4MzDJzkEXUWjxRRiZg2awyvo4+a+0BSi1yOvFssDM=";
+          };
           nativeBuildInputs = [ (wasmBindgenCli pkgs) ];
           auditable = false;
           doCheck = false;
@@ -197,8 +194,7 @@
           '';
         };
 
-      # A published release's archive (sources.json): the binaries publish.yaml built, `espice`
-      # included. On Linux they are glibc ≥ 2.28 programs, so autoPatchelf points them at
+      # A published release's archive (sources.json): the binaries publish.yaml built. On Linux they are glibc ≥ 2.28 programs, so autoPatchelf points them at
       # nixpkgs' loader and libraries; the editor gets the libraries it dlopens, as above.
       fromRelease =
         pkgs: v: source:
@@ -220,7 +216,6 @@
             runHook preInstall
             cd schemify-v${v}-*
             install -Dm755 schemify schemify-gui -t $out/bin
-            if [ -e espice ]; then install -Dm755 espice -t $out/libexec/schemify; fi
             install -Dm644 LICENSE -t $out/share/licenses/schemify
             runHook postInstall
           '';
@@ -228,7 +223,7 @@
             for p in schemify schemify-gui; do
               wrapProgram $out/bin/$p \
                 ${lib.optionalString pkgs.stdenv.isLinux "--prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath (runtimeLibs pkgs)}"} \
-                --suffix PATH : $out/libexec/schemify:${lib.makeBinPath [ pkgs.git pkgs.curl ]}
+                --suffix PATH : ${lib.makeBinPath [ pkgs.git pkgs.curl ]}
             done
           '';
           meta = {
