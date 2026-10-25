@@ -1007,16 +1007,24 @@ impl Document {
         w.x1[r] == w.x2[r] && w.y1[r] == w.y2[r]
     }
 
-    /// Rebuilds the arena and pool from the live rows when garbage outweighs live data
-    /// (pool entries of replaced rows, strings edits interned), so a long session of
-    /// edits stays bounded. Row order and ids are kept; `Sym` and `Span` values change
-    /// (they are never held across edits).
-    pub(crate) fn compact_if_needed(&mut self) {
+    /// Returns whether garbage (pool entries of replaced rows, strings edits interned) is at
+    /// least `k` times the live data, and at least `k`·2^16 entries: [`Document::compact`]
+    /// is due. `Project` compacts at `k = 1` in an idle step and at `k = 3` inside a commit,
+    /// for a caller that never idles (the CLI, a script). Cost: O(1).
+    pub(crate) fn compact_due(&self, k: usize) -> bool {
+        assert!(k >= 1);
         let dead = self.pool.dead as usize;
-        let pool = dead >= 1 << 16 && dead * 2 >= self.pool.size();
-        if !pool && !self.strings.outgrown() {
-            return;
-        }
+        let size = self.pool.size();
+        assert!(dead <= size, "garbage is part of the pool");
+        let pool = dead >= k << 16 && dead * (k + 1) >= size * k;
+        pool || self.strings.outgrown(k as u32)
+    }
+
+    /// Rebuilds the arena and pool from the live rows, so a long session of edits stays
+    /// bounded. Row order and ids are kept; `Sym` and `Span` values change and the change
+    /// log breaks (a reader rebuilds, as after a reload). Cost: O(document), ~100 ms at
+    /// 100k objects, so `Project` runs it in an idle step.
+    pub(crate) fn compact(&mut self) {
         let model = self.to_format();
         let rebuilt = Document::from_format(&model).doc;
         assert_eq!(
@@ -1028,7 +1036,7 @@ impl Document {
         log.break_here();
         *self = rebuilt;
         self.log = log;
-        assert!(self.pool.dead == 0 && !self.strings.outgrown());
+        assert!(self.pool.dead == 0 && !self.compact_due(1));
     }
 }
 
@@ -1062,7 +1070,9 @@ mod tests {
         assert_eq!(doc.pool.dead - dead, 256, "the replaced row's coordinates");
         for k in 2..1000 {
             doc.put(loc, &poly(k)).unwrap();
-            doc.compact_if_needed();
+            if doc.compact_due(1) {
+                doc.compact();
+            }
         }
         assert!(
             doc.pool.coords.len() <= 2 * (1 << 16) + 512,
@@ -1083,7 +1093,9 @@ mod tests {
         let loc = doc.insert(&prose(0), None).unwrap();
         for k in 1..200 {
             doc.put(loc, &prose(k)).unwrap();
-            doc.compact_if_needed();
+            if doc.compact_due(1) {
+                doc.compact();
+            }
         }
         assert!(
             doc.strings().len() <= 32,

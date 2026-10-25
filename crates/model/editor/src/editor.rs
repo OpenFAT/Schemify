@@ -79,9 +79,9 @@ const HIT_PX: f64 = 5.0;
 const DOUBLE_CLICK_MS: u64 = 400;
 /// Zoom factor per wheel notch and per zoom key (xschem: 1.2).
 const ZOOM_STEP: f64 = 1.2;
-/// Bytes of the active document's disk state a tick hashes (`Project::hash_step`): about
-/// 0.3 ms at 400 MB/s, so the 4 MB of a 100k-object cell take a few dozen ticks after it opens.
-const HASH_STEP_BYTES: usize = 128 << 10;
+/// Bytes an idle tick hashes or encodes for the documents' journals (`Project::idle_step`):
+/// ~1 ms of sha256, so the 6 MB of a 100k-object cell take a few dozen ticks after it opens.
+const IDLE_STEP_BYTES: usize = 128 << 10;
 /// Chooser rows listed (the list scrolls; typing filters). Every row is a composed node, so
 /// the cap bounds the per-frame compose cost while a chooser is open.
 // ponytail: a fixed cap; a virtualized list (rows composed for the visible window only) when
@@ -1210,11 +1210,10 @@ impl Editor {
         let queued = self.host.has_work().then_some(1);
         // The plugin snapshot behind a new check pass is refilled on the next tick.
         let snapshot = self.snapshot_due.then_some(0);
-        // The active document's disk hash (its journal's first record) is taken in steps.
-        let hash = self
-            .active()
-            .is_some_and(|(h, _)| self.session.project.hash_pending(h))
-            .then_some(0);
+        // Work commits leave to idle ticks: disk hashes (a journal's first record), a
+        // compaction, a first journal's history.
+        let active = self.active().map(|(h, _)| h);
+        let hash = self.session.project.idle_pending(active).then_some(0);
         // The browser owes an answer (web: a clipboard read).
         let platform = platform::wake_ms();
         [
@@ -1360,13 +1359,21 @@ impl Editor {
         }
         self.snapshot_due = !self.host.plugins.ids().is_empty()
             && (pass_moved || snapshot_due && !self.snapshot_fresh);
-        // A tick hashes a step of the active document's disk state, so its first commit
-        // appends its journal records without hashing the file in its frame.
+        // A tick without input does a step of the work commits leave to idle frames (the
+        // active document's disk hash first, so its first commit hashes nothing; compactions;
+        // a first journal's history), so no commit frame does O(document) work.
+        let active = self.active().map(|(h, _)| h);
         if events.events.is_empty()
             && events.text.is_empty()
-            && let Some((h, _)) = self.active()
+            && self.session.project.idle_pending(active)
         {
-            self.session.project.hash_step(h, HASH_STEP_BYTES);
+            if let Some(h) = self.session.project.idle_step(active, IDLE_STEP_BYTES) {
+                self.session.bump(h); // compacted: the scene and the cell rebuild from it
+                changed = true;
+            }
+            for h in self.session.project.handles().collect::<Vec<_>>() {
+                self.session.flush_journal(h); // a journal sent again once its hash landed
+            }
         }
         self.routed = routed;
         changed
@@ -1847,6 +1854,12 @@ impl Editor {
                     self.session
                         .say("unsaved changes: Ctrl+Q again to quit without saving");
                 } else {
+                    // A journal whose disk hash idle ticks had not taken names it now, so a
+                    // restart offers its edits against the file.
+                    for d in self.session.project.handles().collect::<Vec<_>>() {
+                        self.session.project.settle_journal(d);
+                        self.session.flush_journal(d);
+                    }
                     self.quit = true;
                 }
             }

@@ -8,7 +8,7 @@
 //!    the 6-char ids the writer generates, bit 31 for any other id length.
 //! 4. Interning is a hash probe on load and edit; reads are `ends[sym]` slices.
 //! 5. Lifetime: the document. Strings are never freed; what edits intern is counted
-//!    (garbage once its row is replaced) and `Document::compact_if_needed` rebuilds.
+//!    (garbage once its row is replaced) and `Document::compact` rebuilds.
 //! 6. Not parallel: one writer (`doc`), many readers through `&Strings`.
 
 use schemify_format::{ID_ALPHABET, ID_LEN_NEW, is_id};
@@ -117,16 +117,20 @@ impl Strings {
     /// Marks what is interned now as loaded (not edit output).
     pub(crate) fn settle(&mut self) {
         self.settled = (self.len(), self.bytes.len() as u32);
-        assert!(!self.outgrown());
+        assert!(!self.outgrown(1));
     }
 
-    /// Returns whether edits interned as many strings or bytes as were loaded (and at
-    /// least 2^16 strings or 1 MiB): each may be garbage of a replaced row, and nothing
-    /// tells which, so the document is rebuilt then (amortized O(1) per interned byte).
-    pub(crate) fn outgrown(&self) -> bool {
+    /// Returns whether edits interned `k` times as many strings or bytes as were loaded
+    /// (and at least `k`·2^16 strings or `k` MiB): each may be garbage of a replaced row, and
+    /// nothing tells which, so the document is rebuilt then (amortized O(1) per interned
+    /// byte).
+    pub(crate) fn outgrown(&self, k: u32) -> bool {
+        assert!(k >= 1);
         let (n, b) = self.settled;
         let (dn, db) = (self.len() - n, self.bytes.len() as u32 - b);
-        (dn >= 1 << 16 && dn >= n) || (db >= 1 << 20 && db >= b)
+        let k = u64::from(k);
+        let (dn, db) = (u64::from(dn), u64::from(db));
+        (dn >= k << 16 && dn >= u64::from(n) * k) || (db >= k << 20 && db >= u64::from(b) * k)
     }
 
     fn grow(&mut self) {

@@ -435,3 +435,35 @@ fn the_startup_file_reuses_the_index_digest() {
     let h = s.open_path(&file).unwrap();
     assert!(s.project.hash_pending(h));
 }
+
+/// A cell opened after startup is hashed in idle ticks (`Project::idle_step`): an edit
+/// before they finish commits without hashing the file in its frame (HANDOFF latent bug 5),
+/// and a quit then writes the journal naming the file's sha256, so a restart offers the
+/// edit against the file. Oracle: the sha256 of the file's bytes.
+#[test]
+fn a_quit_names_the_disk_hash_an_early_edit_left_to_idle_ticks() {
+    let mut s = Session::open("inv", "top.shcomp", "quit-hash", true);
+    s.click((10 * U, 0)); // x1
+    s.key("e");
+    let (child, _) = s.ed.active().unwrap();
+    s.click((-50 * U, -145 * U)); // the "CMOS inverter" text
+    s.key("Del");
+    assert!(s.ed.session().project.is_dirty(child));
+    assert!(
+        s.ed.session().project.hash_pending(child),
+        "the edit's frame did not hash the file"
+    );
+    s.key("Ctrl+Q");
+    s.key("Ctrl+Q"); // again: quit without saving
+    assert!(s.ed.wants_quit());
+    let file = std::fs::read(s.dir.join("inv.shcomp")).unwrap();
+    let sha = schemify_doc::hex(&schemify_doc::sha256(&file));
+    let journal = s.dir.join(".schemify/journal/inv.shcomp.journal");
+    let journal = std::fs::read_to_string(journal).unwrap();
+    assert!(journal.contains(&format!("base {sha}\n")), "{journal}");
+    let mut p = schemify_doc::Project::new(None, None, 7).unwrap();
+    let opened = p
+        .open("", "inv.shcomp", &file, Some(journal.as_bytes()))
+        .unwrap();
+    assert_eq!(opened.recovery, schemify_doc::Recovery::Offer { txs: 1 });
+}

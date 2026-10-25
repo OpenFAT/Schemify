@@ -62,7 +62,7 @@ fn session(seed: u64, steps: usize, saves: bool) -> Vec<Snap> {
     for step in 0..steps {
         // The editor's idle frames hash the disk state ahead of the commits (in part).
         if rng.below(3) == 0 {
-            p.hash_step(h, 1 + rng.below(64) as usize);
+            p.idle_step(Some(h), 1 + rng.below(64) as usize);
         }
         match rng.below(10) {
             0..=5 => {
@@ -117,18 +117,27 @@ fn replay_after_a_crash_at_every_request_equals_the_pre_crash_state() {
         let (p, h) = open(SEED_DOC, "cell.shcomp");
         canon(&p, h)
     };
-    let (mut offers, mut saved_files, mut redo_states) = (0, 0, 0);
+    let (mut offers, mut saved_files, mut redo_states, mut unhashed_crashes) = (0, 0, 0, 0);
     for seed in 0..24 {
         let snaps = session(seed, 70, true);
         for (k, s) in snaps.iter().enumerate() {
             let ctx = format!("seed {seed} crash after request {k}");
             let (mut p, h, recovery) = reopen(&s.disk);
-            assert!(!matches!(recovery, Recovery::Diverged { .. }), "{ctx}");
+            // A crash before the idle steps took the disk hash leaves a `base` that
+            // matches no file: the tail is replayed onto the (same) file instead.
+            let unhashed = String::from_utf8_lossy(&s.disk.journal).contains("base xxxx");
+            let diverged = matches!(recovery, Recovery::Diverged { .. });
+            assert_eq!(diverged, unhashed, "{ctx}");
+            unhashed_crashes += u32::from(unhashed);
             offers += u32::from(matches!(recovery, Recovery::Offer { .. }));
             saved_files += u32::from(s.disk.file != SEED_DOC.as_bytes());
             redo_states += u32::from(s.history.1 > 0);
             assert_eq!(canon(&p, h), s.state, "{ctx}");
-            assert_eq!(p.history_len(h), s.history, "{ctx}");
+            // That replay rewrites the journal, which keeps no redo history.
+            match unhashed {
+                false => assert_eq!(p.history_len(h), s.history, "{ctx}"),
+                true => assert_eq!(p.history_len(h), (s.history.0, 0), "{ctx}"),
+            }
             let labels: Vec<String> = p.undo_labels(h).iter().map(|l| l.to_string()).collect();
             assert_eq!(labels, s.labels, "{ctx}");
             assert_eq!(p.is_dirty(h), s.dirty, "{ctx}");
@@ -138,8 +147,8 @@ fn replay_after_a_crash_at_every_request_equals_the_pre_crash_state() {
     }
     // The sessions must exercise recovery, saves and redo history, or this proves nothing.
     assert!(
-        offers > 200 && saved_files > 200 && redo_states > 100,
-        "{offers} {saved_files} {redo_states}"
+        offers > 200 && saved_files > 200 && redo_states > 100 && unhashed_crashes > 10,
+        "{offers} {saved_files} {redo_states} {unhashed_crashes}"
     );
 }
 
@@ -455,11 +464,15 @@ fn a_long_journal_is_compacted_on_save() {
     );
 }
 
+/// Edit garbage is compacted in idle steps (`Project::idle_step`), never inside a commit
+/// while the steps keep up (a compaction is O(document): ~100 ms at 100k objects, HANDOFF
+/// latent bug 5); a caller that never idles still compacts in its commits once garbage
+/// is three times the live data. Neither changes the document or its undo history.
 #[test]
 fn edit_garbage_is_compacted_without_changing_the_document() {
     let (mut p, h) = open(OTA, "ota5t.shcomp");
-    let mut compactions = 0;
-    const COMMITS: usize = 12_000;
+    let (mut in_commits, mut in_steps) = (0, 0);
+    const COMMITS: usize = 40_000;
     for i in 0..COMMITS {
         let op = Op::SetAttr {
             target: Target::new(RecordKind::Inst, "0gsrp0"),
@@ -474,16 +487,25 @@ fn edit_garbage_is_compacted_without_changing_the_document() {
         // A compaction renumbers the tables: the change log no longer reads through it.
         let d = p.doc(h).unwrap();
         let compacted = d.pool().dead < dead;
-        compactions += u32::from(compacted);
         assert_eq!(d.changes_since(cursor).is_none(), compacted, "commit {i}");
+        in_commits += u32::from(compacted);
+        // The first quarter idles after every commit; the rest never does.
+        if i < COMMITS / 4 {
+            assert!(!compacted, "commit {i} compacted in its frame");
+            let cursor = p.doc(h).unwrap().cursor();
+            let rebuilt = p.idle_step(Some(h), 1 << 17);
+            let broke = p.doc(h).unwrap().changes_since(cursor).is_none();
+            assert_eq!(rebuilt == Some(h), broke, "step after commit {i}");
+            in_steps += u32::from(broke);
+        }
+        let d = p.doc(h).unwrap();
+        assert!(
+            d.pool().dead < 4 << 16,
+            "garbage stays bounded: {}",
+            d.pool().dead
+        );
     }
-    assert!(compactions > 0, "the walk compacted");
-    let d = p.doc(h).unwrap();
-    assert!(
-        d.pool().dead < 1 << 17,
-        "garbage stays bounded: {}",
-        d.pool().dead
-    );
+    assert!(in_steps > 0 && in_commits > 0, "{in_steps} {in_commits}");
     let expected = OTA.replacen(
         "  name M1\n  W Wp\n",
         &format!("  name M1\n  W {}\n", (COMMITS - 1) % 7),
@@ -556,42 +578,199 @@ fn extend_joins_the_last_commit_and_its_journal_record() {
     assert!(!canon(&p, h).contains("var d"));
 }
 
-/// The disk hash the first commit's `base` record names can be spread over idle frames
-/// (`Project::hash_step`): the journal is then byte-identical to one whose commit hashed the
-/// file itself, names the file's sha256, and the steps stop once the hash is known (and for a
-/// document with nothing to hash).
+/// Hashes, compacts and encodes until `Project::idle_step` has nothing left (the editor's
+/// idle frames); returns the number of steps.
+fn settle(p: &mut Project, h: DocHandle, budget: usize) -> usize {
+    let mut steps = 0;
+    while p.idle_pending(Some(h)) {
+        p.idle_step(Some(h), budget);
+        steps += 1;
+        assert!(steps < 1 << 20, "idle steps end");
+    }
+    steps
+}
+
+/// The disk hash a journal's `base` names is taken in idle steps (`Project::idle_step`),
+/// never in a commit's frame (D39; HANDOFF latent bug 5): a commit before the steps end
+/// leaves the hash pending and writes a placeholder `base`, and once the steps end the
+/// journal is sent again whole, byte-identical to the journal of a document hashed before
+/// its commit. A crash in between recovers the edits as a diverged tail. Oracle: the
+/// journal of the hashed-first document, and the file's sha256.
 #[test]
-fn a_disk_hash_spread_over_steps_journals_the_same() {
-    let op = || Op::Insert {
-        rec: RecordBuf::new(RecordKind::Var).field("q").field("1"),
+fn the_disk_hash_is_taken_in_idle_steps_not_in_the_commit() {
+    let op = |v: &str| Op::Insert {
+        rec: RecordBuf::new(RecordKind::Var).field(v).field("1"),
         at: None,
     };
-    let (mut a, ha) = open(SEED_DOC, "cell.shcomp");
-    let (mut b, hb) = open(SEED_DOC, "cell.shcomp");
-    let mut steps = 0;
-    while b.hash_step(hb, 7) {
-        steps += 1;
-        assert!(steps < 1 << 20, "steps end");
-    }
-    assert!(steps > 3, "{steps} steps");
-    assert!(!b.hash_step(hb, 7), "hashed: nothing left");
     let committed = |o: Outcome| matches!(o, Outcome::Committed { .. });
-    assert!(committed(run(&mut a, ha, tx(vec![op()]))));
-    assert!(committed(run(&mut b, hb, tx(vec![op()]))));
-    let (ja, jb) = (a.take_journal(ha).unwrap(), b.take_journal(hb).unwrap());
-    assert_eq!(ja.text, jb.text, "the same journal");
+    let (mut b, hb) = open(SEED_DOC, "cell.shcomp");
+    assert!(settle(&mut b, hb, 7) > 3, "the hash takes steps");
+    assert!(!b.hash_pending(hb) && !b.idle_pending(Some(hb)));
+    assert!(committed(run(&mut b, hb, tx(vec![op("q")]))));
+    assert!(committed(run(&mut b, hb, tx(vec![op("r")]))));
+    let want = b.take_journal(hb).unwrap();
     let sha = schemify_doc::hex(&schemify_doc::sha256(SEED_DOC.as_bytes()));
-    assert!(ja.text.contains(&format!("base {sha}")), "{}", ja.text);
-    // A half-hashed document finishes the hash in its first commit, to the same text.
+    assert!(want.rewrite && want.text.contains(&format!("base {sha}")));
+    // Committed half-hashed, the journal taken (written) between the commits.
     let (mut c, hc) = open(SEED_DOC, "cell.shcomp");
-    assert!(c.hash_step(hc, 7), "partly hashed");
-    assert!(committed(run(&mut c, hc, tx(vec![op()]))));
-    assert_eq!(c.take_journal(hc).unwrap().text, ja.text);
+    c.idle_step(Some(hc), 7);
+    assert!(committed(run(&mut c, hc, tx(vec![op("q")]))));
+    assert!(c.hash_pending(hc), "the commit did not hash the file");
+    let mut disk = Disk {
+        file: SEED_DOC.as_bytes().to_vec(),
+        journal: Vec::new(),
+    };
+    disk.sync(&mut c, hc);
+    assert!(!String::from_utf8_lossy(&disk.journal).contains(&sha));
+    assert!(committed(run(&mut c, hc, tx(vec![op("r")]))));
+    disk.sync(&mut c, hc);
+    let (rp, rh, recovery) = reopen(&disk);
+    assert_eq!(
+        recovery,
+        Recovery::Diverged { txs: 2 },
+        "a crash before the hash"
+    );
+    assert_eq!(canon(&rp, rh), canon(&c, hc));
+    assert_eq!(rp.history_len(rh), c.history_len(hc));
+    settle(&mut c, hc, 7);
+    let got = c
+        .take_journal(hc)
+        .expect("the journal again, with its hash");
+    assert!(got.rewrite);
+    assert_eq!(got.text, want.text, "the same journal");
+    disk.journal = got.text.into_bytes();
+    assert_eq!(reopen(&disk).2, Recovery::Offer { txs: 2 });
+    // Negative space: nothing to hash for a document without disk bytes.
     let mut p = Project::new(None, None, 7).unwrap();
     let new = p
         .create("", "fresh.shcomp", schemify_format::FileKind::Shcomp)
         .unwrap();
-    assert!(!p.hash_step(new, 7), "a new document has no disk bytes");
+    assert!(!p.hash_pending(new) && !p.idle_pending(Some(new)));
+}
+
+/// A save, or a quit, while the idle work is pending writes the right bytes: the file is
+/// the canonical form whatever the steps did (compaction keeps rows and ids), and the
+/// journal names the hash of the bytes it started from (`saved` and
+/// `Project::settle_journal` take the rest of the hash in their frame). Oracle: the same
+/// session settled before the save.
+#[test]
+fn a_save_or_quit_with_idle_work_pending_writes_the_right_bytes() {
+    let op = |i: usize| Op::SetAttr {
+        target: Target::new(RecordKind::Inst, "0gsrp0"),
+        key: "W".into(),
+        values: vec![format!("{}", i % 7)],
+    };
+    let session = |idle: bool| {
+        let (mut p, h) = open(OTA, "ota5t.shcomp");
+        let mut i = 0;
+        while p.doc(h).unwrap().pool().dead < 1 << 17 {
+            let o = run(&mut p, h, tx(vec![op(i)]));
+            assert!(matches!(o, Outcome::Committed { .. }));
+            i += 1;
+            assert!(i < 1 << 16, "garbage grows");
+        }
+        assert!(p.hash_pending(h), "a hash waits");
+        assert!(
+            p.doc(h).unwrap().pool().dead > 1 << 16,
+            "a compaction waits"
+        );
+        if idle {
+            settle(&mut p, h, 1 << 17);
+            assert!(p.doc(h).unwrap().pool().dead == 0, "compacted");
+        }
+        (p, h)
+    };
+    let ((mut lazy, h), (mut busy, _)) = (session(true), session(false));
+    let (a, b) = (
+        lazy.save(h).unwrap().unwrap(),
+        busy.save(h).unwrap().unwrap(),
+    );
+    assert_eq!(a.bytes, b.bytes, "the saved file");
+    let (mut quit, _) = session(false);
+    quit.settle_journal(h);
+    let want = lazy.take_journal(h).unwrap().text;
+    assert_eq!(
+        quit.take_journal(h).unwrap().text,
+        want,
+        "the journal at a quit"
+    );
+    lazy.saved(h, a.bytes).unwrap();
+    busy.saved(h, b.bytes).unwrap();
+    let (ja, jb) = (lazy.take_journal(h).unwrap(), busy.take_journal(h).unwrap());
+    assert!(
+        !ja.rewrite && jb.rewrite,
+        "the busy journal is sent again, settled"
+    );
+    assert_eq!(
+        jb.text,
+        format!("{want}{}", ja.text),
+        "the journal after the save"
+    );
+}
+
+/// A document's first journal (the first commit after its first save) holds its whole
+/// undo history as `hist` records: idle steps encode them ahead (`Project::idle_step`), so
+/// that commit's frame does not, to the same journal. Oracle: the journal of a session
+/// without idle steps, and a reopen that undoes the history.
+#[test]
+fn a_first_journal_encodes_its_history_in_idle_steps() {
+    let var = |i: usize| Op::Insert {
+        rec: RecordBuf::new(RecordKind::Var)
+            .field(&format!("v{i}"))
+            .field("1"),
+        at: None,
+    };
+    let session = |idle: bool| {
+        let mut p = Project::new(None, None, 7).unwrap();
+        let h = p
+            .create("", "fresh.shcomp", schemify_format::FileKind::Shcomp)
+            .unwrap();
+        let imp = Op::Insert {
+            rec: RecordBuf::new(RecordKind::Impl)
+                .field("sch")
+                .field("schematic"),
+            at: None,
+        };
+        let committed = |o: Outcome| matches!(o, Outcome::Committed { .. });
+        assert!(committed(run(&mut p, h, tx(vec![imp]))));
+        for i in 0..300 {
+            assert!(committed(run(&mut p, h, tx(vec![var(i)]))));
+        }
+        let req = p.save(h).unwrap().unwrap();
+        let file = req.bytes.clone();
+        p.saved(h, req.bytes).unwrap();
+        if idle {
+            assert!(p.idle_pending(Some(h)), "a hash and the history wait");
+            // Small steps: the history is encoded across many of them.
+            assert!(settle(&mut p, h, 512) > 20);
+        }
+        assert!(committed(run(&mut p, h, tx(vec![var(300)]))));
+        if !idle {
+            p.settle_journal(h);
+        }
+        (file, p.take_journal(h).unwrap())
+    };
+    let ((file, lazy), (_, busy)) = (session(true), session(false));
+    assert!(lazy.rewrite && busy.rewrite);
+    assert_eq!(lazy.text, busy.text, "the same journal");
+    let mut q = Project::new(None, None, 7).unwrap();
+    let opened = q
+        .open(
+            "",
+            "fresh.shcomp",
+            file.as_bytes(),
+            Some(lazy.text.as_bytes()),
+        )
+        .unwrap();
+    assert_eq!(opened.recovery, Recovery::Offer { txs: 1 });
+    let h = opened.handle;
+    assert_eq!(q.history_len(h), (301, 0), "the history before the save");
+    q.recover(h).unwrap();
+    while matches!(run(&mut q, h, Edit::Undo), Outcome::Undone { .. }) {}
+    assert!(
+        !canon(&q, h).contains("var"),
+        "undo-all reaches the empty cell"
+    );
 }
 
 /// Oracle: [`Project::open`], which hashes the bytes itself. `open_indexed` reuses the
@@ -672,6 +851,7 @@ fn a_commit_below_the_first_save_starts_no_journal() {
         run(&mut p, h, tx(vec![op("c")])),
         Outcome::Committed { .. }
     ));
+    p.settle_journal(h);
     let journal = p
         .take_journal(h)
         .expect("the journal starts at the saved state");

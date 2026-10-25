@@ -26,6 +26,7 @@ On NixOS the tests need the Vulkan loader on `LD_LIBRARY_PATH`, e.g.
 | …on a given GPU | prefix `SCHEMIFY_GPU=<adapter name substring>` (default: the first non-CPU adapter) |
 | Param edit with 1k dependents | `… --test perf -- --ignored --nocapture var_edit` |
 | Flat 1M-instance netlist (elaborate + emit) | `cargo test --release -p schemify-netlist --test perf -- --ignored --nocapture --test-threads=1` |
+| Commit frames vs the O(document) work they leave to idle steps (hash, compaction, first journal) at 100k | `cargo test --release -p schemify-doc --test perf -- --ignored --nocapture commit_frames` |
 | elab cost of a local edit (p50/p95/p99) at 10k / 100k / 1M objects | `cargo test --release -p schemify-elab --test perf -- --ignored --nocapture a_local_edit` |
 | Canvas cache and patch oracles (GPU) | `cargo test --release -p schemify-render --test gpu -- --ignored --nocapture --test-threads=1` |
 
@@ -395,7 +396,7 @@ times came from temporary `Instant` laps around each spine step.
    (`CellState::changes`, placed with `Violation::key_cmp`).
 5. **elab**: connectivity findings in a map keyed by raw handles (no whole-table moves).
 6. **First edit**: the disk hash the journal's `base` record names is taken 128 KB a tick
-   after the document opens (`Project::hash_step`), so the first commit appends its records.
+   after the document opens (`Project::idle_step`), so the first commit appends its records.
 
 ### After (2026-10-18, same machine, load ~5, best of 3 runs; CPU p50 / p95 ms)
 
@@ -589,6 +590,22 @@ but not asserted (no margin under load); its p95 is the one edit whose value gro
 (9 → 10): every dependent is re-stamped (20 ms) and the scene then compacts (30 ms). The
 upgrade for that frame is killing and appending only the text rows of an instance (its other
 rows keep their stamp), and compacting on an idle tick.
+
+## Commit frames hand O(document) work to idle steps (2026-10-24)
+
+Three things a commit did in its own frame at 100k objects (HANDOFF latent bug 5), now done
+in bounded `Project::idle_step` calls on ticks without input (`Editor::wake_ms` asks for them):
+
+| Work | In the commit frame before (ms) | Commit frame after (ms) |
+|---|---|---|
+| sha256 of the file for a first journal's `base`, commit before the hash steps ended | 62 | 0.09 (placeholder `base`, journal re-sent once hashed) |
+| Compaction once garbage ≥ live data (`to_format` + `from_format`) | 113 | worst commit of 1000 edits 17 (O(change)); the 113 ms run in one idle tick |
+| A new document's first journal: `hist` of its history (100k-wire paste) | 162 | 0.99 |
+
+`cargo test --release -p schemify-doc --test perf -- --ignored --nocapture commit_frames` (one
+run, shared host). A caller that never idles (the CLI) still compacts inside a commit, at
+garbage ≥ 3× live data. The compaction stays one O(document) idle tick, and its change-log break
+makes the next frame rebuild the scene: both off the interactive path.
 
 ## Frame pacing 2026-10
 
