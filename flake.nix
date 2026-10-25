@@ -9,6 +9,12 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # The simulator the packages ship (user decision 2026-10-25: ESPice, not ngspice), pinned
+    # to the tag publish.yaml builds into the release archives.
+    espice = {
+      url = "github:OmarSiwy/ESPice/v0.3.0";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -16,8 +22,17 @@
       self,
       nixpkgs,
       rust-overlay,
+      espice,
     }:
     let
+      lib = nixpkgs.lib;
+      # One version for the packages, the workspace's (Cargo.toml).
+      version = (lib.importTOML ./Cargo.toml).workspace.package.version;
+      # Release binaries by version, written by tools/update-sources.py after each published
+      # release (publish.yaml): `nix run 'github:OmarSiwy/Schemify#latest'` installs the
+      # newest without compiling.
+      sources = lib.importJSON ./sources.json;
+      latest = if sources == { } then null else lib.last (lib.sort lib.versionOlder (lib.attrNames sources));
       systems = [
         "x86_64-linux"
         "aarch64-linux"
@@ -75,8 +90,10 @@
           ]
         );
 
-      # Simulators the runner spawns (D15). ngspice is the default; the others are
-      # picked up when present (Xyce dialect, Verilog cosim via d_cosim).
+      # The simulator the packages put on PATH (after the user's own): ESPice, the default.
+      shipped = pkgs: [ espice.packages.${pkgs.stdenv.hostPlatform.system}.espice ];
+
+      # Simulators of the development shell, which the tests run: ngspice, Xyce, Icarus.
       simulators =
         pkgs: with pkgs; [
           ngspice
@@ -105,7 +122,7 @@
         pkgs:
         (rustPlatform pkgs).buildRustPackage {
           pname = "schemify";
-          version = "0.1.0";
+          inherit version;
           # Tracked files only (git).
           src = self;
           cargoLock.lockFile = ./Cargo.lock;
@@ -137,14 +154,14 @@
           # `cargo test --workspace` in the dev shell (CI does).
           doCheck = false;
           nativeBuildInputs = [ pkgs.makeWrapper ];
-          # Only the editor gets the GUI libraries. Both find the simulators; the core also runs
-          # git and curl for `schemify pack` (config spec §5). The user's PATH comes first.
+          # Only the editor gets the GUI libraries. Both find ESPice; the core also runs git and
+          # curl for `schemify pack` (config spec §5). The user's PATH comes first.
           postInstall = ''
             wrapProgram $out/bin/schemify \
-              --suffix PATH : ${pkgs.lib.makeBinPath ((simulators pkgs) ++ [ pkgs.git pkgs.curl ])}
+              --suffix PATH : ${pkgs.lib.makeBinPath ((shipped pkgs) ++ [ pkgs.git pkgs.curl ])}
             wrapProgram $out/bin/schemify-gui \
               ${pkgs.lib.optionalString pkgs.stdenv.isLinux "--prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (runtimeLibs pkgs)}"} \
-              --suffix PATH : ${pkgs.lib.makeBinPath (simulators pkgs)}
+              --suffix PATH : ${pkgs.lib.makeBinPath (shipped pkgs)}
           '';
           meta = {
             description = "Schematic capture with simulation, docs pages and WASM plugins";
@@ -159,7 +176,7 @@
         pkgs:
         (rustPlatform pkgs).buildRustPackage {
           pname = "schemify-web";
-          version = "0.1.0";
+          inherit version;
           src = self;
           cargoLock.lockFile = ./Cargo.lock;
           nativeBuildInputs = [ (wasmBindgenCli pkgs) ];
@@ -179,14 +196,72 @@
             runHook postInstall
           '';
         };
+
+      # A published release's archive (sources.json): the binaries publish.yaml built, `espice`
+      # included. On Linux they are glibc ≥ 2.28 programs, so autoPatchelf points them at
+      # nixpkgs' loader and libraries; the editor gets the libraries it dlopens, as above.
+      fromRelease =
+        pkgs: v: source:
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "schemify";
+          version = v;
+          src = pkgs.fetchurl { inherit (source) url sha256; };
+          sourceRoot = ".";
+          nativeBuildInputs = [
+            pkgs.makeWrapper
+          ]
+          ++ lib.optional pkgs.stdenv.isLinux pkgs.autoPatchelfHook;
+          buildInputs = lib.optionals pkgs.stdenv.isLinux [
+            pkgs.stdenv.cc.cc.lib
+            pkgs.glibc
+          ];
+          dontStrip = true;
+          installPhase = ''
+            runHook preInstall
+            cd schemify-v${v}-*
+            install -Dm755 schemify schemify-gui -t $out/bin
+            if [ -e espice ]; then install -Dm755 espice -t $out/libexec/schemify; fi
+            install -Dm644 LICENSE -t $out/share/licenses/schemify
+            runHook postInstall
+          '';
+          postFixup = ''
+            for p in schemify schemify-gui; do
+              wrapProgram $out/bin/$p \
+                ${lib.optionalString pkgs.stdenv.isLinux "--prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath (runtimeLibs pkgs)}"} \
+                --suffix PATH : $out/libexec/schemify:${lib.makeBinPath [ pkgs.git pkgs.curl ]}
+            done
+          '';
+          meta = {
+            description = "Schematic capture with simulation, docs pages and WASM plugins (release binaries)";
+            homepage = "https://github.com/OmarSiwy/Schemify";
+            license = lib.licenses.mit;
+            sourceProvenance = [ lib.sourceTypes.binaryNativeCode ];
+            mainProgram = "schemify-gui";
+          };
+        };
+
+      # Per system: one package per released version in sources.json, and `latest`.
+      releases =
+        pkgs:
+        let
+          system = pkgs.stdenv.hostPlatform.system;
+          built = lib.mapAttrs (v: s: fromRelease pkgs v s.${system}) (
+            lib.filterAttrs (_: s: s ? ${system}) sources
+          );
+        in
+        built // lib.optionalAttrs (latest != null && built ? ${latest}) { latest = built.${latest}; };
     in
     {
-      packages = forAll (pkgs: {
-        default = schemify pkgs;
-        schemify = schemify pkgs;
-        web = web pkgs;
-        wasm-bindgen-cli = wasmBindgenCli pkgs;
-      });
+      packages = forAll (
+        pkgs:
+        releases pkgs
+        // {
+          default = schemify pkgs;
+          schemify = schemify pkgs;
+          web = web pkgs;
+          wasm-bindgen-cli = wasmBindgenCli pkgs;
+        }
+      );
 
       apps = forAll (pkgs: {
         # `nix run` starts the editor; `nix run .#schemify -- netlist …` the headless core.
