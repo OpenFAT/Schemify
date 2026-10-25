@@ -8,10 +8,10 @@
 //! `schemify_expr::Template` render stays as the general path and as the oracle of the
 //! fast one (`tests/metamorphic.rs`).
 
-use crate::{is_spice, push_name};
+use crate::{deck, is_spice, net_text, push_name};
 use schemify_elab::{COMPUTED, DEFAULT, Dialect, Elab, Name, PinDir, Target, Val};
 use schemify_expr::{Scratch, Segment, Template, Value};
-use spicerack::ir::Instance;
+use spicerack::codegen::xschem;
 
 /// Where a template identifier's value comes from (expr spec §6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -313,10 +313,9 @@ struct Row<'a, F> {
 }
 
 /// Appends instance row `r`'s text to `out` (no final newline unless the template
-/// writes one; empty when the template renders nothing), or returns the subcircuit
-/// [`Instance`] a default template stands for (the deck writer spells it, `out` is then
-/// untouched). `name` is the instance name before escaping; `net` gives a connection's
-/// text (never called with [`Name::NONE`], which is `?`).
+/// writes one; empty when the template renders nothing). `name` is the instance name
+/// before escaping; `net` gives a connection's text (never called with [`Name::NONE`],
+/// which is `?`).
 ///
 /// # Errors
 ///
@@ -333,7 +332,7 @@ pub(crate) fn line<'n, F: Fn(Name) -> &'n str>(
     net: F,
     out: &mut String,
     tmp: &mut Tmp,
-) -> Result<Option<Instance>, String> {
+) -> Result<(), String> {
     assert!(r < e.insts.name.len());
     assert_eq!(e.insts.param_start.len(), e.insts.name.len() + 1);
     let (plan, cell, leaf) = match e.insts.target[r] {
@@ -368,9 +367,9 @@ pub(crate) fn line<'n, F: Fn(Name) -> &'n str>(
                     Segment::Hole { ident: None } => unreachable!("a fast plan has bare holes"),
                 }
             }
-            Ok(None)
+            Ok(())
         }
-        Form::Template { tmpl, srcs, .. } => slow_line(&row, tmpl, srcs, out, tmp).map(|()| None),
+        Form::Template { tmpl, srcs, .. } => slow_line(&row, tmpl, srcs, out, tmp),
     }
 }
 
@@ -541,14 +540,14 @@ fn push_prefixed(out: &mut String, letter: u8, name: &str, d: Dialect) {
 }
 
 /// The default templates of spec §7.1 (and §7.5 for spectre and verilog): a subcircuit
-/// row is an [`Instance`], the deck writer's to spell (`X{name} {pins} {cell}`,
-/// Spectre `{name} ({pins}) {cell}`, Verilog `{cell} {name} (.{port}({net}), …);`).
+/// row is spelled by SpiceRack (`X{name} {pins} {cell}`, Spectre `{name} ({pins})
+/// {cell}`, Verilog `{cell} {name} (.{port}({net}), …);`).
 fn default_line<'n, F: Fn(Name) -> &'n str>(
     row: &Row<'_, F>,
     leaf: u32,
     out: &mut String,
     uses: &mut Uses,
-) -> Result<Option<Instance>, String> {
+) -> Result<(), String> {
     let (e, d) = (row.e, row.d);
     let conn = row.conn;
     assert_eq!(conn.len(), e.conns(row.r).len());
@@ -559,13 +558,13 @@ fn default_line<'n, F: Fn(Name) -> &'n str>(
         _ => row.cell,
     };
     match (row.plan.lang, d) {
-        (Lang::Schematic | Lang::Spice, _) if is_spice(d) => return Ok(Some(instance(row))),
+        (Lang::Schematic | Lang::Spice, _) if is_spice(d) => instance(row, out),
         (Lang::Schematic, Dialect::Spectre | Dialect::Verilog) => {
             assert!(
                 matches!(e.insts.target[row.r], Target::Def(_)),
                 "a definition row"
             );
-            return Ok(Some(instance(row)));
+            instance(row, out);
         }
         (Lang::Verilog, Dialect::Verilog) => {
             model(out);
@@ -608,30 +607,33 @@ fn default_line<'n, F: Fn(Name) -> &'n str>(
             ));
         }
     }
-    Ok(None)
+    Ok(())
 }
 
-/// The subcircuit instance of a default-template row: its name, its cell, its
-/// connections in the row's spelling (`?` unconnected).
-fn instance<'n, F: Fn(Name) -> &'n str>(row: &Row<'_, F>) -> Instance {
-    let port_mapping: Vec<String> = row
+/// Appends the subcircuit instance of a default-template row as SpiceRack spells an
+/// IR `Instance` (`xschem::push_instance`): its name, its cell, its connections in the
+/// row's spelling (`?` unconnected); Verilog pairs them with the definition's ports.
+fn instance<'n, F: Fn(Name) -> &'n str>(row: &Row<'_, F>, out: &mut String) {
+    let e = row.e;
+    let nets = row
         .conn
         .iter()
-        .map(|&n| {
-            if n == Name::NONE {
-                "?".to_owned()
-            } else {
-                (row.net)(n).to_owned()
-            }
-        })
-        .collect();
-    assert_eq!(port_mapping.len(), row.conn.len());
-    Instance {
-        name: row.name.to_owned(),
-        subcircuit: row.e.names.get(row.cell).to_owned(),
-        port_mapping,
-        parameters: Vec::new(),
-    }
+        .map(|&n| if n == Name::NONE { "?" } else { (row.net)(n) });
+    let ports: &[Name] = match (e.insts.target[row.r], row.d) {
+        (Target::Def(c), Dialect::Verilog) => e.ports(c),
+        _ => &[],
+    };
+    let start = out.len();
+    xschem::push_instance(
+        out,
+        row.name,
+        e.names.get(row.cell),
+        nets,
+        ports.iter().map(|&p| net_text(e, p)),
+        [],
+        deck(row.d),
+    );
+    assert!(out.len() > start);
 }
 
 /// Appends ` k=v` for every param of a Verilog-A leaf row that differs from its default

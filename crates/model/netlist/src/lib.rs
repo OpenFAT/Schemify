@@ -12,10 +12,10 @@
 //! `elab::elaborate` → gate on `violations` (the caller's) → [`emit`]: plan the
 //! templates → [`lower`] (title, globals, bench params, corner lines, bench code, the
 //! top block, definitions by name, once-only text) → `spicerack::codegen::xschem::write`.
-//! A block is its instance rows (template text as packed element lines, a subcircuit
-//! [`Instance`] for a default template), then its cell's own `code` lines (a component's
-//! netlist text, D17 as amended); SpiceRack sorts the rows by element name and spells
-//! the dialect.
+//! A block is its instance rows as packed element lines (template text; a default
+//! template's subcircuit instance as SpiceRack's `push_instance` spells it), then its
+//! cell's own `code` lines (a component's netlist text, D17 as amended); SpiceRack sorts
+//! the rows by element name and spells the dialect.
 //!
 //! ```
 //! use schemify_doc::Project;
@@ -47,13 +47,15 @@
 //    written to text by SpiceRack) and a `NameMap`.
 // 2. Many: one element per emitted instance row; rows are per definition, not
 //    flattened, so a design of 10^6 leaves in 5 definitions has ~10^2 elements, and a
-//    flat bench of 10^5 instances 10^5. Template rows are packed `Lines` (one text
-//    buffer and a `u32` end per row, no allocation per row); a default-template
-//    subcircuit row is an `Instance` (name, cell, a `String` per connection).
+//    flat bench of 10^5 instances 10^5. Every row is a line of packed `Lines` (one text
+//    buffer and a `u32` end per row, no allocation per row), default-template
+//    subcircuit rows included (an IR `Instance` would own a `String` per connection).
 // 3. Widths: rows, definitions and names are `u32` (elab's capacities: 2^24 rows, 2^26
 //    names); line ends and name-map offsets are `u32` (asserted below 4 GiB).
 // 4. Access: rows of one definition are read in order (name, target, conns, params
-//    together); SpiceRack sorts a block's lines only when they are out of name order.
+//    together). The name-map pass reads every element name, so it also marks runs
+//    already in name order (`Lines::sorted`): SpiceRack then copies them without a
+//    second scan, and sorts a block's lines only when they are out of name order.
 // 5. Lifetime: everything is per `emit` call; the IR is dropped once written.
 // 6. Parallel: a large block's rows render in chunks on scoped threads (`Writer::rows`),
 //    appended in row order; the name map stays sequential.
@@ -63,7 +65,7 @@ mod name_map;
 
 pub use name_map::NameMap;
 pub use spicerack::codegen::xschem::{Lines, SetupLine};
-pub use spicerack::ir::{CircuitIR, Instance};
+pub use spicerack::ir::CircuitIR;
 
 use inst::{Plans, Tmp};
 use schemify_elab::PinDir;
@@ -148,9 +150,9 @@ fn write(l: &mut Lowered, dialect: Dialect) -> String {
     text
 }
 
-/// Lowers `elab` to SpiceRack's IR for `dialect` (spec §7): template rows rendered as
-/// packed element lines, default-template subcircuit rows as [`Instance`]s, with the
-/// name map built from the element names the deck sorts and writes.
+/// Lowers `elab` to SpiceRack's IR for `dialect` (spec §7): every row rendered as a
+/// packed element line, with the name map built from the element names the deck sorts
+/// and writes.
 ///
 /// # Panics
 ///
@@ -216,7 +218,7 @@ pub fn emit_flat(elab: &Elab, dialect: Dialect) -> String {
             .iter()
             .map(|n| net_text(elab, *n).to_owned())
             .collect();
-        let (mut lines, mut insts) = (Vec::new(), Vec::new());
+        let mut lines = Vec::new();
         flat_def(
             elab,
             dialect,
@@ -225,7 +227,7 @@ pub fn emit_flat(elab: &Elab, dialect: Dialect) -> String {
             elab.top,
             ("", ""),
             &top_ports,
-            (&mut lines, &mut insts),
+            &mut lines,
         );
         lines.sort();
         lines.iter().for_each(|line| top.push(line));
@@ -234,7 +236,6 @@ pub fn emit_flat(elab: &Elab, dialect: Dialect) -> String {
         if dialect == Dialect::Cdl {
             l.ir.top.parameters = cdl_params(elab, elab.top);
         }
-        l.ir.top.instances = insts;
     }
     l.lines = vec![vec![top]];
     once_only(&mut l, elab, dialect, &tmp);
@@ -656,9 +657,9 @@ impl<'e> Writer<'e> {
         }
     }
 
-    /// Definition `d`: the subcircuit (its ports, its instances, its cell's own code, D17
-    /// as amended, spec §7.6.15, and for CDL its parameter tuple), its template rows and
-    /// its verilog `wire`s. The deck sorts the rows by element name.
+    /// Definition `d`: the subcircuit (its ports, its cell's own code, D17 as amended,
+    /// spec §7.6.15, and for CDL its parameter tuple), its rows as lines and its verilog
+    /// `wire`s. The deck sorts the rows by element name.
     fn def_block(&mut self, d: u32) -> (Subcircuit, Vec<Lines>, Vec<String>) {
         let e = self.e;
         assert!(
@@ -666,7 +667,7 @@ impl<'e> Writer<'e> {
             "definition {d} is emitted"
         );
         self.map.def(e, d, &self.def_map);
-        let (lines, instances) = self.rows(d);
+        let lines = self.rows(d);
         let code =
             e.defs.code_start[d as usize] as usize..e.defs.code_start[d as usize + 1] as usize;
         let sc = Subcircuit {
@@ -677,7 +678,6 @@ impl<'e> Writer<'e> {
             } else {
                 Vec::new()
             },
-            instances,
             raw_spice: e.defs.code[code]
                 .iter()
                 .map(|l| e.names.get(*l).to_owned())
@@ -710,9 +710,9 @@ impl<'e> Writer<'e> {
         wires.iter().map(|n| e.names.get(*n).to_owned()).collect()
     }
 
-    /// Instance rows of definition `d` in row order (template text as packed lines,
-    /// default-template rows as instances), and their name-map rows.
-    fn rows(&mut self, d: u32) -> (Vec<Lines>, Vec<Instance>) {
+    /// Instance rows of definition `d` in row order as packed lines, each run marked
+    /// sorted when the whole block is in element-name order, and their name-map rows.
+    fn rows(&mut self, d: u32) -> Vec<Lines> {
         let e = self.e;
         let rows = e.insts_of(d);
         // Rows render independently: a large block renders in chunks on scoped threads and
@@ -731,7 +731,7 @@ impl<'e> Writer<'e> {
         let (dl, plans, respell) = (self.d, self.plans, &self.map.respell);
         // The first part renders here into `self.tmp`; every other part on its own thread
         // with its own scratch, whose uses are merged after.
-        let block = std::thread::scope(|sc| {
+        let mut block = std::thread::scope(|sc| {
             let workers: Vec<_> = parts[1..]
                 .iter()
                 .map(|p| {
@@ -746,41 +746,37 @@ impl<'e> Writer<'e> {
                 let (c, uses) = w.join().expect("rows render");
                 self.tmp.uses.merge(uses);
                 all.runs.extend(c.runs);
-                all.insts.extend(c.insts);
                 all.kept.extend(c.kept);
             }
             all
         });
         let xd = deck(dl);
-        let (mut run, mut line, mut inst) = (0, 0, 0);
-        let mut name = String::new();
-        for &(r, kind) in &block.kept {
-            let r = r as usize;
-            let child = match e.insts.target[r] {
-                Target::Def(c) => self.def_map[c as usize],
-                Target::Leaf(_) => NONE,
-            };
-            match kind {
-                Kept::Inst => {
-                    name.clear();
-                    xschem::push_element_name(&mut name, &block.insts[inst].name, xd);
-                    self.map.row(e, r, name.trim_end(), child);
-                    inst += 1;
-                }
-                Kept::Line | Kept::Failed => {
-                    while line == block.runs[run].len() {
-                        (run, line) = (run + 1, 0); // the next part's run
-                    }
-                    if matches!(kind, Kept::Line) {
-                        let text = block.runs[run].get(line);
-                        self.map.row(e, r, xschem::element_name(text, xd), child);
-                    }
-                    line += 1;
-                }
+        let (mut run, mut line) = (0, 0);
+        let (mut sorted, mut prev) = (true, "");
+        for &(r, rendered) in &block.kept {
+            while line == block.runs[run].len() {
+                (run, line) = (run + 1, 0); // the next part's run
             }
+            let name = xschem::element_name(block.runs[run].get(line), xd);
+            sorted &= prev <= name;
+            prev = name;
+            if rendered {
+                let r = r as usize;
+                let child = match e.insts.target[r] {
+                    Target::Def(c) => self.def_map[c as usize],
+                    Target::Leaf(_) => NONE,
+                };
+                self.map.row(e, r, name, child);
+            }
+            line += 1;
         }
-        assert_eq!(inst, block.insts.len());
-        (block.runs, block.insts)
+        assert_eq!(
+            block.kept.len(),
+            block.runs.iter().map(Lines::len).sum::<usize>()
+        );
+        // The deck then copies the runs without reading their names again.
+        block.runs.iter_mut().for_each(|l| l.sorted = sorted);
+        block.runs
     }
 }
 
@@ -797,24 +793,12 @@ pub fn set_serial(serial: bool) {
     SERIAL.store(serial, Relaxed);
 }
 
-/// The rows of one block in row order: template text as packed lines, default-template
-/// subcircuit rows as instances, and per kept row what it lowered to.
+/// The rows of one block in row order as packed lines, and per kept row whether it
+/// rendered (a failed row is an error comment line with no name-map row).
 struct Block {
     /// One run per rendered part, in row order.
     runs: Vec<Lines>,
-    insts: Vec<Instance>,
-    kept: Vec<(u32, Kept)>,
-}
-
-/// What a kept row lowered to.
-#[derive(Clone, Copy)]
-enum Kept {
-    /// A line that rendered (it gets a name-map row).
-    Line,
-    /// An error comment line (no name-map row).
-    Failed,
-    /// An instance.
-    Inst,
+    kept: Vec<(u32, bool)>,
 }
 
 /// Renders rows `rows` of one block straight into its packed lines (spec §7.6.1: a
@@ -831,8 +815,8 @@ fn render(
     let mut lines = Lines {
         text: String::with_capacity(48 * rows.len()),
         ends: Vec::with_capacity(rows.len()),
+        sorted: false,
     };
-    let mut insts = Vec::new();
     let mut kept = Vec::with_capacity(rows.len());
     for r in rows {
         if e.insts.ignore[r] != Ignore::No {
@@ -850,30 +834,20 @@ fn render(
             &mut lines.text,
             tmp,
         );
-        let what = match rendered {
-            Ok(Some(i)) => {
-                assert_eq!(lines.text.len(), start, "an instance writes no text");
-                insts.push(i);
-                Kept::Inst
-            }
-            Ok(None) if lines.text.len() == start => continue, // renders nothing
-            Ok(None) => {
-                end_line(&mut lines);
-                Kept::Line
-            }
+        match &rendered {
+            Ok(()) if lines.text.len() == start => continue, // renders nothing
+            Ok(()) => end_line(&mut lines),
             Err(msg) => {
                 lines.text.truncate(start);
-                push_error(&mut lines.text, d, local, &msg);
+                push_error(&mut lines.text, d, local, msg);
                 end_line(&mut lines);
-                Kept::Failed
             }
-        };
-        kept.push((r as u32, what));
+        }
+        kept.push((r as u32, rendered.is_ok()));
     }
-    assert_eq!(kept.len(), lines.len() + insts.len());
+    assert_eq!(kept.len(), lines.len());
     Block {
         runs: vec![lines],
-        insts,
         kept,
     }
 }
@@ -897,8 +871,7 @@ fn push_error(out: &mut String, d: Dialect, local: &str, msg: &str) {
 
 /// Flattens definition `d` at instance path `path` (`__`-joined local names, empty at
 /// the top; `dotted` is the same path `.`-joined) whose ports are bound to `ports`
-/// (flat net names), appending its leaf lines and leaf instances (failed and empty
-/// rows are left out).
+/// (flat net names), appending its leaf lines (failed and empty rows are left out).
 #[allow(clippy::too_many_arguments)]
 fn flat_def(
     e: &Elab,
@@ -908,10 +881,9 @@ fn flat_def(
     d: u32,
     (path, dotted): (&str, &str),
     ports: &[String],
-    out: (&mut Vec<String>, &mut Vec<Instance>),
+    lines: &mut Vec<String>,
 ) {
     assert_eq!(ports.len(), e.ports(d).len());
-    let (lines, insts) = out;
     let flat = |n: Name| -> String {
         if n == Name::NONE {
             return "?".to_owned();
@@ -944,7 +916,7 @@ fn flat_def(
                 } else {
                     format!("{dotted}.{local}")
                 };
-                flat_def(e, dialect, plans, tmp, c, (&p, &dt), &child, (lines, insts));
+                flat_def(e, dialect, plans, tmp, c, (&p, &dt), &child, lines);
             }
             Target::Leaf(_) => {
                 let names: Vec<(Name, String)> =
@@ -961,10 +933,9 @@ fn flat_def(
                         .find(|x| x.0 == n)
                         .map_or("?", |x| x.1.as_str())
                 };
-                match inst::line(e, dialect, plans, r, &name, lookup, &mut out, tmp) {
-                    Ok(Some(i)) => insts.push(i),
-                    Ok(None) if !out.is_empty() => lines.push(out),
-                    _ => {}
+                let ok = inst::line(e, dialect, plans, r, &name, lookup, &mut out, tmp).is_ok();
+                if ok && !out.is_empty() {
+                    lines.push(out);
                 }
             }
         }

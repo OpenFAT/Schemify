@@ -122,6 +122,20 @@ use a second thread (connectivity beside the graph, element names beside the geo
 emission in row chunks); output is byte-identical to the serial run (oracle
 `netlist/tests/metamorphic.rs` `threads_change_nothing`).
 
+Emission through SpiceRack (2026-10-24, `tests/perf.rs`, the old emitter, the first
+SpiceRack lowering and the current one run interleaved, best of 4 at load average 13;
+callgrind instructions per emit beside, which the load does not move):
+
+| | old emitter | SpiceRack, first | now |
+|---|---|---|---|
+| flat 100k emit | 9.80 ms, 111.5 M | 11.26 ms, 129.9 M | 9.82 ms, 110.3 M |
+| 1M-leaf hierarchy emit | 20 µs, 252 K | 47 µs, 540 K | 23 µs, 278 K |
+
+The first lowering built an IR `Instance` per subcircuit row (a `String` per connection)
+and SpiceRack read every element name a second time; both are gone (decisions, D22
+amendment). The hierarchy's remaining 10% is the IR's own strings (ports, names, code
+lines) and the copy of each block into the deck.
+
 ### Local edit, elab cost (`CellState::recompute`), p50 / p95 / p99 ms
 
 200 random edits plus their undos (wire delete/insert/move, label renames that merge by

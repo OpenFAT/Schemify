@@ -674,3 +674,47 @@ fn espice_verilog_a_lines_carry_instance_params_and_mfactor() {
     );
     assert!(ng.contains("\nNM1 out in 0 0 nch nfin=3 m=1\n"), "{ng}");
 }
+
+/// Lowering hands SpiceRack packed runs only (netlist spec §7.6.0): subcircuit rows are
+/// lines too, never IR `Instance`s (a `String` per connection), and a run is marked
+/// sorted exactly when its block's element names are in order, so the name scan the
+/// deck then skips cannot leave a block unsorted. Oracle: the names re-read from the
+/// lines by whitespace split.
+#[test]
+fn rows_lower_to_lines_marked_sorted_exactly_when_in_order() {
+    let res = "schemify 1 shprim\n\npin p inout 0 -30\npin n inout 0 30\n\nparam P R\n  kind string\n\n\
+               impl s spice\n  format spice \"{P}{name} {p} {n} 1k\"\n";
+    // `Za` and `Ab`: out of name order in either row order.
+    let bench = "schemify 1 shbench\n\ninst 0a0001 ./res\n  at 0 0 R0\n  name a\n  P Z\n\
+                 inst 0a0002 ./res\n  at 100 0 R0\n  name b\n  P A\n\n\
+                 label 0n0001 0 -30 R0 x\nlabel 0n0002 0 30 R0 0\n\
+                 label 0n0003 100 -30 R0 x\nlabel 0n0004 100 30 R0 0\n";
+    let (p, hs) = project(&[("res.shprim", res), ("tb.shbench", bench)]);
+    let files = fixtures();
+    let (fp, ftop) = fixture(&files, "tb.shbench");
+    let mut seen = [false; 2];
+    for (p, top, dialects) in [(&p, hs[1], &DIALECTS[..1]), (&fp, ftop, &DIALECTS[..4])] {
+        for &d in dialects {
+            let l = schemify_netlist::lower(&elab(p, top, d), d);
+            assert!(
+                std::iter::once(&l.ir.top)
+                    .chain(&l.ir.subcircuit_defs)
+                    .all(|s| s.instances.is_empty()),
+                "{d:?}: no IR instances"
+            );
+            for runs in &l.lines {
+                let names: Vec<&str> = runs
+                    .iter()
+                    .flat_map(|r| (0..r.len()).map(|i| r.get(i)))
+                    .map(|line| line.split_ascii_whitespace().next().unwrap_or(""))
+                    .collect();
+                let sorted = names.windows(2).all(|w| w[0] <= w[1]);
+                assert!(runs.iter().all(|r| r.sorted == sorted), "{d:?} {names:?}");
+                seen[usize::from(sorted)] |= names.len() > 1;
+            }
+        }
+    }
+    assert_eq!(seen, [true, true], "both kinds of block were checked");
+    let n = emit(&elab(&p, hs[1], Dialect::Ngspice), Dialect::Ngspice).text;
+    assert!(n.contains("\nAb x 0 1k\nZa x 0 1k\n"), "{n}");
+}

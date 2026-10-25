@@ -43,7 +43,7 @@ libm = "0.2"
 # backends (processes, temp files, dlopen), so it builds for the web.
 # Pinned to a rev, so the plugin repositories (git dependencies on the model's crates)
 # resolve it too.
-spicerack = { git = "https://github.com/OmarSiwy/SpiceRack", rev = "819bbdbbee353ebe88c6d22b3dd6ea3c5ef881bb", default-features = false }
+spicerack = { git = "https://github.com/OmarSiwy/SpiceRack", rev = "86ab039e30faa34dfef39782130d63c469de2f20", default-features = false }
 # User config (D9 amended): Lua 5.4 in pure Rust (no C, builds for every target incl. the
 # web; user decision 2026-10-12, web spec §5); only `config` may use it. No `io`, `os`,
 # `package` libraries are compiled in; `debug` serves the API prelude and is stripped after.
