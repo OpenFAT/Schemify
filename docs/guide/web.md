@@ -13,7 +13,8 @@ rustup target add wasm32-unknown-unknown
 grep -A1 '^name = "wasm-bindgen"$' Cargo.lock      # the version your CLI must have
 cargo install wasm-bindgen-cli --version <that version>
 
-cargo build --release --target wasm32-unknown-unknown -p schemify-app --bin schemify-gui
+RUSTFLAGS="-C target-feature=+simd128" \
+  cargo build --release --target wasm32-unknown-unknown -p schemify-app --bin schemify-gui
 wasm-bindgen --target web --no-typescript --out-name schemify --out-dir crates/view/app/web/pkg \
   target/wasm32-unknown-unknown/release/schemify-gui.wasm
 ```

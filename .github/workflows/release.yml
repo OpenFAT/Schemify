@@ -116,7 +116,10 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: wasm32-unknown-unknown
+      # SIMD128 for the browser build only (ci.yml's `build web crates` says why).
       - run: cargo build --release --locked --target wasm32-unknown-unknown -p schemify-app --bin schemify-gui
+        env:
+          RUSTFLAGS: -C target-feature=+simd128
       - id: wb
         run: echo "version=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p')" >> "$GITHUB_OUTPUT"
       - uses: taiki-e/install-action@v2

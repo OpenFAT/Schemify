@@ -91,7 +91,12 @@ jobs:
         run: >-
           cargo clippy --target wasm32-unknown-unknown -p schemify-cli -p schemify-config --lib
           -- -D warnings
+      # SIMD128 for the browser build only (vello_cpu's kernels, the CPU tier of web spec §7,
+      # select it at compile time). Not in .cargo/config.toml: the plugin guests share this
+      # target, run under wasmi, and their committed .wasm files must not change.
       - name: build web crates
+        env:
+          RUSTFLAGS: -C target-feature=+simd128
         run: >-
           cargo build --release --target wasm32-unknown-unknown
           -p schemify-format -p schemify-expr -p schemify-doc -p schemify-elab

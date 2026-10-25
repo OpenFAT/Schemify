@@ -17,7 +17,8 @@ Requirements:
 Build and serve, from the repository root:
 
 ```text
-cargo build --release --target wasm32-unknown-unknown -p schemify-render --example demo
+RUSTFLAGS="-C target-feature=+simd128" \
+  cargo build --release --target wasm32-unknown-unknown -p schemify-render --example demo
 wasm-bindgen --target web --no-typescript --out-dir crates/view/render/web/pkg \
     target/wasm32-unknown-unknown/release/examples/demo.wasm
 python3 -m http.server --directory crates/view/render/web 8080
