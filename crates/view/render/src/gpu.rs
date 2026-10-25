@@ -38,8 +38,8 @@
 //!    switch, a palette change, a diff that gave up, a layer whose free slots ran out); each
 //!    layer range keeps an eighth of its rows plus 16 free slots for appended rows. The frame
 //!    request lives one frame; GPU buffers grow by doubling and never shrink.
-//! 6. Sources and kinds are independent; serial (about 4 ms per 10^5 rows packed whole, an
-//!    edit's patch O(change)).
+//! 6. Sources and kinds are independent; serial (0.7 ms per 10^5 rows packed whole,
+//!    `pack_100k_whole`; an edit's patch O(change)).
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -234,6 +234,11 @@ pub struct InstanceRows {
     counts: [[usize; 5]; SOURCES],
     ears: Vec<[u32; 3]>,
     order: Vec<u32>,
+    /// The palette's pens, resolved on first use and kept while the palette is the same.
+    pens: Pens,
+    /// Per row of the column being repacked: its palette layer, or [`NO_KEY`] when it draws
+    /// nothing (the pack's one decision per row, made once).
+    keys: Vec<u8>,
     /// The frame to draw, set by the painter's canvas call and taken by the window.
     pub frame: Option<Frame>,
 }
@@ -345,6 +350,7 @@ impl InstanceRows {
             t.polygons.end.len(),
         ];
         assert!(n.iter().all(|&c| c <= CanvasPrims::CAPACITY));
+        self.pens.use_palette(palette);
         let was = self.counts[src];
         let whole = !self.packed[src] || matches!(change, Change::All | Change::Edits(_));
         let polys = match change {
@@ -356,16 +362,16 @@ impl InstanceRows {
         };
         for c in 0..3 {
             let patched = match change {
-                Change::Killed(k) if !whole => self.patch(src, c, t, palette, k),
+                Change::Killed(k) if !whole => self.patch(src, c, t, k),
                 Change::Same if !whole => true,
                 _ => false,
             };
             if !patched {
-                self.repack(src, c, t, palette);
+                self.repack(src, c, t);
             }
         }
         if whole || polys {
-            self.repack_polys(src, t, palette);
+            self.repack_polys(src, t);
         }
         self.counts[src] = n;
         self.packed[src] = true;
@@ -375,44 +381,79 @@ impl InstanceRows {
         );
     }
 
-    /// Repacks 1:1 column `c` (0 lines, 1 rects, 2 arcs) of source `src` whole.
-    fn repack(&mut self, src: usize, c: usize, t: &CanvasPrims, palette: &Palette) {
+    /// Repacks 1:1 column `c` (0 lines, 1 rects, 2 arcs) of source `src` whole: one pass
+    /// keys each row by its layer (or [`NO_KEY`]) and counts the layers, the layout places the
+    /// layer ranges, and one pass per kind writes each live row's fixed-size fields into the
+    /// next slot of its layer. Each row's pen is resolved once, from the cached [`Pens`].
+    ///
+    /// Cost: O(rows); about 10 ns a row (`pack_100k_whole`).
+    fn repack(&mut self, src: usize, c: usize, t: &CanvasPrims) {
         let kind = ONE_TO_ONE[c];
         let n = column_len(t, c);
+        let (keys, pens) = (&mut self.keys, &mut self.pens);
+        keys.clear();
         let mut count = [0u32; LAYERS];
-        for i in 0..n {
-            if let Some((l, ..)) = one_row(t, c, i, palette) {
-                count[l] += 1;
+        let mut key = |layer: u8, style: LineStyle, closed: bool| {
+            let k = match pens.get(layer, style, closed) {
+                Some(_) => layer,
+                None => NO_KEY,
+            };
+            if k != NO_KEY {
+                count[usize::from(k)] += 1;
             }
+            keys.push(k);
+        };
+        match c {
+            0 => (0..n).for_each(|i| key(t.lines.layer[i], t.lines.style[i], false)),
+            1 => (0..n).for_each(|i| key(t.rects.layer[i], t.rects.style[i], true)),
+            _ => (0..n).for_each(|i| {
+                key(
+                    t.arcs.layer[i],
+                    t.arcs.style[i],
+                    t.arcs.sweep[i].abs() >= 360_000,
+                );
+            }),
         }
+        assert_eq!(self.keys.len(), n, "a key per row");
         let table = &mut self.tables[src][kind];
         table.layout(kind, &count, true);
         let slots = &mut self.slots[src][c];
         slots.clear();
-        for i in 0..n {
-            let s = match one_row(t, c, i, palette) {
-                Some((l, fields, len)) => {
-                    let s = table.take(l).expect("laid out for every row");
-                    row(&mut table.bytes, STRIDE[kind], s as usize, &fields[..len]);
-                    s
-                }
-                None => NO_SLOT,
-            };
-            slots.push(s);
+        slots.reserve(n);
+        let (keys, pens) = (&self.keys, &mut self.pens);
+        match c {
+            0 => {
+                let l = &t.lines;
+                write_rows(table, slots, keys, |i| {
+                    let (co, st) = pens.get(l.layer[i], l.style[i], false).expect("keyed live");
+                    let f = [l.x0[i], l.y0[i], l.x1[i], l.y1[i]].map(|v| v as u32);
+                    [f[0], f[1], f[2], f[3], co, st]
+                });
+            }
+            1 => {
+                let r = &t.rects;
+                write_rows(table, slots, keys, |i| {
+                    let (co, st) = pens.get(r.layer[i], r.style[i], true).expect("keyed live");
+                    let f = [r.x0[i], r.y0[i], r.x1[i], r.y1[i]].map(|v| v as u32);
+                    [f[0], f[1], f[2], f[3], co, st]
+                });
+            }
+            _ => {
+                let a = &t.arcs;
+                write_rows(table, slots, keys, |i| {
+                    let full = a.sweep[i].abs() >= 360_000;
+                    let (co, st) = pens.get(a.layer[i], a.style[i], full).expect("keyed live");
+                    let f = [a.cx[i], a.cy[i], a.r[i], a.start[i], a.sweep[i]].map(|v| v as u32);
+                    [f[0], f[1], f[2], f[3], f[4], co, st]
+                });
+            }
         }
         assert_eq!(table.used, count, "every live row placed");
     }
 
     /// Follows `killed` and the rows appended to column `c` of source `src`. False when the
     /// column shrank or a layer ran out of free slots: the caller then repacks it.
-    fn patch(
-        &mut self,
-        src: usize,
-        c: usize,
-        t: &CanvasPrims,
-        palette: &Palette,
-        killed: &[Vec<u32>; 6],
-    ) -> bool {
+    fn patch(&mut self, src: usize, c: usize, t: &CanvasPrims, killed: &[Vec<u32>; 6]) -> bool {
         let kind = ONE_TO_ONE[c];
         let (was, n) = (self.slots[src][c].len(), column_len(t, c));
         if n < was {
@@ -427,7 +468,7 @@ impl InstanceRows {
             }
         }
         for i in was..n {
-            let s = match one_row(t, c, i, palette) {
+            let s = match one_row(t, c, i, &mut self.pens) {
                 Some((l, fields, len)) => {
                     let Some(s) = table.take(l) else {
                         return false;
@@ -444,7 +485,7 @@ impl InstanceRows {
 
     /// Repacks the polyline and polygon edges and the polygon fills of source `src` whole,
     /// layer by layer (no free slots: they are rebuilt on any chain change).
-    fn repack_polys(&mut self, src: usize, t: &CanvasPrims, palette: &Palette) {
+    fn repack_polys(&mut self, src: usize, t: &CanvasPrims) {
         // The live chains, polylines then polygons, each in row order; the layer ranges put
         // them in drawing order (one colour per layer, so only the layer order shows).
         let order = &mut self.order;
@@ -452,7 +493,7 @@ impl InstanceRows {
         let (mut edges, mut tris) = ([0u32; LAYERS], [0u32; LAYERS]);
         for (closed, p) in [(false, &t.polylines), (true, &t.polygons)] {
             for k in 0..p.end.len() {
-                let Some((_, s)) = pen(palette, p.layer[k], p.style[k], closed) else {
+                let Some((_, s)) = self.pens.get(p.layer[k], p.style[k], closed) else {
                     continue;
                 };
                 let l = usize::from(p.layer[k]);
@@ -471,7 +512,7 @@ impl InstanceRows {
         for &o in order.iter() {
             let (closed, k) = (o >> 31 == 1, (o & !(1 << 31)) as usize);
             let p = if closed { &t.polygons } else { &t.polylines };
-            let (c, s) = pen(palette, p.layer[k], p.style[k], closed).expect("live");
+            let (c, s) = self.pens.get(p.layer[k], p.style[k], closed).expect("live");
             let l = usize::from(p.layer[k]);
             let pts = chain(&p.end, k);
             let m = pts.len();
@@ -630,11 +671,11 @@ type Packed = (usize, [u32; 7], usize);
 
 /// Row `i` of 1:1 column `c` packed, or `None` when it draws nothing (dead, or its layer
 /// hidden).
-fn one_row(t: &CanvasPrims, c: usize, i: usize, palette: &Palette) -> Option<Packed> {
+fn one_row(t: &CanvasPrims, c: usize, i: usize, pens: &mut Pens) -> Option<Packed> {
     match c {
-        0 => line_row(&t.lines, i, palette),
-        1 => rect_row(&t.rects, i, palette),
-        2 => arc_row(&t.arcs, i, palette),
+        0 => line_row(&t.lines, i, pens),
+        1 => rect_row(&t.rects, i, pens),
+        2 => arc_row(&t.arcs, i, pens),
         _ => unreachable!("three 1:1 columns"),
     }
 }
@@ -663,6 +704,99 @@ fn row(buf: &mut [u8], stride: usize, i: usize, fields: &[u32]) {
     }
 }
 
+/// A row that draws nothing (dead, or its layer hidden) in [`InstanceRows::repack`]'s key
+/// column: above every palette layer.
+const NO_KEY: u8 = u8::MAX;
+const _: () = assert!(NO_KEY as usize >= LAYERS, "no key is no layer");
+
+/// Style bytes a [`LineStyle`] spans (weight, dash and fill bits).
+const STYLES: usize = 128;
+
+/// The pens of one palette: per (layer, style byte, closed) what [`pen`] returns, resolved on
+/// first use and kept while the palette is unchanged, so a pack resolves each distinct pen
+/// once instead of once per row.
+///
+/// Six questions: in, a row's (layer, style, closed); out, its colour and style word or
+/// nothing. 32 × 128 × 2 entries (64 KiB), mostly unused (a document has a few dozen pens).
+/// Read once per row per pack, written once per distinct pen. Lives with its
+/// [`InstanceRows`]; cleared when the palette changes. Serial.
+#[derive(Debug, Default)]
+struct Pens {
+    palette: Option<Palette>,
+    /// `RESOLVED | colour << 24 | style word`, or `RESOLVED | DRAWS_NOTHING`, or 0 (not yet).
+    lut: Vec<u64>,
+}
+
+impl Pens {
+    const RESOLVED: u64 = 1 << 63;
+    const DRAWS_NOTHING: u64 = 1 << 62;
+
+    /// Resolves pens from `palette` from now on (forgetting the old ones when it differs).
+    fn use_palette(&mut self, palette: &Palette) {
+        if self.palette.as_ref() != Some(palette) {
+            self.palette = Some(palette.clone());
+            self.lut.clear();
+            self.lut.resize(LAYERS * STYLES * 2, 0);
+        }
+        assert_eq!(self.lut.len(), LAYERS * STYLES * 2, "a palette in use");
+    }
+
+    /// The pen of a row on `layer` in `style` ([`pen`]), from the cache.
+    #[inline]
+    fn get(&mut self, layer: u8, style: LineStyle, closed: bool) -> Option<(u32, u32)> {
+        let l = usize::from(layer);
+        if l >= LAYERS {
+            return None; // a dead row: no palette layer
+        }
+        let st = usize::from(style.0);
+        assert!(st < STYLES, "a style byte");
+        let at = (l * STYLES + st) * 2 + usize::from(closed);
+        let mut e = self.lut[at];
+        if e == 0 {
+            let palette = self.palette.as_ref().expect("a palette in use");
+            e = Self::RESOLVED
+                | match pen(palette, layer, style, closed) {
+                    Some((c, s)) => u64::from(c) << 24 | u64::from(s),
+                    None => Self::DRAWS_NOTHING,
+                };
+            self.lut[at] = e;
+        }
+        if e & Self::DRAWS_NOTHING != 0 {
+            return None;
+        }
+        Some(((e >> 24) as u32, (e & 0xff_ffff) as u32))
+    }
+}
+
+/// Writes every keyed row of a column into `table` (laid out for their layers' counts):
+/// row `i` with key `keys[i]` goes to the next slot of its layer as `fields(i)`, its slot
+/// recorded in `slots`; a [`NO_KEY`] row gets [`NO_SLOT`]. `W` words a row (the kind's
+/// [`STRIDE`] / 4).
+fn write_rows<const W: usize>(
+    table: &mut Table,
+    slots: &mut Vec<u32>,
+    keys: &[u8],
+    mut fields: impl FnMut(usize) -> [u32; W],
+) {
+    let stride = W * 4;
+    for (i, &k) in keys.iter().enumerate() {
+        if k == NO_KEY {
+            slots.push(NO_SLOT);
+            continue;
+        }
+        let l = usize::from(k);
+        let s = table.start[l] + table.used[l];
+        debug_assert!(table.used[l] < table.cap[l], "laid out for every row");
+        table.used[l] += 1;
+        let at = s as usize * stride;
+        let row = &mut table.bytes[at..at + stride];
+        for (b, f) in row.chunks_exact_mut(4).zip(fields(i)) {
+            b.copy_from_slice(&f.to_ne_bytes());
+        }
+        slots.push(s);
+    }
+}
+
 /// A row's colour (RGBA bytes in memory order) and style word ([`style_word`]) on `layer` in
 /// `style`; `closed` lets the layer's or the style's fill apply. `None` for a dead row
 /// ([`LAYER_DEAD`]) or a hidden layer (colour alpha 0): nothing drawn.
@@ -688,8 +822,8 @@ fn pen(palette: &Palette, layer: u8, style: LineStyle, closed: bool) -> Option<(
     ))
 }
 
-fn line_row(l: &Lines, i: usize, palette: &Palette) -> Option<Packed> {
-    let (c, s) = pen(palette, l.layer[i], l.style[i], false)?;
+fn line_row(l: &Lines, i: usize, pens: &mut Pens) -> Option<Packed> {
+    let (c, s) = pens.get(l.layer[i], l.style[i], false)?;
     let f = [l.x0[i], l.y0[i], l.x1[i], l.y1[i]].map(|v| v as u32);
     Some((
         usize::from(l.layer[i]),
@@ -698,8 +832,8 @@ fn line_row(l: &Lines, i: usize, palette: &Palette) -> Option<Packed> {
     ))
 }
 
-fn rect_row(r: &Lines, i: usize, palette: &Palette) -> Option<Packed> {
-    let (c, s) = pen(palette, r.layer[i], r.style[i], true)?;
+fn rect_row(r: &Lines, i: usize, pens: &mut Pens) -> Option<Packed> {
+    let (c, s) = pens.get(r.layer[i], r.style[i], true)?;
     let f = [r.x0[i], r.y0[i], r.x1[i], r.y1[i]].map(|v| v as u32);
     Some((
         usize::from(r.layer[i]),
@@ -708,9 +842,9 @@ fn rect_row(r: &Lines, i: usize, palette: &Palette) -> Option<Packed> {
     ))
 }
 
-fn arc_row(a: &Arcs, i: usize, palette: &Palette) -> Option<Packed> {
+fn arc_row(a: &Arcs, i: usize, pens: &mut Pens) -> Option<Packed> {
     let full = a.sweep[i].abs() >= 360_000;
-    let (c, s) = pen(palette, a.layer[i], a.style[i], full)?;
+    let (c, s) = pens.get(a.layer[i], a.style[i], full)?;
     let f = [a.cx[i], a.cy[i], a.r[i], a.start[i], a.sweep[i]].map(|v| v as u32);
     Some((
         usize::from(a.layer[i]),
@@ -1759,6 +1893,122 @@ mod tests {
             }
             r.pack(0, &t, &palette, Change::Killed(&killed));
             same_rows(&r, &rebuilt(&t, &palette), 0, &format!("step {step}"));
+        }
+    }
+
+    /// The pack's 1:1 columns equal the per-row reference it replaced (each row's pen
+    /// resolved from the palette on the spot, counted then written through `Table::take`),
+    /// byte for byte with every slot, over random tables with dead rows, hidden layers, every
+    /// style byte and partial arcs, while the palette changes under the cached pens.
+    #[test]
+    fn the_pack_equals_the_per_row_reference() {
+        fn reference(t: &CanvasPrims, c: usize, palette: &Palette) -> (Vec<u8>, Vec<u32>) {
+            let kind = ONE_TO_ONE[c];
+            let n = column_len(t, c);
+            let row_of = |i: usize| -> Option<Packed> {
+                let (layer, style, closed, f): (u8, LineStyle, bool, Vec<i32>) = match c {
+                    0 => {
+                        let l = &t.lines;
+                        (
+                            l.layer[i],
+                            l.style[i],
+                            false,
+                            vec![l.x0[i], l.y0[i], l.x1[i], l.y1[i]],
+                        )
+                    }
+                    1 => {
+                        let r = &t.rects;
+                        (
+                            r.layer[i],
+                            r.style[i],
+                            true,
+                            vec![r.x0[i], r.y0[i], r.x1[i], r.y1[i]],
+                        )
+                    }
+                    _ => {
+                        let a = &t.arcs;
+                        let full = a.sweep[i].abs() >= 360_000;
+                        let f = vec![a.cx[i], a.cy[i], a.r[i], a.start[i], a.sweep[i]];
+                        (a.layer[i], a.style[i], full, f)
+                    }
+                };
+                let (co, st) = pen(palette, layer, style, closed)?;
+                let mut w = [0u32; 7];
+                for (k, v) in f.iter().enumerate() {
+                    w[k] = *v as u32;
+                }
+                (w[f.len()], w[f.len() + 1]) = (co, st);
+                Some((usize::from(layer), w, f.len() + 2))
+            };
+            let mut count = [0u32; LAYERS];
+            for i in 0..n {
+                if let Some((l, ..)) = row_of(i) {
+                    count[l] += 1;
+                }
+            }
+            let mut table = Table::default();
+            table.layout(kind, &count, true);
+            let mut slots = Vec::new();
+            for i in 0..n {
+                slots.push(match row_of(i) {
+                    Some((l, w, len)) => {
+                        let s = table.take(l).expect("laid out");
+                        row(&mut table.bytes, STRIDE[kind], s as usize, &w[..len]);
+                        s
+                    }
+                    None => NO_SLOT,
+                });
+            }
+            (table.bytes, slots)
+        }
+        let mut rng = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |m: u32| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng % u64::from(m)) as i32
+        };
+        let mut packed = InstanceRows::default();
+        for round in 0..40 {
+            let mut palette = Palette::xschem_dark();
+            palette.color[next(8) as usize] &= !0xff; // a hidden layer
+            palette.fill ^= 1 << next(8);
+            palette.width[next(8) as usize] = next(5) as f32 + 0.5;
+            let mut t = CanvasPrims::default();
+            for _ in 0..next(400) {
+                let (x, y) = (next(1_000_000), next(600_000));
+                let layer = next(8) as u8;
+                let style = LineStyle::new(next(5) as u8, next(16) as u8);
+                let style = if next(3) == 0 { style.filled() } else { style };
+                match next(3) {
+                    0 => t.line_styled(x, y, x + next(30_000), y - next(9_000), layer, style),
+                    1 => t.rect_styled(x, y, x + next(20_000), y + next(20_000), layer, style),
+                    _ => {
+                        let sweep = [360_000, -360_000, 90_000, -45_000][next(4) as usize];
+                        t.arc_styled(x, y, next(10_000) + 1, next(360_000), sweep, layer, style)
+                    }
+                }
+            }
+            for _ in 0..next(20) {
+                let kind = next(3) as u8;
+                let n = [t.lines.x0.len(), t.rects.x0.len(), t.arcs.cx.len()][usize::from(kind)];
+                if n > 0 {
+                    t.kill(kind, next(n as u32) as usize);
+                }
+            }
+            packed.pack(0, &t, &palette, Change::All);
+            for (c, &kind) in ONE_TO_ONE.iter().enumerate() {
+                let (bytes, slots) = reference(&t, c, &palette);
+                assert_eq!(
+                    packed.bytes(0, kind),
+                    &bytes[..],
+                    "round {round}, column {c}"
+                );
+                assert_eq!(
+                    packed.slots[0][c], slots,
+                    "round {round}, column {c}: slots"
+                );
+            }
         }
     }
 

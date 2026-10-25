@@ -986,6 +986,23 @@ bytes and the pane entries that moved. p50 / p95 ms.
 - **GPU**: unchanged (the kept rows draw what the per-frame batch drew, plus the free slots,
   which are zero-area quads). The pan p95 0.93 → 0.67 is run-to-run noise in the timestamps.
 
+### The whole-table pack (2026-10-25)
+
+`render::gpu::InstanceRows::pack` with `Change::All` (a document opened, a palette changed, a
+diff that gave up): `render/tests/perf.rs` `pack_100k_whole`, the 100k fixture (70k lines,
+15k rects, 10k arcs, the polys; 2.9 MB of rows), median of 20 packs, release, load ≈ 10, the
+two builds back to back, three runs each:
+
+| | median | max (the first pack: cold pens, allocations) |
+|---|---|---|
+| before (two passes, each resolving the row's pen through the palette) | 2.81–2.82 ms | 4.7–5.6 ms |
+| after (pens cached per palette, a `u8` key column, fixed-size row writes) | 0.67–0.70 ms | 1.7–2.8 ms |
+
+Where the 0.7 ms goes (temporary laps, one run): keying 0.16 ms, layout (zeroing the rows)
+0.07 ms, writing 0.35 ms, polygons and polylines 0.12 ms. The rows are byte-identical to the
+old pack's (`the_pack_equals_the_per_row_reference`, which keeps the old per-row pack as its
+oracle).
+
 ## Binary size
 
 D39 (amended 2026-10-11): the headless core `schemify` ≤ 2 MB, the editor `schemify-gui` ≤
