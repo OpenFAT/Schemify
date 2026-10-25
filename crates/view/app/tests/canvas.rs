@@ -13,7 +13,7 @@ mod common;
 use common::{Session, U, VIEW};
 use schemify_canvas::{CanvasPrims, LAYER_DEAD};
 use schemify_editor::checks;
-use schemify_render::vello::peniko::Color;
+use schemify_render::peniko::Color;
 use schemify_render::{CpuPainter, Pixmap};
 
 struct Rng(u64);
@@ -517,7 +517,7 @@ fn an_edit_refills_the_plugin_snapshot_on_the_next_tick() {
 #[test]
 fn a_pan_or_zoom_frame_writes_no_instance_bytes() {
     use schemify_render::gpu::InstanceRows;
-    use schemify_render::vello::kurbo::Affine;
+    use schemify_render::kurbo::Affine;
     use schemify_render::{Batch, GpuPainter};
     use schemify_ui::{Button, InputEvent};
     let mut s = Session::open("inv", "top.shcomp", "zero-bytes", true);

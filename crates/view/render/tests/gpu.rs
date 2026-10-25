@@ -13,11 +13,11 @@ use std::time::Instant;
 use schemify_canvas::{Camera, CanvasPrims, LineStyle, Marks, Palette, PrimKind};
 use schemify_render::canvas::{self, CanvasScratch};
 use schemify_render::gpu::{Change, Frame, InstanceRows, Pipelines};
-use schemify_render::vello::kurbo::{Affine, Rect};
-use schemify_render::vello::peniko::Color;
-use schemify_render::vello::{Glyph, wgpu};
+use schemify_render::kurbo::{Affine, Rect};
+use schemify_render::peniko::Color;
 use schemify_render::widgets::{UiScratch, draw_math, draw_prose, draw_text, draw_ui};
 use schemify_render::{Batch, CpuPainter, GpuPainter, Painter};
+use schemify_render::{Glyph, wgpu};
 use schemify_ui::{Kind, Layer, Strings, TextSystem, UiState, compose, layout, records};
 
 mod common;
@@ -252,7 +252,7 @@ fn amplified_diff(name: &str, gpu: &[u8], cpu: &[u8], (w, h): (u32, u32)) {
         .zip(gpu.chunks_exact(4).zip(cpu.chunks_exact(4)))
     {
         let d = |k: usize| a[k].abs_diff(b[k]).saturating_mul(8);
-        *o = schemify_render::vello::peniko::color::PremulRgba8 {
+        *o = schemify_render::peniko::color::PremulRgba8 {
             r: d(0),
             g: d(1),
             b: d(2),

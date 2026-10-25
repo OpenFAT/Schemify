@@ -8,8 +8,8 @@
 //! [`schemify_wave::decimate`] or [`schemify_wave::logic_runs`] (which scan the visible samples
 //! once), O(samples) per histogram trace, plus shaping the tick and legend labels.
 
-use vello::kurbo::{BezPath, Rect};
-use vello::peniko::Color;
+use kurbo::{BezPath, Rect};
+use peniko::Color;
 
 use schemify_ui::graph::{log_ticks, tick_digits, ticks};
 use schemify_ui::parley::Layout;

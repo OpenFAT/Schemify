@@ -11,9 +11,8 @@
 use std::sync::Arc;
 
 use accesskit::{Action, TreeUpdate};
-use vello::kurbo::Affine;
-use vello::peniko::Color;
-use vello::wgpu;
+use kurbo::Affine;
+use peniko::Color;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, StartCause, WindowEvent};
@@ -157,11 +156,7 @@ impl Gpu {
             info.name, info.device_type, info.backend
         );
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                required_features: adapter.features()
-                    & (wgpu::Features::CLEAR_TEXTURE | wgpu::Features::PIPELINE_CACHE),
-                ..Default::default()
-            })
+            .request_device(&wgpu::DeviceDescriptor::default())
             .await
             .map_err(|e| e.to_string())?;
         let caps = surface.get_capabilities(&adapter);

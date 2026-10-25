@@ -89,7 +89,7 @@ UI and visual work has its own guides under [skills/](skills/), read as document
 4. **Determinism.** The same input gives byte-identical output on Linux, macOS, Windows and the web: ordered collections in output paths, i32 milli-unit coordinates where the spec says i32 (D33), fixed reduction order.
 5. **Asserts** (TigerStyle). At least two per function on average: entry invariants and one exit invariant, positive and negative space, split rather than compound. Every table has a stated capacity; every loop and queue is bounded.
 6. **Safe Rust**: `#![forbid(unsafe_code)]`, unless a profile proves the need and a `// SAFETY:` comment states the obligation.
-7. **Dependencies** climb the ladder: stdlib, an existing dependency, a few lines of our own, then a new dependency justified in the PR. GPU and window crates (vello, wgpu, winit) live in `crates/view/`, wasmi in `plugin`, Lua in `config`; `tests/deps.rs` checks the headless core and the model.
+7. **Dependencies** climb the ladder: stdlib, an existing dependency, a few lines of our own, then a new dependency justified in the PR. GPU and window crates (wgpu, winit, vello_cpu) live in `crates/view/`, wasmi in `plugin`, Lua in `config`; `tests/deps.rs` checks the headless core and the model.
 8. **Inert design files** (D7): nothing in a `.sh*` file can run a command.
 9. **Exhaustive boundary matches**: a `match` over an enum that crosses a crate boundary lists every variant, so a new variant is a compiler-listed set of sites.
 10. **Marked simplifications**: `// ponytail: <ceiling and upgrade path>`.

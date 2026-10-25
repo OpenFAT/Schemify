@@ -22,9 +22,9 @@ use std::time::Instant;
 
 use schemify_editor::editor::{Editor, Options};
 use schemify_render::gpu::{InstanceRows, Pipelines};
-use schemify_render::vello::kurbo::Affine;
-use schemify_render::vello::peniko::Color;
-use schemify_render::vello::wgpu;
+use schemify_render::kurbo::Affine;
+use schemify_render::peniko::Color;
+use schemify_render::wgpu;
 use schemify_render::{Batch, GpuPainter};
 use schemify_ui::{Button, Chord, InputEvent, InputEvents};
 
@@ -185,7 +185,7 @@ impl Gpu {
             .find(|a| a.get_info().name.to_lowercase().contains(&want))?;
         let name = adapter.get_info().name;
         let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features: need | (adapter.features() & wgpu::Features::CLEAR_TEXTURE),
+            required_features: need,
             ..Default::default()
         }))
         .ok()?;
@@ -682,7 +682,7 @@ fn frame_times_1m() {
 /// 8 ms frame) and zooms in bursts of wheel notches; every frame is whole, so none asks for
 /// another. `grid` false turns the grid off (its share of the frame). Before the instanced
 /// canvas the view switcher floating over the canvas sent every frame through vello (5.5 ms
-/// GPU per pan frame at 1×, 14 ms at 2×, on the Intel iGPU); no frame calls vello now.
+/// GPU per pan frame at 1×, 14 ms at 2×, on the Intel iGPU); vello is gone (D5, 2026-10-25).
 ///
 /// Prints frame times (`report`); `grid_keeps_up_with_pan_and_zoom` runs it at 1× and 2×, 6
 /// and 40 px per frame, grid on and off.
@@ -1598,7 +1598,7 @@ fn gpu_editor_frame_matches_cpu_frame() {
                 .zip(gpu.chunks_exact(4).zip(cpu.chunks_exact(4)))
             {
                 let d = |k: usize| p[k].abs_diff(q[k]).saturating_mul(8);
-                *o = schemify_render::vello::peniko::color::PremulRgba8 {
+                *o = schemify_render::peniko::color::PremulRgba8 {
                     r: d(0),
                     g: d(1),
                     b: d(2),
@@ -1648,7 +1648,7 @@ fn report_cpu(what: &str, t: &mut Vec<(f64, f64)>) {
 
 /// What a frame costs when the CPU rasterizes it whole (`CpuPainter`: vello_cpu, one thread,
 /// a fresh 1280×800 pixmap per frame), for the same gestures as `frame_times` and
-/// `interactions` at 100k objects: decides whether the window needs vello on the GPU at all.
+/// `interactions` at 100k objects: the cost of a frame with no GPU (the web's last-resort painter).
 /// `cargo test --release -p schemify-app --test perf -- --ignored --nocapture cpu_frames`
 #[test]
 #[ignore = "release-mode benchmark"]

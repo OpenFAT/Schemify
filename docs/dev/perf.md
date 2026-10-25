@@ -899,6 +899,22 @@ inline `draw_prims` under the clip, the status bar is drawn directly as a painte
 layers always drew it); every render and app golden passes `check_golden` and none was
 re-blessed.
 
+### Step 4: vello's GPU renderer out of the graph (2026-10-25)
+
+`vello`, `vello_encoding` and `vello_shaders` are gone from `Cargo.lock` (`cargo tree -i vello`
+matches no package); `render` names `kurbo`, `peniko` and `wgpu` itself. Nothing called vello's
+`Renderer` since step 3, so LTO had already dropped its code and shaders: the bytes barely move.
+Built 2026-10-25 on x86_64-linux, before = 5635595b, after = this step:
+
+| | Before | After | Change |
+|---|---:|---:|---:|
+| `schemify-gui`, native (`tools/size-check.sh`: stripped, fat LTO) | 18,247,192 | 18,239,000 | −8 K |
+| `schemify_bg.wasm` (release, after `wasm-bindgen --target web`) | 14,572,633 | 14,569,867 | −3 K |
+| the same, `gzip -9` | 4,715,942 | 4,715,150 | −1 K |
+
+The win is the build: three crates and naga's WGSL-to-WGSL path for vello's shaders no longer
+compile. Step 5 (WebGL2) adds wgpu's GL backend to the wasm: § WebGL2 tier below.
+
 ## Binary size
 
 D39 (amended 2026-10-11): the headless core `schemify` ≤ 2 MB, the editor `schemify-gui` ≤
@@ -974,7 +990,7 @@ No regression beyond noise: the table touches no crate on these paths.
 | Group | K |
 |---|---:|
 | Our crates (with the generics they instantiate) | 2,825 |
-| GPU: wgpu, naga, vello | 2,266 |
+| GPU: wgpu, naga, vello (vello left in step 4 of the GPU canvas pipelines; already dead code then) | 2,266 |
 | Text: parley, harfrust, skrifa, read-fonts, fontique, ICU | 1,618 |
 | Accessibility: accesskit, zbus/zvariant, async runtime | 1,141 |
 | LaTeX: ratex + regex, fancy-regex, regex-lite, aho-corasick | 927 |
@@ -999,7 +1015,6 @@ with owners:
 | Hot crates at `opt-level = "s"` (ours, text, vello, wasmi) | editor ≈ −2 M, core ≈ −0.4 M (all-`s` core measured 2,401,304 before the flags) | frame time to be measured; user decision |
 | One shared sort instantiation: `elab` alone instantiates 312 K of `slice::sort` code (113 instances), `format` 77 K, `netlist` 55 K, `run` 43 K, `doc` 25 K | both ≈ −0.4 M | elab, format, netlist, run, doc owners |
 | ratex: put mhchem (`\ce`, three regex engines + serde_json + 175 K of JSON) behind a feature | editor ≈ −0.8 M | upstream ratex-parser |
-| vello: ship minified WGSL | editor ≈ −0.2 M | upstream vello_shaders |
 | Drop the GLES backend | editor −0.18 M | loses non-Vulkan Linux GPUs |
 
 Even all of them leave the editor near 12 M: the 10 M budget needs a feature-level decision

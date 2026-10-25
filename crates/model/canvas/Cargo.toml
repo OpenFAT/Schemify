@@ -9,6 +9,6 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-# Geometry only (`Rect` for the camera's view); the same kurbo vello re-exports, so the
+# Geometry only (`Rect` for the camera's view); the same kurbo render re-exports, so the
 # renderer and the editor name one type. No GPU, window or text crate here (tests/deps.rs).
 kurbo.workspace = true

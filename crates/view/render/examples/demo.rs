@@ -9,7 +9,7 @@
 
 use schemify_canvas::{Camera, CanvasPrims, Marks, Palette, PrimKind};
 use schemify_render::canvas::{self, CanvasScratch};
-use schemify_render::vello::kurbo::Rect;
+use schemify_render::kurbo::Rect;
 use schemify_render::widgets::{UiScratch, draw_ui};
 use schemify_render::{App, Painter, run};
 use schemify_ui::{

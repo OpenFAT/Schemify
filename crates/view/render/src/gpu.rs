@@ -44,8 +44,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use vello::kurbo::Rect;
-use vello::wgpu;
+use kurbo::Rect;
 
 use crate::atlas::ATLAS_SIDE;
 use crate::batch::{self, Batch, Stage, What};
@@ -1204,7 +1203,7 @@ impl Pipelines {
                 continue;
             }
             assert!(
-                image.format == vello::peniko::ImageFormat::Rgba8,
+                image.format == peniko::ImageFormat::Rgba8,
                 "prose images are RGBA8"
             );
             let size = (image.width, image.height);

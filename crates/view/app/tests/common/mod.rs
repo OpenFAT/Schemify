@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use schemify_editor::editor::{Editor, Options};
 use schemify_editor::geometry::Pt;
 use schemify_render::CpuPainter;
-use schemify_render::vello::peniko::Color;
+use schemify_render::peniko::Color;
 use schemify_ui::{Button, Chord, InputEvent, InputEvents, Mods};
 
 /// Logical window size of every scripted session.

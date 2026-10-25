@@ -1,9 +1,9 @@
 //! Paints `ui_layout` rows: backgrounds, borders, text, indicators, and the `math`
 //! widget. Reads the UI tables; writes only painter calls.
 
-use vello::Glyph;
-use vello::kurbo::{Affine, BezPath, Rect};
-use vello::peniko::Color;
+use kurbo::{Affine, BezPath, Rect};
+use peniko::Color;
+use vello_cpu::Glyph;
 
 use schemify_ui::icon::{ICON_BOX, ICON_STROKE, Icon};
 use schemify_ui::math::{MathFonts, MathList, MathPaths, Verb};
@@ -21,7 +21,7 @@ pub struct UiScratch {
     glyphs: Vec<Glyph>,
     coords: Vec<i16>,
     path: BezPath,
-    images: Vec<vello::peniko::ImageData>,
+    images: Vec<peniko::ImageData>,
 }
 
 /// A `ui_layout` rect as a kurbo rect.
@@ -204,12 +204,12 @@ fn draw_row<P: Painter>(
         let path = &mut scratch.path;
         path.truncate(0);
         if style(StyleProp::Radius) > 0 {
-            path.extend(vello::kurbo::Shape::path_elements(
-                &vello::kurbo::Circle::new(b.center(), size / 2.0),
+            path.extend(kurbo::Shape::path_elements(
+                &kurbo::Circle::new(b.center(), size / 2.0),
                 0.1,
             ));
         } else {
-            path.extend(vello::kurbo::Shape::path_elements(&b.inset(-0.5), 0.1));
+            path.extend(kurbo::Shape::path_elements(&b.inset(-0.5), 0.1));
         }
         p.stroke_path(path, 1.0, fg);
         if n.is_checked(strings, node) {
@@ -387,8 +387,8 @@ pub fn draw_math<P: Painter>(
         p.glyphs(fonts.face(face), px, &[], color, at, &scratch.glyphs);
     }
     for r in &list.rules {
-        let a = at * vello::kurbo::Point::new(f64::from(r[0]), f64::from(r[1]));
-        let b = at * vello::kurbo::Point::new(f64::from(r[0] + r[2]), f64::from(r[1] + r[3]));
+        let a = at * kurbo::Point::new(f64::from(r[0]), f64::from(r[1]));
+        let b = at * kurbo::Point::new(f64::from(r[0] + r[2]), f64::from(r[1] + r[3]));
         p.fill_rect(Rect::from_points(a, b), color);
     }
     let em = list.glyph_px.first().copied().unwrap_or(16.0);
@@ -420,7 +420,7 @@ fn draw_paths<P: Painter>(
             let mut take = || {
                 let q = paths.pt[pt];
                 pt += 1;
-                at * vello::kurbo::Point::new(f64::from(q[0]), f64::from(q[1]))
+                at * kurbo::Point::new(f64::from(q[0]), f64::from(q[1]))
             };
             for v in &paths.verb[v0..v1 as usize] {
                 match v {

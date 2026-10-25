@@ -22,9 +22,9 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
-use vello::Glyph;
-use vello::kurbo::{Affine, BezPath, Cap, Join, PathEl, Point, Rect, Shape, Stroke};
-use vello::peniko::{Color, FontData, ImageData};
+use kurbo::{Affine, BezPath, Cap, Join, PathEl, Point, Rect, Shape, Stroke};
+use peniko::{Color, FontData, ImageData};
+use vello_cpu::Glyph;
 
 use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
 use schemify_ui::TextSystem;
@@ -423,12 +423,7 @@ impl GpuPainter<'_> {
                             .glyph_run(res, font)
                             .font_size(px)
                             .normalized_coords(coords);
-                        let one = vello_cpu::Glyph {
-                            id: g.id,
-                            x: g.x,
-                            y: g.y,
-                        };
-                        let _ = run.fill_glyphs(std::iter::once(one));
+                        let _ = run.fill_glyphs(std::iter::once(*g));
                     })
                 };
                 let (w, h) = if cov.is_empty() { (0, 0) } else { (w, h) };
@@ -514,12 +509,7 @@ impl GpuPainter<'_> {
                             .glyph_run(res, font)
                             .font_size(px)
                             .normalized_coords(coords);
-                        let one = vello_cpu::Glyph {
-                            id: g.id,
-                            x: g.x,
-                            y: g.y,
-                        };
-                        let _ = run.fill_glyphs(std::iter::once(one));
+                        let _ = run.fill_glyphs(std::iter::once(*g));
                     })
                 };
                 let (w, h) = if cov.is_empty() { (0, 0) } else { (w, h) };
@@ -574,7 +564,7 @@ impl GpuPainter<'_> {
                                     ctx.stroke_path(path);
                                 }
                                 None => {
-                                    ctx.set_fill_rule(vello::peniko::Fill::NonZero);
+                                    ctx.set_fill_rule(peniko::Fill::NonZero);
                                     ctx.fill_path(path);
                                 }
                             }
@@ -623,10 +613,10 @@ impl GpuPainter<'_> {
         };
         let tol = 0.1 / self.device_scale();
         if stroke.dash_pattern.is_empty() {
-            vello::kurbo::flatten(path, tol, &mut each);
+            kurbo::flatten(path, tol, &mut each);
         } else {
-            let dashed = vello::kurbo::dash(path.iter(), stroke.dash_offset, &stroke.dash_pattern);
-            vello::kurbo::flatten(dashed, tol, &mut each);
+            let dashed = kurbo::dash(path.iter(), stroke.dash_offset, &stroke.dash_pattern);
+            kurbo::flatten(dashed, tol, &mut each);
         }
         flush(&mut pts, false);
         for s in segs {

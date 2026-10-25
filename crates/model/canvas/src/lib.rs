@@ -14,7 +14,7 @@
 //! 2. **How many.** 10^2–10^5 visible primitives per frame (D39 budgets 120 fps at 10^5).
 //! 3. **How wide.** Coordinates `i32` milli-units (±2.1 M covers the corpus, D33); layer `u8`
 //!    (xschem has 22); arc angles `i32` millidegrees; text size `i32` milli-units; screen math
-//!    in `f64` (the camera) and `f32` only at the GPU boundary (vello's encoding).
+//!    in `f64` (the camera) and `f32` only at the GPU boundary (the instance rows).
 //! 4. **Access.** Every frame reads all coordinates of one primitive kind in one linear pass;
 //!    layer decides the batch. So each kind is SoA (`x0`, `y0`, … columns) and batching is by
 //!    layer into reused paths: one draw call per (layer, stroke|fill), not per primitive.

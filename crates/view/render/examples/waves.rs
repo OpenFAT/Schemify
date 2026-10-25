@@ -265,8 +265,8 @@ impl App for Viewer {
         access::access_tree(&self.tables, &self.frame, &self.strings, &self.state)
     }
 
-    fn background(&self) -> schemify_render::vello::peniko::Color {
-        schemify_render::vello::peniko::Color::from_rgba8(0xd9, 0xd9, 0xd9, 0xff)
+    fn background(&self) -> schemify_render::peniko::Color {
+        schemify_render::peniko::Color::from_rgba8(0xd9, 0xd9, 0xd9, 0xff)
     }
 }
 

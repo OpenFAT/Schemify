@@ -7,8 +7,8 @@
 
 use schemify_canvas::{Camera, CanvasPrims, Marks, Palette, PrimKind};
 use schemify_render::canvas::{self, CanvasScratch};
-use schemify_render::vello::kurbo::{Affine, Rect};
-use schemify_render::vello::peniko::Color;
+use schemify_render::kurbo::{Affine, Rect};
+use schemify_render::peniko::Color;
 use schemify_render::widgets::{UiScratch, draw_math, draw_ui};
 use schemify_render::{CpuPainter, Painter};
 use schemify_ui::{Kind, Layer, Strings, TextSystem, UiState, compose, layout, records};

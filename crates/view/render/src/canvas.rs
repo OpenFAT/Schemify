@@ -22,9 +22,9 @@
 
 use std::collections::HashMap;
 
-use vello::Glyph;
-use vello::kurbo::{Affine, BezPath, Cap, Join, Rect, Stroke};
-use vello::peniko::FontData;
+use kurbo::{Affine, BezPath, Cap, Join, Rect, Stroke};
+use peniko::FontData;
+use vello_cpu::Glyph;
 
 use schemify_ui::TextSystem;
 use schemify_ui::parley::PositionedLayoutItem;
@@ -766,18 +766,18 @@ mod tests {
     struct Strokes(usize);
 
     impl Painter for Strokes {
-        fn fill_rect(&mut self, _: Rect, _: vello::peniko::Color) {}
-        fn fill_path(&mut self, _: &BezPath, _: vello::peniko::Color) {}
-        fn stroke_path(&mut self, path: &BezPath, _: f64, _: vello::peniko::Color) {
+        fn fill_rect(&mut self, _: Rect, _: peniko::Color) {}
+        fn fill_path(&mut self, _: &BezPath, _: peniko::Color) {}
+        fn stroke_path(&mut self, path: &BezPath, _: f64, _: peniko::Color) {
             self.0 += path.elements().len();
         }
-        fn stroke_styled(&mut self, _: &BezPath, _: &Stroke, _: vello::peniko::Color) {}
+        fn stroke_styled(&mut self, _: &BezPath, _: &Stroke, _: peniko::Color) {}
         fn glyphs(
             &mut self,
             _: &FontData,
             _: f32,
             _: &[i16],
-            _: vello::peniko::Color,
+            _: peniko::Color,
             _: Affine,
             _: &[Glyph],
         ) {

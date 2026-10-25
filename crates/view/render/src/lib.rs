@@ -22,12 +22,12 @@
 //! from the rows [`schemify_canvas::CanvasDiff`] reports changed), drawn by Schemify's own
 //! instanced pipelines ([`gpu`]), so a pan or zoom writes one camera uniform. On the CPU,
 //! [`canvas::draw_rows`] rasterizes the same rows, the goldens' oracle. Every frame is
-//! complete: there is no tile cache, and vello's GPU renderer draws nothing.
+//! complete: there is no tile cache and no vector renderer on the GPU.
 //!
 //! ```
 //! use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
 //! use schemify_render::{CpuPainter, Painter, canvas::*};
-//! use vello::kurbo::Rect;
+//! use schemify_render::kurbo::Rect;
 //!
 //! let mut prims = CanvasPrims::default();
 //! prims.line(0, 0, 100_000, 0, 1);
@@ -38,7 +38,7 @@
 //! let mut text = schemify_ui::TextSystem::new();
 //! draw_canvas(&mut p, view, &cam, 20_000, &prims, &Palette::xschem_dark(),
 //!     &CanvasPrims::default(), &Marks::default(), &mut text, &mut CanvasScratch::default());
-//! let pixels = p.finish(vello::peniko::Color::BLACK);
+//! let pixels = p.finish(schemify_render::peniko::Color::BLACK);
 //! assert_eq!(pixels.width(), 64);
 //! ```
 
@@ -61,8 +61,9 @@ pub use painter::{Chains, CpuPainter, Painter, rgba};
 pub use vello_cpu::Pixmap;
 pub use window::{App, RunError, Waker, run};
 
-/// Re-exported so callers name the same scene, geometry and color types.
-pub use vello;
+/// Re-exported so callers name the same geometry, colour, glyph and GPU types.
+pub use vello_cpu::Glyph;
+pub use {kurbo, peniko, wgpu};
 
 /// Re-exported for [`App::access`]'s return type.
 pub use accesskit;

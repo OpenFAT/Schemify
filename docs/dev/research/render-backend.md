@@ -450,7 +450,7 @@ is the count of existing function bodies edited.
 | 1 (done) | **`render::gpu` rows and pipelines for canvas primitives**, drawn straight into the surface texture under the vello UI frame. The vello target becomes premultiplied and blended over the canvas pass instead of blitted opaque. `paint.rs` calls `canvas::draw` instead of `draw_cached` on the GPU painter. | per-kind GPU vs `CpuPainter` tolerance test; row-patch oracle (patched rows = rebuilt rows after random kill/append sequences); `frame_times_100k` GPU column | 6 (`Shell::render`, `Gpu::new`, `paint::frame`'s canvas call, `ScenePainter` canvas hook, `perf.rs` `Gpu::render`, `gpu.rs` render helper) |
 | 2 (done) | **Delete the tile cache**: `tiles.rs`, the canvas use of `layers.rs`, `CanvasCache` in `paint::Caches`, LOD masks, and the cache tests and perf.md rows | goldens unchanged; `frame_times_100k`, `interactions_100k` | 4 (`paint::Caches`, `paint::frame`, `Editor::painted`'s partial-record wake, `wake_ms`'s "partly recorded" arm) |
 | 3 (done) | **Glyph atlas and UI batch.** `GpuPainter` implements every `Painter` method; canvas text moves to atlas quads | glyph mask vs `CpuPainter` glyph raster per size bucket; app goldens unchanged (CPU); hover and type frames' GPU time on the iGPU | 3 (`Painter` impl split, `draw_texts`, `widgets::draw_text`) |
-| 4 | **Remove vello (GPU)**: `layers.rs`, the window's vello target and blit; the `vello` dependency goes, `vello_cpu` stays. Amend D5. | `tools/size-check.sh` before and after; all tests | 2 (`Gpu::new`, `Shell::render`) |
+| 4 (done) | **Remove vello (GPU)**: `layers.rs`, the window's vello target and blit; the `vello` dependency goes, `vello_cpu` stays. Amend D5. | `tools/size-check.sh` before and after; all tests | 2 (`Gpu::new`, `Shell::render`) |
 | 5 | **WebGL2.** Enable wgpu `webgl` on wasm32; the WebGPU-unusable path tries WebGL2 before `cpu_view` (web spec §7 amended) | the web smoke test on headless Chrome with WebGPU disabled shows GPU frames | 2 (`Gpu::new` on wasm, `UserEvent::NoGpu` arm) |
 | 6 | **Buckets and far-zoom LOD** for 1M: rows grouped by `PrimIndex` cell, visible bucket ranges per frame, glyph draw skipped below 3 px, overview texture below 2 px per line | `frame_times_1m` GPU column on the iGPU under 8.3 ms; overview vs full draw tolerance test | 2 (`GpuRows::apply`, `canvas::draw`) |
 
@@ -613,6 +613,19 @@ stays in `Cargo.toml` for its kurbo, peniko and wgpu re-exports (step 4). Number
   `docs_preview_modern` (14), `primitive_modern` (6) from step 2's tile intermediate. Every
   golden now renders byte-identical to its PNG.
 
+### Step 4: done (2026-10-25)
+
+`vello`, `vello_encoding` and `vello_shaders` left the dependency graph: `cargo tree -i vello
+--target all` matches no package. `render` depends on `kurbo`, `peniko` and `wgpu` directly (the
+versions vello pinned: 0.13.1, 0.6.1, 30.0.1) and re-exports them with `vello_cpu::Glyph`, so
+callers write `schemify_render::{kurbo, peniko, wgpu, Glyph}` instead of
+`schemify_render::vello::…`. The glyph type is now vello_cpu's own, so the copies between the two
+`Glyph` structs went. The window no longer asks for `CLEAR_TEXTURE` and `PIPELINE_CACHE`, which
+only vello used. D5 is amended (decisions.md, 2026-10-25). `layers.rs`, the vello target and the
+blit were already gone in step 3, so the change radius is 1 (`Gpu::new`'s device request) plus
+the import paths. Sizes in [perf.md](../perf.md) § GPU canvas pipelines, step 4: −8 K native,
+−1 K gzip wasm, because LTO had already dropped the uncalled renderer.
+
 ## 6. Risks
 
 | Risk | Mitigation |
@@ -627,7 +640,7 @@ stays in `Cargo.toml` for its kurbo, peniko and wgpu re-exports (step 4). Number
 | GPU output differs by driver | Goldens stay CPU; GPU tests use tolerances, as today. |
 | Buffer growth past capacity | Capacity doubling with `copy_buffer_to_buffer`, asserted against 2^22 rows per kind. |
 
-## 7. Proposed decisions.md amendment (not applied)
+## 7. Proposed decisions.md amendment (applied 2026-10-25, reworded: decisions.md's D5 row of that date)
 
 > | 2026-10-24 | D5, D39 | **Schemify draws with its own instanced wgpu pipelines; vello's GPU renderer is dropped** (research: `docs/dev/research/render-backend.md`). `render::gpu` owns one retained instance buffer per primitive kind (lines, rects, arcs, segments, glyph quads), patched from `CanvasDiff` rows. Pan and zoom write one camera uniform, and every frame is one render pass straight into the surface (no intermediate texture, no blit, no tile cache, no layer compositor). Text and math are drawn as quads from a glyph atlas filled from parley glyph runs; UI widgets go through the same instance kinds per frame. `vello_cpu` stays as the CPU `Painter` for goldens and the no-GPU web fallback. The pipelines use no compute and no storage buffers, so the web build draws on the GPU under WebGPU and WebGL2. Measured 2026-10-24 at 100k objects: pan/zoom 0.30–0.40 ms GPU and ≤ 0.1 ms CPU on the RTX 4060, 2.9–5.5 ms GPU on the Raptor Lake iGPU, against vello re-encoding at 2.1 ms GPU + 8.8 ms CPU and 30.7 ms GPU + 9.1 ms CPU. Input-to-present latency is set by the window's frame pacing, not by the renderer (same note, § 1). |
 

@@ -13,10 +13,10 @@
 use schemify_canvas::kurbo::{Affine, BezPath, Rect as KRect, Stroke};
 use schemify_canvas::{Camera, CanvasDiff, CanvasPrims, PrimIndex, Rows, TableChange};
 use schemify_editor::editor::{CanvasPicture, DockPicture, Editor, GraphPicture, Picture, UiView};
+use schemify_render::Glyph;
 use schemify_render::canvas::{self, CanvasScratch};
 use schemify_render::gpu::{Change, Frame};
-use schemify_render::vello::Glyph;
-use schemify_render::vello::peniko::{Color, FontData};
+use schemify_render::peniko::{Color, FontData};
 use schemify_render::waves::{WaveLook, WaveScratch, draw_window};
 use schemify_render::widgets::{UiScratch, draw_ui};
 use schemify_render::{Painter, rgba};

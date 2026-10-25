@@ -142,7 +142,7 @@ fn sd_box(p: vec2<f32>, h: vec2<f32>) -> f32 {
 
 // The point of a stroke of length `len` nearest to position `s` along it: `s` clamped to the
 // stroke, or with dashes and gaps of `d` px each from its start (`d > 0`; the last dash
-// clipped at `len`, vello's dashing) the nearest point of the nearest dash.
+// clipped at `len`, vello_cpu's dashing) the nearest point of the nearest dash.
 fn dash_near(s: f32, len: f32, d: f32) -> f32 {
     let sc = clamp(s, 0.0, len);
     if d <= 0.0 {
@@ -268,7 +268,7 @@ fn fs_seg(o: SegOut) -> @location(0) vec4<f32> {
     let q = o.p - o.a;
     let s = dot(q, t);
     let hw = o.par.x;
-    // A capsule: round caps; a dashed stroke is round-capped dashes (vello strokes each one).
+    // A capsule: round caps; a dashed stroke is round-capped dashes (vello_cpu strokes each one).
     // Within the span (a pixel whole inside it along the stroke) the coverage is the exact area
     // of the band the stroke covers; at the ends the distance approximation of the caps.
     let h = dash_near(s, len, o.par.y);

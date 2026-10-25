@@ -5,9 +5,9 @@
 //! Both draw the canvas from the instance rows [`crate::gpu`] packs ([`Painter::canvas`]): the
 //! GPU painter leaves them to the window's instanced pass, the CPU painter rasterizes them.
 
-use vello::Glyph;
-use vello::kurbo::{Affine, BezPath, Rect, Shape, Stroke};
-use vello::peniko::{Color, Fill, FontData, ImageData, ImageSampler};
+use kurbo::{Affine, BezPath, Rect, Shape, Stroke};
+use peniko::{Color, Fill, FontData, ImageData, ImageSampler};
+use vello_cpu::Glyph;
 
 use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
 use schemify_ui::TextSystem;
@@ -128,9 +128,9 @@ pub(crate) fn image_data(cache: &mut Vec<ImageData>, image: &schemify_ui::Image)
         cache.clear();
     }
     let d = ImageData {
-        data: vello::peniko::Blob::new(image.rgba.clone()),
-        format: vello::peniko::ImageFormat::Rgba8,
-        alpha_type: vello::peniko::ImageAlphaType::AlphaPremultiplied,
+        data: peniko::Blob::new(image.rgba.clone()),
+        format: peniko::ImageFormat::Rgba8,
+        alpha_type: peniko::ImageAlphaType::AlphaPremultiplied,
         width: image.width,
         height: image.height,
     };
@@ -314,11 +314,7 @@ impl Painter for CpuPainter {
             .font_size(px)
             .normalized_coords(coords);
         // A glyph the face cannot outline is skipped by vello_cpu; the rest of the run still draws.
-        let _ = run.fill_glyphs(glyphs.iter().map(|g| vello_cpu::Glyph {
-            id: g.id,
-            x: g.x,
-            y: g.y,
-        }));
+        let _ = run.fill_glyphs(glyphs.iter().copied());
     }
 
     fn push_clip(&mut self, r: Rect) {

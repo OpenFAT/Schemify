@@ -13,8 +13,9 @@ schemify-ui.workspace = true
 schemify-canvas.workspace = true
 # Waveform panes (D23): trace columns, decimation, axes.
 schemify-wave.workspace = true
-vello.workspace = true
 vello_cpu.workspace = true
+kurbo.workspace = true
+peniko.workspace = true
 winit.workspace = true
 accesskit.workspace = true
 accesskit_winit.workspace = true
@@ -22,7 +23,7 @@ accesskit_winit.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster.workspace = true
 
-# GPU backends, one set per platform (vello draws through wgpu, D5): Vulkan with a GL
+# GPU backends, one set per platform (render's own pipelines, D5): Vulkan with a GL
 # fallback on Linux/BSD, Metal on macOS, DX12 on Windows, WebGPU on the web.
 [target.'cfg(not(any(target_arch = "wasm32", target_vendor = "apple", windows)))'.dependencies]
 wgpu = { workspace = true, features = ["vulkan", "gles"] }
