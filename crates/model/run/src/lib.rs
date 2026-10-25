@@ -68,8 +68,8 @@ mod sweep;
 
 pub use jobs::{DEFAULT, JOBS_MAX, Jobs, NO_SAMPLE, Select, State, expand};
 
-/// The simulators a native run starts (run spec §5), in detection order: ESPice first, the
-/// simulator the release packages ship (user decision 2026-10-25); the other dialects
+/// The simulators a native run starts (run spec §5), in detection order: ESPice first (user
+/// decision 2026-10-25: the default simulator, installed separately); the other dialects
 /// (HSPICE, CDL, Verilog) are netlist-only.
 pub const SIMULATORS: [schemify_elab::Dialect; 5] = [
     schemify_elab::Dialect::Espice,

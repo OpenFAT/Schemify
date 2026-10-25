@@ -1,7 +1,7 @@
 Schemify {{TAG}} (commit {{SHA}}).
 
-Assets: `schemify` and `schemify-gui` for Linux x86_64 (glibc ≥ 2.28), macOS aarch64 and x86_64, and Windows x86_64 (stripped, LTO), with ESPice
-(`espice`, the default simulator) beside them except on Windows; `.deb`, `.rpm` and Arch packages of the Linux build and an AUR `PKGBUILD`;
+Assets: `schemify` and `schemify-gui` for Linux x86_64 (glibc ≥ 2.28), macOS aarch64 and x86_64, and Windows x86_64 (stripped, LTO);
+`.deb`, `.rpm` and Arch packages of the Linux build and an AUR `PKGBUILD`;
 `schemify-{{TAG}}-web.tar.gz` is the browser build (serve the directory with any static file server; WebGPU, else WebGL2, else the CPU);
 `SHA256SUMS`. Install: docs/guide/install.md. Once published, `nix run 'github:OmarSiwy/Schemify#latest'` installs this release (sources.json).
 

@@ -1,7 +1,7 @@
 # Release tier (docs/dev/testing.md § Tiers). On a `v*` tag: build `schemify` and `schemify-gui` for
-# Linux, macOS (Apple silicon and Intel) and Windows, with ESPice (the default simulator, user
-# decision 2026-10-25) beside them on Linux and macOS; the web bundle; .deb, .rpm and Arch
-# packages and an AUR PKGBUILD from the Linux binaries; SHA256SUMS. All of it goes to a *draft*
+# Linux, macOS (Apple silicon and Intel) and Windows; the web bundle; .deb, .rpm and Arch
+# packages and an AUR PKGBUILD from the Linux binaries; SHA256SUMS. ESPice, the default
+# simulator, is an external program: nothing here builds or ships it. All of it goes to a *draft*
 # GitHub release whose notes are the release checklist (.github/release-notes.md): a maintainer
 # ticks it, then publishes. Publishing the release adds it to sources.json on main (the
 # `sources` job), which the flake's versioned packages install without compiling
@@ -22,8 +22,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # The ESPice the archives and packages ship (= flake.nix's `espice` input).
-  ESPICE_TAG: v0.3.0
   NFPM_VERSION: "2.48.0"
   RUST_TOOLCHAIN: "1.95.0" # = ci.yml
   # Shipped binaries (the flake's package profile): no debug info, LTO, no unwinding (D39 size).
@@ -34,42 +32,10 @@ env:
   CARGO_PROFILE_RELEASE_PANIC: abort
 
 jobs:
-  # ESPice for every platform that ships it, cross-compiled by Zig on one runner (ESPice's own
-  # release command; CPU baseline, no GPU backend): Linux x86_64 for glibc 2.28 like
-  # Schemify's own Linux build, macOS x86_64 and aarch64. ESPice has no Windows target.
-  espice:
-    if: github.event_name != 'release'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          repository: OmarSiwy/ESPice
-          ref: ${{ env.ESPICE_TAG }}
-      - uses: cachix/install-nix-action@v31
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-      - name: build
-        run: |
-          for t in linux-x86_64:x86_64-linux-gnu.2.28:x86_64 macos-x86_64:x86_64-macos:x86_64 macos-aarch64:aarch64-macos:generic; do
-            IFS=: read -r name target cpu <<< "$t"
-            nix develop .#ci -c zig build -Doptimize=ReleaseSafe -Dtarget="$target" -Dcpu="$cpu" \
-              -Dgpu=false -Dcuda-arch=none -Dhip-arch=none -j2 --prefix "out/$name" --summary failures
-            mkdir -p "dist/$name"
-            cp "out/$name/bin/espice" "dist/$name/"
-            cp LICENSE "dist/$name/ESPICE-LICENSE"
-          done
-          file dist/*/espice
-      - uses: actions/upload-artifact@v4
-        with:
-          name: espice
-          path: dist
-
   # macOS x86_64 is cross-compiled on the Apple-silicon runner: GitHub retired its Intel
   # macOS images, and Apple's SDK builds both architectures.
   native:
     if: github.event_name != 'release'
-    needs: espice
     strategy:
       fail-fast: false
       matrix:
@@ -91,11 +57,6 @@ jobs:
         run: |
           target="${{ matrix.target && format('--target {0}', matrix.target) || '' }}"
           cargo build --release --locked $target -p schemify-cli -p schemify-app
-      - uses: actions/download-artifact@v4
-        if: runner.os != 'Windows'
-        with:
-          name: espice
-          path: espice
       - name: package
         run: |
           bin="target/${{ matrix.target }}/release"
@@ -106,10 +67,6 @@ jobs:
           mkdir "$dir"
           cp "$bin/schemify${{ matrix.exe }}" "$bin/schemify-gui${{ matrix.exe }}" \
             README.md LICENSE "$dir"/
-          if [ -d "espice/${{ matrix.name }}" ]; then
-            install -m755 "espice/${{ matrix.name }}/espice" "$dir"/
-            cp "espice/${{ matrix.name }}/ESPICE-LICENSE" "$dir"/
-          fi
           if [ "${{ runner.os }}" = Windows ]; then
             7z a -bd "$dir.zip" "$dir" >/dev/null
           else
@@ -127,7 +84,6 @@ jobs:
   # musl is not an option for it (dlopen of the desktop's glibc libraries).
   linux:
     if: github.event_name != 'release'
-    needs: espice
     runs-on: ubuntu-latest
     container: quay.io/pypa/manylinux_2_28_x86_64
     env:
@@ -150,18 +106,12 @@ jobs:
             [ "$(printf '%s\n%s\n' "$newest" "$GLIBC_MAX" | sort -V | tail -n 1)" = "$GLIBC_MAX" ] \
               || { echo "::error::$b needs glibc $newest > $GLIBC_MAX"; exit 1; }
           done
-      - uses: actions/download-artifact@v4
-        with:
-          name: espice
-          path: espice
       - name: package
         run: |
           dir="schemify-${GITHUB_REF_NAME//\//-}-linux-x86_64"
           mkdir "$dir"
           cp target/release/schemify target/release/schemify-gui \
             README.md LICENSE "$dir"/
-          install -m755 espice/linux-x86_64/espice "$dir"/
-          cp espice/linux-x86_64/ESPICE-LICENSE "$dir"/
           tar czf "$dir.tar.gz" "$dir"
       - uses: actions/upload-artifact@v4
         with:
@@ -237,11 +187,11 @@ jobs:
       - name: smoke (Debian, Fedora, Arch)
         run: |
           docker run --rm -v "$PWD/pkg:/pkg" debian:stable sh -c \
-            'apt-get update -qq && apt-get install -y -qq /pkg/*.deb >/dev/null && schemify --version && espice --version'
+            'apt-get update -qq && apt-get install -y -qq /pkg/*.deb >/dev/null && schemify --version'
           docker run --rm -v "$PWD/pkg:/pkg" fedora:latest sh -c \
-            'dnf install -y -q /pkg/*.rpm && schemify --version && espice --version'
+            'dnf install -y -q /pkg/*.rpm && schemify --version'
           docker run --rm -v "$PWD/pkg:/pkg" archlinux:latest sh -c \
-            'pacman -U --noconfirm /pkg/*.pkg.tar.zst >/dev/null && schemify --version && espice --version'
+            'pacman -U --noconfirm /pkg/*.pkg.tar.zst >/dev/null && schemify --version'
       - uses: actions/upload-artifact@v4
         with:
           name: release-distro

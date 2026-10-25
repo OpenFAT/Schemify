@@ -9,8 +9,8 @@
 [![rust](https://img.shields.io/badge/rust-1.95%2B-orange)](Cargo.toml)
 
 Schemify draws schematics, writes netlists for ESPice, ngspice, Xyce, LTspice, HSPICE, CDL,
-Spectre and Verilog, runs simulations (with [ESPice](https://github.com/OmarSiwy/ESPice), which
-ships with it) and shows the waveforms. It imports xschem libraries and PDKs, so you can switch
+Spectre and Verilog, runs simulations (with [ESPice](https://github.com/OmarSiwy/ESPice) by
+default, or ngspice and others) and shows the waveforms. It imports xschem libraries and PDKs, so you can switch
 without redrawing anything. Every cell can carry a documentation page with LaTeX and live
 sizing math (gm/Id) that updates the schematic when a parameter changes. The same code runs on
 Linux, macOS, Windows and in a browser.
@@ -45,8 +45,8 @@ Linux, macOS, Windows and in a browser.
 ## Install
 
 Each [release](https://github.com/OmarSiwy/Schemify/releases) ships `schemify` (the headless
-core) and `schemify-gui` (the editor) for Linux, macOS and Windows, with `espice` (the simulator)
-beside them on Linux and macOS.
+core) and `schemify-gui` (the editor) for Linux, macOS and Windows. Simulation runs an external
+simulator: install [ESPice](https://github.com/OmarSiwy/ESPice) (the default) or ngspice.
 
 Linux packages (x86_64, glibc 2.28 or newer):
 
@@ -64,11 +64,10 @@ nix profile install 'github:OmarSiwy/Schemify#latest'
 ```
 
 macOS (Apple silicon and Intel) and Windows: download `schemify-v1.0.0-<platform>.tar.gz` (`.zip`
-on Windows), unpack it, and put the directory on your `PATH`. ESPice has no Windows build, so on
-Windows install ngspice and set `schemify.opt.simulator = "ngspice"`.
+on Windows), unpack it, and put the directory on your `PATH`.
 
 [docs/guide/install.md](docs/guide/install.md) covers every option, the runtime libraries the
-editor needs on Linux, and Zig for Verilog-A devices in ESPice.
+editor needs on Linux, and the external programs (simulators).
 
 ## Quick start
 

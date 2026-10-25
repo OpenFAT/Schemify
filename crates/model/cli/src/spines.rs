@@ -258,8 +258,8 @@ fn kind(d: Dialect) -> schemify_config::SimKind {
 /// The dialect a request netlists and simulates for (run spec §5): `explicit`
 /// (`--dialect`, the Netlist dialect menu), else the simulator the PDK pins (its tech
 /// map's `simulator`, pdk spec §6), else the user config's `schemify.opt.simulator`, else
-/// the first of [`SIMULATORS`] installed, else ESPice (the simulator the release packages
-/// ship).
+/// the first of [`SIMULATORS`] installed, else ESPice (the default simulator, user decision
+/// 2026-10-25).
 ///
 /// # Errors
 ///

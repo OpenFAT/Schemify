@@ -5,9 +5,9 @@
 #
 # The editor opens the windowing, graphics and font libraries at run time (dlopen), so they
 # are recommendations, not hard dependencies: the headless core `schemify` needs none of
-# them. ESPice, the default simulator (user decision 2026-10-25), ships in the package:
-# `schemify run` and Simulate start it. ESPice compiles Verilog-A devices with Zig 0.17,
-# found through `ZIG` or `zig` on PATH, so Zig is a suggestion; ngspice is an alternative.
+# them. The simulator is an external program: ESPice (the default when installed) is not a
+# distribution package, so it is not listed; ngspice, which distributions do package, is
+# suggested.
 name: schemify
 arch: amd64
 platform: linux
@@ -21,11 +21,11 @@ description: |
   Schematic capture for analog/mixed-signal IC design.
   Schemify draws, checks and netlists schematics, runs SPICE simulations and shows their
   waveforms. `schemify` is the headless core (netlist, check, run, fmt, diff, pack);
-  `schemify-gui` is the editor, which `schemify edit` starts; `espice` is ESPice, the
-  simulator they start.
+  `schemify-gui` is the editor, which `schemify edit` starts. Simulation runs an external
+  simulator: ESPice by default, or ngspice, Xyce, LTspice or Spectre.
 vendor: Schemify
 homepage: https://github.com/OmarSiwy/Schemify
-license: MIT and Apache-2.0
+license: MIT
 
 contents:
   - src: ${SCHEMIFY_DIR}/schemify
@@ -36,14 +36,8 @@ contents:
     dst: /usr/bin/schemify-gui
     file_info:
       mode: 0755
-  - src: ${SCHEMIFY_DIR}/espice
-    dst: /usr/bin/espice
-    file_info:
-      mode: 0755
   - src: ${SCHEMIFY_DIR}/LICENSE
     dst: /usr/share/licenses/schemify/LICENSE
-  - src: ${SCHEMIFY_DIR}/ESPICE-LICENSE
-    dst: /usr/share/licenses/schemify/ESPICE-LICENSE
   - src: ${SCHEMIFY_DIR}/README.md
     dst: /usr/share/doc/schemify/README.md
 
@@ -63,7 +57,6 @@ overrides:
     suggests:
       - git
       - curl
-      - zig
       - ngspice
   rpm:
     depends:
@@ -80,14 +73,13 @@ overrides:
     suggests:
       - git
       - curl
-      - zig
       - ngspice
   archlinux:
     depends:
       - glibc
-    # nfpm writes these as optdepends (no description): the editor's libraries, Zig for
-    # Verilog-A in ESPice, ngspice as an alternative, git and curl for `schemify pack`. The
-    # PKGBUILD for the AUR (packaging/PKGBUILD.in) says what each is for.
+    # nfpm writes these as optdepends (no description): the editor's libraries, ngspice, git
+    # and curl for `schemify pack`. The PKGBUILD for the AUR (packaging/PKGBUILD.in) says what
+    # each is for.
     suggests:
       - wayland
       - libxkbcommon
@@ -97,7 +89,6 @@ overrides:
       - libxi
       - libxrandr
       - fontconfig
-      - zig
       - ngspice
       - git
       - curl
