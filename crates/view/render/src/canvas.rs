@@ -65,8 +65,12 @@ pub struct Paths {
     closed: Chains,
     open: Chains,
     curves: BezPath,
-    /// Fills: rects, circles, polygons.
+    /// Fills: rects, circles, polygons, one closed shape after another, and where each ends
+    /// (its element count): each is filled on its own, so shapes wound opposite ways that
+    /// overlap do not cancel as one non-zero path would, and `one`, the shape being filled.
     fill: BezPath,
+    fill_ends: Vec<usize>,
+    one: BezPath,
     /// Styled strokes, one path per (width in 1/16 px, dash) seen so far.
     styled: Vec<(u32, u32, BezPath)>,
     /// Far-zoom rows as the whole pixels their box touches.
@@ -82,6 +86,7 @@ impl Paths {
         self.closed.clear();
         self.open.clear();
         self.lod.clear();
+        self.fill_ends.clear();
         for path in [&mut self.curves, &mut self.fill, &mut self.marks] {
             path.truncate(0);
         }
@@ -421,6 +426,7 @@ pub fn draw_rows<P: Painter>(
             }
             if flags(w[5]) & FILL != 0 {
                 push_rect(&mut paths.fill, Rect::new(x0, y0, x1, y1));
+                paths.fill_ends.push(paths.fill.elements().len());
             }
             if flags(w[5]) & PARITY != 0 {
                 let (path, o) = paths.styled(w[5]);
@@ -461,6 +467,7 @@ pub fn draw_rows<P: Painter>(
             push_arc(curves, cx, cy, r, start, sweep);
             if flags(w[6]) & FILL != 0 {
                 push_arc(&mut paths.fill, cx, cy, r, start, sweep);
+                paths.fill_ends.push(paths.fill.elements().len());
             }
         }
         // Edges: each chain (a run of edges from one flagged FIRST) as the one path it is.
@@ -556,6 +563,7 @@ pub fn draw_rows<P: Painter>(
                     f.line_to(point(j));
                 }
                 f.close_path();
+                paths.fill_ends.push(paths.fill.elements().len());
             }
         }
         if color == 0 {
@@ -568,9 +576,17 @@ pub fn draw_rows<P: Painter>(
             }
             continue;
         }
-        if !paths.fill.is_empty() {
-            p.fill_path(&paths.fill, c);
+        // Each closed shape on its own (the GPU fills each instance on its own too).
+        let mut at = 0;
+        for &end in &paths.fill_ends {
+            paths.one.truncate(0);
+            paths
+                .one
+                .extend(paths.fill.elements()[at..end].iter().copied());
+            p.fill_path(&paths.one, c);
+            at = end;
         }
+        debug_assert_eq!(at, paths.fill.elements().len(), "every fill ends a shape");
         if !paths.closed.is_empty() {
             p.stroke_chains(&paths.closed, true, w, c);
         }
@@ -855,6 +871,47 @@ mod tests {
         let mut solid = CanvasPrims::default();
         solid.arc(0, 0, 40_000, 0, 360_000, 4);
         assert!(ink(&lit(&p, 1e-3)) < ink(&lit(&solid, 1e-3)) * 3 / 4);
+    }
+
+    /// A filled rect and a filled polygon that overlap fill their overlap whichever way the
+    /// polygon winds (each shape is filled on its own; one non-zero path of both cancelled
+    /// there when they wound opposite ways), and a filled circle does too.
+    #[test]
+    fn overlapping_fills_wound_either_way_both_fill() {
+        let at = |px: &[u8], x: usize, y: usize| px[y * 100 + x];
+        let square = [
+            (-10_000, -10_000),
+            (30_000, -10_000),
+            (30_000, 30_000),
+            (-10_000, 30_000),
+        ];
+        for reversed in [false, true] {
+            let mut pts = square.to_vec();
+            if reversed {
+                pts.reverse();
+            }
+            let mut p = CanvasPrims::default();
+            p.rect_styled(
+                -30_000,
+                -30_000,
+                10_000,
+                10_000,
+                4,
+                LineStyle::PLAIN.filled(),
+            );
+            p.poly_styled(&pts, true, 4, LineStyle::PLAIN.filled());
+            p.arc_styled(0, 0, 4_000, 0, -360_000, 4, LineStyle::PLAIN.filled());
+            let px = lit(&p, 1e-3);
+            // (50, 50) is world (0, 0): inside all three.
+            assert!(
+                at(&px, 50, 50) > 0xc0,
+                "overlap filled (reversed {reversed})"
+            );
+            assert!(
+                at(&px, 44, 44) > 0xc0,
+                "rect and polygon overlap (reversed {reversed})"
+            );
+        }
     }
 
     #[test]

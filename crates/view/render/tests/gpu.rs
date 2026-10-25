@@ -190,10 +190,9 @@ const MEAN_MAX_DENSE: f64 = 4.0;
 /// A channel this many levels off is a wrong pixel, not antialiasing (edge coverage differs
 /// by a fraction of the colour; a misplaced primitive by the whole of it).
 const FAR_LEVELS: u8 = 96;
-/// At most this share of pixels may be wrong. Within it in the scenes built on the thousand
-/// (`thousand_prims`): one hole of about 14 px the CPU painter leaves where a filled layer-5
-/// rect and polygon of opposite winding overlap (it fills a layer's closed shapes as one
-/// non-zero path, so they cancel); the GPU fills both.
+/// At most this share of pixels may be wrong: an edge where the two painters' coverage
+/// models round a pixel to opposite sides of the colour (both fill each closed shape on its
+/// own, so overlapping fills never cancel on either side).
 const FAR_SHARE: f64 = 0.001;
 
 /// Text's bound: a glyph mask is vello_cpu's own raster of the glyph with its origin moved to

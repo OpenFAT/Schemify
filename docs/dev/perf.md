@@ -693,9 +693,9 @@ What the remaining differences are:
   1 px edge, that alone is a mean of 1.17 (the CPU against itself drawing instance by
   instance).
 - Text goes through vello on the GPU against vello_cpu on the CPU.
-- One CPU artifact: it fills a layer's closed shapes as one non-zero path, so a filled rect
-  and polygon of opposite winding that overlap cancel (14 px in the thousand). The GPU fills
-  both.
+- One CPU artifact, fixed since: it filled a layer's closed shapes as one non-zero path, so
+  a filled rect and polygon of opposite winding that overlap cancelled (14 px in the
+  thousand). Each closed shape is filled on its own now, as the GPU fills each instance.
 
 ### Step 2: the tile cache deleted (2026-10-24)
 
