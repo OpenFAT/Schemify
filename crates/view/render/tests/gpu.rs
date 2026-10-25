@@ -38,8 +38,15 @@ fn gpu() -> Gpu {
     .expect("no GPU adapter");
     let info = adapter.get_info();
     println!("adapter: {} ({:?})", info.name, info.backend);
-    let (device, queue) =
-        pollster::block_on(adapter.request_device(&Default::default())).expect("a device");
+    // WebGL2's guaranteed limits, as the window asks (`Gpu::new`): what the web's WebGL2 tier
+    // could not build fails here too.
+    let required_limits =
+        wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits,
+        ..Default::default()
+    }))
+    .expect("a device");
     Gpu {
         pipes: Pipelines::new(&device, wgpu::TextureFormat::Rgba8Unorm),
         device,

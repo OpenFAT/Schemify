@@ -23,8 +23,11 @@ accesskit_winit.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster.workspace = true
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+naga.workspace = true
+
 # GPU backends, one set per platform (render's own pipelines, D5): Vulkan with a GL
-# fallback on Linux/BSD, Metal on macOS, DX12 on Windows, WebGPU on the web.
+# fallback on Linux/BSD, Metal on macOS, DX12 on Windows, WebGPU then WebGL2 on the web.
 [target.'cfg(not(any(target_arch = "wasm32", target_vendor = "apple", windows)))'.dependencies]
 wgpu = { workspace = true, features = ["vulkan", "gles"] }
 [target.'cfg(target_vendor = "apple")'.dependencies]
@@ -33,10 +36,11 @@ wgpu = { workspace = true, features = ["metal"] }
 wgpu = { workspace = true, features = ["dx12"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wgpu = { workspace = true, features = ["webgpu"] }
+# WebGPU, else WebGL2 through wgpu's GL backend (the same pipelines; web spec §7).
+wgpu = { workspace = true, features = ["webgpu", "webgl"] }
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
-# `cpu_view`: the CPU-rastered 2D overlay when the browser has no WebGPU adapter (web spec §7).
+# `cpu_view`: the CPU-rastered 2D overlay when neither GPU tier is usable (web spec §7).
 web-sys = { workspace = true, features = [
   "CanvasRenderingContext2d",
   "CssStyleDeclaration",

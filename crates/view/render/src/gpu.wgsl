@@ -483,8 +483,9 @@ fn arc_distance(q: vec2<f32>, r: f32, hw: f32, start: f32, sweep: f32, dash: f32
             e = abs(rp - r) - hw;
             let lo = sh - 0.7;
             let hi = sh + 0.7;
-            clear = full && dash <= 0.0
-                || abs(dash_near(lo, len, dash) - lo) < 1e-4 && abs(dash_near(hi, len, dash) - hi) < 1e-4;
+            // Parenthesized: WGSL forbids mixing `&&` and `||` (naga accepts it, Tint does not).
+            clear = (full && dash <= 0.0)
+                || (abs(dash_near(lo, len, dash) - lo) < 1e-4 && abs(dash_near(hi, len, dash) - hi) < 1e-4);
         } else {
             let a = radians(start + dir * degrees(h / max(r, 1e-6)));
             e = length(q - r * vec2<f32>(cos(a), sin(a))) - hw;

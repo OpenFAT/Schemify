@@ -913,7 +913,21 @@ Built 2026-10-25 on x86_64-linux, before = 5635595b, after = this step:
 | the same, `gzip -9` | 4,715,942 | 4,715,150 | −1 K |
 
 The win is the build: three crates and naga's WGSL-to-WGSL path for vello's shaders no longer
-compile. Step 5 (WebGL2) adds wgpu's GL backend to the wasm: § WebGL2 tier below.
+compile. Step 5 (WebGL2) adds wgpu's GL backend to the wasm: next section.
+
+### Step 5: the WebGL2 tier on the web (2026-10-25)
+
+wgpu's `webgl` feature on wasm32: the GL backend (wgpu-core's GL path, wgpu-hal's GLES HAL,
+glow, naga's GLSL writer) joins the WebGPU one. Same build as step 4's table:
+
+| | Step 4 | Step 5 | Change |
+|---|---:|---:|---:|
+| `schemify_bg.wasm` (release, after `wasm-bindgen --target web`) | 14,569,867 | 17,546,743 | +2,977 K |
+| the same, `gzip -9` | 4,715,150 | 5,706,077 | +991 K |
+
+Inside D39's 8 MiB compressed budget (CI's `wasm` job checks it) with 2.56 MiB to spare. Native
+binaries keep their backends (the GLES one was already linked). Frame time on WebGL2 was not
+measured: the local smoke run is SwiftShader, a CPU rasterizer behind ANGLE.
 
 ## Binary size
 

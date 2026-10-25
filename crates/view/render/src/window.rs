@@ -101,13 +101,15 @@ enum UserEvent {
     Access(accesskit_winit::Event),
     /// [`Waker::wake`]: update with no input.
     Wake,
+    /// Web: a tier's GPU is made and waits in `pending` with its tier.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     GpuReady,
-    /// Web: WebGPU is unusable (no adapter or device, the device lost, or presented frames
-    /// that never reach the page), for the reason given; frames go to the CPU overlay
-    /// (`cpu_view`) from now on. The first one is logged; later ones are ignored.
+    /// Web: tier `.0` is unusable (no adapter or device, the device lost, or presented frames
+    /// that never reach the page), for the reason given; the next tier is tried, and past the
+    /// last frames go to the CPU overlay (`cpu_view`). Logged once per tier; a report about a
+    /// tier already left is ignored.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    NoGpu(String),
+    NoGpu(usize, String),
 }
 
 impl From<accesskit_winit::Event> for UserEvent {
@@ -124,19 +126,49 @@ struct Gpu {
     config: wgpu::SurfaceConfiguration,
     /// The canvas and batch pipelines, row buffers and atlas texture (`render::gpu`).
     pipes: Pipelines,
+    /// Web, a tier after the first: the canvas laid over winit's that this GPU presents to
+    /// (winit's holds the first tier's context for life); leaves the page with the GPU.
+    #[cfg(target_arch = "wasm32")]
+    overlay: Option<web_sys::HtmlCanvasElement>,
 }
 
+#[cfg(target_arch = "wasm32")]
+impl Drop for Gpu {
+    fn drop(&mut self) {
+        if let Some(c) = self.overlay.take() {
+            c.remove();
+        }
+    }
+}
+
+/// Web: the GPU tiers in the order they are tried (web spec §7), each drawing with the same
+/// pipelines; past the last, frames are rasterized on the CPU (`cpu_view`).
+#[cfg(target_arch = "wasm32")]
+const TIERS: [(wgpu::Backends, &str); 2] = [
+    (wgpu::Backends::BROWSER_WEBGPU, "WebGPU"),
+    (wgpu::Backends::GL, "WebGL2"),
+];
+
+/// Web: the element id of the WebGL2 tier's canvas (the browser tests find the tier by it).
+#[cfg(target_arch = "wasm32")]
+const GL_ID: &str = "schemify-webgl";
+
 impl Gpu {
-    /// Opens the window's surface on the fastest adapter that presents to it: a discrete GPU
-    /// before an integrated one (`WGPU_ADAPTER_NAME` and `WGPU_POWER_PREF` override, as in
-    /// wgpu), with one frame in flight and mailbox presentation where the surface offers it
-    /// (an input shows at the next vertical blank instead of two frames later; D39). Logs the
-    /// adapter once, so a report names the GPU that ran.
-    async fn new(window: Arc<Window>, w: u32, h: u32) -> Result<Gpu, String> {
+    /// Opens a surface on `target` (the window, or on the web a canvas) on the fastest adapter
+    /// of `instance` that presents to it: a discrete GPU before an integrated one
+    /// (`WGPU_ADAPTER_NAME` and `WGPU_POWER_PREF` override, as in wgpu), with one frame in
+    /// flight and mailbox presentation where the surface offers it (an input shows at the next
+    /// vertical blank instead of two frames later; D39). The device is held to WebGL2's
+    /// guaranteed limits on every backend, so a pipeline the web's WebGL2 tier could not build
+    /// fails validation natively too. Logs the adapter once, so a report names the GPU that ran.
+    async fn new(
+        instance: wgpu::Instance,
+        target: wgpu::SurfaceTarget<'static>,
+        w: u32,
+        h: u32,
+    ) -> Result<Gpu, String> {
         assert!(w > 0 && h > 0, "a surface has a size");
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let surface = instance.create_surface(window).map_err(|e| e.to_string())?;
+        let surface = instance.create_surface(target).map_err(|e| e.to_string())?;
         let named = wgpu::util::initialize_adapter_from_env(&instance, Some(&surface)).await;
         let adapter = match named {
             Ok(a) => a,
@@ -151,12 +183,21 @@ impl Gpu {
                 .map_err(|e| e.to_string())?,
         };
         let info = adapter.get_info();
-        eprintln!(
+        let named = format!(
             "gpu: {} ({:?}, {:?})",
             info.name, info.device_type, info.backend
         );
+        #[cfg(not(target_arch = "wasm32"))]
+        eprintln!("{named}");
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&named.into());
+        let required_limits =
+            wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
+            .request_device(&wgpu::DeviceDescriptor {
+                required_limits,
+                ..Default::default()
+            })
             .await
             .map_err(|e| e.to_string())?;
         let caps = surface.get_capabilities(&adapter);
@@ -194,6 +235,8 @@ impl Gpu {
             queue,
             surface,
             config,
+            #[cfg(target_arch = "wasm32")]
+            overlay: None,
         })
     }
 
@@ -211,12 +254,16 @@ struct Shell<A: App> {
     proxy: EventLoopProxy<UserEvent>,
     window: Option<Arc<Window>>,
     gpu: Option<Gpu>,
+    /// Web: a GPU made by the tier's future, with its tier, until `GpuReady` takes it.
     #[cfg(target_arch = "wasm32")]
-    pending: std::rc::Rc<std::cell::RefCell<Option<Gpu>>>,
+    pending: std::rc::Rc<std::cell::RefCell<Option<(usize, Gpu)>>>,
+    /// Web: the tier tried now (an index into `TIERS`; `TIERS.len()` is the CPU).
+    #[cfg(target_arch = "wasm32")]
+    tier: usize,
     /// Web without a GPU: the CPU-rastered overlay (web spec §7).
     #[cfg(target_arch = "wasm32")]
     cpu: Option<crate::cpu_view::CpuView>,
-    /// Web: the first GPU frame was presented and `cpu_view::shows_frames` checks it.
+    /// Web: the tier's first GPU frame was presented and `cpu_view::shows_frames` checks it.
     #[cfg(target_arch = "wasm32")]
     probed: bool,
     adapter: Option<accesskit_winit::Adapter>,
@@ -259,7 +306,9 @@ struct Shell<A: App> {
 /// Fails when no event loop can be created (no display server). Native: a GPU without
 /// Vulkan/Metal/DX12 support is reported on stderr and leaves the window blank. Web: when
 /// WebGPU is unusable (no adapter, the device lost, or frames that never reach the page) the
-/// editor draws on the CPU instead, logged once as `gpu: …; drawing on the CPU` (web spec §7).
+/// editor draws through WebGL2, and when that is unusable too, on the CPU; each step is
+/// logged once as `gpu: <tier> unusable (<reason>); drawing with WebGL2` or `…; drawing on
+/// the CPU` (web spec §7).
 pub fn run<A: App + 'static>(title: &str, mut app: A) -> Result<(), RunError> {
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
@@ -274,6 +323,8 @@ pub fn run<A: App + 'static>(title: &str, mut app: A) -> Result<(), RunError> {
         gpu: None,
         #[cfg(target_arch = "wasm32")]
         pending: Default::default(),
+        #[cfg(target_arch = "wasm32")]
+        tier: 0,
         #[cfg(target_arch = "wasm32")]
         cpu: None,
         #[cfg(target_arch = "wasm32")]
@@ -315,6 +366,66 @@ pub fn run<A: App + 'static>(title: &str, mut app: A) -> Result<(), RunError> {
 }
 
 impl<A: App> Shell<A> {
+    /// Web: makes tier `self.tier`'s GPU in the background: on winit's canvas for the first
+    /// tier, on a canvas laid over it for a later one. Ends in `GpuReady` or `NoGpu`; a device
+    /// lost later sends `NoGpu` too.
+    #[cfg(target_arch = "wasm32")]
+    fn start_gpu(&self, window: &Arc<Window>) {
+        let tier = self.tier;
+        assert!(tier < TIERS.len(), "a GPU tier");
+        let size = window.inner_size();
+        let (w, h) = (size.width.max(1), size.height.max(1));
+        let (pending, proxy, win) = (self.pending.clone(), self.proxy.clone(), window.clone());
+        wasm_bindgen_futures::spawn_local(async move {
+            let made = async {
+                let mut desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+                desc.backends = TIERS[tier].0;
+                let instance = wgpu::Instance::new(desc);
+                if tier == 0 {
+                    return Gpu::new(instance, win.into(), w, h).await;
+                }
+                let canvas = crate::cpu_view::overlay(&win, GL_ID)?;
+                // The context made first wins, so wgpu's later request gets this one: wgpu's
+                // own options plus a kept drawing buffer, which the probe (`shows_frames`)
+                // reads after the frame was composited; without it the read sees a cleared
+                // buffer and every WebGL2 frame would count as missing.
+                let opts = wasm_bindgen_futures::js_sys::Object::new();
+                for key in ["preserveDrawingBuffer", "antialias"] {
+                    let on = key == "preserveDrawingBuffer";
+                    let _ =
+                        wasm_bindgen_futures::js_sys::Reflect::set(&opts, &key.into(), &on.into());
+                }
+                let _ = canvas.get_context_with_context_options("webgl2", &opts);
+                let target = wgpu::SurfaceTarget::Canvas(canvas.clone());
+                let made = Gpu::new(instance, target, w, h).await;
+                if made.is_err() {
+                    canvas.remove();
+                }
+                made.map(|mut g| {
+                    g.overlay = Some(canvas);
+                    g
+                })
+            };
+            match made.await {
+                Ok(g) => {
+                    let lost = proxy.clone();
+                    // `Destroyed` is our own drop of the device after a fallback.
+                    g.device.set_device_lost_callback(move |reason, msg| {
+                        if reason != wgpu::DeviceLostReason::Destroyed {
+                            let why = format!("device lost ({msg})");
+                            let _ = lost.send_event(UserEvent::NoGpu(tier, why));
+                        }
+                    });
+                    *pending.borrow_mut() = Some((tier, g));
+                    let _ = proxy.send_event(UserEvent::GpuReady);
+                }
+                Err(e) => {
+                    let _ = proxy.send_event(UserEvent::NoGpu(tier, e));
+                }
+            }
+        });
+    }
+
     fn viewport(&self) -> (f32, f32) {
         let size = self
             .window
@@ -455,16 +566,17 @@ impl<A: App> Shell<A> {
             }
             (self.shown, self.updates, self.presented) = (None, 0, Some(now));
         }
-        // Web: a browser can take every WebGPU call and still show nothing (web spec §7).
+        // Web: a browser can take every GPU call and still show nothing (web spec §7), so
+        // each tier's first frame is looked for on the page.
         #[cfg(target_arch = "wasm32")]
         if !std::mem::replace(&mut self.probed, true) {
             use winit::platform::web::WindowExtWebSys;
-            if let Some(canvas) = window.canvas() {
-                let proxy = self.proxy.clone();
+            if let Some(canvas) = gpu.overlay.clone().or_else(|| window.canvas()) {
+                let (proxy, tier) = (self.proxy.clone(), self.tier);
                 wasm_bindgen_futures::spawn_local(async move {
                     if !crate::cpu_view::shows_frames(canvas).await {
-                        let why = "WebGPU frames do not reach the page".to_owned();
-                        let _ = proxy.send_event(UserEvent::NoGpu(why));
+                        let why = "frames do not reach the page".to_owned();
+                        let _ = proxy.send_event(UserEvent::NoGpu(tier, why));
                     }
                 });
             }
@@ -603,36 +715,20 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
         window.set_visible(true);
         window.set_ime_allowed(true);
         self.scale = window.scale_factor();
-        let size = window.inner_size();
-        let (w, h) = (size.width.max(1), size.height.max(1));
         #[cfg(not(target_arch = "wasm32"))]
-        match pollster::block_on(Gpu::new(window.clone(), w, h)) {
-            Ok(g) => self.gpu = Some(g),
-            Err(e) => eprintln!("gpu: {e}"),
+        {
+            let size = window.inner_size();
+            let (w, h) = (size.width.max(1), size.height.max(1));
+            let instance = wgpu::Instance::new(
+                wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+            );
+            match pollster::block_on(Gpu::new(instance, window.clone().into(), w, h)) {
+                Ok(g) => self.gpu = Some(g),
+                Err(e) => eprintln!("gpu: {e}"),
+            }
         }
         #[cfg(target_arch = "wasm32")]
-        {
-            let (pending, proxy, win) = (self.pending.clone(), self.proxy.clone(), window.clone());
-            wasm_bindgen_futures::spawn_local(async move {
-                match Gpu::new(win, w, h).await {
-                    Ok(g) => {
-                        let lost = proxy.clone();
-                        // `Destroyed` is our own drop of the device after a fallback.
-                        g.device.set_device_lost_callback(move |reason, msg| {
-                            if reason != wgpu::DeviceLostReason::Destroyed {
-                                let why = format!("device lost ({msg})");
-                                let _ = lost.send_event(UserEvent::NoGpu(why));
-                            }
-                        });
-                        *pending.borrow_mut() = Some(g);
-                        let _ = proxy.send_event(UserEvent::GpuReady);
-                    }
-                    Err(e) => {
-                        let _ = proxy.send_event(UserEvent::NoGpu(e));
-                    }
-                }
-            });
-        }
+        self.start_gpu(&window);
         self.window = Some(window);
         self.update();
         if let Some(w) = &self.window {
@@ -657,23 +753,42 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
             UserEvent::GpuReady => {
                 #[cfg(target_arch = "wasm32")]
                 {
-                    self.gpu = self.pending.borrow_mut().take();
+                    let ready = self.pending.borrow_mut().take();
+                    if let Some((t, g)) = ready
+                        && t == self.tier
+                    {
+                        self.gpu = Some(g);
+                    }
                 }
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }
             }
             #[cfg_attr(not(target_arch = "wasm32"), allow(unused_variables))]
-            UserEvent::NoGpu(why) => {
+            UserEvent::NoGpu(tier, why) => {
                 #[cfg(target_arch = "wasm32")]
-                if let (Some(w), None) = (&self.window, &self.cpu) {
-                    // Once per page: the console line the smoke test looks for (web spec §7).
-                    web_sys::console::error_1(&format!("gpu: {why}; drawing on the CPU").into());
-                    self.gpu = None;
+                if let Some(w) = self.window.clone()
+                    && tier == self.tier
+                    && tier < TIERS.len()
+                {
+                    let next = tier + 1;
+                    let then = TIERS
+                        .get(next)
+                        .map_or("on the CPU".to_owned(), |t| format!("with {}", t.1));
+                    // Once per tier: the console line the smoke test looks for (web spec §7).
+                    let line = format!("gpu: {} unusable ({why}); drawing {then}", TIERS[tier].1);
+                    web_sys::console::error_1(&line.into());
+                    (self.tier, self.gpu, self.probed) = (next, None, false);
+                    // The rows and masks the old device holds: the next one is sent all of them.
+                    (self.rows, self.batch) = (InstanceRows::default(), Batch::default());
                     self.pending.borrow_mut().take();
-                    match crate::cpu_view::CpuView::new(w) {
-                        Ok(v) => self.cpu = Some(v),
-                        Err(e) => web_sys::console::error_1(&format!("cpu view: {e}").into()),
+                    if next < TIERS.len() {
+                        self.start_gpu(&w);
+                    } else {
+                        match crate::cpu_view::CpuView::new(&w) {
+                            Ok(v) => self.cpu = Some(v),
+                            Err(e) => web_sys::console::error_1(&format!("cpu view: {e}").into()),
+                        }
                     }
                     w.request_redraw();
                 }

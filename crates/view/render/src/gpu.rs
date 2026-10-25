@@ -78,6 +78,12 @@ pub const OVERLAY: usize = 5;
 const BYTES_MAX: usize = 1 << 28;
 /// Dirty ranges kept per row array before they merge into one.
 const DIRTY_MAX: usize = 8;
+/// The canvas pipelines' WGSL module, exactly as `Pipelines::new` hands it to wgpu (the
+/// WebGL2 test validates this string, whatever files it is assembled from).
+const CANVAS_WGSL: &str = include_str!("gpu.wgsl");
+/// The batch pipeline's WGSL module, as `Pipelines::new` hands it to wgpu.
+const UI_WGSL: &str = include_str!("ui.wgsl");
+
 /// Camera uniform size (`Cam` in `gpu.wgsl`).
 const UNIFORM_BYTES: usize = 96;
 /// A table row with no slot (dead, hidden, or nothing to draw).
@@ -983,7 +989,7 @@ impl Pipelines {
         );
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("canvas"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("gpu.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(CANVAS_WGSL.into()),
         });
         let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
             binding,
@@ -1051,7 +1057,7 @@ impl Pipelines {
         });
         let ui_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("batch"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("ui.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(UI_WGSL.into()),
         });
         let ui_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("batch"),
@@ -1767,6 +1773,120 @@ mod tests {
                 assert_eq!(out.len(), n - 2);
             }
         }
+    }
+
+    /// User locations an entry point's arguments (`args`) or result take, struct members
+    /// counted one by one.
+    fn locations(module: &naga::Module, ep: &naga::EntryPoint, args: bool) -> usize {
+        let count = |ty: naga::Handle<naga::Type>, binding: &Option<naga::Binding>| match (
+            &module.types[ty].inner,
+            binding,
+        ) {
+            (naga::TypeInner::Struct { members, .. }, None) => members
+                .iter()
+                .filter(|m| matches!(m.binding, Some(naga::Binding::Location { .. })))
+                .count(),
+            (_, Some(naga::Binding::Location { .. })) => 1,
+            _ => 0,
+        };
+        if args {
+            ep.function
+                .arguments
+                .iter()
+                .map(|a| count(a.ty, &a.binding))
+                .sum()
+        } else {
+            ep.function
+                .result
+                .as_ref()
+                .map_or(0, |r| count(r.ty, &r.binding))
+        }
+    }
+
+    /// The WebGL2 tier (web spec §7) runs these shaders through wgpu's GL backend, which
+    /// translates them with naga to GLSL ES 3.00. Oracle: naga's own validator with no
+    /// optional capability and its GLSL writer set up as wgpu-hal sets it for WebGL2 (no draw
+    /// parameters, so `first_instance` goes through a uniform), plus WebGL2's guaranteed limits
+    /// (`Limits::downlevel_webgl2_defaults`: 16 vertex attributes, 15 inter-stage variables).
+    /// Negative space: a compute entry point and a storage buffer, which WebGL2 lacks, are
+    /// rejected by the same checks.
+    #[test]
+    fn shaders_compile_to_glsl_es_300_for_webgl2() {
+        use naga::back::glsl;
+        let limits = wgpu::Limits::downlevel_webgl2_defaults();
+        let glsl_of = |src: &str| -> Result<Vec<String>, String> {
+            let module = naga::front::wgsl::parse_str(src).map_err(|e| e.emit_to_string(src))?;
+            let info = naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::empty(),
+            )
+            .validate(&module)
+            .map_err(|e| format!("{e:?}"))?;
+            let mut binding_map = glsl::BindingMap::default();
+            for (_, g) in module.global_variables.iter() {
+                if let Some(b) = g.binding {
+                    let slot = u8::try_from(binding_map.len()).expect("few bindings");
+                    binding_map.insert(b, slot);
+                }
+            }
+            let options = glsl::Options {
+                version: glsl::Version::Embedded {
+                    version: 300,
+                    is_webgl: true,
+                },
+                writer_flags: glsl::WriterFlags::ADJUST_COORDINATE_SPACE
+                    | glsl::WriterFlags::FORCE_POINT_SIZE,
+                binding_map,
+                zero_initialize_workgroup_memory: true,
+            };
+            let mut out = Vec::new();
+            for ep in &module.entry_points {
+                if ep.stage == naga::ShaderStage::Vertex {
+                    let (ins, outs) = (locations(&module, ep, true), locations(&module, ep, false));
+                    if ins > limits.max_vertex_attributes as usize {
+                        return Err(format!("{}: {ins} vertex attributes", ep.name));
+                    }
+                    if outs > limits.max_inter_stage_shader_variables as usize {
+                        return Err(format!("{}: {outs} inter-stage variables", ep.name));
+                    }
+                }
+                let pipeline = glsl::PipelineOptions {
+                    shader_stage: ep.stage,
+                    entry_point: ep.name.clone(),
+                    multiview: None,
+                };
+                let mut text = String::new();
+                glsl::Writer::new(
+                    &mut text,
+                    &module,
+                    &info,
+                    &options,
+                    &pipeline,
+                    naga::proc::BoundsCheckPolicies::default(),
+                )
+                .and_then(|mut w| w.write())
+                .map_err(|e| format!("{}: {e}", ep.name))?;
+                out.push(text);
+            }
+            Ok(out)
+        };
+        // Every module exactly as `Pipelines::new` hands it to wgpu.
+        for (name, src) in [("canvas", CANVAS_WGSL), ("ui", UI_WGSL)] {
+            let out = glsl_of(src).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(!out.is_empty(), "{name}: has entry points");
+            for text in &out {
+                assert!(text.starts_with("#version 300 es"), "{name}: {text:.40}");
+            }
+        }
+        // Negative space: what WebGL2 lacks fails the same checks.
+        let compute = "@compute @workgroup_size(1) fn main() {}";
+        assert!(glsl_of(compute).is_err(), "no compute in GLSL ES 3.00");
+        let storage = "@group(0) @binding(0) var<storage, read> s: array<u32>;
+            @vertex fn main() -> @builtin(position) vec4<f32> { return vec4<f32>(f32(s[0])); }";
+        assert!(
+            glsl_of(storage).is_err(),
+            "no storage buffers in GLSL ES 3.00"
+        );
     }
 
     /// The uniform carries the camera split into an integer centre and a fraction, the view in

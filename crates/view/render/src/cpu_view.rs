@@ -1,10 +1,9 @@
-//! The web's no-GPU fallback (web spec §7): when the browser offers no WebGPU adapter
-//! (browsers without WebGPU), loses the device, or presents frames that never reach the page
-//! ([`shows_frames`]; headless Chrome in CI), frames are rasterized on the CPU by
-//! [`CpuPainter`] (vello_cpu, the painter of the native goldens) and put on a 2D canvas laid
-//! over winit's canvas. winit's canvas keeps the input: the overlay ignores pointer events.
-//! A separate canvas because winit's already holds the `webgpu` context the GPU attempt made,
-//! and a canvas has one context kind for life.
+//! The web's last tier (web spec §7): when neither WebGPU nor WebGL2 is usable (no adapter,
+//! a lost device, or frames that never reach the page: [`shows_frames`]), frames are
+//! rasterized on the CPU by [`CpuPainter`] (vello_cpu, the painter of the native goldens) and
+//! put on a 2D canvas laid over winit's canvas ([`overlay`]). winit's canvas keeps the input:
+//! the overlay ignores pointer events. A separate canvas because winit's already holds the
+//! `webgpu` context the first tier made, and a canvas has one context kind for life.
 //!
 //! Cost: one full raster per frame (no damage tracking): fine for an editor that redraws
 //! on input only (D39), slow for continuous pans of large drawings.
@@ -36,26 +35,7 @@ impl CpuView {
     ///
     /// The window has no canvas in a document, or the browser gives no 2D context.
     pub(crate) fn new(window: &Window) -> Result<CpuView, String> {
-        let under = window.canvas().ok_or("no window canvas")?;
-        let doc = under.owner_document().ok_or("no document")?;
-        let canvas: HtmlCanvasElement = doc
-            .create_element("canvas")
-            .map_err(js)?
-            .dyn_into()
-            .map_err(|_| "no canvas element".to_owned())?;
-        canvas.set_id(ID);
-        let s = canvas.style();
-        s.set_property("position", "absolute").map_err(js)?;
-        s.set_property("left", &format!("{}px", under.offset_left()))
-            .map_err(js)?;
-        s.set_property("top", &format!("{}px", under.offset_top()))
-            .map_err(js)?;
-        s.set_property("pointer-events", "none").map_err(js)?;
-        under
-            .parent_node()
-            .ok_or("window canvas outside the page")?
-            .append_child(&canvas)
-            .map_err(js)?;
+        let canvas = overlay(window, ID)?;
         let ctx: CanvasRenderingContext2d = canvas
             .get_context("2d")
             .map_err(js)?
@@ -103,18 +83,18 @@ impl CpuView {
     }
 }
 
-/// How long after the first presented WebGPU frame [`shows_frames`] looks at the page: the
+/// How long after a tier's first presented frame [`shows_frames`] looks at the page: the
 /// browser composites the frame at its next rendering update (~16 ms); 250 ms leaves slack
 /// for a loaded CI runner.
 const PROBE_MS: i32 = 250;
 
-/// Whether `canvas`, a WebGPU canvas that has presented a frame, shows it to the page.
-/// Some browsers take every WebGPU call and composite nothing: headless Chrome on
+/// Whether `canvas`, a WebGPU or WebGL2 canvas that has presented a frame, shows it to the
+/// page. Some browsers take every WebGPU call and composite nothing: headless Chrome on
 /// SwiftShader (no error at all) or on Vulkan (the swap-chain image fails to allocate).
-/// The page would stay blank, so the caller falls back to [`CpuView`] when this is false.
+/// The page would stay blank, so the caller moves to the next tier when this is false.
 ///
-/// Waits [`PROBE_MS`], then reads one pixel at the centre back through a 2D canvas (the
-/// WebGPU spec's canvas readback returns the last presented frame). Every frame starts
+/// Waits [`PROBE_MS`], then reads one pixel at the centre back through a 2D canvas (both
+/// specs' canvas readback returns the last presented frame). Every frame starts
 /// from the app's opaque background, so a shown frame has alpha 255 and a missing one 0.
 /// A readback that fails (no document, no 2D context) counts as shown: the probe only
 /// switches on evidence.
@@ -145,6 +125,39 @@ pub(crate) async fn shows_frames(canvas: HtmlCanvasElement) -> bool {
         Ok(px[3])
     };
     !matches!(alpha(), Ok(0))
+}
+
+/// A canvas with element id `id` laid over `window`'s, ignoring pointer events (winit's
+/// canvas keeps the input): the CPU overlay, and the WebGL2 tier's canvas (window.rs). Its
+/// drawing buffer is sized by its painter; its CSS size by the CPU overlay itself, and for
+/// the WebGL2 canvas by the page's rule for winit's (`web/index.html`).
+///
+/// # Errors
+///
+/// The window has no canvas in a document.
+pub(crate) fn overlay(window: &Window, id: &str) -> Result<HtmlCanvasElement, String> {
+    assert!(!id.is_empty(), "an overlay has an id");
+    let under = window.canvas().ok_or("no window canvas")?;
+    let doc = under.owner_document().ok_or("no document")?;
+    let canvas: HtmlCanvasElement = doc
+        .create_element("canvas")
+        .map_err(js)?
+        .dyn_into()
+        .map_err(|_| "no canvas element".to_owned())?;
+    canvas.set_id(id);
+    let s = canvas.style();
+    s.set_property("position", "absolute").map_err(js)?;
+    s.set_property("left", &format!("{}px", under.offset_left()))
+        .map_err(js)?;
+    s.set_property("top", &format!("{}px", under.offset_top()))
+        .map_err(js)?;
+    s.set_property("pointer-events", "none").map_err(js)?;
+    under
+        .parent_node()
+        .ok_or("window canvas outside the page")?
+        .append_child(&canvas)
+        .map_err(js)?;
+    Ok(canvas)
 }
 
 fn js(e: JsValue) -> String {

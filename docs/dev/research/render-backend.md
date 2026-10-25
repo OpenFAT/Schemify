@@ -451,7 +451,7 @@ is the count of existing function bodies edited.
 | 2 (done) | **Delete the tile cache**: `tiles.rs`, the canvas use of `layers.rs`, `CanvasCache` in `paint::Caches`, LOD masks, and the cache tests and perf.md rows | goldens unchanged; `frame_times_100k`, `interactions_100k` | 4 (`paint::Caches`, `paint::frame`, `Editor::painted`'s partial-record wake, `wake_ms`'s "partly recorded" arm) |
 | 3 (done) | **Glyph atlas and UI batch.** `GpuPainter` implements every `Painter` method; canvas text moves to atlas quads | glyph mask vs `CpuPainter` glyph raster per size bucket; app goldens unchanged (CPU); hover and type frames' GPU time on the iGPU | 3 (`Painter` impl split, `draw_texts`, `widgets::draw_text`) |
 | 4 (done) | **Remove vello (GPU)**: `layers.rs`, the window's vello target and blit; the `vello` dependency goes, `vello_cpu` stays. Amend D5. | `tools/size-check.sh` before and after; all tests | 2 (`Gpu::new`, `Shell::render`) |
-| 5 | **WebGL2.** Enable wgpu `webgl` on wasm32; the WebGPU-unusable path tries WebGL2 before `cpu_view` (web spec §7 amended) | the web smoke test on headless Chrome with WebGPU disabled shows GPU frames | 2 (`Gpu::new` on wasm, `UserEvent::NoGpu` arm) |
+| 5 (done) | **WebGL2.** Enable wgpu `webgl` on wasm32; the WebGPU-unusable path tries WebGL2 before `cpu_view` (web spec §7 amended) | the web smoke test on headless Chrome with WebGPU disabled shows GPU frames | 2 (`Gpu::new` on wasm, `UserEvent::NoGpu` arm) |
 | 6 | **Buckets and far-zoom LOD** for 1M: rows grouped by `PrimIndex` cell, visible bucket ranges per frame, glyph draw skipped below 3 px, overview texture below 2 px per line | `frame_times_1m` GPU column on the iGPU under 8.3 ms; overview vs full draw tolerance test | 2 (`GpuRows::apply`, `canvas::draw`) |
 
 Steps 0 and 1 are independent and can land in either order. Step 2 needs step 1, and step 4
@@ -625,6 +625,38 @@ only vello used. D5 is amended (decisions.md, 2026-10-25). `layers.rs`, the vell
 blit were already gone in step 3, so the change radius is 1 (`Gpu::new`'s device request) plus
 the import paths. Sizes in [perf.md](../perf.md) § GPU canvas pipelines, step 4: −8 K native,
 −1 K gzip wasm, because LTO had already dropped the uncalled renderer.
+
+### Step 5: done (2026-10-25)
+
+The web tries WebGPU, then WebGL2 (wgpu's `webgl` feature, the same pipelines and shaders), then
+the CPU (web spec §7, amended). Each GPU tier gets web spec §7's "unusable" probe (no adapter,
+device or surface; device lost; first frame not on the page). Numbers in [perf.md](../perf.md)
+§ GPU canvas pipelines, step 5 (+991 K gzip wasm). What differed from the plan:
+
+- **The pipelines were WebGL2-shaped**, checked three ways. A unit test
+  (`gpu::tests::shaders_compile_to_glsl_es_300_for_webgl2`) validates both WGSL modules with naga
+  and no optional capability, writes every entry point as GLSL ES 3.00 for WebGL2, and checks
+  WebGL2's 16 attributes and 15 inter-stage variables. The window's and the GPU tests' devices
+  ask for `Limits::downlevel_webgl2_defaults()` at the adapter's resolution, so native runs
+  validate against WebGL2's limits. And the smoke test draws on WebGL2 in headless Chrome. No
+  shader or pipeline needed a change for WebGL2.
+- **One real gap was in WebGPU, not WebGL2**: `gpu.wgsl` mixed `&&` and `||` without
+  parentheses in the arc's dash test. naga accepts that and Tint (Chrome's WGSL compiler)
+  rejects it, so on every Chrome with a WebGPU adapter the canvas module failed and nothing was
+  drawn. Fixed. SwiftShader's WebGPU still shows no frames after the fix (web spec §7 (c)), so
+  that was not the cause of CI's blank WebGPU page, and CI still leaves WebGPU.
+- **WebGL2 draws on its own canvas** laid over winit's (`schemify-webgl`), since winit's keeps
+  the `webgpu` context of the first attempt. Its context is made by us first with
+  `preserveDrawingBuffer: true`: without it the probe read the cleared buffer after compositing
+  and WebGL2 counted as unusable even though it drew.
+- **A switch starts the next GPU from fresh rows and a fresh batch**: the rows and masks were
+  uploaded to the old device, so the first WebGL2 frame after a failed WebGPU panicked on missing
+  buffers (found by the smoke test).
+- **CI lands on WebGL2** (SwiftShader behind ANGLE, `--enable-unsafe-swiftshader`). The smoke
+  script runs a second time with `--disable-3d-apis`, so the CPU tier and its golden check stay
+  covered.
+- Change radius: 4 (`Gpu::new`, `resumed`, `user_event`'s `GpuReady` and `NoGpu` arms, the probe
+  in `render`); `cpu_view::overlay` was split out of `CpuView::new`.
 
 ## 6. Risks
 

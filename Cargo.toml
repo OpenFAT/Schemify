@@ -84,6 +84,8 @@ peniko = { version = "0.6", default-features = false, features = ["std"] }
 png = { version = "0.18", default-features = false }
 # Render's own instanced pipelines (WGSL); render picks the backends per target.
 wgpu = { version = "30", default-features = false, features = ["std", "wgsl"] }
+# render's test that its shaders compile for WebGL2: the naga wgpu links, its GLSL writer on.
+naga = { version = "30", default-features = false, features = ["wgsl-in", "glsl-out"] }
 vello_cpu = "0.3"
 pollster = "0.4"
 wasm-bindgen = "0.2"
