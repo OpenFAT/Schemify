@@ -1,27 +1,28 @@
-//! The only crate that touches the GPU (D5): builds vello scenes from `ui_layout` and the
-//! schematic canvas tables, and owns the window/event loop glue (native and web).
+//! The only crate that touches the GPU (D5): draws `ui_layout` and the schematic canvas
+//! tables, and owns the window/event loop glue (native and web).
 //!
 //! A frame, in spine order:
 //!
 //! ```text
 //! widgets::draw_ui(Layer::Main)        bars, tabs, status
-//! canvas::draw_canvas(canvas rect)     grid, primitives, overlay, marks
+//! Painter::canvas(canvas rect)         grid, the tables' rows each with its labels, marks
+//! Painter::overlay                     the gesture overlay
 //! widgets::draw_ui(Layer::Overlay)     menu popups, dialogs
 //! ```
 //!
-//! Every drawing function is generic over [`Painter`], so the same code fills a GPU
-//! [`vello::Scene`] ([`ScenePainter`]) or rasterizes on the CPU ([`CpuPainter`]: golden
+//! Every drawing function is generic over [`Painter`], so the same code fills the GPU
+//! painter's frame batch ([`GpuPainter`]) or rasterizes on the CPU ([`CpuPainter`]: golden
 //! images, and the web's frames when the browser has no WebGPU adapter). No `dyn`: the trait
 //! is a compile-time bound only.
 //!
-//! The canvas is one retained instance row per primitive ([`gpu::InstanceRows`], patched from
-//! the rows [`schemify_canvas::CanvasDiff`] reports changed), which both painters draw
-//! ([`Painter::canvas`]): on the GPU, Schemify's own instanced pipelines ([`gpu`]) draw them
-//! into the surface under the vello UI frame, which leaves a hole there, so a pan or zoom
-//! writes one camera uniform; on the CPU, [`canvas::draw_rows`] rasterizes them, the goldens'
-//! oracle. Every frame is complete: there is no tile cache. Canvas text stays with vello until
-//! the glyph atlas. A frame whose vello scene did not change is composed without vello
-//! ([`Layers::reusable`]).
+//! On the GPU a frame is one render pass straight into the surface (D39): the batch's rects,
+//! stroke segments, images and atlas masks ([`batch`]: glyphs, icons and math delimiters
+//! rasterized once by `vello_cpu` into the coverage [`atlas`]) in painting order, and among
+//! them the canvas's stages from its retained instance rows ([`gpu::InstanceRows`], patched
+//! from the rows [`schemify_canvas::CanvasDiff`] reports changed), drawn by Schemify's own
+//! instanced pipelines ([`gpu`]), so a pan or zoom writes one camera uniform. On the CPU,
+//! [`canvas::draw_rows`] rasterizes the same rows, the goldens' oracle. Every frame is
+//! complete: there is no tile cache, and vello's GPU renderer draws nothing.
 //!
 //! ```
 //! use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
@@ -49,15 +50,13 @@ pub mod canvas;
 #[cfg(target_arch = "wasm32")]
 mod cpu_view;
 pub mod gpu;
-mod layers;
 mod painter;
 pub mod waves;
 pub mod widgets;
 mod window;
 
 pub use batch::{Batch, GpuPainter};
-pub use layers::{LAYER_SLOTS, Layers};
-pub use painter::{Chains, CpuPainter, Painter, ScenePainter, rgba};
+pub use painter::{Chains, CpuPainter, Painter, rgba};
 /// CPU raster target returned by [`CpuPainter::finish`] (PNG encode/decode included).
 pub use vello_cpu::Pixmap;
 pub use window::{App, RunError, Waker, run};

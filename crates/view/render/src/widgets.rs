@@ -13,7 +13,6 @@ use schemify_ui::{
     UiTables, row_paint, row_style,
 };
 
-use crate::layers::LAYER_SLOTS;
 use crate::painter::{Painter, outline, rgba};
 
 /// Reused buffers for UI painting.
@@ -35,10 +34,6 @@ pub(crate) fn rect(r: schemify_ui::Rect) -> Rect {
     )
 }
 
-/// Raster layer slot of the status bar ([`Kind::Status`], a [`Painter::live_layer`]); the
-/// canvas atlas is slot 0.
-pub const STATUS_SLOT: usize = LAYER_SLOTS - 1;
-
 /// Paints the rows of one layer. Call with [`Layer::Main`], draw the canvas into the canvas
 /// row's rect, then call with [`Layer::Overlay`] so popups cover the schematic.
 #[allow(clippy::too_many_arguments)]
@@ -52,7 +47,6 @@ pub fn draw_ui<P: Painter>(
     layer: Layer,
     scratch: &mut UiScratch,
 ) {
-    let n = &tables.nodes;
     assert_eq!(layout.rect().len(), layout.len());
     assert_eq!(layout.clip().len(), layout.len());
     // Rows inside a scroll pane are clipped to it; consecutive rows share one clip layer.
@@ -74,24 +68,6 @@ pub fn draw_ui<P: Painter>(
         if vis.w <= 0.0 || vis.h <= 0.0 {
             r += 1;
             continue; // scrolled out of view
-        }
-        let node = layout.node()[r];
-        if n.kind()[node as usize] == Kind::Status {
-            // The status bar shows the pointer's coordinates, so it changes on every pointer
-            // move: through a live layer such a frame composes without vello (D39). Its rows
-            // follow it (pre-order) and open no scroll clip.
-            let end = n.end()[node as usize];
-            let last = (r + 1..rows.end)
-                .find(|&k| !(node + 1..end).contains(&layout.node()[k]))
-                .unwrap_or(rows.end);
-            let area = rect(layout.rect()[r]);
-            p.live_layer(STATUS_SLOT, area, |p| {
-                for k in r..last {
-                    draw_row(p, tables, layout, strings, text, state, scratch, k);
-                }
-            });
-            r = last;
-            continue;
         }
         draw_row(p, tables, layout, strings, text, state, scratch, r);
         r += 1;
