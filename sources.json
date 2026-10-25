@@ -1,1 +1,17 @@
-{}
+{
+  "1.0.0": {
+    "aarch64-darwin": {
+      "sha256": "e94ab5ab7daf5c77e3bec2ce3b951885f968b6681587b155761bfc0628d6fc0e",
+      "url": "https://github.com/OmarSiwy/Schemify/releases/download/v1.0.0/schemify-v1.0.0-macos-aarch64.tar.gz"
+    },
+    "date": "2026-10-25",
+    "x86_64-darwin": {
+      "sha256": "fd33902bec3a13684721a08598726c17ba498454f27bbc860ec5562070fce3b4",
+      "url": "https://github.com/OmarSiwy/Schemify/releases/download/v1.0.0/schemify-v1.0.0-macos-x86_64.tar.gz"
+    },
+    "x86_64-linux": {
+      "sha256": "b4f279eaca2a1b8fbd40da369873c00765f9d11650b47b9b63a042c170efd280",
+      "url": "https://github.com/OmarSiwy/Schemify/releases/download/v1.0.0/schemify-v1.0.0-linux-x86_64.tar.gz"
+    }
+  }
+}
