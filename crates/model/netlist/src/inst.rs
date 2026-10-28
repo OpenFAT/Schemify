@@ -459,6 +459,10 @@ fn default_line<'net, F: Fn(Name) -> &'net str>(
 /// row's spelling (`?` unconnected); Verilog pairs them with the definition's ports.
 fn instance<'net, F: Fn(Name) -> &'net str>(row: &Row<'_, F>, out: &mut String) {
     let elab = row.elab;
+    assert!(
+        crate::is_spice(row.dialect) || matches!(elab.insts.target[row.index], Target::Def(_)),
+        "Spectre and Verilog instantiate only definitions this way"
+    );
     let nets = row
         .conn
         .iter()

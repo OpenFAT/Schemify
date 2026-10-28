@@ -230,6 +230,11 @@ pub(crate) fn xspice_spellings(elab: &Elab, plans: &Plans, dialect: Dialect) -> 
     }
     out.sort_unstable_by_key(|r| r.net.0);
     assert!(out.windows(2).all(|w| w[0].net != w[1].net));
+    // `crate::spelled` relies on it, and `name_map::Builder` keys on it.
+    assert!(
+        !out.iter().any(|r| r.text.is_empty()),
+        "a respelling has text"
+    );
     assert!(
         out.iter().all(|r| !r.text.contains('[')),
         "no respelling opens a port vector"
@@ -280,6 +285,10 @@ pub(crate) fn once_only(lowered: &mut Lowered, elab: &Elab, dialect: Dialect, us
 /// The body lines of leaf impl row `leaf`.
 fn body(elab: &Elab, leaf: usize) -> &[Name] {
     let impls = &elab.impls;
+    assert!(
+        leaf < impls.cell.len(),
+        "impl row {leaf} of the elaboration"
+    );
     assert_eq!(impls.body_start.len(), impls.cell.len() + 1);
     &impls.body[impls.body_start[leaf] as usize..impls.body_start[leaf + 1] as usize]
 }

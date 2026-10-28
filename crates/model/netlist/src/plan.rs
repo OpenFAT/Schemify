@@ -156,7 +156,12 @@ impl Plans {
     /// The plan that writes instance row `row`.
     pub(crate) fn of_row(&self, elab: &Elab, row: usize) -> &Plan {
         let plan = match elab.insts.target[row] {
-            Target::Def(def) => &self.def[elab.defs.cell[def as usize] as usize],
+            Target::Def(def) => {
+                let plan = &self.def[elab.defs.cell[def as usize] as usize];
+                // `Plans::new` plans a cell's schematic impl, or none, for its definitions.
+                debug_assert_eq!(plan.lang, Lang::Schematic);
+                plan
+            }
             Target::Leaf(leaf) => &self.leaf[leaf as usize],
         };
         debug_assert_eq!(plan.slots.len(), plan.vector.len(), "one entry per pin");

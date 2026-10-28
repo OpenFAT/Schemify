@@ -41,7 +41,7 @@
 //! - `pub fn emit(elab: &Elab, dialect: Dialect) -> Netlist`
 //! - `pub fn lower(elab: &Elab, dialect: Dialect) -> Lowered`
 //! - re-exported: `emit_flat` (flat.rs), `compiled_source` (deck.rs), `set_serial`
-//!   (block.rs), `NameMap` (name_map.rs), SpiceRack's `Lines`, `SetupLine`, `CircuitIR`
+//!   (block.rs), `NameMap` (name_map/), SpiceRack's `Lines`, `SetupLine`, `CircuitIR`
 //! - crate-wide: `const NONE`, `struct Respelling`,
 //!   `fn write(lowered: &mut Lowered, dialect: Dialect) -> String`,
 //!   `fn spicerack_dialect(dialect: Dialect) -> SpiceRackDialect`,
@@ -279,7 +279,14 @@ pub(crate) fn spicerack_dialect(dialect: Dialect) -> SpiceRackDialect {
 /// Whether `dialect` is a SPICE-syntax dialect: verbatim names, `*` comments, `.subckt`
 /// blocks, case-insensitive names.
 pub(crate) fn is_spice(dialect: Dialect) -> bool {
-    xschem::is_spice(spicerack_dialect(dialect))
+    let spice = xschem::is_spice(spicerack_dialect(dialect));
+    // `inst::default_line` writes Spectre and Verilog by their own arms.
+    debug_assert_eq!(
+        spice,
+        !matches!(dialect, Dialect::Spectre | Dialect::Verilog),
+        "SpiceRack and this crate agree on the SPICE dialects"
+    );
+    spice
 }
 
 /// Appends `name` as the dialect spells an identifier (SpiceRack's `push_ident`: SPICE

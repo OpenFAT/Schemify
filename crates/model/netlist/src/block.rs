@@ -302,6 +302,8 @@ fn render(
         rows.end <= elab.insts.name.len(),
         "rows of this elaboration"
     );
+    // `Kept::row` narrows a row index.
+    assert!(rows.end <= u32::MAX as usize);
     let mut lines = Lines {
         text: String::with_capacity(48 * rows.len()),
         ends: Vec::with_capacity(rows.len()),
