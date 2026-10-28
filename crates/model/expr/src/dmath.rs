@@ -1,26 +1,33 @@
-//! Deterministic math. Every transcendental goes through `libm` (pure Rust), so
-//! a value is bit-identical on Linux, macOS, Windows and wasm (D32). The
+//! Deterministic math (D32): every transcendental goes through `libm` (pure
+//! Rust), so a value is bit-identical on Linux, macOS, Windows and wasm. The
 //! platform libm (`f64::sin`) may differ by an ulp between targets, which
-//! would make netlists differ byte-wise.
-//!
-//! `sqrt` and the four arithmetic operators are IEEE correctly rounded on every
-//! target, so they need no wrapper.
+//! would make netlists differ byte-wise. `sqrt` and the four arithmetic
+//! operators are IEEE correctly rounded on every target and need no wrapper.
 //!
 //! Hidden public module: the test-only reference evaluator shares this math
-//! kernel (and nothing else) so the differential oracle checks evaluator logic.
+//! kernel (and nothing else), so the differential oracle checks evaluator logic.
+//!
+//! Contents:
+//! - `pub struct Complex`, `Complex::new(re: f64, im: f64) -> Complex`,
+//!   `Complex::conj(self) -> Complex`; `Add`, `Sub`, `Mul`, `Div`, `Neg`,
+//!   `MulAssign`, `Mul<f64>`, `Div<f64>`
+//! - `pub fn norm(z: Complex) -> f64`
+//! - `pub(crate) fn real(b: Builtin, x: f64) -> f64`
+//! - `pub(crate) fn complex(b: Builtin, z: Complex) -> Complex`
+//! - `pub fn real_named(name: &str, x: f64) -> Option<f64>`
+//! - `pub fn complex_named(name: &str, z: Complex) -> Option<Complex>`
+//! - `pub fn cpow(a: Complex, b: Complex) -> Complex`
 
 use core::ops::{Add, Div, Mul, MulAssign, Neg, Sub};
 
 use crate::builtin::Builtin;
 
-type C = Complex;
-
 /// A complex number over two `f64`s: the calculator's `cnum` element and the
 /// `fft` sample.
 ///
 /// The operators use the textbook formulas (no scaling, no fused multiply-add),
-/// so results are bit-identical to `num_complex::Complex64`'s (tested); `/` by a zero divisor yields non-finite parts, which callers turn
-/// into `X010`.
+/// so results are bit-identical to `num_complex::Complex64`'s (tested). `/` by
+/// a zero divisor yields non-finite parts, which callers turn into `X010`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Complex {
     /// Real part.
@@ -28,6 +35,8 @@ pub struct Complex {
     /// Imaginary part.
     pub im: f64,
 }
+
+type C = Complex;
 
 impl Complex {
     /// `re + i·im`.
@@ -103,14 +112,15 @@ impl Neg for Complex {
     }
 }
 
-/// `|z|`.
+/// `|z|`, through `libm::hypot` (no overflow for large parts).
 pub fn norm(z: C) -> f64 {
     libm::hypot(z.re, z.im)
 }
 
 /// Real elementary function `b` at `x`.
 ///
-/// Panics if `b` is not one of the elementary functions (a compiler bug).
+/// # Panics
+/// If `b` is not one of the elementary functions (a compiler bug).
 pub(crate) fn real(b: Builtin, x: f64) -> f64 {
     match b {
         Builtin::Sqrt => x.sqrt(),
@@ -132,7 +142,8 @@ pub(crate) fn real(b: Builtin, x: f64) -> f64 {
 
 /// Complex elementary function `b` at `z` (principal branches).
 ///
-/// Panics if `b` is not one of the elementary functions (a compiler bug).
+/// # Panics
+/// If `b` is not one of the elementary functions (a compiler bug).
 pub(crate) fn complex(b: Builtin, z: C) -> C {
     match b {
         Builtin::Sqrt => csqrt(z),
@@ -174,13 +185,6 @@ pub(crate) fn complex(b: Builtin, z: C) -> C {
     }
 }
 
-/// The elementary function spelled `name`, if it is one.
-fn by_name(name: &str) -> Option<Builtin> {
-    Builtin::lookup(name)
-        .map(|(b, _, _)| b)
-        .filter(|b| b.elementary())
-}
-
 /// Real elementary function by source name (`"sin"`, …); `None` if `name`
 /// is not one.
 pub fn real_named(name: &str, x: f64) -> Option<f64> {
@@ -202,6 +206,15 @@ pub fn cpow(a: C, b: C) -> C {
         };
     }
     cexp(b * cln(a))
+}
+
+// ---- private ----
+
+/// The elementary function spelled `name`, if it is one.
+fn by_name(name: &str) -> Option<Builtin> {
+    Builtin::lookup(name)
+        .map(|(b, _, _)| b)
+        .filter(|b| b.elementary())
 }
 
 fn cexp(z: C) -> C {

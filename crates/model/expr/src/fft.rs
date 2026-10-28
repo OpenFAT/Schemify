@@ -4,6 +4,9 @@
 //! Twiddles and chirps come from `libm` (pure Rust), so a spectrum is bit-identical on every
 //! target (D32); `rustfft` used the platform `sin`/`cos`. Lengths are bounded by the column
 //! (a step of one raw plot), so scratch is allocated per call.
+//!
+//! Contents:
+//! - `pub(crate) fn forward(buf: &mut [Complex])`
 
 use core::f64::consts::PI;
 
@@ -21,6 +24,8 @@ pub(crate) fn forward(buf: &mut [C]) {
     }
     assert_eq!(buf.len(), n);
 }
+
+// ---- private ----
 
 /// `e^(i·angle)` through `libm`.
 fn cis(angle: f64) -> C {

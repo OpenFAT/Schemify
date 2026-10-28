@@ -77,12 +77,7 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut String) -> Result<V, Error
             format!("`{name}` needs a number, got {}", type_name(v)),
         )),
     };
-    let bad = |v: V| {
-        Error::bare(
-            Code::X003,
-            format!("`{name}` cannot take {}", type_name(v)),
-        )
-    };
+    let bad = |v: V| Error::bare(Code::X003, format!("`{name}` cannot take {}", type_name(v)));
     let a0 = args[0];
     let r = match b {
         Builtin::Abs => match a0 {
@@ -114,7 +109,10 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut String) -> Result<V, Error
                 if (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&t) {
                     Ok(V::Int(t as i64))
                 } else {
-                    Err(Error::bare(Code::X010, "`int` result outside the int range"))
+                    Err(Error::bare(
+                        Code::X010,
+                        "`int` result outside the int range",
+                    ))
                 }
             }
         },
@@ -239,10 +237,7 @@ pub(crate) fn fin(x: f64, what: &str) -> Result<V, Error> {
         return Ok(V::Num(x));
     }
     let kind = if x.is_nan() { "NaN" } else { "infinity" };
-    Err(Error::bare(
-        Code::X010,
-        format!("`{what}` produced {kind}"),
-    ))
+    Err(Error::bare(Code::X010, format!("`{what}` produced {kind}")))
 }
 
 /// `Cnum(z)` if both parts are finite, else `X010` naming what produced it.

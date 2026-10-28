@@ -8,6 +8,8 @@
 //! Contents:
 //! - `pub(crate) fn call_cv(b: Builtin, args: Vec<CV>, axes: &mut Vec<Axis>, strs: &mut String) -> Result<CV, Error>`
 
+use core::ops::Range;
+
 use crate::builtin::Builtin;
 use crate::calc::{Axis, AxisKind, CV, Col, ColKind, x011};
 use crate::column::{check_finite, elementwise, first_nonfinite, scalars};
@@ -260,7 +262,10 @@ fn per_step_axis(axes: &mut Vec<Axis>, parent: u32) -> u32 {
     let n = axes[parent as usize].steps.len();
     axes.push(Axis {
         x: (0..n).map(|i| i as f64).collect(),
-        steps: vec![0..n as u32],
+        steps: vec![Range {
+            start: 0,
+            end: n as u32,
+        }],
         parent,
         kind: AxisKind::PerStep,
     });

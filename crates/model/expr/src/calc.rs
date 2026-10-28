@@ -23,7 +23,9 @@ use core::ops::Range;
 
 use crate::builtin::Builtin;
 use crate::column::{col_binary, cv_type, elementwise, scalars};
-use crate::eval::{PluginValue, Scratch, V, call_plugin, load_const, load_value, no_plugins, to_value};
+use crate::eval::{
+    PluginValue, Scratch, V, call_plugin, load_const, load_value, no_plugins, to_value,
+};
 use crate::kernel::{binary, not_bool, op_str, unary};
 use crate::measure::call_cv;
 use crate::program::{Mode, OpKind, Program, SignalKind};
@@ -192,7 +194,15 @@ impl Program {
         });
         scratch.strs.clear();
         let (start, end) = self.roots[0];
-        let v = run(self, (start, end), inputs, plot, plugins, &mut scratch.strs, cs)?;
+        let v = run(
+            self,
+            (start, end),
+            inputs,
+            plot,
+            plugins,
+            &mut scratch.strs,
+            cs,
+        )?;
         Ok(match v {
             CV::S(v) => CalcResult::Scalar(to_value(v, &scratch.strs)),
             CV::C(c) => {
@@ -260,7 +270,10 @@ fn check_plot(prog: &Program, plot: &Plot<'_>) -> Result<Vec<Range<u32>>, Error>
         }
     }
     if plot.steps.is_empty() {
-        return Ok(vec![0..n as u32]);
+        return Ok(vec![Range {
+            start: 0,
+            end: n as u32,
+        }]);
     }
     let mut at = 0;
     for s in plot.steps {
@@ -294,7 +307,10 @@ where
     R: PluginValue,
 {
     assert!(start < end, "empty code range");
-    assert!(end as usize <= prog.ops.len(), "code range past the program");
+    assert!(
+        end as usize <= prog.ops.len(),
+        "code range past the program"
+    );
     cs.stack.clear();
     cs.frames.clear();
     let mut pc = start;

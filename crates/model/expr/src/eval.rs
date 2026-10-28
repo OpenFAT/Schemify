@@ -160,7 +160,10 @@ where
     R: PluginValue,
 {
     assert!(start < end, "empty code range {start}..{end}");
-    assert!(end as usize <= prog.ops.len(), "code range past the program");
+    assert!(
+        end as usize <= prog.ops.len(),
+        "code range past the program"
+    );
     s.stack.clear();
     s.strs.clear();
     let mut pc = start;

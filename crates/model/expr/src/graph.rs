@@ -3,6 +3,15 @@
 //!
 //! Edges are "depends on": node `i` reads the values of `deps.edges(i)`.
 //! Determinism: results depend only on node and edge order, never on hashing.
+//!
+//! Contents:
+//! - `pub struct Deps<'a>`, `Deps::len(&self) -> usize`, `Deps::is_empty(&self) -> bool`,
+//!   `Deps::edges(&self, i: u32) -> &[u32]`
+//! - `pub struct Cycle`, `Cycle::error(&self, name) -> Error`
+//! - `pub fn topo_order(deps: Deps<'_>, order: &mut Vec<u32>) -> Result<(), Cycle>`
+//! - `pub fn topo_order_all(deps: Deps<'_>, order: &mut Vec<u32>, cycles: &mut Vec<Cycle>)`
+//! - `pub fn reverse(deps: Deps<'_>, offsets: &mut Vec<u32>, targets: &mut Vec<u32>)`
+//! - `pub fn affected(dependents: Deps<'_>, rank: &[u32], dirty: &[u32], out: &mut Vec<u32>)`
 
 use crate::{Code, Error, Span};
 
@@ -17,44 +26,6 @@ pub struct Deps<'a> {
     pub targets: &'a [u32],
 }
 
-impl Deps<'_> {
-    /// Number of nodes.
-    pub fn len(&self) -> usize {
-        self.offsets.len() - 1
-    }
-
-    /// True when there are no nodes.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Edges of node `i`.
-    pub fn edges(&self, i: u32) -> &[u32] {
-        &self.targets[self.offsets[i as usize] as usize..self.offsets[i as usize + 1] as usize]
-    }
-
-    fn check(&self) {
-        assert!(
-            !self.offsets.is_empty() && self.offsets[0] == 0,
-            "CSR offsets must start with 0"
-        );
-        assert!(
-            self.offsets.windows(2).all(|w| w[0] <= w[1]),
-            "CSR offsets must not decrease"
-        );
-        assert_eq!(
-            *self.offsets.last().expect("non-empty") as usize,
-            self.targets.len(),
-            "CSR offsets must end at targets.len()"
-        );
-        let n = self.len();
-        assert!(
-            self.targets.iter().all(|&t| (t as usize) < n),
-            "CSR target out of range"
-        );
-    }
-}
-
 /// A dependency cycle: `nodes[0]` depends on `nodes[1]`, …, and the last
 /// depends on `nodes[0]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,18 +34,27 @@ pub struct Cycle {
     pub nodes: Vec<u32>,
 }
 
-impl Cycle {
-    /// `X005` naming the cycle as `a -> b -> a`.
-    pub fn error<'n>(&self, name: impl Fn(u32) -> &'n str) -> Error {
-        assert!(!self.nodes.is_empty(), "a cycle has at least one node");
-        let mut msg = String::from("dependency cycle: ");
-        for &n in &self.nodes {
-            msg.push_str(name(n));
-            msg.push_str(" -> ");
-        }
-        msg.push_str(name(self.nodes[0]));
-        Error::new(Code::X005, Span::default(), msg)
-    }
+/// Marker for "no index yet" / "no parent" in [`topo_order_all`].
+const NONE: u32 = u32::MAX;
+
+/// Tarjan's strongly connected components, iterative: discovery index ([`NONE`] =
+/// unseen), low link, the component stack and the DFS path of (node, next edge offset).
+struct Tarjan {
+    index: Vec<u32>,
+    low: Vec<u32>,
+    on_stack: Vec<bool>,
+    stack: Vec<u32>,
+    path: Vec<(u32, u32)>,
+    next: u32,
+}
+
+/// Scratch for covering cyclic components with shortest cycles: component membership,
+/// coverage and breadth-first-search parents, one slot per node, reset after each use.
+struct Cover {
+    in_component: Vec<bool>,
+    covered: Vec<bool>,
+    parent: Vec<u32>,
+    queue: Vec<u32>,
 }
 
 /// Writes a topological order into `order` (cleared first): every node after
@@ -206,18 +186,131 @@ pub fn topo_order_all(deps: Deps<'_>, order: &mut Vec<u32>, cycles: &mut Vec<Cyc
     assert!(t.stack.is_empty() && t.path.is_empty());
 }
 
-/// Marker for "no index yet" / "no parent" in [`topo_order_all`].
-const NONE: u32 = u32::MAX;
+/// Builds the reverse table (dependents) of `deps` into `offsets`/`targets`
+/// (both cleared). Each node's dependents are in increasing index order.
+///
+/// # Panics
+/// If `deps` is not a valid CSR table.
+pub fn reverse(deps: Deps<'_>, offsets: &mut Vec<u32>, targets: &mut Vec<u32>) {
+    deps.check();
+    let n = deps.len();
+    offsets.clear();
+    offsets.resize(n + 1, 0);
+    for &t in deps.targets {
+        offsets[t as usize + 1] += 1;
+    }
+    for i in 0..n {
+        offsets[i + 1] += offsets[i];
+    }
+    targets.clear();
+    targets.resize(deps.targets.len(), 0);
+    let mut fill: Vec<u32> = offsets[..n].to_vec();
+    for i in 0..n as u32 {
+        for &t in deps.edges(i) {
+            targets[fill[t as usize] as usize] = i;
+            fill[t as usize] += 1;
+        }
+    }
+    assert_eq!(offsets[n] as usize, targets.len());
+}
 
-/// Tarjan's strongly connected components, iterative: discovery index ([`NONE`] =
-/// unseen), low link, the component stack and the DFS path of (node, next edge offset).
-struct Tarjan {
-    index: Vec<u32>,
-    low: Vec<u32>,
-    on_stack: Vec<bool>,
-    stack: Vec<u32>,
-    path: Vec<(u32, u32)>,
-    next: u32,
+/// Incremental recompute set: writes into `out` (cleared first) the `dirty`
+/// nodes and everything that transitively depends on them, sorted by `rank`,
+/// so re-evaluating `out` in order equals a full recompute. `rank[i]` is
+/// node `i`'s position in a [`topo_order`] result. Valid only while the edges
+/// are unchanged: an edited expression whose identifiers changed needs a new
+/// order first.
+///
+/// Cost: O(affected nodes + their edges + log) plus O(nodes) scratch.
+///
+/// # Panics
+/// If `dependents` is invalid, `rank.len()` differs from the node count, or
+/// a dirty index is out of range.
+pub fn affected(dependents: Deps<'_>, rank: &[u32], dirty: &[u32], out: &mut Vec<u32>) {
+    dependents.check();
+    let n = dependents.len();
+    assert_eq!(rank.len(), n, "one rank per node");
+    out.clear();
+    let mut seen = vec![false; n];
+    for &d in dirty {
+        assert!((d as usize) < n, "dirty node {d} out of range");
+        if !seen[d as usize] {
+            seen[d as usize] = true;
+            out.push(d);
+        }
+    }
+    let mut i = 0;
+    while i < out.len() {
+        for &w in dependents.edges(out[i]) {
+            if !seen[w as usize] {
+                seen[w as usize] = true;
+                out.push(w);
+            }
+        }
+        i += 1;
+    }
+    out.sort_unstable_by_key(|&v| rank[v as usize]);
+    debug_assert!(out.len() <= n);
+}
+
+impl Deps<'_> {
+    /// Number of nodes.
+    pub fn len(&self) -> usize {
+        self.offsets.len() - 1
+    }
+
+    /// True when there are no nodes.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The nodes node `i` depends on.
+    ///
+    /// # Panics
+    /// If `i >= self.len()`.
+    pub fn edges(&self, i: u32) -> &[u32] {
+        &self.targets[self.offsets[i as usize] as usize..self.offsets[i as usize + 1] as usize]
+    }
+}
+
+impl Cycle {
+    /// `X005` naming the cycle as `a -> b -> a`.
+    pub fn error<'n>(&self, name: impl Fn(u32) -> &'n str) -> Error {
+        assert!(!self.nodes.is_empty(), "a cycle has at least one node");
+        let mut msg = String::from("dependency cycle: ");
+        for &n in &self.nodes {
+            msg.push_str(name(n));
+            msg.push_str(" -> ");
+        }
+        msg.push_str(name(self.nodes[0]));
+        Error::new(Code::X005, Span::default(), msg)
+    }
+}
+
+// ---- private ----
+
+impl Deps<'_> {
+    /// Asserts the CSR invariants of [`Deps`].
+    fn check(&self) {
+        assert!(
+            !self.offsets.is_empty() && self.offsets[0] == 0,
+            "CSR offsets must start with 0"
+        );
+        assert!(
+            self.offsets.windows(2).all(|w| w[0] <= w[1]),
+            "CSR offsets must not decrease"
+        );
+        assert_eq!(
+            *self.offsets.last().expect("non-empty") as usize,
+            self.targets.len(),
+            "CSR offsets must end at targets.len()"
+        );
+        let n = self.len();
+        assert!(
+            self.targets.iter().all(|&t| (t as usize) < n),
+            "CSR target out of range"
+        );
+    }
 }
 
 impl Tarjan {
@@ -234,15 +327,6 @@ impl Tarjan {
             "DFS path within the node count"
         );
     }
-}
-
-/// Scratch for covering cyclic components with shortest cycles: component membership,
-/// coverage and breadth-first-search parents, one slot per node, reset after each use.
-struct Cover {
-    in_component: Vec<bool>,
-    covered: Vec<bool>,
-    parent: Vec<u32>,
-    queue: Vec<u32>,
 }
 
 impl Cover {
@@ -324,71 +408,4 @@ impl Cover {
         assert_eq!(cycle[0], v);
         cycle
     }
-}
-
-/// Builds the reverse table (dependents) of `deps` into `offsets`/`targets`
-/// (both cleared). Each node's dependents are in increasing index order.
-///
-/// # Panics
-/// If `deps` is not a valid CSR table.
-pub fn reverse(deps: Deps<'_>, offsets: &mut Vec<u32>, targets: &mut Vec<u32>) {
-    deps.check();
-    let n = deps.len();
-    offsets.clear();
-    offsets.resize(n + 1, 0);
-    for &t in deps.targets {
-        offsets[t as usize + 1] += 1;
-    }
-    for i in 0..n {
-        offsets[i + 1] += offsets[i];
-    }
-    targets.clear();
-    targets.resize(deps.targets.len(), 0);
-    let mut fill: Vec<u32> = offsets[..n].to_vec();
-    for i in 0..n as u32 {
-        for &t in deps.edges(i) {
-            targets[fill[t as usize] as usize] = i;
-            fill[t as usize] += 1;
-        }
-    }
-    assert_eq!(offsets[n] as usize, targets.len());
-}
-
-/// Incremental recompute set: writes into `out` (cleared first) the `dirty`
-/// nodes and everything that transitively depends on them, sorted by `rank`,
-/// so re-evaluating `out` in order equals a full recompute. `rank[i]` is
-/// node `i`'s position in a [`topo_order`] result. Valid only while the edges
-/// are unchanged: an edited expression whose identifiers changed needs a new
-/// order first.
-///
-/// Cost: O(affected nodes + their edges + log) plus O(nodes) scratch.
-///
-/// # Panics
-/// If `dependents` is invalid, `rank.len()` differs from the node count, or
-/// a dirty index is out of range.
-pub fn affected(dependents: Deps<'_>, rank: &[u32], dirty: &[u32], out: &mut Vec<u32>) {
-    dependents.check();
-    let n = dependents.len();
-    assert_eq!(rank.len(), n, "one rank per node");
-    out.clear();
-    let mut seen = vec![false; n];
-    for &d in dirty {
-        assert!((d as usize) < n, "dirty node {d} out of range");
-        if !seen[d as usize] {
-            seen[d as usize] = true;
-            out.push(d);
-        }
-    }
-    let mut i = 0;
-    while i < out.len() {
-        for &w in dependents.edges(out[i]) {
-            if !seen[w as usize] {
-                seen[w as usize] = true;
-                out.push(w);
-            }
-        }
-        i += 1;
-    }
-    out.sort_unstable_by_key(|&v| rank[v as usize]);
-    debug_assert!(out.len() <= n);
 }

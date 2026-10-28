@@ -1,10 +1,17 @@
 //! Templates (spec §6): text with `{expr}` holes; `{{` and `}}` are literal
 //! braces. All holes compile into one [`Program`] with one root per hole, so
 //! a template binds its identifiers once, like a single expression.
+//!
+//! Contents:
+//! - `pub struct Template`, `Template::parse(src: &str) -> Result<Template, Error>`,
+//!   `Template::program(&self) -> &Program`, `Template::segments(&self)`,
+//!   `Template::render(&self, inputs, scratch, out) -> Result<(), Error>`,
+//!   `Template::render_with(&self, inputs, plugins, scratch, out) -> Result<(), Error>`
+//! - `pub enum Segment<'t>`
 
 use crate::compile::Compiler;
-use crate::program::{Mode, Program};
 use crate::eval::{self, PluginValue, Scratch, V, str_at};
+use crate::program::{Mode, Program};
 use crate::text::{write_int, write_num};
 use crate::{Code, Error, Span, Value};
 
@@ -16,18 +23,6 @@ pub struct Template {
     text: String,
     segs: Vec<Seg>,
 }
-
-#[derive(Clone, Copy, Debug)]
-enum Seg {
-    /// Byte range of `text`.
-    Lit(u32, u32),
-    /// Root index in `program`, the hole's span for errors, and the index in
-    /// `program.idents` of the identifier the hole is spelled as (`NOT_IDENT`
-    /// for any other expression).
-    Hole(u32, Span, u32),
-}
-
-const NOT_IDENT: u32 = u32::MAX;
 
 /// One piece of a parsed template, in source order (see [`Template::segments`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +36,21 @@ pub enum Segment<'t> {
         ident: Option<u32>,
     },
 }
+
+/// A [`Segment`] as stored: literal ranges index `text`, so one template is
+/// two allocations plus its program.
+#[derive(Clone, Copy, Debug)]
+enum Seg {
+    /// Byte range of `text`.
+    Lit(u32, u32),
+    /// Root index in `program`, the hole's span for errors, and the index in
+    /// `program.idents` of the identifier the hole is spelled as (`NOT_IDENT`
+    /// for any other expression).
+    Hole(u32, Span, u32),
+}
+
+/// `Seg::Hole`'s identifier index when the hole is not one bare identifier.
+const NOT_IDENT: u32 = u32::MAX;
 
 impl Template {
     /// Parses `src` and compiles every hole in [`Mode::Scalar`].
@@ -183,7 +193,13 @@ impl Template {
         }
         r
     }
+}
 
+// ---- private ----
+
+impl Template {
+    /// Evaluates every hole onto `out`; [`Template::render_with`] restores
+    /// `out` on error.
     fn render_inner<P, R>(
         &self,
         inputs: &[Value<'_>],
