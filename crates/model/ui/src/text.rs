@@ -44,8 +44,9 @@ pub struct Image {
     pub width: u32,
     /// Height in pixels (> 0).
     pub height: u32,
-    /// `width × height × 4` bytes of premultiplied RGBA8, rows top to bottom. Shared, so a
-    /// renderer can hand it to the GPU without copying.
+    /// `width × height × 4` bytes of premultiplied RGBA8, rows top to bottom. An `Arc`
+    /// because the renderer's image type (`peniko::Blob`) takes one: it reaches the GPU
+    /// without a copy.
     pub rgba: Arc<Vec<u8>>,
 }
 
@@ -128,6 +129,7 @@ impl TextSystem {
     pub fn new() -> Self {
         let mut font_cx = FontContext::default();
         let mut register = |bytes: &'static [u8]| {
+            // Arc: `Blob::new` takes one (fontique's API); it wraps a `&'static` slice.
             let families = font_cx
                 .collection
                 .register_fonts(Blob::new(Arc::new(bytes)), None);
@@ -162,7 +164,7 @@ impl TextSystem {
             code_metrics: Vec::new(),
             epoch: 0,
         };
-        let code = crate::prose::CODE_PX
+        let code: Vec<Option<crate::prose::CodeMetrics>> = crate::prose::CODE_PX
             .map(|px| crate::prose::measure_code(&mut ts, px))
             .collect();
         // The probe layouts are not cache entries: drop them so ids start at 0 as before.

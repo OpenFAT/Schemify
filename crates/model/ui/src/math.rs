@@ -147,7 +147,8 @@ impl MathFonts {
     /// Wraps the embedded faces (no copy: the blobs borrow the static bytes).
     #[must_use]
     pub fn new() -> Self {
-        let data = FACES
+        // Arc: `Blob::new` takes one (the font library's API); it wraps a `&'static` slice.
+        let data: Vec<FontData> = FACES
             .iter()
             .map(|(_, b)| FontData::new(Blob::new(Arc::new(*b)), 0))
             .collect();

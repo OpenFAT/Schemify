@@ -22,7 +22,7 @@ use taffy::{AvailableSpace, Dimension, Size, TaffyTree};
 
 use crate::flex::{Builder, Frame, NO_ROW, Placed};
 use crate::kinds::{Kind, StyleProp};
-use crate::paint::row_style;
+use crate::paint;
 use crate::state::UiState;
 use crate::strings::Strings;
 use crate::tables::{NO_NODE, NO_STYLE, NodeIx, UiTables};
@@ -265,7 +265,7 @@ impl UiLayout {
 
     /// [`row_style`] of `node` shown normally, as a float (what input and painting measure with).
     pub(crate) fn style(&self, tables: &UiTables, node: NodeIx, prop: StyleProp) -> f32 {
-        row_style(tables, self.title_style, node, Shown::Normal, prop) as f32
+        paint::row_style(tables, self.title_style, node, Shown::Normal, prop) as f32
     }
 
     /// First row showing `node` normally, as a title or as a cascade row (not as a popup).

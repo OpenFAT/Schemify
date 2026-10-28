@@ -4,8 +4,6 @@
 
 use schemify_ui::{Button, InputEvent, InputEvents, Layer, Shown};
 
-use crate::{first_nav_row, fixture, key};
-
 // ---- private ----
 
 /// Menus by keyboard: F10 opens the menubar, arrows walk rows (wrapping, skipping
@@ -13,84 +11,90 @@ use crate::{first_nav_row, fixture, key};
 /// and no key binding runs under an open menu.
 #[test]
 fn menus_by_keyboard_arrows_enter_escape_and_mnemonics() {
-    let mut f = fixture(&[]);
-    key(&mut f, "F10");
+    let mut f = crate::fixture(&[]);
+    crate::key(&mut f, "F10");
     assert_eq!(f.state.open(), [f.sym("menu.file")]);
     assert_eq!(f.state.hover(), f.sym("file.clear_schematic"));
-    key(&mut f, "Down");
+    crate::key(&mut f, "Down");
     assert_eq!(f.state.hover(), f.sym("file.clear_symbol"));
-    key(&mut f, "Up");
-    key(&mut f, "Up");
+    crate::key(&mut f, "Up");
+    crate::key(&mut f, "Up");
     assert_eq!(f.state.hover(), f.sym("file.quit"), "wraps to the last row");
-    assert!(key(&mut f, "Ctrl+S").commands.is_empty(), "bindings wait");
+    assert!(
+        crate::key(&mut f, "Ctrl+S").commands.is_empty(),
+        "bindings wait"
+    );
     assert_eq!(f.state.open(), [f.sym("menu.file")]);
-    key(&mut f, "o");
+    crate::key(&mut f, "o");
     assert_eq!(
         f.state.hover(),
         f.sym("file.open"),
         "first of several O rows"
     );
-    key(&mut f, "o");
+    crate::key(&mut f, "o");
     assert_eq!(
         f.state.hover(),
         f.sym("file.open_most_recent"),
         "the next one"
     );
     // "i" lands on the cascade (first of several I rows); Right opens it on its first row.
-    key(&mut f, "i");
+    crate::key(&mut f, "i");
     assert_eq!(f.state.hover(), f.sym("menu.file.image_export"));
-    key(&mut f, "Right");
+    crate::key(&mut f, "Right");
     assert_eq!(
         f.state.open(),
         [f.sym("menu.file"), f.sym("menu.file.image_export")]
     );
-    assert_eq!(f.state.hover(), first_nav_row(&f, "menu.file.image_export"));
-    key(&mut f, "Left");
+    assert_eq!(
+        f.state.hover(),
+        crate::first_nav_row(&f, "menu.file.image_export")
+    );
+    crate::key(&mut f, "Left");
     assert_eq!(f.state.open(), [f.sym("menu.file")]);
     assert_eq!(f.state.hover(), f.sym("menu.file.image_export"));
     for _ in 0..3 {
-        key(&mut f, "Down");
+        crate::key(&mut f, "Down");
     }
     assert_eq!(f.state.hover(), f.sym("file.import_project.folder"));
-    key(&mut f, "Down");
+    crate::key(&mut f, "Down");
     assert_eq!(
         f.state.hover(),
         f.sym("file.close_schematic"),
         "separator skipped"
     );
-    key(&mut f, "Right");
+    crate::key(&mut f, "Right");
     assert_eq!(
         f.state.open(),
         [f.sym("menu.edit")],
         "the next menubar menu"
     );
-    assert_eq!(f.state.hover(), first_nav_row(&f, "menu.edit"));
-    key(&mut f, "Left");
+    assert_eq!(f.state.hover(), crate::first_nav_row(&f, "menu.edit"));
+    crate::key(&mut f, "Left");
     assert_eq!(f.state.open(), [f.sym("menu.file")]);
-    let out = key(&mut f, "Enter");
+    let out = crate::key(&mut f, "Enter");
     assert_eq!(f.commands(&out), ["file.clear_schematic"]);
     assert!(f.state.open().is_empty());
-    key(&mut f, "F10");
-    let out = key(&mut f, "m");
+    crate::key(&mut f, "F10");
+    let out = crate::key(&mut f, "m");
     assert_eq!(
         f.commands(&out),
         ["file.merge"],
         "a unique mnemonic runs its item"
     );
     assert!(f.state.open().is_empty());
-    key(&mut f, "F10");
-    key(&mut f, "i");
-    key(&mut f, "Right");
-    key(&mut f, "Escape");
+    crate::key(&mut f, "F10");
+    crate::key(&mut f, "i");
+    crate::key(&mut f, "Right");
+    crate::key(&mut f, "Escape");
     assert_eq!(
         f.state.open(),
         [f.sym("menu.file")],
         "Escape closes one level"
     );
-    key(&mut f, "Escape");
+    crate::key(&mut f, "Escape");
     assert!(f.state.open().is_empty() && f.state.hover().is_none());
     // With every menu closed, bindings run again.
-    let out = key(&mut f, "Ctrl+S");
+    let out = crate::key(&mut f, "Ctrl+S");
     assert_eq!(f.commands(&out), ["file.save"]);
 }
 
@@ -99,7 +103,7 @@ fn menus_by_keyboard_arrows_enter_escape_and_mnemonics() {
 /// inside a dialog (popup above the dialog), and a dropdown without choices runs its command.
 #[test]
 fn dropdowns_open_choose_close_and_work_in_dialogs() {
-    let mut f = fixture(&[concat!(
+    let mut f = crate::fixture(&[concat!(
         "node t.dd dropdown\n  parent toolbar\n  order -2\n  label Ngspice\n  command t.dd.plain\n",
         "node t.dd.a item\n  parent t.dd\n  label Ngspice\n  command t.pick.ngspice\n",
         "node t.dd.b item\n  parent t.dd\n  label Xyce\n  command t.pick.xyce\n",
@@ -137,9 +141,9 @@ fn dropdowns_open_choose_close_and_work_in_dialogs() {
     assert!(f.click("t.dd").commands.is_empty(), "a second click closes");
     assert!(f.state.open().is_empty());
     f.click("t.dd");
-    key(&mut f, "Down");
-    key(&mut f, "Down");
-    let out = key(&mut f, "Enter");
+    crate::key(&mut f, "Down");
+    crate::key(&mut f, "Down");
+    let out = crate::key(&mut f, "Enter");
     assert_eq!(f.commands(&out), ["t.pick.xyce"]);
     f.click("t.dd");
     let (cx, cy) = f.center("canvas");

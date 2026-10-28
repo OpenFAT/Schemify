@@ -5,12 +5,13 @@
 //! - `WaveUi::command(waves, geo, name, arg, node, now_ms, out) -> Effect`
 //! - `WaveUi::note(waves, req, res) -> Effect`
 
-use schemify_wave::calc::signal_expr;
+use schemify_wave::calc;
 use schemify_wave::{
     Applied, Cursor, LineStyle, PALETTE, PaneMode, Radix, Request, ViewError, Waves,
 };
 
-use super::dialog::field_index;
+use super::dialog;
+use super::pointer::PaneFraction;
 use super::{DOUBLE_CLICK_MS, DialogFx, Effect, Geometry, WaveUi};
 
 impl WaveUi {
@@ -18,7 +19,10 @@ impl WaveUi {
     /// the issuing node's id (`waves.sig.12`, `waves.trace.3`, `waves.props.f.4`), `arg` a
     /// submitted field's text, `now_ms` a monotonic clock for double-clicks. Unknown names do
     /// nothing (and ask for no redraw).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "public API used by the app crate; reshaping it is a cross-crate change"
+    )]
     pub fn command(
         &mut self,
         waves: &Waves,
@@ -62,13 +66,15 @@ impl WaveUi {
                 fx.recompose = true;
             }
             "waves.props.field" => {
-                if let (Some(k), Some(d)) = (field_index(node), self.dialog.as_mut()) {
+                if let (Some(k), Some(d)) = (dialog::field_index(node), self.dialog.as_mut()) {
                     d.text[k] = arg.to_owned();
                     fx.recompose = true;
                 }
             }
             "waves.signal" => {
-                let Some(v) = node.strip_prefix("waves.sig.").and_then(|v| v.parse().ok()) else {
+                let signal: Option<u32> =
+                    node.strip_prefix("waves.sig.").and_then(|v| v.parse().ok());
+                let Some(v) = signal else {
                     return fx;
                 };
                 let double = self.last_click.is_some_and(|(last, t)| {
@@ -88,10 +94,10 @@ impl WaveUi {
                 }
             }
             "waves.trace" => {
-                if let Some(i) = node
+                let clicked: Option<u8> = node
                     .strip_prefix("waves.trace.")
-                    .and_then(|v| v.parse().ok())
-                {
+                    .and_then(|v| v.parse().ok());
+                if let Some(i) = clicked {
                     self.selected_trace = Some(i);
                     fx.recompose = true;
                 }
@@ -142,8 +148,8 @@ impl WaveUi {
                     None => {
                         // At the pointer when it is over a pane showing the shared x.
                         let f = at_pointer
-                            .filter(|&(k, ..)| !waves.props(usize::from(k)).own_x())
-                            .map_or(cursor_home(which), |(_, f, _)| f);
+                            .filter(|at| !waves.props(usize::from(at.pane)).own_x())
+                            .map_or(cursor_home(which), |at| at.x);
                         Some(waves.x().at(f))
                     }
                 };
@@ -156,7 +162,7 @@ impl WaveUi {
                     Cursor::B
                 };
                 let (pane, fy) = match at_pointer {
-                    Some((k, _, fy)) => (k, Some(fy)),
+                    Some(at) => (at.pane, Some(at.y)),
                     None => (active, None),
                 };
                 let p = usize::from(pane);
@@ -172,27 +178,32 @@ impl WaveUi {
             "waves.measure" => {
                 self.measure = !self.measure;
                 self.status = if self.measure {
-                    "measure: on (y= x= at the pointer)".into()
+                    "measure: on (y= x= at the pointer)".to_owned()
                 } else {
-                    "measure: off".into()
+                    "measure: off".to_owned()
                 };
                 fx.recompose = true;
             }
             "waves.track" => {
                 fx.recompose = true;
-                let Some((k, f, fy)) = at_pointer else {
-                    self.status = "track: point at a pane".into();
+                let Some(PaneFraction {
+                    pane: k,
+                    x: f,
+                    y: fy,
+                }) = at_pointer
+                else {
+                    self.status = "track: point at a pane".to_owned();
                     return fx;
                 };
                 let p = usize::from(k);
                 let mut props = waves.props(p);
                 if props.step.is_some() {
                     props.step = None;
-                    self.status = "tracking off: every step".into();
+                    self.status = "tracking off: every step".to_owned();
                 } else {
                     let (x, y) = (waves.x_of(p).at(f), waves.panes()[p].at(fy));
                     let Some(s) = waves.closest_step(k, x, y) else {
-                        self.status = "track: no step under the pointer".into();
+                        self.status = "track: no step under the pointer".to_owned();
                         return fx;
                     };
                     props.step = Some(s);
@@ -210,7 +221,7 @@ impl WaveUi {
             }
             "waves.zoom_in" | "waves.zoom_out" => {
                 let factor = if name == "waves.zoom_in" { 0.8 } else { 1.25 };
-                let (pane, at) = at_pointer.map_or((active, 0.5), |(k, f, _)| (k, f));
+                let (pane, at) = at_pointer.map_or((active, 0.5), |at| (at.pane, at.x));
                 out.push(Request::ZoomX { pane, at, factor });
             }
             "waves.dataset_prev" | "waves.dataset_next" => {
@@ -261,7 +272,7 @@ impl WaveUi {
                         color: PALETTE[k],
                     }),
                     _ => {
-                        self.status = "colour: select a trace first".into();
+                        self.status = "colour: select a trace first".to_owned();
                         fx.recompose = true;
                     }
                 }
@@ -271,7 +282,7 @@ impl WaveUi {
                     return fx;
                 };
                 // Enter in a field submits it with its text (the editor may be gone already).
-                if let Some(k) = field_index(node) {
+                if let Some(k) = dialog::field_index(node) {
                     d.text[k] = arg.to_owned();
                 }
                 fx.recompose = true;
@@ -371,7 +382,7 @@ impl WaveUi {
         let Some(d) = waves.datasets().get(usize::from(self.dataset)) else {
             return;
         };
-        let e = signal_expr(d, v as usize);
+        let e = calc::signal_expr(d, v as usize);
         // On AC data a plain node is shown as its Bode magnitude.
         let src = if d.is_complex() {
             format!("db({e})")

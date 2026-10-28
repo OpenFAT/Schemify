@@ -3,7 +3,7 @@
 //!
 //! Contents: `Router::{pointer_move, pointer_down, pointer_up, wheel}` (to `route`)
 
-use super::{Hit, Router, has_popup, popup_depth};
+use super::{Hit, Router};
 use crate::field;
 use crate::field::FieldPress;
 use crate::input::{Button, InputEvent};
@@ -64,7 +64,7 @@ impl Router<'_> {
             Some(Hit {
                 node: n, shown: s, ..
             }) if !state.open.is_empty() && matches!(s, Shown::Cascade | Shown::Normal) => {
-                if let Some(d) = popup_depth(self.tables, state, n) {
+                if let Some(d) = super::popup_depth(self.tables, state, n) {
                     let before = state.open.len();
                     state.open.truncate(d + 1);
                     if s == Shown::Cascade && state.open.len() < UiState::MAX_OPEN {
@@ -232,13 +232,13 @@ impl Router<'_> {
                 out.relayout = true;
             }
             (_, Shown::Cascade) => {
-                if let Some(d) = popup_depth(self.tables, state, n) {
+                if let Some(d) = super::popup_depth(self.tables, state, n) {
                     state.open.truncate(d + 1);
                     state.open.push(id);
                     out.relayout = true;
                 }
             }
-            (Kind::Dropdown, Shown::Normal) if has_popup(self.tables, n) => {
+            (Kind::Dropdown, Shown::Normal) if super::has_popup(self.tables, n) => {
                 toggle_popup(self.tables, state, n);
                 out.relayout = true;
             }
@@ -341,12 +341,12 @@ fn drag_split(tables: &UiTables, layout: &UiLayout, state: &mut UiState, x: f32,
 /// it, anywhere else it starts a new chain.
 fn toggle_popup(tables: &UiTables, state: &mut UiState, n: NodeIx) {
     debug_assert!(
-        has_popup(tables, n),
+        super::has_popup(tables, n),
         "only a dropdown with choices toggles a popup"
     );
     let id = tables.nodes.id[n as usize];
     let reopen = state.open.last() != Some(&id);
-    match popup_depth(tables, state, n) {
+    match super::popup_depth(tables, state, n) {
         Some(d) => state.open.truncate(d + 1),
         None => state.open.clear(),
     }

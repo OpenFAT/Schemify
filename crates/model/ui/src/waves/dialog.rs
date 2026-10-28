@@ -6,7 +6,7 @@
 //! - `pub(super) WaveUi::dialog_requests(waves, d) -> Result<Vec<Request>, String>`
 //! - `pub(super) fn field_index(node) -> Option<usize>`
 
-use schemify_wave::{Axis, Cursor, PaneProps, Request, Waves, parse_num, write_num};
+use schemify_wave::{Axis, Cursor, PaneProps, Request, Waves};
 
 use super::{Dialog, DialogFx, Drag, Effect, FIELDS, WaveUi};
 
@@ -34,7 +34,7 @@ impl WaveUi {
         let mut text: [String; FIELDS.len()] = Default::default();
         for (t, v) in text.iter_mut().zip(shown) {
             if let Some(v) = v {
-                write_num(t, v);
+                schemify_wave::write_num(t, v);
             }
         }
         self.dialog = Some(Dialog {
@@ -64,7 +64,8 @@ impl WaveUi {
         for (k, t) in d.text.iter().enumerate() {
             let t = t.trim();
             if !t.is_empty() {
-                let n = parse_num(t).map_err(|_| format!("{}: not a number: {t}", FIELDS[k]))?;
+                let n = schemify_wave::parse_num(t)
+                    .map_err(|_| format!("{}: not a number: {t}", FIELDS[k]))?;
                 v[k] = Some(n);
             }
         }

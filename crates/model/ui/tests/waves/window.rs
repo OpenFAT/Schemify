@@ -4,16 +4,16 @@
 //! Contents: no `pub` items.
 
 use schemify_ui::waves::{Geometry, WaveUi};
-use schemify_ui::{HealthKind, InputEvent, Rect, layout};
+use schemify_ui::{HealthKind, InputEvent, Rect};
 use schemify_wave::Request;
 
-use crate::{VIEW, Win, data, inside};
+use crate::{VIEW, Win};
 
 // ---- private ----
 
 #[test]
 fn window_composes_and_lists_fit_their_panels() {
-    let mut w = Win::new(data());
+    let mut w = Win::new(crate::data());
     let bad = w.tables.health.kind.iter().filter(|k| {
         matches!(
             k,
@@ -30,7 +30,7 @@ fn window_composes_and_lists_fit_their_panels() {
     for &id in &rows {
         let r = w.rect(w.strings.get(id));
         assert!(
-            inside(r, w.geo.signals),
+            crate::inside(r, w.geo.signals),
             "row {} overflows the list",
             w.strings.get(id)
         );
@@ -41,7 +41,7 @@ fn window_composes_and_lists_fit_their_panels() {
         w: VIEW.0,
         h: VIEW.1,
     };
-    assert!(inside(w.rect("waves.status"), window));
+    assert!(crate::inside(w.rect("waves.status"), window));
     // Three panes share the column equally and stack without overlap.
     w.apply(vec![Request::AddPane, Request::AddPane]);
     assert_eq!(w.geo.panes.len(), 3);
@@ -52,7 +52,7 @@ fn window_composes_and_lists_fit_their_panels() {
     // A smaller window re-measures the lists instead of overflowing.
     let before = rows.len();
     w.ui.set_capacity(0, 0);
-    w.frame = layout(
+    w.frame = schemify_ui::layout(
         &w.tables,
         &w.strings,
         &mut w.text,
@@ -65,7 +65,7 @@ fn window_composes_and_lists_fit_their_panels() {
 
 #[test]
 fn filter_and_scroll_window_the_signal_list() {
-    let mut w = Win::new(data());
+    let mut w = Win::new(crate::data());
     w.command("waves.filter", "net11", "waves.filter", 0);
     let names: Vec<String> = w
         .signal_rows()

@@ -3,7 +3,7 @@
 //!
 //! Contents: `Router::{key, text_in, preedit, activate}` (to `route`)
 
-use super::{Router, has_popup, popup_depth};
+use super::Router;
 use crate::field;
 use crate::field::Lines;
 use crate::keys::{Chord, Key, Mods};
@@ -103,8 +103,8 @@ impl Router<'_> {
         let (nodes, state) = (&tables.nodes, &mut *self.state);
         let Some(n) = nodes.find(node) else { return };
         let cmd = nodes.prop(Prop::Command)[n as usize];
-        if nodes.kind[n as usize] == Kind::Menu || has_popup(self.tables, n) {
-            match popup_depth(self.tables, state, n) {
+        if nodes.kind[n as usize] == Kind::Menu || super::has_popup(self.tables, n) {
+            match super::popup_depth(self.tables, state, n) {
                 Some(d) => state.open.truncate(d + 1),
                 None => state.open.clear(),
             }

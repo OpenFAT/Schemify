@@ -3,13 +3,25 @@
 //!
 //! Contents:
 //! - `WaveUi::route(waves, geo, events, now_ms, out) -> Effect`
-//! - `pub(super) WaveUi::pointer_at(geo) -> Option<(u8, f64, f64)>`
+//! - `pub(super) struct PaneFraction`
+//! - `pub(super) WaveUi::pointer_at(geo) -> Option<PaneFraction>`
 
 use schemify_wave::{Cursor, PaneMode, Request, Scale, Waves};
 
-use super::{DOUBLE_CLICK_MS, Drag, Effect, Geometry, WaveUi, plot_area};
+use super::{DOUBLE_CLICK_MS, Drag, Effect, Geometry, WaveUi};
 use crate::input::{Button, InputEvent, InputEvents};
 use crate::keys::Mods;
+
+/// A point inside a pane's plot as fractions of it, clamped to `[0, 1]`.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PaneFraction {
+    /// The pane.
+    pub(super) pane: u8,
+    /// From the plot's left edge.
+    pub(super) x: f64,
+    /// From the plot's bottom edge.
+    pub(super) y: f64,
+}
 
 /// Pointer distance in logical pixels within which a press grabs a cursor line.
 const GRAB_PX: f32 = 6.0;
@@ -45,13 +57,19 @@ impl WaveUi {
 
     /// The pane under the pointer with the pointer's fractions of its plot (x from the left, y
     /// from the bottom), clamped to `[0, 1]`.
-    pub(super) fn pointer_at(&self, geo: &Geometry) -> Option<(u8, f64, f64)> {
+    pub(super) fn pointer_at(&self, geo: &Geometry) -> Option<PaneFraction> {
         let (x, y) = self.pointer?;
         let k = geo.pane_at(x, y)?;
-        let p = plot_area(geo.panes[usize::from(k)]);
+        let p = super::plot_area(geo.panes[usize::from(k)]);
         let fx = f64::from((x - p.x) / p.w).clamp(0.0, 1.0);
         let fy = f64::from((p.y + p.h - y) / p.h).clamp(0.0, 1.0);
-        Some((k, fx, fy))
+        debug_assert!((0.0..=1.0).contains(&fx), "clamped x fraction");
+        debug_assert!((0.0..=1.0).contains(&fy), "clamped y fraction");
+        Some(PaneFraction {
+            pane: k,
+            x: fx,
+            y: fy,
+        })
     }
 }
 
@@ -79,7 +97,7 @@ impl WaveUi {
         if held.is_some_and(|p| usize::from(p) >= geo.panes.len()) {
             self.drag = Drag::None;
         }
-        let plot = |k: u8| plot_area(geo.panes[usize::from(k)]);
+        let plot = |k: u8| super::plot_area(geo.panes[usize::from(k)]);
         let x_scale = |k: u8| {
             let p = plot(k);
             waves.x_of(usize::from(k)).scale(p.x, p.x + p.w)

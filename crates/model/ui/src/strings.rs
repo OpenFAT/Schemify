@@ -101,8 +101,8 @@ impl Strings {
             live_text: HashMap::new(),
             live_next: 0,
         };
-        s.names.push("".into());
-        s.lookup.insert("".into(), Sym::NONE);
+        s.names.push(Box::from(""));
+        s.lookup.insert(Box::from(""), Sym::NONE);
         debug_assert_eq!(s.len(), 1);
         s
     }
@@ -118,8 +118,8 @@ impl Strings {
         }
         assert!(self.names.len() < Self::CAPACITY, "string interner full");
         let sym = Sym(self.names.len() as u32);
-        self.names.push(s.into());
-        self.lookup.insert(s.into(), sym);
+        self.names.push(Box::from(s));
+        self.lookup.insert(Box::from(s), sym);
         debug_assert_eq!(self.get(sym), s);
         debug_assert!(!sym.is_live());
         sym
@@ -230,8 +230,8 @@ impl Strings {
         self.live_next = (idx + 1) & !LIVE;
         let sym = Sym(LIVE | idx);
         assert!(!self.live_text.contains_key(&sym.0), "live handle in use");
-        self.live.insert(s.into(), sym);
-        self.live_text.insert(sym.0, s.into());
+        self.live.insert(Box::from(s), sym);
+        self.live_text.insert(sym.0, Box::from(s));
         debug_assert!(sym.is_live());
         debug_assert!(!sym.is_none());
         sym

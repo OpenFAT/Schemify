@@ -9,9 +9,9 @@
 //! - `pub fn measure_at(geo, waves, x, y) -> Option<(f64, f64)>`,
 //!   `pub fn measure_label(geo, waves, x, y) -> Option<String>`
 
-use schemify_wave::{PaneMode, Waves, format_si};
+use schemify_wave::{PaneMode, Waves};
 
-use super::{Geometry, plot_area};
+use super::Geometry;
 
 /// Column headings of the readout's trace table, one per [`ReadoutRow::cells`] column.
 pub const READOUT_HEADINGS: [&str; 4] = ["trace", "@A", "@B", "B−A"];
@@ -80,7 +80,7 @@ pub fn legend_label(waves: &Waves, i: usize, out: &mut String) {
     let a = waves.cursors()[0].filter(|_| !props.own_x());
     if let Some(v) = a.and_then(|a| waves.value_at(i, a)) {
         out.push_str(" = ");
-        out.push_str(&format_si(v, 4));
+        out.push_str(&schemify_wave::format_si(v, 4));
     }
     debug_assert!(out.contains(waves.src(i)));
 }
@@ -99,7 +99,7 @@ pub fn readout_head(waves: &Waves, active: u8) -> ReadoutHead {
         let inv = if dx != 0.0 {
             si(Some(1.0 / dx))
         } else {
-            "-".into()
+            "-".to_owned()
         };
         format!("Δx = {}   1/Δx = {inv}", si(Some(dx)))
     });
@@ -204,7 +204,7 @@ pub fn measure_at(geo: &Geometry, waves: &Waves, x: f32, y: f32) -> Option<(f64,
         "more pane rects than panes"
     );
     let k = usize::from(geo.pane_at(x, y)?);
-    let pr = plot_area(geo.panes[k]);
+    let pr = super::plot_area(geo.panes[k]);
     if !pr.contains(x, y) {
         return None;
     }
@@ -218,12 +218,16 @@ pub fn measure_at(geo: &Geometry, waves: &Waves, x: f32, y: f32) -> Option<(f64,
 #[must_use]
 pub fn measure_label(geo: &Geometry, waves: &Waves, x: f32, y: f32) -> Option<String> {
     let (vx, vy) = measure_at(geo, waves, x, y)?;
-    Some(format!("y={}  x={}", format_si(vy, 4), format_si(vx, 4)))
+    Some(format!(
+        "y={}  x={}",
+        schemify_wave::format_si(vy, 4),
+        schemify_wave::format_si(vx, 4)
+    ))
 }
 
 // ---- private ----
 
 /// `v` in engineering units with 4 significant digits, `-` for `None`.
 fn si(v: Option<f64>) -> String {
-    v.map_or_else(|| "-".to_owned(), |v| format_si(v, 4))
+    v.map_or_else(|| "-".to_owned(), |v| schemify_wave::format_si(v, 4))
 }

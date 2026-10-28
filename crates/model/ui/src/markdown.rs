@@ -83,6 +83,20 @@ pub enum Segment<'a> {
     Plot(&'a str),
 }
 
+/// A link `[text](target)` in a run of chars: indices of its `]` and its `)`.
+#[derive(Clone, Copy, Debug)]
+struct Link {
+    close: usize,
+    end: usize,
+}
+
+/// A footnote definition line `[^label]: text`, split.
+#[derive(Clone, Copy, Debug)]
+struct NoteDef<'line> {
+    label: &'line str,
+    text: &'line str,
+}
+
 /// Parses the block structure of `src`. Never fails: anything unrecognised is paragraph text.
 ///
 /// Cost: O(len); allocates the block texts.
@@ -155,7 +169,7 @@ pub(crate) fn blocks(src: &str) -> Vec<Block> {
             out.push(Block::Table(header, rows));
             continue;
         }
-        if let Some((label, text)) = note_def(t) {
+        if let Some(NoteDef { label, text }) = note_def(t) {
             let mut text = text.to_owned();
             i += 1;
             while i < lines.len() {
@@ -252,11 +266,11 @@ pub(crate) fn inlines(
     let chars: Vec<char> = src.chars().collect();
     // The open link: indices of its `]` and `)`. Its text is parsed like any other, so
     // emphasis nests inside; the target is skipped when the scan reaches the `]`.
-    let mut link: Option<(usize, usize)> = None;
+    let mut link: Option<Link> = None;
     let mut i = 0;
     // Each iteration consumes ≥ 1 char.
     while i < chars.len() {
-        if let Some((k, e)) = link
+        if let Some(Link { close: k, end: e }) = link
             && i >= k
         {
             link = None;
@@ -358,9 +372,9 @@ pub(crate) fn inlines(
             }
             // An image inside text shows its alt text; only one alone on a line is drawn.
             '!' if chars.get(i + 1) == Some(&'[') => match link_at(&chars, i + 1) {
-                Some((k, e)) => {
-                    out.text.extend(&chars[i + 2..k]);
-                    i = e + 1;
+                Some(l) => {
+                    out.text.extend(&chars[i + 2..l.close]);
+                    i = l.end + 1;
                 }
                 None => {
                     out.text.push('!');
@@ -450,12 +464,14 @@ fn starts_block(t: &str) -> bool {
         || image_line(t).is_some()
 }
 
-/// A footnote definition line `[^label]: text`: `(label, text)`. Labels have no spaces or
-/// brackets.
-fn note_def(t: &str) -> Option<(&str, &str)> {
+/// A footnote definition line `[^label]: text`. Labels have no spaces or brackets.
+fn note_def(t: &str) -> Option<NoteDef<'_>> {
     let (label, text) = t.strip_prefix("[^")?.split_once("]:")?;
     let ok = !label.is_empty() && !label.contains(|c: char| c.is_whitespace() || c == '[');
-    ok.then(|| (label, text.trim()))
+    ok.then(|| NoteDef {
+        label,
+        text: text.trim(),
+    })
 }
 
 /// A list item line: `(depth, marker, text)`.
@@ -490,15 +506,17 @@ fn is_separator(c: &str) -> bool {
     !c.is_empty() && c.bytes().all(|b| b == b'-')
 }
 
-/// The link `[text](target)` whose `[` is `chars[at]`: indices of its `]` and `)`.
-fn link_at(chars: &[char], at: usize) -> Option<(usize, usize)> {
+/// The link `[text](target)` whose `[` is `chars[at]`.
+fn link_at(chars: &[char], at: usize) -> Option<Link> {
     debug_assert_eq!(chars.get(at), Some(&'['));
     let k = at + chars[at..].iter().position(|&n| n == ']')?;
     if chars.get(k + 1) != Some(&'(') {
         return None;
     }
     let e = k + chars[k..].iter().position(|&n| n == ')')?;
-    Some((k, e))
+    debug_assert!(at < k, "the `]` follows the `[`");
+    debug_assert!(k + 1 < e, "the `(` sits between `]` and `)`");
+    Some(Link { close: k, end: e })
 }
 
 /// Appends `n` in superscript digits (`¹²`): a footnote reference.

@@ -5,13 +5,13 @@
 
 use schemify_ui::{Button, Chord, InputEvent, InputEvents, Layer, SPLIT_GAP, SPLIT_MIN};
 
-use crate::{Fixture, VIEW, fixture};
+use crate::{Fixture, VIEW};
 
 // ---- private ----
 
 #[test]
 fn routing_keys_menus_clicks_and_canvas() {
-    let mut f = fixture(&[]);
+    let mut f = crate::fixture(&[]);
     let mut ev = InputEvents::default();
     ev.push(InputEvent::Key {
         chord: Chord::parse("Ctrl+S").unwrap(),
@@ -97,7 +97,7 @@ fn routing_keys_menus_clicks_and_canvas() {
 
 #[test]
 fn dialog_is_modal_and_escape_closes_it() {
-    let mut f = fixture(&[]);
+    let mut f = crate::fixture(&[]);
     f.state.set_dialog(f.sym("dialog.enter_text"));
     f.relayout();
     let d = f.frame.rect()[f.frame.floats().end];
@@ -125,7 +125,7 @@ fn dialog_is_modal_and_escape_closes_it() {
 /// not drag.
 #[test]
 fn split_divider_drags_the_second_pane() {
-    let mut f = fixture(&[]);
+    let mut f = crate::fixture(&[]);
     let r = |f: &Fixture, s: &str| f.frame.rect()[f.row(s)];
     let (canvas, docs) = (r(&f, "canvas"), r(&f, "docs.pane"));
     let (gx, y) = (canvas.x + canvas.w + SPLIT_GAP / 2.0, canvas.y + 40.0);
@@ -181,7 +181,7 @@ fn split_divider_drags_the_second_pane() {
 /// nothing; a click inside keeps it; a centered dialog stays modal.
 #[test]
 fn context_menu_closes_on_a_click_outside() {
-    let mut f = fixture(&[]);
+    let mut f = crate::fixture(&[]);
     f.state
         .set_dialog_at(f.sym("dialog.ctx"), Some((300.0, 200.0)));
     f.relayout();
@@ -218,7 +218,7 @@ fn context_menu_closes_on_a_click_outside() {
 /// closes it nor reaches the UI below), and the next dialog opens centered again (#46).
 #[test]
 fn a_dialog_drags_by_its_surface_and_stays_modal() {
-    let mut f = fixture(&[]);
+    let mut f = crate::fixture(&[]);
     f.state.set_dialog(f.sym("dialog.enter_text"));
     f.relayout();
     let at = |f: &Fixture| f.frame.rect()[f.frame.floats().end];

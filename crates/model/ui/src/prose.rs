@@ -28,7 +28,8 @@ use parley::{
     Layout, PositionedLayoutItem, StyleProperty, VerticalAlign,
 };
 
-use crate::markdown::{BOLD, Block, CODE, COLUMNS_MAX, ITALIC, Inline, blocks, inlines};
+use crate::markdown;
+use crate::markdown::{BOLD, Block, CODE, COLUMNS_MAX, ITALIC, Inline};
 use crate::text::{TextId, TextSystem};
 
 pub use crate::markdown::{Segment, image_line, split_plots};
@@ -83,6 +84,14 @@ pub struct ProseList {
 /// Size of a fenced code block's monospace text relative to the prose font.
 const CODE_SCALE: f32 = 0.92;
 
+/// Where a run goes: its top-left corner and the width it wraps at, in logical px.
+#[derive(Clone, Copy, Debug)]
+struct Slot {
+    x: f32,
+    y: f32,
+    width: f32,
+}
+
 /// Code metrics at prose font `px`, from the table [`TextSystem::new`] measured; `None`
 /// outside [`CODE_PX`] or when the measured row height is not a whole number (then rows can
 /// not be stacked with integer spacers).
@@ -126,7 +135,7 @@ pub(crate) fn layout_prose(ts: &mut TextSystem, src: &str, px: f32, width: f32) 
     );
     let mut p = ProseList::default();
     let gap = (px * 0.6).round();
-    let parsed = blocks(src);
+    let parsed = markdown::blocks(src);
     let notes: Vec<&str> = parsed
         .iter()
         .filter_map(|b| match b {
@@ -148,12 +157,17 @@ pub(crate) fn layout_prose(ts: &mut TextSystem, src: &str, px: f32, width: f32) 
         match b {
             Block::Heading(level, text) => {
                 let scale = [1.6, 1.35, 1.2, 1.1, 1.0, 1.0][usize::from(*level) - 1];
-                y += rich(ts, &mut p, text, px * scale, BOLD, (0.0, y), width, notes);
+                let slot = Slot { x: 0.0, y, width };
+                y += rich(ts, &mut p, text, px * scale, BOLD, slot, notes);
             }
-            Block::Para(text) => y += rich(ts, &mut p, text, px, 0, (0.0, y), width, notes),
+            Block::Para(text) => {
+                let slot = Slot { x: 0.0, y, width };
+                y += rich(ts, &mut p, text, px, 0, slot, notes);
+            }
             Block::Quote(text) => {
                 let w = (width - px).max(px);
-                let h = rich(ts, &mut p, text, px, ITALIC, (px, y), w, notes);
+                let slot = Slot { x: px, y, width: w };
+                let h = rich(ts, &mut p, text, px, ITALIC, slot, notes);
                 p.rules.push([px * 0.25, y, 3.0, h]);
                 y += h;
             }
@@ -164,18 +178,19 @@ pub(crate) fn layout_prose(ts: &mut TextSystem, src: &str, px: f32, width: f32) 
             } => {
                 let x = px * 1.5 * f32::from(*depth);
                 let body = x + px * 1.6;
-                rich(
-                    ts,
-                    &mut p,
-                    marker,
-                    px,
-                    0,
-                    (x + px * 0.3, y),
-                    px * 1.3,
-                    notes,
-                );
+                let marker_slot = Slot {
+                    x: x + px * 0.3,
+                    y,
+                    width: px * 1.3,
+                };
+                rich(ts, &mut p, marker, px, 0, marker_slot, notes);
                 let w = (width - body).max(px);
-                y += rich(ts, &mut p, text, px, 0, (body, y), w, notes);
+                let slot = Slot {
+                    x: body,
+                    y,
+                    width: w,
+                };
+                y += rich(ts, &mut p, text, px, 0, slot, notes);
             }
             Block::Code(_, text) => {
                 let pad = code_pad(px);
@@ -221,7 +236,8 @@ pub(crate) fn layout_prose(ts: &mut TextSystem, src: &str, px: f32, width: f32) 
                 }
                 None => {
                     let text = format!("[image: {alt}]");
-                    y += rich(ts, &mut p, &text, px, ITALIC, (0.0, y), width, notes);
+                    let slot = Slot { x: 0.0, y, width };
+                    y += rich(ts, &mut p, &text, px, ITALIC, slot, notes);
                 }
             },
             Block::Note(..) => unreachable!("skipped above"),
@@ -243,9 +259,19 @@ pub(crate) fn layout_prose(ts: &mut TextSystem, src: &str, px: f32, width: f32) 
         }
         let marker = format!("{}.", k + 1);
         let body = small * 2.0;
-        rich(ts, &mut p, &marker, small, 0, (0.0, y), body, notes);
+        let marker_slot = Slot {
+            x: 0.0,
+            y,
+            width: body,
+        };
+        rich(ts, &mut p, &marker, small, 0, marker_slot, notes);
         let w = (width - body).max(small);
-        y += rich(ts, &mut p, text, small, 0, (body, y), w, notes);
+        let slot = Slot {
+            x: body,
+            y,
+            width: w,
+        };
+        y += rich(ts, &mut p, text, small, 0, slot, notes);
     }
     p.height = y.ceil();
     p.width = p.width.min(width);
@@ -262,20 +288,18 @@ fn code_pad(px: f32) -> f32 {
     (px * 0.5).round()
 }
 
-/// Lays out one inline run at `at`, wrapping at `width`; returns its height.
-#[allow(clippy::too_many_arguments)]
+/// Lays out one inline run in `slot`; returns its height.
 fn rich(
     ts: &mut TextSystem,
     p: &mut ProseList,
     src: &str,
     px: f32,
     style: u8,
-    at: (f32, f32),
-    width: f32,
+    slot: Slot,
     notes: &[&str],
 ) -> f32 {
     let (layout, inl) = shape_rich(ts, src, px, style, notes);
-    place(ts, p, layout, &inl, at, width)
+    place(ts, p, layout, &inl, slot)
 }
 
 /// Parses and shapes one inline run at `px` (lines not broken yet), its formulas laid out.
@@ -286,7 +310,7 @@ fn shape_rich(
     style: u8,
     notes: &[&str],
 ) -> (Layout<()>, Inline) {
-    let inl = inlines(src, notes, &mut |m| ts.math_uncached(m, px));
+    let inl = markdown::inlines(src, notes, &mut |m| ts.math_uncached(m, px));
     // Math boxes first: the builder below borrows the text system's contexts mutably.
     let boxes: Vec<(u32, f32, f32, f32)> = inl
         .maths
@@ -343,29 +367,28 @@ fn shape_rich(
     (layout, inl)
 }
 
-/// Breaks a [`shape_rich`] layout at `width`, records it and its formulas at `at`; returns
-/// its height.
+/// Breaks a [`shape_rich`] layout at the slot's width, records it and its formulas at the
+/// slot's corner; returns its height.
 fn place(
     ts: &mut TextSystem,
     p: &mut ProseList,
     mut layout: Layout<()>,
     inl: &Inline,
-    at: (f32, f32),
-    width: f32,
+    slot: Slot,
 ) -> f32 {
-    layout.break_all_lines(Some(width.max(1.0)));
+    layout.break_all_lines(Some(slot.width.max(1.0)));
     layout.align(Alignment::Start, AlignmentOptions::default());
     for line in layout.lines() {
         for item in line.items() {
             if let PositionedLayoutItem::InlineBox(ib) = item {
                 p.math_id.push(inl.maths[ib.id as usize].1);
-                p.math_x.push(at.0 + ib.x);
-                p.math_y.push(at.1 + ib.y);
+                p.math_x.push(slot.x + ib.x);
+                p.math_y.push(slot.y + ib.y);
             }
         }
     }
     let id = ts.push_layout(layout);
-    push_text(p, ts, id, at.0, at.1)
+    push_text(p, ts, id, slot.x, slot.y)
 }
 
 /// Shapes verbatim monospace text (code blocks, formulas outside the subset), wrapping at
@@ -449,8 +472,12 @@ fn table(
         let mut h = 0.0f32;
         for (&w, &x) in widths.iter().zip(&xs) {
             let (layout, inl) = cells.next().expect("one shaped cell per column");
-            let at = (x + pad, y + pad);
-            h = h.max(place(ts, p, layout, &inl, at, (w - 2.0 * pad).max(1.0)));
+            let slot = Slot {
+                x: x + pad,
+                y: y + pad,
+                width: (w - 2.0 * pad).max(1.0),
+            };
+            h = h.max(place(ts, p, layout, &inl, slot));
         }
         y += h + 2.0 * pad;
         p.rules.push([0.0, y, total, 1.0]);
