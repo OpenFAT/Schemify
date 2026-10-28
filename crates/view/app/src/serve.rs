@@ -1,15 +1,23 @@
-//! `schemify-gui --rpc <socket>`: the D27 command stream into the running editor
-//! (`docs/spec/rpc.md`). Clients connect to a local socket ([`schemify_cli::rpc::listen`]);
-//! a thread per client reads its request lines; the frame loop takes them between frames,
-//! queues each as [`Editor::command`] (the same command table menus, keys and plugins
-//! name), answers after the frame that ran it, and sends every editor event as an `event`
-//! notification to every client.
+//! `serve`: request lines on a local socket → commands queued into the running editor, and
+//! their answers and the editor's events → response and notification lines
+//! (`schemify-gui --rpc <socket>`; D27, `docs/spec/rpc.md`). Clients connect through
+//! `schemify_cli::rpc::listen`; a thread per client reads its lines; the frame loop takes
+//! them between frames, queues each through `schemify_editor::rpc::dispatch` (the command
+//! table menus, keys and plugins name), answers after the frame that ran it, and sends
+//! every editor event as an `event` notification to every client.
 //!
 //! Spine position: [`Pump::take`] before `Editor::update` (beside input), [`Pump::answer`]
 //! after it. A reader thread that hands over a message wakes the window ([`Waker`]), so an
 //! idle editor answers at once and sleeps otherwise (idle CPU 0%, D39).
+//!
+//! Contents:
+//! - `pub struct Pump`, `Pump::start(listener: Listener, ed: &Editor) -> Pump`,
+//!   `Pump::take(&mut self, ed: &mut Editor)`, `Pump::waiting(&self) -> bool`,
+//!   `Pump::answer(&mut self, ed: &mut Editor)`
+//! - `pub fn run(opts: Options, socket: &str) -> Result<(), String>`
 
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::io::Write;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use schemify_cli::rpc::{self, Frame, Json, Listener, Request, Stream};
@@ -21,15 +29,32 @@ use schemify_ui::InputEvents;
 
 use crate::window::Window;
 
+/// The server's side of the frame loop: the request channel, the clients, the answers due
+/// in arrival order and the last editor event sent. Answers due plus notifications whose
+/// command has not run stay at most [`QUEUED_MAX`], so `Editor::command_answered` never
+/// drops one.
+pub struct Pump {
+    rx: Receiver<Msg>,
+    wake: Wake,
+    /// Every connected client: each gets the event notifications.
+    clients: Vec<Conn>,
+    /// Answers in arrival order; per client, a later answer waits behind an earlier one.
+    due: Vec<Due>,
+    /// Tickets of commands sent as notifications (no `id`): taken and dropped once they ran.
+    unanswered: Vec<u32>,
+    /// `Host::notes_seq` of the last event sent.
+    seen: u64,
+}
+
 /// Tick period while an answer waits for its queued command to run.
 const ANSWER_TICK_MS: u32 = 20;
 /// Clients connected at once; more are refused (their connection is closed).
-pub const CLIENTS_MAX: usize = 16;
+const CLIENTS_MAX: usize = 16;
 /// How long a write may block on a client that stopped reading; it is dropped then.
 const WRITE_TIMEOUT_MS: u64 = 200;
 
-/// The window's waker, set once the window runs; empty before (and in headless tests), when
-/// the first update drains whatever arrived.
+/// The window's waker, set once the window runs; empty before (and in headless tests),
+/// when the first update drains whatever arrived.
 type Wake = Arc<OnceLock<Waker>>;
 
 /// One client's write side: only the frame loop writes; the reader thread holds a clone
@@ -46,20 +71,27 @@ enum Msg {
     Reply(Conn, String),
 }
 
-/// One answer due: a ready response line, or the ticket of a queued command whose status
-/// result is sent once the editor has it ([`Editor::take_said`]).
-type Due = (Conn, Json, Result<String, u32>);
+/// One answer due to a client.
+struct Due {
+    conn: Conn,
+    /// The request's id (`Json::Null` for a malformed line's reply).
+    id: Json,
+    answer: Answer,
+}
 
-/// The server's side of the frame loop: the request channel, the clients, this frame's
-/// answers in arrival order and the last editor event sent.
-pub struct Pump {
-    rx: Receiver<Msg>,
-    wake: Wake,
-    clients: Vec<Conn>,
-    due: Vec<Due>,
-    /// Tickets of commands sent as notifications (no `id`): taken and dropped once they ran.
-    unanswered: Vec<u32>,
-    seen: u64,
+/// What a due answer is made of.
+enum Answer {
+    /// A ready response line.
+    Line(String),
+    /// The ticket of a queued command, answered `{"status": <what it said>}` once it ran
+    /// (`Editor::take_said`).
+    Ticket(u32),
+}
+
+/// The editor window with the server's two spine steps around its update.
+struct Served {
+    win: Window,
+    pump: Pump,
 }
 
 impl Pump {
@@ -80,86 +112,98 @@ impl Pump {
         }
     }
 
-    /// Takes the messages that arrived (at most [`QUEUED_MAX`] answers wait, so
-    /// [`Editor::command_answered`] never drops one): each command is queued for the next
-    /// update; `rpc.methods`, unknown methods, bad params and malformed lines get their
-    /// response ready now. Everything is sent by [`Pump::answer`], in arrival order per
-    /// client.
+    /// Takes the messages that arrived, up to the [`QUEUED_MAX`] capacity: each command is
+    /// queued for the next update; `rpc.methods`, unknown methods, bad params and malformed
+    /// lines get their response ready now. [`Pump::answer`] sends everything, in arrival
+    /// order per client; the rest of the channel waits for the next frame.
     pub fn take(&mut self, ed: &mut Editor) {
-        assert!(self.due.len() + self.unanswered.len() <= QUEUED_MAX);
-        for _ in self.due.len() + self.unanswered.len()..QUEUED_MAX {
-            let (conn, req) = match self.rx.try_recv() {
-                Ok(Msg::Joined(conn)) => {
+        assert!(self.held() <= QUEUED_MAX);
+        // Each pass takes one message and holds at most one more answer.
+        for _ in self.held()..QUEUED_MAX {
+            let Ok(msg) = self.rx.try_recv() else { break };
+            let (conn, req) = match msg {
+                Msg::Joined(conn) => {
                     self.clients.push(conn);
                     continue;
                 }
-                Ok(Msg::Reply(conn, line)) => {
-                    self.due.push((conn, Json::Null, Ok(line)));
+                Msg::Reply(conn, line) => {
+                    let answer = Answer::Line(line);
+                    self.due.push(Due {
+                        conn,
+                        id: Json::Null,
+                        answer,
+                    });
                     continue;
                 }
-                Ok(Msg::Call(conn, req)) => (conn, req),
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+                Msg::Call(conn, req) => (conn, req),
             };
-            let out = match dispatch(ed, &req.method, &req.params) {
-                Dispatched::Queued(ticket) => Err(ticket),
-                Dispatched::Ready(out) => Ok(req.id.as_ref().map(|id| reply(id, out))),
+            let answer = match dispatch(ed, &req.method, &req.params) {
+                Dispatched::Queued(ticket) => Answer::Ticket(ticket),
+                Dispatched::Ready(Ok(v)) => {
+                    let Some(id) = &req.id else { continue };
+                    Answer::Line(rpc::result(id, &v))
+                }
+                Dispatched::Ready(Err((code, msg))) => {
+                    let Some(id) = &req.id else { continue };
+                    Answer::Line(rpc::error(id, code, &msg))
+                }
             };
-            match (req.id, out) {
-                (Some(id), Err(ticket)) => self.due.push((conn, id, Err(ticket))),
-                (Some(id), Ok(Some(line))) => self.due.push((conn, id, Ok(line))),
-                // A notification: nothing to answer (its command still runs).
-                (None, Err(ticket)) => self.unanswered.push(ticket),
-                (None, Ok(_)) | (Some(_), Ok(None)) => {}
+            match (req.id, answer) {
+                (Some(id), answer) => self.due.push(Due { conn, id, answer }),
+                // A notification: nothing to answer, but its command still runs.
+                (None, Answer::Ticket(ticket)) => self.unanswered.push(ticket),
+                (None, Answer::Line(_)) => unreachable!("a notification's result is dropped"),
             }
         }
-        assert!(self.due.len() + self.unanswered.len() <= QUEUED_MAX);
+        assert!(self.held() <= QUEUED_MAX);
     }
 
     /// Whether an answer waits for its queued command to run: the window ticks while true.
     /// False once every answer is sent, so a served editor with no client traffic sleeps.
     pub fn waiting(&self) -> bool {
-        assert!(self.due.len() + self.unanswered.len() <= QUEUED_MAX);
-        !(self.due.is_empty() && self.unanswered.is_empty())
+        assert!(self.held() <= QUEUED_MAX);
+        self.held() != 0
     }
 
-    /// Sends the answers that are ready, in arrival order per client (a queued command's is
-    /// `{"status": <what it said>}` once it ran, frames later for a plugin event on a
-    /// worker; a client's later answers wait behind it), then the editor events since the
-    /// last call as `event` notifications. Clients whose writes fail, or whose reader ended,
-    /// are dropped.
+    /// Sends the answers that are ready, in arrival order per client (a queued command's
+    /// once it ran, frames later for a plugin event on a worker; a client's later answers
+    /// wait behind it), then the editor events since the last call as `event`
+    /// notifications. Drops clients whose writes fail or whose reader ended.
     pub fn answer(&mut self, ed: &mut Editor) {
-        let mut waiting: Vec<Conn> = Vec::new();
-        let mut kept: Vec<Due> = Vec::new();
-        for (conn, id, due) in std::mem::take(&mut self.due) {
-            let blocked = waiting.iter().any(|c| Arc::ptr_eq(c, &conn));
-            let line = match &due {
-                Ok(line) if !blocked => Some(line.clone()),
-                &Err(ticket) if !blocked => ed.take_said(ticket).map(|said| {
+        assert!(self.held() <= QUEUED_MAX);
+        let before = self.due.len();
+        // Clients with an answer still waiting: their later answers wait too.
+        let mut blocked: Vec<Conn> = Vec::new();
+        for due in std::mem::take(&mut self.due) {
+            let held = blocked.iter().any(|c| Arc::ptr_eq(c, &due.conn));
+            let line = match &due.answer {
+                _ if held => None,
+                Answer::Line(line) => Some(line.clone()),
+                &Answer::Ticket(ticket) => ed.take_said(ticket).map(|said| {
                     let status = Json::obj(vec![("status", Json::Str(said))]);
-                    rpc::result(&id, &status)
+                    rpc::result(&due.id, &status)
                 }),
-                _ => None,
             };
             match line {
                 Some(line) => {
-                    send(&conn, &line);
+                    send(&due.conn, &line);
                 }
                 None => {
-                    if !blocked {
-                        waiting.push(conn.clone());
+                    if !held {
+                        blocked.push(due.conn.clone());
                     }
-                    kept.push((conn, id, due));
+                    self.due.push(due);
                 }
             }
         }
-        self.due = kept;
         self.unanswered.retain(|&t| ed.take_said(t).is_none());
         let host = ed.host();
         let lines: Vec<String> = host.notes_since(self.seen).map(event).collect();
         self.seen = host.notes_seq();
         self.clients
             .retain(|c| lines.iter().all(|l| send(c, l)) && Arc::strong_count(c) > 1);
-        assert!(self.due.len() + self.unanswered.len() <= QUEUED_MAX);
+        assert!(self.due.len() <= before);
+        assert!(blocked.len() <= self.due.len());
     }
 }
 
@@ -178,12 +222,6 @@ pub fn run(opts: Options, socket: &str) -> Result<(), String> {
         pump,
     };
     schemify_render::run("Schemify", served).map_err(|e| e.to_string())
-}
-
-/// The editor window with the server's two spine steps around its update.
-struct Served {
-    win: Window,
-    pump: Pump,
 }
 
 impl App for Served {
@@ -222,11 +260,12 @@ impl App for Served {
     }
 }
 
-/// The response line for an immediate result.
-fn reply(id: &Json, out: Result<Json, (i32, String)>) -> String {
-    match out {
-        Ok(v) => rpc::result(id, &v),
-        Err((code, msg)) => rpc::error(id, code, &msg),
+// ---- private ----
+
+impl Pump {
+    /// Answers held: due ones plus notifications whose command has not run.
+    fn held(&self) -> usize {
+        self.due.len() + self.unanswered.len()
     }
 }
 
@@ -243,7 +282,7 @@ fn event(note: &Note) -> String {
 
 /// Writes one line to a client; false when the client is gone (or stopped reading).
 fn send(conn: &Conn, line: &str) -> bool {
-    use std::io::Write;
+    assert!(line.ends_with('\n'), "a frame is one line");
     let Ok(mut stream) = conn.lock() else {
         return false;
     };
@@ -253,10 +292,12 @@ fn send(conn: &Conn, line: &str) -> bool {
         .is_ok()
 }
 
-/// The accept loop: one reader thread per client, at most [`CLIENTS_MAX`] at once.
+/// The accept loop: one reader thread per client, at most [`CLIENTS_MAX`] at once. Runs
+/// until the listener fails or the editor is gone.
 fn accept(listener: Listener, tx: Sender<Msg>, wake: Wake) {
+    // One count per reader thread, plus this one.
     let live = Arc::new(());
-    // A server thread: runs until the listener fails or the editor is gone.
+    let timeout = Some(std::time::Duration::from_millis(WRITE_TIMEOUT_MS));
     loop {
         let Ok(stream) = listener.accept() else {
             return;
@@ -264,7 +305,6 @@ fn accept(listener: Listener, tx: Sender<Msg>, wake: Wake) {
         if Arc::strong_count(&live) > CLIENTS_MAX {
             continue; // dropping the stream closes it
         }
-        let timeout = Some(std::time::Duration::from_millis(WRITE_TIMEOUT_MS));
         let Ok(reader) = stream.try_clone() else {
             continue;
         };
@@ -277,6 +317,7 @@ fn accept(listener: Listener, tx: Sender<Msg>, wake: Wake) {
         }
         let (tx, token, wake) = (tx.clone(), live.clone(), wake.clone());
         std::thread::spawn(move || read_client(reader, conn, tx, wake, token));
+        assert!(Arc::strong_count(&live) <= CLIENTS_MAX + 1);
     }
 }
 
