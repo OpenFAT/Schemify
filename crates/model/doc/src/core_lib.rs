@@ -1,8 +1,13 @@
-//! The bundled `core` library (D10, spec `import.md` §6): the cells under `crates/model/doc/devices/`,
-//! compiled into the binary so `lib core builtin` needs no file system.
+//! The bundled `core` library (D10, import spec §6): the cells under
+//! `crates/model/doc/devices/` → `(file name, bytes)` compiled into the binary, so
+//! `lib core builtin` needs no file system.
 //!
 //! The cells are authored for Schemify from SPICE semantics; only their pin *positions*
 //! follow xschem's devices, because imported schematics connect by geometry.
+//!
+//! Contents:
+//! - `pub fn core_library() -> &'static [(&'static str, &'static [u8])]`
+//! - `pub fn core_file(cell: &str) -> Option<&'static [u8]>`
 
 macro_rules! core_files {
     ($($name:literal),* $(,)?) => {

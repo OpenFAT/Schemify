@@ -1,10 +1,29 @@
-//! SHA-256 (FIPS 180-4) for lockfile and journal hashes.
+//! Bytes → SHA-256 digest (FIPS 180-4), for lockfile, library and journal hashes.
+//! Cites: FIPS 180-4; D10 (lockfile hashes); edits spec §3 (journal `base`/`save`).
 //!
-//! In-crate rather than the `sha2` crate (docs/dev/contributing.md rule 7: a few lines of our own
-//! before a new dependency): ~60 lines, verified against the NIST CAVP vectors in the
-//! tests, deterministic, no feature detection, builds for wasm32. `ponytail:` scalar
-//! code runs ~300 MB/s; switch to `sha2` (SHA-NI) if lockfile hashing of large PDKs
-//! shows up in a profile.
+//! In-crate rather than the `sha2` crate (contributing.md rule 7: a few lines of our own
+//! before a new dependency): verified against the NIST CAVP vectors in the tests,
+//! deterministic, no feature detection, builds for wasm32. `ponytail:` scalar code runs
+//! ~300 MB/s; switch to `sha2` (SHA-NI) if lockfile hashing of large PDKs shows up in a
+//! profile.
+//!
+//! Contents:
+//! - `pub type Digest`
+//! - `pub struct Sha256`: `Sha256::update`, `Sha256::finish`
+//! - `pub fn sha256(bytes: &[u8]) -> Digest`
+//! - `pub fn hex(digest: &Digest) -> String`
+
+/// A SHA-256 digest.
+pub type Digest = [u8; 32];
+
+/// Incremental SHA-256, for hashing a sequence of parts without concatenating them.
+#[derive(Clone, Debug)]
+pub struct Sha256 {
+    state: [u32; 8],
+    block: [u8; 64],
+    fill: usize,
+    total: u64,
+}
 
 const K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -20,18 +39,6 @@ const K: [u32; 64] = [
 const H0: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
-
-/// A SHA-256 digest.
-pub type Digest = [u8; 32];
-
-/// Incremental SHA-256, for hashing a sequence of parts without concatenating them.
-#[derive(Clone, Debug)]
-pub struct Sha256 {
-    state: [u32; 8],
-    block: [u8; 64],
-    fill: usize,
-    total: u64,
-}
 
 impl Default for Sha256 {
     fn default() -> Self {
@@ -87,6 +94,26 @@ impl Sha256 {
     }
 }
 
+/// Returns the SHA-256 of `bytes`.
+pub fn sha256(bytes: &[u8]) -> Digest {
+    let mut h = Sha256::default();
+    h.update(bytes);
+    h.finish()
+}
+
+/// Returns `digest` as 64 lowercase hex characters (the lockfile and journal form).
+pub fn hex(digest: &Digest) -> String {
+    let mut s = String::with_capacity(64);
+    for b in digest {
+        s.push(char::from(b"0123456789abcdef"[usize::from(b >> 4)]));
+        s.push(char::from(b"0123456789abcdef"[usize::from(b & 15)]));
+    }
+    assert_eq!(s.len(), 64);
+    s
+}
+
+// ---- private ----
+
 fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
     let mut w = [0u32; 64];
     for (i, chunk) in block.chunks_exact(4).enumerate() {
@@ -126,24 +153,6 @@ fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
     for (s, x) in state.iter_mut().zip(v) {
         *s = s.wrapping_add(x);
     }
-}
-
-/// Returns the SHA-256 of `bytes`.
-pub fn sha256(bytes: &[u8]) -> Digest {
-    let mut h = Sha256::default();
-    h.update(bytes);
-    h.finish()
-}
-
-/// Returns `digest` as 64 lowercase hex characters (the lockfile and journal form).
-pub fn hex(digest: &Digest) -> String {
-    let mut s = String::with_capacity(64);
-    for b in digest {
-        s.push(char::from(b"0123456789abcdef"[usize::from(b >> 4)]));
-        s.push(char::from(b"0123456789abcdef"[usize::from(b & 15)]));
-    }
-    assert_eq!(s.len(), 64);
-    s
 }
 
 #[cfg(test)]

@@ -1,7 +1,15 @@
-//! One record as owned text ([`RecordBuf`]) and its validation against the format
-//! schema. `RecordBuf` is the payload of `insert`/`put` ops, the before-image an undo
-//! entry restores, and what [`crate::Document::record`] returns; it is cold data
-//! (one allocation per string), never used on the load/save path.
+//! One record as owned text ([`RecordBuf`]) → validated against the format schema.
+//! Cites: format spec §4 (kinds, attributes, shapes), §7 (codes); edits spec §1.
+//!
+//! `RecordBuf` is the payload of `insert`/`put` ops, the before-image an undo entry
+//! restores, and what [`crate::Document::record`] returns; it is cold data (one
+//! allocation per string), never used on the load/save path.
+//!
+//! Contents:
+//! - `pub struct Attr`
+//! - `pub struct RecordBuf`: `new`, `field`, `attr`, `verbatim`, `find_attr`, `from_format`
+//! - `pub(crate) const INST_RESERVED`
+//! - `pub(crate) fn check_record(rec: &RecordBuf, file: FileKind) -> Result<(), (Code, &str)>`
 
 use crate::Code;
 use schemify_format::{Document as FormatDoc, FileKind, RecordKind, Shape, is_word};
@@ -32,6 +40,10 @@ pub struct RecordBuf {
     /// Comments written before the record (text after `#`).
     pub comments: Vec<String>,
 }
+
+/// Attribute keys of an instance that are not parameter overrides (`cached <param> <value>
+/// <digest>` holds a value Virtuoso derived, D20 as amended 2026-10-15).
+pub(crate) const INST_RESERVED: [&str; 5] = ["at", "name", "inherit", "ignore", "cached"];
 
 impl RecordBuf {
     /// Creates an empty record of `kind`; add parts with the builder methods.
@@ -99,10 +111,6 @@ impl RecordBuf {
         rec
     }
 }
-
-/// Attribute keys of an instance that are not parameter overrides (`cached <param> <value>
-/// <digest>` holds a value Virtuoso derived, D20 as amended 2026-10-15).
-pub(crate) const INST_RESERVED: [&str; 5] = ["at", "name", "inherit", "ignore", "cached"];
 
 /// Validates `rec` as a record of a `file` document: allowed kind (`E027`), positional
 /// shape and values (`E029`, `E022`), attribute shapes, duplicates (`E024`) and required
@@ -176,6 +184,8 @@ pub(crate) fn check_record(rec: &RecordBuf, file: FileKind) -> Result<(), (Code,
     assert!(rec.kind == RecordKind::Header || file.records().contains(&rec.kind));
     Ok(())
 }
+
+// ---- private ----
 
 /// Checks `values` against a schema shape: arity, then each value's form (format's own
 /// checks, so an edit is refused with the code and detail a file would get).

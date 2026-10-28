@@ -1,377 +1,36 @@
-//! Design tables of one document: typed column-major (SoA) tables per record family,
-//! plus the shared pool that holds every row's attribute lines, verbatim lines,
-//! comments and graphic coordinates.
+//! Records of one document → typed column-major (SoA) tables per record family, and
+//! back (each table pushes a [`RecView`] and emits a row into a [`Sink`]).
+//! Cites: format spec §4 (record kinds and ranks), D11 (existence-based tables), D33
+//! (i32 milli-unit coordinates), D40 (instance overrides).
 //!
 //! Six questions, answered once for all tables here and per table in its doc:
-//! 1. In: format records (load) or validated [`RecordBuf`]s (edits). Out: column slices
+//! 1. In: format records (load) or validated `RecordBuf`s (edits). Out: column slices
 //!    for `elab`, `render`, `plugin`; format records again on save.
-//! 2. Rank-3 tables hold up to 2^22 rows each (ARCHITECTURE: objects per cell); symbol
+//! 2. Rank-3 tables hold up to 2^22 rows each (architecture: objects per cell); symbol
 //!    and bench tables up to 2^12; capacities are [`crate::TableId::capacity`].
-//! 3. Coordinates are i32 milli-units (D33); text is a [`Sym`] (`u32`); ids are
-//!    [`ObjId`] (`u32`); orientation and pin direction are `u8` enums; pool offsets `u32`.
+//! 3. Coordinates are i32 milli-units; text is a [`Sym`] (`u32`); ids are [`ObjId`]
+//!    (`u32`); orientation and pin direction are `u8` enums; pool offsets `u32`.
 //! 4. Consumers scan whole columns (connectivity reads `x1..y2` of every wire); edits
 //!    touch one row. Attributes are read per row through its [`Span`].
 //! 5. Lifetime: the document. Pool entries of replaced rows become garbage that
-//!    [`crate::Document`] reclaims by rebuilding (counted in [`Pool::dead`]).
+//!    [`crate::Document`] reclaims by rebuilding.
 //! 6. Read-parallel: consumers get `&` slices; `doc` is the single writer.
 //!
 //! Row order: tables of ranks 1, 2, 4 and 5 are in file order (it is semantic: port
 //! order, draw order, document order). Rank-3 and rank-6 tables are unordered; the
 //! writer sorts them. Row indices are valid until the next edit of that table.
+//!
+//! Contents:
+//! - `pub(crate) trait Table`
+//! - `pub enum PinDir`: `as_str`; `pub struct Pins`
+//! - `pub struct Graphics`, `pub struct Instances`: `is_override`, `pub struct Wires`
+//! - `pub struct Placed`: crate `new`; `pub struct Noconns`, `pub struct Shapes`
+//! - `pub struct Records`
 
-use crate::record::{INST_RESERVED, RecordBuf};
+use crate::pool::{Pool, RecView, Sink, Span, emit_attrs, emit_comments};
+use crate::record::INST_RESERVED;
 use crate::strings::{ObjId, Strings, Sym};
-use schemify_format::{
-    Document as FormatDoc, KeyRule, Orient, RecordKind, format_coord, parse_coord,
-};
-use std::ops::Range;
-
-/// A run of pool entries owned by one row.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Span {
-    /// First entry.
-    pub start: u32,
-    /// Entry count.
-    pub len: u32,
-}
-
-impl Span {
-    /// Returns the entries as an index range.
-    pub fn range(self) -> Range<usize> {
-        self.start as usize..(self.start + self.len) as usize
-    }
-}
-
-/// Pool capacity per vector (attribute lines, values, lines, coordinates).
-pub const POOL_MAX: usize = 1 << 28;
-
-/// Per-row variable-length data, shared by every table of a document.
-///
-/// Rows own disjoint [`Span`]s. Edits never write into an existing span: a replaced row
-/// appends fresh runs and the old ones become garbage (copy on write), so spans other
-/// rows hold stay valid.
-#[derive(Clone, Debug, Default)]
-pub struct Pool {
-    /// Attribute line keys.
-    pub attr_key: Vec<Sym>,
-    /// Attribute line values, as spans into [`Pool::vals`]; parallel to `attr_key`.
-    pub attr_vals: Vec<Span>,
-    /// Attribute values.
-    pub vals: Vec<Sym>,
-    /// Verbatim lines and comments.
-    pub lines: Vec<Sym>,
-    /// Graphic coordinates (milli-units).
-    pub coords: Vec<i32>,
-    /// Entries orphaned by removed or replaced rows.
-    pub dead: u32,
-}
-
-impl Pool {
-    /// Iterates the attribute lines of `span` as `(key, values)`.
-    pub fn attrs(&self, span: Span) -> impl Iterator<Item = (Sym, &[Sym])> + '_ {
-        span.range()
-            .map(|a| (self.attr_key[a], &self.vals[self.attr_vals[a].range()]))
-    }
-
-    /// Returns the values of the first attribute line of `span` whose key is `key`.
-    pub fn find_attr<'p>(&'p self, strings: &Strings, span: Span, key: &str) -> Option<&'p [Sym]> {
-        let key = strings.find(key)?;
-        self.attrs(span).find(|(k, _)| *k == key).map(|(_, v)| v)
-    }
-
-    pub(crate) fn push_attrs(
-        &mut self,
-        rec: &RecView<'_>,
-        skip: &[&str],
-        strings: &mut Strings,
-    ) -> Span {
-        let start = self.attr_key.len();
-        for (key, vals) in rec.attrs {
-            if skip.contains(key) {
-                continue;
-            }
-            let v_start = self.vals.len();
-            for v in &rec.vals[vals.start as usize..vals.end as usize] {
-                self.vals.push(strings.intern(v));
-            }
-            self.attr_key.push(strings.intern(key));
-            self.attr_vals.push(span(v_start, self.vals.len()));
-        }
-        assert!(
-            self.attr_key.len() < POOL_MAX && self.vals.len() < POOL_MAX,
-            "pool full"
-        );
-        assert_eq!(self.attr_key.len(), self.attr_vals.len());
-        span(start, self.attr_key.len())
-    }
-
-    fn push_lines(&mut self, lines: &[&str], strings: &mut Strings) -> Span {
-        let start = self.lines.len();
-        for l in lines {
-            self.lines.push(strings.intern(l));
-        }
-        assert!(self.lines.len() < POOL_MAX, "pool full");
-        span(start, self.lines.len())
-    }
-
-    fn push_coords(&mut self, milli: &[i32]) -> Span {
-        let start = self.coords.len();
-        self.coords.extend_from_slice(milli);
-        assert!(self.coords.len() < POOL_MAX, "pool full");
-        span(start, self.coords.len())
-    }
-
-    /// Counts the entries a removed row leaves behind: its attribute lines with their
-    /// values, plus `others` (comments, verbatim lines, coordinates).
-    pub(crate) fn orphan(&mut self, attrs: Span, others: u32) {
-        let vals: u32 = attrs.range().map(|a| self.attr_vals[a].len).sum();
-        self.dead = self.dead.saturating_add(attrs.len + vals + others);
-        assert!(
-            self.dead as usize <= self.size(),
-            "garbage is part of the pool"
-        );
-    }
-
-    /// Returns the number of live-or-dead entries, the denominator for compaction.
-    pub(crate) fn size(&self) -> usize {
-        self.attr_key.len() + self.vals.len() + self.lines.len() + self.coords.len()
-    }
-}
-
-fn span(start: usize, end: usize) -> Span {
-    assert!(start <= end && end < POOL_MAX);
-    Span {
-        start: start as u32,
-        len: (end - start) as u32,
-    }
-}
-
-fn orient(text: &str) -> Orient {
-    Orient::parse(text).expect("orientations are validated before they reach a table")
-}
-
-// ------------------------------------------------------------------ record views
-
-/// A borrowed record from either source (a format document or a [`RecordBuf`]), so one
-/// push path serves load and edits without per-record allocation.
-pub(crate) struct RecView<'a> {
-    pub(crate) kind: RecordKind,
-    pub(crate) fields: &'a [&'a str],
-    /// Milli-units of each field: a `Coord` slot's value (D33: i32), unspecified at other
-    /// slots, which no table reads. From format's coordinate column on load, so a loaded
-    /// coordinate is parsed once.
-    pub(crate) field_milli: &'a [i32],
-    /// `(key, value range into vals)`.
-    pub(crate) attrs: &'a [(&'a str, Range<u32>)],
-    pub(crate) vals: &'a [&'a str],
-    /// As `field_milli`, one per value.
-    pub(crate) val_milli: &'a [i32],
-    pub(crate) verbatim: &'a [&'a str],
-    pub(crate) comments: &'a [&'a str],
-}
-
-impl RecView<'_> {
-    /// The values of attribute `key` and their milli-units.
-    fn attr(&self, key: &str) -> Option<(&[&str], &[i32])> {
-        let (_, r) = self.attrs.iter().find(|(k, _)| *k == key)?;
-        let r = r.start as usize..r.end as usize;
-        Some((&self.vals[r.clone()], &self.val_milli[r]))
-    }
-}
-
-/// Reusable buffers that build a [`RecView`].
-#[derive(Default)]
-pub(crate) struct Scratch<'a> {
-    fields: Vec<&'a str>,
-    field_milli: Vec<i32>,
-    attrs: Vec<(&'a str, Range<u32>)>,
-    vals: Vec<&'a str>,
-    val_milli: Vec<i32>,
-    verbatim: Vec<&'a str>,
-    comments: Vec<&'a str>,
-}
-
-impl<'a> Scratch<'a> {
-    pub(crate) fn fill_format(&mut self, doc: &'a FormatDoc<'_>, r: u32) {
-        self.clear();
-        self.fields.extend(doc.fields(r));
-        self.field_milli.extend_from_slice(doc.field_coords(r));
-        for a in doc.attrs(r) {
-            let start = self.vals.len() as u32;
-            self.vals.extend(doc.attr_values(a));
-            self.val_milli.extend_from_slice(doc.value_coords(a));
-            self.attrs
-                .push((doc.attr_key(a), start..self.vals.len() as u32));
-        }
-        self.verbatim.extend(doc.verbatim(r));
-        self.comments.extend(doc.comments(r));
-        assert_eq!(self.attrs.len(), doc.attrs(r).len());
-    }
-
-    pub(crate) fn fill_buf(&mut self, rec: &'a RecordBuf) {
-        // The edit path: values were checked (`check_record`), but not into a column.
-        let milli = |t: &String| parse_coord(t).unwrap_or(0);
-        self.clear();
-        self.fields.extend(rec.fields.iter().map(String::as_str));
-        self.field_milli.extend(rec.fields.iter().map(milli));
-        for a in &rec.attrs {
-            let start = self.vals.len() as u32;
-            self.vals.extend(a.values.iter().map(String::as_str));
-            self.val_milli.extend(a.values.iter().map(milli));
-            self.attrs
-                .push((a.key.as_str(), start..self.vals.len() as u32));
-        }
-        self.verbatim
-            .extend(rec.verbatim.iter().map(String::as_str));
-        self.comments
-            .extend(rec.comments.iter().map(String::as_str));
-        assert_eq!(self.attrs.len(), rec.attrs.len());
-    }
-
-    fn clear(&mut self) {
-        self.fields.clear();
-        self.field_milli.clear();
-        self.attrs.clear();
-        self.vals.clear();
-        self.val_milli.clear();
-        self.verbatim.clear();
-        self.comments.clear();
-    }
-
-    pub(crate) fn view(&self, kind: RecordKind) -> RecView<'_> {
-        RecView {
-            kind,
-            fields: &self.fields,
-            field_milli: &self.field_milli,
-            attrs: &self.attrs,
-            vals: &self.vals,
-            val_milli: &self.val_milli,
-            verbatim: &self.verbatim,
-            comments: &self.comments,
-        }
-    }
-}
-
-/// Where a table row goes when written out: a format document (save) or a
-/// [`RecordBuf`] (edits, undo images). Compile-time generic; no dispatch.
-pub(crate) trait Sink {
-    fn begin(&mut self, kind: RecordKind);
-    fn field(&mut self, text: &str);
-    fn attr(&mut self, key: &str);
-    fn value(&mut self, text: &str);
-    fn verbatim(&mut self, line: &str);
-    fn comment(&mut self, line: &str);
-    fn coord(&mut self, milli: i32);
-    fn coord_value(&mut self, milli: i32);
-    fn id(&mut self, id: ObjId, strings: &Strings);
-}
-
-/// The save sink: the format document being built plus one reusable buffer for
-/// formatted coordinates and ids (no allocation per value).
-pub(crate) struct FormatSink {
-    pub(crate) doc: FormatDoc<'static>,
-    buf: String,
-}
-
-impl FormatSink {
-    pub(crate) fn new(doc: FormatDoc<'static>) -> FormatSink {
-        FormatSink {
-            doc,
-            buf: String::with_capacity(16),
-        }
-    }
-}
-
-impl Sink for FormatSink {
-    fn begin(&mut self, kind: RecordKind) {
-        self.doc.begin_record(kind);
-    }
-    fn field(&mut self, text: &str) {
-        self.doc.push_field(text);
-    }
-    fn attr(&mut self, key: &str) {
-        self.doc.push_attr(key);
-    }
-    fn value(&mut self, text: &str) {
-        self.doc.push_value(text);
-    }
-    fn verbatim(&mut self, line: &str) {
-        self.doc.push_verbatim(line);
-    }
-    fn comment(&mut self, line: &str) {
-        self.doc.push_comment(line);
-    }
-    fn coord(&mut self, milli: i32) {
-        self.doc.push_field_coord(milli);
-    }
-    fn coord_value(&mut self, milli: i32) {
-        self.doc.push_value_coord(milli);
-    }
-    fn id(&mut self, id: ObjId, strings: &Strings) {
-        self.buf.clear();
-        id.write(strings, &mut self.buf);
-        self.doc.push_field(&self.buf);
-    }
-}
-
-impl Sink for RecordBuf {
-    fn begin(&mut self, kind: RecordKind) {
-        *self = RecordBuf::new(kind);
-    }
-    fn field(&mut self, text: &str) {
-        self.fields.push(text.to_owned());
-    }
-    fn attr(&mut self, key: &str) {
-        self.attrs.push(crate::record::Attr {
-            key: key.to_owned(),
-            values: Vec::new(),
-        });
-    }
-    fn value(&mut self, text: &str) {
-        let a = self.attrs.last_mut().expect("value before attr");
-        a.values.push(text.to_owned());
-    }
-    fn verbatim(&mut self, line: &str) {
-        self.verbatim.push(line.to_owned());
-    }
-    fn comment(&mut self, line: &str) {
-        self.comments.push(line.to_owned());
-    }
-    fn coord(&mut self, milli: i32) {
-        let mut s = String::new();
-        format_coord(milli, &mut s);
-        self.fields.push(s);
-    }
-    fn coord_value(&mut self, milli: i32) {
-        let mut s = String::new();
-        format_coord(milli, &mut s);
-        self.value(&s);
-    }
-    fn id(&mut self, id: ObjId, strings: &Strings) {
-        self.fields.push(id.text(strings));
-    }
-}
-
-pub(crate) fn emit_attrs<S: Sink>(span: Span, strings: &Strings, pool: &Pool, sink: &mut S) {
-    for (key, vals) in pool.attrs(span) {
-        sink.attr(strings.get(key));
-        for v in vals {
-            sink.value(strings.get(*v));
-        }
-    }
-}
-
-fn emit_lines<S: Sink>(span: Span, strings: &Strings, pool: &Pool, sink: &mut S, verbatim: bool) {
-    for &l in &pool.lines[span.range()] {
-        if verbatim {
-            sink.verbatim(strings.get(l));
-        } else {
-            sink.comment(strings.get(l));
-        }
-    }
-}
-
-// ------------------------------------------------------------------ the Table trait
+use schemify_format::{KeyRule, Orient, RecordKind};
 
 /// Operations every table supports; the document dispatches by `TableId` with a
 /// `match`, so every call is static.
@@ -390,20 +49,195 @@ pub(crate) trait Table {
     /// verbatim lines, coordinates): what replacing or removing it leaves as garbage.
     fn owned(&self, row: usize) -> (Span, u32);
     /// The row's id, or `ObjId::NONE` for kinds without one.
-    fn id_at(&self, row: usize, strings: &Strings) -> ObjId;
+    fn id_at(&self, _row: usize, _strings: &Strings) -> ObjId {
+        ObjId::NONE
+    }
     /// The row's name, or `Sym::NONE` for kinds without one.
-    fn name_at(&self, row: usize) -> Sym;
+    fn name_at(&self, _row: usize) -> Sym {
+        Sym::NONE
+    }
     /// Whether every column has `len()` rows (the SoA invariant).
     fn columns_ok(&self) -> bool;
 }
 
-fn move_elem<T>(v: &mut [T], from: usize, to: usize) {
-    assert!(from < v.len() && to < v.len());
-    if from < to {
-        v[from..=to].rotate_left(1);
-    } else {
-        v[to..=from].rotate_right(1);
-    }
+/// Pin direction (`pin <name> <dir> ...`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum PinDir {
+    /// `in`
+    In,
+    /// `out`
+    Out,
+    /// `inout`
+    Inout,
+}
+
+/// `pin` records (rank 1), file order = port order. Capacity 2^12. Attributes `domain`,
+/// `inherit`, `number` stay in the pool (read per pin by elab, not scanned).
+#[derive(Clone, Debug, Default)]
+pub struct Pins {
+    /// Pin name (may be a bus `D[3:0]`).
+    pub name: Vec<Sym>,
+    /// Direction.
+    pub dir: Vec<PinDir>,
+    /// Symbol-local x (milli-units).
+    pub x: Vec<i32>,
+    /// Symbol-local y (milli-units).
+    pub y: Vec<i32>,
+    /// Attribute lines.
+    pub attrs: Vec<Span>,
+    /// Comments.
+    pub comments: Vec<Span>,
+}
+
+/// Symbol graphics (rank 2) in draw order: `line rect arc circle poly stext` in one
+/// table, because z-order across kinds is semantic. Capacity 2^16.
+///
+/// `coords` spans into [`Pool::coords`]: line/rect `x1 y1 x2 y2`, arc/circle `cx cy r`,
+/// poly `x y` pairs, stext `x y`. `text` and `orient` are set for stext only, `angles`
+/// (start, sweep, as number text) for arcs only; other rows hold `Sym::NONE`/`R0`.
+#[derive(Clone, Debug, Default)]
+pub struct Graphics {
+    /// Record kind (one of the six graphic kinds).
+    pub shape: Vec<RecordKind>,
+    /// Coordinates.
+    pub coords: Vec<Span>,
+    /// stext template.
+    pub text: Vec<Sym>,
+    /// stext orientation.
+    pub orient: Vec<Orient>,
+    /// arc start and sweep degrees (file number literals).
+    pub angles: Vec<[Sym; 2]>,
+    /// Attribute lines (`layer`, `fill`, ...).
+    pub attrs: Vec<Span>,
+    /// Comments.
+    pub comments: Vec<Span>,
+}
+
+/// `inst` records (rank 3, unordered). Capacity 2^22. `at` and `name` are columns;
+/// every other attribute line (parameter overrides, `inherit`, `ignore`) stays in the
+/// pool in file order: overrides are the existence-based `inst_params` table (D40, a
+/// missing line means "use the default").
+#[derive(Clone, Debug, Default)]
+pub struct Instances {
+    /// Object id.
+    pub id: Vec<ObjId>,
+    /// Cell reference text (`lib:cell` or `./cell`).
+    pub cell: Vec<Sym>,
+    /// Placement x (milli-units).
+    pub x: Vec<i32>,
+    /// Placement y (milli-units).
+    pub y: Vec<i32>,
+    /// Placement orientation.
+    pub orient: Vec<Orient>,
+    /// Instance name (may be iterated `X1[3:0]`).
+    pub name: Vec<Sym>,
+    /// Attribute lines other than `at`/`name`.
+    pub attrs: Vec<Span>,
+    /// Comments.
+    pub comments: Vec<Span>,
+}
+
+/// `wire` records (rank 3, unordered). Capacity 2^22. Endpoints are normalized so
+/// `(x1, y1) < (x2, y2)` (spec §4), the same model the reader produces. `bus` stays in
+/// the pool.
+#[derive(Clone, Debug, Default)]
+pub struct Wires {
+    /// Object id.
+    pub id: Vec<ObjId>,
+    /// First endpoint x (the lexicographically smaller endpoint).
+    pub x1: Vec<i32>,
+    /// First endpoint y.
+    pub y1: Vec<i32>,
+    /// Second endpoint x.
+    pub x2: Vec<i32>,
+    /// Second endpoint y.
+    pub y2: Vec<i32>,
+    /// Attribute lines.
+    pub attrs: Vec<Span>,
+    /// Comments.
+    pub comments: Vec<Span>,
+}
+
+/// `label`, `port` and `text` records (rank 3, unordered, one table each): an anchor,
+/// an orientation and one text (net expression, interface pin, or annotation).
+/// Capacity 2^22.
+#[derive(Clone, Debug)]
+pub struct Placed {
+    /// Which of the three kinds this table holds.
+    pub kind: RecordKind,
+    /// Object id.
+    pub id: Vec<ObjId>,
+    /// Anchor x (milli-units).
+    pub x: Vec<i32>,
+    /// Anchor y (milli-units).
+    pub y: Vec<i32>,
+    /// Orientation.
+    pub orient: Vec<Orient>,
+    /// Net expression (label), pin name (port) or annotation (text).
+    pub text: Vec<Sym>,
+    /// Attribute lines.
+    pub attrs: Vec<Span>,
+    /// Comments.
+    pub comments: Vec<Span>,
+}
+
+/// `noconn` records (rank 3, unordered). Capacity 2^22.
+#[derive(Clone, Debug, Default)]
+pub struct Noconns {
+    /// Object id.
+    pub id: Vec<ObjId>,
+    /// Anchor x (milli-units).
+    pub x: Vec<i32>,
+    /// Anchor y (milli-units).
+    pub y: Vec<i32>,
+    /// Attribute lines.
+    pub attrs: Vec<Span>,
+    /// Comments.
+    pub comments: Vec<Span>,
+}
+
+/// `shape` records (rank 3, unordered): schematic graphics, annotation only. Capacity
+/// 2^16. `form` is the rank-2 kind of the same shape (`Line`, `Rect`, `Arc`, `Circle`,
+/// `Poly`); `coords` spans into [`Pool::coords`] in record order — for an arc the start and
+/// sweep degrees are stored in milli-degrees there too (the file writes them as coordinates,
+/// spec §4 rank 3).
+#[derive(Clone, Debug, Default)]
+pub struct Shapes {
+    /// Object id.
+    pub id: Vec<ObjId>,
+    /// The shape's form, as the rank-2 record kind of the same name.
+    pub form: Vec<RecordKind>,
+    /// Values after the form.
+    pub coords: Vec<Span>,
+    /// Attribute lines (`layer`, `fill`, `dash`, `width`, `closed`).
+    pub attrs: Vec<Span>,
+    /// Comments.
+    pub comments: Vec<Span>,
+}
+
+/// Text-only records: every kind whose fields are names, ids, words or expressions
+/// (`param`, `impl`, `constraint`, `waive`, `prose`, `var`, `body`, and the bench kinds).
+/// One table per kind, except `doc_blocks`, which holds `prose` and `var` interleaved in
+/// document order.
+///
+/// `fields[row]` holds the record's positional values (at most 3; unused slots are
+/// `Sym::NONE`), so the key is `fields[row][0]`: an id (`constraint`, `waive`, `prose`)
+/// or a name. `waive`'s instance id is `fields[row][1]` as text (resolve with
+/// [`ObjId::find`]). Attributes stay in the pool (param schema, impl formats, bench
+/// settings). Capacities in `TableId::capacity`.
+#[derive(Clone, Debug, Default)]
+pub struct Records {
+    /// Record kind of each row.
+    pub kind: Vec<RecordKind>,
+    /// Positional values.
+    pub fields: Vec<[Sym; 3]>,
+    /// Verbatim lines (`prose`, `body`, `code`).
+    pub verbatim: Vec<Span>,
+    /// Attribute lines.
+    pub attrs: Vec<Span>,
+    /// Comments.
+    pub comments: Vec<Span>,
 }
 
 macro_rules! row_ops {
@@ -433,52 +267,11 @@ macro_rules! row_ops {
     };
 }
 
-// ------------------------------------------------------------------ tables
-
-/// Pin direction (`pin <name> <dir> ...`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum PinDir {
-    /// `in`
-    In,
-    /// `out`
-    Out,
-    /// `inout`
-    Inout,
-}
-
 impl PinDir {
     /// Returns the file word.
     pub fn as_str(self) -> &'static str {
         ["in", "out", "inout"][self as usize]
     }
-
-    fn parse(word: &str) -> PinDir {
-        match word {
-            "in" => PinDir::In,
-            "out" => PinDir::Out,
-            "inout" => PinDir::Inout,
-            _ => panic!("pin dir {word:?} was validated before reaching the table"),
-        }
-    }
-}
-
-/// `pin` records (rank 1), file order = port order. Capacity 2^12. Attributes `domain`,
-/// `inherit`, `number` stay in the pool (read per pin by elab, not scanned).
-#[derive(Clone, Debug, Default)]
-pub struct Pins {
-    /// Pin name (may be a bus `D[3:0]`).
-    pub name: Vec<Sym>,
-    /// Direction.
-    pub dir: Vec<PinDir>,
-    /// Symbol-local x (milli-units).
-    pub x: Vec<i32>,
-    /// Symbol-local y (milli-units).
-    pub y: Vec<i32>,
-    /// Attribute lines.
-    pub attrs: Vec<Span>,
-    /// Comments.
-    pub comments: Vec<Span>,
 }
 
 impl Table for Pins {
@@ -503,38 +296,11 @@ impl Table for Pins {
         sink.coord(self.x[row]);
         sink.coord(self.y[row]);
         emit_attrs(self.attrs[row], strings, pool, sink);
-        emit_lines(self.comments[row], strings, pool, sink, false);
-    }
-    fn id_at(&self, _row: usize, _strings: &Strings) -> ObjId {
-        ObjId::NONE
+        emit_comments(self.comments[row], strings, pool, sink);
     }
     fn name_at(&self, row: usize) -> Sym {
         self.name[row]
     }
-}
-
-/// Symbol graphics (rank 2) in draw order: `line rect arc circle poly stext` in one
-/// table, because z-order across kinds is semantic. Capacity 2^16.
-///
-/// `coords` spans into [`Pool::coords`]: line/rect `x1 y1 x2 y2`, arc/circle `cx cy r`,
-/// poly `x y` pairs, stext `x y`. `text` and `orient` are set for stext only, `angles`
-/// (start, sweep, as number text) for arcs only; other rows hold `Sym::NONE`/`R0`.
-#[derive(Clone, Debug, Default)]
-pub struct Graphics {
-    /// Record kind (one of the six graphic kinds).
-    pub shape: Vec<RecordKind>,
-    /// Coordinates.
-    pub coords: Vec<Span>,
-    /// stext template.
-    pub text: Vec<Sym>,
-    /// stext orientation.
-    pub orient: Vec<Orient>,
-    /// arc start and sweep degrees (file number literals).
-    pub angles: Vec<[Sym; 2]>,
-    /// Attribute lines (`layer`, `fill`, ...).
-    pub attrs: Vec<Span>,
-    /// Comments.
-    pub comments: Vec<Span>,
 }
 
 impl Table for Graphics {
@@ -553,12 +319,7 @@ impl Table for Graphics {
             RecordKind::Stext => {
                 assert_eq!(f.len(), 4);
                 let t = strings.intern(f[3]);
-                (
-                    pool.push_coords(&m[..2]),
-                    t,
-                    self::orient(f[2]),
-                    [Sym::NONE; 2],
-                )
+                (pool.push_coords(&m[..2]), t, orient(f[2]), [Sym::NONE; 2])
             }
             RecordKind::Line | RecordKind::Rect | RecordKind::Circle | RecordKind::Poly => {
                 (pool.push_coords(m), Sym::NONE, Orient::R0, [Sym::NONE; 2])
@@ -592,38 +353,8 @@ impl Table for Graphics {
             _ => {}
         }
         emit_attrs(self.attrs[row], strings, pool, sink);
-        emit_lines(self.comments[row], strings, pool, sink, false);
+        emit_comments(self.comments[row], strings, pool, sink);
     }
-    fn id_at(&self, _row: usize, _strings: &Strings) -> ObjId {
-        ObjId::NONE
-    }
-    fn name_at(&self, _row: usize) -> Sym {
-        Sym::NONE
-    }
-}
-
-/// `inst` records (rank 3, unordered). Capacity 2^22. `at` and `name` are columns;
-/// every other attribute line (parameter overrides, `inherit`, `ignore`) stays in the
-/// pool in file order: overrides are the existence-based `inst_params` table (D40, a
-/// missing line means "use the default").
-#[derive(Clone, Debug, Default)]
-pub struct Instances {
-    /// Object id.
-    pub id: Vec<ObjId>,
-    /// Cell reference text (`lib:cell` or `./cell`).
-    pub cell: Vec<Sym>,
-    /// Placement x (milli-units).
-    pub x: Vec<i32>,
-    /// Placement y (milli-units).
-    pub y: Vec<i32>,
-    /// Placement orientation.
-    pub orient: Vec<Orient>,
-    /// Instance name (may be iterated `X1[3:0]`).
-    pub name: Vec<Sym>,
-    /// Attribute lines other than `at`/`name`.
-    pub attrs: Vec<Span>,
-    /// Comments.
-    pub comments: Vec<Span>,
 }
 
 impl Instances {
@@ -667,35 +398,11 @@ impl Table for Instances {
         sink.attr("name");
         sink.value(strings.get(self.name[row]));
         emit_attrs(self.attrs[row], strings, pool, sink);
-        emit_lines(self.comments[row], strings, pool, sink, false);
+        emit_comments(self.comments[row], strings, pool, sink);
     }
     fn id_at(&self, row: usize, _strings: &Strings) -> ObjId {
         self.id[row]
     }
-    fn name_at(&self, _row: usize) -> Sym {
-        Sym::NONE
-    }
-}
-
-/// `wire` records (rank 3, unordered). Capacity 2^22. Endpoints are normalized so
-/// `(x1, y1) < (x2, y2)` (spec §4), the same model the reader produces. `bus` stays in
-/// the pool.
-#[derive(Clone, Debug, Default)]
-pub struct Wires {
-    /// Object id.
-    pub id: Vec<ObjId>,
-    /// First endpoint x (the lexicographically smaller endpoint).
-    pub x1: Vec<i32>,
-    /// First endpoint y.
-    pub y1: Vec<i32>,
-    /// Second endpoint x.
-    pub x2: Vec<i32>,
-    /// Second endpoint y.
-    pub y2: Vec<i32>,
-    /// Attribute lines.
-    pub attrs: Vec<Span>,
-    /// Comments.
-    pub comments: Vec<Span>,
 }
 
 impl Table for Wires {
@@ -728,37 +435,11 @@ impl Table for Wires {
             sink.coord(c);
         }
         emit_attrs(self.attrs[row], strings, pool, sink);
-        emit_lines(self.comments[row], strings, pool, sink, false);
+        emit_comments(self.comments[row], strings, pool, sink);
     }
     fn id_at(&self, row: usize, _strings: &Strings) -> ObjId {
         self.id[row]
     }
-    fn name_at(&self, _row: usize) -> Sym {
-        Sym::NONE
-    }
-}
-
-/// `label`, `port` and `text` records (rank 3, unordered, one table each): an anchor,
-/// an orientation and one text (net expression, interface pin, or annotation).
-/// Capacity 2^22.
-#[derive(Clone, Debug)]
-pub struct Placed {
-    /// Which of the three kinds this table holds.
-    pub kind: RecordKind,
-    /// Object id.
-    pub id: Vec<ObjId>,
-    /// Anchor x (milli-units).
-    pub x: Vec<i32>,
-    /// Anchor y (milli-units).
-    pub y: Vec<i32>,
-    /// Orientation.
-    pub orient: Vec<Orient>,
-    /// Net expression (label), pin name (port) or annotation (text).
-    pub text: Vec<Sym>,
-    /// Attribute lines.
-    pub attrs: Vec<Span>,
-    /// Comments.
-    pub comments: Vec<Span>,
 }
 
 impl Placed {
@@ -804,29 +485,11 @@ impl Table for Placed {
         sink.field(self.orient[row].as_str());
         sink.field(strings.get(self.text[row]));
         emit_attrs(self.attrs[row], strings, pool, sink);
-        emit_lines(self.comments[row], strings, pool, sink, false);
+        emit_comments(self.comments[row], strings, pool, sink);
     }
     fn id_at(&self, row: usize, _strings: &Strings) -> ObjId {
         self.id[row]
     }
-    fn name_at(&self, _row: usize) -> Sym {
-        Sym::NONE
-    }
-}
-
-/// `noconn` records (rank 3, unordered). Capacity 2^22.
-#[derive(Clone, Debug, Default)]
-pub struct Noconns {
-    /// Object id.
-    pub id: Vec<ObjId>,
-    /// Anchor x (milli-units).
-    pub x: Vec<i32>,
-    /// Anchor y (milli-units).
-    pub y: Vec<i32>,
-    /// Attribute lines.
-    pub attrs: Vec<Span>,
-    /// Comments.
-    pub comments: Vec<Span>,
 }
 
 impl Table for Noconns {
@@ -849,48 +512,10 @@ impl Table for Noconns {
         sink.coord(self.x[row]);
         sink.coord(self.y[row]);
         emit_attrs(self.attrs[row], strings, pool, sink);
-        emit_lines(self.comments[row], strings, pool, sink, false);
+        emit_comments(self.comments[row], strings, pool, sink);
     }
     fn id_at(&self, row: usize, _strings: &Strings) -> ObjId {
         self.id[row]
-    }
-    fn name_at(&self, _row: usize) -> Sym {
-        Sym::NONE
-    }
-}
-
-/// `shape` records (rank 3, unordered): schematic graphics, annotation only. Capacity
-/// 2^16. `form` is the rank-2 kind of the same shape (`Line`, `Rect`, `Arc`, `Circle`,
-/// `Poly`); `coords` spans into [`Pool::coords`] in record order — for an arc the start and
-/// sweep degrees are stored in milli-degrees there too (the file writes them as coordinates,
-/// spec §4 rank 3).
-#[derive(Clone, Debug, Default)]
-pub struct Shapes {
-    /// Object id.
-    pub id: Vec<ObjId>,
-    /// The shape's form, as the rank-2 record kind of the same name.
-    pub form: Vec<RecordKind>,
-    /// Values after the form.
-    pub coords: Vec<Span>,
-    /// Attribute lines (`layer`, `fill`, `dash`, `width`, `closed`).
-    pub attrs: Vec<Span>,
-    /// Comments.
-    pub comments: Vec<Span>,
-}
-
-/// The rank-2 kind a `shape` form word names.
-///
-/// # Panics
-///
-/// Panics on a word outside `format::SHAPE_FORMS` (validated before reaching a table).
-pub(crate) fn shape_form(word: &str) -> RecordKind {
-    match word {
-        "line" => RecordKind::Line,
-        "rect" => RecordKind::Rect,
-        "arc" => RecordKind::Arc,
-        "circle" => RecordKind::Circle,
-        "poly" => RecordKind::Poly,
-        _ => panic!("shape form {word:?} was validated before reaching the table"),
     }
 }
 
@@ -919,38 +544,11 @@ impl Table for Shapes {
             sink.coord(c);
         }
         emit_attrs(self.attrs[row], strings, pool, sink);
-        emit_lines(self.comments[row], strings, pool, sink, false);
+        emit_comments(self.comments[row], strings, pool, sink);
     }
     fn id_at(&self, row: usize, _strings: &Strings) -> ObjId {
         self.id[row]
     }
-    fn name_at(&self, _row: usize) -> Sym {
-        Sym::NONE
-    }
-}
-
-/// Text-only records: every kind whose fields are names, ids, words or expressions
-/// (`param`, `impl`, `constraint`, `waive`, `prose`, `var`, `body`, and the bench kinds).
-/// One table per kind, except `doc_blocks`, which holds `prose` and `var` interleaved in
-/// document order.
-///
-/// `fields[row]` holds the record's positional values (at most 3; unused slots are
-/// `Sym::NONE`), so the key is `fields[row][0]`: an id (`constraint`, `waive`, `prose`)
-/// or a name. `waive`'s instance id is `fields[row][1]` as text (resolve with
-/// [`ObjId::find`]). Attributes stay in the pool (param schema, impl formats, bench
-/// settings). Capacities in `TableId::capacity`.
-#[derive(Clone, Debug, Default)]
-pub struct Records {
-    /// Record kind of each row.
-    pub kind: Vec<RecordKind>,
-    /// Positional values.
-    pub fields: Vec<[Sym; 3]>,
-    /// Verbatim lines (`prose`, `body`, `code`).
-    pub verbatim: Vec<Span>,
-    /// Attribute lines.
-    pub attrs: Vec<Span>,
-    /// Comments.
-    pub comments: Vec<Span>,
 }
 
 impl Table for Records {
@@ -982,8 +580,10 @@ impl Table for Records {
             sink.field(strings.get(f));
         }
         emit_attrs(self.attrs[row], strings, pool, sink);
-        emit_lines(self.verbatim[row], strings, pool, sink, true);
-        emit_lines(self.comments[row], strings, pool, sink, false);
+        for &l in &pool.lines[self.verbatim[row].range()] {
+            sink.verbatim(strings.get(l));
+        }
+        emit_comments(self.comments[row], strings, pool, sink);
     }
     fn id_at(&self, row: usize, strings: &Strings) -> ObjId {
         if self.kind[row].key() != KeyRule::Id {
@@ -996,6 +596,48 @@ impl Table for Records {
         match self.kind[row].key() {
             KeyRule::Name => self.fields[row][0],
             _ => Sym::NONE,
+        }
+    }
+}
+
+// ---- private ----
+
+fn move_elem<T>(v: &mut [T], from: usize, to: usize) {
+    assert!(from < v.len() && to < v.len());
+    if from < to {
+        v[from..=to].rotate_left(1);
+    } else {
+        v[to..=from].rotate_right(1);
+    }
+}
+
+fn orient(text: &str) -> Orient {
+    Orient::parse(text).expect("orientations are validated before they reach a table")
+}
+
+/// The rank-2 kind a `shape` form word names.
+///
+/// # Panics
+///
+/// Panics on a word outside `format::SHAPE_FORMS` (validated before reaching a table).
+fn shape_form(word: &str) -> RecordKind {
+    match word {
+        "line" => RecordKind::Line,
+        "rect" => RecordKind::Rect,
+        "arc" => RecordKind::Arc,
+        "circle" => RecordKind::Circle,
+        "poly" => RecordKind::Poly,
+        _ => panic!("shape form {word:?} was validated before reaching the table"),
+    }
+}
+
+impl PinDir {
+    fn parse(word: &str) -> PinDir {
+        match word {
+            "in" => PinDir::In,
+            "out" => PinDir::Out,
+            "inout" => PinDir::Inout,
+            _ => panic!("pin dir {word:?} was validated before reaching the table"),
         }
     }
 }
