@@ -7,7 +7,8 @@
 
 use std::path::Path;
 
-use schemify_cli::spines::{self, OpenError, Opened, env_pairs};
+use schemify_cli::spines::{self, OpenError, Opened};
+use schemify_cli::{libs, platform};
 use schemify_config::Config;
 use schemify_elab::{self as elab, Dialect};
 
@@ -34,7 +35,7 @@ pub fn netlist(config: &Config, args: &[String]) -> Exit {
     let explicit = explicit_dialect(&a)?;
     let mut o = open_design(&a.cell)?;
     let dialect = dialect(config, explicit, &o)?;
-    let env = env_pairs();
+    let env = spines::env_pairs();
     let env = pairs(&env);
     let sets = pairs(&a.sets);
     let req = elab::Request {
@@ -51,11 +52,10 @@ pub fn netlist(config: &Config, args: &[String]) -> Exit {
     }
     let text = schemify_netlist::emit(&e, dialect).text;
     match &a.out {
-        Some(out) => schemify_cli::platform::write_atomic(Path::new(out), text.as_bytes())
-            .map_err(|e| {
-                eprintln!("{e}");
-                USAGE_ERROR
-            })?,
+        Some(out) => platform::write_atomic(Path::new(out), text.as_bytes()).map_err(|e| {
+            eprintln!("{e}");
+            USAGE_ERROR
+        })?,
         None => print!("{text}"),
     }
     Ok(OK)
@@ -65,7 +65,7 @@ pub fn netlist(config: &Config, args: &[String]) -> Exit {
 pub fn check(args: &[String]) -> Exit {
     let a = design_args(args).ok_or_else(usage)?;
     let mut o = open_design(&a.cell)?;
-    let env = env_pairs();
+    let env = spines::env_pairs();
     let env = pairs(&env);
     let req = elab::Request {
         config: a.configs.first().map(String::as_str),
@@ -99,7 +99,11 @@ pub fn run(config: &Config, args: &[String]) -> Exit {
         eprintln!("run: {e}");
         DESIGN_ERROR
     })?;
-    let env = env_pairs();
+    assert!(
+        spines::SIMULATORS.contains(&dialect),
+        "run_dialect picks a simulator"
+    );
+    let env = spines::env_pairs();
     let env = pairs(&env);
     let (configs, corners, sweeps) = (strs(&a.configs), strs(&a.corners), strs(&a.sweeps));
     let sets = pairs(&a.sets);
@@ -111,7 +115,7 @@ pub fn run(config: &Config, args: &[String]) -> Exit {
         overrides: &sets,
     };
     let cell = Path::new(&a.cell);
-    let root = schemify_cli::libs::project_root(cell);
+    let root = libs::project_root(cell);
     let top = o.top;
     // Every library row's directory (the project root standing in for builtin ones): a
     // Verilog-A `file` of a library cell (a generated PDK device) is compiled from there.
@@ -216,7 +220,7 @@ fn design_args(args: &[String]) -> Option<DesignArgs> {
 
 /// Opens the project around `file` with `file` open; notes go to stderr as `note: …`.
 fn open_design(file: &str) -> Result<Opened, u8> {
-    match spines::open_file(Path::new(file), schemify_cli::platform::seed()) {
+    match spines::open_file(Path::new(file), platform::seed()) {
         Ok((o, notes)) => {
             for n in &notes {
                 eprintln!("note: {n}");
@@ -267,7 +271,9 @@ fn pairs(owned: &[(String, String)]) -> Vec<(&str, &str)> {
 /// Borrows owned strings as the `&str` lists the run selection takes.
 #[cfg(not(target_arch = "wasm32"))]
 fn strs(owned: &[String]) -> Vec<&str> {
-    owned.iter().map(String::as_str).collect()
+    let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
+    assert_eq!(borrowed.len(), owned.len());
+    borrowed
 }
 
 /// The `--dialect` of `a` (`Ok(None)` without one); an unknown word is reported and is a
@@ -282,14 +288,19 @@ fn explicit_dialect(a: &DesignArgs) -> Result<Option<Dialect>, u8> {
         );
         USAGE_ERROR
     })?;
+    assert_eq!(spines::dialect_word(d), word, "dialect words round-trip");
     Ok(Some(d))
 }
 
 /// The dialect of the request (`spines::sim_dialect`: `--dialect`, the PDK's pin, the user
 /// config, detection); a refused pin is reported and is a design error.
 fn dialect(config: &Config, explicit: Option<Dialect>, o: &Opened) -> Result<Dialect, u8> {
-    spines::sim_dialect(explicit, &o.project, config.table()).map_err(|e| {
+    let chosen = spines::sim_dialect(explicit, &o.project, config.table()).map_err(|e| {
         eprintln!("{e}");
         DESIGN_ERROR
-    })
+    })?;
+    if let Some(d) = explicit {
+        assert_eq!(chosen, d, "an explicit --dialect wins");
+    }
+    Ok(chosen)
 }

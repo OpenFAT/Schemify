@@ -24,8 +24,11 @@ pub fn core(dir: &Path) -> Command {
 /// Runs the core in `dir` with `args`; returns its exit code and stdout followed by stderr.
 pub fn schemify(dir: &Path, args: &[&str]) -> (i32, String) {
     let out = core(dir).args(args).output().expect("binary runs");
-    let text =
-        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
     (out.status.code().expect("not killed"), text)
 }
 
@@ -38,6 +41,6 @@ pub fn scratch(name: &str) -> PathBuf {
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&dir).expect("the temp dir is writable");
     dir
 }

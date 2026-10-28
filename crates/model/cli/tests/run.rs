@@ -32,10 +32,15 @@ printf 'Title: fake\nPlotname: Operating Point\nFlags: real\nNo. Variables: 1\nN
 
 fn run_project(name: &str) -> PathBuf {
     let dir = scratch(name);
-    std::fs::write(dir.join("schemify.project"), "schemify 1 project\n").unwrap();
-    std::fs::write(dir.join("amp.shcomp"), AMP).unwrap();
-    std::fs::write(dir.join("res.shprim"), RES).unwrap();
-    std::fs::write(dir.join("tb.shbench"), BENCH).unwrap();
+    let files = [
+        ("schemify.project", "schemify 1 project\n"),
+        ("amp.shcomp", AMP),
+        ("res.shprim", RES),
+        ("tb.shbench", BENCH),
+    ];
+    for (file, text) in files {
+        std::fs::write(dir.join(file), text).expect("the scratch dir is writable");
+    }
     dir
 }
 
@@ -148,11 +153,15 @@ fn publish_writes_a_hosted_project_with_its_runs() {
     let proj = site.join("projects").join(&name);
     let manifest = std::fs::read_to_string(proj.join("schemify.files")).unwrap();
     let rows = schemify_cli::hosted::parse(&manifest).unwrap();
-    for (rel, digest) in &rows {
-        let bytes = std::fs::read(proj.join(rel)).unwrap();
-        assert!(schemify_cli::hosted::matches(digest, &bytes), "{rel}");
+    for row in &rows {
+        let bytes = std::fs::read(proj.join(&row.path)).unwrap();
+        assert!(
+            schemify_cli::hosted::matches(&row.digest, &bytes),
+            "{}",
+            row.path
+        );
     }
-    let paths: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+    let paths: Vec<&str> = rows.iter().map(|r| r.path.as_str()).collect();
     assert!(paths.contains(&"tb.shbench") && paths.contains(&"schemify.project"));
     assert!(
         paths
@@ -184,8 +193,11 @@ fn publish_writes_a_hosted_project_with_its_runs() {
 #[test]
 fn run_and_netlist_select_espice() {
     let dir = run_project("run-espice");
-    let init = fake_sim("espice", ", env = { ZIG = '/z/zig', WANT = 'espice' }")
-        + &fake_sim("ngspice", ", env = { WANT = 'ngspice' }");
+    let init = format!(
+        "{}{}",
+        fake_sim("espice", ", env = { ZIG = '/z/zig', WANT = 'espice' }"),
+        fake_sim("ngspice", ", env = { WANT = 'ngspice' }")
+    );
     std::fs::write(dir.join("init.lua"), &init).unwrap();
     let run = |args: &[&str]| {
         let mut all = vec!["-u", "init.lua", "run", "tb.shbench"];
@@ -198,7 +210,7 @@ fn run_and_netlist_select_espice() {
     assert_eq!(code, 0, "ngspice by default: {text}");
     std::fs::write(
         dir.join("init.lua"),
-        init.clone() + "schemify.opt.simulator = 'espice'\n",
+        format!("{init}schemify.opt.simulator = 'espice'\n"),
     )
     .unwrap();
     let (code, text) = run(&[]);
@@ -227,10 +239,14 @@ fn a_pdk_pins_its_simulator() {
         let map = format!("schemify 1 techmap\n  pdk kit\n  simulator {word}\n");
         std::fs::write(dir.join("tech.map"), map).unwrap();
     };
-    let init = fake_sim("espice", ", env = { ZIG = '/z/zig' }") + &fake_sim("ngspice", "");
+    let init = format!(
+        "{}{}",
+        fake_sim("espice", ", env = { ZIG = '/z/zig' }"),
+        fake_sim("ngspice", "")
+    );
     std::fs::write(
         dir.join("init.lua"),
-        init.clone() + "schemify.opt.simulator = 'ngspice'\n",
+        format!("{init}schemify.opt.simulator = 'ngspice'\n"),
     )
     .unwrap();
     let cli = |args: &[&str]| {
@@ -301,15 +317,17 @@ fn a_pdk_pins_its_simulator() {
 fn run_starts_every_simulator() {
     let dir = run_project("run-sims");
     // A resistor Spectre can spell too.
-    let res = RES.to_owned() + "  format spectre \"{name} ({A} {B}) resistor r=1k\"\n";
+    let res = format!("{RES}  format spectre \"{{name}} ({{A}} {{B}}) resistor r=1k\"\n");
     std::fs::write(dir.join("res.shprim"), res).unwrap();
     let ltspice = format!(
         "schemify.sim('ltspice', {{ path = 'sh', args = {{ '-c', [==[{FAKE}]==], 'fake', \
          '{{netlist}}', 'netlist.raw' }}, env = {{ WANT = 'ltspice' }} }})\n"
     );
-    let init = fake_sim("xyce", ", env = { WANT = 'xyce' }")
-        + &fake_sim("spectre", ", env = { WANT = 'spectre' }")
-        + &ltspice;
+    let init = format!(
+        "{}{}{ltspice}",
+        fake_sim("xyce", ", env = { WANT = 'xyce' }"),
+        fake_sim("spectre", ", env = { WANT = 'spectre' }")
+    );
     std::fs::write(dir.join("init.lua"), &init).unwrap();
     for sim in ["xyce", "ltspice", "spectre"] {
         let (code, text) = schemify(

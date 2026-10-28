@@ -12,7 +12,7 @@
 
 use std::io::{self, BufRead, Write};
 
-use crate::rpc::{self, Headless, INVALID_PARAMS, Json, METHOD_NOT_FOUND, METHODS};
+use crate::rpc::{self, Headless, INVALID_PARAMS, Json, METHOD_NOT_FOUND, METHODS, MethodError};
 
 /// The protocol revision answered when the client asks for one this bridge does not list.
 pub const PROTOCOL: &str = "2025-06-18";
@@ -32,13 +32,13 @@ pub fn serve<R: BufRead, W: Write>(input: &mut R, output: &mut W, h: &Headless) 
 // ---- private ----
 
 /// One MCP method.
-fn call(h: &Headless, method: &str, params: &Json) -> Result<Json, (i32, String)> {
+fn call(h: &Headless, method: &str, params: &Json) -> Result<Json, MethodError> {
     match method {
         "initialize" => {
             let asked = params.get("protocolVersion").and_then(Json::as_str);
             let version = asked.filter(|v| PROTOCOLS.contains(v)).unwrap_or(PROTOCOL);
             Ok(Json::obj(vec![
-                ("protocolVersion", s(version)),
+                ("protocolVersion", str_value(version)),
                 (
                     "capabilities",
                     Json::obj(vec![("tools", Json::obj(vec![]))]),
@@ -46,8 +46,8 @@ fn call(h: &Headless, method: &str, params: &Json) -> Result<Json, (i32, String)
                 (
                     "serverInfo",
                     Json::obj(vec![
-                        ("name", s("schemify")),
-                        ("version", s(env!("CARGO_PKG_VERSION"))),
+                        ("name", str_value("schemify")),
+                        ("version", str_value(env!("CARGO_PKG_VERSION"))),
                     ]),
                 ),
             ]))
@@ -56,10 +56,16 @@ fn call(h: &Headless, method: &str, params: &Json) -> Result<Json, (i32, String)
         "tools/list" => Ok(Json::obj(vec![("tools", Json::Arr(tools()))])),
         "tools/call" => {
             let Some(name) = params.get("name").and_then(Json::as_str) else {
-                return Err((INVALID_PARAMS, "tools/call needs a tool `name`".into()));
+                return Err(MethodError::new(
+                    INVALID_PARAMS,
+                    "tools/call needs a tool `name`".to_owned(),
+                ));
             };
             if name == "rpc.methods" || !METHODS.contains(&name) {
-                return Err((INVALID_PARAMS, format!("unknown tool `{name}`")));
+                return Err(MethodError::new(
+                    INVALID_PARAMS,
+                    format!("unknown tool `{name}`"),
+                ));
             }
             let empty = Json::obj(vec![]);
             let arguments = params.get("arguments").unwrap_or(&empty);
@@ -73,28 +79,37 @@ fn call(h: &Headless, method: &str, params: &Json) -> Result<Json, (i32, String)
             };
             Ok(tool_result(h.call(name, &forwarded)))
         }
-        _ => Err((METHOD_NOT_FOUND, format!("unknown method `{method}`"))),
+        _ => Err(MethodError::new(
+            METHOD_NOT_FOUND,
+            format!("unknown method `{method}`"),
+        )),
     }
 }
 
 /// A JSON string value.
-fn s(t: &str) -> Json {
-    Json::Str(t.to_owned())
+fn str_value(text: &str) -> Json {
+    Json::Str(text.to_owned())
 }
 
 /// The JSON Schema of a string.
-fn string() -> Json {
-    Json::obj(vec![("type", s("string"))])
+fn string_schema() -> Json {
+    Json::obj(vec![("type", str_value("string"))])
 }
 
 /// A JSON Schema object with `props`, `required` listing the mandatory ones.
 fn schema(props: Vec<(&str, Json)>, required: &[&str]) -> Json {
+    for r in required {
+        assert!(
+            props.iter().any(|(name, _)| name == r),
+            "required `{r}` is not a property"
+        );
+    }
     Json::obj(vec![
-        ("type", s("object")),
+        ("type", str_value("object")),
         ("properties", Json::obj(props)),
         (
             "required",
-            Json::Arr(required.iter().map(|r| s(r)).collect()),
+            Json::Arr(required.iter().map(|r| str_value(r)).collect()),
         ),
     ])
 }
@@ -102,13 +117,18 @@ fn schema(props: Vec<(&str, Json)>, required: &[&str]) -> Json {
 /// The tool list: one tool per headless method, with its input schema.
 fn tools() -> Vec<Json> {
     let mut out = Vec::new();
-    for &m in METHODS.iter().filter(|m| **m != "rpc.methods") {
+    let tool_methods = METHODS.iter().filter(|m| **m != "rpc.methods");
+    for &m in tool_methods {
         let (about, input) = match m {
             "edit" => (
                 "Apply edit ops (Schemify edits spec op text, one record per line) to a \
                  .shprim/.shcomp/.shbench file as one transaction and save it.",
                 schema(
-                    vec![("file", string()), ("ops", string()), ("label", string())],
+                    vec![
+                        ("file", string_schema()),
+                        ("ops", string_schema()),
+                        ("label", string_schema()),
+                    ],
                     &["file", "ops"],
                 ),
             ),
@@ -118,15 +138,18 @@ fn tools() -> Vec<Json> {
                 schema(
                     vec![(
                         "args",
-                        Json::obj(vec![("type", s("array")), ("items", string())]),
+                        Json::obj(vec![
+                            ("type", str_value("array")),
+                            ("items", string_schema()),
+                        ]),
                     )],
                     &["args"],
                 ),
             ),
         };
         out.push(Json::obj(vec![
-            ("name", s(m)),
-            ("description", s(about)),
+            ("name", str_value(m)),
+            ("description", str_value(about)),
             ("inputSchema", input),
         ]));
     }
@@ -136,26 +159,27 @@ fn tools() -> Vec<Json> {
 
 /// A tool call's MCP result: the method's result (or error) as one text block; `isError`
 /// when the method failed or the command exited non-zero.
-fn tool_result(out: Result<Json, (i32, String)>) -> Json {
+fn tool_result(out: Result<Json, MethodError>) -> Json {
     let (text, failed) = match out {
         Ok(v) => {
             let failed = matches!(v.get("code"), Some(Json::Num(c)) if *c != 0.0);
-            let mut t = String::new();
+            let mut body = String::new();
             match (v.get("stdout"), v.get("stderr")) {
-                (Some(Json::Str(o)), Some(Json::Str(e))) => {
+                (Some(Json::Str(stdout)), Some(Json::Str(stderr))) => {
                     let code = v.get("code").cloned().unwrap_or(Json::Null);
-                    rpc::write(&code, &mut t);
-                    t.insert_str(0, "exit code ");
-                    t.push('\n');
-                    t.push_str(o);
-                    t.push_str(e);
+                    rpc::write(&code, &mut body);
+                    body.insert_str(0, "exit code ");
+                    body.push('\n');
+                    body.push_str(stdout);
+                    body.push_str(stderr);
                 }
-                _ => rpc::write(&v, &mut t),
+                _ => rpc::write(&v, &mut body),
             }
-            (t, failed)
+            (body, failed)
         }
-        Err((code, msg)) => (format!("error {code}: {msg}"), true),
+        Err(e) => (format!("error {}: {}", e.code, e.message), true),
     };
+    assert!(!text.is_empty(), "a tool result says something");
     let block = Json::obj(vec![
         ("type", Json::Str("text".into())),
         ("text", Json::Str(text)),

@@ -1,7 +1,7 @@
 //! The project on disk, without any GUI state: the `load` spine (manifest + lockfile →
 //! library directories → `doc::index_library` per local library and the tech map → the
 //! bundled `core` library) and cell bytes by (library, path). Shared by the headless CLI
-//! spines and the editor's `Session` (`schemify_app::session`). Cites D10 (one directory of
+//! spines and the editor's `Session` (`schemify_editor::session`). Cites D10 (one directory of
 //! cells per library, the implicit `core`), pdk spec §5 (`lib tech map`) and §9.2
 //! (`project.reload`).
 //!
@@ -20,7 +20,7 @@
 
 use std::path::{Path, PathBuf};
 
-use schemify_doc::{LibSource, Project};
+use schemify_doc::{LibSource, Project, ReloadError};
 
 use crate::platform;
 
@@ -42,12 +42,15 @@ pub struct Loaded {
     pub kept: Option<(PathBuf, Vec<u8>)>,
 }
 
-/// What `index_all` returns: the directory per library row, the notes, the kept file.
-type Indexed = (
-    Vec<Option<PathBuf>>,
-    Vec<String>,
-    Option<(PathBuf, Vec<u8>)>,
-);
+/// What `index_all` returns.
+struct Indexed {
+    /// Directory per library row, as [`Loaded::lib_dir`].
+    lib_dir: Vec<Option<PathBuf>>,
+    /// As [`Loaded::notes`].
+    notes: Vec<String>,
+    /// As [`Loaded::kept`].
+    kept: Option<(PathBuf, Vec<u8>)>,
+}
 
 /// Loads the project rooted at `root`, keeping the bytes of cell file `keep` (an absolute
 /// path) if a library lists it. `git`/`url` libraries are reported in
@@ -56,13 +59,24 @@ type Indexed = (
 /// # Errors
 ///
 /// The manifest or lockfile does not parse, or the bundled core library is refused.
+///
+/// # Panics
+///
+/// Panics if the bundled core library indexes with a diagnostic (a build defect).
 pub fn load(root: &Path, seed: u64, keep: Option<&Path>) -> Result<Loaded, String> {
     let manifest = platform::read(&root.join("schemify.project")).ok();
     let lock = platform::read(&root.join("schemify.lock")).ok();
     let mut project = Project::new(manifest.as_deref(), lock.as_deref(), seed)
         .map_err(|e| format!("schemify.project: {:?}", e.diagnostics.first()))?;
-    let (lib_dir, notes, kept) = index_all(&mut project, root, keep)?;
-    assert!(kept.as_ref().is_none_or(|k| Some(k.0.as_path()) == keep));
+    let Indexed {
+        lib_dir,
+        notes,
+        kept,
+    } = index_all(&mut project, root, keep)?;
+    if let Some((path, _)) = &kept {
+        assert_eq!(Some(path.as_path()), keep, "kept a file nobody asked for");
+    }
+    assert_eq!(lib_dir.len(), project.libs().name.len());
     Ok(Loaded {
         project,
         lib_dir,
@@ -79,6 +93,10 @@ pub fn load(root: &Path, seed: u64, keep: Option<&Path>) -> Result<Loaded, Strin
 ///
 /// A file does not parse, an open document's library is no longer declared, or the bundled
 /// core library is refused; the project keeps its previous manifest on a refusal.
+///
+/// # Panics
+///
+/// As [`load`].
 pub fn reload(
     project: &mut Project,
     root: &Path,
@@ -88,15 +106,17 @@ pub fn reload(
     project
         .reload_manifest(manifest.as_deref(), lock.as_deref())
         .map_err(|e| match e {
-            schemify_doc::ReloadError::Parse(p) => {
+            ReloadError::Parse(p) => {
                 format!("schemify.project: {:?}", p.diagnostics.first())
             }
-            schemify_doc::ReloadError::LibraryInUse(l) => {
+            ReloadError::LibraryInUse(l) => {
                 format!("project.reload: close the documents of library `{l}` first")
             }
         })?;
-    let (lib_dir, notes, _) = index_all(project, root, None)?;
-    Ok((lib_dir, notes))
+    let indexed = index_all(project, root, None)?;
+    assert!(indexed.kept.is_none(), "nothing to keep was asked for");
+    assert_eq!(indexed.lib_dir.len(), project.libs().name.len());
+    Ok((indexed.lib_dir, indexed.notes))
 }
 
 /// Indexes library `row` from the cell files under `dir`, skipping `skip` subtrees (also
@@ -147,6 +167,9 @@ pub fn index(
     }
     drop(files);
     assert_eq!(rel.len(), bytes.len());
+    if let Some(i) = kept {
+        assert!(i < bytes.len());
+    }
     Ok(kept.map(|i| bytes.swap_remove(i)))
 }
 
@@ -157,12 +180,21 @@ pub fn index(
 /// # Errors
 ///
 /// The library is not local, or the file cannot be read.
+///
+/// # Panics
+///
+/// Panics if `relpath` is empty or absolute.
 pub fn cell_bytes(
     loaded_dirs: &[Option<PathBuf>],
     project: &Project,
     lib: u8,
     relpath: &str,
 ) -> Result<(PathBuf, Vec<u8>, bool), String> {
+    assert!(!relpath.is_empty());
+    assert!(
+        !relpath.starts_with('/'),
+        "{relpath}: relative to its library"
+    );
     let row = usize::from(lib);
     if let Some(Some(dir)) = loaded_dirs.get(row) {
         let path = dir.join(relpath);
@@ -180,12 +212,25 @@ pub fn cell_bytes(
 
 /// The project directory of a file: the nearest ancestor holding `schemify.project`,
 /// else the file's directory.
+///
+/// # Panics
+///
+/// Panics if the parent walk outlasts the path's depth (a bug in `Path::parent`).
+#[must_use]
 pub fn project_root(file: &Path) -> PathBuf {
     let abs = absolute(file);
+    let depth = abs.components().count();
     let mut dir = abs.parent().map(Path::to_path_buf);
-    // Bounded by the path depth.
+    let mut steps = 0;
     while let Some(d) = dir {
+        steps += 1;
+        assert!(
+            steps <= depth,
+            "{}: parent walk past the root",
+            abs.display()
+        );
         if platform::exists(&d.join("schemify.project")) {
+            assert!(abs.starts_with(&d));
             return d;
         }
         dir = d.parent().map(Path::to_path_buf);
@@ -195,8 +240,15 @@ pub fn project_root(file: &Path) -> PathBuf {
 }
 
 /// The relative path of indexed cell `row` within its library.
+///
+/// # Panics
+///
+/// Panics if `row` is not a cell row of `project`.
+#[must_use]
 pub fn cell_relpath(project: &Project, row: usize) -> String {
     let c = project.cells();
+    assert!(row < c.stem.len(), "cell row {row} of {}", c.stem.len());
+    assert_eq!(c.dir.len(), c.stem.len());
     let s = project.strings();
     let (dir, stem) = (s.get(c.dir[row]), s.get(c.stem[row]));
     let ext = c.kind[row].word();
@@ -208,6 +260,7 @@ pub fn cell_relpath(project: &Project, row: usize) -> String {
 }
 
 /// Whether `rel` names a cell file.
+#[must_use]
 pub fn is_cell_file(rel: &str) -> bool {
     [".shprim", ".shcomp", ".shbench"]
         .iter()
@@ -215,6 +268,7 @@ pub fn is_cell_file(rel: &str) -> bool {
 }
 
 /// `path` relative to `dir` with `/` separators, if inside it.
+#[must_use]
 pub fn rel_path(dir: &Path, path: &Path) -> Option<String> {
     let rel = path.strip_prefix(dir).ok()?;
     let parts: Vec<String> = rel
@@ -226,6 +280,7 @@ pub fn rel_path(dir: &Path, path: &Path) -> Option<String> {
 
 /// `p` made absolute against the working directory (`.` components dropped, `..` and
 /// symlinks kept); `p` itself when there is no working directory (the web) or it is empty.
+#[must_use]
 pub fn absolute(p: &Path) -> PathBuf {
     std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
 }
@@ -236,6 +291,8 @@ pub fn absolute(p: &Path) -> PathBuf {
 /// library and the technology map → the bundled `core` library.
 fn index_all(project: &mut Project, root: &Path, keep: Option<&Path>) -> Result<Indexed, String> {
     let libs = project.libs();
+    assert_eq!(libs.source.len(), libs.name.len());
+    assert_eq!(libs.subdir.len(), libs.name.len());
     let mut lib_dir = Vec::with_capacity(libs.name.len());
     let mut notes = Vec::new();
     let mut kept = None;
@@ -322,5 +379,9 @@ fn index_all(project: &mut Project, root: &Path, keep: Option<&Path>) -> Result<
         );
     }
     assert_eq!(lib_dir.len(), project.libs().name.len());
-    Ok((lib_dir, notes, kept))
+    Ok(Indexed {
+        lib_dir,
+        notes,
+        kept,
+    })
 }

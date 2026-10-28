@@ -81,14 +81,14 @@ fn digest(bytes: &[u8]) -> String {
 /// A repository with two commits of `<name>.wasm` (`a`, then `b`), `a` tagged `v1`.
 fn repo(dir: &Path, name: &str) -> (PathBuf, String, String) {
     let r = dir.join("upstream");
-    std::fs::create_dir_all(&r).unwrap();
+    std::fs::create_dir_all(&r).expect("the scratch dir is writable");
     git(&r, &["init", "--quiet", "--initial-branch=main"]);
-    std::fs::write(r.join(format!("{name}.wasm")), b"module a").unwrap();
+    std::fs::write(r.join(format!("{name}.wasm")), b"module a").expect("the repo is writable");
     git(&r, &["add", "."]);
     git(&r, &["commit", "--quiet", "-m", "a"]);
     git(&r, &["tag", "v1"]);
     let a = git(&r, &["rev-parse", "HEAD"]);
-    std::fs::write(r.join(format!("{name}.wasm")), b"module b").unwrap();
+    std::fs::write(r.join(format!("{name}.wasm")), b"module b").expect("the repo is writable");
     git(&r, &["commit", "--quiet", "-am", "b"]);
     let b = git(&r, &["rev-parse", "HEAD"]);
     (r, a, b)

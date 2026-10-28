@@ -15,7 +15,7 @@
 
 /// Entries per archive: the classic format's 16-bit count, whose all-ones value marks zip64
 /// (neither written nor read).
-pub const ENTRIES_MAX: usize = 0xFFFE;
+pub const ENTRIES_MAX: usize = 0xfffe;
 
 const LOCAL: u32 = 0x0403_4b50;
 const CENTRAL: u32 = 0x0201_4b50;
@@ -29,8 +29,14 @@ const DOS_DATE: u16 = (1 << 5) | 1;
 const LOCAL_LEN: usize = 30;
 const CENTRAL_LEN: usize = 46;
 const END_LEN: usize = 22;
+/// The fields a local and a central header share, from "version needed" on.
+const COMMON_LEN: usize = 26;
 // The entry count fits the 16-bit field below its zip64 marker.
 const _: () = assert!(ENTRIES_MAX < u16::MAX as usize);
+// Local: signature, the common fields. Central: signature, "made by", the common fields,
+// comment, disk and internal attributes (2 bytes each), external attributes, offset.
+const _: () = assert!(LOCAL_LEN == 4 + COMMON_LEN);
+const _: () = assert!(CENTRAL_LEN == 4 + 2 + COMMON_LEN + 3 * 2 + 4 + 4);
 
 /// Writes `entries` (path with `/` separators, bytes) as a stored archive, in the order
 /// given.
@@ -39,6 +45,10 @@ const _: () = assert!(ENTRIES_MAX < u16::MAX as usize);
 ///
 /// More than [`ENTRIES_MAX`] entries, a path longer than 65535 bytes, or an entry or archive
 /// past 4 GiB.
+///
+/// # Panics
+///
+/// Panics if the archive's length differs from the size computed up front (a bug here).
 pub fn write(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, String> {
     if entries.len() > ENTRIES_MAX {
         return Err(format!("more than {ENTRIES_MAX} files"));
@@ -59,7 +69,7 @@ pub fn write(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, String> {
         let offset = u32::try_from(out.len()).expect("archive size checked above");
         let crc = crc32(bytes);
         // Fields shared by the local and the central header, from "version needed" on.
-        let mut common = Vec::with_capacity(26);
+        let mut common = Vec::with_capacity(COMMON_LEN);
         for v in [VERSION, UTF8, 0, 0, DOS_DATE] {
             common.extend_from_slice(&v.to_le_bytes());
         }
@@ -68,6 +78,7 @@ pub fn write(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, String> {
         }
         common.extend_from_slice(&name_len.to_le_bytes());
         common.extend_from_slice(&0u16.to_le_bytes()); // extra field length
+        assert_eq!(common.len(), COMMON_LEN);
         out.extend_from_slice(&LOCAL.to_le_bytes());
         out.extend_from_slice(&common);
         out.extend_from_slice(path.as_bytes());
@@ -82,6 +93,10 @@ pub fn write(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, String> {
         central.extend_from_slice(&offset.to_le_bytes());
         central.extend_from_slice(path.as_bytes());
     }
+    assert_eq!(
+        central.len(),
+        entries.len() * CENTRAL_LEN + names_len(entries)
+    );
     let count = u16::try_from(entries.len()).expect("checked above");
     let cd_offset = u32::try_from(out.len()).expect("archive size checked above");
     let cd_len = u32::try_from(central.len()).expect("archive size checked above");
@@ -106,6 +121,10 @@ pub fn write(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, String> {
 ///
 /// Not a zip, truncated or inconsistent headers, zip64, encryption, another compression
 /// method, a CRC mismatch, or more than `bytes_max` bytes of output.
+///
+/// # Panics
+///
+/// Never on any input: the asserts check the reader's own bookkeeping.
 pub fn read(archive: &[u8], bytes_max: usize) -> Result<Vec<(String, Vec<u8>)>, String> {
     let end = find_end(archive).ok_or("not a zip archive (no end record)")?;
     let count = usize::from(u16_at(archive, end + 10)?);
@@ -172,6 +191,7 @@ pub fn read(archive: &[u8], bytes_max: usize) -> Result<Vec<(String, Vec<u8>)>, 
         out.push((name, bytes));
     }
     assert!(out.len() <= count);
+    assert!(total <= bytes_max);
     Ok(out)
 }
 
@@ -185,7 +205,7 @@ fn crc32(bytes: &[u8]) -> u32 {
     for &b in bytes {
         crc ^= u32::from(b);
         for _ in 0..8 {
-            crc = (crc >> 1) ^ (0xEDB8_8320 & (crc & 1).wrapping_neg());
+            crc = (crc >> 1) ^ (0xedb8_8320 & (crc & 1).wrapping_neg());
         }
     }
     !crc
@@ -196,27 +216,36 @@ fn crc32(bytes: &[u8]) -> u32 {
 fn find_end(archive: &[u8]) -> Option<usize> {
     let last = archive.len().checked_sub(END_LEN)?;
     let first = last.saturating_sub(usize::from(u16::MAX));
-    (first..=last).rev().find(|&i| {
+    let end = (first..=last).rev().find(|&i| {
         archive[i..i + 4] == END.to_le_bytes()
             && i + END_LEN + usize::from(u16::from_le_bytes([archive[i + 20], archive[i + 21]]))
                 == archive.len()
-    })
+    });
+    if let Some(i) = end {
+        assert!(i + END_LEN <= archive.len());
+    }
+    end
 }
 
-fn slice(b: &[u8], at: usize, len: usize) -> Result<&[u8], String> {
+/// Bytes the entry names take in the central directory.
+fn names_len(entries: &[(&str, &[u8])]) -> usize {
+    entries.iter().map(|(path, _)| path.len()).sum()
+}
+
+fn slice(archive: &[u8], at: usize, len: usize) -> Result<&[u8], String> {
     at.checked_add(len)
-        .and_then(|end| b.get(at..end))
+        .and_then(|end| archive.get(at..end))
         .ok_or_else(|| format!("truncated archive (need {len} bytes at {at})"))
 }
 
-fn u16_at(b: &[u8], at: usize) -> Result<u16, String> {
-    let s = slice(b, at, 2)?;
-    Ok(u16::from_le_bytes([s[0], s[1]]))
+fn u16_at(archive: &[u8], at: usize) -> Result<u16, String> {
+    let field = slice(archive, at, 2)?;
+    Ok(u16::from_le_bytes([field[0], field[1]]))
 }
 
-fn u32_at(b: &[u8], at: usize) -> Result<u32, String> {
-    let s = slice(b, at, 4)?;
-    Ok(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+fn u32_at(archive: &[u8], at: usize) -> Result<u32, String> {
+    let field = slice(archive, at, 4)?;
+    Ok(u32::from_le_bytes([field[0], field[1], field[2], field[3]]))
 }
 
 #[cfg(test)]
@@ -248,7 +277,7 @@ mod tests {
 
     #[test]
     fn crc32_matches_the_standard_check_value() {
-        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+        assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
         assert_eq!(crc32(b""), 0);
     }
 

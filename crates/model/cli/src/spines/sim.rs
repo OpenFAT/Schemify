@@ -13,11 +13,19 @@
 pub use schemify_run::SIMULATORS;
 
 #[cfg(not(target_arch = "wasm32"))]
+use std::env;
+#[cfg(not(target_arch = "wasm32"))]
+use std::mem;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
+#[cfg(not(target_arch = "wasm32"))]
+use schemify_config::SimKind;
 use schemify_config::Table;
 use schemify_doc::Project;
 use schemify_elab::Dialect;
+#[cfg(not(target_arch = "wasm32"))]
+use schemify_run::{SimCommand, Tools};
 
 use super::dialect_of;
 
@@ -30,6 +38,10 @@ use super::dialect_of;
 /// # Errors
 ///
 /// The tech map pins a word that names no simulator.
+///
+/// # Panics
+///
+/// Panics if a fallback lands outside [`SIMULATORS`] (a bug here).
 pub fn sim_dialect(
     explicit: Option<Dialect>,
     project: &Project,
@@ -41,13 +53,15 @@ pub fn sim_dialect(
     if let Some((_, d)) = pin(project)? {
         return Ok(d);
     }
-    Ok(match user.opts.simulator {
+    let chosen = match user.opts.simulator {
         Some(k) => SIMULATORS
             .into_iter()
             .find(|d| d.as_str() == k.word())
             .unwrap_or(Dialect::Espice),
         None => detect(user).unwrap_or(Dialect::Espice),
-    })
+    };
+    assert!(SIMULATORS.contains(&chosen), "the fallbacks are simulators");
+    Ok(chosen)
 }
 
 /// The simulator the project's PDK pins: (PDK name, dialect); `None` without a tech map
@@ -83,6 +97,10 @@ pub fn pin(project: &Project) -> Result<Option<(&str, Dialect)>, String> {
 ///
 /// The PDK pins a simulator Schemify cannot start (HSPICE), or (native) one whose
 /// configured or default program is not found.
+///
+/// # Panics
+///
+/// Panics if the choice lands outside [`SIMULATORS`] (a bug here).
 pub fn run_dialect(chosen: Dialect, project: &Project, user: &Table) -> Result<Dialect, String> {
     let pin = pin(project)?;
     let run = match (chosen, pin) {
@@ -115,17 +133,22 @@ pub fn run_dialect(chosen: Dialect, project: &Project, user: &Table) -> Result<D
 /// The external programs of run spec §5 from the user config's `schemify.sim` rows; the
 /// defaults for rows it does not set (documents never name a program, D7). A row without
 /// `args` keeps the default arguments.
+///
+/// # Panics
+///
+/// Panics if a simulator row ends up without a program (the config refuses an empty
+/// `path`, and every default names one).
 #[cfg(not(target_arch = "wasm32"))]
-pub fn tools(user: &Table) -> schemify_run::Tools {
-    use schemify_config::SimKind;
-    let mut t = schemify_run::Tools::default();
+#[must_use]
+pub fn tools(user: &Table) -> Tools {
+    let mut t = Tools::default();
     for (k, d) in SIMULATORS.into_iter().enumerate() {
         let Some(s) = user.sim(kind(d)) else {
             continue;
         };
         // A row without `args` keeps the default row's.
-        let default_args = std::mem::take(&mut t.sims[k].args);
-        t.sims[k] = schemify_run::SimCommand {
+        let default_args = mem::take(&mut t.sims[k].args);
+        t.sims[k] = SimCommand {
             path: s.path.clone(),
             args: if s.args.is_empty() {
                 default_args
@@ -173,22 +196,20 @@ fn installed(d: Dialect, user: &Table) -> bool {
     } else {
         prog
     };
-    std::env::var_os("PATH")
-        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(&exe).is_file()))
+    env::var_os("PATH")
+        .is_some_and(|path| env::split_paths(&path).any(|dir| dir.join(&exe).is_file()))
 }
 
 /// The user config's program row of simulator `d` (one of [`SIMULATORS`]).
 #[cfg(not(target_arch = "wasm32"))]
-fn kind(d: Dialect) -> schemify_config::SimKind {
+fn kind(d: Dialect) -> SimKind {
     // By word, not by position: `SIMULATORS` is in detection order, the config's rows in
     // its own.
     assert!(SIMULATORS.contains(&d), "{} is not a simulator", d.as_str());
-    let k = schemify_config::SimKind::SIMULATORS
+    SimKind::SIMULATORS
         .into_iter()
         .find(|k| k.word() == d.as_str())
-        .unwrap_or_else(|| panic!("the config has no row for {}", d.as_str()));
-    assert_eq!(k.word(), d.as_str());
-    k
+        .unwrap_or_else(|| panic!("the config has no row for {}", d.as_str()))
 }
 
 #[cfg(test)]
@@ -212,7 +233,7 @@ mod tests {
         let user = Table::default();
         let t = tools(&user);
         for d in SIMULATORS {
-            assert_eq!(t.sim(d).path, schemify_run::SimCommand::default_for(d).path);
+            assert_eq!(t.sim(d).path, SimCommand::default_for(d).path);
         }
     }
 }

@@ -9,27 +9,31 @@
 //! - `pub fn listen(&str) -> io::Result<Listener>`
 
 use std::io::{self, Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+#[cfg(unix)]
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
+use std::time::Duration;
 
 /// A listening local socket: a Unix-domain socket path (Unix only) or a loopback TCP
 /// `host:port` (every platform).
 #[derive(Debug)]
 pub enum Listener {
     /// `127.0.0.1:<port>` or `[::1]:<port>`.
-    Tcp(std::net::TcpListener),
+    Tcp(TcpListener),
     /// A socket file.
     #[cfg(unix)]
-    Unix(std::os::unix::net::UnixListener),
+    Unix(UnixListener),
 }
 
 /// One client connection of a [`Listener`].
 #[derive(Debug)]
 pub enum Stream {
     /// TCP.
-    Tcp(std::net::TcpStream),
+    Tcp(TcpStream),
     /// Unix-domain socket.
     #[cfg(unix)]
-    Unix(std::os::unix::net::UnixStream),
+    Unix(UnixStream),
 }
 
 /// Listens on `addr`: a socket address (`127.0.0.1:7777`) is TCP and must be loopback, so
@@ -41,8 +45,13 @@ pub enum Stream {
 ///
 /// A non-loopback address, a path on a platform without Unix sockets, or the OS refusing
 /// the bind.
+///
+/// # Panics
+///
+/// Panics if the OS bound a loopback request off the loopback interface (D7).
 pub fn listen(addr: &str) -> io::Result<Listener> {
-    let Ok(sock) = addr.parse::<std::net::SocketAddr>() else {
+    let parsed: Result<SocketAddr, _> = addr.parse();
+    let Ok(sock) = parsed else {
         return listen_path(Path::new(addr));
     };
     if !sock.ip().is_loopback() {
@@ -51,7 +60,14 @@ pub fn listen(addr: &str) -> io::Result<Listener> {
             "only loopback addresses (127.0.0.1, ::1) are served",
         ));
     }
-    std::net::TcpListener::bind(sock).map(Listener::Tcp)
+    let listener = TcpListener::bind(sock)?;
+    if let Ok(bound) = listener.local_addr() {
+        assert!(
+            bound.ip().is_loopback(),
+            "D7: bound {bound} off the loopback"
+        );
+    }
+    Ok(Listener::Tcp(listener))
 }
 
 impl Listener {
@@ -88,11 +104,11 @@ impl Stream {
     /// # Errors
     ///
     /// The OS refusing the option.
-    pub fn set_write_timeout(&self, t: Option<std::time::Duration>) -> io::Result<()> {
+    pub fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         match self {
-            Stream::Tcp(s) => s.set_write_timeout(t),
+            Stream::Tcp(s) => s.set_write_timeout(timeout),
             #[cfg(unix)]
-            Stream::Unix(s) => s.set_write_timeout(t),
+            Stream::Unix(s) => s.set_write_timeout(timeout),
         }
     }
 }
@@ -131,7 +147,6 @@ impl Write for Stream {
 #[cfg(unix)]
 fn listen_path(path: &Path) -> io::Result<Listener> {
     use std::os::unix::fs::FileTypeExt;
-    use std::os::unix::net::{UnixListener, UnixStream};
     let stale = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_socket())
         && UnixStream::connect(path).is_err();
     if stale {

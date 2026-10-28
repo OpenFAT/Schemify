@@ -5,7 +5,7 @@
 //! dialects; run spec §5 simulator choice in `sim`).
 //!
 //! Both callers own their project differently (the CLI a bare `doc::Project`, the editor a
-//! `Session` (`schemify_app::session`) with journals), so opening a cell is the one step
+//! `Session` (`schemify_editor::session`) with journals), so opening a cell is the one step
 //! behind a trait, [`Cells`]: two implementations today, resolved at compile time (rung 5).
 //!
 //! Contents:
@@ -65,6 +65,27 @@ pub const DIALECTS: [(&str, Dialect, &str); 8] = [
     ("verilog", Dialect::Verilog, "v"),
 ];
 
+// The words and the extensions are each unique, so `dialect_of` and `netlist_file` are
+// one-to-one; a duplicate row is a compile error.
+const _: () = {
+    let mut i = 0;
+    while i < DIALECTS.len() {
+        let mut j = i + 1;
+        while j < DIALECTS.len() {
+            assert!(
+                !same_str(DIALECTS[i].0, DIALECTS[j].0),
+                "two dialects share a word"
+            );
+            assert!(
+                !same_str(DIALECTS[i].2, DIALECTS[j].2),
+                "two dialects share an extension"
+            );
+            j += 1;
+        }
+        i += 1;
+    }
+};
+
 /// A project loaded from disk with one cell file open: the CLI's `load` spine (the editor's
 /// equivalent is its session).
 #[derive(Debug)]
@@ -119,6 +140,7 @@ pub fn elaborate_all<C: Cells, F: Funcs>(
 /// One violation as the CLI prints it and the editor lists it:
 /// `E005 lib:cell /X1 W: detail` (path and param only when set). `names` is the arena the
 /// violation's names live in (`Elab::names` or `CellState::names`).
+#[must_use]
 pub fn violation_line(names: &Names, v: &Violation) -> String {
     let name = |n: Name| (n != Name::NONE).then(|| names.get(n));
     let mut line = format!("{} {}", v.code.as_str(), name(v.cell).unwrap_or_default());
@@ -132,11 +154,13 @@ pub fn violation_line(names: &Names, v: &Violation) -> String {
 }
 
 /// The dialect a CLI word names (`ngspice espice xyce ltspice hspice cdl spectre verilog`).
+#[must_use]
 pub fn dialect_of(word: &str) -> Option<Dialect> {
     DIALECTS.iter().find(|d| d.0 == word).map(|d| d.1)
 }
 
 /// The CLI word of `d`.
+#[must_use]
 pub fn dialect_word(d: Dialect) -> &'static str {
     DIALECTS
         .iter()
@@ -150,6 +174,7 @@ pub fn dialect_word(d: Dialect) -> &'static str {
 /// # Panics
 ///
 /// Panics if `stem` is empty or holds a path separator.
+#[must_use]
 pub fn netlist_file(root: &Path, stem: &str, d: Dialect) -> PathBuf {
     assert!(!stem.is_empty(), "a file stem");
     assert!(!stem.contains(['/', '\\']), "a file stem, not a path");
@@ -162,6 +187,7 @@ pub fn netlist_file(root: &Path, stem: &str, d: Dialect) -> PathBuf {
 /// The process environment for `${NAME}` expansion (netlist spec §7.1) and the design hash
 /// (run spec §4), sorted by name so the hash does not depend on the OS's listing order.
 /// Empty on the web.
+#[must_use]
 pub fn env_pairs() -> Vec<(String, String)> {
     #[cfg(not(target_arch = "wasm32"))]
     let mut v: Vec<(String, String)> = std::env::vars().collect();
@@ -178,30 +204,41 @@ pub fn env_pairs() -> Vec<(String, String)> {
 /// # Errors
 ///
 /// See [`OpenError`].
+///
+/// # Panics
+///
+/// Panics if the bundled core library indexes with a diagnostic (a build defect).
 pub fn open_file(file: &Path, seed: u64) -> Result<(Opened, Vec<String>), OpenError> {
+    /// The deepest library directory holding the file so far.
+    struct Deepest {
+        row: usize,
+        rel: String,
+        depth: usize,
+    }
     let root = libs::project_root(file);
     let abs = libs::absolute(file);
     let loaded = libs::load(&root, seed, Some(&abs)).map_err(OpenError::Io)?;
     let mut project = loaded.project;
-    // The deepest library directory holding the file: (row, relative path, depth).
-    let mut best: Option<(usize, String, usize)> = None;
+    let mut best: Option<Deepest> = None;
     for (row, dir) in loaded.lib_dir.iter().enumerate() {
         let Some(dir) = dir else { continue };
         let dir = libs::absolute(dir);
         if let Some(rel) = libs::rel_path(&dir, &abs) {
             let depth = dir.components().count();
-            if best.as_ref().is_none_or(|b| depth > b.2) {
-                best = Some((row, rel, depth));
+            if best.as_ref().is_none_or(|b| depth > b.depth) {
+                best = Some(Deepest { row, rel, depth });
             }
         }
     }
-    let Some((row, rel, _)) = best else {
+    let Some(Deepest { row, rel, .. }) = best else {
         return Err(OpenError::Io(format!(
             "outside every library of the project at {}",
             root.display()
         )));
     };
     // The index read the file already (a cell file of the library); else read it now.
+    assert!(row < project.libs().name.len());
+    assert!(!rel.is_empty(), "the file is not its library's directory");
     let name = project.libs().name[row].clone();
     let opened = match loaded.kept {
         Some((_, bytes)) => project.open_indexed(&name, &rel, bytes, None),
@@ -230,9 +267,15 @@ pub fn open_file(file: &Path, seed: u64) -> Result<(Opened, Vec<String>), OpenEr
 /// run`, so a run either one saved shows in the other's history.
 ///
 /// Cost: one path join and compare per indexed cell.
-pub fn bench_name<'a>(
+///
+/// # Panics
+///
+/// Panics if `lib_dir` hands out a directory for a library row `project` lacks, or a cell's
+/// file name has no stem.
+#[must_use]
+pub fn bench_name<'dirs>(
     project: &Project,
-    lib_dir: impl Fn(u8) -> Option<&'a Path>,
+    lib_dir: impl Fn(u8) -> Option<&'dirs Path>,
     path: &Path,
 ) -> Option<String> {
     // Library directories hang off the absolute project root (`libs::project_root`).
@@ -243,6 +286,7 @@ pub fn bench_name<'a>(
         let rel = libs::cell_relpath(project, r);
         (dir.join(&rel) == path).then_some((r, rel))
     })?;
+    assert!(row < cells.lib.len());
     let lib = &project.libs().name[usize::from(cells.lib[row])];
     let stem = rel.rsplit_once('.').map_or(rel.as_str(), |(s, _)| s);
     assert!(!stem.is_empty(), "a cell file has a stem");
@@ -253,6 +297,24 @@ pub fn bench_name<'a>(
     })
 }
 
+// ---- private ----
+
+/// `a == b` for the compile-time checks (`str` equality is not `const` yet).
+const fn same_str(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 impl Cells for Opened {
     fn project(&self) -> &Project {
         &self.project
@@ -261,6 +323,7 @@ impl Cells for Opened {
     fn open_row(&mut self, row: u32) -> Result<(), String> {
         let row = row as usize;
         assert!(row < self.project.cells().lib.len(), "an indexed cell row");
+        assert_eq!(self.lib_dir.len(), self.project.libs().name.len());
         let lib = self.project.cells().lib[row];
         let rel = libs::cell_relpath(&self.project, row);
         let (_, bytes, _) = libs::cell_bytes(&self.lib_dir, &self.project, lib, &rel)
@@ -275,6 +338,8 @@ impl Cells for Opened {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     #[test]
@@ -296,7 +361,7 @@ mod tests {
                 .iter()
                 .all(|s| DIALECTS.iter().any(|d| d.1 == *s))
         );
-        let exts: std::collections::BTreeSet<&str> = DIALECTS.iter().map(|d| d.2).collect();
+        let exts: BTreeSet<&str> = DIALECTS.iter().map(|d| d.2).collect();
         assert_eq!(exts.len(), DIALECTS.len(), "one netlist file per dialect");
     }
 

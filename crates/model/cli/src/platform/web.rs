@@ -18,17 +18,21 @@
 //! `error`.
 
 use std::cell::{Cell, RefCell};
+use std::mem;
 use std::path::{Path, PathBuf};
 
 use wasm_bindgen_futures::{JsFuture, spawn_local};
-use web_sys::FileSystemDirectoryHandle;
-use web_sys::js_sys::{self, Uint8Array};
+use web_sys::js_sys::{self, Array, Date, Math, Promise, Reflect, Uint8Array};
 use web_sys::wasm_bindgen::closure::Closure;
 use web_sys::wasm_bindgen::{JsCast, JsValue};
+use web_sys::{
+    Blob, Clipboard, FileList, FileSystemDirectoryHandle, HtmlAnchorElement, HtmlInputElement, Url,
+    console,
+};
 
 pub(super) use super::opfs::mount_then;
 use super::opfs::{flush, pending};
-use super::vfs::{self, IMPORT_BYTES_MAX, Vfs};
+use super::vfs::{self, IMPORT_BYTES_MAX, ImportPlan, Vfs};
 use super::{CLIPBOARD_BYTES_MAX, CLIPBOARD_PENDING};
 
 /// The error when the page has no window (a worker).
@@ -72,15 +76,19 @@ pub fn read(path: &Path) -> Result<Vec<u8>, String> {
 
 pub fn read_tail(path: &Path, max: u64) -> Result<(Vec<u8>, bool), String> {
     let k = vfs::key(path);
-    FS.with_borrow(|fs| {
-        fs.read(&k).map(|b| {
-            let from = b
-                .len()
-                .saturating_sub(usize::try_from(max).unwrap_or(usize::MAX));
-            (b[from..].to_vec(), from > 0)
+    let max_bytes = usize::try_from(max).unwrap_or(usize::MAX);
+    let (tail, cut) = FS
+        .with_borrow(|fs| {
+            fs.read(&k).map(|b| {
+                let from = b.len().saturating_sub(max_bytes);
+                (b[from..].to_vec(), from > 0)
+            })
         })
-    })
-    .ok_or_else(|| format!("{}: no such file", path.display()))
+        .ok_or_else(|| format!("{}: no such file", path.display()))?;
+    if cut {
+        assert_eq!(tail.len(), max_bytes, "a cut tail is exactly `max` bytes");
+    }
+    Ok((tail, cut))
 }
 
 pub fn exists(path: &Path) -> bool {
@@ -98,6 +106,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     FS.with_borrow_mut(|fs| fs.write(&k, bytes.to_vec(), now_s()))
         .inspect_err(|e| warn(e))?;
     flush();
+    assert!(exists(path));
     Ok(())
 }
 
@@ -145,14 +154,14 @@ pub fn spawn(_: &Path, _: &[String], _: &[u8]) -> (i32, Vec<u8>) {
 }
 
 pub fn unix_ms() -> u64 {
-    js_sys::Date::now() as u64
+    Date::now() as u64
 }
 
 pub fn seed() -> u64 {
     // ponytail: `Math.random` (not a CSPRNG) seeds object ids; ids need uniqueness, not
     // secrecy. `crypto.getRandomValues` if they ever must be unguessable.
     let half = |r: f64| (r * f64::from(u32::MAX)) as u64;
-    (half(js_sys::Math::random()) << 32) ^ half(js_sys::Math::random()) ^ unix_ms()
+    (half(Math::random()) << 32) ^ half(Math::random()) ^ unix_ms()
 }
 
 pub fn args() -> Vec<String> {
@@ -194,10 +203,13 @@ pub fn clipboard_get() -> Result<String, String> {
                 if text.len() > CLIPBOARD_BYTES_MAX {
                     let mut cut = CLIPBOARD_BYTES_MAX;
                     while !text.is_char_boundary(cut) {
+                        // A UTF-8 character is at most four bytes long.
+                        assert!(CLIPBOARD_BYTES_MAX - cut < 4);
                         cut -= 1;
                     }
                     text.truncate(cut);
                 }
+                assert!(text.len() <= CLIPBOARD_BYTES_MAX);
                 Ok(text)
             }
             Err(e) => {
@@ -216,7 +228,7 @@ pub fn clipboard_get() -> Result<String, String> {
 }
 
 pub fn clipboard_ready() -> bool {
-    CLIP.with_borrow_mut(|c| std::mem::take(&mut c.ready))
+    CLIP.with_borrow_mut(|c| mem::take(&mut c.ready))
 }
 
 pub fn wake_ms() -> Option<u32> {
@@ -229,10 +241,10 @@ pub fn export(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_or_else(|| "export".to_owned(), |n| n.to_string_lossy().into_owned());
     let window = web_sys::window().ok_or(NO_WINDOW)?;
     let doc = window.document().ok_or(NO_WINDOW)?;
-    let parts = js_sys::Array::of1(&JsValue::from(Uint8Array::from(bytes)));
-    let blob = web_sys::Blob::new_with_u8_array_sequence(&JsValue::from(parts)).map_err(js_err)?;
-    let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(js_err)?;
-    let a: web_sys::HtmlAnchorElement = doc
+    let parts = Array::of1(&JsValue::from(Uint8Array::from(bytes)));
+    let blob = Blob::new_with_u8_array_sequence(&JsValue::from(parts)).map_err(js_err)?;
+    let url = Url::create_object_url_with_blob(&blob).map_err(js_err)?;
+    let a: HtmlAnchorElement = doc
         .create_element("a")
         .map_err(js_err)?
         .dyn_into()
@@ -242,7 +254,7 @@ pub fn export(path: &Path, bytes: &[u8]) -> Result<(), String> {
     a.click();
     // The previous download started long ago; its blob can go now.
     if let Some(old) = LAST_URL.replace(Some(url)) {
-        let _ = web_sys::Url::revoke_object_url(&old);
+        let _ = Url::revoke_object_url(&old);
     }
     Ok(())
 }
@@ -251,7 +263,7 @@ pub fn import_project(folder: bool) -> Result<(), String> {
     let doc = web_sys::window()
         .and_then(|w| w.document())
         .ok_or(NO_WINDOW)?;
-    let input: web_sys::HtmlInputElement = doc
+    let input: HtmlInputElement = doc
         .create_element("input")
         .map_err(js_err)?
         .dyn_into()
@@ -304,24 +316,24 @@ pub(super) fn js_err(e: JsValue) -> String {
 
 /// A console line.
 pub(super) fn log(msg: &str) {
-    web_sys::console::log_1(&JsValue::from_str(msg));
+    console::log_1(&JsValue::from_str(msg));
 }
 
 /// A console line hidden by default (DevTools' "Verbose" level): one per OPFS write.
 pub(super) fn debug(msg: &str) {
-    web_sys::console::debug_1(&JsValue::from_str(msg));
+    console::debug_1(&JsValue::from_str(msg));
 }
 
 /// A console error line.
 pub(super) fn error(msg: &str) {
-    web_sys::console::error_1(&JsValue::from_str(msg));
+    console::error_1(&JsValue::from_str(msg));
 }
 
 // ---- private ----
 
 /// `navigator.clipboard`, absent outside secure contexts (plain `http://` other than
 /// localhost).
-fn clipboard() -> Result<web_sys::Clipboard, String> {
+fn clipboard() -> Result<Clipboard, String> {
     let c = web_sys::window().ok_or(NO_WINDOW)?.navigator().clipboard();
     if AsRef::<JsValue>::as_ref(&c).is_undefined() {
         return Err("no clipboard here (the page needs HTTPS)".into());
@@ -332,7 +344,7 @@ fn clipboard() -> Result<web_sys::Clipboard, String> {
 /// Reads the picked files (one zip, or a folder's files), writes them under
 /// `/projects/<name>`, waits until OPFS has them, and reloads the page on that project (one
 /// project per session, like one per native process).
-async fn import(files: web_sys::FileList, folder: bool) -> Result<(), String> {
+async fn import(files: FileList, folder: bool) -> Result<(), String> {
     let mut entries = Vec::new();
     let mut hint = String::new();
     let mut total = 0usize;
@@ -348,7 +360,7 @@ async fn import(files: web_sys::FileList, folder: bool) -> Result<(), String> {
         }
         if folder {
             // `File.webkitRelativePath` has no web-sys binding: read the property.
-            let rel = js_sys::Reflect::get(&f, &JsValue::from_str("webkitRelativePath"))
+            let rel = Reflect::get(&f, &JsValue::from_str("webkitRelativePath"))
                 .ok()
                 .and_then(|v| v.as_string())
                 .filter(|s| !s.is_empty())
@@ -360,13 +372,15 @@ async fn import(files: web_sys::FileList, folder: bool) -> Result<(), String> {
             entries = crate::zip::read(&bytes, IMPORT_BYTES_MAX)?;
         }
     }
+    assert!(total <= IMPORT_BYTES_MAX);
     let dir = FS.with_borrow_mut(|fs| {
-        let (dir, files) = fs.import_plan(&hint, entries)?;
+        let ImportPlan { dir, files } = fs.import_plan(&hint, entries)?;
         for (rel, bytes) in files {
             fs.write(&format!("{dir}/{rel}"), bytes, now_s())?;
         }
-        Ok::<_, String>(dir)
+        Ok::<String, String>(dir)
     })?;
+    assert!(dir.starts_with(vfs::PROJECTS));
     let failed = FAILED.get();
     flush();
     let mut waited = 0;
@@ -374,6 +388,7 @@ async fn import(files: web_sys::FileList, folder: bool) -> Result<(), String> {
         sleep(50).await;
         waited += 50;
     }
+    assert!(waited <= IMPORT_WAIT_MS + 50);
     if pending() || FAILED.get() != failed {
         return Err(format!("{dir}: not all files reached web storage"));
     }
@@ -384,7 +399,8 @@ async fn import(files: web_sys::FileList, folder: bool) -> Result<(), String> {
 
 /// Resolves after `ms` milliseconds (a `setTimeout` promise).
 async fn sleep(ms: i32) {
-    let p = js_sys::Promise::new(&mut |resolve, _| {
+    assert!(ms >= 0);
+    let p = Promise::new(&mut |resolve, _| {
         if let Some(w) = web_sys::window() {
             let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
         }
@@ -394,5 +410,5 @@ async fn sleep(ms: i32) {
 
 /// A console warning line.
 fn warn(msg: &str) {
-    web_sys::console::warn_1(&JsValue::from_str(msg));
+    console::warn_1(&JsValue::from_str(msg));
 }

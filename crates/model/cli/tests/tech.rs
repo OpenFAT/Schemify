@@ -17,13 +17,14 @@ const MAPS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tech/map
 // ---- private ----
 
 fn copy_tree(from: &Path, to: &Path) {
-    std::fs::create_dir_all(to).unwrap();
-    for e in std::fs::read_dir(from).unwrap().flatten() {
+    std::fs::create_dir_all(to).expect("the scratch dir is writable");
+    let entries = std::fs::read_dir(from).expect("the fixture exists");
+    for e in entries.flatten() {
         let p = e.path();
         if p.is_dir() {
             copy_tree(&p, &to.join(e.file_name()));
         } else {
-            std::fs::copy(&p, to.join(e.file_name())).unwrap();
+            std::fs::copy(&p, to.join(e.file_name())).expect("the fixture copies");
         }
     }
 }
@@ -34,7 +35,7 @@ fn project(name: &str, manifest: &str) -> PathBuf {
     copy_tree(Path::new(FIXTURE), &dir);
     std::fs::remove_dir_all(dir.join("golden")).ok();
     copy_tree(Path::new(MAPS), &dir.join("maps"));
-    std::fs::write(dir.join("schemify.project"), manifest).unwrap();
+    std::fs::write(dir.join("schemify.project"), manifest).expect("the scratch dir is writable");
     dir
 }
 
@@ -47,8 +48,9 @@ fn manifest(family: &str, lib: &str) -> String {
 fn golden(name: &str, text: &str) {
     let path = Path::new(FIXTURE).join("golden").join(name);
     if std::env::var_os("SCHEMIFY_BLESS").is_some() {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, text).unwrap();
+        let parent = path.parent().expect("a golden lives in a directory");
+        std::fs::create_dir_all(parent).expect("the golden dir is writable");
+        std::fs::write(&path, text).expect("the golden is writable");
     }
     let want = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{name}: bless it"));
     assert_eq!(text, want, "{name}");

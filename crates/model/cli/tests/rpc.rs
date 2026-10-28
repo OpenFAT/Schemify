@@ -25,7 +25,8 @@ const MESSY: &str = include_str!(concat!(
 /// A scratch directory holding an empty project.
 fn scratch(name: &str) -> PathBuf {
     let dir = common::scratch(name);
-    std::fs::write(dir.join("schemify.project"), "schemify 1 project\n").unwrap();
+    std::fs::write(dir.join("schemify.project"), "schemify 1 project\n")
+        .expect("the scratch dir is writable");
     dir
 }
 
@@ -37,15 +38,15 @@ fn session(dir: &Path, lines: &[String]) -> Vec<Json> {
         .stdout(Stdio::piped())
         .spawn()
         .expect("binary runs");
-    let mut stdin = child.stdin.take().unwrap();
+    let mut stdin = child.stdin.take().expect("stdin was piped");
     for l in lines {
-        writeln!(stdin, "{l}").unwrap();
+        writeln!(stdin, "{l}").expect("the server reads every line");
     }
     drop(stdin);
-    let out = child.wait_with_output().unwrap();
+    let out = child.wait_with_output().expect("the server exits");
     assert_eq!(out.status.code(), Some(0), "the stream ends cleanly at EOF");
     String::from_utf8(out.stdout)
-        .unwrap()
+        .expect("responses are UTF-8")
         .lines()
         .map(|l| rpc::parse(l).expect("every response is one JSON line"))
         .collect()

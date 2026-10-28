@@ -30,7 +30,7 @@ fn edit_attr(text: &str, nth_inst: usize, attr: &str, new_line: &str) -> String 
         .find(|&i| lines[i].trim_start().starts_with(attr))
         .expect("attribute present");
     lines[at] = new_line.to_owned();
-    lines.join("\n") + "\n"
+    format!("{}\n", lines.join("\n"))
 }
 
 #[test]

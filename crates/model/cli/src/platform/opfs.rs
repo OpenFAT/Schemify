@@ -7,10 +7,14 @@
 //! Contents (for `web`): `fn mount_then`, `fn flush`, `fn pending`.
 
 use wasm_bindgen_futures::{JsFuture, spawn_local};
-use web_sys::js_sys::{self, Uint8Array};
+use web_sys::js_sys::{IteratorNext, Uint8Array};
 use web_sys::wasm_bindgen::closure::Closure;
 use web_sys::wasm_bindgen::{JsCast, JsValue};
-use web_sys::{FileSystemDirectoryHandle, FileSystemFileHandle, FileSystemHandle};
+use web_sys::{
+    BeforeUnloadEvent, DomException, File, FileSystemDirectoryHandle, FileSystemFileHandle,
+    FileSystemGetDirectoryOptions, FileSystemGetFileOptions, FileSystemHandle,
+    FileSystemHandleKind, FileSystemRemoveOptions, FileSystemWritableFileStream, Response, Window,
+};
 
 use super::WEB_ROOT;
 use super::vfs::{self, IMPORT_BYTES_MAX, Vfs};
@@ -20,6 +24,15 @@ use super::web::{
 
 /// Directory depth the mount walks (a job directory sits 5 levels under a project).
 const MOUNT_DEPTH_MAX: u32 = 32;
+
+/// What [`opfs_parent`] does with a directory that does not exist.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Missing {
+    /// Creates it (a write).
+    Create,
+    /// Fails (a removal: the file is gone with it).
+    Fail,
+}
 
 /// Mounts the web storage, copies a hosted project the URL names, guards the unload, then
 /// calls `run` (`platform::mount_then`).
@@ -75,6 +88,8 @@ pub(super) fn flush() {
                 }
             }
         }
+        // No `await` since the queue came back empty, so nothing can have refilled it.
+        assert!(!FS.with_borrow(Vfs::has_stale));
         FLUSHING.set(false);
     });
 }
@@ -93,7 +108,7 @@ pub(super) fn pending() -> bool {
 /// ponytail: fetches one file at a time (a few hundred small files take a second or two);
 /// a bounded set of concurrent fetches if hosted projects grow large.
 async fn hosted() -> Result<(), String> {
-    use crate::hosted;
+    use crate::hosted::{self, ManifestRow};
     let Some(arg) = args().into_iter().next() else {
         return Ok(());
     };
@@ -113,22 +128,27 @@ async fn hosted() -> Result<(), String> {
     let rows = hosted::parse(&text)?;
     let mut files = Vec::with_capacity(rows.len() + 1);
     let mut total = 0usize;
-    for (rel, digest) in rows {
-        let bytes = fetch(&format!("{base}/{rel}"))
+    for ManifestRow { path, digest } in rows {
+        let bytes = fetch(&format!("{base}/{path}"))
             .await?
-            .ok_or_else(|| format!("{base}/{rel}: not on the site"))?;
+            .ok_or_else(|| format!("{base}/{path}: not on the site"))?;
         if !hosted::matches(&digest, &bytes) {
-            return Err(format!("{base}/{rel}: does not match {}", hosted::MANIFEST));
+            return Err(format!(
+                "{base}/{path}: does not match {}",
+                hosted::MANIFEST
+            ));
         }
         total += bytes.len();
         if total > IMPORT_BYTES_MAX {
             return Err(format!("more than {} MiB", IMPORT_BYTES_MAX >> 20));
         }
-        files.push((rel, bytes));
+        files.push((path, bytes));
     }
+    assert!(total <= IMPORT_BYTES_MAX);
     // The stamp last: a refresh cut short is retried on the next load.
     files.push((hosted::STAMP.to_owned(), text.into_bytes()));
     let n = files.len() - 1;
+    assert!(dir.starts_with(vfs::PROJECTS));
     FS.with_borrow_mut(|fs| fs.replace_tree(&dir, files, now_s()))?;
     flush();
     log(&format!("hosted project {name}: {n} files from the site"));
@@ -143,7 +163,7 @@ async fn hosted() -> Result<(), String> {
 /// No window, or the request failed without an answer (network, CORS).
 async fn fetch(url: &str) -> Result<Option<Vec<u8>>, String> {
     let w = web_sys::window().ok_or(NO_WINDOW)?;
-    let resp: web_sys::Response = JsFuture::from(w.fetch_with_str(url))
+    let resp: Response = JsFuture::from(w.fetch_with_str(url))
         .await
         .map_err(|e| format!("{url}: {}", js_err(e)))?
         .unchecked_into();
@@ -168,11 +188,11 @@ async fn mount() -> Result<usize, String> {
     let mut files = 0usize;
     // Bounded: every directory is visited once and the table refuses past FILES_MAX.
     while let Some((dir, key, depth)) = todo.pop() {
+        assert!(depth <= MOUNT_DEPTH_MAX);
         let entries = dir.values();
         loop {
             let next = entries.next().map_err(js_err)?;
-            let next: js_sys::IteratorNext =
-                JsFuture::from(next).await.map_err(js_err)?.unchecked_into();
+            let next: IteratorNext = JsFuture::from(next).await.map_err(js_err)?.unchecked_into();
             if next.done() {
                 break;
             }
@@ -183,7 +203,7 @@ async fn mount() -> Result<usize, String> {
             } else {
                 format!("{key}/{name}")
             };
-            if h.kind() == web_sys::FileSystemHandleKind::Directory {
+            if h.kind() == FileSystemHandleKind::Directory {
                 FS.with_borrow_mut(|fs| fs.mkdirs(&child))?;
                 if depth < MOUNT_DEPTH_MAX {
                     todo.push((h.unchecked_into(), child, depth + 1));
@@ -191,7 +211,7 @@ async fn mount() -> Result<usize, String> {
             } else if !name.ends_with(".crswap") {
                 // `.crswap`: Chrome's temporary for an unfinished `createWritable`.
                 let fh: FileSystemFileHandle = h.unchecked_into();
-                let file: web_sys::File = JsFuture::from(fh.get_file())
+                let file: File = JsFuture::from(fh.get_file())
                     .await
                     .map_err(js_err)?
                     .unchecked_into();
@@ -200,6 +220,8 @@ async fn mount() -> Result<usize, String> {
                 let mtime = (file.last_modified() / 1000.0) as u64;
                 FS.with_borrow_mut(|fs| fs.load(&child, bytes, mtime))?;
                 files += 1;
+                // The table refuses a file past its capacity, so the count stops there.
+                assert!(files <= vfs::FILES_MAX);
             }
         }
     }
@@ -212,14 +234,13 @@ fn unsaved() -> bool {
 }
 
 /// Asks before the page closes while edits are still on their way to OPFS.
-fn guard_unload(w: &web_sys::Window) {
-    let guard =
-        Closure::<dyn FnMut(web_sys::BeforeUnloadEvent)>::new(|e: web_sys::BeforeUnloadEvent| {
-            if unsaved() {
-                e.prevent_default();
-                e.set_return_value("unsaved");
-            }
-        });
+fn guard_unload(w: &Window) {
+    let guard = Closure::<dyn FnMut(BeforeUnloadEvent)>::new(|e: BeforeUnloadEvent| {
+        if unsaved() {
+            e.prevent_default();
+            e.set_return_value("unsaved");
+        }
+    });
     if w.add_event_listener_with_callback("beforeunload", guard.as_ref().unchecked_ref())
         .is_ok()
     {
@@ -227,18 +248,19 @@ fn guard_unload(w: &web_sys::Window) {
     }
 }
 
-/// The OPFS directory holding `key` and the file name, creating directories when `create`.
+/// The OPFS directory holding `key` and the file name.
 async fn opfs_parent(
     key: &str,
-    create: bool,
+    missing: Missing,
 ) -> Result<(FileSystemDirectoryHandle, String), String> {
+    assert!(key.starts_with('/'), "{key}: not a table key");
     let mut dir = ROOT
         .with_borrow(Clone::clone)
         .ok_or("web storage is not mounted")?;
     let mut segs: Vec<&str> = key.split('/').filter(|s| !s.is_empty()).collect();
     let name = segs.pop().ok_or("the root is not a file")?.to_owned();
-    let opts = web_sys::FileSystemGetDirectoryOptions::new();
-    opts.set_create(create);
+    let opts = FileSystemGetDirectoryOptions::new();
+    opts.set_create(missing == Missing::Create);
     for s in segs {
         dir = JsFuture::from(dir.get_directory_handle_with_options(s, &opts))
             .await
@@ -249,14 +271,14 @@ async fn opfs_parent(
 }
 
 async fn opfs_write(key: &str, bytes: &[u8]) -> Result<(), String> {
-    let (dir, name) = opfs_parent(key, true).await?;
-    let opts = web_sys::FileSystemGetFileOptions::new();
+    let (dir, name) = opfs_parent(key, Missing::Create).await?;
+    let opts = FileSystemGetFileOptions::new();
     opts.set_create(true);
     let file: FileSystemFileHandle = JsFuture::from(dir.get_file_handle_with_options(&name, &opts))
         .await
         .map_err(js_err)?
         .unchecked_into();
-    let w: web_sys::FileSystemWritableFileStream = JsFuture::from(file.create_writable())
+    let w: FileSystemWritableFileStream = JsFuture::from(file.create_writable())
         .await
         .map_err(js_err)?
         .unchecked_into();
@@ -270,21 +292,19 @@ async fn opfs_write(key: &str, bytes: &[u8]) -> Result<(), String> {
 }
 
 async fn opfs_remove(key: &str) -> Result<(), String> {
-    let (dir, name) = match opfs_parent(key, false).await {
-        Ok(p) => p,
-        Err(_) => return Ok(()), // its directory is gone: so is the file
+    let Ok((dir, name)) = opfs_parent(key, Missing::Fail).await else {
+        return Ok(()); // its directory is gone: so is the file
     };
-    let opts = web_sys::FileSystemRemoveOptions::new();
+    let opts = FileSystemRemoveOptions::new();
     opts.set_recursive(true);
     match JsFuture::from(dir.remove_entry_with_options(&name, &opts)).await {
         Ok(_) => Ok(()),
-        Err(e) if dom_error(&e) == Some("NotFoundError".into()) => Ok(()),
+        Err(e) if dom_error(&e).as_deref() == Some("NotFoundError") => Ok(()),
         Err(e) => Err(js_text(&e)),
     }
 }
 
 /// The `DOMException` name of a JS error, if it is one.
 fn dom_error(e: &JsValue) -> Option<String> {
-    e.dyn_ref::<web_sys::DomException>()
-        .map(web_sys::DomException::name)
+    e.dyn_ref::<DomException>().map(DomException::name)
 }
