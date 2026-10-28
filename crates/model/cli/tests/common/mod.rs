@@ -5,14 +5,12 @@
 //! Contents: `pub fn core(&Path) -> Command`, `pub fn schemify(&Path, &[&str]) -> (i32,
 //! String)`, `pub fn scratch(&str) -> PathBuf`.
 
-// Each test crate uses a subset of these helpers.
-#![allow(dead_code)]
+#![allow(dead_code, reason = "each test binary uses a subset of these helpers")]
 
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process;
-use std::process::Command;
+use std::process::{self, Command};
 
 /// The core binary, run in `dir` with its config and data directories under `dir/.xdg`.
 pub fn core(dir: &Path) -> Command {
