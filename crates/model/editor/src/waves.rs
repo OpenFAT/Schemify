@@ -20,7 +20,7 @@ use schemify_ui::{
     Chord, Contribution, InputEvent, InputEvents, Key, Mods, Routed, Strings, Sym, TextSystem,
     UiLayout, UiState, UiTables, compose, layout, records, route_input,
 };
-use schemify_wave::{MAX_DATASETS, Request, Waves, group_datasets, parse_raw};
+use schemify_wave::{MAX_DATASETS, Request, Waves};
 
 /// One open waveform window.
 pub struct WavesView {
@@ -331,8 +331,8 @@ pub fn current_probe(emitted: &str, pin: &str) -> String {
 /// The datasets of a `.raw` file (ngspice/Xyce/LTspice, binary or ASCII), `.step` blocks
 /// grouped; errors name `title`.
 fn datasets(title: &str, bytes: &[u8]) -> Result<Vec<schemify_wave::RawPlot>, String> {
-    let plots = parse_raw(bytes).map_err(|e| format!("{title}: {e}"))?;
-    let d = group_datasets(plots);
+    let plots = schemify_wave::parse_raw(bytes).map_err(|e| format!("{title}: {e}"))?;
+    let d = schemify_wave::group_datasets(plots);
     if d.len() > MAX_DATASETS {
         return Err(format!(
             "{title}: {} datasets (at most {MAX_DATASETS})",

@@ -18,10 +18,12 @@ use crate::geometry::Pt;
 use crate::session::View;
 
 use super::dots::Wiring;
-use super::draw::{Stamp, instance, one_other, other_objects, revalue_texts, wire};
-use super::symbols::{Symbols, rotated_extent, text_size, text_start};
-use super::symview::{redot, symbol};
-use super::{ObjKey, Objects, Owners, Scene, pack};
+use super::draw;
+use super::draw::Stamp;
+use super::symbols;
+use super::symbols::Symbols;
+use super::symview;
+use super::{ObjKey, Objects, Owners, Scene};
 
 /// Scene builder state: the scene being filled plus the extent accumulator.
 pub(super) struct Build<'a> {
@@ -112,8 +114,8 @@ impl Build<'_> {
         if s.is_empty() || size <= 0 {
             return [at.0, at.1, at.0, at.1];
         }
-        let (from, drawn) = text_start(at, size, s, rot).expect("a drawn text");
-        let (dx, dy) = rotated_extent(text_size(size, s), rot % 4);
+        let (from, drawn) = symbols::text_start(at, size, s, rot).expect("a drawn text");
+        let (dx, dy) = symbols::rotated_extent(symbols::text_size(size, s), rot % 4);
         let (q0, q1) = ((at.0, at.1), (at.0 + dx, at.1 + dy));
         self.sc
             .prims
@@ -173,18 +175,18 @@ pub fn build(
         View::Schematic => {
             let mut st = Stamp::default();
             for i in 0..doc.instances().id.len() {
-                instance(&mut b, project, h, doc, symbols, values, i, &mut st);
+                draw::instance(&mut b, project, h, doc, symbols, values, i, &mut st);
             }
             for i in 0..doc.wires().id.len() {
-                wire(&mut b, doc, i);
+                draw::wire(&mut b, doc, i);
             }
             b.sc.wiring = Wiring::of(doc.wires());
             let mut ends = b.sc.wiring.xy.clone();
             ends.dedup();
-            redot(&mut b, &ends);
-            other_objects(&mut b, doc, 0..usize::MAX);
+            symview::redot(&mut b, &ends);
+            draw::other_objects(&mut b, doc, 0..usize::MAX);
         }
-        View::Symbol => symbol(&mut b, doc),
+        View::Symbol => symview::symbol(&mut b, doc),
     }
     let ext = if b.ext[0] > b.ext[2] { [0; 4] } else { b.ext };
     sc.extent = ext;
@@ -195,7 +197,7 @@ pub fn build(
             .key
             .iter()
             .enumerate()
-            .map(|(i, &k)| (pack(k), i as u32)),
+            .map(|(i, &k)| (super::pack(k), i as u32)),
     );
     sc.built = Some((h, view, epoch, symbols.epoch));
     sc.generation = generation;
@@ -298,7 +300,7 @@ pub fn update(
                 return true;
             };
             edited.binary_search(&key).is_ok()
-                || !revalue_texts(
+                || !draw::revalue_texts(
                     sc,
                     project,
                     h,
@@ -336,15 +338,17 @@ pub fn update(
         };
         let i = loc.row as usize;
         match key.table {
-            TableId::Instances => instance(&mut b, project, h, doc, symbols, values, i, &mut st),
+            TableId::Instances => {
+                draw::instance(&mut b, project, h, doc, symbols, values, i, &mut st)
+            }
             TableId::Wires => {
-                wire(&mut b, doc, i);
+                draw::wire(&mut b, doc, i);
                 let w = doc.wires();
                 let p = [w.x1[i], w.y1[i], w.x2[i], w.y2[i]];
                 b.sc.wiring.add(p);
                 wires.push(p);
             }
-            t => one_other(&mut b, doc, t, i),
+            t => draw::one_other(&mut b, doc, t, i),
         }
     }
     for &w in &wires {
@@ -352,12 +356,12 @@ pub fn update(
     }
     points.sort_unstable();
     points.dedup();
-    redot(&mut b, &points);
+    symview::redot(&mut b, &points);
     let ext = b.ext;
     sc.extent = if ext[0] > ext[2] { [0; 4] } else { ext };
     fit_boxes(sc, prims0);
     for o in objs0..sc.objs.len() {
-        let prev = sc.index.insert(pack(sc.objs.key[o]), o as u32);
+        let prev = sc.index.insert(super::pack(sc.objs.key[o]), o as u32);
         assert!(prev.is_none(), "one object per key");
     }
     sc.built = Some((h, View::Schematic, epoch, symbols.epoch));
@@ -415,7 +419,7 @@ fn check_tables(sc: &Scene) {
 ///
 /// Cost: O(log rows) per kind plus the rows of the two objects involved.
 fn remove_object(sc: &mut Scene, key: ObjKey) {
-    let Some(o) = sc.index.remove(&pack(key)) else {
+    let Some(o) = sc.index.remove(&super::pack(key)) else {
         return;
     };
     let s = sc.objs.stamp[o as usize];
@@ -438,7 +442,7 @@ fn remove_object(sc: &mut Scene, key: ObjKey) {
     // The last object moves into `o`'s slot.
     if let Some(slot) = sc.objs.swap_remove(o as usize) {
         let (moved, ms) = (sc.objs.key[slot], sc.objs.stamp[slot]);
-        sc.index.insert(pack(moved), o);
+        sc.index.insert(super::pack(moved), o);
         let last = sc.objs.len() as u32;
         for kind in 0..6 {
             for r in stamped(sc.stamps.cols()[kind], ms) {
@@ -494,7 +498,8 @@ fn fit_boxes(sc: &mut Scene, from: [usize; 6]) {
         (&p.polylines, &o.polylines, from[3]),
         (&p.polygons, &o.polygons, from[4]),
     ] {
-        for (k, (&end, &owner)) in polys.end.iter().zip(owners).enumerate().skip(k0) {
+        let tail = polys.end.iter().zip(owners).enumerate().skip(k0);
+        for (k, (&end, &owner)) in tail {
             let start = if k == 0 { 0 } else { polys.end[k - 1] as usize };
             for j in start..end as usize {
                 grow(owner, polys.x[j], polys.y[j], polys.x[j], polys.y[j]);
@@ -505,7 +510,10 @@ fn fit_boxes(sc: &mut Scene, from: [usize; 6]) {
     for i in from[5]..t.x.len() {
         let start = if i == 0 { 0 } else { t.end[i - 1] as usize };
         let rot = t.rot.get(i).copied().unwrap_or(0);
-        let (w, h) = rotated_extent(text_size(t.size[i], &t.text[start..t.end[i] as usize]), rot);
+        let (w, h) = symbols::rotated_extent(
+            symbols::text_size(t.size[i], &t.text[start..t.end[i] as usize]),
+            rot,
+        );
         grow(o.texts[i], t.x[i], t.y[i], t.x[i] + w, t.y[i] + h);
     }
 }

@@ -19,7 +19,7 @@ use schemify_expr::Value;
 use crate::session::TextView;
 use crate::{platform, spines};
 
-use super::highlight::env_refs;
+use super::highlight;
 use super::{Editor, Panel};
 
 /// Rows of hierarchy the changelog lists at most.
@@ -87,7 +87,7 @@ impl Editor {
             return;
         };
         let dialect = self.dialect;
-        let env = env_refs(&self.env);
+        let env = highlight::env_refs(&self.env);
         let req = Request {
             config: None,
             corner: None,

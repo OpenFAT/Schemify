@@ -16,8 +16,6 @@ use crate::edit::{self, FreshId, Ids};
 use crate::geometry::{Pt, Xform};
 use crate::scene::ObjKey;
 
-use super::{inst_pins, on_interior, points_of, route, wire_rec};
-
 /// The result of a stretch or kissing move.
 #[derive(Debug, Default)]
 pub struct Stretched {
@@ -59,7 +57,7 @@ pub(super) fn fixed_points(
     let inst = doc.instances();
     for i in 0..inst.id.len() {
         if unselected(TableId::Instances, inst.id[i].0) {
-            out.extend(inst_pins(project, h, doc, i));
+            out.extend(super::inst_pins(project, h, doc, i));
         }
     }
     for (table, t) in [
@@ -118,7 +116,7 @@ pub fn stretch(
     let selset: HashSet<ObjKey> = sel.iter().copied().collect();
     let mut moved: Vec<Pt> = if m.follow {
         sel.iter()
-            .flat_map(|&k| points_of(project, h, doc, k))
+            .flat_map(|&k| super::points_of(project, h, doc, k))
             .collect()
     } else {
         Vec::new()
@@ -170,7 +168,7 @@ pub fn stretch(
             continue;
         }
         let (fixed, end) = if ma { (b, x.point(a)) } else { (a, x.point(b)) };
-        let legs = route(fixed, end, manhattan);
+        let legs = super::route(fixed, end, manhattan);
         if legs.len() < 2 {
             out.ops.push(Op::Delete(target));
             continue;
@@ -178,7 +176,7 @@ pub fn stretch(
         let id = rec.fields[0].clone();
         out.ops.push(Op::Put {
             target,
-            rec: wire_rec(&id, legs[0], legs[1], &rec.attrs),
+            rec: super::wire_rec(&id, legs[0], legs[1], &rec.attrs),
         });
         for leg in legs[1..].windows(2) {
             if added < budget {
@@ -187,7 +185,7 @@ pub fn stretch(
                     key: raw,
                 } = ids.draw(doc);
                 out.ops.push(Op::Insert {
-                    rec: wire_rec(&nid, leg[0], leg[1], &rec.attrs),
+                    rec: super::wire_rec(&nid, leg[0], leg[1], &rec.attrs),
                     at: None,
                 });
                 out.wires.push(ObjKey {
@@ -215,17 +213,19 @@ pub fn stretch(
                 continue;
             }
             let touches = fixed.binary_search(&m).is_ok()
-                || unselected_wires.iter().any(|&(a, b)| on_interior(m, a, b));
+                || unselected_wires
+                    .iter()
+                    .any(|&(a, b)| super::on_interior(m, a, b));
             if !touches {
                 continue;
             }
-            for leg in route(m, to, manhattan).windows(2) {
+            for leg in super::route(m, to, manhattan).windows(2) {
                 let FreshId {
                     text: nid,
                     key: raw,
                 } = ids.draw(doc);
                 out.ops.push(Op::Insert {
-                    rec: wire_rec(&nid, leg[0], leg[1], &[]),
+                    rec: super::wire_rec(&nid, leg[0], leg[1], &[]),
                     at: None,
                 });
                 out.wires.push(ObjKey {

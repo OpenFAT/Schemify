@@ -25,11 +25,12 @@ use schemify_format::{FileKind, Orient, RecordKind};
 use crate::edit::Ids;
 use crate::geometry::Pt;
 use crate::scene::ObjKey;
-use crate::wiring::{on_interior, route};
+use crate::wiring;
 use crate::{checks, edit, platform};
 
 use super::Editor;
-use super::symbol::{PITCH, symbol_records};
+use super::symbol;
+use super::symbol::PITCH;
 
 /// Net of a connection point that belongs to no net (a noconn): foreign to every crossing.
 const NO_COMP: u32 = u32::MAX;
@@ -250,7 +251,7 @@ fn crossings(doc: &Document, cell: &CellState, sel: &HashSet<ObjKey>) -> (Vec<Cr
                 || outside
                     .segs
                     .iter()
-                    .any(|&(d, a, b)| d == c && on_interior(p, a, b));
+                    .any(|&(d, a, b)| d == c && wiring::on_interior(p, a, b));
             if touches {
                 contacts.push(p);
             }
@@ -259,7 +260,7 @@ fn crossings(doc: &Document, cell: &CellState, sel: &HashSet<ObjKey>) -> (Vec<Cr
             if inside
                 .segs
                 .iter()
-                .any(|&(d, a, b)| d == c && on_interior(q, a, b))
+                .any(|&(d, a, b)| d == c && wiring::on_interior(q, a, b))
             {
                 contacts.push(q);
             }
@@ -299,7 +300,7 @@ fn touches(q: Pt, outside: &Side) -> bool {
         || outside
             .segs
             .iter()
-            .any(|&(_, a, b)| q == a || q == b || on_interior(q, a, b))
+            .any(|&(_, a, b)| q == a || q == b || wiring::on_interior(q, a, b))
 }
 
 /// The first place for the new instance around `centre` (ring by ring, grid offsets of
@@ -342,18 +343,18 @@ fn clear_route(
     segs: &[(u32, Pt, Pt)],
 ) -> Option<Vec<Pt>> {
     for mode in [1u8, 2] {
-        let path = route(q, p, mode);
+        let path = wiring::route(q, p, mode);
         assert!(!path.is_empty() && path[0] == q);
         let legs_clear = path.windows(2).all(|l| {
             pts.iter()
-                .all(|&(d, f)| d == net || !on_interior(f, l[0], l[1]))
+                .all(|&(d, f)| d == net || !wiring::on_interior(f, l[0], l[1]))
         });
         let corners = &path[1..path.len().saturating_sub(1).max(1)];
         let corners_clear = corners.iter().all(|&v| {
             pts.iter().all(|&(d, f)| d == net || f != v)
-                && segs
-                    .iter()
-                    .all(|&(d, a, b)| d == net || (v != a && v != b && !on_interior(v, a, b)))
+                && segs.iter().all(|&(d, a, b)| {
+                    d == net || (v != a && v != b && !wiring::on_interior(v, a, b))
+                })
         });
         if legs_clear && corners_clear {
             return Some(path);
@@ -408,7 +409,7 @@ fn plan(
             (c.name.clone(), o, c.port_at)
         })
         .collect();
-    let symbol = symbol_records(&ports, width);
+    let symbol = symbol::symbol_records(&ports, width);
     let local: Vec<(String, Pt)> = symbol
         .iter()
         .filter(|r| r.kind == RecordKind::Pin)

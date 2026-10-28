@@ -7,7 +7,8 @@
 
 use schemify_canvas::CanvasPrims;
 
-use super::ops::{Glyphs, Lang, Used, page_ops};
+use super::ops;
+use super::ops::{Glyphs, Lang, Used};
 use super::{FONT_NAMES, Look, Page};
 
 /// Longest `sfnts` string of a Type 42 font: PostScript strings hold at most 65535 bytes,
@@ -27,7 +28,7 @@ pub fn eps(prims: &CanvasPrims, b: [i32; 4], look: &Look, page: Page) -> String 
     assert!(b[1] <= b[3], "inverted bounds: y0 {} > y1 {}", b[1], b[3]);
     let size = page.points();
     let mut used = Used::default();
-    let body = page_ops(prims, b, look, size, Lang::Ps, &mut used);
+    let body = ops::page_ops(prims, b, look, size, Lang::Ps, &mut used);
     let fonts: String = used
         .iter()
         .enumerate()

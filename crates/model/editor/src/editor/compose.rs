@@ -13,11 +13,11 @@ use crate::docs::quote as q;
 use crate::session::View;
 use crate::{cell, docs};
 
+use super::Editor;
 use super::chooser::ChooseFor;
 use super::dialog::Dialog;
-use super::dispatch::kind_refusal;
+use super::dispatch;
 use super::tool::{Form, Tool};
-use super::{Editor, has_view};
 
 impl Editor {
     /// The UI step of the frame spine: [`Editor::ui_inputs`], the pure [`Editor::compose_ui`],
@@ -226,7 +226,7 @@ impl Editor {
                     ("switch.schematic", View::Schematic),
                     ("switch.symbol", View::Symbol),
                 ] {
-                    let has = kind.is_some_and(|k| has_view(k, v));
+                    let has = kind.is_some_and(|k| super::has_view(k, v));
                     let style = match (has, view == v) {
                         (false, _) => "viewsw-off",
                         (true, true) => "viewsw-on",
@@ -279,7 +279,11 @@ impl Editor {
                         let id = self.shell.strings.get(nodes.id()[i]);
                         let b = &mut block.1;
                         let _ = writeln!(b, "set {id} disabled 1");
-                        let _ = writeln!(b, "set {id} tooltip {}", q(&kind_refusal(cmd, kind)));
+                        let _ = writeln!(
+                            b,
+                            "set {id} tooltip {}",
+                            q(&dispatch::kind_refusal(cmd, kind))
+                        );
                     }
                 }
                 block.0 = Some(key);

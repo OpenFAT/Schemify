@@ -49,7 +49,9 @@ impl Editor {
             self.session.say("choose a cell to compare with first");
             return;
         };
-        let Some(prev_row) = super::row_of_doc(&self.session.project, h).map(|r| r as usize) else {
+        let Some(prev_row) =
+            super::values::row_of_doc(&self.session.project, h).map(|r| r as usize)
+        else {
             return;
         };
         match self.session.open_cell(c.row) {

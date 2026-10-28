@@ -12,7 +12,8 @@ use std::path::PathBuf;
 use schemify_doc::{DocHandle, EditRequest, Op, RecordBuf, Target as DocTarget};
 use schemify_format::RecordKind;
 
-use crate::geometry::{Pt, Xform, snap};
+use crate::geometry;
+use crate::geometry::{Pt, Xform};
 use crate::session::View;
 use crate::{edit, platform};
 
@@ -145,7 +146,10 @@ impl Editor {
         let c = anchors.iter().fold((0.0, 0.0), |a, p| {
             (a.0 + f64::from(p.0) / n, a.1 + f64::from(p.1) / n)
         });
-        let base = (snap(c.0, self.opts.snap), snap(c.1, self.opts.snap));
+        let base = (
+            geometry::snap(c.0, self.opts.snap),
+            geometry::snap(c.1, self.opts.snap),
+        );
         let back = Xform::translate(-base.0, -base.1);
         let recs: Vec<RecordBuf> = recs
             .into_iter()

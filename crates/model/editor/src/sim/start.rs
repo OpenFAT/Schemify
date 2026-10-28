@@ -24,7 +24,7 @@ use schemify_run::{NO_SAMPLE, OptRun, Plan, RunnerConfig, Select};
 
 use crate::session::Session;
 use crate::spines;
-use crate::waves::spice_device;
+use crate::waves;
 
 use super::{
     BenchRun, JobLog, Kind, PROBE_DEVICES_MAX, QUEUE_MAX, RUNS_MAX, Request, Sim, session_name,
@@ -387,11 +387,9 @@ impl Sim {
 /// Never: the assert checks that the text ends with a line break.
 pub fn probe_lines(map: &NameMap) -> String {
     let mut t = String::from(".save all\n.options savecurrents\n");
-    for dev in map
-        .leaves(PROBE_DEVICES_MAX)
-        .iter()
-        .map(|e| spice_device(e))
-    {
+    let leaves = map.leaves(PROBE_DEVICES_MAX);
+    let devices = leaves.iter().map(|e| waves::spice_device(e));
+    for dev in devices {
         if !dev.starts_with('m') {
             continue;
         }

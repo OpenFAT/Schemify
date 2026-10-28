@@ -13,7 +13,8 @@ use schemify_elab::CellState;
 use schemify_plugin::Snapshots;
 use schemify_plugin::abi::{Table, col};
 
-use super::snapshot::{Filled, NetShadow, fill_nets, fill_violations};
+use super::snapshot;
+use super::snapshot::{Filled, NetShadow};
 
 /// Rows of a table changed by more than this share are refilled instead of patched.
 const PATCH_SHARE: usize = 8;
@@ -160,16 +161,16 @@ pub(super) fn sync_cell_groups(
             match differ {
                 Some(differ) => {
                     for &i in &differ {
-                        fill_nets(s, c, i..i + 1, i..i + 1);
+                        snapshot::fill_nets(s, c, i..i + 1, i..i + 1);
                     }
-                    fill_nets(s, c, kept..name.len(), kept..n.net_name.len());
+                    snapshot::fill_nets(s, c, kept..name.len(), kept..n.net_name.len());
                 }
-                None => fill_nets(s, c, 0..name.len(), 0..n.net_name.len()),
+                None => snapshot::fill_nets(s, c, 0..name.len(), 0..n.net_name.len()),
             }
         }
         false => {
             let rows = s.rows(Table::Nets) as usize;
-            fill_nets(s, c, 0..rows, 0..n.net_name.len());
+            snapshot::fill_nets(s, c, 0..rows, 0..n.net_name.len());
         }
     }
     if !same {
@@ -183,7 +184,7 @@ pub(super) fn sync_cell_groups(
     let nv = s.rows(Table::Violations) as usize;
     let (gone, added) = &c.changes;
     if !continues || gone.len() + added.len() > 64 {
-        fill_violations(s, c, 0..nv, 0..c.violations.rows.len());
+        snapshot::fill_violations(s, c, 0..nv, 0..c.violations.rows.len());
     } else {
         let rows = &c.violations.rows;
         let rank = |list: &[schemify_elab::Violation], v: &schemify_elab::Violation| {
@@ -197,12 +198,12 @@ pub(super) fn sync_cell_groups(
             .collect();
         at.sort_unstable_by(|a, b| b.cmp(a));
         for &i in &at {
-            fill_violations(s, c, i..i + 1, 0..0);
+            snapshot::fill_violations(s, c, i..i + 1, 0..0);
         }
         let mut to: Vec<usize> = added.iter().map(|a| rank(rows, a)).collect();
         to.sort_unstable();
         for &j in &to {
-            fill_violations(s, c, j..j, j..j + 1);
+            snapshot::fill_violations(s, c, j..j, j..j + 1);
         }
     }
     assert_eq!(

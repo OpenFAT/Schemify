@@ -173,11 +173,11 @@ impl Editor {
         };
         let target = schemify_doc::Target::new(rec.kind, &tkey);
         let mut ops = Vec::new();
-        for f in p
+        let changed = p
             .fields
             .iter()
-            .filter(|f| f.editable && f.value != f.original)
-        {
+            .filter(|f| f.editable && f.value != f.original);
+        for f in changed {
             let op = match (rec.kind, f.key.as_str()) {
                 (RecordKind::Label | RecordKind::Port | RecordKind::Text, _) => Op::SetField {
                     target: target.clone(),

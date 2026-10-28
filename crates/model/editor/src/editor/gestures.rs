@@ -21,7 +21,7 @@
 
 use schemify_canvas::CanvasPrims;
 use schemify_doc::{DocHandle, EditRequest, Op, RecordBuf, TableId};
-use schemify_format::{RecordKind, format_coord, parse_coord};
+use schemify_format::RecordKind;
 
 use crate::edit;
 use crate::geometry::{Pt, Xform};
@@ -246,7 +246,7 @@ fn vertices(rec: &RecordBuf) -> Vec<Pt> {
         .get(first..)
         .unwrap_or(&[])
         .iter()
-        .map(|t| parse_coord(t).ok())
+        .map(|t| schemify_format::parse_coord(t).ok())
         .collect();
     let Some(n) = nums.filter(|n| n.len() >= 4 && n.len().is_multiple_of(2)) else {
         return Vec::new();
@@ -272,7 +272,7 @@ fn with_vertex(rec: &RecordBuf, i: usize, p: Pt) -> Option<RecordBuf> {
     let mut set = |k: usize, val: i32| {
         let slot = &mut out.fields[first + k];
         slot.clear();
-        format_coord(val, slot);
+        schemify_format::format_coord(val, slot);
     };
     if form == "rect" {
         // Corner i owns x1 (corners 0, 3) or x2 (1, 2), and y1 (0, 1) or y2 (2, 3).

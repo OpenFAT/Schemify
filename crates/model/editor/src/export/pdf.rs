@@ -7,7 +7,8 @@
 
 use schemify_canvas::CanvasPrims;
 
-use super::ops::{Glyphs, Lang, Used, page_ops};
+use super::ops;
+use super::ops::{Glyphs, Lang, Used};
 use super::{FONT_NAMES, Look, Page};
 
 /// ASCII85 (PDF `/ASCII85Decode`) of `bytes` with its `~>` end marker and a line break
@@ -70,7 +71,7 @@ pub fn pdf(pages: &[(&CanvasPrims, [i32; 4])], look: &Look, page: Page) -> Vec<u
         .map(|(prims, b)| {
             assert!(b[0] <= b[2], "inverted bounds: x0 {} > x1 {}", b[0], b[2]);
             assert!(b[1] <= b[3], "inverted bounds: y0 {} > y1 {}", b[1], b[3]);
-            page_ops(prims, *b, look, size, Lang::Pdf, &mut used)
+            ops::page_ops(prims, *b, look, size, Lang::Pdf, &mut used)
         })
         .collect();
     // 1 catalog, 2 pages, (page, content) pairs from 3, then five objects per printing face.

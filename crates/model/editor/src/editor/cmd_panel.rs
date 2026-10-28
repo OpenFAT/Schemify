@@ -10,7 +10,7 @@ use crate::commands::Cmd;
 use crate::{cell, docs};
 
 use super::Editor;
-use super::symbol::symbol_from_ports_ops;
+use super::symbol;
 
 impl Editor {
     /// Cell panel and docs page commands (one undo each). Returns whether anything visible changed.
@@ -123,7 +123,7 @@ impl Editor {
                         .say("sync pins: review the changes, then Apply");
                 } else {
                     let w = self.opts.symbol_width;
-                    let ops = self.with_doc(h, |d, _| symbol_from_ports_ops(d, &ports, w));
+                    let ops = self.with_doc(h, |d, _| symbol::symbol_from_ports_ops(d, &ports, w));
                     if ops.is_empty() {
                         self.session
                             .say("symbol from ports: the body declares no ports");

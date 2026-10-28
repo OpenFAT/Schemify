@@ -12,8 +12,6 @@ use schemify_doc::{Document, Op, RecordKind, Records, Strings, Sym, Target};
 use schemify_elab::{CellState, Val};
 use schemify_expr::{Mode, Program, Template};
 
-use super::var_value;
-
 /// Ops writing `cached <value> <hash>` on every own param (its default, or its `computed`
 /// expression) and own var whose expression calls plugin functions and whose current value a
 /// loaded plugin computed (not unverified, not an error, not complex), when the stored pair
@@ -62,7 +60,7 @@ pub fn cache_ops(
         }
         let name = s.get(b.fields[r][0]);
         let stored = doc.pool().find_attr(s, b.attrs[r], "cached");
-        let now = var_value(cell, name, v);
+        let now = super::var_value(cell, name, v);
         cache_op(
             &mut ops,
             (RecordKind::Var, name),

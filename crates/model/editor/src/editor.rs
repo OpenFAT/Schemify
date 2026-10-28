@@ -78,7 +78,7 @@ use schemify_canvas::{CanvasPrims, Marks, Palette};
 use schemify_doc::{DocHandle, Document, EditRequest, Op, RecordBuf};
 use schemify_elab::{Annotations, CellState, Dialect};
 use schemify_format::{FileKind, IdRng};
-use schemify_ui::{InputEvent, InputEvents, Routed, route_input};
+use schemify_ui::{InputEvent, InputEvents, Routed};
 
 use crate::cell;
 use crate::checks::Members;
@@ -97,13 +97,13 @@ use canvas::ShownKey;
 use compare::Compare;
 use decor::DecorKey;
 use dialog::Dialog;
-use files::{default_view, project_root};
+
 pub use opts::EditOpts;
 pub use picture::{CanvasPicture, DockPicture, GraphPicture, Picture, Raster, UiView};
 pub use queue::QUEUED_MAX;
 use queue::Said;
 pub use tool::{Form, Placement, Tool};
-use values::{Parked, row_of_doc};
+use values::Parked;
 
 /// Which panel the `bottom` container shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -427,7 +427,7 @@ impl Editor {
         self.ui_step(false, resized);
         let mut routed = std::mem::take(&mut self.routed);
         // 1. input → command_requests + canvas events
-        route_input(
+        schemify_ui::route_input(
             &self.shell.tables,
             &self.shell.layout,
             &self.shell.strings,

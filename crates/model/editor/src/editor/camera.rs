@@ -16,7 +16,8 @@
 use schemify_canvas::Camera;
 use schemify_canvas::kurbo::Rect as KRect;
 
-use crate::geometry::{Pt, snap};
+use crate::geometry;
+use crate::geometry::Pt;
 use crate::scene::UNIT;
 
 use super::Editor;
@@ -55,7 +56,10 @@ impl Editor {
     }
     pub(super) fn pointer_world_snapped(&self) -> Pt {
         let (x, y) = self.pointer_world();
-        (snap(x, self.opts.snap), snap(y, self.opts.snap))
+        (
+            geometry::snap(x, self.opts.snap),
+            geometry::snap(y, self.opts.snap),
+        )
     }
     pub(super) fn world_at(&self, s: (f32, f32)) -> (f64, f64) {
         self.camera()
@@ -63,7 +67,10 @@ impl Editor {
     }
     pub(super) fn snapped_at(&self, s: (f32, f32)) -> Pt {
         let (x, y) = self.world_at(s);
-        (snap(x, self.opts.snap), snap(y, self.opts.snap))
+        (
+            geometry::snap(x, self.opts.snap),
+            geometry::snap(y, self.opts.snap),
+        )
     }
     pub(super) fn nearest_conn(&self, p: Pt) -> Option<Pt> {
         let d = |q: Pt| {

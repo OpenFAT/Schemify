@@ -8,13 +8,11 @@
 use std::collections::HashSet;
 
 use schemify_doc::{DocHandle, Document, Op, Project, RecordBuf, TableId, Target};
-use schemify_format::{RecordKind, parse_coord};
+use schemify_format::RecordKind;
 
 use crate::edit::Ids;
 use crate::geometry::Pt;
 use crate::scene::ObjKey;
-
-use super::{on_interior, points_of, wire_rec};
 
 /// Cuts every wire that has one of `points` strictly inside it into pieces ending there.
 /// Returns the ops and, per cut wire, the new pieces' end points.
@@ -28,7 +26,7 @@ pub fn break_at(doc: &Document, points: &[Pt], ids: &mut Ids<'_>) -> (Vec<Op>, V
         let mut inside: Vec<Pt> = points
             .iter()
             .copied()
-            .filter(|&p| on_interior(p, a, b))
+            .filter(|&p| super::on_interior(p, a, b))
             .collect();
         if inside.is_empty() {
             continue;
@@ -48,13 +46,13 @@ pub fn break_at(doc: &Document, points: &[Pt], ids: &mut Ids<'_>) -> (Vec<Op>, V
         let id = rec.fields[0].clone();
         ops.push(Op::Put {
             target: Target::new(RecordKind::Wire, &w.id[r].text(s)),
-            rec: wire_rec(&id, chain[0], chain[1], &rec.attrs),
+            rec: super::wire_rec(&id, chain[0], chain[1], &rec.attrs),
         });
         pieces.push((chain[0], chain[1]));
         for leg in chain[1..].windows(2) {
             let nid = ids.draw(doc).text;
             ops.push(Op::Insert {
-                rec: wire_rec(&nid, leg[0], leg[1], &rec.attrs),
+                rec: super::wire_rec(&nid, leg[0], leg[1], &rec.attrs),
                 at: None,
             });
             pieces.push((leg[0], leg[1]));
@@ -79,7 +77,7 @@ pub fn remove_through(
         .iter()
         .filter(|k| k.table == TableId::Instances)
         .map(|&k| {
-            let mut p = points_of(project, h, doc, k);
+            let mut p = super::points_of(project, h, doc, k);
             p.sort_unstable();
             p
         })
@@ -127,7 +125,7 @@ pub(super) fn rec_pt(rec: &RecordBuf, i: usize) -> Pt {
     let c = |k: usize| {
         rec.fields
             .get(k)
-            .and_then(|t| parse_coord(t).ok())
+            .and_then(|t| schemify_format::parse_coord(t).ok())
             .unwrap_or(i32::MIN)
     };
     (c(i), c(i + 1))

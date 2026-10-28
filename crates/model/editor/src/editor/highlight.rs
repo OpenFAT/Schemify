@@ -190,11 +190,11 @@ impl Editor {
                 return;
             };
             let p = &self.session.project;
-            for k in self
+            let instances = self
                 .selection()
                 .iter()
-                .filter(|k| k.table == TableId::Instances)
-            {
+                .filter(|k| k.table == TableId::Instances);
+            for k in instances {
                 let Some(loc) = edit::loc_of(doc, *k) else {
                     continue;
                 };

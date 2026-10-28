@@ -192,12 +192,12 @@ impl Editor {
         }
         match self.session.open_path(&path) {
             Ok(d) => {
-                let view = super::default_view(self.session.project.doc(d));
+                let view = default_view(self.session.project.doc(d));
                 self.session.open_tab(d, view);
                 self.remember(d);
                 self.tool = Tool::Idle;
             }
-            Err(_) if super::project_root(&path) != crate::libs::absolute(&self.session.root) => {
+            Err(_) if project_root(&path) != crate::libs::absolute(&self.session.root) => {
                 self.switch_project(path, reqs);
             }
             Err(e) => self.session.say(e),

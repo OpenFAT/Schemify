@@ -13,7 +13,7 @@ use schemify_format::RecordKind;
 use crate::geometry::Pt;
 
 use super::refresh::Build;
-use super::symbols::{sym_prims, sym_text_at};
+use super::symbols;
 use super::{DOT_R, LAYER_JUNCTION, ObjKey, PIN_HALF, UNIT};
 
 /// Makes the junction dots at `points` (sorted, unique) match xschem's rule for the current
@@ -50,7 +50,7 @@ pub(super) fn redot(b: &mut Build<'_>, points: &[Pt]) {
 }
 
 pub(super) fn symbol(b: &mut Build<'_>, doc: &Document) {
-    let p = sym_prims(doc);
+    let p = symbols::sym_prims(doc);
     let g = doc.graphics();
     // One object per graphic row, in draw order; `sym_prims` pushed per kind, so walk the
     // table again to pair rows with primitives.
@@ -106,7 +106,7 @@ pub(super) fn symbol(b: &mut Build<'_>, doc: &Document) {
                 ti += 1;
                 let obj = b.sc.objs.push(key, [t.at.0, t.at.1, t.at.0, t.at.1], false);
                 let rot = t.orient.quarter_turns();
-                let at = sym_text_at(t.at, t, &t.raw, rot, t.orient.mirrored());
+                let at = symbols::sym_text_at(t.at, t, &t.raw, rot, t.orient.mirrored());
                 let bx = b.text_rot(at, t.size, t.layer, &t.raw, rot, obj);
                 b.sc.objs.geom[obj as usize] = bx;
             }

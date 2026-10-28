@@ -304,7 +304,8 @@ impl Shell {
             (row != schemify_ui::NO_STYLE)
                 .then(|| self.tables.styles.get(row, Kind::Canvas, StyleProp::Fg))
         };
-        for (layer, slot) in p.color.iter_mut().enumerate().take(22) {
+        let numbered = p.color.iter_mut().enumerate().take(22);
+        for (layer, slot) in numbered {
             if let Some(c) = color(&layer.to_string()) {
                 *slot = c;
             }

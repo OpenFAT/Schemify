@@ -34,8 +34,8 @@ use schemify_canvas::Camera;
 use schemify_doc::{DocHandle, Project};
 
 use crate::geometry::Pt;
+use crate::libs;
 pub use crate::libs::cell_relpath;
-use crate::libs::{self, absolute};
 use crate::scene::ObjKey;
 
 pub use tabs::{STATUS_MAX, TabView};
@@ -177,7 +177,7 @@ impl Session {
     ///
     /// The manifest or lockfile does not parse.
     pub fn load(root: &Path, seed: u64, open: Option<&Path>) -> Result<Session, String> {
-        let open = open.map(absolute);
+        let open = open.map(libs::absolute);
         let loaded = libs::load(root, seed, open.as_deref())?;
         Ok(Session {
             root: root.to_path_buf(),

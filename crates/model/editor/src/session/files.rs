@@ -19,8 +19,7 @@ use std::path::{Path, PathBuf};
 use schemify_doc::{DocHandle, OpenError, Recovery};
 use schemify_format::FileKind;
 
-use crate::libs::cell_relpath;
-use crate::libs::{self, BUILTIN_DIR, absolute, rel_path};
+use crate::libs::{self, BUILTIN_DIR};
 use crate::platform;
 
 use super::Session;
@@ -45,7 +44,7 @@ impl Session {
             .and_then(Option::as_deref);
         let kept = self
             .kept
-            .take_if(|(p, _)| dir.is_some_and(|d| absolute(&d.join(relpath)) == *p));
+            .take_if(|(p, _)| dir.is_some_and(|d| libs::absolute(&d.join(relpath)) == *p));
         let indexed = kept.is_some();
         let (path, bytes, builtin) = match kept {
             Some((path, bytes)) => (path, bytes, false),
@@ -116,7 +115,7 @@ impl Session {
         let cells = self.project.cells();
         assert!(row < cells.lib.len(), "cell row from a previous index");
         let lib = cells.lib[row];
-        let rel = cell_relpath(&self.project, row);
+        let rel = libs::cell_relpath(&self.project, row);
         self.open_file(lib, &rel)
     }
 
@@ -136,12 +135,12 @@ impl Session {
     /// The local library holding `path` and the path relative to it: the longest matching
     /// directory wins (libraries may live under the root).
     fn lib_of(&self, path: &Path) -> Option<(usize, String)> {
-        let abs = absolute(path);
+        let abs = libs::absolute(path);
         let mut best: Option<(usize, String, usize)> = None;
         for (row, dir) in self.lib_dir.iter().enumerate() {
             let Some(dir) = dir else { continue };
-            let dir = absolute(dir);
-            if let Some(rel) = rel_path(&dir, &abs) {
+            let dir = libs::absolute(dir);
+            if let Some(rel) = libs::rel_path(&dir, &abs) {
                 let depth = dir.components().count();
                 if best.as_ref().is_none_or(|b| depth > b.2) {
                     best = Some((row, rel, depth));
@@ -272,10 +271,11 @@ impl Session {
 impl Session {
     /// `.schemify/journal/<project-relative cell path>.journal` (edits spec §3).
     fn journal_path(&self, file: &Path) -> PathBuf {
-        let rel = rel_path(&absolute(&self.root), &absolute(file)).unwrap_or_else(|| {
-            file.file_name()
-                .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
-        });
+        let rel = libs::rel_path(&libs::absolute(&self.root), &libs::absolute(file))
+            .unwrap_or_else(|| {
+                file.file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+            });
         self.root
             .join(".schemify")
             .join("journal")

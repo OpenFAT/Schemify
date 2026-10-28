@@ -30,13 +30,13 @@ mod stretch;
 use std::collections::HashSet;
 
 use schemify_doc::{DocHandle, Document, Op, Project, RecordBuf, TableId};
-use schemify_format::{RecordKind, parse_coord};
+use schemify_format::RecordKind;
 
 use crate::edit;
-use crate::geometry::{Pt, coord, place, snap};
+use crate::geometry;
+use crate::geometry::Pt;
 use crate::scene::ObjKey;
 
-use cut::rec_pt;
 pub use cut::{break_at, remove_through};
 pub use join::join_trim;
 pub use stretch::{Moved, Stretched, stretch};
@@ -62,7 +62,7 @@ pub fn inst_pins(project: &Project, h: DocHandle, doc: &Document, i: usize) -> V
     let pins = iface.pins();
     let (o, at) = (inst.orient[i], (inst.x[i], inst.y[i]));
     let out: Vec<Pt> = (0..pins.x.len())
-        .map(|k| place(o, at, (pins.x[k], pins.y[k])))
+        .map(|k| geometry::place(o, at, (pins.x[k], pins.y[k])))
         .collect();
     assert_eq!(out.len(), pins.x.len());
     out
@@ -217,8 +217,8 @@ pub fn align(doc: &Document, sel: &[ObjKey], snap_m: i32) -> Vec<Op> {
         sel.to_vec()
     };
     let snapped = |t: &str| -> Option<String> {
-        let v = parse_coord(t).ok()?;
-        Some(coord(snap(f64::from(v), snap_m)))
+        let v = schemify_format::parse_coord(t).ok()?;
+        Some(geometry::coord(geometry::snap(f64::from(v), snap_m)))
     };
     let mut ops = Vec::new();
     for (_, target, mut rec) in edit::selected_records(doc, &keys) {
@@ -256,7 +256,7 @@ pub fn align(doc: &Document, sel: &[ObjKey], snap_m: i32) -> Vec<Op> {
         if rec == before {
             continue;
         }
-        if rec.kind == RecordKind::Wire && rec_pt(&rec, 1) == rec_pt(&rec, 3) {
+        if rec.kind == RecordKind::Wire && cut::rec_pt(&rec, 1) == cut::rec_pt(&rec, 3) {
             ops.push(Op::Delete(target));
         } else {
             ops.push(Op::Put { target, rec });
@@ -270,10 +270,10 @@ pub fn align(doc: &Document, sel: &[ObjKey], snap_m: i32) -> Vec<Op> {
 fn wire_rec(id: &str, a: Pt, b: Pt, attrs: &[schemify_doc::Attr]) -> RecordBuf {
     let mut r = RecordBuf::new(RecordKind::Wire)
         .field(id)
-        .field(&coord(a.0))
-        .field(&coord(a.1))
-        .field(&coord(b.0))
-        .field(&coord(b.1));
+        .field(&geometry::coord(a.0))
+        .field(&geometry::coord(a.1))
+        .field(&geometry::coord(b.0))
+        .field(&geometry::coord(b.1));
     r.attrs = attrs.to_vec();
     r
 }
@@ -300,7 +300,7 @@ fn points_of(project: &Project, h: DocHandle, doc: &Document, key: ObjKey) -> Ve
 
 #[cfg(test)]
 mod tests {
-    use super::join::{covered, gcd, line_of};
+    use super::join;
     use super::*;
 
     #[test]
@@ -315,20 +315,28 @@ mod tests {
 
     #[test]
     fn lines_are_canonical_in_both_directions_and_on_diagonals() {
-        assert_eq!(line_of((0, 0), (10, 0)), (1, 0, 0));
-        assert_eq!(line_of((10, 5), (0, 5)), (1, 0, 5));
-        assert_eq!(line_of((0, 0), (0, -7)), (0, 1, 0));
-        assert_eq!(line_of((3, 0), (3, 9)), (0, 1, -3));
-        assert_eq!(line_of((0, 0), (4, 4)), (1, 1, 0));
-        assert_eq!(line_of((6, 6), (2, 2)), line_of((0, 0), (4, 4)));
-        assert_ne!(line_of((0, 1), (4, 5)), line_of((0, 0), (4, 4)), "parallel");
-        assert_eq!(line_of((0, 0), (6, -4)), (3, -2, 0), "reduced by the gcd");
-        assert_eq!(gcd(-12, 18), 6);
-        assert!(covered(&[(0, 10), (20, 30)], 10));
-        assert!(covered(&[(0, 10), (20, 30)], 20));
-        assert!(!covered(&[(0, 10), (20, 30)], 15));
-        assert!(!covered(&[(0, 10)], -1));
-        assert!(!covered(&[], 0));
+        assert_eq!(join::line_of((0, 0), (10, 0)), (1, 0, 0));
+        assert_eq!(join::line_of((10, 5), (0, 5)), (1, 0, 5));
+        assert_eq!(join::line_of((0, 0), (0, -7)), (0, 1, 0));
+        assert_eq!(join::line_of((3, 0), (3, 9)), (0, 1, -3));
+        assert_eq!(join::line_of((0, 0), (4, 4)), (1, 1, 0));
+        assert_eq!(join::line_of((6, 6), (2, 2)), join::line_of((0, 0), (4, 4)));
+        assert_ne!(
+            join::line_of((0, 1), (4, 5)),
+            join::line_of((0, 0), (4, 4)),
+            "parallel"
+        );
+        assert_eq!(
+            join::line_of((0, 0), (6, -4)),
+            (3, -2, 0),
+            "reduced by the gcd"
+        );
+        assert_eq!(join::gcd(-12, 18), 6);
+        assert!(join::covered(&[(0, 10), (20, 30)], 10));
+        assert!(join::covered(&[(0, 10), (20, 30)], 20));
+        assert!(!join::covered(&[(0, 10), (20, 30)], 15));
+        assert!(!join::covered(&[(0, 10)], -1));
+        assert!(!join::covered(&[], 0));
     }
 
     #[test]

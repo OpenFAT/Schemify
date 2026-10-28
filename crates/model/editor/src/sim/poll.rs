@@ -15,8 +15,7 @@ use std::path::{Path, PathBuf};
 
 use schemify_doc::{DocHandle, Project};
 use schemify_elab::Funcs;
-use schemify_run::{Plan, RunnerConfig, State, read_results};
-use schemify_wave::format_si;
+use schemify_run::{Plan, RunnerConfig, State};
 
 use crate::platform;
 use crate::session::Session;
@@ -149,7 +148,7 @@ impl Sim {
                 let best = o
                     .opt
                     .best()
-                    .map_or("-".to_owned(), |b| format_si(b.score, 4));
+                    .map_or("-".to_owned(), |b| schemify_wave::format_si(b.score, 4));
                 format!(
                     "optimize {name}: {} evaluation(s), best score {best}",
                     o.opt.n_evals()
@@ -259,7 +258,7 @@ impl Sim {
         let plan = Plan::read(doc).map_err(|e| format!("bench: {e:?}"))?;
         let text = platform::read(&dir.join(schemify_run::RESULTS))?;
         let text = String::from_utf8(text).map_err(|e| e.to_string())?;
-        let (jobs, results) = read_results(&text)?;
+        let (jobs, results) = schemify_run::read_results(&text)?;
         let digest = *results.design();
         let mut cfg = RunnerConfig::new(&session.root, &digest);
         cfg.dir = dir.to_path_buf();

@@ -22,7 +22,8 @@ use schemify_elab::CellState;
 use schemify_expr::{Scratch, Value};
 use schemify_format::{Orient, RecordKind};
 
-use crate::geometry::{Pt, place};
+use crate::geometry;
+use crate::geometry::Pt;
 
 use super::refresh::{Build, stamped};
 use super::symbols::{
@@ -85,7 +86,7 @@ pub(super) fn instance<'d>(
         );
         return;
     };
-    let x = |q: Pt| place(o, at, q);
+    let x = |q: Pt| geometry::place(o, at, q);
     let (c0, c1) = (x((p.bbox[0], p.bbox[1])), x((p.bbox[2], p.bbox[3])));
     let obj = b.sc.objs.push(key, [c0.0, c0.1, c1.0, c1.1], false);
     for &(l, layer, st) in &p.lines {
@@ -346,7 +347,7 @@ pub(super) fn arc_placed(o: Orient, start: i32, sweep: i32) -> (i32, i32) {
 /// it, on the side the orientation points to.
 pub(super) fn placed(b: &mut Build<'_>, key: ObjKey, at: Pt, o: Orient, name: &str, port: bool) {
     let obj = b.sc.objs.push(key, [at.0, at.1, at.0, at.1], false);
-    let dir = place(o, (0, 0), (1, 0));
+    let dir = geometry::place(o, (0, 0), (1, 0));
     let size = 16 * UNIT;
     let (w, h) = text_size(size, name);
     let mut bx = [
@@ -438,7 +439,13 @@ fn inst_text<'d>(
     let turned = crate::geometry::compose(o, t.orient);
     let rot = turned.quarter_turns();
     (
-        sym_text_at(place(o, at, t.at), t, text, rot, turned.mirrored()),
+        sym_text_at(
+            geometry::place(o, at, t.at),
+            t,
+            text,
+            rot,
+            turned.mirrored(),
+        ),
         rot,
     )
 }

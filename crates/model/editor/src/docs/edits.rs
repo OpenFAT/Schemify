@@ -15,8 +15,6 @@ use schemify_doc::{Document, Loc, NEW_ID, Op, RecordBuf, RecordKind, TableId, Ta
 
 use crate::edit::Toward;
 
-use super::{kind_of, prose_text};
-
 pub(super) fn target(doc: &Document, row: u32) -> Option<Target> {
     let b = doc.doc_blocks();
     let kind = *b.kind.get(row as usize)?;
@@ -77,7 +75,7 @@ pub fn prose_ops(doc: &Document, row: u32, text: &str) -> Vec<Op> {
     let Some(t) = target(doc, row).filter(|t| t.kind == RecordKind::Prose) else {
         return Vec::new();
     };
-    if prose_text(doc, row) == text {
+    if super::prose_text(doc, row) == text {
         return Vec::new();
     }
     if text.trim().is_empty() {
@@ -164,7 +162,7 @@ pub fn move_block(doc: &Document, row: u32, toward: Toward) -> Vec<Op> {
 /// Never: the assert checks that only a stale `row` gives no ops.
 pub fn delete_block(doc: &Document, row: u32) -> Vec<Op> {
     let ops: Vec<Op> = target(doc, row).map(Op::Delete).into_iter().collect();
-    assert_eq!(ops.is_empty(), kind_of(doc, row).is_none());
+    assert_eq!(ops.is_empty(), super::kind_of(doc, row).is_none());
     ops
 }
 

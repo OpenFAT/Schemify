@@ -21,7 +21,7 @@ use schemify_format::FileKind;
 use crate::edit::Toward;
 use crate::scene::UNIT;
 
-use super::bench::bench_ops;
+use super::bench;
 use super::{
     ADD_LANGS, DIALECTS, Field, PARAM_ATTRS, PARAM_KINDS, PIN_DIRS, PIN_DOMAINS, SyncPlan, attr_of,
     body_row, body_text, names, record, row_u32,
@@ -175,7 +175,7 @@ pub fn set_ops(doc: &Document, field: Field<'_>, value: &str) -> Result<Vec<Op>,
                 }
                 "choices" => {
                     let cur = rec.find_attr("choices").map(|at| at.values.join(" "));
-                    let vals = v.split_whitespace().map(str::to_owned).collect();
+                    let vals: Vec<String> = v.split_whitespace().map(str::to_owned).collect();
                     attr_ops(target, cur.as_deref(), "choices", v, vals)
                 }
                 a if PARAM_ATTRS.contains(&a) => {
@@ -225,7 +225,7 @@ pub fn set_ops(doc: &Document, field: Field<'_>, value: &str) -> Result<Vec<Op>,
         }
         Field::Bench(b, row, a) => {
             let rec = record(doc, b.table(), row).ok_or_else(|| format!("no such {}", b.word()))?;
-            return bench_ops(b, &rec, a, v);
+            return bench::bench_ops(b, &rec, a, v);
         }
     };
     assert!(ops.len() <= 1, "one field sets at most one line");

@@ -17,7 +17,7 @@ use schemify_plugin::abi::{Code, Event, Level};
 
 use crate::platform;
 
-use super::{Child, Delivered, Host, PluginEdit, ROUNDS_MAX, Timer, WAITING_MAX, handle_of};
+use super::{Child, Delivered, Host, PluginEdit, ROUNDS_MAX, Timer, WAITING_MAX};
 
 impl Host {
     /// The spine's `plugin::deliver` plus queue draining, at most `ROUNDS_MAX` (4) rounds:
@@ -65,7 +65,7 @@ impl Host {
             );
             self.events.clear();
             for e in self.queues.edits.drain(..) {
-                let Some(h) = handle_of(project, e.doc) else {
+                let Some(h) = super::handle_of(project, e.doc) else {
                     out.logs
                         .push(format!("{}: edit for a closed document", e.plugin));
                     continue;
@@ -177,7 +177,7 @@ impl Host {
         doc: u32,
         expr: &str,
     ) -> (i32, String) {
-        let Some(h) = handle_of(project, doc) else {
+        let Some(h) = super::handle_of(project, doc) else {
             return (Code::Gone.neg(), "document closed".to_owned());
         };
         let i = match states.iter().position(|s| s.0 == h) {

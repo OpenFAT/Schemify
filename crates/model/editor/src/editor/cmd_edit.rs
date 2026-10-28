@@ -14,7 +14,7 @@ use crate::session::View;
 use crate::{edit, platform, wiring};
 
 use super::Editor;
-use super::apply::push_req;
+use super::apply;
 use super::dialog::TextFor;
 use super::tool::{Form, Placement, Tool};
 
@@ -39,7 +39,7 @@ impl Editor {
                 } else {
                     Edit::Redo
                 };
-                push_req(reqs, h, edit);
+                apply::push_req(reqs, h, edit);
             }
             Cmd::Delete => {
                 let ops = self.with_doc(h, edit::delete);

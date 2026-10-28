@@ -10,7 +10,8 @@
 
 use schemify_doc::TableId;
 
-use crate::geometry::{Pt, snap};
+use crate::geometry;
+use crate::geometry::Pt;
 use crate::scene::ObjKey;
 use crate::{edit, scene};
 
@@ -99,7 +100,10 @@ impl Editor {
         let c = anchors.iter().fold((0.0, 0.0), |a, p| {
             (a.0 + f64::from(p.0) / n, a.1 + f64::from(p.1) / n)
         });
-        (snap(c.0, self.opts.snap), snap(c.1, self.opts.snap))
+        (
+            geometry::snap(c.0, self.opts.snap),
+            geometry::snap(c.1, self.opts.snap),
+        )
     }
     /// The single selected instance (or the instance under the pointer).
     pub(super) fn one_instance(&self) -> Option<ObjKey> {

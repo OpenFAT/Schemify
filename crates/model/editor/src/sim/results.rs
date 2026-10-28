@@ -21,8 +21,8 @@ use std::path::Path;
 use schemify_elab::{AnnotationRequest, Mark, Severity};
 use schemify_netlist::NameMap;
 use schemify_run::{Jobs, Pass, Results, State};
-use schemify_wave::calc::op_dataset;
-use schemify_wave::{RawPlot, Request as WaveRequest, Waves, format_si, group_datasets, parse_raw};
+use schemify_wave::calc;
+use schemify_wave::{RawPlot, Request as WaveRequest, Waves};
 
 use crate::checks::SOURCE_OP;
 use crate::platform;
@@ -65,8 +65,8 @@ impl Sim {
         if !fresh {
             let parsed = match self.job_raw(j) {
                 Some(p) => platform::read(&p)
-                    .and_then(|b| parse_raw(&b).map_err(|e| e.to_string()))
-                    .map(group_datasets),
+                    .and_then(|b| schemify_wave::parse_raw(&b).map_err(|e| e.to_string()))
+                    .map(schemify_wave::group_datasets),
                 None => Err(format!("job {j} has no raw file")),
             };
             self.raw = Some((j, parsed));
@@ -132,8 +132,8 @@ impl Sim {
         };
         for j in others {
             let parsed = self.job_raw(j).and_then(|p| platform::read(&p).ok());
-            if let Some(d) = parsed.and_then(|b| parse_raw(&b).ok()) {
-                jobs.push(group_datasets(d));
+            if let Some(d) = parsed.and_then(|b| schemify_wave::parse_raw(&b).ok()) {
+                jobs.push(schemify_wave::group_datasets(d));
             }
         }
         assert!(jobs.len() <= OVERLAY_JOBS);
@@ -161,7 +161,7 @@ impl Sim {
     /// when the job has no operating point.
     pub fn op_marks(&mut self, map: &NameMap) -> AnnotationRequest {
         let mut marks = Vec::new();
-        if let Some(op) = self.datasets().and_then(op_dataset) {
+        if let Some(op) = self.datasets().and_then(calc::op_dataset) {
             // An OP dataset has one point and no real scale: column 0 is a vector too.
             for (k, v) in op.vars().iter().enumerate() {
                 let Some(&x) = op.col(k).first() else {
@@ -415,7 +415,7 @@ fn op_mark(map: &NameMap, name: &str, x: f64) -> Option<Mark> {
         Some(Mark {
             target: inst_path(map, dev)?,
             severity: Severity::Info,
-            text: format!("{param}={}", format_si(x, 4)),
+            text: format!("{param}={}", schemify_wave::format_si(x, 4)),
         })
     };
     if let Some(dev) = lower.strip_prefix('@') {
@@ -445,7 +445,7 @@ fn op_mark(map: &NameMap, name: &str, x: f64) -> Option<Mark> {
     Some(Mark {
         target: net.to_owned(),
         severity: Severity::Info,
-        text: format!("{}V", format_si(x, 4)),
+        text: format!("{}V", schemify_wave::format_si(x, 4)),
     })
 }
 

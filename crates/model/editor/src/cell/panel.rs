@@ -13,7 +13,7 @@
 use schemify_doc::{Document, Loc, PinDir, TableId};
 use schemify_format::FileKind;
 
-use crate::docs::{attr, node};
+use crate::docs;
 
 use super::bench_panel::bench_sections;
 use super::ops::{add_impl_ops, sync_ops};
@@ -98,8 +98,8 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
             &blk,
         );
         let bar = format!("cell.pin.{r}.bar");
-        node(t, &bar, "panel", &blk);
-        attr(t, "style", "cell-bar");
+        docs::node(t, &bar, "panel", &blk);
+        docs::attr(t, "style", "cell-bar");
         button(
             t,
             &format!("cell.pin.{r}.up"),
@@ -189,9 +189,9 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
         });
         let lang = rec.fields.get(1).map_or("", String::as_str);
         let blk = block(t, &format!("cell.impl.{r}"));
-        node(t, &format!("cell.impl.{r}.title"), "label", &blk);
-        attr(t, "label", &format!("{name} · {lang}"));
-        attr(t, "style", "cell-title");
+        docs::node(t, &format!("cell.impl.{r}.title"), "label", &blk);
+        docs::attr(t, "label", &format!("{name} · {lang}"));
+        docs::attr(t, "style", "cell-title");
         if lang != "schematic" {
             input(
                 t,
@@ -223,19 +223,19 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
                 );
             }
             let id = format!("cell.impl.{r}.body");
-            node(t, &id, "text_area", &blk);
-            attr(t, "value", &body_text(doc, name));
-            attr(t, "command", "cell.set");
-            attr(
+            docs::node(t, &id, "text_area", &blk);
+            docs::attr(t, "value", &body_text(doc, name));
+            docs::attr(t, "command", "cell.set");
+            docs::attr(
                 t,
                 "tooltip",
                 "Definition text (Verilog-A, Verilog, SPICE); Ctrl+Enter applies",
             );
-            attr(t, "style", "cell-body");
+            docs::attr(t, "style", "cell-body");
             if body_row(doc, name).is_some() {
                 let bar = format!("cell.impl.{r}.ports");
-                node(t, &bar, "panel", &blk);
-                attr(t, "style", "cell-bar");
+                docs::node(t, &bar, "panel", &blk);
+                docs::attr(t, "style", "cell-bar");
                 button(
                     t,
                     &format!("cell.impl.{r}.sync"),
@@ -267,8 +267,8 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
         );
     }
     let bar = "cell.add_impl";
-    node(t, bar, "panel", "cell.page");
-    attr(t, "style", "cell-bar");
+    docs::node(t, bar, "panel", "cell.page");
+    docs::attr(t, "style", "cell-bar");
     for (lang, _) in ADD_LANGS {
         if add_impl_ops(doc, lang).is_ok() {
             let label = match lang {
@@ -295,9 +295,9 @@ pub(super) fn section(t: &mut String, id: &str, title: &str) {
         "section ids are `cell.s.<name>`: {id}"
     );
     assert!(!title.is_empty());
-    node(t, id, "label", "cell.page");
-    attr(t, "label", title);
-    attr(t, "style", "cell-section");
+    docs::node(t, id, "label", "cell.page");
+    docs::attr(t, "label", title);
+    docs::attr(t, "style", "cell-section");
 }
 
 pub(super) fn note(t: &mut String, id: &str, text: &str) {
@@ -306,9 +306,9 @@ pub(super) fn note(t: &mut String, id: &str, text: &str) {
         "panel node ids carry the `cell.` prefix: {id}"
     );
     assert!(!text.is_empty());
-    node(t, id, "label", "cell.page");
-    attr(t, "label", text);
-    attr(t, "style", "docs-hint");
+    docs::node(t, id, "label", "cell.page");
+    docs::attr(t, "label", text);
+    docs::attr(t, "style", "docs-hint");
 }
 
 pub(super) fn block(t: &mut String, id: &str) -> String {
@@ -316,8 +316,8 @@ pub(super) fn block(t: &mut String, id: &str) -> String {
         id.starts_with("cell."),
         "panel node ids carry the `cell.` prefix: {id}"
     );
-    node(t, id, "panel", "cell.page");
-    attr(t, "style", "cell-block");
+    docs::node(t, id, "panel", "cell.page");
+    docs::attr(t, "style", "cell-block");
     id.to_owned()
 }
 
@@ -329,15 +329,15 @@ pub(super) fn input(t: &mut String, id: &str, key: &str, value: &str, parent: &s
     );
     assert!(!parent.is_empty());
     let row = format!("{id}.row");
-    node(t, &row, "panel", parent);
-    attr(t, "style", "cell-row");
-    node(t, &format!("{id}.key"), "label", &row);
-    attr(t, "label", key);
-    attr(t, "style", "cell-key");
-    node(t, id, "text_input", &row);
-    attr(t, "value", value);
-    attr(t, "command", "cell.set");
-    attr(t, "style", "cell-input");
+    docs::node(t, &row, "panel", parent);
+    docs::attr(t, "style", "cell-row");
+    docs::node(t, &format!("{id}.key"), "label", &row);
+    docs::attr(t, "label", key);
+    docs::attr(t, "style", "cell-key");
+    docs::node(t, id, "text_input", &row);
+    docs::attr(t, "value", value);
+    docs::attr(t, "command", "cell.set");
+    docs::attr(t, "style", "cell-input");
 }
 
 /// A `key  [choice v]` row: each choice item runs `cell.set` from id `<id>=<choice>`.
@@ -355,19 +355,19 @@ pub(super) fn dropdown(
     );
     assert!(!choices.is_empty(), "a dropdown offers at least one choice");
     let row = format!("{id}.row");
-    node(t, &row, "panel", parent);
-    attr(t, "style", "cell-row");
-    node(t, &format!("{id}.key"), "label", &row);
-    attr(t, "label", key);
-    attr(t, "style", "cell-key");
-    node(t, id, "dropdown", &row);
-    attr(t, "label", if value.is_empty() { "(none)" } else { value });
-    attr(t, "style", "cell-input");
+    docs::node(t, &row, "panel", parent);
+    docs::attr(t, "style", "cell-row");
+    docs::node(t, &format!("{id}.key"), "label", &row);
+    docs::attr(t, "label", key);
+    docs::attr(t, "style", "cell-key");
+    docs::node(t, id, "dropdown", &row);
+    docs::attr(t, "label", if value.is_empty() { "(none)" } else { value });
+    docs::attr(t, "style", "cell-input");
     for c in choices {
-        node(t, &format!("{id}={c}"), "item", id);
-        attr(t, "label", c);
-        attr(t, "command", "cell.set");
-        attr(t, "checked", if *c == value { "1" } else { "0" });
+        docs::node(t, &format!("{id}={c}"), "item", id);
+        docs::attr(t, "label", c);
+        docs::attr(t, "command", "cell.set");
+        docs::attr(t, "checked", if *c == value { "1" } else { "0" });
     }
 }
 
@@ -384,11 +384,11 @@ pub(super) fn button(
         "panel node ids carry the `cell.` prefix: {id}"
     );
     assert!(!command.is_empty(), "a button runs a command");
-    node(t, id, "button", parent);
-    attr(t, "label", label);
-    attr(t, "command", command);
+    docs::node(t, id, "button", parent);
+    docs::attr(t, "label", label);
+    docs::attr(t, "command", command);
     if !tooltip.is_empty() {
-        attr(t, "tooltip", tooltip);
+        docs::attr(t, "tooltip", tooltip);
     }
 }
 
@@ -418,13 +418,13 @@ fn sync_rows(t: &mut String, plan: &SyncPlan, ports: &[(String, PinDir)], parent
     }
     assert!(!rows.is_empty(), "an empty plan says so in a row");
     for (k, (text, style)) in rows.iter().enumerate() {
-        node(t, &format!("cell.sync.{k}"), "label", parent);
-        attr(t, "label", text);
-        attr(t, "style", style);
+        docs::node(t, &format!("cell.sync.{k}"), "label", parent);
+        docs::attr(t, "label", text);
+        docs::attr(t, "style", style);
     }
     let bar = "cell.sync.bar";
-    node(t, bar, "panel", parent);
-    attr(t, "style", "cell-bar");
+    docs::node(t, bar, "panel", parent);
+    docs::attr(t, "style", "cell-bar");
     if !plan.is_empty() {
         button(
             t,
