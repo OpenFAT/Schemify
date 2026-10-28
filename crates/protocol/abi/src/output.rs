@@ -299,6 +299,10 @@ impl Out {
 
 // ---- private ----
 
+// `contribute_ui` and `contribute_commands` never hit `contribute`'s scope assert.
+const _: () = assert!(!Kind::Ui.scoped());
+const _: () = assert!(!Kind::Commands.scoped());
+
 impl Out {
     /// Writes `contribute <kind> [<scope>]` and `body` as verbatim lines.
     fn contribution(&mut self, kind: Kind, scope: Option<&str>, body: &str) {
@@ -361,11 +365,11 @@ fn each_attr<'body>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
+    use proptest::{prop_assert, prop_assert_eq, proptest};
 
     fn parse_all(text: &str) -> Vec<Result<Output<'_>, Code>> {
         text::chunks(text.as_bytes())
-            .map(|c| Output::parse(std::str::from_utf8(c).unwrap()))
+            .map(|chunk| Output::parse(std::str::from_utf8(chunk).unwrap()))
             .collect()
     }
 
@@ -464,14 +468,14 @@ mod tests {
                 got[0].clone().unwrap(),
                 Output::Log { level: Level::Info, text: msg.as_str().into() }
             );
-            let ok = matches!(&got[1], Ok(Output::Contribute { scope: s, .. }) if *s == scope);
+            let ok = matches!(&got[1], Ok(Output::Contribute { scope: got, .. }) if *got == scope);
             prop_assert!(ok);
         }
 
         #[test]
-        fn parse_never_panics(s in "\\PC{0,96}|[a-z \\n|\"\\\\]{0,96}") {
-            for c in text::chunks(s.as_bytes()) {
-                let _ = Output::parse(std::str::from_utf8(c).unwrap());
+        fn parse_never_panics(text in "\\PC{0,96}|[a-z \\n|\"\\\\]{0,96}") {
+            for chunk in text::chunks(text.as_bytes()) {
+                let _ = Output::parse(std::str::from_utf8(chunk).unwrap());
             }
         }
     }

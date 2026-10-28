@@ -46,8 +46,22 @@ mod sys {
     unsafe extern "C" {
         pub safe fn table_len(table: u32) -> i32;
         pub safe fn table_epoch(table: u32) -> i32;
-        pub fn read_column(t: u32, c: u32, start: u32, count: u32, dst: u32, dst_len: u32) -> i32;
-        pub fn read_strings(t: u32, c: u32, start: u32, count: u32, dst: u32, dst_len: u32) -> i32;
+        pub fn read_column(
+            table: u32,
+            column: u32,
+            start: u32,
+            count: u32,
+            dst: u32,
+            dst_len: u32,
+        ) -> i32;
+        pub fn read_strings(
+            table: u32,
+            column: u32,
+            start: u32,
+            count: u32,
+            dst: u32,
+            dst_len: u32,
+        ) -> i32;
         pub fn eval(doc: u32, ptr: u32, len: u32) -> i32;
         pub fn log(level: u32, ptr: u32, len: u32);
         pub fn fs_read(path: u32, path_len: u32) -> i32;
@@ -218,8 +232,8 @@ impl Host {
         let mut rest = &bytes[..];
         while let Some((len, tail)) = rest.split_first_chunk::<4>() {
             let len = u32::from_le_bytes(*len) as usize;
-            let s = tail.get(..len).ok_or(Code::Parse)?;
-            out.push(String::from_utf8(s.to_vec()).map_err(|_| Code::Parse)?);
+            let string = tail.get(..len).ok_or(Code::Parse)?;
+            out.push(String::from_utf8(string.to_vec()).map_err(|_| Code::Parse)?);
             rest = &tail[len..];
         }
         if out.len() != count as usize || !rest.is_empty() {
@@ -314,6 +328,10 @@ impl Host {
             }
             text::push_value(&mut line, arg);
         }
+        debug_assert!(
+            !line.contains(['\n', '\r', '\0']),
+            "argv travels as one line of values"
+        );
         let line = line.as_bytes();
         // SAFETY: the host only reads the given byte ranges.
         Code::check(unsafe { sys::spawn(addr(line), len32(line), addr(stdin), len32(stdin)) })
@@ -372,11 +390,17 @@ pub fn __on_event(ptr: u32, len: u32, handler: fn(Event<'_>, &Host, &mut Out)) -
         return 0;
     };
     let mut out = Out::new();
-    match Event::parse(&input) {
+    let parsed = Event::parse(&input);
+    match parsed {
         Ok(event) => handler(event, &HOST, &mut out),
         Err(code) => out.log_at(Level::Error, &format!("unparsable event ({code})")),
     }
-    publish(out.into_string().into_bytes())
+    let packed = publish(out.into_string().into_bytes());
+    debug_assert!(
+        parsed.is_ok() || packed != 0,
+        "an unparsable event is answered with a log"
+    );
+    packed
 }
 
 #[doc(hidden)]
@@ -384,7 +408,7 @@ pub fn __call(
     fn_id: u32,
     ptr: u32,
     len: u32,
-    f: fn(u32, &str, &mut String) -> Result<(), Code>,
+    call: fn(u32, &str, &mut String) -> Result<(), Code>,
 ) -> u64 {
     let Some(input) = take_input(ptr, len) else {
         return crate::pack(0, Code::Range as u32);
@@ -393,7 +417,7 @@ pub fn __call(
         return crate::pack(0, Code::Parse as u32);
     };
     let mut result = String::new();
-    match f(fn_id, args, &mut result) {
+    match call(fn_id, args, &mut result) {
         Ok(()) if !result.is_empty() => publish(result.into_bytes()),
         Ok(()) => crate::pack(0, Code::Parse as u32),
         Err(code) => crate::pack(0, code as u32),
@@ -417,8 +441,8 @@ fn fill_retrying(guess: usize, mut read: impl FnMut(&mut [u8]) -> i32) -> Result
     let mut buf = vec![0u8; guess.max(4)];
     for _ in 0..2 {
         match Code::check(read(&mut buf)) {
-            Ok(n) => {
-                buf.truncate(n as usize);
+            Ok(written) => {
+                buf.truncate(written as usize);
                 return Ok(buf);
             }
             Err(Code::Space) => {
@@ -470,17 +494,17 @@ fn lock(buffer: &'static Mutex<Vec<u8>>) -> MutexGuard<'static, Vec<u8>> {
 }
 
 /// Guest-memory address of a slice the host only reads, as the ABI's `u32` pointer.
-fn addr<T>(s: &[T]) -> u32 {
-    s.as_ptr() as u32
+fn addr<T>(slice: &[T]) -> u32 {
+    slice.as_ptr() as u32
 }
 
 /// Guest-memory address of a buffer the host writes into; derived from a unique borrow so
 /// the write is permitted.
-fn addr_mut<T>(s: &mut [T]) -> u32 {
-    s.as_mut_ptr() as u32
+fn addr_mut<T>(slice: &mut [T]) -> u32 {
+    slice.as_mut_ptr() as u32
 }
 
 /// Byte length of a slice as the ABI's `u32` length (guest memory is below 4 GiB).
-fn len32<T>(s: &[T]) -> u32 {
-    u32::try_from(mem::size_of_val(s)).expect("wasm32 slices fit u32")
+fn len32<T>(slice: &[T]) -> u32 {
+    u32::try_from(mem::size_of_val(slice)).expect("wasm32 slices fit u32")
 }

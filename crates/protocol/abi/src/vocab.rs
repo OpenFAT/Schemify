@@ -179,6 +179,14 @@ const _: () = assert!(Code::Module as usize == Code::ALL.len());
 // the first code to be 1.
 const _: () = assert!(Code::ALL[0] as u8 == 1);
 const _: () = assert!(Kind::COUNT == 9);
+// A kind without record words would reject every non-empty contribution of itself.
+const _: () = {
+    let mut index = 0;
+    while index < Kind::COUNT {
+        assert!(!Kind::ALL[index].words().is_empty());
+        index += 1;
+    }
+};
 
 impl Code {
     /// Every code, in numeric order (`ALL[i] as u8 == i + 1`). An array, not a slice, so
@@ -340,13 +348,13 @@ mod tests {
     /// Oracle: the §8 table (numbers 1..=11 in this order, `E_` names).
     #[test]
     fn codes_round_trip_by_value_and_name() {
-        for (i, &c) in Code::ALL.iter().enumerate() {
-            assert_eq!(c as usize, i + 1);
-            assert_eq!(Code::from_raw(c as u32), Some(c));
-            assert_eq!(Code::parse(c.name()), Some(c));
-            assert_eq!(Code::check(c.neg()), Err(c));
-            assert!(c.neg() < 0);
-            assert_eq!(c.to_string(), c.name());
+        for (i, &code) in Code::ALL.iter().enumerate() {
+            assert_eq!(code as usize, i + 1);
+            assert_eq!(Code::from_raw(code as u32), Some(code));
+            assert_eq!(Code::parse(code.name()), Some(code));
+            assert_eq!(Code::check(code.neg()), Err(code));
+            assert!(code.neg() < 0);
+            assert_eq!(code.to_string(), code.name());
         }
         assert_eq!(Code::Parse.name(), "E_PARSE");
         assert_eq!(Code::from_raw(0), None);
@@ -399,15 +407,15 @@ mod tests {
 
     #[test]
     fn named_enums_are_dense_and_round_trip() {
-        for (i, &k) in Kind::ALL.iter().enumerate() {
-            assert_eq!(k as usize, i);
-            assert_eq!(Kind::parse(k.name()), Some(k));
-            assert!(!k.words().is_empty());
-            assert_eq!(k.scoped(), k == Kind::Annotations);
+        for (i, &kind) in Kind::ALL.iter().enumerate() {
+            assert_eq!(kind as usize, i);
+            assert_eq!(Kind::parse(kind.name()), Some(kind));
+            assert!(!kind.words().is_empty());
+            assert_eq!(kind.scoped(), kind == Kind::Annotations);
         }
-        for (i, &l) in Level::ALL.iter().enumerate() {
-            assert_eq!(l as usize, i);
-            assert_eq!(Level::parse(l.name()), Some(l));
+        for (i, &level) in Level::ALL.iter().enumerate() {
+            assert_eq!(level as usize, i);
+            assert_eq!(Level::parse(level.name()), Some(level));
         }
         assert_eq!(Kind::COUNT, 9);
         assert_eq!(Kind::parse("nope"), None);

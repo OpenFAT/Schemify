@@ -7,13 +7,15 @@
 //! any input; every failure is [`Code::Parse`].
 //!
 //! Contents:
-//! - `pub fn is_word(s: &str) -> bool`, `pub fn is_bare(s: &str) -> bool`
+//! - `pub fn is_word(text: &str) -> bool`, `pub fn is_bare(text: &str) -> bool`
 //! - `pub fn split_word(line: &str) -> Result<(&str, &str), Code>`
-//! - `pub fn values(s: &str) -> Values<'_>`; `pub struct Values`: `rest`, `need`,
+//! - `pub fn values(text: &str) -> Values<'_>`; `pub struct Values`: `rest`, `need`,
 //!   `need_plain`, `need_num`, `end`, `Iterator<Item = Result<Cow<str>, Code>>`
-//! - `pub fn push_value(out: &mut String, v: &str)`, `pub fn push_num(out: &mut String, x: f64)`,
+//! - `pub fn push_value(out: &mut String, value: &str)`,
+//!   `pub fn push_num(out: &mut String, x: f64)`,
 //!   `pub fn push_verbatim(out: &mut String, body: &str)`
-//! - `pub enum BodyLine` (`Attr { word, values }`), `pub fn body_line(line: &str) -> Result<BodyLine<'_>, Code>`
+//! - `pub enum BodyLine` (`Attr { word, values }`),
+//!   `pub fn body_line(line: &str) -> Result<BodyLine<'_>, Code>`
 //! - `pub fn lines(body: &str) -> impl Iterator<Item = &str>`
 //! - `pub fn verbatim_body(body: &str) -> Result<String, Code>`
 //! - `pub fn chunks(bytes: &[u8]) -> Chunks<'_>`; `pub struct Chunks`: `Iterator<Item = &[u8]>`
@@ -69,10 +71,10 @@ const UNICODE_DIGITS_MAX: u32 = 6;
 // `lex_unicode` accumulates the digits in a `u32` without overflow checks.
 const _: () = assert!(UNICODE_DIGITS_MAX * 4 < u32::BITS);
 
-/// Returns whether `s` is a legal word: `ALPHA *(ALPHA / DIGIT / "_" / "-" / "." / ":")`.
+/// Returns whether `text` is a legal word: `ALPHA *(ALPHA / DIGIT / "_" / "-" / "." / ":")`.
 #[must_use]
-pub fn is_word(s: &str) -> bool {
-    let Some((&first, tail)) = s.as_bytes().split_first() else {
+pub fn is_word(text: &str) -> bool {
+    let Some((&first, tail)) = text.as_bytes().split_first() else {
         return false;
     };
     let word = first.is_ascii_alphabetic()
@@ -80,16 +82,16 @@ pub fn is_word(s: &str) -> bool {
             .iter()
             .all(|&byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'));
     if word {
-        debug_assert!(is_bare(s), "a word is always a legal bare value");
+        debug_assert!(is_bare(text), "a word is always a legal bare value");
     }
     word
 }
 
-/// Returns whether `s` can be written as a bare (unquoted) value: non-empty, no whitespace,
-/// quote, backslash or control character, and not starting with `#` or `|`.
+/// Returns whether `text` can be written as a bare (unquoted) value: non-empty, no
+/// whitespace, quote, backslash or control character, and not starting with `#` or `|`.
 #[must_use]
-pub fn is_bare(s: &str) -> bool {
-    let mut chars = s.chars();
+pub fn is_bare(text: &str) -> bool {
+    let mut chars = text.chars();
     match chars.next() {
         None => false,
         Some(first) => is_bchar(first) && first != '#' && first != '|' && chars.all(is_bchar),
@@ -113,45 +115,50 @@ pub fn split_word(line: &str) -> Result<(&str, &str), Code> {
     Ok((word, rest))
 }
 
-/// Iterates the whitespace-separated values of `s`, unescaping quoted ones.
+/// Iterates the whitespace-separated values of `text`, unescaping quoted ones.
 ///
-/// Bare values and quoted values without escapes borrow from `s`; only a quoted value with
-/// an escape allocates.
+/// Bare values and quoted values without escapes borrow from `text`; only a quoted value
+/// with an escape allocates.
 #[must_use]
-pub fn values(s: &str) -> Values<'_> {
-    Values { rest: s }
+pub fn values(text: &str) -> Values<'_> {
+    Values { rest: text }
 }
 
-/// Appends `v` as one value: bare when legal, otherwise quoted with escapes. Control
+/// Appends `value` as one value: bare when legal, otherwise quoted with escapes. Control
 /// characters are always escaped, so the output never contains CR, LF or NUL.
-pub fn push_value(out: &mut String, v: &str) {
+pub fn push_value(out: &mut String, value: &str) {
     use std::fmt::Write as _;
 
     let before = out.len();
-    if is_bare(v) {
-        out.push_str(v);
+    if is_bare(value) {
+        out.push_str(value);
     } else {
         out.push('"');
-        for c in v.chars() {
-            match c {
+        for character in value.chars() {
+            match character {
                 '"' => out.push_str("\\\""),
                 '\\' => out.push_str("\\\\"),
                 '\n' => out.push_str("\\n"),
                 '\t' => out.push_str("\\t"),
                 '\u{0}'..='\u{1f}' | '\u{7f}' => {
-                    write!(out, "\\u{{{:x}}}", c as u32).expect("writing to a String");
+                    write!(out, "\\u{{{:x}}}", u32::from(character)).expect("writing to a String");
                 }
-                c => out.push(c),
+                character => out.push(character),
             }
         }
         out.push('"');
     }
     let written = &out[before..];
     debug_assert!(!written.contains(['\n', '\r', '\0']));
-    // The pair of this encoder is `values`: what it wrote must lex back to `v`, alone.
+    // The pair of this encoder is `values`: what it wrote must lex back to `value`, alone.
+    let mut lexed = values(written);
     debug_assert!(
-        matches!(values(written).next(), Some(Ok(back)) if back == v),
-        "push_value wrote {written:?}, which does not lex back to {v:?}"
+        matches!(lexed.next(), Some(Ok(back)) if back == value),
+        "push_value wrote {written:?}, which does not lex back to {value:?}"
+    );
+    debug_assert!(
+        lexed.next().is_none(),
+        "push_value wrote {written:?}: two values"
     );
 }
 
@@ -203,8 +210,10 @@ pub fn push_verbatim(out: &mut String, body: &str) {
             out.push('\n');
         }
     }
-    // The pair of this encoder is `verbatim_body`: every line written is a verbatim line.
+    // The pair of this encoder is `verbatim_body`: every line written is a verbatim line,
+    // one per line of `body`.
     debug_assert!(verbatim_body(&out[before..]).is_ok());
+    debug_assert_eq!(out[before..].lines().count(), body.lines().count());
 }
 
 /// Classifies one body line, as [`lines`] yields it: no LF inside (debug builds assert it).
@@ -228,10 +237,10 @@ pub fn body_line(line: &str) -> Result<BodyLine<'_>, Code> {
     if trimmed.starts_with('#') {
         return Ok(BodyLine::Comment);
     }
-    if let Some(v) = trimmed.strip_prefix('|') {
-        return match v.strip_prefix(' ') {
+    if let Some(after_bar) = trimmed.strip_prefix('|') {
+        return match after_bar.strip_prefix(' ') {
             Some(content) => Ok(BodyLine::Verbatim(content)),
-            None if v.is_empty() => Ok(BodyLine::Verbatim("")),
+            None if after_bar.is_empty() => Ok(BodyLine::Verbatim("")),
             None => Err(Code::Parse),
         };
     }
@@ -243,8 +252,8 @@ pub fn body_line(line: &str) -> Result<BodyLine<'_>, Code> {
 /// line.
 pub fn lines(body: &str) -> impl Iterator<Item = &str> {
     body.split('\n')
-        .map(|l| l.strip_suffix('\r').unwrap_or(l))
-        .filter(|l| !l.is_empty())
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .filter(|line| !line.is_empty())
 }
 
 /// Joins the verbatim lines of `body` with `\n` (blank and comment lines are skipped).
@@ -341,12 +350,12 @@ impl<'text> Iterator for Values<'text> {
     type Item = Result<Cow<'text, str>, Code>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let s = self.rest();
-        self.rest = s;
-        if s.is_empty() {
+        let rest = self.rest();
+        self.rest = rest;
+        if rest.is_empty() {
             return None;
         }
-        let lexed = lex_value(s).and_then(|lexed| {
+        let lexed = lex_value(rest).and_then(|lexed| {
             if lexed.after.is_empty() || lexed.after.starts_with([' ', '\t']) {
                 Ok(lexed)
             } else {
@@ -355,7 +364,7 @@ impl<'text> Iterator for Values<'text> {
         });
         match lexed {
             Ok(Lexed { value, after }) => {
-                debug_assert!(after.len() < s.len(), "a value consumes input");
+                debug_assert!(after.len() < rest.len(), "a value consumes input");
                 self.rest = after;
                 Some(Ok(value))
             }
@@ -418,52 +427,54 @@ impl<'bytes> Iterator for Chunks<'bytes> {
 // ---- private ----
 
 /// Whether `c` may appear in a bare value (format spec §2 `bchar`).
-const fn is_bchar(c: char) -> bool {
+const fn is_bchar(character: char) -> bool {
     !matches!(
-        c,
+        character,
         ' ' | '\t' | '\r' | '\n' | '"' | '\\' | '\u{0}'..='\u{1f}' | '\u{7f}'
     )
 }
 
-/// Lexes one value at the start of `s` (non-empty, no leading whitespace).
-fn lex_value(s: &str) -> Result<Lexed<'_>, Code> {
-    debug_assert!(!s.is_empty());
+/// Lexes one value at the start of `text` (non-empty, no leading whitespace).
+fn lex_value(text: &str) -> Result<Lexed<'_>, Code> {
+    debug_assert!(!text.is_empty());
     debug_assert!(
-        !s.starts_with([' ', '\t']),
+        !text.starts_with([' ', '\t']),
         "`Values::rest` strips leading whitespace"
     );
-    if let Some(quoted) = s.strip_prefix('"') {
+    if let Some(quoted) = text.strip_prefix('"') {
         return lex_quoted(quoted);
     }
-    let end = s.find(|c: char| !is_bchar(c)).unwrap_or(s.len());
-    let value = &s[..end];
+    let end = text
+        .find(|character: char| !is_bchar(character))
+        .unwrap_or(text.len());
+    let value = &text[..end];
     if value.is_empty() || value.starts_with(['#', '|']) {
         return Err(Code::Parse);
     }
     Ok(Lexed {
         value: Cow::Borrowed(value),
-        after: &s[end..],
+        after: &text[end..],
     })
 }
 
-/// Lexes the body of a quoted value; `s` starts just after the opening quote.
-fn lex_quoted(s: &str) -> Result<Lexed<'_>, Code> {
+/// Lexes the body of a quoted value; `quoted` starts just after the opening quote.
+fn lex_quoted(quoted: &str) -> Result<Lexed<'_>, Code> {
     let mut owned: Option<String> = None;
-    let mut chars = s.char_indices();
+    let mut chars = quoted.char_indices();
     let mut run_start = 0;
     while let Some((i, c)) = chars.next() {
         match c {
             '"' => {
                 let value = match owned {
-                    None => Cow::Borrowed(&s[..i]),
+                    None => Cow::Borrowed(&quoted[..i]),
                     Some(mut unescaped) => {
-                        unescaped.push_str(&s[run_start..i]);
+                        unescaped.push_str(&quoted[run_start..i]);
                         Cow::Owned(unescaped)
                     }
                 };
                 return Ok(Lexed {
                     value,
-                    after: &s[i + 1..],
+                    after: &quoted[i + 1..],
                 });
             }
             '\r' | '\n' => return Err(Code::Parse),
@@ -473,7 +484,7 @@ fn lex_quoted(s: &str) -> Result<Lexed<'_>, Code> {
                     "a run starts before the escape that ends it"
                 );
                 let unescaped_so_far = owned.get_or_insert_with(String::new);
-                unescaped_so_far.push_str(&s[run_start..i]);
+                unescaped_so_far.push_str(&quoted[run_start..i]);
                 let unescaped = match chars.next().map(|(_, escape)| escape) {
                     Some('"') => '"',
                     Some('\\') => '\\',
@@ -483,8 +494,8 @@ fn lex_quoted(s: &str) -> Result<Lexed<'_>, Code> {
                     _ => return Err(Code::Parse),
                 };
                 unescaped_so_far.push(unescaped);
-                run_start = chars.clone().next().map_or(s.len(), |(next, _)| next);
-                debug_assert!(s.is_char_boundary(run_start));
+                run_start = chars.clone().next().map_or(quoted.len(), |(next, _)| next);
+                debug_assert!(quoted.is_char_boundary(run_start));
             }
             _ => {}
         }
@@ -501,8 +512,8 @@ fn lex_unicode(chars: &mut CharIndices<'_>) -> Result<char, Code> {
     for digits in 0..=UNICODE_DIGITS_MAX {
         match chars.next().map(|(_, c)| c) {
             Some('}') if digits > 0 => return char::from_u32(value).ok_or(Code::Parse),
-            Some(c) if digits < UNICODE_DIGITS_MAX => {
-                value = value * 16 + c.to_digit(16).ok_or(Code::Parse)?;
+            Some(digit) if digits < UNICODE_DIGITS_MAX => {
+                value = value * 16 + digit.to_digit(16).ok_or(Code::Parse)?;
             }
             _ => return Err(Code::Parse),
         }
@@ -510,25 +521,29 @@ fn lex_unicode(chars: &mut CharIndices<'_>) -> Result<char, Code> {
     Err(Code::Parse)
 }
 
-/// Splits `b` at its first LF: the line without it, and the bytes after it.
-fn split_line(b: &[u8]) -> (&[u8], &[u8]) {
-    match b.iter().position(|&c| c == b'\n') {
-        Some(i) => (&b[..i], &b[i + 1..]),
-        None => (b, &[]),
+/// Splits `bytes` at its first LF: the line without it, and the bytes after it.
+fn split_line(bytes: &[u8]) -> (&[u8], &[u8]) {
+    match bytes.iter().position(|&byte| byte == b'\n') {
+        Some(i) => (&bytes[..i], &bytes[i + 1..]),
+        None => (bytes, &[]),
     }
 }
 
 fn is_blank(line: &[u8]) -> bool {
-    line.iter().all(|&c| matches!(c, b' ' | b'\t' | b'\r'))
+    line.iter()
+        .all(|&byte| matches!(byte, b' ' | b'\t' | b'\r'))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
+    use proptest::arbitrary::any;
+    use proptest::{prop_assert, prop_assert_eq, prop_assume, proptest};
 
-    fn collect(s: &str) -> Result<Vec<String>, Code> {
-        values(s).map(|v| v.map(Cow::into_owned)).collect()
+    fn collect(text: &str) -> Result<Vec<String>, Code> {
+        values(text)
+            .map(|value| value.map(Cow::into_owned))
+            .collect()
     }
 
     #[test]
@@ -623,9 +638,9 @@ mod tests {
             999_999_999_999_999.5,
             (1u64 << 53) as f64,
         ];
-        for e in -24..=24 {
-            let p = 10f64.powi(e);
-            for x in [p, 1.5 * p, 4.7 * p, 999.0 * p] {
+        for exponent in -24..=24 {
+            let decade = 10f64.powi(exponent);
+            for x in [decade, 1.5 * decade, 4.7 * decade, 999.0 * decade] {
                 xs.extend([
                     x,
                     f64::from_bits(x.to_bits() + 1),
@@ -655,11 +670,11 @@ mod tests {
         }
 
         #[test]
-        fn push_value_round_trips(v in "\\PC{0,24}|[\\x00-\\x7f]{0,24}") {
+        fn push_value_round_trips(value in "\\PC{0,24}|[\\x00-\\x7f]{0,24}") {
             let mut out = String::new();
-            push_value(&mut out, &v);
+            push_value(&mut out, &value);
             let got = collect(&out).unwrap();
-            prop_assert_eq!(got, vec![v]);
+            prop_assert_eq!(got, vec![value]);
         }
 
         #[test]
@@ -675,12 +690,12 @@ mod tests {
         fn lexers_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..256)) {
             for chunk in chunks(&bytes) {
                 prop_assert!(!chunk.is_empty());
-                if let Ok(s) = std::str::from_utf8(chunk) {
-                    let _ = values(s).count();
-                    for line in lines(s) {
+                if let Ok(text) = std::str::from_utf8(chunk) {
+                    let _ = values(text).count();
+                    for line in lines(text) {
                         let _ = body_line(line);
                     }
-                    let _ = verbatim_body(s);
+                    let _ = verbatim_body(text);
                 }
             }
         }

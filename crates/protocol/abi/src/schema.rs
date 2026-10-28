@@ -245,13 +245,18 @@ mod tests {
     #[test]
     fn ids_index_the_schema_and_names_are_unique() {
         assert_eq!(Table::COUNT, 15);
-        for (i, &t) in Table::ALL.iter().enumerate() {
-            assert_eq!(t as usize, i);
-            assert_eq!(Table::from_raw(i as u32), Some(t));
-            let cols = t.columns();
-            assert!(!cols.is_empty());
-            for (j, c) in cols.iter().enumerate() {
-                assert!(cols[j + 1..].iter().all(|d| d.name != c.name), "{}", c.name);
+        for (i, &table) in Table::ALL.iter().enumerate() {
+            assert_eq!(table as usize, i);
+            assert_eq!(Table::from_raw(i as u32), Some(table));
+            let columns = table.columns();
+            assert!(!columns.is_empty());
+            for (j, column) in columns.iter().enumerate() {
+                let later = &columns[j + 1..];
+                assert!(
+                    later.iter().all(|other| other.name != column.name),
+                    "{}",
+                    column.name
+                );
             }
         }
         assert_eq!(Table::from_raw(Table::COUNT as u32), None);

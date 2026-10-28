@@ -159,7 +159,7 @@ impl<'buf> Event<'buf> {
     /// [`Code::Parse`] for invalid UTF-8 before the payload, an unknown kind, wrong arity,
     /// a non-numeric number, an escaped identifier, or a payload on a kind without one.
     pub fn parse(buf: &'buf [u8]) -> Result<Event<'buf>, Code> {
-        let (text, payload) = match buf.iter().position(|&b| b == 0) {
+        let (text, payload) = match buf.iter().position(|&byte| byte == 0) {
             Some(i) => (&buf[..i], Some(&buf[i + 1..])),
             None => (buf, None),
         };
@@ -306,11 +306,16 @@ impl Event<'_> {
 
 /// Appends ` <ident>` for an identifier field, which must be a bare value.
 fn push_ident(out: &mut Vec<u8>, ident: &str) -> Result<(), Code> {
+    debug_assert!(
+        out.last().is_some_and(|&byte| byte != b'\n'),
+        "an identifier goes inside the record line, after its kind"
+    );
     if !text::is_bare(ident) {
         return Err(Code::Parse);
     }
     out.push(b' ');
     out.extend_from_slice(ident.as_bytes());
+    debug_assert!(out.ends_with(ident.as_bytes()));
     Ok(())
 }
 
@@ -318,20 +323,26 @@ fn push_ident(out: &mut Vec<u8>, ident: &str) -> Result<(), Code> {
 fn push_num(out: &mut Vec<u8>, number: i64) {
     use std::io::Write as _;
 
+    debug_assert!(
+        out.last().is_some_and(|&byte| byte != b'\n'),
+        "a number goes inside the record line, after its kind"
+    );
     write!(out, " {number}").expect("writing to a Vec cannot fail");
+    debug_assert!(out.last().is_some_and(u8::is_ascii_digit));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
+    use proptest::arbitrary::any;
+    use proptest::{prop_assert_eq, proptest};
 
-    fn round_trip(e: Event<'_>) {
+    fn round_trip(event: Event<'_>) {
         let mut buf = Vec::new();
-        e.encode(&mut buf).unwrap();
+        event.encode(&mut buf).unwrap();
         assert_eq!(
             Event::parse(&buf),
-            Ok(e),
+            Ok(event),
             "{}",
             String::from_utf8_lossy(&buf)
         );
@@ -339,7 +350,7 @@ mod tests {
 
     #[test]
     fn every_kind_round_trips() {
-        for e in [
+        for event in [
             Event::Load,
             Event::Unload,
             Event::SelectionChanged,
@@ -375,7 +386,7 @@ mod tests {
                 record: b"edit 9 commit x",
             },
         ] {
-            round_trip(e);
+            round_trip(event);
         }
     }
 
@@ -445,9 +456,9 @@ mod tests {
     /// Oracle: the spec §6 wire form, byte for byte, for one event of each payload shape.
     #[test]
     fn wire_form_is_the_spec_bytes() {
-        let wire = |e: Event<'_>| {
+        let wire = |event: Event<'_>| {
             let mut buf = Vec::new();
-            e.encode(&mut buf).unwrap();
+            event.encode(&mut buf).unwrap();
             buf
         };
         assert_eq!(wire(Event::Load), b"event load\n");
@@ -493,14 +504,15 @@ mod tests {
         #[test]
         fn command_args_survive(args in proptest::collection::vec("\\PC{0,8}", 0..4)) {
             let mut text = String::new();
-            for a in &args {
+            for arg in &args {
                 text.push(' ');
-                text::push_value(&mut text, a);
+                text::push_value(&mut text, arg);
             }
             let mut buf = Vec::new();
             Event::Command { name: "c", args: &text }.encode(&mut buf).unwrap();
             let Ok(Event::Command { args: got, .. }) = Event::parse(&buf) else { panic!() };
-            let got: Vec<String> = text::values(got).map(|v| v.unwrap().into_owned()).collect();
+            let got: Vec<String> =
+                text::values(got).map(|value| value.unwrap().into_owned()).collect();
             prop_assert_eq!(got, args);
         }
     }
