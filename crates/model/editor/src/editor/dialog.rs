@@ -29,6 +29,7 @@ use crate::session::View;
 
 use super::Editor;
 use super::chooser::Chooser;
+use super::finish::Outline;
 use super::tool::{Form, Placement, Tool};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -320,7 +321,7 @@ impl Editor {
                 pts,
                 ..
             } if pts.len() >= 2 => {
-                self.finish_shape(reqs, h, view, Form::Poly, &pts, false);
+                self.finish_shape(reqs, h, view, Form::Poly, &pts, Outline::Open);
                 return;
             }
             Tool::Idle | Tool::Press { .. } => {}

@@ -20,8 +20,8 @@ use schemify_expr::{Code as XCode, Error as XError, Span, Value};
 use schemify_plugin::PluginId;
 use schemify_plugin::abi::Event;
 
-use super::deliver::fn_result;
-use super::load::{content_hash, load_installed};
+use super::deliver;
+use super::load;
 use super::{Host, NOTES_MAX, Note};
 
 impl Host {
@@ -60,7 +60,7 @@ impl Host {
         };
         let p = self.lazy.remove(i);
         let mut notes = Vec::new();
-        match load_installed(&mut self.plugins, &mut self.hashes, &mut notes, &p) {
+        match load::load_installed(&mut self.plugins, &mut self.hashes, &mut notes, &p) {
             Some(id) => {
                 let ev = Event::Command { name, args };
                 if let Err(e) = self.push(Some(id), &ev) {
@@ -162,7 +162,7 @@ impl Host {
             }
             let p = self.lazy.remove(i);
             let mut notes = Vec::new();
-            load_installed(&mut self.plugins, &mut self.hashes, &mut notes, &p);
+            load::load_installed(&mut self.plugins, &mut self.hashes, &mut notes, &p);
             self.user_logs.extend(notes);
         }
         assert!(
@@ -223,7 +223,7 @@ impl Host {
             .plugins
             .call(plugin, fn_id, &self.args, &mut self.result)
         {
-            Ok(()) => Some(fn_result(self.result.trim()).ok_or_else(|| {
+            Ok(()) => Some(deliver::fn_result(self.result.trim()).ok_or_else(|| {
                 let t = self.result.trim();
                 XError::new(
                     XCode::X003,
@@ -260,7 +260,7 @@ impl Host {
         match hashes.as_slice() {
             [] => None,
             [one] => Some((*one).to_owned()),
-            many => Some(content_hash(many.join("").as_bytes())),
+            many => Some(load::content_hash(many.join("").as_bytes())),
         }
     }
 }

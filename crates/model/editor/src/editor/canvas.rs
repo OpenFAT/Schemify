@@ -23,7 +23,7 @@ use crate::session::View;
 use crate::{checks, edit, export, scene};
 
 use super::Editor;
-use super::finish::{arc_3, dist};
+use super::finish;
 use super::tool::{Form, Placement, Tool};
 
 /// What a displayed scene (`shown`) was made for: (scene build key, symbol mode, symbol texts).
@@ -363,10 +363,17 @@ impl Editor {
                     o.rect(pts[0].0, pts[0].1, to.0, to.1, layer);
                 }
                 Form::Circle => {
-                    o.arc(pts[0].0, pts[0].1, dist(pts[0], *to), 0, 360_000, layer);
+                    o.arc(
+                        pts[0].0,
+                        pts[0].1,
+                        finish::dist(pts[0], *to),
+                        0,
+                        360_000,
+                        layer,
+                    );
                 }
                 Form::Arc if pts.len() == 2 => {
-                    if let Some(a) = arc_3(pts[0], pts[1], *to) {
+                    if let Some(a) = finish::arc_3(pts[0], pts[1], *to) {
                         o.arc(a.center.0, a.center.1, a.r, a.start, a.sweep, layer);
                     } else {
                         o.line(pts[0].0, pts[0].1, pts[1].0, pts[1].1, layer);

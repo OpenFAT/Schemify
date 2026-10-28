@@ -21,9 +21,7 @@ use crate::platform;
 use crate::session::Session;
 use crate::spines::{BENCH, Run};
 
-use super::{
-    BenchRun, Best, HISTORY_MAX, Kind, Polled, RUNS_MAX, SUBMIT_PER_FRAME, Sim, session_name,
-};
+use super::{BenchRun, Best, HISTORY_MAX, Kind, Polled, RUNS_MAX, SUBMIT_PER_FRAME, Sim};
 
 impl Sim {
     /// One frame of every run: prepares and submits up to [`SUBMIT_PER_FRAME`] jobs in all,
@@ -242,7 +240,7 @@ impl Sim {
     ///
     /// Never: the history is cut to [`HISTORY_MAX`] runs.
     pub fn load_latest(&mut self, session: &Session, top: DocHandle) -> bool {
-        let name = session_name(session, top);
+        let name = super::session_name(session, top);
         self.history = history(&session.root, &name);
         assert!(self.history.len() <= HISTORY_MAX);
         if self.index_of(top).is_some() {
@@ -299,7 +297,7 @@ impl Sim {
             // selected now (the design hash covers the dialect).
             dialect: self.dialect,
         };
-        let name = session_name(session, top);
+        let name = super::session_name(session, top);
         self.install(BenchRun {
             bench: top,
             name,

@@ -19,6 +19,7 @@ use schemify_doc::EditRequest;
 use schemify_plugin::PluginId;
 
 use super::Editor;
+use super::dispatch::{Caller, Ran};
 
 /// Commands [`Editor::command`] queues between frames.
 pub const QUEUED_MAX: usize = 256;
@@ -167,7 +168,7 @@ impl Editor {
             // Each command's own message: the status line starts empty for it and gets the
             // previous message back when the command says nothing.
             let before = self.session.take_status();
-            let (c, plugin) = self.dispatch(&name, &arg, "", false, reqs);
+            let Ran { changed: c, plugin } = self.dispatch(&name, &arg, "", Caller::Stream, reqs);
             changed |= c;
             if let Some(ticket) = ticket {
                 let status = plugin.is_none().then(|| self.session.status().to_owned());

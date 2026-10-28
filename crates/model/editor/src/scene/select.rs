@@ -12,7 +12,7 @@
 
 use schemify_canvas::{CanvasPrims, Marks, PrimKind};
 
-use super::refresh::stamped;
+use super::refresh;
 use super::{Objects, Scene};
 
 /// The selected objects of a scene: a bitset over object indices beside the sorted list of
@@ -117,7 +117,7 @@ pub fn selected_prims(sc: &Scene, selected: &Selected, out: &mut Vec<(u8, u32)>)
         let at = out.len();
         let stamps = sc.stamps.cols()[kind];
         for &o in &selected.objs {
-            let rows = stamped(stamps, sc.objs.stamp[o as usize]);
+            let rows = refresh::stamped(stamps, sc.objs.stamp[o as usize]);
             debug_assert!(rows.clone().all(|r| sc.owner.cols()[kind][r] == o));
             out.extend(rows.map(|r| (kind as u8, r as u32)));
         }

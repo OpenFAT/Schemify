@@ -16,8 +16,8 @@ use schemify_elab::{CellState, Name};
 use schemify_plugin::Snapshots;
 use schemify_plugin::abi::{Table, col};
 
-use super::patch::{patch_doc_groups, sync_cell_groups};
-use super::{Host, ResultRows, doc_id};
+use super::patch;
+use super::{Host, ResultRows};
 
 /// What the snapshot's document and cell groups were filled from (see [`Host::snapshot`]), so
 /// the next fill writes only what changed: the document groups follow the document's change
@@ -153,7 +153,7 @@ impl Host {
         key: u64,
     ) {
         let s = &mut self.snapshots;
-        let id = h.map_or(0, doc_id);
+        let id = h.map_or(0, super::doc_id);
         s.fill::<u32>(
             Table::Selection,
             col::selection::DOC,
@@ -165,7 +165,7 @@ impl Host {
             return; // a selection change only (a click): the document tables stand
         }
         let handles: Vec<DocHandle> = project.handles().collect();
-        let ids: Vec<u32> = handles.iter().map(|&d| doc_id(d)).collect();
+        let ids: Vec<u32> = handles.iter().map(|&d| super::doc_id(d)).collect();
         s.fill::<u32>(Table::Docs, col::docs::HANDLE, &ids);
         let kinds: Vec<u8> = handles
             .iter()
@@ -188,7 +188,7 @@ impl Host {
         let Some((h, doc)) = h.and_then(|h| Some((h, project.doc(h)?))) else {
             return;
         };
-        let id = doc_id(h);
+        let id = super::doc_id(h);
         // The document groups follow the document's change log from the last fill; the
         // elab groups follow the check pass, compared with what was filled.
         let changes = self
@@ -197,7 +197,7 @@ impl Host {
             .filter(|d| d.0 == id)
             .and_then(|d| doc.changes_since(d.1));
         match changes {
-            Some(changes) => patch_doc_groups(s, doc, id, changes, &mut self.filled),
+            Some(changes) => patch::patch_doc_groups(s, doc, id, changes, &mut self.filled),
             None => {
                 let groups = [true, true, true, false, false, false, false];
                 fill_groups(s, doc, id, cell, results, groups);
@@ -205,7 +205,7 @@ impl Host {
             }
         }
         self.filled.doc = Some((id, doc.cursor()));
-        sync_cell_groups(s, id, cell, &mut self.filled);
+        patch::sync_cell_groups(s, id, cell, &mut self.filled);
         assert_eq!(
             s.rows(Table::Wires) as usize,
             doc.wires().id.len(),

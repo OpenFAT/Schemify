@@ -18,8 +18,7 @@ use schemify_format::RecordKind;
 use crate::edit::Ids;
 use crate::geometry::Pt;
 
-use super::stretch::fixed_points;
-use super::wire_rec;
+use super::stretch;
 
 /// A wire's line: its reduced direction `(dx, dy)` (coprime, `dx > 0`, or `dx == 0` and
 /// `dy > 0`) and the offset `dx·y − dy·x`, which is the same for every point of the line.
@@ -100,7 +99,7 @@ pub fn join_trim(project: &Project, h: DocHandle, ids: &mut Ids<'_>) -> Vec<Op> 
         return Vec::new();
     };
     // Pins, ports and noconns (labels excluded: they never cut).
-    let mut anchors: Vec<Pt> = fixed_points(project, h, doc, &HashSet::new());
+    let mut anchors: Vec<Pt> = stretch::fixed_points(project, h, doc, &HashSet::new());
     let labels: Vec<Pt> = (0..doc.labels().id.len())
         .map(|i| (doc.labels().x[i], doc.labels().y[i]))
         .collect();
@@ -266,7 +265,7 @@ pub fn join_trim(project: &Project, h: DocHandle, ids: &mut Ids<'_>) -> Vec<Op> 
             if !kept.contains(sp) {
                 let id = ids.draw(doc).text;
                 ops.push(Op::Insert {
-                    rec: wire_rec(&id, pt(sp.0), pt(sp.1), &attrs),
+                    rec: super::wire_rec(&id, pt(sp.0), pt(sp.1), &attrs),
                     at: None,
                 });
             }

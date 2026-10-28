@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 
 use schemify_canvas::{CanvasPrims, LAYERS, LineStyle};
 
-use super::{Look, arc_point};
+use super::Look;
 
 pub(super) fn units(m: i64) -> String {
     let mut s = String::new();
@@ -138,8 +138,8 @@ pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
         }
         let start = i64::from(a.start[i]);
         let end = start + i64::from(a.sweep[i]);
-        let p0 = arc_point(a.cx[i], a.cy[i], a.r[i], start);
-        let p1 = arc_point(a.cx[i], a.cy[i], a.r[i], end);
+        let p0 = super::arc_point(a.cx[i], a.cy[i], a.r[i], start);
+        let p1 = super::arc_point(a.cx[i], a.cy[i], a.r[i], end);
         let large = u8::from(a.sweep[i].unsigned_abs() > 180_000);
         let dir = u8::from(a.sweep[i] > 0);
         let _ = writeln!(

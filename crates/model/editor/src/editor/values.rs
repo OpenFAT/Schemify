@@ -21,7 +21,7 @@ use crate::scene::ObjKey;
 use crate::{docs, spines};
 
 use super::Editor;
-use super::apply::push_req;
+use super::apply;
 
 /// Cell states kept for documents that are not active ([`Editor`]'s `parked`).
 pub(super) const PARKED_MAX: usize = 8;
@@ -252,7 +252,7 @@ impl Editor {
             return false;
         }
         match self.amend.as_ref().and_then(|a| a.3.filter(|_| a.0 == h)) {
-            Some(seq) => push_req(reqs, h, Edit::Extend(seq, ops)),
+            Some(seq) => apply::push_req(reqs, h, Edit::Extend(seq, ops)),
             None if self.undid => return false,
             None => self.commit(reqs, h, "update plugin cache", ops),
         }

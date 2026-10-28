@@ -13,7 +13,7 @@
 use schemify_canvas::{CanvasPrims, LAYERS, LineStyle};
 use schemify_ui::FontGlyph;
 
-use super::{FONT_NAMES, Look, arc_point};
+use super::{FONT_NAMES, Look};
 
 /// Which page-description language a vector page is written in: PDF content-stream
 /// operators or PostScript. Same geometry, two spellings.
@@ -79,7 +79,7 @@ pub(super) fn arc_beziers(cx: i32, cy: i32, r: i32, start: i64, sweep: i64) -> V
         (q(f64::from(cx) + x), q(f64::from(cy) + y))
     };
     let end = |d: i64| {
-        let p = arc_point(cx, cy, r, d);
+        let p = super::arc_point(cx, cy, r, d);
         let q = |v: i64| v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
         (q(p.0), q(p.1))
     };

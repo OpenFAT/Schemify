@@ -25,9 +25,7 @@ use schemify_run::{NO_SAMPLE, OptRun, Plan, RunnerConfig, Select};
 use crate::session::Session;
 use crate::{spines, waves};
 
-use super::{
-    BenchRun, JobLog, Kind, PROBE_DEVICES_MAX, QUEUE_MAX, RUNS_MAX, Request, Sim, session_name,
-};
+use super::{BenchRun, JobLog, Kind, PROBE_DEVICES_MAX, QUEUE_MAX, RUNS_MAX, Request, Sim};
 
 /// The quantities saved for each MOSFET (every ngspice MOS model has them).
 const MOS_SAVES: [&str; 6] = ["id", "gm", "gds", "vgs", "vds", "vdsat"];
@@ -74,7 +72,7 @@ impl Sim {
             });
             return Ok(format!(
                 "{}: queued after the run in flight",
-                session_name(session, top)
+                super::session_name(session, top)
             ));
         }
         self.start_now(session, top, optimize, probe, env, funcs)
@@ -139,7 +137,7 @@ impl Sim {
             None => Kind::Simulate,
         };
         let jobs = run.jobs.len();
-        let name = session_name(session, top);
+        let name = super::session_name(session, top);
         self.install(BenchRun {
             bench: top,
             name,
@@ -343,7 +341,7 @@ impl Sim {
             });
             match fresh {
                 Ok(run) => {
-                    let name = session_name(session, top);
+                    let name = super::session_name(session, top);
                     self.install(BenchRun {
                         bench: top,
                         name,

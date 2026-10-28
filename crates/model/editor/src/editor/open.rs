@@ -23,8 +23,9 @@ use crate::sim::Sim;
 use crate::{platform, spines};
 
 use super::dialog::Dialog;
-use super::files::{default_view, project_root};
-use super::opts::{EditOpts, user_layer_colors};
+use super::files;
+use super::opts;
+use super::opts::EditOpts;
 use super::probe::DOCK_SPLIT;
 use super::tool::Tool;
 use super::{Editor, Options, Panel};
@@ -41,7 +42,7 @@ impl Editor {
         let path = opts.path.clone();
         let root = match &path {
             Some(p) if platform::is_dir(p) => p.clone(),
-            Some(p) => project_root(p),
+            Some(p) => files::project_root(p),
             None => std::env::current_dir().map_err(|e| e.to_string())?,
         };
         let first = path.as_deref().filter(|p| !platform::is_dir(p));
@@ -57,7 +58,7 @@ impl Editor {
             width_tenths: user.opts.line_width_tenths,
             ..EditOpts::default()
         };
-        let layer_colors = user_layer_colors(&user.opts);
+        let layer_colors = opts::user_layer_colors(&user.opts);
         // The PDK's pin, else the config's simulator, else detection (run spec §5).
         let (dialect, pin_err) = match spines::sim_dialect(None, &session.project, user) {
             Ok(d) => (d, None),
@@ -188,7 +189,7 @@ impl Editor {
         };
         match opened {
             Some(h) => {
-                let view = default_view(ed.session.project.doc(h));
+                let view = files::default_view(ed.session.project.doc(h));
                 ed.session.open_tab(h, view);
                 let id = plugins::doc_id(h);
                 let _ = ed.host.push(None, &Event::DocOpened { doc: id });

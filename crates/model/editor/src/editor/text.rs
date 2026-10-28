@@ -1,6 +1,7 @@
 //! Read-only text tabs: netlists, find, changelog, packages, processes, job logs, help.
 //!
 //! Contents:
+//! - `pub(super) enum NetlistOf`
 //! - `pub(super) const CHANGELOG_ROWS`
 //! - `Editor::find_in_text`
 //! - `Editor::netlist`
@@ -22,6 +23,15 @@ use crate::session::TextView;
 use crate::{platform, spines};
 
 use super::{Editor, Panel, highlight};
+
+/// Which cell of the active tab a netlist is made of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NetlistOf {
+    /// The tab's top cell (`n`).
+    Top,
+    /// The cell shown at this level (`Shift+N`).
+    Level,
+}
 
 /// Rows of hierarchy the changelog lists at most.
 pub(super) const CHANGELOG_ROWS: usize = 1 << 12;
@@ -74,14 +84,13 @@ impl Editor {
     /// gate on errors (D13: the blocking lines go to the checks panel), emit in the selected
     /// dialect, write `.schemify/netlist/<cell>.<ext>`, and show it in a text tab when "show
     /// netlist" is on.
-    pub(super) fn netlist(&mut self, whole: bool) {
+    pub(super) fn netlist(&mut self, of: NetlistOf) {
         let Some(tab) = self.session.tabs().get(self.session.active()) else {
             return;
         };
-        let h = if whole {
-            tab.stack[0].doc
-        } else {
-            tab.stack.last().expect("tabs are never empty").doc
+        let h = match of {
+            NetlistOf::Top => tab.stack[0].doc,
+            NetlistOf::Level => tab.stack.last().expect("tabs are never empty").doc,
         };
         let Some(stem) = self
             .session

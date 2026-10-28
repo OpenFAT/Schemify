@@ -9,8 +9,8 @@
 use schemify_doc::{Document, Op, RecordBuf, RecordKind, TableId, Target};
 use schemify_format::FileKind;
 
-use super::ops::{attr_ops, one_of, set_field, word};
-use super::{ALGOS, Bench, attr_of, names, record, record_count};
+use super::ops;
+use super::{ALGOS, Bench};
 
 pub(super) fn bench_ops(b: Bench, rec: &RecordBuf, a: &str, v: &str) -> Result<Vec<Op>, String> {
     assert_eq!(
@@ -27,28 +27,34 @@ pub(super) fn bench_ops(b: Bench, rec: &RecordBuf, a: &str, v: &str) -> Result<V
     };
     let ops = match (b, a) {
         (Bench::Output, "name") => {
-            word(v, "an output name")?;
-            set_field(target, rec, 0, v)
+            ops::word(v, "an output name")?;
+            ops::set_field(target, rec, 0, v)
         }
         (Bench::Output, "expr") => {
             if v.is_empty() {
                 return Err("an output needs an expression".into());
             }
-            set_field(target, rec, 1, v)
+            ops::set_field(target, rec, 1, v)
         }
         (Bench::Output, "unit") | (Bench::Spec, "min" | "max") => {
-            attr_ops(target, attr_of(rec, a), a, v, vec![v.to_owned()])
+            ops::attr_ops(target, super::attr_of(rec, a), a, v, vec![v.to_owned()])
         }
         (Bench::Optimize, "algo") => {
-            one_of(v, &ALGOS, "algo")?;
+            ops::one_of(v, &ALGOS, "algo")?;
             let v = if v == "nelder-mead" { "" } else { v };
-            attr_ops(target, attr_of(rec, "algo"), "algo", v, vec![v.to_owned()])
+            ops::attr_ops(
+                target,
+                super::attr_of(rec, "algo"),
+                "algo",
+                v,
+                vec![v.to_owned()],
+            )
         }
         (Bench::Optimize, "budget" | "seed") => {
             if !v.is_empty() && v.parse::<u64>().is_err() {
                 return Err(format!("{a} must be a whole number"));
             }
-            attr_ops(target, attr_of(rec, a), a, v, vec![v.to_owned()])
+            ops::attr_ops(target, super::attr_of(rec, a), a, v, vec![v.to_owned()])
         }
         (Bench::Optimize, "goals") => lines_ops(&target, rec, "goal", parse_goals(v)?),
         (Bench::Optimize, "vary") => lines_ops(&target, rec, "vary", words(v)),
@@ -73,8 +79,8 @@ pub fn add_bench_ops(doc: &Document, b: Bench) -> Result<Vec<Op>, String> {
     if doc.kind() != FileKind::Shbench {
         return Err("only a testbench has outputs, specs and optimizers".into());
     }
-    let n = record_count(doc, b.table());
-    let have = names(doc, b.table(), n);
+    let n = super::record_count(doc, b.table());
+    let have = super::names(doc, b.table(), n);
     assert_eq!(have.len(), n);
     let free = |base: &str| {
         (1..=n + 1)
@@ -87,7 +93,11 @@ pub fn add_bench_ops(doc: &Document, b: Bench) -> Result<Vec<Op>, String> {
             .field(&free("out"))
             .field("0"),
         Bench::Spec => {
-            let outs = names(doc, TableId::Outputs, record_count(doc, TableId::Outputs));
+            let outs = super::names(
+                doc,
+                TableId::Outputs,
+                super::record_count(doc, TableId::Outputs),
+            );
             let out = outs
                 .into_iter()
                 .find(|o| !have.contains(o))
@@ -111,12 +121,12 @@ pub fn add_bench_ops(doc: &Document, b: Bench) -> Result<Vec<Op>, String> {
 ///
 /// Never: the assert checks that only a stale `row` gives no ops.
 pub fn delete_bench_ops(doc: &Document, b: Bench, row: u32) -> Vec<Op> {
-    let ops = record(doc, b.table(), row).map_or_else(Vec::new, |rec| {
+    let ops = super::record(doc, b.table(), row).map_or_else(Vec::new, |rec| {
         vec![Op::Delete(Target::new(b.kind(), &rec.fields[0]))]
     });
     assert_eq!(
         ops.is_empty(),
-        (row as usize) >= record_count(doc, b.table())
+        (row as usize) >= super::record_count(doc, b.table())
     );
     ops
 }

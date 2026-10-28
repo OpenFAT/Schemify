@@ -14,6 +14,7 @@ use crate::session::View;
 use crate::{edit, platform, wiring};
 
 use super::dialog::TextFor;
+use super::finish::Outline;
 use super::tool::{Form, Placement, Tool};
 use super::{Editor, apply};
 
@@ -231,7 +232,7 @@ impl Editor {
                     ..
                 } = std::mem::take(&mut self.tool)
                 {
-                    self.finish_shape(reqs, h, view, Form::Poly, &pts, true);
+                    self.finish_shape(reqs, h, view, Form::Poly, &pts, Outline::Closed);
                 }
             }
             Cmd::AlignGrid => {

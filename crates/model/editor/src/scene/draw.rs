@@ -25,10 +25,10 @@ use schemify_format::{Orient, RecordKind};
 use crate::geometry;
 use crate::geometry::Pt;
 
-use super::refresh::{Build, stamped};
-use super::symbols::{
-    SymText, Symbols, attr, layer_attr, size_of, style_attr, sym_text_at, text_size, text_start,
-};
+use super::refresh;
+use super::refresh::Build;
+use super::symbols;
+use super::symbols::{SymText, Symbols};
 use super::{LAYER_BUS, LAYER_MISSING, ObjKey, PIN_HALF, Scene, UNIT};
 
 /// Reusable buffers of instance stamping (resolved cells, template inputs, text).
@@ -156,11 +156,11 @@ pub(super) fn revalue_texts<'d>(
         return false; // the placeholder has no value texts
     };
     let iface = row.and_then(|r| project.interface(r));
-    let rows = stamped(&sc.stamps.texts, sc.objs.stamp[o as usize]);
+    let rows = refresh::stamped(&sc.stamps.texts, sc.objs.stamp[o as usize]);
     let mut next = rows.start;
     for t in &p.texts {
         let (q, rot) = inst_text(t, (orient, at), (doc, i, iface, cellref), values, st);
-        let Some((from, drawn)) = text_start(q, t.size, &st.text, rot) else {
+        let Some((from, drawn)) = symbols::text_start(q, t.size, &st.text, rot) else {
             continue; // drew no row before either, or the count check below fails
         };
         if next == rows.end {
@@ -197,7 +197,7 @@ pub(super) fn wire(b: &mut Build<'_>, doc: &Document, i: usize) {
         table: TableId::Wires,
         key: w.id[i].0,
     };
-    let bus = attr(doc, w.attrs[i], "bus").is_some_and(|v| v == "true");
+    let bus = symbols::attr(doc, w.attrs[i], "bus").is_some_and(|v| v == "true");
     let obj = b.sc.objs.push(key, [a.0, a.1, c.0, c.1], true);
     b.line(a, c, if bus { LAYER_BUS } else { 1 }, LineStyle::PLAIN, obj);
     b.conn_at(a, obj);
@@ -274,8 +274,8 @@ pub(super) fn one_other(b: &mut Build<'_>, doc: &Document, table: TableId, i: us
                 table,
                 key: t.id[i].0,
             };
-            let size = size_of(attr(doc, t.attrs[i], "size"), 0.4);
-            let layer = layer_attr(doc, t.attrs[i], 3);
+            let size = symbols::size_of(symbols::attr(doc, t.attrs[i], "size"), 0.4);
+            let layer = symbols::layer_attr(doc, t.attrs[i], 3);
             let at = (t.x[i], t.y[i]);
             let obj = b.sc.objs.push(key, [at.0, at.1, at.0, at.1], false);
             // Rotated texts (format spec §3 orientation): turned about the anchor; a mirror
@@ -303,8 +303,8 @@ pub(super) fn shape(b: &mut Build<'_>, doc: &Document, i: usize) {
     };
     let c = &doc.pool().coords[sh.coords[i].range()];
     assert!(i < sh.id.len(), "shape row {i}");
-    let layer = layer_attr(doc, sh.attrs[i], 4);
-    let st = style_attr(doc, sh.attrs[i]);
+    let layer = symbols::layer_attr(doc, sh.attrs[i], 4);
+    let st = symbols::style_attr(doc, sh.attrs[i]);
     match sh.form[i] {
         RecordKind::Line if c.len() == 4 => {
             let obj = b.sc.objs.push(key, [c[0], c[1], c[2], c[3]], true);
@@ -327,7 +327,7 @@ pub(super) fn shape(b: &mut Build<'_>, doc: &Document, i: usize) {
         }
         RecordKind::Poly if c.len() >= 4 => {
             let pts: Vec<Pt> = c.chunks_exact(2).map(|q| (q[0], q[1])).collect();
-            let closed = attr(doc, sh.attrs[i], "closed") == Some("true");
+            let closed = symbols::attr(doc, sh.attrs[i], "closed") == Some("true");
             let obj =
                 b.sc.objs
                     .push(key, [pts[0].0, pts[0].1, pts[0].0, pts[0].1], false);
@@ -363,7 +363,7 @@ pub(super) fn placed(b: &mut Build<'_>, key: ObjKey, at: Pt, o: Orient, name: &s
     let obj = b.sc.objs.push(key, [at.0, at.1, at.0, at.1], false);
     let dir = geometry::place(o, (0, 0), (1, 0));
     let size = 16 * UNIT;
-    let (w, h) = text_size(size, name);
+    let (w, h) = symbols::text_size(size, name);
     let mut bx = [
         at.0 - PIN_HALF,
         at.1 - PIN_HALF,
@@ -456,7 +456,7 @@ fn inst_text<'d>(
     let rot = turned.quarter_turns();
     debug_assert!(rot < 4, "a quarter-turn count");
     (
-        sym_text_at(
+        symbols::sym_text_at(
             geometry::place(o, at, t.at),
             t,
             text,

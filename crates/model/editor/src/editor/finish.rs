@@ -2,6 +2,7 @@
 //!
 //! Contents:
 //! - `pub(super) fn dist`
+//! - `pub(super) enum Outline`
 //! - `pub(super) struct ArcFit`, `pub(super) fn arc_3`
 //! - `Editor::manhattan_points`
 //! - `Editor::finish_wire`
@@ -31,6 +32,15 @@ pub(super) fn dist(a: Pt, b: Pt) -> i32 {
         f64::from(b.1) - f64::from(a.1),
     );
     (dx.hypot(dy).round() as i64).clamp(0, i64::from(i32::MAX)) as i32
+}
+
+/// Whether a drawn polygon closes on its first point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Outline {
+    /// An open polyline (every other shape too).
+    Open,
+    /// A polygon whose last point joins the first.
+    Closed,
 }
 
 /// An arc through three points, as an `arc` record holds it.
@@ -277,11 +287,11 @@ impl Editor {
         assert!(!pts.is_empty(), "a shape tool starts with its first point");
         if form == Form::Poly {
             if pts.len() >= 3 && p == pts[0] {
-                self.finish_shape(reqs, h, view, form, &pts, true);
+                self.finish_shape(reqs, h, view, form, &pts, Outline::Closed);
                 return;
             }
             if pts.len() >= 2 && Some(&p) == pts.last() {
-                self.finish_shape(reqs, h, view, form, &pts, false);
+                self.finish_shape(reqs, h, view, form, &pts, Outline::Open);
                 return;
             }
         }
@@ -289,7 +299,7 @@ impl Editor {
             pts.push(p);
         }
         if form.points() == Some(pts.len()) {
-            self.finish_shape(reqs, h, view, form, &pts, false);
+            self.finish_shape(reqs, h, view, form, &pts, Outline::Open);
             if form == Form::Line && self.opts.persistent {
                 self.tool = Tool::Shape {
                     form,
@@ -311,10 +321,13 @@ impl Editor {
         view: View,
         form: Form,
         pts: &[Pt],
-        closed: bool,
+        outline: Outline,
     ) {
         assert!(!pts.is_empty(), "a shape has its first point");
-        assert!(!closed || form == Form::Poly, "only a polygon closes");
+        assert!(
+            outline == Outline::Open || form == Form::Poly,
+            "only a polygon closes"
+        );
         self.tool = Tool::Idle;
         let schematic = view == View::Schematic;
         let Some(doc) = self.session.project.doc(h) else {
@@ -332,7 +345,7 @@ impl Editor {
         } else {
             (None, None)
         };
-        let Some(rec) = shape_record(form, pts, closed, self.opts.layer, id.as_deref()) else {
+        let Some(rec) = shape_record(form, pts, outline, self.opts.layer, id.as_deref()) else {
             self.session.say("that shape has no extent");
             return;
         };
@@ -464,10 +477,11 @@ impl Editor {
 fn shape_record(
     form: Form,
     pts: &[Pt],
-    closed: bool,
+    outline: Outline,
     layer: u8,
     id: Option<&str>,
 ) -> Option<RecordBuf> {
+    let closed = outline == Outline::Closed;
     let c = crate::geometry::coord;
     let (word, values): (&str, Vec<i32>) = match form {
         Form::Line | Form::Rect => {
@@ -540,11 +554,20 @@ mod tests {
 
     #[test]
     fn shapes_need_extent() {
-        assert!(shape_record(Form::Rect, &[(0, 0), (0, 10)], false, 4, Some("abcdef")).is_none());
+        assert!(
+            shape_record(
+                Form::Rect,
+                &[(0, 0), (0, 10)],
+                Outline::Open,
+                4,
+                Some("abcdef")
+            )
+            .is_none()
+        );
         let r = shape_record(
             Form::Poly,
             &[(0, 0), (10, 0), (10, 10)],
-            true,
+            Outline::Closed,
             7,
             Some("abcdef"),
         )
@@ -555,7 +578,14 @@ mod tests {
         );
         assert_eq!(r.find_attr("layer").unwrap().values, ["7"]);
         assert!(r.find_attr("closed").is_some());
-        let sym = shape_record(Form::Circle, &[(0, 0), (3_000, 4_000)], false, 4, None).unwrap();
+        let sym = shape_record(
+            Form::Circle,
+            &[(0, 0), (3_000, 4_000)],
+            Outline::Open,
+            4,
+            None,
+        )
+        .unwrap();
         assert_eq!(sym.kind, RecordKind::Circle);
         assert_eq!(sym.fields, ["0", "0", "5"]);
     }

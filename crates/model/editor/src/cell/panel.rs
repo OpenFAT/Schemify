@@ -15,11 +15,10 @@ use schemify_format::FileKind;
 
 use crate::docs;
 
-use super::bench_panel::bench_sections;
-use super::ops::{add_impl_ops, sync_ops};
+use super::bench_panel;
+use super::ops;
 use super::{
     ADD_LANGS, DIALECTS, PARAM_ATTRS, PARAM_KINDS, PIN_DIRS, PIN_DOMAINS, PortSync, SyncPlan,
-    attr_of, body_row, body_text, names, row_u32,
 };
 
 /// Projects `doc` into the panel: rows under the plugin-declared `cell.page` node. A file
@@ -34,7 +33,7 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
     let start = t.len();
     let kind = doc.kind();
     let cellish = matches!(kind, FileKind::Shprim | FileKind::Shcomp);
-    let impls = names(doc, TableId::Impls, doc.impls().kind.len());
+    let impls = super::names(doc, TableId::Impls, doc.impls().kind.len());
     assert!(
         sync.is_none_or(|p| (p.impl_row as usize) < impls.len()),
         "a pending sync is dropped on every edit, so its impl row exists"
@@ -58,7 +57,7 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
         dropdown(t, "cell.hdr.default", "default", v, &choices, "cell.page");
     }
     if kind == FileKind::Shbench {
-        bench_sections(t, doc);
+        bench_panel::bench_sections(t, doc);
     }
     assert!(t.len() > start, "the header section is always shown");
     if !cellish {
@@ -70,7 +69,7 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
     for r in 0..n_pins {
         let rec = doc.record(Loc {
             table: TableId::Pins,
-            row: row_u32(r),
+            row: super::row_u32(r),
         });
         let blk = block(t, &format!("cell.pin.{r}"));
         input(
@@ -88,7 +87,7 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
             &PIN_DIRS,
             &blk,
         );
-        let dom = attr_of(&rec, "domain").unwrap_or("analog");
+        let dom = super::attr_of(&rec, "domain").unwrap_or("analog");
         dropdown(
             t,
             &format!("cell.pin.{r}.domain"),
@@ -129,7 +128,7 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
     for r in 0..doc.params().kind.len() {
         let rec = doc.record(Loc {
             table: TableId::Params,
-            row: row_u32(r),
+            row: super::row_u32(r),
         });
         let blk = block(t, &format!("cell.param.{r}"));
         input(
@@ -147,7 +146,7 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
             default,
             &blk,
         );
-        let k = attr_of(&rec, "kind").unwrap_or("number");
+        let k = super::attr_of(&rec, "kind").unwrap_or("number");
         dropdown(
             t,
             &format!("cell.param.{r}.kind"),
@@ -185,7 +184,7 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
     for (r, name) in impls.iter().enumerate() {
         let rec = doc.record(Loc {
             table: TableId::Impls,
-            row: row_u32(r),
+            row: super::row_u32(r),
         });
         let lang = rec.fields.get(1).map_or("", String::as_str);
         let blk = block(t, &format!("cell.impl.{r}"));
@@ -197,14 +196,14 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
                 t,
                 &format!("cell.impl.{r}.model"),
                 "model",
-                attr_of(&rec, "model").unwrap_or(""),
+                super::attr_of(&rec, "model").unwrap_or(""),
                 &blk,
             );
             input(
                 t,
                 &format!("cell.impl.{r}.file"),
                 "file",
-                attr_of(&rec, "file").unwrap_or(""),
+                super::attr_of(&rec, "file").unwrap_or(""),
                 &blk,
             );
             for d in DIALECTS {
@@ -224,7 +223,7 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
             }
             let id = format!("cell.impl.{r}.body");
             docs::node(t, &id, "text_area", &blk);
-            docs::attr(t, "value", &body_text(doc, name));
+            docs::attr(t, "value", &super::body_text(doc, name));
             docs::attr(t, "command", "cell.set");
             docs::attr(
                 t,
@@ -232,7 +231,7 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
                 "Definition text (Verilog-A, Verilog, SPICE); Ctrl+Enter applies",
             );
             docs::attr(t, "style", "cell-body");
-            if body_row(doc, name).is_some() {
+            if super::body_row(doc, name).is_some() {
                 let bar = format!("cell.impl.{r}.ports");
                 docs::node(t, &bar, "panel", &blk);
                 docs::attr(t, "style", "cell-bar");
@@ -253,8 +252,8 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
                     &bar,
                 );
             }
-            if let Some(p) = sync.filter(|p| p.impl_row == row_u32(r)) {
-                sync_rows(t, &sync_ops(doc, &p.ports).plan, &p.ports, &blk);
+            if let Some(p) = sync.filter(|p| p.impl_row == super::row_u32(r)) {
+                sync_rows(t, &ops::sync_ops(doc, &p.ports).plan, &p.ports, &blk);
             }
         }
         button(
@@ -270,7 +269,7 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
     docs::node(t, bar, "panel", "cell.page");
     docs::attr(t, "style", "cell-bar");
     for (lang, _) in ADD_LANGS {
-        if add_impl_ops(doc, lang).is_ok() {
+        if ops::add_impl_ops(doc, lang).is_ok() {
             let label = match lang {
                 "schematic" => "+ Schematic",
                 "spice" => "+ SPICE",

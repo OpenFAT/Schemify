@@ -400,7 +400,8 @@ impl Editor {
     ///
     /// If a `viewport` dimension is negative.
     pub fn update(&mut self, events: &InputEvents, viewport: (f32, f32), now_ms: u64) -> bool {
-        assert!(viewport.0 >= 0.0 && viewport.1 >= 0.0, "negative viewport");
+        assert!(viewport.0 >= 0.0, "a viewport of non-negative width");
+        assert!(viewport.1 >= 0.0, "a viewport of non-negative height");
         self.now = now_ms;
         // 0. the waves dock: its share of the window and the input over it
         let mut changed = false;
@@ -468,6 +469,7 @@ impl Editor {
             }
             changed |= self.apply(&mut reqs);
         }
+        assert!(reqs.is_empty(), "every delivered request was applied");
         changed |= self.auto_trim(&mut reqs);
         // 5. symbols of the active document (I/O); a journal's crash recovery asks first
         self.load_symbols();
@@ -564,16 +566,6 @@ impl Editor {
             self.mods = mods.0;
         }
     }
-
-    // ------------------------------------------------------------------ dispatch
-
-    // ------------------------------------------------------------------ helpers
-
-    // ------------------------------------------------------------------ dialogs
-
-    // ------------------------------------------------------------------ canvas gestures
-
-    // ------------------------------------------------------------------ spine steps
 }
 
 /// Whether a cell of `kind` has the `view` side: a `.shcomp` has both, a `.shprim` only a
