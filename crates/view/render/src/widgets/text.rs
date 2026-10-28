@@ -45,6 +45,21 @@ pub fn draw_prose<P: Painter>(
         list.math_y.len(),
         "math columns in step"
     );
+    assert_eq!(
+        list.text_id.len(),
+        list.text_x.len(),
+        "text columns in step"
+    );
+    assert_eq!(
+        list.math_id.len(),
+        list.math_x.len(),
+        "math columns in step"
+    );
+    assert_eq!(
+        list.image_id.len(),
+        list.image_rect.len(),
+        "image columns in step"
+    );
     let r = |q: &[f32; 4]| {
         let (x, y) = (at.0 + f64::from(q[0]), at.1 + f64::from(q[1]));
         Rect::new(x, y, x + f64::from(q[2]), y + f64::from(q[3]))
@@ -186,11 +201,14 @@ pub(super) fn draw_icon<P: Painter>(
     color: Color,
     scratch: &mut UiScratch,
 ) {
+    assert!(pad.0 >= 0.0, "an icon's horizontal padding");
+    assert!(pad.1 >= 0.0, "an icon's vertical padding");
     let side = (area.width() - 2.0 * pad.0).min(area.height() - 2.0 * pad.1);
     if side <= 0.0 {
         return;
     }
     let s = side / f64::from(ICON_BOX);
+    debug_assert!(s > 0.0, "an icon scales up from its box");
     let c = area.center();
     let at = Affine::translate((c.x - side / 2.0, c.y - side / 2.0)) * Affine::scale(s);
     let width = f64::from(ICON_STROKE) * s;

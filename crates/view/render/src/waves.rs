@@ -13,6 +13,8 @@
 //! - `pub fn draw_window<P: Painter>(p, geo, waves, ui, look, text, s)`
 //! - `pub fn draw_pane<P: Painter>(p, area, waves, k, active, drag, look, text, s)`
 
+use std::mem;
+
 use kurbo::{BezPath, Rect};
 use peniko::Color;
 
@@ -98,6 +100,10 @@ pub fn draw_window<P: Painter>(
         geo.panes.len() <= waves.panes().len(),
         "more pane rects than panes"
     );
+    assert!(
+        geo.panes.len() <= usize::from(u8::MAX) + 1,
+        "pane indices are u8"
+    );
     let several = geo.panes.len() > 1;
     for (k, &r) in geo.panes.iter().enumerate() {
         let active = several && ui.active_pane() as usize == k;
@@ -134,6 +140,8 @@ pub fn draw_pane<P: Painter>(
     s: &mut WaveScratch,
 ) {
     assert!(usize::from(k) < waves.panes().len(), "no pane {k}");
+    debug_assert!(area.w.is_finite(), "a laid-out pane");
+    debug_assert!(area.h.is_finite(), "a laid-out pane");
     let pane = widgets::rect(area);
     p.fill_rect(pane, painter::rgba(look.bg));
     let pr = ui_waves::plot_area(area);
@@ -151,7 +159,7 @@ pub fn draw_pane<P: Painter>(
     // Grid and tick labels (a digital pane has lanes, not a y scale).
     let nx = (pr.w / 90.0).clamp(2.0, 12.0) as u8;
     axis_ticks(xa, nx, &mut s.ticks);
-    let ts = std::mem::take(&mut s.ticks);
+    let ts = mem::take(&mut s.ticks);
     let digits = graph::tick_digits(&ts, xa.log);
     for &t in &ts {
         let x = f64::from(sx.px(t)).floor() + 0.5;
@@ -174,7 +182,7 @@ pub fn draw_pane<P: Painter>(
     if !digital {
         let ny = (pr.h / 26.0).clamp(2.0, 10.0) as u8;
         axis_ticks(ya, ny, &mut s.ticks);
-        let ts = std::mem::take(&mut s.ticks);
+        let ts = mem::take(&mut s.ticks);
         let digits = graph::tick_digits(&ts, ya.log);
         for &t in &ts {
             let y = f64::from(sy.px(t)).floor() + 0.5;
@@ -273,6 +281,7 @@ pub fn draw_pane<P: Painter>(
     if digital {
         // Lane names in the y-label strip, in their trace's colour.
         let lh = plot.height() / traces_of(waves, k).count().max(1) as f64;
+        debug_assert!(lh > 0.0, "a lane has height");
         for (j, i) in traces_of(waves, k).enumerate() {
             let y = plot.y0 + (j as f64 + 0.5) * lh - 7.0;
             let color = painter::rgba(waves.color(i));
@@ -283,11 +292,12 @@ pub fn draw_pane<P: Painter>(
         // Legend: trace names in their colours, left to right until the plot's right edge.
         let mut lx = plot.x0 + 2.0;
         for i in traces_of(waves, k) {
-            let mut t = std::mem::take(&mut s.text);
+            let mut t = mem::take(&mut s.text);
             ui_waves::legend_label(waves, i, &mut t);
             let color = painter::rgba(waves.color(i));
             let w = label_at(p, text, s, &t, lx, pane.y0 + 2.0, Align::Left, color);
             s.text = t;
+            debug_assert!(w >= 0.0, "a label has a width");
             lx += w + 14.0;
             if lx > plot.x1 {
                 break;
@@ -318,6 +328,8 @@ fn draw_readout<P: Painter>(
     text: &mut TextSystem,
     s: &mut WaveScratch,
 ) {
+    assert!(area.w > 0.0, "a readout panel has a width");
+    assert!(area.h > 0.0, "a readout panel has a height");
     let r = widgets::rect(area);
     p.push_clip(r);
     let fg = painter::rgba(0xd0d0_d0ff);
@@ -357,8 +369,9 @@ fn draw_readout<P: Painter>(
     y += row;
     // A row whose bottom would pass the panel's is left out.
     let fit = ((r.y1 - y) / row).floor().max(0.0) as usize;
-    let mut rows = std::mem::take(&mut s.rows);
+    let mut rows = mem::take(&mut s.rows);
     ui_waves::readout_rows(waves, fit, &mut rows);
+    assert!(rows.len() <= fit, "the readout keeps to the rows that fit");
     for rr in &rows {
         let color = painter::rgba(rr.color);
         for (k, t) in rr.cells.iter().enumerate() {
@@ -381,11 +394,14 @@ fn draw_measure<P: Painter>(
     text: &mut TextSystem,
     s: &mut WaveScratch,
 ) {
+    debug_assert!(x.is_finite(), "a pointer on the screen");
+    debug_assert!(y.is_finite(), "a pointer on the screen");
     let Some(t) = ui_waves::measure_label(geo, waves, x, y) else {
         return;
     };
     text.shape_into(&t, TICK_PX, &mut s.label);
     let w = f64::from(s.label.width());
+    debug_assert!(w >= 0.0, "a shaped label has a width");
     let (bx, by) = (f64::from(x) + 12.0, f64::from(y) - 20.0);
     p.fill_rect(
         Rect::new(bx, by, bx + w + 8.0, by + 15.0),
@@ -403,11 +419,13 @@ fn draw_measure<P: Painter>(
 
 /// Tick positions for one axis: decades on a log axis, nice 1-2-5 steps otherwise.
 fn axis_ticks(a: Axis, n: u8, out: &mut Vec<f64>) {
+    assert!(n >= 2, "an axis shows at least two ticks");
     if a.log {
         graph::log_ticks(a.lo, a.hi, n, out);
     } else {
         graph::ticks(a.lo, a.hi, n, out);
     }
+    debug_assert!(out.is_sorted(), "ticks run along the axis");
 }
 
 /// Shapes and draws `t` with its top at `y`, anchored at `x`; returns the width.
@@ -427,6 +445,8 @@ fn label_at<P: Painter>(
 ) -> f64 {
     // ponytail: every tick, legend and readout label is shaped each frame (~0.3 ms for a
     // three-pane window). Cache by (text, size) in `TextSystem` if a profile ever shows it.
+    debug_assert!(x.is_finite(), "a label anchored on the screen");
+    debug_assert!(y.is_finite(), "a label anchored on the screen");
     text.shape_into(t, TICK_PX, &mut s.label);
     let w = f64::from(s.label.width());
     let x = match align {
@@ -449,9 +469,11 @@ fn draw_lines<P: Painter>(
 ) {
     for i in traces_of(waves, k) {
         let (x, y) = waves.xy(i);
+        assert_eq!(x.len(), y.len(), "trace {i}: x and y columns in step");
         s.chains.clear();
         for st in &waves.steps(i)[waves.shown_steps(i)] {
             let r = st.start as usize..st.end as usize;
+            debug_assert!(r.end <= x.len(), "trace {i}: a step inside its columns");
             s.pts.clear();
             schemify_wave::decimate(&x[r.clone()], &y[r], sx, sy, &mut s.pts);
             if s.pts.len() >= 2 {
@@ -486,7 +508,9 @@ fn draw_lanes<P: Painter>(
     s: &mut WaveScratch,
 ) {
     let props = waves.props(usize::from(k));
+    assert_eq!(props.mode, PaneMode::Digital, "lanes draw a digital pane");
     let lh = plot.height() / traces_of(waves, k).count().max(1) as f64;
+    debug_assert!(lh > 0.0, "a lane has height");
     for (j, i) in traces_of(waves, k).enumerate() {
         let top = plot.y0 + j as f64 * lh;
         let (hi, lo) = (top + 0.2 * lh, top + 0.8 * lh);
@@ -495,9 +519,11 @@ fn draw_lanes<P: Painter>(
         let color = painter::rgba(waves.color(i));
         let busy = painter::rgba((waves.color(i) & 0xffff_ff00) | 0x60);
         let (x, y) = waves.xy(i);
+        assert_eq!(x.len(), y.len(), "trace {i}: x and y columns in step");
         s.runs.clear();
         for st in &waves.steps(i)[waves.shown_steps(i)] {
             let r = st.start as usize..st.end as usize;
+            debug_assert!(r.end <= x.len(), "trace {i}: a step inside its columns");
             schemify_wave::logic_runs(&x[r.clone()], &y[r], thr, sx, &mut s.runs);
         }
         let px = |c: u32| f64::from(sx.p0) + f64::from(c);
@@ -506,6 +532,7 @@ fn draw_lanes<P: Painter>(
         s.path.truncate(0);
         let mut last: Option<u32> = None;
         for &run in &s.runs {
+            debug_assert!(run.c0 <= run.c1, "a run spans its columns left to right");
             let (x0, x1) = (px(run.c0), px(run.c1));
             let Some(v) = run.value else {
                 p.fill_rect(Rect::new(x0, hi, x1, lo), busy);
@@ -577,9 +604,11 @@ fn draw_histogram<P: Painter>(
 ) {
     let base = plot.y1 as f32;
     for i in traces_of(waves, k) {
-        let mut bins = std::mem::take(&mut s.bins);
+        let mut bins = mem::take(&mut s.bins);
         waves.histogram(i, &mut bins);
         let n = bins.len();
+        let props = waves.props(usize::from(k));
+        assert_eq!(n, usize::from(props.bins), "trace {i}: a count per bin");
         let edge = |b: usize| sx.px(xa.at(b as f64 / n as f64));
         s.pts.clear();
         s.pts.push([edge(0), base]);
@@ -589,6 +618,11 @@ fn draw_histogram<P: Painter>(
             s.pts.push([edge(b + 1), h]);
         }
         s.pts.push([edge(n), base]);
+        assert_eq!(
+            s.pts.len(),
+            2 * n + 2,
+            "two points per bin, two on the base"
+        );
         s.chains.clear();
         s.chains.push(&s.pts);
         p.fill_chains(
@@ -607,5 +641,6 @@ fn draw_histogram<P: Painter>(
 
 /// The traces drawn in pane `k`, in trace order.
 fn traces_of(waves: &Waves, k: u8) -> impl Iterator<Item = usize> + '_ {
+    assert!(usize::from(k) < waves.panes().len(), "no pane {k}");
     (0..waves.trace_count()).filter(move |&i| waves.pane_of(i) == k)
 }

@@ -109,6 +109,7 @@ pub fn row_key(
     let n = &tables.nodes;
     let node = layout.node()[r];
     let i = node as usize;
+    assert!(i < n.len(), "row {r} shows node {node} of the tables");
     let (shown, kind, id) = (layout.shown()[r], n.kind()[i], n.id()[i]);
     let style = |prop| schemify_ui::row_style(tables, layout.title_style(), node, shown, prop);
     let RowPaint { bg, fg } = schemify_ui::row_paint(tables, layout, strings, state, r);
@@ -119,11 +120,11 @@ pub fn row_key(
         .filter(|_| editing)
         .and_then(|e| e.try_layout().map(|l| (e, l)))
         .map_or([0; 2], |(e, l)| {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
+            use std::hash::{DefaultHasher, Hash, Hasher};
+            let mut h = DefaultHasher::new();
             e.raw_text().hash(&mut h);
             let text = h.finish();
-            let mut h = std::collections::hash_map::DefaultHasher::new();
+            let mut h = DefaultHasher::new();
             [l.width(), l.height()].map(f32::to_bits).hash(&mut h);
             if let Some(b) = e.cursor_geometry(1.0) {
                 [b.x0, b.y0, b.x1, b.y1].map(f64::to_bits).hash(&mut h);
@@ -205,12 +206,12 @@ pub fn draw_ui<P: Painter>(
     // Rows inside a scroll pane are clipped to it; consecutive rows share one clip layer.
     let mut clipped: Option<schemify_ui::Rect> = None;
     let rows = layout.rows(layer);
+    assert!(rows.end <= layout.len(), "a layer's rows inside the layout");
     let src = match layer {
         Layer::Main => 0,
         Layer::Overlay => 1,
     };
-    let mut r = rows.start;
-    while r < rows.end {
+    for r in rows {
         let clip = layout.clip()[r];
         if clipped != Some(clip).filter(|c| *c != schemify_ui::NO_CLIP) {
             if clipped.take().is_some() {
@@ -223,6 +224,12 @@ pub fn draw_ui<P: Painter>(
         }
         let vis = layout.rect()[r].intersect(&clip);
         let scroller = layout.scroller(r);
+        if scroller != NO_NODE {
+            assert!(
+                usize::from(scroller) < tables.nodes.len(),
+                "row {r}: scroll pane {scroller} is a node"
+            );
+        }
         let row = UiRow {
             key: row_key(tables, layout, strings, text, state, r),
             visible: vis.w > 0.0 && vis.h > 0.0, // else scrolled out of view
@@ -235,7 +242,6 @@ pub fn draw_ui<P: Painter>(
         p.ui_row(src, &row, |p| {
             draw_row(p, tables, layout, strings, text, state, scratch, r);
         });
-        r += 1;
     }
     if clipped.is_some() {
         p.pop_clip();
@@ -270,9 +276,11 @@ fn draw_row<P: Painter>(
     scratch: &mut UiScratch,
     r: usize,
 ) {
+    assert!(r < layout.len(), "row {r} of the layout");
     let n = &tables.nodes;
     let node = layout.node()[r];
     let i = node as usize;
+    assert!(i < n.len(), "row {r} shows node {node} of the tables");
     let shown = layout.shown()[r];
     let kind = n.kind()[i];
     let id = n.id()[i];
@@ -317,12 +325,12 @@ fn draw_row<P: Painter>(
         } else {
             area.y0 + (area.height() - f64::from(ed.height())) / 2.0
         };
-        let (x, w) = (area.x0 + pad, f64::from(ed.width()));
+        let x = area.x0 + pad;
         draw_text(p, ed, x, y, fg, scratch);
         if let Some(c) = state.editor().and_then(|e| e.cursor_geometry(1.0)) {
+            debug_assert!(c.y0 <= c.y1, "a caret runs down its line");
             p.fill_rect(Rect::new(x + c.x0, y + c.y0, x + c.x0 + 1.0, y + c.y1), fg);
         }
-        debug_assert!(w >= 0.0);
     } else if label != NO_TEXT {
         let l = text.layout(label);
         let y = if area_kind {
@@ -384,14 +392,13 @@ fn draw_row<P: Painter>(
         let b = Rect::new(x, y, x + size, y + size);
         let path = &mut scratch.path;
         path.truncate(0);
+        use kurbo::Shape as _;
         if style(StyleProp::Radius) > 0 {
-            path.extend(kurbo::Shape::path_elements(
-                &kurbo::Circle::new(b.center(), size / 2.0),
-                0.1,
-            ));
+            path.extend(kurbo::Circle::new(b.center(), size / 2.0).path_elements(0.1));
         } else {
-            path.extend(kurbo::Shape::path_elements(&b.inset(-0.5), 0.1));
+            path.extend(b.inset(-0.5).path_elements(0.1));
         }
+        debug_assert!(!path.elements().is_empty(), "a check box has an outline");
         p.stroke_path(path, 1.0, fg);
         if n.is_checked(strings, node) {
             p.fill_rect(b.inset(-2.0), fg);

@@ -284,6 +284,7 @@ pub fn draw_rows<P: Painter>(
                 paths.fill_ends.push(paths.fill.elements().len());
             }
         }
+        debug_assert_eq!(k, edges.end, "the chains cover the layer's edges");
         if color == 0 {
             debug_assert!(paths.marks.is_empty(), "a mark in view has a colour");
             continue; // nothing of this layer in view
