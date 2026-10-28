@@ -102,6 +102,8 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             defaults: None,
             default_key: None,
         });
+        assert_eq!(self.cells.len(), self.ifaces.len());
+        assert_eq!(self.nets.len(), self.ifaces.len());
         ci
     }
 
@@ -110,8 +112,10 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
     /// reachable schematic, selected or not: a superset, but path-independent.
     pub(super) fn discover(&mut self) {
         let mut globals = Vec::new();
+        // Bounded: `resolve` adds each reached cell row once (`row_cell`).
         let mut ci = 0;
         while ci < self.cells.len() {
+            assert!(ci < NONE as usize - 1, "cell capacity");
             if self.ifaces[ci].open {
                 self.resolve(ci as u32);
                 crate::nets::global_labels(self.cells[ci].doc, &mut self.names, &mut globals);
@@ -121,6 +125,12 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         globals.sort_unstable();
         globals.dedup();
         self.globals = globals;
+        assert!(
+            self.cells
+                .iter()
+                .zip(&self.ifaces)
+                .all(|(c, f)| c.resolved || !f.open)
+        );
     }
 
     /// Evaluates cell `ci`'s graph for own-param values `own_vals` and gates the values
@@ -266,6 +276,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         g.eval_own(&mut vals, &mut unv, &self.ifaces, self.funcs, &mut self.ws);
         vals.truncate(g.params as usize);
         let (key, _) = tuple(&self.ifaces[ci as usize], &vals, &mut self.names);
+        assert_eq!(vals.len(), self.ifaces[ci as usize].param_name.len());
         let cell = &mut self.cells[ci as usize];
         cell.defaults = Some(vals.clone());
         cell.default_key = Some(key);
@@ -291,7 +302,10 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         let open = derived || self.project.open_handle(row).is_some();
         let iface = Iface::from_doc(doc, &cell, &stem, row as u32, open, &mut self.names);
         let ci = self.push_cell(doc, iface);
-        self.row_cell.insert(row as u32, ci);
+        assert!(
+            self.row_cell.insert(row as u32, ci).is_none(),
+            "one cell per row"
+        );
         ci
     }
 
@@ -346,6 +360,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         cell.inst_iface = inst_iface;
         cell.unresolved = unresolved;
         cell.resolved = true;
+        assert_eq!(cell.inst_iface.len(), cell.unresolved.len());
     }
 
     /// The request's var substitutions for cell `ci` (the top only), names interned.

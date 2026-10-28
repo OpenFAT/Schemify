@@ -290,6 +290,10 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 }
             }
         }
+        assert!(
+            self.defs.name.iter().all(|&n| n != Name::NONE),
+            "every definition named"
+        );
     }
 }
 
@@ -325,10 +329,11 @@ pub(super) fn tuple(f: &Iface, vals: &[Val], names: &mut Names) -> (String, Vec<
         key.push('=');
         key.push_str(v);
     }
-    let out = pairs
+    let out: Vec<(Name, Name)> = pairs
         .into_iter()
         .map(|(k, _, plain)| (k, names.intern(&plain)))
         .collect();
+    assert!(out.len() <= f.param_name.len());
     (key, out)
 }
 

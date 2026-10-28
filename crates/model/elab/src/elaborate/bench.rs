@@ -108,6 +108,10 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             }
             b.code_start.push(b.code_lines.len() as u32);
         }
+        assert_eq!(b.var_name.len(), b.var_text.len());
+        assert_eq!(b.corner_start.len(), b.corner_kind.len() + 1);
+        assert_eq!(b.corner_project.len(), b.corner_kind.len());
+        assert_eq!(b.code_start.len(), b.code_name.len() + 1);
         b
     }
 
@@ -163,7 +167,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 .map(|(_, v)| v.as_str())
                 .or_else(|| self.req.env.iter().find(|(k, _)| *k == n).map(|(_, v)| *v))
         };
-        match expand_dollars(text, lookup) {
+        match expand_dollars(text, &lookup, 0) {
             Ok(out) => self.names.intern(&out),
             Err(name) => {
                 let param = self.names.intern(&name);
@@ -183,25 +187,18 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
 // ---- private ----
 
 /// `${NAME}` expansion (spec §7.1): `$$` → `$`, `${NAME}` → `lookup(NAME)`, any other
-/// `$` literal. Nothing is executed.
+/// `$` literal, recursively expanding the values it substitutes (project `set` values
+/// such as `${PDK_ROOT}/${PDK}/libs.tech` are themselves templates). Nothing is executed.
+/// Call with `depth` 0.
 ///
-/// # Errors
-///
-/// The first undefined name (or the unclosed `${…` text).
+/// Errors: the first undefined name, the unclosed `${…` text, or the name at which
+/// nesting passes [`EXPAND_DEPTH_MAX`] (a cycle).
 fn expand_dollars<'v>(
-    text: &str,
-    lookup: impl Fn(&str) -> Option<&'v str>,
-) -> Result<String, String> {
-    expand_depth(text, &lookup, 0)
-}
-
-/// Expands `text`, recursively expanding the values it substitutes (project `set`
-/// values such as `${PDK_ROOT}/${PDK}/libs.tech` are themselves templates).
-fn expand_depth<'v>(
     text: &str,
     lookup: &impl Fn(&str) -> Option<&'v str>,
     depth: u8,
 ) -> Result<String, String> {
+    assert!(depth <= EXPAND_DEPTH_MAX);
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find('$') {
@@ -217,7 +214,7 @@ fn expand_depth<'v>(
             if depth >= EXPAND_DEPTH_MAX {
                 return Err(name.to_owned());
             }
-            out.push_str(&expand_depth(value, lookup, depth + 1)?);
+            out.push_str(&expand_dollars(value, lookup, depth + 1)?);
             rest = &after[end + 1..];
         } else {
             out.push('$');
@@ -246,4 +243,31 @@ fn eval_in_bench(text: &str, b: &Bench, names: &Names) -> Result<String, schemif
     let mut out = String::new();
     Val::from_value(v).write_text(&mut out);
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EXPAND_DEPTH_MAX, expand_dollars};
+
+    /// Spec §7.1 cases, each answer written by hand from the rule.
+    #[test]
+    fn expand_dollars_follows_the_spec() {
+        let sets = [
+            ("A", "a"),
+            ("ROOT", "/pdk"),
+            ("LIB", "${ROOT}/lib"),
+            ("X", "${Y}"),
+            ("Y", "${X}"),
+        ];
+        let lookup = |n: &str| sets.iter().find(|(k, _)| *k == n).map(|(_, v)| *v);
+        let ok = |t: &str| expand_dollars(t, &lookup, 0);
+        assert_eq!(ok("plain"), Ok("plain".to_owned()));
+        assert_eq!(ok("$$A ${A} $A"), Ok("$A a $A".to_owned()));
+        assert_eq!(ok("${LIB}/models"), Ok("/pdk/lib/models".to_owned()));
+        // Negative space: undefined, unclosed, cyclic.
+        assert_eq!(ok("${NOPE}"), Err("NOPE".to_owned()));
+        assert_eq!(ok("x ${A"), Err("${A".to_owned()));
+        assert!(ok("${X}").is_err());
+        const { assert!(EXPAND_DEPTH_MAX > 2, "the nested case above fits") };
+    }
 }

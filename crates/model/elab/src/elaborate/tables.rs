@@ -262,23 +262,31 @@ impl Dialect {
 
 impl Elab {
     /// Returns the instance rows of definition `d`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `d` is not a definition row (as do the accessors below for theirs).
     pub fn insts_of(&self, d: u32) -> std::ops::Range<usize> {
+        assert!((d as usize) < self.defs.cell.len(), "a definition row");
         self.defs.inst_start[d as usize] as usize..self.defs.inst_start[d as usize + 1] as usize
     }
 
     /// Returns the connection names of instance row `r`.
     pub fn conns(&self, r: usize) -> &[Name] {
+        assert!(r < self.insts.name.len(), "an instance row");
         &self.insts.conn[self.insts.conn_start[r] as usize..self.insts.conn_start[r + 1] as usize]
     }
 
     /// Returns the port nets of definition `d`.
     pub fn ports(&self, d: u32) -> &[Name] {
         let d = d as usize;
+        assert!(d < self.defs.cell.len(), "a definition row");
         &self.defs.port_net[self.defs.port_start[d] as usize..self.defs.port_start[d + 1] as usize]
     }
 
     /// Returns the param entries of instance row `r` as a range into the param columns.
     pub fn params_of(&self, r: usize) -> std::ops::Range<usize> {
+        assert!(r < self.insts.name.len(), "an instance row");
         self.insts.param_start[r] as usize..self.insts.param_start[r + 1] as usize
     }
 
@@ -304,7 +312,11 @@ impl Elab {
             }
             n += match self.insts.target[r] {
                 Target::Leaf(_) => 1,
-                Target::Def(c) => self.leaves(c, memo),
+                Target::Def(c) => {
+                    // Children are built before parents: the recursion descends.
+                    assert!(c < d, "a child definition precedes its parent");
+                    self.leaves(c, memo)
+                }
             };
         }
         memo[d as usize] = n;
