@@ -1,12 +1,20 @@
-//! Contribution composition (§1, D8): `plugin₁ ⊕ … ⊕ pluginₙ` per (kind, scope), ordered,
-//! last wins, every override recorded.
+//! Contribution composition (§1, D8): every plugin's sets and the plugin order in →
+//! `plugin₁ ⊕ … ⊕ pluginₙ` per (kind, scope), last wins, plus every override and the
+//! expression-function registry (D20) out.
+//!
+//! Contents:
+//! - `pub struct ComposedRecord`, `pub struct Override`
+//! - `pub struct Functions`, `Functions::find(&self, name: &str) -> Option<usize>`
+//! - `pub struct Composed`, `Composed::of(&self, kind: Kind) -> &[ComposedRecord]`,
+//!   `Composed::find(&self, kind: Kind, key: &str) -> Option<&ComposedRecord>`
+//! - `pub fn compose(contributions: &Contributions, order: &[PluginId]) -> (Composed, Vec<Override>)`
 
 use std::collections::BTreeMap;
 
 use schemify_abi::Kind;
 
-use crate::PluginId;
-use crate::intake::{Contributions, function_row, lex, set_records};
+use crate::contributions::{function_row, lex, set_records};
+use crate::{Contributions, PluginId};
 
 /// One record that survived composition.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,7 +48,7 @@ pub struct Override {
 }
 
 /// Expression-function registry (D20) for `expr`: one row per composed `function` record,
-/// sorted by name. Resolve `ns.f(args)` by binary search, then call
+/// sorted by name (unique). Resolve `ns.f(args)` by binary search, then call
 /// [`crate::Plugins::call`]`(plugin[i], fn_id[i], …)`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Functions {
@@ -54,13 +62,6 @@ pub struct Functions {
     pub arity: Vec<u8>,
 }
 
-impl Functions {
-    /// Returns the row of `name`, if registered.
-    pub fn find(&self, name: &str) -> Option<usize> {
-        self.name.binary_search_by(|n| (**n).cmp(name)).ok()
-    }
-}
-
 /// The composition: surviving records grouped by kind (in [`Kind::ALL`] order), then
 /// scope (sorted), then first appearance; plus the function registry.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -69,21 +70,6 @@ pub struct Composed {
     pub records: Vec<ComposedRecord>,
     /// Registry derived from the [`Kind::Functions`] records.
     pub functions: Functions,
-}
-
-impl Composed {
-    /// Returns the records of `kind` (all scopes).
-    pub fn of(&self, kind: Kind) -> &[ComposedRecord] {
-        let start = self.records.partition_point(|r| r.kind < kind);
-        let end = self.records.partition_point(|r| r.kind <= kind);
-        &self.records[start..end]
-    }
-
-    /// Returns the surviving record of (`kind`, `key`) in any scope, e.g. the owner of a
-    /// command for routing `Event::Command`.
-    pub fn find(&self, kind: Kind, key: &str) -> Option<&ComposedRecord> {
-        self.of(kind).iter().find(|r| &*r.key == key)
-    }
 }
 
 /// Composes every set of the plugins in `order` (plugins absent from `order` are ignored).
@@ -95,7 +81,8 @@ impl Composed {
 ///
 /// # Panics
 ///
-/// Panics if a set fails validation, which [`crate::intake`] already guarantees.
+/// Panics if a set fails validation, which [`crate::intake`] already guarantees, or (debug)
+/// if `order` names a plugin twice.
 ///
 /// # Time complexity
 ///
@@ -121,15 +108,23 @@ pub fn compose(contributions: &Contributions, order: &[PluginId]) -> (Composed, 
         scopes.sort_unstable();
         scopes.dedup();
         for scope in scopes {
-            let mut index: BTreeMap<String, usize> = BTreeMap::new();
+            // One (kind, scope) group: key → record index; records a redefinition dropped
+            // are marked in `dropped` and filtered out at the group's end.
             let first = composed.records.len();
-            // Records of this group dropped by a redefinition (existence: filtered below).
+            let mut index: BTreeMap<String, usize> = BTreeMap::new();
             let mut dropped: Vec<bool> = Vec::new();
             for &plugin in order {
                 let Some(body) = contributions.get(plugin, kind, scope) else {
                     continue;
                 };
                 for rec in set_records(kind, body).expect("validated at intake") {
+                    let replaced = |key: String, loser| Override {
+                        kind,
+                        scope: scope.into(),
+                        key: key.into(),
+                        loser,
+                        winner: plugin,
+                    };
                     if let Some(node) = rec.key.strip_prefix("node ") {
                         let prefix = format!("set {node} ");
                         let stale: Vec<String> = index
@@ -140,25 +135,13 @@ pub fn compose(contributions: &Contributions, order: &[PluginId]) -> (Composed, 
                         for key in stale {
                             let i = index.remove(&key).expect("collected from the index");
                             dropped[i - first] = true;
-                            overrides.push(Override {
-                                kind,
-                                scope: scope.into(),
-                                key: key.into(),
-                                loser: composed.records[i].owner,
-                                winner: plugin,
-                            });
+                            overrides.push(replaced(key, composed.records[i].owner));
                         }
                     }
                     match index.get(&rec.key) {
                         Some(&i) => {
                             let won = &mut composed.records[i];
-                            overrides.push(Override {
-                                kind,
-                                scope: scope.into(),
-                                key: rec.key.as_str().into(),
-                                loser: won.owner,
-                                winner: plugin,
-                            });
+                            overrides.push(replaced(rec.key, won.owner));
                             won.owner = plugin;
                             won.text = rec.text.into();
                         }
@@ -178,12 +161,8 @@ pub fn compose(contributions: &Contributions, order: &[PluginId]) -> (Composed, 
             }
             assert_eq!(composed.records.len() - first, dropped.len());
             let group = composed.records.split_off(first);
-            composed.records.extend(
-                group
-                    .into_iter()
-                    .zip(dropped)
-                    .filter_map(|(r, gone)| (!gone).then_some(r)),
-            );
+            let kept = group.into_iter().zip(dropped).filter(|(_, gone)| !gone);
+            composed.records.extend(kept.map(|(r, _)| r));
             debug_assert_eq!(composed.records.len() - first, index.len());
         }
     }
@@ -192,12 +171,37 @@ pub fn compose(contributions: &Contributions, order: &[PluginId]) -> (Composed, 
     (composed, overrides)
 }
 
+impl Functions {
+    /// Returns the row of `name`, if registered. O(log rows).
+    pub fn find(&self, name: &str) -> Option<usize> {
+        self.name.binary_search_by(|n| (**n).cmp(name)).ok()
+    }
+}
+
+impl Composed {
+    /// Returns the records of `kind` (all scopes). O(log records).
+    pub fn of(&self, kind: Kind) -> &[ComposedRecord] {
+        let start = self.records.partition_point(|r| r.kind < kind);
+        let end = self.records.partition_point(|r| r.kind <= kind);
+        &self.records[start..end]
+    }
+
+    /// Returns the surviving record of (`kind`, `key`) in any scope, e.g. the owner of a
+    /// command for routing `Event::Command`. O(records of `kind`).
+    pub fn find(&self, kind: Kind, key: &str) -> Option<&ComposedRecord> {
+        self.of(kind).iter().find(|r| &*r.key == key)
+    }
+}
+
+// ---- private ----
+
+/// The registry of the composed `function` records, sorted by name.
 fn functions(records: &[ComposedRecord]) -> Functions {
+    debug_assert!(records.iter().all(|r| r.kind == Kind::Functions));
     let mut rows: Vec<(Box<str>, PluginId, u32, u8)> = records
         .iter()
         .map(|r| {
-            let row = lex(&r.text, |d| function_row(d, 1));
-            let Ok(Ok((name, fn_id, arity))) = row else {
+            let Ok(Ok((name, fn_id, arity))) = lex(&r.text, |d| function_row(d, 1)) else {
                 panic!("validated at intake: {}", r.text)
             };
             (name, r.owner, fn_id, arity)
