@@ -4,6 +4,8 @@
 use proptest::prelude::*;
 use schemify_wave::{Run, Scale, bin_counts, logic, logic_runs};
 
+// ---- private ----
+
 /// Naive oracle of [`logic_runs`]: every column scans every sample.
 fn naive_runs(xs: &[f64], ys: &[f64], thr: Option<f64>, sx: &Scale) -> Vec<Run> {
     let cols = ((sx.p1 - sx.p0).floor() as usize).max(1);

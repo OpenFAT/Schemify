@@ -6,6 +6,8 @@ use schemify_wave::{RawPlot, calc, group_datasets};
 
 use crate::{close, fixture};
 
+// ---- private ----
+
 fn col(src: &str, p: &RawPlot) -> ColOut {
     let prog = Program::compile(src, Mode::Calc).unwrap_or_else(|e| panic!("{src}: {e}"));
     let mut s = Scratch::default();

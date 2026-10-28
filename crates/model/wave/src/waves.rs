@@ -26,7 +26,7 @@
 //! - `pub struct Waves`: `new`, `datasets`, `trace_count`, `src`, `pane_of`, `color`, `style`,
 //!   `is_magnitude`, `bus_bits`, `has_own_axis`, `xy`, `steps`, `shown_steps`, `panes`, `props`,
 //!   `x_of`, `hcursors`, `x`, `cursors`, `value_at`, `value_at_step`, `logic_at`,
-//!   `closest_step`, `histogram`, `reload`
+//!   `closest_step`, `histogram`, `reload`; `pub(crate)` `traces_in`, `check`
 
 use core::ops::Range;
 

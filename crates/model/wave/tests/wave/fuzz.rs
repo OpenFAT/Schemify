@@ -16,6 +16,16 @@ const SEEDS: [&str; 8] = [
     "dc_step.xyce.bin.raw",
 ];
 
+#[derive(Debug, Clone)]
+enum Mutation {
+    Flip { at: usize, byte: u8 },
+    Truncate { at: usize },
+    Insert { at: usize, bytes: Vec<u8> },
+    Remove { at: usize, len: usize },
+}
+
+// ---- private ----
+
 fn seed(k: usize) -> Vec<u8> {
     let path = format!("{}/tests/fixtures/{}", env!("CARGO_MANIFEST_DIR"), SEEDS[k]);
     std::fs::read(path).expect("fixture")
@@ -53,14 +63,6 @@ fn invariants(p: &RawPlot) {
         at = s.end;
     }
     assert_eq!(at as usize, n);
-}
-
-#[derive(Debug, Clone)]
-enum Mutation {
-    Flip { at: usize, byte: u8 },
-    Truncate { at: usize },
-    Insert { at: usize, bytes: Vec<u8> },
-    Remove { at: usize, len: usize },
 }
 
 fn mutation() -> impl Strategy<Value = Mutation> {

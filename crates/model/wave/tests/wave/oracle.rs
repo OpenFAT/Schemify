@@ -14,6 +14,8 @@ use crate::{close, fixture};
 const FLAVOURS: [(&str, f64); 2] = [("", 1e-14), (".xyce", 1e-8)];
 const DECKS: [&str; 3] = ["rc_tran", "rlc_ac", "dc_step"];
 
+// ---- private ----
+
 fn assert_same(bin: &[RawPlot], asc: &[RawPlot], rtol: f64, what: &str) {
     assert_eq!(bin.len(), asc.len(), "{what}: block count");
     for (k, (b, a)) in bin.iter().zip(asc).enumerate() {

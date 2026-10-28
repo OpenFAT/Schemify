@@ -174,7 +174,7 @@ pub enum Request {
     SwapCursors,
 }
 
-/// What [`Waves::apply`] did.
+/// What [`Waves::apply`](crate::Waves::apply) did.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Applied {
     /// Tables changed (or the request was a no-op, like zooming past f64 resolution).
