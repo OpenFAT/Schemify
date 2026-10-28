@@ -21,7 +21,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::builtin::{self, Builtin, BuiltinRow, VARIADIC};
+use crate::builtin::{self, Builtin};
 use crate::eval::{self, Scalar, Scratch};
 use crate::parse::{self, Ast, BinOp, Node};
 use crate::program::{CodeRange, Mode, Name, Op, OpKind, PluginFn, Program, Signal, SignalKind};
@@ -362,7 +362,7 @@ impl Compiler {
         let row = Builtin::lookup(name)
             .ok_or_else(|| Error::new(Code::X006, span, format!("unknown function `{name}`")))?;
         if f.phase == 0 {
-            check_call(self.program.mode, row, name, argc, span)?;
+            row.check_call(self.program.mode, name, argc, span)?;
         }
         debug_assert!(argc >= row.min_args, "arity checked in phase 0");
         let builtin = row.builtin;
@@ -530,44 +530,6 @@ impl Compiler {
             }
         }
     }
-}
-
-/// Arity (`X008`) and mode (`X006`) of a builtin call with `argc` arguments.
-fn check_call(
-    mode: Mode,
-    row: &BuiltinRow,
-    name: &str,
-    argc: u32,
-    span: Span,
-) -> Result<(), Error> {
-    let (lo, hi) = (row.min_args, row.max_args);
-    debug_assert!(lo <= hi);
-    debug_assert!(
-        name.eq_ignore_ascii_case(row.name),
-        "`{name}` checked against `{}`",
-        row.name
-    );
-    let builtin = row.builtin;
-    if argc < lo || argc > hi {
-        let want = match (lo, hi) {
-            (lo, hi) if lo == hi => format!("{lo}"),
-            (lo, VARIADIC) => format!("at least {lo}"),
-            (lo, hi) => format!("{lo} to {hi}"),
-        };
-        return Err(Error::new(
-            Code::X008,
-            span,
-            format!("`{name}` takes {want} arguments, got {argc}"),
-        ));
-    }
-    if builtin.calc_only() && mode == Mode::Scalar {
-        return Err(Error::new(
-            Code::X006,
-            span,
-            format!("`{name}` is only available in calculator mode"),
-        ));
-    }
-    Ok(())
 }
 
 fn intern(pool: &mut String, s: &str) -> Name {

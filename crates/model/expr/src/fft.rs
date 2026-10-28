@@ -12,6 +12,15 @@ use core::f64::consts::PI;
 
 use crate::dmath::Complex;
 
+/// Which way [`radix2`] turns: the sign of the twiddle exponent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Direction {
+    /// `e^(−2πi·kn/N)`.
+    Forward,
+    /// `e^(+2πi·kn/N)`, unscaled.
+    Inverse,
+}
+
 /// Transforms `buf` in place: `X[k] = Σₙ x[n]·e^(−2πi·kn/N)`, unscaled.
 /// Cost O(N log N) for every N; any N that is not a power of two allocates two scratch
 /// buffers of the next power of two ≥ 2N − 1.
@@ -39,15 +48,6 @@ pub(crate) fn forward(buf: &mut [Complex]) {
 }
 
 // ---- private ----
-
-/// Which way [`radix2`] turns: the sign of the twiddle exponent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Direction {
-    /// `e^(−2πi·kn/N)`.
-    Forward,
-    /// `e^(+2πi·kn/N)`, unscaled.
-    Inverse,
-}
 
 /// `e^(i·angle)` through `libm`.
 fn cis(angle: f64) -> Complex {

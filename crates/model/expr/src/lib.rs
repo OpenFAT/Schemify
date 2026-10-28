@@ -95,6 +95,7 @@ mod program;
 mod spectre;
 mod template;
 mod text;
+mod waveform;
 
 use core::fmt;
 

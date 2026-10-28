@@ -7,7 +7,11 @@
 //! - `Builtin::lookup(name: &str) -> Option<&'static BuiltinRow>`,
 //!   `Builtin::from_id(id: u8) -> Builtin`, `Builtin::name(self) -> &'static str`,
 //!   `Builtin::calc_only(self) -> bool`, `Builtin::elementary(self) -> bool`
+//! - `BuiltinRow::check_call(&self, mode, name, argc, span) -> Result<(), Error>`
 //! - `pub(crate) fn phys(name: &str) -> Option<f64>`
+
+use crate::program::Mode;
+use crate::{Code, Error, Span};
 
 /// Builtin functions (spec §5). Discriminants index [`BUILTINS`] and are the
 /// `sub` byte of a call op; everything from `V` up to `Op` is calculator-only
@@ -214,6 +218,49 @@ impl Builtin {
             self,
             Sqrt | Exp | Ln | Log10 | Sin | Cos | Tan | Asin | Acos | Atan | Sinh | Cosh | Tanh
         )
+    }
+}
+
+impl BuiltinRow {
+    /// Checks a call of this builtin, spelled `name`, with `argc` arguments in `mode`.
+    ///
+    /// # Errors
+    /// `X008` when `argc` is outside the row's arity; `X006` for a calculator-only
+    /// builtin in [`Mode::Scalar`].
+    pub(crate) fn check_call(
+        &self,
+        mode: Mode,
+        name: &str,
+        argc: u32,
+        span: Span,
+    ) -> Result<(), Error> {
+        let (lo, hi) = (self.min_args, self.max_args);
+        debug_assert!(lo <= hi);
+        debug_assert!(
+            name.eq_ignore_ascii_case(self.name),
+            "`{name}` checked against `{}`",
+            self.name
+        );
+        if argc < lo || argc > hi {
+            let want = match (lo, hi) {
+                (lo, hi) if lo == hi => format!("{lo}"),
+                (lo, VARIADIC) => format!("at least {lo}"),
+                (lo, hi) => format!("{lo} to {hi}"),
+            };
+            return Err(Error::new(
+                Code::X008,
+                span,
+                format!("`{name}` takes {want} arguments, got {argc}"),
+            ));
+        }
+        if self.builtin.calc_only() && mode == Mode::Scalar {
+            return Err(Error::new(
+                Code::X006,
+                span,
+                format!("`{name}` is only available in calculator mode"),
+            ));
+        }
+        Ok(())
     }
 }
 
