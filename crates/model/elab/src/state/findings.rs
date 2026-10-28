@@ -35,6 +35,11 @@ const MERGE_MIN: usize = 32;
 impl CellState {
     /// Recomputes every finding (the full pass).
     pub(super) fn check<F: Funcs>(&mut self, doc: &Document, funcs: &mut F) {
+        assert_eq!(
+            self.unresolved.len(),
+            self.inst_iface.len(),
+            "one resolution per instance row"
+        );
         self.waivers = check::waivers(doc, &self.names);
         let mut net = self.live.rows(&self.nets, &self.ifaces[0], &self.names);
         net.sort_by(|a, b| violations::cmp_key(a, b, &self.names));
@@ -223,6 +228,7 @@ impl CellState {
             }
         }
         let rows = &mut self.violations.rows;
+        let before = rows.len();
         let lost: Vec<Violation> = gone.iter().map(|&o| rows[o].clone()).collect();
         if gone.len() + new.len() > MERGE_MIN {
             let mut out = Vec::with_capacity(rows.capacity());
@@ -251,7 +257,11 @@ impl CellState {
             }
         }
         debug_assert!(rows.windows(2).all(|w| order(&w[0], &w[1]).is_lt()));
-        assert_eq!(lost.len(), gone.len());
+        assert_eq!(
+            rows.len() + gone.len(),
+            before + new.len(),
+            "the table moved by the reported delta"
+        );
         Some(Delta {
             gone: lost,
             added: new,
@@ -338,6 +348,7 @@ impl CellState {
         }
         old.sort_unstable();
         assert!(old.len() <= table.len(), "each old row once");
+        debug_assert!(old.windows(2).all(|w| w[0] < w[1]), "each old row once");
         old
     }
 }
@@ -352,6 +363,14 @@ fn cancel(
     new: Vec<Violation>,
     order: impl Fn(&Violation, &Violation) -> Ordering,
 ) -> Delta {
+    debug_assert!(
+        gone.windows(2).all(|w| order(&w[0], &w[1]).is_le()),
+        "sorted"
+    );
+    debug_assert!(
+        new.windows(2).all(|w| order(&w[0], &w[1]).is_le()),
+        "sorted"
+    );
     let total = gone.len() + new.len();
     let (mut g, mut n) = (Vec::new(), Vec::new());
     let (mut gi, mut ni) = (gone.into_iter().peekable(), new.into_iter().peekable());

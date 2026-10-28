@@ -67,6 +67,8 @@ impl Live {
     /// alias pins.
     pub(super) fn neighbors(&self, v: u32, cx: &Ctx<'_>, out: &mut Vec<u32>) {
         let vi = v as usize;
+        assert!(vi < self.x.len(), "node {v} exists");
+        let before = out.len();
         let (x, y) = (self.x[vi], self.y[vi]);
         let same = self.by_x.range((x, y, 0)..=(x, y, u32::MAX));
         out.extend(same.map(|e| e.2).filter(|&m| m != v));
@@ -108,11 +110,16 @@ impl Live {
                 out.extend([w, w + 1]);
             }
         }
+        debug_assert!(
+            out[before..].iter().all(|&m| (m as usize) < self.x.len()),
+            "a neighbor is a node"
+        );
     }
 
     /// Appends the nodes lying on the wire whose first node is `first`, its ends included.
     pub(super) fn on_wire(&self, first: u32, out: &mut Vec<u32>) {
         let (x1, y1, x2, y2) = self.ends(first);
+        let before = out.len();
         if x1 == x2 {
             let r = (x1, y1.min(y2), 0)..=(x1, y1.max(y2), u32::MAX);
             out.extend(self.by_x.range(r).map(|e| e.2));
@@ -128,5 +135,14 @@ impl Live {
                 .filter(|e| nets::on_segment(e.0, e.1, x1, y1, x2, y2));
             out.extend(on.map(|e| e.2));
         }
+        // An indexed wire's own ends lie on it.
+        debug_assert!(
+            out[before..].contains(&first),
+            "wire {first} ends on itself"
+        );
+        debug_assert!(
+            out[before..].contains(&(first + 1)),
+            "wire {first} ends on itself"
+        );
     }
 }

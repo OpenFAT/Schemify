@@ -369,11 +369,16 @@ fn used_globals<F>(e: &Elaborator<'_, '_, F>) -> Vec<Name> {
     }
     e.names.sort(&mut globals);
     assert!(globals.len() <= e.names.len() as usize);
+    debug_assert!(
+        globals.windows(2).all(|w| w[0] != w[1]),
+        "each name tested once"
+    );
     globals
 }
 
 /// Returns the row of the record named `name` in a named bench table.
 fn record(t: &Records, doc: &Document, name: &str) -> Option<usize> {
+    assert_eq!(t.fields.len(), t.kind.len(), "record columns in step");
     let s = doc.strings();
     (0..t.kind.len()).find(|&r| s.get(t.fields[r][0]) == name)
 }

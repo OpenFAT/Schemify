@@ -283,6 +283,7 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
     /// Default values of cell `ci`'s own params (its defaults evaluated in its own
     /// scope) and their tuple text. Evaluated on a params-and-vars-only graph.
     pub(super) fn defaults(&mut self, ci: u32) -> Vec<Val> {
+        assert!((ci as usize) < self.cells.len(), "cell {ci} is loaded");
         if let Some(d) = &self.cells[ci as usize].defaults {
             return d.clone();
         }
@@ -308,6 +309,10 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
 
 impl<'project, F: Funcs> Elaborator<'project, '_, F> {
     fn cell_of_row(&mut self, row: usize) -> u32 {
+        assert!(
+            row < self.project.cells().lib.len(),
+            "cell row {row} exists"
+        );
         if let Some(&ci) = self.row_cell.get(&(row as u32)) {
             return ci;
         }
@@ -380,6 +385,10 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
                 Err(why) => unresolved[i] = Some(why),
             }
         }
+        debug_assert!(
+            (0..ni).all(|i| (inst_iface[i] == NONE) == unresolved[i].is_some()),
+            "an instance resolves or says why not"
+        );
         let cell = &mut self.cells[ci as usize];
         cell.inst_iface = inst_iface;
         cell.unresolved = unresolved;
