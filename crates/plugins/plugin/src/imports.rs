@@ -12,7 +12,10 @@ use wasmi::{Caller, Engine, Linker};
 
 use crate::contributions::{line_values, truncate};
 use crate::runtime::Ctx;
-use crate::{EvalRequest, IO_BYTES_MAX, IoOp, IoRequest, LOG_BYTES_MAX, LogEntry, authorize};
+use crate::{
+    EVALS_MAX, EvalRequest, IO_BYTES_MAX, IO_MAX, IoOp, IoRequest, LOG_BYTES_MAX, LogEntry,
+    authorize,
+};
 
 /// Longest expression an `eval` import accepts.
 const EXPR_BYTES_MAX: usize = 64 << 10;
@@ -169,6 +172,7 @@ fn eval(mut caller: Caller<'_, Ctx>, doc: u32, ptr: u32, len: u32) -> i32 {
         doc,
         expr: expr.to_owned(),
     });
+    debug_assert!(ctx.staged.evals.len() <= EVALS_MAX);
     i32::try_from(handle).expect("handles are positive i32")
 }
 
@@ -190,9 +194,11 @@ fn log(mut caller: Caller<'_, Ctx>, level: u32, ptr: u32, len: u32) {
         return;
     }
     ctx.room.logs -= 1;
+    debug_assert!(bytes.len() == len as usize);
     // A lossy decode turns at most 3 cut bytes into one U+FFFD, which `truncate` then cuts.
     let text = String::from_utf8_lossy(&bytes[..bytes.len().min(LOG_BYTES_MAX + 3)]);
     let text = truncate(&text, LOG_BYTES_MAX).to_owned();
+    debug_assert!(text.len() <= LOG_BYTES_MAX);
     ctx.staged.logs.push(LogEntry {
         plugin: ctx.plugin,
         level,
@@ -252,6 +258,7 @@ fn request(mut caller: Caller<'_, Ctx>, op: IoOp, target: (u32, u32), data: (u32
         args,
         data: data.to_vec(),
     });
+    debug_assert!(ctx.staged.io.len() <= IO_MAX);
     i32::try_from(handle).expect("handles are positive i32")
 }
 
@@ -267,6 +274,7 @@ fn charge(caller: &mut Caller<'_, Ctx>, bytes: usize) {
     caller
         .set_fuel(fuel.saturating_sub(cost))
         .expect("fuel metering is enabled");
+    debug_assert!(caller.get_fuel().is_ok_and(|left| left < fuel || fuel == 0));
 }
 
 /// Splits the caller into its linear memory and store data; `None` outside an event handler
@@ -283,7 +291,9 @@ fn guest(mem: &[u8], ptr: u32, len: u32) -> Option<&[u8]> {
         return Some(&[]);
     }
     let start = ptr as usize;
-    mem.get(start..start.checked_add(len as usize)?)
+    let window = mem.get(start..start.checked_add(len as usize)?)?;
+    debug_assert_eq!(window.len(), len as usize);
+    Some(window)
 }
 
 fn guest_mut(mem: &mut [u8], ptr: u32, len: usize) -> Option<&mut [u8]> {
@@ -297,6 +307,7 @@ fn copy_out(mem: &mut [u8], dst: u32, dst_len: u32, src: &[u8]) -> i32 {
     if src.len() > dst_len as usize {
         return need_more(mem, dst, dst_len, src.len());
     }
+    debug_assert!(src.len() <= dst_len as usize);
     match guest_mut(mem, dst, src.len()) {
         None => Code::Range.neg(),
         Some(window) => {

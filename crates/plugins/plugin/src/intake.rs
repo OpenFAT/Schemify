@@ -150,5 +150,6 @@ fn push_bounded<T>(queue: &mut Vec<T>, max: usize, item: T) -> Result<(), Code> 
         return Err(Code::Space);
     }
     queue.push(item);
+    debug_assert!(queue.len() <= max);
     Ok(())
 }
