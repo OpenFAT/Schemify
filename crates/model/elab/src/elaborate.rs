@@ -47,8 +47,9 @@ use std::collections::HashMap;
 use std::mem;
 use std::ops::Range;
 
-/// What to elaborate besides the top document.
-#[derive(Clone, Copy, Debug)]
+/// What to elaborate besides the top document. The default takes the bench's own config
+/// and corner, no overrides and no environment, for ngspice.
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Request<'req> {
     /// Bench config; `None` takes the bench's `config` header attribute, if any.
     pub config: Option<&'req str>,

@@ -196,6 +196,13 @@ impl Val {
     }
 }
 
+impl From<Value<'_>> for Val {
+    /// [`Val::from_value`].
+    fn from(v: Value<'_>) -> Val {
+        Val::from_value(v)
+    }
+}
+
 impl PluginValue for Val {
     /// # Panics
     ///

@@ -25,10 +25,11 @@ use schemify_doc::ObjId;
 
 /// Netlist dialects (D22). Owned here because impl support (`E013`) and code-block
 /// selection depend on it; `netlist` matches on the same enum.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Dialect {
     /// ngspice.
+    #[default]
     Ngspice,
     /// Xyce.
     Xyce,
