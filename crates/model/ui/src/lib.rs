@@ -50,6 +50,7 @@ mod markdown;
 pub mod math;
 mod menu;
 mod paint;
+mod place;
 pub mod prose;
 pub mod records;
 mod route;

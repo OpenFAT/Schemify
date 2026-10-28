@@ -22,9 +22,10 @@ use std::ops::Range;
 
 use taffy::{AvailableSpace, Dimension, Size, TaffyTree};
 
-use crate::flex::{Builder, Frame, NO_ROW, Placed};
+use crate::flex::{Builder, NO_ROW};
 use crate::kinds::{Kind, StyleProp};
 use crate::paint;
+use crate::place::{Frame, Placed};
 use crate::state::UiState;
 use crate::strings::Strings;
 use crate::tables::{NO_NODE, NO_STYLE, NodeIx, UiTables};
