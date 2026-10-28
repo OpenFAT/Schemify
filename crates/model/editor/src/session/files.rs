@@ -93,10 +93,12 @@ impl Session {
                 self.status = format!("{relpath}: {txs} unsaved edit(s) can be recovered");
             }
         }
+        let before = self.docs.len();
         self.docs.handle.push(h);
         self.docs.path.push(path);
         self.docs.journal.push(journal_path);
         self.docs.epoch.push(0);
+        assert_eq!(self.docs.len(), before + 1, "one row per opened document");
         self.flush_journal(h);
         assert!(self.project.doc(h).is_some());
         Ok(h)
@@ -147,7 +149,14 @@ impl Session {
                 }
             }
         }
-        best.map(|(row, rel, _)| (row, rel))
+        let found = best.map(|(row, rel, _)| (row, rel));
+        assert!(
+            found
+                .as_ref()
+                .is_none_or(|(row, _)| self.lib_dir[*row].is_some()),
+            "only a local library holds a file"
+        );
+        found
     }
 
     /// The next document waiting for a crash-recovery decision: (document, journal records
@@ -260,10 +269,13 @@ impl Session {
             .create("", &rel, kind)
             .map_err(|c| format!("{rel}: {c}"))?;
         let path = self.root.join(&rel);
+        let before = self.docs.len();
         self.docs.handle.push(h);
         self.docs.journal.push(self.journal_path(&path));
         self.docs.path.push(path);
         self.docs.epoch.push(0);
+        assert_eq!(self.docs.len(), before + 1, "one row per created document");
+        assert!(self.project.doc(h).is_some());
         Ok(h)
     }
 }
@@ -276,10 +288,16 @@ impl Session {
                 file.file_name()
                     .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
             });
-        self.root
+        let journal = self
+            .root
             .join(".schemify")
             .join("journal")
-            .join(format!("{rel}.journal"))
+            .join(format!("{rel}.journal"));
+        assert!(
+            journal.starts_with(&self.root),
+            "journals live under the project"
+        );
+        journal
     }
 
     /// Writes the journal bytes `doc` produced for `h` since the last call.

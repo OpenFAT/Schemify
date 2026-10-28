@@ -150,6 +150,17 @@ struct Docs {
     epoch: Vec<u32>,
 }
 
+impl Docs {
+    /// Open documents; the four columns stay in step.
+    fn len(&self) -> usize {
+        let n = self.handle.len();
+        assert_eq!(self.path.len(), n, "document columns in step");
+        assert_eq!(self.journal.len(), n, "document columns in step");
+        assert_eq!(self.epoch.len(), n, "document columns in step");
+        n
+    }
+}
+
 /// The indexed cell row `name` names: `lib:cell` or, for the project library, `cell`, where
 /// `cell` is the cell's path in its library with or without its extension (`inv`,
 /// `inv.shcomp`, `sub/amp`). `None` when no indexed cell matches. Cost: one pass over the
@@ -177,9 +188,18 @@ impl Session {
     /// # Errors
     ///
     /// The manifest or lockfile does not parse.
+    ///
+    /// # Panics
+    ///
+    /// Never: the load gives one directory per library row.
     pub fn load(root: &Path, seed: u64, open: Option<&Path>) -> Result<Session, String> {
         let open = open.map(libs::absolute);
         let loaded = libs::load(root, seed, open.as_deref())?;
+        assert_eq!(
+            loaded.lib_dir.len(),
+            loaded.project.libs().name.len(),
+            "one directory per library row"
+        );
         Ok(Session {
             root: root.to_path_buf(),
             project: loaded.project,
@@ -217,6 +237,7 @@ impl Session {
     /// Returns the directory of library row `lib`, if it is local.
     #[must_use]
     pub fn lib_dir(&self, lib: u8) -> Option<&Path> {
+        debug_assert_eq!(self.lib_dir.len(), self.project.libs().name.len());
         self.lib_dir.get(usize::from(lib))?.as_deref()
     }
 
@@ -240,13 +261,21 @@ impl Session {
 
 impl Session {
     fn row(&self, h: DocHandle) -> Option<usize> {
-        self.docs.handle.iter().position(|&d| d == h)
+        let n = self.docs.len();
+        let i = self.docs.handle.iter().position(|&d| d == h);
+        assert!(i.is_none_or(|i| i < n));
+        i
     }
 
     /// The open document read from `path`, if any.
+    ///
+    /// # Panics
+    ///
+    /// Never: the document table's columns stay in step.
     #[must_use]
     pub fn handle_of(&self, path: &Path) -> Option<DocHandle> {
         let i = self.docs.path.iter().position(|p| p == path)?;
+        assert!(i < self.docs.len(), "document columns in step");
         let h = self.docs.handle[i];
         self.project.doc(h).map(|_| h)
     }

@@ -81,8 +81,9 @@ impl Symbols {
     ///
     /// # Panics
     ///
-    /// If `row` is not a row of the cache.
+    /// If `h` is `None` and `epoch` is not 0.
     pub fn refresh(&mut self, row: usize, h: Option<DocHandle>, epoch: u32, doc: &Document) {
+        assert!(h.is_some() || epoch == 0, "the indexed symbol has epoch 0");
         if self.rows.len() <= row {
             self.rows.resize_with(row + 1, || None);
         }
@@ -91,7 +92,12 @@ impl Symbols {
             self.rows[row] = Some((h, epoch, sym_prims(doc)));
             self.epoch = self.epoch.wrapping_add(1);
         }
-        assert!(self.rows[row].is_some());
+        assert!(
+            self.rows[row]
+                .as_ref()
+                .is_some_and(|e| e.0 == h && e.1 == epoch),
+            "the entry is current"
+        );
     }
 
     pub(super) fn get(&self, row: usize) -> Option<&SymPrims> {
@@ -105,6 +111,7 @@ pub(super) fn attr<'d>(doc: &'d Document, span: Span, key: &str) -> Option<&'d s
 }
 
 pub(super) fn layer_attr(doc: &Document, span: Span, default: u8) -> u8 {
+    assert!(default < 22, "a drawing layer");
     attr(doc, span, "layer")
         .and_then(|v| v.parse::<u8>().ok())
         .filter(|&l| l < 22)
@@ -131,8 +138,11 @@ pub(super) fn style_attr(doc: &Document, span: Span) -> LineStyle {
 }
 
 pub(super) fn size_of(text: Option<&str>, default: f64) -> i32 {
+    assert!(default > 0.0, "a positive default size");
     let s = text.and_then(|t| t.parse::<f64>().ok()).unwrap_or(default);
-    (s.clamp(0.01, 100.0) * TEXT_PER_SIZE) as i32
+    let size = (s.clamp(0.01, 100.0) * TEXT_PER_SIZE) as i32;
+    assert!(size > 0, "a drawable text size");
+    size
 }
 
 /// Builds the symbol primitives of a cell document (its pins and rank-2 graphics).
@@ -150,6 +160,7 @@ pub(super) fn sym_prims(doc: &Document) -> SymPrims {
     let mut bbox = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
     for i in 0..g.shape.len() {
         let c = &coords[g.coords[i].range()];
+        debug_assert!(c.len() >= 2, "every graphic has a point");
         let layer = layer_attr(doc, g.attrs[i], 4);
         let style = style_attr(doc, g.attrs[i]);
         match g.shape[i] {
@@ -216,6 +227,8 @@ pub(super) fn sym_prims(doc: &Document) -> SymPrims {
     if bbox[0] > bbox[2] {
         bbox = [-5 * UNIT, -5 * UNIT, 5 * UNIT, 5 * UNIT];
     }
+    assert!(bbox[0] <= bbox[2] && bbox[1] <= bbox[3], "an ordered box");
+    assert_eq!(p.pins.len(), pins.x.len(), "one pin per pin row");
     p.bbox = bbox;
     p
 }
@@ -249,6 +262,7 @@ pub(super) fn sym_text_at(q: Pt, t: &SymText, text: &str, rot: u8, mirrored: boo
 
 /// Approximate text box: 0.6 em per character (the renderer shapes the real glyphs).
 pub(super) fn text_size(size: i32, text: &str) -> (i32, i32) {
+    debug_assert!(size >= 0, "a non-negative text size");
     let n = text.chars().count().max(1) as f64;
     ((f64::from(size) * 0.6 * n) as i32, size)
 }

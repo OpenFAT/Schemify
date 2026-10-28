@@ -14,13 +14,17 @@ use crate::edit::Ids;
 use crate::geometry::Pt;
 use crate::scene::ObjKey;
 
-/// Cuts every wire that has one of `points` strictly inside it into pieces ending there.
-/// Returns the ops and, per cut wire, the new pieces' end points.
-pub fn break_at(doc: &Document, points: &[Pt], ids: &mut Ids<'_>) -> (Vec<Op>, Vec<(Pt, Pt)>) {
+/// Cuts every wire that has one of `points` strictly inside it into pieces ending there:
+/// per cut wire, a put of its first piece and an insert per further piece.
+///
+/// # Panics
+///
+/// Never: the asserts check each cut wire gives a put and an insert at least.
+pub fn break_at(doc: &Document, points: &[Pt], ids: &mut Ids<'_>) -> Vec<Op> {
     let w = doc.wires();
     let s = doc.strings();
     let mut ops = Vec::new();
-    let mut pieces = Vec::new();
+    let mut cut = 0;
     for r in 0..w.id.len() {
         let (a, b) = ((w.x1[r], w.y1[r]), (w.x2[r], w.y2[r]));
         let mut inside: Vec<Pt> = points
@@ -43,22 +47,25 @@ pub fn break_at(doc: &Document, points: &[Pt], ids: &mut Ids<'_>) -> (Vec<Op>, V
         let mut chain = vec![a];
         chain.extend(inside);
         chain.push(b);
+        assert!(chain.len() >= 3, "a cut wire has a point inside");
+        cut += 1;
         let id = rec.fields[0].clone();
         ops.push(Op::Put {
             target: Target::new(RecordKind::Wire, &w.id[r].text(s)),
             rec: super::wire_rec(&id, chain[0], chain[1], &rec.attrs),
         });
-        pieces.push((chain[0], chain[1]));
         for leg in chain[1..].windows(2) {
             let nid = ids.draw(doc).text;
             ops.push(Op::Insert {
                 rec: super::wire_rec(&nid, leg[0], leg[1], &rec.attrs),
                 at: None,
             });
-            pieces.push((leg[0], leg[1]));
         }
     }
-    (ops, pieces)
+    // Each cut wire: a put of its first piece and at least one insert.
+    assert!(ops.len() >= 2 * cut);
+    assert!(cut <= w.id.len());
+    ops
 }
 
 /// Xschem "Remove wires running through selected inst. pins": cuts wires at the pins of the
@@ -88,7 +95,7 @@ pub fn remove_through(
             .iter()
             .any(|p| p.binary_search(&a).is_ok() && p.binary_search(&b).is_ok())
     };
-    let (cut, _) = break_at(doc, &all, ids);
+    let cut = break_at(doc, &all, ids);
     let mut ops = Vec::with_capacity(cut.len());
     let mut cut_ids: HashSet<String> = HashSet::new();
     for op in cut {

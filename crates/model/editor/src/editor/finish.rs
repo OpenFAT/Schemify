@@ -2,7 +2,7 @@
 //!
 //! Contents:
 //! - `pub(super) fn dist`
-//! - `pub(super) fn arc_3`
+//! - `pub(super) struct ArcFit`, `pub(super) fn arc_3`
 //! - `Editor::manhattan_points`
 //! - `Editor::finish_wire`
 //! - `Editor::finish_move`
@@ -33,10 +33,22 @@ pub(super) fn dist(a: Pt, b: Pt) -> i32 {
     (dx.hypot(dy).round() as i64).clamp(0, i64::from(i32::MAX)) as i32
 }
 
-/// The arc from `a` to `b` through `c` (xschem's 3-point arc): center, radius (milli-units)
-/// and start/sweep in milli-degrees, clockwise on screen, sweep in `(0, 360000)`. `None` for
-/// collinear or repeated points.
-pub(super) fn arc_3(a: Pt, b: Pt, c: Pt) -> Option<(i32, i32, i32, i32, i32)> {
+/// An arc through three points, as an `arc` record holds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ArcFit {
+    /// Center (milli-units).
+    pub(super) center: Pt,
+    /// Radius (milli-units).
+    pub(super) r: i32,
+    /// Start in milli-degrees, clockwise on screen, in `[0, 360000)`.
+    pub(super) start: i32,
+    /// Sweep in milli-degrees, in `(0, 360000)`.
+    pub(super) sweep: i32,
+}
+
+/// The arc from `a` to `b` through `c` (xschem's 3-point arc). `None` for collinear or
+/// repeated points.
+pub(super) fn arc_3(a: Pt, b: Pt, c: Pt) -> Option<ArcFit> {
     let (ax, ay) = (f64::from(a.0), f64::from(a.1));
     let (bx, by) = (f64::from(b.0), f64::from(b.1));
     let (cx, cy) = (f64::from(c.0), f64::from(c.1));
@@ -62,13 +74,15 @@ pub(super) fn arc_3(a: Pt, b: Pt, c: Pt) -> Option<(i32, i32, i32, i32, i32)> {
     if !(fits(ux) && fits(uy) && fits(r)) || sweep <= 0.0 {
         return None;
     }
-    Some((
-        ux.round() as i32,
-        uy.round() as i32,
-        r.round() as i32,
-        start.rem_euclid(360_000.0) as i32,
-        sweep as i32,
-    ))
+    let fit = ArcFit {
+        center: (ux.round() as i32, uy.round() as i32),
+        r: r.round() as i32,
+        start: start.rem_euclid(360_000.0) as i32,
+        sweep: sweep as i32,
+    };
+    assert!((0..360_000).contains(&fit.start), "start {}", fit.start);
+    assert!(0 < fit.sweep && fit.sweep < 360_000, "sweep {}", fit.sweep);
+    Some(fit)
 }
 
 impl Editor {
@@ -82,11 +96,14 @@ impl Editor {
         } else {
             self.opts.manhattan
         };
-        match mode {
+        let pts = match mode {
             1 => vec![from, (to.0, from.1), to],
             2 => vec![from, (from.0, to.1), to],
             _ => vec![from, to],
-        }
+        };
+        assert_eq!(pts.first(), Some(&from));
+        assert_eq!(pts.last(), Some(&to));
+        pts
     }
     pub(super) fn finish_wire(
         &mut self,
@@ -128,6 +145,7 @@ impl Editor {
         copy: bool,
         stretch: u8,
     ) {
+        assert!(stretch <= 2, "plain, stretch or kissing move");
         let x = lin.then(Xform::translate(to.0 - from.0, to.1 - from.1));
         self.opts.constrain = 0;
         if x == Xform::IDENTITY && !copy {
@@ -295,6 +313,8 @@ impl Editor {
         pts: &[Pt],
         closed: bool,
     ) {
+        assert!(!pts.is_empty(), "a shape has its first point");
+        assert!(!closed || form == Form::Poly, "only a polygon closes");
         self.tool = Tool::Idle;
         let schematic = view == View::Schematic;
         let Some(doc) = self.session.project.doc(h) else {
@@ -335,6 +355,7 @@ impl Editor {
     /// attached wires follow (translations only; a move rotated in flight is plain). The
     /// selected ends of partially selected wires (Ctrl+drag box) move with any translation.
     fn finish_stretch(&mut self, reqs: &mut Vec<EditRequest>, h: DocHandle, x: Xform, stretch: u8) {
+        assert!(stretch <= 2, "plain, stretch or kissing move");
         let sel = self.selection().to_vec();
         let ends: Vec<(ObjKey, Pt)> = self
             .partial_ends()
@@ -426,7 +447,7 @@ impl Editor {
                 return;
             };
             let mut ids = Ids::new(&mut self.rng);
-            wiring::break_at(doc, &[p], &mut ids).0
+            wiring::break_at(doc, &[p], &mut ids)
         };
         if ops.is_empty() {
             self.session.say("the cut point is not inside the wire");
@@ -466,8 +487,8 @@ fn shape_record(
             ("circle", vec![m.0, m.1, r])
         }
         Form::Arc => {
-            let (cx, cy, r, start, sweep) = arc_3(*pts.first()?, *pts.get(1)?, *pts.get(2)?)?;
-            ("arc", vec![cx, cy, r, start, sweep])
+            let a = arc_3(*pts.first()?, *pts.get(1)?, *pts.get(2)?)?;
+            ("arc", vec![a.center.0, a.center.1, a.r, a.start, a.sweep])
         }
         Form::Poly => {
             if pts.len() < 2 || (closed && pts.len() < 3) {
@@ -497,6 +518,7 @@ fn shape_record(
     if form == Form::Poly && closed {
         rec = rec.attr("closed", &["true"]);
     }
+    assert!(rec.fields.len() >= values.len(), "every value is a field");
     Some(rec)
 }
 
@@ -507,12 +529,12 @@ mod tests {
     #[test]
     fn three_point_arcs_pass_through_their_points() {
         // A quarter circle of radius 10 around the origin, clockwise on screen from +x to +y.
-        let (cx, cy, r, start, sweep) = arc_3((10_000, 0), (0, 10_000), (6_000, 8_000)).unwrap();
-        assert_eq!((cx, cy, r), (0, 0, 10_000));
-        assert_eq!((start, sweep), (0, 90_000));
+        let a = arc_3((10_000, 0), (0, 10_000), (6_000, 8_000)).unwrap();
+        assert_eq!((a.center, a.r), ((0, 0), 10_000));
+        assert_eq!((a.start, a.sweep), (0, 90_000));
         // The same points with the middle one on the other side: the long way round.
-        let (_, _, _, s2, w2) = arc_3((10_000, 0), (0, 10_000), (-10_000, 0)).unwrap();
-        assert_eq!((s2, w2), (90_000, 270_000));
+        let b = arc_3((10_000, 0), (0, 10_000), (-10_000, 0)).unwrap();
+        assert_eq!((b.start, b.sweep), (90_000, 270_000));
         assert!(arc_3((0, 0), (1, 1), (2, 2)).is_none(), "collinear");
     }
 

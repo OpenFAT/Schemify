@@ -42,6 +42,8 @@ impl Wiring {
         out.xy.sort_unstable();
         out.yx = out.xy.iter().map(|p| (p.1, p.0)).collect();
         out.yx.sort_unstable();
+        assert_eq!(out.xy.len(), 2 * w.id.len(), "two ends per wire");
+        assert_eq!(out.yx.len(), out.xy.len(), "both end orders hold every end");
         out
     }
 
@@ -90,13 +92,18 @@ impl Wiring {
     }
 
     pub(super) fn add(&mut self, w: [i32; 4]) {
+        let before = self.xy.len();
         self.ends(w, true);
         self.runs(w, true);
+        assert_eq!(self.xy.len(), before + 2, "a wire adds its two ends");
     }
 
     pub(super) fn remove(&mut self, w: [i32; 4]) {
+        assert!(self.xy.len() >= 2, "a drawn wire's ends");
+        let before = self.xy.len();
         self.ends(w, false);
         self.runs(w, false);
+        assert_eq!(self.xy.len() + 2, before, "a wire removes its two ends");
     }
 
     /// Wire ends at `p`.

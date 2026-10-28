@@ -186,13 +186,13 @@ impl Editor {
             },
             Cmd::CompareSwap => self.compare_swap(h),
             Cmd::DupNames => {
-                let keys = self.with_doc(h, |d, _| duplicate_names(d).0);
+                let keys = self.with_doc(h, |d, _| duplicate_names(d).keys);
                 self.session
                     .say(format!("{} instance(s) with a duplicate name", keys.len()));
                 self.set_selection(keys);
             }
             Cmd::RenameDups => {
-                let ops = self.with_doc(h, |d, _| duplicate_names(d).1);
+                let ops = self.with_doc(h, |d, _| duplicate_names(d).ops);
                 if ops.is_empty() {
                     self.session.say("no duplicate instance names");
                 }

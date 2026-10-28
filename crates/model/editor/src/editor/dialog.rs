@@ -92,6 +92,7 @@ pub(super) enum Dialog {
 
 impl Editor {
     pub(super) fn show_dialog(&mut self, id: &str) {
+        assert!(id.starts_with("dialog."), "a dialog node id: {id}");
         let sym = self.shell.sym(id);
         self.shell.ui.set_dialog(sym);
         self.shell.invalidate();
@@ -100,8 +101,10 @@ impl Editor {
         self.dialog = Dialog::None;
         self.shell.ui.set_dialog(Sym::NONE);
         self.shell.invalidate();
+        assert!(self.shell.ui.dialog().is_none(), "no dialog stays open");
     }
     pub(super) fn open_text(&mut self, purpose: TextFor, title: &str) {
+        assert!(!title.is_empty(), "an enter-text dialog has a title");
         self.tool = Tool::Idle;
         self.dialog = Dialog::Text(purpose, title.to_owned(), String::new());
         self.show_dialog("dialog.enter_text");
@@ -193,6 +196,10 @@ impl Editor {
         fields: &[Field],
         reqs: &mut Vec<EditRequest>,
     ) {
+        assert!(
+            fields.iter().any(|f| f.key == "value"),
+            "the search dialog's fields"
+        );
         let get = |k: &str| {
             fields
                 .iter()
@@ -279,11 +286,13 @@ impl Editor {
                 }
             })
             .collect();
+        assert!(ops.len() <= fields.len(), "one op per changed field");
         self.commit(reqs, h, "edit header", ops);
     }
     /// Opens the canvas context menu at screen point `at` (xschem §1.15): the no-selection or
     /// the selection variant.
     pub(super) fn context_menu(&mut self, at: (f32, f32)) {
+        assert!(at.0.is_finite() && at.1.is_finite(), "a screen point");
         let selected = !self.selection().is_empty();
         self.dialog = Dialog::Ctx(selected);
         let sym = self.shell.sym("dialog.ctx");

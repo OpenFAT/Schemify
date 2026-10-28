@@ -12,8 +12,10 @@
 //! - `Editor::highlight_plotted`
 //! - `Editor::auto_highlight`
 //! - `Editor::colored_highlight`
-//! - `pub(super) fn duplicate_names`
+//! - `pub(super) struct Duplicates`, `pub(super) fn duplicate_names`
 //! - `pub(super) fn overlapped`
+
+use std::collections::{BTreeMap, HashSet};
 
 use schemify_canvas::CanvasPrims;
 use schemify_doc::{DocHandle, Document, Op, TableId, Target as DocTarget};
@@ -24,6 +26,7 @@ use schemify_netlist::NameMap;
 
 use crate::commands::Cmd;
 use crate::scene::{ObjKey, UNIT};
+use crate::session::DEPTH_MAX;
 use crate::{checks, edit, spines};
 
 use super::Editor;
@@ -34,7 +37,17 @@ pub(super) const PIN_PX: f64 = 8.0;
 
 /// Borrows the session's `${NAME}` environment pairs in the shape elab and run take.
 pub(super) fn env_refs(env: &[(String, String)]) -> Vec<(&str, &str)> {
-    env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
+    let refs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    assert_eq!(refs.len(), env.len());
+    refs
+}
+
+/// The duplicate-name check's answer: every holder of a shared name and the renames.
+pub(super) struct Duplicates {
+    /// Every instance whose name another instance also holds, sorted.
+    pub(super) keys: Vec<ObjKey>,
+    /// Renames of all but the first holder of each name.
+    pub(super) ops: Vec<Op>,
 }
 
 impl Editor {
@@ -49,6 +62,11 @@ impl Editor {
             p.push('/');
             p.push_str(&l.inst);
         }
+        assert!(tab.stack.len() <= DEPTH_MAX, "a bounded hierarchy");
+        assert!(
+            p.is_empty() == (tab.stack.len() == 1),
+            "empty exactly at the top"
+        );
         p
     }
     /// The name map of the active tab's top cell (ngspice, default config and corner),
@@ -83,10 +101,12 @@ impl Editor {
     /// path when the name map does not know it.
     pub(super) fn net_key(&mut self, name: &str) -> String {
         let path = format!("{}/{name}", self.level_prefix());
-        match self.hier_map().and_then(|m| m.net_name(&path)) {
+        let key = match self.hier_map().and_then(|m| m.net_name(&path)) {
             Some(e) => spice_case(&e),
             None => path,
-        }
+        };
+        assert!(!key.is_empty());
+        key
     }
     /// `k` / `Ctrl+K` / `Shift+K`: highlight (or unhighlight) the nets of the selected wires,
     /// labels and ports and of the instance pin under the pointer — the object under the
@@ -159,6 +179,7 @@ impl Editor {
             "unhighlighted"
         };
         self.session.say(format!("{verb}: {}", shown.join(" ")));
+        assert!(self.highlight.len() <= checks::HIGHLIGHT_MAX);
         debug_assert!(self.highlight.windows(2).all(|w| w[0] < w[1]));
     }
     /// Local names of the highlighted nets at the active level.
@@ -235,6 +256,8 @@ impl Editor {
         }
         self.session
             .say(format!("{} net/pin mismatch(es)", nets.len()));
+        assert!(self.highlight.len() <= checks::HIGHLIGHT_MAX);
+        debug_assert!(self.highlight.is_sorted());
     }
     /// Adds the nets the waves dock plots (`v(<net>)`) to the highlight.
     pub(super) fn highlight_plotted(&mut self) {
@@ -250,6 +273,8 @@ impl Editor {
                 self.highlight.insert(i, key);
             }
         }
+        assert!(self.highlight.len() <= checks::HIGHLIGHT_MAX);
+        debug_assert!(self.highlight.is_sorted());
     }
     /// Highlight → auto-highlight: the selection's nets replace the highlight on every
     /// selection change; an empty selection clears it (xschem `auto_hilight`).
@@ -311,18 +336,18 @@ impl Editor {
 
 /// Instances whose name is used more than once (every holder), and the ops renaming all
 /// but the first holder of each name to the next free `<prefix><n>`.
-pub(super) fn duplicate_names(doc: &Document) -> (Vec<ObjKey>, Vec<Op>) {
+pub(super) fn duplicate_names(doc: &Document) -> Duplicates {
     let s = doc.strings();
     let inst = doc.instances();
-    let mut by_name: std::collections::BTreeMap<&str, Vec<usize>> =
-        std::collections::BTreeMap::new();
+    let mut by_name: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
     for i in 0..inst.id.len() {
         by_name.entry(s.get(inst.name[i])).or_default().push(i);
     }
     let mut keys = Vec::new();
     let mut ops = Vec::new();
-    let mut taken = std::collections::HashSet::new();
-    for (name, rows) in by_name.iter().filter(|e| e.1.len() > 1) {
+    let mut taken = HashSet::new();
+    let shared = by_name.iter().filter(|e| e.1.len() > 1);
+    for (name, rows) in shared {
         for (k, &i) in rows.iter().enumerate() {
             keys.push(ObjKey {
                 table: TableId::Instances,
@@ -344,14 +369,17 @@ pub(super) fn duplicate_names(doc: &Document) -> (Vec<ObjKey>, Vec<Op>) {
         }
     }
     keys.sort_unstable();
-    (keys, ops)
+    // Each shared name keeps its first holder: fewer renames than holders.
+    assert!(keys.is_empty() || ops.len() < keys.len());
+    assert!(keys.len() <= inst.id.len());
+    Duplicates { keys, ops }
 }
 
 /// Instances placed exactly like an earlier instance of the same cell (all but the first of
 /// each group).
 pub(super) fn overlapped(doc: &Document) -> Vec<ObjKey> {
     let inst = doc.instances();
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     let mut out = Vec::new();
     for i in 0..inst.id.len() {
         let place = (inst.cell[i], inst.x[i], inst.y[i], inst.orient[i] as u8);
@@ -363,6 +391,8 @@ pub(super) fn overlapped(doc: &Document) -> Vec<ObjKey> {
         }
     }
     out.sort_unstable();
+    // The first instance of each placement stays.
+    assert!(out.is_empty() || out.len() < inst.id.len());
     out
 }
 

@@ -256,7 +256,7 @@ impl Editor {
                                 .collect()
                         });
                         p.doc(h)
-                            .map_or_else(Vec::new, |d| wiring::break_at(d, &pts, &mut ids).0)
+                            .map_or_else(Vec::new, |d| wiring::break_at(d, &pts, &mut ids))
                     }
                 };
                 self.commit(reqs, h, cmd.name(), ops);

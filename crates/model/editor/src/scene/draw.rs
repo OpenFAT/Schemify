@@ -55,6 +55,8 @@ pub(super) fn instance<'d>(
 ) {
     let s = doc.strings();
     let inst = doc.instances();
+    assert!(i < inst.id.len(), "instance row {i}");
+    let objects = b.sc.objs.len();
     let key = ObjKey {
         table: TableId::Instances,
         key: inst.id[i].0,
@@ -84,6 +86,7 @@ pub(super) fn instance<'d>(
             cellref,
             obj,
         );
+        assert_eq!(b.sc.objs.len(), objects + 1, "one object per instance");
         return;
     };
     let x = |q: Pt| geometry::place(o, at, q);
@@ -119,6 +122,7 @@ pub(super) fn instance<'d>(
         let (q, rot) = inst_text(t, (o, at), (doc, i, iface, cellref), values, st);
         b.text_rot(q, t.size, t.layer, &st.text, rot, obj);
     }
+    assert_eq!(b.sc.objs.len(), objects + 1, "one object per instance");
 }
 
 /// Re-renders the texts of instance row `i`, drawn as object `o` whose only change is its
@@ -140,6 +144,8 @@ pub(super) fn revalue_texts<'d>(
     st: &mut Stamp<'d>,
 ) -> bool {
     let inst = doc.instances();
+    assert!(i < inst.id.len(), "instance row {i}");
+    assert!((o as usize) < sc.objs.len(), "object {o}");
     let (orient, at) = (inst.orient[i], (inst.x[i], inst.y[i]));
     let cellref = doc.strings().get(inst.cell[i]);
     let row = *st
@@ -178,12 +184,14 @@ pub(super) fn revalue_texts<'d>(
             }
         }
     }
+    debug_assert!(next <= rows.end);
     next == rows.end
 }
 
 /// Draws wire row `i` (its connection points included; dots are [`redot`]'s).
 pub(super) fn wire(b: &mut Build<'_>, doc: &Document, i: usize) {
     let w = doc.wires();
+    assert!(i < w.id.len(), "wire row {i}");
     let (a, c) = ((w.x1[i], w.y1[i]), (w.x2[i], w.y2[i]));
     let key = ObjKey {
         table: TableId::Wires,
@@ -199,6 +207,7 @@ pub(super) fn wire(b: &mut Build<'_>, doc: &Document, i: usize) {
 /// Labels, ports, noconns, texts and shapes of rows `rows` (clamped to each table) in that
 /// order.
 pub(super) fn other_objects(b: &mut Build<'_>, doc: &Document, rows: std::ops::Range<usize>) {
+    assert!(rows.start <= rows.end, "an ordered row range");
     for table in [
         TableId::Labels,
         TableId::Ports,
@@ -222,6 +231,7 @@ pub(super) fn other_objects(b: &mut Build<'_>, doc: &Document, rows: std::ops::R
 /// Draws row `i` of a label, port, noconn, text or shape table.
 pub(super) fn one_other(b: &mut Build<'_>, doc: &Document, table: TableId, i: usize) {
     let s = doc.strings();
+    let objects = b.sc.objs.len();
     match table {
         TableId::Labels | TableId::Ports => {
             // Labels: a pin square at the anchor and the net name beside it, in wire color;
@@ -277,6 +287,9 @@ pub(super) fn one_other(b: &mut Build<'_>, doc: &Document, table: TableId, i: us
         TableId::Shapes => shape(b, doc, i),
         _ => unreachable!("{table:?} has no canvas objects"),
     }
+    // A malformed shape draws nothing; every other row draws one object.
+    assert!(b.sc.objs.len() <= objects + 1, "one object per row");
+    assert!(table == TableId::Shapes || b.sc.objs.len() == objects + 1);
 }
 
 /// Draws row `i` of the schematic graphics (`shape` records, format spec §4 rank 3): one
@@ -289,6 +302,7 @@ pub(super) fn shape(b: &mut Build<'_>, doc: &Document, i: usize) {
         key: sh.id[i].0,
     };
     let c = &doc.pool().coords[sh.coords[i].range()];
+    assert!(i < sh.id.len(), "shape row {i}");
     let layer = layer_attr(doc, sh.attrs[i], 4);
     let st = style_attr(doc, sh.attrs[i]);
     match sh.form[i] {
@@ -401,6 +415,8 @@ pub(super) fn placed(b: &mut Build<'_>, key: ObjKey, at: Pt, o: Orient, name: &s
         bx[2].max(tb[2]),
         bx[3].max(tb[3]),
     ];
+    assert!(bx[0] <= at.0 && at.0 <= bx[2], "the box covers the anchor");
+    assert!(bx[1] <= at.1 && at.1 <= bx[3], "the box covers the anchor");
     b.sc.objs.geom[obj as usize] = bx;
     b.conn_at(at, obj);
 }
@@ -436,8 +452,9 @@ fn inst_text<'d>(
         text.clear();
         text.push_str(&t.raw);
     }
-    let turned = crate::geometry::compose(o, t.orient);
+    let turned = geometry::compose(o, t.orient);
     let rot = turned.quarter_turns();
+    debug_assert!(rot < 4, "a quarter-turn count");
     (
         sym_text_at(
             geometry::place(o, at, t.at),
@@ -463,6 +480,7 @@ fn bind_ident<'d>(
 ) -> Option<Value<'d>> {
     let s = doc.strings();
     let inst = doc.instances();
+    assert!(i < inst.id.len(), "instance row {i}");
     let text = match name {
         "name" => s.get(inst.name[i]),
         "cell" => cellref.rsplit([':', '/']).next().unwrap_or(cellref),
