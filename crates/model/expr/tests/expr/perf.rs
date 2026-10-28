@@ -7,6 +7,8 @@ use std::time::Instant;
 
 use schemify_expr::{Mode, Program, Scratch, Value};
 
+// ---- private ----
+
 #[test]
 #[ignore = "timing; run in release with --ignored"]
 fn perf_scalar_eval_1m() {

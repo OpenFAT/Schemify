@@ -6,6 +6,22 @@ use schemify_expr::{Code, Mode, Program, Scratch, Value, parse_num, write_num};
 
 use crate::Owned::{Num, Str};
 
+const TABLE: [(&str, i32); 11] = [
+    ("f", -15),
+    ("p", -12),
+    ("n", -9),
+    ("u", -6),
+    ("\u{b5}", -6),
+    ("\u{3bc}", -6),
+    ("m", -3),
+    ("k", 3),
+    ("meg", 6),
+    ("g", 9),
+    ("t", 12),
+];
+
+// ---- private ----
+
 fn canon(x: f64) -> String {
     let mut s = String::new();
     write_num(&mut s, x);
@@ -70,20 +86,6 @@ proptest! {
         prop_assert!((y - x).abs() <= tol, "eng({x}, {digits}) read back as {y}");
     }
 }
-
-const TABLE: [(&str, i32); 11] = [
-    ("f", -15),
-    ("p", -12),
-    ("n", -9),
-    ("u", -6),
-    ("\u{b5}", -6),
-    ("\u{3bc}", -6),
-    ("m", -3),
-    ("k", 3),
-    ("meg", 6),
-    ("g", 9),
-    ("t", 12),
-];
 
 /// Every casing of an ASCII suffix.
 fn casings(s: &str) -> Vec<String> {

@@ -7,6 +7,10 @@ use schemify_expr::{
     CalcResult, Code, ColKind, ColOut, Column, Mode, Plot, Program, Scratch, Value,
 };
 
+const F: f64 = 3.0;
+
+// ---- private ----
+
 /// Evaluates `src` over signals `v(a)`, `v(b)`… (named by position) on `x`.
 fn calc(
     src: &str,
@@ -60,8 +64,6 @@ fn col(r: Result<CalcResult<'static>, Code>) -> ColOut {
 fn grid(n: usize, t_end: f64) -> Vec<f64> {
     (0..n).map(|i| t_end * i as f64 / (n - 1) as f64).collect()
 }
-
-const F: f64 = 3.0;
 
 fn sine(x: &[f64]) -> Vec<f64> {
     x.iter().map(|t| (2.0 * PI * F * t).sin()).collect()
