@@ -1,37 +1,18 @@
-//! Oracles for the user config (docs/dev/testing.md, config spec §2–§5): the Lua API against the table
-//! written directly, and the sandbox's negative space (absent libraries, budget, memory cap,
-//! errors located at `file:line`).
+//! The `schemify.*` API (config spec §3, §5): Lua source → the table written directly, the
+//! requests of functions and hooks, and each call's negative space.
 //!
-//! The same interpreter runs natively and on the web (web spec §5), so CI also runs this file
-//! for `wasm32-wasip1` under wasmtime. The browser target has no test harness.
-
-#![cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+//! Contents: no `pub` items.
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 use schemify_config::{
     Config, Event, FnId, Keymaps, Level, Opts, PackSpec, Request, Sim, Source, Startup, Table,
     Target,
 };
 
-fn run(src: &str) -> (Config, Vec<Request>) {
-    Config::from_source(src, None)
-}
+use crate::{SHA, errors, run};
 
-fn errors(out: &[Request]) -> Vec<&str> {
-    out.iter()
-        .filter_map(|r| match r {
-            Request::Notify {
-                level: Level::Error,
-                text,
-            } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect()
-}
-
-const SHA: &str = "9f2c000000000000000000000000000000000000000000000000000000000001";
+// ---- private ----
 
 /// Setting options, maps, sims, hooks and packages through Lua equals writing the table.
 #[test]
@@ -263,126 +244,6 @@ fn functions_and_hooks_return_their_requests() {
 }
 
 #[test]
-fn sandbox_has_no_io_os_debug_or_loaders() {
-    let absent = [
-        "io",
-        "os",
-        "debug",
-        "package",
-        "coroutine",
-        "dofile",
-        "loadfile",
-        "load",
-        "collectgarbage",
-    ];
-    for name in absent {
-        let (_, out) = run(&format!("assert({name} == nil, '{name} is present')"));
-        assert!(out.is_empty(), "{name}: {out:?}");
-    }
-    let (_, out) = run("os.execute('touch /tmp/schemify-sandbox-escape')");
-    let e = errors(&out);
-    assert!(
-        e[0].starts_with("init.lua:1:") && e[0].contains("os"),
-        "{e:?}"
-    );
-    assert!(!std::path::Path::new("/tmp/schemify-sandbox-escape").exists());
-    let (_, out) = run("package.loadlib('libc.so.6', 'system')");
-    assert!(errors(&out)[0].contains("package"), "{out:?}");
-    let (_, out) = run("require('os')");
-    assert!(errors(&out)[0].contains("no config directory"), "{out:?}");
-    // Precompiled bytecode (which can crash the VM) never loads, not even as the init file.
-    let (_, out) = run("\x1bLuaT\0");
-    assert!(errors(&out)[0].contains("binary chunk"), "{out:?}");
-}
-
-/// The ceiling C Lua had (spec §4, BACKLOG): one library call ran between budget checks. The
-/// pattern matcher now charges the budget as it backtracks, so a pathological match stops.
-#[test]
-fn a_pathological_pattern_is_killed_by_the_budget() {
-    let t = Instant::now();
-    let (_, out) = run("local s = string.rep('a', 4000)\nstring.find(s, '.-.-.-.-.-.-b')");
-    assert!(
-        t.elapsed() < Duration::from_secs(20),
-        "took {:?}",
-        t.elapsed()
-    );
-    let e = errors(&out);
-    assert_eq!(e.len(), 1, "{out:?}");
-    assert!(e[0].contains("instruction budget exhausted"), "{e:?}");
-    // Negative space: a cheap match in the same state runs.
-    let (_, out) = run("assert(string.find(string.rep('a', 4000) .. 'b', 'a-b') == 1)");
-    assert!(out.is_empty(), "{out:?}");
-}
-
-#[test]
-fn an_infinite_loop_is_killed_by_the_budget() {
-    for src in [
-        "local x = 0\nwhile true do x = x + 1 end",
-        // pcall cannot swallow the budget error and keep looping.
-        "while true do pcall(function() while true do end end) end",
-        "while true do xpcall(function() while true do end end, function(m) return m end) end",
-    ] {
-        let t = Instant::now();
-        let (_, out) = run(src);
-        assert!(
-            t.elapsed() < Duration::from_secs(20),
-            "{src}: took {:?}",
-            t.elapsed()
-        );
-        let e = errors(&out);
-        assert_eq!(e.len(), 1, "{src}: {out:?}");
-        assert!(e[0].contains("instruction budget exhausted"), "{e:?}");
-        assert!(e[0].starts_with("init.lua:"), "located: {e:?}");
-    }
-}
-
-#[test]
-fn a_memory_bomb_is_killed_by_the_cap() {
-    for src in [
-        "local s = string.rep('x', 1 << 30)",
-        "local t = {}\nfor i = 1, 1e9 do t[i] = string.rep('x', 4096) .. i end",
-    ] {
-        let (cfg, out) = run(src);
-        let e = errors(&out);
-        assert_eq!(e.len(), 1, "{src}: {out:?}");
-        assert!(e[0].contains("not enough memory"), "{e:?}");
-        assert_eq!(cfg.table(), &Table::default());
-    }
-    // pcall may catch it (the state stays usable), but the budget still bounds a retry loop.
-    let (_, out) = run("for i = 1, 3 do assert(not pcall(string.rep, 'x', 1 << 30)) end");
-    assert!(out.is_empty(), "{out:?}");
-}
-
-#[test]
-fn errors_are_located_and_earlier_settings_stay() {
-    let (cfg, out) =
-        run("schemify.opt.snap = 5\n\nschemify.opt.bogus = 1\nschemify.opt.light = true");
-    assert_eq!(errors(&out), vec!["init.lua:3: unknown option `bogus`"]);
-    assert_eq!(cfg.table().opts.snap, 5_000, "set before the error");
-    assert!(!cfg.table().opts.light, "after the error: not run");
-    let (_, out) = run("\nerror('boom')");
-    assert_eq!(errors(&out), vec!["init.lua:2: boom"]);
-    let (_, out) = run("schemify.opt.snap = 'wide'");
-    assert!(
-        errors(&out)[0].starts_with("init.lua:1: option `snap`"),
-        "{out:?}"
-    );
-    let (_, out) = run("schemify.opt.snap = 0");
-    assert!(errors(&out)[0].contains("bad value"), "{out:?}");
-    let (_, out) = run("local x = = 1");
-    assert!(errors(&out)[0].starts_with("init.lua:1:"), "{out:?}");
-    let (_, out) = run("schemify.on('bogus_event', function() end)");
-    assert!(errors(&out)[0].contains("unknown event"), "{out:?}");
-    let (_, out) = run("schemify.sim('hspice', { path = 'x' })");
-    assert!(errors(&out)[0].contains("unknown program"), "{out:?}");
-    let (_, out) = run("schemify.keymap.set('Ctrl+X', 42)");
-    assert!(errors(&out)[0].starts_with("init.lua:1:"), "{out:?}");
-    // Argument conversion errors are located through the traceback.
-    let (_, out) = run("\nschemify.on('saved', 5)");
-    assert!(errors(&out)[0].starts_with("init.lua:2:"), "{out:?}");
-}
-
-#[test]
 fn bad_pack_specs_are_reported_and_dropped() {
     let (cfg, out) = run(&format!(
         "schemify.pack.add {{\n\
@@ -404,6 +265,38 @@ fn bad_pack_specs_are_reported_and_dropped() {
     );
     assert_eq!(cfg.table().packs.len(), 1);
     assert_eq!(cfg.table().packs[0].name, "ok");
+}
+
+/// `schemify.sim` `env` (ESPice's `ZIG`): a map of names to strings, else one located error
+/// that leaves the row unset.
+#[test]
+fn sim_env_must_map_names_to_strings() {
+    let (cfg, out) = run("schemify.sim('espice', { path = 'espice', env = { ZIG = '/z' } })");
+    assert!(out.is_empty(), "{out:?}");
+    let row = cfg.table().sim(schemify_config::SimKind::Espice).unwrap();
+    assert_eq!(row.env, vec![("ZIG".to_owned(), "/z".to_owned())]);
+    for bad in [
+        "schemify.sim('espice', { path = 'espice', env = 'ZIG=/z' })",
+        "schemify.sim('espice', { path = 'espice', env = { ZIG = true } })",
+        "schemify.sim('espice', { path = 'espice', env = { '/z' } })",
+        "schemify.sim('espice', { path = 'espice', env = { ['A=B'] = 'x' } })",
+    ] {
+        let (cfg, out) = run(bad);
+        let e = errors(&out);
+        assert_eq!(e.len(), 1, "{bad}: {out:?}");
+        assert!(e[0].contains("`env` must map"), "{bad}: {}", e[0]);
+        assert!(cfg.table().sim(schemify_config::SimKind::Espice).is_none());
+    }
+    for bad in [
+        "schemify.sim('espice', { path = 'espice', args = '-b' })",
+        "schemify.sim('espice', { path = 'espice', args = { true } })",
+    ] {
+        let (cfg, out) = run(bad);
+        let e = errors(&out);
+        assert_eq!(e.len(), 1, "{bad}: {out:?}");
+        assert!(e[0].contains("`args` must be a list"), "{bad}: {}", e[0]);
+        assert!(cfg.table().sim(schemify_config::SimKind::Espice).is_none());
+    }
 }
 
 #[test]
@@ -501,154 +394,99 @@ fn the_example_config_is_valid() {
     assert_eq!(cfg.table().keymaps.chord.len(), 2);
 }
 
+/// Each call's argument checks: one located error per bad call, nothing queued or set.
 #[test]
-fn startup_flags_parse() {
-    let args = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-    assert_eq!(
-        Startup::parse(&args(&["netlist", "x"])),
-        Ok((Startup::User, 0))
-    );
-    assert_eq!(
-        Startup::parse(&args(&["--clean", "fmt"])),
-        Ok((Startup::Clean, 1))
-    );
-    assert_eq!(
-        Startup::parse(&args(&["-u", "t.lua", "pack", "sync"])),
-        Ok((Startup::File("t.lua".into()), 2))
-    );
-    assert!(Startup::parse(&args(&["-u"])).is_err());
-    assert!(Startup::parse(&args(&["--clean", "-u", "x"])).is_err());
-    for s in [Startup::Clean, Startup::User, Startup::File("a.lua".into())] {
-        let mut flags = s.flags();
-        flags.push("edit".into());
-        assert_eq!(Startup::parse(&flags), Ok((s.clone(), flags.len() - 1)));
+fn bad_arguments_are_located_errors_that_set_nothing() {
+    for (src, why) in [
+        (
+            "schemify.keymap.set('Ctrl X', 'file.save')",
+            "bad chord `Ctrl X`",
+        ),
+        (
+            "schemify.keymap.set('F5', 'file save')",
+            "bad command name `file save`",
+        ),
+        (
+            "schemify.keymap.set({}, 'file.save')",
+            "bad argument #1 to 'set'",
+        ),
+        ("schemify.cmd('a b')", "bad command name `a b`"),
+        (
+            "schemify.cmd('x.y', {})",
+            "bad argument #2 to 'cmd' (string expected, got table)",
+        ),
+        ("schemify.notify('hi', 'loud')", "unknown level `loud`"),
+        ("schemify.notify(nil)", "bad argument #1 to 'notify'"),
+        (
+            "schemify.sim('ngspice', { args = {} })",
+            "sim `ngspice`: `path` is required",
+        ),
+        (
+            "schemify.pack.add('x')",
+            "bad argument #1 to 'add' (table expected, got string)",
+        ),
+        ("local x = schemify.opt.bogus", "unknown option `bogus`"),
+    ] {
+        let (cfg, out) = run(src);
+        let e = errors(&out);
+        assert_eq!(e.len(), 1, "{src}: {out:?}");
+        assert!(
+            e[0].starts_with(&format!("init.lua:1: {why}")),
+            "{src}: {}",
+            e[0]
+        );
+        assert_eq!(out.len(), 1, "{src}: {out:?}");
+        assert_eq!(cfg.table(), &Table::default(), "{src}");
     }
+    // `opts.desc` is kept; a number converts to a command argument string.
+    let (cfg, out) =
+        run("schemify.keymap.set('w', 'x.y', { desc = 'wire' })\nschemify.cmd('x.y', 5)");
+    assert_eq!(cfg.table().keymaps.desc, vec!["wire".to_owned()]);
+    let cmd = Request::Command {
+        name: "x.y".into(),
+        args: "5".into(),
+    };
+    assert_eq!(out, vec![cmd]);
 }
 
-/// The editor's command line (spec §7): each word, in any order after the flags, and every
-/// bad case is the usage text (after the flag's own message for a bad global flag).
+/// The per-call request capacity (spec §6) and the hook capacity: the first call past it
+/// fails, located, and what came before stays.
 #[test]
-fn launch_parses_the_editor_command_line() {
-    use schemify_config::{GUI_USAGE, Launch};
-    let parse = |a: &[&str]| Launch::parse(&a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
-    let only = |l: Launch| {
-        Ok(Launch {
-            startup: Startup::User,
-            ..l
-        })
-    };
-    assert_eq!(parse(&[]), only(Launch::default()));
-    let full = Launch {
-        startup: Startup::Clean,
-        path: Some("top.shcomp".into()),
-        no_default_ui: true,
-        rpc: Some("/tmp/s".into()),
-    };
-    for order in [
-        &[
-            "--clean",
-            "edit",
-            "top.shcomp",
-            "--no-default-ui",
-            "--rpc",
-            "/tmp/s",
-        ][..],
-        &[
-            "--clean",
-            "--rpc",
-            "/tmp/s",
-            "--no-default-ui",
-            "top.shcomp",
-        ],
-        &[
-            "--clean",
-            "--no-default-ui",
-            "top.shcomp",
-            "--rpc",
-            "/tmp/s",
-        ],
-    ] {
-        assert_eq!(parse(order), Ok(full.clone()), "{order:?}");
-    }
-    assert_eq!(parse(&["edit"]), only(Launch::default()));
-    assert_eq!(
-        parse(&["dir"]),
-        only(Launch {
-            path: Some("dir".into()),
-            ..Launch::default()
-        })
-    );
-    // `edit` is only a word right after the flags; elsewhere it is a path.
-    assert_eq!(
-        parse(&["edit", "edit"]),
-        only(Launch {
-            path: Some("edit".into()),
-            ..Launch::default()
-        })
-    );
-    // The socket is the next word whatever it looks like.
-    assert_eq!(
-        parse(&["--rpc", "--no-default-ui"]),
-        only(Launch {
-            rpc: Some("--no-default-ui".into()),
-            ..Launch::default()
-        })
-    );
-    assert_eq!(
-        parse(&["-u", "t.lua", "x"]),
-        Ok(Launch {
-            startup: Startup::File("t.lua".into()),
-            path: Some("x".into()),
-            ..Launch::default()
-        })
-    );
-    for bad in [
-        &["--rpc"][..],
-        &["x", "--rpc"],
-        &["--rpc", "a", "--rpc", "b"],
-        &["a", "b"],
-        &["edit", "a", "b"],
-        &["--bogus"],
-        &["-x", "a"],
-        &["a", "--clean"],
-    ] {
-        assert_eq!(parse(bad), Err(GUI_USAGE.to_owned()), "{bad:?}");
-    }
-    assert_eq!(parse(&["-u"]), Err(format!("-u needs a file\n{GUI_USAGE}")));
-    assert_eq!(
-        parse(&["--clean", "-u", "x"]),
-        Err(format!("give --clean or -u once\n{GUI_USAGE}"))
-    );
+fn capacities_fail_the_call_past_their_limit() {
+    let (_, out) = run(&format!(
+        "for i = 1, {} do schemify.cmd('x.y') end",
+        schemify_config::REQUESTS_MAX + 1
+    ));
+    assert_eq!(out.len(), schemify_config::REQUESTS_MAX + 1);
+    let e = errors(&out);
+    assert_eq!(e, vec!["init.lua:1: more than 256 requests in one call"]);
+    let (cfg, out) = run(&format!(
+        "for i = 1, {} do schemify.on('saved', function() end) end",
+        schemify_config::HOOKS_MAX + 1
+    ));
+    assert_eq!(errors(&out), vec!["init.lua:1: more than 1024 hooks"]);
+    assert_eq!(cfg.table().hooks.len(), schemify_config::HOOKS_MAX);
 }
 
-/// `schemify.sim` `env` (ESPice's `ZIG`): a map of names to strings, else one located error
-/// that leaves the row unset.
+/// A function the config never returned, a config without Lua, and an unreadable `-u` file
+/// are each one error request, never a panic.
 #[test]
-fn sim_env_must_map_names_to_strings() {
-    let (cfg, out) = run("schemify.sim('espice', { path = 'espice', env = { ZIG = '/z' } })");
+fn calls_without_a_function_or_a_file_are_errors() {
+    let (mut cfg, out) = run("schemify.on('load', function() end)");
     assert!(out.is_empty(), "{out:?}");
-    let row = cfg.table().sim(schemify_config::SimKind::Espice).unwrap();
-    assert_eq!(row.env, vec![("ZIG".to_owned(), "/z".to_owned())]);
-    for bad in [
-        "schemify.sim('espice', { path = 'espice', env = 'ZIG=/z' })",
-        "schemify.sim('espice', { path = 'espice', env = { ZIG = true } })",
-        "schemify.sim('espice', { path = 'espice', env = { '/z' } })",
-        "schemify.sim('espice', { path = 'espice', env = { ['A=B'] = 'x' } })",
-    ] {
-        let (cfg, out) = run(bad);
-        let e = errors(&out);
-        assert_eq!(e.len(), 1, "{bad}: {out:?}");
-        assert!(e[0].contains("`env` must map"), "{bad}: {}", e[0]);
-        assert!(cfg.table().sim(schemify_config::SimKind::Espice).is_none());
-    }
-    for bad in [
-        "schemify.sim('espice', { path = 'espice', args = '-b' })",
-        "schemify.sim('espice', { path = 'espice', args = { true } })",
-    ] {
-        let (cfg, out) = run(bad);
-        let e = errors(&out);
-        assert_eq!(e.len(), 1, "{bad}: {out:?}");
-        assert!(e[0].contains("`args` must be a list"), "{bad}: {}", e[0]);
-        assert!(cfg.table().sim(schemify_config::SimKind::Espice).is_none());
-    }
+    let e = cfg.call(FnId(9));
+    assert!(errors(&e)[0].contains("no function 9"), "{e:?}");
+    assert_eq!(e.len(), 1);
+    let (mut clean, _) = Config::load(&Startup::Clean);
+    assert_eq!(
+        errors(&clean.call(FnId(0))),
+        vec!["function 0 called without a config"]
+    );
+    assert!(clean.fire(Event::Load, &[]).is_empty());
+    let missing = PathBuf::from("/nonexistent/schemify/init.lua");
+    let (cfg, out) = Config::load(&Startup::File(missing.clone()));
+    let want = format!("{}: cannot read the file", missing.display());
+    assert_eq!(errors(&out), vec![want.as_str()]);
+    assert!(cfg.root().is_none());
+    assert_eq!(cfg.table(), &Table::default());
 }

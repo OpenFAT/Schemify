@@ -1,5 +1,13 @@
-//! Neovim-style `stdpath` directories (config spec §1): a pure function of the environment
-//! and the OS layout, so the per-OS table is tested on any host.
+//! Neovim-style `stdpath` directories (config spec §1): the environment and the OS layout →
+//! one absolute directory path. A pure function of both, so the per-OS table is tested on
+//! any host. Cites: config spec §1; the XDG base directory spec (relative values ignored);
+//! D31 (the web's OPFS paths).
+//!
+//! Contents:
+//! - `pub enum Dir`, `pub enum Os`, `Os::current() -> Os`, `pub const APP: &str`
+//! - `pub fn stdpath(dir: Dir, os: Os, env: impl Fn(&str) -> Option<String>)
+//!   -> Result<PathBuf, String>`
+//! - `pub fn here(dir: Dir) -> Result<PathBuf, String>`
 
 use std::path::PathBuf;
 
@@ -27,6 +35,9 @@ pub enum Os {
     Web,
 }
 
+/// The default app name; `SCHEMIFY_APPNAME` replaces it.
+pub const APP: &str = "schemify";
+
 impl Os {
     /// The layout of the target this binary was built for.
     pub const fn current() -> Os {
@@ -39,9 +50,6 @@ impl Os {
         }
     }
 }
-
-/// The default app name; `SCHEMIFY_APPNAME` replaces it.
-pub const APP: &str = "schemify";
 
 /// The directory `dir` under layout `os`, reading variables through `env` (`None` = unset).
 ///
@@ -97,6 +105,7 @@ pub fn stdpath(dir: Dir, os: Os, env: impl Fn(&str) -> Option<String>) -> Result
     };
     let path = join(&base, &format!("{app}{suffix}"), sep);
     assert!(path.len() > app.len());
+    assert!(path.ends_with(&format!("{sep}{app}{suffix}")));
     Ok(PathBuf::from(path))
 }
 
@@ -108,6 +117,8 @@ pub fn stdpath(dir: Dir, os: Os, env: impl Fn(&str) -> Option<String>) -> Result
 pub fn here(dir: Dir) -> Result<PathBuf, String> {
     stdpath(dir, Os::current(), |k| std::env::var(k).ok())
 }
+
+// ---- private ----
 
 /// One path segment of `A–Z a–z 0–9 . _ -`, not `.` or `..`.
 fn is_segment(s: &str) -> bool {
