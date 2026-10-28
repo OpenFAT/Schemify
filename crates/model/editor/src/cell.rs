@@ -33,6 +33,7 @@ pub use ops::{
     set_ops, sync_ops,
 };
 mod bench;
+mod bench_panel;
 pub use bench::{add_bench_ops, delete_bench_ops};
 
 /// A "Sync pins from ports" waiting for Apply or Cancel: the ports parsed from impl

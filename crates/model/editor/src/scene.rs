@@ -35,6 +35,7 @@ mod draw;
 mod select;
 pub use select::{Selected, box_select, hit, marks, selected_prims};
 mod preview;
+mod symview;
 pub use preview::{preview_records, preview_records_on, push_moved, stamp};
 
 /// Junction dots (filled, wire color).

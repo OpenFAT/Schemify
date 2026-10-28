@@ -2,8 +2,9 @@
 //! change log in place (dead rows kept, new rows appended).
 
 use super::dots::Wiring;
-use super::draw::{Stamp, instance, one_other, other_objects, redot, revalue_texts, symbol, wire};
+use super::draw::{Stamp, instance, one_other, other_objects, revalue_texts, wire};
 use super::symbols::{Symbols, rotated_extent, text_size, text_start};
+use super::symview::{redot, symbol};
 use super::{ObjKey, Objects, Owners, Scene, pack};
 use crate::geometry::Pt;
 use crate::session::View;

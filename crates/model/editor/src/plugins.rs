@@ -26,6 +26,7 @@ mod snapshot;
 mod user;
 use snapshot::Filled;
 mod deliver;
+mod patch;
 pub use deliver::{eval_in, fn_result};
 
 /// Hex digits of a plugin content hash in a D20 `cached <value> <hash>` attribute: the
