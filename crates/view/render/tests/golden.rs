@@ -9,12 +9,24 @@ use schemify_canvas::{Camera, CanvasPrims, Marks, Palette, PrimKind};
 use schemify_render::canvas::{self, CanvasScratch};
 use schemify_render::kurbo::{Affine, Rect};
 use schemify_render::peniko::Color;
+use schemify_render::waves::{WaveLook, WaveScratch, draw_pane, draw_window};
 use schemify_render::widgets::{UiScratch, draw_math, draw_ui};
 use schemify_render::{CpuPainter, Painter};
+use schemify_ui::waves::{Geometry, WAVES_UI, WaveUi};
 use schemify_ui::{Kind, Layer, Strings, TextSystem, UiState, compose, layout, records};
+use schemify_wave::{Cursor, Request, Waves, parse_raw};
 
 mod common;
 use common::thousand_prims;
+
+struct Shell {
+    strings: Strings,
+    tables: schemify_ui::UiTables,
+    text: TextSystem,
+    state: UiState,
+}
+
+// ---- private ----
 
 fn check(name: &str, pixmap: schemify_render::Pixmap) {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden");
@@ -48,13 +60,6 @@ fn check(name: &str, pixmap: schemify_render::Pixmap) {
         std::fs::write(&out, &png).unwrap();
         panic!("{name}: {bad} pixels differ (limit {limit}); actual written to {out}");
     }
-}
-
-struct Shell {
-    strings: Strings,
-    tables: schemify_ui::UiTables,
-    text: TextSystem,
-    state: UiState,
 }
 
 fn shell() -> Shell {
@@ -216,12 +221,6 @@ fn math_expression() {
     );
     check("math", p.finish(Color::WHITE));
 }
-
-// --- waveform viewer (D23) ----------------------------------------------------------------------
-
-use schemify_render::waves::{WaveLook, WaveScratch, draw_pane, draw_window};
-use schemify_ui::waves::{Geometry, WAVES_UI, WaveUi};
-use schemify_wave::{Cursor, Request, Waves, parse_raw};
 
 /// Real simulator output shared with the `wave` crate's oracles.
 fn raw(name: &str) -> Waves {

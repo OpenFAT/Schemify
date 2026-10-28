@@ -46,6 +46,108 @@ struct Demo {
     timing: (u32, f64),
 }
 
+impl App for Demo {
+    fn update(&mut self, events: &InputEvents, viewport: (f32, f32)) -> bool {
+        let mut changed = viewport != self.viewport;
+        if changed {
+            self.viewport = viewport;
+            self.dirty_layout = true;
+        }
+        if self.dirty_layout {
+            self.relayout();
+        }
+        let mut routed = std::mem::take(&mut self.routed);
+        route_input(
+            &self.tables,
+            &self.frame,
+            &self.strings,
+            &mut self.text,
+            &mut self.state,
+            events,
+            &mut routed,
+        );
+        for i in 0..routed.commands.len() {
+            let name = self.strings.get(routed.commands.command[i]).to_owned();
+            changed |= self.command(&name, routed.commands.arg(i));
+        }
+        for &ev in &routed.canvas {
+            changed |= self.canvas_event(ev);
+        }
+        changed |= routed.redraw || routed.relayout || self.dirty_layout;
+        if routed.relayout || self.dirty_layout {
+            self.relayout();
+        }
+        self.routed = routed;
+        changed
+    }
+
+    fn paint<P: Painter>(&mut self, p: &mut P, _viewport: (f32, f32)) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let t0 = std::time::Instant::now();
+        let (tables, frame, strings, state) =
+            (&self.tables, &self.frame, &self.strings, &self.state);
+        draw_ui(
+            p,
+            tables,
+            frame,
+            strings,
+            &mut self.text,
+            state,
+            Layer::Main,
+            &mut self.ui_scratch,
+        );
+        let view = self.canvas_rect();
+        let grid_step = if self.grid { 20 * U } else { i32::MAX / 4 };
+        canvas::draw_canvas(
+            p,
+            view,
+            &self.cam,
+            grid_step,
+            &self.prims,
+            &self.palette,
+            &self.overlay,
+            &self.marks,
+            &mut self.text,
+            &mut self.canvas_scratch,
+        );
+        draw_ui(
+            p,
+            &self.tables,
+            &self.frame,
+            &self.strings,
+            &mut self.text,
+            &self.state,
+            Layer::Overlay,
+            &mut self.ui_scratch,
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var_os("SCHEMIFY_FPS").is_some() {
+            self.timing.0 += 1;
+            self.timing.1 += t0.elapsed().as_secs_f64();
+            if self.timing.0 == 120 {
+                eprintln!(
+                    "scene build: {:.3} ms/frame (avg of 120)",
+                    self.timing.1 / 120.0 * 1e3
+                );
+                self.timing = (0, 0.0);
+            }
+        }
+    }
+
+    fn access(&mut self) -> schemify_render::accesskit::TreeUpdate {
+        access::access_tree(&self.tables, &self.frame, &self.strings, &self.state)
+    }
+}
+
+// ---- private ----
+
+fn main() {
+    if let Err(e) = run("Schemify (shell demo)", Demo::new()) {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
+}
+
 impl Demo {
     fn new() -> Demo {
         let mut strings = Strings::new();
@@ -219,99 +321,6 @@ impl Demo {
     }
 }
 
-impl App for Demo {
-    fn update(&mut self, events: &InputEvents, viewport: (f32, f32)) -> bool {
-        let mut changed = viewport != self.viewport;
-        if changed {
-            self.viewport = viewport;
-            self.dirty_layout = true;
-        }
-        if self.dirty_layout {
-            self.relayout();
-        }
-        let mut routed = std::mem::take(&mut self.routed);
-        route_input(
-            &self.tables,
-            &self.frame,
-            &self.strings,
-            &mut self.text,
-            &mut self.state,
-            events,
-            &mut routed,
-        );
-        for i in 0..routed.commands.len() {
-            let name = self.strings.get(routed.commands.command[i]).to_owned();
-            changed |= self.command(&name, routed.commands.arg(i));
-        }
-        for &ev in &routed.canvas {
-            changed |= self.canvas_event(ev);
-        }
-        changed |= routed.redraw || routed.relayout || self.dirty_layout;
-        if routed.relayout || self.dirty_layout {
-            self.relayout();
-        }
-        self.routed = routed;
-        changed
-    }
-
-    fn paint<P: Painter>(&mut self, p: &mut P, _viewport: (f32, f32)) {
-        #[cfg(not(target_arch = "wasm32"))]
-        let t0 = std::time::Instant::now();
-        let (tables, frame, strings, state) =
-            (&self.tables, &self.frame, &self.strings, &self.state);
-        draw_ui(
-            p,
-            tables,
-            frame,
-            strings,
-            &mut self.text,
-            state,
-            Layer::Main,
-            &mut self.ui_scratch,
-        );
-        let view = self.canvas_rect();
-        let grid_step = if self.grid { 20 * U } else { i32::MAX / 4 };
-        canvas::draw_canvas(
-            p,
-            view,
-            &self.cam,
-            grid_step,
-            &self.prims,
-            &self.palette,
-            &self.overlay,
-            &self.marks,
-            &mut self.text,
-            &mut self.canvas_scratch,
-        );
-        draw_ui(
-            p,
-            &self.tables,
-            &self.frame,
-            &self.strings,
-            &mut self.text,
-            &self.state,
-            Layer::Overlay,
-            &mut self.ui_scratch,
-        );
-        #[cfg(not(target_arch = "wasm32"))]
-        if std::env::var_os("SCHEMIFY_FPS").is_some() {
-            self.timing.0 += 1;
-            self.timing.1 += t0.elapsed().as_secs_f64();
-            if self.timing.0 == 120 {
-                eprintln!(
-                    "scene build: {:.3} ms/frame (avg of 120)",
-                    self.timing.1 / 120.0 * 1e3
-                );
-                self.timing = (0, 0.0);
-            }
-        }
-    }
-
-    fn access(&mut self) -> schemify_render::accesskit::TreeUpdate {
-        access::access_tree(&self.tables, &self.frame, &self.strings, &self.state)
-    }
-}
-
 /// Index of the segment within 4 px of `(x, y)`, if any. O(lines); fine for a demo pick.
 fn pick_line(prims: &CanvasPrims, cam: &Camera, view: Rect, x: f32, y: f32) -> Option<u32> {
     let l = &prims.lines;
@@ -391,12 +400,5 @@ fn synthetic_schematic(p: &mut CanvasPrims, cols: i32, rows: i32) {
             p.text(ox + 44 * U, oy + 104 * U, 12 * U, 1, "VSS");
             p.text(ox + 150 * U, oy + 150 * U, 12 * U, 1, "OUT");
         }
-    }
-}
-
-fn main() {
-    if let Err(e) = run("Schemify (shell demo)", Demo::new()) {
-        eprintln!("{e}");
-        std::process::exit(1);
     }
 }

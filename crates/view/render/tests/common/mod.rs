@@ -1,4 +1,8 @@
 //! Deterministic canvas fixtures shared by the golden, perf and GPU tests.
+//!
+//! Contents:
+//! - `pub fn thousand_prims() -> CanvasPrims`
+//! - `pub fn hundred_k() -> CanvasPrims`
 
 #![allow(dead_code)]
 
