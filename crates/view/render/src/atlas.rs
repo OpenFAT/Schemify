@@ -122,12 +122,17 @@ struct Shelf {
 
 impl Slot {
     /// Whether the two slots share a texel.
+    #[must_use]
     pub fn overlaps(&self, o: &Slot) -> bool {
         let (a, b) = (
             [self.x, self.y, self.x + self.w, self.y + self.h],
             [o.x, o.y, o.x + o.w, o.y + o.h],
         );
-        a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
+        let overlap = a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
+        if self.w == 0 || self.h == 0 || o.w == 0 || o.h == 0 {
+            debug_assert!(!overlap, "an empty slot holds no texel");
+        }
+        overlap
     }
 }
 
@@ -161,6 +166,7 @@ impl Atlas {
     /// # Panics
     ///
     /// Panics unless `CLASS ≤ side ≤ ATLAS_SIDE`.
+    #[must_use]
     pub fn new(side: u16) -> Atlas {
         assert!(side >= CLASS, "an atlas side in range");
         assert!(side <= ATLAS_SIDE, "an atlas side in range");
@@ -178,6 +184,7 @@ impl Atlas {
     }
 
     /// Texels per side.
+    #[must_use]
     pub fn side(&self) -> u16 {
         self.side
     }
@@ -189,13 +196,21 @@ impl Atlas {
     /// Panics when the frame stamp would wrap (2^32 frames).
     pub fn begin_frame(&mut self) {
         self.frame = self.frame.checked_add(1).expect("frame stamps do not wrap");
+        debug_assert!(
+            self.shelves.iter().all(|s| s.used < self.frame),
+            "no shelf is drawn yet this frame"
+        );
     }
 
     /// The placed mask of `key`, marked drawn this frame; `None` when it is not held.
     pub fn get(&mut self, key: &Key) -> Option<Placed> {
         let e = self.map.get(key)?;
-        if e.shelf != NO_SHELF {
-            self.shelves[usize::from(e.shelf)].used = self.frame;
+        if e.shelf == NO_SHELF {
+            debug_assert_eq!(e.placed.slot.w, 0, "only an empty mask has no shelf");
+        } else {
+            let s = &mut self.shelves[usize::from(e.shelf)];
+            debug_assert!(e.placed.slot.y >= s.y, "an entry lies in its shelf");
+            s.used = self.frame;
         }
         Some(e.placed)
     }
@@ -265,11 +280,13 @@ impl Atlas {
         assert!(y < self.next_y, "a texel row of a shelf");
         let k = self.shelves.partition_point(|s| s.y <= y) - 1;
         let s = &mut self.shelves[k];
-        assert!(s.y <= y && y < s.y + s.h, "the shelf holds the row");
+        assert!(s.y <= y, "the shelf holds the row");
+        assert!(y < s.y + s.h, "the shelf holds the row");
         s.pins = s.pins.checked_add_signed(delta).expect("pins balance");
     }
 
     /// Retained instances pinning the shelf that holds texel row `y` (tests).
+    #[must_use]
     pub fn pins(&self, y: u16) -> u32 {
         let k = self.shelves.partition_point(|s| s.y <= y);
         k.checked_sub(1).map_or(0, |k| self.shelves[k].pins)
@@ -277,11 +294,21 @@ impl Atlas {
 
     /// Slots written since the last [`Atlas::clear_pending`], each with the offset of its
     /// `w × h` bytes in the second slice, in write order (a later write wins).
+    #[must_use]
     pub fn pending(&self) -> (&[(Slot, u32)], &[u8]) {
+        debug_assert_eq!(
+            self.pending
+                .iter()
+                .map(|(s, _)| usize::from(s.w) * usize::from(s.h))
+                .sum::<usize>(),
+            self.staging.len(),
+            "the staged bytes are the pending slots'"
+        );
         (&self.pending, &self.staging)
     }
 
     /// Bytes written since the last [`Atlas::clear_pending`].
+    #[must_use]
     pub fn pending_bytes(&self) -> usize {
         self.staging.len()
     }
@@ -290,14 +317,17 @@ impl Atlas {
     pub fn clear_pending(&mut self) {
         self.pending.clear();
         self.staging.clear();
+        debug_assert_eq!(self.pending_bytes(), 0, "nothing left to copy");
     }
 
     /// Entries held, empty masks included.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.map.len()
     }
 
     /// True when no entry is held.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
@@ -314,8 +344,14 @@ impl Atlas {
     /// A `w × h` slot on a shelf of its height class: the first with room, else a new shelf,
     /// else the least recently drawn tall enough unpinned shelf not drawn this frame, emptied.
     fn alloc(&mut self, w: u16, h: u16) -> Option<(u16, Slot)> {
-        assert!(w > 0 && h > 0, "a mask with texels");
+        assert!(w > 0, "a mask with texels");
+        assert!(h > 0, "a mask with texels");
         let class = h.div_ceil(CLASS) * CLASS;
+        debug_assert!(class >= h, "the class holds the mask");
+        debug_assert!(
+            self.shelves.len() <= usize::from(self.side / CLASS),
+            "shelves tile the side"
+        );
         let fits = |s: &Shelf| s.h == class && self.side - s.x >= w;
         let at = match self.shelves.iter().position(fits) {
             Some(at) => at,

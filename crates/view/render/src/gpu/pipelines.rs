@@ -6,6 +6,7 @@
 //! Contents:
 //! - `pub struct Pipelines`, `Pipelines::new`
 //! - `pub(super) const UNIFORM_BYTES`, `UI_UNIFORM_BYTES`
+//! - `pub(super) struct TexelRect`
 //! - `pub(super) fn buffer`, `texture`, `write_texels`, `bind_batch` (GPU resources)
 
 use std::collections::HashMap;
@@ -43,6 +44,15 @@ pub struct Pipelines {
     pub(super) panes: [[f32; 8]; ui_rows::PANES],
     pub(super) atlas_uploaded: u64,
     pub(super) instances_uploaded: u64,
+}
+
+/// A rectangle of a texture, texels.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TexelRect {
+    pub(super) x: u32,
+    pub(super) y: u32,
+    pub(super) w: u32,
+    pub(super) h: u32,
 }
 
 /// Camera uniform size (`Cam` in `shaders/canvas/camera.wgsl`).
@@ -132,6 +142,11 @@ const _: () = assert!(
     UNIFORM_BYTES.is_multiple_of(16),
     "the uniform is vec4-aligned"
 );
+const _: () = assert!(
+    UI_UNIFORM_BYTES.is_multiple_of(16),
+    "the batch uniform is vec4-aligned"
+);
+const _: () = assert!(batch::STRIDE.is_multiple_of(4), "instances are whole words");
 
 impl std::fmt::Debug for Pipelines {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -149,6 +164,7 @@ impl Pipelines {
     /// # Panics
     ///
     /// Panics on a device whose textures cannot be [`ATLAS_SIDE`] texels across.
+    #[must_use]
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipelines {
         let side = u32::from(ATLAS_SIDE);
         assert!(
@@ -248,6 +264,7 @@ impl Pipelines {
             wgpu::BufferUsages::UNIFORM,
         );
         let atlas = texture(device, "atlas", (side, side), wgpu::TextureFormat::R8Unorm);
+        debug_assert_eq!(atlas.width(), side, "an atlas-sized texture");
         let atlas_view = atlas.create_view(&Default::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("batch"),
@@ -294,6 +311,13 @@ impl Pipelines {
     }
 }
 
+impl TexelRect {
+    /// Texels covered.
+    fn texels(self) -> usize {
+        self.w as usize * self.h as usize
+    }
+}
+
 /// A buffer of `size` bytes for `usage` (plus copies into it).
 pub(super) fn buffer(
     device: &wgpu::Device,
@@ -301,6 +325,11 @@ pub(super) fn buffer(
     size: u64,
     usage: wgpu::BufferUsages,
 ) -> wgpu::Buffer {
+    assert!(size > 0, "a buffer holds something");
+    assert!(
+        size.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT),
+        "queue writes are word-aligned"
+    );
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size,
@@ -316,6 +345,8 @@ pub(super) fn texture(
     (w, h): (u32, u32),
     format: wgpu::TextureFormat,
 ) -> wgpu::Texture {
+    assert!(w > 0, "a texture has texels");
+    assert!(h > 0, "a texture has texels");
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
@@ -332,15 +363,24 @@ pub(super) fn texture(
     })
 }
 
-/// Writes `data` (`w × h` texels of `bpp` bytes, row-major) into `t` at `(x, y)`.
+/// Writes `data` (`rect`'s texels of `bpp` bytes, row-major) into `t` at `rect`.
 pub(super) fn write_texels(
     queue: &wgpu::Queue,
     t: &wgpu::Texture,
-    (x, y, w, h): (u32, u32, u32, u32),
+    rect: TexelRect,
     bpp: u32,
     data: &[u8],
 ) {
-    assert_eq!(data.len(), (w * h * bpp) as usize, "whole texels");
+    assert_eq!(data.len(), rect.texels() * bpp as usize, "whole texels");
+    assert!(
+        rect.x + rect.w <= t.width(),
+        "the rect is inside the texture"
+    );
+    assert!(
+        rect.y + rect.h <= t.height(),
+        "the rect is inside the texture"
+    );
+    let TexelRect { x, y, w, h } = rect;
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture: t,
@@ -408,6 +448,12 @@ fn pipeline(
     format: wgpu::TextureFormat,
     blend: wgpu::BlendState,
 ) -> wgpu::RenderPipeline {
+    assert!(vs.starts_with("vs_"), "a vertex entry point");
+    assert!(fs.starts_with("fs_"), "a fragment entry point");
+    if let Some((stride, attributes)) = rows {
+        debug_assert!(stride.is_multiple_of(4), "instances are whole words");
+        debug_assert!(!attributes.is_empty(), "an instance has fields");
+    }
     let buffers: Vec<Option<wgpu::VertexBufferLayout>> = rows
         .map(|(stride, attributes)| {
             Some(wgpu::VertexBufferLayout {

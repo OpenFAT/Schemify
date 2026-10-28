@@ -9,13 +9,15 @@
 //! - `impl Painter for GpuPainter`
 //! - `GpuPainter::mask`, `GpuPainter::clipped_out` (`pub(super)`)
 
+use std::mem;
+
 use kurbo::{Affine, BezPath, Point, Rect, Stroke};
 use peniko::{Color, FontData, ImageData};
 use vello_cpu::Glyph;
 
 use schemify_canvas::{CanvasPrims, Marks, Palette};
 
-use super::{Batch, IMAGE, MASK, RECT, STRIDE, Stage, What, color_word};
+use super::{Batch, IMAGE, MASK, RECT, STRIDE, Stage, What};
 use crate::atlas::Placed;
 use crate::gpu::{Change, Frame, InstanceRows, MARKS};
 use crate::painter::{Chains, Painter};
@@ -23,22 +25,26 @@ use crate::ui_rows;
 use crate::widgets::UiRow;
 
 /// Paints into a [`Batch`] (the GPU path): the window's painter. Built per frame by its
-/// owner, which calls [`Batch::begin_frame`] before painting.
-#[allow(missing_debug_implementations)]
-pub struct GpuPainter<'a> {
+/// owner, which calls [`Batch::begin_frame`] before painting; `'frame` is that frame's borrow
+/// of the batch and the rows.
+#[allow(
+    missing_debug_implementations,
+    reason = "a per-frame view of two tables that print their own `Debug`"
+)]
+pub struct GpuPainter<'frame> {
     /// The frame's batch.
-    pub batch: &'a mut Batch,
+    pub batch: &'frame mut Batch,
     /// Logical → device px (the window's scale factor).
     pub base: Affine,
     /// The canvas's instance rows ([`Painter::canvas_rows`] packs into them and leaves the
     /// frame to draw in [`InstanceRows::frame`]); `None` draws no canvas (a benchmark of the UI
     /// alone).
-    pub rows: Option<&'a mut InstanceRows>,
+    pub rows: Option<&'frame mut InstanceRows>,
 }
 
 impl Painter for GpuPainter<'_> {
     fn fill_rect(&mut self, r: Rect, color: Color) {
-        let c = color_word(color);
+        let c = super::color_word(color);
         let d = self.base.transform_rect_bbox(r);
         if c >> 24 == 0 || self.clipped_out([d.x0, d.y0, d.x1, d.y1]) {
             return;
@@ -68,19 +74,21 @@ impl Painter for GpuPainter<'_> {
         at: Affine,
         glyphs: &[Glyph],
     ) {
-        self.draw_glyphs(font, px, coords, color_word(color), at, glyphs);
+        self.draw_glyphs(font, px, coords, super::color_word(color), at, glyphs);
     }
 
     fn push_clip(&mut self, r: Rect) {
         let d = self.base.transform_rect_bbox(r);
         let c = self.batch.clip();
         let d = [d.x0, d.y0, d.x1, d.y1].map(|v| v as f32);
+        let depth = self.batch.clips.len();
         self.batch.clips.push([
             d[0].max(c[0]),
             d[1].max(c[1]),
             d[2].min(c[2]),
             d[3].min(c[3]),
         ]);
+        debug_assert_eq!(self.batch.clips.len(), depth + 1, "one clip deeper");
     }
 
     fn pop_clip(&mut self) {
@@ -88,12 +96,13 @@ impl Painter for GpuPainter<'_> {
     }
 
     fn stroke_chains(&mut self, chains: &Chains, closed: bool, width: f64, color: Color) {
-        let c = color_word(color);
+        let c = super::color_word(color);
         if c >> 24 == 0 {
             return;
         }
         assert!(width > 0.0, "zero-width stroke");
         let hw = (width * self.device_scale() * 0.5) as f32;
+        debug_assert!(hw > 0.0, "a positive half width");
         let base = self.base;
         let dev = |q: [f32; 2]| {
             let p = base * Point::new(f64::from(q[0]), f64::from(q[1]));
@@ -103,6 +112,7 @@ impl Painter for GpuPainter<'_> {
         for &end in &chains.end {
             let end = end as usize;
             let pts = &chains.pts[start..end];
+            assert!(pts.len() >= 2, "a chain of 2 points or more");
             for k in 0..pts.len() - usize::from(!closed) {
                 let (a, b) = (dev(pts[k]), dev(pts[(k + 1) % pts.len()]));
                 self.segment([a[0], a[1], b[0], b[1]], hw, c);
@@ -119,7 +129,9 @@ impl Painter for GpuPainter<'_> {
     }
 
     fn device_scale(&self) -> f64 {
-        self.base.as_coeffs()[0]
+        let s = self.base.as_coeffs()[0];
+        debug_assert!(s > 0.0, "the base transform scales up, got {s}");
+        s
     }
 
     fn image(&mut self, image: &ImageData, r: Rect) {
@@ -128,6 +140,10 @@ impl Painter for GpuPainter<'_> {
             return;
         }
         let k = self.batch.image(image);
+        debug_assert!(
+            (k as usize) < self.batch.images().len(),
+            "an image of this frame"
+        );
         let pos = [d.x0, d.y0, d.x1, d.y1].map(|v| v as f32);
         self.batch
             .push(IMAGE, pos, [0.0, 0.0, 1.0, 1.0], u32::MAX, What::Image(k));
@@ -138,6 +154,7 @@ impl Painter for GpuPainter<'_> {
             return false; // a batch that draws no canvas (a benchmark of the UI alone)
         };
         assert!(rows.frame.is_none(), "one canvas per frame");
+        assert!(frame.cam.scale > 0.0, "a drawable camera");
         rows.frame = Some(*frame);
         // The canvas pass's stages go among the batch's instances in call order: each source's
         // labels over its rows and under the next source's, as the CPU painter draws them.
@@ -167,6 +184,8 @@ impl Painter for GpuPainter<'_> {
     }
 
     fn canvas_end(&mut self) {
+        let rows = self.rows.as_deref().expect("inside a canvas");
+        assert!(rows.frame.is_some(), "inside a canvas");
         self.pop_clip();
     }
 
@@ -179,6 +198,7 @@ impl Painter for GpuPainter<'_> {
     /// texture is the frame's).
     fn ui_row(&mut self, src: usize, row: &UiRow, mut paint: impl FnMut(&mut Self)) {
         assert!(src < ui_rows::SOURCES, "a UI source");
+        assert!(self.batch.capture.is_none(), "rows do not nest");
         let dev = self.device_scale();
         self.batch.ui.rescale(dev);
         let pane = if row.pane.is_none() {
@@ -196,6 +216,8 @@ impl Painter for GpuPainter<'_> {
             shift = off.round();
             let c = self.base.transform_rect_bbox(row.clip);
             let entry = [0.0, shift, 0.0, 0.0, c.x0, c.y0, c.x1, c.y1].map(|v| v as f32);
+            assert!(k > 0, "pane slot 0 is no pane");
+            assert!(k < ui_rows::PANES, "a pane slot");
             self.batch.ui.panes[k] = entry;
             key.rect[1] += key.scroll;
             key.scroll = (off - shift) as f32;
@@ -209,12 +231,18 @@ impl Painter for GpuPainter<'_> {
         }
         // Paint the row into the capture, in its pane's coordinates.
         let base = self.base;
-        let clips = pane.map(|_| std::mem::take(&mut self.batch.clips));
+        let clips = pane.map(|_| mem::take(&mut self.batch.clips));
+        let depth = self.batch.clips.len();
         self.base = Affine::translate((0.0, shift)) * base;
         self.batch.capture = Some(pane.unwrap_or(0) as u32);
-        let unsettled = std::mem::take(&mut self.batch.unsettled);
+        let unsettled = mem::take(&mut self.batch.unsettled);
         let overflows = self.batch.atlas.overflows;
         paint(self);
+        assert_eq!(
+            self.batch.clips.len(),
+            depth,
+            "a row pops every clip it pushes"
+        );
         self.batch.capture = None;
         self.base = base;
         if let Some(c) = clips {
@@ -223,8 +251,9 @@ impl Painter for GpuPainter<'_> {
         key.stale = self.batch.unsettled || self.batch.atlas.overflows != overflows;
         self.batch.unsettled |= unsettled;
         // Keep it, or draw it from the frame's instances when it holds an image.
-        let mut bytes = std::mem::take(&mut self.batch.captured);
-        if std::mem::take(&mut self.batch.captured_image) {
+        let mut bytes = mem::take(&mut self.batch.captured);
+        debug_assert_eq!(bytes.len() % STRIDE, 0, "whole instances");
+        if mem::take(&mut self.batch.captured_image) {
             paint(self); // from the frame's instances, in screen coordinates
         } else {
             let Batch { ui, atlas, .. } = &mut *self.batch;
@@ -235,9 +264,12 @@ impl Painter for GpuPainter<'_> {
         }
         bytes.clear();
         self.batch.captured = bytes;
+        debug_assert!(self.batch.capture.is_none(), "the row's capture ended");
     }
 
     fn ui_end(&mut self, src: usize) {
+        assert!(src < ui_rows::SOURCES, "a UI source");
+        assert!(self.batch.capture.is_none(), "rows end outside a row");
         let Batch { ui, atlas, .. } = &mut *self.batch;
         ui.end(src, atlas);
     }
@@ -249,8 +281,10 @@ impl GpuPainter<'_> {
     pub(super) fn mask(&mut self, p: Placed, x: i32, y: i32, color: u32) {
         let s = p.slot;
         if s.w == 0 {
+            debug_assert_eq!(s.h, 0, "an empty mask is 0 × 0");
             return;
         }
+        debug_assert!(s.h > 0, "a mask with texels");
         let (x, y) = (
             (x + i32::from(p.off[0])) as f32,
             (y + i32::from(p.off[1])) as f32,
@@ -263,6 +297,16 @@ impl GpuPainter<'_> {
     /// Whether device box `b` misses the current clip (an empty box always does).
     pub(super) fn clipped_out(&self, b: [f64; 4]) -> bool {
         let c = self.batch.clip().map(f64::from);
-        b[2] <= c[0] || b[0] >= c[2] || b[3] <= c[1] || b[1] >= c[3] || b[2] <= b[0] || b[3] <= b[1]
+        let out = b[2] <= c[0]
+            || b[0] >= c[2]
+            || b[3] <= c[1]
+            || b[1] >= c[3]
+            || b[2] <= b[0]
+            || b[3] <= b[1];
+        if !out {
+            debug_assert!(b[0] < b[2], "a kept box has width");
+            debug_assert!(b[1] < b[3], "a kept box has height");
+        }
+        out
     }
 }

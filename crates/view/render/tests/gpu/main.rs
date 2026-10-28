@@ -421,7 +421,10 @@ fn seeded(seed: u32) -> impl FnMut(i32) -> i32 {
 /// `prims` (one table, with its labels, and `marks`) as a frame paints it: through
 /// `Painter::canvas_begin` … `canvas_end` with the labels as the frame's texts (`draw_texts`), then the gesture
 /// `overlay`, between UI chrome before (a grey fill) and after (a popup).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a scene's whole canvas input set, as `draw_canvas` takes it"
+)]
 fn canvas_scene<P: Painter>(
     p: &mut P,
     whole: Rect,
@@ -442,7 +445,10 @@ fn canvas_scene<P: Painter>(
     });
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a scene's whole canvas input set, as `draw_canvas` takes it"
+)]
 fn canvas_scene_in<P: Painter>(
     p: &mut P,
     whole: Rect,

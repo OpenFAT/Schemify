@@ -18,11 +18,10 @@ use vello_cpu::Glyph;
 
 use schemify_ui::{
     Kind, Layer, NO_NODE, NO_TEXT, Prop, RowPaint, Shown, Strings, StyleProp, Sym, TextSystem,
-    UiLayout, UiState, UiTables, row_paint, row_style,
+    UiLayout, UiState, UiTables,
 };
 
-use crate::painter::{Painter, outline, rgba};
-use text::draw_icon;
+use crate::painter::{self, Painter};
 
 pub use text::{draw_math, draw_prose, draw_text};
 
@@ -111,8 +110,8 @@ pub fn row_key(
     let node = layout.node()[r];
     let i = node as usize;
     let (shown, kind, id) = (layout.shown()[r], n.kind()[i], n.id()[i]);
-    let style = |prop| row_style(tables, layout.title_style(), node, shown, prop);
-    let RowPaint { bg, fg } = row_paint(tables, layout, strings, state, r);
+    let style = |prop| schemify_ui::row_style(tables, layout.title_style(), node, shown, prop);
+    let RowPaint { bg, fg } = schemify_ui::row_paint(tables, layout, strings, state, r);
     let (q, c) = (layout.rect()[r], layout.clip()[r]);
     let editing = matches!(kind, Kind::TextInput | Kind::TextArea) && state.focus() == id;
     let editor = state
@@ -174,7 +173,8 @@ pub fn row_key(
         stale: false,
         pane: 0,
     };
-    debug_assert!(!key.stale && key.pane == 0, "a fresh key");
+    debug_assert!(!key.stale, "a fresh key");
+    debug_assert_eq!(key.pane, 0, "a fresh key");
     key
 }
 
@@ -182,7 +182,14 @@ pub fn row_key(
 /// row's rect, then call with [`Layer::Overlay`] so popups cover the schematic. Each row goes
 /// through [`Painter::ui_row`] (UI source 0 for the main layer, 1 for the overlay), so a
 /// painter that keeps rows repaints only the rows whose [`RowKey`] changed.
-#[allow(clippy::too_many_arguments)]
+///
+/// # Panics
+///
+/// Panics when `layout`'s columns are out of step.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one frame's UI inputs: tables, layout, strings, text, state, layer and scratch"
+)]
 pub fn draw_ui<P: Painter>(
     p: &mut P,
     tables: &UiTables,
@@ -193,8 +200,8 @@ pub fn draw_ui<P: Painter>(
     layer: Layer,
     scratch: &mut UiScratch,
 ) {
-    assert_eq!(layout.rect().len(), layout.len());
-    assert_eq!(layout.clip().len(), layout.len());
+    assert_eq!(layout.rect().len(), layout.len(), "layout columns in step");
+    assert_eq!(layout.clip().len(), layout.len(), "layout columns in step");
     // Rows inside a scroll pane are clipped to it; consecutive rows share one clip layer.
     let mut clipped: Option<schemify_ui::Rect> = None;
     let rows = layout.rows(layer);
@@ -249,7 +256,10 @@ pub(crate) fn rect(r: schemify_ui::Rect) -> Rect {
 // ---- private ----
 
 /// Paints row `r` of the layout: background, border, text, indicators and its widget.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one row's inputs: the UI tables, layout, strings, text, state, row and scratch"
+)]
 fn draw_row<P: Painter>(
     p: &mut P,
     tables: &UiTables,
@@ -266,18 +276,18 @@ fn draw_row<P: Painter>(
     let shown = layout.shown()[r];
     let kind = n.kind()[i];
     let id = n.id()[i];
-    let style = |prop| row_style(tables, layout.title_style(), node, shown, prop);
+    let style = |prop| schemify_ui::row_style(tables, layout.title_style(), node, shown, prop);
     let area = rect(layout.rect()[r]);
-    let RowPaint { bg, fg } = row_paint(tables, layout, strings, state, r);
-    let fg = rgba(fg);
+    let RowPaint { bg, fg } = schemify_ui::row_paint(tables, layout, strings, state, r);
+    let fg = painter::rgba(fg);
     if bg & 0xff != 0 && kind != Kind::Canvas {
-        p.fill_rect(area, rgba(bg));
+        p.fill_rect(area, painter::rgba(bg));
     }
     let border = style(StyleProp::Border);
     if border > 0 {
         let w = f64::from(border);
-        let color = rgba(style(StyleProp::BorderColor));
-        outline(p, &mut scratch.path, area.inset(-w / 2.0), w, color);
+        let color = painter::rgba(style(StyleProp::BorderColor));
+        painter::outline(p, &mut scratch.path, area.inset(-w / 2.0), w, color);
     }
     let pad = f64::from(style(StyleProp::Pad));
     let indent = f64::from(layout.indent()[r]);
@@ -285,7 +295,7 @@ fn draw_row<P: Painter>(
         let y = (area.y0 + area.y1) / 2.0;
         p.fill_rect(
             Rect::new(area.x0 + 2.0, y.floor(), area.x1 - 2.0, y.floor() + 1.0),
-            rgba(style(StyleProp::Fg)),
+            painter::rgba(style(StyleProp::Fg)),
         );
         return;
     }
@@ -335,7 +345,7 @@ fn draw_row<P: Painter>(
     if accel != NO_TEXT {
         let l = text.layout(accel);
         let y = area.y0 + (area.height() - f64::from(l.height())) / 2.0;
-        let color = rgba(style(StyleProp::AccelFg));
+        let color = painter::rgba(style(StyleProp::AccelFg));
         draw_text(
             p,
             l,
@@ -347,7 +357,7 @@ fn draw_row<P: Painter>(
     }
     let icon = layout.icon()[r];
     if icon != u32::MAX {
-        draw_icon(p, text.icon_paths(icon), area, (pad, pad_y), fg, scratch);
+        text::draw_icon(p, text.icon_paths(icon), area, (pad, pad_y), fg, scratch);
     }
     if shown == Shown::Cascade || (kind == Kind::Dropdown && shown == Shown::Normal) {
         let (cx, cy) = (area.x1 - pad - 4.0, (area.y0 + area.y1) / 2.0);

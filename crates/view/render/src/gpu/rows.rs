@@ -14,12 +14,14 @@
 
 use std::ops::Range;
 
-use schemify_canvas::{Arcs, CanvasPrims, LAYERS, LineStyle, Lines, Polys, chain};
+use schemify_canvas::{Arcs, CanvasPrims, LAYERS, LineStyle, Lines, Polys};
 
-use super::ear::ear_clip;
-use super::pens::Pens;
-use super::{ARC, CLOSED, Change, EDGE, FILL, FIRST, Frame, KINDS, LINE, MARKS, RECT, SOURCES};
-use super::{STRIDE, TRI, push_dirty};
+use super::ear;
+use super::pens::{Pen, Pens};
+use super::{
+    ARC, CLOSED, Change, DIRTY_MAX, EDGE, FILL, FIRST, Frame, KINDS, LINE, MARKS, RECT, SOURCES,
+    STRIDE, TRI,
+};
 
 /// The instance rows of one canvas: per source and kind the rows grouped by layer, the slot
 /// of each table row, and the byte ranges written since the GPU last read them
@@ -72,9 +74,24 @@ const NO_KEY: u8 = u8::MAX;
 const ONE_TO_ONE: [usize; 3] = [LINE, RECT, ARC];
 
 const _: () = assert!(NO_KEY as usize >= LAYERS, "no key is no layer");
+const _: () = {
+    let mut k = 0;
+    while k < KINDS {
+        assert!(STRIDE[k].is_multiple_of(4), "rows are whole words");
+        assert!(STRIDE[k] <= 7 * 4, "a row is at most `row`'s seven words");
+        k += 1;
+    }
+};
+const _: () = assert!(
+    CanvasPrims::CAPACITY < 1 << 31,
+    "a chain index leaves the closed bit"
+);
 
 /// A packed 1:1 row: its layer and its words (the kind's [`STRIDE`] / 4 of them used).
-type Packed = (usize, [u32; 7]);
+struct Packed {
+    layer: usize,
+    words: [u32; 7],
+}
 
 impl std::fmt::Debug for InstanceRows {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -88,24 +105,53 @@ impl std::fmt::Debug for InstanceRows {
 
 impl InstanceRows {
     /// Slots of kind `kind` from source `src` in use (drawn; an emptied slot draws nothing).
+    ///
+    /// # Panics
+    ///
+    /// Panics on `src ≥ SOURCES` or `kind ≥ KINDS`.
+    #[must_use]
     pub fn count(&self, src: usize, kind: usize) -> usize {
-        self.tables[src][kind]
-            .used
-            .iter()
-            .map(|&u| u as usize)
-            .sum()
+        assert!(src < SOURCES, "a row source");
+        assert!(kind < KINDS, "a row kind");
+        let t = &self.tables[src][kind];
+        let n: usize = t.used.iter().map(|&u| u as usize).sum();
+        debug_assert!(
+            n * STRIDE[kind] <= t.bytes.len(),
+            "the slots in use are rows"
+        );
+        n
     }
 
     /// The rows of kind `kind` from source `src`, `STRIDE[kind]` bytes per slot, every layer
     /// range in turn (free slots zero).
+    ///
+    /// # Panics
+    ///
+    /// Panics on `src ≥ SOURCES` or `kind ≥ KINDS`.
+    #[must_use]
     pub fn bytes(&self, src: usize, kind: usize) -> &[u8] {
-        &self.tables[src][kind].bytes
+        assert!(src < SOURCES, "a row source");
+        assert!(kind < KINDS, "a row kind");
+        let b = &self.tables[src][kind].bytes;
+        debug_assert_eq!(b.len() % STRIDE[kind], 0, "whole rows");
+        b
     }
 
     /// The slots of layer `layer` of kind `kind` from source `src` that are drawn.
+    ///
+    /// # Panics
+    ///
+    /// Panics on `src ≥ SOURCES`, `kind ≥ KINDS` or `layer ≥ LAYERS`.
+    #[must_use]
     pub fn layer_slots(&self, src: usize, kind: usize, layer: usize) -> Range<u32> {
+        assert!(layer < LAYERS, "a palette layer");
         let t = &self.tables[src][kind];
-        t.start[layer]..t.start[layer] + t.used[layer]
+        let slots = t.start[layer]..t.start[layer] + t.used[layer];
+        debug_assert!(
+            slots.end as usize * STRIDE[kind] <= t.bytes.len(),
+            "a layer's slots are rows"
+        );
+        slots
     }
 
     /// Slot `slot` of kind `kind` from source `src` as its `STRIDE[kind] / 4` words, the rest
@@ -116,11 +162,13 @@ impl InstanceRows {
     ///
     /// Panics on a slot past the rows.
     #[inline]
+    #[must_use]
     pub fn row(&self, src: usize, kind: usize, slot: u32) -> [u32; 7] {
         let b = &self.tables[src][kind].bytes[slot as usize * STRIDE[kind]..][..STRIDE[kind]];
+        debug_assert_eq!(b.len() % 4, 0, "a row is whole words");
         let mut w = [0u32; 7];
-        for (k, c) in b.chunks_exact(4).enumerate() {
-            w[k] = u32::from_ne_bytes(c.try_into().expect("4 bytes"));
+        for (word, c) in w.iter_mut().zip(b.as_chunks::<4>().0) {
+            *word = u32::from_ne_bytes(*c);
         }
         w
     }
@@ -128,29 +176,44 @@ impl InstanceRows {
     /// Forgets the dirty ranges, as an upload does: for a consumer that reads the rows in
     /// place (the CPU painter), and for tests that count the bytes one frame writes.
     pub fn clear_dirty(&mut self) {
-        self.tables
-            .iter_mut()
-            .flatten()
-            .for_each(|t| t.dirty.clear());
-        assert_eq!(self.dirty_bytes(), 0, "no range left");
+        for t in self.tables.iter_mut().flatten() {
+            t.dirty.clear();
+        }
+        debug_assert_eq!(self.dirty_bytes(), 0, "no range left");
     }
 
     /// The byte ranges of `(src, kind)` written since the GPU last read the rows.
+    ///
+    /// # Panics
+    ///
+    /// Panics on `src ≥ SOURCES` or `kind ≥ KINDS`.
+    #[must_use]
     pub fn dirty(&self, src: usize, kind: usize) -> &[Range<usize>] {
-        &self.tables[src][kind].dirty
+        assert!(src < SOURCES, "a row source");
+        assert!(kind < KINDS, "a row kind");
+        let d = &self.tables[src][kind].dirty;
+        debug_assert!(d.len() <= DIRTY_MAX, "dirty ranges bounded");
+        d
     }
 
     /// Bytes the GPU has to read to be current: the dirty ranges, clipped to the rows.
+    #[must_use]
     pub fn dirty_bytes(&self) -> usize {
         let mut n = 0;
+        let mut total = 0;
         for t in self.tables.iter().flatten() {
             let len = t.bytes.len();
+            total += len;
+            debug_assert!(t.dirty.len() <= DIRTY_MAX, "dirty ranges bounded");
             n += t
                 .dirty
                 .iter()
                 .map(|r| r.end.min(len).saturating_sub(r.start.min(len)))
                 .sum::<usize>();
         }
+        // Ranges of one array may overlap only before they merge (`push_dirty`), so at most
+        // DIRTY_MAX copies of each byte.
+        debug_assert!(n <= total * DIRTY_MAX, "dirty bytes are bytes of the rows");
         n
     }
 
@@ -227,33 +290,44 @@ impl Table {
     ///
     /// Panics past [`BYTES_MAX`].
     pub(super) fn layout(&mut self, kind: usize, count: &[u32; LAYERS], slack: bool) {
+        assert!(kind < KINDS, "a row kind");
         let mut at = 0u32;
         for (l, &n) in count.iter().enumerate() {
             let free = if slack && n > 0 { n / 8 + 16 } else { 0 };
             (self.start[l], self.used[l], self.cap[l]) = (at, 0, n + free);
-            at += n + free;
+            at = at.checked_add(n + free).expect("slots are u32");
         }
         let len = at as usize * STRIDE[kind];
         assert!(len <= BYTES_MAX, "rows fit wgpu's buffer limit");
         self.bytes.clear();
         self.bytes.resize(len, 0);
         self.dirty.clear();
-        push_dirty(&mut self.dirty, 0..len);
+        super::push_dirty(&mut self.dirty, 0..len);
+        debug_assert_eq!(self.used, [0; LAYERS], "every layer unused");
+        debug_assert_eq!(self.bytes.len(), len, "every slot laid out");
     }
 
     /// Takes the next free slot of layer `l`, or `None` when its range is full.
     pub(super) fn take(&mut self, l: usize) -> Option<u32> {
-        (self.used[l] < self.cap[l]).then(|| {
+        assert!(l < LAYERS, "a palette layer");
+        let slot = (self.used[l] < self.cap[l]).then(|| {
             self.used[l] += 1;
             self.start[l] + self.used[l] - 1
-        })
+        });
+        debug_assert!(self.used[l] <= self.cap[l], "a layer's slots are bounded");
+        slot
     }
 
     /// Writes `fields` into slot `s` of this `kind`'s rows and notes it dirty.
     pub(super) fn put(&mut self, kind: usize, s: u32, fields: &[u32]) {
         let at = s as usize * STRIDE[kind];
+        assert!(
+            at + STRIDE[kind] <= self.bytes.len(),
+            "slot {s} is a laid-out slot"
+        );
         row(&mut self.bytes, STRIDE[kind], s as usize, fields);
-        push_dirty(&mut self.dirty, at..at + STRIDE[kind]);
+        super::push_dirty(&mut self.dirty, at..at + STRIDE[kind]);
+        debug_assert!(!self.dirty.is_empty(), "the slot is noted dirty");
     }
 }
 
@@ -265,35 +339,45 @@ impl Table {
 pub(super) fn row(buf: &mut [u8], stride: usize, i: usize, fields: &[u32]) {
     assert_eq!(fields.len() * 4, stride, "a whole row");
     let at = i * stride;
-    for (k, f) in fields.iter().enumerate() {
-        buf[at + 4 * k..at + 4 * k + 4].copy_from_slice(&f.to_ne_bytes());
+    assert!(at + stride <= buf.len(), "row {i} is inside the array");
+    let out = &mut buf[at..at + stride];
+    for (b, f) in out.as_chunks_mut::<4>().0.iter_mut().zip(fields) {
+        *b = f.to_ne_bytes();
     }
 }
 
 /// Line or rect row `i` of `l` in colour `c` and style word `s`: `[x0, y0, x1, y1, c, s, 0]`.
 pub(super) fn seg_fields(l: &Lines, i: usize, c: u32, s: u32) -> [u32; 7] {
+    debug_assert_eq!(l.x1.len(), l.x0.len(), "columns in step");
+    debug_assert_eq!(l.y1.len(), l.x0.len(), "columns in step");
     let f = [l.x0[i], l.y0[i], l.x1[i], l.y1[i]].map(|v| v as u32);
     [f[0], f[1], f[2], f[3], c, s, 0]
 }
 
 /// Arc row `i` of `a` in colour `c` and style word `s`: `[cx, cy, r, start, sweep, c, s]`.
 pub(super) fn arc_fields(a: &Arcs, i: usize, c: u32, s: u32) -> [u32; 7] {
+    debug_assert_eq!(a.r.len(), a.cx.len(), "columns in step");
+    debug_assert_eq!(a.sweep.len(), a.cx.len(), "columns in step");
     let f = [a.cx[i], a.cy[i], a.r[i], a.start[i], a.sweep[i]].map(|v| v as u32);
     [f[0], f[1], f[2], f[3], f[4], c, s]
 }
 
 /// Edges chain `k` of `p` draws (a polygon, `closed`, also its closing edge).
 pub(super) fn edges_of(p: &Polys, k: usize, closed: bool) -> usize {
-    let m = chain(&p.end, k).len();
+    let m = schemify_canvas::chain(&p.end, k).len();
     assert!(m >= 2, "malformed poly table");
-    if closed { m } else { m - 1 }
+    let edges = if closed { m } else { m - 1 };
+    debug_assert!(edges >= 1, "a chain has an edge");
+    edges
 }
 
 /// Edge `j` of chain `k` of `p` in colour `c` and style word `s`, its chain flags added:
 /// `[xa, ya, xb, yb, c, s | flags]`.
 pub(super) fn edge_fields(p: &Polys, k: usize, j: usize, closed: bool, c: u32, s: u32) -> [u32; 6] {
-    let pts = chain(&p.end, k);
+    let pts = schemify_canvas::chain(&p.end, k);
     let m = pts.len();
+    debug_assert!(j < m, "an edge of the chain");
+    debug_assert!(closed || j + 1 < m, "an open chain has no closing edge");
     let (a, b) = (pts.start + j, pts.start + (j + 1) % m);
     let f = [p.x[a], p.y[a], p.x[b], p.y[b]].map(|v| v as u32);
     let first = if j == 0 { FIRST } else { 0 };
@@ -306,6 +390,7 @@ pub(super) fn edge_fields(p: &Polys, k: usize, j: usize, closed: bool, c: u32, s
 impl InstanceRows {
     /// Repacks 1:1 column `c` (0 lines, 1 rects, 2 arcs) of source `src` whole.
     fn repack(&mut self, src: usize, c: usize, t: &CanvasPrims) {
+        assert!(c < ONE_TO_ONE.len(), "a 1:1 column");
         let (l, r, a) = (&t.lines, &t.rects, &t.arcs);
         match c {
             0 => self.repack_with(
@@ -373,24 +458,26 @@ impl InstanceRows {
                 slots.push(NO_SLOT);
                 continue;
             }
-            let (co, st) = pens.get(k, style[i], closed(i)).expect("keyed live");
+            let pen = pens.get(k, style[i], closed(i)).expect("keyed live");
             let l = usize::from(k);
             debug_assert!(table.used[l] < table.cap[l], "laid out for every row");
             let s = table.start[l] + table.used[l];
             table.used[l] += 1;
             let at = s as usize * stride;
             let out = &mut table.bytes[at..at + stride];
-            for (b, f) in out.chunks_exact_mut(4).zip(fields(i, co, st)) {
+            for (b, f) in out.chunks_exact_mut(4).zip(fields(i, pen.color, pen.style)) {
                 b.copy_from_slice(&f.to_ne_bytes());
             }
             slots.push(s);
         }
         assert_eq!(table.used, count, "every live row placed");
+        assert_eq!(slots.len(), n, "a slot per table row");
     }
 
     /// Follows `killed` and the rows appended to column `c` of source `src`. False when the
     /// column shrank or a layer ran out of free slots: the caller then repacks it.
     fn patch(&mut self, src: usize, c: usize, t: &CanvasPrims, killed: &[Vec<u32>; 6]) -> bool {
+        assert!(c < ONE_TO_ONE.len(), "a 1:1 column");
         let kind = ONE_TO_ONE[c];
         let words = STRIDE[kind] / 4;
         let (was, n) = (self.slots[src][c].len(), column_len(t, c));
@@ -407,8 +494,11 @@ impl InstanceRows {
         }
         for i in was..n {
             let s = match one_row(t, c, i, &mut self.pens) {
-                Some((l, fields)) => {
-                    let Some(s) = table.take(l) else {
+                Some(Packed {
+                    layer,
+                    words: fields,
+                }) => {
+                    let Some(s) = table.take(layer) else {
                         return false;
                     };
                     table.put(kind, s, &fields[..words]);
@@ -418,6 +508,7 @@ impl InstanceRows {
             };
             slots.push(s);
         }
+        debug_assert_eq!(slots.len(), n, "a slot per table row");
         true
     }
 
@@ -431,7 +522,8 @@ impl InstanceRows {
         let (mut edges, mut tris) = ([0u32; LAYERS], [0u32; LAYERS]);
         for (closed, p) in [(false, &t.polylines), (true, &t.polygons)] {
             for k in 0..p.end.len() {
-                let Some((_, s)) = self.pens.get(p.layer[k], p.style[k], closed) else {
+                let Some(Pen { style: s, .. }) = self.pens.get(p.layer[k], p.style[k], closed)
+                else {
                     continue;
                 };
                 let l = usize::from(p.layer[k]);
@@ -440,6 +532,7 @@ impl InstanceRows {
                 if closed && s & (FILL << 20) != 0 {
                     tris[l] += m.saturating_sub(2);
                 }
+                debug_assert!(k < 1 << 31, "a chain index leaves the closed bit");
                 order.push((u32::from(closed) << 31) | k as u32);
             }
         }
@@ -449,7 +542,8 @@ impl InstanceRows {
         for &o in order.iter() {
             let (closed, k) = (o >> 31 == 1, (o & !(1 << 31)) as usize);
             let p = if closed { &t.polygons } else { &t.polylines };
-            let (c, s) = self.pens.get(p.layer[k], p.style[k], closed).expect("live");
+            let Pen { color: c, style: s } =
+                self.pens.get(p.layer[k], p.style[k], closed).expect("live");
             let l = usize::from(p.layer[k]);
             for j in 0..edges_of(p, k, closed) {
                 let at = edge.take(l).expect("laid out") as usize;
@@ -460,10 +554,10 @@ impl InstanceRows {
                     &edge_fields(p, k, j, closed, c, s),
                 );
             }
-            let pts = chain(&p.end, k);
+            let pts = schemify_canvas::chain(&p.end, k);
             if closed && s & (FILL << 20) != 0 && pts.len() >= 3 {
                 let (xs, ys) = (&p.x[pts.clone()], &p.y[pts]);
-                ear_clip(xs, ys, &mut self.ears);
+                ear::ear_clip(xs, ys, &mut self.ears);
                 for &[a, b, d] in &self.ears {
                     let (a, b, d) = (a as usize, b as usize, d as usize);
                     let f = [xs[a], ys[a], xs[b], ys[b], xs[d], ys[d]].map(|v| v as u32);
@@ -501,15 +595,29 @@ fn one_row(t: &CanvasPrims, c: usize, i: usize, pens: &mut Pens) -> Option<Packe
 
 /// Line or rect row `i` of `l` (`closed` for a rect) packed with its pen.
 fn seg_row(l: &Lines, i: usize, closed: bool, pens: &mut Pens) -> Option<Packed> {
-    let (c, s) = pens.get(l.layer[i], l.style[i], closed)?;
-    Some((usize::from(l.layer[i]), seg_fields(l, i, c, s)))
+    let pen = pens.get(l.layer[i], l.style[i], closed)?;
+    debug_assert!(
+        usize::from(l.layer[i]) < LAYERS,
+        "a live row has a palette layer"
+    );
+    Some(Packed {
+        layer: usize::from(l.layer[i]),
+        words: seg_fields(l, i, pen.color, pen.style),
+    })
 }
 
 /// Arc row `i` of `a` packed with its pen (a full circle is closed).
 fn arc_row(a: &Arcs, i: usize, pens: &mut Pens) -> Option<Packed> {
     let full = a.sweep[i].abs() >= 360_000;
-    let (c, s) = pens.get(a.layer[i], a.style[i], full)?;
-    Some((usize::from(a.layer[i]), arc_fields(a, i, c, s)))
+    let pen = pens.get(a.layer[i], a.style[i], full)?;
+    debug_assert!(
+        usize::from(a.layer[i]) < LAYERS,
+        "a live row has a palette layer"
+    );
+    Some(Packed {
+        layer: usize::from(a.layer[i]),
+        words: arc_fields(a, i, pen.color, pen.style),
+    })
 }
 
 #[cfg(test)]
@@ -833,7 +941,10 @@ mod tests {
                         (a.layer[i], a.style[i], full, f)
                     }
                 };
-                let (co, st) = pen(palette, layer, style, closed)?;
+                let Pen {
+                    color: co,
+                    style: st,
+                } = pen(palette, layer, style, closed)?;
                 let mut w = [0u32; 7];
                 for (k, v) in f.iter().enumerate() {
                     w[k] = *v as u32;

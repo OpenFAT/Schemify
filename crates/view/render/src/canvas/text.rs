@@ -9,12 +9,12 @@
 use kurbo::{Affine, Rect};
 use vello_cpu::Glyph;
 
-use schemify_canvas::{Camera, LAYERS, Palette, Texts, chain};
+use schemify_canvas::{Camera, LAYERS, Palette, Texts};
 use schemify_ui::TextSystem;
 use schemify_ui::parley::PositionedLayoutItem;
 
 use super::{CanvasScratch, TEXT_MIN_PX};
-use crate::painter::{Painter, rgba};
+use crate::painter::{self, Painter};
 
 /// Labels are shaped once at this size and scaled by the camera.
 const TEXT_REF_PX: f32 = 64.0;
@@ -27,7 +27,15 @@ const TEXT_RUNS_MAX: usize = 1 << 16;
 /// painter draws it after each table's rows until the glyph atlas lands.
 ///
 /// Cost: O(listed rows + glyphs of visible labels).
-#[allow(clippy::too_many_arguments)]
+///
+/// # Panics
+///
+/// Panics on text columns of different lengths, a listed row past them, or a camera that
+/// does not scale up.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the labels' table, the camera, and the caches it shapes through"
+)]
 pub fn draw_texts<P: Painter>(
     p: &mut P,
     view: Rect,
@@ -38,14 +46,17 @@ pub fn draw_texts<P: Painter>(
     text: &mut TextSystem,
     scratch: &mut CanvasScratch,
 ) -> usize {
-    assert_eq!(t.x.len(), t.end.len());
+    assert_eq!(t.x.len(), t.end.len(), "text columns in step");
+    assert_eq!(t.y.len(), t.end.len(), "text columns in step");
+    assert!(cam.scale > 0.0, "a drawable camera, scale {}", cam.scale);
     let (ox, oy) = cam.origin(view);
     let mut drawn = 0;
-    for i in each(t.x.len(), rows) {
+    let listed = each(t.x.len(), rows);
+    for i in listed {
         if usize::from(t.layer[i]) >= LAYERS {
             continue; // dead
         }
-        let bytes = chain(&t.end, i);
+        let bytes = schemify_canvas::chain(&t.end, i);
         let px = f64::from(t.size[i]) * cam.scale;
         let (x, y) = (
             f64::from(t.x[i]) * cam.scale + ox,
@@ -61,13 +72,17 @@ pub fn draw_texts<P: Painter>(
                 let at = Affine::translate((x, y))
                     * Affine::rotate(f64::from(rot) * std::f64::consts::FRAC_PI_2)
                     * Affine::scale(px / f64::from(TEXT_REF_PX));
-                let color = rgba(palette.color[usize::from(t.layer[i])]);
+                let color = painter::rgba(palette.color[usize::from(t.layer[i])]);
                 let glyphs = &scratch.text_glyphs[g0 as usize..g1 as usize];
                 p.glyphs(&face, TEXT_REF_PX, &[], color, at, glyphs);
                 drawn += 1;
             }
         }
     }
+    debug_assert!(
+        drawn <= t.x.len() + rows.map_or(0, <[u32]>::len),
+        "a label at most once"
+    );
     drawn
 }
 
@@ -75,6 +90,12 @@ pub fn draw_texts<P: Painter>(
 
 /// Every row `0..n`, or the listed ones.
 fn each(n: usize, rows: Option<&[u32]>) -> impl Iterator<Item = usize> + '_ {
+    if let Some(rows) = rows {
+        debug_assert!(
+            rows.iter().all(|&i| (i as usize) < n),
+            "listed rows are rows"
+        );
+    }
     let all = rows.is_none().then_some(0..n).into_iter().flatten();
     all.chain(rows.into_iter().flatten().map(|&i| i as usize))
 }
@@ -112,6 +133,10 @@ fn shaped(s: &str, text: &mut TextSystem, scratch: &mut CanvasScratch) -> (u32, 
     }
     let r = (g0, scratch.text_glyphs.len() as u32);
     scratch.text_runs.insert(s.into(), r);
-    assert!(r.0 <= r.1);
+    assert!(r.0 <= r.1, "a glyph range");
+    debug_assert!(
+        scratch.text_runs.len() <= TEXT_RUNS_MAX,
+        "the label cache is bounded"
+    );
     r
 }

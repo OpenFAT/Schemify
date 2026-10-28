@@ -22,7 +22,7 @@
 //!    so serial.
 //!
 //! Contents:
-//! - `pub struct CanvasScratch`
+//! - `pub struct CanvasScratch`, `pub struct GridDots`
 //! - `pub const LOD_PX`, `pub const TEXT_MIN_PX`
 //! - `pub fn draw_canvas`, `draw_grid`, `grid_dots`, `draw_prims`, `draw_marks`
 //! - `pub use rows::{Paths, draw_rows}`, `pub use text::draw_texts`
@@ -40,8 +40,7 @@ use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
 use schemify_ui::TextSystem;
 
 use crate::gpu::{self, Change, InstanceRows};
-use crate::painter::{Painter, rgba};
-use rows::pixel;
+use crate::painter::{self, Painter};
 
 pub use rows::{Paths, draw_rows};
 pub use text::draw_texts;
@@ -59,6 +58,22 @@ pub struct CanvasScratch {
     pub(super) text_runs: HashMap<Box<str>, (u32, u32)>,
     pub(super) text_glyphs: Vec<Glyph>,
     pub(super) text_layout: schemify_ui::parley::Layout<()>,
+}
+
+/// The dots of a readable grid ([`grid_dots`]): dot `(i, j)` sits at world
+/// `(i · pitch, j · pitch)`, for `i` in `i_first..=i_last` and `j` in `j_first..=j_last`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GridDots {
+    /// Milli-units between neighbouring dots.
+    pub pitch: f64,
+    /// The first dot column in view.
+    pub i_first: i64,
+    /// The last dot column in view (`≥ i_first`).
+    pub i_last: i64,
+    /// The first dot row in view.
+    pub j_first: i64,
+    /// The last dot row in view (`≥ j_first`).
+    pub j_last: i64,
 }
 
 /// Primitives whose screen box is at most this many logical px each way are drawn as the whole
@@ -80,7 +95,14 @@ impl std::fmt::Debug for CanvasScratch {
 
 /// Draws background, grid, primitives, overlay primitives and marks into `view`, clipped.
 /// The diagonal route for the common case; each step is also public.
-#[allow(clippy::too_many_arguments)]
+///
+/// # Panics
+///
+/// Panics on `grid_step ≤ 0`, a camera that does not scale up, or a view that is not finite.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the diagonal route takes every step's inputs; each step is public on its own"
+)]
 pub fn draw_canvas<P: Painter>(
     p: &mut P,
     view: Rect,
@@ -93,8 +115,10 @@ pub fn draw_canvas<P: Painter>(
     text: &mut TextSystem,
     scratch: &mut CanvasScratch,
 ) {
+    assert!(grid_step > 0, "grid step must be positive");
+    assert!(cam.scale > 0.0, "a drawable camera, scale {}", cam.scale);
     p.push_clip(view);
-    p.fill_rect(view, rgba(palette.background));
+    p.fill_rect(view, painter::rgba(palette.background));
     draw_grid(p, view, cam, grid_step, palette.grid, &mut scratch.paths);
     draw_prims(p, view, cam, prims, palette, text, scratch);
     draw_prims(p, view, cam, overlay, palette, text, scratch);
@@ -104,6 +128,10 @@ pub fn draw_canvas<P: Painter>(
 
 /// Grid dots every `step` milli-units in `color` (`0xRRGGBBAA`), doubled until they are ≥ 10
 /// px apart (xschem's rule).
+///
+/// # Panics
+///
+/// Panics on `step ≤ 0`.
 pub fn draw_grid<P: Painter>(
     p: &mut P,
     view: Rect,
@@ -112,31 +140,41 @@ pub fn draw_grid<P: Painter>(
     color: u32,
     paths: &mut Paths,
 ) {
-    let Some((s, i0, i1, j0, j1)) = grid_dots(view, cam, step) else {
+    let Some(GridDots {
+        pitch: s,
+        i_first: i0,
+        i_last: i1,
+        j_first: j0,
+        j_last: j1,
+    }) = grid_dots(view, cam, step)
+    else {
         return;
     };
     let (ox, oy) = cam.origin(view);
     let dots = &mut paths.dots;
     dots.clear();
     for j in j0..=j1 {
-        let y = pixel(j as f64 * s * cam.scale + oy) as f32;
+        let y = rows::pixel(j as f64 * s * cam.scale + oy) as f32;
         for i in i0..=i1 {
-            let x = pixel(i as f64 * s * cam.scale + ox) as f32;
+            let x = rows::pixel(i as f64 * s * cam.scale + ox) as f32;
             dots.push(&[[x, y], [x + 1.0, y], [x + 1.0, y + 1.0], [x, y + 1.0]]);
         }
     }
-    p.fill_chains(dots, rgba(color));
+    let n = (i1 - i0 + 1) * (j1 - j0 + 1);
+    debug_assert_eq!(dots.end.len() as i64, n, "a dot per grid point in view");
+    p.fill_chains(dots, painter::rgba(color));
 }
 
 /// The grid `step` milli-units apart as `view` shows it through `cam`: the dot pitch in
 /// milli-units (doubled until the dots are ≥ 10 px apart, xschem's rule) and the dot indices
-/// `[i0, i1] × [j0, j1]` in view, dot `i` at world `i · pitch`. `None` when there is no
-/// readable grid: a degenerate zoom, or more than 200 000 dots.
+/// in view. `None` when there is no readable grid: a degenerate zoom, or more than 200 000
+/// dots.
 ///
 /// # Panics
 ///
 /// Panics on `step ≤ 0`.
-pub fn grid_dots(view: Rect, cam: &Camera, step: i32) -> Option<(f64, i64, i64, i64, i64)> {
+#[must_use]
+pub fn grid_dots(view: Rect, cam: &Camera, step: i32) -> Option<GridDots> {
     assert!(step > 0, "grid step must be positive");
     let mut s = f64::from(step);
     // Bounded: 40 doublings exceed any i32 range.
@@ -153,8 +191,16 @@ pub fn grid_dots(view: Rect, cam: &Camera, step: i32) -> Option<(f64, i64, i64, 
     if (i1 - i0 + 1).saturating_mul(j1 - j0 + 1) > 200_000 || i1 < i0 || j1 < j0 {
         return None; // degenerate zoom: no readable grid
     }
-    assert!(s >= f64::from(step));
-    Some((s, i0, i1, j0, j1))
+    assert!(s >= f64::from(step), "the pitch only doubles");
+    debug_assert!(i0 <= i1, "a dot column in view");
+    debug_assert!(j0 <= j1, "a dot row in view");
+    Some(GridDots {
+        pitch: s,
+        i_first: i0,
+        i_last: i1,
+        j_first: j0,
+        j_last: j1,
+    })
 }
 
 /// Draws the primitives of `prims` (packed into `scratch`'s rows, then [`draw_rows`]) and their
@@ -164,6 +210,11 @@ pub fn grid_dots(view: Rect, cam: &Camera, step: i32) -> Option<(f64, i64, i64, 
 /// # Time complexity
 ///
 /// O(primitives + glyphs of visible labels); allocation-free once `scratch` has grown.
+///
+/// # Panics
+///
+/// Panics on a table past [`CanvasPrims::CAPACITY`], a camera that does not scale up, or a
+/// view that is not finite.
 pub fn draw_prims<P: Painter>(
     p: &mut P,
     view: Rect,
@@ -173,13 +224,22 @@ pub fn draw_prims<P: Painter>(
     text: &mut TextSystem,
     scratch: &mut CanvasScratch,
 ) {
+    assert!(cam.scale > 0.0, "a drawable camera, scale {}", cam.scale);
     scratch.rows.pack(0, prims, palette, Change::All);
+    debug_assert!(
+        scratch.rows.count(0, gpu::LINE) <= prims.lines.x0.len(),
+        "a slot per live line at most"
+    );
     draw_rows(p, view, cam, &scratch.rows, 0, &mut scratch.paths);
     draw_texts(p, view, cam, &prims.texts, None, palette, text, scratch);
 }
 
 /// Redraws the marked rows of `prims` in their mark colour, 2 px wide, one stroke per run of
 /// one colour (packed into `scratch`'s rows, then [`draw_rows`]).
+///
+/// # Panics
+///
+/// Panics on a mark past its table's end or mark columns of different lengths.
 pub fn draw_marks<P: Painter>(
     p: &mut P,
     view: Rect,
@@ -188,7 +248,13 @@ pub fn draw_marks<P: Painter>(
     marks: &Marks,
     scratch: &mut CanvasScratch,
 ) {
-    scratch.rows.pack_marks(prims, marks, true);
+    assert!(cam.scale > 0.0, "a drawable camera, scale {}", cam.scale);
+    scratch.rows.pack_marks(prims, marks, /* changed */ true);
+    debug_assert_eq!(
+        scratch.rows.count(gpu::MARKS, gpu::TRI),
+        0,
+        "a mark never fills"
+    );
     draw_rows(p, view, cam, &scratch.rows, gpu::MARKS, &mut scratch.paths);
 }
 
@@ -236,7 +302,7 @@ mod tests {
         let mut sc = CanvasScratch::default();
         let palette = Palette::xschem_dark();
         draw_prims(&mut p, view, &cam, prims, &palette, &mut text, &mut sc);
-        let px = p.finish(rgba(0x0000_00ff));
+        let px = p.finish(painter::rgba(0x0000_00ff));
         let out: Vec<u8> = px.data().iter().map(|c| c.g).collect();
         assert_eq!(out.len(), 100 * 100);
         out

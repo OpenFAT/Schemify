@@ -154,6 +154,7 @@ pub struct Chains {
 }
 
 /// Converts packed `0xRRGGBBAA` (the `ui_styles` encoding) to a color.
+#[must_use]
 pub fn rgba(v: u32) -> Color {
     let [r, g, b, a] = v.to_be_bytes();
     Color::from_rgba8(r, g, b, a)
@@ -167,6 +168,10 @@ impl Chains {
     /// Panics on fewer than 2 points.
     pub fn push(&mut self, pts: &[[f32; 2]]) {
         assert!(pts.len() >= 2, "a chain needs 2 points");
+        assert!(
+            self.pts.len() + pts.len() <= u32::MAX as usize,
+            "chain ends are u32 point indices"
+        );
         self.pts.extend_from_slice(pts);
         self.end.push(self.pts.len() as u32);
         debug_assert_eq!(self.end.last().copied(), Some(self.pts.len() as u32));
@@ -176,14 +181,27 @@ impl Chains {
     pub fn clear(&mut self) {
         self.pts.clear();
         self.end.clear();
+        debug_assert!(self.is_empty(), "no chain left");
     }
 
     /// True when no chain is stored.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
+        debug_assert_eq!(
+            self.end.is_empty(),
+            self.pts.is_empty(),
+            "every point belongs to a chain"
+        );
         self.end.is_empty()
     }
 
     /// The chains as a kurbo path (allocates; the slow route for backends without a fast path).
+    ///
+    /// # Panics
+    ///
+    /// Panics on a chain of fewer than 2 points (columns written by hand, not by
+    /// [`Chains::push`]).
+    #[must_use]
     pub fn to_path(&self, closed: bool) -> BezPath {
         let mut path = BezPath::new();
         let pt = |q: [f32; 2]| (f64::from(q[0]), f64::from(q[1]));
@@ -207,17 +225,25 @@ impl Chains {
 
 /// Appends `r` as one closed subpath (corners clockwise on screen from the top-left).
 pub(crate) fn push_rect(path: &mut BezPath, r: Rect) {
+    let before = path.elements().len();
     path.move_to((r.x0, r.y0));
     path.line_to((r.x1, r.y0));
     path.line_to((r.x1, r.y1));
     path.line_to((r.x0, r.y1));
     path.close_path();
+    debug_assert_eq!(
+        path.elements().len(),
+        before + 5,
+        "one closed four-corner subpath"
+    );
 }
 
 /// Strokes the outline of `r`, `w` px wide, building it in `path` (cleared first).
 pub(crate) fn outline<P: Painter>(p: &mut P, path: &mut BezPath, r: Rect, w: f64, color: Color) {
+    assert!(w > 0.0, "an outline has a width, got {w}");
     path.truncate(0);
     push_rect(path, r);
+    debug_assert_eq!(path.elements().len(), 5, "the rect alone");
     p.stroke_path(path, w, color);
 }
 
@@ -226,6 +252,13 @@ pub(crate) fn outline<P: Painter>(p: &mut P, path: &mut BezPath, r: Rect, w: f64
 /// never reused by another image.
 // ponytail: dropped wholesale past twice the image cap; an LRU when pages show more images.
 pub(crate) fn image_data(cache: &mut Vec<ImageData>, image: &schemify_ui::Image) -> ImageData {
+    assert!(image.width > 0, "an image has pixels");
+    assert!(image.height > 0, "an image has pixels");
+    assert_eq!(
+        image.rgba.len(),
+        image.width as usize * image.height as usize * 4,
+        "RGBA8 rows of the image's width"
+    );
     let key = image.rgba.as_ptr();
     if let Some(d) = cache.iter().find(|d| d.data.data().as_ptr() == key) {
         return d.clone();
@@ -241,6 +274,10 @@ pub(crate) fn image_data(cache: &mut Vec<ImageData>, image: &schemify_ui::Image)
         height: image.height,
     };
     cache.push(d.clone());
+    debug_assert!(
+        cache.len() <= 2 * schemify_ui::TextSystem::IMAGES_MAX,
+        "a bounded cache"
+    );
     debug_assert_eq!(
         d.data.data().as_ptr(),
         key,

@@ -33,8 +33,8 @@ fn check(name: &str, pixmap: schemify_render::Pixmap) {
     let path = format!("{dir}/{name}.png");
     let png = pixmap.clone().into_png().expect("encode png");
     if std::env::var_os("SCHEMIFY_BLESS").is_some() {
-        std::fs::create_dir_all(dir).unwrap();
-        std::fs::write(&path, &png).unwrap();
+        std::fs::create_dir_all(dir).expect("create the golden directory");
+        std::fs::write(&path, &png).expect("bless the golden");
     }
     let want = std::fs::read(&path)
         .unwrap_or_else(|_| panic!("{path} missing; run with SCHEMIFY_BLESS=1"));
@@ -57,7 +57,7 @@ fn check(name: &str, pixmap: schemify_render::Pixmap) {
     let limit = want.data().len() / 1000;
     if bad > limit {
         let out = format!("{}/{name}.actual.png", env!("CARGO_TARGET_TMPDIR"));
-        std::fs::write(&out, &png).unwrap();
+        std::fs::write(&out, &png).expect("write the actual image");
         panic!("{name}: {bad} pixels differ (limit {limit}); actual written to {out}");
     }
 }
@@ -102,8 +102,10 @@ fn paint_shell(s: &mut Shell, w: u16, h: u16) -> schemify_render::Pixmap {
         .kind()
         .iter()
         .position(|&k| k == Kind::Canvas)
-        .unwrap() as u16;
-    let r = frame.rect()[frame.row_of(canvas_node).unwrap()];
+        .expect("the default UI has a canvas node") as u16;
+    let r = frame.rect()[frame
+        .row_of(canvas_node)
+        .expect("the canvas node is laid out")];
     let view = Rect::new(
         f64::from(r.x),
         f64::from(r.y),

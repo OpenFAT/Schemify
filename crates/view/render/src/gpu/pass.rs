@@ -7,12 +7,14 @@
 //! - `Pipelines::upload`, `Pipelines::upload_batch`, `Pipelines::take_uploaded`,
 //!   `Pipelines::take_batch_uploaded`, `Pipelines::draw`
 
+use std::mem;
+
 use schemify_canvas::LAYERS;
 
 use crate::atlas::ATLAS_SIDE;
 use crate::batch::{self, Batch, Stage, What};
 
-use super::pipelines::{Pipelines, UNIFORM_BYTES, bind_batch, buffer, texture, write_texels};
+use super::pipelines::{self, Pipelines, TexelRect, UNIFORM_BYTES};
 use super::rows::BYTES_MAX;
 use super::{Frame, InstanceRows, SOURCES, TRI};
 
@@ -21,31 +23,35 @@ impl Pipelines {
     /// twice the size and written whole) and clears them. Call before [`Pipelines::draw`].
     ///
     /// Cost: one `write_buffer` per dirty range.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a row array past [`wgpu::Limits::max_buffer_size`]'s default (256 MiB), which
+    /// the pack never writes.
     pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, rows: &mut InstanceRows) {
         for (src, tables) in rows.tables.iter_mut().enumerate() {
             for (kind, t) in tables.iter_mut().enumerate() {
-                let dirty = std::mem::take(&mut t.dirty);
+                let dirty = mem::take(&mut t.dirty);
                 if dirty.is_empty() {
                     continue;
                 }
                 let bytes = &t.bytes;
                 assert!(bytes.len() <= BYTES_MAX, "rows fit wgpu's buffer limit");
                 let slot = &mut self.buffers[src][kind];
-                let fits = slot
-                    .as_ref()
-                    .is_some_and(|b| b.size() >= bytes.len() as u64);
-                if !fits {
-                    let size = bytes.len().next_power_of_two().max(4096);
-                    let usage = wgpu::BufferUsages::VERTEX;
-                    let b = buffer(device, "canvas rows", size as u64, usage);
-                    if !bytes.is_empty() {
-                        queue.write_buffer(&b, 0, bytes);
-                        self.uploaded += bytes.len() as u64;
+                let b = match slot {
+                    Some(b) if b.size() >= bytes.len() as u64 => b,
+                    _ => {
+                        let size = bytes.len().next_power_of_two().max(4096);
+                        let usage = wgpu::BufferUsages::VERTEX;
+                        let b = pipelines::buffer(device, "canvas rows", size as u64, usage);
+                        if !bytes.is_empty() {
+                            queue.write_buffer(&b, 0, bytes);
+                            self.uploaded += bytes.len() as u64;
+                        }
+                        *slot = Some(b);
+                        continue;
                     }
-                    *slot = Some(b);
-                    continue;
-                }
-                let b = slot.as_ref().expect("fits");
+                };
                 for r in dirty {
                     let r = r.start.min(bytes.len())..r.end.min(bytes.len());
                     if !r.is_empty() {
@@ -63,35 +69,43 @@ impl Pipelines {
     /// [`Pipelines::draw`].
     ///
     /// Cost: one `write_buffer`, one `write_texture` per new mask and per new image.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a UI row's dirty range past its rows or an image that is not RGBA8, neither
+    /// of which the GPU painter writes.
     pub fn upload_batch(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, batch: &mut Batch) {
         let bytes = batch.instances();
         if !bytes.is_empty() {
-            let fits = self
-                .instances
-                .as_ref()
-                .is_some_and(|b| b.size() >= bytes.len() as u64);
-            if !fits {
-                let size = bytes.len().next_power_of_two().max(1 << 16);
-                let usage = wgpu::BufferUsages::VERTEX;
-                self.instances = Some(buffer(device, "batch", size as u64, usage));
-            }
-            queue.write_buffer(self.instances.as_ref().expect("made"), 0, bytes);
+            let b = match &mut self.instances {
+                Some(b) if b.size() >= bytes.len() as u64 => b,
+                slot => {
+                    let size = bytes.len().next_power_of_two().max(1 << 16);
+                    let usage = wgpu::BufferUsages::VERTEX;
+                    slot.insert(pipelines::buffer(device, "batch", size as u64, usage))
+                }
+            };
+            assert!(b.size() >= bytes.len() as u64, "the buffer holds the frame");
+            queue.write_buffer(b, 0, bytes);
             self.instances_uploaded += bytes.len() as u64;
         }
         // The retained UI rows: only what changed since the last upload.
         for (k, s) in batch.ui.src.iter_mut().enumerate() {
-            let dirty = std::mem::take(&mut s.dirty);
+            let dirty = mem::take(&mut s.dirty);
             let bytes = &s.bytes;
             let slot = &mut self.ui_rows[k];
-            if slot.as_ref().is_none_or(|b| b.size() < bytes.len() as u64) {
-                let size = bytes.len().next_power_of_two().max(1 << 16);
-                let b = buffer(device, "ui rows", size as u64, wgpu::BufferUsages::VERTEX);
-                queue.write_buffer(&b, 0, bytes);
-                self.instances_uploaded += bytes.len() as u64;
-                *slot = Some(b);
-                continue;
-            }
-            let b = slot.as_ref().expect("fits");
+            let b = match slot {
+                Some(b) if b.size() >= bytes.len() as u64 => b,
+                _ => {
+                    let size = bytes.len().next_power_of_two().max(1 << 16);
+                    let usage = wgpu::BufferUsages::VERTEX;
+                    let b = pipelines::buffer(device, "ui rows", size as u64, usage);
+                    queue.write_buffer(&b, 0, bytes);
+                    self.instances_uploaded += bytes.len() as u64;
+                    *slot = Some(b);
+                    continue;
+                }
+            };
             for r in dirty {
                 assert!(r.end <= bytes.len(), "a dirty range inside the rows");
                 queue.write_buffer(b, r.start as u64, &bytes[r.clone()]);
@@ -100,7 +114,8 @@ impl Pipelines {
         }
         assert_eq!(batch.ui.dirty_bytes(), 0, "every UI row uploaded");
         // The panes' offsets and clips that moved (a scroll writes one entry, 32 bytes).
-        for (k, (have, want)) in self.panes.iter_mut().zip(&batch.ui.panes).enumerate() {
+        let panes = self.panes.iter_mut().zip(&batch.ui.panes).enumerate();
+        for (k, (have, want)) in panes {
             if have != want {
                 *have = *want;
                 let bytes: Vec<u8> = want.iter().flat_map(|v| v.to_ne_bytes()).collect();
@@ -112,13 +127,17 @@ impl Pipelines {
         for &(s, at) in slots {
             let n = usize::from(s.w) * usize::from(s.h);
             let at = at as usize;
-            let rect = (
-                u32::from(s.x),
-                u32::from(s.y),
-                u32::from(s.w),
-                u32::from(s.h),
+            assert!(
+                at + n <= coverage.len(),
+                "a pending mask's bytes are staged"
             );
-            write_texels(queue, &self.atlas, rect, 1, &coverage[at..at + n]);
+            let rect = TexelRect {
+                x: u32::from(s.x),
+                y: u32::from(s.y),
+                w: u32::from(s.w),
+                h: u32::from(s.h),
+            };
+            pipelines::write_texels(queue, &self.atlas, rect, 1, &coverage[at..at + n]);
         }
         self.atlas_uploaded += batch.atlas.pending_bytes() as u64;
         batch.atlas.clear_pending();
@@ -137,10 +156,16 @@ impl Pipelines {
                 "prose images are RGBA8"
             );
             let size = (image.width, image.height);
-            let t = texture(device, "image", size, wgpu::TextureFormat::Rgba8Unorm);
-            write_texels(queue, &t, (0, 0, size.0, size.1), 4, image.data.data());
+            let t = pipelines::texture(device, "image", size, wgpu::TextureFormat::Rgba8Unorm);
+            let rect = TexelRect {
+                x: 0,
+                y: 0,
+                w: size.0,
+                h: size.1,
+            };
+            pipelines::write_texels(queue, &t, rect, 4, image.data.data());
             let view = t.create_view(&Default::default());
-            let bind = bind_batch(
+            let bind = pipelines::bind_batch(
                 device,
                 &self.ui_layout,
                 &self.ui_uniform,
@@ -150,21 +175,22 @@ impl Pipelines {
             );
             self.images.insert(id, bind);
         }
-        debug_assert!(self.atlas.width() == u32::from(ATLAS_SIDE));
+        debug_assert_eq!(self.atlas.width(), u32::from(ATLAS_SIDE), "one atlas side");
+        debug_assert_eq!(batch.atlas.pending_bytes(), 0, "every mask uploaded");
     }
 
     /// Bytes written to the GPU by [`Pipelines::upload`] since the last call (a report's
     /// "bytes per edit").
     pub fn take_uploaded(&mut self) -> u64 {
-        std::mem::take(&mut self.uploaded)
+        mem::take(&mut self.uploaded)
     }
 
     /// Atlas bytes and batch instance bytes written by [`Pipelines::upload_batch`] since the
     /// last call.
     pub fn take_batch_uploaded(&mut self) -> (u64, u64) {
         (
-            std::mem::take(&mut self.atlas_uploaded),
-            std::mem::take(&mut self.instances_uploaded),
+            mem::take(&mut self.atlas_uploaded),
+            mem::take(&mut self.instances_uploaded),
         )
     }
 
@@ -180,8 +206,13 @@ impl Pipelines {
     ///
     /// # Panics
     ///
-    /// Panics when rows were packed since the last [`Pipelines::upload`].
-    #[allow(clippy::too_many_arguments)]
+    /// Panics when rows were packed since the last [`Pipelines::upload`], on an empty target,
+    /// or on a batch whose instances or images were not uploaded
+    /// ([`Pipelines::upload_batch`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one frame's inputs: the encoder, the target, the rows, the batch and the camera"
+    )]
     pub fn draw(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -195,7 +226,9 @@ impl Pipelines {
         size: (u32, u32),
     ) {
         let (w, h) = size;
-        assert!(w > 0 && h > 0, "a target has a size");
+        assert!(w > 0, "a target has a size");
+        assert!(h > 0, "a target has a size");
+        assert!(dev > 0.0, "a positive device scale, got {dev}");
         assert_eq!(rows.dirty_bytes(), 0, "rows uploaded before they are drawn");
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("frame"),
@@ -290,6 +323,7 @@ impl Pipelines {
 impl Pipelines {
     /// The rows of source `src`, layer by layer, each layer's kinds in order.
     fn draw_rows(&self, pass: &mut wgpu::RenderPass<'_>, rows: &InstanceRows, src: usize) {
+        assert!(src < SOURCES, "a row source");
         let tables = &rows.tables[src];
         for layer in 0..LAYERS {
             for (kind, t) in tables.iter().enumerate() {
@@ -308,6 +342,10 @@ impl Pipelines {
                 pass.set_vertex_buffer(0, buf.slice(..));
                 let verts = if kind == TRI { 3 } else { 6 };
                 let first = t.start[layer];
+                debug_assert!(
+                    (first + used) as usize * super::STRIDE[kind] <= t.bytes.len(),
+                    "a layer's slots are rows"
+                );
                 pass.draw(0..verts, first..first + used);
             }
         }
@@ -318,13 +356,14 @@ impl Pipelines {
 /// into a `target`-sized texture.
 fn uniform(frame: &Frame, dev: f64, (w, h): (u32, u32)) -> [u8; UNIFORM_BYTES] {
     let (cam, v) = (&frame.cam, frame.view);
-    assert!(dev > 0.0 && cam.scale > 0.0, "a drawable camera");
+    assert!(dev > 0.0, "a positive device scale");
+    assert!(cam.scale > 0.0, "a drawable camera");
     let (fx, fy) = (cam.cx.floor(), cam.cy.floor());
     let clamp = |c: f64| c.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
     let (ox, oy) = cam.origin(v);
     let grid = match crate::canvas::grid_dots(v, cam, frame.grid) {
-        Some((s, ..)) => {
-            let p = s * cam.scale;
+        Some(dots) => {
+            let p = dots.pitch * cam.scale;
             [
                 p as f32,
                 ox.rem_euclid(p) as f32,
@@ -363,8 +402,10 @@ fn uniform(frame: &Frame, dev: f64, (w, h): (u32, u32)) -> [u8; UNIFORM_BYTES] {
         bg[3].to_bits(),
     ];
     let mut out = [0u8; UNIFORM_BYTES];
-    for (i, wd) in words.iter().enumerate() {
-        out[4 * i..4 * i + 4].copy_from_slice(&wd.to_ne_bytes());
+    let (chunks, rest) = out.as_chunks_mut::<4>();
+    debug_assert!(rest.is_empty(), "the uniform is whole words");
+    for (b, wd) in chunks.iter_mut().zip(&words) {
+        *b = wd.to_ne_bytes();
     }
     out
 }

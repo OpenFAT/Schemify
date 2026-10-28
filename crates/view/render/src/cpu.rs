@@ -9,6 +9,8 @@
 //! - `pub struct CpuPainter`, `CpuPainter::new`, `CpuPainter::reset`, `CpuPainter::finish`
 //! - `impl Painter for CpuPainter`
 
+use std::mem;
+
 use kurbo::{Affine, BezPath, Rect, Shape, Stroke};
 use peniko::{Color, Fill, FontData, ImageData, ImageSampler};
 use vello_cpu::Glyph;
@@ -17,7 +19,7 @@ use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
 
 use crate::canvas::{self, Paths};
 use crate::gpu::{Change, Frame, InstanceRows, MARKS};
-use crate::painter::{Painter, rgba};
+use crate::painter::{self, Painter};
 use crate::ui_rows;
 use crate::widgets::{RowKey, UiRow};
 
@@ -31,13 +33,20 @@ pub struct CpuPainter {
     /// paths they are batched into.
     rows: InstanceRows,
     paths: Paths,
-    /// The canvas being drawn (between `canvas_begin` and `canvas_end`): its view and camera.
-    canvas: Option<(Rect, Camera)>,
+    /// The canvas being drawn (between `canvas_begin` and `canvas_end`).
+    canvas: Option<OpenCanvas>,
     /// The UI's rows per source, and the calls of the row being recorded.
     ui: [CpuRows; ui_rows::SOURCES],
     rec: Option<Vec<Call>>,
     /// Rows recorded so far (the rest were replayed): tests count them.
     pub recorded: u64,
+}
+
+/// The view and camera of the canvas being drawn.
+#[derive(Clone, Copy, Debug)]
+struct OpenCanvas {
+    view: Rect,
+    cam: Camera,
 }
 
 /// One painter call of a UI row, as the CPU painter keeps it: replayed while the row's key
@@ -87,10 +96,12 @@ impl CpuPainter {
     /// # Panics
     ///
     /// Panics on a zero-sized target or a non-positive scale.
+    #[must_use]
     pub fn new(w: u16, h: u16, scale: f64) -> Self {
         assert!(w > 0, "empty target");
         assert!(h > 0, "empty target");
-        assert!(scale > 0.0 && scale.is_finite(), "bad scale");
+        assert!(scale > 0.0, "a positive scale, got {scale}");
+        assert!(scale.is_finite(), "a finite scale");
         CpuPainter {
             ctx: vello_cpu::RenderContext::new(w, h),
             resources: vello_cpu::Resources::new(),
@@ -105,13 +116,26 @@ impl CpuPainter {
     }
 
     /// Starts a new frame on the same target, keeping the canvas and UI rows.
+    ///
+    /// # Panics
+    ///
+    /// Panics inside a canvas ([`Painter::canvas_begin`] without its
+    /// [`Painter::canvas_end`]) or while a UI row is recorded.
     pub fn reset(&mut self) {
         assert!(self.canvas.is_none(), "no canvas left open");
+        assert!(self.rec.is_none(), "no UI row left recording");
         self.ctx.reset();
     }
 
     /// Rasterizes everything painted so far onto `background` and returns the pixels.
+    ///
+    /// # Panics
+    ///
+    /// Panics inside a canvas or while a UI row is recorded (a frame painted halfway).
+    #[must_use]
     pub fn finish(&mut self, background: Color) -> vello_cpu::Pixmap {
+        assert!(self.canvas.is_none(), "the canvas was ended");
+        assert!(self.rec.is_none(), "no UI row left recording");
         let (w, h) = (self.ctx.width(), self.ctx.height());
         let mut pixmap = vello_cpu::Pixmap::new(w, h);
         pixmap.data_mut().fill(background.premultiply().to_rgba8());
@@ -197,13 +221,14 @@ impl Painter for CpuPainter {
 
     fn canvas_begin(&mut self, frame: &Frame) -> bool {
         assert!(self.canvas.is_none(), "one canvas at a time");
+        assert!(self.rec.is_none(), "a canvas is not a UI row's call");
         let (view, cam) = (frame.view, frame.cam);
         self.push_clip(view);
-        self.fill_rect(view, rgba(frame.background));
-        let mut paths = std::mem::take(&mut self.paths);
+        self.fill_rect(view, painter::rgba(frame.background));
+        let mut paths = mem::take(&mut self.paths);
         canvas::draw_grid(self, view, &cam, frame.grid, frame.grid_color, &mut paths);
         self.paths = paths;
-        self.canvas = Some((view, cam));
+        self.canvas = Some(OpenCanvas { view, cam });
         true
     }
 
@@ -225,6 +250,11 @@ impl Painter for CpuPainter {
         assert!(self.canvas.take().is_some(), "inside a canvas");
         self.pop_clip();
         self.rows.clear_dirty(); // read in place: nothing to upload
+        debug_assert_eq!(
+            self.rows.dirty_bytes(),
+            0,
+            "the CPU reads its rows in place"
+        );
     }
 
     /// Replays the row's calls while its key is the one recorded (matched as the GPU painter
@@ -243,7 +273,7 @@ impl Painter for CpuPainter {
         }
         let kept = matched
             .filter(|&o| s.keys[o] == row.key)
-            .map(|o| std::mem::take(&mut s.calls[o]));
+            .map(|o| mem::take(&mut s.calls[o]));
         let calls = match kept {
             Some(c) => c,
             None => {
@@ -259,12 +289,16 @@ impl Painter for CpuPainter {
         let s = &mut self.ui[src];
         s.new_keys.push(row.key);
         s.new_calls.push(calls);
+        assert_eq!(s.new_keys.len(), s.new_calls.len(), "a call list per row");
+        debug_assert!(self.rec.is_none(), "the row's recording ended");
     }
 
     fn ui_end(&mut self, src: usize) {
+        assert!(src < ui_rows::SOURCES, "a UI source");
+        assert!(self.rec.is_none(), "rows end outside a row");
         let s = &mut self.ui[src];
-        std::mem::swap(&mut s.keys, &mut s.new_keys);
-        std::mem::swap(&mut s.calls, &mut s.new_calls);
+        mem::swap(&mut s.keys, &mut s.new_keys);
+        mem::swap(&mut s.calls, &mut s.new_calls);
         s.new_keys.clear();
         s.new_calls.clear();
         s.cursor = 0;
@@ -278,9 +312,10 @@ impl CpuPainter {
     /// Packs one row source with `pack` into the kept rows and rasterizes it in the open
     /// canvas.
     fn draw_source(&mut self, src: usize, pack: impl FnOnce(&mut InstanceRows)) {
-        let (view, cam) = self.canvas.expect("inside a canvas");
-        let mut rows = std::mem::take(&mut self.rows);
-        let mut paths = std::mem::take(&mut self.paths);
+        let OpenCanvas { view, cam } = self.canvas.expect("inside a canvas");
+        assert!(self.rec.is_none(), "canvas rows are not a UI row's calls");
+        let mut rows = mem::take(&mut self.rows);
+        let mut paths = mem::take(&mut self.paths);
         pack(&mut rows);
         canvas::draw_rows(self, view, &cam, &rows, src, &mut paths);
         (self.rows, self.paths) = (rows, paths);
@@ -307,12 +342,14 @@ impl CpuPainter {
     }
 
     fn draw_rect(&mut self, r: Rect, color: Color) {
+        debug_assert!(self.rec.is_none(), "drawn, not recorded");
         self.ctx.set_transform(self.base);
         self.ctx.set_paint(color);
         self.ctx.fill_rect(&r);
     }
 
     fn draw_fill(&mut self, path: &BezPath, color: Color) {
+        debug_assert!(self.rec.is_none(), "drawn, not recorded");
         self.ctx.set_transform(self.base);
         self.ctx.set_paint(color);
         self.ctx.set_fill_rule(Fill::NonZero);
@@ -320,6 +357,8 @@ impl CpuPainter {
     }
 
     fn draw_stroke(&mut self, path: &BezPath, stroke: Stroke, color: Color) {
+        debug_assert!(self.rec.is_none(), "drawn, not recorded");
+        debug_assert!(stroke.width >= 0.0, "a stroke width");
         self.ctx.set_transform(self.base);
         self.ctx.set_paint(color);
         self.ctx.set_stroke(stroke);
@@ -335,6 +374,7 @@ impl CpuPainter {
         at: Affine,
         glyphs: &[Glyph],
     ) {
+        debug_assert!(self.rec.is_none(), "drawn, not recorded");
         self.ctx.set_transform(self.base * at);
         self.ctx.set_paint(color);
         let run = self
@@ -347,11 +387,13 @@ impl CpuPainter {
     }
 
     fn clip(&mut self, r: Rect) {
+        debug_assert!(self.rec.is_none(), "drawn, not recorded");
         self.ctx.set_transform(self.base);
         self.ctx.push_clip_layer(&r.to_path(0.1));
     }
 
     fn draw_image(&mut self, image: &ImageData, r: Rect) {
+        debug_assert!(self.rec.is_none(), "drawn, not recorded");
         // ponytail: converts (copies) the pixels on every draw; the CPU path draws goldens
         // and the GPU-less fallback only. Cache the pixmap beside the blob if that changes.
         let brush = vello_cpu::Image {
@@ -371,5 +413,8 @@ fn image_to(image: &ImageData, r: Rect) -> Affine {
     let (w, h) = (f64::from(image.width), f64::from(image.height));
     assert!(w > 0.0, "an image has pixels");
     assert!(h > 0.0, "an image has pixels");
-    Affine::translate((r.x0, r.y0)) * Affine::scale_non_uniform(r.width() / w, r.height() / h)
+    let to =
+        Affine::translate((r.x0, r.y0)) * Affine::scale_non_uniform(r.width() / w, r.height() / h);
+    debug_assert!(to.is_finite(), "a drawable image transform");
+    to
 }

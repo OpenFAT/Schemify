@@ -7,7 +7,9 @@
 //! Contents:
 //! - `GpuPainter::draw_glyphs` (`pub(crate)`)
 
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::iter;
 
 use kurbo::{Affine, Point};
 use peniko::FontData;
@@ -15,7 +17,7 @@ use vello_cpu::Glyph;
 
 use schemify_ui::skrifa::{self, MetadataProvider};
 
-use super::{GpuPainter, MASK_MAX, MASK_SCALED, What};
+use super::{Exact, GpuPainter, MASK_MAX, MASK_SCALED, What};
 use crate::atlas::{Key, Placed};
 
 /// Subpixel positions per pixel a glyph is rasterized at (horizontally; vertically too when
@@ -52,6 +54,7 @@ impl GpuPainter<'_> {
         if c >> 24 == 0 || px <= 0.0 {
             return;
         }
+        assert!(px.is_finite(), "a finite glyph size");
         let t = self.base * at;
         let [a, b, cc, d, _, _] = t.as_coeffs();
         let em = (a * d - b * cc).abs().sqrt() * f64::from(px);
@@ -64,10 +67,11 @@ impl GpuPainter<'_> {
             }
             return;
         }
+        debug_assert!(em <= EM_MAX, "rasterized at its own size");
         let m = [a, b, cc, d].map(|v| v * f64::from(px));
         let run = Run {
             em,
-            hint: hinted(&t),
+            hint: hinted(t),
             hash: run_hash(m, coords),
             dir: run_hash(m.map(|v| v / em), coords),
         };
@@ -81,7 +85,10 @@ impl GpuPainter<'_> {
 
 impl GpuPainter<'_> {
     /// One glyph of a run through `t` (run space → device px) at `px`.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a step of `draw_glyphs`: the run's shared inputs and the glyph"
+    )]
     fn glyph(
         &mut self,
         font: &FontData,
@@ -92,6 +99,8 @@ impl GpuPainter<'_> {
         g: &Glyph,
         c: u32,
     ) {
+        debug_assert!(run.em > 0.0, "a run has an em");
+        debug_assert!(run.em <= EM_MAX, "larger runs are drawn scaled");
         let o = t * Point::new(f64::from(g.x), f64::from(g.y));
         let (ix, qx) = phase(o.x);
         let (iy, qy) = if run.hint {
@@ -124,9 +133,12 @@ impl GpuPainter<'_> {
                 let Some(p) = self.raster_glyph(key, font, px, coords, g, shift, cell) else {
                     return;
                 };
-                self.batch
-                    .latest
-                    .insert(same, (key, run.em as f32, [qx, qy]));
+                let exact = Exact {
+                    key,
+                    em: run.em as f32,
+                    phase: [qx, qy],
+                };
+                self.batch.latest.insert(same, exact);
                 p
             }
         };
@@ -137,9 +149,16 @@ impl GpuPainter<'_> {
     /// `o` from its last exact mask at another size, scaled about the origin; false when no
     /// such mask is held.
     fn stand_in(&mut self, same: &Key, em: f64, o: Point, c: u32) -> bool {
-        let Some(&(key, em0, q)) = self.batch.latest.get(same) else {
+        assert!(em > 0.0, "a drawn glyph has an em");
+        let Some(&Exact {
+            key,
+            em: em0,
+            phase: q,
+        }) = self.batch.latest.get(same)
+        else {
             return false;
         };
+        assert!(em0 > 0.0, "an exact mask has an em");
         let Some(p) = self.batch.atlas.get(&key) else {
             return false;
         };
@@ -161,7 +180,10 @@ impl GpuPainter<'_> {
 
     /// A glyph whose em is over [`EM_MAX`]: rasterized at `k` times its size (an em of
     /// `EM_MAX`, so every size past it shares one mask per direction) and drawn scaled up.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a step of `draw_glyphs`: the run's shared inputs, the glyph and its scale"
+    )]
     fn glyph_scaled(
         &mut self,
         font: &FontData,
@@ -172,7 +194,8 @@ impl GpuPainter<'_> {
         c: u32,
         k: f64,
     ) {
-        assert!(k > 0.0 && k < 1.0, "a glyph scaled down to rasterize");
+        assert!(k > 0.0, "a glyph scaled down to rasterize, got {k}");
+        assert!(k < 1.0, "a glyph scaled down to rasterize, got {k}");
         let o = t * Point::new(f64::from(g.x), f64::from(g.y));
         let [a, b, cc, d, _, _] = t.as_coeffs();
         // Through `ts`, the glyph's origin lands where it does through `t`, its outline `k`
@@ -215,7 +238,10 @@ impl GpuPainter<'_> {
     /// Rasterizes glyph `g` through `shift` (run space → the cell's pixels) into a mask of
     /// `cell`'s size and stores it under `key`, its cell at `cell`'s corner; `None` when the
     /// atlas cannot place it. A cell or coverage with no pixels is stored empty.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a step of `glyph`: the key, the glyph's run inputs and its cell"
+    )]
     fn raster_glyph(
         &mut self,
         key: Key,
@@ -226,6 +252,8 @@ impl GpuPainter<'_> {
         shift: Affine,
         cell: [i32; 4],
     ) -> Option<Placed> {
+        assert!(cell[2] - cell[0] <= MASK_MAX, "a cell fits a mask");
+        assert!(cell[3] - cell[1] <= MASK_MAX, "a cell fits a mask");
         let (w, h) = ((cell[2] - cell[0]) as u16, (cell[3] - cell[1]) as u16);
         let off = [cell[0] as i16, cell[1] as i16];
         self.batch.rastered += 1;
@@ -239,7 +267,7 @@ impl GpuPainter<'_> {
                     .glyph_run(res, font)
                     .font_size(px)
                     .normalized_coords(coords);
-                let _ = run.fill_glyphs(std::iter::once(*g));
+                let _ = run.fill_glyphs(iter::once(*g));
             })
         };
         let (w, h) = if cov.is_empty() { (0, 0) } else { (w, h) };
@@ -249,7 +277,7 @@ impl GpuPainter<'_> {
 
 /// Whether `t` is a positive uniform scale with no vertical skew: `vello_cpu` then hints the
 /// glyphs it draws through it (vertically) and rounds their baseline to whole pixels.
-fn hinted(t: &Affine) -> bool {
+fn hinted(t: Affine) -> bool {
     const EPS: f64 = 1.0 / 4096.0; // glifo's SCALAR_NEARLY_ZERO
     let [a, b, _, d, _, _] = t.as_coeffs();
     (a - d).abs() <= EPS && a > 0.0 && d > 0.0 && b.abs() <= EPS
@@ -258,7 +286,8 @@ fn hinted(t: &Affine) -> bool {
 /// The hash of what every glyph of a run shares in its key: the em-to-device matrix `m` (to
 /// 1/256 px of em: two runs that round alike rasterize alike) and the variation `coords`.
 fn run_hash(m: [f64; 4], coords: &[i16]) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
+    debug_assert!(m.iter().all(|v| v.is_finite()), "a drawable em matrix");
+    let mut h = DefaultHasher::new();
     m.map(|v| (v * 256.0).round() as i64).hash(&mut h);
     coords.hash(&mut h);
     h.finish()
@@ -269,6 +298,9 @@ fn run_hash(m: [f64; 4], coords: &[i16]) -> u64 {
 /// without hashing the run again per glyph. What decides the glyph's mask, and nothing else
 /// (not where it is drawn).
 fn key_in_run(font: &FontData, id: u32, run: u64, q: [u8; 2]) -> Key {
+    // `PHASES` itself marks a scaled glyph's key (`glyph_scaled`).
+    debug_assert!(f64::from(q[0]) <= PHASES, "a phase in range");
+    debug_assert!(f64::from(q[1]) < PHASES, "a phase in range");
     let phase = u64::from(q[0]) | (u64::from(q[1]) << 8);
     [
         font.data.id(),
@@ -284,6 +316,7 @@ fn phase(v: f64) -> (i32, u8) {
     let q = ((v - i) * PHASES).round();
     let (i, q) = if q >= PHASES { (i + 1.0, 0.0) } else { (i, q) };
     assert!((0.0..PHASES).contains(&q), "a phase in range");
+    debug_assert!(i <= v.floor() + 1.0, "at most the next pixel");
     (i as i32, q as u8)
 }
 
@@ -300,6 +333,7 @@ fn glyph_cell(
     o: Point,
     at: (f64, f64),
 ) -> Option<[i32; 4]> {
+    debug_assert!(px > 0.0, "a glyph with a size");
     let face = skrifa::FontRef::from_index(font.data.data(), font.index).ok()?;
     let coords: Vec<skrifa::instance::NormalizedCoord> = coords
         .iter()

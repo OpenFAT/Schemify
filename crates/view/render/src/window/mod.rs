@@ -22,7 +22,15 @@ mod cpu_view;
 mod gpu;
 mod input;
 
+#[cfg(target_arch = "wasm32")]
+use std::cell::RefCell;
+use std::mem;
+#[cfg(target_arch = "wasm32")]
+use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
 
 use accesskit::{Action, TreeUpdate};
 use peniko::Color;
@@ -103,14 +111,31 @@ enum UserEvent {
     /// [`Waker::wake`]: update with no input.
     Wake,
     /// Web: a tier's GPU is made and waits in `pending` with its tier.
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        allow(dead_code, reason = "natively the GPU opens on the loop's thread")
+    )]
     GpuReady,
-    /// Web: tier `.0` is unusable (no adapter or device, the device lost, or presented frames
-    /// that never reach the page), for the reason given; the next tier is tried, and past the
+    /// Web: `tier` is unusable (no adapter or device, the device lost, or presented frames
+    /// that never reach the page), for reason `why`; the next tier is tried, and past the
     /// last frames go to the CPU overlay (`cpu_view`). Logged once per tier; a report about a
-    /// tier already left is ignored.
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    NoGpu(usize, String),
+    /// tier already left is ignored. Native: the device was lost (`tier` 0).
+    NoGpu {
+        #[cfg_attr(
+            not(target_arch = "wasm32"),
+            allow(dead_code, reason = "natively there is one tier")
+        )]
+        tier: usize,
+        why: String,
+    },
+}
+
+/// When the oldest and the newest of a run of inputs arrived (`SCHEMIFY_FRAME_LOG`).
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug)]
+struct InputSpan {
+    oldest: Instant,
+    newest: Instant,
 }
 
 /// The window, its GPU and the app, as the event loop drives them.
@@ -118,11 +143,15 @@ struct Shell<A: App> {
     app: A,
     title: String,
     proxy: EventLoopProxy<UserEvent>,
+    /// `Arc`: wgpu's surface takes a `'static` handle to the window it draws into
+    /// (`SurfaceTarget::from(Arc<Window>)`) while the shell keeps the window too.
     window: Option<Arc<Window>>,
     gpu: Option<Gpu>,
-    /// Web: a GPU made by the tier's future, with its tier, until `GpuReady` takes it.
+    /// Web: a GPU made by the tier's future, with its tier, until `GpuReady` takes it. `Rc`:
+    /// the spawned future outlives the `start_gpu` call that made it and fills this slot the
+    /// shell reads (one thread, so `Rc<RefCell>`).
     #[cfg(target_arch = "wasm32")]
-    pending: std::rc::Rc<std::cell::RefCell<Option<(usize, Gpu)>>>,
+    pending: Rc<RefCell<Option<(usize, Gpu)>>>,
     /// Web: the tier tried now (an index into `TIERS`; `TIERS.len()` is the CPU).
     #[cfg(target_arch = "wasm32")]
     tier: usize,
@@ -151,17 +180,17 @@ struct Shell<A: App> {
     frame_log: bool,
     /// When the oldest and the newest input no update has consumed yet arrived.
     #[cfg(not(target_arch = "wasm32"))]
-    queued: Option<(std::time::Instant, std::time::Instant)>,
+    queued: Option<InputSpan>,
     /// The same for the input the updates since the last present consumed: what the next
     /// present shows. The oldest is the lag a log reader sees, the newest what the hand feels.
     #[cfg(not(target_arch = "wasm32"))]
-    shown: Option<(std::time::Instant, std::time::Instant)>,
+    shown: Option<InputSpan>,
     /// Updates that consumed input since the last present (the frame's coalescing).
     #[cfg(not(target_arch = "wasm32"))]
     updates: u32,
     /// When the last frame was presented (the log's frame period).
     #[cfg(not(target_arch = "wasm32"))]
-    presented: Option<std::time::Instant>,
+    presented: Option<Instant>,
     /// Native: why no GPU could draw the window ([`RunError::NoGpu`]).
     #[cfg(not(target_arch = "wasm32"))]
     failed: Option<String>,
@@ -255,28 +284,35 @@ pub fn run<A: App + 'static>(title: &str, mut app: A) -> Result<(), RunError> {
 /// without a reactor, so this stands in for an executor; on the web the browser's event loop
 /// runs them (`wasm_bindgen_futures`).
 #[cfg(not(target_arch = "wasm32"))]
-pub fn block_on<F: std::future::Future>(f: F) -> F::Output {
-    struct Unpark(std::thread::Thread);
-    impl std::task::Wake for Unpark {
+pub fn block_on<F: Future>(f: F) -> F::Output {
+    use std::task::{Context, Poll, Wake};
+    use std::thread::{self, Thread};
+    struct Unpark(Thread);
+    impl Wake for Unpark {
         fn wake(self: Arc<Self>) {
             self.0.unpark();
         }
     }
-    let waker = std::task::Waker::from(Arc::new(Unpark(std::thread::current())));
-    let mut cx = std::task::Context::from_waker(&waker);
+    // `Arc`: `Wake::wake` takes the waker by shared ownership (std's waker contract).
+    let waker = std::task::Waker::from(Arc::new(Unpark(thread::current())));
+    let mut cx = Context::from_waker(&waker);
     let mut f = std::pin::pin!(f);
     loop {
-        if let std::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
+        if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
             return v;
         }
-        std::thread::park(); // a wake before this park makes it return at once
+        thread::park(); // a wake before this park makes it return at once
     }
 }
 
 /// A `w × h` physical-pixel size in logical pixels at `scale` physical per logical.
 pub(crate) fn logical(w: u32, h: u32, scale: f64) -> (f32, f32) {
-    assert!(scale > 0.0, "a positive scale");
-    ((f64::from(w) / scale) as f32, (f64::from(h) / scale) as f32)
+    assert!(scale > 0.0, "a positive scale, got {scale}");
+    assert!(scale.is_finite(), "a finite scale");
+    let size = ((f64::from(w) / scale) as f32, (f64::from(h) / scale) as f32);
+    debug_assert!(size.0 >= 0.0);
+    debug_assert!(size.1 >= 0.0);
+    size
 }
 
 impl Waker {
@@ -313,6 +349,11 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
         if self.window.is_some() {
             return;
         }
+        assert!(self.gpu.is_none(), "a GPU draws into a window opened first");
+        assert!(
+            self.adapter.is_none(),
+            "AccessKit attaches to the window opened here"
+        );
         let attrs = Window::default_attributes()
             .with_title(self.title.clone())
             .with_visible(false);
@@ -343,6 +384,7 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
         window.set_visible(true);
         window.set_ime_allowed(true);
         self.scale = window.scale_factor();
+        assert!(self.scale > 0.0, "winit reports a positive scale factor");
         #[cfg(not(target_arch = "wasm32"))]
         match self.open_gpu(&window) {
             Ok(g) => self.gpu = Some(g),
@@ -355,6 +397,7 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
         if let Some(w) = &self.window {
             w.request_redraw();
         }
+        debug_assert!(self.events.is_empty(), "the first update took the queue");
     }
 
     #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
@@ -365,7 +408,8 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
                 accesskit_winit::WindowEvent::ActionRequested(req)
                     if req.action == Action::Click =>
                 {
-                    self.events.push(InputEvent::Activate {
+                    // A full queue drops the click, as it drops any input past its capacity.
+                    let _ = self.events.push(InputEvent::Activate {
                         node: schemify_ui::access::sym_of(req.target_node),
                     });
                 }
@@ -379,6 +423,7 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
                     if let Some((t, g)) = ready
                         && t == self.tier
                     {
+                        assert!(t < TIERS.len(), "a GPU is made on a GPU tier");
                         self.gpu = Some(g);
                     }
                 }
@@ -386,8 +431,11 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
                     w.request_redraw();
                 }
             }
-            #[cfg_attr(not(target_arch = "wasm32"), allow(unused_variables))]
-            UserEvent::NoGpu(tier, why) => {
+            #[cfg_attr(
+                not(target_arch = "wasm32"),
+                allow(unused_variables, reason = "natively there is one tier")
+            )]
+            UserEvent::NoGpu { tier, why } => {
                 // Native: the device was lost. The same ladder opens another, sent every row
                 // and mask again; past it the window closes with the reason.
                 #[cfg(not(target_arch = "wasm32"))]
@@ -395,6 +443,9 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
                     eprintln!("gpu: {why}; opening another device");
                     self.gpu = None;
                     (self.rows, self.batch) = (InstanceRows::default(), Batch::default());
+                    // A new device holds nothing: every row is written again.
+                    debug_assert_eq!(self.rows.dirty_bytes(), 0, "no row is packed yet");
+                    debug_assert!(self.batch.atlas.is_empty(), "no mask is held yet");
                     match self.open_gpu(&w) {
                         Ok(g) => self.gpu = Some(g),
                         Err(e) => return self.fail(event_loop, format!("{why}; then {e}")),
@@ -407,6 +458,7 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
                     && tier < TIERS.len()
                 {
                     let next = tier + 1;
+                    assert!(next <= TIERS.len(), "past the last GPU tier is the CPU");
                     let then = TIERS
                         .get(next)
                         .map_or("on the CPU".to_owned(), |t| format!("with {}", t.1));
@@ -414,6 +466,7 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
                     let line = format!("gpu: {} unusable ({why}); drawing {then}", TIERS[tier].1);
                     web_sys::console::error_1(&line.into());
                     (self.tier, self.gpu, self.probed) = (next, None, false);
+                    debug_assert!(self.cpu.is_none(), "the CPU tier is the last one");
                     // The rows and masks the old device holds: the next one is sent all of them.
                     (self.rows, self.batch) = (InstanceRows::default(), Batch::default());
                     self.pending.borrow_mut().take();
@@ -448,15 +501,33 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
                     w.request_redraw();
                 }
             }
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => self.scale = scale_factor,
-            WindowEvent::RedrawRequested => self.render(),
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                assert!(scale_factor > 0.0, "winit reports a positive scale factor");
+                self.scale = scale_factor;
+            }
+            WindowEvent::RedrawRequested => {
+                self.render();
+                debug_assert!(self.events.is_empty(), "a granted redraw answers the queue");
+            }
             other => self.input(other),
         }
+        assert!(
+            self.events.events.len() <= InputEvents::CAPACITY,
+            "the input queue is bounded"
+        );
         // Each input stamps the frame that answers it (`SCHEMIFY_FRAME_LOG`).
         #[cfg(not(target_arch = "wasm32"))]
         if self.events.events.len() > queued {
-            let now = std::time::Instant::now();
-            self.queued = Some((self.queued.map_or(now, |q| q.0), now));
+            let now = Instant::now();
+            let oldest = self.queued.map_or(now, |q| q.oldest);
+            self.queued = Some(InputSpan {
+                oldest,
+                newest: now,
+            });
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(q) = self.queued {
+            debug_assert!(q.oldest <= q.newest, "input arrives in time order");
         }
     }
 
@@ -465,9 +536,11 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        match pace(std::mem::take(&mut self.tick), !self.events.is_empty()) {
+        match pace(mem::take(&mut self.tick), !self.events.is_empty()) {
             Pace::Update => {
-                if self.update() {
+                let changed = self.update();
+                debug_assert!(self.events.is_empty(), "an update takes the queue");
+                if changed {
                     if let Some(w) = &self.window {
                         w.request_redraw();
                     }
@@ -479,12 +552,14 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
                 }
             }
             Pace::Redraw => {
+                debug_assert!(!self.events.is_empty(), "input waits for its redraw");
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }
             }
-            Pace::Sleep => {}
+            Pace::Sleep => debug_assert!(self.events.is_empty(), "nothing pending sleeps"),
         }
+        debug_assert!(!self.tick, "a tick is taken once");
         if self.app.exit_requested() {
             event_loop.exit();
             return;
@@ -497,7 +572,7 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
             self.access_dirty = false;
         }
         let flow = match self.app.wake_ms() {
-            Some(ms) => ControlFlow::wait_duration(std::time::Duration::from_millis(u64::from(ms))),
+            Some(ms) => ControlFlow::wait_duration(Duration::from_millis(u64::from(ms))),
             None => ControlFlow::Wait,
         };
         event_loop.set_control_flow(flow);
@@ -511,7 +586,7 @@ impl<A: App> Shell<A> {
         let size = self
             .window
             .as_ref()
-            .map_or(Default::default(), |w| w.inner_size());
+            .map_or_else(Default::default, |w| w.inner_size());
         logical(size.width, size.height, self.scale)
     }
 
@@ -521,12 +596,17 @@ impl<A: App> Shell<A> {
     fn update(&mut self) -> bool {
         let viewport = self.viewport();
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some((oldest, newest)) = self.queued.take() {
-            self.shown = Some((self.shown.map_or(oldest, |s| s.0), newest));
+        if let Some(InputSpan { oldest, newest }) = self.queued.take() {
+            let oldest = self.shown.map_or(oldest, |s| s.oldest);
+            self.shown = Some(InputSpan { oldest, newest });
             self.updates += 1;
         }
         let changed = self.app.update(&self.events, viewport);
         self.events.clear();
+        debug_assert!(
+            self.events.text.is_empty(),
+            "the payloads go with their events"
+        );
         if changed {
             self.access_dirty = true;
             let ime = self.app.ime_area();
@@ -537,6 +617,8 @@ impl<A: App> Shell<A> {
             }
             self.ime = ime;
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        debug_assert!(self.queued.is_none(), "an update consumes the queued input");
         changed
     }
 }

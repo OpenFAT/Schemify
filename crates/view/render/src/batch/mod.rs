@@ -106,10 +106,9 @@ pub struct Batch {
     pub dropped: u64,
     /// Masks rasterized so far (the atlas's misses).
     pub rastered: u64,
-    /// Per glyph and direction (`[font blob, face and glyph id, direction hash]`), the key,
-    /// em (device px) and subpixel phase of its last exact mask: the stand-in for its other
-    /// sizes.
-    latest: HashMap<Key, (Key, f32, [u8; 2])>,
+    /// Per glyph and direction (`[font blob, face and glyph id, direction hash]`), its last
+    /// exact mask: the stand-in for its other sizes.
+    latest: HashMap<Key, Exact>,
     /// Exact glyph masks this frame may still rasterize where a stand-in exists.
     exact_left: u32,
     /// A stand-in was drawn this frame: the next frame rasterizes more exact masks.
@@ -146,6 +145,15 @@ const _: () = assert!(
 );
 const _: () = assert!(KIND_AT + 4 == STRIDE, "the kind is the last word");
 
+/// A glyph's exact mask as a stand-in knows it: its atlas key, the em (device px) and the
+/// subpixel phase it was rasterized at.
+#[derive(Clone, Copy, Debug)]
+struct Exact {
+    key: Key,
+    em: f32,
+    phase: [u8; 2],
+}
+
 /// `vello_cpu` state reused for every mask: the context, its resources, the target.
 struct Raster {
     ctx: vello_cpu::RenderContext,
@@ -163,8 +171,13 @@ struct Raster {
 pub(crate) fn mask_row(inst: &[u8]) -> Option<u16> {
     assert_eq!(inst.len(), STRIDE, "one instance");
     let kind = word(inst, KIND_AT) & 0xff;
+    debug_assert!(kind <= MASK_SCALED, "a known instance kind, got {kind}");
     let y = f32::from_bits(word(inst, AUX_AT + 4));
-    (kind == MASK || kind == MASK_SCALED).then_some(y as u16)
+    let row = (kind == MASK || kind == MASK_SCALED).then_some(y as u16);
+    if let Some(y) = row {
+        debug_assert!(y < crate::atlas::ATLAS_SIDE, "a mask samples an atlas row");
+    }
+    row
 }
 
 impl std::fmt::Debug for Batch {
@@ -199,36 +212,53 @@ impl Batch {
             self.latest.clear();
         }
         debug_assert!(self.is_empty(), "a fresh frame draws nothing");
+        debug_assert_eq!(self.len(), 0, "a fresh frame has no instance");
+        debug_assert!(
+            self.latest.len() <= LATEST_MAX,
+            "the stand-in index is bounded"
+        );
     }
 
     /// False when the frame drew a glyph from a stand-in (another size, scaled): its owner
     /// asks for another frame, with no input, to rasterize the exact masks (a few dozen a
     /// frame), so a zoom costs little per frame and the picture settles exact.
+    #[must_use]
     pub fn settled(&self) -> bool {
         !self.unsettled
     }
 
     /// Instances this frame, [`STRIDE`] bytes each.
+    #[must_use]
     pub fn instances(&self) -> &[u8] {
+        debug_assert_eq!(self.bytes.len() % STRIDE, 0, "whole instances");
         &self.bytes
     }
 
     /// Instances this frame.
+    #[must_use]
     pub fn len(&self) -> usize {
+        debug_assert_eq!(self.bytes.len() % STRIDE, 0, "whole instances");
         self.bytes.len() / STRIDE
     }
 
-    /// True when the frame drew nothing.
+    /// True when the frame drew nothing (no draw: a retained row or a canvas stage is a draw
+    /// with no instance of this frame).
+    #[must_use]
     pub fn is_empty(&self) -> bool {
+        if self.draws.is_empty() {
+            debug_assert!(self.bytes.is_empty(), "every instance is in a draw");
+        }
         self.draws.is_empty()
     }
 
     /// The draws, in order.
+    #[must_use]
     pub fn draws(&self) -> &[Draw] {
         &self.draws
     }
 
     /// The images [`What::Image`] names.
+    #[must_use]
     pub fn images(&self) -> &[ImageData] {
         &self.images
     }
@@ -249,7 +279,10 @@ impl Default for Raster {
 
 /// The native-endian `u32` at byte `at` of `b`.
 fn word(b: &[u8], at: usize) -> u32 {
-    u32::from_ne_bytes(b[at..at + 4].try_into().expect("4 bytes"))
+    let Some(&bytes) = b[at..].first_chunk::<4>() else {
+        panic!("a word at byte {at} of {} bytes", b.len());
+    };
+    u32::from_ne_bytes(bytes)
 }
 
 /// RGBA8 bytes in memory order (R first), straight alpha, as `color_of` in
@@ -262,7 +295,9 @@ fn color_word(c: Color) -> u32 {
 impl Batch {
     /// The current clip, device px.
     fn clip(&self) -> [f32; 4] {
-        self.clips.last().copied().unwrap_or(UNCLIPPED)
+        let c = self.clips.last().copied().unwrap_or(UNCLIPPED);
+        debug_assert!(!c.iter().any(|v| v.is_nan()), "a clip in device px");
+        c
     }
 
     /// Appends one instance drawn by `what`, under the current clip: to the row being captured
@@ -289,6 +324,10 @@ impl Batch {
         out.extend_from_slice(&kind.to_ne_bytes());
         debug_assert_eq!(out.len() % STRIDE, 0, "whole instances");
         if self.capture.is_none() {
+            debug_assert!(
+                self.len() <= INSTANCES_MAX,
+                "the frame's instances are bounded"
+            );
             let i = self.len() as u32 - 1;
             match self.draws.last_mut() {
                 Some(d) if d.what == what && d.range.end == i => d.range.end = i + 1,
@@ -297,6 +336,10 @@ impl Batch {
                     what,
                 }),
             }
+            debug_assert!(
+                self.draws.last().is_some_and(|d| d.range.end == i + 1),
+                "the last draw ends at the new instance"
+            );
         }
     }
 
@@ -304,6 +347,8 @@ impl Batch {
     /// it ends where `range` starts).
     fn retained(&mut self, src: usize, range: Range<u32>) {
         assert!(range.start <= range.end, "a slot range");
+        assert!(src < crate::ui_rows::SOURCES, "a UI source");
+        let end = range.end;
         match self.draws.last_mut() {
             Some(d) if d.what == What::Retained(src) && d.range.end == range.start => {
                 d.range.end = range.end;
@@ -313,10 +358,21 @@ impl Batch {
                 what: What::Retained(src),
             }),
         }
+        debug_assert!(
+            self.draws.last().is_some_and(|d| d.range.end == end),
+            "the last draw ends at the row"
+        );
     }
 
     /// Marks where canvas stage `stage` is drawn among the instances.
     fn stage(&mut self, stage: Stage) {
+        assert!(
+            self.capture.is_none(),
+            "a canvas stage is not a UI row's instance"
+        );
+        if let Stage::Rows(src) = stage {
+            assert!(src < crate::gpu::SOURCES, "a row source");
+        }
         let i = self.len() as u32;
         self.draws.push(Draw {
             range: i..i,
@@ -334,6 +390,7 @@ impl Batch {
                 self.images.len() - 1
             }
         };
+        debug_assert_eq!(self.images[k].data.id(), id, "the image's own index");
         k as u32
     }
 }
@@ -347,7 +404,8 @@ impl Raster {
         h: u16,
         draw: impl FnOnce(&mut vello_cpu::RenderContext, &mut vello_cpu::Resources),
     ) -> &[u8] {
-        assert!(w > 0 && h > 0, "a mask has pixels");
+        assert!(w > 0, "a mask has pixels");
+        assert!(h > 0, "a mask has pixels");
         self.ctx.reset_and_resize(w, h);
         self.ctx.set_paint(Color::WHITE);
         draw(&mut self.ctx, &mut self.res);

@@ -9,7 +9,13 @@
 //! - `pub(super) fn gpu_ladder<T>(open: impl FnMut(bool) -> Result<T, String>) -> Result<T, String>`
 //! - web: `pub(super) const TIERS`
 
+#[cfg(target_arch = "wasm32")]
+use std::mem;
+#[cfg(target_arch = "wasm32")]
+use std::rc::Rc;
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
 
 use kurbo::Affine;
 #[cfg(not(target_arch = "wasm32"))]
@@ -17,8 +23,8 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
 #[cfg(not(target_arch = "wasm32"))]
-use super::block_on;
-use super::{App, Shell, UserEvent, logical};
+use super::InputSpan;
+use super::{App, Shell, UserEvent};
 use crate::batch::GpuPainter;
 use crate::gpu::Pipelines;
 
@@ -59,21 +65,28 @@ impl Drop for Gpu {
 
 impl<A: App> Shell<A> {
     /// Native: a GPU for `window` down the ladder ([`gpu_ladder`]), its device's loss reported
-    /// as `NoGpu`.
+    /// as `NoGpu`. Takes the `Arc` because the surface keeps a `'static` handle to the window.
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn open_gpu(&self, window: &Arc<Window>) -> Result<Gpu, String> {
+        assert!(self.gpu.is_none(), "one GPU draws the window");
         let size = window.inner_size();
         let (w, h) = (size.width.max(1), size.height.max(1));
         let g = gpu_ladder(|fallback| {
             let desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
-            let target = window.clone().into();
-            block_on(Gpu::new(wgpu::Instance::new(desc), target, w, h, fallback))
+            let target: wgpu::SurfaceTarget<'static> = Arc::clone(window).into();
+            super::block_on(Gpu::new(wgpu::Instance::new(desc), target, w, h, fallback))
         })?;
+        debug_assert_eq!(
+            (g.config.width, g.config.height),
+            (w, h),
+            "sized to the window"
+        );
         let lost = self.proxy.clone();
         // `Destroyed` is our own drop of the device (the window closing, a reopen).
         g.device.set_device_lost_callback(move |reason, msg| {
             if reason != wgpu::DeviceLostReason::Destroyed {
-                let _ = lost.send_event(UserEvent::NoGpu(0, format!("device lost ({msg})")));
+                let why = format!("device lost ({msg})");
+                let _ = lost.send_event(UserEvent::NoGpu { tier: 0, why });
             }
         });
         Ok(g)
@@ -83,6 +96,8 @@ impl<A: App> Shell<A> {
     /// the reason ([`RunError::NoGpu`]) instead of leaving a blank window.
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn fail(&mut self, event_loop: &ActiveEventLoop, why: String) {
+        assert!(self.gpu.is_none(), "a window some GPU draws has not failed");
+        assert!(self.failed.is_none(), "the loop exits on the first failure");
         self.app.close();
         self.failed = Some(why);
         event_loop.exit();
@@ -95,9 +110,11 @@ impl<A: App> Shell<A> {
     pub(super) fn start_gpu(&self, window: &Arc<Window>) {
         let tier = self.tier;
         assert!(tier < TIERS.len(), "a GPU tier");
+        assert!(self.gpu.is_none(), "a tier starts with no GPU");
         let size = window.inner_size();
         let (w, h) = (size.width.max(1), size.height.max(1));
-        let (pending, proxy, win) = (self.pending.clone(), self.proxy.clone(), window.clone());
+        let (pending, proxy) = (Rc::clone(&self.pending), self.proxy.clone());
+        let win = Arc::clone(window);
         wasm_bindgen_futures::spawn_local(async move {
             let made = async {
                 let mut desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
@@ -112,7 +129,8 @@ impl<A: App> Shell<A> {
                 // reads after the frame was composited; without it the read sees a cleared
                 // buffer and every WebGL2 frame would count as missing.
                 let opts = wasm_bindgen_futures::js_sys::Object::new();
-                for key in ["preserveDrawingBuffer", "antialias"] {
+                const OPTIONS: [&str; 2] = ["preserveDrawingBuffer", "antialias"];
+                for key in OPTIONS {
                     let on = key == "preserveDrawingBuffer";
                     let _ =
                         wasm_bindgen_futures::js_sys::Reflect::set(&opts, &key.into(), &on.into());
@@ -135,18 +153,20 @@ impl<A: App> Shell<A> {
                     g.device.set_device_lost_callback(move |reason, msg| {
                         if reason != wgpu::DeviceLostReason::Destroyed {
                             let why = format!("device lost ({msg})");
-                            let _ = lost.send_event(UserEvent::NoGpu(tier, why));
+                            let _ = lost.send_event(UserEvent::NoGpu { tier, why });
                         }
                     });
                     *pending.borrow_mut() = Some((tier, g));
                     let _ = proxy.send_event(UserEvent::GpuReady);
                 }
-                Err(e) => {
-                    let _ = proxy.send_event(UserEvent::NoGpu(tier, e));
+                Err(why) => {
+                    let _ = proxy.send_event(UserEvent::NoGpu { tier, why });
                 }
             }
         });
     }
+    /// Draws and presents one frame of the app (a granted redraw): updates first when input
+    /// is queued, so the frame answers it. Nothing is drawn without a window, a GPU or pixels.
     pub(super) fn render(&mut self) {
         // The granted redraw answers every input queued until now (`pace`). The frame is
         // presented even when that input changed nothing (a modifier press): winit's own
@@ -171,12 +191,20 @@ impl<A: App> Shell<A> {
         };
         let size = window.inner_size();
         if size.width == 0 || size.height == 0 {
-            return;
+            return; // a minimized window shows nothing
         }
         if (gpu.config.width, gpu.config.height) != (size.width, size.height) {
             gpu.resize(size.width, size.height);
         }
-        let viewport = logical(size.width, size.height, self.scale);
+        assert_eq!(
+            gpu.config.width, size.width,
+            "the surface is the window's size"
+        );
+        assert_eq!(
+            gpu.config.height, size.height,
+            "the surface is the window's size"
+        );
+        let viewport = super::logical(size.width, size.height, self.scale);
         self.batch.begin_frame();
         let mut painter = GpuPainter {
             batch: &mut self.batch,
@@ -207,6 +235,12 @@ impl<A: App> Shell<A> {
         gpu.pipes.upload(&gpu.device, &gpu.queue, &mut self.rows);
         gpu.pipes
             .upload_batch(&gpu.device, &gpu.queue, &mut self.batch);
+        debug_assert_eq!(self.rows.dirty_bytes(), 0, "every row written is uploaded");
+        debug_assert_eq!(
+            self.batch.atlas.pending_bytes(),
+            0,
+            "every mask is uploaded"
+        );
         let bg = self.app.background().components.map(f64::from);
         let clear = wgpu::Color {
             r: bg[0],
@@ -215,6 +249,7 @@ impl<A: App> Shell<A> {
             a: bg[3],
         };
         let canvas = self.rows.frame.take();
+        debug_assert!(self.rows.frame.is_none(), "each frame sets its own canvas");
         gpu.pipes.draw(
             &mut encoder,
             &gpu.queue,
@@ -236,11 +271,11 @@ impl<A: App> Shell<A> {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let now = std::time::Instant::now();
+            let now = Instant::now();
             if self.frame_log
-                && let Some((oldest, newest)) = self.shown
+                && let Some(InputSpan { oldest, newest }) = self.shown
             {
-                let ms = |t: std::time::Instant| (now - t).as_secs_f64() * 1e3;
+                let ms = |t: Instant| (now - t).as_secs_f64() * 1e3;
                 let (atlas, instances) = gpu.pipes.take_batch_uploaded();
                 eprintln!(
                     "frame: input to present {:.2} ms oldest, {:.2} ms newest, {} updates, period {:.2} ms, atlas {} B, instances {} B",
@@ -257,14 +292,14 @@ impl<A: App> Shell<A> {
         // Web: a browser can take every GPU call and still show nothing (web spec §7), so
         // each tier's first frame is looked for on the page.
         #[cfg(target_arch = "wasm32")]
-        if !std::mem::replace(&mut self.probed, true) {
+        if !mem::replace(&mut self.probed, true) {
             use winit::platform::web::WindowExtWebSys;
             if let Some(canvas) = gpu.overlay.clone().or_else(|| window.canvas()) {
                 let (proxy, tier) = (self.proxy.clone(), self.tier);
                 wasm_bindgen_futures::spawn_local(async move {
                     if !super::cpu_view::shows_frames(canvas).await {
                         let why = "frames do not reach the page".to_owned();
-                        let _ = proxy.send_event(UserEvent::NoGpu(tier, why));
+                        let _ = proxy.send_event(UserEvent::NoGpu { tier, why });
                     }
                 });
             }
@@ -276,13 +311,17 @@ impl<A: App> Shell<A> {
 /// (wgpu's software adapter: WARP, lavapipe or llvmpipe). The error names both failures.
 // ponytail: no CPU rung (`CpuPainter` through `softbuffer`): WARP and lavapipe cover the
 // machines without a GPU we know of; a new dependency waits for one where both fail.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(dead_code, reason = "the web has its own tiers (`TIERS`)")
+)]
 pub(super) fn gpu_ladder<T>(mut open: impl FnMut(bool) -> Result<T, String>) -> Result<T, String> {
     let hardware = match open(false) {
         Ok(g) => return Ok(g),
         Err(e) => e,
     };
     eprintln!("gpu: no hardware adapter ({hardware}); trying the software one");
+    // Bounded: two rungs.
     open(true).map_err(|software| format!("hardware: {hardware}; software: {software}"))
 }
 
@@ -305,7 +344,8 @@ impl Gpu {
         h: u32,
         fallback: bool,
     ) -> Result<Gpu, String> {
-        assert!(w > 0 && h > 0, "a surface has a size");
+        assert!(w > 0, "a surface has a size");
+        assert!(h > 0, "a surface has a size");
         let surface = instance.create_surface(target).map_err(|e| e.to_string())?;
         let named = match fallback {
             false => wgpu::util::initialize_adapter_from_env(&instance, Some(&surface))
@@ -356,6 +396,7 @@ impl Gpu {
                 )
             })
             .ok_or("no 8-bit surface format")?;
+        debug_assert!(!caps.present_modes.is_empty(), "a surface presents somehow");
         let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
             wgpu::PresentMode::Mailbox
         } else {
@@ -373,6 +414,10 @@ impl Gpu {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
+        debug_assert_eq!(
+            config.desired_maximum_frame_latency, 1,
+            "one frame in flight (D39)"
+        );
         Ok(Gpu {
             pipes: Pipelines::new(&device, format),
             device,
@@ -386,7 +431,8 @@ impl Gpu {
 
     /// Sizes the surface to `w × h` device px (both non-zero).
     fn resize(&mut self, w: u32, h: u32) {
-        assert!(w > 0 && h > 0, "a surface has a size");
+        assert!(w > 0, "a surface has a size");
+        assert!(h > 0, "a surface has a size");
         (self.config.width, self.config.height) = (w, h);
         self.surface.configure(&self.device, &self.config);
     }
