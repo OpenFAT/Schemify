@@ -1,51 +1,28 @@
-//! The AccessKit tree: one transform from the composed tables and the frame's layout.
+//! The AccessKit tree: the composed tables and the frame's layout in, one
+//! [`accesskit::TreeUpdate`] out.
 //!
 //! Node ids are the interned public ids ([`Sym::raw`]), so they are stable across frames and
 //! recompositions; only visible rows are exported (a closed menu's items are not).
+//!
+//! Contents:
+//! - `pub(crate) fn access_id(id: Sym, shown: Shown) -> NodeId`
+//! - `pub fn sym_of(id: NodeId) -> Sym`
+//! - `pub fn access_tree(tables: &UiTables, layout: &UiLayout, strings: &Strings, state: &UiState)
+//!   -> TreeUpdate`
+//! - `pub fn dump(update: &TreeUpdate) -> String`
 
 use std::fmt::Write as _;
 
 use accesskit::{Action, Node, NodeId, Role, Toggled, TreeInfo, TreeUpdate};
 
-use crate::input::UiState;
+use crate::kinds::{Kind, Prop};
 use crate::layout::{Shown, UiLayout};
+use crate::state::UiState;
 use crate::strings::{Strings, Sym};
-use crate::tables::{Kind, Prop, UiTables};
-
-fn role(kind: Kind, shown: Shown) -> Role {
-    match (kind, shown) {
-        (_, Shown::Title | Shown::Cascade) => Role::MenuItem,
-        (_, Shown::Popup) => Role::Menu,
-        (Kind::Window, _) => Role::Window,
-        (Kind::Menubar, _) => Role::MenuBar,
-        (Kind::Menu, _) => Role::Menu,
-        (Kind::Item, _) => Role::MenuItem,
-        (Kind::Separator, _) => Role::GenericContainer,
-        (Kind::Toolbar, _) => Role::Toolbar,
-        (Kind::Button, _) => Role::Button,
-        (Kind::Tabs, _) => Role::TabList,
-        (Kind::Tab, _) => Role::Tab,
-        (Kind::Panel, _) => Role::Pane,
-        (Kind::Split, _) => Role::Splitter,
-        (Kind::Label, _) => Role::Label,
-        (Kind::TextInput, _) => Role::TextInput,
-        (Kind::Checkbox, _) => Role::CheckBox,
-        (Kind::Dropdown, _) => Role::ComboBox,
-        (Kind::List, _) => Role::List,
-        (Kind::Tree, _) => Role::Tree,
-        (Kind::Scroll, _) => Role::ScrollView,
-        (Kind::Canvas, _) => Role::Canvas,
-        (Kind::Graph, _) => Role::Figure,
-        (Kind::Math, _) => Role::Math,
-        (Kind::Prose, _) => Role::Paragraph,
-        (Kind::TextArea, _) => Role::MultilineTextInput,
-        (Kind::Dialog, _) => Role::Dialog,
-        (Kind::Status, _) => Role::Status,
-    }
-}
+use crate::tables::UiTables;
 
 /// AccessKit node id of public node id `id`; a menu's popup gets a distinct id (high bit set).
-pub fn access_id(id: Sym, shown: Shown) -> NodeId {
+pub(crate) fn access_id(id: Sym, shown: Shown) -> NodeId {
     let popup = if shown == Shown::Popup { 1u64 << 32 } else { 0 };
     NodeId(u64::from(id.raw()) | popup)
 }
@@ -214,4 +191,39 @@ pub fn dump(update: &TreeUpdate) -> String {
         stack.extend(node.children().iter().rev().map(|&c| (depth + 1, c)));
     }
     out
+}
+
+// ---- private ----
+
+/// The AccessKit role of a row: a menu shows as an item or a popup, the rest by kind.
+fn role(kind: Kind, shown: Shown) -> Role {
+    match (kind, shown) {
+        (_, Shown::Title | Shown::Cascade) => Role::MenuItem,
+        (_, Shown::Popup) => Role::Menu,
+        (Kind::Window, _) => Role::Window,
+        (Kind::Menubar, _) => Role::MenuBar,
+        (Kind::Menu, _) => Role::Menu,
+        (Kind::Item, _) => Role::MenuItem,
+        (Kind::Separator, _) => Role::GenericContainer,
+        (Kind::Toolbar, _) => Role::Toolbar,
+        (Kind::Button, _) => Role::Button,
+        (Kind::Tabs, _) => Role::TabList,
+        (Kind::Tab, _) => Role::Tab,
+        (Kind::Panel, _) => Role::Pane,
+        (Kind::Split, _) => Role::Splitter,
+        (Kind::Label, _) => Role::Label,
+        (Kind::TextInput, _) => Role::TextInput,
+        (Kind::Checkbox, _) => Role::CheckBox,
+        (Kind::Dropdown, _) => Role::ComboBox,
+        (Kind::List, _) => Role::List,
+        (Kind::Tree, _) => Role::Tree,
+        (Kind::Scroll, _) => Role::ScrollView,
+        (Kind::Canvas, _) => Role::Canvas,
+        (Kind::Graph, _) => Role::Figure,
+        (Kind::Math, _) => Role::Math,
+        (Kind::Prose, _) => Role::Paragraph,
+        (Kind::TextArea, _) => Role::MultilineTextInput,
+        (Kind::Dialog, _) => Role::Dialog,
+        (Kind::Status, _) => Role::Status,
+    }
 }

@@ -1,9 +1,16 @@
-//! The `math` widget (D21): a LaTeX subset laid out by RaTeX into positioned glyphs, rules and
-//! paths, in pixels with the origin at the box's top-left and the baseline at `height`.
+//! The `math` widget (D21): LaTeX source in, RaTeX's layout out as positioned glyphs, rules and
+//! paths ([`MathList`]), in pixels with the origin at the box's top-left and the baseline at
+//! `height`.
 //!
 //! RaTeX positions glyphs with KaTeX font metrics, so the glyphs must come from the KaTeX fonts
 //! (embedded, OFL). D21 names an OpenType MATH font; that would need a MATH-table layout engine,
 //! which RaTeX is not.
+//!
+//! Contents:
+//! - `pub struct MathFonts`: `new`, `face(u8) -> &FontData`
+//! - `pub enum Verb`, `pub struct MathPaths`, `pub struct MathList`
+//! - `pub(crate) fn face_bytes(name: &str) -> &'static [u8]`
+//! - `pub(crate) fn layout_math(src: &str, px: f32, fonts: &MathFonts) -> Result<MathList, String>`
 
 use std::sync::Arc;
 
@@ -14,87 +21,9 @@ use ratex_types::display_item::DisplayItem;
 use ratex_types::path_command::PathCommand;
 use skrifa::MetadataProvider;
 
-/// One embedded KaTeX face: its [`FontId`] spelling and the bytes of `fonts/KaTeX_<name>.ttf`.
-macro_rules! face {
-    ($name:literal) => {
-        (
-            $name,
-            include_bytes!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/fonts/KaTeX_",
-                $name,
-                ".ttf"
-            )),
-        )
-    };
-}
-
-/// KaTeX faces in [`FontId`] spelling, with their bytes.
-const FACES: [(&str, &[u8]); 19] = [
-    face!("AMS-Regular"),
-    face!("Caligraphic-Regular"),
-    face!("Fraktur-Regular"),
-    face!("Fraktur-Bold"),
-    face!("Main-Bold"),
-    face!("Main-BoldItalic"),
-    face!("Main-Italic"),
-    face!("Main-Regular"),
-    face!("Math-BoldItalic"),
-    face!("Math-Italic"),
-    face!("SansSerif-Bold"),
-    face!("SansSerif-Italic"),
-    face!("SansSerif-Regular"),
-    face!("Script-Regular"),
-    face!("Size1-Regular"),
-    face!("Size2-Regular"),
-    face!("Size3-Regular"),
-    face!("Size4-Regular"),
-    face!("Typewriter-Regular"),
-];
-
-/// The bytes of embedded KaTeX face `name` ([`FontId`] spelling, `"Main-Regular"`).
-///
-/// # Panics
-///
-/// `name` is not one of the embedded faces.
-pub(crate) fn face_bytes(name: &str) -> &'static [u8] {
-    let face = FACES.iter().find(|f| f.0 == name);
-    face.expect("an embedded KaTeX face").1
-}
-
 /// The embedded KaTeX faces, indexed by the `u8` face index stored in [`MathList::glyph_face`].
 pub struct MathFonts {
     data: Vec<FontData>,
-}
-
-impl Default for MathFonts {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Debug for MathFonts {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MathFonts")
-            .field("faces", &self.data.len())
-            .finish()
-    }
-}
-
-impl MathFonts {
-    /// Wraps the embedded faces (no copy: the blobs borrow the static bytes).
-    pub fn new() -> Self {
-        let data = FACES
-            .iter()
-            .map(|(_, b)| FontData::new(Blob::new(Arc::new(*b)), 0))
-            .collect();
-        MathFonts { data }
-    }
-
-    /// Font for a face index from [`MathList::glyph_face`].
-    pub fn face(&self, i: u8) -> &FontData {
-        &self.data[i as usize]
-    }
 }
 
 /// Path verbs for [`MathPaths`].
@@ -152,12 +81,90 @@ pub struct MathList {
     pub missing: u32,
 }
 
+/// One embedded KaTeX face: its [`FontId`] spelling and the bytes of `fonts/KaTeX_<name>.ttf`.
+macro_rules! face {
+    ($name:literal) => {
+        (
+            $name,
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/fonts/KaTeX_",
+                $name,
+                ".ttf"
+            )),
+        )
+    };
+}
+
+/// KaTeX faces in [`FontId`] spelling, with their bytes.
+const FACES: [(&str, &[u8]); 19] = [
+    face!("AMS-Regular"),
+    face!("Caligraphic-Regular"),
+    face!("Fraktur-Regular"),
+    face!("Fraktur-Bold"),
+    face!("Main-Bold"),
+    face!("Main-BoldItalic"),
+    face!("Main-Italic"),
+    face!("Main-Regular"),
+    face!("Math-BoldItalic"),
+    face!("Math-Italic"),
+    face!("SansSerif-Bold"),
+    face!("SansSerif-Italic"),
+    face!("SansSerif-Regular"),
+    face!("Script-Regular"),
+    face!("Size1-Regular"),
+    face!("Size2-Regular"),
+    face!("Size3-Regular"),
+    face!("Size4-Regular"),
+    face!("Typewriter-Regular"),
+];
+
+/// The bytes of embedded KaTeX face `name` ([`FontId`] spelling, `"Main-Regular"`).
+///
+/// # Panics
+///
+/// `name` is not one of the embedded faces.
+pub(crate) fn face_bytes(name: &str) -> &'static [u8] {
+    let face = FACES.iter().find(|f| f.0 == name);
+    face.expect("an embedded KaTeX face").1
+}
+
+impl Default for MathFonts {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for MathFonts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MathFonts")
+            .field("faces", &self.data.len())
+            .finish()
+    }
+}
+
+impl MathFonts {
+    /// Wraps the embedded faces (no copy: the blobs borrow the static bytes).
+    pub fn new() -> Self {
+        let data = FACES
+            .iter()
+            .map(|(_, b)| FontData::new(Blob::new(Arc::new(*b)), 0))
+            .collect();
+        MathFonts { data }
+    }
+
+    /// Font for a face index from [`MathList::glyph_face`].
+    pub fn face(&self, i: u8) -> &FontData {
+        &self.data[i as usize]
+    }
+}
+
 /// Parses and lays out `src` at `px` pixels per em.
 ///
 /// # Errors
 ///
 /// Returns RaTeX's parse message for input outside its LaTeX subset.
-pub fn layout_math(src: &str, px: f32, fonts: &MathFonts) -> Result<MathList, String> {
+pub(crate) fn layout_math(src: &str, px: f32, fonts: &MathFonts) -> Result<MathList, String> {
     assert!(px > 0.0 && px.is_finite(), "math size must be positive");
     assert_eq!(fonts.data.len(), FACES.len());
     let ast = ratex_parser::parse(src).map_err(|e| e.to_string())?;

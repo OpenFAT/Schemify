@@ -26,7 +26,9 @@ use schemify_wave::{
 use crate::input::{Button, InputEvent, InputEvents};
 use crate::layout::{Rect, UiLayout};
 use crate::strings::{Strings, Sym};
-use crate::tables::{Contribution, Edit, Kind, Mods, Prop, StyleProp, UiTables};
+use crate::keys::Mods;
+use crate::kinds::{Kind, Prop, StyleProp};
+use crate::tables::{Contribution, Edit, UiTables};
 
 /// The window's static skeleton: toolbar, browser, pane column, trace panel, readout, status,
 /// the graph properties dialog, theme and keys. Compose it as the base contribution, then

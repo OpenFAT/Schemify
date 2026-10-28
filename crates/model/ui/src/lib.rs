@@ -13,6 +13,9 @@
 //! waves::WaveUi::{route,command}       -> wave requests     (the waveform window, D23)
 //! ```
 //!
+//! Owners: [`compose`] alone writes [`UiTables`]; [`layout`] writes [`UiLayout`];
+//! [`route_input`] writes [`UiState`] and [`Routed`]; [`TextSystem`] owns every shaped layout.
+//!
 //! ```
 //! use schemify_ui::{compose, layout, records, Strings, TextSystem, UiState};
 //!
@@ -24,35 +27,55 @@
 //! let frame = layout(&tables, &strings, &mut text, &UiState::default(), (1280.0, 800.0));
 //! assert!(frame.len() > 50);
 //! ```
+//!
+//! Contents:
+//! - `pub const DEFAULT_UI: &str`
+//! - modules `access`, `graph`, `icon`, `math`, `prose`, `records`, `waves`; the rest
+//!   re-exported at the root
 
 #![forbid(unsafe_code)]
 
 pub mod access;
+mod compose;
+mod field;
+mod flex;
+mod fonts;
 pub mod graph;
 pub mod icon;
 mod input;
+mod keys;
+mod kinds;
 mod layout;
 pub mod math;
+mod menu;
+mod paint;
 pub mod prose;
 pub mod records;
+mod route;
+mod state;
 mod strings;
 mod tables;
 mod text;
 pub mod waves;
 
-pub use input::{Button, CommandRequests, InputEvent, InputEvents, Routed, UiState, route_input};
+pub use compose::{compose, patch_last};
+pub use fonts::{FontGlyph, FontInfo, ui_font_glyphs, ui_font_info, ui_fonts};
+pub use input::{Button, CommandRequests, InputEvent, InputEvents, Routed};
+pub use keys::{Chord, Key, Mods};
+pub use kinds::{Kind, Prop, StyleProp};
 pub use layout::{
-    AREA_EM_MAX, DISABLED_ALPHA, FLOAT_INSET, Layer, NO_CLIP, Rect, RowPaint, SPLIT_GAP, SPLIT_MIN,
-    Shown, UiLayout, area_scroll_max, layout, row_paint, row_style,
+    AREA_EM_MAX, FLOAT_INSET, Layer, NO_CLIP, Rect, SPLIT_GAP, SPLIT_MIN, Shown, UiLayout,
+    area_scroll_max, layout,
 };
+pub use paint::{DISABLED_ALPHA, RowPaint, row_paint, row_style};
+pub use route::route_input;
+pub use state::UiState;
 pub use strings::{Strings, Sym};
 pub use tables::{
-    Chord, Contribution, Edit, Health, HealthKind, Key, Keymap, Kind, Mods, NO_NODE, NO_STYLE,
-    NodeIx, Prop, StyleProp, UiNodes, UiStyles, UiTables, compose, patch_last,
+    Contribution, Edit, Health, HealthKind, Keymap, NO_NODE, NO_STYLE, NodeIx, UiNodes, UiStyles,
+    UiTables,
 };
-pub use text::{
-    FontGlyph, FontInfo, Image, NO_TEXT, TextId, TextSystem, ui_font_glyphs, ui_font_info, ui_fonts,
-};
+pub use text::{Image, NO_TEXT, TextId, TextSystem};
 
 /// Re-exported for [`access::access_tree`]'s return type.
 pub use accesskit;

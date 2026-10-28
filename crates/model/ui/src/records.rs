@@ -1,4 +1,6 @@
-//! Parser for UI contributions written as line records (format spec §2, plugin-abi §7).
+//! Parser for UI contributions written as line records (format spec §2, plugin-abi §7): text
+//! in, a [`Contribution`] of edits plus the rejected lines out. Also the virtualized-list
+//! helpers that write such records ([`window`], [`spacer`]).
 //!
 //! Records (column 0) and their attributes (indented):
 //!
@@ -11,12 +13,20 @@
 //! ```
 //!
 //! This is the body of a `contribute ui` / `contribute keymap` output, so the base UI and plugin
-//! UI share one syntax and can be hand-written in user config.
+//! UI share one syntax and can be hand-written in user config. A local lexer for the §2 subset:
+//! decisions.md, amendment 2026-10-25 (D6, D9), says why.
+//!
+//! Contents:
+//! - `pub enum RejectReason`, `pub struct Reject`, `pub const LENGTH_MAX: u32`
+//! - `pub fn parse(text: &str, strings: &mut Strings) -> (Contribution, Vec<Reject>)`
+//! - `pub fn parse_live(text: &str, strings: &mut Strings) -> (Contribution, Vec<Reject>)`
+//! - `pub fn window(offset: f32, pitch: f32, rows: u32, len: u32) -> (u32, u32)`
+//! - `pub fn spacer(t: &mut String, parent: &str, id: &str, px: u32, gap: u32)`
 
-// A local lexer for the §2 subset: decisions.md, amendment 2026-10-25 (D6, D9), says why.
-
+use crate::keys::Chord;
+use crate::kinds::{Kind, Prop, StyleProp};
 use crate::strings::{Strings, Sym};
-use crate::tables::{Chord, Contribution, Edit, Kind, Prop, StyleProp};
+use crate::tables::{Contribution, Edit};
 
 /// Why a record was rejected.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -46,11 +56,19 @@ pub struct Reject {
     pub reason: RejectReason,
 }
 
+/// Longest length a style value holds, in px ([`StyleProp::parse_value`]).
+pub const LENGTH_MAX: u32 = 1 << 14;
+
+/// The record whose indented attributes follow.
 enum Ctx {
     None,
     Node(Sym),
     Style(Sym),
 }
+
+/// Values of a line passed on to the record and attribute parsers (one past the largest
+/// arity, four).
+const TOKENS_SEEN: usize = 5;
 
 /// Parses contribution text into edits, interning every string into `strings`.
 ///
@@ -84,6 +102,63 @@ pub fn parse_live(text: &str, strings: &mut Strings) -> (Contribution, Vec<Rejec
     out
 }
 
+/// Rows `[start, end)` a virtualized list lays out (only those rows become nodes, D39's node
+/// budget): `rows` rows `pitch` px apart, its scroll pane `offset` px past the first row. The
+/// window is `len` rows starting `len / 8` rows above the first visible one, the start rounded
+/// down to a multiple of 16 so a small scroll leaves the window, and so the contribution text,
+/// unchanged. The rows outside it are [`spacer`]s.
+///
+/// # Panics
+///
+/// Panics if `pitch` is not positive or `len` is 0.
+pub fn window(offset: f32, pitch: f32, rows: u32, len: u32) -> (u32, u32) {
+    assert!(pitch > 0.0, "rows have a pitch");
+    assert!(len > 0, "a window shows rows");
+    let first = ((offset.max(0.0) / pitch) as u32).min(rows);
+    let start = (first.saturating_sub(len / 8) / 16) * 16;
+    let end = (start + len).min(rows);
+    assert!(start <= end);
+    assert!(end - start <= len);
+    (start, end)
+}
+
+/// Appends `px` of empty column to contribution text `t`: `panel` nodes `{id}.{k}` under
+/// `parent`, each with its own `style` record (the id with `.` as `-`, then `-full` for the
+/// full-height ones), at most [`LENGTH_MAX`] tall. With the parent's child `gap` after each,
+/// they span exactly `px`, the space of the rows they stand for when every row's pitch counts
+/// its gap. Writes nothing for 0.
+///
+/// # Panics
+///
+/// Panics if `gap` is not below [`LENGTH_MAX`], or if the last piece (`px % LENGTH_MAX`) is
+/// shorter than `gap`.
+pub fn spacer(t: &mut String, parent: &str, id: &str, px: u32, gap: u32) {
+    use std::fmt::Write as _;
+    assert!(gap < LENGTH_MAX, "a gap shorter than a spacer piece");
+    let style = id.replace('.', "-");
+    let (full, rest) = (px / LENGTH_MAX, px % LENGTH_MAX);
+    assert!(rest == 0 || rest >= gap, "the last piece holds its gap");
+    if full > 0 {
+        let _ = writeln!(t, "style {style}-full\n  height {}", LENGTH_MAX - gap);
+    }
+    for k in 0..full {
+        let _ = writeln!(
+            t,
+            "node {id}.{k} panel\n  parent {parent}\n  style {style}-full"
+        );
+    }
+    if rest > 0 {
+        let _ = writeln!(
+            t,
+            "style {style}\n  height {}\nnode {id}.{full} panel\n  parent {parent}\n  style {style}",
+            rest - gap
+        );
+    }
+}
+
+// ---- private ----
+
+/// [`parse`] and [`parse_live`]: one pass over the lines, each accepted or rejected alone.
 fn parse_into(text: &str, strings: &mut Strings, live: bool) -> (Contribution, Vec<Reject>) {
     assert!(
         text.len() < u32::MAX as usize,
@@ -129,6 +204,7 @@ fn parse_into(text: &str, strings: &mut Strings, live: bool) -> (Contribution, V
     (out, rejects)
 }
 
+/// A column-0 record; returns the context its attributes apply to.
 fn record(
     t: &[&str],
     strings: &mut Strings,
@@ -180,6 +256,7 @@ fn record(
     }
 }
 
+/// An indented attribute of the record above.
 fn attr(
     t: &[&str],
     ctx: &Ctx,
@@ -206,6 +283,7 @@ fn attr(
     }
 }
 
+/// A node prop (or `parent`/`order`) as an edit; free text goes live in a live parse.
 fn node_attr(
     id: Sym,
     name: &str,
@@ -301,67 +379,7 @@ fn tokenize(body: &str, out: &mut Vec<String>) -> Result<usize, RejectReason> {
     Ok(n)
 }
 
-/// Values of a line passed on to the record and attribute parsers (one past the largest
-/// arity, four).
-const TOKENS_SEEN: usize = 5;
-
-/// Longest length a style value holds, in px ([`StyleProp::parse_value`]).
-pub const LENGTH_MAX: u32 = 1 << 14;
-
-/// Rows `[start, end)` a virtualized list lays out (only those rows become nodes, D39's node
-/// budget): `rows` rows `pitch` px apart, its scroll pane `offset` px past the first row. The
-/// window is `len` rows starting `len / 8` rows above the first visible one, the start rounded
-/// down to a multiple of 16 so a small scroll leaves the window, and so the contribution text,
-/// unchanged. The rows outside it are [`spacer`]s.
-///
-/// # Panics
-///
-/// Panics if `pitch` is not positive or `len` is 0.
-pub fn window(offset: f32, pitch: f32, rows: u32, len: u32) -> (u32, u32) {
-    assert!(pitch > 0.0, "rows have a pitch");
-    assert!(len > 0, "a window shows rows");
-    let first = ((offset.max(0.0) / pitch) as u32).min(rows);
-    let start = (first.saturating_sub(len / 8) / 16) * 16;
-    let end = (start + len).min(rows);
-    assert!(start <= end);
-    assert!(end - start <= len);
-    (start, end)
-}
-
-/// Appends `px` of empty column to contribution text `t`: `panel` nodes `{id}.{k}` under
-/// `parent`, each with its own `style` record (the id with `.` as `-`, then `-full` for the
-/// full-height ones), at most [`LENGTH_MAX`] tall. With the parent's child `gap` after each,
-/// they span exactly `px`, the space of the rows they stand for when every row's pitch counts
-/// its gap. Writes nothing for 0.
-///
-/// # Panics
-///
-/// Panics if `gap` is not below [`LENGTH_MAX`], or if the last piece (`px % LENGTH_MAX`) is
-/// shorter than `gap`.
-pub fn spacer(t: &mut String, parent: &str, id: &str, px: u32, gap: u32) {
-    use std::fmt::Write as _;
-    assert!(gap < LENGTH_MAX, "a gap shorter than a spacer piece");
-    let style = id.replace('.', "-");
-    let (full, rest) = (px / LENGTH_MAX, px % LENGTH_MAX);
-    assert!(rest == 0 || rest >= gap, "the last piece holds its gap");
-    if full > 0 {
-        let _ = writeln!(t, "style {style}-full\n  height {}", LENGTH_MAX - gap);
-    }
-    for k in 0..full {
-        let _ = writeln!(
-            t,
-            "node {id}.{k} panel\n  parent {parent}\n  style {style}-full"
-        );
-    }
-    if rest > 0 {
-        let _ = writeln!(
-            t,
-            "style {style}\n  height {}\nnode {id}.{full} panel\n  parent {parent}\n  style {style}",
-            rest - gap
-        );
-    }
-}
-
+/// The `{hex}` after a `\u` escape in a quoted value.
 fn unicode_escape(
     chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
 ) -> Result<char, RejectReason> {
