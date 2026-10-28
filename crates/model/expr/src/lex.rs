@@ -299,10 +299,10 @@ fn ident(src: &str, start: usize) -> Token {
         .get(end + 1)
         .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_');
     if b.get(end) == Some(&b'.') && ns_name {
-        let end2 = word_end(end + 2);
+        let name_end = word_end(end + 2);
         return Token {
             kind: TokenKind::NsIdent,
-            span: Span::new(start, end2),
+            span: Span::new(start, name_end),
         };
     }
     debug_assert!(end > start);

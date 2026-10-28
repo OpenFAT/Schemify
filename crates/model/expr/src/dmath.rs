@@ -299,15 +299,18 @@ mod tests {
             assert!(same(a - b, n(a) - n(b)), "{a:?} - {b:?}");
             assert!(same(a * b, n(a) * n(b)), "{a:?} * {b:?}");
             assert!(same(a / b, n(a) / n(b)), "{a:?} / {b:?}");
-            assert!(same(a * k, n(a) * k) && same(a / k, n(a) / k), "{a:?}, {k}");
-            assert!(same(-a, -n(a)) && same(a.conj(), n(a).conj()));
+            assert!(same(a * k, n(a) * k), "{a:?} * {k}");
+            assert!(same(a / k, n(a) / k), "{a:?} / {k}");
+            assert!(same(-a, -n(a)), "-{a:?}");
+            assert!(same(a.conj(), n(a).conj()), "conj {a:?}");
             let mut m = a;
             m *= b;
             assert!(same(m, n(a) * n(b)));
         }
         // A zero divisor gives non-finite parts, never a panic.
         let q = Complex::new(1.0, 1.0) / Complex::new(0.0, 0.0);
-        assert!(!q.re.is_finite() && !q.im.is_finite());
+        assert!(!q.re.is_finite(), "real part of {q:?}");
+        assert!(!q.im.is_finite(), "imaginary part of {q:?}");
     }
 
     #[test]

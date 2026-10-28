@@ -475,7 +475,10 @@ fn settle(x: &[f64], y: &[f64], tol: f64) -> f64 {
     };
     match y.iter().rposition(|v| (v - last).abs() > tol) {
         None => x[0],
-        Some(k) => x[k + 1],
+        Some(k) => {
+            debug_assert!(k + 1 < y.len(), "the last point is always settled");
+            x[k + 1]
+        }
     }
 }
 
@@ -551,7 +554,11 @@ fn fft(axes: &mut Vec<Axis>, y: &ColumnValue) -> Result<ColumnValue, Error> {
     column::check_finite(&im, "fft")?;
     // One fft axis per source axis, so fft(a) and fft(b) of one plot combine.
     let axis = match find_axis(axes, AxisKind::Fft, y.axis) {
-        Some(i) => i,
+        Some(i) => {
+            // The same source steps give the same bins.
+            debug_assert_eq!(axes[i as usize].x.len(), re.len(), "fft axis bins differ");
+            i
+        }
         None => {
             axes.push(Axis {
                 x: fx,
@@ -575,6 +582,7 @@ fn fft(axes: &mut Vec<Axis>, y: &ColumnValue) -> Result<ColumnValue, Error> {
 fn resample(xs: &[f64], ys: &[f64], m: usize) -> Vec<Complex> {
     assert!(xs.len() >= 2, "resample needs two points per step");
     assert_eq!(xs.len(), ys.len());
+    debug_assert!(m >= xs.len(), "resampling never drops points");
     let (x0, span) = (xs[0], xs[xs.len() - 1] - xs[0]);
     let mut k = 0;
     let out: Vec<Complex> = (0..m)

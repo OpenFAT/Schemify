@@ -137,7 +137,10 @@ fn complex() {
     assert_eq!(ok("db(cplx(0, 10))"), Num(20.0));
     assert_eq!(ok("cplx(1, 2) == cplx(1, 2)"), Bool(true));
     match ok("sqrt(cplx(-4, 0))") {
-        Cnum(re, im) => assert!(re.abs() < 1e-15 && (im - 2.0).abs() < 1e-15),
+        Cnum(re, im) => {
+            assert!(re.abs() < 1e-15, "re {re}");
+            assert!((im - 2.0).abs() < 1e-15, "im {im}");
+        }
         o => panic!("{o:?}"),
     }
 }

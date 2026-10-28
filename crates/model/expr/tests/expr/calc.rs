@@ -134,7 +134,12 @@ fn at_cross_delay_settle() {
     let neg: Vec<f64> = ramp.iter().map(|y| -y).collect();
     let z = col(calc("at(v(a), 3.33)", &x, &[], &[(&ramp, &neg)]));
     assert_eq!(z.kind, ColKind::Complex);
-    assert!((z.re[0] - (2.0 * 3.33 - 5.0)).abs() < 1e-12 && (z.im[0] + z.re[0]).abs() < 1e-12);
+    assert!(
+        (z.re[0] - (2.0 * 3.33 - 5.0)).abs() < 1e-12,
+        "re {}",
+        z.re[0]
+    );
+    assert!((z.im[0] + z.re[0]).abs() < 1e-12, "im {}", z.im[0]);
     assert!((one("cross(v(a), 0)", &[(&ramp, &[])]) - 2.5).abs() < 1e-12);
     assert_eq!(
         calc("cross(v(a), 0, -1)", &x, &[], &[(&ramp, &[])]).unwrap_err(),

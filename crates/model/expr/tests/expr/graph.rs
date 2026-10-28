@@ -335,5 +335,6 @@ fn every_cycle_of_two_disjoint_loops_and_a_self_loop() {
         targets: &[],
     };
     topo_order_all(empty, &mut order, &mut cycles);
-    assert!(order.is_empty() && cycles.is_empty());
+    assert!(order.is_empty());
+    assert!(cycles.is_empty());
 }

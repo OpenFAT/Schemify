@@ -92,7 +92,7 @@ pub fn lit_value(l: &NumLit) -> f64 {
     let e = l.exp.unwrap_or(0);
     match suffix_pow(l.suffix) {
         Some(p) => format!("{}e{}", l.mant, e + p)
-            .parse()
+            .parse::<f64>()
             .expect("mantissa and exponent form a float"),
         None => {
             assert!(l.suffix.eq_ignore_ascii_case("mil"));

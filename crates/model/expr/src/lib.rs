@@ -241,8 +241,10 @@ impl Span {
             start: self.start.min(other.start),
             end: self.end.max(other.end),
         };
-        debug_assert!(joined.start <= self.start && joined.start <= other.start);
-        debug_assert!(joined.end >= self.end && joined.end >= other.end);
+        debug_assert!(joined.start <= self.start);
+        debug_assert!(joined.start <= other.start);
+        debug_assert!(joined.end >= self.end);
+        debug_assert!(joined.end >= other.end);
         joined
     }
 }

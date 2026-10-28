@@ -72,7 +72,9 @@ proptest! {
         prop_assume!(x.is_finite());
         let text = canon(x);
         prop_assert_eq!(parse_num(&text).unwrap(), x, "{}", text);
-        prop_assert!(!text.contains('+') && !text.contains(".e") && !text.ends_with('.'));
+        prop_assert!(!text.contains('+'), "{text}");
+        prop_assert!(!text.contains(".e"), "{text}");
+        prop_assert!(!text.ends_with('.'), "{text}");
         let p = Program::compile("num(str(x)) == x", Mode::Scalar).unwrap();
         let mut s = Scratch::default();
         prop_assert_eq!(p.eval(&[Value::Num(x)], &mut s).unwrap(), Value::Bool(true));
