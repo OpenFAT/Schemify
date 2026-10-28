@@ -7,6 +7,11 @@
 //!
 //! Cost: one full raster per frame (no damage tracking): fine for an editor that redraws
 //! on input only (D39), slow for continuous pans of large drawings.
+//!
+//! Contents:
+//! - `pub(crate) struct CpuView`, `CpuView::new`, `CpuView::present`
+//! - `pub(crate) async fn shows_frames(canvas: HtmlCanvasElement) -> bool`
+//! - `pub(crate) fn overlay(window: &Window, id: &str) -> Result<HtmlCanvasElement, String>`
 
 use wasm_bindgen::{Clamped, JsCast, JsValue};
 use wasm_bindgen_futures::js_sys;
@@ -14,11 +19,8 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageData};
 use winit::platform::web::WindowExtWebSys;
 use winit::window::Window;
 
-use crate::painter::CpuPainter;
-use crate::window::App;
-
-/// The overlay canvas's element id (the browser tests find the fallback by it).
-pub(crate) const ID: &str = "schemify-cpu";
+use super::App;
+use crate::CpuPainter;
 
 /// The overlay and the painter that fills it.
 pub(crate) struct CpuView {
@@ -27,6 +29,14 @@ pub(crate) struct CpuView {
     /// Kept across frames for its raster layers; rebuilt when the size changes.
     painter: Option<CpuPainter>,
 }
+
+/// The overlay canvas's element id (the browser tests find the fallback by it).
+const ID: &str = "schemify-cpu";
+
+/// How long after a tier's first presented frame [`shows_frames`] looks at the page: the
+/// browser composites the frame at its next rendering update (~16 ms); 250 ms leaves slack
+/// for a loaded CI runner.
+const PROBE_MS: i32 = 250;
 
 impl CpuView {
     /// Lays a 2D canvas over `window`'s canvas.
@@ -68,7 +78,7 @@ impl CpuView {
         }
         let p = self.painter.as_mut().expect("made above");
         p.reset();
-        let viewport = crate::window::logical(w, h, scale);
+        let viewport = super::logical(w, h, scale);
         app.paint(p, viewport);
         let pixels = p.finish(app.background());
         assert_eq!((pixels.width(), pixels.height()), (w16, h16));
@@ -82,11 +92,6 @@ impl CpuView {
         }
     }
 }
-
-/// How long after a tier's first presented frame [`shows_frames`] looks at the page: the
-/// browser composites the frame at its next rendering update (~16 ms); 250 ms leaves slack
-/// for a loaded CI runner.
-const PROBE_MS: i32 = 250;
 
 /// Whether `canvas`, a WebGPU or WebGL2 canvas that has presented a frame, shows it to the
 /// page. Some browsers take every WebGPU call and composite nothing: headless Chrome on
@@ -160,6 +165,9 @@ pub(crate) fn overlay(window: &Window, id: &str) -> Result<HtmlCanvasElement, St
     Ok(canvas)
 }
 
+// ---- private ----
+
+/// A JS error as text.
 fn js(e: JsValue) -> String {
     e.as_string().unwrap_or_else(|| format!("{e:?}"))
 }

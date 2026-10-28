@@ -50,99 +50,6 @@ struct Viewer {
     timing: (u32, f64),
 }
 
-impl Viewer {
-    fn new(waves: Waves, embed: bool) -> Viewer {
-        let mut strings = Strings::new();
-        let (base, rejects) = records::parse(WAVES_UI, &mut strings);
-        assert!(rejects.is_empty(), "waves UI rejects: {rejects:?}");
-        let session_name = strings.intern("waves.session");
-        Viewer {
-            strings,
-            base,
-            session: Contribution::default(),
-            session_name,
-            tables: UiTables::default(),
-            text: TextSystem::new(),
-            state: UiState::default(),
-            frame: UiLayout::default(),
-            geo: Geometry::default(),
-            viewport: (0.0, 0.0),
-            routed: Routed::default(),
-            waves,
-            ui: WaveUi::default(),
-            requests: Vec::new(),
-            embed,
-            look: WaveLook::default(),
-            scratch: WaveScratch::default(),
-            ui_scratch: UiScratch::default(),
-            start: Instant::now(),
-            timing: (0, 0.0),
-        }
-    }
-
-    /// Recomposes the window from the viewer tables and lays it out. The lists are measured
-    /// empty first, so their row count follows the window size (at most three passes).
-    fn rebuild(&mut self) {
-        if self.embed {
-            let (w, h) = self.viewport;
-            self.geo = Geometry {
-                panes: vec![Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    w,
-                    h,
-                }],
-                ..Geometry::default()
-            };
-            return;
-        }
-        for _ in 0..3 {
-            self.session = self.ui.contribute(&self.waves, &mut self.strings);
-            self.tables = compose(
-                &self.strings,
-                &self.base,
-                &[(self.session_name, &self.session)],
-            );
-            self.frame = layout(
-                &self.tables,
-                &self.strings,
-                &mut self.text,
-                &self.state,
-                self.viewport,
-            );
-            self.geo = Geometry::of(&self.tables, &self.frame, &self.strings);
-            let fit = (
-                WaveUi::rows_fit(self.geo.signals),
-                WaveUi::rows_fit(self.geo.traces),
-            );
-            if !self.ui.set_capacity(fit.0, fit.1) {
-                break;
-            }
-        }
-    }
-
-    /// Shows or closes the graph properties dialog as the window's effect asks.
-    fn show_dialog(&mut self, fx: DialogFx) {
-        match fx {
-            DialogFx::Keep => {}
-            DialogFx::Open => {
-                let id = self.strings.intern(PROPS_DIALOG);
-                self.state.set_dialog(id);
-            }
-            DialogFx::Close => self.state.set_dialog(Sym::NONE),
-        }
-    }
-
-    fn apply(&mut self) -> bool {
-        let mut recompose = false;
-        for r in std::mem::take(&mut self.requests) {
-            let res = self.waves.apply(&r);
-            recompose |= self.ui.note(&self.waves, &r, &res).recompose;
-        }
-        recompose
-    }
-}
-
 impl App for Viewer {
     fn update(&mut self, events: &InputEvents, viewport: (f32, f32)) -> bool {
         let now = self.start.elapsed().as_millis() as u64;
@@ -270,6 +177,8 @@ impl App for Viewer {
     }
 }
 
+// ---- private ----
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let Some(path) = args.next() else {
@@ -328,5 +237,98 @@ fn main() {
     if let Err(e) = run("Schemify waves", Viewer::new(waves, embed)) {
         eprintln!("{e}");
         std::process::exit(1);
+    }
+}
+
+impl Viewer {
+    fn new(waves: Waves, embed: bool) -> Viewer {
+        let mut strings = Strings::new();
+        let (base, rejects) = records::parse(WAVES_UI, &mut strings);
+        assert!(rejects.is_empty(), "waves UI rejects: {rejects:?}");
+        let session_name = strings.intern("waves.session");
+        Viewer {
+            strings,
+            base,
+            session: Contribution::default(),
+            session_name,
+            tables: UiTables::default(),
+            text: TextSystem::new(),
+            state: UiState::default(),
+            frame: UiLayout::default(),
+            geo: Geometry::default(),
+            viewport: (0.0, 0.0),
+            routed: Routed::default(),
+            waves,
+            ui: WaveUi::default(),
+            requests: Vec::new(),
+            embed,
+            look: WaveLook::default(),
+            scratch: WaveScratch::default(),
+            ui_scratch: UiScratch::default(),
+            start: Instant::now(),
+            timing: (0, 0.0),
+        }
+    }
+
+    /// Recomposes the window from the viewer tables and lays it out. The lists are measured
+    /// empty first, so their row count follows the window size (at most three passes).
+    fn rebuild(&mut self) {
+        if self.embed {
+            let (w, h) = self.viewport;
+            self.geo = Geometry {
+                panes: vec![Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w,
+                    h,
+                }],
+                ..Geometry::default()
+            };
+            return;
+        }
+        for _ in 0..3 {
+            self.session = self.ui.contribute(&self.waves, &mut self.strings);
+            self.tables = compose(
+                &self.strings,
+                &self.base,
+                &[(self.session_name, &self.session)],
+            );
+            self.frame = layout(
+                &self.tables,
+                &self.strings,
+                &mut self.text,
+                &self.state,
+                self.viewport,
+            );
+            self.geo = Geometry::of(&self.tables, &self.frame, &self.strings);
+            let fit = (
+                WaveUi::rows_fit(self.geo.signals),
+                WaveUi::rows_fit(self.geo.traces),
+            );
+            if !self.ui.set_capacity(fit.0, fit.1) {
+                break;
+            }
+        }
+    }
+
+    /// Shows or closes the graph properties dialog as the window's effect asks.
+    fn show_dialog(&mut self, fx: DialogFx) {
+        match fx {
+            DialogFx::Keep => {}
+            DialogFx::Open => {
+                let id = self.strings.intern(PROPS_DIALOG);
+                self.state.set_dialog(id);
+            }
+            DialogFx::Close => self.state.set_dialog(Sym::NONE),
+        }
+    }
+
+    fn apply(&mut self) -> bool {
+        let mut recompose = false;
+        for r in std::mem::take(&mut self.requests) {
+            let res = self.waves.apply(&r);
+            recompose |= self.ui.note(&self.waves, &r, &res).recompose;
+        }
+        recompose
     }
 }

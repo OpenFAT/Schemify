@@ -1,30 +1,38 @@
-//! The coverage atlas (`docs/dev/research/render-backend.md` § 5, step 3): one single-channel
-//! texture of [`ATLAS_SIDE`]² (WebGL2's guaranteed texture size) holding every glyph and path
-//! mask the GPU painter draws, packed in shelves and evicted least recently used, a shelf at a
-//! time. Headless: the masks wait in [`Atlas::pending`] until the GPU side copies them into
-//! its texture, so packing and eviction are tested without a device.
+//! The coverage atlas (`docs/dev/research/render-backend.md` § 5, step 3): masks in, slots
+//! out. One single-channel texture of [`ATLAS_SIDE`]² (WebGL2's guaranteed texture size)
+//! holding every glyph and path mask the GPU painter draws, packed in shelves and evicted least
+//! recently used, a shelf at a time. Headless: the masks wait in [`Atlas::pending`] until the
+//! GPU side copies them into its texture, so packing and eviction are tested without a device.
 //!
 //! Six questions:
 //! 1. In: masks (a key, a size, the cell's offset from the glyph's whole-pixel origin, the
 //!    coverage bytes), and per frame which keys it draws. Out: per key the slot it lives in;
 //!    per frame the slots written and their bytes.
 //! 2. ≤ 2048² bytes of coverage; a few thousand entries (a UI frame draws a few hundred
-//!    distinct glyphs, a zoom a few hundred more per frame).
+//!    distinct glyphs, a zoom a few hundred more per frame); at most `ATLAS_SIDE / CLASS`
+//!    shelves.
 //! 3. Slots are `u16` texels (the side is 2048); keys three `u64`s (font blob, glyph id and
 //!    face index, a hash of size, transform and phase; or a path's two hashes); frame stamps
 //!    `u32` (a frame a millisecond for 49 days).
 //! 4. Lookups hash a key per glyph drawn; inserts append to the shelf of their height class.
 //! 5. Entries live until their shelf is evicted: the least recently drawn shelf not drawn this
-//!    frame, when a mask fits nowhere else. Pending bytes live one frame.
+//!    frame and pinned by no retained row, when a mask fits nowhere else. Pending bytes live
+//!    one frame.
 //! 6. Serial (the painter is).
+//!
+//! Contents:
+//! - `pub const ATLAS_SIDE`, `pub type Key`, `pub const PATH`
+//! - `pub struct Slot`, `Slot::overlaps`
+//! - `pub struct Placed`
+//! - `pub struct Atlas`, `Atlas::new`, `Atlas::side`, `Atlas::begin_frame`, `Atlas::get`,
+//!   `Atlas::insert`, `Atlas::pin`, `Atlas::pins`, `Atlas::pending`, `Atlas::pending_bytes`,
+//!   `Atlas::clear_pending`, `Atlas::len`, `Atlas::is_empty`, `Atlas::entries`
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
 /// Texels per side of the atlas: WebGL2's guaranteed `MAX_TEXTURE_SIZE`.
 pub const ATLAS_SIDE: u16 = 2048;
-/// Shelf heights are multiples of this many texels (height classes).
-const CLASS: u16 = 4;
 
 /// An atlas entry's key: `[font blob, (face index << 32) | glyph id, hash]` for a glyph,
 /// `[PATH, hash, hash]` for a path mask ([`PATH`]).
@@ -32,10 +40,102 @@ pub type Key = [u64; 3];
 /// First word of a path mask's key (a font blob id is a counter, never this).
 pub const PATH: u64 = u64::MAX;
 
+/// A rectangle of the atlas, texels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Slot {
+    /// Left texel.
+    pub x: u16,
+    /// Top texel.
+    pub y: u16,
+    /// Width (0 × 0: a mask with no coverage, drawn as nothing).
+    pub w: u16,
+    /// Height.
+    pub h: u16,
+}
+
+/// A key's slot and where its cell sits relative to what it was keyed at (a glyph: its
+/// whole-pixel origin; a path: its cell's corner, so 0).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Placed {
+    /// The texels.
+    pub slot: Slot,
+    /// The cell's top-left, device px from the key's anchor.
+    pub off: [i16; 2],
+}
+
+/// The atlas: shelves of height classes, the entries placed in them, and the bytes written
+/// since the GPU last copied them. Owner: the GPU painter's batch (`batch::Batch`); the
+/// retained UI rows pin the shelves they sample (`Atlas::pin`).
+#[derive(Debug)]
+pub struct Atlas {
+    side: u16,
+    frame: u32,
+    /// Sorted by `y` (pushed top to bottom, never moved).
+    shelves: Vec<Shelf>,
+    /// Top of the space no shelf has taken.
+    next_y: u16,
+    map: HashMap<Key, Entry, BuildHasherDefault<Mix>>,
+    /// Slots written since [`Atlas::clear_pending`], each with its bytes' offset in `staging`
+    /// (`w × h`, row-major).
+    pending: Vec<(Slot, u32)>,
+    staging: Vec<u8>,
+    /// Masks that fit nowhere (every shelf tall enough is drawn this frame): not drawn.
+    pub overflows: u64,
+    /// Shelves evicted so far.
+    pub evictions: u64,
+}
+
+/// Shelf heights are multiples of this many texels (height classes).
+const CLASS: u16 = 4;
+/// The shelf of an empty mask, which takes no texels.
+const NO_SHELF: u16 = u16::MAX;
+
+const _: () = assert!(ATLAS_SIDE.is_multiple_of(CLASS), "shelves tile the side");
+const _: () = assert!(
+    ATLAS_SIDE / CLASS < NO_SHELF,
+    "a shelf index is never NO_SHELF"
+);
+
 /// Multiply-rotate hashing (fxhash's mix) for the map's keys, which are hashes and ids
 /// already: SipHash per glyph drawn cost more than the rest of its lookup.
 #[derive(Clone, Copy, Debug, Default)]
 struct Mix(u64);
+
+#[derive(Clone, Copy, Debug)]
+struct Entry {
+    placed: Placed,
+    /// Its shelf ([`NO_SHELF`] for an empty mask).
+    shelf: u16,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Shelf {
+    y: u16,
+    h: u16,
+    /// Next free texel along the shelf.
+    x: u16,
+    /// The last frame a mask of this shelf was drawn in.
+    used: u32,
+    /// Retained UI instances that sample this shelf (`Atlas::pin`): never evicted while any.
+    pins: u32,
+}
+
+impl Slot {
+    /// Whether the two slots share a texel.
+    pub fn overlaps(&self, o: &Slot) -> bool {
+        let (a, b) = (
+            [self.x, self.y, self.x + self.w, self.y + self.h],
+            [o.x, o.y, o.x + o.w, o.y + o.h],
+        );
+        a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
+    }
+}
+
+impl Default for Atlas {
+    fn default() -> Self {
+        Atlas::new(ATLAS_SIDE)
+    }
+}
 
 impl Hasher for Mix {
     fn finish(&self) -> u64 {
@@ -55,85 +155,6 @@ impl Hasher for Mix {
     }
 }
 
-/// A rectangle of the atlas, texels.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Slot {
-    /// Left and top texel.
-    pub x: u16,
-    /// Top texel.
-    pub y: u16,
-    /// Width and height (0 × 0: a mask with no coverage, drawn as nothing).
-    pub w: u16,
-    /// Height.
-    pub h: u16,
-}
-
-impl Slot {
-    /// Whether the two slots share a texel.
-    pub fn overlaps(&self, o: &Slot) -> bool {
-        let (a, b) = (
-            [self.x, self.y, self.x + self.w, self.y + self.h],
-            [o.x, o.y, o.x + o.w, o.y + o.h],
-        );
-        a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
-    }
-}
-
-/// A key's slot and where its cell sits relative to what it was keyed at (a glyph: its
-/// whole-pixel origin; a path: its cell's corner, so 0).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Placed {
-    /// The texels.
-    pub slot: Slot,
-    /// The cell's top-left, device px from the key's anchor.
-    pub off: [i16; 2],
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Entry {
-    placed: Placed,
-    /// Its shelf (`u16::MAX` for an empty mask, which takes no texels).
-    shelf: u16,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Shelf {
-    y: u16,
-    h: u16,
-    /// Next free texel along the shelf.
-    x: u16,
-    /// The last frame a mask of this shelf was drawn in.
-    used: u32,
-    /// Retained UI instances that sample this shelf ([`Atlas::pin`]): never evicted while any.
-    pins: u32,
-}
-
-/// The atlas: shelves of height classes, the entries placed in them, and the bytes written
-/// since the GPU last copied them. Owner: the GPU painter's batch (`batch::Batch`).
-#[derive(Debug)]
-pub struct Atlas {
-    side: u16,
-    frame: u32,
-    shelves: Vec<Shelf>,
-    /// Top of the space no shelf has taken.
-    next_y: u16,
-    map: HashMap<Key, Entry, BuildHasherDefault<Mix>>,
-    /// Slots written since [`Atlas::clear_pending`], each with its bytes' offset in `staging`
-    /// (`w × h`, row-major).
-    pending: Vec<(Slot, u32)>,
-    staging: Vec<u8>,
-    /// Masks that fit nowhere (every shelf tall enough is drawn this frame): not drawn.
-    pub overflows: u64,
-    /// Shelves evicted so far.
-    pub evictions: u64,
-}
-
-impl Default for Atlas {
-    fn default() -> Self {
-        Atlas::new(ATLAS_SIDE)
-    }
-}
-
 impl Atlas {
     /// An empty atlas of `side`² texels (tests use small ones to exercise eviction).
     ///
@@ -141,10 +162,8 @@ impl Atlas {
     ///
     /// Panics unless `CLASS ≤ side ≤ ATLAS_SIDE`.
     pub fn new(side: u16) -> Atlas {
-        assert!(
-            (CLASS..=ATLAS_SIDE).contains(&side),
-            "an atlas side in range"
-        );
+        assert!(side >= CLASS, "an atlas side in range");
+        assert!(side <= ATLAS_SIDE, "an atlas side in range");
         Atlas {
             side,
             frame: 1,
@@ -164,15 +183,18 @@ impl Atlas {
     }
 
     /// Starts a frame: entries drawn from now on are this frame's, which eviction keeps.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the frame stamp would wrap (2^32 frames).
     pub fn begin_frame(&mut self) {
-        self.frame += 1;
-        assert!(self.frame > 0, "frame stamps do not wrap");
+        self.frame = self.frame.checked_add(1).expect("frame stamps do not wrap");
     }
 
     /// The placed mask of `key`, marked drawn this frame; `None` when it is not held.
     pub fn get(&mut self, key: &Key) -> Option<Placed> {
         let e = self.map.get(key)?;
-        if e.shelf != u16::MAX {
+        if e.shelf != NO_SHELF {
             self.shelves[usize::from(e.shelf)].used = self.frame;
         }
         Some(e.placed)
@@ -204,19 +226,18 @@ impl Atlas {
             usize::from(w) * usize::from(h),
             "a whole mask"
         );
-        assert!(w <= self.side && h <= self.side, "a mask fits the atlas");
+        assert!(w <= self.side, "a mask fits the atlas");
+        assert!(h <= self.side, "a mask fits the atlas");
         if w == 0 || h == 0 {
             let placed = Placed {
                 slot: Slot::default(),
                 off,
             };
-            self.map.insert(
-                key,
-                Entry {
-                    placed,
-                    shelf: u16::MAX,
-                },
-            );
+            let entry = Entry {
+                placed,
+                shelf: NO_SHELF,
+            };
+            self.map.insert(key, entry);
             return Some(placed);
         }
         let Some((shelf, slot)) = self.alloc(w, h) else {
@@ -227,67 +248,8 @@ impl Atlas {
         self.map.insert(key, Entry { placed, shelf });
         self.pending.push((slot, self.staging.len() as u32));
         self.staging.extend_from_slice(coverage);
-        debug_assert!(self.shelves[usize::from(shelf)].used == self.frame);
+        debug_assert_eq!(self.shelves[usize::from(shelf)].used, self.frame);
         Some(placed)
-    }
-
-    /// A `w × h` slot on a shelf of its height class: the first with room, else a new shelf,
-    /// else the least recently drawn tall enough shelf not drawn this frame, emptied.
-    fn alloc(&mut self, w: u16, h: u16) -> Option<(u16, Slot)> {
-        let class = h.div_ceil(CLASS) * CLASS;
-        let fits = |s: &Shelf| s.h == class && self.side - s.x >= w;
-        let at = match self.shelves.iter().position(fits) {
-            Some(at) => at,
-            None if self.side - self.next_y >= class => {
-                self.shelves.push(Shelf {
-                    y: self.next_y,
-                    h: class,
-                    x: 0,
-                    used: 0,
-                    pins: 0,
-                });
-                self.next_y += class;
-                self.shelves.len() - 1
-            }
-            None => {
-                let frame = self.frame;
-                let (at, _) = self
-                    .shelves
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, s)| s.used < frame && s.h >= class && s.pins == 0)
-                    .min_by_key(|(_, s)| (s.used, s.h))?;
-                self.evict(at);
-                at
-            }
-        };
-        let s = &mut self.shelves[at];
-        assert!(self.side - s.x >= w && s.h >= h, "the shelf has room");
-        let slot = Slot {
-            x: s.x,
-            y: s.y,
-            w,
-            h,
-        };
-        s.x += w;
-        s.used = self.frame;
-        Some((at as u16, slot))
-    }
-
-    /// Empties shelf `at`: its entries are dropped (drawn again, they are rasterized again).
-    fn evict(&mut self, at: usize) {
-        assert!(
-            self.shelves[at].used < self.frame,
-            "a shelf drawn this frame is kept"
-        );
-        assert_eq!(
-            self.shelves[at].pins, 0,
-            "a shelf retained rows draw from is kept"
-        );
-        let shelf = at as u16;
-        self.map.retain(|_, e| e.shelf != shelf);
-        self.shelves[at].x = 0;
-        self.evictions += 1;
     }
 
     /// Adds `delta` (1 or -1) to the retained instances that sample the shelf holding texel row
@@ -301,7 +263,6 @@ impl Atlas {
     pub(crate) fn pin(&mut self, y: u16, delta: i32) {
         assert!(delta == 1 || delta == -1, "one instance at a time");
         assert!(y < self.next_y, "a texel row of a shelf");
-        // Shelves are pushed top to bottom and never move: sorted by `y`.
         let k = self.shelves.partition_point(|s| s.y <= y) - 1;
         let s = &mut self.shelves[k];
         assert!(s.y <= y && y < s.y + s.h, "the shelf holds the row");
@@ -344,6 +305,66 @@ impl Atlas {
     /// Every held entry's key and slot (tests: overlaps, what survived an eviction).
     pub fn entries(&self) -> impl Iterator<Item = (&Key, Slot)> {
         self.map.iter().map(|(k, e)| (k, e.placed.slot))
+    }
+}
+
+// ---- private ----
+
+impl Atlas {
+    /// A `w × h` slot on a shelf of its height class: the first with room, else a new shelf,
+    /// else the least recently drawn tall enough unpinned shelf not drawn this frame, emptied.
+    fn alloc(&mut self, w: u16, h: u16) -> Option<(u16, Slot)> {
+        assert!(w > 0 && h > 0, "a mask with texels");
+        let class = h.div_ceil(CLASS) * CLASS;
+        let fits = |s: &Shelf| s.h == class && self.side - s.x >= w;
+        let at = match self.shelves.iter().position(fits) {
+            Some(at) => at,
+            None if self.side - self.next_y >= class => {
+                self.shelves.push(Shelf {
+                    y: self.next_y,
+                    h: class,
+                    x: 0,
+                    used: 0,
+                    pins: 0,
+                });
+                self.next_y += class;
+                self.shelves.len() - 1
+            }
+            None => {
+                let frame = self.frame;
+                let (at, _) = self
+                    .shelves
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| s.used < frame && s.h >= class && s.pins == 0)
+                    .min_by_key(|(_, s)| (s.used, s.h))?;
+                self.evict(at);
+                at
+            }
+        };
+        let s = &mut self.shelves[at];
+        assert!(self.side - s.x >= w, "the shelf has room");
+        assert!(s.h >= h, "the shelf is tall enough");
+        let slot = Slot {
+            x: s.x,
+            y: s.y,
+            w,
+            h,
+        };
+        s.x += w;
+        s.used = self.frame;
+        Some((at as u16, slot))
+    }
+
+    /// Empties shelf `at`: its entries are dropped (drawn again, they are rasterized again).
+    fn evict(&mut self, at: usize) {
+        let s = &self.shelves[at];
+        assert!(s.used < self.frame, "a shelf drawn this frame is kept");
+        assert_eq!(s.pins, 0, "a shelf retained rows draw from is kept");
+        let shelf = at as u16;
+        self.map.retain(|_, e| e.shelf != shelf);
+        self.shelves[at].x = 0;
+        self.evictions += 1;
     }
 }
 

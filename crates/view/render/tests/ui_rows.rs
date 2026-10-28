@@ -28,6 +28,8 @@ struct Ui {
     batch: Batch,
 }
 
+// ---- private ----
+
 impl Ui {
     fn new(plugin: &str) -> Ui {
         let mut strings = Strings::new();

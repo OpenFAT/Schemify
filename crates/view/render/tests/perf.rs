@@ -17,6 +17,8 @@ use schemify_ui::{Layer, Strings, TextSystem, UiState, compose, layout, records}
 mod common;
 use common::hundred_k;
 
+// ---- private ----
+
 #[test]
 #[ignore = "release-mode benchmark; run explicitly"]
 fn scene_build_100k_primitives() {
