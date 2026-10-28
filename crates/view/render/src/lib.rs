@@ -28,11 +28,13 @@
 //! [`canvas::draw_rows`] rasterizes the same rows, the goldens' oracle. Every frame is
 //! complete: there is no tile cache and no vector renderer on the GPU.
 //!
-//! Contents (re-exports):
-//! - `CpuPainter`, `Painter`, `Chains`, `rgba` (`painter`, `cpu`)
-//! - `Batch`, `GpuPainter` (`batch`)
-//! - `App`, `RunError`, `Waker`, `run`, `block_on` (`window`)
-//! - `Pixmap`, `Glyph`, `kurbo`, `peniko`, `wgpu`, `accesskit`
+//! Contents:
+//! - modules `atlas`, `batch`, `canvas`, `gpu`, `ui_rows`, `waves`, `widgets`
+//! - re-exports:
+//!   - `CpuPainter`, `Painter`, `Chains`, `rgba` (`painter`, `cpu`)
+//!   - `Batch`, `GpuPainter` (`batch`)
+//!   - `App`, `RunError`, `Waker`, `run`, `block_on` (`window`; its web tiers in `window::cpu_view`)
+//!   - `Pixmap`, `Glyph`, `kurbo`, `peniko`, `wgpu`, `accesskit`
 //!
 //! ```
 //! use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
