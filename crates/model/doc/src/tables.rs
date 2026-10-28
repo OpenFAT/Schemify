@@ -21,13 +21,13 @@
 //! writer sorts them. Row indices are valid until the next edit of that table.
 //!
 //! Contents:
-//! - `pub(crate) trait Table`
+//! - `pub(crate) trait Table`, `pub(crate) struct Owned`
 //! - `pub enum PinDir`: `as_str`; `pub struct Pins`
 //! - `pub struct Graphics`, `pub struct Instances`: `is_override`, `pub struct Wires`
 //! - `pub struct Placed`: crate `new`; `pub struct Noconns`, `pub struct Shapes`
 //! - `pub struct Records`
 
-use crate::pool::{Pool, RecView, Sink, Span, emit_attrs, emit_comments};
+use crate::pool::{self, Pool, RecView, Sink, Span};
 use crate::record::INST_RESERVED;
 use crate::strings::{ObjId, Strings, Sym};
 use schemify_format::{KeyRule, Orient, RecordKind};
@@ -45,9 +45,8 @@ pub(crate) trait Table {
     fn swap_remove_row(&mut self, row: usize);
     fn remove_row(&mut self, row: usize);
     fn move_row(&mut self, from: usize, to: usize);
-    /// The row's attribute span and the count of its other pool entries (comments,
-    /// verbatim lines, coordinates): what replacing or removing it leaves as garbage.
-    fn owned(&self, row: usize) -> (Span, u32);
+    /// The pool entries `row` owns: what replacing or removing it leaves as garbage.
+    fn owned(&self, row: usize) -> Owned;
     /// The row's id, or `ObjId::NONE` for kinds without one.
     fn id_at(&self, _row: usize, _strings: &Strings) -> ObjId {
         ObjId::NONE
@@ -58,6 +57,15 @@ pub(crate) trait Table {
     }
     /// Whether every column has `len()` rows (the SoA invariant).
     fn columns_ok(&self) -> bool;
+}
+
+/// The pool entries one row owns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Owned {
+    /// The row's attribute lines (their values counted through the pool).
+    pub(crate) attrs: Span,
+    /// Its other entries: comments, verbatim lines, coordinates.
+    pub(crate) others: u32,
 }
 
 /// Pin direction (`pin <name> <dir> ...`).
@@ -246,19 +254,30 @@ macro_rules! row_ops {
             self.attrs.len()
         }
         fn swap_remove_row(&mut self, row: usize) {
+            let len = self.len();
+            assert!(row < len, "stale row");
             $( self.$col.swap_remove(row); )+
             assert!(self.columns_ok());
+            assert_eq!(self.len(), len - 1);
         }
         fn remove_row(&mut self, row: usize) {
+            let len = self.len();
+            assert!(row < len, "stale row");
             $( self.$col.remove(row); )+
             assert!(self.columns_ok());
+            assert_eq!(self.len(), len - 1);
         }
         fn move_row(&mut self, from: usize, to: usize) {
+            let len = self.len();
             $( move_elem(&mut self.$col, from, to); )+
             assert!(self.columns_ok());
+            assert_eq!(self.len(), len, "a move keeps every row");
         }
-        fn owned(&self, row: usize) -> (Span, u32) {
-            (self.attrs[row], self.comments[row].len $($( + self.$span[row].len )+)?)
+        fn owned(&self, row: usize) -> Owned {
+            Owned {
+                attrs: self.attrs[row],
+                others: self.comments[row].len $($( + self.$span[row].len )+)?,
+            }
         }
         fn columns_ok(&self) -> bool {
             let n = self.attrs.len();
@@ -269,6 +288,7 @@ macro_rules! row_ops {
 
 impl PinDir {
     /// Returns the file word.
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         ["in", "out", "inout"][self as usize]
     }
@@ -282,7 +302,7 @@ impl Table for Pins {
     fn push(&mut self, rec: &RecView<'_>, strings: &mut Strings, pool: &mut Pool) {
         assert_eq!(rec.fields.len(), 4);
         self.name.push(strings.intern(rec.fields[0]));
-        self.dir.push(PinDir::parse(rec.fields[1]));
+        self.dir.push(PinDir::from_word(rec.fields[1]));
         self.x.push(rec.field_milli[2]);
         self.y.push(rec.field_milli[3]);
         self.attrs.push(pool.push_attrs(rec, &[], strings));
@@ -295,8 +315,8 @@ impl Table for Pins {
         sink.field(self.dir[row].as_str());
         sink.coord(self.x[row]);
         sink.coord(self.y[row]);
-        emit_attrs(self.attrs[row], strings, pool, sink);
-        emit_comments(self.comments[row], strings, pool, sink);
+        pool::emit_attrs(self.attrs[row], strings, pool, sink);
+        pool::emit_comments(self.comments[row], strings, pool, sink);
     }
     fn name_at(&self, row: usize) -> Sym {
         self.name[row]
@@ -352,14 +372,15 @@ impl Table for Graphics {
             }
             _ => {}
         }
-        emit_attrs(self.attrs[row], strings, pool, sink);
-        emit_comments(self.comments[row], strings, pool, sink);
+        pool::emit_attrs(self.attrs[row], strings, pool, sink);
+        pool::emit_comments(self.comments[row], strings, pool, sink);
     }
 }
 
 impl Instances {
     /// Returns whether an attribute key of an instance is a parameter override
     /// (anything but `at`, `name`, `inherit`, `ignore`).
+    #[must_use]
     pub fn is_override(key: &str) -> bool {
         !INST_RESERVED.contains(&key)
     }
@@ -372,14 +393,15 @@ impl Table for Instances {
     }
     fn push(&mut self, rec: &RecView<'_>, strings: &mut Strings, pool: &mut Pool) {
         assert_eq!(rec.fields.len(), 2);
-        let (at, at_milli) = rec.attr("at").expect("`at` is required");
-        let (name, _) = rec.attr("name").expect("`name` is required");
-        assert!(at.len() == 3 && name.len() == 1);
+        let at = rec.attr("at").expect("`at` is required");
+        let name = rec.attr("name").expect("`name` is required").texts;
+        assert_eq!(at.texts.len(), 3, "`at` is x, y, orientation");
+        assert_eq!(name.len(), 1, "`name` is one value");
         self.id.push(ObjId::intern(rec.fields[0], strings));
         self.cell.push(strings.intern(rec.fields[1]));
-        self.x.push(at_milli[0]);
-        self.y.push(at_milli[1]);
-        self.orient.push(orient(at[2]));
+        self.x.push(at.milli[0]);
+        self.y.push(at.milli[1]);
+        self.orient.push(orient(at.texts[2]));
         self.name.push(strings.intern(name[0]));
         self.attrs
             .push(pool.push_attrs(rec, &["at", "name"], strings));
@@ -397,8 +419,8 @@ impl Table for Instances {
         sink.value(self.orient[row].as_str());
         sink.attr("name");
         sink.value(strings.get(self.name[row]));
-        emit_attrs(self.attrs[row], strings, pool, sink);
-        emit_comments(self.comments[row], strings, pool, sink);
+        pool::emit_attrs(self.attrs[row], strings, pool, sink);
+        pool::emit_comments(self.comments[row], strings, pool, sink);
     }
     fn id_at(&self, row: usize, _strings: &Strings) -> ObjId {
         self.id[row]
@@ -434,8 +456,8 @@ impl Table for Wires {
         for c in [self.x1[row], self.y1[row], self.x2[row], self.y2[row]] {
             sink.coord(c);
         }
-        emit_attrs(self.attrs[row], strings, pool, sink);
-        emit_comments(self.comments[row], strings, pool, sink);
+        pool::emit_attrs(self.attrs[row], strings, pool, sink);
+        pool::emit_comments(self.comments[row], strings, pool, sink);
     }
     fn id_at(&self, row: usize, _strings: &Strings) -> ObjId {
         self.id[row]
@@ -467,7 +489,8 @@ impl Table for Placed {
         self.kind
     }
     fn push(&mut self, rec: &RecView<'_>, strings: &mut Strings, pool: &mut Pool) {
-        assert!(rec.kind == self.kind && rec.fields.len() == 5);
+        assert_eq!(rec.kind, self.kind, "each placed table holds one kind");
+        assert_eq!(rec.fields.len(), 5);
         self.id.push(ObjId::intern(rec.fields[0], strings));
         self.x.push(rec.field_milli[1]);
         self.y.push(rec.field_milli[2]);
@@ -484,8 +507,8 @@ impl Table for Placed {
         sink.coord(self.y[row]);
         sink.field(self.orient[row].as_str());
         sink.field(strings.get(self.text[row]));
-        emit_attrs(self.attrs[row], strings, pool, sink);
-        emit_comments(self.comments[row], strings, pool, sink);
+        pool::emit_attrs(self.attrs[row], strings, pool, sink);
+        pool::emit_comments(self.comments[row], strings, pool, sink);
     }
     fn id_at(&self, row: usize, _strings: &Strings) -> ObjId {
         self.id[row]
@@ -511,8 +534,8 @@ impl Table for Noconns {
         sink.id(self.id[row], strings);
         sink.coord(self.x[row]);
         sink.coord(self.y[row]);
-        emit_attrs(self.attrs[row], strings, pool, sink);
-        emit_comments(self.comments[row], strings, pool, sink);
+        pool::emit_attrs(self.attrs[row], strings, pool, sink);
+        pool::emit_comments(self.comments[row], strings, pool, sink);
     }
     fn id_at(&self, row: usize, _strings: &Strings) -> ObjId {
         self.id[row]
@@ -543,8 +566,8 @@ impl Table for Shapes {
         for &c in &pool.coords[self.coords[row].range()] {
             sink.coord(c);
         }
-        emit_attrs(self.attrs[row], strings, pool, sink);
-        emit_comments(self.comments[row], strings, pool, sink);
+        pool::emit_attrs(self.attrs[row], strings, pool, sink);
+        pool::emit_comments(self.comments[row], strings, pool, sink);
     }
     fn id_at(&self, row: usize, _strings: &Strings) -> ObjId {
         self.id[row]
@@ -579,11 +602,11 @@ impl Table for Records {
         for &f in &self.fields[row][..arity] {
             sink.field(strings.get(f));
         }
-        emit_attrs(self.attrs[row], strings, pool, sink);
+        pool::emit_attrs(self.attrs[row], strings, pool, sink);
         for &l in &pool.lines[self.verbatim[row].range()] {
             sink.verbatim(strings.get(l));
         }
-        emit_comments(self.comments[row], strings, pool, sink);
+        pool::emit_comments(self.comments[row], strings, pool, sink);
     }
     fn id_at(&self, row: usize, strings: &Strings) -> ObjId {
         if self.kind[row].key() != KeyRule::Id {
@@ -595,7 +618,7 @@ impl Table for Records {
     fn name_at(&self, row: usize) -> Sym {
         match self.kind[row].key() {
             KeyRule::Name => self.fields[row][0],
-            _ => Sym::NONE,
+            KeyRule::Id | KeyRule::Position | KeyRule::Header | KeyRule::TypeName => Sym::NONE,
         }
     }
 }
@@ -603,7 +626,8 @@ impl Table for Records {
 // ---- private ----
 
 fn move_elem<T>(v: &mut [T], from: usize, to: usize) {
-    assert!(from < v.len() && to < v.len());
+    assert!(from < v.len());
+    assert!(to < v.len());
     if from < to {
         v[from..=to].rotate_left(1);
     } else {
@@ -632,7 +656,7 @@ fn shape_form(word: &str) -> RecordKind {
 }
 
 impl PinDir {
-    fn parse(word: &str) -> PinDir {
+    fn from_word(word: &str) -> PinDir {
         match word {
             "in" => PinDir::In,
             "out" => PinDir::Out,

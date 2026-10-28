@@ -114,7 +114,7 @@ use std::fmt;
 /// `docs/spec/format.md` §7 and `docs/spec/netlist.md` §8; `E040`–`E044` and `W002`
 /// are doc-level (edits spec §6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[allow(missing_docs)] // meanings are in `Code::meaning` and the specs
+#[allow(missing_docs, reason = "meanings are in `Code::meaning` and the specs")]
 pub enum Code {
     E001,
     E020,
@@ -150,6 +150,7 @@ pub struct Diag {
 
 impl Code {
     /// Returns the spec meaning.
+    #[must_use]
     pub fn meaning(self) -> &'static str {
         match self {
             Code::E001 => "missing lib or cell, or a bench instantiated",
@@ -175,6 +176,7 @@ impl Code {
     }
 
     /// Returns whether the code is a warning.
+    #[must_use]
     pub fn is_warning(self) -> bool {
         matches!(self, Code::W001 | Code::W002)
     }

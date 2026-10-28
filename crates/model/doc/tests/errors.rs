@@ -3,10 +3,8 @@
 
 mod common;
 
-use common::*;
 use schemify_doc::{
     Code, DocHandle, Edit, Mode, Op, OpError, Outcome, Project, RecordBuf, Target, Transaction,
-    ops_from_text,
 };
 use schemify_format::{FileKind, RecordKind};
 
@@ -15,10 +13,10 @@ const CELL: &str = "schemify 1 shcomp\n  default sch\n\npin A in 0 0\npin B out 
 // ---- private ----
 
 fn rejected(p: &mut Project, h: DocHandle, ops: Vec<Op>) -> Vec<OpError> {
-    let before = canon(p, h);
-    let out = run(p, h, tx(ops));
+    let before = common::canon(p, h);
+    let out = common::run(p, h, common::tx(ops));
     assert_eq!(
-        canon(p, h),
+        common::canon(p, h),
         before,
         "a rejected transaction changes nothing"
     );
@@ -47,7 +45,7 @@ fn wire(id: &str, c: [&str; 4]) -> RecordBuf {
 
 #[test]
 fn every_code_from_its_trigger() {
-    let (mut p, h) = open(CELL, "x.shcomp");
+    let (mut p, h) = common::open(CELL, "x.shcomp");
     let ins = |rec: RecordBuf| Op::Insert { rec, at: None };
     // E022: a coordinate needing a fourth fractional digit.
     let e = first(
@@ -100,7 +98,7 @@ fn every_code_from_its_trigger() {
         .field("sch")
         .field("schematic");
     assert!(matches!(
-        run(&mut p, h, tx(vec![del_sch, ins(new_sch)])),
+        common::run(&mut p, h, common::tx(vec![del_sch, ins(new_sch)])),
         Outcome::Committed { .. }
     ));
     // E026: a zero-length wire at the end of the transaction (not in between).
@@ -121,7 +119,7 @@ fn every_code_from_its_trigger() {
         },
     ];
     assert!(matches!(
-        run(&mut p, h, tx(via_zero)),
+        common::run(&mut p, h, common::tx(via_zero)),
         Outcome::Committed { .. }
     ));
     // E027: a kind the file kind does not allow.
@@ -215,7 +213,7 @@ fn every_code_from_its_trigger() {
         values: vec!["sch".into()],
     };
     assert!(matches!(
-        run(&mut p, h, tx(vec![rename, fix_body, fix_default])),
+        common::run(&mut p, h, common::tx(vec![rename, fix_body, fix_default])),
         Outcome::Committed { .. }
     ));
     // E043: ids are immutable; reorder or a position in an unordered table; the header
@@ -295,7 +293,7 @@ fn every_code_from_its_trigger() {
 
 #[test]
 fn errors_list_every_failing_op_with_its_index() {
-    let (mut p, h) = open(CELL, "x.shcomp");
+    let (mut p, h) = common::open(CELL, "x.shcomp");
     let ops = vec![
         Op::Delete(t(RecordKind::Wire, "zzzzzz")),
         Op::Insert {
@@ -333,19 +331,19 @@ fn errors_list_every_failing_op_with_its_index() {
 
 #[test]
 fn refusals_for_stale_handles_stages_and_states() {
-    let (mut p, h) = open(CELL, "x.shcomp");
+    let (mut p, h) = common::open(CELL, "x.shcomp");
     assert_eq!(
-        run(&mut p, h, Edit::Accept(9)),
+        common::run(&mut p, h, Edit::Accept(9)),
         Outcome::Refused(Code::E040)
     );
     assert_eq!(
-        run(&mut p, h, Edit::Reject(9)),
+        common::run(&mut p, h, Edit::Reject(9)),
         Outcome::Refused(Code::E040)
     );
-    assert_eq!(run(&mut p, h, Edit::Undo), Outcome::Nothing);
+    assert_eq!(common::run(&mut p, h, Edit::Undo), Outcome::Nothing);
     assert!(p.close(h).is_ok());
     assert_eq!(
-        run(&mut p, h, Edit::Undo),
+        common::run(&mut p, h, Edit::Undo),
         Outcome::Refused(Code::E040),
         "stale handle"
     );
@@ -370,10 +368,16 @@ fn refusals_for_stale_handles_stages_and_states() {
         })
     };
     for i in 0..256 {
-        assert!(matches!(run(&mut p, h2, stage(i)), Outcome::Staged { .. }));
+        assert!(matches!(
+            common::run(&mut p, h2, stage(i)),
+            Outcome::Staged { .. }
+        ));
     }
-    assert_eq!(run(&mut p, h2, stage(256)), Outcome::Refused(Code::E043));
-    assert_eq!(canon(&p, h2), CELL, "stages do not apply");
+    assert_eq!(
+        common::run(&mut p, h2, stage(256)),
+        Outcome::Refused(Code::E043)
+    );
+    assert_eq!(common::canon(&p, h2), CELL, "stages do not apply");
     // A created document is invalid until it has its kind's records: saving says so.
     let c = p.create("", "new.shprim", FileKind::Shprim).unwrap();
     assert!(p.is_dirty(c));
@@ -387,12 +391,12 @@ fn refusals_for_stale_handles_stages_and_states() {
 #[test]
 fn op_text_errors_carry_op_indices() {
     assert_eq!(
-        ops_from_text("delete wire 0d2k1m\nfrob x y\n", FileKind::Shcomp),
+        schemify_doc::ops_from_text("delete wire 0d2k1m\nfrob x y\n", FileKind::Shcomp),
         Err(vec![OpError {
             op: 1,
             code: Code::E027
         }])
     );
-    let e = ops_from_text("delete wire \"0d2k1m\n", FileKind::Shcomp).unwrap_err();
+    let e = schemify_doc::ops_from_text("delete wire \"0d2k1m\n", FileKind::Shcomp).unwrap_err();
     assert_eq!(e[0].code, Code::E028);
 }

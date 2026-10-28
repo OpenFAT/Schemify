@@ -6,8 +6,9 @@
 
 mod common;
 
-use common::disk::*;
-use common::*;
+use common::disk;
+use common::disk::Disk;
+use common::{OTA, SEED_DOC};
 use schemify_doc::{Edit, Op, Outcome, Project, RecordBuf, Recovery, Target};
 use schemify_format::RecordKind;
 
@@ -26,18 +27,30 @@ fn the_disk_hash_is_taken_in_idle_steps_not_in_the_commit() {
         at: None,
     };
     let committed = |o: Outcome| matches!(o, Outcome::Committed { .. });
-    let (mut b, hb) = open(SEED_DOC, "cell.shcomp");
-    assert!(settle(&mut b, hb, 7) > 3, "the hash takes steps");
+    let (mut b, hb) = common::open(SEED_DOC, "cell.shcomp");
+    assert!(disk::settle(&mut b, hb, 7) > 3, "the hash takes steps");
     assert!(!b.hash_pending(hb) && !b.idle_pending(Some(hb)));
-    assert!(committed(run(&mut b, hb, tx(vec![op("q")]))));
-    assert!(committed(run(&mut b, hb, tx(vec![op("r")]))));
+    assert!(committed(common::run(
+        &mut b,
+        hb,
+        common::tx(vec![op("q")])
+    )));
+    assert!(committed(common::run(
+        &mut b,
+        hb,
+        common::tx(vec![op("r")])
+    )));
     let want = b.take_journal(hb).unwrap();
     let sha = schemify_doc::hex(&schemify_doc::sha256(SEED_DOC.as_bytes()));
     assert!(want.rewrite && want.text.contains(&format!("base {sha}")));
     // Committed half-hashed, the journal taken (written) between the commits.
-    let (mut c, hc) = open(SEED_DOC, "cell.shcomp");
+    let (mut c, hc) = common::open(SEED_DOC, "cell.shcomp");
     c.idle_step(Some(hc), 7);
-    assert!(committed(run(&mut c, hc, tx(vec![op("q")]))));
+    assert!(committed(common::run(
+        &mut c,
+        hc,
+        common::tx(vec![op("q")])
+    )));
     assert!(c.hash_pending(hc), "the commit did not hash the file");
     let mut disk = Disk {
         file: SEED_DOC.as_bytes().to_vec(),
@@ -45,24 +58,28 @@ fn the_disk_hash_is_taken_in_idle_steps_not_in_the_commit() {
     };
     disk.sync(&mut c, hc);
     assert!(!String::from_utf8_lossy(&disk.journal).contains(&sha));
-    assert!(committed(run(&mut c, hc, tx(vec![op("r")]))));
+    assert!(committed(common::run(
+        &mut c,
+        hc,
+        common::tx(vec![op("r")])
+    )));
     disk.sync(&mut c, hc);
-    let (rp, rh, recovery) = reopen(&disk);
+    let (rp, rh, recovery) = disk::reopen(&disk);
     assert_eq!(
         recovery,
         Recovery::Diverged { txs: 2 },
         "a crash before the hash"
     );
-    assert_eq!(canon(&rp, rh), canon(&c, hc));
+    assert_eq!(common::canon(&rp, rh), common::canon(&c, hc));
     assert_eq!(rp.history_len(rh), c.history_len(hc));
-    settle(&mut c, hc, 7);
+    disk::settle(&mut c, hc, 7);
     let got = c
         .take_journal(hc)
         .expect("the journal again, with its hash");
     assert!(got.rewrite);
     assert_eq!(got.text, want.text, "the same journal");
     disk.journal = got.text.into_bytes();
-    assert_eq!(reopen(&disk).2, Recovery::Offer { txs: 2 });
+    assert_eq!(disk::reopen(&disk).2, Recovery::Offer { txs: 2 });
     // Negative space: nothing to hash for a document without disk bytes.
     let mut p = Project::new(None, None, 7).unwrap();
     let new = p
@@ -84,10 +101,10 @@ fn a_save_or_quit_with_idle_work_pending_writes_the_right_bytes() {
         values: vec![format!("{}", i % 7)],
     };
     let session = |idle: bool| {
-        let (mut p, h) = open(OTA, "ota5t.shcomp");
+        let (mut p, h) = common::open(OTA, "ota5t.shcomp");
         let mut i = 0;
         while p.doc(h).unwrap().pool().dead < 1 << 17 {
-            let o = run(&mut p, h, tx(vec![op(i)]));
+            let o = common::run(&mut p, h, common::tx(vec![op(i)]));
             assert!(matches!(o, Outcome::Committed { .. }));
             i += 1;
             assert!(i < 1 << 16, "garbage grows");
@@ -98,7 +115,7 @@ fn a_save_or_quit_with_idle_work_pending_writes_the_right_bytes() {
             "a compaction waits"
         );
         if idle {
-            settle(&mut p, h, 1 << 17);
+            disk::settle(&mut p, h, 1 << 17);
             assert!(p.doc(h).unwrap().pool().dead == 0, "compacted");
         }
         (p, h)
@@ -155,9 +172,9 @@ fn a_first_journal_encodes_its_history_in_idle_steps() {
             at: None,
         };
         let committed = |o: Outcome| matches!(o, Outcome::Committed { .. });
-        assert!(committed(run(&mut p, h, tx(vec![imp]))));
+        assert!(committed(common::run(&mut p, h, common::tx(vec![imp]))));
         for i in 0..300 {
-            assert!(committed(run(&mut p, h, tx(vec![var(i)]))));
+            assert!(committed(common::run(&mut p, h, common::tx(vec![var(i)]))));
         }
         let req = p.save(h).unwrap().unwrap();
         let file = req.bytes.clone();
@@ -165,9 +182,13 @@ fn a_first_journal_encodes_its_history_in_idle_steps() {
         if idle {
             assert!(p.idle_pending(Some(h)), "a hash and the history wait");
             // Small steps: the history is encoded across many of them.
-            assert!(settle(&mut p, h, 512) > 20);
+            assert!(disk::settle(&mut p, h, 512) > 20);
         }
-        assert!(committed(run(&mut p, h, tx(vec![var(300)]))));
+        assert!(committed(common::run(
+            &mut p,
+            h,
+            common::tx(vec![var(300)])
+        )));
         if !idle {
             p.settle_journal(h);
         }
@@ -189,9 +210,9 @@ fn a_first_journal_encodes_its_history_in_idle_steps() {
     let h = opened.handle;
     assert_eq!(q.history_len(h), (301, 0), "the history before the save");
     q.recover(h).unwrap();
-    while matches!(run(&mut q, h, Edit::Undo), Outcome::Undone { .. }) {}
+    while matches!(common::run(&mut q, h, Edit::Undo), Outcome::Undone { .. }) {}
     assert!(
-        !canon(&q, h).contains("var"),
+        !common::canon(&q, h).contains("var"),
         "undo-all reaches the empty cell"
     );
 }
@@ -203,7 +224,7 @@ fn a_first_journal_encodes_its_history_in_idle_steps() {
 fn open_indexed_matches_the_journal_with_the_index_digest() {
     let mut offers = 0;
     for seed in 0..6 {
-        for s in session(seed, 40, true).iter().step_by(5) {
+        for s in disk::session(seed, 40, true).iter().step_by(5) {
             let journal = (!s.disk.journal.is_empty()).then_some(s.disk.journal.as_slice());
             let mut p = Project::new(None, None, 99).unwrap();
             p.index_library("", ".", &[("cell.shcomp", &s.disk.file)])
@@ -216,7 +237,7 @@ fn open_indexed_matches_the_journal_with_the_index_digest() {
                 !p.hash_pending(h),
                 "seed {seed}: the index digest is reused"
             );
-            let (_, _, want) = reopen(&s.disk);
+            let (_, _, want) = disk::reopen(&s.disk);
             assert_eq!(opened.recovery, want, "seed {seed}");
             offers += u32::from(matches!(want, Recovery::Offer { .. }));
         }
@@ -253,17 +274,20 @@ fn a_commit_below_the_first_save_starts_no_journal() {
         at: None,
     };
     assert!(matches!(
-        run(&mut p, h, tx(vec![imp])),
+        common::run(&mut p, h, common::tx(vec![imp])),
         Outcome::Committed { .. }
     ));
     assert!(matches!(
-        run(&mut p, h, tx(vec![op("a")])),
+        common::run(&mut p, h, common::tx(vec![op("a")])),
         Outcome::Committed { .. }
     ));
     let req = p.save(h).unwrap().unwrap();
     p.saved(h, req.bytes).unwrap();
-    assert!(matches!(run(&mut p, h, Edit::Undo), Outcome::Undone { .. }));
-    let o = run(&mut p, h, tx(vec![op("b")]));
+    assert!(matches!(
+        common::run(&mut p, h, Edit::Undo),
+        Outcome::Undone { .. }
+    ));
+    let o = common::run(&mut p, h, common::tx(vec![op("b")]));
     assert!(matches!(o, Outcome::Committed { .. }), "{o:?}");
     assert!(p.take_journal(h).is_none(), "no reachable disk state");
     assert!(p.is_dirty(h));
@@ -271,7 +295,7 @@ fn a_commit_below_the_first_save_starts_no_journal() {
     let file = req.bytes.clone();
     p.saved(h, req.bytes).unwrap();
     assert!(matches!(
-        run(&mut p, h, tx(vec![op("c")])),
+        common::run(&mut p, h, common::tx(vec![op("c")])),
         Outcome::Committed { .. }
     ));
     p.settle_journal(h);
@@ -290,5 +314,5 @@ fn a_commit_below_the_first_save_starts_no_journal() {
         .unwrap();
     assert_eq!(opened.recovery, Recovery::Offer { txs: 1 });
     q.recover(opened.handle).unwrap();
-    assert_eq!(canon(&q, opened.handle), canon(&p, h));
+    assert_eq!(common::canon(&q, opened.handle), common::canon(&p, h));
 }

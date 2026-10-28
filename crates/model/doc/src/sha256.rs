@@ -53,7 +53,13 @@ impl Default for Sha256 {
 
 impl Sha256 {
     /// Absorbs `bytes`.
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this function: the block buffer never holds a whole block after a
+    /// call.
     pub fn update(&mut self, mut bytes: &[u8]) {
+        assert!(self.fill < 64, "a full block is compressed at once");
         let before = self.total;
         self.total += bytes.len() as u64;
         while !bytes.is_empty() {
@@ -74,10 +80,16 @@ impl Sha256 {
                 self.fill = 0;
             }
         }
-        assert!(self.fill < 64 && self.total >= before);
+        assert!(self.fill < 64);
+        assert!(self.total >= before);
     }
 
     /// Returns the digest of everything absorbed.
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this function: the padding ends on a block boundary.
+    #[must_use]
     pub fn finish(mut self) -> Digest {
         let bits = self.total.wrapping_mul(8);
         self.update(&[0x80]);
@@ -95,6 +107,7 @@ impl Sha256 {
 }
 
 /// Returns the SHA-256 of `bytes`.
+#[must_use]
 pub fn sha256(bytes: &[u8]) -> Digest {
     let mut h = Sha256::default();
     h.update(bytes);
@@ -102,6 +115,11 @@ pub fn sha256(bytes: &[u8]) -> Digest {
 }
 
 /// Returns `digest` as 64 lowercase hex characters (the lockfile and journal form).
+///
+/// # Panics
+///
+/// Only on a bug in this function: two characters per byte.
+#[must_use]
 pub fn hex(digest: &Digest) -> String {
     let mut s = String::with_capacity(64);
     for b in digest {
@@ -109,6 +127,10 @@ pub fn hex(digest: &Digest) -> String {
         s.push(char::from(b"0123456789abcdef"[usize::from(b & 15)]));
     }
     assert_eq!(s.len(), 64);
+    assert!(
+        s.bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    );
     s
 }
 

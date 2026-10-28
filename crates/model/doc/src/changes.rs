@@ -24,6 +24,8 @@ use crate::strings::ObjId;
 /// Changes the log keeps; past it the older half is dropped (a consumer that far behind
 /// rebuilds).
 pub const LOG_MAX: usize = 1 << 16;
+// `push` drops exactly half the log, so the kept half and the next change fit.
+const _: () = assert!(LOG_MAX.is_multiple_of(2));
 
 /// What a row write did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,6 +94,11 @@ impl Clone for ChangeLog {
 impl ChangeLog {
     /// Appends one change, dropping the older half when full.
     pub(crate) fn push(&mut self, table: TableId, what: Write, row: u32, id: ObjId) {
+        assert!(
+            row < table.capacity(),
+            "{table:?} row {row} is past the table's capacity"
+        );
+        let seq = self.seq();
         if self.rows.len() >= LOG_MAX {
             let half = LOG_MAX / 2;
             self.rows.drain(..half);
@@ -104,6 +111,7 @@ impl ChangeLog {
             id,
         });
         assert!(self.rows.len() <= LOG_MAX);
+        assert_eq!(self.seq(), seq + 1, "one change, one sequence number");
     }
 
     /// Every cursor taken so far stops reading through: the tables changed in a way the
@@ -129,7 +137,9 @@ impl ChangeLog {
         }
         let from = (c.at - self.start) as usize;
         assert!(from <= self.rows.len());
-        Some(&self.rows[from..])
+        let changes = &self.rows[from..];
+        assert_eq!(changes.len() as u64, self.seq() - c.at);
+        Some(changes)
     }
 }
 

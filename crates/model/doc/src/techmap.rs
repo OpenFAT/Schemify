@@ -14,19 +14,35 @@
 //! library (re)index, because any library may hold a referenced cell. Lifetime: the index.
 //!
 //! Contents:
-//! - `pub(crate) const CLASSES`, `FLAVORS`, `CLASS_PARAMS`, `CLASSES_MAX`
+//! - `pub(crate) struct TechClass`; `pub(crate) const CLASSES`, `FLAVORS`, `CLASS_PARAMS`,
+//!   `CLASSES_MAX`
 //! - `pub struct TechMap`: `parse`, `find`, `params`
 //! - `pub(crate) fn core_symbol(class: &str) -> Option<&'static str>`
 //! - `pub(crate) fn derive(map: &TechMap, row: usize, core: &Document, pdk: &Document) -> Result<Document, String>`
 
 use crate::document::{Document, Loc, TableId};
-use crate::record::RecordBuf;
+use crate::record::{Attr, RecordBuf};
 use schemify_format::{Document as FormatDoc, FileKind, RecordKind};
+
+/// A technology class the core resolves and the core symbol it draws as.
+pub(crate) struct TechClass {
+    pub(crate) class: &'static str,
+    pub(crate) core_symbol: &'static str,
+}
 
 /// Technology classes the core resolves, with the core symbol each one draws as.
 // ponytail: MOS only (pdk spec §10 MVP); res, cap, diode, npn, pnp are one row each here
 // plus their class params once their core symbols carry them.
-pub(crate) const CLASSES: [(&str, &str); 2] = [("nmos", "nmos4"), ("pmos", "pmos4")];
+pub(crate) const CLASSES: [TechClass; 2] = [
+    TechClass {
+        class: "nmos",
+        core_symbol: "nmos4",
+    },
+    TechClass {
+        class: "pmos",
+        core_symbol: "pmos4",
+    },
+];
 /// Flavors a map row may name; `core` is what `tech:<class>` means without a `flavor`.
 pub(crate) const FLAVORS: [&str; 4] = ["core", "io", "lvt", "hvt"];
 /// Class params of a MOS class (pdk spec §5), in the order they are appended.
@@ -66,6 +82,11 @@ impl TechMap {
     ///
     /// The format error, a file of another kind, more than 2^8 class rows, or a flavor
     /// other than `core`, `io`, `lvt`, `hvt`, as text for the checks panel.
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in the format reader: it checks every `class` record's shape and its
+    /// required `cell`.
     pub fn parse(bytes: &[u8]) -> Result<TechMap, String> {
         let d = schemify_format::parse(bytes).map_err(|e| e.to_string())?;
         if d.kind() != FileKind::Techmap {
@@ -103,6 +124,7 @@ impl TechMap {
             for a in d.attrs(r) {
                 if d.attr_key(a) == "param" {
                     let v: Vec<&str> = d.attr_values(a).collect();
+                    assert_eq!(v.len(), 2, "the reader checked `param <name> <expr>`");
                     m.param_name.push(v[0].to_owned());
                     m.param_expr.push(v[1].to_owned());
                 }
@@ -115,6 +137,11 @@ impl TechMap {
     }
 
     /// Returns the row of (`class`, `flavor`).
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: the row columns are in step.
+    #[must_use]
     pub fn find(&self, class: &str, flavor: &str) -> Option<usize> {
         let row =
             (0..self.class.len()).find(|&r| self.class[r] == class && self.flavor[r] == flavor);
@@ -123,19 +150,32 @@ impl TechMap {
     }
 
     /// The `(param, expression)` pairs of row `row`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `row` is not a row of this map.
     pub fn params(&self, row: usize) -> impl Iterator<Item = (&str, &str)> {
-        let (a, b) = (
+        assert!(
+            row < self.class.len(),
+            "row {row} of a {}-row map",
+            self.class.len()
+        );
+        let (start, end) = (
             self.param_start[row] as usize,
             self.param_start[row + 1] as usize,
         );
-        assert!(a <= b && b <= self.param_name.len());
-        (a..b).map(|k| (self.param_name[k].as_str(), self.param_expr[k].as_str()))
+        assert!(start <= end, "CSR offsets ascend");
+        assert!(end <= self.param_name.len());
+        (start..end).map(|k| (self.param_name[k].as_str(), self.param_expr[k].as_str()))
     }
 }
 
 /// Returns the core symbol a class draws as (`nmos` → `nmos4`).
 pub(crate) fn core_symbol(class: &str) -> Option<&'static str> {
-    CLASSES.iter().find(|c| c.0 == class).map(|c| c.1)
+    CLASSES
+        .iter()
+        .find(|c| c.class == class)
+        .map(|c| c.core_symbol)
 }
 
 /// Builds the derived interface of map row `row`: `core` is the class's core symbol,
@@ -152,11 +192,20 @@ pub(crate) fn derive(
     core: &Document,
     pdk: &Document,
 ) -> Result<Document, String> {
+    assert!(row < map.class.len());
+    assert!(
+        core_symbol(&map.class[row]).is_some(),
+        "only resolvable classes derive"
+    );
     let (class, flavor, cell) = (&map.class[row], &map.flavor[row], &map.cell[row]);
     let mut d = FormatDoc::new(FileKind::Shprim);
-    for a in pdk.header_record().attrs.iter().filter(|a| a.key != "doc") {
+    let header = pdk.header_record();
+    let header_attrs = header.attrs.iter().filter(|a| a.key != "doc");
+    for a in header_attrs {
         d.push_attr(&a.key);
-        a.values.iter().for_each(|v| d.push_value(v));
+        for v in &a.values {
+            d.push_value(v);
+        }
     }
     d.push_attr("doc");
     d.push_value(&format!("tech:{class} ({flavor}) of {}: {cell}", map.pdk));
@@ -217,7 +266,8 @@ pub(crate) fn derive(
             return Err(format!("map param `{name}` is not a param of {cell}"));
         }
     }
-    for mut p in pdk_params.iter().cloned() {
+    for pdk_param in &pdk_params {
+        let mut p = pdk_param.clone();
         let name = p.fields[0].clone();
         let expr = mapped.iter().find(|m| m.0 == name).map(|m| m.1);
         if CLASS_PARAMS.contains(&name.as_str()) {
@@ -231,7 +281,7 @@ pub(crate) fn derive(
         } else if let Some(e) = expr {
             p.fields[1] = e.to_owned();
             p.attrs.retain(|a| a.key != "computed");
-            p.attrs.push(crate::record::Attr {
+            p.attrs.push(Attr {
                 key: "computed".to_owned(),
                 values: vec![e.to_owned()],
             });
@@ -264,12 +314,18 @@ pub(crate) fn derive(
 /// Appends `rec` to `d` (comments dropped: a derived cell is never written to disk).
 fn push(d: &mut FormatDoc<'static>, rec: &RecordBuf) {
     d.begin_record(rec.kind);
-    rec.fields.iter().for_each(|f| d.push_field(f));
+    for f in &rec.fields {
+        d.push_field(f);
+    }
     for a in &rec.attrs {
         d.push_attr(&a.key);
-        a.values.iter().for_each(|v| d.push_value(v));
+        for v in &a.values {
+            d.push_value(v);
+        }
     }
-    rec.verbatim.iter().for_each(|v| d.push_verbatim(v));
+    for v in &rec.verbatim {
+        d.push_verbatim(v);
+    }
 }
 
 #[cfg(test)]

@@ -14,14 +14,15 @@
 //! - `pub struct Span`: `range`; `pub(crate) const POOL_MAX`
 //! - `pub struct Pool`: `attrs`, `find_attr`; crate: `push_attrs`, `push_lines`,
 //!   `push_coords`, `orphan`, `size`
-//! - `pub(crate) struct RecView`: `attr`; `pub(crate) struct Scratch`: `fill_format`,
+//! - `pub(crate) struct RecView`: `attr`; `pub(crate) struct AttrLine`,
+//!   `pub(crate) struct AttrValues`; `pub(crate) struct Scratch`: `fill_format`,
 //!   `fill_buf`, `view`
 //! - `pub(crate) trait Sink`, `pub(crate) struct FormatSink`: `new`
 //! - `pub(crate) fn emit_attrs`, `pub(crate) fn emit_comments`
 
 use crate::record::{Attr, RecordBuf};
 use crate::strings::{ObjId, Strings, Sym};
-use schemify_format::{Document as FormatDoc, RecordKind, format_coord, parse_coord};
+use schemify_format::{Document as FormatDoc, RecordKind};
 use std::ops::Range;
 
 /// A run of pool entries owned by one row.
@@ -59,32 +60,44 @@ pub struct Pool {
 
 /// A borrowed record from either source (a format document or a [`RecordBuf`]), so one
 /// push path serves load and edits without per-record allocation.
-pub(crate) struct RecView<'a> {
+pub(crate) struct RecView<'src> {
     pub(crate) kind: RecordKind,
-    pub(crate) fields: &'a [&'a str],
+    pub(crate) fields: &'src [&'src str],
     /// Milli-units of each field: a `Coord` slot's value (D33: i32), unspecified at other
     /// slots, which no table reads. From format's coordinate column on load, so a loaded
     /// coordinate is parsed once.
-    pub(crate) field_milli: &'a [i32],
-    /// `(key, value range into vals)`.
-    pub(crate) attrs: &'a [(&'a str, Range<u32>)],
-    pub(crate) vals: &'a [&'a str],
+    pub(crate) field_milli: &'src [i32],
+    pub(crate) attrs: &'src [AttrLine<'src>],
+    pub(crate) vals: &'src [&'src str],
     /// As `field_milli`, one per value.
-    pub(crate) val_milli: &'a [i32],
-    pub(crate) verbatim: &'a [&'a str],
-    pub(crate) comments: &'a [&'a str],
+    pub(crate) val_milli: &'src [i32],
+    pub(crate) verbatim: &'src [&'src str],
+    pub(crate) comments: &'src [&'src str],
+}
+
+/// One attribute line of a [`RecView`]: its key and its values' range in `vals`.
+#[derive(Clone, Debug)]
+pub(crate) struct AttrLine<'src> {
+    pub(crate) key: &'src str,
+    pub(crate) values: Range<u32>,
+}
+
+/// The values of one attribute line and their milli-units (in step).
+pub(crate) struct AttrValues<'view> {
+    pub(crate) texts: &'view [&'view str],
+    pub(crate) milli: &'view [i32],
 }
 
 /// Reusable buffers that build a [`RecView`].
 #[derive(Default)]
-pub(crate) struct Scratch<'a> {
-    fields: Vec<&'a str>,
+pub(crate) struct Scratch<'src> {
+    fields: Vec<&'src str>,
     field_milli: Vec<i32>,
-    attrs: Vec<(&'a str, Range<u32>)>,
-    vals: Vec<&'a str>,
+    attrs: Vec<AttrLine<'src>>,
+    vals: Vec<&'src str>,
     val_milli: Vec<i32>,
-    verbatim: Vec<&'a str>,
-    comments: Vec<&'a str>,
+    verbatim: Vec<&'src str>,
+    comments: Vec<&'src str>,
 }
 
 /// Where a table row goes when written out: a format document (save) or a
@@ -111,6 +124,7 @@ pub(crate) struct FormatSink {
 
 impl Span {
     /// Returns the entries as an index range.
+    #[must_use]
     pub fn range(self) -> Range<usize> {
         self.start as usize..(self.start + self.len) as usize
     }
@@ -130,6 +144,7 @@ impl Pool {
 
     /// Returns the values of the first attribute line of `span` whose key is `key`.
     /// `strings` is the arena of the same document.
+    #[must_use]
     pub fn find_attr<'p>(&'p self, strings: &Strings, span: Span, key: &str) -> Option<&'p [Sym]> {
         let key = strings.find(key)?;
         self.attrs(span).find(|(k, _)| *k == key).map(|(_, v)| v)
@@ -142,17 +157,18 @@ impl Pool {
         skip: &[&str],
         strings: &mut Strings,
     ) -> Span {
+        assert_eq!(rec.vals.len(), rec.val_milli.len(), "value columns in step");
         let start = self.attr_key.len();
-        for (key, vals) in rec.attrs {
-            if skip.contains(key) {
+        for line in rec.attrs {
+            if skip.contains(&line.key) {
                 continue;
             }
-            let v_start = self.vals.len();
-            for v in &rec.vals[vals.start as usize..vals.end as usize] {
+            let values_start = self.vals.len();
+            for v in &rec.vals[line.values.start as usize..line.values.end as usize] {
                 self.vals.push(strings.intern(v));
             }
-            self.attr_key.push(strings.intern(key));
-            self.attr_vals.push(span(v_start, self.vals.len()));
+            self.attr_key.push(strings.intern(line.key));
+            self.attr_vals.push(span(values_start, self.vals.len()));
         }
         assert!(self.attr_key.len() < POOL_MAX, "pool full");
         assert!(self.vals.len() < POOL_MAX, "pool full");
@@ -166,14 +182,18 @@ impl Pool {
             self.lines.push(strings.intern(l));
         }
         assert!(self.lines.len() < POOL_MAX, "pool full");
-        span(start, self.lines.len())
+        let pushed = span(start, self.lines.len());
+        assert_eq!(pushed.len as usize, lines.len());
+        pushed
     }
 
     pub(crate) fn push_coords(&mut self, milli: &[i32]) -> Span {
         let start = self.coords.len();
         self.coords.extend_from_slice(milli);
         assert!(self.coords.len() < POOL_MAX, "pool full");
-        span(start, self.coords.len())
+        let pushed = span(start, self.coords.len());
+        assert_eq!(pushed.len as usize, milli.len());
+        pushed
     }
 
     /// Counts the entries a removed row leaves behind: its attribute lines with their
@@ -189,21 +209,31 @@ impl Pool {
 
     /// Returns the number of live-or-dead entries, the denominator for compaction.
     pub(crate) fn size(&self) -> usize {
+        assert_eq!(
+            self.attr_key.len(),
+            self.attr_vals.len(),
+            "attribute columns in step"
+        );
         self.attr_key.len() + self.vals.len() + self.lines.len() + self.coords.len()
     }
 }
 
 impl RecView<'_> {
     /// The values of attribute `key` and their milli-units.
-    pub(crate) fn attr(&self, key: &str) -> Option<(&[&str], &[i32])> {
-        let (_, r) = self.attrs.iter().find(|(k, _)| *k == key)?;
-        let r = r.start as usize..r.end as usize;
-        Some((&self.vals[r.clone()], &self.val_milli[r]))
+    pub(crate) fn attr(&self, key: &str) -> Option<AttrValues<'_>> {
+        let line = self.attrs.iter().find(|line| line.key == key)?;
+        let range = line.values.start as usize..line.values.end as usize;
+        let values = AttrValues {
+            texts: &self.vals[range.clone()],
+            milli: &self.val_milli[range],
+        };
+        assert_eq!(values.texts.len(), values.milli.len());
+        Some(values)
     }
 }
 
-impl<'a> Scratch<'a> {
-    pub(crate) fn fill_format(&mut self, doc: &'a FormatDoc<'_>, r: u32) {
+impl<'src> Scratch<'src> {
+    pub(crate) fn fill_format(&mut self, doc: &'src FormatDoc<'_>, r: u32) {
         self.clear();
         self.fields.extend(doc.fields(r));
         self.field_milli.extend_from_slice(doc.field_coords(r));
@@ -211,17 +241,29 @@ impl<'a> Scratch<'a> {
             let start = self.vals.len() as u32;
             self.vals.extend(doc.attr_values(a));
             self.val_milli.extend_from_slice(doc.value_coords(a));
-            self.attrs
-                .push((doc.attr_key(a), start..self.vals.len() as u32));
+            self.attrs.push(AttrLine {
+                key: doc.attr_key(a),
+                values: start..self.vals.len() as u32,
+            });
         }
         self.verbatim.extend(doc.verbatim(r));
         self.comments.extend(doc.comments(r));
         assert_eq!(self.attrs.len(), doc.attrs(r).len());
+        assert_eq!(
+            self.fields.len(),
+            self.field_milli.len(),
+            "one coordinate per field"
+        );
+        assert_eq!(
+            self.vals.len(),
+            self.val_milli.len(),
+            "one coordinate per value"
+        );
     }
 
-    pub(crate) fn fill_buf(&mut self, rec: &'a RecordBuf) {
+    pub(crate) fn fill_buf(&mut self, rec: &'src RecordBuf) {
         // The edit path: values were checked (`check_record`), but not into a column.
-        let milli = |t: &String| parse_coord(t).unwrap_or(0);
+        let milli = |t: &String| schemify_format::parse_coord(t).unwrap_or(0);
         self.clear();
         self.fields.extend(rec.fields.iter().map(String::as_str));
         self.field_milli.extend(rec.fields.iter().map(milli));
@@ -229,14 +271,26 @@ impl<'a> Scratch<'a> {
             let start = self.vals.len() as u32;
             self.vals.extend(a.values.iter().map(String::as_str));
             self.val_milli.extend(a.values.iter().map(milli));
-            self.attrs
-                .push((a.key.as_str(), start..self.vals.len() as u32));
+            self.attrs.push(AttrLine {
+                key: a.key.as_str(),
+                values: start..self.vals.len() as u32,
+            });
         }
         self.verbatim
             .extend(rec.verbatim.iter().map(String::as_str));
         self.comments
             .extend(rec.comments.iter().map(String::as_str));
         assert_eq!(self.attrs.len(), rec.attrs.len());
+        assert_eq!(
+            self.fields.len(),
+            self.field_milli.len(),
+            "one coordinate per field"
+        );
+        assert_eq!(
+            self.vals.len(),
+            self.val_milli.len(),
+            "one coordinate per value"
+        );
     }
 
     pub(crate) fn view(&self, kind: RecordKind) -> RecView<'_> {
@@ -319,12 +373,12 @@ impl Sink for RecordBuf {
     }
     fn coord(&mut self, milli: i32) {
         let mut s = String::new();
-        format_coord(milli, &mut s);
+        schemify_format::format_coord(milli, &mut s);
         self.fields.push(s);
     }
     fn coord_value(&mut self, milli: i32) {
         let mut s = String::new();
-        format_coord(milli, &mut s);
+        schemify_format::format_coord(milli, &mut s);
         self.value(&s);
     }
     fn id(&mut self, id: ObjId, strings: &Strings) {

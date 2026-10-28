@@ -20,7 +20,7 @@
 //!   `intern`
 //! - `pub(crate) struct MixHasher`, `pub(crate) type FastMap`
 
-use schemify_format::{ID_ALPHABET, ID_LEN_NEW, is_id};
+use schemify_format::{ID_ALPHABET, ID_LEN_NEW};
 use std::hash::{BuildHasherDefault, Hasher};
 
 /// Handle of an interned string; valid only for the arena (document) that interned it.
@@ -82,11 +82,13 @@ impl Sym {
 
 impl Strings {
     /// Returns the number of interned strings.
+    #[must_use]
     pub fn len(&self) -> u32 {
         self.ends.len() as u32
     }
 
     /// Returns whether nothing is interned.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.ends.is_empty()
     }
@@ -96,6 +98,7 @@ impl Strings {
     /// # Panics
     ///
     /// Panics if `sym` was not interned by this arena (including [`Sym::NONE`]).
+    #[must_use]
     pub fn get(&self, sym: Sym) -> &str {
         let i = sym.0 as usize;
         assert!(i < self.ends.len(), "symbol from another arena or NONE");
@@ -105,6 +108,7 @@ impl Strings {
 
     /// Returns the symbol of `text` if it was interned, without interning it.
     /// Cost: one hash and a short probe.
+    #[must_use]
     pub fn find(&self, text: &str) -> Option<Sym> {
         if self.table.is_empty() {
             return None;
@@ -152,6 +156,14 @@ impl Strings {
     pub(crate) fn outgrown(&self, k: u32) -> bool {
         assert!(k >= 1);
         let (n, b) = self.settled;
+        assert!(
+            n <= self.len(),
+            "strings are freed only by a rebuild, which settles"
+        );
+        assert!(
+            b as usize <= self.bytes.len(),
+            "bytes are freed only by a rebuild"
+        );
         let dn = u64::from(self.len() - n);
         let db = u64::from(self.bytes.len() as u32 - b);
         let k = u64::from(k);
@@ -164,6 +176,12 @@ impl ObjId {
     pub const NONE: ObjId = ObjId(u32::MAX);
 
     /// Decodes a 6-char id to its 30-bit value; `None` for any other text.
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: the asserts check that the decoded value fits 30 bits
+    /// and that the text is an id by the format's rules.
+    #[must_use]
     pub fn decode(text: &str) -> Option<ObjId> {
         if text.len() != ID_LEN_NEW {
             return None;
@@ -177,14 +195,19 @@ impl ObjId {
             v = v << 5 | u32::from(d);
         }
         assert!(v < 1 << 30);
-        assert!(is_id(text));
+        assert!(schemify_format::is_id(text));
         Some(ObjId(v))
     }
 
     /// Returns the id of `text` in `strings` without interning; `None` when `text` is
     /// not an id or is an alias this arena never saw (so no record can carry it).
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: an id never equals [`ObjId::NONE`].
+    #[must_use]
     pub fn find(text: &str, strings: &Strings) -> Option<ObjId> {
-        if !is_id(text) {
+        if !schemify_format::is_id(text) {
             return None;
         }
         let id = ObjId::decode(text).or_else(|| strings.find(text).map(|s| ObjId(ALIAS | s.0)))?;
@@ -198,13 +221,14 @@ impl ObjId {
     ///
     /// Panics if `text` is not an id (callers validate first).
     pub(crate) fn intern(text: &str, strings: &mut Strings) -> ObjId {
-        assert!(is_id(text), "{text:?} is not an id");
+        assert!(schemify_format::is_id(text), "{text:?} is not an id");
         let id = ObjId::decode(text).unwrap_or_else(|| ObjId(ALIAS | strings.intern(text).0));
         assert!(id != ObjId::NONE);
         id
     }
 
     /// Returns whether this id's text lives in the document arena (it is not 6 chars).
+    #[must_use]
     pub fn is_alias(self) -> bool {
         self.0 & ALIAS != 0
     }
@@ -220,16 +244,22 @@ impl ObjId {
             out.push_str(strings.get(Sym(self.0 & !ALIAS)));
             return;
         }
+        assert!(self.0 < 1 << 30, "a 6-char id is a 30-bit value");
         for i in (0..ID_LEN_NEW).rev() {
             out.push(char::from(ID_ALPHABET[(self.0 >> (5 * i) & 31) as usize]));
         }
     }
 
     /// Returns the id text as a new string (see [`ObjId::write`]; allocates).
+    ///
+    /// # Panics
+    ///
+    /// As [`ObjId::write`].
+    #[must_use]
     pub fn text(self, strings: &Strings) -> String {
         let mut s = String::with_capacity(ID_LEN_NEW);
         self.write(strings, &mut s);
-        assert!(is_id(&s));
+        assert!(schemify_format::is_id(&s));
         s
     }
 }
@@ -273,19 +303,22 @@ impl Strings {
     /// factor stays below 1/2, so an empty slot exists.
     fn probe(&self, text: &str) -> Result<Sym, usize> {
         assert!(self.table.len().is_power_of_two());
+        assert!(self.ends.len() < self.table.len(), "an empty slot exists");
         let mask = self.table.len() - 1;
         let mut slot = hash(text) as usize & mask;
-        loop {
+        for _ in 0..self.table.len() {
             match self.table[slot] {
                 0 => return Err(slot),
                 e if self.get(Sym(e - 1)) == text => return Ok(Sym(e - 1)),
                 _ => slot = (slot + 1) & mask,
             }
         }
+        unreachable!("the load factor stays below 1/2, so a probe meets an empty slot")
     }
 
     fn grow(&mut self) {
         let len = (self.table.len() * 2).max(64);
+        assert!(len.is_power_of_two());
         self.table = vec![0; len];
         for i in 0..self.len() {
             let slot = self

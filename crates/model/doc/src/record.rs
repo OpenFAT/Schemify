@@ -8,11 +8,11 @@
 //! Contents:
 //! - `pub struct Attr`
 //! - `pub struct RecordBuf`: `new`, `field`, `attr`, `verbatim`, `find_attr`, `from_format`
-//! - `pub(crate) const INST_RESERVED`
-//! - `pub(crate) fn check_record(rec: &RecordBuf, file: FileKind) -> Result<(), (Code, &str)>`
+//! - `pub(crate) const INST_RESERVED`, `pub(crate) struct RecordError`
+//! - `pub(crate) fn check_record(rec: &RecordBuf, file: FileKind) -> Result<(), RecordError>`
 
 use crate::Code;
-use schemify_format::{Document as FormatDoc, FileKind, RecordKind, Shape, is_word};
+use schemify_format::{Document as FormatDoc, FileKind, RecordKind, Shape};
 
 /// One attribute line: key plus values.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,8 +45,21 @@ pub struct RecordBuf {
 /// <digest>` holds a value Virtuoso derived, D20 as amended 2026-10-15).
 pub(crate) const INST_RESERVED: [&str; 5] = ["at", "name", "inherit", "ignore", "cached"];
 
+/// Why [`check_record`] refused a record: the code and which rule, as a file with the
+/// same record would report them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RecordError {
+    pub(crate) code: Code,
+    pub(crate) detail: &'static str,
+}
+
 impl RecordBuf {
     /// Creates an empty record of `kind`; add parts with the builder methods.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `kind` is [`RecordKind::Unknown`]: unknown records are not editable.
+    #[must_use]
     pub fn new(kind: RecordKind) -> RecordBuf {
         assert!(
             kind != RecordKind::Unknown,
@@ -62,12 +75,14 @@ impl RecordBuf {
     }
 
     /// Appends a positional field.
+    #[must_use]
     pub fn field(mut self, text: &str) -> RecordBuf {
         self.fields.push(text.to_owned());
         self
     }
 
     /// Appends an attribute line.
+    #[must_use]
     pub fn attr(mut self, key: &str, values: &[&str]) -> RecordBuf {
         self.attrs.push(Attr {
             key: key.to_owned(),
@@ -77,17 +92,25 @@ impl RecordBuf {
     }
 
     /// Appends a verbatim line.
+    #[must_use]
     pub fn verbatim(mut self, line: &str) -> RecordBuf {
         self.verbatim.push(line.to_owned());
         self
     }
 
     /// Returns the first attribute line with `key`.
+    #[must_use]
     pub fn find_attr(&self, key: &str) -> Option<&Attr> {
         self.attrs.iter().find(|a| a.key == key)
     }
 
     /// Copies record `r` of a parsed or built format document.
+    ///
+    /// # Panics
+    ///
+    /// Panics if record `r` is an unknown record (a newer format's word, kept verbatim):
+    /// it has no kind to edit as.
+    #[must_use]
     pub fn from_format(doc: &FormatDoc<'_>, r: u32) -> RecordBuf {
         let kind = doc.record_kind(r);
         assert!(
@@ -120,37 +143,49 @@ impl RecordBuf {
 ///
 /// Zero-length wires (`E026`) are checked at the end of a transaction, not here, so a
 /// wire may pass through zero length between two `set_field`s.
-pub(crate) fn check_record(rec: &RecordBuf, file: FileKind) -> Result<(), (Code, &'static str)> {
+pub(crate) fn check_record(rec: &RecordBuf, file: FileKind) -> Result<(), RecordError> {
     let schema = rec.kind.schema();
     if rec.kind == RecordKind::Header {
         if !rec.verbatim.is_empty() || !rec.comments.is_empty() {
-            return Err((
-                Code::E029,
-                "the header carries no verbatim lines or comments",
-            ));
+            return Err(RecordError {
+                code: Code::E029,
+                detail: "the header carries no verbatim lines or comments",
+            });
         }
     } else {
         if rec.kind == RecordKind::Unknown || !file.records().contains(&rec.kind) {
-            return Err((Code::E027, "record kind not allowed in this file kind"));
+            return Err(RecordError {
+                code: Code::E027,
+                detail: "record kind not allowed in this file kind",
+            });
         }
         check_shape(&schema.fields, &rec.fields)?;
     }
     let mut seen: u32 = 0;
     for (i, a) in rec.attrs.iter().enumerate() {
-        if !is_word(&a.key) {
-            return Err((Code::E028, "attribute key is not a word"));
+        if !schemify_format::is_word(&a.key) {
+            return Err(RecordError {
+                code: Code::E028,
+                detail: "attribute key is not a word",
+            });
         }
         match schema.attr(&a.key) {
             Some((k, attr)) => {
                 if seen & (1 << k) != 0 && !attr.repeat {
-                    return Err((Code::E024, "attribute given twice"));
+                    return Err(RecordError {
+                        code: Code::E024,
+                        detail: "attribute given twice",
+                    });
                 }
                 seen |= 1 << k;
                 check_shape(&attr.shape, &a.values)?;
             }
             // Open kinds (instance overrides, constraint key/values): one line per key.
             None if schema.open && rec.attrs[..i].iter().any(|b| b.key == a.key) => {
-                return Err((Code::E024, "attribute given twice"));
+                return Err(RecordError {
+                    code: Code::E024,
+                    detail: "attribute given twice",
+                });
             }
             None => {}
         }
@@ -161,25 +196,37 @@ pub(crate) fn check_record(rec: &RecordBuf, file: FileKind) -> Result<(), (Code,
         .enumerate()
         .any(|(k, a)| a.required && seen & (1 << k) == 0)
     {
-        return Err((Code::E029, "missing required attribute"));
+        return Err(RecordError {
+            code: Code::E029,
+            detail: "missing required attribute",
+        });
     }
     if !rec.verbatim.is_empty() && !schema.verbatim {
-        return Err((Code::E029, "this record kind takes no verbatim lines"));
+        return Err(RecordError {
+            code: Code::E029,
+            detail: "this record kind takes no verbatim lines",
+        });
     }
     if rec.kind == RecordKind::Shape
         && schemify_format::shape_arity(&rec.fields[1], rec.fields.len() - 2) != Some(true)
     {
-        return Err((Code::E029, "wrong number of values for this shape form"));
+        return Err(RecordError {
+            code: Code::E029,
+            detail: "wrong number of values for this shape form",
+        });
     }
     if rec.verbatim.iter().any(|l| l.contains(['\n', '\r'])) {
-        return Err((Code::E028, "verbatim line contains a line break"));
+        return Err(RecordError {
+            code: Code::E028,
+            detail: "verbatim line contains a line break",
+        });
     }
     let bad_comment = |c: &String| c.contains(['\n', '\r']) || c.ends_with([' ', '\t']);
     if rec.comments.iter().any(bad_comment) {
-        return Err((
-            Code::E028,
-            "comment contains a line break or trailing whitespace",
-        ));
+        return Err(RecordError {
+            code: Code::E028,
+            detail: "comment contains a line break or trailing whitespace",
+        });
     }
     assert!(rec.kind == RecordKind::Header || file.records().contains(&rec.kind));
     Ok(())
@@ -189,13 +236,19 @@ pub(crate) fn check_record(rec: &RecordBuf, file: FileKind) -> Result<(), (Code,
 
 /// Checks `values` against a schema shape: arity, then each value's form (format's own
 /// checks, so an edit is refused with the code and detail a file would get).
-fn check_shape(shape: &Shape, values: &[String]) -> Result<(), (Code, &'static str)> {
+fn check_shape(shape: &Shape, values: &[String]) -> Result<(), RecordError> {
     shape
         .check_arity(values.len())
-        .map_err(|d| (Code::E029, d))?;
+        .map_err(|detail| RecordError {
+            code: Code::E029,
+            detail,
+        })?;
     for (i, v) in values.iter().enumerate() {
         let ty = shape.ty(i).expect("arity checked above");
-        ty.check(v).map_err(|(c, d)| (Code::from_format(c), d))?;
+        ty.check(v).map_err(|(code, detail)| RecordError {
+            code: Code::from_format(code),
+            detail,
+        })?;
     }
     Ok(())
 }
@@ -229,7 +282,7 @@ mod tests {
 
     #[test]
     fn negative_space_reports_the_right_code() {
-        let code = |r: &RecordBuf, f| check_record(r, f).unwrap_err().0;
+        let code = |r: &RecordBuf, f| check_record(r, f).unwrap_err().code;
         assert_eq!(
             code(
                 &RecordBuf::new(RecordKind::Pin)
@@ -291,7 +344,11 @@ mod tests {
                 .unwrap_err()
                 .diagnostics[0];
             let edit = check_record(&r, FileKind::Shbench).unwrap_err();
-            assert_eq!(edit, (Code::from_format(d.code), d.detail), "{text}");
+            let file = RecordError {
+                code: Code::from_format(d.code),
+                detail: d.detail,
+            };
+            assert_eq!(edit, file, "{text}");
         }
     }
 }

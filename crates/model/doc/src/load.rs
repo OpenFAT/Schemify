@@ -14,11 +14,11 @@
 
 use crate::changes::ChangeLog;
 use crate::document::{Document, Loaded, Loc, TableId};
-use crate::pool::{FormatSink, Pool, RecView, Scratch, Span, emit_attrs};
+use crate::pool::{self, FormatSink, Pool, RecView, Scratch, Span};
 use crate::strings::{ObjId, Strings};
 use crate::tables::Table;
 use crate::{Code, Diag};
-use schemify_format::{Document as FormatDoc, IdRng, RecordKind, fresh_id};
+use schemify_format::{Document as FormatDoc, IdRng, RecordKind};
 
 impl Document {
     /// Loads tables from a parsed format model, re-iding `W001` duplicates and reporting
@@ -71,7 +71,7 @@ impl Document {
     pub(crate) fn to_format(&self) -> FormatDoc<'static> {
         assert!(!self.read_only(), "a read-only document is never written");
         let mut sink = FormatSink::new(FormatDoc::new(self.kind));
-        emit_attrs(self.header, &self.strings, &self.pool, &mut sink);
+        pool::emit_attrs(self.header, &self.strings, &self.pool, &mut sink);
         for t in TableId::ALL {
             with_table!(self, t, |tab| {
                 for row in 0..tab.len() {
@@ -133,6 +133,11 @@ impl Document {
     /// reloading the same bytes always yields the same ids. References (`waive`
     /// targets, constraint `member`s) keep pointing at the first occurrence.
     fn reid_dups(&mut self, src: &FormatDoc<'_>, locs: &[Option<Loc>]) -> Vec<Diag> {
+        assert_eq!(
+            locs.len(),
+            src.record_count() as usize,
+            "one location per record"
+        );
         let mut diags = Vec::new();
         for (ordinal, w) in src.warnings().iter().enumerate() {
             assert_eq!(w.code, schemify_format::Code::W001);
@@ -142,7 +147,7 @@ impl Document {
             let mut rec = self.record(loc);
             let mut rng = IdRng::for_import(&rec.fields[0], ordinal as u32);
             let (by_id, strings) = (&self.by_id, &self.strings);
-            let new = fresh_id(&mut rng, |t| {
+            let new = schemify_format::fresh_id(&mut rng, |t| {
                 ObjId::find(t, strings).is_some_and(|id| by_id.contains_key(&id))
             });
             rec.fields[0] = new.as_str().to_owned();

@@ -14,11 +14,11 @@
 use crate::Code;
 use crate::document::Document;
 use crate::edit;
-use crate::journal::{Entry, JRec};
-use crate::open::{DocHandle, Open, refused};
+use crate::journal::{Entry, JournalRecord};
+use crate::open::{self, DocHandle, Open};
 use crate::ops::{Mode, Op, OpError, Transaction};
 use crate::project::Project;
-use crate::sidecar::{COMPACT_OVERDUE, append_journal, rewrite_journal_lazy};
+use crate::sidecar::{self, COMPACT_OVERDUE, LastTx};
 use crate::snap::{ParamFacts, ParamMap};
 use schemify_format::{FileKind, RecordKind};
 
@@ -106,13 +106,24 @@ pub enum Outcome {
 }
 
 /// A document after [`Project::apply_ops`], with the ops as applied and their inverse.
-type Applied<'a> = (&'a mut Open, Vec<Op>, Vec<Op>);
+struct Applied<'project> {
+    open: &'project mut Open,
+    /// The ops as applied (fresh ids drawn, values snapped).
+    ops: Vec<Op>,
+    /// Ops that undo `ops`, in application order.
+    inverse: Vec<Op>,
+}
 
 /// Applies edit requests in order (the frame spine's `doc::apply_edits`): transactions
 /// (commit or stage), undo, redo, accept and reject. Each request is all-or-nothing;
 /// a failing request does not stop the ones after it. Journal output accumulates per
 /// document for [`Project::take_journal`]; [`Project::applied`] reads back the ops a
 /// request applied, without copying them.
+///
+/// # Panics
+///
+/// Only on a bug in this crate: one outcome per request, and a committed stage's document
+/// is still open.
 pub fn apply_edits(project: &mut Project, requests: &[EditRequest]) -> Vec<Outcome> {
     let mut out = Vec::with_capacity(requests.len());
     for req in requests {
@@ -134,7 +145,9 @@ pub fn apply_edits(project: &mut Project, requests: &[EditRequest]) -> Vec<Outco
                         let o = project.tx(req.doc, &tx, req.unix_ms);
                         if matches!(o, Outcome::Committed { .. }) {
                             let open = project.open_mut(req.doc).expect("just committed");
+                            let before = open.stages.len();
                             open.stages.retain(|s| s.id != *id);
+                            assert_eq!(open.stages.len() + 1, before, "stage ids are unique");
                         }
                         o
                     }
@@ -154,10 +167,11 @@ pub fn apply_edits(project: &mut Project, requests: &[EditRequest]) -> Vec<Outco
             },
             Edit::Undo | Edit::Redo => match project.open_mut(req.doc) {
                 None => Outcome::Refused(Code::E040),
-                Some(open) if refused(open) => Outcome::Refused(Code::E044),
+                Some(open) if open::refused(open) => Outcome::Refused(Code::E044),
                 Some(open) if req.edit == Edit::Undo => match undo_top(open) {
                     Ok(Some(seq)) => {
-                        append_journal::<Entry>(&mut open.journal, &[JRec::Undo(seq)]);
+                        let undone = [JournalRecord::<Entry>::Undo(seq)];
+                        sidecar::append_journal(&mut open.journal, &undone);
                         Outcome::Undone { seq }
                     }
                     Ok(None) => Outcome::Nothing,
@@ -165,7 +179,8 @@ pub fn apply_edits(project: &mut Project, requests: &[EditRequest]) -> Vec<Outco
                 },
                 Some(open) => match redo_top(open) {
                     Ok(Some(seq)) => {
-                        append_journal::<Entry>(&mut open.journal, &[JRec::Redo(seq)]);
+                        let redone = [JournalRecord::<Entry>::Redo(seq)];
+                        sidecar::append_journal(&mut open.journal, &redone);
                         Outcome::Redone { seq }
                     }
                     Ok(None) => Outcome::Nothing,
@@ -191,6 +206,7 @@ impl Project {
     /// the redo stack an undone entry sits on, and the oldest undo entries drop past
     /// [`UNDO_MAX`]. Read it before the next request to `h` to be sure of an answer.
     /// Cost: a scan from the top of one stack, O(1) right after the request.
+    #[must_use]
     pub fn applied(&self, h: DocHandle, outcome: &Outcome) -> Option<&[Op]> {
         let open = self.open_ref(h)?;
         let ops = match *outcome {
@@ -205,6 +221,7 @@ impl Project {
     }
 
     /// Returns the open stages (the `staged_edits` table) of a document.
+    #[must_use]
     pub fn stages(&self, h: DocHandle) -> &[Stage] {
         self.open_ref(h).map_or(&[], |o| &o.stages)
     }
@@ -216,6 +233,10 @@ impl Project {
     ///
     /// `E040` stale handle or unknown stage; the stage's op errors when it no longer
     /// applies.
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: a replay returns one inverse per op.
     pub fn preview(&self, h: DocHandle, stage: u16) -> Result<Document, Vec<OpError>> {
         let refused = |code| vec![OpError { op: 0, code }];
         let open = self.open_ref(h).ok_or_else(|| refused(Code::E040))?;
@@ -240,7 +261,8 @@ pub(crate) fn push_commit(open: &mut Open, entry: Entry) {
     }
     open.redo.clear();
     push_undo(open, entry);
-    assert!(open.undo.back().is_some_and(|e| e.seq == seq) && open.redo.is_empty());
+    assert!(open.undo.back().is_some_and(|e| e.seq == seq));
+    assert!(open.redo.is_empty(), "a commit clears redo");
 }
 
 pub(crate) fn undo_top(open: &mut Open) -> Result<Option<u64>, Vec<OpError>> {
@@ -253,9 +275,14 @@ pub(crate) fn undo_top(open: &mut Open) -> Result<Option<u64>, Vec<OpError>> {
         return Err(e);
     }
     let seq = entry.seq;
+    assert_eq!(
+        ops.len(),
+        entry.forward.len(),
+        "one op restored per op undone"
+    );
     entry.inverse = ops;
     open.redo.push(entry);
-    open.journal.prelude.1 = 0; // a redo brings the entry back with a new inverse
+    open.journal.prelude.entries = 0; // a redo brings the entry back with a new inverse
     // Entries only move between the stacks, and a commit clears redo: their sum is
     // bounded by the undo cap, so redo needs no cap of its own.
     assert!(open.undo.len() + open.redo.len() <= UNDO_MAX);
@@ -271,6 +298,7 @@ pub(crate) fn redo_top(open: &mut Open) -> Result<Option<u64>, Vec<OpError>> {
     match edit::restore(&mut open.doc, &mut ops) {
         Ok(inv) => {
             let seq = entry.seq;
+            assert_eq!(inv.len(), entry.forward.len(), "one inverse per op redone");
             entry.inverse = inv;
             open.undo.push_back(entry);
             assert!(
@@ -293,10 +321,10 @@ impl Project {
         let Some(open) = self.open_ref(h) else {
             return Outcome::Refused(Code::E040);
         };
-        if refused(open) {
+        if open::refused(open) {
             return Outcome::Refused(Code::E044);
         }
-        let (open, ops, inverse) = match self.apply_ops(h, &tx.ops) {
+        let Applied { open, ops, inverse } = match self.apply_ops(h, &tx.ops) {
             Ok(applied) => applied,
             Err(errors) => return Outcome::Rejected(errors),
         };
@@ -317,7 +345,7 @@ impl Project {
     /// they instantiate. Returns the document, the ops as applied and their inverse.
     fn apply_ops(&mut self, h: DocHandle, ops: &[Op]) -> Result<Applied<'_>, Vec<OpError>> {
         let open = self.open_ref(h).expect("checked live");
-        assert!(!refused(open), "checked by the caller");
+        assert!(!open::refused(open), "checked by the caller");
         let params = self.param_map(open, ops);
         let mut ops = ops.to_vec();
         let Project { slots, rng, .. } = self;
@@ -327,7 +355,7 @@ impl Project {
             .expect("checked live");
         let inverse = edit::apply(&mut open.doc, &mut ops, &params, rng)?;
         assert_eq!(inverse.len(), ops.len());
-        Ok((open, ops, inverse))
+        Ok(Applied { open, ops, inverse })
     }
 
     /// [`Edit::Extend`]: applies `ops` inside entry `seq`. Refused (`E040`) unless `seq` is
@@ -341,13 +369,17 @@ impl Project {
         if !open.redo.is_empty() || open.undo.back().is_none_or(|e| e.seq != seq) {
             return Outcome::Refused(Code::E040);
         }
-        let pending = open.journal.last_tx.is_some_and(|(s, _)| s == seq);
+        let pending = open.journal.last_tx.is_some_and(|last| last.seq == seq);
         let rewritable = pending || !open.journal.started || open.saved_depth.is_some();
         let saved = open.saved_depth.is_some_and(|d| d >= open.undo.len());
-        if refused(open) || saved || !rewritable {
+        if open::refused(open) || saved || !rewritable {
             return Outcome::Refused(Code::E044);
         }
-        let (open, ops, mut inverse) = match self.apply_ops(h, ops) {
+        let Applied {
+            open,
+            ops,
+            mut inverse,
+        } = match self.apply_ops(h, ops) {
             Ok(applied) => applied,
             Err(errors) => return Outcome::Rejected(errors),
         };
@@ -357,22 +389,27 @@ impl Project {
         inverse.append(&mut entry.inverse);
         entry.inverse = inverse;
         match open.journal.last_tx {
-            Some((s, at)) if s == seq => {
+            Some(last) if last.seq == seq => {
                 let j = &mut open.journal;
-                j.bytes -= (j.text.len() - at) as u64;
+                assert!(
+                    last.offset <= j.text.len(),
+                    "the record is still in the pending text"
+                );
+                j.bytes -= (j.text.len() - last.offset) as u64;
                 j.txs -= 1;
-                j.text.truncate(at);
+                j.text.truncate(last.offset);
                 let entry = open.undo.back().expect("checked above");
-                append_journal(&mut open.journal, &[JRec::Tx(entry)]);
-                open.journal.last_tx = Some((seq, at));
+                sidecar::append_journal(&mut open.journal, &[JournalRecord::Tx(entry)]);
+                open.journal.last_tx = Some(last);
             }
-            _ if open.journal.started => rewrite_journal_lazy(open),
+            _ if open.journal.started => sidecar::rewrite_journal_lazy(open),
             _ => {}
         }
         if open.doc.compact_due(COMPACT_OVERDUE) {
             open.doc.compact();
         }
-        assert!(open.undo.back().is_some_and(|e| e.seq == seq) && open.redo.is_empty());
+        assert!(open.undo.back().is_some_and(|e| e.seq == seq));
+        assert!(open.redo.is_empty(), "extend requires an empty redo stack");
         Outcome::Committed { seq }
     }
 
@@ -418,20 +455,20 @@ impl Project {
     }
 }
 
-fn param_facts(iface: &Document) -> Vec<ParamFacts> {
+fn param_facts(interface: &Document) -> Vec<ParamFacts> {
     assert!(
-        matches!(iface.kind(), FileKind::Shprim | FileKind::Shcomp),
+        matches!(interface.kind(), FileKind::Shprim | FileKind::Shcomp),
         "benches have no params"
     );
-    let s = iface.strings();
-    let p = iface.params();
-    let pool = iface.pool();
+    let s = interface.strings();
+    let p = interface.params();
+    let pool = interface.pool();
     let first = |row: usize, key: &str| {
         pool.find_attr(s, p.attrs[row], key)
             .and_then(|v| v.first())
             .map(|v| s.get(*v).to_owned())
     };
-    (0..p.kind.len())
+    let facts: Vec<ParamFacts> = (0..p.kind.len())
         .map(|row| ParamFacts {
             name: s.get(p.fields[row][0]).to_owned(),
             computed: pool.find_attr(s, p.attrs[row], "computed").is_some(),
@@ -439,15 +476,21 @@ fn param_facts(iface: &Document) -> Vec<ParamFacts> {
             step: first(row, "step"),
             min: first(row, "min"),
         })
-        .collect()
+        .collect();
+    assert_eq!(facts.len(), p.kind.len(), "one fact row per param");
+    facts
 }
 
 fn stage(open: &mut Open, label: &str, ops: Vec<Op>) -> Outcome {
     if open.stages.len() >= STAGES_MAX {
         return Outcome::Refused(Code::E043);
     }
+    // Bounded: fewer than `STAGES_MAX` ids are taken, so a free one is that close.
     let mut id = open.next_stage;
-    while open.stages.iter().any(|s| s.id == id) {
+    for _ in 0..STAGES_MAX {
+        if !open.stages.iter().any(|s| s.id == id) {
+            break;
+        }
         id = id.wrapping_add(1);
     }
     open.next_stage = id.wrapping_add(1);
@@ -467,6 +510,7 @@ fn stage(open: &mut Open, label: &str, ops: Vec<Op>) -> Outcome {
 
 /// Pushes a committed transaction on the undo stack, clears redo, journals it.
 fn commit(open: &mut Open, label: &str, unix_ms: u64, forward: Vec<Op>, inverse: Vec<Op>) -> u64 {
+    assert_eq!(forward.len(), inverse.len(), "one inverse per op");
     let seq = open.next_seq;
     open.next_seq += 1;
     let entry = Entry {
@@ -482,11 +526,11 @@ fn commit(open: &mut Open, label: &str, unix_ms: u64, forward: Vec<Op>, inverse:
     // entry the save sat on, and the journal waits for the next save.
     let reachable = open.saved_depth.is_some_and(|d| d <= open.undo.len());
     if !open.journal.started && !open.disk.is_empty() && reachable {
-        rewrite_journal_lazy(open);
+        sidecar::rewrite_journal_lazy(open);
     }
-    let at = open.journal.text.len();
-    append_journal(&mut open.journal, &[JRec::Tx(&entry)]);
-    open.journal.last_tx = open.journal.started.then_some((seq, at));
+    let offset = open.journal.text.len();
+    sidecar::append_journal(&mut open.journal, &[JournalRecord::Tx(&entry)]);
+    open.journal.last_tx = open.journal.started.then_some(LastTx { seq, offset });
     push_commit(open, entry);
     // Idle steps compact (`Project::idle_step`); a caller that never idles still bounds
     // the garbage here.

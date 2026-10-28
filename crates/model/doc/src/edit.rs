@@ -22,10 +22,11 @@ use crate::Code;
 use crate::document::{Document, Loc};
 use crate::ops::{NEW_ID, OPS_MAX, Op, OpError, Target};
 use crate::record::{Attr, RecordBuf};
+use crate::rows::Dangling;
 use crate::snap::ParamMap;
 use crate::strings::ObjId;
 use crate::tables::Instances;
-use schemify_format::{IdRng, KeyRule, RecordKind, fresh_id, is_word};
+use schemify_format::{IdRng, KeyRule, RecordKind};
 
 /// Which override values of an instance an op writes, so only those are snapped:
 /// replaying the journal (which has no parameter facts) must reproduce the state.
@@ -37,6 +38,15 @@ enum Scope<'k> {
     Key(&'k str),
     /// The cell reference changed: re-check `E030`, change nothing.
     CheckOnly,
+}
+
+/// Which rules a transaction is held to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Rules {
+    /// Record rules and the end-of-transaction rules (`E025`, `E026`, `E042`): new edits.
+    EndOfTransaction,
+    /// Record rules only: history being restored.
+    RecordsOnly,
 }
 
 /// Applies `ops` to `doc` all-or-nothing. Ops are resolved in place (fresh ids drawn,
@@ -54,7 +64,7 @@ pub(crate) fn apply(
     params: &ParamMap,
     rng: &mut IdRng,
 ) -> Result<Vec<Op>, Vec<OpError>> {
-    apply_with(doc, ops, params, rng, true)
+    apply_with(doc, ops, params, rng, Rules::EndOfTransaction)
 }
 
 /// Re-applies ops that once validated onto possibly different content (journal
@@ -65,7 +75,13 @@ pub(crate) fn apply(
 ///
 /// As [`apply`]: the content no longer admits the ops.
 pub(crate) fn replay(doc: &mut Document, ops: &mut [Op]) -> Result<Vec<Op>, Vec<OpError>> {
-    apply_with(doc, ops, &ParamMap::new(), &mut IdRng::new(0), true)
+    apply_with(
+        doc,
+        ops,
+        &ParamMap::new(),
+        &mut IdRng::new(0),
+        Rules::EndOfTransaction,
+    )
 }
 
 /// Applies ops that restore a state that existed (undo, redo, a stage rollback, the
@@ -76,7 +92,13 @@ pub(crate) fn replay(doc: &mut Document, ops: &mut [Op]) -> Result<Vec<Op>, Vec<
 ///
 /// Record-level errors only; one means the document changed under the history.
 pub(crate) fn restore(doc: &mut Document, ops: &mut [Op]) -> Result<Vec<Op>, Vec<OpError>> {
-    apply_with(doc, ops, &ParamMap::new(), &mut IdRng::new(0), false)
+    apply_with(
+        doc,
+        ops,
+        &ParamMap::new(),
+        &mut IdRng::new(0),
+        Rules::RecordsOnly,
+    )
 }
 
 // ---- private ----
@@ -86,17 +108,19 @@ fn apply_with(
     ops: &mut [Op],
     params: &ParamMap,
     rng: &mut IdRng,
-    end_rules: bool,
+    rules: Rules,
 ) -> Result<Vec<Op>, Vec<OpError>> {
     assert!(
         !doc.read_only(),
         "callers refuse read-only documents (E044)"
     );
     assert!(ops.len() <= OPS_MAX, "transaction exceeds {OPS_MAX} ops");
-    let rules = end_rules && ops.iter().any(|op| touches_kind_rules(op.subject().0));
+    let end_rules = rules == Rules::EndOfTransaction;
+    let kind_rules = end_rules && ops.iter().any(|op| touches_kind_rules(op.subject().0));
     let refs = end_rules && ops.iter().any(touches_refs);
-    let rules_before = rules && doc.kind_rules_ok();
-    let dangling_before = if refs { doc.dangling() } else { Vec::new() };
+    let rules_before = kind_rules && doc.kind_rules_ok();
+    // `None` when no op touches a reference: the transaction cannot add a dangling one.
+    let dangling_before = refs.then(|| doc.dangling());
     let mut inverse = Vec::with_capacity(ops.len());
     let mut errors = Vec::new();
     for (i, op) in ops.iter_mut().enumerate() {
@@ -110,7 +134,13 @@ fn apply_with(
         }
     }
     if end_rules {
-        end_checks(doc, ops, rules_before, &dangling_before, refs, &mut errors);
+        end_checks(
+            doc,
+            ops,
+            rules_before,
+            dangling_before.as_deref(),
+            &mut errors,
+        );
     }
     if !errors.is_empty() {
         undo_partial(doc, inverse);
@@ -118,11 +148,12 @@ fn apply_with(
         return Err(errors);
     }
     inverse.reverse();
-    assert!(inverse.len() == ops.len());
+    assert_eq!(inverse.len(), ops.len(), "one inverse per applied op");
     Ok(inverse)
 }
 
 fn undo_partial(doc: &mut Document, inverse: Vec<Op>) {
+    assert!(!doc.read_only());
     let empty = ParamMap::new();
     let mut rng = IdRng::new(0);
     for mut inv in inverse.into_iter().rev() {
@@ -160,8 +191,7 @@ fn end_checks(
     doc: &Document,
     ops: &[Op],
     rules_before: bool,
-    dangling_before: &[(RecordKind, String, String)],
-    refs: bool,
+    dangling_before: Option<&[Dangling]>,
     errors: &mut Vec<OpError>,
 ) {
     fn last(ops: &[Op], pred: impl Fn(RecordKind, &str) -> bool) -> u32 {
@@ -199,13 +229,13 @@ fn end_checks(
             code: Code::E025,
         });
     }
-    if refs {
+    if let Some(before) = dangling_before {
+        assert!(before.is_sorted(), "`Document::dangling` sorts");
         for d in doc.dangling() {
-            if dangling_before.binary_search(&d).is_ok() {
+            if before.binary_search(&d).is_ok() {
                 continue;
             }
-            let (kind, key, target) = (d.0, d.1.as_str(), d.2.as_str());
-            let op = last(ops, |k, x| (k == kind && x == key) || x == target);
+            let op = last(ops, |k, x| (k == d.kind && x == d.key) || x == d.target);
             errors.push(OpError {
                 op,
                 code: Code::E042,
@@ -293,7 +323,7 @@ fn apply_one(
             key,
             values,
         } => {
-            if !is_word(key) {
+            if !schemify_format::is_word(key) {
                 return Err(Code::E028);
             }
             let (loc, prior) = read(doc, target)?;
@@ -385,14 +415,16 @@ fn locate(doc: &Document, t: &Target) -> Result<Loc, Code> {
     if t.kind == RecordKind::Header {
         return Err(Code::E043);
     }
-    doc.locate(t.kind, &t.key).ok_or(Code::E040)
+    let loc = doc.locate(t.kind, &t.key).ok_or(Code::E040)?;
+    assert!((loc.row as usize) < doc.table_len(loc.table));
+    Ok(loc)
 }
 
 fn assign_id(doc: &Document, rec: &mut RecordBuf, rng: &mut IdRng) {
     if rec.kind.key() != KeyRule::Id || rec.fields.first().map(String::as_str) != Some(NEW_ID) {
         return;
     }
-    let id = fresh_id(rng, |t| {
+    let id = schemify_format::fresh_id(rng, |t| {
         ObjId::find(t, doc.strings())
             .and_then(|i| doc.find_id(i))
             .is_some()
@@ -407,15 +439,15 @@ fn inst_params(rec: &mut RecordBuf, params: &ParamMap, scope: Scope<'_>) -> Resu
     if rec.kind != RecordKind::Inst {
         return Ok(());
     }
-    assert!(rec.fields.len() == 2, "validated instances have two fields");
+    assert_eq!(rec.fields.len(), 2, "validated instances have two fields");
     let Some(Some(facts)) = params.get(&rec.fields[1]) else {
         return Ok(());
     };
-    for a in rec
+    let overrides = rec
         .attrs
         .iter_mut()
-        .filter(|a| Instances::is_override(&a.key))
-    {
+        .filter(|a| Instances::is_override(&a.key));
+    for a in overrides {
         let Some(p) = facts.iter().find(|p| p.name == a.key) else {
             continue; // override of an unknown param: elab's W007
         };
@@ -439,6 +471,11 @@ fn inst_params(rec: &mut RecordBuf, params: &ParamMap, scope: Scope<'_>) -> Resu
 
 /// Sets an attribute line on an owned record (see [`Op::SetAttr`]); returns its index.
 fn set_attr(rec: &mut RecordBuf, key: &str, values: &[String]) -> usize {
+    assert!(
+        schemify_format::is_word(key),
+        "the caller refuses a key that is not a word (E028)"
+    );
+    let lines = rec.attrs.len();
     let repeat = rec.kind.schema().attr(key).is_some_and(|(_, a)| a.repeat);
     let pos = rec
         .attrs
@@ -457,6 +494,10 @@ fn set_attr(rec: &mut RecordBuf, key: &str, values: &[String]) -> usize {
             rec.attrs.len() - 1
         }
     };
-    assert!(rec.attrs[i].key == key);
+    assert_eq!(rec.attrs[i].key, key);
+    assert!(
+        rec.attrs.len() <= lines + 1,
+        "replaces a line or appends one"
+    );
     i
 }

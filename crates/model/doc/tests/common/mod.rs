@@ -16,9 +16,9 @@ pub mod model;
 
 use schemify_doc::{
     DocHandle, Document, Edit, EditRequest, Mode, Op, Outcome, Project, RecordBuf, TableId, Target,
-    Transaction, apply_edits,
+    Transaction,
 };
-use schemify_format::{KeyRule, RecordKind, format_coord};
+use schemify_format::{KeyRule, RecordKind};
 
 pub const OTA: &str = include_str!(concat!(
     env!("SCHEMIFY_ROOT"),
@@ -83,14 +83,18 @@ impl Mix {
 
 pub fn coord(milli: i32) -> String {
     let mut s = String::new();
-    format_coord(milli, &mut s);
+    schemify_format::format_coord(milli, &mut s);
     s
 }
 
 /// Opens `text` as project file `relpath` in a fresh project.
 pub fn open(text: &str, relpath: &str) -> (Project, DocHandle) {
-    let mut p = Project::new(None, None, 7).unwrap();
-    let h = p.open("", relpath, text.as_bytes(), None).unwrap().handle;
+    let mut p =
+        Project::new(None, None, 7).expect("a project without manifest or lock always opens");
+    let h = p
+        .open("", relpath, text.as_bytes(), None)
+        .expect("fixture text opens")
+        .handle;
     (p, h)
 }
 
@@ -111,11 +115,13 @@ pub fn req(doc: DocHandle, edit: Edit) -> EditRequest {
 }
 
 pub fn run(p: &mut Project, h: DocHandle, edit: Edit) -> Outcome {
-    apply_edits(p, &[req(h, edit)]).remove(0)
+    schemify_doc::apply_edits(p, &[req(h, edit)]).remove(0)
 }
 
 pub fn canon(p: &Project, h: DocHandle) -> String {
-    p.doc(h).unwrap().canonical()
+    p.doc(h)
+        .expect("the handle names an open document")
+        .canonical()
 }
 
 pub fn gen_record(rng: &mut Mix, doc: &Document) -> RecordBuf {
@@ -224,7 +230,9 @@ pub fn gen_op(rng: &mut Mix, doc: &Document) -> Op {
     match choice {
         0..=2 | 3.. if pool.is_empty() && !header_edit => {
             let rec = gen_record(rng, doc);
-            let ordered = TableId::of(rec.kind).unwrap().ordered();
+            let ordered = TableId::of(rec.kind)
+                .expect("a document's record kinds all map to tables")
+                .ordered();
             let at = (rng.chance(30) && ordered).then(|| rng.below(4) as u32);
             Op::Insert { rec, at }
         }

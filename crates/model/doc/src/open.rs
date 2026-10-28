@@ -17,17 +17,17 @@
 //! - `pub(crate) fn dirty(open: &Open) -> bool`, `pub(crate) fn refused(open: &Open) -> bool`
 
 use crate::document::Document;
-use crate::journal::{Analysis, Entry, JRec, analyze, parse_journal};
+use crate::journal::{self, Analysis, Entry, JournalRecord};
 use crate::ops::{Mode, Op, Target, Transaction};
 use crate::project::Project;
 use crate::requests::{Stage, UNDO_MAX};
-use crate::sha256::{hex, sha256};
-use crate::sidecar::{DiskHash, JournalOut, disk_hash};
+use crate::sha256;
+use crate::sidecar::{self, DiskHash, JournalOut};
 use crate::strings::{ObjId, Sym};
 use crate::sync::{Conflict, PendingSave};
 use crate::tables::Instances;
 use crate::{Code, Diag};
-use schemify_format::{FileKind, ParseError, RecordKind, parse};
+use schemify_format::{FileKind, ParseError, RecordKind};
 use std::collections::VecDeque;
 
 /// Open documents per project.
@@ -108,10 +108,19 @@ pub(crate) struct Open {
     pub(crate) pending_save: Option<PendingSave>,
     pub(crate) conflict: Option<Conflict>,
     /// Journal records after the checkpoint, awaiting `recover`/`discard_recovery`.
-    pub(crate) tail: Option<Vec<JRec>>,
+    pub(crate) tail: Option<Vec<JournalRecord>>,
     /// Load changed the model (duplicate ids re-assigned): dirty until saved. Replay
     /// from the journal's `base` reproduces it, because re-iding is deterministic.
     pub(crate) fixups: bool,
+}
+
+/// Where the bytes handed to `open_with` come from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Bytes {
+    /// The very buffer the library index hashed: its digest is the index's.
+    Indexed,
+    /// Any other read of the file: hashed when needed.
+    Read,
 }
 
 #[derive(Debug, Default)]
@@ -124,6 +133,13 @@ impl Open {
     /// A document with no history and no disk state (a new, unsaved cell); `open`
     /// overrides the disk fields.
     pub(crate) fn new(lib: u8, dir: Sym, stem: Sym, doc: Document) -> Open {
+        assert!(
+            matches!(
+                doc.kind(),
+                FileKind::Shprim | FileKind::Shcomp | FileKind::Shbench
+            ),
+            "open documents are cell files"
+        );
         Open {
             lib,
             dir,
@@ -167,7 +183,7 @@ impl Project {
         bytes: &[u8],
         journal: Option<&[u8]>,
     ) -> Result<Opened, OpenError> {
-        self.open_with(lib, relpath, bytes.to_vec(), journal, false)
+        self.open_with(lib, relpath, bytes.to_vec(), journal, Bytes::Read)
     }
 
     /// [`Project::open`] for bytes the current index of `lib` was built from (the very
@@ -187,7 +203,7 @@ impl Project {
         bytes: Vec<u8>,
         journal: Option<&[u8]>,
     ) -> Result<Opened, OpenError> {
-        self.open_with(lib, relpath, bytes, journal, true)
+        self.open_with(lib, relpath, bytes, journal, Bytes::Indexed)
     }
 
     /// Creates a new, empty cell document (not yet on disk; dirty until saved).
@@ -195,6 +211,10 @@ impl Project {
     /// # Errors
     ///
     /// `E001` unknown library, `E027` not a cell kind, `E043` too many documents.
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: a new document is dirty until saved.
     pub fn create(&mut self, lib: &str, relpath: &str, kind: FileKind) -> Result<DocHandle, Code> {
         let lib = self.libs.find(lib).ok_or(Code::E001)? as u8;
         if !matches!(
@@ -203,8 +223,11 @@ impl Project {
         ) {
             return Err(Code::E027);
         }
-        let (dir, stem) = split_path(relpath);
-        let (dir, stem) = (self.strings.intern(dir), self.strings.intern(stem));
+        let path = split_path(relpath);
+        let (dir, stem) = (
+            self.strings.intern(path.dir),
+            self.strings.intern(path.stem),
+        );
         let h = self.alloc(Open::new(lib, dir, stem, Document::new(kind)))?;
         assert!(self.is_dirty(h), "a new document is unsaved");
         Ok(h)
@@ -216,15 +239,23 @@ impl Project {
     /// # Errors
     ///
     /// `E040` stale handle.
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: the handle goes stale.
     pub fn close(&mut self, h: DocHandle) -> Result<bool, Code> {
         let slot = self.slot_mut(h).ok_or(Code::E040)?;
-        let open = slot.open.take().expect("live handle");
+        let open = slot
+            .open
+            .take()
+            .expect("`slot_mut` returns slots with a document");
         slot.generation = slot.generation.wrapping_add(1);
         assert!(self.open_ref(h).is_none());
         Ok(dirty(&open))
     }
 
     /// Returns the tables of an open document; `None` for a stale handle.
+    #[must_use]
     pub fn doc(&self, h: DocHandle) -> Option<&Document> {
         self.open_ref(h).map(|o| &o.doc)
     }
@@ -242,17 +273,20 @@ impl Project {
     }
 
     /// Returns whether the document differs from its last loaded/saved bytes.
+    #[must_use]
     pub fn is_dirty(&self, h: DocHandle) -> bool {
         self.open_ref(h).is_some_and(dirty)
     }
 
     /// Returns (undo depth, redo depth).
+    #[must_use]
     pub fn history_len(&self, h: DocHandle) -> (usize, usize) {
         self.open_ref(h)
             .map_or((0, 0), |o| (o.undo.len(), o.redo.len()))
     }
 
     /// Returns the labels of the undo stack, oldest first (for undo menus).
+    #[must_use]
     pub fn undo_labels(&self, h: DocHandle) -> Vec<&str> {
         self.open_ref(h).map_or(Vec::new(), |o| {
             o.undo.iter().map(|e| e.label.as_str()).collect()
@@ -262,6 +296,11 @@ impl Project {
     /// Instance parameter overrides equal (as text) to the cell's default (D40): kept
     /// as the user wrote them, listed for the canonicalizer (`W002`). Sorted by
     /// (instance id, param).
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: every listed instance is in the document.
+    #[must_use]
     pub fn redundant_overrides(&self, h: DocHandle) -> Vec<(ObjId, String)> {
         let Some(open) = self.open_ref(h) else {
             return Vec::new();
@@ -274,17 +313,21 @@ impl Project {
             else {
                 continue;
             };
-            let Some(iface) = self.interface(row) else {
+            let Some(interface) = self.interface(row) else {
                 continue;
             };
-            let is = iface.strings();
+            let interface_strings = interface.strings();
             for (k, vals) in doc.pool().attrs(doc.instances().attrs[i]) {
                 let key = s.get(k);
                 if !Instances::is_override(key) || vals.len() != 1 {
                     continue;
                 }
-                let p = &iface.params().fields;
-                let default = p.iter().find(|f| is.get(f[0]) == key).map(|f| is.get(f[1]));
+                let default = interface
+                    .params()
+                    .fields
+                    .iter()
+                    .find(|f| interface_strings.get(f[0]) == key)
+                    .map(|f| interface_strings.get(f[1]));
                 if default == Some(s.get(vals[0])) {
                     out.push((doc.instances().id[i], key.to_owned()));
                 }
@@ -297,18 +340,26 @@ impl Project {
 
     /// Builds the transaction that drops the redundant overrides of
     /// [`Project::redundant_overrides`] (the D40 canonicalizer; the user applies it).
+    /// Empty for a stale handle.
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this function: one op per redundant override.
+    #[must_use]
     pub fn canonicalize_overrides(&self, h: DocHandle) -> Transaction {
-        let strings = self.doc(h).map(Document::strings);
         let redundant = self.redundant_overrides(h);
         let n = redundant.len();
-        let ops: Vec<Op> = redundant
-            .into_iter()
-            .map(|(id, key)| Op::RemoveAttr {
-                target: Target::new(RecordKind::Inst, &id.text(strings.expect("live handle"))),
-                key,
-                first: None,
-            })
-            .collect();
+        let ops: Vec<Op> = match self.doc(h) {
+            None => Vec::new(),
+            Some(doc) => redundant
+                .into_iter()
+                .map(|(id, key)| Op::RemoveAttr {
+                    target: Target::new(RecordKind::Inst, &id.text(doc.strings())),
+                    key,
+                    first: None,
+                })
+                .collect(),
+        };
         assert_eq!(ops.len(), n);
         Transaction {
             label: "drop overrides equal to defaults".into(),
@@ -318,6 +369,7 @@ impl Project {
     }
 
     pub(crate) fn open_ref(&self, h: DocHandle) -> Option<&Open> {
+        assert!(self.slots.len() <= DOCS_MAX);
         let slot = self.slots.get(h.index as usize)?;
         (slot.generation == h.generation)
             .then_some(slot.open.as_deref())
@@ -347,12 +399,15 @@ impl Project {
         relpath: &str,
         bytes: Vec<u8>,
         journal: Option<&[u8]>,
-        indexed: bool,
+        origin: Bytes,
     ) -> Result<Opened, OpenError> {
         let lib = self.libs.find(lib).ok_or(OpenError::Code(Code::E001))? as u8;
-        let (dir, stem) = split_path(relpath);
-        let (dir, stem) = (self.strings.intern(dir), self.strings.intern(stem));
-        let model = parse(&bytes).map_err(OpenError::Parse)?;
+        let path = split_path(relpath);
+        let (dir, stem) = (
+            self.strings.intern(path.dir),
+            self.strings.intern(path.stem),
+        );
+        let model = schemify_format::parse(&bytes).map_err(OpenError::Parse)?;
         if !matches!(
             model.kind(),
             FileKind::Shprim | FileKind::Shcomp | FileKind::Shbench
@@ -369,10 +424,14 @@ impl Project {
         let c = &self.cells;
         let row = (0..c.lib.len())
             .find(|&i| (c.lib[i], c.dir[i], c.stem[i], c.kind[i]) == (lib, dir, stem, kind));
-        let digest = match row.filter(|_| indexed) {
+        let digest = match row.filter(|_| origin == Bytes::Indexed) {
             Some(row) => {
-                debug_assert_eq!(c.hash[row], sha256(&bytes), "bytes are the indexed bytes");
-                DiskHash::Done(hex(&c.hash[row]))
+                debug_assert_eq!(
+                    c.hash[row],
+                    sha256::sha256(&bytes),
+                    "bytes are the indexed bytes"
+                );
+                DiskHash::Done(sha256::hex(&c.hash[row]))
             }
             None => DiskHash::unhashed(),
         };
@@ -383,10 +442,10 @@ impl Project {
             fixups: reids,
             ..Open::new(lib, dir, stem, loaded.doc)
         };
-        let recovery = match journal.map(|j| parse_journal(j, open.doc.kind())) {
+        let recovery = match journal.map(|j| journal::parse_journal(j, open.doc.kind())) {
             Some(Ok(recs)) => {
-                let hash = disk_hash(&mut open);
-                let analysis = analyze(recs, &hash, UNDO_MAX);
+                let hash = sidecar::disk_hash(&mut open);
+                let analysis = journal::analyze(recs, &hash, UNDO_MAX);
                 install_journal(&mut open, analysis)
             }
             _ => Recovery::None,
@@ -430,20 +489,25 @@ impl Project {
     }
 }
 
-fn split_path(relpath: &str) -> (&str, &str) {
+/// A file's directory and stem within its library.
+struct FilePath<'path> {
+    dir: &'path str,
+    stem: &'path str,
+}
+
+fn split_path(relpath: &str) -> FilePath<'_> {
     let (dir, file) = relpath.rsplit_once('/').unwrap_or(("", relpath));
     let stem = file.rsplit_once('.').map_or(file, |(s, _)| s);
-    assert!(!stem.contains('/') && dir.len() + stem.len() <= relpath.len());
-    (dir, stem)
+    assert!(!stem.contains('/'));
+    assert!(dir.len() + stem.len() <= relpath.len());
+    FilePath { dir, stem }
 }
 
 /// Installs a journal analysis on a freshly opened document: history if a checkpoint
 /// matched, the tail as a pending recovery.
 fn install_journal(open: &mut Open, a: Analysis) -> Recovery {
-    assert!(
-        open.undo.is_empty() && open.tail.is_none(),
-        "installed on a fresh open"
-    );
+    assert!(open.undo.is_empty(), "installed on a fresh open");
+    assert!(open.tail.is_none(), "installed on a fresh open");
     open.next_seq = a.next_seq;
     open.journal.started = a.matched;
     if a.matched {
