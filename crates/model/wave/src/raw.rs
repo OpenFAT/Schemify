@@ -13,10 +13,14 @@
 //! The reader is total: any byte string yields `Ok` or a [`RawError`], never a panic, and no
 //! allocation exceeds what the input's size can fill (a header claiming 2^32 points in a
 //! 100-byte file fails before allocating).
+//!
+//! Contents:
+//! - `pub enum RawError`
+//! - `pub fn parse_raw(bytes: &[u8]) -> Result<Vec<RawPlot>, RawError>`
 
 use std::borrow::Cow;
 
-use crate::data::{RawPlot, VarKind, Variable};
+use crate::plot::{RawPlot, VarKind, Variable};
 
 /// Why a `.raw` file could not be read.
 #[derive(Debug, PartialEq, Eq)]
@@ -38,24 +42,32 @@ pub enum RawError {
     NoPlots,
 }
 
-impl std::fmt::Display for RawError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RawError::Empty => f.write_str("empty file"),
-            RawError::Header(m) => write!(f, "malformed header: {m}"),
-            RawError::Truncated { expected, found } => {
-                write!(
-                    f,
-                    "data truncated: expected {expected} bytes, found {found}"
-                )
-            }
-            RawError::Values(p) => write!(f, "malformed ascii values at point {p}"),
-            RawError::NoPlots => f.write_str("no plots found in file"),
-        }
-    }
+#[derive(Default)]
+struct Header {
+    plotname: String,
+    command: String,
+    flags: String,
+    n_vars: u32,
+    n_points: u32,
+    variables: Vec<Variable>,
+    binary: bool,
 }
 
-impl std::error::Error for RawError {}
+/// Points per block of [`transpose`]: one block writes 16 consecutive `f64` (two cache lines)
+/// of each column, where a point at a time would touch a line of every column per point.
+const BLOCK: usize = 16;
+/// Widest row [`transpose`] copies a point at a time: up to here the per-point column writes
+/// stay in cache and that loop is the faster one; above it, blocked (measured by `bench_parse`:
+/// 40k × 256 1.8× faster blocked, 10k × 1024 3.4×; 1M × 4 a little slower blocked).
+const POINTWISE_NV_MAX: usize = 128;
+
+/// Line- and token-oriented cursor over UTF-8 or UTF-16LE text, with raw byte access for binary
+/// sections. `unit` is the code-unit width (1 or 2 bytes).
+struct Reader<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+    unit: usize,
+}
 
 /// Parses a complete `.raw` file into one [`RawPlot`] per analysis block.
 ///
@@ -88,16 +100,26 @@ pub fn parse_raw(bytes: &[u8]) -> Result<Vec<RawPlot>, RawError> {
     Ok(plots)
 }
 
-#[derive(Default)]
-struct Header {
-    plotname: String,
-    command: String,
-    flags: String,
-    n_vars: u32,
-    n_points: u32,
-    variables: Vec<Variable>,
-    binary: bool,
+impl std::error::Error for RawError {}
+
+impl std::fmt::Display for RawError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RawError::Empty => f.write_str("empty file"),
+            RawError::Header(m) => write!(f, "malformed header: {m}"),
+            RawError::Truncated { expected, found } => {
+                write!(
+                    f,
+                    "data truncated: expected {expected} bytes, found {found}"
+                )
+            }
+            RawError::Values(p) => write!(f, "malformed ascii values at point {p}"),
+            RawError::NoPlots => f.write_str("no plots found in file"),
+        }
+    }
 }
+
+// ---- private ----
 
 fn parse_one_plot(rd: &mut Reader) -> Result<Option<RawPlot>, RawError> {
     let Some(h) = parse_header(rd)? else {
@@ -325,14 +347,6 @@ fn parse_binary(
     Ok((re, Vec::new()))
 }
 
-/// Points per block of [`transpose`]: one block writes 16 consecutive `f64` (two cache lines)
-/// of each column, where a point at a time would touch a line of every column per point.
-const BLOCK: usize = 16;
-/// Widest row [`transpose`] copies a point at a time: up to here the per-point column writes
-/// stay in cache and that loop is the faster one; above it, blocked (measured by `bench_parse`:
-/// 40k × 256 1.8× faster blocked, 10k × 1024 3.4×; 1M × 4 a little slower blocked).
-const POINTWISE_NV_MAX: usize = 128;
-
 /// Transposes `n` row-major rows of `nv` cells of `cell` bytes into columns: `out[v * n + p]`
 /// is the little-endian `f64` at byte `off` of cell `(p, v)`. Rows wider than
 /// [`POINTWISE_NV_MAX`] go [`BLOCK`] points at a time, so a block's reads stay in cache and
@@ -380,14 +394,6 @@ fn f64_le(b: &[u8]) -> f64 {
 #[inline]
 fn f32_le(b: &[u8]) -> f32 {
     f32::from_le_bytes(b[..4].try_into().expect("4 bytes"))
-}
-
-/// Line- and token-oriented cursor over UTF-8 or UTF-16LE text, with raw byte access for binary
-/// sections. `unit` is the code-unit width (1 or 2 bytes).
-struct Reader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-    unit: usize,
 }
 
 impl<'a> Reader<'a> {

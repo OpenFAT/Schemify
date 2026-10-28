@@ -3,10 +3,51 @@
 //!
 //! Binding copies nothing: every [`Column`] borrows the plot's column-major storage, the sweep
 //! axis is the plot's scale column and the sweep steps are the plot's steps.
+//!
+//! Contents:
+//! - `pub fn eval(prog, plot, ops, lookup, scratch) -> Result<CalcResult, Error>`
+//! - `pub fn op_dataset(plots: &[RawPlot]) -> Option<&RawPlot>`
+//! - `pub fn op_value(op: &RawPlot, vector: &str) -> Option<f64>`
+//! - `pub fn signal_expr(plot: &RawPlot, v: usize) -> String`
+//! - `pub(crate) fn bind(prog, plot, ops, cols) -> Result<(), Error>`
 
 use schemify_expr::{CalcResult, Code, Column, Error, Plot, Program, Scratch, SignalKind, Value};
 
-use crate::data::{RawPlot, VarKind};
+use crate::plot::{RawPlot, VarKind};
+
+/// Evaluates `prog` over `plot`. Its `v()`/`i()` signals read `plot`'s columns by
+/// [`RawPlot::find_signal`] without copying; `ops[k]` is the value of the `k`-th `op(…)` signal
+/// (a run's job reads them from its operating point, run spec §4), `None` where there is none.
+/// Identifiers (bench vars) resolve through `lookup`; the result's strings borrow `scratch`.
+///
+/// # Errors
+///
+/// `X004` naming the first signal the plot does not hold or an unknown identifier; `X006` for an
+/// `op(…)` signal when `ops` is `None`; then every error of [`Program::eval_calc_plain`]
+/// (`X003`, `X010`, `X011`, …).
+///
+/// # Panics
+///
+/// Panics if `prog` was not compiled in calculator mode, or if `ops` does not hold one value per
+/// `op(…)` signal.
+pub fn eval<'s, 'v>(
+    prog: &Program,
+    plot: &RawPlot,
+    ops: Option<&[f64]>,
+    lookup: impl FnMut(&str) -> Option<Value<'v>>,
+    scratch: &'s mut Scratch,
+) -> Result<CalcResult<'s>, Error> {
+    let mut cols = Vec::with_capacity(prog.signals().len());
+    bind(prog, plot, ops, &mut cols)?;
+    let mut inputs = Vec::with_capacity(prog.idents().len());
+    prog.bind(&mut inputs, lookup)?;
+    let p = Plot {
+        x: plot.scale(),
+        steps: plot.steps(),
+        signals: &cols,
+    };
+    prog.eval_calc_plain(&inputs, &p, scratch)
+}
 
 /// Fills `cols` (cleared first) with one borrowed column per [`Program::signals`] entry, in that
 /// order, resolving names with [`RawPlot::find_signal`]. `ops[k]` is the value of the `k`-th
@@ -21,7 +62,7 @@ use crate::data::{RawPlot, VarKind};
 /// # Panics
 ///
 /// Panics if `ops` does not hold one value per `op(…)` signal.
-pub fn bind<'a>(
+pub(crate) fn bind<'a>(
     prog: &Program,
     plot: &'a RawPlot,
     ops: Option<&'a [f64]>,
@@ -68,50 +109,14 @@ pub fn bind<'a>(
     Ok(())
 }
 
-/// Evaluates `prog` over `plot`, with `ops` as in [`bind`]. Identifiers (bench vars) resolve
-/// through `lookup`; the result's strings borrow `scratch`.
-///
-/// # Errors
-///
-/// Those of [`bind`], `X004` for an unknown identifier, then every error of
-/// [`Program::eval_calc_plain`] (`X003`, `X010`, `X011`, …).
-///
-/// # Panics
-///
-/// Panics if `prog` was not compiled in calculator mode, or as [`bind`].
-pub fn eval<'s, 'v>(
-    prog: &Program,
-    plot: &RawPlot,
-    ops: Option<&[f64]>,
-    lookup: impl FnMut(&str) -> Option<Value<'v>>,
-    scratch: &'s mut Scratch,
-) -> Result<CalcResult<'s>, Error> {
-    let mut cols = Vec::with_capacity(prog.signals().len());
-    bind(prog, plot, ops, &mut cols)?;
-    let mut inputs = Vec::with_capacity(prog.idents().len());
-    prog.bind(&mut inputs, lookup)?;
-    let p = Plot {
-        x: plot.scale(),
-        steps: plot.steps(),
-        signals: &cols,
-    };
-    prog.eval_calc_plain(&inputs, &p, scratch)
-}
-
 /// The operating-point dataset of a raw file's plots: the one whose plot name says
 /// "operating point" (ngspice, ESPice), else a one-point `dc` plot (Xyce writes `.op` that way).
 pub fn op_dataset(plots: &[RawPlot]) -> Option<&RawPlot> {
     let named = |p: &&RawPlot, s: &str| p.name().to_ascii_lowercase().contains(s);
-    let found = plots
+    plots
         .iter()
         .find(|p| named(p, "operating point"))
-        .or_else(|| {
-            plots
-                .iter()
-                .find(|p| named(p, "dc") && !p.vars().is_empty() && p.col(0).len() == 1)
-        });
-    assert!(found.is_none_or(|p| !p.vars().is_empty()));
-    found
+        .or_else(|| plots.iter().find(|p| named(p, "dc") && p.len() == 1))
 }
 
 /// The value of ngspice device vector `vector` (`@m.x1.mm2[gm]`) at the operating point `op`:
@@ -180,7 +185,7 @@ mod tests {
     use schemify_expr::{ColKind, Mode};
 
     use super::*;
-    use crate::data::Variable;
+    use crate::plot::Variable;
 
     fn plot() -> RawPlot {
         let vars = [
