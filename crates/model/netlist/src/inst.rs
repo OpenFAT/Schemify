@@ -217,6 +217,12 @@ fn fast_ok<F>(row: &Row<'_, F>, sources: &[Source]) -> bool {
         row.elab.params_of(row.index).len(),
         row.iface.param_name.len()
     );
+    debug_assert!(
+        !sources
+            .iter()
+            .any(|s| matches!(s, Source::Param(k) if *k as usize >= row.iface.param_name.len())),
+        "the plan indexes the schema of the row's cell"
+    );
     !sources.iter().any(|s| {
         matches!(s, Source::Param(k) if matches!(
             row.elab.insts.param_val[param_start + *k as usize],
@@ -334,6 +340,7 @@ fn pin_bits<'row, F>(row: &Row<'row, F>, pin: usize) -> &'row [Name] {
 
 /// Appends `nets` space-separated in the row's dialect; an unconnected bit is `?`.
 fn push_nets<'net, F: Fn(Name) -> &'net str>(out: &mut String, nets: &[Name], row: &Row<'_, F>) {
+    let start = out.len();
     for (i, &net) in nets.iter().enumerate() {
         if i > 0 {
             out.push(' ');
@@ -344,6 +351,10 @@ fn push_nets<'net, F: Fn(Name) -> &'net str>(out: &mut String, nets: &[Name], ro
             crate::push_name(out, (row.net)(net), row.dialect);
         }
     }
+    debug_assert!(
+        nets.is_empty() || out.len() >= start + 2 * nets.len() - 1,
+        "every net is a token, separated by one space"
+    );
 }
 
 /// Appends the connections of the cell's pins in `group`, in pin order, space-separated;

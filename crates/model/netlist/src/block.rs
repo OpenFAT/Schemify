@@ -160,6 +160,11 @@ impl<'elab> Writer<'elab> {
 
     /// What the emitted rows used, and the finished name map.
     pub(crate) fn finish(self) -> (Uses, NameMap) {
+        assert_eq!(
+            self.scratch.uses.impl_used.len(),
+            self.context.elab.impls.cell.len(),
+            "uses of this elaboration"
+        );
         (self.scratch.uses, self.map.finish())
     }
 }

@@ -258,7 +258,7 @@ pub(crate) fn write(lowered: &mut Lowered, dialect: Dialect) -> String {
 
 /// SpiceRack's dialect of `dialect`.
 pub(crate) fn spicerack_dialect(dialect: Dialect) -> SpiceRackDialect {
-    match dialect {
+    let spicerack = match dialect {
         Dialect::Ngspice => SpiceRackDialect::Ngspice,
         Dialect::Espice => SpiceRackDialect::Espice,
         Dialect::Xyce => SpiceRackDialect::Xyce,
@@ -267,7 +267,13 @@ pub(crate) fn spicerack_dialect(dialect: Dialect) -> SpiceRackDialect {
         Dialect::Verilog => SpiceRackDialect::Verilog,
         Dialect::Hspice => SpiceRackDialect::Hspice,
         Dialect::Ltspice => SpiceRackDialect::Ltspice,
-    }
+    };
+    debug_assert_eq!(
+        xschem::word(spicerack),
+        dialect.as_str(),
+        "the same dialect by name"
+    );
+    spicerack
 }
 
 /// Whether `dialect` is a SPICE-syntax dialect: verbatim names, `*` comments, `.subckt`

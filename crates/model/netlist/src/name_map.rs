@@ -124,6 +124,10 @@ impl NameMap {
             def = self.row_child[row];
         }
         assert!(!out.is_empty());
+        assert!(
+            def == NONE || (def as usize) + 1 < self.def_rows.len(),
+            "a row's child is a definition of the map"
+        );
         Some(out)
     }
 
@@ -169,6 +173,10 @@ impl NameMap {
             def = self.row_child[row];
         }
         if def != NONE {
+            assert!(
+                (def as usize) + 1 < self.def_rows.len(),
+                "a row's child is a definition of the map"
+            );
             return Err(format!("`{path}` is a subcircuit instance, not a device"));
         }
         out.make_ascii_lowercase();
@@ -397,10 +405,12 @@ impl Builder {
 /// Group `def` of the CSR offsets `csr`; `None` past the last group (`NONE`, the child of
 /// a leaf, included), so a walk below a leaf finds nothing.
 fn group(csr: &[u32], def: u32) -> Option<Range<usize>> {
-    match csr.get(def as usize..)? {
-        [a, b, ..] => Some(*a as usize..*b as usize),
-        _ => None,
-    }
+    let group = match csr.get(def as usize..)? {
+        [a, b, ..] => *a as usize..*b as usize,
+        _ => return None,
+    };
+    debug_assert!(group.start <= group.end, "CSR offsets ascend");
+    Some(group)
 }
 
 /// Appends `s` to the text arena `text` and returns its span.
