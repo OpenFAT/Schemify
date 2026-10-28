@@ -5,25 +5,16 @@
 //! re-blessed with `SCHEMIFY_BLESS=1`); without `lib tech`, with an unknown class or an
 //! unknown flavor it is refused with the reason.
 
+mod common;
+
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
+use common::{schemify, scratch};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tech");
 const MAPS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tech/maps");
 
-fn schemify(dir: &Path, args: &[&str]) -> (i32, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_schemify"))
-        .args(args)
-        .current_dir(dir)
-        .env("XDG_CONFIG_HOME", dir.join(".xdg/config"))
-        .env("XDG_DATA_HOME", dir.join(".xdg/data"))
-        .env_remove("SCHEMIFY_APPNAME")
-        .output()
-        .expect("binary runs");
-    let text =
-        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
-    (out.status.code().expect("not killed"), text)
-}
+// ---- private ----
 
 fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
@@ -39,8 +30,7 @@ fn copy_tree(from: &Path, to: &Path) {
 
 /// The fixture project with the shipped maps under `maps/` and `manifest` as its manifest.
 fn project(name: &str, manifest: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("schemify-tech-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = scratch(name);
     copy_tree(Path::new(FIXTURE), &dir);
     std::fs::remove_dir_all(dir.join("golden")).ok();
     copy_tree(Path::new(MAPS), &dir.join("maps"));

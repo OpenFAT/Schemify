@@ -9,7 +9,7 @@
 //! - `pub enum Json`, `Json::get`, `Json::as_str`, `Json::obj`
 //! - `pub struct JsonError { at, what }`
 //! - `pub fn parse(&str) -> Result<Json, JsonError>`
-//! - `pub fn write(&Json, &mut String)`
+//! - `pub fn write(&Json, &mut String)`, `pub(crate) fn write_str(&str, &mut String)`
 
 use std::fmt::Write as _;
 

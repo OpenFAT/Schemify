@@ -72,6 +72,8 @@ pub fn usage() -> u8 {
     USAGE_ERROR
 }
 
+// ---- private ----
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (start, first) = match Startup::parse(&args) {
@@ -124,8 +126,6 @@ fn main() -> ExitCode {
     assert!(code <= USAGE_ERROR, "exit codes are 0, 1 or 2");
     ExitCode::from(code)
 }
-
-// ---- private ----
 
 /// Prints the user config's notifications and errors on stderr. Queued commands are for the
 /// editor: the core has no command table, so it ignores them (config spec §3).

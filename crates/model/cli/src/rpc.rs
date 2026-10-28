@@ -24,6 +24,8 @@
 //! - `pub const METHODS: [&str; 7]`
 //! - `pub struct Headless { exe, flags, seed }`, `Headless::call`
 //! - `pub fn serve<R: BufRead, W: Write>(&mut R, &mut W, &Headless) -> io::Result<()>`
+//! - `pub(crate) fn serve_with(&mut R, &mut W, impl FnMut(&str, &Json) -> Result<Json, (i32,
+//!   String)>) -> io::Result<()>` (the loop [`serve`] and `mcp::serve` share)
 
 mod json;
 mod socket;

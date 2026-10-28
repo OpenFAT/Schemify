@@ -40,6 +40,8 @@ const EDITOR_ONLY: &[&str] = &[
     "rustfft",
 ];
 
+// ---- private ----
+
 /// The package names `pkg` links on any target (normal and build edges).
 fn linked(pkg: &str) -> Vec<String> {
     let out = Command::new(env!("CARGO"))
