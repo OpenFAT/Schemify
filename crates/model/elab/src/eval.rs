@@ -10,7 +10,7 @@
 
 use crate::graph::Graph;
 use crate::iface::{GRID, Iface, MAX, MIN, STEP, VALID};
-use crate::values::{Funcs, NONE, VAR, Val};
+use crate::values::{Evaluated, Funcs, NONE, VAR, Val};
 use crate::violations::Code;
 use schemify_expr::{Scratch, Value};
 use std::mem;
@@ -180,11 +180,11 @@ impl Graph {
             };
             inputs.push(vals[d as usize].value()?);
         }
-        let (v, _) = c
+        let r = c
             .progs
             .eval(b, &inputs, funcs, &mut ws.scratch, &mut ws.text);
         ws.inputs = recycle(inputs);
-        (!v.is_err()).then_some(v)
+        (!r.val.is_err()).then_some(r.val)
     }
 }
 
@@ -257,7 +257,10 @@ impl Graph {
                 u |= unv[d as usize];
             }
             let r = if upstream {
-                (Val::Upstream, false)
+                Evaluated {
+                    val: Val::Upstream,
+                    unverified: false,
+                }
             } else {
                 self.progs_of(node, ifaces).eval(
                     self.prog[node as usize],
@@ -268,7 +271,7 @@ impl Graph {
                 )
             };
             ws.inputs = recycle(inputs);
-            (r.0, r.1 || u)
+            (r.val, r.unverified || u)
         };
         vals[node as usize] = val;
         unv[node as usize] = u;

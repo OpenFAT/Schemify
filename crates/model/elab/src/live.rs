@@ -38,7 +38,7 @@
 //! few touched nodes.
 //!
 //! This file holds the state, its seeding and the row checks; `patch` runs an edit,
-//! `comps` keeps components and bits.
+//! `comps` keeps components and bits, `index` holds the spatial index and its queries.
 //!
 //! Contents:
 //! - `pub(crate) struct Delta`
@@ -47,6 +47,7 @@
 //!   `update` (in `patch`)
 
 mod comps;
+mod index;
 mod patch;
 
 use crate::iface::Iface;

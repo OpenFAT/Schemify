@@ -6,7 +6,8 @@
 //! connection counts. The phases `connect` runs after naming its components.
 //!
 //! Contents:
-//! - `pub(crate) struct Slots`, `pub(crate) struct BitNets`, `pub(crate) struct DomainCounts`
+//! - `pub(crate) struct Slots`, `pub(crate) struct NamedSlot`, `pub(crate) struct SlotDomain`
+//! - `pub(crate) struct BitNets`, `pub(crate) struct DomainCounts`
 //! - `pub(crate) fn slots(cx, geo, comps, src, names, cn, out) -> Slots`
 //! - `pub(crate) fn merge(slots: Slots, cn: &CellNets) -> BitNets`
 //! - `pub(crate) fn name_bits(cx, comps, bits, names, cn)`
