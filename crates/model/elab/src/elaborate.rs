@@ -11,13 +11,16 @@
 //! globals → bench lines → sort violations.
 
 use crate::cells::{display, readable, row_of};
-use crate::check::{CellCtx, Code, Violation, Violations, check_overrides, check_values, waivers};
-use crate::connect::{CellNets, Ignore, NO_NET, connect};
-use crate::graph::{Graph, OWN, Work};
+use crate::check::{CellCtx, check_overrides, check_values, waivers};
+use crate::connect::connect;
+use crate::eval::Work;
+use crate::graph::{Graph, OWN};
 use crate::iface::Iface;
 use crate::names::{Name, Names, fnv1a64, push_base32};
 use crate::netexpr::{self, is_global};
+use crate::nets::{CellNets, Ignore, NO_NET};
 use crate::values::{Funcs, NONE, Val};
+use crate::violations::{Code, Violation, Violations};
 use schemify_doc::{DocHandle, Document, ObjId, Project, Sym};
 use schemify_expr::{Mode, Program, Scratch, Value};
 use schemify_format::FileKind;
@@ -778,7 +781,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         while ci < self.cells.len() {
             if self.ifaces[ci].open {
                 self.resolve(ci as u32);
-                crate::connect::global_labels(self.cells[ci].doc, &mut self.names, &mut globals);
+                crate::nets::global_labels(self.cells[ci].doc, &mut self.names, &mut globals);
             }
             ci += 1;
         }
@@ -1556,7 +1559,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             .enumerate()
             .map(|(i, r)| (r.prefix, i as u32))
             .collect();
-        let mut keys = crate::connect::radix_sort(keys);
+        let mut keys = crate::names::radix_sort(keys);
         let (mut lo, mut run) = (0, Vec::new());
         while lo < keys.len() {
             let hi = lo + keys[lo..].iter().take_while(|k| k.0 == keys[lo].0).count();
@@ -1586,7 +1589,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 Target::Leaf(l) => ('l', l),
             };
             sig.push(tag);
-            crate::connect::push_decimal(n, &mut sig);
+            crate::names::push_decimal(n, &mut sig);
             sig.push(',');
         }
         let full = (ci, key.clone(), sig);
@@ -1924,7 +1927,7 @@ fn short_nets(
             if first == NONE {
                 first = idx(n);
             } else {
-                crate::connect::union(&mut parent, first, idx(n));
+                crate::nets::union(&mut parent, first, idx(n));
             }
         }
     }
@@ -1939,7 +1942,7 @@ fn short_nets(
     };
     let mut best: Vec<Name> = ids.clone();
     for i in 0..ids.len() {
-        let r = crate::connect::find(&mut parent, i as u32) as usize;
+        let r = crate::nets::find(&mut parent, i as u32) as usize;
         let (a, b) = (ids[i], best[r]);
         if (rank(a), names.get(a)) < (rank(b), names.get(b)) {
             best[r] = a;
@@ -1947,7 +1950,7 @@ fn short_nets(
     }
     let mut rename = |n: &mut Name| {
         if *n != Name::NONE {
-            *n = best[crate::connect::find(&mut parent, idx(*n)) as usize];
+            *n = best[crate::nets::find(&mut parent, idx(*n)) as usize];
         }
     };
     for r in rows {

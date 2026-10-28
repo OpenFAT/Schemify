@@ -58,22 +58,26 @@
 #![allow(clippy::needless_range_loop)]
 
 mod annotate;
+mod bits;
 mod cells;
 mod check;
 mod connect;
 mod elaborate;
+mod eval;
 mod graph;
 mod iface;
 mod live;
 mod names;
+mod netcheck;
 mod netexpr;
+mod nets;
 mod ports;
 mod state;
 mod values;
+mod violations;
 
 pub use annotate::{ANNOTATIONS_MAX, AnnotationRequest, Annotations, Mark, violation_marks};
-pub use check::{Code, Severity, VIOLATIONS_MAX, Violation, Violations};
-pub use connect::{CellNets, Ignore, NO_NET, connect, global_labels, place};
+pub use connect::connect;
 pub use elaborate::{
     Bench, COMPUTED, CornerLine, DEFAULT, DEPTH_MAX, Defs, Dialect, Elab, Impls, Insts, OVERRIDDEN,
     Request, Target, elaborate,
@@ -82,7 +86,9 @@ pub use graph::Graph;
 pub use iface::{Domain, Iface, ParamKind};
 pub use names::{NAMES_MAX, Name, Names};
 pub use netexpr::{WIDTH_MAX, is_global};
+pub use nets::{CellNets, Ignore, NO_NET, global_labels, place};
 pub use ports::{PORTS_MAX, PortError, impl_ports};
+pub use violations::{Code, Severity, VIOLATIONS_MAX, Violation, Violations};
 // `Iface::pin_dir`'s element type, so readers of elab need not depend on doc.
 pub use schemify_doc::PinDir;
 pub use state::{CellState, NetChange, Recomputed};

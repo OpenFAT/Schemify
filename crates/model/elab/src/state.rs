@@ -7,15 +7,18 @@
 
 use crate::cells::{display, readable, row_of};
 use crate::check::{
-    CellCtx, INST_CODES, Violation, Violations, check_overrides, check_values, cmp_key,
-    inst_overrides, inst_rules, value_errors, waivers,
+    CellCtx, INST_CODES, check_overrides, check_values, inst_overrides, inst_rules, value_errors,
+    waivers,
 };
-use crate::connect::{CellNets, Seed, connect_seeded};
-use crate::graph::{Graph, OWN, Work, override_of, own_node};
+use crate::connect::connect_seeded;
+use crate::eval::Work;
+use crate::graph::{Graph, OWN, override_of, own_node};
 use crate::iface::{Iface, own_ref};
 use crate::live::{Ctx, Delta, Live};
 use crate::names::{Name, Names};
+use crate::nets::{CellNets, Seed};
 use crate::values::{Funcs, NONE, Syntax, VAR};
+use crate::violations::{Violation, Violations, cmp_key};
 use std::collections::BTreeMap;
 
 use schemify_doc::{DocHandle, Document, ObjId, Op, Project, Sym};
@@ -87,7 +90,7 @@ pub struct CellState {
 }
 
 /// A finding's key as raw handles: (code, cell, object, path, param).
-type RowKey = (crate::check::Code, u32, u32, u32, u32);
+type RowKey = (crate::violations::Code, u32, u32, u32, u32);
 
 fn row_key(v: &Violation) -> RowKey {
     (v.code, v.cell.0, v.object.0, v.path.0, v.param.0)
@@ -520,7 +523,7 @@ impl CellState {
 
     fn rebuild_nets(&mut self, doc: &Document) {
         let mut globals = Vec::new();
-        crate::connect::global_labels(doc, &mut self.names, &mut globals);
+        crate::nets::global_labels(doc, &mut self.names, &mut globals);
         globals.sort_unstable();
         globals.dedup();
         let (mut seed, mut found) = (Seed::default(), Vec::new());

@@ -1,16 +1,26 @@
-//! Cell interfaces as elab reads them ([`Iface`]): pins with their bit expansion,
-//! the param schema with compiled defaults/computed/bounds, the cell's vars, and its
-//! impls. Built once per reached cell from whatever `doc` holds for it (the open
-//! document, else the indexed ranks 0–1).
+//! One cell document in, its interface digest out ([`Iface`]): pins with their bit
+//! expansion, the param schema with compiled defaults/computed/bounds, the cell's vars,
+//! and its impls. Built once per reached cell from whatever `doc` holds for it (the open
+//! document, else the indexed ranks 0–1). Cites format spec §4 rank 1 (pins, params,
+//! impls), D13 (bounds and the `valid` rule), D20 (`vderived`, `vinputs`), D29
+//! (inherited pins, domains).
 //!
 //! Six questions: in, one `Document`; out, SoA columns. Pins ≤ 2^12, params ≤ 2^8,
 //! impls ≤ 2^4, vars ≤ 2^12 per cell (doc capacities). Read per instance during
 //! connectivity (pin columns) and per graph node during binding (program refs).
 //! Lifetime: one elaboration or one editor cell state.
+//!
+//! Contents:
+//! - `pub enum Domain`, `pub enum ParamKind` (`pub(crate) syntax`)
+//! - `pub struct Iface`: `bits`, `param`, `schematic_impl`, `choices_of`,
+//!   `pub(crate)` `from_doc`, `bound_konst`
+//! - `pub(crate) const MIN`, `MAX`, `STEP`, `GRID`, `VALID`, `BOUNDS`
+//! - `pub(crate) fn own_ref(names, params, vars, name) -> Option<Ref>`
+//! - `pub(crate) fn cached(t: &Records, r: usize, s: &Strings, doc: &Document) -> Option<Val>`
 
-use crate::connect::Ignore;
 use crate::names::{Name, Names};
 use crate::netexpr;
+use crate::nets::Ignore;
 use crate::values::{NONE, Progs, Ref, Syntax, VAR, Val};
 use schemify_doc::{Document, PinDir, Records, Strings, Sym};
 use schemify_format::RecordKind;
@@ -42,25 +52,6 @@ pub enum ParamKind {
     /// `choice`: template, gated by `choices`.
     Choice,
 }
-
-impl ParamKind {
-    pub(crate) fn syntax(self) -> Syntax {
-        match self {
-            ParamKind::Str | ParamKind::Choice => Syntax::Template,
-            _ => Syntax::Expr,
-        }
-    }
-}
-
-/// Index of a bound in [`Iface::param_bound`].
-pub(crate) const MIN: usize = 0;
-pub(crate) const MAX: usize = 1;
-pub(crate) const STEP: usize = 2;
-pub(crate) const GRID: usize = 3;
-/// A param's legality rule (`valid <bool expr>`, D13 as amended 2026-10-15).
-pub(crate) const VALID: usize = 4;
-/// Bounds per param: `min max step grid valid`.
-pub(crate) const BOUNDS: usize = 5;
 
 /// One cell's interface digest. Pins keep file order (= port order).
 #[derive(Clone, Debug, Default)]
@@ -112,7 +103,9 @@ pub struct Iface {
     pub(crate) choice_start: Vec<u32>,
     /// Choice texts.
     pub(crate) choices: Vec<Name>,
+    /// Program (in [`Iface::progs`]) of the default, or of the computed expression.
     pub(crate) param_prog: Vec<u32>,
+    /// Programs of `min max step grid valid`, `u32::MAX` where absent.
     pub(crate) param_bound: Vec<[u32; BOUNDS]>,
     /// Whether the param is `vderived true`: a value only Virtuoso's callbacks compute
     /// (no rule explains it), carried by an instance's `cached` attribute (D20 as amended
@@ -123,6 +116,7 @@ pub struct Iface {
 
     /// Var names (rank 4; present only when the document is open).
     pub(crate) var_name: Vec<Name>,
+    /// Program of each var's expression.
     pub(crate) var_prog: Vec<u32>,
 
     /// Impl name.
@@ -147,11 +141,39 @@ pub struct Iface {
     /// Bus pin names that expand to more than [`netexpr::WIDTH_MAX`] bits.
     pub(crate) too_wide: Vec<Name>,
 
+    /// Every program above: defaults, computed expressions, bounds, vars.
     pub(crate) progs: Progs,
 }
 
+/// Index of a bound in [`Iface::param_bound`].
+pub(crate) const MIN: usize = 0;
+
+pub(crate) const MAX: usize = 1;
+
+pub(crate) const STEP: usize = 2;
+
+pub(crate) const GRID: usize = 3;
+
+/// A param's legality rule (`valid <bool expr>`, D13 as amended 2026-10-15).
+pub(crate) const VALID: usize = 4;
+
+/// Bounds per param: `min max step grid valid`.
+pub(crate) const BOUNDS: usize = 5;
+
+impl ParamKind {
+    pub(crate) fn syntax(self) -> Syntax {
+        match self {
+            ParamKind::Str | ParamKind::Choice => Syntax::Template,
+            _ => Syntax::Expr,
+        }
+    }
+}
+
 impl Iface {
-    /// Digests `doc`. `cell` is the display name; `stem` the subckt base name.
+    /// Digests `doc`. `cell` is the display name; `stem` the subckt base name; `row` the
+    /// project cell row or `u32::MAX`; `open` whether the full document is at hand.
+    ///
+    /// Cost: one compile per param default, bound and var; O(pins + bits) otherwise.
     pub(crate) fn from_doc(
         doc: &Document,
         cell: &str,
@@ -160,8 +182,6 @@ impl Iface {
         open: bool,
         names: &mut Names,
     ) -> Iface {
-        let s = doc.strings();
-        let pool = doc.pool();
         let mut f = Iface {
             cell: names.intern(cell),
             stem: names.intern(stem),
@@ -169,8 +189,84 @@ impl Iface {
             open,
             ..Iface::default()
         };
-        // Pins.
-        let pins = doc.pins();
+        // The interning order is part of the output (handles number in it): pins, params
+        // and vars, new choice texts, impls, `vinputs`.
+        f.read_pins(doc, names);
+        f.read_params(doc, names);
+        f.read_impls(doc, names);
+        f.vinputs = doc
+            .header_values("vinputs")
+            .into_iter()
+            .map(|n| names.intern(n))
+            .collect();
+        f.default_impl = match doc.header_value("default") {
+            Some(d) => f
+                .impl_name
+                .iter()
+                .position(|n| names.get(*n) == d)
+                .map_or(NONE, |i| i as u32),
+            None if f.impl_name.len() == 1 => 0,
+            None => NONE,
+        };
+        assert_eq!(f.pin_bit_start.len(), f.pin_name.len() + 1);
+        assert_eq!(f.param_prog.len(), f.param_name.len());
+        assert_eq!(f.fmt_start.len(), f.impl_name.len() + 1);
+        f
+    }
+
+    /// Returns the bit names of pin `p`.
+    pub fn bits(&self, p: usize) -> &[Name] {
+        &self.pin_bits[self.pin_bit_start[p] as usize..self.pin_bit_start[p + 1] as usize]
+    }
+
+    /// Returns the index of param `name`.
+    pub fn param(&self, name: Name) -> Option<usize> {
+        self.param_name.iter().position(|n| *n == name)
+    }
+
+    /// Returns the index of the schematic impl, if the cell has one.
+    pub fn schematic_impl(&self, names: &Names) -> Option<usize> {
+        self.impl_lang
+            .iter()
+            .position(|l| names.get(*l) == "schematic")
+    }
+
+    /// The value of bound `w` of param `k` when it reads nothing (the usual `min 0.15`:
+    /// evaluated once when compiled, `Progs::konst`); `None` when absent or not constant.
+    pub(crate) fn bound_konst(&self, k: usize, w: usize) -> Option<&Val> {
+        assert!(w < BOUNDS);
+        let b = self.param_bound[k][w];
+        (b != NONE).then(|| self.progs.konst[b as usize].as_ref())?
+    }
+
+    /// Returns the choices of param `k`.
+    pub fn choices_of(&self, k: usize) -> &[Name] {
+        &self.choices[self.choice_start[k] as usize..self.choice_start[k + 1] as usize]
+    }
+}
+
+/// Resolves `name` in a cell's own scope: params first, then vars (expr spec §4).
+pub(crate) fn own_ref(names: &Names, params: &[Name], vars: &[Name], name: &str) -> Option<Ref> {
+    let n = names.find(name)?;
+    if let Some(k) = params.iter().position(|p| *p == n) {
+        return Some(k as Ref);
+    }
+    vars.iter().position(|v| *v == n).map(|v| VAR | v as Ref)
+}
+
+/// The D20 `cached` value of record `r` of table `t`, parsed ([`Val::parse_cached`]).
+pub(crate) fn cached(t: &Records, r: usize, s: &Strings, doc: &Document) -> Option<Val> {
+    let v = attr_vals(t, r, s, doc, "cached")?;
+    v.first().map(|v| Val::parse_cached(s.get(*v)))
+}
+
+// ---- private ----
+
+impl Iface {
+    /// Pin columns, each pin's bits, aliases and the ordinary-pin bit offsets.
+    fn read_pins(&mut self, doc: &Document, names: &mut Names) {
+        let (s, pool, pins) = (doc.strings(), doc.pool(), doc.pins());
+        let f = self;
         let mut buf = String::new();
         f.pin_bit_start.push(0);
         for p in 0..pins.name.len() {
@@ -218,17 +314,23 @@ impl Iface {
                 f.pin_off.push(NONE);
             }
         }
-        // Params and vars: names first, so programs can resolve against both.
-        let params = doc.params();
-        let vars: Vec<usize> = (0..doc.doc_blocks().kind.len())
-            .filter(|&r| doc.doc_blocks().kind[r] == RecordKind::Var)
+        assert_eq!(f.pin_off.len(), f.pin_name.len());
+    }
+
+    /// Param and var columns with their compiled programs: names first, so programs can
+    /// resolve against both; then the choice texts the programs did not intern.
+    fn read_params(&mut self, doc: &Document, names: &mut Names) {
+        let s = doc.strings();
+        let (params, blocks) = (doc.params(), doc.doc_blocks());
+        let f = self;
+        let vars: Vec<usize> = (0..blocks.kind.len())
+            .filter(|&r| blocks.kind[r] == RecordKind::Var)
             .collect();
         for r in 0..params.kind.len() {
             f.param_name.push(names.intern(s.get(params.fields[r][0])));
         }
         for &r in &vars {
-            f.var_name
-                .push(names.intern(s.get(doc.doc_blocks().fields[r][0])));
+            f.var_name.push(names.intern(s.get(blocks.fields[r][0])));
         }
         let scope = |name: &str| own_ref(names, &f.param_name, &f.var_name, name);
         let mut progs = Progs::default();
@@ -242,7 +344,6 @@ impl Iface {
                 Some("choice") => ParamKind::Choice,
                 _ => ParamKind::Number,
             };
-            let cached = cached(params, r, s, doc);
             let computed = a("computed").and_then(|v| v.first().copied());
             let text = computed.unwrap_or(params.fields[r][1]);
             let syntax = if computed.is_some() {
@@ -255,8 +356,8 @@ impl Iface {
             let vderived = a("vderived").and_then(|v| v.first().copied());
             f.param_vderived
                 .push(vderived.is_some_and(|v| s.get(v) == "true"));
-            f.param_prog
-                .push(progs.push(s.get(text), syntax, cached, scope));
+            let prog = progs.push(s.get(text), syntax, cached(params, r, s, doc), scope);
+            f.param_prog.push(prog);
             let mut bound = [NONE; BOUNDS];
             for (slot, key) in [
                 (MIN, "min"),
@@ -270,36 +371,36 @@ impl Iface {
                 }
             }
             f.param_bound.push(bound);
-            if let Some(cs) = a("choices") {
-                for &c in cs {
-                    let n = names.find(s.get(c));
-                    f.choices.push(n.unwrap_or(Name::NONE));
-                }
+            // `scope` borrows `names`: choices are looked up now, the new ones interned
+            // below.
+            for &c in a("choices").unwrap_or_default() {
+                f.choices.push(names.find(s.get(c)).unwrap_or(Name::NONE));
             }
             f.choice_start.push(f.choices.len() as u32);
         }
         for &r in &vars {
-            let blocks = doc.doc_blocks();
             let c = cached(blocks, r, s, doc);
             f.var_prog
                 .push(progs.push(s.get(blocks.fields[r][1]), Syntax::Expr, c, scope));
         }
         f.progs = progs;
-        // Choices were looked up before interning (the closure borrows `names`); intern
-        // the ones that were new.
         let mut k = 0;
         for r in 0..params.kind.len() {
-            if let Some(cs) = attr_vals(params, r, s, doc, "choices") {
-                for &c in cs {
-                    if f.choices[k] == Name::NONE {
-                        f.choices[k] = names.intern(s.get(c));
-                    }
-                    k += 1;
+            for &c in attr_vals(params, r, s, doc, "choices").unwrap_or_default() {
+                if f.choices[k] == Name::NONE {
+                    f.choices[k] = names.intern(s.get(c));
                 }
+                k += 1;
             }
         }
-        // Impls.
-        let impls = doc.impls();
+        assert_eq!(k, f.choices.len());
+        assert_eq!(f.var_prog.len(), f.var_name.len());
+    }
+
+    /// Impl columns and their `format` lines.
+    fn read_impls(&mut self, doc: &Document, names: &mut Names) {
+        let (s, pool, impls) = (doc.strings(), doc.pool(), doc.impls());
+        let f = self;
         f.fmt_start.push(0);
         for r in 0..impls.kind.len() {
             f.impl_name.push(names.intern(s.get(impls.fields[r][0])));
@@ -319,62 +420,8 @@ impl Iface {
             }
             f.fmt_start.push(f.fmt_dialect.len() as u32);
         }
-        f.vinputs = doc
-            .header_values("vinputs")
-            .into_iter()
-            .map(|n| names.intern(n))
-            .collect();
-        f.default_impl = match doc.header_value("default") {
-            Some(d) => f
-                .impl_name
-                .iter()
-                .position(|n| names.get(*n) == d)
-                .map_or(NONE, |i| i as u32),
-            None if f.impl_name.len() == 1 => 0,
-            None => NONE,
-        };
-        assert_eq!(f.pin_bit_start.len(), f.pin_name.len() + 1);
-        assert_eq!(f.param_prog.len(), f.param_name.len());
-        f
+        assert_eq!(f.impl_ignore.len(), f.impl_name.len());
     }
-
-    /// Returns the bit names of pin `p`.
-    pub fn bits(&self, p: usize) -> &[Name] {
-        &self.pin_bits[self.pin_bit_start[p] as usize..self.pin_bit_start[p + 1] as usize]
-    }
-
-    /// Returns the index of param `name`.
-    pub fn param(&self, name: Name) -> Option<usize> {
-        self.param_name.iter().position(|n| *n == name)
-    }
-
-    /// Returns the index of the schematic impl, if the cell has one.
-    pub fn schematic_impl(&self, names: &Names) -> Option<usize> {
-        self.impl_lang
-            .iter()
-            .position(|l| names.get(*l) == "schematic")
-    }
-
-    /// The value of bound `w` of param `k` when it reads nothing (the usual `min 0.15`:
-    /// evaluated once when compiled, `Progs::konst`); `None` when absent or not constant.
-    pub(crate) fn bound_konst(&self, k: usize, w: usize) -> Option<&Val> {
-        let b = self.param_bound[k][w];
-        (b != NONE).then(|| self.progs.konst[b as usize].as_ref())?
-    }
-
-    /// Returns the choices of param `k`.
-    pub fn choices_of(&self, k: usize) -> &[Name] {
-        &self.choices[self.choice_start[k] as usize..self.choice_start[k + 1] as usize]
-    }
-}
-
-/// Resolves `name` in a cell's own scope: params first, then vars (expr spec §4).
-pub(crate) fn own_ref(names: &Names, params: &[Name], vars: &[Name], name: &str) -> Option<Ref> {
-    let n = names.find(name)?;
-    if let Some(k) = params.iter().position(|p| *p == n) {
-        return Some(k as Ref);
-    }
-    vars.iter().position(|v| *v == n).map(|v| VAR | v as Ref)
 }
 
 fn attr_vals<'d>(
@@ -385,9 +432,4 @@ fn attr_vals<'d>(
     key: &str,
 ) -> Option<&'d [Sym]> {
     doc.pool().find_attr(s, t.attrs[r], key)
-}
-
-pub(crate) fn cached(t: &Records, r: usize, s: &Strings, doc: &Document) -> Option<Val> {
-    let v = attr_vals(t, r, s, doc, "cached")?;
-    v.first().map(|v| Val::parse_cached(s.get(*v)))
 }

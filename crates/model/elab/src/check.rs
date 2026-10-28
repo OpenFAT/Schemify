@@ -1,257 +1,56 @@
-//! Checks (netlist spec §8): the code table, the [`Violations`] table, D13 gating on
-//! evaluated values with waivers, and the per-cell checks over instances and the
-//! expression graph. Connectivity findings come from `connect`; hierarchy findings
-//! (`E013`, `E014`, `E031`, `E033`–`E036`, `W037`) from `elaborate`.
+//! One cell's evaluated graph, documents and waivers in, its value and instance findings
+//! out (netlist spec §8): D13 gating on evaluated values with waivers (`E005`, `E006`,
+//! `E032`, `E038`, `I005`), expression errors (`E008`), override checks (`E001`, `W007`,
+//! `E030`) and stale Virtuoso-derived values (`E039`, D20 as amended 2026-10-15).
+//! Connectivity findings come from `connect`; hierarchy findings (`E013`, `E014`, `E031`,
+//! `E033`–`E036`, `W037`) from `elaborate`.
+//!
+//! Contents:
+//! - `pub(crate) struct CellCtx`
+//! - `pub(crate) const INST_CODES`
+//! - `pub(crate) fn waivers(doc: &Document, names: &Names) -> Vec<(ObjId, Name)>`
+//! - `pub(crate) fn gate(v, bounds, choices, names, out)`
+//! - `pub(crate) fn passes(x: f64, b: [Option<f64>; 4]) -> bool`
+//! - `pub(crate) fn check_overrides(cx, unresolved, names, out)`
+//! - `pub(crate) fn inst_overrides(cx, i, unresolved, names, out)`
+//! - `pub(crate) fn check_values(cx, vals, names, funcs, ws, out)`
+//! - `pub(crate) fn value_errors(cx, vals, nodes, out)`
+//! - `pub(crate) fn inst_rules(cx, i, vals, names, funcs, ws, found, out)`
+//! - `pub(crate) fn inputs_digest(c: &Iface, vals: &[Val], names: &Names) -> Option<String>`
 
-use crate::graph::{Graph, Work};
-use crate::iface::{GRID, Iface, MAX, MIN, STEP};
-use crate::names::{Name, Names};
-use crate::values::{Code as PCode, Funcs, NONE, Val};
+use crate::eval::Work;
+use crate::graph::{Graph, OWN};
+use crate::iface::{BOUNDS, GRID, Iface, MAX, MIN, STEP, VALID};
+use crate::names::{Name, Names, fnv1a64};
+use crate::values::{Code as PCode, Funcs, NONE, Val, cached_text};
+use crate::violations::{Code, Violation};
 use schemify_doc::{Document, Instances, ObjId};
-use std::cmp::Ordering;
 
-/// Check codes (netlist spec §8; `E035`, `E036`, `W037` are elab amendments).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[allow(missing_docs)] // meanings: `Code::meaning`
-pub enum Code {
-    E001,
-    E002,
-    E003,
-    W004,
-    E005,
-    E006,
-    W007,
-    E008,
-    E009,
-    W010,
-    E011,
-    E012,
-    E013,
-    E014,
-    W016,
-    E030,
-    E031,
-    E032,
-    E033,
-    E034,
-    E035,
-    E036,
-    W037,
-    E038,
-    E039,
-    I005,
+/// What one evaluation context of a cell is checked against.
+pub(crate) struct CellCtx<'a> {
+    pub(crate) doc: &'a Document,
+    pub(crate) ifaces: &'a [Iface],
+    pub(crate) own: u32,
+    pub(crate) inst_iface: &'a [u32],
+    pub(crate) graph: &'a Graph,
+    pub(crate) waivers: &'a [(ObjId, Name)],
 }
 
-/// How much a violation matters (spec §8): `Error` blocks Run and netlisting.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(u8)]
-pub enum Severity {
-    /// Blocks.
-    Error,
-    /// Reported.
-    Warning,
-    /// Informational (waived violations).
-    Info,
-}
-
-impl Code {
-    /// Returns the code as written in reports (`"E005"`).
-    pub fn as_str(self) -> &'static str {
-        const S: [&str; 26] = [
-            "E001", "E002", "E003", "W004", "E005", "E006", "W007", "E008", "E009", "W010", "E011",
-            "E012", "E013", "E014", "W016", "E030", "E031", "E032", "E033", "E034", "E035", "E036",
-            "W037", "E038", "E039", "I005",
-        ];
-        S[self as usize]
-    }
-
-    /// Returns the severity, from the code's letter.
-    pub fn severity(self) -> Severity {
-        match self.as_str().as_bytes()[0] {
-            b'E' => Severity::Error,
-            b'W' => Severity::Warning,
-            _ => Severity::Info,
-        }
-    }
-
-    /// Returns whether a `waive` record can downgrade it to `I005` (D13).
-    pub fn waivable(self) -> bool {
-        matches!(
-            self,
-            Code::E005 | Code::E006 | Code::E032 | Code::E038 | Code::E039
-        )
-    }
-
-    /// Returns the spec meaning.
-    pub fn meaning(self) -> &'static str {
-        match self {
-            Code::E001 => "missing lib/cell, or bench instantiated",
-            Code::E002 => "impl pins differ from symbol pins",
-            Code::E003 => "shorted names on one net",
-            Code::W004 => "instance pin unconnected",
-            Code::E005 => "param outside min/max",
-            Code::E006 => "param not in choices",
-            Code::W007 => "override of unknown param",
-            Code::E008 => "expression error",
-            Code::E009 => "duplicate instance name in a cell",
-            Code::W010 => "real-domain pin on an analog/digital net",
-            Code::E011 => "bus width mismatch",
-            Code::E012 => "port without interface pin, or interface pin without port",
-            Code::E013 => "dialect unsupported by selected impl",
-            Code::E014 => "hierarchy recursion",
-            Code::W016 => "net with a single connection",
-            Code::E030 => "override of computed param",
-            Code::E031 => "config names an impl the cell lacks",
-            Code::E032 => "param off grid/step",
-            Code::E033 => ".control in a code block for xyce, hspice or ltspice",
-            Code::E034 => "undefined ${NAME} in code, body or corner path",
-            Code::E035 => "unknown corner or config",
-            Code::E036 => "inherited pins of one name with different default nets",
-            Code::W037 => "config inst rule names a path no instance has",
-            Code::E038 => "param value fails its valid rule",
-            Code::E039 => "Virtuoso-derived value is stale",
-            Code::I005 => "waived violation",
-        }
-    }
-}
-
-/// One finding. Keyed by (code, cell, object, path, param).
-#[derive(Clone, Debug, PartialEq)]
-pub struct Violation {
-    /// What.
-    pub code: Code,
-    /// Display name of the cell whose document holds the object (`lib:cell`).
-    pub cell: Name,
-    /// The object id in that document, or [`ObjId::NONE`].
-    pub object: ObjId,
-    /// Hierarchical instance path (`/X1/X3`), or [`Name::NONE`] when the finding holds
-    /// for every path through the object.
-    pub path: Name,
-    /// Param, pin, net or impl name, or [`Name::NONE`].
-    pub param: Name,
-    /// Human-readable detail (cold).
-    pub detail: String,
-}
-
-impl Violation {
-    /// A finding on every path through `object` ([`Violation::path`] is [`Name::NONE`]).
-    pub(crate) fn new(
-        code: Code,
-        cell: Name,
-        object: ObjId,
-        param: Name,
-        detail: String,
-    ) -> Violation {
-        Violation {
-            code,
-            cell,
-            object,
-            path: Name::NONE,
-            param,
-            detail,
-        }
-    }
-
-    /// The order [`Violations::rows`] are sorted in (unique per table): code text, cell,
-    /// object, path, param (texts through `names`, the arena both rows' names are from).
-    pub fn key_cmp(&self, other: &Violation, names: &Names) -> Ordering {
-        cmp_key(self, other, names)
-    }
-}
-
-/// Most violations one table holds (ARCHITECTURE capacity).
-pub const VIOLATIONS_MAX: usize = 1 << 20;
-
-/// Violations, sorted by key and unique per key.
-#[derive(Clone, Debug, Default)]
-pub struct Violations {
-    /// Rows, sorted by (code text, cell text, object, path text, param text).
-    pub rows: Vec<Violation>,
-}
-
-impl Violations {
-    /// Sorts `rows` by key and keeps the first row of each key. Beyond
-    /// [`VIOLATIONS_MAX`] rows the tail is dropped (the count stays visible as the cap).
-    pub(crate) fn from_rows(mut rows: Vec<Violation>, names: &Names) -> Violations {
-        rows.sort_by(|a, b| cmp_key(a, b, names));
-        rows.dedup_by(|b, a| cmp_key(a, b, names) == Ordering::Equal);
-        rows.truncate(VIOLATIONS_MAX);
-        // Room for a patch's insertions: the first one after a build would otherwise
-        // reallocate the whole table in an edit frame.
-        rows.reserve(rows.len() / 8 + 64);
-        debug_assert!(
-            rows.windows(2)
-                .all(|w| cmp_key(&w[0], &w[1], names) == Ordering::Less)
-        );
-        Violations { rows }
-    }
-
-    /// What changed from `old` to `self` (both from the same names arena): `(gone, new)`,
-    /// the rows only `old` has and the rows only `self` has, each in key order. A row whose
-    /// key stayed but whose detail changed is in both.
-    ///
-    /// Cost: one merge pass, O(rows) row compares; key comparisons (string compares through
-    /// `names`) only where the two lists differ.
-    pub fn diff<'a>(
-        &'a self,
-        old: &'a Violations,
-        names: &Names,
-    ) -> (Vec<&'a Violation>, Vec<&'a Violation>) {
-        let (mut gone, mut new) = (Vec::new(), Vec::new());
-        let (a, b) = (&old.rows, &self.rows);
-        let (mut i, mut j) = (0, 0);
-        while i < a.len() && j < b.len() {
-            if a[i] == b[j] {
-                (i, j) = (i + 1, j + 1);
-                continue;
-            }
-            match cmp_key(&a[i], &b[j], names) {
-                Ordering::Less => {
-                    gone.push(&a[i]);
-                    i += 1;
-                }
-                Ordering::Greater => {
-                    new.push(&b[j]);
-                    j += 1;
-                }
-                Ordering::Equal => {
-                    gone.push(&a[i]);
-                    new.push(&b[j]);
-                    (i, j) = (i + 1, j + 1);
-                }
-            }
-        }
-        gone.extend(&a[i..]);
-        new.extend(&b[j..]);
-        assert!(gone.len() <= a.len() && new.len() <= b.len());
-        (gone, new)
-    }
-
-    /// Returns whether any row blocks (severity `Error`).
-    pub fn blocking(&self) -> bool {
-        self.rows
-            .iter()
-            .any(|v| v.code.severity() == Severity::Error)
-    }
-
-    /// Returns the rows with `code`.
-    pub fn with(&self, code: Code) -> impl Iterator<Item = &Violation> + '_ {
-        self.rows.iter().filter(move |v| v.code == code)
-    }
-}
-
-/// Orders violations by their key (code text, cell, object, path, param).
-pub(crate) fn cmp_key(a: &Violation, b: &Violation, names: &Names) -> Ordering {
-    let code = if a.code == b.code {
-        Ordering::Equal
-    } else {
-        a.code.as_str().cmp(b.code.as_str())
-    };
-    code.then_with(|| names.cmp(a.cell, b.cell))
-        .then(a.object.cmp(&b.object))
-        .then_with(|| names.cmp(a.path, b.path))
-        .then_with(|| names.cmp(a.param, b.param))
-}
+/// The codes a cell state's per-instance checks write ([`inst_overrides`],
+/// [`value_errors`], [`inst_rules`]), each once: in a cell state's table every row of these
+/// codes comes from them, keyed by its instance (own-scope `E008` rows by no object).
+pub(crate) const INST_CODES: [Code; 10] = [
+    Code::E001,
+    Code::W007,
+    Code::E030,
+    Code::E008,
+    Code::E005,
+    Code::E006,
+    Code::E032,
+    Code::E038,
+    Code::E039,
+    Code::I005,
+];
 
 /// Waivers of one document: `(instance id, param)` pairs, sorted. A waiver naming a param
 /// no interface has (its name not in `names`) can match no finding (only gating codes on
@@ -273,7 +72,7 @@ pub(crate) fn waivers(doc: &Document, names: &Names) -> Vec<(ObjId, Name)> {
 /// violated rule; `bounds` are the evaluated `min`, `max`, `step`, `grid`.
 pub(crate) fn gate(
     v: &Val,
-    bounds: &[Option<Val>; crate::iface::BOUNDS],
+    bounds: &[Option<Val>; BOUNDS],
     choices: &[Name],
     names: &Names,
     out: &mut Vec<(Code, String)>,
@@ -355,7 +154,7 @@ pub(crate) fn gate(
     // The param's legality rule (`valid`, D13 as amended 2026-10-15): a rule that does not
     // hold, or that is not a bool, is a finding; one that could not be evaluated is already
     // an E008.
-    match &bounds[crate::iface::VALID] {
+    match &bounds[VALID] {
         None | Some(Val::Bool(true)) => {}
         Some(Val::Bool(false)) => out.push((
             Code::E038,
@@ -383,29 +182,6 @@ pub(crate) fn passes(x: f64, b: [Option<f64>; 4]) -> bool {
             (None, Some(st)) => on_grid(x, base, st),
             (None, None) => true,
         }
-}
-
-/// Whether `x` is `base + k·step` for an integer `k`, to a relative 1e-9 (values are
-/// f64 from decimal text, so `0.3` on a `0.1` grid must pass).
-fn on_grid(x: f64, base: f64, step: f64) -> bool {
-    let r = (x - base) / step;
-    (r - r.round()).abs() <= 1e-9 * r.abs().max(1.0)
-}
-
-fn num_text(x: f64) -> String {
-    let mut s = String::new();
-    schemify_expr::write_num(&mut s, x);
-    s
-}
-
-/// What one evaluation context of a cell is checked against.
-pub(crate) struct CellCtx<'a> {
-    pub(crate) doc: &'a Document,
-    pub(crate) ifaces: &'a [Iface],
-    pub(crate) own: u32,
-    pub(crate) inst_iface: &'a [u32],
-    pub(crate) graph: &'a Graph,
-    pub(crate) waivers: &'a [(ObjId, Name)],
 }
 
 /// Instance-level checks that do not depend on values: `E001` (unresolved cell, given
@@ -506,7 +282,7 @@ pub(crate) fn value_errors(
             continue;
         };
         let owner = g.owner[n as usize];
-        let child_scope = owner != NONE && g.table[n as usize] != crate::graph::OWN;
+        let child_scope = owner != NONE && g.table[n as usize] != OWN;
         if child_scope && matches!(g.code(n, cx.ifaces), PCode::Bad(_)) {
             continue;
         }
@@ -561,8 +337,8 @@ pub(crate) fn inst_rules<F: Funcs>(
         // that passes them has nothing to report.
         let konst = |w| c.bound_konst(k, w);
         let fast = c.choice_start[k] == c.choice_start[k + 1]
-            && (0..crate::iface::BOUNDS).all(|w| c.param_bound[k][w] == NONE || konst(w).is_some())
-            && konst(crate::iface::VALID).is_none_or(|v| matches!(v, Val::Bool(true)));
+            && (0..BOUNDS).all(|w| c.param_bound[k][w] == NONE || konst(w).is_some())
+            && konst(VALID).is_none_or(|v| matches!(v, Val::Bool(true)));
         if fast {
             let b = |w: usize| konst(w).and_then(Val::as_f64);
             if v.as_f64()
@@ -571,7 +347,7 @@ pub(crate) fn inst_rules<F: Funcs>(
                 continue;
             }
         }
-        let mut bounds: [Option<Val>; crate::iface::BOUNDS] = Default::default();
+        let mut bounds: [Option<Val>; BOUNDS] = Default::default();
         for (which, b) in bounds.iter_mut().enumerate() {
             *b = g.bound(i, k, which, vals, cx.ifaces, funcs, ws);
         }
@@ -598,22 +374,6 @@ pub(crate) fn inst_rules<F: Funcs>(
     }
 }
 
-/// The codes a cell state's per-instance checks write ([`inst_overrides`],
-/// [`value_errors`], [`inst_rules`]), each once: in a cell state's table every row of these
-/// codes comes from them, keyed by its instance (own-scope `E008` rows by no object).
-pub(crate) const INST_CODES: [Code; 10] = [
-    Code::E001,
-    Code::W007,
-    Code::E030,
-    Code::E008,
-    Code::E005,
-    Code::E006,
-    Code::E032,
-    Code::E038,
-    Code::E039,
-    Code::I005,
-];
-
 /// The digest of an instance's `vinputs` values (D20 as amended 2026-10-15): FNV-1a 64 of
 /// one `<name>=<cached text>` line per input, in `vinputs` order, as 16 lowercase hex
 /// digits; `None` when an input is not a param of the cell or has no value.
@@ -626,10 +386,25 @@ pub(crate) fn inputs_digest(c: &Iface, vals: &[Val], names: &Names) -> Option<St
         }
         text.push_str(names.get(n));
         text.push('=');
-        crate::values::cached_text(v, &mut text);
+        cached_text(v, &mut text);
         text.push('\n');
     }
-    Some(format!("{:016x}", crate::names::fnv1a64(text.as_bytes())))
+    Some(format!("{:016x}", fnv1a64(text.as_bytes())))
+}
+
+// ---- private ----
+
+/// Whether `x` is `base + k·step` for an integer `k`, to a relative 1e-9 (values are
+/// f64 from decimal text, so `0.3` on a `0.1` grid must pass).
+fn on_grid(x: f64, base: f64, step: f64) -> bool {
+    let r = (x - base) / step;
+    (r - r.round()).abs() <= 1e-9 * r.abs().max(1.0)
+}
+
+fn num_text(x: f64) -> String {
+    let mut s = String::new();
+    schemify_expr::write_num(&mut s, x);
+    s
 }
 
 /// `E039` for each `vderived` param of instance row `i` (its param values `vals`, in the
@@ -756,20 +531,5 @@ mod tests {
         assert!(run(Val::Num(2.0), [None; 4], &["1", "2"]).is_empty());
         assert!(run(Val::Int(2), [None; 4], &["2.0"]).is_empty());
         assert_eq!(run(Val::Int(3), [None; 4], &["1", "2"]), [Code::E006]);
-    }
-
-    #[test]
-    fn codes_have_severity_by_letter_and_only_gating_is_waivable() {
-        assert_eq!(Code::E005.severity(), Severity::Error);
-        assert_eq!(Code::W016.severity(), Severity::Warning);
-        assert_eq!(Code::I005.severity(), Severity::Info);
-        let waivable: Vec<Code> = [Code::E001, Code::E005, Code::E006, Code::E032, Code::E030]
-            .into_iter()
-            .filter(|c| c.waivable())
-            .collect();
-        assert_eq!(waivable, [Code::E005, Code::E006, Code::E032]);
-        assert!(Code::E039.waivable() && Code::E038.waivable());
-        assert_eq!(Code::I005.as_str(), "I005");
-        assert_eq!(Code::E035.as_str(), "E035");
     }
 }

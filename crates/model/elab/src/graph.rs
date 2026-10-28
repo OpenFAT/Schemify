@@ -1,6 +1,7 @@
-//! The expression graph of one cell (D19, expr spec §4): one node per value the cell
-//! defines or instantiates, edges "depends on", evaluated in topological order, and
-//! re-evaluated incrementally over the affected set after an edit.
+//! One cell document and its interfaces in, its expression graph out (D19, expr spec §4):
+//! one node per value the cell defines or instantiates, edges "depends on", a topological
+//! order, and the in-place dependency edits an incremental recompute needs. Evaluation
+//! over the graph is `eval`'s.
 //!
 //! Node layout (by index):
 //! - `[0, P)`: the cell's own params (default or computed expression), own scope;
@@ -14,23 +15,27 @@
 //! Own scope = own params, then own vars; child scope = that instance's param nodes,
 //! then its child var nodes (expr spec §4, netlist spec §6).
 //!
-//! Six questions: in, a document + interfaces; out, `vals`/`unverified` columns. Nodes
-//! ≤ instances × 2^8 params (2^30 bound, `u32`). Eval walks `order` reading each
-//! node's deps (a `[start, end)` range per node: built as CSR, an edit that changes a
-//! node's dependencies writes them in place or appends them, [`Graph::set_deps`]).
-//! Lifetime: until a structural edit (the editor) or one elaboration. Parallel: one graph
-//! per cell, independent.
+//! Six questions: in, a document + interfaces; out, SoA node columns. Nodes ≤ instances ×
+//! 2^8 params (2^30 bound, `u32`). Eval walks `order` reading each node's deps (a
+//! `[start, end)` range per node: built as CSR, an edit that changes a node's dependencies
+//! writes them in place or appends them, [`Graph::set_deps`]). Lifetime: until a
+//! structural edit (the editor) or one elaboration. Parallel: one graph per cell,
+//! independent.
+//!
+//! Contents:
+//! - `pub struct Graph`: `len`, `is_empty`, `inst_param`; `pub(crate)` `build`,
+//!   `node_param`, `child_var`, `node_deps`, `set_deps`, `code`, `progs_of`
+//! - `pub(crate) const OWN`
+//! - `pub(crate) fn override_of(doc: &Document, i: usize, key: &str) -> Option<Sym>`
+//! - `pub(crate) fn cached_of(doc, i, key) -> (Option<(&str, &str)>, bool)`
+//! - `pub(crate) fn own_node(params: u32, r: Ref) -> u32`
 
-use crate::iface::{GRID, Iface, MAX, MIN, STEP, VALID};
+use crate::iface::Iface;
 use crate::names::{Name, Names};
-use crate::values::{Code as PCode, Funcs, NONE, Progs, Ref, Syntax, VAR, Val};
+use crate::values::{Code as PCode, NONE, Progs, Ref, Syntax, VAR, Val};
 use schemify_doc::{Document, Instances, Sym};
-use schemify_expr::{Deps, Error as XError, Scratch, Value, reverse, topo_order, topo_order_all};
+use schemify_expr::{Deps, Error as XError, reverse, topo_order, topo_order_all};
 use std::collections::HashMap;
-
-/// Program table of a node: the graph's own table (overrides, substituted vars), or the
-/// interface at this index.
-pub(crate) const OWN: u32 = u32::MAX - 1;
 
 /// One cell's dependency graph and its current values.
 #[derive(Clone, Debug, Default)]
@@ -39,7 +44,9 @@ pub struct Graph {
     pub owner: Vec<u32>,
     /// Param index (own or child), or `VAR | var index` for var nodes.
     pub(crate) slot: Vec<u32>,
+    /// Program table of the node: [`OWN`], or the interface index holding it.
     pub(crate) table: Vec<u32>,
+    /// Program index in that table.
     pub(crate) prog: Vec<u32>,
     /// Doc symbol of the node's expression text in the cell's own document (overrides,
     /// own params and vars), for change detection; [`Sym::NONE`] otherwise.
@@ -54,11 +61,13 @@ pub struct Graph {
     pub(crate) rdep_end: Vec<u32>,
     pub(crate) rdeps: Vec<u32>,
     /// Edges at the last build: [`Graph::set_deps`] gives up (the caller rebuilds, which
-    /// compacts) once appended lists pass twice this.
+    /// compacts) once the appended lists pass four times this.
     pub(crate) edges: usize,
+    /// Position of each node in `order`.
     pub(crate) rank: Vec<u32>,
+    /// Nodes in topological order (dependencies first).
     pub(crate) order: Vec<u32>,
-    /// Nodes on a dependency cycle (`X005`), with the error.
+    /// Nodes on a dependency cycle (`X005`), with the error, sorted by node.
     pub(crate) cyclic: Vec<(u32, XError)>,
     /// Current value per node (default context in the editor).
     pub vals: Vec<Val>,
@@ -78,54 +87,25 @@ pub struct Graph {
     pub(crate) inst_iface: Vec<u32>,
     /// `(instance row, child var) → node`, sorted.
     pub(crate) child_vars: Vec<(u32, u32, u32)>,
+    /// Programs the graph compiled itself: overrides and substituted vars.
     pub(crate) progs: Progs,
 }
 
-/// Returns the override text symbol of `key` on instance row `i`: the last attribute
-/// line with that key (a duplicate is `E024` at load; the later line wins), else the value
-/// of its `cached <key> <value> <digest>` line (a value Virtuoso derived, D20 as amended
-/// 2026-10-15).
-pub(crate) fn override_of(doc: &Document, i: usize, key: &str) -> Option<Sym> {
-    let s = doc.strings();
-    let mut found = None;
-    let mut cached = None;
-    for (k, vals) in doc.pool().attrs(doc.instances().attrs[i]) {
-        let k = s.get(k);
-        if Instances::is_override(k) && k == key {
-            found = vals.first().copied();
-        } else if k == "cached" && vals.first().is_some_and(|p| s.get(*p) == key) {
-            cached = vals.get(1).copied();
-        }
-    }
-    found.or(cached)
-}
-
-/// The `(value, digest)` of instance row `i`'s `cached <key> <value> <digest>` line, and
-/// whether `key` has an override of its own.
-pub(crate) fn cached_of<'d>(
-    doc: &'d Document,
-    i: usize,
-    key: &str,
-) -> (Option<(&'d str, &'d str)>, bool) {
-    let s = doc.strings();
-    let (mut cached, mut own) = (None, false);
-    for (k, vals) in doc.pool().attrs(doc.instances().attrs[i]) {
-        let k = s.get(k);
-        if Instances::is_override(k) && k == key {
-            own = true;
-        } else if k == "cached" && vals.len() == 3 && s.get(vals[0]) == key {
-            cached = Some((s.get(vals[1]), s.get(vals[2])));
-        }
-    }
-    (cached, own)
-}
+/// Program table of a node: the graph's own table (overrides, substituted vars), or the
+/// interface at this index.
+pub(crate) const OWN: u32 = u32::MAX - 1;
 
 impl Graph {
     /// Builds the graph of `doc`. `own` indexes `ifaces` (the cell's own interface);
     /// `inst_iface[i]` is instance row `i`'s interface or `u32::MAX`. `subst` replaces
     /// own var expressions by name (later entries win), adding vars that do not exist.
+    /// Values start as [`Val::Upstream`]; `eval` fills them.
     ///
     /// Cost: O(nodes + edges) plus one compile per distinct override text.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `inst_iface` is not one slot per instance row.
     pub(crate) fn build(
         doc: &Document,
         own: u32,
@@ -134,7 +114,6 @@ impl Graph {
         subst: &[(Name, &str)],
         names: &Names,
     ) -> Graph {
-        let s = doc.strings();
         let ni = doc.instances().id.len();
         assert_eq!(inst_iface.len(), ni);
         let me = &ifaces[own as usize];
@@ -145,191 +124,12 @@ impl Graph {
             inst_iface: inst_iface.to_vec(),
             ..Graph::default()
         };
-        // Substituted / added vars (later wins).
-        let mut var_subst: Vec<Option<&str>> = vec![None; me.var_name.len()];
-        for &(n, text) in subst {
-            match g.var_name.iter().position(|v| *v == n) {
-                Some(v) => var_subst[v] = Some(text),
-                None => {
-                    g.var_name.push(n);
-                    var_subst.push(Some(text));
-                }
-            }
-        }
-        g.vars = g.var_name.len() as u32;
-        let p = g.params;
-        // Own params and vars.
-        let own_src = own_sources(doc);
-        for k in 0..p {
-            let src = own_src.0.get(k as usize).copied().unwrap_or(Sym::NONE);
-            g.push(NONE, k, own, me.param_prog[k as usize], src);
-        }
-        for v in 0..g.vars {
-            let src = own_src.1.get(v as usize).copied().unwrap_or(Sym::NONE);
-            match var_subst[v as usize] {
-                Some(text) => {
-                    let prog = {
-                        let lookup =
-                            |n: &str| crate::iface::own_ref(names, &me.param_name, &g.var_name, n);
-                        g.progs.push(text, Syntax::Expr, None, lookup)
-                    };
-                    g.push(NONE, VAR | v, OWN, prog, Sym::NONE);
-                }
-                None => g.push(NONE, VAR | v, own, me.var_prog[v as usize], src),
-            }
-        }
-        // Instance blocks.
-        let mut dedupe: HashMap<(Sym, bool), u32> = HashMap::new();
-        for i in 0..ni {
-            let Some(c) = ifaces.get(inst_iface[i] as usize) else {
-                g.inst_first.push(NONE);
-                continue;
-            };
-            g.inst_first.push(g.owner.len() as u32);
-            for k in 0..c.param_name.len() {
-                let ovr = if c.param_computed[k] {
-                    None // E030: the override is reported and ignored
-                } else {
-                    override_of(doc, i, names.get(c.param_name[k]))
-                };
-                match ovr {
-                    Some(sym) => {
-                        let syntax = c.param_kind[k].syntax();
-                        let key = (sym, syntax == Syntax::Template);
-                        let prog = match dedupe.get(&key) {
-                            Some(&prog) => prog,
-                            None => {
-                                let lookup = |n: &str| {
-                                    crate::iface::own_ref(names, &me.param_name, &g.var_name, n)
-                                };
-                                let prog = g.progs.push(s.get(sym), syntax, None, lookup);
-                                dedupe.insert(key, prog);
-                                prog
-                            }
-                        };
-                        g.push(i as u32, k as u32, OWN, prog, sym);
-                    }
-                    None => g.push(
-                        i as u32,
-                        k as u32,
-                        inst_iface[i],
-                        c.param_prog[k],
-                        Sym::NONE,
-                    ),
-                }
-            }
-        }
-        // Dependencies (child var nodes are appended while resolving).
-        g.dep_start.push(0);
-        g.dep_start.reserve(g.owner.len());
-        let mut n = 0;
-        let mut refs: Vec<Ref> = Vec::new(); // reused: one allocation, not one per node
-        while n < g.owner.len() {
-            let (owner, table, prog) = (g.owner[n], g.table[n], g.prog[n]);
-            let child_scope = owner != NONE && table != OWN;
-            let progs = if table == OWN {
-                &g.progs
-            } else {
-                &ifaces[table as usize].progs
-            };
-            refs.clear();
-            refs.extend_from_slice(progs.refs(prog));
-            for &r in &refs {
-                let d = if child_scope {
-                    g.child_ref(owner, table, r, ifaces)
-                } else {
-                    own_node(p, r)
-                };
-                g.deps.push(d);
-            }
-            if child_scope && g.slot[n] & VAR == 0 {
-                // Bounds may read child vars: make sure their nodes exist for gating.
-                let c = &ifaces[table as usize];
-                for b in c.param_bound[g.slot[n] as usize] {
-                    if b != NONE {
-                        for &r in c.progs.refs(b) {
-                            if r & VAR != 0 {
-                                g.child_ref(owner, table, r, ifaces);
-                            }
-                        }
-                    }
-                }
-            }
-            g.dep_start.push(g.deps.len() as u32);
-            n += 1;
-        }
+        g.own_nodes(doc, me, subst, names);
+        g.inst_blocks(doc, me, ifaces, names);
+        g.resolve_deps(ifaces);
         g.finish(ifaces, names);
+        assert_eq!(g.inst_first.len(), ni);
         g
-    }
-
-    fn push(&mut self, owner: u32, slot: u32, table: u32, prog: u32, src: Sym) {
-        self.owner.push(owner);
-        self.slot.push(slot);
-        self.table.push(table);
-        self.prog.push(prog);
-        self.src.push(src);
-        assert!(self.owner.len() < NONE as usize - 1, "graph node capacity");
-    }
-
-    /// Node for a child-scope reference of instance `owner` (interface `table`).
-    fn child_ref(&mut self, owner: u32, table: u32, r: Ref, ifaces: &[Iface]) -> u32 {
-        if r & VAR == 0 {
-            return self.inst_first[owner as usize] + r;
-        }
-        let v = r & !VAR;
-        let key = (owner, v);
-        match self.child_vars.binary_search_by_key(&key, |e| (e.0, e.1)) {
-            Ok(i) => self.child_vars[i].2,
-            Err(i) => {
-                let node = self.owner.len() as u32;
-                let prog = ifaces[table as usize].var_prog[v as usize];
-                self.push(owner, VAR | v, table, prog, Sym::NONE);
-                self.child_vars.insert(i, (owner, v, node));
-                node
-            }
-        }
-    }
-
-    /// Builds reverse edges and the topological order. Every node on a cycle gets `X005`
-    /// (expr spec §4: all cycles in one pass) and loses its edges, which leaves the order
-    /// valid: an edge inside a cyclic component starts at a cycle node.
-    fn finish(&mut self, ifaces: &[Iface], names: &Names) {
-        let n = self.owner.len();
-        assert_eq!(self.dep_start.len(), n + 1);
-        self.dep_end = self.dep_start[1..].to_vec();
-        let deps = Deps {
-            offsets: &self.dep_start,
-            targets: &self.deps,
-        };
-        // The acyclic case (nearly every cell) takes the cheaper order.
-        if topo_order(deps, &mut self.order).is_err() {
-            let mut cycles = Vec::new();
-            topo_order_all(deps, &mut self.order, &mut cycles);
-            for c in &cycles {
-                let err = c.error(|n| names.get(self.node_param(n, ifaces)));
-                self.cyclic
-                    .extend(c.nodes.iter().map(|&node| (node, err.clone())));
-            }
-            // A node on several cycles reports the first.
-            self.cyclic.sort_by_key(|e| e.0);
-            self.cyclic.dedup_by_key(|e| e.0);
-            assert!(!self.cyclic.is_empty(), "a failed order has a cycle");
-            self.cut();
-        }
-        let deps = Deps {
-            offsets: &self.dep_start,
-            targets: &self.deps,
-        };
-        reverse(deps, &mut self.rdep_start, &mut self.rdeps);
-        self.rdep_end = self.rdep_start[1..].to_vec();
-        self.edges = self.deps.len();
-        self.rank = vec![0; n];
-        for (r, &node) in self.order.iter().enumerate() {
-            self.rank[node as usize] = r as u32;
-        }
-        self.vals = vec![Val::Upstream; n];
-        self.unverified = vec![false; n];
-        assert_eq!(self.order.len(), n);
     }
 
     /// The param or var node `n` is the value of: an own param or var, or a param or
@@ -355,27 +155,6 @@ impl Graph {
             .binary_search_by_key(&(i, v), |e| (e.0, e.1))
             .ok()?;
         Some(self.child_vars[at].2)
-    }
-
-    /// Drops the edges of the `cyclic` nodes (rebuilds the CSR).
-    fn cut(&mut self) {
-        // Rebuild the CSR without the cyclic nodes' edges.
-        let mut start = vec![0u32];
-        let mut deps = Vec::with_capacity(self.deps.len());
-        for node in 0..self.owner.len() {
-            if self
-                .cyclic
-                .binary_search_by_key(&(node as u32), |e| e.0)
-                .is_err()
-            {
-                deps.extend_from_slice(self.node_deps(node as u32));
-            }
-            start.push(deps.len() as u32);
-        }
-        self.dep_start = start;
-        self.deps = deps;
-        self.dep_end = self.dep_start[1..].to_vec();
-        assert_eq!(self.dep_end.len(), self.owner.len());
     }
 
     /// Returns the nodes node `n` depends on, in its program's identifier order.
@@ -441,257 +220,274 @@ impl Graph {
         (first != NONE).then_some(first + k as u32)
     }
 
-    /// Returns the program of node `n` and the table holding it.
+    /// Returns the compiled program of node `n`.
     pub(crate) fn code<'a>(&'a self, n: u32, ifaces: &'a [Iface]) -> &'a PCode {
         let progs = self.progs_of(n, ifaces);
         &progs.code[self.prog[n as usize] as usize]
     }
 
-    fn progs_of<'a>(&'a self, n: u32, ifaces: &'a [Iface]) -> &'a Progs {
+    /// Returns the program table holding node `n`'s program.
+    pub(crate) fn progs_of<'a>(&'a self, n: u32, ifaces: &'a [Iface]) -> &'a Progs {
         match self.table[n as usize] {
             OWN => &self.progs,
             t => &ifaces[t as usize].progs,
         }
     }
-
-    /// Evaluates every node into `vals`/`unv` in topological order. With `fixed`, own
-    /// params take those values (an elaboration context) instead of their defaults.
-    pub(crate) fn eval_all<F: Funcs>(
-        &self,
-        fixed: Option<&[Val]>,
-        vals: &mut Vec<Val>,
-        unv: &mut Vec<bool>,
-        ifaces: &[Iface],
-        funcs: &mut F,
-        ws: &mut Work,
-    ) {
-        let n = self.len();
-        vals.clear();
-        vals.resize(n, Val::Upstream);
-        unv.clear();
-        unv.resize(n, false);
-        if let Some(f) = fixed {
-            assert_eq!(f.len(), self.params as usize, "one value per own param");
-            vals[..f.len()].clone_from_slice(f);
-        }
-        for &node in &self.order {
-            if fixed.is_some() && node < self.params {
-                continue;
-            }
-            self.eval_node(node, vals, unv, ifaces, funcs, ws);
-        }
-    }
-
-    /// Evaluates only the own params and vars (default context): they never read
-    /// instance nodes, so this is their full evaluation at a fraction of the cost.
-    /// Instance nodes are left as [`Val::Upstream`].
-    pub(crate) fn eval_own<F: Funcs>(
-        &self,
-        vals: &mut Vec<Val>,
-        unv: &mut Vec<bool>,
-        ifaces: &[Iface],
-        funcs: &mut F,
-        ws: &mut Work,
-    ) {
-        let n = self.len();
-        vals.clear();
-        vals.resize(n, Val::Upstream);
-        unv.clear();
-        unv.resize(n, false);
-        for &node in &self.order {
-            if self.owner[node as usize] == NONE {
-                debug_assert!(
-                    self.node_deps(node)
-                        .iter()
-                        .all(|&d| self.owner[d as usize] == NONE)
-                );
-                self.eval_node(node, vals, unv, ifaces, funcs, ws);
-            }
-        }
-    }
-
-    /// Re-evaluates the `dirty` nodes and everything depending on them, in order, and
-    /// appends to `changed` each evaluated node whose value or `unverified` flag differs
-    /// from before (in evaluation order). Returns the number of nodes evaluated. Valid
-    /// while edges are unchanged.
-    ///
-    /// Cost: O(affected + their edges), plus O(nodes) once to size the marks.
-    pub(crate) fn recompute<F: Funcs>(
-        &mut self,
-        dirty: &[u32],
-        ifaces: &[Iface],
-        funcs: &mut F,
-        ws: &mut Work,
-        changed: &mut Vec<u32>,
-    ) -> usize {
-        self.affected(dirty, ws);
-        let todo = std::mem::take(&mut ws.affected);
-        let (mut vals, mut unv) = (
-            std::mem::take(&mut self.vals),
-            std::mem::take(&mut self.unverified),
-        );
-        let before = changed.len();
-        for &node in &todo {
-            // A node never reads itself (cycle nodes lost their edges): its old value can
-            // step aside while it is evaluated.
-            let was = std::mem::replace(&mut vals[node as usize], Val::Upstream);
-            let was_unv = unv[node as usize];
-            self.eval_node(node, &mut vals, &mut unv, ifaces, funcs, ws);
-            if vals[node as usize] != was || unv[node as usize] != was_unv {
-                changed.push(node);
-            }
-        }
-        self.vals = vals;
-        self.unverified = unv;
-        let count = todo.len();
-        assert!(
-            changed.len() - before <= count,
-            "only evaluated nodes change"
-        );
-        ws.affected = todo;
-        count
-    }
-
-    /// The `dirty` nodes and every node depending on them, in topological order, into
-    /// `ws.affected`. Marks are epoch stamps, so a walk clears nothing.
-    fn affected(&self, dirty: &[u32], ws: &mut Work) {
-        let n = self.len();
-        if ws.seen.len() != n {
-            ws.seen = vec![0; n];
-            ws.epoch = 0;
-        }
-        ws.epoch = ws.epoch.wrapping_add(1);
-        if ws.epoch == 0 {
-            ws.seen.fill(0);
-            ws.epoch = 1;
-        }
-        let (out, seen, epoch) = (&mut ws.affected, &mut ws.seen, ws.epoch);
-        out.clear();
-        for &d in dirty {
-            assert!((d as usize) < n, "dirty node {d} out of range");
-            if seen[d as usize] != epoch {
-                seen[d as usize] = epoch;
-                out.push(d);
-            }
-        }
-        let mut i = 0;
-        while i < out.len() {
-            let v = out[i] as usize;
-            for &w in &self.rdeps[self.rdep_start[v] as usize..self.rdep_end[v] as usize] {
-                if seen[w as usize] != epoch {
-                    seen[w as usize] = epoch;
-                    out.push(w);
-                }
-            }
-            i += 1;
-        }
-        out.sort_unstable_by_key(|&v| self.rank[v as usize]);
-        assert!(out.len() <= n, "each node once");
-    }
-
-    fn eval_node<F: Funcs>(
-        &self,
-        node: u32,
-        vals: &mut [Val],
-        unv: &mut [bool],
-        ifaces: &[Iface],
-        funcs: &mut F,
-        ws: &mut Work,
-    ) {
-        if let Ok(i) = self.cyclic.binary_search_by_key(&node, |e| e.0) {
-            vals[node as usize] = Val::Err(Box::new(self.cyclic[i].1.clone()));
-            return;
-        }
-        let (val, u) = {
-            let mut inputs: Vec<Value<'_>> = recycle(std::mem::take(&mut ws.inputs));
-            let mut upstream = false;
-            let mut u = false;
-            for &d in self.node_deps(node) {
-                match vals[d as usize].value() {
-                    Some(v) => inputs.push(v),
-                    None => upstream = true,
-                }
-                u |= unv[d as usize];
-            }
-            let r = if upstream {
-                (Val::Upstream, false)
-            } else {
-                self.progs_of(node, ifaces).eval(
-                    self.prog[node as usize],
-                    &inputs,
-                    funcs,
-                    &mut ws.scratch,
-                    &mut ws.text,
-                )
-            };
-            ws.inputs = recycle(inputs);
-            (r.0, r.1 || u)
-        };
-        vals[node as usize] = val;
-        unv[node as usize] = u;
-    }
-
-    /// Evaluates bound `which` (`MIN`, `MAX`, `STEP`, `GRID`, `VALID`) of param `k` for
-    /// instance row `i` in its child scope; `None` when absent or failing.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn bound<F: Funcs>(
-        &self,
-        i: usize,
-        k: usize,
-        which: usize,
-        vals: &[Val],
-        ifaces: &[Iface],
-        funcs: &mut F,
-        ws: &mut Work,
-    ) -> Option<Val> {
-        assert!(matches!(which, MIN | MAX | STEP | GRID | VALID));
-        let first = self.inst_first[i];
-        assert!(first != NONE, "gating needs a resolved instance");
-        let c = &ifaces[self.inst_iface[i] as usize];
-        let b = c.param_bound[k][which];
-        if b == NONE {
-            return None;
-        }
-        let mut inputs: Vec<Value<'_>> = recycle(std::mem::take(&mut ws.inputs));
-        for &r in c.progs.refs(b) {
-            let d = if r & VAR == 0 {
-                first + r
-            } else {
-                self.child_var(i as u32, r & !VAR)?
-            };
-            inputs.push(vals[d as usize].value()?);
-        }
-        let (v, _) = c
-            .progs
-            .eval(b, &inputs, funcs, &mut ws.scratch, &mut ws.text);
-        ws.inputs = recycle(inputs);
-        (!v.is_err()).then_some(v)
-    }
 }
 
-/// Reusable evaluation memory.
-#[derive(Debug, Default)]
-pub(crate) struct Work {
-    pub(crate) scratch: Scratch,
-    pub(crate) text: String,
-    inputs: Vec<Value<'static>>,
-    affected: Vec<u32>,
-    /// Epoch marks of the affected walk, one per node.
-    seen: Vec<u32>,
-    epoch: u32,
+/// Returns the override text symbol of `key` on instance row `i`: the last attribute
+/// line with that key (a duplicate is `E024` at load; the later line wins), else the value
+/// of its `cached <key> <value> <digest>` line (a value Virtuoso derived, D20 as amended
+/// 2026-10-15).
+pub(crate) fn override_of(doc: &Document, i: usize, key: &str) -> Option<Sym> {
+    let s = doc.strings();
+    let mut found = None;
+    let mut cached = None;
+    for (k, vals) in doc.pool().attrs(doc.instances().attrs[i]) {
+        let k = s.get(k);
+        if Instances::is_override(k) && k == key {
+            found = vals.first().copied();
+        } else if k == "cached" && vals.first().is_some_and(|p| s.get(*p) == key) {
+            cached = vals.get(1).copied();
+        }
+    }
+    found.or(cached)
 }
 
-/// Reuses a value buffer's allocation across lifetimes (clears it).
-fn recycle<'b>(mut v: Vec<Value<'_>>) -> Vec<Value<'b>> {
-    v.clear();
-    v.into_iter()
-        .map(|_| -> Value<'b> { unreachable!("cleared") })
-        .collect()
+/// The `(value, digest)` of instance row `i`'s `cached <key> <value> <digest>` line, and
+/// whether `key` has an override of its own.
+pub(crate) fn cached_of<'d>(
+    doc: &'d Document,
+    i: usize,
+    key: &str,
+) -> (Option<(&'d str, &'d str)>, bool) {
+    let s = doc.strings();
+    let (mut cached, mut own) = (None, false);
+    for (k, vals) in doc.pool().attrs(doc.instances().attrs[i]) {
+        let k = s.get(k);
+        if Instances::is_override(k) && k == key {
+            own = true;
+        } else if k == "cached" && vals.len() == 3 && s.get(vals[0]) == key {
+            cached = Some((s.get(vals[1]), s.get(vals[2])));
+        }
+    }
+    (cached, own)
 }
 
 /// The own-scope node of ref `r` (params first, then vars).
 pub(crate) fn own_node(params: u32, r: Ref) -> u32 {
     if r & VAR == 0 { r } else { params + (r & !VAR) }
+}
+
+// ---- private ----
+
+impl Graph {
+    /// Own param and var nodes; `subst` replaces var expressions or adds vars (later wins).
+    fn own_nodes(&mut self, doc: &Document, me: &Iface, subst: &[(Name, &str)], names: &Names) {
+        let mut var_subst: Vec<Option<&str>> = vec![None; me.var_name.len()];
+        for &(n, text) in subst {
+            match self.var_name.iter().position(|v| *v == n) {
+                Some(v) => var_subst[v] = Some(text),
+                None => {
+                    self.var_name.push(n);
+                    var_subst.push(Some(text));
+                }
+            }
+        }
+        self.vars = self.var_name.len() as u32;
+        let own = self.own;
+        let (param_src, var_src) = own_sources(doc);
+        for k in 0..self.params {
+            let src = param_src.get(k as usize).copied().unwrap_or(Sym::NONE);
+            self.push(NONE, k, own, me.param_prog[k as usize], src);
+        }
+        for v in 0..self.vars {
+            let src = var_src.get(v as usize).copied().unwrap_or(Sym::NONE);
+            match var_subst[v as usize] {
+                Some(text) => {
+                    let lookup =
+                        |n: &str| crate::iface::own_ref(names, &me.param_name, &self.var_name, n);
+                    let prog = self.progs.push(text, Syntax::Expr, None, lookup);
+                    self.push(NONE, VAR | v, OWN, prog, Sym::NONE);
+                }
+                None => self.push(NONE, VAR | v, own, me.var_prog[v as usize], src),
+            }
+        }
+        assert_eq!(self.len(), (self.params + self.vars) as usize);
+    }
+
+    /// One node per param of each resolved instance: its override (own scope, one compile
+    /// per distinct text), else the cell's program in the child scope.
+    fn inst_blocks(&mut self, doc: &Document, me: &Iface, ifaces: &[Iface], names: &Names) {
+        let s = doc.strings();
+        let mut dedupe: HashMap<(Sym, bool), u32> = HashMap::new();
+        for i in 0..self.inst_iface.len() {
+            let t = self.inst_iface[i];
+            let Some(c) = ifaces.get(t as usize) else {
+                self.inst_first.push(NONE);
+                continue;
+            };
+            self.inst_first.push(self.len() as u32);
+            for k in 0..c.param_name.len() {
+                let ovr = if c.param_computed[k] {
+                    None // E030: the override is reported and ignored
+                } else {
+                    override_of(doc, i, names.get(c.param_name[k]))
+                };
+                let Some(sym) = ovr else {
+                    self.push(i as u32, k as u32, t, c.param_prog[k], Sym::NONE);
+                    continue;
+                };
+                let syntax = c.param_kind[k].syntax();
+                let key = (sym, syntax == Syntax::Template);
+                let prog = match dedupe.get(&key) {
+                    Some(&prog) => prog,
+                    None => {
+                        let lookup = |n: &str| {
+                            crate::iface::own_ref(names, &me.param_name, &self.var_name, n)
+                        };
+                        let prog = self.progs.push(s.get(sym), syntax, None, lookup);
+                        dedupe.insert(key, prog);
+                        prog
+                    }
+                };
+                self.push(i as u32, k as u32, OWN, prog, sym);
+            }
+        }
+        assert_eq!(self.inst_first.len(), self.inst_iface.len());
+    }
+
+    /// The CSR of each node's dependencies; child var nodes are appended (and resolved in
+    /// turn) as references meet them.
+    fn resolve_deps(&mut self, ifaces: &[Iface]) {
+        self.dep_start.push(0);
+        self.dep_start.reserve(self.len());
+        let mut refs: Vec<Ref> = Vec::new(); // reused: one allocation, not one per node
+        let mut n = 0;
+        while n < self.len() {
+            let (owner, table, prog) = (self.owner[n], self.table[n], self.prog[n]);
+            let child_scope = owner != NONE && table != OWN;
+            let progs = if table == OWN {
+                &self.progs
+            } else {
+                &ifaces[table as usize].progs
+            };
+            refs.clear();
+            refs.extend_from_slice(progs.refs(prog));
+            for &r in &refs {
+                let d = if child_scope {
+                    self.child_ref(owner, table, r, ifaces)
+                } else {
+                    own_node(self.params, r)
+                };
+                self.deps.push(d);
+            }
+            if child_scope && self.slot[n] & VAR == 0 {
+                // Bounds may read child vars: make sure their nodes exist for gating.
+                let c = &ifaces[table as usize];
+                for b in c.param_bound[self.slot[n] as usize] {
+                    if b == NONE {
+                        continue;
+                    }
+                    for &r in c.progs.refs(b).iter().filter(|&&r| r & VAR != 0) {
+                        self.child_ref(owner, table, r, ifaces);
+                    }
+                }
+            }
+            self.dep_start.push(self.deps.len() as u32);
+            n += 1;
+        }
+        assert_eq!(self.dep_start.len(), self.len() + 1);
+    }
+
+    fn push(&mut self, owner: u32, slot: u32, table: u32, prog: u32, src: Sym) {
+        assert!(
+            self.owner.len() + 1 < NONE as usize - 1,
+            "graph node capacity"
+        );
+        self.owner.push(owner);
+        self.slot.push(slot);
+        self.table.push(table);
+        self.prog.push(prog);
+        self.src.push(src);
+    }
+
+    /// Node for a child-scope reference of instance `owner` (interface `table`).
+    fn child_ref(&mut self, owner: u32, table: u32, r: Ref, ifaces: &[Iface]) -> u32 {
+        if r & VAR == 0 {
+            return self.inst_first[owner as usize] + r;
+        }
+        let v = r & !VAR;
+        let key = (owner, v);
+        match self.child_vars.binary_search_by_key(&key, |e| (e.0, e.1)) {
+            Ok(i) => self.child_vars[i].2,
+            Err(i) => {
+                let node = self.len() as u32;
+                let prog = ifaces[table as usize].var_prog[v as usize];
+                self.push(owner, VAR | v, table, prog, Sym::NONE);
+                self.child_vars.insert(i, (owner, v, node));
+                node
+            }
+        }
+    }
+
+    /// Builds reverse edges and the topological order. Every node on a cycle gets `X005`
+    /// (expr spec §4: all cycles in one pass) and loses its edges, which leaves the order
+    /// valid: an edge inside a cyclic component starts at a cycle node.
+    fn finish(&mut self, ifaces: &[Iface], names: &Names) {
+        let n = self.len();
+        assert_eq!(self.dep_start.len(), n + 1);
+        self.dep_end = self.dep_start[1..].to_vec();
+        let deps = Deps {
+            offsets: &self.dep_start,
+            targets: &self.deps,
+        };
+        // The acyclic case (nearly every cell) takes the cheaper order.
+        if topo_order(deps, &mut self.order).is_err() {
+            let mut cycles = Vec::new();
+            topo_order_all(deps, &mut self.order, &mut cycles);
+            for c in &cycles {
+                let err = c.error(|n| names.get(self.node_param(n, ifaces)));
+                self.cyclic
+                    .extend(c.nodes.iter().map(|&node| (node, err.clone())));
+            }
+            // A node on several cycles reports the first.
+            self.cyclic.sort_by_key(|e| e.0);
+            self.cyclic.dedup_by_key(|e| e.0);
+            assert!(!self.cyclic.is_empty(), "a failed order has a cycle");
+            self.cut();
+        }
+        let deps = Deps {
+            offsets: &self.dep_start,
+            targets: &self.deps,
+        };
+        reverse(deps, &mut self.rdep_start, &mut self.rdeps);
+        self.rdep_end = self.rdep_start[1..].to_vec();
+        self.edges = self.deps.len();
+        self.rank = vec![0; n];
+        for (r, &node) in self.order.iter().enumerate() {
+            self.rank[node as usize] = r as u32;
+        }
+        self.vals = vec![Val::Upstream; n];
+        self.unverified = vec![false; n];
+        assert_eq!(self.order.len(), n);
+    }
+
+    /// Drops the edges of the `cyclic` nodes (rebuilds the CSR).
+    fn cut(&mut self) {
+        let mut start = vec![0u32];
+        let mut deps = Vec::with_capacity(self.deps.len());
+        for node in 0..self.len() as u32 {
+            if self.cyclic.binary_search_by_key(&node, |e| e.0).is_err() {
+                deps.extend_from_slice(self.node_deps(node));
+            }
+            start.push(deps.len() as u32);
+        }
+        self.dep_start = start;
+        self.deps = deps;
+        self.dep_end = self.dep_start[1..].to_vec();
+        assert_eq!(self.dep_end.len(), self.len());
+    }
 }
 
 /// Doc symbols of the own params' expressions (computed, else default) and own vars'.

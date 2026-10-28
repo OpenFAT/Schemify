@@ -1,11 +1,17 @@
-//! Port lists of leaf impl bodies (format rank 5 `body <impl>`): the ordered `(name, dir)`
-//! a Verilog / Verilog-A `module` header or a SPICE `.subckt` line declares. The cell
-//! settings panel syncs pins from it; the D11 `E002` check ("every impl matches the cell's
-//! pins") can read bodies through it later.
+//! Leaf impl body text in, its port list out (format rank 5 `body <impl>`): the ordered
+//! `(name, dir)` a Verilog / Verilog-A `module` header or a SPICE `.subckt` line declares.
+//! The cell settings panel syncs pins from it; the D11 `E002` check ("every impl matches
+//! the cell's pins") can read bodies through it later.
 //!
 //! Data design: in, one body's text (a cell's definition, kilobytes); out, ≤ [`PORTS_MAX`]
 //! ports in declaration order. One pass to tokens (`O(text)`), one over the tokens; nothing
-//! outlives the call.
+//! outlives the call. Cites IEEE 1364 §12.3 (module port lists, ANSI and non-ANSI) and the
+//! SPICE `.subckt` card; no Schemify spec clause beyond format §4 rank 5.
+//!
+//! Contents:
+//! - `pub const PORTS_MAX`
+//! - `pub struct PortError`
+//! - `pub fn impl_ports(lang: &str, text: &str) -> Result<Vec<(String, PinDir)>, PortError>`
 
 use schemify_doc::PinDir;
 
@@ -21,16 +27,15 @@ pub struct PortError {
     pub why: String,
 }
 
+#[derive(Clone, Copy)]
+struct Tok<'a> {
+    text: &'a str,
+    line: u32,
+}
+
 impl std::fmt::Display for PortError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "line {}: {}", self.line, self.why)
-    }
-}
-
-fn err(line: u32, why: impl Into<String>) -> PortError {
-    PortError {
-        line,
-        why: why.into(),
     }
 }
 
@@ -61,6 +66,15 @@ pub fn impl_ports(lang: &str, text: &str) -> Result<Vec<(String, PinDir)>, PortE
     Ok(ports)
 }
 
+// ---- private ----
+
+fn err(line: u32, why: impl Into<String>) -> PortError {
+    PortError {
+        line,
+        why: why.into(),
+    }
+}
+
 fn push(
     ports: &mut Vec<(String, PinDir)>,
     name: String,
@@ -76,8 +90,6 @@ fn push(
     ports.push((name, dir));
     Ok(())
 }
-
-// ------------------------------------------------------------------------ SPICE
 
 fn spice_ports(text: &str) -> Result<Vec<(String, PinDir)>, PortError> {
     // Logical lines: a `+` line continues the one before.
@@ -118,12 +130,73 @@ fn spice_ports(text: &str) -> Result<Vec<(String, PinDir)>, PortError> {
     Ok(ports)
 }
 
-// ---------------------------------------------------------------------- Verilog
-
-#[derive(Clone, Copy)]
-struct Tok<'a> {
-    text: &'a str,
-    line: u32,
+fn verilog_ports(text: &str) -> Result<Vec<(String, PinDir)>, PortError> {
+    let toks = tokens(text);
+    let m = toks
+        .iter()
+        .position(|t| t.text == "module" || t.text == "macromodule")
+        .ok_or_else(|| err(1, "no module"))?;
+    let line0 = toks[m].line;
+    let mut i = m + 2;
+    if toks.get(m + 1).is_none_or(|t| !is_ident(t.text)) {
+        return Err(err(line0, "module without a name"));
+    }
+    if toks.get(i).is_some_and(|t| t.text == "#") {
+        if toks.get(i + 1).is_none_or(|t| t.text != "(") {
+            return Err(err(line0, "# without a parameter list"));
+        }
+        i = close(&toks, i + 1).ok_or_else(|| err(line0, "unterminated parameter list"))?;
+    }
+    // (port, dir, declared in the header)
+    let mut ports: Vec<(String, PinDir)> = Vec::new();
+    let mut ansi: Vec<bool> = Vec::new();
+    if toks.get(i).is_some_and(|t| t.text == "(") {
+        let j = close(&toks, i).ok_or_else(|| err(line0, "unterminated port list"))?;
+        let mut carry: Option<(PinDir, String)> = None;
+        for item in items(&toks[i + 1..j - 1]) {
+            let Some(first) = item.first() else { continue };
+            let dir = item.iter().find_map(|t| dir_of(t.text));
+            let (range, name) = range_and_name(item);
+            let Some(name) = name.filter(|n| dir_of(n.text).is_none()) else {
+                return Err(err(first.line, "port without a name"));
+            };
+            let (dir, range, declared) = match (dir, &carry) {
+                (Some(d), _) => {
+                    carry = Some((d, range.clone()));
+                    (d, range, true)
+                }
+                (None, Some((d, r))) if item.len() == 1 => (*d, r.clone(), true),
+                (None, _) => (PinDir::Inout, range, false),
+            };
+            push(&mut ports, format!("{}{range}", name.text), dir, name.line)?;
+            ansi.push(declared);
+        }
+        i = j;
+    }
+    // Non-ANSI declarations after the header, up to `endmodule`.
+    let rest = &toks[i.min(toks.len())..];
+    let end = rest
+        .iter()
+        .position(|t| t.text == "endmodule")
+        .unwrap_or(rest.len());
+    for stmt in rest[..end].split(|t| t.text == ";") {
+        let Some(dir) = stmt.first().and_then(|t| dir_of(t.text)) else {
+            continue;
+        };
+        let (range, _) = range_and_name(stmt);
+        for piece in items(&stmt[1..]) {
+            let Some(name) = range_and_name(piece).1 else {
+                continue;
+            };
+            let k = ports.iter().position(|p| p.0 == name.text);
+            if let Some(k) = k.filter(|&k| !ansi[k]) {
+                ports[k] = (format!("{}{range}", name.text), dir);
+                ansi[k] = true;
+            }
+        }
+    }
+    assert_eq!(ports.len(), ansi.len());
+    Ok(ports)
 }
 
 /// Identifiers, numbers and one-character punctuation; comments, strings, attributes and
@@ -253,75 +326,6 @@ fn range_and_name<'a>(toks: &[Tok<'a>]) -> (String, Option<Tok<'a>>) {
         }
     }
     (range, name)
-}
-
-fn verilog_ports(text: &str) -> Result<Vec<(String, PinDir)>, PortError> {
-    let toks = tokens(text);
-    let m = toks
-        .iter()
-        .position(|t| t.text == "module" || t.text == "macromodule")
-        .ok_or_else(|| err(1, "no module"))?;
-    let line0 = toks[m].line;
-    let mut i = m + 2;
-    if toks.get(m + 1).is_none_or(|t| !is_ident(t.text)) {
-        return Err(err(line0, "module without a name"));
-    }
-    if toks.get(i).is_some_and(|t| t.text == "#") {
-        if toks.get(i + 1).is_none_or(|t| t.text != "(") {
-            return Err(err(line0, "# without a parameter list"));
-        }
-        i = close(&toks, i + 1).ok_or_else(|| err(line0, "unterminated parameter list"))?;
-    }
-    // (port, dir, declared in the header)
-    let mut ports: Vec<(String, PinDir)> = Vec::new();
-    let mut ansi: Vec<bool> = Vec::new();
-    if toks.get(i).is_some_and(|t| t.text == "(") {
-        let j = close(&toks, i).ok_or_else(|| err(line0, "unterminated port list"))?;
-        let mut carry: Option<(PinDir, String)> = None;
-        for item in items(&toks[i + 1..j - 1]) {
-            let Some(first) = item.first() else { continue };
-            let dir = item.iter().find_map(|t| dir_of(t.text));
-            let (range, name) = range_and_name(item);
-            let Some(name) = name.filter(|n| dir_of(n.text).is_none()) else {
-                return Err(err(first.line, "port without a name"));
-            };
-            let (dir, range, declared) = match (dir, &carry) {
-                (Some(d), _) => {
-                    carry = Some((d, range.clone()));
-                    (d, range, true)
-                }
-                (None, Some((d, r))) if item.len() == 1 => (*d, r.clone(), true),
-                (None, _) => (PinDir::Inout, range, false),
-            };
-            push(&mut ports, format!("{}{range}", name.text), dir, name.line)?;
-            ansi.push(declared);
-        }
-        i = j;
-    }
-    // Non-ANSI declarations after the header, up to `endmodule`.
-    let rest = &toks[i.min(toks.len())..];
-    let end = rest
-        .iter()
-        .position(|t| t.text == "endmodule")
-        .unwrap_or(rest.len());
-    for stmt in rest[..end].split(|t| t.text == ";") {
-        let Some(dir) = stmt.first().and_then(|t| dir_of(t.text)) else {
-            continue;
-        };
-        let (range, _) = range_and_name(stmt);
-        for piece in items(&stmt[1..]) {
-            let Some(name) = range_and_name(piece).1 else {
-                continue;
-            };
-            let k = ports.iter().position(|p| p.0 == name.text);
-            if let Some(k) = k.filter(|&k| !ansi[k]) {
-                ports[k] = (format!("{}{range}", name.text), dir);
-                ansi[k] = true;
-            }
-        }
-    }
-    assert_eq!(ports.len(), ansi.len());
-    Ok(ports)
 }
 
 #[cfg(test)]

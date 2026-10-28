@@ -37,16 +37,17 @@
 //! accumulator (xor-or per chunk) and vectorizes as written. Everything else walks the
 //! few touched nodes.
 
-use crate::check::{Code, Violation};
-use crate::connect::{
-    CellNets, GLOBAL, Ignore, LABEL, NO_NET, NONE_PIN, OWN_BITS, OWN_PORTS, OWN_STATIC, PORT, Seed,
-    bit_findings, find, glob, id_cmp, label_is_global, on_segment, place, port_findings,
-    push_decimal, slicing, union, unkey, write_key,
-};
 use crate::iface::{Domain, Iface};
+use crate::names::push_decimal;
 use crate::names::{Name, Names};
+use crate::netcheck::{bit_findings, port_findings};
 use crate::netexpr;
+use crate::nets::{
+    CellNets, GLOBAL, Ignore, LABEL, NO_NET, NONE_PIN, OWN_BITS, OWN_PORTS, OWN_STATIC, PORT, Seed,
+    find, glob, id_cmp, label_is_global, on_segment, place, slicing, union, unkey, write_key,
+};
 use crate::values::NONE;
+use crate::violations::{Code, Violation};
 use schemify_doc::{Document, ObjId, Op};
 use schemify_format::RecordKind;
 use std::cmp::Ordering;
@@ -449,13 +450,12 @@ impl Live {
         names: &Names,
         out: &mut Vec<Violation>,
     ) {
+        let counts = (cn.bit_conns[b], self.real[b], self.other[b]);
         bit_findings(
             own.cell,
             cn.bit_name[b],
             cn.bit_global[b],
-            cn.bit_conns[b],
-            self.real[b],
-            self.other[b],
+            counts,
             names,
             out,
         );

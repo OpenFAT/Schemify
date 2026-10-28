@@ -1,24 +1,40 @@
-//! Net expressions (netlist spec §4): labels, ports, pin names, `inherit` nets and
-//! instance names expand to an ordered list of bit names.
+//! Net expressions (netlist spec §4): label, port, pin, `inherit` and instance-name text
+//! in, an ordered list of bit [`Name`]s out.
 //!
 //! ```text
 //! netexpr = term *("," term)
 //! term    = [count "*"] base
 //! base    = ident ["[" int [":" int] "]"]
-//! ident   = [A-Za-z_][A-Za-z0-9_$.]* ["!"]   ; or the literal "0"
+//! ident   = ["~"] [A-Za-z_][A-Za-z0-9_$.]* ["!"]   ; or the literal "0"
 //! ```
 //!
-//! Text outside the grammar is one scalar name, verbatim (amendment: importers keep
-//! odd names working instead of failing the whole cell).
+//! Text outside the grammar is one scalar name, verbatim (amendment: importers keep odd
+//! names working instead of failing the whole cell). `~` marks an active-low name and stays
+//! part of it, as xschem writes `~D[5:0]`.
+//!
+//! Contents:
+//! - `pub const WIDTH_MAX`
+//! - `pub(crate) struct TooWide`
+//! - `pub fn is_global(bit: &str) -> bool`
+//! - `pub(crate) fn is_plain(text: &str) -> bool`
+//! - `pub(crate) fn expand(text, names, out, buf) -> Result<u32, TooWide>`
 
-use crate::names::{Name, Names};
+use crate::names::{Name, Names, push_decimal};
 
 /// Most bits one expression expands to (the plugin `Nets.width` column is `u16`).
 pub const WIDTH_MAX: u32 = u16::MAX as u32;
 
-/// Why an expression could not be expanded.
+/// Why an expression could not be expanded: it is wider than [`WIDTH_MAX`] bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TooWide;
+
+/// One parsed term: `count * ident[first:last]`.
+struct Term<'a> {
+    count: u32,
+    ident: &'a str,
+    /// `(first, last)` index in written order.
+    range: Option<(u32, u32)>,
+}
 
 /// Returns whether a bit name is global (netlist spec §3): `0`, or ending in `!`.
 pub fn is_global(bit: &str) -> bool {
@@ -35,6 +51,10 @@ pub(crate) fn is_plain(text: &str) -> bool {
 /// `buf` is scratch for building `name[i]` texts.
 ///
 /// Cost: O(bits). Plain identifiers (the common case) intern `text` itself.
+///
+/// # Errors
+///
+/// [`TooWide`] past [`WIDTH_MAX`] bits; then nothing is appended or interned.
 pub(crate) fn expand(
     text: &str,
     names: &mut Names,
@@ -42,11 +62,9 @@ pub(crate) fn expand(
     buf: &mut String,
 ) -> Result<u32, TooWide> {
     let before = out.len();
-    if is_plain(text) {
-        out.push(names.intern(text));
-        return Ok(1);
-    }
-    let Some(terms) = parse(text) else {
+    // A plain name, or text outside the grammar: one verbatim name.
+    let parsed = if is_plain(text) { None } else { parse(text) };
+    let Some(terms) = parsed else {
         out.push(names.intern(text));
         return Ok(1);
     };
@@ -56,24 +74,23 @@ pub(crate) fn expand(
     }
     for t in &terms {
         for _ in 0..t.count {
-            match t.range {
-                None => out.push(names.intern(t.ident)),
-                Some((a, b)) => {
-                    let step: i64 = if a <= b { 1 } else { -1 };
-                    let mut i = i64::from(a); // within [a, b]: a u32
-                    loop {
-                        buf.clear();
-                        buf.push_str(t.ident);
-                        buf.push('[');
-                        crate::connect::push_decimal(i as u32, buf);
-                        buf.push(']');
-                        out.push(names.intern(buf));
-                        if i == i64::from(b) {
-                            break;
-                        }
-                        i += step;
-                    }
+            let Some((a, b)) = t.range else {
+                out.push(names.intern(t.ident));
+                continue;
+            };
+            let step: i64 = if a <= b { 1 } else { -1 };
+            let mut i = i64::from(a); // within [a, b]: a u32
+            loop {
+                buf.clear();
+                buf.push_str(t.ident);
+                buf.push('[');
+                push_decimal(i as u32, buf);
+                buf.push(']');
+                out.push(names.intern(buf));
+                if i == i64::from(b) {
+                    break;
                 }
+                i += step;
             }
         }
     }
@@ -82,12 +99,7 @@ pub(crate) fn expand(
     Ok(n)
 }
 
-struct Term<'a> {
-    count: u32,
-    ident: &'a str,
-    /// `(first, last)` index in written order.
-    range: Option<(u32, u32)>,
-}
+// ---- private ----
 
 impl Term<'_> {
     fn width(&self) -> u64 {
