@@ -44,6 +44,10 @@ impl Sim {
     /// A cell cannot be opened, the plan or selection is refused, the gate blocks (the
     /// message names the blocking violations), the queue is full, or [`RUNS_MAX`] runs are
     /// in flight.
+    ///
+    /// # Panics
+    ///
+    /// Never: requests past [`QUEUE_MAX`] are refused.
     pub fn start<F: Funcs>(
         &mut self,
         session: &mut Session,
@@ -53,6 +57,7 @@ impl Sim {
         env: &[(&str, &str)],
         funcs: &mut F,
     ) -> Result<String, String> {
+        assert!(self.queue.len() <= QUEUE_MAX);
         let waits = self.index_of(top).is_some_and(|i| !self.runs[i].idle())
             || self
                 .queue
@@ -145,6 +150,7 @@ impl Sim {
             saved: false,
         });
         self.show(top);
+        assert!(self.index_of(top).is_some(), "the started run is kept");
         Ok(match opt_name {
             Some(n) => format!("optimize {n}: started"),
             None => format!("simulate: {jobs} job(s) queued"),
@@ -153,6 +159,7 @@ impl Sim {
 
     /// Frees a slot for a run of `top` (its own old run, else the oldest idle run not shown).
     pub(super) fn make_room(&mut self, top: DocHandle) -> Result<(), String> {
+        assert!(self.runs.len() <= RUNS_MAX);
         if self.index_of(top).is_some() || self.runs.len() < RUNS_MAX {
             return Ok(());
         }
@@ -175,8 +182,14 @@ impl Sim {
         if self.shown == Some(r.bench) {
             self.reset_view();
         }
+        let bench = r.bench;
         self.runs.push(r);
         assert!(self.runs.len() <= RUNS_MAX);
+        assert_eq!(
+            self.index_of(bench),
+            Some(self.runs.len() - 1),
+            "the newest run is last"
+        );
     }
 
     /// Shows `bench`'s results (the table, plots, OP annotation and stale check follow).
@@ -185,6 +198,7 @@ impl Sim {
             self.shown = Some(bench);
             self.reset_view();
         }
+        assert_eq!(self.shown, Some(bench));
     }
 
     pub(super) fn reset_view(&mut self) {
@@ -309,6 +323,7 @@ impl Sim {
             }
         }
         assert!(self.queue.len() <= QUEUE_MAX);
+        assert_eq!(blocked.len(), self.queue.len(), "every request left waits");
     }
 
     /// One plugin request for bench `top`: a job of its run, or of a fresh run of it.

@@ -38,6 +38,7 @@ impl Sim {
         env: &[(&str, &str)],
         funcs: &mut F,
     ) -> Polled {
+        assert!(self.runs.len() <= RUNS_MAX);
         let mut out = Polled::default();
         let active = self.running().max(1) as u32;
         let budget = (SUBMIT_PER_FRAME / active).max(1);
@@ -128,11 +129,19 @@ impl Sim {
             let _ = write!(self.status, "; {n}");
         }
         assert!(self.runs.len() <= RUNS_MAX);
+        assert!(
+            out.best.len() <= self.runs.len(),
+            "one best per run at most"
+        );
         out
     }
 
     /// The status line of the shown run: progress while busy, a summary when done, and how
     /// many other runs are in flight.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that the job states partition the jobs.
     #[must_use]
     pub fn progress(&self) -> String {
         let Some(br) = self.shown_run() else {
@@ -143,6 +152,10 @@ impl Sim {
         let n = |s: State| st.iter().filter(|&&x| x == s).count();
         let (done, failed, cancelled) = (n(State::Done), n(State::Failed), n(State::Cancelled));
         let running = n(State::Running);
+        assert!(
+            done + failed + cancelled + running <= st.len(),
+            "states partition the jobs"
+        );
         let mut t = match &br.kind {
             Kind::Optimize(o, name) => {
                 let best = o
@@ -224,12 +237,18 @@ impl Sim {
     /// Shows the results of bench `top`: its run in memory, else the newest saved one
     /// (`.schemify/runs/*/bench` naming it). Lists the bench's run directories in
     /// [`Sim::history`]. Returns whether the shown results changed.
+    ///
+    /// # Panics
+    ///
+    /// Never: the history is cut to [`HISTORY_MAX`] runs.
     pub fn load_latest(&mut self, session: &Session, top: DocHandle) -> bool {
         let name = session_name(session, top);
         self.history = history(&session.root, &name);
+        assert!(self.history.len() <= HISTORY_MAX);
         if self.index_of(top).is_some() {
             let changed = self.shown != Some(top);
             self.show(top);
+            assert_eq!(self.shown, Some(top));
             return changed;
         }
         let Some(dir) = self.history.first().cloned() else {
@@ -244,6 +263,10 @@ impl Sim {
     ///
     /// The bench's run is in flight, the bench's plan no longer reads, the results file is
     /// missing or invalid, or [`RUNS_MAX`] runs are in flight.
+    ///
+    /// # Panics
+    ///
+    /// Never: the asserts check that the loaded run is kept and shown.
     pub fn load_dir(
         &mut self,
         session: &Session,
@@ -289,11 +312,17 @@ impl Sim {
         self.show(top);
         self.reset_view();
         self.status = format!("results loaded from {}", dir.display());
+        assert_eq!(self.shown, Some(top));
+        assert!(self.index_of(top).is_some(), "the loaded run is kept");
         Ok(())
     }
 
     /// The raw file of job `j` of the shown run (`<run dir>/<j>/out.raw`, else the first
     /// `.raw` the job wrote, as the runner reads it).
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that the file is the job's.
     #[must_use]
     pub fn job_raw(&self, j: u32) -> Option<PathBuf> {
         let dir = self.dir()?.join(j.to_string());
@@ -302,9 +331,14 @@ impl Sim {
             return Some(main);
         }
         let files = platform::list_files(&dir, &[]);
-        files
+        let raw = files
             .into_iter()
-            .find(|p| p.extension().is_some_and(|x| x == "raw"))
+            .find(|p| p.extension().is_some_and(|x| x == "raw"));
+        assert!(
+            raw.as_ref().is_none_or(|p| p.starts_with(&dir)),
+            "a file of the job"
+        );
+        raw
     }
 }
 

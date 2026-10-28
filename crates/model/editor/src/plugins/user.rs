@@ -138,7 +138,11 @@ impl Host {
         }
         self.notes.push_back(note);
         self.notes_seq += 1;
-        debug_assert!(self.notes.len() <= NOTES_MAX);
+        assert!(self.notes.len() <= NOTES_MAX);
+        assert!(
+            self.notes_seq >= self.notes.len() as u64,
+            "every kept note was counted"
+        );
         self.wake_lazy(event);
         if self.user.table().hooks.iter().any(|h| h.0 == event) {
             let keys = self.user.table().keymaps.clone();
@@ -161,6 +165,10 @@ impl Host {
             load_installed(&mut self.plugins, &mut self.hashes, &mut notes, &p);
             self.user_logs.extend(notes);
         }
+        assert!(
+            !self.lazy.iter().any(|p| p.lazy_event.contains(&event)),
+            "every package waiting for the event woke"
+        );
     }
 
     /// Whether a user package is still waiting to load (tests, status).
@@ -230,6 +238,10 @@ impl Host {
     /// D20 cache hash of an expression calling `fns` (sorted, distinct `ns.f` names): the
     /// content hash of the one plugin serving them, or of their hashes joined when several
     /// do. `None` when any function is not loaded.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks one owner per function at most.
     #[must_use]
     pub fn fn_hash(&self, fns: &[String]) -> Option<String> {
         let f = &self.plugins.composed().functions;
@@ -239,6 +251,7 @@ impl Host {
         }
         owners.sort_unstable();
         owners.dedup();
+        assert!(owners.len() <= fns.len(), "one owner per function at most");
         let hashes: Vec<&str> = owners
             .iter()
             .filter_map(|id| self.hashes.iter().find(|(h, _)| h == id))

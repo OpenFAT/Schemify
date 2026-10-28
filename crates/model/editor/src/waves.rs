@@ -116,7 +116,13 @@ impl WavesView {
 
     /// One frame of input. Returns `(redraw, close)`; `close` asks the editor to return to
     /// the schematic.
+    ///
+    /// # Panics
+    ///
+    /// If a `viewport` dimension is negative.
     pub fn update(&mut self, events: &InputEvents, viewport: (f32, f32), now: u64) -> (bool, bool) {
+        assert!(viewport.0 >= 0.0, "a viewport of non-negative width");
+        assert!(viewport.1 >= 0.0, "a viewport of non-negative height");
         let close_keys = [
             Chord::new(Mods(Mods::CTRL), Key('w' as u32)),
             Chord::new(Mods::default(), Key::ESCAPE),
@@ -181,6 +187,7 @@ impl WavesView {
         }
         changed |= routed.redraw || recompose;
         self.routed = routed;
+        assert!(self.requests.is_empty(), "every request applied this frame");
         (changed, false)
     }
 
@@ -203,8 +210,13 @@ impl WavesView {
     /// # Errors
     ///
     /// The reader's error text; the viewer is unchanged then.
+    ///
+    /// # Panics
+    ///
+    /// Never: the reader caps the datasets at `MAX_DATASETS`.
     pub fn reload(&mut self, title: &str, bytes: &[u8]) -> Result<String, String> {
         let dropped = self.waves.reload(datasets(title, bytes)?);
+        assert!(self.waves.datasets().len() <= MAX_DATASETS);
         self.title = title.to_owned();
         if self.viewport.0 > 0.0 {
             self.rebuild();
@@ -279,15 +291,25 @@ impl WavesView {
 
 /// ngspice's name of the device emitted as `emitted`: lowercase, and inside a subcircuit
 /// its type letter and a dot in front (`X1.MM2` → `m.x1.mm2`, top-level `MM1` → `mm1`).
+///
+/// # Panics
+///
+/// Never: the asserts check that the name only gains a prefix.
 pub fn spice_device(emitted: &str) -> String {
     let lower = emitted.to_ascii_lowercase();
-    match lower.rsplit_once('.') {
+    let dev = match lower.rsplit_once('.') {
         Some((_, last)) if !last.is_empty() => {
             let letter = &last[..last.chars().next().map_or(0, char::len_utf8)];
             format!("{letter}.{lower}")
         }
         _ => lower,
-    }
+    };
+    assert!(dev.len() >= emitted.len(), "a prefix, never a cut");
+    debug_assert!(
+        !dev.bytes().any(|b| b.is_ascii_uppercase()),
+        "ngspice lowercases"
+    );
+    dev
 }
 
 /// The waves calculator expression of the current into `pin` of the device emitted as
