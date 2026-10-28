@@ -12,6 +12,8 @@ use schemify_format::{FileKind, RecordKind};
 
 const CELL: &str = "schemify 1 shcomp\n  default sch\n\npin A in 0 0\npin B out 10 0\n\nparam W 1\n\nimpl sch schematic\nimpl beh spice\n\nline 0 0 1 1\n\nrect 0 0 2 2\n\ninst 0gsrp0 ./x\n  at 0 0 R0\n  name X1\n\nwire 0d2k1m 0 0 10 0\n\nwaive 1aaaaa 0gsrp0 W\n  reason ok\n\nvar g 1\n\nbody beh\n  | .subckt x\n";
 
+// ---- private ----
+
 fn rejected(p: &mut Project, h: DocHandle, ops: Vec<Op>) -> Vec<OpError> {
     let before = canon(p, h);
     let out = run(p, h, tx(ops));

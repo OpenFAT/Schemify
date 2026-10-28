@@ -1,15 +1,20 @@
-//! The change log of one [`Document`](crate::Document): every row write the edit
-//! primitives make (insert, delete and the row it swaps in, put, reorder), in order, so a
-//! derived table (the editor's scene, its plugin snapshot) follows an edit in O(change)
-//! instead of diffing every row (D39, `docs/dev/perf.md` "Edit frames pass 2026-10").
+//! Row writes of one [`Document`](crate::Document) → its change log, read back as
+//! [`Change`] rows since a consumer's [`Cursor`] (D39, `docs/dev/perf.md` "Edit frames
+//! pass 2026-10").
 //!
-//! In: the primitives' row writes. Out: [`Change`] rows since a consumer's [`Cursor`], or
-//! `None` when the log no longer reaches it (the consumer rebuilds from the tables).
+//! Every row write the edit primitives make (insert, delete and the row it swaps in, put,
+//! reorder) is logged in order, so a derived table (the editor's scene, its plugin
+//! snapshot) follows an edit in O(change) instead of diffing every row. `None` from
+//! `since` means the log no longer reaches the cursor: the consumer rebuilds.
 //!
 //! Six questions: 1. row writes in, a sequence of changes out; 2. a handful per edit, at
 //! most [`LOG_MAX`] kept; 3. table `u8`, row `u32` (tables hold < 2^22 rows), id `u32`;
 //! 4. appended once, read sequentially by each consumer once per frame; 5. lives with the
 //! document (a reload or merge makes a new document, so a new log); 6. not parallel.
+//!
+//! Contents:
+//! - `pub const LOG_MAX`, `pub enum Write`, `pub struct Change`, `pub struct Cursor`
+//! - `pub(crate) struct ChangeLog`: `push`, `break_here`, `cursor`, `since`
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -19,9 +24,6 @@ use crate::strings::ObjId;
 /// Changes the log keeps; past it the older half is dropped (a consumer that far behind
 /// rebuilds).
 pub const LOG_MAX: usize = 1 << 16;
-
-/// Source of log origins: two logs never share one, so a cursor of one never reads another.
-static ORIGINS: AtomicU64 = AtomicU64::new(1);
 
 /// What a row write did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,6 +68,9 @@ pub(crate) struct ChangeLog {
     rows: Vec<Change>,
 }
 
+/// Source of log origins: two logs never share one, so a cursor of one never reads another.
+static ORIGINS: AtomicU64 = AtomicU64::new(1);
+
 impl Default for ChangeLog {
     fn default() -> ChangeLog {
         ChangeLog {
@@ -85,10 +90,6 @@ impl Clone for ChangeLog {
 }
 
 impl ChangeLog {
-    fn seq(&self) -> u64 {
-        self.start + self.rows.len() as u64
-    }
-
     /// Appends one change, dropping the older half when full.
     pub(crate) fn push(&mut self, table: TableId, what: Write, row: u32, id: ObjId) {
         if self.rows.len() >= LOG_MAX {
@@ -129,5 +130,13 @@ impl ChangeLog {
         let from = (c.at - self.start) as usize;
         assert!(from <= self.rows.len());
         Some(&self.rows[from..])
+    }
+}
+
+// ---- private ----
+
+impl ChangeLog {
+    fn seq(&self) -> u64 {
+        self.start + self.rows.len() as u64
     }
 }

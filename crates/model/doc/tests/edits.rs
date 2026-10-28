@@ -5,18 +5,11 @@
 
 mod common;
 
+use common::model::*;
 use common::*;
 use schemify_doc::{
     Code, Edit, Mode, Op, Outcome, Project, RecordKind, Target, Transaction, UNDO_MAX, apply_edits,
 };
-
-fn stage_tx(ops: Vec<Op>) -> Edit {
-    Edit::Tx(Transaction {
-        label: "staged".into(),
-        mode: Mode::Stage,
-        ops,
-    })
-}
 
 const REJECT_CODES: [Code; 6] = [
     Code::E024,
@@ -26,6 +19,16 @@ const REJECT_CODES: [Code; 6] = [
     Code::E041,
     Code::E043,
 ];
+
+// ---- private ----
+
+fn stage_tx(ops: Vec<Op>) -> Edit {
+    Edit::Tx(Transaction {
+        label: "staged".into(),
+        mode: Mode::Stage,
+        ops,
+    })
+}
 
 fn check_rejection(out: &Outcome, accepted: bool, ctx: &str) {
     match out {

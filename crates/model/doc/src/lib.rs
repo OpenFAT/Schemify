@@ -14,10 +14,21 @@
 //!
 //! A [`Document`] is one file as typed column tables (see the `tables` module docs for
 //! the data-oriented-design answers): [`Pins`], [`Graphics`], [`Instances`],
-//! [`Wires`], [`Placed`] (labels, ports, texts), [`Noconns`] and [`Records`] (every
-//! text-only kind), plus one string arena ([`Strings`]) and one [`Pool`] of per-row
-//! attribute lines, verbatim lines, comments and coordinates. A [`Project`] owns the
-//! manifest, lockfile, library index, cell interfaces and open documents.
+//! [`Wires`], [`Placed`] (labels, ports, texts), [`Noconns`], [`Shapes`] and [`Records`]
+//! (every text-only kind), plus one string arena ([`Strings`]) and one [`Pool`] of
+//! per-row attribute lines, verbatim lines, comments and coordinates. A [`Project`] owns
+//! the manifest, lockfile, library index, cell interfaces and open documents.
+//!
+//! # Files
+//!
+//! Leaves: `strings` (arena, ids), `sha256`, `record` (owned records, validation),
+//! `changes` (change log), `pool` (per-row data, row views and sinks), `tables` (the
+//! column tables). Documents: `document` (struct, reads), `load` (load, save, compaction),
+//! `rows` (edit primitives). Edits: `ops` (op types), `snap`, `edit` (transactions),
+//! `diff`, `optext` (op text), `journal` (journal records, recovery analysis).
+//! Project: `library`, `techmap`, `core_lib`, `project` (libraries, resolution), `open`
+//! (open documents), `requests` (the edit spine), `sidecar` (journal output, idle work),
+//! `sync` (saves, external changes, recovery).
 //!
 //! # Spines
 //!
@@ -43,46 +54,59 @@
 //! assert!(matches!(out[0], Outcome::Committed { .. }));
 //! assert_eq!(project.doc(doc).unwrap().wires().x1.len(), 2);
 //! ```
+//!
+//! # Contents
+//!
+//! The re-exports below, plus `pub enum Code` (`meaning`, `is_warning`; crate:
+//! `from_format`) and `pub struct Diag`.
 
 #![forbid(unsafe_code)]
 
 mod changes;
 mod core_lib;
+mod diff;
+#[macro_use]
 mod document;
 mod edit;
 mod journal;
 mod library;
+mod load;
+mod open;
+mod ops;
+mod optext;
+mod pool;
 mod project;
 mod record;
+mod requests;
+mod rows;
 mod sha256;
+mod sidecar;
+mod snap;
 mod strings;
+mod sync;
 mod tables;
 mod techmap;
 
 pub use changes::{Change, Cursor, LOG_MAX, Write};
 pub use core_lib::{core_file, core_library};
 pub use document::{Document, Loc, TableId};
-pub use edit::{Mode, NEW_ID, OPS_MAX, Op, OpError, Target, Transaction};
-pub use journal::{ops_from_text, ops_to_text};
-pub use library::{
-    CELLS_MAX, CellRef, Cells, LIBS_MAX, LibSource, Libs, LockStatus, Locked, TECH_LIB,
-};
-pub use project::{
-    Choice, ConflictBlock, DOCS_MAX, DocHandle, Edit, EditRequest, External, JournalWrite,
-    OpenError, Opened, Outcome, Project, Recovery, ReloadError, STAGES_MAX, SaveRequest, Stage,
-    UNDO_MAX, apply_edits,
-};
+pub use library::{CELLS_MAX, Cells, LibSource, Libs, LockStatus, Locked, TECH_LIB};
+pub use open::{DOCS_MAX, DocHandle, OpenError, Opened, Recovery};
+pub use ops::{Mode, NEW_ID, Op, OpError, Target, Transaction};
+pub use optext::{ops_from_text, ops_to_text};
+pub use pool::{Pool, Span};
+pub use project::{Project, ReloadError};
 pub use record::{Attr, RecordBuf};
+pub use requests::{Edit, EditRequest, Outcome, Stage, UNDO_MAX, apply_edits};
 /// Format types that appear in this crate's columns and edit targets, re-exported so
 /// consumers need no direct `schemify-format` dependency just to name them.
-pub use schemify_format::{FileKind, Orient, RecordKind};
+pub use schemify_format::{FileKind, RecordKind};
 pub use sha256::{Digest, Sha256, hex, sha256};
-pub use strings::{ObjId, SYMS_MAX, Strings, Sym};
-pub use tables::{
-    Graphics, Instances, Noconns, POOL_MAX, PinDir, Pins, Placed, Pool, Records, Shapes, Span,
-    Wires,
-};
-pub use techmap::{CLASS_PARAMS, CLASSES, CLASSES_MAX, FLAVORS, TechMap, core_symbol};
+pub use sidecar::JournalWrite;
+pub use strings::{ObjId, Strings, Sym};
+pub use sync::{Choice, ConflictBlock, External, SaveRequest};
+pub use tables::{Graphics, Instances, Noconns, PinDir, Pins, Placed, Records, Shapes, Wires};
+pub use techmap::TechMap;
 
 use std::fmt;
 
@@ -111,6 +135,17 @@ pub enum Code {
     E044,
     W001,
     W002,
+}
+
+/// One finding about a loaded file or library.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Diag {
+    /// What was found.
+    pub code: Code,
+    /// 1-based source line, or 0 when not tied to one line.
+    pub line: u32,
+    /// Which rule, beyond the code's meaning.
+    pub detail: &'static str,
 }
 
 impl Code {
@@ -165,15 +200,4 @@ impl fmt::Display for Code {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{self:?}")
     }
-}
-
-/// One finding about a loaded file or library.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Diag {
-    /// What was found.
-    pub code: Code,
-    /// 1-based source line, or 0 when not tied to one line.
-    pub line: u32,
-    /// Which rule, beyond the code's meaning.
-    pub detail: &'static str,
 }

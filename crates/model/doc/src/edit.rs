@@ -1,6 +1,9 @@
-//! Edit ops and the all-or-nothing transaction engine (edits spec §1).
+//! A transaction's ops on one [`Document`] → applied all-or-nothing, each resolved in
+//! place (fresh ids drawn, values snapped) and paired with its exact inverse.
+//! Cites: edits spec §1 (transactions, `E025`, `E026`, `E030`, `E040`–`E043`); D13
+//! (snapping).
 //!
-//! Spine of [`apply`]: note which whole-document rules the ops can affect → apply each
+//! Spine of `apply`: note which whole-document rules the ops can affect → apply each
 //! op (resolving fresh ids, snapping, building its exact inverse) → end-of-transaction
 //! checks (`E026`, `E025`, `E042`) → on any error, replay the inverses and return every
 //! (op index, code); otherwise return the inverse transaction.
@@ -9,193 +12,32 @@
 //! copy, validate it, put it back", so the inverse of `set_field`/`set_attr`/
 //! `remove_attr`/`put` is one `put` of the prior record. That is exact even when the
 //! table normalizes (wire endpoint order) or the value was snapped.
+//!
+//! Contents:
+//! - `pub(crate) fn apply(doc, ops, params, rng) -> Result<Vec<Op>, Vec<OpError>>`
+//! - `pub(crate) fn replay(doc, ops) -> Result<Vec<Op>, Vec<OpError>>`
+//! - `pub(crate) fn restore(doc, ops) -> Result<Vec<Op>, Vec<OpError>>`
 
 use crate::Code;
-use crate::document::{Document, Loc, TableId};
+use crate::document::{Document, Loc};
+use crate::ops::{NEW_ID, OPS_MAX, Op, OpError, Target};
 use crate::record::{Attr, RecordBuf};
+use crate::snap::ParamMap;
 use crate::strings::ObjId;
 use crate::tables::Instances;
-use schemify_format::is_word;
-use schemify_format::{IdRng, KeyRule, RecordKind, fresh_id, is_number};
-use std::collections::BTreeMap;
+use schemify_format::{IdRng, KeyRule, RecordKind, fresh_id, is_word};
 
-/// The id field value that asks `doc` to draw a fresh id on insert.
-pub const NEW_ID: &str = "-";
-/// Most ops one transaction may carry (a paste of a whole 2^22-object cell).
-pub const OPS_MAX: usize = 1 << 22;
-
-/// Addresses one record: its kind plus its key. The key is the id for id-keyed kinds,
-/// the name for named kinds, the draw-order index for graphics, and ignored (`"0"`)
-/// for the header.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Target {
-    /// Record kind (`Header` for the header).
-    pub kind: RecordKind,
-    /// Id, name or graphic index.
-    pub key: String,
+/// Which override values of an instance an op writes, so only those are snapped:
+/// replaying the journal (which has no parameter facts) must reproduce the state.
+#[derive(Clone, Copy)]
+enum Scope<'k> {
+    /// Insert/put: every override is new.
+    All,
+    /// `set_attr`: only this key.
+    Key(&'k str),
+    /// The cell reference changed: re-check `E030`, change nothing.
+    CheckOnly,
 }
-
-impl Target {
-    /// Addresses a record.
-    pub fn new(kind: RecordKind, key: &str) -> Target {
-        Target {
-            kind,
-            key: key.to_owned(),
-        }
-    }
-
-    /// Addresses the header.
-    pub fn header() -> Target {
-        Target::new(RecordKind::Header, "0")
-    }
-}
-
-/// One edit op (edits spec §1; `put` and positional `insert` are doc amendments).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Op {
-    /// Adds a record. An id field of [`NEW_ID`] is replaced by a fresh id. `at` is the
-    /// row in an ordered table (ranks 1, 2, 4, 5); `None` puts it after the last record
-    /// of its kind. Inverse: `delete`.
-    Insert {
-        /// The record.
-        rec: RecordBuf,
-        /// Row in an ordered table.
-        at: Option<u32>,
-    },
-    /// Removes a record. Inverse: `insert` of the prior record at its prior row.
-    Delete(Target),
-    /// Replaces a record wholesale, keeping its row (ids are immutable). Inverse: `put`
-    /// of the prior record.
-    Put {
-        /// The record to replace.
-        target: Target,
-        /// Its new content.
-        rec: RecordBuf,
-    },
-    /// Sets positional field `index` (0-based, after the word). Field 0 of an id-keyed
-    /// record is immutable (`E043`). Inverse: `put` of the prior record.
-    SetField {
-        /// The record.
-        target: Target,
-        /// Field index.
-        index: u32,
-        /// New value.
-        value: String,
-    },
-    /// Sets an attribute line: replaces the line with `key` (for repeatable attributes,
-    /// the one whose first value matches), else appends. Inverse: `put` of the prior.
-    SetAttr {
-        /// The record.
-        target: Target,
-        /// Attribute word.
-        key: String,
-        /// Values.
-        values: Vec<String>,
-    },
-    /// Removes the lines with `key` (only those whose first value is `first`, if given).
-    /// Removing nothing is `E040`. Inverse: `put` of the prior.
-    RemoveAttr {
-        /// The record.
-        target: Target,
-        /// Attribute word.
-        key: String,
-        /// First value selecting repeatable lines.
-        first: Option<String>,
-    },
-    /// Moves a record of an ordered table to row `to`. Inverse: `reorder` back.
-    Reorder {
-        /// The record.
-        target: Target,
-        /// New row.
-        to: u32,
-    },
-}
-
-impl Op {
-    /// Returns the record this op changes: (kind, key text), the key as in [`Target`].
-    /// Inserts report the payload's first field (a graphic's draw-order index is its
-    /// insert row instead, which an insert without `at` does not know).
-    pub fn subject(&self) -> (RecordKind, &str) {
-        match self {
-            Op::Insert { rec, .. } => (rec.kind, rec.fields.first().map_or("", String::as_str)),
-            Op::Delete(t)
-            | Op::Put { target: t, .. }
-            | Op::SetField { target: t, .. }
-            | Op::SetAttr { target: t, .. }
-            | Op::RemoveAttr { target: t, .. }
-            | Op::Reorder { target: t, .. } => (t.kind, t.key.as_str()),
-        }
-    }
-}
-
-/// Whether a transaction is applied now or held for review.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mode {
-    /// Validate, apply, push the inverse on the undo stack, journal it.
-    Commit,
-    /// Validate, then store in `staged_edits` without applying.
-    Stage,
-}
-
-/// An ordered list of ops on one document with an undo-menu label.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Transaction {
-    /// Label for undo menus and the journal.
-    pub label: String,
-    /// Commit or stage.
-    pub mode: Mode,
-    /// The ops, applied in order.
-    pub ops: Vec<Op>,
-}
-
-/// Why one op of a rejected transaction failed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct OpError {
-    /// Index of the op in its transaction.
-    pub op: u32,
-    /// What went wrong.
-    pub code: Code,
-}
-
-/// What edits need to know about one parameter of an instantiated cell: whether it is
-/// computed (`E030`) and its plain-number snapping rule.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ParamFacts {
-    pub(crate) name: String,
-    pub(crate) computed: bool,
-    pub(crate) grid: Option<String>,
-    pub(crate) step: Option<String>,
-    pub(crate) min: Option<String>,
-}
-
-impl ParamFacts {
-    /// Returns the snapped value when `value` is a plain number and the param has a
-    /// plain-number `grid` (multiples of it) or `step` (from `min` when that is a plain
-    /// number, else from 0); `None` when nothing changes (expressions are elab's).
-    pub(crate) fn snap(&self, value: &str) -> Option<String> {
-        if !is_number(value) {
-            return None;
-        }
-        // A `grid` that is an expression wins over `step`: elab evaluates and gates it.
-        let snapped = match (self.grid.as_deref(), self.step.as_deref()) {
-            (Some(g), _) => snap(value, g, "0"),
-            (None, Some(st)) => snap(value, st, self.min.as_deref().unwrap_or("0")),
-            (None, None) => None,
-        };
-        assert!(
-            snapped.as_deref().is_none_or(is_number),
-            "snapping yields plain numbers"
-        );
-        snapped.filter(|s| s != value)
-    }
-}
-
-/// Per cell reference text (as written in this document): the cell's parameters, or
-/// `None` when the reference does not resolve (then nothing is snapped or checked;
-/// elab reports `E001`).
-pub(crate) type ParamMap = BTreeMap<String, Option<Vec<ParamFacts>>>;
-
-// ------------------------------------------------------------------ the engine
 
 /// Applies `ops` to `doc` all-or-nothing. Ops are resolved in place (fresh ids drawn,
 /// values snapped), so the caller journals exactly what was applied.
@@ -236,6 +78,8 @@ pub(crate) fn replay(doc: &mut Document, ops: &mut [Op]) -> Result<Vec<Op>, Vec<
 pub(crate) fn restore(doc: &mut Document, ops: &mut [Op]) -> Result<Vec<Op>, Vec<OpError>> {
     apply_with(doc, ops, &ParamMap::new(), &mut IdRng::new(0), false)
 }
+
+// ---- private ----
 
 fn apply_with(
     doc: &mut Document,
@@ -392,7 +236,7 @@ fn apply_one(
             doc.check(rec)?;
             inst_params(rec, params, Scope::All)?;
             let loc = doc.insert(rec, *at)?;
-            Ok(Op::Delete(target_at(doc, loc)))
+            Ok(Op::Delete(Target::at(doc, loc)))
         }
         Op::Delete(t) => {
             let loc = locate(doc, t)?;
@@ -419,7 +263,7 @@ fn apply_one(
             let prior = doc.record(loc);
             let loc = doc.put(loc, rec)?;
             Ok(Op::Put {
-                target: target_at(doc, loc),
+                target: Target::at(doc, loc),
                 rec: prior,
             })
         }
@@ -488,7 +332,7 @@ fn apply_one(
             let new = doc.reorder(loc, *to)?;
             assert_eq!(new.row, *to);
             Ok(Op::Reorder {
-                target: target_at(doc, new),
+                target: Target::at(doc, new),
                 to: from,
             })
         }
@@ -500,7 +344,7 @@ fn modify(doc: &mut Document, loc: Loc, prior: RecordBuf, rec: RecordBuf) -> Res
     assert_eq!(prior.kind, rec.kind);
     let loc = doc.put(loc, &rec)?;
     let inv = Op::Put {
-        target: target_at(doc, loc),
+        target: Target::at(doc, loc),
         rec: prior,
     };
     assert!(matches!(inv, Op::Put { .. }));
@@ -544,18 +388,6 @@ fn locate(doc: &Document, t: &Target) -> Result<Loc, Code> {
     doc.locate(t.kind, &t.key).ok_or(Code::E040)
 }
 
-fn target_at(doc: &Document, loc: Loc) -> Target {
-    let t = Target {
-        kind: doc.kind_at(loc),
-        key: doc.key_of(loc),
-    };
-    assert!(
-        doc.locate(t.kind, &t.key) == Some(loc),
-        "the target addresses the row back"
-    );
-    t
-}
-
 fn assign_id(doc: &Document, rec: &mut RecordBuf, rng: &mut IdRng) {
     if rec.kind.key() != KeyRule::Id || rec.fields.first().map(String::as_str) != Some(NEW_ID) {
         return;
@@ -567,18 +399,6 @@ fn assign_id(doc: &Document, rec: &mut RecordBuf, rng: &mut IdRng) {
     });
     rec.fields[0] = id.as_str().to_owned();
     assert_ne!(rec.fields[0], NEW_ID);
-}
-
-/// Which override values of an instance an op writes, so only those are snapped:
-/// replaying the journal (which has no parameter facts) must reproduce the state.
-#[derive(Clone, Copy)]
-enum Scope<'k> {
-    /// Insert/put: every override is new.
-    All,
-    /// `set_attr`: only this key.
-    Key(&'k str),
-    /// The cell reference changed: re-check `E030`, change nothing.
-    CheckOnly,
 }
 
 /// Instance parameter semantics on a validated record: `E030` for an override of a
@@ -639,205 +459,4 @@ fn set_attr(rec: &mut RecordBuf, key: &str, values: &[String]) -> usize {
     };
     assert!(rec.attrs[i].key == key);
     i
-}
-
-// ------------------------------------------------------------------ snapping
-
-/// A decimal `m / 10^s`.
-#[derive(Clone, Copy)]
-struct Dec {
-    m: i128,
-    s: u32,
-}
-
-/// Digits a snapped operand may have; beyond it the value is left for elab.
-const DIGITS_MAX: usize = 30;
-
-fn dec(text: &str) -> Option<Dec> {
-    if !is_number(text) || text.len() > DIGITS_MAX {
-        return None;
-    }
-    let (neg, body) = text.strip_prefix('-').map_or((false, text), |b| (true, b));
-    let (whole, frac) = body.split_once('.').unwrap_or((body, ""));
-    let mut m: i128 = 0;
-    for b in whole.bytes().chain(frac.bytes()) {
-        m = m * 10 + i128::from(b - b'0');
-    }
-    assert!(
-        m >= 0 && m < 10i128.pow(DIGITS_MAX as u32),
-        "at most 30 digits"
-    );
-    Some(Dec {
-        m: if neg { -m } else { m },
-        s: frac.len() as u32,
-    })
-}
-
-/// Snaps `value` to `origin + k * grid` for the nearest integer `k` (ties away from
-/// zero), in exact decimal arithmetic. Returns the shortest decimal text, or `None` when
-/// an operand is not a plain number, the grid is not positive, or digits overflow.
-pub(crate) fn snap(value: &str, grid: &str, origin: &str) -> Option<String> {
-    let (v, g, o) = (dec(value)?, dec(grid)?, dec(origin)?);
-    let s = v.s.max(g.s).max(o.s);
-    let scale = |d: Dec| d.m.checked_mul(10i128.checked_pow(s - d.s)?);
-    let (v, g, o) = (scale(v)?, scale(g)?, scale(o)?);
-    if g <= 0 {
-        return None;
-    }
-    let diff = v.checked_sub(o)?;
-    let (q, r) = (diff / g, diff % g);
-    let k = if 2 * r.abs() >= g {
-        q + diff.signum()
-    } else {
-        q
-    };
-    let out = o.checked_add(k.checked_mul(g)?)?;
-    assert!(
-        (out - o) % g == 0 && 2 * (out - v).abs() <= g,
-        "on grid, nearest"
-    );
-    Some(format_dec(out, s))
-}
-
-fn format_dec(m: i128, s: u32) -> String {
-    let neg = m < 0;
-    let digits = m.unsigned_abs().to_string();
-    let s = s as usize;
-    let padded = if digits.len() <= s {
-        format!("{}{digits}", "0".repeat(s + 1 - digits.len()))
-    } else {
-        digits
-    };
-    let (whole, frac) = padded.split_at(padded.len() - s);
-    let frac = frac.trim_end_matches('0');
-    let mut out = String::new();
-    if neg && (whole != "0" || !frac.is_empty()) {
-        out.push('-');
-    }
-    out.push_str(whole);
-    if !frac.is_empty() {
-        out.push('.');
-        out.push_str(frac);
-    }
-    assert!(is_number(&out));
-    out
-}
-
-// ------------------------------------------------------------------ diff → ops
-
-/// Returns ops that turn `from` into `to` (same file kind; canonical text equal after
-/// applying). The header is one `put`; an ordered table that differs is rewritten whole
-/// (deletes by descending row, inserts by ascending row); unordered tables go by key
-/// (delete, put, insert). All deletes come first, then puts, then inserts, so a key may
-/// move between kinds. Cost: O(n log n) in records, allocating one `RecordBuf` each.
-pub(crate) fn diff_ops(from: &Document, to: &Document) -> Vec<Op> {
-    assert_eq!(from.kind(), to.kind(), "diff across file kinds");
-    let (mut deletes, mut puts, mut inserts) = (Vec::new(), Vec::new(), Vec::new());
-    let header = to.header_record();
-    if from.header_record() != header {
-        puts.push(Op::Put {
-            target: Target::header(),
-            rec: header,
-        });
-    }
-    for t in TableId::ALL {
-        let rows = |d: &Document| -> Vec<(RecordBuf, Target)> {
-            (0..d.table_len(t) as u32)
-                .map(|row| {
-                    let loc = Loc { table: t, row };
-                    (d.record(loc), target_at(d, loc))
-                })
-                .collect()
-        };
-        let (a, b) = (rows(from), rows(to));
-        if t.ordered() {
-            if a.iter().map(|x| &x.0).eq(b.iter().map(|x| &x.0)) {
-                continue;
-            }
-            deletes.extend(a.into_iter().rev().map(|(_, tg)| Op::Delete(tg)));
-            for (row, (rec, _)) in b.into_iter().enumerate() {
-                inserts.push(Op::Insert {
-                    rec,
-                    at: Some(row as u32),
-                });
-            }
-            continue;
-        }
-        let key = |(r, tg): (RecordBuf, Target)| ((r.kind, tg.key), r);
-        let a: BTreeMap<_, _> = a.into_iter().map(key).collect();
-        let mut b: BTreeMap<_, _> = b.into_iter().map(key).collect();
-        for (k, rec) in a {
-            let new = b.remove(&k);
-            let target = Target {
-                kind: k.0,
-                key: k.1,
-            };
-            match new {
-                None => deletes.push(Op::Delete(target)),
-                Some(new) if new != rec => puts.push(Op::Put { target, rec: new }),
-                Some(_) => {}
-            }
-        }
-        inserts.extend(b.into_values().map(|rec| Op::Insert { rec, at: None }));
-    }
-    let rows: usize = TableId::ALL
-        .iter()
-        .map(|t| from.table_len(*t) + to.table_len(*t))
-        .sum();
-    deletes.extend(puts);
-    deletes.extend(inserts);
-    assert!(
-        deletes.len() <= rows + 1,
-        "at most one op per record plus the header"
-    );
-    deletes
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn snapping_is_exact_decimal() {
-        assert_eq!(snap("0.153", "0.005", "0").as_deref(), Some("0.155"));
-        assert_eq!(snap("0.152", "0.005", "0").as_deref(), Some("0.15"));
-        assert_eq!(
-            snap("0.1525", "0.005", "0").as_deref(),
-            Some("0.155"),
-            "ties away from zero"
-        );
-        assert_eq!(snap("-0.1525", "0.005", "0").as_deref(), Some("-0.155"));
-        assert_eq!(snap("7", "2", "0").as_deref(), Some("8"));
-        assert_eq!(snap("0.4", "1", "0").as_deref(), Some("0"));
-        assert_eq!(snap("-0.4", "1", "0").as_deref(), Some("0"));
-        assert_eq!(snap("1.07", "0.1", "0.15").as_deref(), Some("1.05"));
-        assert_eq!(snap("1u", "0.1", "0"), None, "expressions are elab's");
-        assert_eq!(snap("1", "0", "0"), None);
-        assert_eq!(snap("1", "-1", "0"), None);
-        assert_eq!(snap("1", "w", "0"), None);
-    }
-
-    #[test]
-    fn param_facts_choose_grid_then_step() {
-        let mut p = ParamFacts {
-            name: "L".into(),
-            computed: false,
-            grid: Some("0.005".into()),
-            step: Some("1".into()),
-            min: None,
-        };
-        assert_eq!(p.snap("0.151").as_deref(), Some("0.15"));
-        assert_eq!(p.snap("0.15"), None, "already on grid");
-        p.grid = Some("lambda".into());
-        assert_eq!(
-            p.snap("2.6"),
-            None,
-            "an expression grid is elab's, even with a step"
-        );
-        p.grid = None;
-        p.min = Some("0.5".into());
-        assert_eq!(p.snap("2.6").as_deref(), Some("2.5"));
-        p.min = Some("lmin".into());
-        assert_eq!(p.snap("2.6"), None, "step from an expression min is elab's");
-    }
 }

@@ -12,6 +12,12 @@
 //! Six questions: in, the map bytes and the indexed interfaces; out, derived interface
 //! documents. Rows ≤ [`CLASSES_MAX`] (a handful in practice). Rebuilt whole after every
 //! library (re)index, because any library may hold a referenced cell. Lifetime: the index.
+//!
+//! Contents:
+//! - `pub(crate) const CLASSES`, `FLAVORS`, `CLASS_PARAMS`, `CLASSES_MAX`
+//! - `pub struct TechMap`: `parse`, `find`, `params`
+//! - `pub(crate) fn core_symbol(class: &str) -> Option<&'static str>`
+//! - `pub(crate) fn derive(map: &TechMap, row: usize, core: &Document, pdk: &Document) -> Result<Document, String>`
 
 use crate::document::{Document, Loc, TableId};
 use crate::record::RecordBuf;
@@ -20,13 +26,13 @@ use schemify_format::{Document as FormatDoc, FileKind, RecordKind};
 /// Technology classes the core resolves, with the core symbol each one draws as.
 // ponytail: MOS only (pdk spec §10 MVP); res, cap, diode, npn, pnp are one row each here
 // plus their class params once their core symbols carry them.
-pub const CLASSES: [(&str, &str); 2] = [("nmos", "nmos4"), ("pmos", "pmos4")];
+pub(crate) const CLASSES: [(&str, &str); 2] = [("nmos", "nmos4"), ("pmos", "pmos4")];
 /// Flavors a map row may name; `core` is what `tech:<class>` means without a `flavor`.
-pub const FLAVORS: [&str; 4] = ["core", "io", "lvt", "hvt"];
+pub(crate) const FLAVORS: [&str; 4] = ["core", "io", "lvt", "hvt"];
 /// Class params of a MOS class (pdk spec §5), in the order they are appended.
-pub const CLASS_PARAMS: [&str; 5] = ["w", "l", "nf", "m", "flavor"];
+pub(crate) const CLASS_PARAMS: [&str; 5] = ["w", "l", "nf", "m", "flavor"];
 /// Most `class` rows one map holds.
-pub const CLASSES_MAX: usize = 1 << 8;
+pub(crate) const CLASSES_MAX: usize = 1 << 8;
 
 /// A parsed `tech.map` (SoA over its `class` records, params as CSR).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -58,8 +64,8 @@ impl TechMap {
     ///
     /// # Errors
     ///
-    /// The format error, a file of another kind, more than [`CLASSES_MAX`] rows, or a
-    /// flavor outside [`FLAVORS`], as text for the checks panel.
+    /// The format error, a file of another kind, more than 2^8 class rows, or a flavor
+    /// other than `core`, `io`, `lvt`, `hvt`, as text for the checks panel.
     pub fn parse(bytes: &[u8]) -> Result<TechMap, String> {
         let d = schemify_format::parse(bytes).map_err(|e| e.to_string())?;
         if d.kind() != FileKind::Techmap {
@@ -128,7 +134,7 @@ impl TechMap {
 }
 
 /// Returns the core symbol a class draws as (`nmos` → `nmos4`).
-pub fn core_symbol(class: &str) -> Option<&'static str> {
+pub(crate) fn core_symbol(class: &str) -> Option<&'static str> {
     CLASSES.iter().find(|c| c.0 == class).map(|c| c.1)
 }
 
@@ -252,6 +258,8 @@ pub(crate) fn derive(
     assert_eq!(doc.pins().name.len(), core_pins.len());
     Ok(doc)
 }
+
+// ---- private ----
 
 /// Appends `rec` to `d` (comments dropped: a derived cell is never written to disk).
 fn push(d: &mut FormatDoc<'static>, rec: &RecordBuf) {

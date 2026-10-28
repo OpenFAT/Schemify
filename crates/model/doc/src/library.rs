@@ -1,4 +1,7 @@
-//! Project manifest, lockfile and library index (D10, D35; netlist spec §1).
+//! Project manifest and lockfile bytes → library rows and lock rows; a library's file
+//! listing → indexed cell rows (with each cell's symbol) and the library content hash.
+//! Cites: D10, D35 (libraries, lockfile); netlist spec §1 (cell references); pdk spec §5
+//! (`lib tech map`).
 //!
 //! Six questions (project-level tables):
 //! 1. In: `schemify.project` and `schemify.lock` bytes, and per library a listing of
@@ -6,7 +9,7 @@
 //!    archive). Out: cell rows with interfaces, resolution of `lib:cell` / `./cell`,
 //!    content hashes, lockfile text.
 //! 2. Libraries ≤ 2^8 (row 0 is the project itself; the builtin `core` comes last
-//!    unless the manifest declares `core`); cells ≤ 2^16 per project (ARCHITECTURE);
+//!    unless the manifest declares `core`); cells ≤ 2^16 per project (architecture);
 //!    lock rows ≤ 2^8 + plugins.
 //! 3. Library index `u8`; names, dirs and stems are `Sym`s in the project arena;
 //!    hashes are 32-byte digests.
@@ -15,6 +18,15 @@
 //! 5. Lifetime: the project; a library's rows are replaced when it is re-indexed.
 //! 6. Indexing is per library and independent; the app may index on worker threads
 //!    and call in sequence.
+//!
+//! Contents:
+//! - `pub const TECH_LIB`, `pub(crate) const LIBS_MAX`, `pub const CELLS_MAX`
+//! - `pub enum LibSource`: `word`; `pub struct Libs`: `find`
+//! - `pub struct Locked`: `find`, `write`; crate: `set`
+//! - `pub enum LockStatus`; `pub struct Cells`: crate `retain_not_lib`, `push_row`, `find`
+//! - `pub(crate) enum CellRef`: `parse`; `pub(crate) struct ManifestRest`
+//! - `pub(crate) fn parse_manifest`, `pub(crate) fn parse_lock`,
+//!   `pub(crate) fn content_hash`, `pub(crate) fn index_cells`, `pub(crate) fn lock_status`
 
 use crate::document::Document;
 use crate::record::RecordBuf;
@@ -22,6 +34,14 @@ use crate::sha256::{Digest, Sha256, hex};
 use crate::strings::{Strings, Sym};
 use crate::{Code, Diag};
 use schemify_format::{Document as FormatDoc, FileKind, RecordKind, parse_prefix};
+
+/// The reserved library name of technology classes (pdk spec §5).
+pub const TECH_LIB: &str = "tech";
+
+/// Most libraries in one project.
+pub(crate) const LIBS_MAX: usize = 1 << 8;
+/// Most indexed cells in one project.
+pub const CELLS_MAX: usize = 1 << 16;
 
 /// Where a library comes from (manifest `lib` record; `core` is builtin).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,23 +79,6 @@ pub enum LibSource {
     },
 }
 
-impl LibSource {
-    /// Returns the lockfile `kind` word.
-    pub fn word(&self) -> &'static str {
-        match self {
-            LibSource::Project => "project",
-            LibSource::Builtin => "builtin",
-            LibSource::Path { .. } => "path",
-            LibSource::Git { .. } => "git",
-            LibSource::Url { .. } => "url",
-            LibSource::Map { .. } => "map",
-        }
-    }
-}
-
-/// The reserved library name of technology classes (pdk spec §5).
-pub const TECH_LIB: &str = "tech";
-
 /// Library rows (manifest order after the two implicit rows).
 #[derive(Clone, Debug, Default)]
 pub struct Libs {
@@ -89,33 +92,6 @@ pub struct Libs {
     pub hash: Vec<Option<Digest>>,
     /// What the app resolved the source to when indexing (commit, url, path).
     pub resolved: Vec<Option<String>>,
-}
-
-/// Most libraries in one project.
-pub const LIBS_MAX: usize = 1 << 8;
-/// Most indexed cells in one project.
-pub const CELLS_MAX: usize = 1 << 16;
-
-impl Libs {
-    /// Returns the row of library `name`.
-    pub fn find(&self, name: &str) -> Option<usize> {
-        let row = self.name.iter().position(|n| n == name);
-        assert!(row.is_none_or(|r| r < self.name.len()));
-        row
-    }
-
-    fn push(&mut self, name: &str, source: LibSource, subdir: Option<String>) {
-        assert!(
-            self.name.len() < LIBS_MAX,
-            "a project has at most 2^8 libraries"
-        );
-        self.name.push(name.to_owned());
-        self.source.push(source);
-        self.subdir.push(subdir);
-        self.hash.push(None);
-        self.resolved.push(None);
-        assert_eq!(self.name.len(), self.resolved.len());
-    }
 }
 
 /// Lockfile rows (`locked <type> <name> <kind> <resolved> <sha256>`), sorted by
@@ -132,6 +108,91 @@ pub struct Locked {
     pub resolved: Vec<String>,
     /// Content hash, lowercase hex.
     pub hash: Vec<String>,
+}
+
+/// How an indexed library's content compares with its lockfile row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LockStatus {
+    /// No lockfile row (call `Project::lock_library` to pin it).
+    Unlocked,
+    /// The content hash equals the locked hash.
+    Match,
+    /// The content changed since it was locked (a PDK update, a tampered fetch).
+    Mismatch {
+        /// The hash in the lockfile.
+        locked: String,
+    },
+}
+
+/// Indexed cell files: one row per `.shprim`/`.shcomp`/`.shbench` of every indexed
+/// library. Row indices are valid until the next `index_library`.
+#[derive(Clone, Debug, Default)]
+pub struct Cells {
+    /// Library row.
+    pub lib: Vec<u8>,
+    /// Directory inside the library (`""` at its root), in the project arena.
+    pub dir: Vec<Sym>,
+    /// Cell name (the file stem), in the project arena.
+    pub stem: Vec<Sym>,
+    /// File kind from the extension.
+    pub kind: Vec<FileKind>,
+    /// sha256 of the file bytes.
+    pub hash: Vec<Digest>,
+    /// The symbol (ranks 0–2, `parse_prefix`: header, interface and symbol graphics),
+    /// for cells; `None` for benches and for files whose symbol does not parse (see the
+    /// index report). Enough to place and draw an instance without opening the cell.
+    pub iface: Vec<Option<Document>>,
+}
+
+/// A parsed cell reference (netlist spec §1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CellRef<'a> {
+    /// `lib:cell`, resolved through the manifest.
+    Lib {
+        /// Library name.
+        lib: &'a str,
+        /// Cell name.
+        cell: &'a str,
+    },
+    /// `./cell`, resolved in the referencing file's directory.
+    Local {
+        /// Cell name.
+        cell: &'a str,
+    },
+}
+
+/// The manifest's non-library records, kept for the app and the plugin host.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ManifestRest {
+    pub(crate) plugins: Vec<RecordBuf>,
+    pub(crate) sets: Vec<(String, String)>,
+}
+
+/// Highest rank an indexed cell keeps: the symbol graphics (rank 2), so an editor draws
+/// instances from the index instead of opening every instantiated cell.
+const SYMBOL_RANK: u8 = 2;
+
+impl LibSource {
+    /// Returns the lockfile `kind` word.
+    pub fn word(&self) -> &'static str {
+        match self {
+            LibSource::Project => "project",
+            LibSource::Builtin => "builtin",
+            LibSource::Path { .. } => "path",
+            LibSource::Git { .. } => "git",
+            LibSource::Url { .. } => "url",
+            LibSource::Map { .. } => "map",
+        }
+    }
+}
+
+impl Libs {
+    /// Returns the row of library `name`.
+    pub fn find(&self, name: &str) -> Option<usize> {
+        let row = self.name.iter().position(|n| n == name);
+        assert!(row.is_none_or(|r| r < self.name.len()));
+        row
+    }
 }
 
 impl Locked {
@@ -180,40 +241,6 @@ impl Locked {
     }
 }
 
-/// How an indexed library's content compares with its lockfile row.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LockStatus {
-    /// No lockfile row (call `Project::lock_library` to pin it).
-    Unlocked,
-    /// The content hash equals the locked hash.
-    Match,
-    /// The content changed since it was locked (a PDK update, a tampered fetch).
-    Mismatch {
-        /// The hash in the lockfile.
-        locked: String,
-    },
-}
-
-/// Indexed cell files: one row per `.shprim`/`.shcomp`/`.shbench` of every indexed
-/// library. Row indices are valid until the next `index_library`.
-#[derive(Clone, Debug, Default)]
-pub struct Cells {
-    /// Library row.
-    pub lib: Vec<u8>,
-    /// Directory inside the library (`""` at its root), in the project arena.
-    pub dir: Vec<Sym>,
-    /// Cell name (the file stem), in the project arena.
-    pub stem: Vec<Sym>,
-    /// File kind from the extension.
-    pub kind: Vec<FileKind>,
-    /// sha256 of the file bytes.
-    pub hash: Vec<Digest>,
-    /// The symbol (ranks 0–2, `parse_prefix`: header, interface and symbol graphics),
-    /// for cells; `None` for benches and for files whose symbol does not parse (see the
-    /// index report). Enough to place and draw an instance without opening the cell.
-    pub iface: Vec<Option<Document>>,
-}
-
 impl Cells {
     pub(crate) fn retain_not_lib(&mut self, lib: u8) {
         fn retain_by<T>(v: &mut Vec<T>, keep: &[bool]) {
@@ -253,19 +280,6 @@ impl Cells {
         assert!(self.columns_ok());
     }
 
-    fn columns_ok(&self) -> bool {
-        let n = self.lib.len();
-        [
-            self.dir.len(),
-            self.stem.len(),
-            self.kind.len(),
-            self.hash.len(),
-            self.iface.len(),
-        ]
-        .iter()
-        .all(|&l| l == n)
-    }
-
     /// Returns the row of (`lib`, `dir`, `stem`) with kind `kind`.
     pub(crate) fn find(&self, lib: u8, dir: Sym, stem: Sym, kind: FileKind) -> Option<usize> {
         assert!(self.columns_ok());
@@ -277,26 +291,9 @@ impl Cells {
     }
 }
 
-/// A parsed cell reference (netlist spec §1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CellRef<'a> {
-    /// `lib:cell`, resolved through the manifest.
-    Lib {
-        /// Library name.
-        lib: &'a str,
-        /// Cell name.
-        cell: &'a str,
-    },
-    /// `./cell`, resolved in the referencing file's directory.
-    Local {
-        /// Cell name.
-        cell: &'a str,
-    },
-}
-
 impl<'a> CellRef<'a> {
     /// Parses `lib:cell` or `./cell`; `None` for anything else.
-    pub fn parse(text: &'a str) -> Option<CellRef<'a>> {
+    pub(crate) fn parse(text: &'a str) -> Option<CellRef<'a>> {
         let ok = |s: &str| !s.is_empty() && !s.contains(['/', ':']);
         if let Some(cell) = text.strip_prefix("./") {
             return ok(cell).then_some(CellRef::Local { cell });
@@ -306,13 +303,6 @@ impl<'a> CellRef<'a> {
         assert!(r.is_none() || lib.len() + cell.len() + 1 == text.len());
         r
     }
-}
-
-/// The manifest's non-library records, kept for the app and the plugin host.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct ManifestRest {
-    pub(crate) plugins: Vec<RecordBuf>,
-    pub(crate) sets: Vec<(String, String)>,
 }
 
 /// Parses `schemify.project` into library rows (project and builtin `core` first).
@@ -391,18 +381,6 @@ pub(crate) fn parse_lock(bytes: Option<&[u8]>) -> Result<Locked, schemify_format
     Ok(lock)
 }
 
-fn not_kind() -> schemify_format::ParseError {
-    schemify_format::ParseError {
-        diagnostics: vec![schemify_format::Diagnostic {
-            code: schemify_format::Code::E028,
-            line: 1,
-            col: 1,
-            record: schemify_format::NO_RECORD,
-            detail: "wrong file kind or library source shape",
-        }],
-    }
-}
-
 /// Content hash of a library listing: sha256 over the files sorted bytewise by path,
 /// each contributing `relpath`, a 0 byte and the sha256 of its bytes (`digests[i]` is
 /// the sha256 of file `i`).
@@ -426,24 +404,6 @@ pub(crate) fn content_hash(files: &[(&str, &[u8])], digests: &[Digest]) -> Diges
     }
     h.finish()
 }
-
-/// Splits `a/b/c.shcomp` into (`a/b`, `c`, kind); `None` for non-cell files.
-pub(crate) fn split_cell_path(relpath: &str) -> Option<(&str, &str, FileKind)> {
-    let (dir, file) = relpath.rsplit_once('/').unwrap_or(("", relpath));
-    let (stem, ext) = file.rsplit_once('.')?;
-    let kind = match ext {
-        "shprim" => FileKind::Shprim,
-        "shcomp" => FileKind::Shcomp,
-        "shbench" => FileKind::Shbench,
-        _ => return None,
-    };
-    assert!(!stem.contains('/') && dir.len() < relpath.len());
-    (!stem.is_empty()).then_some((dir, stem, kind))
-}
-
-/// Highest rank an indexed cell keeps: the symbol graphics (rank 2), so an editor draws
-/// instances from the index instead of opening every instantiated cell.
-const SYMBOL_RANK: u8 = 2;
 
 /// Indexes one library's listing into `cells`, replacing its previous rows. Returns
 /// per-file findings as (relpath, diag): `E020` same stem with two kinds in one
@@ -515,6 +475,64 @@ pub(crate) fn lock_status(lock: &Locked, name: &str, hash: &Digest) -> LockStatu
     };
     assert!(!matches!(&status, LockStatus::Mismatch { locked } if *locked == hex(hash)));
     status
+}
+
+// ---- private ----
+
+fn not_kind() -> schemify_format::ParseError {
+    schemify_format::ParseError {
+        diagnostics: vec![schemify_format::Diagnostic {
+            code: schemify_format::Code::E028,
+            line: 1,
+            col: 1,
+            record: schemify_format::NO_RECORD,
+            detail: "wrong file kind or library source shape",
+        }],
+    }
+}
+
+/// Splits `a/b/c.shcomp` into (`a/b`, `c`, kind); `None` for non-cell files.
+fn split_cell_path(relpath: &str) -> Option<(&str, &str, FileKind)> {
+    let (dir, file) = relpath.rsplit_once('/').unwrap_or(("", relpath));
+    let (stem, ext) = file.rsplit_once('.')?;
+    let kind = match ext {
+        "shprim" => FileKind::Shprim,
+        "shcomp" => FileKind::Shcomp,
+        "shbench" => FileKind::Shbench,
+        _ => return None,
+    };
+    assert!(!stem.contains('/') && dir.len() < relpath.len());
+    (!stem.is_empty()).then_some((dir, stem, kind))
+}
+
+impl Libs {
+    fn push(&mut self, name: &str, source: LibSource, subdir: Option<String>) {
+        assert!(
+            self.name.len() < LIBS_MAX,
+            "a project has at most 2^8 libraries"
+        );
+        self.name.push(name.to_owned());
+        self.source.push(source);
+        self.subdir.push(subdir);
+        self.hash.push(None);
+        self.resolved.push(None);
+        assert_eq!(self.name.len(), self.resolved.len());
+    }
+}
+
+impl Cells {
+    fn columns_ok(&self) -> bool {
+        let n = self.lib.len();
+        [
+            self.dir.len(),
+            self.stem.len(),
+            self.kind.len(),
+            self.hash.len(),
+            self.iface.len(),
+        ]
+        .iter()
+        .all(|&l| l == n)
+    }
 }
 
 #[cfg(test)]
