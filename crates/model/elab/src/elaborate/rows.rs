@@ -169,7 +169,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                     }
                 };
                 let c0 = out.conn.len();
-                self.instance_conns(ci, i, k, target, is_top, &child_path, &mut out);
+                self.instance_conns(ci, i, k, target, &child_path, &mut out);
                 // The instance's own `ignore` wins; else the selected impl's.
                 let ignore = match ignore {
                     Ignore::No => self.ifaces[c as usize].impl_ignore[imp as usize],
@@ -241,10 +241,12 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         i: usize,
         k: usize,
         target: Target,
-        is_top: bool,
         path: &str,
         out: &mut DefRows,
     ) {
+        // `build_def` pushed `ci`: one entry means `ci` is the top.
+        assert_eq!(self.stack.last(), Some(&ci));
+        let is_top = self.stack.len() == 1;
         let (conn, propagated) = (&mut out.conn, &mut out.propagated);
         let c = self.cells[ci as usize].inst_iface[i];
         let nets = self.nets[ci as usize].as_ref().expect("prepared");
