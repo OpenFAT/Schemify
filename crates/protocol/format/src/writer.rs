@@ -1,20 +1,20 @@
-//! Canonical writer: [`Document`] → bytes (spec §2 "Writer canonical form", §4 ordering).
+//! Canonical writer: [`Document`] → bytes (spec §2 "Writer canonical form", §4 ordering,
+//! §8 conflict output).
 //!
 //! Spine: `emission_order` (stable sort by rank, then by (kind, key) inside sorted
 //! ranks) → `write_record` per record, with blank lines between kinds and optional
 //! merge-conflict markers around record spans.
+//!
+//! Contents:
+//! - `pub fn write(doc: &Document<'_>) -> String`
+//! - `pub fn write_into(doc: &Document<'_>, out: &mut String)`
+//! - `pub(crate) struct ConflictSpan`
+//! - `pub(crate) fn write_spans(doc, spans: &[ConflictSpan], eof_split: Option<u32>, out)`
 
 use crate::document::{Document, NONE};
-use crate::reader::is_bare_byte;
+use crate::lex::is_bare_byte;
 use crate::schema::{RANK_MAX, RecordKind};
 use std::fmt::Write as _;
-
-/// Opening merge-conflict marker (git's 7-character form).
-pub(crate) const MARK_OURS: &str = "<<<<<<< ours\n";
-/// Separator between the two sides of a conflict.
-pub(crate) const MARK_SPLIT: &str = "=======\n";
-/// Closing merge-conflict marker.
-pub(crate) const MARK_THEIRS: &str = ">>>>>>> theirs\n";
 
 /// Records `first .. first + ours` are our side of a conflict and the next `theirs`
 /// records are theirs; the writer wraps them in conflict markers.
@@ -24,6 +24,13 @@ pub(crate) struct ConflictSpan {
     pub(crate) ours: u32,
     pub(crate) theirs: u32,
 }
+
+/// Opening merge-conflict marker (git's 7-character form).
+const MARK_OURS: &str = "<<<<<<< ours\n";
+/// Separator between the two sides of a conflict.
+const MARK_SPLIT: &str = "=======\n";
+/// Closing merge-conflict marker.
+const MARK_THEIRS: &str = ">>>>>>> theirs\n";
 
 /// Writes `doc` in canonical form: rank order; rank-3 and rank-6 kinds in listed order,
 /// each sorted bytewise by key; other ranks in document order; one blank line between
@@ -121,29 +128,11 @@ pub(crate) fn write_spans(
             }
         }
     }
-    let eof: Vec<&str> = doc.eof_comments().collect();
-    if !eof.is_empty() {
-        out.push('\n');
-        let split = eof_split.map_or(eof.len(), |s| s as usize);
-        assert!(split <= eof.len());
-        if eof_split.is_some() {
-            out.push_str(MARK_OURS);
-        }
-        for (i, c) in eof.iter().enumerate() {
-            if eof_split.is_some() && i == split {
-                out.push_str(MARK_SPLIT);
-            }
-            push_comment(c, out);
-        }
-        if eof_split.is_some() {
-            if split == eof.len() {
-                out.push_str(MARK_SPLIT);
-            }
-            out.push_str(MARK_THEIRS);
-        }
-    }
+    write_eof(doc, eof_split, out);
     assert!(out.len() > start_len && out.ends_with('\n'));
 }
+
+// ---- private ----
 
 /// Returns record indices in canonical order. Stable, so ties keep document order.
 fn emission_order(doc: &Document<'_>) -> Vec<u32> {
@@ -169,13 +158,8 @@ fn emission_order(doc: &Document<'_>) -> Vec<u32> {
     order
 }
 
-fn push_comment(text: &str, out: &mut String) {
-    assert!(!text.contains(['\n', '\r']) && !text.ends_with([' ', '\t']));
-    out.push('#');
-    out.push_str(text);
-    out.push('\n');
-}
-
+/// Appends record `r`: its comments, the record line, attributes (known before
+/// unknown), verbatim lines.
 fn write_record(doc: &Document<'_>, r: u32, out: &mut String) {
     assert!(r < doc.record_count());
     let before = out.len();
@@ -224,11 +208,32 @@ fn write_record(doc: &Document<'_>, r: u32, out: &mut String) {
     assert!(out.len() > before && out.ends_with('\n'));
 }
 
-/// Returns whether `v` must be quoted: empty, starting with `#` or `|`, or holding a
-/// byte that is not a bare-value byte.
-pub(crate) fn needs_quotes(v: &str) -> bool {
-    let b = v.as_bytes();
-    b.is_empty() || b[0] == b'#' || b[0] == b'|' || !b.iter().all(|&c| is_bare_byte(c))
+/// Appends the end-of-file comments after a blank line; with `eof_split`, as a
+/// conflict of `..split` (ours) and `split..` (theirs).
+fn write_eof(doc: &Document<'_>, eof_split: Option<u32>, out: &mut String) {
+    let eof: Vec<&str> = doc.eof_comments().collect();
+    if eof.is_empty() {
+        return;
+    }
+    out.push('\n');
+    let Some(split) = eof_split.map(|s| s as usize) else {
+        eof.iter().for_each(|c| push_comment(c, out));
+        return;
+    };
+    assert!(split <= eof.len());
+    out.push_str(MARK_OURS);
+    eof[..split].iter().for_each(|c| push_comment(c, out));
+    out.push_str(MARK_SPLIT);
+    eof[split..].iter().for_each(|c| push_comment(c, out));
+    out.push_str(MARK_THEIRS);
+}
+
+/// Appends `#text` as one line.
+fn push_comment(text: &str, out: &mut String) {
+    assert!(!text.contains(['\n', '\r']) && !text.ends_with([' ', '\t']));
+    out.push('#');
+    out.push_str(text);
+    out.push('\n');
 }
 
 /// Appends `v` bare when legal, else quoted with the canonical escapes: `\"`, `\\`,
@@ -266,6 +271,13 @@ fn push_value(v: &str, out: &mut String) {
         out.len() >= before + 2 + v.len(),
         "escaping never shortens a value"
     );
+}
+
+/// Returns whether `v` must be quoted: empty, starting with `#` or `|`, or holding a
+/// byte that is not a bare-value byte.
+fn needs_quotes(v: &str) -> bool {
+    let b = v.as_bytes();
+    b.is_empty() || b[0] == b'#' || b[0] == b'|' || !b.iter().all(|&c| is_bare_byte(c))
 }
 
 #[cfg(test)]

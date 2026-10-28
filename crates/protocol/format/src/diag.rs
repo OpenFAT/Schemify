@@ -1,4 +1,10 @@
-//! Diagnostics (spec §7): the error and warning codes this crate reports, with positions.
+//! Diagnostics: reader findings → codes with positions (spec §7).
+//!
+//! Contents:
+//! - `pub enum Code`, `Code::as_str`, `Code::meaning`, `Code::is_warning`
+//! - `pub const NO_RECORD: u32`
+//! - `pub struct Diagnostic`
+//! - `pub struct ParseError`, `ParseError::has`
 
 use std::fmt;
 
@@ -18,47 +24,6 @@ pub enum Code {
     E028,
     E029,
     W001,
-}
-
-impl Code {
-    /// Returns the code as written in diagnostics and the spec (`"E022"`).
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Code::E021 => "E021",
-            Code::E022 => "E022",
-            Code::E023 => "E023",
-            Code::E024 => "E024",
-            Code::E025 => "E025",
-            Code::E026 => "E026",
-            Code::E027 => "E027",
-            Code::E028 => "E028",
-            Code::E029 => "E029",
-            Code::W001 => "W001",
-        }
-    }
-
-    /// Returns the spec §7 meaning.
-    pub fn meaning(self) -> &'static str {
-        match self {
-            Code::E021 => "file too large",
-            Code::E022 => "coordinate not representable",
-            Code::E023 => "record out of rank order",
-            Code::E024 => "duplicate name within a kind",
-            Code::E025 => "kind rule violated",
-            Code::E026 => "zero-length wire",
-            Code::E027 => "unknown record",
-            Code::E028 => "malformed line",
-            Code::E029 => "wrong arity or value form",
-            Code::W001 => "duplicate id",
-        }
-    }
-
-    /// Returns whether the code is a warning; warnings never fail a parse.
-    pub fn is_warning(self) -> bool {
-        let warning = self == Code::W001;
-        assert_eq!(warning, self.as_str().starts_with('W'));
-        warning
-    }
 }
 
 /// Sentinel for [`Diagnostic::record`] when no record is involved (lexical errors).
@@ -81,6 +46,53 @@ pub struct Diagnostic {
     pub detail: &'static str,
 }
 
+/// Why a file failed to parse: every error found, in line order (capped at 64).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParseError {
+    /// Errors only; warnings of a failed parse are dropped.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Code text and spec §7 meaning, in `Code` declaration order.
+const CODES: [(&str, &str); 10] = [
+    ("E021", "file too large"),
+    ("E022", "coordinate not representable"),
+    ("E023", "record out of rank order"),
+    ("E024", "duplicate name within a kind"),
+    ("E025", "kind rule violated"),
+    ("E026", "zero-length wire"),
+    ("E027", "unknown record"),
+    ("E028", "malformed line"),
+    ("E029", "wrong arity or value form"),
+    ("W001", "duplicate id"),
+];
+
+impl Code {
+    /// Returns the code as written in diagnostics and the spec (`"E022"`).
+    pub fn as_str(self) -> &'static str {
+        CODES[self as usize].0
+    }
+
+    /// Returns the spec §7 meaning.
+    pub fn meaning(self) -> &'static str {
+        CODES[self as usize].1
+    }
+
+    /// Returns whether the code is a warning; warnings never fail a parse.
+    pub fn is_warning(self) -> bool {
+        let warning = self == Code::W001;
+        assert_eq!(warning, self.as_str().starts_with('W'));
+        warning
+    }
+}
+
+impl ParseError {
+    /// Returns whether any diagnostic has `code`.
+    pub fn has(&self, code: Code) -> bool {
+        self.diagnostics.iter().any(|d| d.code == code)
+    }
+}
+
 impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (code, meaning) = (self.code.as_str(), self.code.meaning());
@@ -89,20 +101,6 @@ impl fmt::Display for Diagnostic {
             "{}:{}: {code} {meaning}: {}",
             self.line, self.col, self.detail
         )
-    }
-}
-
-/// Why a file failed to parse: every error found, in line order (capped at 64).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ParseError {
-    /// Errors only; warnings of a failed parse are dropped.
-    pub diagnostics: Vec<Diagnostic>,
-}
-
-impl ParseError {
-    /// Returns whether any diagnostic has `code`.
-    pub fn has(&self, code: Code) -> bool {
-        self.diagnostics.iter().any(|d| d.code == code)
     }
 }
 
@@ -119,3 +117,24 @@ impl fmt::Display for ParseError {
 }
 
 impl std::error::Error for ParseError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Oracle: spec §7's table, typed independently of `CODES`.
+    #[test]
+    fn codes_match_the_spec_table() {
+        let all = [
+            (Code::E021, "E021", "file too large"),
+            (Code::E022, "E022", "coordinate not representable"),
+            (Code::E026, "E026", "zero-length wire"),
+            (Code::E029, "E029", "wrong arity or value form"),
+            (Code::W001, "W001", "duplicate id"),
+        ];
+        for (code, text, meaning) in all {
+            assert_eq!((code.as_str(), code.meaning()), (text, meaning));
+            assert_eq!(code.is_warning(), code == Code::W001);
+        }
+    }
+}

@@ -1,31 +1,65 @@
-//! Object ids (spec §4, research §3.3): 1–13 chars of lowercase Crockford base32,
-//! unique per file across all id-bearing kinds. The writer generates 6.
+//! Object ids: seeds → fresh ids, text → validity and sort keys (spec §4 ids, research
+//! §3.3). An id is 1–13 chars of lowercase Crockford base32, unique per file across all
+//! id-bearing kinds; the writer generates 6.
+//!
+//! Contents:
+//! - `pub const ID_ALPHABET: &[u8; 32]`, `pub const ID_LEN_NEW: usize`
+//! - `pub(crate) const ID_LEN_MAX: usize`, `pub(crate) const FNV_OFFSET: u64`
+//! - `pub struct IdRng`, `IdRng::new`, `IdRng::for_import`
+//! - `pub struct NewId`, `NewId::as_str`
+//! - `pub fn is_id(s: &str) -> bool`
+//! - `pub fn fresh_id(rng: &mut IdRng, taken: impl FnMut(&str) -> bool) -> NewId`
+//! - `pub(crate) fn id_sort_key(s: &str) -> Option<u128>`
+//! - `pub(crate) fn fnv1a64(hash: u64, bytes: &[u8]) -> u64`
 
 /// Crockford base32 digits in value order. Byte order equals value order, so ids sort
 /// bytewise and numerically alike.
 pub const ID_ALPHABET: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
-/// Longest id the reader accepts.
-pub(crate) const ID_LEN_MAX: usize = 13;
 /// Length of every id this crate generates (30 random bits).
 pub const ID_LEN_NEW: usize = 6;
+/// Longest id the reader accepts.
+pub(crate) const ID_LEN_MAX: usize = 13;
+/// FNV-1a 64-bit offset basis.
+pub(crate) const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// Caller-owned random state for id generation (splitmix64). There is no global RNG:
+/// the same seed always yields the same id sequence.
+#[derive(Clone, Debug)]
+pub struct IdRng {
+    state: u64,
+}
+
+/// A generated 6-char id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NewId([u8; ID_LEN_NEW]);
+
 /// Draws [`fresh_id`] makes before concluding the caller's id set is full.
 const DRAWS_MAX: u32 = 64;
-
-fn digit(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'h' => Some(b - b'a' + 10),
-        b'j' | b'k' => Some(b - b'j' + 18),
-        b'm' | b'n' => Some(b - b'm' + 20),
-        b'p'..=b't' => Some(b - b'p' + 22),
-        b'v'..=b'z' => Some(b - b'v' + 27),
-        _ => None,
-    }
-}
 
 /// Returns whether `s` is a legal id: 1–13 chars from [`ID_ALPHABET`].
 pub fn is_id(s: &str) -> bool {
     (1..=ID_LEN_MAX).contains(&s.len()) && s.bytes().all(|b| digit(b).is_some())
+}
+
+/// Draws 6-char ids from `rng` until `taken` reports one unused (the editor's
+/// redraw-on-collision rule, research §3.3).
+///
+/// # Panics
+///
+/// Panics after 64 consecutive taken draws. With 2^30 ids and at most 2^22 objects
+/// per file that has probability below 2^-512; reaching it means `taken` is wrong.
+pub fn fresh_id(rng: &mut IdRng, mut taken: impl FnMut(&str) -> bool) -> NewId {
+    for _ in 0..DRAWS_MAX {
+        let bits = rng.next_u64();
+        let id = NewId(std::array::from_fn(|i| {
+            ID_ALPHABET[((bits >> (5 * i)) & 31) as usize]
+        }));
+        if !taken(id.as_str()) {
+            assert!(is_id(id.as_str()));
+            return id;
+        }
+    }
+    panic!("fresh_id: {DRAWS_MAX} consecutive draws were taken; the id set predicate is broken");
 }
 
 /// Packs an id into an integer whose order equals the bytewise order of the text:
@@ -45,10 +79,8 @@ pub(crate) fn id_sort_key(s: &str) -> Option<u128> {
         key = key << 5 | u128::from(d);
     }
     let key = key << 4 | b.len() as u128;
-    assert!(
-        key & 0xf != 0 && key >> 69 == 0,
-        "length nibble set, 69 bits used"
-    );
+    assert!(key & 0xf != 0, "length nibble set");
+    assert!(key >> 69 == 0, "13 digits and a length use 69 bits");
     Some(key)
 }
 
@@ -59,16 +91,6 @@ pub(crate) fn fnv1a64(mut hash: u64, bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash
-}
-
-/// FNV-1a 64-bit offset basis.
-pub(crate) const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-
-/// Caller-owned random state for id generation (splitmix64). There is no global RNG:
-/// the same seed always yields the same id sequence.
-#[derive(Clone, Debug)]
-pub struct IdRng {
-    state: u64,
 }
 
 impl IdRng {
@@ -85,19 +107,7 @@ impl IdRng {
         let hash = fnv1a64(FNV_OFFSET, source_path.as_bytes());
         IdRng::new(fnv1a64(hash, &ordinal.to_le_bytes()))
     }
-
-    fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
 }
-
-/// A generated 6-char id.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NewId([u8; ID_LEN_NEW]);
 
 impl NewId {
     /// Returns the id text.
@@ -108,27 +118,30 @@ impl NewId {
     }
 }
 
-/// Draws 6-char ids from `rng` until `taken` reports one unused (the editor's
-/// redraw-on-collision rule, research §3.3).
-///
-/// # Panics
-///
-/// Panics after 64 consecutive taken draws. With 2^30 ids and at most 2^22 objects
-/// per file that has probability below 2^-512; reaching it means `taken` is wrong.
-pub fn fresh_id(rng: &mut IdRng, mut taken: impl FnMut(&str) -> bool) -> NewId {
-    for _ in 0..DRAWS_MAX {
-        let bits = rng.next_u64();
-        let mut id = [0u8; ID_LEN_NEW];
-        for (i, c) in id.iter_mut().enumerate() {
-            *c = ID_ALPHABET[((bits >> (5 * i)) & 31) as usize];
-        }
-        let id = NewId(id);
-        if !taken(id.as_str()) {
-            assert!(is_id(id.as_str()));
-            return id;
-        }
+// ---- private ----
+
+/// Returns the value of Crockford digit `b`, `None` outside [`ID_ALPHABET`].
+fn digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'h' => Some(b - b'a' + 10),
+        b'j' | b'k' => Some(b - b'j' + 18),
+        b'm' | b'n' => Some(b - b'm' + 20),
+        b'p'..=b't' => Some(b - b'p' + 22),
+        b'v'..=b'z' => Some(b - b'v' + 27),
+        _ => None,
     }
-    panic!("fresh_id: {DRAWS_MAX} consecutive draws were taken; the id set predicate is broken");
+}
+
+impl IdRng {
+    /// splitmix64 step.
+    fn next_u64(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
 }
 
 #[cfg(test)]
@@ -153,6 +166,15 @@ mod tests {
         ] {
             assert!(!is_id(bad), "{bad}");
             assert_eq!(id_sort_key(bad), None);
+        }
+    }
+
+    /// Oracle: `digit` agrees with the alphabet's positions.
+    #[test]
+    fn digits_are_alphabet_positions() {
+        for b in 0..=255u8 {
+            let pos = ID_ALPHABET.iter().position(|&c| c == b);
+            assert_eq!(digit(b).map(usize::from), pos, "{b}");
         }
     }
 
@@ -195,6 +217,14 @@ mod tests {
         let i3 = fresh_id(&mut IdRng::for_import("lib/a.sch", 4), |_| false);
         assert_eq!(i1, i2);
         assert_ne!(i1, i3);
+    }
+
+    /// Oracle: an independent splitmix64 + base32 computation (Python), so re-import keeps ids.
+    #[test]
+    fn generation_is_pinned() {
+        assert_eq!(fresh_id(&mut IdRng::new(42), |_| false).as_str(), "nmvpyq");
+        assert_eq!(fnv1a64(FNV_OFFSET, b""), FNV_OFFSET);
+        assert_eq!(fnv1a64(FNV_OFFSET, b"a"), 0xaf63_dc4c_8601_ec8c);
     }
 
     #[test]
