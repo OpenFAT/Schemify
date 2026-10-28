@@ -64,7 +64,9 @@ pub fn find(doc: &Document, q: &Query) -> Vec<ObjKey> {
 pub fn replace(doc: &Document, q: &Query, with: &str) -> Vec<Op> {
     let s = doc.strings();
     let mut ops = Vec::new();
-    for h in hits(doc, q) {
+    let found = hits(doc, q);
+    let n = found.len();
+    for h in found {
         let new = q.replaced(&h.text, with);
         if new == h.text {
             continue;
@@ -72,6 +74,13 @@ pub fn replace(doc: &Document, q: &Query, with: &str) -> Vec<Op> {
         let Some(loc) = crate::edit::loc_of(doc, h.key) else {
             continue;
         };
+        assert!(
+            matches!(
+                h.key.table,
+                TableId::Instances | TableId::Labels | TableId::Ports | TableId::Texts
+            ),
+            "search reads these tables only"
+        );
         let id = match h.key.table {
             TableId::Instances => doc.instances().id[loc.row as usize],
             TableId::Labels => doc.labels().id[loc.row as usize],
@@ -92,6 +101,7 @@ pub fn replace(doc: &Document, q: &Query, with: &str) -> Vec<Op> {
             },
         });
     }
+    assert!(ops.len() <= n, "one op per match at most");
     ops
 }
 
@@ -192,6 +202,7 @@ fn hits(doc: &Document, q: &Query) -> Vec<Hit> {
             }
         }
     }
+    debug_assert!(out.iter().all(|h| q.hit(&h.text)), "every hit matches");
     out
 }
 

@@ -81,6 +81,7 @@ impl Editor {
             ops.push(Op::Insert { rec, at: None });
             k += 1;
         }
+        assert!(ops.len() <= pins.name.len(), "one port per pin at most");
         ops
     }
     /// Symbol → Attach net labels: a label named after the pin on every pin of the selected
@@ -109,6 +110,10 @@ impl Editor {
                 continue;
             };
             let pts = wiring::inst_pins(p, h, doc, row);
+            assert!(
+                pts.len() <= iface.pins().name.len(),
+                "a point per interface pin"
+            );
             for (i, q) in pts.into_iter().enumerate() {
                 // The pin itself is one connection point; anything else touching it is another.
                 if count(q) > 1 {
@@ -208,6 +213,8 @@ pub(super) fn symbol_records(ports: &[(String, Orient, Pt)], width: i32) -> Vec<
         graphics.push(label(name, half_w - lead - 2 * UNIT - w, y));
     }
     assert_eq!(pins.len(), left.len() + right.len());
+    // The box and the name, then a lead and a label per pin.
+    assert_eq!(graphics.len(), 2 + 2 * pins.len());
     pins.extend(graphics);
     pins
 }
@@ -222,6 +229,13 @@ pub(super) fn symbol_from_ports_ops(
     width: i32,
 ) -> Vec<Op> {
     use schemify_doc::PinDir;
+    debug_assert!(
+        ports
+            .iter()
+            .enumerate()
+            .all(|(k, p)| !ports[..k].iter().any(|q| q.0 == p.0)),
+        "unique port names"
+    );
     // Positions only order each side top to bottom: port order.
     let placed: Vec<(String, Orient, Pt)> = ports
         .iter()
@@ -277,6 +291,7 @@ pub(super) fn pins_from_ports(doc: &Document, sel: &[ObjKey]) -> Vec<Op> {
         ops.push(Op::Insert { rec, at: None });
         made.push(name);
     }
+    assert!(ops.len() <= sel.len(), "one pin per selected port at most");
     ops
 }
 
@@ -296,6 +311,9 @@ fn replace_symbol_ops(doc: &Document, recs: Vec<RecordBuf>) -> Vec<Op> {
     for &kind in &doc.graphics().shape {
         ops.push(Op::Delete(DocTarget::new(kind, "0")));
     }
+    let deletes = ops.len();
+    assert_eq!(deletes, pins.name.len() + doc.graphics().shape.len());
     ops.extend(recs.into_iter().map(|rec| Op::Insert { rec, at: None }));
+    assert!(ops.len() > deletes, "the new symbol is inserted");
     ops
 }

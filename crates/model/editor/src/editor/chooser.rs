@@ -124,8 +124,10 @@ impl Editor {
             }
         }
         rows.truncate(CHOOSER_ROWS);
+        debug_assert!(rows.iter().all(|r| r.0.to_lowercase().contains(&filter)));
         if let Dialog::Choose(c) = &mut self.dialog {
             c.rows = rows;
+            assert!(c.rows.len() <= CHOOSER_ROWS);
         }
     }
     pub(super) fn choose_filter(&mut self, arg: &str) {
@@ -159,6 +161,10 @@ impl Editor {
             return;
         };
         let purpose = c.purpose;
+        assert!(
+            !matches!(pick, Pick::Cell(row) if row >= self.session.project.cells().lib.len()),
+            "a picked cell row is in the index"
+        );
         self.close_dialog();
         match (purpose, pick) {
             (ChooseFor::Insert, Pick::Cell(row)) => {
@@ -190,6 +196,7 @@ impl Editor {
     fn cellref_for(&self, h: DocHandle, row: usize) -> Option<String> {
         let p = &self.session.project;
         let cells = p.cells();
+        assert!(row < cells.lib.len(), "cell row {row}");
         let lib = &p.libs().name[usize::from(cells.lib[row])];
         let s = p.strings();
         let stem = s.get(cells.stem[row]);

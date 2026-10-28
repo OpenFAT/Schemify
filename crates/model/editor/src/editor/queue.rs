@@ -2,7 +2,7 @@
 //!
 //! Contents:
 //! - `pub const QUEUED_MAX`
-//! - `pub(super) struct Said`
+//! - `pub(super) struct Said`, `pub(super) struct Queued`
 //! - `pub(super) const KEPT_LOG_MAX`
 //! - `Editor::command`
 //! - `Editor::request_edits`
@@ -12,6 +12,8 @@
 //! - `Editor::take_said`
 //! - `Editor::dispatch_queued`
 //! - `Editor::resolve_said`
+
+use std::mem;
 
 use schemify_doc::EditRequest;
 use schemify_plugin::PluginId;
@@ -35,6 +37,15 @@ pub(super) struct Said {
     last: Option<String>,
 }
 
+/// A command [`Editor::command`] queued for the next frame.
+#[derive(Debug)]
+pub(super) struct Queued {
+    name: String,
+    arg: String,
+    /// The answer's ticket ([`Editor::command_answered`]), if one was asked for.
+    ticket: Option<u32>,
+}
+
 /// Plugin log lines [`Editor::keep_plugin_log`] holds between two takes.
 pub(super) const KEPT_LOG_MAX: usize = 4096;
 
@@ -44,13 +55,22 @@ impl Editor {
     /// suffix arguments included). The entry point of the CLI / JSON-RPC command stream (D27)
     /// and of scripted tests. At most [`QUEUED_MAX`] commands wait; more are dropped with a
     /// status message.
+    ///
+    /// # Panics
+    ///
+    /// Never: commands past [`QUEUED_MAX`] are refused, not queued.
     pub fn command(&mut self, name: &str, arg: &str) {
         if self.queued.len() >= QUEUED_MAX {
             self.session.say(format!("{name}: command queue full"));
             return;
         }
-        self.queued.push((name.to_owned(), arg.to_owned(), None));
+        self.queued.push(Queued {
+            name: name.to_owned(),
+            arg: arg.to_owned(),
+            ticket: None,
+        });
         self.ui_stale = true;
+        assert!(self.queued.len() <= QUEUED_MAX);
     }
     /// Queues edit requests for the next frame, where `doc::apply_edits` runs them with the
     /// frame's own (the path plugins and the optimizer take). Requests past [`QUEUED_MAX`]
@@ -100,8 +120,11 @@ impl Editor {
             assert!(self.said.len() <= QUEUED_MAX);
             return ticket;
         }
-        self.queued
-            .push((name.to_owned(), arg.to_owned(), Some(ticket)));
+        self.queued.push(Queued {
+            name: name.to_owned(),
+            arg: arg.to_owned(),
+            ticket: Some(ticket),
+        });
         self.ui_stale = true;
         assert!(self.queued.len() <= QUEUED_MAX);
         ticket
@@ -115,7 +138,7 @@ impl Editor {
     /// [`Editor::keep_plugin_log`] failed (an error-level log or an aborted call; sticky).
     pub fn take_plugin_log(&mut self) -> (Vec<String>, bool) {
         match &mut self.kept_log {
-            Some((lines, failed)) => (std::mem::take(lines), *failed),
+            Some((lines, failed)) => (mem::take(lines), *failed),
             None => (Vec::new(), false),
         }
     }
@@ -124,11 +147,15 @@ impl Editor {
     /// already, or never issued, answers an empty message.
     pub fn take_said(&mut self, ticket: u32) -> Option<String> {
         let Some(i) = self.said.iter().position(|s| s.ticket == ticket) else {
-            let waiting = self.queued.iter().any(|q| q.2 == Some(ticket));
+            let waiting = self.queued.iter().any(|q| q.ticket == Some(ticket));
             return if waiting { None } else { Some(String::new()) };
         };
         let status = self.said[i].status.take()?;
         self.said.remove(i);
+        debug_assert!(
+            !self.said.iter().any(|s| s.ticket == ticket),
+            "tickets are unique"
+        );
         Some(status)
     }
     /// Runs the commands [`Editor::command`] queued, in order, recording what each
@@ -136,7 +163,7 @@ impl Editor {
     /// [`Editor::resolve_said`]).
     pub(super) fn dispatch_queued(&mut self, reqs: &mut Vec<EditRequest>) -> bool {
         let mut changed = false;
-        for (name, arg, ticket) in std::mem::take(&mut self.queued) {
+        for Queued { name, arg, ticket } in mem::take(&mut self.queued) {
             // Each command's own message: the status line starts empty for it and gets the
             // previous message back when the command says nothing.
             let before = self.session.take_status();

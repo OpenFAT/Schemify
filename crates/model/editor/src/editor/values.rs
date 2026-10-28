@@ -97,8 +97,11 @@ impl Editor {
             }
         });
         self.undid |= matches!(o, Outcome::Undone { .. } | Outcome::Redone { .. });
-        debug_assert!(self.cell_key.is_some() || self.cell_ops.is_empty());
-        debug_assert!(self.parked.len() <= PARKED_MAX);
+        assert!(
+            self.cell_key.is_some() || self.cell_ops.is_empty(),
+            "ops queue on a current state"
+        );
+        assert!(self.parked.len() <= PARKED_MAX);
     }
     /// `elab::CellState::recompute` for the active document: incremental over the queued ops
     /// when `cell` is current, else a full build (a document shown for the first time or
@@ -169,6 +172,11 @@ impl Editor {
             self.values_gen = self.values_gen.wrapping_add(1);
         }
         assert!(self.cell_ops.is_empty());
+        assert!(
+            self.cell_key.is_none_or(|k| k.0 == h),
+            "the state is the active document's"
+        );
+        assert!(self.parked.len() <= PARKED_MAX);
         true
     }
     /// Keeps `p` among the parked states (replacing an older one of its document), dropping
@@ -180,8 +188,14 @@ impl Editor {
         if self.parked.len() >= PARKED_MAX {
             self.parked.remove(0);
         }
+        let doc = p.doc;
         self.parked.push(p);
         assert!(self.parked.len() <= PARKED_MAX);
+        assert_eq!(
+            self.parked.iter().filter(|q| q.doc == doc).count(),
+            1,
+            "one parked state per document"
+        );
     }
     /// `project.reload` (pdk spec §9.2): the session re-reads the manifest and lockfile and
     /// re-indexes; everything keyed by cell row (symbol cache, cell states, scenes) rebuilds.
@@ -206,7 +220,8 @@ impl Editor {
         for d in docs {
             self.session.bump(d);
         }
-        assert!(self.cell_key.is_none() && self.symbols_key.is_none());
+        assert!(self.cell_key.is_none(), "cell states rebuild");
+        assert!(self.symbols_key.is_none(), "the symbol cache rebuilds");
     }
     /// Drops every cell state (active and parked): plugin functions may answer differently,
     /// a document was recovered or the cell index changed.

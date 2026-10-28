@@ -23,6 +23,10 @@ impl Editor {
             self.sel_changed = true;
             self.sel_moved = true;
         }
+        debug_assert!(
+            self.selection().windows(2).all(|w| w[0] < w[1]),
+            "sorted, distinct"
+        );
     }
     /// The selection without the scene objects `hits` (an unselect box). While the scene's
     /// selected set is current and holds every selected key, a bitset of the hits and one
@@ -57,7 +61,9 @@ impl Editor {
     }
     pub(super) fn hit_at(&self, s: (f32, f32)) -> Option<u32> {
         let tol = HIT_PX / self.camera().scale;
-        scene::hit(&self.scene.objs, self.world_at(s), tol)
+        let o = scene::hit(&self.scene.objs, self.world_at(s), tol);
+        assert!(o.is_none_or(|o| (o as usize) < self.scene.objs.len()));
+        o
     }
     pub(super) fn selection_bbox(&self) -> Option<[i32; 4]> {
         let mut b: Option<[i32; 4]> = None;
@@ -75,6 +81,10 @@ impl Editor {
                 });
             }
         }
+        assert!(
+            b.is_none_or(|b| b[0] <= b[2] && b[1] <= b[3]),
+            "an ordered box"
+        );
         b
     }
     /// Centroid of the selected objects' anchors, snapped: the group rotate/flip pivot and
@@ -95,6 +105,10 @@ impl Editor {
         if anchors.is_empty() {
             return self.pointer_world_snapped();
         }
+        assert!(
+            anchors.len() <= self.selection().len(),
+            "one anchor per object at most"
+        );
         let n = anchors.len() as f64;
         let c = anchors.iter().fold((0.0, 0.0), |a, p| {
             (a.0 + f64::from(p.0) / n, a.1 + f64::from(p.1) / n)
@@ -112,6 +126,7 @@ impl Editor {
             .copied()
             .filter(|k| k.table == TableId::Instances)
             .collect();
+        assert!(sel.len() <= self.selection().len());
         match sel.as_slice() {
             [k] => Some(*k),
             [] => self

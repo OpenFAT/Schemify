@@ -45,15 +45,18 @@ impl Editor {
         label: &str,
         ops: Vec<Op>,
     ) {
+        assert!(!label.is_empty(), "an undo entry has a label");
         if ops.is_empty() {
             return;
         }
+        let before = reqs.len();
         let tx = Transaction {
             label: label.to_owned(),
             mode: Mode::Commit,
             ops,
         };
         push_req(reqs, h, Edit::Tx(tx));
+        assert_eq!(reqs.len(), before + 1, "one transaction per commit");
     }
     /// [`Editor::commit`] for a docs-page edit, remembered so a D20 cache write it causes
     /// lands in the same undo entry (`sync_cache`).
@@ -69,6 +72,7 @@ impl Editor {
         }
         self.amend = Some((h, label.to_owned(), ops.clone(), None));
         self.commit(reqs, h, label, ops);
+        assert!(self.amend.as_ref().is_some_and(|a| a.0 == h));
     }
     /// `plugin::deliver`: snapshots, events, and the plugins' requests into `reqs`.
     pub(super) fn deliver(&mut self, reqs: &mut Vec<EditRequest>) -> bool {
@@ -122,6 +126,7 @@ impl Editor {
             lines.extend(d.logs.iter().cloned());
             let over = lines.len().saturating_sub(KEPT_LOG_MAX);
             lines.drain(..over);
+            assert!(lines.len() <= KEPT_LOG_MAX);
             *failed |= d.failed;
         }
         self.resolve_said(&d.logs);
@@ -140,6 +145,7 @@ impl Editor {
             .filter(|k| !matches!(k.table, TableId::Pins | TableId::Graphics))
             .map(|k| k.key)
             .collect();
+        assert!(sel.len() <= self.selection().len());
         #[cfg(not(target_arch = "wasm32"))]
         let rows = self.sim.result_rows();
         #[cfg(target_arch = "wasm32")]
@@ -151,8 +157,9 @@ impl Editor {
         // What the document tables are filled from: unchanged on a click, so a selection
         // change does not copy every row again.
         let key = {
+            use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
+            let mut h = DefaultHasher::new();
             let project = &self.session.project;
             for d in project.handles() {
                 (d, project.is_dirty(d), self.session.epoch(d)).hash(&mut h);
@@ -225,4 +232,5 @@ pub(super) fn push_req(reqs: &mut Vec<EditRequest>, doc: DocHandle, edit: Edit) 
         edit,
         unix_ms: platform::unix_ms(),
     });
+    assert!(reqs.len() <= REQUESTS_MAX);
 }

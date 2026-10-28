@@ -100,7 +100,7 @@ use dialog::Dialog;
 pub use opts::EditOpts;
 pub use picture::{CanvasPicture, DockPicture, GraphPicture, Picture, Raster, UiView};
 pub use queue::QUEUED_MAX;
-use queue::Said;
+use queue::{Queued, Said};
 use schemify_config::Startup;
 use schemify_netlist::NameMap;
 #[cfg(not(target_arch = "wasm32"))]
@@ -324,8 +324,8 @@ pub struct Editor {
     shown: Option<CanvasPrims>,
     /// (scene build, symbol mode) `shown` was made for.
     shown_key: Option<ShownKey>,
-    /// Commands queued by [`Editor::command`]: (name, argument, ticket of an answered one).
-    queued: Vec<(String, String, Option<u32>)>,
+    /// Commands queued by [`Editor::command`].
+    queued: Vec<Queued>,
     /// Edit requests from outside the frame ([`Editor::request_edits`]), joined to the next
     /// frame's `edit_requests` before dispatch (at most [`QUEUED_MAX`]).
     queued_edits: Vec<EditRequest>,
