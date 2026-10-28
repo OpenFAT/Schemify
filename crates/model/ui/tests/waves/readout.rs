@@ -39,7 +39,7 @@ fn small() -> Waves {
     re.extend((0..n).map(|i| f64::from(u8::from(i >= 5))));
     re.extend((0..n).map(|i| f64::from(i % 2)));
     Waves::new(vec![
-        RawPlot::from_columns("tran", vars, re, vec![]).unwrap(),
+        RawPlot::from_columns("tran", vars, re, vec![]).expect("four full columns"),
     ])
 }
 
@@ -54,7 +54,8 @@ fn add(w: &mut Waves, src: &str, pane: u8) {
 
 fn cursors(w: &mut Waves, a: Option<f64>, b: Option<f64>) {
     for (which, at) in [(Cursor::A, a), (Cursor::B, b)] {
-        w.apply(&Request::Cursor { which, at }).unwrap();
+        w.apply(&Request::Cursor { which, at })
+            .expect("a cursor accepts any position");
     }
 }
 

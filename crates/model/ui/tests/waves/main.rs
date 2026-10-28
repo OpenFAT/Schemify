@@ -54,14 +54,14 @@ pub(crate) fn data() -> Waves {
         re.extend((0..n).map(|i| (f64::from(k) * f64::from(i) * 1e-3).sin()));
     }
     let mut w = Waves::new(vec![
-        RawPlot::from_columns("tran", vars, re, vec![]).unwrap(),
+        RawPlot::from_columns("tran", vars, re, vec![]).expect("full columns"),
     ]);
     w.apply(&Request::AddTrace {
         src: "v(net1)".into(),
         dataset: 0,
         pane: 0,
     })
-    .unwrap();
+    .expect("v(net1) is in the dataset");
     w
 }
 
@@ -164,20 +164,22 @@ impl Win {
     }
 
     pub(crate) fn rect(&self, id: &str) -> Rect {
-        let n = self
-            .tables
-            .nodes
-            .find(self.strings.find(id).unwrap())
-            .unwrap();
-        self.frame.rect()[self.frame.row_of(n).unwrap()]
+        let sym = self.strings.find(id).expect("the id is interned");
+        let n = self.tables.nodes.find(sym).expect("the id names a node");
+        let row = self.frame.row_of(n).expect("the node is laid out");
+        self.frame.rect()[row]
     }
 
     pub(crate) fn signal_rows(&self) -> Vec<Sym> {
+        let sym = self
+            .strings
+            .find("waves.signals")
+            .expect("the signal list is interned");
         let list = self
             .tables
             .nodes
-            .find(self.strings.find("waves.signals").unwrap());
-        let list = list.unwrap();
+            .find(sym)
+            .expect("the window has a signal list");
         self.tables
             .nodes
             .children(list)

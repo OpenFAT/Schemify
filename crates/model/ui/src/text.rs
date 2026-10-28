@@ -120,6 +120,10 @@ impl TextSystem {
     /// Creates the system and registers the embedded fonts. UI text asks for the Noto Sans
     /// subset, then KaTeX Main (already embedded for math) for the arrows and relations Noto
     /// Sans lacks (→ ≤ ≥), and only then the system fallback.
+    ///
+    /// # Panics
+    ///
+    /// If an embedded font registers no family (a build defect, never input).
     #[must_use]
     pub fn new() -> Self {
         let mut font_cx = FontContext::default();
@@ -193,6 +197,10 @@ impl TextSystem {
     }
 
     /// Shapes `text` at `px` pixels (single line, no wrapping), cached by (string, size).
+    ///
+    /// # Panics
+    ///
+    /// If `px` is 0.
     pub fn shape(&mut self, strings: &Strings, text: Sym, px: u16) -> TextId {
         assert!(px > 0, "font size must be positive");
         if let Some(&id) = self.cache.get(&(text, px)) {
@@ -207,6 +215,10 @@ impl TextSystem {
     }
 
     /// Shapes uncached text into `out` (reusing its allocation): canvas labels, editors.
+    ///
+    /// # Panics
+    ///
+    /// If `px` is not finite and positive.
     pub fn shape_into(&mut self, text: &str, px: f32, out: &mut Layout<()>) {
         assert!(px > 0.0 && px.is_finite(), "font size must be positive");
         let mut builder = self

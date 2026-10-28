@@ -86,6 +86,10 @@ pub fn ui_font_info(face: u8) -> FontInfo {
 /// `glyphshow` places. A character no face has gets glyph 0 of face 0 (`.notdef`, a box).
 ///
 /// Cost: at most one charmap lookup per face per character.
+///
+/// # Panics
+///
+/// If an embedded UI face fails to parse (a build defect, never input).
 pub fn ui_font_glyphs(text: &str, out: &mut Vec<FontGlyph>) {
     use skrifa::MetadataProvider;
     use skrifa::instance::{LocationRef, Size};

@@ -87,6 +87,10 @@ pub fn legend_label(waves: &Waves, i: usize, out: &mut String) {
 
 /// The readout's head lines for the viewer's cursors. `active` picks the pane whose
 /// horizontal cursors show; it is clamped to the last pane for the lookup but printed as given.
+///
+/// # Panics
+///
+/// If `waves` has no pane.
 pub fn readout_head(waves: &Waves, active: u8) -> ReadoutHead {
     assert!(!waves.panes().is_empty(), "a viewer always has a pane");
     let [a, b] = waves.cursors();
