@@ -30,11 +30,14 @@ pub(super) type Line = (i64, i64, i64);
 type AttrKey = Vec<(String, Vec<String>)>;
 
 pub(super) fn gcd(mut a: i64, mut b: i64) -> i64 {
+    let (a0, b0) = (a, b);
     (a, b) = (a.abs(), b.abs());
     // Bounded: Euclid's algorithm takes O(log min(a, b)) steps.
     while b != 0 {
         (a, b) = (b, a % b);
     }
+    assert!(a >= 0);
+    debug_assert!(a == 0 || (a0 % a == 0 && b0 % a == 0), "a common divisor");
     a
 }
 
@@ -54,6 +57,7 @@ pub(super) fn line_of(a: Pt, b: Pt) -> Line {
     if dx < 0 || (dx == 0 && dy < 0) {
         (dx, dy) = (-dx, -dy);
     }
+    assert!(dx > 0 || (dx == 0 && dy > 0), "the canonical direction");
     (dx, dy, offset((dx, dy), a))
 }
 
@@ -69,6 +73,10 @@ pub(super) fn along(d: (i64, i64), p: Pt) -> i64 {
 
 /// Whether position `t` lies in one of the sorted, disjoint closed intervals `iv`.
 pub(super) fn covered(iv: &[(i64, i64)], t: i64) -> bool {
+    debug_assert!(
+        iv.windows(2).all(|w| w[0].1 < w[1].0),
+        "sorted, disjoint intervals"
+    );
     let i = iv.partition_point(|x| x.0 <= t);
     i > 0 && iv[i - 1].1 >= t
 }
@@ -141,6 +149,14 @@ pub fn join_trim(project: &Project, h: DocHandle, ids: &mut Ids<'_>) -> Vec<Op> 
                     _ => m.push((lo, hi)),
                 }
             }
+            assert!(
+                !m.is_empty() && m.len() <= rows.len(),
+                "one interval per wire at most"
+            );
+            debug_assert!(
+                m.windows(2).all(|w| w[0].1 < w[1].0),
+                "sorted, disjoint intervals"
+            );
             m
         })
         .collect();
@@ -205,6 +221,8 @@ pub fn join_trim(project: &Project, h: DocHandle, ids: &mut Ids<'_>) -> Vec<Op> 
             }
             want.push((start, hi));
         }
+        assert!(want.len() >= merged[g].len(), "cuts only split intervals");
+        debug_assert!(want.is_sorted());
         let span = |r: usize| {
             let [a, b] = ends(r);
             let (ta, tb) = (along(d, a), along(d, b));

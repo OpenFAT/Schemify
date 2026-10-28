@@ -6,6 +6,7 @@
 //! - `Editor::step_sim`
 //! - `Editor::track_stage`
 
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use schemify_doc::{DocHandle, Document, ObjId, Op, TableId};
@@ -147,12 +148,13 @@ impl Editor {
         let s = doc.strings();
         for i in 0..pins.name.len() {
             let id = ids.draw(&scratch).text;
-            text.push_str(&format!(
-                "label {id} {} {} R0 {}\n",
+            let _ = writeln!(
+                text,
+                "label {id} {} {} R0 {}",
                 coord(pins.x[i]),
                 coord(pins.y[i]),
                 docs::quote(s.get(pins.name[i]))
-            ));
+            );
         }
         text.push_str("\ncode op spice\n  | .op\n");
         let bytes = match schemify_format::parse(text.as_bytes()) {
@@ -371,7 +373,7 @@ impl Editor {
         self.apply(reqs);
         let mut msg = format!("{}: staged", best.label);
         for (n, v) in &best.values {
-            msg.push_str(&format!(" {n}={v}"));
+            let _ = write!(msg, " {n}={v}");
         }
         msg.push_str(" — review on the docs page, then Accept or Reject");
         self.session.say(msg);

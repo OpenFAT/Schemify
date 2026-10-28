@@ -200,14 +200,24 @@ impl Host {
     /// # Errors
     ///
     /// The event table is full: the event is dropped, and the error says so.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that a queued event waits.
     pub fn push(&mut self, target: Option<PluginId>, ev: &Event<'_>) -> Result<(), String> {
         self.commanded |= matches!(ev, Event::Command { .. });
         if target.is_none() {
             self.user_event(ev);
         }
-        self.events
+        let queued = self
+            .events
             .push(target, ev)
-            .map_err(|c| format!("plugin event dropped: {c:?}"))
+            .map_err(|c| format!("plugin event dropped: {c:?}"));
+        assert!(
+            queued.is_err() || !self.events.is_empty(),
+            "a queued event waits"
+        );
+        queued
     }
 
     /// Returns whether a delivery has work (queued events or host-originated ones, user
@@ -346,11 +356,11 @@ impl Host {
 
 /// Plugin-visible document id: slot index in the low 16 bits, generation in the high 16
 /// (`doc::DOCS_MAX` is 2^16), so a handle kept across a close is detected as gone.
-#[must_use]
 ///
 /// # Panics
 ///
 /// A handle index past `doc::DOCS_MAX` (2^16).
+#[must_use]
 pub fn doc_id(h: DocHandle) -> u32 {
     assert!(
         h.index < 1 << 16,
