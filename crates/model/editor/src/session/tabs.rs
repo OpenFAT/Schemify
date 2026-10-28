@@ -55,8 +55,9 @@ impl Session {
     ///
     /// # Panics
     ///
-    /// Never: the assert checks that the active tab shows a level.
+    /// Never: the asserts check the tab count against [`TABS_MAX`].
     pub fn open_tab(&mut self, doc: DocHandle, view: View) {
+        assert!(self.tabs.len() <= TABS_MAX);
         if let Some(i) = self
             .tabs
             .iter()
@@ -88,7 +89,7 @@ impl Session {
             text: None,
         });
         self.active = self.tabs.len() - 1;
-        assert!(!self.tabs[self.active].stack.is_empty());
+        assert!(self.tabs.len() <= TABS_MAX);
     }
 
     /// Shows `view` in a read-only text tab made from the active level (a tab already
@@ -96,8 +97,9 @@ impl Session {
     ///
     /// # Panics
     ///
-    /// Never: the assert checks that the active tab is a text tab.
+    /// Never: the asserts check the tab count against [`TABS_MAX`].
     pub fn open_text_tab(&mut self, view: TextView) {
+        assert!(self.tabs.len() <= TABS_MAX);
         let Some(level) = self.level().cloned() else {
             return;
         };
@@ -122,7 +124,7 @@ impl Session {
             text: Some(view),
         });
         self.active = self.tabs.len() - 1;
-        assert!(self.tabs[self.active].text.is_some());
+        assert!(self.tabs.len() <= TABS_MAX);
     }
 
     /// The status line: the message the last step left (last wins).
@@ -158,6 +160,7 @@ impl Session {
     /// The open tabs, in tab-bar order.
     #[must_use]
     pub fn tabs(&self) -> &[Tab] {
+        debug_assert!(self.tabs.len() <= TABS_MAX);
         &self.tabs
     }
 
@@ -202,6 +205,14 @@ impl Session {
             false => Ok(()),
         };
         self.active = self.active.min(self.tabs.len().saturating_sub(1));
+        assert!(
+            self.tabs.is_empty() || self.active < self.tabs.len(),
+            "the active index names an open tab"
+        );
+        assert!(
+            made.is_err() || !self.tabs.is_empty(),
+            "the last tab is replaced"
+        );
         made
     }
 
@@ -223,9 +234,13 @@ impl Session {
     ///
     /// # Panics
     ///
-    /// If `cam.scale` is not positive.
+    /// If `cam.scale` is not positive or its center is not finite.
     pub fn set_camera(&mut self, cam: Camera) {
         assert!(cam.scale > 0.0, "a positive zoom");
+        assert!(
+            cam.cx.is_finite() && cam.cy.is_finite(),
+            "a finite camera center"
+        );
         if let Some(l) = self.level_mut() {
             l.cam = Some(cam);
         }
@@ -260,9 +275,6 @@ impl Session {
     /// dropped (they name another document's rows), and with `refit` the camera too (the
     /// first build fits it). Returns whether a selection was dropped.
     ///
-    /// # Panics
-    ///
-    /// Never: the assert checks that the selection and the partial ends were dropped.
     pub fn show(&mut self, doc: DocHandle, view: View, refit: bool) -> bool {
         let Some(l) = self.level_mut() else {
             return false;
@@ -275,14 +287,20 @@ impl Session {
         let had = !l.sel.is_empty();
         l.sel.clear();
         l.ends.clear();
-        assert!(l.sel.is_empty() && l.ends.is_empty());
         had
     }
 
     /// The level shown in the active tab.
     #[must_use]
     pub fn level(&self) -> Option<&Level> {
-        self.tabs.get(self.active).and_then(|t| t.stack.last())
+        let tab = self.tabs.get(self.active);
+        let level = tab.and_then(|t| t.stack.last());
+        debug_assert_eq!(
+            tab.is_some(),
+            level.is_some(),
+            "a tab's level stack is never empty"
+        );
+        level
     }
 
     /// The level shown in the active tab, mutably: only `Session`'s own transforms write a
@@ -311,6 +329,10 @@ impl Session {
     /// # Errors
     ///
     /// The tab is already [`DEPTH_MAX`] deep.
+    ///
+    /// # Panics
+    ///
+    /// Never: the depth is checked against [`DEPTH_MAX`] first.
     pub fn push_level(&mut self, doc: DocHandle, view: View, inst: &str) -> Result<(), String> {
         let tab = self.tabs.get_mut(self.active).ok_or("no tab")?;
         if tab.stack.len() >= DEPTH_MAX {
@@ -324,14 +346,20 @@ impl Session {
             sel: Vec::new(),
             ends: Vec::new(),
         });
+        assert!(tab.stack.len() <= DEPTH_MAX);
         Ok(())
     }
 
     /// Pops the active tab's level (return to parent); false at the top.
+    ///
+    /// # Panics
+    ///
+    /// Never: only a level above the top one is popped.
     pub fn pop_level(&mut self) -> bool {
         match self.tabs.get_mut(self.active) {
             Some(t) if t.stack.len() > 1 => {
                 t.stack.pop();
+                assert!(!t.stack.is_empty(), "the top level stays");
                 true
             }
             _ => false,
@@ -347,5 +375,7 @@ pub(super) fn cut(s: &mut String) {
             at -= 1;
         }
         s.truncate(at);
+        assert!(at + 4 > STATUS_MAX, "a char is at most four bytes");
     }
+    assert!(s.len() <= STATUS_MAX);
 }

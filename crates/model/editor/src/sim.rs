@@ -301,14 +301,26 @@ impl Sim {
     }
 
     /// Runs in flight.
+    ///
+    /// # Panics
+    ///
+    /// Never: runs are capped at [`RUNS_MAX`].
     #[must_use]
     pub fn running(&self) -> usize {
-        self.runs.iter().filter(|r| !r.idle()).count()
+        assert!(self.runs.len() <= RUNS_MAX);
+        let n = self.runs.iter().filter(|r| !r.idle()).count();
+        assert!(n <= self.runs.len());
+        n
     }
 
     /// Requests waiting for their bench.
+    ///
+    /// # Panics
+    ///
+    /// Never: requests past [`QUEUE_MAX`] are refused.
     #[must_use]
     pub fn queued(&self) -> usize {
+        assert!(self.queue.len() <= QUEUE_MAX);
         self.queue.len()
     }
 
@@ -331,13 +343,22 @@ impl Sim {
     }
 
     fn index_of(&self, bench: DocHandle) -> Option<usize> {
-        self.runs.iter().position(|r| r.bench == bench)
+        assert!(self.runs.len() <= RUNS_MAX);
+        let i = self.runs.iter().position(|r| r.bench == bench);
+        debug_assert!(
+            i.is_none_or(|i| !self.runs[i + 1..].iter().any(|r| r.bench == bench)),
+            "one run per bench"
+        );
+        i
     }
 
     fn shown_run(&self) -> Option<&BenchRun> {
-        self.shown
+        let r = self
+            .shown
             .and_then(|b| self.index_of(b))
-            .map(|i| &self.runs[i])
+            .map(|i| &self.runs[i]);
+        assert!(r.is_none_or(|r| Some(r.bench) == self.shown));
+        r
     }
 
     /// Plan, jobs and results of the shown run, if any.
@@ -348,9 +369,14 @@ impl Sim {
     }
 
     /// Plan, jobs and results of `bench`'s run, if it has one.
+    ///
+    /// # Panics
+    ///
+    /// Never: the run found is `bench`'s.
     #[must_use]
     pub fn tables_of(&self, bench: DocHandle) -> Option<(&Plan, &Jobs, &Results)> {
         let r = &self.runs[self.index_of(bench)?];
+        assert_eq!(r.bench, bench);
         Some((&r.run.plan, &r.run.jobs, &r.run.results))
     }
 

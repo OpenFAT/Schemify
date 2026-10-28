@@ -183,6 +183,8 @@ impl Objects {
         self.seg.push(seg);
         let s = self.fresh_stamp();
         self.stamp.push(s);
+        assert_eq!(self.geom.len(), self.key.len(), "object columns in step");
+        assert_eq!(self.seg.len(), self.key.len(), "object columns in step");
         (self.key.len() - 1) as u32
     }
 
@@ -195,6 +197,7 @@ impl Objects {
 
     /// Removes object `o`; the last object takes its index (returned when there was one).
     fn swap_remove(&mut self, o: usize) -> Option<usize> {
+        assert!(o < self.key.len(), "object {o} of {}", self.key.len());
         let last = self.key.len() - 1;
         self.key.swap_remove(o);
         self.geom.swap_remove(o);
@@ -207,6 +210,7 @@ impl Objects {
     /// Number of objects.
     #[must_use]
     pub fn len(&self) -> usize {
+        debug_assert_eq!(self.geom.len(), self.key.len(), "object columns in step");
         self.key.len()
     }
 
@@ -273,6 +277,7 @@ impl Scene {
     /// object follows when [`Scene::generation`] moved by exactly one.
     #[must_use]
     pub fn touched(&self) -> Option<&[ObjKey]> {
+        debug_assert!(self.touched.as_ref().is_none_or(|t| t.is_sorted()));
         self.touched.as_deref()
     }
 

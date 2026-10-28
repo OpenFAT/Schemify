@@ -396,6 +396,11 @@ fn set_coord(slot: &mut String, v: i32) {
 
 /// Maps the coordinate pair at fields `i, i + 1`.
 fn map_pair(fields: &mut [String], i: usize, x: Xform) -> Option<()> {
+    assert!(
+        i + 1 < fields.len(),
+        "a coordinate pair at fields {i}, {}",
+        i + 1
+    );
     let p = (read_coord(&fields[i])?, read_coord(&fields[i + 1])?);
     let q = x.point(p);
     set_coord(&mut fields[i], q.0);

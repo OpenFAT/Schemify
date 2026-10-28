@@ -172,6 +172,10 @@ impl Shell {
 
     /// Replaces the plugin contributions: `(plugin name, ui set + keymap set text)` in load
     /// order. Rejected lines are counted, never fatal (plugin-abi §8).
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks one contribution per plugin.
     pub fn set_plugins(&mut self, sets: &[(String, String)]) {
         self.rejects = 0;
         self.plugins.clear();
@@ -195,6 +199,11 @@ impl Shell {
             .iter()
             .any(|(_, c)| c.edits.iter().any(is_window));
         self.composed = false;
+        assert_eq!(
+            self.plugins.len(),
+            sets.len(),
+            "one contribution per plugin"
+        );
     }
 
     /// Replaces the state contribution when its text changed. Its free text (labels, values)
@@ -231,7 +240,13 @@ impl Shell {
 
     /// Composes (if any contribution changed) and lays out (if anything changed) for
     /// `viewport`. Returns whether the layout was rebuilt.
+    ///
+    /// # Panics
+    ///
+    /// If a `viewport` dimension is negative.
     pub fn refresh(&mut self, viewport: (f32, f32), relayout: bool) -> bool {
+        assert!(viewport.0 >= 0.0, "a viewport of non-negative width");
+        assert!(viewport.1 >= 0.0, "a viewport of non-negative height");
         let recompose = !self.composed;
         if recompose {
             let mut all: Vec<(Sym, &Contribution)> =
@@ -257,6 +272,7 @@ impl Shell {
             );
             self.laid_out = Some(viewport);
         }
+        assert!(self.composed);
         stale
     }
 
@@ -272,10 +288,16 @@ impl Shell {
 
     /// Screen rectangle of the canvas node (logical px), or the whole viewport when no
     /// canvas is laid out.
+    ///
+    /// # Panics
+    ///
+    /// If a `viewport` dimension is negative.
     pub fn canvas_rect(&self, viewport: (f32, f32)) -> Rect {
+        assert!(viewport.0 >= 0.0, "a viewport of non-negative width");
+        assert!(viewport.1 >= 0.0, "a viewport of non-negative height");
         let n = &self.tables.nodes;
         let canvas = (0..n.len()).find(|&i| n.kind()[i] == Kind::Canvas);
-        canvas
+        let r = canvas
             .and_then(|i| self.layout.row_of(i as u16))
             .map(|r| self.layout.rect()[r])
             .filter(|r| r.w > 0.0 && r.h > 0.0)
@@ -284,7 +306,9 @@ impl Shell {
                 y: 0.0,
                 w: viewport.0,
                 h: viewport.1,
-            })
+            });
+        assert!(r.w >= 0.0 && r.h >= 0.0, "a canvas of non-negative size");
+        r
     }
 
     /// The canvas palette for `light` or dark from the `canvas.<theme>.<n>` / `.grid` /
