@@ -583,11 +583,9 @@ fn emit(
     picks: &Picks,
 ) {
     let before = out.doc.record_count();
-    assert!(
-        out.spans
-            .iter()
-            .all(|s| s.first + s.ours + s.theirs <= before)
-    );
+    // Spans are appended in record order, so the last one ends last.
+    let spans_end = out.spans.last().map_or(0, |s| s.first + s.ours + s.theirs);
+    assert!(spans_end <= before, "a conflict span covers emitted records only");
     let doc = &mut out.doc;
     match outcome {
         Outcome::Drop => {}

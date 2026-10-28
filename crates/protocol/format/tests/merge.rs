@@ -207,19 +207,19 @@ fn new_obj(rng: &mut Rng) -> Obj {
 /// An edit of one object that touches only `unit`: 0 = geometry/name, 1 = params.
 fn edit_of(rng: &mut Rng, id: &str, o: &Obj, unit: u8) -> Edit {
     match (o, unit) {
-        (Obj::Inst { .. }, 0) => Edit::Move(id.into(), grid(rng), grid(rng)),
+        (Obj::Inst { .. }, 0) => Edit::Move(id.to_string(), grid(rng), grid(rng)),
         (Obj::Inst { params, .. }, _) => {
             let key = if rng.chance(50) {
                 params[0].0.clone()
             } else {
                 rng.word(&["nf", "m", "model"]).to_string()
             };
-            Edit::Param(id.into(), key, format!("{}", rng.below(100)))
+            Edit::Param(id.to_string(), key, format!("{}", rng.below(100)))
         }
         (Obj::Wire { c }, _) => {
-            Edit::MoveWire(id.into(), [c[0], c[1] + 10_000, c[2], c[3] + 10_000])
+            Edit::MoveWire(id.to_string(), [c[0], c[1] + 10_000, c[2], c[3] + 10_000])
         }
-        (Obj::Label { .. }, _) => Edit::Rename(id.into(), format!("net{}", rng.below(50))),
+        (Obj::Label { .. }, _) => Edit::Rename(id.to_string(), format!("net{}", rng.below(50))),
     }
 }
 
@@ -229,7 +229,7 @@ fn scenario(seed: u64) -> (Model, Vec<Edit>, Vec<Edit>) {
     let mut rng = Rng::new(seed);
     let mut used = BTreeSet::new();
     let mut o = Model {
-        doc: "bench".into(),
+        doc: "bench".to_string(),
         objs: BTreeMap::new(),
     };
     for _ in 0..rng.below(25) {
@@ -271,8 +271,8 @@ fn scenario(seed: u64) -> (Model, Vec<Edit>, Vec<Edit>) {
         }
     }
     match rng.below(4) {
-        0 => a.push(Edit::Doc("ours".into())),
-        1 => b.push(Edit::Doc("theirs".into())),
+        0 => a.push(Edit::Doc("ours".to_string())),
+        1 => b.push(Edit::Doc("theirs".to_string())),
         _ => {}
     }
     (o, a, b)

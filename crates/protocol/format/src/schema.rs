@@ -478,9 +478,8 @@ impl RecordSchema {
     #[must_use]
     pub fn attr(&self, key: &str) -> Option<(usize, &'static AttrSchema)> {
         let found = self.attrs.iter().enumerate().find(|(_, a)| a.key == key);
-        if let Some((i, a)) = found {
+        if let Some((i, _)) = found {
             assert!(i < 32, "the reader's attribute bitmask holds 32");
-            assert_eq!(a.key, key);
         }
         found
     }

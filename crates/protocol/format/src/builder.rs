@@ -158,11 +158,20 @@ impl<'src> Document<'src> {
     ///
     /// # Panics
     ///
-    /// Panics if `line` contains CR or LF.
+    /// Panics if `line` contains CR or LF, or if the current record's kind takes no
+    /// verbatim lines (the reader would reject the written file with `E029`).
     pub fn push_verbatim(&mut self, line: &str) {
         assert!(
             !line.contains(['\n', '\r']),
             "verbatim line contains a line break"
+        );
+        let kind = *self
+            .record_kinds
+            .last()
+            .expect("push_verbatim before any record");
+        assert!(
+            kind.schema().verbatim,
+            "{kind:?} records take no verbatim lines"
         );
         let s = self.intern(line);
         self.push_verbatim_str(s);
@@ -367,6 +376,10 @@ impl<'src> Document<'src> {
             "push_field before any record"
         );
         assert!(self.fields.len() < NONE as usize - 1, "field table full");
+        assert!(
+            self.record_kinds.len() > 1 || self.fields.len() < 2,
+            "the header is `<version> <kind>`: begin a record before pushing fields"
+        );
         self.fields.push(s);
         self.field_milli.push(milli);
         assert_eq!(self.field_milli.len(), self.fields.len(), "columns in step");
