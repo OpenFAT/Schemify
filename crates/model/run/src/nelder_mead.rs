@@ -1,37 +1,22 @@
-//! Ask-tell Nelder-Mead simplex over bounded params.
+//! Ask-tell Nelder-Mead simplex over bounded params (run spec §6): one score in per
+//! `tell`, the next candidate out.
 //!
-//! Classic downhill simplex split into a state machine because evaluations
-//! arrive one at a time (tell), instead of the algorithm driving a closure.
-//! Every candidate is clamped to [lo, hi] before being handed out, so the
-//! simplex only ever contains feasible points.
+//! Classic downhill simplex split into a state machine because evaluations arrive one at
+//! a time (tell), instead of the algorithm driving a closure. Every candidate is clamped
+//! to `[lo, hi]` before it is handed out, so the simplex only ever holds feasible points.
+//!
+//! Contents:
+//! - crate-only `const UNEVALUATED: f64`
+//! - crate-only `struct NelderMead`: `new`, `candidate`, `tell`
 
-use super::Param;
-
-const ALPHA: f64 = 1.0; // reflection
-const GAMMA: f64 = 2.0; // expansion
-const RHO: f64 = 0.5; // contraction
-const SIGMA: f64 = 0.5; // shrink
+use crate::optimize::Param;
 
 /// Placeholder for not-yet-evaluated vertices; also the score of a failed evaluation,
 /// so a failed candidate sorts worst.
 pub(crate) const UNEVALUATED: f64 = f64::MAX;
 
-/// Where the state machine is waiting for its next evaluation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Phase {
-    /// Scoring simplex rows `next..=n` one tell at a time: the initial simplex (from row
-    /// 0) or the shrunk one (from row 1).
-    Scoring {
-        next: u32,
-    },
-    Reflecting,
-    Expanding,
-    Contracting {
-        outside: bool,
-    },
-}
-
 #[derive(Clone, Debug, PartialEq)]
+/// The simplex, its scores and the pending candidate. Rows stay inside `[lo, hi]`.
 pub(crate) struct NelderMead {
     lo: Vec<f64>,
     hi: Vec<f64>,
@@ -45,6 +30,26 @@ pub(crate) struct NelderMead {
     /// Reflected point kept across Reflecting -> Expanding/Contracting.
     reflected: Vec<f64>,
     f_reflected: f64,
+}
+
+const ALPHA: f64 = 1.0; // reflection
+const GAMMA: f64 = 2.0; // expansion
+const RHO: f64 = 0.5; // contraction
+const SIGMA: f64 = 0.5; // shrink
+
+/// Where the state machine is waiting for its next evaluation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    /// Scoring simplex rows `next..=n` one tell at a time: the initial simplex (from row
+    /// 0) or the shrunk one (from row 1).
+    Scoring {
+        next: u32,
+    },
+    Reflecting,
+    Expanding,
+    Contracting {
+        outside: bool,
+    },
 }
 
 impl NelderMead {
@@ -170,7 +175,11 @@ impl NelderMead {
             }
         }
     }
+}
 
+// ---- private ----
+
+impl NelderMead {
     fn n(&self) -> usize {
         self.lo.len()
     }

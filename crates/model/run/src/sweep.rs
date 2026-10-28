@@ -2,7 +2,11 @@
 //! and `log` expanded to canonical number text.
 //!
 //! `log` points use the expression language's `^` so they are bit-identical on every
-//! target (D32: the platform `powf` may differ by an ulp).
+//! target (D32: the platform `powf` may differ by an ulp). In: one sweep's shape
+//! attributes; out: its point texts.
+//!
+//! Contents:
+//! - crate-only `fn points(shapes: &[Option<Vec<&str>>; 3]) -> Result<Vec<String>, String>`
 
 use crate::plan::{SWEEP_POINTS_MAX, const_value, parse_count};
 use schemify_expr::{Mode, Program, Scratch, Value, write_num};
@@ -15,8 +19,7 @@ use schemify_expr::{Mode, Program, Scratch, Value, write_num};
 /// are not constants; a point count outside `1..=SWEEP_POINTS_MAX`; `log` bounds that
 /// are zero or of different signs.
 pub(crate) fn points(shapes: &[Option<Vec<&str>>; 3]) -> Result<Vec<String>, String> {
-    let present = shapes.iter().filter(|s| s.is_some()).count();
-    if present != 1 {
+    if shapes.iter().filter(|s| s.is_some()).count() != 1 {
         return Err("needs exactly one of `values`, `lin`, `log`".into());
     }
     let out = match shapes {
@@ -30,9 +33,12 @@ pub(crate) fn points(shapes: &[Option<Vec<&str>>; 3]) -> Result<Vec<String>, Str
         [None, None, Some(a)] => grid(a, true)?,
         _ => unreachable!("exactly one shape is present"),
     };
-    assert!(!out.is_empty() && out.len() <= SWEEP_POINTS_MAX as usize);
+    assert!(!out.is_empty());
+    assert!(out.len() <= SWEEP_POINTS_MAX as usize);
     Ok(out)
 }
+
+// ---- private ----
 
 /// `lin|log <from> <to> <n>`: `n` points, both ends included (`n = 1` is `from`).
 fn grid(a: &[&str], log: bool) -> Result<Vec<String>, String> {

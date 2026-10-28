@@ -14,6 +14,8 @@ use schemify_run::{
     prepare, read_results, write_results, yield_summary,
 };
 
+// ---- private ----
+
 fn var(results: &Results, j: u32, name: &str) -> f64 {
     let v = results.vars().iter().position(|x| x == name).unwrap() as u16;
     results.var_value(j, v).unwrap()

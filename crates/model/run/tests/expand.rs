@@ -15,6 +15,8 @@ use schemify_run::{
     Corner, Dist, DistKind, MonteCarlo, NO_SAMPLE, Plan, Select, Sweep, Var, expand, sim_seed,
 };
 
+// ---- private ----
+
 fn plan(configs: usize, corners: usize, sweeps: &[usize], samples: u32, dists: usize) -> Plan {
     let mut p = Plan {
         configs: (0..configs).map(|c| format!("cfg{c}")).collect(),

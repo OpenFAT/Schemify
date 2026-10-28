@@ -85,6 +85,8 @@ printf 'Title: fake\nPlotname: Operating Point\nFlags: real\nNo. Variables: 5\nN
 const FAKE_TRAN: &str = r#"printf 'Title: fake\nPlotname: Transient Analysis\nFlags: real\nNo. Variables: 2\nNo. Points: 2\nVariables:\n 0 time time\n 1 v(out) voltage\nValues:\n0 0\n 0\n1 1\n 1\n' > "$2"
 "#;
 
+// ---- private ----
+
 fn sh(script: &str) -> SimCommand {
     SimCommand {
         path: "sh".into(),
