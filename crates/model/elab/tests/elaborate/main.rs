@@ -8,8 +8,7 @@ mod hierarchy;
 mod params;
 mod selection;
 
-use common::project;
-use schemify_elab::{Dialect, Elab, Request, Target, elaborate, no_funcs};
+use schemify_elab::{Dialect, Elab, Request, Target, no_funcs};
 
 /// Row of instance `name` in definition `d`.
 fn row(e: &Elab, d: u32, name: &str) -> usize {
@@ -56,7 +55,7 @@ fn bench_with(config: &str) -> String {
 }
 
 fn elab_cfg(bench: &str, cfg: Option<&str>, dialect: Dialect) -> Elab {
-    let (p, hs) = project(&[
+    let (p, hs) = common::project(&[
         ("res.shprim", RES),
         ("amp.shcomp", AMP),
         ("tb.shbench", bench),
@@ -68,5 +67,5 @@ fn elab_cfg(bench: &str, cfg: Option<&str>, dialect: Dialect) -> Elab {
         env: &[],
         dialect,
     };
-    elaborate(&p, hs[2], &req, &mut no_funcs)
+    schemify_elab::elaborate(&p, hs[2], &req, &mut no_funcs)
 }

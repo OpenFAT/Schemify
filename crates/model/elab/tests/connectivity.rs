@@ -5,9 +5,7 @@
 
 mod common;
 
-use common::{
-    DEV, Mix, c, canon, id, naive_partition, place_ref, project, random_bench, real_partition,
-};
+use common::{DEV, Mix};
 use proptest::prelude::*;
 use schemify_doc::{DocHandle, Project};
 use schemify_elab::{CellState, Code, NO_NET, no_funcs};
@@ -21,7 +19,7 @@ fn state(p: &Project, h: DocHandle) -> CellState {
 fn bench_state(bench: &str, cells: &[(&str, &str)]) -> (Project, DocHandle, CellState) {
     let mut files: Vec<(&str, &str)> = cells.to_vec();
     files.push(("tb.shbench", bench));
-    let (p, hs) = project(&files);
+    let (p, hs) = common::project(&files);
     let h = *hs.last().expect("the file list ends with the bench");
     let st = state(&p, h);
     (p, h, st)
@@ -30,8 +28,8 @@ fn bench_state(bench: &str, cells: &[(&str, &str)]) -> (Project, DocHandle, Cell
 fn check_against_oracle(bench: &str) {
     let (p, h, st) = bench_state(bench, &[("dev.shprim", DEV)]);
     let doc = p.doc(h).expect("a live handle has a document");
-    let want = canon(&naive_partition(doc, &PINS));
-    let got = canon(&real_partition(doc, &st.nets));
+    let want = common::canon(&common::naive_partition(doc, &PINS));
+    let got = common::canon(&common::real_partition(doc, &st.nets));
     assert_eq!(got, want, "bench:\n{bench}");
 }
 
@@ -41,7 +39,7 @@ proptest! {
     /// The extractor's components equal the naive all-pairs union-find.
     #[test]
     fn components_equal_the_naive_reference(seed in any::<u64>(), n in 0usize..80) {
-        check_against_oracle(&random_bench(&mut Mix(seed), n, seed % 1000 * 100));
+        check_against_oracle(&common::random_bench(&mut Mix(seed), n, seed % 1000 * 100));
     }
 }
 
@@ -49,18 +47,18 @@ proptest! {
 /// origin, then `shift`; instance orientations compose with it. `perm` reverses the
 /// record order; `reid` maps every id through `id(n + 7_777)`.
 fn transform(bench: &str, orient: &str, shift: (i64, i64), reverse: bool, reid: bool) -> String {
-    let (p, hs) = project(&[("dev.shprim", DEV), ("tb.shbench", bench)]);
+    let (p, hs) = common::project(&[("dev.shprim", DEV), ("tb.shbench", bench)]);
     let doc = p.doc(hs[1]).expect("a live handle has a document");
     let s = doc.strings();
-    let pt = |x: i32, y: i32| place_ref(x as i64, y as i64, orient, shift);
+    let pt = |x: i32, y: i32| common::place_ref(x as i64, y as i64, orient, shift);
     let new_id = |old: String| -> String {
         if !reid {
             return old;
         }
         let n = (0..1_000_000u64)
-            .find(|&n| id(n) == old)
+            .find(|&n| common::id(n) == old)
             .expect("ids come from id()");
-        id(n + 7_777)
+        common::id(n + 7_777)
     };
     let (m, t) = (orient.starts_with('M'), turns(orient));
     let mut recs: Vec<String> = Vec::new();
@@ -76,8 +74,8 @@ fn transform(bench: &str, orient: &str, shift: (i64, i64), reverse: bool, reid: 
         recs.push(format!(
             "inst {} ./dev\n  at {} {} {word}\n  name {}\n",
             new_id(inst.id[i].text(s)),
-            c(x),
-            c(y),
+            common::c(x),
+            common::c(y),
             s.get(inst.name[i])
         ));
     }
@@ -87,10 +85,10 @@ fn transform(bench: &str, orient: &str, shift: (i64, i64), reverse: bool, reid: 
         recs.push(format!(
             "wire {} {} {} {} {}\n",
             new_id(w.id[k].text(s)),
-            c(x1),
-            c(y1),
-            c(x2),
-            c(y2)
+            common::c(x1),
+            common::c(y1),
+            common::c(x2),
+            common::c(y2)
         ));
     }
     let l = doc.labels();
@@ -99,8 +97,8 @@ fn transform(bench: &str, orient: &str, shift: (i64, i64), reverse: bool, reid: 
         recs.push(format!(
             "label {} {} {} R0 {}\n",
             new_id(l.id[k].text(s)),
-            c(x),
-            c(y),
+            common::c(x),
+            common::c(y),
             s.get(l.text[k])
         ));
     }
@@ -110,8 +108,8 @@ fn transform(bench: &str, orient: &str, shift: (i64, i64), reverse: bool, reid: 
         recs.push(format!(
             "noconn {} {} {}\n",
             new_id(n.id[k].text(s)),
-            c(x),
-            c(y)
+            common::c(x),
+            common::c(y)
         ));
     }
     if reverse {
@@ -132,29 +130,29 @@ fn turns(orient: &str) -> i64 {
 /// Partition of a bench keyed by object *index in the original id order*, so re-id'd
 /// copies compare.
 fn partition_by_id_order(bench: &str, reid: bool) -> std::collections::BTreeMap<String, String> {
-    let (p, hs) = project(&[("dev.shprim", DEV), ("tb.shbench", bench)]);
+    let (p, hs) = common::project(&[("dev.shprim", DEV), ("tb.shbench", bench)]);
     let st = state(&p, hs[1]);
     let doc = p.doc(hs[1]).expect("a live handle has a document");
-    let part = real_partition(doc, &st.nets);
+    let part = common::real_partition(doc, &st.nets);
     let back = |key: &str| -> String {
         if !reid {
             return key.to_owned();
         }
         let mut parts: Vec<String> = key.split(':').map(str::to_owned).collect();
         let n = (0..1_000_000u64)
-            .find(|&n| id(n) == parts[1])
+            .find(|&n| common::id(n) == parts[1])
             .expect("ids come from id()");
-        parts[1] = id(n - 7_777);
+        parts[1] = common::id(n - 7_777);
         parts.join(":")
     };
-    canon(&part.into_iter().map(|(k, v)| (back(&k), v)).collect())
+    common::canon(&part.into_iter().map(|(k, v)| (back(&k), v)).collect())
 }
 
 #[test]
 fn partitions_survive_every_sheet_orientation_shift_permutation_and_reid() {
     let mut rng = Mix(0x5eed);
     for round in 0..12 {
-        let bench = random_bench(&mut rng, 70, 50_000 + round * 1000);
+        let bench = common::random_bench(&mut rng, 70, 50_000 + round * 1000);
         let base = partition_by_id_order(&bench, false);
         for orient in ["R0", "R90", "R180", "R270", "MR0", "MR90", "MR180", "MR270"] {
             let shift = (rng.range(-50, 50) * 1000, rng.range(-50, 50) * 1000);
@@ -184,7 +182,7 @@ fn the_orientation_transform_matches_the_spec_examples() {
         let got = place(7, 3, m, t, 11, 13);
         assert_eq!(
             (got.0 as i64, got.1 as i64),
-            place_ref(7, 3, o, (11, 13)),
+            common::place_ref(7, 3, o, (11, 13)),
             "{o}"
         );
     }
@@ -202,9 +200,9 @@ fn the_orientation_transform_matches_the_spec_examples() {
 fn assert_groups(body: &str, same: &[&[&str]], apart: &[(&str, &str)]) {
     let bench = format!("schemify 1 shbench\n\n{body}");
     check_against_oracle(&bench);
-    let (p, hs) = project(&[("dev.shprim", DEV), ("tb.shbench", &bench)]);
+    let (p, hs) = common::project(&[("dev.shprim", DEV), ("tb.shbench", &bench)]);
     let st = state(&p, hs[1]);
-    let part = real_partition(
+    let part = common::real_partition(
         p.doc(hs[1]).expect("a live handle has a document"),
         &st.nets,
     );
@@ -327,7 +325,7 @@ fn naming_rules() {
 #[test]
 fn ports_take_precedence_and_bind_interface_pins() {
     let cell = "schemify 1 shcomp\n\npin IN in 0 0\npin OUT out 20 0\npin VDD inout 0 -20\n  inherit vdd!\n\nimpl sch schematic\n\ninst 000001 ./one\n  at 0 0 R0\n  name X1\ninst 000002 ./one\n  at 100 0 R0\n  name X2\nport 000003 0 0 R0 IN\nlabel 000004 0 0 R0 zz\nport 000005 100 0 R0 OUT\nport 000006 300 0 R0 NOPE\nlabel 000007 500 0 R0 VDD\n";
-    let (p, hs) = project(&[("one.shprim", ONE), ("amp.shcomp", cell)]);
+    let (p, hs) = common::project(&[("one.shprim", ONE), ("amp.shcomp", cell)]);
     let st = state(&p, hs[1]);
     assert_eq!(
         conns(&p, hs[1], &st, "X1"),

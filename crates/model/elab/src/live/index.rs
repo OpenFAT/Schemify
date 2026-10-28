@@ -6,7 +6,7 @@
 //! - `Live::index_wire`, `Live::index`, `Live::unindex`, `Live::unindex_wire`,
 //!   `Live::ends`, `Live::neighbors`, `Live::on_wire` (`pub(super)`)
 
-use super::{Ctx, INSTS, Kind, Live, geometric};
+use super::{Ctx, INSTS, Kind, Live};
 use crate::nets;
 
 impl Live {
@@ -82,7 +82,7 @@ impl Live {
                 let f = &cx.ifaces[cx.inst_iface[i] as usize];
                 let p = usize::from(self.sub[vi]);
                 let first = self.first[INSTS][i];
-                for (k, q) in geometric(f).enumerate() {
+                for (k, q) in super::geometric(f).enumerate() {
                     if q != p && (f.pin_alias[p] == q as u32 || f.pin_alias[q] == p as u32) {
                         out.push(first + k as u32);
                     }

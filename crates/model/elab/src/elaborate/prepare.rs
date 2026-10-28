@@ -7,7 +7,7 @@
 //! - `Elaborator::{request_finding, read_config, unmatched_inst_rules, push_cell, discover,
 //!   prepare_eval, defaults}` (`pub(super)`)
 
-use super::{CellData, CellRule, Elaborator, InstRule, defs, record};
+use super::{CellData, CellRule, Elaborator, InstRule, defs};
 use crate::cells::{self, CellName};
 use crate::check::{self, CellCtx};
 use crate::connect;
@@ -34,7 +34,7 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
     }
 
     pub(super) fn read_config(&mut self, doc: &Document, name: &str, top_cell: Name) {
-        let Some(r) = record(doc.configs(), doc, name) else {
+        let Some(r) = super::record(doc.configs(), doc, name) else {
             self.request_finding(top_cell, &format!("config `{name}` does not exist"));
             return;
         };

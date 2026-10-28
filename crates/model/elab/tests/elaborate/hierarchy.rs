@@ -1,10 +1,10 @@
 //! Specialization naming and its stability, path rules, recursion and inherited
 //! connections.
 
-use schemify_elab::{Dialect, Request, Target, elaborate, no_funcs};
+use crate::common;
+use schemify_elab::{Dialect, Request, Target, no_funcs};
 
-use super::{AMP, RES, conn_names, elab_cfg, param, row, target};
-use crate::common::{codes, elab, ngspice, project};
+use super::{AMP, RES};
 
 /// FNV-1a 64 + 6 Crockford base32 digits, written independently of elab.
 fn spec_hash(text: &str) -> String {
@@ -22,10 +22,10 @@ fn spec_hash(text: &str) -> String {
 #[test]
 fn specialization_names_are_stable_and_shared() {
     let bench = "schemify 1 shbench\n\ninst 0x0001 ./amp\n  at 0 0 R0\n  name X1\ninst 0x0002 ./amp\n  at 100 0 R0\n  name X2\n  r 2k\ninst 0x0003 ./amp\n  at 200 0 R0\n  name X3\n  r 2000\ninst 0x0004 ./amp\n  at 300 0 R0\n  name X4\n  r 1000\ninst 0x0005 ./amp\n  at 400 0 R0\n  name X5\n  r 3k\n";
-    let e = elab_cfg(bench, None, Dialect::Ngspice);
+    let e = super::elab_cfg(bench, None, Dialect::Ngspice);
     let names: Vec<String> = ["X1", "X2", "X3", "X4", "X5"]
         .iter()
-        .map(|x| target(&e, row(&e, e.top, x)))
+        .map(|x| super::target(&e, super::row(&e, e.top, x)))
         .collect();
     let two = format!("def:amp__{}", spec_hash("r=2000"));
     let three = format!("def:amp__{}", spec_hash("r=3000"));
@@ -47,16 +47,16 @@ fn specialization_names_are_stable_and_shared() {
         .count();
     assert_eq!(amp_defs, 3, "identical tuples share one definition");
     // Inside the specialization the value is concrete.
-    let d = match e.insts.target[row(&e, e.top, "X2")] {
+    let d = match e.insts.target[super::row(&e, e.top, "X2")] {
         Target::Def(d) => d,
         Target::Leaf(_) => panic!(),
     };
-    assert_eq!(param(&e, row(&e, d, "R1"), "R"), "2000");
+    assert_eq!(super::param(&e, super::row(&e, d, "R1"), "R"), "2000");
     // Stable across unrelated edits and record order: reverse the instances, add one.
     let shuffled = "schemify 1 shbench\n\ninst 0x0005 ./amp\n  at 0 0 R0\n  name X5\n  r 3k\ninst 0x0002 ./amp\n  at 9 9 R90\n  name X2\n  r 2k\ninst 0x0009 ./res\n  at 500 0 R0\n  name R9\n";
-    let e2 = elab_cfg(shuffled, None, Dialect::Ngspice);
-    assert_eq!(target(&e2, row(&e2, e2.top, "X2")), two);
-    assert_eq!(target(&e2, row(&e2, e2.top, "X5")), three);
+    let e2 = super::elab_cfg(shuffled, None, Dialect::Ngspice);
+    assert_eq!(super::target(&e2, super::row(&e2, e2.top, "X2")), two);
+    assert_eq!(super::target(&e2, super::row(&e2, e2.top, "X5")), three);
 }
 
 #[test]
@@ -66,7 +66,7 @@ fn path_rules_split_definitions_with_equal_params() {
     // a name.
     let mid = "schemify 1 shcomp\n\npin P inout 0 0\n\nimpl sch schematic\n\ninst 0a0001 ./amp\n  at 0 0 R0\n  name A1\n\nport 0p0001 0 0 R0 P\n";
     let bench = "schemify 1 shbench\n\ninst 0x0001 ./mid\n  at 0 0 R0\n  name M1\ninst 0x0002 ./mid\n  at 100 0 R0\n  name M2\n\nconfig c\n  inst /M2/A1 beh\n";
-    let (p, hs) = project(&[
+    let (p, hs) = common::project(&[
         ("res.shprim", RES),
         ("amp.shcomp", AMP),
         ("mid.shcomp", mid),
@@ -74,12 +74,12 @@ fn path_rules_split_definitions_with_equal_params() {
     ]);
     let req = Request {
         config: Some("c"),
-        ..ngspice()
+        ..common::ngspice()
     };
-    let e = elaborate(&p, hs[3], &req, &mut no_funcs);
+    let e = schemify_elab::elaborate(&p, hs[3], &req, &mut no_funcs);
     let (m1, m2) = (
-        target(&e, row(&e, e.top, "M1")),
-        target(&e, row(&e, e.top, "M2")),
+        super::target(&e, super::row(&e, e.top, "M1")),
+        super::target(&e, super::row(&e, e.top, "M2")),
     );
     assert_ne!(m1, m2, "different children, different definitions");
     assert!(
@@ -103,13 +103,13 @@ fn recursion_is_reported_not_followed() {
     let b = "schemify 1 shcomp\n\npin P inout 0 0\n\nimpl sch schematic\n\ninst 0b0001 ./a\n  at 0 0 R0\n  name XA\n\nport 0p0002 0 0 R0 P\n";
     let selfie = "schemify 1 shcomp\n\npin P inout 0 0\n\nimpl sch schematic\n\ninst 0c0001 ./selfie\n  at 0 0 R0\n  name XS\n\nport 0p0003 0 0 R0 P\n";
     let bench = "schemify 1 shbench\n\ninst 0x0001 ./a\n  at 0 0 R0\n  name X1\ninst 0x0002 ./selfie\n  at 100 0 R0\n  name X2\n";
-    let (p, hs) = project(&[
+    let (p, hs) = common::project(&[
         ("a.shcomp", a),
         ("b.shcomp", b),
         ("selfie.shcomp", selfie),
         ("tb.shbench", bench),
     ]);
-    let e = elab(&p, hs[3]);
+    let e = common::elab(&p, hs[3]);
     let paths: Vec<&str> = e
         .violations
         .with(schemify_elab::Code::E014)
@@ -126,17 +126,17 @@ fn inherited_connections_resolve_up_the_path() {
     // propagated inherited ports (sorted), and the top resolves them per instance.
     let buf = "schemify 1 shcomp\n\npin A in 0 0\npin Y out 100 0\n\nimpl sch schematic\n\ninst 0j0001 ./inv\n  at 0 0 R0\n  name I1\n  inherit VSS gnd_local\ninst 0j0002 ./inv\n  at 20 0 R0\n  name I2\n\nport 0p0001 0 0 R0 A\nport 0p0002 40 0 R0 Y\n";
     let bench = "schemify 1 shbench\n\ninst 0x0001 ./buf\n  at 0 0 R0\n  name X1\ninst 0x0002 ./buf\n  at 200 0 R0\n  name X2\n  inherit VDD vccb\n\nlabel 0n0001 0 0 R0 in1\nlabel 0n0002 100 0 R0 out1\nlabel 0n0003 200 0 R0 in2\nlabel 0n0004 300 0 R0 out2\n";
-    let (p, hs) = project(&[
+    let (p, hs) = common::project(&[
         ("inv.shprim", INV),
         ("buf.shcomp", buf),
         ("tb.shbench", bench),
     ]);
-    let e = elab(&p, hs[2]);
-    assert!(!e.violations.blocking(), "{:?}", codes(&e));
-    let x1 = row(&e, e.top, "X1");
-    assert_eq!(conn_names(&e, x1), ["in1", "out1", "vdd!", "0"]);
+    let e = common::elab(&p, hs[2]);
+    assert!(!e.violations.blocking(), "{:?}", common::codes(&e));
+    let x1 = super::row(&e, e.top, "X1");
+    assert_eq!(super::conn_names(&e, x1), ["in1", "out1", "vdd!", "0"]);
     assert_eq!(
-        conn_names(&e, row(&e, e.top, "X2")),
+        super::conn_names(&e, super::row(&e, e.top, "X2")),
         ["in2", "out2", "vccb", "0"]
     );
     let Target::Def(d) = e.insts.target[x1] else {
@@ -145,17 +145,20 @@ fn inherited_connections_resolve_up_the_path() {
     let ports: Vec<&str> = e.ports(d).iter().map(|n| e.names.get(*n)).collect();
     assert_eq!(ports, ["A", "Y", "VDD", "VSS"]);
     assert_eq!(
-        conn_names(&e, row(&e, d, "I1")),
+        super::conn_names(&e, super::row(&e, d, "I1")),
         // A net of instance pins only is `net_<inst id>_<pin index>` (spec §3).
         ["A", "net_0j0001_1", "VDD", "gnd_local"]
     );
     assert_eq!(
-        conn_names(&e, row(&e, d, "I2")),
+        super::conn_names(&e, super::row(&e, d, "I2")),
         ["net_0j0001_1", "Y", "VDD", "VSS"]
     );
     let globals: Vec<&str> = e.globals.iter().map(|n| e.names.get(*n)).collect();
     assert_eq!(globals, ["0", "vdd!"]);
     // A cell netlisted on its own: its declared/propagated pins are bound to defaults.
-    let e = elab(&p, hs[1]);
-    assert_eq!(conn_names(&e, row(&e, e.top, "I2"))[2..], ["vdd!", "0"]);
+    let e = common::elab(&p, hs[1]);
+    assert_eq!(
+        super::conn_names(&e, super::row(&e, e.top, "I2"))[2..],
+        ["vdd!", "0"]
+    );
 }

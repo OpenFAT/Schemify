@@ -33,7 +33,7 @@
 //!
 //! ```
 //! use schemify_doc::Project;
-//! use schemify_elab::{Dialect, Request, Target, elaborate, no_funcs};
+//! use schemify_elab::{Dialect, Request, Target, no_funcs};
 //!
 //! let mut p = Project::new(None, None, 1).unwrap();
 //! let res = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\nparam R 1k\n\nimpl spice spice\n  format spice \"R{name} {A} {B} {R}\"\n";
@@ -42,7 +42,7 @@
 //! p.open("", "res.shprim", res.as_bytes(), None).unwrap();
 //! let top = p.open("", "tb.shbench", bench.as_bytes(), None).unwrap().handle;
 //! let req = Request { config: None, corner: None, overrides: &[], env: &[], dialect: Dialect::Ngspice };
-//! let e = elaborate(&p, top, &req, &mut no_funcs);
+//! let e = schemify_elab::elaborate(&p, top, &req, &mut no_funcs);
 //! assert!(!e.violations.blocking());
 //! let row = e.insts_of(e.top).start;
 //! let nets: Vec<&str> = e.conns(row).iter().map(|n| e.names.get(*n)).collect();

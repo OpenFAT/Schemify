@@ -6,10 +6,7 @@
 //! Contents:
 //! - `Live::update` (`pub(crate)`); `Live::write_row`, `Live::enter` (`pub(super)`)
 
-use super::{
-    Ctx, Delta, INSTS, Kind, LABELS, Live, NOCONNS, PORTS, WIRES, changed_rows, geometric,
-    table_ids,
-};
+use super::{Ctx, Delta, INSTS, Kind, LABELS, Live, NOCONNS, PORTS, WIRES};
 use crate::names::{Name, Names};
 use crate::netcheck;
 use crate::nets::{self, CellNets};
@@ -122,7 +119,7 @@ impl Live {
 
         // ---- row mirrors and row outputs
         for t in 0..INSTS {
-            let len = table_ids(doc, t).len();
+            let len = super::table_ids(doc, t).len();
             self.ids[t].resize(len, NONE);
             self.first[t].resize(len, NONE);
             match t {
@@ -138,7 +135,7 @@ impl Live {
             row,
         } in &moved
         {
-            self.ids[t][row as usize] = table_ids(doc, t)[row as usize].0;
+            self.ids[t][row as usize] = super::table_ids(doc, t)[row as usize].0;
             self.first[t][row as usize] = first;
             for v in first..first + if t == WIRES { 2 } else { 1 } {
                 self.row[v as usize] = row;
@@ -162,7 +159,7 @@ impl Live {
                 self.uf.push(0);
                 self.enter(first + u32::from(sub));
             }
-            self.ids[t][row as usize] = table_ids(doc, t)[row as usize].0;
+            self.ids[t][row as usize] = super::table_ids(doc, t)[row as usize].0;
             self.first[t][row as usize] = first;
             self.place(t, row as usize, cx);
         }
@@ -175,7 +172,7 @@ impl Live {
                 INSTS => cx
                     .ifaces
                     .get(cx.inst_iface[row as usize] as usize)
-                    .map_or(0, |f| geometric(f).count() as u32),
+                    .map_or(0, |f| super::geometric(f).count() as u32),
                 _ => 1,
             };
             if count == 0 {
@@ -288,9 +285,9 @@ impl Live {
         // A rejected transaction permutes rows without ops reaching here (its replayed
         // `delete` inverse re-inserts at the end), so every table is diffed, every time.
         for t in 0..INSTS {
-            let ids = table_ids(doc, t);
+            let ids = super::table_ids(doc, t);
             rows.clear();
-            changed_rows(&self.ids[t], ids, &mut rows);
+            super::changed_rows(&self.ids[t], ids, &mut rows);
             for &j in &rows {
                 if j < self.ids[t].len() {
                     gone.push((t, self.ids[t][j], self.first[t][j]));
@@ -408,7 +405,7 @@ impl Live {
     /// (debug builds, small cells: O(n)).
     fn check(&self, doc: &Document, cn: &CellNets) {
         for t in 0..INSTS {
-            let ids = table_ids(doc, t);
+            let ids = super::table_ids(doc, t);
             assert_eq!(self.ids[t].len(), ids.len(), "table {t} length");
             for r in 0..ids.len() {
                 assert_eq!(self.ids[t][r], ids[r].0, "table {t} row {r} id");
@@ -493,7 +490,7 @@ impl Live {
                     inst.orient[row].mirrored(),
                     inst.orient[row].quarter_turns(),
                 );
-                for (k, p) in geometric(f).enumerate() {
+                for (k, p) in super::geometric(f).enumerate() {
                     let xy = nets::place(f.pin_x[p], f.pin_y[p], m, q, inst.x[row], inst.y[row]);
                     at(self, first + k as u32, xy);
                 }

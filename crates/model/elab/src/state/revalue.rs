@@ -7,8 +7,8 @@
 //! - `CellState::diff_values`, `CellState::refresh_cached` (`pub(super)`)
 
 use super::CellState;
-use crate::graph::{OWN, override_of, own_node};
-use crate::iface::own_ref;
+use crate::graph::{self, OWN};
+use crate::iface;
 use crate::values::{NONE, Syntax, VAR};
 use schemify_doc::{Document, ObjId, Sym};
 use schemify_format::RecordKind;
@@ -74,10 +74,11 @@ impl CellState {
             let (table, prog, src) = match text {
                 Some(Source { sym, syntax }) => {
                     let names = &self.names;
-                    let lookup = |name: &str| own_ref(names, &me.param_name, &g.var_name, name);
+                    let lookup =
+                        |name: &str| iface::own_ref(names, &me.param_name, &g.var_name, name);
                     let prog = g.progs.push(s.get(sym), syntax, None, lookup);
                     let refs = g.progs.refs(prog).iter();
-                    new_deps.extend(refs.map(|&r| own_node(g.params, r)));
+                    new_deps.extend(refs.map(|&r| graph::own_node(g.params, r)));
                     (OWN, prog, sym)
                 }
                 None => {
@@ -199,7 +200,7 @@ impl CellState {
             let now = if c.param_computed[k] {
                 None
             } else {
-                override_of(doc, i, self.names.get(c.param_name[k]))
+                graph::override_of(doc, i, self.names.get(c.param_name[k]))
             };
             let was = (g.table[n as usize] == OWN).then_some(g.src[n as usize]);
             let text = match (was, now) {

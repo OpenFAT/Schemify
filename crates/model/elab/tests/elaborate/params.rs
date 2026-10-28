@@ -1,18 +1,18 @@
 //! Param scopes, corners and overrides, plugin functions, expression errors and
 //! cycles, gating waivers, valid rules and D20 cached values.
 
-use schemify_elab::{CellState, CornerLine, Dialect, Request, Target, Val, elaborate, no_funcs};
+use crate::common;
+use schemify_elab::{CellState, CornerLine, Dialect, Request, Target, Val, no_funcs};
 use schemify_expr::Value;
 
-use super::{RES, param, row};
-use crate::common::{codes, project};
+use super::RES;
 
 #[test]
 fn params_evaluate_in_parent_then_child_scope_with_corner_and_overrides() {
     let dev = "schemify 1 shprim\n\npin D inout 0 0\n\nparam W 1\nparam L 0.25\nparam ad 0\n  computed W*L\n\nimpl spice spice\n";
     let amp = "schemify 1 shcomp\n\npin P inout 0 0\n\nparam Wp 2\n\nimpl sch schematic\n\ninst 0m0001 ./dev\n  at 0 0 R0\n  name M1\n  W Wp*k\n  ad 9\n  bogus 1\n\nport 0p0001 0 0 R0 P\n\nvar k 3\n";
     let bench = "schemify 1 shbench\n  corner tt\n\ninst 0x0001 ./amp\n  at 0 0 R0\n  name X1\n  Wp vdd*2\n\nvar vdd 1.8\n\ncorner ff\n  lib ${PDK}/models.lib ff\n  set vdd 2\n  temp -40\ncorner tt\n  include ./tt.spice\n  set vdd 1.8\n  temp vdd*10\n\ncode b2 ngspice\n  | .op\ncode a1 spice\n  | .control\n  | run\n  | .endc\ncode z9 xyce\n  | .tran 1n 1u\n";
-    let (p, hs) = project(&[
+    let (p, hs) = common::project(&[
         ("dev.shprim", dev),
         ("amp.shcomp", amp),
         ("tb.shbench", bench),
@@ -25,24 +25,24 @@ fn params_evaluate_in_parent_then_child_scope_with_corner_and_overrides() {
             env: &[],
             dialect: d,
         };
-        elaborate(&p, hs[2], &req, &mut no_funcs)
+        schemify_elab::elaborate(&p, hs[2], &req, &mut no_funcs)
     };
     let e = run(Some("ff"), &[], Dialect::Ngspice);
-    let Target::Def(d) = e.insts.target[row(&e, e.top, "X1")] else {
+    let Target::Def(d) = e.insts.target[super::row(&e, e.top, "X1")] else {
         panic!()
     };
-    let m1 = row(&e, d, "M1");
+    let m1 = super::row(&e, d, "M1");
     assert_eq!(
-        param(&e, m1, "W"),
+        super::param(&e, m1, "W"),
         "12",
         "Wp = vdd*2 in the bench scope, W = Wp*k in amp's"
     );
     assert_eq!(
-        param(&e, m1, "ad"),
+        super::param(&e, m1, "ad"),
         "3",
         "computed in the child scope; the override is E030"
     );
-    let c = codes(&e);
+    let c = common::codes(&e);
     assert!(
         c.contains(&"E030".to_owned()) && c.contains(&"W007".to_owned()),
         "{c:?}"
@@ -68,10 +68,10 @@ fn params_evaluate_in_parent_then_child_scope_with_corner_and_overrides() {
     assert_eq!(blocks, ["a1", "b2"]);
     // Default corner from the header; overrides win over the corner's set, in order.
     let e = run(None, &[("vdd", "2"), ("vdd", "2.5")], Dialect::Ngspice);
-    let Target::Def(d) = e.insts.target[row(&e, e.top, "X1")] else {
+    let Target::Def(d) = e.insts.target[super::row(&e, e.top, "X1")] else {
         panic!()
     };
-    assert_eq!(param(&e, row(&e, d, "M1"), "W"), "15");
+    assert_eq!(super::param(&e, super::row(&e, d, "M1"), "W"), "15");
     let args: Vec<&str> = e
         .bench
         .corner_args
@@ -83,14 +83,14 @@ fn params_evaluate_in_parent_then_child_scope_with_corner_and_overrides() {
     let e = run(None, &[], Dialect::Xyce);
     let blocks: Vec<&str> = e.bench.code_name.iter().map(|n| e.names.get(*n)).collect();
     assert_eq!(blocks, ["z9"]);
-    assert!(codes(&e).contains(&"E033".to_owned()));
+    assert!(common::codes(&e).contains(&"E033".to_owned()));
     // So for HSPICE and LTspice; ESPice runs ngspice's control blocks.
     for d in [Dialect::Hspice, Dialect::Ltspice] {
         let e = run(None, &[], d);
-        assert!(codes(&e).contains(&"E033".to_owned()), "{d:?}");
+        assert!(common::codes(&e).contains(&"E033".to_owned()), "{d:?}");
     }
-    assert!(!codes(&run(None, &[], Dialect::Espice)).contains(&"E033".to_owned()));
-    assert!(codes(&run(Some("nope"), &[], Dialect::Ngspice)).contains(&"E035".to_owned()));
+    assert!(!common::codes(&run(None, &[], Dialect::Espice)).contains(&"E033".to_owned()));
+    assert!(common::codes(&run(Some("nope"), &[], Dialect::Ngspice)).contains(&"E035".to_owned()));
     // CDL takes no code blocks.
     assert!(run(None, &[], Dialect::Cdl).bench.code_name.is_empty());
 }
@@ -98,7 +98,7 @@ fn params_evaluate_in_parent_then_child_scope_with_corner_and_overrides() {
 #[test]
 fn plugin_functions_fall_back_to_cached_values() {
     let cell = "schemify 1 shcomp\n\npin P inout 0 0\n\nparam w 1\n\nimpl sch schematic\n\ninst 0m0001 ./res\n  at 0 0 R0\n  name R1\n  R k*1000\n\nport 0p0001 0 0 R0 P\n\nvar k gmid.width(w)\n  cached 2.5 abc123\nvar j gmid.width(w)\n";
-    let (p, hs) = project(&[("res.shprim", RES), ("cell.shcomp", cell)]);
+    let (p, hs) = common::project(&[("res.shprim", RES), ("cell.shcomp", cell)]);
     let st = CellState::build(&p, hs[1], &mut no_funcs).unwrap();
     let g = &st.graph;
     let (k, j) = (g.params as usize, g.params as usize + 1);
@@ -126,7 +126,7 @@ fn plugin_functions_fall_back_to_cached_values() {
 #[test]
 fn expression_errors_and_cycles_are_e008() {
     let cell = "schemify 1 shcomp\n\npin P inout 0 0\n\nparam a b+1\nparam b a+1\nparam c 1/0\n\nimpl sch schematic\n\ninst 0m0001 ./res\n  at 0 0 R0\n  name R1\n  R nope\n\nport 0p0001 0 0 R0 P\n";
-    let (p, hs) = project(&[("res.shprim", RES), ("cell.shcomp", cell)]);
+    let (p, hs) = common::project(&[("res.shprim", RES), ("cell.shcomp", cell)]);
     let st = CellState::build(&p, hs[1], &mut no_funcs).unwrap();
     let details: Vec<String> = st
         .violations
@@ -146,7 +146,7 @@ fn expression_errors_and_cycles_are_e008() {
 #[test]
 fn every_node_of_a_cyclic_component_is_x005() {
     let cell = "schemify 1 shcomp\n\npin P inout 0 0\n\nparam a b+c\nparam b a\nparam c a+1\nparam d a*2\nparam e 3\n\nimpl sch schematic\n\nport 0p0001 0 0 R0 P\n";
-    let (p, hs) = project(&[("res.shprim", RES), ("cell.shcomp", cell)]);
+    let (p, hs) = common::project(&[("res.shprim", RES), ("cell.shcomp", cell)]);
     let st = CellState::build(&p, hs[1], &mut no_funcs).unwrap();
     let mut x005: Vec<&str> = st
         .violations
@@ -178,7 +178,7 @@ fn gating_waivers_flip_only_the_named_param() {
                 let bench = format!(
                     "schemify 1 shbench\n\ninst 0m0001 ./dev\n  at 0 0 R0\n  name M1\n  L {l}\n  W 0.5\n  model {model}\n{w}"
                 );
-                let (p, hs) = project(&[("dev.shprim", dev), ("tb.shbench", &bench)]);
+                let (p, hs) = common::project(&[("dev.shprim", dev), ("tb.shbench", &bench)]);
                 let st = CellState::build(&p, hs[1], &mut no_funcs).unwrap();
                 let x: f64 = l.parse().unwrap();
                 let mut want: Vec<(&str, &str)> = Vec::new();
@@ -237,7 +237,7 @@ fn valid_rules_gate_like_bounds() {
             let bench = format!(
                 "schemify 1 shbench\n\ninst 0m0001 ./dev\n  at 0 0 R0\n  name M1\n  l {l}\n{w}"
             );
-            let (p, hs) = project(&[("dev.shprim", dev), ("tb.shbench", &bench)]);
+            let (p, hs) = common::project(&[("dev.shprim", dev), ("tb.shbench", &bench)]);
             let st = CellState::build(&p, hs[1], &mut no_funcs).unwrap();
             let mut got: Vec<(&str, &str)> = st
                 .violations
@@ -327,7 +327,7 @@ fn virtuoso_derived_values_are_cached_and_go_stale() {
             let bench = format!(
                 "schemify 1 shbench\n\ninst 0m0001 ./dev\n  at 0 0 R0\n  name M1\n{ovr}{cached}{w}"
             );
-            let (p, hs) = project(&[("dev.shprim", dev), ("tb.shbench", &bench)]);
+            let (p, hs) = common::project(&[("dev.shprim", dev), ("tb.shbench", &bench)]);
             let st = CellState::build(&p, hs[1], &mut no_funcs).unwrap();
             let got: Vec<(&str, &str)> = st
                 .violations

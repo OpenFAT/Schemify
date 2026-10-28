@@ -8,10 +8,8 @@ mod common;
 mod geometry;
 mod values;
 
-use common::{Mix, c, id};
-use schemify_doc::{
-    DocHandle, Edit, EditRequest, Mode, Op, Outcome, Project, Transaction, apply_edits,
-};
+use common::Mix;
+use schemify_doc::{DocHandle, Edit, EditRequest, Mode, Op, Outcome, Project, Transaction};
 use schemify_elab::CellState;
 
 const DEV: &str = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 20 0\n\nparam w 1\n  min 0.5\n  max 8\nparam l w*2\n  grid 0.5\nparam ad 0\n  computed w*l\n\nimpl spice spice\n";
@@ -29,11 +27,11 @@ fn cell(n: usize) -> String {
         };
         s.push_str(&format!(
             "inst {} ./dev\n  at {} 0 R0\n  name M{i}\n{ovr}",
-            id(i as u64 + 1),
-            c(i as i64 * 40_000)
+            common::id(i as u64 + 1),
+            common::c(i as i64 * 40_000)
         ));
     }
-    s.push_str(&format!("\nwire {} 0 0 20 0\n\nport {} 0 0 R0 P\n\nvar a 1\nvar b a+1\nvar c b*a+k1\nvar k1 5\nvar k2 7\n", id(9_001), id(9_002)));
+    s.push_str(&format!("\nwire {} 0 0 20 0\n\nport {} 0 0 R0 P\n\nvar a 1\nvar b a+1\nvar c b*a+k1\nvar k1 5\nvar k2 7\n", common::id(9_001), common::id(9_002)));
     s
 }
 
@@ -55,7 +53,7 @@ struct Applied {
 /// Applies one request; its applied ops (`Project::applied`: a commit's resolved ops, an
 /// undo's inverse ops, a redo's ops) are what the editor hands `recompute`.
 fn edit(p: &mut Project, h: DocHandle, edit: Edit) -> Applied {
-    let mut out = apply_edits(
+    let mut out = schemify_doc::apply_edits(
         p,
         &[EditRequest {
             doc: h,

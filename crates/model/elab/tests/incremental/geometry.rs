@@ -1,11 +1,11 @@
 //! Geometry edits: connectivity patched per touched net (D39), against a fresh build.
 
+use crate::common;
 use schemify_doc::{Edit, Mode, Op, Outcome, RecordBuf, Target, Transaction};
 use schemify_elab::{CellState, NetChange, no_funcs};
 use schemify_format::RecordKind;
 
-use super::{commit, edit, revert, snapshot};
-use crate::common::{DEV, Mix, c, canon, id, project, real_partition};
+use crate::common::{DEV, Mix};
 
 /// Names labels and ports take in the geometry tests: scalars, a bus and its bits, globals,
 /// an interface pin, a repeat, and a port text that names no pin (`E012`).
@@ -29,9 +29,9 @@ fn geo_cell(rng: &mut Mix) -> String {
         let (x, y) = (grid(rng), grid(rng));
         s.push_str(&format!(
             "inst {} ./dev\n  at {} {} {o}\n  name X{i}\n",
-            id(100 + i),
-            c(x),
-            c(y)
+            common::id(100 + i),
+            common::c(x),
+            common::c(y)
         ));
     }
     for k in 0..12 {
@@ -44,33 +44,33 @@ fn geo_cell(rng: &mut Mix) -> String {
         };
         s.push_str(&format!(
             "wire {} {} {} {} {}\n",
-            id(200 + k),
-            c(x),
-            c(y),
-            c(x2),
-            c(y2)
+            common::id(200 + k),
+            common::c(x),
+            common::c(y),
+            common::c(x2),
+            common::c(y2)
         ));
     }
     for k in 0..3 {
         let name = NET_NAMES[rng.below(7) as usize];
         s.push_str(&format!(
             "label {} {} {} R0 {name}\n",
-            id(300 + k),
-            c(grid(rng)),
-            c(grid(rng))
+            common::id(300 + k),
+            common::c(grid(rng)),
+            common::c(grid(rng))
         ));
     }
     s.push_str(&format!(
         "port {} {} {} R0 P\nport {} {} {} R0 B[1:0]\nnoconn {} {} {}\n",
-        id(400),
-        c(grid(rng)),
-        c(grid(rng)),
-        id(401),
-        c(grid(rng)),
-        c(grid(rng)),
-        id(402),
-        c(grid(rng)),
-        c(grid(rng))
+        common::id(400),
+        common::c(grid(rng)),
+        common::c(grid(rng)),
+        common::id(401),
+        common::c(grid(rng)),
+        common::c(grid(rng)),
+        common::id(402),
+        common::c(grid(rng)),
+        common::c(grid(rng))
     ));
     s
 }
@@ -109,22 +109,28 @@ fn geo_ops(rng: &mut Mix, doc: &schemify_doc::Document) -> Vec<Op> {
                 Some(Op::Insert {
                     rec: RecordBuf::new(RecordKind::Wire)
                         .field("-")
-                        .field(&c(x))
-                        .field(&c(y))
-                        .field(&c(x + dx))
-                        .field(&c(y + dy)),
+                        .field(&common::c(x))
+                        .field(&common::c(y))
+                        .field(&common::c(x + dx))
+                        .field(&common::c(y + dy)),
                     at: None,
                 })
             }
             3 | 4 => pick(rng, doc, RecordKind::Wire)
                 .map(|k| Op::Delete(Target::new(RecordKind::Wire, &k))),
-            5 => pick(rng, doc, RecordKind::Wire)
-                .map(|k| set(RecordKind::Wire, k, 1 + rng.below(4) as u32, c(grid(rng)))),
+            5 => pick(rng, doc, RecordKind::Wire).map(|k| {
+                set(
+                    RecordKind::Wire,
+                    k,
+                    1 + rng.below(4) as u32,
+                    common::c(grid(rng)),
+                )
+            }),
             6 | 7 => Some(Op::Insert {
                 rec: RecordBuf::new(RecordKind::Label)
                     .field("-")
-                    .field(&c(grid(rng)))
-                    .field(&c(grid(rng)))
+                    .field(&common::c(grid(rng)))
+                    .field(&common::c(grid(rng)))
                     .field("R0")
                     .field(name),
                 at: None,
@@ -132,8 +138,14 @@ fn geo_ops(rng: &mut Mix, doc: &schemify_doc::Document) -> Vec<Op> {
             8 => {
                 pick(rng, doc, RecordKind::Label).map(|k| set(RecordKind::Label, k, 4, name.into()))
             }
-            9 => pick(rng, doc, RecordKind::Label)
-                .map(|k| set(RecordKind::Label, k, 1 + rng.below(2) as u32, c(grid(rng)))),
+            9 => pick(rng, doc, RecordKind::Label).map(|k| {
+                set(
+                    RecordKind::Label,
+                    k,
+                    1 + rng.below(2) as u32,
+                    common::c(grid(rng)),
+                )
+            }),
             10 => pick(rng, doc, RecordKind::Label)
                 .map(|k| Op::Delete(Target::new(RecordKind::Label, &k))),
             11 => match pick(rng, doc, RecordKind::Noconn) {
@@ -141,8 +153,8 @@ fn geo_ops(rng: &mut Mix, doc: &schemify_doc::Document) -> Vec<Op> {
                 _ => Some(Op::Insert {
                     rec: RecordBuf::new(RecordKind::Noconn)
                         .field("-")
-                        .field(&c(grid(rng)))
-                        .field(&c(grid(rng))),
+                        .field(&common::c(grid(rng)))
+                        .field(&common::c(grid(rng))),
                     at: None,
                 }),
             },
@@ -153,7 +165,7 @@ fn geo_ops(rng: &mut Mix, doc: &schemify_doc::Document) -> Vec<Op> {
                         Some(Op::Delete(Target::new(RecordKind::Port, &k)))
                     }
                     Some(k) if rng.chance(50) => Some(set(RecordKind::Port, k, 4, text.into())),
-                    Some(k) => Some(set(RecordKind::Port, k, 1, c(grid(rng)))),
+                    Some(k) => Some(set(RecordKind::Port, k, 1, common::c(grid(rng)))),
                     None => None,
                 }
             }
@@ -167,7 +179,7 @@ fn geo_ops(rng: &mut Mix, doc: &schemify_doc::Document) -> Vec<Op> {
                 Op::SetAttr {
                     target: Target::new(RecordKind::Inst, &k),
                     key: "at".into(),
-                    values: vec![c(grid(rng)), c(grid(rng)), o.into()],
+                    values: vec![common::c(grid(rng)), common::c(grid(rng)), o.into()],
                 }
             }),
             _ => pick(rng, doc, RecordKind::Label).map(|k| {
@@ -183,8 +195,8 @@ fn geo_ops(rng: &mut Mix, doc: &schemify_doc::Document) -> Vec<Op> {
                         target,
                         rec: RecordBuf::new(RecordKind::Label)
                             .field(&k)
-                            .field(&c(grid(rng)))
-                            .field(&c(grid(rng)))
+                            .field(&common::c(grid(rng)))
+                            .field(&common::c(grid(rng)))
                             .field("R0")
                             .field(name),
                     }
@@ -218,7 +230,7 @@ fn nets_view(st: &CellState, doc: &schemify_doc::Document) -> Vec<String> {
             bits(c)
         )
     };
-    let mut out: Vec<String> = canon(&real_partition(doc, n))
+    let mut out: Vec<String> = common::canon(&common::real_partition(doc, n))
         .into_iter()
         .map(|(k, b)| format!("block {k} {b}"))
         .collect();
@@ -286,13 +298,13 @@ fn nets_view(st: &CellState, doc: &schemify_doc::Document) -> Vec<String> {
 fn geometry_run(seed: u64, steps: usize) -> usize {
     let mut rng = Mix(seed);
     let cell = geo_cell(&mut rng);
-    let (mut p, hs) = project(&[("dev.shprim", DEV), ("cell.shcomp", &cell)]);
+    let (mut p, hs) = common::project(&[("dev.shprim", DEV), ("cell.shcomp", &cell)]);
     let h = hs[1];
     let mut st = CellState::build(&p, h, &mut no_funcs).expect("a live handle builds");
     let mut patched = 0;
     for step in 0..steps {
         let ops = if rng.chance(20) {
-            let Some(ops) = revert(&mut p, h, &mut rng) else {
+            let Some(ops) = super::revert(&mut p, h, &mut rng) else {
                 continue;
             };
             ops
@@ -302,7 +314,7 @@ fn geometry_run(seed: u64, steps: usize) -> usize {
                 mode: Mode::Commit,
                 ops: geo_ops(&mut rng, p.doc(h).expect("a live handle has a document")),
             };
-            let done = edit(&mut p, h, Edit::Tx(tx));
+            let done = super::edit(&mut p, h, Edit::Tx(tx));
             // A rejected transaction still permutes rows (its replayed inverses
             // re-insert deletions at the end): the next step must cope.
             if !matches!(done.outcome, Outcome::Committed { .. }) {
@@ -320,7 +332,11 @@ fn geometry_run(seed: u64, steps: usize) -> usize {
             nets_view(&fresh, doc),
             "seed {seed} step {step} ops {ops:?}"
         );
-        assert_eq!(snapshot(&st), snapshot(&fresh), "seed {seed} step {step}");
+        assert_eq!(
+            super::snapshot(&st),
+            super::snapshot(&fresh),
+            "seed {seed} step {step}"
+        );
         if st.prev_pass == 0 {
             continue;
         }
@@ -377,25 +393,29 @@ fn an_edit_far_away_keeps_every_other_net() {
             let (x, y) = (side + k * 20_000, 0);
             s.push_str(&format!(
                 "wire {} {} {} {} {}\n",
-                id((side / 1000 + k) as u64 + 10),
-                c(x),
-                c(y),
-                c(x),
-                c(y + 10_000)
+                common::id((side / 1000 + k) as u64 + 10),
+                common::c(x),
+                common::c(y),
+                common::c(x),
+                common::c(y + 10_000)
             ));
             if k % 4 == 0 {
                 s.push_str(&format!(
                     "label {} {} {} R0 n{k}\n",
-                    id((side / 1000 + k) as u64 + 5000),
-                    c(x),
-                    c(y)
+                    common::id((side / 1000 + k) as u64 + 5000),
+                    common::c(x),
+                    common::c(y)
                 ));
             }
         }
     }
     // The port sits apart: on a labelled wire it would short two names (E003, a rebuild).
-    s.push_str(&format!("port {} {} 0 R0 P\n", id(9_999), c(-100_000)));
-    let (mut p, hs) = project(&[("dev.shprim", DEV), ("cell.shcomp", &s)]);
+    s.push_str(&format!(
+        "port {} {} 0 R0 P\n",
+        common::id(9_999),
+        common::c(-100_000)
+    ));
+    let (mut p, hs) = common::project(&[("dev.shprim", DEV), ("cell.shcomp", &s)]);
     let h = hs[1];
     let mut st = CellState::build(&p, h, &mut no_funcs).unwrap();
     let left = |st: &CellState, doc: &schemify_doc::Document| -> Vec<(u32, String, Vec<u32>)> {
@@ -409,28 +429,28 @@ fn an_edit_far_away_keeps_every_other_net() {
             .collect()
     };
     let before = left(&st, p.doc(h).unwrap());
-    let right = |k: i64| id((1_000_000 / 1000 + k) as u64 + 10);
+    let right = |k: i64| common::id((1_000_000 / 1000 + k) as u64 + 10);
     let edits = [
         // Join two right-hand nets, rename a right-hand label to a left-hand name (merge by
         // name), delete a right-hand wire, insert one.
         vec![Op::Insert {
             rec: RecordBuf::new(RecordKind::Wire)
                 .field("-")
-                .field(&c(1_000_000))
-                .field(&c(10_000))
-                .field(&c(1_040_000))
-                .field(&c(10_000)),
+                .field(&common::c(1_000_000))
+                .field(&common::c(10_000))
+                .field(&common::c(1_040_000))
+                .field(&common::c(10_000)),
             at: None,
         }],
         vec![Op::SetField {
-            target: Target::new(RecordKind::Label, &id(1_000 + 4 + 5000)),
+            target: Target::new(RecordKind::Label, &common::id(1_000 + 4 + 5000)),
             index: 4,
             value: "n0".into(),
         }],
         vec![Op::Delete(Target::new(RecordKind::Wire, &right(7)))],
     ];
     for ops in edits {
-        assert!(commit(&mut p, h, ops.clone()), "{ops:?}");
+        assert!(super::commit(&mut p, h, ops.clone()), "{ops:?}");
         let done = st.recompute(&p, h, &ops, &mut no_funcs);
         assert_eq!(done.nets, NetChange::Patched, "{ops:?}");
         let doc = p.doc(h).unwrap();

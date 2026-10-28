@@ -19,7 +19,7 @@
 //! - `pub(crate) fn is_plain(text: &str) -> bool`
 //! - `pub(crate) fn expand(text, names, out, buf) -> Result<u32, TooWide>`
 
-use crate::names::{Name, Names, push_decimal};
+use crate::names::{self, Name, Names};
 
 /// Most bits one expression expands to (the plugin `Nets.width` column is `u16`).
 pub const WIDTH_MAX: u32 = u16::MAX as u32;
@@ -85,7 +85,7 @@ pub(crate) fn expand(
                 buf.clear();
                 buf.push_str(t.ident);
                 buf.push('[');
-                push_decimal(i as u32, buf);
+                names::push_decimal(i as u32, buf);
                 buf.push(']');
                 out.push(names.intern(buf));
                 if i == i64::from(b) {

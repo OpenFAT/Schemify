@@ -5,9 +5,8 @@
 
 mod common;
 
-use common::codes;
 use schemify_doc::{DocHandle, Project};
-use schemify_elab::{Elab, Target, elaborate, no_funcs};
+use schemify_elab::{Elab, Target, no_funcs};
 use std::path::{Path, PathBuf};
 
 /// A deterministic text dump of an elaboration (definitions and rows by name).
@@ -119,7 +118,7 @@ fn row(e: &Elab, d: u32, name: &str) -> usize {
 #[test]
 fn inverter_bench() {
     let (p, hs) = fixtures();
-    let e = elaborate(
+    let e = schemify_elab::elaborate(
         &p,
         top(&hs, "inv_tb.shbench"),
         &common::ngspice(),
@@ -160,7 +159,7 @@ fn inverter_bench() {
 #[test]
 fn opamp_hierarchy_specializes_per_size() {
     let (p, hs) = fixtures();
-    let e = elaborate(
+    let e = schemify_elab::elaborate(
         &p,
         top(&hs, "opamp_tb.shbench"),
         &common::ngspice(),
@@ -204,7 +203,7 @@ fn opamp_hierarchy_specializes_per_size() {
     assert_eq!(tail[2], "tail", "the wire carries the tail label to M2");
     assert_eq!(
         dump(&e),
-        dump(&elaborate(
+        dump(&schemify_elab::elaborate(
             &p,
             top(&hs, "opamp_tb.shbench"),
             &common::ngspice(),
@@ -216,7 +215,7 @@ fn opamp_hierarchy_specializes_per_size() {
 #[test]
 fn bus_array_slices_per_element() {
     let (p, hs) = fixtures();
-    let e = elaborate(
+    let e = schemify_elab::elaborate(
         &p,
         top(&hs, "bus_tb.shbench"),
         &common::ngspice(),
@@ -231,7 +230,7 @@ fn bus_array_slices_per_element() {
             .collect();
         assert_eq!(c, [d_in, d_out], "{x}");
     }
-    assert_eq!(codes(&e).iter().filter(|c| *c == "W016").count(), 8);
+    assert_eq!(common::codes(&e).iter().filter(|c| *c == "W016").count(), 8);
 }
 
 /// Every bench under `$SCHEMIFY_CORPUS`: elaboration never panics and is
@@ -250,13 +249,18 @@ fn corpus_smoke() {
             continue;
         }
         benches += 1;
-        let e = elaborate(&p, *h, &common::ngspice(), &mut no_funcs);
+        let e = schemify_elab::elaborate(&p, *h, &common::ngspice(), &mut no_funcs);
         assert_eq!(
             dump(&e),
-            dump(&elaborate(&p, *h, &common::ngspice(), &mut no_funcs)),
+            dump(&schemify_elab::elaborate(
+                &p,
+                *h,
+                &common::ngspice(),
+                &mut no_funcs
+            )),
             "{name}"
         );
-        for c in codes(&e) {
+        for c in common::codes(&e) {
             *by_code.entry(c).or_default() += 1;
         }
     }
