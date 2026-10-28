@@ -58,6 +58,12 @@ pub fn row_style(
     let n = &tables.nodes;
     let i = node as usize;
     assert!(i < n.len(), "node index out of range");
+    if shown != Shown::Normal {
+        debug_assert!(
+            matches!(n.kind[i], Kind::Menu | Kind::Dropdown),
+            "only menus and dropdowns show other than as themselves"
+        );
+    }
     match shown {
         Shown::Normal => tables.styles.get(n.class[i], n.kind[i], prop),
         Shown::Title => tables.styles.get(

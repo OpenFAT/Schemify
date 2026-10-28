@@ -57,7 +57,10 @@ pub struct FontGlyph {
 /// font that only covers ASCII.
 #[must_use]
 pub fn ui_fonts() -> [&'static [u8]; 2] {
-    [NOTO_SANS, math::face_bytes("Main-Regular")]
+    let faces = [NOTO_SANS, math::face_bytes("Main-Regular")];
+    debug_assert!(faces[0].starts_with(&[0, 1, 0, 0]), "face 0 is TrueType");
+    debug_assert!(faces[1].starts_with(&[0, 1, 0, 0]), "face 1 is TrueType");
+    faces
 }
 
 /// The metrics of face `face` of [`ui_fonts`].
@@ -69,6 +72,7 @@ pub fn ui_fonts() -> [&'static [u8]; 2] {
 pub fn ui_font_info(face: u8) -> FontInfo {
     use skrifa::MetadataProvider;
     use skrifa::instance::{LocationRef, Size};
+    assert!(usize::from(face) < ui_fonts().len(), "no UI face {face}");
     let m = ui_face(face).metrics(Size::unscaled(), LocationRef::default());
     let r = |v: f32| v.round().clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16;
     let b = m.bounds.unwrap_or_default();
@@ -80,7 +84,8 @@ pub fn ui_font_info(face: u8) -> FontInfo {
         cap_height: r(m.cap_height.unwrap_or(m.ascent * 0.7)),
         bbox: [r(b.x_min), r(b.y_min), r(b.x_max), r(b.y_max)],
     };
-    assert!(info.upem >= 16 && info.glyphs > 1, "a usable TrueType face");
+    assert!(info.upem >= 16, "a TrueType em has at least 16 units");
+    assert!(info.glyphs > 1, "a face has glyphs beyond .notdef");
     info
 }
 
@@ -97,6 +102,7 @@ pub fn ui_font_info(face: u8) -> FontInfo {
 pub fn ui_font_glyphs(text: &str, out: &mut Vec<FontGlyph>) {
     use skrifa::MetadataProvider;
     use skrifa::instance::{LocationRef, Size};
+    debug_assert_eq!(ui_fonts().len(), 2, "two faces, in fallback order");
     let faces = [ui_face(0), ui_face(1)];
     let cmaps = [faces[0].charmap(), faces[1].charmap()];
     let metrics = [
@@ -126,6 +132,7 @@ pub fn ui_font_glyphs(text: &str, out: &mut Vec<FontGlyph>) {
 
 /// Face `face` of [`ui_fonts`], parsed.
 fn ui_face(face: u8) -> FontRef<'static> {
+    assert!(usize::from(face) < ui_fonts().len(), "no UI face {face}");
     let bytes = ui_fonts()[usize::from(face)];
     FontRef::new(bytes).expect("an embedded UI face parses")
 }

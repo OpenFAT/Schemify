@@ -98,6 +98,7 @@ pub fn tick_digits(ts: &[f64], log: bool) -> usize {
     if log || b <= a || big == 0.0 {
         return 3;
     }
+    debug_assert!(big >= b.abs(), "the largest magnitude bounds every tick");
     let d = ((big / (b - a)).log10().ceil() as i64 + 1).clamp(3, 15) as usize;
     debug_assert!((3..=15).contains(&d));
     d

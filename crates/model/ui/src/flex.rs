@@ -293,11 +293,16 @@ impl Builder<'_> {
 impl Builder<'_> {
     /// [`paint::row_style`] of a row as a float.
     fn style(&self, node: NodeIx, shown: Shown, p: StyleProp) -> f32 {
+        debug_assert!(
+            (node as usize) < self.tables.nodes.len(),
+            "node {node} out of range"
+        );
         paint::row_style(self.tables, self.title_style, node, shown, p) as f32
     }
 
     /// Shapes `sym` at `px` (nothing for an absent string).
     fn text(&mut self, sym: Sym, px: f32) -> Shaped {
+        debug_assert!(px.is_finite(), "a font size is finite");
         if sym.is_none() {
             return Shaped {
                 id: NO_TEXT,
@@ -308,21 +313,23 @@ impl Builder<'_> {
         let id = self.text.shape(self.strings, sym, px.max(1.0) as u16);
         debug_assert_ne!(id, NO_TEXT);
         let l = self.text.layout(id);
-        Shaped {
+        let shaped = Shaped {
             id,
             w: l.width(),
             h: l.height(),
-        }
+        };
+        debug_assert!(shaped.w >= 0.0, "a shaped width is not negative");
+        shaped
     }
 
     /// A flex container row and its children's subtrees.
     fn container(&mut self, row: u32, m: &Metrics, mut style: Style) -> NodeId {
+        assert!((row as usize) < self.rows.len(), "row {row} is built");
         let Pending { node, shown, .. } = self.rows[row as usize];
         let kind = self.tables.nodes.kind[node as usize];
-        debug_assert!(
-            kind != Kind::Dialog || self.rows[row as usize].parent == NO_ROW,
-            "a dialog is a root"
-        );
+        if kind == Kind::Dialog {
+            debug_assert_eq!(self.rows[row as usize].parent, NO_ROW, "a dialog is a root");
+        }
         style.flex_direction = m.direction;
         if m.direction == FlexDirection::Row {
             let stretch = self.style(node, shown, StyleProp::Stretch) != 0.0;
@@ -546,6 +553,10 @@ impl Builder<'_> {
     /// stay aligned (Tk does the same).
     fn check_indent(&self, menu: NodeIx) -> f32 {
         let n = &self.tables.nodes;
+        debug_assert!(
+            matches!(n.kind[menu as usize], Kind::Menu | Kind::Dropdown),
+            "only a popup reserves an indicator inset"
+        );
         let any = n
             .children(menu)
             .any(|c| !n.prop(Prop::Checked)[c as usize].is_none());
@@ -590,6 +601,7 @@ impl Builder<'_> {
     /// True when row `r` is a `scroll` node shown as itself.
     fn is_scroll(&self, r: usize) -> bool {
         debug_assert!(r < self.rows.len());
+        debug_assert!((self.rows[r].node as usize) < self.tables.nodes.len());
         self.rows[r].shown == Shown::Normal
             && self.tables.nodes.kind[self.rows[r].node as usize] == Kind::Scroll
     }
@@ -611,12 +623,14 @@ impl Builder<'_> {
                 self.rows[r].prose = self.text.prose(self.strings, src, font as u16, w as u16);
             }
         }
+        debug_assert_eq!(out.rect.len(), self.rows.len(), "prose adds no rows");
     }
 }
 
 /// Taffy padding of `pad` left and right, `pad_y` above and below.
 fn padding(pad: f32, pad_y: f32) -> taffy::Rect<LengthPercentage> {
-    debug_assert!(pad >= 0.0 && pad_y >= 0.0, "style lengths are unsigned");
+    debug_assert!(pad >= 0.0, "style lengths are unsigned");
+    debug_assert!(pad_y >= 0.0, "style lengths are unsigned");
     taffy::Rect {
         left: LengthPercentage::length(pad),
         right: LengthPercentage::length(pad),
