@@ -19,7 +19,12 @@ impl Sim {
     /// job rows of [`TableView::rows`](super::TableView::rows) near the list's scroll offset `scroll_px` (at most
     /// [`TABLE_WINDOW`], spacers standing in for the rest; each row's button picks the job);
     /// error rows; the bench's earlier runs.
+    ///
+    /// # Panics
+    ///
+    /// If `scroll_px` is not finite.
     pub fn contribute(&self, t: &mut String, scroll_px: f32) {
+        assert!(scroll_px.is_finite(), "a scroll offset");
         let _ = writeln!(
             t,
             "node results.pane panel\n  parent bottom\n  style bottom-pane"
@@ -192,6 +197,8 @@ impl Sim {
         let shown = self.table.rows.len() as u32;
         let data_px = scroll_px - ROW_PX * (1 + extra_rows) as f32;
         let (start, end) = records::window(data_px, ROW_PX, shown, TABLE_WINDOW);
+        assert!(start <= end && end <= shown, "a window of the rows");
+        assert!(extra_rows <= 2, "the yield and best rows");
         // The list's gap (1) follows every row, so a row's pitch is ROW_PX.
         let gap = |t: &mut String, id: &str, rows: u32| {
             records::spacer(t, "results.list", id, rows * ROW_PX as u32, 1);
@@ -280,6 +287,7 @@ impl Sim {
 
     /// The state, output and spec cells of job `j` in row `rid`.
     fn job_cells(&self, t: &mut String, rid: &str, jobs: &Jobs, res: &Results, j: u32) {
+        assert!(j < jobs.len(), "job {j}");
         let cell = |t: &mut String, id: String, text: &str, style: &str| {
             let _ = writeln!(
                 t,

@@ -159,6 +159,10 @@ impl Editor {
             }
             _ => Vec::new(),
         };
+        debug_assert!(
+            comps.windows(2).all(|w| w[0] < w[1]),
+            "components in net order, once"
+        );
         let prefix = self.level_prefix();
         let has_op = self.annotations.has_source(SOURCE_OP);
         // Net keys for annotation lookup: computed before borrowing the scene and the doc.

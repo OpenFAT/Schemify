@@ -407,7 +407,12 @@ impl Editor {
         let mut changed = false;
         let (events, viewport) = match self.waves.is_some() {
             true => {
-                let (mine, dock, view, dock_view) = self.split_input(events, viewport);
+                let probe::Split {
+                    mine,
+                    dock,
+                    view,
+                    dock_view,
+                } = self.split_input(events, viewport);
                 let w = self.waves.as_mut().expect("checked above");
                 let (redraw, close) = w.update(&dock, dock_view, now_ms);
                 changed |= redraw;
@@ -704,7 +709,10 @@ mod tests {
         assert!(ed.page.images_failed.is_empty(), "compose reads no file");
         assert_eq!(
             ed.ui_inputs(),
-            (false, true),
+            compose::UiInputs {
+                loaded: false,
+                restyle: true
+            },
             "nothing loaded; the plugins composed"
         );
         assert_eq!(ed.page.images_failed, ["img/missing.png"]);

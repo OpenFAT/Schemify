@@ -2,6 +2,7 @@
 //!
 //! Contents:
 //! - `pub(super) const DOCK_SPLIT`
+//! - `pub(super) struct Split`
 //! - `Editor::split_input`
 //! - `Editor::open_waves`
 //! - `Editor::send_to_viewer`
@@ -29,17 +30,28 @@ const DOCK_SPLIT_RANGE: (f32, f32) = (0.15, 0.85);
 /// Logical px either side of the dock divider that grab it.
 const DOCK_GRAB_PX: f32 = 4.0;
 
+/// One input batch split between the editor and the waves dock ([`Editor::split_input`]).
+pub(super) struct Split {
+    /// The editor's events.
+    pub(super) mine: InputEvents,
+    /// The dock's events, in its own coordinates.
+    pub(super) dock: InputEvents,
+    /// The editor's viewport (above the dock).
+    pub(super) view: (f32, f32),
+    /// The dock's viewport.
+    pub(super) dock_view: (f32, f32),
+}
+
 impl Editor {
     /// Splits one input batch between the editor (above the dock) and the waves dock
     /// (below, in its own coordinates): pointer events by position, keys and text to the
     /// side the pointer was last over, `Ctrl+W` always to the dock (it closes it). A left
     /// press within [`DOCK_GRAB_PX`] of the divider drags it (neither side sees the drag).
-    /// Returns (editor events, dock events, editor viewport, dock viewport).
-    pub(super) fn split_input(
-        &mut self,
-        events: &InputEvents,
-        viewport: (f32, f32),
-    ) -> (InputEvents, InputEvents, (f32, f32), (f32, f32)) {
+    pub(super) fn split_input(&mut self, events: &InputEvents, viewport: (f32, f32)) -> Split {
+        assert!(
+            (DOCK_SPLIT_RANGE.0..=DOCK_SPLIT_RANGE.1).contains(&self.dock_split),
+            "a divider in range"
+        );
         let split = (viewport.1 * self.dock_split).floor();
         let mut mine = InputEvents {
             events: Vec::new(),
@@ -119,13 +131,15 @@ impl Editor {
         }
         // A drag in this batch moves the divider now: both sides lay out at the new split.
         let split = (viewport.1 * self.dock_split).floor();
-        assert!(split >= 0.0 && split <= viewport.1);
-        (
+        assert!(split >= 0.0, "the divider is below the top");
+        assert!(split <= viewport.1, "the divider is above the bottom");
+        assert!(mine.events.len() + dock.events.len() <= 2 * events.events.len());
+        Split {
             mine,
             dock,
-            (viewport.0, split),
-            (viewport.0, viewport.1 - split),
-        )
+            view: (viewport.0, split),
+            dock_view: (viewport.0, viewport.1 - split),
+        }
     }
     /// Opens the waves dock on `path`, or points an open dock at it keeping its traces and panes
     /// (spec waves §9).

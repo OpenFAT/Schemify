@@ -23,8 +23,8 @@ use super::symbols::Symbols;
 use super::{ObjKey, Objects, Owners, Scene, draw, symbols, symview};
 
 /// Scene builder state: the scene being filled plus the extent accumulator.
-pub(super) struct Build<'a> {
-    pub(super) sc: &'a mut Scene,
+pub(super) struct Build<'scene> {
+    pub(super) sc: &'scene mut Scene,
     ext: [i32; 4],
 }
 

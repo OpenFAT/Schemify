@@ -36,23 +36,23 @@ use crate::shell::Shell;
 use crate::sim::Plot;
 
 /// One UI's tables as drawn: the editor's window, or the waves dock's.
-pub struct UiView<'a> {
+pub struct UiView<'frame> {
     /// `ui_nodes`, `ui_styles`, `keymap`.
-    pub tables: &'a UiTables,
+    pub tables: &'frame UiTables,
     /// This frame's layout of `tables`.
-    pub layout: &'a UiLayout,
+    pub layout: &'frame UiLayout,
     /// The strings every table names.
-    pub strings: &'a Strings,
+    pub strings: &'frame Strings,
     /// Menus, dialog, hover and focus.
-    pub state: &'a UiState,
+    pub state: &'frame UiState,
     /// The shaped-text cache `layout` was measured with (paint shapes through it too).
-    pub text: &'a mut TextSystem,
+    pub text: &'frame mut TextSystem,
 }
 
 /// The canvas tables of one frame, in drawing order, with the generations they were
 /// changed at (`gens[k]` advances whenever table `k` changes, so an unchanged generation
 /// means unchanged rows).
-pub struct CanvasPicture<'a> {
+pub struct CanvasPicture<'frame> {
     /// The canvas rectangle in logical px.
     pub view: KRect,
     /// The active level's camera.
@@ -64,60 +64,60 @@ pub struct CanvasPicture<'a> {
     /// Generations of: scene as shown, decor, parity extra, selection marks, violation markers.
     pub gens: [u64; 5],
     /// The scene as built (the marks recolor its rows).
-    pub scene: &'a CanvasPrims,
+    pub scene: &'frame CanvasPrims,
     /// The scene as displayed when the View options change it (instances as boxes, symbol
     /// texts off); `None`: `scene` itself.
-    pub shown: Option<&'a CanvasPrims>,
+    pub shown: Option<&'frame CanvasPrims>,
     /// Rows of `scene` killed since [`Editor::painted`] last took them (`None`: unknown).
-    pub scene_edits: Option<&'a [Vec<u32>; 6]>,
+    pub scene_edits: Option<&'frame [Vec<u32>; 6]>,
     /// Net highlight, staged diff and annotation decor.
-    pub decor: &'a CanvasPrims,
+    pub decor: &'frame CanvasPrims,
     /// Violation markers.
-    pub markers: &'a CanvasPrims,
+    pub markers: &'frame CanvasPrims,
     /// Rows of `markers` killed since [`Editor::painted`] last took them.
-    pub markers_edits: Option<&'a [Vec<u32>; 6]>,
+    pub markers_edits: Option<&'frame [Vec<u32>; 6]>,
     /// The parity extra (compare overlay).
-    pub extra: &'a CanvasPrims,
+    pub extra: &'frame CanvasPrims,
     /// Selection marks over `scene`.
-    pub marks: &'a Marks,
+    pub marks: &'frame Marks,
     /// The gesture preview, drawn over the other tables.
-    pub overlay: &'a CanvasPrims,
+    pub overlay: &'frame CanvasPrims,
 }
 
 /// One filled docs-page plot slot: the pane rectangle, its clip and its traces.
-pub struct GraphPicture<'a> {
+pub struct GraphPicture<'frame> {
     /// The `graph` node's laid-out rectangle.
     pub rect: Rect,
     /// Its clip (`schemify_ui::NO_CLIP`: none).
     pub clip: Rect,
     /// The one-pane viewer holding the traces.
-    pub waves: &'a Waves,
+    pub waves: &'frame Waves,
 }
 
 /// The waves dock, laid out at its own origin and painted `dy` below the editor.
-pub struct DockPicture<'a> {
+pub struct DockPicture<'frame> {
     /// The dock's own UI tables.
-    pub ui: UiView<'a>,
+    pub ui: UiView<'frame>,
     /// Pane rectangles of this frame.
-    pub geo: &'a Geometry,
+    pub geo: &'frame Geometry,
     /// The viewer tables.
-    pub waves: &'a Waves,
+    pub waves: &'frame Waves,
     /// The viewer's interaction state (drag, active pane, cursors).
-    pub wave_ui: &'a WaveUi,
+    pub wave_ui: &'frame WaveUi,
     /// Logical px the dock is painted below the window's top.
     pub dy: f64,
 }
 
 /// Everything one frame is painted from.
-pub struct Picture<'a> {
+pub struct Picture<'frame> {
     /// The window's UI.
-    pub ui: UiView<'a>,
+    pub ui: UiView<'frame>,
     /// The canvas; `None` while a text tab replaces it.
-    pub canvas: Option<CanvasPicture<'a>>,
+    pub canvas: Option<CanvasPicture<'frame>>,
     /// The docs page's filled plot slots.
-    pub graphs: Vec<GraphPicture<'a>>,
+    pub graphs: Vec<GraphPicture<'frame>>,
     /// The waves dock when open.
-    pub dock: Option<DockPicture<'a>>,
+    pub dock: Option<DockPicture<'frame>>,
 }
 
 /// A PNG export the editor asked for ([`Editor::take_raster`]): `schemify-app` rasterizes
@@ -262,11 +262,11 @@ impl Editor {
 /// Each filled plot slot of the docs page (`graph` nodes `graphs` names) with a drawable
 /// rectangle, over the run's plot slots `plots`.
 #[cfg(not(target_arch = "wasm32"))]
-fn graph_pictures<'a>(
+fn graph_pictures<'frame>(
     s: &Shell,
-    plots: &'a [Plot],
+    plots: &'frame [Plot],
     graphs: &[(String, String)],
-) -> Vec<GraphPicture<'a>> {
+) -> Vec<GraphPicture<'frame>> {
     let mut out = Vec::new();
     for (id, expr) in graphs {
         let Some(sym) = s.strings.find(id) else {

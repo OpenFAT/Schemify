@@ -27,12 +27,12 @@ pub struct Stretched {
 
 /// What a move carries: objects moved whole and the moving ends of partially selected wires.
 #[derive(Clone, Copy, Debug)]
-pub struct Moved<'a> {
+pub struct Moved<'sel> {
     /// Objects moved whole.
-    pub sel: &'a [ObjKey],
+    pub sel: &'sel [ObjKey],
     /// Selected ends of partially selected wires (xschem's Ctrl+drag box): (wire, end
     /// position). A row whose position is not an end of its wire is ignored.
-    pub ends: &'a [(ObjKey, Pt)],
+    pub ends: &'sel [(ObjKey, Pt)],
     /// Unselected wires with an end on a moved connection point follow it (xschem
     /// "stretch"); without it only the partial ends move.
     pub follow: bool,

@@ -41,13 +41,13 @@ use super::{DEPTH_MAX, Level, Session, TABS_MAX, Tab, TextView, View};
 pub const STATUS_MAX: usize = 1 << 14;
 
 /// The active tab's view toggles, lent by [`Session::tab_view_mut`].
-pub struct TabView<'a> {
+pub struct TabView<'tab> {
     /// The docs page is shown beside (or instead of) the canvas.
-    pub docs: &'a mut bool,
+    pub docs: &'tab mut bool,
     /// The docs page shows its source text.
-    pub docs_source: &'a mut bool,
+    pub docs_source: &'tab mut bool,
     /// The cell settings panel is shown.
-    pub cell: &'a mut bool,
+    pub cell: &'tab mut bool,
 }
 
 impl Session {
