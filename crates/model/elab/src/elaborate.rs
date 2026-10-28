@@ -32,34 +32,35 @@ pub use tables::{
     Bench, COMPUTED, CornerLine, DEFAULT, Defs, Dialect, Elab, Impls, Insts, OVERRIDDEN, Target,
 };
 
-use crate::cells::{display, row_of};
+use crate::cells;
 use crate::eval::Work;
 use crate::graph::Graph;
-use crate::iface::Iface;
+use crate::iface::{Held, Iface};
 use crate::names::{Name, Names};
-use crate::netexpr::is_global;
+use crate::netexpr;
 use crate::nets::{CellNets, Ignore};
 use crate::values::{Funcs, NONE, Val};
 use crate::violations::{Violation, Violations};
-use defs::tuple;
-use schemify_doc::{DocHandle, Document, ObjId, Project};
+use schemify_doc::{DocHandle, Document, ObjId, Project, Records};
 use schemify_format::FileKind;
 use std::collections::HashMap;
+use std::mem;
+use std::ops::Range;
 
 /// What to elaborate besides the top document.
 #[derive(Clone, Copy, Debug)]
-pub struct Request<'a> {
+pub struct Request<'req> {
     /// Bench config; `None` takes the bench's `config` header attribute, if any.
-    pub config: Option<&'a str>,
+    pub config: Option<&'req str>,
     /// Corner; `None` takes the bench's `corner` header attribute, if any.
-    pub corner: Option<&'a str>,
+    pub corner: Option<&'req str>,
     /// `(var, expression)` assignments applied after the corner's `set` lines, in
     /// order (sweep/MC/optimizer values, then CLI overrides); later entries win.
-    pub overrides: &'a [(&'a str, &'a str)],
+    pub overrides: &'req [(&'req str, &'req str)],
     /// Environment for `${NAME}` expansion after the project's `set` entries (spec
     /// §7.1). The app passes what it allows (the process environment natively, nothing
     /// on the web); elab itself reads no environment.
-    pub env: &'a [(&'a str, &'a str)],
+    pub env: &'req [(&'req str, &'req str)],
     /// Target dialect.
     pub dialect: Dialect,
 }
@@ -71,18 +72,30 @@ pub const DEPTH_MAX: u32 = 1024;
 #[derive(Default)]
 struct Config {
     /// `inst <path> <impl>` rules.
-    inst: Vec<(String, String)>,
+    inst: Vec<InstRule>,
     /// Parallel to `inst`: some instance path matched the rule (`W037` otherwise).
     inst_hit: Vec<bool>,
     /// `cell <cell row> <impl>` rules.
-    cell: Vec<(usize, String)>,
+    cell: Vec<CellRule>,
     /// `order` impl names, first match wins.
     order: Vec<String>,
 }
 
+/// A config `inst <path> <impl>` rule.
+struct InstRule {
+    path: String,
+    imp: String,
+}
+
+/// A config `cell <cell> <impl>` rule, its cell resolved to a project row.
+struct CellRule {
+    row: usize,
+    imp: String,
+}
+
 /// Per reached cell: its document and what preparing it derived (once per cell).
-struct CellData<'p> {
-    doc: &'p Document,
+struct CellData<'project> {
+    doc: &'project Document,
     resolved: bool,
     /// Why each unresolved instance row did not resolve (`None`: resolved).
     unresolved: Vec<Option<String>>,
@@ -106,8 +119,8 @@ struct RowTmp {
     id: ObjId,
     target: Target,
     ignore: Ignore,
-    conn: std::ops::Range<u32>,
-    params: std::ops::Range<u32>,
+    conn: Range<u32>,
+    params: Range<u32>,
 }
 
 /// The rows of one definition being built (flat, appended per instance, so a row costs
@@ -115,21 +128,37 @@ struct RowTmp {
 struct DefRows {
     rows: Vec<RowTmp>,
     conn: Vec<Name>,
-    /// (name, canonical text, value, flags) per param entry.
-    params: Vec<(Name, Name, Val, u8)>,
-    /// Inherited pins the subtree reaches this definition with: (pin, default net).
-    propagated: Vec<(Name, Name)>,
+    params: Vec<ParamEntry>,
+    /// Inherited pins the subtree reaches this definition with.
+    propagated: Vec<InheritedPin>,
+}
+
+/// One param of one instance row being built.
+struct ParamEntry {
+    name: Name,
+    /// Canonical value text (spec §6).
+    text: Name,
+    value: Val,
+    /// [`COMPUTED`], [`DEFAULT`], [`OVERRIDDEN`].
+    flags: u8,
+}
+
+/// An inherited pin (D29) and the net it defaults to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct InheritedPin {
+    pin: Name,
+    default: Name,
 }
 
 /// One elaboration's working state; its tables move into [`Elab`] at the end.
-struct Elaborator<'p, 'r, F> {
-    project: &'p Project,
+struct Elaborator<'project, 'request, F> {
+    project: &'project Project,
     top: DocHandle,
-    req: &'r Request<'r>,
-    funcs: &'r mut F,
+    req: &'request Request<'request>,
+    funcs: &'request mut F,
     names: Names,
     ifaces: Vec<Iface>,
-    cells: Vec<CellData<'p>>,
+    cells: Vec<CellData<'project>>,
     nets: Vec<Option<CellNets>>,
     /// Cell row → index into `ifaces`.
     row_cell: HashMap<u32, u32>,
@@ -219,9 +248,9 @@ pub fn elaborate<F: Funcs>(
         req.config.or(header("config")),
         req.corner.or(header("corner")),
     );
-    let top_row = row_of(project, doc);
+    let top_row = cells::row_of(project, doc);
     let (top_name, top_stem) = match top_row {
-        Some(r) => display(project, r),
+        Some(r) => cells::display(project, r),
         None => ("top".to_owned(), "top".to_owned()),
     };
     let top_cell = e.names.intern(&top_name);
@@ -247,7 +276,7 @@ pub fn elaborate<F: Funcs>(
 
     // ---- top cell and the hierarchy
     let row = top_row.map_or(NONE, |r| r as u32);
-    let iface = Iface::from_doc(doc, &top_name, &top_stem, row, true, &mut e.names);
+    let iface = Iface::from_doc(doc, &top_name, &top_stem, row, Held::Open, &mut e.names);
     e.push_cell(doc, iface);
     if let Some(r) = top_row {
         e.row_cell.insert(r as u32, 0);
@@ -255,6 +284,7 @@ pub fn elaborate<F: Funcs>(
     e.discover();
     let top_tuple = e.defaults(0);
     let top_def = e.build_def(0, top_tuple, String::new(), 0);
+    assert!(e.stack.is_empty(), "build_def pops every level it pushes");
     e.unmatched_inst_rules(top_cell);
 
     // ---- names, used flags, globals, bench lines
@@ -273,7 +303,7 @@ pub fn elaborate<F: Funcs>(
     e.needs_open.sort_unstable();
     e.needs_open.dedup();
     let out = Elab {
-        violations: Violations::from_rows(std::mem::take(&mut e.viol), &e.names),
+        violations: Violations::from_rows(mem::take(&mut e.viol), &e.names),
         top: top_def.unwrap_or(NONE),
         globals,
         bench,
@@ -287,6 +317,11 @@ pub fn elaborate<F: Funcs>(
     };
     assert_eq!(out.defs.inst_start.len(), out.defs.cell.len() + 1);
     assert_eq!(out.insts.conn_start.len(), out.insts.name.len() + 1);
+    assert!(
+        out.top == NONE || (out.top as usize) < out.defs.cell.len(),
+        "the top is a definition"
+    );
+    assert_eq!(out.defs.used.len(), out.defs.cell.len(), "one used flag per definition");
     out
 }
 
@@ -295,6 +330,7 @@ pub fn elaborate<F: Funcs>(
 /// Marks definition `d` and every definition reachable from it through rows that are
 /// not ignored. Recursion depth ≤ [`DEPTH_MAX`] (definitions are built at most that deep).
 fn mark(defs: &Defs, insts: &Insts, d: u32, used: &mut [bool]) {
+    assert!((d as usize) < used.len(), "definition {d} out of range");
     if used[d as usize] {
         return;
     }
@@ -313,7 +349,8 @@ fn used_globals<F>(e: &Elaborator<'_, '_, F>) -> Vec<Name> {
     // design repeats few names among 10^6 connections.
     let mut seen = vec![0u64; (e.names.len() as usize).div_ceil(64)];
     let mut globals: Vec<Name> = Vec::new();
-    for &n in e.insts.conn.iter().chain(&e.defs.port_net) {
+    let connected = e.insts.conn.iter().chain(&e.defs.port_net);
+    for &n in connected {
         if n == Name::NONE {
             continue;
         }
@@ -322,7 +359,7 @@ fn used_globals<F>(e: &Elaborator<'_, '_, F>) -> Vec<Name> {
             continue;
         }
         seen[w] |= bit;
-        if is_global(e.names.get(n)) || e.globals.binary_search(&n).is_ok() {
+        if netexpr::is_global(e.names.get(n)) || e.globals.binary_search(&n).is_ok() {
             globals.push(n);
         }
     }
@@ -332,7 +369,7 @@ fn used_globals<F>(e: &Elaborator<'_, '_, F>) -> Vec<Name> {
 }
 
 /// Returns the row of the record named `name` in a named bench table.
-fn record(t: &schemify_doc::Records, doc: &Document, name: &str) -> Option<usize> {
+fn record(t: &Records, doc: &Document, name: &str) -> Option<usize> {
     let s = doc.strings();
     (0..t.kind.len()).find(|&r| s.get(t.fields[r][0]) == name)
 }

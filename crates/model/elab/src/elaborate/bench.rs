@@ -17,7 +17,7 @@ use schemify_expr::{Mode, Program, Scratch, Value};
 /// Bound on nested `${NAME}` expansion; deeper (or cyclic) definitions are `E034`.
 const EXPAND_DEPTH_MAX: u8 = 16;
 
-impl<'p, F: Funcs> Elaborator<'p, '_, F> {
+impl<'project, F: Funcs> Elaborator<'project, '_, F> {
     pub(super) fn bench_lines(&mut self, doc: &Document, corner: Option<usize>) -> Bench {
         let mut b = Bench::default();
         let s = doc.strings();

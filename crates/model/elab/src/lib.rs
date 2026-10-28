@@ -115,7 +115,7 @@ pub mod test_support {
         cell: &str,
         names: &mut crate::Names,
     ) -> crate::Iface {
-        crate::Iface::from_doc(doc, cell, cell, u32::MAX, true, names)
+        crate::Iface::from_doc(doc, cell, cell, u32::MAX, crate::iface::Held::Open, names)
     }
 }
 

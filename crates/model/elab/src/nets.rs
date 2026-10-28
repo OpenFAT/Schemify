@@ -21,6 +21,7 @@
 //! - `pub(crate) fn union(parent: &mut [u32], a: u32, b: u32)`
 //! - `pub(crate) fn id_cmp(a: ObjId, b: ObjId, s: &Strings) -> Ordering`
 //! - `pub(crate) fn write_key(k: NetKey, s: &Strings, buf: &mut String)`
+//! - `pub(crate) fn csr<T>(start: &[u32], items: &[T], row: usize) -> &[T]`
 
 use crate::names::{self, Name, Names};
 use crate::netexpr;
@@ -397,10 +398,8 @@ pub(crate) fn write_key(k: NetKey, s: &Strings, buf: &mut String) {
     }
 }
 
-// ---- private ----
-
 /// Row `row` of a CSR table: `items[start[row]..start[row + 1]]`.
-fn csr<'a, T>(start: &[u32], items: &'a [T], row: usize) -> &'a [T] {
+pub(crate) fn csr<'a, T>(start: &[u32], items: &'a [T], row: usize) -> &'a [T] {
     assert!(
         row + 1 < start.len(),
         "row {row} of a {}-row table",

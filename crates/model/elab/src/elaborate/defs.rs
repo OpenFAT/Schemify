@@ -5,39 +5,53 @@
 //!
 //! Contents:
 //! - `Elaborator::{finish_def, name_defs}` (`pub(super)`)
-//! - `pub(super) fn tuple(f: &Iface, vals: &[Val], names: &mut Names) -> (String, Vec<(Name, Name)>)`
+//! - `pub(super) struct ParamTuple`
+//! - `pub(super) fn tuple(f: &Iface, vals: &[Val], names: &mut Names) -> ParamTuple`
 
-use super::{DefRows, Elaborator, RowTmp, Target};
+use super::{DefRows, Elaborator, InheritedPin, ParamEntry, RowTmp, Target};
 use crate::iface::Iface;
-use crate::names::{Name, Names, fnv1a64, push_base32};
-use crate::netexpr::{self, is_global};
-use crate::nets::Ignore;
-use crate::values::{Funcs, NONE, Val};
+use crate::names::{self, Name, Names};
+use crate::netexpr;
+use crate::nets::{self, Ignore};
+use crate::values::{self, Funcs, NONE, Val};
 use std::collections::HashMap;
 
-impl<'p, F: Funcs> Elaborator<'p, '_, F> {
-    /// Returns the definition of cell `ci` with tuple `key` (its `pairs`) and the rows
-    /// `body`: an existing one with the same children signature, else a new [`Defs`] row
-    /// with its ports, inherited pins and instance rows sorted by name. With `sensitive`
-    /// (a config `inst` rule reaches below this path) the tuple alone is not memoized.
+/// A param tuple (spec §6): its canonical text and its non-computed params, sorted by
+/// name, with their value texts (two columns in step).
+pub(super) struct ParamTuple {
+    pub(super) key: String,
+    pub(super) names: Vec<Name>,
+    pub(super) texts: Vec<Name>,
+}
+
+impl<'project, F: Funcs> Elaborator<'project, '_, F> {
+    /// Returns the definition of cell `ci` with param tuple `tuple` and the rows `body`:
+    /// an existing one with the same children signature, else a new [`Defs`] row with its
+    /// ports, inherited pins and instance rows sorted by name. With `sensitive` (a config
+    /// `inst` rule reaches below this path) the tuple alone is not memoized.
     ///
     /// [`Defs`]: super::Defs
     pub(super) fn finish_def(
         &mut self,
         ci: u32,
-        key: String,
-        pairs: Vec<(Name, Name)>,
+        tuple: ParamTuple,
         sensitive: bool,
         body: DefRows,
         is_top: bool,
     ) -> u32 {
+        assert_eq!(tuple.names.len(), tuple.texts.len(), "tuple columns in step");
+        let ParamTuple {
+            key,
+            names: tuple_names,
+            texts: tuple_texts,
+        } = tuple;
         let DefRows {
             rows,
             conn: mut bufs_conn,
             params: bufs_params,
             propagated,
         } = body;
-        let names = &self.names;
+        let arena = &self.names;
         // By name text (stable): a radix sort of (prefix, row) keys, then runs of equal
         // prefixes (names sharing their first 8 bytes) by text. The rows stay put and are
         // read in that order (no sorted copy of 10^6 rows).
@@ -46,14 +60,15 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             .enumerate()
             .map(|(i, r)| (r.prefix, i as u32))
             .collect();
-        let mut keys = crate::names::radix_sort(keys);
+        let mut keys = names::radix_sort(keys);
+        assert_eq!(keys.len(), rows.len(), "the sort keeps every row");
         let (mut lo, mut run) = (0, Vec::new());
         while lo < keys.len() {
             let hi = lo + keys[lo..].iter().take_while(|k| k.0 == keys[lo].0).count();
             if hi - lo > 1 {
                 run.clear();
                 run.extend(keys[lo..hi].iter().map(|k| (rows[k.1 as usize].name, k.1)));
-                names.sort_by_text(&mut run);
+                arena.sort_by_text(&mut run);
                 for (k, r) in keys[lo..hi].iter_mut().zip(&run) {
                     k.1 = r.1;
                 }
@@ -63,21 +78,24 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         let order: Vec<u32> = keys.into_iter().map(|k| k.1).collect();
         debug_assert!(order.windows(2).all(|w| {
             let (a, b) = (&rows[w[0] as usize], &rows[w[1] as usize]);
-            (a.prefix, names.get(a.name)) <= (b.prefix, names.get(b.name))
+            (a.prefix, arena.get(a.name)) <= (b.prefix, arena.get(b.name))
         }));
         // The children signature keys reuse of an identical definition; the top is never
         // instantiated, so it has nothing to be shared with (and the longest signature).
         let mut sig = String::new();
-        for r in order.iter().map(|&i| &rows[i as usize]).filter(|_| !is_top) {
-            sig.push_str(names.get(r.name));
-            sig.push('=');
-            let (tag, n) = match r.target {
-                Target::Def(d) => ('d', d),
-                Target::Leaf(l) => ('l', l),
-            };
-            sig.push(tag);
-            crate::names::push_decimal(n, &mut sig);
-            sig.push(',');
+        if !is_top {
+            for &i in &order {
+                let r = &rows[i as usize];
+                sig.push_str(arena.get(r.name));
+                sig.push('=');
+                let (tag, n) = match r.target {
+                    Target::Def(d) => ('d', d),
+                    Target::Leaf(l) => ('l', l),
+                };
+                sig.push(tag);
+                names::push_decimal(n, &mut sig);
+                sig.push(',');
+            }
         }
         let full = (ci, key.clone(), sig);
         if let Some(&d) = self.by_key.get(&full) {
@@ -87,10 +105,8 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             return d;
         }
         let d = self.defs.cell.len() as u32;
-        for (name, text) in pairs {
-            self.defs.param_name.push(name);
-            self.defs.param_text.push(text);
-        }
+        self.defs.param_name.extend(tuple_names);
+        self.defs.param_text.extend(tuple_texts);
         // Ports: ordinary pins, declared inherited pins, propagated inherited pins.
         let f = &self.ifaces[ci as usize];
         let nets = self.nets[ci as usize].as_ref().expect("prepared");
@@ -111,19 +127,20 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             }
         }
         if !is_top {
-            let extra: Vec<(Name, Name)> = propagated
+            let extra: Vec<InheritedPin> = propagated
                 .into_iter()
-                .filter(|(p, _)| {
+                .filter(|e| {
                     !(0..f.pin_name.len())
-                        .any(|q| f.pin_name[q] == *p && f.pin_inherit[q] != Name::NONE)
+                        .any(|q| f.pin_name[q] == e.pin && f.pin_inherit[q] != Name::NONE)
                 })
                 .collect();
             let mut order: Vec<(Name, u32)> =
-                (0..extra.len()).map(|i| (extra[i].0, i as u32)).collect();
+                (0..extra.len()).map(|i| (extra[i].pin, i as u32)).collect();
             self.names.sort_by_text(&mut order);
             let mut tmp = Vec::new();
             let mut buf = String::new();
-            for (pin, default) in order.into_iter().map(|o| extra[o.1 as usize]) {
+            for o in order {
+                let InheritedPin { pin, default } = extra[o.1 as usize];
                 tmp.clear();
                 let text = self.names.get(pin).to_owned();
                 let _ = netexpr::expand(&text, &mut self.names, &mut tmp, &mut buf);
@@ -177,13 +194,13 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             let conn = r.conn.start as usize..r.conn.end as usize;
             self.insts.conn.extend_from_slice(&bufs_conn[conn]);
             self.insts.conn_start.push(self.insts.conn.len() as u32);
-            for (name, text, val, flags) in
-                &bufs_params[r.params.start as usize..r.params.end as usize]
-            {
-                self.insts.param_name.push(*name);
-                self.insts.param_text.push(*text);
-                self.insts.param_val.push(val.clone());
-                self.insts.param_flags.push(*flags);
+            let entries: &[ParamEntry] =
+                &bufs_params[r.params.start as usize..r.params.end as usize];
+            for p in entries {
+                self.insts.param_name.push(p.name);
+                self.insts.param_text.push(p.text);
+                self.insts.param_val.push(p.value.clone());
+                self.insts.param_flags.push(p.flags);
             }
             self.insts
                 .param_start
@@ -195,6 +212,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             self.memo.insert((ci, key), d);
         }
         assert_eq!(self.defs.inst_start.len(), self.defs.cell.len() + 1);
+        assert_eq!(self.insts.param_start.len(), self.insts.name.len() + 1);
         d
     }
 
@@ -205,6 +223,8 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
     /// `<stem>__<6 base32 of FNV-1a 64 of the display name>` as their base.
     pub(super) fn name_defs(&mut self) {
         let nd = self.defs.cell.len();
+        assert_eq!(self.defs.name.len(), nd, "one name slot per definition");
+        assert_eq!(self.defs.key.len(), nd, "one tuple per definition");
         // Base names.
         let mut cells_used: Vec<u32> = self.defs.cell.clone();
         cells_used.sort_unstable();
@@ -218,11 +238,8 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             let mut b = stem.to_owned();
             if clash {
                 b.push_str("__");
-                push_base32(
-                    fnv1a64(self.names.get(self.ifaces[ci as usize].cell).as_bytes()),
-                    6,
-                    &mut b,
-                );
+                let display = self.names.get(self.ifaces[ci as usize].cell);
+                names::push_base32(names::fnv1a64(display.as_bytes()), 6, &mut b);
             }
             base.insert(ci, b);
         }
@@ -270,7 +287,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                     }
                 }
                 name.push_str("__");
-                push_base32(fnv1a64(text.as_bytes()), 6, &mut name);
+                names::push_base32(names::fnv1a64(text.as_bytes()), 6, &mut name);
                 texts[d] = text;
             }
             self.defs.name[d] = self.names.intern(&name);
@@ -285,7 +302,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                     let ci = self.defs.cell[d];
                     let mut name = base[&ci].clone();
                     name.push_str("__");
-                    push_base32(fnv1a64(texts[d].as_bytes()), 13, &mut name);
+                    names::push_base32(names::fnv1a64(texts[d].as_bytes()), 13, &mut name);
                     self.defs.name[d] = self.names.intern(&name);
                 }
             }
@@ -299,9 +316,10 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
 
 /// The canonical text of a param tuple (spec §6): non-computed params as `k=v`, sorted
 /// bytewise by name, joined by single spaces; string values quoted with expression
-/// string escapes so the text is unambiguous. Also returns the `(name, value text)`
-/// pairs in that order.
-pub(super) fn tuple(f: &Iface, vals: &[Val], names: &mut Names) -> (String, Vec<(Name, Name)>) {
+/// string escapes so the text is unambiguous. Also returns the param names and value
+/// texts in that order.
+pub(super) fn tuple(f: &Iface, vals: &[Val], arena: &mut Names) -> ParamTuple {
+    assert_eq!(f.param_computed.len(), f.param_name.len(), "param columns in step");
     let mut pairs: Vec<(Name, String, String)> = Vec::new();
     for k in 0..f.param_name.len().min(vals.len()) {
         if f.param_computed[k] {
@@ -313,28 +331,34 @@ pub(super) fn tuple(f: &Iface, vals: &[Val], names: &mut Names) -> (String, Vec<
             v => v.write_text(&mut plain),
         }
         if let Val::Str(_) = &vals[k] {
-            crate::values::cached_text(&vals[k], &mut quoted); // expression string escapes
+            values::cached_text(&vals[k], &mut quoted); // expression string escapes
         } else {
             quoted.clone_from(&plain);
         }
         pairs.push((f.param_name[k], quoted, plain));
     }
-    pairs.sort_by(|a, b| names.get(a.0).cmp(names.get(b.0)));
+    pairs.sort_by(|a, b| arena.get(a.0).cmp(arena.get(b.0)));
     let mut key = String::new();
     for (i, (k, v, _)) in pairs.iter().enumerate() {
         if i > 0 {
             key.push(' ');
         }
-        key.push_str(names.get(*k));
+        key.push_str(arena.get(*k));
         key.push('=');
         key.push_str(v);
     }
-    let out: Vec<(Name, Name)> = pairs
-        .into_iter()
-        .map(|(k, _, plain)| (k, names.intern(&plain)))
-        .collect();
-    assert!(out.len() <= f.param_name.len());
-    (key, out)
+    let mut out = ParamTuple {
+        key,
+        names: Vec::with_capacity(pairs.len()),
+        texts: Vec::with_capacity(pairs.len()),
+    };
+    for (k, _, plain) in pairs {
+        out.names.push(k);
+        out.texts.push(arena.intern(&plain));
+    }
+    assert!(out.names.len() <= f.param_name.len());
+    assert_eq!(out.names.len(), out.texts.len());
+    out
 }
 
 // ---- private ----
@@ -348,8 +372,9 @@ fn short_nets(
     conns: &mut [Name],
     ports: &mut [Name],
     globals: &[Name],
-    names: &Names,
+    arena: &Names,
 ) {
+    assert!(rows.iter().any(|r| r.ignore == Ignore::Short), "called for a shorted row");
     let range = |r: &RowTmp| r.conn.start as usize..r.conn.end as usize;
     let mut ids: Vec<Name> = rows
         .iter()
@@ -361,18 +386,20 @@ fn short_nets(
     ids.dedup();
     let idx = |n: Name| ids.binary_search(&n).expect("collected above") as u32;
     let mut parent: Vec<u32> = (0..ids.len() as u32).collect();
-    for r in rows.iter().filter(|r| r.ignore == Ignore::Short) {
+    let shorted = rows.iter().filter(|r| r.ignore == Ignore::Short);
+    for r in shorted {
         let mut first = NONE;
-        for &n in conns[range(r)].iter().filter(|n| **n != Name::NONE) {
+        let connected = conns[range(r)].iter().filter(|n| **n != Name::NONE);
+        for &n in connected {
             if first == NONE {
                 first = idx(n);
             } else {
-                crate::nets::union(&mut parent, first, idx(n));
+                nets::union(&mut parent, first, idx(n));
             }
         }
     }
     let rank = |n: Name| -> u8 {
-        if is_global(names.get(n)) || globals.binary_search(&n).is_ok() {
+        if netexpr::is_global(arena.get(n)) || globals.binary_search(&n).is_ok() {
             0
         } else if ports.contains(&n) {
             1
@@ -382,19 +409,24 @@ fn short_nets(
     };
     let mut best: Vec<Name> = ids.clone();
     for i in 0..ids.len() {
-        let r = crate::nets::find(&mut parent, i as u32) as usize;
+        let r = nets::find(&mut parent, i as u32) as usize;
         let (a, b) = (ids[i], best[r]);
-        if (rank(a), names.get(a)) < (rank(b), names.get(b)) {
+        if (rank(a), arena.get(a)) < (rank(b), arena.get(b)) {
             best[r] = a;
         }
     }
     let mut rename = |n: &mut Name| {
         if *n != Name::NONE {
-            *n = best[crate::nets::find(&mut parent, idx(*n)) as usize];
+            *n = best[nets::find(&mut parent, idx(*n)) as usize];
         }
     };
     for r in rows {
-        conns[range(r)].iter_mut().for_each(&mut rename);
+        for n in &mut conns[range(r)] {
+            rename(n);
+        }
     }
-    ports.iter_mut().for_each(&mut rename);
+    for n in ports.iter_mut() {
+        rename(n);
+    }
+    debug_assert!(ports.iter().all(|n| *n == Name::NONE || ids.binary_search(n).is_ok()));
 }

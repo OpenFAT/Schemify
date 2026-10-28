@@ -194,10 +194,7 @@ impl Found<'_> {
 impl Sources {
     /// The bit names of source `k`.
     pub(crate) fn bits(&self, k: usize) -> &[Name] {
-        assert!(k + 1 < self.start.len(), "source {k} out of range");
-        let (from, to) = (self.start[k] as usize, self.start[k + 1] as usize);
-        assert!(from <= to, "source offsets are monotone");
-        &self.bits[from..to]
+        nets::csr(&self.start, &self.bits, k)
     }
 }
 

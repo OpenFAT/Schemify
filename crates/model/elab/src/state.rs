@@ -22,7 +22,7 @@ use crate::cells;
 use crate::connect::{self, Cx};
 use crate::eval::Work;
 use crate::graph::Graph;
-use crate::iface::Iface;
+use crate::iface::{Held, Iface};
 use crate::live::{Ctx, Delta, Live};
 use crate::names::{Name, Names};
 use crate::nets::{self, CellNets, Seed};
@@ -134,7 +134,7 @@ impl CellState {
             .map_or(("top".to_owned(), "top".to_owned()), |r| {
                 cells::display(project, r)
             });
-        let own = Iface::from_doc(doc, &cell, &stem, NONE, true, &mut st.names);
+        let own = Iface::from_doc(doc, &cell, &stem, NONE, Held::Open, &mut st.names);
         st.ifaces.push(own);
         let s = doc.strings();
         // One interface per instantiated cell row, in first-use order.
@@ -148,10 +148,14 @@ impl CellState {
                     if at == next {
                         let iface_doc = project.interface(row).expect("readable");
                         let (cell, stem) = cells::display(project, row);
-                        let open = project.open_handle(row).is_some();
+                        let held = if project.open_handle(row).is_some() {
+                            Held::Open
+                        } else {
+                            Held::Indexed
+                        };
                         let row32 = row as u32;
                         let f =
-                            Iface::from_doc(iface_doc, &cell, &stem, row32, open, &mut st.names);
+                            Iface::from_doc(iface_doc, &cell, &stem, row32, held, &mut st.names);
                         st.ifaces.push(f);
                     }
                     st.inst_iface.push(at);
@@ -413,7 +417,7 @@ impl CellState {
             self.names.get(self.ifaces[0].cell).to_owned(),
             self.names.get(self.ifaces[0].stem).to_owned(),
         );
-        self.ifaces[0] = Iface::from_doc(doc, &cell, &stem, NONE, true, &mut self.names);
+        self.ifaces[0] = Iface::from_doc(doc, &cell, &stem, NONE, Held::Open, &mut self.names);
         self.graph = Graph::build(doc, 0, &self.ifaces, &self.inst_iface, &[], &self.names);
         let (mut vals, mut unv) = (Vec::new(), Vec::new());
         self.graph
