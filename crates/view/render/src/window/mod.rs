@@ -24,6 +24,8 @@ mod input;
 
 #[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
+#[cfg(not(target_arch = "wasm32"))]
+use std::env;
 use std::mem;
 #[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
@@ -251,7 +253,7 @@ pub fn run<A: App + 'static>(title: &str, mut app: A) -> Result<(), RunError> {
         tick: false,
         ime: None,
         #[cfg(not(target_arch = "wasm32"))]
-        frame_log: std::env::var_os("SCHEMIFY_FRAME_LOG").is_some_and(|v| v != "0"),
+        frame_log: env::var_os("SCHEMIFY_FRAME_LOG").is_some_and(|v| v != "0"),
         #[cfg(not(target_arch = "wasm32"))]
         queued: None,
         #[cfg(not(target_arch = "wasm32"))]
@@ -653,15 +655,18 @@ mod tests {
     /// thread wakes it (a park that a wake must end).
     #[test]
     fn block_on_waits_for_the_wake() {
+        use std::cell::Cell;
+        use std::future;
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::{Arc, Mutex};
         use std::task::{Poll, Waker};
+        use std::thread;
         assert_eq!(block_on(async { 7 }), 7, "ready at once");
         let done = Arc::new(AtomicBool::new(false));
         let waker: Arc<Mutex<Option<Waker>>> = Arc::default();
         let (d, w) = (done.clone(), waker.clone());
-        let polls = std::cell::Cell::new(0);
-        let pending = std::future::poll_fn(|cx| {
+        let polls = Cell::new(0);
+        let pending = future::poll_fn(|cx| {
             polls.set(polls.get() + 1);
             if d.load(Ordering::SeqCst) {
                 return Poll::Ready(42);
@@ -670,9 +675,9 @@ mod tests {
             Poll::Pending
         });
         let (d2, w2) = (done.clone(), waker.clone());
-        let t = std::thread::spawn(move || {
+        let t = thread::spawn(move || {
             while w2.lock().expect("lock").is_none() {
-                std::thread::yield_now();
+                thread::yield_now();
             }
             d2.store(true, Ordering::SeqCst);
             w2.lock().expect("lock").take().expect("waker").wake();

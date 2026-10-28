@@ -13,7 +13,7 @@ use schemify_canvas::{Camera, LAYERS, Palette, Texts};
 use schemify_ui::TextSystem;
 use schemify_ui::parley::PositionedLayoutItem;
 
-use super::{CanvasScratch, TEXT_MIN_PX};
+use super::{CanvasScratch, GlyphSpan, TEXT_MIN_PX};
 use crate::painter::{self, Painter};
 
 /// Labels are shaped once at this size and scaled by the camera.
@@ -67,7 +67,7 @@ pub fn draw_texts<P: Painter>(
         let visible = px >= TEXT_MIN_PX
             && (rot != 0 || (x < view.x1 && y < view.y1 && y + px * 2.0 > view.y0));
         if visible {
-            let (g0, g1) = shaped(&t.text[bytes], text, scratch);
+            let GlyphSpan { start: g0, end: g1 } = shaped(&t.text[bytes], text, scratch);
             if let (Some(face), true) = (scratch.text_face.clone(), g1 > g0) {
                 let at = Affine::translate((x, y))
                     * Affine::rotate(f64::from(rot) * std::f64::consts::FRAC_PI_2)
@@ -103,7 +103,7 @@ fn each(n: usize, rows: Option<&[u32]>) -> impl Iterator<Item = usize> + '_ {
 /// The glyph range of `s` shaped at [`TEXT_REF_PX`] (positions relative to its top-left),
 /// shaping it on first use: a string is shaped once per cache lifetime, however many labels or
 /// frames show it.
-fn shaped(s: &str, text: &mut TextSystem, scratch: &mut CanvasScratch) -> (u32, u32) {
+fn shaped(s: &str, text: &mut TextSystem, scratch: &mut CanvasScratch) -> GlyphSpan {
     if let Some(&r) = scratch.text_runs.get(s) {
         return r;
     }
@@ -131,9 +131,12 @@ fn shaped(s: &str, text: &mut TextSystem, scratch: &mut CanvasScratch) -> (u32, 
             }
         }
     }
-    let r = (g0, scratch.text_glyphs.len() as u32);
+    let r = GlyphSpan {
+        start: g0,
+        end: scratch.text_glyphs.len() as u32,
+    };
     scratch.text_runs.insert(s.into(), r);
-    assert!(r.0 <= r.1, "a glyph range");
+    assert!(r.start <= r.end, "a glyph range");
     debug_assert!(
         scratch.text_runs.len() <= TEXT_RUNS_MAX,
         "the label cache is bounded"

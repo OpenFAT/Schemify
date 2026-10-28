@@ -9,7 +9,7 @@
 use schemify_canvas::{CanvasPrims, LAYER_DEAD, LAYERS, Marks, PrimKind};
 
 use super::pens;
-use super::rows::{self, InstanceRows};
+use super::rows::{self, InstanceRows, Slack};
 use super::{ARC, EDGE, KINDS, LINE, MARKS, RECT, STRIDE, TRI};
 
 /// A mark's stroke: 2 logical px (`canvas::draw_marks`), in 1/16 px.
@@ -74,7 +74,7 @@ impl InstanceRows {
         }
         let tables = &mut self.tables[MARKS];
         for (kind, t) in tables.iter_mut().enumerate() {
-            t.layout(kind, &count[kind], /* slack */ false);
+            t.layout(kind, &count[kind], Slack::Tight);
         }
         let style = pens::style_word(MARK_WIDTH_Q16, 0, 0);
         let mut put = |kind: usize, run: usize, fields: &[u32]| {

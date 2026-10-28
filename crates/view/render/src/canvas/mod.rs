@@ -55,9 +55,16 @@ pub struct CanvasScratch {
     rows: InstanceRows,
     pub(super) text_face: Option<FontData>,
     /// Glyph range in `text_glyphs` of each string shaped so far.
-    pub(super) text_runs: HashMap<Box<str>, (u32, u32)>,
+    pub(super) text_runs: HashMap<Box<str>, GlyphSpan>,
     pub(super) text_glyphs: Vec<Glyph>,
     pub(super) text_layout: schemify_ui::parley::Layout<()>,
+}
+
+/// A shaped string's glyphs: `text_glyphs[start..end]` of [`CanvasScratch`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct GlyphSpan {
+    pub(super) start: u32,
+    pub(super) end: u32,
 }
 
 /// The dots of a readable grid ([`grid_dots`]): dot `(i, j)` sits at world

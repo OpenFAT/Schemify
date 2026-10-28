@@ -8,7 +8,7 @@
 //! - `pub struct InstanceRows`, `InstanceRows::count`, `InstanceRows::bytes`,
 //!   `InstanceRows::layer_slots`, `InstanceRows::row`, `InstanceRows::clear_dirty`,
 //!   `InstanceRows::dirty`, `InstanceRows::dirty_bytes`, `InstanceRows::pack`
-//! - `pub(super) struct Table`, `Table::layout`, `Table::take`, `Table::put`; `pub(super) const BYTES_MAX`
+//! - `pub(super) struct Table`, `pub(super) enum Slack`, `Table::layout`, `Table::take`, `Table::put`; `pub(super) const BYTES_MAX`
 //! - `pub(super) fn row(buf: &mut [u8], stride: usize, i: usize, fields: &[u32])`
 //! - `pub(super) fn seg_fields`, `arc_fields`, `edge_fields`, `edges_of` (a row's words)
 
@@ -60,6 +60,15 @@ pub(super) struct Table {
     pub(super) used: [u32; LAYERS],
     cap: [u32; LAYERS],
     pub(super) dirty: Vec<Range<usize>>,
+}
+
+/// Whether [`Table::layout`] leaves free slots after each non-empty layer's rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Slack {
+    /// Room for an eighth more rows plus 16 per layer: a table patched in place.
+    Spare,
+    /// Exactly the rows counted: a table repacked whole each time.
+    Tight,
 }
 
 /// Most bytes one row array holds: wgpu's default buffer limit (256 MiB).
@@ -284,16 +293,19 @@ impl InstanceRows {
 
 impl Table {
     /// Lays the table out for `count[l]` rows per layer, with free slots after each non-empty
-    /// layer's rows when `slack`; every slot zero (empty), every layer unused, all dirty.
+    /// layer's rows under [`Slack::Spare`]; every slot zero (empty), every layer unused, all dirty.
     ///
     /// # Panics
     ///
     /// Panics past [`BYTES_MAX`].
-    pub(super) fn layout(&mut self, kind: usize, count: &[u32; LAYERS], slack: bool) {
+    pub(super) fn layout(&mut self, kind: usize, count: &[u32; LAYERS], slack: Slack) {
         assert!(kind < KINDS, "a row kind");
         let mut at = 0u32;
         for (l, &n) in count.iter().enumerate() {
-            let free = if slack && n > 0 { n / 8 + 16 } else { 0 };
+            let free = match slack {
+                Slack::Spare if n > 0 => n / 8 + 16,
+                Slack::Spare | Slack::Tight => 0,
+            };
             (self.start[l], self.used[l], self.cap[l]) = (at, 0, n + free);
             at = at.checked_add(n + free).expect("slots are u32");
         }
@@ -449,7 +461,7 @@ impl InstanceRows {
             keys.push(k);
         }
         let table = &mut self.tables[src][kind];
-        table.layout(kind, &count, true);
+        table.layout(kind, &count, Slack::Spare);
         let slots = &mut self.slots[src][c];
         slots.clear();
         slots.reserve(n);
@@ -537,8 +549,8 @@ impl InstanceRows {
             }
         }
         let [tri, .., edge] = &mut self.tables[src];
-        edge.layout(EDGE, &edges, false);
-        tri.layout(TRI, &tris, false);
+        edge.layout(EDGE, &edges, Slack::Tight);
+        tri.layout(TRI, &tris, Slack::Tight);
         for &o in order.iter() {
             let (closed, k) = (o >> 31 == 1, (o & !(1 << 31)) as usize);
             let p = if closed { &t.polygons } else { &t.polylines };
@@ -959,7 +971,7 @@ mod tests {
                 }
             }
             let mut table = Table::default();
-            table.layout(kind, &count, true);
+            table.layout(kind, &count, Slack::Spare);
             let mut slots = Vec::new();
             for i in 0..n {
                 slots.push(match row_of(i) {

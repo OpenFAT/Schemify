@@ -108,6 +108,13 @@ struct Entry {
     shelf: u16,
 }
 
+/// A slot [`Atlas::alloc`] found, and the shelf it sits on.
+#[derive(Clone, Copy, Debug)]
+struct Allocation {
+    shelf: u16,
+    slot: Slot,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Shelf {
     y: u16,
@@ -255,7 +262,7 @@ impl Atlas {
             self.map.insert(key, entry);
             return Some(placed);
         }
-        let Some((shelf, slot)) = self.alloc(w, h) else {
+        let Some(Allocation { shelf, slot }) = self.alloc(w, h) else {
             self.overflows += 1;
             return None;
         };
@@ -343,7 +350,7 @@ impl Atlas {
 impl Atlas {
     /// A `w × h` slot on a shelf of its height class: the first with room, else a new shelf,
     /// else the least recently drawn tall enough unpinned shelf not drawn this frame, emptied.
-    fn alloc(&mut self, w: u16, h: u16) -> Option<(u16, Slot)> {
+    fn alloc(&mut self, w: u16, h: u16) -> Option<Allocation> {
         assert!(w > 0, "a mask with texels");
         assert!(h > 0, "a mask with texels");
         let class = h.div_ceil(CLASS) * CLASS;
@@ -389,7 +396,10 @@ impl Atlas {
         };
         s.x += w;
         s.used = self.frame;
-        Some((at as u16, slot))
+        Some(Allocation {
+            shelf: at as u16,
+            slot,
+        })
     }
 
     /// Empties shelf `at`: its entries are dropped (drawn again, they are rasterized again).
