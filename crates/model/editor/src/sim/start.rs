@@ -219,6 +219,10 @@ impl Sim {
 
     /// Cancels every run in flight (children are killed, unprepared jobs cancelled) and
     /// drops the queued requests. Returns whether anything was running.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that the run is idle afterwards.
     pub fn cancel(&mut self) -> bool {
         let was = self.busy();
         for r in &mut self.runs {
@@ -235,6 +239,10 @@ impl Sim {
 
     /// Enqueues plugin run requests (bounded by [`QUEUE_MAX`]; the rest are refused with a
     /// status note).
+    ///
+    /// # Panics
+    ///
+    /// Never: requests past [`QUEUE_MAX`] are refused, not queued.
     pub fn enqueue(&mut self, reqs: Vec<RunRequest>) {
         for r in reqs {
             if self.queue.len() >= QUEUE_MAX {
@@ -250,6 +258,10 @@ impl Sim {
     /// bench's run (a fresh run when the bench has none or its results are stale), a
     /// Simulate/Optimize starts once its bench's run is idle. A request behind a waiting
     /// one of the same bench waits too.
+    ///
+    /// # Panics
+    ///
+    /// Never: the queue only shrinks here.
     pub fn serve_queue<F: Funcs>(
         &mut self,
         session: &mut Session,
@@ -369,6 +381,10 @@ impl Sim {
 /// `.options savecurrents` adds every device's terminal currents (`@r1[i]`, `@m.x1.mm2[id]`:
 /// cross-probe and OP marks), and one `.save` per MOSFET the netlist names directly saves
 /// its OP quantities (`@m1[gm]`, …), for at most [`PROBE_DEVICES_MAX`] leaves of `map`.
+///
+/// # Panics
+///
+/// Never: the assert checks that the text ends with a line break.
 pub fn probe_lines(map: &NameMap) -> String {
     let mut t = String::from(".save all\n.options savecurrents\n");
     for dev in map

@@ -16,7 +16,7 @@ use schemify_doc::{DocHandle, EditRequest, Op, RecordBuf, TableId};
 use schemify_format::{FileKind, Orient, RecordKind};
 
 use crate::commands::Cmd;
-use crate::edit::Ids;
+use crate::edit::{FreshId, Ids};
 use crate::geometry::{Pt, Xform};
 use crate::scene::ObjKey;
 use crate::session::View;
@@ -96,12 +96,12 @@ impl Editor {
         to: Pt,
     ) {
         let pts = self.manhattan_points(from, to);
-        let (ops, _) = {
+        let ops = {
             let Some(doc) = self.session.project.doc(h) else {
                 return;
             };
             let mut ids = Ids::new(&mut self.rng);
-            edit::wires(doc, &pts, &mut ids)
+            edit::wires(doc, &pts, &mut ids).ops
         };
         self.opts.constrain = 0;
         self.commit(reqs, h, "draw wire", ops);
@@ -141,7 +141,7 @@ impl Editor {
             return;
         }
         if copy {
-            let (ops, keys) = {
+            let edit::Inserted { ops, keys } = {
                 let Some(doc) = self.session.project.doc(h) else {
                     return;
                 };
@@ -174,7 +174,7 @@ impl Editor {
             let schematic = view == View::Schematic && doc.kind() != FileKind::Shprim;
             let mut ids = Ids::new(&mut self.rng);
             let mut one = |kind: RecordKind, table: TableId, o: Orient, text: &str| {
-                let (id, raw) = ids.draw(doc);
+                let FreshId { text: id, key: raw } = ids.draw(doc);
                 let rec = edit::placed(kind, at, o, text, &id);
                 (
                     vec![Op::Insert { rec, at: None }],
@@ -190,7 +190,7 @@ impl Editor {
                         .and_then(|i| i.header_value("prefix").map(str::to_owned))
                         .unwrap_or_else(|| "X".to_owned());
                     let name = edit::unique_name(doc, &prefix, &mut Default::default());
-                    let (id, raw) = ids.draw(doc);
+                    let FreshId { text: id, key: raw } = ids.draw(doc);
                     let rec = edit::instance(&cellref, at, lin.orient(Orient::R0), &name, &id);
                     let key = ObjKey {
                         table: TableId::Instances,
@@ -226,8 +226,8 @@ impl Editor {
                 }
                 Placement::Paste(recs) => {
                     let x = lin.then(Xform::translate(at.0, at.1));
-                    let (o, k) = edit::insert_copies(doc, recs, x, &mut ids);
-                    ("paste", o, k)
+                    let copies = edit::insert_copies(doc, recs, x, &mut ids);
+                    ("paste", copies.ops, copies.keys)
                 }
                 _ => {
                     err = Some("that object does not belong in this view");
@@ -307,7 +307,7 @@ impl Editor {
         }
         let mut ids = Ids::new(&mut self.rng);
         let (id, raw) = if schematic {
-            let (t, r) = ids.draw(doc);
+            let FreshId { text: t, key: r } = ids.draw(doc);
             (Some(t), Some(r))
         } else {
             (None, None)

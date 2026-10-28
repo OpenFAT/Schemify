@@ -142,6 +142,11 @@ impl Shell {
     }
 
     /// A shell with the core base only.
+    ///
+    /// # Panics
+    ///
+    /// Never: the built-in UI parses (a test pins it).
+    #[must_use]
     pub fn new() -> Shell {
         let mut strings = Strings::new();
         let (base, rejects) = records::parse(CORE_UI, &mut strings);
@@ -197,6 +202,10 @@ impl Shell {
     /// that changes every frame does not grow it. When only `set` values changed (the pointer
     /// coordinates, a title) the composed tables are patched in place (`ui::patch_last`: the
     /// state goes last) and the next [`Shell::refresh`] only lays out; otherwise it recomposes.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that a new state recomposes or lays out again.
     pub fn set_state(&mut self, text: &str) {
         if text == self.state_text {
             return;
@@ -281,6 +290,10 @@ impl Shell {
     /// The canvas palette for `light` or dark from the `canvas.<theme>.<n>` / `.grid` /
     /// `.sel` selectors (`fg`); layers without a selector keep the built-in xschem dark
     /// colors. Returns the palette and the selection color.
+    ///
+    /// # Panics
+    ///
+    /// Never: the selection layer is one of the palette's layers.
     pub fn palette(&self, light: bool) -> (Palette, u32) {
         let theme = if light { "light" } else { "dark" };
         let mut p = Palette::xschem_dark();

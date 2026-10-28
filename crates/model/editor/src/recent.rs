@@ -24,11 +24,13 @@ use crate::platform;
 pub const RECENT_MAX: usize = 10;
 
 /// The list file inside the state directory.
+#[must_use]
 pub fn file(dir: &Path) -> PathBuf {
     dir.join("recent")
 }
 
 /// Reads the list; a missing or unreadable file is an empty list (state is optional).
+#[must_use]
 pub fn load(dir: &Path) -> Vec<PathBuf> {
     let Ok(bytes) = platform::read(&file(dir)) else {
         return Vec::new();
@@ -54,6 +56,10 @@ pub fn load(dir: &Path) -> Vec<PathBuf> {
 
 /// Moves `path` to the front of `list` (dropping an older copy and the oldest beyond
 /// [`RECENT_MAX`]).
+///
+/// # Panics
+///
+/// Never: the list is cut to [`RECENT_MAX`].
 pub fn push(list: &mut Vec<PathBuf>, path: PathBuf) {
     list.retain(|p| *p != path);
     list.insert(0, path);
@@ -62,6 +68,7 @@ pub fn push(list: &mut Vec<PathBuf>, path: PathBuf) {
 }
 
 /// The list as file text.
+#[must_use]
 pub fn text(list: &[PathBuf]) -> String {
     let mut d = FormatDoc::new(FileKind::Config);
     for (i, p) in list.iter().take(RECENT_MAX).enumerate() {

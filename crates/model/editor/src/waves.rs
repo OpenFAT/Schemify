@@ -56,6 +56,10 @@ impl WavesView {
     /// # Errors
     ///
     /// The reader's error text, or more than `wave::MAX_DATASETS` datasets.
+    ///
+    /// # Panics
+    ///
+    /// Never: the built-in waves UI parses (a test pins it).
     pub fn open(title: &str, bytes: &[u8]) -> Result<WavesView, String> {
         let waves = Waves::new(datasets(title, bytes)?);
         let mut strings = Strings::new();
@@ -292,6 +296,11 @@ pub fn spice_device(emitted: &str) -> String {
 /// `p` = `i` + the pin's initial for MOS and JFET drain/gate/source/bulk and BJT
 /// collector/base/emitter/substrate pins (`id`, `ic` when the pin name says nothing), else
 /// `id` for a diode and `i` for two-terminal devices.
+///
+/// # Panics
+///
+/// Never: the assert checks that the probe names a device and a quantity.
+#[must_use]
 pub fn current_probe(emitted: &str, pin: &str) -> String {
     let dev = spice_device(emitted);
     let last = emitted.rsplit('.').next().unwrap_or(emitted);

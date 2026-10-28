@@ -189,13 +189,21 @@ pub(super) fn symbol_records(ports: &[(String, Orient, Pt)], width: i32) -> Vec<
     for (k, name) in left.iter().enumerate() {
         let y = top + (k as i32 + 1) * PITCH;
         pins.push(pin(name, "in", -half_w, y));
-        graphics.push(edit::shape(false, (-half_w, y), (-half_w + lead, y)));
+        graphics.push(edit::shape(
+            RecordKind::Line,
+            (-half_w, y),
+            (-half_w + lead, y),
+        ));
         graphics.push(label(name, -half_w + lead + 2 * UNIT, y));
     }
     for (k, (name, dir)) in right.iter().enumerate() {
         let y = top + (k as i32 + 1) * PITCH;
         pins.push(pin(name, dir, half_w, y));
-        graphics.push(edit::shape(false, (half_w - lead, y), (half_w, y)));
+        graphics.push(edit::shape(
+            RecordKind::Line,
+            (half_w - lead, y),
+            (half_w, y),
+        ));
         let w = (name.chars().count() as i32) * 6 * UNIT;
         graphics.push(label(name, half_w - lead - 2 * UNIT - w, y));
     }

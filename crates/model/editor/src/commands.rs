@@ -561,8 +561,16 @@ commands! {
     OpAnnotate = "waves.op_annotate",
 }
 
+// `Cmd` is `repr(u8)` and indexes `CORE` by discriminant.
+const _: () = assert!(CORE.len() <= 256);
+
 impl Cmd {
     /// Returns the command's public name.
+    ///
+    /// # Panics
+    ///
+    /// Only if `commands!` lists the variants out of name order (a bug in this file).
+    #[must_use]
     pub fn name(self) -> &'static str {
         // Variants are declared in name order, so a variant's row is its discriminant.
         let (name, cmd) = CORE[self as usize];
@@ -573,6 +581,7 @@ impl Cmd {
     /// The file kinds this command acts on, `None` when it acts on any. The one table both
     /// the dispatcher (a refusal) and the UI (every node bound to the command is disabled,
     /// so it greys out) read; a handler may still refine the check.
+    #[must_use]
     pub fn file_kinds(self) -> Option<&'static [FileKind]> {
         use FileKind::{Shbench, Shcomp, Shprim};
         match self {
@@ -585,12 +594,14 @@ impl Cmd {
     }
 
     /// Whether this command acts on a file of `kind` ([`Cmd::file_kinds`]).
+    #[must_use]
     pub fn accepts(self, kind: FileKind) -> bool {
         self.file_kinds().is_none_or(|ks| ks.contains(&kind))
     }
 
     /// Whether `<name>.<word>` names this command with `<word>` as its argument (D27:
     /// arguments are data, so a key binding or menu row can carry one without a field).
+    #[must_use]
     pub fn takes_suffix(self) -> bool {
         matches!(
             self,
@@ -610,6 +621,10 @@ impl Cmd {
 impl Commands {
     /// Rebuilds the plugin rows from the composed `commands` records (`command <name> …`).
     /// Rows beyond [`PLUGIN_COMMANDS_MAX`] are dropped.
+    ///
+    /// # Panics
+    ///
+    /// Only on a broken internal invariant (the name and owner columns out of step).
     pub fn set_plugin_rows(&mut self, composed: &schemify_plugin::Composed) {
         let mut rows: Vec<(Box<str>, PluginId)> = composed
             .of(Kind::Commands)
@@ -625,11 +640,18 @@ impl Commands {
         self.name = rows.iter().map(|r| r.0.clone()).collect();
         self.owner = rows.iter().map(|r| r.1).collect();
         assert_eq!(self.name.len(), self.owner.len());
+        assert!(self.name.len() <= PLUGIN_COMMANDS_MAX);
+        assert!(
+            self.name.windows(2).all(|w| w[0] < w[1]),
+            "binary search needs sorted names"
+        );
     }
 
     /// Resolves a name: a plugin row wins over a core command of the same name (plugins
     /// compose over the core base, last wins, D8).
+    #[must_use]
     pub fn resolve(&self, name: &str) -> Target {
+        debug_assert_eq!(self.name.len(), self.owner.len());
         if let Ok(i) = self.name.binary_search_by(|n| (**n).cmp(name)) {
             return Target::Plugin(self.owner[i]);
         }
@@ -643,6 +665,11 @@ impl Commands {
     /// `<core name>.<word>` for a command that [`Cmd::takes_suffix`], returning `<word>` as
     /// the argument (`layers.set_current.3` → (`SetLayer`, `"3"`)). The argument is empty
     /// for an exact match.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks how the name was split.
+    #[must_use]
     pub fn resolve_arg<'n>(&self, name: &'n str) -> (Target, &'n str) {
         let t = self.resolve(name);
         if t != Target::Unknown {
@@ -653,6 +680,7 @@ impl Commands {
             && let Target::Core(c) = self.resolve(base)
             && c.takes_suffix()
         {
+            assert!(!word.contains('.'), "the argument is the name's last word");
             return (Target::Core(c), word);
         }
         (Target::Unknown, "")

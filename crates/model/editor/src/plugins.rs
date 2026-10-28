@@ -23,7 +23,7 @@
 //!   `Host::run_done`, `Host::ui_sets`
 //! - `pub const NOTES_MAX`
 //! - `pub struct Note`, `Note::values`
-//! - `pub struct Delivered`
+//! - `pub struct Delivered`, `pub struct PluginEdit`
 //! - `pub fn doc_id`
 //! - `pub fn handle_of`
 
@@ -32,6 +32,9 @@ mod load;
 mod patch;
 mod snapshot;
 mod user;
+
+use std::collections::VecDeque;
+use std::fmt;
 
 use schemify_cli::pack::Installed;
 use schemify_config::Config;
@@ -82,10 +85,10 @@ pub struct Host {
     result: String,
     /// A command event waits for delivery (see [`Delivered::state_changed`]).
     commanded: bool,
-    /// Child processes started for `spawn` requests: (plugin, handle, child).
-    children: Vec<(PluginId, u32, Spawned)>,
-    /// Pending timers: (due, in the editor's monotonic ms; plugin; timer id).
-    timers: Vec<(u64, PluginId, u32)>,
+    /// Child processes started for `spawn` requests, at most [`WAITING_MAX`].
+    children: Vec<Child>,
+    /// Pending timers, at most [`WAITING_MAX`].
+    timers: Vec<Timer>,
     /// The user config (owner: `schemify_config`); its Lua runs only through this host.
     user: Config,
     /// User packages waiting for their first command or event (config spec §5 `lazy`).
@@ -98,7 +101,7 @@ pub struct Host {
     user_ready: bool,
     /// Recent editor events, oldest first, at most [`NOTES_MAX`]: the command stream's
     /// notifications (D27).
-    notes: std::collections::VecDeque<Note>,
+    notes: VecDeque<Note>,
     /// Editor events recorded so far (the sequence number of the newest note).
     notes_seq: u64,
     /// Health faults already surfaced ([`schemify_plugin::Health::recorded`]).
@@ -122,8 +125,8 @@ pub struct Note {
 /// What a delivery produced for the rest of the spine.
 #[derive(Debug, Default)]
 pub struct Delivered {
-    /// Plugin edit transactions: (document, label, op text, stage?).
-    pub edits: Vec<(DocHandle, String, String, bool)>,
+    /// Plugin edit transactions, in request order.
+    pub edits: Vec<PluginEdit>,
     /// Log lines for the status line.
     pub logs: Vec<String>,
     /// A plugin ran a command or got an I/O completion: its pure functions may answer
@@ -138,6 +141,35 @@ pub struct Delivered {
     pub failed: bool,
 }
 
+/// One plugin edit transaction for the editor's request queue.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginEdit {
+    /// The document it edits (live when the delivery ended).
+    pub doc: DocHandle,
+    /// The undo label.
+    pub label: String,
+    /// The ops as edit text (edits spec §1), parsed against the document's kind.
+    pub ops: String,
+    /// Staged for review (plugin-abi `EditMode::Stage`) rather than committed.
+    pub stage: bool,
+}
+
+/// A child process started for a plugin's `spawn` request.
+struct Child {
+    plugin: PluginId,
+    /// The request's handle, echoed in its `IoDone`.
+    handle: u32,
+    process: Spawned,
+}
+
+/// A plugin timer waiting to fire.
+struct Timer {
+    /// Due time, in the editor's monotonic ms.
+    due_ms: u64,
+    plugin: PluginId,
+    id: u32,
+}
+
 /// Delivery rounds per frame: a plugin's I/O completion is answered in the same frame, up to
 /// this many request → completion hops.
 const ROUNDS_MAX: u32 = 4;
@@ -147,13 +179,15 @@ const IO_POLL_MS: u32 = 20;
 
 impl Note {
     /// The event's numbers (document handles, epochs, job ids), at most two.
+    #[must_use]
     pub fn values(&self) -> &[u32] {
+        debug_assert!(usize::from(self.len) <= self.values.len());
         &self.values[..usize::from(self.len)]
     }
 }
 
-impl std::fmt::Debug for Host {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Host {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Host")
             .field("plugins", &self.plugins.ids().len())
             .finish()
@@ -161,7 +195,11 @@ impl std::fmt::Debug for Host {
 }
 
 impl Host {
-    /// Queues an event (`None` = broadcast). A full table drops it with a note.
+    /// Queues an event (`None` = broadcast).
+    ///
+    /// # Errors
+    ///
+    /// The event table is full: the event is dropped, and the error says so.
     pub fn push(&mut self, target: Option<PluginId>, ev: &Event<'_>) -> Result<(), String> {
         self.commanded |= matches!(ev, Event::Command { .. });
         if target.is_none() {
@@ -174,6 +212,7 @@ impl Host {
 
     /// Returns whether a delivery has work (queued events or host-originated ones, user
     /// config requests, an event running on a worker to take in).
+    #[must_use]
     pub fn has_work(&self) -> bool {
         !self.events.is_empty()
             || self.plugins.has_pending()
@@ -186,51 +225,77 @@ impl Host {
     /// Queues the completions that arrived since the last call: `IoDone` for every child
     /// process that exited, `Timer` for every timer due at `now_ms`. Returns whether any
     /// event was queued. Cost: one channel poll per running child.
+    ///
+    /// # Panics
+    ///
+    /// Only on a broken internal invariant (more than [`WAITING_MAX`] children or timers).
     pub fn poll(&mut self, now_ms: u64) -> bool {
+        assert!(self.children.len() <= WAITING_MAX);
+        assert!(self.timers.len() <= WAITING_MAX);
         let before = self.events.len();
         let mut i = 0;
         while i < self.children.len() {
-            let Some((status, bytes)) = self.children[i].2.try_finish() else {
+            let Some((status, bytes)) = self.children[i].process.try_finish() else {
                 i += 1;
                 continue;
             };
-            let (plugin, handle, _) = self.children.swap_remove(i);
+            let child = self.children.swap_remove(i);
             let ev = Event::IoDone {
-                handle,
+                handle: child.handle,
                 status,
                 bytes: &bytes,
             };
-            let _ = self.events.push(Some(plugin), &ev);
+            let _ = self.events.push(Some(child.plugin), &ev);
             self.commanded = true; // a completion may change what a pure function answers
         }
         let mut k = 0;
         while k < self.timers.len() {
-            if self.timers[k].0 > now_ms {
+            if self.timers[k].due_ms > now_ms {
                 k += 1;
                 continue;
             }
-            let (_, plugin, id) = self.timers.swap_remove(k);
-            let _ = self.events.push(Some(plugin), &Event::Timer { id });
+            let timer = self.timers.swap_remove(k);
+            let _ = self
+                .events
+                .push(Some(timer.plugin), &Event::Timer { id: timer.id });
         }
-        assert!(self.children.len() <= WAITING_MAX && self.timers.len() <= WAITING_MAX);
+        assert!(
+            self.timers.iter().all(|t| t.due_ms > now_ms),
+            "every due timer fired"
+        );
+        assert!(self.events.len() >= before, "events are only queued here");
         self.events.len() > before
     }
 
     /// Milliseconds until the next completion should be looked for: 20 ms while a
     /// child or a plugin's worker event runs, else the nearest timer; `None` when nothing
     /// waits (idle CPU 0%, D39).
+    ///
+    /// # Panics
+    ///
+    /// Never: the wait is clamped to `u32`, and the assert checks that `None` means idle.
+    #[must_use]
     pub fn wake_ms(&self, now_ms: u64) -> Option<u32> {
         let timer = self
             .timers
             .iter()
-            .map(|t| t.0.saturating_sub(now_ms).min(u64::from(u32::MAX)) as u32)
+            .map(|t| {
+                let wait = t.due_ms.saturating_sub(now_ms).min(u64::from(u32::MAX));
+                u32::try_from(wait).expect("clamped to u32")
+            })
             .min();
         let busy = !self.children.is_empty() || self.plugins.running() > 0;
         let io = busy.then_some(IO_POLL_MS);
-        match (timer, io) {
+        let wake = match (timer, io) {
             (Some(t), Some(i)) => Some(t.min(i)),
             (t, i) => t.or(i),
-        }
+        };
+        assert_eq!(
+            wake.is_none(),
+            timer.is_none() && !busy,
+            "idle exactly when nothing waits"
+        );
+        wake
     }
 
     /// Queues `RunDone { job }` for `plugin` (its `run` request's job finished or failed).
@@ -243,6 +308,10 @@ impl Host {
 impl Host {
     /// Returns `(plugin name, ui set + keymap set)` per plugin in load order, when the
     /// composition changed since the last call.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks one set per plugin.
     pub fn ui_sets(&mut self) -> Option<Vec<(String, String)>> {
         let epoch = self.plugins.composed_epoch();
         if self.seen_epoch == Some(epoch) {
@@ -250,19 +319,23 @@ impl Host {
         }
         self.seen_epoch = Some(epoch);
         let c = self.plugins.contributions();
-        let sets = self
+        let mut sets: Vec<(String, String)> = self
             .plugins
             .ids()
             .iter()
             .map(|&id| {
-                let mut text = c.get(id, Kind::Ui, "").unwrap_or("").to_owned();
-                text.push('\n');
-                text.push_str(c.get(id, Kind::Keymap, "").unwrap_or(""));
-                (self.plugins.name(id).unwrap_or("?").to_owned(), text)
+                let ui = c.get(id, Kind::Ui, "").unwrap_or("");
+                let keymap = c.get(id, Kind::Keymap, "").unwrap_or("");
+                let name = self.plugins.name(id).unwrap_or("?").to_owned();
+                (name, format!("{ui}\n{keymap}"))
             })
-            .collect::<Vec<_>>();
+            .collect();
+        assert_eq!(
+            sets.len(),
+            self.plugins.ids().len(),
+            "one set per plugin, in load order"
+        );
         // The user's own keymaps go after every plugin (config spec §6).
-        let mut sets = sets;
         let keys = self.user.table().keymaps.records();
         if !keys.is_empty() {
             sets.push(("user".to_owned(), keys));
@@ -273,12 +346,33 @@ impl Host {
 
 /// Plugin-visible document id: slot index in the low 16 bits, generation in the high 16
 /// (`doc::DOCS_MAX` is 2^16), so a handle kept across a close is detected as gone.
+#[must_use]
+///
+/// # Panics
+///
+/// A handle index past `doc::DOCS_MAX` (2^16).
 pub fn doc_id(h: DocHandle) -> u32 {
-    assert!(h.index < 1 << 16);
-    (h.generation << 16) | h.index
+    assert!(
+        h.index < 1 << 16,
+        "doc handle index {} past DOCS_MAX",
+        h.index
+    );
+    let id = (h.generation << 16) | h.index;
+    debug_assert_eq!(id & 0xffff, h.index, "the slot is the low 16 bits");
+    id
 }
 
 /// The live handle a plugin's document id names.
+///
+/// # Panics
+///
+/// Never: the assert checks that the handle's slot is the id's low 16 bits.
+#[must_use]
 pub fn handle_of(project: &Project, id: u32) -> Option<DocHandle> {
-    project.handles().find(|&h| doc_id(h) == id)
+    let h = project.handles().find(|&h| doc_id(h) == id);
+    assert!(
+        h.is_none_or(|h| h.index == id & 0xffff),
+        "the slot is the id's low 16 bits"
+    );
+    h
 }

@@ -29,6 +29,10 @@ use super::{
 impl Sim {
     /// One frame of every run: prepares and submits up to [`SUBMIT_PER_FRAME`] jobs in all,
     /// polls the runners, steps the optimizers, saves a run's results when it goes idle.
+    ///
+    /// # Panics
+    ///
+    /// Never: runs past [`RUNS_MAX`] are refused, not started.
     pub fn poll<F: Funcs>(
         &mut self,
         project: &Project,
@@ -130,6 +134,7 @@ impl Sim {
 
     /// The status line of the shown run: progress while busy, a summary when done, and how
     /// many other runs are in flight.
+    #[must_use]
     pub fn progress(&self) -> String {
         let Some(br) = self.shown_run() else {
             return String::new();
@@ -290,6 +295,7 @@ impl Sim {
 
     /// The raw file of job `j` of the shown run (`<run dir>/<j>/out.raw`, else the first
     /// `.raw` the job wrote, as the runner reads it).
+    #[must_use]
     pub fn job_raw(&self, j: u32) -> Option<PathBuf> {
         let dir = self.dir()?.join(j.to_string());
         let main = dir.join(schemify_run::RAW);

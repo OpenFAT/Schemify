@@ -143,7 +143,16 @@ const ANNOT_SIZE: i32 = 11 * UNIT;
 
 /// Every bit name of component `c`, in bit order: a bus component carries several, and each
 /// keys it across the hierarchy (highlight).
+///
+/// # Panics
+///
+/// `c` is not a component handle of `cell`.
 pub fn bit_names(cell: &CellState, c: u32) -> impl Iterator<Item = &str> + '_ {
+    assert!(
+        (c as usize) < cell.nets.net_width.len(),
+        "component {c} of {}",
+        cell.nets.net_width.len()
+    );
     // Empty for a hole (a component handle an edit freed: elab patches nets in place).
     cell.nets
         .bits_of(c as usize)
@@ -153,7 +162,17 @@ pub fn bit_names(cell: &CellState, c: u32) -> impl Iterator<Item = &str> + '_ {
 
 /// The bit name of component `c` that keys it across the hierarchy (its first bit); empty
 /// for a hole (a component handle an edit freed: elab patches nets in place).
+///
+/// # Panics
+///
+/// `c` is not a component handle of `cell`.
+#[must_use]
 pub fn net_name(cell: &CellState, c: u32) -> &str {
+    assert!(
+        (c as usize) < cell.nets.net_width.len(),
+        "component {c} of {}",
+        cell.nets.net_width.len()
+    );
     let bits = cell.nets.bits_of(c as usize);
     assert!(
         bits.is_empty() == (cell.nets.net_width[c as usize] == 0),
@@ -165,9 +184,18 @@ pub fn net_name(cell: &CellState, c: u32) -> &str {
 
 /// World position of every ordinary pin of instance row `i` with its component, in pin
 /// order. Empty for an unresolved instance.
+///
+/// # Panics
+///
+/// `i` is not an instance row of `doc`, or `cell` is not `doc`'s connectivity.
+#[must_use]
 pub fn pins_of(doc: &Document, cell: &CellState, i: usize) -> Vec<(u32, Pt)> {
     let inst = doc.instances();
     assert!(i < inst.id.len(), "instance row {i}");
+    assert!(
+        i < cell.inst_iface.len(),
+        "the cell state was elaborated from this document"
+    );
     let Some(f) = cell.ifaces.get(cell.inst_iface[i] as usize) else {
         return Vec::new();
     };
@@ -186,12 +214,18 @@ pub fn pins_of(doc: &Document, cell: &CellState, i: usize) -> Vec<(u32, Pt)> {
         );
         out.push((c, at));
     }
-    debug_assert!(out.len() <= comps.len());
+    assert!(out.len() <= comps.len());
+    assert!(out.len() <= f.pin_name.len());
     out
 }
 
 /// The component an object is on: a wire's, label's or port's net; for an instance, the net
 /// of its pin nearest `near` within `tol` milli-units. `None` for anything else.
+///
+/// # Panics
+///
+/// A negative `tol`.
+#[must_use]
 pub fn component_of(
     doc: &Document,
     cell: &CellState,
@@ -199,7 +233,9 @@ pub fn component_of(
     near: Pt,
     tol: i64,
 ) -> Option<(u32, Option<(u32, u32)>)> {
+    assert!(tol >= 0, "a pick tolerance is a distance, got {tol}");
     let loc = doc.find_id(ObjId(key.key))?;
+    assert_eq!(loc.table, key.table, "an object key names its id's table");
     let row = loc.row as usize;
     let n = &cell.nets;
     let comp = match key.table {
@@ -216,7 +252,9 @@ pub fn component_of(
             if d(pins[best].1) > tol * tol {
                 return None;
             }
-            return Some((pins[best].0, Some((row as u32, best as u32))));
+            let row = u32::try_from(row).expect("instance rows fit a u32");
+            let best = u32::try_from(best).expect("pin indexes fit a u32");
+            return Some((pins[best as usize].0, Some((row, best))));
         }
         _ => None,
     };
@@ -229,6 +267,11 @@ pub fn component_of(
 /// when `cell.nets.wire_net[row] == c`.
 ///
 /// Cost: one pass over wires, labels, ports and instance pins.
+///
+/// # Panics
+///
+/// `cell` is not `doc`'s connectivity (a table's net column is out of step with it).
+#[must_use]
 pub fn members(doc: &Document, cell: &CellState, comps: &[u32]) -> Members {
     debug_assert!(comps.windows(2).all(|w| w[0] < w[1]), "sorted components");
     let on = |c: u32| comps.binary_search(&c).is_ok();
@@ -253,17 +296,32 @@ pub fn members(doc: &Document, cell: &CellState, comps: &[u32]) -> Members {
     for i in 0..doc.instances().id.len().min(cell.inst_iface.len()) {
         for (k, (c, at)) in pins_of(doc, cell, i).into_iter().enumerate() {
             if on(c) {
-                out.pins.push((i as u32, k as u32, at));
+                let row = u32::try_from(i).expect("instance rows fit a u32");
+                let pin = u32::try_from(k).expect("pin indexes fit a u32");
+                out.pins.push((row, pin, at));
             }
         }
     }
     out.keys.sort_unstable();
     out.pins.sort_unstable();
+    assert!(
+        out.keys.windows(2).all(|w| w[0] < w[1]),
+        "each object is listed once"
+    );
+    assert!(
+        out.pins.windows(2).all(|w| w[0] < w[1]),
+        "each pin is listed once"
+    );
     out
 }
 
 /// The `checks` source's annotation request: one mark per violation of `cell`, targeted at
 /// its object id in `doc` (or the cell name when it has none).
+///
+/// # Panics
+///
+/// Only on a broken `violation_marks` contract (one mark per violation).
+#[must_use]
 pub fn violation_request(cell: &CellState, doc: &Document) -> AnnotationRequest {
     let s = doc.strings();
     let req = violation_marks(&cell.violations, &cell.names, |raw| {
@@ -281,6 +339,11 @@ pub fn violation_request(cell: &CellState, doc: &Document) -> AnnotationRequest 
 /// The marks of violation rows `rows` of `cell` as [`violation_request`] targets them, or
 /// `None` when one names an aliased object `doc` no longer has (its posted mark used the
 /// alias text, which is gone: the caller re-posts everything).
+///
+/// # Panics
+///
+/// Only on a broken `violation_marks` contract (one mark per violation).
+#[must_use]
 pub fn violation_marks_of(
     rows: &[Violation],
     cell: &CellState,
@@ -305,8 +368,11 @@ pub fn violation_marks_of(
 }
 
 /// One violation as a panel line (`spines::violation_line` over a cell state's names).
+#[must_use]
 pub fn line(names: &Names, v: &Violation) -> String {
-    crate::spines::violation_line(names, v)
+    let text = crate::spines::violation_line(names, v);
+    debug_assert!(!text.contains('\n'), "a panel line is one line");
+    text
 }
 
 /// Builds the decor primitives of the active level into `out` (cleared first):
@@ -314,7 +380,15 @@ pub fn line(names: &Names, v: &Violation) -> String {
 /// other source on nets (`net_key` maps a net's bit name at this level to its overlay
 /// target) and instances (`inst_key` maps an instance name), and the visual diff of a
 /// staged edit (`diff`).
-#[allow(clippy::too_many_arguments)]
+///
+/// # Panics
+///
+/// `hl` or `diff` lists an object key twice or unsorted (they are built sorted), or the
+/// written text columns fall out of step.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one pass over the scene, document, overlay and the three overlays it draws"
+)]
 pub fn decor(
     out: &mut CanvasPrims,
     scene: &Scene,
@@ -326,6 +400,18 @@ pub fn decor(
     inst_key: impl Fn(&str) -> String,
     diff: &Diff,
 ) {
+    debug_assert!(
+        hl.keys.windows(2).all(|w| w[0] < w[1]),
+        "highlight keys sorted"
+    );
+    assert!(
+        diff.changed.windows(2).all(|w| w[0] < w[1]),
+        "diff changes sorted"
+    );
+    assert!(
+        diff.deleted.windows(2).all(|w| w[0] < w[1]),
+        "diff deletes sorted"
+    );
     *out = CanvasPrims::default();
     // Highlight: wires as thick segments, labels/ports/pins as squares.
     let r = 3 * UNIT;
@@ -349,7 +435,8 @@ pub fn decor(
         let at = anchors(doc, cell);
         for (c, p) in at.iter().enumerate() {
             let Some(p) = p else { continue };
-            let Some(target) = net_key(net_name(cell, c as u32)) else {
+            let c = u32::try_from(c).expect("components fit a u32");
+            let Some(target) = net_key(net_name(cell, c)) else {
                 continue;
             };
             let mut dy = 0;
@@ -408,18 +495,22 @@ impl Markers {
     /// The rows killed since the last [`Markers::clear_edits`] (with the rows appended
     /// since, every change in that time), or `None` when a full placement made the table
     /// anew in that time.
+    #[must_use]
     pub fn edits(&self) -> Option<&[Vec<u32>; 6]> {
         self.killed.as_ref()
     }
 
     /// Starts the next [`Markers::edits`] window.
     pub fn clear_edits(&mut self) {
-        let k = self.killed.get_or_insert_with(Default::default);
-        k.iter_mut().for_each(Vec::clear);
-        assert!(self.edits().is_some());
+        let killed = self.killed.get_or_insert_with(Default::default);
+        for rows in killed.iter_mut() {
+            rows.clear();
+        }
+        debug_assert!(self.edits().is_some_and(|k| k.iter().all(Vec::is_empty)));
     }
 
     /// The scene generation the markers were last placed against (`None`: never).
+    #[must_use]
     pub fn generation(&self) -> Option<u64> {
         self.generation
     }
@@ -432,6 +523,20 @@ impl Markers {
             key: id.0,
         };
         let Some(o) = scene.find(key) else { return };
+        assert!(
+            !self.by_id.contains_key(&id.0),
+            "an object is unplaced before it is placed"
+        );
+        assert_eq!(
+            self.stamps[0].len(),
+            self.prims.rects.x0.len(),
+            "rect stamps in step"
+        );
+        assert_eq!(
+            self.stamps[1].len(),
+            self.prims.texts.x.len(),
+            "text stamps in step"
+        );
         let b = scene.objs.bbox(o as usize);
         let target = id.text(doc.strings());
         let (stamp, rects, texts) = (
@@ -476,6 +581,7 @@ impl Markers {
             let s = &self.stamps[col];
             let lo = s.partition_point(|&x| x < stamp);
             let hi = lo + s[lo..].partition_point(|&x| x == stamp);
+            assert!(hi <= s.len());
             for r in lo..hi {
                 self.prims.kill(kind, r);
             }
@@ -495,6 +601,11 @@ impl Markers {
 /// result equals a full placement as a set of live rows.
 ///
 /// Cost: O(marks · log) for a full placement; O(ids · (log rows + their marks)) otherwise.
+///
+/// # Panics
+///
+/// An object of `ids` placed twice (they must be unique), or the stamp columns out of step
+/// with the rows (a bug in this module).
 pub fn place_markers(
     m: &mut Markers,
     scene: &Scene,
@@ -537,9 +648,15 @@ pub fn place_markers(
 /// close button, the `blocked` lines of the last refused netlist or run, then one clickable
 /// row (`checks.row.<i>`, command `checks.pick`) per violation of `cell`, at most
 /// [`PANEL_ROWS`].
+///
+/// # Panics
+///
+/// If `cell` holds more than `schemify_elab::VIOLATIONS_MAX` violations (elab's capacity).
 pub fn contribute(t: &mut String, cell: Option<&CellState>, blocked: &[String]) {
     use std::fmt::Write as _;
+    let start = t.len();
     let rows = cell.map_or(&[][..], |c| &c.violations.rows[..]);
+    assert!(rows.len() <= schemify_elab::VIOLATIONS_MAX);
     let count = |s: Severity| rows.iter().filter(|v| v.code.severity() == s).count();
     let (e, w) = (count(Severity::Error), count(Severity::Warning));
     let q = crate::docs::quote;
@@ -575,8 +692,13 @@ pub fn contribute(t: &mut String, cell: Option<&CellState>, blocked: &[String]) 
             q(b)
         );
     }
+    assert!(
+        t.len() > start,
+        "the pane, its bar and its list were written"
+    );
     let Some(cell) = cell else { return };
-    for (i, v) in rows.iter().take(PANEL_ROWS).enumerate() {
+    let shown = rows.iter().take(PANEL_ROWS);
+    for (i, v) in shown.enumerate() {
         let style = match v.code.severity() {
             Severity::Error => "check-error",
             Severity::Warning => "check-warning",
@@ -614,6 +736,13 @@ fn marks_of_checks(ann: &Annotations) -> usize {
 /// else its first port (where an OP voltage is written).
 fn anchors(doc: &Document, cell: &CellState) -> Vec<Option<Pt>> {
     let n = &cell.nets;
+    assert_eq!(
+        n.label_net.len(),
+        doc.labels().x.len(),
+        "label nets in step"
+    );
+    assert_eq!(n.wire_net.len(), doc.wires().x1.len(), "wire nets in step");
+    assert_eq!(n.port_net.len(), doc.ports().x.len(), "port nets in step");
     let mut at: Vec<Option<Pt>> = vec![None; n.net_name.len()];
     let l = doc.labels();
     for (i, &c) in n.label_net.iter().enumerate() {
@@ -633,6 +762,7 @@ fn anchors(doc: &Document, cell: &CellState) -> Vec<Option<Pt>> {
             *slot = Some((p.x[i], p.y[i]));
         }
     }
+    assert_eq!(at.len(), n.net_name.len());
     at
 }
 

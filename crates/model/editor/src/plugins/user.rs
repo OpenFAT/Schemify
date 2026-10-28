@@ -26,11 +26,13 @@ use super::{Host, NOTES_MAX, Note};
 
 impl Host {
     /// The user-config table (options, keymaps, sims, packages, hooks).
+    #[must_use]
     pub fn user(&self) -> &schemify_config::Table {
         self.user.table()
     }
 
     /// The user config itself: its root locates the package lockfile (`pack::Paths::of`).
+    #[must_use]
     pub fn config(&self) -> &Config {
         &self.user
     }
@@ -38,6 +40,10 @@ impl Host {
     /// Runs a command nobody in the command table owns, if the user config or a lazy package
     /// does: a Lua keymap function (`user.lua.<id>`) runs now; a lazy package listing `name`
     /// loads and gets the command as `Event::Command`. Returns whether it was handled.
+    ///
+    /// # Panics
+    ///
+    /// Never: the lazy list holds at most `schemify_config::PACKS_MAX` packages and loses one here.
     pub fn user_command(&mut self, name: &str, args: &str) -> bool {
         if let Some(f) = schemify_config::fn_of_command(name) {
             let keys = self.user.table().keymaps.clone();
@@ -94,6 +100,7 @@ impl Host {
     }
 
     /// The sequence number of the newest recorded editor event (0 before the first).
+    #[must_use]
     pub fn notes_seq(&self) -> u64 {
         self.notes_seq
     }
@@ -157,6 +164,7 @@ impl Host {
     }
 
     /// Whether a user package is still waiting to load (tests, status).
+    #[must_use]
     pub fn is_lazy(&self, name: &str) -> bool {
         self.lazy.iter().any(|p| p.name == name)
     }
@@ -222,6 +230,7 @@ impl Host {
     /// D20 cache hash of an expression calling `fns` (sorted, distinct `ns.f` names): the
     /// content hash of the one plugin serving them, or of their hashes joined when several
     /// do. `None` when any function is not loaded.
+    #[must_use]
     pub fn fn_hash(&self, fns: &[String]) -> Option<String> {
         let f = &self.plugins.composed().functions;
         let mut owners: Vec<PluginId> = Vec::with_capacity(fns.len());

@@ -46,6 +46,7 @@ struct Hit {
 /// # Panics
 ///
 /// Panics if `q.value` is empty.
+#[must_use]
 pub fn find(doc: &Document, q: &Query) -> Vec<ObjKey> {
     let mut keys: Vec<ObjKey> = hits(doc, q).into_iter().map(|h| h.key).collect();
     keys.sort_unstable();
@@ -59,6 +60,7 @@ pub fn find(doc: &Document, q: &Query) -> Vec<ObjKey> {
 /// # Panics
 ///
 /// Panics if `q.value` is empty.
+#[must_use]
 pub fn replace(doc: &Document, q: &Query, with: &str) -> Vec<Op> {
     let s = doc.strings();
     let mut ops = Vec::new();

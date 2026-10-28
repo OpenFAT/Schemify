@@ -47,8 +47,8 @@ use schemify_doc::{Document, Loc, PinDir, RecordBuf, RecordKind, TableId};
 
 pub use bench::{add_bench_ops, delete_bench_ops};
 pub use ops::{
-    add_impl_ops, add_param_ops, delete_impl_ops, delete_param_ops, impl_ports, move_pin_ops,
-    set_ops, sync_ops,
+    SyncOps, add_impl_ops, add_param_ops, delete_impl_ops, delete_param_ops, impl_ports,
+    move_pin_ops, set_ops, sync_ops,
 };
 pub use panel::contribute;
 
@@ -103,21 +103,21 @@ pub const ADD_LANGS: [(&str, &str); 4] = [
 
 /// A field of the panel, decoded from its node id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Field<'a> {
+pub enum Field<'id> {
     /// Header attribute `key`.
-    Header(&'a str),
+    Header(&'id str),
     /// Pin row, attribute (`name`, `dir`, `domain`).
-    Pin(u32, &'a str),
+    Pin(u32, &'id str),
     /// Param row, attribute (`name`, `default`, `kind` or one of [`PARAM_ATTRS`]).
-    Param(u32, &'a str),
+    Param(u32, &'id str),
     /// Impl row, attribute (`model`, `file`).
-    Impl(u32, &'a str),
+    Impl(u32, &'id str),
     /// Impl row, `format` template of a dialect.
-    Format(u32, &'a str),
+    Format(u32, &'id str),
     /// Impl row's `body` text.
     Body(u32),
     /// A bench record (`.shbench` rank 6): table, row, attribute.
-    Bench(Bench, u32, &'a str),
+    Bench(Bench, u32, &'id str),
 }
 
 /// The bench tables the panel edits (format rank 6).
@@ -136,6 +136,7 @@ pub const ALGOS: [&str; 2] = ["nelder-mead", "random"];
 
 impl SyncPlan {
     /// Whether the pins already match the ports.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.add.is_empty() && self.remove.is_empty() && self.redir.is_empty() && !self.reorder
     }
@@ -143,6 +144,7 @@ impl SyncPlan {
 
 impl Bench {
     /// The node id word of the table.
+    #[must_use]
     pub fn word(self) -> &'static str {
         match self {
             Bench::Output => "output",
@@ -173,6 +175,11 @@ impl Bench {
 
 /// Decodes a field node id; a dropdown choice id (`<field>=<value>`) also returns the value.
 /// `None` for an id that is not a panel field.
+///
+/// # Panics
+///
+/// Never: the asserts check how the id was split.
+#[must_use]
 pub fn parse_field(node: &str) -> Option<(Field<'_>, Option<&str>)> {
     let (id, choice) = match node.split_once('=') {
         Some((id, v)) => (id, Some(v)),
@@ -183,7 +190,11 @@ pub fn parse_field(node: &str) -> Option<(Field<'_>, Option<&str>)> {
     let section = parts.next()?;
     if section == "hdr" {
         let key = parts.next()?;
-        return (parts.next().is_none() && !key.is_empty()).then_some((Field::Header(key), choice));
+        if parts.next().is_some() || key.is_empty() {
+            return None;
+        }
+        assert!(!key.contains('.'), "splitn(3) left no dot in a 2-part id");
+        return Some((Field::Header(key), choice));
     }
     let row: u32 = parts.next()?.parse().ok()?;
     let what = parts.next()?;
@@ -200,17 +211,35 @@ pub fn parse_field(node: &str) -> Option<(Field<'_>, Option<&str>)> {
         ("opt", a) => Field::Bench(Bench::Optimize, row, a),
         _ => return None,
     };
+    assert!(
+        !section.is_empty(),
+        "every matched section is a non-empty word"
+    );
+    assert!(
+        !id.contains('='),
+        "the first `=` splits off the choice: {node}"
+    );
     Some((field, choice))
 }
 
 /// Row number of a button id `cell.<section>.<r>.<action>`, if it is one.
+///
+/// # Panics
+///
+/// Never: the assert checks how the id was split.
+#[must_use]
 pub fn button_row(node: &str, section: &str, action: &str) -> Option<u32> {
     let rest = node
         .strip_prefix("cell.")?
         .strip_prefix(section)?
         .strip_prefix('.')?;
     let (row, act) = rest.split_once('.')?;
-    (act == action).then(|| row.parse().ok()).flatten()
+    if act != action {
+        return None;
+    }
+    let row: u32 = row.parse().ok()?;
+    assert!(node.ends_with(action), "the action is the id's last word");
+    Some(row)
 }
 
 // ---- private ----
@@ -220,9 +249,17 @@ pub fn button_row(node: &str, section: &str, action: &str) -> Option<u32> {
 // ------------------------------------------------------------------------ reads
 
 fn names(doc: &Document, table: TableId, n: usize) -> Vec<String> {
-    (0..n as u32)
+    assert!(n <= doc.table_len(table), "names past the table's end");
+    let names: Vec<String> = (0..row_u32(n))
         .map(|row| doc.record(Loc { table, row }).fields[0].clone())
-        .collect()
+        .collect();
+    assert_eq!(names.len(), n);
+    names
+}
+
+/// A table length as a row number: doc tables hold < 2^16 rows (module header).
+fn row_u32(n: usize) -> u32 {
+    u32::try_from(n).expect("doc tables hold < 2^16 rows")
 }
 
 fn attr_of<'r>(rec: &'r RecordBuf, key: &str) -> Option<&'r str> {
@@ -233,15 +270,17 @@ fn attr_of<'r>(rec: &'r RecordBuf, key: &str) -> Option<&'r str> {
 
 /// Row of the `body` record of impl `name`, if it has one.
 fn body_row(doc: &Document, name: &str) -> Option<u32> {
-    let n = doc.bodies().kind.len() as u32;
-    (0..n).find(|&row| {
+    let n = row_u32(doc.bodies().kind.len());
+    let row = (0..n).find(|&row| {
         doc.record(Loc {
             table: TableId::Bodies,
             row,
         })
         .fields[0]
             == name
-    })
+    });
+    assert!(row.is_none_or(|r| r < n));
+    row
 }
 
 /// The `body` text of impl `name` (empty when it has none).
@@ -256,17 +295,26 @@ fn body_text(doc: &Document, name: &str) -> String {
     })
 }
 
+/// The record at `row` of a panel table, `None` past its end (a stale node id).
 fn record(doc: &Document, table: TableId, row: u32) -> Option<RecordBuf> {
-    let n = match table {
-        TableId::Pins => doc.pins().name.len(),
-        TableId::Params => doc.params().kind.len(),
-        TableId::Impls => doc.impls().kind.len(),
-        TableId::Outputs => doc.outputs().kind.len(),
-        TableId::Specs => doc.specs().kind.len(),
-        TableId::Optimizes => doc.optimizes().kind.len(),
-        _ => 0,
-    };
-    ((row as usize) < n).then(|| doc.record(Loc { table, row }))
+    assert!(
+        matches!(
+            table,
+            TableId::Pins
+                | TableId::Params
+                | TableId::Impls
+                | TableId::Outputs
+                | TableId::Specs
+                | TableId::Optimizes
+        ),
+        "the panel edits interface and bench tables only, got {table:?}"
+    );
+    let rec = ((row as usize) < doc.table_len(table)).then(|| doc.record(Loc { table, row }));
+    assert!(
+        rec.as_ref().is_none_or(|r| !r.fields.is_empty()),
+        "panel records are named"
+    );
+    rec
 }
 
 // ------------------------------------------------------------------------ edits
@@ -274,16 +322,19 @@ fn record(doc: &Document, table: TableId, row: u32) -> Option<RecordBuf> {
 // ------------------------------------------------------------------- bench tables
 
 fn record_count(doc: &Document, table: TableId) -> usize {
-    match table {
-        TableId::Outputs => doc.outputs().kind.len(),
-        TableId::Specs => doc.specs().kind.len(),
-        TableId::Optimizes => doc.optimizes().kind.len(),
-        _ => 0,
-    }
+    assert!(
+        matches!(
+            table,
+            TableId::Outputs | TableId::Specs | TableId::Optimizes
+        ),
+        "a bench table, got {table:?}"
+    );
+    doc.table_len(table)
 }
 
 /// The values of every `key` line of `rec`, one line per item, joined by `sep`.
 fn joined(rec: &RecordBuf, key: &str, sep: &str) -> String {
+    assert!(!key.is_empty());
     rec.attrs
         .iter()
         .filter(|a| a.key == key)

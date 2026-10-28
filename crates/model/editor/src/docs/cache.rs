@@ -22,6 +22,10 @@ use super::var_value;
 /// (`None`: one is missing).
 ///
 /// Cost: one compile per param and var expression.
+///
+/// # Panics
+///
+/// `doc`'s param or block columns out of step (a bug in `schemify_doc`).
 pub fn cache_ops(
     doc: &Document,
     cell: &CellState,
@@ -30,6 +34,8 @@ pub fn cache_ops(
     let s = doc.strings();
     let mut ops = Vec::new();
     let p = doc.params();
+    assert_eq!(p.fields.len(), p.kind.len(), "param columns in step");
+    assert_eq!(p.attrs.len(), p.kind.len(), "param columns in step");
     for r in 0..p.kind.len() {
         let name = s.get(p.fields[r][0]);
         let computed = doc.pool().find_attr(s, p.attrs[r], "computed");
@@ -68,7 +74,10 @@ pub fn cache_ops(
         );
         v += 1;
     }
-    debug_assert!(ops.len() <= p.kind.len() + v);
+    assert!(
+        ops.len() <= p.kind.len() + v,
+        "at most one cache write per param and var"
+    );
     ops
 }
 
@@ -81,21 +90,31 @@ pub(super) fn plugin_fns(text: &str) -> Vec<String> {
         v.dedup();
         v
     };
-    match Program::compile(text, Mode::Scalar) {
+    let fns = match Program::compile(text, Mode::Scalar) {
         Ok(p) => names(&p),
         Err(_) => Template::parse(text).map_or_else(|_| Vec::new(), |t| names(t.program())),
-    }
+    };
+    debug_assert!(fns.windows(2).all(|w| w[0] < w[1]), "sorted and distinct");
+    fns
 }
 
 /// Value and D20 flag of own param row `r` (`name` guards against a stale state): own params
 /// are the graph's first nodes, in row order.
+///
+/// # Panics
+///
+/// `cell`'s graph has fewer param nodes than its interface has params (an elab bug).
+#[must_use]
 pub fn param_value<'c>(cell: &'c CellState, name: &str, r: usize) -> Option<(&'c Val, bool)> {
     let n = *cell.ifaces.first()?.param_name.get(r)?;
     if cell.names.get(n) != name {
         return None;
     }
     let g = &cell.graph;
-    debug_assert!(r < g.params as usize);
+    assert!(
+        r < g.params as usize,
+        "own params are the graph's first nodes"
+    );
     Some((g.vals.get(r)?, *g.unverified.get(r)?))
 }
 
@@ -105,6 +124,11 @@ pub fn param_value<'c>(cell: &'c CellState, name: &str, r: usize) -> Option<(&'c
 /// `put` of such a record has the cache stripped from the replacement instead.
 ///
 /// Cost: O(ops · touched records).
+///
+/// # Panics
+///
+/// Only on a broken internal invariant (it appends `remove_attr … cached` ops, nothing
+/// else).
 pub fn drop_stale_caches(doc: &Document, ops: &mut Vec<Op>) {
     let s = doc.strings();
     let n = ops.len();
@@ -162,7 +186,13 @@ pub fn drop_stale_caches(doc: &Document, ops: &mut Vec<Op>) {
             });
         }
     }
-    debug_assert!(ops.len() >= n);
+    assert!(ops.len() >= n, "ops are only appended");
+    for op in &ops[n..] {
+        assert!(
+            matches!(op, Op::RemoveAttr { key, .. } if key == "cached"),
+            "the appended ops drop caches"
+        );
+    }
 }
 
 /// The table and row of the var or param named `name`.
@@ -177,9 +207,12 @@ pub(super) fn named<'d>(
         _ => return None,
     };
     let s = doc.strings();
-    (0..t.kind.len())
-        .find(|&r| t.kind[r] == kind && s.get(t.fields[r][0]) == name)
-        .map(|r| (t, r))
+    let row = (0..t.kind.len()).find(|&r| t.kind[r] == kind && s.get(t.fields[r][0]) == name);
+    assert!(
+        row.is_none_or(|r| r < t.fields.len()),
+        "kind and fields columns in step"
+    );
+    row.map(|r| (t, r))
 }
 
 // ---- private ----
@@ -194,6 +227,8 @@ fn cache_op(
     s: &Strings,
     hash: &impl Fn(&[String]) -> Option<String>,
 ) {
+    assert!(cacheable(kind), "only params and vars carry a D20 cache");
+    assert!(!name.is_empty());
     let fns = plugin_fns(expr);
     let Some((val, unverified)) = now.filter(|_| !fns.is_empty()) else {
         return;
@@ -204,6 +239,10 @@ fn cache_op(
     }
     let mut text = String::new();
     schemify_elab::cached_text(val, &mut text);
+    assert!(
+        !h.is_empty(),
+        "a cache names the plugin content it came from"
+    );
     let same = stored.is_some_and(|c| c.len() == 2 && s.get(c[0]) == text && s.get(c[1]) == h);
     if !same {
         ops.push(Op::SetAttr {
@@ -219,6 +258,7 @@ fn cacheable(kind: RecordKind) -> bool {
 }
 
 fn first_attr<'d>(doc: &'d Document, t: &Records, r: usize, key: &str) -> Option<&'d str> {
+    assert!(r < t.attrs.len(), "row {r} of {}", t.attrs.len());
     let s = doc.strings();
     let v = doc.pool().find_attr(s, t.attrs[r], key)?;
     v.first().map(|v| s.get(*v))

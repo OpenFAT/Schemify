@@ -43,6 +43,11 @@ pub use stretch::{Moved, Stretched, stretch};
 
 /// World positions of the interface pins of instance row `i` (empty when its cell does not
 /// resolve), in pin order.
+///
+/// # Panics
+///
+/// If `i` is not an instance row of `doc`.
+#[must_use]
 pub fn inst_pins(project: &Project, h: DocHandle, doc: &Document, i: usize) -> Vec<Pt> {
     let inst = doc.instances();
     assert!(i < inst.id.len(), "instance row {i}");
@@ -64,6 +69,7 @@ pub fn inst_pins(project: &Project, h: DocHandle, doc: &Document, i: usize) -> V
 }
 
 /// Whether `p` lies on segment `a`–`b`, end points excluded (exact integer test).
+#[must_use]
 pub fn on_interior(p: Pt, a: Pt, b: Pt) -> bool {
     if p == a || p == b {
         return false;
@@ -81,6 +87,7 @@ pub fn on_interior(p: Pt, a: Pt, b: Pt) -> bool {
 
 /// Points of a wire from `a` to `b` routed by Manhattan `mode` (0 straight, 1 horizontal
 /// first, 2 vertical first), zero-length legs dropped.
+#[must_use]
 pub fn route(a: Pt, b: Pt, mode: u8) -> Vec<Pt> {
     let mut pts = match mode {
         1 if a.0 != b.0 && a.1 != b.1 => vec![a, (b.0, a.1), b],
@@ -97,6 +104,11 @@ pub fn route(a: Pt, b: Pt, mode: u8) -> Vec<Pt> {
 /// wire ends meet or a T joins (xschem Ctrl+right button).
 ///
 /// Cost: O(visited × W) for the T test; bounded by the wire count.
+///
+/// # Panics
+///
+/// Never: the assert checks that each point is visited once.
+#[must_use]
 pub fn connected(
     project: &Project,
     h: DocHandle,
@@ -196,6 +208,7 @@ pub fn connected(
 /// # Panics
 ///
 /// Panics if `snap` is not positive.
+#[must_use]
 pub fn align(doc: &Document, sel: &[ObjKey], snap_m: i32) -> Vec<Op> {
     assert!(snap_m > 0, "snap must be positive");
     let keys: Vec<ObjKey> = if sel.is_empty() {

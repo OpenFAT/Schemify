@@ -254,7 +254,7 @@ impl Editor {
         cmds: &CommandRequests,
         reqs: &mut Vec<EditRequest>,
     ) -> bool {
-        let Some((row, _)) = self.page.editing else {
+        let Some(row) = self.page.editing.as_ref().map(|e| e.0) else {
             return false;
         };
         let focus = self.shell.ui.focus();
@@ -282,7 +282,9 @@ impl Editor {
         let escape = events.events.iter().any(
             |e| matches!(e, InputEvent::Key { chord } if chord.key() == schemify_ui::Key::ESCAPE),
         );
-        let (row, text) = self.page.editing.take().expect("checked above");
+        let Some((row, text)) = self.page.editing.take() else {
+            return false;
+        };
         self.page.focused = false;
         if !escape && let Some((h, _)) = self.active() {
             let ops = self.with_doc(h, |d, _| docs::prose_ops(d, row, &text));

@@ -267,6 +267,7 @@ impl std::fmt::Debug for Sim {
 impl Sim {
     /// An idle run state whose runners start `tools` (the user config's `sim` rows; tests
     /// pass a fake simulator).
+    #[must_use]
     pub fn new(tools: Tools) -> Sim {
         Sim {
             tools,
@@ -294,31 +295,37 @@ impl Sim {
     }
 
     /// Whether a run is in flight or requests wait.
+    #[must_use]
     pub fn busy(&self) -> bool {
         self.runs.iter().any(|r| !r.idle()) || !self.queue.is_empty()
     }
 
     /// Runs in flight.
+    #[must_use]
     pub fn running(&self) -> usize {
         self.runs.iter().filter(|r| !r.idle()).count()
     }
 
     /// Requests waiting for their bench.
+    #[must_use]
     pub fn queued(&self) -> usize {
         self.queue.len()
     }
 
     /// Milliseconds until the next poll: [`POLL_MS`] while busy, `None` when idle (D39).
+    #[must_use]
     pub fn wake_ms(&self) -> Option<u32> {
         self.busy().then_some(POLL_MS)
     }
 
     /// The bench whose results are shown.
+    #[must_use]
     pub fn bench(&self) -> Option<DocHandle> {
         self.shown
     }
 
     /// Whether the shown results belong to another design than the documents now open.
+    #[must_use]
     pub fn stale(&self) -> bool {
         self.stale
     }
@@ -334,18 +341,21 @@ impl Sim {
     }
 
     /// Plan, jobs and results of the shown run, if any.
+    #[must_use]
     pub fn tables(&self) -> Option<(&Plan, &Jobs, &Results)> {
         self.shown_run()
             .map(|r| (&r.run.plan, &r.run.jobs, &r.run.results))
     }
 
     /// Plan, jobs and results of `bench`'s run, if it has one.
+    #[must_use]
     pub fn tables_of(&self, bench: DocHandle) -> Option<(&Plan, &Jobs, &Results)> {
         let r = &self.runs[self.index_of(bench)?];
         Some((&r.run.plan, &r.run.jobs, &r.run.results))
     }
 
     /// The run directory of the shown results.
+    #[must_use]
     pub fn dir(&self) -> Option<&Path> {
         self.shown_run()
             .map(|r| r.run.runner.config().dir.as_path())

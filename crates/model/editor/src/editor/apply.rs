@@ -92,7 +92,13 @@ impl Editor {
         }
         #[cfg(not(target_arch = "wasm32"))]
         self.sim.enqueue(d.runs);
-        for (doc, label, text, stage) in d.edits {
+        for crate::plugins::PluginEdit {
+            doc,
+            label,
+            ops: text,
+            stage,
+        } in d.edits
+        {
             let Some(kind) = self.session.project.doc(doc).map(Document::kind) else {
                 continue;
             };

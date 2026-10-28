@@ -54,6 +54,10 @@ impl Editor {
     /// Queues edit requests for the next frame, where `doc::apply_edits` runs them with the
     /// frame's own (the path plugins and the optimizer take). Requests past [`QUEUED_MAX`]
     /// are refused on the status line, as a full command queue is.
+    ///
+    /// # Panics
+    ///
+    /// Never: requests past [`QUEUED_MAX`] are refused, not queued.
     pub fn request_edits(&mut self, reqs: impl IntoIterator<Item = EditRequest>) {
         assert!(self.queued_edits.len() <= QUEUED_MAX);
         for r in reqs {
@@ -73,6 +77,10 @@ impl Editor {
     /// line or fault of that plugin in the delivery that completed its event, frames later
     /// for a plugin on a worker. At most [`QUEUED_MAX`] answers wait; a caller that never
     /// takes its tickets stops getting new ones answered (they say `command queue full`).
+    ///
+    /// # Panics
+    ///
+    /// Never: tickets past [`QUEUED_MAX`] are refused, not queued.
     pub fn command_answered(&mut self, name: &str, arg: &str) -> u32 {
         let ticket = self.next_ticket;
         self.next_ticket = self.next_ticket.wrapping_add(1);

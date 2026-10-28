@@ -83,6 +83,10 @@ pub(super) fn covered(iv: &[(i64, i64)], t: i64) -> bool {
 /// of the first wire of its group (by row).
 ///
 /// Cost: O(W log W + E·D) with E the wire ends and D the distinct wire directions.
+///
+/// # Panics
+///
+/// Never: a point between two wire ends fits in `i32`.
 pub fn join_trim(project: &Project, h: DocHandle, ids: &mut Ids<'_>) -> Vec<Op> {
     let Some(doc) = project.doc(h) else {
         return Vec::new();
@@ -242,7 +246,7 @@ pub fn join_trim(project: &Project, h: DocHandle, ids: &mut Ids<'_>) -> Vec<Op> 
         }
         for sp in &want {
             if !kept.contains(sp) {
-                let (id, _) = ids.draw(doc);
+                let id = ids.draw(doc).text;
                 ops.push(Op::Insert {
                     rec: wire_rec(&id, pt(sp.0), pt(sp.1), &attrs),
                     at: None,

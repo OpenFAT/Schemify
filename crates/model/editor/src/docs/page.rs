@@ -11,19 +11,19 @@
 use schemify_doc::{Document, RecordKind};
 use schemify_elab::{CellState, Val};
 use schemify_expr::{Mode, Program, Scratch, Value};
-use schemify_ui::prose::{Segment, split_plots};
+use schemify_ui::prose::Segment;
 
 use super::{Page, attr, editor_id, node, prose_text, value_text, var_value};
 
 /// What the page shows besides its document.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Extras<'a> {
+pub struct Extras<'frame> {
     /// `(expression, None when its graph has data | Some(why the slot is empty))` per plot
     /// slot with results; a fence missing here shows "no results yet".
-    pub plots: &'a [(String, Option<String>)],
+    pub plots: &'frame [(String, Option<String>)],
     /// The staged edit under review (D18 optimizer, plugin stages): its label and the
     /// document with it applied (`doc::Project::preview`).
-    pub staged: Option<(&'a str, &'a Document)>,
+    pub staged: Option<(&'frame str, &'frame Document)>,
     /// Show prose blocks as their verbatim Markdown / LaTeX source (`docs.source`) instead of
     /// rendered; var blocks and an open editor are unaffected.
     pub source: bool,
@@ -45,6 +45,10 @@ pub struct Extras<'a> {
 // height of each prose source per width (its prose cache already holds the layout), the page
 // windows by those heights and estimates unmeasured blocks, re-anchoring on the first block
 // on screen.
+///
+/// # Panics
+///
+/// `doc` holds more than 2^12 blocks (the doc capacity).
 pub fn contribute(
     t: &mut String,
     doc: &Document,
@@ -57,6 +61,7 @@ pub fn contribute(
     let s = doc.strings();
     let n = blocks.kind.len();
     assert!(n <= 1 << 12, "doc blocks over capacity");
+    let graphs_before = graphs.len();
     if let Some((label, _)) = extras.staged {
         node(t, "docs.staged", "panel", "docs.page");
         attr(t, "style", "docs-staged-bar");
@@ -82,7 +87,8 @@ pub fn contribute(
         attr(t, "style", "docs-hint");
     }
     let mut v = 0usize;
-    for r in 0..n as u32 {
+    let rows = u32::try_from(n).expect("n ≤ 2^12");
+    for r in 0..rows {
         let id = format!("docs.b.{r}");
         let style = if page.sel == Some(r) {
             "docs-block-sel"
@@ -140,6 +146,11 @@ pub fn contribute(
             _ => {}
         }
     }
+    assert!(v <= n, "vars are a subset of the blocks");
+    assert!(
+        graphs.len() >= graphs_before,
+        "graph slots are only appended"
+    );
 }
 
 /// The live preview under an open prose editor: a caption and `text` (what the user has
@@ -147,7 +158,7 @@ pub fn contribute(
 /// click on it is a click away from the editor (which applies). A ```` ```plot ```` fence
 /// previews as a code block; images not yet on the page preview as their alt text.
 pub(super) fn preview(t: &mut String, id: &str, text: &str) {
-    debug_assert!(id.starts_with("docs.b."));
+    assert!(id.starts_with("docs.b."), "a block's node: {id}");
     node(t, &format!("{id}.preview.cap"), "label", id);
     attr(t, "label", "Preview");
     attr(t, "style", "docs-preview-cap");
@@ -164,7 +175,7 @@ pub(super) fn preview(t: &mut String, id: &str, text: &str) {
         },
     );
     attr(t, "style", "docs-preview");
-    debug_assert!(
+    assert!(
         t.ends_with("\"docs-preview\"\n"),
         "the preview is the last node written"
     );
@@ -174,7 +185,7 @@ pub(super) fn preview(t: &mut String, id: &str, text: &str) {
 /// code fence, so it lays out verbatim in monospace on a faint shade (no markup, no math).
 /// Clicking it opens the editor like a rendered block.
 pub(super) fn source(t: &mut String, id: &str, text: &str) {
-    debug_assert!(id.starts_with("docs.b."));
+    assert!(id.starts_with("docs.b."), "a block's node: {id}");
     let pid = format!("{id}.0");
     node(t, &pid, "prose", id);
     attr(t, "command", "docs.edit");
@@ -190,7 +201,8 @@ pub(super) fn source(t: &mut String, id: &str, text: &str) {
     let fenced = |f: &str| text.lines().any(|l| l.trim_start().starts_with(f));
     let fence = if fenced("~~~") { "```" } else { "~~~" };
     let value = format!("{fence}\n{text}\n{fence}");
-    debug_assert!(value.starts_with(fence) && value.ends_with(fence));
+    assert!(value.starts_with(fence));
+    assert!(value.ends_with(fence));
     attr(t, "value", &value);
 }
 
@@ -203,7 +215,10 @@ pub(super) fn prose(
     plots: &[(String, Option<String>)],
     graphs: &mut Vec<(String, String)>,
 ) {
-    let parts = split_plots(text);
+    assert!(id.starts_with("docs.b."), "a block's node: {id}");
+    let graphs_before = graphs.len();
+    let parts = schemify_ui::prose::split_plots(text);
+    let segments = parts.len();
     if parts.is_empty() {
         node(t, &format!("{id}.0"), "prose", id);
         attr(t, "value", "*(empty text block: click to edit)*");
@@ -239,12 +254,17 @@ pub(super) fn prose(
             }
         }
     }
+    assert!(
+        graphs.len() - graphs_before <= segments,
+        "one graph per plot slot at most"
+    );
 }
 
 // ---- private ----
 
 /// The expression of var `name` in `doc`, if it has one.
 fn var_expr<'d>(doc: &'d Document, name: &str) -> Option<&'d str> {
+    assert!(!name.is_empty());
     let b = doc.doc_blocks();
     let s = doc.strings();
     (0..b.kind.len())
@@ -262,6 +282,8 @@ fn var_row(
     cell: Option<&CellState>,
     v: usize,
 ) {
+    assert!(id.starts_with("docs.b."), "a block's node: {id}");
+    assert!(!name.is_empty(), "a var block is named");
     let row = format!("{id}.row");
     node(t, &row, "panel", id);
     attr(t, "style", "docs-var");
@@ -278,7 +300,8 @@ fn var_row(
     attr(t, "value", expr);
     attr(t, "command", "docs.var_ok");
     attr(t, "style", "docs-expr");
-    let Some((val, unverified)) = cell.and_then(|c| var_value(c, name, v)) else {
+    let Some(cell) = cell else { return };
+    let Some((val, unverified)) = var_value(cell, name, v) else {
         return;
     };
     let (text, ok) = match val {
@@ -286,7 +309,7 @@ fn var_row(
         Val::Upstream => ("(an input has an error)".to_owned(), false),
         _ => {
             let shown = value_text(val, unit.unwrap_or(""));
-            match bound_status(val, min, max, cell.expect("value implies a cell")) {
+            match bound_status(val, min, max, cell) {
                 Some(why) => (format!("= {shown}  ({why})"), false),
                 None => (format!("= {shown}"), true),
             }

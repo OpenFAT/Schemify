@@ -107,6 +107,10 @@ impl Sim {
     /// expression, autoscaled. Kept when the expressions and the selection did not change.
     ///
     /// Cost: reads and parses the overlaid jobs' raw files (the selected one is cached).
+    ///
+    /// # Panics
+    ///
+    /// Never: the overlay is cut to [`OVERLAY_JOBS`] jobs and the plots to [`PLOTS_MAX`].
     pub fn refresh_plots(&mut self, exprs: &[String]) {
         let same = self.plots.len() == exprs.len()
             && self.plots.iter().zip(exprs).all(|(p, e)| p.expr == *e);
@@ -177,6 +181,7 @@ impl Sim {
     /// Rows plugins read as the `Results` snapshot: one per finished job and output of the
     /// run that last finished a plugin's job (else the shown run); `pass` is the verdict of
     /// the output's spec (1 pass, 2 fail, 0 unknown or no spec; a spec names one output).
+    #[must_use]
     pub fn result_rows(&self) -> crate::plugins::ResultRows {
         let run = self
             .snapshot
@@ -249,6 +254,10 @@ impl Sim {
     ///
     /// Cost: O(jobs · (outputs + specs)) text building plus an O(rows log rows) sort, only
     /// after a change.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that the sort order is total.
     pub fn refresh_table(&mut self) {
         if !self.table.dirty {
             return;

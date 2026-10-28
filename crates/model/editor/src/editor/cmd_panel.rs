@@ -88,12 +88,15 @@ impl Editor {
             }
             Cmd::CellPinUp | Cmd::CellPinDown => {
                 let node = if node.is_empty() { arg } else { node };
-                let up = cmd == Cmd::CellPinUp;
-                let action = if up { "up" } else { "down" };
+                let (toward, action) = if cmd == Cmd::CellPinUp {
+                    (crate::edit::Toward::Earlier, "up")
+                } else {
+                    (crate::edit::Toward::Later, "down")
+                };
                 let Some(r) = cell::button_row(node, "pin", action) else {
                     return false;
                 };
-                let ops = self.with_doc(h, |d, _| cell::move_pin_ops(d, r, up));
+                let ops = self.with_doc(h, |d, _| cell::move_pin_ops(d, r, toward));
                 self.commit(reqs, h, "reorder pins", ops);
             }
             Cmd::CellSyncPorts | Cmd::CellSymbolFromPorts => {
@@ -138,7 +141,7 @@ impl Editor {
                     self.session.say("sync pins: nothing pending");
                     return true;
                 };
-                let ops = self.with_doc(h, |d, _| cell::sync_ops(d, &p.ports).1);
+                let ops = self.with_doc(h, |d, _| cell::sync_ops(d, &p.ports).ops);
                 if ops.is_empty() {
                     self.session.say("pins already match the ports");
                 }
@@ -206,10 +209,17 @@ impl Editor {
                     self.session.say("select a docs block first");
                     return true;
                 };
-                let up = cmd == Cmd::DocsUp;
-                let ops = self.with_doc(h, |d, _| docs::move_block(d, row, up));
+                let toward = if cmd == Cmd::DocsUp {
+                    crate::edit::Toward::Earlier
+                } else {
+                    crate::edit::Toward::Later
+                };
+                let ops = self.with_doc(h, |d, _| docs::move_block(d, row, toward));
                 if !ops.is_empty() {
-                    self.page.sel = Some(if up { row - 1 } else { row + 1 });
+                    self.page.sel = Some(match toward {
+                        crate::edit::Toward::Earlier => row - 1,
+                        crate::edit::Toward::Later => row + 1,
+                    });
                 }
                 self.commit_docs(reqs, h, "move block", ops);
             }

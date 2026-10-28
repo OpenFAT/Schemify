@@ -26,6 +26,8 @@
 //! - `Session::pop_level`
 //! - `pub(super) fn cut`
 
+use std::mem;
+
 use schemify_canvas::Camera;
 use schemify_doc::{DocHandle, TableId};
 use schemify_format::FileKind;
@@ -50,6 +52,10 @@ pub struct TabView<'a> {
 
 impl Session {
     /// Opens a new tab showing `doc` (or switches to the tab already showing it at top).
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that the active tab shows a level.
     pub fn open_tab(&mut self, doc: DocHandle, view: View) {
         if let Some(i) = self
             .tabs
@@ -87,6 +93,10 @@ impl Session {
 
     /// Shows `view` in a read-only text tab made from the active level (a tab already
     /// showing the same file is replaced and activated).
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that the active tab is a text tab.
     pub fn open_text_tab(&mut self, view: TextView) {
         let Some(level) = self.level().cloned() else {
             return;
@@ -116,12 +126,17 @@ impl Session {
     }
 
     /// The status line: the message the last step left (last wins).
+    #[must_use]
     pub fn status(&self) -> &str {
         &self.status
     }
 
     /// Sets the status line; the newest message wins. A message past [`STATUS_MAX`] bytes is
     /// cut at a character boundary (a plugin's error text is untrusted in length).
+    ///
+    /// # Panics
+    ///
+    /// Never: the message is cut to [`STATUS_MAX`] bytes.
     pub fn say(&mut self, msg: impl Into<String>) {
         self.status = msg.into();
         cut(&mut self.status);
@@ -131,28 +146,37 @@ impl Session {
     /// Takes the status line and leaves it empty: a step that runs a command on a clean
     /// line and puts the old message back when the command says nothing.
     pub fn take_status(&mut self) -> String {
-        let s = std::mem::take(&mut self.status);
-        assert!(self.status.is_empty());
-        s
+        mem::take(&mut self.status)
     }
 
     /// The text view of the active tab, if it is one.
+    #[must_use]
     pub fn text_view(&self) -> Option<&TextView> {
         self.tabs.get(self.active).and_then(|t| t.text.as_ref())
     }
 
     /// The open tabs, in tab-bar order.
+    #[must_use]
     pub fn tabs(&self) -> &[Tab] {
         &self.tabs
     }
 
     /// The active tab's index (`< tabs().len()` once a tab is open).
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that the index names an open tab when one is open.
+    #[must_use]
     pub fn active(&self) -> usize {
         assert!(self.tabs.is_empty() || self.active < self.tabs.len());
         self.active
     }
 
     /// Makes tab `i` the active one.
+    ///
+    /// # Panics
+    ///
+    /// If `i` is not an open tab.
     pub fn switch_tab(&mut self, i: usize) {
         assert!(i < self.tabs.len(), "tab {i} of {}", self.tabs.len());
         self.active = i;
@@ -164,6 +188,10 @@ impl Session {
     /// # Errors
     ///
     /// The new schematic cannot be created (the tab is closed regardless).
+    ///
+    /// # Panics
+    ///
+    /// If no tab is open.
     pub fn close_active_tab(&mut self) -> Result<(), String> {
         assert!(self.active < self.tabs.len(), "an active tab to close");
         self.tabs.remove(self.active);
@@ -192,6 +220,10 @@ impl Session {
     }
 
     /// Sets the active level's camera.
+    ///
+    /// # Panics
+    ///
+    /// If `cam.scale` is not positive.
     pub fn set_camera(&mut self, cam: Camera) {
         assert!(cam.scale > 0.0, "a positive zoom");
         if let Some(l) = self.level_mut() {
@@ -227,6 +259,10 @@ impl Session {
     /// Shows `doc` in `view` at the active level: the selection and the partial ends are
     /// dropped (they name another document's rows), and with `refit` the camera too (the
     /// first build fits it). Returns whether a selection was dropped.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that the selection and the partial ends were dropped.
     pub fn show(&mut self, doc: DocHandle, view: View, refit: bool) -> bool {
         let Some(l) = self.level_mut() else {
             return false;
@@ -244,6 +280,7 @@ impl Session {
     }
 
     /// The level shown in the active tab.
+    #[must_use]
     pub fn level(&self) -> Option<&Level> {
         self.tabs.get(self.active).and_then(|t| t.stack.last())
     }
@@ -257,6 +294,7 @@ impl Session {
     }
 
     /// Hierarchy path of the active tab, xschem style (`.x1.x2.`).
+    #[must_use]
     pub fn hier_path(&self) -> String {
         let mut s = String::from(".");
         if let Some(t) = self.tabs.get(self.active) {

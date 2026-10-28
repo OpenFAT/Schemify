@@ -21,8 +21,10 @@ pub(super) const SFNTS_MAX: usize = 65_534;
 /// # Panics
 ///
 /// Panics if `b` is inverted.
+#[must_use]
 pub fn eps(prims: &CanvasPrims, b: [i32; 4], look: &Look, page: Page) -> String {
-    assert!(b[0] <= b[2] && b[1] <= b[3], "inverted bounds");
+    assert!(b[0] <= b[2], "inverted bounds: x0 {} > x1 {}", b[0], b[2]);
+    assert!(b[1] <= b[3], "inverted bounds: y0 {} > y1 {}", b[1], b[3]);
     let size = page.points();
     let mut used = Used::default();
     let body = page_ops(prims, b, look, size, Lang::Ps, &mut used);
@@ -30,7 +32,7 @@ pub fn eps(prims: &CanvasPrims, b: [i32; 4], look: &Look, page: Page) -> String 
         .iter()
         .enumerate()
         .filter(|(_, glyphs)| !glyphs.is_empty())
-        .map(|(f, glyphs)| type42(f as u8, glyphs))
+        .map(|(f, glyphs)| type42(u8::try_from(f).expect("two UI faces"), glyphs))
         .collect();
     let out = format!(
         "%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 {} {}\n%%Creator: Schemify\n%%LanguageLevel: 2\n%%EndComments\n{fonts}gsave\n{body}grestore\nshowpage\n%%EOF\n",

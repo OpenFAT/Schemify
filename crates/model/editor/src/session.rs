@@ -153,6 +153,7 @@ struct Docs {
 /// `cell` is the cell's path in its library with or without its extension (`inv`,
 /// `inv.shcomp`, `sub/amp`). `None` when no indexed cell matches. Cost: one pass over the
 /// cell index.
+#[must_use]
 pub fn find_cell(p: &Project, name: &str) -> Option<usize> {
     let (lib, rest) = name.split_once(':').unwrap_or(("", name));
     let cells = p.cells();
@@ -199,6 +200,10 @@ impl Session {
     /// # Errors
     ///
     /// A file does not parse or an open document's library is gone; nothing changed then.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks one directory per library row.
     pub fn reload(&mut self) -> Result<(), String> {
         let (lib_dir, notes) = libs::reload(&mut self.project, &self.root)?;
         self.kept = None; // the new index may have read other bytes
@@ -209,12 +214,18 @@ impl Session {
     }
 
     /// Returns the directory of library row `lib`, if it is local.
+    #[must_use]
     pub fn lib_dir(&self, lib: u8) -> Option<&Path> {
         self.lib_dir.get(usize::from(lib))?.as_deref()
     }
 
     /// The directory of every library row, the project root standing in for libraries
     /// that are not local (a runner's `lib_dirs`: sources are compiled from them).
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks one directory per library row.
+    #[must_use]
     pub fn lib_dirs(&self) -> Vec<PathBuf> {
         let dirs: Vec<PathBuf> = self
             .lib_dir
@@ -232,6 +243,7 @@ impl Session {
     }
 
     /// The open document read from `path`, if any.
+    #[must_use]
     pub fn handle_of(&self, path: &Path) -> Option<DocHandle> {
         let i = self.docs.path.iter().position(|p| p == path)?;
         let h = self.docs.handle[i];
@@ -239,11 +251,13 @@ impl Session {
     }
 
     /// File path of an open document; `None` once `h` is closed.
+    #[must_use]
     pub fn path(&self, h: DocHandle) -> Option<&Path> {
         self.row(h).map(|i| self.docs.path[i].as_path())
     }
 
     /// Display name of an open document (file name).
+    #[must_use]
     pub fn name(&self, h: DocHandle) -> String {
         self.path(h)
             .and_then(|p| p.file_name())
@@ -252,6 +266,7 @@ impl Session {
 
     /// Edit epoch of an open document: changes on every commit, undo, redo or reload, so
     /// derived data (scene, symbol cache) knows when to rebuild.
+    #[must_use]
     pub fn epoch(&self, h: DocHandle) -> u32 {
         self.row(h).map_or(0, |i| self.docs.epoch[i])
     }

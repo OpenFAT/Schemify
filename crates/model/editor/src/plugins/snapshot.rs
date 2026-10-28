@@ -7,6 +7,10 @@
 //! - `pub(super) fn fill_violations`
 //! - `Host::snapshot`
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::ops::Range;
+
 use schemify_doc::{Cursor, DocHandle, Project};
 use schemify_elab::{CellState, Name};
 use schemify_plugin::Snapshots;
@@ -28,10 +32,19 @@ pub(super) struct Filled {
     /// What the Wires and Labels net columns hold (`None`: unknown, refill them).
     pub(super) wire_net: Option<Vec<u32>>,
     pub(super) label_net: Option<Vec<u32>>,
-    /// The Nets columns as filled: name, width, global, pin count.
-    pub(super) nets: (Vec<Name>, Vec<u16>, Vec<bool>, Vec<u32>),
+    /// The Nets columns as filled.
+    pub(super) nets: NetShadow,
     /// What the Results table was filled from.
     pub(super) results: Option<u64>,
+}
+
+/// The Nets snapshot columns as last filled, one row per component.
+#[derive(Debug, Default)]
+pub(super) struct NetShadow {
+    pub(super) name: Vec<Name>,
+    pub(super) width: Vec<u16>,
+    pub(super) global: Vec<bool>,
+    pub(super) pins: Vec<u32>,
 }
 
 /// Snapshot groups [`Host::snapshot`] refills independently: Instances; Wires and Labels
@@ -40,16 +53,16 @@ pub(super) struct Filled {
 const GROUPS: usize = 7;
 
 /// Writes nets `rows` of `c` over Nets rows `at`.
-pub(super) fn fill_nets(
-    s: &mut Snapshots,
-    c: &CellState,
-    at: std::ops::Range<usize>,
-    rows: std::ops::Range<usize>,
-) {
+pub(super) fn fill_nets(s: &mut Snapshots, c: &CellState, at: Range<usize>, rows: Range<usize>) {
     if at.is_empty() && rows.is_empty() {
         return;
     }
+    assert!(
+        at.end <= s.rows(Table::Nets) as usize,
+        "rows {at:?} of the Nets table"
+    );
     let n = &c.nets;
+    assert!(rows.end <= n.net_name.len(), "nets {rows:?} of the cell");
     let names: Vec<&str> = n.net_name[rows.clone()]
         .iter()
         .map(|&x| c.names.get(x))
@@ -73,12 +86,20 @@ pub(super) fn fill_nets(
 pub(super) fn fill_violations(
     s: &mut Snapshots,
     c: &CellState,
-    at: std::ops::Range<usize>,
-    rows: std::ops::Range<usize>,
+    at: Range<usize>,
+    rows: Range<usize>,
 ) {
     if at.is_empty() && rows.is_empty() {
         return;
     }
+    assert!(
+        at.end <= s.rows(Table::Violations) as usize,
+        "rows {at:?} of Violations"
+    );
+    assert!(
+        rows.end <= c.violations.rows.len(),
+        "violations {rows:?} of the cell"
+    );
     let v = &c.violations.rows[rows];
     let codes: Vec<&str> = v.iter().map(|r| r.code.as_str()).collect();
     s.splice_strings(Table::Violations, col::violations::CODE, at.clone(), &codes);
@@ -118,7 +139,10 @@ impl Host {
     /// are compared with the previous pass's rows (refilled when `cell` does not continue
     /// it). Cost: O(changed rows) for the document tables, one compare pass over the net
     /// columns, nets and violations, plus the rows written (or the selection).
-    #[allow(clippy::too_many_arguments)]
+    ///
+    /// # Panics
+    ///
+    /// `h` names a document past `doc::DOCS_MAX` ([`doc_id`]).
     pub fn snapshot(
         &mut self,
         project: &Project,
@@ -156,10 +180,15 @@ impl Host {
         let empty: Vec<&str> = vec![""; handles.len()];
         s.fill_strings(Table::Docs, col::docs::PATH, &empty);
         s.fill_strings(Table::Docs, col::docs::CELL, &empty);
-        let Some(doc) = h.and_then(|h| project.doc(h)) else {
+        assert_eq!(
+            s.rows(Table::Docs) as usize,
+            handles.len(),
+            "one Docs row per document"
+        );
+        let Some((h, doc)) = h.and_then(|h| Some((h, project.doc(h)?))) else {
             return;
         };
-        let id = doc_id(h.expect("doc implies handle"));
+        let id = doc_id(h);
         // The document groups follow the document's change log from the last fill; the
         // elab groups follow the check pass, compared with what was filled.
         let changes = self
@@ -177,6 +206,16 @@ impl Host {
         }
         self.filled.doc = Some((id, doc.cursor()));
         sync_cell_groups(s, id, cell, &mut self.filled);
+        assert_eq!(
+            s.rows(Table::Wires) as usize,
+            doc.wires().id.len(),
+            "Wires in step"
+        );
+        assert_eq!(
+            s.rows(Table::Labels) as usize,
+            doc.labels().id.len(),
+            "Labels in step"
+        );
         let rk = hash_of(results);
         if self.filled.results.replace(rk) != Some(rk) {
             let mut stale = [false; GROUPS];
@@ -210,6 +249,10 @@ fn fill_groups(
     results: &ResultRows,
     stale: [bool; GROUPS],
 ) {
+    assert!(
+        stale.iter().any(|&g| g),
+        "a fill refreshes at least one group"
+    );
     let st = doc.strings();
     let (inst, w, l) = (doc.instances(), doc.wires(), doc.labels());
     // Net ids are elab's component rows; u32::MAX = not elaborated.
@@ -306,10 +349,10 @@ fn fill_groups(
         s.fill_strings(Table::Results, col::results::VALUE, &vals);
         let pass: Vec<u8> = results.iter().map(|r| r.3).collect();
         s.fill::<u8>(Table::Results, col::results::PASS, &pass);
+        assert_eq!(s.rows(Table::Results) as usize, results.len());
     }
     // The caller completes the tables (a document group refilled without its net column
     // waits for `sync_cell_groups`) and checks them.
-    debug_assert!(stale.iter().any(|&g| g));
 }
 
 /// A snapshot's debug text without its table epochs (they count fills, not content).
@@ -326,9 +369,8 @@ fn without_epochs(text: &str) -> String {
 }
 
 /// The std hash of `v`.
-fn hash_of(v: impl std::hash::Hash) -> u64 {
-    use std::hash::Hasher;
-    let mut h = std::collections::hash_map::DefaultHasher::new();
+fn hash_of(v: impl Hash) -> u64 {
+    let mut h = DefaultHasher::new();
     v.hash(&mut h);
     h.finish()
 }

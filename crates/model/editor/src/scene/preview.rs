@@ -20,6 +20,10 @@ use super::{LAYER_SEL, PIN_HALF, Scene, UNIT};
 /// (move and copy previews; texts included, so a moving label shows its name), in table then
 /// row order, from the selection's rows ([`selected_prims`](super::selected_prims) of `sc`). Cost: O(selected
 /// primitives).
+///
+/// # Panics
+///
+/// Never: the assert checks that primitives are only appended.
 pub fn push_moved(sc: &Scene, rows: &[(u8, u32)], x: Xform, out: &mut CanvasPrims) {
     let p = &sc.prims;
     let before = out.len();

@@ -9,16 +9,21 @@ use schemify_doc::{Document, Loc, TableId};
 use crate::docs::{attr, node};
 
 use super::panel::{block, button, dropdown, input, note, section};
-use super::{ALGOS, Bench, attr_of, joined, record_count};
+use super::{ALGOS, Bench, attr_of, joined, record_count, row_u32};
 
 /// The Outputs, Specs and Optimizers sections of a `.shbench`.
 pub(super) fn bench_sections(t: &mut String, doc: &Document) {
+    assert!(
+        !t.is_empty(),
+        "the bench sections follow the panel's header"
+    );
+    let start = t.len();
     let rows = |b: Bench| record_count(doc, b.table());
     section(t, "cell.s.output", "Outputs (one number per job)");
     for r in 0..rows(Bench::Output) {
         let rec = doc.record(Loc {
             table: TableId::Outputs,
-            row: r as u32,
+            row: row_u32(r),
         });
         let blk = block(t, &format!("cell.output.{r}"));
         input(
@@ -59,7 +64,7 @@ pub(super) fn bench_sections(t: &mut String, doc: &Document) {
     for r in 0..rows(Bench::Spec) {
         let rec = doc.record(Loc {
             table: TableId::Specs,
-            row: r as u32,
+            row: row_u32(r),
         });
         let blk = block(t, &format!("cell.spec.{r}"));
         node(t, &format!("cell.spec.{r}.title"), "label", &blk);
@@ -96,7 +101,7 @@ pub(super) fn bench_sections(t: &mut String, doc: &Document) {
     for r in 0..rows(Bench::Optimize) {
         let rec = doc.record(Loc {
             table: TableId::Optimizes,
-            row: r as u32,
+            row: row_u32(r),
         });
         let blk = block(t, &format!("cell.opt.{r}"));
         node(t, &format!("cell.opt.{r}.title"), "label", &blk);
@@ -157,5 +162,9 @@ pub(super) fn bench_sections(t: &mut String, doc: &Document) {
         "cell.add_bench",
         "Add an optimizer setup",
         "cell.page",
+    );
+    assert!(
+        t.len() > start,
+        "three sections and their add buttons were written"
     );
 }

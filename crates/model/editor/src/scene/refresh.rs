@@ -232,6 +232,10 @@ pub(super) fn drawn(t: TableId) -> bool {
 ///
 /// Cost: O((touched + revalued objects) · (log rows + their primitives)), plus the index
 /// inserts.
+///
+/// # Panics
+///
+/// If a key of `revalued` is not an instance, or two objects share a key.
 pub fn update(
     sc: &mut Scene,
     project: &Project,

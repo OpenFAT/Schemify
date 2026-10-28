@@ -205,16 +205,19 @@ impl Objects {
     }
 
     /// Number of objects.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.key.len()
     }
 
     /// True when the scene has no objects.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.key.is_empty()
     }
 
     /// Normalized bounding box of object `i`.
+    #[must_use]
     pub fn bbox(&self, i: usize) -> [i32; 4] {
         let g = self.geom[i];
         [
@@ -242,6 +245,7 @@ impl std::hash::Hasher for KeyHasher {
 
 impl Scene {
     /// Object index of `key`, if drawn.
+    #[must_use]
     pub fn find(&self, key: ObjKey) -> Option<u32> {
         let o = self.index.get(&pack(key)).copied();
         debug_assert!(o.is_none_or(|o| self.objs.key[o as usize] == key));
@@ -253,6 +257,7 @@ impl Scene {
     /// appended since, every change of `prims` in that time (a canvas diffs them as
     /// `TableChange::Rows`). `None` when a [`build`] made
     /// the tables anew in that time.
+    #[must_use]
     pub fn edits(&self) -> Option<&[Vec<u32>; 6]> {
         self.killed.as_ref()
     }
@@ -261,12 +266,12 @@ impl Scene {
     pub fn clear_edits(&mut self) {
         let k = self.killed.get_or_insert_with(Default::default);
         k.iter_mut().for_each(Vec::clear);
-        assert!(self.edits().is_some_and(|k| k.iter().all(Vec::is_empty)));
     }
 
     /// The objects the last [`update`] removed or stamped (sorted, a key may no longer be
     /// drawn), or `None` when the last change was a [`build`]: what a derived table keyed by
     /// object follows when [`Scene::generation`] moved by exactly one.
+    #[must_use]
     pub fn touched(&self) -> Option<&[ObjKey]> {
         self.touched.as_deref()
     }

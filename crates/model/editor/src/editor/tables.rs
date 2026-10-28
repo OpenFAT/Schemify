@@ -121,6 +121,10 @@ impl Editor {
     }
     /// Shows `view` in a read-only text tab (the request a netlist or report command makes;
     /// a tab already showing the same file is replaced). Drawn from the next frame.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that at most one tab opened.
     pub fn open_text_tab(&mut self, view: crate::session::TextView) {
         let tabs = self.session.tabs().len();
         self.session.open_text_tab(view);
@@ -129,6 +133,10 @@ impl Editor {
     }
     /// Sets the scroll offset of the UI node named `id` (as a wheel or scrollbar drag
     /// would), clamped to `[0, max]`; layout reads it on the next frame.
+    ///
+    /// # Panics
+    ///
+    /// If `offset` or `max` is NaN.
     pub fn set_scroll(&mut self, id: schemify_ui::Sym, offset: f32, max: f32) {
         assert!(
             !offset.is_nan() && !max.is_nan(),

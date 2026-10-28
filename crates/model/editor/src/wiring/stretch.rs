@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use schemify_doc::{DocHandle, Document, Op, Project, TableId, Target};
 use schemify_format::RecordKind;
 
-use crate::edit::{self, Ids};
+use crate::edit::{self, FreshId, Ids};
 use crate::geometry::{Pt, Xform};
 use crate::scene::ObjKey;
 
@@ -182,7 +182,10 @@ pub fn stretch(
         });
         for leg in legs[1..].windows(2) {
             if added < budget {
-                let (nid, raw) = ids.draw(doc);
+                let FreshId {
+                    text: nid,
+                    key: raw,
+                } = ids.draw(doc);
                 out.ops.push(Op::Insert {
                     rec: wire_rec(&nid, leg[0], leg[1], &rec.attrs),
                     at: None,
@@ -217,7 +220,10 @@ pub fn stretch(
                 continue;
             }
             for leg in route(m, to, manhattan).windows(2) {
-                let (nid, raw) = ids.draw(doc);
+                let FreshId {
+                    text: nid,
+                    key: raw,
+                } = ids.draw(doc);
                 out.ops.push(Op::Insert {
                     rec: wire_rec(&nid, leg[0], leg[1], &[]),
                     at: None,

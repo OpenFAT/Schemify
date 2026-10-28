@@ -392,6 +392,10 @@ impl Editor {
     /// One frame: input in, tables updated. Returns whether the picture changed. `now_ms`
     /// is a monotonic clock (double-click detection, waves UI, plugin timers). An empty
     /// `events` is a tick ([`Editor::wake_ms`]): it polls the run and plugin completions.
+    ///
+    /// # Panics
+    ///
+    /// If a `viewport` dimension is negative.
     pub fn update(&mut self, events: &InputEvents, viewport: (f32, f32), now_ms: u64) -> bool {
         assert!(viewport.0 >= 0.0 && viewport.1 >= 0.0, "negative viewport");
         self.now = now_ms;

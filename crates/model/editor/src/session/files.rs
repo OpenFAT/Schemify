@@ -34,6 +34,10 @@ impl Session {
     /// # Errors
     ///
     /// The file cannot be read or does not parse.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that the returned handle is open.
     pub fn open_file(&mut self, lib: u8, relpath: &str) -> Result<DocHandle, String> {
         let dir = self
             .lib_dir
@@ -104,6 +108,10 @@ impl Session {
     /// # Errors
     ///
     /// As [`Session::open_file`].
+    ///
+    /// # Panics
+    ///
+    /// If `row` is not a row of the current cell index (a row kept across a re-index).
     pub fn open_cell(&mut self, row: usize) -> Result<DocHandle, String> {
         let cells = self.project.cells();
         assert!(row < cells.lib.len(), "cell row from a previous index");
@@ -153,6 +161,10 @@ impl Session {
 
     /// Recovers (`true`: replays the journal's unsaved edits) or discards the offer of `h`,
     /// writes the journal, and reports the outcome in the status line.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that `h` left the recovery list.
     pub fn decide_recovery(&mut self, h: DocHandle, recover: bool) {
         let Some(i) = self.recovery.iter().position(|r| r.0 == h) else {
             return;
@@ -179,6 +191,10 @@ impl Session {
 
     /// Closes `h` dropping its unsaved edits and its journal (Save As moved them to another
     /// file). Tabs must no longer show it.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that `h` was closed.
     pub fn close_discarding(&mut self, h: DocHandle) {
         if let Some(path) = self.path(h).map(Path::to_path_buf) {
             self.drop_journal(&path);
@@ -198,6 +214,10 @@ impl Session {
     /// Re-indexes the local library whose directory holds `path` (a file was written or
     /// deleted there), so choosers and `lib:cell` references see it. Cell rows shift: callers
     /// drop anything keyed by row (the symbol cache).
+    ///
+    /// # Panics
+    ///
+    /// Never: `lib_of` matches local libraries only.
     pub fn reindex(&mut self, path: &Path) {
         let Some((row, _)) = self.lib_of(path) else {
             return;
@@ -222,6 +242,10 @@ impl Session {
     /// # Errors
     ///
     /// `doc` refuses (too many documents).
+    ///
+    /// # Panics
+    ///
+    /// If `kind` is not `Shcomp` or `Shprim`.
     pub fn create(&mut self, kind: FileKind) -> Result<DocHandle, String> {
         assert!(matches!(kind, FileKind::Shcomp | FileKind::Shprim));
         let ext = kind.word();
@@ -284,6 +308,10 @@ impl Session {
     /// # Errors
     ///
     /// `doc` refuses (read-only, conflict, kind rules) or the write fails.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that a saved document is clean.
     pub fn save(&mut self, h: DocHandle) -> Result<bool, String> {
         let req = self
             .project

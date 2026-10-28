@@ -136,6 +136,10 @@ impl Editor {
     /// Borrows the tables of the next painted frame. Call after [`Editor::update`]; the
     /// borrow ends before the next one. A PNG export ([`Editor::take_raster`]) draws from
     /// the same picture's canvas.
+    ///
+    /// # Panics
+    ///
+    /// If the grid pitch in the options is not positive or the viewport height is negative.
     pub fn picture(&mut self) -> Picture<'_> {
         let text_tab = self.session.text_view().is_some();
         let (view, cam, palette) = (self.canvas_rect(), self.camera(), self.view_palette());
@@ -207,12 +211,14 @@ impl Editor {
 
     /// The PNG export the last command asked for, if any (one at a time).
     pub fn take_raster(&mut self) -> Option<Raster> {
-        let r = self.raster.take();
-        assert!(self.raster.is_none());
-        r
+        self.raster.take()
     }
 
     /// Writes the PNG `bytes` of `r` (or reports why there are none) and sets the status.
+    ///
+    /// # Panics
+    ///
+    /// If `r` is smaller than 1 × 1 px.
     pub fn rastered(&mut self, r: &Raster, bytes: Result<Vec<u8>, String>) {
         assert!(r.w >= 1.0 && r.h >= 1.0, "a drawable raster");
         // Web: a download (web spec §3).
@@ -228,6 +234,10 @@ impl Editor {
 impl Editor {
     /// Where the input method's candidate window goes (the focused text field), in logical
     /// px: `(x, y, w, h)`.
+    ///
+    /// # Panics
+    ///
+    /// Never: layout gives every node a non-negative size.
     pub fn ime_area(&self) -> Option<(f32, f32, f32, f32)> {
         let s = &self.shell;
         let r = s.ui.ime_area(&s.tables, &s.layout)?;

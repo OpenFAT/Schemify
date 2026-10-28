@@ -12,18 +12,23 @@ use std::path::{Path, PathBuf};
 use schemify_doc::{DocHandle, Project};
 use schemify_elab::{CellState, Funcs, Val};
 use schemify_expr::{Code as XCode, Error as XError, Mode, Program, Scratch, Span, Value};
+use schemify_plugin::IoOp;
 use schemify_plugin::abi::{Code, Event, Level};
-use schemify_plugin::{IoOp, deliver};
 
 use crate::platform;
 
-use super::{Delivered, Host, ROUNDS_MAX, WAITING_MAX, handle_of};
+use super::{Child, Delivered, Host, PluginEdit, ROUNDS_MAX, Timer, WAITING_MAX, handle_of};
 
 impl Host {
     /// The spine's `plugin::deliver` plus queue draining, at most `ROUNDS_MAX` (4) rounds:
     /// file I/O completes within the frame; `spawn` starts a child whose `IoDone` comes
     /// through [`Host::poll`]; timers are armed against `now_ms`; run requests go out in
     /// [`Delivered::runs`].
+    ///
+    /// # Panics
+    ///
+    /// Only on a broken internal invariant (a waiting table past [`WAITING_MAX`], or more
+    /// cell states built than the rounds' evals).
     pub fn deliver(&mut self, project: &Project, root: &Path, now_ms: u64) -> Delivered {
         if !self.user_ready {
             self.user_ready = true;
@@ -52,7 +57,7 @@ impl Host {
             if !self.has_work() {
                 break;
             }
-            deliver(
+            schemify_plugin::deliver(
                 &mut self.plugins,
                 &self.events,
                 &mut self.snapshots,
@@ -66,7 +71,12 @@ impl Host {
                     continue;
                 };
                 let stage = e.mode == schemify_plugin::abi::EditMode::Stage;
-                out.edits.push((h, e.label, e.ops, stage));
+                out.edits.push(PluginEdit {
+                    doc: h,
+                    label: e.label,
+                    ops: e.ops,
+                    stage,
+                });
             }
             for l in self.queues.logs.drain(..) {
                 out.failed |= l.level == Level::Error;
@@ -75,7 +85,11 @@ impl Host {
             }
             for t in self.queues.timers.drain(..) {
                 if self.timers.len() < WAITING_MAX {
-                    self.timers.push((now_ms + u64::from(t.ms), t.plugin, t.id));
+                    self.timers.push(Timer {
+                        due_ms: now_ms + u64::from(t.ms),
+                        plugin: t.plugin,
+                        id: t.id,
+                    });
                 } else {
                     out.logs.push(format!("{}: too many timers", t.plugin));
                 }
@@ -96,7 +110,11 @@ impl Host {
             for r in io {
                 if r.op == IoOp::Spawn && self.children.len() < WAITING_MAX {
                     let child = platform::spawn_start(root, r.args, r.data);
-                    self.children.push((r.plugin, r.handle, child));
+                    self.children.push(Child {
+                        plugin: r.plugin,
+                        handle: r.handle,
+                        process: child,
+                    });
                     continue;
                 }
                 let (status, bytes) = if r.op == IoOp::Spawn {
@@ -143,6 +161,8 @@ impl Host {
         }
         self.faults_seen = health.recorded();
         assert!(states.len() <= ROUNDS_MAX as usize * schemify_plugin::EVALS_MAX);
+        assert!(self.timers.len() <= WAITING_MAX);
+        assert!(self.children.len() <= WAITING_MAX);
         out
     }
 
@@ -171,6 +191,10 @@ impl Host {
         let Some(st) = &states[i].1 else {
             return (Code::Gone.neg(), "document closed".to_owned());
         };
+        assert!(
+            states.iter().filter(|s| s.0 == h).count() == 1,
+            "one state per document"
+        );
         let mut funcs = |name: &str, args: &[Value<'_>]| self.call_fn(name, args);
         match eval_in(st, expr, &mut funcs) {
             Ok(text) => (0, text),
@@ -189,6 +213,10 @@ impl Host {
 ///
 /// The compile or evaluation error of `expr`; `X004` also for a name whose own value failed
 /// in the cell (its error is the cell's violation, not this expression's).
+///
+/// # Panics
+///
+/// Never: the asserts check the slots of the compiled program.
 pub fn eval_in<F: Funcs>(st: &CellState, expr: &str, funcs: &mut F) -> Result<String, XError> {
     let prog = Program::compile(expr, Mode::Scalar)?;
     let g = &st.graph;
@@ -255,6 +283,14 @@ pub fn fn_result(t: &str) -> Option<Val> {
 /// Executes an authorized I/O request natively (project-relative paths were checked by the
 /// host). Returns the `IoDone` status and bytes.
 fn run_io(root: &Path, op: IoOp, args: &[String], data: &[u8]) -> (i32, Vec<u8>) {
+    let file_op = matches!(
+        op,
+        IoOp::FsRead | IoOp::FsList | IoOp::FsWrite | IoOp::FsRemove
+    );
+    assert!(
+        !file_op || !args.is_empty(),
+        "the host checked a file request names its path"
+    );
     let denied = -(schemify_plugin::abi::Code::Denied as i32);
     let gone = -(schemify_plugin::abi::Code::Gone as i32);
     // A read path: project-relative, or `${NAME}/…` under the variable's directory (the

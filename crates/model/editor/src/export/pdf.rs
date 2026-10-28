@@ -41,6 +41,11 @@ pub(super) fn ascii85(bytes: &[u8]) -> String {
         }
     }
     out.push_str("~>");
+    assert!(out.is_ascii(), "ASCII85 digits are `!`..`u` and `z`");
+    assert!(
+        out.len() >= bytes.len().div_ceil(4) + 2,
+        "a digit or more per word, then `~>`"
+    );
     out
 }
 
@@ -54,6 +59,7 @@ pub(super) fn ascii85(bytes: &[u8]) -> String {
 /// # Panics
 ///
 /// Panics if `pages` is empty or a bound is inverted.
+#[must_use]
 pub fn pdf(pages: &[(&CanvasPrims, [i32; 4])], look: &Look, page: Page) -> Vec<u8> {
     use std::fmt::Write;
     assert!(!pages.is_empty(), "a PDF has at least one page");
@@ -62,7 +68,8 @@ pub fn pdf(pages: &[(&CanvasPrims, [i32; 4])], look: &Look, page: Page) -> Vec<u
     let contents: Vec<String> = pages
         .iter()
         .map(|(prims, b)| {
-            assert!(b[0] <= b[2] && b[1] <= b[3], "inverted bounds");
+            assert!(b[0] <= b[2], "inverted bounds: x0 {} > x1 {}", b[0], b[2]);
+            assert!(b[1] <= b[3], "inverted bounds: y0 {} > y1 {}", b[1], b[3]);
             page_ops(prims, *b, look, size, Lang::Pdf, &mut used)
         })
         .collect();
@@ -136,6 +143,7 @@ pub fn pdf(pages: &[(&CanvasPrims, [i32; 4])], look: &Look, page: Page) -> Vec<u
 /// The `ToUnicode` CMap of the glyphs one face prints, so viewers extract and search the text.
 fn to_unicode(glyphs: &Glyphs) -> String {
     use std::fmt::Write;
+    assert!(!glyphs.is_empty(), "only a face that prints gets a map");
     let rows: Vec<(u16, char)> = glyphs
         .iter()
         .filter(|(g, _)| **g != 0)
@@ -161,6 +169,7 @@ fn to_unicode(glyphs: &Glyphs) -> String {
         s.push_str("endbfchar\n");
     }
     s.push_str("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
+    assert_eq!(s.matches("beginbfchar").count(), rows.len().div_ceil(100));
     s
 }
 

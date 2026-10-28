@@ -19,16 +19,26 @@ use super::bench_panel::bench_sections;
 use super::ops::{add_impl_ops, sync_ops};
 use super::{
     ADD_LANGS, DIALECTS, PARAM_ATTRS, PARAM_KINDS, PIN_DIRS, PIN_DOMAINS, PortSync, SyncPlan,
-    attr_of, body_row, body_text, names,
+    attr_of, body_row, body_text, names, row_u32,
 };
 
 /// Projects `doc` into the panel: rows under the plugin-declared `cell.page` node. A file
 /// kind without an interface (a `.shbench`) shows only its header. `sync`, a pending
 /// "Sync pins from ports" of `doc`, shows its diff with Apply / Cancel under its impl.
+///
+/// # Panics
+///
+/// `sync` names an impl row `doc` does not have (it is stale: the editor drops a pending
+/// sync on every edit).
 pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
+    let start = t.len();
     let kind = doc.kind();
     let cellish = matches!(kind, FileKind::Shprim | FileKind::Shcomp);
     let impls = names(doc, TableId::Impls, doc.impls().kind.len());
+    assert!(
+        sync.is_none_or(|p| (p.impl_row as usize) < impls.len()),
+        "a pending sync is dropped on every edit, so its impl row exists"
+    );
 
     section(t, "cell.s.hdr", "Cell");
     let mut keys = vec!["doc", "category"];
@@ -50,6 +60,7 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
     if kind == FileKind::Shbench {
         bench_sections(t, doc);
     }
+    assert!(t.len() > start, "the header section is always shown");
     if !cellish {
         return;
     }
@@ -59,7 +70,7 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
     for r in 0..n_pins {
         let rec = doc.record(Loc {
             table: TableId::Pins,
-            row: r as u32,
+            row: row_u32(r),
         });
         let blk = block(t, &format!("cell.pin.{r}"));
         input(
@@ -118,7 +129,7 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
     for r in 0..doc.params().kind.len() {
         let rec = doc.record(Loc {
             table: TableId::Params,
-            row: r as u32,
+            row: row_u32(r),
         });
         let blk = block(t, &format!("cell.param.{r}"));
         input(
@@ -174,7 +185,7 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
     for (r, name) in impls.iter().enumerate() {
         let rec = doc.record(Loc {
             table: TableId::Impls,
-            row: r as u32,
+            row: row_u32(r),
         });
         let lang = rec.fields.get(1).map_or("", String::as_str);
         let blk = block(t, &format!("cell.impl.{r}"));
@@ -242,8 +253,8 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
                     &bar,
                 );
             }
-            if let Some(p) = sync.filter(|p| p.impl_row == r as u32) {
-                sync_rows(t, &sync_ops(doc, &p.ports).0, &p.ports, &blk);
+            if let Some(p) = sync.filter(|p| p.impl_row == row_u32(r)) {
+                sync_rows(t, &sync_ops(doc, &p.ports).plan, &p.ports, &blk);
             }
         }
         button(
@@ -279,18 +290,32 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
 }
 
 pub(super) fn section(t: &mut String, id: &str, title: &str) {
+    assert!(
+        id.starts_with("cell.s."),
+        "section ids are `cell.s.<name>`: {id}"
+    );
+    assert!(!title.is_empty());
     node(t, id, "label", "cell.page");
     attr(t, "label", title);
     attr(t, "style", "cell-section");
 }
 
 pub(super) fn note(t: &mut String, id: &str, text: &str) {
+    assert!(
+        id.starts_with("cell."),
+        "panel node ids carry the `cell.` prefix: {id}"
+    );
+    assert!(!text.is_empty());
     node(t, id, "label", "cell.page");
     attr(t, "label", text);
     attr(t, "style", "docs-hint");
 }
 
 pub(super) fn block(t: &mut String, id: &str) -> String {
+    assert!(
+        id.starts_with("cell."),
+        "panel node ids carry the `cell.` prefix: {id}"
+    );
     node(t, id, "panel", "cell.page");
     attr(t, "style", "cell-block");
     id.to_owned()
@@ -298,6 +323,11 @@ pub(super) fn block(t: &mut String, id: &str) -> String {
 
 /// A `key  [value]` row: Enter submits `cell.set` with the typed text.
 pub(super) fn input(t: &mut String, id: &str, key: &str, value: &str, parent: &str) {
+    assert!(
+        id.starts_with("cell."),
+        "`cell.set` decodes the id, so it names its target: {id}"
+    );
+    assert!(!parent.is_empty());
     let row = format!("{id}.row");
     node(t, &row, "panel", parent);
     attr(t, "style", "cell-row");
@@ -319,6 +349,11 @@ pub(super) fn dropdown(
     choices: &[&str],
     parent: &str,
 ) {
+    assert!(
+        id.starts_with("cell."),
+        "`cell.set` decodes the id, so it names its target: {id}"
+    );
+    assert!(!choices.is_empty(), "a dropdown offers at least one choice");
     let row = format!("{id}.row");
     node(t, &row, "panel", parent);
     attr(t, "style", "cell-row");
@@ -344,6 +379,11 @@ pub(super) fn button(
     tooltip: &str,
     parent: &str,
 ) {
+    assert!(
+        id.starts_with("cell."),
+        "panel node ids carry the `cell.` prefix: {id}"
+    );
+    assert!(!command.is_empty(), "a button runs a command");
     node(t, id, "button", parent);
     attr(t, "label", label);
     attr(t, "command", command);
@@ -356,6 +396,8 @@ pub(super) fn button(
 
 /// The pending sync's diff rows and its Apply / Cancel buttons, under `parent`.
 fn sync_rows(t: &mut String, plan: &SyncPlan, ports: &[(String, PinDir)], parent: &str) {
+    assert!(ports.len() <= schemify_elab::PORTS_MAX);
+    assert!(plan.add.len() <= ports.len(), "every added pin is a port");
     let mut rows: Vec<(String, &str)> = Vec::new();
     if plan.is_empty() {
         rows.push(("Pins already match the ports.".into(), "docs-hint"));
@@ -374,6 +416,7 @@ fn sync_rows(t: &mut String, plan: &SyncPlan, ports: &[(String, PinDir)], parent
         let order: Vec<&str> = ports.iter().map(|p| p.0.as_str()).collect();
         rows.push((format!("order: {}", order.join(" ")), "check-warning"));
     }
+    assert!(!rows.is_empty(), "an empty plan says so in a row");
     for (k, (text, style)) in rows.iter().enumerate() {
         node(t, &format!("cell.sync.{k}"), "label", parent);
         attr(t, "label", text);

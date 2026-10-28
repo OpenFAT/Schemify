@@ -427,7 +427,7 @@ fn plan(
             .filter(|r| r.kind.rank() == 3),
     );
     for (name, o, at) in &ports {
-        let (id, _) = ids.draw(doc);
+        let id = ids.draw(doc).text;
         frag.push(edit::placed(RecordKind::Port, *at, *o, name, &id));
     }
     // A clipboard fragment is a `.shcomp` with one schematic impl: the new cell's file.
@@ -450,7 +450,7 @@ fn plan(
     };
     let mut ops = edit::delete(doc, sel);
     let name = edit::unique_name(doc, "X", &mut HashSet::new());
-    let (id, _) = ids.draw(doc);
+    let id = ids.draw(doc).text;
     ops.push(Op::Insert {
         rec: edit::instance(&format!("./{sub_stem}"), at, Orient::R0, &name, &id),
         at: None,
@@ -476,7 +476,7 @@ fn plan(
                         segs.push((c.net, l[0], l[1]));
                         pts.push((c.net, l[1]));
                     }
-                    ops.extend(edit::wires(doc, &path, ids).0);
+                    ops.extend(edit::wires(doc, &path, ids).ops);
                 }
                 None => {
                     label_at.push((q, c.name.as_str()));
@@ -488,7 +488,7 @@ fn plan(
     label_at.sort_unstable();
     label_at.dedup();
     for (p, net) in label_at {
-        let (id, _) = ids.draw(doc);
+        let id = ids.draw(doc).text;
         ops.push(Op::Insert {
             rec: edit::placed(RecordKind::Label, p, Orient::R0, net, &id),
             at: None,

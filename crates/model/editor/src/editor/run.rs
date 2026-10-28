@@ -137,7 +137,7 @@ impl Editor {
         let scratch = schemify_doc::Document::new(FileKind::Shbench);
         let mut ids = crate::edit::Ids::new(&mut self.rng);
         let coord = crate::geometry::coord;
-        let (id, _) = ids.draw(&scratch);
+        let id = ids.draw(&scratch).text;
         let mut text = format!(
             "schemify 1 shbench\n\ninst {id} ./{stem}\n  at 0 0 R0\n  name {}\n\n",
             docs::quote(&format!("{prefix}1"))
@@ -145,7 +145,7 @@ impl Editor {
         let pins = doc.pins();
         let s = doc.strings();
         for i in 0..pins.name.len() {
-            let (id, _) = ids.draw(&scratch);
+            let id = ids.draw(&scratch).text;
             text.push_str(&format!(
                 "label {id} {} {} R0 {}\n",
                 coord(pins.x[i]),

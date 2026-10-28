@@ -61,6 +61,10 @@ pub struct Symbols {
 impl Symbols {
     /// Drops every entry (the library rows shifted: a re-index, a project reload); the
     /// epoch keeps advancing, so no scene built from the old entries matches it again.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that the epoch advanced.
     pub fn clear(&mut self) {
         let before = self.epoch;
         self.rows.clear();
@@ -74,6 +78,10 @@ impl Symbols {
     /// Makes the entry of cell `row` current for `doc`: open document `h` at edit epoch
     /// `epoch`, or the indexed symbol (`h == None`, epoch 0). Rebuilds the primitives and
     /// advances [`Symbols::epoch`] only when that source changed.
+    ///
+    /// # Panics
+    ///
+    /// If `row` is not a row of the cache.
     pub fn refresh(&mut self, row: usize, h: Option<DocHandle>, epoch: u32, doc: &Document) {
         if self.rows.len() <= row {
             self.rows.resize_with(row + 1, || None);

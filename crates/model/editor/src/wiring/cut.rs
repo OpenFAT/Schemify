@@ -52,7 +52,7 @@ pub fn break_at(doc: &Document, points: &[Pt], ids: &mut Ids<'_>) -> (Vec<Op>, V
         });
         pieces.push((chain[0], chain[1]));
         for leg in chain[1..].windows(2) {
-            let (nid, _) = ids.draw(doc);
+            let nid = ids.draw(doc).text;
             ops.push(Op::Insert {
                 rec: wire_rec(&nid, leg[0], leg[1], &rec.attrs),
                 at: None,
