@@ -1,20 +1,36 @@
-//! The user package manager (D35 as amended 2026-10-11; config spec §5): installs the
-//! `schemify.pack.add` specs of the user config under `<data>/pack/<name>`, pins them in
-//! `schemify-pack.lock` next to the init file, and tells the editor where each module is and
-//! which capabilities it gets.
+//! The user package manager (D35 as amended 2026-10-11; config spec §5): the
+//! `schemify.pack.add` specs of the user config → packages installed under
+//! `<data>/pack/<name>`, pinned in `schemify-pack.lock` next to the init file (`lock`), and
+//! for the editor where each module is and which capabilities it gets (`locate`).
 //!
-//! Fetching runs `git` and `curl` as child processes (lazy.nvim, `vim.pack`); hashing and the
-//! lockfile rows reuse `doc` (`sha256`, `Locked`). Packages are prebuilt wasm, so nothing
+//! Fetching runs `git` and `curl` as child processes (lazy.nvim, `vim.pack`); hashing and
+//! the lockfile rows reuse `doc` (`sha256`, `Locked`). Packages are prebuilt wasm, so nothing
 //! here ever builds or runs package code.
 //!
-//! Data design: ≤ `PACKS_MAX` (128) specs and lock rows, processed in spec order; one
-//! [`Report`] line per package. Lifetime: one command.
+//! Data: ≤ `PACKS_MAX` (128) specs and lock rows, processed in spec order; one [`Report`]
+//! line per package. Lifetime: one command.
+//!
+//! Contents:
+//! - `pub const LOCKFILE: &str`, `pub const MANIFEST: &str`
+//! - `pub struct Paths { pack, lock }`, `Paths::of`
+//! - `pub struct Report { lines, failed }`
+//! - re-exported from `locate`: `READ_ANY`, `Installed`, `locate`, `installed`
+//! - `pub fn main(&Config, &[String]) -> u8`
+//! - `pub fn sync, update, restore, clean, status(&[PackSpec], &Paths) -> Report`
+
+mod locate;
+mod lock;
+
+pub use locate::{Installed, READ_ANY, installed, locate};
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use schemify_config::{Config, Event, PackSpec, Source, Table, dirs};
-use schemify_doc::{Locked, Project, hex, sha256};
+use schemify_config::{Config, PackSpec, Source, dirs};
+use schemify_doc::{hex, sha256};
+
+use locate::{locate_in, package_dir};
+use lock::{read_lock, select, set_row, write_lock};
 
 /// The lockfile name, next to the init file.
 pub const LOCKFILE: &str = "schemify-pack.lock";
@@ -30,25 +46,6 @@ pub struct Paths {
     pub lock: PathBuf,
 }
 
-impl Paths {
-    /// The paths of this process's config: the data directory (config spec §1) and the
-    /// config root.
-    ///
-    /// # Errors
-    ///
-    /// No data directory (unset `HOME`, …) or no config root (`--clean`).
-    pub fn of(config: &Config) -> Result<Paths, String> {
-        let root = config
-            .root()
-            .ok_or("no user config (--clean, or no config directory)")?;
-        let data = dirs::here(dirs::Dir::Data)?;
-        Ok(Paths {
-            pack: data.join("pack"),
-            lock: root.join(LOCKFILE),
-        })
-    }
-}
-
 /// What a command did: one line per package, and how many failed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Report {
@@ -58,15 +55,15 @@ pub struct Report {
     pub failed: u32,
 }
 
-impl Report {
-    fn ok(&mut self, name: &str, what: impl std::fmt::Display) {
-        self.lines.push(format!("{name}: {what}"));
-    }
-
-    fn fail(&mut self, name: &str, what: impl std::fmt::Display) {
-        self.lines.push(format!("{name}: error: {what}"));
-        self.failed += 1;
-    }
+/// How far a sync may move an installed package.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Install missing ones (at the locked commit when known); leave installed ones.
+    Sync,
+    /// Move every package to its spec's newest state.
+    Update,
+    /// Move every package to its lock row.
+    Restore,
 }
 
 /// `schemify pack <command>` on the user config's specs; prints the report and returns the
@@ -101,17 +98,6 @@ pub fn main(config: &Config, args: &[String]) -> u8 {
     u8::from(report.failed > 0)
 }
 
-/// How far a sync may move an installed package.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    /// Install missing ones (at the locked commit when known); leave installed ones.
-    Sync,
-    /// Move every package to its spec's newest state.
-    Update,
-    /// Move every package to its lock row.
-    Restore,
-}
-
 /// Installs missing packages and writes their lock rows (config spec §5 `sync`).
 pub fn sync(specs: &[PackSpec], paths: &Paths) -> Report {
     run(specs, paths, Mode::Sync)
@@ -127,6 +113,120 @@ pub fn restore(specs: &[PackSpec], paths: &Paths) -> Report {
     run(specs, paths, Mode::Restore)
 }
 
+/// Deletes package directories no spec names and drops their lock rows.
+pub fn clean(specs: &[PackSpec], paths: &Paths) -> Report {
+    let mut report = Report::default();
+    let listed = |n: &str| {
+        specs
+            .iter()
+            .any(|s| s.name == n && !matches!(s.source, Source::Path(_)))
+    };
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(&paths.pack)
+        .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).collect())
+        .unwrap_or_default();
+    entries.sort();
+    for p in entries {
+        let name = p
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        if !p.is_dir() || name.starts_with('.') || listed(&name) {
+            continue;
+        }
+        match std::fs::remove_dir_all(&p) {
+            Ok(()) => report.ok(&name, "removed"),
+            Err(e) => report.fail(&name, e),
+        }
+    }
+    match read_lock(&paths.lock) {
+        Ok(mut lock) => {
+            let keep: Vec<usize> = (0..lock.name.len())
+                .filter(|&r| lock.ty[r] != "plugin" || specs.iter().any(|s| s.name == lock.name[r]))
+                .collect();
+            select(&mut lock, &keep);
+            if let Err(e) = write_lock(&paths.lock, &mut lock) {
+                report.fail(LOCKFILE, e);
+            }
+        }
+        Err(e) => report.fail(LOCKFILE, e),
+    }
+    report
+}
+
+/// One line per package: kind, resolved source, state, grants (config spec §5 `status`).
+/// A package that is not installed counts as failed.
+pub fn status(specs: &[PackSpec], paths: &Paths) -> Report {
+    let mut report = Report::default();
+    let lock = match read_lock(&paths.lock) {
+        Ok(l) => l,
+        Err(e) => {
+            report.fail(LOCKFILE, e);
+            return report;
+        }
+    };
+    for spec in specs {
+        let row = lock.find("plugin", &spec.name);
+        let found = locate(spec, paths);
+        let state = match (&found, row) {
+            (Err(_), _) => "missing".to_owned(),
+            (Ok(m), None) => format!("unlocked{}", m.grant_notes()),
+            (Ok(m), Some(r)) => {
+                let hash = std::fs::read(&m.wasm)
+                    .map(|b| hex(&sha256(&b)))
+                    .unwrap_or_default();
+                let s = if hash == lock.hash[r] {
+                    "ok"
+                } else {
+                    "changed"
+                };
+                format!("{s}{}", m.grant_notes())
+            }
+        };
+        let resolved = row.map_or("-", |r| lock.resolved[r].as_str());
+        report.ok(
+            &spec.name,
+            format!("{} {resolved} {state}", spec.source.word()),
+        );
+        if found.is_err() {
+            report.failed += 1;
+        }
+    }
+    assert_eq!(report.lines.len(), specs.len());
+    report
+}
+
+impl Paths {
+    /// The paths of this process's config: the data directory (config spec §1) and the
+    /// config root.
+    ///
+    /// # Errors
+    ///
+    /// No data directory (unset `HOME`, …) or no config root (`--clean`).
+    pub fn of(config: &Config) -> Result<Paths, String> {
+        let root = config
+            .root()
+            .ok_or("no user config (--clean, or no config directory)")?;
+        let data = dirs::here(dirs::Dir::Data)?;
+        Ok(Paths {
+            pack: data.join("pack"),
+            lock: root.join(LOCKFILE),
+        })
+    }
+}
+
+// ---- private ----
+
+impl Report {
+    fn ok(&mut self, name: &str, what: impl std::fmt::Display) {
+        self.lines.push(format!("{name}: {what}"));
+    }
+
+    fn fail(&mut self, name: &str, what: impl std::fmt::Display) {
+        self.lines.push(format!("{name}: error: {what}"));
+        self.failed += 1;
+    }
+}
+
+/// `sync`, `update` and `restore`: [`install`] per spec in spec order, then the lock rows.
 fn run(specs: &[PackSpec], paths: &Paths, mode: Mode) -> Report {
     assert!(specs.len() <= schemify_config::PACKS_MAX);
     let mut report = Report::default();
@@ -243,15 +343,8 @@ fn newest(dir: &Path, rev: Option<&str>) -> Result<String, String> {
         Some(r) => vec![format!("origin/{r}"), r.to_owned()],
     };
     for c in &candidates {
-        if let Ok(commit) = git(
-            dir,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("{c}^{{commit}}"),
-            ],
-        ) {
+        let spec = format!("{c}^{{commit}}");
+        if let Ok(commit) = git(dir, &["rev-parse", "--verify", "--quiet", &spec]) {
             return Ok(commit);
         }
     }
@@ -294,309 +387,9 @@ fn download(url: &str, want: &str, pack: &Path, dir: &Path, file: &Path) -> Resu
     Ok(())
 }
 
-/// Deletes package directories no spec names and drops their lock rows.
-pub fn clean(specs: &[PackSpec], paths: &Paths) -> Report {
-    let mut report = Report::default();
-    let listed = |n: &str| {
-        specs
-            .iter()
-            .any(|s| s.name == n && !matches!(s.source, Source::Path(_)))
-    };
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(&paths.pack)
-        .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).collect())
-        .unwrap_or_default();
-    entries.sort();
-    for p in entries {
-        let name = p
-            .file_name()
-            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-        if !p.is_dir() || name.starts_with('.') || listed(&name) {
-            continue;
-        }
-        match std::fs::remove_dir_all(&p) {
-            Ok(()) => report.ok(&name, "removed"),
-            Err(e) => report.fail(&name, e),
-        }
-    }
-    match read_lock(&paths.lock) {
-        Ok(mut lock) => {
-            let keep: Vec<usize> = (0..lock.name.len())
-                .filter(|&r| lock.ty[r] != "plugin" || specs.iter().any(|s| s.name == lock.name[r]))
-                .collect();
-            select(&mut lock, &keep);
-            if let Err(e) = write_lock(&paths.lock, &mut lock) {
-                report.fail(LOCKFILE, e);
-            }
-        }
-        Err(e) => report.fail(LOCKFILE, e),
-    }
-    report
-}
-
-/// One line per package: kind, resolved source, state, grants (config spec §5 `status`).
-pub fn status(specs: &[PackSpec], paths: &Paths) -> Report {
-    let mut report = Report::default();
-    let lock = match read_lock(&paths.lock) {
-        Ok(l) => l,
-        Err(e) => {
-            report.fail(LOCKFILE, e);
-            return report;
-        }
-    };
-    for spec in specs {
-        let row = lock.find("plugin", &spec.name);
-        let found = locate(spec, paths);
-        let state = match (&found, row) {
-            (Err(_), _) => "missing".to_owned(),
-            (Ok(m), None) => format!("unlocked{}", m.grant_notes()),
-            (Ok(m), Some(r)) => {
-                let hash = std::fs::read(&m.wasm)
-                    .map(|b| hex(&sha256(&b)))
-                    .unwrap_or_default();
-                let s = if hash == lock.hash[r] {
-                    "ok"
-                } else {
-                    "changed"
-                };
-                format!("{s}{}", m.grant_notes())
-            }
-        };
-        let resolved = row.map_or("-", |r| lock.resolved[r].as_str());
-        report.ok(
-            &spec.name,
-            format!("{} {resolved} {state}", spec.source.word()),
-        );
-        if found.is_err() {
-            report.failed += 1;
-        }
-    }
-    report
-}
-
-/// The package request that takes every `read:<NAME>` grant the user gives (config spec §5).
-pub const READ_ANY: &str = "read:*";
-
-/// An installed package, ready for the plugin host.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Installed {
-    /// Package name (the plugin's name in the host).
-    pub name: String,
-    /// The module.
-    pub wasm: PathBuf,
-    /// What the plugin gets: requested ∩ granted, in request order (D7).
-    pub grants: Vec<String>,
-    /// Requested but not granted.
-    pub denied: Vec<String>,
-    /// Granted but not requested.
-    pub unused: Vec<String>,
-    /// Spec `fuel`, else the manifest's, else `None` (the host default).
-    pub fuel: Option<u64>,
-    /// Commands that load it lazily.
-    pub lazy_cmd: Vec<String>,
-    /// Events that load it lazily.
-    pub lazy_event: Vec<Event>,
-}
-
-impl Installed {
-    fn grant_notes(&self) -> String {
-        let mut s = String::new();
-        if !self.denied.is_empty() {
-            s.push_str(&format!(" denied: {}", self.denied.join(",")));
-        }
-        if !self.unused.is_empty() {
-            s.push_str(&format!(" unused: {}", self.unused.join(",")));
-        }
-        s
-    }
-}
-
-/// A module found in a package directory: its file, requested grants (`None` without a
-/// manifest) and manifest fuel.
-struct Module {
-    wasm: PathBuf,
-    requested: Option<Vec<String>>,
-    fuel: Option<u64>,
-}
-
-/// Finds the installed module of `spec` and computes its grants (config spec §5).
-///
-/// # Errors
-///
-/// Not installed (run `schemify pack sync`), or a manifest that does not parse.
-pub fn locate(spec: &PackSpec, paths: &Paths) -> Result<Installed, String> {
-    let dir = package_dir(spec, paths);
-    let m = locate_in(&dir, &spec.name)?;
-    if !m.wasm.is_file() {
-        return Err(format!(
-            "not installed (no {}); run `schemify pack sync`",
-            m.wasm.display()
-        ));
-    }
-    let requested = m.requested.unwrap_or_else(|| spec.grant.clone());
-    // A request `read:*` takes every `read:<NAME>` the user grants (plugin-abi §5): an
-    // importer cannot know which variables a user will point it at, the user names each one.
-    let covers = |req: &str, g: &str| req == g || (req == READ_ANY && g.starts_with("read:"));
-    let mut grants: Vec<String> = Vec::with_capacity(spec.grant.len());
-    for req in &requested {
-        for g in spec.grant.iter().filter(|g| covers(req, g)) {
-            if !grants.contains(g) {
-                grants.push(g.clone());
-            }
-        }
-    }
-    let denied = requested
-        .iter()
-        .filter(|r| *r != READ_ANY && !spec.grant.contains(r))
-        .cloned()
-        .collect();
-    let unused = spec
-        .grant
-        .iter()
-        .filter(|g| !requested.iter().any(|r| covers(r, g)))
-        .cloned()
-        .collect();
-    assert!(grants.len() <= spec.grant.len());
-    Ok(Installed {
-        name: spec.name.clone(),
-        wasm: m.wasm,
-        grants,
-        denied,
-        unused,
-        fuel: spec.fuel.or(m.fuel),
-        lazy_cmd: spec.lazy_cmd.clone(),
-        lazy_event: spec.lazy_event.clone(),
-    })
-}
-
-/// [`locate`] for every spec of `table`, in spec order: the installed packages and one
-/// message per package that cannot load.
-pub fn installed(table: &Table, paths: &Paths) -> (Vec<Installed>, Vec<String>) {
-    let mut ok = Vec::with_capacity(table.packs.len());
-    let mut notes = Vec::new();
-    for spec in &table.packs {
-        match locate(spec, paths) {
-            Ok(i) => {
-                if !i.denied.is_empty() {
-                    notes.push(format!("{}: not granted: {}", i.name, i.denied.join(", ")));
-                }
-                ok.push(i);
-            }
-            Err(e) => notes.push(format!("{}: {e}", spec.name)),
-        }
-    }
-    (ok, notes)
-}
-
-fn package_dir(spec: &PackSpec, paths: &Paths) -> PathBuf {
-    match &spec.source {
-        Source::Path(p) => p.clone(),
-        Source::Git { .. } | Source::Url { .. } => paths.pack.join(&spec.name),
-    }
-}
-
-fn locate_in(dir: &Path, name: &str) -> Result<Module, String> {
-    let manifest = dir.join(MANIFEST);
-    let Ok(bytes) = std::fs::read(&manifest) else {
-        return Ok(Module {
-            wasm: dir.join(format!("{name}.wasm")),
-            requested: None,
-            fuel: None,
-        });
-    };
-    let project = Project::new(Some(&bytes), None, 0)
-        .map_err(|e| format!("{}: {:?}", manifest.display(), e.diagnostics.first()))?;
-    let Some(rec) = project.plugins().first() else {
-        return Err(format!("{}: no `plugin` record", manifest.display()));
-    };
-    let rel = match (rec.fields.get(1).map(String::as_str), rec.fields.get(2)) {
-        (Some("path"), Some(rel)) if !rel.contains("..") && !Path::new(rel).is_absolute() => rel,
-        _ => {
-            return Err(format!(
-                "{}: the plugin record must be `plugin <name> path <file>.wasm`",
-                manifest.display()
-            ));
-        }
-    };
-    let requested = rec
-        .attrs
-        .iter()
-        .filter(|a| a.key == "grant")
-        .filter_map(|a| a.values.first().cloned())
-        .collect();
-    let fuel = rec
-        .attrs
-        .iter()
-        .find(|a| a.key == "fuel")
-        .and_then(|a| a.values.first()?.parse().ok());
-    Ok(Module {
-        wasm: dir.join(rel),
-        requested: Some(requested),
-        fuel,
-    })
-}
-
-// ------------------------------------------------------------------ lockfile
-
-fn read_lock(path: &Path) -> Result<Locked, String> {
-    let Ok(bytes) = std::fs::read(path) else {
-        return Ok(Locked::default());
-    };
-    Project::new(None, Some(&bytes), 0)
-        .map(|p| p.lock().clone())
-        .map_err(|e| format!("{}: {:?}", path.display(), e.diagnostics.first()))
-}
-
-fn set_row(lock: &mut Locked, name: &str, kind: &str, resolved: &str, hash: &str) {
-    let row = match lock.find("plugin", name) {
-        Some(r) => r,
-        None => {
-            lock.ty.push("plugin".into());
-            lock.name.push(name.to_owned());
-            lock.kind.push(String::new());
-            lock.resolved.push(String::new());
-            lock.hash.push(String::new());
-            lock.name.len() - 1
-        }
-    };
-    lock.kind[row] = kind.to_owned();
-    lock.resolved[row] = resolved.to_owned();
-    lock.hash[row] = hash.to_owned();
-    assert_eq!(lock.ty.len(), lock.hash.len());
-}
-
-/// Keeps rows `rows` of `lock` (each at most once), in that order.
-fn select(lock: &mut Locked, rows: &[usize]) {
-    assert!(rows.len() <= lock.name.len());
-    for col in [
-        &mut lock.ty,
-        &mut lock.name,
-        &mut lock.kind,
-        &mut lock.resolved,
-        &mut lock.hash,
-    ] {
-        *col = rows.iter().map(|&r| std::mem::take(&mut col[r])).collect();
-    }
-    assert_eq!(lock.ty.len(), lock.hash.len());
-}
-
-/// Writes the lockfile sorted by (type, name); an empty lock deletes the file.
-fn write_lock(path: &Path, lock: &mut Locked) -> Result<(), String> {
-    let mut order: Vec<usize> = (0..lock.name.len()).collect();
-    order.sort_by(|&a, &b| (&lock.ty[a], &lock.name[a]).cmp(&(&lock.ty[b], &lock.name[b])));
-    select(lock, &order);
-    if lock.name.is_empty() {
-        return match std::fs::remove_file(path) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
-            _ => Ok(()),
-        };
-    }
-    crate::platform::write_atomic(path, lock.write().as_bytes())
-}
-
-// ------------------------------------------------------------------ processes
-
 /// Runs `git -C dir args…` without prompts; returns trimmed stdout.
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    assert!(!args.is_empty(), "a git subcommand");
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -606,15 +399,12 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         .map_err(|e| format!("cannot run git: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        return Err(format!(
-            "git {}: {}",
-            args.first().unwrap_or(&""),
-            err.trim()
-        ));
+        return Err(format!("git {}: {}", args[0], err.trim()));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
+/// The first 12 characters of a commit or content hash, for report lines.
 fn short(hash: &str) -> &str {
     &hash[..hash.len().min(12)]
 }

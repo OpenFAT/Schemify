@@ -7,6 +7,11 @@
 //! archive. At most [`ENTRIES_MAX`] entries and 4 GiB per entry and per archive (no zip64);
 //! the reader's total output is capped by its caller. Whole archives live in memory for one
 //! import or export.
+//!
+//! Contents:
+//! - `pub const ENTRIES_MAX: usize`
+//! - `pub fn write(&[(&str, &[u8])]) -> Result<Vec<u8>, String>`
+//! - `pub fn read(&[u8], usize) -> Result<Vec<(String, Vec<u8>)>, String>`
 
 /// Entries per archive: the classic format's 16-bit count, whose all-ones value marks zip64
 /// (neither written nor read).
@@ -24,20 +29,8 @@ const DOS_DATE: u16 = (1 << 5) | 1;
 const LOCAL_LEN: usize = 30;
 const CENTRAL_LEN: usize = 46;
 const END_LEN: usize = 22;
-
-/// The CRC-32 (IEEE 802.3, reflected, as zip uses) of `bytes`.
-pub fn crc32(bytes: &[u8]) -> u32 {
-    // ponytail: bitwise, 8 steps per byte (~0.3 GB/s); a slice-by-8 table if exports of
-    // large projects ever show up in a profile.
-    let mut crc = !0u32;
-    for &b in bytes {
-        crc ^= u32::from(b);
-        for _ in 0..8 {
-            crc = (crc >> 1) ^ (0xEDB8_8320 & (crc & 1).wrapping_neg());
-        }
-    }
-    !crc
-}
+// The entry count fits the 16-bit field below its zip64 marker.
+const _: () = assert!(ENTRIES_MAX < u16::MAX as usize);
 
 /// Writes `entries` (path with `/` separators, bytes) as a stored archive, in the order
 /// given.
@@ -180,6 +173,22 @@ pub fn read(archive: &[u8], bytes_max: usize) -> Result<Vec<(String, Vec<u8>)>, 
     }
     assert!(out.len() <= count);
     Ok(out)
+}
+
+// ---- private ----
+
+/// The CRC-32 (IEEE 802.3, reflected, as zip uses) of `bytes`.
+fn crc32(bytes: &[u8]) -> u32 {
+    // ponytail: bitwise, 8 steps per byte (~0.3 GB/s); a slice-by-8 table if exports of
+    // large projects ever show up in a profile.
+    let mut crc = !0u32;
+    for &b in bytes {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xEDB8_8320 & (crc & 1).wrapping_neg());
+        }
+    }
+    !crc
 }
 
 /// Offset of the end-of-central-directory record: the last signature whose comment length

@@ -5,6 +5,10 @@
 //!
 //! Why here and not a wasm plugin: a plugin owns no stdio (plugin-abi §5), and the bridge
 //! adds no behaviour of its own, so it is a second front door to the same table.
+//!
+//! Contents:
+//! - `pub const PROTOCOL: &str`, `pub const PROTOCOLS: [&str; 3]`
+//! - `pub fn serve<R: BufRead, W: Write>(&mut R, &mut W, &Headless) -> io::Result<()>`
 
 use std::io::{self, BufRead, Write};
 
@@ -24,6 +28,8 @@ pub const PROTOCOLS: [&str; 3] = ["2024-11-05", "2025-03-26", "2025-06-18"];
 pub fn serve<R: BufRead, W: Write>(input: &mut R, output: &mut W, h: &Headless) -> io::Result<()> {
     rpc::serve_with(input, output, |method, params| call(h, method, params))
 }
+
+// ---- private ----
 
 /// One MCP method.
 fn call(h: &Headless, method: &str, params: &Json) -> Result<Json, (i32, String)> {
@@ -71,10 +77,12 @@ fn call(h: &Headless, method: &str, params: &Json) -> Result<Json, (i32, String)
     }
 }
 
+/// A JSON string value.
 fn s(t: &str) -> Json {
     Json::Str(t.to_owned())
 }
 
+/// The JSON Schema of a string.
 fn string() -> Json {
     Json::obj(vec![("type", s("string"))])
 }

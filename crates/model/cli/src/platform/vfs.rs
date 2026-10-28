@@ -15,6 +15,12 @@
 //!    flusher pops the queue in the order the last change of each path happened.
 //! 5. Lifetime: the page.
 //! 6. Not parallel: the browser's main thread.
+//!
+//! Contents (for `web` and `opfs`):
+//! - `const FILES_MAX`, `BYTES_MAX`, `IMPORT_BYTES_MAX`, `PROJECTS`; `type Files`
+//! - `struct Vfs`: `new`, `read`, `is_dir`, `exists`, `mtime`, `mkdirs`, `write`, `append`,
+//!   `remove`, `replace_tree`, `load`, `next_stale`, `has_stale`, `list`, `import_plan`
+//! - `fn key(&Path) -> String`
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
@@ -69,24 +75,6 @@ pub(crate) fn key(path: &Path) -> String {
     let k = format!("/{}", parts.join("/"));
     debug_assert!(k == "/" || !k.ends_with('/'));
     k
-}
-
-/// The parent directory key of `key`; `None` for `/`.
-fn parent(key: &str) -> Option<&str> {
-    match key.rsplit_once('/')? {
-        (_, "") => None,
-        ("", _) => Some("/"),
-        (p, _) => Some(p),
-    }
-}
-
-/// `dir/name` for a directory key.
-fn child(dir: &str, name: &str) -> String {
-    if dir == "/" {
-        format!("/{name}")
-    } else {
-        format!("{dir}/{name}")
-    }
 }
 
 impl Vfs {
@@ -224,31 +212,6 @@ impl Vfs {
         self.put(key, bytes, mtime_s)
     }
 
-    fn put(&mut self, key: &str, bytes: Vec<u8>, mtime_s: u64) -> Result<(), String> {
-        if self.dirs.contains(key) {
-            return Err(format!("{key}: is a directory"));
-        }
-        let dir = parent(key).ok_or("/: is a directory")?;
-        let old = self.files.get(key).map_or(0, |f| f.0.len());
-        let after = self.bytes - old + bytes.len();
-        if after > BYTES_MAX {
-            return Err(format!("{key}: web storage full ({} MiB)", BYTES_MAX >> 20));
-        }
-        self.mkdirs(dir)?;
-        self.bytes = after;
-        self.files.insert(key.to_owned(), (bytes, mtime_s));
-        Ok(())
-    }
-
-    fn mark(&mut self, key: &str) {
-        if let Some(old) = self.stale_at.insert(key.to_owned(), self.seq) {
-            self.stale.remove(&old);
-        }
-        self.stale.insert(self.seq, key.to_owned());
-        self.seq += 1;
-        assert_eq!(self.stale.len(), self.stale_at.len());
-    }
-
     /// The next path whose OPFS copy is stale, in the order of each path's last change (a
     /// save that writes a cell and then drops its journal reaches OPFS in that order).
     /// The flusher writes the path's current bytes, or removes it when it has none.
@@ -374,6 +337,53 @@ impl Vfs {
                 .all(|(p, _)| !p.is_empty() && !p.starts_with('/'))
         );
         Ok((dir, entries))
+    }
+}
+
+// ---- private ----
+
+/// The parent directory key of `key`; `None` for `/`.
+fn parent(key: &str) -> Option<&str> {
+    match key.rsplit_once('/')? {
+        (_, "") => None,
+        ("", _) => Some("/"),
+        (p, _) => Some(p),
+    }
+}
+
+/// `dir/name` for a directory key.
+fn child(dir: &str, name: &str) -> String {
+    if dir == "/" {
+        format!("/{name}")
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
+impl Vfs {
+    fn put(&mut self, key: &str, bytes: Vec<u8>, mtime_s: u64) -> Result<(), String> {
+        if self.dirs.contains(key) {
+            return Err(format!("{key}: is a directory"));
+        }
+        let dir = parent(key).ok_or("/: is a directory")?;
+        let old = self.files.get(key).map_or(0, |f| f.0.len());
+        let after = self.bytes - old + bytes.len();
+        if after > BYTES_MAX {
+            return Err(format!("{key}: web storage full ({} MiB)", BYTES_MAX >> 20));
+        }
+        self.mkdirs(dir)?;
+        self.bytes = after;
+        self.files.insert(key.to_owned(), (bytes, mtime_s));
+        Ok(())
+    }
+
+    fn mark(&mut self, key: &str) {
+        if let Some(old) = self.stale_at.insert(key.to_owned(), self.seq) {
+            self.stale.remove(&old);
+        }
+        self.stale.insert(self.seq, key.to_owned());
+        self.seq += 1;
+        assert_eq!(self.stale.len(), self.stale_at.len());
     }
 }
 

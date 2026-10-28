@@ -124,6 +124,32 @@ fn usage_errors_exit_2() {
     assert_eq!(schemify(&dir, &["frobnicate"]).0, 2);
     assert_eq!(schemify(&dir, &["merge-driver", "O"]).0, 2);
     assert_eq!(schemify(&dir, &["diff", "missing-a", "missing-b"]).0, 2);
+    // Every command refuses arguments it does not take, before doing any work.
+    for args in [
+        &["fmt"][..],
+        &["fmt", "--check"],
+        &["git-setup", "extra"],
+        &["rpc", "--bogus"],
+        &["rpc", "--listen"],
+        &["mcp", "extra"],
+        &["publish", "."],
+        &["publish", "-o", "site"],
+        &["check"],
+        &["run", "--jobs", "0", "tb.shbench"],
+        &["netlist", "a.shcomp", "b.shcomp"],
+        &["netlist", "a.shcomp", "--set", "noequals"],
+    ] {
+        let (code, text) = schemify(&dir, args);
+        assert_eq!(code, 2, "{args:?}: {text}");
+        assert!(text.contains("usage: schemify"), "{args:?}: {text}");
+    }
+    assert!(!dir.join("site").exists(), "publish wrote nothing");
+    let (code, text) = schemify(&dir, &["--version"]);
+    assert_eq!(code, 0);
+    assert_eq!(text, format!("schemify {}\n", env!("CARGO_PKG_VERSION")));
+    let (code, text) = schemify(&dir, &["help"]);
+    assert_eq!(code, 0);
+    assert!(text.starts_with("usage: schemify"), "{text}");
 }
 
 /// The editor's fixture project: a two-inverter buffer over a hierarchical `inv`.
