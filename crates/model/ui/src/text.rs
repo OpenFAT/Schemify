@@ -91,8 +91,13 @@ impl Image {
     /// Panics if a side is 0 or `rgba` is not `width × height × 4` bytes.
     #[must_use]
     pub fn new(path: &str, width: u32, height: u32, rgba: Vec<u8>) -> Image {
-        assert!(width > 0 && height > 0, "an image has pixels");
-        assert_eq!(rgba.len() as u64, u64::from(width) * u64::from(height) * 4);
+        assert!(width > 0, "an image has columns");
+        assert!(height > 0, "an image has rows");
+        assert_eq!(
+            rgba.len() as u64,
+            u64::from(width) * u64::from(height) * 4,
+            "four bytes per pixel"
+        );
         Image {
             path: path.to_owned(),
             width,
@@ -149,7 +154,11 @@ impl TextSystem {
         let mono = register(math::face_bytes("Typewriter-Regular"));
         // A CSS family list: every builder parses it (`FontFamily::from(&str)`).
         let family = format!("\"{noto}\", \"{symbols}\"");
-        assert!(noto != mono && symbols != mono);
+        assert_ne!(noto, mono, "code text is monospace, never the UI face");
+        assert_ne!(
+            symbols, mono,
+            "code text is monospace, never the symbol face"
+        );
         let mut ts = TextSystem {
             font_cx,
             layout_cx: LayoutContext::new(),
@@ -193,6 +202,15 @@ impl TextSystem {
             self.icon_cache.clear();
             self.epoch = self.epoch.wrapping_add(1);
         }
+        let held = self.layouts.len() + self.maths.len() + self.proses.len() + self.icons.len();
+        debug_assert!(
+            held <= Self::CACHE_CAPACITY,
+            "a frame starts under capacity"
+        );
+        debug_assert!(
+            self.cache.len() <= self.layouts.len(),
+            "every cached id names a layout"
+        );
     }
 
     /// How many times the cache was dropped: a text, math, prose or icon id names the same
@@ -210,6 +228,7 @@ impl TextSystem {
     pub fn shape(&mut self, strings: &Strings, text: Sym, px: u16) -> TextId {
         assert!(px > 0, "font size must be positive");
         if let Some(&id) = self.cache.get(&(text, px)) {
+            debug_assert!((id as usize) < self.layouts.len(), "a cached id is live");
             return id;
         }
         let mut layout = Layout::new();
@@ -217,6 +236,7 @@ impl TextSystem {
         let id = self.layouts.len() as TextId;
         self.layouts.push(layout);
         self.cache.insert((text, px), id);
+        debug_assert_ne!(id, NO_TEXT, "the cache never reaches the sentinel");
         id
     }
 
@@ -226,7 +246,8 @@ impl TextSystem {
     ///
     /// If `px` is not finite and positive.
     pub fn shape_into(&mut self, text: &str, px: f32, out: &mut Layout<()>) {
-        assert!(px > 0.0 && px.is_finite(), "font size must be positive");
+        assert!(px.is_finite(), "font size must be finite");
+        assert!(px > 0.0, "font size must be positive");
         let mut builder = self
             .layout_cx
             .ranged_builder(&mut self.font_cx, text, 1.0, true);
@@ -240,24 +261,35 @@ impl TextSystem {
     }
 
     pub(crate) fn family(&self) -> &str {
+        debug_assert!(!self.family.is_empty(), "the UI family list is registered");
         &self.family
     }
 
     pub(crate) fn mono(&self) -> &str {
+        debug_assert!(!self.mono.is_empty(), "the monospace family is registered");
         &self.mono
     }
 
     /// Stores a layout built outside [`TextSystem::shape`] (prose runs) and returns its id.
     pub(crate) fn push_layout(&mut self, layout: Layout<()>) -> TextId {
+        assert!(
+            self.layouts.len() < NO_TEXT as usize,
+            "layout ids stay below the sentinel"
+        );
         self.layouts.push(layout);
-        (self.layouts.len() - 1) as TextId
+        let id = (self.layouts.len() - 1) as TextId;
+        debug_assert_ne!(id, NO_TEXT);
+        id
     }
 
     /// Lays out math that has no interned source (prose formulas); `None` outside the subset.
     pub(crate) fn math_uncached(&mut self, src: &str, px: f32) -> Option<u32> {
+        assert!(px > 0.0, "math size must be positive");
         let list = math::layout_math(src, px, &self.math_fonts).ok()?;
         self.maths.push(list);
-        Some((self.maths.len() - 1) as u32)
+        let id = (self.maths.len() - 1) as u32;
+        debug_assert_ne!(id, u32::MAX, "math ids stay below the sentinel");
+        Some(id)
     }
 
     /// Lays out markdown `src` (the `prose` widget, [`crate::prose`]) at `px` wrapped at
@@ -268,19 +300,30 @@ impl TextSystem {
     ///
     /// Panics if `px` or `width` is zero.
     pub fn prose(&mut self, strings: &Strings, src: Sym, px: u16, width: u16) -> u32 {
-        assert!(px > 0 && width > 0, "prose needs a size and a width");
+        assert!(px > 0, "prose needs a font size");
+        assert!(width > 0, "prose needs a width");
         if let Some(&id) = self.prose_cache.get(&(src, px, width)) {
+            debug_assert!((id as usize) < self.proses.len(), "a cached id is live");
             return id;
         }
         let list = prose::layout_prose(self, strings.get(src), f32::from(px), f32::from(width));
         self.proses.push(list);
         let id = (self.proses.len() - 1) as u32;
         self.prose_cache.insert((src, px, width), id);
+        debug_assert!(
+            self.prose_cache.len() <= self.proses.len(),
+            "every cached id is live"
+        );
         id
     }
 
     /// A prose layout from [`TextSystem::prose`].
+    ///
+    /// # Panics
+    ///
+    /// Panics on a stale id.
     pub fn prose_list(&self, id: u32) -> &ProseList {
+        assert!((id as usize) < self.proses.len(), "prose id {id} is stale");
         &self.proses[id as usize]
     }
 
@@ -299,15 +342,21 @@ impl TextSystem {
             None => self.images.push(image),
         }
         self.prose_cache.clear();
+        debug_assert!(
+            self.images.len() <= Self::IMAGES_MAX,
+            "images stay under capacity"
+        );
         true
     }
 
     /// Id of the registered image named `path`.
     pub fn image_id(&self, path: &str) -> Option<u32> {
-        self.images
-            .iter()
-            .position(|i| i.path == path)
-            .map(|k| k as u32)
+        debug_assert!(
+            self.images.len() <= Self::IMAGES_MAX,
+            "images stay under capacity"
+        );
+        let k = self.images.iter().position(|i| i.path == path)?;
+        Some(k as u32)
     }
 
     /// A registered image.
@@ -316,6 +365,10 @@ impl TextSystem {
     ///
     /// Panics on an id [`TextSystem::image_id`] did not return.
     pub fn image(&self, id: u32) -> &Image {
+        assert!(
+            (id as usize) < self.images.len(),
+            "image id {id} not registered"
+        );
         &self.images[id as usize]
     }
 
@@ -325,6 +378,11 @@ impl TextSystem {
     ///
     /// Panics on [`NO_TEXT`] or a stale id.
     pub fn layout(&self, id: TextId) -> &Layout<()> {
+        assert_ne!(id, NO_TEXT, "no layout behind the sentinel");
+        assert!(
+            (id as usize) < self.layouts.len(),
+            "layout id {id} is stale"
+        );
         &self.layouts[id as usize]
     }
 
@@ -333,8 +391,14 @@ impl TextSystem {
     /// # Errors
     ///
     /// Returns the parser's message when `src` is not in the supported LaTeX subset.
+    ///
+    /// # Panics
+    ///
+    /// If `px` is 0.
     pub fn math(&mut self, strings: &Strings, src: Sym, px: u16) -> Result<u32, String> {
+        assert!(px > 0, "math size must be positive");
         if let Some(&id) = self.math_cache.get(&(src, px)) {
+            debug_assert!((id as usize) < self.maths.len(), "a cached id is live");
             return Ok(id);
         }
         let list = math::layout_math(strings.get(src), f32::from(px), &self.math_fonts)?;
@@ -345,7 +409,12 @@ impl TextSystem {
     }
 
     /// A math layout from [`TextSystem::math`].
+    ///
+    /// # Panics
+    ///
+    /// Panics on a stale id.
     pub fn math_list(&self, id: u32) -> &MathList {
+        assert!((id as usize) < self.maths.len(), "math id {id} is stale");
         &self.maths[id as usize]
     }
 
@@ -354,6 +423,10 @@ impl TextSystem {
     /// [`TextSystem::begin_frame`] that evicts.
     pub fn icon(&mut self, strings: &Strings, src: Sym) -> Option<u32> {
         if let Some(&id) = self.icon_cache.get(&src) {
+            debug_assert!(
+                id == u32::MAX || (id as usize) < self.icons.len(),
+                "a cached id is live"
+            );
             return (id != u32::MAX).then_some(id);
         }
         let id = match icon::parse(strings.get(src)) {
@@ -374,6 +447,7 @@ impl TextSystem {
     ///
     /// Panics on a stale id.
     pub fn icon_paths(&self, id: u32) -> &Icon {
+        assert!((id as usize) < self.icons.len(), "icon id {id} is stale");
         &self.icons[id as usize]
     }
 
