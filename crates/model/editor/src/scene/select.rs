@@ -97,7 +97,7 @@ pub(super) fn hit_one(
 }
 
 /// The primitive rows `(kind, row)` of the selected objects, by table (lines, rects, arcs,
-/// polylines, polygons, texts: kinds 0–5) then row: what [`marks`] and [`push_moved`] read.
+/// polylines, polygons, texts: kinds 0–5) then row: what [`marks`] and [`push_moved`](super::push_moved) read.
 /// Computed once per selection or scene change, so a move preview frame costs O(selection).
 ///
 /// Cost: O(selection · log rows) to find each object's rows by its stamp, plus a sort of the

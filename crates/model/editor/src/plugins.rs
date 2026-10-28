@@ -7,7 +7,7 @@
 //! keymaps and hooks run here too, so their requests join the plugins' (config spec §6).
 //!
 //! I/O is inverted and never blocks the frame (plugin-abi §5): file reads and writes complete
-//! within the delivery, a `spawn` runs on a worker ([`platform::spawn_start`]) and its
+//! within the delivery, a `spawn` runs on a worker ([`platform::spawn_start`](crate::platform::spawn_start)) and its
 //! `IoDone` arrives in a later frame through [`Host::poll`]; timers fire the same way. While
 //! either waits, [`Host::wake_ms`] asks the window for a tick. A plugin granted more fuel than
 //! the default (a manifest or package `fuel` override) runs its events on a worker thread

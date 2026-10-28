@@ -17,7 +17,7 @@ impl Sim {
     /// Appends the results panel to the state contribution `t` (nodes under `bottom`): a bar
     /// with the run summary, a stale marker, the filter field and buttons; the table header
     /// (buttons that sort); the Monte Carlo yield and the optimizer's best point as rows; the
-    /// job rows of [`TableView::rows`] near the list's scroll offset `scroll_px` (at most
+    /// job rows of [`TableView::rows`](super::TableView::rows) near the list's scroll offset `scroll_px` (at most
     /// [`TABLE_WINDOW`], spacers standing in for the rest; each row's button picks the job);
     /// error rows; the bench's earlier runs.
     pub fn contribute(&self, t: &mut String, scroll_px: f32) {

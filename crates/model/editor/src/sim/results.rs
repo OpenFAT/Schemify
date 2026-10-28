@@ -247,7 +247,7 @@ impl Sim {
         }
     }
 
-    /// Rebuilds [`TableView::rows`] when stale: the shown run's jobs whose text matches the
+    /// Rebuilds [`TableView::rows`](super::TableView::rows) when stale: the shown run's jobs whose text matches the
     /// filter, in sort order (ties by job index, so the order is total and stable).
     ///
     /// Cost: O(jobs · (outputs + specs)) text building plus an O(rows log rows) sort, only
