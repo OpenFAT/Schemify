@@ -6,20 +6,19 @@
 //! connection counts. The phases `connect` runs after naming its components.
 //!
 //! Contents:
-//! - `pub(crate) struct Slots`
+//! - `pub(crate) struct Slots`, `pub(crate) struct BitNets`, `pub(crate) struct DomainCounts`
 //! - `pub(crate) fn slots(cx, geo, comps, src, names, cn, out) -> Slots`
-//! - `pub(crate) fn merge(slots: &mut Slots, cn: &CellNets) -> (Vec<u32>, usize)`
-//! - `pub(crate) fn name_bits(cx, comps, slots, net_of, nb, names, cn)`
-//! - `pub(crate) fn outputs(cx, geo, comps, src, slots, net_of, names, cn)`
-//! - `pub(crate) fn domains(slots: &Slots, net_of: &[u32], nb: usize) -> (Vec<u32>, Vec<u32>)`
+//! - `pub(crate) fn merge(slots: Slots, cn: &CellNets) -> BitNets`
+//! - `pub(crate) fn name_bits(cx, comps, bits, names, cn)`
+//! - `pub(crate) fn outputs(cx, geo, comps, src, bits, names, cn)`
+//! - `pub(crate) fn domains(bits: &BitNets) -> DomainCounts`
 
 use crate::connect::{Comps, Cx, Found, Sources};
 use crate::iface::Domain;
-use crate::names::{Name, Names, push_decimal};
-use crate::netexpr::{self, is_global};
+use crate::names::{self, Name, Names};
+use crate::netexpr;
 use crate::nets::{
-    CellNets, GLOBAL, Ignore, LABEL, NO_NET, NONE_PIN, OWN_STATIC, PORT, Seed, find, glob, id_cmp,
-    slicing, union, write_key,
+    self, CellNets, GLOBAL, Ignore, LABEL, NO_NET, NONE_PIN, NetKey, OWN_STATIC, PORT, Seed,
 };
 use crate::values::NONE;
 use crate::violations::{Code, Violation};
@@ -33,8 +32,8 @@ pub(crate) struct Slots {
     pub(crate) start: Vec<u32>,
     /// Slots in all.
     pub(crate) count: u32,
-    /// `(bit name, slot, class)` of every named slot; sorted by (name, slot) by [`merge`].
-    pub(crate) pairs: Vec<(Name, u32, u8)>,
+    /// Every named slot; sorted by (name, slot) by [`merge`].
+    pub(crate) pairs: Vec<NamedSlot>,
     /// CSR offsets (`own pins + 1`) into `port`.
     pub(crate) port_start: Vec<u32>,
     /// Slots of the own pins' bits.
@@ -45,8 +44,50 @@ pub(crate) struct Slots {
     pub(crate) inh: Vec<u32>,
     /// Slot of each connection (`CellNets::conn_start` layout), `u32::MAX` unconnected.
     pub(crate) conn: Vec<u32>,
-    /// `(slot, domain)` of every instance pin bit.
-    pub(crate) domain: Vec<(u32, Domain)>,
+    /// The slot and domain of every instance pin bit.
+    pub(crate) domain: Vec<SlotDomain>,
+}
+
+/// A slot that carries a bit name.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NamedSlot {
+    pub(crate) name: Name,
+    pub(crate) slot: u32,
+    /// [`GLOBAL`], [`PORT`] or [`LABEL`].
+    pub(crate) class: u8,
+}
+
+/// The domain of an instance pin bit's slot (`W010`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SlotDomain {
+    pub(crate) slot: u32,
+    pub(crate) domain: Domain,
+}
+
+/// The slots merged into bit nets: what [`merge`] returns.
+pub(crate) struct BitNets {
+    pub(crate) slots: Slots,
+    /// Bit net of each slot.
+    pub(crate) net_of: Vec<u32>,
+    /// Bit nets in all (dense, `0..count`).
+    pub(crate) count: usize,
+}
+
+/// Instance pin bits on each bit net, by domain (`W010`).
+pub(crate) struct DomainCounts {
+    /// Pin bits in the `real` domain.
+    pub(crate) real: Vec<u32>,
+    /// Pin bits in the other domains.
+    pub(crate) other: Vec<u32>,
+}
+
+/// The bit a still-unnamed bit net takes its generated name from: the smallest
+/// (component key, bit index) among its slots, and the component's width.
+#[derive(Clone, Copy)]
+struct Unnamed {
+    key: NetKey,
+    bit: u32,
+    width: u32,
 }
 
 /// Lays out the slots: component bits (named by their usable sources), own pins and
@@ -63,6 +104,8 @@ pub(crate) fn slots(
     out: &mut Found<'_>,
 ) -> Slots {
     let nc = comps.width.len();
+    assert_eq!(comps.best.len(), nc, "component columns in step");
+    assert_eq!(src.usable.len(), src.comp.len(), "source columns in step");
     let mut start = vec![0u32; nc + 1];
     for c in 0..nc {
         start[c + 1] = start[c] + comps.width[c];
@@ -78,11 +121,15 @@ pub(crate) fn slots(
         conn: Vec::new(),
         domain: Vec::new(),
     };
-    for k in (0..src.comp.len()).filter(|&k| src.usable[k]) {
+    let usable = (0..src.comp.len()).filter(|&k| src.usable[k]);
+    for k in usable {
         let c = src.comp[k] as usize;
         for (j, &b) in src.bits(k).iter().enumerate() {
-            let class = class_of(cx, names, b, src.class[k]);
-            sl.pairs.push((b, sl.start[c] + j as u32, class));
+            sl.pairs.push(NamedSlot {
+                name: b,
+                slot: sl.start[c] + j as u32,
+                class: class_of(cx, names, b, src.class[k]),
+            });
         }
     }
     // Own interface pins (ports and inherited pins bind by name).
@@ -94,32 +141,43 @@ pub(crate) fn slots(
     sl.overrides(cx, names, cn, out);
     sl.connections(cx, geo, comps, names, cn, out);
     assert_eq!(sl.port_start.len(), cx.own.pin_name.len() + 1);
+    assert_eq!(cn.conn_start.len(), cx.doc.instances().id.len() + 1);
+    assert!(
+        sl.pairs.iter().all(|p| p.slot < sl.count),
+        "named slots exist"
+    );
     sl
 }
 
 /// Merges slots of equal names, then the connections of each `ignore short` instance, and
-/// numbers the merged sets densely in slot order: `(bit net of each slot, bit nets)`.
-pub(crate) fn merge(sl: &mut Slots, cn: &CellNets) -> (Vec<u32>, usize) {
+/// numbers the merged sets densely in slot order.
+pub(crate) fn merge(mut sl: Slots, cn: &CellNets) -> BitNets {
+    assert_eq!(
+        cn.conn_start.len(),
+        cn.ignore.len() + 1,
+        "instance columns in step"
+    );
     let mut sp: Vec<u32> = (0..sl.count).collect();
-    sl.pairs.sort_unstable_by_key(|p| (p.0, p.1));
+    sl.pairs.sort_unstable_by_key(|p| (p.name, p.slot));
     for w in sl.pairs.windows(2) {
-        if w[0].0 == w[1].0 {
-            union(&mut sp, w[0].1, w[1].1);
+        if w[0].name == w[1].name {
+            nets::union(&mut sp, w[0].slot, w[1].slot);
         }
     }
-    for i in (0..cn.ignore.len()).filter(|&i| cn.ignore[i] == Ignore::Short) {
+    let shorted = (0..cn.ignore.len()).filter(|&i| cn.ignore[i] == Ignore::Short);
+    for i in shorted {
         let r = cn.conn_start[i] as usize..cn.conn_start[i + 1] as usize;
         let mut live = sl.conn[r].iter().copied().filter(|&s| s != NONE);
         if let Some(first) = live.next() {
             for slot in live {
-                union(&mut sp, first, slot);
+                nets::union(&mut sp, first, slot);
             }
         }
     }
     let mut net_of = vec![NONE; sl.count as usize];
     let mut nbits = 0u32;
     for slot in 0..sl.count as usize {
-        let r = find(&mut sp, slot as u32) as usize; // the set's first slot (see `geometry`)
+        let r = nets::find(&mut sp, slot as u32) as usize; // the set's first slot (`geometry`)
         net_of[slot] = if r == slot {
             nbits += 1;
             nbits - 1
@@ -128,55 +186,75 @@ pub(crate) fn merge(sl: &mut Slots, cn: &CellNets) -> (Vec<u32>, usize) {
         };
     }
     assert!(nbits <= sl.count);
-    (net_of, nbits as usize)
+    debug_assert!(
+        net_of.iter().all(|&b| b < nbits),
+        "every slot is on a bit net"
+    );
+    BitNets {
+        slots: sl,
+        net_of,
+        count: nbits as usize,
+    }
 }
 
 /// Names the `nb` bit nets: the best named slot's name (class, then bytewise), else
 /// `net_<key>[k]` from the smallest (component key, bit index) among its slots, interned
 /// as one batch in bit order. Fills `bit_name`, `bit_global` and `by_name`.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn name_bits(
     cx: &Cx<'_>,
     comps: &Comps,
-    sl: &Slots,
-    net_of: &[u32],
-    nb: usize,
+    bits: &BitNets,
     names: &mut Names,
     cn: &mut CellNets,
 ) {
+    let (sl, net_of, nb) = (&bits.slots, &bits.net_of, bits.count);
+    assert_eq!(net_of.len(), sl.count as usize, "one bit net per slot");
     let s = cx.doc.strings();
+    // (class, name) of each bit net's best named slot.
     let mut best: Vec<(u8, Name)> = vec![(u8::MAX, Name::NONE); nb];
-    for &(name, slot, class) in &sl.pairs {
-        let b = net_of[slot as usize] as usize;
+    for p in &sl.pairs {
+        let b = net_of[p.slot as usize] as usize;
         let (bc, bn) = best[b];
-        if class < bc || (class == bc && names.cmp(name, bn) == Ordering::Less) {
-            best[b] = (class, name);
+        if p.class < bc || (p.class == bc && names.cmp(p.name, bn) == Ordering::Less) {
+            best[b] = (p.class, p.name);
         }
     }
     // Owned ids sort before pin nodes; then by id text, then pin index.
-    let key_cmp = |a: (ObjId, u32), b: (ObjId, u32)| {
-        (a.1 != NONE_PIN)
-            .cmp(&(b.1 != NONE_PIN))
-            .then_with(|| id_cmp(a.0, b.0, s))
-            .then(a.1.cmp(&b.1))
+    let key_cmp = |a: NetKey, b: NetKey| {
+        (a.pin != NONE_PIN)
+            .cmp(&(b.pin != NONE_PIN))
+            .then_with(|| nets::id_cmp(a.id, b.id, s))
+            .then(a.pin.cmp(&b.pin))
     };
     // Unnamed bits: smallest (component key, bit index) among the slots, with the width.
-    let mut unnamed: Vec<((ObjId, u32), u32, u32)> = vec![((ObjId::NONE, 0), 0, 1); nb];
+    let none = Unnamed {
+        key: NetKey {
+            id: ObjId::NONE,
+            pin: 0,
+        },
+        bit: 0,
+        width: 1,
+    };
+    let mut unnamed: Vec<Unnamed> = vec![none; nb];
     for c in 0..comps.width.len() {
         for j in 0..comps.width[c] {
             let b = net_of[(sl.start[c] + j) as usize] as usize;
             if best[b].1 != Name::NONE {
                 continue;
             }
-            let (key, k, _) = unnamed[b];
-            let take = key.0 == ObjId::NONE
-                || match key_cmp(comps.key[c], key) {
+            let held = unnamed[b];
+            let take = held.key.id == ObjId::NONE
+                || match key_cmp(comps.key[c], held.key) {
                     Ordering::Less => true,
-                    Ordering::Equal => j < k,
+                    Ordering::Equal => j < held.bit,
                     Ordering::Greater => false,
                 };
             if take {
-                unnamed[b] = (comps.key[c], j, comps.width[c]);
+                unnamed[b] = Unnamed {
+                    key: comps.key[c],
+                    bit: j,
+                    width: comps.width[c],
+                };
             }
         }
     }
@@ -187,15 +265,15 @@ pub(crate) fn name_bits(
     let mut gen_text = String::with_capacity(gen_bits.len() * 16);
     let mut gen_end = Vec::with_capacity(gen_bits.len());
     for &b in &gen_bits {
-        let (key, k, width) = unnamed[b];
+        let Unnamed { key, bit, width } = unnamed[b];
         assert!(
-            key.0 != ObjId::NONE,
+            key.id != ObjId::NONE,
             "every component holds an object with an id"
         );
-        write_key(key, s, &mut gen_text);
+        nets::write_key(key, s, &mut gen_text);
         if width > 1 {
             gen_text.push('[');
-            push_decimal(k, &mut gen_text);
+            names::push_decimal(bit, &mut gen_text);
             gen_text.push(']');
         }
         gen_end.push(gen_text.len());
@@ -205,21 +283,25 @@ pub(crate) fn name_bits(
         .collect();
     let mut gen_name = Vec::with_capacity(texts.len());
     names.intern_batch(&texts, &mut gen_name);
+    assert_eq!(gen_name.len(), gen_bits.len(), "one name per generated bit");
     cn.bit_global = vec![false; nb];
-    for (b, best) in best.iter().enumerate().filter(|(_, b)| b.1 != Name::NONE) {
-        cn.bit_global[b] = glob(cx.globals, names, best.1);
+    for (b, best) in best.iter().enumerate() {
+        if best.1 != Name::NONE {
+            cn.bit_global[b] = nets::glob(cx.globals, names, best.1);
+        }
     }
     // A generated bit's text is at hand: no second read of the arena per bit.
     for (g, &b) in gen_bits.iter().enumerate() {
         cn.bit_name[b] = gen_name[g];
-        cn.bit_global[b] = is_global(texts[g]) || cx.globals.binary_search(&gen_name[g]).is_ok();
+        cn.bit_global[b] =
+            netexpr::is_global(texts[g]) || cx.globals.binary_search(&gen_name[g]).is_ok();
     }
     // All pairs with one name were merged, so one net per name; `pairs` is sorted by
     // name, so `by_name` already is (no sort).
     cn.by_name = sl
         .pairs
         .iter()
-        .map(|p| (p.0, net_of[p.1 as usize]))
+        .map(|p| (p.name, net_of[p.slot as usize]))
         .collect();
     assert!(
         cn.by_name.windows(2).all(|w| w[0] <= w[1]),
@@ -232,17 +314,18 @@ pub(crate) fn name_bits(
 /// The row outputs: connections, own pin and override bits as bit nets (`ignore open`
 /// rows unconnected), component rows (name, width, pins, bits, global), the component of
 /// every wire, label, port and instance pin, and each bit's connection count.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn outputs(
     cx: &Cx<'_>,
     geo: &Seed,
     comps: &Comps,
     src: &Sources,
-    sl: &Slots,
-    net_of: &[u32],
+    bits: &BitNets,
     names: &mut Names,
     cn: &mut CellNets,
 ) {
+    let (sl, net_of) = (&bits.slots, &bits.net_of);
+    assert_eq!(cn.bit_name.len(), bits.count, "name_bits ran first");
+    assert!(cn.net_name.is_empty(), "component rows are written once");
     let s = cx.doc.strings();
     let to_net = |slot: u32| {
         if slot == NONE {
@@ -256,7 +339,8 @@ pub(crate) fn outputs(
     cn.port_bits = sl.port.iter().map(|&x| to_net(x)).collect();
     cn.inh_bit_start.clone_from(&sl.inh_start);
     cn.inh_bits = sl.inh.iter().map(|&x| to_net(x)).collect();
-    for i in (0..cn.ignore.len()).filter(|&i| cn.ignore[i] == Ignore::Open) {
+    let opened = (0..cn.ignore.len()).filter(|&i| cn.ignore[i] == Ignore::Open);
+    for i in opened {
         let r = cn.conn_start[i] as usize..cn.conn_start[i + 1] as usize;
         cn.conns[r].fill(NO_NET);
     }
@@ -267,7 +351,7 @@ pub(crate) fn outputs(
             NONE if width == 1 => cn.bit_name[net_of[sl.start[c] as usize] as usize],
             NONE => {
                 buf.clear();
-                write_key(comps.key[c], s, &mut buf);
+                nets::write_key(comps.key[c], s, &mut buf);
                 names.intern(&buf)
             }
             k => src.text[k as usize],
@@ -303,27 +387,44 @@ pub(crate) fn outputs(
     }
     assert_eq!(k, cn.pin_net.len());
     cn.bit_conns = vec![0; cn.bit_name.len()];
-    for &b in cn.conns.iter().chain(&cn.port_bits).chain(&cn.inh_bits) {
+    let connected = cn.conns.iter().chain(&cn.port_bits).chain(&cn.inh_bits);
+    for &b in connected {
         if b != NO_NET {
             cn.bit_conns[b as usize] += 1;
         }
     }
+    assert_eq!(
+        cn.net_name.len(),
+        comps.width.len(),
+        "one row per component"
+    );
+    assert_eq!(
+        cn.net_bit_start.len(),
+        cn.net_width.len(),
+        "component columns in step"
+    );
 }
 
-/// Instance pin bits on each of the `nb` bit nets in the `real` domain and in the others
-/// (`W010`).
-pub(crate) fn domains(sl: &Slots, net_of: &[u32], nb: usize) -> (Vec<u32>, Vec<u32>) {
+/// Instance pin bits on each bit net in the `real` domain and in the others (`W010`).
+pub(crate) fn domains(bits: &BitNets) -> DomainCounts {
+    let nb = bits.count;
     let (mut real, mut other) = (vec![0u32; nb], vec![0u32; nb]);
-    for &(slot, d) in &sl.domain {
-        let b = net_of[slot as usize] as usize;
-        if d == Domain::Real {
+    for d in &bits.slots.domain {
+        let b = bits.net_of[d.slot as usize] as usize;
+        if d.domain == Domain::Real {
             real[b] += 1;
         } else {
             other[b] += 1;
         }
     }
     assert_eq!(real.len(), other.len());
-    (real, other)
+    let total: u64 = real.iter().chain(&other).map(|&n| u64::from(n)).sum();
+    assert_eq!(
+        total,
+        bits.slots.domain.len() as u64,
+        "every pin bit counted once"
+    );
+    DomainCounts { real, other }
 }
 
 // ---- private ----
@@ -339,8 +440,11 @@ impl Slots {
     ) -> (u32, u32) {
         let first = self.count;
         for &b in text_bits {
-            self.pairs
-                .push((b, self.count, class_of(cx, names, b, class)));
+            self.pairs.push(NamedSlot {
+                name: b,
+                slot: self.count,
+                class: class_of(cx, names, b, class),
+            });
             self.count += 1;
         }
         assert_eq!(self.count - first, text_bits.len() as u32);
@@ -359,6 +463,7 @@ impl Slots {
     ) {
         let doc = cx.doc;
         let (s, inst) = (doc.strings(), doc.instances());
+        assert!(cn.inh_inst.is_empty(), "overrides are laid out once");
         let Some(inherit_key) = s.find("inherit") else {
             return; // the document never interned the key: no row has it
         };
@@ -414,6 +519,12 @@ impl Slots {
         out: &mut Found<'_>,
     ) {
         let inst = cx.doc.instances();
+        assert!(cn.conn_start.is_empty(), "connections are laid out once");
+        assert_eq!(
+            cn.elem_start.len(),
+            inst.id.len() + 1,
+            "element names come first"
+        );
         let mut node = geo.pins0;
         for i in 0..inst.id.len() {
             cn.conn_start.push(self.conn.len() as u32);
@@ -424,11 +535,13 @@ impl Slots {
             let stride = f.bits_total as usize;
             let base = self.conn.len();
             self.conn.resize(base + elems * stride, NONE);
-            for p in (0..f.pin_name.len()).filter(|&p| f.pin_inherit[p] == Name::NONE) {
+            let ordinary = (0..f.pin_name.len()).filter(|&p| f.pin_inherit[p] == Name::NONE);
+            for p in ordinary {
                 let c = geo.comp[node] as usize;
                 node += 1;
                 let w = f.bits(p).len();
-                let sliced = match slicing(names.get(f.pin_name[p]), w, elems, comps.width[c]) {
+                let pin = names.get(f.pin_name[p]);
+                let sliced = match nets::slicing(pin, w, elems, comps.width[c]) {
                     Ok(sliced) => sliced,
                     Err(detail) => {
                         let v = Violation::new(
@@ -447,7 +560,10 @@ impl Slots {
                         let bit = if sliced { e * w + j } else { j };
                         let slot = self.start[c] + bit as u32;
                         self.conn[base + e * stride + f.pin_off[p] as usize + j] = slot;
-                        self.domain.push((slot, f.pin_domain[p]));
+                        self.domain.push(SlotDomain {
+                            slot,
+                            domain: f.pin_domain[p],
+                        });
                     }
                 }
             }
@@ -459,7 +575,8 @@ impl Slots {
 
 /// A slot's class: [`GLOBAL`] when bit `b` is global, else `class`.
 fn class_of(cx: &Cx<'_>, names: &Names, b: Name, class: u8) -> u8 {
-    if glob(cx.globals, names, b) {
+    assert!(class <= LABEL, "a class is GLOBAL, PORT or LABEL");
+    if nets::glob(cx.globals, names, b) {
         GLOBAL
     } else {
         class

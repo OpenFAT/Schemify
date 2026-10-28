@@ -4,25 +4,40 @@
 //! for gating (D13). Cites expr spec §4 (scopes, cycles) and D20 (`unverified` values).
 //!
 //! Contents:
-//! - `pub(crate) struct Work`
+//! - `pub(crate) struct Work`, `pub(crate) struct BoundOf`
 //! - `Graph::eval_all`, `Graph::eval_own`, `Graph::recompute`, `Graph::bound`
 //!   (all `pub(crate)`)
 
 use crate::graph::Graph;
 use crate::iface::{GRID, Iface, MAX, MIN, STEP, VALID};
 use crate::values::{Funcs, NONE, VAR, Val};
+use crate::violations::Code;
 use schemify_expr::{Scratch, Value};
+use std::mem;
 
 /// Reusable evaluation memory.
 #[derive(Debug, Default)]
 pub(crate) struct Work {
     pub(crate) scratch: Scratch,
     pub(crate) text: String,
+    /// Gating findings of one instance param, `(code, detail)` ([`crate::check::gate`]).
+    pub(crate) gated: Vec<(Code, String)>,
     inputs: Vec<Value<'static>>,
     affected: Vec<u32>,
     /// Epoch marks of the affected walk, one per node.
     seen: Vec<u32>,
     epoch: u32,
+}
+
+/// One bound of one instance param: what [`Graph::bound`] evaluates.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BoundOf {
+    /// Instance row.
+    pub(crate) inst: usize,
+    /// Param index in the instance's interface.
+    pub(crate) param: usize,
+    /// `MIN`, `MAX`, `STEP`, `GRID` or `VALID`.
+    pub(crate) which: usize,
 }
 
 impl Graph {
@@ -52,6 +67,8 @@ impl Graph {
             }
             self.eval_node(node, vals, unv, ifaces, funcs, ws);
         }
+        assert_eq!(vals.len(), n);
+        assert_eq!(unv.len(), n);
     }
 
     /// Evaluates only the own params and vars (default context): they never read
@@ -80,6 +97,8 @@ impl Graph {
                 self.eval_node(node, vals, unv, ifaces, funcs, ws);
             }
         }
+        assert_eq!(vals.len(), n);
+        assert_eq!(unv.len(), n);
     }
 
     /// Re-evaluates the `dirty` nodes and everything depending on them, in order, and
@@ -96,17 +115,20 @@ impl Graph {
         ws: &mut Work,
         changed: &mut Vec<u32>,
     ) -> usize {
-        self.affected(dirty, ws);
-        let todo = std::mem::take(&mut ws.affected);
-        let (mut vals, mut unv) = (
-            std::mem::take(&mut self.vals),
-            std::mem::take(&mut self.unverified),
+        assert_eq!(
+            self.vals.len(),
+            self.len(),
+            "recompute needs evaluated values"
         );
+        assert_eq!(self.unverified.len(), self.len());
+        self.affected(dirty, ws);
+        let todo = mem::take(&mut ws.affected);
+        let (mut vals, mut unv) = (mem::take(&mut self.vals), mem::take(&mut self.unverified));
         let before = changed.len();
         for &node in &todo {
             // A node never reads itself (cycle nodes lost their edges): its old value can
             // step aside while it is evaluated.
-            let was = std::mem::replace(&mut vals[node as usize], Val::Upstream);
+            let was = mem::replace(&mut vals[node as usize], Val::Upstream);
             let was_unv = unv[node as usize];
             self.eval_node(node, &mut vals, &mut unv, ifaces, funcs, ws);
             if vals[node as usize] != was || unv[node as usize] != was_unv {
@@ -124,28 +146,32 @@ impl Graph {
         count
     }
 
-    /// Evaluates bound `which` (`MIN`, `MAX`, `STEP`, `GRID`, `VALID`) of param `k` for
-    /// instance row `i` in its child scope; `None` when absent or failing.
-    #[allow(clippy::too_many_arguments)]
+    /// Evaluates bound `at.which` of param `at.param` for instance row `at.inst` in its
+    /// child scope; `None` when absent or failing.
     pub(crate) fn bound<F: Funcs>(
         &self,
-        i: usize,
-        k: usize,
-        which: usize,
+        at: BoundOf,
         vals: &[Val],
         ifaces: &[Iface],
         funcs: &mut F,
         ws: &mut Work,
     ) -> Option<Val> {
+        let BoundOf {
+            inst: i,
+            param: k,
+            which,
+        } = at;
         assert!(matches!(which, MIN | MAX | STEP | GRID | VALID));
+        assert_eq!(vals.len(), self.len(), "values indexed like the graph");
         let first = self.inst_first[i];
         assert!(first != NONE, "gating needs a resolved instance");
         let c = &ifaces[self.inst_iface[i] as usize];
+        assert!(k < c.param_name.len(), "param {k} of instance {i}");
         let b = c.param_bound[k][which];
         if b == NONE {
             return None;
         }
-        let mut inputs: Vec<Value<'_>> = recycle(std::mem::take(&mut ws.inputs));
+        let mut inputs: Vec<Value<'_>> = recycle(mem::take(&mut ws.inputs));
         for &r in c.progs.refs(b) {
             let d = if r & VAR == 0 {
                 first + r
@@ -187,8 +213,10 @@ impl Graph {
                 out.push(d);
             }
         }
+        // Each node enters `out` once (its mark), so the walk ends after at most n steps.
         let mut i = 0;
         while i < out.len() {
+            debug_assert!(i < n, "the affected walk visits each node once");
             let v = out[i] as usize;
             for &w in &self.rdeps[self.rdep_start[v] as usize..self.rdep_end[v] as usize] {
                 if seen[w as usize] != epoch {
@@ -211,12 +239,14 @@ impl Graph {
         funcs: &mut F,
         ws: &mut Work,
     ) {
-        if let Ok(i) = self.cyclic.binary_search_by_key(&node, |e| e.0) {
-            vals[node as usize] = Val::Err(Box::new(self.cyclic[i].1.clone()));
+        assert!((node as usize) < vals.len(), "node {node} has a value slot");
+        assert_eq!(vals.len(), unv.len(), "value columns in step");
+        if let Ok(i) = self.cyclic.binary_search_by_key(&node, |e| e.node) {
+            vals[node as usize] = Val::Err(Box::new(self.cyclic[i].error.clone()));
             return;
         }
         let (val, u) = {
-            let mut inputs: Vec<Value<'_>> = recycle(std::mem::take(&mut ws.inputs));
+            let mut inputs: Vec<Value<'_>> = recycle(mem::take(&mut ws.inputs));
             let mut upstream = false;
             let mut u = false;
             for &d in self.node_deps(node) {

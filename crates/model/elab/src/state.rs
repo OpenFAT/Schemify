@@ -18,16 +18,16 @@
 mod findings;
 mod revalue;
 
-use crate::cells::{display, readable, row_of};
-use crate::connect::connect_seeded;
+use crate::cells;
+use crate::connect::{self, Cx};
 use crate::eval::Work;
 use crate::graph::Graph;
 use crate::iface::Iface;
 use crate::live::{Ctx, Delta, Live};
 use crate::names::{Name, Names};
-use crate::nets::{CellNets, Seed};
+use crate::nets::{self, CellNets, Seed};
 use crate::values::{Funcs, NONE};
-use crate::violations::{Code, Violation, Violations, cmp_key};
+use crate::violations::{self, Code, Violation, Violations};
 use schemify_doc::{DocHandle, Document, ObjId, Op, Project};
 use schemify_format::RecordKind;
 use std::collections::{BTreeMap, HashMap};
@@ -130,9 +130,10 @@ impl CellState {
     pub fn build<F: Funcs>(project: &Project, h: DocHandle, funcs: &mut F) -> Option<CellState> {
         let doc = project.doc(h)?;
         let mut st = CellState::default();
-        let (cell, stem) = row_of(project, doc).map_or(("top".to_owned(), "top".to_owned()), |r| {
-            display(project, r)
-        });
+        let (cell, stem) = cells::row_of(project, doc)
+            .map_or(("top".to_owned(), "top".to_owned()), |r| {
+                cells::display(project, r)
+            });
         let own = Iface::from_doc(doc, &cell, &stem, NONE, true, &mut st.names);
         st.ifaces.push(own);
         let s = doc.strings();
@@ -140,13 +141,13 @@ impl CellState {
         let mut by_row: HashMap<usize, u32> = HashMap::new();
         for i in 0..doc.instances().id.len() {
             let text = s.get(doc.instances().cell[i]);
-            match readable(project, project.resolve(h, text).ok(), text) {
+            match cells::readable(project, project.resolve(h, text).ok(), text) {
                 Ok(row) => {
                     let next = st.ifaces.len() as u32;
                     let at = *by_row.entry(row).or_insert(next);
                     if at == next {
                         let iface_doc = project.interface(row).expect("readable");
-                        let (cell, stem) = display(project, row);
+                        let (cell, stem) = cells::display(project, row);
                         let open = project.open_handle(row).is_some();
                         let row32 = row as u32;
                         let f =
@@ -217,10 +218,10 @@ impl CellState {
                 .live
                 .rename(&t.renamed, &cx, &mut self.nets, &mut self.names)
             {
-                Some((gone, new)) => {
+                Some(renamed) => {
                     let d = delta.get_or_insert_default();
-                    d.0.extend(gone);
-                    d.1.extend(new);
+                    d.gone.extend(renamed.gone);
+                    d.added.extend(renamed.added);
                 }
                 None => t.nets = true, // an element count changed
             }
@@ -280,26 +281,40 @@ impl CellState {
             None
         } else {
             let net = delta.map(|d| self.apply_net_delta(d));
-            self.recheck(doc, &rows, own, funcs)
-                .map(|(mut gone, mut new)| {
-                    if let Some((g, n)) = net {
-                        gone.extend(g);
-                        new.extend(n);
-                    }
-                    gone.sort_by(|a, b| cmp_key(a, b, &self.names));
-                    new.sort_by(|a, b| cmp_key(a, b, &self.names));
-                    (gone, new)
-                })
+            self.recheck(doc, &rows, own, funcs).map(|mut rechecked| {
+                if let Some(net) = net {
+                    rechecked.gone.extend(net.gone);
+                    rechecked.added.extend(net.added);
+                }
+                let names = &self.names;
+                rechecked
+                    .gone
+                    .sort_by(|a, b| violations::cmp_key(a, b, names));
+                rechecked
+                    .added
+                    .sort_by(|a, b| violations::cmp_key(a, b, names));
+                rechecked
+            })
         };
         match changes {
-            Some(c) => self.next_pass(c),
+            Some(c) => self.next_pass(c.gone, c.added),
             None => self.check(doc, funcs),
         }
         if done.graph {
             self.revalued.clear(); // every instance: consumers take a rebuild
         }
-        assert!(!(done.graph && done.evaluated > 0));
+        if done.graph {
+            assert_eq!(
+                done.evaluated, 0,
+                "a rebuilt graph evaluates fully, not incrementally"
+            );
+        }
         assert!(self.revalued.len() <= self.inst_iface.len());
+        assert_eq!(
+            self.graph.vals.len(),
+            self.graph.len(),
+            "every node evaluated"
+        );
         done
     }
 }
@@ -307,7 +322,7 @@ impl CellState {
 /// The record an op is about: (kind, key, attribute key for attribute ops).
 pub(crate) fn subject(op: &Op) -> (RecordKind, &str, Option<&str>) {
     let (kind, key) = op.subject();
-    let attr = match op {
+    let attr: Option<&str> = match op {
         Op::SetAttr { key, .. } | Op::RemoveAttr { key, .. } => Some(key.as_str()),
         _ => None,
     };
@@ -352,6 +367,7 @@ impl<'o> Touched<'o> {
             }
         }
         assert!(t.insts.len() <= ops.len());
+        assert!(t.renamed.len() <= ops.len());
         Some(t)
     }
 }
@@ -359,7 +375,8 @@ impl<'o> Touched<'o> {
 impl CellState {
     /// Replaces the state by a fresh build (what every edit `recompute` cannot patch does).
     fn rebuild<F: Funcs>(&mut self, project: &Project, h: DocHandle, funcs: &mut F) -> Recomputed {
-        *self = CellState::build(project, h, funcs).expect("live handle");
+        *self = CellState::build(project, h, funcs).expect("recompute's handle is live");
+        assert_eq!(self.prev_pass, 0, "a fresh build has no delta");
         Recomputed {
             nets: NetChange::Rebuilt,
             graph: true,
@@ -369,21 +386,21 @@ impl CellState {
 
     /// Rebuilds the connectivity and reseeds the live patcher from it.
     fn rebuild_nets(&mut self, doc: &Document) {
+        assert!(!self.ifaces.is_empty(), "the own interface is built first");
         let mut globals = Vec::new();
-        crate::nets::global_labels(doc, &mut self.names, &mut globals);
+        nets::global_labels(doc, &mut self.names, &mut globals);
         globals.sort_unstable();
         globals.dedup();
         let (mut seed, mut found) = (Seed::default(), Vec::new());
-        self.nets = connect_seeded(
+        let connect_cx = Cx {
             doc,
-            &self.ifaces[0],
-            &self.ifaces,
-            &self.inst_iface,
-            &globals,
-            &mut self.names,
-            &mut found,
-            Some(&mut seed),
-        );
+            own: &self.ifaces[0],
+            ifaces: &self.ifaces,
+            inst_iface: &self.inst_iface,
+            globals: &globals,
+        };
+        self.nets =
+            connect::connect_seeded(&connect_cx, &mut self.names, &mut found, Some(&mut seed));
         let cx = Ctx::new(doc, &self.ifaces, &self.inst_iface);
         self.live = Live::seed(seed, found, globals, &self.nets, &cx, &mut self.names);
         assert_eq!(self.nets.elem_start.len(), self.inst_iface.len() + 1);
@@ -404,5 +421,6 @@ impl CellState {
         self.graph.vals = vals;
         self.graph.unverified = unv;
         assert_eq!(self.graph.vals.len(), self.graph.len());
+        assert_eq!(self.graph.unverified.len(), self.graph.len());
     }
 }

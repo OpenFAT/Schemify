@@ -7,7 +7,7 @@
 //! Contents:
 //! - `pub const NO_NET`, `pub enum Ignore` (`pub(crate) parse`)
 //! - `pub struct CellNets`: `bit`, `elems`, `port`, `pins`, `bits_of`
-//! - `pub(crate) struct Seed`
+//! - `pub(crate) struct Seed`, `pub(crate) struct NetKey`
 //! - `pub(crate) const GLOBAL`, `PORT`, `LABEL`, `OWN_STATIC`, `OWN_PORTS`, `OWN_BITS`,
 //!   `NONE_PIN`
 //! - `pub fn place(x, y, mirrored, turns, at_x, at_y) -> (i32, i32)`
@@ -20,10 +20,10 @@
 //! - `pub(crate) fn find(parent: &mut [u32], x: u32) -> u32`
 //! - `pub(crate) fn union(parent: &mut [u32], a: u32, b: u32)`
 //! - `pub(crate) fn id_cmp(a: ObjId, b: ObjId, s: &Strings) -> Ordering`
-//! - `pub(crate) fn write_key(k: (ObjId, u32), s: &Strings, buf: &mut String)`
+//! - `pub(crate) fn write_key(k: NetKey, s: &Strings, buf: &mut String)`
 
-use crate::names::{Name, Names, push_decimal};
-use crate::netexpr::{self, is_global};
+use crate::names::{self, Name, Names};
+use crate::netexpr;
 use schemify_doc::{Document, ObjId, Strings};
 use std::cmp::Ordering;
 
@@ -149,6 +149,14 @@ pub(crate) struct Seed {
     pub(crate) merged: bool,
 }
 
+/// The naming key of a component (§3): an owned object id (`pin` is [`NONE_PIN`]), or an
+/// instance id and the pin index of its smallest pin node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct NetKey {
+    pub(crate) id: ObjId,
+    pub(crate) pin: u32,
+}
+
 /// Name classes in precedence order (§3): globals win, then ports, then labels.
 pub(crate) const GLOBAL: u8 = 0;
 
@@ -182,29 +190,57 @@ impl Ignore {
 }
 
 impl CellNets {
-    /// Returns the bit net named `name`, if any net carries it.
+    /// Returns the bit net named `name`, if any net carries it. O(log names).
+    #[must_use]
     pub fn bit(&self, name: Name) -> Option<u32> {
         let i = self.by_name.binary_search_by_key(&name, |p| p.0).ok()?;
-        Some(self.by_name[i].1)
+        let bit = self.by_name[i].1;
+        assert!(
+            (bit as usize) < self.bit_name.len(),
+            "by_name points past the bit table"
+        );
+        Some(bit)
     }
 
     /// Returns the element names of instance row `i`.
+    ///
+    /// # Panics
+    ///
+    /// If `i` is not an instance row.
+    #[must_use]
     pub fn elems(&self, i: usize) -> &[Name] {
-        &self.elem_name[self.elem_start[i] as usize..self.elem_start[i + 1] as usize]
+        csr(&self.elem_start, &self.elem_name, i)
     }
 
     /// Returns the bit nets of own pin `p`.
+    ///
+    /// # Panics
+    ///
+    /// If `p` is not a pin of the cell's own interface.
+    #[must_use]
     pub fn port(&self, p: usize) -> &[u32] {
-        &self.port_bits[self.port_bit_start[p] as usize..self.port_bit_start[p + 1] as usize]
+        csr(&self.port_bit_start, &self.port_bits, p)
     }
 
     /// Returns the components of instance row `i`'s ordinary pins.
+    ///
+    /// # Panics
+    ///
+    /// If `i` is not an instance row.
+    #[must_use]
     pub fn pins(&self, i: usize) -> &[u32] {
-        &self.pin_net[self.pin_start[i] as usize..self.pin_start[i + 1] as usize]
+        csr(&self.pin_start, &self.pin_net, i)
     }
 
     /// Returns the bit nets of component `c` (empty for a hole).
+    ///
+    /// # Panics
+    ///
+    /// If `c` is not a component row.
+    #[must_use]
     pub fn bits_of(&self, c: usize) -> &[u32] {
+        assert!(c < self.net_width.len(), "component {c} out of range");
+        assert_eq!(self.net_bit_start.len(), self.net_width.len());
         let start = self.net_bit_start[c] as usize;
         &self.net_bits[start..start + usize::from(self.net_width[c])]
     }
@@ -212,8 +248,13 @@ impl CellNets {
 
 /// Places a symbol-local point (format spec §3): mirror x, rotate clockwise by quarter
 /// turns (y down), translate. Saturates at the i32 range.
+///
+/// # Panics
+///
+/// If `turns` is not below 4.
+#[must_use]
 pub fn place(x: i32, y: i32, mirrored: bool, turns: u8, at_x: i32, at_y: i32) -> (i32, i32) {
-    assert!(turns < 4);
+    assert!(turns < 4, "a rotation is 0 to 3 quarter turns, got {turns}");
     let (mut x, y) = (i64::from(x), i64::from(y));
     if mirrored {
         x = -x;
@@ -224,6 +265,8 @@ pub fn place(x: i32, y: i32, mirrored: bool, turns: u8, at_x: i32, at_y: i32) ->
         2 => (-x, -y),
         _ => (y, -x),
     };
+    // A mirror or quarter turn keeps the L1 distance from the origin.
+    debug_assert_eq!(rx.abs() + ry.abs(), x.abs() + y.abs());
     let sat = |v: i64| v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
     (sat(rx + i64::from(at_x)), sat(ry + i64::from(at_y)))
 }
@@ -233,7 +276,8 @@ pub fn place(x: i32, y: i32, mirrored: bool, turns: u8, at_x: i32, at_y: i32) ->
 pub fn global_labels(doc: &Document, names: &mut Names, out: &mut Vec<Name>) {
     let (s, labels) = (doc.strings(), doc.labels());
     let mut buf = String::new();
-    for l in (0..labels.id.len()).filter(|&l| label_is_global(doc, l)) {
+    let global_rows = (0..labels.id.len()).filter(|&l| label_is_global(doc, l));
+    for l in global_rows {
         // An over-wide expression is reported by `connect` as E011.
         let _ = netexpr::expand(s.get(labels.text[l]), names, out, &mut buf);
     }
@@ -241,6 +285,7 @@ pub fn global_labels(doc: &Document, names: &mut Names, out: &mut Vec<Name>) {
 
 /// Whether label row `l` carries `global true`.
 pub(crate) fn label_is_global(doc: &Document, l: usize) -> bool {
+    assert!(l < doc.labels().id.len(), "label row {l} out of range");
     let s = doc.strings();
     doc.pool()
         .find_attr(s, doc.labels().attrs[l], "global")
@@ -251,7 +296,8 @@ pub(crate) fn label_is_global(doc: &Document, l: usize) -> bool {
 /// Whether bit name `n` is global: by spelling (`0`, `…!`) or made so by a `global true`
 /// label (`globals`, sorted).
 pub(crate) fn glob(globals: &[Name], names: &Names, n: Name) -> bool {
-    is_global(names.get(n)) || globals.binary_search(&n).is_ok()
+    debug_assert!(globals.is_sorted(), "globals is binary-searched");
+    netexpr::is_global(names.get(n)) || globals.binary_search(&n).is_ok()
 }
 
 /// Bus slicing (§4): whether a `w`-bit pin of an `elems`-element instance takes its whole
@@ -261,6 +307,7 @@ pub(crate) fn glob(globals: &[Name], names: &Names, n: Name) -> bool {
 ///
 /// The `E011` detail when the net is neither width.
 pub(crate) fn slicing(pin: &str, w: usize, elems: usize, net: u32) -> Result<bool, String> {
+    assert!(elems >= 1, "an instance has at least one element");
     let net = net as usize;
     if net == w {
         Ok(false)
@@ -286,7 +333,9 @@ pub(crate) fn on_segment(x: i32, y: i32, x1: i32, y1: i32, x2: i32, y2: i32) -> 
 
 /// The sort key of point `(a, b)`: both coordinates offset to unsigned, `a` high.
 pub(crate) fn key(a: i32, b: i32) -> u64 {
-    (u64::from(a as u32 ^ 0x8000_0000) << 32) | u64::from(b as u32 ^ 0x8000_0000)
+    let k = (u64::from(a as u32 ^ 0x8000_0000) << 32) | u64::from(b as u32 ^ 0x8000_0000);
+    debug_assert_eq!(unkey(k), (a, b), "key and unkey are inverses");
+    k
 }
 
 /// Decodes [`key`]: `(a, b)`.
@@ -299,7 +348,12 @@ pub(crate) fn unkey(k: u64) -> (i32, i32) {
 
 /// The root of `x`'s set, halving the path on the way.
 pub(crate) fn find(parent: &mut [u32], mut x: u32) -> u32 {
+    assert!((x as usize) < parent.len(), "element {x} out of the forest");
+    // Each step moves at least one level up a tree of at most `parent.len()` levels.
+    let mut steps = 0;
     while parent[x as usize] != x {
+        debug_assert!(steps < parent.len(), "union-find cycle");
+        steps += 1;
         let p = parent[parent[x as usize] as usize];
         parent[x as usize] = p;
         x = p;
@@ -316,6 +370,11 @@ pub(crate) fn union(parent: &mut [u32], a: u32, b: u32) {
         Ordering::Greater => parent[ra as usize] = rb,
         Ordering::Equal => {}
     }
+    debug_assert_eq!(
+        parent[ra.min(rb) as usize],
+        ra.min(rb),
+        "the kept root is a root"
+    );
 }
 
 /// Compares ids by their text (bytewise), the order `net_<id>` names use.
@@ -328,13 +387,29 @@ pub(crate) fn id_cmp(a: ObjId, b: ObjId, s: &Strings) -> Ordering {
 
 /// Appends `net_<id>` (an owned object id) or `net_<inst id>_<pin>` (a pin node): the
 /// generated name of an unnamed component keyed `k` (§3).
-pub(crate) fn write_key(k: (ObjId, u32), s: &Strings, buf: &mut String) {
+pub(crate) fn write_key(k: NetKey, s: &Strings, buf: &mut String) {
+    assert!(k.id != ObjId::NONE, "a naming key holds an id");
     buf.push_str("net_");
-    k.0.write(s, buf);
-    if k.1 != NONE_PIN {
+    k.id.write(s, buf);
+    if k.pin != NONE_PIN {
         buf.push('_');
-        push_decimal(k.1, buf);
+        names::push_decimal(k.pin, buf);
     }
+}
+
+// ---- private ----
+
+/// Row `row` of a CSR table: `items[start[row]..start[row + 1]]`.
+fn csr<'a, T>(start: &[u32], items: &'a [T], row: usize) -> &'a [T] {
+    assert!(
+        row + 1 < start.len(),
+        "row {row} of a {}-row table",
+        start.len().saturating_sub(1)
+    );
+    let (from, to) = (start[row] as usize, start[row + 1] as usize);
+    assert!(from <= to, "CSR offsets are monotone");
+    assert!(to <= items.len(), "CSR offsets stay inside their column");
+    &items[from..to]
 }
 
 #[cfg(test)]
