@@ -56,6 +56,7 @@ pub fn lane_name(src: &str) -> &str {
         .map_or(src.len(), |(b, _)| b);
     let name = &src[..end];
     debug_assert!(name.chars().count() <= LANE_NAME_CHARS);
+    debug_assert!(src.starts_with(name), "a lane name is a prefix");
     name
 }
 
@@ -135,6 +136,7 @@ pub fn readout_head(waves: &Waves, active: u8) -> ReadoutHead {
 /// O(min(rows, `max`)) value lookups, each a binary search of one trace's samples.
 pub fn readout_rows(waves: &Waves, max: usize, out: &mut Vec<ReadoutRow>) {
     out.clear();
+    debug_assert!(!waves.panes().is_empty(), "a viewer always has a pane");
     let [ca, cb] = waves.cursors();
     for i in 0..waves.trace_count() {
         if out.len() >= max {
@@ -189,6 +191,11 @@ pub fn readout_rows(waves: &Waves, max: usize, out: &mut Vec<ReadoutRow>) {
         }
     }
     debug_assert!(out.len() <= max);
+    debug_assert!(
+        out.iter()
+            .all(|r| r.cells[1..].iter().all(|c| !c.is_empty())),
+        "every value cell shows a value or `-`"
+    );
 }
 
 /// The data point under the pointer `(x, y)`, as `(x, y)` values of the pane it is over, or
@@ -204,6 +211,7 @@ pub fn measure_at(geo: &Geometry, waves: &Waves, x: f32, y: f32) -> Option<(f64,
         "more pane rects than panes"
     );
     let k = usize::from(geo.pane_at(x, y)?);
+    debug_assert!(k < geo.panes.len());
     let pr = super::plot_area(geo.panes[k]);
     if !pr.contains(x, y) {
         return None;
@@ -215,19 +223,28 @@ pub fn measure_at(geo: &Geometry, waves: &Waves, x: f32, y: f32) -> Option<(f64,
 
 /// The measurement tooltip's text (xschem `m`): `y=…  x=…` of [`measure_at`] in engineering
 /// units, or `None` where it measures nothing.
+///
+/// # Panics
+///
+/// As [`measure_at`].
 #[must_use]
 pub fn measure_label(geo: &Geometry, waves: &Waves, x: f32, y: f32) -> Option<String> {
     let (vx, vy) = measure_at(geo, waves, x, y)?;
-    Some(format!(
+    let label = format!(
         "y={}  x={}",
         schemify_wave::format_si(vy, 4),
         schemify_wave::format_si(vx, 4)
-    ))
+    );
+    debug_assert!(label.starts_with("y="));
+    debug_assert!(label.contains("  x="), "both values are shown");
+    Some(label)
 }
 
 // ---- private ----
 
 /// `v` in engineering units with 4 significant digits, `-` for `None`.
 fn si(v: Option<f64>) -> String {
-    v.map_or_else(|| "-".to_owned(), |v| schemify_wave::format_si(v, 4))
+    let text = v.map_or_else(|| "-".to_owned(), |v| schemify_wave::format_si(v, 4));
+    debug_assert!(!text.is_empty(), "a value or `-`");
+    text
 }

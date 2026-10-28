@@ -163,7 +163,6 @@ impl Router<'_> {
     /// The wheel: the canvas, a text area taller than its box, or the scroll pane under it.
     pub(super) fn wheel(&mut self, ev: InputEvent, x: f32, y: f32, dy: f32) {
         debug_assert!(matches!(ev, InputEvent::Wheel { .. }));
-        debug_assert!(dy.is_finite(), "a wheel step is finite");
         let tables = self.tables;
         let nodes = &tables.nodes;
         let h = self.hit(x, y);

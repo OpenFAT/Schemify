@@ -97,6 +97,10 @@ impl WaveUi {
         if held.is_some_and(|p| usize::from(p) >= geo.panes.len()) {
             self.drag = Drag::None;
         }
+        debug_assert!(
+            geo.panes.len() <= waves.panes().len(),
+            "pane rects index the viewer's panes"
+        );
         let plot = |k: u8| super::plot_area(geo.panes[usize::from(k)]);
         let x_scale = |k: u8| {
             let p = plot(k);
@@ -297,6 +301,7 @@ impl WaveUi {
 /// x), else a horizontal one (analog and histogram panes).
 fn grab(waves: &Waves, k: u8, sx: &Scale, sy: &Scale, x: f32, y: f32) -> Option<Drag> {
     let p = usize::from(k);
+    assert!(p < waves.panes().len(), "a press lands in a pane ({k})");
     let props = waves.props(p);
     let near =
         |c: Option<f64>, at: f32, s: &Scale| c.is_some_and(|v| (s.px(v) - at).abs() <= GRAB_PX);

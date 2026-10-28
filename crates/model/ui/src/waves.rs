@@ -284,11 +284,16 @@ impl WaveUi {
     /// The gesture in progress (the renderer draws the box-zoom rubber band from it).
     #[must_use]
     pub fn drag(&self) -> Drag {
-        if let Drag::Box { x0, y0, x1, y1, .. } = self.drag {
-            debug_assert!(x0.is_finite(), "box corners are pointer positions");
-            debug_assert!(y0.is_finite(), "box corners are pointer positions");
-            debug_assert!(x1.is_finite(), "box corners are pointer positions");
-            debug_assert!(y1.is_finite(), "box corners are pointer positions");
+        if let Drag::Pan { pane, .. }
+        | Drag::PanY { pane, .. }
+        | Drag::Box { pane, .. }
+        | Drag::Cursor { pane, .. }
+        | Drag::HCursor { pane, .. } = self.drag
+        {
+            debug_assert!(
+                usize::from(pane) < schemify_wave::MAX_PANES,
+                "a drag holds a pane"
+            );
         }
         self.drag
     }
@@ -334,10 +339,6 @@ impl WaveUi {
     /// Last pointer position over the window, `None` after it left.
     #[must_use]
     pub fn pointer(&self) -> Option<(f32, f32)> {
-        if let Some((x, y)) = self.pointer {
-            debug_assert!(x.is_finite(), "pointer positions are finite");
-            debug_assert!(y.is_finite(), "pointer positions are finite");
-        }
         self.pointer
     }
 
