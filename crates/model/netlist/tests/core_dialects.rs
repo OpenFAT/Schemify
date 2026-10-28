@@ -6,10 +6,8 @@
 
 mod common;
 
-use common::{elab, id};
 use schemify_doc::{DocHandle, Project, core_file, core_library};
 use schemify_elab::{Dialect, Elab, Severity};
-use schemify_netlist::emit;
 use std::fmt::Write;
 use std::path::Path;
 
@@ -95,16 +93,15 @@ const DEVICES: &[Row] = &[
 
 /// The pins of core cell `cell`: `(name, x, y)` from its `pin` lines.
 fn pins(cell: &str) -> Vec<(String, f64, f64)> {
-    let text = std::str::from_utf8(core_file(cell).expect("a core cell")).unwrap();
+    let text =
+        std::str::from_utf8(core_file(cell).expect("a core cell")).expect("a core cell is UTF-8");
     text.lines()
         .filter_map(|l| l.strip_prefix("pin "))
         .map(|l| {
-            let f: Vec<&str> = l.split_whitespace().collect();
-            (
-                f[0].to_owned(),
-                f[2].parse().unwrap(),
-                f[3].parse().unwrap(),
-            )
+            let fields: Vec<&str> = l.split_whitespace().collect();
+            let x: f64 = fields[2].parse().expect("a pin x coordinate");
+            let y: f64 = fields[3].parse().expect("a pin y coordinate");
+            (fields[0].to_owned(), x, y)
         })
         .collect()
 }
@@ -120,13 +117,14 @@ fn bench(rows: &[Row]) -> String {
         let _ = write!(
             s,
             "inst {} core:{cell}\n  at {x} 0 R0\n  name {name}\n",
-            id(k as u64)
+            common::id(k as u64)
         );
         for (p, v) in params.iter() {
             let _ = writeln!(s, "  {p} {v}");
         }
-        for (j, ((_, px, py), net)) in pins.iter().zip(nets.iter()).enumerate() {
-            let lid = id(10_000 + 16 * k as u64 + j as u64);
+        let pin_nets = pins.iter().zip(nets.iter());
+        for (j, ((_, px, py), net)) in pin_nets.enumerate() {
+            let lid = common::id(10_000 + 16 * k as u64 + j as u64);
             let _ = writeln!(labels, "label {lid} {} {py} R0 {net}", x + px);
         }
     }
@@ -137,19 +135,22 @@ fn bench(rows: &[Row]) -> String {
 
 /// The core library plus `bench` as the project's `tb.shbench`, everything open.
 fn project(bench: &str) -> (Project, DocHandle) {
-    let mut p = Project::new(None, None, 11).unwrap();
-    let (_, diags) = p.index_library("core", "", core_library()).unwrap();
+    let mut p = Project::new(None, None, 11).expect("an empty project");
+    let (_, diags) = p
+        .index_library("core", "", core_library())
+        .expect("the core library indexes");
     assert!(diags.is_empty(), "{diags:?}");
     for (name, bytes) in core_library() {
-        p.open("core", name, bytes, None).unwrap();
+        p.open("core", name, bytes, None)
+            .expect("a core cell opens");
     }
     let (_, diags) = p
         .index_library("", "", &[("tb.shbench", bench.as_bytes())])
-        .unwrap();
+        .expect("the bench indexes");
     assert!(diags.is_empty(), "{diags:?}");
     let top = p
         .open("", "tb.shbench", bench.as_bytes(), None)
-        .unwrap()
+        .expect("the bench opens")
         .handle;
     (p, top)
 }
@@ -166,7 +167,7 @@ fn errors(e: &Elab) -> Vec<String> {
 fn snapshot(name: &str, text: &str) {
     let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures")).join(name);
     if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
-        std::fs::write(&path, text).unwrap();
+        std::fs::write(&path, text).expect("the snapshot is writable");
         return;
     }
     let want = std::fs::read_to_string(&path)
@@ -178,15 +179,16 @@ fn snapshot(name: &str, text: &str) {
 fn every_core_device_netlists_for_spice_and_spectre() {
     let (p, top) = project(&bench(DEVICES));
     for d in [Dialect::Ngspice, Dialect::Spectre] {
-        let e = elab(&p, top, d);
+        let e = common::elab(&p, top, d);
         assert!(errors(&e).is_empty(), "{d:?}: {:?}", errors(&e));
-        let text = emit(&e, d).text;
+        let text = schemify_netlist::emit(&e, d).text;
         assert!(!text.contains("error in"), "{d:?}:\n{text}");
         snapshot(&format!("core_tb.{}", d.as_str()), &text);
     }
     // Spectre numbers are canonical, never a SPICE suffix Spectre reads otherwise
     // (`1M` is milli in SPICE, mega in Spectre; Spectre has no `meg`).
-    let text = emit(&elab(&p, top, Dialect::Spectre), Dialect::Spectre).text;
+    let text =
+        schemify_netlist::emit(&common::elab(&p, top, Dialect::Spectre), Dialect::Spectre).text;
     for line in text.lines() {
         assert!(!line.contains("meg"), "{line}");
     }
@@ -214,7 +216,7 @@ fn cells_spectre_cannot_express_are_refused() {
     ] {
         let rows: Vec<Row> = vec![(cell, "U1", &[], nets)];
         let (p, top) = project(&bench(&rows));
-        let errs = errors(&elab(&p, top, Dialect::Spectre));
+        let errs = errors(&common::elab(&p, top, Dialect::Spectre));
         assert!(
             errs.iter()
                 .any(|e| e.starts_with("E013") && e.contains("no format for spectre")),
@@ -222,7 +224,7 @@ fn cells_spectre_cannot_express_are_refused() {
         );
         // The SPICE dialects keep them.
         assert!(
-            errors(&elab(&p, top, Dialect::Ngspice)).is_empty(),
+            errors(&common::elab(&p, top, Dialect::Ngspice)).is_empty(),
             "{cell}"
         );
     }
@@ -241,9 +243,9 @@ fn a_source_spec_spectre_cannot_say_fails_its_line_only() {
         ("res", "R1", &[], &["a", "0"]),
     ];
     let (p, top) = project(&bench(&rows));
-    let e = elab(&p, top, Dialect::Spectre);
+    let e = common::elab(&p, top, Dialect::Spectre);
     assert!(errors(&e).is_empty(), "{:?}", errors(&e));
-    let n = emit(&e, Dialect::Spectre);
+    let n = schemify_netlist::emit(&e, Dialect::Spectre);
     assert!(
         n.text.contains("// error in VFM: X009") && n.text.contains("sffm"),
         "{}",

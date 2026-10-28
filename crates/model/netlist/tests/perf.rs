@@ -7,9 +7,7 @@
 
 mod common;
 
-use common::*;
 use schemify_elab::Dialect;
-use schemify_netlist::emit;
 use std::time::{Duration, Instant};
 
 const RES: &str = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\nparam R 1k\n  min 1\n\nimpl spice spice\n  format spice \"R{name} {A} {B} {R}\"\n";
@@ -22,8 +20,8 @@ fn level(child: &str, fan: usize, param_child: &str) -> String {
     for i in 0..fan {
         s.push_str(&format!(
             "inst {} ./{child}\n  at {} 0 R0\n  name X{i}\n  {param_child} r*2\n",
-            id(i as u64 + 1),
-            c(i as i64 * 100_000)
+            common::id(i as u64 + 1),
+            common::coord(i as i64 * 100_000)
         ));
     }
     for i in 0..fan {
@@ -37,18 +35,21 @@ fn level(child: &str, fan: usize, param_child: &str) -> String {
         } else {
             format!("n{}", i + 1)
         };
-        let x = c(i as i64 * 100_000);
-        s.push_str(&format!("label {} {x} 0 R0 {a}\n", id(1000 + 2 * i as u64)));
+        let x = common::coord(i as i64 * 100_000);
+        s.push_str(&format!(
+            "label {} {x} 0 R0 {a}\n",
+            common::id(1000 + 2 * i as u64)
+        ));
         s.push_str(&format!(
             "label {} {x} 20 R0 {b}\n",
-            id(1001 + 2 * i as u64)
+            common::id(1001 + 2 * i as u64)
         ));
     }
     s.push_str(&format!(
         "port {} 0 0 R0 A\nport {} {} 20 R0 B\n",
-        id(5000),
-        id(5001),
-        c((fan as i64 - 1) * 100_000)
+        common::id(5000),
+        common::id(5001),
+        common::coord((fan as i64 - 1) * 100_000)
     ));
     s
 }
@@ -76,7 +77,7 @@ fn emit_a_hierarchy_of_a_million_leaves() {
         level("l3", fan, "r"),
     );
     let bench = "schemify 1 shbench\n\ninst 0x0001 ./l4\n  at 0 0 R0\n  name X\n\nlabel 0n0001 0 0 R0 in\nlabel 0n0002 0 20 R0 0\n";
-    let (p, hs) = project(&[
+    let (p, hs) = common::project(&[
         ("res.shprim", RES),
         ("l1.shcomp", &l1),
         ("l2.shcomp", &l2),
@@ -84,9 +85,9 @@ fn emit_a_hierarchy_of_a_million_leaves() {
         ("l4.shcomp", &l4),
         ("tb.shbench", bench),
     ]);
-    let (te, e) = best_of(3, || elab(&p, hs[5], Dialect::Ngspice));
+    let (te, e) = best_of(3, || common::elab(&p, hs[5], Dialect::Ngspice));
     assert_eq!(e.flat_leaves(e.top), (fan as u64).pow(4));
-    let (dt, n) = best_of(10, || emit(&e, Dialect::Ngspice));
+    let (dt, n) = best_of(10, || schemify_netlist::emit(&e, Dialect::Ngspice));
     assert_eq!(n.text.matches(".subckt").count(), 4);
     assert_eq!(
         n.name_map.inst_name("/X/X3/X4/X5/X6").as_deref(),
@@ -108,14 +109,14 @@ fn emit_a_flat_bench_of_100k_instances() {
     for i in 0..n {
         s.push_str(&format!(
             "inst {} ./res\n  at 0 {} R0\n  name R{i}\n  R {}\n",
-            id(i as u64 + 1),
-            c(i as i64 * 20_000),
+            common::id(i as u64 + 1),
+            common::coord(i as i64 * 20_000),
             i % 7 + 1
         ));
     }
-    let (p, hs) = project(&[("res.shprim", RES), ("tb.shbench", &s)]);
-    let (te, e) = best_of(1, || elab(&p, hs[1], Dialect::Ngspice));
-    let (dt, out) = best_of(5, || emit(&e, Dialect::Ngspice));
+    let (p, hs) = common::project(&[("res.shprim", RES), ("tb.shbench", &s)]);
+    let (te, e) = best_of(1, || common::elab(&p, hs[1], Dialect::Ngspice));
+    let (dt, out) = best_of(5, || schemify_netlist::emit(&e, Dialect::Ngspice));
     assert_eq!(out.text.lines().filter(|l| l.starts_with("RR")).count(), n);
     let (dl, path) = best_of(1, || out.name_map.inst_path("rr99999"));
     assert_eq!(path.as_deref(), Some("/R99999"));
@@ -144,18 +145,18 @@ fn netlist_a_flat_bench_of_1m_instances() {
     for i in 0..n {
         s.push_str(&format!(
             "inst {} ./res\n  at {} {} R0\n  name R{i}\n  R {}\n",
-            id(i as u64 + 1),
-            c((i / 100_000) as i64 * 100_000),
-            c((i % 100_000) as i64 * 20_000),
+            common::id(i as u64 + 1),
+            common::coord((i / 100_000) as i64 * 100_000),
+            common::coord((i % 100_000) as i64 * 20_000),
             i % 7 + 1
         ));
     }
-    let (p, hs) = project(&[("res.shprim", RES), ("tb.shbench", &s)]);
+    let (p, hs) = common::project(&[("res.shprim", RES), ("tb.shbench", &s)]);
     drop(s);
     let t = Instant::now();
-    let e = elab(&p, hs[1], Dialect::Ngspice);
+    let e = common::elab(&p, hs[1], Dialect::Ngspice);
     let te = t.elapsed();
-    let out = emit(&e, Dialect::Ngspice);
+    let out = schemify_netlist::emit(&e, Dialect::Ngspice);
     let total = t.elapsed();
     assert_eq!(e.flat_leaves(e.top), n as u64);
     assert_eq!(out.text.lines().filter(|l| l.starts_with("RR")).count(), n);

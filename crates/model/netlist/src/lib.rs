@@ -52,8 +52,10 @@
 
 #![forbid(unsafe_code)]
 #![deny(rustdoc::broken_intra_doc_links)]
-// Tables are SoA: loops index several parallel columns by one row.
-#![allow(clippy::needless_range_loop)]
+#![allow(
+    clippy::needless_range_loop,
+    reason = "tables are SoA: loops index several parallel columns by one row"
+)]
 
 // Data design (the six questions):
 // 1. In: one `Elab` (definitions, instance rows, leaf impls, bench lines). Out: one

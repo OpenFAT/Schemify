@@ -6,9 +6,7 @@
 
 mod common;
 
-use common::*;
 use schemify_elab::{Dialect, Elab};
-use schemify_netlist::emit;
 use std::path::Path;
 
 const DIALECTS: [Dialect; 5] = [
@@ -27,7 +25,7 @@ fn fixture_dir() -> &'static Path {
 fn snapshot(name: &str, text: &str) {
     let path = fixture_dir().join(name);
     if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
-        std::fs::write(&path, text).unwrap();
+        std::fs::write(&path, text).expect("the snapshot is writable");
         return;
     }
     let want = std::fs::read_to_string(&path)
@@ -46,10 +44,10 @@ fn blocking(e: &Elab) -> Vec<String> {
 
 #[test]
 fn tb_snapshots_per_dialect() {
-    let files = fixtures();
-    let (p, top) = fixture(&files, "tb.shbench");
+    let files = common::fixtures();
+    let (p, top) = common::fixture(&files, "tb.shbench");
     for d in DIALECTS {
-        let e = elab(&p, top, d);
+        let e = common::elab(&p, top, d);
         if matches!(d, Dialect::Verilog) {
             // Leaf impls without `format verilog` are E013 (spec §7.5): gated.
             assert!(
@@ -60,7 +58,7 @@ fn tb_snapshots_per_dialect() {
             continue;
         }
         assert!(blocking(&e).is_empty(), "{d:?}: {:?}", blocking(&e));
-        let n = emit(&e, d);
+        let n = schemify_netlist::emit(&e, d);
         snapshot(&format!("tb.{}", d.as_str()), &n.text);
     }
 }
@@ -69,9 +67,10 @@ fn tb_snapshots_per_dialect() {
 /// §7.2b): HSPICE quotes corner paths, LTspice keeps every waveform point.
 #[test]
 fn tb_hspice_and_ltspice_are_the_ngspice_text_respelled() {
-    let files = fixtures();
-    let (p, top) = fixture(&files, "tb.shbench");
-    let ng = emit(&elab(&p, top, Dialect::Ngspice), Dialect::Ngspice).text;
+    let files = common::fixtures();
+    let (p, top) = common::fixture(&files, "tb.shbench");
+    let ng =
+        schemify_netlist::emit(&common::elab(&p, top, Dialect::Ngspice), Dialect::Ngspice).text;
     let header = "* tb (schemify ngspice)\n";
     assert!(
         ng.starts_with(header) && ng.contains(".lib models.lib tt\n"),
@@ -89,22 +88,23 @@ fn tb_hspice_and_ltspice_are_the_ngspice_text_respelled() {
         1,
     );
     for (d, want) in [(Dialect::Hspice, hspice), (Dialect::Ltspice, ltspice)] {
-        let e = elab(&p, top, d);
+        let e = common::elab(&p, top, d);
         assert!(blocking(&e).is_empty(), "{d:?}: {:?}", blocking(&e));
-        assert_eq!(emit(&e, d).text, want, "{d:?}");
+        assert_eq!(schemify_netlist::emit(&e, d).text, want, "{d:?}");
     }
 }
 
 #[test]
 fn tb_ngspice_matches_the_expected_netlist() {
-    let files = fixtures();
-    let (p, top) = fixture(&files, "tb.shbench");
+    let files = common::fixtures();
+    let (p, top) = common::fixture(&files, "tb.shbench");
     for (d, expected) in [
         (Dialect::Ngspice, "tb.expected.spice"),
         (Dialect::Cdl, "tb.expected.cdl"),
     ] {
-        let n = emit(&elab(&p, top, d), d);
-        let want = std::fs::read_to_string(fixture_dir().join(expected)).unwrap();
+        let n = schemify_netlist::emit(&common::elab(&p, top, d), d);
+        let want = std::fs::read_to_string(fixture_dir().join(expected))
+            .expect("the expected netlist exists");
         let r = schemify_spicecmp::compare(&want, &n.text, &Default::default());
         assert!(r.is_equal(), "{d:?}:\n{:#?}\n{}", r.diffs, n.text);
     }
@@ -112,9 +112,9 @@ fn tb_ngspice_matches_the_expected_netlist() {
 
 #[test]
 fn tb_name_map_round_trips() {
-    let files = fixtures();
-    let (p, top) = fixture(&files, "tb.shbench");
-    let n = emit(&elab(&p, top, Dialect::Ngspice), Dialect::Ngspice);
+    let files = common::fixtures();
+    let (p, top) = common::fixture(&files, "tb.shbench");
+    let n = schemify_netlist::emit(&common::elab(&p, top, Dialect::Ngspice), Dialect::Ngspice);
     let m = &n.name_map;
     for (path, name) in [
         ("/X1", "X1"),
@@ -145,7 +145,9 @@ fn tb_name_map_round_trips() {
     assert_eq!(m.net_name("/X2/X1/VDD").as_deref(), Some("vdd!"));
     assert_eq!(m.net_name("/X1/X1/0").as_deref(), Some("0"));
     assert_eq!(m.net_name("/X1/nope"), None);
-    let mid = m.net_name("/X1/X1/Y").unwrap();
+    let mid = m
+        .net_name("/X1/X1/Y")
+        .expect("a net of an emitted instance");
     assert!(mid.starts_with("X1.net_"), "{mid}");
     assert_eq!(
         m.net_path(&mid).as_deref(),
@@ -178,9 +180,9 @@ fn tb_name_map_round_trips() {
 fn name_map_lookups_follow_the_dialect() {
     // Spectre and verilog names are case-sensitive and escaped (spec §7.6); reverse
     // lookups take a net name with or without the escapes; a path below a leaf is none.
-    let files = fixtures();
-    let (p, top) = fixture(&files, "tb.shbench");
-    let n = emit(&elab(&p, top, Dialect::Spectre), Dialect::Spectre);
+    let files = common::fixtures();
+    let (p, top) = common::fixture(&files, "tb.shbench");
+    let n = schemify_netlist::emit(&common::elab(&p, top, Dialect::Spectre), Dialect::Spectre);
     let m = &n.name_map;
     assert_eq!(m.inst_name("/C[0]").as_deref(), Some(r"C\[0\]"));
     assert_eq!(m.inst_path(r"C\[0\]").as_deref(), Some("/C[0]"));
@@ -194,8 +196,8 @@ fn name_map_lookups_follow_the_dialect() {
     assert_eq!(m.inst_name("/X1/X1/MN/deeper"), None);
     assert_eq!(m.net_name("/X1/X1/MN/deeper"), None);
 
-    let (p, top) = fixture(&files, "dig_tb.shbench");
-    let n = emit(&elab(&p, top, Dialect::Verilog), Dialect::Verilog);
+    let (p, top) = common::fixture(&files, "dig_tb.shbench");
+    let n = schemify_netlist::emit(&common::elab(&p, top, Dialect::Verilog), Dialect::Verilog);
     let m = &n.name_map;
     assert_eq!(m.inst_path("UX").as_deref(), Some("/UX"));
     assert_eq!(m.inst_path("ux"), None, "no case folding");
@@ -217,8 +219,8 @@ fn spice_reverse_lookups_prefer_the_exact_spelling() {
                  inst 0a0002 ./res\n  at 100 0 R0\n  name r1\n\n\
                  label 0n0001 0 -30 R0 ab\nlabel 0n0002 0 30 R0 0\n\
                  label 0n0003 100 -30 R0 AB\nlabel 0n0004 100 30 R0 0\n";
-    let (p, hs) = project(&[("res.shprim", res), ("tb.shbench", bench)]);
-    let n = emit(&elab(&p, hs[1], Dialect::Ngspice), Dialect::Ngspice);
+    let (p, hs) = common::project(&[("res.shprim", res), ("tb.shbench", bench)]);
+    let n = schemify_netlist::emit(&common::elab(&p, hs[1], Dialect::Ngspice), Dialect::Ngspice);
     let m = &n.name_map;
     for name in ["R1", "r1"] {
         assert_eq!(m.inst_path(name).as_deref(), Some(&*format!("/{name}")));
@@ -231,25 +233,25 @@ fn spice_reverse_lookups_prefer_the_exact_spelling() {
 
 #[test]
 fn logic_and_mixed_benches() {
-    let files = fixtures();
+    let files = common::fixtures();
     for (bench, dialects) in [
         ("dig_tb.shbench", &[Dialect::Ngspice, Dialect::Verilog][..]),
         ("mixed_tb.shbench", &[Dialect::Ngspice][..]),
     ] {
-        let (p, top) = fixture(&files, bench);
+        let (p, top) = common::fixture(&files, bench);
         for &d in dialects {
-            let e = elab(&p, top, d);
+            let e = common::elab(&p, top, d);
             assert!(blocking(&e).is_empty(), "{bench} {d:?}: {:?}", blocking(&e));
-            let n = emit(&e, d);
+            let n = schemify_netlist::emit(&e, d);
             let stem = bench.trim_end_matches(".shbench");
             snapshot(&format!("{stem}.{}", d.as_str()), &n.text);
         }
     }
     // Veriloga and Verilog leaves have no default template for xyce or cdl (E013).
-    let (p, top) = fixture(&files, "mixed_tb.shbench");
+    let (p, top) = common::fixture(&files, "mixed_tb.shbench");
     for d in [Dialect::Xyce, Dialect::Cdl] {
         assert!(
-            blocking(&elab(&p, top, d))
+            blocking(&common::elab(&p, top, d))
                 .iter()
                 .any(|b| b.starts_with("E013"))
         );
@@ -264,14 +266,14 @@ fn xspice_vector_bus_bits_are_respelled_everywhere() {
     let dbus = "schemify 1 shprim\n\npin A[1:0] in -20 0\n  domain digital\npin Y out 20 0\n  domain digital\n\nimpl verilog verilog\n  model dbus\n";
     let res = "schemify 1 shprim\n  prefix R\n\npin p inout 0 -30\npin n inout 0 30\n\nimpl spice spice\n  format spice \"R{name} {p} {n} 1k\"\n";
     let bench = "schemify 1 shbench\n\ninst 0a0001 ./dbus\n  at 0 0 R0\n  name U1\ninst 0r0001 ./res\n  at 100 0 R0\n  name R1\ninst 0r0002 ./res\n  at 200 0 R0\n  name R2\n\nlabel 0n0001 -20 0 R0 d[1:0]\nlabel 0n0002 20 0 R0 y\nlabel 0n0003 100 -30 R0 d[0]\nlabel 0n0004 100 30 R0 0\nlabel 0n0005 200 -30 R0 d_1\nlabel 0n0006 200 30 R0 0\n";
-    let (p, hs) = project(&[
+    let (p, hs) = common::project(&[
         ("dbus.shprim", dbus),
         ("res.shprim", res),
         ("tb.shbench", bench),
     ]);
-    let e = elab(&p, hs[2], Dialect::Ngspice);
+    let e = common::elab(&p, hs[2], Dialect::Ngspice);
     assert!(blocking(&e).is_empty(), "{:?}", blocking(&e));
-    let text = emit(&e, Dialect::Ngspice).text;
+    let text = schemify_netlist::emit(&e, Dialect::Ngspice).text;
     assert!(text.contains("AU1 [ d_1_ d_0 ] [ y ] dbus"), "{text}");
     assert!(
         text.contains("RR1 d_0 0 1k"),
@@ -283,7 +285,8 @@ fn xspice_vector_bus_bits_are_respelled_everywhere() {
     );
     assert!(!text.contains("d[0]") && !text.contains("d[1]"), "{text}");
     // Spectre/CDL keep brackets; xyce has no verilog default template.
-    let n = emit(&elab(&p, hs[2], Dialect::Spectre), Dialect::Spectre).text;
+    let n =
+        schemify_netlist::emit(&common::elab(&p, hs[2], Dialect::Spectre), Dialect::Spectre).text;
     assert!(!n.contains("d_0"), "{n}");
 }
 
@@ -295,14 +298,14 @@ fn component_code_is_emitted_inside_every_definition() {
     let res = "schemify 1 shprim\n\npin p inout 0 -30\npin n inout 0 30\n\nparam R 1k\n\nimpl spice spice\n  format spice \"R{name} {p} {n} {R}\"\n";
     let comp = "schemify 1 shcomp\n\npin A inout -20 0\npin B inout 20 0\n\nparam r 1k\n\nimpl sch schematic\n\ninst 0r0001 ./res\n  at 0 0 R0\n  name R1\n  R r\n\nport 0p0001 0 -30 R0 A\nport 0p0002 0 30 R0 B\n\ncode ctl spice\n  | .control\n  | .endc\n\ncode models spice\n  | .model dm d is=1e-14\n";
     let bench = "schemify 1 shbench\n\ninst 0x0001 ./comp\n  at 0 0 R0\n  name X1\ninst 0x0002 ./comp\n  at 100 0 R0\n  name X2\n  r 2k\n\nlabel 0n0001 -20 0 R0 a\nlabel 0n0002 20 0 R0 0\nlabel 0n0003 80 0 R0 a\nlabel 0n0004 120 0 R0 0\n\ncode tran spice\n  | .tran 1n 10n\n";
-    let (p, hs) = project(&[
+    let (p, hs) = common::project(&[
         ("res.shprim", res),
         ("comp.shcomp", comp),
         ("tb.shbench", bench),
     ]);
-    let e = elab(&p, hs[2], Dialect::Ngspice);
+    let e = common::elab(&p, hs[2], Dialect::Ngspice);
     assert!(blocking(&e).is_empty(), "{:?}", blocking(&e));
-    let text = emit(&e, Dialect::Ngspice).text;
+    let text = schemify_netlist::emit(&e, Dialect::Ngspice).text;
     let blocks: Vec<&str> = text.split(".subckt ").skip(1).collect();
     assert_eq!(blocks.len(), 2, "two specializations: {text}");
     for b in &blocks {
@@ -322,22 +325,23 @@ fn component_code_is_emitted_inside_every_definition() {
         "bench code stays at the top: {text}"
     );
     // CDL: no code at all. Xyce: the `.control` block is E033, the model is kept.
-    let cdl = emit(&elab(&p, hs[2], Dialect::Cdl), Dialect::Cdl).text;
+    let cdl = schemify_netlist::emit(&common::elab(&p, hs[2], Dialect::Cdl), Dialect::Cdl).text;
     assert!(
         !cdl.contains(".model") && !cdl.contains(".control"),
         "{cdl}"
     );
-    let x = elab(&p, hs[2], Dialect::Xyce);
+    let x = common::elab(&p, hs[2], Dialect::Xyce);
     assert!(
         blocking(&x).iter().any(|b| b.starts_with("E033")),
         "{:?}",
         blocking(&x)
     );
-    let xyce = emit(&x, Dialect::Xyce).text;
+    let xyce = schemify_netlist::emit(&x, Dialect::Xyce).text;
     assert_eq!(xyce.matches(".model dm d").count(), 2, "{xyce}");
     assert!(!xyce.contains(".control"), "{xyce}");
     // The component as the top: its code sits in the (unwrapped) top block.
-    let top = emit(&elab(&p, hs[1], Dialect::Ngspice), Dialect::Ngspice).text;
+    let top =
+        schemify_netlist::emit(&common::elab(&p, hs[1], Dialect::Ngspice), Dialect::Ngspice).text;
     assert_eq!(top.matches(".model dm d").count(), 1, "{top}");
     assert!(!top.contains(".subckt"), "{top}");
 }
@@ -357,12 +361,12 @@ fn veriloga_bodies_are_source_or_precompiled_text() {
     let bench = "schemify 1 shbench\n\ninst 0a0001 ./vsrc\n  at 0 0 R0\n  name N1\n\
                  inst 0a0002 ./pre\n  at 100 0 R0\n  name N2\n\nlabel 0n0001 0 -30 R0 a\n\
                  label 0n0002 0 30 R0 0\nlabel 0n0003 100 -30 R0 a\nlabel 0n0004 100 30 R0 0\n";
-    let (p, hs) = project(&[
+    let (p, hs) = common::project(&[
         ("vsrc.shprim", src),
         ("pre.shprim", pre),
         ("tb.shbench", bench),
     ]);
-    let e = elab(&p, hs[2], Dialect::Ngspice);
+    let e = common::elab(&p, hs[2], Dialect::Ngspice);
     assert!(blocking(&e).is_empty(), "{:?}", blocking(&e));
     let compiled: Vec<(&str, bool)> = (0..e.impls.cell.len())
         .map(|l| {
@@ -374,7 +378,7 @@ fn veriloga_bodies_are_source_or_precompiled_text() {
         compiled.contains(&("vsrc", true)) && compiled.contains(&("pre", false)),
         "{compiled:?}"
     );
-    let text = emit(&e, Dialect::Ngspice).text;
+    let text = schemify_netlist::emit(&e, Dialect::Ngspice).text;
     assert!(
         text.contains(".control\npre_osdi vsrc.osdi\n.endc\n"),
         "{text}"
@@ -393,7 +397,7 @@ fn veriloga_bodies_are_source_or_precompiled_text() {
         "{text}"
     );
     // CDL: neither is LVS text.
-    let cdl = emit(&elab(&p, hs[2], Dialect::Cdl), Dialect::Cdl).text;
+    let cdl = schemify_netlist::emit(&common::elab(&p, hs[2], Dialect::Cdl), Dialect::Cdl).text;
     assert!(!cdl.contains("osdi") && !cdl.contains("endmodule"), "{cdl}");
 }
 
@@ -410,8 +414,9 @@ fn u_lines(attrs: &str, format: &str, params2: &str) -> Vec<String> {
          label 0n0001 -20 0 R0 a[1:0]\nlabel 0n0002 -20 20 R0 c\nlabel 0n0003 20 0 R0 y\nlabel 0n0004 20 20 R0 z\n\
          label 0n0005 80 0 R0 b[1:0]\nlabel 0n0006 80 20 R0 c\nlabel 0n0007 120 0 R0 y\nlabel 0n0008 120 20 R0 z\n"
     );
-    let (p, hs) = project(&[("u.shprim", &u), ("tb.shbench", &bench)]);
-    let text = emit(&elab(&p, hs[1], Dialect::Ngspice), Dialect::Ngspice).text;
+    let (p, hs) = common::project(&[("u.shprim", &u), ("tb.shbench", &bench)]);
+    let text =
+        schemify_netlist::emit(&common::elab(&p, hs[1], Dialect::Ngspice), Dialect::Ngspice).text;
     text.lines()
         .skip(1)
         .filter(|l| *l != ".end")
@@ -468,8 +473,9 @@ fn xspice_line(format: &str) -> String {
     let bench = "schemify 1 shbench\n\ninst 0a0001 ./v\n  at 0 0 R0\n  name 1\n\n\
                  label 0n0001 -20 0 R0 d[1:0]\nlabel 0n0002 -20 20 R0 e[0]\n\
                  label 0n0003 -20 40 R0 f[0]\nlabel 0n0004 20 0 R0 y[0]\n";
-    let (p, hs) = project(&[("v.shprim", &v), ("tb.shbench", bench)]);
-    let text = emit(&elab(&p, hs[1], Dialect::Ngspice), Dialect::Ngspice).text;
+    let (p, hs) = common::project(&[("v.shprim", &v), ("tb.shbench", bench)]);
+    let text =
+        schemify_netlist::emit(&common::elab(&p, hs[1], Dialect::Ngspice), Dialect::Ngspice).text;
     text.lines().nth(1).expect("one line").to_owned()
 }
 
@@ -502,14 +508,16 @@ fn verilog_default_template_connects_ordinary_then_inherited_pins() {
              pin Y out 20 0\n  domain digital\n\nimpl v verilog\n  model gm\n  file g.v\n";
     let bench = "schemify 1 shbench\n\ninst 0a0001 ./g\n  at 0 0 R0\n  name U1\n\n\
                  label 0n0001 -20 0 R0 a\nlabel 0n0002 -20 40 R0 b\nlabel 0n0003 20 0 R0 y\n";
-    let (p, hs) = project(&[("g.shprim", g), ("tb.shbench", bench)]);
-    let text = emit(&elab(&p, hs[1], Dialect::Verilog), Dialect::Verilog).text;
+    let (p, hs) = common::project(&[("g.shprim", g), ("tb.shbench", bench)]);
+    let text =
+        schemify_netlist::emit(&common::elab(&p, hs[1], Dialect::Verilog), Dialect::Verilog).text;
     assert!(
         text.contains("\n  gm U1 (.A(a), .B(b), .Y(y), .V(vdd));\n"),
         "{text}"
     );
     // ngspice d_cosim: `in` pins in the first vector, the others in pin order.
-    let text = emit(&elab(&p, hs[1], Dialect::Ngspice), Dialect::Ngspice).text;
+    let text =
+        schemify_netlist::emit(&common::elab(&p, hs[1], Dialect::Ngspice), Dialect::Ngspice).text;
     assert!(text.contains("\nAU1 [ a b ] [ vdd y ] gm\n"), "{text}");
 }
 
@@ -536,14 +544,15 @@ fn once_only_text_follows_the_rows_that_use_it() {
                  label 0n0004 100 30 R0 0\nlabel 0n0005 200 -30 R0 a\nlabel 0n0006 200 30 R0 0\n\
                  label 0n0007 280 0 R0 a\nlabel 0n0008 320 0 R0 y\nlabel 0n0009 400 -30 R0 a\n\
                  label 0n000a 400 30 R0 0\n";
-    let (p, hs) = project(&[
+    let (p, hs) = common::project(&[
         ("va.shprim", va),
         ("dv.shprim", dv),
         ("sp.shprim", sp),
         ("unused.shprim", unused),
         ("tb.shbench", bench),
     ]);
-    let text = emit(&elab(&p, hs[4], Dialect::Ngspice), Dialect::Ngspice).text;
+    let text =
+        schemify_netlist::emit(&common::elab(&p, hs[4], Dialect::Ngspice), Dialect::Ngspice).text;
     let once = &text[text.find(".control").expect("an OSDI load")..];
     assert_eq!(
         once,
@@ -554,7 +563,8 @@ fn once_only_text_follows_the_rows_that_use_it() {
         text.contains("\nN1 a 0 m1\nN2 a 0 m2\nN3 a 0 m2\n"),
         "{text}"
     );
-    let s = emit(&elab(&p, hs[4], Dialect::Spectre), Dialect::Spectre).text;
+    let s =
+        schemify_netlist::emit(&common::elab(&p, hs[4], Dialect::Spectre), Dialect::Spectre).text;
     assert!(
         s.ends_with("\n5 (a 0) rm\nsimulator lang=spice\n.model rm r\nsimulator lang=spectre\n"),
         "{s}"
@@ -577,15 +587,16 @@ fn espice_loads_verilog_a_sources_with_hdl_and_is_ngspice_text_otherwise() {
                  inst 0a0002 ./amp\n  at 100 0 R0\n  name 2\n\n\
                  label 0n0001 0 -30 R0 a\nlabel 0n0002 0 30 R0 y\nlabel 0n0003 100 -30 R0 a\n\
                  label 0n0004 100 30 R0 0\n";
-    let (p, hs) = project(&[
+    let (p, hs) = common::project(&[
         ("vgain.shprim", body),
         ("amp.shprim", file),
         ("tb.shbench", bench),
     ]);
-    let ng = emit(&elab(&p, hs[2], Dialect::Ngspice), Dialect::Ngspice).text;
-    let e = elab(&p, hs[2], Dialect::Espice);
+    let ng =
+        schemify_netlist::emit(&common::elab(&p, hs[2], Dialect::Ngspice), Dialect::Ngspice).text;
+    let e = common::elab(&p, hs[2], Dialect::Espice);
     assert!(blocking(&e).is_empty(), "{:?}", blocking(&e));
-    let es = emit(&e, Dialect::Espice).text;
+    let es = schemify_netlist::emit(&e, Dialect::Espice).text;
     let want = ng
         .replace("(schemify ngspice)", "(schemify espice)")
         .replace(
@@ -618,15 +629,15 @@ fn espice_has_no_default_template_for_verilog_leaves() {
              impl v verilog\n  model gm\n  file g.v\n";
     let bench = "schemify 1 shbench\n\ninst 0a0001 ./g\n  at 0 0 R0\n  name U1\n\n\
                  label 0n0001 -20 0 R0 a\nlabel 0n0003 20 0 R0 y\n";
-    let (p, hs) = project(&[("g.shprim", g), ("tb.shbench", bench)]);
-    let e = elab(&p, hs[1], Dialect::Espice);
+    let (p, hs) = common::project(&[("g.shprim", g), ("tb.shbench", bench)]);
+    let e = common::elab(&p, hs[1], Dialect::Espice);
     assert!(
         blocking(&e).iter().any(|b| b.starts_with("E013")),
         "{:?}",
         blocking(&e)
     );
     // ngspice still takes it (positive space).
-    assert!(blocking(&elab(&p, hs[1], Dialect::Ngspice)).is_empty());
+    assert!(blocking(&common::elab(&p, hs[1], Dialect::Ngspice)).is_empty());
 }
 
 #[test]
@@ -649,14 +660,14 @@ fn espice_verilog_a_lines_carry_instance_params_and_mfactor() {
                  label 0n0001 0 -30 R0 in\nlabel 0n0002 0 30 R0 out\nlabel 0n0003 100 -30 R0 in\n\
                  label 0n0004 100 30 R0 0\nlabel 0n0005 200 -30 R0 out\nlabel 0n0006 180 0 R0 in\n\
                  label 0n0007 200 30 R0 0\nlabel 0n0008 220 0 R0 0\n";
-    let (p, hs) = project(&[
+    let (p, hs) = common::project(&[
         ("gain.shprim", va),
         ("fin.shprim", fin),
         ("tb.shbench", bench),
     ]);
-    let e = elab(&p, hs[2], Dialect::Espice);
+    let e = common::elab(&p, hs[2], Dialect::Espice);
     assert!(blocking(&e).is_empty(), "{:?}", blocking(&e));
-    let es = emit(&e, Dialect::Espice).text;
+    let es = schemify_netlist::emit(&e, Dialect::Espice).text;
     assert!(es.contains("\nNG1 in out gain_x a=4 mfactor=2\n"), "{es}");
     assert!(
         es.contains("\nNG2 in 0 gain_m\n"),
@@ -667,7 +678,8 @@ fn espice_verilog_a_lines_carry_instance_params_and_mfactor() {
         "format espice: {es}"
     );
     assert!(!es.contains(" m="), "{es}");
-    let ng = emit(&elab(&p, hs[2], Dialect::Ngspice), Dialect::Ngspice).text;
+    let ng =
+        schemify_netlist::emit(&common::elab(&p, hs[2], Dialect::Ngspice), Dialect::Ngspice).text;
     assert!(
         ng.contains("\nNG1 in out gain_x\n") && ng.contains("\nNG2 in 0 gain_m\n"),
         "{ng}"
@@ -689,13 +701,13 @@ fn rows_lower_to_lines_marked_sorted_exactly_when_in_order() {
                  inst 0a0002 ./res\n  at 100 0 R0\n  name b\n  P A\n\n\
                  label 0n0001 0 -30 R0 x\nlabel 0n0002 0 30 R0 0\n\
                  label 0n0003 100 -30 R0 x\nlabel 0n0004 100 30 R0 0\n";
-    let (p, hs) = project(&[("res.shprim", res), ("tb.shbench", bench)]);
-    let files = fixtures();
-    let (fp, ftop) = fixture(&files, "tb.shbench");
+    let (p, hs) = common::project(&[("res.shprim", res), ("tb.shbench", bench)]);
+    let files = common::fixtures();
+    let (fp, ftop) = common::fixture(&files, "tb.shbench");
     let mut seen = [false; 2];
     for (p, top, dialects) in [(&p, hs[1], &DIALECTS[..1]), (&fp, ftop, &DIALECTS[..4])] {
         for &d in dialects {
-            let l = schemify_netlist::lower(&elab(p, top, d), d);
+            let l = schemify_netlist::lower(&common::elab(p, top, d), d);
             assert!(
                 std::iter::once(&l.ir.top)
                     .chain(&l.ir.subcircuit_defs)
@@ -715,6 +727,7 @@ fn rows_lower_to_lines_marked_sorted_exactly_when_in_order() {
         }
     }
     assert_eq!(seen, [true, true], "both kinds of block were checked");
-    let n = emit(&elab(&p, hs[1], Dialect::Ngspice), Dialect::Ngspice).text;
+    let n =
+        schemify_netlist::emit(&common::elab(&p, hs[1], Dialect::Ngspice), Dialect::Ngspice).text;
     assert!(n.contains("\nAb x 0 1k\nZa x 0 1k\n"), "{n}");
 }

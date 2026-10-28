@@ -8,20 +8,22 @@
 
 mod common;
 
-use common::*;
 use proptest::prelude::*;
 use schemify_elab::Dialect;
-use schemify_netlist::{emit, emit_flat};
 
 fn set(files: &[(String, String)], name: &str, text: String) -> Vec<(String, String)> {
     let mut out = files.to_vec();
-    out.iter_mut().find(|f| f.0 == name).expect("fixture").1 = text;
+    let (_, old) = out
+        .iter_mut()
+        .find(|(file, _)| file == name)
+        .expect("fixture");
+    *old = text;
     out
 }
 
 #[test]
 fn hierarchical_and_flat_emission_are_equivalent() {
-    let files = fixtures();
+    let files = common::fixtures();
     for (bench, d) in [
         ("tb.shbench", Dialect::Ngspice),
         ("tb.shbench", Dialect::Xyce),
@@ -30,9 +32,12 @@ fn hierarchical_and_flat_emission_are_equivalent() {
         // which ngspice's tokenizer splits (spec §7.6, open issue).
         ("mixed_tb.shbench", Dialect::Ngspice),
     ] {
-        let (p, top) = fixture(&files, bench);
-        let e = elab(&p, top, d);
-        let (hier, flat) = (emit(&e, d).text, emit_flat(&e, d));
+        let (p, top) = common::fixture(&files, bench);
+        let e = common::elab(&p, top, d);
+        let (hier, flat) = (
+            schemify_netlist::emit(&e, d).text,
+            schemify_netlist::emit_flat(&e, d),
+        );
         assert!(!flat.contains(".subckt chain"), "flattened");
         // CDL wraps the top in a `.SUBCKT` (spec §7.4), flat or not.
         assert_eq!(flat.contains(".ENDS tb\n"), d == Dialect::Cdl, "{flat}");
@@ -48,15 +53,20 @@ fn hierarchical_and_flat_emission_are_equivalent() {
 
 #[test]
 fn renaming_an_unlabeled_net_keeps_labeled_names() {
-    let files = fixtures();
-    let chain = &files.iter().find(|f| f.0 == "chain.shcomp").unwrap().1;
-    let (p, top) = fixture(&files, "tb.shbench");
-    let before = emit(&elab(&p, top, Dialect::Ngspice), Dialect::Ngspice).text;
+    let files = common::fixtures();
+    let (_, chain) = files
+        .iter()
+        .find(|(name, _)| name == "chain.shcomp")
+        .expect("the chain fixture");
+    let (p, top) = common::fixture(&files, "tb.shbench");
+    let before =
+        schemify_netlist::emit(&common::elab(&p, top, Dialect::Ngspice), Dialect::Ngspice).text;
     assert!(before.contains("net_0w0001"));
     for new_id in ["zzzzzz", "000001", "0w0002", "k9m3x2"] {
         let renamed = set(&files, "chain.shcomp", chain.replace("0w0001", new_id));
-        let (p, top) = fixture(&renamed, "tb.shbench");
-        let after = emit(&elab(&p, top, Dialect::Ngspice), Dialect::Ngspice).text;
+        let (p, top) = common::fixture(&renamed, "tb.shbench");
+        let after =
+            schemify_netlist::emit(&common::elab(&p, top, Dialect::Ngspice), Dialect::Ngspice).text;
         assert_eq!(
             after.replace(&format!("net_{new_id}"), "net_0w0001"),
             before,
@@ -69,17 +79,23 @@ fn renaming_an_unlabeled_net_keeps_labeled_names() {
 
 #[test]
 fn output_is_byte_identical_across_runs_and_input_orders() {
-    let files = fixtures();
+    let files = common::fixtures();
     let mut reversed = files.clone();
     reversed.reverse();
     // Rank-3 records in reverse order inside the bench (the reader accepts any order).
-    let tb = &files.iter().find(|f| f.0 == "tb.shbench").unwrap().1;
-    let (head, rest) = tb.split_at(tb.find("\ninst ").unwrap() + 1);
-    let end = rest.find("\nvar ").unwrap() + 1;
+    let (_, tb) = files
+        .iter()
+        .find(|(name, _)| name == "tb.shbench")
+        .expect("the bench fixture");
+    let (head, rest) = tb.split_at(tb.find("\ninst ").expect("the bench has instances") + 1);
+    let end = rest.find("\nvar ").expect("vars follow the instances") + 1;
     let mut blocks: Vec<String> = Vec::new();
-    for line in rest[..end].lines().filter(|l| !l.is_empty()) {
+    let lines = rest[..end].lines().filter(|l| !l.is_empty());
+    for line in lines {
         if line.starts_with(' ') {
-            let last = blocks.last_mut().unwrap();
+            let last = blocks
+                .last_mut()
+                .expect("an attribute line follows its record");
             last.push_str(line);
             last.push('\n');
         } else {
@@ -96,8 +112,8 @@ fn output_is_byte_identical_across_runs_and_input_orders() {
         Dialect::Spectre,
     ] {
         let run = |files: &[(String, String)]| {
-            let (p, top) = fixture(files, "tb.shbench");
-            emit(&elab(&p, top, d), d).text
+            let (p, top) = common::fixture(files, "tb.shbench");
+            schemify_netlist::emit(&common::elab(&p, top, d), d).text
         };
         let first = run(&files);
         assert_eq!(first, run(&files), "{d:?}: two runs");
@@ -112,14 +128,19 @@ const IDENTS: [&str; 10] = [
 ];
 
 fn render_with(template: &str) -> String {
-    let files = fixtures();
-    let nmos = &files.iter().find(|f| f.0 == "nmos.shprim").unwrap().1;
+    let files = common::fixtures();
+    let (_, nmos) = files
+        .iter()
+        .find(|(name, _)| name == "nmos.shprim")
+        .expect("the nmos fixture");
     let quoted = template.replace('\\', "\\\\").replace('"', "\\\"");
-    let at = nmos.find("  format spice ").unwrap();
-    let eol = at + nmos[at..].find('\n').unwrap();
+    let at = nmos
+        .find("  format spice ")
+        .expect("the nmos fixture has a spice format");
+    let eol = at + nmos[at..].find('\n').expect("the format line ends");
     let text = format!("{}  format spice \"{quoted}\"{}", &nmos[..at], &nmos[eol..]);
-    let (p, top) = fixture(&set(&files, "nmos.shprim", text), "tb.shbench");
-    emit(&elab(&p, top, Dialect::Ngspice), Dialect::Ngspice).text
+    let (p, top) = common::fixture(&set(&files, "nmos.shprim", text), "tb.shbench");
+    schemify_netlist::emit(&common::elab(&p, top, Dialect::Ngspice), Dialect::Ngspice).text
 }
 
 proptest! {
@@ -164,19 +185,19 @@ fn threads_change_nothing() {
         let y = (i % 1000) as i64 * 30_000 - if i % 3 == 0 { 0 } else { 10_000 };
         s.push_str(&format!(
             "inst {} ./res\n  at {} {} R0\n  name {name}\n  R {value}\n",
-            id(i as u64 + 1),
-            c((i / 1000) as i64 * 100_000),
-            c(y)
+            common::id(i as u64 + 1),
+            common::coord((i / 1000) as i64 * 100_000),
+            common::coord(y)
         ));
     }
     s.push_str(&format!(
         "inst {} ./res\n  at 9000 0 R0\n  name RB[3:0]\nlabel {} 9000 0 R0 d[3:0]\nlabel {} 0 0 R0 in\nlabel {} 100 0 R0 0\n",
-        id(1 << 26),
-        id((1 << 26) + 1),
-        id((1 << 26) + 2),
-        id((1 << 26) + 3)
+        common::id(1 << 26),
+        common::id((1 << 26) + 1),
+        common::id((1 << 26) + 2),
+        common::id((1 << 26) + 3)
     ));
-    let (p, hs) = project(&[("res.shprim", res), ("tb.shbench", &s)]);
+    let (p, hs) = common::project(&[("res.shprim", res), ("tb.shbench", &s)]);
     for d in [
         Dialect::Ngspice,
         Dialect::Cdl,
@@ -186,29 +207,32 @@ fn threads_change_nothing() {
         let run = |serial: bool| {
             schemify_elab::test_support::set_serial(serial);
             schemify_netlist::set_serial(serial);
-            let e = elab(&p, hs[1], d);
+            let e = common::elab(&p, hs[1], d);
             let codes: Vec<String> = e
                 .violations
                 .rows
                 .iter()
                 .map(|v| format!("{} {}", v.code.as_str(), v.detail))
                 .collect();
-            let out = emit(&e, d);
+            let out = schemify_netlist::emit(&e, d);
             let map = (
                 out.name_map.inst_name("/R12345"),
                 out.name_map.inst_path("r12345"),
             );
             (out.text, codes, map)
         };
-        let serial = run(true);
-        let threaded = run(false);
+        let (serial_text, serial_codes, serial_map) = run(true);
+        let (threaded_text, threaded_codes, threaded_map) = run(false);
         for code in ["E009", "E005", "E008"] {
-            assert!(serial.1.iter().any(|c| c.starts_with(code)), "{d:?} {code}");
+            assert!(
+                serial_codes.iter().any(|c| c.starts_with(code)),
+                "{d:?} {code}"
+            );
         }
-        assert_eq!(serial.0.len(), threaded.0.len(), "{d:?}");
-        assert!(serial.0 == threaded.0, "{d:?}: texts differ");
-        assert_eq!(serial.1, threaded.1, "{d:?}");
-        assert_eq!(serial.2, threaded.2, "{d:?}");
+        assert_eq!(serial_text.len(), threaded_text.len(), "{d:?}");
+        assert!(serial_text == threaded_text, "{d:?}: texts differ");
+        assert_eq!(serial_codes, threaded_codes, "{d:?}");
+        assert_eq!(serial_map, threaded_map, "{d:?}");
     }
     schemify_elab::test_support::set_serial(false);
     schemify_netlist::set_serial(false);

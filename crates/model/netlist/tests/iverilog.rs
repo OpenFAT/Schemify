@@ -8,16 +8,14 @@
 
 mod common;
 
-use common::*;
 use schemify_elab::Dialect;
-use schemify_netlist::emit;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Compiles `text` as `<dir>/<name>.v`; `Err(stderr)` when Icarus rejects it.
 fn icarus(bin: &Path, dir: &Path, name: &str, text: &str) -> Result<(), String> {
     let src = dir.join(format!("{name}.v"));
-    std::fs::write(&src, text).unwrap();
+    std::fs::write(&src, text).expect("the scratch directory is writable");
     let out = Command::new(bin)
         .arg("-o")
         .arg(dir.join(format!("{name}.vvp")))
@@ -38,7 +36,7 @@ fn icarus_parses_and_elaborates_the_verilog_dialect() {
         return;
     };
     let dir = std::env::temp_dir().join(format!("schemify-iverilog-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&dir).expect("the temp directory is writable");
     // Negative space: Icarus elaborates, so an undefined module fails (the oracle is not
     // a mere parser), and so does a port our module does not have.
     let undefined = "module t ();\n  wire a;\n  missing u1 (.A(a));\nendmodule\n";
@@ -46,18 +44,18 @@ fn icarus_parses_and_elaborates_the_verilog_dialect() {
     let bad_port = "module t ();\n  wire a;\n  b u1 (.Q(a));\nendmodule\nmodule b (A);\n  input A;\nendmodule\n";
     assert!(icarus(&bin, &dir, "neg_port", bad_port).is_err());
 
-    let files = fixtures();
+    let files = common::fixtures();
     let mut checked = Vec::new();
-    for (name, _) in files
+    let tops = files
         .iter()
-        .filter(|f| f.0.ends_with(".shbench") || f.0.ends_with(".shcomp"))
-    {
-        let (p, top) = fixture(&files, name);
-        let e = elab(&p, top, Dialect::Verilog);
+        .filter(|(name, _)| name.ends_with(".shbench") || name.ends_with(".shcomp"));
+    for (name, _) in tops {
+        let (p, top) = common::fixture(&files, name);
+        let e = common::elab(&p, top, Dialect::Verilog);
         if e.violations.blocking() {
             continue; // leaves without a Verilog view (E013): no netlist to check
         }
-        let text = emit(&e, Dialect::Verilog).text;
+        let text = schemify_netlist::emit(&e, Dialect::Verilog).text;
         let stem = name.replace('.', "_");
         if let Err(why) = icarus(&bin, &dir, &stem, &text) {
             panic!("{name}: Icarus Verilog rejects our netlist:\n{why}\n{text}");
