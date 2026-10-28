@@ -23,7 +23,7 @@ fn png_size(path: &Path) -> (u16, u16) {
 
 fn open_with_config(dir: &Path, file: &str, init: &str) -> Session {
     let path = dir.join("init.lua");
-    std::fs::write(&path, init).unwrap();
+    std::fs::write(&path, init).expect("the test's temp dir is writable");
     let ed = Editor::new(Options {
         path: Some(dir.join(file)),
         seed: 7,

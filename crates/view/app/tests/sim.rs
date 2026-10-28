@@ -59,12 +59,13 @@ fn open_with(
 ) -> Session {
     let dir = fixture(name, tag);
     for (f, text) in files {
-        std::fs::write(dir.join(f), text).unwrap();
+        std::fs::write(dir.join(f), text).expect("the test's temp dir is writable");
     }
     // These tests run ngspice decks (a fake ngspice), so ngspice is pinned: the default
     // (espice, or whichever simulator this machine has) must not decide the dialect.
     let init = dir.join("init.lua");
-    std::fs::write(&init, "schemify.opt.simulator = \"ngspice\"\n").unwrap();
+    std::fs::write(&init, "schemify.opt.simulator = \"ngspice\"\n")
+        .expect("the test's temp dir is writable");
     let ed = Editor::new(Options {
         path: Some(dir.join(file)),
         seed: 7,
@@ -755,8 +756,10 @@ fn results_table_sorts_filters_and_scrolls_any_number_of_jobs() {
     let src = fixture("rc", "table-src");
     let tb = std::fs::read_to_string(src.join("tb.shbench")).unwrap();
     let _ = std::fs::remove_dir_all(&src);
-    let many = tb.replace("  max 10k\n", "  max 10k\n  dist gauss 50\n")
-        + "\nsweep rsw\n  var R\n  lin 1k 10k 100\n\nmontecarlo mc\n  samples 2\n  seed 3\n";
+    let mismatched = tb.replace("  max 10k\n", "  max 10k\n  dist gauss 50\n");
+    let many = format!(
+        "{mismatched}\nsweep rsw\n  var R\n  lin 1k 10k 100\n\nmontecarlo mc\n  samples 2\n  seed 3\n"
+    );
     assert_ne!(many, tb);
     let fast = FAKE.replace("sleep 0.3", "");
     let mut s = open_with(
@@ -1148,13 +1151,21 @@ fn the_espice_dialect_simulates_an_espice_deck() {
 /// Children of `textview` and the source lines of its prose body.
 fn text_tab_nodes(s: &Session) -> (usize, Vec<String>) {
     let sh = &s.ed.shell();
-    let tv = sh
+    let tv = sh.tables().nodes.find(
+        sh.strings()
+            .find("textview")
+            .expect("the UI names the node"),
+    );
+    let kids = sh
         .tables()
         .nodes
-        .find(sh.strings().find("textview").unwrap());
-    let kids = sh.tables().nodes.children(tv.unwrap()).count();
-    let body = sh.strings().find("textview.body").unwrap();
-    let body = sh.tables().nodes.find(body).unwrap();
+        .children(tv.expect("the node is composed"))
+        .count();
+    let body = sh
+        .strings()
+        .find("textview.body")
+        .expect("the UI names the node");
+    let body = sh.tables().nodes.find(body).expect("the node is composed");
     let src = sh
         .strings()
         .get(sh.tables().nodes.prop(Prop::Value)[body as usize]);

@@ -33,8 +33,12 @@ impl Lcg {
 /// Connectivity of the active schematic: every instance pin (`i<id>.<k>`), wire (`w<id>`),
 /// label (`l<id>`) and port (`p<id>`) with its component and that component's net name.
 fn nets(s: &Session) -> BTreeMap<String, (u32, String)> {
-    let (h, _) = s.ed.active().unwrap();
-    let doc = s.ed.session().project.doc(h).unwrap();
+    let (h, _) = s.ed.active().expect("a cell is open");
+    let doc =
+        s.ed.session()
+            .project
+            .doc(h)
+            .expect("the open cell's document is loaded");
     let cell = s.ed.cell().expect("elaborated");
     let name = |c: u32| schemify_editor::checks::net_name(cell, c).to_owned();
     let mut out = BTreeMap::new();

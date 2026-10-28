@@ -36,17 +36,17 @@ pub fn fixture(name: &str, tag: &str) -> PathBuf {
 /// Copies the tree `src` to `dst`, leaving out every `.schemify/` directory (derived editor
 /// state: journals, netlists, runs, exports).
 pub fn copy_dir(src: &Path, dst: &Path) {
-    std::fs::create_dir_all(dst).unwrap();
-    for e in std::fs::read_dir(src).unwrap() {
-        let p = e.unwrap().path();
-        let to = dst.join(p.file_name().unwrap());
+    std::fs::create_dir_all(dst).expect("the test's temp dir is writable");
+    for e in std::fs::read_dir(src).expect("the fixture directory lists") {
+        let p = e.expect("the fixture directory lists").path();
+        let to = dst.join(p.file_name().expect("a listed entry has a file name"));
         if p.file_name().is_some_and(|n| n == ".schemify") {
             continue;
         }
         if p.is_dir() {
             copy_dir(&p, &to);
         } else {
-            std::fs::copy(&p, &to).unwrap();
+            std::fs::copy(&p, &to).expect("the fixture copies into the temp dir");
         }
     }
 }
@@ -278,9 +278,9 @@ impl Drop for Session {
 pub fn save_png(px: &schemify_render::Pixmap, path: &Path) {
     let png = px.clone().into_png().expect("encode png");
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).unwrap();
+        std::fs::create_dir_all(dir).expect("the test's temp dir is writable");
     }
-    std::fs::write(path, png).unwrap();
+    std::fs::write(path, png).expect("the test's temp dir is writable");
 }
 
 /// Compares `pixmap` with `tests/golden/<name>.png`: equal size, and at most 0.1% of pixels
@@ -291,8 +291,8 @@ pub fn check_golden(name: &str, pixmap: schemify_render::Pixmap) {
     let path = format!("{dir}/{name}.png");
     let png = pixmap.clone().into_png().expect("encode png");
     if std::env::var_os("SCHEMIFY_BLESS").is_some() {
-        std::fs::create_dir_all(dir).unwrap();
-        std::fs::write(&path, &png).unwrap();
+        std::fs::create_dir_all(dir).expect("the test's temp dir is writable");
+        std::fs::write(&path, &png).expect("the test's temp dir is writable");
     }
     let want = std::fs::read(&path)
         .unwrap_or_else(|_| panic!("{path} missing; run with SCHEMIFY_BLESS=1"));
@@ -314,7 +314,7 @@ pub fn check_golden(name: &str, pixmap: schemify_render::Pixmap) {
     let limit = want.data().len() / 1000;
     if bad > limit {
         let out = format!("{}/{name}.actual.png", env!("CARGO_TARGET_TMPDIR"));
-        std::fs::write(&out, &png).unwrap();
+        std::fs::write(&out, &png).expect("the test's temp dir is writable");
         panic!("{name}: {bad} pixels differ (limit {limit}); actual written to {out}");
     }
 }

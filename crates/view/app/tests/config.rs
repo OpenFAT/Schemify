@@ -15,7 +15,7 @@ use schemify_ui::InputEvents;
 
 fn write_init(dir: &Path, src: &str) -> PathBuf {
     let init = dir.join("init.lua");
-    std::fs::write(&init, src).unwrap();
+    std::fs::write(&init, src).expect("the test's temp dir is writable");
     init
 }
 

@@ -23,7 +23,7 @@ fn session(tag: &str) -> Session {
         dir.join("schemify.project"),
         "schemify 1 project\nlib sky130_fd_pr path pdk/sky130/sky130_fd_pr\n",
     )
-    .unwrap();
+    .expect("the test's temp dir is writable");
     let ed = Editor::new(Options {
         no_default_ui: true,
         path: Some(dir.join("inv.shcomp")),

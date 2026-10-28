@@ -83,8 +83,11 @@ fn owned(s: &Session, prefix: &str) -> Vec<String> {
 }
 
 fn active_path(s: &Session) -> PathBuf {
-    let (h, _) = s.ed.active().unwrap();
-    s.ed.session().path(h).unwrap().to_path_buf()
+    let (h, _) = s.ed.active().expect("a cell is open");
+    s.ed.session()
+        .path(h)
+        .expect("the open cell has a file")
+        .to_path_buf()
 }
 
 /// Right click (press + release) at world point `p` with modifiers `mods`.
@@ -137,8 +140,12 @@ fn dialog(s: &Session) -> String {
 /// Connectivity of the active schematic: (pin identity, component), pins of instances by
 /// (instance id, pin index), ports by id.
 fn pin_nets(s: &Session) -> Vec<(String, u32)> {
-    let (h, _) = s.ed.active().unwrap();
-    let doc = s.ed.session().project.doc(h).unwrap();
+    let (h, _) = s.ed.active().expect("a cell is open");
+    let doc =
+        s.ed.session()
+            .project
+            .doc(h)
+            .expect("the open cell's document is loaded");
     let cell = s.ed.cell().expect("elaborated");
     let mut out = Vec::new();
     let inst = doc.instances();

@@ -441,7 +441,7 @@ fn an_edit_before_the_idle_hash(tag: &str) -> Session {
     let mut s = Session::open("inv", "top.shcomp", tag, true);
     s.click((10 * U, 0)); // x1
     s.key("e");
-    let (child, _) = s.ed.active().unwrap();
+    let (child, _) = s.ed.active().expect("a cell is open");
     s.click((-50 * U, -145 * U)); // the "CMOS inverter" text
     s.key("Del");
     assert!(s.ed.session().project.is_dirty(child));
@@ -454,15 +454,15 @@ fn an_edit_before_the_idle_hash(tag: &str) -> Session {
 
 /// The journal of `inv` names the sha256 of the file's bytes, so a reopen offers the edit.
 fn assert_the_journal_names_the_disk_hash(dir: &std::path::Path) {
-    let file = std::fs::read(dir.join("inv.shcomp")).unwrap();
+    let file = std::fs::read(dir.join("inv.shcomp")).expect("the fixture is readable");
     let sha = schemify_doc::hex(&schemify_doc::sha256(&file));
     let journal = dir.join(".schemify/journal/inv.shcomp.journal");
     let journal = std::fs::read_to_string(journal).unwrap_or_default();
     assert!(journal.contains(&format!("base {sha}\n")), "{journal}");
-    let mut p = schemify_doc::Project::new(None, None, 7).unwrap();
+    let mut p = schemify_doc::Project::new(None, None, 7).expect("a project with no library opens");
     let opened = p
         .open("", "inv.shcomp", &file, Some(journal.as_bytes()))
-        .unwrap();
+        .expect("the fixture cell opens");
     assert_eq!(opened.recovery, schemify_doc::Recovery::Offer { txs: 1 });
 }
 
@@ -496,10 +496,10 @@ fn a_window_close_names_the_disk_hash_an_early_edit_left_to_idle_ticks() {
     })
     .unwrap();
     let mut w = schemify_app::window::Window::new(ed);
-    std::mem::swap(w.editor(), &mut s.ed);
+    std::mem::swap(w.editor_mut(), &mut s.ed);
     w.close();
     assert!(
-        !w.editor().wants_quit(),
+        !w.editor_mut().wants_quit(),
         "a close asks nothing of the quit command"
     );
     assert_the_journal_names_the_disk_hash(&s.dir);

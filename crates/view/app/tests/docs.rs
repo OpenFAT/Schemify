@@ -44,27 +44,38 @@ fn num(s: &Session, name: &str) -> f64 {
 
 /// Evaluated value of param `param` of the instance named `inst`.
 fn inst_param(s: &Session, inst: &str, param: &str) -> (Val, bool) {
-    let (h, _) = s.ed.active().unwrap();
-    let doc = s.ed.session().project.doc(h).unwrap();
+    let (h, _) = s.ed.active().expect("a cell is open");
+    let doc =
+        s.ed.session()
+            .project
+            .doc(h)
+            .expect("the open cell's document is loaded");
     let st = doc.strings();
     let i = (0..doc.instances().id.len())
         .find(|&i| st.get(doc.instances().name[i]) == inst)
         .unwrap_or_else(|| panic!("instance {inst}"));
-    let cell = s.ed.cell().unwrap();
+    let cell = s.ed.cell().expect("a cell is open");
     let iface = &cell.ifaces[cell.inst_iface[i] as usize];
     let k = iface
         .param_name
         .iter()
         .position(|n| cell.names.get(*n) == param)
-        .unwrap();
-    let node = cell.graph.inst_param(i, k).unwrap() as usize;
+        .expect("the interface declares the parameter");
+    let node = cell
+        .graph
+        .inst_param(i, k)
+        .expect("the instance binds the parameter") as usize;
     (cell.graph.vals[node].clone(), cell.graph.unverified[node])
 }
 
 /// Doc block row of var `name`.
 fn row(s: &Session, name: &str) -> u32 {
-    let (h, _) = s.ed.active().unwrap();
-    let doc = s.ed.session().project.doc(h).unwrap();
+    let (h, _) = s.ed.active().expect("a cell is open");
+    let doc =
+        s.ed.session()
+            .project
+            .doc(h)
+            .expect("the open cell's document is loaded");
     let b = doc.doc_blocks();
     (0..b.kind.len())
         .find(|&r| doc.strings().get(b.fields[r][0]) == name)
@@ -107,14 +118,14 @@ fn plugin_hash() -> String {
 }
 
 fn eng(x: f64) -> String {
-    let t = Template::parse("{eng(x)}").unwrap();
+    let t = Template::parse("{eng(x)}").expect("the template parses");
     let mut inputs = Vec::new();
     t.program()
         .bind(&mut inputs, |_| Some(Value::Num(x)))
-        .unwrap();
+        .expect("the template's names bind");
     let mut out = String::new();
     t.render(&inputs, &mut Scratch::default(), &mut out)
-        .unwrap();
+        .expect("the template renders");
     out
 }
 
@@ -326,8 +337,8 @@ fn bounds_colour_the_value_red() {
 fn open_edited(tag: &str, file: &str, edit: impl Fn(String) -> String) -> Session {
     let dir = common::fixture("ota", tag);
     let p = dir.join(file);
-    let text = std::fs::read_to_string(&p).unwrap();
-    std::fs::write(&p, edit(text)).unwrap();
+    let text = std::fs::read_to_string(&p).expect("the fixture is readable");
+    std::fs::write(&p, edit(text)).expect("the test's temp dir is writable");
     let ed = schemify_editor::editor::Editor::new(schemify_editor::editor::Options {
         no_default_ui: false,
         path: Some(dir.join("ota.shcomp")),
@@ -479,7 +490,7 @@ fn d20_param_cache_without_the_plugin_goes_with_its_default() {
 
 /// The hash the fixture file was cached with.
 fn fixture_hash(text: &str) -> String {
-    cached(text, "W_in").unwrap().1
+    cached(text, "W_in").expect("the value is cached").1
 }
 
 #[test]
@@ -706,7 +717,7 @@ fn laid_out(s: &Session, id: &str) -> (usize, usize) {
     let n = sh
         .tables()
         .nodes
-        .find(sh.strings().find(id).unwrap())
+        .find(sh.strings().find(id).expect("the UI names the node"))
         .unwrap_or_else(|| panic!("{id} composed"));
     let r = sh
         .layout()

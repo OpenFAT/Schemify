@@ -418,14 +418,14 @@ fn the_plugin_snapshot_follows_random_edits() {
 fn same_as_reopened(s: &mut Session, ctx: &str) {
     let dir = common::fixture("inv", "snapshot-walk-reopened");
     let path = dir.join("walk.shcomp");
-    std::fs::write(&path, s.text()).unwrap();
+    std::fs::write(&path, s.text()).expect("the test's temp dir is writable");
     let ed = schemify_editor::editor::Editor::new(schemify_editor::editor::Options {
         no_default_ui: false,
         path: Some(path),
         seed: 3,
         ..Default::default()
     })
-    .unwrap();
+    .expect("the fixture project opens");
     let mut fresh = Session {
         ed,
         now: 1,

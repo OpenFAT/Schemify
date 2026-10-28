@@ -423,23 +423,29 @@ fn walk(seed: u64, steps: usize, base: usize) -> usize {
         top.push_str(&format!("wire {} {x} {y} {} {y2}\n", id(next), x + 20));
     }
     top.push_str("\nvar rv 2\nvar rw rv*3\n");
-    let mut p = Project::new(None, None, seed).unwrap();
+    let mut p = Project::new(None, None, seed).expect("a project with no library opens");
     let files: [(&str, &[u8]); 2] = [
         ("res.shprim", RES.as_bytes()),
         ("top.shcomp", top.as_bytes()),
     ];
-    p.index_library("", "", &files).unwrap();
+    p.index_library("", "", &files)
+        .expect("the library indexes");
     let res = p
         .open("", "res.shprim", RES.as_bytes(), None)
-        .unwrap()
+        .expect("the fixture cell opens")
         .handle;
     let h = p
         .open("", "top.shcomp", top.as_bytes(), None)
-        .unwrap()
+        .expect("the fixture cell opens")
         .handle;
     let mut symbols = Symbols::default();
     let row = p.resolve(h, "./res").expect("resolves");
-    symbols.refresh(row, Some(res), 0, p.doc(res).unwrap());
+    symbols.refresh(
+        row,
+        Some(res),
+        0,
+        p.doc(res).expect("the open cell's document is loaded"),
+    );
     // The elab state rides along (D19: symbol texts show evaluated values), as the editor
     // drives it: a rebuilt graph builds the scene again, a value edit re-stamps the
     // instances elab names (`revalued`).
@@ -474,7 +480,11 @@ fn walk(seed: u64, steps: usize, base: usize) -> usize {
             .map_or_else(Vec::new, <[_]>::to_vec);
         epoch += 1;
         let done = st.recompute(&p, h, &ops, &mut no_funcs);
-        let ids = &p.doc(h).unwrap().instances().id;
+        let ids = &p
+            .doc(h)
+            .expect("the open cell's document is loaded")
+            .instances()
+            .id;
         let keys: Vec<ObjKey> = st
             .revalued
             .iter()

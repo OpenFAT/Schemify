@@ -846,8 +846,9 @@ fn cmd_runs_a_plugin_command_headless() {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         let out = child.wait_with_output().unwrap();
-        let text = String::from_utf8_lossy(&out.stdout).into_owned()
-            + &String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let text = format!("{stdout}{stderr}");
         (out.status.code(), text)
     };
     let (code, text) = run(&["count_nets.run"]);

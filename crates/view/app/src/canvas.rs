@@ -12,9 +12,9 @@
 //!
 //! Contents:
 //! - `pub(crate) struct CanvasCache`, `CanvasCache::paint<P: Painter>(&mut self, p: &mut P,
-//!   cp: &CanvasPicture<'_>, text: &mut TextSystem) -> bool`
+//!   picture: &CanvasPicture<'_>, text: &mut TextSystem) -> bool`
 
-use std::hash::{Hash, Hasher};
+use std::hash::DefaultHasher;
 
 use schemify_canvas::kurbo::Rect as KRect;
 use schemify_canvas::{Camera, CanvasDiff, CanvasPrims, PrimIndex, Rows, TableChange};
@@ -39,6 +39,8 @@ pub(crate) struct CanvasCache {
 
 /// Canvas tables in drawing order: scene as shown, decor, violation markers, parity extra.
 const TABLES: usize = 4;
+/// Entries of `CanvasPicture::gens`: the four tables and the selection marks.
+const GENS: usize = 5;
 /// The `CanvasPicture::gens` entry of each table in drawing order; entry 3 is the
 /// selection marks, which recolor scene rows.
 const TABLE_GEN: [usize; TABLES] = [0, 1, 4, 2];
@@ -50,11 +52,14 @@ const INDEX_ROWS_MIN: usize = 4096;
 /// anchor, antialiasing): the rows near the view are looked up this much wider.
 const NEAR_PAD_PX: f64 = 8.0;
 
+const _: () = assert!(MARKS_GEN < GENS);
+const _: () = assert!(NEAR_PAD_PX >= 0.0);
+
 // Every table and the marks read their own generation.
 const _: () = {
     let mut k = 0;
     while k < TABLES {
-        assert!(TABLE_GEN[k] < 5);
+        assert!(TABLE_GEN[k] < GENS);
         assert!(TABLE_GEN[k] != MARKS_GEN);
         k += 1;
     }
@@ -65,12 +70,20 @@ const _: () = {
 struct Diffed {
     diff: CanvasDiff,
     /// `CanvasPicture::gens` the diff was taken at.
-    gens: [u64; 5],
+    gens: [u64; GENS],
     /// The style key ([`style_key`]) the diff was taken at.
     style: u64,
     /// Whether the diff last read the scene's own table (not `shown`): only then do the
     /// scene's reported edits describe what changed since.
     read_scene: bool,
+}
+
+/// What [`Diffed::take`] found changed since the diff last read its inputs.
+struct Taken<'picture> {
+    /// Per table in drawing order: what its rows rewrite.
+    changes: [Change<'picture>; TABLES],
+    /// Whether the selection marks must be repainted.
+    marks_changed: bool,
 }
 
 /// One canvas table's label caches. Generations are stored plus 1, so 0 is never built.
@@ -86,62 +99,91 @@ struct TableCache {
 }
 
 impl CanvasCache {
-    /// Paints `cp` between `Painter::canvas_begin` and `canvas_end`. Returns whether the
-    /// diff took the scene's and the markers' reported edits (`Editor::painted`): true when
-    /// the generations or the style moved, also for a painter that shows no canvas.
+    /// Paints `picture` between `Painter::canvas_begin` and `canvas_end`. Returns whether
+    /// the diff took the scene's and the markers' reported edits (`Editor::painted`): true
+    /// when the generations or the style moved, also for a painter that shows no canvas.
     pub(crate) fn paint<P: Painter>(
         &mut self,
-        p: &mut P,
-        cp: &CanvasPicture<'_>,
+        painter: &mut P,
+        picture: &CanvasPicture<'_>,
         text: &mut TextSystem,
     ) -> bool {
-        assert!(cp.cam.scale > 0.0, "a camera scale is positive");
-        let style = style_key(cp);
-        let shown = cp.shown.unwrap_or(cp.scene);
-        let diffed = self.diff.gens != cp.gens || self.diff.style != style;
-        let (changes, marks_changed) = match diffed {
-            true => self.diff.take(cp, shown, style, &mut self.tables),
-            false => ([Change::Same; TABLES], false),
+        assert!(picture.cam.scale > 0.0, "a camera scale is positive");
+        assert!(picture.cam.scale.is_finite(), "a camera scale is finite");
+        let style = style_key(picture);
+        let shown = picture.shown.unwrap_or(picture.scene);
+        let diffed = self.diff.gens != picture.gens || self.diff.style != style;
+        let Taken {
+            changes,
+            marks_changed,
+        } = if diffed {
+            self.diff.take(picture, shown, style, &mut self.tables)
+        } else {
+            Taken {
+                changes: [Change::Same; TABLES],
+                marks_changed: false,
+            }
         };
         let frame = Frame {
-            view: cp.view,
-            cam: cp.cam,
-            grid: cp.grid,
-            background: cp.palette.background,
-            grid_color: cp.palette.grid,
+            view: picture.view,
+            cam: picture.cam,
+            grid: picture.grid,
+            background: picture.palette.background,
+            grid_color: picture.palette.grid,
         };
-        if !p.canvas_begin(&frame) {
+        if !painter.canvas_begin(&frame) {
+            assert_eq!(self.diff.gens, picture.gens, "the diff is current");
             return diffed; // a painter that shows no canvas
         }
-        let (view, cam, palette) = (cp.view, &cp.cam, &cp.palette);
+        let (view, cam, palette) = (picture.view, &picture.cam, &picture.palette);
         let near = world_box(view, cam);
-        let tables = [shown, cp.decor, cp.markers, cp.extra];
-        for (k, (t, change)) in tables.into_iter().zip(changes).enumerate() {
-            p.canvas_rows(k, t, palette, change);
+        let tables = [shown, picture.decor, picture.markers, picture.extra];
+        let tables_changes = tables.into_iter().zip(changes).enumerate();
+        for (k, (table, change)) in tables_changes {
+            painter.canvas_rows(k, table, palette, change);
             // A table whose largest label is under the text cut at this zoom draws none (the
             // far zoom's frames look at no label); else only the rows near the view.
             let cache = &mut self.tables[k];
-            let g = cp.gens[TABLE_GEN[k]];
-            if cache.label_gen != g + 1 {
-                cache.label_gen = g + 1;
-                cache.label_max = t.texts.size.iter().copied().max().unwrap_or(0);
+            let generation = picture.gens[TABLE_GEN[k]];
+            if cache.label_gen != generation + 1 {
+                cache.label_gen = generation + 1;
+                cache.label_max = table.texts.size.iter().copied().max().unwrap_or(0);
             }
             if f64::from(cache.label_max) * cam.scale < draw::TEXT_MIN_PX {
                 continue;
             }
-            let listed = cache.rows_near(t, g, near, &mut self.near);
+            let listed = cache.rows_near(table, generation, near, &mut self.near);
             let listed = listed.then_some(&self.near.texts[..]);
             let scratch = &mut self.scratch;
-            draw::draw_texts(p, view, cam, &t.texts, listed, palette, text, scratch);
+            draw::draw_texts(
+                painter,
+                view,
+                cam,
+                &table.texts,
+                listed,
+                palette,
+                text,
+                scratch,
+            );
         }
-        p.canvas_marks(cp.scene, cp.marks, marks_changed);
-        if !cp.overlay.is_empty() {
-            let (o, scratch) = (cp.overlay, &mut self.scratch);
-            p.canvas_rows(OVERLAY, o, palette, Change::All);
-            draw::draw_texts(p, view, cam, &o.texts, None, palette, text, scratch);
+        painter.canvas_marks(picture.scene, picture.marks, marks_changed);
+        if !picture.overlay.is_empty() {
+            let (overlay, scratch) = (picture.overlay, &mut self.scratch);
+            painter.canvas_rows(OVERLAY, overlay, palette, Change::All);
+            draw::draw_texts(
+                painter,
+                view,
+                cam,
+                &overlay.texts,
+                None,
+                palette,
+                text,
+                scratch,
+            );
         }
-        p.canvas_end();
-        assert_eq!(self.diff.gens, cp.gens, "the diff is current");
+        painter.canvas_end();
+        assert_eq!(self.diff.gens, picture.gens, "the diff is current");
+        assert_eq!(self.diff.style, style, "the diff is current");
         diffed
     }
 }
@@ -150,60 +192,65 @@ impl CanvasCache {
 
 /// The palette as the View/Layers options shape it (hidden layers, dimming, colors, widths)
 /// and the grid: the rows bake them, so a change of this key repacks every row.
-fn style_key(cp: &CanvasPicture<'_>) -> u64 {
-    let palette = &cp.palette;
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    let colors = (
+fn style_key(picture: &CanvasPicture<'_>) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let palette = &picture.palette;
+    let mut hasher = DefaultHasher::new();
+    let style = (
+        picture.grid,
         palette.color,
         palette.fill,
         palette.background,
         palette.grid,
     );
-    (cp.grid, colors.0, colors.1, colors.2, colors.3).hash(&mut h);
-    palette.width.map(f32::to_bits).hash(&mut h);
-    h.finish()
+    style.hash(&mut hasher);
+    palette.width.map(f32::to_bits).hash(&mut hasher);
+    hasher.finish()
 }
 
 /// The world box `view` shows through `cam`, widened by [`NEAR_PAD_PX`].
 fn world_box(view: KRect, cam: &Camera) -> [i32; 4] {
-    let (a0, b0) = cam.to_world(view, view.x0, view.y0);
-    let (a1, b1) = cam.to_world(view, view.x1, view.y1);
+    assert!(cam.scale > 0.0, "a camera scale is positive");
+    let (x0, y0) = cam.to_world(view, view.x0, view.y0);
+    let (x1, y1) = cam.to_world(view, view.x1, view.y1);
     let pad = NEAR_PAD_PX / cam.scale;
-    let c = |v: f64| v.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
-    let b = [
-        c((a0.min(a1) - pad).floor()),
-        c((b0.min(b1) - pad).floor()),
-        c((a0.max(a1) + pad).ceil()),
-        c((b0.max(b1) + pad).ceil()),
+    // Saturating: a far zoom's box clamps to the i32 world, never wraps.
+    let to_i32 = |v: f64| v.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+    let bounds = [
+        to_i32((x0.min(x1) - pad).floor()),
+        to_i32((y0.min(y1) - pad).floor()),
+        to_i32((x0.max(x1) + pad).ceil()),
+        to_i32((y0.max(y1) + pad).ceil()),
     ];
-    assert!(b[0] <= b[2]);
-    assert!(b[1] <= b[3]);
-    b
+    assert!(bounds[0] <= bounds[2], "a box is ordered: {bounds:?}");
+    assert!(bounds[1] <= bounds[3], "a box is ordered: {bounds:?}");
+    bounds
 }
 
 impl Diffed {
     /// Takes the tables' changes since the generations and style the diff last read: per
     /// table in drawing order what its rows rewrite, and whether the marks changed. Indexes
     /// current before the change follow it; the rest rebuild when their texts next need it.
-    fn take<'a>(
-        &'a mut self,
-        cp: &CanvasPicture<'a>,
-        shown: &'a CanvasPrims,
+    fn take<'picture>(
+        &'picture mut self,
+        picture: &CanvasPicture<'picture>,
+        shown: &'picture CanvasPrims,
         style: u64,
         caches: &mut [TableCache; TABLES],
-    ) -> ([Change<'a>; TABLES], bool) {
+    ) -> Taken<'picture> {
         assert!(
-            self.gens != cp.gens || self.style != style,
+            self.gens != picture.gens || self.style != style,
             "called once the inputs moved"
         );
-        let changed = |g: usize| self.gens[g] != cp.gens[g];
+        let changed = |generation: usize| self.gens[generation] != picture.gens[generation];
         // The scene reports its own edits (O(change)) when the diff last read it; the
         // markers always do; decor and the parity extra are hashed when they changed.
-        let scene_edits = (cp.shown.is_none() && self.read_scene)
-            .then_some(cp.scene_edits)
+        let scene_edits = (picture.shown.is_none() && self.read_scene)
+            .then_some(picture.scene_edits)
             .flatten();
-        let reports = [scene_edits, None, cp.markers_edits, None];
-        let prims = [shown, cp.decor, cp.markers, cp.extra];
+        let reports = [scene_edits, None, picture.markers_edits, None];
+        let prims = [shown, picture.decor, picture.markers, picture.extra];
         let tables: [_; TABLES] = std::array::from_fn(|k| {
             let change = match (changed(TABLE_GEN[k]), reports[k]) {
                 (true, Some(killed)) => TableChange::Rows(killed),
@@ -215,23 +262,27 @@ impl Diffed {
         let marks_changed = changed(TABLE_GEN[0]) || changed(MARKS_GEN);
         let known = self
             .diff
-            .update(&tables, (cp.scene, cp.marks, marks_changed));
+            .update(&tables, (picture.scene, picture.marks, marks_changed));
         for (k, cache) in caches.iter_mut().enumerate() {
-            let g = TABLE_GEN[k];
-            if known && changed(g) && cache.index_gen == self.gens[g] + 1 {
-                let follows = match tables[k].1 {
-                    TableChange::Rows(_) => cache.index.follow(tables[k].0),
-                    _ => cache.index.apply(self.diff.edits_of(k)),
+            let generation = TABLE_GEN[k];
+            let current = cache.index_gen == self.gens[generation] + 1;
+            if known && changed(generation) && current {
+                let (prims, change) = tables[k];
+                let follows = match change {
+                    TableChange::Rows(_) => cache.index.follow(prims),
+                    TableChange::Any | TableChange::Same => {
+                        cache.index.apply(self.diff.edits_of(k))
+                    }
                 };
                 if follows {
-                    cache.index_gen = cp.gens[g] + 1;
+                    cache.index_gen = picture.gens[generation] + 1;
                 }
             }
         }
         // Each table's own change: a producer's report is exact whatever the diff made of
         // the other tables; a hashed table's edit script only when the diff could follow.
         let restyled = self.style != style;
-        (self.gens, self.style, self.read_scene) = (cp.gens, style, cp.shown.is_none());
+        (self.gens, self.style, self.read_scene) = (picture.gens, style, picture.shown.is_none());
         let changes = std::array::from_fn(|k| match tables[k].1 {
             _ if restyled => Change::All,
             TableChange::Same => Change::Same,
@@ -239,22 +290,34 @@ impl Diffed {
             TableChange::Any if known => Change::Edits(self.diff.edits_of(k)),
             TableChange::Any => Change::All,
         });
-        (changes, restyled || marks_changed)
+        Taken {
+            changes,
+            marks_changed: restyled || marks_changed,
+        }
     }
 }
 
 impl TableCache {
     /// Lists in `out` the rows of `t` near world box `near`, from the index (rebuilt for
     /// generation `g` when stale). Returns false (draw every row) for a small table.
-    fn rows_near(&mut self, t: &CanvasPrims, g: u64, near: [i32; 4], out: &mut Rows) -> bool {
-        if t.len() < INDEX_ROWS_MIN {
+    fn rows_near(
+        &mut self,
+        table: &CanvasPrims,
+        generation: u64,
+        near: [i32; 4],
+        out: &mut Rows,
+    ) -> bool {
+        assert!(near[0] <= near[2], "a box is ordered: {near:?}");
+        assert!(near[1] <= near[3], "a box is ordered: {near:?}");
+        if table.len() < INDEX_ROWS_MIN {
             return false;
         }
-        if self.index_gen != g + 1 {
-            (self.index_gen, self.index) = (g + 1, PrimIndex::build(t));
+        if self.index_gen != generation + 1 {
+            (self.index_gen, self.index) = (generation + 1, PrimIndex::build(table));
         }
-        self.index.query(t, near, out);
-        let rows = t.texts.size.len();
+        assert_eq!(self.index_gen, generation + 1, "the index is current");
+        self.index.query(table, near, out);
+        let rows = table.texts.size.len();
         assert!(
             out.texts.last().is_none_or(|&r| (r as usize) < rows),
             "rows of the table"

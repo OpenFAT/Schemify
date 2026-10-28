@@ -486,7 +486,7 @@ fn event(e: InputEvent) -> InputEvents {
 /// `n`-object schematic.
 fn frame_times(n: u32) {
     let dir = fixture("inv", &format!("perf-{n}"));
-    std::fs::write(dir.join("big.shcomp"), schematic(n)).unwrap();
+    std::fs::write(dir.join("big.shcomp"), schematic(n)).expect("the test's temp dir is writable");
     let t0 = Instant::now();
     let mut ed = Editor::new(Options {
         no_default_ui: false,
@@ -494,7 +494,7 @@ fn frame_times(n: u32) {
         seed: 1,
         ..Default::default()
     })
-    .unwrap();
+    .expect("the fixture project opens");
     ed.update(&InputEvents::default(), VIEW, 0);
     let open = t0.elapsed().as_secs_f64() * 1e3;
     let (objs, prims) = (ed.scene().objs.len(), ed.scene().prims.len());
@@ -682,7 +682,7 @@ fn grid_lag(scale: f64, step: f32, grid: bool) {
         seed: 1,
         ..Default::default()
     })
-    .unwrap();
+    .expect("the fixture project opens");
     let mut b = Bench {
         caches: Default::default(),
         ed,
@@ -761,14 +761,14 @@ fn grid_keeps_up_with_pan_and_zoom() {
 /// typing into a properties dialog field. Pan and zoom are [`frame_times`].
 fn interactions(n: u32) {
     let dir = fixture("inv", &format!("perf-int-{n}"));
-    std::fs::write(dir.join("big.shcomp"), schematic(n)).unwrap();
+    std::fs::write(dir.join("big.shcomp"), schematic(n)).expect("the test's temp dir is writable");
     let mut ed = Editor::new(Options {
         no_default_ui: false,
         path: Some(dir.join("big.shcomp")),
         seed: 1,
         ..Default::default()
     })
-    .unwrap();
+    .expect("the fixture project opens");
     ed.update(&InputEvents::default(), VIEW, 0);
     let mut b = Bench {
         caches: Default::default(),
@@ -1017,14 +1017,14 @@ fn key_event(c: &str) -> InputEvents {
 /// those before the next input). Returns (kind, CPU p50/p95/p99, largest tick) per kind.
 fn edit_frames(n: u32) -> Vec<(&'static str, [f64; 3], f64)> {
     let dir = fixture("inv", &format!("perf-edit-{n}"));
-    std::fs::write(dir.join("big.shcomp"), schematic(n)).unwrap();
+    std::fs::write(dir.join("big.shcomp"), schematic(n)).expect("the test's temp dir is writable");
     let mut ed = Editor::new(Options {
         no_default_ui: false,
         path: Some(dir.join("big.shcomp")),
         seed: 1,
         ..Default::default()
     })
-    .unwrap();
+    .expect("the fixture project opens");
     ed.update(&InputEvents::default(), VIEW, 0);
     let mut b = Bench {
         caches: Default::default(),
@@ -1458,7 +1458,7 @@ impl Bench {
             seed: 1,
             ..Default::default()
         })
-        .unwrap();
+        .expect("the fixture project opens");
         Some(Bench {
             caches: Default::default(),
             ed,
