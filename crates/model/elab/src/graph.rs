@@ -194,7 +194,12 @@ impl Graph {
     pub(crate) fn node_deps(&self, n: u32) -> &[u32] {
         let (start, end) = (self.dep_start[n as usize], self.dep_end[n as usize]);
         assert!(start <= end, "node {n}'s dependency range is reversed");
-        &self.deps[start as usize..end as usize]
+        let deps = &self.deps[start as usize..end as usize];
+        debug_assert!(
+            deps.iter().all(|&d| (d as usize) < self.len()),
+            "edge to no node"
+        );
+        deps
     }
 
     /// Replaces node `n`'s dependencies by `new` (in its program's identifier order) when
@@ -243,12 +248,14 @@ impl Graph {
     /// Returns the node count.
     #[must_use]
     pub fn len(&self) -> usize {
+        debug_assert_eq!(self.slot.len(), self.owner.len(), "node columns in step");
         self.owner.len()
     }
 
     /// Returns whether the graph has no nodes.
     #[must_use]
     pub fn is_empty(&self) -> bool {
+        debug_assert_eq!(self.table.len(), self.owner.len(), "node columns in step");
         self.owner.is_empty()
     }
 
@@ -562,6 +569,11 @@ impl Graph {
         self.vals = vec![Val::Upstream; n];
         self.unverified = vec![false; n];
         assert_eq!(self.order.len(), n);
+        // Every kept edge points back in the order (cycle nodes lost theirs in `cut`).
+        debug_assert!((0..n as u32).all(|v| {
+            let r = self.rank[v as usize];
+            self.node_deps(v).iter().all(|&d| self.rank[d as usize] < r)
+        }));
         assert_eq!(self.rdep_end.len(), n, "one dependent range per node");
     }
 

@@ -112,7 +112,7 @@ type RowKey = (Code, u32, u32, u32, u32);
 
 /// What the ops of one [`CellState::recompute`] touched.
 #[derive(Default)]
-struct Touched<'o> {
+struct Touched<'ops> {
     /// Rebuild the connectivity (`inherit`, `ignore`).
     nets: bool,
     /// Patch the connectivity (geometry moved).
@@ -124,8 +124,8 @@ struct Touched<'o> {
     /// A var's expression changed.
     vars: bool,
     /// D20: own vars and params whose `cached` stand-in changed (the app's write-back).
-    cached_vars: Vec<&'o str>,
-    cached_params: Vec<&'o str>,
+    cached_vars: Vec<&'ops str>,
+    cached_params: Vec<&'ops str>,
     /// A waiver changed: the whole check pass reruns.
     waived: bool,
     /// Instances whose `name` changed: their element names and `E009` rows are patched.
@@ -352,10 +352,10 @@ pub(crate) fn subject(op: &Op) -> Subject<'_> {
 
 // ---- private ----
 
-impl<'o> Touched<'o> {
+impl<'ops> Touched<'ops> {
     /// Classifies `ops` (applied to `doc`); `None` when one moves rows or interfaces
     /// (instances inserted, deleted or re-pointed; params, pins, impls, the header).
-    fn of(ops: &'o [Op], doc: &Document) -> Option<Touched<'o>> {
+    fn of(ops: &'ops [Op], doc: &Document) -> Option<Touched<'ops>> {
         let mut t = Touched::default();
         for op in ops {
             let Subject { kind, key, attr } = subject(op);

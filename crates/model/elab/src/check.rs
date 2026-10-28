@@ -187,6 +187,7 @@ pub(crate) fn gate(
 /// `MAX`, `STEP`, `GRID`; `None` absent) and no choices: the per-instance fast path, with
 /// no bound copied and no text written.
 pub(crate) fn passes(x: f64, b: [Option<f64>; 4]) -> bool {
+    debug_assert!(x.is_finite(), "a gated number is finite");
     let grid = b[GRID].filter(|g| *g != 0.0);
     let step = b[STEP].filter(|s| *s != 0.0);
     let base = b[MIN].unwrap_or(0.0);
@@ -425,7 +426,9 @@ pub(crate) fn inputs_digest(c: &Iface, vals: &[Val], names: &Names) -> Option<St
         values::cached_text(v, &mut text);
         text.push('\n');
     }
-    Some(format!("{:016x}", names::fnv1a64(text.as_bytes())))
+    let digest = format!("{:016x}", names::fnv1a64(text.as_bytes()));
+    debug_assert_eq!(digest.len(), 16, "a digest is 16 hex digits");
+    Some(digest)
 }
 
 // ---- private ----
@@ -434,6 +437,10 @@ pub(crate) fn inputs_digest(c: &Iface, vals: &[Val], names: &Names) -> Option<St
 /// f64 from decimal text, so `0.3` on a `0.1` grid must pass).
 fn on_grid(x: f64, base: f64, step: f64) -> bool {
     assert!(step != 0.0, "callers drop a zero grid or step");
+    debug_assert!(
+        step.is_finite() && base.is_finite(),
+        "bounds are finite numbers"
+    );
     let r = (x - base) / step;
     (r - r.round()).abs() <= 1e-9 * r.abs().max(1.0)
 }
@@ -441,6 +448,7 @@ fn on_grid(x: f64, base: f64, step: f64) -> bool {
 fn num_text(x: f64) -> String {
     let mut s = String::new();
     schemify_expr::write_num(&mut s, x);
+    debug_assert!(!s.is_empty());
     s
 }
 

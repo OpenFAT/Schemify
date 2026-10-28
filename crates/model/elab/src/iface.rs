@@ -242,12 +242,22 @@ impl Iface {
     /// Returns the index of param `name`. O(params).
     #[must_use]
     pub fn param(&self, name: Name) -> Option<usize> {
+        debug_assert_eq!(
+            self.param_prog.len(),
+            self.param_name.len(),
+            "param columns in step"
+        );
         self.param_name.iter().position(|n| *n == name)
     }
 
     /// Returns the index of the schematic impl, if the cell has one.
     #[must_use]
     pub fn schematic_impl(&self, names: &Names) -> Option<usize> {
+        debug_assert_eq!(
+            self.impl_lang.len(),
+            self.impl_name.len(),
+            "impl columns in step"
+        );
         self.impl_lang
             .iter()
             .position(|l| names.get(*l) == "schematic")
@@ -281,6 +291,10 @@ pub(crate) fn own_ref(names: &Names, params: &[Name], vars: &[Name], name: &str)
     assert!(
         (params.len() as Ref) < VAR,
         "param indices stay below the var flag"
+    );
+    assert!(
+        (vars.len() as Ref) < VAR,
+        "var indices stay below the var flag"
     );
     let n = names.find(name)?;
     if let Some(k) = params.iter().position(|p| *p == n) {
@@ -475,13 +489,13 @@ impl Iface {
     }
 }
 
-fn attr_vals<'d>(
+fn attr_vals<'doc>(
     t: &Records,
     r: usize,
     s: &Strings,
-    doc: &'d Document,
+    doc: &'doc Document,
     key: &str,
-) -> Option<&'d [Sym]> {
+) -> Option<&'doc [Sym]> {
     assert!(r < t.attrs.len(), "record {r} out of range");
     doc.pool().find_attr(s, t.attrs[r], key)
 }

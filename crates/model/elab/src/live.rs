@@ -331,6 +331,7 @@ impl Live {
     ///
     /// Cost: one compare per instance row (vectorized).
     pub(crate) fn instances_moved(&self, doc: &Document) -> bool {
+        assert_eq!(self.ids.len(), INSTS + 1, "one id mirror per table");
         let mut rows = Vec::new();
         changed_rows(&self.ids[INSTS], &doc.instances().id, &mut rows);
         !rows.is_empty()
@@ -342,6 +343,7 @@ impl Live {
     ///
     /// Cost: one compare per row of those tables (vectorized).
     pub(crate) fn rows_moved(&self, doc: &Document) -> bool {
+        assert_eq!(self.ids.len(), INSTS + 1, "one id mirror per table");
         let mut rows = Vec::new();
         for t in 0..INSTS {
             changed_rows(&self.ids[t], table_ids(doc, t), &mut rows);
@@ -493,5 +495,6 @@ fn changed_rows(old: &[u32], ids: &[ObjId], out: &mut Vec<usize>) {
 
 /// Geometric (non-inherited) pins of `f`, in order: an instance's node `k` is the `k`-th.
 fn geometric(f: &Iface) -> impl Iterator<Item = usize> + '_ {
+    debug_assert_eq!(f.pin_inherit.len(), f.pin_name.len(), "pin columns in step");
     (0..f.pin_name.len()).filter(|&p| f.pin_inherit[p] == Name::NONE)
 }

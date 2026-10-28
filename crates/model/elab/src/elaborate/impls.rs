@@ -17,6 +17,15 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
     /// Impl selection (spec §2) for the instance at `path` of cell `c`. Reports `E031`
     /// for config names the cell lacks and `E013` when nothing is selectable.
     pub(super) fn select(&mut self, path: &str, c: u32) -> Option<u32> {
+        assert!(
+            (c as usize) < self.ifaces.len(),
+            "cell {c} has an interface"
+        );
+        assert_eq!(
+            self.config.inst_hit.len(),
+            self.config.inst.len(),
+            "one hit flag per inst rule"
+        );
         let f = &self.ifaces[c as usize];
         let f_impls = f.impl_name.len();
         let by_name =
@@ -155,6 +164,7 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
     /// The [`Impls`] row carrying the body of cell `c`'s schematic impl, `NONE` when no
     /// schematic impl has one (spec §7.6.8). Memoized like leaf rows.
     pub(super) fn def_body(&mut self, c: u32) -> u32 {
+        assert!((c as usize) < self.cells.len(), "cell {c} is loaded");
         let f = &self.ifaces[c as usize];
         let doc = self.cells[c as usize].doc;
         let (s, bodies) = (doc.strings(), doc.bodies());
