@@ -6,12 +6,10 @@
 //! [`crate::text::push_value`] escapes control characters).
 //!
 //! Contents:
-//! - `pub enum Event<'a>`
+//! - `pub enum Event<'buf>`
 //! - `Event::kind_name(&self) -> &'static str`
 //! - `Event::encode(&self, out: &mut Vec<u8>) -> Result<(), Code>`
-//! - `Event::parse(buf: &'a [u8]) -> Result<Event<'a>, Code>`
-
-use std::io::Write as _;
+//! - `Event::parse(buf: &'buf [u8]) -> Result<Event<'buf>, Code>`
 
 use crate::Code;
 use crate::text;
@@ -19,7 +17,7 @@ use crate::text;
 /// One event. Borrowed from the buffer it was parsed from; identifier fields (`name`,
 /// `dialect`, `bench`, `lang`) are bare values and never need unescaping.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Event<'a> {
+pub enum Event<'buf> {
     /// The plugin was just loaded: declare contributions.
     Load,
     /// The plugin is about to be unloaded; contributions it makes now are dropped.
@@ -28,9 +26,9 @@ pub enum Event<'a> {
     /// iterate it with [`crate::text::values`].
     Command {
         /// Command name (`count_nets.run`).
-        name: &'a str,
+        name: &'buf str,
         /// Arguments as line-record values, possibly empty.
-        args: &'a str,
+        args: &'buf str,
     },
     /// A document was opened.
     DocOpened {
@@ -54,16 +52,16 @@ pub enum Event<'a> {
     /// A netlist in a plugin-claimed dialect was requested.
     NetlistRequest {
         /// Dialect tag.
-        dialect: &'a str,
+        dialect: &'buf str,
         /// Bench as `lib:cell`.
-        bench: &'a str,
+        bench: &'buf str,
     },
     /// A job in a plugin-claimed runner language should run.
     RunJob {
         /// Job id.
         job: u32,
         /// Runner language tag.
-        lang: &'a str,
+        lang: &'buf str,
     },
     /// A job finished; its rows are in the `Results` table.
     RunDone {
@@ -77,7 +75,7 @@ pub enum Event<'a> {
         /// `>= 0` success (exit status for `spawn`), `< 0` a negated [`Code`].
         status: i32,
         /// Result bytes: file contents, response body, stdout, clipboard text, eval value.
-        bytes: &'a [u8],
+        bytes: &'buf [u8],
     },
     /// A timer the plugin requested fired.
     Timer {
@@ -94,12 +92,13 @@ pub enum Event<'a> {
         /// Why.
         code: Code,
         /// The rejected record, truncated by the host; not necessarily UTF-8.
-        record: &'a [u8],
+        record: &'buf [u8],
     },
 }
 
-impl<'a> Event<'a> {
+impl<'buf> Event<'buf> {
     /// Returns the wire kind (`load`, `command`, …).
+    #[must_use]
     pub const fn kind_name(&self) -> &'static str {
         match self {
             Event::Load => "load",
@@ -138,9 +137,15 @@ impl<'a> Event<'a> {
                     out.push(0);
                     out.extend_from_slice(payload);
                 }
+                // The pair of this encoder is `parse`: the bytes must read back as this kind.
+                debug_assert_eq!(
+                    Event::parse(&out[start..]).map(|event| event.kind_name()),
+                    Ok(self.kind_name())
+                );
                 Ok(())
             }
             Err(code) => {
+                debug_assert!(out.len() >= start, "encode_line only appends");
                 out.truncate(start);
                 Err(code)
             }
@@ -153,7 +158,7 @@ impl<'a> Event<'a> {
     ///
     /// [`Code::Parse`] for invalid UTF-8 before the payload, an unknown kind, wrong arity,
     /// a non-numeric number, an escaped identifier, or a payload on a kind without one.
-    pub fn parse(buf: &'a [u8]) -> Result<Event<'a>, Code> {
+    pub fn parse(buf: &'buf [u8]) -> Result<Event<'buf>, Code> {
         let (text, payload) = match buf.iter().position(|&b| b == 0) {
             Some(i) => (&buf[..i], Some(&buf[i + 1..])),
             None => (buf, None),
@@ -168,47 +173,60 @@ impl<'a> Event<'a> {
         if word != "event" {
             return Err(Code::Parse);
         }
-        let mut v = text::values(rest);
+        let mut values = text::values(rest);
         let event = match (kind, payload) {
             ("load", None) => Event::Load,
             ("unload", None) => Event::Unload,
             ("selection_changed", None) => Event::SelectionChanged,
             ("command", None) => {
-                let name = v.need_plain()?;
-                let args = v.rest();
-                text::values(args).try_for_each(|a| a.map(drop))?;
+                let name = values.need_plain()?;
+                let args = values.rest();
+                for arg in text::values(args) {
+                    arg?;
+                }
                 return Ok(Event::Command { name, args });
             }
-            ("doc_opened", None) => Event::DocOpened { doc: v.need_num()? },
-            ("doc_closed", None) => Event::DocClosed { doc: v.need_num()? },
-            ("saved", None) => Event::Saved { doc: v.need_num()? },
+            ("doc_opened", None) => Event::DocOpened {
+                doc: values.need_num()?,
+            },
+            ("doc_closed", None) => Event::DocClosed {
+                doc: values.need_num()?,
+            },
+            ("saved", None) => Event::Saved {
+                doc: values.need_num()?,
+            },
             ("doc_changed", None) => Event::DocChanged {
-                doc: v.need_num()?,
-                epoch: v.need_num()?,
+                doc: values.need_num()?,
+                epoch: values.need_num()?,
             },
             ("netlist_request", None) => Event::NetlistRequest {
-                dialect: v.need_plain()?,
-                bench: v.need_plain()?,
+                dialect: values.need_plain()?,
+                bench: values.need_plain()?,
             },
             ("run_job", None) => Event::RunJob {
-                job: v.need_num()?,
-                lang: v.need_plain()?,
+                job: values.need_num()?,
+                lang: values.need_plain()?,
             },
-            ("run_done", None) => Event::RunDone { job: v.need_num()? },
-            ("timer", None) => Event::Timer { id: v.need_num()? },
+            ("run_done", None) => Event::RunDone {
+                job: values.need_num()?,
+            },
+            ("timer", None) => Event::Timer {
+                id: values.need_num()?,
+            },
             ("io_done", Some(bytes)) => Event::IoDone {
-                handle: v.need_num()?,
-                status: v.need_num()?,
+                handle: values.need_num()?,
+                status: values.need_num()?,
                 bytes,
             },
             ("rejected", Some(record)) => Event::Rejected {
-                code: Code::parse(v.need_plain()?).ok_or(Code::Parse)?,
+                code: Code::parse(values.need_plain()?).ok_or(Code::Parse)?,
                 record,
             },
             _ => return Err(Code::Parse),
         };
-        v.end()?;
+        values.end()?;
         debug_assert_eq!(event.kind_name(), kind);
+        debug_assert_eq!(payload.is_some(), event.has_payload());
         Ok(event)
     }
 }
@@ -216,16 +234,23 @@ impl<'a> Event<'a> {
 // ---- private ----
 
 impl Event<'_> {
+    /// Whether the wire form carries a binary payload after a NUL.
+    const fn has_payload(&self) -> bool {
+        matches!(self, Event::IoDone { .. } | Event::Rejected { .. })
+    }
+
     /// Writes the record line (text and LF) and returns the payload still to append. On
     /// error `out` may hold a partial line; [`Event::encode`] truncates it.
-    fn encode_line<'p>(&'p self, out: &mut Vec<u8>) -> Result<Option<&'p [u8]>, Code> {
+    fn encode_line<'event>(&'event self, out: &mut Vec<u8>) -> Result<Option<&'event [u8]>, Code> {
         out.extend_from_slice(b"event ");
         out.extend_from_slice(self.kind_name().as_bytes());
         let payload = match *self {
             Event::Load | Event::Unload | Event::SelectionChanged => None,
             Event::Command { name, args } => {
                 push_ident(out, name)?;
-                if args.contains(['\n', '\r', '\0']) || text::values(args).any(|v| v.is_err()) {
+                if args.contains(['\n', '\r', '\0'])
+                    || text::values(args).any(|value| value.is_err())
+                {
                     return Err(Code::Parse);
                 }
                 let args = args.trim_matches([' ', '\t']);
@@ -236,12 +261,12 @@ impl Event<'_> {
                 None
             }
             Event::DocOpened { doc } | Event::DocClosed { doc } | Event::Saved { doc } => {
-                push_num(out, doc.into());
+                push_num(out, i64::from(doc));
                 None
             }
             Event::DocChanged { doc, epoch } => {
-                push_num(out, doc.into());
-                push_num(out, epoch.into());
+                push_num(out, i64::from(doc));
+                push_num(out, i64::from(epoch));
                 None
             }
             Event::NetlistRequest { dialect, bench } => {
@@ -250,12 +275,12 @@ impl Event<'_> {
                 None
             }
             Event::RunJob { job, lang } => {
-                push_num(out, job.into());
+                push_num(out, i64::from(job));
                 push_ident(out, lang)?;
                 None
             }
             Event::RunDone { job } | Event::Timer { id: job } => {
-                push_num(out, job.into());
+                push_num(out, i64::from(job));
                 None
             }
             Event::IoDone {
@@ -263,8 +288,8 @@ impl Event<'_> {
                 status,
                 bytes,
             } => {
-                push_num(out, handle.into());
-                push_num(out, status.into());
+                push_num(out, i64::from(handle));
+                push_num(out, i64::from(status));
                 Some(bytes)
             }
             Event::Rejected { code, record } => {
@@ -274,23 +299,26 @@ impl Event<'_> {
             }
         };
         out.push(b'\n');
+        debug_assert_eq!(payload.is_some(), self.has_payload());
         Ok(payload)
     }
 }
 
-/// Appends ` <v>` for an identifier field, which must be a bare value.
-fn push_ident(out: &mut Vec<u8>, v: &str) -> Result<(), Code> {
-    if !text::is_bare(v) {
+/// Appends ` <ident>` for an identifier field, which must be a bare value.
+fn push_ident(out: &mut Vec<u8>, ident: &str) -> Result<(), Code> {
+    if !text::is_bare(ident) {
         return Err(Code::Parse);
     }
     out.push(b' ');
-    out.extend_from_slice(v.as_bytes());
+    out.extend_from_slice(ident.as_bytes());
     Ok(())
 }
 
-/// Appends ` <v>` in decimal.
-fn push_num(out: &mut Vec<u8>, v: i64) {
-    write!(out, " {v}").expect("writing to a Vec cannot fail");
+/// Appends ` <number>` in decimal.
+fn push_num(out: &mut Vec<u8>, number: i64) {
+    use std::io::Write as _;
+
+    write!(out, " {number}").expect("writing to a Vec cannot fail");
 }
 
 #[cfg(test)]

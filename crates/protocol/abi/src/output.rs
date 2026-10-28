@@ -7,25 +7,27 @@
 //! owner. [`Out`] writes them; [`Output::parse`] reads one record back.
 //!
 //! Contents:
-//! - `pub enum Output<'a>`, `Output::parse(chunk: &'a str) -> Result<Output<'a>, Code>`
+//! - `pub enum Output<'chunk>`,
+//!   `Output::parse(chunk: &'chunk str) -> Result<Output<'chunk>, Code>`
 //! - `pub struct Out`: `new`, `as_str`, `into_string`, `contribute`, `contribute_scoped`,
 //!   `contribute_ui`, `contribute_commands`, `edit`, `stage`, `run`, `timer`, `log`, `log_at`
 
 use std::borrow::Cow;
-use std::fmt::Write as _;
+use std::fmt::Arguments;
 
-use crate::text::{self, BodyLine};
+use crate::text;
+use crate::text::BodyLine;
 use crate::{Code, EditMode, Kind, Level};
 
 /// One parsed output record.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Output<'a> {
+pub enum Output<'chunk> {
     /// `contribute <kind> [<scope>]` + verbatim body: replace this plugin's set.
     Contribute {
         /// Which set.
         kind: Kind,
         /// Annotation scope; empty for every other kind.
-        scope: Cow<'a, str>,
+        scope: Cow<'chunk, str>,
         /// Line-record text of the set (verbatim lines joined with LF). Empty clears it.
         body: String,
     },
@@ -36,20 +38,20 @@ pub enum Output<'a> {
         /// Commit or stage.
         mode: EditMode,
         /// Undo-menu label.
-        label: Cow<'a, str>,
+        label: Cow<'chunk, str>,
         /// Op lines, at least one; validated by `doc`.
         ops: String,
     },
     /// `run <bench> <config> <corner>` + `vary <var> <value>` attributes.
     Run {
         /// Bench as `lib:cell`.
-        bench: Cow<'a, str>,
+        bench: Cow<'chunk, str>,
         /// Named bench config.
-        config: Cow<'a, str>,
+        config: Cow<'chunk, str>,
         /// Corner name.
-        corner: Cow<'a, str>,
+        corner: Cow<'chunk, str>,
         /// Variable overrides in record order.
-        vary: Vec<(Cow<'a, str>, Cow<'a, str>)>,
+        vary: Vec<(Cow<'chunk, str>, Cow<'chunk, str>)>,
     },
     /// `timer <id> <ms>`: deliver `Event::Timer { id }` after `ms` milliseconds.
     Timer {
@@ -63,7 +65,7 @@ pub enum Output<'a> {
         /// Severity.
         level: Level,
         /// Message.
-        text: Cow<'a, str>,
+        text: Cow<'chunk, str>,
     },
 }
 
@@ -92,7 +94,7 @@ pub struct Out {
     text: String,
 }
 
-impl<'a> Output<'a> {
+impl<'chunk> Output<'chunk> {
     /// Parses one record chunk (as split by [`text::chunks`]). Values borrow from `chunk`
     /// unless they needed unescaping; bodies are copied.
     ///
@@ -101,23 +103,23 @@ impl<'a> Output<'a> {
     /// [`Code::Parse`] for an unknown record word or contribution kind, wrong arity, a
     /// malformed value or body line, a body on a record that takes none, an attribute in a
     /// verbatim body, an `edit` without ops, or a `vary` with other than two values.
-    pub fn parse(chunk: &'a str) -> Result<Output<'a>, Code> {
+    pub fn parse(chunk: &'chunk str) -> Result<Output<'chunk>, Code> {
         let (head, body) = chunk.split_once('\n').unwrap_or((chunk, ""));
         let head = head.strip_suffix('\r').unwrap_or(head);
         if head.starts_with([' ', '\t']) {
             return Err(Code::Parse);
         }
         let (word, rest) = text::split_word(head)?;
-        let mut v = text::values(rest);
+        let mut values = text::values(rest);
         let out = match word {
             "contribute" => {
-                let kind = Kind::parse(v.need_plain()?).ok_or(Code::Parse)?;
+                let kind = Kind::parse(values.need_plain()?).ok_or(Code::Parse)?;
                 let scope = if kind.scoped() {
-                    v.need()?
+                    values.need()?
                 } else {
                     Cow::Borrowed("")
                 };
-                v.end()?;
+                values.end()?;
                 Output::Contribute {
                     kind,
                     scope,
@@ -125,10 +127,10 @@ impl<'a> Output<'a> {
                 }
             }
             "edit" => {
-                let doc = v.need_num()?;
-                let mode = EditMode::parse(v.need_plain()?).ok_or(Code::Parse)?;
-                let label = v.need()?;
-                v.end()?;
+                let doc = values.need_num()?;
+                let mode = EditMode::parse(values.need_plain()?).ok_or(Code::Parse)?;
+                let label = values.need()?;
+                values.end()?;
                 let ops = text::verbatim_body(body)?;
                 if ops.trim().is_empty() {
                     return Err(Code::Parse);
@@ -141,16 +143,16 @@ impl<'a> Output<'a> {
                 }
             }
             "run" => {
-                let (bench, config, corner) = (v.need()?, v.need()?, v.need()?);
-                v.end()?;
+                let (bench, config, corner) = (values.need()?, values.need()?, values.need()?);
+                values.end()?;
                 let mut vary = Vec::new();
                 each_attr(body, |word, rest| {
                     if word != "vary" {
                         return Err(Code::Parse);
                     }
-                    let mut a = text::values(rest);
-                    vary.push((a.need()?, a.need()?));
-                    a.end()
+                    let mut pair = text::values(rest);
+                    vary.push((pair.need()?, pair.need()?));
+                    pair.end()
                 })?;
                 Output::Run {
                     bench,
@@ -160,36 +162,45 @@ impl<'a> Output<'a> {
                 }
             }
             "timer" => {
-                let (id, ms) = (v.need_num()?, v.need_num()?);
-                v.end()?;
+                let (id, ms) = (values.need_num()?, values.need_num()?);
+                values.end()?;
                 each_attr(body, |_, _| Err(Code::Parse))?;
                 Output::Timer { id, ms }
             }
             "log" => {
-                let level = Level::parse(v.need_plain()?).ok_or(Code::Parse)?;
-                let text = v.need()?;
-                v.end()?;
+                let level = Level::parse(values.need_plain()?).ok_or(Code::Parse)?;
+                let text = values.need()?;
+                values.end()?;
                 each_attr(body, |_, _| Err(Code::Parse))?;
                 Output::Log { level, text }
             }
             _ => return Err(Code::Parse),
         };
+        if let Output::Contribute { kind, scope, .. } = &out {
+            debug_assert!(
+                kind.scoped() || scope.is_empty(),
+                "only a scoped kind has a scope"
+            );
+        }
         Ok(out)
     }
 }
 
 impl Out {
     /// Returns an empty builder.
+    #[must_use]
     pub fn new() -> Out {
         Out::default()
     }
 
     /// Returns the records written so far.
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.text
     }
 
     /// Returns the buffer, consuming the builder.
+    #[must_use]
     pub fn into_string(self) -> String {
         self.text
     }
@@ -227,10 +238,16 @@ impl Out {
     /// Requests an edit transaction on `doc`; `ops` are edits-spec §1 op lines. Empty `ops`
     /// writes a record the host rejects (`E_PARSE`).
     pub fn edit(&mut self, doc: u32, mode: EditMode, label: &str, ops: &str) {
+        let start = self.text.len();
         self.line(format_args!("edit {doc} {} ", mode.name()));
         text::push_value(&mut self.text, label);
         self.text.push('\n');
         text::push_verbatim(&mut self.text, ops);
+        debug_assert_eq!(
+            Output::parse(&self.text[start..]).is_ok(),
+            !ops.trim().is_empty(),
+            "an edit parses back exactly when it has an op"
+        );
     }
 
     /// Shortcut for `edit(doc, EditMode::Stage, label, ops)`: the user reviews it in the
@@ -241,10 +258,11 @@ impl Out {
 
     /// Requests a simulation job; `vary` overrides variables in order.
     pub fn run(&mut self, bench: &str, config: &str, corner: &str, vary: &[(&str, &str)]) {
+        let start = self.text.len();
         self.text.push_str("run");
-        for v in [bench, config, corner] {
+        for value in [bench, config, corner] {
             self.text.push(' ');
-            text::push_value(&mut self.text, v);
+            text::push_value(&mut self.text, value);
         }
         self.text.push('\n');
         for (var, value) in vary {
@@ -254,11 +272,14 @@ impl Out {
             text::push_value(&mut self.text, value);
             self.text.push('\n');
         }
+        self.debug_check_record(start);
     }
 
     /// Requests `Event::Timer { id }` after `ms` milliseconds.
     pub fn timer(&mut self, id: u32, ms: u32) {
+        let start = self.text.len();
         self.line(format_args!("timer {id} {ms}\n"));
+        self.debug_check_record(start);
     }
 
     /// Logs `text` at [`Level::Info`].
@@ -268,9 +289,11 @@ impl Out {
 
     /// Logs `text` at `level`; any string is safe (quoted and escaped as needed).
     pub fn log_at(&mut self, level: Level, text: &str) {
+        let start = self.text.len();
         self.line(format_args!("log {} ", level.name()));
         text::push_value(&mut self.text, text);
         self.text.push('\n');
+        self.debug_check_record(start);
     }
 }
 
@@ -280,6 +303,7 @@ impl Out {
     /// Writes `contribute <kind> [<scope>]` and `body` as verbatim lines.
     fn contribution(&mut self, kind: Kind, scope: Option<&str>, body: &str) {
         debug_assert_eq!(kind.scoped(), scope.is_some());
+        let start = self.text.len();
         self.line(format_args!("contribute {}", kind.name()));
         if let Some(scope) = scope {
             self.text.push(' ');
@@ -288,11 +312,29 @@ impl Out {
         self.text.push('\n');
         text::push_verbatim(&mut self.text, body);
         debug_assert!(self.text.ends_with('\n'));
+        self.debug_check_record(start);
     }
 
     /// Appends preformatted record text (words and numbers only, never a value to escape).
-    fn line(&mut self, args: std::fmt::Arguments<'_>) {
+    fn line(&mut self, args: Arguments<'_>) {
+        use std::fmt::Write as _;
+
+        let start = self.text.len();
         self.text.write_fmt(args).expect("writing to a String");
+        debug_assert!(
+            !self.text[start..].contains(['"', '\\', '\r', '\0']),
+            "a value that may need escaping goes through text::push_value"
+        );
+    }
+
+    /// Checks, in debug builds, the pair of this builder and [`Output::parse`]: the record
+    /// written since `start` parses back.
+    fn debug_check_record(&self, start: usize) {
+        let record = &self.text[start..];
+        debug_assert!(
+            Output::parse(record).is_ok(),
+            "Out wrote a record Output::parse rejects: {record:?}"
+        );
     }
 }
 
@@ -302,14 +344,14 @@ impl Out {
 /// # Errors
 ///
 /// [`Code::Parse`] for a verbatim or malformed line, or the first error `each` returns.
-fn each_attr<'b>(
-    body: &'b str,
-    mut each: impl FnMut(&'b str, &'b str) -> Result<(), Code>,
+fn each_attr<'body>(
+    body: &'body str,
+    mut each: impl FnMut(&'body str, &'body str) -> Result<(), Code>,
 ) -> Result<(), Code> {
     for line in text::lines(body) {
         match text::body_line(line)? {
             BodyLine::Blank | BodyLine::Comment => {}
-            BodyLine::Attr(word, rest) => each(word, rest)?,
+            BodyLine::Attr { word, values } => each(word, values)?,
             BodyLine::Verbatim(_) => return Err(Code::Parse),
         }
     }

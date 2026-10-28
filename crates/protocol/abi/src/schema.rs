@@ -67,10 +67,18 @@ macro_rules! scalar {
         impl Scalar for $t {
             const TY: ColType = ColType::$ty;
             fn put_le(self, out: &mut Vec<u8>) {
+                let before = out.len();
                 out.extend_from_slice(&self.to_le_bytes());
+                debug_assert_eq!(out.len() - before, size_of::<$t>());
             }
             fn get_le(bytes: &[u8]) -> Self {
-                <$t>::from_le_bytes(bytes.try_into().expect("element width"))
+                assert_eq!(
+                    bytes.len(),
+                    size_of::<$t>(),
+                    "get_le takes exactly one {} element",
+                    stringify!($t)
+                );
+                <$t>::from_le_bytes(bytes.try_into().expect("length asserted above"))
             }
         }
     )*};
@@ -97,11 +105,13 @@ macro_rules! tables {
             pub const COUNT: usize = Table::ALL.len();
 
             /// Returns the spec name.
+            #[must_use]
             pub const fn name(self) -> &'static str {
                 match self { $(Table::$T => $tname,)* }
             }
 
             /// Returns the schema: one entry per column id, in id order.
+            #[must_use]
             pub const fn columns(self) -> &'static [ColumnDef] {
                 match self {
                     $(Table::$T => &[$(ColumnDef { name: $cname, ty: ColType::$ty },)*],)*
@@ -109,6 +119,7 @@ macro_rules! tables {
             }
 
             /// Returns the table with id `raw`; `None` (→ `E_TABLE`) when out of range.
+            #[must_use]
             pub fn from_raw(raw: u32) -> Option<Table> {
                 let table = Table::ALL.get(usize::try_from(raw).ok()?).copied()?;
                 debug_assert_eq!(table as u32, raw);
@@ -121,7 +132,11 @@ macro_rules! tables {
             $(
                 #[doc = concat!("Columns of [`Table::", stringify!($T), "`](super::Table::", stringify!($T), ").")]
                 pub mod $m {
-                    #[allow(clippy::upper_case_acronyms, non_camel_case_types)]
+                    #[allow(
+                        clippy::upper_case_acronyms,
+                        non_camel_case_types,
+                        reason = "each variant is spelled as the column constant it numbers"
+                    )]
                     #[repr(u32)]
                     enum Id { $($C,)* }
                     $(
@@ -199,8 +214,20 @@ tables! {
     }
 }
 
+// `Table::ALL[i] as usize == i` is what `from_raw` and every import's `table` argument rely
+// on, and a table without columns could not be read at all.
+const _: () = {
+    let mut i = 0;
+    while i < Table::COUNT {
+        assert!(Table::ALL[i] as usize == i);
+        assert!(!Table::ALL[i].columns().is_empty());
+        i += 1;
+    }
+};
+
 impl ColType {
     /// Returns the element width in bytes; 0 for [`ColType::Str`] (variable).
+    #[must_use]
     pub const fn width(self) -> u8 {
         match self {
             ColType::U8 => 1,
@@ -247,11 +274,11 @@ mod tests {
         let mut out = Vec::new();
         0x1234_5678u32.put_le(&mut out);
         (-2i32).put_le(&mut out);
-        0xBEEFu16.put_le(&mut out);
+        0xbeefu16.put_le(&mut out);
         assert_eq!(&out[..4], &[0x78, 0x56, 0x34, 0x12]);
         assert_eq!(u32::get_le(&out[..4]), 0x1234_5678);
         assert_eq!(i32::get_le(&out[4..8]), -2);
-        assert_eq!(u16::get_le(&out[8..]), 0xBEEF);
+        assert_eq!(u16::get_le(&out[8..]), 0xbeef);
         assert_eq!(<u16 as Scalar>::TY.width(), 2);
     }
 }

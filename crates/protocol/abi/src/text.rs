@@ -13,7 +13,7 @@
 //!   `need_plain`, `need_num`, `end`, `Iterator<Item = Result<Cow<str>, Code>>`
 //! - `pub fn push_value(out: &mut String, v: &str)`, `pub fn push_num(out: &mut String, x: f64)`,
 //!   `pub fn push_verbatim(out: &mut String, body: &str)`
-//! - `pub enum BodyLine`, `pub fn body_line(line: &str) -> Result<BodyLine<'_>, Code>`
+//! - `pub enum BodyLine` (`Attr { word, values }`), `pub fn body_line(line: &str) -> Result<BodyLine<'_>, Code>`
 //! - `pub fn lines(body: &str) -> impl Iterator<Item = &str>`
 //! - `pub fn verbatim_body(body: &str) -> Result<String, Code>`
 //! - `pub fn chunks(bytes: &[u8]) -> Chunks<'_>`; `pub struct Chunks`: `Iterator<Item = &[u8]>`
@@ -24,55 +24,75 @@
 // events and output records. Re-export the format's once it has a public value lexer.
 
 use std::borrow::Cow;
-use std::fmt::Write as _;
+use std::str::{CharIndices, FromStr};
 
 use crate::Code;
 
 /// Iterator returned by [`values`]. Stops after the first error.
 #[derive(Clone, Debug)]
-pub struct Values<'a> {
-    rest: &'a str,
+pub struct Values<'text> {
+    rest: &'text str,
 }
 
 /// One line after a record's first line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BodyLine<'a> {
+pub enum BodyLine<'line> {
     /// Only whitespace.
     Blank,
     /// `# …`, ignored.
     Comment,
-    /// An indented attribute: its word and the values after it.
-    Attr(&'a str, &'a str),
+    /// An indented attribute.
+    Attr {
+        /// The attribute's word (`vary`).
+        word: &'line str,
+        /// The values text after the word; iterate it with [`values`].
+        values: &'line str,
+    },
     /// A `|` line's content.
-    Verbatim(&'a str),
+    Verbatim(&'line str),
 }
 
 /// Iterator returned by [`chunks`]; every chunk it yields is non-empty.
 #[derive(Clone, Debug)]
-pub struct Chunks<'a> {
-    rest: &'a [u8],
+pub struct Chunks<'bytes> {
+    rest: &'bytes [u8],
+}
+
+/// One value lexed off the front of a values text, and the text after it.
+struct Lexed<'text> {
+    value: Cow<'text, str>,
+    after: &'text str,
 }
 
 /// Longest `\u{…}` escape, in hex digits (format spec §2).
 const UNICODE_DIGITS_MAX: u32 = 6;
+// `lex_unicode` accumulates the digits in a `u32` without overflow checks.
+const _: () = assert!(UNICODE_DIGITS_MAX * 4 < u32::BITS);
 
 /// Returns whether `s` is a legal word: `ALPHA *(ALPHA / DIGIT / "_" / "-" / "." / ":")`.
+#[must_use]
 pub fn is_word(s: &str) -> bool {
-    let b = s.as_bytes();
-    !b.is_empty()
-        && b[0].is_ascii_alphabetic()
-        && b[1..]
+    let Some((&first, tail)) = s.as_bytes().split_first() else {
+        return false;
+    };
+    let word = first.is_ascii_alphabetic()
+        && tail
             .iter()
-            .all(|&c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.' | b':'))
+            .all(|&byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'));
+    if word {
+        debug_assert!(is_bare(s), "a word is always a legal bare value");
+    }
+    word
 }
 
 /// Returns whether `s` can be written as a bare (unquoted) value: non-empty, no whitespace,
 /// quote, backslash or control character, and not starting with `#` or `|`.
+#[must_use]
 pub fn is_bare(s: &str) -> bool {
-    let mut cs = s.chars();
-    match cs.next() {
+    let mut chars = s.chars();
+    match chars.next() {
         None => false,
-        Some(c) => is_bchar(c) && c != '#' && c != '|' && cs.all(is_bchar),
+        Some(first) => is_bchar(first) && first != '#' && first != '|' && chars.all(is_bchar),
     }
 }
 
@@ -97,6 +117,7 @@ pub fn split_word(line: &str) -> Result<(&str, &str), Code> {
 ///
 /// Bare values and quoted values without escapes borrow from `s`; only a quoted value with
 /// an escape allocates.
+#[must_use]
 pub fn values(s: &str) -> Values<'_> {
     Values { rest: s }
 }
@@ -104,26 +125,34 @@ pub fn values(s: &str) -> Values<'_> {
 /// Appends `v` as one value: bare when legal, otherwise quoted with escapes. Control
 /// characters are always escaped, so the output never contains CR, LF or NUL.
 pub fn push_value(out: &mut String, v: &str) {
+    use std::fmt::Write as _;
+
+    let before = out.len();
     if is_bare(v) {
         out.push_str(v);
-        return;
-    }
-    let before = out.len();
-    out.push('"');
-    for c in v.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\u{0}'..='\u{1f}' | '\u{7f}' => {
-                write!(out, "\\u{{{:x}}}", c as u32).expect("writing to a String");
+    } else {
+        out.push('"');
+        for c in v.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\t' => out.push_str("\\t"),
+                '\u{0}'..='\u{1f}' | '\u{7f}' => {
+                    write!(out, "\\u{{{:x}}}", c as u32).expect("writing to a String");
+                }
+                c => out.push(c),
             }
-            c => out.push(c),
         }
+        out.push('"');
     }
-    out.push('"');
-    debug_assert!(!out[before..].contains(['\n', '\r', '\0']));
+    let written = &out[before..];
+    debug_assert!(!written.contains(['\n', '\r', '\0']));
+    // The pair of this encoder is `values`: what it wrote must lex back to `v`, alone.
+    debug_assert!(
+        matches!(values(written).next(), Some(Ok(back)) if back == v),
+        "push_value wrote {written:?}, which does not lex back to {v:?}"
+    );
 }
 
 /// Appends the canonical number text of `x` (expr spec §7), byte-identical to
@@ -138,21 +167,33 @@ pub fn push_value(out: &mut String, v: &str) {
 pub fn push_num(out: &mut String, x: f64) {
     // ponytail: a copy of expr's `write_num` so guests need not link expr; the abi test
     // `push_num_matches_expr` is the differential that keeps the two identical.
+    use std::fmt::Write as _;
+
     assert!(x.is_finite(), "canonical text of a non-finite number");
-    let a = x.abs();
-    let r = if x.fract() == 0.0 && a < 1e15 {
+    let before = out.len();
+    let magnitude = x.abs();
+    let written = if x.fract() == 0.0 && magnitude < 1e15 {
         write!(out, "{}", x as i64)
-    } else if (1e-4..1e15).contains(&a) {
+    } else if (1e-4..1e15).contains(&magnitude) {
         write!(out, "{x}")
     } else {
         write!(out, "{x:e}")
     };
-    r.expect("writing to a String");
+    written.expect("writing to a String");
+    // Every branch writes a shortest round-trip form, so the text reads back as `x` itself.
+    let back: Result<f64, _> = out[before..].parse();
+    debug_assert_eq!(
+        back,
+        Ok(x),
+        "{:?} does not read back as {x:?}",
+        &out[before..]
+    );
 }
 
 /// Appends `body` as verbatim lines (`  | text`, or `  |` for an empty line). A trailing
 /// newline in `body` adds no extra line; a lone `\r` before a newline is dropped.
 pub fn push_verbatim(out: &mut String, body: &str) {
+    let before = out.len();
     for line in body.lines() {
         if line.is_empty() {
             out.push_str("  |\n");
@@ -162,15 +203,21 @@ pub fn push_verbatim(out: &mut String, body: &str) {
             out.push('\n');
         }
     }
+    // The pair of this encoder is `verbatim_body`: every line written is a verbatim line.
+    debug_assert!(verbatim_body(&out[before..]).is_ok());
 }
 
-/// Classifies one body line (no line terminator).
+/// Classifies one body line, as [`lines`] yields it: no LF inside (debug builds assert it).
 ///
 /// # Errors
 ///
 /// [`Code::Parse`] for a non-blank line in column 0, a `|` not followed by a space or end,
 /// or an attribute that does not start with a word.
 pub fn body_line(line: &str) -> Result<BodyLine<'_>, Code> {
+    debug_assert!(
+        !line.contains('\n'),
+        "body_line takes one line, as `lines` yields it"
+    );
     let trimmed = line.trim_start_matches([' ', '\t']);
     if trimmed.is_empty() {
         return Ok(BodyLine::Blank);
@@ -188,8 +235,8 @@ pub fn body_line(line: &str) -> Result<BodyLine<'_>, Code> {
             None => Err(Code::Parse),
         };
     }
-    let (word, rest) = split_word(trimmed)?;
-    Ok(BodyLine::Attr(word, rest))
+    let (word, values) = split_word(trimmed)?;
+    Ok(BodyLine::Attr { word, values })
 }
 
 /// Iterates the non-empty lines of `body`, splitting on LF and dropping one trailing CR per
@@ -211,7 +258,7 @@ pub fn verbatim_body(body: &str) -> Result<String, Code> {
     for line in lines(body) {
         match body_line(line)? {
             BodyLine::Blank | BodyLine::Comment => {}
-            BodyLine::Attr(..) => return Err(Code::Parse),
+            BodyLine::Attr { .. } => return Err(Code::Parse),
             BodyLine::Verbatim(content) => {
                 if !first {
                     out.push('\n');
@@ -231,13 +278,15 @@ pub fn verbatim_body(body: &str) -> Result<String, Code> {
 /// orphan attribute and fails to parse downstream.
 ///
 /// Works on bytes so one invalid UTF-8 record cannot poison its neighbours.
+#[must_use]
 pub fn chunks(bytes: &[u8]) -> Chunks<'_> {
     Chunks { rest: bytes }
 }
 
-impl<'a> Values<'a> {
+impl<'text> Values<'text> {
     /// Returns the unconsumed text, leading whitespace removed.
-    pub fn rest(&self) -> &'a str {
+    #[must_use]
+    pub fn rest(&self) -> &'text str {
         self.rest.trim_start_matches([' ', '\t'])
     }
 
@@ -246,7 +295,7 @@ impl<'a> Values<'a> {
     /// # Errors
     ///
     /// [`Code::Parse`] when no value is left or the next one is malformed.
-    pub fn need(&mut self) -> Result<Cow<'a, str>, Code> {
+    pub fn need(&mut self) -> Result<Cow<'text, str>, Code> {
         self.next().unwrap_or(Err(Code::Parse))
     }
 
@@ -256,7 +305,7 @@ impl<'a> Values<'a> {
     /// # Errors
     ///
     /// [`Code::Parse`] when no value is left, it is malformed, or it needed unescaping.
-    pub fn need_plain(&mut self) -> Result<&'a str, Code> {
+    pub fn need_plain(&mut self) -> Result<&'text str, Code> {
         match self.need()? {
             Cow::Borrowed(s) => Ok(s),
             Cow::Owned(_) => Err(Code::Parse),
@@ -268,7 +317,7 @@ impl<'a> Values<'a> {
     /// # Errors
     ///
     /// [`Code::Parse`] when no value is left or it is not a number of that type.
-    pub fn need_num<T: std::str::FromStr>(&mut self) -> Result<T, Code> {
+    pub fn need_num<T: FromStr>(&mut self) -> Result<T, Code> {
         self.need()?.parse().map_err(|_| Code::Parse)
     }
 
@@ -279,14 +328,17 @@ impl<'a> Values<'a> {
     /// [`Code::Parse`] when any value is left.
     pub fn end(&mut self) -> Result<(), Code> {
         match self.next() {
-            None => Ok(()),
+            None => {
+                debug_assert!(self.rest.is_empty(), "`next` ends only on an empty rest");
+                Ok(())
+            }
             Some(_) => Err(Code::Parse),
         }
     }
 }
 
-impl<'a> Iterator for Values<'a> {
-    type Item = Result<Cow<'a, str>, Code>;
+impl<'text> Iterator for Values<'text> {
+    type Item = Result<Cow<'text, str>, Code>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let s = self.rest();
@@ -294,18 +346,18 @@ impl<'a> Iterator for Values<'a> {
         if s.is_empty() {
             return None;
         }
-        let lexed = lex_value(s).and_then(|(v, after)| {
-            if after.is_empty() || after.starts_with([' ', '\t']) {
-                Ok((v, after))
+        let lexed = lex_value(s).and_then(|lexed| {
+            if lexed.after.is_empty() || lexed.after.starts_with([' ', '\t']) {
+                Ok(lexed)
             } else {
                 Err(Code::Parse)
             }
         });
         match lexed {
-            Ok((v, after)) => {
+            Ok(Lexed { value, after }) => {
                 debug_assert!(after.len() < s.len(), "a value consumes input");
                 self.rest = after;
-                Some(Ok(v))
+                Some(Ok(value))
             }
             Err(code) => {
                 self.rest = "";
@@ -315,10 +367,10 @@ impl<'a> Iterator for Values<'a> {
     }
 }
 
-impl<'a> Iterator for Chunks<'a> {
-    type Item = &'a [u8];
+impl<'bytes> Iterator for Chunks<'bytes> {
+    type Item = &'bytes [u8];
 
-    fn next(&mut self) -> Option<&'a [u8]> {
+    fn next(&mut self) -> Option<&'bytes [u8]> {
         let all = self.rest;
         // Skip column-0 blank and comment lines; each pass consumes one line.
         let (line, after) = loop {
@@ -348,7 +400,18 @@ impl<'a> Iterator for Chunks<'a> {
         }
         debug_assert!(start < end, "a chunk is never empty");
         debug_assert!(end <= all.len());
-        Some(&all[start..end])
+        debug_assert!(self.rest.len() < all.len(), "each call consumes input");
+        let chunk = &all[start..end];
+        debug_assert_ne!(
+            chunk[0], b'#',
+            "column-0 comments are skipped, never chunked"
+        );
+        debug_assert_ne!(
+            chunk[chunk.len() - 1],
+            b'\n',
+            "a chunk has no final terminator"
+        );
+        Some(chunk)
     }
 }
 
@@ -362,23 +425,29 @@ const fn is_bchar(c: char) -> bool {
     )
 }
 
-/// Lexes one value at the start of `s` (non-empty, no leading whitespace); returns it and
-/// the text after it.
-fn lex_value(s: &str) -> Result<(Cow<'_, str>, &str), Code> {
+/// Lexes one value at the start of `s` (non-empty, no leading whitespace).
+fn lex_value(s: &str) -> Result<Lexed<'_>, Code> {
     debug_assert!(!s.is_empty());
+    debug_assert!(
+        !s.starts_with([' ', '\t']),
+        "`Values::rest` strips leading whitespace"
+    );
     if let Some(quoted) = s.strip_prefix('"') {
         return lex_quoted(quoted);
     }
     let end = s.find(|c: char| !is_bchar(c)).unwrap_or(s.len());
-    let v = &s[..end];
-    if v.is_empty() || v.starts_with(['#', '|']) {
+    let value = &s[..end];
+    if value.is_empty() || value.starts_with(['#', '|']) {
         return Err(Code::Parse);
     }
-    Ok((Cow::Borrowed(v), &s[end..]))
+    Ok(Lexed {
+        value: Cow::Borrowed(value),
+        after: &s[end..],
+    })
 }
 
 /// Lexes the body of a quoted value; `s` starts just after the opening quote.
-fn lex_quoted(s: &str) -> Result<(Cow<'_, str>, &str), Code> {
+fn lex_quoted(s: &str) -> Result<Lexed<'_>, Code> {
     let mut owned: Option<String> = None;
     let mut chars = s.char_indices();
     let mut run_start = 0;
@@ -387,18 +456,25 @@ fn lex_quoted(s: &str) -> Result<(Cow<'_, str>, &str), Code> {
             '"' => {
                 let value = match owned {
                     None => Cow::Borrowed(&s[..i]),
-                    Some(mut o) => {
-                        o.push_str(&s[run_start..i]);
-                        Cow::Owned(o)
+                    Some(mut unescaped) => {
+                        unescaped.push_str(&s[run_start..i]);
+                        Cow::Owned(unescaped)
                     }
                 };
-                return Ok((value, &s[i + 1..]));
+                return Ok(Lexed {
+                    value,
+                    after: &s[i + 1..],
+                });
             }
             '\r' | '\n' => return Err(Code::Parse),
             '\\' => {
-                let o = owned.get_or_insert_with(String::new);
-                o.push_str(&s[run_start..i]);
-                let unescaped = match chars.next().map(|(_, e)| e) {
+                debug_assert!(
+                    run_start <= i,
+                    "a run starts before the escape that ends it"
+                );
+                let unescaped_so_far = owned.get_or_insert_with(String::new);
+                unescaped_so_far.push_str(&s[run_start..i]);
+                let unescaped = match chars.next().map(|(_, escape)| escape) {
                     Some('"') => '"',
                     Some('\\') => '\\',
                     Some('n') => '\n',
@@ -406,8 +482,9 @@ fn lex_quoted(s: &str) -> Result<(Cow<'_, str>, &str), Code> {
                     Some('u') => lex_unicode(&mut chars)?,
                     _ => return Err(Code::Parse),
                 };
-                o.push(unescaped);
-                run_start = chars.clone().next().map_or(s.len(), |(j, _)| j);
+                unescaped_so_far.push(unescaped);
+                run_start = chars.clone().next().map_or(s.len(), |(next, _)| next);
+                debug_assert!(s.is_char_boundary(run_start));
             }
             _ => {}
         }
@@ -416,7 +493,7 @@ fn lex_quoted(s: &str) -> Result<(Cow<'_, str>, &str), Code> {
 }
 
 /// Lexes `{1*6HEXDIG}` after `\u`.
-fn lex_unicode(chars: &mut std::str::CharIndices<'_>) -> Result<char, Code> {
+fn lex_unicode(chars: &mut CharIndices<'_>) -> Result<char, Code> {
     if chars.next().map(|(_, c)| c) != Some('{') {
         return Err(Code::Parse);
     }
@@ -486,7 +563,13 @@ mod tests {
         assert_eq!(body_line("  | x y"), Ok(BodyLine::Verbatim("x y")));
         assert_eq!(body_line("  |"), Ok(BodyLine::Verbatim("")));
         assert_eq!(body_line("  |x"), Err(Code::Parse));
-        assert_eq!(body_line("  vary a 1"), Ok(BodyLine::Attr("vary", "a 1")));
+        assert_eq!(
+            body_line("  vary a 1"),
+            Ok(BodyLine::Attr {
+                word: "vary",
+                values: "a 1"
+            })
+        );
         assert_eq!(body_line("  # c"), Ok(BodyLine::Comment));
         assert_eq!(body_line("   "), Ok(BodyLine::Blank));
         assert_eq!(body_line("top"), Err(Code::Parse));
