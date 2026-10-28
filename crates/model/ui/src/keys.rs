@@ -218,6 +218,12 @@ impl Chord {
     /// Key code.
     #[must_use]
     pub fn key(self) -> Key {
-        Key(self.0 & 0xff_ffff)
+        let key = Key(self.0 & 0xff_ffff);
+        debug_assert_eq!(
+            (u32::from(self.mods().0) << 24) | key.0,
+            self.0,
+            "modifiers and key repack to the chord"
+        );
+        key
     }
 }

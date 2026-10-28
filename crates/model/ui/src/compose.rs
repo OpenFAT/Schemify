@@ -7,6 +7,7 @@
 //! - `pub fn patch_last(tables: &mut UiTables, old: &Contribution, new: &Contribution) -> bool`
 
 use std::collections::HashMap;
+use std::iter;
 
 use crate::keys::Chord;
 use crate::kinds::{Kind, Prop, StyleProp};
@@ -76,7 +77,7 @@ pub fn compose(
     let mut sel: Vec<Selector> = Vec::new();
     let mut keys: HashMap<Chord, (Sym, u8)> = HashMap::new();
 
-    let all = std::iter::once((Sym::NONE, base)).chain(plugins.iter().copied());
+    let all = iter::once((Sym::NONE, base)).chain(plugins.iter().copied());
     for (owner, (_, contribution)) in all.enumerate() {
         let owner = owner as u8;
         assert!(

@@ -140,6 +140,7 @@ impl InputEvents {
     /// Appends an event; returns false when the table is full and the event was dropped.
     pub fn push(&mut self, e: InputEvent) -> bool {
         if self.events.len() >= Self::CAPACITY {
+            debug_assert_eq!(self.events.len(), Self::CAPACITY, "never past capacity");
             return false;
         }
         let before = self.events.len();
@@ -155,10 +156,17 @@ impl InputEvents {
     /// Panics when one frame's text payloads exceed 4 GiB.
     pub fn push_text(&mut self, s: &str) -> bool {
         let range = self.payload(s);
-        self.push(InputEvent::Text {
+        debug_assert_eq!(
+            range.end as usize,
+            self.text.len(),
+            "the payload is the newest text"
+        );
+        let pushed = self.push(InputEvent::Text {
             start: range.start,
             end: range.end,
-        })
+        });
+        debug_assert!(self.events.len() <= Self::CAPACITY);
+        pushed
     }
 
     /// Appends an IME preedit event; returns false when the table is full.
@@ -168,10 +176,17 @@ impl InputEvents {
     /// Panics when one frame's text payloads exceed 4 GiB.
     pub fn push_preedit(&mut self, s: &str) -> bool {
         let range = self.payload(s);
-        self.push(InputEvent::Preedit {
+        debug_assert_eq!(
+            range.end as usize,
+            self.text.len(),
+            "the payload is the newest text"
+        );
+        let pushed = self.push(InputEvent::Preedit {
             start: range.start,
             end: range.end,
-        })
+        });
+        debug_assert!(self.events.len() <= Self::CAPACITY);
+        pushed
     }
 
     /// Empties the table, keeping its allocation.
@@ -184,6 +199,10 @@ impl InputEvents {
     /// True when no event is queued.
     #[must_use]
     pub fn is_empty(&self) -> bool {
+        debug_assert!(
+            self.events.len() <= Self::CAPACITY,
+            "the table stays bounded"
+        );
         self.events.is_empty()
     }
 }
@@ -231,6 +250,7 @@ impl CommandRequests {
     /// True when nothing was requested.
     #[must_use]
     pub fn is_empty(&self) -> bool {
+        debug_assert_eq!(self.arg_end.len(), self.command.len(), "columns in step");
         self.command.is_empty()
     }
 }

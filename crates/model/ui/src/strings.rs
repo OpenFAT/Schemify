@@ -15,6 +15,7 @@
 //!   `live_len`, `is_empty`; crate-only `begin_live`, `intern_live`, `end_live`
 
 use std::collections::HashMap;
+use std::mem;
 
 /// Handle to an interned string.
 ///
@@ -62,6 +63,12 @@ impl Sym {
     /// used as the AccessKit node id.
     #[must_use]
     pub fn raw(self) -> u32 {
+        if !self.is_live() {
+            debug_assert!(
+                (self.0 as usize) < Strings::CAPACITY,
+                "permanent handles are bounded"
+            );
+        }
         self.0
     }
 
@@ -136,7 +143,11 @@ impl Strings {
                 "the permanent region holds permanent handles"
             );
         }
-        permanent.or_else(|| self.live.get(s).copied())
+        let sym = permanent.or_else(|| self.live.get(s).copied());
+        if let Some(sym) = sym {
+            debug_assert_eq!(self.get(sym), s, "a handle names its text");
+        }
+        sym
     }
 
     /// Returns the text of `sym`; a dead live handle reads as the empty string (and fails a
@@ -189,7 +200,7 @@ impl Strings {
     /// the handles of the previous generation's strings and allocates new ones for new text.
     pub(crate) fn begin_live(&mut self) {
         assert!(self.live_old.is_empty(), "live generation already open");
-        self.live_old = std::mem::take(&mut self.live);
+        self.live_old = mem::take(&mut self.live);
         debug_assert!(self.live.is_empty());
     }
 
@@ -201,12 +212,21 @@ impl Strings {
     /// Panics when one generation holds more than [`Strings::LIVE_CAPACITY`] strings.
     pub(crate) fn intern_live(&mut self, s: &str) -> Sym {
         if let Some(&sym) = self.lookup.get(s) {
+            debug_assert!(
+                !sym.is_live(),
+                "a permanent string keeps its permanent handle"
+            );
             return sym;
         }
         if let Some(&sym) = self.live.get(s) {
+            debug_assert!(sym.is_live());
             return sym;
         }
         if let Some((text, sym)) = self.live_old.remove_entry(s) {
+            debug_assert!(
+                self.live_text.contains_key(&sym.0),
+                "a reused handle is held"
+            );
             self.live.insert(text, sym);
             return sym;
         }

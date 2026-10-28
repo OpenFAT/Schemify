@@ -138,10 +138,10 @@ impl UiState {
     ///
     /// Panics if `at` is not finite.
     pub fn set_dialog_at(&mut self, id: Sym, at: Option<(f32, f32)>) {
-        assert!(
-            at.is_none_or(|(x, y)| x.is_finite() && y.is_finite()),
-            "dialog position must be finite"
-        );
+        if let Some((x, y)) = at {
+            assert!(x.is_finite(), "dialog x must be finite");
+            assert!(y.is_finite(), "dialog y must be finite");
+        }
         self.open.clear();
         self.dialog = id;
         self.dialog_at = at.filter(|_| !id.is_none());
@@ -155,6 +155,9 @@ impl UiState {
     /// The open dialog (`Sym::NONE` when none).
     #[must_use]
     pub fn dialog(&self) -> Sym {
+        if self.dialog.is_none() {
+            debug_assert!(self.dialog_at.is_none(), "no position without a dialog");
+        }
         self.dialog
     }
 
@@ -167,6 +170,11 @@ impl UiState {
     /// Focused node.
     #[must_use]
     pub fn focus(&self) -> Sym {
+        debug_assert_eq!(
+            self.focus.is_none(),
+            self.editor.is_none(),
+            "a focused field and its editor come and go together"
+        );
         self.focus
     }
 
@@ -174,6 +182,11 @@ impl UiState {
     /// [`route_input`](crate::route_input).
     #[must_use]
     pub fn editor(&self) -> Option<&PlainEditor<()>> {
+        debug_assert_eq!(
+            self.focus.is_none(),
+            self.editor.is_none(),
+            "a focused field and its editor come and go together"
+        );
         self.editor.as_ref()
     }
 
@@ -183,6 +196,10 @@ impl UiState {
     #[must_use]
     pub fn ime_area(&self, tables: &UiTables, layout: &UiLayout) -> Option<Rect> {
         let ed = self.editor.as_ref()?;
+        debug_assert!(
+            !self.focus.is_none(),
+            "an editor belongs to a focused field"
+        );
         let n = tables.nodes.find(self.focus)?;
         let r = layout.row_of(n)?;
         let l = ed.try_layout()?;
@@ -211,6 +228,8 @@ impl UiState {
     pub(crate) fn blur(&mut self) {
         self.focus = Sym::NONE;
         self.editor = None;
+        debug_assert!(self.focus.is_none());
+        debug_assert!(self.editor.is_none());
     }
 
     /// Gives keyboard focus to text field `node` with the caret at the end of its value, as

@@ -35,6 +35,7 @@
 //! - `pub struct UiTables`
 
 use std::collections::HashMap;
+use std::iter;
 
 use crate::keys::Chord;
 use crate::kinds::{Kind, Prop, StyleProp};
@@ -318,12 +319,14 @@ impl UiNodes {
             "a subtree ends inside the table"
         );
         let mut c = i + 1;
-        std::iter::from_fn(move || {
+        iter::from_fn(move || {
             if c >= end {
                 return None;
             }
             let this = c;
             c = self.end[c as usize];
+            debug_assert!(c > this, "each sibling step moves forward");
+            debug_assert!(c <= end, "a child's subtree ends inside its parent's");
             Some(this)
         })
     }
@@ -372,7 +375,11 @@ impl UiStyles {
             "rows stay below the sentinel"
         );
         let row = self.selector.iter().position(|&s| s == selector);
-        row.map_or(NO_STYLE, |r| r as u16)
+        let row = row.map_or(NO_STYLE, |r| r as u16);
+        if row != NO_STYLE {
+            debug_assert_eq!(self.selector[usize::from(row)], selector);
+        }
+        row
     }
 
     /// Resolves `prop` for a node with class row `class` and kind `kind`; 0 when no selector
@@ -383,9 +390,15 @@ impl UiStyles {
     /// Panics if `class` is neither [`NO_STYLE`] nor a row of this table.
     #[must_use]
     pub fn get(&self, class: u16, kind: Kind, prop: StyleProp) -> u32 {
-        assert!(
-            class == NO_STYLE || usize::from(class) < self.selector.len(),
-            "style row {class} from other tables"
+        if class != NO_STYLE {
+            assert!(
+                usize::from(class) < self.selector.len(),
+                "style row {class} from other tables"
+            );
+        }
+        debug_assert!(
+            self.default_row == NO_STYLE || usize::from(self.default_row) < self.selector.len(),
+            "the default row is a row"
         );
         self.lookup(class, prop)
             .or_else(|| self.lookup(self.kind_row[kind as usize], prop))
@@ -404,7 +417,12 @@ impl Keymap {
             "binary search needs ascending chords"
         );
         let found = self.chord.binary_search(&chord).ok();
-        found.map(|i| self.command[i])
+        let command = found.map(|i| self.command[i]);
+        debug_assert!(
+            command.is_none_or(|c| !c.is_none()),
+            "a binding names a command"
+        );
+        command
     }
 
     /// Bound chords, ascending.
@@ -426,7 +444,10 @@ impl Keymap {
 
 /// A boolean prop: set and not `"0"`.
 fn is_true(strings: &Strings, v: Sym) -> bool {
-    !v.is_none() && strings.get(v) != "0"
+    if v.is_none() {
+        return false;
+    }
+    strings.get(v) != "0"
 }
 
 impl UiStyles {
@@ -438,6 +459,7 @@ impl UiStyles {
             return None;
         }
         let r = usize::from(row);
+        debug_assert!(r < self.selector.len(), "style row {r} out of range");
         (self.set[r] & (1 << prop as u32) != 0).then(|| self.value[r][prop as usize])
     }
 }
