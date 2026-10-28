@@ -60,7 +60,7 @@ pub struct RowKey {
     pub epoch: u32,
     /// The check-indicator inset.
     pub indent: f32,
-    /// [`row_paint`]'s colours (hover, active, disabled already applied).
+    /// [`schemify_ui::row_paint`]'s colours (hover, active, disabled already applied).
     pub paint: [u32; 2],
     /// Border, border colour, pad, pad-y, fg, gap, accelerator fg, radius.
     pub style: [u32; 8],
