@@ -9,9 +9,11 @@
 
 use schemify_doc::{DocHandle, ObjId};
 
+use crate::checks;
 use crate::commands::Cmd;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::platform;
 use crate::scene::{ObjKey, UNIT};
-use crate::{checks, platform};
 
 use super::Editor;
 

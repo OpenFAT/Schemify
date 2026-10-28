@@ -13,10 +13,9 @@ use crate::scene::ObjKey;
 use crate::session::View;
 use crate::{edit, platform, wiring};
 
-use super::Editor;
-use super::apply;
 use super::dialog::TextFor;
 use super::tool::{Form, Placement, Tool};
+use super::{Editor, apply};
 
 impl Editor {
     /// Edit and Tools commands: undo, the clipboard, transforms, drawing tools, wire tools. Returns whether anything visible changed.

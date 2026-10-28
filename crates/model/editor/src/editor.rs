@@ -80,11 +80,9 @@ use schemify_elab::{Annotations, CellState, Dialect};
 use schemify_format::{FileKind, IdRng};
 use schemify_ui::{InputEvent, InputEvents, Routed};
 
-use crate::cell;
-use crate::checks::Members;
+use crate::checks::{Diff, Markers, Members};
 use crate::commands::{Cmd, Commands};
 use crate::docs::Page;
-use crate::platform;
 use crate::plugins::Host;
 use crate::scene::{self, ObjKey, Scene, Symbols};
 use crate::session::{Session, View};
@@ -92,6 +90,7 @@ use crate::shell::Shell;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::sim::Sim;
 use crate::waves::WavesView;
+use crate::{cell, platform};
 
 use canvas::ShownKey;
 use compare::Compare;
@@ -102,6 +101,10 @@ pub use opts::EditOpts;
 pub use picture::{CanvasPicture, DockPicture, GraphPicture, Picture, Raster, UiView};
 pub use queue::QUEUED_MAX;
 use queue::Said;
+use schemify_config::Startup;
+use schemify_netlist::NameMap;
+#[cfg(not(target_arch = "wasm32"))]
+use schemify_run::SimCommand;
 pub use tool::{Form, Placement, Tool};
 use values::Parked;
 
@@ -128,7 +131,7 @@ pub struct Options {
     /// The simulator command line (`None`: the user config's, by default
     /// `ngspice -b -r {raw} {netlist}`, D7/D15). Tests pass a fake simulator.
     #[cfg(not(target_arch = "wasm32"))]
-    pub sim: Option<schemify_run::SimCommand>,
+    pub sim: Option<SimCommand>,
     /// Directory of user state (the recent-files list); `None` keeps it in memory only.
     /// `schemify_app::window::run` uses `platform::state_dir()`; tests leave it `None` or pass a temp dir.
     pub state_dir: Option<PathBuf>,
@@ -137,7 +140,7 @@ pub struct Options {
     pub system_clipboard: bool,
     /// Which user config runs (config spec §2). The default is `--clean`, so tests never read
     /// the developer's own `init.lua`; the binary passes its flags.
-    pub config: schemify_config::Startup,
+    pub config: Startup,
 }
 
 /// An interactive editing session: project, UI, plugins, scene, tool and dialogs.
@@ -255,13 +258,13 @@ pub struct Editor {
     /// the decor draws).
     op_gen: u32,
     /// The violation markers of the `checks` source, kept per marked object.
-    markers: crate::checks::Markers,
+    markers: Markers,
     /// Targets of the `checks` marks patched since the markers were placed (`None`: the
     /// overlay was replaced, so every marker is placed anew).
     marker_targets: Option<Vec<String>>,
     /// Name map of the active tab's top cell (ngspice, default request), for hierarchy-wide
     /// net keys, cross-probe names and OP targets: (top document, edit generation, map).
-    hier: Option<(DocHandle, u32, schemify_netlist::NameMap)>,
+    hier: Option<(DocHandle, u32, NameMap)>,
     /// The panel under the work area.
     panel: Panel,
     /// Blocking violation lines of the last refused netlist or run (checks panel).
@@ -287,7 +290,7 @@ pub struct Editor {
     /// The clock of the last update.
     now: u64,
     /// The visual diff of the staged edit under review and its key (document, stage id).
-    diff: crate::checks::Diff,
+    diff: Diff,
     diff_key: Option<(DocHandle, u32)>,
     /// Which of the active document's staged edits is under review (index; clamped).
     stage_pick: usize,

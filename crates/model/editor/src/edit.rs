@@ -29,7 +29,7 @@ use std::cmp::Reverse;
 use std::collections::HashSet;
 
 use schemify_doc::{Document, Loc, NEW_ID, ObjId, Op, RecordBuf, TableId, Target};
-use schemify_format::{IdRng, KeyRule, Orient, RecordKind};
+use schemify_format::{FileKind, IdRng, KeyRule, Orient, RecordKind};
 
 use crate::geometry;
 use crate::geometry::{Pt, Xform};
@@ -290,9 +290,9 @@ pub fn insert_copies(
         // Only geometry kinds the document kind allows (format spec §4): rank 3 outside
         // `.shprim`, pins and graphics outside `.shbench`.
         let legal = match rec.kind.schema().rank {
-            3 => kind != schemify_format::FileKind::Shprim,
-            1 => rec.kind == RecordKind::Pin && kind != schemify_format::FileKind::Shbench,
-            2 => kind != schemify_format::FileKind::Shbench,
+            3 => kind != FileKind::Shprim,
+            1 => rec.kind == RecordKind::Pin && kind != FileKind::Shbench,
+            2 => kind != FileKind::Shbench,
             _ => false,
         };
         if !legal {

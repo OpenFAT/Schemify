@@ -18,12 +18,9 @@ use crate::geometry::Pt;
 use crate::session::View;
 
 use super::dots::Wiring;
-use super::draw;
 use super::draw::Stamp;
-use super::symbols;
 use super::symbols::Symbols;
-use super::symview;
-use super::{ObjKey, Objects, Owners, Scene};
+use super::{ObjKey, Objects, Owners, Scene, draw, symbols, symview};
 
 /// Scene builder state: the scene being filled plus the extent accumulator.
 pub(super) struct Build<'a> {

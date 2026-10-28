@@ -24,11 +24,16 @@ use std::path::PathBuf;
 
 use schemify_canvas::kurbo::Rect as KRect;
 use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
+use schemify_ui::accesskit::TreeUpdate;
 use schemify_ui::waves::{Geometry, WaveUi};
-use schemify_ui::{Strings, TextSystem, UiLayout, UiState, UiTables};
+use schemify_ui::{Rect, Strings, TextSystem, UiLayout, UiState, UiTables};
 use schemify_wave::Waves;
 
 use super::Editor;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::shell::Shell;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::sim::Plot;
 
 /// One UI's tables as drawn: the editor's window, or the waves dock's.
 pub struct UiView<'a> {
@@ -82,9 +87,9 @@ pub struct CanvasPicture<'a> {
 /// One filled docs-page plot slot: the pane rectangle, its clip and its traces.
 pub struct GraphPicture<'a> {
     /// The `graph` node's laid-out rectangle.
-    pub rect: schemify_ui::Rect,
+    pub rect: Rect,
     /// Its clip (`schemify_ui::NO_CLIP`: none).
-    pub clip: schemify_ui::Rect,
+    pub clip: Rect,
     /// The one-pane viewer holding the traces.
     pub waves: &'a Waves,
 }
@@ -246,7 +251,7 @@ impl Editor {
     }
 
     /// The accessibility tree of this frame's UI (D6: the UI is data, so is its tree).
-    pub fn access_tree(&self) -> schemify_ui::accesskit::TreeUpdate {
+    pub fn access_tree(&self) -> TreeUpdate {
         let s = &self.shell;
         schemify_ui::access::access_tree(&s.tables, &s.layout, &s.strings, &s.ui)
     }
@@ -258,8 +263,8 @@ impl Editor {
 /// rectangle, over the run's plot slots `plots`.
 #[cfg(not(target_arch = "wasm32"))]
 fn graph_pictures<'a>(
-    s: &crate::shell::Shell,
-    plots: &'a [crate::sim::Plot],
+    s: &Shell,
+    plots: &'a [Plot],
     graphs: &[(String, String)],
 ) -> Vec<GraphPicture<'a>> {
     let mut out = Vec::new();

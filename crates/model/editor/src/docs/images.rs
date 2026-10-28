@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
+use png::{ColorType, Decoder, Transformations};
 use schemify_doc::{Document, Loc, RecordKind, TableId};
 use schemify_ui::{Image, TextSystem};
 
@@ -148,10 +149,8 @@ fn decode_png(bytes: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
     // `load_image` checked the header, so the pixel count fits a u32 and the buffers.
     assert!((1..=IMAGE_SIDE_MAX).contains(&w), "width {w}");
     assert!((1..=IMAGE_SIDE_MAX).contains(&h), "height {h}");
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-    decoder.set_transformations(
-        png::Transformations::normalize_to_color8() | png::Transformations::ALPHA,
-    );
+    let mut decoder = Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(Transformations::normalize_to_color8() | Transformations::ALPHA);
     let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
     let mut buf = vec![0; reader.output_buffer_size().ok_or("image too large")?];
     let info = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
@@ -164,15 +163,15 @@ fn decode_png(bytes: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
     let px = (w * h) as usize;
     let mut rgba = Vec::with_capacity(px * 4);
     match info.color_type {
-        png::ColorType::Rgba => rgba.extend_from_slice(&buf[..px * 4]),
-        png::ColorType::GrayscaleAlpha => {
+        ColorType::Rgba => rgba.extend_from_slice(&buf[..px * 4]),
+        ColorType::GrayscaleAlpha => {
             for ga in buf[..px * 2].chunks_exact(2) {
                 rgba.extend_from_slice(&[ga[0], ga[0], ga[0], ga[1]]);
             }
         }
         // `ALPHA` adds an alpha channel to every color type, and `normalize_to_color8`
         // expands palettes: these cannot come out of the decoder.
-        png::ColorType::Rgb | png::ColorType::Grayscale | png::ColorType::Indexed => {
+        ColorType::Rgb | ColorType::Grayscale | ColorType::Indexed => {
             return Err(format!(
                 "unexpected decoded color type {:?}",
                 info.color_type

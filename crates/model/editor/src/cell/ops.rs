@@ -21,10 +21,9 @@ use schemify_format::FileKind;
 use crate::edit::Toward;
 use crate::scene::UNIT;
 
-use super::bench;
 use super::{
     ADD_LANGS, DIALECTS, Field, PARAM_ATTRS, PARAM_KINDS, PIN_DIRS, PIN_DOMAINS, SyncPlan, attr_of,
-    body_row, body_text, names, record, row_u32,
+    bench, body_row, body_text, names, record, row_u32,
 };
 
 /// What [`sync_ops`] found: the diff to show and the ops that apply it.

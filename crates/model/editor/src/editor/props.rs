@@ -7,8 +7,8 @@
 //! - `Editor::props_ok`
 //! - `Editor::field_typed`
 
-use schemify_doc::{DocHandle, EditRequest, Op};
-use schemify_format::RecordKind;
+use schemify_doc::{DocHandle, EditRequest, Instances, Op, Target};
+use schemify_format::{KeyRule, RecordKind};
 
 use crate::edit;
 
@@ -85,7 +85,7 @@ impl Editor {
                 // Overrides the schema does not know (kept, editable).
                 for a in &rec.attrs {
                     let known = fields.iter().any(|f| f.key == a.key);
-                    if !known && schemify_doc::Instances::is_override(&a.key) {
+                    if !known && Instances::is_override(&a.key) {
                         let v = a.values.join(" ");
                         fields.push(field(
                             &a.key,
@@ -168,10 +168,10 @@ impl Editor {
         };
         let rec = doc.record(loc);
         let tkey = match rec.kind.key() {
-            schemify_format::KeyRule::Position => loc.row.to_string(),
+            KeyRule::Position => loc.row.to_string(),
             _ => rec.fields[0].clone(),
         };
-        let target = schemify_doc::Target::new(rec.kind, &tkey);
+        let target = Target::new(rec.kind, &tkey);
         let mut ops = Vec::new();
         let changed = p
             .fields

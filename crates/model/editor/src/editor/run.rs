@@ -8,26 +8,31 @@
 
 use std::path::PathBuf;
 
-use schemify_doc::{DocHandle, ObjId, Op, TableId};
+use schemify_doc::{DocHandle, Document, ObjId, Op, TableId};
+#[cfg(not(target_arch = "wasm32"))]
+use schemify_doc::{Edit, EditRequest, Mode, Transaction};
+#[cfg(not(target_arch = "wasm32"))]
+use schemify_elab::AnnotationRequest;
+#[cfg(not(target_arch = "wasm32"))]
+use schemify_expr::Value;
 use schemify_format::FileKind;
 #[cfg(not(target_arch = "wasm32"))]
-use {
-    super::Panel,
-    super::apply::push_req,
-    super::highlight::env_refs,
-    crate::checks::SOURCE_OP,
-    crate::spines,
-    schemify_doc::{EditRequest, Mode, Transaction},
-    schemify_elab::AnnotationRequest,
-    schemify_expr::Value,
-    schemify_format::RecordKind,
-};
+use schemify_format::RecordKind;
 
 use crate::scene::ObjKey;
 use crate::session::View;
 use crate::{checks, docs, platform};
 
 use super::Editor;
+#[cfg(not(target_arch = "wasm32"))]
+use super::{Panel, apply, highlight};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::checks::SOURCE_OP;
+use crate::edit::Ids;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::sim::Best;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::spines;
 
 /// Benches "New bench from this component" tries before giving up on a free file name.
 const BENCH_NAMES_MAX: u32 = 100;
@@ -37,11 +42,7 @@ impl Editor {
     /// New-bench command). Starts the run without blocking; a refused gate lists its blocking
     /// violations in the checks panel.
     pub(super) fn simulate(&mut self, h: DocHandle, optimize: bool, arg: &str) {
-        let kind = self
-            .session
-            .project
-            .doc(h)
-            .map(schemify_doc::Document::kind);
+        let kind = self.session.project.doc(h).map(Document::kind);
         if kind != Some(FileKind::Shbench) {
             self.session.say(
                 "simulate: only a .shbench runs (D11b); use Simulation → New \
@@ -67,7 +68,7 @@ impl Editor {
                     return;
                 }
             }
-            let env = env_refs(&self.env);
+            let env = highlight::env_refs(&self.env);
             let host = &mut self.host;
             let mut funcs = |name: &str, args: &[Value<'_>]| host.call_fn(name, args);
             let what = optimize.then_some(arg.trim());
@@ -134,8 +135,8 @@ impl Editor {
             return;
         };
         let prefix = doc.header_value("prefix").unwrap_or("X");
-        let scratch = schemify_doc::Document::new(FileKind::Shbench);
-        let mut ids = crate::edit::Ids::new(&mut self.rng);
+        let scratch = Document::new(FileKind::Shbench);
+        let mut ids = Ids::new(&mut self.rng);
         let coord = crate::geometry::coord;
         let id = ids.draw(&scratch).text;
         let mut text = format!(
@@ -190,11 +191,7 @@ impl Editor {
         let mut changed = false;
         let active = self.active().map(|a| a.0);
         let bench = active.filter(|&h| {
-            self.session
-                .project
-                .doc(h)
-                .map(schemify_doc::Document::kind)
-                == Some(FileKind::Shbench)
+            self.session.project.doc(h).map(Document::kind) == Some(FileKind::Shbench)
         });
         if let Some(b) = bench
             && self.results_for != Some(b)
@@ -202,7 +199,7 @@ impl Editor {
             self.results_for = Some(b);
             changed |= self.sim.load_latest(&self.session, b);
         }
-        let env = env_refs(&self.env);
+        let env = highlight::env_refs(&self.env);
         let host = &mut self.host;
         let mut funcs = |name: &str, args: &[Value<'_>]| host.call_fn(name, args);
         self.sim.serve_queue(&mut self.session, &env, &mut funcs);
@@ -344,7 +341,7 @@ impl Editor {
     /// Stages the optimizer's best point on its bench (D18): one `set_field var` per varied
     /// var (plus dropping a stale D20 cache), reviewed on the docs page, then Accept/Reject.
     #[cfg(not(target_arch = "wasm32"))]
-    fn stage_best(&mut self, reqs: &mut Vec<EditRequest>, best: crate::sim::Best) {
+    fn stage_best(&mut self, reqs: &mut Vec<EditRequest>, best: Best) {
         let ops: Vec<Op> = {
             let Some(doc) = self.session.project.doc(best.bench) else {
                 return;
@@ -370,7 +367,7 @@ impl Editor {
             mode: Mode::Stage,
             ops,
         };
-        push_req(reqs, best.bench, schemify_doc::Edit::Tx(tx));
+        apply::push_req(reqs, best.bench, Edit::Tx(tx));
         self.apply(reqs);
         let mut msg = format!("{}: staged", best.label);
         for (n, v) in &best.values {

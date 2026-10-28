@@ -48,13 +48,13 @@
 use std::collections::HashMap;
 
 use schemify_canvas::CanvasPrims;
-use schemify_doc::{Document, ObjId, TableId};
+use schemify_doc::{Document, ObjId, RecordBuf, TableId};
 use schemify_elab::{
-    AnnotationRequest, Annotations, CellState, Mark, Name, Names, Severity, Violation,
+    AnnotationRequest, Annotations, CellState, Mark, Name, Names, Severity, Violation, Violations,
     violation_marks,
 };
 
-use crate::geometry::Pt;
+use crate::geometry::{Pt, Xform};
 use crate::scene::{ObjKey, Scene, UNIT};
 
 /// Highlighted nets (thick, xschem's highlight colour).
@@ -107,7 +107,7 @@ pub struct Diff {
     /// Objects the stage deletes, sorted.
     pub deleted: Vec<ObjKey>,
     /// Records the stage inserts.
-    pub inserted: Vec<schemify_doc::RecordBuf>,
+    pub inserted: Vec<RecordBuf>,
 }
 
 /// The violation markers of the `checks` source on the canvas (D13): per marked object a box
@@ -358,7 +358,7 @@ pub fn violation_marks_of(
     if rows.iter().any(lost) {
         return None;
     }
-    let v = schemify_elab::Violations {
+    let v = Violations {
         rows: rows.to_vec(),
     };
     let s = doc.strings();
@@ -486,7 +486,7 @@ pub fn decor(
             }
         }
     }
-    let identity = crate::geometry::Xform::translate(0, 0);
+    let identity = Xform::translate(0, 0);
     crate::scene::preview_records_on(&diff.inserted, identity, LAYER_DIFF, out);
     assert_eq!(out.texts.x.len(), out.texts.end.len());
 }

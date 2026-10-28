@@ -16,15 +16,14 @@
 
 use std::fmt::Write as _;
 
-use schemify_doc::DocHandle;
+use schemify_doc::{Digest, DocHandle};
 use schemify_elab::Funcs;
 use schemify_netlist::NameMap;
 use schemify_plugin::RunRequest;
 use schemify_run::{NO_SAMPLE, OptRun, Plan, RunnerConfig, Select};
 
 use crate::session::Session;
-use crate::spines;
-use crate::waves;
+use crate::{spines, waves};
 
 use super::{
     BenchRun, JobLog, Kind, PROBE_DEVICES_MAX, QUEUE_MAX, RUNS_MAX, Request, Sim, session_name,
@@ -202,10 +201,7 @@ impl Sim {
 
     /// The runner configuration for a run of `session`'s project: the run directory under
     /// its root, every library's directory, the user config's programs.
-    pub(super) fn config(
-        &self,
-        session: &Session,
-    ) -> impl FnOnce(&schemify_doc::Digest) -> RunnerConfig + use<> {
+    pub(super) fn config(&self, session: &Session) -> impl FnOnce(&Digest) -> RunnerConfig + use<> {
         let root = session.root.clone();
         let lib_dirs = session.lib_dirs();
         let tools = self.tools.clone();

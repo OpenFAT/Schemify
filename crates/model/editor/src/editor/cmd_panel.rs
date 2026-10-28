@@ -9,8 +9,8 @@ use schemify_format::RecordKind;
 use crate::commands::Cmd;
 use crate::{cell, docs};
 
-use super::Editor;
-use super::symbol;
+use super::{Editor, symbol};
+use crate::edit::Toward;
 
 impl Editor {
     /// Cell panel and docs page commands (one undo each). Returns whether anything visible changed.
@@ -89,9 +89,9 @@ impl Editor {
             Cmd::CellPinUp | Cmd::CellPinDown => {
                 let node = if node.is_empty() { arg } else { node };
                 let (toward, action) = if cmd == Cmd::CellPinUp {
-                    (crate::edit::Toward::Earlier, "up")
+                    (Toward::Earlier, "up")
                 } else {
-                    (crate::edit::Toward::Later, "down")
+                    (Toward::Later, "down")
                 };
                 let Some(r) = cell::button_row(node, "pin", action) else {
                     return false;
@@ -210,15 +210,15 @@ impl Editor {
                     return true;
                 };
                 let toward = if cmd == Cmd::DocsUp {
-                    crate::edit::Toward::Earlier
+                    Toward::Earlier
                 } else {
-                    crate::edit::Toward::Later
+                    Toward::Later
                 };
                 let ops = self.with_doc(h, |d, _| docs::move_block(d, row, toward));
                 if !ops.is_empty() {
                     self.page.sel = Some(match toward {
-                        crate::edit::Toward::Earlier => row - 1,
-                        crate::edit::Toward::Later => row + 1,
+                        Toward::Earlier => row - 1,
+                        Toward::Later => row + 1,
                     });
                 }
                 self.commit_docs(reqs, h, "move block", ops);

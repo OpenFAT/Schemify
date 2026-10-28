@@ -21,8 +21,7 @@ use std::path::Path;
 use schemify_elab::{AnnotationRequest, Mark, Severity};
 use schemify_netlist::NameMap;
 use schemify_run::{Jobs, Pass, Results, State};
-use schemify_wave::calc;
-use schemify_wave::{RawPlot, Request as WaveRequest, Waves};
+use schemify_wave::{Applied, RawPlot, Request as WaveRequest, Waves, calc};
 
 use crate::checks::SOURCE_OP;
 use crate::platform;
@@ -30,6 +29,7 @@ use crate::platform;
 use super::{
     Col, JobLog, Kind, LOG_LINES, LOG_TAIL_BYTES, OP_PARAMS, OVERLAY_JOBS, PLOTS_MAX, Plot, Sim,
 };
+use crate::plugins::ResultRows;
 
 /// The last [`LOG_LINES`] lines of `path` (at most [`LOG_TAIL_BYTES`] read); empty when
 /// the file is missing.
@@ -182,7 +182,7 @@ impl Sim {
     /// run that last finished a plugin's job (else the shown run); `pass` is the verdict of
     /// the output's spec (1 pass, 2 fail, 0 unknown or no spec; a spec names one output).
     #[must_use]
-    pub fn result_rows(&self) -> crate::plugins::ResultRows {
+    pub fn result_rows(&self) -> ResultRows {
         let run = self
             .snapshot
             .and_then(|b| self.index_of(b))
@@ -355,15 +355,15 @@ pub(super) fn plot(jobs: &[Vec<RawPlot>], expr: &str) -> Result<Waves, String> {
                 pane: 0,
             };
             match w.apply(&req) {
-                Ok(schemify_wave::Applied::Trace(_)) => {
+                Ok(Applied::Trace(_)) => {
                     traces += 1;
                     break;
                 }
-                Ok(schemify_wave::Applied::Value(v)) if k == 0 => {
+                Ok(Applied::Value(v)) if k == 0 => {
                     return Err(format!("{expr} = {v}"));
                 }
-                Ok(schemify_wave::Applied::Value(_)) => break,
-                Ok(schemify_wave::Applied::Done) => {}
+                Ok(Applied::Value(_)) => break,
+                Ok(Applied::Done) => {}
                 Err(e) => last = e.to_string(),
             }
         }

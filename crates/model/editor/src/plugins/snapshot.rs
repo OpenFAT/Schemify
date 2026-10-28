@@ -11,7 +11,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
-use schemify_doc::{Cursor, DocHandle, Project};
+use schemify_doc::{Cursor, DocHandle, Document, Project};
 use schemify_elab::{CellState, Name};
 use schemify_plugin::Snapshots;
 use schemify_plugin::abi::{Table, col};
@@ -243,7 +243,7 @@ impl Host {
 /// `id`), its state `cell` and the run's `results`; see [`Host::snapshot`].
 fn fill_groups(
     s: &mut Snapshots,
-    doc: &schemify_doc::Document,
+    doc: &Document,
     id: u32,
     cell: Option<&CellState>,
     results: &ResultRows,
@@ -327,7 +327,7 @@ fn fill_groups(
         s.fill::<u8>(Table::Violations, col::violations::SEVERITY, &sev);
         let obj: Vec<u32> = v.iter().map(|r| r.object.0).collect();
         s.fill::<u32>(Table::Violations, col::violations::OBJECT, &obj);
-        let none = schemify_elab::Name::NONE;
+        let none = Name::NONE;
         let param: Vec<&str> = v
             .iter()
             .map(|r| {

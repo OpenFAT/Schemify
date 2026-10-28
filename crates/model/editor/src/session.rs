@@ -37,6 +37,7 @@ use crate::geometry::Pt;
 use crate::libs;
 pub use crate::libs::cell_relpath;
 use crate::scene::ObjKey;
+use crate::spines::Cells;
 
 pub use tabs::{STATUS_MAX, TabView};
 
@@ -280,7 +281,7 @@ impl Session {
     }
 }
 
-impl crate::spines::Cells for Session {
+impl Cells for Session {
     fn project(&self) -> &Project {
         &self.project
     }

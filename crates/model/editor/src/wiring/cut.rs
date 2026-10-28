@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 
-use schemify_doc::{DocHandle, Document, Op, Project, RecordBuf, TableId, Target};
+use schemify_doc::{DocHandle, Document, Loc, Op, Project, RecordBuf, TableId, Target};
 use schemify_format::RecordKind;
 
 use crate::edit::Ids;
@@ -36,7 +36,7 @@ pub fn break_at(doc: &Document, points: &[Pt], ids: &mut Ids<'_>) -> (Vec<Op>, V
         };
         inside.sort_unstable_by_key(|&p| (d(p), p));
         inside.dedup();
-        let rec = doc.record(schemify_doc::Loc {
+        let rec = doc.record(Loc {
             table: TableId::Wires,
             row: r as u32,
         });

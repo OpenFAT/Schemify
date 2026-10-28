@@ -9,7 +9,8 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
-use schemify_elab::CellState;
+use schemify_doc::{Change, Document};
+use schemify_elab::{CellState, Violation};
 use schemify_plugin::Snapshots;
 use schemify_plugin::abi::{Table, col};
 
@@ -44,9 +45,9 @@ pub(super) fn differing(n: usize, differs: impl Fn(usize) -> bool) -> Option<Vec
 /// Cost: O(changed rows · columns) plus the moves of the string columns' tails.
 pub(super) fn patch_doc_groups(
     s: &mut Snapshots,
-    doc: &schemify_doc::Document,
+    doc: &Document,
     id: u32,
-    changes: &[schemify_doc::Change],
+    changes: &[Change],
     f: &mut Filled,
 ) {
     use schemify_doc::TableId as T;
@@ -187,7 +188,7 @@ pub(super) fn sync_cell_groups(
         snapshot::fill_violations(s, c, 0..nv, 0..c.violations.rows.len());
     } else {
         let rows = &c.violations.rows;
-        let rank = |list: &[schemify_elab::Violation], v: &schemify_elab::Violation| {
+        let rank = |list: &[Violation], v: &Violation| {
             list.partition_point(|x| x.key_cmp(v, &c.names).is_lt())
         };
         // Where each gone row was: the rows before it in the old order are the kept rows
@@ -224,7 +225,7 @@ pub(super) fn sync_cell_groups(
 /// `at`.
 fn fill_doc_table(
     s: &mut Snapshots,
-    doc: &schemify_doc::Document,
+    doc: &Document,
     id: u32,
     snap: Table,
     at: Range<usize>,

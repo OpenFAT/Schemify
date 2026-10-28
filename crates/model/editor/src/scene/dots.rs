@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::geometry::Pt;
+use schemify_doc::Wires;
 
 /// Wire ends and runs (xschem's connection cues): what decides where junction dots go, kept
 /// up to date per changed wire.
@@ -31,7 +32,7 @@ pub(super) struct Wiring {
 
 impl Wiring {
     /// The wiring of every wire row of `w` (bulk: one sort, not an insert per end).
-    pub(super) fn of(w: &schemify_doc::Wires) -> Wiring {
+    pub(super) fn of(w: &Wires) -> Wiring {
         let mut out = Wiring::default();
         for i in 0..w.id.len() {
             let p = [w.x1[i], w.y1[i], w.x2[i], w.y2[i]];

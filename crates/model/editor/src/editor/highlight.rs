@@ -16,8 +16,8 @@
 //! - `pub(super) fn overlapped`
 
 use schemify_canvas::CanvasPrims;
-use schemify_doc::{DocHandle, Op, TableId, Target as DocTarget};
-use schemify_elab::Request;
+use schemify_doc::{DocHandle, Document, Op, TableId, Target as DocTarget};
+use schemify_elab::{Dialect, Request};
 use schemify_expr::Value;
 use schemify_format::RecordKind;
 use schemify_netlist::NameMap;
@@ -67,12 +67,12 @@ impl Editor {
                 corner: None,
                 overrides: &[],
                 env: &env,
-                dialect: schemify_elab::Dialect::Ngspice,
+                dialect: Dialect::Ngspice,
             };
             let host = &mut self.host;
             let mut funcs = |name: &str, args: &[Value<'_>]| host.call_fn(name, args);
             let map = spines::elaborate_all(&mut self.session, top, &req, &mut funcs)
-                .map(|e| schemify_netlist::emit(&e, schemify_elab::Dialect::Ngspice).name_map)
+                .map(|e| schemify_netlist::emit(&e, Dialect::Ngspice).name_map)
                 .ok()?;
             self.hier = Some((top, self.generation, map));
         }
@@ -311,7 +311,7 @@ impl Editor {
 
 /// Instances whose name is used more than once (every holder), and the ops renaming all
 /// but the first holder of each name to the next free `<prefix><n>`.
-pub(super) fn duplicate_names(doc: &schemify_doc::Document) -> (Vec<ObjKey>, Vec<Op>) {
+pub(super) fn duplicate_names(doc: &Document) -> (Vec<ObjKey>, Vec<Op>) {
     let s = doc.strings();
     let inst = doc.instances();
     let mut by_name: std::collections::BTreeMap<&str, Vec<usize>> =
@@ -349,7 +349,7 @@ pub(super) fn duplicate_names(doc: &schemify_doc::Document) -> (Vec<ObjKey>, Vec
 
 /// Instances placed exactly like an earlier instance of the same cell (all but the first of
 /// each group).
-pub(super) fn overlapped(doc: &schemify_doc::Document) -> Vec<ObjKey> {
+pub(super) fn overlapped(doc: &Document) -> Vec<ObjKey> {
     let inst = doc.instances();
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();

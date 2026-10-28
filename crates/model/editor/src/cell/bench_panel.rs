@@ -8,8 +8,7 @@ use schemify_doc::{Document, Loc, TableId};
 
 use crate::docs;
 
-use super::panel;
-use super::{ALGOS, Bench};
+use super::{ALGOS, Bench, panel};
 
 /// The Outputs, Specs and Optimizers sections of a `.shbench`.
 pub(super) fn bench_sections(t: &mut String, doc: &Document) {

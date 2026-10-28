@@ -14,13 +14,14 @@ use schemify_doc::{
     ops_from_text,
 };
 use schemify_plugin::abi::Event;
-use schemify_ui::CommandRequests;
+use schemify_ui::{CommandRequests, Sym};
 
 use crate::scene::ObjKey;
 use crate::{docs, platform, plugins};
 
 use super::Editor;
 use super::queue::KEPT_LOG_MAX;
+use crate::plugins::PluginEdit;
 
 /// Edit requests one frame may carry.
 const REQUESTS_MAX: usize = 1 << 10;
@@ -84,7 +85,7 @@ impl Editor {
             let mut cmds = CommandRequests::default();
             for (name, args) in &d.commands {
                 cmds.command.push(self.shell.strings.intern(name));
-                cmds.node.push(schemify_ui::Sym::NONE);
+                cmds.node.push(Sym::NONE);
                 cmds.args.push_str(args);
                 cmds.arg_end.push(cmds.args.len() as u32);
             }
@@ -92,7 +93,7 @@ impl Editor {
         }
         #[cfg(not(target_arch = "wasm32"))]
         self.sim.enqueue(d.runs);
-        for crate::plugins::PluginEdit {
+        for PluginEdit {
             doc,
             label,
             ops: text,

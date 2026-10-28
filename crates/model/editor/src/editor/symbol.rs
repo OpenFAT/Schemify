@@ -9,7 +9,7 @@
 //! - `pub(super) fn symbol_from_ports_ops`
 //! - `pub(super) fn pins_from_ports`
 
-use schemify_doc::{DocHandle, Op, RecordBuf, TableId, Target as DocTarget};
+use schemify_doc::{DocHandle, Document, Op, PinDir, RecordBuf, TableId, Target as DocTarget};
 use schemify_format::{FileKind, Orient, RecordKind};
 
 use crate::geometry::Pt;
@@ -68,7 +68,7 @@ impl Editor {
                 continue;
             }
             let o = match pins.dir[i] {
-                schemify_doc::PinDir::Out => Orient::R180,
+                PinDir::Out => Orient::R180,
                 _ => Orient::R0,
             };
             let rec = edit::placed(
@@ -217,8 +217,8 @@ pub(super) fn symbol_records(ports: &[(String, Orient, Pt)], width: i32) -> Vec<
 /// written in port order, replacing `doc`'s pins and symbol graphics. Any cell kind with a
 /// symbol. Empty when `ports` is.
 pub(super) fn symbol_from_ports_ops(
-    doc: &schemify_doc::Document,
-    ports: &[(String, schemify_doc::PinDir)],
+    doc: &Document,
+    ports: &[(String, PinDir)],
     width: i32,
 ) -> Vec<Op> {
     use schemify_doc::PinDir;
@@ -248,7 +248,7 @@ pub(super) fn symbol_from_ports_ops(
 
 /// Symbol → Create symbol pins from selected schematic ports: one pin per selected port
 /// whose name has no pin yet, at the port's position (R180/MR0 ports are outputs).
-pub(super) fn pins_from_ports(doc: &schemify_doc::Document, sel: &[ObjKey]) -> Vec<Op> {
+pub(super) fn pins_from_ports(doc: &Document, sel: &[ObjKey]) -> Vec<Op> {
     if doc.kind() != FileKind::Shcomp {
         return Vec::new();
     }
@@ -284,7 +284,7 @@ pub(super) fn pins_from_ports(doc: &schemify_doc::Document, sel: &[ObjKey]) -> V
 
 /// Ops replacing every pin and symbol graphic of `doc` with `recs` (pins and graphics, as
 /// [`symbol_records`] makes them).
-fn replace_symbol_ops(doc: &schemify_doc::Document, recs: Vec<RecordBuf>) -> Vec<Op> {
+fn replace_symbol_ops(doc: &Document, recs: Vec<RecordBuf>) -> Vec<Op> {
     assert!(!recs.is_empty());
     let (s, pins) = (doc.strings(), doc.pins());
     let mut ops: Vec<Op> = pins

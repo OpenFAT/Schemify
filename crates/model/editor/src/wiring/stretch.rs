@@ -9,7 +9,7 @@
 
 use std::collections::HashSet;
 
-use schemify_doc::{DocHandle, Document, Op, Project, TableId, Target};
+use schemify_doc::{DocHandle, Document, Loc, Op, Project, TableId, Target};
 use schemify_format::RecordKind;
 
 use crate::edit::{self, FreshId, Ids};
@@ -152,7 +152,7 @@ pub fn stretch(
             continue;
         }
         let target = Target::new(RecordKind::Wire, &w.id[r].text(s));
-        let rec = doc.record(schemify_doc::Loc {
+        let rec = doc.record(Loc {
             table: TableId::Wires,
             row: r as u32,
         });

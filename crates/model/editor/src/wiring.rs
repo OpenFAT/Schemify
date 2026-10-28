@@ -29,13 +29,12 @@ mod stretch;
 
 use std::collections::HashSet;
 
-use schemify_doc::{DocHandle, Document, Op, Project, RecordBuf, TableId};
+use schemify_doc::{Attr, DocHandle, Document, Op, Project, RecordBuf, TableId};
 use schemify_format::RecordKind;
 
-use crate::edit;
-use crate::geometry;
 use crate::geometry::Pt;
 use crate::scene::ObjKey;
+use crate::{edit, geometry};
 
 pub use cut::{break_at, remove_through};
 pub use join::join_trim;
@@ -267,7 +266,7 @@ pub fn align(doc: &Document, sel: &[ObjKey], snap_m: i32) -> Vec<Op> {
 
 // ---- private ----
 
-fn wire_rec(id: &str, a: Pt, b: Pt, attrs: &[schemify_doc::Attr]) -> RecordBuf {
+fn wire_rec(id: &str, a: Pt, b: Pt, attrs: &[Attr]) -> RecordBuf {
     let mut r = RecordBuf::new(RecordKind::Wire)
         .field(id)
         .field(&geometry::coord(a.0))

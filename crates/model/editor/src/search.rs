@@ -15,7 +15,7 @@
 //! - `pub fn find`
 //! - `pub fn replace`
 
-use schemify_doc::{Document, Op, TableId, Target};
+use schemify_doc::{Document, Instances, Op, TableId, Target};
 use schemify_format::RecordKind;
 
 use crate::scene::ObjKey;
@@ -155,7 +155,7 @@ fn hits(doc: &Document, q: &Query) -> Vec<Hit> {
             let Some(&v0) = v.first() else { continue };
             let v = s.get(v0);
             let named = q.field == k && !matches!(k, "name" | "at");
-            let any = q.field == "*" && schemify_doc::Instances::is_override(k);
+            let any = q.field == "*" && Instances::is_override(k);
             if (named || any) && q.hit(v) {
                 out.push(Hit {
                     key,

@@ -13,14 +13,13 @@
 //! - `pub(super) fn help_text`
 
 use schemify_doc::DocHandle;
-use schemify_elab::{Request, Severity};
+use schemify_elab::{Dialect, Request, Severity};
 use schemify_expr::Value;
 
 use crate::session::TextView;
 use crate::{platform, spines};
 
-use super::highlight;
-use super::{Editor, Panel};
+use super::{Editor, Panel, highlight};
 
 /// Rows of hierarchy the changelog lists at most.
 pub(super) const CHANGELOG_ROWS: usize = 1 << 12;
@@ -121,12 +120,7 @@ impl Editor {
         }
         self.blocked.clear();
         // Options → Flat netlist: the hierarchy expanded (SPICE dialects only).
-        let spice = matches!(
-            dialect,
-            schemify_elab::Dialect::Ngspice
-                | schemify_elab::Dialect::Xyce
-                | schemify_elab::Dialect::Cdl
-        );
+        let spice = matches!(dialect, Dialect::Ngspice | Dialect::Xyce | Dialect::Cdl);
         let text = if self.opts.flat && spice {
             schemify_netlist::emit_flat(&e, dialect)
         } else {

@@ -11,10 +11,10 @@
 //! - `Editor::sync_page`
 //! - `pub(super) fn row_of_doc`
 
-use schemify_doc::{DocHandle, Edit, EditRequest, Op, Outcome, TableId};
+use schemify_doc::{DocHandle, Edit, EditRequest, Op, Outcome, Project, TableId};
 use schemify_elab::CellState;
 use schemify_expr::Value;
-use schemify_ui::{CommandRequests, InputEvent, InputEvents};
+use schemify_ui::{CommandRequests, InputEvent, InputEvents, Key};
 
 use crate::commands::Cmd;
 use crate::scene::ObjKey;
@@ -279,9 +279,10 @@ impl Editor {
         if !self.page.focused || submitted {
             return false;
         }
-        let escape = events.events.iter().any(
-            |e| matches!(e, InputEvent::Key { chord } if chord.key() == schemify_ui::Key::ESCAPE),
-        );
+        let escape = events
+            .events
+            .iter()
+            .any(|e| matches!(e, InputEvent::Key { chord } if chord.key() == Key::ESCAPE));
         let Some((row, text)) = self.page.editing.take() else {
             return false;
         };
@@ -296,7 +297,7 @@ impl Editor {
 
 /// The cell row whose open document is `h` (a scan of the cell index); `None` for a
 /// document outside it (a new, unsaved file).
-pub(super) fn row_of_doc(project: &schemify_doc::Project, h: DocHandle) -> Option<u32> {
+pub(super) fn row_of_doc(project: &Project, h: DocHandle) -> Option<u32> {
     let doc = project.doc(h)?;
     let cells = project.cells();
     (0..cells.lib.len())

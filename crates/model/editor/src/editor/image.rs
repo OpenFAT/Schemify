@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use schemify_canvas::CanvasPrims;
+use schemify_canvas::{Camera, CanvasPrims};
 use schemify_doc::DocHandle;
 
 use crate::commands::Cmd;
@@ -15,7 +15,7 @@ use crate::scene::UNIT;
 use crate::session::View;
 use crate::{export, platform, scene};
 
-use super::Editor;
+use super::{Editor, Raster};
 
 /// Largest PNG export side in pixels (the CPU raster's target is `u16`; 16k keeps one
 /// image under 1 GiB of RGBA).
@@ -158,7 +158,7 @@ impl Editor {
             (f64::from(b[2]) - f64::from(b[0])) / u,
             (f64::from(b[3]) - f64::from(b[1])) / u,
         );
-        let cam = schemify_canvas::Camera {
+        let cam = Camera {
             cx: (f64::from(b[0]) + f64::from(b[2])) / 2.0,
             cy: (f64::from(b[1]) + f64::from(b[3])) / 2.0,
             scale: 1.0 / u,
@@ -166,13 +166,7 @@ impl Editor {
         self.ask_raster(path, w.ceil(), h.ceil(), cam)
     }
     /// Queues a `w × h` logical-pixel raster through `cam` at the PNG scale.
-    fn ask_raster(
-        &mut self,
-        path: PathBuf,
-        w: f64,
-        h: f64,
-        cam: schemify_canvas::Camera,
-    ) -> Result<(), String> {
+    fn ask_raster(&mut self, path: PathBuf, w: f64, h: f64, cam: Camera) -> Result<(), String> {
         let k = f64::from(self.opts.png_scale) / 100.0;
         assert!(k > 0.0 && cam.scale > 0.0, "a positive scale");
         let (pw, ph) = ((w * k).round(), (h * k).round());
@@ -186,7 +180,7 @@ impl Editor {
                  (options.png_export_scale)"
             ));
         }
-        self.raster = Some(super::Raster {
+        self.raster = Some(Raster {
             path,
             w,
             h,

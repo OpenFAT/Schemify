@@ -9,7 +9,7 @@
 //! - `pub fn methods`
 
 use schemify_cli::rpc::{INVALID_PARAMS, Json, METHOD_NOT_FOUND};
-use schemify_plugin::abi::text;
+use schemify_plugin::abi::{Kind, text};
 
 use crate::commands::{CORE, Target};
 use crate::editor::Editor;
@@ -62,7 +62,7 @@ pub fn methods(ed: &Editor) -> Json {
         .host()
         .plugins
         .composed()
-        .of(schemify_plugin::abi::Kind::Commands)
+        .of(Kind::Commands)
         .iter()
         .filter_map(|r| r.key.strip_prefix("command "))
         .collect();

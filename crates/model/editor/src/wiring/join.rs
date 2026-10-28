@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use schemify_doc::{DocHandle, Op, Project, TableId, Target};
+use schemify_doc::{DocHandle, Loc, Op, Project, TableId, Target};
 use schemify_format::RecordKind;
 
 use crate::edit::Ids;
@@ -231,7 +231,7 @@ pub fn join_trim(project: &Project, h: DocHandle, ids: &mut Ids<'_>) -> Vec<Op> 
             (c(p0.0, d.0), c(p0.1, d.1))
         };
         let attrs = doc
-            .record(schemify_doc::Loc {
+            .record(Loc {
                 table: TableId::Wires,
                 row: rows[0] as u32,
             })

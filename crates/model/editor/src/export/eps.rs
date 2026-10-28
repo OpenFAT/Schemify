@@ -7,9 +7,8 @@
 
 use schemify_canvas::CanvasPrims;
 
-use super::ops;
 use super::ops::{Glyphs, Lang, Used};
-use super::{FONT_NAMES, Look, Page};
+use super::{FONT_NAMES, Look, Page, ops};
 
 /// Longest `sfnts` string of a Type 42 font: PostScript strings hold at most 65535 bytes,
 /// and each must have an even length.

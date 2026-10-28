@@ -11,7 +11,7 @@ use std::path::Path;
 
 use schemify_cli::pack::{self, Installed};
 use schemify_config::{Config, Request, Startup};
-use schemify_doc::Project;
+use schemify_doc::{Attr, Project};
 use schemify_plugin::abi::FUEL_DEFAULT;
 use schemify_plugin::{PluginEvents, PluginId, Plugins, RequestQueues, Snapshots};
 
@@ -208,7 +208,7 @@ pub(super) fn content_hash(bytes: &[u8]) -> String {
 ///
 /// The value is not a whole number in `[FUEL_MIN, FUEL_MAX]`; the caller reports it and
 /// falls back to the default rather than trusting a project file's number.
-fn manifest_fuel(attr: Option<&schemify_doc::Attr>) -> Result<u64, String> {
+fn manifest_fuel(attr: Option<&Attr>) -> Result<u64, String> {
     let Some(attr) = attr else {
         return Ok(FUEL_DEFAULT);
     };

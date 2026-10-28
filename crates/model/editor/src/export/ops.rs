@@ -11,6 +11,7 @@
 //! - `pub(super) fn page_ops`
 
 use schemify_canvas::{CanvasPrims, LAYERS, LineStyle};
+use schemify_ui::FontGlyph;
 
 use super::{FONT_NAMES, Look, arc_point};
 
@@ -314,7 +315,7 @@ pub(super) fn page_ops(
     }
     let t = &prims.texts;
     let mut start = 0usize;
-    let mut glyphs: Vec<schemify_ui::FontGlyph> = Vec::new();
+    let mut glyphs: Vec<FontGlyph> = Vec::new();
     for i in 0..t.x.len() {
         let end = t.end[i] as usize;
         let text = &t.text[start..end];

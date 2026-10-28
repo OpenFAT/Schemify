@@ -10,7 +10,8 @@
 use std::path::PathBuf;
 
 use schemify_doc::DocHandle;
-use schemify_ui::{Button, InputEvent, InputEvents, Mods};
+use schemify_elab::Name;
+use schemify_ui::{Button, Chord, InputEvent, InputEvents, Key, Mods};
 
 use crate::geometry::Pt;
 use crate::waves::WavesView;
@@ -48,7 +49,7 @@ impl Editor {
             events: Vec::new(),
             text: events.text.clone(),
         };
-        let close = schemify_ui::Chord::new(Mods(Mods::CTRL), schemify_ui::Key('w' as u32));
+        let close = Chord::new(Mods(Mods::CTRL), Key('w' as u32));
         for &e in &events.events {
             match e {
                 InputEvent::PointerDown {
@@ -197,7 +198,7 @@ impl Editor {
                     // `k` counts the ordinary (not inherited) pins, as `pins_of` does.
                     let pin = f.and_then(|f| {
                         (0..f.pin_name.len())
-                            .filter(|&p| f.pin_inherit[p] == schemify_elab::Name::NONE)
+                            .filter(|&p| f.pin_inherit[p] == Name::NONE)
                             .nth(k as usize)
                             .map(|p| cell.names.get(f.pin_name[p]).to_owned())
                     });

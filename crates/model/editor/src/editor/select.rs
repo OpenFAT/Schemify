@@ -10,10 +10,9 @@
 
 use schemify_doc::TableId;
 
-use crate::geometry;
 use crate::geometry::Pt;
 use crate::scene::ObjKey;
-use crate::{edit, scene};
+use crate::{edit, geometry, scene};
 
 use super::Editor;
 use super::tool::HIT_PX;

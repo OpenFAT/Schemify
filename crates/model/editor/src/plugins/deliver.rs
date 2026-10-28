@@ -13,7 +13,7 @@ use schemify_doc::{DocHandle, Project};
 use schemify_elab::{CellState, Funcs, Val};
 use schemify_expr::{Code as XCode, Error as XError, Mode, Program, Scratch, Span, Value};
 use schemify_plugin::IoOp;
-use schemify_plugin::abi::{Code, Event, Level};
+use schemify_plugin::abi::{Code, EditMode, Event, Level};
 
 use crate::platform;
 
@@ -70,7 +70,7 @@ impl Host {
                         .push(format!("{}: edit for a closed document", e.plugin));
                     continue;
                 };
-                let stage = e.mode == schemify_plugin::abi::EditMode::Stage;
+                let stage = e.mode == EditMode::Stage;
                 out.edits.push(PluginEdit {
                     doc: h,
                     label: e.label,
@@ -118,7 +118,7 @@ impl Host {
                     continue;
                 }
                 let (status, bytes) = if r.op == IoOp::Spawn {
-                    let space = -(schemify_plugin::abi::Code::Space as i32);
+                    let space = -(Code::Space as i32);
                     (space, b"too many child processes".to_vec())
                 } else {
                     run_io(root, r.op, &r.args, &r.data)
@@ -291,8 +291,8 @@ fn run_io(root: &Path, op: IoOp, args: &[String], data: &[u8]) -> (i32, Vec<u8>)
         !file_op || !args.is_empty(),
         "the host checked a file request names its path"
     );
-    let denied = -(schemify_plugin::abi::Code::Denied as i32);
-    let gone = -(schemify_plugin::abi::Code::Gone as i32);
+    let denied = -(Code::Denied as i32);
+    let gone = -(Code::Gone as i32);
     // A read path: project-relative, or `${NAME}/…` under the variable's directory (the
     // host authorized the `read:<NAME>` grant, plugin-abi §5).
     let read_path = |p: &str| -> Result<PathBuf, String> {
@@ -336,7 +336,7 @@ fn run_io(root: &Path, op: IoOp, args: &[String], data: &[u8]) -> (i32, Vec<u8>)
         IoOp::FsRemove => {
             let path = root.join(&args[0]);
             if !platform::exists(&path) {
-                let gone = -(schemify_plugin::abi::Code::Gone as i32);
+                let gone = -(Code::Gone as i32);
                 return (gone, format!("{}: nothing to remove", args[0]).into_bytes());
             }
             match platform::remove_tree(&path) {

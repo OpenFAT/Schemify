@@ -6,7 +6,7 @@
 //! - `Editor::build_markers`
 //! - `Editor::build_decor`
 
-use schemify_doc::{DocHandle, ObjId};
+use schemify_doc::{DocHandle, Document, ObjId};
 use schemify_elab::AnnotationRequest;
 
 use crate::checks;
@@ -206,7 +206,7 @@ impl Editor {
 // ---- private ----
 
 /// The object ids of mark targets `targets` (sorted, unique; a path or name target has none).
-fn ids_of(targets: &[String], doc: &schemify_doc::Document) -> Vec<u32> {
+fn ids_of(targets: &[String], doc: &Document) -> Vec<u32> {
     let s = doc.strings();
     let mut ids: Vec<u32> = targets
         .iter()

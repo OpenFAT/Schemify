@@ -14,7 +14,7 @@
 //! - `Host::call_fn`
 //! - `Host::fn_hash`
 
-use schemify_config::{Config, Request};
+use schemify_config::{Config, Keymaps, Request, Table};
 use schemify_elab::Val;
 use schemify_expr::{Code as XCode, Error as XError, Span, Value};
 use schemify_plugin::PluginId;
@@ -27,7 +27,7 @@ use super::{Host, NOTES_MAX, Note};
 impl Host {
     /// The user-config table (options, keymaps, sims, packages, hooks).
     #[must_use]
-    pub fn user(&self) -> &schemify_config::Table {
+    pub fn user(&self) -> &Table {
         self.user.table()
     }
 
@@ -76,7 +76,7 @@ impl Host {
 
     /// Queues the requests of a user-config call; recomposes the UI when the call changed the
     /// keymaps (`keys` is the table before it; a function may call `schemify.keymap.set`).
-    pub(super) fn absorb(&mut self, out: Vec<Request>, keys: &schemify_config::Keymaps) {
+    pub(super) fn absorb(&mut self, out: Vec<Request>, keys: &Keymaps) {
         for r in out {
             match r {
                 Request::Command { name, args } => self.user_cmds.push((name, args)),

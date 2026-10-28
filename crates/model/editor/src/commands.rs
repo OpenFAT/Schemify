@@ -17,8 +17,8 @@
 //!   `Cmd::accepts`, `Cmd::takes_suffix`
 
 use schemify_format::FileKind;
-use schemify_plugin::PluginId;
 use schemify_plugin::abi::Kind;
+use schemify_plugin::{Composed, PluginId};
 
 /// Plugin command rows (ARCHITECTURE: commands capacity 2^12).
 pub const PLUGIN_COMMANDS_MAX: usize = 1 << 12;
@@ -625,7 +625,7 @@ impl Commands {
     /// # Panics
     ///
     /// Only on a broken internal invariant (the name and owner columns out of step).
-    pub fn set_plugin_rows(&mut self, composed: &schemify_plugin::Composed) {
+    pub fn set_plugin_rows(&mut self, composed: &Composed) {
         let mut rows: Vec<(Box<str>, PluginId)> = composed
             .of(Kind::Commands)
             .iter()

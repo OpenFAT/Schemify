@@ -25,12 +25,10 @@ use schemify_format::{FileKind, Orient, RecordKind};
 use crate::edit::Ids;
 use crate::geometry::Pt;
 use crate::scene::ObjKey;
-use crate::wiring;
-use crate::{checks, edit, platform};
+use crate::{checks, edit, platform, wiring};
 
-use super::Editor;
-use super::symbol;
 use super::symbol::PITCH;
+use super::{Editor, symbol};
 
 /// Net of a connection point that belongs to no net (a noconn): foreign to every crossing.
 const NO_COMP: u32 = u32::MAX;

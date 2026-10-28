@@ -7,9 +7,8 @@
 
 use schemify_canvas::CanvasPrims;
 
-use super::ops;
 use super::ops::{Glyphs, Lang, Used};
-use super::{FONT_NAMES, Look, Page};
+use super::{FONT_NAMES, Look, Page, ops};
 
 /// ASCII85 (PDF `/ASCII85Decode`) of `bytes` with its `~>` end marker and a line break
 /// every 80 characters, so a PDF carrying a font stays 7-bit text.

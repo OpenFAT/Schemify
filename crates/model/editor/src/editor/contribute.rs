@@ -4,6 +4,7 @@
 //! - `Editor::contribute_parity`
 //! - `Editor::contribute_integration`
 
+use schemify_elab::Dialect;
 use schemify_ui::{Kind, StyleProp, records};
 
 use crate::docs::quote as q;
@@ -34,7 +35,7 @@ impl Editor {
             ("view.show_hide.symbol_text", o.symbol_text),
             (
                 "view.show_hide.show_erc_info_window",
-                self.panel == super::Panel::Checks,
+                self.panel == Panel::Checks,
             ),
             ("view.toggle_variable_line_width", o.variable_width),
             ("highlight.auto_highlight_net_pins", o.auto_highlight),
@@ -70,15 +71,15 @@ impl Editor {
             ),
             (
                 "options.netlist_format_symbol_mode.spice_netlist",
-                self.dialect == schemify_elab::Dialect::Ngspice,
+                self.dialect == Dialect::Ngspice,
             ),
             (
                 "options.netlist_format_symbol_mode.espice_netlist",
-                self.dialect == schemify_elab::Dialect::Espice,
+                self.dialect == Dialect::Espice,
             ),
             (
                 "options.netlist_format_symbol_mode.verilog_netlist",
-                self.dialect == schemify_elab::Dialect::Verilog,
+                self.dialect == Dialect::Verilog,
             ),
         ];
         for (id, on) in flags {

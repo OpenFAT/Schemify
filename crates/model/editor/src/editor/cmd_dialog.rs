@@ -3,7 +3,7 @@
 //! Contents:
 //! - `Editor::run_dialog`
 
-use schemify_doc::EditRequest;
+use schemify_doc::{Document, EditRequest};
 
 use crate::commands::Cmd;
 
@@ -37,7 +37,7 @@ impl Editor {
                     .session
                     .project
                     .doc(h)
-                    .map(schemify_doc::Document::canonical)
+                    .map(Document::canonical)
                     .unwrap_or_default();
                 self.tool = Tool::Idle;
                 self.dialog = Dialog::File(text);

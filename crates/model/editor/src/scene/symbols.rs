@@ -16,7 +16,7 @@
 //! - `pub(super) fn text_start`
 
 use schemify_canvas::LineStyle;
-use schemify_doc::{DocHandle, Document, Strings as DocStrings, Sym};
+use schemify_doc::{DocHandle, Document, Span, Strings as DocStrings, Sym};
 use schemify_expr::Template;
 use schemify_format::{Orient, RecordKind};
 
@@ -99,12 +99,12 @@ impl Symbols {
     }
 }
 
-pub(super) fn attr<'d>(doc: &'d Document, span: schemify_doc::Span, key: &str) -> Option<&'d str> {
+pub(super) fn attr<'d>(doc: &'d Document, span: Span, key: &str) -> Option<&'d str> {
     let v = doc.pool().find_attr(doc.strings(), span, key)?;
     Some(v.first().map_or("", |s| doc.strings().get(*s)))
 }
 
-pub(super) fn layer_attr(doc: &Document, span: schemify_doc::Span, default: u8) -> u8 {
+pub(super) fn layer_attr(doc: &Document, span: Span, default: u8) -> u8 {
     attr(doc, span, "layer")
         .and_then(|v| v.parse::<u8>().ok())
         .filter(|&l| l < 22)
@@ -115,7 +115,7 @@ pub(super) fn layer_attr(doc: &Document, span: schemify_doc::Span, default: u8) 
 /// a value that is not a number reads as absent; the rest rounds and clamps in
 /// [`LineStyle::new`]. `fill true` fills a closed shape; absent or `false` leaves it to the
 /// layer.
-pub(super) fn style_attr(doc: &Document, span: schemify_doc::Span) -> LineStyle {
+pub(super) fn style_attr(doc: &Document, span: Span) -> LineStyle {
     let n = |key: &str, absent: u8| {
         attr(doc, span, key)
             .and_then(|v| v.parse::<f64>().ok())

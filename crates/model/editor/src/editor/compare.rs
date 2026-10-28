@@ -8,7 +8,8 @@
 //! - `Editor::build_extra`
 
 use schemify_canvas::CanvasPrims;
-use schemify_doc::{DocHandle, RecordBuf, TableId};
+use schemify_doc::{DocHandle, ObjId, RecordBuf, TableId};
+use schemify_format::ChangeKind;
 
 use crate::geometry::Xform;
 use crate::scene::{LAYER_SEL, ObjKey, UNIT};
@@ -148,14 +149,14 @@ impl Editor {
         let mut changed = 0usize;
         for c in &d.changes {
             match c.kind {
-                schemify_format::ChangeKind::Removed => {
+                ChangeKind::Removed => {
                     if fa.record_kind(c.a).rank() == 3 {
                         removed.push(RecordBuf::from_format(&fa, c.a));
                     }
                 }
                 _ => {
                     let Some(id) = fb.field(c.b, 0) else { continue };
-                    let Some(oid) = schemify_doc::ObjId::find(id, b.strings()) else {
+                    let Some(oid) = ObjId::find(id, b.strings()) else {
                         continue;
                     };
                     let Some(loc) = b.find_id(oid) else { continue };

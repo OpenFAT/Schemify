@@ -19,6 +19,7 @@
 //! - `Editor::prompt_recovery`
 
 use schemify_doc::{DocHandle, EditRequest, Op, Target as DocTarget};
+use schemify_ui::{Mods, Sym};
 
 use crate::commands::Cmd;
 use crate::geometry::{Pt, Xform};
@@ -97,7 +98,7 @@ impl Editor {
     }
     pub(super) fn close_dialog(&mut self) {
         self.dialog = Dialog::None;
-        self.shell.ui.set_dialog(schemify_ui::Sym::NONE);
+        self.shell.ui.set_dialog(Sym::NONE);
         self.shell.invalidate();
     }
     pub(super) fn open_text(&mut self, purpose: TextFor, title: &str) {
@@ -300,9 +301,9 @@ impl Editor {
         at: (f32, f32),
     ) {
         let (shift, ctrl, alt) = (
-            self.mods & schemify_ui::Mods::SHIFT != 0,
-            self.mods & schemify_ui::Mods::CTRL != 0,
-            self.mods & schemify_ui::Mods::ALT != 0,
+            self.mods & Mods::SHIFT != 0,
+            self.mods & Mods::CTRL != 0,
+            self.mods & Mods::ALT != 0,
         );
         match std::mem::take(&mut self.tool) {
             Tool::Shape {

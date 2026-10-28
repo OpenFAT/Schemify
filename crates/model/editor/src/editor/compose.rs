@@ -7,17 +7,17 @@
 //! - `Editor::state_contribution`
 
 use schemify_doc::Document;
+use schemify_ui::Prop;
 
 use crate::commands::Target;
 use crate::docs::quote as q;
 use crate::session::View;
 use crate::{cell, docs};
 
-use super::Editor;
 use super::chooser::ChooseFor;
 use super::dialog::Dialog;
-use super::dispatch;
 use super::tool::{Form, Tool};
+use super::{Editor, dispatch};
 
 impl Editor {
     /// The UI step of the frame spine: [`Editor::ui_inputs`], the pure [`Editor::compose_ui`],
@@ -256,7 +256,7 @@ impl Editor {
             .map(Document::kind)
         {
             let nodes = &self.shell.tables.nodes;
-            let commands = nodes.prop(schemify_ui::Prop::Command);
+            let commands = nodes.prop(Prop::Command);
             let key = {
                 use std::hash::{Hash, Hasher};
                 let mut h = std::collections::hash_map::DefaultHasher::new();

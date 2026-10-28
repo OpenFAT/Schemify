@@ -8,14 +8,14 @@
 //! - `pub fn preview_records_on`
 
 use schemify_canvas::CanvasPrims;
+use schemify_doc::RecordBuf;
 use schemify_format::{Orient, RecordKind};
 
 use crate::geometry;
 use crate::geometry::{Pt, Xform};
 
-use super::draw;
 use super::symbols::Symbols;
-use super::{LAYER_SEL, PIN_HALF, Scene, UNIT};
+use super::{LAYER_SEL, PIN_HALF, Scene, UNIT, draw};
 
 /// Copies the primitives of selected objects through `x` into `out` on [`LAYER_SEL`]
 /// (move and copy previews; texts included, so a moving label shows its name), in table then
@@ -126,17 +126,12 @@ pub fn stamp(symbols: &Symbols, row: usize, o: Orient, at: Pt, out: &mut CanvasP
 
 /// Outlines clipboard records through `x` (paste preview): wires and graphics as drawn,
 /// everything else as a small box at its anchor plus its text.
-pub fn preview_records(recs: &[schemify_doc::RecordBuf], x: Xform, out: &mut CanvasPrims) {
+pub fn preview_records(recs: &[RecordBuf], x: Xform, out: &mut CanvasPrims) {
     preview_records_on(recs, x, LAYER_SEL, out);
 }
 
 /// [`preview_records`] on `layer` (the staged-edit diff draws inserted records on its own).
-pub fn preview_records_on(
-    recs: &[schemify_doc::RecordBuf],
-    x: Xform,
-    layer: u8,
-    out: &mut CanvasPrims,
-) {
+pub fn preview_records_on(recs: &[RecordBuf], x: Xform, layer: u8, out: &mut CanvasPrims) {
     for r in recs {
         let mut r = r.clone();
         if crate::geometry::transform_record(&mut r, x).is_none() {

@@ -10,12 +10,12 @@
 use std::path::PathBuf;
 
 use schemify_doc::{DocHandle, EditRequest, Op, RecordBuf, Target as DocTarget};
-use schemify_format::RecordKind;
+use schemify_format::{ChangeKind, Document, RecordKind};
+use schemify_plugin::abi::Event;
 
-use crate::geometry;
 use crate::geometry::{Pt, Xform};
 use crate::session::View;
-use crate::{edit, platform};
+use crate::{edit, geometry, platform};
 
 use super::Editor;
 use super::chooser::ChooseFor;
@@ -112,7 +112,7 @@ impl Editor {
         self.remember(new);
         let _ = self.host.push(
             None,
-            &schemify_plugin::abi::Event::DocOpened {
+            &Event::DocOpened {
                 doc: crate::plugins::doc_id(new),
             },
         );
@@ -238,7 +238,7 @@ impl Editor {
         let old = schemify_format::parse(current.as_bytes()).expect("canonical text parses");
         let d = schemify_format::diff(&old, &new);
         let mut ops = Vec::new();
-        let target = |f: &schemify_format::Document<'_>, r: u32| -> DocTarget {
+        let target = |f: &Document<'_>, r: u32| -> DocTarget {
             let kind = f.record_kind(r);
             match kind {
                 RecordKind::Header => DocTarget::header(),
@@ -258,12 +258,12 @@ impl Editor {
                 continue;
             }
             match c.kind {
-                schemify_format::ChangeKind::Removed => ops.push(Op::Delete(target(&old, c.a))),
-                schemify_format::ChangeKind::Added => ops.push(Op::Insert {
+                ChangeKind::Removed => ops.push(Op::Delete(target(&old, c.a))),
+                ChangeKind::Added => ops.push(Op::Insert {
                     rec: RecordBuf::from_format(&new, c.b),
                     at: None,
                 }),
-                schemify_format::ChangeKind::Changed => ops.push(Op::Put {
+                ChangeKind::Changed => ops.push(Op::Put {
                     target: target(&old, c.a),
                     rec: RecordBuf::from_format(&new, c.b),
                 }),

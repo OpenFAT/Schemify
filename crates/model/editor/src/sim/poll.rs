@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use schemify_doc::{DocHandle, Project};
 use schemify_elab::Funcs;
-use schemify_run::{Plan, RunnerConfig, State};
+use schemify_run::{Blocked, Plan, Runner, RunnerConfig, State};
 
 use crate::platform;
 use crate::session::Session;
@@ -208,7 +208,7 @@ impl Sim {
             let (bench, base, dialect) = (br.bench, &br.base, br.run.dialect);
             match schemify_run::design(&session.project, bench, base, env, dialect, funcs) {
                 Ok(d) => stale = d != br.run.digest,
-                Err(schemify_run::Blocked::NeedsOpen(rows))
+                Err(Blocked::NeedsOpen(rows))
                     if rows.iter().all(|&r| session.open_cell(r as usize).is_ok()) =>
                 {
                     continue;
@@ -268,7 +268,7 @@ impl Sim {
             next: jobs.len(),
             jobs,
             results,
-            runner: schemify_run::Runner::new(cfg),
+            runner: Runner::new(cfg),
             digest,
             finished: Vec::new(),
             extra: String::new(),

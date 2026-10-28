@@ -9,6 +9,7 @@
 
 use schemify_doc::{Document, EditRequest};
 use schemify_format::FileKind;
+use schemify_plugin::PluginId;
 use schemify_plugin::abi::Event;
 use schemify_ui::CommandRequests;
 
@@ -60,7 +61,7 @@ impl Editor {
         node: &str,
         user: bool,
         reqs: &mut Vec<EditRequest>,
-    ) -> (bool, Option<schemify_plugin::PluginId>) {
+    ) -> (bool, Option<PluginId>) {
         let (target, suffix) = self.commands.resolve_arg(name);
         let arg = if arg.is_empty() { suffix } else { arg };
         match target {

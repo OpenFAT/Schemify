@@ -13,8 +13,7 @@ use schemify_format::RecordKind;
 use crate::geometry::Pt;
 
 use super::refresh::Build;
-use super::symbols;
-use super::{DOT_R, LAYER_JUNCTION, ObjKey, PIN_HALF, UNIT};
+use super::{DOT_R, LAYER_JUNCTION, ObjKey, PIN_HALF, UNIT, symbols};
 
 /// Makes the junction dots at `points` (sorted, unique) match xschem's rule for the current
 /// wiring ([`Wiring::dot_at`]): adds missing dots, kills stale ones. Dots belong to no

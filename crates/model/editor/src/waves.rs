@@ -15,12 +15,13 @@
 //! - `pub fn spice_device`
 //! - `pub fn current_probe`
 
+use crate::editor::{DockPicture, UiView};
 use schemify_ui::waves::{DialogFx, Effect, Geometry, PROPS_DIALOG, WAVES_UI, WaveUi};
 use schemify_ui::{
     Chord, Contribution, InputEvent, InputEvents, Key, Mods, Routed, Strings, Sym, TextSystem,
     UiLayout, UiState, UiTables, compose, layout, records, route_input,
 };
-use schemify_wave::{MAX_DATASETS, Request, Waves};
+use schemify_wave::{Applied, MAX_DATASETS, RawPlot, Request, Waves};
 
 /// One open waveform window.
 pub struct WavesView {
@@ -235,7 +236,7 @@ impl WavesView {
             };
             let res = self.waves.apply(&req);
             match &res {
-                Ok(schemify_wave::Applied::Trace(_)) => {
+                Ok(Applied::Trace(_)) => {
                     self.ui.note(&self.waves, &req, &res);
                     if self.viewport.0 > 0.0 {
                         self.rebuild();
@@ -258,10 +259,10 @@ impl WavesView {
 
     /// The dock's tables as [`crate::editor::Editor::picture`] lends them, painted `dy`
     /// logical px below the window's top.
-    pub(crate) fn picture(&mut self, dy: f64) -> crate::editor::DockPicture<'_> {
+    pub(crate) fn picture(&mut self, dy: f64) -> DockPicture<'_> {
         assert!(dy >= 0.0, "a dock below the window's top");
-        crate::editor::DockPicture {
-            ui: crate::editor::UiView {
+        DockPicture {
+            ui: UiView {
                 tables: &self.tables,
                 layout: &self.frame,
                 strings: &self.strings,
@@ -330,7 +331,7 @@ pub fn current_probe(emitted: &str, pin: &str) -> String {
 
 /// The datasets of a `.raw` file (ngspice/Xyce/LTspice, binary or ASCII), `.step` blocks
 /// grouped; errors name `title`.
-fn datasets(title: &str, bytes: &[u8]) -> Result<Vec<schemify_wave::RawPlot>, String> {
+fn datasets(title: &str, bytes: &[u8]) -> Result<Vec<RawPlot>, String> {
     let plots = schemify_wave::parse_raw(bytes).map_err(|e| format!("{title}: {e}"))?;
     let d = schemify_wave::group_datasets(plots);
     if d.len() > MAX_DATASETS {

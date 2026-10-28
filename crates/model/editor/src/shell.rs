@@ -22,8 +22,8 @@
 
 use schemify_canvas::{LAYERS, Palette};
 use schemify_ui::{
-    Contribution, Edit, Kind, Strings, StyleProp, Sym, TextSystem, UiLayout, UiState, UiTables,
-    compose, layout, patch_last, records,
+    Contribution, Edit, Kind, Rect, Strings, StyleProp, Sym, TextSystem, UiLayout, UiState,
+    UiTables, compose, layout, patch_last, records,
 };
 
 use crate::checks::{LAYER_ANNOT, LAYER_DIFF, LAYER_ERROR, LAYER_HILITE, LAYER_INFO, LAYER_WARN};
@@ -272,14 +272,14 @@ impl Shell {
 
     /// Screen rectangle of the canvas node (logical px), or the whole viewport when no
     /// canvas is laid out.
-    pub fn canvas_rect(&self, viewport: (f32, f32)) -> schemify_ui::Rect {
+    pub fn canvas_rect(&self, viewport: (f32, f32)) -> Rect {
         let n = &self.tables.nodes;
         let canvas = (0..n.len()).find(|&i| n.kind()[i] == Kind::Canvas);
         canvas
             .and_then(|i| self.layout.row_of(i as u16))
             .map(|r| self.layout.rect()[r])
             .filter(|r| r.w > 0.0 && r.h > 0.0)
-            .unwrap_or(schemify_ui::Rect {
+            .unwrap_or(Rect {
                 x: 0.0,
                 y: 0.0,
                 w: viewport.0,

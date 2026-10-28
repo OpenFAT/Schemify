@@ -14,6 +14,7 @@
 //! - `Editor::resolve_said`
 
 use schemify_doc::EditRequest;
+use schemify_plugin::PluginId;
 
 use super::Editor;
 
@@ -25,7 +26,7 @@ pub const QUEUED_MAX: usize = 256;
 #[derive(Debug)]
 pub(super) struct Said {
     ticket: u32,
-    plugin: Option<schemify_plugin::PluginId>,
+    plugin: Option<PluginId>,
     status: Option<String>,
     /// The plugin's event count right after the delivery that took its command
     /// ([`schemify_plugin::Plugins::event_counts`]): finished once that many have.
