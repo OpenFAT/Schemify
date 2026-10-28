@@ -3,6 +3,8 @@
 //! Oracles: the lockfile rows equal the commit and the sha256 of the module actually
 //! installed; restore reproduces the locked bytes; grants are the intersection.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -10,12 +12,9 @@ use schemify_cli::pack::{self, Paths};
 use schemify_config::{PackSpec, Source};
 use schemify_doc::{hex, sha256};
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("schemify-pack-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
+use common::scratch;
+
+// ---- private ----
 
 fn paths(dir: &Path) -> Paths {
     Paths {

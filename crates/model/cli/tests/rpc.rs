@@ -2,10 +2,13 @@
 //! exit codes and output are the oracle for its methods; `edit` is checked with the
 //! semantic `diff`; malformed lines get declared errors and the stream goes on.
 
+mod common;
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
+use common::core;
 use schemify_cli::rpc::{self, Json};
 
 const CANONICAL: &str = include_str!(concat!(
@@ -17,19 +20,11 @@ const MESSY: &str = include_str!(concat!(
     "/crates/protocol/format/tests/fixtures/ota5t.messy.shcomp"
 ));
 
-fn core(dir: &Path) -> Command {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_schemify"));
-    c.current_dir(dir)
-        .env("XDG_CONFIG_HOME", dir.join(".xdg/config"))
-        .env("XDG_DATA_HOME", dir.join(".xdg/data"))
-        .env_remove("SCHEMIFY_APPNAME");
-    c
-}
+// ---- private ----
 
+/// A scratch directory holding an empty project.
 fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("schemify-rpc-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::scratch(name);
     std::fs::write(dir.join("schemify.project"), "schemify 1 project\n").unwrap();
     dir
 }

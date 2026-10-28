@@ -7,8 +7,39 @@
 //!
 //! Every path here is absolute or relative to the process working directory (on the web,
 //! `/`); callers build them from the project root. Errors are plain text for the status line.
+//! The native side is `native`; the web side is `web` (the API), `opfs` (mount and
+//! write-back) over `vfs` (the in-memory table).
+//!
+//! Contents:
+//! - `pub const LIST_FILES_MAX: usize`, `pub const LIST_DEPTH_MAX: u32`,
+//!   `pub const WEB_ROOT: &str`, `pub const CLIPBOARD_PENDING: &str`,
+//!   `pub const CLIPBOARD_BYTES_MAX: usize`
+//! - `pub struct Spawned`, `Spawned::try_finish`
+//! - processes: `pub fn spawn`, `pub fn spawn_start`
+//! - files: `pub fn read`, `read_tail`, `exists`, `is_dir`, `write_atomic`, `append`,
+//!   `remove`, `remove_tree`, `mtime_unix_s`, `list_files`
+//! - projects in and out: `pub fn export`, `export_project`, `import_project`, `mount_then`
+//!   (web)
+//! - clipboard: `pub fn clipboard_set`, `clipboard_get`, `clipboard_ready`, `wake_ms`
+//! - environment: `pub fn args`, `env_var`, `state_dir`, `unix_ms`, `seed`
 
 use std::path::{Path, PathBuf};
+
+// WASI (the CLI under a wasm runtime, CI's determinism job) has `std::fs`: it takes the native
+// path. Only the browser (`wasm32-unknown-unknown`) lacks a file system.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+mod native;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod opfs;
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+mod vfs;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod web;
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+use native as imp;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use web as imp;
 
 /// Directory entries visited per listing; deeper or larger trees are cut (a library is one
 /// directory of cells, D10, so real ones are far below this).
@@ -21,277 +52,18 @@ pub const WEB_ROOT: &str = "/projects/default";
 /// The error [`clipboard_get`] returns on the web while the browser has not answered yet;
 /// [`clipboard_ready`] turns true once it has (web spec §4). Never returned natively.
 pub const CLIPBOARD_PENDING: &str = "clipboard: waiting for the browser";
+/// Bytes read from the system clipboard at most (a fragment of 2^22 records is far below).
+pub const CLIPBOARD_BYTES_MAX: usize = 64 << 20;
 
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-mod vfs;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod web;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use web as imp;
-
-// WASI (the CLI under a wasm runtime, CI's determinism job) has `std::fs`: it takes the native
-// path. Only the browser (`wasm32-unknown-unknown`) lacks a file system.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-mod imp {
-    use super::*;
-    use std::io::Write;
-
-    /// Plugin-ABI `E_GONE` (§8): a spawned binary that cannot start. Spelled here because
-    /// the headless build has no plugin crate.
-    const E_GONE: i32 = 2;
-
-    pub fn read(path: &Path) -> Result<Vec<u8>, String> {
-        std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
-    }
-
-    pub fn read_tail(path: &Path, max: u64) -> Result<(Vec<u8>, bool), String> {
-        use std::io::{Read, Seek, SeekFrom};
-        let err = |e: std::io::Error| format!("{}: {e}", path.display());
-        let mut f = std::fs::File::open(path).map_err(err)?;
-        let len = f.metadata().map_err(err)?.len();
-        let from = len.saturating_sub(max);
-        f.seek(SeekFrom::Start(from)).map_err(err)?;
-        let mut buf = Vec::new();
-        f.take(max).read_to_end(&mut buf).map_err(err)?;
-        Ok((buf, from > 0))
-    }
-
-    pub fn exists(path: &Path) -> bool {
-        path.exists()
-    }
-
-    pub fn is_dir(path: &Path) -> bool {
-        path.is_dir()
-    }
-
-    /// Writes a sibling temp file, then renames it over `path` (edits spec §5).
-    pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        }
-        let mut tmp = path.as_os_str().to_owned();
-        tmp.push(".schemify-tmp");
-        std::fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-        std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
-    }
-
-    pub fn append(path: &Path, bytes: &[u8]) -> Result<(), String> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        }
-        // ponytail: no fsync batching (edits spec §3 asks ≤ 100 ms); the OS flushes. Add a
-        // timer-driven fsync when the frame loop gets timers.
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        f.write_all(bytes)
-            .map_err(|e| format!("{}: {e}", path.display()))
-    }
-
-    pub fn spawn(cwd: &Path, argv: &[String], stdin: &[u8]) -> (i32, Vec<u8>) {
-        use std::process::{Command, Stdio};
-        let child = Command::new(&argv[0])
-            .args(&argv[1..])
-            .current_dir(cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn();
-        let mut child = match child {
-            Ok(c) => c,
-            Err(e) => {
-                let gone = -E_GONE;
-                return (gone, format!("{}: {e}", argv[0]).into_bytes());
-            }
-        };
-        if let Some(mut pipe) = child.stdin.take() {
-            // A child that exits without reading its input is not an error.
-            let _ = pipe.write_all(stdin);
-        }
-        match child.wait_with_output() {
-            Ok(o) => {
-                let mut bytes = o.stdout;
-                bytes.extend_from_slice(&o.stderr);
-                // A signal kill has no code; report it as a failure, never as success.
-                (o.status.code().unwrap_or(-1).max(-1), bytes)
-            }
-            Err(e) => (-1, e.to_string().into_bytes()),
-        }
-    }
-
-    pub fn remove(path: &Path) -> Result<(), String> {
-        std::fs::remove_file(path).map_err(|e| format!("{}: {e}", path.display()))
-    }
-
-    pub fn remove_tree(path: &Path) -> Result<(), String> {
-        // `symlink_metadata`: a link is removed itself, never followed out of the tree.
-        let meta =
-            std::fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        if meta.is_dir() {
-            std::fs::remove_dir_all(path)
-        } else {
-            std::fs::remove_file(path)
-        }
-        .map_err(|e| format!("{}: {e}", path.display()))
-    }
-
-    pub fn mtime_unix_s(path: &Path) -> Option<u64> {
-        let t = std::fs::metadata(path).ok()?.modified().ok()?;
-        t.duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .map(|d| d.as_secs())
-    }
-
-    /// The platform's clipboard programs: (write argv, read argv) candidates in order.
-    fn clipboard_tools() -> Vec<(Vec<&'static str>, Vec<&'static str>)> {
-        if cfg!(target_os = "macos") {
-            return vec![(vec!["pbcopy"], vec!["pbpaste"])];
-        }
-        if cfg!(target_os = "windows") {
-            return vec![(
-                vec![
-                    "powershell",
-                    "-NoProfile",
-                    "-Command",
-                    "$input | Set-Clipboard",
-                ],
-                vec!["powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw"],
-            )];
-        }
-        let mut t = Vec::new();
-        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-            t.push((vec!["wl-copy"], vec!["wl-paste", "--no-newline"]));
-        }
-        t.push((
-            vec!["xclip", "-selection", "clipboard"],
-            vec!["xclip", "-selection", "clipboard", "-o"],
-        ));
-        t.push((
-            vec!["xsel", "--clipboard", "--input"],
-            vec!["xsel", "--clipboard", "--output"],
-        ));
-        t
-    }
-
-    pub fn clipboard_set(text: &str) -> Result<(), String> {
-        use std::process::{Command, Stdio};
-        let mut last = String::from("no clipboard program");
-        for (write, _) in clipboard_tools() {
-            // stdout/stderr are not piped: X11/Wayland tools fork a server that keeps them
-            // open, and waiting for their end would hang the frame.
-            let child = Command::new(write[0])
-                .args(&write[1..])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn();
-            let mut child = match child {
-                Ok(c) => c,
-                Err(e) => {
-                    last = format!("{}: {e}", write[0]);
-                    continue;
-                }
-            };
-            if let Some(mut pipe) = child.stdin.take() {
-                let _ = pipe.write_all(text.as_bytes());
-            }
-            match child.wait() {
-                Ok(s) if s.success() => return Ok(()),
-                Ok(s) => last = format!("{}: {s}", write[0]),
-                Err(e) => last = format!("{}: {e}", write[0]),
-            }
-        }
-        Err(last)
-    }
-
-    pub fn clipboard_get() -> Result<String, String> {
-        use std::process::Command;
-        let mut last = String::from("no clipboard program");
-        for (_, read) in clipboard_tools() {
-            match Command::new(read[0]).args(&read[1..]).output() {
-                Ok(o) if o.status.success() => {
-                    let mut b = o.stdout;
-                    b.truncate(super::CLIPBOARD_BYTES_MAX);
-                    return String::from_utf8(b).map_err(|_| "clipboard is not UTF-8".into());
-                }
-                Ok(o) => last = format!("{}: {}", read[0], o.status),
-                Err(e) => last = format!("{}: {e}", read[0]),
-            }
-        }
-        Err(last)
-    }
-
-    // The clipboard tools answer synchronously: nothing is ever pending.
-    pub fn clipboard_ready() -> bool {
-        false
-    }
-
-    pub fn wake_ms() -> Option<u32> {
-        None
-    }
-
-    pub fn export(path: &Path, bytes: &[u8]) -> Result<(), String> {
-        write_atomic(path, bytes)
-    }
-
-    pub fn import_project(_folder: bool) -> Result<(), String> {
-        Err("a native project is a directory: open it (schemify edit <dir>)".into())
-    }
-
-    pub fn args() -> Vec<String> {
-        std::env::args().skip(1).collect()
-    }
-
-    pub fn unix_ms() -> u64 {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_millis() as u64)
-        }
-        // WASI (CI's determinism runs under wasmtime): no clock.
-        #[cfg(target_arch = "wasm32")]
-        {
-            0
-        }
-    }
-
-    pub fn seed() -> u64 {
-        #[cfg(not(target_arch = "wasm32"))]
-        let pid = u64::from(std::process::id());
-        #[cfg(target_arch = "wasm32")]
-        let pid = 0u64; // WASI: no process ids
-        unix_ms() ^ (pid << 32) ^ 0x9e37_79b9_7f4a_7c15
-    }
-
-    pub fn list(dir: &Path, depth: u32, skip: &[&Path], out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        let mut paths: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
-        paths.sort();
-        for p in paths {
-            if out.len() >= LIST_FILES_MAX {
-                return;
-            }
-            let hidden = p
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_none_or(|n| n.starts_with('.') || n == "target");
-            if hidden || skip.contains(&p.as_path()) {
-                continue;
-            }
-            if p.is_dir() {
-                if depth < LIST_DEPTH_MAX {
-                    list(&p, depth + 1, skip, out);
-                }
-            } else {
-                out.push(p);
-            }
-        }
-    }
+/// A child process started by [`spawn_start`]: poll it with [`Spawned::try_finish`].
+#[derive(Debug)]
+pub struct Spawned {
+    #[cfg(not(target_arch = "wasm32"))]
+    rx: std::sync::mpsc::Receiver<(i32, Vec<u8>)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    taken: bool,
+    #[cfg(target_arch = "wasm32")]
+    done: Option<(i32, Vec<u8>)>,
 }
 
 /// Runs `argv` (a binary on `PATH` and its arguments; the plugin host already checked the
@@ -307,17 +79,6 @@ mod imp {
 pub fn spawn(cwd: &Path, argv: &[String], stdin: &[u8]) -> (i32, Vec<u8>) {
     assert!(!argv.is_empty(), "spawn needs a binary");
     imp::spawn(cwd, argv, stdin)
-}
-
-/// A child process started by [`spawn_start`]: poll it with [`Spawned::try_finish`].
-#[derive(Debug)]
-pub struct Spawned {
-    #[cfg(not(target_arch = "wasm32"))]
-    rx: std::sync::mpsc::Receiver<(i32, Vec<u8>)>,
-    #[cfg(not(target_arch = "wasm32"))]
-    taken: bool,
-    #[cfg(target_arch = "wasm32")]
-    done: Option<(i32, Vec<u8>)>,
 }
 
 /// Starts [`spawn`] without waiting: the child runs and its pipes drain on a worker thread
@@ -506,9 +267,6 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 pub fn append(path: &Path, bytes: &[u8]) -> Result<(), String> {
     imp::append(path, bytes)
 }
-
-/// Bytes read from the system clipboard at most (a fragment of 2^22 records is far below).
-pub const CLIPBOARD_BYTES_MAX: usize = 64 << 20;
 
 /// Deletes a file.
 ///

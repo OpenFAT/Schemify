@@ -10,6 +10,15 @@
 //!
 //! Pure: no I/O, so both sides (native publish, web fetch) share one parser and one set of
 //! checks, tested natively.
+//!
+//! Contents:
+//! - `pub const MANIFEST: &str`, `pub const STAMP: &str`, `pub const FILES_MAX: usize`
+//! - `pub struct Bench { path, jobs }`
+//! - `pub fn manifest(&[(String, Vec<u8>)]) -> String`
+//! - `pub fn parse(&str) -> Result<Vec<(String, String)>, String>`
+//! - `pub fn matches(&str, &[u8]) -> bool`
+//! - `pub fn project_name(&str) -> Option<&str>`
+//! - `pub fn index_html(&[(String, Vec<Bench>)]) -> String`
 
 use schemify_doc::{hex, sha256};
 
@@ -21,11 +30,42 @@ pub const STAMP: &str = ".schemify/hosted";
 /// Files one hosted project may list (the import limit, web spec §3).
 pub const FILES_MAX: usize = 1 << 16;
 
+/// One published bench on the index page: its path in the project and the jobs of its
+/// newest saved run (`None` when it was never simulated).
+pub struct Bench {
+    /// Path relative to the project root (`lib/tb.shbench`).
+    pub path: String,
+    /// `(done, failed)` job counts of the newest run.
+    pub jobs: Option<(u32, u32)>,
+}
+
+/// The page head and style of [`index_html`].
+const INDEX_HEAD: &str = "<!doctype html>
+<html lang=\"en\">
+<head>
+<meta charset=\"utf-8\">
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+<title>Schemify projects</title>
+<style>
+:root { color-scheme: light dark; --bg: #fafafa; --fg: #1a1a1a; --mute: #666; --ok: #15803d; --fail: #b91c1c; --link: #2563eb; }
+@media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #eee; --mute: #999; --ok: #4ade80; --fail: #f87171; --link: #60a5fa; } }
+body { margin: 0 auto; max-width: 720px; padding: 32px 16px; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+a { color: var(--link); } h2 { font-size: 1.15rem; margin: 24px 0 4px; } ul { margin: 0; padding-left: 20px; }
+span { font-size: .9rem; margin-left: 8px; } .ok { color: var(--ok); } .fail { color: var(--fail); } .none { color: var(--mute); }
+</style>
+</head>
+<body>
+<h1>Schemify projects</h1>
+<p>Opening a project copies it into this browser's storage; your edits stay there until the
+site publishes a new version of it.</p>
+";
+
 /// The manifest text for `files` (`(relative path, bytes)`), sorted by path.
 ///
 /// # Panics
 ///
-/// Panics if a path is unsafe ([`safe_path`]) or listed twice.
+/// Panics if a path is unsafe (empty, absolute, an empty, `.` or `..` segment, or a `\`,
+/// `:` or NUL) or listed twice.
 pub fn manifest(files: &[(String, Vec<u8>)]) -> String {
     let mut rows: Vec<(&str, String)> = files
         .iter()
@@ -87,16 +127,6 @@ pub fn matches(hex_digest: &str, bytes: &[u8]) -> bool {
     hex(&sha256(bytes)) == hex_digest
 }
 
-/// A relative path with no empty, `.` or `..` segment and no `\`, `:` or NUL (the zip
-/// import's rule, web spec §3).
-pub fn safe_path(p: &str) -> bool {
-    !p.is_empty()
-        && !p.starts_with('/')
-        && !p
-            .split('/')
-            .any(|s| s.is_empty() || s == "." || s == ".." || s.contains(['\\', ':', '\0']))
-}
-
 /// The project a page URL argument names (`/projects/<name>` or a path below it), when the
 /// name is one a project directory can have: `A–Z a–z 0–9 . _ -`, not starting with `.`,
 /// at most 64 characters.
@@ -110,15 +140,6 @@ pub fn project_name(arg: &str) -> Option<&str> {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
     ok.then_some(name)
-}
-
-/// One published bench on the index page: its path in the project and the jobs of its
-/// newest saved run (`None` when it was never simulated).
-pub struct Bench {
-    /// Path relative to the project root (`lib/tb.shbench`).
-    pub path: String,
-    /// `(done, failed)` job counts of the newest run.
-    pub jobs: Option<(u32, u32)>,
 }
 
 /// The page `schemify publish` writes at `<site>/projects/index.html`: each project with a
@@ -166,25 +187,17 @@ pub fn index_html(projects: &[(String, Vec<Bench>)]) -> String {
     format!("{INDEX_HEAD}{body}</body>\n</html>\n")
 }
 
-const INDEX_HEAD: &str = "<!doctype html>
-<html lang=\"en\">
-<head>
-<meta charset=\"utf-8\">
-<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
-<title>Schemify projects</title>
-<style>
-:root { color-scheme: light dark; --bg: #fafafa; --fg: #1a1a1a; --mute: #666; --ok: #15803d; --fail: #b91c1c; --link: #2563eb; }
-@media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #eee; --mute: #999; --ok: #4ade80; --fail: #f87171; --link: #60a5fa; } }
-body { margin: 0 auto; max-width: 720px; padding: 32px 16px; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
-a { color: var(--link); } h2 { font-size: 1.15rem; margin: 24px 0 4px; } ul { margin: 0; padding-left: 20px; }
-span { font-size: .9rem; margin-left: 8px; } .ok { color: var(--ok); } .fail { color: var(--fail); } .none { color: var(--mute); }
-</style>
-</head>
-<body>
-<h1>Schemify projects</h1>
-<p>Opening a project copies it into this browser's storage; your edits stay there until the
-site publishes a new version of it.</p>
-";
+// ---- private ----
+
+/// A relative path with no empty, `.` or `..` segment and no `\`, `:` or NUL (the zip
+/// import's rule, web spec §3).
+fn safe_path(p: &str) -> bool {
+    !p.is_empty()
+        && !p.starts_with('/')
+        && !p
+            .split('/')
+            .any(|s| s.is_empty() || s == "." || s == ".." || s.contains(['\\', ':', '\0']))
+}
 
 #[cfg(test)]
 mod tests {
