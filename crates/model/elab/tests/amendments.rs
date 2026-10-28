@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::*;
+use common::{codes, elab, ngspice, project};
 use schemify_doc::Project;
 use schemify_elab::{CellState, Code, Elab, Ignore, Name, Request, elaborate, no_funcs};
 

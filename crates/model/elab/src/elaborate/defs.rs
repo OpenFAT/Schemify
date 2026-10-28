@@ -5,7 +5,7 @@
 //!
 //! Contents:
 //! - `Elaborator::{finish_def, name_defs}` (`pub(super)`)
-//! - `pub(super) struct ParamTuple`
+//! - `pub(super) struct ParamTuple`, `pub(super) struct DefPlace`
 //! - `pub(super) fn tuple(f: &Iface, vals: &[Val], names: &mut Names) -> ParamTuple`
 
 use super::{DefRows, Elaborator, InheritedPin, ParamEntry, RowTmp, Target};
@@ -24,21 +24,29 @@ pub(super) struct ParamTuple {
     pub(super) texts: Vec<Name>,
 }
 
+/// Where a definition is built: what decides its memoization and its inherited ports.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct DefPlace {
+    /// A config `inst` rule reaches below this path: the tuple alone is not memoized.
+    pub(super) sensitive: bool,
+    /// The top definition: inherited pins do not become ports.
+    pub(super) is_top: bool,
+}
+
 impl<'project, F: Funcs> Elaborator<'project, '_, F> {
     /// Returns the definition of cell `ci` with param tuple `tuple` and the rows `body`:
     /// an existing one with the same children signature, else a new [`Defs`] row with its
-    /// ports, inherited pins and instance rows sorted by name. With `sensitive` (a config
-    /// `inst` rule reaches below this path) the tuple alone is not memoized.
+    /// ports, inherited pins and instance rows sorted by name.
     ///
     /// [`Defs`]: super::Defs
     pub(super) fn finish_def(
         &mut self,
         ci: u32,
         tuple: ParamTuple,
-        sensitive: bool,
         body: DefRows,
-        is_top: bool,
+        place: DefPlace,
     ) -> u32 {
+        let DefPlace { sensitive, is_top } = place;
         assert_eq!(
             tuple.names.len(),
             tuple.texts.len(),

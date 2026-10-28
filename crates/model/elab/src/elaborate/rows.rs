@@ -6,6 +6,7 @@
 //! Contents:
 //! - `Elaborator::build_def` (`pub(super)`)
 
+use super::defs::DefPlace;
 use super::{
     COMPUTED, DEFAULT, DEPTH_MAX, DefRows, Elaborator, InheritedPin, OVERRIDDEN, ParamEntry,
     RowTmp, Target, defs,
@@ -72,7 +73,7 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
             });
             return None;
         }
-        let (vals, _unverified) = self.prepare_eval(ci, &own_vals);
+        let vals = self.prepare_eval(ci, &own_vals);
         self.stack.push(ci);
         let doc = self.cells[ci as usize].doc;
         let ni = doc.instances().id.len();
@@ -203,7 +204,7 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
             }
         }
         assert_eq!(self.stack.pop(), Some(ci), "the stack unwinds in order");
-        let d = self.finish_def(ci, tuple, sensitive, out, is_top);
+        let d = self.finish_def(ci, tuple, out, DefPlace { sensitive, is_top });
         assert!(
             (d as usize) < self.defs.cell.len(),
             "finish_def returns a definition"

@@ -145,14 +145,15 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
 
     /// Evaluates cell `ci`'s graph for own-param values `own_vals` and gates the values
     /// (`E008`, D13), building the cell's connectivity and graph first, once per cell, with
-    /// its context-free findings. Returns the values and their unverified flags.
+    /// its context-free findings. Returns the values, one per node (a netlist has no use
+    /// for the unverified flags: the D20 stand-in is the value).
     ///
     /// A large cell (`crate::PARALLEL_MIN` instances, native targets) builds its connectivity on a
     /// second thread while this one builds, evaluates and gates the graph (`funcs` stays
     /// here). The two share only the name arena: the graph side interns nothing and reads
     /// a snapshot, and every interning call happens in the serial order, so names, values
     /// and findings are the serial ones (D37: jobs = 1 vs N byte-identical).
-    pub(super) fn prepare_eval(&mut self, ci: u32, own_vals: &[Val]) -> (Vec<Val>, Vec<bool>) {
+    pub(super) fn prepare_eval(&mut self, ci: u32, own_vals: &[Val]) -> Vec<Val> {
         assert_eq!(
             own_vals.len(),
             self.ifaces[ci as usize].param_name.len(),
@@ -188,7 +189,8 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
                 &mut gated,
             );
             self.viol.append(&mut gated);
-            return (vals, unv);
+            assert_eq!(vals.len(), cell.graph.len(), "one value per node");
+            return vals;
         }
         self.resolve(ci);
         let doc = self.cells[ci as usize].doc;
@@ -273,8 +275,9 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
         cell.graph = graph;
         cell.waivers = waiv;
         cell.prepared = true;
-        assert_eq!(vals.len(), cell.graph.len());
-        (vals, unv)
+        assert_eq!(vals.len(), cell.graph.len(), "one value per node");
+        assert_eq!(unv.len(), vals.len(), "value columns in step");
+        vals
     }
 
     /// Default values of cell `ci`'s own params (its defaults evaluated in its own

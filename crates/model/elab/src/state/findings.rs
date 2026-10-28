@@ -3,6 +3,7 @@
 //! pass delta ([`CellState::changes`]) out; or the full check pass.
 //!
 //! Contents:
+//! - `pub(super) enum OwnScope`
 //! - `CellState::check`, `CellState::next_pass`, `CellState::apply_net_delta`,
 //!   `CellState::recheck` (`pub(super)`)
 
@@ -15,6 +16,15 @@ use schemify_doc::{Document, ObjId};
 use std::cmp::Ordering;
 use std::mem;
 use std::sync::atomic::{self, AtomicU64};
+
+/// Whether a recheck covers the own scope's `E008` rows besides the instance rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum OwnScope {
+    /// No own-scope value changed: its rows stay.
+    Kept,
+    /// An own var or param changed value: its rows are rechecked too.
+    Rechecked,
+}
 
 /// Process-unique check pass ids (0 is "no pass").
 static PASSES: AtomicU64 = AtomicU64::new(1);
@@ -158,7 +168,7 @@ impl CellState {
     }
 
     /// Reruns the per-instance checks of instance rows `rows` (sorted, unique) and, with
-    /// `own`, the own scope's `E008` rows, and replaces those rows of the table. Returns what
+    /// [`OwnScope::Rechecked`], the own scope's `E008` rows, and replaces those rows of the table. Returns what
     /// the table lost and gained (key order; a row whose key stayed but whose detail changed
     /// is in both), or `None` near [`crate::VIOLATIONS_MAX`] (the caller runs the full pass,
     /// which truncates).
@@ -173,7 +183,7 @@ impl CellState {
         &mut self,
         doc: &Document,
         rows: &[u32],
-        own: bool,
+        own: OwnScope,
         funcs: &mut F,
     ) -> Option<Delta> {
         assert!(
@@ -183,7 +193,7 @@ impl CellState {
         if self.violations.rows.len() >= crate::VIOLATIONS_MAX / 2 {
             return None;
         }
-        if rows.is_empty() && !own {
+        if rows.is_empty() && own == OwnScope::Kept {
             return Some(Delta::default());
         }
         let fresh = self.fresh_rows(doc, rows, own, funcs);
@@ -252,17 +262,17 @@ impl CellState {
 // ---- private ----
 
 impl CellState {
-    /// The per-instance findings of instance rows `rows` (and the own scope's with `own`),
-    /// sorted and one per key.
+    /// The per-instance findings of instance rows `rows` (and the own scope's with
+    /// [`OwnScope::Rechecked`]), sorted and one per key.
     fn fresh_rows<F: Funcs>(
         &mut self,
         doc: &Document,
         rows: &[u32],
-        own: bool,
+        own: OwnScope,
         funcs: &mut F,
     ) -> Vec<Violation> {
         let g = &self.graph;
-        let mut nodes: Vec<u32> = if own {
+        let mut nodes: Vec<u32> = if own == OwnScope::Rechecked {
             (0..g.params + g.vars).collect()
         } else {
             Vec::new()
@@ -304,11 +314,12 @@ impl CellState {
     }
 
     /// Indices of the table rows the per-instance checks wrote last time for `rows` (and
-    /// the own scope with `own`), ascending: per code, a run sorted by object (one cell).
-    fn old_rows(&self, doc: &Document, rows: &[u32], own: bool) -> Vec<usize> {
+    /// the own scope with [`OwnScope::Rechecked`]), ascending: per code, a run sorted by
+    /// object (one cell).
+    fn old_rows(&self, doc: &Document, rows: &[u32], own: OwnScope) -> Vec<usize> {
         let inst = doc.instances();
         let mut objs: Vec<ObjId> = rows.iter().map(|&r| inst.id[r as usize]).collect();
-        if own {
+        if own == OwnScope::Rechecked {
             objs.push(ObjId::NONE);
         }
         objs.sort_unstable();

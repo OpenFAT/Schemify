@@ -1,7 +1,7 @@
 //! Shared test helpers: projects from file texts, ids, a seeded RNG, random schematics,
 //! the naive O(n²) connectivity oracle, and partition comparison.
 
-#![allow(dead_code)] // each test binary uses a subset
+#![allow(dead_code, reason = "each test binary uses a subset")]
 
 use schemify_doc::{DocHandle, Document, Project};
 use schemify_elab::{CellNets, Dialect, Elab, Request, elaborate, no_funcs};

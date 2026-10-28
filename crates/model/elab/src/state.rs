@@ -13,10 +13,12 @@
 //! - `pub enum NetChange`
 //! - `pub struct Recomputed`
 //! - `pub struct CellState`: `build`, `recompute`
-//! - `pub(crate) fn subject(op: &Op) -> (RecordKind, &str, Option<&str>)`
+//! - `pub(crate) struct Subject`, `pub(crate) fn subject(op: &Op) -> Subject<'_>`
 
 mod findings;
 mod revalue;
+
+use findings::OwnScope;
 
 use crate::cells::{self, CellName};
 use crate::connect::{self, Cx};
@@ -95,6 +97,14 @@ pub struct CellState {
     live: Live,
     waivers: Vec<(ObjId, Name)>,
     ws: Work,
+}
+
+/// The record an op is about.
+pub(crate) struct Subject<'op> {
+    pub(crate) kind: RecordKind,
+    pub(crate) key: &'op str,
+    /// The attribute key, for attribute ops.
+    pub(crate) attr: Option<&'op str>,
 }
 
 /// A finding's key as raw handles: (code, cell, object, path, param).
@@ -265,7 +275,11 @@ impl CellState {
         }
         // The value delta: instance rows owning a node whose value changed.
         let owner = &self.graph.owner;
-        let own = changed.iter().any(|&n| owner[n as usize] == NONE);
+        let own = if changed.iter().any(|&n| owner[n as usize] == NONE) {
+            OwnScope::Rechecked
+        } else {
+            OwnScope::Kept
+        };
         self.revalued.clear();
         let revalued = changed.iter().map(|&n| owner[n as usize]);
         self.revalued.extend(revalued.filter(|&o| o != NONE));
@@ -326,14 +340,14 @@ impl CellState {
     }
 }
 
-/// The record an op is about: (kind, key, attribute key for attribute ops).
-pub(crate) fn subject(op: &Op) -> (RecordKind, &str, Option<&str>) {
+/// Returns the record an op is about.
+pub(crate) fn subject(op: &Op) -> Subject<'_> {
     let (kind, key) = op.subject();
     let attr: Option<&str> = match op {
         Op::SetAttr { key, .. } | Op::RemoveAttr { key, .. } => Some(key.as_str()),
         _ => None,
     };
-    (kind, key, attr)
+    Subject { kind, key, attr }
 }
 
 // ---- private ----
@@ -344,7 +358,7 @@ impl<'o> Touched<'o> {
     fn of(ops: &'o [Op], doc: &Document) -> Option<Touched<'o>> {
         let mut t = Touched::default();
         for op in ops {
-            let (kind, key, attr) = subject(op);
+            let Subject { kind, key, attr } = subject(op);
             let attr_op = matches!(op, Op::SetAttr { .. } | Op::RemoveAttr { .. });
             match kind {
                 RecordKind::Wire | RecordKind::Label | RecordKind::Port | RecordKind::Noconn => {

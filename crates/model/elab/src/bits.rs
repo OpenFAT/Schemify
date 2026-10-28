@@ -25,6 +25,7 @@ use crate::values::NONE;
 use crate::violations::{Code, Violation};
 use schemify_doc::ObjId;
 use std::cmp::Ordering;
+use std::ops::Range;
 
 /// The slots of one `connect` run: component bits first (`start[c]..start[c + 1]`), then
 /// one per own pin bit and per override bit.
@@ -135,8 +136,8 @@ pub(crate) fn slots(
     }
     // Own interface pins (ports and inherited pins bind by name).
     for p in 0..cx.own.pin_name.len() {
-        let (a, b) = sl.name_slots(cx, cx.own.bits(p), PORT, names);
-        sl.port.extend(a..b);
+        let fresh = sl.name_slots(cx, cx.own.bits(p), PORT, names);
+        sl.port.extend(fresh);
         sl.port_start.push(sl.port.len() as u32);
     }
     sl.overrides(cx, names, cn, out);
@@ -418,7 +419,6 @@ pub(crate) fn domains(bits: &BitNets) -> DomainCounts {
             other[b] += 1;
         }
     }
-    assert_eq!(real.len(), other.len());
     let total: u64 = real.iter().chain(&other).map(|&n| u64::from(n)).sum();
     assert_eq!(
         total,
@@ -431,14 +431,14 @@ pub(crate) fn domains(bits: &BitNets) -> DomainCounts {
 // ---- private ----
 
 impl Slots {
-    /// Fresh slots for the bits `text_bits` bound by name in `class`: `(first, end)`.
+    /// Fresh slots for the bits `text_bits` bound by name in `class`.
     fn name_slots(
         &mut self,
         cx: &Cx<'_>,
         text_bits: &[Name],
         class: u8,
         names: &Names,
-    ) -> (u32, u32) {
+    ) -> Range<u32> {
         let first = self.count;
         for &b in text_bits {
             self.pairs.push(NamedSlot {
@@ -449,7 +449,7 @@ impl Slots {
             self.count += 1;
         }
         assert_eq!(self.count - first, text_bits.len() as u32);
-        (first, self.count)
+        first..self.count
     }
 
     /// The `inherit <pin> <net>` override slots of every instance. A declared inherited
@@ -497,10 +497,10 @@ impl Slots {
                         continue;
                     }
                 }
-                let (a, b) = self.name_slots(cx, &tmp, LABEL, names);
+                let fresh = self.name_slots(cx, &tmp, LABEL, names);
                 cn.inh_inst.push(i as u32);
                 cn.inh_pin.push(pin_name);
-                self.inh.extend(a..b);
+                self.inh.extend(fresh);
                 self.inh_start.push(self.inh.len() as u32);
             }
         }

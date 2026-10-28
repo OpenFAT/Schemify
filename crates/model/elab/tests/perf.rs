@@ -9,7 +9,7 @@
 
 mod common;
 
-use common::*;
+use common::{DEV, Mix, c, codes, id, ngspice, project};
 use schemify_doc::{Edit, EditRequest, Mode, Op, Outcome, Target, Transaction, apply_edits};
 use schemify_elab::Names;
 use schemify_elab::test_support::iface;

@@ -59,9 +59,11 @@
 
 #![forbid(unsafe_code)]
 #![deny(rustdoc::broken_intra_doc_links)]
-// Tables are SoA: loops index several parallel columns by one row, which is clearer
-// than zipping four iterators.
-#![allow(clippy::needless_range_loop)]
+#![allow(
+    clippy::needless_range_loop,
+    reason = "tables are SoA: a loop indexes several parallel columns by one row, which \
+              reads clearer than zipping four iterators"
+)]
 
 mod annotate;
 mod bits;

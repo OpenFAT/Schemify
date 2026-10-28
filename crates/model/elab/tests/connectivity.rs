@@ -5,7 +5,9 @@
 
 mod common;
 
-use common::*;
+use common::{
+    DEV, Mix, c, canon, id, naive_partition, place_ref, project, random_bench, real_partition,
+};
 use proptest::prelude::*;
 use schemify_doc::{DocHandle, Project};
 use schemify_elab::{CellState, Code, NO_NET, no_funcs};

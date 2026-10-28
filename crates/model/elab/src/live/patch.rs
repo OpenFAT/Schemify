@@ -13,7 +13,7 @@ use super::{
 use crate::names::{Name, Names};
 use crate::netcheck;
 use crate::nets::{self, CellNets};
-use crate::state;
+use crate::state::{self, Subject};
 use crate::values::NONE;
 use schemify_doc::{Document, ObjId, Op};
 use schemify_format::RecordKind;
@@ -267,7 +267,7 @@ impl Live {
         // Records named by content ops.
         let mut named: Vec<(usize, ObjId)> = Vec::new();
         for op in ops {
-            let (kind, key, attr) = state::subject(op);
+            let Subject { kind, key, attr } = state::subject(op);
             let t = match kind {
                 RecordKind::Wire => WIRES,
                 RecordKind::Label => LABELS,
