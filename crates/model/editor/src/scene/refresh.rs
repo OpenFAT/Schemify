@@ -10,6 +10,8 @@
 //! - `pub(super) fn counts`
 //! - `pub(super) fn stamped`
 
+use std::ops::Range;
+
 use schemify_canvas::{CanvasPrims, LineStyle};
 use schemify_doc::{DocHandle, ObjId, Project, TableId, Write};
 use schemify_elab::CellState;
@@ -38,6 +40,7 @@ impl Build<'_> {
     /// Records the owner and stamp of a row just pushed to kind `kind` (`o == u32::MAX`: a
     /// junction dot, which takes a stamp of its own).
     pub(super) fn owned(&mut self, kind: usize, o: u32) {
+        debug_assert!(kind < 6, "a primitive kind");
         let s = match o {
             u32::MAX => self.sc.objs.fresh_stamp(),
             o => self.sc.objs.stamp[o as usize],
@@ -46,11 +49,21 @@ impl Build<'_> {
         debug_assert!(stamps[kind].last().is_none_or(|&l| l <= s), "stamps ascend");
         stamps[kind].push(s);
         self.sc.owner.cols_mut()[kind].push(o);
+        debug_assert_eq!(
+            self.sc.stamps.cols()[kind].len(),
+            self.sc.owner.cols()[kind].len(),
+            "owner and stamp columns in step"
+        );
     }
     /// A connection point of object `o`.
     pub(super) fn conn_at(&mut self, p: Pt, o: u32) {
         self.sc.conn.push((p, o));
         self.sc.conn_stamp.push(self.sc.objs.stamp[o as usize]);
+        debug_assert_eq!(
+            self.sc.conn.len(),
+            self.sc.conn_stamp.len(),
+            "columns in step"
+        );
     }
     pub(super) fn line(&mut self, a: Pt, b: Pt, layer: u8, style: LineStyle, o: u32) {
         self.sc.prims.line_styled(a.0, a.1, b.0, b.1, layer, style);
@@ -83,6 +96,7 @@ impl Build<'_> {
         self.grow(c.0 + r, c.1 + r);
     }
     pub(super) fn poly(&mut self, pts: &[Pt], closed: bool, layer: u8, style: LineStyle, o: u32) {
+        debug_assert!(pts.len() >= 2, "a polyline has two points");
         self.sc.prims.poly_styled(pts, closed, layer, style);
         self.owned(if closed { 4 } else { 3 }, o);
         for p in pts {
@@ -93,7 +107,6 @@ impl Build<'_> {
     pub(super) fn text(&mut self, at: Pt, size: i32, layer: u8, s: &str, o: u32) -> [i32; 4] {
         self.text_rot(at, size, layer, s, 0, o)
     }
-    /// Text turned `rot` quarter turns clockwise about `at`; returns its box.
     /// Draws `s` turned `rot` clockwise quarter turns about `at`; returns its box. Text is
     /// never drawn upside down (format spec §3): a half turn draws the glyphs upright and a
     /// three-quarter turn as a quarter turn, from the far corner of the turned box, so the
@@ -375,7 +388,7 @@ pub(super) fn counts(sc: &Scene) -> [usize; 6] {
 }
 
 /// The rows (or connection points) carrying stamp `s` in a non-decreasing stamp column.
-pub(super) fn stamped(col: &[u32], s: u32) -> std::ops::Range<usize> {
+pub(super) fn stamped(col: &[u32], s: u32) -> Range<usize> {
     let lo = col.partition_point(|&x| x < s);
     let hi = lo + col[lo..].partition_point(|&x| x == s);
     assert!(hi <= col.len());

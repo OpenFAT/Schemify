@@ -7,6 +7,7 @@
 //! - `pub fn load_image`
 //! - `pub(super) fn png_size`
 
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use png::{ColorType, Decoder, Transformations};
@@ -149,7 +150,7 @@ fn decode_png(bytes: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
     // `load_image` checked the header, so the pixel count fits a u32 and the buffers.
     assert!((1..=IMAGE_SIDE_MAX).contains(&w), "width {w}");
     assert!((1..=IMAGE_SIDE_MAX).contains(&h), "height {h}");
-    let mut decoder = Decoder::new(std::io::Cursor::new(bytes));
+    let mut decoder = Decoder::new(Cursor::new(bytes));
     decoder.set_transformations(Transformations::normalize_to_color8() | Transformations::ALPHA);
     let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
     let mut buf = vec![0; reader.output_buffer_size().ok_or("image too large")?];

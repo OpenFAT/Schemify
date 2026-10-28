@@ -20,10 +20,12 @@
 //!   `Shell::refresh`, `Shell::invalidate`, `Shell::sym`, `Shell::canvas_rect`,
 //!   `Shell::palette`
 
+use std::fmt;
+
 use schemify_canvas::{LAYERS, Palette};
 use schemify_ui::{
     Contribution, Edit, Kind, Rect, Strings, StyleProp, Sym, TextSystem, UiLayout, UiState,
-    UiTables, compose, layout, patch_last, records,
+    UiTables, records,
 };
 
 use crate::checks::{LAYER_ANNOT, LAYER_DIFF, LAYER_ERROR, LAYER_HILITE, LAYER_INFO, LAYER_WARN};
@@ -95,8 +97,8 @@ pub struct Shell {
     laid_out: Option<(f32, f32)>,
 }
 
-impl std::fmt::Debug for Shell {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Shell {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Shell")
             .field("nodes", &self.tables.nodes.len())
             .field("plugins", &self.plugins.len())
@@ -224,7 +226,7 @@ impl Shell {
             rejects.is_empty(),
             "state contribution rejects: {rejects:?}\n{text}"
         );
-        if self.composed && patch_last(&mut self.tables, &self.state, &c) {
+        if self.composed && schemify_ui::patch_last(&mut self.tables, &self.state, &c) {
             self.laid_out = None;
         } else {
             self.composed = false;
@@ -258,12 +260,12 @@ impl Shell {
             } else {
                 &self.base
             };
-            self.tables = compose(&self.strings, base, &all);
+            self.tables = schemify_ui::compose(&self.strings, base, &all);
             self.composed = true;
         }
         let stale = recompose || relayout || self.laid_out != Some(viewport);
         if stale && viewport.0 > 0.0 && viewport.1 > 0.0 {
-            self.layout = layout(
+            self.layout = schemify_ui::layout(
                 &self.tables,
                 &self.strings,
                 &mut self.text,

@@ -10,8 +10,7 @@
 //! - `pub(super) fn push_req`
 
 use schemify_doc::{
-    DocHandle, Document, Edit, EditRequest, Mode, Op, Outcome, TableId, Transaction, apply_edits,
-    ops_from_text,
+    DocHandle, Document, Edit, EditRequest, Mode, Op, Outcome, TableId, Transaction,
 };
 use schemify_plugin::abi::Event;
 use schemify_ui::{CommandRequests, Sym};
@@ -107,7 +106,7 @@ impl Editor {
             let Some(kind) = self.session.project.doc(doc).map(Document::kind) else {
                 continue;
             };
-            match ops_from_text(&text, kind) {
+            match schemify_doc::ops_from_text(&text, kind) {
                 Ok(ops) => {
                     let mode = if stage { Mode::Stage } else { Mode::Commit };
                     push_req(reqs, doc, Edit::Tx(Transaction { label, mode, ops }));
@@ -183,7 +182,7 @@ impl Editor {
                 docs::drop_stale_caches(doc, &mut tx.ops);
             }
         }
-        let outcomes = apply_edits(&mut self.session.project, reqs);
+        let outcomes = schemify_doc::apply_edits(&mut self.session.project, reqs);
         assert_eq!(outcomes.len(), reqs.len());
         let mut changed = false;
         for (r, o) in reqs.iter().zip(&outcomes) {

@@ -51,7 +51,6 @@ use schemify_canvas::CanvasPrims;
 use schemify_doc::{Document, ObjId, RecordBuf, TableId};
 use schemify_elab::{
     AnnotationRequest, Annotations, CellState, Mark, Name, Names, Severity, Violation, Violations,
-    violation_marks,
 };
 
 use crate::geometry::{Pt, Xform};
@@ -324,7 +323,7 @@ pub fn members(doc: &Document, cell: &CellState, comps: &[u32]) -> Members {
 #[must_use]
 pub fn violation_request(cell: &CellState, doc: &Document) -> AnnotationRequest {
     let s = doc.strings();
-    let req = violation_marks(&cell.violations, &cell.names, |raw| {
+    let req = schemify_elab::violation_marks(&cell.violations, &cell.names, |raw| {
         // An id from another arena (an alias the document lost) cannot be drawn: name it.
         let id = ObjId(raw);
         if id.is_alias() && doc.find_id(id).is_none() {
@@ -362,7 +361,7 @@ pub fn violation_marks_of(
         rows: rows.to_vec(),
     };
     let s = doc.strings();
-    let req = violation_marks(&v, &cell.names, |raw| ObjId(raw).text(s));
+    let req = schemify_elab::violation_marks(&v, &cell.names, |raw| ObjId(raw).text(s));
     assert_eq!(req.marks.len(), rows.len());
     Some(req.marks)
 }

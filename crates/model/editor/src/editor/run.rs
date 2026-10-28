@@ -7,7 +7,7 @@
 //! - `Editor::track_stage`
 
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use schemify_doc::{DocHandle, Document, ObjId, Op, TableId};
 #[cfg(not(target_arch = "wasm32"))]
@@ -111,15 +111,13 @@ impl Editor {
             self.session.say("this is already a bench");
             return;
         }
-        let Some(path) = self.session.path(h).map(std::path::Path::to_path_buf) else {
+        let Some(path) = self.session.path(h).map(Path::to_path_buf) else {
             return;
         };
         let stem = path
             .file_stem()
             .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
-        let dir = path
-            .parent()
-            .map_or_else(PathBuf::new, std::path::Path::to_path_buf);
+        let dir = path.parent().map_or_else(PathBuf::new, Path::to_path_buf);
         let Some(file) = (0..BENCH_NAMES_MAX)
             .map(|k| {
                 let name = if k == 0 {

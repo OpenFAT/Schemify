@@ -58,6 +58,7 @@ mod results;
 mod start;
 mod table;
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use schemify_doc::DocHandle;
@@ -254,8 +255,8 @@ enum Request {
 /// Bytes read from the end of a log file to find its tail.
 const LOG_TAIL_BYTES: u64 = 8 << 10;
 
-impl std::fmt::Debug for Sim {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Sim {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Sim")
             .field("runs", &self.runs.len())
             .field("shown", &self.shown)

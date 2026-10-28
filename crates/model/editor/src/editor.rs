@@ -72,6 +72,9 @@ mod text;
 mod tool;
 mod values;
 
+use std::borrow::Cow;
+use std::cell::RefCell;
+use std::fmt;
 use std::path::PathBuf;
 
 use schemify_canvas::{CanvasPrims, Marks, Palette};
@@ -217,7 +220,7 @@ pub struct Editor {
     ui_stale: bool,
     /// The state contribution's block of commands refused by the active file kind, and the
     /// key it was made for (see `state_contribution`); a projection cache.
-    kind_block: std::cell::RefCell<(Option<u64>, String)>,
+    kind_block: RefCell<(Option<u64>, String)>,
     /// Derived values of the active level's document (owner: `elab`; D19, D20).
     cell: Option<CellState>,
     /// What `cell` is current for: (document, its edit epoch, plugin composition epoch).
@@ -348,8 +351,8 @@ pub struct Editor {
 /// ~1 ms of sha256, so the 6 MB of a 100k-object cell take a few dozen ticks after it opens.
 const IDLE_STEP_BYTES: usize = 128 << 10;
 
-impl std::fmt::Debug for Editor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Editor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Editor")
             .field("tabs", &self.session.tabs().len())
             .field("tool", &self.tool)
@@ -421,9 +424,9 @@ impl Editor {
                     self.shell.invalidate();
                     changed = true;
                 }
-                (std::borrow::Cow::Owned(mine), view)
+                (Cow::Owned(mine), view)
             }
-            false => (std::borrow::Cow::Borrowed(events), viewport),
+            false => (Cow::Borrowed(events), viewport),
         };
         let events: &InputEvents = &events;
         let snapshot_due = std::mem::take(&mut self.snapshot_due);
@@ -586,6 +589,7 @@ pub(crate) fn has_view(kind: FileKind, view: View) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::path::Path;
 
     use schemify_doc::TableId;
@@ -653,7 +657,7 @@ mod tests {
             ed.set_selection(sel);
             ed.update(&InputEvents::default(), (1280.0, 800.0), 2 + round);
             let hits: Vec<u32> = (0..next(n)).map(|_| next(n)).collect();
-            let gone: std::collections::BTreeSet<ObjKey> = hits
+            let gone: BTreeSet<ObjKey> = hits
                 .iter()
                 .map(|&o| ed.scene.objs.key[o as usize])
                 .collect();

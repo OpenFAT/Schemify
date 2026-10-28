@@ -244,8 +244,6 @@ pub fn button_row(node: &str, section: &str, action: &str) -> Option<u32> {
 
 // ---- private ----
 
-// ------------------------------------------------------------------- projection
-
 // ------------------------------------------------------------------------ reads
 
 fn names(doc: &Document, table: TableId, n: usize) -> Vec<String> {
@@ -316,8 +314,6 @@ fn record(doc: &Document, table: TableId, row: u32) -> Option<RecordBuf> {
     );
     rec
 }
-
-// ------------------------------------------------------------------------ edits
 
 // ------------------------------------------------------------------- bench tables
 

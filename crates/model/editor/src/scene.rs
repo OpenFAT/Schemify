@@ -39,6 +39,7 @@ mod symbols;
 mod symview;
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use schemify_canvas::CanvasPrims;
 use schemify_doc::{Cursor, DocHandle, TableId};
@@ -166,7 +167,7 @@ const DOT_R: i32 = 3_700;
 
 /// Object key → object index ([`Scene::find`]); keys packed into a `u64`, hashed with one
 /// multiply (never iterated, so the order is never seen).
-type KeyMap = HashMap<u64, u32, std::hash::BuildHasherDefault<KeyHasher>>;
+type KeyMap = HashMap<u64, u32, BuildHasherDefault<KeyHasher>>;
 
 /// One multiply per key: object ids are random 30-bit values, so their bits spread already.
 #[derive(Default)]
@@ -233,7 +234,7 @@ impl Objects {
     }
 }
 
-impl std::hash::Hasher for KeyHasher {
+impl Hasher for KeyHasher {
     fn finish(&self) -> u64 {
         self.0
     }

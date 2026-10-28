@@ -15,7 +15,9 @@
 //! - `Sim::refresh_table`
 //! - `pub(super) fn plot`
 
+use std::cmp::Ordering;
 use std::fmt::Write as _;
+use std::ops::Range;
 use std::path::Path;
 
 use schemify_elab::{AnnotationRequest, Mark, Severity};
@@ -345,9 +347,9 @@ impl Sim {
                     Col::State => (jobs.state(ja) as u8).cmp(&(jobs.state(jb) as u8)),
                     Col::Output(o) => match (res.value(ja, o), res.value(jb, o)) {
                         (Some(x), Some(y)) => x.total_cmp(&y),
-                        (Some(_), None) => std::cmp::Ordering::Less,
-                        (None, Some(_)) => std::cmp::Ordering::Greater,
-                        (None, None) => std::cmp::Ordering::Equal,
+                        (Some(_), None) => Ordering::Less,
+                        (None, Some(_)) => Ordering::Greater,
+                        (None, None) => Ordering::Equal,
                     },
                     Col::Spec(s) => rank(res.pass(ja, s)).cmp(&rank(res.pass(jb, s))),
                 };
@@ -372,7 +374,7 @@ impl Sim {
 pub(super) fn plot(jobs: &[Vec<RawPlot>], expr: &str) -> Result<Waves, String> {
     assert!(!jobs.is_empty(), "a plot overlays one job at least");
     let mut data: Vec<RawPlot> = Vec::new();
-    let mut ranges: Vec<std::ops::Range<usize>> = Vec::with_capacity(jobs.len());
+    let mut ranges: Vec<Range<usize>> = Vec::with_capacity(jobs.len());
     for job in jobs {
         // The viewer's cap (its dataset indices are u8).
         if data.len() + job.len() > schemify_wave::MAX_DATASETS {

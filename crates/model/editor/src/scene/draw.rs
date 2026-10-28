@@ -15,6 +15,7 @@
 //! - `pub(super) fn placed`
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use schemify_canvas::LineStyle;
 use schemify_doc::{DocHandle, Document, Project, Sym, TableId};
@@ -206,7 +207,7 @@ pub(super) fn wire(b: &mut Build<'_>, doc: &Document, i: usize) {
 
 /// Labels, ports, noconns, texts and shapes of rows `rows` (clamped to each table) in that
 /// order.
-pub(super) fn other_objects(b: &mut Build<'_>, doc: &Document, rows: std::ops::Range<usize>) {
+pub(super) fn other_objects(b: &mut Build<'_>, doc: &Document, rows: Range<usize>) {
     assert!(rows.start <= rows.end, "an ordered row range");
     for table in [
         TableId::Labels,

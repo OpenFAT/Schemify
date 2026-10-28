@@ -10,6 +10,8 @@
 //! - `pub(super) fn arc_beziers`
 //! - `pub(super) fn page_ops`
 
+use std::collections::BTreeMap;
+
 use schemify_canvas::{CanvasPrims, LAYERS, LineStyle};
 use schemify_ui::FontGlyph;
 
@@ -25,7 +27,7 @@ pub(super) enum Lang {
 
 /// Glyphs one face prints: glyph id → (advance in font units, a character it prints).
 /// Ordered, so the font tables written from it are deterministic.
-pub(super) type Glyphs = std::collections::BTreeMap<u16, (u16, char)>;
+pub(super) type Glyphs = BTreeMap<u16, (u16, char)>;
 
 /// Glyphs the texts of a document print, per [`schemify_ui::ui_fonts`] face; a face with
 /// none is not embedded.

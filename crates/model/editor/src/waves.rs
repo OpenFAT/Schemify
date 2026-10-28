@@ -15,11 +15,13 @@
 //! - `pub fn spice_device`
 //! - `pub fn current_probe`
 
+use std::fmt;
+
 use crate::editor::{DockPicture, UiView};
 use schemify_ui::waves::{DialogFx, Effect, Geometry, PROPS_DIALOG, WAVES_UI, WaveUi};
 use schemify_ui::{
     Chord, Contribution, InputEvent, InputEvents, Key, Mods, Routed, Strings, Sym, TextSystem,
-    UiLayout, UiState, UiTables, compose, layout, records, route_input,
+    UiLayout, UiState, UiTables, records,
 };
 use schemify_wave::{Applied, MAX_DATASETS, RawPlot, Request, Waves};
 
@@ -43,8 +45,8 @@ pub struct WavesView {
     pub title: String,
 }
 
-impl std::fmt::Debug for WavesView {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for WavesView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WavesView")
             .field("title", &self.title)
             .finish()
@@ -91,12 +93,12 @@ impl WavesView {
     fn rebuild(&mut self) {
         for _ in 0..3 {
             self.session = self.ui.contribute(&self.waves, &mut self.strings);
-            self.tables = compose(
+            self.tables = schemify_ui::compose(
                 &self.strings,
                 &self.base,
                 &[(self.session_name, &self.session)],
             );
-            self.frame = layout(
+            self.frame = schemify_ui::layout(
                 &self.tables,
                 &self.strings,
                 &mut self.text,
@@ -143,7 +145,7 @@ impl WavesView {
             self.rebuild();
         }
         let mut routed = std::mem::take(&mut self.routed);
-        route_input(
+        schemify_ui::route_input(
             &self.tables,
             &self.frame,
             &self.strings,
