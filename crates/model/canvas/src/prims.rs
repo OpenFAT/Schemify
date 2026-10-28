@@ -14,7 +14,7 @@
 //! - `pub struct LineStyle(pub u8)`, `LineStyle::PLAIN`, `WEIGHT_MAX`, `DASH_MAX`, `new`,
 //!   `weight`, `dash`, `filled`, `fills`
 
-use crate::row::{TABLES, layers_mut};
+use crate::row::{self, TABLES};
 use crate::{LAYER_DEAD, LAYERS};
 
 /// Two points per row: a line segment, or (as [`Rects`]) the opposite corners of a rectangle.
@@ -125,9 +125,12 @@ pub struct CanvasPrims {
 pub struct LineStyle(pub u8);
 
 const FILL: u8 = 1 << 6;
+/// The bits [`LineStyle::new`] and [`LineStyle::filled`] may set: weight, dash, fill.
+const PACKED: u8 = 0b0111_1111;
 
 const _: () = assert!(LineStyle::WEIGHT_MAX - 1 <= 0b11, "weight fits bits 0–1");
 const _: () = assert!(LineStyle::DASH_MAX <= 0b1111, "dash fits bits 2–5");
+const _: () = assert!(FILL & PACKED == FILL, "the fill bit is packed");
 
 impl CanvasPrims {
     /// Maximum rows per kind; row indices and CSR offsets fit `u32`.
@@ -142,7 +145,8 @@ impl CanvasPrims {
         self.lines.push(x0, y0, x1, y1, layer, LineStyle::PLAIN);
     }
 
-    /// Appends a segment drawn in `style`; panics as [`CanvasPrims::line`].
+    /// Appends a segment drawn in `style`; panics as [`CanvasPrims::line`], and if `style` has
+    /// a bit no [`LineStyle`] constructor sets.
     pub fn line_styled(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, layer: u8, style: LineStyle) {
         self.lines.push(x0, y0, x1, y1, layer, style);
     }
@@ -152,7 +156,7 @@ impl CanvasPrims {
         self.rects.push(x0, y0, x1, y1, layer, LineStyle::PLAIN);
     }
 
-    /// Appends a rectangle outlined in `style`; panics as [`CanvasPrims::line`].
+    /// Appends a rectangle outlined in `style`; panics as [`CanvasPrims::line_styled`].
     pub fn rect_styled(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, layer: u8, style: LineStyle) {
         self.rects.push(x0, y0, x1, y1, layer, style);
     }
@@ -166,8 +170,16 @@ impl CanvasPrims {
         self.arc_styled(cx, cy, r, start, sweep, layer, LineStyle::PLAIN);
     }
 
-    /// Appends an arc stroked in `style`; panics as [`CanvasPrims::arc`].
-    #[allow(clippy::too_many_arguments)]
+    /// Appends an arc stroked in `style`.
+    ///
+    /// # Panics
+    ///
+    /// If the arc table is full, `layer` is not below [`LAYERS`], `r` is negative, or
+    /// `style` has a bit no [`LineStyle`] constructor sets.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one parameter per column of the row, like every other appender"
+    )]
     pub fn arc_styled(
         &mut self,
         cx: i32,
@@ -185,6 +197,7 @@ impl CanvasPrims {
             "layer {layer} is no palette layer"
         );
         assert!(r >= 0, "negative radius");
+        assert!(style.is_packed(), "style {style:?} has an unknown bit");
         assert_eq!(t.style.len(), t.cx.len(), "style column in step");
         t.cx.push(cx);
         t.cy.push(cy);
@@ -193,6 +206,8 @@ impl CanvasPrims {
         t.sweep.push(sweep);
         t.layer.push(layer);
         t.style.push(style);
+        debug_assert_eq!(t.r.len(), t.cx.len(), "radius column in step");
+        debug_assert_eq!(t.sweep.len(), t.cx.len(), "sweep column in step");
     }
 
     /// Appends a polyline (`closed = false`) or polygon (`closed = true`) in the layer's plain
@@ -205,7 +220,12 @@ impl CanvasPrims {
         self.poly_styled(pts, closed, layer, LineStyle::PLAIN);
     }
 
-    /// Appends a polyline or polygon stroked in `style`; panics as [`CanvasPrims::poly`].
+    /// Appends a polyline or polygon stroked in `style`.
+    ///
+    /// # Panics
+    ///
+    /// If the table is full, `layer` is not below [`LAYERS`], `pts` has fewer than 2 points,
+    /// or `style` has a bit no [`LineStyle`] constructor sets.
     pub fn poly_styled(&mut self, pts: &[(i32, i32)], closed: bool, layer: u8, style: LineStyle) {
         assert!(pts.len() >= 2, "poly needs 2 points");
         assert!(
@@ -218,12 +238,16 @@ impl CanvasPrims {
             &mut self.polylines
         };
         assert!(t.end.len() < Self::CAPACITY, "poly table full");
+        assert!(style.is_packed(), "style {style:?} has an unknown bit");
         assert_eq!(t.style.len(), t.end.len(), "style column in step");
+        assert_eq!(t.y.len(), t.x.len(), "point columns in step");
         t.x.extend(pts.iter().map(|p| p.0));
         t.y.extend(pts.iter().map(|p| p.1));
         t.end.push(offset(t.x.len()));
         t.layer.push(layer);
         t.style.push(style);
+        debug_assert_eq!(t.y.len(), t.x.len(), "point columns in step");
+        debug_assert_eq!(t.layer.len(), t.end.len(), "layer column in step");
     }
 
     /// Appends a label.
@@ -235,8 +259,12 @@ impl CanvasPrims {
         self.text_rot(x, y, size, layer, s, 0);
     }
 
-    /// Appends a label turned `rot` quarter turns clockwise about its anchor (taken mod 4);
-    /// panics as [`CanvasPrims::text`].
+    /// Appends a label turned `rot` quarter turns clockwise about its anchor (taken mod 4).
+    ///
+    /// # Panics
+    ///
+    /// If the text table is full, `layer` is not below [`LAYERS`], `size` is not positive, or
+    /// the label bytes outgrow a `u32` offset.
     pub fn text_rot(&mut self, x: i32, y: i32, size: i32, layer: u8, s: &str, rot: u8) {
         let t = &mut self.texts;
         assert!(t.x.len() < Self::CAPACITY, "text table full");
@@ -253,6 +281,8 @@ impl CanvasPrims {
         t.rot.push(rot % 4);
         t.text.push_str(s);
         t.end.push(offset(t.text.len()));
+        debug_assert_eq!(t.end.len(), t.x.len(), "offset column in step");
+        debug_assert_eq!(t.layer.len(), t.x.len(), "layer column in step");
     }
 
     /// Marks row `row` of kind `kind` (0 lines, 1 rects, 2 arcs, 3 polylines, 4 polygons, 5
@@ -267,22 +297,25 @@ impl CanvasPrims {
         let Some(&table) = TABLES.get(usize::from(kind)) else {
             panic!("kind {kind} is not a primitive table");
         };
-        let layer = layers_mut(self, table);
+        // A short layer column would kill some other row's twin, or none.
+        assert_eq!(
+            row::layers(self, table).len(),
+            row::len(self, table),
+            "layer column of kind {kind} in step"
+        );
+        let layer = row::layers_mut(self, table);
         assert!(row < layer.len(), "row {row} of kind {kind} past the table");
         layer[row] = LAYER_DEAD;
     }
 
     /// Total primitive count over all kinds (dead rows included).
+    #[must_use]
     pub fn len(&self) -> usize {
-        self.lines.x0.len()
-            + self.rects.x0.len()
-            + self.arcs.cx.len()
-            + self.polylines.end.len()
-            + self.polygons.end.len()
-            + self.texts.x.len()
+        TABLES.iter().map(|&table| row::len(self, table)).sum()
     }
 
     /// True when the tables hold no row, dead or alive.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -299,21 +332,29 @@ impl LineStyle {
     /// The style of weight `weight` (clamped to `[1, WEIGHT_MAX]`) and dash `dash` (0 = solid,
     /// clamped to `DASH_MAX`). Clamping, not failing: the file stores any number (format spec
     /// §4) and the renderer draws the nearest it can.
+    ///
+    /// # Panics
+    ///
+    /// Never for any input: the asserts check that the packing round-trips.
+    #[must_use]
     pub fn new(weight: u8, dash: u8) -> LineStyle {
         let w = weight.clamp(1, Self::WEIGHT_MAX) - 1;
         let d = dash.min(Self::DASH_MAX);
-        let s = LineStyle(w | (d << 2));
-        assert_eq!(s.weight(), w + 1, "weight round-trips");
-        assert_eq!(s.dash(), d, "dash round-trips");
-        s
+        let style = LineStyle(w | (d << 2));
+        assert_eq!(style.weight(), w + 1, "weight round-trips");
+        assert_eq!(style.dash(), d, "dash round-trips");
+        assert!(!style.fills(), "a new style takes its fill from the layer");
+        style
     }
 
     /// Stroke weight, `[1, WEIGHT_MAX]`, in multiples of the layer width.
+    #[must_use]
     pub fn weight(self) -> u8 {
         (self.0 & 3) + 1
     }
 
     /// Dash, `[0, DASH_MAX]`; 0 is solid.
+    #[must_use]
     pub fn dash(self) -> u8 {
         (self.0 >> 2) & 15
     }
@@ -321,11 +362,13 @@ impl LineStyle {
     /// This style, also filling a closed shape (rect, full circle, polygon) in its layer's
     /// colour whatever the layer's [`Palette::fill`](crate::Palette::fill) bit says; an open
     /// shape ignores it.
+    #[must_use]
     pub fn filled(self) -> LineStyle {
         LineStyle(self.0 | FILL)
     }
 
     /// True when [`LineStyle::filled`] was applied.
+    #[must_use]
     pub fn fills(self) -> bool {
         self.0 & FILL != 0
     }
@@ -333,10 +376,17 @@ impl LineStyle {
 
 // ---- private ----
 
+impl LineStyle {
+    /// Whether only the bits a constructor sets are set (bit 7 is unused).
+    fn is_packed(self) -> bool {
+        self.0 & !PACKED == 0
+    }
+}
+
 /// A CSR end offset: below [`CanvasPrims::CAPACITY`] rows a column could still outgrow `u32`
 /// (labels of 1 KiB each), so the narrowing is checked.
 fn offset(len: usize) -> u32 {
-    u32::try_from(len).expect("CSR offset fits u32")
+    u32::try_from(len).expect("a CSR column outgrew a u32 offset")
 }
 
 impl Lines {
@@ -346,6 +396,7 @@ impl Lines {
             usize::from(layer) < LAYERS,
             "layer {layer} is no palette layer"
         );
+        assert!(style.is_packed(), "style {style:?} has an unknown bit");
         assert_eq!(self.style.len(), self.x0.len(), "style column in step");
         self.x0.push(x0);
         self.y0.push(y0);
@@ -353,6 +404,8 @@ impl Lines {
         self.y1.push(y1);
         self.layer.push(layer);
         self.style.push(style);
+        debug_assert_eq!(self.y1.len(), self.x0.len(), "corner columns in step");
+        debug_assert_eq!(self.layer.len(), self.x0.len(), "layer column in step");
     }
 }
 
@@ -402,6 +455,12 @@ mod tests {
     #[should_panic(expected = "not a primitive table")]
     fn kill_refuses_an_unknown_kind() {
         CanvasPrims::default().kill(6, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown bit")]
+    fn appenders_refuse_an_unpacked_style() {
+        CanvasPrims::default().line_styled(0, 0, 1, 1, 1, LineStyle(0x80));
     }
 
     #[test]

@@ -35,6 +35,8 @@
 
 #![forbid(unsafe_code)]
 
+use std::ops::Range;
+
 pub use kurbo;
 
 mod camera;
@@ -68,9 +70,11 @@ const _: () = assert!(LAYERS == u32::BITS as usize, "one fill bit per layer");
 ///
 /// # Panics
 ///
-/// If `i` is past `end`, or the offsets are not ascending.
+/// If `i` is past `end`, or (in a debug build) the offsets are not ascending.
 #[inline]
-pub fn chain(end: &[u32], i: usize) -> std::ops::Range<usize> {
+#[must_use]
+pub fn chain(end: &[u32], i: usize) -> Range<usize> {
+    assert!(i < end.len(), "chain {i} past a CSR table of {}", end.len());
     let start = if i == 0 { 0 } else { end[i - 1] as usize };
     let stop = end[i] as usize;
     debug_assert!(start <= stop, "CSR offsets ascend");

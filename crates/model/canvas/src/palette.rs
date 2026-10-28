@@ -7,7 +7,7 @@
 //! - `pub enum PrimKind { Line, Rect, Arc, Polyline, Polygon }`
 //! - `pub struct Marks { kind, index, color }`, `Marks::push`
 
-use crate::LAYERS;
+use crate::{CanvasPrims, LAYERS};
 
 /// Per-layer drawing style: variation by data, one row per layer.
 #[derive(Clone, Debug, PartialEq)]
@@ -79,22 +79,37 @@ const XSCHEM_DARK: [u32; 22] = [
     0xffc0_40ff,
 ];
 
+/// The pin layer of xschem's Layers menu: the one layer the dark scheme fills.
+const PIN_LAYER: usize = 5;
+
 const _: () = assert!(XSCHEM_DARK.len() <= LAYERS);
+const _: () = assert!(PIN_LAYER < LAYERS, "the pin layer is a palette layer");
 
 impl Palette {
     /// The xschem dark scheme as it appears on screen: pins (layer 5) fill, every width is
     /// 1 px.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that no layer is hidden (alpha 0).
     // ponytail: hard-coded rows until the palette is a `ui_styles` selector set (`layer.N`).
+    #[must_use]
     pub fn xschem_dark() -> Palette {
         let mut color = [0x8888_88ff; LAYERS];
         color[..XSCHEM_DARK.len()].copy_from_slice(&XSCHEM_DARK);
-        Palette {
+        let palette = Palette {
             color,
             width: [1.0; LAYERS],
-            fill: 1 << 5,
+            fill: 1 << PIN_LAYER,
             background: 0x0000_00ff,
             grid: 0x7070_70ff,
-        }
+        };
+        // The renderer skips a layer whose colour has alpha 0; this scheme shows every layer.
+        assert!(
+            palette.color.iter().all(|c| c & 0xff == 0xff),
+            "the dark scheme hides no layer"
+        );
+        palette
     }
 }
 
@@ -105,10 +120,15 @@ impl Marks {
     ///
     /// # Panics
     ///
-    /// If the columns are out of step.
+    /// If the columns are out of step, or `index` is not below
+    /// [`CanvasPrims::CAPACITY`] (no table has that row).
     pub fn push(&mut self, kind: PrimKind, index: u32, color: u32) {
         assert_eq!(self.index.len(), self.kind.len(), "index column in step");
         assert_eq!(self.color.len(), self.kind.len(), "color column in step");
+        assert!(
+            (index as usize) < CanvasPrims::CAPACITY,
+            "mark row {index} is past every table's capacity"
+        );
         self.kind.push(kind);
         self.index.push(index);
         self.color.push(color);
