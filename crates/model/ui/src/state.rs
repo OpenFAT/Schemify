@@ -87,7 +87,10 @@ impl UiState {
     pub fn split_of(&self, id: Sym) -> Option<f32> {
         debug_assert!(self.split.len() <= Self::MAX_SPLIT);
         let px = self.split.iter().find(|r| r.id == id).map(|r| r.value);
-        debug_assert!(px.is_none_or(|px| px.is_finite() && px >= 0.0));
+        if let Some(px) = px {
+            debug_assert!(px.is_finite(), "set_split stores finite sizes");
+            debug_assert!(px >= 0.0, "set_split stores sizes not below 0");
+        }
         px
     }
 

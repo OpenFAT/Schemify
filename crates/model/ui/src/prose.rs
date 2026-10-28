@@ -130,11 +130,10 @@ pub(crate) fn measure_code(ts: &mut TextSystem, px: u16) -> Option<CodeMetrics> 
 ///
 /// Panics if `px` or `width` is not finite and positive.
 pub(crate) fn layout_prose(ts: &mut TextSystem, src: &str, px: f32, width: f32) -> ProseList {
-    assert!(px > 0.0 && px.is_finite(), "prose size must be positive");
-    assert!(
-        width > 0.0 && width.is_finite(),
-        "prose width must be positive"
-    );
+    assert!(px.is_finite(), "prose size must be finite");
+    assert!(px > 0.0, "prose size must be positive");
+    assert!(width.is_finite(), "prose width must be finite");
+    assert!(width > 0.0, "prose width must be positive");
     let mut p = ProseList::default();
     let gap = (px * 0.6).round();
     let parsed = markdown::blocks(src);

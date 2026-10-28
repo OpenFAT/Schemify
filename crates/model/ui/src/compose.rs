@@ -264,10 +264,14 @@ fn declare(
         }
     }
     debug_assert_eq!(rows.len(), by_id.len());
+    let declared = by_id.get(&id).map(|&r| &rows[r as usize]);
     debug_assert!(
-        by_id
-            .get(&id)
-            .is_some_and(|&r| rows[r as usize].id == id && rows[r as usize].live)
+        declared.is_some_and(|row| row.id == id),
+        "the index points at the row"
+    );
+    debug_assert!(
+        declared.is_some_and(|row| row.live),
+        "a declared row is live"
     );
 }
 

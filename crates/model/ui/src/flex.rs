@@ -357,7 +357,8 @@ impl Builder<'_> {
         if m.fixed_h > 0.0 {
             h = m.fixed_h;
         }
-        debug_assert!(w >= 0.0 && h >= 0.0, "a leaf's size is not negative");
+        debug_assert!(w >= 0.0, "a leaf's width is not negative");
+        debug_assert!(h >= 0.0, "a leaf's height is not negative");
         style.min_size = Size {
             width: LengthPercentageAuto::length(w.max(m.min_w)),
             height: LengthPercentageAuto::length(h),

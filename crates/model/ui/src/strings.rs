@@ -55,7 +55,9 @@ impl Sym {
     #[must_use]
     pub fn is_none(self) -> bool {
         let none = self.0 == 0;
-        debug_assert!(!(none && self.is_live()), "the empty string is permanent");
+        if none {
+            debug_assert!(!self.is_live(), "the empty string is permanent");
+        }
         none
     }
 
