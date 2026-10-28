@@ -15,7 +15,7 @@
 //! Contents:
 //! - `pub const WIDTH_MAX`
 //! - `pub(crate) struct TooWide`
-//! - `pub fn is_global(bit: &str) -> bool`
+//! - `pub(crate) fn is_global(bit: &str) -> bool`
 //! - `pub(crate) fn is_plain(text: &str) -> bool`
 //! - `pub(crate) fn expand(text, names, out, buf) -> Result<u32, TooWide>`
 
@@ -37,7 +37,7 @@ struct Term<'a> {
 }
 
 /// Returns whether a bit name is global (netlist spec §3): `0`, or ending in `!`.
-pub fn is_global(bit: &str) -> bool {
+pub(crate) fn is_global(bit: &str) -> bool {
     bit == "0" || bit.ends_with('!')
 }
 
