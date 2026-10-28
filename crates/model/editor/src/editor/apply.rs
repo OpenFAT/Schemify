@@ -1,7 +1,6 @@
 //! Edit requests: commit helpers, plugin delivery, `doc::apply_edits` and its bookkeeping.
 //!
 //! Contents:
-//! - `pub(super) const REQUESTS_MAX`
 //! - `Editor::with_doc`
 //! - `Editor::commit`
 //! - `Editor::commit_docs`
@@ -24,7 +23,7 @@ use super::Editor;
 use super::queue::KEPT_LOG_MAX;
 
 /// Edit requests one frame may carry.
-pub(super) const REQUESTS_MAX: usize = 1 << 10;
+const REQUESTS_MAX: usize = 1 << 10;
 
 impl Editor {
     pub(super) fn with_doc<R>(&self, h: DocHandle, f: impl FnOnce(&Document, &[ObjKey]) -> R) -> R

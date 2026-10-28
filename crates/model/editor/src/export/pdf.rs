@@ -3,8 +3,6 @@
 //!
 //! Contents:
 //! - `pub(super) fn ascii85`
-//! - `pub(super) fn to_unicode`
-//! - `pub(super) fn font_objects`
 //! - `pub fn pdf`
 
 use schemify_canvas::CanvasPrims;
@@ -44,86 +42,6 @@ pub(super) fn ascii85(bytes: &[u8]) -> String {
     }
     out.push_str("~>");
     out
-}
-
-/// The `ToUnicode` CMap of the glyphs one face prints, so viewers extract and search the text.
-pub(super) fn to_unicode(glyphs: &Glyphs) -> String {
-    use std::fmt::Write;
-    let rows: Vec<(u16, char)> = glyphs
-        .iter()
-        .filter(|(g, _)| **g != 0)
-        .map(|(g, (_, c))| (*g, *c))
-        .collect();
-    let mut s = String::from(
-        "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n\
-         /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
-         /CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n\
-         1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n",
-    );
-    // At most 100 entries per block (PDF 32000-1 §9.10.3).
-    for block in rows.chunks(100) {
-        let _ = writeln!(s, "{} beginbfchar", block.len());
-        for &(g, c) in block {
-            let _ = write!(s, "<{g:04X}> <");
-            let mut units = [0u16; 2];
-            for u in c.encode_utf16(&mut units) {
-                let _ = write!(s, "{u:04X}");
-            }
-            s.push_str(">\n");
-        }
-        s.push_str("endbfchar\n");
-    }
-    s.push_str("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
-    s
-}
-
-/// The PDF objects of UI face `face`, numbered from `first`: the `Type0` font (the one a
-/// page names `/F<face + 1>`), its `CIDFontType2` (widths `W` of the glyphs it prints), the
-/// font descriptor, the `FontFile2` stream (the whole face, ASCII85) and the `ToUnicode` CMap.
-pub(super) fn font_objects(first: usize, face: u8, glyphs: &Glyphs) -> [String; 5] {
-    use std::fmt::Write;
-    assert!(!glyphs.is_empty(), "only a face that prints is embedded");
-    let name = FONT_NAMES[usize::from(face)];
-    let info = schemify_ui::ui_font_info(face);
-    let upem = u32::from(info.upem);
-    let em = |v: i16| i64::from(v) * 1000 / i64::from(upem);
-    let mut w = String::new();
-    for (g, (adv, _)) in glyphs {
-        let _ = write!(w, "{g} [{}] ", (u32::from(*adv) * 1000 + upem / 2) / upem);
-    }
-    let font = schemify_ui::ui_fonts()[usize::from(face)];
-    let data = ascii85(font);
-    let cmap = to_unicode(glyphs);
-    let b = info.bbox;
-    [
-        format!(
-            "<< /Type /Font /Subtype /Type0 /BaseFont /{name} /Encoding /Identity-H /DescendantFonts [{} 0 R] /ToUnicode {} 0 R >>",
-            first + 1,
-            first + 4
-        ),
-        format!(
-            "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /{name} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor {} 0 R /CIDToGIDMap /Identity /W [{}] >>",
-            first + 2,
-            w.trim_end()
-        ),
-        format!(
-            "<< /Type /FontDescriptor /FontName /{name} /Flags 32 /FontBBox [{} {} {} {}] /ItalicAngle 0 /Ascent {} /Descent {} /CapHeight {} /StemV 80 /FontFile2 {} 0 R >>",
-            em(b[0]),
-            em(b[1]),
-            em(b[2]),
-            em(b[3]),
-            em(info.ascent),
-            em(info.descent),
-            em(info.cap_height),
-            first + 3
-        ),
-        format!(
-            "<< /Length {} /Length1 {} /Filter /ASCII85Decode >>\nstream\n{data}\nendstream",
-            data.len() + 1,
-            font.len()
-        ),
-        format!("<< /Length {} >>\nstream\n{cmap}endstream", cmap.len()),
-    ]
 }
 
 /// One PDF page per `(prims, world bounds)` drawing, each fitted to `page`. Texts print in
@@ -211,4 +129,86 @@ pub fn pdf(pages: &[(&CanvasPrims, [i32; 4])], look: &Look, page: Page) -> Vec<u
     assert_eq!(offsets.len(), next - 1);
     assert!(out.is_ascii(), "the PDF is 7-bit text");
     out.into_bytes()
+}
+
+// ---- private ----
+
+/// The `ToUnicode` CMap of the glyphs one face prints, so viewers extract and search the text.
+fn to_unicode(glyphs: &Glyphs) -> String {
+    use std::fmt::Write;
+    let rows: Vec<(u16, char)> = glyphs
+        .iter()
+        .filter(|(g, _)| **g != 0)
+        .map(|(g, (_, c))| (*g, *c))
+        .collect();
+    let mut s = String::from(
+        "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n\
+         /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
+         /CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n\
+         1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n",
+    );
+    // At most 100 entries per block (PDF 32000-1 §9.10.3).
+    for block in rows.chunks(100) {
+        let _ = writeln!(s, "{} beginbfchar", block.len());
+        for &(g, c) in block {
+            let _ = write!(s, "<{g:04X}> <");
+            let mut units = [0u16; 2];
+            for u in c.encode_utf16(&mut units) {
+                let _ = write!(s, "{u:04X}");
+            }
+            s.push_str(">\n");
+        }
+        s.push_str("endbfchar\n");
+    }
+    s.push_str("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
+    s
+}
+
+/// The PDF objects of UI face `face`, numbered from `first`: the `Type0` font (the one a
+/// page names `/F<face + 1>`), its `CIDFontType2` (widths `W` of the glyphs it prints), the
+/// font descriptor, the `FontFile2` stream (the whole face, ASCII85) and the `ToUnicode` CMap.
+fn font_objects(first: usize, face: u8, glyphs: &Glyphs) -> [String; 5] {
+    use std::fmt::Write;
+    assert!(!glyphs.is_empty(), "only a face that prints is embedded");
+    let name = FONT_NAMES[usize::from(face)];
+    let info = schemify_ui::ui_font_info(face);
+    let upem = u32::from(info.upem);
+    let em = |v: i16| i64::from(v) * 1000 / i64::from(upem);
+    let mut w = String::new();
+    for (g, (adv, _)) in glyphs {
+        let _ = write!(w, "{g} [{}] ", (u32::from(*adv) * 1000 + upem / 2) / upem);
+    }
+    let font = schemify_ui::ui_fonts()[usize::from(face)];
+    let data = ascii85(font);
+    let cmap = to_unicode(glyphs);
+    let b = info.bbox;
+    [
+        format!(
+            "<< /Type /Font /Subtype /Type0 /BaseFont /{name} /Encoding /Identity-H /DescendantFonts [{} 0 R] /ToUnicode {} 0 R >>",
+            first + 1,
+            first + 4
+        ),
+        format!(
+            "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /{name} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor {} 0 R /CIDToGIDMap /Identity /W [{}] >>",
+            first + 2,
+            w.trim_end()
+        ),
+        format!(
+            "<< /Type /FontDescriptor /FontName /{name} /Flags 32 /FontBBox [{} {} {} {}] /ItalicAngle 0 /Ascent {} /Descent {} /CapHeight {} /StemV 80 /FontFile2 {} 0 R >>",
+            em(b[0]),
+            em(b[1]),
+            em(b[2]),
+            em(b[3]),
+            em(info.ascent),
+            em(info.descent),
+            em(info.cap_height),
+            first + 3
+        ),
+        format!(
+            "<< /Length {} /Length1 {} /Filter /ASCII85Decode >>\nstream\n{data}\nendstream",
+            data.len() + 1,
+            font.len()
+        ),
+        format!("<< /Length {} >>\nstream\n{cmap}endstream", cmap.len()),
+    ]
 }

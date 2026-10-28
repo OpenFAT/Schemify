@@ -10,11 +10,11 @@
 //!
 //! Contents:
 //! - `pub const PLUGIN_COMMANDS_MAX`
-//! - `pub enum Cmd`, `pub const CORE` (both from `commands!`), `Cmd::name`, `Cmd::file_kinds`,
-//!   `Cmd::accepts`, `Cmd::takes_suffix`
 //! - `pub enum Target`
 //! - `pub struct Commands`, `Commands::set_plugin_rows`, `Commands::resolve`,
 //!   `Commands::resolve_arg`
+//! - `pub enum Cmd`, `pub const CORE` (both from `commands!`), `Cmd::name`, `Cmd::file_kinds`,
+//!   `Cmd::accepts`, `Cmd::takes_suffix`
 
 use schemify_format::FileKind;
 use schemify_plugin::PluginId;

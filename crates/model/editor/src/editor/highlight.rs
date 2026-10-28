@@ -3,7 +3,6 @@
 //! Contents:
 //! - `pub(super) const PIN_PX`
 //! - `pub(super) fn env_refs`
-//! - `pub(super) fn spice_case`
 //! - `Editor::level_prefix`
 //! - `Editor::hier_map`
 //! - `Editor::net_key`
@@ -36,11 +35,6 @@ pub(super) const PIN_PX: f64 = 8.0;
 /// Borrows the session's `${NAME}` environment pairs in the shape elab and run take.
 pub(super) fn env_refs(env: &[(String, String)]) -> Vec<(&str, &str)> {
     env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
-}
-
-/// The ngspice spelling of an emitted name: ngspice lowercases every name it writes.
-pub(super) fn spice_case(name: &str) -> String {
-    name.to_ascii_lowercase()
 }
 
 impl Editor {
@@ -370,4 +364,11 @@ pub(super) fn overlapped(doc: &schemify_doc::Document) -> Vec<ObjKey> {
     }
     out.sort_unstable();
     out
+}
+
+// ---- private ----
+
+/// The ngspice spelling of an emitted name: ngspice lowercases every name it writes.
+fn spice_case(name: &str) -> String {
+    name.to_ascii_lowercase()
 }

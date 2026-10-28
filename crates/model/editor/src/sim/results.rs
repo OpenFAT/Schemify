@@ -13,10 +13,7 @@
 //! - `Sim::sort_by`
 //! - `Sim::set_filter`
 //! - `Sim::refresh_table`
-//! - `pub(super) fn row_text`
 //! - `pub(super) fn plot`
-//! - `pub(super) fn op_mark`
-//! - `pub(super) fn inst_path`
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -323,23 +320,6 @@ impl Sim {
     }
 }
 
-/// The text the table filter matches for job `j`: index, key line, state and verdicts,
-/// lowercase.
-pub(super) fn row_text(jobs: &Jobs, res: &Results, j: u32, out: &mut String) {
-    let _ = write!(out, "{j} ");
-    jobs.write_key(j, out);
-    out.push(' ');
-    out.push_str(jobs.state(j).word());
-    for s in 0..res.specs() as u16 {
-        match res.pass(j, s) {
-            Pass::Pass => out.push_str(" pass"),
-            Pass::Fail => out.push_str(" fail"),
-            Pass::Unknown => {}
-        }
-    }
-    out.make_ascii_lowercase();
-}
-
 /// A one-pane viewer over the datasets of `jobs` (each a raw file's grouped datasets, the
 /// first the selected job's) showing `expr` once per job, on the last dataset of that job
 /// that evaluates it. A scalar answer of the first job explains an empty slot instead.
@@ -387,13 +367,32 @@ pub(super) fn plot(jobs: &[Vec<RawPlot>], expr: &str) -> Result<Waves, String> {
     Ok(w)
 }
 
+// ---- private ----
+
+/// The text the table filter matches for job `j`: index, key line, state and verdicts,
+/// lowercase.
+fn row_text(jobs: &Jobs, res: &Results, j: u32, out: &mut String) {
+    let _ = write!(out, "{j} ");
+    jobs.write_key(j, out);
+    out.push(' ');
+    out.push_str(jobs.state(j).word());
+    for s in 0..res.specs() as u16 {
+        match res.pass(j, s) {
+            Pass::Pass => out.push_str(" pass"),
+            Pass::Fail => out.push_str(" fail"),
+            Pass::Unknown => {}
+        }
+    }
+    out.make_ascii_lowercase();
+}
+
 /// One OP mark from raw vector `name` = `x`, ngspice or Xyce spelling (case-insensitive,
 /// Xyce's `:` hierarchy separator read as `.`): `v(net)` or a bare node name on the net;
 /// `@dev[p]` (also as ngspice writes saved ones, `i(@dev[p])`, `v(@dev[p])`) with `p` in
 /// [`OP_PARAMS`], `<dev>#branch` (`i`) and lead currents
 /// `i(dev)`, `id(dev)`, `ig(dev)`, `is(dev)`, `ib(dev)`, `ic(dev)`, `ie(dev)` on the device's
 /// instance path.
-pub(super) fn op_mark(map: &NameMap, name: &str, x: f64) -> Option<Mark> {
+fn op_mark(map: &NameMap, name: &str, x: f64) -> Option<Mark> {
     let mut lower = name.to_ascii_lowercase().replace(':', ".");
     // A saved device vector comes wrapped by its kind: `i(@m1[id])`, `v(@m1[vgs])`.
     if let Some(inner) = lower
@@ -444,7 +443,7 @@ pub(super) fn op_mark(map: &NameMap, name: &str, x: f64) -> Option<Mark> {
 /// The instance path of an ngspice device name: the type letter and dot (`m.`) are dropped,
 /// then the longest dotted prefix the name map knows wins (`x1.mm2` → `/x1/M2`;
 /// `xm1.msky130_fd_pr__nfet_01v8` → `/M1`, the model subckt's inner device).
-pub(super) fn inst_path(map: &NameMap, dev: &str) -> Option<String> {
+fn inst_path(map: &NameMap, dev: &str) -> Option<String> {
     let body = match dev.split_once('.') {
         Some((t, rest)) if t.len() == 1 => rest,
         _ => dev,

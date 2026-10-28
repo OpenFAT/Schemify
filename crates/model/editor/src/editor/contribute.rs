@@ -2,9 +2,7 @@
 //!
 //! Contents:
 //! - `Editor::contribute_parity`
-//! - `Editor::contribute_text_body`
 //! - `Editor::contribute_integration`
-//! - `pub(super) fn q_multiline`
 
 use schemify_ui::{Kind, StyleProp, records};
 
@@ -214,7 +212,7 @@ impl Editor {
     /// never starts past the first line that is not, nor before the tab has been laid out once.
     /// Lines below the window are counted as one row each; the scroll extent is exact once
     /// the window reaches the end.
-    pub(super) fn contribute_text_body(&self, t: &mut String, shown: &str) {
+    fn contribute_text_body(&self, t: &mut String, shown: &str) {
         use std::fmt::Write as _;
         let sh = &self.shell;
         let node = |t: &mut String, body: &str| {
@@ -366,8 +364,10 @@ impl Editor {
     }
 }
 
+// ---- private ----
+
 /// Quotes a multi-line value: like `q` but keeps line breaks as `\n` escapes.
-pub(super) fn q_multiline(s: &str) -> String {
+fn q_multiline(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {

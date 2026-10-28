@@ -32,6 +32,7 @@
 //! - `pub const SOURCE_OP`
 //! - `pub struct Members`
 //! - `pub struct Diff`
+//! - `pub struct Markers`, `Markers::edits`, `Markers::clear_edits`, `Markers::generation`
 //! - `pub fn bit_names`
 //! - `pub fn net_name`
 //! - `pub fn pins_of`
@@ -41,7 +42,6 @@
 //! - `pub fn violation_marks_of`
 //! - `pub fn line`
 //! - `pub fn decor`
-//! - `pub struct Markers`, `Markers::edits`, `Markers::clear_edits`, `Markers::generation`
 //! - `pub fn place_markers`
 //! - `pub fn contribute`
 

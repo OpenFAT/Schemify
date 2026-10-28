@@ -3,13 +3,10 @@
 //!
 //! Contents:
 //! - `pub fn cache_ops`
-//! - `pub(super) fn cache_op`
 //! - `pub(super) fn plugin_fns`
 //! - `pub fn param_value`
 //! - `pub fn drop_stale_caches`
-//! - `pub(super) fn cacheable`
 //! - `pub(super) fn named`
-//! - `pub(super) fn first_attr`
 
 use schemify_doc::{Document, Op, RecordKind, Records, Strings, Sym, Target};
 use schemify_elab::{CellState, Val};
@@ -73,36 +70,6 @@ pub fn cache_ops(
     }
     debug_assert!(ops.len() <= p.kind.len() + v);
     ops
-}
-
-/// The `cached` write of one record (see [`cache_ops`]), when it is due.
-pub(super) fn cache_op(
-    ops: &mut Vec<Op>,
-    (kind, name): (RecordKind, &str),
-    expr: &str,
-    now: Option<(&Val, bool)>,
-    stored: Option<&[Sym]>,
-    s: &Strings,
-    hash: &impl Fn(&[String]) -> Option<String>,
-) {
-    let fns = plugin_fns(expr);
-    let Some((val, unverified)) = now.filter(|_| !fns.is_empty()) else {
-        return;
-    };
-    let Some(h) = hash(&fns) else { return };
-    if unverified || val.is_err() || matches!(val, Val::Cnum(..)) {
-        return;
-    }
-    let mut text = String::new();
-    schemify_elab::cached_text(val, &mut text);
-    let same = stored.is_some_and(|c| c.len() == 2 && s.get(c[0]) == text && s.get(c[1]) == h);
-    if !same {
-        ops.push(Op::SetAttr {
-            target: Target::new(kind, name),
-            key: "cached".into(),
-            values: vec![text, h],
-        });
-    }
 }
 
 /// Sorted, distinct `ns.f` plugin functions an expression (or a string param's template)
@@ -198,10 +165,6 @@ pub fn drop_stale_caches(doc: &Document, ops: &mut Vec<Op>) {
     debug_assert!(ops.len() >= n);
 }
 
-pub(super) fn cacheable(kind: RecordKind) -> bool {
-    matches!(kind, RecordKind::Var | RecordKind::Param)
-}
-
 /// The table and row of the var or param named `name`.
 pub(super) fn named<'d>(
     doc: &'d Document,
@@ -219,12 +182,43 @@ pub(super) fn named<'d>(
         .map(|r| (t, r))
 }
 
-pub(super) fn first_attr<'d>(
-    doc: &'d Document,
-    t: &Records,
-    r: usize,
-    key: &str,
-) -> Option<&'d str> {
+// ---- private ----
+
+/// The `cached` write of one record (see [`cache_ops`]), when it is due.
+fn cache_op(
+    ops: &mut Vec<Op>,
+    (kind, name): (RecordKind, &str),
+    expr: &str,
+    now: Option<(&Val, bool)>,
+    stored: Option<&[Sym]>,
+    s: &Strings,
+    hash: &impl Fn(&[String]) -> Option<String>,
+) {
+    let fns = plugin_fns(expr);
+    let Some((val, unverified)) = now.filter(|_| !fns.is_empty()) else {
+        return;
+    };
+    let Some(h) = hash(&fns) else { return };
+    if unverified || val.is_err() || matches!(val, Val::Cnum(..)) {
+        return;
+    }
+    let mut text = String::new();
+    schemify_elab::cached_text(val, &mut text);
+    let same = stored.is_some_and(|c| c.len() == 2 && s.get(c[0]) == text && s.get(c[1]) == h);
+    if !same {
+        ops.push(Op::SetAttr {
+            target: Target::new(kind, name),
+            key: "cached".into(),
+            values: vec![text, h],
+        });
+    }
+}
+
+fn cacheable(kind: RecordKind) -> bool {
+    matches!(kind, RecordKind::Var | RecordKind::Param)
+}
+
+fn first_attr<'d>(doc: &'d Document, t: &Records, r: usize, key: &str) -> Option<&'d str> {
     let s = doc.strings();
     let v = doc.pool().find_attr(s, t.attrs[r], key)?;
     v.first().map(|v| s.get(*v))

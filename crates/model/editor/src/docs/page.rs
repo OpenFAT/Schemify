@@ -4,13 +4,9 @@
 //! Contents:
 //! - `pub struct Extras`
 //! - `pub fn contribute`
-//! - `pub(super) fn var_expr`
 //! - `pub(super) fn preview`
 //! - `pub(super) fn source`
 //! - `pub(super) fn prose`
-//! - `pub(super) fn var_row`
-//! - `pub(super) fn bound_status`
-//! - `pub(super) fn eval_in_cell`
 
 use schemify_doc::{Document, RecordKind};
 use schemify_elab::{CellState, Val};
@@ -146,15 +142,6 @@ pub fn contribute(
     }
 }
 
-/// The expression of var `name` in `doc`, if it has one.
-pub(super) fn var_expr<'d>(doc: &'d Document, name: &str) -> Option<&'d str> {
-    let b = doc.doc_blocks();
-    let s = doc.strings();
-    (0..b.kind.len())
-        .find(|&r| b.kind[r] == RecordKind::Var && s.get(b.fields[r][0]) == name)
-        .map(|r| s.get(b.fields[r][1]))
-}
-
 /// The live preview under an open prose editor: a caption and `text` (what the user has
 /// typed so far) through the same prose renderer, math included. It carries no command, so a
 /// click on it is a click away from the editor (which applies). A ```` ```plot ```` fence
@@ -254,8 +241,19 @@ pub(super) fn prose(
     }
 }
 
+// ---- private ----
+
+/// The expression of var `name` in `doc`, if it has one.
+fn var_expr<'d>(doc: &'d Document, name: &str) -> Option<&'d str> {
+    let b = doc.doc_blocks();
+    let s = doc.strings();
+    (0..b.kind.len())
+        .find(|&r| b.kind[r] == RecordKind::Var && s.get(b.fields[r][0]) == name)
+        .map(|r| s.get(b.fields[r][1]))
+}
+
 /// A var row: `name = [expr] = value unit` plus bound and D20 markers.
-pub(super) fn var_row(
+fn var_row(
     t: &mut String,
     id: &str,
     name: &str,
@@ -311,7 +309,7 @@ pub(super) fn var_row(
 
 /// D13 status of a var against its `min`/`max` (expressions in the cell scope): `None` when
 /// inside, else why not. A bound that does not evaluate is reported as such.
-pub(super) fn bound_status(
+fn bound_status(
     val: &Val,
     min: Option<&str>,
     max: Option<&str>,
@@ -332,7 +330,7 @@ pub(super) fn bound_status(
 }
 
 /// Evaluates a scalar expression over the cell's own params and vars (current values).
-pub(super) fn eval_in_cell(src: &str, cell: &CellState) -> Option<f64> {
+fn eval_in_cell(src: &str, cell: &CellState) -> Option<f64> {
     let prog = Program::compile(src, Mode::Scalar).ok()?;
     let g = &cell.graph;
     let own = cell.ifaces.first()?;

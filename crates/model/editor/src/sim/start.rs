@@ -3,7 +3,6 @@
 //! probe lines a run adds before each netlist's `.end`.
 //!
 //! Contents:
-//! - `pub(super) const MOS_SAVES`
 //! - `Sim::start`
 //! - `Sim::make_room`
 //! - `Sim::install`
@@ -24,7 +23,7 @@ use schemify_plugin::RunRequest;
 use schemify_run::{NO_SAMPLE, OptRun, Plan, RunnerConfig, Select};
 
 use crate::session::Session;
-use crate::spines::{self};
+use crate::spines;
 use crate::waves::spice_device;
 
 use super::{
@@ -32,7 +31,7 @@ use super::{
 };
 
 /// The quantities saved for each MOSFET (every ngspice MOS model has them).
-pub(super) const MOS_SAVES: [&str; 6] = ["id", "gm", "gds", "vgs", "vds", "vdsat"];
+const MOS_SAVES: [&str; 6] = ["id", "gm", "gds", "vgs", "vds", "vdsat"];
 
 impl Sim {
     /// Starts a run of `top` (a `.shbench`): Simulate (every corner and sweep, the first

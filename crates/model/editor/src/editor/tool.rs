@@ -1,9 +1,7 @@
 //! The `tool_state` table and the canvas gesture state machine over it.
 //!
 //! Contents:
-//! - `pub(super) const DRAG_PX`
 //! - `pub(super) const HIT_PX`
-//! - `pub(super) const DOUBLE_CLICK_MS`
 //! - `pub(super) const ZOOM_STEP`
 //! - `pub enum Placement`
 //! - `pub enum Tool`
@@ -21,14 +19,8 @@ use crate::session::View;
 
 use super::Editor;
 
-/// Pointer travel (logical px) before a press becomes a drag (xschem: 8 px).
-pub(super) const DRAG_PX: f32 = 8.0;
-
 /// Hit-test tolerance in logical px.
 pub(super) const HIT_PX: f64 = 5.0;
-
-/// Double-click window.
-pub(super) const DOUBLE_CLICK_MS: u64 = 400;
 
 /// Zoom factor per wheel notch and per zoom key (xschem: 1.2).
 pub(super) const ZOOM_STEP: f64 = 1.2;
@@ -162,6 +154,12 @@ pub enum Form {
     /// Center and a point on the circle.
     Circle,
 }
+
+/// Pointer travel (logical px) before a press becomes a drag (xschem: 8 px).
+const DRAG_PX: f32 = 8.0;
+
+/// Double-click window.
+const DOUBLE_CLICK_MS: u64 = 400;
 
 impl Form {
     /// Points that complete the shape (`None`: open-ended polygon).

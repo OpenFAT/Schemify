@@ -3,7 +3,6 @@
 //!
 //! Contents:
 //! - `pub(super) type Line`
-//! - `pub(super) type AttrKey`
 //! - `pub(super) fn gcd`
 //! - `pub(super) fn line_of`
 //! - `pub(super) fn offset`
@@ -28,7 +27,7 @@ pub(super) type Line = (i64, i64, i64);
 
 /// Attribute lines of a wire as merge sees them: sorted, with `bus` other than `true` left
 /// out (it is the default). Wires merge only when these are equal.
-pub(super) type AttrKey = Vec<(String, Vec<String>)>;
+type AttrKey = Vec<(String, Vec<String>)>;
 
 pub(super) fn gcd(mut a: i64, mut b: i64) -> i64 {
     (a, b) = (a.abs(), b.abs());

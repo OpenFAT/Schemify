@@ -3,10 +3,10 @@
 //! embedded faces with the glyphs each used.
 //!
 //! Contents:
-//! - `pub(super) fn fit`
 //! - `pub(super) enum Lang`
 //! - `pub(super) type Glyphs`
 //! - `pub(super) type Used`
+//! - `pub(super) fn fit`
 //! - `pub(super) fn arc_beziers`
 //! - `pub(super) fn page_ops`
 

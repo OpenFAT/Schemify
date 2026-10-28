@@ -1,15 +1,9 @@
 //! Image exports: SVG, PDF and EPS written here, PNG asked of `schemify-app` as a `Raster`.
 //!
 //! Contents:
-//! - `pub(super) const PNG_MAX_PX`
-//! - `Editor::export_look`
-//! - `Editor::export_path`
 //! - `Editor::export`
 //! - `Editor::view_world_rect`
 //! - `Editor::export_png`
-//! - `Editor::export_png_full`
-//! - `Editor::ask_raster`
-//! - `Editor::export_hierarchy`
 
 use std::path::{Path, PathBuf};
 
@@ -25,12 +19,12 @@ use super::Editor;
 
 /// Largest PNG export side in pixels (the CPU raster's target is `u16`; 16k keeps one
 /// image under 1 GiB of RGBA).
-pub(super) const PNG_MAX_PX: u16 = 16_384;
+const PNG_MAX_PX: u16 = 16_384;
 
 impl Editor {
     /// The palette exports draw with: the view palette without dimming or hidden layers
     /// beyond the user's.
-    pub(super) fn export_look(&self) -> export::Look {
+    fn export_look(&self) -> export::Look {
         export::Look {
             palette: self.view_palette(),
             color: self.opts.export_color,
@@ -38,7 +32,7 @@ impl Editor {
         }
     }
     /// Where an export goes: `arg` when given, else `.schemify/export/<cell>.<ext>`.
-    pub(super) fn export_path(&self, h: DocHandle, arg: &str, ext: &str) -> PathBuf {
+    fn export_path(&self, h: DocHandle, arg: &str, ext: &str) -> PathBuf {
         if !arg.trim().is_empty() {
             let p = PathBuf::from(arg.trim());
             return if p.is_absolute() {
@@ -155,7 +149,7 @@ impl Editor {
     /// # Errors
     ///
     /// Nothing is drawn, or the image is over 16384 px a side (lower the scale).
-    pub(super) fn export_png_full(&mut self, path: PathBuf) -> Result<(), String> {
+    fn export_png_full(&mut self, path: PathBuf) -> Result<(), String> {
         let b = export::bounds(&self.scene.prims)
             .map(|b| export::padded(b, 10 * UNIT))
             .ok_or("nothing to export")?;
@@ -172,7 +166,7 @@ impl Editor {
         self.ask_raster(path, w.ceil(), h.ceil(), cam)
     }
     /// Queues a `w × h` logical-pixel raster through `cam` at the PNG scale.
-    pub(super) fn ask_raster(
+    fn ask_raster(
         &mut self,
         path: PathBuf,
         w: f64,
@@ -203,11 +197,7 @@ impl Editor {
     }
     /// One PDF page per schematic from the active cell down (breadth first, each cell once):
     /// every page is that cell's scene built offscreen with the same symbol cache.
-    pub(super) fn export_hierarchy(
-        &mut self,
-        h: DocHandle,
-        look: &export::Look,
-    ) -> Result<Vec<u8>, String> {
+    fn export_hierarchy(&mut self, h: DocHandle, look: &export::Look) -> Result<Vec<u8>, String> {
         let docs = self.hierarchy_docs(h);
         let mut scenes: Vec<scene::Scene> = Vec::with_capacity(docs.len());
         for &d in &docs {

@@ -2,8 +2,6 @@
 //! analysis, sweep, corner and optimize records.
 //!
 //! Contents:
-//! - `pub(super) fn lines_ops`
-//! - `pub(super) fn parse_goals`
 //! - `pub(super) fn bench_ops`
 //! - `pub fn add_bench_ops`
 //! - `pub fn delete_bench_ops`
@@ -13,62 +11,6 @@ use schemify_format::FileKind;
 
 use super::ops::{attr_ops, one_of, set_field, word};
 use super::{ALGOS, Bench, attr_of, names, record, record_count};
-
-/// Ops replacing every `key` line of `target` by one line per item of `items`.
-pub(super) fn lines_ops(
-    target: &Target,
-    rec: &RecordBuf,
-    key: &str,
-    items: Vec<Vec<String>>,
-) -> Vec<Op> {
-    let current: Vec<Vec<String>> = rec
-        .attrs
-        .iter()
-        .filter(|a| a.key == key)
-        .map(|a| a.values.clone())
-        .collect();
-    if current == items {
-        return Vec::new();
-    }
-    let mut ops = Vec::with_capacity(items.len() + 1);
-    if !current.is_empty() {
-        ops.push(Op::RemoveAttr {
-            target: target.clone(),
-            key: key.to_owned(),
-            first: None,
-        });
-    }
-    // ponytail: SetAttr replaces a repeatable line by its first value, so items sharing a
-    // first value (two goals on one output) keep only the last; split the record if needed.
-    for values in items {
-        ops.push(Op::SetAttr {
-            target: target.clone(),
-            key: key.to_owned(),
-            values,
-        });
-    }
-    ops
-}
-
-/// Parses an optimizer goal list `<output> min|max|target <expr> [weight <w>]; …`.
-pub(super) fn parse_goals(v: &str) -> Result<Vec<Vec<String>>, String> {
-    let mut out = Vec::new();
-    for g in v.split(';').map(str::trim).filter(|g| !g.is_empty()) {
-        let w: Vec<String> = g.split_whitespace().map(str::to_owned).collect();
-        let ok = match w.get(1).map(String::as_str) {
-            Some("min" | "max") => w.len() == 2 || (w.len() == 4 && w[2] == "weight"),
-            Some("target") => w.len() == 3 || (w.len() == 5 && w[3] == "weight"),
-            _ => false,
-        };
-        if !ok {
-            return Err(format!(
-                "goal `{g}`: expected `<output> min|max|target <expr> [weight <w>]`"
-            ));
-        }
-        out.push(w);
-    }
-    Ok(out)
-}
 
 pub(super) fn bench_ops(b: Bench, rec: &RecordBuf, a: &str, v: &str) -> Result<Vec<Op>, String> {
     let target = Target::new(b.kind(), &rec.fields[0]);
@@ -147,4 +89,57 @@ pub fn delete_bench_ops(doc: &Document, b: Bench, row: u32) -> Vec<Op> {
     record(doc, b.table(), row).map_or_else(Vec::new, |rec| {
         vec![Op::Delete(Target::new(b.kind(), &rec.fields[0]))]
     })
+}
+
+// ---- private ----
+
+/// Ops replacing every `key` line of `target` by one line per item of `items`.
+fn lines_ops(target: &Target, rec: &RecordBuf, key: &str, items: Vec<Vec<String>>) -> Vec<Op> {
+    let current: Vec<Vec<String>> = rec
+        .attrs
+        .iter()
+        .filter(|a| a.key == key)
+        .map(|a| a.values.clone())
+        .collect();
+    if current == items {
+        return Vec::new();
+    }
+    let mut ops = Vec::with_capacity(items.len() + 1);
+    if !current.is_empty() {
+        ops.push(Op::RemoveAttr {
+            target: target.clone(),
+            key: key.to_owned(),
+            first: None,
+        });
+    }
+    // ponytail: SetAttr replaces a repeatable line by its first value, so items sharing a
+    // first value (two goals on one output) keep only the last; split the record if needed.
+    for values in items {
+        ops.push(Op::SetAttr {
+            target: target.clone(),
+            key: key.to_owned(),
+            values,
+        });
+    }
+    ops
+}
+
+/// Parses an optimizer goal list `<output> min|max|target <expr> [weight <w>]; …`.
+fn parse_goals(v: &str) -> Result<Vec<Vec<String>>, String> {
+    let mut out = Vec::new();
+    for g in v.split(';').map(str::trim).filter(|g| !g.is_empty()) {
+        let w: Vec<String> = g.split_whitespace().map(str::to_owned).collect();
+        let ok = match w.get(1).map(String::as_str) {
+            Some("min" | "max") => w.len() == 2 || (w.len() == 4 && w[2] == "weight"),
+            Some("target") => w.len() == 3 || (w.len() == 5 && w[3] == "weight"),
+            _ => false,
+        };
+        if !ok {
+            return Err(format!(
+                "goal `{g}`: expected `<output> min|max|target <expr> [weight <w>]`"
+            ));
+        }
+        out.push(w);
+    }
+    Ok(out)
 }

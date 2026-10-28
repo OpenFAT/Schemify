@@ -23,11 +23,11 @@
 //!
 //! Contents:
 //! - `pub struct Look`
+//! - `pub const PAPER`
+//! - `pub struct Page`, `Page::parse`, `Page::points`, `Page::name`
 //! - `pub fn subset`
 //! - `pub fn bounds`
 //! - `pub fn padded`
-//! - `pub const PAPER`
-//! - `pub struct Page`, `Page::parse`, `Page::points`, `Page::name`
 
 mod eps;
 mod ops;

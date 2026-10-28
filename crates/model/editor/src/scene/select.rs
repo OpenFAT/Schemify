@@ -2,13 +2,12 @@
 //! its marks. In: the objects, a point or a box. Out: object indices, marks.
 //!
 //! Contents:
+//! - `pub struct Selected`, `Selected::set`, `Selected::contains`, `Selected::universe`,
+//!   `Selected::len`, `Selected::is_empty`
 //! - `pub fn hit`
 //! - `pub(super) fn hit_one`
 //! - `pub fn selected_prims`
-//! - `pub(super) fn seg_dist`
 //! - `pub fn box_select`
-//! - `pub struct Selected`, `Selected::set`, `Selected::contains`, `Selected::universe`,
-//!   `Selected::len`, `Selected::is_empty`
 //! - `pub fn marks`
 
 use schemify_canvas::{CanvasPrims, Marks, PrimKind};
@@ -118,24 +117,6 @@ pub fn selected_prims(sc: &Scene, selected: &Selected, out: &mut Vec<(u8, u32)>)
     assert!(out.len() <= sc.prims.len());
 }
 
-pub(super) fn seg_dist(p: (f64, f64), g: [i32; 4]) -> f64 {
-    let (ax, ay, bx, by) = (
-        f64::from(g[0]),
-        f64::from(g[1]),
-        f64::from(g[2]),
-        f64::from(g[3]),
-    );
-    let (dx, dy) = (bx - ax, by - ay);
-    let len2 = dx * dx + dy * dy;
-    let t = if len2 > 0.0 {
-        (((p.0 - ax) * dx + (p.1 - ay) * dy) / len2).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let (qx, qy) = (ax + t * dx - p.0, ay + t * dy - p.1);
-    (qx * qx + qy * qy).sqrt()
-}
-
 /// Objects selected by a box `[x0, y0, x1, y1]` (any corner order): fully inside it, or,
 /// with `touch` (xschem's right-to-left drag), any object whose box meets it.
 pub fn box_select(objs: &Objects, r: [f64; 4], touch: bool) -> Vec<u32> {
@@ -243,4 +224,24 @@ pub fn marks(sc: &Scene, rows: &[(u8, u32)], color: u32, out: &mut Marks) {
         }
     }
     assert!(out.kind.len() <= sc.prims.len());
+}
+
+// ---- private ----
+
+fn seg_dist(p: (f64, f64), g: [i32; 4]) -> f64 {
+    let (ax, ay, bx, by) = (
+        f64::from(g[0]),
+        f64::from(g[1]),
+        f64::from(g[2]),
+        f64::from(g[3]),
+    );
+    let (dx, dy) = (bx - ax, by - ay);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 > 0.0 {
+        (((p.0 - ax) * dx + (p.1 - ay) * dy) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let (qx, qy) = (ax + t * dx - p.0, ay + t * dy - p.1);
+    (qx * qx + qy * qy).sqrt()
 }

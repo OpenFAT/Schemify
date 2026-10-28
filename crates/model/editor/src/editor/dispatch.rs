@@ -2,7 +2,6 @@
 //!
 //! Contents:
 //! - `pub(super) fn kind_refusal`
-//! - `pub(super) fn text_tab_cmd`
 //! - `Editor::dispatch_all`
 //! - `Editor::dispatch`
 //! - `Editor::run`
@@ -29,64 +28,6 @@ pub(super) fn kind_refusal(cmd: Cmd, kind: FileKind) -> String {
         cmd.name(),
         want.join(" or "),
         ext(&kind)
-    )
-}
-
-/// Whether `cmd` makes sense on a read-only text tab: navigation, panels, the run, another
-/// text or dialog, a view option (nothing that edits the level behind the tab).
-pub(super) fn text_tab_cmd(cmd: Cmd) -> bool {
-    matches!(
-        cmd,
-        Cmd::TabSelect
-            | Cmd::TabNext
-            | Cmd::TabPrev
-            | Cmd::TabNew
-            | Cmd::NewSchematic
-            | Cmd::NewSymbol
-            | Cmd::Close
-            | Cmd::Quit
-            | Cmd::Open
-            | Cmd::Waves
-            | Cmd::ChecksToggle
-            | Cmd::ResultsToggle
-            | Cmd::ResultsPick
-            | Cmd::ResultsWaves
-            | Cmd::ResultsHistory
-            | Cmd::ResultsSort
-            | Cmd::ResultsFilter
-            | Cmd::SimCancel
-            | Cmd::SetDialect
-            | Cmd::ShowNetlist
-            | Cmd::OpAnnotate
-            | Cmd::SendToViewer
-            | Cmd::SendHighlighted
-            | Cmd::Redraw
-            | Cmd::ToggleTheme
-            | Cmd::DialogClose
-            | Cmd::ChooseFilter
-            | Cmd::ChoosePick
-            | Cmd::TextFind
-            | Cmd::About
-            | Cmd::Help
-            | Cmd::Changelog
-            | Cmd::ListProcesses
-            | Cmd::PackageStatus
-            | Cmd::JobData
-            | Cmd::JobErrors
-            | Cmd::ListNets
-            | Cmd::ListNetsBuses
-            | Cmd::EditNetlist
-            | Cmd::WavesClear
-            | Cmd::WavesLoad
-            | Cmd::CycleDialect
-            | Cmd::FlatNetlist
-            | Cmd::Fullscreen
-            | Cmd::ToolbarToggle
-            | Cmd::OpenRecent
-            | Cmd::OpenMostRecent
-            | Cmd::NewWindowTab
-            | Cmd::Recover
-            | Cmd::DiscardRecovery
     )
 }
 
@@ -454,4 +395,64 @@ impl Editor {
             | Cmd::Help => self.run_net(cmd, arg, node, reqs),
         }
     }
+}
+
+// ---- private ----
+
+/// Whether `cmd` makes sense on a read-only text tab: navigation, panels, the run, another
+/// text or dialog, a view option (nothing that edits the level behind the tab).
+fn text_tab_cmd(cmd: Cmd) -> bool {
+    matches!(
+        cmd,
+        Cmd::TabSelect
+            | Cmd::TabNext
+            | Cmd::TabPrev
+            | Cmd::TabNew
+            | Cmd::NewSchematic
+            | Cmd::NewSymbol
+            | Cmd::Close
+            | Cmd::Quit
+            | Cmd::Open
+            | Cmd::Waves
+            | Cmd::ChecksToggle
+            | Cmd::ResultsToggle
+            | Cmd::ResultsPick
+            | Cmd::ResultsWaves
+            | Cmd::ResultsHistory
+            | Cmd::ResultsSort
+            | Cmd::ResultsFilter
+            | Cmd::SimCancel
+            | Cmd::SetDialect
+            | Cmd::ShowNetlist
+            | Cmd::OpAnnotate
+            | Cmd::SendToViewer
+            | Cmd::SendHighlighted
+            | Cmd::Redraw
+            | Cmd::ToggleTheme
+            | Cmd::DialogClose
+            | Cmd::ChooseFilter
+            | Cmd::ChoosePick
+            | Cmd::TextFind
+            | Cmd::About
+            | Cmd::Help
+            | Cmd::Changelog
+            | Cmd::ListProcesses
+            | Cmd::PackageStatus
+            | Cmd::JobData
+            | Cmd::JobErrors
+            | Cmd::ListNets
+            | Cmd::ListNetsBuses
+            | Cmd::EditNetlist
+            | Cmd::WavesClear
+            | Cmd::WavesLoad
+            | Cmd::CycleDialect
+            | Cmd::FlatNetlist
+            | Cmd::Fullscreen
+            | Cmd::ToolbarToggle
+            | Cmd::OpenRecent
+            | Cmd::OpenMostRecent
+            | Cmd::NewWindowTab
+            | Cmd::Recover
+            | Cmd::DiscardRecovery
+    )
 }

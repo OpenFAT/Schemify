@@ -7,11 +7,8 @@
 //! - `pub fn build`
 //! - `pub(super) fn drawn`
 //! - `pub fn update`
-//! - `pub(super) fn check_tables`
 //! - `pub(super) fn counts`
 //! - `pub(super) fn stamped`
-//! - `pub(super) fn remove_object`
-//! - `pub(super) fn fit_boxes`
 
 use schemify_canvas::{CanvasPrims, LineStyle};
 use schemify_doc::{DocHandle, ObjId, Project, TableId, Write};
@@ -367,8 +364,23 @@ pub fn update(
     true
 }
 
+/// Primitive rows per kind ([`CanvasPrims::kill`] order): where an update's new rows start.
+pub(super) fn counts(sc: &Scene) -> [usize; 6] {
+    sc.owner.cols().map(Vec::len)
+}
+
+/// The rows (or connection points) carrying stamp `s` in a non-decreasing stamp column.
+pub(super) fn stamped(col: &[u32], s: u32) -> std::ops::Range<usize> {
+    let lo = col.partition_point(|&x| x < s);
+    let hi = lo + col[lo..].partition_point(|&x| x == s);
+    assert!(hi <= col.len());
+    lo..hi
+}
+
+// ---- private ----
+
 /// Parallel-column invariants of a built scene.
-pub(super) fn check_tables(sc: &Scene) {
+fn check_tables(sc: &Scene) {
     let (p, o) = (&sc.prims, &sc.owner);
     assert_eq!(p.lines.x0.len(), o.lines.len());
     assert_eq!(p.rects.x0.len(), o.rects.len());
@@ -393,25 +405,12 @@ pub(super) fn check_tables(sc: &Scene) {
     assert!(sc.dead <= p.len());
 }
 
-/// Primitive rows per kind ([`CanvasPrims::kill`] order): where an update's new rows start.
-pub(super) fn counts(sc: &Scene) -> [usize; 6] {
-    sc.owner.cols().map(Vec::len)
-}
-
-/// The rows (or connection points) carrying stamp `s` in a non-decreasing stamp column.
-pub(super) fn stamped(col: &[u32], s: u32) -> std::ops::Range<usize> {
-    let lo = col.partition_point(|&x| x < s);
-    let hi = lo + col[lo..].partition_point(|&x| x == s);
-    assert!(hi <= col.len());
-    lo..hi
-}
-
 /// Removes object `key` (when drawn): its primitive rows die in place (reported through
 /// [`Scene::edits`]), its connection points lose their owner, its index entry goes; the last
 /// object takes its index (swap-remove), so that object's rows and points are renumbered.
 ///
 /// Cost: O(log rows) per kind plus the rows of the two objects involved.
-pub(super) fn remove_object(sc: &mut Scene, key: ObjKey) {
+fn remove_object(sc: &mut Scene, key: ObjKey) {
     let Some(o) = sc.index.remove(&pack(key)) else {
         return;
     };
@@ -453,7 +452,7 @@ pub(super) fn remove_object(sc: &mut Scene, key: ObjKey) {
 
 /// Grows every box object's geometry to cover all of its primitives from `from` on, so
 /// whatever is drawn for an object hits and box-selects as that object.
-pub(super) fn fit_boxes(sc: &mut Scene, from: [usize; 6]) {
+fn fit_boxes(sc: &mut Scene, from: [usize; 6]) {
     let p = &sc.prims;
     let o = &sc.owner;
     let objs = &mut sc.objs;

@@ -3,7 +3,6 @@
 //!
 //! Contents:
 //! - `pub(super) const SFNTS_MAX`
-//! - `pub(super) fn type42`
 //! - `pub fn eps`
 
 use schemify_canvas::CanvasPrims;
@@ -15,6 +14,34 @@ use super::{FONT_NAMES, Look, Page};
 /// and each must have an even length.
 pub(super) const SFNTS_MAX: usize = 65_534;
 
+/// The drawing as Encapsulated PostScript (Level 2), fitted into a `page`-sized bounding
+/// box. Texts print in the embedded UI faces as Type 42 resources (only faces that print),
+/// so non-ASCII text prints as on the canvas.
+///
+/// # Panics
+///
+/// Panics if `b` is inverted.
+pub fn eps(prims: &CanvasPrims, b: [i32; 4], look: &Look, page: Page) -> String {
+    assert!(b[0] <= b[2] && b[1] <= b[3], "inverted bounds");
+    let size = page.points();
+    let mut used = Used::default();
+    let body = page_ops(prims, b, look, size, Lang::Ps, &mut used);
+    let fonts: String = used
+        .iter()
+        .enumerate()
+        .filter(|(_, glyphs)| !glyphs.is_empty())
+        .map(|(f, glyphs)| type42(f as u8, glyphs))
+        .collect();
+    let out = format!(
+        "%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 {} {}\n%%Creator: Schemify\n%%LanguageLevel: 2\n%%EndComments\n{fonts}gsave\n{body}grestore\nshowpage\n%%EOF\n",
+        size.0 as i32, size.1 as i32
+    );
+    assert!(out.is_ascii(), "the EPS is 7-bit text");
+    out
+}
+
+// ---- private ----
+
 /// UI face `face` as a PostScript Type 42 font resource named `FONT_NAMES[face]`: the
 /// TrueType file as `sfnts` hex strings broken at table boundaries, `CharStrings` naming every
 /// glyph it prints (`/g<id>`) for `glyphshow`.
@@ -23,7 +50,7 @@ pub(super) const SFNTS_MAX: usize = 65_534;
 ///
 /// Panics if a table of the face is longer than [`SFNTS_MAX`] (not the case for the shipped
 /// faces: the largest table, Noto Sans's `glyf`, is 63.6 KB).
-pub(super) fn type42(face: u8, glyphs: &Glyphs) -> String {
+fn type42(face: u8, glyphs: &Glyphs) -> String {
     use std::fmt::Write;
     // ponytail: breaks at table boundaries only; split `glyf` at `loca` glyph boundaries if
     // a UI face ever grows a table over 64 KB.
@@ -91,30 +118,4 @@ pub(super) fn type42(face: u8, glyphs: &Glyphs) -> String {
     }
     s.push_str("] def\nFontName currentdict end definefont pop\n%%EndResource\n");
     s
-}
-
-/// The drawing as Encapsulated PostScript (Level 2), fitted into a `page`-sized bounding
-/// box. Texts print in the embedded UI faces as Type 42 resources (only faces that print),
-/// so non-ASCII text prints as on the canvas.
-///
-/// # Panics
-///
-/// Panics if `b` is inverted.
-pub fn eps(prims: &CanvasPrims, b: [i32; 4], look: &Look, page: Page) -> String {
-    assert!(b[0] <= b[2] && b[1] <= b[3], "inverted bounds");
-    let size = page.points();
-    let mut used = Used::default();
-    let body = page_ops(prims, b, look, size, Lang::Ps, &mut used);
-    let fonts: String = used
-        .iter()
-        .enumerate()
-        .filter(|(_, glyphs)| !glyphs.is_empty())
-        .map(|(f, glyphs)| type42(f as u8, glyphs))
-        .collect();
-    let out = format!(
-        "%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 {} {}\n%%Creator: Schemify\n%%LanguageLevel: 2\n%%EndComments\n{fonts}gsave\n{body}grestore\nshowpage\n%%EOF\n",
-        size.0 as i32, size.1 as i32
-    );
-    assert!(out.is_ascii(), "the EPS is 7-bit text");
-    out
 }

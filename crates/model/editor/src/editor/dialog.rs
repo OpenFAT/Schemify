@@ -10,7 +10,6 @@
 //! - `Editor::close_dialog`
 //! - `Editor::open_text`
 //! - `Editor::enter_text_ok`
-//! - `Editor::text_ok`
 //! - `Editor::open_search`
 //! - `Editor::search_ok`
 //! - `Editor::open_header`
@@ -144,7 +143,7 @@ impl Editor {
 
 impl Editor {
     /// OK of an enter-text dialog opened by a parity command.
-    pub(super) fn text_ok(&mut self, purpose: TextFor, text: &str, reqs: &mut Vec<EditRequest>) {
+    fn text_ok(&mut self, purpose: TextFor, text: &str, reqs: &mut Vec<EditRequest>) {
         match purpose {
             TextFor::SaveAs(symbol) => {
                 if let Some((h, _)) = self.active() {

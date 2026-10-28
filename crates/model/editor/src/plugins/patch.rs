@@ -2,11 +2,8 @@
 //! differ when few do ([`PATCH_SHARE`]), the net columns and the per-cell groups synced.
 //!
 //! Contents:
-//! - `pub(super) const PATCH_SHARE`
 //! - `pub(super) fn differing`
 //! - `pub(super) fn patch_doc_groups`
-//! - `pub(super) fn fill_doc_table`
-//! - `pub(super) fn sync_net_column`
 //! - `pub(super) fn sync_cell_groups`
 
 use schemify_elab::CellState;
@@ -16,7 +13,7 @@ use schemify_plugin::abi::{Table, col};
 use super::snapshot::{Filled, fill_nets, fill_violations};
 
 /// Rows of a table changed by more than this share are refilled instead of patched.
-pub(super) const PATCH_SHARE: usize = 8;
+const PATCH_SHARE: usize = 8;
 
 /// The rows `0..n` for which `differs` holds, or `None` once they pass `n / PATCH_SHARE`
 /// (the caller refills instead): the scan stops there, so a refill costs no index list.
@@ -88,97 +85,6 @@ pub(super) fn patch_doc_groups(
             v.extend_from_slice(&pad);
         }
         debug_assert_eq!(s.rows(snap) as usize, new);
-    }
-}
-
-/// Writes document rows `rows` of table `snap` (all but the net column) over snapshot rows
-/// `at`.
-pub(super) fn fill_doc_table(
-    s: &mut Snapshots,
-    doc: &schemify_doc::Document,
-    id: u32,
-    snap: Table,
-    at: std::ops::Range<usize>,
-    rows: std::ops::Range<usize>,
-) {
-    if at.is_empty() && rows.is_empty() {
-        return;
-    }
-    let st = doc.strings();
-    let n = rows.len();
-    match snap {
-        Table::Instances => {
-            let t = doc.instances();
-            s.splice::<u32>(snap, col::instances::DOC, at.clone(), &vec![id; n]);
-            let raw: Vec<u32> = t.id[rows.clone()].iter().map(|i| i.0).collect();
-            s.splice::<u32>(snap, col::instances::ID, at.clone(), &raw);
-            s.splice::<i32>(snap, col::instances::X, at.clone(), &t.x[rows.clone()]);
-            s.splice::<i32>(snap, col::instances::Y, at.clone(), &t.y[rows.clone()]);
-            let o: Vec<u8> = t.orient[rows.clone()].iter().map(|&o| o as u8).collect();
-            s.splice::<u8>(snap, col::instances::ORIENT, at.clone(), &o);
-            let cells: Vec<&str> = t.cell[rows.clone()].iter().map(|&c| st.get(c)).collect();
-            s.splice_strings(snap, col::instances::CELL, at.clone(), &cells);
-            let names: Vec<&str> = t.name[rows].iter().map(|&c| st.get(c)).collect();
-            s.splice_strings(snap, col::instances::NAME, at, &names);
-        }
-        Table::Wires => {
-            let t = doc.wires();
-            s.splice::<u32>(snap, col::wires::DOC, at.clone(), &vec![id; n]);
-            let raw: Vec<u32> = t.id[rows.clone()].iter().map(|i| i.0).collect();
-            s.splice::<u32>(snap, col::wires::ID, at.clone(), &raw);
-            s.splice::<i32>(snap, col::wires::X1, at.clone(), &t.x1[rows.clone()]);
-            s.splice::<i32>(snap, col::wires::Y1, at.clone(), &t.y1[rows.clone()]);
-            s.splice::<i32>(snap, col::wires::X2, at.clone(), &t.x2[rows.clone()]);
-            s.splice::<i32>(snap, col::wires::Y2, at, &t.y2[rows]);
-        }
-        _ => {
-            let t = doc.labels();
-            s.splice::<u32>(snap, col::labels::DOC, at.clone(), &vec![id; n]);
-            let raw: Vec<u32> = t.id[rows.clone()].iter().map(|i| i.0).collect();
-            s.splice::<u32>(snap, col::labels::ID, at.clone(), &raw);
-            s.splice::<i32>(snap, col::labels::X, at.clone(), &t.x[rows.clone()]);
-            s.splice::<i32>(snap, col::labels::Y, at.clone(), &t.y[rows.clone()]);
-            let texts: Vec<&str> = t.text[rows].iter().map(|&x| st.get(x)).collect();
-            s.splice_strings(snap, col::labels::TEXT, at, &texts);
-        }
-    }
-}
-
-/// Makes net column `column` of `table` hold `want`, writing only the rows that differ from
-/// what it holds (`shadow`; unknown or of another length: refilled).
-///
-/// Cost: one compare pass over the column, plus the rows written.
-pub(super) fn sync_net_column(
-    s: &mut Snapshots,
-    table: Table,
-    column: u32,
-    shadow: &mut Option<Vec<u32>>,
-    want: &[u32],
-) {
-    assert_eq!(s.rows(table) as usize, want.len(), "the column is in step");
-    match shadow.as_mut().filter(|v| v.len() == want.len()) {
-        Some(old) if old[..] == *want => {}
-        Some(old) => {
-            match differing(want.len(), |i| old[i] != want[i]) {
-                Some(differ) => {
-                    for &i in &differ {
-                        s.splice::<u32>(table, column, i..i + 1, &want[i..=i]);
-                    }
-                }
-                None => s.fill::<u32>(table, column, want),
-            }
-            old.copy_from_slice(want);
-        }
-        None => {
-            s.fill::<u32>(table, column, want);
-            match shadow.as_mut() {
-                Some(v) => {
-                    v.clear();
-                    v.extend_from_slice(want);
-                }
-                None => *shadow = Some(want.to_vec()),
-            }
-        }
     }
 }
 
@@ -289,4 +195,97 @@ pub(super) fn sync_cell_groups(
     }
     debug_assert_eq!(s.rows(Table::Nets) as usize, c.nets.net_name.len());
     debug_assert_eq!(s.rows(Table::Violations) as usize, c.violations.rows.len());
+}
+
+// ---- private ----
+
+/// Writes document rows `rows` of table `snap` (all but the net column) over snapshot rows
+/// `at`.
+fn fill_doc_table(
+    s: &mut Snapshots,
+    doc: &schemify_doc::Document,
+    id: u32,
+    snap: Table,
+    at: std::ops::Range<usize>,
+    rows: std::ops::Range<usize>,
+) {
+    if at.is_empty() && rows.is_empty() {
+        return;
+    }
+    let st = doc.strings();
+    let n = rows.len();
+    match snap {
+        Table::Instances => {
+            let t = doc.instances();
+            s.splice::<u32>(snap, col::instances::DOC, at.clone(), &vec![id; n]);
+            let raw: Vec<u32> = t.id[rows.clone()].iter().map(|i| i.0).collect();
+            s.splice::<u32>(snap, col::instances::ID, at.clone(), &raw);
+            s.splice::<i32>(snap, col::instances::X, at.clone(), &t.x[rows.clone()]);
+            s.splice::<i32>(snap, col::instances::Y, at.clone(), &t.y[rows.clone()]);
+            let o: Vec<u8> = t.orient[rows.clone()].iter().map(|&o| o as u8).collect();
+            s.splice::<u8>(snap, col::instances::ORIENT, at.clone(), &o);
+            let cells: Vec<&str> = t.cell[rows.clone()].iter().map(|&c| st.get(c)).collect();
+            s.splice_strings(snap, col::instances::CELL, at.clone(), &cells);
+            let names: Vec<&str> = t.name[rows].iter().map(|&c| st.get(c)).collect();
+            s.splice_strings(snap, col::instances::NAME, at, &names);
+        }
+        Table::Wires => {
+            let t = doc.wires();
+            s.splice::<u32>(snap, col::wires::DOC, at.clone(), &vec![id; n]);
+            let raw: Vec<u32> = t.id[rows.clone()].iter().map(|i| i.0).collect();
+            s.splice::<u32>(snap, col::wires::ID, at.clone(), &raw);
+            s.splice::<i32>(snap, col::wires::X1, at.clone(), &t.x1[rows.clone()]);
+            s.splice::<i32>(snap, col::wires::Y1, at.clone(), &t.y1[rows.clone()]);
+            s.splice::<i32>(snap, col::wires::X2, at.clone(), &t.x2[rows.clone()]);
+            s.splice::<i32>(snap, col::wires::Y2, at, &t.y2[rows]);
+        }
+        _ => {
+            let t = doc.labels();
+            s.splice::<u32>(snap, col::labels::DOC, at.clone(), &vec![id; n]);
+            let raw: Vec<u32> = t.id[rows.clone()].iter().map(|i| i.0).collect();
+            s.splice::<u32>(snap, col::labels::ID, at.clone(), &raw);
+            s.splice::<i32>(snap, col::labels::X, at.clone(), &t.x[rows.clone()]);
+            s.splice::<i32>(snap, col::labels::Y, at.clone(), &t.y[rows.clone()]);
+            let texts: Vec<&str> = t.text[rows].iter().map(|&x| st.get(x)).collect();
+            s.splice_strings(snap, col::labels::TEXT, at, &texts);
+        }
+    }
+}
+
+/// Makes net column `column` of `table` hold `want`, writing only the rows that differ from
+/// what it holds (`shadow`; unknown or of another length: refilled).
+///
+/// Cost: one compare pass over the column, plus the rows written.
+fn sync_net_column(
+    s: &mut Snapshots,
+    table: Table,
+    column: u32,
+    shadow: &mut Option<Vec<u32>>,
+    want: &[u32],
+) {
+    assert_eq!(s.rows(table) as usize, want.len(), "the column is in step");
+    match shadow.as_mut().filter(|v| v.len() == want.len()) {
+        Some(old) if old[..] == *want => {}
+        Some(old) => {
+            match differing(want.len(), |i| old[i] != want[i]) {
+                Some(differ) => {
+                    for &i in &differ {
+                        s.splice::<u32>(table, column, i..i + 1, &want[i..=i]);
+                    }
+                }
+                None => s.fill::<u32>(table, column, want),
+            }
+            old.copy_from_slice(want);
+        }
+        None => {
+            s.fill::<u32>(table, column, want);
+            match shadow.as_mut() {
+                Some(v) => {
+                    v.clear();
+                    v.extend_from_slice(want);
+                }
+                None => *shadow = Some(want.to_vec()),
+            }
+        }
+    }
 }

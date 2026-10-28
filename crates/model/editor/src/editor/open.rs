@@ -4,7 +4,6 @@
 //!
 //! Contents:
 //! - `Editor::new`
-//! - `pub(super) fn push_note`
 
 use schemify_canvas::{CanvasPrims, Marks, Palette};
 use schemify_elab::Annotations;
@@ -209,7 +208,9 @@ impl Editor {
     }
 }
 
-pub(super) fn push_note(status: &mut String, note: &str) {
+// ---- private ----
+
+fn push_note(status: &mut String, note: &str) {
     if !status.is_empty() {
         status.push_str("; ");
     }

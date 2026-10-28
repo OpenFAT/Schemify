@@ -6,7 +6,6 @@
 //! - `Editor::compare_with`
 //! - `Editor::compare_swap`
 //! - `Editor::build_extra`
-//! - `Editor::draw_compare`
 
 use schemify_canvas::CanvasPrims;
 use schemify_doc::{DocHandle, RecordBuf, TableId};
@@ -126,7 +125,7 @@ impl Editor {
     /// The comparison drawn into `out`: objects of the active document added or changed
     /// against cell `row` outlined (diff layer), objects only in `row` drawn in the error
     /// layer at their place.
-    pub(super) fn draw_compare(&mut self, h: DocHandle, row: usize, out: &mut CanvasPrims) {
+    fn draw_compare(&mut self, h: DocHandle, row: usize, out: &mut CanvasPrims) {
         let Ok(other) = self.session.open_cell(row) else {
             return;
         };

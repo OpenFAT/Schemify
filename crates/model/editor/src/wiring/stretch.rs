@@ -2,10 +2,9 @@
 //! (an instance pin touching another without a wire) get new wires, routed by mode.
 //!
 //! Contents:
-//! - `pub(super) const ADDED_PER_OBJECT`
-//! - `pub(super) fn fixed_points`
 //! - `pub struct Stretched`
 //! - `pub struct Moved`
+//! - `pub(super) fn fixed_points`
 //! - `pub fn stretch`
 
 use std::collections::HashSet;
@@ -18,9 +17,6 @@ use crate::geometry::{Pt, Xform};
 use crate::scene::ObjKey;
 
 use super::{inst_pins, on_interior, points_of, route, wire_rec};
-
-/// Wires one stretch may add (kissing wires and L corners) per selected object.
-pub(super) const ADDED_PER_OBJECT: usize = 64;
 
 /// The result of a stretch or kissing move.
 #[derive(Debug, Default)]
@@ -46,6 +42,9 @@ pub struct Moved<'a> {
     /// ("kissing"); needs `follow`.
     pub kiss: bool,
 }
+
+/// Wires one stretch may add (kissing wires and L corners) per selected object.
+const ADDED_PER_OBJECT: usize = 64;
 
 /// Every connection point of objects not in `sel` that a wire does not carry: instance
 /// pins and label/port/noconn anchors (sorted, distinct).

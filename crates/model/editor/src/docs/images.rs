@@ -5,7 +5,6 @@
 //! - `pub fn load_images`
 //! - `pub fn image_path`
 //! - `pub fn load_image`
-//! - `pub(super) fn decode_png`
 //! - `pub(super) fn png_size`
 
 use std::path::{Path, PathBuf};
@@ -110,11 +109,23 @@ pub fn load_image(root: &Path, path: &str) -> Result<Image, String> {
     Ok(Image::new(path, w, h, rgba))
 }
 
+/// Width and height from a PNG's signature and IHDR chunk; `None` when it is not one.
+pub(super) fn png_size(b: &[u8]) -> Option<(u32, u32)> {
+    const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    if b.len() < 24 || b[..8] != SIGNATURE || b[12..16] != *b"IHDR" {
+        return None;
+    }
+    let be = |at: usize| u32::from_be_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+    Some((be(16), be(20)))
+}
+
+// ---- private ----
+
 /// A `w × h` PNG as premultiplied RGBA8, the layout `ui::Image` holds: every color type and
 /// bit depth normalized to 8-bit RGBA (palette expanded, transparency chunks applied, gray
 /// widened), then each channel multiplied by alpha, truncated (as the renderer's own PNG decoder does,
 /// so a page image draws the same pixels it did when render decoded it).
-pub(super) fn decode_png(bytes: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
+fn decode_png(bytes: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     decoder.set_transformations(
         png::Transformations::normalize_to_color8() | png::Transformations::ALPHA,
@@ -154,14 +165,4 @@ pub(super) fn decode_png(bytes: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String
     }
     assert_eq!(rgba.len(), px * 4, "one RGBA pixel per image pixel");
     Ok(rgba)
-}
-
-/// Width and height from a PNG's signature and IHDR chunk; `None` when it is not one.
-pub(super) fn png_size(b: &[u8]) -> Option<(u32, u32)> {
-    const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
-    if b.len() < 24 || b[..8] != SIGNATURE || b[12..16] != *b"IHDR" {
-        return None;
-    }
-    let be = |at: usize| u32::from_be_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
-    Some((be(16), be(20)))
 }

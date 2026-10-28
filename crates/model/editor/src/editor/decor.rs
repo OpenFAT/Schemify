@@ -1,11 +1,10 @@
 //! The decor step: the `checks` overlay source, violation markers and the decor primitives.
 //!
 //! Contents:
+//! - `pub(super) struct DecorKey`
 //! - `Editor::post_checks`
 //! - `Editor::build_markers`
 //! - `Editor::build_decor`
-//! - `pub(super) fn ids_of`
-//! - `pub(super) struct DecorKey`
 
 use schemify_doc::{DocHandle, ObjId};
 use schemify_elab::AnnotationRequest;
@@ -204,8 +203,10 @@ impl Editor {
     }
 }
 
+// ---- private ----
+
 /// The object ids of mark targets `targets` (sorted, unique; a path or name target has none).
-pub(super) fn ids_of(targets: &[String], doc: &schemify_doc::Document) -> Vec<u32> {
+fn ids_of(targets: &[String], doc: &schemify_doc::Document) -> Vec<u32> {
     let s = doc.strings();
     let mut ids: Vec<u32> = targets
         .iter()

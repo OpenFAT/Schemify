@@ -6,7 +6,6 @@
 //! - `Editor::make_schematic_ops`
 //! - `Editor::attach_labels_ops`
 //! - `pub(super) fn symbol_records`
-//! - `pub(super) fn replace_symbol_ops`
 //! - `pub(super) fn symbol_from_ports_ops`
 //! - `pub(super) fn pins_from_ports`
 
@@ -205,24 +204,6 @@ pub(super) fn symbol_records(ports: &[(String, Orient, Pt)], width: i32) -> Vec<
     pins
 }
 
-/// Ops replacing every pin and symbol graphic of `doc` with `recs` (pins and graphics, as
-/// [`symbol_records`] makes them).
-pub(super) fn replace_symbol_ops(doc: &schemify_doc::Document, recs: Vec<RecordBuf>) -> Vec<Op> {
-    assert!(!recs.is_empty());
-    let (s, pins) = (doc.strings(), doc.pins());
-    let mut ops: Vec<Op> = pins
-        .name
-        .iter()
-        .map(|&n| Op::Delete(DocTarget::new(RecordKind::Pin, s.get(n))))
-        .collect();
-    // Row 0 each time: the rows of the graphics still to delete shift up.
-    for &kind in &doc.graphics().shape {
-        ops.push(Op::Delete(DocTarget::new(kind, "0")));
-    }
-    ops.extend(recs.into_iter().map(|rec| Op::Insert { rec, at: None }));
-    ops
-}
-
 /// Cell panel → Symbol from ports: the [`symbol_records`] symbol for an impl body's port
 /// list (`ports`: unique names, port order; `in` left, `out` and `inout` right), its pins
 /// written in port order, replacing `doc`'s pins and symbol graphics. Any cell kind with a
@@ -288,5 +269,25 @@ pub(super) fn pins_from_ports(doc: &schemify_doc::Document, sel: &[ObjKey]) -> V
         ops.push(Op::Insert { rec, at: None });
         made.push(name);
     }
+    ops
+}
+
+// ---- private ----
+
+/// Ops replacing every pin and symbol graphic of `doc` with `recs` (pins and graphics, as
+/// [`symbol_records`] makes them).
+fn replace_symbol_ops(doc: &schemify_doc::Document, recs: Vec<RecordBuf>) -> Vec<Op> {
+    assert!(!recs.is_empty());
+    let (s, pins) = (doc.strings(), doc.pins());
+    let mut ops: Vec<Op> = pins
+        .name
+        .iter()
+        .map(|&n| Op::Delete(DocTarget::new(RecordKind::Pin, s.get(n))))
+        .collect();
+    // Row 0 each time: the rows of the graphics still to delete shift up.
+    for &kind in &doc.graphics().shape {
+        ops.push(Op::Delete(DocTarget::new(kind, "0")));
+    }
+    ops.extend(recs.into_iter().map(|rec| Op::Insert { rec, at: None }));
     ops
 }

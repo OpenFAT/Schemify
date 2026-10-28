@@ -7,7 +7,6 @@
 //! - `pub(super) fn word`
 //! - `pub fn set_ops`
 //! - `pub(super) fn set_field`
-//! - `pub(super) fn body_ops`
 //! - `pub fn impl_ports`
 //! - `pub fn sync_ops`
 //! - `pub fn add_param_ops`
@@ -215,28 +214,6 @@ pub(super) fn set_field(target: Target, rec: &RecordBuf, index: u32, v: &str) ->
         index,
         value: v.to_owned(),
     }]
-}
-
-/// Ops replacing impl `name`'s body with `text` (blank deletes the body record).
-pub(super) fn body_ops(doc: &Document, name: &str, text: &str) -> Vec<Op> {
-    let row = body_row(doc, name);
-    if row.is_some_and(|_| body_text(doc, name) == text)
-        || (row.is_none() && text.trim().is_empty())
-    {
-        return Vec::new();
-    }
-    let target = Target::new(RecordKind::Body, name);
-    if text.trim().is_empty() {
-        return vec![Op::Delete(target)];
-    }
-    let rec = text.split('\n').fold(
-        RecordBuf::new(RecordKind::Body).field(name),
-        RecordBuf::verbatim,
-    );
-    match row {
-        Some(_) => vec![Op::Put { target, rec }],
-        None => vec![Op::Insert { rec, at: None }],
-    }
 }
 
 /// The ports impl `row`'s body declares (`schemify_elab::impl_ports`). `Err` in words when
@@ -454,4 +431,28 @@ pub fn move_pin_ops(doc: &Document, row: u32, up: bool) -> Vec<Op> {
         target: Target::new(RecordKind::Pin, &rec.fields[0]),
         to,
     }]
+}
+
+// ---- private ----
+
+/// Ops replacing impl `name`'s body with `text` (blank deletes the body record).
+fn body_ops(doc: &Document, name: &str, text: &str) -> Vec<Op> {
+    let row = body_row(doc, name);
+    if row.is_some_and(|_| body_text(doc, name) == text)
+        || (row.is_none() && text.trim().is_empty())
+    {
+        return Vec::new();
+    }
+    let target = Target::new(RecordKind::Body, name);
+    if text.trim().is_empty() {
+        return vec![Op::Delete(target)];
+    }
+    let rec = text.split('\n').fold(
+        RecordBuf::new(RecordKind::Body).field(name),
+        RecordBuf::verbatim,
+    );
+    match row {
+        Some(_) => vec![Op::Put { target, rec }],
+        None => vec![Op::Insert { rec, at: None }],
+    }
 }

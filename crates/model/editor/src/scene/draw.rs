@@ -5,13 +5,11 @@
 //! Contents:
 //! - `pub(super) struct Stamp`
 //! - `pub(super) fn instance`
-//! - `pub(super) fn inst_text`
 //! - `pub(super) fn revalue_texts`
 //! - `pub(super) fn wire`
 //! - `pub(super) fn other_objects`
 //! - `pub(super) fn one_other`
 //! - `pub(super) fn shape`
-//! - `pub(super) fn bind_ident`
 //! - `pub(super) fn param_value`
 //! - `pub(super) fn arc_placed`
 //! - `pub(super) fn placed`
@@ -120,43 +118,6 @@ pub(super) fn instance<'d>(
         let (q, rot) = inst_text(t, (o, at), (doc, i, iface, cellref), values, st);
         b.text_rot(q, t.size, t.layer, &st.text, rot, obj);
     }
-}
-
-/// Renders symbol text `t` of instance row `i` (placed at `at` turned `o`) into `st.text`;
-/// returns its anchor and quarter turns, as [`Build::text_rot`] takes them.
-pub(super) fn inst_text<'d>(
-    t: &SymText,
-    (o, at): (Orient, Pt),
-    (doc, i, iface, cellref): (&'d Document, usize, Option<&'d Document>, &'d str),
-    values: Option<&'d CellState>,
-    st: &mut Stamp<'d>,
-) -> (Pt, u8) {
-    let Stamp {
-        inputs,
-        scratch,
-        text,
-        ..
-    } = st;
-    text.clear();
-    let rendered = t.template.as_ref().is_some_and(|tpl| {
-        let ok = tpl
-            .program()
-            .bind(inputs, |name| {
-                bind_ident(name, doc, i, iface, cellref, values)
-            })
-            .is_ok();
-        ok && tpl.render(inputs, scratch, text).is_ok()
-    });
-    if !rendered {
-        text.clear();
-        text.push_str(&t.raw);
-    }
-    let turned = crate::geometry::compose(o, t.orient);
-    let rot = turned.quarter_turns();
-    (
-        sym_text_at(place(o, at, t.at), t, text, rot, turned.mirrored()),
-        rot,
-    )
 }
 
 /// Re-renders the texts of instance row `i`, drawn as object `o` whose only change is its
@@ -361,49 +322,6 @@ pub(super) fn shape(b: &mut Build<'_>, doc: &Document, i: usize) {
     }
 }
 
-/// Binds a template identifier for instance row `i`: `name`, `cell`, then the param's
-/// evaluated value from `values` (elab), then the instance's override text, then the cell's
-/// default (numbers as numbers, the rest as text).
-pub(super) fn bind_ident<'d>(
-    name: &str,
-    doc: &'d Document,
-    i: usize,
-    iface: Option<&'d Document>,
-    cellref: &'d str,
-    values: Option<&'d CellState>,
-) -> Option<Value<'d>> {
-    let s = doc.strings();
-    let inst = doc.instances();
-    let text = match name {
-        "name" => s.get(inst.name[i]),
-        "cell" => cellref.rsplit([':', '/']).next().unwrap_or(cellref),
-        _ => {
-            if let Some(v) = values.and_then(|st| param_value(st, i, name)) {
-                return Some(v);
-            }
-            let over = doc
-                .pool()
-                .find_attr(s, inst.attrs[i], name)
-                .and_then(|v| v.first())
-                .map(|v| s.get(*v));
-            match over {
-                Some(v) => v,
-                None => {
-                    let iface = iface?;
-                    let is = iface.strings();
-                    let p = iface.params();
-                    let row = (0..p.fields.len()).find(|&r| is.get(p.fields[r][0]) == name)?;
-                    is.get(p.fields[row][1])
-                }
-            }
-        }
-    };
-    Some(match schemify_expr::parse_num(text) {
-        Ok(v) if name != "name" => Value::Num(v),
-        _ => Value::Str(text),
-    })
-}
-
 /// The evaluated value of param `name` of instance row `i` (`None`: unresolved cell, no
 /// such param, or an evaluation error, which the docs page and checks report).
 pub(super) fn param_value<'c>(st: &'c CellState, i: usize, name: &str) -> Option<Value<'c>> {
@@ -484,4 +402,86 @@ pub(super) fn placed(b: &mut Build<'_>, key: ObjKey, at: Pt, o: Orient, name: &s
     ];
     b.sc.objs.geom[obj as usize] = bx;
     b.conn_at(at, obj);
+}
+
+// ---- private ----
+
+/// Renders symbol text `t` of instance row `i` (placed at `at` turned `o`) into `st.text`;
+/// returns its anchor and quarter turns, as [`Build::text_rot`] takes them.
+fn inst_text<'d>(
+    t: &SymText,
+    (o, at): (Orient, Pt),
+    (doc, i, iface, cellref): (&'d Document, usize, Option<&'d Document>, &'d str),
+    values: Option<&'d CellState>,
+    st: &mut Stamp<'d>,
+) -> (Pt, u8) {
+    let Stamp {
+        inputs,
+        scratch,
+        text,
+        ..
+    } = st;
+    text.clear();
+    let rendered = t.template.as_ref().is_some_and(|tpl| {
+        let ok = tpl
+            .program()
+            .bind(inputs, |name| {
+                bind_ident(name, doc, i, iface, cellref, values)
+            })
+            .is_ok();
+        ok && tpl.render(inputs, scratch, text).is_ok()
+    });
+    if !rendered {
+        text.clear();
+        text.push_str(&t.raw);
+    }
+    let turned = crate::geometry::compose(o, t.orient);
+    let rot = turned.quarter_turns();
+    (
+        sym_text_at(place(o, at, t.at), t, text, rot, turned.mirrored()),
+        rot,
+    )
+}
+
+/// Binds a template identifier for instance row `i`: `name`, `cell`, then the param's
+/// evaluated value from `values` (elab), then the instance's override text, then the cell's
+/// default (numbers as numbers, the rest as text).
+fn bind_ident<'d>(
+    name: &str,
+    doc: &'d Document,
+    i: usize,
+    iface: Option<&'d Document>,
+    cellref: &'d str,
+    values: Option<&'d CellState>,
+) -> Option<Value<'d>> {
+    let s = doc.strings();
+    let inst = doc.instances();
+    let text = match name {
+        "name" => s.get(inst.name[i]),
+        "cell" => cellref.rsplit([':', '/']).next().unwrap_or(cellref),
+        _ => {
+            if let Some(v) = values.and_then(|st| param_value(st, i, name)) {
+                return Some(v);
+            }
+            let over = doc
+                .pool()
+                .find_attr(s, inst.attrs[i], name)
+                .and_then(|v| v.first())
+                .map(|v| s.get(*v));
+            match over {
+                Some(v) => v,
+                None => {
+                    let iface = iface?;
+                    let is = iface.strings();
+                    let p = iface.params();
+                    let row = (0..p.fields.len()).find(|&r| is.get(p.fields[r][0]) == name)?;
+                    is.get(p.fields[row][1])
+                }
+            }
+        }
+    };
+    Some(match schemify_expr::parse_num(text) {
+        Ok(v) if name != "name" => Value::Num(v),
+        _ => Value::Str(text),
+    })
 }

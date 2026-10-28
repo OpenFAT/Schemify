@@ -1,8 +1,6 @@
 //! Read-only text tabs: netlists, find, changelog, packages, processes, job logs, help.
 //!
 //! Contents:
-//! - `pub(super) const TEXT_TAB_LINES`
-//! - `pub(super) const TEXT_TAB_BYTES`
 //! - `pub(super) const CHANGELOG_ROWS`
 //! - `Editor::find_in_text`
 //! - `Editor::netlist`
@@ -24,14 +22,14 @@ use crate::{platform, spines};
 use super::highlight::env_refs;
 use super::{Editor, Panel};
 
-/// Netlist lines a text tab shows (the prose widget's source cap); the file has them all.
-pub(super) const TEXT_TAB_LINES: usize = 1 << 14;
-
-/// Bytes of a netlist a text tab shows (the file has all of it).
-pub(super) const TEXT_TAB_BYTES: usize = 256 << 10;
-
 /// Rows of hierarchy the changelog lists at most.
 pub(super) const CHANGELOG_ROWS: usize = 1 << 12;
+
+/// Netlist lines a text tab shows (the prose widget's source cap); the file has them all.
+const TEXT_TAB_LINES: usize = 1 << 14;
+
+/// Bytes of a netlist a text tab shows (the file has all of it).
+const TEXT_TAB_BYTES: usize = 256 << 10;
 
 impl Editor {
     /// `text.find`: the lines of the text tab's file (all of it, not only the part the tab

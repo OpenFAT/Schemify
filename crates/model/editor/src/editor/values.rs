@@ -5,7 +5,6 @@
 //! - `pub(super) struct Parked`
 //! - `Editor::track_elab`
 //! - `Editor::recompute_elab`
-//! - `Editor::park`
 //! - `Editor::reload_project`
 //! - `Editor::invalidate_cells`
 //! - `Editor::sync_cache`
@@ -174,7 +173,7 @@ impl Editor {
     }
     /// Keeps `p` among the parked states (replacing an older one of its document), dropping
     /// states of closed documents and, past [`PARKED_MAX`], the oldest.
-    pub(super) fn park(&mut self, p: Parked) {
+    fn park(&mut self, p: Parked) {
         let project = &self.session.project;
         self.parked
             .retain(|q| q.doc != p.doc && project.doc(q.doc).is_some());

@@ -3,7 +3,6 @@
 //!
 //! Contents:
 //! - `pub fn contribute`
-//! - `pub(super) fn sync_rows`
 //! - `pub(super) fn section`
 //! - `pub(super) fn note`
 //! - `pub(super) fn block`
@@ -279,54 +278,6 @@ pub fn contribute(t: &mut String, doc: &Document, sync: Option<&PortSync>) {
     }
 }
 
-/// The pending sync's diff rows and its Apply / Cancel buttons, under `parent`.
-pub(super) fn sync_rows(t: &mut String, plan: &SyncPlan, ports: &[(String, PinDir)], parent: &str) {
-    let mut rows: Vec<(String, &str)> = Vec::new();
-    if plan.is_empty() {
-        rows.push(("Pins already match the ports.".into(), "docs-hint"));
-    }
-    for (name, dir) in &plan.add {
-        rows.push((format!("+ pin {name} {}", dir.as_str()), "check-info"));
-    }
-    for name in &plan.remove {
-        rows.push((format!("− pin {name}"), "check-error"));
-    }
-    for (name, from, to) in &plan.redir {
-        let text = format!("pin {name}: {} → {}", from.as_str(), to.as_str());
-        rows.push((text, "check-warning"));
-    }
-    if plan.reorder {
-        let order: Vec<&str> = ports.iter().map(|p| p.0.as_str()).collect();
-        rows.push((format!("order: {}", order.join(" ")), "check-warning"));
-    }
-    for (k, (text, style)) in rows.iter().enumerate() {
-        node(t, &format!("cell.sync.{k}"), "label", parent);
-        attr(t, "label", text);
-        attr(t, "style", style);
-    }
-    let bar = "cell.sync.bar";
-    node(t, bar, "panel", parent);
-    attr(t, "style", "cell-bar");
-    if !plan.is_empty() {
-        button(
-            t,
-            "cell.sync.apply",
-            "Apply",
-            "cell.sync_apply",
-            "Apply these pin changes (one undo)",
-            bar,
-        );
-    }
-    button(
-        t,
-        "cell.sync.cancel",
-        "Cancel",
-        "cell.sync_cancel",
-        "Leave the pins as they are",
-        bar,
-    );
-}
-
 pub(super) fn section(t: &mut String, id: &str, title: &str) {
     node(t, id, "label", "cell.page");
     attr(t, "label", title);
@@ -399,4 +350,54 @@ pub(super) fn button(
     if !tooltip.is_empty() {
         attr(t, "tooltip", tooltip);
     }
+}
+
+// ---- private ----
+
+/// The pending sync's diff rows and its Apply / Cancel buttons, under `parent`.
+fn sync_rows(t: &mut String, plan: &SyncPlan, ports: &[(String, PinDir)], parent: &str) {
+    let mut rows: Vec<(String, &str)> = Vec::new();
+    if plan.is_empty() {
+        rows.push(("Pins already match the ports.".into(), "docs-hint"));
+    }
+    for (name, dir) in &plan.add {
+        rows.push((format!("+ pin {name} {}", dir.as_str()), "check-info"));
+    }
+    for name in &plan.remove {
+        rows.push((format!("− pin {name}"), "check-error"));
+    }
+    for (name, from, to) in &plan.redir {
+        let text = format!("pin {name}: {} → {}", from.as_str(), to.as_str());
+        rows.push((text, "check-warning"));
+    }
+    if plan.reorder {
+        let order: Vec<&str> = ports.iter().map(|p| p.0.as_str()).collect();
+        rows.push((format!("order: {}", order.join(" ")), "check-warning"));
+    }
+    for (k, (text, style)) in rows.iter().enumerate() {
+        node(t, &format!("cell.sync.{k}"), "label", parent);
+        attr(t, "label", text);
+        attr(t, "style", style);
+    }
+    let bar = "cell.sync.bar";
+    node(t, bar, "panel", parent);
+    attr(t, "style", "cell-bar");
+    if !plan.is_empty() {
+        button(
+            t,
+            "cell.sync.apply",
+            "Apply",
+            "cell.sync_apply",
+            "Apply these pin changes (one undo)",
+            bar,
+        );
+    }
+    button(
+        t,
+        "cell.sync.cancel",
+        "Cancel",
+        "cell.sync_cancel",
+        "Leave the pins as they are",
+        bar,
+    );
 }

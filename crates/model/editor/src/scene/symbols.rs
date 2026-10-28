@@ -9,7 +9,6 @@
 //! - `pub(super) fn layer_attr`
 //! - `pub(super) fn style_attr`
 //! - `pub(super) fn size_of`
-//! - `pub(super) fn degrees_milli`
 //! - `pub(super) fn sym_prims`
 //! - `pub(super) fn rotated_extent`
 //! - `pub(super) fn sym_text_at`
@@ -126,10 +125,6 @@ pub(super) fn style_attr(doc: &Document, span: schemify_doc::Span) -> LineStyle 
 pub(super) fn size_of(text: Option<&str>, default: f64) -> i32 {
     let s = text.and_then(|t| t.parse::<f64>().ok()).unwrap_or(default);
     (s.clamp(0.01, 100.0) * TEXT_PER_SIZE) as i32
-}
-
-pub(super) fn degrees_milli(s: &DocStrings, sym: Sym) -> i32 {
-    (s.get(sym).parse::<f64>().unwrap_or(0.0) * 1000.0) as i32
 }
 
 /// Builds the symbol primitives of a cell document (its pins and rank-2 graphics).
@@ -267,4 +262,10 @@ pub(super) fn text_start(at: Pt, size: i32, s: &str, rot: u8) -> Option<(Pt, u8)
     };
     debug_assert!(start.1 < 2);
     Some(start)
+}
+
+// ---- private ----
+
+fn degrees_milli(s: &DocStrings, sym: Sym) -> i32 {
+    (s.get(sym).parse::<f64>().unwrap_or(0.0) * 1000.0) as i32
 }

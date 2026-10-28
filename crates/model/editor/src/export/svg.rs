@@ -3,7 +3,6 @@
 //!
 //! Contents:
 //! - `pub(super) fn units`
-//! - `pub(super) fn xml_escape`
 //! - `pub fn svg`
 //! - `pub fn svg_counts`
 
@@ -19,19 +18,6 @@ pub(super) fn units(m: i64) -> String {
         &mut s,
     );
     s
-}
-
-pub(super) fn xml_escape(s: &str, out: &mut String) {
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            c if c.is_control() => out.push(' '),
-            c => out.push(c),
-        }
-    }
 }
 
 /// The drawing `prims` inside world bounds `b` as an SVG document in xschem units (one user
@@ -235,4 +221,19 @@ pub fn svg_counts(svg: &str) -> [usize; 5] {
         count("<polyline ") + count("<polygon "),
         count("<text "),
     ]
+}
+
+// ---- private ----
+
+fn xml_escape(s: &str, out: &mut String) {
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            c if c.is_control() => out.push(' '),
+            c => out.push(c),
+        }
+    }
 }

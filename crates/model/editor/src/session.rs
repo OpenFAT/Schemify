@@ -13,7 +13,6 @@
 //! 5. Lifetime: session. 6. Parallel: no (one writer, I/O bound).
 //!
 //! Contents:
-//! - `pub fn find_cell`
 //! - `pub const TABS_MAX`
 //! - `pub const DEPTH_MAX`
 //! - `pub enum View`
@@ -24,6 +23,7 @@
 //! - `pub struct Session`, `Session::load`, `Session::reload`, `Session::lib_dir`,
 //!   `Session::lib_dirs`, `Session::handle_of`, `Session::path`, `Session::name`,
 //!   `Session::epoch`, `Session::bump`
+//! - `pub fn find_cell`
 
 mod files;
 mod tabs;

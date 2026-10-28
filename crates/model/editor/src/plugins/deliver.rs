@@ -5,7 +5,6 @@
 //! Contents:
 //! - `Host::deliver`
 //! - `pub fn eval_in`
-//! - `pub(super) fn run_io`
 //! - `pub fn fn_result`
 
 use std::path::{Path, PathBuf};
@@ -16,7 +15,7 @@ use schemify_expr::{Code as XCode, Error as XError, Mode, Program, Scratch, Span
 use schemify_plugin::abi::{Code, Event, Level};
 use schemify_plugin::{IoOp, deliver};
 
-use crate::platform::{self};
+use crate::platform;
 
 use super::{Delivered, Host, ROUNDS_MAX, WAITING_MAX, handle_of};
 
@@ -234,9 +233,28 @@ pub fn eval_in<F: Funcs>(st: &CellState, expr: &str, funcs: &mut F) -> Result<St
     Ok(out)
 }
 
+/// A plugin function's result text (plugin ABI §2 `schemify_call`, expr §5): `true`/`false`,
+/// a number in canonical text, or one quoted string (format §2 escapes). `None` for anything
+/// else, including trailing values.
+pub fn fn_result(t: &str) -> Option<Val> {
+    match t {
+        "true" => Some(Val::Bool(true)),
+        "false" => Some(Val::Bool(false)),
+        t if t.starts_with('"') => {
+            let mut v = schemify_plugin::abi::text::values(t);
+            let s = v.need().ok()?;
+            v.end().ok()?;
+            Some(Val::Str(s.as_ref().into()))
+        }
+        t => schemify_expr::parse_num(t).ok().map(Val::Num),
+    }
+}
+
+// ---- private ----
+
 /// Executes an authorized I/O request natively (project-relative paths were checked by the
 /// host). Returns the `IoDone` status and bytes.
-pub(super) fn run_io(root: &Path, op: IoOp, args: &[String], data: &[u8]) -> (i32, Vec<u8>) {
+fn run_io(root: &Path, op: IoOp, args: &[String], data: &[u8]) -> (i32, Vec<u8>) {
     let denied = -(schemify_plugin::abi::Code::Denied as i32);
     let gone = -(schemify_plugin::abi::Code::Gone as i32);
     // A read path: project-relative, or `${NAME}/…` under the variable's directory (the
@@ -297,25 +315,6 @@ pub(super) fn run_io(root: &Path, op: IoOp, args: &[String], data: &[u8]) -> (i3
         }
     }
 }
-
-/// A plugin function's result text (plugin ABI §2 `schemify_call`, expr §5): `true`/`false`,
-/// a number in canonical text, or one quoted string (format §2 escapes). `None` for anything
-/// else, including trailing values.
-pub fn fn_result(t: &str) -> Option<Val> {
-    match t {
-        "true" => Some(Val::Bool(true)),
-        "false" => Some(Val::Bool(false)),
-        t if t.starts_with('"') => {
-            let mut v = schemify_plugin::abi::text::values(t);
-            let s = v.need().ok()?;
-            v.end().ok()?;
-            Some(Val::Str(s.as_ref().into()))
-        }
-        t => schemify_expr::parse_num(t).ok().map(Val::Num),
-    }
-}
-
-// ---- private ----
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod io_tests {

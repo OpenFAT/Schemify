@@ -1,7 +1,6 @@
 //! Gesture ends as edit requests: wires, moves, stretches, placements, shapes, cuts.
 //!
 //! Contents:
-//! - `pub(super) fn shape_record`
 //! - `pub(super) fn dist`
 //! - `pub(super) fn arc_3`
 //! - `Editor::manhattan_points`
@@ -10,7 +9,6 @@
 //! - `Editor::finish_place`
 //! - `Editor::shape_click`
 //! - `Editor::finish_shape`
-//! - `Editor::finish_stretch`
 //! - `Editor::auto_trim`
 //! - `Editor::cut_wire`
 
@@ -26,69 +24,6 @@ use crate::{edit, wiring};
 
 use super::Editor;
 use super::tool::{Form, Placement, Tool};
-
-/// One shape's points as a record: rank-2 symbol graphics (`schematic == false`) or a rank-3
-/// `shape` with id `id`. `None` when the points do not make the shape (a degenerate rect, a
-/// polygon under two points, an arc through collinear points).
-pub(super) fn shape_record(
-    form: Form,
-    pts: &[Pt],
-    closed: bool,
-    layer: u8,
-    id: Option<&str>,
-) -> Option<RecordBuf> {
-    let c = crate::geometry::coord;
-    let (word, values): (&str, Vec<i32>) = match form {
-        Form::Line | Form::Rect => {
-            let (a, b) = (*pts.first()?, *pts.get(1)?);
-            if a == b || (form == Form::Rect && (a.0 == b.0 || a.1 == b.1)) {
-                return None;
-            }
-            let w = if form == Form::Line { "line" } else { "rect" };
-            (w, vec![a.0, a.1, b.0, b.1])
-        }
-        Form::Circle => {
-            let (m, p) = (*pts.first()?, *pts.get(1)?);
-            let r = dist(m, p);
-            if r == 0 {
-                return None;
-            }
-            ("circle", vec![m.0, m.1, r])
-        }
-        Form::Arc => {
-            let (cx, cy, r, start, sweep) = arc_3(*pts.first()?, *pts.get(1)?, *pts.get(2)?)?;
-            ("arc", vec![cx, cy, r, start, sweep])
-        }
-        Form::Poly => {
-            if pts.len() < 2 || (closed && pts.len() < 3) {
-                return None;
-            }
-            ("poly", pts.iter().flat_map(|p| [p.0, p.1]).collect())
-        }
-    };
-    let mut rec = match id {
-        Some(id) => RecordBuf::new(RecordKind::Shape).field(id).field(word),
-        None => RecordBuf::new(match word {
-            "line" => RecordKind::Line,
-            "rect" => RecordKind::Rect,
-            "circle" => RecordKind::Circle,
-            "arc" => RecordKind::Arc,
-            _ => RecordKind::Poly,
-        }),
-    };
-    // Rank-2 arc angles are file numbers, everything else (and every rank-3 value) is a
-    // coordinate: both print as the shortest decimal of the milli value.
-    for v in &values {
-        rec = rec.field(&c(*v));
-    }
-    if layer != 4 {
-        rec = rec.attr("layer", &[&layer.to_string()]);
-    }
-    if form == Form::Poly && closed {
-        rec = rec.attr("closed", &["true"]);
-    }
-    Some(rec)
-}
 
 pub(super) fn dist(a: Pt, b: Pt) -> i32 {
     let (dx, dy) = (
@@ -399,13 +334,7 @@ impl Editor {
     /// Ends a move: a plain move, or a stretch (`stretch` 1) / kissing (2) move whose
     /// attached wires follow (translations only; a move rotated in flight is plain). The
     /// selected ends of partially selected wires (Ctrl+drag box) move with any translation.
-    pub(super) fn finish_stretch(
-        &mut self,
-        reqs: &mut Vec<EditRequest>,
-        h: DocHandle,
-        x: Xform,
-        stretch: u8,
-    ) {
+    fn finish_stretch(&mut self, reqs: &mut Vec<EditRequest>, h: DocHandle, x: Xform, stretch: u8) {
         let sel = self.selection().to_vec();
         let ends: Vec<(ObjKey, Pt)> = self
             .partial_ends()
@@ -504,6 +433,71 @@ impl Editor {
         }
         self.commit(reqs, h, "cut wire", ops);
     }
+}
+
+// ---- private ----
+
+/// One shape's points as a record: rank-2 symbol graphics (`schematic == false`) or a rank-3
+/// `shape` with id `id`. `None` when the points do not make the shape (a degenerate rect, a
+/// polygon under two points, an arc through collinear points).
+fn shape_record(
+    form: Form,
+    pts: &[Pt],
+    closed: bool,
+    layer: u8,
+    id: Option<&str>,
+) -> Option<RecordBuf> {
+    let c = crate::geometry::coord;
+    let (word, values): (&str, Vec<i32>) = match form {
+        Form::Line | Form::Rect => {
+            let (a, b) = (*pts.first()?, *pts.get(1)?);
+            if a == b || (form == Form::Rect && (a.0 == b.0 || a.1 == b.1)) {
+                return None;
+            }
+            let w = if form == Form::Line { "line" } else { "rect" };
+            (w, vec![a.0, a.1, b.0, b.1])
+        }
+        Form::Circle => {
+            let (m, p) = (*pts.first()?, *pts.get(1)?);
+            let r = dist(m, p);
+            if r == 0 {
+                return None;
+            }
+            ("circle", vec![m.0, m.1, r])
+        }
+        Form::Arc => {
+            let (cx, cy, r, start, sweep) = arc_3(*pts.first()?, *pts.get(1)?, *pts.get(2)?)?;
+            ("arc", vec![cx, cy, r, start, sweep])
+        }
+        Form::Poly => {
+            if pts.len() < 2 || (closed && pts.len() < 3) {
+                return None;
+            }
+            ("poly", pts.iter().flat_map(|p| [p.0, p.1]).collect())
+        }
+    };
+    let mut rec = match id {
+        Some(id) => RecordBuf::new(RecordKind::Shape).field(id).field(word),
+        None => RecordBuf::new(match word {
+            "line" => RecordKind::Line,
+            "rect" => RecordKind::Rect,
+            "circle" => RecordKind::Circle,
+            "arc" => RecordKind::Arc,
+            _ => RecordKind::Poly,
+        }),
+    };
+    // Rank-2 arc angles are file numbers, everything else (and every rank-3 value) is a
+    // coordinate: both print as the shortest decimal of the milli value.
+    for v in &values {
+        rec = rec.field(&c(*v));
+    }
+    if layer != 4 {
+        rec = rec.attr("layer", &[&layer.to_string()]);
+    }
+    if form == Form::Poly && closed {
+        rec = rec.attr("closed", &["true"]);
+    }
+    Some(rec)
 }
 
 #[cfg(test)]

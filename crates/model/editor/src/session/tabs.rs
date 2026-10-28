@@ -2,6 +2,8 @@
 //! camera, selection and wire ends, descending into an instance and back.
 //!
 //! Contents:
+//! - `pub const STATUS_MAX`
+//! - `pub struct TabView`
 //! - `Session::open_tab`
 //! - `Session::open_text_tab`
 //! - `Session::status`
@@ -22,9 +24,7 @@
 //! - `Session::hier_path`
 //! - `Session::push_level`
 //! - `Session::pop_level`
-//! - `pub const STATUS_MAX`
 //! - `pub(super) fn cut`
-//! - `pub struct TabView`
 
 use schemify_canvas::Camera;
 use schemify_doc::{DocHandle, TableId};

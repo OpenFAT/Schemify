@@ -2,8 +2,6 @@
 //!
 //! Contents:
 //! - `pub(super) const DOCK_SPLIT`
-//! - `pub(super) const DOCK_SPLIT_RANGE`
-//! - `pub(super) const DOCK_GRAB_PX`
 //! - `Editor::split_input`
 //! - `Editor::open_waves`
 //! - `Editor::send_to_viewer`
@@ -25,10 +23,10 @@ use super::highlight::PIN_PX;
 pub(super) const DOCK_SPLIT: f32 = 0.6;
 
 /// Range the dock divider can be dragged in, as shares of the window height.
-pub(super) const DOCK_SPLIT_RANGE: (f32, f32) = (0.15, 0.85);
+const DOCK_SPLIT_RANGE: (f32, f32) = (0.15, 0.85);
 
 /// Logical px either side of the dock divider that grab it.
-pub(super) const DOCK_GRAB_PX: f32 = 4.0;
+const DOCK_GRAB_PX: f32 = 4.0;
 
 impl Editor {
     /// Splits one input batch between the editor (above the dock) and the waves dock

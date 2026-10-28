@@ -10,7 +10,6 @@
 //! - `Editor::build_overlay`
 //! - `Editor::refresh_palette`
 //! - `Editor::build_shown`
-//! - `Editor::parity_overlay`
 //! - `Editor::view_palette`
 
 use schemify_canvas::{CanvasPrims, Palette};
@@ -343,7 +342,7 @@ impl Editor {
     }
     /// Overlay additions of the parity options: crosshair, snap cursor, grid axes and the
     /// preview of a shape tool in progress.
-    pub(super) fn parity_overlay(&self, o: &mut CanvasPrims) {
+    fn parity_overlay(&self, o: &mut CanvasPrims) {
         self.gesture_overlay(o);
         let v = self.canvas_rect();
         let cam = self.camera();

@@ -1,12 +1,9 @@
 //! The run in the editor: start, poll, results, plots, OP annotation, staged edits.
 //!
 //! Contents:
-//! - `pub(super) const BENCH_NAMES_MAX`
 //! - `Editor::simulate`
 //! - `Editor::new_bench`
 //! - `Editor::step_sim`
-//! - `Editor::related_to_bench`
-//! - `Editor::stage_best`
 //! - `Editor::track_stage`
 
 use std::path::PathBuf;
@@ -33,7 +30,7 @@ use crate::{checks, docs, platform};
 use super::Editor;
 
 /// Benches "New bench from this component" tries before giving up on a free file name.
-pub(super) const BENCH_NAMES_MAX: u32 = 100;
+const BENCH_NAMES_MAX: u32 = 100;
 
 impl Editor {
     /// `s` / Optimize: only a `.shbench` runs (D11b; a component gets the message and the
@@ -296,7 +293,7 @@ impl Editor {
     /// Cost: O(instances of the open documents of the hierarchy); called only while the
     /// shown page has plot fences.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn related_to_bench(&self, h: DocHandle) -> bool {
+    fn related_to_bench(&self, h: DocHandle) -> bool {
         let Some(b) = self.sim.bench() else {
             return false;
         };
@@ -347,7 +344,7 @@ impl Editor {
     /// Stages the optimizer's best point on its bench (D18): one `set_field var` per varied
     /// var (plus dropping a stale D20 cache), reviewed on the docs page, then Accept/Reject.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn stage_best(&mut self, reqs: &mut Vec<EditRequest>, best: crate::sim::Best) {
+    fn stage_best(&mut self, reqs: &mut Vec<EditRequest>, best: crate::sim::Best) {
         let ops: Vec<Op> = {
             let Some(doc) = self.session.project.doc(best.bench) else {
                 return;

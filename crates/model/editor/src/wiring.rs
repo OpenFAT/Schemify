@@ -32,7 +32,7 @@ use std::collections::HashSet;
 use schemify_doc::{DocHandle, Document, Op, Project, RecordBuf, TableId};
 use schemify_format::{RecordKind, parse_coord};
 
-use crate::edit::{self};
+use crate::edit;
 use crate::geometry::{Pt, coord, place, snap};
 use crate::scene::ObjKey;
 

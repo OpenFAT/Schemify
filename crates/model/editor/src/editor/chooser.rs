@@ -1,7 +1,6 @@
 //! The chooser dialog: cells or waveform files filtered as typed, picked by row.
 //!
 //! Contents:
-//! - `pub(super) const CHOOSER_ROWS`
 //! - `pub(super) enum Pick`
 //! - `pub(super) enum ChooseFor`
 //! - `pub(super) struct Chooser`
@@ -9,7 +8,6 @@
 //! - `Editor::refill_chooser`
 //! - `Editor::choose_filter`
 //! - `Editor::choose_pick`
-//! - `Editor::cellref_for`
 
 use std::path::{Path, PathBuf};
 
@@ -22,12 +20,6 @@ use crate::platform;
 use super::Editor;
 use super::dialog::Dialog;
 use super::tool::{Placement, Tool};
-
-/// Chooser rows listed (the list scrolls; typing filters). Every row is a composed node, so
-/// the cap bounds the per-frame compose cost while a chooser is open.
-// ponytail: a fixed cap; a virtualized list (rows composed for the visible window only) when
-// libraries list more cells than this.
-pub(super) const CHOOSER_ROWS: usize = 512;
 
 #[derive(Clone, Debug)]
 pub(super) enum Pick {
@@ -56,6 +48,12 @@ pub(super) struct Chooser {
     /// Analysis a waves chooser was opened for (`waves.load.<a>`), shown in its title.
     pub(super) note: String,
 }
+
+/// Chooser rows listed (the list scrolls; typing filters). Every row is a composed node, so
+/// the cap bounds the per-frame compose cost while a chooser is open.
+// ponytail: a fixed cap; a virtualized list (rows composed for the visible window only) when
+// libraries list more cells than this.
+const CHOOSER_ROWS: usize = 512;
 
 impl Editor {
     pub(super) fn open_chooser(&mut self, purpose: ChooseFor) {
@@ -189,7 +187,7 @@ impl Editor {
     }
     /// How document `h` references indexed cell `row`: `lib:cell` for a library root, or
     /// `./cell` for a project cell in `h`'s directory (netlist spec §1).
-    pub(super) fn cellref_for(&self, h: DocHandle, row: usize) -> Option<String> {
+    fn cellref_for(&self, h: DocHandle, row: usize) -> Option<String> {
         let p = &self.session.project;
         let cells = p.cells();
         let lib = &p.libs().name[usize::from(cells.lib[row])];

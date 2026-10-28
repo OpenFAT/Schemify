@@ -6,13 +6,14 @@
 //! editor can select what it just created.
 //!
 //! Contents:
+//! - `pub struct Ids`, `Ids::new`, `Ids::draw`
+//! - `pub const AUTO_ID`
 //! - `pub fn loc_of`
 //! - `pub fn selected_records`
 //! - `pub fn schematic_keys`
 //! - `pub fn delete`
 //! - `pub fn transform`
 //! - `pub fn transform_each`
-//! - `pub struct Ids`, `Ids::new`, `Ids::draw`
 //! - `pub fn unique_name`
 //! - `pub fn duplicate`
 //! - `pub fn insert_copies`
@@ -21,7 +22,6 @@
 //! - `pub fn placed`
 //! - `pub fn pin`
 //! - `pub fn shape`
-//! - `pub const AUTO_ID`
 
 use std::collections::HashSet;
 

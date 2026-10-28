@@ -7,11 +7,11 @@
 //!
 //! Contents:
 //! - `pub type Pt`
-//! - `pub fn place`
-//! - `pub fn compose`
 //! - `pub struct Xform`, `Xform::IDENTITY`, `Xform::translate`, `Xform::rotate`,
 //!   `Xform::flip_x`, `Xform::flip_y`, `Xform::then`, `Xform::is_translation`, `Xform::point`,
 //!   `Xform::orient`, `Xform::arc`
+//! - `pub fn place`
+//! - `pub fn compose`
 //! - `pub(crate) fn coord`
 //! - `pub fn transform_record`
 //! - `pub fn anchor`
